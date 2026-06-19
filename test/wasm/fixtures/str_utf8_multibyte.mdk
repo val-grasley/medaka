@@ -1,0 +1,4 @@
+-- W6 string: a multi-byte UTF-8 literal — 2-byte (é, λ), 3-byte (世界), 4-byte (𝄞)
+-- codepoints. Verifies the UTF-8 codec + cp_count (the bytes round-trip, codepoint
+-- count != byte count).
+main = putStrLn "héllo λ 世界 𝄞"

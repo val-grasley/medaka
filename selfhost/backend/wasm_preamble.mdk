@@ -176,3 +176,126 @@ preambleScalarLines =
       "  )",
     ]
     ++ importLines
+
+-- ── W6 byte-level IO seam (§6 / §10 fork e) ──────────────────────────────────
+-- The scaffold-collapse: instead of importing `mdk_write_int`/`mdk_write_bool` (which
+-- made the JS runner do the decimal / true|false / newline FORMATTING), the module
+-- now produces the bytes ITSELF (real intToString/string codegen, this slice) and
+-- writes them one byte at a time through ONE custom host import — the §6 stdout seam,
+-- engine-portable (no GC-array↔JS interop needed).  The JS runner just accumulates
+-- raw bytes and UTF-8-decodes them.
+export
+ioByteImportLines : List String
+ioByteImportLines = [
+  "  ;; ── §6 host-import IO seam (§10 fork e — byte-level custom import) ──",
+  "  (import \"env\" \"mdk_write_byte\" (func $mdk_write_byte (param i32)))",
+]
+
+-- the §3.3 String aggregate types — emitted into the rec group only when a program
+-- uses strings (`useStrRef`).  `$str` caches the codepoint count so `stringLength`
+-- is O(1) (RUNTIME-DESIGN §7 decision 2 / §5 INTRINSIC).  `$u8arr` is the UTF-8 byte
+-- backing store (mutable so `array.new_data` / `array.new` can fill it).
+export
+strTypeLines : List String
+strTypeLines = [
+  "    ;; ── §3.3 String aggregate (UTF-8 bytes + cached codepoint count) ──",
+  "    (type $u8arr (array (mut i8)))",
+  "    (type $str (sub (struct (field $cp_count i32) (field $bytes (ref $u8arr)))))",
+]
+
+-- the byte-write print runtime (emitted once, after the function defs, when the
+-- program does any IO / value-main auto-print).  Self-contained WAT — no host help
+-- beyond `$mdk_write_byte`.
+--   $mdk_print_str  — write a $str's UTF-8 bytes verbatim (no newline; putStr).
+--   $mdk_print_strln— write a $str's bytes + a trailing '\n' (putStrLn / String main).
+--   $mdk_print_int  — render an i64 in decimal (sign + digits) and byte-write it + '\n'
+--                     (matches medaka_rt.c mdk_int_to_string's "%lld" + mdk_print_int's
+--                     trailing newline).
+--   $mdk_print_bool — write "true"/"false" + '\n' (matches mdk_print_bool).
+--   $mdk_int_to_str — render an i64 in decimal into a fresh $str (intToString; the
+--                     LEAF extern).  cp_count == byte_len (all ASCII digits/sign).
+export
+ioRuntimeLines : List String
+ioRuntimeLines = [
+  "  ;; ── §6 byte-write print runtime (decimal int / bool text) ──",
+  "  ;; write the decimal digits of a NON-NEGATIVE i64 (most-significant first).",
+  "  (func $mdk_write_digits (param $n i64)",
+  "    (if (i64.ge_s (local.get $n) (i64.const 10))",
+  "      (then (call $mdk_write_digits (i64.div_s (local.get $n) (i64.const 10)))))",
+  "    (call $mdk_write_byte",
+  "      (i32.add (i32.const 48)",
+  "        (i32.wrap_i64 (i64.rem_s (local.get $n) (i64.const 10))))))",
+  "  ;; render an i64 in decimal to stdout + a trailing newline (value-main Int).",
+  "  (func $mdk_print_int (param $n i64)",
+  "    (if (i64.lt_s (local.get $n) (i64.const 0))",
+  "      (then",
+  "        (call $mdk_write_byte (i32.const 45))",
+  "        (call $mdk_write_digits (i64.sub (i64.const 0) (local.get $n))))",
+  "      (else (call $mdk_write_digits (local.get $n))))",
+  "    (call $mdk_write_byte (i32.const 10)))",
+  "  (func $mdk_print_bool (param $b i32)",
+  "    (if (local.get $b)",
+  "      (then",
+  "        (call $mdk_write_byte (i32.const 116)) (call $mdk_write_byte (i32.const 114))",
+  "        (call $mdk_write_byte (i32.const 117)) (call $mdk_write_byte (i32.const 101)))",
+  "      (else",
+  "        (call $mdk_write_byte (i32.const 102)) (call $mdk_write_byte (i32.const 97))",
+  "        (call $mdk_write_byte (i32.const 108)) (call $mdk_write_byte (i32.const 115))",
+  "        (call $mdk_write_byte (i32.const 101))))",
+  "    (call $mdk_write_byte (i32.const 10)))",
+]
+
+-- the STRING-dependent byte-write runtime (references `$str`/`$u8arr`) — emitted only
+-- when the program uses strings (`useStrRef`), so a string-free module never names
+-- the absent `$str` type.
+--   $mdk_print_str  — write a $str's UTF-8 bytes verbatim (no newline; putStr).
+--   $mdk_print_strln— write a $str's bytes + a trailing '\n' (putStrLn / String main).
+--   $mdk_int_to_str — render an i64 in decimal into a fresh $str (intToString; the
+--                     LEAF extern).  cp_count == byte_len (all ASCII digits/sign).
+export
+ioStrRuntimeLines : List String
+ioStrRuntimeLines = [
+  "  ;; ── §6 string byte-write runtime ($str-dependent) ──",
+  "  (func $mdk_print_str (param $s (ref $str))",
+  "    (local $b (ref $u8arr)) (local $i i32) (local $n i32)",
+  "    (local.set $b (struct.get $str $bytes (local.get $s)))",
+  "    (local.set $n (array.len (local.get $b)))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (call $mdk_write_byte (array.get_u $u8arr (local.get $b) (local.get $i)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l))))",
+  "  (func $mdk_print_strln (param $s (ref $str))",
+  "    (call $mdk_print_str (local.get $s))",
+  "    (call $mdk_write_byte (i32.const 10)))",
+  "  ;; intToString : render an i64 in decimal into a fresh $str (cp_count == byte len).",
+  "  (func $mdk_int_to_str (param $n i64) (result (ref $str))",
+  "    (local $neg i32) (local $m i64) (local $len i32) (local $i i32)",
+  "    (local $buf (ref $u8arr)) (local $d i32)",
+  "    (local.set $neg (i64.lt_s (local.get $n) (i64.const 0)))",
+  "    (local.set $m (if (result i64) (local.get $neg)",
+  "      (then (i64.sub (i64.const 0) (local.get $n))) (else (local.get $n))))",
+  "    ;; count digits",
+  "    (local.set $len (i32.const 1))",
+  "    (block $cd (loop $cl",
+  "      (br_if $cd (i64.lt_s (local.get $m) (i64.const 10)))",
+  "      (local.set $len (i32.add (local.get $len) (i32.const 1)))",
+  "      (local.set $m (i64.div_s (local.get $m) (i64.const 10)))",
+  "      (br $cl)))",
+  "    (local.set $m (if (result i64) (local.get $neg)",
+  "      (then (i64.sub (i64.const 0) (local.get $n))) (else (local.get $n))))",
+  "    (if (local.get $neg) (then (local.set $len (i32.add (local.get $len) (i32.const 1)))))",
+  "    (local.set $buf (array.new $u8arr (i32.const 0) (local.get $len)))",
+  "    ;; fill digits from least-significant (end) backward",
+  "    (local.set $i (i32.sub (local.get $len) (i32.const 1)))",
+  "    (block $fd (loop $fl",
+  "      (array.set $u8arr (local.get $buf) (local.get $i)",
+  "        (i32.add (i32.const 48) (i32.wrap_i64 (i64.rem_s (local.get $m) (i64.const 10)))))",
+  "      (local.set $m (i64.div_s (local.get $m) (i64.const 10)))",
+  "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))",
+  "      (br_if $fd (i64.eq (local.get $m) (i64.const 0)))",
+  "      (br $fl)))",
+  "    (if (local.get $neg) (then (array.set $u8arr (local.get $buf) (i32.const 0) (i32.const 45))))",
+  "    (struct.new $str (local.get $len) (local.get $buf)))",
+]
+

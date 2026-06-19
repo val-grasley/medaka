@@ -1,0 +1,3 @@
+-- W6 string: stringLength returns the cached CODEPOINT count (O(1)), not the byte
+-- count — "héllo λ" is 7 codepoints but 10 UTF-8 bytes.
+main = stringLength "héllo λ"

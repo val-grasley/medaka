@@ -1,0 +1,2 @@
+-- W6 string: putStrLn of a literal (the byte-write IO path; Unit main, no auto-print).
+main = putStrLn "greetings from WasmGC"

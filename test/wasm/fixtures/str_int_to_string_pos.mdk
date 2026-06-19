@@ -1,0 +1,2 @@
+-- W6 string: intToString of a positive Int (decimal, byte-matches medaka_rt.c).
+main = intToString 12345

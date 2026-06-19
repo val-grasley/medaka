@@ -50,11 +50,33 @@
 --     clause-or-pattern-param fn, a top-level fn referenced as a value} forces the
 --     uniform (ref eq) rep (`useClos`), since a closure captures heterogeneous values.
 --
--- ── W4 RESIDUAL GAPS (deferred to later slices) ─────────────────────────────
---   * CMethod / CDict typeclass dispatch → W5; strings/Char/Float → W6; tuples /
---     records / lists / arrays / ranges / index/slice → W7; RNG + remaining externs
---     → W8.  Refutable pattern guards (`p <- e`) in a match arm remain a gap (both
---     paths).  A CLetGroup (where / mutually-recursive let-group) is not yet lowered.
+-- ── W6 SCOPE (slice 6 — strings + the byte-level IO path) ────────────────────
+-- The temporary W2 IO scaffold (JS-side decimal/bool/newline formatting via
+-- mdk_write_int/mdk_write_bool) is COLLAPSED: the module produces its own output
+-- bytes through real codegen + ONE byte-level host import `env.mdk_write_byte(i32)`
+-- (§6 / §10 fork e).  W6 adds:
+--   * §3.3 String rep: `(type $str (sub (struct $cp_count i32 $bytes (ref $u8arr))))`
+--     + `(type $u8arr (array (mut i8)))` — UTF-8 bytes + cached codepoint count, so
+--     stringLength is O(1) (mirrors the locked native rep, RUNTIME-DESIGN §7 dec 2).
+--     Emitted into the rec group only when the program uses strings (`useStrRef`).
+--   * String literals (`CLit (LString _)`): bytes in a passive data segment, built at
+--     run time by `array.new_data` (the §11-preferred non-const-array init); cp_count
+--     computed at emit time (UTF-8 codec, peer to llvm_emit.strBytes/utf8Bytes).
+--   * Char literals (`CLit (LChar _)`): the codepoint as an i31 immediate.
+--   * Externs: `intToString` (decimal → $str, byte-matches medaka_rt.c incl. neg/zero),
+--     `stringLength` (O(1) cp_count), `putStr`/`putStrLn` (byte-write), `flushStdout`
+--     (no-op).  Value-main auto-print routes Int→$mdk_print_int / Bool→$mdk_print_bool
+--     / String→$mdk_print_strln; a Unit main (putStrLn …) auto-prints nothing.
+--   * A program using strings forces ref-mode (a String is a boxed (ref eq) value).
+--
+-- ── W6b RESIDUAL GAPS (deferred) ─────────────────────────────────────────────
+--   * charToStr (needs a codepoint→$str runtime), stringConcat (`List String` → W7
+--     list support), `++` String concat, floatToString (Float → W6b), the remaining
+--     string externs (stringSlice/stringIndexOf/stringCompare/toUpper/…), ePutStr/
+--     ePutStrLn (stderr byte-write import).  Tuples / records / lists / arrays /
+--     ranges / index/slice → W7; RNG + remaining externs → W8.  Refutable pattern
+--     guards (`p <- e`) in a match arm remain a gap (both paths).  A CLetGroup is not
+--     yet lowered.
 --
 -- ── VALUE-REP DECISION (resolve per the slice guardrail) ─────────────────────
 -- W2 used raw i32 for every value.  ADT values force a uniform §8.6 rep.  CHOICE:
@@ -89,12 +111,13 @@ import support.util.{
   lookupAssoc, listLen, maxI
 }
 import backend.wasm_preamble.{
-  preambleHeadLines, importLines, preambleScalarLines,
-  closTypeLines, closApplyLines
+  preambleHeadLines,
+  closTypeLines, closApplyLines,
+  ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines
 }
 
 -- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
-data WTy = WInt | WBool | WUnit | WRef
+data WTy = WInt | WBool | WUnit | WStr | WRef
 
 -- ── program info threaded through the ref-mode emitter ───────────────────────
 -- ctorArs: ctor name → arity.  ctorTypes: ctor name → owning type name.
@@ -151,6 +174,33 @@ liftedFnsRef = Ref []
 funcRefsRef : Ref (List String)
 funcRefsRef = Ref []
 
+-- ── W6 string state ──────────────────────────────────────────────────────────
+-- `useStrRef` records whether the program uses any String/Char literal, the
+-- byte-level IO externs (putStr/putStrLn/…), or a String-returning extern
+-- (intToString/charToStr/stringConcat/…) — any of which forces the §3.3 `$str`
+-- aggregate + the byte-write runtime into the module (and ref-mode, since a String
+-- is a boxed (ref eq) value).  `strSegsRef` accumulates the passive data segments
+-- for string literals (one `(data $strseg_N "…")` per distinct literal, init'd via
+-- `array.new_data`, the §11-preferred non-const-array scheme).  Both reset per
+-- program in `emitProgram`.
+useStrRef : Ref Bool
+useStrRef = Ref False
+
+-- each entry: (segment index, the byte list of that literal).  Drained at module end.
+strSegsRef : Ref (List (Int, List Int))
+strSegsRef = Ref []
+
+strSegIdRef : Ref Int
+strSegIdRef = Ref 0
+
+-- intern a literal's bytes as a fresh passive data segment; returns its index.
+freshStrSeg : List Int -> <Mut> Int
+freshStrSeg bytes =
+  let i = strSegIdRef.value
+  let _ = set_ref strSegIdRef (i + 1)
+  let _ = set_ref strSegsRef ((i, bytes) :: strSegsRef.value)
+  i
+
 freshLamId : Unit -> <Mut> Int
 freshLamId _ =
   let n = lamIdRef.value
@@ -170,6 +220,9 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref lamIdRef 0
   let _ = set_ref liftedFnsRef []
   let _ = set_ref funcRefsRef []
+  let _ = set_ref useStrRef (programUsesStr groups)
+  let _ = set_ref strSegsRef []
+  let _ = set_ref strSegIdRef 0
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
   let fnArs = collectFnArities groups
@@ -177,8 +230,9 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let useClos = programUsesClosures groups ctorArs
   -- closures force the uniform (ref eq) rep (a closure captures heterogeneous
   -- values); so does ANY dispatch — an impl method / method occurrence threads
-  -- (ref eq) impl args + i31 dict witnesses, the W5 §8.6 uniform rep.
-  let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls)
+  -- (ref eq) impl args + i31 dict witnesses, the W5 §8.6 uniform rep.  Strings
+  -- (W6) also force ref-mode: a String is a boxed (ref eq) $str struct.
+  let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
   let typeNames = distinctTypeNames ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
@@ -211,6 +265,49 @@ programUsesClosures groups ctorArs =
 anyBind : (CBind -> Bool) -> List CBind -> Bool
 anyBind _ [] = False
 anyBind p (b::rest) = if p b then True else anyBind p rest
+
+-- ── W6: does the program use strings? ────────────────────────────────────────
+-- True if any body contains a String/Char literal, or applies a String/IO extern
+-- (intToString/putStrLn/stringConcat/…).  Any of these forces the §3.3 $str rep +
+-- the byte-write runtime + ref-mode.  Detected structurally over every clause body.
+isStrExternW : String -> Bool
+isStrExternW name = contains name [
+  "intToString", "charToStr", "stringConcat", "stringLength",
+  "putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
+
+programUsesStr : List CBind -> Bool
+programUsesStr groups = anyBind bindUsesStr groups
+
+bindUsesStr : CBind -> Bool
+bindUsesStr (CBind _ clauses) = anyList (c => exprUsesStr (clauseBodyOf c)) clauses
+
+exprUsesStr : CExpr -> Bool
+exprUsesStr e = match e
+  CLit (LString _) => True
+  CLit (LChar _) => True
+  CLit _ => False
+  CVar x _ => isStrExternW x
+  CApp f a =>
+    let (hd, args) = flattenApp (CApp f a) []
+    headUsesStr hd || anyList exprUsesStr args
+  CLam _ b => exprUsesStr b
+  CBinPrim _ l r => exprUsesStr l || exprUsesStr r
+  CUnOp _ x => exprUsesStr x
+  CIf c t f => exprUsesStr c || exprUsesStr t || exprUsesStr f
+  CLet _ _ a b => exprUsesStr a || exprUsesStr b
+  CBlock stmts => anyList stmtUsesStr stmts
+  CDecision scrut arms _ => exprUsesStr scrut || anyList (a => exprUsesStr (armBody a)) arms
+  CMatch scrut arms => exprUsesStr scrut || anyList (a => exprUsesStr (armBody a)) arms
+  _ => False
+
+stmtUsesStr : CStmt -> Bool
+stmtUsesStr (CSExpr e) = exprUsesStr e
+stmtUsesStr (CSLet _ _ e) = exprUsesStr e
+stmtUsesStr _ = False
+
+headUsesStr : CExpr -> Bool
+headUsesStr (CVar fn _) = isStrExternW fn
+headUsesStr h = exprUsesStr h
 
 bindUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CBind -> Bool
 bindUsesClosures fnNames fnArs ctorArs (CBind _ clauses) =
@@ -360,13 +457,22 @@ anyList p (x::xs) = if p x then True else anyList p xs
 -- SCALAR MODE (W2, raw i32) — byte-identical to the W2 emitter.
 -- ════════════════════════════════════════════════════════════════════════════
 
-emitScalarProgram : List String -> List String -> List CBind -> String
+emitScalarProgram : List String -> List String -> List CBind -> <Mut> String
 emitScalarProgram fnNames valNames groups =
-  let header = preambleScalarLines
+  -- the scalar type section (W2 shape) with the byte-write IO import (W6 collapse)
+  -- replacing the old mdk_write_int/mdk_write_bool scaffold imports.
+  let header = preambleHeadLines
+    ++ [
+      "  ;; ── §3 type section (one rec group) — scalar subset uses raw i32 ──",
+      "  (rec",
+      "    (type $boxint (sub (struct (field i64))))",
+      "    (type $float (sub (struct (field f64))))",
+      "  )"]
+    ++ ioByteImportLines
   let globals = map oneGlobalI32 valNames
   let fns = concatMapList (emitScalarFnBind fnNames valNames) (userFnBinds groups)
   let initLines = emitScalarInit fnNames valNames groups
-  joinNl (header ++ globals ++ fns ++ initLines ++ [")"])
+  joinNl (header ++ globals ++ fns ++ ioRuntimeLines ++ initLines ++ [")"])
 
 oneGlobalI32 : String -> String
 oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
@@ -402,9 +508,10 @@ emitScalarMain fnNames valNames groups = match findMain groups
   None => gap "no `main` binding"
 
 printFor : WTy -> List String
-printFor WInt = ["    call $mdk_write_int"]
-printFor WBool = ["    call $mdk_write_bool"]
-printFor WUnit = gap "`main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
+printFor WInt = ["    i64.extend_i32_s", "    call $mdk_print_int"]
+printFor WBool = ["    call $mdk_print_bool"]
+printFor WUnit = gap "scalar-mode: Unit main has no scalar value to print"
+printFor WStr = gap "scalar-mode main produced a String — internal mode mismatch (strings force ref-mode)"
 printFor WRef = gap "scalar-mode main produced a (ref eq) — internal mode mismatch"
 
 emitScalarFnBind : List String -> List String -> CBind -> List String
@@ -564,7 +671,7 @@ emitRefProgram : Prog -> List CBind -> <Mut> String
 emitRefProgram prog groups =
   let header = preambleHeadLines
   let typeSection = emitTypeSection prog
-  let imports = importLines
+  let imports = ioByteImportLines
   let valNames = progValNames prog
   let globals = map oneGlobalRef valNames
   -- emit user fns FIRST (this is what accumulates lifted lambdas into liftedFnsRef).
@@ -577,8 +684,35 @@ emitRefProgram prog groups =
   let lifted = if progUseClos prog then concatMapList (x => x) (reverseL liftedFnsRef.value) else []
   let applyRt = if progUseClos prog then closApplyLines else []
   let elemDecl = if progUseClos prog then [emitElemDeclare ()] else []
+  -- W6: the byte-write IO runtime (int/bool printers always; the $str-dependent
+  -- string runtime only when strings are used) + the string-literal passive data
+  -- segments (drained from strSegsRef, in segment-index order).
+  let ioRt = ioRuntimeLines ++ (if useStrRef.value then ioStrRuntimeLines else [])
+  let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
-            ++ fns ++ implFns ++ lifted ++ applyRt ++ initLines ++ [")"])
+            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ dataSegs ++ initLines ++ [")"])
+
+-- the passive data segments for string literals — one `(data $strseg_N "…")` per
+-- distinct literal, emitted in segment-index order.  `array.new_data` reads from
+-- these (the §11-preferred non-const-array init scheme; no active memory needed).
+emitDataSegs : Unit -> <Mut> List String
+emitDataSegs _ =
+  let segs = sortSegsByIdx (reverseL strSegsRef.value)
+  map oneDataSeg segs
+
+oneDataSeg : (Int, List Int) -> String
+oneDataSeg (i, bytes) =
+  "  (data $strseg_" ++ intToString i ++ " \"" ++ escWatBytes bytes ++ "\")"
+
+-- sort (idx, bytes) entries by ascending idx (insertion sort; segment counts are tiny).
+sortSegsByIdx : List (Int, List Int) -> List (Int, List Int)
+sortSegsByIdx [] = []
+sortSegsByIdx (x::xs) = insertSeg x (sortSegsByIdx xs)
+
+insertSeg : (Int, List Int) -> List (Int, List Int) -> List (Int, List Int)
+insertSeg x [] = [x]
+insertSeg (i, b) ((j, c)::rest) =
+  if i <= j then (i, b) :: (j, c) :: rest else (j, c) :: insertSeg (i, b) rest
 
 -- the `(elem declare func …)` line listing every fn `ref.func`'d (lifted lambdas,
 -- the PAP code, and any top-level fn used as a value) — required so `ref.func`
@@ -603,10 +737,12 @@ emitTypeSection prog =
   let userStructs = concatMapList (emitTypeStructs prog) userTypes
   let reservedStructs = emitReservedStructs prog
   let closTypes = if progUseClos prog then closTypeLines else []
+  let strTypes = if useStrRef.value then strTypeLines else []
   ["  ;; ── §3 type section (rec group) — §3.4 ADT structs + §8.6 (ref eq)/i31 ──",
    "  (rec",
    "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
    "    (type $float (sub (struct (field f64))))"]
+    ++ strTypes
     ++ closTypes
     ++ userStructs
     ++ reservedStructs
@@ -714,7 +850,11 @@ emitRefMain prog groups = match findMain groups
   Some body =>
     let instrs = emitRefExpr prog [] 0 body
     let k = refMainKind prog body
-    indent instrs ++ refPrintFor k
+    -- a Unit main (a `putStrLn …` etc.) has already produced its IO effect; drop its
+    -- i31-0 result and auto-print NOTHING (the "Unit main no auto-print" contract).
+    match k
+      WUnit => indent instrs ++ ["    drop"]
+      _ => indent instrs ++ refPrintFor k
   None => gap "no `main` binding"
 
 -- the printable static kind of a ref-mode main body: an Int (decimal) or a Bool
@@ -735,6 +875,7 @@ refMainKind : Prog -> CExpr -> WTy
 refMainKind prog e = match e
   CLit (LInt _) => WInt
   CLit (LBool _) => WBool
+  CLit (LString _) => WStr
   -- the Bool constructors as values (a dispatched main `… else False`); also lets a
   -- CIf whose arms are dispatch calls recover Bool-ness from a literal-Bool branch.
   CVar "True" _ => WBool
@@ -750,9 +891,26 @@ refMainKind prog e = match e
   CBlock stmts => refMainKindBlock prog stmts
   CDecision _ arms _ => refMainKindArms prog arms
   CMatch _ arms => refMainKindArms prog arms
-  CApp f _ => refMainKind prog (appHead f)
+  -- a String-returning extern applied to its args (intToString/charToStr/stringConcat).
+  CApp f a => match appHead f
+    CVar fn _ =>
+      if isStrReturningExtern fn then WStr
+      else if isUnitExtern fn then WUnit
+      else refMainKind prog (appHead f)
+    h => refMainKind prog h
   CVar x _ => WInt
   other => WInt
+
+-- the String-RESULT externs (drive value-main String auto-print).  `stringLength`
+-- returns Int, so it is NOT here.
+isStrReturningExtern : String -> Bool
+isStrReturningExtern name = contains name ["intToString", "charToStr", "stringConcat"]
+
+-- the Unit-RESULT IO externs: a `main = putStrLn …` produces Unit and must NOT be
+-- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
+-- nothing for a Unit main; the IO side effect IS the output).
+isUnitExtern : String -> Bool
+isUnitExtern name = contains name ["putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
 
 refMainKindBlock : Prog -> List CStmt -> WTy
 refMainKindBlock _ [] = WInt
@@ -768,10 +926,11 @@ appHead (CApp f _) = appHead f
 appHead e = e
 
 refPrintFor : WTy -> List String
-refPrintFor WInt = ["    ref.cast (ref i31)", "    i31.get_s", "    call $mdk_write_int"]
-refPrintFor WBool = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_write_bool"]
-refPrintFor WUnit = gap "`main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
-refPrintFor WRef = gap "ref-mode main produced a non-scalar value — printing ADTs is W6 (Debug)"
+refPrintFor WInt = ["    ref.cast (ref i31)", "    i31.get_s", "    i64.extend_i32_s", "    call $mdk_print_int"]
+refPrintFor WBool = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_print_bool"]
+refPrintFor WStr = ["    ref.cast (ref $str)", "    call $mdk_print_strln"]
+refPrintFor WUnit = gap "ref-mode: Unit main has no value to print"
+refPrintFor WRef = gap "ref-mode main produced a non-scalar value — printing ADTs is W6b (Debug)"
 
 -- ── ref-mode top-level function defs ─────────────────────────────────────────
 -- Every param/local/result is `(ref eq)`.  Three shapes:
@@ -1178,13 +1337,70 @@ emitRefExpr prog env d e = match e
 
 -- a scalar literal → an i31 immediate.  Int: ref.i31 of the value.  Bool: 1/0.
 -- Unit: i31 0 (a placeholder immediate; Unit is never inspected in this slice).
-emitLitRef : Lit -> List String
+emitLitRef : Lit -> <Mut> List String
 emitLitRef (LInt n) = ["i32.const " ++ intToString n, "ref.i31"]
 emitLitRef (LBool b) = [if b then "i32.const 1" else "i32.const 0", "ref.i31"]
 emitLitRef LUnit = ["i32.const 0", "ref.i31"]
 emitLitRef (LFloat _) = gap "ref-mode: Float literal is deferred (boxed (struct f64))"
-emitLitRef (LString _) = gap "ref-mode: String literal is W6"
-emitLitRef (LChar _) = gap "ref-mode: Char literal is W6"
+-- W6: a String literal is a §3.3 `$str` boxed value.  Its UTF-8 bytes go in a
+-- passive data segment (the §11-preferred non-const-array init), read at run time by
+-- `array.new_data`; the cached cp_count is computed at emit time (UTF-8 codepoint
+-- count == source Char count).  Stack: push cp_count (i32), build the byte array via
+-- array.new_data, then struct.new $str.
+emitLitRef (LString s) =
+  let bytes = strBytesW s
+  let cpc = stringLength s
+  let n = listLen bytes
+  let seg = freshStrSeg bytes
+  ["i32.const " ++ intToString cpc,
+   "i32.const 0",
+   "i32.const " ++ intToString n,
+   "array.new_data $u8arr $strseg_" ++ intToString seg,
+   "struct.new $str"]
+-- W6: a Char literal is its Unicode codepoint as an i31 immediate (matching the
+-- native rep: a Char is a tagged codepoint, not a boxed string).  `LChar` carries a
+-- one-char String, so take the codepoint of its sole char (peer to llvm_emit).
+emitLitRef (LChar c) = ["i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "ref.i31"]
+
+-- ── W6 UTF-8 codec (selfhost-local; mirrors llvm_emit.strBytes/utf8Bytes — the
+-- no-stdlib rule forbids importing `string`, so the codec is duplicated here). ──
+-- the raw UTF-8 bytes of a string, in order.
+strBytesW : String -> List Int
+strBytesW s = strBytesGoW (stringToChars s) 0
+
+strBytesGoW : Array Char -> Int -> List Int
+strBytesGoW cs i =
+  if i >= arrayLength cs then []
+  else utf8BytesW (charCode (arrayGetUnsafe i cs)) ++ strBytesGoW cs (i + 1)
+
+-- encode one Unicode codepoint to its UTF-8 bytes (0..255).  Bit fields are disjoint,
+-- so `or` is `+` and the masks are `% 64`; no bitwise primitive needed.
+utf8BytesW : Int -> List Int
+utf8BytesW cp =
+  if cp < 128 then [cp]
+  else if cp < 2048 then [192 + cp / 64, 128 + cp % 64]
+  else if cp < 65536 then [224 + cp / 4096, 128 + (cp / 64) % 64, 128 + cp % 64]
+  else [240 + cp / 262144, 128 + (cp / 4096) % 64, 128 + (cp / 64) % 64, 128 + cp % 64]
+
+-- escape a byte list for a WAT data-string `"…"`: every byte as `\HH` (lowercase
+-- hex per wasm-tools convention; uppercase also parses, lowercase keeps the emitted
+-- text stable vs a `wasm-tools print` round-trip).
+escWatBytes : List Int -> String
+escWatBytes [] = ""
+escWatBytes (b::rest) = "\\" ++ hex2W b ++ escWatBytes rest
+
+hex2W : Int -> String
+hex2W b = hexDigitW (b / 16) ++ hexDigitW (b % 16)
+
+hexDigitW : Int -> String
+hexDigitW d =
+  if d < 10 then intToString d
+  else if d == 10 then "a"
+  else if d == 11 then "b"
+  else if d == 12 then "c"
+  else if d == 13 then "d"
+  else if d == 14 then "e"
+  else "f"
 
 -- a variable: local/global → get (already (ref eq)); a nullary ctor → its i31 tag;
 -- a top-level fn used as a VALUE → build its closure wrapper struct (code =
@@ -1268,6 +1484,7 @@ emitAppRef prog env d app =
   match hd
     CVar f _ =>
       if isCtor prog f then emitCtorConstruct prog env d f args
+      else if isStrExternW f then emitStrExternRef prog env d f args
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
         let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
         argInstrs ++ ["call $" ++ gname f]
@@ -1281,6 +1498,33 @@ emitAppRef prog env d app =
     -- witnesses (from `routes`) are PREPENDED to the args at the call.
     CDict name routes => emitDictRef prog env d name routes args
     _ => emitIndirectApp prog env d hd args
+
+-- ── W6 string / IO externs ───────────────────────────────────────────────────
+-- `intToString` : i31 Int → unbox → i64 → $mdk_int_to_str → (ref $str) (an (ref eq)).
+-- `stringLength` : (ref $str) → cached cp_count (O(1), §5 INTRINSIC) → i31 Int.
+-- `putStr`/`putStrLn` : (ref $str) → byte-write (no/with trailing '\n'); Unit (i31 0).
+-- `flushStdout` : no-op (byte writes are unbuffered through the host import); Unit.
+-- `charToStr`/`stringConcat` are W6b (charToStr needs a codepoint→$str runtime;
+-- stringConcat takes a `List String`, which needs W7 list support).
+emitStrExternRef : Prog -> List String -> Int -> String -> List CExpr -> <Mut> List String
+emitStrExternRef prog env d "intToString" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_s", "i64.extend_i32_s", "call $mdk_int_to_str"]
+  _ => gap "wasm W6: intToString takes exactly one argument"
+emitStrExternRef prog env d "stringLength" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "struct.get $str $cp_count", "ref.i31"]
+  _ => gap "wasm W6: stringLength takes exactly one argument"
+emitStrExternRef prog env d "putStr" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_print_str", "i32.const 0", "ref.i31"]
+  _ => gap "wasm W6: putStr takes exactly one argument"
+emitStrExternRef prog env d "putStrLn" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_print_strln", "i32.const 0", "ref.i31"]
+  _ => gap "wasm W6: putStrLn takes exactly one argument"
+emitStrExternRef prog env d "ePutStr" args = gap "wasm W6b: ePutStr (stderr byte-write import) is deferred"
+emitStrExternRef prog env d "ePutStrLn" args = gap "wasm W6b: ePutStrLn (stderr byte-write import) is deferred"
+emitStrExternRef _ _ _ "flushStdout" _ = ["i32.const 0", "ref.i31"]
+emitStrExternRef _ _ _ "charToStr" _ = gap "wasm W6b: charToStr (codepoint→$str runtime) is deferred"
+emitStrExternRef _ _ _ "stringConcat" _ = gap "wasm W6b: stringConcat (List String) needs W7 list support"
+emitStrExternRef _ _ _ name _ = gap ("wasm W6: unsupported string extern '" ++ name ++ "'")
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
 -- into an $argarr, and `call $mdk_apply` — which dispatches on the closure's arity

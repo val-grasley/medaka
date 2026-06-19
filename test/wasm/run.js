@@ -3,25 +3,21 @@
 // the module writes. `(start $__init)` runs the value-binding prologue + `main`
 // during instantiation.
 //
-// Host-import ABI (WASMGC-DESIGN §6 / §10 fork e — custom shim, the W2 scaffold):
-//   * env.mdk_write       (i32) — W1 toolchain proof: writes the int verbatim.
-//   * env.mdk_write_int   (i32) — W2 auto-print of an Int  main: decimal + "\n".
-//   * env.mdk_write_bool  (i32) — W2 auto-print of a Bool main: "true"/"false" + "\n".
-// The decimal / true|false / newline FORMATTING lives here (a temporary W2
-// scaffold): once the W6 string slice lands real (array i8) string codegen +
-// intToString/Debug, the module will produce the bytes itself and this collapses
-// to a byte-level `mdk_write`. The bytes here match the native-compiled oracle's
-// pp_value exactly (decimal int, lowercase true/false, one trailing newline).
+// Host-import ABI (WASMGC-DESIGN §6 / §10 fork e — byte-level custom shim, W6):
+//   * env.mdk_write_byte (i32) — write ONE byte (0..255) to stdout.
+// The module produces ALL its output bytes itself (real intToString / string
+// codegen / the byte-write print runtime in selfhost/backend/wasm_preamble.mdk):
+// the decimal-int / true|false / newline FORMATTING the W2 scaffold did here is
+// gone — this runner only accumulates the raw bytes and UTF-8-decodes them.
+// (The legacy env.mdk_write / mdk_write_int / mdk_write_bool imports are removed.)
 const fs = require('fs');
 const path = process.argv[2];
 if (!path) { console.error('usage: run.js <module.wasm>'); process.exit(2); }
 const bytes = fs.readFileSync(path);
-let out = '';
+const acc = [];
 const imports = { env: {
-  mdk_write: (n) => { out += String(n); },
-  mdk_write_int: (n) => { out += String(n | 0) + '\n'; },
-  mdk_write_bool: (n) => { out += (n ? 'true' : 'false') + '\n'; },
+  mdk_write_byte: (b) => { acc.push(b & 0xff); },
 } };
 WebAssembly.instantiate(bytes, imports)
-  .then(() => { process.stdout.write(out); })
+  .then(() => { process.stdout.write(Buffer.from(acc).toString('utf8')); })
   .catch((e) => { console.error('instantiate failed:', e.message); process.exit(1); });
