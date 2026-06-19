@@ -1,0 +1,403 @@
+-- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
+-- consumes the SAME backend-neutral Core IR (`ir.core_ir`) the LLVM emitter
+-- consumes (lowered by the SAME `core_ir_lower.lowerProgramEmit`) and produces a
+-- complete WAT text module (assembled by `wasm-tools parse`, run under a WasmGC
+-- engine).  `emitProgram : CProgram -> String`.
+--
+-- ── W2 SCOPE (WASMGC-DESIGN §9 slice 2 — immediates + arithmetic) ────────────
+-- This is the FIRST real WasmGC emitter slice (W1 was a hand-shaped toolchain
+-- proof).  It covers the scalar / arithmetic subset of the Core IR — exactly what
+-- the LLVM slice-1 fixtures exercise:
+--   * `CLit`   — Int (raw i32), Bool (i32 0/1), Unit.
+--   * `CVar`   — a top-level function (→ `call`), a nullary top-level value
+--                binding (→ a wasm `global`), or a local (param / let — `local.get`).
+--   * `CBinPrim` — integer `+ - * / %`, the six comparisons, on i32.
+--   * `CUnOp`  — `-` (i32 negate), `!` (boolean not).
+--   * `CIf`    — `(if (result i32) …)`; `&&`/`||` arrive pre-lowered to CIf.
+--   * `CLet` / `CSLet` / `CBlock` — let-binding via wasm `local`s (`local.set`).
+--   * top-level `CBind`/`CClause` — nullary `main` + simple (possibly recursive)
+--     top-level functions with `PVar`/`PWild` params.
+--   * the output boundary — the value `main` is AUTO-PRINTED (the LLVM gate's
+--     value-main contract) through the §6 host import, routed by static type:
+--     Int → `mdk_write_int`, Bool → `mdk_write_bool` (the runner formats decimal /
+--     true|false + newline; a temporary W2 scaffold the W6 string slice replaces).
+--
+-- ── EXPLICIT GAPS (out of W2 scope — each is a `gap`, so scope is visible) ────
+-- Every Core IR node not in the scalar subset routes to `gap`, which `panic`s with
+-- the node tag — mirroring how the LLVM emitter staged its slices.  Deferred:
+--   * Float (§3.3 boxed `(struct f64)`)            — deferred until a scalar Float
+--     fixture needs it (none in the W2 corpus); the box type is declared in the
+--     preamble but no arm emits it.                                       [W2 defer]
+--   * the i31ref unitype + 32–63-bit Int boxing (§3.2) — values only flow into
+--     polymorphic slots from W3 on; the scalar subset stays raw i32.      [W3]
+--   * `CDecision`/`CMatch`, ADTs, `CTuple`/`CList`/`CArray`/`CRecord`     [W3/W7]
+--   * `CLam`/closures/`CApp` of a non-top-level head, TCO (`return_call`) [W4]
+--   * `CMethod`/`CDict` dispatch (dict-passing)                          [W5]
+--   * `CRangeList`/`CRangeArray`/`CIndex`/`CSlice`, strings              [W6/W7]
+--
+-- ── WAT lowering strategy ────────────────────────────────────────────────────
+-- A wasm function body is an INSTRUCTION SEQUENCE leaving its result on the stack;
+-- it is NOT the deeply-folded S-expr form.  So `emitExpr` returns a flat list of
+-- instruction lines that, executed in order, push the expression's i32 value.
+-- `CLet x = e1 in e2`  →  <e1 instrs> ; `local.set $x` ; <e2 instrs>.  All
+-- let-bound + param locals are DECLARED up front (`collectLocals`) — wasm requires
+-- every local declared in the function header.  Recursion is a plain `call $self`
+-- (TCO via `return_call` is W4).
+
+import frontend.ast.{Lit(..), Pat(..), Addr(..)}
+import ir.core_ir.{
+  CProgram(..), CBind(..), CClause(..), CExpr(..), CStmt(..),
+}
+import support.util.{joinNl, joinWith, reverseL, contains, concatMapList, filterList}
+import backend.wasm_preamble.{preambleLines}
+
+-- ── static value kind (for the auto-print routing + sanity) ─────────────────
+-- The scalar subset is two-typed: an Int (i32 decimal) or a Bool (i32 0/1).
+data WTy = WInt | WBool | WUnit
+
+-- ── program entry ────────────────────────────────────────────────────────────
+
+export
+emitProgram : CProgram -> String
+emitProgram (CProgram groups _ _ _) =
+  let fnNames = collectFnNames groups
+  let valNames = collectValNames groups
+  let header = preambleLines
+  let globals = emitGlobals valNames
+  let fns = concatMapList (emitFnBind fnNames valNames) (userFnBinds groups)
+  let initLines = emitInit fnNames valNames groups
+  joinNl (header ++ globals ++ fns ++ initLines ++ [")"])
+
+-- ── top-level binding classification ─────────────────────────────────────────
+-- A nullary `CBind name [CClause [] body]` whose name is NOT `main` is a VALUE
+-- binding → a wasm `global` (computed in the start prologue, source order).  A
+-- `CBind` with parameters (or multiple clauses) is a FUNCTION → a `func`.  `main`
+-- is special (the start prologue's tail).
+
+isValBind : CBind -> Bool
+isValBind (CBind name [(CClause [] _)]) = not (name == "main")
+isValBind _ = False
+
+isFnBind : CBind -> Bool
+isFnBind (CBind "main" _) = False
+isFnBind b = not (isValBind b)
+
+userFnBinds : List CBind -> List CBind
+userFnBinds groups = filterList isFnBind groups
+
+collectFnNames : List CBind -> List String
+collectFnNames groups = map bindName (filterList isFnBind groups)
+
+collectValNames : List CBind -> List String
+collectValNames groups = map bindName (filterList isValBind groups)
+
+bindName : CBind -> String
+bindName (CBind n _) = n
+
+-- ── globals (nullary top-level value bindings) ───────────────────────────────
+-- One mutable i32 global per value binding; initialised in the start prologue
+-- (emitInit) in SOURCE ORDER, so a binding referencing an earlier one reads the
+-- already-stored global (peer of the LLVM E1b global prologue).
+
+emitGlobals : List String -> List String
+emitGlobals names = map oneGlobal names
+
+oneGlobal : String -> String
+oneGlobal n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
+
+-- ── the start prologue: init value globals (source order), then run main ─────
+
+emitInit : List String -> List String -> List CBind -> List String
+emitInit fnNames valNames groups =
+  let valBinds = filterList isValBind groups
+  let valInit = concatMapList (emitValInit fnNames valNames) valBinds
+  let mainLines = emitMain fnNames valNames groups
+  -- the $__init func contains every value-init body + main's body; collect ALL
+  -- their let-bound locals and declare them in the func header (wasm requires it).
+  let valLocals = concatMapList (b => collectBindLocals b) valBinds
+  let mainLocals = match findMain groups
+    Some body => collectExprLocals body
+    None => []
+  let locals = dedupKeep (valLocals ++ mainLocals)
+  let localDecls = map (l => "  " ++ localDecl l) locals
+  ["  (func $__init"]
+    ++ localDecls
+    ++ valInit
+    ++ mainLines
+    ++ ["  )", "  (start $__init)"]
+
+-- the let-bound locals inside a binding's (single, nullary) clause body.
+collectBindLocals : CBind -> List String
+collectBindLocals (CBind _ [(CClause _ body)]) = collectExprLocals body
+collectBindLocals _ = []
+
+emitValInit : List String -> List String -> CBind -> List String
+emitValInit fnNames valNames (CBind name [(CClause [] body)]) =
+  let env = []
+  let (instrs, _) = emitExpr fnNames valNames env body
+  indent instrs ++ ["    global.set $" ++ gname name]
+emitValInit _ _ _ = gap "value binding must be a nullary clause"
+
+-- `main` is the start prologue's tail: compute its body, auto-print by static type.
+emitMain : List String -> List String -> List CBind -> List String
+emitMain fnNames valNames groups = match findMain groups
+  Some body =>
+    let (instrs, ty) = emitExpr fnNames valNames [] body
+    indent instrs ++ printFor ty
+  None => gap "no `main` binding"
+
+findMain : List CBind -> Option CExpr
+findMain [] = None
+findMain ((CBind "main" [(CClause [] body)])::_) = Some body
+findMain ((CBind "main" _)::_) = gap "`main` must be a nullary value (main = ...)"
+findMain (_::rest) = findMain rest
+
+-- auto-print the scalar main result via the §6 host import, by static type.
+printFor : WTy -> List String
+printFor WInt = ["    call $mdk_write_int"]
+printFor WBool = ["    call $mdk_write_bool"]
+printFor WUnit = gap "W2: `main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
+
+-- ── top-level function defs ──────────────────────────────────────────────────
+-- One `func` per top-level function binding (single clause, PVar/PWild params).
+-- Multi-clause / pattern-matching clauses are a gap (that is decision-tree match,
+-- W3).  Locals = the params + every let-bound var in the body.
+
+emitFnBind : List String -> List String -> CBind -> List String
+emitFnBind fnNames valNames (CBind name [(CClause pats body)]) =
+  let params = map patName pats
+  let localsInBody = collectExprLocals body
+  let extraLocals = filterList (notIn params) (dedupKeep localsInBody)
+  let env = params
+  let (instrs, _) = emitExpr fnNames valNames env body
+  let sig = "  (func $" ++ gname name
+    ++ joinWith "" (map paramDecl params)
+    ++ " (result i32)"
+  let localDecls = map localDecl extraLocals
+  [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
+emitFnBind _ _ (CBind name _) =
+  gap ("W2: top-level function '" ++ name
+    ++ "' is multi-clause or pattern-matching (decision-tree match is W3)")
+
+paramDecl : String -> String
+paramDecl p = " (param $" ++ gname p ++ " i32)"
+
+localDecl : String -> String
+localDecl l = "(local $" ++ gname l ++ " i32)"
+
+patName : Pat -> String
+patName (PVar x) = x
+patName PWild = "_"
+patName _ = gap "W2: only PVar/PWild parameters (pattern params are W3 match)"
+
+-- ── the expression emitter — returns (instruction lines, static type) ─────────
+
+emitExpr : List String -> List String -> List String -> CExpr -> (List String, WTy)
+emitExpr fnNames valNames env e = match e
+  CLit l => emitLit l
+  CVar x _ => emitVar fnNames valNames env x
+  CBinPrim op l r => emitBin fnNames valNames env op l r
+  CUnOp op x => emitUn fnNames valNames env op x
+  CIf c t f => emitIf fnNames valNames env c t f
+  CLet recF pat e1 e2 => emitLet fnNames valNames env recF pat e1 e2
+  CBlock stmts => emitBlock fnNames valNames env stmts
+  CApp f a => emitApp fnNames valNames env (CApp f a)
+  other => gap ("W2: unsupported Core IR node " ++ ctag other)
+
+emitLit : Lit -> (List String, WTy)
+emitLit (LInt n) = (["i32.const " ++ intToString n], WInt)
+emitLit (LBool b) = ([if b then "i32.const 1" else "i32.const 0"], WBool)
+emitLit LUnit = (["i32.const 0"], WUnit)
+emitLit (LFloat _) = gap "W2: Float literal (boxed (struct f64)) is deferred — no scalar Float fixture in W2"
+emitLit (LString _) = gap "W2: String literal (the (array i8) rep) is W6"
+emitLit (LChar _) = gap "W2: Char literal is W6 (string/unicode slice)"
+
+-- a variable: a local (param/let) → local.get; a value global → global.get;
+-- a nullary call to a top-level function → call (e.g. a 0-arg fn reference).
+emitVar : List String -> List String -> List String -> String -> (List String, WTy)
+emitVar fnNames valNames env x =
+  if contains x env then (["local.get $" ++ gname x], WInt)
+  else if contains x valNames then (["global.get $" ++ gname x], WInt)
+  else if contains x fnNames then (["call $" ++ gname x], WInt)
+  else gap ("W2: unbound variable '" ++ x ++ "'")
+
+-- a binary primitive on i32.  Arithmetic → WInt; comparison → WBool.
+emitBin : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
+emitBin fnNames valNames env op l r =
+  let (li, _) = emitExpr fnNames valNames env l
+  let (ri, _) = emitExpr fnNames valNames env r
+  let body = li ++ ri ++ [wasmBinOp op]
+  (body, binOpTy op)
+
+-- a unary op: integer negate (0 - x) or boolean not (x == 0).
+emitUn : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
+emitUn fnNames valNames env "-" x =
+  let (xi, _) = emitExpr fnNames valNames env x
+  (["i32.const 0"] ++ xi ++ ["i32.sub"], WInt)
+emitUn fnNames valNames env "!" x =
+  let (xi, _) = emitExpr fnNames valNames env x
+  (xi ++ ["i32.eqz"], WBool)
+emitUn _ _ _ op _ = gap ("W2: unsupported unary op '" ++ op ++ "'")
+
+-- if/else as `(if (result i32) (then …) (else …))` — but in instruction-sequence
+-- form: <cond instrs> ; `if (result i32)` ; <then instrs> ; `else` ; <else instrs>
+-- ; `end`.  The static type is the then-branch's (both branches agree by typing).
+emitIf : List String -> List String -> List String -> CExpr -> CExpr -> CExpr -> (List String, WTy)
+emitIf fnNames valNames env c t f =
+  let (ci, _) = emitExpr fnNames valNames env c
+  let (ti, tty) = emitExpr fnNames valNames env t
+  let (fi, _) = emitExpr fnNames valNames env f
+  let body = ci
+    ++ ["if (result i32)"]
+    ++ indent ti
+    ++ ["else"]
+    ++ indent fi
+    ++ ["end"]
+  (body, tty)
+
+-- a non-recursive `let x = e1 in e2` (x a PVar / PWild).  e1's value is stored in
+-- the local `$x` (declared at the function header by collectLocals), then e2 runs
+-- with x bound.  A function-let (CLet True (PVar f) (CLam …)) is a closure → W4.
+emitLet : List String -> List String -> List String -> Bool -> Pat -> CExpr -> CExpr -> (List String, WTy)
+emitLet fnNames valNames env False (PVar x) e1 e2 =
+  let (i1, _) = emitExpr fnNames valNames env e1
+  let (i2, ty2) = emitExpr fnNames valNames (x :: env) e2
+  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty2)
+emitLet fnNames valNames env False PWild e1 e2 =
+  let (i1, _) = emitExpr fnNames valNames env e1
+  let (i2, ty2) = emitExpr fnNames valNames env e2
+  -- drop the discarded value
+  (i1 ++ ["drop"] ++ i2, ty2)
+emitLet _ _ _ _ _ _ _ =
+  gap "W2: only non-recursive `let x = e` / `let _ = e` (function-let closures are W4, tuple/pattern lets are W3)"
+
+-- a sequential block (desugar's EBlock: let-sequencing + a final expression).
+emitBlock : List String -> List String -> List String -> List CStmt -> (List String, WTy)
+emitBlock fnNames valNames env [(CSExpr ex)] = emitExpr fnNames valNames env ex
+emitBlock fnNames valNames env ((CSExpr ex)::rest) =
+  let (i1, _) = emitExpr fnNames valNames env ex
+  let (i2, ty) = emitBlock fnNames valNames env rest
+  (i1 ++ ["drop"] ++ i2, ty)
+emitBlock fnNames valNames env ((CSLet _ (PVar x) ex)::rest) =
+  let (i1, _) = emitExpr fnNames valNames env ex
+  let (i2, ty) = emitBlock fnNames valNames (x :: env) rest
+  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty)
+emitBlock fnNames valNames env ((CSLet _ PWild ex)::rest) =
+  let (i1, _) = emitExpr fnNames valNames env ex
+  let (i2, ty) = emitBlock fnNames valNames env rest
+  (i1 ++ ["drop"] ++ i2, ty)
+emitBlock _ _ _ [] = gap "W2: empty block"
+emitBlock _ _ _ _ = gap "W2: unsupported block statement (assign/let-else/pattern-let are W3+)"
+
+-- a saturated call to a top-level function: `f a0 a1 …` → <a0> <a1> … `call $f`.
+-- Only a top-level-function head is in scope for W2 (higher-order / closure
+-- application is W4).
+emitApp : List String -> List String -> List String -> CExpr -> (List String, WTy)
+emitApp fnNames valNames env app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar f _ =>
+      if contains f fnNames then
+        let argInstrs = concatMapList (a => fst (emitExpr fnNames valNames env a)) args
+        (argInstrs ++ ["call $" ++ gname f], WInt)
+      else gap ("W2: application of non-top-level head '" ++ f ++ "' (closures/HOFs are W4)")
+    _ => gap "W2: application of a non-variable head (closures/HOFs are W4)"
+
+-- ── operator tables ──────────────────────────────────────────────────────────
+
+wasmBinOp : String -> String
+wasmBinOp "+" = "i32.add"
+wasmBinOp "-" = "i32.sub"
+wasmBinOp "*" = "i32.mul"
+wasmBinOp "/" = "i32.div_s"
+wasmBinOp "%" = "i32.rem_s"
+wasmBinOp "==" = "i32.eq"
+wasmBinOp "!=" = "i32.ne"
+wasmBinOp "<" = "i32.lt_s"
+wasmBinOp ">" = "i32.gt_s"
+wasmBinOp "<=" = "i32.le_s"
+wasmBinOp ">=" = "i32.ge_s"
+wasmBinOp op = gap ("W2: unsupported binary operator '" ++ op
+  ++ "' (`::`/`++` are list/string ops — W6/W7)")
+
+binOpTy : String -> WTy
+binOpTy op =
+  if contains op ["==", "!=", "<", ">", "<=", ">="] then WBool else WInt
+
+-- ── local collection ─────────────────────────────────────────────────────────
+-- Wasm requires every local declared in the function header.  Walk the body for
+-- every `let`-bound / block-let-bound PVar.  (Params are added separately.)
+
+collectExprLocals : CExpr -> List String
+collectExprLocals e = match e
+  CLet _ (PVar x) e1 e2 => x :: (collectExprLocals e1 ++ collectExprLocals e2)
+  CLet _ _ e1 e2 => collectExprLocals e1 ++ collectExprLocals e2
+  CBinPrim _ l r => collectExprLocals l ++ collectExprLocals r
+  CUnOp _ x => collectExprLocals x
+  CIf c t f => collectExprLocals c ++ collectExprLocals t ++ collectExprLocals f
+  CApp f a => collectExprLocals f ++ collectExprLocals a
+  CBlock stmts => concatMapList collectStmtLocals stmts
+  _ => []
+
+collectStmtLocals : CStmt -> List String
+collectStmtLocals (CSExpr ex) = collectExprLocals ex
+collectStmtLocals (CSLet _ (PVar x) ex) = x :: collectExprLocals ex
+collectStmtLocals (CSLet _ _ ex) = collectExprLocals ex
+collectStmtLocals _ = []
+
+-- ── helpers ──────────────────────────────────────────────────────────────────
+
+flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
+flattenApp (CApp f a) acc = flattenApp f (a :: acc)
+flattenApp hd acc = (hd, acc)
+
+-- indent a block of WAT lines by one extra level (4 spaces) for readability.
+indent : List String -> List String
+indent lines = map (l => "    " ++ l) lines
+
+-- a WAT-safe identifier: identifiers may contain most printables, but keep it
+-- simple — prefix nothing; Medaka names are already alnum/_.  (No collisions in
+-- the scalar corpus; W3+ will reuse private_mangle for the full surface.)
+gname : String -> String
+gname n = n
+
+notIn : List String -> String -> Bool
+notIn xs x = not (contains x xs)
+
+-- dedup preserving first occurrence.
+dedupKeep : List String -> List String
+dedupKeep xs = reverseL (dedupGo xs [])
+
+dedupGo : List String -> List String -> List String
+dedupGo [] acc = acc
+dedupGo (x::xs) acc = if contains x acc then dedupGo xs acc else dedupGo xs (x :: acc)
+
+fst : (a, b) -> a
+fst (x, _) = x
+
+-- a readable tag for the unsupported-node gap message.
+ctag : CExpr -> String
+ctag (CApp _ _) = "CApp (application)"
+ctag (CLam _ _) = "CLam (lambda — W4)"
+ctag (CMatch _ _) = "CMatch (W3)"
+ctag (CDecision _ _ _) = "CDecision (match — W3)"
+ctag (CTuple _) = "CTuple (W7)"
+ctag (CList _) = "CList (W7)"
+ctag (CArray _) = "CArray (W7)"
+ctag (CRecord _ _) = "CRecord (W7)"
+ctag (CFieldAccess _ _) = "CFieldAccess (W7)"
+ctag (CRecordUpdate _ _) = "CRecordUpdate (W7)"
+ctag (CVariantUpdate _ _ _) = "CVariantUpdate (W7)"
+ctag (CRangeList _ _ _) = "CRangeList (W7)"
+ctag (CRangeArray _ _ _) = "CRangeArray (W7)"
+ctag (CIndex _ _) = "CIndex (W7)"
+ctag (CSlice _ _ _ _) = "CSlice (W7)"
+ctag (CMethod _ _ _ _) = "CMethod (dispatch — W5)"
+ctag (CDict _ _) = "CDict (dispatch — W5)"
+ctag (CLetGroup _ _) = "CLetGroup (where/let-group — W4)"
+ctag _ = "?"
+
+-- the W2 scope wall: any out-of-slice node lands here, matching how the LLVM
+-- emitter staged its gaps (an explicit hard stop, not a silent wrong answer).
+gap : String -> a
+gap msg = panic ("wasm_emit gap — " ++ msg)

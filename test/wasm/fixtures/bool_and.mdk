@@ -1,0 +1,2 @@
+-- W2 scalar: && short-circuit (lowers to CIf).
+main = (1 == 1) && (2 < 3)

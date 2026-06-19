@@ -1,0 +1,2 @@
+-- W2 scalar: a bare integer literal.
+main = 42

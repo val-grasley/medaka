@@ -1,0 +1,2 @@
+-- W2 scalar: || (CIf) combined with unary ! (boolean not).
+main = !(3 == 3) || (4 > 2)

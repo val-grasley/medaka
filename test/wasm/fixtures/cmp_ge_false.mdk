@@ -1,0 +1,2 @@
+-- W2 scalar: a >= comparison that is false.
+main = 3 >= 7

@@ -1,0 +1,2 @@
+-- W2 scalar: a let-bound local reused.
+main = let x = 5 in x * x + x

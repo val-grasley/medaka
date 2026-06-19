@@ -1,0 +1,2 @@
+-- W2 scalar: if/else returning an Int.
+main = if 3 > 2 then 100 else 200

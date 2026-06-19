@@ -1,0 +1,6 @@
+-- W2 scalar: two value globals where the second references the first, then a
+-- function reads the second global (source-order init).
+a = 7
+b = a + 1
+useB x = x * b
+main = useB 10

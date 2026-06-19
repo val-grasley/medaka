@@ -1,0 +1,3 @@
+-- W2 scalar: non-tail self-recursion (call inside a multiply).
+fact n = if n <= 1 then 1 else n * fact (n - 1)
+main = fact 6

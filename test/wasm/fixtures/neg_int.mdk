@@ -1,0 +1,2 @@
+-- W2 scalar: unary integer negate in an expression.
+main = -5 + 3

@@ -1,0 +1,2 @@
+-- W2 scalar: nested lets, later binding sees the earlier one.
+main = let a = 3 in let b = a + 4 in a * b

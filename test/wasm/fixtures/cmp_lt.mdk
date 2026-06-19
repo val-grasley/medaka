@@ -1,0 +1,2 @@
+-- W2 scalar: a comparison producing a Bool (auto-printed true/false).
+main = 3 < 7

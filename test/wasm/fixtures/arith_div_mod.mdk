@@ -1,0 +1,2 @@
+-- W2 scalar: integer division + modulo (signed).
+main = 17 / 5 + 17 % 5

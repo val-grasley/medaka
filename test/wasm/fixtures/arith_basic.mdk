@@ -1,0 +1,2 @@
+-- W2 scalar: nested integer arithmetic (precedence + assoc).
+main = 2 * 3 + 4
