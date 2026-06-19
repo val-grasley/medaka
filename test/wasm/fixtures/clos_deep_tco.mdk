@@ -1,0 +1,6 @@
+-- W4: deep tail recursion (5_000_000 frames). WITHOUT TCO this exhausts the wasm
+-- stack; WITH return_call it completes in bounded stack. `acc` stays < 2^30 (a
+-- bounded counter) so the i31 immediate never overflows and the native (i64) oracle
+-- agrees exactly. The IR-shape gate asserts $loop's tail emits return_call.
+loop n acc = if n == 0 then acc else loop (n - 1) (if acc >= 1000000 then 0 else acc + 1)
+main = loop 5000000 0

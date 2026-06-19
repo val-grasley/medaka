@@ -1,0 +1,4 @@
+-- W4: nested closures capturing OUTER params (the nested-closure-param-capture
+-- shape). The inner lambda captures both `a` (outer param) and `b` (middle param).
+adder3 a = (b => (c => a + b + c))
+main = ((adder3 100) 20) 3

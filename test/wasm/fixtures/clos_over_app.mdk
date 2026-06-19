@@ -1,0 +1,6 @@
+-- W4: OVER-application — a fn returning a fn, called with all args at once.
+-- `makeAdd x` returns a lambda; `(makeAdd 10) 7` is the (g 7) 9 captured-then-
+-- over-applied shape from the native nested-closure bug. Here flattenApp collapses
+-- it to makeAdd[10,7] (over-arity for the arity-1 makeAdd) → saturate+reapply.
+makeAdd x = (y => x + y)
+main = makeAdd 10 7

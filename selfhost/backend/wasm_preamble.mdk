@@ -56,6 +56,107 @@ importLines = [
   "  (import \"env\" \"mdk_write_bool\" (func $mdk_write_bool (param i32)))",
 ]
 
+-- ── W4 closure / TCO preamble (WASMGC-DESIGN §4) ─────────────────────────────
+-- The closure ABI types + the universal apply runtime.  Emitted (by wasm_emit's
+-- `emitTypeSection`) only when a program uses closures / higher-order application
+-- (`progUseClos`).  The closure layout carries ARITY IN THE STRUCT (§11) so every
+-- application site reads arity from the value — never a name-keyed side table —
+-- which kills the native backend's table-miss miscompile class by construction.
+--
+--   $argarr  = (array (mut (ref null eq)))  — args / captured-env vector
+--   $codety  = (func (param $self (ref eq)) (param $args (ref $argarr))
+--                     (result (ref eq)))    — ONE uniform code signature (no
+--                     per-arity funcref type; over/under/exact stay uniform)
+--   $clos    = (struct $code $arity $env)   — funcref + arity + spill/env array
+--
+-- A lifted lambda reads its captures from `self`'s $env array and its params from
+-- the $args array.  A capture-free top-level fn used as a VALUE gets a wrapper
+-- closure (arity = param count, env = []).  Direct saturated top-level calls stay
+-- a plain `call` (the fast path) and never touch this machinery.
+export
+closTypeLines : List String
+closTypeLines = [
+  "    ;; ── §4 closure ABI (arity-in-struct, uniform code sig) ──",
+  "    (type $argarr (array (mut (ref null eq))))",
+  "    (type $codety (func (param (ref eq)) (param (ref $argarr)) (result (ref eq))))",
+  "    (type $clos (sub (struct (field $code (ref $codety)) (field $arity i32) (field $env (ref $argarr)))))",
+]
+
+-- the universal apply runtime (emitted once, after the function defs).  `$mdk_apply`
+-- takes a closure value + an args array and dispatches on the closure's arity:
+--   exact  (argc == arity) → return_call_ref the code (guaranteed-tail);
+--   under  (argc <  arity) → build a PAP closure (env = [orig, partialArgs…],
+--                            code = $mdk_pap) with the REMAINING arity;
+--   over   (argc >  arity) → saturate the first `arity` args (call_ref), then
+--                            return_call $mdk_apply on the result with the surplus.
+-- `$mdk_pap` is the PAP code: env[0] is the original closure, env[1..] the saved
+-- partial args; it concatenates saved + incoming and re-applies the original.
+export
+closApplyLines : List String
+closApplyLines = [
+  "  ;; ── §4 universal apply runtime (exact / under-PAP / over-saturate) ──",
+  "  (func $mdk_pap (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))",
+  "    (local $c (ref $clos)) (local $env (ref $argarr)) (local $orig (ref eq))",
+  "    (local $ne i32) (local $na i32) (local $total (ref $argarr)) (local $i i32)",
+  "    (local.set $c (ref.cast (ref $clos) (local.get $self)))",
+  "    (local.set $env (struct.get $clos $env (local.get $c)))",
+  "    (local.set $orig (ref.as_non_null (array.get $argarr (local.get $env) (i32.const 0))))",
+  "    (local.set $ne (i32.sub (array.len (local.get $env)) (i32.const 1)))",
+  "    (local.set $na (array.len (local.get $args)))",
+  "    (local.set $total (array.new $argarr (ref.null eq) (i32.add (local.get $ne) (local.get $na))))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $pd (loop $pl",
+  "      (br_if $pd (i32.ge_s (local.get $i) (local.get $ne)))",
+  "      (array.set $argarr (local.get $total) (local.get $i)",
+  "        (array.get $argarr (local.get $env) (i32.add (local.get $i) (i32.const 1))))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $pl)))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $pd2 (loop $pl2",
+  "      (br_if $pd2 (i32.ge_s (local.get $i) (local.get $na)))",
+  "      (array.set $argarr (local.get $total) (i32.add (local.get $ne) (local.get $i))",
+  "        (array.get $argarr (local.get $args) (local.get $i)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $pl2)))",
+  "    (return_call $mdk_apply (local.get $orig) (local.get $total)))",
+  "  (func $mdk_apply (param $f (ref eq)) (param $args (ref $argarr)) (result (ref eq))",
+  "    (local $c (ref $clos)) (local $ar i32) (local $na i32)",
+  "    (local $sat (ref $argarr)) (local $surplus (ref $argarr)) (local $i i32) (local $r (ref eq))",
+  "    (local $penv (ref $argarr))",
+  "    (local.set $c (ref.cast (ref $clos) (local.get $f)))",
+  "    (local.set $ar (struct.get $clos $arity (local.get $c)))",
+  "    (local.set $na (array.len (local.get $args)))",
+  "    (if (result (ref eq)) (i32.eq (local.get $na) (local.get $ar))",
+  "      (then (return_call_ref $codety (local.get $f) (local.get $args) (struct.get $clos $code (local.get $c))))",
+  "      (else",
+  "        (if (result (ref eq)) (i32.lt_s (local.get $na) (local.get $ar))",
+  "          (then",
+  "            (local.set $penv (array.new $argarr (ref.null eq) (i32.add (local.get $na) (i32.const 1))))",
+  "            (array.set $argarr (local.get $penv) (i32.const 0) (local.get $f))",
+  "            (local.set $i (i32.const 0))",
+  "            (block $ud (loop $ul",
+  "              (br_if $ud (i32.ge_s (local.get $i) (local.get $na)))",
+  "              (array.set $argarr (local.get $penv) (i32.add (local.get $i) (i32.const 1))",
+  "                (array.get $argarr (local.get $args) (local.get $i)))",
+  "              (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $ul)))",
+  "            (struct.new $clos (ref.func $mdk_pap) (i32.sub (local.get $ar) (local.get $na)) (local.get $penv)))",
+  "          (else",
+  "            (local.set $sat (array.new $argarr (ref.null eq) (local.get $ar)))",
+  "            (local.set $i (i32.const 0))",
+  "            (block $sd (loop $sl",
+  "              (br_if $sd (i32.ge_s (local.get $i) (local.get $ar)))",
+  "              (array.set $argarr (local.get $sat) (local.get $i)",
+  "                (array.get $argarr (local.get $args) (local.get $i)))",
+  "              (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $sl)))",
+  "            (local.set $r (call_ref $codety (local.get $f) (local.get $sat) (struct.get $clos $code (local.get $c))))",
+  "            (local.set $surplus (array.new $argarr (ref.null eq) (i32.sub (local.get $na) (local.get $ar))))",
+  "            (local.set $i (i32.const 0))",
+  "            (block $od (loop $ol",
+  "              (br_if $od (i32.ge_s (local.get $i) (i32.sub (local.get $na) (local.get $ar))))",
+  "              (array.set $argarr (local.get $surplus) (local.get $i)",
+  "                (array.get $argarr (local.get $args) (i32.add (local.get $i) (local.get $ar))))",
+  "              (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $ol)))",
+  "            (return_call $mdk_apply (local.get $r) (local.get $surplus)))))))",
+]
+
 -- the SCALAR-only preamble (no ADTs in the program): the W2 shape verbatim — an
 -- empty forward-compat rec group + the imports.  Kept byte-identical to the W2
 -- output so the 15 scalar fixtures do not move.

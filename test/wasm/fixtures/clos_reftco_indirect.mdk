@@ -1,0 +1,6 @@
+-- W4: ref-mode deep tail recursion (3_000_000 frames) that ALSO makes a tail
+-- INDIRECT closure call. `loop` takes a closure param `f` → ref-mode; its tail self-
+-- call lowers to return_call $loop, and the terminal `f acc` lowers to
+-- return_call $mdk_apply (→ return_call_ref). Proves the ref-mode + closure TCO path.
+loop n acc f = if n == 0 then f acc else loop (n - 1) (if acc >= 1000000 then 0 else acc + 1) f
+main = loop 3000000 0 (x => x + 7)
