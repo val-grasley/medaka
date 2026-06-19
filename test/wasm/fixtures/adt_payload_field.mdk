@@ -1,0 +1,7 @@
+-- W3: a single payload constructor + field extraction (struct.new + struct.get).
+data Box = Box Int
+
+unbox b = match b
+  Box n => n * 2
+
+main = unbox (Box 21)

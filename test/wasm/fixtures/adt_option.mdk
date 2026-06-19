@@ -1,0 +1,6 @@
+-- W3: reserved Option (Some/None) match.
+unwrapOr o d = match o
+  Some x => x
+  None => d
+
+main = unwrapOr (Some 7) 99

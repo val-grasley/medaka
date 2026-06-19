@@ -1,0 +1,10 @@
+-- W3: a multi-ctor type mixing nullary + payload variants (the ctor-collision
+-- class — distinct struct types per payload ctor + i31 ordinals for nullary).
+data Shape = Empty | Circle Int | Rect Int Int
+
+area s = match s
+  Empty => 0
+  Circle r => r * r * 3
+  Rect w h => w * h
+
+main = area (Rect 4 5)

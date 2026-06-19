@@ -1,0 +1,6 @@
+-- W3: reserved Result (Ok/Err) match, both payload variants.
+collapse r = match r
+  Ok v => v
+  Err e => 0 - e
+
+main = collapse (Err 5)

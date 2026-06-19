@@ -1,0 +1,12 @@
+-- W3: the structurally-identical-variant guard — two single-Int-field variants of
+-- ONE datatype.  WasmGC structural subtyping would collapse them without the
+-- explicit per-ctor struct type + i32 discriminant field (§3.4); this fixture is
+-- the WasmGC peer of the native cross-module ctor-collision bug.  `pick` must
+-- return the SECOND variant's payload, never confuse it with the first.
+data Temp = Celsius Int | Fahrenheit Int
+
+asF t = match t
+  Celsius c => c * 9 / 5 + 32
+  Fahrenheit f => f
+
+main = asF (Fahrenheit 451)

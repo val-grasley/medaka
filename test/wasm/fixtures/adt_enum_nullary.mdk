@@ -1,0 +1,9 @@
+-- W3: a nullary-only enum + match (i31 immediates, dense-ordinal br_table).
+data Color = Red | Green | Blue
+
+toInt c = match c
+  Red => 10
+  Green => 20
+  Blue => 30
+
+main = toInt Blue

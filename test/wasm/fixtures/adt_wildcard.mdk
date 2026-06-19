@@ -1,0 +1,8 @@
+-- W3: a wildcard/default arm (the decision tree's CTSwitch default subtree).
+data Light = R | Y | G | Off
+
+go l = match l
+  G => 1
+  _ => 0
+
+main = go Y

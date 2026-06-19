@@ -1,0 +1,6 @@
+-- W3: reserved Option, the None branch (nullary reserved ctor).
+unwrapOr o d = match o
+  Some x => x
+  None => d
+
+main = unwrapOr None 99

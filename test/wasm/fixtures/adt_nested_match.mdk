@@ -1,0 +1,10 @@
+-- W3: a nested match (a match inside a match arm — depth-indexed scratch locals).
+data Tree = Leaf Int | Node Tree Tree
+
+sumTop t = match t
+  Leaf n => n
+  Node l r => match l
+    Leaf a => a
+    Node _ _ => 0
+
+main = sumTop (Node (Leaf 8) (Leaf 9))

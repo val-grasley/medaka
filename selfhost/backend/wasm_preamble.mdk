@@ -4,46 +4,74 @@
 -- every program, so it carries no dependency on the emitter's state.  Kept in its
 -- own module to avoid a circular import (wasm_emit iterates this list).
 --
--- W2 SCOPE (WASMGC-DESIGN §9 slice 2 — immediates + arithmetic):
+-- ── W2 SCOPE (WASMGC-DESIGN §9 slice 2 — immediates + arithmetic) ────────────
 --   * The value rep for the SCALAR subset is raw `i32` (the §3.2 recommendation:
 --     "for monomorphic Int arithmetic keep values as raw i32").  Ints/Bools are
---     `i32`.  The i31ref/`(ref eq)` unitype + boxing (§3.1/§3.2) is declared in the
---     rec group for forward-compatibility but NOT yet exercised — values only flow
---     into polymorphic / heap positions from W3 on, where the unitype is needed.
---   * Output ABI (§6 IO / §10 fork e — custom host import, the W1 `env.mdk_write`
---     seam extended): the W2 emitter auto-prints the scalar `main` result (the LLVM
---     gate's value-main auto-print contract, mirrored), routed by static type:
---       - `env.mdk_write_int(i32)`  — write the int as decimal + newline
---       - `env.mdk_write_bool(i32)` — write "true"/"false" + newline
---     The JS runner (`test/wasm/run.js`) does the int→decimal / bool→text + newline
---     formatting.  This is a TEMPORARY W2 scaffold: the W6 string slice replaces it
---     with real `(array i8)` string codegen + a byte-level `mdk_write` once strings
---     and `intToString`/`Debug` land.  The bytes it produces are exactly the
---     native-compiled oracle's `pp_value` (decimal int, lowercase true/false, one
---     trailing newline).
+--     `i32`.  The i31ref/`(ref eq)` unitype + boxing (§3.1/§3.2) is exercised by
+--     W3 (ADTs) — see `recGroupLines` below + the §3.4 per-type struct emission in
+--     wasm_emit's `emitTypeSection`.
+--
+-- ── W3 SCOPE (WASMGC-DESIGN §9 slice 3 — ADTs + match) ───────────────────────
+-- A program that uses NO ADTs (no `data` decl, no `match`) emits exactly the W2
+-- scalar shape (raw i32, the 15 W2 fixtures stay byte-identical).  A program that
+-- DOES use an ADT switches to the §8.6 uniform `(ref eq)` value rep: every value
+-- slot is `(ref eq)`, scalars/Bool/Unit/nullary-ctors are `i31ref` immediates
+-- (`ref.i31`), payload constructors are per-ctor `struct`s with an explicit i32
+-- discriminant field 0 (§3.4 — defends against WasmGC structural-subtyping
+-- collapse) under a per-datatype root struct.  The type section's `rec` group is
+-- emitted DYNAMICALLY by wasm_emit (`emitTypeSection`) since it depends on the
+-- program's `data` decls; this preamble carries only the FIXED header + imports.
+--
+-- ── Output ABI (§6 IO / §10 fork e) ──────────────────────────────────────────
+-- The emitter auto-prints the scalar `main` result (the LLVM gate's value-main
+-- auto-print contract, mirrored), routed by static type:
+--   - `env.mdk_write_int(i32)`  — write the int as decimal + newline
+--   - `env.mdk_write_bool(i32)` — write "true"/"false" + newline
+-- The JS runner (`test/wasm/run.js`) does the int→decimal / bool→text + newline
+-- formatting.  This is a TEMPORARY scaffold the W6 string slice replaces.  The
+-- bytes it produces are exactly the native-compiled oracle's `pp_value`.
 --
 -- Order is load-bearing: emitted WAT is assembled by `wasm-tools parse` and the
 -- program's stdout is diffed byte-for-byte against the oracle, so these lines stay
--- in EXACTLY this order.  The module is CLOSED by the emitter (it appends the
--- function defs + `(start)` + the trailing `)`), so this preamble deliberately
--- leaves the `(module` paren OPEN.
+-- in EXACTLY this order.  The module is CLOSED by the emitter (it appends the type
+-- section, function defs, `(start)`, and the trailing `)`), so this preamble
+-- deliberately leaves the `(module` paren OPEN.
 
 export
-preambleLines : List String
-preambleLines = [
+preambleHeadLines : List String
+preambleHeadLines = [
   ";; Medaka WasmGC backend (Stage 2.4c) — emitted WAT.",
-  ";; Value rep: WASMGC-DESIGN.md §3.  W2 = scalar i32 subset (§9 slice 2).",
+  ";; Value rep: WASMGC-DESIGN.md §3 / §8.6.  W2 = scalar i32; W3 = (ref eq) + i31/structs.",
   "(module",
-  "  ;; ── §3 type section (one rec group, iso-recursive / nominal-modulo-canon) ──",
-  "  ;; W2 declares the universal-value scaffolding for forward-compat; the scalar",
-  "  ;; subset itself computes in raw i32 and only the print boundary is reached.",
-  "  (rec",
-  "    ;; boxed Int outside the i31 range (§3.2) — declared, unused until W3.",
-  "    (type $boxint (sub (struct (field i64))))",
-  "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
-  "    (type $float (sub (struct (field f64))))",
-  "  )",
-  "  ;; ── §6 host-import IO seam (§10 fork e — custom import, W2 scaffold) ──",
+]
+
+-- the §6 host-import IO seam (emitted AFTER the type section, since some engines /
+-- the binary format want imports grouped, but WAT order here is fine either way —
+-- kept after the rec group for readability of the emitted module).
+export
+importLines : List String
+importLines = [
+  "  ;; ── §6 host-import IO seam (§10 fork e — custom import) ──",
   "  (import \"env\" \"mdk_write_int\" (func $mdk_write_int (param i32)))",
   "  (import \"env\" \"mdk_write_bool\" (func $mdk_write_bool (param i32)))",
 ]
+
+-- the SCALAR-only preamble (no ADTs in the program): the W2 shape verbatim — an
+-- empty forward-compat rec group + the imports.  Kept byte-identical to the W2
+-- output so the 15 scalar fixtures do not move.
+export
+preambleScalarLines : List String
+preambleScalarLines =
+  preambleHeadLines
+    ++ [
+      "  ;; ── §3 type section (one rec group, iso-recursive / nominal-modulo-canon) ──",
+      "  ;; This program uses no ADTs — the scalar subset computes in raw i32 and only",
+      "  ;; the print boundary is reached; the unitype scaffolding is declared unused.",
+      "  (rec",
+      "    ;; boxed Int outside the i31 range (§3.2) — declared, unused.",
+      "    (type $boxint (sub (struct (field i64))))",
+      "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
+      "    (type $float (sub (struct (field f64))))",
+      "  )",
+    ]
+    ++ importLines

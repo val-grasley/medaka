@@ -4,76 +4,833 @@
 -- complete WAT text module (assembled by `wasm-tools parse`, run under a WasmGC
 -- engine).  `emitProgram : CProgram -> String`.
 --
--- ── W2 SCOPE (WASMGC-DESIGN §9 slice 2 — immediates + arithmetic) ────────────
--- This is the FIRST real WasmGC emitter slice (W1 was a hand-shaped toolchain
--- proof).  It covers the scalar / arithmetic subset of the Core IR — exactly what
--- the LLVM slice-1 fixtures exercise:
---   * `CLit`   — Int (raw i32), Bool (i32 0/1), Unit.
---   * `CVar`   — a top-level function (→ `call`), a nullary top-level value
---                binding (→ a wasm `global`), or a local (param / let — `local.get`).
---   * `CBinPrim` — integer `+ - * / %`, the six comparisons, on i32.
---   * `CUnOp`  — `-` (i32 negate), `!` (boolean not).
---   * `CIf`    — `(if (result i32) …)`; `&&`/`||` arrive pre-lowered to CIf.
---   * `CLet` / `CSLet` / `CBlock` — let-binding via wasm `local`s (`local.set`).
---   * top-level `CBind`/`CClause` — nullary `main` + simple (possibly recursive)
---     top-level functions with `PVar`/`PWild` params.
---   * the output boundary — the value `main` is AUTO-PRINTED (the LLVM gate's
---     value-main contract) through the §6 host import, routed by static type:
---     Int → `mdk_write_int`, Bool → `mdk_write_bool` (the runner formats decimal /
---     true|false + newline; a temporary W2 scaffold the W6 string slice replaces).
+-- ── W2 SCOPE (slice 2 — immediates + arithmetic) ─────────────────────────────
+-- Scalar / arithmetic subset on raw i32: CLit Int/Bool/Unit, CVar (fn/global/
+-- local), CBinPrim int arith+cmp, CUnOp `-`/`!`, CIf, CLet/CSLet/CBlock via
+-- locals, top-level fns (incl recursion), value-bindings→globals, value-main
+-- auto-print.
 --
--- ── EXPLICIT GAPS (out of W2 scope — each is a `gap`, so scope is visible) ────
--- Every Core IR node not in the scalar subset routes to `gap`, which `panic`s with
--- the node tag — mirroring how the LLVM emitter staged its slices.  Deferred:
---   * Float (§3.3 boxed `(struct f64)`)            — deferred until a scalar Float
---     fixture needs it (none in the W2 corpus); the box type is declared in the
---     preamble but no arm emits it.                                       [W2 defer]
---   * the i31ref unitype + 32–63-bit Int boxing (§3.2) — values only flow into
---     polymorphic slots from W3 on; the scalar subset stays raw i32.      [W3]
---   * `CDecision`/`CMatch`, ADTs, `CTuple`/`CList`/`CArray`/`CRecord`     [W3/W7]
---   * `CLam`/closures/`CApp` of a non-top-level head, TCO (`return_call`) [W4]
---   * `CMethod`/`CDict` dispatch (dict-passing)                          [W5]
---   * `CRangeList`/`CRangeArray`/`CIndex`/`CSlice`, strings              [W6/W7]
+-- ── W3 SCOPE (slice 3 — ADTs + match) ────────────────────────────────────────
+-- User `data` types + `match` (CDecision/CTree), incl the reserved Option/Result/
+-- Ordering ADTs.  W3 adds:
+--   * a §3.4 dynamic type section: per payload-ctor `struct` (discriminant field 0
+--     + one `(ref eq)` per field) under a per-datatype root struct, plus the
+--     reserved Option/Result/Ordering roots/structs.
+--   * construction: `CApp (CVar ctor) args` → `struct.new` (payload) / `ref.i31
+--     globalNullaryTag` (nullary); a nullary `CVar ctor` likewise.
+--   * match: `CDecision`/`CTree` → discriminant extraction (i31 nullary vs struct
+--     payload) feeding a `br_table` on the dense per-type ordinal, then field
+--     extraction via `ref.cast` + `struct.get`, leaf re-match for var bindings.
+--
+-- ── VALUE-REP DECISION (resolve per the slice guardrail) ─────────────────────
+-- W2 used raw i32 for every value.  ADT values force a uniform §8.6 rep.  CHOICE:
+-- **per-PROGRAM split.**  A program with NO ADTs (no `data` decl, no CDecision)
+-- emits the W2 raw-i32 shape VERBATIM (the 15 W2 fixtures stay byte-identical — the
+-- gate is output-diff, so this is the safe-and-simple half).  A program that uses
+-- ANY ADT switches WHOLESALE to the §8.6 uniform `(ref eq)` rep: every value slot
+-- (param / local / global / fn result) is `(ref eq)`; Int/Bool/Unit/nullary-ctors
+-- are `i31ref` immediates (`ref.i31`); payload ctors are typed structs.  Arithmetic
+-- unboxes its operands (`i31.get_s`) and re-boxes the result.  WHY per-program (not
+-- per-function): a per-function split needs the callee's signature to agree at each
+-- call site, i.e. real cross-fn rep inference; the gate is output-diff so the extra
+-- boxing in ref-mode is invisible, and per-program keeps the two reps from ever
+-- meeting inside one module — strictly simpler to keep CORRECT, which is the
+-- guardrail's tie-breaker.  (Perf — the monomorphic-i32 fast path — is a later
+-- slice.)  The mode is computed once in `emitProgram` (`programUsesAdt`) and
+-- threaded as `Prog.useRef`.
 --
 -- ── WAT lowering strategy ────────────────────────────────────────────────────
--- A wasm function body is an INSTRUCTION SEQUENCE leaving its result on the stack;
--- it is NOT the deeply-folded S-expr form.  So `emitExpr` returns a flat list of
--- instruction lines that, executed in order, push the expression's i32 value.
--- `CLet x = e1 in e2`  →  <e1 instrs> ; `local.set $x` ; <e2 instrs>.  All
--- let-bound + param locals are DECLARED up front (`collectLocals`) — wasm requires
--- every local declared in the function header.  Recursion is a plain `call $self`
--- (TCO via `return_call` is W4).
+-- A wasm function body is an INSTRUCTION SEQUENCE leaving its result on the stack.
+-- `emitExpr` returns a flat list of instruction lines.  In ref-mode the value left
+-- on the stack is always `(ref eq)`; in scalar-mode it is i32.
 
 import frontend.ast.{Lit(..), Pat(..), Addr(..)}
 import ir.core_ir.{
   CProgram(..), CBind(..), CClause(..), CExpr(..), CStmt(..),
+  CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)
 }
-import support.util.{joinNl, joinWith, reverseL, contains, concatMapList, filterList}
-import backend.wasm_preamble.{preambleLines}
+import support.util.{
+  joinNl, joinWith, reverseL, contains, concatMapList, filterList,
+  lookupAssoc, listLen, maxI
+}
+import backend.wasm_preamble.{
+  preambleHeadLines, importLines, preambleScalarLines
+}
 
--- ── static value kind (for the auto-print routing + sanity) ─────────────────
--- The scalar subset is two-typed: an Int (i32 decimal) or a Bool (i32 0/1).
-data WTy = WInt | WBool | WUnit
+-- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
+data WTy = WInt | WBool | WUnit | WRef
+
+-- ── program info threaded through the ref-mode emitter ───────────────────────
+-- ctorArs: ctor name → arity.  ctorTypes: ctor name → owning type name.
+-- typeNames: distinct user type names in declaration order (for per-type ids).
+-- useRef: whether this program uses any ADT (→ the §8.6 (ref eq) rep).
+-- fnNames / valNames: top-level functions / value-globals (as in W2).
+data Prog = Prog (List (String, Int)) (List (String, String)) (List String) Bool (List String) (List String)
+
+progUseRef : Prog -> Bool
+progUseRef (Prog _ _ _ u _ _) = u
+
+progFnNames : Prog -> List String
+progFnNames (Prog _ _ _ _ fns _) = fns
+
+progValNames : Prog -> List String
+progValNames (Prog _ _ _ _ _ vals) = vals
 
 -- ── program entry ────────────────────────────────────────────────────────────
 
 export
 emitProgram : CProgram -> String
-emitProgram (CProgram groups _ _ _) =
+emitProgram (CProgram groups ctorArs ctorTypes _) =
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
-  let header = preambleLines
-  let globals = emitGlobals valNames
-  let fns = concatMapList (emitFnBind fnNames valNames) (userFnBinds groups)
-  let initLines = emitInit fnNames valNames groups
+  let useRef = programUsesAdt groups ctorArs
+  let typeNames = distinctTypeNames ctorTypes
+  let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames
+  if useRef then emitRefProgram prog groups
+  else emitScalarProgram fnNames valNames groups
+
+-- a program uses ADTs if it has any user constructor (the ctor table is non-empty
+-- once a `data` decl exists) OR any `CDecision` in any body.  The reserved
+-- Option/Result/Ordering ctors only enter the table when actually used, and a
+-- bare scalar program (the W2 corpus) has an empty ctor table + no CDecision.
+programUsesAdt : List CBind -> List (String, Int) -> Bool
+programUsesAdt groups ctorArs =
+  not (listLen ctorArs == 0) || anyBindHasDecision groups
+
+anyBindHasDecision : List CBind -> Bool
+anyBindHasDecision [] = False
+anyBindHasDecision ((CBind _ clauses)::rest) =
+  if anyClauseHasDecision clauses then True else anyBindHasDecision rest
+
+anyClauseHasDecision : List CClause -> Bool
+anyClauseHasDecision [] = False
+anyClauseHasDecision ((CClause _ body)::rest) =
+  if exprHasDecision body then True else anyClauseHasDecision rest
+
+exprHasDecision : CExpr -> Bool
+exprHasDecision e = match e
+  CDecision _ _ _ => True
+  CMatch _ _ => True
+  CIf c t f => exprHasDecision c || exprHasDecision t || exprHasDecision f
+  CLet _ _ a b => exprHasDecision a || exprHasDecision b
+  CBinPrim _ a b => exprHasDecision a || exprHasDecision b
+  CUnOp _ a => exprHasDecision a
+  CApp f a => exprHasDecision f || exprHasDecision a
+  CBlock stmts => anyList stmtHasDecision stmts
+  _ => False
+
+stmtHasDecision : CStmt -> Bool
+stmtHasDecision (CSExpr e) = exprHasDecision e
+stmtHasDecision (CSLet _ _ e) = exprHasDecision e
+stmtHasDecision _ = False
+
+anyList : (a -> Bool) -> List a -> Bool
+anyList _ [] = False
+anyList p (x::xs) = if p x then True else anyList p xs
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- SCALAR MODE (W2, raw i32) — byte-identical to the W2 emitter.
+-- ════════════════════════════════════════════════════════════════════════════
+
+emitScalarProgram : List String -> List String -> List CBind -> String
+emitScalarProgram fnNames valNames groups =
+  let header = preambleScalarLines
+  let globals = map oneGlobalI32 valNames
+  let fns = concatMapList (emitScalarFnBind fnNames valNames) (userFnBinds groups)
+  let initLines = emitScalarInit fnNames valNames groups
   joinNl (header ++ globals ++ fns ++ initLines ++ [")"])
 
--- ── top-level binding classification ─────────────────────────────────────────
--- A nullary `CBind name [CClause [] body]` whose name is NOT `main` is a VALUE
--- binding → a wasm `global` (computed in the start prologue, source order).  A
--- `CBind` with parameters (or multiple clauses) is a FUNCTION → a `func`.  `main`
--- is special (the start prologue's tail).
+oneGlobalI32 : String -> String
+oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
 
+emitScalarInit : List String -> List String -> List CBind -> List String
+emitScalarInit fnNames valNames groups =
+  let valBinds = filterList isValBind groups
+  let valInit = concatMapList (emitScalarValInit fnNames valNames) valBinds
+  let mainLines = emitScalarMain fnNames valNames groups
+  let valLocals = concatMapList collectBindLocals valBinds
+  let mainLocals = match findMain groups
+    Some body => collectExprLocals body
+    None => []
+  let locals = dedupKeep (valLocals ++ mainLocals)
+  let localDecls = map (l => "  " ++ localDeclI32 l) locals
+  ["  (func $__init"]
+    ++ localDecls
+    ++ valInit
+    ++ mainLines
+    ++ ["  )", "  (start $__init)"]
+
+emitScalarValInit : List String -> List String -> CBind -> List String
+emitScalarValInit fnNames valNames (CBind name [(CClause [] body)]) =
+  let (instrs, _) = emitScalarExpr fnNames valNames [] body
+  indent instrs ++ ["    global.set $" ++ gname name]
+emitScalarValInit _ _ _ = gap "value binding must be a nullary clause"
+
+emitScalarMain : List String -> List String -> List CBind -> List String
+emitScalarMain fnNames valNames groups = match findMain groups
+  Some body =>
+    let (instrs, ty) = emitScalarExpr fnNames valNames [] body
+    indent instrs ++ printFor ty
+  None => gap "no `main` binding"
+
+printFor : WTy -> List String
+printFor WInt = ["    call $mdk_write_int"]
+printFor WBool = ["    call $mdk_write_bool"]
+printFor WUnit = gap "`main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
+printFor WRef = gap "scalar-mode main produced a (ref eq) — internal mode mismatch"
+
+emitScalarFnBind : List String -> List String -> CBind -> List String
+emitScalarFnBind fnNames valNames (CBind name [(CClause pats body)]) =
+  let params = map patName pats
+  let localsInBody = collectExprLocals body
+  let extraLocals = filterList (notIn params) (dedupKeep localsInBody)
+  let env = params
+  let (instrs, _) = emitScalarExpr fnNames valNames env body
+  let sig = "  (func $" ++ gname name
+    ++ joinWith "" (map paramDeclI32 params)
+    ++ " (result i32)"
+  let localDecls = map localDeclI32 extraLocals
+  [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
+emitScalarFnBind _ _ (CBind name _) =
+  gap ("scalar-mode top-level function '" ++ name
+    ++ "' is multi-clause or pattern-matching (decision-tree match needs ADT mode)")
+
+paramDeclI32 : String -> String
+paramDeclI32 p = " (param $" ++ gname p ++ " i32)"
+
+localDeclI32 : String -> String
+localDeclI32 l = "(local $" ++ gname l ++ " i32)"
+
+emitScalarExpr : List String -> List String -> List String -> CExpr -> (List String, WTy)
+emitScalarExpr fnNames valNames env e = match e
+  CLit l => emitLitI32 l
+  CVar x _ => emitVarI32 fnNames valNames env x
+  CBinPrim op l r => emitBinI32 fnNames valNames env op l r
+  CUnOp op x => emitUnI32 fnNames valNames env op x
+  CIf c t f => emitIfI32 fnNames valNames env c t f
+  CLet recF pat e1 e2 => emitLetI32 fnNames valNames env recF pat e1 e2
+  CBlock stmts => emitBlockI32 fnNames valNames env stmts
+  CApp f a => emitAppI32 fnNames valNames env (CApp f a)
+  other => gap ("scalar-mode: unsupported Core IR node " ++ ctag other)
+
+emitLitI32 : Lit -> (List String, WTy)
+emitLitI32 (LInt n) = (["i32.const " ++ intToString n], WInt)
+emitLitI32 (LBool b) = ([if b then "i32.const 1" else "i32.const 0"], WBool)
+emitLitI32 LUnit = (["i32.const 0"], WUnit)
+emitLitI32 (LFloat _) = gap "Float literal (boxed (struct f64)) is deferred — no scalar Float fixture"
+emitLitI32 (LString _) = gap "String literal (the (array i8) rep) is W6"
+emitLitI32 (LChar _) = gap "Char literal is W6 (string/unicode slice)"
+
+emitVarI32 : List String -> List String -> List String -> String -> (List String, WTy)
+emitVarI32 fnNames valNames env x =
+  if contains x env then (["local.get $" ++ gname x], WInt)
+  else if contains x valNames then (["global.get $" ++ gname x], WInt)
+  else if contains x fnNames then (["call $" ++ gname x], WInt)
+  else gap ("scalar-mode: unbound variable '" ++ x ++ "'")
+
+emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
+emitBinI32 fnNames valNames env op l r =
+  let (li, _) = emitScalarExpr fnNames valNames env l
+  let (ri, _) = emitScalarExpr fnNames valNames env r
+  (li ++ ri ++ [wasmBinOp op], binOpTy op)
+
+emitUnI32 : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
+emitUnI32 fnNames valNames env "-" x =
+  let (xi, _) = emitScalarExpr fnNames valNames env x
+  (["i32.const 0"] ++ xi ++ ["i32.sub"], WInt)
+emitUnI32 fnNames valNames env "!" x =
+  let (xi, _) = emitScalarExpr fnNames valNames env x
+  (xi ++ ["i32.eqz"], WBool)
+emitUnI32 _ _ _ op _ = gap ("scalar-mode: unsupported unary op '" ++ op ++ "'")
+
+emitIfI32 : List String -> List String -> List String -> CExpr -> CExpr -> CExpr -> (List String, WTy)
+emitIfI32 fnNames valNames env c t f =
+  let (ci, _) = emitScalarExpr fnNames valNames env c
+  let (ti, tty) = emitScalarExpr fnNames valNames env t
+  let (fi, _) = emitScalarExpr fnNames valNames env f
+  (ci ++ ["if (result i32)"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end"], tty)
+
+emitLetI32 : List String -> List String -> List String -> Bool -> Pat -> CExpr -> CExpr -> (List String, WTy)
+emitLetI32 fnNames valNames env False (PVar x) e1 e2 =
+  let (i1, _) = emitScalarExpr fnNames valNames env e1
+  let (i2, ty2) = emitScalarExpr fnNames valNames (x :: env) e2
+  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty2)
+emitLetI32 fnNames valNames env False PWild e1 e2 =
+  let (i1, _) = emitScalarExpr fnNames valNames env e1
+  let (i2, ty2) = emitScalarExpr fnNames valNames env e2
+  (i1 ++ ["drop"] ++ i2, ty2)
+emitLetI32 _ _ _ _ _ _ _ =
+  gap "scalar-mode: only non-recursive `let x = e` / `let _ = e`"
+
+emitBlockI32 : List String -> List String -> List String -> List CStmt -> (List String, WTy)
+emitBlockI32 fnNames valNames env [(CSExpr ex)] = emitScalarExpr fnNames valNames env ex
+emitBlockI32 fnNames valNames env ((CSExpr ex)::rest) =
+  let (i1, _) = emitScalarExpr fnNames valNames env ex
+  let (i2, ty) = emitBlockI32 fnNames valNames env rest
+  (i1 ++ ["drop"] ++ i2, ty)
+emitBlockI32 fnNames valNames env ((CSLet _ (PVar x) ex)::rest) =
+  let (i1, _) = emitScalarExpr fnNames valNames env ex
+  let (i2, ty) = emitBlockI32 fnNames valNames (x :: env) rest
+  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty)
+emitBlockI32 fnNames valNames env ((CSLet _ PWild ex)::rest) =
+  let (i1, _) = emitScalarExpr fnNames valNames env ex
+  let (i2, ty) = emitBlockI32 fnNames valNames env rest
+  (i1 ++ ["drop"] ++ i2, ty)
+emitBlockI32 _ _ _ [] = gap "scalar-mode: empty block"
+emitBlockI32 _ _ _ _ = gap "scalar-mode: unsupported block statement"
+
+emitAppI32 : List String -> List String -> List String -> CExpr -> (List String, WTy)
+emitAppI32 fnNames valNames env app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar f _ =>
+      if contains f fnNames then
+        let argInstrs = concatMapList (a => fst (emitScalarExpr fnNames valNames env a)) args
+        (argInstrs ++ ["call $" ++ gname f], WInt)
+      else gap ("scalar-mode: application of non-top-level head '" ++ f ++ "' (closures/HOFs are W4)")
+    _ => gap "scalar-mode: application of a non-variable head (closures/HOFs are W4)"
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- REF MODE (W3, uniform (ref eq) + i31/structs) — the ADT path.
+-- ════════════════════════════════════════════════════════════════════════════
+
+emitRefProgram : Prog -> List CBind -> String
+emitRefProgram prog groups =
+  let header = preambleHeadLines
+  let typeSection = emitTypeSection prog
+  let imports = importLines
+  let valNames = progValNames prog
+  let globals = map oneGlobalRef valNames
+  let fns = concatMapList (emitRefFnBind prog) (userFnBinds groups)
+  let initLines = emitRefInit prog groups
+  joinNl (header ++ typeSection ++ imports ++ globals ++ fns ++ initLines ++ [")"])
+
+oneGlobalRef : String -> String
+oneGlobalRef n = "  (global $" ++ gname n ++ " (mut (ref null eq)) (ref.null eq))"
+
+-- ── §3.4 type section: one rec group with the universal root + per-type roots
+-- + per payload-ctor structs.  Each payload struct has an explicit i32 tag field
+-- (field 0 — defends against structural-subtyping collapse) then one (ref eq) per
+-- payload field.  Nullary ctors need no struct (they are i31 immediates).  The
+-- reserved Option/Result/Ordering types are appended (their structs only matter
+-- for the payload ctors Some/Ok/Err).
+emitTypeSection : Prog -> List String
+emitTypeSection prog =
+  let userTypes = userTypesWithCtors prog
+  let userStructs = concatMapList (emitTypeStructs prog) userTypes
+  let reservedStructs = emitReservedStructs prog
+  ["  ;; ── §3 type section (rec group) — §3.4 ADT structs + §8.6 (ref eq)/i31 ──",
+   "  (rec",
+   "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
+   "    (type $float (sub (struct (field f64))))"]
+    ++ userStructs
+    ++ reservedStructs
+    ++ ["  )"]
+
+-- distinct user type names (declaration order) that actually own ctors, paired
+-- with their ctor list.  Reserved types are handled separately so they are never
+-- double-declared.
+userTypesWithCtors : Prog -> List String
+userTypesWithCtors (Prog _ ctorTypes typeNames _ _ _) =
+  filterList (t => not (isReservedType t)) typeNames
+
+-- per-type: a root struct (just the i32 tag) + one struct per PAYLOAD ctor (tag +
+-- fields), each declared `(sub $root …)`.  Nullary ctors get no struct.
+emitTypeStructs : Prog -> String -> List String
+emitTypeStructs prog ty =
+  let ctors = ctorsOfType prog ty
+  let root = "    (type $" ++ typeRootName ty ++ " (sub (struct (field i32))))"
+  let payloadStructs = concatMapList (emitCtorStruct prog ty) ctors
+  [root] ++ payloadStructs
+
+emitCtorStruct : Prog -> String -> String -> List String
+emitCtorStruct prog ty ctor =
+  let arity = ctorArity prog ctor
+  if arity == 0 then []
+  else
+    let fields = joinWith "" (replicateStr arity " (field (ref eq))")
+    ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
+      ++ " (struct (field i32)" ++ fields ++ ")))"]
+
+-- reserved Option/Result/Ordering: declare each type's root + payload structs.
+-- Emitted UNCONDITIONALLY in ref-mode (they are small; unused struct types are
+-- valid WasmGC).  Detecting exact usage would need to scan the whole program for
+-- reserved-ctor occurrences (constructions AND match heads) — the ctor table only
+-- lists USER ctors — so always-declare is the simple correct choice for this slice.
+emitReservedStructs : Prog -> List String
+emitReservedStructs prog =
+  reservedTypeStructs prog "Option" ["Some", "None"]
+    ++ reservedTypeStructs prog "Result" ["Ok", "Err"]
+    ++ reservedTypeStructs prog "Ordering" ["Lt", "Eq", "Gt"]
+
+reservedTypeStructs : Prog -> String -> List String -> List String
+reservedTypeStructs prog ty ctors =
+  let root = "    (type $" ++ typeRootName ty ++ " (sub (struct (field i32))))"
+  let payloadStructs = concatMapList (emitReservedCtorStruct ty) ctors
+  [root] ++ payloadStructs
+
+-- reserved-ctor arities are fixed: Some/Ok/Err carry 1 payload field; None/Lt/Eq/Gt
+-- are nullary.
+emitReservedCtorStruct : String -> String -> List String
+emitReservedCtorStruct ty ctor =
+  if reservedCtorArity ctor == 0 then []
+  else
+    let fields = joinWith "" (replicateStr (reservedCtorArity ctor) " (field (ref eq))")
+    ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
+      ++ " (struct (field i32)" ++ fields ++ ")))"]
+
+-- ── ref-mode globals init + main ─────────────────────────────────────────────
+
+emitRefInit : Prog -> List CBind -> List String
+emitRefInit prog groups =
+  let valBinds = filterList isValBind groups
+  let valInit = concatMapList (emitRefValInit prog) valBinds
+  let mainLines = emitRefMain prog groups
+  let valLocals = concatMapList collectBindLocals valBinds
+  let mainBodies = match findMain groups
+    Some body => [body]
+    None => []
+  let mainLocals = concatMapList collectExprLocals mainBodies
+  let valBodies = concatMapList bindBodies valBinds
+  -- scratch ($__rf<d>) locals sized to the deepest match nesting across all $__init
+  -- bodies (val inits + main).
+  let maxDepth = foldMaxDepth (valBodies ++ mainBodies)
+  let scratch = scratchLocals maxDepth
+  let locals = dedupKeep (valLocals ++ mainLocals) ++ scratch
+  let localDecls = map (l => "  " ++ localDeclRef l) locals
+  ["  (func $__init"]
+    ++ localDecls
+    ++ valInit
+    ++ mainLines
+    ++ ["  )", "  (start $__init)"]
+
+bindBodies : CBind -> List CExpr
+bindBodies (CBind _ clauses) = concatMapList clauseBody clauses
+
+clauseBody : CClause -> List CExpr
+clauseBody (CClause _ body) = [body]
+
+foldMaxDepth : List CExpr -> Int
+foldMaxDepth [] = 0
+foldMaxDepth (e::rest) = maxI (maxRefDepth e) (foldMaxDepth rest)
+
+emitRefValInit : Prog -> CBind -> List String
+emitRefValInit prog (CBind name [(CClause [] body)]) =
+  let instrs = emitRefExpr prog [] 0 body
+  indent instrs ++ ["    global.set $" ++ gname name]
+emitRefValInit _ _ = gap "value binding must be a nullary clause"
+
+-- main: compute the body (a (ref eq)), then unbox to i32 and route to the print
+-- import by the body's STATIC kind (Int vs Bool — the only printable scalar mains
+-- in this slice).  In ref-mode an Int/Bool result is an i31 immediate, so unbox via
+-- `i31.get_s` / `i31.get_u`.
+emitRefMain : Prog -> List CBind -> List String
+emitRefMain prog groups = match findMain groups
+  Some body =>
+    let instrs = emitRefExpr prog [] 0 body
+    let k = refMainKind prog body
+    indent instrs ++ refPrintFor k
+  None => gap "no `main` binding"
+
+-- the printable static kind of a ref-mode main body: an Int (decimal) or a Bool
+-- (true/false).  Determined structurally — arithmetic/Int-lit → Int; a comparison
+-- / Bool-lit / `!` → Bool.  A match's kind is its first arm's body kind.
+refMainKind : Prog -> CExpr -> WTy
+refMainKind prog e = match e
+  CLit (LInt _) => WInt
+  CLit (LBool _) => WBool
+  CBinPrim op _ _ => binOpTy op
+  CUnOp "!" _ => WBool
+  CUnOp _ _ => WInt
+  CIf _ t _ => refMainKind prog t
+  CLet _ _ _ b => refMainKind prog b
+  CBlock stmts => refMainKindBlock prog stmts
+  CDecision _ arms _ => refMainKindArms prog arms
+  CMatch _ arms => refMainKindArms prog arms
+  CApp f _ => refMainKind prog (appHead f)
+  CVar x _ => WInt
+  other => WInt
+
+refMainKindBlock : Prog -> List CStmt -> WTy
+refMainKindBlock _ [] = WInt
+refMainKindBlock prog [(CSExpr e)] = refMainKind prog e
+refMainKindBlock prog (_::rest) = refMainKindBlock prog rest
+
+refMainKindArms : Prog -> List CArm -> WTy
+refMainKindArms _ [] = WInt
+refMainKindArms prog ((CArm _ _ body)::_) = refMainKind prog body
+
+appHead : CExpr -> CExpr
+appHead (CApp f _) = appHead f
+appHead e = e
+
+refPrintFor : WTy -> List String
+refPrintFor WInt = ["    ref.cast (ref i31)", "    i31.get_s", "    call $mdk_write_int"]
+refPrintFor WBool = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_write_bool"]
+refPrintFor WUnit = gap "`main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
+refPrintFor WRef = gap "ref-mode main produced a non-scalar value — printing ADTs is W6 (Debug)"
+
+-- ── ref-mode top-level function defs ─────────────────────────────────────────
+-- Every param/local/result is `(ref eq)`.  Multi-clause fns (clause dispatch via
+-- the decision tree) are not yet coalesced into a single match by the lowering for
+-- this slice, so a multi-clause top-level fn stays a gap; user `match` lives inside
+-- a single clause body (CDecision), which IS handled.
+emitRefFnBind : Prog -> CBind -> List String
+emitRefFnBind prog (CBind name [(CClause pats body)]) =
+  let params = map patName pats
+  let localsInBody = collectExprLocals body
+  let extraLocals = filterList (notIn params) (dedupKeep localsInBody)
+  let scratch = scratchLocals (maxRefDepth body)
+  let env = params
+  let instrs = emitRefExpr prog env 0 body
+  let sig = "  (func $" ++ gname name
+    ++ joinWith "" (map paramDeclRef params)
+    ++ " (result (ref eq))"
+  let localDecls = map localDeclRef (extraLocals ++ scratch)
+  [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
+emitRefFnBind _ (CBind name _) =
+  gap ("ref-mode top-level function '" ++ name
+    ++ "' is multi-clause (clause-dispatch coalescing into one match is W4; "
+    ++ "use a single-clause body with an inner `match`)")
+
+paramDeclRef : String -> String
+paramDeclRef p = " (param $" ++ gname p ++ " (ref eq))"
+
+localDeclRef : String -> String
+localDeclRef l = "(local $" ++ gname l ++ " (ref eq))"
+
+-- ── ref-mode expression emitter — every result is a (ref eq) on the stack ────
+-- `d` is the current match/switch nesting DEPTH: a CDecision/CTSwitch stashes a
+-- value into the scratch local `$__rf<d>` and recurses at d+1, so simultaneously-
+-- live stash locals never collide.  The function header declares `$__rf0..` up to
+-- the body's max depth (`maxRefDepth`).  No mutable counter needed → re-derivable.
+
+emitRefExpr : Prog -> List String -> Int -> CExpr -> List String
+emitRefExpr prog env d e = match e
+  CLit l => emitLitRef l
+  CVar x _ => emitVarRef prog env d x
+  CBinPrim op l r => emitBinRef prog env d op l r
+  CUnOp op x => emitUnRef prog env d op x
+  CIf c t f => emitIfRef prog env d c t f
+  CLet recF pat e1 e2 => emitLetRef prog env d recF pat e1 e2
+  CBlock stmts => emitBlockRef prog env d stmts
+  CApp f a => emitAppRef prog env d (CApp f a)
+  CDecision scrut arms tree => emitDecisionRef prog env d scrut arms tree
+  other => gap ("ref-mode: unsupported Core IR node " ++ ctag other)
+
+-- a scalar literal → an i31 immediate.  Int: ref.i31 of the value.  Bool: 1/0.
+-- Unit: i31 0 (a placeholder immediate; Unit is never inspected in this slice).
+emitLitRef : Lit -> List String
+emitLitRef (LInt n) = ["i32.const " ++ intToString n, "ref.i31"]
+emitLitRef (LBool b) = [if b then "i32.const 1" else "i32.const 0", "ref.i31"]
+emitLitRef LUnit = ["i32.const 0", "ref.i31"]
+emitLitRef (LFloat _) = gap "ref-mode: Float literal is deferred (boxed (struct f64))"
+emitLitRef (LString _) = gap "ref-mode: String literal is W6"
+emitLitRef (LChar _) = gap "ref-mode: Char literal is W6"
+
+-- a variable: local/global → get (already (ref eq)); a nullary ctor → its i31 tag;
+-- a top-level fn → call (W4 closures; a bare nullary fn ref is handled).
+emitVarRef : Prog -> List String -> Int -> String -> List String
+emitVarRef prog env d x =
+  if contains x env then ["local.get $" ++ gname x]
+  else if contains x (progValNames prog) then ["global.get $" ++ gname x, "ref.as_non_null"]
+  else if isCtor prog x then emitCtorConstruct prog env d x []
+  else if contains x (progFnNames prog) then ["call $" ++ gname x]
+  else gap ("ref-mode: unbound variable '" ++ x ++ "'")
+
+-- arithmetic / comparison: unbox both operands from i31 to i32, do the i32 op, then
+-- re-box (arithmetic → i31 int; comparison → i31 0/1 bool).
+emitBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> List String
+emitBinRef prog env d op l r =
+  let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
+  li ++ ri ++ [wasmBinOp op, "ref.i31"]
+
+emitUnRef : Prog -> List String -> Int -> String -> CExpr -> List String
+emitUnRef prog env d "-" x =
+  let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_s"]
+  ["i32.const 0"] ++ xi ++ ["i32.sub", "ref.i31"]
+emitUnRef prog env d "!" x =
+  let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_u"]
+  xi ++ ["i32.eqz", "ref.i31"]
+emitUnRef _ _ _ op _ = gap ("ref-mode: unsupported unary op '" ++ op ++ "'")
+
+-- if/else: cond is an i31 Bool — unbox to i32 for the wasm `if`; both branches push
+-- a (ref eq).
+emitIfRef : Prog -> List String -> Int -> CExpr -> CExpr -> CExpr -> List String
+emitIfRef prog env d c t f =
+  let ci = emitRefExpr prog env d c ++ ["ref.cast (ref i31)", "i31.get_u"]
+  let ti = emitRefExpr prog env d t
+  let fi = emitRefExpr prog env d f
+  ci ++ ["if (result (ref eq))"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end"]
+
+emitLetRef : Prog -> List String -> Int -> Bool -> Pat -> CExpr -> CExpr -> List String
+emitLetRef prog env d False (PVar x) e1 e2 =
+  let i1 = emitRefExpr prog env d e1
+  let i2 = emitRefExpr prog (x :: env) d e2
+  i1 ++ ["local.set $" ++ gname x] ++ i2
+emitLetRef prog env d False PWild e1 e2 =
+  let i1 = emitRefExpr prog env d e1
+  let i2 = emitRefExpr prog env d e2
+  i1 ++ ["drop"] ++ i2
+emitLetRef _ _ _ _ _ _ _ = gap "ref-mode: only non-recursive `let x = e` / `let _ = e`"
+
+emitBlockRef : Prog -> List String -> Int -> List CStmt -> List String
+emitBlockRef prog env d [(CSExpr ex)] = emitRefExpr prog env d ex
+emitBlockRef prog env d ((CSExpr ex)::rest) =
+  emitRefExpr prog env d ex ++ ["drop"] ++ emitBlockRef prog env d rest
+emitBlockRef prog env d ((CSLet _ (PVar x) ex)::rest) =
+  emitRefExpr prog env d ex ++ ["local.set $" ++ gname x] ++ emitBlockRef prog (x :: env) d rest
+emitBlockRef prog env d ((CSLet _ PWild ex)::rest) =
+  emitRefExpr prog env d ex ++ ["drop"] ++ emitBlockRef prog env d rest
+emitBlockRef _ _ _ [] = gap "ref-mode: empty block"
+emitBlockRef _ _ _ _ = gap "ref-mode: unsupported block statement"
+
+-- application: a saturated top-level-fn call, or a saturated CONSTRUCTOR application
+-- (the W3 ADT construction path).
+emitAppRef : Prog -> List String -> Int -> CExpr -> List String
+emitAppRef prog env d app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar f _ =>
+      if isCtor prog f then emitCtorConstruct prog env d f args
+      else if contains f (progFnNames prog) then
+        let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+        argInstrs ++ ["call $" ++ gname f]
+      else gap ("ref-mode: application of non-top-level head '" ++ f ++ "' (closures/HOFs are W4)")
+    _ => gap "ref-mode: application of a non-variable head (closures/HOFs are W4)"
+
+-- ── ADT construction (§3.4) ──────────────────────────────────────────────────
+-- A NULLARY ctor → an `i31ref` carrying its PER-TYPE dense ordinal (the same value
+-- a payload ctor stores in struct field 0, so one discriminant read + one br_table
+-- cover both reps within a match).  Two nullary ctors of DIFFERENT types could
+-- share an i31 ordinal, but a well-typed match's scrutinee is one fixed type, so
+-- only that type's ctors are ever compared — no cross-type aliasing.  The §3.4
+-- structural-collapse caution is about STRUCTS (handled by the per-ctor struct type
+-- + explicit i32 tag field), not i31 immediates.  A PAYLOAD ctor → `struct.new
+-- $S_ctor` with the per-type dense ordinal as i32 field 0, then the (ref eq) fields.
+emitCtorConstruct : Prog -> List String -> Int -> String -> List CExpr -> List String
+emitCtorConstruct prog env d ctor args =
+  let arity = ctorArity prog ctor
+  if arity == 0 then
+    ["i32.const " ++ intToString (ctorOrdinal prog ctor), "ref.i31"]
+  else
+    let tagField = ["i32.const " ++ intToString (ctorOrdinal prog ctor)]
+    let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+    tagField ++ argInstrs ++ ["struct.new $" ++ ctorStructName ctor]
+
+-- ── match lowering: CDecision → discriminant + br_table + field extraction ───
+-- The scrutinee is a (ref eq).  The decision tree (CTree) is walked into a nest of
+-- wasm blocks.  We mirror the LLVM emitter's structure: `root` is the whole
+-- scrutinee value (kept for the leaf re-match that recovers bindings); each arm
+-- body computes a (ref eq).  A CTSwitch on a constructor column reads the column's
+-- discriminant (i31 nullary tag vs struct field-0 ordinal) and `br_table`s on the
+-- dense per-type ordinal to the matching branch.
+--
+-- IMPLEMENTATION: a uniform result via a labelled block that all arms `br` out of
+-- with their value.  Each arm stores its (ref eq) into a fresh result LOCAL and
+-- branches to the shared end.  The tree's control flow is a tower of wasm `block`s.
+-- We thread occurrence-values (the focus stack) as a list of "value-producing
+-- instruction snippets" (each a List String that, executed, pushes that occurrence
+-- onto the stack) — the LLVM emitter uses SSA register names; we use re-emittable
+-- snippets (local.get of a stashed local), which keeps it stackless and simple.
+
+-- CDecision at nesting depth `d`.  Stashes the scrutinee into scratch local
+-- `$__rf<d>` (so the focus stack re-reads it), wraps the tree in a result block
+-- `$dec<d>` that arm bodies `br` out of with their value, and recurses into the
+-- tree at depth `d+1` (nested matches/switches get fresh, non-colliding locals +
+-- labels).  `decLabel` is `$dec<d>` — the target every arm body branches to.
+emitDecisionRef : Prog -> List String -> Int -> CExpr -> List CArm -> CTree -> List String
+emitDecisionRef prog env d scrut arms tree =
+  let st = emitRefExpr prog env d scrut
+  let scrutL = scratchLocal d
+  let decLabel = "$dec" ++ intToString d
+  let occ0 = ["local.get $" ++ scrutL]
+  st
+    ++ ["local.set $" ++ scrutL]
+    ++ ["block " ++ decLabel ++ " (result (ref eq))"]
+    ++ indent (emitTreeRef prog env (d + 1) decLabel occ0 [occ0] arms tree)
+    ++ ["end"]
+
+-- emit a CTree.  `d` = nesting depth (fresh locals/labels); `decLabel` = the
+-- enclosing `$dec<n>` an arm body branches to; `root` = the scrutinee occurrence
+-- snippet (for leaf re-match); `occs` = the live focus columns.  Every path leaves
+-- exactly one (ref eq) for `decLabel`'s block to yield (via `br decLabel`), except
+-- the default tail of a switch tower which falls through with the value on the stack.
+emitTreeRef : Prog -> List String -> Int -> String -> List String -> List (List String) -> List CArm -> CTree -> List String
+emitTreeRef prog env d decLabel root occs arms tree = match tree
+  CTFail => ["unreachable"]
+  CTLeaf i => emitLeafRef prog env d decLabel root arms i
+  CTGuard i fail => emitGuardArmRef prog env d decLabel root occs arms i fail
+  CTDrop sub => emitTreeRef prog env d decLabel root (tailList occs) arms sub
+  CTSwitch branches dft => emitSwitchRef prog env d decLabel root occs arms branches dft
+
+-- a leaf: re-match arm i's pattern against `root` to bind its PVars (loading struct
+-- fields), then emit the body, then `br decLabel` with the value.
+emitLeafRef : Prog -> List String -> Int -> String -> List String -> List CArm -> Int -> List String
+emitLeafRef prog env d decLabel root arms i = match nthArm arms i
+  Some (CArm pat _ body) =>
+    let (binds, env2) = bindPatRef prog env pat root
+    binds ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel]
+  None => gap "ref-mode: decision arm index out of range"
+
+-- a guarded arm: bind the pattern, evaluate the guards; all-pass → body + br
+-- decLabel; any fail → the `fail` subtree (resumes at the same column context).
+-- Fall-through is a labelled block `$g<d>`: a failed guard `br_if $g<d>` skips the
+-- body, then control falls into the fail subtree after the block's `end`.
+emitGuardArmRef : Prog -> List String -> Int -> String -> List String -> List (List String) -> List CArm -> Int -> CTree -> List String
+emitGuardArmRef prog env d decLabel root occs arms i fail = match nthArm arms i
+  Some (CArm pat guards body) =>
+    if allBoolGuards guards then
+      let (binds, env2) = bindPatRef prog env pat root
+      let gLabel = "$g" ++ intToString d
+      ["block " ++ gLabel]
+        ++ indent (binds ++ concatMapList (emitGuardTest prog env2 d gLabel) guards
+                   ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel])
+        ++ ["end"]
+        ++ emitTreeRef prog env d decLabel root occs arms fail
+    else gap "ref-mode: refutable pattern guard (`p <- e`) in a match arm — not yet lowered"
+  None => gap "ref-mode: guarded arm index out of range"
+
+-- a CGBool guard: unbox the i31 Bool; if false, br out of the guard block (skip body).
+emitGuardTest : Prog -> List String -> Int -> String -> CGuard -> List String
+emitGuardTest prog env d gLabel (CGBool g) =
+  emitRefExpr prog env d g ++ ["ref.cast (ref i31)", "i31.get_u", "i32.eqz", "br_if " ++ gLabel]
+emitGuardTest _ _ _ _ (CGBind _ _) = gap "ref-mode: refutable pattern guard (`p <- e`) — not yet lowered"
+
+allBoolGuards : List CGuard -> Bool
+allBoolGuards [] = True
+allBoolGuards ((CGBool _)::rest) = allBoolGuards rest
+allBoolGuards _ = False
+
+-- a CTSwitch on the focus column.  All heads in one switch are homogeneous.  ADT
+-- heads → discriminant + br_table on the dense per-type ordinal.  Int-literal heads
+-- → compare immediates.  HUnit is irrefutable (drop focus, descend).
+emitSwitchRef : Prog -> List String -> Int -> String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> List String
+emitSwitchRef prog env d decLabel root occs arms branches dft = match occs
+  [] => emitTreeRef prog env d decLabel root [] arms dft
+  foc::rest => match branches
+    [] => emitTreeRef prog env d decLabel root rest arms dft
+    (CTBranch (HLit _) _)::_ => emitLitSwitchRef prog env d decLabel root foc rest arms branches dft
+    (CTBranch HUnit sub)::_ => emitTreeRef prog env d decLabel root rest arms sub
+    (CTBranch h _)::_ => match conHeadInfo h
+      Some _ => emitConSwitchRef prog env d decLabel root foc rest arms branches dft
+      None => gap "ref-mode: unsupported switch head (constructor / int-literal / unit only)"
+
+-- the constructor switch (§3.4): stash the focus into scratch local `$__rf<d>`,
+-- read its discriminant, and `br_table` on the dense per-type ordinal.  Recurses
+-- into branch subtrees at depth d+1.
+emitConSwitchRef : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> List String
+emitConSwitchRef prog env d decLabel root foc rest arms branches dft =
+  let ty = switchTypeName prog branches
+  let nOrd = typeCtorCount prog ty
+  let sv = scratchLocal d
+  let svRead = ["local.get $" ++ sv]
+  foc ++ ["local.set $" ++ sv]
+    ++ emitBrTableTower prog env (d + 1) decLabel root svRead rest arms branches dft ty d nOrd
+
+-- the discriminant: from a value that is EITHER an i31 nullary (its per-type ordinal,
+-- set at construction) OR a payload struct (the per-type ordinal in field 0).
+-- `ref.test (ref i31)` selects the rep; both yield the SAME dense ordinal.
+discrimReadOf : List String -> String -> List String
+discrimReadOf svRead ty =
+  svRead ++ ["ref.test (ref i31)", "if (result i32)"]
+    ++ indent (svRead ++ ["ref.cast (ref i31)", "i31.get_u"])
+    ++ ["else"]
+    ++ indent (svRead ++ ["ref.cast (ref $" ++ typeRootName ty ++ ")", "struct.get $" ++ typeRootName ty ++ " 0"])
+    ++ ["end"]
+
+-- build the br_table tower (the standard switch idiom).  Labels are suffixed by the
+-- SWITCH depth `sd` so nested switches don't collide.  Structure for nOrd cases:
+--
+--   block $swd<sd> (result (ref eq))
+--     block $sw<sd>_{n-1} … block $sw<sd>_0
+--       <discriminant i32>  br_table $sw<sd>_0 … $sw<sd>_{n-1} $swd<sd>
+--     end           ;; end $sw<sd>_0 — fall through = ordinal 0 selected
+--     <arm 0>  br decLabel
+--     end           ;; end $sw<sd>_1
+--     <arm 1>  br decLabel
+--     …
+--   end             ;; end $swd<sd>
+--   <default subtree>          (falls through with its value on the stack)
+emitBrTableTower : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+emitBrTableTower prog env d decLabel root svRead rest arms branches dft ty sd nOrd =
+  let sfx = intToString sd
+  let labels = map (k => "$sw" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
+  let tableInstr = "br_table " ++ joinWith " " labels ++ " $swd" ++ sfx
+  let opens = ["block $swd" ++ sfx]
+    ++ map (k => "block $sw" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
+  let pick = discrimReadOf svRead ty ++ [tableInstr]
+  opens
+    ++ pick
+    ++ towerBodies prog env d decLabel root svRead rest arms branches dft ty sd (nOrd - 1)
+
+-- emit, innermost-first (ordinal n-1 down to 0): `end` of $sw<sd>_k then ordinal k's
+-- arm; finally `end` of $swd<sd> then the default subtree (yields the block value).
+towerBodies : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+towerBodies prog env d decLabel root svRead rest arms branches dft ty sd k =
+  if k < 0 then ["end"] ++ emitTreeRef prog env d decLabel root rest arms dft
+  else ["end"]
+    ++ emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k
+    ++ towerBodies prog env d decLabel root svRead rest arms branches dft ty sd (k - 1)
+
+-- ordinal k's arm: the branch whose head has ordinal k.  Present → extract its
+-- fields (ref.cast to the ctor struct + struct.get i+1) as new leading occurrences,
+-- emit its subtree.  Absent → fall to $swd<sd> (the default).
+emitOrdinalSlot : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> String -> Int -> Int -> List String
+emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = match branchForOrdinal prog branches ty k
+  Some (CTBranch h sub) =>
+    let (c, a) = conHeadInfoUnsafe h
+    let fieldOccs = map (i => svRead ++ ["ref.cast (ref $" ++ ctorStructName c ++ ")", "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1)]) (rangeList 0 a)
+    emitTreeRef prog env d decLabel root (fieldOccs ++ rest) arms sub
+  None => ["br $swd" ++ intToString sd]
+
+-- the literal switch: compare the focus i31 Int against each branch's constant via
+-- an if/else chain.  The focus is re-read per comparison through `foc`.
+emitLitSwitchRef : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> List String
+emitLitSwitchRef prog env d decLabel root foc rest arms [] dft =
+  emitTreeRef prog env d decLabel root rest arms dft
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft =
+  (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"])
+    ++ ["if (result (ref eq))"]
+    ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
+    ++ ["else"]
+    ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
+    ++ ["end"]
+emitLitSwitchRef _ _ _ _ _ _ _ _ _ _ = gap "ref-mode: non-Int literal switch head (Char/String literals are W6)"
+
+-- ── pattern binding (leaf re-match) ──────────────────────────────────────────
+-- bind a pattern's PVars against the value the snippet `v` produces, emitting struct
+-- field extractions.  Returns (instructions that stash bound vars into their locals,
+-- extended env).  Mirrors the LLVM bindPattern but stashes into named locals.
+bindPatRef : Prog -> List String -> Pat -> List String -> (List String, List String)
+bindPatRef prog env pat v = match pat
+  PWild => ([], env)
+  PLit _ => ([], env)
+  PVar x => (v ++ ["local.set $" ++ gname x], x :: env)
+  PCon c args => bindConFields prog env c args v
+  PAs x p =>
+    let setX = v ++ ["local.set $" ++ gname x]
+    let (inner, env2) = bindPatRef prog (x :: env) p v
+    (setX ++ inner, env2)
+  other => gap ("ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): " ++ ptag other)
+
+-- bind a constructor pattern's fields: for each field i, extract via ref.cast +
+-- struct.get (field i+1, after the i32 tag), then recurse into the sub-pattern.
+bindConFields : Prog -> List String -> String -> List Pat -> List String -> (List String, List String)
+bindConFields prog env c args v = bindConFieldsGo prog env c args v 0
+
+bindConFieldsGo : Prog -> List String -> String -> List Pat -> List String -> Int -> (List String, List String)
+bindConFieldsGo _ env _ [] _ _ = ([], env)
+bindConFieldsGo prog env c (p::rest) v i =
+  let fieldSnippet = v ++ ["ref.cast (ref $" ++ ctorStructName c ++ ")", "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1)]
+  let (cur, env2) = bindPatRef prog env p fieldSnippet
+  let (more, env3) = bindConFieldsGo prog env2 c rest v (i + 1)
+  (cur ++ more, env3)
+
+-- ── helpers shared by both modes ─────────────────────────────────────────────
+
+-- top-level binding classification (W2 + W3, identical).
 isValBind : CBind -> Bool
 isValBind (CBind name [(CClause [] _)]) = not (name == "main")
 isValBind _ = False
@@ -94,216 +851,67 @@ collectValNames groups = map bindName (filterList isValBind groups)
 bindName : CBind -> String
 bindName (CBind n _) = n
 
--- ── globals (nullary top-level value bindings) ───────────────────────────────
--- One mutable i32 global per value binding; initialised in the start prologue
--- (emitInit) in SOURCE ORDER, so a binding referencing an earlier one reads the
--- already-stored global (peer of the LLVM E1b global prologue).
-
-emitGlobals : List String -> List String
-emitGlobals names = map oneGlobal names
-
-oneGlobal : String -> String
-oneGlobal n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
-
--- ── the start prologue: init value globals (source order), then run main ─────
-
-emitInit : List String -> List String -> List CBind -> List String
-emitInit fnNames valNames groups =
-  let valBinds = filterList isValBind groups
-  let valInit = concatMapList (emitValInit fnNames valNames) valBinds
-  let mainLines = emitMain fnNames valNames groups
-  -- the $__init func contains every value-init body + main's body; collect ALL
-  -- their let-bound locals and declare them in the func header (wasm requires it).
-  let valLocals = concatMapList (b => collectBindLocals b) valBinds
-  let mainLocals = match findMain groups
-    Some body => collectExprLocals body
-    None => []
-  let locals = dedupKeep (valLocals ++ mainLocals)
-  let localDecls = map (l => "  " ++ localDecl l) locals
-  ["  (func $__init"]
-    ++ localDecls
-    ++ valInit
-    ++ mainLines
-    ++ ["  )", "  (start $__init)"]
-
--- the let-bound locals inside a binding's (single, nullary) clause body.
-collectBindLocals : CBind -> List String
-collectBindLocals (CBind _ [(CClause _ body)]) = collectExprLocals body
-collectBindLocals _ = []
-
-emitValInit : List String -> List String -> CBind -> List String
-emitValInit fnNames valNames (CBind name [(CClause [] body)]) =
-  let env = []
-  let (instrs, _) = emitExpr fnNames valNames env body
-  indent instrs ++ ["    global.set $" ++ gname name]
-emitValInit _ _ _ = gap "value binding must be a nullary clause"
-
--- `main` is the start prologue's tail: compute its body, auto-print by static type.
-emitMain : List String -> List String -> List CBind -> List String
-emitMain fnNames valNames groups = match findMain groups
-  Some body =>
-    let (instrs, ty) = emitExpr fnNames valNames [] body
-    indent instrs ++ printFor ty
-  None => gap "no `main` binding"
-
 findMain : List CBind -> Option CExpr
 findMain [] = None
 findMain ((CBind "main" [(CClause [] body)])::_) = Some body
 findMain ((CBind "main" _)::_) = gap "`main` must be a nullary value (main = ...)"
 findMain (_::rest) = findMain rest
 
--- auto-print the scalar main result via the §6 host import, by static type.
-printFor : WTy -> List String
-printFor WInt = ["    call $mdk_write_int"]
-printFor WBool = ["    call $mdk_write_bool"]
-printFor WUnit = gap "W2: `main` must reduce to a scalar Int/Bool (Unit-main IO is W6)"
-
--- ── top-level function defs ──────────────────────────────────────────────────
--- One `func` per top-level function binding (single clause, PVar/PWild params).
--- Multi-clause / pattern-matching clauses are a gap (that is decision-tree match,
--- W3).  Locals = the params + every let-bound var in the body.
-
-emitFnBind : List String -> List String -> CBind -> List String
-emitFnBind fnNames valNames (CBind name [(CClause pats body)]) =
-  let params = map patName pats
-  let localsInBody = collectExprLocals body
-  let extraLocals = filterList (notIn params) (dedupKeep localsInBody)
-  let env = params
-  let (instrs, _) = emitExpr fnNames valNames env body
-  let sig = "  (func $" ++ gname name
-    ++ joinWith "" (map paramDecl params)
-    ++ " (result i32)"
-  let localDecls = map localDecl extraLocals
-  [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
-emitFnBind _ _ (CBind name _) =
-  gap ("W2: top-level function '" ++ name
-    ++ "' is multi-clause or pattern-matching (decision-tree match is W3)")
-
-paramDecl : String -> String
-paramDecl p = " (param $" ++ gname p ++ " i32)"
-
-localDecl : String -> String
-localDecl l = "(local $" ++ gname l ++ " i32)"
+-- the let-bound locals inside a binding's (single, nullary) clause body.
+collectBindLocals : CBind -> List String
+collectBindLocals (CBind _ [(CClause _ body)]) = collectExprLocals body
+collectBindLocals _ = []
 
 patName : Pat -> String
 patName (PVar x) = x
 patName PWild = "_"
-patName _ = gap "W2: only PVar/PWild parameters (pattern params are W3 match)"
+patName _ = gap "only PVar/PWild parameters (pattern params are inner-match material)"
 
--- ── the expression emitter — returns (instruction lines, static type) ─────────
+-- ── local collection ─────────────────────────────────────────────────────────
+-- Wasm requires every local declared in the function header.  Walk the body for
+-- every `let`-bound / block-let-bound PVar AND (W3) every PATTERN-bound var in a
+-- CDecision arm (the leaf re-match binds them into locals).
+collectExprLocals : CExpr -> List String
+collectExprLocals e = match e
+  CLet _ (PVar x) e1 e2 => x :: (collectExprLocals e1 ++ collectExprLocals e2)
+  CLet _ _ e1 e2 => collectExprLocals e1 ++ collectExprLocals e2
+  CBinPrim _ l r => collectExprLocals l ++ collectExprLocals r
+  CUnOp _ x => collectExprLocals x
+  CIf c t f => collectExprLocals c ++ collectExprLocals t ++ collectExprLocals f
+  CApp f a => collectExprLocals f ++ collectExprLocals a
+  CBlock stmts => concatMapList collectStmtLocals stmts
+  CDecision scrut arms _ => collectExprLocals scrut ++ concatMapList collectArmLocals arms
+  CMatch scrut arms => collectExprLocals scrut ++ concatMapList collectArmLocals arms
+  _ => []
 
-emitExpr : List String -> List String -> List String -> CExpr -> (List String, WTy)
-emitExpr fnNames valNames env e = match e
-  CLit l => emitLit l
-  CVar x _ => emitVar fnNames valNames env x
-  CBinPrim op l r => emitBin fnNames valNames env op l r
-  CUnOp op x => emitUn fnNames valNames env op x
-  CIf c t f => emitIf fnNames valNames env c t f
-  CLet recF pat e1 e2 => emitLet fnNames valNames env recF pat e1 e2
-  CBlock stmts => emitBlock fnNames valNames env stmts
-  CApp f a => emitApp fnNames valNames env (CApp f a)
-  other => gap ("W2: unsupported Core IR node " ++ ctag other)
+collectStmtLocals : CStmt -> List String
+collectStmtLocals (CSExpr ex) = collectExprLocals ex
+collectStmtLocals (CSLet _ (PVar x) ex) = x :: collectExprLocals ex
+collectStmtLocals (CSLet _ _ ex) = collectExprLocals ex
+collectStmtLocals _ = []
 
-emitLit : Lit -> (List String, WTy)
-emitLit (LInt n) = (["i32.const " ++ intToString n], WInt)
-emitLit (LBool b) = ([if b then "i32.const 1" else "i32.const 0"], WBool)
-emitLit LUnit = (["i32.const 0"], WUnit)
-emitLit (LFloat _) = gap "W2: Float literal (boxed (struct f64)) is deferred — no scalar Float fixture in W2"
-emitLit (LString _) = gap "W2: String literal (the (array i8) rep) is W6"
-emitLit (LChar _) = gap "W2: Char literal is W6 (string/unicode slice)"
+-- an arm contributes its pattern's bound vars + its body's locals + guard locals.
+collectArmLocals : CArm -> List String
+collectArmLocals (CArm pat guards body) =
+  patVars pat ++ concatMapList collectGuardLocals guards ++ collectExprLocals body
 
--- a variable: a local (param/let) → local.get; a value global → global.get;
--- a nullary call to a top-level function → call (e.g. a 0-arg fn reference).
-emitVar : List String -> List String -> List String -> String -> (List String, WTy)
-emitVar fnNames valNames env x =
-  if contains x env then (["local.get $" ++ gname x], WInt)
-  else if contains x valNames then (["global.get $" ++ gname x], WInt)
-  else if contains x fnNames then (["call $" ++ gname x], WInt)
-  else gap ("W2: unbound variable '" ++ x ++ "'")
+collectGuardLocals : CGuard -> List String
+collectGuardLocals (CGBool g) = collectExprLocals g
+collectGuardLocals (CGBind p e) = patVars p ++ collectExprLocals e
 
--- a binary primitive on i32.  Arithmetic → WInt; comparison → WBool.
-emitBin : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
-emitBin fnNames valNames env op l r =
-  let (li, _) = emitExpr fnNames valNames env l
-  let (ri, _) = emitExpr fnNames valNames env r
-  let body = li ++ ri ++ [wasmBinOp op]
-  (body, binOpTy op)
+-- the variables a pattern binds (for local declaration).
+patVars : Pat -> List String
+patVars (PVar x) = [x]
+patVars PWild = []
+patVars (PLit _) = []
+patVars (PCon _ args) = concatMapList patVars args
+patVars (PTuple ps) = concatMapList patVars ps
+patVars (PCons h t) = patVars h ++ patVars t
+patVars (PList ps) = concatMapList patVars ps
+patVars (PAs x p) = x :: patVars p
+patVars _ = []
 
--- a unary op: integer negate (0 - x) or boolean not (x == 0).
-emitUn : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
-emitUn fnNames valNames env "-" x =
-  let (xi, _) = emitExpr fnNames valNames env x
-  (["i32.const 0"] ++ xi ++ ["i32.sub"], WInt)
-emitUn fnNames valNames env "!" x =
-  let (xi, _) = emitExpr fnNames valNames env x
-  (xi ++ ["i32.eqz"], WBool)
-emitUn _ _ _ op _ = gap ("W2: unsupported unary op '" ++ op ++ "'")
-
--- if/else as `(if (result i32) (then …) (else …))` — but in instruction-sequence
--- form: <cond instrs> ; `if (result i32)` ; <then instrs> ; `else` ; <else instrs>
--- ; `end`.  The static type is the then-branch's (both branches agree by typing).
-emitIf : List String -> List String -> List String -> CExpr -> CExpr -> CExpr -> (List String, WTy)
-emitIf fnNames valNames env c t f =
-  let (ci, _) = emitExpr fnNames valNames env c
-  let (ti, tty) = emitExpr fnNames valNames env t
-  let (fi, _) = emitExpr fnNames valNames env f
-  let body = ci
-    ++ ["if (result i32)"]
-    ++ indent ti
-    ++ ["else"]
-    ++ indent fi
-    ++ ["end"]
-  (body, tty)
-
--- a non-recursive `let x = e1 in e2` (x a PVar / PWild).  e1's value is stored in
--- the local `$x` (declared at the function header by collectLocals), then e2 runs
--- with x bound.  A function-let (CLet True (PVar f) (CLam …)) is a closure → W4.
-emitLet : List String -> List String -> List String -> Bool -> Pat -> CExpr -> CExpr -> (List String, WTy)
-emitLet fnNames valNames env False (PVar x) e1 e2 =
-  let (i1, _) = emitExpr fnNames valNames env e1
-  let (i2, ty2) = emitExpr fnNames valNames (x :: env) e2
-  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty2)
-emitLet fnNames valNames env False PWild e1 e2 =
-  let (i1, _) = emitExpr fnNames valNames env e1
-  let (i2, ty2) = emitExpr fnNames valNames env e2
-  -- drop the discarded value
-  (i1 ++ ["drop"] ++ i2, ty2)
-emitLet _ _ _ _ _ _ _ =
-  gap "W2: only non-recursive `let x = e` / `let _ = e` (function-let closures are W4, tuple/pattern lets are W3)"
-
--- a sequential block (desugar's EBlock: let-sequencing + a final expression).
-emitBlock : List String -> List String -> List String -> List CStmt -> (List String, WTy)
-emitBlock fnNames valNames env [(CSExpr ex)] = emitExpr fnNames valNames env ex
-emitBlock fnNames valNames env ((CSExpr ex)::rest) =
-  let (i1, _) = emitExpr fnNames valNames env ex
-  let (i2, ty) = emitBlock fnNames valNames env rest
-  (i1 ++ ["drop"] ++ i2, ty)
-emitBlock fnNames valNames env ((CSLet _ (PVar x) ex)::rest) =
-  let (i1, _) = emitExpr fnNames valNames env ex
-  let (i2, ty) = emitBlock fnNames valNames (x :: env) rest
-  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty)
-emitBlock fnNames valNames env ((CSLet _ PWild ex)::rest) =
-  let (i1, _) = emitExpr fnNames valNames env ex
-  let (i2, ty) = emitBlock fnNames valNames env rest
-  (i1 ++ ["drop"] ++ i2, ty)
-emitBlock _ _ _ [] = gap "W2: empty block"
-emitBlock _ _ _ _ = gap "W2: unsupported block statement (assign/let-else/pattern-let are W3+)"
-
--- a saturated call to a top-level function: `f a0 a1 …` → <a0> <a1> … `call $f`.
--- Only a top-level-function head is in scope for W2 (higher-order / closure
--- application is W4).
-emitApp : List String -> List String -> List String -> CExpr -> (List String, WTy)
-emitApp fnNames valNames env app =
-  let (hd, args) = flattenApp app []
-  match hd
-    CVar f _ =>
-      if contains f fnNames then
-        let argInstrs = concatMapList (a => fst (emitExpr fnNames valNames env a)) args
-        (argInstrs ++ ["call $" ++ gname f], WInt)
-      else gap ("W2: application of non-top-level head '" ++ f ++ "' (closures/HOFs are W4)")
-    _ => gap "W2: application of a non-variable head (closures/HOFs are W4)"
-
--- ── operator tables ──────────────────────────────────────────────────────────
+-- ── operator tables (both modes) ─────────────────────────────────────────────
 
 wasmBinOp : String -> String
 wasmBinOp "+" = "i32.add"
@@ -317,54 +925,226 @@ wasmBinOp "<" = "i32.lt_s"
 wasmBinOp ">" = "i32.gt_s"
 wasmBinOp "<=" = "i32.le_s"
 wasmBinOp ">=" = "i32.ge_s"
-wasmBinOp op = gap ("W2: unsupported binary operator '" ++ op
+wasmBinOp op = gap ("unsupported binary operator '" ++ op
   ++ "' (`::`/`++` are list/string ops — W6/W7)")
 
 binOpTy : String -> WTy
 binOpTy op =
   if contains op ["==", "!=", "<", ">", "<=", ">="] then WBool else WInt
 
--- ── local collection ─────────────────────────────────────────────────────────
--- Wasm requires every local declared in the function header.  Walk the body for
--- every `let`-bound / block-let-bound PVar.  (Params are added separately.)
+-- ── ctor / type info (ref mode) ──────────────────────────────────────────────
 
-collectExprLocals : CExpr -> List String
-collectExprLocals e = match e
-  CLet _ (PVar x) e1 e2 => x :: (collectExprLocals e1 ++ collectExprLocals e2)
-  CLet _ _ e1 e2 => collectExprLocals e1 ++ collectExprLocals e2
-  CBinPrim _ l r => collectExprLocals l ++ collectExprLocals r
-  CUnOp _ x => collectExprLocals x
-  CIf c t f => collectExprLocals c ++ collectExprLocals t ++ collectExprLocals f
-  CApp f a => collectExprLocals f ++ collectExprLocals a
-  CBlock stmts => concatMapList collectStmtLocals stmts
-  _ => []
+isCtor : Prog -> String -> Bool
+isCtor (Prog ctorArs _ _ _ _ _) name = isSome (lookupAssoc name ctorArs) || isReservedCtor name
 
-collectStmtLocals : CStmt -> List String
-collectStmtLocals (CSExpr ex) = collectExprLocals ex
-collectStmtLocals (CSLet _ (PVar x) ex) = x :: collectExprLocals ex
-collectStmtLocals (CSLet _ _ ex) = collectExprLocals ex
-collectStmtLocals _ = []
+isReservedCtor : String -> Bool
+isReservedCtor name = isSome (reservedCtorOrdinal name)
 
--- ── helpers ──────────────────────────────────────────────────────────────────
+ctorArity : Prog -> String -> Int
+ctorArity (Prog ctorArs _ _ _ _ _) name = match lookupAssoc name ctorArs
+  Some a => a
+  None => reservedCtorArity name
+
+-- a ctor's owning type name (user types via the ctor→type map; reserved ctors map
+-- to their fixed type names).
+ctorTypeName : Prog -> String -> String
+ctorTypeName (Prog _ ctorTypes _ _ _ _) name = match lookupAssoc name ctorTypes
+  Some ty => ty
+  None => reservedTypeOf name
+
+-- the per-type dense ordinal of a ctor (0-based index in its type's declaration
+-- order).  Reserved ctors have fixed ordinals.
+ctorOrdinal : Prog -> String -> Int
+ctorOrdinal prog name = match reservedCtorOrdinal name
+  Some o => o
+  None => orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+
+-- the declaration-ordered ctor list of a user type (the ctor→type map lists each
+-- type's ctors consecutively in declaration order — filter to this type).
+ctorsOfType : Prog -> String -> List String
+ctorsOfType prog ty =
+  if isReservedType ty then reservedCtorsOfType ty
+  else ctorsOfTypeUser prog ty
+
+ctorsOfTypeUser : Prog -> String -> List String
+ctorsOfTypeUser (Prog _ ctorTypes _ _ _ _) ty =
+  map fstPair (filterList (e => eqStr (sndPair e) ty) ctorTypes)
+
+-- the number of ctors a type has (the br_table's slot count).
+typeCtorCount : Prog -> String -> Int
+typeCtorCount prog ty = listLen (ctorsOfType prog ty)
+
+-- the type a switch's branches discriminate (all branches share one type — take the
+-- first ADT head's ctor's owning type).
+switchTypeName : Prog -> List CTBranch -> String
+switchTypeName prog [] = gap "ref-mode: empty constructor switch"
+switchTypeName prog ((CTBranch h _)::rest) = match conHeadInfo h
+  Some (c, _) => ctorTypeName prog c
+  None => switchTypeName prog rest
+
+-- the branch whose head's ordinal is k (for the br_table slot).
+branchForOrdinal : Prog -> List CTBranch -> String -> Int -> Option CTBranch
+branchForOrdinal _ [] _ _ = None
+branchForOrdinal prog ((CTBranch h sub)::rest) ty k = match conHeadInfo h
+  Some (c, _) =>
+    if ctorOrdinal prog c == k then Some (CTBranch h sub)
+    else branchForOrdinal prog rest ty k
+  None => branchForOrdinal prog rest ty k
+
+-- the name + arity a constructor-LIKE head tests against.  HCons/HNil/HTuple are
+-- W7 (list/tuple) — not handled in W3 (gap if reached via a user-ADT decision).
+conHeadInfo : CHead -> Option (String, Int)
+conHeadInfo (HCon c a) = Some (c, a)
+conHeadInfo _ = None
+
+conHeadInfoUnsafe : CHead -> (String, Int)
+conHeadInfoUnsafe h = match conHeadInfo h
+  Some p => p
+  None => gap "ref-mode: non-constructor head in a constructor switch (HCons/HNil/HTuple are W7)"
+
+-- ── reserved ADTs (Option / Result / Ordering) ───────────────────────────────
+-- The lowering names Ordering's ctors `Lt`/`Eq`/`Gt` (capitalized — see
+-- llvm_emit.reservedTag).
+isReservedType : String -> Bool
+isReservedType ty = contains ty ["Option", "Result", "Ordering"]
+
+reservedCtorsOfType : String -> List String
+reservedCtorsOfType "Option" = ["Some", "None"]
+reservedCtorsOfType "Result" = ["Ok", "Err"]
+reservedCtorsOfType "Ordering" = ["Lt", "Eq", "Gt"]
+reservedCtorsOfType _ = []
+
+reservedTypeOf : String -> String
+reservedTypeOf name =
+  if contains name ["Some", "None"] then "Option"
+  else if contains name ["Ok", "Err"] then "Result"
+  else if contains name ["Lt", "Eq", "Gt"] then "Ordering"
+  else gap ("ref-mode: unknown constructor '" ++ name ++ "' (not in the ctor table, not reserved)")
+
+reservedCtorOrdinal : String -> Option Int
+reservedCtorOrdinal "Some" = Some 0
+reservedCtorOrdinal "None" = Some 1
+reservedCtorOrdinal "Ok" = Some 0
+reservedCtorOrdinal "Err" = Some 1
+reservedCtorOrdinal "Lt" = Some 0
+reservedCtorOrdinal "Eq" = Some 1
+reservedCtorOrdinal "Gt" = Some 2
+reservedCtorOrdinal _ = None
+
+reservedCtorArity : String -> Int
+reservedCtorArity "Some" = 1
+reservedCtorArity "Ok" = 1
+reservedCtorArity "Err" = 1
+reservedCtorArity _ = 0
+
+-- ── WAT type-name mangling ───────────────────────────────────────────────────
+-- a per-type root struct type name and a per-ctor struct type name.  Prefixed to
+-- avoid colliding with the fixed $float / $boxint scaffolding.
+typeRootName : String -> String
+typeRootName ty = "T_" ++ ty
+
+ctorStructName : String -> String
+ctorStructName ctor = "C_" ++ ctor
+
+-- ── distinct type names (declaration order) ──────────────────────────────────
+-- the ctor→type map lists each type's ctors consecutively, so dedup-preserving-
+-- order over the type column gives declaration order.
+distinctTypeNames : List (String, String) -> List String
+distinctTypeNames ctorTypes = dedupKeep (map sndPair ctorTypes)
+
+-- ── scratch locals for match scrutinee/focus stashes ─────────────────────────
+-- a CDecision/CTSwitch at nesting depth d stashes its value into `$__rf<d>`.  The
+-- function header declares `$__rf0..$__rf<maxDepth-1>`.
+scratchLocal : Int -> String
+scratchLocal d = "__rf" ++ intToString d
+
+scratchLocals : Int -> List String
+scratchLocals n = map scratchLocal (rangeList 0 n)
+
+-- the number of scratch locals an expression needs = (highest scratch index used
+-- anywhere) + 1.  This MIRRORS the actual depth threading: emitDecisionRef at depth
+-- d uses local d and recurses its tree at d+1; emitConSwitchRef at depth d uses
+-- local d and recurses subtrees at d+1.  `maxIndexAt e d` = the highest local index
+-- used when `e` is emitted at depth d (or d-1 if `e` uses no stash, meaning no
+-- scratch beyond what the caller already accounts for).
+maxRefDepth : CExpr -> Int
+maxRefDepth e = maxIndexAt e 0 + 1
+
+-- the highest scratch-local index used emitting `e` at depth `d`.  Returns d-1 as a
+-- "nothing used here" sentinel (so `+1` gives d, i.e. no extra slot).
+maxIndexAt : CExpr -> Int -> Int
+maxIndexAt e d = match e
+  CDecision scrut arms tree =>
+    let scrutI = maxIndexAt scrut d
+    let treeI = maxIndexTree tree (d + 1)
+    let armDepth = d + 1 + treeSwitchNesting tree
+    let armsI = foldMaxI (map (a => maxIndexAt (armBody a) armDepth) arms)
+    maxI d (maxI scrutI (maxI treeI armsI))
+  CMatch scrut arms =>
+    let scrutI = maxIndexAt scrut d
+    let armsI = foldMaxI (map (a => maxIndexAt (armBody a) (d + 1)) arms)
+    maxI d (maxI scrutI armsI)
+  CIf c t f => maxI (maxIndexAt c d) (maxI (maxIndexAt t d) (maxIndexAt f d))
+  CLet _ _ a b => maxI (maxIndexAt a d) (maxIndexAt b d)
+  CBinPrim _ a b => maxI (maxIndexAt a d) (maxIndexAt b d)
+  CUnOp _ a => maxIndexAt a d
+  CApp f a => maxI (maxIndexAt f d) (maxIndexAt a d)
+  CBlock stmts => foldMaxI (map (s => maxIndexAtStmt s d) stmts)
+  _ => d - 1
+
+-- the deepest switch nesting in a tree (each CTSwitch increments the emit depth by
+-- 1 for its subtrees; an arm body at a leaf is emitted at decision-depth + this).
+treeSwitchNesting : CTree -> Int
+treeSwitchNesting CTFail = 0
+treeSwitchNesting (CTLeaf _) = 0
+treeSwitchNesting (CTGuard _ fail) = treeSwitchNesting fail
+treeSwitchNesting (CTDrop sub) = treeSwitchNesting sub
+treeSwitchNesting (CTSwitch branches dft) =
+  let bd = foldMaxI (map (b => treeSwitchNesting (branchSub b)) branches)
+  maxI (1 + bd) (treeSwitchNesting dft)
+
+maxIndexAtStmt : CStmt -> Int -> Int
+maxIndexAtStmt (CSExpr e) d = maxIndexAt e d
+maxIndexAtStmt (CSLet _ _ e) d = maxIndexAt e d
+maxIndexAtStmt _ d = d - 1
+
+-- the highest scratch index used emitting a decision tree at depth d (a CTSwitch
+-- stashes the focus at index d and recurses subtrees at d+1; leaves/guards re-emit
+-- arm bodies via emitTreeRef at the same depth, accounted by the arm walk above).
+maxIndexTree : CTree -> Int -> Int
+maxIndexTree CTFail d = d - 1
+maxIndexTree (CTLeaf _) d = d - 1
+maxIndexTree (CTGuard _ fail) d = maxIndexTree fail d
+maxIndexTree (CTDrop sub) d = maxIndexTree sub d
+maxIndexTree (CTSwitch branches dft) d =
+  let bd = foldMaxI (map (b => maxIndexTree (branchSub b) (d + 1)) branches)
+  maxI d (maxI bd (maxIndexTree dft d))
+
+branchSub : CTBranch -> CTree
+branchSub (CTBranch _ sub) = sub
+
+armBody : CArm -> CExpr
+armBody (CArm _ _ body) = body
+
+foldMaxI : List Int -> Int
+foldMaxI [] = 0
+foldMaxI (x::xs) = maxI x (foldMaxI xs)
+
+-- ── small generic helpers ────────────────────────────────────────────────────
 
 flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
 flattenApp (CApp f a) acc = flattenApp f (a :: acc)
 flattenApp hd acc = (hd, acc)
 
--- indent a block of WAT lines by one extra level (4 spaces) for readability.
 indent : List String -> List String
 indent lines = map (l => "    " ++ l) lines
 
--- a WAT-safe identifier: identifiers may contain most printables, but keep it
--- simple — prefix nothing; Medaka names are already alnum/_.  (No collisions in
--- the scalar corpus; W3+ will reuse private_mangle for the full surface.)
 gname : String -> String
 gname n = n
 
 notIn : List String -> String -> Bool
 notIn xs x = not (contains x xs)
 
--- dedup preserving first occurrence.
 dedupKeep : List String -> List String
 dedupKeep xs = reverseL (dedupGo xs [])
 
@@ -375,12 +1155,51 @@ dedupGo (x::xs) acc = if contains x acc then dedupGo xs acc else dedupGo xs (x :
 fst : (a, b) -> a
 fst (x, _) = x
 
+fstPair : (String, String) -> String
+fstPair (x, _) = x
+
+sndPair : (String, String) -> String
+sndPair (_, y) = y
+
+eqStr : String -> String -> Bool
+eqStr a b = a == b
+
+isSome : Option a -> Bool
+isSome (Some _) = True
+isSome None = False
+
+-- inclusive-exclusive integer range [lo, hi) as a list.
+rangeList : Int -> Int -> List Int
+rangeList lo hi = if lo >= hi then [] else lo :: rangeList (lo + 1) hi
+
+tailList : List a -> List a
+tailList [] = []
+tailList (_::xs) = xs
+
+nthArm : List CArm -> Int -> Option CArm
+nthArm [] _ = None
+nthArm (a::rest) i = if i == 0 then Some a else nthArm rest (i - 1)
+
+-- the index of `x` in a String list, or -1.
+indexOfL : String -> List String -> Int
+indexOfL x xs = indexOfGo x xs 0
+
+indexOfGo : String -> List String -> Int -> Int
+indexOfGo _ [] _ = -1
+indexOfGo x (y::ys) i = if x == y then i else indexOfGo x ys (i + 1)
+
+orZeroIdx : Int -> Int
+orZeroIdx i = if i < 0 then 0 else i
+
+replicateStr : Int -> String -> List String
+replicateStr n s = if n <= 0 then [] else s :: replicateStr (n - 1) s
+
 -- a readable tag for the unsupported-node gap message.
 ctag : CExpr -> String
 ctag (CApp _ _) = "CApp (application)"
 ctag (CLam _ _) = "CLam (lambda — W4)"
-ctag (CMatch _ _) = "CMatch (W3)"
-ctag (CDecision _ _ _) = "CDecision (match — W3)"
+ctag (CMatch _ _) = "CMatch (ordered-arm match — needs the decision-tree form)"
+ctag (CDecision _ _ _) = "CDecision (match)"
 ctag (CTuple _) = "CTuple (W7)"
 ctag (CList _) = "CList (W7)"
 ctag (CArray _) = "CArray (W7)"
@@ -397,7 +1216,18 @@ ctag (CDict _ _) = "CDict (dispatch — W5)"
 ctag (CLetGroup _ _) = "CLetGroup (where/let-group — W4)"
 ctag _ = "?"
 
--- the W2 scope wall: any out-of-slice node lands here, matching how the LLVM
--- emitter staged its gaps (an explicit hard stop, not a silent wrong answer).
+-- a readable tag for an unsupported pattern.
+ptag : Pat -> String
+ptag (PVar _) = "PVar"
+ptag PWild = "PWild"
+ptag (PLit _) = "PLit"
+ptag (PCon _ _) = "PCon"
+ptag (PTuple _) = "PTuple (W7)"
+ptag (PCons _ _) = "PCons (list — W7)"
+ptag (PList _) = "PList (list — W7)"
+ptag (PAs _ _) = "PAs"
+ptag _ = "?"
+
+-- the W3 scope wall: any out-of-slice node lands here (an explicit hard stop).
 gap : String -> a
 gap msg = panic ("wasm_emit gap — " ++ msg)
