@@ -1,0 +1,5 @@
+-- W4: a multi-clause top-level fn with literal pattern params (clause coalescing).
+fib 0 = 0
+fib 1 = 1
+fib n = fib (n - 1) + fib (n - 2)
+main = fib 10

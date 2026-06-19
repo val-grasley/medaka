@@ -1,0 +1,5 @@
+-- W4: PARTIAL application (under-app → PAP) then applied later.
+-- `add 3` under-applies the arity-2 `add` → a PAP closure; `h 4` saturates it.
+add x y = x + y
+inc = add 1
+main = inc (add 20 1)

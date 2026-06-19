@@ -1,0 +1,3 @@
+-- W4: higher-order fn — apply a lambda twice over its argument.
+applyTwice f x = f (f x)
+main = applyTwice (n => n + 1) 5
