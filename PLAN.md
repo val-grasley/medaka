@@ -23,44 +23,66 @@ landed: **#55** (sum/product two-constraint, on both the build AND eval paths),
 false-positive + `medaka test` SIGBUS. Native stdlib test coverage expanded
 (json/toml/list/set doctests+props), and the **fuzzer is ported to native**
 (`fuzz_diff.sh` OCaml-free). The native-emitter **cross-module constructor-name
-collision** (the fuzzer's find — really a bare-name ctor-table collapse, not the
-"mixed-ADT match" first suspected) is fixed via universal ctor mangling; the
-**`argStampEnabled` eval-vs-emit dispatch unification is COMPLETE** (eval now threads
-dicts — the GENUINE #21 nested-element-dict flattening solved, not contained;
-`evalDictLayerActive` retired; `selfhost/ARGSTAMP-UNIFY-PLAN.md`); and the **emit-path
-Set-literal / mutual-rec-Monoid dict gaps** are fixed. **Remaining = the soak itself:**
-a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` removal.
+collision** fixed via universal ctor mangling; the **`argStampEnabled` eval-vs-emit
+dispatch unification COMPLETE** (eval threads dicts; `evalDictLayerActive` retired;
+`selfhost/ARGSTAMP-UNIFY-PLAN.md`); **emit-path Set-literal / mutual-rec-Monoid dict
+gaps** fixed.
 
-**Soak findings from the Unit-`main` auto-print + fmt work (2026-06-16/17) — ALL CLOSED:**- **Native under-defaulted ambiguous `Num` bindings** (`fa = [10,20,30].[1]` → native `fa : a` vs
-  oracle `fa : Int`; `poly_let`/`index_default`) — ✅ CLOSED by the #11 value-level-defaulting fix
-  (`4fc5f47`/`18176ea`): the no-prelude HM driver wasn't recording the literal's `Num` obligation, so
-  nothing to default; now recorded unconditionally. `diff_selfhost_typecheck` 12/0.
-- **Native type-error wording** (`default_body_type_error`: native `Type mismatch: Int vs Bool` vs
-  oracle `Method 'greetDefault': expected type Int but got Bool`) — ✅ CLOSED (`18176ea`): specialized
-  default-method-body error. `diff_selfhost_typecheck_errors` 35/0.
-- **Native printer missing `ENumLit` arm** (fmt SIGTRAP on int literals) + **Unit-`main` auto-print
-  suppression** — ✅ CLOSED in `d0a99a9` (merged); the interp-side `dev/eval_probe` lag (5
-  `diff_selfhost_llvm` failures) closed in `7540a7e`. `diff_selfhost_llvm` 180/0. Native, interp,
-  and CLI now all consistent: a Unit `main` prints nothing; value `main`s print their result.
+**2026-06-18 correctness arc — ALL LANDED** (`main` = `e638673`, seed re-minted, C3a PASS):
 
-**Verified open-set — 2026-06-18 gap audit (reproduced on the binary; these are the REAL remaining gaps):**
+- ✅ **Cross-module Num-obligation soundness hole FIXED** — native `check` was accepting
+  imported calls where a numeric literal unified with a non-`Num` type (e.g. `member s 3`
+  with `s : Set Int`). Root: typecheck-module path passed `implDecls=[]` → obligation
+  dropped. Fixed in `selfhost/types/typecheck.mdk` (register iface params over full universe
+  + `checkImplObligations` on typecheck path). Broad fix — every imported numeric-literal
+  call was affected.
+- ✅ **Top-level `DLetGroup` (`let rec … with …`) — RUN + BUILD both work** (A7/D10 FULLY
+  CLOSED). `funClausesOf`/`lowerLetBind`/`letGroupClausesOf` in `core_ir_lower.mdk`;
+  `isEmittingDecl` in `dce.mdk` includes `DLetGroup`. Coverage:
+  `test/build_diff_fixtures/letgroup_toplevel.mdk` + `test/eval_fixtures/letgroup_toplevel.mdk`.
+- ✅ **Recursive inferred-constraint dict-forwarding FIXED** (`inferDictAtFound`,
+  `anyIdPinned` gate) — unannotated recursive fns with inferred constraints dropped their
+  forwarded dict → miscompiled in both `run` and `build`. Coverage:
+  `test/eval_fixtures/inferred_rec_dict.mdk`.
+- ✅ **Type-arg-blind impl dispatch FIXED** (both backends) — two `impl`s sharing a head
+  tycon but differing in type args dispatched to the FIRST impl. Fixed via canonical
+  full-type key through `resolveArgStamp` + Core-IR/LLVM backend. Coverage:
+  `test/eval_dict_fixtures/same_head_argpos.mdk` + `test/build_diff_fixtures/same_head_typeargs.mdk`.
+- ✅ **D5 interp local-shadow FIXED** — local `let` shadowing a prelude-method name was
+  mis-dispatched to the method in `run`. Fixed in `rewriteArgScoped` (scope-blind return-pos
+  arm now skips locally-bound names). Coverage: `test/eval_fixtures/local_shadow_method.mdk`.
+- ✅ **`medaka check --json` ported to native** — byte-identical to OCaml. Gate:
+  `test/diff_selfhost_check_cli_modules.sh`.
+- ✅ **`medaka doc` ported to native** — `selfhost/tools/doc.mdk` + `medaka_cli` wiring;
+  byte-identical, single-file scope. Gate: `test/diff_selfhost_doc.sh` (14 fixtures). Fixed a
+  scheme name-collision (`lookupScheme` last-match → user-schemes-first ordering).
+- ✅ **Native LSP `No impl` diagnostic range** fixed (was `{0,0}`; now carries `ELoc` span).
 
-*Soundness:*
-1. **Num-literal over-accept** — native `check` ACCEPTS a program where a `Num` literal unifies with a non-`Num` type (e.g. `member s 3` with `s : Set Int` — wrong arg order); OCaml correctly REJECTS; native `build` then fails `no impl of fromInt for Set`. Lands in `selfhost/types/typecheck.mdk`. (#11-defaulting-adjacent.)
-
-*Correctness:*
-2. ~~**A7 / D10 `let rec … with …` top-level mutual recursion BUILD residual CLOSED (2026-06-18).**~~ `funClausesOf` in `selfhost/ir/core_ir_lower.mdk` now handles `DLetGroup` (new `letGroupClausesOf`/`lowerLetBind` helpers); `isEmittingDecl` in `dce.mdk` now includes `DLetGroup` so refs in group bodies seed DCE reachability. Both unconstrained (`ping`/`pong` via `not`) and constrained (`isEven`/`isOdd` via `==`/`-`) `medaka build` work; run still correct. Coverage: `test/eval_fixtures/letgroup_toplevel.mdk` + `.eval.golden`/`.boot_eval.golden`/`.sexp`; `test/build_diff_fixtures/letgroup_toplevel.mdk` + `.build.golden`; `diff_selfhost_build` PROGRAMS list.
-3. **D5 marker shadow-rename** — a local binder shadowing a same-named top-level redef of a prelude method gets misrenamed past its scope → native runtime error; oracle correct. Lands in `selfhost/frontend/marker.mdk`.
-4. **C7-native emitter same-head dispatch** — `medaka build` fails on two `impl`s of one interface sharing a head tycon with different type args (`impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) is correct.
-5. **Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.
+**Verified open-set — 2026-06-18 (reproduced on the binary; the REAL remaining gaps):**
 
 *Tooling:*
-6. **`medaka doc` ported to native CLI** ✅ (2026-06-18, single-file) — `selfhost/tools/doc.mdk` + medaka_cli wiring; byte-identical to the OCaml oracle over `test/doc_fixtures` (`test/diff_selfhost_doc.sh`, 13/0). Multi-module doc is a separate follow-up.
-7. **LSP parse-error in imported sibling → silent no-publish** — `didOpen` an entry importing a parse-broken sibling: server does NOT crash (the earlier "panics" claim was a shifted symptom) but emits zero `publishDiagnostics`.
-8. **Interp-behind-`build` externs** — `medaka run` (tree-walker) lacks externs the compiled `build` has: `hashString` (so `import hash_map` crashes under `run`, works under `build`), the `toList`-of-Map display path, `arrayBlit`/IO. Build is canonical so lower-severity.
+1. **LSP parse-error in imported sibling → silent no-publish** — `didOpen` an entry importing
+   a parse-broken sibling: server does NOT crash but emits zero `publishDiagnostics`. Root:
+   loader/`analyzeProject` panics on a graph-member parse error before diagnostics surface.
+   Needs loader error-recovery. Memory: `project_lsp_fault_tolerance`. `lib/`-removal-relevant.
+2. **Latent `ppTy` drops effect rows** — `selfhost/types/typecheck.mdk`'s `ppTy` renders
+   interface-method effect rows wrong (drops `<IO>` etc.); `doc` port worked around with its
+   own `ppTyP`. Affects LSP hover / `check` errors / `doc` output broadly. Wide golden churn
+   risk — scope carefully.
+
+*Correctness:*
+3. **Interp-behind-`build` externs** — `medaka run` lacks `hashString`/`arrayBlit`/Map
+   `toList` display; `import hash_map` crashes under `run`, works under `build`. Build is
+   canonical; lower severity.
 
 *Stdlib:*
-9. **Stdlib genuinely missing**: `<>` Semigroup operator (not lexed at all); JSON pretty-printer (`json.mdk` has compact `stringify` only); `ToJson`/`FromJson` codec interfaces; single-codepoint string indexing (deliberately deferred). (`List` `zip`/`zip3`/`zipWith`/`unzip` ARE present — `list.mdk:494-533`.)
+4. **Genuinely missing**: `<>` Semigroup operator (not lexed — cross-cutting: both lexers +
+   parser + builtins + `Semigroup` impl); JSON pretty-printer; `ToJson`/`FromJson` codecs;
+   single-codepoint string indexing (deferred by design). (`List` `zip`/`zip3`/`zipWith`/`unzip`
+   ARE present — `list.mdk:494-533`.)
+
+*Diagnostics:*
+5. **Phase 147 ctor disambiguation** and other proposed compiler diagnostics — as-is.
 
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
