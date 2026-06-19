@@ -1,0 +1,3 @@
+-- W4: a returned closure (curried add). `mkAdder x` returns a lambda capturing x.
+mkAdder x = (y => x + y)
+main = (mkAdder 10) 7

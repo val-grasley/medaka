@@ -383,10 +383,17 @@ Mirrors how the LLVM backend was staged (slices 1–14). Each slice is gated by
    datatype, dense-ordinal discriminant, `CDecision`→`br_table`,
    `br_on_cast`/field extraction. Gate: ADT/match fixtures (incl. nullary-vs-payload
    mix — the cross-module ctor-collision class from MEMORY).
-4. **Slice W4 — closures + `call_ref` + TCO.** Closure struct, Hoot-style uniform
-   calling convention + arity/PAP machinery (port `emitIndirect`),
-   `return_call`/`return_call_ref` at tail positions. Gate: deep tail-recursion
-   (the 5M-deep `sumTo` peer) + over/under-application fixtures.
+4. **Slice W4 — closures + `call_ref` + TCO. DONE (2026-06-19).** Closure struct
+   with **arity-in-struct** (§11 — kills the native table-miss class by construction),
+   a single uniform `$codety` `(func (param $self (ref eq)) (param $args (ref $argarr))
+   (result (ref eq)))`, a universal `$mdk_apply` doing exact/under-PAP/over-saturate
+   dispatch (`$mdk_pap` for partials), lambda-lift of `CLam`, closure wrappers for
+   top-level fns used as values, multi-clause/pattern-param coalescing (fallthrough
+   clause chain), and `return_call`/`return_call_ref` at tail positions in BOTH the
+   scalar-i32 and ref paths. Gate: `diff_wasm.sh` 32/32 + a TCO IR-shape assertion
+   (the 5M-deep `clos_deep_tco`/`fn_tailsum`/`clos_reftco_indirect` tails emit
+   `return_call`, no plain `call` survives). Value rep: closures force the uniform
+   `(ref eq)` rep (`useClos`).
 5. **Slice W5 — dispatch (dict-passing).** `CMethod` (`RKey`→`return_call`,
    `RDict`→cast+`call_ref`) and `CDict` threading. Gate: typeclass/Eq/Ord/Num
    dispatch fixtures.

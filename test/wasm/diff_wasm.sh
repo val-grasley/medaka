@@ -89,4 +89,34 @@ for f in "$FIXDIR"/*.mdk; do
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
-[ "$fail" -eq 0 ]
+
+# ── W4 TCO IR-shape assertion (decisive: prove return_call FIRED, not just that the
+# program completed) ─────────────────────────────────────────────────────────────
+# A deep tail-recursive fn must lower its tail self-call to `return_call`, never a
+# plain `call`+fall-through (which would grow the wasm stack and crash at depth).
+# We re-emit two tail-recursive fixtures and grep their recursive fn bodies.
+tco_assert() {
+  fix="$1"; fn="$2"
+  wat="$WORK/$fix.tco.wat"
+  "$EMITBIN" "$FIXDIR/$fix" > "$wat" 2>/dev/null || { echo "TCO-ASSERT FAIL $fix (emit)"; tco_fail=1; return; }
+  # isolate the function body: from `(func $<fn>` to its closing `  )`.
+  body="$(awk "/\\(func \\\$$fn /{f=1} f{print} f&&/^  \\)\$/{exit}" "$wat")"
+  if printf '%s' "$body" | grep -q 'return_call'; then
+    # also assert NO plain `call $<fn>` survives in the tail (would be non-TCO).
+    if printf '%s' "$body" | grep -qE "^\s*call \\\$$fn\b"; then
+      echo "TCO-ASSERT FAIL $fix: a plain 'call \$$fn' survives in the tail (not TCO'd)"; tco_fail=1
+    else
+      echo "TCO-ASSERT ok   $fix: \$$fn tail-self-call emits return_call"
+    fi
+  else
+    echo "TCO-ASSERT FAIL $fix: \$$fn body has no return_call (TCO did not fire)"; tco_fail=1
+  fi
+}
+tco_fail=0
+if [ "$fail" -eq 0 ]; then
+  tco_assert clos_deep_tco.mdk loop
+  tco_assert clos_reftco_indirect.mdk loop
+  tco_assert fn_tailsum.mdk sumTo
+fi
+
+[ "$fail" -eq 0 ] && [ "$tco_fail" -eq 0 ]
