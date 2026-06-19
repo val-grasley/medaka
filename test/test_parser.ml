@@ -1352,16 +1352,25 @@ let test_cont_blank_line =
     "f x = x |> g\n"
     "f x =\n  x\n\n  |> g\n"
 
-let test_cont_comment_not_rescued () =
-  (* a comment physically between the operand and the operator stops the
-     newline run, so continuation does not apply; this was a parse error before
-     the rule existed and remains one (documented limitation) *)
-  match
-    (try ignore (parse "f x =\n  x\n  -- note\n  && True\n"); `Parsed
-     with Failure _ -> `Error)
-  with
-  | `Error  -> ()
-  | `Parsed -> failwith "expected comment-between-operand-and-operator to error"
+let test_cont_comment_through_continuation () =
+  (* Comment-only-line layout transparency: a comment-only line between an
+     operand and a leading-operator continuation line is now transparent to
+     layout (it emits no NEWLINE/INDENT/DEDENT), so the `&& True` line still
+     continues the expression and the whole binding parses.  This used to be a
+     parse error (the comment's newline run stopped the continuation); the fix
+     that made comment-only lines transparent to layout (lib/lexer.mll
+     `next_is_comment` / selfhost `nextIsComment`) lifts that limitation. *)
+  ignore (parse "f x =\n  x\n  -- note\n  && True\n")
+
+let test_comment_in_match_arm_layout () =
+  (* Regression for the comment-in-layout bug: a comment-only line sitting
+     between a match-arm `=>` and its (more-indented) body must NOT close the
+     arm block early, regardless of the comment's own column.  Repros c4 (arm
+     indent), c4b (column 0), c2 (body indent) must all parse. *)
+  let c4  = "f x = match x\n  0 =>\n  -- comment at arm indent\n    10\n  _ => 20\nmain = f 0\n" in
+  let c4b = "f x = match x\n  0 =>\n-- comment at column 0\n    10\n  _ => 20\nmain = f 0\n" in
+  let c2  = "f x = match x\n  0 =>\n    -- comment at body indent\n    10\n  _ => 20\nmain = f 0\n" in
+  ignore (parse c4); ignore (parse c4b); ignore (parse c2)
 
 (* ── Phase 137: expression-RHS continuation ──────────────
    A more-indented line that continues an unfinished application is folded into
@@ -2236,7 +2245,8 @@ let () =
       test_case "all trigger operators"  `Quick test_cont_all_ops;
       test_case "dedented continuation"  `Quick test_cont_dedented;
       test_case "blank line before op"   `Quick test_cont_blank_line;
-      test_case "comment not rescued"    `Quick test_cont_comment_not_rescued;
+      test_case "comment transparent → continues" `Quick test_cont_comment_through_continuation;
+      test_case "comment-only line in match-arm layout" `Quick test_comment_in_match_arm_layout;
       test_case "cons (::) across lines" `Quick test_cont_cons;
       test_case "cons pattern still ok"  `Quick test_cons_pattern_still_parses;
     ];

@@ -1,6 +1,4 @@
 NEWLINE
-NEWLINE
-NEWLINE
 IDENT "inline"
 EQUAL
 STRING "one \"quoted\" line"

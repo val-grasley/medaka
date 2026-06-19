@@ -127,6 +127,21 @@ let take_comments () = List.rev !comments
 
 let push_pending t = Queue.push t pending
 
+(* Peek (without consuming) whether the next characters at the current scan
+   position begin a line comment (`--`) or a block comment (`{-`).  Used by the
+   newline-run rule to keep a *comment-only line transparent to layout*: a line
+   that begins with a comment must not emit INDENT/DEDENT/NEWLINE based on its
+   own column — layout resumes at the next *code* line.  Input is always
+   `Lexing.from_string`, so the whole source is buffered and peeking
+   `lex_buffer` at `lex_curr_pos` is safe. *)
+let next_is_comment lexbuf =
+  let buf = lexbuf.Lexing.lex_buffer in
+  let n   = lexbuf.Lexing.lex_buffer_len in
+  let p   = lexbuf.Lexing.lex_curr_pos in
+  (p + 1 < n
+   && ((Bytes.get buf p = '-' && Bytes.get buf (p + 1) = '-')
+       || (Bytes.get buf p = '{' && Bytes.get buf (p + 1) = '-')))
+
 let handle_indent col =
   (* When inside `(...)`/`[...]`/`{...}`, ignore indentation changes
      — the grouping characters carry the structure, not whitespace. *)
@@ -380,8 +395,16 @@ and read = parse
           incr i
         end
       done;
-      handle_indent !indent;
-      raw_token lexbuf
+      (* Comment-only line transparency: if the line that this newline run lands
+         on begins with a comment, do NOT run layout for it — its own column must
+         not emit INDENT/DEDENT/NEWLINE.  Skip straight to reading the comment;
+         the newline that ends the comment line re-enters this rule and layout is
+         decided by the next *code* line's indent.  (Python/Haskell behavior.) *)
+      if next_is_comment lexbuf then read lexbuf
+      else begin
+        handle_indent !indent;
+        raw_token lexbuf
+      end
     }
 
   | hex_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }

@@ -831,8 +831,20 @@ consumeNl src len p indent
 afterNl : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> List RawTok
 afterNl src len np depth id indent nlPos
   | depth > 0 = scan src len np depth id
+  | nextIsComment src len np = scan src len np depth id
   | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
   | otherwise = RNewline indent nlPos :: scan src len np depth id
+
+-- Comment-only line transparency: a line beginning with a comment (`--` or `{-`)
+-- must NOT emit a layout marker (INDENT/DEDENT/NEWLINE) based on its own column.
+-- When a newline run lands on a comment start we suppress the RNewline and keep
+-- scanning; the newline ending the comment line re-enters afterNl and layout is
+-- decided by the next *code* line.  Mirrors lib/lexer.mll `next_is_comment`.
+nextIsComment : Array Char -> Int -> Int -> Bool
+nextIsComment src len p =
+  p + 1 < len
+  && ((at src p == '-' && at src (p + 1) == '-')
+      || (at src p == '{' && at src (p + 1) == '-'))
 
 -- leading-operator line continuation (|> >> << && || ++ ::)
 isContinuation : Array Char -> Int -> Int -> Bool
