@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medaka Playground</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      padding: 10px 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #e2b96f;
+      letter-spacing: 0.04em;
+    }
+
+    header .tagline {
+      font-size: 0.8rem;
+      color: #888;
+    }
+
+    #gc-banner {
+      display: none;
+      background: #5a1a1a;
+      color: #ffb3b3;
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      border-bottom: 1px solid #8b2222;
+      flex-shrink: 0;
+    }
+
+    .main-layout {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 12px;
+      gap: 10px;
+    }
+
+    .editor-row {
+      display: flex;
+      flex-direction: column;
+      flex: 2;
+      min-height: 0;
+      gap: 6px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .label {
+      font-size: 0.75rem;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .status {
+      font-size: 0.78rem;
+      color: #888;
+      margin-left: auto;
+    }
+
+    .status.ok    { color: #6fcf97; }
+    .status.error { color: #eb5757; }
+
+    #run-btn {
+      background: #e2b96f;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      padding: 5px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    #run-btn:hover:not(:disabled) { background: #f0cd8e; }
+    #run-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
+
+    #editor {
+      flex: 1;
+      width: 100%;
+      background: #0d1117;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 10px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+      font-size: 0.88rem;
+      line-height: 1.55;
+      resize: none;
+      outline: none;
+      tab-size: 2;
+    }
+
+    #editor:focus { border-color: #58a6ff; }
+
+    .output-row {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      gap: 10px;
+    }
+
+    .pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .pane-label {
+      font-size: 0.72rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0 0 4px 2px;
+    }
+
+    .pane pre {
+      flex: 1;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 60px;
+    }
+
+    #stdout { color: #c9d1d9; }
+    #stderr { color: #f8a5a5; }
+
+    #problems-pane .pane pre {
+      color: #ffb347;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Medaka Playground</h1>
+    <span class="tagline">edit, run, iterate — no install</span>
+  </header>
+
+  <div id="gc-banner">
+    WasmGC is not supported in this browser. Use a current Chrome or Firefox (2024+).
+  </div>
+
+  <div class="main-layout">
+    <div class="editor-row">
+      <div class="toolbar">
+        <span class="label">Source</span>
+        <button id="run-btn">Run</button>
+        <span id="status" class="status"></span>
+      </div>
+      <textarea id="editor" spellcheck="false" autocorrect="off" autocapitalize="off">-- Medaka playground — edit me and hit Run!
+
+main = do
+  println (sum [1, 2, 3, 4])
+  println (map (* 2) [1..5])
+  println "hello from Medaka!"
+</textarea>
+    </div>
+
+    <div class="output-row">
+      <div class="pane">
+        <div class="pane-label">stdout</div>
+        <pre id="stdout"></pre>
+      </div>
+      <div class="pane">
+        <div class="pane-label">stderr</div>
+        <pre id="stderr"></pre>
+      </div>
+      <div class="pane" id="problems-pane">
+        <div class="pane-label">problems</div>
+        <pre id="problems"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
