@@ -68,11 +68,16 @@ added to the `frontend.ast` import (the missing ctor import was SIGTRAPping unde
 emitter). Concreteness gate mirrors the oracle: parametric `impl Monoid (Bag a)` is deferred;
 concrete `impl Monoid Color` without `impl Semigroup Color` now rejects with the byte-identical
 message. Fixture `test/typecheck_error_fixtures/missing_super_impl.mdk`. Gates green (typecheck_errors
-36/0, check 51/0, eval_dict 26/0); fixpoint C3a/C3b YES (orchestrator-verified). **Residual
-(under-rejection only, never over):** the multi-module *per-module* path (`checkModuleFullDiags`)
-sees only `accData ++ prog`, so a `requires`-bearing interface living in the **prelude** isn't in
-scope there and the gate doesn't fire — closing it needs the full interface set threaded into that
-driver. Single-file `check` (the D1 repro path) is fully covered.
+36/0, check 51/0, eval_dict 26/0); fixpoint C3a/C3b YES (orchestrator-verified). **Multi-module
+verified + over-rejection fixed (`00cf2f7`):** the gate fires correctly in the multi-module path too
+(single-file *and* imported impls); an initial under-rejection worry was disproved empirically. The
+real multi-module defect was the OPPOSITE — an **over-rejection**: `checkModuleFullDiags` searched
+`accData ++ prog` for the super-impl, but `accData` (via `publicDataDecls`) drops `DImpl`, so a valid
+`impl Monoid Color` whose `impl Semigroup Color` lived in an *imported* module was falsely rejected.
+Fixed with a parallel `accImpls` accumulator (`allImplDecls`, threaded through `checkModulesDiagsGo`/
+`checkModulesEntryFullGo`, seeded from `coreDecls`) feeding `checkSuperImpls prog (accImpls ++ accData
+++ prog)` — `accData` left untouched so `buildOracle`/`registerAllData` are unperturbed. Guard legs in
+`test/diff_selfhost_check_cli_modules.sh` (7/0). **No residual under-rejection.**
 
 Port `check_superinterface_obligations` (`lib/typecheck.ml:4857-4875`) into
 selfhost as a self-contained post-pass over the impl table using the already-stored
