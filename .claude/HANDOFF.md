@@ -7,33 +7,43 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — Web playground workstream STARTED (2026-06-19). `main` = `1323c36`
+## RESUME — Web playground workstream: Stages 1+2 DONE (2026-06-19). `main` = `bd71d40`
 
 **The active workstream** (user-chosen): the in-browser Medaka playground —
-**`PLAYGROUND-DESIGN.md`** (decision-ready design; §6 staging; §9 forks for the server half).
-Rides on the WasmGC backend (compute+print MVP met). The architecture splits a NATIVE trusted
-Medaka HTTP server (compiles user source) from UNTRUSTED user programs that compile to WasmGC and
+**`PLAYGROUND-DESIGN.md`** (design; §6 staging; §6.1 hosting DECIDED; §9 forks for the server half).
+Architecture: a trusted compile API (runs `medaka`) + UNTRUSTED user programs compiled to WasmGC that
 run sandboxed in the visitor's browser — a live capability-effects wedge demo.
 
-- **Stage 0** (WasmGC `--target wasm` MVP) — MET (the W-slice work).
-- **Stage 1 — `medaka build --target wasm` CLI flag — ✅ DONE (`1323c36`, native-only).** Wired the
-  wasm emitter entry into the native build driver (`selfhost/driver/{medaka_cli,build_cmd}.mdk`):
-  `--target native|wasm` (default native, additive), wasm branch = run `wasm_emit_modules_main` →
-  capture WAT → `wasm-tools parse`+`validate`. Gate `test/build_wasm_cmd.sh` 4/0; native `build_cmd.sh`
-  14/0 unchanged; the three `diff_wasm{,_typed,_modules}` 85/6/9 unchanged. Fixpoint-safe (CLI/driver
-  outside the emitter graph → no seed re-mint). **Residual (tracked):** `--target wasm` needs a COMPILED
-  wasm emitter via `MEDAKA_WASM_EMITTER` (the entry's `main = match args ()` needs the `args` extern,
-  absent in interp `run` mode — same constraint as the LLVM entry); `make medaka` mints `medaka_emitter`
-  for the native path but nothing yet mints a canonical wasm emitter. Fine for the server (builds+sets
-  it); a user-facing flag should mint/locate it canonically later. Memory: `project_playground_workstream`.
-- **NEXT — Stage 2: static playground page + local server-stub** (§2.2/§2.3): editor + console +
-  a stub that shells `medaka build --target wasm` and returns `.wasm`/JSON-diagnostics; browser glue
-  matures `test/wasm/run.js` (fetch + TextDecoder + Web Worker). **First shareable artifact.** No new
-  compiler work; `check --json` already emits structured diagnostics for editor squiggles.
-- **Stage 3+ (the Medaka HTTP server)** carries the **§9 design forks needing user decisions** —
-  async scope (recommend blocking-sequential v1; defer reactor; skip thread-per-request), HTTP-in-Medaka
-  vs C lib (recommend in-Medaka), socket extern shape (recommend BSD-style `<Net>` externs), compile
-  sandboxing/resource limits, doc placement. Surface these to the user BEFORE building Stage 3.
+- **Stage 0** (WasmGC `--target wasm` MVP) — MET.
+- **Stage 1 — `medaka build --target wasm` CLI flag — ✅ DONE (`1323c36`, native-only).** `--target
+  native|wasm` in `selfhost/driver/{medaka_cli,build_cmd}.mdk`; wasm branch runs `wasm_emit_modules_main`
+  → WAT → `wasm-tools parse`+`validate`. Gate `test/build_wasm_cmd.sh` 4/0. **Residual:** needs a COMPILED
+  wasm emitter via `MEDAKA_WASM_EMITTER` (entry `main = match args ()` can't run under interp; same as LLVM
+  `MEDAKA_EMITTER`); `make medaka` mints `medaka_emitter` but nothing mints a canonical wasm emitter yet.
+- **Stage 2 — static page + Node stub server — ✅ DONE (`3243849`).** `playground/` (5 files, zero npm
+  deps, additive): `server.js` (Node HTTP stub — `POST /compile` runs `medaka check --json` then `medaka
+  build --target wasm`, returns `application/wasm` bytes or `{errors}`; `PORT` env; probes prereqs),
+  `worker.js` (Web Worker runner, host-import ABI copied verbatim from `test/wasm/run.js`, terminable),
+  `main.js` (Run→POST→Worker, 10 s kill-timer, WasmGC feature-detect banner, diagnostics pane),
+  `index.html` (textarea editor + console), `README.md`. **Independently verified:** good compile → valid
+  wasm → run-path output matches oracle (`15`); bad compile → correct `check --json` diagnostics.
+  *(Footgun hit during verify: main `./medaka` was stale (pre-Stage-1) → server's `--target wasm` failed
+  "takes exactly one input file"; `make medaka` + `build_wasm_oracle.sh` fixed it. The CONTAINER must
+  build medaka fresh.)*
+- **HOSTING DECIDED (2026-06-19, `bd71d40`, PLAYGROUND-DESIGN §6.1):** static front on a free CDN
+  (CF/GH Pages); **compile API as a CONTAINER on Cloud Run / Fly Machines (scale-to-zero, ~$0 hobby,
+  platform gives TLS + resource caps).** NOT edge-FaaS (can't exec native binaries). **Stage-3 Medaka
+  socket server DEFERRED** — the containerized Stage-2 Node stub IS the v1 production backend; build the
+  `<Net>` sockets + HTTP-in-Medaka later as a language/async-reactor milestone, swap into the same image.
+- **NEXT — Stage 2b: containerize for Cloud Run/Fly.** A slim Dockerfile bundling `medaka` +
+  `test/bin/wasm_emit_modules_main` + `wasm-tools` + `stdlib/*.mdk` (compiler reads stdlib via
+  `MEDAKA_ROOT`), `server.js`, env wired, listen on `$PORT`; **build `./medaka` fresh in the image**
+  (stale-binary footgun above); a deploy README. No clang on the wasm path → small image. Then Stage 4
+  hardening (resource limits — much given by the platform; shareable permalinks; the capability-rejection
+  demo). Stage 3 (Medaka server) + Stage 5 (async reactor) are deferred language milestones, NOT launch
+  deps; their §9 forks come up only if/when we build the Medaka server.
+- **Memory:** `project_playground_workstream`.
+
 
 ## RESUME — WasmGC 2nd backend: MVP MET + W8b DONE (2026-06-19). `main` was `7bae959`→`44c915f`
 
