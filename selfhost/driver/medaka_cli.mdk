@@ -22,7 +22,7 @@ import tools.check.{
 }
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
-import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
+import driver.build_cmd.{BuildResult, BuildOk, BuildErr, BuildTarget, TNative, TWasm, runBuild, envOr}
 import support.util.{reverseL}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
@@ -385,7 +385,7 @@ runBuildCmd argv = match parseBuildArgs argv
   Err msg =>
     let _ = ePutStrLn msg
     exit 1
-  Ok (input, outOpt) => if not (fileExists input) then
+  Ok (input, outOpt, target) => if not (fileExists input) then
     let _ = ePutStrLn ("error: no such file: " ++ input)
     exit 1
   else
@@ -395,7 +395,7 @@ runBuildCmd argv = match parseBuildArgs argv
     let inputAbs = input
     let outPath = match outOpt
       Some o => o
-      None => chopExt (baseOf input)
+      None => defaultOutPath target input
     match typecheckGate root inputAbs
       TGErr msg =>
         let _ = ePutStrLn msg
@@ -403,11 +403,18 @@ runBuildCmd argv = match parseBuildArgs argv
       TGFail =>
         let _ = ePutStrLn ("error: type error in " ++ input ++ " — run `medaka check` for details")
         exit 1
-      TGOk => match runBuild root medaka cc inputAbs outPath
+      TGOk => match runBuild root medaka cc target inputAbs outPath
         BuildOk msg => println msg
         BuildErr msg =>
           let _ = ePutStrLn msg
           exit 1
+
+-- Default output path per target: native drops the extension (a bare exe name);
+-- wasm appends `.wasm` to the entry's base.
+defaultOutPath : BuildTarget -> String -> String
+defaultOutPath target input = match target
+  TNative => chopExt (baseOf input)
+  TWasm => chopExt (baseOf input) ++ ".wasm"
 -- G1 (SOUNDNESS): typecheck the whole module graph BEFORE shelling out to
 -- the emitter.  runBuild emits/clangs whatever the emitter produces — for
 -- an ill-typed program that is garbage (the G1 bug), so we abort here on any
@@ -441,20 +448,31 @@ typecheckGate root input =
             True => TGFail
             False => TGOk
 
--- Parse a single optional `-o <out>`; first remaining positional is the input.
-parseBuildArgs : List String -> Result String (String, Option String)
-parseBuildArgs argv = parseBuildGo argv [] None
+-- Parse `[-o <out>] [--target <native|wasm>]`; first remaining positional is the
+-- input.  Default target is TNative (the LLVM/clang path) — purely additive, the
+-- no-`--target` behaviour is unchanged.
+parseBuildArgs : List String -> Result String (String, Option String, BuildTarget)
+parseBuildArgs argv = parseBuildGo argv [] None TNative
 
-parseBuildGo : List String -> List String -> Option String -> Result String (String, Option String)
-parseBuildGo [] acc out = finishBuildArgs (reverseL acc) out
-parseBuildGo ("-o"::v::rest) acc out = parseBuildGo rest acc (Some v)
-parseBuildGo ["-o"] _ _ = Err "error: -o requires an argument"
-parseBuildGo (x::rest) acc out = parseBuildGo rest (x :: acc) out
+parseBuildGo : List String -> List String -> Option String -> BuildTarget -> Result String (String, Option String, BuildTarget)
+parseBuildGo [] acc out target = finishBuildArgs (reverseL acc) out target
+parseBuildGo ("-o"::v::rest) acc out target = parseBuildGo rest acc (Some v) target
+parseBuildGo ["-o"] _ _ _ = Err "error: -o requires an argument"
+parseBuildGo ("--target"::v::rest) acc out _ = match parseTarget v
+  Err msg => Err msg
+  Ok t => parseBuildGo rest acc out t
+parseBuildGo ["--target"] _ _ _ = Err "error: --target requires an argument (native|wasm)"
+parseBuildGo (x::rest) acc out target = parseBuildGo rest (x :: acc) out target
 
-finishBuildArgs : List String -> Option String -> Result String (String, Option String)
-finishBuildArgs [] _ = Err "usage: medaka build <file.mdk> [-o <out>]"
-finishBuildArgs [input] out = Ok (input, out)
-finishBuildArgs _ _ = Err "error: medaka build takes exactly one input file"
+parseTarget : String -> Result String BuildTarget
+parseTarget "native" = Ok TNative
+parseTarget "wasm" = Ok TWasm
+parseTarget other = Err ("error: unknown --target '" ++ other ++ "' (expected native|wasm)")
+
+finishBuildArgs : List String -> Option String -> BuildTarget -> Result String (String, Option String, BuildTarget)
+finishBuildArgs [] _ _ = Err "usage: medaka build [--target native|wasm] <file.mdk> [-o <out>]"
+finishBuildArgs [input] out target = Ok (input, out, target)
+finishBuildArgs _ _ _ = Err "error: medaka build takes exactly one input file"
 
 -- ── run ───────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `run` arm + eval_typed_modules_main.mdk: load the entry
