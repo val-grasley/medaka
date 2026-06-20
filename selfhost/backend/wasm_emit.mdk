@@ -182,6 +182,60 @@ progUseClos (Prog _ _ _ _ _ _ _ uc _) = uc
 progImpls : Prog -> List CImplEntry
 progImpls (Prog _ _ _ _ _ _ _ _ impls) = impls
 
+-- ── method → DECLARED interface arity table (W9b — port of llvm_emit's) ───────
+-- The REAL prelude carries POINT-FREE impls whose source clause arity is LESS than
+-- the method's declared user arity: `length = fold g 0` (clause arity 0, method
+-- arity 1), `toList = identity` (0 vs 1), `foldMap f = fold …` (1 vs 2), `filter p
+-- = filterMap …` (1 vs 2).  Such an impl's `@mdk_impl_<tag>_<method>` function is
+-- emitted at the SHORT clause arity, but DISPATCHED at the full method arity (the
+-- call site passes every declared arg) → the impl fn has fewer params than the call
+-- supplies → invalid WAT ("expected (ref eq) but nothing on stack").  Eta-expanding
+-- the impl body to the method's FULL declared arity (gatherImplGroup) makes the
+-- define and the call sites agree.
+--
+-- This table maps a BARE method name to its DECLARED interface arity (the true USER
+-- arity, SEPARATE from the forwarded `requires`/method-level dict params the dict-
+-- pass prepends).  Keyed by bare method name (interface method names are distinct in
+-- the prelude).  A max-clause-arity heuristic is WRONG: a `Debug (List a) requires
+-- Debug a` impl's leading requires-dict inflates the apparent arity, so the separation
+-- via methodArityOf + implReqCount is load-bearing.  Installed from the modules entry
+-- (installMethodIface) before emitProgram; an empty table (the prelude-free W2/W5
+-- entries never install it) ⇒ methodArityOf returns 0 ⇒ eta-expansion is a no-op ⇒
+-- byte-identical to the pre-W9b behaviour.
+methodIfaceTableRef : Ref (List (String, (String, Int)))
+methodIfaceTableRef = Ref []
+
+export
+installMethodIface : List (String, (String, Int)) -> <Mut> Unit
+installMethodIface t = set_ref methodIfaceTableRef t
+
+-- the declared full arity of an interface method (0 = not found → eta no-op).
+methodArityOf : String -> <Mut> Int
+methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
+  Some (_, arity) => arity
+  None => 0
+
+-- ── decl → DECLARED return type-head name table (W9b — for Unit-main detection) ─
+-- `declSigTypeNames` maps a top-level binding name to (param-type-heads, return-type-
+-- head).  A value main `main = println (10 + 5)` whose head function `println` is
+-- declared `Display a => a -> <IO> Unit` must NOT auto-print its Unit result (the
+-- "Unit main no auto-print" contract — the trailing `0` bug); a structural-only
+-- `refMainKind` can't see through the `println` wrapper to the Unit, so it routes the
+-- result to the Int printer.  Installed from the modules entry (installDeclRetTypes);
+-- empty (prelude-free entries) ⇒ declRetTypeOf returns "" ⇒ unchanged.
+declRetTypesRef : Ref (List (String, (List String, String)))
+declRetTypesRef = Ref []
+
+export
+installDeclRetTypes : List (String, (List String, String)) -> <Mut> Unit
+installDeclRetTypes t = set_ref declRetTypesRef t
+
+-- the declared return type-head name of a top-level binding ("" = unknown).
+declRetTypeOf : String -> <Mut> String
+declRetTypeOf name = match lookupAssoc name declRetTypesRef.value
+  Some (_, ret) => ret
+  None => ""
+
 -- the declared arity (param count) of a top-level function, or -1 if not a fn.
 progFnArity : Prog -> String -> Int
 progFnArity prog n = match lookupAssoc n (progFnArs prog)
@@ -1284,13 +1338,33 @@ emitRefMain : Prog -> List CBind -> <Mut> List String
 emitRefMain prog groups = match findMain groups
   Some body =>
     let instrs = emitRefExpr prog [] 0 body
-    let k = refMainKind prog body
+    let k = if mainBodyIsUnit prog body then WUnit else refMainKind prog body
     -- a Unit main (a `putStrLn …` etc.) has already produced its IO effect; drop its
     -- i31-0 result and auto-print NOTHING (the "Unit main no auto-print" contract).
     match k
       WUnit => indent instrs ++ ["    drop"]
       _ => indent instrs ++ refPrintFor k
   None => gap "no `main` binding"
+
+-- W9b: a value main whose head function DECLARES a Unit return (`println : … -> <IO>
+-- Unit`, `print`, any user/prelude Unit-returning wrapper) is a Unit main and must
+-- NOT auto-print its result — the structural `refMainKind` can't see through the
+-- wrapper, so it would route the Unit result to the Int printer (a trailing `0`).
+-- Reads the installed declared-return-type table; empty ⇒ "" ⇒ False (unchanged).
+mainBodyIsUnit : Prog -> CExpr -> <Mut> Bool
+mainBodyIsUnit prog e = match e
+  CApp f _ => match appHead f
+    CVar fn _ => declRetTypeOf fn == "Unit"
+    -- `println`/`print` are `Display a =>` constrained → the dict-pass rewrites the
+    -- head to a CDict (or CMethod) carrying the routes; recover the bare name.
+    CDict fn _ => declRetTypeOf fn == "Unit"
+    CMethod fn _ _ _ => declRetTypeOf fn == "Unit"
+    _ => False
+  CVar fn _ => declRetTypeOf fn == "Unit"
+  CDict fn _ => declRetTypeOf fn == "Unit"
+  CMethod fn _ _ _ => declRetTypeOf fn == "Unit"
+  CLet _ _ _ b => mainBodyIsUnit prog b
+  _ => False
 
 -- the printable static kind of a ref-mode main body: an Int (decimal) or a Bool
 -- (true/false).  Determined structurally — arithmetic/Int-lit → Int; a comparison
@@ -1688,13 +1762,19 @@ emitDispatchChain prog name ((tag, key)::rest) blk tagRead argInstrs nArgs =
     ++ indent (emitDispatchChain prog name rest blk tagRead argInstrs nArgs)
     ++ ["end"]
 
--- leading `requires`-dict count for a method's impl at `tag`: the impl fn's arity
--- (clause pattern count, dict-pass injects leading $dict_* params) minus the method's
--- user-arg count.  >= 0; 0 for the unconstrained impls (Int/Bool/…).
-implReqDictCount : Prog -> String -> String -> Int -> Int
-implReqDictCount prog method tag userArgs =
-  let a = implArityFor prog method tag
-  if a > userArgs then a - userArgs else 0
+-- leading `requires`-dict count for a method's impl at `tag`: the impl's SOURCE
+-- clause pattern count (the dict-pass injects leading $dict_* params, BEFORE the
+-- user args) minus the method's DECLARED user arity (methodArityOf).  This is the
+-- llvm_emit `implReqCount` separation (listLen implPats - methodArityOf), NOT the
+-- pre-W9b `arity - userArgs` heuristic: a point-free impl (`length`, raw pats 0,
+-- method arity 1) now yields 0 (no requires) rather than a spurious count, and a
+-- genuinely-constrained impl yields exactly its requires-dict count regardless of
+-- how many args the call site supplies.  >= 0; 0 for the unconstrained impls.
+implReqDictCount : Prog -> String -> String -> Int -> <Mut> Int
+implReqDictCount prog method tag _userArgs =
+  let raw = implArityFor prog method tag
+  let ua = methodArityOf method
+  if raw > ua then raw - ua else 0
 
 implArityFor : Prog -> String -> String -> Int
 implArityFor prog method tag = implGroupArity (concatMapList (implClauseFor method tag) (progImpls prog))
@@ -1748,8 +1828,15 @@ emitImplFns prog = concatMapList (emitImplGroup prog) (implGroups (progImpls pro
 -- (method, tag, arity, clauses) per distinct impl key, in first-seen order.
 data ImplG = ImplG String String Int (List CClause)
 
-implGroups : List CImplEntry -> List ImplG
-implGroups entries = map (gatherImplGroup entries) (distinctImplKeys entries)
+implGroups : List CImplEntry -> <Mut> List ImplG
+implGroups entries = mapGatherGroups entries (distinctImplKeys entries)
+
+-- map gatherImplGroup (a <Mut> fn — it reads the iface-arity table) over the keys.
+mapGatherGroups : List CImplEntry -> List (String, String) -> <Mut> List ImplG
+mapGatherGroups _ [] = []
+mapGatherGroups entries (k::rest) =
+  let g = gatherImplGroup entries k
+  g :: mapGatherGroups entries rest
 
 -- the (method, tag) keys present, first-seen order.
 distinctImplKeys : List CImplEntry -> List (String, String)
@@ -1768,11 +1855,35 @@ containsPair : (String, String) -> List (String, String) -> Bool
 containsPair _ [] = False
 containsPair (a, b) ((c, dd)::rest) = if a == c && b == dd then True else containsPair (a, b) rest
 
-gatherImplGroup : List CImplEntry -> (String, String) -> ImplG
+gatherImplGroup : List CImplEntry -> (String, String) -> <Mut> ImplG
 gatherImplGroup entries (m, tag) =
   let clauses = concatMapList (implClauseFor m tag) entries
-  let arity = implGroupArity clauses
-  ImplG m tag arity clauses
+  -- W9b: eta-expand a POINT-FREE / under-applied impl (`length = fold g 0`, clause
+  -- arity 0) to the method's full DECLARED arity (methodArityOf), so the lifted
+  -- $mdk_impl_<tag>_<method> takes every call-site arg.  maxI keeps a multi-clause
+  -- or already-full-arity impl unchanged (etaExpandClause is a no-op when have >=
+  -- arity).  An empty iface table ⇒ methodArityOf 0 ⇒ no-op (W2/W5 entries).
+  let arity = maxI (implGroupArity clauses) (methodArityOf m)
+  let clauses2 = map (etaExpandClause arity) clauses
+  ImplG m tag arity clauses2
+
+-- eta-expand one impl clause's (pats, body) to `arity` (no-op when already there).
+-- The added trailing params are fresh `$etaN` PVars, and the body is APPLIED to each
+-- — so `length = fold g 0` (arity 0) becomes `length $eta0 = (fold g 0) $eta0`.  The
+-- $etaN are bound to the synthetic positional params in emitClausesRef (they reach
+-- env) and declared as locals by clauseLocals (patVars collects them).  Mirror of
+-- llvm_emit's etaExpand / etaExpandClause.
+etaExpandClause : Int -> CClause -> CClause
+etaExpandClause arity (CClause pats body) =
+  let (pats2, body2) = etaExpandTo pats body arity (listLen pats)
+  CClause pats2 body2
+
+etaExpandTo : List Pat -> CExpr -> Int -> Int -> (List Pat, CExpr)
+etaExpandTo pats body arity have
+  | have >= arity = (pats, body)
+  | otherwise =
+    let nm = "$eta" ++ intToString have
+    etaExpandTo (pats ++ [PVar nm]) (CApp body (CVar nm AGlobal)) arity (have + 1)
 
 implClauseFor : String -> String -> CImplEntry -> List CClause
 implClauseFor m tag (CImplEntry n _ (CImplTagged t _ _ _ pats body)) =

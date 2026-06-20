@@ -18,12 +18,13 @@
 --   medaka run selfhost/entries/wasm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
 --   (or, OCaml-free: the compiled binary test/bin/wasm_emit_modules_main <runtime.mdk> <core.mdk> <entry.mdk> [root ...])
 --
--- NOTE vs the LLVM modules entry: wasm_emit exposes NO install* hooks
--- (installReturnsSelf / installMethodIface / ...) — those feed llvm_emit's own
--- mutable state, not the SHARED lowerProgramEmit.  The wasm typed entry already
--- omits them and its gate is green, so this entry omits them too.  Everything up
--- to lowerProgramEmit (loader, mangle, elaborateModules, dceFilter) is identical
--- to the LLVM modules driver.
+-- NOTE vs the LLVM modules entry: wasm_emit exposes ONE install* hook —
+-- installMethodIface (W9b), feeding the method→declared-arity table wasm_emit needs
+-- to eta-expand the real prelude's point-free impls.  The other llvm install* hooks
+-- (installReturnsSelf / installSelfFnParams / installCtorFieldTypes / …) feed
+-- llvm-specific mutable state with no wasm analogue and stay omitted.  Everything up
+-- to lowerProgramEmit (loader, mangle, elaborateModules, dceFilter) is identical to
+-- the LLVM modules driver.
 
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
@@ -36,12 +37,12 @@ import types.typecheck.{
   preludeArgPosDictNames,
   enableArgStamp,
 }
-import ir.core_ir_lower.{lowerProgramEmit}
+import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
 import support.util.{concatMapList}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
 import support.path.{dirOf}
-import backend.wasm_emit.{emitProgram}
+import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -72,4 +73,12 @@ runEmit runtimeDecls coreDecls modules =
   let allDecls0 = coreD ++ concatMapList snd modules2
   let allDecls = dceFilter allDecls0
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
+  -- W9b: install the method → declared-interface-arity table so wasm_emit can
+  -- eta-expand the REAL prelude's point-free impls (`length = fold g 0`, `toList =
+  -- identity`, `foldMap`, `filter`) to the method's full arity — the precise
+  -- real-prelude MVP blocker.  Mirrors llvm_emit_modules_main's installMethodIface.
+  let _ = installMethodIface (methodIfaceTable allDecls)
+  -- W9b: install declared return-type heads so a Unit-returning value main
+  -- (`main = println …`) suppresses its auto-print (the trailing-`0` bug).
+  let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
   putStr (emitProgram (lowerProgramEmit allDecls))

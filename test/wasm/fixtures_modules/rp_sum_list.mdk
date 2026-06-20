@@ -1,0 +1,2 @@
+-- W9b real-prelude: sum (point-free `fold (+) (fromInt 0)`) over a real List.
+main = sum [1, 2, 3, 4]

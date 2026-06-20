@@ -1,0 +1,3 @@
+-- W9b multi-module: a sibling module exporting a real List the entry folds over.
+export nums : List Int
+nums = [4, 8, 15, 16]

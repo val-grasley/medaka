@@ -1,0 +1,4 @@
+-- W9b multi-module + real-prelude: import a sibling List and `sum` it (point-free
+-- Foldable `fold` dispatched through the real core.mdk prelude, cross-module).
+import nums.{nums}
+main = sum nums

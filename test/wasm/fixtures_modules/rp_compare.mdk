@@ -1,2 +1,10 @@
 -- W9 real-prelude: Ord Int `compare` → Ordering, dispatched through the real prelude.
-main = compare 3 5
+-- Reduce the Ordering to a scalar Int so the value-main auto-prints a meaningful
+-- number (an ADT-valued main auto-prints a raw tag word — not a supported scalar main).
+ordToInt : Ordering -> Int
+ordToInt o = match o
+  Lt => 0
+  Eq => 1
+  Gt => 2
+
+main = ordToInt (compare 3 5)

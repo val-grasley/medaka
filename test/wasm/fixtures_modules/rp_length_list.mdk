@@ -1,0 +1,2 @@
+-- W9b real-prelude: length (the point-free `length = fold g 0` Foldable impl) over a real List.
+main = length [10, 20, 30]

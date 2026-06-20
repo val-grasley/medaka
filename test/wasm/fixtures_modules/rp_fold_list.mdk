@@ -1,0 +1,2 @@
+-- W9b real-prelude: fold (+) over a real List with an explicit seed.
+main = fold (+) 0 [5, 6, 7]
