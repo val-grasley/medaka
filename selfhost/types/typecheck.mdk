@@ -32,6 +32,7 @@ import frontend.ast.{
   IfaceMethod(..),
   MethodDefault(..),
   Require(..),
+  Super(..),
   ImplMethod(..),
   DataVis(..),
   Decl(..),
@@ -4917,6 +4918,127 @@ checkCoherence userDecls = match cohFirstConflict (reverseL (cohCollectImpls use
   Some msg => pushTypeError msg
   None => ()
 
+-- ── D1 WS-1a: superinterface-existence gate ────────────────────────────────
+-- Mirror of lib/typecheck.ml's `check_superinterface_obligations`.  An
+-- `impl C T` whose interface declares `interface C a requires D a` is unsound
+-- unless a matching `impl D T` also exists.  This post-pass iterates the USER
+-- impls (so a user impl that overrides a prelude impl isn't double-flagged) and,
+-- for each, looks up its interface's supers in the FULL decl universe
+-- ([allDecls], prelude included — the SUPER impl it needs may be a prelude impl).
+-- It fires ONLY when the impl head's type args are all CONCRETE/ground (mirrors
+-- the oracle's `is_concrete` gate); a parametric head like `impl Monoid (Bag a)`
+-- (free tyvar) is deferred exactly as the oracle defers it.  Error wording is
+-- byte-identical to the oracle's MissingSuperImpl message.
+-- [userDecls] = the impls to check; [allDecls] = prelude + user, for both the
+-- interface-supers lookup AND super-impl existence.
+checkSuperImpls : List Decl -> List Decl -> <Mut> Unit
+checkSuperImpls userDecls allDecls =
+  foreachUnit pushTypeError (concatMapList (superImplMsgsOf allDecls) userDecls)
+
+foreachUnit : (a -> <Mut> Unit) -> List a -> <Mut> Unit
+foreachUnit _ [] = ()
+foreachUnit f (x::xs) =
+  let _ = f x
+  foreachUnit f xs
+
+-- the missing-superinterface error messages for one user decl (a DImpl, possibly
+-- wrapped in DAttrib); [] for any non-impl decl or when every super impl exists.
+superImplMsgsOf : List Decl -> Decl -> List String
+superImplMsgsOf allDecls (DAttrib _ d) = superImplMsgsOf allDecls d
+superImplMsgsOf allDecls DImpl { iface, tys, ... } =
+  match ifaceSupersOf allDecls iface
+    None => []   -- unknown interface (already reported elsewhere) → skip
+    Some (typarams, supers) =>
+      if listLen typarams == listLen tys && allList tyIsConcrete tys then
+        concatMapList (superMsgFor allDecls iface tys (zipL typarams tys)) supers
+      else
+        []   -- arity mismatch, or a non-concrete head (deferred, like the oracle)
+superImplMsgsOf _ _ = []
+
+-- check one `Super superName params` against the substitution: map each super
+-- param name through [subst] to its concrete Ty; if every param mapped, all are
+-- concrete, AND no matching `impl superName <concrete>` exists, emit the error.
+superMsgFor : List Decl -> String -> List Ty -> List (String, Ty) -> Super -> List String
+superMsgFor allDecls iface implTys subst (Super superName params) =
+  let concrete = substParams params subst
+  if listLen concrete == listLen params
+     && allList tyIsConcrete concrete
+     && not (superImplExists allDecls superName concrete) then
+    [missingSuperImplMsg iface implTys superName concrete]
+  else
+    []
+
+-- map each super-param NAME through [subst] to its Ty, dropping any unmapped (so a
+-- short result vs [params] signals an incomplete substitution → caller skips).
+substParams : List String -> List (String, Ty) -> List Ty
+substParams [] _ = []
+substParams (p::rest) subst = match lookupAssoc p subst
+  Some t => t :: substParams rest subst
+  None => substParams rest subst
+
+-- byte-identical to lib/typecheck.ml's MissingSuperImpl rendering: both the impl
+-- head and the super are printed with the same space-joined atom-position args.
+missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
+missingSuperImplMsg iface implTys superName superTys =
+  "impl "
+  ++ iface ++ " " ++ joinWith " " (map ppTyAtom implTys)
+  ++ " requires a superinterface impl 'impl "
+  ++ superName ++ " " ++ joinWith " " (map ppTyAtom superTys)
+  ++ "', which is missing"
+
+-- the (typarams, supers) of interface [target], scanning DInterface decls; None if
+-- no such interface is in scope.
+ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
+ifaceSupersOf [] _ = None
+ifaceSupersOf ((DAttrib _ d)::rest) target = match ifaceSupersOf [d] target
+  Some r => Some r
+  None => ifaceSupersOf rest target
+ifaceSupersOf ((DInterface { pub, def, name, typarams, supers, methods })::rest) target
+  | name == target = Some (typarams, supers)
+  | otherwise = ifaceSupersOf rest target
+ifaceSupersOf (_::rest) target = ifaceSupersOf rest target
+
+-- does any `impl superName <head>` with a head matching [concrete] exist? (head
+-- may be parametric — a free tyvar in the impl head matches any concrete arg,
+-- mirroring the oracle's mono_matches: pattern=impl head, concrete=super args.)
+superImplExists : List Decl -> String -> List Ty -> Bool
+superImplExists allDecls superName concrete =
+  anyList (implMatchesSuper superName concrete) allDecls
+
+implMatchesSuper : String -> List Ty -> Decl -> Bool
+implMatchesSuper superName concrete (DAttrib _ d) = implMatchesSuper superName concrete d
+implMatchesSuper superName concrete DImpl { iface, tys, ... } =
+  iface == superName
+  && listLen tys == listLen concrete
+  && allList (p => tyMatchesAst (fst p) (snd p)) (zipL tys concrete)
+implMatchesSuper _ _ _ = False
+
+-- a Ty is concrete iff it contains no TyVar (mirror of the oracle's is_concrete,
+-- which treats effect rows as transparent — TyEffect ignores its row).
+tyIsConcrete : Ty -> Bool
+tyIsConcrete (TyVar _) = False
+tyIsConcrete (TyCon _) = True
+tyIsConcrete (TyApp a b) = tyIsConcrete a && tyIsConcrete b
+tyIsConcrete (TyFun a b) = tyIsConcrete a && tyIsConcrete b
+tyIsConcrete (TyTuple ts) = allList tyIsConcrete ts
+tyIsConcrete (TyEffect _ _ t) = tyIsConcrete t
+tyIsConcrete (TyConstrained _ t) = tyIsConcrete t
+
+-- one-directional structural match (pattern may carry free TyVar wildcards;
+-- concrete is fully ground).  Mirror of lib/typecheck.ml's mono_matches.
+tyMatchesAst : Ty -> Ty -> Bool
+tyMatchesAst (TyVar _) _ = True
+tyMatchesAst (TyCon a) (TyCon b) = a == b
+tyMatchesAst (TyApp f1 a1) (TyApp f2 a2) = tyMatchesAst f1 f2 && tyMatchesAst a1 a2
+tyMatchesAst (TyFun a1 b1) (TyFun a2 b2) = tyMatchesAst a1 a2 && tyMatchesAst b1 b2
+tyMatchesAst (TyTuple ts1) (TyTuple ts2) =
+  listLen ts1 == listLen ts2 && allList (p => tyMatchesAst (fst p) (snd p)) (zipL ts1 ts2)
+tyMatchesAst (TyEffect _ _ t1) t2 = tyMatchesAst t1 t2
+tyMatchesAst t1 (TyEffect _ _ t2) = tyMatchesAst t1 t2
+tyMatchesAst (TyConstrained _ t1) t2 = tyMatchesAst t1 t2
+tyMatchesAst t1 (TyConstrained _ t2) = tyMatchesAst t1 t2
+tyMatchesAst _ _ = False
+
 -- effectful concatMap of cohImplsOf (astTypeFresh allocates fresh tyvars → <Mut>)
 cohCollectImpls : List Decl -> <Mut> List CohImpl
 cohCollectImpls [] = []
@@ -7306,6 +7428,7 @@ checkToLines : List Decl -> <Mut> String
 checkToLines prog =
   let schemes = checkProgramSchemes prog
   let _ = checkCoherence prog
+  let _ = checkSuperImpls prog prog
   let errs = reverseL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
@@ -7323,6 +7446,7 @@ checkToLinesWithRuntime runtimeDecls prog =
   let _ = set_ref matchOracle (buildOracle prog)
   let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
+  let _ = checkSuperImpls coherenceUserDecls.value prog
   let errs = reverseL typeErrors.value
   let warns = reverseL matchWarnings.value
   match errs
@@ -7349,6 +7473,7 @@ checkErrorsWithRuntime runtimeDecls prog =
   let _ = set_ref matchOracle (buildOracle prog)
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
+  let _ = checkSuperImpls coherenceUserDecls.value prog
   match typeErrors.value
     [] => False
     _ => True
@@ -7381,6 +7506,7 @@ checkProgramDiags runtimeDecls prog =
   let _ = set_ref matchOracle (buildOracle prog)
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
+  let _ = checkSuperImpls coherenceUserDecls.value prog
   (reverseL typeErrors.value, reverseL matchWarnings.value)
 
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
@@ -7754,6 +7880,7 @@ checkModuleFullDiags seedVars accData prog =
   let _ = set_ref matchOracle (buildOracle (accData ++ prog))
   let schemes = checkModuleFull seedVars accData prog
   let _ = checkCoherence prog
+  let _ = checkSuperImpls prog (accData ++ prog)
   (schemes, reverseL typeErrors.value, reverseL matchWarnings.value)
 -- Seed the ctor oracle over ALL data decls in scope (prelude + every imported
 -- module via accData, plus this module's own prog), NOT just `prog`.  The

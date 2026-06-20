@@ -1,0 +1,1 @@
+TYPE ERROR: impl Monoid Color requires a superinterface impl 'impl Semigroup Color', which is missing

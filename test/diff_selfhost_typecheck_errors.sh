@@ -22,7 +22,7 @@
 # OCaml probe (dev/tc_module_probe.exe) by test/capture_goldens.sh.  All OTHER
 # fixtures keep BOTH drivers + a no-prelude golden, unchanged.  (Capture may use
 # OCaml by design; the gate stays OCaml-free at RUN time.)
-PRELUDE_DEP="int_vs_string.mdk mut_generalization.mdk value_restriction.mdk"
+PRELUDE_DEP="int_vs_string.mdk mut_generalization.mdk value_restriction.mdk missing_super_impl.mdk"
 #
 # Usage:  sh test/diff_selfhost_typecheck_errors.sh
 set -u

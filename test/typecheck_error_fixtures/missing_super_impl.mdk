@@ -1,0 +1,7 @@
+-- D1 WS-1a: an `impl Monoid Color` is unsound without an `impl Semigroup Color`,
+-- because `interface Monoid a requires Semigroup a`.  Both the OCaml oracle and the
+-- native check must reject this (MissingSuperImpl / superinterface-existence gate).
+-- The impl head is CONCRETE (Color, no free tyvar), so the gate fires.
+data Color = Red | Green
+impl Monoid Color where
+  empty = Red
