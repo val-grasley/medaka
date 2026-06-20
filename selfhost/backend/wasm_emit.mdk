@@ -73,11 +73,38 @@
 --   * charToStr (needs a codepoint→$str runtime), stringConcat (`List String` → W7
 --     list support), `++` String concat, floatToString (Float → W6b), the remaining
 --     string externs (stringSlice/stringIndexOf/stringCompare/toUpper/…), ePutStr/
---     ePutStrLn (stderr byte-write import).  Tuples / records / lists / arrays /
---     ranges / index/slice → W7; RNG + remaining externs → W8.  Refutable pattern
---     guards (`p <- e`) in a match arm remain a gap (both paths).  A CLetGroup is not
---     yet lowered.
+--     ePutStrLn (stderr byte-write import).  RNG + remaining externs → W8.  Refutable
+--     pattern guards (`p <- e`) in a match arm remain a gap (both paths).  A CLetGroup
+--     is not yet lowered.
 --
+-- ── W7 SCOPE (slice 7 — collections) ─────────────────────────────────────────
+-- List / Tuple / Array / Record / Ref, ranges, index/slice (§3.3 heap aggregates +
+-- §8.6 (ref eq) unitype).  KEY DESIGN: List/Tuple/Record reuse the W3 ctor machinery
+-- via SYNTHETIC ctors so construction + the discriminant br_table + field extraction
+-- stay uniform (peer to the LLVM backend's Cons/Nil/$tuple synthetic names):
+--   * List: ctors Cons (ord 0, struct $C_Cons {tag,head,tail}) / Nil (ord 1, an i31).
+--     `CList` = right-nested struct.new spine; `CRangeList` = a back-to-front counted
+--     cons loop; the HCons/HNil match heads map through `conHeadInfo`→("Cons",2)/
+--     ("Nil",0), so the §3.4 i31-vs-struct discriminant read selects Nil vs Cons.
+--   * Tuple n: a per-arity synthetic ctor "Tup<n>" (type "$Tuple<n>", single-ctor),
+--     struct $C_Tup<n> {tag + n (ref eq)}.  `CTuple` = struct.new; HTuple n drives the
+--     same (single-slot) br_table; tuple-pattern fields extract via struct.get i+1.
+--   * Array: $arr = (array (mut (ref eq))).  `CArray` = array.new_fixed; `CRangeArray`
+--     = a counted fill loop; `CIndex` = a bounds-checked array.get (i<0 || i>=len →
+--     `unreachable`, matching native @mdk_oob's abort — both abort with empty stdout);
+--     `CSlice` = array.new + array.copy.  Array temps are (ref null $arr) scratch
+--     locals (`ref.as_non_null` before array ops).
+--   * Record: a named-field ctor is ALREADY a W3 user ctor (its $C_<name> struct is
+--     declared), so `CRecord` = positional struct.new in declared field order;
+--     `CFieldAccess` = struct.get at 1+field-index (from the recFieldsRef field-order
+--     table scanned from CRecord nodes); `CRecordUpdate`/`CVariantUpdate` = struct.new
+--     copying the unchanged fields (struct.get of a stashed base) + the overrides.
+--   * Ref: $refbox = a 1-field mutable struct (declared on use; the Ref/set_ref
+--     externs' full lowering rides on W8's extern surface — the type is reserved).
+-- The range/index/slice/record-update codegen uses depth-keyed typed scratch locals
+-- ($__rli<d>/$__raarr<d>/…), declared per function over depths 0..maxDepth.
+--
+
 -- ── VALUE-REP DECISION (resolve per the slice guardrail) ─────────────────────
 -- W2 used raw i32 for every value.  ADT values force a uniform §8.6 rep.  CHOICE:
 -- **per-PROGRAM split.**  A program with NO ADTs (no `data` decl, no CDecision)
@@ -104,7 +131,7 @@ import frontend.ast.{Lit(..), Pat(..), Addr(..), Route(..)}
 import ir.core_ir.{
   CProgram(..), CBind(..), CClause(..), CExpr(..), CStmt(..),
   CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..),
-  CImplEntry(..), CImplBody(..)
+  CImplEntry(..), CImplBody(..), CField(..)
 }
 import support.util.{
   joinNl, joinWith, reverseL, contains, concatMapList, filterList,
@@ -193,6 +220,44 @@ strSegsRef = Ref []
 strSegIdRef : Ref Int
 strSegIdRef = Ref 0
 
+-- ── W7 collection state ──────────────────────────────────────────────────────
+-- Which collection reps the program actually uses (gates their type-section decls,
+-- peer to `useStrRef`).  `useListRef`: any CList/CRangeList or a HCons/HNil match
+-- head → the cons-cell `$C_Cons` + root `$T_List` (Nil is an i31).  `useArrayRef`:
+-- any CArray/CRangeArray/CIndex/CSlice → the `$arr` (array (mut (ref eq))) type.
+-- `useRefBoxRef`: any Ref/set_ref/.value → the `$refbox` 1-field mutable struct.
+-- `tupleAritiesRef`: the distinct tuple arities present (CTuple / HTuple) → one
+-- per-arity struct `$C_TupN`.  Records reuse the EXISTING per-ctor struct ($C_<ctor>,
+-- already declared by the W3 ctor type section since a named-field ctor is in the
+-- ctor table) — they need no new type, only the field-order table below.
+useListRef : Ref Bool
+useListRef = Ref False
+
+useArrayRef : Ref Bool
+useArrayRef = Ref False
+
+useRefBoxRef : Ref Bool
+useRefBoxRef = Ref False
+
+-- the distinct tuple arities used anywhere in the program (construction or match).
+tupleAritiesRef : Ref (List Int)
+tupleAritiesRef = Ref []
+
+noteTupleArity : Int -> <Mut> Unit
+noteTupleArity n =
+  if containsInt n tupleAritiesRef.value then () else set_ref tupleAritiesRef (n :: tupleAritiesRef.value)
+
+containsInt : Int -> List Int -> Bool
+containsInt _ [] = False
+containsInt x (y::ys) = x == y || containsInt x ys
+
+-- ctor name → field labels in DECLARED order, for every named-field record/variant
+-- the program constructs (scanned from CRecord nodes, peer to llvm_emit.collectRecords).
+-- Drives CFieldAccess's struct index + CRecordUpdate/CVariantUpdate's unchanged-field
+-- copy.  Set once per program in emitProgram.
+recFieldsRef : Ref (List (String, List String))
+recFieldsRef = Ref []
+
 -- intern a literal's bytes as a fresh passive data segment; returns its index.
 freshStrSeg : List Int -> <Mut> Int
 freshStrSeg bytes =
@@ -223,6 +288,14 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useStrRef (programUsesStr groups)
   let _ = set_ref strSegsRef []
   let _ = set_ref strSegIdRef 0
+  -- W7: scan the program for collection usage (gates type-section decls + forces
+  -- ref-mode — every collection is a boxed (ref eq) value).
+  let _ = set_ref useListRef False
+  let _ = set_ref useArrayRef False
+  let _ = set_ref useRefBoxRef False
+  let _ = set_ref tupleAritiesRef []
+  let _ = set_ref recFieldsRef (collectRecFields groups)
+  let _ = scanProgW7 groups
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
   let fnArs = collectFnArities groups
@@ -233,6 +306,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   -- (ref eq) impl args + i31 dict witnesses, the W5 §8.6 uniform rep.  Strings
   -- (W6) also force ref-mode: a String is a boxed (ref eq) $str struct.
   let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
+    || useListRef.value || useArrayRef.value || useRefBoxRef.value || not (isEmptyList tupleAritiesRef.value)
   let typeNames = distinctTypeNames ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
@@ -308,6 +382,153 @@ stmtUsesStr _ = False
 headUsesStr : CExpr -> Bool
 headUsesStr (CVar fn _) = isStrExternW fn
 headUsesStr h = exprUsesStr h
+
+-- ── W7: scan the program for collection usage (sets the type-section gating refs) ──
+-- Sets useListRef/useArrayRef/useRefBoxRef and records every tuple arity seen, from
+-- BOTH constructions (CList/CTuple/CArray/CRangeArray/CIndex/CSlice/CRangeList, Ref/
+-- set_ref) AND match heads (HCons/HNil → list, HTuple n → tuple).  Mirrors how
+-- programUsesStr scans, but mutates the refs as it walks (peer to noteTupleArity).
+scanProgW7 : List CBind -> <Mut> Unit
+scanProgW7 groups = forEachU (b => scanBindW7 b) groups
+
+forEachU : (a -> <Mut> Unit) -> List a -> <Mut> Unit
+forEachU _ [] = ()
+forEachU f (x::xs) = let _ = f x in forEachU f xs
+
+scanBindW7 : CBind -> <Mut> Unit
+scanBindW7 (CBind _ clauses) = forEachU (c => scanExprW7 (clauseBodyOf c)) clauses
+
+scanExprW7 : CExpr -> <Mut> Unit
+scanExprW7 e = match e
+  CList es => let _ = set_ref useListRef True in forEachU scanExprW7 es
+  CRangeList lo hi _ => let _ = set_ref useListRef True in let _ = scanExprW7 lo in scanExprW7 hi
+  CTuple es => let _ = noteTupleArity (listLen es) in forEachU scanExprW7 es
+  CArray es => let _ = set_ref useArrayRef True in forEachU scanExprW7 es
+  CRangeArray lo hi _ => let _ = set_ref useArrayRef True in let _ = scanExprW7 lo in scanExprW7 hi
+  CIndex a i => let _ = set_ref useArrayRef True in let _ = scanExprW7 a in scanExprW7 i
+  CSlice a lo hi _ => let _ = set_ref useArrayRef True in let _ = scanExprW7 a in let _ = scanExprW7 lo in scanExprW7 hi
+  CRecord _ fields => forEachU (f => scanExprW7 (cFieldExpr f)) fields
+  CFieldAccess ex _ => scanExprW7 ex
+  CRecordUpdate base fields => let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
+  CVariantUpdate _ base fields => let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
+  CApp f a =>
+    let (hd, args) = flattenApp (CApp f a) []
+    let _ = scanW7Head hd
+    forEachU scanExprW7 args
+  CVar x _ => if x == "Ref" then set_ref useRefBoxRef True else ()
+  CLam _ b => scanExprW7 b
+  CBinPrim _ l r => let _ = scanExprW7 l in scanExprW7 r
+  CUnOp _ x => scanExprW7 x
+  CIf c t f => let _ = scanExprW7 c in let _ = scanExprW7 t in scanExprW7 f
+  CLet _ _ a b => let _ = scanExprW7 a in scanExprW7 b
+  CBlock stmts => forEachU scanStmtW7 stmts
+  CDecision scrut arms tree => let _ = scanExprW7 scrut in let _ = forEachU (a => scanArmW7 a) arms in scanTreeW7 tree
+  CMatch scrut arms => let _ = scanExprW7 scrut in forEachU (a => scanArmW7 a) arms
+  _ => ()
+
+scanW7Head : CExpr -> <Mut> Unit
+scanW7Head (CVar "Ref" _) = set_ref useRefBoxRef True
+scanW7Head (CVar "set_ref" _) = set_ref useRefBoxRef True
+scanW7Head h = scanExprW7 h
+
+scanArmW7 : CArm -> <Mut> Unit
+scanArmW7 (CArm pat guards body) =
+  let _ = scanPatW7 pat
+  let _ = forEachU scanGuardW7 guards
+  scanExprW7 body
+
+scanGuardW7 : CGuard -> <Mut> Unit
+scanGuardW7 (CGBool g) = scanExprW7 g
+scanGuardW7 (CGBind p e) = let _ = scanPatW7 p in scanExprW7 e
+
+scanStmtW7 : CStmt -> <Mut> Unit
+scanStmtW7 (CSExpr e) = scanExprW7 e
+scanStmtW7 (CSLet _ _ e) = scanExprW7 e
+scanStmtW7 _ = ()
+
+-- a pattern's collection heads: a cons/nil/list pattern → list; a tuple pattern → its arity.
+scanPatW7 : Pat -> <Mut> Unit
+scanPatW7 (PCons h t) = let _ = set_ref useListRef True in let _ = scanPatW7 h in scanPatW7 t
+scanPatW7 (PList ps) = let _ = set_ref useListRef True in forEachU scanPatW7 ps
+scanPatW7 (PTuple ps) = let _ = noteTupleArity (listLen ps) in forEachU scanPatW7 ps
+scanPatW7 (PCon _ args) = forEachU scanPatW7 args
+scanPatW7 (PAs _ p) = scanPatW7 p
+scanPatW7 _ = ()
+
+-- a decision tree's match heads (the lowered shape of list/tuple patterns).
+scanTreeW7 : CTree -> <Mut> Unit
+scanTreeW7 CTFail = ()
+scanTreeW7 (CTLeaf _) = ()
+scanTreeW7 (CTGuard _ fail) = scanTreeW7 fail
+scanTreeW7 (CTDrop sub) = scanTreeW7 sub
+scanTreeW7 (CTSwitch branches dft) =
+  let _ = forEachU scanBranchW7 branches in scanTreeW7 dft
+
+scanBranchW7 : CTBranch -> <Mut> Unit
+scanBranchW7 (CTBranch h sub) =
+  let _ = scanHeadW7 h in scanTreeW7 sub
+
+scanHeadW7 : CHead -> <Mut> Unit
+scanHeadW7 HCons = set_ref useListRef True
+scanHeadW7 HNil = set_ref useListRef True
+scanHeadW7 (HTuple n) = noteTupleArity n
+scanHeadW7 _ = ()
+
+cFieldExpr : CField -> CExpr
+cFieldExpr (CField _ e) = e
+
+cFieldName : CField -> String
+cFieldName (CField k _) = k
+
+-- ── W7: record field-order table (ctor → declared field labels) ──────────────
+-- A named-field record/variant ctor IS a user ctor (in the W3 ctor table); we only
+-- need its field ORDER to compute a CFieldAccess struct index + a record-update's
+-- unchanged-field copy.  Recover it from CRecord nodes (which carry fields in
+-- declared order — lowering preserves it), peer to llvm_emit.collectRecords.
+collectRecFields : List CBind -> List (String, List String)
+collectRecFields groups = dedupRecEntries (concatMapList collectRecFieldsBind groups)
+
+collectRecFieldsBind : CBind -> List (String, List String)
+collectRecFieldsBind (CBind _ clauses) = concatMapList (c => scanRecFields (clauseBodyOf c)) clauses
+
+scanRecFields : CExpr -> List (String, List String)
+scanRecFields e = match e
+  CRecord name fields => (name, map cFieldName fields) :: concatMapList (f => scanRecFields (cFieldExpr f)) fields
+  CFieldAccess ex _ => scanRecFields ex
+  CRecordUpdate base fields => scanRecFields base ++ concatMapList (f => scanRecFields (cFieldExpr f)) fields
+  CVariantUpdate _ base fields => scanRecFields base ++ concatMapList (f => scanRecFields (cFieldExpr f)) fields
+  CTuple es => concatMapList scanRecFields es
+  CList es => concatMapList scanRecFields es
+  CArray es => concatMapList scanRecFields es
+  CApp f a => scanRecFields f ++ scanRecFields a
+  CLam _ b => scanRecFields b
+  CBinPrim _ l r => scanRecFields l ++ scanRecFields r
+  CUnOp _ x => scanRecFields x
+  CIf c t f => scanRecFields c ++ scanRecFields t ++ scanRecFields f
+  CLet _ _ a b => scanRecFields a ++ scanRecFields b
+  CBlock stmts => concatMapList scanRecFieldsStmt stmts
+  CDecision scrut arms _ => scanRecFields scrut ++ concatMapList (a => scanRecFields (armBody a)) arms
+  CMatch scrut arms => scanRecFields scrut ++ concatMapList (a => scanRecFields (armBody a)) arms
+  CRangeList lo hi _ => scanRecFields lo ++ scanRecFields hi
+  CRangeArray lo hi _ => scanRecFields lo ++ scanRecFields hi
+  CIndex a i => scanRecFields a ++ scanRecFields i
+  CSlice a lo hi _ => scanRecFields a ++ scanRecFields lo ++ scanRecFields hi
+  _ => []
+
+scanRecFieldsStmt : CStmt -> List (String, List String)
+scanRecFieldsStmt (CSExpr e) = scanRecFields e
+scanRecFieldsStmt (CSLet _ _ e) = scanRecFields e
+scanRecFieldsStmt _ = []
+
+-- dedup by ctor name (first entry wins; all entries for one ctor agree).
+dedupRecEntries : List (String, List String) -> List (String, List String)
+dedupRecEntries [] = []
+dedupRecEntries ((n, fs)::rest) =
+  if isSome (lookupAssoc n rest) then (n, fs) :: dedupRecEntries (filterList (e => not (eqStr (recEntryName e) n)) rest)
+  else (n, fs) :: dedupRecEntries rest
+
+recEntryName : (String, List String) -> String
+recEntryName (n, _) = n
 
 bindUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CBind -> Bool
 bindUsesClosures fnNames fnArs ctorArs (CBind _ clauses) =
@@ -738,6 +959,7 @@ emitTypeSection prog =
   let reservedStructs = emitReservedStructs prog
   let closTypes = if progUseClos prog then closTypeLines else []
   let strTypes = if useStrRef.value then strTypeLines else []
+  let w7Types = emitW7Types ()
   ["  ;; ── §3 type section (rec group) — §3.4 ADT structs + §8.6 (ref eq)/i31 ──",
    "  (rec",
    "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
@@ -746,7 +968,36 @@ emitTypeSection prog =
     ++ closTypes
     ++ userStructs
     ++ reservedStructs
+    ++ w7Types
     ++ ["  )"]
+
+-- ── W7 collection types (§3.3) ───────────────────────────────────────────────
+-- Conditionally emitted by usage (peer to strTypes):
+--   List: root $T_List (i32 tag) + cons struct $C_Cons (tag, head, tail); Nil is an
+--     i31 immediate (ordinal 1) so it needs no struct.  Matches the §3.3 + LLVM rep.
+--   Tuple n: per-arity $T_Tup<n> root + $C_Tup<n> struct (tag + n (ref eq) fields).
+--     A tuple is single-shape, but it reuses the W3 ctor machinery (discrimReadOf
+--     reads the struct's field-0 tag = ordinal 0), so it carries a leading i32 tag.
+--   Array: $arr = (array (mut (ref eq))) — array.len carries the length (§3.3).
+--   Ref:   $refbox = a 1-field MUTABLE struct (set_ref overwrites the field).
+emitW7Types : Unit -> List String
+emitW7Types _ =
+  let listT = if useListRef.value then
+        ["    (type $T_List (sub (struct (field i32))))",
+         "    (type $C_Cons (sub $T_List (struct (field i32) (field (ref eq)) (field (ref eq)))))"]
+      else []
+  let tupTs = concatMapList tupleTypeDecl (reverseL tupleAritiesRef.value)
+  let arrT = if useArrayRef.value then ["    (type $arr (array (mut (ref eq))))"] else []
+  let refT = if useRefBoxRef.value then ["    (type $refbox (sub (struct (field (mut (ref eq))))))"] else []
+  listT ++ tupTs ++ arrT ++ refT
+
+tupleTypeDecl : Int -> List String
+tupleTypeDecl n =
+  let fields = joinWith "" (replicateStr n " (field (ref eq))")
+  let root = typeRootName (syntheticCtorType (tupleCtorName n))
+  let cs = ctorStructName (tupleCtorName n)
+  ["    (type $" ++ root ++ " (sub (struct (field i32))))",
+   "    (type $" ++ cs ++ " (sub $" ++ root ++ " (struct (field i32)" ++ fields ++ ")))"]
 
 -- distinct user type names (declaration order) that actually own ctors, paired
 -- with their ctor list.  Reserved types are handled separately so they are never
@@ -819,8 +1070,10 @@ emitRefInit prog groups =
   let scratch = scratchLocals maxDepth
   let locals = dedupKeep (valLocals ++ mainLocals) ++ scratch
   let localDecls = map (l => "  " ++ localDeclRef l) locals
+  let w7Decls = map (l => "  " ++ l) (w7LocalDecls maxDepth)
   ["  (func $__init"]
     ++ localDecls
+    ++ w7Decls
     ++ valInit
     ++ mainLines
     ++ ["  )", "  (start $__init)"]
@@ -956,7 +1209,8 @@ emitRefFnBind prog (CBind name clauses) =
     ++ joinWith "" (map paramDeclRef params)
     ++ " (result (ref eq))"
   let localDecls = map localDeclRef (extraLocals ++ scratch)
-  let fnDef = [sig] ++ map (l => "  " ++ l) localDecls ++ indent bodyLines ++ ["  )"]
+  let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
+  let fnDef = [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
   let wrapper = if needsClosWrapper prog name then emitFnClosWrapper prog name arity else []
   fnDef ++ wrapper
 
@@ -1266,7 +1520,8 @@ emitImplGroup prog (ImplG method tag arity clauses) =
     ++ joinWith "" (map paramDeclRef params)
     ++ " (result (ref eq))"
   let localDecls = map localDeclRef (extraLocals ++ scratch)
-  [sig] ++ map (l => "  " ++ l) localDecls ++ indent bodyLines ++ ["  )"]
+  let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
+  [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
 -- impl bodies use the SAME clause emission as top-level fns; the synthetic fn
 -- "name" (used only for the internal clause-block labels) is the impl symbol.
@@ -1333,6 +1588,17 @@ emitRefExpr prog env d e = match e
   CMethod name route implRoutes methRoutes =>
     emitMethodRef prog env d name route implRoutes methRoutes []
   CDict name routes => emitDictRef prog env d name routes []
+  CTuple es => emitTupleRef prog env d es
+  CList es => emitListRef prog env d es
+  CRangeList lo hi incl => emitRangeListRef prog env d lo hi incl
+  CArray es => emitArrayCreateRef prog env d es
+  CRangeArray lo hi incl => emitRangeArrayRef prog env d lo hi incl
+  CIndex a i => emitIndexRef prog env d a i
+  CSlice a lo hi incl => emitSliceRef prog env d a lo hi incl
+  CRecord name fields => emitRecordRef prog env d name fields
+  CFieldAccess ex label => emitFieldAccessRef prog env d ex label
+  CRecordUpdate base fields => emitRecordUpdateRef prog env d base fields
+  CVariantUpdate con base fields => emitVariantUpdateRef prog env d con base fields
   other => gap ("ref-mode: unsupported Core IR node " ++ ctag other)
 
 -- a scalar literal → an i31 immediate.  Int: ref.i31 of the value.  Bool: 1/0.
@@ -1761,6 +2027,7 @@ emitLamDefine prog lamName params captured body =
   let scratch = scratchLocals (maxRefDepth body)
   let localLines = ["(local $__self_clos (ref $clos))"]
     ++ map (l => localDeclRef l) (params ++ captured ++ bodyLocals ++ scratch)
+    ++ w7LocalDecls (maxRefDepth body)
   -- env env: captures + params are bound as locals; the body's free vars resolve to them.
   let bodyEnv = captured ++ params
   let setup = ["local.get $self", "ref.cast (ref $clos)", "local.set $__self_clos"]
@@ -1837,6 +2104,202 @@ emitCtorConstruct prog env d ctor args =
     let tagField = ["i32.const " ++ intToString (ctorOrdinal prog ctor)]
     let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
     tagField ++ argInstrs ++ ["struct.new $" ++ ctorStructName ctor]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- W7 — collections (§3.3): List / Tuple / Array / Record / Ref, ranges, index/slice
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- a tuple: a single-shape struct `$C_Tup<n>` (tag-0 field + n (ref eq) fields).
+-- Reuses the W3 ctor construction shape (a leading i32 tag = ordinal 0) so the match
+-- machinery (discrimReadOf → struct field-0) drives HTuple uniformly.
+emitTupleRef : Prog -> List String -> Int -> List CExpr -> <Mut> List String
+emitTupleRef prog env d es =
+  let n = listLen es
+  let argInstrs = concatMapList (a => emitRefExpr prog env d a) es
+  ["i32.const 0"] ++ argInstrs ++ ["struct.new $" ++ ctorStructName (tupleCtorName n)]
+
+-- a list literal: a right-nested cons spine ending in the Nil i31.  Built
+-- back-to-front so the emitted struct.news nest correctly (Cons head tail).
+emitListRef : Prog -> List String -> Int -> List CExpr -> <Mut> List String
+emitListRef prog env d [] = emitCtorConstruct prog env d "Nil" []
+emitListRef prog env d (x::xs) =
+  let hd = emitRefExpr prog env d x
+  let tl = emitListRef prog env d xs
+  ["i32.const 0"] ++ hd ++ tl ++ ["struct.new $C_Cons"]
+
+-- a range list [lo..hi] / [lo..=hi]: a back-to-front counted loop building the cons
+-- spine in a scratch accumulator local.  The accumulator + counter reuse the
+-- depth-keyed scratch locals ($__rl_acc<d> / $__rl_i<d>) declared in the header.
+emitRangeListRef : Prog -> List String -> Int -> CExpr -> CExpr -> Bool -> <Mut> List String
+emitRangeListRef prog env d lo hi incl =
+  let loI = emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let hiI = emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let sfx = intToString d
+  let accL = "$__rlacc" ++ sfx
+  let iL = "$__rli" ++ sfx
+  let loL = "$__rllo" ++ sfx
+  -- count = (incl ? hi+1 : hi) - lo ; clamped at 0 by the loop guard.
+  let adj = if incl then ["i32.const 1", "i32.add"] else []
+  -- stash lo, init acc=Nil, i = count-1, loop i>=0: acc = Cons (lo+i) acc.
+  loI ++ ["local.set " ++ loL]
+    ++ ["i32.const 1", "ref.i31", "local.set " ++ accL]
+    ++ hiI ++ adj ++ ["local.get " ++ loL, "i32.sub", "i32.const 1", "i32.sub", "local.set " ++ iL]
+    ++ ["block $rld" ++ sfx, "loop $rll" ++ sfx]
+    ++ ["local.get " ++ iL, "i32.const 0", "i32.lt_s", "br_if $rld" ++ sfx]
+    ++ ["i32.const 0"]
+    ++ ["local.get " ++ loL, "local.get " ++ iL, "i32.add", "ref.i31"]
+    ++ ["local.get " ++ accL]
+    ++ ["struct.new $C_Cons", "local.set " ++ accL]
+    ++ ["local.get " ++ iL, "i32.const 1", "i32.sub", "local.set " ++ iL]
+    ++ ["br $rll" ++ sfx, "end", "end"]
+    ++ ["local.get " ++ accL]
+
+-- an array literal: array.new_fixed over the emitted element values.
+emitArrayCreateRef : Prog -> List String -> Int -> List CExpr -> <Mut> List String
+emitArrayCreateRef prog env d es =
+  let argInstrs = concatMapList (a => emitRefExpr prog env d a) es
+  argInstrs ++ ["array.new_fixed $arr " ++ intToString (listLen es)]
+
+-- a range array [lo..hi] / [lo..=hi]: allocate `count` slots, fill with a counted
+-- loop (peer to llvm_emit.emitRangeArray's alloca-counter loop).
+emitRangeArrayRef : Prog -> List String -> Int -> CExpr -> CExpr -> Bool -> <Mut> List String
+emitRangeArrayRef prog env d lo hi incl =
+  let loI = emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let hiI = emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let sfx = intToString d
+  let arrL = "$__raarr" ++ sfx
+  let iL = "$__rai" ++ sfx
+  let loL = "$__ralo" ++ sfx
+  let cntL = "$__racnt" ++ sfx
+  let adj = if incl then ["i32.const 1", "i32.add"] else []
+  loI ++ ["local.set " ++ loL]
+    ++ hiI ++ adj ++ ["local.get " ++ loL, "i32.sub", "local.set " ++ cntL]
+    -- clamp negative count to 0
+    ++ ["local.get " ++ cntL, "i32.const 0", "i32.lt_s", "if", "i32.const 0", "local.set " ++ cntL, "end"]
+    ++ ["i32.const 0", "ref.i31", "local.get " ++ cntL, "array.new $arr", "local.set " ++ arrL]
+    ++ ["i32.const 0", "local.set " ++ iL]
+    ++ ["block $rad" ++ sfx, "loop $ral" ++ sfx]
+    ++ ["local.get " ++ iL, "local.get " ++ cntL, "i32.ge_s", "br_if $rad" ++ sfx]
+    ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ iL]
+    ++ ["local.get " ++ loL, "local.get " ++ iL, "i32.add", "ref.i31"]
+    ++ ["array.set $arr"]
+    ++ ["local.get " ++ iL, "i32.const 1", "i32.add", "local.set " ++ iL]
+    ++ ["br $ral" ++ sfx, "end", "end"]
+    ++ ["local.get " ++ arrL, "ref.as_non_null"]
+
+-- CIndex arr i: bounds-check (i<0 or i>=len → trap, matching native @mdk_oob), then
+-- array.get.  The trap is `unreachable` (WasmGC has no host-trap call here; an OOB
+-- access aborting the module mirrors the native abort).
+emitIndexRef : Prog -> List String -> Int -> CExpr -> CExpr -> <Mut> List String
+emitIndexRef prog env d a i =
+  let sfx = intToString d
+  let arrL = "$__ixarr" ++ sfx
+  let idxL = "$__ixi" ++ sfx
+  let arrI = emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "local.set " ++ arrL]
+  let idxI = emitRefExpr prog env d i ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ idxL]
+  arrI ++ idxI
+    -- bounds: idx < 0 || idx >= len → unreachable
+    ++ ["local.get " ++ idxL, "i32.const 0", "i32.lt_s"]
+    ++ ["local.get " ++ idxL, "local.get " ++ arrL, "ref.as_non_null", "array.len", "i32.ge_s"]
+    ++ ["i32.or", "if", "unreachable", "end"]
+    ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ idxL, "array.get $arr", "ref.as_non_null"]
+
+-- CSlice arr lo hi incl: new array of (end-lo) slots, copy via array.copy.  end =
+-- incl ? hi+1 : hi.  (No bounds clamping beyond non-negative count — mirrors the
+-- native slice which assumes valid indices; an over-range copy traps in-engine.)
+emitSliceRef : Prog -> List String -> Int -> CExpr -> CExpr -> CExpr -> Bool -> <Mut> List String
+emitSliceRef prog env d a lo hi incl =
+  let sfx = intToString d
+  let srcL = "$__slsrc" ++ sfx
+  let dstL = "$__sldst" ++ sfx
+  let loL = "$__sllo" ++ sfx
+  let lenL = "$__sllen" ++ sfx
+  let arrI = emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "local.set " ++ srcL]
+  let loI = emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ loL]
+  let hiI = emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
+  let adj = if incl then ["i32.const 1", "i32.add"] else []
+  arrI ++ loI ++ hiI ++ adj ++ ["local.get " ++ loL, "i32.sub", "local.set " ++ lenL]
+    ++ ["i32.const 0", "ref.i31", "local.get " ++ lenL, "array.new $arr", "local.set " ++ dstL]
+    -- array.copy dst dstoff src srcoff len
+    ++ ["local.get " ++ dstL, "ref.as_non_null", "i32.const 0", "local.get " ++ srcL, "ref.as_non_null", "local.get " ++ loL, "local.get " ++ lenL, "array.copy $arr $arr"]
+    ++ ["local.get " ++ dstL, "ref.as_non_null"]
+
+-- a named-field record construction: CRecord carries fields in DECLARED order
+-- (lowering preserves it), so emit positionally — identical to a positional ctor
+-- struct.new (the ctor IS a W3 user ctor with a $C_<name> struct already declared).
+emitRecordRef : Prog -> List String -> Int -> String -> List CField -> <Mut> List String
+emitRecordRef prog env d name fields =
+  let tagField = ["i32.const " ++ intToString (ctorOrdinal prog name)]
+  let argInstrs = concatMapList (f => emitRefExpr prog env d (cFieldExpr f)) fields
+  tagField ++ argInstrs ++ ["struct.new $" ++ ctorStructName name]
+
+-- field access `r.label`: cast to the record's ctor struct and struct.get the field
+-- at index (1 + its declared position).  The record ctor + its field order come from
+-- the recFieldsRef table built in emitProgram.
+emitFieldAccessRef : Prog -> List String -> Int -> CExpr -> String -> <Mut> List String
+emitFieldAccessRef prog env d ex label =
+  match findRecByField recFieldsRef.value label
+    Some (ctor, labels) =>
+      let idx = orZeroIdx (indexOfL label labels)
+      emitRefExpr prog env d ex
+        ++ ["ref.cast (ref $" ++ ctorStructName ctor ++ ")", "struct.get $" ++ ctorStructName ctor ++ " " ++ intToString (idx + 1)]
+    None => gap ("ref-mode: CFieldAccess on unknown field '" ++ label ++ "' (no record ctor in the field-order table)")
+
+-- functional update `{ base | f = v … }`: copy the base's struct, overriding the
+-- named fields.  The record type is recovered from the first update field's label.
+emitRecordUpdateRef : Prog -> List String -> Int -> CExpr -> List CField -> <Mut> List String
+emitRecordUpdateRef prog env d base fields = match firstFieldLabel fields
+  None => gap "ref-mode: empty record update"
+  Some k0 => match findRecByField recFieldsRef.value k0
+    Some (ctor, labels) => emitUpdateCopy prog env d ctor labels base fields
+    None => gap ("ref-mode: CRecordUpdate on unknown field '" ++ k0 ++ "'")
+
+firstFieldLabel : List CField -> Option String
+firstFieldLabel [] = None
+firstFieldLabel ((CField k _)::_) = Some k
+
+-- named-field variant update `Con { base | f = v … }`: same copy, ctor known.
+emitVariantUpdateRef : Prog -> List String -> Int -> String -> CExpr -> List CField -> <Mut> List String
+emitVariantUpdateRef prog env d con base fields =
+  match lookupAssoc con recFieldsRef.value
+    Some labels => emitUpdateCopy prog env d con labels base fields
+    None => gap ("ref-mode: CVariantUpdate on unknown constructor '" ++ con ++ "'")
+
+-- the shared copy-with-overrides: stash the base into a scratch local, then build a
+-- struct.new whose tag is the ctor ordinal and whose fields are, per declared label,
+-- the override expr (if present) or a struct.get of the stashed base.
+emitUpdateCopy : Prog -> List String -> Int -> String -> List String -> CExpr -> List CField -> <Mut> List String
+emitUpdateCopy prog env d ctor labels base fields =
+  let sfx = intToString d
+  let bL = "$__rub" ++ sfx
+  let baseI = emitRefExpr prog env d base ++ ["ref.cast (ref $" ++ ctorStructName ctor ++ ")", "local.set " ++ bL]
+  let tagField = ["i32.const " ++ intToString (ctorOrdinal prog ctor)]
+  baseI ++ tagField ++ fieldInstrsWithLabels prog env d ctor bL labels fields ++ ["struct.new $" ++ ctorStructName ctor]
+
+-- per declared label index, emit the override expr or the base's struct.get.
+fieldInstrsWithLabels : Prog -> List String -> Int -> String -> String -> List String -> List CField -> <Mut> List String
+fieldInstrsWithLabels prog env d ctor bL labels fields =
+  concatMapList (lab => oneUpdateField prog env d ctor bL fields lab) (idxZip labels 0)
+
+idxZip : List String -> Int -> List (Int, String)
+idxZip [] _ = []
+idxZip (x::xs) i = (i, x) :: idxZip xs (i + 1)
+
+oneUpdateField : Prog -> List String -> Int -> String -> String -> List CField -> (Int, String) -> <Mut> List String
+oneUpdateField prog env d ctor bL fields (idx, label) =
+  match findUpdateExpr label fields
+    Some ex => emitRefExpr prog env d ex
+    None => ["local.get " ++ bL, "ref.cast (ref $" ++ ctorStructName ctor ++ ")", "struct.get $" ++ ctorStructName ctor ++ " " ++ intToString (idx + 1)]
+
+findUpdateExpr : String -> List CField -> Option CExpr
+findUpdateExpr _ [] = None
+findUpdateExpr label ((CField k ex)::rest) = if k == label then Some ex else findUpdateExpr label rest
+
+-- the (ctor, labels) of the record whose declared fields contain `label`.
+findRecByField : List (String, List String) -> String -> Option (String, List String)
+findRecByField [] _ = None
+findRecByField ((ctor, labels)::rest) label =
+  if contains label labels then Some (ctor, labels) else findRecByField rest label
 
 -- ── match lowering: CDecision → discriminant + br_table + field extraction ───
 -- The scrutinee is a (ref eq).  The decision tree (CTree) is walked into a nest of
@@ -2028,11 +2491,43 @@ bindPatRef prog env pat v = match pat
   PLit _ => ([], env)
   PVar x => (v ++ ["local.set $" ++ gname x], x :: env)
   PCon c args => bindConFields prog env c args v
+  -- W7: a cons cell — field 1 = head, field 2 = tail (struct $C_Cons).
+  PCons h t =>
+    let hSnip = v ++ ["ref.cast (ref $C_Cons)", "struct.get $C_Cons 1"]
+    let tSnip = v ++ ["ref.cast (ref $C_Cons)", "struct.get $C_Cons 2"]
+    let (hb, env2) = bindPatRef prog env h hSnip
+    let (tb, env3) = bindPatRef prog env2 t tSnip
+    (hb ++ tb, env3)
+  -- W7: a fixed-length list pattern — bind each element by descending the Cons spine.
+  PList ps => bindListPat prog env ps v
+  -- W7: a tuple pattern — field i+1 of the $C_Tup<n> struct.
+  PTuple ps => bindTupleFields prog env (tupleCtorName (listLen ps)) ps v 0
   PAs x p =>
     let setX = v ++ ["local.set $" ++ gname x]
     let (inner, env2) = bindPatRef prog (x :: env) p v
     (setX ++ inner, env2)
   other => gap ("ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): " ++ ptag other)
+
+-- bind a fixed-length list pattern `[p0, p1, …]`: p0 = head of v, the rest match the
+-- tail recursively (descending Cons cells; the final empty list / Nil is irrefutable
+-- here — the decision tree already proved the length).
+bindListPat : Prog -> List String -> List Pat -> List String -> (List String, List String)
+bindListPat _ env [] _ = ([], env)
+bindListPat prog env (p::ps) v =
+  let hSnip = v ++ ["ref.cast (ref $C_Cons)", "struct.get $C_Cons 1"]
+  let tSnip = v ++ ["ref.cast (ref $C_Cons)", "struct.get $C_Cons 2"]
+  let (hb, env2) = bindPatRef prog env p hSnip
+  let (tb, env3) = bindListPat prog env2 ps tSnip
+  (hb ++ tb, env3)
+
+-- bind a tuple pattern's fields: field i+1 of $C_Tup<n> (after the i32 tag).
+bindTupleFields : Prog -> List String -> String -> List Pat -> List String -> Int -> (List String, List String)
+bindTupleFields _ env _ [] _ _ = ([], env)
+bindTupleFields prog env tc (p::rest) v i =
+  let fieldSnippet = v ++ ["ref.cast (ref $" ++ ctorStructName tc ++ ")", "struct.get $" ++ ctorStructName tc ++ " " ++ intToString (i + 1)]
+  let (cur, env2) = bindPatRef prog env p fieldSnippet
+  let (more, env3) = bindTupleFields prog env2 tc rest v (i + 1)
+  (cur ++ more, env3)
 
 -- bind a constructor pattern's fields: for each field i, extract via ref.cast +
 -- struct.get (field i+1, after the i32 tag), then recurse into the sub-pattern.
@@ -2109,6 +2604,25 @@ collectStmtLocals (CSLet _ (PVar x) ex) = x :: collectExprLocals ex
 collectStmtLocals (CSLet _ _ ex) = collectExprLocals ex
 collectStmtLocals _ = []
 
+-- ── W7 scratch-local declarations ────────────────────────────────────────────
+-- The range/index/slice/record-update codegen uses depth-keyed scratch locals
+-- ($__rli<d> etc.) with specific WAT types (i32 counters, (ref $arr) array temps,
+-- (ref eq) accumulators).  A W7 node is emitted at the same depth `d` the surrounding
+-- match nesting threads, so declaring the locals for every depth 0..maxDepth (the
+-- bound `maxRefDepth` already computes for $__rf<d>) covers every site (unused locals
+-- are valid WasmGC, so over-declaring is harmless).  Gated by the per-kind usage refs
+-- so a program that uses none declares none.  Returns full `(local …)` lines.
+w7LocalDecls : Int -> List String
+w7LocalDecls maxDepth = concatMapList w7LocalsAtDepth (rangeList 0 (maxI maxDepth 1))
+
+w7LocalsAtDepth : Int -> List String
+w7LocalsAtDepth d =
+  let sfx = intToString d
+  let rl = if useListRef.value then ["(local $__rlacc" ++ sfx ++ " (ref eq))", "(local $__rli" ++ sfx ++ " i32)", "(local $__rllo" ++ sfx ++ " i32)"] else []
+  let ra = if useArrayRef.value then ["(local $__raarr" ++ sfx ++ " (ref null $arr))", "(local $__rai" ++ sfx ++ " i32)", "(local $__ralo" ++ sfx ++ " i32)", "(local $__racnt" ++ sfx ++ " i32)", "(local $__ixarr" ++ sfx ++ " (ref null $arr))", "(local $__ixi" ++ sfx ++ " i32)", "(local $__slsrc" ++ sfx ++ " (ref null $arr))", "(local $__sldst" ++ sfx ++ " (ref null $arr))", "(local $__sllo" ++ sfx ++ " i32)", "(local $__sllen" ++ sfx ++ " i32)"] else []
+  let ru = if not (isEmptyList recFieldsRef.value) then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
+  rl ++ ra ++ ru
+
 -- an arm contributes its pattern's bound vars + its body's locals + guard locals.
 collectArmLocals : CArm -> List String
 collectArmLocals (CArm pat guards body) =
@@ -2154,36 +2668,75 @@ binOpTy op =
 -- ── ctor / type info (ref mode) ──────────────────────────────────────────────
 
 isCtor : Prog -> String -> Bool
-isCtor (Prog ctorArs _ _ _ _ _ _ _ _) name = isSome (lookupAssoc name ctorArs) || isReservedCtor name
+isCtor (Prog ctorArs _ _ _ _ _ _ _ _) name = isSome (lookupAssoc name ctorArs) || isReservedCtor name || isSyntheticCtor name
 
 isReservedCtor : String -> Bool
 isReservedCtor name = isSome (reservedCtorOrdinal name)
 
+-- ── W7 synthetic ctors (List Cons/Nil, tuple Tup<n>) ─────────────────────────
+-- These are not in the user ctor table; they share the W3 ctor machinery so the
+-- match tower / construction / field-extract code stays uniform.  A tuple ctor is
+-- "Tup<n>" (its own single-ctor synthetic type "$Tuple<n>").  List = Cons/Nil under
+-- type "List".
+isSyntheticCtor : String -> Bool
+isSyntheticCtor name = name == "Cons" || name == "Nil" || isTupleCtorName name
+
+tupleCtorName : Int -> String
+tupleCtorName n = "Tup" ++ intToString n
+
+isTupleCtorName : String -> Bool
+isTupleCtorName name = startsWithStr name "Tup" && allDigitsFrom (stringToChars name) 3
+
+-- the synthetic type a synthetic ctor belongs to.
+syntheticCtorType : String -> String
+syntheticCtorType "Cons" = "List"
+syntheticCtorType "Nil" = "List"
+syntheticCtorType name = "$Tuple" ++ intToString (trailingIntOf name)
+
+syntheticCtorOrdinal : String -> Int
+syntheticCtorOrdinal "Cons" = 0
+syntheticCtorOrdinal "Nil" = 1
+syntheticCtorOrdinal _ = 0
+
+syntheticCtorArity : String -> Int
+syntheticCtorArity "Cons" = 2
+syntheticCtorArity "Nil" = 0
+syntheticCtorArity name = trailingIntOf name
+
 ctorArity : Prog -> String -> Int
 ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match lookupAssoc name ctorArs
   Some a => a
-  None => reservedCtorArity name
+  None => if isSyntheticCtor name then syntheticCtorArity name else reservedCtorArity name
 
 -- a ctor's owning type name (user types via the ctor→type map; reserved ctors map
--- to their fixed type names).
+-- to their fixed type names; W7 synthetic ctors to their synthetic types).
 ctorTypeName : Prog -> String -> String
 ctorTypeName (Prog _ ctorTypes _ _ _ _ _ _ _) name = match lookupAssoc name ctorTypes
   Some ty => ty
-  None => reservedTypeOf name
+  None => if isSyntheticCtor name then syntheticCtorType name else reservedTypeOf name
 
 -- the per-type dense ordinal of a ctor (0-based index in its type's declaration
--- order).  Reserved ctors have fixed ordinals.
+-- order).  Reserved + synthetic ctors have fixed ordinals.
 ctorOrdinal : Prog -> String -> Int
 ctorOrdinal prog name = match reservedCtorOrdinal name
   Some o => o
-  None => orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+  None => if isSyntheticCtor name then syntheticCtorOrdinal name else orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
 ctorsOfType : Prog -> String -> List String
 ctorsOfType prog ty =
   if isReservedType ty then reservedCtorsOfType ty
+  else if ty == "List" then ["Cons", "Nil"]
+  else if isTupleType ty then [tupleCtorName (tupleTypeArity ty)]
   else ctorsOfTypeUser prog ty
+
+-- a synthetic tuple type name "$Tuple<n>" and its arity.
+isTupleType : String -> Bool
+isTupleType ty = startsWithStr ty "$Tuple"
+
+tupleTypeArity : String -> Int
+tupleTypeArity ty = trailingIntOf ty
 
 ctorsOfTypeUser : Prog -> String -> List String
 ctorsOfTypeUser (Prog _ ctorTypes _ _ _ _ _ _ _) ty =
@@ -2210,10 +2763,15 @@ branchForOrdinal prog ((CTBranch h sub)::rest) ty k = match conHeadInfo h
     else branchForOrdinal prog rest ty k
   None => branchForOrdinal prog rest ty k
 
--- the name + arity a constructor-LIKE head tests against.  HCons/HNil/HTuple are
--- W7 (list/tuple) — not handled in W3 (gap if reached via a user-ADT decision).
+-- the name + arity a constructor-LIKE head tests against.  W7 maps the built-in
+-- heads to synthetic ctor names so the SAME ctor machinery (ordinal / struct /
+-- field-extract) drives them: HCons → ("Cons", 2) / HNil → ("Nil", 0) (type "List",
+-- exactly the LLVM names), HTuple n → the per-arity synthetic tuple ctor "Tup<n>".
 conHeadInfo : CHead -> Option (String, Int)
 conHeadInfo (HCon c a) = Some (c, a)
+conHeadInfo HCons = Some ("Cons", 2)
+conHeadInfo HNil = Some ("Nil", 0)
+conHeadInfo (HTuple n) = Some (tupleCtorName n, n)
 conHeadInfo _ = None
 
 conHeadInfoUnsafe : CHead -> (String, Int)
@@ -2350,6 +2908,56 @@ foldMaxI [] = 0
 foldMaxI (x::xs) = maxI x (foldMaxI xs)
 
 -- ── small generic helpers ────────────────────────────────────────────────────
+
+-- W7 string helpers (no stdlib): prefix test + drop + trailing-integer parse, over
+-- the char array.  Used only for the synthetic tuple ctor/type names ("Tup<n>" /
+-- "$Tuple<n>") whose arity is recovered from the trailing decimal.
+startsWithStr : String -> String -> Bool
+startsWithStr s pre =
+  let sc = stringToChars s
+  let pc = stringToChars pre
+  startsWithGo sc pc 0
+
+startsWithGo : Array Char -> Array Char -> Int -> Bool
+startsWithGo sc pc i =
+  if i >= arrayLength pc then True
+  else if i >= arrayLength sc then False
+  else if charCode (arrayGetUnsafe i sc) == charCode (arrayGetUnsafe i pc) then startsWithGo sc pc (i + 1)
+  else False
+
+-- the integer formed by the trailing decimal digits of `s` (e.g. "Tup3" → 3,
+-- "$Tuple12" → 12).  Walks from the first digit to the end.
+trailingIntOf : String -> Int
+trailingIntOf s =
+  let cs = stringToChars s
+  trailingIntGo cs (firstDigitIdx cs 0) 0
+
+firstDigitIdx : Array Char -> Int -> Int
+firstDigitIdx cs i =
+  if i >= arrayLength cs then i
+  else if isDigitCh (charCode (arrayGetUnsafe i cs)) then i
+  else firstDigitIdx cs (i + 1)
+
+trailingIntGo : Array Char -> Int -> Int -> Int
+trailingIntGo cs i acc =
+  if i >= arrayLength cs then acc
+  else trailingIntGo cs (i + 1) (acc * 10 + (charCode (arrayGetUnsafe i cs) - 48))
+
+isDigitCh : Int -> Bool
+isDigitCh c = c >= 48 && c <= 57
+
+-- True if every char from index `i` to the end is a decimal digit (and there is at
+-- least one).  Used to confirm a "Tup<n>" synthetic tuple ctor name.
+allDigitsFrom : Array Char -> Int -> Bool
+allDigitsFrom cs i =
+  if i >= arrayLength cs then False
+  else allDigitsGo cs i
+
+allDigitsGo : Array Char -> Int -> Bool
+allDigitsGo cs i =
+  if i >= arrayLength cs then True
+  else if isDigitCh (charCode (arrayGetUnsafe i cs)) then allDigitsGo cs (i + 1)
+  else False
 
 flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
 flattenApp (CApp f a) acc = flattenApp f (a :: acc)

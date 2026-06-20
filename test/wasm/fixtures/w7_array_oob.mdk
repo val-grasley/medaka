@@ -1,0 +1,4 @@
+-- W7: an out-of-bounds Array index — both the native oracle and the WasmGC module
+-- abort with empty stdout (native: stderr "array index out of bounds" + nonzero
+-- exit; WasmGC: a trap).  The gate compares stdout, so empty == empty.
+main = [|5, 6, 7|].[9]

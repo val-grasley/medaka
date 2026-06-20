@@ -1,0 +1,6 @@
+-- W7: list length over the cons spine (HCons/HNil match, recursion).
+len xs = match xs
+  [] => 0
+  _ :: t => 1 + len t
+
+main = len [10, 20, 30, 40, 5]

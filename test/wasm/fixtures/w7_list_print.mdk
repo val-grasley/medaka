@@ -1,0 +1,7 @@
+-- W7: print a List Int's sum as a String (fold the cons spine + intToString,
+-- absorbing part of the deferred W6b list-Debug — no value-main ADT printing).
+sumL xs = match xs
+  [] => 0
+  h :: t => h + sumL t
+
+main = putStrLn (intToString (sumL [3, 4, 5, 6]))

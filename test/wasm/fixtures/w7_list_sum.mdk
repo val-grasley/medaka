@@ -1,0 +1,6 @@
+-- W7: a list literal + sum via a HCons/HNil match (cons-cell rep + br on i31 Nil).
+sumL xs = match xs
+  [] => 0
+  h :: t => h + sumL t
+
+main = sumL [1, 2, 3, 4]

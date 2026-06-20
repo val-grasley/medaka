@@ -1,0 +1,4 @@
+-- W7: a named-field record construct + field access (struct.new + struct.get).
+data Point = Pt { px : Int, py : Int }
+
+main = (Pt { px = 30, py = 4 }).px

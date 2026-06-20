@@ -1,0 +1,6 @@
+-- W7: a record functional update { r | f = v } (copy unchanged fields + override).
+data Point = Pt { px : Int, py : Int }
+
+shift p = { p | px = 100 }
+
+main = (shift (Pt { px = 3, py = 4 })).px
