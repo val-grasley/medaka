@@ -349,9 +349,19 @@ broader than the capability-platform narrative; folding it in would unbalance th
    identical to native) is met (§0). *Owned by the WasmGC backend effort, not this
    doc — listed here only to mark the dependency satisfied.* The playground can run
    any compute+print program today.
-2. **Stage 1 — `medaka build --target wasm`** (§2.1): wire the wasm entry into both build
-   drivers + `wasm-tools` assemble. Ship-test: a `.mdk` → `.wasm` that runs under
-   `test/wasm/run.js`.
+2. **Stage 1 — `medaka build --target wasm`** (§2.1): ✅ **DONE (2026-06-19, native-only).**
+   Wired the wasm entry into the native build driver (`selfhost/driver/{medaka_cli,build_cmd}.mdk`):
+   `--target native|wasm` flag (default native, purely additive), wasm branch runs
+   `wasm_emit_modules_main` → captures WAT → `wasm-tools parse`+`validate`. Gate
+   `test/build_wasm_cmd.sh` (4/0: rp_int_arith→14, rp_sum_list→10, rp_length_list→3, mm_sum→43),
+   `test/build_cmd.sh` native regression 14/0 unchanged. **Residual:** the wasm emitter must be a
+   COMPILED binary (the entry's `main = match args ()` needs the `args` extern, absent in interpreter
+   `run` mode — same as the LLVM entry), so `--target wasm` reads `MEDAKA_WASM_EMITTER` (built by
+   `test/wasm/build_wasm_oracle.sh` as `test/bin/wasm_emit_modules_main`), mirroring LLVM's
+   `MEDAKA_EMITTER`. Unlike `make medaka` (which mints `medaka_emitter` for the native path), no build
+   step yet mints a canonical wasm emitter — fine for the playground server (it can build+set it), but
+   a user-facing `--target wasm` should mint/locate it canonically later. OCaml `lib/build_cmd.ml` dual
+   intentionally NOT mirrored (frozen oracle, native-only decision).
 3. **Stage 2 — static playground page** (§2.2/§2.3): editor + console + a *server-stub*
    that shells `medaka build --target wasm` locally (no Medaka server yet) and returns
    bytes/errors. End-to-end in-browser run + diagnostics. **First shareable artifact.**
