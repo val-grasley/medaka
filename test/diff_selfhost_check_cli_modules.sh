@@ -107,5 +107,56 @@ case "$num_out" in
   *) fail=$((fail+1)); printf 'FAIL numlit-soundness (cross-module Num literal hole: [%s])\n' "$num_out" ;;
 esac
 
+# 6. cross-module superinterface (WS-1a over-rejection regression guard).  An
+#    `impl Monoid Color` in the ENTRY whose required superinterface `impl
+#    Semigroup Color` lives in an IMPORTED module must be ACCEPTED — instances are
+#    global, so the super impl exists even though it isn't `export`-marked (and
+#    even when it is).  Before the allImplDecls accumulator fix, the multi-module
+#    superinterface existence query only saw `accData ++ prog` (which drops
+#    imported impls) → false `requires a superinterface impl '… Semigroup …',
+#    which is missing`.  Legs: (a) imported non-export super → accept; (b) NO
+#    super anywhere → still reject (the under-rejection guard for WS-1a itself).
+cat > "$TMP/sg.mdk" <<'EOF'
+public export data Color = Red | Green
+
+impl Semigroup Color where
+  append x y = x
+EOF
+cat > "$TMP/mono_ok.mdk" <<'EOF'
+import sg.{Color(..)}
+
+impl Monoid Color where
+  empty = Red
+
+main = println "ok"
+EOF
+sup_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/mono_ok.mdk" 2>/dev/null)"
+sup_code=$?
+case "$sup_out" in
+  *superinterface*) fail=$((fail+1)); printf 'FAIL super-xmod/accept (false reject: [%s])\n' "$sup_out" ;;
+  *) if [ "$sup_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   super-xmod/accept (imported super impl satisfies the requires)\n'
+     else fail=$((fail+1)); printf 'FAIL super-xmod/accept (exit %d: [%s])\n' "$sup_code" "$sup_out"; fi ;;
+esac
+
+cat > "$TMP/nosup.mdk" <<'EOF'
+public export data Color = Red | Green
+EOF
+cat > "$TMP/mono_bad.mdk" <<'EOF'
+import nosup.{Color(..)}
+
+impl Monoid Color where
+  empty = Red
+
+main = println "ok"
+EOF
+nosup_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/mono_bad.mdk" 2>/dev/null)"
+nosup_code=$?
+case "$nosup_out" in
+  *"requires a superinterface impl 'impl Semigroup Color', which is missing"*)
+    if [ "$nosup_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   super-xmod/reject (no super anywhere still rejected)\n'
+    else fail=$((fail+1)); printf 'FAIL super-xmod/reject (rejected but exit %d)\n' "$nosup_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL super-xmod/reject (under-rejection regressed: [%s])\n' "$nosup_out" ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

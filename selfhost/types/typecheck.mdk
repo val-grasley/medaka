@@ -7761,6 +7761,21 @@ publicDataDecls ((d@DImpl { pub = True, ... })::rest) =
   d :: publicDataDecls rest
 publicDataDecls (_::rest) = publicDataDecls rest
 
+-- WS-1a fix: every impl in scope, EXPORT OR NOT.  Instances are GLOBAL (coherence
+-- + dispatch leak across module boundaries regardless of `export`), so the
+-- superinterface existence query (checkSuperImpls/superImplExists) must see an
+-- imported module's `impl Semigroup T` even when it isn't `export`-marked — else
+-- `impl Monoid T` in an importer is falsely rejected for a "missing" super impl.
+-- publicDataDecls drops non-public DImpl (and `accData` is also consumed by
+-- buildOracle/registerAllData, which must NOT see extra impls), so this is a
+-- SEPARATE accumulator threaded in parallel.  Keeps DAttrib-wrapped impls too;
+-- superImplExists/implMatchesSuper already unwrap DAttrib.
+allImplDecls : List Decl -> List Decl
+allImplDecls [] = []
+allImplDecls ((d@DImpl { ... })::rest) = d :: allImplDecls rest
+allImplDecls ((d@(DAttrib _ DImpl { ... }))::rest) = d :: allImplDecls rest
+allImplDecls (_::rest) = allImplDecls rest
+
 pickSchemes : List String -> List (String, Scheme) -> List (String, Scheme)
 pickSchemes [] _ = []
 pickSchemes (n::ns) table = match lookupAssoc n table
@@ -7873,14 +7888,14 @@ checkModules runtimeDecls coreDecls modules =
 -- (resetState does NOT clear it).  Returns (own value schemes, errs, warns) so the
 -- driver can thread accV/accData exactly as checkModulesGo does.
 export
-checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
-checkModuleFullDiags seedVars accData prog =
+checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModuleFullDiags seedVars accData accImpls prog =
   let _ = set_ref implInferEnabled False
   let _ = set_ref matchWarnings []
   let _ = set_ref matchOracle (buildOracle (accData ++ prog))
   let schemes = checkModuleFull seedVars accData prog
   let _ = checkCoherence prog
-  let _ = checkSuperImpls prog (accData ++ prog)
+  let _ = checkSuperImpls prog (accImpls ++ accData ++ prog)
   (schemes, reverseL typeErrors.value, reverseL matchWarnings.value)
 -- Seed the ctor oracle over ALL data decls in scope (prelude + every imported
 -- module via accData, plus this module's own prog), NOT just `prog`.  The
@@ -7907,12 +7922,12 @@ checkModuleFullDiags seedVars accData prog =
 -- checkModulesGo — NOT a flat union of every earlier module's publics, which let
 -- a same-named function from a non-imported module win by load order (e.g.
 -- string.reverse shadowing the list.reverse a module imports → spurious errors).
-checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
-checkModulesDiagsGo _ _ _ [] = []
-checkModulesDiagsGo baseSeed depEnv accData ((mid, prog)::rest) =
-  let (schemes, errs, warns) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
+checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
+checkModulesDiagsGo _ _ _ _ [] = []
+checkModulesDiagsGo baseSeed depEnv accData accImpls ((mid, prog)::rest) =
+  let (schemes, errs, warns) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accImpls prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  (mid, (errs, warns)) :: checkModulesDiagsGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
+  (mid, (errs, warns)) :: checkModulesDiagsGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) (accImpls ++ allImplDecls prog) rest
 
 export
 checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
@@ -7923,6 +7938,7 @@ checkModulesDiags runtimeDecls coreDecls modules =
     (runtimeSeed ++ coreSchemes)
     []
     (publicDataDecls coreDecls)
+    (allImplDecls coreDecls)
     modules
 
 -- the entry module is last in dependency-first order
@@ -7951,6 +7967,7 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
     (runtimeSeed ++ coreSchemes)
     []
     (publicDataDecls coreDecls)
+    (allImplDecls coreDecls)
     modules
 
 -- thread the public accumulators exactly as checkModulesGo.  The returned
@@ -7968,14 +7985,14 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
 -- baseSeed (runtime + core) is always in scope; depEnv keys earlier modules' public
 -- schemes by module id for importSeed to pick from.  accData stays a flat union
 -- (data/type collisions aren't the issue here; mirrors checkModulesGo).
-checkModulesEntryFullGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
-checkModulesEntryFullGo _ _ _ [] = ([], [], [])
-checkModulesEntryFullGo baseSeed depEnv accData [(_, prog)] =
-  checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
-checkModulesEntryFullGo baseSeed depEnv accData ((mid, prog)::rest) =
-  let (schemes, errs, _) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
+checkModulesEntryFullGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModulesEntryFullGo _ _ _ _ [] = ([], [], [])
+checkModulesEntryFullGo baseSeed depEnv accData accImpls [(_, prog)] =
+  checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accImpls prog
+checkModulesEntryFullGo baseSeed depEnv accData accImpls ((mid, prog)::rest) =
+  let (schemes, errs, _) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accImpls prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
+  let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) (accImpls ++ allImplDecls prog) rest
   (eSchemes, errs ++ eErrs, eWarns)
 
 -- render the entry report: type errors win (each `TYPE ERROR: …`), else the
