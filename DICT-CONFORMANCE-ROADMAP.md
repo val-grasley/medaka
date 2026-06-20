@@ -61,7 +61,19 @@ before WS-1b).
 
 Two stages; ship 1a first (restores soundness floor), then 1b (spec-true form).
 
-**WS-1a — existence gate (minimal, restores oracle parity).**
+**WS-1a — existence gate (minimal, restores oracle parity). ✅ DONE (2026-06-20, `afe4b89`).**
+Ported as `checkSuperImpls` (+ `ifaceSupersOf`/`superImplExists`/`tyIsConcrete` helpers) in
+`selfhost/types/typecheck.mdk`, wired at all 5 `checkCoherence` driver sites; needed `Super(..)`
+added to the `frontend.ast` import (the missing ctor import was SIGTRAPping under the gap-tolerant
+emitter). Concreteness gate mirrors the oracle: parametric `impl Monoid (Bag a)` is deferred;
+concrete `impl Monoid Color` without `impl Semigroup Color` now rejects with the byte-identical
+message. Fixture `test/typecheck_error_fixtures/missing_super_impl.mdk`. Gates green (typecheck_errors
+36/0, check 51/0, eval_dict 26/0); fixpoint C3a/C3b YES (orchestrator-verified). **Residual
+(under-rejection only, never over):** the multi-module *per-module* path (`checkModuleFullDiags`)
+sees only `accData ++ prog`, so a `requires`-bearing interface living in the **prelude** isn't in
+scope there and the gate doesn't fire — closing it needs the full interface set threaded into that
+driver. Single-file `check` (the D1 repro path) is fully covered.
+
 Port `check_superinterface_obligations` (`lib/typecheck.ml:4857-4875`) into
 selfhost as a self-contained post-pass over the impl table using the already-stored
 interface `supers` field: for each `impl C T`, require `impl D T` to exist for every
