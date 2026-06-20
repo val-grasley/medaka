@@ -30,14 +30,17 @@ by a parallel effort to reflect the met MVP; trust the MVP-met status, not the s
 slice ticks.* This plan therefore treats the client target as **available**, not a
 blocker — the playground's gating prerequisite (Stage 0, §6) is satisfied.
 
-**CORRECTION — local engine reality is better than a stale caveat implies.** The
-inherited note says "the drift that made Node 20 fail this session." Per `WASMGC-DESIGN.md`
-§8/§11, **Node ≥20.10 runs WasmGC unflagged** (V8 13.6); the local node is **v20.11.1**,
-which is fine. `wasm-tools` **is installed locally** (`/opt/homebrew/bin/wasm-tools`) —
-the §442 "not installed locally, MVP blocked" caveat is stale. The real drift caveat is
-narrower: **Wasmtime <27 silently rejects** the module and needs `-W gc -W tail-call`;
-browser-side, the finalized Wasm 3.0 GC encoding (shipped 2025-09-17) needs **current
-Chrome/Firefox**, not the *engine* being the blocker the framing suggested.
+**ENGINE REALITY (empirically verified this session — overrides `WASMGC-DESIGN.md` §8's
+optimistic note).** `WASMGC-DESIGN.md` §8 was written before the WasmGC slices ran; its claim
+"Node ≥20.10 runs WasmGC unflagged" is **WRONG in practice.** `wasm-tools` emits the FINALIZED
+Wasm 3.0 GC opcode encoding, and **Node 20.11.1's V8 implements an OLDER DRAFT encoding → it
+FAILS with `invalid array index`** even with `--experimental-wasm-gc` (reproduced repeatedly
+at W1). **Node ≥22 is required** (Node 24 runs it unflagged); the project's `test/wasm/*.sh`
+gates auto-`nvm use 24`. `wasm-tools` 1.252 + `wasmtime` 45 are installed. **Playground
+implication:** the **browser** must be a CURRENT **Chrome/Firefox** (Safari + older versions
+lag the finalized encoding) — a feature-detect + "needs a current browser" banner is mandatory
+(Stage 4). This is a live instance of the project's "gap docs lie — reproduce on the binary"
+rule: trust the empirical W1–W9b result, not §8.
 
 **VERIFIED facts the plan rests on (checked directly):**
 - `stdlib/runtime.mdk` has `runCommand` (`<Exec>`), `readFile`/`writeFile`
