@@ -1,0 +1,2 @@
+-- W8: stringConcat over a List String (walks the W7 cons list → flat $str).
+main = stringConcat ["foo", "-", "bar", "-", "baz"]

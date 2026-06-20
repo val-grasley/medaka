@@ -1,0 +1,4 @@
+-- W8: RNG randomBool — LSB of next_u64, seeded (Bool main → true/false).
+main =
+  let _ = setSeed 7
+  randomBool ()

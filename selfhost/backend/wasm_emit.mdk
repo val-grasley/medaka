@@ -140,11 +140,13 @@ import support.util.{
 import backend.wasm_preamble.{
   preambleHeadLines,
   closTypeLines, closApplyLines,
-  ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines
+  ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines,
+  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines,
+  rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines
 }
 
 -- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
-data WTy = WInt | WBool | WUnit | WStr | WRef
+data WTy = WInt | WBool | WUnit | WStr | WRef | WChar
 
 -- ── program info threaded through the ref-mode emitter ───────────────────────
 -- ctorArs: ctor name → arity.  ctorTypes: ctor name → owning type name.
@@ -239,6 +241,25 @@ useArrayRef = Ref False
 useRefBoxRef : Ref Bool
 useRefBoxRef = Ref False
 
+-- ── W8 extern-use state ──────────────────────────────────────────────────────
+-- Which W8 LEAF/RNG runtime groups the program reaches (gates their preamble
+-- emission, peer to useStrRef).  useStrLeafRef: any pure-WAT string leaf op
+-- (++/charToStr/stringConcat/stringSlice/toUpper/toLower) → the strLeafRuntime.
+-- useRngRef: any RNG extern → the SplitMix64 state global + runtime.  useHashRef:
+-- any per-type hasher → the hash runtime.  useEPutRef: ePutStr/ePutStrLn → the
+-- stderr import + runtime.
+useStrLeafRef : Ref Bool
+useStrLeafRef = Ref False
+
+useRngRef : Ref Bool
+useRngRef = Ref False
+
+useHashRef : Ref Bool
+useHashRef = Ref False
+
+useEPutRef : Ref Bool
+useEPutRef = Ref False
+
 -- the distinct tuple arities used anywhere in the program (construction or match).
 tupleAritiesRef : Ref (List Int)
 tupleAritiesRef = Ref []
@@ -293,6 +314,10 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useListRef False
   let _ = set_ref useArrayRef False
   let _ = set_ref useRefBoxRef False
+  let _ = set_ref useStrLeafRef False
+  let _ = set_ref useRngRef False
+  let _ = set_ref useHashRef False
+  let _ = set_ref useEPutRef False
   let _ = set_ref tupleAritiesRef []
   let _ = set_ref recFieldsRef (collectRecFields groups)
   let _ = scanProgW7 groups
@@ -304,9 +329,11 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   -- closures force the uniform (ref eq) rep (a closure captures heterogeneous
   -- values); so does ANY dispatch — an impl method / method occurrence threads
   -- (ref eq) impl args + i31 dict witnesses, the W5 §8.6 uniform rep.  Strings
-  -- (W6) also force ref-mode: a String is a boxed (ref eq) $str struct.
+  -- (W6) also force ref-mode: a String is a boxed (ref eq) $str struct.  W8 RNG /
+  -- hash externs produce/consume (ref eq) i31 values, so they force ref-mode too.
   let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
     || useListRef.value || useArrayRef.value || useRefBoxRef.value || not (isEmptyList tupleAritiesRef.value)
+    || useRngRef.value || useHashRef.value
   let typeNames = distinctTypeNames ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
@@ -347,7 +374,27 @@ anyBind p (b::rest) = if p b then True else anyBind p rest
 isStrExternW : String -> Bool
 isStrExternW name = contains name [
   "intToString", "charToStr", "stringConcat", "stringLength",
-  "putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
+  "putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout",
+  "stringSlice", "stringToUpper", "stringToLower", "hashString"]
+
+-- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
+-- These force ref-mode (they produce/consume (ref eq) i31 values) but, unlike the
+-- string externs, do NOT pull in the `$str` rep (hashString is the exception and is
+-- listed under isStrExternW since it reads a $str).  Detected so emitProgram can
+-- force `useRef` and gate the RNG / hash preamble.
+isLeafExternW : String -> Bool
+isLeafExternW name = contains name [
+  "randomInt", "randomBool", "randomChar", "setSeed",
+  "hashInt", "hashChar", "hashBool"]
+
+-- ── W8b DEFERRED Float externs ────────────────────────────────────────────────
+-- These need Float boxing (struct $float) + a byte-exact %.12g float formatter (the
+-- `N.0` whole-float canonicalization, nan/inf), which is non-trivial in pure WAT
+-- (no printf / dtoa).  Deferred to W8b; emit a clean, recognizable gap instead of an
+-- "unbound variable" so the deferral is explicit.
+isDeferredFloatExternW : String -> Bool
+isDeferredFloatExternW name = contains name [
+  "floatToString", "stringToFloat", "randomFloat", "hashFloat", "intToFloat", "floatToInt"]
 
 programUsesStr : List CBind -> Bool
 programUsesStr groups = anyBind bindUsesStr groups
@@ -415,9 +462,9 @@ scanExprW7 e = match e
     let (hd, args) = flattenApp (CApp f a) []
     let _ = scanW7Head hd
     forEachU scanExprW7 args
-  CVar x _ => if x == "Ref" then set_ref useRefBoxRef True else ()
+  CVar x _ => if x == "Ref" then set_ref useRefBoxRef True else noteW8Extern x
   CLam _ b => scanExprW7 b
-  CBinPrim _ l r => let _ = scanExprW7 l in scanExprW7 r
+  CBinPrim op l r => let _ = noteW8Binop op in let _ = scanExprW7 l in scanExprW7 r
   CUnOp _ x => scanExprW7 x
   CIf c t f => let _ = scanExprW7 c in let _ = scanExprW7 t in scanExprW7 f
   CLet _ _ a b => let _ = scanExprW7 a in scanExprW7 b
@@ -429,7 +476,30 @@ scanExprW7 e = match e
 scanW7Head : CExpr -> <Mut> Unit
 scanW7Head (CVar "Ref" _) = set_ref useRefBoxRef True
 scanW7Head (CVar "set_ref" _) = set_ref useRefBoxRef True
+scanW7Head (CVar f _) = noteW8Extern f
 scanW7Head h = scanExprW7 h
+
+-- ── W8: note which W8 LEAF/RNG/hash runtime groups an extern occurrence reaches ──
+-- Sets useStrLeafRef (the pure-WAT string ops needing strLeafRuntime), useRngRef,
+-- useHashRef, useEPutRef as appropriate.  Piggybacks on the W7 walk.
+noteW8Extern : String -> <Mut> Unit
+noteW8Extern name =
+  let _ = if contains name ["charToStr", "stringConcat", "stringSlice", "stringToUpper", "stringToLower"]
+          then set_ref useStrLeafRef True else ()
+  let _ = if isLeafExternW name && contains name ["randomInt", "randomBool", "randomChar", "setSeed"]
+          then set_ref useRngRef True else ()
+  -- a Char main from randomChar is auto-printed by encoding the codepoint to a $str
+  -- ($mdk_char_to_str → $mdk_print_strln), so randomChar needs the $str rep + the
+  -- char-encode strLeaf runtime.
+  let _ = if name == "randomChar" then let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
+  let _ = if contains name ["hashInt", "hashChar", "hashBool", "hashString"]
+          then set_ref useHashRef True else ()
+  if contains name ["ePutStr", "ePutStrLn"] then set_ref useEPutRef True else ()
+
+-- string `++` is the pure-WAT binary concat ($mdk_str_append) — note the leaf op.
+noteW8Binop : String -> <Mut> Unit
+noteW8Binop "++" = let _ = set_ref useStrLeafRef True in set_ref useStrRef True
+noteW8Binop _ = ()
 
 scanArmW7 : CArm -> <Mut> Unit
 scanArmW7 (CArm pat guards body) =
@@ -733,6 +803,7 @@ printFor WInt = ["    i64.extend_i32_s", "    call $mdk_print_int"]
 printFor WBool = ["    call $mdk_print_bool"]
 printFor WUnit = gap "scalar-mode: Unit main has no scalar value to print"
 printFor WStr = gap "scalar-mode main produced a String — internal mode mismatch (strings force ref-mode)"
+printFor WChar = gap "scalar-mode main produced a Char — internal mode mismatch (Char main forces ref-mode)"
 printFor WRef = gap "scalar-mode main produced a (ref eq) — internal mode mismatch"
 
 emitScalarFnBind : List String -> List String -> CBind -> List String
@@ -892,9 +963,12 @@ emitRefProgram : Prog -> List CBind -> <Mut> String
 emitRefProgram prog groups =
   let header = preambleHeadLines
   let typeSection = emitTypeSection prog
-  let imports = ioByteImportLines
+  -- W8: ePutStr/ePutStrLn need a second host import (stderr byte-write).
+  let imports = ioByteImportLines ++ (if useEPutRef.value then stderrByteImportLines else [])
   let valNames = progValNames prog
-  let globals = map oneGlobalRef valNames
+  -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
+  let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
+  let globals = rngGlobal ++ map oneGlobalRef valNames
   -- emit user fns FIRST (this is what accumulates lifted lambdas into liftedFnsRef).
   let fns = concatMapList (emitRefFnBind prog) (userFnBinds groups)
   -- W5: the typeclass impl functions ($mdk_impl_<tag>_<method>), emitted as ordinary
@@ -909,9 +983,19 @@ emitRefProgram prog groups =
   -- string runtime only when strings are used) + the string-literal passive data
   -- segments (drained from strSegsRef, in segment-index order).
   let ioRt = ioRuntimeLines ++ (if useStrRef.value then ioStrRuntimeLines else [])
+  -- W8: the pure-WAT string LEAF ops, stderr runtime, RNG, and hashers — each gated
+  -- by its use ref.  strConcat needs the W7 cons list types ($C_Cons), so it is gated
+  -- on useListRef too (a stringConcat always uses a list, so useListRef is set).
+  let strLeafRt = if useStrLeafRef.value then strLeafRuntimeLines else []
+  let strConcatRt = if useStrLeafRef.value && useListRef.value then strConcatRuntimeLines else []
+  let stderrRt = if useEPutRef.value then stderrRuntimeLines else []
+  let rngRt = if useRngRef.value then rngRuntimeLines else []
+  let hashRt = if useHashRef.value then hashRuntimeLines else []
+  let hashStrRt = if useHashRef.value && useStrRef.value then hashStringRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
-            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ dataSegs ++ initLines ++ [")"])
+            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt
+            ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt ++ dataSegs ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
 -- distinct literal, emitted in segment-index order.  `array.new_data` reads from
@@ -1129,6 +1213,7 @@ refMainKind prog e = match e
   CLit (LInt _) => WInt
   CLit (LBool _) => WBool
   CLit (LString _) => WStr
+  CLit (LChar _) => WChar
   -- the Bool constructors as values (a dispatched main `… else False`); also lets a
   -- CIf whose arms are dispatch calls recover Bool-ness from a literal-Bool branch.
   CVar "True" _ => WBool
@@ -1148,6 +1233,8 @@ refMainKind prog e = match e
   CApp f a => match appHead f
     CVar fn _ =>
       if isStrReturningExtern fn then WStr
+      else if fn == "randomBool" then WBool
+      else if fn == "randomChar" then WChar
       else if isUnitExtern fn then WUnit
       else refMainKind prog (appHead f)
     h => refMainKind prog h
@@ -1157,7 +1244,9 @@ refMainKind prog e = match e
 -- the String-RESULT externs (drive value-main String auto-print).  `stringLength`
 -- returns Int, so it is NOT here.
 isStrReturningExtern : String -> Bool
-isStrReturningExtern name = contains name ["intToString", "charToStr", "stringConcat"]
+isStrReturningExtern name = contains name [
+  "intToString", "charToStr", "stringConcat",
+  "stringSlice", "stringToUpper", "stringToLower"]
 
 -- the Unit-RESULT IO externs: a `main = putStrLn …` produces Unit and must NOT be
 -- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
@@ -1182,6 +1271,10 @@ refPrintFor : WTy -> List String
 refPrintFor WInt = ["    ref.cast (ref i31)", "    i31.get_s", "    i64.extend_i32_s", "    call $mdk_print_int"]
 refPrintFor WBool = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_print_bool"]
 refPrintFor WStr = ["    ref.cast (ref $str)", "    call $mdk_print_strln"]
+-- a Char main: an i31 codepoint → encode to a $str via $mdk_char_to_str → print + '\n'
+-- (matches the oracle's pp_value, which renders a Char as its glyph).  Forces the
+-- $str rep + the char-encode strLeaf runtime (see noteW8MainChar).
+refPrintFor WChar = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_char_to_str", "    call $mdk_print_strln"]
 refPrintFor WUnit = gap "ref-mode: Unit main has no value to print"
 refPrintFor WRef = gap "ref-mode main produced a non-scalar value — printing ADTs is W6b (Debug)"
 
@@ -1683,6 +1776,8 @@ emitVarRef prog env d x =
   else if x == "True" then ["i32.const 1", "ref.i31"]
   else if x == "False" then ["i32.const 0", "ref.i31"]
   else if isCtor prog x then emitCtorConstruct prog env d x []
+  else if isDeferredFloatExternW x then
+    gap ("wasm W8b: Float extern '" ++ x ++ "' deferred (needs Float boxing + %.12g float formatter)")
   else if contains x (progFnNames prog) then
     let _ = noteFuncRef ("$mdk_w_" ++ x)
     ["ref.func $mdk_w_" ++ x, "i32.const " ++ intToString (progFnArity prog x),
@@ -1692,6 +1787,11 @@ emitVarRef prog env d x =
 -- arithmetic / comparison: unbox both operands from i31 to i32, do the i32 op, then
 -- re-box (arithmetic → i31 int; comparison → i31 0/1 bool).
 emitBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
+-- W8: string `++` is binary concat over $str (the only `++` use this slice supports;
+-- a list `++` would gap).  Both operands are $str (ref eq) values.
+emitBinRef prog env d "++" l r =
+  emitRefExpr prog env d l ++ ["ref.cast (ref $str)"]
+    ++ emitRefExpr prog env d r ++ ["ref.cast (ref $str)", "call $mdk_str_append"]
 emitBinRef prog env d op l r =
   let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
   let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
@@ -1751,6 +1851,9 @@ emitAppRef prog env d app =
     CVar f _ =>
       if isCtor prog f then emitCtorConstruct prog env d f args
       else if isStrExternW f then emitStrExternRef prog env d f args
+      else if isLeafExternW f then emitLeafExternRef prog env d f args
+      else if isDeferredFloatExternW f then
+        gap ("wasm W8b: Float extern '" ++ f ++ "' deferred (needs Float boxing + %.12g float formatter)")
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
         let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
         argInstrs ++ ["call $" ++ gname f]
@@ -1785,12 +1888,75 @@ emitStrExternRef prog env d "putStr" args = match args
 emitStrExternRef prog env d "putStrLn" args = match args
   [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_print_strln", "i32.const 0", "ref.i31"]
   _ => gap "wasm W6: putStrLn takes exactly one argument"
-emitStrExternRef prog env d "ePutStr" args = gap "wasm W6b: ePutStr (stderr byte-write import) is deferred"
-emitStrExternRef prog env d "ePutStrLn" args = gap "wasm W6b: ePutStrLn (stderr byte-write import) is deferred"
+emitStrExternRef prog env d "ePutStr" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_eprint_str", "i32.const 0", "ref.i31"]
+  _ => gap "wasm W8: ePutStr takes exactly one argument"
+emitStrExternRef prog env d "ePutStrLn" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_eprint_strln", "i32.const 0", "ref.i31"]
+  _ => gap "wasm W8: ePutStrLn takes exactly one argument"
 emitStrExternRef _ _ _ "flushStdout" _ = ["i32.const 0", "ref.i31"]
-emitStrExternRef _ _ _ "charToStr" _ = gap "wasm W6b: charToStr (codepoint→$str runtime) is deferred"
-emitStrExternRef _ _ _ "stringConcat" _ = gap "wasm W6b: stringConcat (List String) needs W7 list support"
+-- charToStr : a Char is an i31 codepoint (ref eq) → unbox to i32 → $mdk_char_to_str.
+emitStrExternRef prog env d "charToStr" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_char_to_str"]
+  _ => gap "wasm W8: charToStr takes exactly one argument"
+-- stringConcat : a List String (ref eq) → walk the W7 cons list → fresh $str.
+emitStrExternRef prog env d "stringConcat" args = match args
+  [a] => emitRefExpr prog env d a ++ ["call $mdk_str_concat"]
+  _ => gap "wasm W8: stringConcat takes exactly one argument"
+-- stringSlice lo hi s : lo/hi are i31 Int codepoint indices, s a $str.
+emitStrExternRef prog env d "stringSlice" args = match args
+  [lo, hi, s] =>
+    emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ emitRefExpr prog env d s ++ ["ref.cast (ref $str)", "call $mdk_str_slice"]
+  _ => gap "wasm W8: stringSlice takes exactly three arguments"
+emitStrExternRef prog env d "stringToUpper" args = match args
+  [s] => emitRefExpr prog env d s ++ ["ref.cast (ref $str)", "call $mdk_str_upper"]
+  _ => gap "wasm W8: stringToUpper takes exactly one argument"
+emitStrExternRef prog env d "stringToLower" args = match args
+  [s] => emitRefExpr prog env d s ++ ["ref.cast (ref $str)", "call $mdk_str_lower"]
+  _ => gap "wasm W8: stringToLower takes exactly one argument"
+-- hashString : a $str → FNV-1a i32 in [0,2^30) → i31 Int.
+emitStrExternRef prog env d "hashString" args = match args
+  [s] => emitRefExpr prog env d s ++ ["ref.cast (ref $str)", "call $mdk_hash_string", "ref.i31"]
+  _ => gap "wasm W8: hashString takes exactly one argument"
 emitStrExternRef _ _ _ name _ = gap ("wasm W6: unsupported string extern '" ++ name ++ "'")
+
+-- ── W8 RNG + hash LEAF externs (RUNTIME-DESIGN §5 RNG / §5 hash) ─────────────
+-- RNG: randomInt lo hi (i31 Int args → $mdk_random_int → i31 Int, INCLUSIVE);
+-- randomBool/randomChar take a Unit arg (emitted + dropped) → i31 Bool/Char;
+-- setSeed unboxes its i31 Int to i64 into the seed global.  Hash: hashInt/hashChar
+-- untag the i31 value to i32 (the runtime sign-extends to i64, matching the native
+-- signed `tagged>>1`); hashBool passes the 0/1 i31.  All hash results fit i31
+-- (masked to 2^30-1, non-negative).  randomFloat / hashFloat are DEFERRED (W8b —
+-- they need Float boxing + the %.12g float formatter; see the gap arms).
+emitLeafExternRef : Prog -> List String -> Int -> String -> List CExpr -> <Mut> List String
+emitLeafExternRef prog env d "randomInt" args = match args
+  [lo, hi] =>
+    emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ ["call $mdk_random_int", "ref.i31"]
+  _ => gap "wasm W8: randomInt takes exactly two arguments"
+emitLeafExternRef prog env d "randomBool" args = match args
+  [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_random_bool", "ref.i31"]
+  _ => gap "wasm W8: randomBool takes exactly one (Unit) argument"
+emitLeafExternRef prog env d "randomChar" args = match args
+  [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_random_char", "ref.i31"]
+  _ => gap "wasm W8: randomChar takes exactly one (Unit) argument"
+emitLeafExternRef prog env d "setSeed" args = match args
+  [n] => emitRefExpr prog env d n ++ ["ref.cast (ref i31)", "i31.get_s", "i64.extend_i32_s",
+         "global.set $mdk_rng_state", "i32.const 0", "ref.i31"]
+  _ => gap "wasm W8: setSeed takes exactly one argument"
+emitLeafExternRef prog env d "hashInt" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_hash_int", "ref.i31"]
+  _ => gap "wasm W8: hashInt takes exactly one argument"
+emitLeafExternRef prog env d "hashChar" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_int", "ref.i31"]
+  _ => gap "wasm W8: hashChar takes exactly one argument"
+emitLeafExternRef prog env d "hashBool" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_bool", "ref.i31"]
+  _ => gap "wasm W8: hashBool takes exactly one argument"
+emitLeafExternRef _ _ _ name _ = gap ("wasm W8: unsupported leaf extern '" ++ name ++ "'")
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
 -- into an $argarr, and `call $mdk_apply` — which dispatches on the closure's arity
@@ -2663,7 +2829,8 @@ wasmBinOp op = gap ("unsupported binary operator '" ++ op
 
 binOpTy : String -> WTy
 binOpTy op =
-  if contains op ["==", "!=", "<", ">", "<=", ">="] then WBool else WInt
+  if op == "++" then WStr
+  else if contains op ["==", "!=", "<", ">", "<=", ">="] then WBool else WInt
 
 -- ── ctor / type info (ref mode) ──────────────────────────────────────────────
 

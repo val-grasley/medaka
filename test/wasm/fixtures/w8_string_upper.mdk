@@ -1,0 +1,2 @@
+-- W8: stringToUpper — ASCII case map over bytes.
+main = stringToUpper "Hello, World!"

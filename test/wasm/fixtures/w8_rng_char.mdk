@@ -1,0 +1,4 @@
+-- W8: RNG randomChar — ASCII [32,126], seeded (Char main → the glyph).
+main =
+  let _ = setSeed 99
+  randomChar ()

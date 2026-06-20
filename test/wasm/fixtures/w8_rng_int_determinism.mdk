@@ -1,0 +1,8 @@
+-- W8: RNG DETERMINISM — a seeded sequence of randomInt draws must byte-match the
+-- oracle's shared SplitMix64 exactly (the whole point of RNG being specified).
+main =
+  let _ = setSeed 123
+  let a = randomInt 0 999
+  let b = randomInt 0 999
+  let c = randomInt 0 999
+  a + b * 1000 + c * 1000000

@@ -1,0 +1,2 @@
+-- W8: hashString — FNV-1a over UTF-8 bytes, byte-identical to medaka_rt.c.
+main = hashString "medaka"

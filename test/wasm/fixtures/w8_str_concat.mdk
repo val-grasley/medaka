@@ -1,0 +1,2 @@
+-- W8: String `++` binary concat ($mdk_str_append) — left-nested, three operands.
+main = "a" ++ "bc" ++ "def"

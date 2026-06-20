@@ -1,0 +1,2 @@
+-- W8: hashInt — SplitMix64 mix64 masked to [0,2^30), byte-identical to medaka_rt.c.
+main = hashInt 12345

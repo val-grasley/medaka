@@ -1,0 +1,2 @@
+-- W8: charToStr — encode a Char codepoint to a 1-byte $str (auto-printed).
+main = charToStr 'Z'

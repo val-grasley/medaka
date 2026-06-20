@@ -1,0 +1,2 @@
+-- W8: hashChar — mix64 of the codepoint (== hashInt of the codepoint).
+main = hashChar 'A'
