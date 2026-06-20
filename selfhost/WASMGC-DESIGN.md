@@ -1,6 +1,9 @@
 # WASMGC-DESIGN.md — WasmGC backend implementation plan
 
-> **Status: EXPLORATORY DESIGN (decision-ready, not yet implemented).** This is the
+> **Status: IMPLEMENTED — compute+print MVP MET (2026-06-19).** Slices W1–W9b are
+> done and on `main`; the per-slice §9 entries below were the original plan and are
+> NOT all re-ticked — see the **Implementation status** banner at §9 for the real state.
+> This is the
 > plan for a *second* backend that consumes the same Core IR the LLVM backend
 > consumes (`selfhost/ir/core_ir.mdk`) and emits a runnable **WasmGC** module. It
 > parallels the LLVM backend (`selfhost/backend/llvm_emit.mdk`). It does **not**
@@ -368,6 +371,26 @@ engine, and diffs stdout against the interpreter/native oracle.
 ---
 
 ## 9. MVP-first staging (ascending-risk slices, each independently gated)
+
+> **IMPLEMENTATION STATUS (2026-06-19) — compute+print MVP MET; W1–W9b DONE on `main`.**
+> Real-`core.mdk`-prelude + multi-module compute+print programs compile to WasmGC and run
+> byte-identical to `medaka build`. Files: `selfhost/backend/wasm_emit.mdk` + `wasm_preamble.mdk`;
+> entries `selfhost/entries/wasm_emit_{main,typed_main,modules_main}.mdk`. **`wasm_emit` is OUTSIDE
+> the self-host compiler graph** (only the gate entries import it) → emitter changes need NO
+> fixpoint/seed; the output-diff gate is decisive. Gates (all green): `test/wasm/diff_wasm.sh` **85**
+> (prelude-free) · `diff_wasm_typed.sh` **6** (typed, own-interface dispatch) · `diff_wasm_modules.sh`
+> **9** (real-prelude/multi-module, incl multi-file). Oracle = `./medaka build` (needs
+> `MEDAKA_EMITTER=$PWD/medaka_emitter`). Per-slice as built: W1 toolchain · W2 scalar · W3 ADTs/match
+> (`br_table`, synthetic ctors) · W4 closures/`call_ref`/TCO (`return_call`, arity-in-struct) · W5
+> dispatch (`CMethod`/`CDict`) · W6a strings (`(array i8)`+cp_count, byte-write IO; collapsed the JS
+> scaffold) · W7 collections (all 11 nodes) · W8 RNG(SplitMix64)/hash/string-externs · W9+**W9b**
+> real-prelude+multi-module (W9b ported llvm's `methodArityOf` eta-expansion to close the point-free-impl
+> blocker) · **W8b** Floats (`floatToString` via a host-import fallback — the one host-dependent formatter)
+> + `stringIndexOf`/`stringCompare`. **REMAINING (deferred, beyond compute+print MVP):** `stringToFloat`,
+> the **IO/WASI host surface** (file/exec/stdin/args/env — the capability-manifest payoff), and
+> **self-host-on-WasmGC** (far horizon). Engine: **Node ≥22 REQUIRED** (Node 20.x FAILS the finalized
+> Wasm 3.0 GC encoding — §11; the gates auto-`nvm use 24`). Authoritative detail: memory
+> `project_wasmgc_backend`. Next workstream: the browser playground — `PLAYGROUND-DESIGN.md`.
 
 Mirrors how the LLVM backend was staged (slices 1–14). Each slice is gated by
 `diff_wasm.sh` on its fixture before the next starts.
