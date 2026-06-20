@@ -31,6 +31,10 @@ import support.path.{dirOf, baseOf, chopExt, joinPath}
 -- A build either succeeds (writing the binary) or fails with a message.
 public export data BuildResult = BuildOk String | BuildErr String
 
+-- Backend target: TNative = the LLVM/clang native binary (default); TWasm =
+-- WasmGC via the wasm_emit entry + wasm-tools assemble/validate.
+public export data BuildTarget = TNative | TWasm
+
 -- ---- small string helpers (externs only — keeps this module self-contained) ----
 
 -- Trim a single trailing newline from command output (brew/pkg-config add one).
@@ -116,11 +120,18 @@ detectGCBare cc =
 -- root  = repo root (assets live under it)
 -- medaka = path to the medaka exe (for the emit shell-out)
 -- cc    = C compiler
+-- target = TNative (LLVM/clang) | TWasm (WasmGC + wasm-tools)
 -- inputAbs = absolute path of the user .mdk entry
 -- outPath  = output binary path
 export
-runBuild : String -> String -> String -> String -> String -> <IO> BuildResult
-runBuild root medaka cc inputAbs outPath =
+runBuild : String -> String -> String -> BuildTarget -> String -> String -> <IO> BuildResult
+runBuild root medaka cc target inputAbs outPath = match target
+  TNative => runBuildNative root medaka cc inputAbs outPath
+  TWasm => runBuildWasm root medaka inputAbs outPath
+
+-- ---- native (LLVM/clang) target — the original path ----
+runBuildNative : String -> String -> String -> String -> String -> <IO> BuildResult
+runBuildNative root medaka cc inputAbs outPath =
   let emitter = joinPath root "selfhost/entries/llvm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
@@ -144,6 +155,70 @@ runBuild root medaka cc inputAbs outPath =
         match writeFile llPath ir
           Err e => BuildErr ("error: could not write IR: " ++ e)
           Ok _ => clangLink cc rtC llPath outPath inputAbs
+
+-- ---- wasm (WasmGC + wasm-tools) target ----
+-- Structurally identical to runBuildNative: run the emitter (here the WasmGC
+-- modules entry) via a fresh subprocess, capture its WAT on stdout, then assemble
+-- with `wasm-tools parse` (the clang analogue) and `wasm-tools validate` (GC
+-- validation, on by default) instead of clang.
+--
+-- EMITTER BINARY.  Like the LLVM path, the emitter must be a COMPILED binary, not
+-- `medaka run <entry>`: the entry's `main = match args ()` needs the `args` runtime
+-- extern, which exists in the native runtime but NOT in the native interpreter's
+-- run mode — so `medaka run <emitter>` fails at resolve (`unbound identifier:
+-- args`) for the LLVM entry too.  The LLVM path sidesteps this via the compiled
+-- MEDAKA_EMITTER binary.  The wasm peer uses MEDAKA_WASM_EMITTER (built by
+-- test/wasm/build_wasm_oracle.sh as test/bin/wasm_emit_modules_main).  If unset we
+-- fall back to `medaka run` (which mirrors the LLVM fallback — also non-functional
+-- without the binary, but the failure is surfaced clearly).
+-- Args mirror the LLVM root set: the COMPILED binary takes positional
+-- <runtime> <core> <entry> <inputDir> <selfhost> <stdlib> (the wasm entry takes
+-- any number of roots after the entry).
+runBuildWasm : String -> String -> String -> String -> <IO> BuildResult
+runBuildWasm root medaka inputAbs outPath =
+  let emitter = joinPath root "selfhost/entries/wasm_emit_modules_main.mdk"
+  let runtimeP = joinPath root "stdlib/runtime.mdk"
+  let preludeP = joinPath root "stdlib/core.mdk"
+  let selfhostDir = joinPath root "selfhost"
+  let stdlibDir = joinPath root "stdlib"
+  let inputDir = findProjectRoot (dirOf inputAbs)
+  let watPath = "/tmp/medaka_build_" ++ baseOf (chopExt inputAbs) ++ ".wat"
+  let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, selfhostDir, stdlibDir]
+  let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
+  let useNativeBin = wasmEmitter != ""
+  let emitProg = if useNativeBin then wasmEmitter else medaka
+  let emitArgs = if useNativeBin then emitArgsBase else "run" :: emitter :: emitArgsBase
+  match probeWasmTools ()
+    None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm."
+    Some _ => match runCommand emitProg emitArgs
+      Err e => BuildErr ("error: could not run wasm emitter (" ++ emitProg ++ "): " ++ e)
+      Ok (code, watRaw, emitErr) => if code != 0 then BuildErr ("error: wasm emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
+      else
+        let wat = stripTrailingUnit watRaw
+        if stringLength wat == 0 then BuildErr ("error: wasm emitter produced empty WAT for " ++ inputAbs ++ "\n" ++ emitErr)
+        else
+          match writeFile watPath wat
+            Err e => BuildErr ("error: could not write WAT: " ++ e)
+            Ok _ => wasmAssemble watPath outPath inputAbs
+
+-- Probe `wasm-tools` up front (the wasm analogue of the implicit clang
+-- requirement).  `wasm-tools --version` exits 0 iff the tool is reachable.
+probeWasmTools : Unit -> <IO> Option Unit
+probeWasmTools _ = match runCommand "wasm-tools" ["--version"]
+  Ok (0, _, _) => Some ()
+  _ => None
+
+-- STEP 2 (wasm): assemble the WAT to a .wasm with `wasm-tools parse`, then GC-
+-- validate it with `wasm-tools validate`.  Surfaces each tool's own stderr on
+-- failure.  `--features=all` matches the gate scripts' validate (GC + tail-call).
+wasmAssemble : String -> String -> String -> <IO> BuildResult
+wasmAssemble watPath outPath inputAbs = match runCommand "wasm-tools" ["parse", watPath, "-o", outPath]
+  Err e => BuildErr ("error: could not run wasm-tools parse: " ++ e)
+  Ok (0, _, _) => match runCommand "wasm-tools" ["validate", "--features=all", outPath]
+    Err e => BuildErr ("error: could not run wasm-tools validate: " ++ e)
+    Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)
+    Ok (_, _, valErr) => BuildErr ("error: wasm-tools validate rejected " ++ outPath ++ "\n" ++ valErr)
+  Ok (_, _, parseErr) => BuildErr ("error: wasm-tools parse failed assembling " ++ inputAbs ++ "\n" ++ parseErr)
 -- EMIT STEP.  Two paths, selected by the MEDAKA_EMITTER env var:
 --   * set   → invoke that NATIVE EMITTER BINARY directly (OCaml-free path — the
 --             clang(seed) binary from test/bootstrap_from_seed.sh).  Args are the
