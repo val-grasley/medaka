@@ -1,0 +1,2 @@
+-- W8b: hashFloat — bit-reinterpret + mix64, masked to [0,2^30).
+main = hashFloat 3.14

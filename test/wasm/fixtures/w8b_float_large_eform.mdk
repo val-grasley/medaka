@@ -1,0 +1,4 @@
+-- W8b: a very large float → %e form (exp >= 12).  Built via runtime arithmetic
+-- (1000000*1000000) to avoid the LLVM-backend's bare-e-form-literal const limitation;
+-- floatToString renders it "1e+12" (byte-matching the oracle's %.12g).
+main = floatToString (intToFloat 1000000 * intToFloat 1000000)

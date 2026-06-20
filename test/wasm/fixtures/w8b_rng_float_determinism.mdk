@@ -1,0 +1,5 @@
+-- W8b: randomFloat DETERMINISM — a seeded draw maps SplitMix64 → f64 in [-1,1).
+-- floatToString the draw so the %.12g rendering byte-matches the oracle exactly.
+main =
+  let _ = setSeed 777
+  floatToString (randomFloat ())

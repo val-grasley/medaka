@@ -1,0 +1,2 @@
+-- W8b: Float arithmetic — +, -, *, / on boxed f64; result auto-printed via %.12g.
+main = (1.5 + 2.25) * 2.0 - 0.5 / 4.0

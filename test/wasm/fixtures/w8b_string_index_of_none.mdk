@@ -1,0 +1,4 @@
+-- W8b: stringIndexOf — substring absent → None.
+main = match stringIndexOf "zz" "medaka"
+  Some i => i
+  None => 0 - 1

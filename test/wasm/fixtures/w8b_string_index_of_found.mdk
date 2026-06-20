@@ -1,0 +1,4 @@
+-- W8b: stringIndexOf — substring present → Some (codepoint index).
+main = match stringIndexOf "ka" "medaka"
+  Some i => i
+  None => 0 - 1

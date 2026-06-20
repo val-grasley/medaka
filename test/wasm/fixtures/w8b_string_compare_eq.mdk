@@ -1,0 +1,5 @@
+-- W8b: stringCompare — equal strings → Eq.
+main = match stringCompare "medaka" "medaka"
+  Lt => 1
+  Eq => 2
+  Gt => 3

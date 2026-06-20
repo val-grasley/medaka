@@ -16,12 +16,49 @@ if (!path) { console.error('usage: run.js <module.wasm>'); process.exit(2); }
 const bytes = fs.readFileSync(path);
 const acc = [];
 const eacc = [];
+// W8b floatToString host seam: reproduce C `%.12g` + the `.0` append rule byte-for-byte.
+// `%.12g` is FIXED 12-significant-digit %g (NOT shortest-round-trip dtoa), so
+// `toExponential(11)` (12 sig digits, correct round-half-to-even) drives it exactly:
+// pick %e form when exp<-4 || exp>=12 else %f form, strip trailing zeros (and a bare
+// trailing '.'), 2-digit signed exponent, then append ".0" when there is no
+// `.`/`e`/`E`/`n`/`i` (matches medaka_rt.c mdk_float_to_string / mdk_print_float).
+function fmt12g(d) {
+  if (Number.isNaN(d)) return 'nan';
+  if (d === Infinity) return 'inf';
+  if (d === -Infinity) return '-inf';
+  if (d === 0) return (1 / d === -Infinity) ? '-0.0' : '0.0';
+  const neg = d < 0, ad = Math.abs(d);
+  const m = ad.toExponential(11).match(/^(\d)\.(\d+)e([+-]\d+)$/);
+  const digits = m[1] + m[2];           // 12 significant digits
+  const exp = parseInt(m[3], 10);
+  let out;
+  if (exp < -4 || exp >= 12) {
+    let mant = digits.replace(/0+$/, '');
+    if (mant.length > 1) mant = mant[0] + '.' + mant.slice(1);
+    const ea = Math.abs(exp).toString().padStart(2, '0');
+    out = mant + 'e' + (exp < 0 ? '-' : '+') + ea;
+  } else {
+    const pointPos = exp + 1;
+    if (pointPos <= 0) out = '0.' + '0'.repeat(-pointPos) + digits;
+    else if (pointPos >= digits.length) out = digits + '0'.repeat(pointPos - digits.length);
+    else out = digits.slice(0, pointPos) + '.' + digits.slice(pointPos);
+    if (out.indexOf('.') >= 0) out = out.replace(/0+$/, '').replace(/\.$/, '');
+  }
+  if (neg) out = '-' + out;
+  if (!/[.eEni]/.test(out)) out = out + '.0';   // the `.0` append rule
+  return out;
+}
+let floatFmtBuf = [];   // the most-recently-formatted Float's UTF-8 bytes (ASCII)
 const imports = { env: {
   mdk_write_byte: (b) => { acc.push(b & 0xff); },
   // W8 stderr seam (ePutStr / ePutStrLn): the diff gate compares STDOUT only, so a
   // stderr-only fixture's stdout matches on both sides; we still surface these bytes
   // on process.stderr for parity with the native oracle's fd 2.
   mdk_write_err_byte: (b) => { eacc.push(b & 0xff); },
+  // W8b floatToString: format the double, cache its bytes, return the byte length;
+  // the module then reads each byte via mdk_float_fmt_byte to rebuild a $str.
+  mdk_float_fmt: (d) => { floatFmtBuf = Array.from(Buffer.from(fmt12g(d), 'utf8')); return floatFmtBuf.length; },
+  mdk_float_fmt_byte: (i) => floatFmtBuf[i] & 0xff,
 } };
 WebAssembly.instantiate(bytes, imports)
   .then(() => {

@@ -104,6 +104,35 @@
 -- The range/index/slice/record-update codegen uses depth-keyed typed scratch locals
 -- ($__rli<d>/$__raarr<d>/…), declared per function over depths 0..maxDepth.
 --
+-- ── W8b SCOPE (slice W8b — Float + the last externs; MVP-completing) ──────────
+-- Float is now a boxed (struct $float (f64)) (ref eq).  CLOSED this slice:
+--   * Float LITERALS — `f64.const <floatToString-text>` + `struct.new $float` (the same
+--     %.12g rendering the LLVM oracle bakes into its const, so the parsed double is
+--     byte-identical across clang and wasm-tools).  pi/e likewise.
+--   * Float ARITHMETIC / COMPARISON — recovered STRUCTURALLY (Core IR is type-erased)
+--     via `cexprIsFloat`: a Float lit / pi/e / Float-returning extern / Float binop /
+--     a Float-impl param (the impl tag drives `floatLocalsRef`).  Unbox→f64 op→rebox
+--     (arith) or →i31 Bool (compare).  Unary `-` → f64.neg.
+--   * Float EXTERNS — intToFloat/floatToInt/hashFloat/randomFloat are pure WAT (the
+--     boxed-Float conversions; hashFloat = reinterpret+mix64; randomFloat = SplitMix64
+--     → f64 in [-1,1), the medaka_rt.c offset).  floatToString is a HOST IMPORT (the
+--     %.12g formatter; the JS host reproduces it byte-for-byte via toExponential(11) —
+--     the ONE host-dependent formatter, a clean parallel to the deferred IO/WASI seam).
+--   * stringIndexOf / stringCompare — pure WAT building the Option Int / Ordering result
+--     directly (byte search → Some/None; memcmp+length → Lt/Eq/Gt).
+--   * Float value-main auto-print → WFloat → unbox → $mdk_float_to_str → print + '\n'.
+-- This CLOSED the previously-gapped real-prelude `impl Num/Debug/Display/Hash Float`
+-- validation (those impls are retained whole by DCE in every real-prelude program; the
+-- modules gate went 0/9-gap → 9/9-ok).
+-- REMAINING DEFERRED after W8b (the precise residual):
+--   * stringToFloat — a faithful port reimplements strtod (decimal/exp/hex parse +
+--     Option); STOP-and-deferred per plan, still a trap stub (reached only via json/
+--     string `toFloat`, which W8b fixtures avoid).
+--   * The IO/WASI surface — file/exec/stdin/args/env (readFile/runCommand/getLine/
+--     args/getEnv).  These need a host/WASI seam, not pure WAT.
+--   * self-host-on-WasmGC (running the COMPILER on a WasmGC engine).
+-- That is the whole remaining-MVP set; compute + print programs are complete.
+--
 
 -- ── VALUE-REP DECISION (resolve per the slice guardrail) ─────────────────────
 -- W2 used raw i32 for every value.  ADT values force a uniform §8.6 rep.  CHOICE:
@@ -142,11 +171,13 @@ import backend.wasm_preamble.{
   closTypeLines, closApplyLines,
   ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines,
   stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines,
-  rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines
+  rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines,
+  floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
+  strSearchRuntimeLines
 }
 
 -- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
-data WTy = WInt | WBool | WUnit | WStr | WRef | WChar
+data WTy = WInt | WBool | WUnit | WStr | WRef | WChar | WFloat
 
 -- ── program info threaded through the ref-mode emitter ───────────────────────
 -- ctorArs: ctor name → arity.  ctorTypes: ctor name → owning type name.
@@ -330,6 +361,30 @@ useHashRef = Ref False
 useEPutRef : Ref Bool
 useEPutRef = Ref False
 
+-- W8b: the program uses Float (a Float literal, a Float extern, or a Float arith op).
+-- Forces ref-mode (a Float is a boxed (ref eq) $float struct) + gates the Float runtime
+-- (floatRuntimeLines + the floatToString host import).  useFloatHashRef / useFloatRngRef
+-- gate the hashFloat / randomFloat runtimes (which need the shared mix64 / next_u64).
+useFloatRef : Ref Bool
+useFloatRef = Ref False
+
+useFloatHashRef : Ref Bool
+useFloatHashRef = Ref False
+
+useFloatRngRef : Ref Bool
+useFloatRngRef = Ref False
+
+-- W8b: the program uses stringIndexOf / stringCompare (the strSearchRuntime).
+useStrSearchRef : Ref Bool
+useStrSearchRef = Ref False
+
+-- W8b: the names KNOWN to hold a Float in the CURRENT function/impl body — set while
+-- emitting an `impl Num Float` (etc.) method, whose params are Float but appear as bare
+-- CVars the structural detector can't otherwise see.  `cexprIsFloat` consults this so
+-- `add a b = a + b` lowers to f64 ops.  Reset to [] before every non-Float-impl body.
+floatLocalsRef : Ref (List String)
+floatLocalsRef = Ref []
+
 -- the distinct tuple arities used anywhere in the program (construction or match).
 tupleAritiesRef : Ref (List Int)
 tupleAritiesRef = Ref []
@@ -388,10 +443,18 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useRngRef False
   let _ = set_ref useHashRef False
   let _ = set_ref useEPutRef False
+  let _ = set_ref useFloatRef False
+  let _ = set_ref useFloatHashRef False
+  let _ = set_ref useFloatRngRef False
+  let _ = set_ref useStrSearchRef False
   let _ = set_ref tupleAritiesRef []
   let _ = set_ref recFieldsRef (collectRecFields groups)
   let _ = scanProgW7 groups
   let _ = scanImplsW7 impls
+  -- W8b: any Float program needs the $str rep — a Float value-main auto-prints through
+  -- floatToString (a $str), and $mdk_float_to_str builds a $str.  Force useStrRef so the
+  -- $str type + the $str print runtime emit.
+  let _ = if useFloatRef.value then set_ref useStrRef True else ()
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
   let fnArs = collectFnArities groups
@@ -404,7 +467,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   -- hash externs produce/consume (ref eq) i31 values, so they force ref-mode too.
   let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
     || useListRef.value || useArrayRef.value || useRefBoxRef.value || not (isEmptyList tupleAritiesRef.value)
-    || useRngRef.value || useHashRef.value
+    || useRngRef.value || useHashRef.value || useFloatRef.value || useStrSearchRef.value
   let typeNames = distinctTypeNames ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
@@ -446,7 +509,10 @@ isStrExternW : String -> Bool
 isStrExternW name = contains name [
   "intToString", "charToStr", "stringConcat", "stringLength",
   "putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout",
-  "stringSlice", "stringToUpper", "stringToLower", "hashString"]
+  "stringSlice", "stringToUpper", "stringToLower", "hashString",
+  -- W8b: floatToString returns a $str; stringIndexOf/stringCompare read $str (and
+  -- return Option Int / Ordering, built inline).  All force the $str rep.
+  "floatToString", "stringIndexOf", "stringCompare"]
 
 -- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
 -- These force ref-mode (they produce/consume (ref eq) i31 values) but, unlike the
@@ -456,7 +522,9 @@ isStrExternW name = contains name [
 isLeafExternW : String -> Bool
 isLeafExternW name = contains name [
   "randomInt", "randomBool", "randomChar", "setSeed",
-  "hashInt", "hashChar", "hashBool"]
+  "hashInt", "hashChar", "hashBool",
+  -- W8b Float leaf externs (produce/consume a boxed $float (ref eq)).
+  "intToFloat", "floatToInt", "hashFloat", "randomFloat"]
 
 -- W9: arity of a str/leaf extern (the param count its emit* arm consumes).  Used to
 -- build an eta closure when the extern is referenced as a VALUE (point-free / passed
@@ -466,22 +534,28 @@ externArityW name =
   if contains name ["flushStdout", "randomBool"] then 0
   else if contains name ["intToString", "charToStr", "stringLength", "putStr",
     "putStrLn", "ePutStr", "ePutStrLn", "stringToUpper", "stringToLower", "hashString",
-    "stringConcat", "setSeed", "randomChar", "hashInt", "hashChar", "hashBool"] then 1
-  else if contains name ["randomInt"] then 2
+    "stringConcat", "setSeed", "randomChar", "hashInt", "hashChar", "hashBool",
+    -- W8b: floatToString/intToFloat/floatToInt/hashFloat are 1-arg; randomFloat takes
+    -- a Unit arg (like randomChar — emitted + dropped).
+    "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat"] then 1
+  else if contains name ["randomInt", "stringIndexOf", "stringCompare"] then 2
   else if contains name ["stringSlice"] then 3
   else 1
 
 isWasmEtaExtern : String -> Bool
 isWasmEtaExtern name = isStrExternW name || isLeafExternW name
 
--- ── W8b DEFERRED Float externs ────────────────────────────────────────────────
--- These need Float boxing (struct $float) + a byte-exact %.12g float formatter (the
--- `N.0` whole-float canonicalization, nan/inf), which is non-trivial in pure WAT
--- (no printf / dtoa).  Deferred to W8b; emit a clean, recognizable gap instead of an
--- "unbound variable" so the deferral is explicit.
+-- ── W8b: the ONE residual deferred extern ────────────────────────────────────
+-- All other Float externs (floatToString / intToFloat / floatToInt / hashFloat /
+-- randomFloat) are PORTED in W8b (real WAT + the floatToString host seam).  The lone
+-- holdout is `stringToFloat` — a faithful port means reimplementing `strtod` (decimal/
+-- exponent/hex float parsing + the Option result), which would balloon this slice; per
+-- the W8b plan it STOPs-and-defers.  It reaches a real prelude only through Foldable/
+-- json's `toFloat`, which W8b fixtures avoid.  Stub to a trap so the program still
+-- emits; a program that actually parses a Float traps loudly (diverges from the LLVM
+-- oracle, which has strtod).
 isDeferredFloatExternW : String -> Bool
-isDeferredFloatExternW name = contains name [
-  "floatToString", "stringToFloat", "randomFloat", "hashFloat", "intToFloat", "floatToInt"]
+isDeferredFloatExternW name = contains name ["stringToFloat"]
 
 -- W9: a DEFERRED Float extern (boxing + %.12g dtoa is W8b) lowers to a `unreachable`
 -- TRAP STUB rather than aborting the whole build.  The real prelude's `impl Debug/
@@ -588,7 +662,14 @@ scanExprW7 e = match e
     let (hd, args) = flattenApp (CApp f a) []
     let _ = scanW7Head hd
     forEachU scanExprW7 args
-  CVar x _ => if x == "Ref" then set_ref useRefBoxRef True else noteW8Extern x
+  CVar x _ =>
+    if x == "Ref" then set_ref useRefBoxRef True
+    else noteW8Extern x
+  -- W8b: a Float literal forces the Float rep + runtime.  (Bare `pi`/`e` are NOT keyed
+  -- here — scanExprW7 doesn't track binders, so a LOCAL named `e`/`pi`, e.g. `Err e`,
+  -- would false-positive; useFloatRef is instead forced by a Float literal, a Float
+  -- extern, OR a Float-kinded main, post-scan in emitProgram.)
+  CLit (LFloat _) => set_ref useFloatRef True
   CLam _ b => scanExprW7 b
   CBinPrim op l r => let _ = noteW8Binop op in let _ = scanExprW7 l in scanExprW7 r
   CUnOp _ x => scanExprW7 x
@@ -624,6 +705,17 @@ noteW8Extern name =
   let _ = if name == "randomChar" then let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
   let _ = if contains name ["hashInt", "hashChar", "hashBool", "hashString"]
           then set_ref useHashRef True else ()
+  -- W8b: Float externs force the Float runtime (+ ref-mode + $str for floatToString).
+  let _ = if contains name ["floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat"]
+          then set_ref useFloatRef True else ()
+  -- floatToString needs the $str rep to build its result string.
+  let _ = if name == "floatToString" then set_ref useStrRef True else ()
+  -- hashFloat needs the shared mix64 (hashRuntime); randomFloat needs next_u64 (rngRuntime).
+  let _ = if name == "hashFloat" then let _ = set_ref useFloatHashRef True in set_ref useHashRef True else ()
+  let _ = if name == "randomFloat" then let _ = set_ref useFloatRngRef True in set_ref useRngRef True else ()
+  -- W8b: stringIndexOf/stringCompare use the strSearch runtime + cp_count (strLeaf) + $str.
+  let _ = if contains name ["stringIndexOf", "stringCompare"]
+          then let _ = set_ref useStrSearchRef True in let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
   if contains name ["ePutStr", "ePutStrLn"] then set_ref useEPutRef True else ()
 
 -- string `++` is the pure-WAT binary concat ($mdk_str_append) — note the leaf op.
@@ -1117,6 +1209,8 @@ emitRefProgram prog groups =
   let typeSection = emitTypeSection prog
   -- W8: ePutStr/ePutStrLn need a second host import (stderr byte-write).
   let imports = ioByteImportLines ++ (if useEPutRef.value then stderrByteImportLines else [])
+    -- W8b: floatToString is a host import (the %.12g formatter lives JS-side).
+    ++ (if useFloatRef.value then floatFmtImportLines else [])
   let valNames = progValNames prog
   -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
@@ -1144,10 +1238,19 @@ emitRefProgram prog groups =
   let rngRt = if useRngRef.value then rngRuntimeLines else []
   let hashRt = if useHashRef.value then hashRuntimeLines else []
   let hashStrRt = if useHashRef.value && useStrRef.value then hashStringRuntimeLines else []
+  -- W8b: the Float runtime (intToFloat/floatToInt/floatToString) + the hashFloat /
+  -- randomFloat helpers (gated separately since they need mix64 / next_u64) + the
+  -- string index-of / compare runtime.
+  let floatRt = if useFloatRef.value then floatRuntimeLines else []
+  let hashFloatRt = if useFloatHashRef.value then hashFloatRuntimeLines else []
+  let randomFloatRt = if useFloatRngRef.value then randomFloatRuntimeLines else []
+  let strSearchRt = if useStrSearchRef.value then strSearchRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
             ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt
-            ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt ++ dataSegs ++ initLines ++ [")"])
+            ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
+            ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
+            ++ dataSegs ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
 -- distinct literal, emitted in segment-index order.  `array.new_data` reads from
@@ -1386,12 +1489,22 @@ refMainKind prog e = match e
   CLit (LBool _) => WBool
   CLit (LString _) => WStr
   CLit (LChar _) => WChar
+  -- W8b: a Float literal main auto-prints via %.12g (floatToString).
+  CLit (LFloat _) => WFloat
   -- the Bool constructors as values (a dispatched main `… else False`); also lets a
   -- CIf whose arms are dispatch calls recover Bool-ness from a literal-Bool branch.
   CVar "True" _ => WBool
   CVar "False" _ => WBool
-  CBinPrim op _ _ => binOpTy op
+  -- W8b: pi/e are Float values.
+  CVar "pi" _ => WFloat
+  CVar "e" _ => WFloat
+  -- W8b: a Float arith binop (recovered structurally) auto-prints as a Float; otherwise
+  -- the op's kind (arith→Int, compare→Bool, ++→Str).
+  CBinPrim op l r =>
+    if isArithOp op && (cexprIsFloat prog [] l || cexprIsFloat prog [] r) then WFloat
+    else binOpTy op
   CUnOp "!" _ => WBool
+  CUnOp "-" x => if cexprIsFloat prog [] x then WFloat else WInt
   CUnOp _ _ => WInt
   -- a CIf main: prefer whichever branch is conclusively Bool (a comparison / Bool
   -- ctor / `!`), else fall back to the then branch.  A W5 dispatch fixture often has
@@ -1407,6 +1520,8 @@ refMainKind prog e = match e
       if isStrReturningExtern fn then WStr
       else if fn == "randomBool" then WBool
       else if fn == "randomChar" then WChar
+      -- W8b: a Float-returning extern main (intToFloat/randomFloat) auto-prints as Float.
+      else if contains fn ["intToFloat", "randomFloat"] then WFloat
       else if isUnitExtern fn then WUnit
       else refMainKind prog (appHead f)
     h => refMainKind prog h
@@ -1418,7 +1533,9 @@ refMainKind prog e = match e
 isStrReturningExtern : String -> Bool
 isStrReturningExtern name = contains name [
   "intToString", "charToStr", "stringConcat",
-  "stringSlice", "stringToUpper", "stringToLower"]
+  "stringSlice", "stringToUpper", "stringToLower",
+  -- W8b: floatToString returns a String.
+  "floatToString"]
 
 -- the Unit-RESULT IO externs: a `main = putStrLn …` produces Unit and must NOT be
 -- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
@@ -1447,6 +1564,9 @@ refPrintFor WStr = ["    ref.cast (ref $str)", "    call $mdk_print_strln"]
 -- (matches the oracle's pp_value, which renders a Char as its glyph).  Forces the
 -- $str rep + the char-encode strLeaf runtime (see noteW8MainChar).
 refPrintFor WChar = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_char_to_str", "    call $mdk_print_strln"]
+-- W8b: a Float main → unbox the $float → %.12g format ($mdk_float_to_str builds a $str)
+-- → print + '\n' (matches the oracle's mdk_print_float, the same %.12g + .0 rule).
+refPrintFor WFloat = ["    ref.cast (ref $float)", "    struct.get $float 0", "    call $mdk_float_to_str", "    call $mdk_print_strln"]
 refPrintFor WUnit = gap "ref-mode: Unit main has no value to print"
 refPrintFor WRef = gap "ref-mode main produced a non-scalar value — printing ADTs is W6b (Debug)"
 
@@ -1898,7 +2018,12 @@ emitImplGroup : Prog -> ImplG -> <Mut> List String
 emitImplGroup prog (ImplG method tag arity clauses) =
   let fnName = implFnSym tag method
   let params = synthParams arity
+  -- W8b: an `impl … Float` method's params are Float — record their (pattern-var) names
+  -- so the body's bare-CVar arithmetic lowers to f64.  `signum`/`abs`/`negate`/`add`/…
+  -- all take Float args.  Reset for every other impl (Int/String/etc. stay i31).
+  let _ = set_ref floatLocalsRef (if tag == "Float" then concatMapList clausePatVars clauses else [])
   let bodyLines = emitClausesImpl prog fnName params arity clauses
+  let _ = set_ref floatLocalsRef []
   let allLocals = clauseLocals clauses
   let extraLocals = filterList (notIn params) (dedupKeep allLocals)
   let scratch = scratchLocals (clausesMaxDepth clauses)
@@ -1908,6 +2033,9 @@ emitImplGroup prog (ImplG method tag arity clauses) =
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
+
+clausePatVars : CClause -> List String
+clausePatVars (CClause pats _) = concatMapList patVars pats
 
 -- impl bodies use the SAME clause emission as top-level fns; the synthetic fn
 -- "name" (used only for the internal clause-block labels) is the impl symbol.
@@ -1994,12 +2122,14 @@ emitLitRef : Lit -> <Mut> List String
 emitLitRef (LInt n) = ["i32.const " ++ intToString n, "ref.i31"]
 emitLitRef (LBool b) = [if b then "i32.const 1" else "i32.const 0", "ref.i31"]
 emitLitRef LUnit = ["i32.const 0", "ref.i31"]
--- W9: a Float literal in ref-mode (boxed (struct f64) is W8b) lowers to a TRAP STUB,
--- not a `gap`.  Float literals appear in always-retained prelude impl bodies (e.g.
--- `pi`/`e` in core, `impl Num Float`), so DCE can't prune them and they'd abort EVERY
--- real-prelude build; but they're only EVALUATED by a program that uses a Float, which
--- W9 fixtures avoid.  `unreachable` is stack-polymorphic → validates as (ref eq).
-emitLitRef (LFloat _) = ["unreachable"]
+-- W8b: a Float literal in ref-mode boxes the double into a `(struct $float (f64))`.
+-- The f64.const text is `floatToString f` — the SAME `%.12g` rendering the LLVM oracle
+-- bakes into its IR const, so clang and wasm-tools parse the identical double (verified
+-- byte-identical via i64.reinterpret_f64).  `$float` is always in the rec group.  Emitted
+-- as TWO FLAT instructions (not the folded `struct.new $float (f64.const …)`) so it
+-- composes with the surrounding flat instruction stream (a folded form mid-stream breaks
+-- wasm-tools' stack tracking).
+emitLitRef (LFloat f) = ["f64.const " ++ floatToString f, "struct.new $float"]
 -- W6: a String literal is a §3.3 `$str` boxed value.  Its UTF-8 bytes go in a
 -- passive data segment (the §11-preferred non-const-array init), read at run time by
 -- `array.new_data`; the cached cp_count is computed at emit time (UTF-8 codepoint
@@ -2082,7 +2212,12 @@ emitVarRef prog env d x =
   -- = Float) are W8b-shaped — they appear only in always-retained Bounded/Num impl
   -- bodies (DCE can't prune them), executed only by a program that actually uses them,
   -- which W9 fixtures avoid.  Trap-stub so the program emits.
-  else if contains x ["intMinBound", "intMaxBound", "pi", "e"] then ["unreachable"]
+  -- W8b: the Float math constants pi/e are boxed (struct $float) — the SAME decimal
+  -- text the LLVM oracle boxes (3.141592653589793 / 2.718281828459045).  intMin/MaxBound
+  -- are 64-bit Ints that overflow i31 and are W8b-shaped; they trap-stub still.
+  else if x == "pi" then ["f64.const 3.141592653589793", "struct.new $float"]
+  else if x == "e" then ["f64.const 2.718281828459045", "struct.new $float"]
+  else if contains x ["intMinBound", "intMaxBound"] then ["unreachable"]
   else if isCtor prog x then emitCtorConstruct prog env d x []
   else if isDeferredFloatExternW x then floatExternStub x
   else if isUnimplStrExternW x then floatExternStub x
@@ -2136,15 +2271,93 @@ emitBinRef prog env d "++" l r =
 -- expression position (e.g. `gen () :: acc` in arbitraryList's where-go).
 emitBinRef prog env d "::" l r =
   ["i32.const 0"] ++ emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["struct.new $C_Cons"]
+-- W8b: Float arithmetic / comparison.  Core IR is type-erased (CBinPrim carries no
+-- LTy), so Float-ness is recovered STRUCTURALLY from the operands (a Float lit, pi/e,
+-- a Float-returning extern, or a nested Float binop).  Both operands of a well-typed
+-- binop share a type, so testing EITHER suffices.  Float operands are boxed $float
+-- structs: unbox via `struct.get $float 0`, run f64 ops, then rebox arith results
+-- (`struct.new $float`) / produce an i31 Bool for comparisons.
 emitBinRef prog env d op l r =
-  let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
-  let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
-  li ++ ri ++ [wasmBinOp op, "ref.i31"]
+  if isArithOrCmp op && (cexprIsFloat prog env l || cexprIsFloat prog env r) then
+    emitFloatBinRef prog env d op l r
+  else
+    let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
+    let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
+    li ++ ri ++ [wasmBinOp op, "ref.i31"]
+
+-- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  Comparison
+-- (==,!=,<,>,<=,>=) → unbox both, f64 compare → i31 Bool.  (`%` is integer-only and
+-- never reaches here for Float.)
+emitFloatBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
+emitFloatBinRef prog env d op l r =
+  let lf = emitRefExpr prog env d l ++ ["ref.cast (ref $float)", "struct.get $float 0"]
+  let rf = emitRefExpr prog env d r ++ ["ref.cast (ref $float)", "struct.get $float 0"]
+  if isCmpOp op then lf ++ rf ++ [wasmFloatCmp op, "ref.i31"]
+  else lf ++ rf ++ [wasmFloatArith op, "struct.new $float"]
+
+isArithOrCmp : String -> Bool
+isArithOrCmp op = contains op ["+", "-", "*", "/", "==", "!=", "<", ">", "<=", ">="]
+
+isCmpOp : String -> Bool
+isCmpOp op = contains op ["==", "!=", "<", ">", "<=", ">="]
+
+wasmFloatArith : String -> String
+wasmFloatArith "+" = "f64.add"
+wasmFloatArith "-" = "f64.sub"
+wasmFloatArith "*" = "f64.mul"
+wasmFloatArith "/" = "f64.div"
+wasmFloatArith op = panic ("wasm W8b: not a Float arith op '" ++ op ++ "'")
+
+wasmFloatCmp : String -> String
+wasmFloatCmp "==" = "f64.eq"
+wasmFloatCmp "!=" = "f64.ne"
+wasmFloatCmp "<" = "f64.lt"
+wasmFloatCmp ">" = "f64.gt"
+wasmFloatCmp "<=" = "f64.le"
+wasmFloatCmp ">=" = "f64.ge"
+wasmFloatCmp op = panic ("wasm W8b: not a Float compare op '" ++ op ++ "'")
+
+-- W8b: STRUCTURAL Float detection (Core IR is type-erased).  An expression is Float if
+-- it is a Float literal, the pi/e constants (NOT shadowed by a local of that name —
+-- `env` carries the bound locals; `Err e => 0 - e`'s `e` is the LOCAL, not Euler's),
+-- a Float-returning extern application (intToFloat / randomFloat), a Float arith binop,
+-- a unary `-` on a Float, or a let/block/if whose result is Float.  Conservative:
+-- anything else → not Float (Int path).  Sufficient for the W8b fixtures.
+cexprIsFloat : Prog -> List String -> CExpr -> Bool
+cexprIsFloat prog env e = match e
+  CLit (LFloat _) => True
+  CVar "pi" _ => not (contains "pi" env)
+  CVar "e" _ => not (contains "e" env)
+  -- W8b: a name known to be Float in the current body (an `impl Num Float` param).
+  CVar x _ => contains x floatLocalsRef.value
+  CBinPrim op l r => isArithOp op && (cexprIsFloat prog env l || cexprIsFloat prog env r)
+  CUnOp "-" x => cexprIsFloat prog env x
+  CLet _ (PVar x) _ b => cexprIsFloat prog (x :: env) b
+  CLet _ _ _ b => cexprIsFloat prog env b
+  CBlock stmts => cexprIsFloatBlock prog env stmts
+  CIf _ t f => cexprIsFloat prog env t || cexprIsFloat prog env f
+  CApp f a => match appHead (CApp f a)
+    CVar fn _ => contains fn ["intToFloat", "randomFloat"] && not (contains fn env)
+    _ => False
+  _ => False
+
+isArithOp : String -> Bool
+isArithOp op = contains op ["+", "-", "*", "/"]
+
+cexprIsFloatBlock : Prog -> List String -> List CStmt -> Bool
+cexprIsFloatBlock _ _ [] = False
+cexprIsFloatBlock prog env [(CSExpr e)] = cexprIsFloat prog env e
+cexprIsFloatBlock prog env ((CSLet _ (PVar x) _)::rest) = cexprIsFloatBlock prog (x :: env) rest
+cexprIsFloatBlock prog env (_::rest) = cexprIsFloatBlock prog env rest
 
 emitUnRef : Prog -> List String -> Int -> String -> CExpr -> <Mut> List String
 emitUnRef prog env d "-" x =
-  let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_s"]
-  ["i32.const 0"] ++ xi ++ ["i32.sub", "ref.i31"]
+  -- W8b: unary `-` on a Float negates the f64 (f64.neg), reboxing; else integer negate.
+  if cexprIsFloat prog env x then
+    emitRefExpr prog env d x ++ ["ref.cast (ref $float)", "struct.get $float 0", "f64.neg", "struct.new $float"]
+  else
+    let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_s"]
+    ["i32.const 0"] ++ xi ++ ["i32.sub", "ref.i31"]
 emitUnRef prog env d "!" x =
   let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_u"]
   xi ++ ["i32.eqz", "ref.i31"]
@@ -2265,6 +2478,24 @@ emitStrExternRef prog env d "stringToLower" args = match args
 emitStrExternRef prog env d "hashString" args = match args
   [s] => emitRefExpr prog env d s ++ ["ref.cast (ref $str)", "call $mdk_hash_string", "ref.i31"]
   _ => gap "wasm W8: hashString takes exactly one argument"
+-- W8b: floatToString : a boxed $float → unbox → $mdk_float_to_str → (ref $str).
+emitStrExternRef prog env d "floatToString" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $float)", "struct.get $float 0", "call $mdk_float_to_str"]
+  _ => gap "wasm W8b: floatToString takes exactly one argument"
+-- W8b: stringIndexOf needle hay : two $str → Option Int (ref eq).  The runtime fn
+-- builds the Some/None result directly (Some idx / None), so no inline ctor here.
+emitStrExternRef prog env d "stringIndexOf" args = match args
+  [needle, hay] =>
+    emitRefExpr prog env d needle ++ ["ref.cast (ref $str)"]
+      ++ emitRefExpr prog env d hay ++ ["ref.cast (ref $str)", "call $mdk_str_index_of"]
+  _ => gap "wasm W8b: stringIndexOf takes exactly two arguments"
+-- W8b: stringCompare a b : two $str → Ordering (ref eq).  The runtime fn returns the
+-- Lt/Eq/Gt i31 immediate directly.
+emitStrExternRef prog env d "stringCompare" args = match args
+  [a, b] =>
+    emitRefExpr prog env d a ++ ["ref.cast (ref $str)"]
+      ++ emitRefExpr prog env d b ++ ["ref.cast (ref $str)", "call $mdk_str_compare"]
+  _ => gap "wasm W8b: stringCompare takes exactly two arguments"
 emitStrExternRef _ _ _ name _ = gap ("wasm W6: unsupported string extern '" ++ name ++ "'")
 
 -- ── W8 RNG + hash LEAF externs (RUNTIME-DESIGN §5 RNG / §5 hash) ─────────────
@@ -2301,6 +2532,21 @@ emitLeafExternRef prog env d "hashChar" args = match args
 emitLeafExternRef prog env d "hashBool" args = match args
   [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_bool", "ref.i31"]
   _ => gap "wasm W8: hashBool takes exactly one argument"
+-- W8b Float leaf externs.  intToFloat : i31 Int → $mdk_int_to_float → boxed $float.
+-- floatToInt : $float → $mdk_float_to_int → i31 Int.  hashFloat : $float → masked i32 →
+-- i31.  randomFloat : Unit arg dropped → $mdk_random_float → boxed $float.
+emitLeafExternRef prog env d "intToFloat" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_int_to_float"]
+  _ => gap "wasm W8b: intToFloat takes exactly one argument"
+emitLeafExternRef prog env d "floatToInt" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $float)", "call $mdk_float_to_int", "ref.i31"]
+  _ => gap "wasm W8b: floatToInt takes exactly one argument"
+emitLeafExternRef prog env d "hashFloat" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $float)", "call $mdk_hash_float", "ref.i31"]
+  _ => gap "wasm W8b: hashFloat takes exactly one argument"
+emitLeafExternRef prog env d "randomFloat" args = match args
+  [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_random_float"]
+  _ => gap "wasm W8b: randomFloat takes exactly one (Unit) argument"
 emitLeafExternRef _ _ _ name _ = gap ("wasm W8: unsupported leaf extern '" ++ name ++ "'")
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
