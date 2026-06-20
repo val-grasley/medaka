@@ -373,6 +373,40 @@ broader than the capability-platform narrative; folding it in would unbalance th
 6. **Stage 5 (separate milestone) — the reactor + `Async`** (async stage (c)): non-blocking
    socket externs + scheduler swap → concurrent server. Additive per the locked contract.
 
+### 6.1 Deployment & hosting — DECIDED (2026-06-19)
+
+**Split hosting, chosen for a solo dev on a limited budget:**
+- **Static front** (the page + browser-run wasm) → a **free static/CDN host** (Cloudflare Pages /
+  GitHub Pages). Untrusted user code runs in the *visitor's* browser, never server-side.
+- **Compile API** (the part that runs `medaka`) → a **container on a scale-to-zero platform
+  (Cloud Run or Fly Machines).** ~$0 at hobby traffic (free tier + idle scales to zero); the
+  platform supplies TLS + per-request CPU/mem/timeout caps — much of the §9d compile-sandboxing
+  *for free*.
+
+**Why a container, NOT edge-FaaS.** The compile step **execs native binaries** (`medaka check/build
+--target wasm` → the wasm-emitter binary → `wasm-tools`). Edge runtimes (Cloudflare Workers, et al.)
+**cannot exec a subprocess or touch a filesystem** → the compile step can't live there. A container
+can. *Do not conflate the project's edge/sandbox pitch with the compile host:* the pitch is about
+where the **user program** runs (browser now; a WasmGC edge host later — the capability platform),
+**not** where the compiler runs. The compile server is boring trusted infra; host it boringly.
+
+**Stage-3 Medaka socket server is DEFERRED, not a launch dependency.** The containerized **Stage-2
+Node stub IS the v1 production backend** (it already takes `PORT`, zero npm deps). The Stage-3 Medaka
+HTTP server (`<Net>` sockets + HTTP-in-Medaka) becomes a separate **language milestone** — build it
+when you want the dogfood / async-reactor substrate, then swap it into the same container (or a ~$5
+always-on box). The locked async contract makes that swap non-breaking. **Backend implication: we do
+NOT build the `<Net>` externs / HTTP parser to launch** — ship sooner on the stub.
+
+**Container packaging (a Stage-2b follow-up):** a slim image bundling `medaka` +
+`test/bin/wasm_emit_modules_main` + `wasm-tools` + `stdlib/*.mdk` (compiler reads stdlib from disk via
+`MEDAKA_ROOT`), the stub `server.js`, env `MEDAKA_WASM_EMITTER`/`MEDAKA_EMITTER` set, listen on `$PORT`.
+No clang on the wasm path → the image stays small.
+
+**Endgame reframe (why not to over-invest in server infra):** the compiler self-hosts and has a WasmGC
+backend → the far-horizon goal is **compile-in-the-browser** (self-host-on-WasmGC, no server at all).
+That makes the compile server a *stopgap* — favor the cheapest bridge (the scale-to-zero container),
+not elaborate always-on infrastructure.
+
 ---
 
 ## 7. What's explicitly NOT needed for a v1 playground
