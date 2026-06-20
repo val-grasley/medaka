@@ -1,0 +1,6 @@
+-- W7: tuple build + destructure through a function (HTuple field extraction).
+swap p = match p
+  (a, b) => (b, a)
+
+main = match (swap (7, 3))
+  (x, y) => x - y

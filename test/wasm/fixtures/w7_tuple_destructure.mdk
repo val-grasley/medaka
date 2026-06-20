@@ -1,0 +1,5 @@
+-- W7: a tuple construct + pattern destructure (per-arity $C_Tup struct + HTuple).
+sum3 t = match t
+  (a, b, c) => a + b + c
+
+main = sum3 (10, 20, 12)

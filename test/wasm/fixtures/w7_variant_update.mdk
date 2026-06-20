@@ -1,0 +1,10 @@
+-- W7: a named-field variant update Con { base | f = v } (CVariantUpdate).
+data Event = Click { ex : Int, ey : Int } | Scroll Int
+
+bump e = Click { e | ex = 99 }
+
+getx e = match e
+  Click { ex = x } => x
+  Scroll n => n
+
+main = getx (bump (Click { ex = 1, ey = 2 }))

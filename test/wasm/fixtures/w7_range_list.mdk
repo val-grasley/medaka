@@ -1,0 +1,6 @@
+-- W7: an inclusive range list [1..=5] (back-to-front cons loop), summed.
+sumL xs = match xs
+  [] => 0
+  h :: t => h + sumL t
+
+main = sumL [1..=5]
