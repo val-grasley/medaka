@@ -1,0 +1,2 @@
+-- W8b: floatToString of a WHOLE float → "N.0" (the trailing-dot canonicalization).
+main = 1.0

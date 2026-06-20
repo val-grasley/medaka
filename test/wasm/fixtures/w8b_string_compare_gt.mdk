@@ -1,0 +1,5 @@
+-- W8b: stringCompare — "pear" > "peach" → Gt (prefix "pea", then 'r' > 'c').
+main = match stringCompare "pear" "peach"
+  Lt => 1
+  Eq => 2
+  Gt => 3

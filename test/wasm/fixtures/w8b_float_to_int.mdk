@@ -1,0 +1,2 @@
+-- W8b: floatToInt — truncate toward zero (3.9 → 3).
+main = floatToInt 3.9

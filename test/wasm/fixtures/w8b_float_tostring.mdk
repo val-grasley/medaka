@@ -1,0 +1,2 @@
+-- W8b: floatToString as an explicit extern → String (round, then a fractional).
+main = floatToString 42.0

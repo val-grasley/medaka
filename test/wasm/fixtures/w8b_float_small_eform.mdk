@@ -1,0 +1,4 @@
+-- W8b: a very small float → %e form (exp < -4).  Built via runtime arithmetic
+-- (1.0/100000) to avoid the LLVM-backend's bare-e-form-literal const limitation;
+-- floatToString renders it "1e-05" (byte-matching the oracle's %.12g).
+main = floatToString (intToFloat 1 / intToFloat 100000)

@@ -1,0 +1,2 @@
+-- W8b: floatToString of zero → "0.0".
+main = 0.0

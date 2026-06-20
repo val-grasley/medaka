@@ -591,3 +591,149 @@ hashStringRuntimeLines = [
   "    (i32.wrap_i64 (i64.and (local.get $h) (i64.const 0x3FFFFFFF))))",
 ]
 
+-- ── W8b Float externs (RUNTIME-DESIGN §5 Float / WASMGC-DESIGN §3.3 boxed Float) ──
+-- The §3.3 boxed Float is `(struct $float (field f64))`, declared unconditionally in
+-- the rec group.  A Float value is a boxed (ref eq) struct; a Float LITERAL emits
+-- `(struct.new $float (f64.const <floatToString-text>))` — the SAME `%.12g` rendering
+-- the LLVM oracle bakes into its IR const, so the parsed double is byte-identical
+-- across clang and wasm-tools (verified: identical i64.reinterpret_f64 bit patterns).
+--
+-- floatToString is the CRUX.  The native impl is `snprintf(buf,"%.12g",d)` + a `.0`
+-- append (when the lexeme has no `.`/`e`/`E`/`n`/`i`).  `%.12g` is FIXED-12-significant
+-- `%g`, not shortest-round-trip dtoa, but reproducing its correctly-rounded decimal
+-- conversion + exponent-form thresholds + trailing-zero stripping in pure WAT means
+-- reimplementing dtoa (no printf available).  Per the W8b plan's authorized fallback,
+-- floatToString is a HOST IMPORT: the JS host reproduces `%.12g` byte-for-byte via
+-- `toExponential(11)` (12 significant digits, correct round-half-to-even) + %g-style
+-- form selection + trailing-zero trim + the `.0` rule (test/wasm/run.js fmt12g).  This
+-- is the ONE host-dependent formatter — a clean parallel to the deferred IO/WASI host
+-- surface; a non-JS wedge target would later need the in-WAT dtoa.  The host caches the
+-- formatted bytes and exposes them as (length, byte-at-index) so the module rebuilds a
+-- $str without GC<->JS interop.
+export
+floatFmtImportLines : List String
+floatFmtImportLines = [
+  "  ;; -- W8b floatToString host seam (%.12g — reproduced JS-side, see run.js) --",
+  "  (import \"env\" \"mdk_float_fmt\" (func $mdk_float_fmt (param f64) (result i32)))",
+  "  (import \"env\" \"mdk_float_fmt_byte\" (func $mdk_float_fmt_byte (param i32) (result i32)))",
+]
+
+-- the Float runtime (RUNTIME-DESIGN §5).  intToFloat/floatToInt are INTRINSIC (the
+-- §3.3 box <-> raw conversion); floatToString rebuilds a $str from the host-formatted
+-- bytes.  All byte-identical to the native oracle.
+export
+floatRuntimeLines : List String
+floatRuntimeLines = [
+  "  ;; -- W8b Float runtime (byte-identical to medaka_rt.c) --",
+  "  ;; intToFloat : i32 -> boxed (struct $float).",
+  "  (func $mdk_int_to_float (param $n i32) (result (ref $float))",
+  "    (struct.new $float (f64.convert_i32_s (local.get $n))))",
+  "  ;; floatToInt : boxed $float -> i32 (truncate toward zero, matching (int)d).",
+  "  (func $mdk_float_to_int (param $f (ref $float)) (result i32)",
+  "    (i32.trunc_f64_s (struct.get $float 0 (local.get $f))))",
+  "  ;; floatToString : the host formats (%.12g + .0 rule) into a cache; copy the bytes",
+  "  ;; into a fresh $str.  cp_count == byte_len (the %.12g output is ASCII).",
+  "  (func $mdk_float_to_str (param $d f64) (result (ref $str))",
+  "    (local $n i32) (local $i i32) (local $buf (ref $u8arr))",
+  "    (local.set $n (call $mdk_float_fmt (local.get $d)))",
+  "    (local.set $buf (array.new $u8arr (i32.const 0) (local.get $n)))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (array.set $u8arr (local.get $buf) (local.get $i) (call $mdk_float_fmt_byte (local.get $i)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))",
+  "    (struct.new $str (local.get $n) (local.get $buf)))",
+]
+
+-- the float HASH ($mdk_hash_float) — bit-reinterpret f64 -> i64 then mix64 & mask.
+-- Emitted only when the program uses BOTH Float and a per-type hasher (so the shared
+-- $mdk_hash_mix64 from hashRuntimeLines is in scope).
+export
+hashFloatRuntimeLines : List String
+hashFloatRuntimeLines = [
+  "  ;; hashFloat : reinterpret the double's bits as i64 -> mix64 -> mask [0,2^30).",
+  "  (func $mdk_hash_float (param $f (ref $float)) (result i32)",
+  "    (i32.wrap_i64 (i64.and (call $mdk_hash_mix64 (i64.reinterpret_f64 (struct.get $float 0 (local.get $f)))) (i64.const 0x3FFFFFFF))))",
+]
+
+-- randomFloat ($mdk_random_float) — SplitMix64 draw -> f64 in [-1,1).  Needs the W8
+-- $mdk_next_u64 from rngRuntimeLines (gated on float+rng co-use).  `(next>>11)` is the
+-- top 53 bits; * 2^-53 gives [0,1); * 2 - 1 gives [-1,1) — EXACTLY medaka_rt.c.
+export
+randomFloatRuntimeLines : List String
+randomFloatRuntimeLines = [
+  "  ;; randomFloat : SplitMix64 -> f64 in [-1,1) (NOTE the -1 offset — see medaka_rt.c).",
+  "  (func $mdk_random_float (result (ref $float))",
+  "    (struct.new $float",
+  "      (f64.sub",
+  "        (f64.mul",
+  "          (f64.mul (f64.convert_i64_u (i64.shr_u (call $mdk_next_u64) (i64.const 11)))",
+  "                   (f64.const 1.1102230246251565e-16))",
+  "          (f64.const 2.0))",
+  "        (f64.const 1.0))))",
+]
+
+-- ── W8b string index-of / compare ($str-dependent) ───────────────────────────
+-- $mdk_str_index_of(needle, hay) -> Option Int (ref eq): the first BYTE-level match's
+-- codepoint index as `Some idx`, or `None` if absent (empty needle -> Some 0).  Builds
+-- the reserved Option ctors directly: None = `ref.i31 1`, Some = struct.new $C_Some
+-- (tag 0 + the i31 index).  ($C_Some / the Option root are emitted unconditionally in
+-- ref-mode.)  $mdk_str_compare(a, b) -> Ordering (ref eq): memcmp the common prefix,
+-- tie-break by length, return Lt/Eq/Gt (i31 0/1/2).  Both byte-identical to medaka_rt.c
+-- (mdk_string_index_of / mdk_string_compare).  Needs $mdk_cp_count from strLeafRuntime.
+export
+strSearchRuntimeLines : List String
+strSearchRuntimeLines = [
+  "  ;; -- W8b stringIndexOf / stringCompare (byte-identical to medaka_rt.c) --",
+  "  (func $mdk_str_index_of (param $needle (ref $str)) (param $hay (ref $str)) (result (ref eq))",
+  "    (local $nb (ref $u8arr)) (local $hb (ref $u8arr)) (local $nl i32) (local $hl i32)",
+  "    (local $b i32) (local $j i32) (local $ok i32)",
+  "    (local.set $nb (struct.get $str $bytes (local.get $needle)))",
+  "    (local.set $hb (struct.get $str $bytes (local.get $hay)))",
+  "    (local.set $nl (array.len (local.get $nb)))",
+  "    (local.set $hl (array.len (local.get $hb)))",
+  "    ;; empty needle -> Some 0 (codepoint index 0).",
+  "    (if (i32.eqz (local.get $nl))",
+  "      (then (return (struct.new $C_Some (i32.const 0) (ref.i31 (i32.const 0))))))",
+  "    (local.set $b (i32.const 0))",
+  "    (block $done (loop $scan",
+  "      ;; while b + nl <= hl",
+  "      (br_if $done (i32.gt_s (i32.add (local.get $b) (local.get $nl)) (local.get $hl)))",
+  "      (local.set $ok (i32.const 1))",
+  "      (local.set $j (i32.const 0))",
+  "      (block $cmpd (loop $cmpl",
+  "        (br_if $cmpd (i32.ge_s (local.get $j) (local.get $nl)))",
+  "        (if (i32.ne (array.get_u $u8arr (local.get $hb) (i32.add (local.get $b) (local.get $j)))",
+  "                    (array.get_u $u8arr (local.get $nb) (local.get $j)))",
+  "          (then (local.set $ok (i32.const 0)) (br $cmpd)))",
+  "        (local.set $j (i32.add (local.get $j) (i32.const 1))) (br $cmpl)))",
+  "      (if (local.get $ok)",
+  "        (then (return (struct.new $C_Some (i32.const 0)",
+  "          (ref.i31 (call $mdk_cp_count (local.get $hb) (local.get $b)))))))",
+  "      (local.set $b (i32.add (local.get $b) (i32.const 1))) (br $scan)))",
+  "    ;; not found -> None (i31 ordinal 1).",
+  "    (ref.i31 (i32.const 1)))",
+  "  (func $mdk_str_compare (param $a (ref $str)) (param $b (ref $str)) (result (ref eq))",
+  "    (local $ab (ref $u8arr)) (local $bb (ref $u8arr)) (local $al i32) (local $bl i32)",
+  "    (local $m i32) (local $i i32) (local $ca i32) (local $cb i32)",
+  "    (local.set $ab (struct.get $str $bytes (local.get $a)))",
+  "    (local.set $bb (struct.get $str $bytes (local.get $b)))",
+  "    (local.set $al (array.len (local.get $ab)))",
+  "    (local.set $bl (array.len (local.get $bb)))",
+  "    (local.set $m (if (result i32) (i32.lt_s (local.get $al) (local.get $bl))",
+  "      (then (local.get $al)) (else (local.get $bl))))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $done (loop $l",
+  "      (br_if $done (i32.ge_s (local.get $i) (local.get $m)))",
+  "      (local.set $ca (array.get_u $u8arr (local.get $ab) (local.get $i)))",
+  "      (local.set $cb (array.get_u $u8arr (local.get $bb) (local.get $i)))",
+  "      ;; byte less -> Lt (i31 0); byte greater -> Gt (i31 2).",
+  "      (if (i32.lt_u (local.get $ca) (local.get $cb)) (then (return (ref.i31 (i32.const 0)))))",
+  "      (if (i32.gt_u (local.get $ca) (local.get $cb)) (then (return (ref.i31 (i32.const 2)))))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))",
+  "    ;; common prefix equal: shorter < longer; equal length -> Eq.",
+  "    (if (i32.lt_s (local.get $al) (local.get $bl)) (then (return (ref.i31 (i32.const 0)))))",
+  "    (if (i32.gt_s (local.get $al) (local.get $bl)) (then (return (ref.i31 (i32.const 2)))))",
+  "    (ref.i31 (i32.const 1)))",
+]
+
