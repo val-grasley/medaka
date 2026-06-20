@@ -1056,6 +1056,23 @@ tagInt e v =
   let _ = emit e ("  " ++ r ++ " = or i64 " ++ s ++ ", 1")
   r
 
+-- Normalise a float lexeme so it always contains a decimal point in the mantissa,
+-- which LLVM requires to distinguish a floating-point constant from an integer.
+-- Examples: "1e-05" → "1.0e-05", "1e+12" → "1.0e+12", "100" → "100.0".
+-- Lexemes that already contain "." are returned unchanged.
+-- Special values "nan", "inf", "-inf" are returned unchanged (adding ".0" would
+-- corrupt them — LLVM accepts these bare).
+ensureFloatDot : String -> String
+ensureFloatDot s =
+  if startsWith "nan" s || startsWith "inf" s || startsWith "-inf" s then s
+  else match stringIndexOf "." s
+    Some _ => s
+    None => match stringIndexOf "e" s
+      Some i => stringSlice 0 i s ++ ".0e" ++ stringSlice (i + 1) (stringLength s) s
+      None => match stringIndexOf "E" s
+        Some i => stringSlice 0 i s ++ ".0E" ++ stringSlice (i + 1) (stringLength s) s
+        None => s ++ ".0"
+
 -- box a double -> a heap cell {i64 header, double}; word = pointer-as-i64.
 -- The cell is POINTER-FREE (tag + raw double), so allocate it atomic — Boehm
 -- never scans its 8 payload bytes for pointers during mark (sound; no false
@@ -1181,7 +1198,7 @@ emitLit : Emit -> Lit -> <Mut> (String, LTy)
 emitLit _ (LInt n) = (intToString (n * 2 + 1), LTInt)
 emitLit _ (LBool b) = (if b then "3" else "1", LTBool)
 emitLit e (LFloat f) =
-  let w = boxFloat e (floatToString f)
+  let w = boxFloat e (ensureFloatDot (floatToString f))
   (w, LTFloat)
 -- a String literal (native extern catalog slice 1): emit a private module-scope
 -- byte-array global for the UTF-8 bytes and box it at run time via @mdk_str_lit
@@ -2001,7 +2018,7 @@ recordFloatRet e env w body =
 -- the strength of the left's type).  Only called in statically-Float context.
 emitFloatD : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
 emitFloatD e env ex = match ex
-  CLit (LFloat f) => floatToString f
+  CLit (LFloat f) => ensureFloatDot (floatToString f)
   CBinPrim op l r =>
     if isArithOp op then
       let ld = emitFloatD e env l

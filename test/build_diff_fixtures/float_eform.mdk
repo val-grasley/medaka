@@ -1,0 +1,10 @@
+-- Regression: float literals whose %.12g rendering has no decimal point
+-- (e.g. 1e-05, 1e+12) must emit valid LLVM IR.  LLVM requires a decimal
+-- point in the mantissa of a floating-point constant; without it LLVM
+-- rejects the instruction as "integer constant must have integer type".
+main : <IO> Unit
+main =
+  println 0.00001
+  println 1000000000000.0
+  println (0.0 - 0.00001)
+  println 1.5
