@@ -1,0 +1,12 @@
+-- WS-3b EXEC hole-fill ⊄ REJECT.  α fills <Exec "/usr/bin/ls"> from argv0; the
+-- declared bound <Exec "/bin/*"> does NOT cover "/usr/bin/ls" (different prefix)
+-- ⇒ REJECT (performs <Exec "/usr/bin/ls">).
+effect Exec Prefix
+
+extern runCommand : String -> List String -> <Exec _> Int
+
+runLs : Unit -> <Exec "/bin/*"> Int
+runLs _ = runCommand "/usr/bin/ls" []
+
+main : <IO> Unit
+main = println "should not typecheck"

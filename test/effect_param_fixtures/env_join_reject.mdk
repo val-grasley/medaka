@@ -1,0 +1,12 @@
+-- WS-3b ENV djoin ∪ REJECT control.  Same two-call union <Env {"A","B"}> as
+-- env_join_accept, but the declared bound is the SUBSET {"A"} ⇒ the joined row
+-- {"A","B"} ⊄ {"A"} ⇒ REJECT (performs <Env {"A", "B"}>).
+effect Env Set
+
+extern getEnv : String -> <Env _> Option String
+
+both : Unit -> <Env {"A"}> (Option String, Option String)
+both _ = (getEnv "A", getEnv "B")
+
+main : <IO> Unit
+main = println "should not typecheck"

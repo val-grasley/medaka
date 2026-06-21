@@ -1,0 +1,12 @@
+-- WS-3b ENV hole-fill ⊄ REJECT.  α fills <Env {"HOME"}> from the literal arg;
+-- the declared bound {"PATH"} does NOT contain HOME ⇒ {"HOME"} ⊄ {"PATH"} ⇒
+-- the escape check REJECTS (a TYPE ERROR performing <Env {"HOME"}>).
+effect Env Set
+
+extern getEnv : String -> <Env _> Option String
+
+readHome : Unit -> <Env {"PATH"}> Option String
+readHome _ = getEnv "HOME"
+
+main : <IO> Unit
+main = println "should not typecheck"

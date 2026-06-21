@@ -1,0 +1,13 @@
+-- WS-3b ENV multi-call djoin ∪.  Two `getEnv` calls with DIFFERENT literals
+-- each fill a singleton (<Env {"A"}>, <Env {"B"}>); the row join is the set
+-- UNION <Env {"A","B"}> (proves djoin = ∪ for the Set domain).  Declared at the
+-- union ⇒ ACCEPT.
+effect Env Set
+
+extern getEnv : String -> <Env _> Option String
+
+both : Unit -> <Env {"A", "B"}> (Option String, Option String)
+both _ = (getEnv "A", getEnv "B")
+
+main : <IO> Unit
+main = println "env join accept"

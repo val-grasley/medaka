@@ -1,0 +1,14 @@
+-- WS-3b EXEC hole-fill ⊑ ACCEPT.  `runCommand : String -> List String ->
+-- <Exec _> …` carries the universal hole; the call-site α recovers the literal
+-- argv0 "/usr/bin/ls" and the DOMAIN-DIRECTED fill builds the Prefix pattern
+-- <Exec "/usr/bin/ls"> (Prefix domain).  Declared bound <Exec "/usr/bin/*">
+-- (a prefix pattern) ADMITS "/usr/bin/ls" ⇒ ACCEPT.
+effect Exec Prefix
+
+extern runCommand : String -> List String -> <Exec _> Int
+
+runLs : Unit -> <Exec "/usr/bin/*"> Int
+runLs _ = runCommand "/usr/bin/ls" []
+
+main : <IO> Unit
+main = println "exec hole-fill accept"

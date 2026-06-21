@@ -152,7 +152,9 @@ seedEffectDomains _ =
   set_ref effectDomains
     [ ("Net", PPrefix None)
     , ("FileRead", PPrefix None)
-    , ("FileWrite", PPrefix None) ]
+    , ("FileWrite", PPrefix None)
+    , ("Env", PSet None)
+    , ("Exec", PPrefix None) ]
 
 -- register a label's domain from its `effect` decl: Some "Prefix" ⇒ Prefix;
 -- None/internal ⇒ atomic.  Internal labels are never parameterized (forced PUnit).
@@ -354,10 +356,15 @@ atomsEscape a b = atomsDiff a (expandIoInBound b)
 -- diagnosed + dropped by checkEffectParams).  Pure: validation is a separate pass.
 atomOfWritten : (String, Option String) -> Atom
 atomOfWritten (l, None) = Atom l (dtopFor l)
-atomOfWritten (l, Some pat) = match dtopFor l
-  PPrefix None => Atom l (PPrefix (Some pat))
-  PSet None => Atom l (PSet (Some (decodeSetParam pat)))
-  _ => Atom l (dtopFor l)
+atomOfWritten (l, Some pat) =
+  -- the universal inferred-hole marker `_`: recognized REGARDLESS of the label's
+  -- domain (a Set-domain `<Env _>` must stay a hole, not become `PSet ["_"]`).
+  -- The domain-directed fillHoleAtom replaces it with the correct domain param.
+  if isHoleStr pat then Atom l (PPrefix (Some pat))
+  else match dtopFor l
+    PPrefix None => Atom l (PPrefix (Some pat))
+    PSet None => Atom l (PSet (Some (decodeSetParam pat)))
+    _ => Atom l (dtopFor l)
 
 -- A Set-domain written param is carried in the `Option String` carrier as a
 -- brace-delimited, comma-separated literal `{a,b,c}` (the parser's `effParamFor`
@@ -567,11 +574,23 @@ anyHoleAtom (a::rest) = if isHoleParam (atomParam a) then True else anyHoleAtom 
 
 fillHoleAtom : List (String, Expr) -> Option Expr -> Atom -> Atom
 fillHoleAtom lets firstArg a =
-  if isHoleParam (atomParam a) then Atom (atomLabel a) (holeFillParam lets firstArg) else a
+  if isHoleParam (atomParam a)
+  then Atom (atomLabel a) (holeFillParam (atomLabel a) lets firstArg)
+  else a
 
-holeFillParam : List (String, Expr) -> Option Expr -> Param
-holeFillParam lets (Some e) = paramOfKp (alpha lets e)
-holeFillParam _ None = PPrefix None
+-- DOMAIN-DIRECTED hole fill (WS-3b): the recovered literal becomes the right
+-- shape for the LABEL's domain.  Prefix-domain (Net/Exec) ⇒ `PPrefix (Some s)`;
+-- Set-domain (Env) ⇒ a singleton authority set `PSet (Some [s])`.  No recovery
+-- (no arg / Unknown) ⇒ the domain's ⊤ (`dtopFor label`), NOT a hardcoded
+-- `PPrefix None` — an unfilled Env hole must degrade to `PSet None`, not Prefix-⊤.
+holeFillParam : String -> List (String, Expr) -> Option Expr -> Param
+holeFillParam label lets (Some e) = match alpha lets e
+  Known s => match dtopFor label
+    PSet None => PSet (Some (sortUniqS [s]))
+    PPrefix None => PPrefix (Some s)
+    _ => dtopFor label
+  Unknown => dtopFor label
+holeFillParam label _ None = dtopFor label
 
 effvarLevel : Ref Effvar -> Int
 effvarLevel cell = match cell.value
