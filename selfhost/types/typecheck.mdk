@@ -1118,6 +1118,22 @@ activeDictVars = Ref []
 funConstraintsRef : Ref (List (String, List Int))
 funConstraintsRef = Ref []
 
+-- WS-1b: the program decls (interfaces) the supers-expansion reads.  Set by each
+-- driver (elaborateDict / the module path) BEFORE inference; read by inferDictAtFound
+-- to expand a call site's constraint slots with their transitive supers.  Read-only
+-- during inference, so it needs no reset-lifecycle care.
+superDeclsRef : Ref (List Decl)
+superDeclsRef = Ref []
+
+-- WS-1b: the USER-module interface names (NOT core/prelude).  Super-expansion is
+-- gated to user interfaces only: a prelude super chain (Ord requires Eq) is already
+-- serviced by arg-tag dispatch and is NOT dict-passed on the eval path, so adding an
+-- Eq slot to `clamp : Ord a =>` would desync its def arity from its arg-tag call sites
+-- (the prior-attempt clamp regression).  User interfaces (Sub requires Sup) ARE
+-- dict-passed and need the super slot.  Set by elaborateModules.
+userIfaceNamesRef : Ref (List String)
+userIfaceNamesRef = Ref []
+
 -- #11 soundness (native obligation hole): the INTERFACE names of a constrained
 -- fn's `=>` constraints, slot-parallel to funConstraintsRef's ids.  funConstraintsRef
 -- keeps only the tyvar ids (enough to pick a dict route); but to record a real impl
@@ -2532,7 +2548,15 @@ inferDictAt env name routesRef = match lookupVar env name
 inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
 inferDictAtFound name routesRef inst
   | hasKeySL2 name funConstraintsRef.value && anyIdPinned (fromOption [] (lookupAssocSL2 name funConstraintsRef.value)) (snd inst) =
-    let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
+    let declaredIds = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
+    let declaredIfaces = fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+    -- WS-1b: expand the callee's constraint slots with their transitive supers HERE
+    -- (the global table isn't expanded until expandSupersTable runs after inference),
+    -- so this call site applies one dict per EXPANDED slot — matching the def params
+    -- dictArityOf/dictPass will prepend from the expanded table.  Each super slot's id
+    -- equals its sub slot's id (shared type param), still pinned in [snd inst].
+    let expanded = expandSupersPairs superDeclsRef.value (zipL declaredIfaces declaredIds)
+    let ids = map snd expanded
     let monos = constraintMonosOf ids (snd inst)
     let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
     let _ = set_ref dictAppFns ((currentFn.value, monos) :: dictAppFns.value)
@@ -2540,7 +2564,7 @@ inferDictAtFound name routesRef inst
     -- with the call's constraint mono), checked after inference by checkCallObligations.
     -- The iface list is slot-parallel to [monos]; a concrete-head mono with no impl
     -- (`Num String` from `f "hello"` where `f : Num a => a -> a`) becomes an error.
-    let ifaces = fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+    let ifaces = map fst expanded
     let _ = recordCallObligations ifaces monos
     fst inst
   | otherwise =
@@ -2601,6 +2625,135 @@ lookupAssocSL2 _ [] = None
 lookupAssocSL2 k ((k2, v)::rest)
   | k == k2 = Some v
   | otherwise = lookupAssocSL2 k rest
+
+-- ── WS-1b: superclass-evidence flatten (port of lib/typecheck.ml expand_supers) ──
+-- A `=>`-constrained fn whose body calls a SUPERCLASS method (e.g. `build : Sub a =>`
+-- calls `mk`, a Sup method, where `Sub a requires Sup a`) needs an honest super-dict
+-- slot threaded through.  Inference registers only the DECLARED constraints in
+-- funConstraintsRef/funConstraintIfacesRef; this pass APPENDS, per entry, one extra
+-- slot for each (transitive) superinterface, mapping the super's decl param-names to
+-- the constraint's instantiated tyvar ids positionally (`Sub a`/`Sup a` share `a`, so
+-- the super id == the sub id).  Appended AFTER the declared slots so existing slot
+-- indices are unchanged; deduped by (iface, id) within an entry.  Because the dict
+-- VALUE is just a type tag (VDict "Widget"), the super slot's route is identical to
+-- the sub slot's — no separate projection is needed; the slot just has to EXIST so the
+-- call site applies a matching dict and the def binds a matching param.
+--
+-- Mutates the TABLE refs themselves at ONE finalization point (after inference, before
+-- realizeRecDictApps/dictPass) so EVERY reader — define-side dictArityOf and call-side
+-- recRoutes/recRoute/inferDictAtFound — sees identical expanded entries automatically.
+-- Transitive: a fixpoint over the constraint set (the WS-4a acyclic-supers guard makes
+-- it terminate), so `Top` reaches `Base` through `Mid` (chain3b).
+expandSupersTable : List Decl -> <Mut> Unit
+expandSupersTable allDecls =
+  let _ = set_ref funConstraintsRef
+            (map (expandSupersEntry allDecls funConstraintIfacesRef.value) funConstraintsRef.value)
+  let _ = set_ref funConstraintIfacesRef
+            (map (expandSupersIfaceEntry allDecls) funConstraintIfacesRef.value)
+  ()
+
+-- as expandSupersTable but operates on the cross-module snapshot pair (so a
+-- cross-module constrained fn gets the same expansion — else it under-fills).
+expandSupersCross : List Decl -> List (String, List Int) -> List (String, List String) -> (List (String, List Int), List (String, List String))
+expandSupersCross allDecls idsTbl ifacesTbl =
+  ( map (expandSupersEntry allDecls ifacesTbl) idsTbl
+  , map (expandSupersIfaceEntry allDecls) ifacesTbl )
+
+-- expand one (fn, ids) entry: the parallel iface list is looked up by fn name.
+expandSupersEntry : List Decl -> List (String, List String) -> (String, List Int) -> (String, List Int)
+expandSupersEntry allDecls ifacesTbl (fn, ids) =
+  let ifaces = fromOption [] (lookupAssocS fn ifacesTbl)
+  let pairs = expandSupersPairs allDecls (zipL ifaces ids)
+  (fn, map snd pairs)
+
+-- expand one (fn, ifaces) entry the SAME way, returning the parallel iface names.
+expandSupersIfaceEntry : List Decl -> (String, List String) -> (String, List String)
+expandSupersIfaceEntry allDecls (fn, ifaces) =
+  let ids = idsForIfaceSlots ifaces
+  let pairs = expandSupersPairs allDecls (zipL ifaces ids)
+  (fn, map fst pairs)
+
+-- a synthetic id list parallel to the iface list when only the iface entry is in
+-- hand (the iface-entry expansion must produce the same iface SEQUENCE as the id
+-- entry; positions, not values, must agree).  Uses slot index as the id so the
+-- super-name substitution + dedup walk identically.  NOTE: this works because in a
+-- `requires` chain every slot in one fn's expansion shares its declared tyvar — but
+-- DISTINCT declared constraints get distinct synthetic ids, so two unrelated
+-- constraints sharing a super still dedup correctly per chain.
+idsForIfaceSlots : List String -> List Int
+idsForIfaceSlots ifaces = idsForIfaceSlotsGo 0 ifaces
+
+idsForIfaceSlotsGo : Int -> List String -> List Int
+idsForIfaceSlotsGo _ [] = []
+idsForIfaceSlotsGo i (_::rest) = i :: idsForIfaceSlotsGo (i + 1) rest
+
+-- transitive super-closure over the declared (iface, id) slots: start from the
+-- declared slots, repeatedly append direct supers of every current slot until no
+-- new (iface, id) pair appears.  Result is the declared slots first (order/indices
+-- preserved) then the appended supers, deduped by (iface, id).
+expandSupersPairs : List Decl -> List (String, Int) -> List (String, Int)
+expandSupersPairs allDecls declared =
+  expandSupersFix allDecls declared declared
+
+expandSupersFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
+expandSupersFix allDecls acc frontier =
+  let next = dedupPairs (acc ++ concatMapList (superSlotsOf allDecls) frontier)
+  if listLen next == listLen acc then acc
+  else expandSupersFix allDecls next (dropPairs (listLen acc) next)
+
+-- the direct super slots of one (iface, id) slot: look up iface's (typarams, supers);
+-- the super-param NAMES index into typarams, which map positionally to [id] (a single
+-- shared id since constraints in a `requires` chain are over the same type param).
+superSlotsOf : List Decl -> (String, Int) -> List (String, Int)
+superSlotsOf allDecls (iface, id)
+  | not (contains iface userIfaceNamesRef.value) = []   -- WS-1b: only expand USER interface supers (prelude chains stay arg-tag)
+  | otherwise = match ifaceSupersOf allDecls iface
+    None => []
+    Some (typarams, supers) =>
+      let subst = zipL typarams (replicateId (listLen typarams) id)
+      concatMapList (superSlotOf subst) supers
+
+-- one `Super superName params`: map each param name through subst → its id; emit the
+-- super slot only if ALL params resolved (matches the oracle's length guard).
+superSlotOf : List (String, Int) -> Super -> List (String, Int)
+superSlotOf subst (Super superName params) =
+  let mapped = filterMaybeIds (map (p => lookupAssoc p subst) params)
+  if listLen mapped == listLen params then
+    (superName, firstOrZero mapped) :: []
+  else
+    []
+
+-- every super slot in a `requires` chain carries the SAME id; represent the slot by it.
+firstOrZero : List Int -> Int
+firstOrZero [] = 0
+firstOrZero (x::_) = x
+
+filterMaybeIds : List (Option Int) -> List Int
+filterMaybeIds [] = []
+filterMaybeIds (Some x :: rest) = x :: filterMaybeIds rest
+filterMaybeIds (None :: rest) = filterMaybeIds rest
+
+replicateId : Int -> Int -> List Int
+replicateId n id
+  | n <= 0 = []
+  | otherwise = id :: replicateId (n - 1) id
+
+dropPairs : Int -> List (String, Int) -> List (String, Int)
+dropPairs n xs
+  | n <= 0 = xs
+  | otherwise = match xs
+    [] => []
+    (_::rest) => dropPairs (n - 1) rest
+
+-- dedup (iface, id) pairs, keeping first occurrence (so declared slots stay leading).
+dedupPairs : List (String, Int) -> List (String, Int)
+dedupPairs xs = dedupPairsGo xs []
+
+dedupPairsGo : List (String, Int) -> List (String, Int) -> List (String, Int)
+dedupPairsGo [] _ = []
+dedupPairsGo (p::rest) seen
+  | anyList (q => fst q == fst p && snd q == snd p) seen = dedupPairsGo rest seen
+  | otherwise = p :: dedupPairsGo rest (p :: seen)
 
 -- the type a method ultimately returns (strip its argument arrows); the impl is
 -- chosen by this type's head tycon (pure : a -> f a → f a; empty : f a → f a)
@@ -3869,6 +4022,7 @@ elaborateOne runtimeDecls coreDecls (rootId, prog) =
 export
 elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
 elaborateDict runtimeDecls dictNames eligibleNames prog =
+  let _ = set_ref superDeclsRef prog
   let _ = set_ref dictEligibleRef eligibleNames
   let _ = set_ref dictEligibleSetRef (namesToSet eligibleNames OTip)
   let _ = set_ref implInferEnabled True
@@ -3877,6 +4031,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let argNames = map fst argDispatchIdxRef.value
   let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
+  let _ = expandSupersTable prog2
   let implTable = buildImplTable prog2
   let keyTable = buildKeyTable prog2
   let _ = resolveSites implTable keyTable (returnPosMethodNames prog2) pendingSites.value
@@ -3936,11 +4091,16 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   let promoted = filterList (n => not (contains n dictSeed)) grown
   let snapshot = promotedConstraints promoted funConstraintsRef.value
   let snapshotIfaces = promotedConstraintIfaces promoted funConstraintIfacesRef.value
+  -- WS-1b: expand the cross-module snapshot's super slots too, so a cross-module
+  -- constrained fn reached from another module under-fills exactly like clamp would.
+  let expandedPair = expandSupersCross joint snapshot snapshotIfaces
+  let snapshotE = fst expandedPair
+  let snapshotIfacesE = snd expandedPair
   let _ = resetState ()
   let _ = set_ref typeErrorsSticky savedSticky
   let _ = set_ref typeErrors savedErrors
-  let _ = set_ref crossModuleFunConstraintsRef snapshot
-  let _ = set_ref crossModuleFunConstraintIfacesRef snapshotIfaces
+  let _ = set_ref crossModuleFunConstraintsRef snapshotE
+  let _ = set_ref crossModuleFunConstraintIfacesRef snapshotIfacesE
   promoted
 -- DRIVER-COLLAPSE Phase 2: discovery is a SCRATCH joint typecheck (see below); its
 -- type-error side effects must NOT leak into the STICKY accumulator that gates the
@@ -5638,8 +5798,10 @@ findImplEntry ((ImplEntry tag2 ms hty reqs itys)::rest) tag m
 resolveDictApps : List ImplEntry -> List (Ref (List Route), List Mono) -> <Mut> Unit
 resolveDictApps _ [] = ()
 resolveDictApps implTable ((routesRef, monos)::rest) =
-  let _ = set_ref routesRef (routesOfMonos implTable monos)
+  let routes = routesOfMonos implTable monos
+  let _ = set_ref routesRef routes
   resolveDictApps implTable rest
+
 
 routesOfMonos : List ImplEntry -> List Mono -> <Mut> List Route
 routesOfMonos _ [] = []
@@ -5733,7 +5895,8 @@ realizeRecDictApps : List RecDictApp -> <Mut> Unit
 realizeRecDictApps [] = ()
 realizeRecDictApps ((RecDictApp routesRef callee encl mono)::rest) =
   let ids = fromOption [] (lookupAssocSL2 callee funConstraintsRef.value)
-  let _ = set_ref routesRef (recRoutes encl mono ids)
+  let routes = recRoutes encl mono ids
+  let _ = set_ref routesRef routes
   realizeRecDictApps rest
 
 recRoutes : String -> Mono -> List Int -> <Mut> List Route
@@ -7871,6 +8034,12 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
+  -- WS-1b: append each constrained fn's transitive super slots to funConstraintsRef/
+  -- funConstraintIfacesRef NOW (after this module's inference, before the cross-module
+  -- + qualified mirrors snapshot it below) so every downstream reader — the qual ref
+  -- seed, dictArityOf (define side), and elabModuleStamp's route resolution (call side)
+  -- — sees identical expanded entries.  superDeclsRef carries the in-scope interfaces.
+  let _ = expandSupersTable superDeclsRef.value
   let _ = set_ref crossModuleFunConstraintsRef funConstraintsRef.value
   -- WS-2/D2: attribute THIS module's constrained-fn arities to mid in the qualified
   -- mirror.  Every fn DEFINED in [prog] that carries an entry in the (now this-module-
@@ -8401,6 +8570,8 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref crossModuleFunConstraintsQualRef []
   let _ = set_ref crossModuleMethodConstraintsRef []
   let allDecls = coreDecls ++ concatMapList snd modules
+  let _ = set_ref superDeclsRef allDecls   -- WS-1b: interfaces in scope for the discovery scratch typecheck
+  let _ = set_ref userIfaceNamesRef (collectIfaceNames (concatMapList snd modules))   -- WS-1b: gate super-expansion to user interfaces
   let rpNames = returnPosMethodNames allDecls
   let _ = set_ref argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst argDispatchIdxRef.value
@@ -8757,6 +8928,7 @@ markModules coreDecls modules =
 -- is also still bound, so a tyvar receiver routes RDict.
 elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp mid seedVars accData implDecls prog =
+  let _ = set_ref superDeclsRef implDecls   -- WS-1b: interfaces in scope for super expansion
   let schemes = checkModuleFullImpl mid seedVars accData implDecls prog
   let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls

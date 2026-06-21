@@ -1,0 +1,18 @@
+-- WS-1b: a return-position SUPERCLASS method (`bump`, from `Sup`) called inside a
+-- function constrained only on the SUBclass (`process : Sub a =>`, where
+-- `Sub a requires Sup a`).  expandSupersTable appends the Sup dict slot to process's
+-- constraint table so the super method dispatches.  `a` is determined by the argument
+-- (no ambiguity), which is the case WS-1b's superclass-evidence flatten closes.
+interface Sup a where
+  bump : a -> a
+interface Sub a requires Sup a where
+  label : a -> Int
+data Widget = Widget Int
+impl Sup Widget where
+  bump (Widget n) = Widget (n + 1)
+impl Sub Widget where
+  label (Widget n) = n
+process : Sub a => a -> Int
+process x = label (bump x)
+main : <IO> Unit
+main = putStrLn (intToString (process (Widget 42)))
