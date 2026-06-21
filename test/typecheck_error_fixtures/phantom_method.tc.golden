@@ -1,0 +1,1 @@
+TYPE ERROR: Method 'name' in interface 'Phantom' does not mention interface parameter(s) 'a'; cannot dispatch

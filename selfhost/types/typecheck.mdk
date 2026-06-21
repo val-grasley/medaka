@@ -4958,6 +4958,48 @@ foreachUnit f (x::xs) =
   let _ = f x
   foreachUnit f xs
 
+-- ── WS-5: phantom interface method detection ──────────────────────────────
+-- A method whose declared type mentions NONE of the interface's type parameters
+-- (neither in argument position nor in the result) cannot be dispatched: there
+-- is no argument or return type to select an impl from.  Reject at check time
+-- so the silent mis-dispatch at runtime is caught early.
+--
+-- Examples:
+--   interface Phantom a where
+--     name : String          -- PHANTOM: `a` appears nowhere in the type
+--   interface Show a where
+--     show : a -> String     -- OK: `a` appears in argument position
+--   interface Pure f where
+--     pure : a -> f a        -- OK: `f` appears in result position
+--
+-- The check uses the full method type (args AND result via tyVarNames), so
+-- return-position methods like `pure : a -> f a` or `minBound : a` are NOT
+-- flagged.  Multi-param interfaces: phantom iff ALL params absent.
+
+checkPhantomMethods : List Decl -> <Mut> Unit
+checkPhantomMethods decls =
+  foreachUnit pushTypeError (concatMapList phantomMethodMsgs decls)
+
+phantomMethodMsgs : Decl -> List String
+phantomMethodMsgs (DAttrib _ d) = phantomMethodMsgs d
+phantomMethodMsgs DInterface { name, typarams, methods, ... } =
+  concatMapList (phantomMethodMsg name typarams) methods
+phantomMethodMsgs _ = []
+
+phantomMethodMsg : String -> List String -> IfaceMethod -> List String
+phantomMethodMsg ifaceName typarams (IfaceMethod mname mty _) =
+  if isEmptyL typarams then []
+  else if anyMember (tyVarNames mty) typarams then []
+  else ["Method '" ++ mname ++ "' in interface '" ++ ifaceName
+        ++ "' does not mention interface parameter(s) "
+        ++ intercalateComma typarams
+        ++ "; cannot dispatch"]
+
+intercalateComma : List String -> String
+intercalateComma [] = ""
+intercalateComma [x] = "'" ++ x ++ "'"
+intercalateComma (x::rest) = "'" ++ x ++ "', " ++ intercalateComma rest
+
 -- ── WS-4a: cyclic superinterface detection ────────────────────────────────
 -- A cyclic `interface A requires B; interface B requires A` is ill-formed: no
 -- impl can ever be constructed (each demands the other) and the transitive
@@ -7636,6 +7678,7 @@ checkToLines prog =
   let schemes = checkProgramSchemes prog
   let _ = checkCoherence prog
   let _ = checkInterfaceCycles prog
+  let _ = checkPhantomMethods prog
   let _ = checkSuperImpls prog prog
   let errs = reverseL typeErrors.value
   match errs
@@ -7655,6 +7698,7 @@ checkToLinesWithRuntime runtimeDecls prog =
   let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
+  let _ = checkPhantomMethods coherenceUserDecls.value
   let _ = checkSuperImpls coherenceUserDecls.value prog
   let errs = reverseL typeErrors.value
   let warns = reverseL matchWarnings.value
@@ -7683,6 +7727,7 @@ checkErrorsWithRuntime runtimeDecls prog =
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
+  let _ = checkPhantomMethods coherenceUserDecls.value
   let _ = checkSuperImpls coherenceUserDecls.value prog
   match typeErrors.value
     [] => False
@@ -7717,6 +7762,7 @@ checkProgramDiags runtimeDecls prog =
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
+  let _ = checkPhantomMethods coherenceUserDecls.value
   let _ = checkSuperImpls coherenceUserDecls.value prog
   (reverseL typeErrors.value, reverseL matchWarnings.value)
 
@@ -8115,6 +8161,7 @@ checkModuleFullDiags seedVars accData accImpls prog =
   let schemes = checkModuleFull seedVars accData prog
   let _ = checkCoherence prog
   let _ = checkInterfaceCycles (accImpls ++ accData ++ prog)
+  let _ = checkPhantomMethods prog
   let _ = checkSuperImpls prog (accImpls ++ accData ++ prog)
   (schemes, reverseL typeErrors.value, reverseL matchWarnings.value)
 -- Seed the ctor oracle over ALL data decls in scope (prelude + every imported

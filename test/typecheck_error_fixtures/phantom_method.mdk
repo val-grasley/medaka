@@ -1,0 +1,10 @@
+-- WS-5: phantom interface method — class type parameter absent from the method
+-- type (neither arg nor result position).  Native check rejects; OCaml oracle
+-- silently accepts (frozen oracle divergence — checked 2026-06-21).
+-- Gate: both tc_main and check_main (uses only user-defined names; no prelude).
+interface Phantom a where
+  name : String
+impl Phantom Int where
+  name = "int"
+impl Phantom Bool where
+  name = "bool"
