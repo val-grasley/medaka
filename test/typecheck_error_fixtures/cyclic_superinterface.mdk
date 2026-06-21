@@ -1,0 +1,9 @@
+-- WS-4a: cyclic superinterface `requires` graph is ill-formed — no impl can ever
+-- be constructed when A requires B AND B requires A.  Native check (checkInterfaceCycles)
+-- rejects this; the OCaml oracle silently accepts it (frozen oracle divergence, not
+-- a regression — checked 2026-06-21).  Gate against check_main only (prelude-dep).
+interface A a requires B a where
+  af : a -> Int
+interface B a requires A a where
+  bf : a -> Int
+main = println "ok"
