@@ -1163,6 +1163,23 @@ schemeObligationsRef = Ref []
 crossModuleFunConstraintsRef : Ref (List (String, List Int))
 crossModuleFunConstraintsRef = Ref []
 
+-- WS-2/D2: module-attributed mirror of crossModuleFunConstraintsRef.  Keyed by
+-- (owning module id, fn name) so the FINAL dict-pass (scopeArities) can keep only
+-- the inferred-arity entry whose DEFINING module is in the dict-passed module's
+-- scope.  Without this, two distinct top-level fns sharing a bare name but with
+-- different `=>`-constraint arity (e.g. `wrap : Tag a => …` in module A vs
+-- `wrap : (P a, Q a) => …` in module B) both land in the bare cross-module table;
+-- scopeArities keeps both (both pass the bare scopeNames membership), and
+-- dictArityOf's first-match returns the WRONG module's arity → a call site in A's
+-- importer is sized to B's 2 dict params (over-application) → run-path crash while
+-- the emit path's arg-stamp recovers (the §1 D2 repro).  Populated per-module in
+-- checkModuleFullImpl (each fn DEFINED in this module's `prog` is attributed to mid);
+-- consumed by scopeAritiesQual.  The bare crossModuleFunConstraintsRef is KEPT — the
+-- per-module reseed at checkModuleFullImpl:7546 needs the bare form for the current
+-- module's E6 cross-module call-site discovery.
+crossModuleFunConstraintsQualRef : Ref (List ((String, String), List Int))
+crossModuleFunConstraintsQualRef = Ref []
+
 -- cross-module accumulator for funConstraintIfacesRef, mirroring
 -- crossModuleFunConstraintsRef exactly (accumulate across the graph, NOT cleared by
 -- resetState, re-seeded after the per-module reset).
@@ -7523,7 +7540,7 @@ checkProgramDiags runtimeDecls prog =
 -- info (e.g. ast's DInterface) resolve.  Returns the module's own value schemes.
 checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkModuleFull seedVars accData prog =
-  checkModuleFullImpl seedVars accData [] prog
+  checkModuleFullImpl "" seedVars accData [] prog
 
 -- E5: like checkModuleFull but takes [implDecls] (core + every EARLIER module +
 -- this module) as the impl-body inference universe.  Under implInferEnabled (the
@@ -7536,8 +7553,8 @@ checkModuleFull seedVars accData prog =
 -- (core's Eq/Ord/…) AND lets a body dispatch against an earlier module's impl.
 -- OFF (every golden module driver), this is exactly checkModuleFull pre-E5:
 -- implInferEnabled is False → no inference, no extra stamping, byte-identical.
-checkModuleFullImpl : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
-checkModuleFullImpl seedVars accData implDecls prog =
+checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = resetState ()
   let importerShadows = buildStandaloneShadows implDecls prog
   let definerShadows = buildDefinerShadows implDecls prog
@@ -7565,6 +7582,14 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
   let _ = set_ref crossModuleFunConstraintsRef funConstraintsRef.value
+  -- WS-2/D2: attribute THIS module's constrained-fn arities to mid in the qualified
+  -- mirror.  Every fn DEFINED in [prog] that carries an entry in the (now this-module-
+  -- accumulated) funConstraintsRef is owned by [mid]; record ((mid,name),ids) so the
+  -- final scopeAritiesQual keeps only the in-scope module's arity (dissolves the
+  -- bare-name cross-module collision).  PREPEND so the per-module-current entry wins
+  -- the first-match if a name recurs across the graph.
+  let _ = set_ref crossModuleFunConstraintsQualRef
+            (attributeModuleArities mid prog funConstraintsRef.value ++ crossModuleFunConstraintsQualRef.value)
   let _ = set_ref crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
   let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
@@ -8073,6 +8098,7 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref implInferEnabled True
   let _ = set_ref mainSchemeRef None
   let _ = set_ref crossModuleFunConstraintsRef []
+  let _ = set_ref crossModuleFunConstraintsQualRef []
   let _ = set_ref crossModuleMethodConstraintsRef []
   let allDecls = coreDecls ++ concatMapList snd modules
   let rpNames = returnPosMethodNames allDecls
@@ -8086,7 +8112,7 @@ elaborateModules runtimeDecls coreDecls modules =
   let core2 = prePassDictArg markRpNames dictNames argNames coreDecls
   let modules2 = map (prePassModulePairArg markRpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
-  let coreSchemes = elabModuleStamp runtimeSeed [] core2 core2
+  let coreSchemes = elabModuleStamp "" runtimeSeed [] core2 core2
   let _ = elabModulesGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls core2) core2 modules2
   dictPassModulesIfEnabled dictNames core2 modules2
 -- arg-position interface-method names whose route resolveArgStamps may stamp
@@ -8191,10 +8217,11 @@ elaborateModules runtimeDecls coreDecls modules =
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 dictPassModulesIfEnabled dictNames core2 modules2 =
   let allModDecls = concatMapList snd modules2
-  let promotedC = crossModuleFunConstraintsRef.value
-  let _ = set_ref funConstraintsRef (scopeArities promotedC (core2 ++ allModDecls))
+  let promotedQ = crossModuleFunConstraintsQualRef.value
+  let allMods = namesToSet (map fst modules2) OTip
+  let _ = set_ref funConstraintsRef (scopeArities promotedQ allMods (core2 ++ allModDecls))
   let core2' = dictPass dictNames core2
-  let modules2' = dictPassModulesScoped dictNames promotedC core2 modules2 modules2
+  let modules2' = dictPassModulesScoped dictNames promotedQ core2 modules2 modules2
   (core2', modules2')
 -- Post-ARGSTAMP-UNIFY (Phase 4): ALWAYS run on BOTH paths.  Emit (argStampEnabled):
 -- the DImpl arm prepends parametric impl-body element-dict params even when no
@@ -8211,13 +8238,14 @@ dictPassModulesIfEnabled dictNames core2 modules2 =
 -- per-module: set funConstraintsRef to the module's importer-scoped arities, then
 -- dict-pass that module.  [allModules] is the full set (for the transitive-importer
 -- walk); [modules2] is the remaining suffix to process.  core2 is always in scope.
-dictPassModulesScoped : List String -> List (String, List Int) -> List Decl -> List (String, List Decl) -> List (String, List Decl) -> <Mut> List (String, List Decl)
+dictPassModulesScoped : List String -> List ((String, String), List Int) -> List Decl -> List (String, List Decl) -> List (String, List Decl) -> <Mut> List (String, List Decl)
 dictPassModulesScoped _ _ _ _ [] = []
-dictPassModulesScoped dictNames promotedC core2 allModules ((mid, prog)::rest) =
+dictPassModulesScoped dictNames promotedQ core2 allModules ((mid, prog)::rest) =
   let importerDecls = transitiveImporterDecls mid allModules
   let scope = core2 ++ prog ++ importerDecls
-  let _ = set_ref funConstraintsRef (scopeArities promotedC scope)
-  (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedC core2 allModules rest
+  let scopeMods = namesToSet (mid :: transitiveImporterIds mid allModules) OTip
+  let _ = set_ref funConstraintsRef (scopeArities promotedQ scopeMods scope)
+  (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedQ core2 allModules rest
 
 -- the arity table for a scope: every `=>`-constrained signature in [scope]
 -- (constrainedSigArity) PLUS the joint-discovered promoted-fn arities whose fn is
@@ -8236,13 +8264,38 @@ dictPassModulesScoped dictNames promotedC core2 allModules ((mid, prog)::rest) =
 -- its sig entry); the sig count is the fallback for fns the body-inference path never
 -- registered (unreached/never-called constrained fns).  `elem` is unaffected: both
 -- its `Eq a` and `Foldable t` vars survive (no literal pins them) → inferred == sig == 2.
-scopeArities : List (String, List Int) -> List Decl -> List (String, List Int)
-scopeArities promotedC scope =
+-- WS-2/D2: [promotedQ] is the module-attributed inferred arities
+-- (crossModuleFunConstraintsQualRef); [scopeMods] is the set of module ids in this
+-- dict-pass scope (this module ∪ its transitive importers ∪ "" for core, which is in
+-- every scope).  An inferred entry survives when its fn NAME is in scope (as before).
+-- For the SUBSET of names that collide (same bare name from ≥2 modules), prefer the
+-- entry whose OWNING module is in scope — that disambiguation is the WS-2/D2 fix.
+-- A non-colliding name, or a colliding name with NO in-scope-module entry, keeps the
+-- old bare behavior (every same-name entry retained; first-match downstream).  This
+-- is intentionally minimal: it changes arity ONLY for the cross-module bare-name
+-- collision, so non-colliding programs (every golden) are byte-identical.
+-- Reduces the qualified entries to the bare (name,ids) form downstream readers expect.
+scopeArities : List ((String, String), List Int) -> OrdMap Unit -> List Decl -> List (String, List Int)
+scopeArities promotedQ scopeMods scope =
   let scopeNames = namesToSet (declTopFnNames scope) OTip
-  let inferred = filterList (e => omHasKey (fst e) scopeNames) promotedC
+  let nameInScope = filterList (e => omHasKey (snd (fst e)) scopeNames) promotedQ
+  -- names that have at least one in-scope-module entry → drop their out-of-scope-module twins
+  let resolvedNames = namesToSet (concatMapList (e => if modInScope (fst (fst e)) scopeMods then [snd (fst e)] else []) nameInScope) OTip
+  let inferredQ = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) nameInScope
+  let inferred = map (e => (snd (fst e), snd e)) inferredQ
   let inferredNames = namesToSet (map fst inferred) OTip
   let sigEntries = filterList (e => not (omHasKey (fst e) inferredNames)) (concatMapList constrainedSigArity scope)
   inferred ++ sigEntries
+
+-- core (mid "") is in every scope; otherwise membership in the scope-module set.
+modInScope : String -> OrdMap Unit -> Bool
+modInScope mid scopeMods = mid == "" || omHasKey mid scopeMods
+
+-- attribute each fn DEFINED in [prog] that carries a funConstraintsRef entry to [mid].
+attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
+attributeModuleArities mid prog entries =
+  let progNames = namesToSet (declTopFnNames prog) OTip
+  concatMapList (e => if omHasKey (fst e) progNames then [((mid, fst e), snd e)] else []) entries
 -- membership-only sets (built once) instead of O(N) contains scans per entry:
 -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).
 
@@ -8256,6 +8309,14 @@ transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
 transitiveImporterDecls mid modules =
   concatMapList
     (p => if fst p != mid && transitivelyImports (fst p) mid modules then snd p else [])
+    modules
+
+-- the module IDS that transitively import [mid] (excluding [mid]) — the id-level
+-- analog of transitiveImporterDecls, for the scopeArities owning-module set.
+transitiveImporterIds : String -> List (String, List Decl) -> List String
+transitiveImporterIds mid modules =
+  concatMapList
+    (p => if fst p != mid && transitivelyImports (fst p) mid modules then [fst p] else [])
     modules
 
 -- does module [a] transitively import module [target]?
@@ -8394,9 +8455,9 @@ markModules coreDecls modules =
 -- still-unresolvable case stays RNone (arg-tag fallback).  activeDictVars (the
 -- constraint-var → dict-param map registerConstraintRegs built in checkModuleFull)
 -- is also still bound, so a tyvar receiver routes RDict.
-elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
-elabModuleStamp seedVars accData implDecls prog =
-  let schemes = checkModuleFullImpl seedVars accData implDecls prog
+elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+elabModuleStamp mid seedVars accData implDecls prog =
+  let schemes = checkModuleFullImpl mid seedVars accData implDecls prog
   let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
@@ -8461,7 +8522,7 @@ elabModulesGo _ _ _ _ [] = ()
 -- module's DUse decls import; accAll stays the cumulative impl-body universe.
 elabModulesGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
   let seed = baseSeed ++ importSeed prog depEnv
-  let schemes = elabModuleStamp seed accData (accAll ++ prog) prog
+  let schemes = elabModuleStamp mid seed accData (accAll ++ prog) prog
   let _ = match lookupAssoc "main" schemes
     Some s => set_ref mainSchemeRef (Some s)
     None => ()

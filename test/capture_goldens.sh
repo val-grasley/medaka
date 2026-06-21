@@ -236,6 +236,12 @@ if want eval_typed_modules; then
     [ -d "$dir" ] || continue
     entry="$dir/main.mdk"
     [ -f "$entry" ] || continue
+    # WS-2/D2: cross_module_dict_arity is a NATIVE>oracle divergence — the frozen
+    # OCaml oracle panics (`unbound identifier: $dict_wrap_1`) on the bare-name
+    # cross-module dict-arity collision this fixture pins, so its golden (11) is
+    # captured from the FIXED native binary, NOT main.exe.  Skip it here so a
+    # capture run can't clobber the native golden with the oracle's crash.
+    case "$(basename "${dir%/}")" in cross_module_dict_arity) continue;; esac
     emit_golden "${dir%/}/main.eval.golden" "$MAIN" run "$entry"
   done
 fi

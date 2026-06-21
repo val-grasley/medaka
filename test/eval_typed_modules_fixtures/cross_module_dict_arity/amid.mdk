@@ -1,0 +1,3 @@
+import aleaf.{wrap, Tag(..), tagOf}
+export callA : Int
+callA = wrap 7

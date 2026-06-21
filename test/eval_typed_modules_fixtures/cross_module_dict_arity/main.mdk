@@ -1,0 +1,3 @@
+import amid.{callA}
+import bmid.{callB}
+main = println (intToString callA)
