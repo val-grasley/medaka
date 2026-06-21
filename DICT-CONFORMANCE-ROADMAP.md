@@ -21,11 +21,14 @@ and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
 | **D5/D6** well-formedness (WS-4) | ✅ closed | `adbbb97` — cyclic-superinterface rejected; instance-termination depth fuse. |
 | **D7** supers fidelity | ✅ sufficient | `expand_supers` flatten (`db091fd`) closes the dispatch gap; the two-field `VDict.supers` record (deluxe form) is non-defect / observationally-equivalent — not pursued. |
 | **D8** phantom-position | ✅ closed | `aa020b0` (WS-5) — method not mentioning its interface param rejected at check. |
-| **D9** vestigial argStamp flag / **D10** stale docs | 🟡 deferred (cosmetic) | Provably-inert flag rename (`argStampEnabled`→`emitArgStampPasses`) + stale-comment corrections. NOT done: an unattended agent built the rename on a stale base (caught at verify, not merged); marginal value, redo supervised. Zero behavioral impact either way. |
+| **D9** vestigial argStamp flag / **D10** stale docs | ✅ closed | `121b9dc` — `argStampEnabled`→`emitArgStampPasses` rename + 2 inert flag/guard removals (parity probe 26/26, provably zero behavioral change) + stale-comment corrections in the gap docs. |
 
-**Newly-discovered (NOT conformance items, logged for follow-up):**
-- `medaka check` **SIGTRAPs** on a `Map { … }` + `toList` program (pre-existing; check should never crash).
-- `stdlib/json.mdk` single-file `check` → `No impl of Ord for Int` (pre-existing).
+**Found bugs — FIXED this session (not conformance items, surfaced in passing):**
+- ✅ `medaka check` SIGTRAP on a `Map`/`Set` literal — RESOLVE stage missing `EHeadAnnot` arm (`Map{}` desugars to `EHeadAnnot`, fell off the match → panic). Fixed `1765007` (`resolve.mdk` arm mirroring the oracle: `import map.*` accepts, bare/no-import rejects `UnknownType`, never crashes).
+- ✅ `stdlib/json.mdk` / any multi-module import → spurious `No impl of Ord for Int` — `checkCallObligations` (`typecheck.mdk:8188`) omitted `accData` (where prelude `impl Ord Int` lives) while sibling `checkImplObligations` included it. Fixed `1765007` (thread `accData` — unifies the N>1 obligation universe with N=1).
+
+**Newly-discovered — NOT fixed (logged for follow-up):**
+- **Bug C:** `toList` on a `Map` — native `check` rejects `No impl of Foldable for Map a` (and misdispatches at runtime), while the oracle accepts. Root: `toList` is BOTH `map.mdk`'s standalone fn (`map.mdk:350`) AND a `Foldable` method; native resolves to the *method* (needs `Foldable (Map a)`) instead of the imported *standalone*. Phase-112 standalone-vs-method resolution territory. Was masked by the SIGTRAP above; surfaced once it was fixed.
 - The OCaml oracle is **known-wrong** on ambiguous multi-impl dispatch (silent first-declared-wins); native now rejects (`AmbiguousImpl`) — an intentional native>oracle divergence (like cyclic/phantom).
 
 ## 0. Principles
