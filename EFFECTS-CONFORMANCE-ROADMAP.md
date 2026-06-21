@@ -4,6 +4,26 @@
 [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md). **Findings:**
 [`EFFECTS-CONFORMANCE-AUDIT.md`](EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
 
+> **WS-1 — Capability manifest realization: ✅ DONE (2026-06-21, `main = 41509f6`).**
+> The headline gap E1/E6 (a verified row nothing consumes on the canonical binary)
+> is closed. All three sub-items landed native-canonical, fixpoint-gated (C3a/C3b
+> YES), differential-gated, and independently re-verified before merge:
+> - **WS-1a** (`f9abda9`) — `medaka check-policy` ported from the OCaml oracle to the
+>   native CLI (`selfhost/tools/check_policy.mdk` + `runCheckPolicyCmd`). Bare-label
+>   compare, byte-identical to the oracle on the demos. Gate
+>   `test/diff_selfhost_check_policy.sh` (4/0).
+> - **WS-1b** (`a5b057a`) — parameter-level policy: `--allow 'Net=host/*'` compared
+>   via the domain `dsub` (`inferred ⊑ policy`); effect read widened `String → Atom`
+>   to carry the param. **Native-only** (the frozen oracle stays bare-label, so the
+>   diff gate's bare cases stay byte-identical); 3 native param fixtures.
+> - **WS-1c** (`41509f6`) — `medaka manifest <file>` emits the security half of the
+>   verified entry row as TOML `[package.capabilities]` (internal `Mut`/`Panic`
+>   dropped per §7), round-trips through `check-policy`. Gate `test/manifest_emit.sh`
+>   (6/0). **Deferred seam:** the Wasm custom-section half (touches `wasm_emit.mdk`).
+>
+> **Remaining:** WS-2 (α scope-seeding, cheap/independent), WS-3 (`Set` domain) →
+> WS-3b (param Env/Exec) → WS-4 (`Product`/structured Net), WS-5 (standing).
+
 The audit's verdict: the effect **typing core is sound and conformant**; the gaps
 are the **unrealized capability manifest** (E1 — the one that matters), **deferred
 parameter expressiveness** (E2/E4), a **sound precision shortfall** in `α` (E3), and
