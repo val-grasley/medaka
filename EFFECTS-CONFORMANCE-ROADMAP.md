@@ -24,6 +24,34 @@
 > **Remaining:** WS-2 (α scope-seeding, cheap/independent), WS-3 (`Set` domain) →
 > WS-3b (param Env/Exec) → WS-4 (`Product`/structured Net), WS-5 (standing).
 
+> **WS-2 — α scope-seeding: ✅ DONE (2026-06-21, `98bf22b`).** E3 common case closed.
+> α's known-prefix analysis was invoked with an empty `lets` at the hole-fill site, so
+> an outer-body `let dest = "<literal>"; fetch dest` collapsed to ⊤ and over-rejected.
+> Now the enclosing function body's `let` scope is threaded into α's initial `lets`
+> (an `alphaLets`/`alpha_lets` field on the inference env, accumulated in the let-arms,
+> read at `fillHolesInRow`). **Landed in BOTH compilers in lockstep** (it changes
+> inferred rows on existing syntax). Intraprocedural only — helper-laundered literals
+> stay ⊤ by design (spec §5 non-goal). Gates: `diff_selfhost_effect_hole` (incl.
+> `reject_outer_computed` soundness guard), `diff_selfhost_typecheck` 12/0, fixpoint
+> C3a/C3b YES. A4/outer flips reject→accept; A3/computed stays reject (verified).
+>
+> **WS-3 — `Set` refinement domain: ✅ DONE (2026-06-21, `5a1d215`, NATIVE-ONLY).** E2
+> closed for set-shaped authority. Added a `PSet (Option (List String))` `Param` arm
+> (`None`=⊤), its `RefinementDomain` instance (`⊑`=⊆, `⊔`=∪ saturating to ⊤ past a
+> cardinality cap of 16, `drender`→`{"a","b"}`), and a parser clause for the `<L
+> {"a","b"}>` literal. **Decided native-only** (new syntax; the frozen OCaml oracle is
+> slated for removal — extending menhir/lexer for doomed code isn't worth it; mirrors
+> the WS-1b native-only precedent). **Abstraction sealed:** `unify_row`, the escape
+> check, and the WS-1c manifest extractor were NOT touched — the escape machinery
+> rejects set over-reach purely through `dsub`/`djoin`. Carrier kept as `Option String`
+> (parser sentinel-encodes the set, `atomOfWritten` decodes) → only 2 source files
+> touched (`parser.mdk` + `typecheck.mdk`). Gates: new `test/effect_set_domain.sh` 5/0,
+> all canaries byte-identical (parse 27/0, typecheck 12/0, check_policy 4/0+7/0,
+> manifest 6/0), fixpoint C3a/C3b YES.
+>
+> **Remaining:** WS-3b (parameterize Env(Set)/Exec(Prefix) — now unblocked by WS-3),
+> WS-4 (`Product`/structured Net — largest), WS-5 (extern-row assurance — standing).
+
 The audit's verdict: the effect **typing core is sound and conformant**; the gaps
 are the **unrealized capability manifest** (E1 — the one that matters), **deferred
 parameter expressiveness** (E2/E4), a **sound precision shortfall** in `α` (E3), and
