@@ -105,7 +105,7 @@ public export data Effvar = EUnbound Int Int | ELink EffRow  -- EUnbound id leve
 -- Stage 1 is the REPRESENTATION only: every param is built at ⊤, so the row is
 -- byte-identical to the v1 set-of-bare-labels.  Stage 2 adds the Prefix domain's
 -- analysis with NO change to this row code.  (Mirror of lib/typecheck.ml.)
-public export data Param = PUnit | PPrefix (Option String)
+public export data Param = PUnit | PPrefix (Option String) | PSet (Option (List String))
 
 -- v2 Stage 2b inferred-hole marker (mirror of lib/typecheck.ml).  A leaf
 -- extern's `<Net _>` parses to the param string "_" (`effHoleSrc`), which
@@ -164,6 +164,7 @@ registerEffectDomain name domain isInternal =
 domainParam : Option String -> Bool -> Param
 domainParam _ True = PUnit
 domainParam (Some "Prefix") False = PPrefix None
+domainParam (Some "Set") False = PSet None
 domainParam _ False = PUnit
 
 -- re-seed to the builtins, then register every `effect …` decl in the program.
@@ -192,6 +193,7 @@ lookupDomain l ((k, p)::rest) = if l == k then p else lookupDomain l rest
 dtopFor : String -> Param
 dtopFor label = match lookupDomain label effectDomains.value
   PPrefix None => PPrefix None
+  PSet None => PSet None
   _ => PUnit
 
 -- the concrete (literal) part of a Prefix pattern: drop a single trailing `*`
@@ -212,7 +214,15 @@ dsubN PUnit PUnit = True
 dsubN _ (PPrefix None) = True                  -- anything ⊑ ⊤
 dsubN (PPrefix (Some a)) (PPrefix (Some b)) = startsWith (prefixConcrete b) (prefixConcrete a)
 dsubN (PPrefix None) (PPrefix (Some _)) = False
+dsubN _ (PSet None) = True                      -- anything ⊑ ⊤ (Set domain)
+dsubN (PSet (Some a)) (PSet (Some b)) = subsetStr a b   -- a ⊆ b
+dsubN (PSet None) (PSet (Some _)) = False
 dsubN _ _ = False                              -- domain mismatch — never happens (one domain per label)
+
+-- a ⊆ b for string sets (lists treated as sets)
+subsetStr : List String -> List String -> Bool
+subsetStr [] _ = True
+subsetStr (x::xs) b = if contains x b then subsetStr xs b else False
 
 -- least upper bound (over-approximation)
 djoin : Param -> Param -> Param
@@ -225,7 +235,18 @@ djoinN _ (PPrefix None) = PPrefix None
 djoinN (PPrefix (Some a)) (PPrefix (Some b)) =
   let k = commonPrefixLen a b 0
   if k == 0 then PPrefix None else PPrefix (Some (stringSlice 0 k a))
+djoinN (PSet None) _ = PSet None
+djoinN _ (PSet None) = PSet None
+djoinN (PSet (Some a)) (PSet (Some b)) =
+  -- ∪, saturating to ⊤ (PSet None) past the cardinality cap (setCardCap = 16)
+  let u = sortUniqS (a ++ b)
+  if listLen u > setCardCap then PSet None else PSet (Some u)
 djoinN p _ = p                                 -- domain mismatch — never happens
+
+-- Set-domain cardinality cap: a join whose union exceeds this many distinct
+-- authority elements saturates to ⊤ (PSet None), bounding the lattice height.
+setCardCap : Int
+setCardCap = 16
 
 -- length of the longest common prefix of two strings (Stage-2 djoin support)
 commonPrefixLen : String -> String -> Int -> Int
@@ -244,6 +265,11 @@ drenderN : Param -> String
 drenderN PUnit = ""
 drenderN (PPrefix None) = ""
 drenderN (PPrefix (Some s)) = " \"" ++ s ++ "\""
+drenderN (PSet None) = ""                       -- ⊤ renders empty (like the others)
+drenderN (PSet (Some xs)) = " {" ++ joinWith ", " (map quoteStr xs) ++ "}"
+
+quoteStr : String -> String
+quoteStr s = "\"" ++ s ++ "\""
 
 -- ── atom-set helpers (replace the v1 String-set ops) ───────────────────────
 -- render one atom: label + domain refinement text (⊤ ⇒ just the label)
@@ -330,7 +356,31 @@ atomOfWritten : (String, Option String) -> Atom
 atomOfWritten (l, None) = Atom l (dtopFor l)
 atomOfWritten (l, Some pat) = match dtopFor l
   PPrefix None => Atom l (PPrefix (Some pat))
+  PSet None => Atom l (PSet (Some (decodeSetParam pat)))
   _ => Atom l (dtopFor l)
+
+-- A Set-domain written param is carried in the `Option String` carrier as a
+-- brace-delimited, comma-separated literal `{a,b,c}` (the parser's `effParamFor`
+-- TLBrace clause builds exactly this).  Decode it back to the element list.
+-- (Keeps the carrier type `Option String`, so no AST `TyEffect` ripple.)
+decodeSetParam : String -> List String
+decodeSetParam s =
+  let n = stringLength s
+  if n >= 2 && stringSlice 0 1 s == "{" && stringSlice (n - 1) n s == "}"
+  then sortUniqS (filterList (x => x != "") (splitOnComma (stringSlice 1 (n - 1) s)))
+  else sortUniqS (filterList (x => x != "") (splitOnComma s))
+
+-- split a string on ',' (Set-element separator; authority tokens contain none)
+splitOnComma : String -> List String
+splitOnComma s = splitOnCommaGo s 0 0 []
+
+splitOnCommaGo : String -> Int -> Int -> List String -> List String
+splitOnCommaGo s start i acc =
+  let n = stringLength s
+  if i >= n then reverseL (stringSlice start n s :: acc)
+  else if stringSlice i (i + 1) s == ","
+    then splitOnCommaGo s (i + 1) (i + 1) (stringSlice start i s :: acc)
+    else splitOnCommaGo s start (i + 1) acc
 
 atomsOfWritten : List (String, Option String) -> List Atom
 atomsOfWritten ls = atomsNorm (map atomOfWritten ls)
@@ -666,6 +716,9 @@ checkOneEffectParam l pat = match dtopFor l
     else if prefixPatternOk pat then ()
     else pushTypeError (effectParamMsg l
       ("pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
+  PSet None =>
+    -- Set-domain param is a brace-set literal `{a,b}` (parser-encoded); always well-formed.
+    ()
   _ => pushTypeError (effectParamMsg l
     ("label '" ++ l ++ "' is atomic and takes no parameter (declare it `effect " ++ l ++ " Prefix` to parameterize)"))
 

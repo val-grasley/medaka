@@ -1,0 +1,12 @@
+-- WS-3 P4: previously a PARSE ERROR (`<Foo {"a","b"}>`), now accepts.
+-- A Set-domain effect label carries a finite authority set literal.  `use`'s
+-- declared bound equals the extern's row, so the escape check is satisfied.
+effect Foo Set
+
+extern grant : String -> <Foo {"a", "b"}> String
+
+use : String -> <Foo {"a", "b"}> String
+use x = grant x
+
+main : <IO> Unit
+main = println "set p4 ok"

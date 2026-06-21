@@ -1,0 +1,9 @@
+effect Foo Set
+extern g1 : String -> <Foo {"a","b","c","d","e","f","g","h","i"}> String
+extern g2 : String -> <Foo {"j","k","l","m","n","o","p","q","r"}> String
+both : String -> <Foo {"a"}> String
+both x =
+  let _ = g1 x
+  g2 x
+main : <IO> Unit
+main = println "x"

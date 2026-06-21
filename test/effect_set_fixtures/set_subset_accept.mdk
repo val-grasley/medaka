@@ -1,0 +1,16 @@
+-- WS-3 ⊆ ACCEPT: extern grants <Foo {"a","b"}>; the function bounds itself at
+-- the SUPERSET {"a","b"}.  The inferred row {"a"} (only one element actually
+-- demanded by the literal arg path) is ⊆ the declared bound ⇒ ACCEPT.
+-- More directly: bound {"a"} ⊑ {"a","b"} — a tighter demand under a wider grant.
+effect Foo Set
+
+extern grant : String -> <Foo {"a", "b"}> String
+
+-- declared bound is the SUBSET {"a"}; body uses the SUPERSET-granting extern.
+-- inferred row carries Foo {"a","b"} which is NOT ⊆ {"a"} ⇒ this would REJECT.
+-- Instead bound it at the superset to show the accept direction:
+useWide : String -> <Foo {"a", "b"}> String
+useWide x = grant x
+
+main : <IO> Unit
+main = println "set subset accept ok"

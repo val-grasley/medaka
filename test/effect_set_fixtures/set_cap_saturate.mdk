@@ -1,0 +1,17 @@
+-- WS-3 cardinality-cap saturation: two Foo-granting externs whose authority
+-- sets together exceed setCardCap (16) distinct elements.  The escape/row
+-- machinery joins same-label atoms (djoin → ∪), and the union (18 elems) > cap
+-- ⇒ saturates to ⊤ (PSet None), which renders as the bare label `<Foo>`.
+-- Bounding the function at bare `<Foo>` (⊤) ACCEPTS (saturated demand ⊑ ⊤).
+effect Foo Set
+
+extern g1 : String -> <Foo {"a","b","c","d","e","f","g","h","i"}> String
+extern g2 : String -> <Foo {"j","k","l","m","n","o","p","q","r"}> String
+
+both : String -> <Foo> String
+both x =
+  let _ = g1 x
+  g2 x
+
+main : <IO> Unit
+main = println "cap saturate ok"

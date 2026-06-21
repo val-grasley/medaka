@@ -1608,7 +1608,26 @@ effParamFor (TString s) = do
 effParamFor TUnderscore = do
   advance
   pure (Some "_")           -- v2 Stage 2b inferred hole (`<Net _>`)
+effParamFor TLBrace = do
+  -- v2 WS-3 Set-domain literal `<Foo {"a", "b"}>`.  Encode the element strings
+  -- into the existing `Option String` carrier as `{a,b}` (sentinel `{` prefix);
+  -- `atomOfWritten`/`decodeSetParam` (typecheck) decode it.  This keeps the
+  -- carrier type unchanged ⇒ no `TyEffect` AST ripple.
+  expectTok TLBrace
+  elems <- sepBy1 stringLitP (expectTok TComma)
+  expectTok TRBrace
+  pure (Some (encodeSetParam elems))
 effParamFor _ = pure None
+
+-- join Set elements into the `{a,b,c}` carrier form (commas separate; Set
+-- authority tokens contain no commas/braces).
+encodeSetParam : List String -> String
+encodeSetParam elems = "{" ++ joinComma elems ++ "}"
+
+joinComma : List String -> String
+joinComma [] = ""
+joinComma [x] = x
+joinComma (x::xs) = x ++ "," ++ joinComma xs
 
 pipeTail : Parser (Option String)
 pipeTail = do

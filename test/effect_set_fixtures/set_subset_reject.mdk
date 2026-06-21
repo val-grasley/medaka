@@ -1,0 +1,12 @@
+-- WS-3 ⊄ REJECT: extern grants <Foo {"a","b"}>; the function declares the
+-- TIGHTER bound <Foo {"a"}>.  The body's inferred row carries {"a","b"} which
+-- is NOT ⊆ {"a"} ⇒ the escape check REJECTS (a TYPE ERROR).
+effect Foo Set
+
+extern grant : String -> <Foo {"a", "b"}> String
+
+tooTight : String -> <Foo {"a"}> String
+tooTight x = grant x
+
+main : <IO> Unit
+main = println "should not typecheck"
