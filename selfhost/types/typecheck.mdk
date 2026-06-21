@@ -1036,11 +1036,11 @@ methodDispatchIdxRef : Ref (List (String, Int))
 methodDispatchIdxRef = Ref []
 
 -- C5: arg-position method occurrences whose name is a standalone-shadow, recorded
--- UNGATED (the eval path leaves argStampEnabled OFF, so the ordinary arg-stamp
--- machinery never fires for them, yet eval still arg-tag-dispatches and panics on a
--- receiver with no impl — box's `toList b`).  Each entry is (name, route ref, the
--- discriminating-argument mono CELL); resolveRLocalSites reads the cell post-
--- inference and stamps RLocal when the receiver grounds to a head with no impl.
+-- UNGATED (the ordinary arg-stamp machinery is emit-path-only, but eval also
+-- arg-tag-dispatches and panics on a receiver with no impl — box's `toList b`).
+-- Each entry is (name, route ref, the discriminating-argument mono CELL);
+-- resolveRLocalSites reads the cell post-inference and stamps RLocal when the
+-- receiver grounds to a head with no impl.
 -- Mirrors lib/typecheck.ml's EApp-receiver RLocal stamp.  Reset by resetState.
 pendingRLocalSites : Ref (List (String, Ref Route, Mono))
 pendingRLocalSites = Ref []
@@ -1173,7 +1173,7 @@ schemeObligationsRef = Ref []
 -- ids so inferDictAt records a real pendingDictApp (→ the call gets its dict ARG).
 -- This ref ACCUMULATES every module's registered fn-constraints across the graph and
 -- is NOT cleared by resetState; checkModuleFullImpl re-seeds funConstraintsRef from
--- it after the per-module reset (gated argStampEnabled — empty + unused when OFF, so
+-- it after the per-module reset (gated emitArgStampPasses — empty + unused when OFF, so
 -- the golden module drivers are byte-identical).  The DEFINING module's entry (real
 -- ids, registered first) wins the lookupAssocSL2 first-match.
 crossModuleFunConstraintsRef : Ref (List (String, List Int))
@@ -1325,35 +1325,35 @@ implInferEnabled = Ref False
 argDispatchIdxRef : Ref (List (String, Int))
 argDispatchIdxRef = Ref []
 
--- ── D3a arg-position dispatch STAMPING (Native backend, the emit path) ───────
+-- ── D3a arg-position dispatch STAMPING (Native backend, emit + eval paths) ──────
 -- The action analog of the D0.5 measurement: instead of classifying each
 -- ARGUMENT-position interface-method occurrence, STAMP a static `RKey <head>` for
 -- every one whose discriminating-argument type resolves to a concrete head (the
 -- 903 concrete sites = 25 primitive + 878 ADT).  Type-variable occurrences (the
 -- 110 D3b sites) stay RNone → the emitter falls back to runtime arg-tag dispatch.
--- Entirely behind argStampEnabled (OFF by default; only the LLVM emit driver turns
--- it ON), so the `=== TYPES ===` / Core-IR golden + ceval-oracle paths stay
+-- OFF by default; the emit AND eval drivers both turn it ON; the `=== TYPES ===`
+-- / Core-IR golden + ceval-oracle paths leave it off so those paths stay
 -- byte-identical: with it OFF, prePassDictArg leaves arg-position uses as bare
 -- EVar (no extra EMethodAt nodes) and inferMethodAt never reaches the stamp arm.
-argStampEnabled : Ref Bool
-argStampEnabled = Ref False
+emitArgStampPasses : Ref Bool
+emitArgStampPasses = Ref False
 
 -- enable arg-position stamping for the current elaboration (the emit path flips
 -- this before elaborateDict; the golden/oracle drivers leave it off).
 export
-enableArgStamp : Unit -> <Mut> Unit
-enableArgStamp _ = set_ref argStampEnabled True
+enableEmitArgStampPasses : Unit -> <Mut> Unit
+enableEmitArgStampPasses _ = set_ref emitArgStampPasses True
 
 -- #55 EVAL residual: active on the multi-module EVAL path (elaborateModules with
--- argStampEnabled OFF) when there is a RETURN-position constrained fn to dict-pass
--- (sum/product via `fromInt`, when/unless via `pure`).  Distinct from argStampEnabled:
+-- emitArgStampPasses OFF) when there is a RETURN-position constrained fn to dict-pass
+-- (sum/product via `fromInt`, when/unless via `pure`).  Distinct from emitArgStampPasses:
 -- it turns on the constrained-FUNCTION dict layer (mark call sites EDictAt + resolve
 -- routes + prepend define params + thread crossModuleFunConstraintsRef) for the eval
 -- interpreter — WITHOUT the emit path's arg-position stamping or its
 -- discoverPromotedModules snapshot.  elaborateModules sets it per run; reset to False
 -- at the top of elaborateModules so a prior emit run can't leak it.
 -- ARGSTAMP-UNIFY Phase 4 (RETIRED): post-unification eval threads dicts fully, so
--- `evalDictLayerActive = not argStampEnabled` made every `argStampEnabled || …` guard
+-- `evalDictLayerActive = not emitArgStampPasses` made every `emitArgStampPasses || …` guard
 -- an always-True tautology.  Flag deleted; those guards are now unconditional.
 
 -- the route refs awaiting an arg-position stamp + their discriminating-argument
@@ -2472,7 +2472,7 @@ inferSlice env arr lo hi =
   infer env arr
 
 -- a method occurrence.  Return-position: record (routeRef, result mono) so
--- resolveSites can stamp RKey/RDict.  D3a arg-position (argStampEnabled + name in
+-- resolveSites can stamp RKey/RDict.  D3a arg-position (emitArgStampPasses + name in
 -- argDispatchIdxRef): the dispatch is decided by the DISCRIMINATING-ARGUMENT type,
 -- not the result, so queue recordArgStamp on the arg-position mono instead — it is
 -- NOT a pendingSites/methodSiteFns return-position site.
@@ -2492,8 +2492,8 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
       None => recordSite name tagRef implRef (fst inst)
 -- C5: if [name] is a standalone-shadow method, record its discriminating-arg
 -- mono cell UNGATED so resolveRLocalSites can route RLocal when the receiver
--- grounds to a no-impl head (the eval path never sets argStampEnabled, so the
--- ordinary arg-stamp path below would otherwise leave it RNone → arg-tag panic).
+-- grounds to a no-impl head (the arg-stamp path would otherwise leave it RNone
+-- → arg-tag panic on a receiver with no impl).
 
 -- Cause-A prerequisite: ALSO record the discriminating-arg mono into
 -- methodSiteFns keyed by currentFn (mirroring recordSite, which only fires
@@ -2507,7 +2507,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
 -- resolveRLocalSites can stamp RLocal once inference grounds the receiver.  Only
 -- shadows (standaloneValuesRef) are recorded — every other method occurrence is
 -- untouched (no entry → byte-identical).  The dispatch index comes from the method's
--- declared interface type (methodDispatchIdx), independent of argStampEnabled.
+-- declared interface type (methodDispatchIdx), independent of emitArgStampPasses.
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
 recordRLocalSite _ name tagRef inst
   | not (contains name standaloneValuesRef.value) = ()
@@ -4016,7 +4016,7 @@ unifyClauses env v ((pats, body)::rest) =
 --
 -- The 1-module case automatically satisfies the flat path's invariants — one
 -- resetState (one module ⇒ one checkModuleFullImpl), zero imports ⇒ the full
--- constraint set, and (for the EVAL path, argStampEnabled OFF) elaborateModules
+-- constraint set, and (for the EVAL path, emitArgStampPasses OFF) elaborateModules
 -- runs the eval-dict layer unconditionally (ARGSTAMP-UNIFY Phase 4), so the
 -- return-position constrained-fn dict layer matches the flat elaborateDict.
 --
@@ -4153,7 +4153,7 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
 -- pendingArgStamps/route refs left by the last checkProgramSeeded) must NOT leak
 -- into the real per-module stamping that follows.  resetState wipes them; the
 -- promoted arities survive in the snapshot, carried to the real pass via
--- crossModuleFunConstraintsRef.  dictEligibleRef + argStampEnabled are NOT touched
+-- crossModuleFunConstraintsRef.  dictEligibleRef + emitArgStampPasses are NOT touched
 -- by resetState (set by the driver, constant).
 
 -- Fixpoint body: prePass the joint program (return-position + constrained-fn names
@@ -4323,11 +4323,11 @@ rewriteRPDict _ _ e = e
 
 -- D3a: like prePassDict but ALSO rewrite ARG-position method occurrences (names in
 -- [argNames]) to EMethodAt, so inferMethodAt can stamp their route from the
--- discriminating-argument type.  [argNames] is empty unless argStampEnabled (the
+-- discriminating-argument type.  [argNames] is empty unless emitArgStampPasses (the
 -- emit path), so the golden/oracle paths get the same tree prePassDict produced.
 -- The golden/oracle path (argNames == []) keeps the scope-BLIND mapProg rewrite,
 -- byte-for-byte identical to prePassDict.  The emit path (argNames non-empty, set
--- only under argStampEnabled) instead uses the SCOPE-AWARE rewriteArgScoped below:
+-- only under emitArgStampPasses) instead uses the SCOPE-AWARE rewriteArgScoped below:
 -- an arg-position interface-method name (in argNames) that is shadowed by a local
 -- binder (a parameter, let, lambda arg, or match-pattern variable) stays a plain
 -- EVar rather than becoming an EMethodAt.  This mirrors the reference typecheck's
@@ -4754,11 +4754,8 @@ resolveRLocalSites keyTable ((name, tagRef, am)::rest) =
 -- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
 -- receiver mono now grounds to a concrete head tycon with NO impl of the method.
 -- The receiver HAS an impl (the genuine-method case, e.g. `toList (Some 7)`):
---   • EVAL path (argStampEnabled OFF): RESET to RNone — resolveSites mis-stamped
---     RKey<resultType> (`toList`'s `List` from its `List a` result), which narrows to
---     the WRONG impl; RNone makes eval arg-tag-dispatch on the receiver instead.
---   • EMIT path (argStampEnabled ON): LEAVE untouched — resolveArgStamps already
---     stamped the correct RKey<receiverHead>, which the emitter dispatches directly.
+-- leave the route untouched — eval arg-tag-dispatches on RNone; emit already
+-- stamped the correct RKey<receiverHead> via resolveArgStamps.
 -- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
 resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
@@ -4766,15 +4763,11 @@ resolveRLocalSite keyTable name tagRef am = match headTyconMono am
   Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
   None => ()
 
--- C5: hasImpl ⇒ genuine method.  EVAL path (argStampEnabled OFF) resets to RNone
--- (resolveSites mis-stamped RKey<result>); EMIT path leaves resolveArgStamps' route.
+-- C5: hasImpl ⇒ genuine method; route already correct (RNone for arg-tag eval,
+-- or RKey stamped by resolveArgStamps on emit) — leave untouched.
 -- no impl ⇒ standalone shadow ⇒ RLocal.
 stampRLocalOrFallback : Bool -> Ref Route -> <Mut> Unit
-stampRLocalOrFallback True tagRef =
-  if argStampEnabled.value then
-    ()
-  else
-    set_ref tagRef RNone
+stampRLocalOrFallback True _ = ()
 stampRLocalOrFallback False tagRef = set_ref tagRef RLocal
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
@@ -4878,16 +4871,10 @@ stampBinopRoute implTable keyTable method tagRef operandMono tag
     let dictMethod = if implDefinesMethodAt implTable method tag then method else innerDefaultMethod method
     let reqs = argImplDictRoutesFor implTable dictMethod tag operandMono
     set_ref tagRef (RKey key reqs)
--- Gate element reqs on argStampEnabled (Gap #21).  On the EMIT path
--- (argStampEnabled ON) the impl method `eq`/`compare` carries leading
--- `$dict_*` params (resolveArgStamps ran), so forward the full element-dict
--- reqs — emitter applies them and threads them in.  On the EVAL path
--- (argStampEnabled OFF) resolveArgStamps is gated off, so the method has NO
--- dict param; forwarding reqs would `applyDicts` a VDict onto a closure with
--- no dict slot → consume a value slot → arity/pattern crash.  Stamp `RKey key
--- []` instead: it still narrows the method VMulti to the right impl, applies
--- ZERO dicts, and lets the rewritten body dispatch inner operands by runtime
--- arg-tag (the working direct-method path).  Emit stays byte-identical.
+-- Gap #21 (CLOSED): element reqs are now forwarded unconditionally on both eval and
+-- emit paths.  The impl method `eq`/`compare` carries leading `$dict_*` params
+-- (resolveArgStamps runs on both paths); emitter applies them; eval's methodAtNarrow
+-- forwards dict reqs (like RDictFwd) truncated to the matched impl's reqCount.
 
 -- The inner same-interface method an interface DEFAULT reduces to, supplying the
 -- element `requires` dicts.  Ord's `lt`/`gt`/`lte`/`gte`/`min`/`max` defaults all
@@ -7031,7 +7018,7 @@ inferOneImpl env allProg rpNames DImpl { iface, tys, reqs, methods, ... } = matc
   _ => inferRequiresImpl env allProg rpNames iface tys reqs methods
 inferOneImpl _ _ _ _ = ()
 
--- D3a: a NON-`requires` impl body, inferred only on the emit path (argStampEnabled)
+-- D3a: a NON-`requires` impl body, inferred only on the emit path (emitArgStampPasses)
 -- so its ARG-position method occurrences (e.g. `display` of a String field inside a
 -- `Display`/`Debug` impl — the 19 `display@String` sites) reach inferMethodAt and
 -- get stamped.  Mirrors inferRequiresImpl's head-mono substitution but with no
@@ -7114,7 +7101,7 @@ methodTyOf mname ((IfaceMethod n ty _)::rest)
 -- surviving (normalized) tyvar ids → its `$dict_<method>_<slot>` param, so the
 -- inner ref's pendingSite/pendingArgStamp (also normalizing to that id) routes
 -- RDict.  D3b-1: arg-position methods (`eq`/`compare`/`debug`/… on the element)
--- register only under argStampEnabled (argDispatchOf returns None otherwise), so
+-- register only under emitArgStampPasses (argDispatchOf returns None otherwise), so
 -- the non-emit return-position path is unchanged.  (The element tyvar is shared
 -- across an impl's methods, so per-method dict names only disambiguate for
 -- single-method interfaces — exactly the D3b-1 targets Eq/Ord/Debug/Display/Hashable.)
@@ -8130,7 +8117,7 @@ checkModuleFull seedVars accData prog =
 
 -- E5: like checkModuleFull but takes [implDecls] (core + every EARLIER module +
 -- this module) as the impl-body inference universe.  Under implInferEnabled (the
--- argStampEnabled emit path ONLY) it ALSO infers THIS module's parametric impl
+-- emitArgStampPasses emit path ONLY) it ALSO infers THIS module's parametric impl
 -- bodies — mirroring checkProgramSeeded's inferImplBodiesIfEnabled — so their
 -- ARG-position ELEMENT dispatch (`eq`/`compare`/… on the impl head tyvar) reaches
 -- inferMethodAt and lands in pendingArgStamps, which elabModuleStamp's
@@ -8230,8 +8217,8 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
 -- E6: re-install the cross-module constraint accumulator that resetState just
 -- wiped, so this module's `=>`-constrained call sites into EARLIER modules resolve.
 -- Post-ARGSTAMP-UNIFY (Phase 4): eval and emit both thread dicts, so this runs
--- UNCONDITIONALLY on both paths (was `argStampEnabled || evalDictLayerActive`, an
--- always-True tautology since evalDictLayerActive = not argStampEnabled).
+-- UNCONDITIONALLY on both paths (was `emitArgStampPasses || evalDictLayerActive`, an
+-- always-True tautology since evalDictLayerActive = not emitArgStampPasses).
 
 -- resetState wiped methodIfaceParamsRef; re-register it from the FULL impl
 -- universe [implDecls] (core/earlier modules ++ this prog) so resolveSite's
@@ -8274,7 +8261,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
 -- E6: fold THIS module's freshly-registered fn-constraints into the cross-module
 -- accumulator so a LATER module's call site finds them after its own reset.
 -- Post-ARGSTAMP-UNIFY (Phase 4): unconditional on both paths (was the always-True
--- `argStampEnabled || evalDictLayerActive`).
+-- `emitArgStampPasses || evalDictLayerActive`).
 
 -- Shape A (gap #44): ground a container literal's free result-element var THROUGH
 -- the unique impl's method type, so this module's pending sites/arg-stamps resolve
@@ -8682,10 +8669,10 @@ allModuleLines ((mid, ss)::rest) =
 -- and no pendingDictApps / pendingRecDictApps to resolve.
 export
 elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
--- E4: under argStampEnabled (the LLVM emit drivers ONLY) apply D3b's ARG-position
+-- E4: under emitArgStampPasses (the LLVM emit drivers ONLY) apply D3b's ARG-position
 -- dict-passing per module, mirroring elaborateDict.
 --
--- implInferEnabled is now ON unconditionally (was `argStampEnabled.value`): the EVAL
+-- implInferEnabled is now ON unconditionally (was `emitArgStampPasses.value`): the EVAL
 -- path needs impl-body inference too, so a standalone-shadow method call INSIDE an
 -- impl body (map's `Debug`/`Eq`/`Ord`/`Display (Map k v)` bodies all call standalone
 -- `toList m`) RECORDS its RLocal site (recordRLocalSite → pendingRLocalSites) for
@@ -8695,7 +8682,7 @@ elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (
 -- `debug`/`display` recursed forever (SIGBUS on `medaka test stdlib/map.mdk`).  The
 -- TYPECHECK golden probes use checkModulesEntryLines/checkModulesDiags (NOT
 -- elaborateModules), so their goldens are unaffected; the emit-path diff gates run
--- with argStampEnabled True, where impl inference was already ON — also unchanged.
+-- with emitArgStampPasses True, where impl inference was already ON — also unchanged.
 elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref implInferEnabled True
   let _ = set_ref mainSchemeRef None
@@ -8724,11 +8711,11 @@ elaborateModules runtimeDecls coreDecls modules =
 
 -- DRIVER-COLLAPSE Phase 2 (global): seed the promotion-eligible set with the USER
 -- modules' top-level fn names (NOT core/prelude — those keep arg-tag / RKey
--- dispatch, which type-checks the goldens).  Previously gated on argStampEnabled
--- (build path only); now ALSO seeded on the eval path (argStampEnabled OFF) so
+-- dispatch, which type-checks the goldens).  Previously gated on emitArgStampPasses
+-- (build path only); now ALSO seeded on the eval path (emitArgStampPasses OFF) so
 -- elaborateModules promotes INFERRED-constraint user fns exactly as flat
 -- elaborateDict does (discoverAll runs discoverPromoted whenever eligibleNames is
--- non-empty, independent of argStampEnabled).  The TYPECHECK golden module drivers
+-- non-empty, independent of emitArgStampPasses).  The TYPECHECK golden module drivers
 -- (checkModulesEntryLines/checkModulesDiags) never reach elaborateModules, so their
 -- goldens are unaffected; the eval goldens are captured from the OCaml oracle's
 -- run, which dict-passes prelude+modules unconditionally — so promotion-on-eval
@@ -8744,12 +8731,12 @@ elaborateModules runtimeDecls coreDecls modules =
 -- ARGUMENT) and their defs get the leading dict PARAM.  Now runs on BOTH paths
 -- (eval too): with argNames=[] on eval it surfaces only RETURN-position inferred
 -- constraints (no arg-position dict-passing), matching flat elaborateDict's eval
--- behaviour (argStampEnabled OFF ⇒ argNames=[] there too).
+-- behaviour (emitArgStampPasses OFF ⇒ argNames=[] there too).
 
 -- E6: dict-name set for the `=>`-constrained-function layer, mirroring the
 -- single-file emit driver's assembly (llvm_emit_typed_main.runEmit): prelude
 -- return- AND arg-position `=>`-constrained fns (clamp/debugListItems/…) plus the
--- modules' own constrained signatures.  [] when OFF (argStampEnabled gates every
+-- modules' own constrained signatures.  [] when OFF (emitArgStampPasses gates every
 -- consumer), so the golden module drivers compute nothing extra → byte-identical.
 -- Used to MARK constrained-fn call sites EDictAt in the prePass (so the caller
 -- supplies the dict ARGUMENT) AND to add the leading dict PARAM in the final
@@ -8769,7 +8756,7 @@ elaborateModules runtimeDecls coreDecls modules =
 -- C5: ALSO mark cross-module standalone-shadow method occurrences (box's
 -- `toList`/`isEmpty`) as EMethodAt, so they carry a route ref for elabModuleStamp's
 -- resolveRLocalSites to stamp RLocal.  Without this they stay EVar (arg-position,
--- argStampEnabled OFF on the eval path) → no route ref → arg-tag panic on a no-impl
+-- emitArgStampPasses OFF on the eval path) → no route ref → arg-tag panic on a no-impl
 -- receiver.  Only added to the MARK set (not rpNames proper, which discoverPromoted
 -- etc. consume) so other passes are unchanged.
 -- DRIVER-COLLAPSE Phase 2: ALSO include methodConstraintNames (methods with their OWN
@@ -8783,7 +8770,7 @@ elaborateModules runtimeDecls coreDecls modules =
 -- arg-position dispatch can thread an EARLIER module's / core's parametric
 -- `requires` element dict.  core2 seeds it.
 
--- E5: on the emit path (argStampEnabled), dict-pass each module's now-stamped
+-- E5: on the emit path (emitArgStampPasses), dict-pass each module's now-stamped
 -- trees, mirroring elaborateDict's final `dictPass`.  A parametric `requires`
 -- impl whose body element-dispatch E5 routed RDict needs its leading
 -- `$dict_<m>_<slot>` PARAM (dictPassDecl's DImpl arm) so the emitter can bind the
@@ -8806,7 +8793,7 @@ elaborateModules runtimeDecls coreDecls modules =
 -- routes were already stamped, with real ids, during each module's own pass), so a
 -- placeholder id list of the correct length is sufficient.  Prepended → wins the
 -- lookupAssocSL2 first-match over any stale last-module entry.  Gated by the
--- argStampEnabled guard below (golden drivers never reach it).
+-- emitArgStampPasses guard below (golden drivers never reach it).
 -- Step 4 (Phase-134 fix): per-module importer-scoped arity, mirroring the oracle
 -- eval.ml:2104-2164 collect_arities-per-scope.  The pre-fix JOINT
 -- seedDictAritiesFromSigs keyed arity by BARE NAME, so a constrained fn in module A
@@ -8827,7 +8814,7 @@ dictPassModulesIfEnabled dictNames core2 modules2 =
   let core2' = dictPass dictNames core2
   let modules2' = dictPassModulesScoped dictNames promotedQ core2 modules2 modules2
   (core2', modules2')
--- Post-ARGSTAMP-UNIFY (Phase 4): ALWAYS run on BOTH paths.  Emit (argStampEnabled):
+-- Post-ARGSTAMP-UNIFY (Phase 4): ALWAYS run on BOTH paths.  Emit (emitArgStampPasses):
 -- the DImpl arm prepends parametric impl-body element-dict params even when no
 -- top-level `=>`-constrained FUNCTION is in [dictNames] (e.g. the empty-prelude
 -- nested_dict_dispatch fixture: a parametric `Cmp (Box a) requires Cmp a` with no
@@ -8837,7 +8824,7 @@ dictPassModulesIfEnabled dictNames core2 modules2 =
 -- Mirrors flat elaborateDict's unconditional final dictPass.  No-op when nothing was
 -- marked → byte-identical golden trees.  scopeArities sizes each define's leading
 -- dict params to its surviving-constraint count.  (Was the always-True
--- `argStampEnabled || evalDictLayerActive` clause guard.)
+-- `emitArgStampPasses || evalDictLayerActive` clause guard.)
 
 -- per-module: set funConstraintsRef to the module's importer-scoped arities, then
 -- dict-pass that module.  [allModules] is the full set (for the transitive-importer
@@ -8966,17 +8953,13 @@ lastComponent (_::rest) = lastComponent rest
 -- E6: the `=>`-constrained-function dict-name set for the module emit path,
 -- mirroring the single-file driver (llvm_emit_typed_main.runEmit): prelude return-
 -- AND arg-position constrained fns (clamp/debugListItems/displayListItems/…) plus
--- every module's own constrained signatures.  [] when OFF, so the golden module
--- drivers neither MARK call sites EDictAt nor add leading dict PARAMs → trees stay
--- byte-identical.  guarded so prePass/dictPass both see the SAME set.
+-- every module's own constrained signatures.  Both eval and emit paths return the
+-- same set; guarded so prePass/dictPass both see the SAME set.
 moduleDictNames : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List String
-moduleDictNames coreDecls allDecls modules
-  | argStampEnabled.value = preludeReturnPosDictNames coreDecls allDecls
-    ++ preludeArgPosDictNames coreDecls allDecls
-    ++ constrainedSigNames (concatMapList snd modules)
-  | otherwise = preludeReturnPosDictNames coreDecls allDecls
-    ++ preludeArgPosDictNames coreDecls allDecls
-    ++ constrainedSigNames (concatMapList snd modules)
+moduleDictNames coreDecls allDecls modules =
+  preludeReturnPosDictNames coreDecls allDecls
+  ++ preludeArgPosDictNames coreDecls allDecls
+  ++ constrainedSigNames (concatMapList snd modules)
 -- EVAL path: even with arg-position stamping OFF, the constrained prelude/module
 -- fns MUST be dict-passed.  DRIVER-COLLAPSE Phase 2: the MODULE part now uses the
 -- FULL constrainedSigNames (every `=>`-constrained module signature), mirroring flat
@@ -9030,7 +9013,7 @@ dictPassModulePair dictNames (mid, prog) = (mid, dictPass dictNames prog)
 
 -- E4/E6: prePass a module rewriting ARG-position method occurrences to EMethodAt
 -- (argNames) AND `=>`-constrained-fn occurrences to EDictAt (dictNames); both
--- non-empty only under argStampEnabled.  Degenerates to prePassModulePair when both
+-- non-empty only under emitArgStampPasses.  Degenerates to prePassModulePair when both
 -- are [] (prePassDictArg with empty argNames/dictNames == prePassDict).
 prePassModulePairArg : List String -> List String -> List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePairArg rpNames dictNames argNames (mid, prog) = (mid, prePassDictArg rpNames dictNames argNames prog)
@@ -9051,7 +9034,7 @@ markModules coreDecls modules =
 -- pendingSites before inference, so on return pendingSites holds exactly THIS
 -- module's sites; the tyvar cells are still bound (the next module's resetState
 -- hasn't run yet), so resolveSites reads each site's resolved result type.
--- E4: under argStampEnabled, ALSO stamp this module's ARG-position sites
+-- E4: under emitArgStampPasses, ALSO stamp this module's ARG-position sites
 -- (pendingArgStamps, likewise this-module-only after resetState) from their now-
 -- resolved discriminating-argument monos — the multi-module analogue of
 -- elaborateDict's resolveArgStamps.  [implDecls] is core + every EARLIER module +
@@ -9090,7 +9073,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
 -- pendingBinopSites is empty (no comparison-operator site) → golden type-only
 -- path leaves them RNone → dictPass-skipped → byte-identical.  Gap #21: on the
 -- EVAL path stampBinopRoute now stamps `RKey key []` (element reqs gated on
--- argStampEnabled), which only narrows the method VMulti and applies ZERO dicts,
+-- emitArgStampPasses), which only narrows the method VMulti and applies ZERO dicts,
 -- so even a RECURSIVE user Eq impl (json's `impl Eq Json`) dispatches inner
 -- operands by arg-tag without over-applying — no suppression needed.
 
@@ -9106,7 +9089,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
 -- also marks the RETURN-position constrained fns (sum/product/when/unless) EDictAt
 -- via moduleDictNames, so their call-site routes must resolve here too.  No-op when
 -- nothing was marked (pendingDictApps/pendingRecDictApps empty → golden drivers
--- byte-identical).  (Was the always-True `argStampEnabled || evalDictLayerActive`.)
+-- byte-identical).  (Was the always-True `emitArgStampPasses || evalDictLayerActive`.)
 
 -- G7: fill each foldMap-style method occurrence's methRoutes from the monos its
 -- `Monoid m` constraint resolved to AT THE CALL SITE (List vs String), so
@@ -9114,7 +9097,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
 -- Independent of the body-side dict routing (the emitter restamps the body's
 -- cross-interface `empty` to its `$dict_<method>_<slot>` param directly).
 -- ARGSTAMP-UNIFY Phase 4: run unconditionally on BOTH paths (was the always-True
--- `argStampEnabled || evalDictLayerActive`), mirroring flat elaborateDict (which
+-- `emitArgStampPasses || evalDictLayerActive`), mirroring flat elaborateDict (which
 -- calls resolveMethodDicts unconditionally) — a method with its OWN method-level
 -- constraint (`build : Num e => e -> t`) needs its method-dict route filled so its
 -- impl clause binds the leading dict param instead of mis-binding it into the first

@@ -1,7 +1,7 @@
 -- ARGSTAMP-UNIFY-PLAN.md Phase 0 — TEMP parity probe (delete at unification end).
 --
 -- Identical to eval_dict_main.mdk EXCEPT it reads a leading mode arg that toggles
--- `argStampEnabled` before elaboration, so the SAME eval-dict corpus can be run
+-- `emitArgStampPasses` before elaboration, so the SAME eval-dict corpus can be run
 -- under BOTH dispatch-elaboration modes (EMIT/True vs EVAL/False) and its PROGRAM
 -- OUTPUT diffed.  Establishes the Phase-0 baseline: which fixtures' output is
 -- already byte-identical under both flags (the plan predicts most are, the fork
@@ -9,15 +9,15 @@
 --
 --   medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>
 --
--- ON  => enableArgStamp () first  (full static dict-threading, the EMIT mode)
--- OFF => leave argStampEnabled False (reduced dict layer + runtime arg-tag, EVAL mode)
+-- ON  => enableEmitArgStampPasses () first  (full static dict-threading, the EMIT mode)
+-- OFF => leave emitArgStampPasses False (reduced dict layer + runtime arg-tag, EVAL mode)
 --
 -- Probe-only entry: NOT in the emitter graph (selfcompile_fixpoint must stay green).
 
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborateOne, enableArgStamp}
+import types.typecheck.{elaborateOne, enableEmitArgStampPasses}
 import support.util.{splitLast}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
@@ -26,7 +26,7 @@ main = match args ()
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withMode mode runtimePath rest =
-  let _ = if mode == "ON" then enableArgStamp () else ()
+  let _ = if mode == "ON" then enableEmitArgStampPasses () else ()
   withRuntime runtimePath rest
 
 withRuntime runtimePath rest = match splitLast rest

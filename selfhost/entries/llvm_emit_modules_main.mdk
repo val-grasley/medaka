@@ -14,7 +14,7 @@
 -- elaborated core + flattened module decls are lowered to Core IR and emitted as
 -- textual LLVM IR to stdout — same shape as llvm_emit_typed_main.mdk.
 --
--- E4 (LANDED): the driver calls enableArgStamp (), so elaborateModules's
+-- E4 (LANDED): the driver calls enableEmitArgStampPasses (), so elaborateModules's
 -- dictPassModulesIfEnabled enabled branch runs the joint arg-position dict-pass
 -- (constrained-fn dict params threaded through call sites cross-module).  The
 -- earlier "Pre-E4 no-op" note here was STALE — arg-position dict-passing IS active
@@ -33,7 +33,7 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableArgStamp,
+  enableEmitArgStampPasses,
 }
 import ir.core_ir_lower.{
   lowerProgramEmit,
@@ -81,7 +81,7 @@ run runtimeP coreP entry roots = match readFile runtimeP
 
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
-  let _ = enableArgStamp ()
+  let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls0 = coreD ++ concatMapList snd modules2
@@ -110,5 +110,5 @@ runEmit runtimeDecls coreDecls modules =
 -- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
 -- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
 -- (the result is discarded) — the real arg-/return-position dict-passing happens
--- INSIDE elaborateModules above (E4 landed; enableArgStamp drives it).  Kept for
+-- INSIDE elaborateModules above (E4 landed; enableEmitArgStampPasses drives it).  Kept for
 -- parity with the single-file typed driver.

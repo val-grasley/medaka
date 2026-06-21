@@ -1,6 +1,6 @@
 STATUS: COMPLETE — all phases (0–5) done 2026-06-14; eval-vs-emit dispatch fork retired.
 
-# ARGSTAMP-UNIFY-PLAN.md — retire the `argStampEnabled` eval-vs-emit dispatch fork
+# ARGSTAMP-UNIFY-PLAN.md — retire the `emitArgStampPasses` eval-vs-emit dispatch fork
 
 Status: **COMPLETE 2026-06-14.** All phases (0/1/2+3/4/5) DONE. Eval and emit now run
 ONE elaboration mode (full static dict-threading); arg-tag (`filterByTag`) survives only
@@ -13,7 +13,7 @@ semantic axis." Selfhost-only; OCaml `lib/` stays the frozen byte-diff oracle.
 Land BEFORE `lib/` removal (the oracle verifies every phase).
 
 ## Why
-`argStampEnabled` is ONE flag toggling TWO dispatch-elaboration modes on the unified
+`emitArgStampPasses` is ONE flag toggling TWO dispatch-elaboration modes on the unified
 driver. **Emit** (`True`): full static **dict-threading** (impl methods get leading
 `$dict_` params, arg/binop sites get routes, promotion runs) — the compiler REQUIRES
 it (no runtime values at codegen). **Eval** (`False`): a REDUCED dict layer + runtime
@@ -22,7 +22,7 @@ two modes elaborate the SAME program differently — the documented root of #55,
 driver-collapse binop regression, and #21. Each was a reconciliation PATCH
 (`evalDictLayerActive`; the now-removed `suppressBinopStamp`), not a fix of the seam.
 Direction is forced: emit can't drop dict-threading, so **eval adopts it** (flip
-`argStampEnabled := True` for the eval driver) and arg-tag retires to its irreducible
+`emitArgStampPasses := True` for the eval driver) and arg-tag retires to its irreducible
 residual.
 
 ## Key findings (scoping, 2026-06-14)
@@ -30,7 +30,7 @@ residual.
   NO flag — it consumes whatever tree the typechecker produces. So unification = flip
   the flag on for the eval driver, NOT rewrite `eval.mdk`.
 - **Return-position dispatch is already unified** (#55 widened `funConstraintsRef`
-  reseed + the return-pos/method/rec dict layers to `argStampEnabled || evalDictLayerActive`).
+  reseed + the return-pos/method/rec dict layers to `emitArgStampPasses || evalDictLayerActive`).
   The ENTIRE remaining delta is **arg-position dispatch** + the #21 binop-reqs gate.
 - **#21's gate becomes unconditional for free** once `resolveArgStamps` runs on eval
   (impl methods then have the `$dict_` slot the binop reqs apply to) — this work
@@ -39,19 +39,19 @@ residual.
   stay structural (`valueEq`/`valueCompare`) — the SAME irreducible residual the
   native backend leaves (`AUDIT §route-taxonomy 1a`). "eval == emit" holds for the
   dict-threadable user-ADT universe; primitives stay structural in BOTH. Not a fork.
-- **Fixpoint is HELPED**: the compiler already self-compiles under `argStampEnabled=True`
+- **Fixpoint is HELPED**: the compiler already self-compiles under `emitArgStampPasses=True`
   (emit), so flipping eval converges it TOWARD the existing self-compile mode.
 
 ## Fork inventory (all in `selfhost/types/typecheck.mdk`; line refs as of 5ee7eef)
 ALREADY CONVERGED (do not touch): F7 (`checkModuleFullImpl` reseed, `:5837/5879`),
 F12 (`realizeRecDictApps`/`resolveDictApps`/`resolveMethodDicts`, `:6564/6565/6577`) —
-gated `argStampEnabled || evalDictLayerActive` since #55. The REMAINING delta:
+gated `emitArgStampPasses || evalDictLayerActive` since #55. The REMAINING delta:
 - **F1/F2/F8** (`argDispatchOf :1883`, `elaborateDict :2879`, `elaborateModules :6213`) — arg-dispatch index seeding; eval `argNames=[]` → arg-position uses stay bare `EVar`→`filterByTag`.
 - **F10** (`moduleDictNames :6444`) — emit set = `preludeReturnPosDictNames ++ preludeArgPosDictNames ++ constrainedSigNames`; eval OMITS `preludeArgPosDictNames`. The structural asymmetry.
 - **F11/F6** (`resolveArgStamps :6550`, `inferPlainImpl :4806`) — adds leading `$dict_` params to impl methods + stamps arg-site routes; skipped on eval. The core step.
-- **F4** (`resolveBinopSite :3569`, the #21 fix) — element-dict `reqs` gated on `argStampEnabled`; becomes unconditional once F11 runs on eval.
+- **F4** (`resolveBinopSite :3569`, the #21 fix) — element-dict `reqs` gated on `emitArgStampPasses`; becomes unconditional once F11 runs on eval.
 - **F3** (`stampRLocalOrFallback :3480`) — eval `RNone` reset (C5 standalone-shadow); verify still resolves (orthogonal to arg-tag-vs-dict).
-- **F9** (`:6260`) — `evalDictLayerActive := not argStampEnabled` (the two flags are one axis); retire at the end.
+- **F9** (`:6260`) — `evalDictLayerActive := not emitArgStampPasses` (the two flags are one axis); retire at the end.
 
 ## Arg-tag dependency map (`selfhost/eval/eval.mdk`) — what unification must handle
 `filterByTag`/`keepCand`/`keepOrAll` (`:650-663`) via `applyOpt (VMulti vs) arg`
@@ -66,7 +66,7 @@ gated `argStampEnabled || evalDictLayerActive` since #55. The REMAINING delta:
    return-position-only discipline that keeps the `neq`-hang closed.
 
 ## Unification design
-Flip `argStampEnabled := True` on the eval driver → ONE elaboration mode. Eval's
+Flip `emitArgStampPasses := True` on the eval driver → ONE elaboration mode. Eval's
 `evalMethodAt`/`applyDicts` consume the now-uniformly-threaded dicts; `evalDictLayerActive`
 retires (dead). Turn on F1/F2/F8/F11/F6 + F10's `preludeArgPosDictNames` for eval; F4
 becomes unconditional. **Keep `filterByTag` ONLY for the primitive/`RNone` residual**
@@ -93,19 +93,19 @@ observably — a clean partial landing if Phase 3 balloons.**
   3. **Mutual-recursion dict forwarding (`monoid_mutual_recursive`).** `evenCat`/`oddCat`'s constraint vars unify to one id; the GLOBAL uncleared `activeDictVars` maps it to whichever sibling registered LAST, so an arg-stamp inside `evenCat` forwarded the out-of-scope `$dict_oddCat_0`. Was ALSO breaking baseline `medaka build`. FIX (`typecheck.mdk`): `pendingArgStamps` carries `currentFn`; `resolveArgStamp` resolves via `activeDictVarOfEncl`, preferring the ENCLOSING fn's OWN dict slot for a constraint var that is encl's.
 
   Gates (all green): `diff_selfhost_test` **9/0**, `diff_selfhost_eval_dict` **22/3** (== baseline; the residual 3 = `method_constraint_foldmap_{list,string}` + `method_constraint_user_iface`, a PRE-EXISTING method-level-constraint `foldMap`/`Monoid m` gap, NOT this work — failing identically on baseline), `_batch` 7/18 (== baseline #55 residual). Emit byte-identical: `diff_selfhost_llvm` 180/0, `_modules` 13/0, `_typed` 37/0, `diff_selfhost_build` 21/0, `diff_native_cli` 54/0. `eval_run`(+batch) 25/0, `eval_modules` 4/0, `eval_typed_modules` 2/0, `bootstrap_eval` 20/0. Canary `core.mdk` 9/0 (no `neq`-hang). parity probe 25/0. `selfcompile_fixpoint` **C3a YES / C3b YES**. NOTE: `medaka build` (emit) of `monoid_mutual_recursive`/`Set {…}` literals still fails (separate pre-existing EMIT-PATH dict-mangling gaps — `$dict_<module>__<fn>_<slot>` not threaded); the INTERPRETER (`medaka run`, eval_dict gate) is now correct for both. Phase 2+3 done; F4 already unconditional (folded in); Phases 4 (retire `evalDictLayerActive` dead flag) + 5 (scope `filterByTag`) remain.
-- **Phase 4 — F4 unconditional + retire `evalDictLayerActive` (medium).** Drop the `:3569` gate (forward reqs always); delete `evalDictLayerActive`, simplify `|| evalDictLayerActive` guards to plain `argStampEnabled`. Gates: full matrix + native_cli + fixpoint.
+- **Phase 4 — F4 unconditional + retire `evalDictLayerActive` (medium).** Drop the `:3569` gate (forward reqs always); delete `evalDictLayerActive`, simplify `|| evalDictLayerActive` guards to plain `emitArgStampPasses`. Gates: full matrix + native_cli + fixpoint.
 - **Phase 4 — ✅ DONE 2026-06-14.** `evalDictLayerActive` was written EXACTLY ONCE
-  (`set_ref evalDictLayerActive (not argStampEnabled.value)`) and read only in guards of
-  the form `argStampEnabled.value || evalDictLayerActive.value` — an **always-True
+  (`set_ref evalDictLayerActive (not emitArgStampPasses.value)`) and read only in guards of
+  the form `emitArgStampPasses.value || evalDictLayerActive.value` — an **always-True
   tautology** (`p || not p`) post-Phase-2+3, since the eval path now threads dicts fully.
-  Confirmed-first: each guard's body is byte-identical whether True-by-`argStampEnabled`
+  Confirmed-first: each guard's body is byte-identical whether True-by-`emitArgStampPasses`
   (emit) or True-by-`evalDictLayerActive` (eval), so retiring the flag and making each
   guard **unconditional** is behavior-preserving on every gate. Simplifications (all in
   `selfhost/types/typecheck.mdk`): F7 `checkModuleFullImpl` reseed (the two
   `set_ref funConstraintsRef` / `set_ref crossModuleFunConstraintsRef` guards, now plain
   `let _ = …`); F12 `realizeRecDictApps` + `resolveDictApps` + `resolveMethodDicts`
   (three guards → plain calls); `dictPassModulesIfEnabled` collapsed from a
-  guarded-clause (`| argStampEnabled || evalDictLayerActive = …` + `| otherwise =
+  guarded-clause (`| emitArgStampPasses || evalDictLayerActive = …` + `| otherwise =
   (core2, modules2)`) to one unconditional `= …` body (the `otherwise` arm was dead). F4
   (`resolveBinopSite` element-dict reqs) was already folded unconditional during Phase
   2+3 (commit 20a5c45) — no `:3569` gate remained to drop. Flag DEFINITION + comment +
@@ -144,15 +144,15 @@ observably — a clean partial landing if Phase 3 balloons.**
   test/bin/argstamp_parity_probe` before trusting it.
 
 ### Unification COMPLETE — summary
-The `argStampEnabled` eval-vs-emit dispatch fork is closed. ONE elaboration mode threads
+The `emitArgStampPasses` eval-vs-emit dispatch fork is closed. ONE elaboration mode threads
 dicts on both paths; `evalDictLayerActive` (the #55-era reconciliation patch) is retired
 with zero readers; arg-tag (`filterByTag`) is scoped to its irreducible primitive +
 `RNone` residual, parity with the native backend. **Vestigiality noted for follow-up (do
-NOT act on here):** `argStampEnabled` itself still legitimately distinguishes
+NOT act on here):** `emitArgStampPasses` itself still legitimately distinguishes
 emit-specific concerns (arg-position stamping, `discoverPromotedModules` snapshot,
 per-module impl-body inference via `implInferEnabled`, `argMeasureEnabled`). Whether
-those emit-only passes can be unified or whether `argStampEnabled` can retire entirely is
-a SEPARATE, larger question — several `argStampEnabled.value` / `implInferEnabled.value`
+those emit-only passes can be unified or whether `emitArgStampPasses` can retire entirely is
+a SEPARATE, larger question — several `emitArgStampPasses.value` / `implInferEnabled.value`
 guards remain that are NOT tautologies (they genuinely gate emit-only work). Left intact.
 
 Riskiest = Phase 3 (eval value-shape change). Phase 1 (`neq`-hang) second. FULLY sequential (shared mutable `typecheck.mdk`/`eval.mdk` + fixpoint canary).

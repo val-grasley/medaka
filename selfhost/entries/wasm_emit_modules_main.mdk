@@ -35,7 +35,7 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableArgStamp,
+  enableEmitArgStampPasses,
 }
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
 import support.util.{concatMapList}
@@ -67,7 +67,7 @@ run runtimeP coreP entry roots = match readFile runtimeP
 
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
-  let _ = enableArgStamp ()
+  let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls0 = coreD ++ concatMapList snd modules2

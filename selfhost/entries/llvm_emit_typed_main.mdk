@@ -19,7 +19,7 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableArgStamp,
+  enableEmitArgStampPasses,
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{
@@ -64,7 +64,7 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 
 runEmit : List Decl -> List Decl -> List Decl -> <Mut> String
 runEmit runtimeDecls preludeDecls userDecls =
-  let _ = enableArgStamp ()
+  let _ = enableEmitArgStampPasses ()
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls
