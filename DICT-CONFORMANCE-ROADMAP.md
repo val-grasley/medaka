@@ -5,6 +5,29 @@ target spec [`DICT-SEMANTICS.md`](DICT-SEMANTICS.md). This document sequences th
 work to bring the **canonical** implementation (`selfhost/*.mdk` → `./medaka`)
 into conformance with the formal dict-passing semantics.
 
+## STATUS — overnight 2026-06-21: roadmap substantially CLOSED
+
+All conformance D-items are resolved (closed, or deferred-with-justification). Each
+landing below was reproduced on the binary first, fixpoint-verified (C3a/C3b YES),
+and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
+
+| Item | Status | Commit / note |
+|------|--------|---------------|
+| **D1** existence gate (WS-1a) | ✅ closed | `afe4b89` + multi-module over-reject fix `00cf2f7` |
+| **D1** dispatch (WS-1b) | ✅ closed | sole-impl emit fix `83bb5c7` + `expand_supers` flatten `db091fd` + **ambiguity-defaulting `72a1477`** (sole→default / ≥2→`AmbiguousImpl`). Return-pos superclass under a `=>` constraint now run==build==oracle (sole 43, chain3b 1005). |
+| **D2** cross-module arity collision | ✅ closed | `e488cd9` (module-qualified define-side arity). **Full re-key (Option B) DEFERRED as net-negative** — empirically proven (agent `a95c…`): `e488cd9` IS the principled module-qualified re-key; the call site is already definer-correct via scheme resolution (not bare-name); remaining bare table serves a collision-free E6 job. D2 dissolved (verified 3-way 1/2/3 reversed-order, unsignatured-promoted). Adding an `EVar` origin field = eval-dict footgun risk for zero gain. |
+| **D3** global coherence | ✅ closed | `84642d0` — orphan cross-module `impl C T` conflicts rejected (names both modules); user-only impl set (prelude excluded); fixpoint = selfhost-self-coherence canary. |
+| **D4** return/phantom overlap | ✅ closed | `fdaefda` (WS-3) — most-specific-wins route stamped for ground return-position. |
+| **D5/D6** well-formedness (WS-4) | ✅ closed | `adbbb97` — cyclic-superinterface rejected; instance-termination depth fuse. |
+| **D7** supers fidelity | ✅ sufficient | `expand_supers` flatten (`db091fd`) closes the dispatch gap; the two-field `VDict.supers` record (deluxe form) is non-defect / observationally-equivalent — not pursued. |
+| **D8** phantom-position | ✅ closed | `aa020b0` (WS-5) — method not mentioning its interface param rejected at check. |
+| **D9** vestigial argStamp flag / **D10** stale docs | 🔄 in progress | cosmetic cleanup (flag rename + doc corrections). |
+
+**Newly-discovered (NOT conformance items, logged for follow-up):**
+- `medaka check` **SIGTRAPs** on a `Map { … }` + `toList` program (pre-existing; check should never crash).
+- `stdlib/json.mdk` single-file `check` → `No impl of Ord for Int` (pre-existing).
+- The OCaml oracle is **known-wrong** on ambiguous multi-impl dispatch (silent first-declared-wins); native now rejects (`AmbiguousImpl`) — an intentional native>oracle divergence (like cyclic/phantom).
+
 ## 0. Principles
 
 - **Target the canonical binary.** The OCaml `lib/*.ml` oracle is frozen and being
