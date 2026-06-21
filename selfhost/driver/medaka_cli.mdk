@@ -37,7 +37,7 @@ import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
 import tools.doc.{runDoc}
-import tools.check_policy.{runCheckPolicy, runAcceptedPlugin, PolicyArgs(..), parsePolicyArgs, PolicyOutcome(..)}
+import tools.check_policy.{runCheckPolicy, runAcceptedPlugin, PolicyArgs(..), parsePolicyArgs, PolicyOutcome(..), runManifest, parseManifestArgs, ManifestArgs(..)}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
@@ -53,6 +53,7 @@ main = match args ()
   "test"::rest => runTestCmd rest
   "doc"::rest => runDocCmd rest
   "check-policy"::rest => runCheckPolicyCmd rest
+  "manifest"::rest => runManifestCmd rest
   "repl"::rest => runReplCmd rest
   "lsp"::rest => runLspCmd rest
   sub::_ => notYet sub
@@ -633,6 +634,46 @@ runCheckPolicyCmd argv = match parsePolicyArgs argv
               PolicyAccept header pluginFn coreD rtD userD =>
                 let _ = putStr header
                 putStr (runAcceptedPlugin pluginFn coreD rtD userD)
+
+-- ── manifest ─────────────────────────────────────────────────────────────────
+-- WS-1c of EFFECTS-CONFORMANCE-ROADMAP.md.  Emit a module's verified capability
+-- manifest as a TOML artifact.  Given a source file and an optional --fn name
+-- (default "main"), typechecks the file, reads the named fn's inferred effect
+-- row, filters to security labels (dropping Mut/Panic), and prints:
+--
+--   [package.capabilities]
+--   Net = "idp.example.com/api"
+--   Stdout = true
+--
+-- Security/internal rule: isSecurity l = not (l == "Mut" || l == "Panic").
+-- Labels sorted ascending (stable output).  Prefix-param → string TOML value;
+-- ⊤/Unit param → boolean `true`.
+--
+-- WS-1c (deferred): Wasm custom section embedding (see
+-- selfhost/tools/check_policy.mdk comment + EFFECTS-SEMANTICS.md §7).
+runManifestCmd : List String -> <IO, Mut, Panic> Unit
+runManifestCmd argv = match parseManifestArgs argv
+  ManifestArgs None _ =>
+    let _ = ePutStrLn "usage: medaka manifest <file.mdk> [--fn name]"
+    exit 1
+  ManifestArgs (Some target) fn =>
+    let root = envOr "MEDAKA_ROOT" "."
+    let rtPath = root ++ "/stdlib/runtime.mdk"
+    let corePath = root ++ "/stdlib/core.mdk"
+    match readFile rtPath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok rsrc => match readFile corePath
+        Err msg =>
+          let _ = ePutStrLn msg
+          exit 1
+        Ok csrc => match readFile target
+          Err msg =>
+            let _ = ePutStrLn msg
+            exit 1
+          Ok tsrc =>
+            putStr (runManifest rsrc csrc tsrc fn)
 
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
 -- import of a non-exported helper).

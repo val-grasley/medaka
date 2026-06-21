@@ -452,3 +452,130 @@ firstOf (x::_) = x
 listIsEmpty : List a -> Bool
 listIsEmpty [] = True
 listIsEmpty _ = False
+
+-- ── WS-1c: capability manifest emission ─────────────────────────────────────
+-- Emit a module's verified capability manifest as a TOML artifact.
+-- M(module) = filter_security(verified-row of the entry point) — §7 of
+-- EFFECTS-SEMANTICS.md.
+--
+-- Security/internal classification (§7, lines ~441-466):
+--   internal: Mut, Panic (purity/divergence tracking; no host counterpart)
+--   security: everything else (all ioAlias labels + every user `effect Foo`)
+-- Rule: isSecurity l = not (l == "Mut" || l == "Panic")
+--
+-- TOML value rendering:
+--   PPrefix (Some s) → key = "s"   (concrete prefix/param as a string value)
+--   PUnit / PPrefix None → key = true  (bare ⊤ grant — host decides scope)
+--
+-- Output order: labels sorted ascending (stable/gateable).
+-- Labels already arrive sorted from monoEffects/sortUniqAtoms.
+--
+-- WS-1c (deferred): Wasm custom section — would embed M(module) into the
+-- compiled .wasm binary as a custom section.  Touches wasm_emit.mdk; left
+-- as a seam.  Add a `-- WS-1c wasm: encode M as custom section bytes` marker
+-- in backend/wasm_emit.mdk when that work is picked up.
+
+-- Is a label a security label (goes in the manifest)?
+-- All labels except Mut and Panic are security.  User-declared `effect Foo`
+-- defaults to security (no host override path exists yet), so the rule is
+-- simply: drop the two known internal labels.
+isSecurity : String -> Bool
+isSecurity l = not (l == "Mut" || l == "Panic")
+
+-- Render one atom as a TOML key-value line.
+-- PPrefix (Some s) → 'Label = "s"'
+-- PUnit / PPrefix None → 'Label = true'
+atomToToml : Atom -> String
+atomToToml a =
+  let label = atomLabel a
+  match atomParam a
+    PPrefix (Some s) => label ++ " = \"" ++ s ++ "\""
+    _ => label ++ " = true"
+
+-- Filter atoms to security labels only, then render TOML.
+-- Returns the full TOML block (empty string if no security effects).
+export
+manifestToml : List Atom -> String
+manifestToml atoms =
+  let secAtoms = filterSecurity atoms
+  match secAtoms
+    [] => "[package.capabilities]\n"
+    _ =>
+      let lines = map atomToToml secAtoms
+      "[package.capabilities]\n" ++ joinTomlLines lines
+
+joinTomlLines : List String -> String
+joinTomlLines [] = ""
+joinTomlLines (x::xs) = x ++ "\n" ++ joinTomlLines xs
+
+filterSecurity : List Atom -> List Atom
+filterSecurity [] = []
+filterSecurity (a::rest) =
+  if isSecurity (atomLabel a) then a :: filterSecurity rest
+  else filterSecurity rest
+
+-- Parse args for `medaka manifest <file.mdk> [--fn name]`.
+-- Default fn name: "main" (the conventional entry point for manifest extraction;
+-- differs from check-policy's "transform" which is the plugin convention).
+public export data ManifestArgs = ManifestArgs (Option String) String
+
+export
+parseManifestArgs : List String -> ManifestArgs
+parseManifestArgs argv = parseManifestGo argv None "main"
+
+parseManifestGo : List String -> Option String -> String -> ManifestArgs
+parseManifestGo [] file fn = ManifestArgs file fn
+parseManifestGo ("--fn"::v::rest) file _ = parseManifestGo rest file v
+parseManifestGo (f::rest) file fn = match file
+  None => parseManifestGo rest (Some f) fn
+  Some _ => parseManifestGo rest file fn
+
+-- Run manifest extraction: typecheck the file, read the named fn's inferred
+-- effect row, filter to security labels, return TOML.
+-- Returns (toml, fnEffects) so the caller can also drive round-trip validation.
+export
+runManifest : String -> String -> String -> String -> <Mut> String
+runManifest rtSrc coreSrc src fnName =
+  let rawUser = parse src
+  let userD = desugar rawUser
+  let rtD = desugar (parse rtSrc)
+  let coreD = desugar (parse coreSrc)
+  let schemes = checkProgramSchemesWithRuntime rtD (coreD ++ userD)
+  let effTable = fnEffectsTable schemes
+  let fnEffects = match lookupAssocL fnName effTable
+    None => []
+    Some e => e
+  manifestToml fnEffects
+
+-- Render the manifest as --allow tokens for round-trip through check-policy.
+-- PPrefix (Some s) → "Label=s"
+-- PUnit / PPrefix None → "Label"
+-- Returns a comma-joined string suitable for --allow.
+export
+manifestToAllowStr : List Atom -> String
+manifestToAllowStr atoms =
+  let secAtoms = filterSecurity atoms
+  let toks = map atomToAllowTok secAtoms
+  joinWith "," toks
+
+atomToAllowTok : Atom -> String
+atomToAllowTok a =
+  let label = atomLabel a
+  match atomParam a
+    PPrefix (Some s) => label ++ "=" ++ s
+    _ => label
+
+-- Full manifest extraction returning the atom list (for round-trip gate).
+export
+runManifestAtoms : String -> String -> String -> String -> <Mut> List Atom
+runManifestAtoms rtSrc coreSrc src fnName =
+  let rawUser = parse src
+  let userD = desugar rawUser
+  let rtD = desugar (parse rtSrc)
+  let coreD = desugar (parse coreSrc)
+  let schemes = checkProgramSchemesWithRuntime rtD (coreD ++ userD)
+  let effTable = fnEffectsTable schemes
+  let fnEffects = match lookupAssocL fnName effTable
+    None => []
+    Some e => e
+  filterSecurity fnEffects

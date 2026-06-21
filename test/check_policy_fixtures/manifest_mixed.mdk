@@ -1,0 +1,22 @@
+-- WS-1c manifest gate fixture.
+-- `compute` is pure (no effects); its inferred row is empty.
+-- `writeOut` uses Stdout (security, ⊤ param → manifest: Stdout = true).
+-- `mutate` uses Mut (internal → must NOT appear in manifest).
+-- `entry` calls both writeOut and mutate, so its row is <Mut, Stdout>.
+-- The manifest of `entry` must be:
+--   [package.capabilities]
+--   Stdout = true
+-- (Mut dropped as internal; Stdout retained as security; labels sorted ascending.)
+
+writeOut : String -> <Stdout> Unit
+writeOut s = putStr s
+
+mutate : <Mut> Unit
+mutate =
+  let r = ref 0
+  set_ref r 1
+
+entry : String -> <Mut, Stdout> Unit
+entry s =
+  let _ = mutate
+  writeOut s
