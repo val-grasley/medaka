@@ -1,0 +1,18 @@
+-- WS-1b param-level check-policy fixture.
+-- `transform` returns a CLOSURE that calls a <Net Prefix> extern with a STRING
+-- LITERAL; the α (known-prefix) abstract analysis fills the extern's <Net _>
+-- hole with the literal:
+--   α("idp.example.com/api") = Known "idp.example.com/api"
+-- so transform's inferred row carries <Net "idp.example.com/api"> (on the
+-- returned arrow).  Returning a closure (rather than calling netGet directly)
+-- keeps the ACCEPT-path run from forcing the unstubbed netGet extern — the
+-- accept run yields the closure value with no panic, so accept is a clean rc 0.
+--
+-- A param-aware policy `--allow 'Net=idp.example.com/*'` must ADMIT it (inferred
+-- concrete prefix ⊑ policy wildcard); `--allow 'Net=other.com/*'` must REJECT;
+-- bare `--allow Net` (⊤) must admit.
+effect Net Prefix
+
+extern netGet : String -> <Net _> String
+
+transform req = (u => netGet "idp.example.com/api")

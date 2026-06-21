@@ -47,10 +47,14 @@ import types.typecheck.{
   Mono(..),
   EffRow(..),
   Atom(..),
+  Param(..),
   checkProgramSchemesWithRuntime,
   normalize,
   effrowLabels,
   atomLabel,
+  atomParam,
+  dsub,
+  drender,
 }
 import eval.eval.{Value(..), evalModulesRootEnv, apply, outputRef, ppValue}
 import support.util.{sortUniqS, joinWith, reverseL, escStr}
@@ -94,6 +98,42 @@ sliceGo cs a b
 filterNonEmpty : List String -> List String
 filterNonEmpty [] = []
 filterNonEmpty (x::xs) = if x == "" then filterNonEmpty xs else x :: filterNonEmpty xs
+
+-- ── WS-1b: policy as (label, param) ─────────────────────────────────────────
+-- Each comma-separated token is either a bare label `L` (→ policy param ⊤ =
+-- PPrefix None, identical to the WS-1a membership test) or `L=rhs` (→ policy
+-- param PPrefix (Some rhs); a written `<Net "pat">` is PPrefix (Some pat), so a
+-- policy RHS maps directly).  One entry per label (last wins via lookup order).
+parsePolicy : String -> List (String, Param)
+parsePolicy s = map parsePolicyTok (splitComma s)
+
+parsePolicyTok : String -> (String, Param)
+parsePolicyTok tok = match splitOnFirstEq (stringToChars tok) (arrayLength (stringToChars tok)) 0
+  None => (tok, PPrefix None)
+  Some i =>
+    let cs = stringToChars tok
+    let n = arrayLength cs
+    let label = sliceStr cs 0 i
+    let rhs = sliceStr cs (i + 1) n
+    (label, PPrefix (Some rhs))
+
+-- Index of the first '=' in the char array, or None.
+splitOnFirstEq : Array Char -> Int -> Int -> Option Int
+splitOnFirstEq cs n i
+  | i >= n = None
+  | arrayGetUnsafe i cs == '=' = Some i
+  | otherwise = splitOnFirstEq cs n (i + 1)
+
+-- The bare-label list of a policy (for the reject report's `{…}` rendering,
+-- byte-identical to WS-1a: a bare entry renders as the label; a parameterized
+-- entry renders `L "pat"`).
+policyLabels : List (String, Param) -> List String
+policyLabels [] = []
+policyLabels ((l, p)::rest) = (l ++ drender p) :: policyLabels rest
+
+lookupParam : String -> List (String, Param) -> Option Param
+lookupParam _ [] = None
+lookupParam k ((l, p)::rest) = if k == l then Some p else lookupParam k rest
 
 -- ── 2. call graph from the desugared AST ────────────────────────────────────
 -- collectEVars: every EVar name referenced in an expression (conservative —
@@ -210,42 +250,79 @@ lookupAssocL : String -> List (String, a) -> Option a
 lookupAssocL _ [] = None
 lookupAssocL k ((n, v)::rest) = if k == n then Some v else lookupAssocL k rest
 
--- ── 4. effect labels from a scheme ──────────────────────────────────────────
--- Walk the normalized mono: at each TFun, collect the row's concrete labels
--- (effrowLabels → atomLabel), recurse into the result; at TApp recurse into
--- both sides.  Sorted-unique.  Mirror mono_effects / scheme_effects.
-monoEffects : Mono -> List String
+-- ── 4. effect ATOMS from a scheme (WS-1b: keep the param, not just the label) ─
+-- Walk the normalized mono: at each TFun, collect the row's atoms (effrowLabels
+-- already returns Atoms), recurse into the result; at TApp recurse into both
+-- sides.  Deduped/sorted by label.  Mirror mono_effects / scheme_effects, but
+-- the threaded representation is now `Atom` so the param survives to the compare.
+monoEffects : Mono -> List Atom
 monoEffects m = match normalize m
   TFun _ row result =>
-    let labs = map atomLabel (effrowLabels row)
-    sortUniqS (labs ++ monoEffects result)
-  TApp a b => sortUniqS (monoEffects a ++ monoEffects b)
+    let atoms = effrowLabels row
+    sortUniqAtoms (atoms ++ monoEffects result)
+  TApp a b => sortUniqAtoms (monoEffects a ++ monoEffects b)
   _ => []
 
-schemeEffects : Scheme -> List String
+schemeEffects : Scheme -> List Atom
 schemeEffects (Forall _ _ mono) = monoEffects mono
 
--- (name, effects) for every fn whose scheme carries a non-empty effect set.
-fnEffectsTable : List (String, Scheme) -> List (String, List String)
+-- Sort atoms by label and drop label-duplicates (first atom of a label wins;
+-- in practice a row carries one atom per label after normalization).
+sortUniqAtoms : List Atom -> List Atom
+sortUniqAtoms atoms = dedupAtoms (sortAtoms atoms)
+
+sortAtoms : List Atom -> List Atom
+sortAtoms [] = []
+sortAtoms (x::xs) = insertAtom x (sortAtoms xs)
+
+insertAtom : Atom -> List Atom -> List Atom
+insertAtom x [] = [x]
+insertAtom x (y::ys) =
+  if stringLeq (atomLabel x) (atomLabel y) then x :: y :: ys
+  else y :: insertAtom x ys
+
+stringLeq : String -> String -> Bool
+stringLeq a b = match stringCompare a b
+  Gt => False
+  _ => True
+
+dedupAtoms : List Atom -> List Atom
+dedupAtoms [] = []
+dedupAtoms [x] = [x]
+dedupAtoms (x::y::rest) =
+  if atomLabel x == atomLabel y then dedupAtoms (x :: rest)
+  else x :: dedupAtoms (y :: rest)
+
+-- The label view of an atom list (for header rendering + chain keys).  Each atom
+-- renders `label` (⊤ param) or `label "pat"` (concrete) via drender — byte-
+-- identical to WS-1a for ⊤ params (drender ⊤ = "").
+atomLabels : List Atom -> List String
+atomLabels [] = []
+atomLabels (a::rest) = (atomLabel a ++ drender (atomParam a)) :: atomLabels rest
+
+-- (name, effect-atoms) for every fn whose scheme carries a non-empty effect set.
+fnEffectsTable : List (String, Scheme) -> List (String, List Atom)
 fnEffectsTable [] = []
 fnEffectsTable ((name, sch)::rest) = match schemeEffects sch
   [] => fnEffectsTable rest
   effs => (name, effs) :: fnEffectsTable rest
 
-fnHasEffect : List (String, List String) -> String -> String -> Bool
+-- Does fn `name` carry an atom whose LABEL is `label`?  (Chain reconstruction
+-- stays label-keyed — the param does not participate in the call-graph trace.)
+fnHasEffect : List (String, List Atom) -> String -> String -> Bool
 fnHasEffect table name label = match lookupAssocL name table
   None => False
-  Some effs => memberStr label effs
+  Some effs => memberStr label (map atomLabel effs)
 
 -- ── 6. call-chain reconstruction ────────────────────────────────────────────
 -- find_chain: from `start`, repeatedly hop to the lexicographically-smallest
 -- callee that carries `forbiddenLabel`, stopping at a leaf or a revisit (mirror
 -- SS.find_first_opt over the sorted callee set + the `visited` cutoff).
-findChain : List (String, List String) -> List (String, List String) -> String -> String -> List String
+findChain : List (String, List String) -> List (String, List Atom) -> String -> String -> List String
 findChain callGraph effTable start forbiddenLabel =
   traceChain callGraph effTable forbiddenLabel start [start]
 
-traceChain : List (String, List String) -> List (String, List String) -> String -> String -> List String -> List String
+traceChain : List (String, List String) -> List (String, List Atom) -> String -> String -> List String -> List String
 traceChain callGraph effTable forbiddenLabel fn visited =
   let callees = match lookupAssocL fn callGraph
     None => []
@@ -257,24 +334,33 @@ traceChain callGraph effTable forbiddenLabel fn visited =
     Some c => if memberStr c visited then [fn, c]
       else fn :: traceChain callGraph effTable forbiddenLabel c (c :: visited)
 
-firstWithEffect : List (String, List String) -> String -> List String -> Option String
+firstWithEffect : List (String, List Atom) -> String -> List String -> Option String
 firstWithEffect _ _ [] = None
 firstWithEffect effTable label (c::rest) =
   if fnHasEffect effTable c label then Some c else firstWithEffect effTable label rest
 
--- ── policy filtering (WS-1a: bare-label compare) ────────────────────────────
-forbiddenLabels : List String -> List String -> List String
+-- ── 5. policy filtering (WS-1b: parameter-level compare via dsub) ────────────
+-- An atom is FORBIDDEN iff EITHER its label is absent from the policy, OR (label
+-- present with policy param `pp`) `dsub inferredParam pp` is FALSE — i.e. the
+-- inferred authority is NOT within the policy's authority.  Returns the offending
+-- LABELS (the chain trace + reject report stay label-keyed).  Bare `--allow Net`
+-- ⟹ policy param ⊤ (PPrefix None) ⟹ `dsub _ ⊤` = True ⟹ identical to WS-1a's
+-- membership test.  Reuse `dsub` — do NOT reimplement the prefix logic.
+forbiddenLabels : List Atom -> List (String, Param) -> List String
 forbiddenLabels effs policy = filterForbidden effs policy
 
-filterForbidden : List String -> List String -> List String
+filterForbidden : List Atom -> List (String, Param) -> List String
 filterForbidden [] _ = []
-filterForbidden (l::rest) policy =
-  -- WS-1b: this is the BARE-LABEL membership test (`label ∈ policy`).  Parameter-
-  -- level compare (e.g. policy `Net=host/*` admitting `Net "host/api"`) replaces
-  -- this `memberStr` with a per-atom domain-prefix match — a later task.  Keep the
-  -- call graph + effect-row read (above) generic so WS-1b only changes this line.
-  if memberStr l policy then filterForbidden rest policy
-  else l :: filterForbidden rest policy
+filterForbidden (a::rest) policy =
+  if atomPermitted a policy then filterForbidden rest policy
+  else atomLabel a :: filterForbidden rest policy
+
+-- Permitted iff the label is in the policy AND the inferred param is ⊑ the
+-- policy param.
+atomPermitted : Atom -> List (String, Param) -> Bool
+atomPermitted a policy = match lookupParam (atomLabel a) policy
+  None => False
+  Some pp => dsub (atomParam a) pp
 
 -- ── 7. accept: run the plugin on a sample request with stub capabilities ─────
 -- Synthetic stub funDefs that shadow the user-declared platform externs.  Parsed
@@ -327,7 +413,7 @@ public export data PolicyOutcome
 export
 runCheckPolicy : String -> String -> String -> String -> String -> <Mut> PolicyOutcome
 runCheckPolicy rtSrc coreSrc src allowStr fnName =
-  let policy = splitComma allowStr
+  let policy = parsePolicy allowStr
   let rawUser = parse src
   let userD = desugar rawUser
   let rtD = desugar (parse rtSrc)
@@ -342,13 +428,13 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
   match forbidden
     [] =>
       let effStr = if listIsEmpty fnEffects then "pure"
-        else "<" ++ joinWith ", " fnEffects ++ ">"
+        else "<" ++ joinWith ", " (atomLabels fnEffects) ++ ">"
       let header = "✅ accepted — " ++ fnName ++ " requires only " ++ effStr ++ "\n"
       PolicyAccept header fnName coreD rtD userD
     _ =>
       let chain = findChain callGraph effTable fnName (firstOf forbidden)
-      let header = "❌ rejected — " ++ fnName ++ " requires <" ++ joinWith ", " fnEffects
-        ++ "> — not permitted by policy {" ++ joinWith ", " policy ++ "}\n"
+      let header = "❌ rejected — " ++ fnName ++ " requires <" ++ joinWith ", " (atomLabels fnEffects)
+        ++ "> — not permitted by policy {" ++ joinWith ", " (policyLabels policy) ++ "}\n"
       let via = "   reached via: " ++ joinWith " → " chain ++ "\n"
       PolicyReject (header ++ via)
 

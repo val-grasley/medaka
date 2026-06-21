@@ -134,6 +134,7 @@ export
 atomLabel : Atom -> String
 atomLabel (Atom l _) = l
 
+export
 atomParam : Atom -> Param
 atomParam (Atom _ p) = p
 
@@ -202,6 +203,7 @@ prefixConcrete s =
 
 -- p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  In the Prefix
 -- domain, p1 ⊑ p2 iff p1's concrete part starts with p2's concrete part.
+export
 dsub : Param -> Param -> Bool
 dsub p1 p2 = dsubN (normHole p1) (normHole p2)
 
@@ -234,6 +236,7 @@ commonPrefixLen a b i =
 
 -- manifest / error text for a param.  ⊤ renders as empty so a ⊤-param atom
 -- renders as JUST its label — byte-identical to v1.
+export
 drender : Param -> String
 drender p = drenderN (normHole p)
 

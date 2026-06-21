@@ -72,3 +72,44 @@ one_case "midgraph-reject"    demo/plugin_malicious.mdk "Cache,Log" tagVisit
 echo ""
 printf '%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
+
+# ── WS-1b: PARAMETER-LEVEL compare (NATIVE-ONLY — no oracle) ─────────────────
+# The OCaml oracle does bare-label compare only; parameter-level compare
+# (--allow 'Net=host/*' admitting an inferred <Net "host/api">) is a native-only
+# enhancement, so these assert the native binary's accept/reject DIRECTLY (NOT
+# vs the oracle).  The fixture's transform calls a <Net Prefix> extern with a
+# STRING LITERAL, so the alpha known-prefix analysis infers
+# <Net "idp.example.com/api">.  transform returns a closure so the accept-path
+# run does not force the unstubbed netGet extern (clean rc 0 on accept).
+ppass=0; pfail=0
+PFIX="test/check_policy_fixtures/net_param_plugin.mdk"
+
+# param_case LABEL ALLOW EXPECT_RC EXPECT_SUBSTR
+param_case() {
+  plabel="$1"; pallow="$2"; prc="$3"; psub="$4"
+  pmdk="$ROOT/$PFIX"
+  [ -f "$pmdk" ] || { pfail=$((pfail+1)); printf 'FAIL %s (missing %s)\n' "$plabel" "$PFIX"; return; }
+  raw="$(perl -e 'alarm 90; exec @ARGV' \
+      "$NATIVE" check-policy "$pmdk" --allow "$pallow" --fn transform 2>&1)"
+  rc=$?
+  out="$(printf '%s' "$raw" | sed "s|$pmdk|<plugin>|g")"
+  if [ "$rc" = "$prc" ] && printf '%s' "$out" | grep -qF "$psub"; then
+    ppass=$((ppass+1)); printf 'ok   %s (rc=%s)\n' "$plabel" "$rc"
+  else
+    pfail=$((pfail+1)); printf 'FAIL %s (rc=%s, want rc=%s + substr <%s>)\n' "$plabel" "$rc" "$prc" "$psub"
+    printf '  --- native ---\n%s\n' "$out"
+  fi
+}
+
+echo ""
+echo "-- WS-1b parameter-level compare (native-only) --"
+# inferred <Net "idp.example.com/api"> within policy wildcard idp.example.com/* => ACCEPT
+param_case "param-prefix-accept"  "Net=idp.example.com/*"  0 "accepted"
+# inferred <Net "idp.example.com/api"> NOT within other.com/* => REJECT, names Net
+param_case "param-prefix-reject"  "Net=other.com/*"        1 "rejected"
+# bare Net => policy param top => dsub _ top = True => ACCEPT (WS-1a invariant)
+param_case "param-bare-accept"    "Net"                    0 "accepted"
+
+echo ""
+printf '%d param ok, %d param failing\n' "$ppass" "$pfail"
+[ "$pfail" -eq 0 ] || exit 1
