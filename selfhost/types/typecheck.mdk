@@ -4741,12 +4741,20 @@ headHasRequires ((ImplEntry tag2 _ _ reqs _)::rest) tag
 
 -- a user impl, reduced to what coherence needs: iface, head-arg monos (fresh
 -- vars), is_default, is_named.
-public export data CohImpl = CohImpl String (List Mono) Bool Bool
+-- CohImpl iface head-tys isDefault isNamed ownerModuleId.  The 5th field is the
+-- id of the module that PHYSICALLY declares this impl ("" for the single-file /
+-- entry path, so its goldens stay byte-identical — only the global cross-module
+-- check threads a real module id and uses it to name BOTH modules in a conflict).
+public export data CohImpl = CohImpl String (List Mono) Bool Bool String
 
 cohImplsOf : Decl -> <Mut> List CohImpl
-cohImplsOf (DAttrib _ d) = cohImplsOf d
-cohImplsOf DImpl { def, iface, tys, name, ... } = [CohImpl iface (cohFreshTys tys) def (isSome name)]
-cohImplsOf _ = []
+cohImplsOf d = cohImplsOfMid "" d
+
+-- module-tagged variant: stamp every harvested CohImpl with [mid].
+cohImplsOfMid : String -> Decl -> <Mut> List CohImpl
+cohImplsOfMid mid (DAttrib _ d) = cohImplsOfMid mid d
+cohImplsOfMid mid DImpl { def, iface, tys, name, ... } = [CohImpl iface (cohFreshTys tys) def (isSome name) mid]
+cohImplsOfMid _ _ = []
 
 -- the impl's head args → monos under ONE shared fresh-var map (so a var reused
 -- across args, e.g. `Conv a a`, is the SAME fresh tyvar — the oracle shares one
@@ -4905,26 +4913,39 @@ cohFirstConflict (e::rest) = match cohConflictWith e rest
 
 cohConflictWith : CohImpl -> List CohImpl -> <Mut> Option String
 cohConflictWith _ [] = None
-cohConflictWith (e1@(CohImpl if1 xs def1 named1)) ((CohImpl if2 ys def2 named2)::rest)
+cohConflictWith (e1@(CohImpl if1 xs def1 named1 mid1)) ((CohImpl if2 ys def2 named2 mid2)::rest)
   | if1 == if2 && cohOverlap xs ys = match (def1, def2)
     (True, True) => Some (cohDefaultMsg if1 xs)
-    (False, False) => cohAnonConflict e1 xs ys (named1 || named2) rest
+    (False, False) => cohAnonConflict e1 xs ys (named1 || named2) mid1 mid2 rest
     _ => cohConflictWith e1 rest
   | otherwise = cohConflictWith e1 rest
 
 -- two overlapping anonymous non-default impls: a *named* impl on either side
 -- disambiguates (@Name), and a strict specialization (most-specific-wins) is
 -- coherent — both fall through to the rest of the scan.  Otherwise it is an
--- unresolvable overlap (mirrors the oracle's OverlappingImpls).
-cohAnonConflict : CohImpl -> List Mono -> List Mono -> Bool -> List CohImpl -> <Mut> Option String
-cohAnonConflict e1 xs ys named rest
+-- unresolvable overlap (mirrors the oracle's OverlappingImpls).  When the two
+-- impls come from DIFFERENT modules (mid1 /= mid2, both non-empty), the message
+-- names BOTH owning modules (the cross-module global-coherence case).
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> Bool -> String -> String -> List CohImpl -> <Mut> Option String
+cohAnonConflict e1 xs ys named mid1 mid2 rest
   | named = cohConflictWith e1 rest
   | cohStrictlyMoreSpecific xs ys = cohConflictWith e1 rest
   | cohStrictlyMoreSpecific ys xs = cohConflictWith e1 rest
+  | mid1 != "" && mid2 != "" && mid1 != mid2 = Some (cohCrossModuleMsg (cohImplIface e1) mid1 mid2)
   | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys)
 
+-- cross-module conflict wording: names the interface and BOTH owning modules.
+cohCrossModuleMsg : String -> String -> String -> <Mut> String
+cohCrossModuleMsg iface mid1 mid2 =
+  "conflicting `impl "
+    ++ iface
+    ++ "`: defined in "
+    ++ mid2
+    ++ " and "
+    ++ mid1
+
 cohImplIface : CohImpl -> String
-cohImplIface (CohImpl i _ _ _) = i
+cohImplIface (CohImpl i _ _ _ _) = i
 
 -- run coherence over USER decls; push the first conflict (if any) into typeErrors.
 -- The impls are scanned in REVERSE declaration order to mirror the oracle, whose
@@ -5160,6 +5181,35 @@ tyMatchesAst _ _ = False
 cohCollectImpls : List Decl -> <Mut> List CohImpl
 cohCollectImpls [] = []
 cohCollectImpls (d::rest) = cohImplsOf d ++ cohCollectImpls rest
+
+-- ── D3 / WS-2 part-2: GLOBAL (cross-module) coherence ──────────────────────
+-- Per-module coherence (checkCoherence prog) accepts two DIFFERENT modules that
+-- each define `impl C T` for the SAME instance — each module is locally coherent,
+-- but jointly they are incoherent (silent dispatch ambiguity).  This pass scans
+-- the joint impl set over ALL USER modules (prelude EXCLUDED — a user `impl Eq Int`
+-- legitimately overrides the prelude one, so prelude impls must NOT be in the set).
+-- Each CohImpl carries the id of the module that PHYSICALLY declares it; imports do
+-- NOT copy impl decls, so the joint set has exactly one entry per definition and a
+-- structural (iface, head-tys) overlap already distinguishes distinct definitions —
+-- no occurrence-dedup needed.  A conflict between two distinct modules is reported
+-- naming BOTH (cohCrossModuleMsg via cohAnonConflict's mid1/=mid2 branch).
+cohCollectModuleImpls : List (String, List Decl) -> <Mut> List CohImpl
+cohCollectModuleImpls [] = []
+cohCollectModuleImpls ((mid, prog)::rest) =
+  concatMapList (cohImplsOfMid mid) prog ++ cohCollectModuleImpls rest
+
+-- Run global coherence over the USER modules only (prelude not in [modules]).
+-- Pushes the first cross-module / overlap conflict (if any) into typeErrors.
+checkGlobalCoherence : List (String, List Decl) -> <Mut> Unit
+checkGlobalCoherence modules = match globalCoherenceConflict modules
+  Some msg => pushTypeError msg
+  None => ()
+
+-- the first cross-module coherence conflict (if any) as a bare message — drivers
+-- that thread errs as a VALUE (checkModulesEntryFullGo) prepend this themselves,
+-- rather than relying on the typeErrors ref (cleared per-module by resetState).
+globalCoherenceConflict : List (String, List Decl) -> <Mut> Option String
+globalCoherenceConflict modules = cohFirstConflict (reverseL (cohCollectModuleImpls modules))
 
 -- the USER decls a driver wants coherence-checked.  Set by single-file drivers
 -- (check.mdk / typecheck_main.mdk / check_batch.mdk) to the desugared USER program
@@ -8201,12 +8251,19 @@ checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> 
 checkModulesDiags runtimeDecls coreDecls modules =
   let runtimeSeed = externSchemes runtimeDecls
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  checkModulesDiagsGo
-    (runtimeSeed ++ coreSchemes)
-    []
-    (publicDataDecls coreDecls)
-    (allImplDecls coreDecls)
-    modules
+  let perMod = checkModulesDiagsGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls coreDecls) (allImplDecls coreDecls) modules
+  -- D3 / WS-2 part-2: attach any cross-module coherence conflict to the ENTRY
+  -- module's diagnostics (last in dependency-first order), so LSP/analyzeProject
+  -- surfaces it too.  User modules only (prelude excluded).
+  match globalCoherenceConflict modules
+    Some msg => attachEntryDiag (msg, None) perMod
+    None => perMod
+
+-- prepend an error to the LAST module's (errs, warns) in a per-module diag list.
+attachEntryDiag : (String, Option Loc) -> List (String, (List (String, Option Loc), List String)) -> List (String, (List (String, Option Loc), List String))
+attachEntryDiag _ [] = []
+attachEntryDiag e [(mid, (errs, warns))] = [(mid, (e :: errs, warns))]
+attachEntryDiag e (m::rest) = m :: attachEntryDiag e rest
 
 -- the entry module is last in dependency-first order
 export
@@ -8230,12 +8287,13 @@ checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> <M
 checkModulesEntryFull runtimeDecls coreDecls modules =
   let runtimeSeed = externSchemes runtimeDecls
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  checkModulesEntryFullGo
-    (runtimeSeed ++ coreSchemes)
-    []
-    (publicDataDecls coreDecls)
-    (allImplDecls coreDecls)
-    modules
+  let (schemes, errs, warns) = checkModulesEntryFullGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls coreDecls) (allImplDecls coreDecls) modules
+  -- D3 / WS-2 part-2: cross-module coherence over the USER modules only (prelude
+  -- excluded — it is checked separately and a user impl may override a prelude one).
+  -- Prepend any conflict (dependency-first, ahead of the entry's own errors).
+  match globalCoherenceConflict modules
+    Some msg => (schemes, (msg, None) :: errs, warns)
+    None => (schemes, errs, warns)
 
 -- thread the public accumulators exactly as checkModulesGo.  The returned
 -- triple keeps the ENTRY (last) module's SCHEMES and WARNINGS (those belong to the

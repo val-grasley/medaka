@@ -158,5 +158,85 @@ case "$nosup_out" in
   *) fail=$((fail+1)); printf 'FAIL super-xmod/reject (under-rejection regressed: [%s])\n' "$nosup_out" ;;
 esac
 
+# 8. global cross-module coherence (D3 / WS-2 part-2).  Two DIFFERENT modules each
+#    define `impl C T` for the SAME instance: each module is LOCALLY coherent, but
+#    jointly incoherent (silent dispatch ambiguity — cuseM2 would print cuseM1's
+#    result).  Per-module coherence accepts this; the global check must REJECT,
+#    naming BOTH owning modules.
+cat > "$TMP/cohbase.mdk" <<'EOF'
+public export data CT = CT1
+export interface CIface a where
+  csh : a -> Int
+EOF
+cat > "$TMP/cohm1.mdk" <<'EOF'
+import cohbase.{CT(..), CIface(..), csh}
+export impl CIface CT where
+  csh x = 1
+export cuseM1 : Int
+cuseM1 = csh CT1
+EOF
+cat > "$TMP/cohm2.mdk" <<'EOF'
+import cohbase.{CT(..), CIface(..), csh}
+export impl CIface CT where
+  csh x = 2
+export cuseM2 : Int
+cuseM2 = csh CT1
+EOF
+cat > "$TMP/cohtop.mdk" <<'EOF'
+import cohm1.{cuseM1}
+import cohm2.{cuseM2}
+main =
+  println cuseM1
+  println cuseM2
+EOF
+coh_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/cohtop.mdk" 2>/dev/null)"
+coh_code=$?
+case "$coh_out" in
+  *conflicting*)
+    case "$coh_out" in *cohm1*) m1seen=yes ;; *) m1seen=no ;; esac
+    case "$coh_out" in *cohm2*) m2seen=yes ;; *) m2seen=no ;; esac
+    if [ "$coh_code" -eq 1 ] && [ "$m1seen" = yes ] && [ "$m2seen" = yes ]; then
+      pass=$((pass+1)); printf 'ok   coh-xmod/conflict (rejected, names both modules)\n'
+    else
+      fail=$((fail+1)); printf 'FAIL coh-xmod/conflict (exit %d m1=%s m2=%s: [%s])\n' "$coh_code" "$m1seen" "$m2seen" "$coh_out"
+    fi ;;
+  *) fail=$((fail+1)); printf 'FAIL coh-xmod/conflict (not rejected as conflict: [%s])\n' "$coh_out" ;;
+esac
+
+# 9. benign DIAMOND: ONE shared impl in `dbase`, imported by m1 and m2 → ACCEPT.
+#    Imports do NOT copy impl decls, so the joint set has a single entry — no
+#    false overlap.  This is the over-rejection guard for the global check.
+cat > "$TMP/dbase.mdk" <<'EOF'
+public export data DT = DT1
+export interface DIface a where
+  dsh : a -> Int
+export impl DIface DT where
+  dsh x = 9
+EOF
+cat > "$TMP/dm1.mdk" <<'EOF'
+import dbase.{DT(..), DIface(..), dsh}
+export duseM1 : Int
+duseM1 = dsh DT1
+EOF
+cat > "$TMP/dm2.mdk" <<'EOF'
+import dbase.{DT(..), DIface(..), dsh}
+export duseM2 : Int
+duseM2 = dsh DT1
+EOF
+cat > "$TMP/dtop.mdk" <<'EOF'
+import dm1.{duseM1}
+import dm2.{duseM2}
+main =
+  println duseM1
+  println duseM2
+EOF
+dia_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/dtop.mdk" 2>/dev/null)"
+dia_code=$?
+case "$dia_out" in
+  *conflicting*) fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (benign shared impl falsely rejected: [%s])\n' "$dia_out" ;;
+  *) if [ "$dia_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   coh-xmod/diamond (single shared impl accepted)\n'
+     else fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (exit %d: [%s])\n' "$dia_code" "$dia_out"; fi ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
