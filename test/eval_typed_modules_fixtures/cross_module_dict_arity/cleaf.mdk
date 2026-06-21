@@ -1,0 +1,14 @@
+export interface U a where
+  uof : a -> Int
+export interface V a where
+  vof : a -> Int
+export interface W a where
+  wof : a -> Int
+export impl U Int where
+  uof x = 4
+export impl V Int where
+  vof x = 5
+export impl W Int where
+  wof x = 6
+export wrap : (U a, V a, W a) => a -> Int
+wrap x = uof x + vof x + wof x + 30

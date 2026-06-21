@@ -1,0 +1,4 @@
+import cmid.{callC}
+import bmid.{callB}
+import amid.{callA}
+main = println (intToString callC ++ " " ++ intToString callB ++ " " ++ intToString callA)

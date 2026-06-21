@@ -1,0 +1,10 @@
+export interface P a where
+  pof : a -> Int
+export interface Q a where
+  qof : a -> Int
+export impl P Int where
+  pof x = 2
+export impl Q Int where
+  qof x = 3
+export wrap : (P a, Q a) => a -> Int
+wrap x = pof x + qof x + 20

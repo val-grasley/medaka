@@ -1,0 +1,3 @@
+import bleaf.{wrap, P(..), Q(..), pof, qof}
+export callB : Int
+callB = wrap 7

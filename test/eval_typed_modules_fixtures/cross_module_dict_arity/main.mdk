@@ -1,3 +1,4 @@
 import amid.{callA}
 import bmid.{callB}
-main = println (intToString callA)
+import cmid.{callC}
+main = println (intToString callA ++ " " ++ intToString callB ++ " " ++ intToString callC)

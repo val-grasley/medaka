@@ -1,0 +1,3 @@
+import cleaf.{wrap, U(..), V(..), W(..), uof, vof, wof}
+export callC : Int
+callC = wrap 7
