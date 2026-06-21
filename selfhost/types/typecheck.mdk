@@ -503,23 +503,25 @@ effrowLabels r = match effrowNorm r
 -- Returns a row whose head labels have every hole atom replaced by α of the
 -- call's first spine argument (Unknown / no-arg ⇒ ⊤); non-hole atoms and the
 -- open tail are preserved.  When no hole is present the row is unchanged.
+-- `lets` is the enclosing function body's α-let scope (EFFECTS WS-2): seeded into
+-- α so an outer-body `let dest = "…"; fetch dest` recovers the literal prefix.
 -- (Mirror of lib/typecheck.ml's fill_holes_in_row.)
-fillHolesInRow : EffRow -> Option Expr -> EffRow
-fillHolesInRow eff firstArg = match effrowNorm eff
+fillHolesInRow : List (String, Expr) -> EffRow -> Option Expr -> EffRow
+fillHolesInRow lets eff firstArg = match effrowNorm eff
   EffRow labels tail =>
-    if anyHoleAtom labels then EffRow (map (fillHoleAtom firstArg) labels) tail else eff
+    if anyHoleAtom labels then EffRow (map (fillHoleAtom lets firstArg) labels) tail else eff
 
 anyHoleAtom : List Atom -> Bool
 anyHoleAtom [] = False
 anyHoleAtom (a::rest) = if isHoleParam (atomParam a) then True else anyHoleAtom rest
 
-fillHoleAtom : Option Expr -> Atom -> Atom
-fillHoleAtom firstArg a =
-  if isHoleParam (atomParam a) then Atom (atomLabel a) (holeFillParam firstArg) else a
+fillHoleAtom : List (String, Expr) -> Option Expr -> Atom -> Atom
+fillHoleAtom lets firstArg a =
+  if isHoleParam (atomParam a) then Atom (atomLabel a) (holeFillParam lets firstArg) else a
 
-holeFillParam : Option Expr -> Param
-holeFillParam (Some e) = paramOfKp (alpha [] e)
-holeFillParam None = PPrefix None
+holeFillParam : List (String, Expr) -> Option Expr -> Param
+holeFillParam lets (Some e) = paramOfKp (alpha lets e)
+holeFillParam _ None = PPrefix None
 
 effvarLevel : Ref Effvar -> Int
 effvarLevel cell = match cell.value
@@ -2224,25 +2226,43 @@ krowArgVarNames (_::ks) (_::as2) = krowArgVarNames ks as2
 -- lookup and structure-sharing inserts (the branching/backtracking inference env
 -- stays valid).  Insert OVERWRITES on equal keys, matching the old assoc-list
 -- "newest binding shadows older" semantics (prepend + first-match).
-public export data TcEnv = TcEnv (OrdMap Scheme) (OrdMap Scheme)  -- vars, ctors
+-- alphaLets (3rd field, EFFECTS WS-2 / E3 precision): same-function-body
+-- `let`-bound (name, rhs) pairs in scope, seeded into α's known-prefix analysis
+-- so an outer-body `let dest = "idp.example.com/page"` then `fetch dest` recovers
+-- the literal prefix instead of collapsing to ⊤.  Intraprocedural ONLY —
+-- accumulated as infer descends ELet/ELetGroup/block lets (PVar / single-clause
+-- zero-arg only, mirroring α's own binding rule); read at the fill site via α's
+-- initial `lets`.  A literal laundered through a helper stays ⊤ (spec §5
+-- non-goal).  Sound: only turns over-rejections into acceptances.  (Mirror of
+-- lib/typecheck.ml's env.alpha_lets.)
+public export data TcEnv = TcEnv (OrdMap Scheme) (OrdMap Scheme) (List (String, Expr))  -- vars, ctors, alphaLets
 
 lookupVar : TcEnv -> String -> Option Scheme
-lookupVar (TcEnv vs cs) n = match omLookup n vs
+lookupVar (TcEnv vs cs _) n = match omLookup n vs
   Some s => Some s
   None => omLookup n cs
 
 lookupCtor : TcEnv -> String -> Option Scheme
-lookupCtor (TcEnv _ cs) n = omLookup n cs
+lookupCtor (TcEnv _ cs _) n = omLookup n cs
 
 extendVar : TcEnv -> String -> Scheme -> TcEnv
-extendVar (TcEnv vs cs) n s = TcEnv (omInsert n s vs) cs
+extendVar (TcEnv vs cs al) n s = TcEnv (omInsert n s vs) cs al
 
 extendVars : TcEnv -> List (String, Scheme) -> TcEnv
 extendVars env [] = env
 extendVars env ((n, s)::rest) = extendVars (extendVar env n s) rest
 
 addCtor : TcEnv -> String -> Scheme -> TcEnv
-addCtor (TcEnv vs cs) n s = TcEnv vs (omInsert n s cs)
+addCtor (TcEnv vs cs al) n s = TcEnv vs (omInsert n s cs) al
+
+-- EFFECTS WS-2: seed α's known-prefix scope with a same-function-body let RHS.
+-- Prepended (most-recent-first) to mirror α's own `(x,e1)::lets` accumulation.
+seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
+seedAlphaLets (TcEnv vs cs al) n rhs = TcEnv vs cs ((n, rhs) :: al)
+
+-- read the accumulated α-let scope (for the hole-fill site)
+envAlphaLets : TcEnv -> List (String, Expr)
+envAlphaLets (TcEnv _ _ al) = al
 
 monoScheme : Mono -> Scheme
 monoScheme t = Forall [] [] t
@@ -2848,7 +2868,7 @@ blockRecLet env x e =
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
   let _ = recordLocalBind x t1   -- LSP hover (block rec-let bypasses inferPat)
-  extendVar env x (generalize t1)
+  seedAlphaLets (extendVar env x (generalize t1)) x e   -- WS-2: α scope-seed
 
 blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
 blockLet env isMut (PVar x) e =
@@ -2859,7 +2879,10 @@ blockLet env isMut (PVar x) e =
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
   let _ = recordLocalBind x t   -- LSP hover (block let bypasses inferPat)
-  extendVar env x (genRestricted (not isMut && isNonexpansive e) t)
+  -- WS-2: α scope-seed — stable (non-mut) bindings only; a `let mut` RHS can be
+  -- reassigned, so its prefix is not stable.
+  let env1 = extendVar env x (genRestricted (not isMut && isNonexpansive e) t)
+  if isMut then env1 else seedAlphaLets env1 x e
 -- T1b: a `mut` binding must be monomorphic — generalizing it (when the RHS is
 -- nonexpansive, e.g. `let mut x = []`) lets later assignments re-instantiate,
 -- so the binding would accept heterogeneous values.  Force the value-restricted
@@ -3299,7 +3322,7 @@ inferInfix env op l r =
   -- reconstruct the equivalent app spine so a hole-bearing extern fills from
   -- its FIRST arg (l) — mirror of the EApp path (v2 Stage 2b).
   let inner = EApp (EVar op) l
-  inferApp (EApp inner r) (inferApp inner ft lt) rt
+  inferApp (envAlphaLets env) (EApp inner r) (inferApp (envAlphaLets env) inner ft lt) rt
 
 inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
@@ -3373,8 +3396,8 @@ inferAppExpr env f x = match lamUnderLoc x
     -- type.  Peel that, then peel the lambda type itself for its per-param types.
     let lamExpected = funDomain (normalize ft)
     let xt = inferLamChecked env (expectedParamTypes lamExpected (listLen pats)) pats body
-    inferApp (EApp f x) ft xt
-  None => inferApp (EApp f x) (infer env f) (infer env x)
+    inferApp (envAlphaLets env) (EApp f x) ft xt
+  None => inferApp (envAlphaLets env) (EApp f x) (infer env f) (infer env x)
 
 -- set currentLoc only when the lambda carried a span (mirror the ELoc arm), so
 -- a bare unlocated lambda doesn't blank out an enclosing position.
@@ -3426,15 +3449,16 @@ unifyParamsExpected (p::ps) (e::es) =
   unifyParamsExpected ps es
 unifyParamsExpected _ _ = ()
 
-inferApp : Expr -> Mono -> Mono -> <Mut> Mono
-inferApp appExpr ft xt =
+inferApp : List (String, Expr) -> Expr -> Mono -> Mono -> <Mut> Mono
+inferApp lets appExpr ft xt =
   let r = freshVar ()
   let eff = openRow ()
   let _ = unify ft (TFun xt eff r)
   -- v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
   -- Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
-  -- argument before the row propagates / is checked against any bound.
-  let eff2 = fillHolesInRow eff (spineFirstArg appExpr)
+  -- argument before the row propagates / is checked against any bound.  `lets`
+  -- seeds α with the enclosing body's let scope (EFFECTS WS-2).
+  let eff2 = fillHolesInRow lets eff (spineFirstArg appExpr)
   let _ = performEffect curEffect eff2
   r
 
@@ -3484,7 +3508,7 @@ inferRecLet env x e1 e2 =
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
   let _ = recordLocalBind x t1   -- LSP hover (recursive PVar let bypasses inferPat)
-  infer (extendVar env x (generalize t1)) e2
+  infer (seedAlphaLets (extendVar env x (generalize t1)) x e1) e2   -- WS-2: α scope-seed
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLetSimple env pat e1 e2 =
@@ -3502,7 +3526,7 @@ inferLetSimple env pat e1 e2 =
 inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
 inferLetBody env (PVar x) t1 e1 e2 =
   let _ = recordLocalBind x t1   -- LSP hover (PVar let bypasses inferPat)
-  infer (extendVar env x (genRestricted (isNonexpansive e1) t1)) e2
+  infer (seedAlphaLets (extendVar env x (genRestricted (isNonexpansive e1) t1)) x e1) e2   -- WS-2: α scope-seed
 inferLetBody env pat t1 _ e2 =
   let pr = inferPat env pat
   let _ = unify (fst pr) t1
@@ -3996,7 +4020,14 @@ generalizeGroup env (((LetBind name clauses), (_, sch))::rest) =
   let constrained = methodConstrainedIds ()
   let mono = schemeMono sch
   let isVal = clausesAreValue clauses && not (anyIn (freeGenVars currentLevel.value mono) constrained)
-  generalizeGroup (extendVar env name (genRestricted isVal mono)) rest
+  -- WS-2: α scope-seed — single-clause zero-param bindings only (mirror α's
+  -- alphaCollectBinds rule); a multi-clause / parameterized binding is not a
+  -- known prefix.
+  let env1 = extendVar env name (genRestricted isVal mono)
+  let env2 = match clauses
+    [FunClause [] rhs] => seedAlphaLets env1 name rhs
+    _ => env1
+  generalizeGroup env2 rest
 
 -- A where-clause binding is a value (generalizable) iff every clause has params
 -- (it's a function) or its zero-arg RHS is non-expansive.  Mirrors the oracle
@@ -7336,6 +7367,7 @@ initialEnv =
   TcEnv
     omEmpty
     (omInsert "True" (monoScheme (TCon "Bool")) (omInsert "False" (monoScheme (TCon "Bool")) omEmpty))
+    []
 
 registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
 registerAllData env [] = env

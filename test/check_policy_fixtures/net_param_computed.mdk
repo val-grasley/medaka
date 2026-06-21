@@ -1,0 +1,15 @@
+-- WS-2 fixture: A3/computed — the SOUNDNESS guard.
+-- The URL is COMPUTED (`base ++ userInput`), not a literal, so even with α
+-- seeded by the outer-body `let dest = …`, α descends into the `++` and finds the
+-- LEFT operand is a let-bound EVar whose RHS is itself non-literal (a parameter),
+-- so the known prefix is UNKNOWN → ⊤.  Must STAY REJECTED under any concrete
+-- wildcard policy.  This guards against α ever recovering a prefix it cannot
+-- actually prove — WS-2 only turns over-rejections into acceptances, never the
+-- reverse.
+effect Net Prefix
+
+extern netGet : String -> <Net _> String
+
+transform userInput =
+  let dest = userInput
+  (u => netGet dest)

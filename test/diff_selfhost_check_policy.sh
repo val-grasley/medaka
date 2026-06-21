@@ -110,6 +110,46 @@ param_case "param-prefix-reject"  "Net=other.com/*"        1 "rejected"
 # bare Net => policy param top => dsub _ top = True => ACCEPT (WS-1a invariant)
 param_case "param-bare-accept"    "Net"                    0 "accepted"
 
+# ── WS-2: α SCOPE-SEEDING (E3 precision, NATIVE-ONLY) ────────────────────────
+# Same fixture shape as WS-1b but the capability URL is bound by an OUTER-BODY
+# `let dest = "<literal>"` then passed to the <Net _> extern.  Pre-WS-2 α ran
+# with an empty `lets` at the fill site → `netGet dest` collapsed to ⊤ →
+# OVER-REJECTED under a wildcard policy.  WS-2 seeds α with the enclosing body's
+# let scope, so the inferred row carries the recovered literal prefix and the
+# wildcard policy ADMITS it.  Soundness guards: a COMPUTED let RHS and a
+# HELPER-LAUNDERED literal must STAY ⊤ (reject) — α recovers a prefix only when
+# it can prove one, and is intraprocedural (spec §5 non-goal).
+# param_case_f LABEL FIXTURE ALLOW EXPECT_RC EXPECT_SUBSTR
+param_case_f() {
+  flabel="$1"; ffix="$2"; fallow="$3"; frc="$4"; fsub="$5"
+  fmdk="$ROOT/$ffix"
+  [ -f "$fmdk" ] || { pfail=$((pfail+1)); printf 'FAIL %s (missing %s)\n' "$flabel" "$ffix"; return; }
+  fraw="$(perl -e 'alarm 90; exec @ARGV' \
+      "$NATIVE" check-policy "$fmdk" --allow "$fallow" --fn transform 2>&1)"
+  frc_actual=$?
+  fout="$(printf '%s' "$fraw" | sed "s|$fmdk|<plugin>|g")"
+  if [ "$frc_actual" = "$frc" ] && printf '%s' "$fout" | grep -qF "$fsub"; then
+    ppass=$((ppass+1)); printf 'ok   %s (rc=%s)\n' "$flabel" "$frc_actual"
+  else
+    pfail=$((pfail+1)); printf 'FAIL %s (rc=%s, want rc=%s + substr <%s>)\n' "$flabel" "$frc_actual" "$frc" "$fsub"
+    printf '  --- native ---\n%s\n' "$fout"
+  fi
+}
+
+echo ""
+echo "-- WS-2 α scope-seeding (native-only) --"
+OUTER="test/check_policy_fixtures/net_param_outer_let.mdk"
+COMP="test/check_policy_fixtures/net_param_computed.mdk"
+HELP="test/check_policy_fixtures/net_param_helper.mdk"
+# A4/outer: outer-body let literal recovered ⇒ wildcard ADMITS ⇒ ACCEPT (was reject pre-WS-2)
+param_case_f "ws2-outer-accept"   "$OUTER" "Net=idp.example.com/*" 0 "accepted"
+# A4/outer under a non-matching wildcard ⇒ REJECT, names the recovered prefix
+param_case_f "ws2-outer-reject"   "$OUTER" "Net=other.com/*"       1 "idp.example.com/api"
+# A3/computed: let RHS is a parameter ⇒ α = ⊤ ⇒ STAY REJECTED (soundness)
+param_case_f "ws2-computed-reject" "$COMP" "Net=idp.example.com/*" 1 "rejected"
+# helper-laundered literal ⇒ intraprocedural boundary ⇒ α = ⊤ ⇒ STAY REJECTED
+param_case_f "ws2-helper-reject"   "$HELP" "Net=idp.example.com/*" 1 "rejected"
+
 echo ""
 printf '%d param ok, %d param failing\n' "$ppass" "$pfail"
 [ "$pfail" -eq 0 ] || exit 1

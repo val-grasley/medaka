@@ -1,0 +1,16 @@
+-- WS-2 fixture: helper-laundered literal — the INTRAPROCEDURAL BOUNDARY.
+-- The literal is passed through a HELPER function (`mkUrl`) before reaching the
+-- <Net Prefix> extern.  α is intraprocedural: it does not look inside `mkUrl`'s
+-- body (that needs value-singleton typing — spec §4 ceiling / §5 non-goal), so
+-- `netGet (mkUrl req)`'s first arg is an EApp → ⊤.  Must STAY REJECTED under a
+-- concrete wildcard policy.  Documents that WS-2 recovers SAME-function-body lets
+-- only; a literal laundered across a call boundary is intended ⊤.
+effect Net Prefix
+
+extern netGet : String -> <Net _> String
+
+mkUrl x = "idp.example.com/api"
+
+transform req =
+  let dest = mkUrl req
+  (u => netGet dest)

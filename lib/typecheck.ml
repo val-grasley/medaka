@@ -664,12 +664,14 @@ let effrow_labels r = (effrow_norm r).labels
    open tail are preserved, so the filled row performs exactly the extern's row
    with its Net/FileRead/FileWrite param resolved.  When no hole is present the
    row is returned unchanged (the common case — zero overhead). *)
-let fill_holes_in_row (eff : effrow) (first_arg : Ast.expr option) : effrow =
+let fill_holes_in_row ?(lets = []) (eff : effrow) (first_arg : Ast.expr option) : effrow =
   let r = effrow_norm eff in
   if not (List.exists (fun a -> is_hole_param a.param) r.labels) then eff
   else
     let fill_param () = match first_arg with
-      | Some e -> param_of_kp (alpha [] e)
+      (* EFFECTS WS-2: seed α with the enclosing function body's let scope so an
+         outer-body `let dest = "…"; fetch dest` recovers the literal prefix. *)
+      | Some e -> param_of_kp (alpha lets e)
       | None -> PPrefix None in
     let labels' = List.map (fun a ->
       if is_hole_param a.param then { a with param = fill_param () } else a) r.labels in
@@ -1449,6 +1451,15 @@ type env = {
        two-pass elaboration with the names pass 1 found in inferred_constraints,
        so a polymorphic-monad do-block's `pure` routes by the caller's monad
        instead of arg-tag "first impl wins". *)
+  alpha_lets      : (ident * Ast.expr) list;
+    (* EFFECTS WS-2 (E3 precision): same-function-body `let`-bound (name, rhs)
+       pairs in scope, seeded into α's known-prefix analysis so an outer-body
+       `let dest = "idp.example.com/page"` then `fetch dest` recovers the literal
+       prefix instead of collapsing to ⊤.  Intraprocedural ONLY — accumulated as
+       infer descends ELet/ELetGroup/lambda bodies (PVar / single-clause-zero-arg
+       only, mirroring α's own binding rule); read at the fill site via α's
+       initial `lets`.  A literal laundered through a helper stays ⊤ (spec §5
+       non-goal).  Sound: only turns over-rejections into acceptances. *)
 }
 
 let empty_env () = {
@@ -1480,6 +1491,7 @@ let empty_env () = {
   deprecated_fns  = Hashtbl.create 8;
   must_use_fns    = Hashtbl.create 8;
   promoted        = Hashtbl.create 8;
+  alpha_lets      = [];
 }
 
 let lookup_var env x =
@@ -1502,6 +1514,11 @@ let mark_locals env names =
 (* Extend env with local bindings AND register them as locals. *)
 let extend_locals env bindings =
   mark_locals (extend_vars env bindings) (List.map fst bindings)
+
+(* EFFECTS WS-2: seed α's known-prefix scope with a same-function-body let RHS.
+   Prepended (most-recent-first) to mirror α's own `(x,e1)::lets` accumulation. *)
+let seed_alpha_lets env name rhs =
+  { env with alpha_lets = (name, rhs) :: env.alpha_lets }
 
 (* ── Built-in types & primitives ────────────────── *)
 
@@ -2321,7 +2338,7 @@ let rec infer env = function
        v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
        Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
        argument before the row propagates / is checked against any bound. *)
-    let eff = fill_holes_in_row eff (spine_first_arg (EApp (f, x))) in
+    let eff = fill_holes_in_row ~lets:env.alpha_lets eff (spine_first_arg (EApp (f, x))) in
     perform_effect cur_effect eff;
     tr
 
@@ -2357,6 +2374,7 @@ let rec infer env = function
        let s = generalize t1 in
        let env' = mark_locals (extend_var env x s) [x] in
        let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+       let env' = seed_alpha_lets env' x e1 in   (* WS-2: α scope-seed *)
        infer env' e2
      | _ ->
        enter_level ();
@@ -2368,6 +2386,11 @@ let rec infer env = function
           let s = gen_restricted (is_nonexpansive e1) t1 in
           let env' = mark_locals (extend_var env x s) [x] in
           let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+          (* WS-2: α scope-seed.  Inline `let mut` is itself a hard error
+             (MutLetRequiresBlock) so the program is rejected regardless; seed
+             unconditionally to match the selfhost expr-let path (which has lost
+             the mut flag by inferLetBody). *)
+          let env' = seed_alpha_lets env' x e1 in
           infer env' e2
         | _ ->
           (* Non-trivial pattern: no generalization (value restriction-like) *)
@@ -2395,6 +2418,12 @@ let rec infer env = function
       let is_val =
         List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
       default_ambiguous_num env t;   (* PLAN.md #11 *)
+      (* WS-2: α scope-seed — single-clause zero-param bindings only (mirror α's
+         ELetGroup rule); a multi-clause / parameterized binding is not a known
+         prefix. *)
+      let e = (match clauses with
+        | [([], rhs)] -> seed_alpha_lets e n rhs
+        | _ -> e) in
       mark_locals (extend_var e n (gen_restricted is_val t)) [n]) env bindings in
     infer env'' body
 
@@ -2587,7 +2616,7 @@ let rec infer env = function
        latent effect in the current context, mirroring the EApp arm.  v2 Stage
        2b: a hole on the extern's last arrow (eff2) fills from the FIRST arg l. *)
     perform_effect cur_effect eff1;
-    let eff2 = fill_holes_in_row eff2 (Some l) in
+    let eff2 = fill_holes_in_row ~lets:env.alpha_lets eff2 (Some l) in
     perform_effect cur_effect eff2;
     result
 
@@ -2642,6 +2671,7 @@ let rec infer env = function
            let s = generalize t1 in
            let env' = mark_locals (extend_var env x s) [x] in
            let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+           let env' = seed_alpha_lets env' x e in   (* WS-2: α scope-seed *)
            type_block env' rest
          | _ ->
            enter_level ();
@@ -2656,7 +2686,8 @@ let rec infer env = function
                let is_value = (not mut) && is_nonexpansive e in
                default_ambiguous_num env t1;   (* PLAN.md #11 *)
                let env' = mark_locals (extend_var env x (gen_restricted is_value t1)) [x] in
-               if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
+               let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+               if mut then env' else seed_alpha_lets env' x e   (* WS-2: α scope-seed (stable, non-mut only) *)
              | _ ->
                let tp, bindings = type_pat env pat in
                unify tp t1;
@@ -5625,6 +5656,7 @@ let copy_tc_env (e : env) : env = {
   deprecated_fns  = Hashtbl.copy e.deprecated_fns;
   must_use_fns    = Hashtbl.copy e.must_use_fns;
   promoted        = Hashtbl.copy e.promoted;
+  alpha_lets      = e.alpha_lets;              (* persistent list *)
 }
 
 (* Type-check one or more declarations against an existing env.

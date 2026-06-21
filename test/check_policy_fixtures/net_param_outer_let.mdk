@@ -1,0 +1,18 @@
+-- WS-2 fixture: A4/outer — α scope-seeding (E3 precision).
+-- The capability-bearing URL is bound by an OUTER-BODY `let dest = "<literal>"`
+-- and only THEN passed to the <Net Prefix> extern.  Pre-WS-2, α was invoked with
+-- an empty `lets` at the hole-fill site, so `netGet dest` saw `dest` as an
+-- unknown EVar → collapsed to ⊤ → OVER-REJECTED under a wildcard policy.
+-- WS-2 seeds α with the enclosing function body's `let` scope, so
+--   α(dest) = α("idp.example.com/api") = Known "idp.example.com/api"
+-- and the inferred row carries <Net "idp.example.com/api">.
+--
+-- Intraprocedural ONLY: the let is in the SAME function body as the call.
+-- `--allow 'Net=idp.example.com/*'` must now ACCEPT (was reject).
+effect Net Prefix
+
+extern netGet : String -> <Net _> String
+
+transform req =
+  let dest = "idp.example.com/api"
+  (u => netGet dest)
