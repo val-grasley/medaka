@@ -156,6 +156,35 @@ methods dispatch from the static dict, not arg-tag:
 
 ### WS-2 — Module-qualified dictionary identity + global IE (closes D2 and D3)
 
+> **STATUS (2026-06-20, `e488cd9`): D2 cross-module collision CLOSED (partial WS-2).**
+> The observable D2 bug is fixed and verified robust (2-way, 3-way, both-sides,
+> reversed-import-order — `run`==`build` in all). It was NOT purely latent: a diamond
+> re-export of two same-bare-name constrained fns of different dict arity made the
+> arity-1 call site size to the arity-2 entry (last-write-wins) → over-application →
+> `intToString: not an Int` on `run` (native `build` recovered via arg-stamp). Root:
+> `discoverPromotedModules` flattens all modules into one bare-name `funConstraintsRef`.
+> **Fix taken (conservative/additive, NOT the full re-key):** a parallel
+> `crossModuleFunConstraintsQualRef : ((module,name), arity)` table populated per-module
+> by `attributeModuleArities`; `scopeArities` uses it + the scope's module-id set to drop
+> the out-of-scope twin **for colliding bare names only** (non-colliding names keep the
+> old bare path → all goldens byte-identical). `mid` threaded via the loader's existing
+> `(mid,prog)` pairs through `elabModulesGo`/`checkModuleFullImpl` — **NO** AST/resolve
+> change (lower risk than the scoped `EVar`-origin approach). `dictParamName` left bare
+> (body-local). Fixture `test/eval_typed_modules_fixtures/cross_module_dict_arity/`
+> (drives `evalModules`; golden native-captured — the frozen oracle PANICS on the
+> collision, so it's skipped in `capture_goldens.sh`, not gated against the oracle).
+> Gates: fixpoint C3a/C3b YES; eval_dict 26/0, build 30/0, resolve 15/0, argstamp parity
+> 26/26, all green.
+>
+> **NOT done (deferred follow-ups):** (1) the principled full re-key + **retirement of the
+> bare `crossModuleFunConstraintsRef` + Phase-134 per-scope decl-filter + empty-entry
+> seeding** — the qualified table is an additive mirror, the workarounds stay; (2) the AST
+> module-origin threading (avoided); (3) **WS-1b's `expand_supers` is NOT unblocked by this**
+> — the `clamp` Eq-slot under-fill is a *different* facet (define-side super-slot expansion
+> vs call-side arity computation, not a name collision); it needs its own arity-sync fix.
+> (4) **D3 global IE/coherence — deferred** (Stage C, orthogonal, see below).
+
+
 **Spec:** §8 I1 (identity-keyed arity), §6 C4 / §8 I2 (single global IE). **Lands
 in:** `selfhost/frontend/resolve.mdk` (qualified identity), `selfhost/driver/loader.mdk`
 (global IE assembly after topo-sort), `selfhost/types/typecheck.mdk`
