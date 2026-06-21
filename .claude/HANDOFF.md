@@ -7,7 +7,38 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — Web playground workstream: Stages 1+2 DONE (2026-06-19). `main` = `bd71d40`
+## RESUME — Dict-passing conformance roadmap CLOSED (2026-06-21). `main` = `5d5bd08`
+
+**The dict-passing conformance roadmap (`DICT-CONFORMANCE-ROADMAP.md`, audit `DICT-CONFORMANCE-AUDIT.md`,
+spec `DICT-SEMANTICS.md`) is substantially CLOSED — D1 through D10 all resolved.** Authoritative status:
+the roadmap's top "STATUS" block + memory `project_dict_semantics_spec`. Each landing was reproduced on the
+binary, fixpoint-verified (C3a/C3b YES), and merged. Seed re-minted (`bootstrap_from_seed` PASS).
+
+- **D1** existence gate + dispatch (`afe4b89`/`00cf2f7`/`83bb5c7`/`db091fd`/`72a1477`) — superinterface
+  rejection + `expand_supers` superclass evidence + ambiguity-defaulting (sole-impl→default / ≥2→`AmbiguousImpl`).
+- **D2** cross-module dict-arity collision (`e488cd9`); **full re-key (Option B) DEFERRED net-negative** —
+  empirically proven the conservative fix IS the module-qualified re-key (call site definer-correct via scheme
+  resolution); Option B = eval-dict footgun for zero gain.
+- **D3** global coherence (`84642d0`) · **D4** WS-3 most-specific return-pos (`fdaefda`) · **D5/D6** WS-4
+  guards (`adbbb97`) · **D7** flatten suffices · **D8** WS-5 phantom reject (`aa020b0`) · **D9/D10**
+  flag rename + inert removals + doc fixes (`121b9dc`).
+- **Found + fixed in passing** (`1765007`): `check` SIGTRAP on `Map`/`Set` literals (resolve missing
+  `EHeadAnnot` arm); spurious cross-module `No impl of Ord for Int` (`checkCallObligations` omitted `accData`).
+- **OPEN follow-ups:** (a) **WS-2 re-key (Option B)** — user wants it in a SUPERVISED new session (an Opus
+  agent prompt was prepared); high-risk/zero-observable-gain cleanup, AST-origin threading through
+  resolve/ast/typecheck/eval. (b) **Bug C** — `toList` on a `Map` resolves to the `Foldable` method not the
+  `map.mdk` standalone (`map.mdk:350`) → native rejects `No impl of Foldable for Map a` where the oracle
+  accepts; Phase-112 standalone-vs-method territory; was masked by the now-fixed SIGTRAP.
+- **METHODOLOGY notes from this arc (read before the next dict task):** (1) every "confirmed bug" decomposed
+  into finer real gaps under empirical scrutiny — reproduce before merging, always. (2) **3 unattended agents
+  silently rooted their worktree at the session-start commit despite self-reporting `BASE_OK`** — verify base
+  yourself via `git diff --stat <main> <branch>` (mass deletions / recent fixtures vanishing = stale) +
+  `merge-base --is-ancestor <recent-sha>`; bake a `test -f <recent-fixture>` assert into prompts. (3)
+  **`FORCE=1 bash test/build_oracles.sh` before `diff_selfhost_typecheck_errors`/`_eval_dict`** — they read
+  mtime-skipping `test/bin/*` oracles; a hand-edit + un-FORCEd gate gave 5 FALSE failures that cost a wrong
+  revert. See ORCHESTRATING.md Failure modes.
+
+## RESUME — Web playground workstream: Stages 1+2 DONE (2026-06-19). `main` was `bd71d40`
 
 **The active workstream** (user-chosen): the in-browser Medaka playground —
 **`PLAYGROUND-DESIGN.md`** (design; §6 staging; §6.1 hosting DECIDED; §9 forks for the server half).
