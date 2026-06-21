@@ -46,8 +46,17 @@ into conformance with the formal dict-passing semantics.
 ```
 
 **Do-now cheap wins (independent, low-risk, land any time):** WS-4a, WS-4b, WS-5,
-WS-6. They need no architectural change and several *gate* later work (WS-4a
-before WS-1b).
+WS-6.
+
+> **CORRECTION (2026-06-20, empirically established — see WS-1b below).** The graph
+> above is wrong on two edges. **WS-1a is DONE** (`afe4b89`+`00cf2f7`). **WS-1b is
+> NOT blocked by WS-4a** — `expand_supers` is one-level/non-recursive and cannot
+> hang on a cycle, so the acyclic guard was never its gate. The spec-true WS-1b
+> (superclass-evidence flatten) is instead **BLOCKED BY WS-2**: appending a super
+> dict slot to `clamp : Ord a` (Ord requires Eq) trips the **bare-name dict-arity
+> under-fill (D2)** → SIGSEGV. Real order: **WS-2 (identity-keyed dict arity) →
+> WS-1b**. The concrete return-position SIGTRAP WS-1b targeted is already CLOSED via
+> an emitter sole-impl-dispatch fix (`83bb5c7`), so WS-2 is now the next item.
 
 ## 2. Workstreams
 
@@ -94,6 +103,36 @@ arg-position superclass dispatch *sound* (the impl is guaranteed present).
   impl handling).
 
 **WS-1b — `supers` evidence + projection route (spec-true; also closes D7).**
+**PARTIAL (2026-06-20, `83bb5c7`): the concrete return-position SIGTRAP is CLOSED;
+the spec-true `expand_supers` evidence is DEFERRED behind WS-2 (see below).**
+
+> **Empirical finding (supersedes the plan below).** The motivating bug was a real
+> run≠build divergence: a return-position superclass method under a subclass-only
+> constraint (`build : Sub a => Int -> a; build n = mk n`, `mk` from super `Sup`)
+> ran correctly in the interpreter (`107`) but the native binary **SIGTRAPped**.
+> Diagnosed: the ambiguous constraint var is unpinned, so the site routes `RNone`
+> → passes a **null dict** (`i64 0`); `emitMethodDispatch` did `inttoptr 0; load`
+> → null-deref. Fixed narrowly + generally in `selfhost/backend/llvm_emit.mdk`: a
+> **sole-impl method** (one tagged impl, no `requires` element dicts) now dispatches
+> by **direct call**, skipping the dict head-tag load — mirroring eval's
+> `narrowMethod`/`oneOrMultiV` sole-impl pick and the existing arg-position
+> single-impl-group optimization. Grounded callers unaffected; null/sole-impl
+> callers no longer deref null. Fixture `test/build_diff_fixtures/super_returnpos.mdk`
+> (golden `43`); gates `diff_selfhost_build` 30/0, `eval_dict` 26/0, fixpoint
+> C3a/C3b YES.
+>
+> **The prescribed `expand_supers` flatten was implemented, tested, and REVERTED:**
+> appending a superinterface dict slot to a super-bearing constraint **destabilizes
+> working prelude code** — `clamp : Ord a => …` (since `Ord requires Eq`) gains a
+> second dict param whose Eq slot the **bare-name-keyed native call site under-fills**
+> → SIGSEGV (build-diff `clampc`). That under-fill is precisely **D2** (dict arity
+> keyed by bare name, not binding identity). **So the spec-true WS-1b is BLOCKED BY
+> WS-2, not WS-4a** — the dependency graph (§1) had this wrong: `expand_supers`'s
+> own traversal is one-level/non-recursive (it cannot hang on a cycle), so WS-4a was
+> never the real gate; the real gate is identity-keyed dict arity (WS-2). Do WS-2
+> first, then revisit the flatten.
+
+Original plan (the spec-true form, deferred):
 Give evidence a real superclass dimension so return/phantom-position superclass
 methods dispatch from the static dict, not arg-tag:
 1. Build superclass evidence at `inst` time — when constructing `DictC⟨T̄⟩`, resolve
