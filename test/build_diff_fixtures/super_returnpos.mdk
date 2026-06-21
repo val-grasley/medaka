@@ -1,0 +1,22 @@
+-- WS-1b regression: a RETURN-position SUPERCLASS method (`mk`, on `Sup`) called
+-- inside a function constrained only by the SUBCLASS (`Sub a requires Sup a`).
+-- The constraint var `a` is return-only and stays AMBIGUOUS (the consuming `label`
+-- is itself a `Sub` method), so the call site passes no concrete dict.  Pre-fix the
+-- native emitter routed `mk` RDict and dereferenced that null dict → SIGTRAP (rc 133)
+-- while `medaka run` printed 107.  The fix dispatches a SOLE-impl method directly
+-- (mirroring eval's `narrowMethod (VMulti vs) ""` sole-impl pick), so build == run.
+interface Sup a where
+  mk : Int -> a
+interface Sub a requires Sup a where
+  label : a -> Int
+data Widget = Widget Int
+impl Sup Widget where
+  mk n = Widget (n * 3 + 1)
+impl Sub Widget where
+  label (Widget n) = n
+build : Sub a => Int -> a
+build n = mk n
+main : <IO> Unit
+main =
+  let w = build 14
+  putStrLn (intToString (label w))

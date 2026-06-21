@@ -3193,7 +3193,33 @@ implEntryIface (CImplEntry _ _ (CImplDefault _ _)) = ""
 -- that impl's lifted fn into a result slot and branch to the end; an exhausted
 -- chain is `unreachable`.
 emitMethodDispatch : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
-emitMethodDispatch e env name d argOps =
+emitMethodDispatch e env name d argOps = match soleImplDirect e name
+  Some ent =>
+    -- WS-1b: the method has exactly ONE impl with no `requires` element dicts, so a
+    -- well-typed call always reaches that impl regardless of the runtime dict (mirrors
+    -- eval's `narrowMethod (VMulti vs) ""` → sole-impl pick, and the arg-position
+    -- single-impl-group DIRECT-call optimization).  Emitting a direct call here avoids
+    -- LOADING the dict head tag — which, under an AMBIGUOUS return-position superclass
+    -- constraint (`build : Sub a => Int -> a; build n = mk n`, where `mk`'s `Sup` dict
+    -- stays ungrounded → the caller passes a NULL dict), would dereference null → the
+    -- run≠build SIGTRAP.  Concrete-grounded callers (a real dict) are unaffected: the
+    -- direct call is the same impl the tag-dispatch chain would have selected.
+    let symTag = implFnSymOf (implEntriesOf e) name ent
+    emitImplCall e (implFnName symTag name) argOps LTInt
+  None => emitMethodDispatchChain e env name d argOps
+
+-- WS-1b: Some impl iff [name] has exactly one tagged impl AND that impl takes no
+-- leading `requires` element-dict params (reqCount 0) — the case where a direct call
+-- needs nothing from the runtime dict.  A multi-impl method, or a sole impl WITH
+-- requires (whose element dicts live in the dict cell), still goes through the
+-- tag-switching chain (which reads the dict).
+soleImplDirect : Emit -> String -> <Mut> Option CImplEntry
+soleImplDirect e name = match implsOf e name
+  [ent] => if implReqCount e name ent <= 0 then Some ent else None
+  _ => None
+
+emitMethodDispatchChain : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
+emitMethodDispatchChain e env name d argOps =
   let dictPtr = dictOperand env d
   let headTag = loadTag e dictPtr
   let impls = implsOf e name
