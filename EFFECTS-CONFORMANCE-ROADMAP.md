@@ -76,6 +76,47 @@
 > **Remaining:** WS-4 (`Product`/structured Net — largest), WS-5 (extern-row
 > assurance — standing). WS-3b's shared-runtime flip rides the `lib/`-removal soak tail.
 
+> **WS-4 — `Product` refinement domain (structure-aware Net): ✅ DONE (2026-06-21,
+> `b948ff3`, NATIVE-ONLY).** E2 closed in full. `Net = Host(Prefix) × Method(Set)`,
+> confining host AND method **independently**. Design banked in `WS-4-DESIGN.md`.
+> Landed exactly as designed, blast radius 3 files (`typecheck.mdk`, `parser.mdk`,
+> `check_policy.mdk`):
+> - `PProduct (List (String, Param))` arm over named axes (Product-⊤ = `PProduct []`),
+>   carrier kept `Option String` (sentinel-encoded, no AST widen).
+> - Pointwise `dsubN`/`djoinN`/`drenderN`. **Soundness-critical axis-defaulting:** a
+>   bound axis absent from the inferred param is treated as ⊤-on-that-axis (via the
+>   sub-domain ⊤), so a silent inferred axis is NOT ⊑ a constrained bound — proven by
+>   `prod_soundness.mdk` (a buggy axis-skipping `dsubN` would accept it). No `dmeet`/⊥
+>   (unreachable — escape+policy call only `dsub`/`djoin`).
+> - **Opt-in via `effect Net Product`** — builtin `Net` stays `PPrefix None`, so the
+>   ENTIRE existing corpus is byte-identical (canary holds); bare `<Net "a/*">` under a
+>   product Net lifts to Host-only. The delimiter-lint is retired only for opt-in code.
+> - **Literal:** `<Net Host="idp.example.com/*" Method={"GET","POST"}>` (keyword-axes,
+>   capitalized). **`check-policy --allow`:** `Net=Host="…";Method={…}` (`;`-separated
+>   axes; brace-depth-aware split). **Manifest:** TOML inline table `Net = { host = "…",
+>   method = ["GET","POST"] }` (only `drenderN`/`atomToToml` arms added — extractor
+>   untouched).
+> - Gates: new `test/effect_product_domain.sh` 8/0; all canaries byte-identical
+>   (typecheck 12/0, check_policy 4/0+7/0, set 5/0, param 6/0, manifest 6/0, parse 27/0,
+>   llvm 181/0); fixpoint C3a/C3b YES. `unify_row`/escape/manifest-extractor/AST sealed.
+
+> ## ✅ Workstream status (2026-06-21) — E1·E2·E3 CLOSED; E4 native-done; E5 standing
+>
+> The effect-and-capability conformance workstream is **substantially complete**:
+> - **E1/E6 (capability manifest)** — ✅ WS-1a/1b/1c (`check-policy` native + parameter-
+>   level + `medaka manifest`).
+> - **E3 (α precision)** — ✅ WS-2 (scope-seeding, both compilers).
+> - **E2 (domain expressiveness)** — ✅ WS-3 (`Set`) + WS-4 (`Product`/structured Net).
+> - **E4 (parameterize Env/Exec)** — ✅ native machinery (WS-3b); the **builtin-extern
+>   flip in `stdlib/runtime.mdk` is the one deferred item**, blocked on the frozen OCaml
+>   oracle (registers Env/Exec atomic + reads embedded runtime) → rides the `lib/`-removal
+>   soak tail; lands with zero further native work.
+> - **E5 (extern-row assurance)** — a **standing discipline** (the extern catalog is the
+>   trusted base), not a closeable code task.
+>
+> **Open:** only the WS-3b shared-runtime flip (soak-tail) + WS-5 (standing). No further
+> domain/precision/manifest work outstanding.
+
 The audit's verdict: the effect **typing core is sound and conformant**; the gaps
 are the **unrealized capability manifest** (E1 — the one that matters), **deferred
 parameter expressiveness** (E2/E4), a **sound precision shortfall** in `α` (E3), and
