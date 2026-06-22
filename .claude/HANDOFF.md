@@ -41,22 +41,23 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   by **topo-sorting value-global inits by EAGER (non-closure) deps** (ported the LLVM backend's
   `eagerVars`/`orderedValBinds`; the subtlety: do NOT descend lambda bodies — closures resolve globals
   at call-time, so only non-lambda refs are init-order deps). `lex_main`/`parse_main` run under Node.
-- **🟡 IN PROGRESS — runtime layer-3: `check_main` traps "illegal cast" at instantiate.** Gets past
-  lex+parse global-init but a resolve/exhaust/typecheck top-level value global's init does a `ref.cast`
-  to the wrong runtime shape (NOT the Nil/Cons path — that's i31-guarded). An agent is localizing
-  which module/global. **The next frontier:** fix it → `check_main` runs → diff its inferred schemes
-  vs the native oracle = the self-hosted-front-end-on-WasmGC demo. Then back stages, then `medaka_cli`
-  (needs `json` module + the deliberately-skipped runCommand/writeFile for `build`).
-- **REAL BUG flagged for the final byte-diff demo — `args()` returns the whole arg string as ONE
-  element.** Isolated repro: `main = match args () { a::b::_ => println (a++"|"++b); a::_ => println
-  ("one:"++a); [] => println "none" }`; native build `… foo bar` → `foo|bar` (2 args, correct), but
-  wasm `MDK_ARGS="foo bar" node test/wasm/run.js mod.wasm` → `one:foo bar` (args()=`["foo bar"]`, ONE
-  element). `run.js` DOES `MDK_ARGS.split(' ')` into argv (line ~66) with per-arg `mdk_args_count`/
-  `mdk_arg_len`/`mdk_arg_byte`, so the bug is most likely the **guest-side `args()` list-building loop**
-  in `wasm_emit.mdk`'s `ioArgsRuntimeLines` (builds one concatenated `$str` instead of N). Does NOT
-  block the instantiate-phase crash debugging (crashes are before args), but MUST be fixed for the
-  `check_main` 3-arg byte-diff demo. (The IO agent's earlier `a bb ccc`→a/bb/ccc hand-verify apparently
-  didn't catch this — re-test with a multi-element match.)
+- **🏁 Runtime layer-3 FIXED — `check_main` now INSTANTIATES + parses args + enters the check logic.**
+  The "illegal cast" was list `++` miscompiled as STRING append: `emitBinRef "++"` hard-wired
+  `$mdk_str_append` + `ref.cast (ref $str)` (a documented W8 gap), so `buildOracle`'s
+  `flatMap dataTypeCtors prog ++ builtinTypeCtors` (list `++`) cast a `$C_Cons` to `$str` → trap.
+  Fixed with a runtime-shape-dispatching `$mdk_append` (`$str`→str-append, i31-Nil/`$C_Cons`→recursive
+  list append), mirroring LLVM's `@mdk_append`. **Also fixed the `run.js` args delimiter** (was split
+  on `\0` — uncarryable in an env var, collapsing multi-arg to one; now `' '`) → the `args()` bug noted
+  below is RESOLVED. `check_main`: 3 args reach `withFiles`, check logic runs. (`377365f`, gates 130/6/13
+  + VALIDATE_OK.)
+- **🟡 IN PROGRESS — runtime layer-4: a deeper "unreachable" trap during real check/typecheck
+  execution.** `check_main` runs partway then traps `unreachable` (the native oracle prints the full
+  inferred schemes; wasm gets partway). This is a distinct downstream layer — a `gap`/stub `unreachable`
+  reached when the real typechecker executes on the prelude (1784 `unreachable` instrs in the module,
+  mostly normal match-fallthroughs, so it needs a wasm runtime trace to pinpoint — e.g. bisect which
+  check sub-stage, or instrument `unreachable` sites). **The next frontier** toward `check_main`
+  byte-identical to native = the self-hosted-front-end-on-WasmGC demo.
+- ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).
 - **METHODOLOGY notes from this arc:** (1) the per-binding census measures EMITTABILITY only — it is
