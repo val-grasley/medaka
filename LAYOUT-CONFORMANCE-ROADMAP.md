@@ -1,5 +1,19 @@
 # LAYOUT-CONFORMANCE-ROADMAP.md
 
+> **STATUS — substantially CLOSED (2026-06-21, `main` = `5a767bb`).** WS-1·WS-2·WS-3·WS-5·WS-6·WS-7
+> all landed; WS-4 is out of scope by design (cross-ref only). Two merges:
+> `eb01df3` (WS-1/3/5/6 — erased SYNTAX/PLAN/AGENTS doc drift, seated `LAYOUT-SEMANTICS.md`
+> as the doc-index anchor, wrote the `no-parser-layout-feedback` decision memory, tracked the
+> leading-`|` `data` frozen-oracle gap, documented the tab policy) and `0182cbc` (WS-7 — 22
+> gated layout fixtures in `test/diff_fixtures/` + WS-2 then/else dual-mechanism source-comment
+> cross-links in both lexers). No lexer behavior change — edits were docs, fixtures, and comments
+> only; fixpoint C3a/C3b held byte-for-byte (comment-only lexer edits → IR identical). Gates on
+> merged main: `diff_selfhost_lexer` 57/0, `diff_selfhost_parse` 27/0, `diff_selfhost_lex_files`
+> 13/0. **Excluded:** `data_leading_pipe` fixture — the frozen OCaml parser rejects leading-`|`
+> `data`, so `gen_golden` can't emit the AST/TYPES/EVAL sections `@thorough` needs (F5/WS-5,
+> auto-resolves at `lib/` removal). **Open:** WS-4 (native `check` error positions) stays out of
+> layout scope; the WS-3 bounded retro-close for own-line `in` stays DEFER by design.
+
 Sequenced, WS-style plan to close the gaps found in
 `LAYOUT-CONFORMANCE-AUDIT.md`. **No fixes are implemented this session** — this is
 the plan. `LAYOUT-SEMANTICS.md` (`§`) is the spec; the audit's findings (F1–F7)
