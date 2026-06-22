@@ -1,0 +1,4 @@
+-- W12 IO: fileExists on an EXISTING path -> True.
+main = if fileExists "test/wasm/fixtures/w_readfile_data.txt"
+  then putStrLn "exists"
+  else putStrLn "missing"

@@ -1,5 +1,19 @@
 # WasmGC self-host gap census
 
+> **STATUS 2026-06-22 — EMITTER-GAP CENSUS IS ZERO.** The all-modules graph now emits
+> with **0 recorded gaps** (was 4: `readFile` ×2 / `fileExists` ×2). The LAST gap
+> category — the IO externs — is closed: **W12 added the IO host surface** (`readFile`,
+> `fileExists`, `args`, `getEnv`, `exit`) as host-import-backed lowerings marshaling
+> strings across the import boundary via the length+byte channel (the same protocol as
+> the `floatToString` host seam), with the Node-side shim in `test/wasm/run.js` behind a
+> swappable `vfs`/`argv` seam (in-memory virtual-FS for the browser playground later).
+> `readFile`/`fileExists` are auto-diff-gated (`test/wasm/fixtures/w_readfile_ok.mdk`,
+> `w_file_exists_{true,false}.mdk` — oracle = `medaka build`, byte-identical);
+> `args`/`getEnv`/`exit` are implemented + hand-verified (valid wasm that runs; not in
+> the auto-diff because argv/env differ between the native binary and run.js). diff_wasm
+> 129/129, typed 6/6, modules 13/13. The historical 1428-gap census below predates the
+> W7–W12 closures and is kept for the roadmap record only.
+
 Enumeration of every Core-IR node / extern / pattern the **WasmGC emitter**
 (`selfhost/backend/wasm_emit.mdk`) cannot yet lower when pointed at the **whole
 compiler source graph**. This mirrors how the LLVM backend reached self-hosting:

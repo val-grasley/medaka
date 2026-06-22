@@ -1,0 +1,4 @@
+-- W12 IO: fileExists on a MISSING path -> False.
+main = if fileExists "test/wasm/fixtures/no_such_file_xyz.txt"
+  then putStrLn "exists"
+  else putStrLn "missing"
