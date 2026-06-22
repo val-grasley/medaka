@@ -1953,7 +1953,33 @@ mainBodyIsUnit prog e = match e
   CDict fn _ => declRetTypeOf fn == "Unit"
   CMethod fn _ _ _ => declRetTypeOf fn == "Unit"
   CLet _ _ _ b => mainBodyIsUnit prog b
+  -- the native branch-(2) equivalent: an UNANNOTATED `main = match … { … }` whose
+  -- Unit-ness is only knowable from its inferred body type (e.g. check_main's
+  -- `match args () { [r,c,f] => withFiles … ; _ => ePutStrLn … }`).  Type-erased here,
+  -- so reason structurally: a match/decision body is Unit iff EVERY tail leaf is Unit
+  -- (an IO-extern returning Unit, a fn whose declared ret is Unit, or another all-Unit
+  -- match).  Conservative — a single non-Unit leaf ⇒ False, so a value main is never
+  -- suppressed.  Block/Let tails recurse to their final expr.
+  CDecision _ arms _ => allArmsUnit prog arms
+  CMatch _ arms => allArmsUnit prog arms
+  CBlock stmts => blockTailIsUnit prog stmts
   _ => False
+
+-- True iff every match/decision arm body is itself a Unit main body.  Empty ⇒ False
+-- (no leaves to prove Unit ⇒ don't suppress).
+allArmsUnit : Prog -> List CArm -> <Mut> Bool
+allArmsUnit _ [] = False
+allArmsUnit prog arms = allArmsUnitGo prog arms
+
+allArmsUnitGo : Prog -> List CArm -> <Mut> Bool
+allArmsUnitGo _ [] = True
+allArmsUnitGo prog ((CArm _ _ body)::rest) =
+  if mainBodyIsUnit prog body then allArmsUnitGo prog rest else False
+
+blockTailIsUnit : Prog -> List CStmt -> <Mut> Bool
+blockTailIsUnit _ [] = False
+blockTailIsUnit prog [(CSExpr e)] = mainBodyIsUnit prog e
+blockTailIsUnit prog (_::rest) = blockTailIsUnit prog rest
 
 -- the printable static kind of a ref-mode main body: an Int (decimal) or a Bool
 -- (true/false).  Determined structurally — arithmetic/Int-lit → Int; a comparison
