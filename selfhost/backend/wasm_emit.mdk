@@ -655,7 +655,11 @@ isLeafExternW name = contains name [
   "randomInt", "randomBool", "randomChar", "setSeed",
   "hashInt", "hashChar", "hashBool",
   -- W8b Float leaf externs (produce/consume a boxed $float (ref eq)).
-  "intToFloat", "floatToInt", "hashFloat", "randomFloat"]
+  "intToFloat", "floatToInt", "hashFloat", "randomFloat",
+  -- W10: `panic : String -> a` lowers to a `unreachable` trap (stack-polymorphic,
+  -- validates as any result type — matches the native @mdk_panic abort).  The message
+  -- arg is emitted-then-dropped; printing it to stderr is a nice-to-have not done here.
+  "panic"]
 
 -- W9: arity of a str/leaf extern (the param count its emit* arm consumes).  Used to
 -- build an eta closure when the extern is referenced as a VALUE (point-free / passed
@@ -668,13 +672,28 @@ externArityW name =
     "stringConcat", "setSeed", "randomChar", "hashInt", "hashChar", "hashBool",
     -- W8b: floatToString/intToFloat/floatToInt/hashFloat are 1-arg; randomFloat takes
     -- a Unit arg (like randomChar — emitted + dropped).
-    "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat"] then 1
-  else if contains name ["randomInt", "stringIndexOf", "stringCompare"] then 2
-  else if contains name ["stringSlice"] then 3
+    "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat",
+    -- W10: panic msg (1); arrayLength/arrayFromList/arrayCopy (1).
+    "panic", "arrayLength", "arrayFromList", "arrayCopy"] then 1
+  else if contains name ["randomInt", "stringIndexOf", "stringCompare",
+    -- W10: arrayGetUnsafe (idx, arr); arrayMake (size, init); arrayMakeWith (size, f).
+    "arrayGetUnsafe", "arrayMake", "arrayMakeWith"] then 2
+  else if contains name ["stringSlice", "arraySetUnsafe"] then 3
   else 1
 
 isWasmEtaExtern : String -> Bool
-isWasmEtaExtern name = isStrExternW name || isLeafExternW name
+isWasmEtaExtern name = isStrExternW name || isLeafExternW name || isArrayExternW name
+
+-- ── W10: Array intrinsic externs (RUNTIME-DESIGN array kernel) ────────────────
+-- The seven array primitives from stdlib/runtime.mdk that lower to the `$arr =
+-- (array (mut (ref eq)))` WasmGC array (array.len/get/set/new/copy + the apply seam
+-- for arrayMakeWith's per-index closure call).  Detected so emitProgram forces the
+-- $arr rep (via noteW8Extern) and the dispatch routes here.  NOTE the per-extern arg
+-- orders (some take the index/size FIRST) — see stdlib/runtime.mdk:92-104.
+isArrayExternW : String -> Bool
+isArrayExternW name = contains name [
+  "arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
+  "arrayCopy", "arraySetUnsafe", "arrayFromList"]
 
 -- ── W8b: the ONE residual deferred extern ────────────────────────────────────
 -- All other Float externs (floatToString / intToFloat / floatToInt / hashFloat /
@@ -847,8 +866,14 @@ noteW8Extern name =
   -- W8b: stringIndexOf/stringCompare use the strSearch runtime + cp_count (strLeaf) + $str.
   let _ = if contains name ["stringIndexOf", "stringCompare"]
           then let _ = set_ref useStrSearchRef True in let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
+  -- W10: panic's message arg is a $str (emitted then dropped) → force the $str rep.
+  let _ = if name == "panic" then set_ref useStrRef True else ()
+  -- W10: the array intrinsic externs all build/read the $arr rep (and arrayFromList
+  -- consumes a cons list).  Force useArrayRef; arrayFromList also forces useListRef.
+  let _ = if contains name ["arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
+            "arrayCopy", "arraySetUnsafe", "arrayFromList"] then set_ref useArrayRef True else ()
+  let _ = if name == "arrayFromList" then set_ref useListRef True else ()
   if contains name ["ePutStr", "ePutStrLn"] then set_ref useEPutRef True else ()
-
 -- string `++` is the pure-WAT binary concat ($mdk_str_append) — note the leaf op.
 noteW8Binop : String -> <Mut> Unit
 noteW8Binop "++" = let _ = set_ref useStrLeafRef True in set_ref useStrRef True
@@ -2541,6 +2566,7 @@ emitAppRef prog env d app =
       if isCtor prog f then emitCtorConstruct prog env d f args
       else if isStrExternW f then emitStrExternRef prog env d f args
       else if isLeafExternW f then emitLeafExternRef prog env d f args
+      else if isArrayExternW f then emitArrayExternRef prog env d f args
       else if isDeferredFloatExternW f then floatExternStub f
       else if isUnimplStrExternW f then floatExternStub f
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
@@ -2678,7 +2704,115 @@ emitLeafExternRef prog env d "hashFloat" args = match args
 emitLeafExternRef prog env d "randomFloat" args = match args
   [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_random_float"]
   _ => gapL "wasm W8b: randomFloat takes exactly one (Unit) argument"
+-- W10: `panic msg` → emit the message (a $str (ref eq)), drop it, then `unreachable`.
+-- `unreachable` is a trap and is stack-polymorphic, so it validates as any result
+-- type (mirroring native @mdk_panic, which aborts with empty stdout).
+emitLeafExternRef prog env d "panic" args = match args
+  [msg] => emitRefExpr prog env d msg ++ ["drop", "unreachable"]
+  _ => gapL "wasm W10: panic takes exactly one argument"
 emitLeafExternRef _ _ _ name _ = gapL ("wasm W8: unsupported leaf extern '" ++ name ++ "'")
+
+-- ── W10: Array intrinsic externs ─────────────────────────────────────────────
+-- All work over `$arr = (array (mut (ref eq)))`.  Index/size args are i31 Ints
+-- (unboxed to i32); element args are (ref eq).  NOTE the arg orders (runtime.mdk):
+--   arrayLength    arr               → array.len → i31
+--   arrayGetUnsafe idx arr           → (idx FIRST) cast arr, array.get
+--   arrayMake      size init         → array.new $arr (init, size)
+--   arrayMakeWith  size f            → alloc size, loop i: array.set (f applied to i)
+--   arrayCopy      arr               → array.new (len) + array.copy
+--   arraySetUnsafe idx val arr       → array.set; result Unit (i31 0)
+--   arrayFromList  list              → alloc (length list), loop-fill from cons cells
+emitArrayExternRef : Prog -> List String -> Int -> String -> List CExpr -> <Mut> List String
+emitArrayExternRef prog env d "arrayLength" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "array.len", "ref.i31"]
+  _ => gapL "wasm W10: arrayLength takes exactly one argument"
+emitArrayExternRef prog env d "arrayGetUnsafe" args = match args
+  -- idx is the FIRST arg, the array the SECOND.  Cast arr, unbox idx, array.get.
+  [i, a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)"]
+    ++ emitRefExpr prog env d i ++ ["ref.cast (ref i31)", "i31.get_s"]
+    ++ ["array.get $arr", "ref.as_non_null"]
+  _ => gapL "wasm W10: arrayGetUnsafe takes exactly two arguments"
+emitArrayExternRef prog env d "arrayMake" args = match args
+  -- size FIRST, init SECOND.  array.new takes (init, size) from the stack.
+  [n, init] => emitRefExpr prog env d init
+    ++ emitRefExpr prog env d n ++ ["ref.cast (ref i31)", "i31.get_s"]
+    ++ ["array.new $arr"]
+  _ => gapL "wasm W10: arrayMake takes exactly two arguments"
+emitArrayExternRef prog env d "arrayCopy" args = match args
+  [a] =>
+    let sfx = intToString d
+    let srcL = "$__aexarr" ++ sfx
+    let dstL = "$__raarr" ++ sfx
+    let nL = "$__aexn" ++ sfx
+    emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "local.set " ++ srcL]
+      ++ ["local.get " ++ srcL, "ref.as_non_null", "array.len", "local.set " ++ nL]
+      ++ ["i32.const 0", "ref.i31", "local.get " ++ nL, "array.new $arr", "local.set " ++ dstL]
+      ++ ["local.get " ++ dstL, "ref.as_non_null", "i32.const 0", "local.get " ++ srcL, "ref.as_non_null", "i32.const 0", "local.get " ++ nL, "array.copy $arr $arr"]
+      ++ ["local.get " ++ dstL, "ref.as_non_null"]
+  _ => gapL "wasm W10: arrayCopy takes exactly one argument"
+emitArrayExternRef prog env d "arraySetUnsafe" args = match args
+  -- idx, val, arr.  array.set takes (arrayref, index, value); result Unit (i31 0).
+  [i, v, a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)"]
+    ++ emitRefExpr prog env d i ++ ["ref.cast (ref i31)", "i31.get_s"]
+    ++ emitRefExpr prog env d v
+    ++ ["array.set $arr", "i32.const 0", "ref.i31"]
+  _ => gapL "wasm W10: arraySetUnsafe takes exactly three arguments"
+emitArrayExternRef prog env d "arrayMakeWith" args = match args
+  -- size FIRST, f SECOND.  Alloc size slots (init 0), then loop i=0..n-1:
+  -- array.set arr i (apply f [i]).  f is applied via the universal $mdk_apply.
+  [n, f] =>
+    let sfx = intToString d
+    let arrL = "$__aexarr" ++ sfx
+    let iL = "$__aexi" ++ sfx
+    let nL = "$__aexn" ++ sfx
+    let fL = "$__aexf" ++ sfx
+    emitRefExpr prog env d n ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ nL]
+      ++ emitRefExpr prog env d f ++ ["local.set " ++ fL]
+      ++ ["i32.const 0", "ref.i31", "local.get " ++ nL, "array.new $arr", "local.set " ++ arrL]
+      ++ ["i32.const 0", "local.set " ++ iL]
+      ++ ["block $aexd" ++ sfx, "loop $aexl" ++ sfx]
+      ++ ["local.get " ++ iL, "local.get " ++ nL, "i32.ge_s", "br_if $aexd" ++ sfx]
+      ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ iL]
+      -- value = f applied to (i31 i): build a 1-element $argarr, call $mdk_apply
+      ++ ["local.get " ++ fL, "local.get " ++ iL, "ref.i31", "array.new_fixed $argarr 1", "call $mdk_apply"]
+      ++ ["array.set $arr"]
+      ++ ["local.get " ++ iL, "i32.const 1", "i32.add", "local.set " ++ iL]
+      ++ ["br $aexl" ++ sfx, "end", "end"]
+      ++ ["local.get " ++ arrL, "ref.as_non_null"]
+  _ => gapL "wasm W10: arrayMakeWith takes exactly two arguments"
+emitArrayExternRef prog env d "arrayFromList" args = match args
+  -- count the list (a $C_Cons chain ending in an i31 Nil), alloc that many slots,
+  -- walk the chain again filling cells in order.  Two-pass over a $C_Cons cursor.
+  [lst] =>
+    let sfx = intToString d
+    let arrL = "$__aexarr" ++ sfx
+    let iL = "$__aexi" ++ sfx
+    let nL = "$__aexn" ++ sfx
+    let curL = "$__aexlst" ++ sfx
+    -- pass 1: length.  cursor = lst; while not i31: n++, cursor = tail.
+    emitRefExpr prog env d lst ++ ["local.set " ++ curL]
+      ++ ["i32.const 0", "local.set " ++ nL]
+      ++ ["block $aexcd" ++ sfx, "loop $aexcl" ++ sfx]
+      ++ ["local.get " ++ curL, "ref.test (ref i31)", "br_if $aexcd" ++ sfx]
+      ++ ["local.get " ++ nL, "i32.const 1", "i32.add", "local.set " ++ nL]
+      ++ ["local.get " ++ curL, "ref.cast (ref $C_Cons)", "struct.get $C_Cons 2", "local.set " ++ curL]
+      ++ ["br $aexcl" ++ sfx, "end", "end"]
+    -- alloc n slots
+      ++ ["i32.const 0", "ref.i31", "local.get " ++ nL, "array.new $arr", "local.set " ++ arrL]
+    -- pass 2: fill.  cursor = lst; i = 0; while not i31: set arr[i]=head, i++, cursor=tail.
+      ++ emitRefExpr prog env d lst ++ ["local.set " ++ curL]
+      ++ ["i32.const 0", "local.set " ++ iL]
+      ++ ["block $aexfd" ++ sfx, "loop $aexfl" ++ sfx]
+      ++ ["local.get " ++ curL, "ref.test (ref i31)", "br_if $aexfd" ++ sfx]
+      ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ iL]
+      ++ ["local.get " ++ curL, "ref.cast (ref $C_Cons)", "struct.get $C_Cons 1"]
+      ++ ["array.set $arr"]
+      ++ ["local.get " ++ iL, "i32.const 1", "i32.add", "local.set " ++ iL]
+      ++ ["local.get " ++ curL, "ref.cast (ref $C_Cons)", "struct.get $C_Cons 2", "local.set " ++ curL]
+      ++ ["br $aexfl" ++ sfx, "end", "end"]
+      ++ ["local.get " ++ arrL, "ref.as_non_null"]
+  _ => gapL "wasm W10: arrayFromList takes exactly one argument"
+emitArrayExternRef _ _ _ name _ = gapL ("wasm W10: unsupported array extern '" ++ name ++ "'")
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
 -- into an $argarr, and `call $mdk_apply` — which dispatches on the closure's arity
@@ -2736,7 +2870,7 @@ emitAppTail prog env arity app =
     CVar f0 _ =>
       let f = canonFn prog f0
       if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
-      else if isStrExternW f || isLeafExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
+      else if isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
         flatMap (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname f]
@@ -3612,7 +3746,10 @@ w7LocalsAtDepth : Int -> List String
 w7LocalsAtDepth d =
   let sfx = intToString d
   let rl = if useListRef.value then ["(local $__rlacc" ++ sfx ++ " (ref eq))", "(local $__rli" ++ sfx ++ " i32)", "(local $__rllo" ++ sfx ++ " i32)"] else []
-  let ra = if useArrayRef.value then ["(local $__raarr" ++ sfx ++ " (ref null $arr))", "(local $__rai" ++ sfx ++ " i32)", "(local $__ralo" ++ sfx ++ " i32)", "(local $__racnt" ++ sfx ++ " i32)", "(local $__ixarr" ++ sfx ++ " (ref null $arr))", "(local $__ixi" ++ sfx ++ " i32)", "(local $__slsrc" ++ sfx ++ " (ref null $arr))", "(local $__sldst" ++ sfx ++ " (ref null $arr))", "(local $__sllo" ++ sfx ++ " i32)", "(local $__sllen" ++ sfx ++ " i32)"] else []
+  let ra = if useArrayRef.value then ["(local $__raarr" ++ sfx ++ " (ref null $arr))", "(local $__rai" ++ sfx ++ " i32)", "(local $__ralo" ++ sfx ++ " i32)", "(local $__racnt" ++ sfx ++ " i32)", "(local $__ixarr" ++ sfx ++ " (ref null $arr))", "(local $__ixi" ++ sfx ++ " i32)", "(local $__slsrc" ++ sfx ++ " (ref null $arr))", "(local $__sldst" ++ sfx ++ " (ref null $arr))", "(local $__sllo" ++ sfx ++ " i32)", "(local $__sllen" ++ sfx ++ " i32)",
+    -- W10 array-intrinsic-extern scratch (loop counter, size, result array, list cursor,
+    -- closure/init value) for arrayMake/arrayMakeWith/arrayFromList/arraySetUnsafe.
+    "(local $__aexi" ++ sfx ++ " i32)", "(local $__aexn" ++ sfx ++ " i32)", "(local $__aexarr" ++ sfx ++ " (ref null $arr))", "(local $__aexlst" ++ sfx ++ " (ref eq))", "(local $__aexf" ++ sfx ++ " (ref eq))", "(local $__aexv" ++ sfx ++ " (ref eq))"] else []
   let ru = if not (isEmptyList recFieldsRef.value) then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
   rl ++ ra ++ ru
 

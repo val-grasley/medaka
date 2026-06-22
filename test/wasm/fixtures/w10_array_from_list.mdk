@@ -1,0 +1,2 @@
+-- W10: arrayFromList (cons-chain → $arr two-pass fill).
+main = arrayLength (arrayFromList [1, 2, 3, 4, 5])

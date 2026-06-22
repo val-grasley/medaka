@@ -1,0 +1,2 @@
+-- W10: arrayCopy arr → array.new + array.copy.
+main = arrayGetUnsafe 1 (arrayCopy (arrayFromList [11, 22, 33]))

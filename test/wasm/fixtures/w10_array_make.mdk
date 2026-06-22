@@ -1,0 +1,2 @@
+-- W10: arrayMake size init → array.new (init, size).
+main = arrayGetUnsafe 2 (arrayMake 4 7)

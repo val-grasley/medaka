@@ -1,0 +1,2 @@
+-- W10: arrayMakeWith size f → per-index closure apply via $mdk_apply.
+main = arrayGetUnsafe 3 (arrayMakeWith 5 (i => i * i))

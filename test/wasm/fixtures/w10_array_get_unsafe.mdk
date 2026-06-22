@@ -1,0 +1,2 @@
+-- W10: arrayGetUnsafe idx arr (idx FIRST) → array.get.
+main = arrayGetUnsafe 1 (arrayFromList [10, 20, 30])
