@@ -1,0 +1,5 @@
+-- W10: panic in an UNREACHED branch — proves it EMITS valid code (unreachable trap)
+-- without the program actually trapping.
+f 0 = panic "boom"
+f n = n
+main = f 5

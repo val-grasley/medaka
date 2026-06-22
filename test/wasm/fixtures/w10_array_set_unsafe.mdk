@@ -1,0 +1,5 @@
+-- W10: arraySetUnsafe idx val arr → array.set; result Unit.  Read back the mutated cell.
+main =
+  let a = arrayFromList [10, 20, 30]
+  let _ = arraySetUnsafe 1 99 a
+  arrayGetUnsafe 1 a
