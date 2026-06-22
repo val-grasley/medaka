@@ -1,0 +1,3 @@
+-- W11b: stringFromChars (stringToChars s) round-trips a multi-byte string (é = 2-byte
+-- UTF-8) — exercises the decode + encode codec end-to-end.
+main = stringFromChars (stringToChars "héllo")

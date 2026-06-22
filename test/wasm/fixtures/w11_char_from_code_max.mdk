@@ -1,0 +1,4 @@
+-- W11b: charFromCode 0x10FFFF (1114111) is the max valid codepoint (4-byte) -> Some.
+main = match charFromCode 1114111
+  Some c => charToStr c
+  None => "none"

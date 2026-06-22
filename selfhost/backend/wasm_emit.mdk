@@ -173,7 +173,8 @@ import backend.wasm_preamble.{
   stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines,
   rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines,
   floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
-  strSearchRuntimeLines
+  strSearchRuntimeLines,
+  strCodecRuntimeLines, charFromCodeRuntimeLines
 }
 
 -- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
@@ -440,6 +441,16 @@ useFloatRngRef = Ref False
 useStrSearchRef : Ref Bool
 useStrSearchRef = Ref False
 
+-- W11b: the program uses stringToChars / stringFromChars (the UTF-8 codec runtime
+-- $mdk_str_to_chars / $mdk_chars_to_str, which decode/encode between a $str and an
+-- $arr of i31 Char codepoints).  Needs $str + $arr + the strLeaf char encoder.
+useStrCodecRef : Ref Bool
+useStrCodecRef = Ref False
+
+-- W11b: the program uses charFromCode (the $mdk_char_from_code range-check runtime).
+useCharFromCodeRef : Ref Bool
+useCharFromCodeRef = Ref False
+
 -- W8b: the names KNOWN to hold a Float in the CURRENT function/impl body — set while
 -- emitting an `impl Num Float` (etc.) method, whose params are Float but appear as bare
 -- CVars the structural detector can't otherwise see.  `cexprIsFloat` consults this so
@@ -643,7 +654,11 @@ isStrExternW name = contains name [
   "stringSlice", "stringToUpper", "stringToLower", "hashString",
   -- W8b: floatToString returns a $str; stringIndexOf/stringCompare read $str (and
   -- return Option Int / Ordering, built inline).  All force the $str rep.
-  "floatToString", "stringIndexOf", "stringCompare"]
+  "floatToString", "stringIndexOf", "stringCompare",
+  -- W11b: stringToChars/stringFromChars are the UTF-8 codec ($str <-> Array Char);
+  -- charFromCode : Int -> Option Char is range-check + i31 rebox.  Routed here so they
+  -- reach emitStrExternRef (all touch $str / Char codepoints).
+  "stringToChars", "stringFromChars", "charFromCode"]
 
 -- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
 -- These force ref-mode (they produce/consume (ref eq) i31 values) but, unlike the
@@ -678,7 +693,9 @@ externArityW name =
     -- a Unit arg (like randomChar — emitted + dropped).
     "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat",
     -- W10: panic msg (1); arrayLength/arrayFromList/arrayCopy (1).
-    "panic", "arrayLength", "arrayFromList", "arrayCopy"] then 1
+    "panic", "arrayLength", "arrayFromList", "arrayCopy",
+    -- W11b: stringToChars/stringFromChars/charFromCode are each 1-arg.
+    "stringToChars", "stringFromChars", "charFromCode"] then 1
   else if contains name ["randomInt", "stringIndexOf", "stringCompare",
     -- W10: arrayGetUnsafe (idx, arr); arrayMake (size, init); arrayMakeWith (size, f).
     "arrayGetUnsafe", "arrayMake", "arrayMakeWith"] then 2
@@ -870,6 +887,13 @@ noteW8Extern name =
   -- W8b: stringIndexOf/stringCompare use the strSearch runtime + cp_count (strLeaf) + $str.
   let _ = if contains name ["stringIndexOf", "stringCompare"]
           then let _ = set_ref useStrSearchRef True in let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
+  -- W11b: stringToChars/stringFromChars are the UTF-8 codec between a $str and an $arr
+  -- of i31 Char codepoints.  Force the $str rep, the $arr rep, the strLeaf char encoder
+  -- ($mdk_char_to_str, reused by stringFromChars), and the codec runtime itself.
+  let _ = if contains name ["stringToChars", "stringFromChars"]
+          then let _ = set_ref useStrCodecRef True in let _ = set_ref useStrRef True in let _ = set_ref useArrayRef True in set_ref useStrLeafRef True else ()
+  -- W11b: charFromCode : Int -> Option Char — range-check runtime, no $str/$arr needed.
+  let _ = if name == "charFromCode" then set_ref useCharFromCodeRef True else ()
   -- W10: panic's message arg is a $str (emitted then dropped) → force the $str rep.
   let _ = if name == "panic" then set_ref useStrRef True else ()
   -- W10: the array intrinsic externs all build/read the $arr rep (and arrayFromList
@@ -1413,11 +1437,18 @@ emitRefProgram prog groups =
   let hashFloatRt = if useFloatHashRef.value then hashFloatRuntimeLines else []
   let randomFloatRt = if useFloatRngRef.value then randomFloatRuntimeLines else []
   let strSearchRt = if useStrSearchRef.value then strSearchRuntimeLines else []
+  -- W11b: the UTF-8 codec ($mdk_str_to_chars / $mdk_chars_to_str) + charFromCode's
+  -- range-check runtime ($mdk_char_from_code).  The codec needs the $str rep ($u8arr)
+  -- and the $arr rep (both forced via noteW8Extern).  charFromCode alone needs neither
+  -- the codec nor strLeaf, so its runtime fn is gated independently.
+  let strCodecRt = if useStrCodecRef.value then strCodecRuntimeLines else []
+  let charFromCodeRt = if useCharFromCodeRef.value then charFromCodeRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
             ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
+            ++ strCodecRt ++ charFromCodeRt
             ++ dataSegs ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
@@ -1703,7 +1734,9 @@ isStrReturningExtern name = contains name [
   "intToString", "charToStr", "stringConcat",
   "stringSlice", "stringToUpper", "stringToLower",
   -- W8b: floatToString returns a String.
-  "floatToString"]
+  "floatToString",
+  -- W11b: stringFromChars : Array Char -> String.
+  "stringFromChars"]
 
 -- the Unit-RESULT IO externs: a `main = putStrLn …` produces Unit and must NOT be
 -- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
@@ -2841,6 +2874,24 @@ emitStrExternRef prog env d "stringCompare" args = match args
     emitRefExpr prog env d a ++ ["ref.cast (ref $str)"]
       ++ emitRefExpr prog env d b ++ ["ref.cast (ref $str)", "call $mdk_str_compare"]
   _ => gapL "wasm W8b: stringCompare takes exactly two arguments"
+-- W11b: stringToChars : String -> Array Char.  Decode the $str's UTF-8 bytes into a
+-- fresh $arr of `cp_count` i31 Char codepoints.  The runtime fn builds the $arr.
+emitStrExternRef prog env d "stringToChars" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_str_to_chars"]
+  _ => gapL "wasm W11b: stringToChars takes exactly one argument"
+-- W11b: stringFromChars : Array Char -> String.  Encode an $arr of i31 Char codepoints
+-- into a fresh $str (UTF-8); cp_count = array.len.  The runtime fn builds the $str.
+emitStrExternRef prog env d "stringFromChars" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "call $mdk_chars_to_str"]
+  _ => gapL "wasm W11b: stringFromChars takes exactly one argument"
+-- W11b: charFromCode : Int -> Option Char.  Range-check the i31 Int (valid = 0..0x10FFFF
+-- EXCLUDING surrogates 0xD800..0xDFFF, byte-identical to medaka_rt.c mdk_char_from_code)
+-- → Some <char i31> (struct.new $C_Some, ordinal 0) / None (i31 ordinal 1).  Inlined
+-- (peer to the runtime-built stringIndexOf Option, but small enough to emit directly).
+emitStrExternRef prog env d "charFromCode" args = match args
+  [a] => emitRefExpr prog env d a
+    ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_char_from_code"]
+  _ => gapL "wasm W11b: charFromCode takes exactly one argument"
 emitStrExternRef _ _ _ name _ = gapL ("wasm W6: unsupported string extern '" ++ name ++ "'")
 
 -- ── W8 RNG + hash LEAF externs (RUNTIME-DESIGN §5 RNG / §5 hash) ─────────────

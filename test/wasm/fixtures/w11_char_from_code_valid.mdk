@@ -1,0 +1,4 @@
+-- W11b: charFromCode 65 -> Some 'A'; render the char via charToStr.
+main = match charFromCode 65
+  Some c => charToStr c
+  None => "none"
