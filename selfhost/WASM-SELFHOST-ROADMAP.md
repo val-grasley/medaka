@@ -63,16 +63,22 @@ investigate after the big categories close (some are artifacts of the above).
 6. ✅ UTF-8 string externs (stringToChars/charFromCode/stringFromChars) (`ae16d02`, →115; census →82)
 7. ✅ nested-closure free-var capture — `freeVarsExpr` now descends compound value nodes (CTuple/CRecord/CList/…) so do-notation `pure (a,b)` captures earlier `<-` binds; parallel `maxIndexAt` fix (`508fdd3`, modules →13; census →35)
 8. ✅ structural batch — Char/String match-switch heads, ctor/tuple lambda-params, **record-ctor registration** (`registerRecordCtors` in `lowerProgramEmit` — IN-GRAPH, fixpoint C3a/C3b YES + diff_selfhost_build 35/0), W5 dict-param capture (`freeVarsExpr` CMethod/CDict arms) (`945c685`, →119; census →11)
-9. 🟡 char-classification externs (charIs*/charTo*, 7) — pure-WAT ASCII, in progress
-10. ⬜ IO host surface (task #3): readFile/args/getEnv/fileExists/exit — emit host-import byte-channel + JS virtual-FS shim. LAST emitter-gap category.
-11. ⬜ whole-compiler emit + `wasm-tools` assemble → run under Node with virtual-FS (the self-host proof). NOTE: census=0 means EMITTABLE, not yet runtime-correct — expect a runtime-validation layer (like LLVM's B1–B7).
+9. ✅ char-classification externs (charIs*/charTo*, 7) — pure-WAT ASCII (`a979385`, →126)
+10. ✅ IO host surface (readFile/args/getEnv/fileExists/exit) — byte-channel host imports + JS virtual-FS shim (`6a90970`, →129). **🏁 ALL-MODULES EMITTER-GAP CENSUS = 0.**
+11. 🟡 **Whole-program LINKAGE** (the self-host-proof layer — NEW frontier the per-binding census can't see). `check_main.mdk` (the real lex→parse→resolve→exhaust→typecheck front-end) emits a **6.77 MB / 241k-line WAT**, but `wasm-tools parse` finds **15 functions referenced-but-undefined** — all VALUE-only-used helpers (`map eqFieldCall fields`, `map (showArm …) variants`, `flatMap dataArity prog`): the emitter emits a closure-WRAPPER referencing them but not the underlying DEFINITION (the fn-emission loop only emits directly-called fns). DCE keeps them (native LLVM links check_main fine). Fix in progress (wasm-emitter fn-collection).
+12. ⬜ runtime validation — once it assembles, run check_main under Node (host shim feeds runtime/core/source) and diff its schemes output vs the native `check_main` oracle. Expect a runtime-correctness layer (miscompiles producing valid-but-wrong wasm), like LLVM's B1–B7 bootstrap stages.
 
-**Census progress: 1428 → 11** (panic, arrays, Ref, fallthrough, string-clauses+charCode,
-destructuring, UTF-8, closure-capture, structural-batch all closed — 99.2%). Remaining:
-char externs 7 (in progress), IO externs 4. **SEED STATUS:** the structural batch touched
-`core_ir_lower.mdk` (in-graph) → committed seed (`selfhost/seed/emitter.ll.gz`) is STALE;
-fixpoint self-compiles fresh (C3a/C3b YES) so it's the decisive check. Re-mint the seed at
-the next checkpoint (`bootstrap_from_seed` red is expected until then). Lazy-emitter rule: this emitter
+**🏁 MILESTONE (2026-06-22): the per-binding emitter-gap census is 0 — the WasmGC
+emitter can LOWER every construct in the whole compiler graph (1428→0, 9 categories).**
+The next layers toward a *running* self-hosted wasm compiler are (11) whole-program
+linkage and (12) runtime correctness — neither visible to the per-binding census.
+
+**SEED RE-MINT PENDING:** the structural batch (step 8) changed `core_ir_lower.mdk`
+(in-graph) → committed seed (`selfhost/seed/emitter.ll.gz`) is STALE. Re-mint at the
+next checkpoint (`CHECK_OCAML=0 bash test/refresh_seed.sh` → verify `bootstrap_from_seed.sh`);
+fixpoint C3a/C3b is green so dev is unaffected; `bootstrap_from_seed` red until re-mint.
+
+## Census progress: 1428 → 0 (per-binding emittability). Lazy-emitter rule: this emitter
 forces instruction strings at final assembly, so binding/label state must thread as
 data / locals / Core-IR-encoded sentinels — NOT mutable refs read at a different time
 than set.
