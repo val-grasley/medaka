@@ -1,0 +1,12 @@
+-- W-fallthrough (ref-mode): a SINGLE-clause fn whose body is a bare guard chain (no
+-- later clause).  The chain desugars to nested ifs terminated by __fallthrough__;
+-- with no next clause the single-clause path must still wrap the body in a
+-- fall-through block (ending in `unreachable`) so the chain has a branch target.  The
+-- `otherwise` arm guarantees a value, so the trailing `unreachable` is never reached.
+-- String results force ref-mode.
+sign n
+  | n > 0 = "pos"
+  | n < 0 = "neg"
+  | otherwise = "zero"
+
+main = sign 5 ++ sign (0 - 3) ++ sign 0

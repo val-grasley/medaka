@@ -1,0 +1,11 @@
+-- W-fallthrough (ref-mode): a match with GUARDED arms plus a catch-all.  The
+-- desugared guard chain inside each arm body falls through (__fallthrough__) when no
+-- guard holds.  String results force ref-mode.  Hits the first matched guard arm, the
+-- second arm (reached by falling through the first failing guard), and the catch-all.
+grade n =
+  match n
+    x if x >= 90 => "A"
+    x if x >= 50 => "B"
+    _ => "F"
+
+main = grade 95 ++ grade 70 ++ grade 10

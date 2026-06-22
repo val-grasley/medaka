@@ -36,7 +36,7 @@ plus the shrinking census.
 | `panic` extern | 112 | ✅ DONE | → `unreachable` trap. |
 | Array intrinsics | 86 | ✅ DONE | `arrayGetUnsafe`/`Length`/`FromList`/`MakeWith`/`Make`/`Copy`/`SetUnsafe` over `$arr`. |
 | Ref (`set_ref`/`.value`/`Ref`) | ~636 | 🟡 in progress | `$refbox` 1-field mutable struct; 3 emit arms (SMALL). |
-| `__fallthrough__` | 261 | ⬜ next | multi-clause/guard fall-through label; mirror LLVM `fallthroughLabelRef`+`emitFallthrough` (MEDIUM). |
+| `__fallthrough__` | 261 | ✅ DONE | multi-clause / guard-chain fall-through. Each clause body wraps in a `(block $cl_<name>_<i>)`; `labelFallthrough` rewrites `__fallthrough__` → label-carrying sentinel `__ft__<clLabel>` lowered to `br <clLabel>` (a PURE function of the var name — the lazily-assembled emitter can't thread a mutable "current label" ref reliably, since strings are forced at final assembly long after any `set_ref`). Single-clause guarded bodies divert to the chain path (block + trailing `unreachable`). A bare (unrewritten) `__fallthrough__` → `unreachable` trap (typechecker-proven-exhaustive context). Census 261 → 0, no new gaps. |
 | string-literal clause heads (`f "kw" =`) | 111 | ⬜ | lower to string-eq if-chain (MEDIUM codegen). |
 | string/char externs (subset) | 51 | ⬜ | extend `emitStrExternRef`. |
 | `CFieldAccess on unknown field` | 283 | 🟡 | mostly `.value` (Ref read) — closed by the Ref work; residual = other records. |

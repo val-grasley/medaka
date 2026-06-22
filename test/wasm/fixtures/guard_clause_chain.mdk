@@ -1,0 +1,9 @@
+-- W-fallthrough (ref-mode): a multi-clause fn whose FIRST clause is a guard chain
+-- that can fail (n <= 10) and fall through to a later catch-all clause.  Returning a
+-- String forces the §8.6 uniform (ref eq) rep, exercising the ref-mode clause-chain
+-- fall-through path (the path the 261 self-host census gaps live in).  Hits both the
+-- matched-guard path ("big") and the fall-through-to-next-clause path ("small").
+classify n | n > 10 = "big"
+classify n = "small"
+
+main = classify 20 ++ classify 3

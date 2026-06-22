@@ -1779,12 +1779,36 @@ emitClausesRef prog name params arity clauses = emitClausesRefEnv prog [] name p
 emitClausesRefEnv : Prog -> List String -> String -> List String -> Int -> List CClause -> <Mut> List String
 emitClausesRefEnv prog baseEnv name params arity clauses = match clauses
   [(CClause pats body)] =>
-    if allPlainParams pats then
+    -- the single-clause fast path skips the clause BLOCK (plain params need no test).
+    -- But a guard chain in the body desugars to `__fallthrough__`, which needs a block
+    -- to `br` to — so when the body contains one, fall back to the chain path (its
+    -- block wrapper + trailing `unreachable` give the fall-through a target).
+    if allPlainParams pats && not (exprHasFallthrough body) then
       let aliases = bindParamAliases pats params
       let env = map patName pats ++ baseEnv
       aliases ++ emitRefTail prog env arity body
     else emitClauseChainRefEnv prog baseEnv name params arity clauses
   _ => emitClauseChainRefEnv prog baseEnv name params arity clauses
+
+-- does this expression contain a `__fallthrough__` occurrence (bare CVar or the
+-- desugared `__fallthrough__ ()` CApp)?  A single-clause body with one needs a clause
+-- block to branch to; without one the fast path (no block) is safe.  Only descends
+-- the constructs a guard chain produces (CIf / CDecision arms / CLet / CBlock); a
+-- `__fallthrough__` never appears under a CLam (closures own their own clause scope).
+exprHasFallthrough : CExpr -> Bool
+exprHasFallthrough e = match e
+  CVar x _ => x == "__fallthrough__"
+  CApp f a => exprHasFallthrough f || exprHasFallthrough a
+  CIf c t f => exprHasFallthrough c || exprHasFallthrough t || exprHasFallthrough f
+  CLet _ _ e1 e2 => exprHasFallthrough e1 || exprHasFallthrough e2
+  CLetGroup _ body => exprHasFallthrough body
+  CBlock stmts => anyList stmtHasFallthrough stmts
+  CDecision scrut arms _ => exprHasFallthrough scrut || anyList (a => exprHasFallthrough (armBody a)) arms
+  _ => False
+
+stmtHasFallthrough : CStmt -> Bool
+stmtHasFallthrough (CSExpr e) = exprHasFallthrough e
+stmtHasFallthrough (CSLet _ _ e) = exprHasFallthrough e
 
 -- when the single clause's params are plain PVars, alias each to the synthetic
 -- positional wasm param ($a<i>): `local.get $a<i>; local.set $<srcname>`.  (The
@@ -1820,10 +1844,53 @@ emitClauseChainGo _ _ _ _ _ [] _ = ["unreachable"]
 emitClauseChainGo prog baseEnv name params arity ((CClause pats body)::rest) i =
   let clLabel = "$cl_" ++ name ++ "_" ++ intToString i
   let (tests, binds, env) = clausePatCodeEnv prog baseEnv pats params clLabel
+  -- A guard chain inside this clause's body desugars to `__fallthrough__` (the
+  -- "no arm matched, try the next clause" sentinel).  We REWRITE each such occurrence
+  -- in the body to a label-carrying sentinel `__ft__<clLabel>` BEFORE emitting, so the
+  -- emitter lowers it to `br <clLabel>` as a PURE function of the var name.  (A mutable
+  -- "current label" ref does NOT work here: this emitter builds the instruction list
+  -- lazily and forces the strings at final assembly, long after any set_ref/restore —
+  -- so the read would see a stale/default label.  Encoding the target in the node is
+  -- timing-independent.)  `br <clLabel>` exits this clause's block, landing on the next
+  -- clause (or the chain's trailing `unreachable` for the last clause).
+  let body2 = labelFallthrough body clLabel
   ["block " ++ clLabel]
-    ++ indent (tests ++ binds ++ emitRefTail prog env arity body)
+    ++ indent (tests ++ binds ++ emitRefTail prog env arity body2)
     ++ ["end"]
     ++ emitClauseChainGo prog baseEnv name params arity rest (i + 1)
+
+-- the prefix marking a fall-through sentinel CVar that carries its target block label:
+-- `__ft__$cl_foo_0` → `br $cl_foo_0`.  Produced by labelFallthrough, consumed by
+-- emitVarRef / emitAppRef / emitAppTail / emitRefTail.
+ftPrefix : String
+ftPrefix = "__ft__"
+
+-- rewrite every `__fallthrough__` occurrence in a clause body to the label-carrying
+-- sentinel `__ft__<label>`, so it lowers to `br <label>`.  Descends only the
+-- constructs a guard chain produces (CIf / CLet / CBlock / CApp / CDecision arms);
+-- does NOT enter a CLam (a closure owns its own clause scope and never contains a bare
+-- fall-through for THIS clause).
+labelFallthrough : CExpr -> String -> CExpr
+labelFallthrough e label = match e
+  CVar x r => if x == "__fallthrough__" then CVar (ftPrefix ++ label) r else e
+  CApp f a => CApp (labelFallthrough f label) (labelFallthrough a label)
+  CIf c t f => CIf (labelFallthrough c label) (labelFallthrough t label) (labelFallthrough f label)
+  CLet rf p e1 e2 => CLet rf p (labelFallthrough e1 label) (labelFallthrough e2 label)
+  CLetGroup binds b => CLetGroup binds (labelFallthrough b label)
+  CBlock stmts => CBlock (map (s => labelFallthroughStmt s label) stmts)
+  CDecision scrut arms tree => CDecision (labelFallthrough scrut label) (map (a => labelFallthroughArm a label) arms) tree
+  _ => e
+
+labelFallthroughStmt : CStmt -> String -> CStmt
+labelFallthroughStmt (CSExpr e) label = CSExpr (labelFallthrough e label)
+labelFallthroughStmt (CSLet rf p e) label = CSLet rf p (labelFallthrough e label)
+
+labelFallthroughArm : CArm -> String -> CArm
+labelFallthroughArm (CArm p gs b) label = CArm p (map (g => labelFallthroughGuard g label) gs) (labelFallthrough b label)
+
+labelFallthroughGuard : CGuard -> String -> CGuard
+labelFallthroughGuard (CGBool e) label = CGBool (labelFallthrough e label)
+labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 
 -- generate (tests, binds, env) for a clause's parameter patterns against the
 -- synthetic positional params.  A `br clLabel` on a failed test falls to the next
@@ -2350,8 +2417,40 @@ hexDigitW d =
 -- a top-level fn used as a VALUE → build its closure wrapper struct (code =
 -- $mdk_w_<f>, arity = its param count, env = []) so it can flow through a (ref eq)
 -- slot / be applied indirectly.
+-- a fall-through sentinel var → its lowering.  `__ft__<label>` (produced by
+-- labelFallthrough in a clause body) → `br <label>`, exiting the clause block to fall
+-- through to the next clause.  The bare `__fallthrough__` (NOT rewritten — appears only
+-- outside a clause block, e.g. a value-binding body or a context the typechecker proved
+-- exhaustive) → a trap stub `unreachable` (the WasmGC peer of llvm_emit's `call void
+-- @mdk_oob()`, EMITTER-GAPS.md E3).  PURE functions of the name — no mutable "current
+-- label" ref, which this lazily-assembled emitter cannot thread reliably (the strings
+-- are forced at final assembly, long after any set_ref).
+isFtSentinel : String -> Bool
+isFtSentinel x = x == "__fallthrough__" || startsWithStr x ftPrefix
+
+ftSentinelInstrs : String -> List String
+ftSentinelInstrs x =
+  if startsWithStr x ftPrefix then ["br " ++ dropPrefix x ftPrefix]
+  else ["unreachable"]
+
+emitFtSentinel : String -> Option (List String)
+emitFtSentinel x = if isFtSentinel x then Some (ftSentinelInstrs x) else None
+
+-- prefix test / drop (selfhost-local; no-stdlib).
+startsWithStr : String -> String -> Bool
+startsWithStr s p = stringLength s >= stringLength p && stringSlice 0 (stringLength p) s == p
+
+dropPrefix : String -> String -> String
+dropPrefix s p = stringSlice (stringLength p) (stringLength s) s
+
+-- a variable: local/global → get (already (ref eq)); a nullary ctor → its i31 tag;
 emitVarRef : Prog -> List String -> Int -> String -> <Mut> List String
-emitVarRef prog env d x =
+emitVarRef prog env d x = match emitFtSentinel x
+  Some instrs => instrs
+  None => emitVarRefPlain prog env d x
+
+emitVarRefPlain : Prog -> List String -> Int -> String -> <Mut> List String
+emitVarRefPlain prog env d x =
   if contains x env then ["local.get $" ++ gname x]
   else if contains x (progValNames prog) then ["global.get $" ++ gname x, "ref.as_non_null"]
   -- the Bool constructors used as VALUES (e.g. an `eq` impl body `… = True`) are
@@ -2563,7 +2662,11 @@ emitAppRef prog env d app =
   match hd
     CVar f0 _ =>
       let f = canonFn prog f0
-      if isCtor prog f then emitCtorConstruct prog env d f args
+      -- the desugared `__fallthrough__ ()` / `__ft__<label> ()` form: ignore the (unit)
+      -- arg, lower the sentinel (br to the clause label, or trap stub).  The bare-CVar
+      -- form is handled by emitVarRef; this catches the applied form guard chains make.
+      if isFtSentinel f0 then ftSentinelInstrs f0
+      else if isCtor prog f then emitCtorConstruct prog env d f args
       else if f == "Ref" then emitRefBoxNew prog env d args
       else if f == "set_ref" then emitRefBoxSet prog env d args
       else if isStrExternW f then emitStrExternRef prog env d f args
@@ -2879,7 +2982,10 @@ emitRefTail prog env arity e = match e
   CBlock stmts => emitBlockTail prog env arity stmts
   CDecision scrut arms tree => emitDecisionTail prog env arity scrut arms tree
   CApp f a => emitAppTail prog env arity (CApp f a)
-  CVar x _ => emitRefExpr prog env 0 e ++ ["return"]
+  -- a bare fall-through sentinel in tail position lowers to its sentinel instrs (a `br`
+  -- to the clause label, or a trap) — NOT value+return (the generic CVar arm would
+  -- append a dead `return` after an unconditional branch, leaving the stack ill-typed).
+  CVar x _ => if isFtSentinel x then ftSentinelInstrs x else emitRefExpr prog env 0 e ++ ["return"]
   other => emitRefExpr prog env 0 other ++ ["return"]
 
 -- a tail application: saturated direct known-fn → return_call; ctor → value+return;
@@ -2890,7 +2996,10 @@ emitAppTail prog env arity app =
   match hd
     CVar f0 _ =>
       let f = canonFn prog f0
-      if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
+      -- tail-position `__fallthrough__ ()` / `__ft__<label> ()`: lower the sentinel
+      -- (a `br`, NOT a `return` — control leaves the clause, not the function).
+      if isFtSentinel f0 then ftSentinelInstrs f0
+      else if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
       else if f == "Ref" || f == "set_ref" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
