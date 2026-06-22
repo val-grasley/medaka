@@ -84,6 +84,21 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   B1–B7 bootstrap stages). After VALIDATE_OK: run check_main under Node (host shim feeds
   runtime/core/source) + diff schemes vs the native `check_main` oracle = the self-host-of-the-front-end demo.
 
+**RUNTIME LAYERS (VALIDATE_OK reached — now run check_main under Node, peel miscompile layers):**
+- ✅ layer-1 `debugStringLit`/`debugCharLit` real escape runtime; ✅ layer-2 value-global init topo-sort
+  by eager deps; ✅ layer-3 list-`++` runtime-shape-dispatching `$mdk_append`.
+- ✅ **layer-4 (`f9c9bc3`)** — UTF-8 `cp_count` bug in `$mdk_io_result_to_str` (`wasm_preamble.mdk`):
+  rebuilt host readFile `$str` with `cp_count = byte_len`, so multibyte content (an em-dash in a
+  `runtime.mdk` comment) padded the decoded `Array Char` with trailing `\0` → stray codepoint-0 fell
+  through every lexer clause into `singleOp`'s panic → `unreachable`. Fixed by counting true UTF-8 lead
+  bytes (`(b & 0xC0) != 0x80`), mirroring `$mdk_chars_to_str`. The self-hosted **lexer now lexes
+  `runtime.mdk` (749 tokens) byte-identical to native.** Emitter-only → no fixpoint/seed.
+- 🟡 **layer-5 (NEXT)** — `RangeError: Maximum call stack size exceeded` in the lexer's non-tail
+  `scan → emit → scanLower → identEnd` recursion (also `support_char__isLower` on `core.mdk`).
+  Pre-existed layer-4. Genuine stack growth, NOT a mis-lowering. Fork: (a) make the scan/emit chain
+  tail-recursive so WasmGC `return_call` TCO applies (edits canonical `frontend/lexer.mdk` → IN-GRAPH,
+  fixpoint + seed, native too); (b) a WasmGC-side stack mitigation. Surface the fork before implementing.
+
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)
 

@@ -50,13 +50,26 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   on `\0` — uncarryable in an env var, collapsing multi-arg to one; now `' '`) → the `args()` bug noted
   below is RESOLVED. `check_main`: 3 args reach `withFiles`, check logic runs. (`377365f`, gates 130/6/13
   + VALIDATE_OK.)
-- **🟡 IN PROGRESS — runtime layer-4: a deeper "unreachable" trap during real check/typecheck
-  execution.** `check_main` runs partway then traps `unreachable` (the native oracle prints the full
-  inferred schemes; wasm gets partway). This is a distinct downstream layer — a `gap`/stub `unreachable`
-  reached when the real typechecker executes on the prelude (1784 `unreachable` instrs in the module,
-  mostly normal match-fallthroughs, so it needs a wasm runtime trace to pinpoint — e.g. bisect which
-  check sub-stage, or instrument `unreachable` sites). **The next frontier** toward `check_main`
-  byte-identical to native = the self-hosted-front-end-on-WasmGC demo.
+- **🏁 Runtime layer-4 FIXED (`f9c9bc3`) — the `singleOp` `unreachable` trap is gone; the self-hosted
+  LEXER now lexes `runtime.mdk` fully (749 tokens) byte-identical to the native oracle.** Root: a
+  UTF-8 codepoint-count bug in `$mdk_io_result_to_str` (`wasm_preamble.mdk`) — it rebuilt a `$str`
+  from the host readFile buffer with `cp_count = byte_len` (a "deliberate approximation"). But
+  `$mdk_str_to_chars` allocates its output `Array Char` to `cp_count` and the lexer reads
+  `arrayLength src` as the char count, so for multibyte UTF-8 (e.g. an em-dash `—` = 3 bytes / 1
+  codepoint in a `runtime.mdk` comment) the decoded array was padded with trailing `\0` chars → a
+  stray codepoint-0 fell through every lexer clause head into `singleOp`'s `panic` → `unreachable`.
+  Fixed by counting true UTF-8 lead bytes (`(b & 0xC0) != 0x80`) for `cp_count`, mirroring the peer
+  `$mdk_chars_to_str`. Emitter-only (`wasm_preamble.mdk`) → no fixpoint/seed. Gates 130/6/13 +
+  VALIDATE_OK, all re-verified on freshly-rebuilt binaries.
+- **🟡 NEXT — runtime layer-5: `RangeError: Maximum call stack size exceeded` in lexer recursion.**
+  After layer-4, `check_main` on the full prelude overflows V8's call stack in the lexer's non-tail
+  `scan → emit → scanLower → identEnd` token-list build (also `support_char__isLower` on `core.mdk`).
+  This **pre-existed** the layer-4 fix (observed on `core.mdk` before it). NOT a mis-lowered construct
+  — genuine stack growth from non-tail recursion (native has a deep C stack so it never overflows).
+  **DESIGN FORK for the next agent:** (a) restructure the lexer scan/emit chain to be
+  tail-recursive/accumulator-based so the WasmGC `return_call` TCO kicks in — but that edits canonical
+  `frontend/lexer.mdk` (IN-GRAPH → fixpoint + seed, affects the native build too), or (b) a
+  WasmGC-side stack mitigation. Surface this fork before implementing.
 - ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).
