@@ -47,12 +47,12 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   which module/global. **The next frontier:** fix it → `check_main` runs → diff its inferred schemes
   vs the native oracle = the self-hosted-front-end-on-WasmGC demo. Then back stages, then `medaka_cli`
   (needs `json` module + the deliberately-skipped runCommand/writeFile for `build`).
-- **HARNESS NOTE for the final byte-diff demo:** `test/wasm/run.js`'s `args` host import appears to NOT
-  split a multi-token `MDK_ARGS` into separate argv entries (parse_main got the whole
-  `"runtime.mdk core.mdk trivial.mdk"` string as ONE readFile path → ENOENT). The instantiate-phase
-  crashes the agents target are BEFORE args (so unaffected), but the eventual `check_main`-byte-identical
-  demo needs run.js to split MDK_ARGS correctly (or pass argv another way). Verify/fix run.js's arg
-  marshaling before the end-to-end demo.
+- **HARNESS NOTE for the final byte-diff demo:** `test/wasm/run.js` DOES split `MDK_ARGS` on spaces
+  into argv (line ~66) and has the full readFile/fileExists/getEnv/args byte-channel host imports. A
+  quick `parse_main` run got the whole arg string as one readFile path (ENOENT) — likely a per-entry
+  `main`-signature detail or the guest-side `args()` list marshaling, NOT a run.js bug. Re-verify with
+  `check_main`'s exact 3-arg `main` (`[runtime, core, target]`) when doing the end-to-end byte-diff
+  demo; the instantiate-phase crashes the agents target are BEFORE args, so unaffected.
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).
 - **METHODOLOGY notes from this arc:** (1) the per-binding census measures EMITTABILITY only — it is
