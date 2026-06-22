@@ -19,11 +19,18 @@
 # independently asserts ZERO referenced-but-undefined `$mdk_w_*` funcs.
 #
 # *NOTE on validate: `parse` succeeding (all funcs defined) is the LINKAGE headline.
-# A residual deeper class (a lifted user lambda whose source param is literally named
-# `args`, colliding with the $codety ABI's `$args` param → "duplicate local identifier")
-# can still fail validate; that is a SEPARATE lambda-lift naming bug, not a linkage gap.
+# The eta-expansion class (a point-free constrained fn `elem a = fold g False` whose
+# under-applied CMethod body underflowed the dispatch call) and the ctor-as-VALUE class
+# (`map PVar xs` — an arity>0 ctor passed as a function needs an eta-CLOSURE, not a
+# malformed partial struct.new) are both FIXED (wasm_emit etaSaturateFnClause +
+# emitCtorEtaClosure).  A residual deeper class remains: a DECISION-TREE match that
+# discriminates two same-tag ctors by a STRING field (`TCon "Float"` vs `TCon "Int"`)
+# wraps an arm in `if (result (ref eq))` then appends a dead `br $swd1` that leaves the
+# arm's result value on the stack at the switch-default block end → "values remaining on
+# stack at end of block" (func 1377, types_typecheck__setNumlitFloatsGo).  That is a
+# SEPARATE decision-tree-emission bug, not a linkage/eta gap.
 # So this gate's hard assertion is PARSE + zero-missing-defs; validate is reported but
-# NOT fatal (toggle with REQUIRE_VALIDATE=1 once the lambda-lift collision is fixed).
+# NOT fatal (toggle with REQUIRE_VALIDATE=1 once the string-discriminated-arm bug is fixed).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
