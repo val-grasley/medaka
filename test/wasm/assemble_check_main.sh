@@ -23,14 +23,17 @@
 # under-applied CMethod body underflowed the dispatch call) and the ctor-as-VALUE class
 # (`map PVar xs` — an arity>0 ctor passed as a function needs an eta-CLOSURE, not a
 # malformed partial struct.new) are both FIXED (wasm_emit etaSaturateFnClause +
-# emitCtorEtaClosure).  A residual deeper class remains: a DECISION-TREE match that
-# discriminates two same-tag ctors by a STRING field (`TCon "Float"` vs `TCon "Int"`)
-# wraps an arm in `if (result (ref eq))` then appends a dead `br $swd1` that leaves the
-# arm's result value on the stack at the switch-default block end → "values remaining on
-# stack at end of block" (func 1377, types_typecheck__setNumlitFloatsGo).  That is a
-# SEPARATE decision-tree-emission bug, not a linkage/eta gap.
-# So this gate's hard assertion is PARSE + zero-missing-defs; validate is reported but
-# NOT fatal (toggle with REQUIRE_VALIDATE=1 once the string-discriminated-arm bug is fixed).
+# emitCtorEtaClosure).  The decision-tree string-discriminated-arm class is ALSO FIXED:
+# a match that discriminates two same-tag ctors by a STRING field (`TCon "Float"` vs
+# `TCon "Int"`) lowered the nested literal switch as `if (result (ref eq))`.  When that
+# switch sits in a constructor-tower SLOT (not at the outer `$dec` position) the phantom
+# `(result (ref eq))` left a value on the stack at the untyped slot `end` → "values
+# remaining on stack at end of block" (func 1377, types_typecheck__setNumlitFloatsGo).
+# Fix: `emitLitSwitchRef` now emits a NO-RESULT `if` (every decision-tree path is already
+# `br`-terminated, so no fall-through value), matching the tail-mode `emitLitSwitchTail`.
+# With that fixed the WHOLE front-end now VALIDATES.
+# So this gate's hard assertion is PARSE + zero-missing-defs + VALIDATE (validate now
+# fatal by default; set REQUIRE_VALIDATE=0 to demote it back to a report).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -72,12 +75,12 @@ if ! wasm-tools parse "$WAT" -o "$WASM" 2>/tmp/assemble_check_main.parseerr; the
 fi
 echo "ASSEMBLE_OK"
 
-# ── wasm-tools validate: reported, fatal only under REQUIRE_VALIDATE=1 ────────────
+# ── wasm-tools validate: fatal by default (REQUIRE_VALIDATE=0 demotes to a report) ──
 if wasm-tools validate "$WASM" 2>/tmp/assemble_check_main.valerr; then
   echo "VALIDATE_OK"
 else
-  echo "validate: FAILED (separate deeper class — see header; not a linkage failure)"
+  echo "validate: FAILED — see the error below + the script header for the residual class"
   sed 's/^/    /' /tmp/assemble_check_main.valerr | head -4
-  if [ "${REQUIRE_VALIDATE:-0}" = "1" ]; then exit 1; fi
+  if [ "${REQUIRE_VALIDATE:-1}" = "1" ]; then exit 1; fi
 fi
 exit 0
