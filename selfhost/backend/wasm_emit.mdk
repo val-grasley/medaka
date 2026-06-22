@@ -4195,8 +4195,15 @@ emitLitSwitchRef : Prog -> List String -> Int -> String -> List String -> List S
 emitLitSwitchRef prog env d decLabel root foc rest arms [] dft =
   emitTreeRef prog env d decLabel root rest arms dft
 emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft =
+  -- W6 (validate fix): a NO-RESULT `if`.  Every decision-tree path is `br`-terminated
+  -- (leaves `br decLabel`, CTFail → unreachable, the else-chain recurses to another
+  -- br-terminated `if` or the br-terminated `dft`), so the `if` never falls through
+  -- with a value.  A `(result (ref eq))` form leaves a PHANTOM `(ref eq)` on the stack
+  -- when this switch is NESTED inside a con-tower slot — at the slot's untyped `end`
+  -- that strands the value ("values remaining on stack at end of block").  No result
+  -- type ⇒ nothing stranded.
   (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"])
-    ++ ["if (result (ref eq))"]
+    ++ ["if"]
     ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
     ++ ["else"]
     ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
@@ -4205,7 +4212,7 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k
 -- `PLit (LChar)`); compare the i31 against the codepoint constant.
 emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft =
   (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"])
-    ++ ["if (result (ref eq))"]
+    ++ ["if"]
     ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
     ++ ["else"]
     ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
@@ -4217,7 +4224,7 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LStrin
   let _ = set_ref useStrLeafRef True
   let _ = set_ref useStrRef True
   (foc ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ ["call $mdk_str_compare", "ref.cast (ref i31)", "i31.get_u", "i32.const 1", "i32.eq"])
-    ++ ["if (result (ref eq))"]
+    ++ ["if"]
     ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
     ++ ["else"]
     ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)

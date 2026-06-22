@@ -1,0 +1,17 @@
+-- Validate regression (func 1377 class): a decision tree where a NESTED string-literal
+-- switch sits in a constructor-tower SLOT.  The outer match is a con-switch (br_table
+-- tower) over Ty; the TCon arm binds a string field then an INNER match discriminates
+-- two SAME-TAG ctors by the STRING literal ("Float" vs "Int").  The inner literal switch
+-- must lower as a NO-RESULT `if` — a `(result (ref eq))` form leaves a phantom value on
+-- the stack at the untyped tower-slot `end` → "values remaining on stack at end of block".
+data Ty = TCon String | TVar Int | TArr Ty Ty
+
+classify t = match t
+  TVar n => n
+  TArr _ _ => 99
+  TCon name => match name
+    "Float" => 1
+    "Int" => 2
+    _ => 0
+
+main = classify (TCon "Int") + classify (TCon "Float") + classify (TVar 7) + classify (TArr (TVar 1) (TVar 2))
