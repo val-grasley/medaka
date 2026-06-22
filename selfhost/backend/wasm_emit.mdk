@@ -1289,7 +1289,7 @@ oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
 
 emitScalarInit : List String -> List String -> List CBind -> <Mut> List String
 emitScalarInit fnNames valNames groups =
-  let valBinds = filterList isValBind groups
+  let valBinds = topoSortValBinds (filterList isValBind groups)
   let valInit = flatMap (emitScalarValInit fnNames valNames) valBinds
   let mainLines = emitScalarMain fnNames valNames groups
   let valLocals = flatMap collectBindLocals valBinds
@@ -1690,9 +1690,128 @@ emitReservedCtorStruct ty ctor =
 
 -- ── ref-mode globals init + main ─────────────────────────────────────────────
 
+-- Value globals (nullary top-level bindings) are eagerly initialized in `$__init`
+-- in the order `valBinds` arrives.  But a value binding may REFERENCE another value
+-- global (`topA = wrap topB`), and a forward reference reads that other global's
+-- slot before its `global.set` runs → it is still `ref.null eq` → a `ref.as_non_null`
+-- in the consumer traps "dereferencing a null pointer" at instantiate.  The parser
+-- combinator ladder (`parsePipe = chainl1 parseCompose …`) is exactly this shape, a
+-- chain of forward-referencing nullary value globals.  Topologically sort the value
+-- binds so every global is initialized AFTER the value globals it reads EAGERLY.
+--
+-- CRUCIAL: the dependency edge is only an EAGER reference — a name NOT inside a
+-- lambda/closure body.  A `CLam`/`do`-closure captures a global BY REFERENCE and
+-- reads it only when later CALLED (at parse time, long after every global is set), so
+-- a reference appearing solely inside a closure is NOT an init-order dependency.
+-- Counting it would forge FALSE cycles between mutually-recursive combinators (the
+-- whole parser ladder: `parseAtom` reaches `parseExpr` reaches `parseAtom`, but only
+-- THROUGH their `do`-closures), and the cycle fallback would then emit them in source
+-- order, leaving an eager forward ref null again — which is exactly why a naive
+-- free-vars sort (descending lambdas) did NOT fix `parse ""`.  This mirrors the LLVM
+-- backend's `eagerVars`/`orderedValBinds` (slice E1b), the proven solution.
+-- A genuine EAGER value cycle (mutual recursion through nullary globals with no
+-- intervening closure — none arise in practice) keeps source order via the back-edge
+-- guard, the pre-existing behaviour.
+topoSortValBinds : List CBind -> <Mut> List CBind
+topoSortValBinds binds =
+  let names = map bindName binds
+  let (_, ordered) = topoValGo binds names binds [] []
+  ordered
+
+-- DFS post-order: visit each binding's value-global EAGER deps first, appending the
+-- binding after them.  `visiting` guards cycles (a back-edge is skipped).
+topoValGo : List CBind -> List String -> List CBind -> List String -> List CBind -> <Mut> (List String, List CBind)
+topoValGo _ _ [] done acc = (done, acc)
+topoValGo all names (b::rest) done acc =
+  let (done2, acc2) = topoValVisit all names b done acc []
+  topoValGo all names rest done2 acc2
+
+topoValVisit : List CBind -> List String -> CBind -> List String -> List CBind -> List String -> <Mut> (List String, List CBind)
+topoValVisit all names b done acc visiting
+  | contains (bindName b) done = (done, acc)
+  | contains (bindName b) visiting = (done, acc)
+  | otherwise =
+    let deps = filterList (n => contains n names) (dedupKeep (bindEagerVars b))
+    let (done2, acc2) = topoValVisitDeps all names deps done acc (bindName b :: visiting)
+    (bindName b :: done2, acc2 ++ [b])
+
+topoValVisitDeps : List CBind -> List String -> List String -> List String -> List CBind -> List String -> <Mut> (List String, List CBind)
+topoValVisitDeps _ _ [] done acc _ = (done, acc)
+topoValVisitDeps all names (d::rest) done acc visiting = match findBindByName d all
+  Some db =>
+    let (done2, acc2) = topoValVisit all names db done acc visiting
+    topoValVisitDeps all names rest done2 acc2 visiting
+  None => topoValVisitDeps all names rest done acc visiting
+
+findBindByName : String -> List CBind -> Option CBind
+findBindByName _ [] = None
+findBindByName name (b::rest) = if bindName b == name then Some b else findBindByName name rest
+
+-- the EAGER free vars of a value binding's nullary rhs (does NOT descend lambdas).
+bindEagerVars : CBind -> <Mut> List String
+bindEagerVars (CBind _ [(CClause [] body)]) = eagerVars [] body
+bindEagerVars _ = []
+
+-- free CVar names evaluated EAGERLY in `body`: like freeVarsExpr but a CLam body is
+-- NOT descended (its refs are deferred to call time).  Mirrors llvm_emit.eagerVars.
+eagerVars : List String -> CExpr -> <Mut> List String
+eagerVars _ (CLam _ _) = []
+eagerVars b (CVar x _) = if contains x b then [] else [x]
+eagerVars _ (CLit _) = []
+eagerVars b (CApp f a) = eagerVars b f ++ eagerVars b a
+eagerVars b (CLet recF pat e1 e2) =
+  let b2 = patVars pat ++ b
+  let fe1 = if recF then eagerVars b2 e1 else eagerVars b e1
+  fe1 ++ eagerVars b2 e2
+eagerVars b (CLetGroup binds body) =
+  let b2 = map lgBindName binds ++ b
+  flatMap (eagerVarsClause b2) binds ++ eagerVars b2 body
+eagerVars b (CBlock stmts) = eagerVarsStmts b stmts
+eagerVars b (CIf c t f) = eagerVars b c ++ eagerVars b t ++ eagerVars b f
+eagerVars b (CBinPrim _ l r) = eagerVars b l ++ eagerVars b r
+eagerVars b (CUnOp _ x) = eagerVars b x
+eagerVars b (CMatch scrut arms) = eagerVars b scrut ++ flatMap (eagerVarsArm b) arms
+eagerVars b (CDecision scrut arms _) = eagerVars b scrut ++ flatMap (eagerVarsArm b) arms
+eagerVars b (CTuple es) = flatMap (eagerVars b) es
+eagerVars b (CList es) = flatMap (eagerVars b) es
+eagerVars b (CArray es) = flatMap (eagerVars b) es
+eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CRecord _ fields) = flatMap (eagerVarsField b) fields
+eagerVars b (CFieldAccess ex _) = eagerVars b ex
+eagerVars b (CRecordUpdate base updates) = eagerVars b base ++ flatMap (eagerVarsField b) updates
+eagerVars b (CVariantUpdate _ base updates) = eagerVars b base ++ flatMap (eagerVarsField b) updates
+eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CSlice a lo hi _) = eagerVars b a ++ eagerVars b lo ++ eagerVars b hi
+eagerVars _ _ = []
+
+eagerVarsClause : List String -> CBind -> <Mut> List String
+eagerVarsClause b (CBind _ clauses) = flatMap (cl => eagerVarsClauseOne b cl) clauses
+
+eagerVarsClauseOne : List String -> CClause -> <Mut> List String
+eagerVarsClauseOne b (CClause pats body) = eagerVars (flatMap patVars pats ++ b) body
+
+eagerVarsArm : List String -> CArm -> <Mut> List String
+eagerVarsArm b (CArm pat guards body) =
+  let b2 = patVars pat ++ b
+  flatMap (eagerVarsGuard b2) guards ++ eagerVars b2 body
+
+eagerVarsGuard : List String -> CGuard -> <Mut> List String
+eagerVarsGuard b (CGBool g) = eagerVars b g
+eagerVarsGuard b (CGBind _ e) = eagerVars b e
+
+eagerVarsField : List String -> CField -> <Mut> List String
+eagerVarsField b (CField _ e) = eagerVars b e
+
+eagerVarsStmts : List String -> List CStmt -> <Mut> List String
+eagerVarsStmts _ [] = []
+eagerVarsStmts b ((CSExpr e)::rest) = eagerVars b e ++ eagerVarsStmts b rest
+eagerVarsStmts b ((CSLet _ pat e)::rest) = eagerVars b e ++ eagerVarsStmts (patVars pat ++ b) rest
+eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
+
 emitRefInit : Prog -> List CBind -> <Mut> List String
 emitRefInit prog groups =
-  let valBinds = filterList isValBind groups
+  let valBinds = topoSortValBinds (filterList isValBind groups)
   let valInit = flatMap (emitRefValInit prog) valBinds
   let mainLines = emitRefMain prog groups
   let valLocals = flatMap collectBindLocals valBinds
