@@ -31,6 +31,7 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{
   resolveProgram,
   ppResError,
+  resErrorLoc,
   resolveModule,
   ModuleExports,
 }
@@ -114,7 +115,7 @@ analyzeFrom runtimeSrc coreSrc raw =
   let runtimeP = desugar (parse runtimeSrc)
   let coreP = desugar (parse coreSrc)
   let resErrs = resolveProgram runtimeP coreP desugared
-  let resDiags = map (e => Diag SevError (ppResError e) None) resErrs
+  let resDiags = map (e => Diag SevError (ppResError e) (resErrorLoc e)) resErrs
   let _ = setCoherenceUserDecls desugared
   let tcDiags = match resErrs
     [] =>
@@ -357,7 +358,7 @@ resolvePass _ _ _ [] buckets = buckets
 resolvePass rt core known ((mid, path, prog)::rest) buckets =
   let desugared = desugar prog
   let (exp, errs) = resolveModule rt core known mid desugared
-  let diags = map (e => Diag SevError (ppResError e) None) errs
+  let diags = map (e => Diag SevError (ppResError e) (resErrorLoc e)) errs
   resolvePass rt core (exp :: known) rest (pushDiags path diags buckets)
 
 -- ── typecheck pass (per module, ISOLATED) ───────────────────────────────────
