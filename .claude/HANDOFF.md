@@ -130,13 +130,21 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   nested `ConNamed` cast was unconditional and trapped on a `ConPos` sibling. Fix (`wasm_emit.mdk`):
   descend each field with `patTestBind` (test+bind) via `patTestBindCon`, mirroring `PCons`/`PTuple`/`PList`.
   Gate `w_clause_nested_ctor.mdk`, `diff_wasm` 135.
-- **🟡 NEXT — runtime layer-11: `illegal cast` in `types_typecheck__unifyN`** (`typecheck.mdk:2021`, via
-  `inferMemberClauses→inferMembers→processSCC→checkProgramSeeded`). Same class (wrong-shape `ref.cast`).
-  `unifyN` is a 2-arg match over the `Mono` type ctors (`TVar c`/`TCon`/`TApp`/`TFun … row …`/`TTuple`/
-  `TEff`) — likely the multi-arg synthetic-tuple scrutinee dispatch or a `Mono`-ctor field extract (`TVar`'s
-  `Ref Tyvar`, etc.). Diagnose the trapping cast — emitter-only `wasm_emit.mdk`. The native oracle COMPLETES
-  on the input → typecheck is the last stage; closing its cast layers should reach a running self-hosted
-  front-end. Faithful run.js trace.
+- **🏁 Runtime layer-11 CLOSED (`9095462`, emitter-only) — synthetic-param/clause-binder name collision;
+  `check_main` runs past unification into application inference.** BROAD fix: the multi-clause ABI named
+  positional params `$a0/$a1/…` (`synthParams`), but a clause-head pattern var spelled `a1` emitted
+  `local.set $a1` and CLOBBERED the second arg's local before it was read → `unifyN`'s `TFun` clause cast
+  field-1-of-arg1 to `$C_…TFun` and trapped (TApp had the same latent bug). Fix (`wasm_emit.mdk`):
+  `synthParams` emits reserved `$__wparg<i>` + `gname` escapes any user `__wparg<digits>` → distinct from
+  every clause-bound var. Gate `clause_param_name_collision.mdk`, `diff_wasm` 136.
+- **🟡 NEXT — runtime layer-12: `unreachable` in `types_typecheck__spineFirstArg`** (`typecheck.mdk:645`,
+  via `inferApp→inferAppExpr→inferClauseEff→inferMemberClauses→processSCC`). NEW class (NOT a cast): the
+  clause-chain fallthrough sentinel (`unreachable`) firing. `spineFirstArg` matches `ELoc`/`EDoOrigin`/
+  `EApp`/**`_ => None`** — it HAS a wildcard catch-all, so `_` should always match; `unreachable` firing
+  means the emitter **dropped/mis-emitted the wildcard catch-all clause** OR mis-computed a ctor
+  discriminant (a non-matching `Expr` like `EVar` should fall to `_`, not trap). Likely a BROAD clause-chain
+  bug (any fn with a `_` catch-all after ctor clauses). Diagnose — emitter-only `wasm_emit.mdk`. Native
+  oracle COMPLETES → still in the last stage (typecheck). Faithful run.js trace.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
