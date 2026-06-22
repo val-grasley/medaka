@@ -221,9 +221,13 @@ cjWholeDocRange : String -> Json
 cjWholeDocRange src = cjRange 0 0 (cjCountLines src) 0
 
 -- Map an Option Loc to a range (mirror of rangeOfLoc in lsp.mdk).
+-- A `None` loc renders the oracle's dummy range {0,0}-{0,0} (lib/diagnostics.ml's
+-- `loc_or_dummy` → `dummy_loc` = line 1 col 0 → 0-based {0,0}), NOT a whole-doc
+-- span — so resolve / build-phase errors with no node span (Stage B) match the
+-- oracle byte-for-byte.
 cjRangeOfLoc : String -> Option Loc -> Json
 cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
-cjRangeOfLoc src None = cjWholeDocRange src
+cjRangeOfLoc src None = cjRange 0 0 0 0
 
 -- Severity code: Error=1, Warning=2.
 cjSevCode : Severity -> Int

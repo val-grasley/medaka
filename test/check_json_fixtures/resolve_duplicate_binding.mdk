@@ -1,0 +1,4 @@
+f x = x
+g = 1
+f y = y
+main = 0
