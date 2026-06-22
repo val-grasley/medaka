@@ -1129,16 +1129,42 @@ scanExprValueUses fnNames fnArs ctorArs e = match e
   CIf c t f => scanExprValueUses fnNames fnArs ctorArs c ++ scanExprValueUses fnNames fnArs ctorArs t ++ scanExprValueUses fnNames fnArs ctorArs f
   CLet _ _ a b => scanExprValueUses fnNames fnArs ctorArs a ++ scanExprValueUses fnNames fnArs ctorArs b
   CBlock stmts => flatMap (s => scanStmtValueUses fnNames fnArs ctorArs s) stmts
-  CDecision scrut arms _ => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
-  CMatch scrut arms => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
+  CDecision scrut arms _ => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanArmValueUses fnNames fnArs ctorArs a) arms
+  CMatch scrut arms => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanArmValueUses fnNames fnArs ctorArs a) arms
   CLetGroup binds b =>
     flatMap (bd => scanBindValueUses fnNames fnArs ctorArs bd) binds
       ++ scanExprValueUses fnNames fnArs ctorArs b
+  -- Composite arms emitVarRef descends into at emit time — each can hold a fn-VALUE
+  -- use (`map (mapIfaceMethod f) ms` lives in a CRecordUpdate; `map (substField s) fs`
+  -- in a CTuple; `flatMap dataArity prog` in a CRecord field).  Missing these here
+  -- under-counted fnsUsedAsValuesRef → the closure wrapper `$mdk_w_<f>` was referenced
+  -- (ref.func emitted) but never DEFINED → "unknown func" at assemble.
+  CTuple xs => flatMap (scanExprValueUses fnNames fnArs ctorArs) xs
+  CList xs => flatMap (scanExprValueUses fnNames fnArs ctorArs) xs
+  CArray xs => flatMap (scanExprValueUses fnNames fnArs ctorArs) xs
+  CRecord _ fs => flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
+  CFieldAccess r _ => scanExprValueUses fnNames fnArs ctorArs r
+  CRecordUpdate r fs => scanExprValueUses fnNames fnArs ctorArs r ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
+  CVariantUpdate _ r fs => scanExprValueUses fnNames fnArs ctorArs r ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
+  CRangeList lo hi _ => scanExprValueUses fnNames fnArs ctorArs lo ++ scanExprValueUses fnNames fnArs ctorArs hi
+  CRangeArray lo hi _ => scanExprValueUses fnNames fnArs ctorArs lo ++ scanExprValueUses fnNames fnArs ctorArs hi
   _ => []
+
+-- scan an arm's guards (refutable `Pat <- e` / boolean `if e`) AND its body — a
+-- guard scrutinee can carry a fn-value use just like the body.
+scanArmValueUses : List String -> List (String, Int) -> List (String, Int) -> CArm -> List String
+scanArmValueUses fnNames fnArs ctorArs (CArm _ guards body) =
+  flatMap (g => scanGuardValueUses fnNames fnArs ctorArs g) guards
+    ++ scanExprValueUses fnNames fnArs ctorArs body
+
+scanGuardValueUses : List String -> List (String, Int) -> List (String, Int) -> CGuard -> List String
+scanGuardValueUses fnNames fnArs ctorArs (CGBool e) = scanExprValueUses fnNames fnArs ctorArs e
+scanGuardValueUses fnNames fnArs ctorArs (CGBind _ e) = scanExprValueUses fnNames fnArs ctorArs e
 
 scanStmtValueUses : List String -> List (String, Int) -> List (String, Int) -> CStmt -> List String
 scanStmtValueUses fnNames fnArs ctorArs (CSExpr e) = scanExprValueUses fnNames fnArs ctorArs e
 scanStmtValueUses fnNames fnArs ctorArs (CSLet _ _ e) = scanExprValueUses fnNames fnArs ctorArs e
+scanStmtValueUses fnNames fnArs ctorArs (CSLetElse _ e f) = scanExprValueUses fnNames fnArs ctorArs e ++ scanExprValueUses fnNames fnArs ctorArs f
 scanStmtValueUses _ _ _ _ = []
 
 clauseUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CClause -> Bool
@@ -4640,6 +4666,15 @@ indent : List String -> List String
 indent lines = map (l => "    " ++ l) lines
 
 gname : String -> String
+-- A user identifier that is LITERALLY one of the codety ABI param names (`$self` /
+-- `$args`, emitted as `(param ...)` on every lifted lambda / wrapper / extern-eta)
+-- would collide with that param when it also becomes a `(local ...)` in the same body
+-- → wasm-tools "duplicate local identifier".  Escape just those two reserved words so
+-- the user var renders distinctly; consistent here means decl + local.get + local.set
+-- (all routed through gname) stay in agreement.  Top-level fn/global names also flow
+-- through gname, but a user binding named `self`/`args` is equally safe to rename there.
+gname "self" = "u__self"
+gname "args" = "u__args"
 gname n = n
 
 notIn : List String -> String -> Bool
