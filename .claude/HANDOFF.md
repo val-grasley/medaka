@@ -7,6 +7,43 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — Effect-and-capability conformance roadmap substantially CLOSED (2026-06-21). `main` = `9cc7c9f`
+
+**The effect/capability conformance roadmap (`EFFECTS-CONFORMANCE-ROADMAP.md`, audit
+`EFFECTS-CONFORMANCE-AUDIT.md`, spec `EFFECTS-SEMANTICS.md`) is substantially CLOSED — E1·E2·E3
+fully closed, E4 native-done, E5 standing.** Authoritative status: the roadmap's "✅ Workstream
+status" block + memory `project_effects_semantics_spec`. Every landing was native-canonical,
+reproduced on the binary, fixpoint-gated (C3a/C3b YES), and merged; seed re-minted (`9cc7c9f`,
+`bootstrap_from_seed` PASS).
+
+- **WS-1a/1b/1c** (E1/E6 capability manifest) — `medaka check-policy` ported to the native CLI
+  (`f9abda9`), parameter-level policy compare via domain `dsub` (`a5b057a`), and `medaka manifest`
+  → TOML `[package.capabilities]` (`41509f6`). The wedge is now real on the canonical binary.
+- **WS-2** (E3 α precision, `98bf22b`, **both compilers** in lockstep) — α scope-seeding: enclosing
+  function-body `let`s thread into the known-prefix analysis; A4/outer reject→accept,
+  computed/helper-laundered stay ⊤ (sound, intraprocedural-only by design).
+- **WS-3** (E2 `Set` domain, `5a1d215`, native-only) + **WS-4** (E2 `Product`/structured Net,
+  `b948ff3`, native-only) — `Set` (`<L {a,b}>`, ⊑=⊆, card-cap 16) and `Product`
+  (`<Net Host="…" Method={…}>`, opt-in `effect Net Product`, pointwise lattice, soundness-critical
+  `dsubN` axis-defaulting-to-⊤). Design banked in `WS-4-DESIGN.md`. **Abstraction held: no domain
+  add ever touched `unify_row`/escape/manifest-extractor/AST.**
+- **WS-3b** (E4 Env/Exec, `2188e6a`) — domain-directed inferred-hole fill landed (Env=Set,
+  Exec=Prefix); the **builtin-extern flip in `stdlib/runtime.mdk` is the ONE deferred item**,
+  blocked on the frozen OCaml oracle (registers Env/Exec atomic + reads the *embedded* runtime), so
+  it rides the `lib/`-removal soak tail and lands with zero further native work.
+- **OPEN follow-ups (both by design, neither urgent):** (a) the WS-3b shared-runtime flip
+  (soak-tail). (b) **WS-5** extern-row assurance — a standing review discipline (the extern catalog
+  is the trusted base), not a code task. Also downstream: Phase 146b parameterized-effect work
+  (CAPABILITY-EFFECTS §6a).
+- **METHODOLOGY notes from this arc:** (1) every domain add stayed native-only *except* WS-2 (an
+  inference change to existing syntax → had to land in BOTH compilers or the diff gates diverge);
+  new-syntax domains (Set/Product) are native-only because the frozen oracle is slated for removal.
+  (2) **Editing `stdlib/runtime.mdk` stale-bakes the OCaml oracle** until `dune build bin/main.exe`
+  regenerates `lib/stdlib_content.ml` — this is exactly why the WS-3b builtin-extern flip can't land
+  while `lib/` lives. (3) The new gates `test/effect_set_domain.sh` (5), `test/effect_param_domain.sh`
+  (6), `test/effect_product_domain.sh` (8), `test/diff_selfhost_check_policy.sh` (4+7), and
+  `test/manifest_emit.sh` (6) are the effects canary set — keep them green.
+
 ## RESUME — Dict-passing conformance roadmap CLOSED (2026-06-21). `main` = `5d5bd08`
 
 **The dict-passing conformance roadmap (`DICT-CONFORMANCE-ROADMAP.md`, audit `DICT-CONFORMANCE-AUDIT.md`,

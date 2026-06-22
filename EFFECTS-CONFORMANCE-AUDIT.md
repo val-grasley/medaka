@@ -1,5 +1,19 @@
 # Effect-and-Capability Conformance Audit
 
+> **⚠️ STATUS UPDATE (2026-06-21, `main = 9cc7c9f`): the gaps this audit found have been
+> substantially CLOSED.** This document is the original point-in-time findings snapshot
+> (`HEAD = bb0bf8d`) — kept as the historical record; it is NOT rewritten. Current state:
+> **E1** (capability manifest unrealized — `check-policy` OCaml-only + label-granularity,
+> probe P11) → **CLOSED** by WS-1a/1b/1c (`medaka check-policy` native + parameter-level +
+> `medaka manifest` TOML). **E2** (only Unit+Prefix domains) → **CLOSED** by WS-3 (`Set`) +
+> WS-4 (`Product`/structured Net). **E3** (α over-rejects outer-body lets) → **CLOSED** by
+> WS-2 (scope-seeding, both compilers). **E4** (only Net/FileRead/FileWrite parameterized) →
+> native machinery DONE (WS-3b); the builtin-extern flip rides the `lib/`-removal soak tail.
+> **E5** (extern-row trust boundary) → standing discipline, not closeable. See
+> [`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md) §"Workstream status"
+> for the authoritative current state. The probe results below describe the binary *as it
+> was at the audit*, not as it is now.
+
 **Status:** audit (findings). **Target spec:**
 [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) (theory-first, *idealized*, written
 without conforming to the implementation). **Audited tree:** `HEAD = bb0bf8d`.

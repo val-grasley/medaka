@@ -10,9 +10,10 @@
 --
 -- Stdlib paths (runtime.mdk / core.mdk) resolve from MEDAKA_ROOT, mirroring
 -- selfhost/build_cmd.mdk's envOr — selfhost has no getcwd/executable_name
--- extern.  Every other subcommand (repl/lsp + bench/doc/
--- check-policy/etc.) prints "not yet in native CLI" and exits 1; those land in
--- later slices (run/build = Slice 2, test = Slice 3, repl/lsp = Slice 4).
+-- extern.  The implemented subcommands are exactly the dispatch arms below
+-- (check/fmt/new/build/run/test/repl/lsp/doc/check-policy/manifest); any other
+-- subcommand falls through to the catch-all, which prints "not yet in native
+-- CLI" and exits 1.
 
 import tools.check.{
   runCheck,
