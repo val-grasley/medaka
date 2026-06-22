@@ -373,17 +373,16 @@ here before assuming `selfhost/` can parse a construct (AGENTS.md points here).
 The differential `test/diff_selfhost_parse*` / `diff_selfhost_check*` gates only
 cover the corpus; these are known holes outside it.
 
-- **`let … in` as an indented clause body.** A clause whose head is on its own
-  line with the body on the next indented line, where that body is a `let … in`
-  expression — e.g.
-  ```
-  f x =
-    let go n = if n == 0 then 0 else go (n - 1) in go x
-  ```
-  Oracle **accepts**; selfhost **rejects** (`parser.mdk` parse error). Workaround:
-  put the whole clause on one line (`f x = let … in …`). Verified 2026-06-09 (T2).
-  (The general "expression RHS cannot wrap to a second indented line" rule —
-  SYNTAX.md — is a *language* rule both honor; this is a selfhost-only divergence.)
+- **Leading-`|` `data` declarations.** Native parser accepts `data T =⏎ | A | B`;
+  the frozen OCaml parser rejects them. **Native-only by design; oracle frozen.**
+  Auto-resolves at `lib/` removal (native becomes sole ground truth). See
+  `LAYOUT-SEMANTICS.md` §9 (AUDIT P-DATAPIPE). Design note: own-line `in` (the `in`
+  keyword leading a less/equally-indented line after a `let`) is **rejected by both
+  parsers by design** — no `parse-error(t)` feedback loop; see `LAYOUT-SEMANTICS.md`
+  §9/§11 and `no-parser-layout-feedback` decision memory.
+
+- ✅ **`let … in` as an indented clause body. CLOSED (both compilers, 2026-06-21).**
+  Previously selfhost-only; now both accept e.g. `f x =⏎  let go n = … in go x`.
 
 - ✅ **Lexical-addressing perf hook — eval-consumption half. CLOSED (non-win on
   the tree-walker; 2026-06-05).** Wired `annotateProgram` into the single-file eval
