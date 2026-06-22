@@ -1,0 +1,8 @@
+-- W5 nested requires-dict CELL: `debug` of a list of tuples dispatches to
+-- `impl Debug (List a) requires Debug a` with `a = (Int, String)`.  The forwarded
+-- element dict is `Debug (Int, String)` = `RKey __tuple2__ [Debug Int, Debug String]`
+-- — a NESTED requires-dict (a tuple-impl witness that ITSELF carries two sub-dicts).
+-- Before the nested-dict-cell port `routeWitness` GAPPED on `RKey tag [reqs]`; with the
+-- $dictcell rep it builds a cell (tag + a $dictarr of the two element witnesses) and the
+-- `Debug (List a)` impl recurses into it.  Output: the debug rendering of the list.
+main = println (debug [(1, "a"), (2, "b")])

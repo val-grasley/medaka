@@ -1661,7 +1661,14 @@ emitTypeSection prog =
   ["  ;; ── §3 type section (rec group) — §3.4 ADT structs + §8.6 (ref eq)/i31 ──",
    "  (rec",
    "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
-   "    (type $float (sub (struct (field f64))))"]
+   "    (type $float (sub (struct (field f64))))",
+   -- W5 nested requires-dict cell (mirrors llvm_emit's `[ i64 head_tag | i64 reqdict_0 | … ]`).
+   -- A one-level dict stays an i31 (just the tag); a NESTED dict (`RKey k [reqs]`) is a
+   -- $dictcell: field 0 = i32 hashName(head-tag), field 1 = a $dictarr of the recursively-
+   -- built nested req witnesses.  Consumption (readDictParam / loadReqDicts) type-tests the
+   -- witness: i31 ⇒ tag = i31.get_s, no reqs; $dictcell ⇒ tag = struct.get 0, reqs = array.
+   "    (type $dictarr (array (mut (ref eq))))",
+   "    (type $dictcell (sub (struct (field i32) (field (ref $dictarr)))))"]
     ++ strTypes
     ++ closTypes
     ++ userStructs
@@ -2484,37 +2491,54 @@ emitMethodDispatchRef prog env d name dpar args =
   -- the dict tag is read repeatedly; stash it in the scratch local for this depth.
   let tagRead = readDictParam prog env dpar
   let blk = "$disp_" ++ name ++ "_" ++ intToString d
-  let chain = emitDispatchChain prog name impls blk tagRead argInstrs (listLen args)
+  let chain = emitDispatchChain prog name impls blk tagRead dpar argInstrs (listLen args)
   ["block " ++ blk ++ " (result (ref eq))"]
     ++ indent chain
     ++ ["unreachable", "end"]
 
 -- one comparison + call per candidate impl group.  loaded tag (i32) == dictTag
--- routeKey?  if so: emit the dict witnesses for this impl's requires (empty for the
--- minimal slice) ++ the args, call the impl, `br` out of the result block carrying
--- its (ref eq).  The `if` carries NO result type — the matched branch exits via
--- `br $blk` (which supplies the block's value), the else branch falls through to the
--- next comparison; after the whole chain an `unreachable` (a well-typed dict always
--- names a candidate) satisfies the block's (ref eq) fallthrough requirement.
-emitDispatchChain : Prog -> String -> List (String, String) -> String -> List String -> List String -> Int -> <Mut> List String
-emitDispatchChain _ _ [] _ _ _ _ = []
-emitDispatchChain prog name ((tag, key)::rest) blk tagRead argInstrs nArgs =
-  -- W9: a `requires`-bearing impl (e.g. `Debug (List a) requires Debug a`) compiles
-  -- to a fn whose leading params are the forwarded `requires` dicts BEFORE the method
-  -- args.  The dispatch site only has the method args, so prepend one PLACEHOLDER dict
-  -- witness per missing leading param (impl arity − method arg count).  This is a STUB:
-  -- it makes the call arity-correct so the program emits + validates, and is harmless
-  -- for any value whose `debug`/`show` never recurses into the element dict (W9
-  -- fixtures avoid container `debug`/`show`).  Faithful element-dict forwarding in the
-  -- WasmGC dispatch chain is the precise remaining-MVP item (the nested-dict gap).
+-- routeKey?  if so: load this impl's nested requires-dicts from the dict param's
+-- $dictcell (W5 — was a placeholder zero) ++ the args, call the impl, `br` out of the
+-- result block carrying its (ref eq).  The `if` carries NO result type — the matched
+-- branch exits via `br $blk` (which supplies the block's value), the else branch falls
+-- through to the next comparison; after the whole chain an `unreachable` (a well-typed
+-- dict always names a candidate) satisfies the block's (ref eq) fallthrough requirement.
+emitDispatchChain : Prog -> String -> List (String, String) -> String -> List String -> String -> List String -> Int -> <Mut> List String
+emitDispatchChain _ _ [] _ _ _ _ _ = []
+emitDispatchChain prog name ((tag, key)::rest) blk tagRead dpar argInstrs nArgs =
+  -- W5: a `requires`-bearing impl (e.g. `Debug (a,b) requires Debug a, Debug b`) compiles
+  -- to a fn whose leading params are the forwarded `requires` dicts BEFORE the method args.
+  -- The dispatch site holds the dict param ($dpar): when this impl is constrained, the dict
+  -- reaching this arm is a $dictcell whose field-1 $dictarr carries those nested req dicts in
+  -- order (built by routeWitness).  Load field 0..reqDicts-1 and prepend them as the impl fn's
+  -- leading dict args, mirroring llvm_emit's loadReqDicts (fields 1..n of the boxed cell).
   let reqDicts = implReqDictCount prog name tag nArgs
-  let placeholders = flatMap (_ => ["i32.const 0", "ref.i31"]) (rangeList 0 reqDicts)
+  let reqLoads = flatMap (loadReqDict dpar) (rangeList 0 reqDicts)
   tagRead
     ++ ["i32.const " ++ intToString (dictTag key), "i32.eq", "if"]
-    ++ indent (placeholders ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
+    ++ indent (reqLoads ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
     ++ ["else"]
-    ++ indent (emitDispatchChain prog name rest blk tagRead argInstrs nArgs)
+    ++ indent (emitDispatchChain prog name rest blk tagRead dpar argInstrs nArgs)
     ++ ["end"]
+
+-- load nested req dict `i` from the dict param $dpar's $dictcell (field 1 = $dictarr).
+-- Only reached for a constrained impl arm, where the in-scope dict IS a $dictcell.
+-- load nested req dict `i` for a matched impl arm.  The witness ($dpar) is EITHER a
+-- one-level i31 (no nested reqs — the typed-entry case where the iface table is absent
+-- so the req COUNT is over-counted, or any concrete-element dict) OR a $dictcell (a real
+-- nested dict carrying its element witnesses in field-1's $dictarr).  Runtime-test the
+-- shape: i31 ⇒ a placeholder i31(0) (mirrors the pre-W5 stub — harmless, the impl never
+-- recurses into a real element dict in that case); $dictcell ⇒ load field-1 array[i] (the
+-- genuine nested element witness).  Both arms leave one (ref eq) → the arg count is static.
+loadReqDict : String -> Int -> <Mut> List String
+loadReqDict dpar i =
+  ["local.get $" ++ gname dpar, "ref.test (ref i31)", "if (result (ref eq))"]
+    ++ indent ["i32.const 0", "ref.i31"]
+    ++ ["else"]
+    ++ indent ["local.get $" ++ gname dpar, "ref.cast (ref $dictcell)", "struct.get $dictcell 1",
+               "i32.const " ++ intToString i, "array.get $dictarr", "ref.as_non_null"]
+    ++ ["end"]
+
 
 -- leading `requires`-dict count for a method's impl at `tag`: the impl's SOURCE
 -- clause pattern count (the dict-pass injects leading $dict_* params, BEFORE the
@@ -2533,11 +2557,18 @@ implReqDictCount prog method tag _userArgs =
 implArityFor : Prog -> String -> String -> Int
 implArityFor prog method tag = implGroupArity (flatMap (implClauseFor method tag) (progImpls prog))
 
--- read a dict PARAM (a (ref eq) i31 witness) into its i32 tag word.  The param is a
--- leading $dict_* local bound by dict-passing; it is always in `env`.
+-- read a dict PARAM's HEAD TAG (an i32) into the stack.  The witness is EITHER an i31
+-- (a one-level `RKey k []` dict — tag = i31.get_s) OR a $dictcell (a nested `RKey k [reqs]`
+-- dict — tag = struct.get 0).  Type-test once and read the tag from the matching shape;
+-- both arms leave one i32 on the stack.  The param is a leading $dict_* local, always in env.
 readDictParam : Prog -> List String -> String -> <Mut> List String
 readDictParam _ env dpar =
-  if contains dpar env then ["local.get $" ++ gname dpar, "ref.cast (ref i31)", "i31.get_s"]
+  if contains dpar env then
+    ["local.get $" ++ gname dpar, "ref.test (ref i31)", "if (result i32)"]
+      ++ indent ["local.get $" ++ gname dpar, "ref.cast (ref i31)", "i31.get_s"]
+      ++ ["else"]
+      ++ indent ["local.get $" ++ gname dpar, "ref.cast (ref $dictcell)", "struct.get $dictcell 0"]
+      ++ ["end"]
   else gapL ("wasm W5: dict param '" ++ dpar ++ "' not in scope")
 
 -- materialize a Route as its leading dict witness instruction(s): a concrete RKey →
@@ -2545,7 +2576,15 @@ readDictParam _ env dpar =
 -- param.  Nested `requires` (RKey with non-empty reqs) are out of the minimal slice.
 routeWitness : Prog -> List String -> Int -> Route -> <Mut> List String
 routeWitness _ _ _ (RKey tag []) = ["i32.const " ++ intToString (dictTag tag), "ref.i31"]
-routeWitness _ _ _ (RKey tag _) = gapL ("wasm W5: nested requires-dict witness for '" ++ tag ++ "' is out of slice")
+-- W5 (nested requires-dict): build a $dictcell — push the tag, recursively build each
+-- nested req witness onto the stack, pack them into a $dictarr (array.new_fixed), then
+-- struct.new $dictcell.  Mirrors llvm_emit's emitDictCell (header + recursively-built
+-- req fields); the recursion is dictWordsOf == flatMap routeWitness over reqs.
+routeWitness prog env d (RKey tag reqs) =
+  let reqWitnesses = flatMap (routeWitness prog env d) reqs
+  ["i32.const " ++ intToString (dictTag tag)]
+    ++ reqWitnesses
+    ++ ["array.new_fixed $dictarr " ++ intToString (listLen reqs), "struct.new $dictcell"]
 routeWitness _ env _ (RDict dpar) =
   if contains dpar env then ["local.get $" ++ gname dpar]
   else gapL ("wasm W5: forwarded dict '" ++ dpar ++ "' not in scope")
