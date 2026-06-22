@@ -2114,10 +2114,18 @@ clauseArityOf : List CClause -> Int
 clauseArityOf ((CClause pats _)::_) = listLen pats
 clauseArityOf [] = 0
 
--- synthetic positional parameter names `$a0 $a1 …` (used for multi-clause dispatch
--- and as the uniform fn ABI param names).
+-- synthetic positional parameter names `$__wparg0 $__wparg1 …` (used for multi-clause
+-- dispatch and as the uniform fn ABI param names).  The `__wparg` prefix is RESERVED:
+-- a source pattern variable in a clause head (e.g. `unifyN (TFun a1 r1 b1) (TFun a2 r2
+-- b2)` binds `a1`) must NOT collide with a sibling positional param's wasm local, or
+-- its `local.set` clobbers a not-yet-read argument and a later field extract `ref.cast`
+-- traps `illegal cast` (layer-11 bug: the second `TFun`'s value was destroyed by the
+-- first clause head binding a var literally named `a1` into `$a1`).  Earlier these were
+-- `$a0/$a1/…`, which a user var named `a1` aliased directly.  `gname` escapes any user
+-- identifier spelled `__wparg<digits>` (mirrors the `self`/`args` reserved-name escape),
+-- so the positional params are provably distinct from every clause-bound source var.
 synthParams : Int -> List String
-synthParams n = map (i => "a" ++ intToString i) (rangeList 0 n)
+synthParams n = map (i => "__wparg" ++ intToString i) (rangeList 0 n)
 
 -- emit the clause chain.  Single all-PVar clause: rename its params to the synthetic
 -- positions (so the body env binds them) and tail-emit.  Otherwise: a fallthrough
@@ -5859,7 +5867,12 @@ gname : String -> String
 -- through gname, but a user binding named `self`/`args` is equally safe to rename there.
 gname "self" = "u__self"
 gname "args" = "u__args"
-gname n = n
+gname n =
+  -- The `__wparg<digits>` family is reserved for synthetic positional fn params
+  -- (synthParams).  A source var spelled identically would collide with a sibling
+  -- positional param's wasm local — escape it so user vars stay distinct.
+  if startsWithStr n "__wparg" && allDigitsFrom (stringToChars n) 7 then "u__" ++ n
+  else n
 
 notIn : List String -> String -> Bool
 notIn xs x = not (contains x xs)

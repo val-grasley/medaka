@@ -1,0 +1,20 @@
+-- layer-11: a 2-arg pattern-match function whose FIRST param's clause head binds a
+-- source variable literally named `a1` — the same spelling the emitter used for the
+-- SECOND synthetic positional param ($a1).  Before the fix, the first clause head's
+-- `local.set $a1` clobbered the second argument's value, so extracting the second
+-- ctor's field then `ref.cast`-trapped `illegal cast` (the field was not the expected
+-- shape).  `a0`/`b1`/`b2` are also chosen to collide with the old `$a0`/… positional
+-- names.  Synthetic params are now `$__wparg<i>` (reserved), so the binders are distinct.
+data T = TFun T T | TLeaf Int
+
+-- mirrors unifyN's TFun clause: bind a1/b1 from arg0, a2/b2 from arg1, then read arg1.
+go : T -> T -> Int
+go (TFun a1 b1) (TFun a2 b2) = sumT a1 + sumT b1 + sumT a2 + sumT b2
+go (TLeaf a0) (TLeaf a1) = a0 + a1
+go _ _ = 0
+
+sumT : T -> Int
+sumT (TLeaf n) = n
+sumT (TFun l r) = sumT l + sumT r
+
+main = go (TFun (TLeaf 1) (TLeaf 2)) (TFun (TLeaf 4) (TLeaf 8))
