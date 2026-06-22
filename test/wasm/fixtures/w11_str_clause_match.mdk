@@ -1,0 +1,7 @@
+-- W11: PLit-LString clause head patterns — dispatch on string literals.
+kw "let" = 1
+kw "in" = 2
+kw "if" = 3
+kw _ = 0
+
+main = intToString (kw "in")

@@ -1,0 +1,6 @@
+-- W11: PLit-LString clause head patterns — fall-through to wildcard.
+classify "hello" = "greeting"
+classify "bye" = "farewell"
+classify _ = "unknown"
+
+main = putStrLn (classify "world")

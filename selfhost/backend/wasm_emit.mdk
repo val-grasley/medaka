@@ -654,6 +654,8 @@ isLeafExternW : String -> Bool
 isLeafExternW name = contains name [
   "randomInt", "randomBool", "randomChar", "setSeed",
   "hashInt", "hashChar", "hashBool",
+  -- W11: charCode : Char -> Int — a Char is an i31 codepoint; charCode = cast+unbox+rebox.
+  "charCode",
   -- W8b Float leaf externs (produce/consume a boxed $float (ref eq)).
   "intToFloat", "floatToInt", "hashFloat", "randomFloat",
   -- W10: `panic : String -> a` lowers to a `unreachable` trap (stack-polymorphic,
@@ -670,6 +672,8 @@ externArityW name =
   else if contains name ["intToString", "charToStr", "stringLength", "putStr",
     "putStrLn", "ePutStr", "ePutStrLn", "stringToUpper", "stringToLower", "hashString",
     "stringConcat", "setSeed", "randomChar", "hashInt", "hashChar", "hashBool",
+    -- W11: charCode : Char -> Int (1-arg leaf).
+    "charCode",
     -- W8b: floatToString/intToFloat/floatToInt/hashFloat are 1-arg; randomFloat takes
     -- a Unit arg (like randomChar — emitted + dropped).
     "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat",
@@ -1925,6 +1929,12 @@ patTestBind prog pat occ clLabel env = match pat
   -- as emitLitRef (LChar)); compare the i31 against the codepoint constant.
   PLit (LChar c) =>
     (occ ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.ne", "br_if " ++ clLabel], [], env)
+  PLit (LString s) =>
+    let cmpSuffix = ["call $mdk_str_compare", "ref.cast (ref i31)", "i31.get_u", "i32.const 1", "i32.ne", "br_if " ++ clLabel]
+    let _ = set_ref useStrSearchRef True
+    let _ = set_ref useStrLeafRef True
+    let _ = set_ref useStrRef True
+    (occ ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ cmpSuffix, [], env)
   PCon c args =>
     let ctest = discrimReadOf occ (ctorTypeName prog c) ++ ["i32.const " ++ intToString (ctorOrdinal prog c), "i32.ne", "br_if " ++ clLabel]
     let (b, env2) = bindConFields prog env c args occ
@@ -2813,6 +2823,13 @@ emitLeafExternRef prog env d "hashChar" args = match args
 emitLeafExternRef prog env d "hashBool" args = match args
   [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_bool", "ref.i31"]
   _ => gapL "wasm W8: hashBool takes exactly one argument"
+-- W11: charCode : Char -> Int — a Char is an i31 codepoint immediate.  Cast to i31,
+-- read the unsigned payload (the codepoint), wrap back as an i31 Int.  The unbox +
+-- rebox is identity on the bits (both Char and Int are i31 codepoint / integer), but
+-- the cast ensures Wasm's type-safe path through (ref eq).
+emitLeafExternRef prog env d "charCode" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_u", "ref.i31"]
+  _ => gapL "wasm W11: charCode takes exactly one argument"
 -- W8b Float leaf externs.  intToFloat : i31 Int → $mdk_int_to_float → boxed $float.
 -- floatToInt : $float → $mdk_float_to_int → i31 Int.  hashFloat : $float → masked i32 →
 -- i31.  randomFloat : Unit arg dropped → $mdk_random_float → boxed $float.

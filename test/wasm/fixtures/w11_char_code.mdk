@@ -1,0 +1,3 @@
+-- W11: charCode : Char -> Int — extracts a char's Unicode codepoint.
+-- A Char is an i31 codepoint in ref-mode; charCode = cast+unbox+rebox (identity bits).
+main = intToString (charCode 'A')
