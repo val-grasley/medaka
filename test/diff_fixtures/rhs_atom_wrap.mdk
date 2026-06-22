@@ -1,0 +1,4 @@
+r = identity
+  5
+
+main = println r

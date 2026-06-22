@@ -1,0 +1,7 @@
+main =
+  if True
+  then
+    if False
+    then println "a"
+    else println "b"
+  else println "c"

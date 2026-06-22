@@ -1,0 +1,5 @@
+f x =
+  -- comment inside = block
+  x + 1
+
+main = println (f 3)

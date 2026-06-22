@@ -1,0 +1,5 @@
+x = 1
+-- top-level comment-only line (layout-transparent)
+y = 2
+
+main = println (x + y)

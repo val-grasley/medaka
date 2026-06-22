@@ -1,0 +1,6 @@
+main =
+  if True
+  then println "yes"
+
+
+  else println "no"
