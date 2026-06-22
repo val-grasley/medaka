@@ -459,7 +459,34 @@ lowerProgram prog =
 export
 lowerProgramEmit : List Decl -> <Mut> CProgram
 lowerProgramEmit prog =
-  rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
+  registerRecordCtors prog (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
+
+-- EMIT-ONLY: register each single-constructor `record` decl's ctor in the Core IR
+-- ctor tables (ctorArs: name→field-count; ctorTypes: name→its own type name).  The
+-- shared `ctorArities`/`buildCtorToType` builders cover only DData/DNewtype — a
+-- DRecord falls through their catch-alls, so a record-literal construction
+-- (`ImportAdds { … }`, `Env { … }`, `ModuleExports { … }`, `Oracle { … }`) reaches
+-- the LLVM/Wasm emitters with its ctor absent from ctorArs/ctorTypes →
+-- `ctorOrdinal`/`ctorTypeName` miss and emit the "unknown constructor" gap.  This is
+-- EMIT-ONLY (mirrors rewriteProgramRecPats's rationale): the tree-walking interpreter
+-- evaluates a record to a by-name `VRecord` and must NOT see a positional ctor for it
+-- (it reads ctorArs to synthesize ctor functions, line `cevalProgram`), so we add the
+-- record entries here in `lowerProgramEmit` rather than the shared builders.  A
+-- record's ctor is arity = field count, owning type = the record name itself (ordinal
+-- 0, consistent with the single-cell layout `emitRecordRef` already assumes).
+registerRecordCtors : List Decl -> CProgram -> CProgram
+registerRecordCtors decls (CProgram groups ctorArs ctorTypes implEntries) =
+  let recArs = flatMap recordCtorArity decls
+  let recTys = flatMap recordCtorType decls
+  CProgram groups (ctorArs ++ recArs) (ctorTypes ++ recTys) implEntries
+
+recordCtorArity : Decl -> List (String, Int)
+recordCtorArity (DRecord _ name _ fields _) = [(name, listLen fields)]
+recordCtorArity _ = []
+
+recordCtorType : Decl -> List (String, String)
+recordCtorType (DRecord _ name _ _ _) = [(name, name)]
+recordCtorType _ = []
 
 -- type/ctor name → [field label in declared order], from every DRecord and every
 -- DData named-field (`ConNamed`) variant.  (`DInterface`/`DImpl` are themselves

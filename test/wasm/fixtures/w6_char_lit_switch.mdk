@@ -1,0 +1,8 @@
+-- W6: a Char-literal switch head — `match c { 'a' => … }` lowers to a Core-IR
+-- decision tree whose head is a Char HLit (i31 codepoint compare).
+classify c = match c
+  'a' => 1
+  'b' => 2
+  _ => 0
+
+main = intToString (classify 'b' + classify 'a' + classify 'z')

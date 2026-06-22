@@ -1,0 +1,12 @@
+-- cat2: a constructor-destructuring lambda PARAM `((Box x) => …)` — field
+-- extraction binds the inner var, irrefutable for a single-ctor type.  Self-
+-- contained (no prelude HOFs): apply the lambda via a local recursive fold.
+data Box = Box Int
+
+applyAll f xs = match xs
+  [] => 0
+  y :: rest => f y + applyAll f rest
+
+unboxAll bs = applyAll ((Box x) => x) bs
+
+main = intToString (unboxAll [Box 5, Box 7, Box 11])

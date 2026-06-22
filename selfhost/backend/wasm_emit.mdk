@@ -3294,6 +3294,27 @@ emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LInt k))
     ++ ["else"]
     ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft)
     ++ ["end", "unreachable"]
+-- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
+-- `PLit (LChar)`); compare the i31 against the codepoint constant.
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft =
+  (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"])
+    ++ ["if"]
+    ++ indent (emitTreeTail prog env arity d root rest arms sub)
+    ++ ["else"]
+    ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft)
+    ++ ["end", "unreachable"]
+-- W6: String-literal switch head — compare the focus $str against each literal via
+-- `$mdk_str_compare` (returns the i31 1 on equal), reusing the `PLit (LString)` logic.
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft =
+  let _ = set_ref useStrSearchRef True
+  let _ = set_ref useStrLeafRef True
+  let _ = set_ref useStrRef True
+  (foc ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ ["call $mdk_str_compare", "ref.cast (ref i31)", "i31.get_u", "i32.const 1", "i32.eq"])
+    ++ ["if"]
+    ++ indent (emitTreeTail prog env arity d root rest arms sub)
+    ++ ["else"]
+    ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft)
+    ++ ["end", "unreachable"]
 emitLitSwitchTail _ _ _ _ _ _ _ _ _ _ = gapL "ref-mode: non-Int literal tail switch head"
 
 -- ── §4 closure (CLam) lowering — lambda-lift + arity-in-struct ───────────────
@@ -3309,35 +3330,58 @@ emitClosure : Prog -> List String -> Int -> List Pat -> CExpr -> <Mut> List Stri
 emitClosure prog env d pats body =
   let n = freshLamId ()
   let lamName = "$mdk_lam" ++ intToString n
-  let params = map patName pats
-  let captured = filterList (c => contains c env) (dedupKeep (freeVarsExpr params body))
+  -- W2/cat2: a param may be a destructuring pattern (tuple/ctor); its BOUND vars
+  -- (patVars) — not a single synthetic name — are what the body's free-var set
+  -- subtracts, so the captures are computed over the real bound names.
+  let boundVars = flatMap patVars pats
+  let captured = filterList (c => contains c env) (dedupKeep (freeVarsExpr boundVars body))
   let _ = noteFuncRef lamName
-  let _ = addLifted (emitLamDefine prog lamName params captured body)
+  let _ = addLifted (emitLamDefine prog lamName pats captured body)
   -- build the closure struct at the use site: ref.func, arity, env array of captures.
   let capInstrs = flatMap (c => ["local.get $" ++ gname c]) captured
-  ["ref.func " ++ lamName, "i32.const " ++ intToString (listLen params)]
+  ["ref.func " ++ lamName, "i32.const " ++ intToString (listLen pats)]
     ++ capInstrs ++ ["array.new_fixed $argarr " ++ intToString (listLen captured), "struct.new $clos"]
 
 -- the lifted lambda body.  Prologue: bind each captured var from self's $env (cast
 -- self to $clos, get $env, array.get i, non-null) into its local; bind each param
 -- from the $args array.  Then TAIL-emit the body.
-emitLamDefine : Prog -> String -> List String -> List String -> CExpr -> <Mut> List String
-emitLamDefine prog lamName params captured body =
-  let arity = listLen params
+emitLamDefine : Prog -> String -> List Pat -> List String -> CExpr -> <Mut> List String
+emitLamDefine prog lamName pats captured body =
+  let arity = listLen pats
+  -- each param i: load $args[i] into a synthetic local `$__lp<i>`, then bind its
+  -- (possibly-destructuring) pattern against that local via bindPatRef (the same
+  -- field-extraction machinery match-arm leaves / destructuring-lets use).
+  let synthPs = map (i => "__lp" ++ intToString i) (rangeList 0 arity)
   let capPrologue = flatMap (capLoadAt) (zipIdx captured 0)
-  let argPrologue = flatMap (argLoadAt) (zipIdx params 0)
-  let bodyLocals = filterList (notIn (params ++ captured)) (dedupKeep (collectExprLocals body))
+  let argLoads = flatMap (argLoadAt) (zipIdx synthPs 0)
+  let (paramBinds, bodyEnv0) = bindParamPats prog (captured ++ synthPs) (zipPatsP pats synthPs)
+  let bodyEnv = bodyEnv0
+  let patBoundVars = flatMap patVars pats
+  let bodyLocals = filterList (notIn (synthPs ++ captured ++ patBoundVars)) (dedupKeep (collectExprLocals body))
   let scratch = scratchLocals (maxRefDepth body)
   let localLines = ["(local $__self_clos (ref $clos))"]
-    ++ map (l => localDeclRef l) (params ++ captured ++ bodyLocals ++ scratch)
+    ++ map (l => localDeclRef l) (synthPs ++ captured ++ patBoundVars ++ bodyLocals ++ scratch)
     ++ w7LocalDecls (maxRefDepth body)
-  -- env env: captures + params are bound as locals; the body's free vars resolve to them.
-  let bodyEnv = captured ++ params
   let setup = ["local.get $self", "ref.cast (ref $clos)", "local.set $__self_clos"]
   ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
     ++ map (l => "  " ++ l) localLines
-    ++ indent (setup ++ capPrologue ++ argPrologue ++ emitRefTail prog bodyEnv arity body)
+    ++ indent (setup ++ capPrologue ++ argLoads ++ paramBinds ++ emitRefTail prog bodyEnv arity body)
     ++ ["  )"]
+
+-- bind a list of (pattern, synthetic-local-name) lambda params: for each, run
+-- bindPatRef against `local.get $<synth>` (the pattern is irrefutable — the type
+-- proves the shape, like a destructuring let).  Threads the env left-to-right.
+bindParamPats : Prog -> List String -> List (Pat, String) -> <Mut> (List String, List String)
+bindParamPats _ env [] = ([], env)
+bindParamPats prog env ((p, a)::rest) =
+  let (binds, env2) = bindPatRef prog env p ["local.get $" ++ gname a]
+  let (more, env3) = bindParamPats prog env2 rest
+  (binds ++ more, env3)
+
+-- zip patterns to synthetic param names (peer of zipPats but for synthetic params).
+zipPatsP : List Pat -> List String -> List (Pat, String)
+zipPatsP (p::ps) (a::bs) = (p, a) :: zipPatsP ps bs
+zipPatsP _ _ = []
 
 -- load captured var i: $__self_clos.$env[i] → its local.
 capLoadAt : (String, Int) -> List String
@@ -3471,7 +3515,26 @@ freeVarsExpr bound e = match e
   CRangeArray lo hi _ => freeVarsExpr bound lo ++ freeVarsExpr bound hi
   CIndex e i => freeVarsExpr bound e ++ freeVarsExpr bound i
   CSlice e lo hi _ => freeVarsExpr bound e ++ freeVarsExpr bound lo ++ freeVarsExpr bound hi
+  -- cat4/W5: a return-position method occurrence (CMethod) and a constrained-fn
+  -- occurrence (CDict) carry their dispatch Routes; a route's RDict/RDictFwd names a
+  -- dict PARAM that is read at the use site.  Without surfacing it here, a method/
+  -- constrained-fn call inside a lifted lambda (`clamp lo hi = min hi >> max lo`) or a
+  -- where-group closure (`minimum`/`maximum`'s `step`) drops the dict from the closure
+  -- capture set → "dict param '$dict_…' not in scope".  (These nodes carry no value
+  -- args of their own — args arrive via the surrounding CApp, already handled.)
+  CMethod _ route implRoutes methRoutes =>
+    flatMap (freeVarsRoute bound) (route :: implRoutes ++ methRoutes)
+  CDict _ routes => flatMap (freeVarsRoute bound) routes
   _ => []
+
+-- the dict-param names a Route reads: RDict/RDictFwd name a leading dict param (free
+-- unless locally bound); RKey recurses into its nested requires-routes; RNone none.
+freeVarsRoute : List String -> Route -> List String
+freeVarsRoute bound route = match route
+  RDict d => if contains d bound then [] else [d]
+  RDictFwd d => if contains d bound then [] else [d]
+  RKey _ rs => flatMap (freeVarsRoute bound) rs
+  RNone => []
 
 -- free vars of a CLetGroup binding's clauses (each clause's params are locally bound).
 freeVarsClauses : List String -> CBind -> <Mut> List String
@@ -3899,6 +3962,27 @@ emitLitSwitchRef prog env d decLabel root foc rest arms [] dft =
   emitTreeRef prog env d decLabel root rest arms dft
 emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft =
   (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"])
+    ++ ["if (result (ref eq))"]
+    ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
+    ++ ["else"]
+    ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
+    ++ ["end"]
+-- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
+-- `PLit (LChar)`); compare the i31 against the codepoint constant.
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft =
+  (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"])
+    ++ ["if (result (ref eq))"]
+    ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
+    ++ ["else"]
+    ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
+    ++ ["end"]
+-- W6: String-literal switch head — compare the focus $str against each literal via
+-- `$mdk_str_compare` (returns the i31 1 on equal), reusing the `PLit (LString)` logic.
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft =
+  let _ = set_ref useStrSearchRef True
+  let _ = set_ref useStrLeafRef True
+  let _ = set_ref useStrRef True
+  (foc ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ ["call $mdk_str_compare", "ref.cast (ref i31)", "i31.get_u", "i32.const 1", "i32.eq"])
     ++ ["if (result (ref eq))"]
     ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
     ++ ["else"]

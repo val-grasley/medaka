@@ -1,0 +1,10 @@
+-- cat2: a tuple-destructuring lambda PARAM `((a, b) => …)` — lambda-lifted, its
+-- bound vars come from field extraction, not a single synthetic name.  Self-
+-- contained (no prelude HOFs): apply the lambda via a local recursive fold.
+applyAll f xs = match xs
+  [] => 0
+  y :: rest => f y + applyAll f rest
+
+addPairs ps = applyAll ((a, b) => a + b) ps
+
+main = intToString (addPairs [(1, 2), (3, 4), (10, 20)])
