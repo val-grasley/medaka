@@ -137,14 +137,28 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   field-1-of-arg1 to `$C_…TFun` and trapped (TApp had the same latent bug). Fix (`wasm_emit.mdk`):
   `synthParams` emits reserved `$__wparg<i>` + `gname` escapes any user `__wparg<digits>` → distinct from
   every clause-bound var. Gate `clause_param_name_collision.mdk`, `diff_wasm` 136.
-- **🟡 NEXT — runtime layer-12: `unreachable` in `types_typecheck__spineFirstArg`** (`typecheck.mdk:645`,
-  via `inferApp→inferAppExpr→inferClauseEff→inferMemberClauses→processSCC`). NEW class (NOT a cast): the
-  clause-chain fallthrough sentinel (`unreachable`) firing. `spineFirstArg` matches `ELoc`/`EDoOrigin`/
-  `EApp`/**`_ => None`** — it HAS a wildcard catch-all, so `_` should always match; `unreachable` firing
-  means the emitter **dropped/mis-emitted the wildcard catch-all clause** OR mis-computed a ctor
-  discriminant (a non-matching `Expr` like `EVar` should fall to `_`, not trap). Likely a BROAD clause-chain
-  bug (any fn with a `_` catch-all after ctor clauses). Diagnose — emitter-only `wasm_emit.mdk`. Native
-  oracle COMPLETES → still in the last stage (typecheck). Faithful run.js trace.
+- **🏁🏁 Runtime layer-12 CLOSED (`faef8fa`, emitter-only) — MILESTONE: the self-hosted FRONT-END runs
+  on WasmGC byte-identical to native.** Root: a `match <Bool>` that lowers to a `CDecision` switch (not an
+  `if`) got a **0-slot `br_table`** with both arms dropped, because `ctorsOfType "Bool"` returned `[]`
+  (True/False are SYNTHETIC ctors, never in the program's ctor table) → `nOrd=0` → empty tower → fell
+  through to `unreachable`. Fix (`wasm_emit.mdk`, 1 arm): `ctorsOfType "Bool" = ["False","True"]`
+  (index-aligned to `syntheticCtorOrdinal`). BROAD — every `match <Bool>` lowering to a decision-switch was
+  mis-compiled. Gate `match_bool_decision.mdk`, `diff_wasm` 137. **VERIFIED ON THE BINARY (orchestrator,
+  independently):** `check_main` (lex→parse→resolve→exhaust→typecheck) compiled to WasmGC runs to COMPLETION
+  under Node on `inc x = x+1`/`main = inc 41`, printing all 88 prelude+user schemes (`eq : a -> a -> Bool` …
+  `inc : a -> a`, `main : Int`) **byte-identical to the native compiled `check_main` oracle** — the ONLY diff
+  is a trailing `0` (the Unit-main auto-print residual below). This is the `WASM-SELFHOST-ROADMAP.md` layer-12
+  "diff schemes vs native = self-host-of-the-front-end demo" — MET.
+- **🟡 NEXT (small) — layer-13 cosmetic: wasm value-main prints check_main's own `main`'s trailing `0`.**
+  The native backend suppresses a Unit/exit-code main auto-print (`mainIsUnit` gate in `llvm_emit.mdk`, memory
+  `project_unit_main_no_autoprint`); `wasm_emit.mdk` lacks the equivalent → `check_main`'s output ends
+  `main : Int0` vs native `main : Int`. Port the `mainIsUnit` suppression to `wasm_emit` (trivial, emitter-only).
+- **🟡 BEYOND THE FRONT-END (the real end goal):** `check_main` is the FRONT-END only (lex→typecheck). The
+  browser-playground goal (`WASM-SELFHOST-ROADMAP.md` §goal) is the WHOLE compiler on WasmGC, which also needs
+  the BACKEND stages (Core IR lowering + the wasm/llvm EMITTER) to run compiled — a further frontier (more
+  runtime-miscompile layers on bigger/more-varied inputs; the emitter is far larger than the front-end). Also:
+  re-run check_main on MORE input shapes (records/ADTs/effects/multi-module) to surface more miscompile layers
+  before declaring the front-end fully self-hosting.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router

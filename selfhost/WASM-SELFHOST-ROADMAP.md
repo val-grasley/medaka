@@ -134,10 +134,19 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   positional params named `$a0/$a1` clobbered by a clause-head var spelled `a1` → `unifyN` TFun cast trapped.
   Fix: `synthParams` emits reserved `$__wparg<i>` + `gname` escapes user `__wparg<digits>`. Gate
   `clause_param_name_collision.mdk`, `diff_wasm` 136. check_main runs into application inference.
-- 🟡 **layer-12 (NEXT)** — `unreachable` in `types_typecheck__spineFirstArg` (`typecheck.mdk:645`). NEW class
-  (not a cast): clause-chain fallthrough firing despite a `_ => None` catch-all → emitter dropped/mis-emitted
-  the wildcard catch-all OR mis-computed a ctor discriminant. Likely BROAD (any fn with `_` after ctor
-  clauses). Emitter-only. Native oracle COMPLETES → last stage.
+- 🏁🏁 **layer-12 CLOSED (`faef8fa`, emitter-only) — MILESTONE: self-hosted FRONT-END runs on WasmGC
+  byte-identical to native.** Root: `match <Bool>` lowering to a `CDecision` switch got a 0-slot `br_table`
+  (both arms dropped) because `ctorsOfType "Bool"` returned `[]` (True/False are synthetic ctors). Fix: add
+  `ctorsOfType "Bool" = ["False","True"]`. BROAD (every Bool decision-switch). Gate `match_bool_decision.mdk`,
+  `diff_wasm` 137. **VERIFIED:** `check_main` (lex→parse→resolve→exhaust→typecheck) compiled to WasmGC runs to
+  COMPLETION under Node, printing all 88 schemes byte-identical to the native compiled oracle (only diff = a
+  trailing Unit-main `0`). This IS the layer-12 "diff schemes vs native = self-host-of-the-front-end demo" — MET.
+- 🟡 **layer-13 (small/cosmetic)** — wasm value-main prints check_main's own `main`'s trailing `0`; port the
+  native `mainIsUnit` auto-print suppression to `wasm_emit` (trivial, emitter-only).
+- 🟡 **BEYOND:** `check_main` is the FRONT-END only. The whole-compiler-on-WasmGC goal needs the BACKEND
+  (Core IR lower + the wasm/llvm emitter) compiled too — a further frontier (more miscompile layers; the
+  emitter dwarfs the front-end). Also exercise check_main on more input shapes (records/ADTs/effects/multi-module)
+  to surface remaining miscompiles.
 - **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it; see
   `TRMC-DESIGN.md` §"Phase 3 … DEFERRED" + WIP `selfhost/bprime-llvm-wip.patch`.
 
