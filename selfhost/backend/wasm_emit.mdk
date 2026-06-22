@@ -1627,7 +1627,10 @@ emitW7Types : Unit -> List String
 emitW7Types _ =
   let listT = if useListRef.value then
         ["    (type $T_List (sub (struct (field i32))))",
-         "    (type $C_Cons (sub $T_List (struct (field i32) (field (ref eq)) (field (ref eq)))))"]
+         -- §3/Stage-0: cons TAIL field (index 2) is `mut` so TRMC destination-passing can
+         -- `struct.set` a freshly-built child into the parent cell.  Head (index 1) stays
+         -- immutable.  `mut` only PERMITS mutation — output is unchanged (nothing writes it yet).
+         "    (type $C_Cons (sub $T_List (struct (field i32) (field (ref eq)) (field (mut (ref eq))))))"]
       else []
   let tupTs = flatMap tupleTypeDecl (reverseL tupleAritiesRef.value)
   let arrT = if useArrayRef.value then ["    (type $arr (array (mut (ref eq))))"] else []
@@ -1663,7 +1666,12 @@ emitCtorStruct prog ty ctor =
   let arity = ctorArity prog ctor
   if arity == 0 then []
   else
-    let fields = joinWith "" (replicate arity " (field (ref eq))")
+    -- §3/Stage-0: ctor payload fields are `mut` so a TRMC-destination recursive field
+    -- can be `struct.set` after the parent cell is built.  Field types are uniform
+    -- `(ref eq)` here (no per-field type), so all payload fields are made `mut`; this is
+    -- output-neutral (`mut` only PERMITS mutation — nothing writes them yet), following
+    -- the `$refbox`/`$arr` precedent.
+    let fields = joinWith "" (replicate arity " (field (mut (ref eq)))")
     ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
       ++ " (struct (field i32)" ++ fields ++ ")))"]
 
