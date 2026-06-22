@@ -1,0 +1,14 @@
+-- W10: a FUNCTION-CLAUSE head with a refutable NESTED constructor pattern.
+-- `pick (Box (Tagged n))` must, in clause 1, emit a discriminant test for the
+-- INNER ctor (`Tagged` vs its sibling `Bare`), not just bind it.  Without that
+-- test the inner `ref.cast (ref $C_Tagged)` runs unconditionally and traps
+-- `illegal cast` when the value is `Box (Bare _)` (the exact shape that hit
+-- frontend_resolve.variantFieldOwners on a positional vs named Con).
+data Inner = Tagged Int | Bare
+data Outer = Box Inner
+
+pick : Outer -> Int
+pick (Box (Tagged n)) = n
+pick (Box Bare) = 0
+
+main = pick (Box Bare) + pick (Box (Tagged 7))

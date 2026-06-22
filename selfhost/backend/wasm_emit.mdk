@@ -2284,10 +2284,17 @@ patTestBind prog pat occ clLabel env = match pat
     let _ = set_ref useStrLeafRef True
     let _ = set_ref useStrRef True
     (occ ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ cmpSuffix, [], env)
+  -- W10: a constructor clause head — test the discriminant, then descend into each
+  -- field with patTestBind (NOT bindConFields).  A nested field pattern can itself be
+  -- refutable (e.g. `Variant cname (ConNamed fs)` — the inner `ConNamed` discriminates
+  -- against a sibling `ConPos` of the same payload type), so the field must emit its own
+  -- discriminant test, else its struct cast runs unconditionally and traps `illegal
+  -- cast` on the sibling shape.  bindConFields only binds (no tests), so it is unsound
+  -- for refutable nested ctors — mirror PCons/PTuple/PList, which recurse via patTestBind.
   PCon c args =>
     let ctest = discrimReadOf occ (ctorTypeName prog c) ++ ["i32.const " ++ intToString (ctorOrdinal prog c), "i32.ne", "br_if " ++ clLabel]
-    let (b, env2) = bindConFields prog env c args occ
-    (ctest, b, env2)
+    let (ft, fb, env2) = patTestBindCon prog c args occ clLabel env 0
+    (ctest ++ ft, fb, env2)
   PAs x p =>
     let setX = occ ++ ["local.set $" ++ gname x]
     let (t, b, env2) = patTestBind prog p occ clLabel (x :: env)
@@ -2334,6 +2341,17 @@ patTestBindTuple prog tc (p::rest) occ clLabel env i =
   let fieldSnip = occ ++ ["ref.cast (ref $" ++ ctorStructName tc ++ ")", "struct.get $" ++ ctorStructName tc ++ " " ++ intToString (i + 1)]
   let (ft, fb, env2) = patTestBind prog p fieldSnip clLabel env
   let (rt, rb, env3) = patTestBindTuple prog tc rest occ clLabel env2 (i + 1)
+  (ft ++ rt, fb ++ rb, env3)
+
+-- (tests, binds, env') for a constructor clause head's fields: field i+1 of the ctor's
+-- struct (after the i32 tag), recursing into each sub-pattern with patTestBind so a
+-- refutable nested ctor (`ConNamed fs`) emits its own discriminant test+bind.
+patTestBindCon : Prog -> String -> List Pat -> List String -> String -> List String -> Int -> <Mut> (List String, List String, List String)
+patTestBindCon _ _ [] _ _ env _ = ([], [], env)
+patTestBindCon prog c (p::rest) occ clLabel env i =
+  let fieldSnip = occ ++ ["ref.cast (ref $" ++ ctorStructName c ++ ")", "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1)]
+  let (ft, fb, env2) = patTestBind prog p fieldSnip clLabel env
+  let (rt, rb, env3) = patTestBindCon prog c rest occ clLabel env2 (i + 1)
   (ft ++ rt, fb ++ rb, env3)
 
 -- all locals a clause group needs: every clause's param-bound vars + body locals.
