@@ -114,14 +114,22 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   calls; `mdk_impl_List_ap` (self inside `++`, non-tail) correctly stays ordinary (the `mentionsSelfMethod`
   walk rejects it — `freeVars` is blind to the `CMethod` name). Gate `w_dispatch_map_stack.mdk` +
   TMC-ASSERT, `diff_wasm_modules` 15. Closes the whole dispatched list-builder class (map/ap/…).
-- **🟡 NEXT — runtime layer-9: `illegal cast` (`ref.cast`) in `frontend_parser__coalesceStep`.** With the
-  lexer + `map` overflows gone, `check_main` emits/parses/validates and runs front-end init INTO the
-  parser, then traps `RuntimeError: illegal cast` in `frontend_parser__coalesceStep` (wasm-fn[392]), via
-  `parse → manyGo → bindPR → orElseR → coalesceStep`. **This is a NEW class — a runtime MISCOMPILE (wrong
-  runtime-shape `ref.cast`), NOT a stack overflow / not TMC** (cf. the earlier layer-3 list-`++` cast bug,
-  fixed by a runtime-shape-dispatching `$mdk_append`). Diagnose the mis-lowered cast in `coalesceStep`'s
-  emit (what value is cast to what wrong `$`-type) — a wasm_emit lowering bug, emitter-only. Use the
-  FAITHFUL run.js trace (copy + patch `.catch` for `e.stack`).
+- **🏁 Runtime layer-9 CLOSED (`bab91b2`, emitter-only) — ref-mode comparison miscompile; `check_main`
+  runs past the parser into resolve.** BROAD fix (not just `coalesceStep`): `emitBinRef`'s else-branch
+  lowered EVERY comparison (`==`/`!=`/`<`/`>`/`<=`/`>=`) as an i31 compare (`ref.cast (ref i31)` +
+  `i31.get_s`), but `String ==` operands are boxed `$str` structs → `ref.cast` to i31 traps `illegal
+  cast` (Core IR is type-erased — no static type to distinguish `String ==` from `Int ==`). Fix: new
+  `$mdk_value_eq`/`$mdk_value_cmp` (`wasm_preamble.mdk`, mirroring LLVM's `@mdk_value_eq`) that dispatch
+  on runtime shape (both `$str` → byte-compare; else `ref.eq`/i31 compare); `emitBinRef` routes
+  comparisons through them when the program uses strings (`useStrRef`), pure-int keeps the i31 fast path.
+  Same shape as layer-3. Gate `str_value_eq_cmp.mdk`, `diff_wasm` 134.
+- **🟡 NEXT — runtime layer-10: `illegal cast` in `frontend_resolve__variantFieldOwners`** (`resolve.mdk:647`,
+  via `fieldOwnersOf → flatMap → mdk_impl_List_andThen`). Same CLASS as layer-9/layer-3 (wrong-runtime-shape
+  `ref.cast` miscompile, NOT TMC). `variantFieldOwners (Variant cname (ConNamed fs))` / `(Variant _ (ConPos
+  _))` — a **nested-ADT match on the `Con` payload**; the cast is on the ctor/nested-Variant field extract.
+  Diagnose which `ref.cast` traps + the shape mismatch (nested-ctor discriminant/field extract) — emitter-only
+  `wasm_emit.mdk` lowering bug. The native oracle COMPLETES on the same input (prints the full scheme table),
+  so we are close to a running self-hosted front-end. Faithful run.js trace for the next layer.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router

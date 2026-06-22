@@ -120,11 +120,16 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   (self-ref-agnostic) + `wTrmcImplTry` (`SelfByMethod`) tried by `emitImplGroup`. `mentionsSelfMethod`
   safety net verified (`map` TMC's, `ap` non-tail stays ordinary). Gate `w_dispatch_map_stack.mdk` +
   TMC-ASSERT, `diff_wasm_modules` 15. `check_main` now runs into the parser.
-- 🟡 **layer-9 (NEXT)** — `illegal cast` (`ref.cast`) in `frontend_parser__coalesceStep` (via
-  `parse→manyGo→bindPR→orElseR→coalesceStep`). A NEW class: a runtime MISCOMPILE (wrong runtime-shape
-  cast), NOT a stack overflow / not TMC (cf. layer-3 list-`++` cast → `$mdk_append`). Diagnose the
-  mis-lowered cast in `coalesceStep` (what value, cast to what wrong `$`-type) — emitter-only wasm_emit
-  lowering bug. Faithful run.js trace for the next layer.
+- 🏁 **layer-9 CLOSED (`bab91b2`, emitter-only)** — ref-mode comparison miscompile. `emitBinRef` lowered
+  ALL comparisons as i31 compares → `String ==` (`$str` operands) `ref.cast`-trapped. Fix: runtime-shape
+  `$mdk_value_eq`/`$mdk_value_cmp` (mirror LLVM `@mdk_value_eq`), routed when the program uses strings.
+  Broad fix (all string comparisons). Gate `str_value_eq_cmp.mdk`, `diff_wasm` 134. `check_main` runs into
+  resolve.
+- 🟡 **layer-10 (NEXT)** — `illegal cast` in `frontend_resolve__variantFieldOwners` (`resolve.mdk:647`, via
+  `fieldOwnersOf→flatMap→mdk_impl_List_andThen`). Same class (wrong-shape `ref.cast`); a nested-ADT match
+  on the `Con` payload (`ConNamed fs`/`ConPos _`). Diagnose the ctor/nested-Variant field-extract cast —
+  emitter-only `wasm_emit.mdk`. The native oracle COMPLETES on the same input → close to a running
+  self-hosted front-end.
 - **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it; see
   `TRMC-DESIGN.md` §"Phase 3 … DEFERRED" + WIP `selfhost/bprime-llvm-wip.patch`.
 
