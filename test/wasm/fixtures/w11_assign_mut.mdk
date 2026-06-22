@@ -1,0 +1,5 @@
+-- W11: a `let mut` local reassignment `x = e` (CSAssign) in scalar mode.
+main =
+  let mut x = 1
+  x = x + 41
+  x

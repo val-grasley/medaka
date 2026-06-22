@@ -1,0 +1,7 @@
+-- W11: a destructuring let in the TAIL position of a function body (emitBlockTail
+-- path) — the binds precede the tail expression which is the block result.
+f p =
+  let (x, y) = p
+  x * y
+
+main = f (6, 7)

@@ -1,0 +1,7 @@
+-- W11: a single-constructor (irrefutable) `let Box v = e` destructure — the ctor
+-- field extracts via bindConFields (struct.get at field-index+1).
+data Box = Box Int
+
+main =
+  let Box v = Box 5
+  v + 1

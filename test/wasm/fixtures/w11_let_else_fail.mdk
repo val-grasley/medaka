@@ -1,0 +1,9 @@
+-- W11: a refutable `let pat = e else alt` whose pattern FAILS — control reaches
+-- the else expression (the fail path of patTestBind's br_if).
+data Opt = Nay | Yay Int
+
+f o =
+  let Yay v = o else 999
+  v + 100
+
+main = f Nay
