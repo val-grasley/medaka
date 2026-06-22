@@ -175,7 +175,8 @@ import backend.wasm_preamble.{
   floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
   strSearchRuntimeLines,
   strCodecRuntimeLines, charFromCodeRuntimeLines,
-  charClassRuntimeLines
+  charClassRuntimeLines,
+  ioHostImportLines, ioHostRuntimeLines, ioArgsRuntimeLines
 }
 
 -- ── static value kind (scalar-mode only; for the auto-print routing) ─────────
@@ -456,6 +457,17 @@ useCharFromCodeRef = Ref False
 useCharClassRef : Ref Bool
 useCharClassRef = Ref False
 
+-- W12: the program uses any IO host-surface extern (readFile / fileExists / args /
+-- getEnv / exit).  Gates the IO host imports + the byte-channel marshaling runtime.
+-- All of these touch a $str (path/result), so they also force useStrRef.
+useIORef : Ref Bool
+useIORef = Ref False
+
+-- W12: the program uses `args` specifically — gates ioArgsRuntimeLines, which builds a
+-- Cons list ($C_Cons) and so needs the list types (useListRef is co-forced).
+useArgsRef : Ref Bool
+useArgsRef = Ref False
+
 -- W8b: the names KNOWN to hold a Float in the CURRENT function/impl body — set while
 -- emitting an `impl Num Float` (etc.) method, whose params are Float but appear as bare
 -- CVars the structural detector can't otherwise see.  `cexprIsFloat` consults this so
@@ -528,6 +540,8 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useStrCodecRef False
   let _ = set_ref useCharFromCodeRef False
   let _ = set_ref useCharClassRef False
+  let _ = set_ref useIORef False
+  let _ = set_ref useArgsRef False
   let _ = set_ref tupleAritiesRef []
   let _ = set_ref recFieldsRef (collectRecFields groups)
   let _ = scanProgW7 groups
@@ -549,7 +563,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
     || useListRef.value || useArrayRef.value || useRefBoxRef.value || not (isEmptyList tupleAritiesRef.value)
     || useRngRef.value || useHashRef.value || useFloatRef.value || useStrSearchRef.value
-    || useCharClassRef.value
+    || useCharClassRef.value || useIORef.value
   let typeNames = distinctTypeNames ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
@@ -586,6 +600,8 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useStrCodecRef False
   let _ = set_ref useCharFromCodeRef False
   let _ = set_ref useCharClassRef False
+  let _ = set_ref useIORef False
+  let _ = set_ref useArgsRef False
   let _ = set_ref tupleAritiesRef []
   let _ = set_ref recFieldsRef (collectRecFields groups)
   let _ = scanProgW7 groups
@@ -688,6 +704,11 @@ isLeafExternW name = contains name [
   "charToUpper", "charToLower",
   -- W8b Float leaf externs (produce/consume a boxed $float (ref eq)).
   "intToFloat", "floatToInt", "hashFloat", "randomFloat",
+  -- W12 IO host-surface externs.  readFile/getEnv build a $str-bearing Result/Option,
+  -- fileExists a Bool, args a List String, exit a trap — all routed through
+  -- emitLeafExternRef into the byte-channel host-import runtime.  ($str is forced by
+  -- noteW8Extern, not by listing them under isStrExternW.)
+  "readFile", "fileExists", "args", "getEnv", "exit",
   -- W10: `panic : String -> a` lowers to a `unreachable` trap (stack-polymorphic,
   -- validates as any result type — matches the native @mdk_panic abort).  The message
   -- arg is emitted-then-dropped; printing it to stderr is a nice-to-have not done here.
@@ -712,7 +733,10 @@ externArityW name =
     -- W10: panic msg (1); arrayLength/arrayFromList/arrayCopy (1).
     "panic", "arrayLength", "arrayFromList", "arrayCopy",
     -- W11b: stringToChars/stringFromChars/charFromCode are each 1-arg.
-    "stringToChars", "stringFromChars", "charFromCode"] then 1
+    "stringToChars", "stringFromChars", "charFromCode",
+    -- W12: readFile/fileExists/getEnv/exit take 1 arg; args takes a Unit arg
+    -- (emitted + dropped, like randomFloat).
+    "readFile", "fileExists", "getEnv", "exit", "args"] then 1
   else if contains name ["randomInt", "stringIndexOf", "stringCompare",
     -- W10: arrayGetUnsafe (idx, arr); arrayMake (size, init); arrayMakeWith (size, f).
     "arrayGetUnsafe", "arrayMake", "arrayMakeWith"] then 2
@@ -922,6 +946,16 @@ noteW8Extern name =
   let _ = if contains name ["arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
             "arrayCopy", "arraySetUnsafe", "arrayFromList"] then set_ref useArrayRef True else ()
   let _ = if name == "arrayFromList" then set_ref useListRef True else ()
+  -- W12: the IO host-surface externs.  readFile/fileExists/getEnv/args all build a $str
+  -- (path/result), so force the $str rep; args additionally builds a Cons list (force
+  -- useListRef).  `exit` needs no $str (it lowers to mdk_exit + unreachable) but still
+  -- forces ref-mode via the useRef predicate (useIORef).
+  let _ = if contains name ["readFile", "fileExists", "getEnv", "args"]
+          then set_ref useStrRef True else ()
+  let _ = if name == "args" then set_ref useListRef True else ()
+  let _ = if name == "args" then set_ref useArgsRef True else ()
+  let _ = if contains name ["readFile", "fileExists", "args", "getEnv", "exit"]
+          then set_ref useIORef True else ()
   if contains name ["ePutStr", "ePutStrLn"] then set_ref useEPutRef True else ()
 -- string `++` is the pure-WAT binary concat ($mdk_str_append) — note the leaf op.
 noteW8Binop : String -> <Mut> Unit
@@ -1424,6 +1458,8 @@ emitRefProgram prog groups =
   let imports = ioByteImportLines ++ (if useEPutRef.value then stderrByteImportLines else [])
     -- W8b: floatToString is a host import (the %.12g formatter lives JS-side).
     ++ (if useFloatRef.value then floatFmtImportLines else [])
+    -- W12: the IO host surface (readFile/fileExists/args/getEnv/exit) host imports.
+    ++ (if useIORef.value then ioHostImportLines else [])
   let valNames = progValNames prog
   -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
@@ -1466,12 +1502,17 @@ emitRefProgram prog groups =
   let charFromCodeRt = if useCharFromCodeRef.value then charFromCodeRuntimeLines else []
   -- W11b: char classification + case-mapping helpers (ASCII-only pure WAT).
   let charClassRt = if useCharClassRef.value then charClassRuntimeLines else []
+  -- W12: the IO host-surface marshaling runtime (byte-channel + the five extern bodies).
+  -- The `args` body lives in a separate block (it builds a $C_Cons list, needing the
+  -- list types) gated on useArgsRef.
+  let ioHostRt = if useIORef.value then ioHostRuntimeLines else []
+  let ioArgsRt = if useArgsRef.value then ioArgsRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
             ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
-            ++ strCodecRt ++ charFromCodeRt ++ charClassRt
+            ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt
             ++ dataSegs ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
@@ -3023,6 +3064,26 @@ emitLeafExternRef prog env d "hashFloat" args = match args
 emitLeafExternRef prog env d "randomFloat" args = match args
   [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_random_float"]
   _ => gapL "wasm W8b: randomFloat takes exactly one (Unit) argument"
+-- W12 IO host-surface externs.  readFile/fileExists/getEnv take a $str path/name;
+-- args takes a Unit (dropped); exit takes an i31 Int.  Each routes through the
+-- byte-channel host-import runtime (ioHostRuntimeLines).  readFile returns a Result
+-- (ref eq), fileExists a Bool i31, getEnv an Option (ref eq), args a List (ref eq),
+-- exit traps (mdk_exit + unreachable, stack-polymorphic like panic).
+emitLeafExternRef prog env d "readFile" args = match args
+  [p] => emitRefExpr prog env d p ++ ["ref.cast (ref $str)", "call $mdk_read_file_io"]
+  _ => gapL "wasm W12: readFile takes exactly one argument"
+emitLeafExternRef prog env d "fileExists" args = match args
+  [p] => emitRefExpr prog env d p ++ ["ref.cast (ref $str)", "call $mdk_file_exists_io"]
+  _ => gapL "wasm W12: fileExists takes exactly one argument"
+emitLeafExternRef prog env d "getEnv" args = match args
+  [n] => emitRefExpr prog env d n ++ ["ref.cast (ref $str)", "call $mdk_get_env_io"]
+  _ => gapL "wasm W12: getEnv takes exactly one argument"
+emitLeafExternRef prog env d "args" args = match args
+  [u] => emitRefExpr prog env d u ++ ["drop", "call $mdk_args_io"]
+  _ => gapL "wasm W12: args takes exactly one (Unit) argument"
+emitLeafExternRef prog env d "exit" args = match args
+  [code] => emitRefExpr prog env d code ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_exit", "unreachable"]
+  _ => gapL "wasm W12: exit takes exactly one argument"
 -- W10: `panic msg` → emit the message (a $str (ref eq)), drop it, then `unreachable`.
 -- `unreachable` is a trap and is stack-polymorphic, so it validates as any result
 -- type (mirroring native @mdk_panic, which aborts with empty stdout).

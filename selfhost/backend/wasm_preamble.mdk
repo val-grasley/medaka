@@ -735,6 +735,132 @@ randomFloatRuntimeLines = [
   "        (f64.const 1.0))))",
 ]
 
+-- ── W12 IO host surface (readFile / fileExists / args / getEnv / exit) ───────
+-- The LAST emitter-gap category: the IO externs.  GC refs ($str) cannot cross the
+-- wasm import boundary, so strings are marshaled through a byte-at-a-time channel —
+-- exactly the length+byte protocol the floatToString host seam uses (run.js fmt12g).
+--
+-- Protocol (run.js backs each import with Node fs/process behind a swappable `vfs`
+-- seam so a browser playground can supply an in-memory FS with the same signatures):
+--   SENDING a string TO the host (a path / env-var name): the guest calls
+--     $mdk_path_reset() then loops the arg $str's bytes calling mdk_path_push(byte).
+--   READING a string FROM the host (file contents / env value / arg): after the host
+--     caches the result bytes, the guest reads mdk_result_len() + mdk_result_byte(i)
+--     per byte and rebuilds a fresh $str ($mdk_io_result_to_str).
+--   readFile  : push path, mdk_read_file() -> i32 (1=Ok, 0=Err); rebuild the result
+--     $str and wrap Ok (struct.new $C_Ok, ord 0) / Err (struct.new $C_Err, ord 1).
+--   fileExists: push path, mdk_file_exists() -> i32 (1/0) -> Bool i31.
+--   getEnv    : push name, mdk_get_env() -> i32 (1=Some / 0=None); rebuild $str and
+--     wrap Some (struct.new $C_Some, ord 0) / None (i31 ord 1).
+--   args      : mdk_args_count(); per i build a $str from mdk_arg_len(i)/mdk_arg_byte(i,j),
+--     fold a Cons chain right-to-left ending in Nil (i31 ord 1).
+--   exit      : mdk_exit(i32) host import then `unreachable` (stack-polymorphic).
+-- Gated on useIORef (set by noteW8Extern when any IO extern is referenced).
+export
+ioHostImportLines : List String
+ioHostImportLines = [
+  "  ;; -- W12 IO host surface (byte-channel marshaling, see run.js) --",
+  "  (import \"env\" \"mdk_path_reset\" (func $mdk_path_reset))",
+  "  (import \"env\" \"mdk_path_push\" (func $mdk_path_push (param i32)))",
+  "  (import \"env\" \"mdk_read_file\" (func $mdk_read_file (result i32)))",
+  "  (import \"env\" \"mdk_file_exists\" (func $mdk_file_exists (result i32)))",
+  "  (import \"env\" \"mdk_get_env\" (func $mdk_get_env (result i32)))",
+  "  (import \"env\" \"mdk_args_count\" (func $mdk_args_count (result i32)))",
+  "  (import \"env\" \"mdk_arg_len\" (func $mdk_arg_len (param i32) (result i32)))",
+  "  (import \"env\" \"mdk_arg_byte\" (func $mdk_arg_byte (param i32) (param i32) (result i32)))",
+  "  (import \"env\" \"mdk_result_len\" (func $mdk_result_len (result i32)))",
+  "  (import \"env\" \"mdk_result_byte\" (func $mdk_result_byte (param i32) (result i32)))",
+  "  (import \"env\" \"mdk_exit\" (func $mdk_exit (param i32)))",
+]
+
+-- the IO host-surface runtime: the byte-channel marshalers + the five extern bodies.
+-- $str-dependent (every path/result is a $str) and $C_Ok/$C_Err/$C_Some/$T_List are
+-- always declared in ref-mode, so these are always in scope when emitted.
+export
+ioHostRuntimeLines : List String
+ioHostRuntimeLines = [
+  "  ;; -- W12 IO host-surface runtime --",
+  "  ;; push a $str's bytes to the host path buffer (reset first).",
+  "  (func $mdk_push_path (param $s (ref $str))",
+  "    (local $b (ref $u8arr)) (local $i i32) (local $n i32)",
+  "    (call $mdk_path_reset)",
+  "    (local.set $b (struct.get $str $bytes (local.get $s)))",
+  "    (local.set $n (array.len (local.get $b)))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (call $mdk_path_push (array.get_u $u8arr (local.get $b) (local.get $i)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))",
+  "    )",
+  "  ;; rebuild a fresh $str from the host result buffer (length + byte-at-index).",
+  "  ;; cp_count = byte_len here is a deliberate approximation: the result buffer holds",
+  "  ;; UTF-8 bytes whose codepoint count may be < byte length, but $str's cp_count is",
+  "  ;; only consulted by stringLength / codepoint ops; file contents flow byte-verbatim",
+  "  ;; through print, where cp_count is unused.  (Matches how floatToString sets cp_count",
+  "  ;; = byte_len for its ASCII output.)",
+  "  (func $mdk_io_result_to_str (result (ref $str))",
+  "    (local $n i32) (local $i i32) (local $buf (ref $u8arr))",
+  "    (local.set $n (call $mdk_result_len))",
+  "    (local.set $buf (array.new $u8arr (i32.const 0) (local.get $n)))",
+  "    (local.set $i (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (array.set $u8arr (local.get $buf) (local.get $i) (call $mdk_result_byte (local.get $i)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))",
+  "    (struct.new $str (local.get $n) (local.get $buf)))",
+  "  ;; readFile : $str path -> Result String String.  1=Ok contents / 0=Err message.",
+  "  (func $mdk_read_file_io (param $path (ref $str)) (result (ref eq))",
+  "    (local $st i32)",
+  "    (call $mdk_push_path (local.get $path))",
+  "    (local.set $st (call $mdk_read_file))",
+  "    (if (result (ref eq)) (local.get $st)",
+  "      (then (struct.new $C_Ok (i32.const 0) (call $mdk_io_result_to_str)))",
+  "      (else (struct.new $C_Err (i32.const 1) (call $mdk_io_result_to_str)))))",
+  "  ;; fileExists : $str path -> Bool (i31 ordinal: False=0 / True=1).",
+  "  (func $mdk_file_exists_io (param $path (ref $str)) (result (ref eq))",
+  "    (call $mdk_push_path (local.get $path))",
+  "    (ref.i31 (call $mdk_file_exists)))",
+  "  ;; getEnv : $str name -> Option String.  1=Some value / 0=None.",
+  "  (func $mdk_get_env_io (param $name (ref $str)) (result (ref eq))",
+  "    (local $st i32)",
+  "    (call $mdk_push_path (local.get $name))",
+  "    (local.set $st (call $mdk_get_env))",
+  "    (if (result (ref eq)) (local.get $st)",
+  "      (then (struct.new $C_Some (i32.const 0) (call $mdk_io_result_to_str)))",
+  "      (else (ref.i31 (i32.const 1)))))",
+]
+
+-- the `args` extern body — split out from ioHostRuntimeLines because it references
+-- the cons-list types ($C_Cons / Nil), which are only declared when the program uses
+-- a list.  Gated on useArgsRef (set when `args` is referenced, which also forces
+-- useListRef so $C_Cons is in scope).
+export
+ioArgsRuntimeLines : List String
+ioArgsRuntimeLines = [
+  "  ;; build a $str from the i-th host arg (mdk_arg_len(i) + mdk_arg_byte(i,j)).",
+  "  (func $mdk_arg_to_str (param $idx i32) (result (ref $str))",
+  "    (local $n i32) (local $j i32) (local $buf (ref $u8arr))",
+  "    (local.set $n (call $mdk_arg_len (local.get $idx)))",
+  "    (local.set $buf (array.new $u8arr (i32.const 0) (local.get $n)))",
+  "    (local.set $j (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $j) (local.get $n)))",
+  "      (array.set $u8arr (local.get $buf) (local.get $j) (call $mdk_arg_byte (local.get $idx) (local.get $j)))",
+  "      (local.set $j (i32.add (local.get $j) (i32.const 1))) (br $l)))",
+  "    (struct.new $str (local.get $n) (local.get $buf)))",
+  "  ;; args : Unit -> List String.  Fold a Cons chain right-to-left ending in Nil.",
+  "  (func $mdk_args_io (result (ref eq))",
+  "    (local $c i32) (local $i i32) (local $acc (ref eq))",
+  "    (local.set $c (call $mdk_args_count))",
+  "    (local.set $acc (ref.i31 (i32.const 1)))",  -- Nil
+  "    (local.set $i (i32.sub (local.get $c) (i32.const 1)))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.lt_s (local.get $i) (i32.const 0)))",
+  "      (local.set $acc (struct.new $C_Cons (i32.const 0) (call $mdk_arg_to_str (local.get $i)) (local.get $acc)))",
+  "      (local.set $i (i32.sub (local.get $i) (i32.const 1))) (br $l)))",
+  "    (local.get $acc))",
+]
+
 -- ── W8b string index-of / compare ($str-dependent) ───────────────────────────
 -- $mdk_str_index_of(needle, hay) -> Option Int (ref eq): the first BYTE-level match's
 -- codepoint index as `Some idx`, or `None` if absent (empty needle -> Some 0).  Builds

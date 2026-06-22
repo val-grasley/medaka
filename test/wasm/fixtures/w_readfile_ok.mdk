@@ -1,0 +1,6 @@
+-- W12 IO: readFile of a known sibling file — print its contents (Ok) byte-verbatim.
+-- The path is relative to the gate's cwd (ROOT); the native oracle and run.js both
+-- resolve it there.  Oracle = `medaka build` (real readFile); wasm via the host seam.
+main = match readFile "test/wasm/fixtures/w_readfile_data.txt"
+  Ok contents => putStr contents
+  Err msg => putStrLn ("ERR: " ++ msg)
