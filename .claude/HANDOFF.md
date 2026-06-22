@@ -149,16 +149,16 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   `inc : a -> a`, `main : Int`) **byte-identical to the native compiled `check_main` oracle** — the ONLY diff
   is a trailing `0` (the Unit-main auto-print residual below). This is the `WASM-SELFHOST-ROADMAP.md` layer-12
   "diff schemes vs native = self-host-of-the-front-end demo" — MET.
-- **🟡 NEXT (small) — layer-13 cosmetic: wasm value-main prints check_main's own `main`'s trailing `0`.**
-  The native backend suppresses a Unit/exit-code main auto-print (`mainIsUnit` gate in `llvm_emit.mdk`, memory
-  `project_unit_main_no_autoprint`); `wasm_emit.mdk` lacks the equivalent → `check_main`'s output ends
-  `main : Int0` vs native `main : Int`. Port the `mainIsUnit` suppression to `wasm_emit` (trivial, emitter-only).
-- **🟡 BEYOND THE FRONT-END (the real end goal):** `check_main` is the FRONT-END only (lex→typecheck). The
-  browser-playground goal (`WASM-SELFHOST-ROADMAP.md` §goal) is the WHOLE compiler on WasmGC, which also needs
-  the BACKEND stages (Core IR lowering + the wasm/llvm EMITTER) to run compiled — a further frontier (more
-  runtime-miscompile layers on bigger/more-varied inputs; the emitter is far larger than the front-end). Also:
-  re-run check_main on MORE input shapes (records/ADTs/effects/multi-module) to surface more miscompile layers
-  before declaring the front-end fully self-hosting.
+- **🏁 layer-13 CLOSED (`e7cd369`) — check_main WasmGC output EXACTLY byte-identical to native** (trailing
+  Unit-main `0` gone; `mainBodyIsUnit` now descends `match`/`block` bodies, approach B). Verified byte-identical.
+- **🟢 EMITTER ON WasmGC — THE PUSH IS ON (the whole-compiler / browser-playground goal).** Recon (read-only,
+  2026-06-22): the frontier is ~ONE emit-gap wide, NOT a 12-layer peel — the emitter compiling its OWN graph
+  (`wasm_emit_modules_main.mdk`, roots `<selfhost> <stdlib>`) records exactly ONE blocker: `routeWitness`
+  (`wasm_emit.mdk:2522`) gaps a NESTED requires-dict (`RKey tag [reqs]`, `__tuple2__` from `Debug (HashMap k v)`
+  via `dce.mdk`'s lone stdlib `import hash_map`). Fix = port `llvm_emit.mdk:2896`'s nested-dict-cell rep (emit +
+  consume sides) — emitter-only. **An agent is closing it now**, then: census→0 → emit emitter→parse→validate→run
+  under Node → diff vs native for byte-identity → peel residual runtime layers (few; shared codepaths). FOOTGUN:
+  build scripts need `bash` not `sh`.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router

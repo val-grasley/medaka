@@ -141,11 +141,11 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   `diff_wasm` 137. **VERIFIED:** `check_main` (lex→parse→resolve→exhaust→typecheck) compiled to WasmGC runs to
   COMPLETION under Node, printing all 88 schemes byte-identical to the native compiled oracle (only diff = a
   trailing Unit-main `0`). This IS the layer-12 "diff schemes vs native = self-host-of-the-front-end demo" — MET.
-- 🟡 **layer-13 (cosmetic, in progress)** — wasm value-main prints check_main's own Unit `main`'s trailing
-  `0`. Native `mainIsUnit` has TWO branches: declared sig (`declSigOf`) AND inferred body type (`mty==LTUnit`).
-  A first attempt ported only branch 1 (`declRetTypeOf "main"`) — INEFFECTIVE (check_main's `main` is unannotated
-  `match args () {…}` → Unit only by inference). Redo in progress: thread the inferred type OR structurally detect
-  Unit through the `match` body. Emitter-only (unless inferred-type recording needs `core_ir_lower`).
+- 🏁 **layer-13 CLOSED (`e7cd369`, emitter-only)** — check_main WasmGC output is now EXACTLY byte-identical to
+  native (trailing Unit-main `0` gone). Native `mainIsUnit` has two branches (declared sig + inferred body
+  `LTUnit`); a first attempt ported only branch 1 (`declRetTypeOf`) and was INEFFECTIVE (check_main's `main` is
+  unannotated). Fix (approach B): `mainBodyIsUnit` now descends `CMatch`/`CDecision`/`CBlock` — Unit iff every
+  tail leaf is Unit (conservative; never suppresses a value main). Verified byte-identical by the orchestrator.
 - 🟢 **BEYOND — the EMITTER on WasmGC (the whole-compiler / browser-playground goal). RECON DONE
   (2026-06-22): the frontier is ~ONE emit-gap wide, NOT a 12-layer peel.** Target = `wasm_emit_modules_main.mdk`
   (emits WAT), invoked with roots `<selfhost> <stdlib>`. A full gap-census of the emitter compiling its OWN graph
