@@ -828,7 +828,7 @@ scanExprW7 e = match e
   CBinPrim op l r => let _ = noteW8Binop op in let _ = scanExprW7 l in scanExprW7 r
   CUnOp _ x => scanExprW7 x
   CIf c t f => let _ = scanExprW7 c in let _ = scanExprW7 t in scanExprW7 f
-  CLet _ _ a b => let _ = scanExprW7 a in scanExprW7 b
+  CLet _ pat a b => let _ = scanPatW7 pat in let _ = scanExprW7 a in scanExprW7 b
   CBlock stmts => forEachU scanStmtW7 stmts
   CDecision scrut arms tree => let _ = scanExprW7 scrut in let _ = forEachU (a => scanArmW7 a) arms in scanTreeW7 tree
   CMatch scrut arms => let _ = scanExprW7 scrut in forEachU (a => scanArmW7 a) arms
@@ -896,8 +896,9 @@ scanGuardW7 (CGBind p e) = let _ = scanPatW7 p in scanExprW7 e
 
 scanStmtW7 : CStmt -> <Mut> Unit
 scanStmtW7 (CSExpr e) = scanExprW7 e
-scanStmtW7 (CSLet _ _ e) = scanExprW7 e
-scanStmtW7 _ = ()
+scanStmtW7 (CSLet _ pat e) = let _ = scanPatW7 pat in scanExprW7 e
+scanStmtW7 (CSLetElse pat e els) = let _ = scanPatW7 pat in let _ = scanExprW7 e in scanExprW7 els
+scanStmtW7 (CSAssign _ e) = scanExprW7 e
 
 -- a pattern's collection heads: a cons/nil/list pattern → list; a tuple pattern → its arity.
 scanPatW7 : Pat -> <Mut> Unit
@@ -1345,6 +1346,13 @@ emitBlockI32 fnNames valNames env ((CSLet _ PWild ex)::rest) =
   let (i1, _) = emitScalarExpr fnNames valNames env ex
   let (i2, ty) = emitBlockI32 fnNames valNames env rest
   (i1 ++ ["drop"] ++ i2, ty)
+-- W11: a `let mut x` reassignment `x = e` in scalar mode — `x` is already an i32
+-- local (the originating `let mut`'s PVar is declared by collectExprLocals); just
+-- recompute and re-set it.  (Scalar mode is i32-only, so the value is an i32.)
+emitBlockI32 fnNames valNames env ((CSAssign x ex)::rest) =
+  let (i1, _) = emitScalarExpr fnNames valNames env ex
+  let (i2, ty) = emitBlockI32 fnNames valNames env rest
+  (i1 ++ ["local.set $" ++ gname x] ++ i2, ty)
 emitBlockI32 _ _ _ [] = gapLTy "scalar-mode: empty block"
 emitBlockI32 _ _ _ _ = gapLTy "scalar-mode: unsupported block statement"
 
@@ -2637,6 +2645,61 @@ emitIfRef prog env d c t f =
   let fi = emitRefExpr prog env d f
   ci ++ ["if (result (ref eq))"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end"]
 
+-- ── W11: irrefutable destructuring let / refutable let-else / assignment ──────
+-- An irrefutable `let <pat> = e` (PTuple / single-ctor PCon / PRecord / PCons /
+-- PList — all single-shape here, the type proves the shape): emit the RHS once,
+-- stash it into the scratch local `$__rf<de>` (de = one slot above whatever the
+-- RHS uses, so it never collides), then bind each sub-pattern by field extraction
+-- (reusing bindPatRef, the same machinery match-arm leaves use).  Returns the
+-- stash+bind instructions and the env extended with the bound vars.
+emitDestructureLet : Prog -> List String -> Int -> Pat -> CExpr -> <Mut> (List String, List String)
+emitDestructureLet prog env d pat e1 =
+  let de = maxIndexAt e1 d + 1
+  let sv = scratchLocal de
+  let rhs = emitRefExpr prog env d e1 ++ ["local.set $" ++ sv]
+  let (binds, env2) = bindPatRef prog env pat ["local.get $" ++ sv]
+  (rhs ++ binds, env2)
+
+-- a refutable `let <pat> = e else <els>`: emit e, stash, test the pattern; on a
+-- mismatch run `els` (which diverges / returns a value of the same block type);
+-- on a match bind the sub-vars and continue with `rest` (the block continuation,
+-- passed as the already-emitted instructions producing the block's result value).
+emitLetElse : Prog -> List String -> Int -> Pat -> CExpr -> CExpr -> (List String -> <Mut> List String) -> <Mut> List String
+emitLetElse prog env d pat e1 els kont =
+  let de = maxIndexAt e1 d + 1
+  let sv = scratchLocal de
+  let okL = "$le_ok" ++ intToString de
+  let failL = "$le_fail" ++ intToString de
+  let (tests, binds, env2) = patTestBind prog pat ["local.get $" ++ sv] failL env
+  let elsI = emitRefExpr prog env d els
+  let cont = kont env2
+  ["block " ++ okL ++ " (result (ref eq))"]
+    ++ indent (["block " ++ failL]
+               ++ indent (emitRefExpr prog env d e1 ++ ["local.set $" ++ sv]
+                          ++ tests ++ binds ++ cont ++ ["br " ++ okL])
+               ++ ["end"]
+               ++ elsI)
+    ++ ["end"]
+
+-- tail-position `let <pat> = e else <els>`: both the continuation and the else are
+-- in tail position (they return / return_call), so no result block / br is needed —
+-- the fail block falls through to the tail `els` and the match path's continuation
+-- returns directly from within the block.
+emitLetElseTail : Prog -> List String -> Int -> Pat -> CExpr -> CExpr -> (List String -> <Mut> List String) -> <Mut> List String
+emitLetElseTail prog env arity pat e1 els kont =
+  let de = maxIndexAt e1 0 + 1
+  let sv = scratchLocal de
+  let failL = "$le_failt" ++ intToString de
+  let (tests, binds, env2) = patTestBind prog pat ["local.get $" ++ sv] failL env
+  let elsI = emitRefTail prog env arity els
+  let cont = kont env2
+  ["block " ++ failL]
+    ++ indent (emitRefExpr prog env 0 e1 ++ ["local.set $" ++ sv]
+               ++ tests ++ binds ++ cont)
+    ++ ["end"]
+    ++ elsI
+
+
 emitLetRef : Prog -> List String -> Int -> Bool -> Pat -> CExpr -> CExpr -> <Mut> List String
 emitLetRef prog env d False (PVar x) e1 e2 =
   let i1 = emitRefExpr prog env d e1
@@ -2646,7 +2709,10 @@ emitLetRef prog env d False PWild e1 e2 =
   let i1 = emitRefExpr prog env d e1
   let i2 = emitRefExpr prog env d e2
   i1 ++ ["drop"] ++ i2
-emitLetRef _ _ _ _ _ _ _ = gapL "ref-mode: only non-recursive `let x = e` / `let _ = e`"
+emitLetRef prog env d False pat e1 e2 =
+  let (binds, env2) = emitDestructureLet prog env d pat e1
+  binds ++ emitRefExpr prog env2 d e2
+emitLetRef _ _ _ _ _ _ _ = gapL "ref-mode: recursive `let` binding"
 
 emitBlockRef : Prog -> List String -> Int -> List CStmt -> <Mut> List String
 emitBlockRef prog env d [(CSExpr ex)] = emitRefExpr prog env d ex
@@ -2656,6 +2722,13 @@ emitBlockRef prog env d ((CSLet _ (PVar x) ex)::rest) =
   emitRefExpr prog env d ex ++ ["local.set $" ++ gname x] ++ emitBlockRef prog (x :: env) d rest
 emitBlockRef prog env d ((CSLet _ PWild ex)::rest) =
   emitRefExpr prog env d ex ++ ["drop"] ++ emitBlockRef prog env d rest
+emitBlockRef prog env d ((CSLet _ pat ex)::rest) =
+  let (binds, env2) = emitDestructureLet prog env d pat ex
+  binds ++ emitBlockRef prog env2 d rest
+emitBlockRef prog env d ((CSLetElse pat ex els)::rest) =
+  emitLetElse prog env d pat ex els (env2 => emitBlockRef prog env2 d rest)
+emitBlockRef prog env d ((CSAssign x ex)::rest) =
+  emitRefExpr prog env d ex ++ ["local.set $" ++ gname x] ++ emitBlockRef prog env d rest
 emitBlockRef _ _ _ [] = gapL "ref-mode: empty block"
 emitBlockRef _ _ _ _ = gapL "ref-mode: unsupported block statement"
 
@@ -3049,6 +3122,13 @@ emitBlockTail prog env arity ((CSLet _ (PVar x) ex)::rest) =
   emitRefExpr prog env 0 ex ++ ["local.set $" ++ gname x] ++ emitBlockTail prog (x :: env) arity rest
 emitBlockTail prog env arity ((CSLet _ PWild ex)::rest) =
   emitRefExpr prog env 0 ex ++ ["drop"] ++ emitBlockTail prog env arity rest
+emitBlockTail prog env arity ((CSLet _ pat ex)::rest) =
+  let (binds, env2) = emitDestructureLet prog env 0 pat ex
+  binds ++ emitBlockTail prog env2 arity rest
+emitBlockTail prog env arity ((CSLetElse pat ex els)::rest) =
+  emitLetElseTail prog env arity pat ex els (env2 => emitBlockTail prog env2 arity rest)
+emitBlockTail prog env arity ((CSAssign x ex)::rest) =
+  emitRefExpr prog env 0 ex ++ ["local.set $" ++ gname x] ++ emitBlockTail prog env arity rest
 emitBlockTail _ _ _ [] = gapL "ref-mode: empty block in tail position"
 emitBlockTail _ _ _ _ = gapL "ref-mode: unsupported block statement in tail position"
 
@@ -3864,7 +3944,7 @@ patName _ = gapS "only PVar/PWild parameters (pattern params are inner-match mat
 collectExprLocals : CExpr -> List String
 collectExprLocals e = match e
   CLet _ (PVar x) e1 e2 => x :: (collectExprLocals e1 ++ collectExprLocals e2)
-  CLet _ _ e1 e2 => collectExprLocals e1 ++ collectExprLocals e2
+  CLet _ pat e1 e2 => patVars pat ++ (collectExprLocals e1 ++ collectExprLocals e2)
   CBinPrim _ l r => collectExprLocals l ++ collectExprLocals r
   CUnOp _ x => collectExprLocals x
   CIf c t f => collectExprLocals c ++ collectExprLocals t ++ collectExprLocals f
@@ -3881,8 +3961,9 @@ collectExprLocals e = match e
 collectStmtLocals : CStmt -> List String
 collectStmtLocals (CSExpr ex) = collectExprLocals ex
 collectStmtLocals (CSLet _ (PVar x) ex) = x :: collectExprLocals ex
-collectStmtLocals (CSLet _ _ ex) = collectExprLocals ex
-collectStmtLocals _ = []
+collectStmtLocals (CSLet _ pat ex) = patVars pat ++ collectExprLocals ex
+collectStmtLocals (CSLetElse pat ex els) = patVars pat ++ collectExprLocals ex ++ collectExprLocals els
+collectStmtLocals (CSAssign _ ex) = collectExprLocals ex
 
 -- ── W7 scratch-local declarations ────────────────────────────────────────────
 -- The range/index/slice/record-update codegen uses depth-keyed scratch locals
@@ -4157,7 +4238,7 @@ maxIndexAt e d = match e
     let armsI = foldMaxI (map (a => maxIndexAt (armBody a) (d + 1)) arms)
     maxI d (maxI scrutI armsI)
   CIf c t f => maxI (maxIndexAt c d) (maxI (maxIndexAt t d) (maxIndexAt f d))
-  CLet _ _ a b => maxI (maxIndexAt a d) (maxIndexAt b d)
+  CLet _ pat a b => maxI (letStashIndex pat a d) (maxI (maxIndexAt a d) (maxIndexAt b d))
   CBinPrim _ a b => maxI (maxIndexAt a d) (maxIndexAt b d)
   CUnOp _ a => maxIndexAt a d
   CApp f a => maxI (maxIndexAt f d) (maxIndexAt a d)
@@ -4177,8 +4258,20 @@ treeSwitchNesting (CTSwitch branches dft) =
 
 maxIndexAtStmt : CStmt -> Int -> Int
 maxIndexAtStmt (CSExpr e) d = maxIndexAt e d
-maxIndexAtStmt (CSLet _ _ e) d = maxIndexAt e d
-maxIndexAtStmt _ d = d - 1
+maxIndexAtStmt (CSLet _ pat e) d = maxI (letStashIndex pat e d) (maxIndexAt e d)
+maxIndexAtStmt (CSLetElse pat e els) d =
+  maxI (letStashIndex pat e d) (maxI (maxIndexAt e d) (maxIndexAt els d))
+maxIndexAtStmt (CSAssign _ e) d = maxIndexAt e d
+
+-- the scratch-local index a let/block-let with `pat` against RHS `e` (emitted at
+-- depth d) needs to stash its RHS, or d-1 (no stash) for a PVar/PWild bind which
+-- needs no scratch.  An irrefutable destructure stashes the RHS one slot ABOVE
+-- whatever the RHS itself uses, so the stash never collides with the RHS's own
+-- scratch and is live only while the sub-patterns extract their fields.
+letStashIndex : Pat -> CExpr -> Int -> Int
+letStashIndex (PVar _) _ d = d - 1
+letStashIndex PWild _ d = d - 1
+letStashIndex _ e d = maxIndexAt e d + 1
 
 -- the highest scratch index used emitting a decision tree at depth d (a CTSwitch
 -- stashes the focus at index d and recurses subtrees at d+1; leaves/guards re-emit

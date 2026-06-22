@@ -1,0 +1,5 @@
+-- W11: a NESTED tuple destructure — `((a, b), c)` recurses bindPatRef through the
+-- inner $C_Tup2 field of the outer tuple.
+main =
+  let ((a, b), c) = ((1, 2), 3)
+  a + b + c

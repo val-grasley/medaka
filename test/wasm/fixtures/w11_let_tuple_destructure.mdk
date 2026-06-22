@@ -1,0 +1,5 @@
+-- W11: an irrefutable tuple-destructuring let in expression position.  The RHS
+-- struct is stashed once and each PVar binds via struct.get (bindPatRef reuse).
+main =
+  let (a, b) = (3, 4)
+  a + b
