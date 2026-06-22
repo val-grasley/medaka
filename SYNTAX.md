@@ -420,11 +420,17 @@ Set { 1, 2, 3 }
 ## Layout notes
 
 - **Indentation-sensitive** (INDENT/DEDENT/NEWLINE). No braces for blocks.
-- An expression RHS **cannot** wrap onto a second indented line, *except* when
-  the continuation line *starts* with a leading binary operator
-  (`|> >> << && || ++`), which continues the expression.
-- `then` cannot start a line. (`else` *may* — it is treated as a continuation
-  of the preceding `if`.)
+- For the exact wrapping rules, see `LAYOUT-SEMANTICS.md` §11. In brief:
+  a deeper-indented line continues the current logical line (no `INDENT`) when
+  the previous token is a trailing-continuation operator, **or** the line starts
+  with a leading-continuation operator (`|> >> << && || ++ ::`), **or** the
+  previous token can end an expression and the new line starts with an atom.
+  Otherwise the deeper line opens a block, causing a parse error in expression-RHS
+  position.
+- `then` **may** start a line — like `else`, a leading `then` continues the
+  enclosing `if` (§5.4 of `LAYOUT-SEMANTICS.md`).
+- Tabs round to the next multiple of 8 (`LAYOUT-SEMANTICS.md` §3); mixing a tab
+  after spaces in indentation can produce surprising column values.
 
 ---
 

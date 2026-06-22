@@ -267,6 +267,7 @@ Dev probes (build to `_build/default/dev/`):
   - **Function-clause refutable guards** (`f n | Some v <- e = v`) — guard gating *and* the bound var scoping into the body. (They desugar to if-chains, not `CTGuard`.)
   - **Match-arm refutable guards** (`x if Some v <- e => body`) — gate correctly, bind scopes rightward into *later qualifiers* (`Some v <- e, v > 0`) **and into the arm body** (`=> v`). This last part was a **native-only** bug (OCaml `lib/resolve.ml` + `lib/typecheck.ml` always threaded the binder; the selfhost `frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArm` did not, so the body saw `UnboundVariable`). Fixed 2026-06-15 by threading the guard binders through later qualifiers and into the body in both selfhost passes — `medaka run` always evaluated it correctly, only `check` rejected it.
   Fixtures: `test/llvm_fixtures/guard_match_{chain,ctor}.mdk`.
+- **For layout questions** (what indentation shapes are legal, leading-op set, then/else, tabs, let…in wrapping), `LAYOUT-SEMANTICS.md` is the ground truth. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug.
 
 ## Dogfooding the language
 
@@ -355,6 +356,7 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 |-----|--------------|
 | `README.md` | Full build/test/CLI usage, editor setup, layout |
 | `SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `parser.mly`. Ground truth over `language-design.md` when they disagree |
+| `LAYOUT-SEMANTICS.md` | Offside-rule layout spec — the formal ground truth for layout work. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug (§12.4). Start here for any layout investigation |
 | `language-design.md` | Language design & semantics (intent/rationale — may describe unimplemented features) |
 | `PLAN.md` | Forward-looking roadmap (open phases) |
 | `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
