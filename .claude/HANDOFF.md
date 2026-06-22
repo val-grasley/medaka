@@ -33,17 +33,26 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   undefined fn). Validate layer (peeled class-by-class): eta-saturate plain constrained fns
   (`elem=fold…`), ctor-as-value eta-closures, and the litswitch phantom-`if`-result-in-nested-tower
   bug. Gate: **`test/wasm/assemble_check_main.sh`** (ASSEMBLE_OK + VALIDATE_OK).
-- **🏁 The self-hosted LEXER RUNS under Node byte-identical to native.** Runtime layer-1 fixed:
-  `debugStringLit`/`debugCharLit` were stubbed to `unreachable` but the real lexer calls them on
-  every token; added a real WAT escape runtime byte-identical to `lib/eval.ml`.
-- **🟡 IN PROGRESS — runtime layer-2: the self-hosted PARSER null-derefs.** Localized to
-  `runP parseProgram` (`frontend/parser.mdk:3108`), **data-independent** (`parse ""` alone crashes);
-  the basic closure-in-ADT shape is ruled out (a 2-arg P monad runs fine). A bisection agent is
-  narrowing it (suspect: parser module-level loc `Ref` global-init OR a knot-tied/forward-referenced
-  combinator read-before-init — a closure/global ordering bug the lexer doesn't have). **This is the
-  next frontier:** fix it → `check_main` runs → diff its inferred schemes vs the native oracle = the
-  self-hosted-front-end-on-WasmGC demo. Then the back stages, then `medaka_cli` (needs `json` module
-  + the deliberately-skipped runCommand/writeFile for `build`).
+- **🏁 The self-hosted LEXER and PARSER RUN under Node.** Runtime layer-1: `debugStringLit`/
+  `debugCharLit` were stubbed to `unreachable` but the real lexer quotes every token — added a real
+  WAT escape runtime byte-identical to `lib/eval.ml`. Runtime layer-2 (parser): top-level nullary
+  value globals (CAF combinator ladder, `parseAppend = chainl1 parseAdd …`) were init'd in SOURCE
+  order → a forward-referenced global was still `ref.null` when read (`ref.as_non_null` trap). Fixed
+  by **topo-sorting value-global inits by EAGER (non-closure) deps** (ported the LLVM backend's
+  `eagerVars`/`orderedValBinds`; the subtlety: do NOT descend lambda bodies — closures resolve globals
+  at call-time, so only non-lambda refs are init-order deps). `lex_main`/`parse_main` run under Node.
+- **🟡 IN PROGRESS — runtime layer-3: `check_main` traps "illegal cast" at instantiate.** Gets past
+  lex+parse global-init but a resolve/exhaust/typecheck top-level value global's init does a `ref.cast`
+  to the wrong runtime shape (NOT the Nil/Cons path — that's i31-guarded). An agent is localizing
+  which module/global. **The next frontier:** fix it → `check_main` runs → diff its inferred schemes
+  vs the native oracle = the self-hosted-front-end-on-WasmGC demo. Then back stages, then `medaka_cli`
+  (needs `json` module + the deliberately-skipped runCommand/writeFile for `build`).
+- **HARNESS NOTE for the final byte-diff demo:** `test/wasm/run.js`'s `args` host import appears to NOT
+  split a multi-token `MDK_ARGS` into separate argv entries (parse_main got the whole
+  `"runtime.mdk core.mdk trivial.mdk"` string as ONE readFile path → ENOENT). The instantiate-phase
+  crashes the agents target are BEFORE args (so unaffected), but the eventual `check_main`-byte-identical
+  demo needs run.js to split MDK_ARGS correctly (or pass argv another way). Verify/fix run.js's arg
+  marshaling before the end-to-end demo.
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).
 - **METHODOLOGY notes from this arc:** (1) the per-binding census measures EMITTABILITY only — it is
