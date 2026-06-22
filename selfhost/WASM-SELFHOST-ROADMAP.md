@@ -141,12 +141,22 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   `diff_wasm` 137. **VERIFIED:** `check_main` (lex→parse→resolve→exhaust→typecheck) compiled to WasmGC runs to
   COMPLETION under Node, printing all 88 schemes byte-identical to the native compiled oracle (only diff = a
   trailing Unit-main `0`). This IS the layer-12 "diff schemes vs native = self-host-of-the-front-end demo" — MET.
-- 🟡 **layer-13 (small/cosmetic)** — wasm value-main prints check_main's own `main`'s trailing `0`; port the
-  native `mainIsUnit` auto-print suppression to `wasm_emit` (trivial, emitter-only).
-- 🟡 **BEYOND:** `check_main` is the FRONT-END only. The whole-compiler-on-WasmGC goal needs the BACKEND
-  (Core IR lower + the wasm/llvm emitter) compiled too — a further frontier (more miscompile layers; the
-  emitter dwarfs the front-end). Also exercise check_main on more input shapes (records/ADTs/effects/multi-module)
-  to surface remaining miscompiles.
+- 🟡 **layer-13 (cosmetic, in progress)** — wasm value-main prints check_main's own Unit `main`'s trailing
+  `0`. Native `mainIsUnit` has TWO branches: declared sig (`declSigOf`) AND inferred body type (`mty==LTUnit`).
+  A first attempt ported only branch 1 (`declRetTypeOf "main"`) — INEFFECTIVE (check_main's `main` is unannotated
+  `match args () {…}` → Unit only by inference). Redo in progress: thread the inferred type OR structurally detect
+  Unit through the `match` body. Emitter-only (unless inferred-type recording needs `core_ir_lower`).
+- 🟢 **BEYOND — the EMITTER on WasmGC (the whole-compiler / browser-playground goal). RECON DONE
+  (2026-06-22): the frontier is ~ONE emit-gap wide, NOT a 12-layer peel.** Target = `wasm_emit_modules_main.mdk`
+  (emits WAT), invoked with roots `<selfhost> <stdlib>`. A full gap-census of the emitter compiling its OWN graph
+  records EXACTLY ONE blocker: `routeWitness` (`wasm_emit.mdk:2522`) gaps a NESTED requires-dict witness
+  (`RKey tag [reqs]`, the `__tuple2__` from `Debug (HashMap k v)` — pulled in by `dce.mdk`'s lone `import hash_map`).
+  Everything else lowers (the 12 front-end layers built shared slices the emitter reuses). **Fix = port
+  `llvm_emit.mdk:2896-2898`'s nested-dict-cell rep into wasm `routeWitness` + the RKey-direct-call consumption side
+  (emitter-only, ~1 layer).** Then re-census→0, emit→parse→validate→run under Node, diff vs native
+  `test/bin/wasm_emit_modules_main` for byte-identity, peel any residual runtime layers (few — shared codepaths).
+  FOOTGUN: build scripts need `bash` not `sh`. (Also: `dce.mdk → stdlib hash_map` is an AGENTS.md violation;
+  prefer fixing the witness gap generally over removing hash_map.)
 - **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it; see
   `TRMC-DESIGN.md` §"Phase 3 … DEFERRED" + WIP `selfhost/bprime-llvm-wip.patch`.
 
