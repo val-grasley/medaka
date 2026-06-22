@@ -1,0 +1,12 @@
+IDENT "r"
+EQUAL
+IDENT "identity"
+INT 5
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+IDENT "r"
+NEWLINE
+NEWLINE
+EOF

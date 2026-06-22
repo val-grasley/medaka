@@ -982,6 +982,8 @@ wouldIndent col off stack rest prev opener
   | opener || not (prevCanEnd prev) = (TIndent, off) :: layout rest (col :: stack) None False
   | otherwise = resolveCont col off stack rest prev opener
 
+-- conforms to LAYOUT-SEMANTICS.md §5.4 (Stage B deeper-line then/else path);
+-- edits must keep both mechanisms in step (LAYOUT-CONFORMANCE-ROADMAP WS-2).
 resolveCont : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List (Token, Int)
 resolveCont col off stack ((RTok t toff tend)::more) prev opener
   | canStartAtom t = layout (RTok t toff tend :: more) stack prev opener
@@ -1008,6 +1010,8 @@ closeDedents [_] off = [(TEof, off)]
 closeDedents (_::tl) off =
   (TDedent, off) :: (TNewline, off) :: closeDedents tl off
 
+-- conforms to LAYOUT-SEMANTICS.md §5.4; edits must keep both mechanisms in step
+-- (LAYOUT-CONFORMANCE-ROADMAP WS-2). See also resolveCont above.
 -- Phase 122 else-continuation filter: drop a NEWLINE immediately before ELSE
 -- or THEN (a `then`/`else` leading the next line continues the enclosing `if`).
 elseFilter : List (Token, Int) -> List (Token, Int)

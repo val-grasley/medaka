@@ -685,6 +685,8 @@ let rec token (lexbuf : Lexing.lexbuf) : token =
      | Some col -> resolve_pending col t lexbuf
      | None     -> filter_newline t lexbuf)
 
+(* conforms to LAYOUT-SEMANTICS.md §5.4 (Stage B deeper-line then/else path);
+   edits must keep both mechanisms in step (LAYOUT-CONFORMANCE-ROADMAP WS-2). *)
 (* Resolve a deferred would-be INDENT (Phase 137) now that [t] — the deeper
    line's first token — is known.  An atom-starter continues the previous
    expression (swallow the indent); a layout boundary (NEWLINE/EOF: the deeper
@@ -710,6 +712,8 @@ and resolve_pending col t lexbuf =
     INDENT
   end
 
+(* conforms to LAYOUT-SEMANTICS.md §5.4; edits must keep both mechanisms in step
+   (LAYOUT-CONFORMANCE-ROADMAP WS-2). See also resolve_pending above. *)
 (* Phase 122 `else`-continuation filter: drop a layout NEWLINE immediately
    before ELSE or THEN (keeping any DEDENT), so the grammar never sees
    `newlines ELSE`/`newlines THEN` — a `then`/`else` leading the next line

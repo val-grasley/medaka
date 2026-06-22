@@ -1,0 +1,5 @@
+r = (1
+  + 2
+  * 3)
+
+main = println r

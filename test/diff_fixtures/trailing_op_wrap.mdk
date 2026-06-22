@@ -1,0 +1,4 @@
+r = 1 +
+  2
+
+main = println r

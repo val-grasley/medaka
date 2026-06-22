@@ -1,0 +1,4 @@
+x = 1 -- has { unbalanced brace in comment
+y = 2
+
+main = println (x + y)

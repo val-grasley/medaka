@@ -1,0 +1,5 @@
+f x = go x
+  where
+    go n = n + 1
+
+main = println (f 5)
