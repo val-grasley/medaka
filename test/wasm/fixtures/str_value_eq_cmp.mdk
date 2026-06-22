@@ -1,0 +1,13 @@
+-- layer-9 regression: ref-mode `String == String` / String ordering must dispatch on
+-- the operand's RUNTIME shape ($str), not be lowered as an i31 compare.  The old emitter
+-- emitted `ref.cast (ref i31)` on a $str operand → traps `illegal cast` (the parser's
+-- `coalesceStep`'s `n == name` guard).  Two string VARIABLES are compared (not a literal,
+-- so neither side is a compile-time-known immediate), plus a String `<` to cover the
+-- ordering path ($mdk_value_cmp).  An Int `==` in the same program keeps the i31 fast path.
+sameName a b = if a == b then 1 else 0
+
+before a b = if a < b then 1 else 0
+
+sameNum x y = if x == y then 1 else 0
+
+main = sameName "go" "go" + sameName "go" "stop" * 10 + before "abc" "abd" * 100 + sameNum 2 2 * 1000

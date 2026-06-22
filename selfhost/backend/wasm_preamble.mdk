@@ -594,6 +594,47 @@ appendRuntimeLines = [
   "      (call $mdk_append (struct.get $C_Cons 2 (local.get $cell)) (local.get $b))))",
 ]
 
+-- ── layer-9 runtime-shape-dispatched value comparison (`==`/`!=`/`<`/`>`/…) ──────
+-- Core IR is type-erased: a ref-mode `CBinPrim "=="` carries no operand type, so the
+-- emitter cannot statically tell a `String == String` (boxed `$str` struct) from an
+-- `Int == Int` (i31 immediate).  The old emitter unconditionally lowered `==` as an
+-- i31 compare (`ref.cast (ref i31)` + `i31.get_s`), so a String operand trapped
+-- `illegal cast` at `ref.cast (ref i31)` (e.g. parser's `coalesceStep`'s `n == name`).
+-- Mirrors the LLVM backend's @mdk_value_eq / @mdk_value_cmp_raw (and the W13
+-- $mdk_append precedent): discriminate on the operand's RUNTIME shape.
+--   $mdk_value_eq(a,b)  : both $str → byte-equal; else `ref.eq` (i31/struct identity,
+--     correct for Int/Bool/Char/Unit immediates).  Returns an i31 Bool (0/1).
+--   $mdk_value_cmp(a,b) : both $str → $mdk_str_compare → -1/0/1; else compare the i31
+--     signed values.  Returns a PLAIN i32 -1/0/1 (the emitter then i32-compares it
+--     against 0 for the requested ordering op).  Gated by useStrRef (forces `$str`
+--     in scope); only reached in ref-mode where the i31 fast path was unsafe.
+export
+valueEqRuntimeLines : List String
+valueEqRuntimeLines = [
+  "  ;; -- layer-9 runtime-shape-dispatched `==`/`!=` (String byte-equal OR immediate identity) --",
+  "  (func $mdk_value_eq (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    ;; both operands are $str structs -> byte equality.",
+  "    (if (i32.and (ref.test (ref $str) (local.get $a)) (ref.test (ref $str) (local.get $b)))",
+  "      (then (return (ref.i31 (i32.eq",
+  "        (i32.const 1)",
+  "        (i31.get_u (ref.cast (ref i31) (call $mdk_str_compare (ref.cast (ref $str) (local.get $a)) (ref.cast (ref $str) (local.get $b)))))))))) ;; Eq == ordinal 1",
+  "    ;; otherwise immediate/struct identity (i31 Int/Bool/Char/Unit, or ctor cells).",
+  "    (ref.i31 (i32.eqz (i32.eqz (ref.eq (local.get $a) (local.get $b))))))",
+  "  ;; -- layer-9 runtime-shape-dispatched ordering (String byte-order OR i31 signed) -> i32 -1/0/1 --",
+  "  (func $mdk_value_cmp (param $a (ref eq)) (param $b (ref eq)) (result i32)",
+  "    (local $o i32) (local $ia i32) (local $ib i32)",
+  "    (if (i32.and (ref.test (ref $str) (local.get $a)) (ref.test (ref $str) (local.get $b)))",
+  "      (then",
+  "        ;; $mdk_str_compare -> Ordering i31 (Lt 0 / Eq 1 / Gt 2); map to -1/0/1.",
+  "        (local.set $o (i31.get_u (ref.cast (ref i31) (call $mdk_str_compare (ref.cast (ref $str) (local.get $a)) (ref.cast (ref $str) (local.get $b))))))",
+  "        (return (i32.sub (local.get $o) (i32.const 1)))))",
+  "    (local.set $ia (i31.get_s (ref.cast (ref i31) (local.get $a))))",
+  "    (local.set $ib (i31.get_s (ref.cast (ref i31) (local.get $b))))",
+  "    (if (i32.lt_s (local.get $ia) (local.get $ib)) (then (return (i32.const -1))))",
+  "    (if (i32.gt_s (local.get $ia) (local.get $ib)) (then (return (i32.const 1))))",
+  "    (i32.const 0))",
+]
+
 -- ── W8 RNG — deterministic SplitMix64 (RUNTIME-DESIGN §5 RNG) ─────────────────
 -- Byte-identical to medaka_rt.c's shared SplitMix64 (the same algorithm the OCaml
 -- oracle runs), so seeded streams match exactly.  Seed lives in a mutable i64 global

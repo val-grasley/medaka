@@ -176,7 +176,7 @@ import backend.wasm_preamble.{
   preambleHeadLines,
   closTypeLines, closApplyLines,
   ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines,
-  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines, appendRuntimeLines,
+  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines, appendRuntimeLines, valueEqRuntimeLines,
   rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines,
   floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
   floatStrImportLines, floatStrRuntimeLines,
@@ -457,6 +457,14 @@ useFloatStrRef = Ref False
 useStrSearchRef : Ref Bool
 useStrSearchRef = Ref False
 
+-- layer-9: the program does a ref-mode `==`/`!=`/ordering binop in a string-using
+-- program → route through the runtime-shape-dispatched $mdk_value_eq / $mdk_value_cmp
+-- (Core IR is type-erased, so a String `==` cannot be told from an Int `==` statically;
+-- the old i31-only lowering trapped `illegal cast` on a String operand).  When set we
+-- also force useStrSearchRef so $mdk_str_compare (the byte comparator) is in scope.
+useValueCmpRef : Ref Bool
+useValueCmpRef = Ref False
+
 -- W11b: the program uses stringToChars / stringFromChars (the UTF-8 codec runtime
 -- $mdk_str_to_chars / $mdk_chars_to_str, which decode/encode between a $str and an
 -- $arr of i31 Char codepoints).  Needs $str + $arr + the strLeaf char encoder.
@@ -552,6 +560,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useFloatRngRef False
   let _ = set_ref useFloatStrRef False
   let _ = set_ref useStrSearchRef False
+  let _ = set_ref useValueCmpRef False
   let _ = set_ref useStrCodecRef False
   let _ = set_ref useCharFromCodeRef False
   let _ = set_ref useCharClassRef False
@@ -613,6 +622,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = set_ref useFloatRngRef False
   let _ = set_ref useFloatStrRef False
   let _ = set_ref useStrSearchRef False
+  let _ = set_ref useValueCmpRef False
   let _ = set_ref useStrCodecRef False
   let _ = set_ref useCharFromCodeRef False
   let _ = set_ref useCharClassRef False
@@ -1561,6 +1571,10 @@ emitRefProgram prog groups =
   let strConcatRt = if useStrLeafRef.value && useListRef.value then strConcatRuntimeLines else []
   -- W13: `++` is runtime-dispatched ($mdk_append); needs $str (str leaf) + $C_Cons (list).
   let appendRt = if useStrLeafRef.value && useListRef.value then appendRuntimeLines else []
+  -- layer-9: $mdk_value_eq / $mdk_value_cmp (runtime-shape-dispatched comparison).
+  -- Needs $str (forced via useStrRef when this is set) + $mdk_str_compare (forced via
+  -- useStrSearchRef in emitValueCmpRef).
+  let valueCmpRt = if useValueCmpRef.value then valueEqRuntimeLines else []
   let stderrRt = if useEPutRef.value then stderrRuntimeLines else []
   let rngRt = if useRngRef.value then rngRuntimeLines else []
   let hashRt = if useHashRef.value then hashRuntimeLines else []
@@ -1591,7 +1605,7 @@ emitRefProgram prog groups =
   let ioArgsRt = if useArgsRef.value then ioArgsRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
-            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt
+            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt ++ valueCmpRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
             ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt ++ floatStrRt
@@ -2978,10 +2992,36 @@ emitBinRef prog env d "::" l r =
 emitBinRef prog env d op l r =
   if isArithOrCmp op && (cexprIsFloat prog env l || cexprIsFloat prog env r) then
     emitFloatBinRef prog env d op l r
+  -- layer-9: a ref-mode comparison (`==`/`!=`/`<`/`>`/`<=`/`>=`) in a string-using
+  -- program could have String OR Int operands (Core IR is type-erased), so the old
+  -- i31-only lowering trapped `illegal cast` on a String operand (e.g. parser
+  -- `coalesceStep`'s `n == name`).  Route through the runtime-shape-dispatched
+  -- $mdk_value_eq / $mdk_value_cmp ($str → byte compare; immediate → identity/i31).
+  -- Pure-int programs (no $str rep) keep the i31 fast path below.
+  else if isCmpOp op && useStrRef.value then
+    let _ = set_ref useValueCmpRef True
+    let _ = set_ref useStrSearchRef True
+    let _ = set_ref useStrLeafRef True
+    emitValueCmpRef prog env d op l r
   else
     let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
     let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
     li ++ ri ++ [wasmBinOp op, "ref.i31"]
+
+-- layer-9: emit a runtime-shape-dispatched comparison.  `==`/`!=` go through
+-- $mdk_value_eq (-> i31 Bool); ordering ops call $mdk_value_cmp (-> plain i32 -1/0/1)
+-- then i32-compare the result against 0 for the requested op, re-boxing the Bool i31.
+emitValueCmpRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
+emitValueCmpRef prog env d op l r =
+  let lv = emitRefExpr prog env d l
+  let rv = emitRefExpr prog env d r
+  if op == "==" then lv ++ rv ++ ["call $mdk_value_eq"]
+  else if op == "!=" then
+    lv ++ rv ++ ["call $mdk_value_eq", "ref.cast (ref i31)", "i31.get_u", "i32.eqz", "ref.i31"]
+  else
+    -- ordering: $mdk_value_cmp -> i32 -1/0/1, then compare against 0.
+    lv ++ rv ++ ["call $mdk_value_cmp", "i32.const 0", wasmBinOp op, "ref.i31"]
+
 
 -- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  Comparison
 -- (==,!=,<,>,<=,>=) → unbox both, f64 compare → i31 Bool.  (`%` is integer-only and
