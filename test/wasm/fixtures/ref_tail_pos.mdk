@@ -1,0 +1,6 @@
+-- Ref tail position: set_ref in tail position of a called fn.
+cell = Ref 0
+setCell v = set_ref cell v
+main =
+  let _ = setCell 77
+  intToString cell.value

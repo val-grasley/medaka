@@ -1,0 +1,10 @@
+-- Ref counter: increment a ref in a loop, print result.
+counter = Ref 0
+loop n =
+  if n == 0 then ()
+  else
+    let _ = set_ref counter (counter.value + 1)
+    loop (n - 1)
+main =
+  let _ = loop 10
+  intToString counter.value

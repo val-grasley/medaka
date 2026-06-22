@@ -1,0 +1,5 @@
+-- Ref: create a mutable ref, read it, write it, read again.
+r = Ref 42
+main =
+  let _ = set_ref r 99
+  intToString r.value

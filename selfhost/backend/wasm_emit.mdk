@@ -2564,6 +2564,8 @@ emitAppRef prog env d app =
     CVar f0 _ =>
       let f = canonFn prog f0
       if isCtor prog f then emitCtorConstruct prog env d f args
+      else if f == "Ref" then emitRefBoxNew prog env d args
+      else if f == "set_ref" then emitRefBoxSet prog env d args
       else if isStrExternW f then emitStrExternRef prog env d f args
       else if isLeafExternW f then emitLeafExternRef prog env d f args
       else if isArrayExternW f then emitArrayExternRef prog env d f args
@@ -2659,6 +2661,25 @@ emitStrExternRef _ _ _ name _ = gapL ("wasm W6: unsupported string extern '" ++ 
 -- RNG: randomInt lo hi (i31 Int args → $mdk_random_int → i31 Int, INCLUSIVE);
 -- randomBool/randomChar take a Unit arg (emitted + dropped) → i31 Bool/Char;
 -- setSeed unboxes its i31 Int to i64 into the seed global.  Hash: hashInt/hashChar
+-- ── Ref / set_ref / .value — $refbox mutable-cell externs ───────────────────
+-- `Ref x`     : allocate a fresh 1-field mutable $refbox, storing x as (ref eq).
+-- `set_ref r v` : overwrite field 0 of r's $refbox; result is Unit (i31 0).
+-- `.value`    : struct.get the mutable field 0; handled in emitFieldAccessRef.
+emitRefBoxNew : Prog -> List String -> Int -> List CExpr -> <Mut> List String
+emitRefBoxNew prog env d args = match args
+  [x] => emitRefExpr prog env d x ++ ["struct.new $refbox"]
+  _ => gapL "wasm Ref: Ref takes exactly one argument"
+
+-- `set_ref r v` : struct.set $refbox 0 ; returns Unit.
+-- WAT stack order for struct.set is [structref, value] (ref on top first).
+emitRefBoxSet : Prog -> List String -> Int -> List CExpr -> <Mut> List String
+emitRefBoxSet prog env d args = match args
+  [r, v] =>
+    emitRefExpr prog env d r ++ ["ref.cast (ref $refbox)"]
+      ++ emitRefExpr prog env d v
+      ++ ["struct.set $refbox 0", "i32.const 0", "ref.i31"]
+  _ => gapL "wasm Ref: set_ref takes exactly two arguments"
+
 -- untag the i31 value to i32 (the runtime sign-extends to i64, matching the native
 -- signed `tagged>>1`); hashBool passes the 0/1 i31.  All hash results fit i31
 -- (masked to 2^30-1, non-negative).  randomFloat / hashFloat are DEFERRED (W8b —
@@ -2870,7 +2891,7 @@ emitAppTail prog env arity app =
     CVar f0 _ =>
       let f = canonFn prog f0
       if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
-      else if isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
+      else if f == "Ref" || f == "set_ref" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
         flatMap (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname f]
@@ -3362,7 +3383,13 @@ emitFieldAccessRef prog env d ex label =
       let idx = orZeroIdx (indexOfL label labels)
       emitRefExpr prog env d ex
         ++ ["ref.cast (ref $" ++ ctorStructName ctor ++ ")", "struct.get $" ++ ctorStructName ctor ++ " " ++ intToString (idx + 1)]
-    None => gapL ("ref-mode: CFieldAccess on unknown field '" ++ label ++ "' (no record ctor in the field-order table)")
+    -- `r.value` on a Ref: no record ctor owns the field `value`, so this is a
+    -- $refbox read — cast to $refbox and read the mutable field at slot 0.
+    None =>
+      if label == "value" then
+        emitRefExpr prog env d ex ++ ["ref.cast (ref $refbox)", "struct.get $refbox 0"]
+      else
+        gapL ("ref-mode: CFieldAccess on unknown field '" ++ label ++ "' (no record ctor in the field-order table)")
 
 -- functional update `{ base | f = v … }`: copy the base's struct, overriding the
 -- named fields.  The record type is recovered from the first update field's label.
