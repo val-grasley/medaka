@@ -160,15 +160,28 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
     stays an i31); emit via `routeWitness`, consume via `readDictParam` (i31-vs-`$dictcell` `ref.test`) +
     `loadReqDict` (nested `struct.get 1`/`array.get`). **Emitter census now 0/0** (orchestrator-verified). Gate
     `w_nested_dict_tuple.mdk`, `diff_wasm_modules` 16.
-  - **🟡 layer-15 (NEXT) — defaulted-method emission.** The full emitter emits (415842-line WAT, exit 0) but
-    `wasm-tools parse` fails on ONE undefined symbol `$mdk_impl_List_filter`: `Filterable List` inherits the
-    `filter` DEFAULT (only `filterMap` is concrete), so a `filter` call resolves to `RKey "List"` with no
-    tagged impl. The WasmGC RKey path (`wasm_emit.mdk:2475`) emits a static `call $mdk_impl_<tag>_<method>`
-    with no default fallback. The native backend synthesizes it via `emitDefaultRKey` (`llvm_emit.mdk:3029`)
-    → `ensureDefaultEmitted`/`emitDefaultDefine` (`:3043`, eta-prepends dict params + forwards) /
-    `innerDefaultReqCount` (`:3292`). Port that subsystem into `wasm_emit` (emitter-only), then re-attempt
-    emitter assemble → validate → run under Node → diff vs native `test/bin/wasm_emit_modules_main` for
-    byte-identity (the emitter-self-compile milestone), peeling any residual runtime layers.
+  - **🏁 layer-15 CLOSED (`fbf1da0`, emitter-only) — defaulted-method emission; the full emitter
+    ASSEMBLES + VALIDATES.** `Filterable List` inherits `filter` as an interface DEFAULT (only `filterMap`
+    concrete) → `RKey "List"` had no `$mdk_impl_List_filter`. Ported llvm's default subsystem
+    (`emitDefaultRKey`:3029 / `ensureDefaultEmitted`/`emitDefaultDefine`:3043 / `innerDefaultReqCount`:3292):
+    synthesize `$mdk_default_<method>_<tag>` once (`emitDefaultDefineW`/`ensureDefaultEmittedW`), eta-expand
+    the point-free default to full arity, `restampIfaceDictsW` rewrites the inner `filterMap` to `RKey tag []`.
+    **ORCHESTRATOR-VERIFIED:** the full emitter emits 418,863-line WAT → `wasm-tools parse` OK (0 undefined
+    `$mdk_impl_*`/`$mdk_w_*`/`$mdk_default_*`) → `wasm-tools validate` OK (2.3 MB wasm). Gate `rp_filter_list.mdk`,
+    `diff_wasm_modules` 17. Deferred (would surface as new undefined symbols, not needed for filter@List):
+    cross-iface method-level dicts (foldMap's Monoid `empty`), parametric element `requires` (Ord `lt`→`compare`).
+  - **🟡 layer-16 (NEXT — the emitter-RUN blocker) — non-tail-recursive runtime list-JOIN helpers overflow.**
+    The emitter assembles+validates but CANNOT RUN under Node: even `main = println (1+2)` emits a ~52,419-line
+    WAT (every program includes the whole prelude), and joining ~52K WAT-line-strings overflows the wasm stack —
+    `RangeError: Maximum call stack size exceeded` in **`$mdk_append`** (the preamble WAT list-append helper,
+    non-tail-recursive `Cons(h, append(t,b))`) and **`support_util__intersperseStr`** (a Medaka helper). EVERY
+    emitter invocation hits this (not an edge case). Fix spans TWO classes: **(a)** rewrite the preamble WAT
+    list/string-join helpers (`$mdk_append`, …) as ITERATIVE loops using the `mut $C_Cons` tail field (from TRMC
+    Stage 0) — emitter-only (`wasm_preamble.mdk`); **(b)** the emitter's own Medaka join helpers
+    (`intersperseStr`/`intercalate` in `support/util.mdk`) are non-tail-recursive over the line list — make them
+    tail-recursive/accumulator or TRMC-eligible; `support/util.mdk` is IN the compiler graph → fixpoint + seed
+    (native unaffected — deep C stack). Native's append is an iterative C extern (`mdk_list_append`,
+    medaka_rt.c:258) — the reference shape. SCOPE FIRST (census which helpers overflow, preamble vs Medaka).
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
