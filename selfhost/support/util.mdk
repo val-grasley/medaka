@@ -24,6 +24,12 @@ listLen [] = 0
 listLen (_::xs) = 1 + listLen xs
 
 export
+replicate : Int -> a -> List a
+replicate n x
+  | n <= 0    = []
+  | otherwise = x :: replicate (n - 1) x
+
+export
 reverseL : List a -> List a
 reverseL xs = reverseGo xs []
 

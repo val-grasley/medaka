@@ -48,17 +48,13 @@ import support.util.{
   allList,
   anyList,
   listLen,
+  replicate,
   lookupAssoc,
   joinNl,
   orElseOpt,
 }
 
 -- ── small helpers ─────────────────────────────────────────────────────────
-replicateWild : Int -> List Pat
-replicateWild n
-  | n <= 0 = []
-  | otherwise = PWild :: replicateWild (n - 1)
-
 litEq : Lit -> Lit -> Bool
 litEq (LInt a) (LInt b) = a == b
 litEq (LFloat a) (LFloat b) = a == b
@@ -224,7 +220,7 @@ specConRow _ _ [] = None
 specConRow c _ ((PCon c2 args)::rest)
   | c2 == c = Some (args ++ rest)
   | otherwise = None
-specConRow _ arity (PWild::rest) = Some (replicateWild arity ++ rest)
+specConRow _ arity (PWild::rest) = Some (replicate arity PWild ++ rest)
 specConRow _ _ _ = None
 
 specializeLit : Lit -> List (List Pat) -> List (List Pat)
@@ -300,7 +296,7 @@ presentIn present c = contains c present
 usefulBranch : Oracle -> List (List Pat) -> List Pat -> String -> Bool
 usefulBranch oracle pmat restQ c =
   let a = oGetArity oracle c
-  useful oracle None (specializeCon c a pmat) (replicateWild a ++ restQ)
+  useful oracle None (specializeCon c a pmat) (replicate a PWild ++ restQ)
 
 -- ── guard totality ────────────────────────────────────────────────────────
 isIrrefutablePat : Pat -> Bool
@@ -363,7 +359,7 @@ checkGroupCovered : Oracle -> List (List Pat, Expr) -> List String
 checkGroupCovered oracle clauses =
   let arity = groupArity clauses
   let rows = totalClauseRows clauses
-  let query = [desugarPat (PTuple (replicateWild arity))]
+  let query = [desugarPat (PTuple (replicate arity PWild))]
   if useful oracle (Some (tupleCtorName arity)) rows query then [guardWarning] else []
 
 groupArity : List (List Pat, Expr) -> Int

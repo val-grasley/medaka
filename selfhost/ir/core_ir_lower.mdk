@@ -66,6 +66,7 @@ import support.util.{
   lookupAssoc,
   noneHeadTag,
   isEmptyL,
+  replicate,
 }
 
 -- a synthetic binder for the lowered composition operators; constructed
@@ -378,7 +379,7 @@ specConRow c _ ((PCon c2 args)::rest, i) =
     Some (args ++ rest, i)
   else
     None
-specConRow _ arity (PWild::rest, i) = Some (replicateWild arity ++ rest, i)
+specConRow _ arity (PWild::rest, i) = Some (replicate arity PWild ++ rest, i)
 specConRow _ _ _ = None
 
 -- specialize on a literal: a matching/​wildcard head drops (arity 0), else drop.
@@ -400,10 +401,6 @@ defRow (PWild::rest, i) = Some (rest, i)
 defRow _ = None
 
 -- ── small local helpers ────────────────────────────────────────────────────
-replicateWild : Int -> List Pat
-replicateWild n
-  | n <= 0 = []
-  | otherwise = PWild :: replicateWild (n - 1)
 
 litEq : Lit -> Lit -> Bool
 litEq (LInt a) (LInt b) = a == b

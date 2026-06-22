@@ -71,6 +71,7 @@ import support.util.{
   dedup,
   sortUniqS,
   startsWith,
+  replicate,
 }
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
@@ -3073,7 +3074,7 @@ superSlotsOf allDecls (iface, id)
   | otherwise = match ifaceSupersOf allDecls iface
     None => []
     Some (typarams, supers) =>
-      let subst = zipL typarams (replicateId (listLen typarams) id)
+      let subst = zipL typarams (replicate (listLen typarams) id)
       concatMapList (superSlotOf subst) supers
 
 -- one `Super superName params`: map each param name through subst → its id; emit the
@@ -3095,11 +3096,6 @@ filterMaybeIds : List (Option Int) -> List Int
 filterMaybeIds [] = []
 filterMaybeIds (Some x :: rest) = x :: filterMaybeIds rest
 filterMaybeIds (None :: rest) = filterMaybeIds rest
-
-replicateId : Int -> Int -> List Int
-replicateId n id
-  | n <= 0 = []
-  | otherwise = id :: replicateId (n - 1) id
 
 dropPairs : Int -> List (String, Int) -> List (String, Int)
 dropPairs n xs

@@ -164,7 +164,7 @@ import ir.core_ir.{
 }
 import support.util.{
   joinNl, joinWith, reverseL, contains, concatMapList, filterList,
-  lookupAssoc, listLen, maxI
+  lookupAssoc, listLen, maxI, replicate
 }
 import backend.wasm_preamble.{
   preambleHeadLines,
@@ -1332,7 +1332,7 @@ emitW7Types _ =
 
 tupleTypeDecl : Int -> List String
 tupleTypeDecl n =
-  let fields = joinWith "" (replicateStr n " (field (ref eq))")
+  let fields = joinWith "" (replicate n " (field (ref eq))")
   let root = typeRootName (syntheticCtorType (tupleCtorName n))
   let cs = ctorStructName (tupleCtorName n)
   ["    (type $" ++ root ++ " (sub (struct (field i32))))",
@@ -1359,7 +1359,7 @@ emitCtorStruct prog ty ctor =
   let arity = ctorArity prog ctor
   if arity == 0 then []
   else
-    let fields = joinWith "" (replicateStr arity " (field (ref eq))")
+    let fields = joinWith "" (replicate arity " (field (ref eq))")
     ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
       ++ " (struct (field i32)" ++ fields ++ ")))"]
 
@@ -1386,7 +1386,7 @@ emitReservedCtorStruct : String -> String -> List String
 emitReservedCtorStruct ty ctor =
   if reservedCtorArity ctor == 0 then []
   else
-    let fields = joinWith "" (replicateStr (reservedCtorArity ctor) " (field (ref eq))")
+    let fields = joinWith "" (replicate (reservedCtorArity ctor) " (field (ref eq))")
     ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
       ++ " (struct (field i32)" ++ fields ++ ")))"]
 
@@ -3891,9 +3891,6 @@ indexOfGo x (y::ys) i = if x == y then i else indexOfGo x ys (i + 1)
 
 orZeroIdx : Int -> Int
 orZeroIdx i = if i < 0 then 0 else i
-
-replicateStr : Int -> String -> List String
-replicateStr n s = if n <= 0 then [] else s :: replicateStr (n - 1) s
 
 -- a readable tag for the unsupported-node gap message.
 ctag : CExpr -> String
