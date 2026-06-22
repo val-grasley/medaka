@@ -1904,6 +1904,14 @@ mainTypeIsAsync _ = match mainSchemeRef.value
 matchWarnings : Ref (List String)
 matchWarnings = Ref []
 
+-- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
+-- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
+-- path (`checkProgramDiags`) zips the two so the CLI/--json warning carries a
+-- span like the OCaml oracle's `pp_loc match_loc`.  String-only readers
+-- (schemes/selfproc/diff_selfhost_diagnostics) ignore it.
+matchWarningLocs : Ref (List (Option Loc))
+matchWarningLocs = Ref []
+
 matchOracle : Ref Oracle
 matchOracle = Ref (buildOracle [])
 
@@ -3891,7 +3899,10 @@ nonExhaustiveMatchWarning = "Warning: non-exhaustive match — some values may n
 checkMatchExhaustive : Mono -> List Arm -> <Mut> Unit
 checkMatchExhaustive scrutTy arms =
   let rows = nonGuardedRows arms
-  if useful matchOracle.value (matchCol0Type scrutTy) rows [PWild] then set_ref matchWarnings (nonExhaustiveMatchWarning :: matchWarnings.value) else ()
+  if useful matchOracle.value (matchCol0Type scrutTy) rows [PWild] then
+    let _ = set_ref matchWarnings (nonExhaustiveMatchWarning :: matchWarnings.value)
+    set_ref matchWarningLocs (currentLoc.value :: matchWarningLocs.value)
+  else ()
 
 -- one single-column matrix row per non-guarded arm (its desugared pattern)
 nonGuardedRows : List Arm -> List (List Pat)
@@ -8422,20 +8433,21 @@ checkMatchToLines runtimeDecls prog =
 -- ── diagnostics entry point (selfhost/diagnostics.mdk bridge) ────────────
 -- Run the full typecheck pass (runtime-seeded) over [prog] and return the raw
 -- error strings — each paired with its captured `Option Loc` (B.10.2b) — plus
--- the warning strings, so diagnostics.mdk can wrap them in structured Diag
--- values (carrying the loc) without reformatting.
+-- the warning strings (each paired with its captured `Option Loc`, S4), so
+-- diagnostics.mdk can wrap them in structured Diag values carrying the span.
 export
-checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, Option Loc), List String)
+checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, Option Loc), List (String, Option Loc))
 checkProgramDiags runtimeDecls prog =
   let _ = set_ref implInferEnabled False
   let _ = set_ref matchWarnings []
+  let _ = set_ref matchWarningLocs []
   let _ = set_ref matchOracle (buildOracle prog)
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
   let _ = checkPhantomMethods coherenceUserDecls.value
   let _ = checkSuperImpls coherenceUserDecls.value prog
-  (reverseL typeErrors.value, reverseL matchWarnings.value)
+  (reverseL typeErrors.value, zipL (reverseL matchWarnings.value) (reverseL matchWarningLocs.value))
 
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
 -- Threads per-module exports in dependency order.  The prelude (core) is checked

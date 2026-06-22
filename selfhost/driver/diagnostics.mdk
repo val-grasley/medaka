@@ -71,15 +71,57 @@ export
 ppDiag : Diag -> String
 ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
 
--- Plain-text CLI renderer: "file:line:col: message" (Stage-A positioned output).
+-- Plain-text CLI renderer (Stage-A positioned output, Stage-C carat block).
 -- line is 1-based (matches the oracle's plain-text convention); col is 0-based.
--- None loc → loc-free "severity: message" (resolve errors, whole-doc range).
+-- With a loc this reproduces the OCaml oracle's carat diagnostic byte-for-byte
+-- (bin/main.ml `show_snippet` :14-24):
+--
+--     file:line:col: message
+--       |
+--     N | <source line>
+--       | <col spaces>^
+--
+-- None loc → loc-free "severity: message" (resolve errors with no node span,
+-- whole-doc range).  `src` is the target file's source text (to echo the
+-- offending line); when the source line can't be read the carat block is
+-- omitted (mirrors `show_snippet`'s `None -> ()`), leaving just the header.
 export
 ppDiagCli : String -> Diag -> String
-ppDiagCli file (Diag _ msg (Some (Loc _ sl sc _ _))) =
-  file ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ msg
-ppDiagCli _ (Diag sev msg None) =
-  ppSeverity sev ++ ": " ++ msg
+ppDiagCli file diag = ppDiagCliSrc "" file diag
+
+-- Stage-C: carat-aware renderer.  `src` carries the file's source text.
+export
+ppDiagCliSrc : String -> String -> Diag -> String
+ppDiagCliSrc src file (Diag _ msg (Some (Loc _ sl sc _ _))) =
+  let header = file ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ msg
+  match nthLine src sl
+    None => header
+    Some lineText =>
+      header ++ "\n"
+        ++ "  |\n"
+        ++ intToString sl ++ " | " ++ lineText ++ "\n"
+        ++ "  | " ++ spaces sc ++ "^"
+ppDiagCliSrc _ _ (Diag _ msg None) =
+  "<unknown location>: " ++ msg
+
+-- `spaces n` = a string of n space characters (the oracle's `String.make col ' '`).
+spaces : Int -> String
+spaces n
+  | n <= 0 = ""
+  | otherwise = " " ++ spaces (n - 1)
+
+-- 1-based Nth line of `src` (`\n`-separated), or None if out of range — mirrors
+-- the oracle's `List.split_on_char '\n' source` then `List.nth_opt (line-1)`.
+nthLine : String -> Int -> Option String
+nthLine src n = nthLineGo (stringToChars src) 0 (stringLength src) 1 n ""
+
+nthLineGo : Array Char -> Int -> Int -> Int -> Int -> String -> Option String
+nthLineGo cs i len cur target acc
+  | i >= len = if cur == target then Some acc else None
+  | arrayGetUnsafe i cs == '\n' =
+      if cur == target then Some acc
+      else nthLineGo cs (i + 1) len (cur + 1) target ""
+  | otherwise = nthLineGo cs (i + 1) len cur target (acc ++ charToStr (arrayGetUnsafe i cs))
 
 
 -- ── single-file analysis ───────────────────────────────────────────────────
@@ -121,7 +163,7 @@ analyzeFrom runtimeSrc coreSrc raw =
     [] =>
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
       map ((msg, loc) => Diag SevError msg loc) tcErrs
-        ++ map (w => Diag SevWarning (stripWarnPrefix w) None) tcWarns
+        ++ map ((w, loc) => Diag SevWarning (stripWarnPrefix w) loc) tcWarns
     _ => []
   let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
   guardDiags ++ resDiags ++ tcDiags

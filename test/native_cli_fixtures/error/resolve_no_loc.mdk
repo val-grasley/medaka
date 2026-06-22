@@ -1,0 +1,3 @@
+data T = A
+data T = B
+main = 0

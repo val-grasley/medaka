@@ -245,5 +245,27 @@ else
   done
 fi
 
+# ── error/* — carat diagnostics (Stage C, WS-4 / F6) ───────────────────────
+# Native `./medaka check <f>` ERROR output (stderr: positioned message + carat
+# block) must reproduce the OCaml oracle's carat diagnostic BYTE-FOR-BYTE.
+# Oracle-COUPLED (compares vs the LIVE oracle, not a committed golden — the
+# existing diagnostics goldens are location-stripped); this leg retires with the
+# oracle.  Skipped if the oracle binary is absent.  The absolute fixture path is
+# normalized to "FIX" on both sides so the comparison is path-stable.
+ORACLE="$ROOT/_build/default/bin/main.exe"
+if [ -x "$ORACLE" ]; then
+  for f in "$ROOT"/test/native_cli_fixtures/error/*.mdk; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f" .mdk)"
+    nat="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$f" 2>&1 1>/dev/null | sed "s#$f#FIX#g")"
+    ora="$("$ORACLE" check "$f" 2>&1 1>/dev/null | sed "s#$f#FIX#g")"
+    if [ "$nat" = "$ora" ]; then pass=$((pass+1)); printf 'ok   error/%s (carat vs live oracle)\n' "$base"
+    else fail=$((fail+1)); printf 'FAIL error/%s (carat)\n' "$base"
+      printf '  oracle: [%s]\n  native: [%s]\n' "$ora" "$nat"; fi
+  done
+else
+  printf 'skip error/* (oracle binary missing — dune build --root . bin/main.exe)\n'
+fi
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

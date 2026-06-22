@@ -30,7 +30,7 @@ import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram, findProjectRoot}
-import driver.diagnostics.{analyzeProject, analyzeLocated, ppDiagCli, Diag(..), Severity(..), SevError}
+import driver.diagnostics.{analyzeProject, analyzeLocated, ppDiagCli, ppDiagCliSrc, Diag(..), Severity(..), SevError}
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors, mainTypeIsAsync}
 import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
@@ -160,7 +160,7 @@ checkRoute rsrc csrc tsrc target [_] =
       let _ = putStr (runCheck rsrc csrc tsrc)
       ()
     _ =>
-      let _ = putStrLn (joinNl (map (ppDiagCli target) errs))
+      let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
 checkRoute rsrc csrc tsrc _ mods =
   let rtD = desugar (parse rsrc)
@@ -236,8 +236,23 @@ cjSevCode _ = 2
 
 -- Build one diagnostic JSON object with OCaml-compatible field order:
 -- { "message": ..., "range": ..., "severity": ..., "source": "medaka" }
-cjDiagnostic : String -> Diag -> Json
-cjDiagnostic src (Diag sev msg loc) =
+-- `path` is the file path (for the oracle's loc-in-message warning form).
+-- ERRORS render the bare message + the loc-derived range (Stage A/B).
+-- WARNINGS mirror the oracle exactly: the oracle's warnings are pre-formatted
+-- strings "file:L:C: Warning: <msg>" passed with a `None` loc, so --json bakes
+-- the loc into the MESSAGE and leaves the range at the {0,0} dummy.  We carry the
+-- span on the Diag (so ppDiag stays loc-free for diff_selfhost_diagnostics) but
+-- reproduce the oracle's json by formatting "path:L:C: Warning: <msg>" here.
+cjDiagnostic : String -> String -> Diag -> Json
+cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) =
+  jObject
+    [
+      ("message", JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg)),
+      ("range", cjRange 0 0 0 0),
+      ("severity", JInt 2),
+      ("source", JString "medaka"),
+    ]
+cjDiagnostic _ src (Diag sev msg loc) =
   jObject
     [
       ("message", JString msg),
@@ -254,7 +269,7 @@ cjFileEntry path src diags =
   jObject
     [
       ("file", JString path),
-      ("diagnostics", JArray (arrayFromList (map (cjDiagnostic src) diags))),
+      ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
     ]
 
 -- Serialize the analyzeProject result as the top-level JSON object:
