@@ -35,7 +35,7 @@ plus the shrinking census.
 |---|---:|---|---|
 | `panic` extern | 112 | ✅ DONE | → `unreachable` trap. |
 | Array intrinsics | 86 | ✅ DONE | `arrayGetUnsafe`/`Length`/`FromList`/`MakeWith`/`Make`/`Copy`/`SetUnsafe` over `$arr`. |
-| Ref (`set_ref`/`.value`/`Ref`) | ~636 | 🟡 in progress | `$refbox` 1-field mutable struct; 3 emit arms (SMALL). |
+| Ref (`set_ref`/`.value`/`Ref`) | ~636 | ✅ DONE | `$refbox` 1-field mutable struct; `Ref x`→`struct.new`, `set_ref`→`struct.set 0`, `.value`→`struct.get 0`. |
 | `__fallthrough__` | 261 | ✅ DONE | multi-clause / guard-chain fall-through. Each clause body wraps in a `(block $cl_<name>_<i>)`; `labelFallthrough` rewrites `__fallthrough__` → label-carrying sentinel `__ft__<clLabel>` lowered to `br <clLabel>` (a PURE function of the var name — the lazily-assembled emitter can't thread a mutable "current label" ref reliably, since strings are forced at final assembly long after any `set_ref`). Single-clause guarded bodies divert to the chain path (block + trailing `unreachable`). A bare (unrewritten) `__fallthrough__` → `unreachable` trap (typechecker-proven-exhaustive context). Census 261 → 0, no new gaps. |
 | string-literal clause heads (`f "kw" =`) | 111 | ⬜ | lower to string-eq if-chain (MEDIUM codegen). |
 | string/char externs (subset) | 51 | ⬜ | extend `emitStrExternRef`. |
@@ -50,12 +50,17 @@ investigate after the big categories close (some are artifacts of the above).
 ## Sequence (all on `selfhost/backend/wasm_emit.mdk` → strictly sequential)
 
 1. ✅ panic + array externs (`63cab37`, diff_wasm 85→93)
-2. 🟡 Ref support
-3. ⬜ `__fallthrough__` (Opus — state-threading risk)
-4. ⬜ string-literal clause heads + remaining string/char externs
-5. ⬜ block-stmt-in-tail + misc structural arms
-6. ⬜ IO host surface (task #3 — see below)
-7. ⬜ assemble + run the compiler-on-wasm on a trivial input (the self-host proof)
+2. ✅ Ref support (`9566ae2`, →96; census ~636→0)
+3. ✅ `__fallthrough__` (`0d30279`, →99; census 261→0). Lazy-emitter pivot: label encoded in the Core-IR node (`__ft__<lbl>` sentinel), not a mutable ref.
+4. 🟡 charCode + string-literal clause heads (PLit-LString) — next batch
+5. ⬜ scope-threading unbound vars (evalBinop `env`, derive params — CLetGroup/multi-clause free-var capture)
+6. ⬜ block-stmt-in-tail (refutable let-bind) + misc structural arms
+7. ⬜ IO host surface (task #3 — see below)
+8. ⬜ assemble + run the compiler-on-wasm on a trivial input (the self-host proof)
+
+**Census progress:** 1428 → 334 (panic, arrays, Ref, fallthrough closed). Remaining
+top: PLit-LString 111, scope-threading unbound ~54, block-tail 35, string/char externs
+~51 (subset), IO externs 4, misc ~21.
 
 ## IO host surface (scoped 2026-06-22 — task #3)
 
