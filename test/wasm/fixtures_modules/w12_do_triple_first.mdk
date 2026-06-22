@@ -1,0 +1,17 @@
+-- W12: triple `<-` bind; the result tuple references the FIRST bind `a` — capture must
+-- thread `a` through THREE nested do-lambdas. Tuple-in-pure forces freeVarsExpr to
+-- descend CTuple. (10, 6) -> 10*100 + 6 = 1006.
+mk : Option (Int, Int)
+mk = do
+  a <- Some 10
+  b <- Some 5
+  c <- Some 1
+  pure (a, b + c)
+
+describe : Option (Int, Int) -> Int
+describe o = match o
+  Some t => match t
+    (x, y) => x * 100 + y
+  None => 0
+
+main = describe mk

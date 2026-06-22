@@ -1,0 +1,17 @@
+-- W12: nested-closure capture across do-notation `<-` binds. The do-block lowers to
+-- nested `andThen e (\x -> rest)` lambdas; the innermost `pure (a, b, a+b)` is a CTuple
+-- referencing the FIRST bind `a` (free in the inner lambda). The wasm emitter's
+-- freeVarsExpr must descend CTuple or `a` emits as unbound. (10,20,30) summed = 60.
+mk : Option (Int, Int, Int)
+mk = do
+  a <- Some 10
+  b <- Some 20
+  pure (a, b, a + b)
+
+describe : Option (Int, Int, Int) -> Int
+describe o = match o
+  Some t => match t
+    (n, p, s) => n + p + s
+  None => 0
+
+main = describe mk

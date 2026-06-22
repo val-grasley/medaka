@@ -3456,6 +3456,21 @@ freeVarsExpr bound e = match e
     let names = map lgBindName binds
     let bound2 = names ++ bound
     flatMap (freeVarsClauses bound2) binds ++ freeVarsExpr bound2 b
+  -- compound value nodes: their sub-expressions can reference outer-bound vars
+  -- (e.g. a do-block's `pure (a, b, c)` lowers to CTuple — without this arm the
+  -- captured `a`/`b` are dropped and emit as unbound).  Each descends with the
+  -- SAME `bound` (these nodes introduce no binders).
+  CTuple es => flatMap (freeVarsExpr bound) es
+  CList es => flatMap (freeVarsExpr bound) es
+  CArray es => flatMap (freeVarsExpr bound) es
+  CRecord _ fields => flatMap (freeVarsField bound) fields
+  CFieldAccess e _ => freeVarsExpr bound e
+  CRecordUpdate e fields => freeVarsExpr bound e ++ flatMap (freeVarsField bound) fields
+  CVariantUpdate _ e fields => freeVarsExpr bound e ++ flatMap (freeVarsField bound) fields
+  CRangeList lo hi _ => freeVarsExpr bound lo ++ freeVarsExpr bound hi
+  CRangeArray lo hi _ => freeVarsExpr bound lo ++ freeVarsExpr bound hi
+  CIndex e i => freeVarsExpr bound e ++ freeVarsExpr bound i
+  CSlice e lo hi _ => freeVarsExpr bound e ++ freeVarsExpr bound lo ++ freeVarsExpr bound hi
   _ => []
 
 -- free vars of a CLetGroup binding's clauses (each clause's params are locally bound).
@@ -3482,6 +3497,9 @@ freeVarsArm bound (CArm pat guards body) =
 freeVarsGuard : List String -> CGuard -> <Mut> List String
 freeVarsGuard bound (CGBool g) = freeVarsExpr bound g
 freeVarsGuard bound (CGBind p e) = freeVarsExpr bound e
+
+freeVarsField : List String -> CField -> <Mut> List String
+freeVarsField bound (CField _ e) = freeVarsExpr bound e
 
 -- ── ADT construction (§3.4) ──────────────────────────────────────────────────
 -- A NULLARY ctor → an `i31ref` carrying its PER-TYPE dense ordinal (the same value
@@ -4294,6 +4312,23 @@ maxIndexAt e d = match e
   CUnOp _ a => maxIndexAt a d
   CApp f a => maxI (maxIndexAt f d) (maxIndexAt a d)
   CBlock stmts => foldMaxI (map (s => maxIndexAtStmt s d) stmts)
+  -- a let-group's BODY is emitted at this same depth `d` at the use site (its lifted
+  -- members carry their own scratch in their own functions); descend into the body so
+  -- the enclosing function declares enough `$__rf` slots (a match in the body uses them).
+  CLetGroup _ body => maxIndexAt body d
+  -- compound value nodes emit their sub-expressions at depth `d` (no own stash slot);
+  -- descend so a scratch-using element (e.g. CIndex/CSlice/a nested match) is counted.
+  CTuple es => foldMaxI (map (x => maxIndexAt x d) es)
+  CList es => foldMaxI (map (x => maxIndexAt x d) es)
+  CArray es => foldMaxI (map (x => maxIndexAt x d) es)
+  CRecord _ fields => foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields)
+  CRecordUpdate b fields => maxI (maxIndexAt b d) (foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields))
+  CVariantUpdate _ b fields => maxI (maxIndexAt b d) (foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields))
+  CFieldAccess e1 _ => maxIndexAt e1 d
+  CRangeList lo hi _ => maxI (maxIndexAt lo d) (maxIndexAt hi d)
+  CRangeArray lo hi _ => maxI (maxIndexAt lo d) (maxIndexAt hi d)
+  CIndex a i => maxI (maxIndexAt a d) (maxIndexAt i d)
+  CSlice a lo hi _ => maxI (maxIndexAt a d) (maxI (maxIndexAt lo d) (maxIndexAt hi d))
   _ => d - 1
 
 -- the deepest switch nesting in a tree (each CTSwitch increments the emit depth by

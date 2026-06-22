@@ -1,0 +1,18 @@
+-- W12: nested-closure capture across do-notation binds where the result is a RECORD
+-- (the `parseInterface`/`ifLet` cluster shape). The do-block lowers to nested lambdas;
+-- the innermost `pure { lo = a, hi = b }` is a CRecord referencing the first bind `a`
+-- — freeVarsExpr must descend CRecord/CField or `a` emits as unbound. a=7,b=3 -> 73.
+data Span = Span { lo : Int, hi : Int }
+
+mk : Option Span
+mk = do
+  a <- Some 7
+  b <- Some 3
+  pure (Span { lo = a, hi = b })
+
+describe : Option Span -> Int
+describe o = match o
+  Some s => s.lo * 10 + s.hi
+  None => 0
+
+main = describe mk

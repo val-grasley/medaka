@@ -1,0 +1,12 @@
+-- W12: a `where`-clause local function whose body builds a TUPLE referencing the
+-- enclosing param `base` (the CLetGroup capture path). groupCaps's freeVarsClauses ->
+-- freeVarsExpr must descend CTuple to capture `base` into the lifted member's $env.
+-- f 7: pair 9 = (16, 7) -> 16*100 + 7 = 1607.
+f : Int -> Int
+f base = combine 9
+  where
+    combine k = match pair k
+      (x, y) => x * 100 + y
+    pair k = (base + k, base)
+
+main = f 7
