@@ -292,6 +292,33 @@ recursion.
 **Why parked:** QoL diagnostic, off the canonicalization critical path. Needs TRMC's classifier (do
 after #56). The complement to the TRMC + big-stack stack-safety work, not a blocker.
 
+### Future idea (parked, not scheduled): bare effectful statements (drop `let _ =`)
+
+**Problem (the `let _ =` tax):** sequencing Unit-returning effects (`putStr`, `writeFile`, `set_ref`,
+`logLine`, dispatch handlers) is written as a stack of `let _ = action` bindings — ~1450 occurrences
+across `selfhost/`. The `_` exists only to give the effect a place in a `let`-chain; the binding
+carries no value. Verbose, and `do`-notation doesn't cover it (no monad to thread in plain Unit-IO).
+
+**Idea:** allow a **bare expression as a statement** in block bodies, sequenced by the existing
+same-indent NEWLINE — so `putStr header` / `putStr body` on consecutive lines run in order without
+`let _ =`.
+
+**Feasibility (already scoped):** *not* a lexer-ambiguity problem. The layout pass
+(`frontend/lexer.mdk` `applyNlTop`/`resolveCont`) already makes same-column lines **separate logical
+lines** (`col == top` → bare `NEWLINE`, no INDENT), and the only application-across-lines case is a
+**deeper-indented** continuation (Phase 137 `resolveCont`), already disambiguated. So `foo\nbar` at the
+same column can never be `foo bar` today. Work is:
+- **Parser:** add an expr-statement production in block bodies; the one snag is distinguishing a bare
+  statement from a binding (`foo x` vs `y = 3`) → `=`/clause lookahead (try-binding-else-expr).
+- **Type policy (the real design call):** `let _ = e` *documents* intentional discard; a bare statement
+  silently drops `e`'s result — a footgun when a non-Unit result was meant to be used. Pick one:
+  require non-final statements be `Unit`-typed (reject accidental drops), or warn on discarded non-Unit
+  (cf. GHC `-fwarn-unused-do-bind`). `let _ =` would remain the explicit-discard escape hatch.
+
+**Why parked:** ergonomics, not on any critical path. Threads `frontend/parser.mdk` +
+`types/typecheck.mdk` (both compilers if done pre-`lib/` removal). Mirror in `SYNTAX.md`. User deferred
+2026-06-21; follow-up only.
+
 ### Capability-effects wedge — near-term sequence
 
 **Owning roadmap:** [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (language
