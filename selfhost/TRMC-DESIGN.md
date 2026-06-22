@@ -540,3 +540,48 @@ today (no target). If ever built, gate each with a synthetic SIGSEGV-before /
 correct-after fixture (F1(b): `data T = N T Int`/field-0 + a self-in-middle ctor,
 prelude-free path; F2(b): a synthetic `instance Builder T requires C a` through the typed
 path) + full `diff_selfhost_*` + `selfcompile_fixpoint` C3a/C3b.
+
+## Phase 3 — (b′) dispatch-into-single-target for LLVM — SCOPED & DEFERRED (2026-06-22)
+
+The WasmGC backend gained a novel **dispatch-into-single-target (b′)** TMC
+(`selfhost/WASMGC-TRMC-DESIGN.md`): a tail-connected GROUP rooted at one cons-target
+(e.g. the lexer's `scan`) where cons-free routers (`scanAt`) tail-call into the group
+and leaves do `tok :: scan …`. A read-only-then-reverted port pass (2026-06-22)
+attempted to mirror it into the LLVM backend to keep the two in sync. **Verdict:
+DEFERRED — there is a fundamental ISA obstacle and native does not need it.**
+
+**Primary obstacle — `musttail` prototype-match (no LLVM analogue of `return_call`).**
+A (b′) group's members have **heterogeneous arities** (the lexer's router `scanAt` is
+arity-6, the cons-root `scan` it spine-conses to is arity-5; in the compiler's own
+source `variantStartsAt`/`variantStartsGo` are 7/6). WASM's `return_call` threads any
+args across any callee prototype — the cross-function tail edge is free. The existing
+LLVM TRMC stays *within one define* (`br %loop`, self-recursive, one prototype); a (b′)
+group's only stack-safe cross-function edge is **`musttail`**, which **requires caller
+and callee param counts to match exactly** (`cannot guarantee tail call due to
+mismatched parameter counts`, confirmed empirically). So the WASM technique does NOT
+port verbatim. The workaround that resolves it — a **uniform-arity dual-define** (public
+`@mdk_<m>` at real arity + an inner `@mdk_<m>__disp` at `U = max-member-arity`, the hot
+cycle musttailing a uniform inner ring with zero-padded args) — is correct in principle
+but **materially larger than "mirror `emitTrmcCtor`"**, which was the STOP condition.
+
+**Secondary — detection non-termination on the real graph.** The lifted
+`detectDispatchGroups` (parameterized over `canonName`/`fnArity` closures) did not
+terminate on the ~2000-bind `medaka_cli` graph (3 GB+, killed at 2 min) where the
+structurally-identical WASM original terminates — a suspected O(binds²)-with-deep-walks
+pathology amplified by per-call closures, not root-caused (the bootstrap's tolerant
+seed-fallback masked which emitter was active, blocking an A/B test). Fixpoint not
+reached.
+
+**Why DEFER (user, 2026-06-22).** Native has a deep C stack
+(`-Wl,-stack_size,0x20000000`), so (b′) overflow is rare on native — this was a
+*consistency* port, not a live-bug fix. The (b′) shape that mattered (browser/V8 stack)
+is already fixed on WasmGC. The cost (uniform-arity dual-define + root-causing the
+non-termination, on the canonical backend, with fixpoint risk) far exceeds the benefit.
+**The backends stay in sync on self-recursive + dispatched-method TMC (Phase 1/2); they
+differ on (b′) by ISA necessity, not oversight.**
+
+**If ever resumed** (a real native (b′) overflow appears): the reverted WIP is preserved
+at `selfhost/bprime-llvm-wip.patch` (819 lines, against base `243dbb9` — will need
+rebasing). Forward options, ranked: (1) homogeneous-arity-only subset (sound, passes
+fixpoint, but the real lexer group is heterogeneous so it wouldn't transform — synthetic
+value only); (2) the full uniform-arity dual-define + fix the detection non-termination.

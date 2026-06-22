@@ -112,6 +112,15 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   `trmc_analysis.mdk` (lifted Stage 0), so this is emitter-only (`wasm_emit.mdk`'s impl-emit path) and
   closes the whole CLASS of dispatched list-builder impls (map/filterMap/ap/…) at once. Then re-measure
   `check_main` (may complete, or hit parser/typecheck spines / the §4.2 Class-B tree-walk).
+- **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
+  the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
+  `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
+  `scanAt` arity-6 → cons-root `scan` arity-5); WASM's `return_call` handles this for free, LLVM can't
+  without a uniform-arity dual-define workaround that balloons past the TMC machinery (+ a detection
+  non-termination on the real graph). And native doesn't NEED it (deep C stack → (b′) overflow rare;
+  consistency, not a live bug). DEFERRED + documented: `TRMC-DESIGN.md` §"Phase 3 … DEFERRED"; reverted
+  WIP preserved at `selfhost/bprime-llvm-wip.patch` (vs base `243dbb9`). Backends stay in sync on
+  self/dispatched-method TMC (Phase 1/2); differ on (b′) by ISA necessity.
 - ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).
