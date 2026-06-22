@@ -119,4 +119,30 @@ if [ "$fail" -eq 0 ]; then
   tco_assert fn_tailsum.mdk sumTo
 fi
 
-[ "$fail" -eq 0 ] && [ "$tco_fail" -eq 0 ]
+# ── (b′) dispatch-TMC IR-shape assertion (WASMGC-TRMC Stage 2) ─────────────────
+# The synthetic dispatch fixture's `scan`-rooted group must lower to a reset wrapper
+# `$scan` + an inner loop `$scan__disploop`, and NO spine cons leaf may emit a
+# recursive `call $scan` (the overflow shape) — every spine edge is a `return_call`
+# to the inner loop.  Proves "dispatch-TMC fired", not merely "the program ran".
+disp_fail=0
+if [ "$fail" -eq 0 ]; then
+  dwat="$WORK/w_trmc_dispatch.disp.wat"
+  if "$EMITBIN" "$FIXDIR/w_trmc_dispatch.mdk" > "$dwat" 2>/dev/null; then
+    # the group bodies = every fn EXCEPT main/lenAcc (which legitimately call the $scan
+    # wrapper as a normal, non-recursive entry).  Extract the scan/scanAt/leaf* funcs.
+    groupbodies="$(awk '/\(func \$(scan|scanAt|leafA|leafB|leafC|next|scan__disploop) /{f=1} f{print} f&&/^  \)$/{f=0}' "$dwat")"
+    if ! grep -q '(func \$scan__disploop ' "$dwat"; then
+      echo "DISP-ASSERT FAIL w_trmc_dispatch: no \$scan__disploop inner loop (group not detected)"; disp_fail=1
+    elif printf '%s' "$groupbodies" | grep -qE '(^|[^_a-zA-Z])call \$scan( |$)'; then
+      echo "DISP-ASSERT FAIL w_trmc_dispatch: a recursive 'call \$scan' survives in a group body (overflow shape)"; disp_fail=1
+    elif ! grep -q 'return_call \$scan__disploop' "$dwat"; then
+      echo "DISP-ASSERT FAIL w_trmc_dispatch: no 'return_call \$scan__disploop' (spine leaf not redirected)"; disp_fail=1
+    else
+      echo "DISP-ASSERT ok   w_trmc_dispatch: \$scan group lowers to reset-wrapper + \$scan__disploop, 0 recursive call \$scan in group bodies"
+    fi
+  else
+    echo "DISP-ASSERT FAIL w_trmc_dispatch (emit)"; disp_fail=1
+  fi
+fi
+
+[ "$fail" -eq 0 ] && [ "$tco_fail" -eq 0 ] && [ "$disp_fail" -eq 0 ]
