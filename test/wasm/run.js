@@ -78,6 +78,10 @@ const imports = { env: {
   // the module then reads each byte via mdk_float_fmt_byte to rebuild a $str.
   mdk_float_fmt: (d) => { floatFmtBuf = Array.from(Buffer.from(fmt12g(d), 'utf8')); return floatFmtBuf.length; },
   mdk_float_fmt_byte: (i) => floatFmtBuf[i] & 0xff,
+  // layer-6 stringToFloat: read the bytes pushed into pathBuf, parse as a float via
+  // Number() (byte-identical to C strtod on the valid-decimal subset medaka uses).
+  // The guest calls mdk_path_reset+mdk_path_push to populate pathBuf, then this.
+  mdk_str_to_float: () => { const s = Buffer.from(pathBuf).toString('utf8'); pathBuf = []; return Number(s); },
   // W12 IO host surface (byte-channel; backed by `vfs` / `argv` so the browser can swap).
   mdk_path_reset: () => { pathBuf = []; },
   mdk_path_push: (b) => { pathBuf.push(b & 0xff); },

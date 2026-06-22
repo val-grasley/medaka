@@ -1,0 +1,16 @@
+-- layer-6 fixture: stringToFloat (String -> Option Float)
+-- Exercises the mdk_str_to_float host-seam with several values.
+-- Uses a value String main (not a Unit/IO main) to avoid the Unit auto-print issue.
+-- The result is a concatenated string of all the showOpt results.
+showOpt : Option Float -> String
+showOpt (Some f) = "Some " ++ floatToString f
+showOpt None = "None"
+
+main =
+  showOpt (stringToFloat "3.14") ++ "\n"
+  ++ showOpt (stringToFloat "0.0") ++ "\n"
+  ++ showOpt (stringToFloat "-2.5") ++ "\n"
+  ++ showOpt (stringToFloat "3.141592653589793") ++ "\n"
+  ++ showOpt (stringToFloat "100.0") ++ "\n"
+  ++ showOpt (stringToFloat "1e12") ++ "\n"
+  ++ showOpt (stringToFloat "not-a-number")
