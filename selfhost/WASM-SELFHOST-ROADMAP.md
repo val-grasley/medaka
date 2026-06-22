@@ -60,12 +60,22 @@ investigate after the big categories close (some are artifacts of the above).
 9. ⬜ IO host surface (task #3 — see below): readFile/args/getEnv/fileExists/exit
 10. ⬜ assemble + run the compiler-on-wasm on a trivial input (the self-host proof)
 
-**Census progress: 1428 → 119** (panic, arrays, Ref, fallthrough, string-clauses+charCode,
-destructuring all closed — 92%). Remaining: UTF-8 externs 37, diffuse unbound ~50,
-small structural ~20, IO externs ~4. **Lazy-emitter rule (learned):** this emitter
+6. ✅ UTF-8 string externs (stringToChars/charFromCode/stringFromChars) (`ae16d02`, →115; census →82)
+7. ✅ nested-closure free-var capture — `freeVarsExpr` now descends compound value nodes (CTuple/CRecord/CList/…) so do-notation `pure (a,b)` captures earlier `<-` binds; parallel `maxIndexAt` fix (`508fdd3`, modules →13; census →35)
+8. ✅ structural batch — Char/String match-switch heads, ctor/tuple lambda-params, **record-ctor registration** (`registerRecordCtors` in `lowerProgramEmit` — IN-GRAPH, fixpoint C3a/C3b YES + diff_selfhost_build 35/0), W5 dict-param capture (`freeVarsExpr` CMethod/CDict arms) (`945c685`, →119; census →11)
+9. 🟡 char-classification externs (charIs*/charTo*, 7) — pure-WAT ASCII, in progress
+10. ⬜ IO host surface (task #3): readFile/args/getEnv/fileExists/exit — emit host-import byte-channel + JS virtual-FS shim. LAST emitter-gap category.
+11. ⬜ whole-compiler emit + `wasm-tools` assemble → run under Node with virtual-FS (the self-host proof). NOTE: census=0 means EMITTABLE, not yet runtime-correct — expect a runtime-validation layer (like LLVM's B1–B7).
+
+**Census progress: 1428 → 11** (panic, arrays, Ref, fallthrough, string-clauses+charCode,
+destructuring, UTF-8, closure-capture, structural-batch all closed — 99.2%). Remaining:
+char externs 7 (in progress), IO externs 4. **SEED STATUS:** the structural batch touched
+`core_ir_lower.mdk` (in-graph) → committed seed (`selfhost/seed/emitter.ll.gz`) is STALE;
+fixpoint self-compiles fresh (C3a/C3b YES) so it's the decisive check. Re-mint the seed at
+the next checkpoint (`bootstrap_from_seed` red is expected until then). Lazy-emitter rule: this emitter
 forces instruction strings at final assembly, so binding/label state must thread as
 data / locals / Core-IR-encoded sentinels — NOT mutable refs read at a different time
-than set (an LLVM-style `set_ref currentLabel` reads its default at the use site).
+than set.
 
 ## IO host surface (scoped 2026-06-22 — task #3)
 
