@@ -686,7 +686,11 @@ isStrExternW name = contains name [
   -- W11b: stringToChars/stringFromChars are the UTF-8 codec ($str <-> Array Char);
   -- charFromCode : Int -> Option Char is range-check + i31 rebox.  Routed here so they
   -- reach emitStrExternRef (all touch $str / Char codepoints).
-  "stringToChars", "stringFromChars", "charFromCode"]
+  "stringToChars", "stringFromChars", "charFromCode",
+  -- W9: the Debug-quoting externs render a String/Char as a quoted+escaped literal
+  -- ("hi" / 'a').  Both produce a fresh $str via the $mdk_dbg_quote runtime (which
+  -- reuses $mdk_cp_count + $mdk_char_to_str, both in strLeafRuntimeLines).
+  "debugStringLit", "debugCharLit"]
 
 -- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
 -- These force ref-mode (they produce/consume (ref eq) i31 values) but, unlike the
@@ -782,13 +786,13 @@ floatExternStub : String -> List String
 floatExternStub _ = ["unreachable"]
 
 -- W9: the QUOTING debug externs `debugStringLit`/`debugCharLit` (used by `impl Debug
--- String`/`impl Debug Char` to render `"hi"`/`'a'` with quotes+escapes) have no
--- WasmGC runtime yet.  Like the Float externs they are reached UNCONDITIONALLY (those
--- impls are retained whole by DCE) but only EXECUTED when a String/Char is `debug`ged,
--- which W9 fixtures avoid (they use `display`/auto-print, not quoted `debug`).  Stub
--- to a trap so the program emits; the port of these externs is a remaining-MVP item.
+-- String`/`impl Debug Char` to render `"hi"`/`'a'` with quotes+escapes).  These now
+-- have a real WasmGC runtime ($mdk_dbg_quote / $mdk_debug_string_lit / _char_lit in
+-- strLeafRuntimeLines) and are routed through isStrExternW → emitStrExternRef, so the
+-- unimplemented set is now empty.  (Kept as a hook for any future trap-stubbed str
+-- extern; `floatExternStub` remains the trap path.)
 isUnimplStrExternW : String -> Bool
-isUnimplStrExternW name = contains name ["debugStringLit", "debugCharLit"]
+isUnimplStrExternW _ = False
 
 programUsesStr : List CBind -> Bool
 programUsesStr groups = anyBind bindUsesStr groups
@@ -933,6 +937,11 @@ noteW8Extern name =
   -- ($mdk_char_to_str, reused by stringFromChars), and the codec runtime itself.
   let _ = if contains name ["stringToChars", "stringFromChars"]
           then let _ = set_ref useStrCodecRef True in let _ = set_ref useStrRef True in let _ = set_ref useArrayRef True in set_ref useStrLeafRef True else ()
+  -- W9: debugStringLit/debugCharLit quote+escape into a fresh $str via $mdk_dbg_quote,
+  -- which reuses $mdk_cp_count + $mdk_char_to_str (both in strLeafRuntimeLines).  Force
+  -- the $str rep + the strLeaf runtime.  (No $arr needed.)
+  let _ = if contains name ["debugStringLit", "debugCharLit"]
+          then let _ = set_ref useStrRef True in set_ref useStrLeafRef True else ()
   -- W11b: charFromCode : Int -> Option Char — range-check runtime, no $str/$arr needed.
   let _ = if name == "charFromCode" then set_ref useCharFromCodeRef True else ()
   -- W11b: char classification + case-mapping externs — pure WAT helpers, no $str/$arr.
@@ -3076,6 +3085,16 @@ emitStrExternRef prog env d "charFromCode" args = match args
   [a] => emitRefExpr prog env d a
     ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_char_from_code"]
   _ => gapL "wasm W11b: charFromCode takes exactly one argument"
+-- W9: debugStringLit s : $str -> $str (quote+escape with double-quotes).
+emitStrExternRef prog env d "debugStringLit" args = match args
+  [a] => emitRefExpr prog env d a
+    ++ ["ref.cast (ref $str)", "call $mdk_debug_string_lit"]
+  _ => gapL "wasm W9: debugStringLit takes exactly one argument"
+-- W9: debugCharLit c : Char (i31) -> $str (quote+escape with single-quotes).
+emitStrExternRef prog env d "debugCharLit" args = match args
+  [a] => emitRefExpr prog env d a
+    ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_debug_char_lit"]
+  _ => gapL "wasm W9: debugCharLit takes exactly one argument"
 emitStrExternRef _ _ _ name _ = gapL ("wasm W6: unsupported string extern '" ++ name ++ "'")
 
 -- ── W8 RNG + hash LEAF externs (RUNTIME-DESIGN §5 RNG / §5 hash) ─────────────
