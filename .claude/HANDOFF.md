@@ -83,14 +83,25 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
     `core.mdk` fully under Node (flat `tokenize→parse→runCheck` trace, no `scan`-recursion tower).
   - All Stage-1/2 work is **emitter-only** (`wasm_emit.mdk` is out of the compiler graph) → no
     fixpoint/seed. Regression gates green throughout (132/6/13 + VALIDATE_OK).
-- **🟡 NEXT — runtime layer-6: `floatTok` → `unreachable` (the deferred `stringToFloat` float-codec
-  gap, NOT TRMC).** With the lexer overflow gone, `check_main` runs `tokenize→parse→runCheck` and traps
-  a single-frame `unreachable` in `frontend_lexer__floatTok` (`isDeferredFloatExternW`) when it hits a
-  float literal in `core.mdk`. This is the **pre-existing W8b `stringToFloat`/strtod-port holdout**
-  (memory `project_wasmgc_backend`, `project_float_literal_native_gaps`), a separate workstream — port a
-  pure-WAT (or host-import, like `mdk_float_fmt`) `stringToFloat`. Then re-check how much further
-  `check_main` runs (expect possibly Stage-3 (a)-spines in parser/typecheck, or the Class-B AST
-  tree-walk overflow `WASMGC-TRMC-DESIGN.md` §4.2 flags as its own non-TRMC item).
+- **🏁 Runtime layer-6 CLOSED (`a332da7`, emitter-only) — `stringToFloat` ported; `check_main` runs
+  PAST `floatTok`.** The deferred float-codec extern (`isDeferredFloatExternW`, was `unreachable`) is now
+  implemented via a HOST SEAM — the inverse of `floatToString`'s `mdk_float_fmt`: a `mdk_str_to_float`
+  import (`run.js`, JS `Number()`) + a WAT runtime `$mdk_string_to_float` that pushes the `$str` bytes
+  through the IO path channel, gets an f64, boxes it into `Option Float`. Byte-identical to the native
+  `strtod` oracle (`stringToFloat "3.14"` → `Some 3.14`; gate `test/wasm/fixtures_modules/w_string_to_float.mdk`,
+  `diff_wasm_modules` 13→14). Wired into `isStrExternW`/`externArityW`/`emitStrExternRef` (removed from
+  the deferred stubs). All gates green (132/6/14 + VALIDATE_OK). **Verified on the binary:** `check_main`
+  no longer traps at `floatTok` — the trap moved deeper (the next layer).
+- **🟡 NEXT — runtime layer-7: `frontend_lexer__stripComments` stack overflow (`Maximum call stack
+  size exceeded`).** With `floatTok` unblocked, `check_main` now traps a **self-recursive overflow** in
+  `frontend_lexer__stripComments` (authoritative wasm stack trace shows `stripComments` recursing into
+  itself to the limit; NOT `coalesceStep` — the layer-6 agent's report was imprecise). This is a lexer
+  self-recursion that Stage-1 self-TMC did NOT transform — **diagnose the shape first**: read
+  `selfhost/frontend/lexer.mdk`'s `stripComments` to classify it (a cons-tail (a) case Stage-1 missed? a
+  plain-tail recursion where WasmGC `return_call` TCO isn't firing? a non-tail accumulator needing
+  restructure?). The fix likely extends the WasmGC TMC/TCO coverage (emitter-only) OR is another spine in
+  the §4.2 Class-A set. Then re-measure `check_main` (more spines — parser `coalesceStep`?, typecheck —
+  or the Class-B AST tree-walk may follow).
 - ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).

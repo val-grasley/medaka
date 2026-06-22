@@ -104,12 +104,18 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   grows a `scan`-rooted 49-member group, each spine cons → cons-into-dest + `return_call $scan__disploop`
   (dest in 3 module globals); `diff_wasm` 132 + `DISP-ASSERT` (0 recursive `call $scan`). Verified:
   `check_main` lexes `runtime.mdk`+`core.mdk` fully under Node (flat `tokenize→parse→runCheck` trace).
-- 🟡 **layer-6 (NEXT)** — `floatTok` → `unreachable` (the deferred **`stringToFloat` float-codec gap**,
-  NOT TRMC). With the lexer overflow gone, `check_main` traps a single-frame `unreachable` in
-  `frontend_lexer__floatTok` (`isDeferredFloatExternW`) on a float literal in `core.mdk` — the
-  pre-existing W8b holdout. Port a pure-WAT (or host-import) `stringToFloat`, then re-measure how far
-  `check_main` runs (possibly Stage-3 (a)-spines in parser/typecheck, or the Class-B AST tree-walk
-  overflow `WASMGC-TRMC-DESIGN.md` §4.2 flags as its own non-TRMC item).
+- 🏁 **layer-6 CLOSED (`a332da7`, emitter-only)** — `stringToFloat` implemented via a HOST SEAM
+  (`mdk_str_to_float` import + `$mdk_string_to_float` WAT runtime, the inverse of `floatToString`'s
+  `mdk_float_fmt`; pushes `$str` bytes → JS `Number()` → boxes `Option Float`). Byte-identical to the
+  native `strtod` oracle (`stringToFloat "3.14"` → `Some 3.14`; `diff_wasm_modules` 13→14). `check_main`
+  now runs PAST `floatTok`.
+- 🟡 **layer-7 (NEXT)** — `frontend_lexer__stripComments` stack overflow (`Maximum call stack size
+  exceeded`). With `floatTok` unblocked, `check_main` traps a **self-recursive** overflow in
+  `stripComments` (authoritative wasm trace). Stage-1 self-TMC did not transform it — **diagnose the
+  recursion shape first** (`selfhost/frontend/lexer.mdk` `stripComments`): cons-tail (a) case Stage-1
+  missed? plain-tail where `return_call` TCO isn't firing? non-tail accumulator? Likely an emitter-only
+  TMC/TCO coverage extension. Then re-measure (more Class-A spines may follow — parser/typecheck — then
+  the §4.2 Class-B AST tree-walk).
 
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)
