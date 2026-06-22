@@ -1,0 +1,8 @@
+-- W6: a String-literal switch head — `match s { "foo" => … }` lowers to a
+-- Core-IR decision tree whose head is a String HLit ($mdk_str_compare per arm).
+greet s = match s
+  "hi" => 1
+  "bye" => 2
+  _ => 0
+
+main = intToString (greet "bye" + greet "hi" + greet "x")
