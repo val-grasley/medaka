@@ -1875,8 +1875,12 @@ refPrintFor WRef = gapL "ref-mode main produced a non-scalar value — printing 
 -- applied), also emit a closure wrapper `$name__clos` (a $clos with arity = param
 -- count, code = a thunk that unpacks the args array + calls $name).
 emitRefFnBind : Prog -> CBind -> <Mut> List String
-emitRefFnBind prog (CBind name clauses) =
+emitRefFnBind prog (CBind name clauses0) =
   let _ = set_ref curBindRef name
+  -- W9b: a single-clause point-free constrained fn (`elem a = fold g False`) whose
+  -- body is an under-applied CMethod gets eta-saturated to the method's full arity
+  -- so the emitted dispatch call pushes every operand (else a validate underflow).
+  let clauses = map etaSaturateFnClause clauses0
   let arity = clauseArityOf clauses
   let params = synthParams arity
   let bodyLines = emitClausesRef prog name params arity clauses
@@ -2370,6 +2374,65 @@ etaExpandTo pats body arity have
     let nm = "$eta" ++ intToString have
     etaExpandTo (pats ++ [PVar nm]) (CApp body (CVar nm AGlobal)) arity (have + 1)
 
+-- W9b — eta-SATURATE a POINT-FREE / under-applied PLAIN top-level constrained fn
+-- whose body is an under-applied interface-method (CMethod) occurrence.  Peer to
+-- llvm_emit's etaSaturateMethodBody (the plain-fn analog of the impl-clause
+-- gatherImplGroup eta-expansion).  `elem a = fold (acc x => …) False` dict-passes
+-- to a clause `[$dict_Foldable, $dict_Eq, a]` whose body is the CMethod `fold`
+-- (declared arity 3) applied to only TWO args (the lambda + `False`) — the
+-- container `t a` argument is the RESIDUAL the method's full arity supplies.  The
+-- emitted call then pushes 2 args at a `mdk_impl_*_fold` that takes 3 → stack
+-- underflow at validate.  Append `deficit` fresh value params and APPLY them to
+-- the body (threading through any where/let tail), so the dispatch call is
+-- SATURATED.  No-op (deficit 0) for a saturated body, a bare value, or any fn
+-- whose body tail is not an under-applied CMethod.  Mirrors the LLVM method-spine
+-- deficit; the #12 CLam-compose case (sig-arity deficit) is not yet a wasm fixture
+-- so we key only on the method-spine signal (the load-bearing one for the prelude).
+etaSaturateFnClause : CClause -> <Mut> CClause
+etaSaturateFnClause (CClause pats body) =
+  let deficit = methodBodyDeficitW body
+  if deficit <= 0 then CClause pats body
+  else
+    let (pats2, body2) = applyEtaTailW pats body deficit (listLen pats)
+    CClause pats2 body2
+
+-- the count of still-unapplied VALUE args of an under-applied CMethod body tail
+-- (0 = saturated / not a method head).  Transparent through CLet/CLetGroup tail
+-- wrappers (a method spine can be the let-body tail).  Mirror of llvm_emit's
+-- methodBodyDeficit.
+methodBodyDeficitW : CExpr -> <Mut> Int
+methodBodyDeficitW (CLet _ _ _ b) = methodBodyDeficitW b
+methodBodyDeficitW (CLetGroup _ b) = methodBodyDeficitW b
+methodBodyDeficitW (CMethod name _ _ _) = methodArityOf name
+methodBodyDeficitW app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CMethod name _ _ _ => maxI 0 (methodArityOf name - listLen args)
+    _ => 0
+
+-- append `n` fresh eta params (numbered after `start`) and APPLY them to the body
+-- at its tail position, threading through where/let wrappers so let bindings stay
+-- in scope for the saturated tail application.  Mirror of llvm_emit's
+-- applyEtaArgsTail / etaFreshPats.
+applyEtaTailW : List Pat -> CExpr -> Int -> Int -> (List Pat, CExpr)
+applyEtaTailW pats body n start =
+  let fresh = etaFreshPatsW n start
+  (pats ++ fresh, applyEtaArgsTailW body fresh)
+
+etaFreshPatsW : Int -> Int -> List Pat
+etaFreshPatsW 0 _ = []
+etaFreshPatsW n start = PVar ("$eta" ++ intToString start) :: etaFreshPatsW (n - 1) (start + 1)
+
+applyEtaArgsTailW : CExpr -> List Pat -> CExpr
+applyEtaArgsTailW (CLet r p rhs b) fresh = CLet r p rhs (applyEtaArgsTailW b fresh)
+applyEtaArgsTailW (CLetGroup bs b) fresh = CLetGroup bs (applyEtaArgsTailW b fresh)
+applyEtaArgsTailW body fresh = applyEtaArgsW body fresh
+
+applyEtaArgsW : CExpr -> List Pat -> CExpr
+applyEtaArgsW body [] = body
+applyEtaArgsW body ((PVar x)::rest) = applyEtaArgsW (CApp body (CVar x AGlobal)) rest
+applyEtaArgsW body (_::rest) = applyEtaArgsW body rest
+
 implClauseFor : String -> String -> CImplEntry -> List CClause
 implClauseFor m tag (CImplEntry n _ (CImplTagged t _ _ _ pats body)) =
   if n == m && t == tag then [CClause pats body] else []
@@ -2615,7 +2678,9 @@ emitVarRefPlain prog env d x =
   else if x == "pi" then ["f64.const 3.141592653589793", "struct.new $float"]
   else if x == "e" then ["f64.const 2.718281828459045", "struct.new $float"]
   else if contains x ["intMinBound", "intMaxBound"] then ["unreachable"]
-  else if isCtor prog x then emitCtorConstruct prog env d x []
+  else if isCtor prog x then
+    if ctorArity prog x == 0 then emitCtorConstruct prog env d x []
+    else emitCtorEtaClosure prog x
   else if isDeferredFloatExternW x then floatExternStub x
   else if isUnimplStrExternW x then floatExternStub x
   else if contains x (progFnNames prog) then
@@ -2653,6 +2718,34 @@ emitExternEtaDefine prog lamName name arity =
   ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
     ++ map (l => "  " ++ l) localLines
     ++ indent (argPrologue ++ call ++ ["return"])
+    ++ ["  )"]
+
+-- W9b: a bare/partial ADT constructor of arity > 0 used as a VALUE (`map PVar xs`)
+-- — eta-wrap it into a captureless closure whose lifted code function `$mdk_wctor_
+-- <Ctor>` unpacks the argarr and allocates the ctor cell.  Peer to llvm_emit's
+-- emitCtorEtaClosure: an arity-0 ctor stays the immediate i31 (emitCtorConstruct
+-- … []), but an arity-N ctor in value position is a FUNCTION and must be a closure,
+-- not a malformed partial struct.new (the pre-W9b bug: emitCtorConstruct unpacked 0
+-- args at an N-field struct → stray operands underflow at validate).
+emitCtorEtaClosure : Prog -> String -> <Mut> List String
+emitCtorEtaClosure prog ctor =
+  let arity = ctorArity prog ctor
+  let lamName = "$mdk_wctor_" ++ gname ctor
+  let _ = noteFuncRef lamName
+  let _ = addLifted (emitCtorEtaDefine prog lamName ctor arity)
+  ["ref.func " ++ lamName, "i32.const " ++ intToString arity,
+   "array.new_fixed $argarr 0", "struct.new $clos"]
+
+emitCtorEtaDefine : Prog -> String -> String -> Int -> <Mut> List String
+emitCtorEtaDefine prog lamName ctor arity =
+  let params = synthParams arity
+  let argPrologue = flatMap (argLoadAt) (zipIdx params 0)
+  let argVars = map (p => CVar p AGlobal) params
+  let body = emitCtorConstruct prog params 0 ctor argVars
+  let localLines = map (l => localDeclRef l) params
+  ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
+    ++ map (l => "  " ++ l) localLines
+    ++ indent (argPrologue ++ body ++ ["return"])
     ++ ["  )"]
 
 -- arithmetic / comparison: unbox both operands from i31 to i32, do the i32 op, then
