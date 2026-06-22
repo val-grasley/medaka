@@ -115,13 +115,18 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   clause-dispatch chain with the TMC ctx LIVE for patterned multi-clause builders; save+clear the TMC ctx
   before lifted-lambda bodies (a 2nd bug — leaked `$__tmc_first`/`$tmcloop` into invalid wasm). Gate
   `w_trmc_strip_clauses.mdk` + S1B-ASSERT; `diff_wasm` 133. `check_main` runs past the lexer.
-- 🟡 **layer-8 (NEXT)** — dispatched `List map` impl-method self-recursion (`mdk_impl_List_map`,
-  `map f (x::xs) = f x :: map f xs`). WasmGC self-TMC runs only on top-level fn binds, not dispatched
-  impl methods → needs the impl-method self-TMC analogue (peer to LLVM `SelfByMethod`/`trmcImplTry`,
-  `TRMC-DESIGN.md` B-dispatch). The `SelfByMethod`/`mentionsSelfMethod` analysis already exists in
-  `trmc_analysis.mdk` → emitter-only (`wasm_emit.mdk` impl-emit path), closes the whole class of
-  dispatched list-builder impls (map/filterMap/ap/…). Then re-measure `check_main` (may complete, or hit
-  parser/typecheck spines / the §4.2 Class-B tree-walk).
+- 🏁 **layer-8 CLOSED (`a76c8b3`, emitter-only)** — dispatched `List map` impl-method TMC. WasmGC
+  self-TMC reached only top-level fn binds → generalized `emitWasmTrmcFn`→`emitWasmTrmcCore`
+  (self-ref-agnostic) + `wTrmcImplTry` (`SelfByMethod`) tried by `emitImplGroup`. `mentionsSelfMethod`
+  safety net verified (`map` TMC's, `ap` non-tail stays ordinary). Gate `w_dispatch_map_stack.mdk` +
+  TMC-ASSERT, `diff_wasm_modules` 15. `check_main` now runs into the parser.
+- 🟡 **layer-9 (NEXT)** — `illegal cast` (`ref.cast`) in `frontend_parser__coalesceStep` (via
+  `parse→manyGo→bindPR→orElseR→coalesceStep`). A NEW class: a runtime MISCOMPILE (wrong runtime-shape
+  cast), NOT a stack overflow / not TMC (cf. layer-3 list-`++` cast → `$mdk_append`). Diagnose the
+  mis-lowered cast in `coalesceStep` (what value, cast to what wrong `$`-type) — emitter-only wasm_emit
+  lowering bug. Faithful run.js trace for the next layer.
+- **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it; see
+  `TRMC-DESIGN.md` §"Phase 3 … DEFERRED" + WIP `selfhost/bprime-llvm-wip.patch`.
 
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)

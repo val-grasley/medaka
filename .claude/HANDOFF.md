@@ -104,14 +104,24 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   functions that don't declare them (invalid wasm) → save+clear the TMC ctx before a lifted body. Gate
   `test/wasm/fixtures/w_trmc_strip_clauses.mdk` + S1B-ASSERT (0 recursive `call $strip`), `diff_wasm`
   133. **Verified:** `check_main` runs past `stripComments` (authoritative run.js trace).
-- **🟡 NEXT — runtime layer-8: dispatched `List map` impl-method self-recursion** (`mdk_impl_List_map`:
-  `call $mdk_impl_List_map` → `struct.new $C_Cons`, `map f (x::xs) = f x :: map f xs`). The WasmGC
-  self-TMC runs only on top-level fn binds, NOT on dispatched impl-method emission — needs the
-  **impl-method self-TMC analogue** (peer to LLVM's `SelfByMethod` / `trmcImplTry` path; `TRMC-DESIGN.md`
-  "B-dispatch"). HIGH LEVERAGE: the `SelfByMethod`/`mentionsSelfMethod` analysis already exists in
-  `trmc_analysis.mdk` (lifted Stage 0), so this is emitter-only (`wasm_emit.mdk`'s impl-emit path) and
-  closes the whole CLASS of dispatched list-builder impls (map/filterMap/ap/…) at once. Then re-measure
-  `check_main` (may complete, or hit parser/typecheck spines / the §4.2 Class-B tree-walk).
+- **🏁 Runtime layer-8 CLOSED (`a76c8b3`, emitter-only) — dispatched `List map` impl-method TMC;
+  `check_main` runs through the lexer/layout and into the parser.** The WasmGC self-TMC reached only
+  top-level fn binds, not dispatched `$mdk_impl_<tag>_<method>` emission. Fix (`wasm_emit.mdk`):
+  generalized `emitWasmTrmcFn`→`emitWasmTrmcCore` (self-ref-agnostic; the only `SelfByVar`-specific bits
+  were the self-ref + func-symbol render); added `wTrmcImplTry` (the `trmcImplTry`-analogue, `SelfByMethod
+  method tag`) tried by `emitImplGroup` before the ordinary impl body. Reused the existing dest-passing
+  machinery verbatim. **Safety net verified:** `mdk_impl_List_map` (cons IS the result) TMC's → 0 self
+  calls; `mdk_impl_List_ap` (self inside `++`, non-tail) correctly stays ordinary (the `mentionsSelfMethod`
+  walk rejects it — `freeVars` is blind to the `CMethod` name). Gate `w_dispatch_map_stack.mdk` +
+  TMC-ASSERT, `diff_wasm_modules` 15. Closes the whole dispatched list-builder class (map/ap/…).
+- **🟡 NEXT — runtime layer-9: `illegal cast` (`ref.cast`) in `frontend_parser__coalesceStep`.** With the
+  lexer + `map` overflows gone, `check_main` emits/parses/validates and runs front-end init INTO the
+  parser, then traps `RuntimeError: illegal cast` in `frontend_parser__coalesceStep` (wasm-fn[392]), via
+  `parse → manyGo → bindPR → orElseR → coalesceStep`. **This is a NEW class — a runtime MISCOMPILE (wrong
+  runtime-shape `ref.cast`), NOT a stack overflow / not TMC** (cf. the earlier layer-3 list-`++` cast bug,
+  fixed by a runtime-shape-dispatching `$mdk_append`). Diagnose the mis-lowered cast in `coalesceStep`'s
+  emit (what value is cast to what wrong `$`-type) — a wasm_emit lowering bug, emitter-only. Use the
+  FAITHFUL run.js trace (copy + patch `.catch` for `e.stack`).
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
