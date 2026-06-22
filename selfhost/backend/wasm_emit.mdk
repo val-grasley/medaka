@@ -5590,6 +5590,12 @@ ctorsOfType : Prog -> String -> List String
 ctorsOfType prog ty =
   if isReservedType ty then reservedCtorsOfType ty
   else if ty == "List" then ["Cons", "Nil"]
+  -- Bool's ctors are SYNTHETIC (registered via syntheticCtor* helpers, not in the
+  -- program's ctorTypes table), so ctorsOfTypeUser would return [] → a 0-slot
+  -- br_table tower → both arms dropped → fall-through `unreachable`.  A genuine
+  -- `match <Bool> { True => …; False => … }` (a CDecision switch, not a lowered CIf)
+  -- hits this.  Index-aligned to syntheticCtorOrdinal: False=0, True=1.
+  else if ty == "Bool" then ["False", "True"]
   else if isTupleType ty then [tupleCtorName (tupleTypeArity ty)]
   else ctorsOfTypeUser prog ty
 

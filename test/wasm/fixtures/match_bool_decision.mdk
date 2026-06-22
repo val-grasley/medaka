@@ -1,0 +1,15 @@
+-- layer-12 repro: a `match <Bool>` that lowers to a CDecision switch (NOT a CIf).
+-- The Bool type's ctors are synthetic (True/False not in the ctorTypes table), so
+-- `ctorsOfType "Bool"` returned [] → a 0-slot br_table tower → both arms dropped →
+-- fall-through `unreachable`.  Before the fix this trapped; now it returns the arm body.
+data Box = Box Int
+
+isBig : Box -> Bool
+isBig (Box n) = n > 10
+
+pick : Box -> Int
+pick b = match isBig b
+  True => 100
+  False => 200
+
+main = pick (Box 3)
