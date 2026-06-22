@@ -893,11 +893,11 @@ ppResError (DuplicateBinding n) = "the clauses of '"
   ++ n
   ++ "' (and its type signature) together, or rename one."
 
--- one S-expression per line (the harness sorts); matches diagdump output set
+-- one human-readable error message per line (the harness sorts)
 export
 resolveToLines : List Decl -> List Decl -> List Decl -> String
 resolveToLines runtimeDecls preludeDecls prog =
-  joinNl (map resErrorSexp (resolveProgram runtimeDecls preludeDecls prog))
+  joinNl (map ppResError (resolveProgram runtimeDecls preludeDecls prog))
 
 -- ── Single-file import validation ─────────────────────────────────────────
 -- In single-file mode the loader is absent, so resolve_program stubs unknown

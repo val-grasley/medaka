@@ -1,3 +1,3 @@
-(UnboundVariable "a")
-(UnboundVariable "b")
-(UnboundVariable "c")
+Unbound variable: a
+Unbound variable: b
+Unbound variable: c

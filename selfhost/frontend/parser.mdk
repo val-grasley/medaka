@@ -3179,7 +3179,7 @@ resultDeclsResult src toks offs srcLen (PErr msg pos) =
   Err (mkLocated src toks offs srcLen msg pos)
 resultDeclsResult src toks offs srcLen (POk ds pos)
   | peekTok toks pos == TEof = Ok ds
-  | otherwise = Err (mkLocated src toks offs srcLen "parse error" pos)
+  | otherwise = Err (mkLocated src toks offs srcLen "Parse error" pos)
 
 -- offset(idx) → (line,col) → ParseError, single place so both arms agree.
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError

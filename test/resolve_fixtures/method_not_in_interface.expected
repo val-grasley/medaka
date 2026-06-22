@@ -1,1 +1,1 @@
-(MethodNotInInterface "baz" "Foo")
+Method 'baz' is not part of interface Foo

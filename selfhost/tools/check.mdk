@@ -30,7 +30,7 @@ import frontend.resolve.{
   resolveToLines,
   resolveModulesToLines,
   singleFileImportErrors,
-  resErrorSexp,
+  ppResError,
 }
 import frontend.exhaust.{exhaustToLines}
 import types.typecheck.{
@@ -57,7 +57,7 @@ runCheck rsrc csrc tsrc =
       let runtimeP = parse rsrc
       let coreP = parse csrc
       let importErrs = singleFileImportErrors desugared
-      let importDiags = joinNl (map resErrorSexp importErrs)
+      let importDiags = joinNl (map ppResError importErrs)
       routeImportCheck importDiags runtimeP coreP raw desugared
 -- R3: check for imports of unknown modules before resolve so we emit
 -- UnknownModule (right category) rather than falling through to a

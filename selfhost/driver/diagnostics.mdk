@@ -70,6 +70,17 @@ export
 ppDiag : Diag -> String
 ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
 
+-- Plain-text CLI renderer: "file:line:col: message" (Stage-A positioned output).
+-- line is 1-based (matches the oracle's plain-text convention); col is 0-based.
+-- None loc → loc-free "severity: message" (resolve errors, whole-doc range).
+export
+ppDiagCli : String -> Diag -> String
+ppDiagCli file (Diag _ msg (Some (Loc _ sl sc _ _))) =
+  file ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ msg
+ppDiagCli _ (Diag sev msg None) =
+  ppSeverity sev ++ ": " ++ msg
+
+
 -- ── single-file analysis ───────────────────────────────────────────────────
 --
 -- Mirrors lib/diagnostics.ml's `analyze`: runs parse → desugar → resolve →

@@ -24,13 +24,13 @@ import tools.check.{
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{BuildResult, BuildOk, BuildErr, BuildTarget, TNative, TWasm, runBuild, envOr}
-import support.util.{reverseL}
+import support.util.{reverseL, joinNl}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram, findProjectRoot}
-import driver.diagnostics.{analyzeProject, analyzeLocated, Diag(..), Severity(..), SevError}
+import driver.diagnostics.{analyzeProject, analyzeLocated, ppDiagCli, Diag(..), Severity(..), SevError}
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors, mainTypeIsAsync}
 import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
@@ -127,11 +127,16 @@ runCheckCmd argv =
                 Err msg =>
                   let _ = ePutStrLn msg
                   exit 1
-                Ok tsrc => match loadProgram target roots
-                  Err lmsg =>
-                    let _ = ePutStrLn lmsg
+                Ok tsrc => match parseResult tsrc
+                  Err e =>
+                    let loc = target ++ ":" ++ intToString (parseErrorLine e + 1) ++ ":" ++ intToString (parseErrorCol e)
+                    let _ = ePutStrLn (loc ++ ": " ++ parseErrorMessage e)
                     exit 1
-                  Ok mods => checkRoute rsrc csrc tsrc mods
+                  Ok _ => match loadProgram target roots
+                    Err lmsg =>
+                      let _ = ePutStrLn lmsg
+                      exit 1
+                    Ok mods => checkRoute rsrc csrc tsrc target mods
     _ =>
       let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
       exit 1
@@ -145,13 +150,19 @@ runCheckCmd argv =
 -- Route by module count: a single loaded module (no non-core imports) ⇒ the
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
 -- import-resolving report.  `mods` is dependency-first, entry last.
-checkRoute : String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute rsrc csrc tsrc [_] =
-  let _ = putStr (runCheck rsrc csrc tsrc)
-  match checkHasErrors rsrc csrc tsrc
-    True => exit 1
-    False => ()
-checkRoute rsrc csrc tsrc mods =
+-- `target` is passed for positioned error output (Stage-A: file:line:col: message).
+checkRoute : String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+checkRoute rsrc csrc tsrc target [_] =
+  let diags = analyzeLocated rsrc csrc tsrc
+  let errs = filter isDiagError diags
+  match errs
+    [] =>
+      let _ = putStr (runCheck rsrc csrc tsrc)
+      ()
+    _ =>
+      let _ = putStrLn (joinNl (map (ppDiagCli target) errs))
+      exit 1
+checkRoute rsrc csrc tsrc _ mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -266,7 +277,7 @@ runCheckJsonCmd rsrc csrc target roots =
   match parseResult src
     Err e =>
       -- Parse error: emit a single located diagnostic, matching LSP format.
-      let ln = if parseErrorLine e > 0 then parseErrorLine e - 1 else 0
+      let ln = parseErrorLine e
       let col = parseErrorCol e
       let r = cjRange ln col ln (col + 1)
       let diag = Diag SevError (parseErrorMessage e) None

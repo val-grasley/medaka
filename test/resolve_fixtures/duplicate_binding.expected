@@ -1,1 +1,1 @@
-(DuplicateBinding "foo")
+the clauses of 'foo' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of 'foo' (and its type signature) together, or rename one.
