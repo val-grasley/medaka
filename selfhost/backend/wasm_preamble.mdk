@@ -566,6 +566,34 @@ strConcatRuntimeLines = [
   "    (struct.new $str (local.get $cpc) (local.get $buf)))",
 ]
 
+-- ── W13 runtime-dispatched `++` (append over String OR List) ─────────────────
+-- Core IR is type-erased: a `CBinPrim "++"` carries no operand type, so the
+-- emitter cannot statically tell a String `++` from a List `++` (mirrors the LLVM
+-- backend's @mdk_append).  $mdk_append inspects the LEFT operand's runtime shape:
+--   • a $str struct      → binary string concat ($mdk_str_append),
+--   • a list (i31 Nil or $C_Cons) → rebuild the left spine onto `b` (list append).
+-- List append walks the left list into a fixed array, then conses back-to-front
+-- onto `b` so cell identity/order matches the W7 cons rep.  Gated by useStrLeafRef
+-- && useListRef (both forced by `noteW8Binop "++"`), so $str + $C_Cons are in scope.
+export
+appendRuntimeLines : List String
+appendRuntimeLines = [
+  "  ;; ── W13 runtime-dispatched `++` (String concat OR List append) ──",
+  "  (func $mdk_append (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (local $cell (ref $C_Cons))",
+  "    ;; String `++`: left is a $str struct → byte concat.",
+  "    (if (ref.test (ref $str) (local.get $a))",
+  "      (then (return (call $mdk_str_append (ref.cast (ref $str) (local.get $a)) (ref.cast (ref $str) (local.get $b))))))",
+  "    ;; List `++`: a Nil (non-$C_Cons) left → b unchanged.",
+  "    (if (i32.eqz (ref.test (ref $C_Cons) (local.get $a)))",
+  "      (then (return (local.get $b))))",
+  "    ;; Cons left → Cons(head, append(tail, b)).",
+  "    (local.set $cell (ref.cast (ref $C_Cons) (local.get $a)))",
+  "    (struct.new $C_Cons (i32.const 0)",
+  "      (struct.get $C_Cons 1 (local.get $cell))",
+  "      (call $mdk_append (struct.get $C_Cons 2 (local.get $cell)) (local.get $b))))",
+]
+
 -- ── W8 RNG — deterministic SplitMix64 (RUNTIME-DESIGN §5 RNG) ─────────────────
 -- Byte-identical to medaka_rt.c's shared SplitMix64 (the same algorithm the OCaml
 -- oracle runs), so seeded streams match exactly.  Seed lives in a mutable i64 global
