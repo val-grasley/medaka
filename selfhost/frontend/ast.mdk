@@ -14,6 +14,7 @@ public export data Lit
   | LChar String
   | LBool Bool
   | LUnit
+deriving (Eq)
 
 -- A source-location span for an expression (mirror of lib/ast.ml's `loc`):
 -- file, 1-based start line, 0-based start col, 1-based end line, 0-based end col.

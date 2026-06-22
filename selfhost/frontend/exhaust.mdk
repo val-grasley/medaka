@@ -59,15 +59,6 @@ replicateWild n
   | n <= 0 = []
   | otherwise = PWild :: replicateWild (n - 1)
 
-litEq : Lit -> Lit -> Bool
-litEq (LInt a) (LInt b) = a == b
-litEq (LFloat a) (LFloat b) = a == b
-litEq (LString a) (LString b) = a == b
-litEq (LChar a) (LChar b) = a == b
-litEq (LBool a) (LBool b) = a == b
-litEq LUnit LUnit = True
-litEq _ _ = False
-
 -- ── synthetic tuple constructor names ─────────────────────────────────────
 -- (exported so the type-aware `check_match` exhaustiveness in typecheck.mdk can
 -- reuse the same synthetic per-arity tuple constructor names.)
@@ -232,7 +223,7 @@ specializeLit l pmat = filterMapRows (specLitRow l) pmat
 
 specLitRow : Lit -> List Pat -> Option (List Pat)
 specLitRow _ [] = None
-specLitRow l ((PLit l2)::rest) = if litEq l2 l then Some rest else None
+specLitRow l ((PLit l2)::rest) = if l2 == l then Some rest else None
 specLitRow _ (PWild::rest) = Some rest
 specLitRow _ _ = None
 

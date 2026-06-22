@@ -357,7 +357,7 @@ colLits (_::rest) = colLits rest
 dedupLits : List Lit -> List Lit -> List Lit
 dedupLits [] _ = []
 dedupLits (l::rest) seen
-  | anyList (litEq l) seen = dedupLits rest seen
+  | anyList (x => l == x) seen = dedupLits rest seen
   | otherwise = l :: dedupLits rest (l :: seen)
 
 -- ── matrix specialization / default (over index-carrying rows) ─────────────
@@ -386,7 +386,7 @@ specializeLit : Lit -> List (List Pat, Int) -> List (List Pat, Int)
 specializeLit l rows = filterMapRows (specLitRow l) rows
 
 specLitRow : Lit -> (List Pat, Int) -> Option (List Pat, Int)
-specLitRow l ((PLit l2)::rest, i) = if litEq l2 l then Some (rest, i) else None
+specLitRow l ((PLit l2)::rest, i) = if l2 == l then Some (rest, i) else None
 specLitRow _ (PWild::rest, i) = Some (rest, i)
 specLitRow _ _ = None
 
@@ -404,15 +404,6 @@ replicateWild : Int -> List Pat
 replicateWild n
   | n <= 0 = []
   | otherwise = PWild :: replicateWild (n - 1)
-
-litEq : Lit -> Lit -> Bool
-litEq (LInt a) (LInt b) = a == b
-litEq (LFloat a) (LFloat b) = a == b
-litEq (LString a) (LString b) = a == b
-litEq (LChar a) (LChar b) = a == b
-litEq (LBool a) (LBool b) = a == b
-litEq LUnit LUnit = True
-litEq _ _ = False
 
 nthBool : List Bool -> Int -> Bool
 nthBool (b::_) 0 = b
