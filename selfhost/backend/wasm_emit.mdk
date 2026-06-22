@@ -170,7 +170,7 @@ import backend.wasm_preamble.{
   preambleHeadLines,
   closTypeLines, closApplyLines,
   ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines,
-  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines,
+  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines, appendRuntimeLines,
   rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines,
   floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
   strSearchRuntimeLines,
@@ -966,9 +966,13 @@ noteW8Extern name =
   let _ = if contains name ["readFile", "fileExists", "args", "getEnv", "exit"]
           then set_ref useIORef True else ()
   if contains name ["ePutStr", "ePutStrLn"] then set_ref useEPutRef True else ()
--- string `++` is the pure-WAT binary concat ($mdk_str_append) — note the leaf op.
+-- `++` is runtime-dispatched ($mdk_append): needs the $str leaf concat ($mdk_str_append)
+-- AND the W7 cons list types ($C_Cons/$T_List) for the list-append branch.
 noteW8Binop : String -> <Mut> Unit
-noteW8Binop "++" = let _ = set_ref useStrLeafRef True in set_ref useStrRef True
+noteW8Binop "++" =
+  let _ = set_ref useStrLeafRef True
+  let _ = set_ref useStrRef True
+  set_ref useListRef True
 noteW8Binop "::" = set_ref useListRef True
 noteW8Binop _ = ()
 
@@ -1518,6 +1522,8 @@ emitRefProgram prog groups =
   -- on useListRef too (a stringConcat always uses a list, so useListRef is set).
   let strLeafRt = if useStrLeafRef.value then strLeafRuntimeLines else []
   let strConcatRt = if useStrLeafRef.value && useListRef.value then strConcatRuntimeLines else []
+  -- W13: `++` is runtime-dispatched ($mdk_append); needs $str (str leaf) + $C_Cons (list).
+  let appendRt = if useStrLeafRef.value && useListRef.value then appendRuntimeLines else []
   let stderrRt = if useEPutRef.value then stderrRuntimeLines else []
   let rngRt = if useRngRef.value then rngRuntimeLines else []
   let hashRt = if useHashRef.value then hashRuntimeLines else []
@@ -1544,7 +1550,7 @@ emitRefProgram prog groups =
   let ioArgsRt = if useArgsRef.value then ioArgsRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
-            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt
+            ++ fns ++ implFns ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
             ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt
@@ -2879,11 +2885,12 @@ emitCtorEtaDefine prog lamName ctor arity =
 -- arithmetic / comparison: unbox both operands from i31 to i32, do the i32 op, then
 -- re-box (arithmetic → i31 int; comparison → i31 0/1 bool).
 emitBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
--- W8: string `++` is binary concat over $str (the only `++` use this slice supports;
--- a list `++` would gap).  Both operands are $str (ref eq) values.
+-- W13: `++` is runtime-dispatched (Core IR is type-erased, so we can't tell a
+-- String `++` from a List `++` statically).  Both operands stay (ref eq) and
+-- $mdk_append inspects the left operand's shape ($str → string concat; i31/$C_Cons
+-- → list append), mirroring the LLVM backend's @mdk_append.
 emitBinRef prog env d "++" l r =
-  emitRefExpr prog env d l ++ ["ref.cast (ref $str)"]
-    ++ emitRefExpr prog env d r ++ ["ref.cast (ref $str)", "call $mdk_str_append"]
+  emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["call $mdk_append"]
 -- W9: `::` is cons — build a $C_Cons cell {tag=0, head=l, tail=r} (same rep the W7
 -- list-literal / Cons match machinery uses).  Reached from prelude fns that cons in
 -- expression position (e.g. `gen () :: acc` in arbitraryList's where-go).
