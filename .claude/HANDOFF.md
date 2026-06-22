@@ -92,16 +92,26 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   `diff_wasm_modules` 13→14). Wired into `isStrExternW`/`externArityW`/`emitStrExternRef` (removed from
   the deferred stubs). All gates green (132/6/14 + VALIDATE_OK). **Verified on the binary:** `check_main`
   no longer traps at `floatTok` — the trap moved deeper (the next layer).
-- **🟡 NEXT — runtime layer-7: `frontend_lexer__stripComments` stack overflow (`Maximum call stack
-  size exceeded`).** With `floatTok` unblocked, `check_main` now traps a **self-recursive overflow** in
-  `frontend_lexer__stripComments` (authoritative wasm stack trace shows `stripComments` recursing into
-  itself to the limit; NOT `coalesceStep` — the layer-6 agent's report was imprecise). This is a lexer
-  self-recursion that Stage-1 self-TMC did NOT transform — **diagnose the shape first**: read
-  `selfhost/frontend/lexer.mdk`'s `stripComments` to classify it (a cons-tail (a) case Stage-1 missed? a
-  plain-tail recursion where WasmGC `return_call` TCO isn't firing? a non-tail accumulator needing
-  restructure?). The fix likely extends the WasmGC TMC/TCO coverage (emitter-only) OR is another spine in
-  the §4.2 Class-A set. Then re-measure `check_main` (more spines — parser `coalesceStep`?, typecheck —
-  or the Class-B AST tree-walk may follow).
+- **🏁 Runtime layer-7 CLOSED (`f96cd10`, emitter-only) — `stripComments` no longer overflows;
+  `check_main` runs past the lexer entirely.** Root: `wasmTrmcTry` required `wTrmcAllPVarParams` (all
+  clause params plain PVar/PWild), so `stripComments`' list/ctor pattern params (`[]`/`(RComment _
+  _)::rest`/`r::rest`) failed the gate → ordinary clause-dispatch → cons-tail self-call inside
+  `struct.new` → overflow. Fix (all `wasm_emit.mdk`): dropped the all-PVar gate (`trmcEligible` already
+  vets the clause set); `emitWasmTrmcFn` now emits the clause-dispatch chain with the TMC context LIVE
+  for multi-clause/patterned builders (each tail leaf TMC-aware: cons-into-dest / plain-tail-drop / base);
+  `wTrmcSelfIdxClauses` scans all clauses for the ctor-tail. **Second real bug fixed:** lifted lambdas
+  (`emitLamDefine`/`emitLgLifted`) under a live TMC context leaked `$__tmc_first`/`$tmcloop` into
+  functions that don't declare them (invalid wasm) → save+clear the TMC ctx before a lifted body. Gate
+  `test/wasm/fixtures/w_trmc_strip_clauses.mdk` + S1B-ASSERT (0 recursive `call $strip`), `diff_wasm`
+  133. **Verified:** `check_main` runs past `stripComments` (authoritative run.js trace).
+- **🟡 NEXT — runtime layer-8: dispatched `List map` impl-method self-recursion** (`mdk_impl_List_map`:
+  `call $mdk_impl_List_map` → `struct.new $C_Cons`, `map f (x::xs) = f x :: map f xs`). The WasmGC
+  self-TMC runs only on top-level fn binds, NOT on dispatched impl-method emission — needs the
+  **impl-method self-TMC analogue** (peer to LLVM's `SelfByMethod` / `trmcImplTry` path; `TRMC-DESIGN.md`
+  "B-dispatch"). HIGH LEVERAGE: the `SelfByMethod`/`mentionsSelfMethod` analysis already exists in
+  `trmc_analysis.mdk` (lifted Stage 0), so this is emitter-only (`wasm_emit.mdk`'s impl-emit path) and
+  closes the whole CLASS of dispatched list-builder impls (map/filterMap/ap/…) at once. Then re-measure
+  `check_main` (may complete, or hit parser/typecheck spines / the §4.2 Class-B tree-walk).
 - ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).

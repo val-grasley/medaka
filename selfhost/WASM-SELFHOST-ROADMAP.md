@@ -109,13 +109,19 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   `mdk_float_fmt`; pushes `$str` bytes → JS `Number()` → boxes `Option Float`). Byte-identical to the
   native `strtod` oracle (`stringToFloat "3.14"` → `Some 3.14`; `diff_wasm_modules` 13→14). `check_main`
   now runs PAST `floatTok`.
-- 🟡 **layer-7 (NEXT)** — `frontend_lexer__stripComments` stack overflow (`Maximum call stack size
-  exceeded`). With `floatTok` unblocked, `check_main` traps a **self-recursive** overflow in
-  `stripComments` (authoritative wasm trace). Stage-1 self-TMC did not transform it — **diagnose the
-  recursion shape first** (`selfhost/frontend/lexer.mdk` `stripComments`): cons-tail (a) case Stage-1
-  missed? plain-tail where `return_call` TCO isn't firing? non-tail accumulator? Likely an emitter-only
-  TMC/TCO coverage extension. Then re-measure (more Class-A spines may follow — parser/typecheck — then
-  the §4.2 Class-B AST tree-walk).
+- 🏁 **layer-7 CLOSED (`f96cd10`, emitter-only)** — `stripComments` (multi-clause patterned {cons-tail +
+  plain-tail-drop + base}) overflowed because `wasmTrmcTry`'s `wTrmcAllPVarParams` gate rejected its
+  list/ctor pattern params. Fix (`wasm_emit.mdk`): drop the gate (`trmcEligible` already vets); emit the
+  clause-dispatch chain with the TMC ctx LIVE for patterned multi-clause builders; save+clear the TMC ctx
+  before lifted-lambda bodies (a 2nd bug — leaked `$__tmc_first`/`$tmcloop` into invalid wasm). Gate
+  `w_trmc_strip_clauses.mdk` + S1B-ASSERT; `diff_wasm` 133. `check_main` runs past the lexer.
+- 🟡 **layer-8 (NEXT)** — dispatched `List map` impl-method self-recursion (`mdk_impl_List_map`,
+  `map f (x::xs) = f x :: map f xs`). WasmGC self-TMC runs only on top-level fn binds, not dispatched
+  impl methods → needs the impl-method self-TMC analogue (peer to LLVM `SelfByMethod`/`trmcImplTry`,
+  `TRMC-DESIGN.md` B-dispatch). The `SelfByMethod`/`mentionsSelfMethod` analysis already exists in
+  `trmc_analysis.mdk` → emitter-only (`wasm_emit.mdk` impl-emit path), closes the whole class of
+  dispatched list-builder impls (map/filterMap/ap/…). Then re-measure `check_main` (may complete, or hit
+  parser/typecheck spines / the §4.2 Class-B tree-walk).
 
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)
