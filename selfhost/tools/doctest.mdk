@@ -26,7 +26,6 @@ import eval.eval.{Value(..), lookupBinding, force, ppValue}
 import support.util.{
   listLen,
   reverseL,
-  concatMapList,
   joinNl,
   startsWith,
   stringTrim,
@@ -240,7 +239,7 @@ extractExamples : List Comment -> List Example
 extractExamples comments =
   let pairs = map commentToPair comments
   let expanded = concatMapC pairs
-  concatMapList extractFromBlock (splitIntoBlocks expanded)
+  flatMap extractFromBlock (splitIntoBlocks expanded)
 
 commentToPair : Comment -> (Int, String)
 commentToPair c = (commentLine c, commentText c)

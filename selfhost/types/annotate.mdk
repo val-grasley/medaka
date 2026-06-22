@@ -62,20 +62,20 @@ import frontend.ast.{
   Variant(..),
   Decl(..),
 }
-import support.util.{concatMapList, reverseL}
+import support.util.{reverseL}
 
 -- ── self-contained helper copies (resolve.mdk keeps its own for its main pass) ─
 patBindings : Pat -> List String
 patBindings (PVar x) = [x]
 patBindings PWild = []
 patBindings (PLit _) = []
-patBindings (PCon _ ps) = concatMapList patBindings ps
+patBindings (PCon _ ps) = flatMap patBindings ps
 patBindings (PCons a b) = patBindings a ++ patBindings b
-patBindings (PTuple ps) = concatMapList patBindings ps
-patBindings (PList ps) = concatMapList patBindings ps
+patBindings (PTuple ps) = flatMap patBindings ps
+patBindings (PList ps) = flatMap patBindings ps
 patBindings (PAs x p) = x :: patBindings p
 patBindings (PRng _ _ _) = []
-patBindings (PRec _ fields _) = concatMapList recFieldBindings fields
+patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 
 recFieldBindings : RecPatField -> List String
 recFieldBindings (RecPatField fname None) = [fname]

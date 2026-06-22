@@ -52,7 +52,6 @@ import backend.llvm_emit.{
   installCtorFieldTypes,
   installDeclSigTypes,
 }
-import support.util.{concatMapList}
 import backend.private_mangle.{mangleUnits}
 import support.path.{dirOf}
 
@@ -82,7 +81,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
-  let allDecls = coreD ++ concatMapList snd modules2
+  let allDecls = coreD ++ flatMap snd modules2
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)

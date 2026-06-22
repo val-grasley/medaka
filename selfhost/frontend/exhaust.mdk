@@ -44,7 +44,6 @@ import frontend.ast.{
 }
 import support.util.{
   contains,
-  concatMapList,
   allList,
   anyList,
   listLen,
@@ -115,9 +114,9 @@ public export record Oracle
 export
 buildOracle : List Decl -> Oracle
 buildOracle prog = Oracle {
-  typeCtors = concatMapList dataTypeCtors prog ++ builtinTypeCtors,
-  ctorArity = concatMapList dataArity prog ++ builtinArity,
-  ctorType = concatMapList dataCtorType prog ++ builtinCtorType,
+  typeCtors = flatMap dataTypeCtors prog ++ builtinTypeCtors,
+  ctorArity = flatMap dataArity prog ++ builtinArity,
+  ctorType = flatMap dataCtorType prog ++ builtinCtorType,
 }
 
 builtinTypeCtors : List (String, List String)
@@ -384,7 +383,7 @@ clausesForName ((n, c)::rest) name
 -- ── collect where-group (ELetGroup) clause groups from an expr tree ────────
 letGroupWarnings : Oracle -> Expr -> List String
 letGroupWarnings oracle body =
-  concatMapList (checkLetBind oracle) (collectLetBinds body)
+  flatMap (checkLetBind oracle) (collectLetBinds body)
 
 checkLetBind : Oracle -> LetBind -> List String
 checkLetBind oracle (LetBind _ funclauses) =
@@ -397,13 +396,13 @@ funClauseToClause (FunClause pats body) = (pats, body)
 -- clause bodies and the result expr)
 collectLetBinds : Expr -> List LetBind
 collectLetBinds (ELetGroup binds body) = binds
-  ++ concatMapList collectLetBindInner binds
+  ++ flatMap collectLetBindInner binds
   ++ collectLetBinds body
 collectLetBinds (EApp a b) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (ELam _ b) = collectLetBinds b
 collectLetBinds (ELet _ _ _ e1 e2) = collectLetBinds e1 ++ collectLetBinds e2
 collectLetBinds (EMatch e0 arms) = collectLetBinds e0
-  ++ concatMapList collectArmBinds arms
+  ++ flatMap collectArmBinds arms
 collectLetBinds (EIf c t el) = collectLetBinds c
   ++ collectLetBinds t
   ++ collectLetBinds el
@@ -411,29 +410,29 @@ collectLetBinds (EBinOp _ a b _) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (EUnOp _ a) = collectLetBinds a
 collectLetBinds (EInfix _ a b) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (EFieldAccess e0 _) = collectLetBinds e0
-collectLetBinds (ERecordCreate _ fs) = concatMapList fieldAssignBinds fs
+collectLetBinds (ERecordCreate _ fs) = flatMap fieldAssignBinds fs
 collectLetBinds (ERecordUpdate e0 fs) = collectLetBinds e0
-  ++ concatMapList fieldAssignBinds fs
+  ++ flatMap fieldAssignBinds fs
 collectLetBinds (EVariantUpdate _ e0 fs) = collectLetBinds e0
-  ++ concatMapList fieldAssignBinds fs
-collectLetBinds (EArrayLit es) = concatMapList collectLetBinds es
-collectLetBinds (EListLit es) = concatMapList collectLetBinds es
-collectLetBinds (ETuple es) = concatMapList collectLetBinds es
+  ++ flatMap fieldAssignBinds fs
+collectLetBinds (EArrayLit es) = flatMap collectLetBinds es
+collectLetBinds (EListLit es) = flatMap collectLetBinds es
+collectLetBinds (ETuple es) = flatMap collectLetBinds es
 collectLetBinds (EIndex e0 i) = collectLetBinds e0 ++ collectLetBinds i
 collectLetBinds (ERangeList lo hi _) = collectLetBinds lo ++ collectLetBinds hi
 collectLetBinds (ERangeArray lo hi _) = collectLetBinds lo ++ collectLetBinds hi
 collectLetBinds (ESlice e0 lo hi _) = collectLetBinds e0
   ++ collectLetBinds lo
   ++ collectLetBinds hi
-collectLetBinds (EBlock stmts) = concatMapList doStmtBinds stmts
-collectLetBinds (EDo stmts) = concatMapList doStmtBinds stmts
+collectLetBinds (EBlock stmts) = flatMap doStmtBinds stmts
+collectLetBinds (EDo stmts) = flatMap doStmtBinds stmts
 collectLetBinds (EAnnot e0 _) = collectLetBinds e0
 collectLetBinds (EListComp body quals) = collectLetBinds body
-  ++ concatMapList lcQualBinds quals
+  ++ flatMap lcQualBinds quals
 collectLetBinds (EQuestion e0) = collectLetBinds e0
-collectLetBinds (EStringInterp parts) = concatMapList interpBinds parts
-collectLetBinds (EGuards arms) = concatMapList guardArmBinds arms
-collectLetBinds (EFunction arms) = concatMapList collectArmBinds arms
+collectLetBinds (EStringInterp parts) = flatMap interpBinds parts
+collectLetBinds (EGuards arms) = flatMap guardArmBinds arms
+collectLetBinds (EFunction arms) = flatMap collectArmBinds arms
 collectLetBinds (ESection (SecRight _ e0)) = collectLetBinds e0
 collectLetBinds (ESection (SecLeft e0 _)) = collectLetBinds e0
 collectLetBinds (ELoc _ e) = collectLetBinds e
@@ -442,13 +441,13 @@ collectLetBinds _ = []
 
 collectLetBindInner : LetBind -> List LetBind
 collectLetBindInner (LetBind _ funclauses) =
-  concatMapList funClauseBinds funclauses
+  flatMap funClauseBinds funclauses
 
 funClauseBinds : FunClause -> List LetBind
 funClauseBinds (FunClause _ body) = collectLetBinds body
 
 collectArmBinds : Arm -> List LetBind
-collectArmBinds (Arm _ gs body) = concatMapList guardBinds gs
+collectArmBinds (Arm _ gs body) = flatMap guardBinds gs
   ++ collectLetBinds body
 
 guardBinds : Guard -> List LetBind
@@ -456,7 +455,7 @@ guardBinds (GBool e) = collectLetBinds e
 guardBinds (GBind _ e) = collectLetBinds e
 
 guardArmBinds : GuardArm -> List LetBind
-guardArmBinds (GuardArm gs body) = concatMapList guardBinds gs
+guardArmBinds (GuardArm gs body) = flatMap guardBinds gs
   ++ collectLetBinds body
 
 fieldAssignBinds : FieldAssign -> List LetBind
@@ -484,8 +483,8 @@ export
 checkGuardExhaustiveness : List Decl -> List String
 checkGuardExhaustiveness prog =
   let oracle = buildOracle prog
-  concatMapList (checkGroup oracle) (groupByName (topFunDefClauses prog))
-    ++ concatMapList (declBodyWarnings oracle) prog
+  flatMap (checkGroup oracle) (groupByName (topFunDefClauses prog))
+    ++ flatMap (declBodyWarnings oracle) prog
 
 topFunDefClauses : List Decl -> List (String, (List Pat, Expr))
 topFunDefClauses [] = []
@@ -495,10 +494,10 @@ topFunDefClauses (_::rest) = topFunDefClauses rest
 
 declBodyWarnings : Oracle -> Decl -> List String
 declBodyWarnings oracle (DFunDef _ _ _ body) = letGroupWarnings oracle body
-declBodyWarnings oracle DImpl { methods, ... } = concatMapList (checkGroup oracle) (groupByName (implClauses methods))
-  ++ concatMapList (implMethodBodyWarnings oracle) methods
+declBodyWarnings oracle DImpl { methods, ... } = flatMap (checkGroup oracle) (groupByName (implClauses methods))
+  ++ flatMap (implMethodBodyWarnings oracle) methods
 declBodyWarnings oracle DInterface { methods, ... } =
-  concatMapList (ifaceMethodWarnings oracle) methods
+  flatMap (ifaceMethodWarnings oracle) methods
 declBodyWarnings oracle (DProp _ _ _ body) = letGroupWarnings oracle body
 declBodyWarnings oracle (DTest _ _ body) = letGroupWarnings oracle body
 declBodyWarnings oracle (DBench _ _ body) = letGroupWarnings oracle body

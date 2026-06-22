@@ -53,7 +53,6 @@ import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
 import support.ordmap.{OrdMap(..), omEmpty, omInsert, omLookup, omHasKey}
 import support.util.{
   listLen,
-  concatMapList,
   lookupAssoc,
   contains,
   reverseL,
@@ -1237,7 +1236,7 @@ freeEffvars t = match normalize t
   TCon _ => []
   TApp a b => freeEffvars a ++ freeEffvars b
   TFun a r b => freeEffvars a ++ rowFreeEffvars r ++ freeEffvars b
-  TTuple ts => concatMapList freeEffvars ts
+  TTuple ts => flatMap freeEffvars ts
   TEff r => rowFreeEffvars r
 
 rowFreeEffvars : EffRow -> List Int
@@ -1679,12 +1678,12 @@ pendingArgStamps = Ref []
 -- contribute nothing.  Computed structurally from interface decls.
 export
 argDispatchIndices : List Decl -> List (String, Int)
-argDispatchIndices prog = concatMapList argDispatchOfDecl prog
+argDispatchIndices prog = flatMap argDispatchOfDecl prog
 
 argDispatchOfDecl : Decl -> List (String, Int)
 argDispatchOfDecl (DAttrib _ d) = argDispatchOfDecl d
 argDispatchOfDecl DInterface { typarams, methods, ... } =
-  concatMapList (argDispatchOfMethod typarams) methods
+  flatMap (argDispatchOfMethod typarams) methods
 argDispatchOfDecl _ = []
 
 argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
@@ -2164,7 +2163,7 @@ freeGenVars lvl t = match normalize t
   TCon _ => []
   TApp a b => freeGenVars lvl a ++ freeGenVars lvl b
   TFun a _ b => freeGenVars lvl a ++ freeGenVars lvl b
-  TTuple ts => concatMapList (freeGenVars lvl) ts
+  TTuple ts => flatMap (freeGenVars lvl) ts
   TEff _ => []
 
 dedupI : List Int -> List Int
@@ -2330,7 +2329,7 @@ tyVarNames (TyVar n) = [n]
 tyVarNames (TyCon _) = []
 tyVarNames (TyApp a b) = tyVarNames a ++ tyVarNames b
 tyVarNames (TyFun a b) = tyVarNames a ++ tyVarNames b
-tyVarNames (TyTuple ts) = concatMapList tyVarNames ts
+tyVarNames (TyTuple ts) = flatMap tyVarNames ts
 tyVarNames (TyEffect _ _ t) = tyVarNames t
 tyVarNames (TyConstrained _ t) = tyVarNames t
 
@@ -2346,12 +2345,12 @@ tyVarNames (TyConstrained _ t) = tyVarNames t
 -- call routes through the normal pendingDictApps path (routeUndeterminedTop).
 constraintVarNamesTy : Ty -> List String
 constraintVarNamesTy (TyConstrained cs t) =
-  concatMapList constraintArgVarNames cs ++ constraintVarNamesTy t
+  flatMap constraintArgVarNames cs ++ constraintVarNamesTy t
 constraintVarNamesTy (TyEffect _ _ t) = constraintVarNamesTy t
 constraintVarNamesTy _ = []
 
 constraintArgVarNames : Constraint -> List String
-constraintArgVarNames (Constraint _ tys) = concatMapList tyVarNames tys
+constraintArgVarNames (Constraint _ tys) = flatMap tyVarNames tys
 
 -- tyVarNames PLUS the signature's constraint-only vars (deduped).
 tyVarNamesWithConstraints : Ty -> List String
@@ -2402,7 +2401,7 @@ effTailNames (TyVar _) = []
 effTailNames (TyCon _) = []
 effTailNames (TyApp a b) = effTailNames a ++ effTailNames b
 effTailNames (TyFun a b) = effTailNames a ++ effTailNames b
-effTailNames (TyTuple ts) = concatMapList effTailNames ts
+effTailNames (TyTuple ts) = flatMap effTailNames ts
 effTailNames (TyEffect _ tail t) = tailNameList tail ++ effTailNames t
 effTailNames (TyConstrained _ t) = effTailNames t
 
@@ -2493,7 +2492,7 @@ rowArgNames (TyApp a b) = match tyAppSpine (TyApp a b)
     rowArgNamesApp n args (rowArgNames a ++ rowArgNames b)
   _ => rowArgNames a ++ rowArgNames b
 rowArgNames (TyFun a b) = rowArgNames a ++ rowArgNames b
-rowArgNames (TyTuple ts) = concatMapList rowArgNames ts
+rowArgNames (TyTuple ts) = flatMap rowArgNames ts
 rowArgNames (TyEffect _ _ t) = rowArgNames t
 rowArgNames (TyConstrained _ t) = rowArgNames t
 rowArgNames _ = []
@@ -2501,7 +2500,7 @@ rowArgNames _ = []
 rowArgNamesApp : String -> List Ty -> List String -> List String
 rowArgNamesApp n args fallback = match lookupAssoc n dataParamKindsRef.value
   Some kinds if listLen kinds == listLen args =>
-    krowArgVarNames kinds args ++ concatMapList rowArgNames args
+    krowArgVarNames kinds args ++ flatMap rowArgNames args
   _ => fallback
 
 krowArgVarNames : List Kind -> List Ty -> List String
@@ -3061,7 +3060,7 @@ expandSupersPairs allDecls declared =
 
 expandSupersFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
 expandSupersFix allDecls acc frontier =
-  let next = dedupPairs (acc ++ concatMapList (superSlotsOf allDecls) frontier)
+  let next = dedupPairs (acc ++ flatMap (superSlotsOf allDecls) frontier)
   if listLen next == listLen acc then acc
   else expandSupersFix allDecls next (dropPairs (listLen acc) next)
 
@@ -3075,7 +3074,7 @@ superSlotsOf allDecls (iface, id)
     None => []
     Some (typarams, supers) =>
       let subst = zipL typarams (replicate (listLen typarams) id)
-      concatMapList (superSlotOf subst) supers
+      flatMap (superSlotOf subst) supers
 
 -- one `Super superName params`: map each param name through subst → its id; emit the
 -- super slot only if ALL params resolved (matches the oracle's length guard).
@@ -4011,11 +4010,11 @@ registerVariants env name params variants =
 -- (`<e>`); else KType (the common case).  Inferred from usage — no syntax.
 inferParamKinds : List String -> List Variant -> List Kind
 inferParamKinds params variants =
-  let tailNames = concatMapList variantFieldTailNames variants
+  let tailNames = flatMap variantFieldTailNames variants
   map (p => if contains p tailNames then KRow else KType) params
 
 variantFieldTailNames : Variant -> List String
-variantFieldTailNames (Variant _ payload) = concatMapList effTailNames (payloadAstTypes payload)
+variantFieldTailNames (Variant _ payload) = flatMap effTailNames (payloadAstTypes payload)
 
 payloadAstTypes : ConPayload -> List Ty
 payloadAstTypes (ConPos tys) = tys
@@ -4209,7 +4208,7 @@ schemeMono (Forall _ _ t) = t
 -- single enclosing-typed use.
 methodConstrainedIds : Unit -> List Int
 methodConstrainedIds _ =
-  concatMapList (s => monoUnboundIds (argStampMono s)) pendingArgStamps.value
+  flatMap (s => monoUnboundIds (argStampMono s)) pendingArgStamps.value
 
 argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
 argStampMono (_, _, _, am, _) = am
@@ -4220,7 +4219,7 @@ monoUnboundIds t = match normalize t
   TCon _ => []
   TApp a b => monoUnboundIds a ++ monoUnboundIds b
   TFun a _ b => monoUnboundIds a ++ monoUnboundIds b
-  TTuple ts => concatMapList monoUnboundIds ts
+  TTuple ts => flatMap monoUnboundIds ts
   TEff _ => []
 
 anyIn : List Int -> List Int -> Bool
@@ -4246,7 +4245,7 @@ monoArgUnboundIds t = match normalize t
 -- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
 -- operand monos recorded by recordNumObligation / the literal infer arm)
 numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> <Mut> List Int
-numConstrainedIds obls = concatMapList numObligIds obls
+numConstrainedIds obls = flatMap numObligIds obls
 
 numObligIds : (String, List String, Ty, Mono, Option Loc) -> List Int
 numObligIds (iface, _, _, occ, _)
@@ -4269,7 +4268,7 @@ defaultAmbiguousNum obls t =
 -- process_letrec_group's group_arg_ids over added_obligs/added_methods.
 defaultGroupNum : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit
 defaultGroupNum obls monos =
-  let argIds = concatMapList monoArgUnboundIds monos
+  let argIds = flatMap monoArgUnboundIds monos
   let candidates = dedupI (numConstrainedIds obls)
   groundNumVars obls (filterList (id => not (containsI id argIds)) candidates)
 
@@ -4377,7 +4376,7 @@ export
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> <Mut> List Decl
 elaborateOne runtimeDecls coreDecls (rootId, prog) =
   let (coreD, modules) = elaborateModules runtimeDecls coreDecls [(rootId, prog)]
-  coreD ++ concatMapList snd modules
+  coreD ++ flatMap snd modules
 
 -- Dict-passing elaboration (the `=>`-constraint layer).  [dictNames] are the
 -- *signatured* constrained functions to dict-pass (the user program's — the
@@ -4456,7 +4455,7 @@ discoverNext runtimeDecls prog current next
 -- (the Cause-A `f s = display s` shape, where the dispatch is the bare method itself).
 discoverPromotedModules : List Decl -> List Decl -> List (String, List Decl) -> List String -> List String -> <Mut> List String
 discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
-  let joint = coreDecls ++ concatMapList snd modules
+  let joint = coreDecls ++ flatMap snd modules
   let dictSeed = moduleDictNames coreDecls joint modules
   let savedSticky = typeErrorsSticky.value
   let savedErrors = typeErrors.value
@@ -4538,13 +4537,13 @@ promotedConstraintIfaces promoted entries =
 -- set on the build path.  Mirrors elaborateDict's eligibleNames = funNamesOf userDecls.
 moduleUserFnNames : List (String, List Decl) -> List String
 moduleUserFnNames modules =
-  dedup (concatMapList (p => map fst (funDefs (snd p))) modules)
+  dedup (flatMap (p => map fst (funDefs (snd p))) modules)
 
 -- the user program's top-level functions carrying a `=>` constraint in their
 -- signature — the set elaborateDict dict-passes
 export
 constrainedSigNames : List Decl -> List String
-constrainedSigNames prog = concatMapList constrainedSigName prog
+constrainedSigNames prog = flatMap constrainedSigName prog
 
 constrainedSigName : Decl -> List String
 constrainedSigName (DTypeSig _ n ty)
@@ -4605,7 +4604,7 @@ preludeArgPosDictNames preludeDecls allDecls =
 
 -- the EVars referenced anywhere in [n]'s definition body (multi-clause: union)
 declBodyVars : String -> List Decl -> List String
-declBodyVars n decls = concatMapList (declBodyVarsOf n) decls
+declBodyVars n decls = flatMap (declBodyVarsOf n) decls
 
 declBodyVarsOf : String -> Decl -> List String
 declBodyVarsOf n (DFunDef _ m _ body)
@@ -4616,11 +4615,11 @@ declBodyVarsOf _ _ = []
 -- methods whose interface type param appears ONLY in the result (no argument
 -- mentions it) — pure/empty/minBound/maxBound/fromInt/… — are return-position
 returnPosMethodNames : List Decl -> List String
-returnPosMethodNames prog = concatMapList returnPosOfDecl prog
+returnPosMethodNames prog = flatMap returnPosOfDecl prog
 
 returnPosOfDecl : Decl -> List String
 returnPosOfDecl DInterface { typarams, methods, ... } =
-  concatMapList (returnPosMethod typarams) methods
+  flatMap (returnPosMethod typarams) methods
 returnPosOfDecl _ = []
 
 returnPosMethod : List String -> IfaceMethod -> List String
@@ -4962,11 +4961,11 @@ patVarsTc (PCons h t) = patVarsTc h ++ patVarsTc t
 patVarsTc (PTuple ps) = patVarsListTc ps
 patVarsTc (PList ps) = patVarsListTc ps
 patVarsTc (PAs x p) = x :: patVarsTc p
-patVarsTc (PRec _ fields _) = concatMapList recPatFieldVarsTc fields
+patVarsTc (PRec _ fields _) = flatMap recPatFieldVarsTc fields
 patVarsTc _ = []
 
 patVarsListTc : List Pat -> List String
-patVarsListTc ps = concatMapList patVarsTc ps
+patVarsListTc ps = flatMap patVarsTc ps
 
 recPatFieldVarsTc : RecPatField -> List String
 recPatFieldVarsTc (RecPatField label None) = [label]
@@ -4977,12 +4976,12 @@ recPatFieldVarsTc (RecPatField _ (Some p)) = patVarsTc p
 -- alongside the return-position methods so the method-level dict can be folded on.
 -- Computed structurally (runs before checkProgramSeeded populates methodConstraintsRef).
 methodConstraintNames : List Decl -> List String
-methodConstraintNames prog = concatMapList methodConstraintNamesOfDecl prog
+methodConstraintNames prog = flatMap methodConstraintNamesOfDecl prog
 
 methodConstraintNamesOfDecl : Decl -> List String
 methodConstraintNamesOfDecl (DAttrib _ d) = methodConstraintNamesOfDecl d
 methodConstraintNamesOfDecl DInterface { typarams, methods, ... } =
-  concatMapList (methodConstraintNameOf typarams) methods
+  flatMap (methodConstraintNameOf typarams) methods
 methodConstraintNamesOfDecl _ = []
 
 methodConstraintNameOf : List String -> IfaceMethod -> List String
@@ -5012,7 +5011,7 @@ constraintIsMethodLevel typarams c =
 
 constraintNonParamVars : List String -> Constraint -> List String
 constraintNonParamVars typarams (Constraint _ args) =
-  removeAllS typarams (concatMapList tyVarNames args)
+  removeAllS typarams (flatMap tyVarNames args)
 
 resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> <Mut> Unit
 resolveSites _ _ _ [] = ()
@@ -5281,7 +5280,7 @@ cohImplsOfMid _ _ = []
 -- tbl across the whole impl head; distinct impls get distinct ids).
 cohFreshTys : List Ty -> <Mut> List Mono
 cohFreshTys tys =
-  let names = dedup (concatMapList tyVarNames tys)
+  let names = dedup (flatMap tyVarNames tys)
   let tvs = freshTvMap names
   map (fromAstType tvs) tys
 
@@ -5491,7 +5490,7 @@ checkCoherence userDecls = match cohFirstConflict (reverseL (cohCollectImpls use
 -- interface-supers lookup AND super-impl existence.
 checkSuperImpls : List Decl -> List Decl -> <Mut> Unit
 checkSuperImpls userDecls allDecls =
-  foreachUnit pushTypeError (concatMapList (superImplMsgsOf allDecls) userDecls)
+  foreachUnit pushTypeError (flatMap (superImplMsgsOf allDecls) userDecls)
 
 foreachUnit : (a -> <Mut> Unit) -> List a -> <Mut> Unit
 foreachUnit _ [] = ()
@@ -5519,12 +5518,12 @@ foreachUnit f (x::xs) =
 
 checkPhantomMethods : List Decl -> <Mut> Unit
 checkPhantomMethods decls =
-  foreachUnit pushTypeError (concatMapList phantomMethodMsgs decls)
+  foreachUnit pushTypeError (flatMap phantomMethodMsgs decls)
 
 phantomMethodMsgs : Decl -> List String
 phantomMethodMsgs (DAttrib _ d) = phantomMethodMsgs d
 phantomMethodMsgs DInterface { name, typarams, methods, ... } =
-  concatMapList (phantomMethodMsg name typarams) methods
+  flatMap (phantomMethodMsg name typarams) methods
 phantomMethodMsgs _ = []
 
 phantomMethodMsg : String -> List String -> IfaceMethod -> List String
@@ -5608,7 +5607,7 @@ superImplMsgsOf allDecls DImpl { iface, tys, ... } =
     None => []   -- unknown interface (already reported elsewhere) → skip
     Some (typarams, supers) =>
       if listLen typarams == listLen tys && allList tyIsConcrete tys then
-        concatMapList (superMsgFor allDecls iface tys (zipL typarams tys)) supers
+        flatMap (superMsgFor allDecls iface tys (zipL typarams tys)) supers
       else
         []   -- arity mismatch, or a non-concrete head (deferred, like the oracle)
 superImplMsgsOf _ _ = []
@@ -5716,7 +5715,7 @@ cohCollectImpls (d::rest) = cohImplsOf d ++ cohCollectImpls rest
 cohCollectModuleImpls : List (String, List Decl) -> <Mut> List CohImpl
 cohCollectModuleImpls [] = []
 cohCollectModuleImpls ((mid, prog)::rest) =
-  concatMapList (cohImplsOfMid mid) prog ++ cohCollectModuleImpls rest
+  flatMap (cohImplsOfMid mid) prog ++ cohCollectModuleImpls rest
 
 -- Run global coherence over the USER modules only (prelude not in [modules]).
 -- Pushes the first cross-module / overlap conflict (if any) into typeErrors.
@@ -5754,7 +5753,7 @@ public export data ImplEntry
 
 -- build the table from the program's impls-with-requires (others need no dicts)
 buildImplTable : List Decl -> List ImplEntry
-buildImplTable prog = concatMapList implEntryOf prog
+buildImplTable prog = flatMap implEntryOf prog
 
 implEntryOf : Decl -> List ImplEntry
 implEntryOf (DAttrib _ d) = implEntryOf d
@@ -5787,7 +5786,7 @@ implMethodNameTc (ImplMethod n _ _) = n
 public export data KeyEntry = KeyEntry (List String) String Ty String
 
 buildKeyTable : List Decl -> List KeyEntry
-buildKeyTable prog = concatMapList keyEntryOf prog
+buildKeyTable prog = flatMap keyEntryOf prog
 
 keyEntryOf : Decl -> List KeyEntry
 keyEntryOf (DAttrib _ d) = keyEntryOf d
@@ -6208,7 +6207,7 @@ reportAmbiguousImpl iface =
 -- one head ty per impl; we read its head tycon).  Dedups so a prelude impl imported
 -- twice via multi-module loading doesn't read as ambiguous.
 implHeadTagsForIface : List Decl -> String -> List String
-implHeadTagsForIface prog iface = dedupStr (concatMapList (implHeadTagForIface iface) prog)
+implHeadTagsForIface prog iface = dedupStr (flatMap (implHeadTagForIface iface) prog)
 
 implHeadTagForIface : String -> Decl -> List String
 implHeadTagForIface want (DAttrib _ d) = implHeadTagForIface want d
@@ -6524,7 +6523,7 @@ methodDictArityOf n =
 -- value parameter.
 implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
 implDictPassMethods nReq methods =
-  let users = dedup (concatMapList (clauseImplDictUser nReq) methods)
+  let users = dedup (flatMap (clauseImplDictUser nReq) methods)
   map (prependImplDictIfUser nReq users) methods
 
 clauseImplDictUser : Int -> ImplMethod -> List String
@@ -6565,8 +6564,8 @@ rangeFromCount start count
 -- (a `=>`-constrained helper call that threads the impl dict through, e.g.
 -- `debug xs = "[\{debugListItems xs}]"` where `debugListItems` is an EDictAt).
 bodyRDictNames : Expr -> List String
-bodyRDictNames e = concatMapList siteRDictName (collectMethodSites e)
-  ++ concatMapList siteRDictNamesL (collectDictSites e)
+bodyRDictNames e = flatMap siteRDictName (collectMethodSites e)
+  ++ flatMap siteRDictNamesL (collectDictSites e)
 
 siteRDictName : Ref Route -> List String
 siteRDictName r = match r.value
@@ -6575,7 +6574,7 @@ siteRDictName r = match r.value
   _ => []
 
 siteRDictNamesL : Ref (List Route) -> List String
-siteRDictNamesL r = concatMapList routeRDictName r.value
+siteRDictNamesL r = flatMap routeRDictName r.value
 
 routeRDictName : Route -> List String
 routeRDictName (RDict d) = [d]
@@ -6586,7 +6585,7 @@ routeRDictName (RDictFwd d) = [d]
 -- gate that decides whether to PREPEND those impl-dict params (usesImplDict) must
 -- see the nested name, else the route references a param the clause never declares
 -- → emitter panics "unbound dict witness".  Recurse into the nested reqs.
-routeRDictName (RKey _ reqs) = concatMapList routeRDictName reqs
+routeRDictName (RKey _ reqs) = flatMap routeRDictName reqs
 routeRDictName _ = []
 
 -- every EMethodAt route ref reachable in [e] (a pure structural walk; reading a
@@ -6599,10 +6598,10 @@ collectMethodSites (EApp f x) = collectMethodSites f ++ collectMethodSites x
 collectMethodSites (ELam _ b) = collectMethodSites b
 collectMethodSites (ELet _ _ _ e1 e2) = collectMethodSites e1
   ++ collectMethodSites e2
-collectMethodSites (ELetGroup binds body) = concatMapList letBindSites binds
+collectMethodSites (ELetGroup binds body) = flatMap letBindSites binds
   ++ collectMethodSites body
 collectMethodSites (EMatch e arms) = collectMethodSites e
-  ++ concatMapList armSites arms
+  ++ flatMap armSites arms
 collectMethodSites (EIf c t e) = collectMethodSites c
   ++ collectMethodSites t
   ++ collectMethodSites e
@@ -6611,9 +6610,9 @@ collectMethodSites (EBinOp _ l r _) = collectMethodSites l
 collectMethodSites (EUnOp _ e) = collectMethodSites e
 collectMethodSites (EInfix _ l r) = collectMethodSites l ++ collectMethodSites r
 collectMethodSites (EFieldAccess e _) = collectMethodSites e
-collectMethodSites (ETuple es) = concatMapList collectMethodSites es
-collectMethodSites (EListLit es) = concatMapList collectMethodSites es
-collectMethodSites (EArrayLit es) = concatMapList collectMethodSites es
+collectMethodSites (ETuple es) = flatMap collectMethodSites es
+collectMethodSites (EListLit es) = flatMap collectMethodSites es
+collectMethodSites (EArrayLit es) = flatMap collectMethodSites es
 collectMethodSites (ERangeList a b _) = collectMethodSites a
   ++ collectMethodSites b
 collectMethodSites (ERangeArray a b _) = collectMethodSites a
@@ -6623,22 +6622,22 @@ collectMethodSites (ESlice e a b _) = collectMethodSites e
   ++ collectMethodSites b
 collectMethodSites (EIndex e i) = collectMethodSites e ++ collectMethodSites i
 collectMethodSites (EAnnot e _) = collectMethodSites e
-collectMethodSites (EBlock stmts) = concatMapList doStmtSites stmts
-collectMethodSites (ERecordCreate _ fs) = concatMapList fieldAssignSites fs
+collectMethodSites (EBlock stmts) = flatMap doStmtSites stmts
+collectMethodSites (ERecordCreate _ fs) = flatMap fieldAssignSites fs
 collectMethodSites (ERecordUpdate e fs) = collectMethodSites e
-  ++ concatMapList fieldAssignSites fs
+  ++ flatMap fieldAssignSites fs
 collectMethodSites (EVariantUpdate _ e fs) = collectMethodSites e
-  ++ concatMapList fieldAssignSites fs
+  ++ flatMap fieldAssignSites fs
 collectMethodSites _ = []
 
 letBindSites : LetBind -> List (Ref Route)
-letBindSites (LetBind _ clauses) = concatMapList funClauseSites clauses
+letBindSites (LetBind _ clauses) = flatMap funClauseSites clauses
 
 funClauseSites : FunClause -> List (Ref Route)
 funClauseSites (FunClause _ body) = collectMethodSites body
 
 armSites : Arm -> List (Ref Route)
-armSites (Arm _ guards body) = concatMapList guardSites guards
+armSites (Arm _ guards body) = flatMap guardSites guards
   ++ collectMethodSites body
 
 guardSites : Guard -> List (Ref Route)
@@ -6671,10 +6670,10 @@ collectDictSites (EDoOrigin _ e) = collectDictSites e
 collectDictSites (EApp f x) = collectDictSites f ++ collectDictSites x
 collectDictSites (ELam _ b) = collectDictSites b
 collectDictSites (ELet _ _ _ e1 e2) = collectDictSites e1 ++ collectDictSites e2
-collectDictSites (ELetGroup binds body) = concatMapList letBindDictSites binds
+collectDictSites (ELetGroup binds body) = flatMap letBindDictSites binds
   ++ collectDictSites body
 collectDictSites (EMatch e arms) = collectDictSites e
-  ++ concatMapList armDictSites arms
+  ++ flatMap armDictSites arms
 collectDictSites (EIf c t e) = collectDictSites c
   ++ collectDictSites t
   ++ collectDictSites e
@@ -6682,9 +6681,9 @@ collectDictSites (EBinOp _ l r _) = collectDictSites l ++ collectDictSites r
 collectDictSites (EUnOp _ e) = collectDictSites e
 collectDictSites (EInfix _ l r) = collectDictSites l ++ collectDictSites r
 collectDictSites (EFieldAccess e _) = collectDictSites e
-collectDictSites (ETuple es) = concatMapList collectDictSites es
-collectDictSites (EListLit es) = concatMapList collectDictSites es
-collectDictSites (EArrayLit es) = concatMapList collectDictSites es
+collectDictSites (ETuple es) = flatMap collectDictSites es
+collectDictSites (EListLit es) = flatMap collectDictSites es
+collectDictSites (EArrayLit es) = flatMap collectDictSites es
 collectDictSites (ERangeList a b _) = collectDictSites a ++ collectDictSites b
 collectDictSites (ERangeArray a b _) = collectDictSites a ++ collectDictSites b
 collectDictSites (ESlice e a b _) = collectDictSites e
@@ -6692,22 +6691,22 @@ collectDictSites (ESlice e a b _) = collectDictSites e
   ++ collectDictSites b
 collectDictSites (EIndex e i) = collectDictSites e ++ collectDictSites i
 collectDictSites (EAnnot e _) = collectDictSites e
-collectDictSites (EBlock stmts) = concatMapList doStmtDictSites stmts
-collectDictSites (ERecordCreate _ fs) = concatMapList fieldAssignDictSites fs
+collectDictSites (EBlock stmts) = flatMap doStmtDictSites stmts
+collectDictSites (ERecordCreate _ fs) = flatMap fieldAssignDictSites fs
 collectDictSites (ERecordUpdate e fs) = collectDictSites e
-  ++ concatMapList fieldAssignDictSites fs
+  ++ flatMap fieldAssignDictSites fs
 collectDictSites (EVariantUpdate _ e fs) = collectDictSites e
-  ++ concatMapList fieldAssignDictSites fs
+  ++ flatMap fieldAssignDictSites fs
 collectDictSites _ = []
 
 letBindDictSites : LetBind -> List (Ref (List Route))
-letBindDictSites (LetBind _ clauses) = concatMapList funClauseDictSites clauses
+letBindDictSites (LetBind _ clauses) = flatMap funClauseDictSites clauses
 
 funClauseDictSites : FunClause -> List (Ref (List Route))
 funClauseDictSites (FunClause _ body) = collectDictSites body
 
 armDictSites : Arm -> List (Ref (List Route))
-armDictSites (Arm _ guards body) = concatMapList guardDictSites guards
+armDictSites (Arm _ guards body) = flatMap guardDictSites guards
   ++ collectDictSites body
 
 guardDictSites : Guard -> List (Ref (List Route))
@@ -7148,7 +7147,7 @@ uniqueImplTysFor prog iface tag = match filterImplTysFor prog iface tag
   _ => None
 
 filterImplTysFor : List Decl -> String -> String -> List (List Ty)
-filterImplTysFor prog iface tag = concatMapList (implTysIfMatch iface tag) prog
+filterImplTysFor prog iface tag = flatMap (implTysIfMatch iface tag) prog
 
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
 implTysIfMatch iface tag (DAttrib _ d) = implTysIfMatch iface tag d
@@ -7226,7 +7225,7 @@ noImplFoundMsg iface args = "No impl of "
 
 -- the (iface, head-arg types) of every USER/prelude impl declared in [prog].
 implHeadsOf : List Decl -> List (String, List Ty)
-implHeadsOf prog = concatMapList implHeadOf prog
+implHeadsOf prog = flatMap implHeadOf prog
 
 implHeadOf : Decl -> List (String, List Ty)
 implHeadOf (DAttrib _ d) = implHeadOf d
@@ -7267,7 +7266,7 @@ walkDispatch typarams (TyApp a b) m = match normalize m
   TApp ma mb => walkDispatch typarams a ma ++ walkDispatch typarams b mb
   _ => []
 walkDispatch typarams (TyTuple ts) m = match normalize m
-  TTuple ms => concatMapList (p => walkDispatch typarams (fst p) (snd p)) (zipL ts ms)
+  TTuple ms => flatMap (p => walkDispatch typarams (fst p) (snd p)) (zipL ts ms)
   _ => []
 walkDispatch _ _ _ = []
 
@@ -7370,7 +7369,7 @@ inferOneImpl _ _ _ _ = ()
 -- impl bodies stay un-inferred exactly as before, keeping every golden identical.
 inferPlainImpl : TcEnv -> List Decl -> String -> List Ty -> List ImplMethod -> <Mut> Unit
 inferPlainImpl env allProg iface tys methods =
-  let implTvMap = freshTvMap (dedup (concatMapList tyVarNames tys))
+  let implTvMap = freshTvMap (dedup (flatMap tyVarNames tys))
   let headMonos = map (fromAstType implTvMap) tys
   inferImplMethods env allProg iface implTvMap headMonos methods
 
@@ -7381,7 +7380,7 @@ inferPlainImpl env allProg iface tys methods =
 -- requires' post-unification ids in activeDictVars keyed to `$dict_<method>_<slot>`.
 inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> <Mut> Unit
 inferRequiresImpl env allProg rpNames iface tys reqs methods =
-  let implTvMap = freshTvMap (dedup (concatMapList tyVarNames tys))
+  let implTvMap = freshTvMap (dedup (flatMap tyVarNames tys))
   let headMonos = map (fromAstType implTvMap) tys
   let _ = inferImplMethods env allProg iface implTvMap headMonos methods
   registerImplRequires implTvMap rpNames reqs methods
@@ -7466,7 +7465,7 @@ registersElementDict mname rpNames = contains mname rpNames
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> <Mut> Unit
 registerReqSlots _ _ _ [] = ()
 registerReqSlots mname implTvMap slot ((Require _ rargs)::rest) =
-  let ids = concatMapList (a => monoTyvarIds (fromAstType implTvMap a)) rargs
+  let ids = flatMap (a => monoTyvarIds (fromAstType implTvMap a)) rargs
   let _ = registerEachActive ids (dictParamName mname slot)
   registerReqSlots mname implTvMap (slot + 1) rest
 
@@ -7482,7 +7481,7 @@ monoTyvarIds m = match normalize m
   TVar cell => [tyvarId cell]
   TApp a b => monoTyvarIds a ++ monoTyvarIds b
   TFun a _ b => monoTyvarIds a ++ monoTyvarIds b
-  TTuple ts => concatMapList monoTyvarIds ts
+  TTuple ts => flatMap monoTyvarIds ts
   _ => []
 
 -- extern declarations become top-level schemes (like interface methods)
@@ -7571,7 +7570,7 @@ hasAssocSL2 n xs = match lookupAssocSL2 n xs
   None => False
 
 methodConstraintSlotIds : List String -> Ty -> List (String, Mono) -> List Int
-methodConstraintSlotIds typarams (TyConstrained cs t) tvs = concatMapList (constraintSlotId typarams tvs) cs
+methodConstraintSlotIds typarams (TyConstrained cs t) tvs = flatMap (constraintSlotId typarams tvs) cs
   ++ methodConstraintSlotIds typarams t tvs
 methodConstraintSlotIds typarams (TyEffect _ _ t) tvs =
   methodConstraintSlotIds typarams t tvs
@@ -7602,39 +7601,39 @@ allEVars (ELit _) = []
 allEVars (EApp f x) = allEVars f ++ allEVars x
 allEVars (ELam _ b) = allEVars b
 allEVars (ELet _ _ _ e1 e2) = allEVars e1 ++ allEVars e2
-allEVars (ELetGroup binds body) = concatMapList letBindEVars binds
+allEVars (ELetGroup binds body) = flatMap letBindEVars binds
   ++ allEVars body
-allEVars (EMatch e arms) = allEVars e ++ concatMapList armEVars arms
+allEVars (EMatch e arms) = allEVars e ++ flatMap armEVars arms
 allEVars (EIf c t e) = allEVars c ++ allEVars t ++ allEVars e
 allEVars (EBinOp _ l r _) = allEVars l ++ allEVars r
 allEVars (EUnOp _ e) = allEVars e
 allEVars (EInfix op l r) = op :: allEVars l ++ allEVars r
 allEVars (EFieldAccess e _) = allEVars e
-allEVars (ETuple es) = concatMapList allEVars es
-allEVars (EListLit es) = concatMapList allEVars es
-allEVars (EArrayLit es) = concatMapList allEVars es
+allEVars (ETuple es) = flatMap allEVars es
+allEVars (EListLit es) = flatMap allEVars es
+allEVars (EArrayLit es) = flatMap allEVars es
 allEVars (ERangeList a b _) = allEVars a ++ allEVars b
 allEVars (ERangeArray a b _) = allEVars a ++ allEVars b
 allEVars (ESlice e a b _) = allEVars e ++ allEVars a ++ allEVars b
 allEVars (EIndex e i) = allEVars e ++ allEVars i
 allEVars (EAnnot e _) = allEVars e
-allEVars (EBlock stmts) = concatMapList doStmtEVars stmts
-allEVars (ERecordCreate _ fs) = concatMapList fieldAssignEVars fs
-allEVars (ERecordUpdate e fs) = allEVars e ++ concatMapList fieldAssignEVars fs
+allEVars (EBlock stmts) = flatMap doStmtEVars stmts
+allEVars (ERecordCreate _ fs) = flatMap fieldAssignEVars fs
+allEVars (ERecordUpdate e fs) = allEVars e ++ flatMap fieldAssignEVars fs
 allEVars (EVariantUpdate _ e fs) = allEVars e
-  ++ concatMapList fieldAssignEVars fs
+  ++ flatMap fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
 allEVars (EDoOrigin _ e) = allEVars e
 allEVars _ = []
 
 letBindEVars : LetBind -> List String
-letBindEVars (LetBind _ clauses) = concatMapList funClauseEVars clauses
+letBindEVars (LetBind _ clauses) = flatMap funClauseEVars clauses
 
 funClauseEVars : FunClause -> List String
 funClauseEVars (FunClause _ body) = allEVars body
 
 armEVars : Arm -> List String
-armEVars (Arm _ guards body) = concatMapList guardEVars guards ++ allEVars body
+armEVars (Arm _ guards body) = flatMap guardEVars guards ++ allEVars body
 
 guardEVars : Guard -> List String
 guardEVars (GBool e) = allEVars e
@@ -7824,7 +7823,7 @@ depsOf name nameSet cbn =
     (keepGroupNames nameSet (dedup (groupRefs (clausesOf name cbn))))
 
 groupRefs : List (List Pat, Expr) -> List String
-groupRefs clauses = concatMapList clauseRefs clauses
+groupRefs clauses = flatMap clauseRefs clauses
 
 clauseRefs : (List Pat, Expr) -> List String
 clauseRefs (_, body) = allEVars body
@@ -7930,7 +7929,7 @@ instantiateSigTracked ty =
 -- the (iface, tyvarName) pairs of a signature's `=>` constraints (each constraint
 -- argument that is a single type variable; multi-param/structured args skipped)
 sigConstraints : Ty -> List (String, String)
-sigConstraints (TyConstrained cs _) = concatMapList constraintTyVars cs
+sigConstraints (TyConstrained cs _) = flatMap constraintTyVars cs
 sigConstraints _ = []
 
 constraintTyVars : Constraint -> List (String, String)
@@ -8302,7 +8301,7 @@ constraintIdsFromSites m boundIds ((fn, mono)::rest)
 constraintIdsFromApps : String -> List Int -> List (String, List Mono) -> List Int
 constraintIdsFromApps _ _ [] = []
 constraintIdsFromApps m boundIds ((fn, monos)::rest)
-  | fn == m = concatMapList (boundTvarId boundIds) monos
+  | fn == m = flatMap (boundTvarId boundIds) monos
     ++ constraintIdsFromApps m boundIds rest
   | otherwise = constraintIdsFromApps m boundIds rest
 
@@ -8795,7 +8794,7 @@ resolveMemberSchemes n depSchemes = match lookupAssoc n depSchemes
 importFormSchemes : UsePath -> List (String, Scheme) -> List (String, Scheme)
 importFormSchemes path depSchemes = match importedMembers path
   None => depSchemes
-  Some names => concatMapList (n => resolveMemberSchemes n depSchemes) names
+  Some names => flatMap (n => resolveMemberSchemes n depSchemes) names
 
 -- build THIS module's import-scoped seed: walk its DUse decls, and for each one
 -- pick the imported names out of the named dependency's public schemes (held in
@@ -9044,9 +9043,9 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref crossModuleFunConstraintsQualRef []
   let _ = set_ref crossModuleMethodConstraintsRef []
   let _ = set_ref crossModuleMethodConstraintsQualRef []
-  let allDecls = coreDecls ++ concatMapList snd modules
+  let allDecls = coreDecls ++ flatMap snd modules
   let _ = set_ref superDeclsRef allDecls   -- WS-1b: interfaces in scope for the discovery scratch typecheck
-  let _ = set_ref userIfaceNamesRef (collectIfaceNames (concatMapList snd modules))   -- WS-1b: gate super-expansion to user interfaces
+  let _ = set_ref userIfaceNamesRef (collectIfaceNames (flatMap snd modules))   -- WS-1b: gate super-expansion to user interfaces
   let rpNames = returnPosMethodNames allDecls
   let _ = set_ref argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst argDispatchIdxRef.value
@@ -9054,7 +9053,7 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref dictEligibleSetRef (namesToSet (moduleUserFnNames modules) OTip)
   let promoted = discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames
   let dictNames = dedup (moduleDictNames coreDecls allDecls modules ++ promoted)
-  let markRpNames = dedup (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (concatMapList snd modules))
+  let markRpNames = dedup (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (flatMap snd modules))
   let core2 = prePassDictArg markRpNames dictNames argNames coreDecls
   let modules2 = map (prePassModulePairArg markRpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
@@ -9162,7 +9161,7 @@ elaborateModules runtimeDecls coreDecls modules =
 -- them) carried across resetState in crossModuleFunConstraintsRef.
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 dictPassModulesIfEnabled dictNames core2 modules2 =
-  let allModDecls = concatMapList snd modules2
+  let allModDecls = flatMap snd modules2
   let promotedQ = crossModuleFunConstraintsQualRef.value
   let allMods = namesToSet (map fst modules2) OTip
   let _ = set_ref funConstraintsRef (scopeArities promotedQ allMods (core2 ++ allModDecls))
@@ -9228,11 +9227,11 @@ scopeArities promotedQ scopeMods scope =
   let scopeNames = namesToSet (declTopFnNames scope) OTip
   let nameInScope = filterList (e => omHasKey (snd (fst e)) scopeNames) promotedQ
   -- names that have at least one in-scope-module entry → drop their out-of-scope-module twins
-  let resolvedNames = namesToSet (concatMapList (e => if modInScope (fst (fst e)) scopeMods then [snd (fst e)] else []) nameInScope) OTip
+  let resolvedNames = namesToSet (flatMap (e => if modInScope (fst (fst e)) scopeMods then [snd (fst e)] else []) nameInScope) OTip
   let inferredQ = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) nameInScope
   let inferred = map (e => (snd (fst e), snd e)) inferredQ
   let inferredNames = namesToSet (map fst inferred) OTip
-  let sigEntries = filterList (e => not (omHasKey (fst e) inferredNames)) (concatMapList constrainedSigArity scope)
+  let sigEntries = filterList (e => not (omHasKey (fst e) inferredNames)) (flatMap constrainedSigArity scope)
   inferred ++ sigEntries
 
 -- WS-2/D2 method analog of scopeArities, WITHOUT the sig-fallback: every method-level
@@ -9247,7 +9246,7 @@ scopeArities promotedQ scopeMods scope =
 -- table → byte-identical method dict-pass (every existing fixture, and the fixpoint).
 scopeMethodArities : List ((String, String), List Int) -> OrdMap Unit -> List (String, List Int)
 scopeMethodArities promotedMQ scopeMods =
-  let resolvedNames = namesToSet (concatMapList (e => if modInScope (fst (fst e)) scopeMods then [snd (fst e)] else []) promotedMQ) OTip
+  let resolvedNames = namesToSet (flatMap (e => if modInScope (fst (fst e)) scopeMods then [snd (fst e)] else []) promotedMQ) OTip
   let kept = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) promotedMQ
   map (e => (snd (fst e), snd e)) kept
 
@@ -9259,7 +9258,7 @@ modInScope mid scopeMods = mid == "" || omHasKey mid scopeMods
 attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArities mid prog entries =
   let progNames = namesToSet (declTopFnNames prog) OTip
-  concatMapList (e => if omHasKey (fst e) progNames then [((mid, fst e), snd e)] else []) entries
+  flatMap (e => if omHasKey (fst e) progNames then [((mid, fst e), snd e)] else []) entries
 
 -- WS-2/D2 method analog: attribute each method whose INTERFACE is declared in [prog]
 -- (carrying a methodConstraintsRef entry) to [mid].  Keyed by the interface's module —
@@ -9268,7 +9267,7 @@ attributeModuleArities mid prog entries =
 attributeMethodModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeMethodModuleArities mid prog entries =
   let progMethods = namesToSet (allIfaceMethodNames prog) OTip
-  concatMapList (e => if omHasKey (fst e) progMethods then [((mid, fst e), snd e)] else []) entries
+  flatMap (e => if omHasKey (fst e) progMethods then [((mid, fst e), snd e)] else []) entries
 -- membership-only sets (built once) instead of O(N) contains scans per entry:
 -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).
 
@@ -9280,7 +9279,7 @@ declTopFnNames decls = map fst (funDefs decls)
 -- importer is in scope when [mid] is dict-passed.
 transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
 transitiveImporterDecls mid modules =
-  concatMapList
+  flatMap
     (p => if fst p != mid && transitivelyImports (fst p) mid modules then snd p else [])
     modules
 
@@ -9288,7 +9287,7 @@ transitiveImporterDecls mid modules =
 -- analog of transitiveImporterDecls, for the scopeArities owning-module set.
 transitiveImporterIds : String -> List (String, List Decl) -> List String
 transitiveImporterIds mid modules =
-  concatMapList
+  flatMap
     (p => if fst p != mid && transitivelyImports (fst p) mid modules then [fst p] else [])
     modules
 
@@ -9312,7 +9311,7 @@ anyDepReaches seen (d::rest) target modules = depReaches seen d target modules
 -- oracle's path→module-id mapping (last component of a dotted UseName, else the path).
 directImports : String -> List (String, List Decl) -> List String
 directImports mid modules = match lookupAssoc mid modules
-  Some prog => concatMapList useModuleId prog
+  Some prog => flatMap useModuleId prog
   None => []
 
 useModuleId : Decl -> List String
@@ -9341,7 +9340,7 @@ moduleDictNames : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Li
 moduleDictNames coreDecls allDecls modules =
   preludeReturnPosDictNames coreDecls allDecls
   ++ preludeArgPosDictNames coreDecls allDecls
-  ++ constrainedSigNames (concatMapList snd modules)
+  ++ constrainedSigNames (flatMap snd modules)
 -- EVAL path: even with arg-position stamping OFF, the constrained prelude/module
 -- fns MUST be dict-passed.  DRIVER-COLLAPSE Phase 2: the MODULE part now uses the
 -- FULL constrainedSigNames (every `=>`-constrained module signature), mirroring flat
@@ -9372,7 +9371,7 @@ moduleDictNames coreDecls allDecls modules =
 -- count at the final cross-module dictPass.  Prepends to funConstraintsRef.
 seedDictAritiesFromSigs : List Decl -> <Mut> Unit
 seedDictAritiesFromSigs decls =
-  let entries = concatMapList constrainedSigArity decls
+  let entries = flatMap constrainedSigArity decls
   set_ref funConstraintsRef (entries ++ funConstraintsRef.value)
 
 constrainedSigArity : Decl -> List (String, List Int)
@@ -9406,7 +9405,7 @@ prePassModulePairArg rpNames dictNames argNames (mid, prog) = (mid, prePassDictA
 export
 markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 markModules coreDecls modules =
-  let rpNames = returnPosMethodNames (coreDecls ++ concatMapList snd modules)
+  let rpNames = returnPosMethodNames (coreDecls ++ flatMap snd modules)
   let core2 = prePassDict rpNames [] coreDecls
   let modules2 = map (prePassModulePair rpNames) modules
   (core2, modules2)

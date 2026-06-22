@@ -163,7 +163,7 @@ import ir.core_ir.{
   CImplEntry(..), CImplBody(..), CField(..)
 }
 import support.util.{
-  joinNl, joinWith, reverseL, contains, concatMapList, filterList,
+  joinNl, joinWith, reverseL, contains, filterList,
   lookupAssoc, listLen, maxI, replicate
 }
 import backend.wasm_preamble.{
@@ -779,29 +779,29 @@ cFieldName (CField k _) = k
 -- unchanged-field copy.  Recover it from CRecord nodes (which carry fields in
 -- declared order — lowering preserves it), peer to llvm_emit.collectRecords.
 collectRecFields : List CBind -> List (String, List String)
-collectRecFields groups = dedupRecEntries (concatMapList collectRecFieldsBind groups)
+collectRecFields groups = dedupRecEntries (flatMap collectRecFieldsBind groups)
 
 collectRecFieldsBind : CBind -> List (String, List String)
-collectRecFieldsBind (CBind _ clauses) = concatMapList (c => scanRecFields (clauseBodyOf c)) clauses
+collectRecFieldsBind (CBind _ clauses) = flatMap (c => scanRecFields (clauseBodyOf c)) clauses
 
 scanRecFields : CExpr -> List (String, List String)
 scanRecFields e = match e
-  CRecord name fields => (name, map cFieldName fields) :: concatMapList (f => scanRecFields (cFieldExpr f)) fields
+  CRecord name fields => (name, map cFieldName fields) :: flatMap (f => scanRecFields (cFieldExpr f)) fields
   CFieldAccess ex _ => scanRecFields ex
-  CRecordUpdate base fields => scanRecFields base ++ concatMapList (f => scanRecFields (cFieldExpr f)) fields
-  CVariantUpdate _ base fields => scanRecFields base ++ concatMapList (f => scanRecFields (cFieldExpr f)) fields
-  CTuple es => concatMapList scanRecFields es
-  CList es => concatMapList scanRecFields es
-  CArray es => concatMapList scanRecFields es
+  CRecordUpdate base fields => scanRecFields base ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
+  CVariantUpdate _ base fields => scanRecFields base ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
+  CTuple es => flatMap scanRecFields es
+  CList es => flatMap scanRecFields es
+  CArray es => flatMap scanRecFields es
   CApp f a => scanRecFields f ++ scanRecFields a
   CLam _ b => scanRecFields b
   CBinPrim _ l r => scanRecFields l ++ scanRecFields r
   CUnOp _ x => scanRecFields x
   CIf c t f => scanRecFields c ++ scanRecFields t ++ scanRecFields f
   CLet _ _ a b => scanRecFields a ++ scanRecFields b
-  CBlock stmts => concatMapList scanRecFieldsStmt stmts
-  CDecision scrut arms _ => scanRecFields scrut ++ concatMapList (a => scanRecFields (armBody a)) arms
-  CMatch scrut arms => scanRecFields scrut ++ concatMapList (a => scanRecFields (armBody a)) arms
+  CBlock stmts => flatMap scanRecFieldsStmt stmts
+  CDecision scrut arms _ => scanRecFields scrut ++ flatMap (a => scanRecFields (armBody a)) arms
+  CMatch scrut arms => scanRecFields scrut ++ flatMap (a => scanRecFields (armBody a)) arms
   CRangeList lo hi _ => scanRecFields lo ++ scanRecFields hi
   CRangeArray lo hi _ => scanRecFields lo ++ scanRecFields hi
   CIndex a i => scanRecFields a ++ scanRecFields i
@@ -844,14 +844,14 @@ isPlainParam _ = False
 -- closure wrapper so they can flow through `(ref eq)` slots / be applied indirectly.
 scanFnValueUses : List String -> List (String, Int) -> List (String, Int) -> List CBind -> List String
 scanFnValueUses fnNames fnArs ctorArs groups =
-  dedupKeep (concatMapList (scanBindValueUses fnNames fnArs ctorArs) groups)
+  dedupKeep (flatMap (scanBindValueUses fnNames fnArs ctorArs) groups)
 
 -- W9: the impl method bodies + interface defaults also use top-level fns as values
 -- (e.g. `toList = identity` in `impl Foldable List`), so their fn-value uses must seed
 -- the closure-wrapper set too — else `$mdk_w_<f>` is referenced but never emitted.
 scanImplValueUses : List String -> List (String, Int) -> List (String, Int) -> List CImplEntry -> List String
 scanImplValueUses fnNames fnArs ctorArs impls =
-  dedupKeep (concatMapList (e => scanImplEntryValueUses fnNames fnArs ctorArs e) impls)
+  dedupKeep (flatMap (e => scanImplEntryValueUses fnNames fnArs ctorArs e) impls)
 
 scanImplEntryValueUses : List String -> List (String, Int) -> List (String, Int) -> CImplEntry -> List String
 scanImplEntryValueUses fnNames fnArs ctorArs (CImplEntry _ _ body) = match body
@@ -860,7 +860,7 @@ scanImplEntryValueUses fnNames fnArs ctorArs (CImplEntry _ _ body) = match body
 
 scanBindValueUses : List String -> List (String, Int) -> List (String, Int) -> CBind -> List String
 scanBindValueUses fnNames fnArs ctorArs (CBind _ clauses) =
-  concatMapList (c => scanExprValueUses fnNames fnArs ctorArs (clauseBodyOf c)) clauses
+  flatMap (c => scanExprValueUses fnNames fnArs ctorArs (clauseBodyOf c)) clauses
 
 clauseBodyOf : CClause -> CExpr
 clauseBodyOf (CClause _ body) = body
@@ -882,17 +882,17 @@ scanExprValueUses fnNames fnArs ctorArs e = match e
           (if arityOf fnArs fn == listLen args then [] else [fn])
         else []
       _ => scanExprValueUses fnNames fnArs ctorArs hd
-    here ++ concatMapList (scanExprValueUses fnNames fnArs ctorArs) args
+    here ++ flatMap (scanExprValueUses fnNames fnArs ctorArs) args
   CLam _ b => scanExprValueUses fnNames fnArs ctorArs b
   CBinPrim _ l r => scanExprValueUses fnNames fnArs ctorArs l ++ scanExprValueUses fnNames fnArs ctorArs r
   CUnOp _ x => scanExprValueUses fnNames fnArs ctorArs x
   CIf c t f => scanExprValueUses fnNames fnArs ctorArs c ++ scanExprValueUses fnNames fnArs ctorArs t ++ scanExprValueUses fnNames fnArs ctorArs f
   CLet _ _ a b => scanExprValueUses fnNames fnArs ctorArs a ++ scanExprValueUses fnNames fnArs ctorArs b
-  CBlock stmts => concatMapList (s => scanStmtValueUses fnNames fnArs ctorArs s) stmts
-  CDecision scrut arms _ => scanExprValueUses fnNames fnArs ctorArs scrut ++ concatMapList (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
-  CMatch scrut arms => scanExprValueUses fnNames fnArs ctorArs scrut ++ concatMapList (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
+  CBlock stmts => flatMap (s => scanStmtValueUses fnNames fnArs ctorArs s) stmts
+  CDecision scrut arms _ => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
+  CMatch scrut arms => scanExprValueUses fnNames fnArs ctorArs scrut ++ flatMap (a => scanExprValueUses fnNames fnArs ctorArs (armBody a)) arms
   CLetGroup binds b =>
-    concatMapList (bd => scanBindValueUses fnNames fnArs ctorArs bd) binds
+    flatMap (bd => scanBindValueUses fnNames fnArs ctorArs bd) binds
       ++ scanExprValueUses fnNames fnArs ctorArs b
   _ => []
 
@@ -1005,7 +1005,7 @@ emitScalarProgram fnNames valNames groups =
       "  )"]
     ++ ioByteImportLines
   let globals = map oneGlobalI32 valNames
-  let fns = concatMapList (emitScalarFnBind fnNames valNames) (userFnBinds groups)
+  let fns = flatMap (emitScalarFnBind fnNames valNames) (userFnBinds groups)
   let initLines = emitScalarInit fnNames valNames groups
   joinNl (header ++ globals ++ fns ++ ioRuntimeLines ++ initLines ++ [")"])
 
@@ -1015,9 +1015,9 @@ oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
 emitScalarInit : List String -> List String -> List CBind -> List String
 emitScalarInit fnNames valNames groups =
   let valBinds = filterList isValBind groups
-  let valInit = concatMapList (emitScalarValInit fnNames valNames) valBinds
+  let valInit = flatMap (emitScalarValInit fnNames valNames) valBinds
   let mainLines = emitScalarMain fnNames valNames groups
-  let valLocals = concatMapList collectBindLocals valBinds
+  let valLocals = flatMap collectBindLocals valBinds
   let mainLocals = match findMain groups
     Some body => collectExprLocals body
     None => []
@@ -1095,7 +1095,7 @@ emitScalarAppTail fnNames valNames env app =
   match hd
     CVar f _ =>
       if contains f fnNames then
-        let argInstrs = concatMapList (a => fst (emitScalarExpr fnNames valNames env a)) args
+        let argInstrs = flatMap (a => fst (emitScalarExpr fnNames valNames env a)) args
         argInstrs ++ ["return_call $" ++ gname f]
       else
         let (i, _) = emitScalarExpr fnNames valNames env app
@@ -1194,7 +1194,7 @@ emitAppI32 fnNames valNames env app =
   match hd
     CVar f _ =>
       if contains f fnNames then
-        let argInstrs = concatMapList (a => fst (emitScalarExpr fnNames valNames env a)) args
+        let argInstrs = flatMap (a => fst (emitScalarExpr fnNames valNames env a)) args
         (argInstrs ++ ["call $" ++ gname f], WInt)
       else gap ("scalar-mode: application of non-top-level head '" ++ f ++ "' (closures/HOFs are W4)")
     _ => gap "scalar-mode: application of a non-variable head (closures/HOFs are W4)"
@@ -1216,13 +1216,13 @@ emitRefProgram prog groups =
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
   let globals = rngGlobal ++ map oneGlobalRef valNames
   -- emit user fns FIRST (this is what accumulates lifted lambdas into liftedFnsRef).
-  let fns = concatMapList (emitRefFnBind prog) (userFnBinds groups)
+  let fns = flatMap (emitRefFnBind prog) (userFnBinds groups)
   -- W5: the typeclass impl functions ($mdk_impl_<tag>_<method>), emitted as ordinary
   -- (ref eq) functions the RKey direct call / RDict if-chain dispatch into.
   let implFns = emitImplFns prog
   let initLines = emitRefInit prog groups
   -- now drain the lifted-lambda defs + the closure-apply runtime + elem-declare.
-  let lifted = if progUseClos prog then concatMapList (x => x) (reverseL liftedFnsRef.value) else []
+  let lifted = if progUseClos prog then flatMap (x => x) (reverseL liftedFnsRef.value) else []
   let applyRt = if progUseClos prog then closApplyLines else []
   let elemDecl = if progUseClos prog then [emitElemDeclare ()] else []
   -- W6: the byte-write IO runtime (int/bool printers always; the $str-dependent
@@ -1294,7 +1294,7 @@ oneGlobalRef n = "  (global $" ++ gname n ++ " (mut (ref null eq)) (ref.null eq)
 emitTypeSection : Prog -> List String
 emitTypeSection prog =
   let userTypes = userTypesWithCtors prog
-  let userStructs = concatMapList (emitTypeStructs prog) userTypes
+  let userStructs = flatMap (emitTypeStructs prog) userTypes
   let reservedStructs = emitReservedStructs prog
   let closTypes = if progUseClos prog then closTypeLines else []
   let strTypes = if useStrRef.value then strTypeLines else []
@@ -1325,7 +1325,7 @@ emitW7Types _ =
         ["    (type $T_List (sub (struct (field i32))))",
          "    (type $C_Cons (sub $T_List (struct (field i32) (field (ref eq)) (field (ref eq)))))"]
       else []
-  let tupTs = concatMapList tupleTypeDecl (reverseL tupleAritiesRef.value)
+  let tupTs = flatMap tupleTypeDecl (reverseL tupleAritiesRef.value)
   let arrT = if useArrayRef.value then ["    (type $arr (array (mut (ref eq))))"] else []
   let refT = if useRefBoxRef.value then ["    (type $refbox (sub (struct (field (mut (ref eq))))))"] else []
   listT ++ tupTs ++ arrT ++ refT
@@ -1351,7 +1351,7 @@ emitTypeStructs : Prog -> String -> List String
 emitTypeStructs prog ty =
   let ctors = ctorsOfType prog ty
   let root = "    (type $" ++ typeRootName ty ++ " (sub (struct (field i32))))"
-  let payloadStructs = concatMapList (emitCtorStruct prog ty) ctors
+  let payloadStructs = flatMap (emitCtorStruct prog ty) ctors
   [root] ++ payloadStructs
 
 emitCtorStruct : Prog -> String -> String -> List String
@@ -1377,7 +1377,7 @@ emitReservedStructs prog =
 reservedTypeStructs : Prog -> String -> List String -> List String
 reservedTypeStructs prog ty ctors =
   let root = "    (type $" ++ typeRootName ty ++ " (sub (struct (field i32))))"
-  let payloadStructs = concatMapList (emitReservedCtorStruct ty) ctors
+  let payloadStructs = flatMap (emitReservedCtorStruct ty) ctors
   [root] ++ payloadStructs
 
 -- reserved-ctor arities are fixed: Some/Ok/Err carry 1 payload field; None/Lt/Eq/Gt
@@ -1395,14 +1395,14 @@ emitReservedCtorStruct ty ctor =
 emitRefInit : Prog -> List CBind -> <Mut> List String
 emitRefInit prog groups =
   let valBinds = filterList isValBind groups
-  let valInit = concatMapList (emitRefValInit prog) valBinds
+  let valInit = flatMap (emitRefValInit prog) valBinds
   let mainLines = emitRefMain prog groups
-  let valLocals = concatMapList collectBindLocals valBinds
+  let valLocals = flatMap collectBindLocals valBinds
   let mainBodies = match findMain groups
     Some body => [body]
     None => []
-  let mainLocals = concatMapList collectExprLocals mainBodies
-  let valBodies = concatMapList bindBodies valBinds
+  let mainLocals = flatMap collectExprLocals mainBodies
+  let valBodies = flatMap bindBodies valBinds
   -- scratch ($__rf<d>) locals sized to the deepest match nesting across all $__init
   -- bodies (val inits + main).
   let maxDepth = foldMaxDepth (valBodies ++ mainBodies)
@@ -1418,7 +1418,7 @@ emitRefInit prog groups =
     ++ ["  )", "  (start $__init)"]
 
 bindBodies : CBind -> List CExpr
-bindBodies (CBind _ clauses) = concatMapList clauseBody clauses
+bindBodies (CBind _ clauses) = flatMap clauseBody clauses
 
 clauseBody : CClause -> List CExpr
 clauseBody (CClause _ body) = [body]
@@ -1634,7 +1634,7 @@ emitClausesRefEnv prog baseEnv name params arity clauses = match clauses
 -- positional wasm param ($a<i>): `local.get $a<i>; local.set $<srcname>`.  (The
 -- source names are declared as locals via clauseLocals.)
 bindParamAliases : List Pat -> List String -> List String
-bindParamAliases pats params = concatMapList aliasOne (zipPats pats params)
+bindParamAliases pats params = flatMap aliasOne (zipPats pats params)
 
 aliasOne : (Pat, String) -> List String
 aliasOne (PVar x, a) = ["local.get $" ++ gname a, "local.set $" ++ gname x]
@@ -1756,13 +1756,13 @@ patTestBindTuple prog tc (p::rest) occ clLabel env i =
 
 -- all locals a clause group needs: every clause's param-bound vars + body locals.
 clauseLocals : List CClause -> List String
-clauseLocals clauses = concatMapList oneClauseLocals clauses
+clauseLocals clauses = flatMap oneClauseLocals clauses
 
 oneClauseLocals : CClause -> List String
-oneClauseLocals (CClause pats body) = concatMapList patVars pats ++ collectExprLocals body
+oneClauseLocals (CClause pats body) = flatMap patVars pats ++ collectExprLocals body
 
 clausesMaxDepth : List CClause -> Int
-clausesMaxDepth clauses = foldMaxDepth (concatMapList clauseBody clauses)
+clausesMaxDepth clauses = foldMaxDepth (flatMap clauseBody clauses)
 
 -- whether a top-level fn must get a closure wrapper: it is referenced as a VALUE
 -- anywhere in the program (bare CVar in non-call position, or partially applied).
@@ -1791,7 +1791,7 @@ fnsUsedAsValuesRef = Ref []
 emitFnClosWrapper : Prog -> String -> Int -> <Mut> List String
 emitFnClosWrapper prog name arity =
   let _ = noteFuncRef ("$mdk_w_" ++ name)
-  let argLoads = concatMapList (i => ["local.get $args", "i32.const " ++ intToString i, "array.get $argarr", "ref.as_non_null"]) (rangeList 0 arity)
+  let argLoads = flatMap (i => ["local.get $args", "i32.const " ++ intToString i, "array.get $argarr", "ref.as_non_null"]) (rangeList 0 arity)
   ["  (func $mdk_w_" ++ name ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
     ++ indent (argLoads ++ ["call $" ++ gname name])
     ++ ["  )"]
@@ -1832,8 +1832,8 @@ localDeclRef l = "(local $" ++ gname l ++ " (ref eq))"
 emitMethodRef : Prog -> List String -> Int -> String -> Route -> List Route -> List Route -> List CExpr -> <Mut> List String
 emitMethodRef prog env d name route implRoutes methRoutes args = match route
   RKey tag _ =>
-    let dictWords = concatMapList (routeWitness prog env d) (methRoutes ++ implRoutes)
-    let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+    let dictWords = flatMap (routeWitness prog env d) (methRoutes ++ implRoutes)
+    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
     dictWords ++ argInstrs ++ ["call $" ++ implFnSym tag name]
   RDict dpar => emitMethodDispatchRef prog env d name dpar args
   RDictFwd dpar => emitMethodDispatchRef prog env d name dpar args
@@ -1846,7 +1846,7 @@ emitMethodRef prog env d name route implRoutes methRoutes args = match route
 emitMethodDispatchRef : Prog -> List String -> Int -> String -> String -> List CExpr -> <Mut> List String
 emitMethodDispatchRef prog env d name dpar args =
   let impls = methodImpls prog name
-  let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+  let argInstrs = flatMap (a => emitRefExpr prog env d a) args
   -- the dict tag is read repeatedly; stash it in the scratch local for this depth.
   let tagRead = readDictParam prog env dpar
   let blk = "$disp_" ++ name ++ "_" ++ intToString d
@@ -1874,7 +1874,7 @@ emitDispatchChain prog name ((tag, key)::rest) blk tagRead argInstrs nArgs =
   -- fixtures avoid container `debug`/`show`).  Faithful element-dict forwarding in the
   -- WasmGC dispatch chain is the precise remaining-MVP item (the nested-dict gap).
   let reqDicts = implReqDictCount prog name tag nArgs
-  let placeholders = concatMapList (_ => ["i32.const 0", "ref.i31"]) (rangeList 0 reqDicts)
+  let placeholders = flatMap (_ => ["i32.const 0", "ref.i31"]) (rangeList 0 reqDicts)
   tagRead
     ++ ["i32.const " ++ intToString (dictTag key), "i32.eq", "if"]
     ++ indent (placeholders ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
@@ -1897,7 +1897,7 @@ implReqDictCount prog method tag _userArgs =
   if raw > ua then raw - ua else 0
 
 implArityFor : Prog -> String -> String -> Int
-implArityFor prog method tag = implGroupArity (concatMapList (implClauseFor method tag) (progImpls prog))
+implArityFor prog method tag = implGroupArity (flatMap (implClauseFor method tag) (progImpls prog))
 
 -- read a dict PARAM (a (ref eq) i31 witness) into its i32 tag word.  The param is a
 -- leading $dict_* local bound by dict-passing; it is always in `env`.
@@ -1926,8 +1926,8 @@ routeWitness _ _ _ RNone = gap "wasm W5: RNone route as a dict witness"
 emitDictRef : Prog -> List String -> Int -> String -> List Route -> List CExpr -> <Mut> List String
 emitDictRef prog env d name routes args =
   if contains name (progFnNames prog) then
-    let dictWords = concatMapList (routeWitness prog env d) routes
-    let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+    let dictWords = flatMap (routeWitness prog env d) routes
+    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
     dictWords ++ argInstrs ++ ["call $" ++ gname name]
   else gap ("wasm W5: CDict over unknown function '" ++ name ++ "'")
 
@@ -1943,7 +1943,7 @@ implFnSym tag method = "mdk_impl_" ++ gname tag ++ "_" ++ gname method
 -- via the SAME clause machinery top-level fns use (emitClausesRef).  Multi-clause
 -- impls (`eq Red Red = …; eq _ _ = …`) coalesce into a fall-through chain.
 emitImplFns : Prog -> <Mut> List String
-emitImplFns prog = concatMapList (emitImplGroup prog) (implGroups (progImpls prog))
+emitImplFns prog = flatMap (emitImplGroup prog) (implGroups (progImpls prog))
 
 -- (method, tag, arity, clauses) per distinct impl key, in first-seen order.
 data ImplG = ImplG String String Int (List CClause)
@@ -1960,7 +1960,7 @@ mapGatherGroups entries (k::rest) =
 
 -- the (method, tag) keys present, first-seen order.
 distinctImplKeys : List CImplEntry -> List (String, String)
-distinctImplKeys entries = dedupPairs (concatMapList implKeyOf entries) []
+distinctImplKeys entries = dedupPairs (flatMap implKeyOf entries) []
 
 implKeyOf : CImplEntry -> List (String, String)
 implKeyOf (CImplEntry m _ (CImplTagged tag _ _ _ _ _)) = [(m, tag)]
@@ -1977,7 +1977,7 @@ containsPair (a, b) ((c, dd)::rest) = if a == c && b == dd then True else contai
 
 gatherImplGroup : List CImplEntry -> (String, String) -> <Mut> ImplG
 gatherImplGroup entries (m, tag) =
-  let clauses = concatMapList (implClauseFor m tag) entries
+  let clauses = flatMap (implClauseFor m tag) entries
   -- W9b: eta-expand a POINT-FREE / under-applied impl (`length = fold g 0`, clause
   -- arity 0) to the method's full DECLARED arity (methodArityOf), so the lifted
   -- $mdk_impl_<tag>_<method> takes every call-site arg.  maxI keeps a multi-clause
@@ -2021,7 +2021,7 @@ emitImplGroup prog (ImplG method tag arity clauses) =
   -- W8b: an `impl … Float` method's params are Float — record their (pattern-var) names
   -- so the body's bare-CVar arithmetic lowers to f64.  `signum`/`abs`/`negate`/`add`/…
   -- all take Float args.  Reset for every other impl (Int/String/etc. stay i31).
-  let _ = set_ref floatLocalsRef (if tag == "Float" then concatMapList clausePatVars clauses else [])
+  let _ = set_ref floatLocalsRef (if tag == "Float" then flatMap clausePatVars clauses else [])
   let bodyLines = emitClausesImpl prog fnName params arity clauses
   let _ = set_ref floatLocalsRef []
   let allLocals = clauseLocals clauses
@@ -2035,7 +2035,7 @@ emitImplGroup prog (ImplG method tag arity clauses) =
   [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
 clausePatVars : CClause -> List String
-clausePatVars (CClause pats _) = concatMapList patVars pats
+clausePatVars (CClause pats _) = flatMap patVars pats
 
 -- impl bodies use the SAME clause emission as top-level fns; the synthetic fn
 -- "name" (used only for the internal clause-block labels) is the impl symbol.
@@ -2046,7 +2046,7 @@ emitClausesImpl prog fnName params arity clauses = emitClausesRef prog fnName pa
 -- key the RDict witness hashes (the canonical impl key); for the minimal slice the
 -- bare head tag IS the key (sole impl per head), so symTag == routeKey == tag.
 methodImpls : Prog -> String -> List (String, String)
-methodImpls prog method = dedupPairs (concatMapList (methodImplKey method) (progImpls prog)) []
+methodImpls prog method = dedupPairs (flatMap (methodImplKey method) (progImpls prog)) []
 
 methodImplKey : String -> CImplEntry -> List (String, String)
 methodImplKey method (CImplEntry n _ (CImplTagged tag _ _ _ _ _)) =
@@ -2248,7 +2248,7 @@ emitExternEtaClosure prog name =
 emitExternEtaDefine : Prog -> String -> String -> Int -> <Mut> List String
 emitExternEtaDefine prog lamName name arity =
   let params = synthParams arity
-  let argPrologue = concatMapList (argLoadAt) (zipIdx params 0)
+  let argPrologue = flatMap (argLoadAt) (zipIdx params 0)
   let argVars = map (p => CVar p AGlobal) params
   let call = if isStrExternW name then emitStrExternRef prog params 0 name argVars
              else emitLeafExternRef prog params 0 name argVars
@@ -2413,7 +2413,7 @@ emitAppRef prog env d app =
       else if isDeferredFloatExternW f then floatExternStub f
       else if isUnimplStrExternW f then floatExternStub f
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
-        let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+        let argInstrs = flatMap (a => emitRefExpr prog env d a) args
         argInstrs ++ ["call $" ++ gname f]
       else
         emitIndirectApp prog env d hd args
@@ -2565,7 +2565,7 @@ emitIndirectApp prog env d hd args =
 emitArgsArray : Prog -> List String -> Int -> List CExpr -> <Mut> List String
 emitArgsArray prog env d args =
   let n = listLen args
-  let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+  let argInstrs = flatMap (a => emitRefExpr prog env d a) args
   argInstrs ++ ["array.new_fixed $argarr " ++ intToString n]
 
 -- ── §4.2 tail-position emission (guaranteed TCO) ─────────────────────────────
@@ -2608,7 +2608,7 @@ emitAppTail prog env arity app =
       else if isStrExternW f || isLeafExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
-        concatMapList (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname f]
+        flatMap (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname f]
       else
         let hi = emitRefExpr prog env 0 hd
         let arr = emitArgsArray prog env 0 args
@@ -2681,7 +2681,7 @@ emitGuardArmTail prog env arity d root occs arms i fail = match nthArm arms i
       let (binds, env2) = bindPatRef prog env pat root
       let gLabel = "$gt" ++ intToString d
       ["block " ++ gLabel]
-        ++ indent (binds ++ concatMapList (emitGuardTest prog env2 0 gLabel) guards
+        ++ indent (binds ++ flatMap (emitGuardTest prog env2 0 gLabel) guards
                    ++ emitRefTail prog env2 arity body)
         ++ ["end"]
         ++ emitTreeTail prog env arity d root occs arms fail
@@ -2771,7 +2771,7 @@ emitClosure prog env d pats body =
   let _ = noteFuncRef lamName
   let _ = addLifted (emitLamDefine prog lamName params captured body)
   -- build the closure struct at the use site: ref.func, arity, env array of captures.
-  let capInstrs = concatMapList (c => ["local.get $" ++ gname c]) captured
+  let capInstrs = flatMap (c => ["local.get $" ++ gname c]) captured
   ["ref.func " ++ lamName, "i32.const " ++ intToString (listLen params)]
     ++ capInstrs ++ ["array.new_fixed $argarr " ++ intToString (listLen captured), "struct.new $clos"]
 
@@ -2781,8 +2781,8 @@ emitClosure prog env d pats body =
 emitLamDefine : Prog -> String -> List String -> List String -> CExpr -> <Mut> List String
 emitLamDefine prog lamName params captured body =
   let arity = listLen params
-  let capPrologue = concatMapList (capLoadAt) (zipIdx captured 0)
-  let argPrologue = concatMapList (argLoadAt) (zipIdx params 0)
+  let capPrologue = flatMap (capLoadAt) (zipIdx captured 0)
+  let argPrologue = flatMap (argLoadAt) (zipIdx params 0)
   let bodyLocals = filterList (notIn (params ++ captured)) (dedupKeep (collectExprLocals body))
   let scratch = scratchLocals (maxRefDepth body)
   let localLines = ["(local $__self_clos (ref $clos))"]
@@ -2830,14 +2830,14 @@ emitLetGroupRef : Prog -> List String -> Int -> List CBind -> CExpr -> <Mut> Lis
 emitLetGroupRef prog env d binds body =
   let gid = freshLamId ()
   let names = map lgBindName binds
-  let allParams = concatMapList lgBindParams binds
+  let allParams = flatMap lgBindParams binds
   let groupCaps = filterList (c => contains c env)
-        (dedupKeep (filterList (notIn (names ++ allParams)) (concatMapList (freeVarsClauses []) binds)))
+        (dedupKeep (filterList (notIn (names ++ allParams)) (flatMap (freeVarsClauses []) binds)))
   -- emit each lifted top-level fn (drained into the module like other lifted lams).
   let _ = forEachU (b => emitLgLifted prog gid names groupCaps binds b) binds
   -- at the use site: rebuild every member closure from the enclosing env, bind to a
   -- local, then emit the body with those names in scope.
-  let rebuilds = concatMapList (b => rebuildLgClosure prog gid groupCaps b) binds
+  let rebuilds = flatMap (b => rebuildLgClosure prog gid groupCaps b) binds
   rebuilds ++ emitRefTail2 prog (names ++ env) d body
 
 -- when a group body is in NON-tail position we still want to evaluate it leaving a
@@ -2859,9 +2859,9 @@ emitLgLifted prog gid names groupCaps binds (CBind name clauses) =
   let _ = noteFuncRef lamName
   let arity = clauseArityOf clauses
   let params = synthParams arity
-  let capPrologue = concatMapList (capLoadAt) (zipIdx groupCaps 0)
-  let memberRebuilds = concatMapList (b => rebuildLgClosure prog gid groupCaps b) binds
-  let argPrologue = concatMapList (argLoadAt) (zipIdx params 0)
+  let capPrologue = flatMap (capLoadAt) (zipIdx groupCaps 0)
+  let memberRebuilds = flatMap (b => rebuildLgClosure prog gid groupCaps b) binds
+  let argPrologue = flatMap (argLoadAt) (zipIdx params 0)
   let bodyLines = emitClausesRefEnv prog (names ++ groupCaps) name params arity clauses
   let memberLocals = names
   let bodyLocals = filterList (notIn (params ++ groupCaps ++ memberLocals)) (dedupKeep (clauseLocals clauses))
@@ -2884,7 +2884,7 @@ rebuildLgClosure : Prog -> Int -> List String -> CBind -> List String
 rebuildLgClosure prog gid groupCaps (CBind name clauses) =
   let lamName = "$mdk_lg" ++ intToString gid ++ "_" ++ gname name
   let arity = clauseArityOf clauses
-  let capInstrs = concatMapList (c => ["local.get $" ++ gname c]) groupCaps
+  let capInstrs = flatMap (c => ["local.get $" ++ gname c]) groupCaps
   ["ref.func " ++ lamName, "i32.const " ++ intToString arity]
     ++ capInstrs ++ ["array.new_fixed $argarr " ++ intToString (listLen groupCaps), "struct.new $clos",
        "local.set $" ++ gname name]
@@ -2907,20 +2907,20 @@ freeVarsExpr bound e = match e
   CIf c t f => freeVarsExpr bound c ++ freeVarsExpr bound t ++ freeVarsExpr bound f
   CLet _ pat e1 e2 => freeVarsExpr bound e1 ++ freeVarsExpr (patVars pat ++ bound) e2
   CBlock stmts => freeVarsStmts bound stmts
-  CDecision scrut arms _ => freeVarsExpr bound scrut ++ concatMapList (freeVarsArm bound) arms
-  CMatch scrut arms => freeVarsExpr bound scrut ++ concatMapList (freeVarsArm bound) arms
+  CDecision scrut arms _ => freeVarsExpr bound scrut ++ flatMap (freeVarsArm bound) arms
+  CMatch scrut arms => freeVarsExpr bound scrut ++ flatMap (freeVarsArm bound) arms
   CLetGroup binds b =>
     let names = map lgBindName binds
     let bound2 = names ++ bound
-    concatMapList (freeVarsClauses bound2) binds ++ freeVarsExpr bound2 b
+    flatMap (freeVarsClauses bound2) binds ++ freeVarsExpr bound2 b
   _ => []
 
 -- free vars of a CLetGroup binding's clauses (each clause's params are locally bound).
 freeVarsClauses : List String -> CBind -> List String
-freeVarsClauses bound (CBind _ clauses) = concatMapList (freeVarsClause bound) clauses
+freeVarsClauses bound (CBind _ clauses) = flatMap (freeVarsClause bound) clauses
 
 freeVarsClause : List String -> CClause -> List String
-freeVarsClause bound (CClause pats body) = freeVarsExpr (concatMapList patVars pats ++ bound) body
+freeVarsClause bound (CClause pats body) = freeVarsExpr (flatMap patVars pats ++ bound) body
 
 lgBindName : CBind -> String
 lgBindName (CBind n _) = n
@@ -2934,7 +2934,7 @@ freeVarsStmts bound (_::rest) = freeVarsStmts bound rest
 freeVarsArm : List String -> CArm -> List String
 freeVarsArm bound (CArm pat guards body) =
   let bound2 = patVars pat ++ bound
-  concatMapList (freeVarsGuard bound2) guards ++ freeVarsExpr bound2 body
+  flatMap (freeVarsGuard bound2) guards ++ freeVarsExpr bound2 body
 
 freeVarsGuard : List String -> CGuard -> List String
 freeVarsGuard bound (CGBool g) = freeVarsExpr bound g
@@ -2956,7 +2956,7 @@ emitCtorConstruct prog env d ctor args =
     ["i32.const " ++ intToString (ctorOrdinal prog ctor), "ref.i31"]
   else
     let tagField = ["i32.const " ++ intToString (ctorOrdinal prog ctor)]
-    let argInstrs = concatMapList (a => emitRefExpr prog env d a) args
+    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
     tagField ++ argInstrs ++ ["struct.new $" ++ ctorStructName ctor]
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -2969,7 +2969,7 @@ emitCtorConstruct prog env d ctor args =
 emitTupleRef : Prog -> List String -> Int -> List CExpr -> <Mut> List String
 emitTupleRef prog env d es =
   let n = listLen es
-  let argInstrs = concatMapList (a => emitRefExpr prog env d a) es
+  let argInstrs = flatMap (a => emitRefExpr prog env d a) es
   ["i32.const 0"] ++ argInstrs ++ ["struct.new $" ++ ctorStructName (tupleCtorName n)]
 
 -- a list literal: a right-nested cons spine ending in the Nil i31.  Built
@@ -3011,7 +3011,7 @@ emitRangeListRef prog env d lo hi incl =
 -- an array literal: array.new_fixed over the emitted element values.
 emitArrayCreateRef : Prog -> List String -> Int -> List CExpr -> <Mut> List String
 emitArrayCreateRef prog env d es =
-  let argInstrs = concatMapList (a => emitRefExpr prog env d a) es
+  let argInstrs = flatMap (a => emitRefExpr prog env d a) es
   argInstrs ++ ["array.new_fixed $arr " ++ intToString (listLen es)]
 
 -- a range array [lo..hi] / [lo..=hi]: allocate `count` slots, fill with a counted
@@ -3084,7 +3084,7 @@ emitSliceRef prog env d a lo hi incl =
 emitRecordRef : Prog -> List String -> Int -> String -> List CField -> <Mut> List String
 emitRecordRef prog env d name fields =
   let tagField = ["i32.const " ++ intToString (ctorOrdinal prog name)]
-  let argInstrs = concatMapList (f => emitRefExpr prog env d (cFieldExpr f)) fields
+  let argInstrs = flatMap (f => emitRefExpr prog env d (cFieldExpr f)) fields
   tagField ++ argInstrs ++ ["struct.new $" ++ ctorStructName name]
 
 -- field access `r.label`: cast to the record's ctor struct and struct.get the field
@@ -3133,7 +3133,7 @@ emitUpdateCopy prog env d ctor labels base fields =
 -- per declared label index, emit the override expr or the base's struct.get.
 fieldInstrsWithLabels : Prog -> List String -> Int -> String -> String -> List String -> List CField -> <Mut> List String
 fieldInstrsWithLabels prog env d ctor bL labels fields =
-  concatMapList (lab => oneUpdateField prog env d ctor bL fields lab) (idxZip labels 0)
+  flatMap (lab => oneUpdateField prog env d ctor bL fields lab) (idxZip labels 0)
 
 idxZip : List String -> Int -> List (Int, String)
 idxZip [] _ = []
@@ -3221,7 +3221,7 @@ emitGuardArmRef prog env d decLabel root occs arms i fail = match nthArm arms i
       let (binds, env2) = bindPatRef prog env pat root
       let gLabel = "$g" ++ intToString d
       ["block " ++ gLabel]
-        ++ indent (binds ++ concatMapList (emitGuardTest prog env2 d gLabel) guards
+        ++ indent (binds ++ flatMap (emitGuardTest prog env2 d gLabel) guards
                    ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel])
         ++ ["end"]
         ++ emitTreeRef prog env d decLabel root occs arms fail
@@ -3451,9 +3451,9 @@ collectExprLocals e = match e
   CUnOp _ x => collectExprLocals x
   CIf c t f => collectExprLocals c ++ collectExprLocals t ++ collectExprLocals f
   CApp f a => collectExprLocals f ++ collectExprLocals a
-  CBlock stmts => concatMapList collectStmtLocals stmts
-  CDecision scrut arms _ => collectExprLocals scrut ++ concatMapList collectArmLocals arms
-  CMatch scrut arms => collectExprLocals scrut ++ concatMapList collectArmLocals arms
+  CBlock stmts => flatMap collectStmtLocals stmts
+  CDecision scrut arms _ => collectExprLocals scrut ++ flatMap collectArmLocals arms
+  CMatch scrut arms => collectExprLocals scrut ++ flatMap collectArmLocals arms
   -- W9: a CLetGroup's member NAMES are bound as closure locals at the use site (the
   -- enclosing fn must declare them); the bindings' own clause locals belong to the
   -- LIFTED fns, not here, so only the group body's locals are collected here.
@@ -3475,7 +3475,7 @@ collectStmtLocals _ = []
 -- are valid WasmGC, so over-declaring is harmless).  Gated by the per-kind usage refs
 -- so a program that uses none declares none.  Returns full `(local …)` lines.
 w7LocalDecls : Int -> List String
-w7LocalDecls maxDepth = concatMapList w7LocalsAtDepth (rangeList 0 (maxI maxDepth 1))
+w7LocalDecls maxDepth = flatMap w7LocalsAtDepth (rangeList 0 (maxI maxDepth 1))
 
 w7LocalsAtDepth : Int -> List String
 w7LocalsAtDepth d =
@@ -3488,7 +3488,7 @@ w7LocalsAtDepth d =
 -- an arm contributes its pattern's bound vars + its body's locals + guard locals.
 collectArmLocals : CArm -> List String
 collectArmLocals (CArm pat guards body) =
-  patVars pat ++ concatMapList collectGuardLocals guards ++ collectExprLocals body
+  patVars pat ++ flatMap collectGuardLocals guards ++ collectExprLocals body
 
 collectGuardLocals : CGuard -> List String
 collectGuardLocals (CGBool g) = collectExprLocals g
@@ -3499,10 +3499,10 @@ patVars : Pat -> List String
 patVars (PVar x) = [x]
 patVars PWild = []
 patVars (PLit _) = []
-patVars (PCon _ args) = concatMapList patVars args
-patVars (PTuple ps) = concatMapList patVars ps
+patVars (PCon _ args) = flatMap patVars args
+patVars (PTuple ps) = flatMap patVars ps
 patVars (PCons h t) = patVars h ++ patVars t
-patVars (PList ps) = concatMapList patVars ps
+patVars (PList ps) = flatMap patVars ps
 patVars (PAs x p) = x :: patVars p
 patVars _ = []
 

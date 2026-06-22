@@ -38,7 +38,6 @@ import types.typecheck.{
   enableEmitArgStampPasses,
 }
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
-import support.util.{concatMapList}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
 import support.path.{dirOf}
@@ -70,7 +69,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
-  let allDecls0 = coreD ++ concatMapList snd modules2
+  let allDecls0 = coreD ++ flatMap snd modules2
   let allDecls = dceFilter allDecls0
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   -- W9b: install the method → declared-interface-arity table so wasm_emit can

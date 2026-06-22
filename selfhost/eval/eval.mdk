@@ -37,7 +37,6 @@ import frontend.ast.{
 }
 import support.util.{
   contains,
-  concatMapList,
   listLen,
   reverseL,
   anyList,
@@ -197,7 +196,7 @@ ctorToTypeRef = Ref []
 
 export
 buildCtorToType : List Decl -> List (String, String)
-buildCtorToType prog = concatMapList ctorTypeEntries prog
+buildCtorToType prog = flatMap ctorTypeEntries prog
 
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
@@ -229,8 +228,8 @@ methodReqCountRef = Ref []
 export
 buildMethodReqCounts : List Decl -> List ((String, String), Int)
 buildMethodReqCounts prog =
-  let arities = concatMapList methodDeclArities prog
-  concatMapList (implMethodReqCounts arities) prog
+  let arities = flatMap methodDeclArities prog
+  flatMap (implMethodReqCounts arities) prog
 
 -- declared arity of each interface method = number of value args in its signature.
 methodDeclArities : Decl -> List (String, Int)
@@ -245,7 +244,7 @@ ifaceMethodArity (IfaceMethod mname mty _) = (mname, listLen (argsOfTy mty))
 implMethodReqCounts : List (String, Int) -> Decl -> List ((String, String), Int)
 implMethodReqCounts arities (DAttrib _ d) = implMethodReqCounts arities d
 implMethodReqCounts arities DImpl { tys = typeArgs, methods, ... } = match headTyconHead typeArgs
-  Some tag => concatMapList (implMethodReqCountEntry arities tag) methods
+  Some tag => flatMap (implMethodReqCountEntry arities tag) methods
   None => []
 implMethodReqCounts _ _ = []
 
@@ -276,11 +275,11 @@ lookupReqCount mname tag (((m, t), c)::rest)
 
 export
 buildCtorFieldOrders : List Decl -> List (String, List String)
-buildCtorFieldOrders prog = concatMapList ctorFieldOrderEntries prog
+buildCtorFieldOrders prog = flatMap ctorFieldOrderEntries prog
 
 ctorFieldOrderEntries : Decl -> List (String, List String)
 ctorFieldOrderEntries (DData _ _ _ variants _) =
-  concatMapList variantFieldOrder variants
+  flatMap variantFieldOrder variants
 ctorFieldOrderEntries _ = []
 
 variantFieldOrder : Variant -> List (String, List String)
@@ -1374,7 +1373,7 @@ evalArith op _ _ = panic ("unknown op '" ++ op ++ "'")
 -- ── program driver ────────────────────────────────────────────────────────
 export
 collectCtors : List Decl -> List (String, Value)
-collectCtors prog = concatMapList ctorsOfDecl prog
+collectCtors prog = flatMap ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
@@ -1421,7 +1420,7 @@ clausesForName name ((n, c)::rest)
 -- ── typeclass impl / interface-default installation ───────────────────────
 export
 buildIfaceDispatch : List Decl -> List ((String, String), List Int)
-buildIfaceDispatch prog = concatMapList ifaceDispatchEntries prog
+buildIfaceDispatch prog = flatMap ifaceDispatchEntries prog
 
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
 ifaceDispatchEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (ifaceMethodEntry ifaceName typeParams) methods
@@ -1490,7 +1489,7 @@ seqV _ v = v
 declImplEntries : EvalEnv -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
 declImplEntries env disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } = map (implMethodEntry env disp ifaceName typeArgs implNm) methods
 declImplEntries env _ DInterface { typarams = typeParams, methods, ... } =
-  concatMapList (defaultEntry env typeParams) methods
+  flatMap (defaultEntry env typeParams) methods
 declImplEntries _ _ _ = []
 
 implMethodEntry : EvalEnv -> List ((String, String), List Int) -> String -> List Ty -> Option String -> ImplMethod -> (String, (Int, Value))
@@ -1544,11 +1543,11 @@ insertScore x (y::ys)
 
 export
 implMethodNames : List Decl -> List String
-implMethodNames prog = dedup (concatMapList implDeclNames prog)
+implMethodNames prog = dedup (flatMap implDeclNames prog)
 
 implDeclNames : Decl -> List String
 implDeclNames DImpl { methods, ... } = map implMethodName methods
-implDeclNames DInterface { methods, ... } = concatMapList defaultName methods
+implDeclNames DInterface { methods, ... } = flatMap defaultName methods
 implDeclNames _ = []
 
 implMethodName : ImplMethod -> String
@@ -1987,7 +1986,7 @@ data ModInfo
 export
 evalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
 evalModules preludeDecls modules =
-  let moduleDecls = concatMapList snd modules
+  let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
   let _ = set_ref methodReqCountRef (buildMethodReqCounts allDecls)
@@ -1998,7 +1997,7 @@ evalModules preludeDecls modules =
   let globalCells = map (n => (n, Ref VUnit)) globalNames
   let globalEnv = EvalEnv [globalCells]
   let mods = buildModInfos globalCells [] modules
-  let implEntries = concatMapList (declImplEntries globalEnv disp) preludeDecls ++ concatMapList (modImplEntries disp) mods
+  let implEntries = flatMap (declImplEntries globalEnv disp) preludeDecls ++ flatMap (modImplEntries disp) mods
   let _ = installConsts globalCells boolSeeds
   let _ = installConsts globalCells externBindings
   let _ = installConsts globalCells ctors
@@ -2030,7 +2029,7 @@ installModGroups ((ModInfo _ _ grps cells menv)::rest) =
 -- into the shared global VMulti
 modImplEntries : List ((String, String), List Int) -> ModInfo -> List (String, (Int, Value))
 modImplEntries disp (ModInfo _ decls _ _ menv) =
-  concatMapList (declImplEntries menv disp) decls
+  flatMap (declImplEntries menv disp) decls
 
 -- the root module is last in dependency order; its locals hold `main`
 rootLocals : List ModInfo -> <Mut> List (String, Value)
@@ -2047,7 +2046,7 @@ rootLocals (_::rest) = rootLocals rest
 export
 evalModulesRootEnv : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
 evalModulesRootEnv preludeDecls modules =
-  let moduleDecls = concatMapList snd modules
+  let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
   let _ = set_ref methodReqCountRef (buildMethodReqCounts allDecls)
@@ -2058,7 +2057,7 @@ evalModulesRootEnv preludeDecls modules =
   let globalCells = map (n => (n, Ref VUnit)) globalNames
   let globalEnv = EvalEnv [globalCells]
   let mods = buildModInfos globalCells [] modules
-  let implEntries = concatMapList (declImplEntries globalEnv disp) preludeDecls ++ concatMapList (modImplEntries disp) mods
+  let implEntries = flatMap (declImplEntries globalEnv disp) preludeDecls ++ flatMap (modImplEntries disp) mods
   let _ = installConsts globalCells boolSeeds
   let _ = installConsts globalCells externBindings
   let _ = installConsts globalCells ctors
@@ -2092,7 +2091,7 @@ groupsOf decls =
 -- omitted (reached via the global frame instead).
 export
 importFrameOf : List (String, List (String, Ref Value)) -> List Decl -> List (String, Ref Value)
-importFrameOf exportsMap decls = concatMapList (useImports exportsMap) decls
+importFrameOf exportsMap decls = flatMap (useImports exportsMap) decls
 
 useImports : List (String, List (String, Ref Value)) -> Decl -> List (String, Ref Value)
 useImports exportsMap (DUse _ path) = match lookupAssoc (useModuleId path) exportsMap
@@ -2103,7 +2102,7 @@ useImports _ _ = []
 -- cells re-exported by a `pub import`
 export
 pubReexports : List (String, List (String, Ref Value)) -> List Decl -> List (String, Ref Value)
-pubReexports exportsMap decls = concatMapList (reexport exportsMap) decls
+pubReexports exportsMap decls = flatMap (reexport exportsMap) decls
 
 reexport : List (String, List (String, Ref Value)) -> Decl -> List (String, Ref Value)
 reexport exportsMap (DUse True path) = match lookupAssoc (useModuleId path) exportsMap

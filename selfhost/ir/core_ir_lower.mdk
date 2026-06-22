@@ -59,7 +59,6 @@ import eval.eval.{
 }
 import support.util.{
   contains,
-  concatMapList,
   listLen,
   allList,
   anyList,
@@ -468,12 +467,12 @@ lowerProgramEmit prog =
 -- Decl = … | DInterface { … }` — so a self-hosted compiler that destructures them
 -- gets their orders through the `DData ConNamed` branch when ast.mdk is in `prog`.)
 buildRecPatFieldOrders : List Decl -> List (String, List String)
-buildRecPatFieldOrders prog = concatMapList recPatFieldOrderEntries prog
+buildRecPatFieldOrders prog = flatMap recPatFieldOrderEntries prog
 
 recPatFieldOrderEntries : Decl -> List (String, List String)
 recPatFieldOrderEntries (DRecord _ name _ fields _) = [(name, map fieldLabel fields)]
 recPatFieldOrderEntries (DData _ _ _ variants _) =
-  concatMapList variantNamedOrder variants
+  flatMap variantNamedOrder variants
 recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner
 recPatFieldOrderEntries _ = []
 
@@ -726,13 +725,13 @@ lowerImpls prog = lowerImplsWith (buildIfaceDispatch prog) prog
 -- module's impls against it.
 export
 lowerImplsWith : List ((String, String), List Int) -> List Decl -> List CImplEntry
-lowerImplsWith disp prog = concatMapList (lowerDeclImpl disp) prog
+lowerImplsWith disp prog = flatMap (lowerDeclImpl disp) prog
 
 lowerDeclImpl : List ((String, String), List Int) -> Decl -> List CImplEntry
 lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } =
   map (lowerImplMethod disp ifaceName typeArgs implNm) methods
 lowerDeclImpl _ DInterface { typarams = typeParams, methods, ... } =
-  concatMapList (lowerDefault typeParams) methods
+  flatMap (lowerDefault typeParams) methods
 lowerDeclImpl _ _ = []
 
 lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> Option String -> ImplMethod -> CImplEntry
@@ -763,7 +762,7 @@ lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
 -- a CALL result like `map f xs` / `f x`, not a param).
 export
 returnsSelfTable : List Decl -> List ((String, String), Bool)
-returnsSelfTable prog = concatMapList ifaceReturnsSelfEntries prog
+returnsSelfTable prog = flatMap ifaceReturnsSelfEntries prog
 
 ifaceReturnsSelfEntries : Decl -> List ((String, String), Bool)
 ifaceReturnsSelfEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
@@ -805,7 +804,7 @@ tyMentionsParams (TyConstrained _ t) params = tyMentionsParams t params
 -- function-typed params, not the whole-method result.
 export
 selfFnParamTable : List Decl -> List ((String, String), List Int)
-selfFnParamTable prog = concatMapList ifaceSelfFnParamEntries prog
+selfFnParamTable prog = flatMap ifaceSelfFnParamEntries prog
 
 ifaceSelfFnParamEntries : Decl -> List ((String, String), List Int)
 ifaceSelfFnParamEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
@@ -834,7 +833,7 @@ methodArgTys _ = []
 -- (interface method names are distinct across the prelude's interfaces).
 export
 methodIfaceTable : List Decl -> List (String, (String, Int))
-methodIfaceTable prog = concatMapList ifaceMethodArityEntries prog
+methodIfaceTable prog = flatMap ifaceMethodArityEntries prog
 
 ifaceMethodArityEntries : Decl -> List (String, (String, Int))
 ifaceMethodArityEntries DInterface { name = ifaceName, methods, ... } =
@@ -857,11 +856,11 @@ ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) = (mname, (ifaceName, 
 -- the impl, not a per-call dict); mirrors typecheck's `constraintIsMethodLevel`.
 export
 methodConstraintIfaces : List Decl -> List (String, List String)
-methodConstraintIfaces prog = concatMapList methodConstraintIfaceEntries prog
+methodConstraintIfaces prog = flatMap methodConstraintIfaceEntries prog
 
 methodConstraintIfaceEntries : Decl -> List (String, List String)
 methodConstraintIfaceEntries DInterface { typarams, methods, ... } =
-  concatMapList (m => methodConstraintIfaceEntry typarams m) methods
+  flatMap (m => methodConstraintIfaceEntry typarams m) methods
 methodConstraintIfaceEntries _ = []
 
 methodConstraintIfaceEntry : List String -> IfaceMethod -> List (String, List String)
@@ -872,7 +871,7 @@ methodConstraintIfaceEntry typarams (IfaceMethod mname mty _) =
 -- the interface name of each method-level constraint in [ty], in declaration
 -- order (peels TyConstrained/TyEffect like methodConstraintSlotIds).
 methodLevelConstraintIfaces : List String -> Ty -> List String
-methodLevelConstraintIfaces typarams (TyConstrained cs t) = concatMapList (c => constraintIfaceIfMethodLevel typarams c) cs
+methodLevelConstraintIfaces typarams (TyConstrained cs t) = flatMap (c => constraintIfaceIfMethodLevel typarams c) cs
   ++ methodLevelConstraintIfaces typarams t
 methodLevelConstraintIfaces typarams (TyEffect _ _ t) =
   methodLevelConstraintIfaces typarams t
@@ -915,7 +914,7 @@ tyMentionsNonParam (TyConstrained _ t) params = tyMentionsNonParam t params
 -- payloads are covered, in the same DECLARED order the cell layout stores.
 export
 ctorFieldTypeNames : List Decl -> List (String, List String)
-ctorFieldTypeNames prog = concatMapList ctorFieldTypeEntries prog
+ctorFieldTypeNames prog = flatMap ctorFieldTypeEntries prog
 
 ctorFieldTypeEntries : Decl -> List (String, List String)
 ctorFieldTypeEntries (DData _ _ _ variants _) =
@@ -960,7 +959,7 @@ tyHeadName _ = ""
 -- returns change typing (and `Int`-annotated fns seed LTInt = current default).
 export
 declSigTypeNames : List Decl -> List (String, (List String, String))
-declSigTypeNames prog = concatMapList declSigTypeEntries prog
+declSigTypeNames prog = flatMap declSigTypeEntries prog
 
 declSigTypeEntries : Decl -> List (String, (List String, String))
 declSigTypeEntries (DTypeSig _ name ty) = [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]

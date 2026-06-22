@@ -42,7 +42,7 @@ import ir.core_ir.{
   CHead(..),
 }
 import ir.core_ir_lower.{lowerGroups, lowerImplsWith}
-import support.util.{concatMapList, isEmptyL, dedup}
+import support.util.{isEmptyL, dedup}
 import eval.eval.{
   Value(..),
   EvalEnv(..),
@@ -486,7 +486,7 @@ data CModInfo
 export
 cevalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
 cevalModules preludeDecls modules =
-  let moduleDecls = concatMapList snd modules
+  let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
   let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders allDecls)
@@ -498,7 +498,7 @@ cevalModules preludeDecls modules =
   let globalCells = map (n => (n, Ref VUnit)) globalNames
   let globalEnv = EvalEnv [globalCells]
   let mods = cBuildModInfos disp globalCells [] modules
-  let implEntries = map (cImplEntryValue globalEnv) preludeImpls ++ concatMapList cModImplValues mods
+  let implEntries = map (cImplEntryValue globalEnv) preludeImpls ++ flatMap cModImplValues mods
   let _ = installConsts globalCells boolSeeds
   let _ = installConsts globalCells externBindings
   let _ = installConsts globalCells ctors

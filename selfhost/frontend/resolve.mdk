@@ -47,7 +47,6 @@ import frontend.ast.{
 }
 import support.util.{
   contains,
-  concatMapList,
   listLen,
   escStr,
   joinNl,
@@ -139,20 +138,20 @@ patBindings : Pat -> List String
 patBindings (PVar x) = [x]
 patBindings PWild = []
 patBindings (PLit _) = []
-patBindings (PCon _ ps) = concatMapList patBindings ps
+patBindings (PCon _ ps) = flatMap patBindings ps
 patBindings (PCons a b) = patBindings a ++ patBindings b
-patBindings (PTuple ps) = concatMapList patBindings ps
-patBindings (PList ps) = concatMapList patBindings ps
+patBindings (PTuple ps) = flatMap patBindings ps
+patBindings (PList ps) = flatMap patBindings ps
 patBindings (PAs x p) = x :: patBindings p
 patBindings (PRng _ _ _) = []
-patBindings (PRec _ fields _) = concatMapList recFieldBindings fields
+patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 
 recFieldBindings : RecPatField -> List String
 recFieldBindings (RecPatField fname None) = [fname]
 recFieldBindings (RecPatField _ (Some p)) = patBindings p
 
 patsBindings : List Pat -> List String
-patsBindings ps = concatMapList patBindings ps
+patsBindings ps = flatMap patBindings ps
 
 -- ── check_type ────────────────────────────────────────────────────────────
 -- `cur` (Stage B) is the enclosing `ELoc` span threaded from the expr walk (or
@@ -166,10 +165,10 @@ checkType cur env (TyCon n) =
 checkType _ _ (TyVar _) = []
 checkType cur env (TyApp a b) = checkType cur env a ++ checkType cur env b
 checkType cur env (TyFun a b) = checkType cur env a ++ checkType cur env b
-checkType cur env (TyTuple ts) = concatMapList (checkType cur env) ts
-checkType cur env (TyEffect labels _ t) = concatMapList (checkEffect cur env) (map fst labels)
+checkType cur env (TyTuple ts) = flatMap (checkType cur env) ts
+checkType cur env (TyEffect labels _ t) = flatMap (checkEffect cur env) (map fst labels)
   ++ checkType cur env t
-checkType cur env (TyConstrained cs t) = concatMapList (checkConstraint cur env) cs
+checkType cur env (TyConstrained cs t) = flatMap (checkConstraint cur env) cs
   ++ checkType cur env t
 
 builtInEffects : List String
@@ -186,22 +185,22 @@ checkEffect cur env e =
 
 checkConstraint : Option Loc -> Env -> Constraint -> List ResError
 checkConstraint cur env (Constraint iface args) = (if contains iface env.interfaces then [] else [UnknownInterface iface cur])
-  ++ concatMapList (checkType cur env) args
+  ++ flatMap (checkType cur env) args
 
 -- ── check_pat ─────────────────────────────────────────────────────────────
 checkPat : Option Loc -> Env -> Pat -> List ResError
 checkPat cur env (PCon c ps) = (if contains c env.ctors || contains c env.imported then [] else [UnknownConstructor c cur])
-  ++ concatMapList (checkPat cur env) ps
+  ++ flatMap (checkPat cur env) ps
 checkPat cur env (PCons a b) = checkPat cur env a ++ checkPat cur env b
-checkPat cur env (PTuple ps) = concatMapList (checkPat cur env) ps
-checkPat cur env (PList ps) = concatMapList (checkPat cur env) ps
+checkPat cur env (PTuple ps) = flatMap (checkPat cur env) ps
+checkPat cur env (PList ps) = flatMap (checkPat cur env) ps
 checkPat cur env (PAs _ p) = checkPat cur env p
 checkPat cur env (PRec name fields _) = checkRecPat cur env name fields
 checkPat _ _ _ = []
 
 checkRecPat : Option Loc -> Env -> String -> List RecPatField -> List ResError
 checkRecPat cur env name fields = recPatHead cur env name
-  ++ concatMapList (checkRecField cur env name) fields
+  ++ flatMap (checkRecField cur env name) fields
 
 recPatHead : Option Loc -> Env -> String -> List ResError
 recPatHead cur env name =
@@ -242,13 +241,13 @@ checkExpr _ _ _ (EMethodRef _) = []
 checkExpr _ _ _ (EDictApp _) = []
 checkExpr cur env scope (EVar n) = checkVar cur env scope n
 checkExpr cur env scope (EApp f x) = checkExpr cur env scope f ++ checkExpr cur env scope x
-checkExpr cur env scope (ELam pats body) = concatMapList (checkPat cur env) pats
+checkExpr cur env scope (ELam pats body) = flatMap (checkPat cur env) pats
   ++ checkExpr cur env (patsBindings pats ++ scope) body
 checkExpr cur env scope (ELet _ isRec pat e1 e2) =
   checkLet cur env scope isRec pat e1 e2
 checkExpr cur env scope (ELetGroup binds body) = checkLetGroup cur env scope binds body
 checkExpr cur env scope (EMatch e0 arms) = checkExpr cur env scope e0
-  ++ concatMapList (checkArm cur env scope) arms
+  ++ flatMap (checkArm cur env scope) arms
 checkExpr cur env scope (EIf c t el) = checkExpr cur env scope c
   ++ checkExpr cur env scope t
   ++ checkExpr cur env scope el
@@ -259,9 +258,9 @@ checkExpr cur env scope (EInfix op a b) = checkVar cur env scope op
   ++ checkExpr cur env scope a
   ++ checkExpr cur env scope b
 checkExpr cur env scope (EFieldAccess e0 _) = checkExpr cur env scope e0
-checkExpr cur env scope (ETuple es) = concatMapList (checkExpr cur env scope) es
-checkExpr cur env scope (EListLit es) = concatMapList (checkExpr cur env scope) es
-checkExpr cur env scope (EArrayLit es) = concatMapList (checkExpr cur env scope) es
+checkExpr cur env scope (ETuple es) = flatMap (checkExpr cur env scope) es
+checkExpr cur env scope (EListLit es) = flatMap (checkExpr cur env scope) es
+checkExpr cur env scope (EArrayLit es) = flatMap (checkExpr cur env scope) es
 checkExpr cur env scope (EListComp body quals) = checkListComp cur env scope body quals
 checkExpr cur env scope (ERangeList lo hi _) = checkExpr cur env scope lo
   ++ checkExpr cur env scope hi
@@ -283,10 +282,10 @@ checkExpr cur env scope (EHeadAnnot e0 t) = checkExpr cur env scope e0 ++ checkT
 checkExpr cur env scope (EBlock stmts) = checkStmts cur env scope stmts
 checkExpr cur env scope (EDo stmts) = checkStmts cur env scope stmts
 checkExpr cur env scope (EStringInterp parts) =
-  concatMapList (checkInterp cur env scope) parts
+  flatMap (checkInterp cur env scope) parts
 checkExpr cur env scope (EGuards arms) =
-  concatMapList (checkGuardArm cur env scope) arms
-checkExpr cur env scope (EFunction arms) = concatMapList (checkArm cur env scope) arms
+  flatMap (checkGuardArm cur env scope) arms
+checkExpr cur env scope (EFunction arms) = flatMap (checkArm cur env scope) arms
 checkExpr cur env scope (ERecordCreate name fs) =
   checkRecordCreate cur env scope name fs
 checkExpr cur env scope (ERecordUpdate e0 fs) = checkRecordUpdate cur env scope e0 fs
@@ -344,17 +343,17 @@ rewriteNonRec _ e = e
 checkLetGroup : Option Loc -> Env -> List String -> List LetBind -> Expr -> List ResError
 checkLetGroup cur env scope binds body =
   let scope2 = map letBindName binds ++ scope
-  concatMapList (checkLetBind cur env scope2) binds ++ checkExpr cur env scope2 body
+  flatMap (checkLetBind cur env scope2) binds ++ checkExpr cur env scope2 body
 
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
 checkLetBind : Option Loc -> Env -> List String -> LetBind -> List ResError
 checkLetBind cur env scope (LetBind _ clauses) =
-  concatMapList (checkFunClause cur env scope) clauses
+  flatMap (checkFunClause cur env scope) clauses
 
 checkFunClause : Option Loc -> Env -> List String -> FunClause -> List ResError
-checkFunClause cur env scope (FunClause pats body) = concatMapList (checkPat cur env) pats
+checkFunClause cur env scope (FunClause pats body) = flatMap (checkPat cur env) pats
   ++ checkExpr cur env (patsBindings pats ++ scope) body
 
 checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
@@ -378,7 +377,7 @@ checkArmGuards cur env scope ((GBind p e)::rest) =
   (here ++ rErrs, scope2)
 
 checkGuardArm : Option Loc -> Env -> List String -> GuardArm -> List ResError
-checkGuardArm cur env scope (GuardArm gs body) = concatMapList (checkGuard cur env scope) gs
+checkGuardArm cur env scope (GuardArm gs body) = flatMap (checkGuard cur env scope) gs
   ++ checkExpr cur env scope body
 
 checkGuard : Option Loc -> Env -> List String -> Guard -> List ResError
@@ -417,11 +416,11 @@ checkFieldAssign cur env scope (FieldAssign _ e) = checkExpr cur env scope e
 -- each field must belong to it; then check the value exprs
 checkRecordCreate : Option Loc -> Env -> List String -> String -> List FieldAssign -> List ResError
 checkRecordCreate cur env scope name fs = recCreateHead cur env name fs
-  ++ concatMapList (checkFieldAssign cur env scope) fs
+  ++ flatMap (checkFieldAssign cur env scope) fs
 
 recCreateHead : Option Loc -> Env -> String -> List FieldAssign -> List ResError
 recCreateHead cur env name fs
-  | contains name env.types || contains name env.imported || contains name env.ctors = concatMapList (recCreateField cur env name) fs
+  | contains name env.types || contains name env.imported || contains name env.ctors = flatMap (recCreateField cur env name) fs
   | otherwise = [UnknownType name cur]
 
 recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
@@ -432,7 +431,7 @@ recCreateField cur env owner (FieldAssign fname _) =
 -- flag a field unknown to *every* record (no FieldNotInRecord here)
 checkRecordUpdate : Option Loc -> Env -> List String -> Expr -> List FieldAssign -> List ResError
 checkRecordUpdate cur env scope e0 fs = checkExpr cur env scope e0
-  ++ concatMapList (recUpdateField cur env scope) fs
+  ++ flatMap (recUpdateField cur env scope) fs
 
 recUpdateField : Option Loc -> Env -> List String -> FieldAssign -> List ResError
 recUpdateField cur env scope (FieldAssign fname v) = checkExpr cur env scope v
@@ -473,15 +472,15 @@ checkQual cur env scope (LCLet _ p e) = (checkPat cur env p ++ checkExpr cur env
 -- lib/resolve.ml resetting `current_loc := None` per decl); the body's `ELoc`
 -- wrappers re-set it as the expr walk descends.
 checkDecl : Env -> Decl -> List ResError
-checkDecl env (DFunDef _ _ pats body) = concatMapList (checkPat None env) pats  ++ checkExpr None env (patsBindings pats) body
+checkDecl env (DFunDef _ _ pats body) = flatMap (checkPat None env) pats  ++ checkExpr None env (patsBindings pats) body
 checkDecl env (DLetGroup _ binds) =
   -- top-level where-group: all group names are in scope for every clause body
   -- (mutual recursion), mirroring lib/resolve.ml's DLetGroup arm.
-  concatMapList (checkLetBind None env (map letBindName binds)) binds
+  flatMap (checkLetBind None env (map letBindName binds)) binds
 checkDecl env (DTypeSig _ _ t) = checkType None env t
 checkDecl env (DExtern _ _ t) = checkType None env t
-checkDecl env (DData _ _ _ vs _) = concatMapList (checkVariant env) vs
-checkDecl env (DRecord _ _ _ fs _) = concatMapList (checkFieldType env) fs
+checkDecl env (DData _ _ _ vs _) = flatMap (checkVariant env) vs
+checkDecl env (DRecord _ _ _ fs _) = flatMap (checkFieldType env) fs
 checkDecl env (DProp _ _ params body) = checkProp env params body
 checkDecl env (DTest _ _ body) = checkExpr None env [] body
 checkDecl env (DBench _ _ body) = checkExpr None env [] body
@@ -495,15 +494,15 @@ checkDecl env (DAttrib _ inner) = checkDecl env inner
 checkDecl _ _ = []
 
 checkVariant : Env -> Variant -> List ResError
-checkVariant env (Variant _ (ConPos tys)) = concatMapList (checkType None env) tys
+checkVariant env (Variant _ (ConPos tys)) = flatMap (checkType None env) tys
 checkVariant env (Variant _ (ConNamed fs)) =
-  concatMapList (checkFieldType env) fs
+  flatMap (checkFieldType env) fs
 
 checkFieldType : Env -> Field -> List ResError
 checkFieldType env (Field _ t) = checkType None env t
 
 checkProp : Env -> List PropParam -> Expr -> List ResError
-checkProp env params body = concatMapList (checkPropParamTy env) params
+checkProp env params body = flatMap (checkPropParamTy env) params
   ++ checkExpr None env (map propParamName params) body
 
 checkPropParamTy : Env -> PropParam -> List ResError
@@ -513,8 +512,8 @@ propParamName : PropParam -> String
 propParamName (PropParam x _) = x
 
 checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
-checkInterfaceDecl env supers methods = concatMapList (checkSuper env) supers
-  ++ concatMapList (checkIfaceMethod env) methods
+checkInterfaceDecl env supers methods = flatMap (checkSuper env) supers
+  ++ flatMap (checkIfaceMethod env) methods
 
 checkSuper : Env -> Super -> List ResError
 checkSuper env (Super iface _) =
@@ -526,27 +525,27 @@ checkSuper env (Super iface _) =
 checkIfaceMethod : Env -> IfaceMethod -> List ResError
 checkIfaceMethod env (IfaceMethod _ t None) = checkType None env t
 checkIfaceMethod env (IfaceMethod _ t (Some (MethodDefault pats body))) = checkType None env t
-  ++ concatMapList (checkPat None env) pats
+  ++ flatMap (checkPat None env) pats
   ++ checkExpr None env (patsBindings pats) body
 
 checkImplDecl : Env -> String -> List Ty -> List Require -> List ImplMethod -> List ResError
-checkImplDecl env iface tyargs reqs methods = concatMapList (checkType None env) tyargs
-  ++ concatMapList (checkRequire env) reqs
-  ++ concatMapList (checkImplMethod env) methods
+checkImplDecl env iface tyargs reqs methods = flatMap (checkType None env) tyargs
+  ++ flatMap (checkRequire env) reqs
+  ++ flatMap (checkImplMethod env) methods
   ++ checkImplIface env iface methods
 
 checkRequire : Env -> Require -> List ResError
 checkRequire env (Require iface tys) = (if contains iface env.interfaces then [] else [UnknownInterface iface None])
-  ++ concatMapList (checkType None env) tys
+  ++ flatMap (checkType None env) tys
 
 checkImplMethod : Env -> ImplMethod -> List ResError
-checkImplMethod env (ImplMethod _ pats body) = concatMapList (checkPat None env) pats
+checkImplMethod env (ImplMethod _ pats body) = flatMap (checkPat None env) pats
   ++ checkExpr None env (patsBindings pats) body
 
 checkImplIface : Env -> String -> List ImplMethod -> List ResError
 checkImplIface env iface methods
   | not (contains iface env.interfaces) = [UnknownInterface iface None]
-  | otherwise = concatMapList (checkMethodMember iface (ifaceMethodsOf iface env.ifaceMethods)) methods
+  | otherwise = flatMap (checkMethodMember iface (ifaceMethodsOf iface env.ifaceMethods)) methods
 
 ifaceMethodsOf : String -> List (String, List String) -> List String
 ifaceMethodsOf _ [] = []
@@ -638,7 +637,7 @@ fieldOwnersOf : List Decl -> List (String, String)
 fieldOwnersOf [] = []
 fieldOwnersOf ((DRecord _ n _ fs _)::rest) = map (recordFieldOwner n) fs
   ++ fieldOwnersOf rest
-fieldOwnersOf ((DData _ _ _ vs _)::rest) = concatMapList variantFieldOwners vs
+fieldOwnersOf ((DData _ _ _ vs _)::rest) = flatMap variantFieldOwners vs
   ++ fieldOwnersOf rest
 fieldOwnersOf (_::rest) = fieldOwnersOf rest
 
@@ -930,7 +929,7 @@ export
 resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
 resolveProgram runtimeDecls preludeDecls prog =
   let env = buildEnv runtimeDecls preludeDecls prog
-  buildErrors preludeDecls prog ++ concatMapList (checkDecl env) prog
+  buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog
 
 -- Human-readable message for a ResError (mirrors lib/resolve.ml's pp_error).
 -- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
@@ -1071,9 +1070,9 @@ importedNamesMM (UseName ns) exp =
     ([nm], pubErr exp nm)
   else ([], [])
 importedNamesMM (UseGroup _ members) exp =
-  let names = concatMapList (expandMemberNames exp) members
-  let expandErrs = concatMapList (expandMemberErrs exp) members
-  (names, expandErrs ++ concatMapList (pubErr exp) names)
+  let names = flatMap (expandMemberNames exp) members
+  let expandErrs = flatMap (expandMemberErrs exp) members
+  (names, expandErrs ++ flatMap (pubErr exp) names)
 importedNamesMM (UseWild _) exp = (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
 importedNamesMM (UseAlias _ a) exp = ([a], [])
 
@@ -1198,7 +1197,7 @@ ownedFieldOwners exp ((f, o)::rest)
 -- interfaces actually in scope (baseIfaces = prelude + user + imported-by-name).
 importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
 importedIfaceMethods known prog baseIfaces =
-  concatMapList (oneImportIfaceMethods known baseIfaces) (usePathsOf prog)
+  flatMap (oneImportIfaceMethods known baseIfaces) (usePathsOf prog)
 
 oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
 oneImportIfaceMethods known baseIfaces path =
@@ -1218,7 +1217,7 @@ filterIfaceMethods baseIfaces ((iface, ms)::rest)
 -- Install exported effect labels from all imported modules (Phase 146).
 importedEffects : List ModuleExports -> List Decl -> List String
 importedEffects known prog =
-  concatMapList (oneImportEffects known) (usePathsOf prog)
+  flatMap (oneImportEffects known) (usePathsOf prog)
 
 oneImportEffects : List ModuleExports -> UsePath -> List String
 oneImportEffects known path =
@@ -1281,7 +1280,7 @@ expValuesDirect (_::rest) = expValuesDirect rest
 -- methods of PUBLIC interfaces that are bound as values (lib's final iter loop)
 publicIfaceMethodVals : List Decl -> Env -> List String
 publicIfaceMethodVals prog env =
-  concatMapList (keepBoundMethods env) (pubIfaceMethodSets prog)
+  flatMap (keepBoundMethods env) (pubIfaceMethodSets prog)
 
 keepBoundMethods : Env -> List String -> List String
 keepBoundMethods env ms = filterContains env.values ms
@@ -1323,7 +1322,7 @@ expFieldOwnersDirect : List Decl -> List (String, String)
 expFieldOwnersDirect [] = []
 expFieldOwnersDirect ((DRecord VisPublic n _ fs _)::rest) = map (recordFieldOwner n) fs
   ++ expFieldOwnersDirect rest
-expFieldOwnersDirect ((DData VisPublic _ _ vs _)::rest) = concatMapList variantFieldOwners vs
+expFieldOwnersDirect ((DData VisPublic _ _ vs _)::rest) = flatMap variantFieldOwners vs
   ++ expFieldOwnersDirect rest
 expFieldOwnersDirect (_::rest) = expFieldOwnersDirect rest
 
@@ -1345,7 +1344,7 @@ expEffectsDirect (_::rest) = expEffectsDirect rest
 
 reExpEffects : List ModuleExports -> List Decl -> List String
 reExpEffects known prog =
-  concatMapList (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
 
 reExpEffectsFrom : UsePath -> ModuleExports -> List String
 reExpEffectsFrom (UseWild _) src = src.expEffects
@@ -1357,7 +1356,7 @@ reExpEffectsFrom _ _ = []
 reexportNamesOf : UsePath -> ModuleExports -> List String
 reexportNamesOf (UseName ns) _ = if listLen ns > 1 then [lastOf ns] else []
 reexportNamesOf (UseGroup _ members) src =
-  concatMapList (expandMemberNames src) members
+  flatMap (expandMemberNames src) members
 reexportNamesOf (UseWild _) src = src.expValues
   ++ src.expTypes
   ++ src.expCtors
@@ -1366,12 +1365,12 @@ reexportNamesOf (UseAlias _ _) _ = []
 
 reExpValues : List ModuleExports -> List Decl -> List String
 reExpValues known prog =
-  concatMapList (overPubUse known reExpValuesFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpValuesFrom) (pubUsePaths prog)
 
 reExpValuesFrom : UsePath -> ModuleExports -> List String
 reExpValuesFrom path src =
   let names = reexportNamesOf path src
-  filterContains src.expValues names ++ concatMapList (ifaceValsOf src) names
+  filterContains src.expValues names ++ flatMap (ifaceValsOf src) names
 
 ifaceValsOf : ModuleExports -> String -> List String
 ifaceValsOf src n =
@@ -1382,21 +1381,21 @@ ifaceValsOf src n =
 
 reExpTypes : List ModuleExports -> List Decl -> List String
 reExpTypes known prog =
-  concatMapList (overPubUse known reExpTypesFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpTypesFrom) (pubUsePaths prog)
 
 reExpTypesFrom : UsePath -> ModuleExports -> List String
 reExpTypesFrom path src = filterContains src.expTypes (reexportNamesOf path src)
 
 reExpCtors : List ModuleExports -> List Decl -> List String
 reExpCtors known prog =
-  concatMapList (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
 
 reExpCtorsFrom : UsePath -> ModuleExports -> List String
 reExpCtorsFrom path src = filterContains src.expCtors (reexportNamesOf path src)
 
 reExpInterfaces : List ModuleExports -> List Decl -> List String
 reExpInterfaces known prog =
-  concatMapList (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
 
 reExpInterfacesFrom : UsePath -> ModuleExports -> List String
 reExpInterfacesFrom path src =
@@ -1404,7 +1403,7 @@ reExpInterfacesFrom path src =
 
 reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
 reExpIfaceMethods known prog =
-  concatMapList (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
 reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
 reExpIfaceMethodsFrom path src =
@@ -1419,7 +1418,7 @@ ifaceMethodPairs src (i::rest) =
 
 reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
 reExpFieldOwners known prog =
-  concatMapList (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
+  flatMap (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
 
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
 reExpFieldOwnersFrom path src =
@@ -1448,7 +1447,7 @@ export
 resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModule runtimeDecls preludeDecls known modId prog =
   let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog
-  let errs = buildErrors preludeDecls prog ++ importErrs ++ concatMapList (checkDecl env) prog
+  let errs = buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog
   let exp = buildExports known modId prog env
   (exp, errs)
 

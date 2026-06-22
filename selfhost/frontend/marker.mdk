@@ -46,7 +46,7 @@ import frontend.ast.{
   Decl(..),
 }
 import frontend.desugar.{mapProg, mapExpr, mapDecl}
-import support.util.{contains, concatMapList}
+import support.util.{contains}
 
 -- ── Name-set collection ───────────────────────────────────────────────────
 -- Interface method names declared across the decls (DInterface methods).
@@ -198,7 +198,7 @@ droppablePreludeFns prelude =
   keepNotIn (externalRefs prelude) (preludePlainFnNames prelude)
 
 externalRefs : List Decl -> List String
-externalRefs prelude = concatMapList declExternalRefs prelude
+externalRefs prelude = flatMap declExternalRefs prelude
 
 declExternalRefs : Decl -> List String
 declExternalRefs d = keepNotIn (declDefines d) (declRefs d)
@@ -214,13 +214,13 @@ implMethodNameOf (ImplMethod n _ _) = n
 
 export
 declRefs : Decl -> List String
-declRefs d = concatMapList collectVars (declBodies d)
+declRefs d = flatMap collectVars (declBodies d)
 
 export
 declBodies : Decl -> List Expr
 declBodies (DFunDef _ _ _ body) = [body]
 declBodies DImpl { methods, ... } = map implMethodBody methods
-declBodies DInterface { methods, ... } = concatMapList ifaceMethodBodies methods
+declBodies DInterface { methods, ... } = flatMap ifaceMethodBodies methods
 declBodies (DProp _ _ _ body) = [body]
 declBodies (DTest _ _ body) = [body]
 declBodies (DBench _ _ body) = [body]
@@ -231,7 +231,7 @@ declBodies (DAttrib _ d) = declBodies d
 -- OBS5: a top-level `let rec … with …` group's clause bodies carry references;
 -- DCE keeps the group whole (non-DFunDef) but must still seed reachability from
 -- its refs, or a binding used ONLY inside a top-level let-group is dropped.
-declBodies (DLetGroup _ binds) = concatMapList letBindBodies binds
+declBodies (DLetGroup _ binds) = flatMap letBindBodies binds
 declBodies _ = []
 
 letBindBodies : LetBind -> List Expr
@@ -255,8 +255,8 @@ collectVars (EDictApp x) = [x]
 collectVars (EApp a b) = collectVars a ++ collectVars b
 collectVars (ELam _ b) = collectVars b
 collectVars (ELet _ _ _ e1 e2) = collectVars e1 ++ collectVars e2
-collectVars (ELetGroup bs e2) = concatMapList letBindVars bs ++ collectVars e2
-collectVars (EMatch e0 arms) = collectVars e0 ++ concatMapList armVars arms
+collectVars (ELetGroup bs e2) = flatMap letBindVars bs ++ collectVars e2
+collectVars (EMatch e0 arms) = collectVars e0 ++ flatMap armVars arms
 collectVars (EIf c t el) = collectVars c ++ collectVars t ++ collectVars el
 collectVars (EBinOp _ a b _) = collectVars a ++ collectVars b
 collectVars (EUnOp _ a) = collectVars a
@@ -267,29 +267,29 @@ collectVars (EUnOp _ a) = collectVars a
 -- operator symbols (`+`/`==`) never name a DFunDef, so adding them is inert.
 collectVars (EInfix op a b) = op :: collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _) = collectVars e0
-collectVars (ERecordCreate _ fs) = concatMapList fieldAssignVars fs
+collectVars (ERecordCreate _ fs) = flatMap fieldAssignVars fs
 collectVars (ERecordUpdate e0 fs) = collectVars e0
-  ++ concatMapList fieldAssignVars fs
+  ++ flatMap fieldAssignVars fs
 collectVars (EVariantUpdate _ e0 fs) = collectVars e0
-  ++ concatMapList fieldAssignVars fs
-collectVars (EArrayLit es) = concatMapList collectVars es
-collectVars (EListLit es) = concatMapList collectVars es
-collectVars (ETuple es) = concatMapList collectVars es
+  ++ flatMap fieldAssignVars fs
+collectVars (EArrayLit es) = flatMap collectVars es
+collectVars (EListLit es) = flatMap collectVars es
+collectVars (ETuple es) = flatMap collectVars es
 collectVars (EIndex e0 i) = collectVars e0 ++ collectVars i
 collectVars (ERangeList lo hi _) = collectVars lo ++ collectVars hi
 collectVars (ERangeArray lo hi _) = collectVars lo ++ collectVars hi
 collectVars (ESlice e0 lo hi _) = collectVars e0
   ++ collectVars lo
   ++ collectVars hi
-collectVars (EBlock stmts) = concatMapList doStmtVars stmts
-collectVars (EDo stmts) = concatMapList doStmtVars stmts
+collectVars (EBlock stmts) = flatMap doStmtVars stmts
+collectVars (EDo stmts) = flatMap doStmtVars stmts
 collectVars (EAnnot e0 _) = collectVars e0
 collectVars (EListComp body quals) = collectVars body
-  ++ concatMapList lcQualVars quals
+  ++ flatMap lcQualVars quals
 collectVars (EQuestion e0) = collectVars e0
-collectVars (EStringInterp parts) = concatMapList interpVars parts
-collectVars (EGuards arms) = concatMapList guardArmVars arms
-collectVars (EFunction arms) = concatMapList armVars arms
+collectVars (EStringInterp parts) = flatMap interpVars parts
+collectVars (EGuards arms) = flatMap guardArmVars arms
+collectVars (EFunction arms) = flatMap armVars arms
 collectVars (ESection (SecRight _ e0)) = collectVars e0
 collectVars (ESection (SecLeft e0 _)) = collectVars e0
 -- Post-typecheck elaborated reference nodes (EVarAt/EMethodAt/EDictAt all carry
@@ -307,27 +307,27 @@ collectVars (EDictAt x _) = [x]
 -- still carry them).  Missing one risks dropping a reachable binding.
 collectVars (EHeadAnnot e0 _) = collectVars e0
 collectVars (EAsPat _ e0) = collectVars e0
-collectVars (EMapLit _ kvs) = concatMapList mapLitPairVars kvs
-collectVars (ESetLit _ es) = concatMapList collectVars es
+collectVars (EMapLit _ kvs) = flatMap mapLitPairVars kvs
+collectVars (ESetLit _ es) = flatMap collectVars es
 collectVars (ELoc _ e) = collectVars e
 collectVars (EDoOrigin _ e) = collectVars e
 collectVars _ = []
 
 letBindVars : LetBind -> List String
-letBindVars (LetBind _ clauses) = concatMapList funClauseVars clauses
+letBindVars (LetBind _ clauses) = flatMap funClauseVars clauses
 
 funClauseVars : FunClause -> List String
 funClauseVars (FunClause _ body) = collectVars body
 
 armVars : Arm -> List String
-armVars (Arm _ gs body) = concatMapList guardVars gs ++ collectVars body
+armVars (Arm _ gs body) = flatMap guardVars gs ++ collectVars body
 
 guardVars : Guard -> List String
 guardVars (GBool e) = collectVars e
 guardVars (GBind _ e) = collectVars e
 
 guardArmVars : GuardArm -> List String
-guardArmVars (GuardArm gs body) = concatMapList guardVars gs ++ collectVars body
+guardArmVars (GuardArm gs body) = flatMap guardVars gs ++ collectVars body
 
 fieldAssignVars : FieldAssign -> List String
 fieldAssignVars (FieldAssign _ e) = collectVars e
@@ -363,12 +363,12 @@ mapLitPairVars (k, v) = collectVars k ++ collectVars v
 
 patBindings : Pat -> List String
 patBindings (PVar x) = [x]
-patBindings (PCon _ ps) = concatMapList patBindings ps
+patBindings (PCon _ ps) = flatMap patBindings ps
 patBindings (PCons a b) = patBindings a ++ patBindings b
-patBindings (PTuple ps) = concatMapList patBindings ps
-patBindings (PList ps) = concatMapList patBindings ps
+patBindings (PTuple ps) = flatMap patBindings ps
+patBindings (PList ps) = flatMap patBindings ps
 patBindings (PAs x p) = x :: patBindings p
-patBindings (PRec _ fields _) = concatMapList recFieldBindings fields
+patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 patBindings _ = []
 
 recFieldBindings : RecPatField -> List String
@@ -377,12 +377,12 @@ recFieldBindings (RecPatField _ (Some p)) = patBindings p
 
 -- Names bound by local patterns *within* an expression tree.
 localBoundExpr : Expr -> List String
-localBoundExpr (ELam ps b) = concatMapList patBindings ps ++ localBoundExpr b
+localBoundExpr (ELam ps b) = flatMap patBindings ps ++ localBoundExpr b
 localBoundExpr (ELet _ _ p e1 e2) =
   patBindings p ++ localBoundExpr e1 ++ localBoundExpr e2
 localBoundExpr (ELetGroup bs e2) =
-  concatMapList letBindBound bs ++ localBoundExpr e2
-localBoundExpr (EMatch e0 arms) = localBoundExpr e0 ++ concatMapList armBound arms
+  flatMap letBindBound bs ++ localBoundExpr e2
+localBoundExpr (EMatch e0 arms) = localBoundExpr e0 ++ flatMap armBound arms
 localBoundExpr (EApp a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EIf c t el) =
   localBoundExpr c ++ localBoundExpr t ++ localBoundExpr el
@@ -390,48 +390,48 @@ localBoundExpr (EBinOp _ a b _) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EUnOp _ a) = localBoundExpr a
 localBoundExpr (EInfix _ a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EFieldAccess e0 _) = localBoundExpr e0
-localBoundExpr (ERecordCreate _ fs) = concatMapList fieldAssignBound fs
+localBoundExpr (ERecordCreate _ fs) = flatMap fieldAssignBound fs
 localBoundExpr (ERecordUpdate e0 fs) =
-  localBoundExpr e0 ++ concatMapList fieldAssignBound fs
+  localBoundExpr e0 ++ flatMap fieldAssignBound fs
 localBoundExpr (EVariantUpdate _ e0 fs) =
-  localBoundExpr e0 ++ concatMapList fieldAssignBound fs
-localBoundExpr (EArrayLit es) = concatMapList localBoundExpr es
-localBoundExpr (EListLit es) = concatMapList localBoundExpr es
-localBoundExpr (ETuple es) = concatMapList localBoundExpr es
+  localBoundExpr e0 ++ flatMap fieldAssignBound fs
+localBoundExpr (EArrayLit es) = flatMap localBoundExpr es
+localBoundExpr (EListLit es) = flatMap localBoundExpr es
+localBoundExpr (ETuple es) = flatMap localBoundExpr es
 localBoundExpr (EIndex e0 i) = localBoundExpr e0 ++ localBoundExpr i
 localBoundExpr (ERangeList lo hi _) = localBoundExpr lo ++ localBoundExpr hi
 localBoundExpr (ERangeArray lo hi _) = localBoundExpr lo ++ localBoundExpr hi
 localBoundExpr (ESlice e0 lo hi _) =
   localBoundExpr e0 ++ localBoundExpr lo ++ localBoundExpr hi
-localBoundExpr (EBlock stmts) = concatMapList doStmtBound stmts
-localBoundExpr (EDo stmts) = concatMapList doStmtBound stmts
+localBoundExpr (EBlock stmts) = flatMap doStmtBound stmts
+localBoundExpr (EDo stmts) = flatMap doStmtBound stmts
 localBoundExpr (EAnnot e0 _) = localBoundExpr e0
 localBoundExpr (EListComp body quals) =
-  localBoundExpr body ++ concatMapList lcQualBound quals
+  localBoundExpr body ++ flatMap lcQualBound quals
 localBoundExpr (EQuestion e0) = localBoundExpr e0
-localBoundExpr (EStringInterp parts) = concatMapList interpBound parts
-localBoundExpr (EGuards arms) = concatMapList guardArmBound arms
-localBoundExpr (EFunction arms) = concatMapList armBound arms
+localBoundExpr (EStringInterp parts) = flatMap interpBound parts
+localBoundExpr (EGuards arms) = flatMap guardArmBound arms
+localBoundExpr (EFunction arms) = flatMap armBound arms
 localBoundExpr (ESection (SecRight _ e0)) = localBoundExpr e0
 localBoundExpr (ESection (SecLeft e0 _)) = localBoundExpr e0
 localBoundExpr (EHeadAnnot e0 _) = localBoundExpr e0
 localBoundExpr (EAsPat _ e0) = localBoundExpr e0
-localBoundExpr (EMapLit _ kvs) = concatMapList mapLitPairBound kvs
-localBoundExpr (ESetLit _ es) = concatMapList localBoundExpr es
+localBoundExpr (EMapLit _ kvs) = flatMap mapLitPairBound kvs
+localBoundExpr (ESetLit _ es) = flatMap localBoundExpr es
 localBoundExpr (ELoc _ e) = localBoundExpr e
 localBoundExpr (EDoOrigin _ e) = localBoundExpr e
 localBoundExpr _ = []
 
 letBindBound : LetBind -> List String
-letBindBound (LetBind _ clauses) = concatMapList funClauseBound clauses
+letBindBound (LetBind _ clauses) = flatMap funClauseBound clauses
 
 funClauseBound : FunClause -> List String
 funClauseBound (FunClause ps body) =
-  concatMapList patBindings ps ++ localBoundExpr body
+  flatMap patBindings ps ++ localBoundExpr body
 
 armBound : Arm -> List String
 armBound (Arm p gs body) =
-  patBindings p ++ concatMapList guardBound gs ++ localBoundExpr body
+  patBindings p ++ flatMap guardBound gs ++ localBoundExpr body
 
 guardBound : Guard -> List String
 guardBound (GBool e) = localBoundExpr e
@@ -439,7 +439,7 @@ guardBound (GBind p e) = patBindings p ++ localBoundExpr e
 
 guardArmBound : GuardArm -> List String
 guardArmBound (GuardArm gs body) =
-  concatMapList guardBound gs ++ localBoundExpr body
+  flatMap guardBound gs ++ localBoundExpr body
 
 fieldAssignBound : FieldAssign -> List String
 fieldAssignBound (FieldAssign _ e) = localBoundExpr e
@@ -470,13 +470,13 @@ mapLitPairBound (k, v) = localBoundExpr k ++ localBoundExpr v
 -- in its body expressions.
 declLocalBound : Decl -> List String
 declLocalBound (DFunDef _ _ ps body) =
-  concatMapList patBindings ps ++ localBoundExpr body
+  flatMap patBindings ps ++ localBoundExpr body
 declLocalBound (DAttrib _ d) = declLocalBound d
-declLocalBound (DLetGroup _ binds) = concatMapList letBindBound binds
-declLocalBound d = concatMapList localBoundExpr (declBodies d)
+declLocalBound (DLetGroup _ binds) = flatMap letBindBound binds
+declLocalBound d = flatMap localBoundExpr (declBodies d)
 
 localBoundNames : List Decl -> List String
-localBoundNames prog = concatMapList declLocalBound prog
+localBoundNames prog = flatMap declLocalBound prog
 
 -- ── Top-level entry ───────────────────────────────────────────────────────
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared

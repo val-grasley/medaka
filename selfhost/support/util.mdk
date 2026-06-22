@@ -14,11 +14,6 @@ contains _ [] = False
 contains x (y::ys) = x == y || contains x ys
 
 export
-concatMapList : (a -> <e> List b) -> List a -> <e> List b
-concatMapList _ [] = []
-concatMapList f (x::xs) = f x ++ concatMapList f xs
-
-export
 listLen : List a -> Int
 listLen [] = 0
 listLen (_::xs) = 1 + listLen xs

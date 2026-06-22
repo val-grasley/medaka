@@ -43,7 +43,7 @@ import frontend.ast.{
   Decl(..),
   Route(..),
 }
-import support.util.{listLen, contains, allList, concatMapList, fallthroughName}
+import support.util.{listLen, contains, allList, fallthroughName}
 
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
@@ -664,7 +664,7 @@ deriveOrdData name variants =
 ordArms : List Variant -> List Arm
 ordArms variants =
   let indexed = indexFrom 0 variants
-  concatMapList (ordRow indexed) indexed
+  flatMap (ordRow indexed) indexed
 
 indexFrom : Int -> List a -> List (Int, a)
 indexFrom _ [] = []

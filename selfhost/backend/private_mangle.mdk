@@ -96,7 +96,6 @@ import frontend.ast.{
 }
 import support.util.{
   contains,
-  concatMapList,
   reverseL,
   lookupAssoc,
   isEmptyL,
@@ -138,7 +137,7 @@ unitExportEntry (mid, decls) = (mid, dedup (pubFnNames decls))
 -- what the importing unit actually brings into scope, and unmangled-because-private
 -- is harmless (an unimported ctor is never referenced cross-unit).
 unitCtorExportEntry : (String, List Decl) -> (String, List (String, List String))
-unitCtorExportEntry (mid, decls) = (mid, concatMapList ctorExportEntries decls)
+unitCtorExportEntry (mid, decls) = (mid, flatMap ctorExportEntries decls)
 
 ctorExportEntries : Decl -> List (String, List String)
 ctorExportEntries (DData _ tyname _ variants _) = [(tyname, filterList nonReservedCtor (map variantCtorName variants))]
@@ -184,14 +183,14 @@ isReservedCtor n = n == "Cons"
 buildUnitCtorRenameMap : String -> List (String, List (String, List String)) -> List Decl -> List (String, String)
 buildUnitCtorRenameMap mid ctorExportsPerUnit decls =
   let localCtors = dedup (unitLocalCtorNames decls)
-  let localEntries = concatMapList (localCtorRenameEntry mid) localCtors
+  let localEntries = flatMap (localCtorRenameEntry mid) localCtors
   let importEntries = ctorImportEntries mid ctorExportsPerUnit decls
   localEntries ++ importEntries
 
 -- local (this-unit-declared) constructor names, reserved ones excluded.
 unitLocalCtorNames : List Decl -> List String
 unitLocalCtorNames decls =
-  filterList nonReservedCtor (concatMapList localCtorNames decls)
+  filterList nonReservedCtor (flatMap localCtorNames decls)
 
 localCtorNames : Decl -> List String
 localCtorNames (DData _ _ _ variants _) = map variantCtorName variants
@@ -209,17 +208,17 @@ localCtorRenameEntry mid n = [(n, mangledName mid n)]
 -- ctors as implicit prelude (`Rep`'s RCon/RInt/… — Ordering/Option/Result ctors are
 -- reserved and were never entered).  Local-first ordering already shadows these.
 ctorImportEntries : String -> List (String, List (String, List String)) -> List Decl -> List (String, String)
-ctorImportEntries _ ctorExportsPerUnit decls = concatMapList (declCtorImportEntries ctorExportsPerUnit) decls
+ctorImportEntries _ ctorExportsPerUnit decls = flatMap (declCtorImportEntries ctorExportsPerUnit) decls
   ++ coreCtorImportEntries ctorExportsPerUnit
 
 coreCtorImportEntries : List (String, List (String, List String)) -> List (String, String)
 coreCtorImportEntries ctorExportsPerUnit = match lookupCtorExports "core" ctorExportsPerUnit
-  Some entries => concatMapList coreCtorEntry entries
+  Some entries => flatMap coreCtorEntry entries
   None => []
 
 coreCtorEntry : (String, List String) -> List (String, String)
 coreCtorEntry (_, ctors) =
-  concatMapList (n => [(n, mangledName "core" n)]) ctors
+  flatMap (n => [(n, mangledName "core" n)]) ctors
 
 declCtorImportEntries : List (String, List (String, List String)) -> Decl -> List (String, String)
 declCtorImportEntries ctorExportsPerUnit (DUse _ path) =
@@ -236,8 +235,8 @@ useCtorPathEntries ctorExportsPerUnit path =
     match lookupCtorExports mid ctorExportsPerUnit
       None => []
       Some typeEntries => match path
-        UseGroup _ members => concatMapList (ctorMemberEntry mid typeEntries) members
-        UseWild _ => concatMapList (typeCtorEntries mid) typeEntries
+        UseGroup _ members => flatMap (ctorMemberEntry mid typeEntries) members
+        UseWild _ => flatMap (typeCtorEntries mid) typeEntries
         UseName _ => []
         UseAlias _ _ => []
 -- `import M.{T(..), Ctor, …}`: a `(..)` member is a TYPE whose ctors all come
@@ -253,12 +252,12 @@ ctorMemberEntry : String -> List (String, List String) -> UseMember -> List (Str
 ctorMemberEntry mid typeEntries (UseMember name wild) =
   if wild then
     match lookupCtorTypeEntry name typeEntries
-      Some ctors => concatMapList (originCtorEntry mid) ctors
+      Some ctors => flatMap (originCtorEntry mid) ctors
       None => []
-  else if contains name (concatMapList snd typeEntries) then originCtorEntry mid name else []
+  else if contains name (flatMap snd typeEntries) then originCtorEntry mid name else []
 
 typeCtorEntries : String -> (String, List String) -> List (String, String)
-typeCtorEntries mid (_, ctors) = concatMapList (originCtorEntry mid) ctors
+typeCtorEntries mid (_, ctors) = flatMap (originCtorEntry mid) ctors
 
 originCtorEntry : String -> String -> List (String, String)
 originCtorEntry mid n = [(n, mangledName mid n)]
@@ -303,7 +302,7 @@ mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
 buildUnitRenameMap : String -> List (String, List String) -> List Decl -> List (String, String)
 buildUnitRenameMap mid exportsPerUnit decls =
   let localFns = dedup (unitDefNames (mid, decls))
-  let localEntries = concatMapList (localRenameEntry mid) localFns
+  let localEntries = flatMap (localRenameEntry mid) localFns
   let importEntries = importRenameEntries mid exportsPerUnit decls
   localEntries ++ importEntries
 -- local first ⇒ shadows any imported entry with the same key under lookupAssoc.
@@ -326,14 +325,14 @@ isExcludedName n = n == "main"
 -- import-entry ordering below).
 -- explicit sibling imports first (they shadow the implicit prelude), prelude last.
 importRenameEntries : String -> List (String, List String) -> List Decl -> List (String, String)
-importRenameEntries _ exportsPerUnit decls = concatMapList (declImportEntries exportsPerUnit) decls
+importRenameEntries _ exportsPerUnit decls = flatMap (declImportEntries exportsPerUnit) decls
   ++ coreImportEntries exportsPerUnit
 
 -- core's exports as implicit-prelude entries (`name → core__name`), excluding
 -- `main` (core has none, but be safe).
 coreImportEntries : List (String, List String) -> List (String, String)
 coreImportEntries exportsPerUnit = match lookupExports "core" exportsPerUnit
-  Some names => concatMapList coreEntry names
+  Some names => flatMap coreEntry names
   None => []
 
 coreEntry : String -> List (String, String)
@@ -364,8 +363,8 @@ usePathEntries exportsPerUnit path =
     match lookupExports mid exportsPerUnit
       None => []
       Some exports => match path
-        UseGroup _ members => concatMapList (memberEntry mid exports) members
-        UseWild _ => concatMapList (originEntry mid exports) exports
+        UseGroup _ members => flatMap (memberEntry mid exports) members
+        UseWild _ => flatMap (originEntry mid exports) exports
         UseName ns => originEntry mid exports (lastOfPM ns)
         UseAlias _ _ => []
 
@@ -438,7 +437,7 @@ pubDefNames (_::rest) = pubDefNames rest
 -- all top-level FUNCTION names defined in a unit (DFunDef + DLetGroup binders),
 -- wrapped through DAttrib.  Only function-shaped decls can collide as @mdk_<name>.
 unitDefNames : (String, List Decl) -> List String
-unitDefNames (_, decls) = concatMapList declDefNames decls
+unitDefNames (_, decls) = flatMap declDefNames decls
 
 declDefNames : Decl -> List String
 declDefNames (DFunDef _ n _ _) = [n]
@@ -770,11 +769,11 @@ patVarsPM (PCons h t) = patVarsPM h ++ patVarsPM t
 patVarsPM (PTuple ps) = patVarsListPM ps
 patVarsPM (PList ps) = patVarsListPM ps
 patVarsPM (PAs x p) = x :: patVarsPM p
-patVarsPM (PRec _ fields _) = concatMapList recPatFieldVarsPM fields
+patVarsPM (PRec _ fields _) = flatMap recPatFieldVarsPM fields
 patVarsPM _ = []
 
 patVarsListPM : List Pat -> List String
-patVarsListPM ps = concatMapList patVarsPM ps
+patVarsListPM ps = flatMap patVarsPM ps
 
 -- ── pattern CONSTRUCTOR rewrite ───────────────────────────────────────────────
 -- Rewrite the constructor name of every PCon / PRec in a pattern to its mangled
