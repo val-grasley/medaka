@@ -737,3 +737,122 @@ strSearchRuntimeLines = [
   "    (ref.i31 (i32.const 1)))",
 ]
 
+-- ── W11b UTF-8 codec: stringToChars / stringFromChars ($str <-> Array Char) ──────
+-- Byte-identical to medaka_rt.c (mdk_string_to_chars / mdk_string_from_chars +
+-- mdk_utf8_decode / mdk_utf8_encode).  A Char is an i31 codepoint; an `Array Char` is
+-- the §3.3 $arr = (array (mut (ref eq))) holding `cp_count` i31s.  Emitted when the
+-- program uses stringToChars/stringFromChars (`useStrCodecRef`); needs the $str rep
+-- ($u8arr) AND the $arr rep (both forced by noteW8Extern).
+--   $mdk_str_to_chars : decode each UTF-8 codepoint (lead byte <0x80 → 1B; <0xE0 → 2B
+--     & 0x1F; <0xF0 → 3B & 0x0F; else 4B & 0x07; each continuation byte & 0x3F, shift
+--     << 6 and OR), pushing `ref.i31 cp` into a fresh $arr of length cp_count.
+--   $mdk_utf8_nbytes : bytes a codepoint encodes to (1..4) — the encoder's pass-1.
+--   $mdk_chars_to_str : two-pass — sum encoded byte length, alloc $u8arr, encode each
+--     codepoint in place (same lead/continuation masks as $mdk_char_to_str), cp_count
+--     = array.len.
+export
+strCodecRuntimeLines : List String
+strCodecRuntimeLines = [
+  "  ;; -- W11b UTF-8 codec (byte-identical to medaka_rt.c) --",
+  "  ;; decode a $str's UTF-8 bytes into a fresh $arr of cp_count i31 Char codepoints.",
+  "  (func $mdk_str_to_chars (param $s (ref $str)) (result (ref $arr))",
+  "    (local $b (ref $u8arr)) (local $n i32) (local $cpc i32) (local $out (ref $arr))",
+  "    (local $bo i32) (local $oi i32) (local $lead i32) (local $cp i32) (local $k i32) (local $w i32)",
+  "    (local.set $b (struct.get $str $bytes (local.get $s)))",
+  "    (local.set $n (array.len (local.get $b)))",
+  "    (local.set $cpc (struct.get $str $cp_count (local.get $s)))",
+  "    (local.set $out (array.new $arr (ref.i31 (i32.const 0)) (local.get $cpc)))",
+  "    (local.set $bo (i32.const 0)) (local.set $oi (i32.const 0))",
+  "    (block $d (loop $l",
+  "      (br_if $d (i32.ge_s (local.get $bo) (local.get $n)))",
+  "      (local.set $lead (array.get_u $u8arr (local.get $b) (local.get $bo)))",
+  "      ;; lead-byte class → codepoint seed bits + total byte width.",
+  "      (if (i32.lt_u (local.get $lead) (i32.const 128))",
+  "        (then (local.set $cp (local.get $lead)) (local.set $w (i32.const 1)))",
+  "        (else (if (i32.lt_u (local.get $lead) (i32.const 224))",
+  "          (then (local.set $cp (i32.and (local.get $lead) (i32.const 31))) (local.set $w (i32.const 2)))",
+  "          (else (if (i32.lt_u (local.get $lead) (i32.const 240))",
+  "            (then (local.set $cp (i32.and (local.get $lead) (i32.const 15))) (local.set $w (i32.const 3)))",
+  "            (else (local.set $cp (i32.and (local.get $lead) (i32.const 7))) (local.set $w (i32.const 4))))))))",
+  "      ;; fold in (w-1) continuation bytes: cp = (cp << 6) | (byte & 0x3F).",
+  "      (local.set $k (i32.const 1))",
+  "      (block $cd (loop $cl",
+  "        (br_if $cd (i32.ge_s (local.get $k) (local.get $w)))",
+  "        (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6))",
+  "          (i32.and (array.get_u $u8arr (local.get $b) (i32.add (local.get $bo) (local.get $k))) (i32.const 63))))",
+  "        (local.set $k (i32.add (local.get $k) (i32.const 1))) (br $cl)))",
+  "      (array.set $arr (local.get $out) (local.get $oi) (ref.i31 (local.get $cp)))",
+  "      (local.set $oi (i32.add (local.get $oi) (i32.const 1)))",
+  "      (local.set $bo (i32.add (local.get $bo) (local.get $w))) (br $l)))",
+  "    (local.get $out))",
+  "  ;; number of UTF-8 bytes a codepoint encodes to (1..4).",
+  "  (func $mdk_utf8_nbytes (param $cp i32) (result i32)",
+  "    (if (result i32) (i32.lt_u (local.get $cp) (i32.const 128)) (then (i32.const 1))",
+  "      (else (if (result i32) (i32.lt_u (local.get $cp) (i32.const 2048)) (then (i32.const 2))",
+  "        (else (if (result i32) (i32.lt_u (local.get $cp) (i32.const 65536)) (then (i32.const 3))",
+  "          (else (i32.const 4))))))))",
+  "  ;; encode one codepoint into $buf at offset $off; return the next offset.",
+  "  (func $mdk_utf8_emit_at (param $buf (ref $u8arr)) (param $off i32) (param $cp i32) (result i32)",
+  "    (if (result i32) (i32.lt_u (local.get $cp) (i32.const 128))",
+  "      (then",
+  "        (array.set $u8arr (local.get $buf) (local.get $off) (local.get $cp))",
+  "        (i32.add (local.get $off) (i32.const 1)))",
+  "      (else (if (result i32) (i32.lt_u (local.get $cp) (i32.const 2048))",
+  "        (then",
+  "          (array.set $u8arr (local.get $buf) (local.get $off) (i32.or (i32.const 192) (i32.shr_u (local.get $cp) (i32.const 6))))",
+  "          (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 128) (i32.and (local.get $cp) (i32.const 63))))",
+  "          (i32.add (local.get $off) (i32.const 2)))",
+  "        (else (if (result i32) (i32.lt_u (local.get $cp) (i32.const 65536))",
+  "          (then",
+  "            (array.set $u8arr (local.get $buf) (local.get $off) (i32.or (i32.const 224) (i32.shr_u (local.get $cp) (i32.const 12))))",
+  "            (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 128) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 63))))",
+  "            (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 128) (i32.and (local.get $cp) (i32.const 63))))",
+  "            (i32.add (local.get $off) (i32.const 3)))",
+  "          (else",
+  "            (array.set $u8arr (local.get $buf) (local.get $off) (i32.or (i32.const 240) (i32.shr_u (local.get $cp) (i32.const 18))))",
+  "            (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 128) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 63))))",
+  "            (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 128) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 63))))",
+  "            (array.set $u8arr (local.get $buf) (i32.add (local.get $off) (i32.const 3)) (i32.or (i32.const 128) (i32.and (local.get $cp) (i32.const 63))))",
+  "            (i32.add (local.get $off) (i32.const 4))))))))",
+  "  )",
+  "  ;; encode an $arr of i31 Char codepoints into a fresh $str (UTF-8); cp_count = len.",
+  "  (func $mdk_chars_to_str (param $a (ref $arr)) (result (ref $str))",
+  "    (local $n i32) (local $i i32) (local $total i32) (local $off i32)",
+  "    (local $buf (ref $u8arr)) (local $cp i32)",
+  "    (local.set $n (array.len (local.get $a)))",
+  "    ;; pass 1: total encoded byte length.",
+  "    (local.set $i (i32.const 0)) (local.set $total (i32.const 0))",
+  "    (block $d1 (loop $l1",
+  "      (br_if $d1 (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (local.set $cp (i31.get_s (ref.cast (ref i31) (array.get $arr (local.get $a) (local.get $i)))))",
+  "      (local.set $total (i32.add (local.get $total) (call $mdk_utf8_nbytes (local.get $cp))))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l1)))",
+  "    ;; pass 2: encode into the buffer.",
+  "    (local.set $buf (array.new $u8arr (i32.const 0) (local.get $total)))",
+  "    (local.set $i (i32.const 0)) (local.set $off (i32.const 0))",
+  "    (block $d2 (loop $l2",
+  "      (br_if $d2 (i32.ge_s (local.get $i) (local.get $n)))",
+  "      (local.set $cp (i31.get_s (ref.cast (ref i31) (array.get $arr (local.get $a) (local.get $i)))))",
+  "      (local.set $off (call $mdk_utf8_emit_at (local.get $buf) (local.get $off) (local.get $cp)))",
+  "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l2)))",
+  "    (struct.new $str (local.get $n) (local.get $buf)))",
+]
+
+-- ── W11b charFromCode : Int -> Option Char ───────────────────────────────────────
+-- Range-check the i32 codepoint (valid = 0..0x10FFFF EXCLUDING surrogates 0xD800..
+-- 0xDFFF, byte-identical to medaka_rt.c mdk_char_from_code) → Some <char i31>
+-- (struct.new $C_Some ordinal 0 + the i31 codepoint) / None (i31 ordinal 1).  The
+-- reserved Option ctors ($C_Some / the Option root) are emitted unconditionally in
+-- ref-mode.  Gated independently (`useCharFromCodeRef`) — needs no $str/$arr.
+export
+charFromCodeRuntimeLines : List String
+charFromCodeRuntimeLines = [
+  "  ;; -- W11b charFromCode (byte-identical to medaka_rt.c mdk_char_from_code) --",
+  "  (func $mdk_char_from_code (param $cp i32) (result (ref eq))",
+  "    ;; valid: 0 <= cp <= 0x10FFFF and not (0xD800 <= cp <= 0xDFFF).",
+  "    (if (i32.and (i32.and (i32.ge_s (local.get $cp) (i32.const 0)) (i32.le_s (local.get $cp) (i32.const 1114111)))",
+  "                 (i32.eqz (i32.and (i32.ge_s (local.get $cp) (i32.const 55296)) (i32.le_s (local.get $cp) (i32.const 57343)))))",
+  "      (then (return (struct.new $C_Some (i32.const 0) (ref.i31 (local.get $cp))))))",
+  "    (ref.i31 (i32.const 1)))",
+]
+

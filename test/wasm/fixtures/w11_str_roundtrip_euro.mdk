@@ -1,0 +1,2 @@
+-- W11b: round-trip with a 3-byte UTF-8 codepoint (€ = U+20AC) + ASCII.
+main = stringFromChars (stringToChars "a€b")

@@ -60,7 +60,7 @@ identifiers it can't resolve split into clear sub-categories:
 | 353 | **Mutable-state externs** | `set_ref` (230), `Ref` (123) — the `Ref`/`set_ref` mutable-cell extern surface is unsupported (only `core`/`typecheck`/etc. heavy users hit it) |
 | 112 | **`panic` extern** | `panic` — the panic/abort extern is not wired |
 |  86 | **Array intrinsics** | `arrayGetUnsafe` (38), `arrayLength` (28), `arrayFromList` (15), `arrayMakeWith` (3), `arrayMake` (1), `arrayCopy` (1) |
-|  51 | **String/Char externs** | `stringToChars` (22), `charFromCode` (9), `charCode` (8), `stringFromChars` (5), `charToUpper`/`charToLower`/`charIsUpper`/`charIsSpace`/`charIsPunct`/`charIsLower`/`charIsAlpha` (1 each) |
+|   7 | **String/Char externs** | `charToUpper`/`charToLower`/`charIsUpper`/`charIsSpace`/`charIsPunct`/`charIsLower`/`charIsAlpha` (1 each). **CLOSED (W11b):** `stringToChars` (was 23), `charFromCode` (was 9), `stringFromChars` (was 5) — real UTF-8 decode/encode + range-check WAT runtime (`$mdk_str_to_chars` / `$mdk_chars_to_str` / `$mdk_char_from_code`, byte-identical to `medaka_rt.c`); `charCode` (was 8) closed earlier in W11 |
 |   4 | **IO externs** | `readFile` (2), `fileExists` (2) |
 | ~111 | **Genuine in-body free vars** | `name` (28), `env` (14), `params` (10), `variants`/`pats`/`fields` (5 each), `s`/`first` (4), `vs` (3), and a long tail of singletons (`t`,`pub`,`mid`,`l`,`iface`,`derives`,`arm`,`arms`,…) — these are real lowering bugs where a let/lambda/where-bound name does not reach the body in ref-mode (e.g. `frontend_parser__parseInterface` body can't see its own `name`). Distinct from the externs above: these are *defined* in the program but the emitter loses the binding. |
 

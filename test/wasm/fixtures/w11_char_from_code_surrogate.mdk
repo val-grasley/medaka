@@ -1,0 +1,4 @@
+-- W11b: charFromCode 0xD800 (55296) is a UTF-16 surrogate -> None (invalid codepoint).
+main = match charFromCode 55296
+  Some _ => "some"
+  None => "none"
