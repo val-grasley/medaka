@@ -151,14 +151,24 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   "diff schemes vs native = self-host-of-the-front-end demo" — MET.
 - **🏁 layer-13 CLOSED (`e7cd369`) — check_main WasmGC output EXACTLY byte-identical to native** (trailing
   Unit-main `0` gone; `mainBodyIsUnit` now descends `match`/`block` bodies, approach B). Verified byte-identical.
-- **🟢 EMITTER ON WasmGC — THE PUSH IS ON (the whole-compiler / browser-playground goal).** Recon (read-only,
-  2026-06-22): the frontier is ~ONE emit-gap wide, NOT a 12-layer peel — the emitter compiling its OWN graph
-  (`wasm_emit_modules_main.mdk`, roots `<selfhost> <stdlib>`) records exactly ONE blocker: `routeWitness`
-  (`wasm_emit.mdk:2522`) gaps a NESTED requires-dict (`RKey tag [reqs]`, `__tuple2__` from `Debug (HashMap k v)`
-  via `dce.mdk`'s lone stdlib `import hash_map`). Fix = port `llvm_emit.mdk:2896`'s nested-dict-cell rep (emit +
-  consume sides) — emitter-only. **An agent is closing it now**, then: census→0 → emit emitter→parse→validate→run
-  under Node → diff vs native for byte-identity → peel residual runtime layers (few; shared codepaths). FOOTGUN:
-  build scripts need `bash` not `sh`.
+- **🟢 EMITTER ON WasmGC — THE PUSH IS ON (the whole-compiler / browser-playground goal).** Recon: the
+  frontier is a SMALL number of emit/linkage layers (NOT a 12-layer peel — the emitter reuses the front-end's
+  fixed codepaths). Progress:
+  - **🏁 layer-14 CLOSED (`ab269d6`, emitter-only) — nested requires-dict cell.** `routeWitness` gapped on
+    `RKey tag [reqs]` (the `__tuple2__` from `Debug (HashMap k v)`). Ported `llvm_emit.mdk:2896`'s uniform
+    nested-dict-cell rep BOTH sides: `$dictcell (struct (field i32) (field (ref $dictarr)))` (a one-level dict
+    stays an i31); emit via `routeWitness`, consume via `readDictParam` (i31-vs-`$dictcell` `ref.test`) +
+    `loadReqDict` (nested `struct.get 1`/`array.get`). **Emitter census now 0/0** (orchestrator-verified). Gate
+    `w_nested_dict_tuple.mdk`, `diff_wasm_modules` 16.
+  - **🟡 layer-15 (NEXT) — defaulted-method emission.** The full emitter emits (415842-line WAT, exit 0) but
+    `wasm-tools parse` fails on ONE undefined symbol `$mdk_impl_List_filter`: `Filterable List` inherits the
+    `filter` DEFAULT (only `filterMap` is concrete), so a `filter` call resolves to `RKey "List"` with no
+    tagged impl. The WasmGC RKey path (`wasm_emit.mdk:2475`) emits a static `call $mdk_impl_<tag>_<method>`
+    with no default fallback. The native backend synthesizes it via `emitDefaultRKey` (`llvm_emit.mdk:3029`)
+    → `ensureDefaultEmitted`/`emitDefaultDefine` (`:3043`, eta-prepends dict params + forwards) /
+    `innerDefaultReqCount` (`:3292`). Port that subsystem into `wasm_emit` (emitter-only), then re-attempt
+    emitter assemble → validate → run under Node → diff vs native `test/bin/wasm_emit_modules_main` for
+    byte-identity (the emitter-self-compile milestone), peeling any residual runtime layers.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
