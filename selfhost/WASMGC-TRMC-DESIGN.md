@@ -445,3 +445,46 @@ deep-list fixture and `check_main`-runs-under-Node. **One honest caveat (Q4.2):*
 *separate*, non-TRMC class of overflow exists in the AST tree-walkers (`infer`,
 `checkExpr`) — bounded by nesting depth, not input length, so low-risk on real programs
 and out of scope for this TRMC work; track it as its own hardening item.
+
+---
+
+## 11. AS BUILT (2026-06-22) — Stages 0–2 COMPLETE, layer-5 CLOSED
+
+Implemented per §7, emitter-only except Stage 0's analysis lift. The self-hosted lexer
+now runs to completion on WasmGC under Node.
+
+- **Stage 0 (`8c69296`; seed re-minted `6bbcde8`, bootstrap_from_seed C3a PASS).** Made the
+  `$C_Cons` tail field + all `emitCtorStruct` payload fields `(field (mut (ref eq)))`
+  (output-neutral). Lifted the analysis (`trmcEligible`/`isCtorTail`/`SelfRef`/
+  `mentionsSelfMethod`/`selfFree`/match-descent + helpers) out of `llvm_emit.mdk` into
+  `selfhost/backend/trmc_analysis.mdk` (503 lines), re-pointed `llvm_emit.mdk`. The
+  `Emit`-coupled ctor lookups were de-coupled by parameterizing `(ic : String -> <Mut> Bool)`/
+  `(ar : String -> <Mut> Int)`. Pure code-move → `selfcompile_fixpoint` C3a/C3b YES; all LLVM
+  differentials unchanged. **The ONE in-graph change of the whole arc.**
+- **Stage 1 (`8737d11`, emitter-only).** WasmGC self-recursive (shape a) destination-passing TMC
+  in `wasm_emit.mdk`: `wasmTrmcTry`/`emitWasmTrmcFn`/`emitWasmTrmcCtor`/`emitWasmTrmcLeaf` +
+  `wTrmcCtxRef`. Loop scaffold with `$__tmc_head`/`$__tmc_dest`/`$__tmc_first` + arg-recompute
+  temps; cons leaf `struct.new`s the cell, `struct.set`s into the parent's `mut` recursive slot,
+  advances dest, recomputes args, `br $tmcloop` — no recursive `call`. Scope `SelfByVar` only;
+  requires a uniform cons/ctor across leaves (`wTrmcUniformCtor`). Gate
+  `test/wasm/fixtures/w_trmc_deep_cons.mdk` (2M `upto`): overflow → `2000000`, 0 loop calls;
+  `diff_wasm` 131.
+- **Stage 2 (`2688edb`, emitter-only).** The novel **dispatch-into-single-target (b′)** TMC — no
+  LLVM precedent. `detectDispatchGroups` (pure, in `wasm_emit.mdk`) grows a TMC group rooted at one
+  cons-target `scan`: routers cons-free + tail-call into the group, leaves cons-then-tail-call the
+  root. On the real lexer the group is **49 members**. The root `scan` becomes a reset wrapper
+  (zeroes 3 module globals `$g_tmc_head`/`$g_tmc_dest`/`$g_tmc_first`, `return_call $scan__disploop`);
+  every spine cons leaf → build cell + link into `$g_tmc_dest` + advance + `return_call
+  $scan__disploop` (the `return_call` IS the loop; no param-recompute slots needed). New
+  `wDispCtxRef` live-context mechanism. **Bug found+fixed in bring-up:** the dispatch context must
+  carry the ROOT's arity (5), not the emitting member's (`scanAt` is arity-6) — else a bare root
+  call mis-redirects to the reset wrapper and drops the first token (`progFnArity prog root`).
+  Gates `test/wasm/fixtures/w_trmc_dispatch.mdk` + `DISP-ASSERT` (0 recursive `call $scan` in any
+  group body), `diff_wasm` 132. **Verified on the binary:** `check_main` lexes `runtime.mdk`+
+  `core.mdk` fully under Node — flat `floatTok→layoutWithOffsets→tokenize→parse→runCheck` trace,
+  no `scan`-recursion tower.
+
+**Layer-6 (next, NOT TRMC):** `check_main` now traps a single-frame `unreachable` in
+`frontend_lexer__floatTok` (`isDeferredFloatExternW`) on a `core.mdk` float literal — the
+pre-existing W8b `stringToFloat` deferred-extern holdout. Port a pure-WAT/host-import
+`stringToFloat`, then re-measure (Stage-3 (a)-spines or the §4.2 Class-B tree-walk may surface).

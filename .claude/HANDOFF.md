@@ -61,15 +61,36 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
   Fixed by counting true UTF-8 lead bytes (`(b & 0xC0) != 0x80`) for `cp_count`, mirroring the peer
   `$mdk_chars_to_str`. Emitter-only (`wasm_preamble.mdk`) → no fixpoint/seed. Gates 130/6/13 +
   VALIDATE_OK, all re-verified on freshly-rebuilt binaries.
-- **🟡 NEXT — runtime layer-5: `RangeError: Maximum call stack size exceeded` in lexer recursion.**
-  After layer-4, `check_main` on the full prelude overflows V8's call stack in the lexer's non-tail
-  `scan → emit → scanLower → identEnd` token-list build (also `support_char__isLower` on `core.mdk`).
-  This **pre-existed** the layer-4 fix (observed on `core.mdk` before it). NOT a mis-lowered construct
-  — genuine stack growth from non-tail recursion (native has a deep C stack so it never overflows).
-  **DESIGN FORK for the next agent:** (a) restructure the lexer scan/emit chain to be
-  tail-recursive/accumulator-based so the WasmGC `return_call` TCO kicks in — but that edits canonical
-  `frontend/lexer.mdk` (IN-GRAPH → fixpoint + seed, affects the native build too), or (b) a
-  WasmGC-side stack mitigation. Surface this fork before implementing.
+- **🏁 Runtime layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2) — the self-hosted lexer now runs to
+  COMPLETION under Node.** The blocker was `RangeError: Maximum call stack size exceeded` in the lexer's
+  token-list build. Design pass (`selfhost/WASMGC-TRMC-DESIGN.md`) diagnosed it as **shape (b′):
+  dispatch-into-single-target TMC** — each per-token leaf scanner does `RTok … :: scan …`, so the
+  cons-bearing frame stays live to EOF while the recursion target is the single dispatcher `scan`
+  (neither the LLVM self-recursive TRMC shape nor general mutual recursion). Fixed via a 3-stage,
+  **emitter-only** TRMC port (the existing LLVM TMC is `selfhost/TRMC-DESIGN.md`):
+  - **Stage 0 (`8c69296`, seed re-minted `6bbcde8`):** made WasmGC cons/ctor recursive struct fields
+    `mut` (destination-passing prereq) + lifted the backend-agnostic TRMC analysis out of `llvm_emit.mdk`
+    into shared `selfhost/backend/trmc_analysis.mdk` (pure code-move; fixpoint C3a/C3b YES — the ONE
+    in-graph change of the arc).
+  - **Stage 1 (`8737d11`):** WasmGC self-recursive destination-passing TMC (shape a). A 2M-cons builder
+    goes from Node call-stack overflow → prints `2000000` with 0 recursive calls in the loop. Gate
+    `test/wasm/fixtures/w_trmc_deep_cons.mdk`, `diff_wasm` 131.
+  - **Stage 2 (`2688edb`):** the novel **dispatch-into-single-target (b′)** TMC (no LLVM precedent) —
+    `detectDispatchGroups` grows a `scan`-rooted TMC group (49 members on the real lexer); each spine
+    cons leaf becomes cons-into-dest + `return_call $scan__disploop` (the dest carried in 3 module
+    globals, `return_call` IS the loop). Gate `w_trmc_dispatch.mdk` + `DISP-ASSERT` (0 recursive
+    `call $scan`), `diff_wasm` 132. **Verified on the binary:** `check_main` now lexes `runtime.mdk`+
+    `core.mdk` fully under Node (flat `tokenize→parse→runCheck` trace, no `scan`-recursion tower).
+  - All Stage-1/2 work is **emitter-only** (`wasm_emit.mdk` is out of the compiler graph) → no
+    fixpoint/seed. Regression gates green throughout (132/6/13 + VALIDATE_OK).
+- **🟡 NEXT — runtime layer-6: `floatTok` → `unreachable` (the deferred `stringToFloat` float-codec
+  gap, NOT TRMC).** With the lexer overflow gone, `check_main` runs `tokenize→parse→runCheck` and traps
+  a single-frame `unreachable` in `frontend_lexer__floatTok` (`isDeferredFloatExternW`) when it hits a
+  float literal in `core.mdk`. This is the **pre-existing W8b `stringToFloat`/strtod-port holdout**
+  (memory `project_wasmgc_backend`, `project_float_literal_native_gaps`), a separate workstream — port a
+  pure-WAT (or host-import, like `mdk_float_fmt`) `stringToFloat`. Then re-check how much further
+  `check_main` runs (expect possibly Stage-3 (a)-spines in parser/typecheck, or the Class-B AST
+  tree-walk overflow `WASMGC-TRMC-DESIGN.md` §4.2 flags as its own non-TRMC item).
 - ~~args() bug~~ **RESOLVED** in `377365f` (run.js delimiter `\0`→`' '`; verified `foo bar`→2 args).
 - **SEED: re-minted (`11f2229`), `bootstrap_from_seed` PASS** (was stale from the in-graph
   `core_ir_lower.mdk` structural-batch change; fixpoint C3a/C3b held throughout).

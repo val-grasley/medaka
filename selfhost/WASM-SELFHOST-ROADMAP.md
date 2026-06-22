@@ -93,11 +93,23 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   through every lexer clause into `singleOp`'s panic → `unreachable`. Fixed by counting true UTF-8 lead
   bytes (`(b & 0xC0) != 0x80`), mirroring `$mdk_chars_to_str`. The self-hosted **lexer now lexes
   `runtime.mdk` (749 tokens) byte-identical to native.** Emitter-only → no fixpoint/seed.
-- 🟡 **layer-5 (NEXT)** — `RangeError: Maximum call stack size exceeded` in the lexer's non-tail
-  `scan → emit → scanLower → identEnd` recursion (also `support_char__isLower` on `core.mdk`).
-  Pre-existed layer-4. Genuine stack growth, NOT a mis-lowering. Fork: (a) make the scan/emit chain
-  tail-recursive so WasmGC `return_call` TCO applies (edits canonical `frontend/lexer.mdk` → IN-GRAPH,
-  fixpoint + seed, native too); (b) a WasmGC-side stack mitigation. Surface the fork before implementing.
+- 🏁 **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, emitter-only)** — the self-hosted lexer now
+  runs to COMPLETION under Node. Design `selfhost/WASMGC-TRMC-DESIGN.md` diagnosed the overflow as
+  **shape (b′) dispatch-into-single-target TMC** (each per-token leaf does `RTok :: scan …`; cons-bearer
+  ≠ recursion target — the single dispatcher `scan`). Ported the existing LLVM TMC (`TRMC-DESIGN.md`):
+  Stage 0 (`8c69296`, seed re-mint `6bbcde8`) made cons/ctor recursive fields `mut` + lifted the
+  backend-agnostic analysis to `backend/trmc_analysis.mdk` (the one in-graph change, fixpoint YES);
+  Stage 1 (`8737d11`) WasmGC self-recursive destination-passing TMC (2M cons: overflow→`2000000`, 0
+  loop calls; `diff_wasm` 131); Stage 2 (`2688edb`) the novel (b′) dispatch-TMC — `detectDispatchGroups`
+  grows a `scan`-rooted 49-member group, each spine cons → cons-into-dest + `return_call $scan__disploop`
+  (dest in 3 module globals); `diff_wasm` 132 + `DISP-ASSERT` (0 recursive `call $scan`). Verified:
+  `check_main` lexes `runtime.mdk`+`core.mdk` fully under Node (flat `tokenize→parse→runCheck` trace).
+- 🟡 **layer-6 (NEXT)** — `floatTok` → `unreachable` (the deferred **`stringToFloat` float-codec gap**,
+  NOT TRMC). With the lexer overflow gone, `check_main` traps a single-frame `unreachable` in
+  `frontend_lexer__floatTok` (`isDeferredFloatExternW`) on a float literal in `core.mdk` — the
+  pre-existing W8b holdout. Port a pure-WAT (or host-import) `stringToFloat`, then re-measure how far
+  `check_main` runs (possibly Stage-3 (a)-spines in parser/typecheck, or the Class-B AST tree-walk
+  overflow `WASMGC-TRMC-DESIGN.md` §4.2 flags as its own non-TRMC item).
 
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)
