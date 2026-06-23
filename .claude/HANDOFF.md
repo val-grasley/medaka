@@ -179,11 +179,19 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
     end-to-end under Node, compiles `println (1+2)` to a 52,443-line WAT, **that wasm-emitted program
     assembles + runs + prints `3`** — the WasmGC backend compiles a Medaka program to a working module
     entirely in WasmGC (the in-browser-compiler milestone). Gates: native diff 181/13/41/35/92 unchanged,
-    diff_wasm 138/6/17, fixpoint YES. **Residual (layer-17, pre-existing, NOT a regression):** the
-    wasm-emitter's WAT differs from native's ONLY in `i32.const` dispatch-hash values (deltas of exactly
-    2^30) — `hashName`/`dictTag` (`wasm_emit.mdk:3028`, `posMod (hashName s) 2^30`) uses i32 djb2 `acc*33`
-    that overflows in the wasm runtime where native stays i64. Self-consistent (the emitted program runs
-    correctly), so functional milestone is met; true byte-identity-to-native needs the i32↔i64 hash-width fix.
+    diff_wasm 138/6/17, fixpoint YES. **🏁 layer-17 CLOSED (`9af476a`, emitter-only) — WasmGC Int soundness + byte-identity to native.**
+    The 2^30 hash divergence was a SYMPTOM of a broad bug: `>2^30` Int arithmetic TRUNCATED to i32 (the
+    `WASMGC-DESIGN.md` §2.1 `$boxint`/i64 rep was declared-but-unimplemented). Implemented the rep seam
+    `$mdk_box_int`/`$mdk_unbox_int` (i31 fast path / `$boxint` i64) and routed every Int site through it
+    (ref-mode + scalar-mode arithmetic/compare/negate/literal/print/`intToString`/`value_cmp`/`value_eq`).
+    **ORCHESTRATOR-VERIFIED:** `1000000*1000000` → `1000000000000` on both (was garbage on wasm); AND the
+    wasm-compiled emitter's WAT is now **BYTE-IDENTICAL to the native-compiled emitter** (hash deltas gone —
+    hashName's djb2 now computes in i64). Gate `w_int64_boundary`, diff_wasm 139/6/18. **Remaining minor
+    loose ends (both LATENT/exotic, deferred):** (a) List `fold`/`length` impl methods are non-tail in the
+    wasm emit (plain-tail self-call not → `return_call`) → deep-list overflow; the principled GENERAL fix is
+    emitting `return_call` for plain-tail IMPL-METHOD self-calls (covers fold/length/etc. at once). (b) a
+    literal-switch pattern-match on a `>2^30` Int LITERAL still reads the scrutinee via `ref.cast (ref i31)`
+    (exotic; array-index/range/charcode Int reads stay i31 by design — those values are inherently <2^30).
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
