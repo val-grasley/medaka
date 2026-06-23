@@ -6,7 +6,7 @@
 -- monad here).
 
 import lib.parser.{Parser, runParser, digit, some, char, sepBy, chainl1, spaces, between, string}
-import string.{intToString}
+-- `intToString` is a global builtin (not a `string` export) — used unqualified below.
 
 -- A natural number: one-or-more digits, folded into an Int.
 number : Parser Int
