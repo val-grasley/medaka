@@ -7,6 +7,46 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🏁🏁 SERVER-FREE BROWSER PLAYGROUND LANDED (2026-06-22). `main` = `7d59a70`
+
+**The Medaka compiler, compiled to WasmGC, now runs IN THE BROWSER — the playground compiles +
+runs Medaka entirely client-side, no backend.** This realizes the `WASM-SELFHOST-ROADMAP.md` §1
+goal. Owning docs: `playground/README.md` (living), `PLAYGROUND-DESIGN.md` (§6.1 now SUPERSEDED —
+the compile-server/container plan is obsolete; ships as a pure static site). Memory:
+`project_playground_workstream` (authoritative). User-verified in a real browser (Chrome + Firefox):
+compiles+runs `15`/`[2,4,6,8,10]`/greeting AND surfaces diagnostics.
+
+Built in 5 staged agents (all merged, native-canonical, NO fixpoint/seed — playground entry +
+wasm_emit are OUTSIDE the self-host graph; the decisive checks are the Node round-trip + the
+browser smoke):
+- **Stage 0** (`c56f224`) — `playground/build_compiler_wasm.sh` self-compiles the emit entry to
+  `dist/compiler.wasm` (2.3MB, assembles+validates+round-trips). GOTCHA: self-compiling the emitter
+  needs BOTH roots `selfhost stdlib` (emitter imports `stdlib/hash_map` via dce.mdk).
+- **Stage 1** (`0e3d6cf`) — browser WAT→wasm assembler `playground/vendor/wat2wasm/` (Rust `wat`
+  crate **=1.252.0**, exact lineage match to native wasm-tools; wasm-bindgen blob ~708KB COMMITTED →
+  static site has no Rust dep). Rust toolchain installed this session (cargo 1.96, ~/.cargo).
+- **Stage 2** (`e1363f6`) — COMBINED entry `selfhost/entries/playground_main.mdk`: front-end runs
+  ONCE; outputs `__MEDAKA_DIAGNOSTICS__`+JSON (errors, byte-identical to `check --json`) or
+  `__MEDAKA_WAT__`+WAT (clean). WHY: the emit entry's error path compiles to a SILENT `unreachable`
+  trap (0 bytes out) — errors must route through the panic-free analyze path; emit runs only after a
+  clean analyze. `playground/compile.mjs` = env-agnostic seam. Node round-trip 4/4 (orchestrator-verified).
+- **Stage 3** (`2c512c8`) — fully client-side: `compiler-worker.js` (compile+assemble off UI thread)
+  → `main.js` (fetch 4 assets once) → `worker.js` runner (10s kill-timer). `server.js` stripped to
+  STATIC-ONLY (no /compile/subprocess) — the visible "no backend" change. Node integration 8/8.
+- **Stage 4** (`e95da8c`) — docs (README/PLAYGROUND-DESIGN/WASM-SELFHOST-ROADMAP/PLAN) + `build_site.sh`
+  (assembles deployable `playground/site/`).
+
+**2 browser-smoke fixes (orchestrator, on main):** `84b98d5` — the WasmGC feature-detect probe was a
+MALFORMED module (func-body length prefix 6, actual 7) → `WebAssembly.validate` false on EVERY engine
+→ false "unsupported" banner (validate hardcoded wasm probes in Node 24!). `277b1f3` — default sample
+used `do` (IO-monad trap, correctly rejected) + `(* 2)` op-section (selfhost-parser-rejected) → fixed
+to a valid bare-block (always compile-test a shipped default).
+
+**Build/run:** Node ≥22 for finalized WasmGC (system node v20 FAILS); browser Chrome≥119/FF≥120/Safari≥18.2,
+**iOS<18.2 has NO WasmGC** (page banners). dist assets gitignored. **NEXT (none blocking):** real CDN
+deploy (build_site.sh + upload); purist option-b (WAT→binary encoder IN Medaka, drop the wat2wasm blob)
+deferred as a later backend milestone. Static dev server may still be running on :8080 from this session.
+
 ## RESUME — 🏁 WasmGC SELF-HOST PUSH: front-end EMITS+ASSEMBLES+VALIDATES; lexer RUNS (2026-06-22). `main` ≈ `a889a23`
 
 **The active workstream + the big result of this session.** Drove the WasmGC backend toward
