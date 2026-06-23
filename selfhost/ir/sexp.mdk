@@ -285,14 +285,6 @@ declSexp (DLetGroup p binds) =
 declSexp (DAttrib attrs d) =
   node "DAttrib" [slist (map attrSexp attrs), declSexp d]
 
-attrSexp : Attr -> String
-attrSexp (AttrDeprecated s) = node "AttrDeprecated" [escStr s]
-attrSexp AttrInline = "AttrInline"
-attrSexp AttrMustUse = "AttrMustUse"
-
-propParamSexp : PropParam -> String
-propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
-
 declSexp DInterface { pub, def, name, typarams, supers, methods } =
   node
     "DInterface"
@@ -316,6 +308,14 @@ declSexp DImpl { pub, def, iface, tys, name, reqs, methods } =
       slist (map requireSexp reqs),
       slist (map implMethodSexp methods),
     ]
+
+attrSexp : Attr -> String
+attrSexp (AttrDeprecated s) = node "AttrDeprecated" [escStr s]
+attrSexp AttrInline = "AttrInline"
+attrSexp AttrMustUse = "AttrMustUse"
+
+propParamSexp : PropParam -> String
+propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
 
 methodDefaultSexp : Option MethodDefault -> String
 methodDefaultSexp None = "None"

@@ -1010,37 +1010,6 @@ eval env (EVarAt x addr) =
 eval env (EMethodAt name routeRef implRef methodRef) =
   evalMethodAt env name routeRef.value implRef.value methodRef.value
 
--- C5: an RLocal route is NOT a method dispatch — the typechecker found no impl
--- of this interface for the concrete receiver but the name has an explicitly-
--- imported/local standalone (which the import frame binds ahead of the global
--- method VMulti).  Resolve the standalone with a plain lookupEnv, unnarrowed and
--- with no dict folding (mirror lib/eval.ml:816 EMethodRef RLocal).  Every other
--- route is a genuine method dispatch: resolve the VMulti past any nearer same-
--- named standalone shadow with lookupMethod (C5 / lib/eval.ml:223), then narrow.
-evalMethodAt : EvalEnv -> String -> Route -> List Route -> List Route -> <Mut> Value
-evalMethodAt env name RLocal _ _ = lookupEnv env name
-evalMethodAt env name route implRoutes methodRoutes =
-  let lm = lookupMethod env name
-  let (narrowed, fwdReqs0) = methodAtNarrow env lm route
-  let fwdReqs = takeN (lookupMethodReqCount name (routeTag env route)) fwdReqs0
-  if awaitsArgs narrowed then
-    let v1 = applyDicts env narrowed methodRoutes
-    let v2 = applyDicts env v1 implRoutes
-    applyValues v2 fwdReqs
-  else narrowed
--- ARGSTAMP-UNIFY / genuine #21: the forwarding dict can be OVER-provisioned (a
--- List-tagged dict may carry an element req that THIS method's List impl does not
--- consume — two interfaces sharing the head tag, only one with `requires`).  Emit
--- tolerates this by loading only the matched impl's reqCount dicts; mirror that —
--- forward only the first reqCount of the dict's reqs (reqCount=0 ⇒ none).
-
--- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
--- forwarded requires onto a value still awaiting application. A terminal
--- nullary return-position impl body (`def = []`, stripped to a bare value by
--- stripResolved) takes no dict params — dict_pass's usesImplDict gate adds none
--- — so applying the route's dicts would over-apply to a constructor/scalar
--- ("applied non-function"). Drop them when the narrowed value awaits no args.
-
 eval env (EDictAt name routesRef) =
   applyDicts env (lookupEnv env name) routesRef.value
 -- @Impl named-instance hint (`combine @Additive 3 4`): the `@Additive` arg is a
@@ -1092,6 +1061,37 @@ eval env (ERangeArray lo hi incl) =
 eval env (ELoc _ e) = eval env e
 eval env (EDoOrigin _ e) = eval env e
 eval _ _ = panic "eval: unsupported node (slice 2)"
+
+-- C5: an RLocal route is NOT a method dispatch — the typechecker found no impl
+-- of this interface for the concrete receiver but the name has an explicitly-
+-- imported/local standalone (which the import frame binds ahead of the global
+-- method VMulti).  Resolve the standalone with a plain lookupEnv, unnarrowed and
+-- with no dict folding (mirror lib/eval.ml:816 EMethodRef RLocal).  Every other
+-- route is a genuine method dispatch: resolve the VMulti past any nearer same-
+-- named standalone shadow with lookupMethod (C5 / lib/eval.ml:223), then narrow.
+evalMethodAt : EvalEnv -> String -> Route -> List Route -> List Route -> <Mut> Value
+evalMethodAt env name RLocal _ _ = lookupEnv env name
+evalMethodAt env name route implRoutes methodRoutes =
+  let lm = lookupMethod env name
+  let (narrowed, fwdReqs0) = methodAtNarrow env lm route
+  let fwdReqs = takeN (lookupMethodReqCount name (routeTag env route)) fwdReqs0
+  if awaitsArgs narrowed then
+    let v1 = applyDicts env narrowed methodRoutes
+    let v2 = applyDicts env v1 implRoutes
+    applyValues v2 fwdReqs
+  else narrowed
+-- ARGSTAMP-UNIFY / genuine #21: the forwarding dict can be OVER-provisioned (a
+-- List-tagged dict may carry an element req that THIS method's List impl does not
+-- consume — two interfaces sharing the head tag, only one with `requires`).  Emit
+-- tolerates this by loading only the matched impl's reqCount dicts; mirror that —
+-- forward only the first reqCount of the dict's reqs (reqCount=0 ⇒ none).
+
+-- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
+-- forwarded requires onto a value still awaiting application. A terminal
+-- nullary return-position impl body (`def = []`, stripped to a bare value by
+-- stripResolved) takes no dict params — dict_pass's usesImplDict gate adds none
+-- — so applying the route's dicts would over-apply to a constructor/scalar
+-- ("applied non-function"). Drop them when the narrowed value awaits no args.
 
 export
 evalIndex : Value -> Value -> Value

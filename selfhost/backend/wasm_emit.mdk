@@ -6184,12 +6184,6 @@ foldMaxI (x::xs) = maxI x (foldMaxI xs)
 -- W7 string helpers (no stdlib): prefix test + drop + trailing-integer parse, over
 -- the char array.  Used only for the synthetic tuple ctor/type names ("Tup<n>" /
 -- "$Tuple<n>") whose arity is recovered from the trailing decimal.
-startsWithStr : String -> String -> Bool
-startsWithStr s pre =
-  let sc = stringToChars s
-  let pc = stringToChars pre
-  startsWithGo sc pc 0
-
 startsWithGo : Array Char -> Array Char -> Int -> Bool
 startsWithGo sc pc i =
   if i >= arrayLength pc then True

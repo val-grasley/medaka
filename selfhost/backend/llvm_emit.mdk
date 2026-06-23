@@ -5519,13 +5519,6 @@ takeS n xs
     [] => []
     y::ys => y :: takeS (n - 1) ys
 
-dropS : Int -> List a -> List a
-dropS n xs
-  | n <= 0 = xs
-  | otherwise = match xs
-    [] => []
-    _::ys => dropS (n - 1) ys
-
 tailS : List a -> List a
 tailS [] = []
 tailS (_::xs) = xs
@@ -5766,11 +5759,6 @@ emitMultiClauseFn e name clauses =
 clausePairs : List CClause -> List (List Pat, CExpr)
 clausePairs [] = []
 clausePairs ((CClause pats body)::rest) = (pats, body) :: clausePairs rest
-
--- the shared param count of a fn's clauses (first clause; all clauses agree).
-clauseArity : List (List Pat, CExpr) -> Int
-clauseArity ((pats, _)::_) = listLen pats
-clauseArity [] = 0
 
 -- ── TRMC emit (destination-passing loop) ────────────────────────────────────
 -- emit a TRMC-eligible function as an O(1)-stack destination-passing loop.
@@ -7048,11 +7036,6 @@ inferParamTysSeedD sigs dsig ((PVar x)::rest) body i di
 inferParamTysSeedD sigs dsig (_::rest) body i di =
   seedParamTy dsig di LTInt ::
     inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
-
--- a dict-passing parameter synthesized by elaborateModules carries the
--- `$dict_<fn>_<slot>` naming (typecheck.mdk `dictParamName`).
-isDictParamName : String -> Bool
-isDictParamName n = strHasPrefix "$dict_" n
 
 strHasPrefix : String -> String -> Bool
 strHasPrefix pre s
