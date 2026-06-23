@@ -15,3 +15,6 @@ _build/
 # Playground dist artifacts (built by playground/build_playground_wasm.sh; not committed)
 /playground/dist/*.wasm
 /playground/dist/*.mdk
+
+# Playground deployable site folder (built by playground/build_site.sh; not committed)
+/playground/site/
