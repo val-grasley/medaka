@@ -595,7 +595,17 @@ unless b m = if b then pure () else m
 
 export impl Thenable List where
   andThen [] _ = []
-  andThen (x::xs) f = f x ++ andThen xs f
+  andThen xs f = concatRev (revAcc xs []) []
+    where
+      -- Tail-recursive reverse (core has no `reverse`; that lives in `list.mdk`).
+      revAcc [] acc = acc
+      revAcc (x::rest) acc = revAcc rest (x :: acc)
+      -- `concatRev` folds `f x ++ acc` over the REVERSED input, rebuilding
+      -- `f a ++ f b ++ f c` by `++` associativity.  Its recursive call is the
+      -- whole body (tail ⇒ no stack growth — depth was previously the outer-list
+      -- length under the non-tail `f x ++ andThen xs f`); the `++` is iterative.
+      concatRev [] acc = acc
+      concatRev (x::rest) acc = concatRev rest (f x ++ acc)
 
 export impl Thenable Option where
   andThen None _ = None

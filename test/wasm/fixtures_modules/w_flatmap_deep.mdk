@@ -1,0 +1,9 @@
+-- layer-16 step-3: the List `andThen` (flatMap/concatMap) is now TAIL-recursive.
+-- andThen's recursion depth = the OUTER list length (independent of the per-element
+-- result size).  Here the outer list is 200000 long but each element contributes an
+-- EMPTY list except the first → the result is just [42], length 1.  The OLD non-tail
+-- `andThen` (self-call under `++`) recursed to depth ~200000 and overflowed the stack
+-- REGARDLESS of the tiny result; the new tail form runs in constant stack.  The small
+-- result keeps the (separately non-tail) `length`/`fold` off the deep path, so this
+-- fixture isolates the andThen tail-recursion fix.
+main = println (length (flatMap (x => if x == 1 then [42] else []) [1..=200000]))
