@@ -1,0 +1,12 @@
+-- layer-17 §2.1 SOUNDNESS gate (ref-mode / multi-decl): >2^30 Int arithmetic must
+-- not truncate when it flows through the uniform (ref eq) value rep (the i31/$boxint
+-- seam), not just the scalar fast path.  `println` forces ref-mode here, so the
+-- emitter boxes the large literals/intermediates and unboxes to i64 for arithmetic.
+-- Each line crosses ±2^30; a single i32-truncating sub-result would change the print.
+prod : Int
+prod = 1000000 * 1000000
+
+cross : Int
+cross = 1073741823 + 1
+
+main = println (prod + cross - 1000000000000)

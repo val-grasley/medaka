@@ -1,0 +1,20 @@
+-- layer-17 §2.1 SOUNDNESS gate: Int arithmetic crossing ±2^30 must NOT truncate.
+-- Pre-fix the WasmGC backend unboxed via i31.get_s (31-bit) and computed in i32, so
+-- any value/intermediate outside [-2^30, 2^30) wrapped.  Now Ints box into $boxint
+-- and arithmetic runs in i64; this fixture's >2^30 results match the native oracle.
+--
+-- crossUp  = 2^30-1 + 1            = 1073741824   (crosses the i31 ceiling)
+-- prod     = 10^6 * 10^6           = 10^12        (a 40-bit intermediate)
+-- big      = 2147483647 + 2147483647 = 4294967294 (> i32 signed max)
+-- eqBig    = (prod == 1000000000000)  must be True (boxed-Int equality)
+-- The final value combines them so a single wrong sub-result changes the output.
+crossUp = 1073741823 + 1
+
+prod = 1000000 * 1000000
+
+big = 2147483647 + 2147483647
+
+eqBig = prod == 1000000000000
+
+-- if the equality and the crossing both hold, fold everything into one large Int.
+main = if eqBig then crossUp + prod + big else 0 - 1
