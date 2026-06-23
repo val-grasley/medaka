@@ -1,0 +1,20 @@
+[package]
+name = "wat2wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Browser WAT->wasm assembler (wasm-bindgen wrapper around the wat crate)"
+license = "Apache-2.0 WITH LLVM-exception"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pinned to match the native toolchain's wasm-tools 1.252.0 so that
+# browser-side assembly is byte-semantics-identical to native assembly.
+# (The `wat` crate version tracks the wasm-tools workspace version.)
+wat = "=1.252.0"
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true

@@ -1,0 +1,4 @@
+# Rust build intermediates — not shipped. The shippable artifacts live in
+# playground/vendor/wat2wasm/ (committed). Rebuild with playground/build_assembler.sh.
+/target/
+/pkg/
