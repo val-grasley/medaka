@@ -29,6 +29,7 @@ import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
+import frontend.resolve.{resolveModulesToHumane}
 import driver.loader.{loadProgram, findProjectRoot}
 import driver.diagnostics.{analyzeProject, analyzeLocated, ppDiagCli, ppDiagCliSrc, Diag(..), Severity(..), SevError}
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
@@ -476,11 +477,24 @@ typecheckGate root input =
       Ok csrc => match loadProgram input roots
         Err msg => TGErr msg
         Ok mods =>
-          let _ = resetTypeErrorsSticky ()
-          let _ = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
-          match hadTypeErrors ()
-            True => TGFail
-            False => TGOk
+          let rtD = desugar (parse rsrc)
+          let coreD = desugar (parse csrc)
+          let modsD = map desugarPair mods
+          let resDiags = resolveModulesToHumane rtD coreD modsD
+          match resDiags
+            "" =>
+              let _ = resetTypeErrorsSticky ()
+              let _ = elaborateModules rtD coreD modsD
+              match hadTypeErrors ()
+                True => TGFail
+                False => TGOk
+            _ => TGErr resDiags
+-- G1 (SOUNDNESS): a RESOLVE-phase error (e.g. PrivateNameAccess — importing a
+-- name a module does not export) is on a SEPARATE channel that hadTypeErrors
+-- does NOT cover, so the gate must consult resolve diagnostics FIRST (mirroring
+-- `check`'s runCheckModules short-circuit) and abort before elaborate/emit.
+-- Surfaced as TGErr (the verbatim humane diagnostics), so build prints the same
+-- message `check` does and exits 1.
 
 -- Parse `[-o <out>] [--target <native|wasm>]`; first remaining positional is the
 -- input.  Default target is TNative (the LLVM/clang path) — purely additive, the
@@ -549,19 +563,32 @@ runRunCmd argv = match dropFlags argv
             let _ = ePutStrLn msg
             exit 1
           Ok mods =>
-            let _ = resetTypeErrorsSticky ()
-            let elaborated = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
-            match hadTypeErrors ()
-              True =>
-                let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
+            let rtD = desugar (parse rsrc)
+            let coreD = desugar (parse csrc)
+            let modsD = map desugarPair mods
+            let resDiags = resolveModulesToHumane rtD coreD modsD
+            match resDiags
+              "" =>
+                let _ = resetTypeErrorsSticky ()
+                let elaborated = elaborateModules rtD coreD modsD
+                match hadTypeErrors ()
+                  True =>
+                    let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
+                    exit 1
+                  False => putStr (runProgramOutput (fst elaborated) (snd elaborated))
+              _ =>
+                let _ = ePutStrLn resDiags
                 exit 1
-              False => putStr (runProgramOutput (fst elaborated) (snd elaborated))
 -- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
 -- eval on ANY type error.  elaborateModules route-stamps via the
 -- per-module typecheck (checkModuleFullImpl), which pushes into the
 -- sticky error accumulator; resetTypeErrorsSticky clears it first so
 -- hadTypeErrors reflects THIS run only.  A type error makes
 -- evalModulesOutput miscompile (the G1 bug), so we never reach it.
+-- Resolve-phase errors (e.g. PrivateNameAccess) ride a SEPARATE channel
+-- hadTypeErrors does not cover, so resolveModulesToHumane is consulted
+-- FIRST (mirroring `check`/`build`) and run aborts with the same humane
+-- diagnostic before elaborate/eval.
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)

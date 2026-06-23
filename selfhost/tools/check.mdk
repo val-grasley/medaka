@@ -29,6 +29,7 @@ import support.util.{joinNl}
 import frontend.resolve.{
   resolveToLines,
   resolveModulesToLines,
+  resolveModulesToHumane,
   singleFileImportErrors,
   ppResError,
 }
@@ -136,7 +137,7 @@ checkHasErrors rsrc csrc tsrc =
 export
 runCheckModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
 runCheckModules rtD coreD mods =
-  let resDiags = resolveModulesToLines rtD coreD mods
+  let resDiags = resolveModulesToHumane rtD coreD mods
   match resDiags
     "" =>
       let exWarns = entryExhaust mods

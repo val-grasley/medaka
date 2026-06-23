@@ -1560,3 +1560,24 @@ resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> St
 resolveModulesToLines runtimeDecls preludeDecls mods =
   joinNl
     (map resErrorSexp (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+
+-- HUMANE multi-module resolve diagnostics for the `medaka check` CLI (vs the
+-- S-expression `resolveModulesToLines`, which the differential resolve-modules
+-- harness diffs).  Each error is rendered through `ppResError` with a location
+-- prefix mirroring the OCaml oracle: `file:line:col: msg` when located, else
+-- `<unknown location>: msg` (PrivateNameAccess et al. carry no loc).  Kept
+-- separate so `resolveModulesToLines`'s sexp output stays byte-stable for the
+-- harness golden.
+export
+resolveModulesToHumane : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumane runtimeDecls preludeDecls mods =
+  joinNl
+    (map ppResErrorLocated (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+
+-- A single located humane line for a resolve error.
+export
+ppResErrorLocated : ResError -> String
+ppResErrorLocated e = match resErrorLoc e
+  None => "<unknown location>: " ++ ppResError e
+  Some (Loc f sl sc _ _) =>
+    f ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ ppResError e
