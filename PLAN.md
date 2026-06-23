@@ -251,7 +251,8 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | `hashName`/`dictTag` i32-vs-i64 width (layer-17, self-consistent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
 | `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
 | `wasm-opt` perf pass (eventual) | WasmGC backend | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 |
-| **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | this file → [Compiler / language](#compiler--language); [`archive/DICT-CONFORMANCE-ROADMAP.md`](./archive/DICT-CONFORMANCE-ROADMAP.md) |
+| **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | ✅ DONE (2026-06-23, `0d40398`) — see [Compiler / language](#compiler--language) |
+| Definer-shadow eval path — `medaka test stdlib/map.mdk` fails (`no matching impl for dispatch`) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 / D8 / D9, `foldMap` RNone emit-site, helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
@@ -473,13 +474,34 @@ routes land. Detail lives in the owning doc cited.
 
 ### Compiler / language
 
-- **Bug C — `toList` on an imported `Map` rejects.** Native `check` resolves `toList m`
-  (for `m : Map k v`) to the `Foldable` *method* rather than `map.mdk`'s standalone
-  function, so it demands `Foldable (Map a)` and fails with `No impl of Foldable for Map a`
-  (and misdispatches at runtime); the OCaml oracle accepts it. Phase-112 standalone-vs-method
-  resolution territory. Repro: `import map.*` then `toList (fromList [("a",1)])` → native
-  `check` errors. Owner: [`archive/DICT-CONFORMANCE-ROADMAP.md`](./archive/DICT-CONFORMANCE-ROADMAP.md)
-  "Bug C". Skill: **add-language-feature** (resolve/typecheck dispatch).
+- **Bug C — `toList` on an imported `Map` — ✅ DONE (2026-06-23, `0d40398`, native).**
+  Native `check`/`run`/`build` now route the bare name `toList m` (for `m : Map k v`) to
+  `map.mdk`'s standalone, not the `Foldable` method, byte-identical to the OCaml oracle
+  (`run`/`build` → `[("a", 1), ("b", 2)]`). The filed root cause was **stale** — the bug was
+  NOT the single-file driver but three layered defects on the **multi-module** `check` path
+  (`import map.*` loads map as a 2nd module): (1) `checkModuleFullDiags` seeded `implDecls=[]`
+  so `buildStandaloneShadows` never saw map's imported `toList` → empty shadow set; (2) the
+  call typed against the rebound *method* scheme leaving the result element free → `debug`/
+  `println` mis-dispatch (`intToString: not an Int` garbage at runtime); (3) `pickSchemes`
+  first-match picked the method scheme over the standalone. Fix (`selfhost/types/typecheck.mdk`,
+  mirrors oracle `lib/typecheck.ml:2293-2329`): thread the full impl universe into the check
+  driver; add a standalone-shadow arm to `inferAppExpr` (single-param interface method that is a
+  registered importer shadow whose receiver has no impl → type against the standalone, stamp
+  RLocal; handles marked `EMethodAt` and unmarked `EVar` heads); `pickStandaloneSchemes` selects
+  the concrete-`TCon`-receiver seed entry after `normalize`. Correctly NARROW: `length` on a Map
+  (no Map standalone) is still soundly rejected (the oracle over-accepts then panics at runtime —
+  native is *more* sound here). Gates: repro flips green; check/typecheck/eval differentials
+  0-failing; fixpoint C3a/C3b YES (orchestrator-re-verified). **Residual (separate, pre-existing,
+  NOT this bug):** `medaka test stdlib/map.mdk` still fails `no matching impl for dispatch` — the
+  orthogonal **definer-shadow** eval path (map's own doctests calling its own `toList`), distinct
+  from the importer-shadow result-type routing fixed here. See [Compiler / language
+  residual](#compiler--language) below.
+
+- **Definer-shadow eval path — `medaka test stdlib/map.mdk` fails.** A module's OWN doctests
+  calling its OWN standalone that shadows an interface method (map's `toList` internally) hit
+  `no matching impl for dispatch` at eval. Distinct from Bug C (importer-shadow, now closed):
+  this is the definer-shadow eval/dict routing. Pre-existing, verified on clean main. Skill:
+  **add-language-feature** (resolve/typecheck/eval dispatch).
 
 - **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
   Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and
