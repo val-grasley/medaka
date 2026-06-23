@@ -184,10 +184,18 @@ likewise. **Decision (user, 2026-06-22):** in-memory virtual-FS shim for the
 playground now; real WASI file IO later for a CLI cross-check — build the host seam
 generically so both back the same imports.
 
-## Open decision (deferred — revisit after the emitter gaps close)
+## RESOLVED: In-browser WAT assembly (2026-06-22)
 
-**In-browser WAT assembly.** The compiler-on-wasm emits WAT *text*; the browser needs
-to assemble it to bytes. Options: (a) emit WAT + a JS/wasm wat-assembler
-(wasm-tools-compiled-to-wasm, or a JS lib); (b) add a WAT→binary encoder in Medaka
-(direct binary emit — larger, fully self-contained). **User chose "defer — census
-first"**; decide once the emitter can actually compile the compiler.
+**Chosen: option (a) — ship the `wat` crate (wasm-tools lineage) as a wasm-bindgen blob.**
+Rust `wat` crate v1.252.0 wrapped with wasm-bindgen; the ~708 KB `_bg.wasm` is committed to
+`playground/vendor/wat2wasm/` so the static site has zero build dependency on Rust. Built
+once by `playground/build_assembler.sh`; re-run only on a version bump. Exact version parity
+with the native `wasm-tools` 1.252.0 used in `build_playground_wasm.sh`.
+
+## Browser playground wired — Stages 0-4 complete (2026-06-22)
+
+The in-browser playground is live: `playground/` contains the fully client-side Medaka
+playground. The compiler (`selfhost/entries/playground_main.mdk`) is compiled to WasmGC
+(`playground/dist/playground.wasm`) and runs entirely in the browser — no server-side
+compilation. See `playground/README.md` for build + run instructions and `PLAYGROUND-DESIGN.md`
+for architecture details.

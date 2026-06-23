@@ -1,13 +1,14 @@
-# PLAYGROUND-DESIGN.md — in-browser Medaka playground, with the server written in Medaka
+# PLAYGROUND-DESIGN.md — in-browser Medaka playground
 
-> **Status: EXPLORATORY DESIGN (decision-ready, not yet implemented).** No code is
-> proposed for landing here; §9 (design forks) is the list a human must rule on
-> before any build starts. Companion to `selfhost/WASMGC-DESIGN.md` (the WasmGC
-> backend this rides on), `ASYNC-DESIGN.md` (the locked async contract the server
-> needs), `selfhost/RUNTIME-DESIGN.md` §6a (the capability-interface/extern
-> disposition model), and `CAPABILITY-PLATFORM.md` (the product vision this is an
-> instance of — §388 there already names "a web playground" as the highest-leverage
-> next step past v1).
+> **Status: Stages 0–4 DONE (2026-06-22).** The playground is server-free: the
+> Medaka compiler runs fully client-side as a WasmGC module; `playground/server.js`
+> is a static file server only. See `playground/README.md` for build + run
+> instructions. The original server-side compile plan (§6.1 below) is marked
+> SUPERSEDED. Companion to `selfhost/WASMGC-DESIGN.md` (the WasmGC backend this
+> rides on), `ASYNC-DESIGN.md` (the locked async contract), `selfhost/RUNTIME-DESIGN.md`
+> §6a (the capability-interface/extern disposition model), and `CAPABILITY-PLATFORM.md`
+> (the product vision this is an instance of — §388 there already names "a web
+> playground" as the highest-leverage next step past v1).
 
 ---
 
@@ -354,28 +355,39 @@ broader than the capability-platform narrative; folding it in would unbalance th
    `--target native|wasm` flag (default native, purely additive), wasm branch runs
    `wasm_emit_modules_main` → captures WAT → `wasm-tools parse`+`validate`. Gate
    `test/build_wasm_cmd.sh` (4/0: rp_int_arith→14, rp_sum_list→10, rp_length_list→3, mm_sum→43),
-   `test/build_cmd.sh` native regression 14/0 unchanged. **Residual:** the wasm emitter must be a
-   COMPILED binary (the entry's `main = match args ()` needs the `args` extern, absent in interpreter
-   `run` mode — same as the LLVM entry), so `--target wasm` reads `MEDAKA_WASM_EMITTER` (built by
-   `test/wasm/build_wasm_oracle.sh` as `test/bin/wasm_emit_modules_main`), mirroring LLVM's
-   `MEDAKA_EMITTER`. Unlike `make medaka` (which mints `medaka_emitter` for the native path), no build
-   step yet mints a canonical wasm emitter — fine for the playground server (it can build+set it), but
-   a user-facing `--target wasm` should mint/locate it canonically later. OCaml `lib/build_cmd.ml` dual
-   intentionally NOT mirrored (frozen oracle, native-only decision).
-3. **Stage 2 — static playground page** (§2.2/§2.3): editor + console + a *server-stub*
-   that shells `medaka build --target wasm` locally (no Medaka server yet) and returns
-   bytes/errors. End-to-end in-browser run + diagnostics. **First shareable artifact.**
-4. **Stage 3 — the Medaka server, blocking-sequential** (§3, async stage (a)): add the
-   `<Net>` socket externs + HTTP-in-Medaka + the compile-subprocess driver. Replaces the
-   stub. Dogfoods the sockets. Still single-request-at-a-time.
-5. **Stage 4 — hardening**: compile sandboxing/resource limits (§9d), engine-feature
-   banner, richer demos (the capability-rejection demo, shareable permalinks).
-6. **Stage 5 (separate milestone) — the reactor + `Async`** (async stage (c)): non-blocking
-   socket externs + scheduler swap → concurrent server. Additive per the locked contract.
+   `test/build_cmd.sh` native regression 14/0 unchanged.
+3. **Stage 2 — static playground page** (§2.2/§2.3): ✅ **DONE (2026-06-19).** Editor +
+   console + a server-stub that shells `medaka build --target wasm` locally. End-to-end
+   in-browser run + diagnostics. First shareable artifact.
+4. **Stage 3 — server-free / compiler-in-browser**: ✅ **DONE (2026-06-22).**
+   **The architecture FLIPPED** — the WasmGC self-host milestone made it possible to
+   compile the entire Medaka compiler to WasmGC itself. The browser now runs the compiler
+   directly (`playground.wasm`, built by `build_playground_wasm.sh`). The Node stub
+   server is now a **static file server only** — no `/compile` endpoint, no medaka
+   subprocess, no container needed at runtime. The prior "trusted compile API + container"
+   plan (§6.1 below) is **SUPERSEDED**. See `playground/` for the implementation.
+   The deferred Stage-3 Medaka socket server (`<Net>` externs + HTTP-in-Medaka) is
+   now **moot for the playground** — there is no server to replace.
+5. **Stage 4 — documentation + static-site packaging**: ✅ **DONE (2026-06-22).**
+   `playground/README.md` rewritten for the server-free architecture;
+   `playground/build_site.sh` assembles a deployable `playground/site/` folder.
+6. **Stage 5 (separate milestone) — the reactor + `Async`** (async stage (c)):
+   non-blocking socket externs + scheduler swap → concurrent server. Additive per the
+   locked contract. Entirely independent of the playground.
 
-### 6.1 Deployment & hosting — DECIDED (2026-06-19)
+### 6.1 Deployment & hosting — SUPERSEDED (original: 2026-06-19; superseded: 2026-06-22)
 
-**Split hosting, chosen for a solo dev on a limited budget:**
+> **The plan below is SUPERSEDED.** The WasmGC self-host milestone (the compiler
+> compiling itself to WasmGC) made it possible to run the entire Medaka compiler
+> client-side. Stage 3 flipped the architecture: there is no longer a compile API
+> or container need. The playground is now a **pure static site** — deploy
+> `playground/site/` to any static CDN (GitHub Pages, Cloudflare Pages, Netlify).
+> No container, no Cloud Run, no subprocess at runtime. The Stage-3 Medaka socket
+> server is now moot for the playground.
+
+**Original plan (2026-06-19, for historical reference):**
+
+Split hosting, chosen for a solo dev on a limited budget:
 - **Static front** (the page + browser-run wasm) → a **free static/CDN host** (Cloudflare Pages /
   GitHub Pages). Untrusted user code runs in the *visitor's* browser, never server-side.
 - **Compile API** (the part that runs `medaka`) → a **container on a scale-to-zero platform
@@ -386,9 +398,7 @@ broader than the capability-platform narrative; folding it in would unbalance th
 **Why a container, NOT edge-FaaS.** The compile step **execs native binaries** (`medaka check/build
 --target wasm` → the wasm-emitter binary → `wasm-tools`). Edge runtimes (Cloudflare Workers, et al.)
 **cannot exec a subprocess or touch a filesystem** → the compile step can't live there. A container
-can. *Do not conflate the project's edge/sandbox pitch with the compile host:* the pitch is about
-where the **user program** runs (browser now; a WasmGC edge host later — the capability platform),
-**not** where the compiler runs. The compile server is boring trusted infra; host it boringly.
+can. *This reasoning is now moot — the compiler runs in the browser, not on a server.*
 
 **Stage-3 Medaka socket server is DEFERRED, not a launch dependency.** The containerized **Stage-2
 Node stub IS the v1 production backend** (it already takes `PORT`, zero npm deps). The Stage-3 Medaka
@@ -405,7 +415,8 @@ No clang on the wasm path → the image stays small.
 **Endgame reframe (why not to over-invest in server infra):** the compiler self-hosts and has a WasmGC
 backend → the far-horizon goal is **compile-in-the-browser** (self-host-on-WasmGC, no server at all).
 That makes the compile server a *stopgap* — favor the cheapest bridge (the scale-to-zero container),
-not elaborate always-on infrastructure.
+not elaborate always-on infrastructure. *This endgame has now been reached: Stage 3 is the compile-in-
+the-browser milestone. No container stopgap needed.*
 
 ---
 
