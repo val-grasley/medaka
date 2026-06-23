@@ -1,0 +1,62 @@
+-- parsec smoke demo: parse and evaluate simple `+`/`-` integer expressions,
+-- e.g. "1+2+3" or "10-3-2", and a comma-separated integer list.  Shows both
+-- the success path and the failure (error) path.
+--
+-- `main` is a BARE indented block of IO statements (NOT `do` — IO is not a
+-- monad here).
+
+import lib.parser.{Parser, runParser, digit, some, char, sepBy, chainl1, spaces, between, string}
+import string.{intToString}
+
+-- A natural number: one-or-more digits, folded into an Int.
+number : Parser Int
+number = map (digits => foldDigits digits 0) (some digit)
+
+foldDigits : List Char -> Int -> Int
+foldDigits ds acc = match ds
+  [] => acc
+  (c :: rest) => foldDigits rest (acc * 10 + (charCode c - 48))
+
+-- '+' and '-' as operator parsers yielding the binary function.
+addOp : Parser (Int -> Int -> Int)
+addOp = map (_ => (x y => x + y)) (char '+')
+
+subOp : Parser (Int -> Int -> Int)
+subOp = map (_ => (x y => x - y)) (char '-')
+
+-- A left-associative sum/difference of numbers.
+expr : Parser Int
+expr = chainl1 number (orElse addOp subOp)
+
+-- A bracketed, comma-separated list of numbers: "[1,2,3]".
+intList : Parser (List Int)
+intList = between (char '[') (char ']') (sepBy number (char ','))
+
+showResult : Result String Int -> String
+showResult r = match r
+  Ok n  => "Ok \{n}"
+  Err m => "Err \{m}"
+
+showListResult : Result String (List Int) -> String
+showListResult r = match r
+  Ok ns => "Ok \{ns}"
+  Err m => "Err \{m}"
+
+main =
+  println "=== expr ==="
+  println (showResult (runParser expr "1+2+3"))
+  println (showResult (runParser expr "10-3-2"))
+  println (showResult (runParser expr "7"))
+  println (showResult (runParser expr "+5"))        -- failure: no leading number
+  println "=== intList ==="
+  println (showListResult (runParser intList "[1,2,3]"))
+  println (showListResult (runParser intList "[]"))
+  println (showListResult (runParser intList "[1,x]"))  -- failure path
+  println "=== string ==="
+  println (showStr (runParser (string "hi") "hi there"))
+  println (showStr (runParser (string "hi") "bye"))     -- failure path
+
+showStr : Result String String -> String
+showStr r = match r
+  Ok s  => "Ok \{s}"
+  Err m => "Err \{m}"
