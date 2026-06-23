@@ -185,9 +185,9 @@
       </div>
       <textarea id="editor" spellcheck="false" autocorrect="off" autocapitalize="off">-- Medaka playground — edit me and hit Run!
 
-main = do
-  println (sum [1, 2, 3, 4])
-  println (map (* 2) [1..5])
+main =
+  println (sum [1, 2, 3, 4, 5])
+  println (map (x => x * 2) [1, 2, 3, 4, 5])
   println "hello from Medaka!"
 </textarea>
     </div>
