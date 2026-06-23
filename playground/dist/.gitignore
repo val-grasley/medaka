@@ -1,0 +1,4 @@
+# Stage-0 playground artifacts (built by build_compiler_wasm.sh).
+# compiler.wasm is multi-MB and regenerable — do not commit.
+*
+!.gitignore
