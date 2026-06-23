@@ -187,9 +187,12 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
     **ORCHESTRATOR-VERIFIED:** `1000000*1000000` → `1000000000000` on both (was garbage on wasm); AND the
     wasm-compiled emitter's WAT is now **BYTE-IDENTICAL to the native-compiled emitter** (hash deltas gone —
     hashName's djb2 now computes in i64). Gate `w_int64_boundary`, diff_wasm 139/6/18. **Remaining minor
-    loose ends (both LATENT/exotic, deferred):** (a) List `fold`/`length` impl methods are non-tail in the
-    wasm emit (plain-tail self-call not → `return_call`) → deep-list overflow; the principled GENERAL fix is
-    emitting `return_call` for plain-tail IMPL-METHOD self-calls (covers fold/length/etc. at once). (b) a
+    loose ends (both LATENT/exotic, deferred):** **(a) ✅ CLOSED (`ef1dd3c`, layer-18, emitter-only):** plain-tail IMPL-METHOD self-calls (`fold`/`length`/
+    `ap`/etc.) now emit `return_call $mdk_impl_<tag>_<method>` (constant stack) via an `implSelfCtxRef`
+    armed only around the ordinary impl body, reusing `trmc_analysis`'s `SelfByMethod`/`isSelfSatApp`
+    detection + composing with layer-8's cons-tail `wTrmcImplTry`. Deep `fold (+) 0 [1..=500000] + length …`
+    → `125000750000` (overflowed before); emitter stays byte-identical to native. diff_wasm 139/6/20.
+    **(b) accepted won't-fix (exotic):** a
     literal-switch pattern-match on a `>2^30` Int LITERAL still reads the scrutinee via `ref.cast (ref i31)`
     (exotic; array-index/range/charcode Int reads stay i31 by design — those values are inherently <2^30).
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
