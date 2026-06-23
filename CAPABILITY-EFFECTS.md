@@ -1,15 +1,16 @@
 # Capability-safe effects — Medaka's headline direction
 
-Status: **partially implemented** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
+Status: **substantially complete** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
 *propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
 holes that made the manifest forgeable are closed for the open/closed AND
 closed-closed point-free cases (the latter via variance-aware covariant re-open),
 and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
 `selfhost/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
 (gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + selfhost
-mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. Remaining:
-manifest emission only. See **§5a (current state)** for the precise done/remaining
-split. Companion to [`language-design.md`](./language-design.md)
+mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. **Manifest
+emission shipped 2026-06-21** (`medaka check-policy` + parameter-level policy +
+`medaka manifest` TOML — WS-1a/1b/1c per `EFFECTS-CONFORMANCE-ROADMAP.md`).
+See **§5a (current state)** for the precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
@@ -240,8 +241,11 @@ green. The self-hosted typechecker now rejects laundering identically to the
 reference. (Expected proportionate cost: ~+20% per-decl typecheck overhead from
 per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
 
-**Remaining:**
-- **Manifest emission** — unbuilt (waits on the edge runtime, §9).
+**Done (2026-06-21, WS-1a/1b/1c per `EFFECTS-CONFORMANCE-ROADMAP.md`):** manifest
+emission. `medaka check-policy` ported to the native CLI (WS-1a), extended to
+parameter-level policy checks via domain `dsub` (WS-1b), and `medaka manifest`
+added to emit the verified security-row as TOML `[package.capabilities]` (WS-1c).
+The Wasm custom-section half remains deferred (touches `wasm_emit.mdk`).
 
 **Done (Phase 146 gap 3, 2026-06-07):** cross-module effect label export. An
 `export effect Foo` declaration in one module is now visible across the loader
@@ -416,33 +420,30 @@ core) first; this is **Phase 146b**.
   attenuation story (a function *removing* a capability before calling another)
   needs design.
 - **Effect-label declaration syntax** — **pinned & shipped** (gap 2 + gap 3 DONE): top-level `effect Foo` (gap 2, 2026-06-06) + cross-module `export effect Foo` visibility (gap 3, 2026-06-07). Both reference + selfhost. See §3a and §5a.
-- **Parameterized effects** — now designed; see **§6a** (the pinned-domain /
-  scoped-KV layer, Phase 146b). Two sub-questions deferred there: precision through
-  wrappers (singleton-typed args) and param-aware row unification × typeclass/dict.
-- **Manifest emission/consumption** — concrete format the Wasm host reads, and how
-  it maps to WASI / the component model's own capability story (don't reinvent what
-  the component model already expresses).
+- **Parameterized effects** — **DONE (2026-06-21, verified done 2026-06-22)**: `CAPABILITY-EFFECTS-V2-DESIGN.md` implemented in full (WS-1 through WS-4 per `EFFECTS-CONFORMANCE-ROADMAP.md`). `Prefix`/`Set`/`Product` domains; parameter-level `check-policy`; `medaka manifest` TOML emission. Two sub-questions from §6a remain deferred: precision through wrappers (singleton-typed args) and the Wasm custom-section manifest format.
+- **Manifest emission/consumption** — **TOML `[package.capabilities]` DONE (2026-06-21, `medaka manifest`)**. Open: Wasm custom-section embedding (touches `wasm_emit.mdk`, deferred until WasmGC backend); mapping to WASI component-model world declarations (no blocking work — `CAPABILITY-EFFECTS-RESEARCH.md` §1 has the dual-layer design).
 - **Typeclass interaction** — effects in method signatures and how they interact
   with dict-passing.
 - **The flagship runtime** — build vs. partner; which edge/plugin host to target
   first.
 
-## 9. Next steps
+## 9. Next steps (historical — all items now done as of 2026-06-21)
 
 Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
 (open/closed rows + closed-closed point-free via instantiation re-opening)
 shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is done**
-(full subsystem ported, 2026-06-06, §5a). The remaining sequence:
+(full subsystem ported, 2026-06-06, §5a). The sequence was:
 
-1. **Fine-grained labels** (gap 2): **shipped 2026-06-06** — the `effect Foo`
+1. **Fine-grained labels** (gap 2): ✅ **shipped 2026-06-06** — the `effect Foo`
    declaration form + resolve registration (reference + selfhost mirror), so the
    manifest vocabulary is user/platform-definable. §3a / §5a. (Cross-module label
    export: ✅ **DONE** as gap 3, 2026-06-07 — see §5a and PLAN.md.)
-2. **Research** (for the manifest layer): WasmGC status + who targets it and how;
-   WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
-   isolation models; object-capability & effects-as-security literature; Roc's
-   platform model; MoonBit + Grain (closest competitors — has either touched
-   capability/effect safety?).
-3. **Design note + manifest format**: concrete surface syntax + a worked plugin
-   example + the manifest format, pressure-tested against 2–3 realistic plugin
-   shapes, then the manifest emission/consumption when the edge runtime is built.
+2. **Research** (for the manifest layer): ✅ **DONE** — `CAPABILITY-EFFECTS-RESEARCH.md`
+   covers WasmGC/WASI status, Cloudflare/Fastly/Fermyon isolation models,
+   object-capability literature, Roc/MoonBit/Grain comparisons, and the manifest
+   format (TOML `[package.capabilities]` + WIT world dual-layer).
+3. **Design note + manifest format**: ✅ **DONE** — `CAPABILITY-EFFECTS-V2-DESIGN.md`
+   is the full v2 design (parameterized effects + IO decomposition); manifest
+   emission shipped 2026-06-21 (`medaka manifest`/`medaka check-policy` — WS-1a/1b/1c
+   per `EFFECTS-CONFORMANCE-ROADMAP.md`). Wasm custom-section deferred (WasmGC backend).
+

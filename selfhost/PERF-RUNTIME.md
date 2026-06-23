@@ -123,11 +123,11 @@ call boundaries.
   RDict-forwarded dicts inside polymorphic fns + polymorphic-`fold` float unboxing. Big. Design (C).
 - **GC allocation density** — bintrees ~50% GC_malloc, listsum/cons churn, the emitter's
   `++`/`mdk_string_append` result allocs (segment-emit was a session-2 dead-end). Structural.
-- **arith-on-type-lost-floats fix** — PARTIALLY DONE (Win 12: `<type-lost-float> +
-  <statically-float>` now uses the float path, soundly; fixes comp/shadow). REMAINING:
-  both-operands-type-lost (`a+b`, both destructured floats → both LTInt) needs
-  field/component-type threading (design B). **Separate compilation** — MOOT (build is
-  ~8s, design D). Constant ADT/tuple cell hoisting — risky (`==` identity).
+- **arith-on-type-lost-floats fix** — **FULLY CLOSED 2026-06-18** (7 fixes; see TL;DR
+  and bug log below). ~~PARTIALLY DONE: both-operands-type-lost REMAINING~~ — all forms
+  closed (Win 12 + 6 soundness commits). Design B (field/component-type threading) was not
+  needed; the `LTNum` / closure-capture / returned-from-fn fixes covered all real cases.
+  (verified done 2026-06-22)
 
 ## Wins banked
 
@@ -397,6 +397,9 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   `project_multimodule_check_import_scoping_collision`). Typecheck-side, pre-existing,
   unrelated to the perf work (which is emitter-only). Blocks demoing Win 5 on stdlib
   containers, but not its validity (user-defined `gmax` shows the 5×; eval_dict 25/0).
+  — **APPEARS FIXED 2026-06-22**: `medaka build` with `import list.* ; sort [3,1,2]`
+  builds and runs correctly (3); no panic. Likely resolved by 2026-06-17 multi-module
+  check import-scoping collision fix (commit cfa2b1d / import-scope checkModulesEntryFullGo).
 
 - **PRE-EXISTING SOUNDNESS BUG — arith on type-lost floats miscompiles.** `a + b`
   (and `- * /`) where `a`/`b` are `Float` but their static LTy was lost — bound via

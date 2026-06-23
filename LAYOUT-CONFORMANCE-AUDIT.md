@@ -206,12 +206,18 @@ ground truth). → ROADMAP **WS-5** (track, no fix).
 
 ### F6 — Native `check` diagnostics lack source positions (out of layout scope)
 
-Across every rejecting probe, native errors are positionless (`parse error`,
+> **UPDATE (2026-06-21): CLOSED.** Pursued as a separate diagnostics workstream
+> (`selfhost/DIAGNOSTICS-SURFACING-PLAN.md`, S1–S4; merges `1cbe1e1`/`dd05010`/`395a276`/`ca1876f`).
+> Native `medaka check` now prints positioned, humane, carat-rendered diagnostics
+> byte-identical to the oracle (parse/type/resolve spans + non-exhaustive-match warning spans).
+> The original finding text is preserved below for audit-log integrity.
+
+~~Across every rejecting probe, native errors are positionless (`parse error`,
 `(UnboundVariable "id")`) while the oracle is positioned (`…:2:1: Parse error`,
 `…:2:4: Unbound variable: id`). This is a **diagnostics-quality** divergence in
 the CLI, *not* a layout/lexer divergence (the token streams agree). Recorded for
-completeness; **out of scope** for the layout roadmap. → ROADMAP **WS-4**
-(cross-reference only).
+completeness; **out of scope** for the layout roadmap.~~ → ROADMAP **WS-4**
+(cross-reference only; now DONE).
 
 ### F7 — `then`/`else` dual mechanism: equivalent today, **latent divergence** (idealized-spec gap)
 

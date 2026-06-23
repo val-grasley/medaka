@@ -7,29 +7,35 @@ calling-convention proposal (§8), and
 [`../selfhost/STAGE2-DESIGN.md`](../selfhost/STAGE2-DESIGN.md) §2.4 for where this
 fits in the backend plan.
 
-## Status: de-risking spike only
+## Status: canonical LLVM runtime (verified done 2026-06-22)
 
-> **`medaka_rt.c` is NOT the real runtime.** It is the minimal stub the Stage-2.4
-> *de-risking spike* (`../selfhost/llvm_emit.mdk`) links against to prove the
-> emit → `clang` → link → run → diff toolchain end-to-end for the scalar + function
-> + ADT/match + closure/HOF + records/tuples/refs subset (slices 1–5a). The real runtime (~54 leaf C functions per
-> RUNTIME-DESIGN.md §5) is built slice-by-slice later, after the bytecode VM (§2.2)
-> proves the same ABI against the tree-walker oracle.
+> **`medaka_rt.c` IS the real runtime.** The de-risking spike this document originally
+> described (slices 1–5a) grew into the full ~1039-line runtime backing the canonical
+> native `medaka` binary. All extern primitives are implemented, Boehm GC is wired
+> (`GC_malloc`/`GC_malloc_atomic` — not malloc-and-leak), strings are full UTF-8
+> with cached codepoint counts, and IO/file/stdio/hash/sort/RNG/time externs all land
+> here. The "build slice-by-slice later" plan is done. See
+> [`../selfhost/BOOTSTRAP.md`](../selfhost/BOOTSTRAP.md) for the completion log.
 
-What the stub provides today (4 functions):
+What the file provides (functions grouped by role — see source for the full list):
 
-| Symbol | Role |
-|--------|------|
-| `mdk_alloc(i64) -> ptr` | Heap allocation entry point. **Spike: malloc-and-leak** (GC deferred — the later step is `brew install bdw-gc` and routing this to `GC_malloc`). Boxes the slice-1 `Float` cell, (slice 3) every ADT constructor cell `{ i64 tag, field… }`, (slice 4) every closure cell `{ i64 header, code_ptr, captured… }`, and (slice 5a) Record/Tuple/Ref cells (same shape); every extern that *returns* a Medaka value must allocate through here so the GC swap is one function (RUNTIME-DESIGN.md §2a). |
-| `mdk_print_int(i64)` | Print an `Int`. Matches the tree-walker oracle: `Eval.pp_value (VInt n)` + newline. |
-| `mdk_print_bool(i64)` | Print a `Bool` (`true`/`false`). |
-| `mdk_print_float(double)` | Print a `Float`, reproducing OCaml `string_of_float` byte-for-byte (`%.12g` + a trailing `.` when integral, e.g. `14.`). |
+| Group | Functions |
+|-------|-----------|
+| Allocation | `mdk_alloc`, `mdk_alloc_atomic` |
+| Print (value types) | `mdk_print_int`, `mdk_print_bool`, `mdk_print_float`, `mdk_print_char`, `mdk_print_str`, `mdk_print_unit`, `mdk_print_num` |
+| Strings | `mdk_putstr`, `mdk_putstrln`, `mdk_eputstr`, `mdk_eputstrln`, `mdk_flushstdout`, plus full UTF-8 codec, `stringConcat`, `stringIndexOf`, Unicode classify/fold |
+| Arrays | `mdk_array_blit`, `mdk_array_fill`, sort, get, set, copy, length |
+| IO / process | `readLine`, `readFile`, `writeFile`, `appendFile`, `fileExists`, `listDir`, `args`, `getEnv`, `exit`, `allocBytes`, `wallTimeSec` |
+| Hash / RNG | `hashInt`, `hashString`, `hashChar`, `hashBool`, `hashFloat`, `randomInt`, `randomBool`, `randomFloat`, `randomChar`, `setSeed` |
 
-## Value representation (PROVISIONAL — see RUNTIME-DESIGN.md §8)
+GC is the **Boehm conservative collector** (`GC_init` at startup, `GC_malloc` for all
+heap objects, `GC_malloc_atomic` for pointer-free string cells). Immediates (`Int`,
+`Bool`, `Char`) are odd tagged words (low bit 1); Boehm never scans them as pointers.
 
-The spike uses a uniform 64-bit tagged word, **revisable in one place** (this file +
-`../selfhost/llvm_emit.mdk`'s tag/box helpers) because the tag arithmetic is emitted
-*into the LLVM IR*, not baked into the runtime:
+## Value representation (LOCKED — see RUNTIME-DESIGN.md §8)
+
+The runtime uses a uniform 64-bit tagged word, with tag arithmetic emitted
+*into the LLVM IR* (not baked into the runtime):
 
 - **`Int` / `Bool` / `Char`** — immediate, `(n << 1) | 1` (low bit 1). Lossless for
   Medaka's 63-bit `Int`.
@@ -49,7 +55,7 @@ The spike uses a uniform 64-bit tagged word, **revisable in one place** (this fi
   leading argument; the runtime itself stays oblivious (no closure-specific symbol).
 - **Record (slice 5a)** — boxed: same cell shape as ADT, with `header = hashName(record-type-name)` and one field per record attribute in declaration order.
 - **Tuple (slice 5a)** — boxed: same cell shape with `header = hashName("$tuple")`.
-- **Ref (slice 5a)** — boxed: 1-field cell `{ i64 header, i64 stored_value }` with `header = hashName("$ref")`. `.value` loads field 0; `set_ref` stores into field 0. Write barrier absent (spike uses malloc-and-leak — the first mutation site, noted as needing a GC write barrier in the real runtime).
+- **Ref (slice 5a)** — boxed: 1-field cell `{ i64 header, i64 stored_value }` with `header = hashName("$ref")`. `.value` loads field 0; `set_ref` stores into field 0. Boehm GC handles tracing; no explicit write barrier needed with the conservative collector.
 
 These helpers take/return *native* C scalars (the emitter untags/unboxes first), so
 the runtime stays a plain C-ABI leaf with no knowledge of the tag scheme beyond the

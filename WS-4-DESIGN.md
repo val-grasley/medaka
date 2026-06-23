@@ -1,6 +1,6 @@
 # WS-4 Design — `Product` refinement domain (structure-aware `Net = Host(Prefix) × Method(Set)`)
 
-**Status:** design pass (read-only). **Roadmap item:**
+**Status:** IMPLEMENTED (verified done 2026-06-22 — `PProduct` arm in `selfhost/types/typecheck.mdk:116`, `encodeProductParam` in `selfhost/frontend/parser.mdk:1699`, `test/effect_product_domain.sh` gate exists). The design-pass recommendation to DEFER was superseded. **Roadmap item:**
 [`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md) §WS-4 (E2, "largest, last").
 **Spec:** [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) §2.1 domain interface, §2.3
 delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** WS-3
@@ -410,7 +410,7 @@ syntax-design change, and lets the human's §4 decision arrive between landings.
 
 ## 6. Is WS-4 worth it now? — candid recommendation
 
-### Recommendation: **DEFER** (build WS-4a representation only if/when a concrete consumer appears; defer WS-4b surface syntax).
+### Recommendation: **DEFER** (build WS-4a representation only if/when a concrete consumer appears; defer WS-4b surface syntax). **[NOTE 2026-06-22: This recommendation was not followed — WS-4 was implemented. See Status header.]**
 
 **The case for deferring (stronger):**
 

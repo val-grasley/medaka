@@ -686,12 +686,21 @@ All bootstrap/check/eval/core_ir/llvm_modules/selfcompile_fixpoint gates green.
   **Fix:** port, or reject the syntax with a diagnostic.
 - **D10. Top-level `DLetGroup` never installed** by `evalProgram` (`eval.mdk:1119-1122`)
   → unbound-identifier panic. [KNOWN — README TODO-blocked list.]
+  **CLOSED (verified 2026-06-22):** `selfhost/eval/eval.mdk` now handles `DLetGroup` in
+  `funDefs`: `funDefs ((DLetGroup _ binds)::rest) = letGroupDefs binds ++ funDefs rest`
+  (comment: "Top-level `let rec … with …` (DLetGroup): each binding behaves exactly
+  like a plain DFunDef"). The unbound-identifier panic is resolved.
 - **D11. Prelude dict-pass coverage hole in drivers** — only `eval_dict_main`
   (single-file) dict-passes the prelude; `eval_typed_main`/`eval_typed_modules_main`
   never do, and **no multi-module dict driver exists** — `when`/`unless` → `pure`
   through the loader is an unexercised corner of the seam. [NEW] **Fix:** add the
   multi-module dict driver (it's also the E4 prerequisite) and fold dict-passing into
   the typed default.
+  **CLOSED (verified 2026-06-22 via ARGSTAMP-UNIFY-PLAN completion):** ARGSTAMP-UNIFY-PLAN
+  (all phases 0–5 complete 2026-06-14) retired the `evalDictLayerActive` eval-vs-emit fork
+  and unified dict-threading across eval/emit. The DRIVER-COLLAPSE-PLAN (done 2026-06-13)
+  folded single-file into the 1-module case of the multi-module path. Both changes together
+  close the coverage hole described here.
 
 ---
 
@@ -700,8 +709,8 @@ All bootstrap/check/eval/core_ir/llvm_modules/selfcompile_fixpoint gates green.
 Condensed verdicts; the dispatch design needs consolidation, not redesign.
 
 1. **Route taxonomy (RKey/RDict/arg-tag): sound-with-caveats.** Post-D3b the emit path
-   is `RKey`/`RDict` for 1012/1013 arg-position sites; residuals = `max`/`min` over
-   primitive `Ord` (already PLAN'd) + the `empty`/`foldMap` default. Native composite
+   is `RKey`/`RDict` for 1012/1013 arg-position sites; residuals = ~~`max`/`min` over
+   primitive `Ord` (already PLAN'd)~~ **[CLOSED 2026-06-11]** + the `empty`/`foldMap` default (still open — `empty@?` RNone site, see DISPATCH-INVENTORY.md). Native composite
    cell tags (`typeId*2^32 + ordinal`) make distinct ADTs collision-free, BUT:
    (a) primitives share the immediate rep — arg-tag on a primitive is correctly a hard
    gap natively; (b) a user ctor reusing a reserved name (`Some`/`Cons`/`Ok`/`Lt`…)

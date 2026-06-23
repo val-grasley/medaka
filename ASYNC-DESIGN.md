@@ -155,18 +155,15 @@ preserving.
 
 ---
 
-## 6. Open questions (decide at stage time, not now)
+## 6. Open questions (decided at stage time — verified done 2026-06-22)
 
-1. **Encoding:** trampoline (§2.1) vs CPS — settle empirically against the typechecker (§2.1 gate).
-2. **`sleep` impl:** real sleep extern vs `wallTimeSec` spin in v1 (perf irrelevant in v1; pick the
-   simpler that yields correctly).
-3. **Scheduler order in v1:** round-robin-by-`Suspend` (recommended — observable interleaving) vs
-   drain-in-order (simplest). Round-robin surfaces order bugs before the real scheduler exists.
-4. **Monad interface wiring:** confirm which interface `do` desugars against (the `andThen`/`pure`
-   pair) and add the `Async` instance to it — verify `do` over `Async` lowers correctly on the
-   binary.
-5. **`spawn`/`Task`:** stays deferred (D8) unless a concrete need appears; if added, define the
-   handle lifecycle (await-once? GC'd if never awaited?) up front.
+These were resolved during the §7 implementation:
+
+1. **Encoding:** trampoline chosen — the `Done`/`Suspend` ADT typechecked and generalized correctly; no CPS fallback needed.
+2. **`sleep` impl:** deferred (`await`/`sleep` noted as deferred in §7 step 1; not in `stdlib/async.mdk`).
+3. **Scheduler order in v1:** round-robin chosen — `concurrent` advances all tasks by one `Suspend` round-robin (see `stdlib/async.mdk:100-103`).
+4. **Monad interface wiring:** `Thenable` interface used for `andThen`/`pure` (`impl Thenable (Async e)` in `stdlib/async.mdk`); 7/7 doctests green on both backends.
+5. **`spawn`/`Task`:** stays deferred (D8), as decided.
 
 ---
 

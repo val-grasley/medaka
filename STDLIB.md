@@ -71,38 +71,37 @@ here. In rough priority order:
 
 ## Module 0 — `runtime` (extern catalog) ✅ implemented
 
-These are the OCaml-backed primitives declared as `extern` in
-`stdlib/runtime.mdk`. They are visible to every Medaka program without an
-import. The list is authoritative — adding a new primitive means editing this
-file and the matching impl in `lib/eval.ml`.
+These are the primitives declared as `extern` in `stdlib/runtime.mdk`. They are
+visible to every Medaka program without an import. The list below reflects
+the **current** labels (fine-grained after the `<IO>` split — verified 2026-06-22).
 
-- `putStr : String -> <IO> Unit` — write a string to stdout, no trailing newline
-- `putStrLn : String -> <IO> Unit` — write a string to stdout followed by `\n`
-- `inspect : a -> <IO> Unit` — dump a value's raw internal structure (debug
-  escape hatch; bypasses `Display`)
+- `putStr : String -> <Stdout> Unit` — write a string to stdout, no trailing newline
+- `putStrLn : String -> <Stdout> Unit` — write a string to stdout followed by `\n`
 - (`print`/`println : Display a => a -> <IO> Unit` are Medaka prelude functions
   over `putStr`/`putStrLn`, not externs — they render via `Display`, Phase 111)
 - `Ref : a -> Ref a` — wrap a value in a mutable cell (read it back via `r.value`)
 - `set_ref : Ref a -> a -> <Mut> Unit` — overwrite the contents of a `Ref`
-- `hash : a -> Int` — structural, non-negative hash (Module 6 hash containers)
+- `hashInt`, `hashFloat`, `hashString`, `hashChar`, `hashBool : _ -> Int` — type-specific
+  hash externs; the `Hashable` interface in `core.mdk` calls these (replaced the old
+  generic `hash : a -> Int` extern)
 - `pi : Float` — math constant π
 - `e : Float` — math constant e
-- `readLine : Unit -> <IO> String` — read one line from stdin
-- `readFile : String -> <IO> (Result String String)` — read file, `Ok contents` or `Err message`
-- `writeFile : String -> String -> <IO> (Result String Unit)` — write file, `Ok ()` or `Err message`
+- `readLine : Unit -> <Stdin> String` — read one line from stdin
+- `readFile : String -> <FileRead> (Result String String)` — read file, `Ok contents` or `Err message`
+- `writeFile : String -> String -> <FileWrite> (Result String Unit)` — write file, `Ok ()` or `Err message`
 - `exit : Int -> <Panic> Unit` — terminate the process with the given exit code
 - `panic : String -> a` — abort with a runtime panic carrying the message
 
 io Module 7 host primitives (see Module 7 for the ergonomic layer):
 
-- `args : Unit -> <IO> (List String)` — program args after the script name
-- `getEnv : String -> <IO> (Option String)` — environment variable, or `None`
-- `fileExists : String -> <IO> Bool`
-- `appendFile : String -> String -> <IO> (Result String Unit)` — `Ok ()` / `Err message`
-- `listDir : String -> <IO> (Result String (List String))` — directory entry names
-- `ePutStr` / `ePutStrLn : String -> <IO> Unit` — raw stderr output
-- `readLineOpt : Unit -> <IO> (Option String)` — one stdin line, `None` at EOF
-- `readAll : Unit -> <IO> String` — all of stdin
+- `args : Unit -> <Env> (List String)` — program args after the script name
+- `getEnv : String -> <Env> (Option String)` — environment variable, or `None`
+- `fileExists : String -> <FileRead> Bool`
+- `appendFile : String -> String -> <FileWrite> (Result String Unit)` — `Ok ()` / `Err message`
+- `listDir : String -> <FileRead> (Result String (List String))` — directory entry names
+- `ePutStr` / `ePutStrLn : String -> <Stderr> Unit` — raw stderr output
+- `readLineOpt : Unit -> <Stdin> (Option String)` — one stdin line, `None` at EOF
+- `readAll : Unit -> <Stdin> String` — all of stdin
 
 `pure` and `map` are *not* externs — they are interface methods (see `core`).
 
@@ -622,7 +621,7 @@ typechecked as if it had no declared effect, then errored on the
 
 ### Sorting (pure)
 
-- ✅ `sort : Ord a => Array a -> Array a` — fresh sorted copy (kernel-level `arraySortBy compare`)
+- ✅ `sort : Ord a => Array a -> Array a` — fresh sorted copy (pure-Medaka `mergeSortBy`; see note above re: `arraySortBy` migration)
 - ✅ `sortBy : (a -> a -> Ordering) -> Array a -> Array a`
 - ✅ `sortOn : Ord b => (a -> b) -> Array a -> Array a`
 
@@ -777,10 +776,10 @@ A growable mutable array (vector) over the fixed-size `Array` — `stdlib/mut_ar
   `__hashRaw` (`Hashtbl.hash`), which the type-erased native runtime can't run.
 - Removed `"HashMap"`/`"HashSet"` from `resolve.ml`'s `primitive_types` (reserved
   placeholders), mirroring the `Map`/`Set` removals.
-- Surfaced two language gaps (PLAN.md): **Phase 118** (`if`/`else` branches can't
-  be multi-statement blocks — use guards) and **Phase 119** (false-positive
-  non-exhaustiveness for 3+-arg list-matching functions — use a `where go`
-  single-list-arg helper). Both have clean workarounds used in these modules.
+- Surfaced two language gaps (both now fixed): **Phase 118** (`if`/`else` branches
+  can't be multi-statement blocks — ✅ DONE 2026-06-03) and **Phase 119** (false-positive
+  non-exhaustiveness for 3+-arg list-matching functions — ✅ DONE 2026-06-03). The
+  workarounds in these modules remain valid code but are no longer required by the language.
 
 ---
 
@@ -1016,15 +1015,15 @@ structures needs no manifest entries at all.
 
 | Extern | Current label | Fine-grained label (proposed) | Notes |
 |--------|--------------|-------------------------------|-------|
-| `putStr`, `putStrLn`, `inspect` | `<IO>` | `<Stdout>` | Standard output |
-| `ePutStr`, `ePutStrLn` | `<IO>` | `<Stderr>` | Standard error |
-| `readLine`, `readLineOpt`, `readAll` | `<IO>` | `<Stdin>` | Standard input |
-| `readFile`, `writeFile`, `appendFile`, `fileExists`, `listDir` | `<IO>` | `<Fs>` | Filesystem |
-| `args` | `<IO>` | `<Args>` | Process argument vector |
-| `getEnv` | `<IO>` | `<Env>` | Environment variables |
+| `putStr`, `putStrLn` | `<Stdout>` ✅ | `<Stdout>` | Standard output (split done) |
+| `ePutStr`, `ePutStrLn` | `<Stderr>` ✅ | `<Stderr>` | Standard error (split done) |
+| `readLine`, `readLineOpt`, `readAll` | `<Stdin>` ✅ | `<Stdin>` | Standard input (split done) |
+| `readFile`, `fileExists`, `listDir` | `<FileRead>` ✅ | `<FileRead>` | Filesystem read (split done) |
+| `writeFile`, `appendFile` | `<FileWrite>` ✅ | `<FileWrite>` | Filesystem write (split done) |
+| `args`, `getEnv` | `<Env>` ✅ | `<Env>` | Process args + env vars (split done) |
 | `exit` | `<Panic>` | **`<Exit>`** | Process termination — a genuine withholdable capability; distinct from `panic` (see Design resolution below) |
 | `randomInt`, `randomBool`, `randomFloat`, `randomChar`, `setSeed` | `<Rand>` | `<Rand>` | (already fine-grained) |
-| `wallTimeSec` | `<IO>` | **`<Time>`** | Wall-clock read is a distinct capability; the `<Time>` built-in label exists for this |
+| `wallTimeSec` | `<Clock>` ✅ (was `<IO>`) | `<Clock>` | Wall-clock read; builtin label is `Clock` (not `Time` as originally planned) |
 | `allocBytes` | `<IO>` | `<Perf>` or keep `<IO>` | GC profiling escape hatch; very low priority |
 
 #### Tooling-only (not for user code or edge modules)
@@ -1087,18 +1086,18 @@ The infrastructure for fine-grained labels is in place (Phase 146 gap 2:
 `effect Foo` declarations, user-definable labels, all labels are erased
 before codegen).  The remaining steps, in priority order:
 
-1. **`wallTimeSec` → `<Time>`** — one-line change in `runtime.mdk`; the
-   `<Time>` built-in label already exists.  Do before manifest emission.
-2. **`<IO>` split** — rename the relevant externs and io.mdk wrappers to
-   `<Stdout>`, `<Stderr>`, `<Stdin>`, `<Fs>`, `<Args>`, `<Env>`.  Required
-   for useful fine-grained edge manifests (a logging plugin needs `<Stdout>`
-   but must not get `<Fs>`).  Coordinate with test fixture updates.
+1. **`wallTimeSec` label** — ✅ already using `<Clock>` in `runtime.mdk` (the builtin
+   label is `Clock`, not `Time`; `<Time>` was a placeholder name that was never
+   added). Do the final label audit before manifest emission.
+2. **`<IO>` split** — ✅ largely DONE (verified 2026-06-22): externs now use `<Stdout>`,
+   `<Stderr>`, `<Stdin>`, `<FileRead>`, `<FileWrite>`, `<Env>` in `runtime.mdk`. The
+   io.mdk wrappers and `appendFile` may still use `<IO>`; do a final audit before
+   manifest emission.
 3. **`panic`/`exit` split** — `panic` stays untagged (excluded from gating);
    `exit` relabelled `<Panic>` → `<Exit>` as a real gated capability. See
    "Design resolution" above. Apply before manifest emission.
-4. **Cross-module effect label export** — `pub effect Fetch` declared in a
-   platform SDK module must be visible across the loader boundary (deferred in
-   Phase 146 gap 2 §3a).  Needed for multi-module platform SDKs.
+4. **Cross-module effect label export** — ✅ DONE (Phase 146 gap 3, 2026-06-07): `export effect Fetch` declared in a
+   platform SDK module is now visible across the loader boundary via `exp_effects` in `module_exports`.
 5. **Manifest emission** — the final Phase 146 remaining item (CAPABILITY-EFFECTS.md
    §5a): once labels are refined and cross-module export works, the compiler
    emits a `[package.capabilities]` table from a verified entry point's effect

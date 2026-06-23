@@ -71,11 +71,9 @@ classify n
   | otherwise                = fallback
 ```
 
-Caveat (see the AGENTS.md guard note): in a **match-arm** guard
-(`x if Some v <- e => body`) the bound `v` reaches later guard qualifiers but
-**not the arm body** (a resolve bug, both backends). So the match-arm form is
-only safe when the bind is consumed inside the guard chain — for bind-in-body,
-use the function-clause form above.
+Note: in a **match-arm** guard (`x if Some v <- e => body`) the bound `v` reaches
+both later guard qualifiers **and the arm body** (fixed 2026-06-15 in the selfhost
+resolve/typecheck passes). Both forms are now safe.
 
 The strength of the rewrite scales with whether the `Some`-arm actually
 **binds**. When the match destructures and *uses* the payload (`Some a => … a …`),

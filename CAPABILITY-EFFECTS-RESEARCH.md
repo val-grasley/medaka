@@ -16,10 +16,12 @@ compile-time metadata only, zero runtime cost. User/platform-definable effect la
 the loader boundary) are implemented. A working demo (`demo/plugin_good.mdk`,
 `demo/plugin_malicious.mdk`, `medaka check-policy`) rejects a malicious plugin
 that buries a `fetch` call four helpers deep — transitively propagated effect row
-`{Fetch, Cache, Log} ⊄ {Cache, Log}` with the call chain printed. What remains is
-**manifest emission**: extracting the verified effect row from the entry point and
-writing it in a format a host can consume. The WasmGC backend (needed for real edge
-deployment) is downstream of Phase 146 and not yet started; the LLVM backend can
+`{Fetch, Cache, Log} ⊄ {Cache, Log}` with the call chain printed. **Manifest
+emission is also done** (2026-06-21): `medaka manifest` extracts the verified
+security-row of an entry point and writes it as TOML `[package.capabilities]`
+(WS-1c per `EFFECTS-CONFORMANCE-ROADMAP.md`); `medaka check-policy` supports
+parameter-level policy (`--allow 'Net=host/*'`). The WasmGC backend (needed for
+real edge deployment) is downstream and not yet started; the LLVM backend can
 produce native binaries for development/demo purposes.
 
 ---
@@ -438,6 +440,11 @@ flag model already implements the explicit-bound path.
 
 ## Open questions / forks for the design note
 
+> **Historical note (verified done 2026-06-22):** these were inputs to the
+> `CAPABILITY-EFFECTS-V2-DESIGN.md` design pass + the WS-1–4 workstreams. Items 2,
+> 4, 5, 7 are resolved; items 1, 3, 6 remain open design questions for the
+> platform/WasmGC layer. See `EFFECTS-CONFORMANCE-ROADMAP.md` for current state.
+
 1. **Extern namespace sealing**: how does the platform prevent a submitted plugin from
    declaring its own `extern fetch` (bypassing the effect system by naming a host
    function directly)? Options: (a) the compilation sandbox forbids `extern`
@@ -446,12 +453,9 @@ flag model already implements the explicit-bound path.
    The WASI instantiation model (host only supplies its declared imports) handles (b)
    for Wasm targets, but the native demo needs an explicit answer.
 
-2. **TOML vs. embedded in Wasm custom section**: the TOML sidecar is developer-facing
-   but may diverge from the binary. Embedding the manifest as a Wasm custom section
-   (like DWARF debug info) keeps them co-located and tamper-evident. Trade-off:
-   parsing a Wasm custom section is less ergonomic for CI/CD. Recommendation: TOML
-   for developer tooling + custom section for the Wasm binary (both compiler-emitted,
-   both authoritative, both same content).
+2. **TOML vs. embedded in Wasm custom section**: ✅ **RESOLVED** — TOML
+   (`medaka manifest` → `[package.capabilities]`, WS-1c 2026-06-21) done; custom
+   section deferred to WasmGC backend (`wasm_emit.mdk`).
 
 3. **Effect → WASI mapping table**: which standard WASI interfaces do Medaka's
    built-in labels (`IO`, `Mut`, `Async`, `Panic`, `Rand`, `Time`) and the common
@@ -460,28 +464,23 @@ flag model already implements the explicit-bound path.
    note should pin the mapping table and decide which labels are "internal-only"
    (not emitted in the manifest) vs. "host-capability" (emitted).
 
-4. **Parameterized effects in the manifest** (Phase 146b): `<Fetch "idp.example.com">`
-   should emit `allowed_outbound_hosts = ["https://idp.example.com"]` in Spin's TOML
-   and the WIT world's import type should carry the domain annotation (not yet in
-   WASI HTTP interface — this would be a Medaka-specific extension or a proxy
-   injection pattern as described in CAPABILITY-PLATFORM.md §7a). Which comes first:
-   the parameterized manifest format or the parameterized WIT mapping?
+4. **Parameterized effects in the manifest** (Phase 146b): ✅ **RESOLVED** —
+   `medaka manifest` emits parameterized atoms (WS-1c/WS-3b, 2026-06-21). The
+   Spin `allowed_outbound_hosts` translation and the WIT world annotation remain
+   future platform work (no WasmGC backend yet).
 
-5. **Inferred vs. declared in the emitted manifest**: should `verified_effects` list
-   the inferred row (compiler's proof), the user-declared bound, or both? Both is the
-   right answer for auditing (policy = declared; proof = inferred); the host policy
-   check should use the declared bound as the policy.
+5. **Inferred vs. declared in the emitted manifest**: ✅ **RESOLVED** —
+   `medaka manifest` emits the inferred row (compiler's proof); `check-policy` takes
+   the user-declared bound as the policy; `EFFECTS-CONFORMANCE-ROADMAP.md` WS-1c.
 
 6. **Multi-entry-point plugins**: the plugin SDK model (CAPABILITY-PLATFORM.md §5)
    expects multiple bounded functions per plugin (e.g. `extractToken`, `verify`,
    `decide`). The manifest must capture each entry's bound separately. The TOML format
    should be an array of entry points, each with its own `verified_effects`.
 
-7. **The target-first decision**: the WasmGC backend is the "real" delivery vehicle
-   for the edge story but is a substantial build. The LLVM native backend works now
-   for the demo. The design note should confirm whether manifest emission + native
-   `medaka check-policy` is sufficient for the "wow" demo phase, or whether Spin/Wasm
-   integration is a prerequisite for any external pitch.
+7. **The target-first decision**: ✅ **RESOLVED** — manifest emission + native
+   `medaka check-policy` is sufficient for the "wow" demo phase (CAPABILITY-PLATFORM.md
+   §7c: demo is complete and runnable). Spin/Wasm integration waits on WasmGC backend.
 
 ---
 

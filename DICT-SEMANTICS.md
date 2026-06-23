@@ -426,7 +426,9 @@ module-qualified identity.
 
 ## 10. How to read the recurring defects against this spec
 
-Not an audit (deferred), but the lens. Each known trouble area maps to a
+**Audit completed 2026-06-21 — see [`DICT-CONFORMANCE-AUDIT.md`](DICT-CONFORMANCE-AUDIT.md); all D1–D10 divergences closed.** The lens below remains useful for diagnosing future regressions.
+
+Each known trouble area maps to a
 specific clause; that mapping is the audit's starting point.
 
 - **Return-position dispatch** → §5: dispatch must come from the static

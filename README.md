@@ -18,12 +18,13 @@ as the differential oracle during the soak period (retirement ≠ removal).
 Frontend, interpreter, and standard library complete; **self-hosting + native LLVM
 codegen done** (the native compiler self-hosts to a reproducing fixpoint — PLAN.md).
 **Native backend is canonical** (2026-06-12): all PRE-FLIP-GAPS soundness/capability
-gaps closed; `make medaka` builds it OCaml-free. **Soak tail in progress (2026-06-14):**
+gaps closed; `make medaka` builds it OCaml-free. **Soak tail in progress (2026-06-22):**
 gate re-rooting done (all correctness gates OCaml-free), the single-file/multi-module
 driver collapse done, native dispatch gaps #55/#21 + the map Foldable false-positive
-fixed, fuzzer ported to native. Next: a native-emitter mixed-ADT-match fix + the
-`argStampEnabled` eval-vs-emit dispatch unification, then confidence-gated OCaml `lib/`
-removal (Stage 3 tail).
+fixed, fuzzer ported to native, constructor-name collision (mis-filed as "mixed-ADT match")
+fixed via universal ctor mangling, `argStampEnabled` eval-vs-emit dispatch unification
+complete (eval now threads dicts; `evalDictLayerActive` retired). Next: confidence-gated
+OCaml `lib/` removal (Stage 3 tail).
 
 - **AST** — `lib/ast.ml`
 - **Lexer** — `lib/lexer.mll` (indentation-sensitive, OCaml-style)

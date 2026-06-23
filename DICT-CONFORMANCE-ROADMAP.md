@@ -35,7 +35,7 @@ and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
 
 - **Target the canonical binary.** The OCaml `lib/*.ml` oracle is frozen and being
   retired; do not invest in its divergences except as a *porting source* (it
-  already implements some checks selfhost lacks — D1, D4).
+  already implemented some checks selfhost lacked — D1, D4, both now closed).
 - **Close gaps generally, not per-symptom** (project ethos). D2 and D3 share one
   root (identity is bare-name, IE is per-module); fix the root, retire the
   containment workarounds — don't add another scope filter.
@@ -330,18 +330,18 @@ Today it silently mis-runs. *Effort:* low (a) / high (b). *Risk:* low.
 - *Effort:* low. *Risk:* none (docs + a provably-inert flag). Do these first to stop
   the stale docs misleading the WS-1/WS-2 implementers.
 
-## 3. Summary table
+## 3. Summary table (all items ✅ CLOSED — see STATUS section above)
 
-| WS | Closes | Spec | Skill | Effort | Risk | Gate |
-|----|--------|------|-------|--------|------|------|
-| 1a | D1 (decl gate) | §6 C2 | add-language-feature | Low | Low | `impl Mon Bag` w/o `Sem` → `MissingSuperImpl` |
-| 1b | D1 (dispatch) + D7 | §3 super, §5 | add-language-feature | Med | Med | return-pos superclass `run==build`, dict-routed |
-| 2 | D2 + D3 | §8 I1, §6 C4/I2 | add-language-feature | High | Med-High | cross-module overlap rejected; same-name diff-arity OK |
-| 3 | D4 | §6 C1, §5 | harden-typechecker | Low-Med | Low | most-specific pair in return-pos: routed or rejected |
-| 4a | D5 (W1) | §3 W1 | harden-typechecker | Low | Low | cyclic `requires` rejected |
-| 4b | D6 (W2) | §3 W2 | harden-typechecker | Low | Low | non-shrinking instance terminates with error |
-| 5 | D8 | §5 phantom | harden-typechecker | Low | Low | phantom method rejected at `check` (or proxy-dispatched) |
-| 6 | D9 + D10 | §7 | — | Low | None | parity probe stays 26/26; docs match binary |
+| WS | Closes | Spec | Status | Gate |
+|----|--------|------|--------|------|
+| 1a | D1 (decl gate) | §6 C2 | ✅ `afe4b89`+`00cf2f7` | `impl Mon Bag` w/o `Sem` → `MissingSuperImpl` ✓ |
+| 1b | D1 (dispatch) + D7 | §3 super, §5 | ✅ `83bb5c7`+`db091fd`+`72a1477` | return-pos superclass `run==build` ✓ |
+| 2 | D2 + D3 | §8 I1, §6 C4/I2 | ✅ `e488cd9`+`880e0fe`+`84642d0` | cross-module overlap rejected; same-name diff-arity OK ✓ |
+| 3 | D4 | §6 C1, §5 | ✅ `fdaefda` | most-specific pair in return-pos: routed ✓ |
+| 4a | D5 (W1) | §3 W1 | ✅ `adbbb97` | cyclic `requires` rejected ✓ |
+| 4b | D6 (W2) | §3 W2 | ✅ `adbbb97` | non-shrinking instance terminates with error ✓ |
+| 5 | D8 | §5 phantom | ✅ `aa020b0` | phantom method rejected at `check` ✓ |
+| 6 | D9 + D10 | §7 | ✅ `121b9dc` | parity probe 26/26; docs match binary ✓ |
 
 ## 4. Verification strategy
 

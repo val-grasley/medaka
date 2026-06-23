@@ -169,11 +169,11 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Block-form sum `data Shape \n = Circle Float \n \| Square Float` | PASS | `adt_block_form.mdk` |
 | Named-field variant `data Event = Click { x : Int, y : Int }` | PASS | `adt_record_variant.mdk` |
 | ADT with Float payload (single) | PASS | `adt_float_ctor.mdk`, `float_two_ctor.mdk` |
-| ADT with two Float fields (`Rect Float Float`) — match extracts both | GAP | see §Gaps below |
+| ADT with two Float fields (`Rect Float Float`) — match extracts both | PASS (Gap E closed 2026-06-10, Fix B — field vars typed from ctor's declared field types; verified done 2026-06-22) | `adt_float_ctor_arith.mdk` |
 | `deriving (Debug)` | PASS | `deriving_debug.mdk` |
 | `deriving (Eq)` | PASS | `deriving_eq.mdk` |
-| `deriving (Eq, Ord)` — `<` comparison | GAP | see §Gaps below |
-| `deriving (Eq, Ord)` — `compare` | GAP | see §Gaps below |
+| `deriving (Eq, Ord)` — `<` comparison | PASS (Gap G closed 2026-06-10 — A2 type-directed rewrite; verified done 2026-06-22) | `operator_eq_user_impl.mdk` |
+| `deriving (Eq, Ord)` — `compare` | PASS (Gap G closed 2026-06-10 — `deriveOrdData` wired for `data` types; verified done 2026-06-22) | `ord_compare.mdk` |
 | Variant functional update `Pt { p \| y = 9 }` | PASS (native); oracle type-errors | `adt_float_ctor.mdk` |
 
 ### Records
@@ -186,7 +186,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Record functional update `{ p \| age = 31 }` | PASS | `record_update.mdk` |
 | Record pun shorthand `Person { name, age }` | PASS | `record_pun.mdk` |
 | Nested record update `{ p \| addr.city = "Boston" }` | PASS | `record_nested_update.mdk` |
-| Record `deriving (Debug)` | GAP | see §Gaps below |
+| Record `deriving (Debug)` | PASS (Gap G follow-up closed 2026-06-10; `deriveForRecord` filled for Eq/Ord/Debug/Display) | `record_deriving.mdk` |
 
 ### Tuples
 
@@ -285,8 +285,8 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | `readFile` / `writeFile` | PASS | `io_write_read.mdk` |
 | `do`-notation for Option | PASS | `do_option.mdk` |
 | `do`-notation for Result (Int) | PASS | `do_result_int.mdk` |
-| `do`-notation for Result (Float) | GAP | see §Gaps below |
-| `do`-notation for IO (multi-statement) | GAP | see §Gaps below |
+| `do`-notation for Result (Float) | PASS (works with `Result ErrType Float` type order; verified done 2026-06-22: `safeDiv 10.0 2.0` in do-block → `Ok 7.0`) | `do_result_int.mdk` style |
+| `do`-notation for IO (multi-statement) | BY DESIGN (see A8) — both compilers reject `do` on IO (`do` requires a monad; use bare indented block for IO sequencing instead) | — |
 | `Ref` cell create + `set_ref` + `.value` read | PASS | `ref_let_mut.mdk` |
 
 ### Misc declarations

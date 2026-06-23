@@ -16,7 +16,7 @@ must both conform to *this document*.
 > `selfhost/frontend/lexer.mdk` is validated against. Written to outlive `lib/`.
 >
 > Cross-references: `SYNTAX.md` "Layout notes" is the operational *what-parses*
-> cheat-sheet (and currently drifts from the binary — see
+> cheat-sheet (doc drift erased by WS-1, `eb01df3`, 2026-06-21 — see
 > `LAYOUT-CONFORMANCE-AUDIT.md`); `language-design.md` is intent/rationale. When
 > any of those disagree with the **binary**, the binary wins and this file is
 > updated to match it.

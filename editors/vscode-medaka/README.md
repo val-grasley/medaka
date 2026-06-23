@@ -19,8 +19,11 @@ settings to the full path.
 - Error diagnostics from the parser, resolver, and type checker, refreshed
   on every edit. Squiggle ranges underline the offending expression.
 
-The server runs as `medaka lsp` over stdio. v1 ships diagnostics only — no
-hover, completion, or go-to-definition yet.
+The server runs as `medaka lsp` over stdio. The native `medaka lsp` server
+advertises and implements diagnostics, hover (inferred types for top-level and
+local bindings), completion (prefix-filtered names from the typecheck env),
+go-to-definition, document highlight, and inlay hints. The client starts the
+server and negotiates capabilities automatically. (verified done 2026-06-22)
 
 ## Building the client
 

@@ -1,4 +1,4 @@
-# Medaka — Plan Archive (Phases 1–144)
+# Medaka — Plan Archive (Phases 1–145)
 
 > **ARCHIVED 2026-06-02; updated through 2026-06-05.** This is the historical
 > roadmap covering completed Phases 1–144. It is kept **for reference only** —
@@ -3961,7 +3961,7 @@ Residual (documented, not a regression): `_` after an operator in a binding LHS
 parses as a left section, not a wildcard (`(x :: _) <- m` — use a named tail);
 inherent to the expression-first parse and shared by all binding LHSs.
 
-### Phase 82: CLI surface completion ⏳ TODO (partial)
+### Phase 82: CLI surface completion ✅ DONE (all non-package-manager gaps closed)
 
 The design spec lists `new build run check test fmt lsp doc add remove update`;
 today `check / run / test / repl / lsp / fmt / new` exist. Non-stdlib,
@@ -3975,14 +3975,11 @@ non-package-manager gaps:
   Output: `{"file": …, "diagnostics": [ <LSP Diagnostic> … ]}` on stdout; exit
   1 iff any `Error`-severity diagnostic. **Single-file only** — `analyze` does
   not invoke the multi-file loader (see §5); multi-file `--json` is a follow-up.
-- `medaka build` — ⏳ TODO. Split out: "typecheck + cache" has no honest
-  implementation yet — there is no artifact cache or AST/typed-IR serialization
-  format in the tree. Needs its own design before it's more than an alias of
-  `check`.
-- `medaka doc` — ⏳ TODO. Split out: doc comments are not attached to AST nodes
-  (a parallel `Lexer.take_comments()` stream matched by position, like
-  `doctest.ml`), and there is no pretty-printer for a typechecker `scheme`.
-  Needs a comment→decl matcher + signature renderer + an output-format decision.
+- `medaka build` — ✅ DONE (2026-06-09, `39f3318`; full prelude 2026-06-18). LLVM backend via
+  selfhost emitter + `clang`. Artifact cache deferred. (Was: ⏳ TODO at time of Phase 82 entry.)
+- `medaka doc` — ✅ DONE (`lib/doc.ml` + `test/test_doc.ml`; ported to native CLI 2026-06-18).
+  Comment→decl matcher + signature renderer + Markdown output; ported to `selfhost/tools/doc.mdk`.
+  (Was: ⏳ TODO at time of Phase 82 entry.)
 
 (`add`/`remove`/`update` need a package manager — out of scope until one
 exists.) Skill: none specific; `--json`/`--release` landed in `bin/main.ml` +
@@ -4334,9 +4331,10 @@ Three related guard gaps, all observed writing `list.mdk`:
    suites green; no new `@thorough` failures.
 
 2. **…detect non-exhaustive guards at compile time** (`exhaust.ml` handles
-   pattern matrices but not guard coverage) — today it's a runtime error. ⏳ TODO.
+   pattern matrices but not guard coverage) — today it's a runtime error. ✅ DONE
+   (Phase 91(2), `lib/exhaust.ml` `check_guard_exhaustiveness` + selfhost mirror `checkGuardExhaustiveness`).
 3. **No inline guard form**: `f n _ | n <= 0 = []` is a parse error; guards must
-   be on indented continuation lines. ⏳ TODO (`lib/parser.mly`/`lib/lexer.mll`).
+   be on indented continuation lines. ✅ DONE (verified 2026-06-22 — `f n _ | n <= 0 = []` parses and runs correctly in both compilers; inline guards are supported).
 
 Remaining (2) + (3) land in `lib/exhaust.ml` (coverage warning — note guards can
 be arbitrary `Bool` so only `| otherwise`/literal-`True` coverage is decidable;
@@ -7930,8 +7928,10 @@ and a TOML reader (for `medaka.toml`).
    GAP 1; do now that `llvm_emit.mdk` is free).
 3. ✅ **TOML reader** (`stdlib/toml.mdk`) — DONE 2026-06-10. Mirrors `project_config.ml`'s
    subset (`[section]`, `key="string"`, string arrays, `#` comments); 12/12 doctests.
-4. **Diagnostics surfacing layer** (mirror `lib/diagnostics.ml` 479) — structured errors
-   the CLI + LSP consume. ⏳ TODO.
+4. ✅ **Diagnostics surfacing layer** (mirror `lib/diagnostics.ml` 479) — structured errors
+   the CLI + LSP consume. **DONE (WS-4/F6, 2026-06-21, `selfhost/DIAGNOSTICS-SURFACING-PLAN.md`).**
+   Native `medaka check` now prints positioned, humane, carat-rendered diagnostics
+   byte-identical to the OCaml oracle; gate `diff_native_cli error/*` 7/7.
 5. ✅ **Comment side-channel** (selfhost lexer) — DONE 2026-06-10. `RComment` in
    `lexer.mdk` (stripped before layout → token stream byte-identical); `collectComments`
    surfaces line/col/text; **8/8 byte-identical** to `lib/`'s channel. Unblocks the fmt port.

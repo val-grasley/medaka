@@ -109,9 +109,9 @@ one-time compile cost paid by `medaka build`; runtime + RSS improve. Acceptable
 for the compiler binary; revisit if per-invocation build latency matters for
 small user programs (could gate -O2 on input size).
 
-**Next candidates (PERF-SCOPE §3b, not yet done):** TRMC for `x :: recurse`
-list builders (PLAN #56); reduce GC allocation density on hot paths (4 201
-`mdk_alloc` sites) — structural, beyond what -O2 reaches.
+**Next candidates (PERF-SCOPE §3b, not yet done at time of writing):** TRMC for `x :: recurse`
+list builders (PLAN #56 — **DONE 2026-06-11**, see `TRMC-DESIGN.md`); reduce GC allocation density on hot paths (4 201
+`mdk_alloc` sites) — structural, beyond what -O2 reaches. (verified done 2026-06-22)
 
 ---
 
@@ -161,9 +161,9 @@ byte-identical to Entry-1 output; listsum output unchanged.
   the -O0 baseline. Env var `GC_FREE_SPACE_DIVISOR` overrides for memory-tight
   deployments.
 
-**Next candidates:** TRMC (PLAN #56) for list-builder stack pressure; profile the
+**Next candidates:** TRMC (PLAN #56) for list-builder stack pressure (**DONE 2026-06-11**, see `TRMC-DESIGN.md`); profile the
 remaining 6.25 s self-compile to see whether it is now emit-logic-bound or still
-alloc-bound (try divisor=2 as a memory/speed midpoint; measure GC_get_heap_size).
+alloc-bound (try divisor=2 as a memory/speed midpoint; measure GC_get_heap_size). (TRMC note verified done 2026-06-22)
 
 **Divisor sweep (self-compile, min-of-3, -O2, via `GC_FREE_SPACE_DIVISOR`):**
 
@@ -323,7 +323,8 @@ Tested and **rejected** — recorded so future sessions skip them:
   remaining O(N²) `contains` scans, but `stdlib/hash_set.mdk` is not yet in the
   emit graph and its `Hashable`/`Eq` constrained dispatch + mutable `Array`
   resize risk the parked route-fragile dispatch gaps (#54/#55/#50/#21). Deferred
-  to a supervised session.
+  to a supervised session. — **SUPERSEDED: hash_set added to emit graph in Entry 7
+  (2026-06-11); dispatch gaps #54/#55/#50/#21 all CLOSED as of 2026-06-14.** (verified done 2026-06-22)
 
 ## Final state (this session)
 
@@ -552,6 +553,12 @@ supervised, with the fixpoint as the gate. Everything banked above is fixpoint-s
 
 ## Remaining hotspots after this session (profile map for supervised follow-up)
 
+> **NOTE (verified 2026-06-22):** This table represents the state at ~Entry 6 (session 1 mid-point).
+> All 4 actionable items were addressed later in the same session:
+> `distinctTypeNames`/`nubStr` memoized in Entry 14; `isKnownFn` EMap-indexed in Entry 17;
+> `core_ir_lower.clausesFor` merge-sort grouped in Entry 16. The unidentified `mdk_lam86996`
+> was tracked by session 2 (it was `scopeArities`, Win 1). The table is kept as historical context.
+
 `sample` of the final emitter during self-compile (2 GB heap to isolate compute),
 ranked. The big O(N²) front-end costs are GONE; the profile is now flat:
 
@@ -643,6 +650,14 @@ work** and must be done supervised, gated by `selfcompile_fixpoint` +
 `diff_selfhost_llvm`/`llvm_modules` + the dispatch differential gates. The
 membership change itself is output-preserving in principle (filters/lookups stay
 identical), so it should be a clean supervised port.
+
+> **UPDATE (session 2, 2026-06-14):** This ~40% `promotedConstraints` claim was
+> **MISATTRIBUTED** — see "Dead-ends this session" above. The `containsName (fst e) promoted`
+> filter's actual wall-clock cost was in the noise floor (the `promotedC`/`ArgRw` lists are
+> small); the real hotspot under that lam-id was `scopeArities` (Win 1, ~23%) + `maybeInferConstraint`
+> (Win 3, ~7.5%), both now fixed. The dispatch machinery SMap conversion was attempted as a
+> dead-end and showed no measurable change. Dispatch gaps #54/#55/#50/#21 are also ALL CLOSED
+> as of 2026-06-14. (verified 2026-06-22)
 
 Lower-priority safe leftovers (each ≲3–6 %, need in-module map/structure):
 `core_ir_lower.lowerGroups` group-by (needs an order-preserving map — a pure

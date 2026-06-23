@@ -114,7 +114,7 @@ simply wouldn't be *granted* a network import — a live, in-browser instance of
 
 ## 2. Half A — client-side delivery (small, language-side)
 
-### 2.1 `medaka build --target wasm` CLI (DOESN'T EXIST — design)
+### 2.1 `medaka build --target wasm` CLI (DONE — see Stage 1 in §6; this section preserved as design rationale)
 
 Today the WasmGC emitter runs only via gate entry binaries
 (`selfhost/entries/wasm_emit_modules_main.mdk`, invoked as a subprocess capturing WAT).

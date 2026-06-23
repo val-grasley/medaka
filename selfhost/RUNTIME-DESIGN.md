@@ -9,12 +9,12 @@ must satisfy and the per-extern disposition for building it.
 See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decision
 (bytecode-VM-first) and [`../PLAN.md`](../PLAN.md) "North star → Stage 2".
 
-> **Status (updated 2026-06-07):** the value representation + calling convention are
+> **Status (updated 2026-06-07; canonical flip done 2026-06-12):** the value representation + calling convention are
 > **RATIFIED** (§8: Option A uniform tagged word under §8.6's abstract contract; dense
 > i32 ctor-ordinal tags; uniform one-word header), and the **String representation is
 > DECIDED** (§4/§7 decision 2: UTF-8 bytes + cached codepoint count). A **native
 > runtime exists** (`runtime/medaka_rt.c`): `mdk_alloc` routes to Boehm `GC_malloc`
-> (conservative GC, verified collecting), and the Stage-2.4 de-risking spike
+> (conservative GC, verified collecting), and the Stage-2.4 backend
 > (`selfhost/llvm_emit.mdk`) emits the full non-GC Core IR surface plus the **entire
 > native extern catalog** (slices 1–14: strings/numeric/IO/abort/arrays/char/unicode/
 > args-env/file-IO + ADT-returning externs), all gated byte-identical against the
@@ -22,10 +22,10 @@ See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decisi
 > dispositions are also **DONE**: RNG = deterministic SplitMix64 (shared oracle +
 > runtime); sorts = `→MEDAKA` (pure-Medaka stdlib); `hash` = `→METHOD` (`Hashable`
 > typeclass); `inspect` = `→METHOD` (`inspect x = putStrLn (debug x)` in
-> `stdlib/io.mdk` — the last reflective extern is gone). **Still open** (per §7):
-> the `set_ref` write barrier, the `panic` unwind model, and **promotion of the
-> spike to the real backend** (close the dispatch gaps + drive it over the real
-> `selfhost/*.mdk` source, then bootstrap).
+> `stdlib/io.mdk` — the last reflective extern is gone). **Spike promoted to real backend
+> (DONE 2026-06-12):** all dispatch gaps closed + self-hosting fixpoint reached (see
+> `BOOTSTRAP.md` C1–C4 + `PRE-FLIP-GAPS.md`). Still deferred (soak-period items):
+> the `set_ref` write barrier and the `panic` unwind model.
 
 ---
 

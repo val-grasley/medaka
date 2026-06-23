@@ -58,9 +58,13 @@ shelled-out tool and run under a Wasm engine.
   compiles a **user program** to a runnable WasmGC module that produces
   byte-identical stdout to the interpreter/native oracle on a growing fixture
   corpus, staged slice-by-slice (§9).
-- **Far horizon (NOT this plan):** the *compiler itself* self-hosting on WasmGC.
+- **Far horizon (NOT this plan — but MET, 2026-06-22):** the *compiler itself* self-hosting on WasmGC.
   That requires the full extern surface (subprocess, files, args) the wedge target
-  deliberately does not grant. Out of scope; do not let it bound the MVP.
+  deliberately does not grant. This was out of scope for the original MVP plan — but
+  it was subsequently built (WASM-SELFHOST-ROADMAP.md layers 1–16): check_main runs
+  byte-identical to native under Node, and the emitter itself compiles programs on WasmGC.
+  The original framing "do not let it bound the MVP" was correct; the MVP shipped first,
+  then the self-host was pursued separately.
 
 The win is leverage: the IR, DCE, mangling, typecheck, and dict-passing dispatch
 are all **already backend-neutral** (§2). A WasmGC backend is "a second
@@ -372,25 +376,7 @@ engine, and diffs stdout against the interpreter/native oracle.
 
 ## 9. MVP-first staging (ascending-risk slices, each independently gated)
 
-> **IMPLEMENTATION STATUS (2026-06-19) — compute+print MVP MET; W1–W9b DONE on `main`.**
-> Real-`core.mdk`-prelude + multi-module compute+print programs compile to WasmGC and run
-> byte-identical to `medaka build`. Files: `selfhost/backend/wasm_emit.mdk` + `wasm_preamble.mdk`;
-> entries `selfhost/entries/wasm_emit_{main,typed_main,modules_main}.mdk`. **`wasm_emit` is OUTSIDE
-> the self-host compiler graph** (only the gate entries import it) → emitter changes need NO
-> fixpoint/seed; the output-diff gate is decisive. Gates (all green): `test/wasm/diff_wasm.sh` **85**
-> (prelude-free) · `diff_wasm_typed.sh` **6** (typed, own-interface dispatch) · `diff_wasm_modules.sh`
-> **9** (real-prelude/multi-module, incl multi-file). Oracle = `./medaka build` (needs
-> `MEDAKA_EMITTER=$PWD/medaka_emitter`). Per-slice as built: W1 toolchain · W2 scalar · W3 ADTs/match
-> (`br_table`, synthetic ctors) · W4 closures/`call_ref`/TCO (`return_call`, arity-in-struct) · W5
-> dispatch (`CMethod`/`CDict`) · W6a strings (`(array i8)`+cp_count, byte-write IO; collapsed the JS
-> scaffold) · W7 collections (all 11 nodes) · W8 RNG(SplitMix64)/hash/string-externs · W9+**W9b**
-> real-prelude+multi-module (W9b ported llvm's `methodArityOf` eta-expansion to close the point-free-impl
-> blocker) · **W8b** Floats (`floatToString` via a host-import fallback — the one host-dependent formatter)
-> + `stringIndexOf`/`stringCompare`. **REMAINING (deferred, beyond compute+print MVP):** `stringToFloat`,
-> the **IO/WASI host surface** (file/exec/stdin/args/env — the capability-manifest payoff), and
-> **self-host-on-WasmGC** (far horizon). Engine: **Node ≥22 REQUIRED** (Node 20.x FAILS the finalized
-> Wasm 3.0 GC encoding — §11; the gates auto-`nvm use 24`). Authoritative detail: memory
-> `project_wasmgc_backend`. Next workstream: the browser playground — `PLAYGROUND-DESIGN.md`.
+> **IMPLEMENTATION STATUS (2026-06-22) — compute+print MVP MET (W1–W9b); SELF-HOST + IN-BROWSER EMITTER COMPLETE.** The per-binding emitter-gap census is 0 (1428→0, 9 categories closed — W10–W12 + self-host layers 1–16). `check_main` (lex→parse→resolve→exhaust→typecheck) compiled to WasmGC runs to completion under Node byte-identical to native. The WasmGC-compiled emitter (`wasm_emit_modules_main`) runs end-to-end and compiles Medaka programs to working WasmGC modules. The in-browser playground is live (`playground/dist/playground.wasm`). Gates (all green): `test/wasm/diff_wasm.sh` **138** · `diff_wasm_typed.sh` **6** · `diff_wasm_modules.sh` **17**. Authoritative detail: `WASM-SELFHOST-ROADMAP.md` (layer log). **Previously REMAINING items now CLOSED:** `stringToFloat` (layer-6), IO/WASI host surface (step 10/W12), self-host-on-WasmGC (layer-12 front-end + layer-16 emitter). **Residual (layer-17, deferred):** `hashName`/`dictTag` i32-vs-i64 width — dispatch-hash `i32.const`s differ from native (deltas 2^30; self-consistent, true byte-identity needs hash-width fix).
 
 Mirrors how the LLVM backend was staged (slices 1–14). Each slice is gated by
 `diff_wasm.sh` on its fixture before the next starts.
@@ -433,7 +419,7 @@ Mirrors how the LLVM backend was staged (slices 1–14). Each slice is gated by
    programs; compile a non-trivial stdlib-using program. Gate: the multi-module
    diff corpus.
 
-**Far horizon (explicitly NOT an MVP slice):** compiler self-host on WasmGC. Needs
+**Far horizon (explicitly NOT an MVP slice — but MET 2026-06-22, see §9 status):** compiler self-host on WasmGC. Needs
 the full IO/subprocess/file extern surface the wedge target withholds. Out of
 scope; track separately.
 
@@ -446,12 +432,12 @@ Each is an open choice with a recommendation; rule on these before any code.
 | # | Fork | Recommendation | Tradeoff |
 |---|---|---|---|
 | **a** | **WAT text vs binary emission** | **Emit WAT text.** | Exactly parallels the current text-LLVM-IR approach (debuggable, diffable, no binary encoder to write); costs one assembler shell-out. Binary would skip the assembler but means writing a LEB128/section encoder — strictly more work for the MVP. |
-| **b** | **Assembler (clang analogue)** | **`wasm-tools parse` + `validate`** (bytecodealliance). | GC validation on by default; text parser supports all proposals always; faithful text→binary (no rewrite). WABT `wat2wasm` **ruled out — no GC** ([#2530](https://github.com/WebAssembly/wabt/issues/2530)). Binaryen `wasm-as` rewrites instructions (lossy as a pure assembler) — keep `wasm-opt -O` as an *optional later* optimization pass only. **Not installed locally (§ toolchain check) — must `cargo install wasm-tools` / `brew`.** |
+| **b** | **Assembler (clang analogue)** | **`wasm-tools parse` + `validate`** (bytecodealliance). | GC validation on by default; text parser supports all proposals always; faithful text→binary (no rewrite). WABT `wat2wasm` **ruled out — no GC** ([#2530](https://github.com/WebAssembly/wabt/issues/2530)). Binaryen `wasm-as` rewrites instructions (lossy as a pure assembler) — keep `wasm-opt -O` as an *optional later* optimization pass only. **Installed: `wasm-tools 1.252.0` (verified 2026-06-22).** |
 | **c** | **Test/run engine** | **Node ≥20.10 for the CI diff gate** (no flags, in-process stdout capture); Wasmtime ≥27 (`-W gc -W tail-call`) as the CLI/non-JS cross-check. | Node = zero-flag, simplest capture, already installed (v20.11.1). Wasmtime needs explicit `-W gc` (off by default) but is the engine an edge deployment actually uses. Support both behind the diff script. |
 | **d** | **String representation** | **`(array i8)` UTF-8 + cached `cp_count`.** | Host-independent (identical Wasmtime + browser), pure WasmGC core, matches Medaka's locked native string rep (RUNTIME-DESIGN §7 decision 2) and codepoint-awareness. **stringref is dead** (Phase 1, not in 3.0). JS String Builtins (shipped, `externref`) are zero-copy on browsers but **useless under Wasmtime** — adopt only at a later browser-interop seam, never as the core rep. ([stringref#54](https://github.com/WebAssembly/stringref/issues/54), [js-string-builtins](https://github.com/WebAssembly/js-string-builtins/blob/main/proposals/js-string-builtins/Overview.md)) |
 | **e** | **IO host interface (WASI P1 vs P2 vs custom)** | **Custom host import for the MVP** (`env.mdk_write` etc.); migrate IO/files/args to **WASI P1** for production CLI; P2/component-model + WIT later as the capability-manifest seam. | Custom shim avoids the P1/P2 adapter matrix and `_start`/memory-export ceremony, works identically across engines, matches the `medaka_rt.c` host-shim model, and is the simplest stdout capture. P2/WIT is where the capability-grant story ultimately lands but is over-scoped for an MVP. Node = P1-only anyway. |
 | **f** | **Unicode externs (9)** | **Host import for MVP; bundled `(array i8)` table for production edge.** | Host import is trivial and correct where the host has ICU/JS, but the wedge target may have *no* such host → bundle a compact Unicode-property table as a data segment + pure lookup for self-containment. Defer the table to a post-MVP slice. |
-| **g** | **MVP scope boundary** | **Done = user programs compile + pass the diff corpus through Slice W9.** Compiler self-host on WasmGC is explicitly **out of MVP scope.** | Self-host needs the withheld IO/subprocess surface; chasing it would balloon the MVP and contradict the wedge target's capability model. |
+| **g** | **MVP scope boundary** | **Done = user programs compile + pass the diff corpus through Slice W9.** Compiler self-host on WasmGC was explicitly **out of MVP scope** — and subsequently MET (layers 1–16, 2026-06-22). | Self-host needs the withheld IO/subprocess surface; chasing it would have ballooned the MVP; the MVP shipped first, then self-host was pursued separately — validating this sequencing decision. |
 
 ---
 
@@ -462,8 +448,7 @@ Each is an open choice with a recommendation; rule on these before any code.
   unflagged but Deno's exact unflag version is unconfirmed ([deno #22861](https://github.com/denoland/deno/issues/22861)) —
   pin engines in the diff gate and assert versions, mirroring the
   "diff_native_cli stale-binary footgun" lesson (MEMORY).
-- **`wasm-tools` not installed locally** (§toolchain) — the MVP cannot run until it
-  (or an alternative assembler) is installed. Slice W1 is blocked on this.
+- **`wasm-tools` installed** (`wasm-tools 1.252.0` at `/opt/homebrew/bin/wasm-tools`, verified 2026-06-22) — this was a pre-MVP risk; it is resolved. ~~Slice W1 is blocked on this.~~
 - **Closure calling convention.** Hoot's uniform `(param argc …)` + spill-array
   scheme is the recommended port of Medaka's arity/PAP machinery, but Hoot's exact
   closure field layout is *not* in public sources — the spill/arg-global details

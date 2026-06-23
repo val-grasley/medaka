@@ -2,7 +2,7 @@
 
 The working handoff between sessions. Read it before starting a task; update it
 when you finish one. This document holds only **forward-looking** work — the
-completed Phases (1–141, with their detailed implementation notes) live in
+completed Phases (1–145+, with their detailed implementation notes) live in
 [`PLAN-ARCHIVE.md`](./PLAN-ARCHIVE.md). When a phase here is finished, move its
 write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
@@ -104,7 +104,7 @@ confidence-gated soak completes, then is removed (retirement ≠ removal; see
 
 The OCaml compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
-→ eval` — with phases through ~141 done (see PLAN-ARCHIVE.md). The language has
+→ eval` — with phases through ~145 done (see PLAN-ARCHIVE.md). The language has
 records, ADTs, interfaces (with superinterfaces, `deriving`, dictionary-passing
 for return-position/multi-param dispatch), effect rows, exhaustiveness checking,
 `do`-notation, guards (with fall-through + exhaustiveness lint), list
@@ -125,7 +125,7 @@ interpreter-perf levers are all resolved (`selfhost/PERF-NOTES.md`).
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
 (e.g. Phase 83/84, 101); genuinely new work gets the next free number (last used:
-150). At task triage, match the work against AGENTS.md's task-playbook table and
+151). At task triage, match the work against AGENTS.md's task-playbook table and
 load the matching skill before planning.
 
 ---
@@ -141,9 +141,9 @@ state changes.
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
-| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **Soak tail remaining:** the `argStampEnabled` eval-vs-emit dispatch unification ([`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)), then confidence-gated `lib/` removal. |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **`argStampEnabled` eval-vs-emit dispatch unification ✅ DONE (2026-06-14, [`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)).** Soak tail: confidence-gated `lib/` removal. |
 | **Capability-effects wedge (Phase 146)** | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) (v2 conformance) + [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟢 **conformance substantially CLOSED (2026-06-21)** | E1/E6 manifest (WS-1a/b/c `41509f6`), E3 α scope-seeding (WS-2 `98bf22b`, both compilers), E2 `Set` (WS-3 `5a1d215`) + `Product`/structured Net (WS-4 `b948ff3`), E4 Env/Exec native machinery (WS-3b `2188e6a`) — all native-canonical, fixpoint-gated. **Open:** only WS-3b's builtin-extern flip in `runtime.mdk` (blocked on frozen oracle → rides `lib/`-removal soak tail) + WS-5 (extern-row assurance, standing discipline) + Phase 146b. WS-4 design banked in `WS-4-DESIGN.md`. |
-| **WasmGC backend (2nd backend)** | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 (slices) + [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) (self-host gap-closing) + [`selfhost/WASMGC-TRMC-DESIGN.md`](./selfhost/WASMGC-TRMC-DESIGN.md) (stack-safety) | 🟢🏁 **self-hosted FRONT-END runs on WasmGC byte-identical to native; browser playground LIVE** (2026-06-22) | Direct Core IR→WAT emitter. Compute+print MVP (W1–W9b+W8b) byte-identical to `medaka build`. **Playground Stages 0–4 DONE** (`playground/`): compiler-as-wasm runs fully client-side, static-only server, WAT assembly via committed `vendor/wat2wasm/` blob. Done: per-binding emitter-gap census **1428→0**; whole-program linkage + `wasm-tools validate` (`check_main` = 6.77 MB WAT); runtime layers 1–4 (escape runtime, value-global init topo-sort, list-`++`, UTF-8 cp_count); **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, `8c69296`/`8737d11`/`2688edb`)** ported the LLVM TMC (`TRMC-DESIGN.md`) + a novel **dispatch-into-single-target (b′)** TMC for the lexer; the self-hosted **lexer now runs to completion under Node** (flat `tokenize→parse→runCheck` trace). `wasm_emit.mdk` is OUTSIDE the compiler graph → emitter changes need no fixpoint/seed (Stage 0's analysis lift was the lone in-graph touch). **Remaining:** `floatTok`→`unreachable` = deferred **`stringToFloat`** float-codec gap; re-measure `check_main`; eventual `wasm-opt` perf pass. |
+| **WasmGC backend (2nd backend)** | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 (slices) + [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) (self-host gap-closing) + [`selfhost/WASMGC-TRMC-DESIGN.md`](./selfhost/WASMGC-TRMC-DESIGN.md) (stack-safety) | 🟢🏁 **self-hosted FRONT-END runs on WasmGC byte-identical to native; browser playground LIVE** (2026-06-22) | Direct Core IR→WAT emitter. Compute+print MVP (W1–W9b+W8b) byte-identical to `medaka build`. **Playground Stages 0–4 DONE** (`playground/`): compiler-as-wasm runs fully client-side, static-only server, WAT assembly via committed `vendor/wat2wasm/` blob. Done: per-binding emitter-gap census **1428→0**; whole-program linkage + `wasm-tools validate` (`check_main` = 6.77 MB WAT); runtime layers 1–4 (escape runtime, value-global init topo-sort, list-`++`, UTF-8 cp_count); **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, `8c69296`/`8737d11`/`2688edb`)** ported the LLVM TMC (`TRMC-DESIGN.md`) + a novel **dispatch-into-single-target (b′)** TMC for the lexer; the self-hosted **lexer now runs to completion under Node** (flat `tokenize→parse→runCheck` trace). **layer-6 CLOSED** — `stringToFloat` via host seam (`a332da7`). **layers 7–13 CLOSED** — parser/resolve/typecheck correctness bugs; `check_main` runs to completion byte-identical to native. **THE EMITTER RUNS ON WasmGC (2026-06-22)** — WasmGC-compiled emitter compiles `println (1+2)` → 52K-line WAT, assembles + runs + prints `3`. `wasm_emit.mdk` is OUTSIDE the compiler graph → emitter changes need no fixpoint/seed. **Remaining:** `hashName`/`dictTag` i32-vs-i64 width (layer-17, pre-existing, self-consistent); `List_andThen`/`flatMap` overflow (layer-18, latent); eventual `wasm-opt` perf pass. See `WASM-SELFHOST-ROADMAP.md` for full layer log. |
 
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
@@ -208,12 +208,12 @@ the Phase-C native-CLI capstone + Stage-4 tooling port (fmt/test/new/repl/build/
 the **single-file/multi-module driver collapse done** (`selfhost/DRIVER-COLLAPSE-PLAN.md`,
 closes audit §6; `medaka check` now resolves imports).
 
-**Soak tail (remaining, see "Current status" above for live state):** the `argStampEnabled`
-eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md` — retires the finer
-dispatch fork the driver collapse left, the shared root of #55/#21); then a clean bug-free
-soak stretch and the confidence-gated `lib/` removal (next). (Closed 2026-06-15: native-emit
-scale failure `unbound 'not'` — fuzzer 5%→100%; foldMap method-level-constraint dict gap —
-eval_dict 25/0; whole-float rendering canonical `1.0`.)
+**Soak tail (remaining, see "Current status" above for live state):** a clean bug-free
+soak stretch and the confidence-gated `lib/` removal. (Closed 2026-06-14: `argStampEnabled`
+eval-vs-emit dispatch unification — `selfhost/ARGSTAMP-UNIFY-PLAN.md`, STATUS: COMPLETE,
+retires the finer dispatch fork the driver collapse left, the shared root of #55/#21. Closed
+2026-06-15: native-emit scale failure `unbound 'not'` — fuzzer 5%→100%; foldMap
+method-level-constraint dict gap — eval_dict 25/0; whole-float rendering canonical `1.0`.)
 
 **Gated milestone — retire `lib/*.ml`.** ✅ **Native is now the default build (2026-06-12
 flip):** `make medaka` builds the canonical native compiler OCaml-free from the seed; docs
@@ -221,8 +221,8 @@ updated; OCaml frozen as the soak oracle. **Re-rooting ✅ DONE (2026-06-13):** 
 correctness gate runs OCaml-free (`selfhost/REROOT-PLAN.md`); only the capture/mint tooling
 (`capture_goldens.sh`/`refresh_seed.sh`) and the perf-baseline gates (`bench.sh`/`profile_selfhost.sh`)
 still invoke OCaml — by design, deleted with `lib/`. **Remaining gated steps (post-soak):**
-the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`),
 a clean bug-free soak stretch, then archive/delete the OCaml compiler. Sequenced toward, not dated.
+(Soak tail: ~~the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`)~~ — ✅ DONE 2026-06-14.)
 
 After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
 backend** are the product horizon (see the Workstreams table).
@@ -472,9 +472,10 @@ cover the corpus; these are known holes outside it.
     is the [Capability-effects wedge](#capability-effects-wedge--near-term-sequence)
     section above.
   - **Done:** gap 1 (soundness — propagation, laundering, directional subsumption),
-    reference + selfhost mirror ✅; gap 2 (user-definable `effect Foo` labels) ✅.
-  - **Remaining:** cross-module label export → manifest emission (both in the wedge
-    sequence above); **Phase 146b** parameterized effects `<Fetch "x.com">` /
+    reference + selfhost mirror ✅; gap 2 (user-definable `effect Foo` labels) ✅;
+    gap 3 (cross-module label export, `exp_effects` across the loader boundary) ✅ (2026-06-07).
+  - **Remaining:** manifest emission (final Phase 146 item, waits on label refinement);
+    **Phase 146b** parameterized effects `<Fetch "x.com">` /
     `<KV "ns">` (designed in CAPABILITY-EFFECTS §6a, follows gap 2).
 
 - ~~**Phase 145**~~ **DONE.** See PLAN-ARCHIVE.md.
@@ -667,7 +668,7 @@ non-package-manager gaps:
   `ppTyP` mirroring `Ast.pp_ty_prec` since selfhost `ppTy` drops effect rows) +
   `runDocCmd` in `medaka_cli.mdk`.  Schemes via the single-file
   `checkProgramSchemesWithRuntime` path (like lsp/repl).  Byte-identical to the
-  OCaml oracle over `test/doc_fixtures` — gate `test/diff_selfhost_doc.sh` (13/0).
+  OCaml oracle over `test/doc_fixtures` — gate `test/diff_selfhost_doc.sh` (14/0).
   Known scoped divergence: a value whose inferred scheme hits the native-vs-OCaml
   ambiguous-Num/var-naming defaulting fork renders different type-var names — a
   pre-existing typechecker soak-tail issue, NOT a doc bug (doc renders whatever

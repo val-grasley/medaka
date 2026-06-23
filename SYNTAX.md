@@ -73,7 +73,7 @@ FileRead, FileWrite`; declare more):
 
 ```
 effect KV                  -- a user/platform effect label, usable as <KV> in rows
-export effect Fetch        -- export-marked (cross-module import is future work)
+export effect Fetch        -- export-marked (cross-module import works; Phase 146 gap 3 ✅ 2026-06-07)
 ```
 
 ## Function definitions

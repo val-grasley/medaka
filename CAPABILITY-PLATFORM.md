@@ -363,7 +363,7 @@ run) or reject with reason + chain. That is the entire demo "platform."
 |---|---|
 | Effect soundness/propagation (makes the rejection trustworthy) | ✅ done (Phase 79/146) |
 | User-definable fine-grained labels (`effect Fetch/Cache/Log`) | ✅ done (Phase 146 gap-2) |
-| The harness (`medaka check-policy`) | ✅ done — `demo/` + `bin/main.ml` |
+| The harness (`medaka check-policy`) | ✅ done — `demo/` + native CLI (WS-1a, 2026-06-21; was `bin/main.ml`) |
 | LLVM / WasmGC / real edge host / parameterized effects / full platform | ❌ not needed |
 
 The demo is **complete and runnable** (`demo/plugin_good.mdk`, `demo/plugin_malicious.mdk`,

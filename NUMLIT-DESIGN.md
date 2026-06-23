@@ -86,16 +86,17 @@ either it generalizes (`n = 1` → `Num a => a`, surfacing in every type dump) o
 let-group's generalization boundary, find tyvars constrained *only* by `Num` (no other class,
 no concrete link) and **unify them with `Int`**. New machinery in *both* checkers.
 
-**Fact B — eval is value-tagged; literals are not elaborated.** `lib/eval.ml:788`
-`ELit (LInt n) -> VInt n` unconditionally. `eval_arith` (:1255-1278) dispatches on the runtime
+**Fact B — eval is value-tagged; literals are not elaborated.** `lib/eval.ml:790`
+`ELit (LInt n) -> VInt n` unconditionally (also `ENumLit` arm at :794). `eval_arith` (:1261+) dispatches on the runtime
 tag and **errors on mixed tags**. So even if `x : Float; x = 0` typechecks, eval yields
 `VInt 0` and `0.0 + x` crashes. **The literal's runtime rep must follow its inferred type** →
 **elaboration**: rewrite a `Float`-typed `LInt n` into `LFloat (float n)` in the typed pipeline
 (the `dict_pass`/marker stage already rewrites post-typecheck), mirrored in the native emitter.
+(Pre-implementation analysis — see `ENumLit` arm at :794 and `set_numlit_floats` at 4746 for the landed fix.)
 
 ### 2.3 HM levels / value restriction / monomorphism
 - **Levels:** the fresh literal var is at `current_level`; defaulting must run **at
-  generalization boundaries** (oracle `generalize:937`, selfhost `generalizeGroup:3251`).
+  generalization boundaries** (oracle `generalize:940`, selfhost `generalizeGroup:4306`).
 - **Value restriction:** `ELit` is non-expansive, so `n = 1` *would* generalize to
   `Num a => a`. Defaulting at the group close intercepts this → policy decision (§6.2).
 - **No existing monomorphism rule.** Defaulting must define one for the `Num`-only case, or
@@ -109,21 +110,22 @@ interaction with deferred obligations. Gated by `diff_selfhost_typecheck_golden*
 self-compile fixpoint. Any asymmetry → fixpoint divergence.
 
 ## 3. Touchpoint map
+(Pre-implementation planning map; line numbers updated 2026-06-22.)
 
-**OCaml `lib/typecheck.ml`:** `type_lit` 1775-1781 (split ELit vs PLit); `ELit` arm 1985;
-`binop_type` 2808-2834 (compose, avoid double obligations); `is_concrete`/constraint-checking
-4083-4125 + generalize sites 937 / 2212-2219 / 2494-2501 (**add defaulting pass here**);
-value-restriction 1020-1053.
+**OCaml `lib/typecheck.ml`:** `type_lit` 1879 (split ELit vs PLit); `ELit` arm 2109; `ENumLit` arm 2118;
+`binop_type` 2981 (compose, avoid double obligations); `is_concrete`/constraint-checking
+4312+ + generalize sites 940 + `set_numlit_floats` 4746 (**landed defaulting**);
+value-restriction ~1060+.
 
-**Selfhost `selfhost/types/typecheck.mdk`:** `litType` 2050-2056 + `infer (ELit)` 2121 +
-`inferPat (PLit)` 1987; `recordNumObligation`/`numIfaceRegistered` 2679-2715 (reuse);
-`generalize` 1554-1556 / `generalizeGroup` 3251 (defaulting insertion); `scopeArities`
-7206-7229 (**the `fromInt 0` workaround's reconciliation — reverting changes inferred
-arities here**).
+**Selfhost `selfhost/types/typecheck.mdk`:** `litType` 2631 + `infer (ELit)` ~2703 +
+`inferPat (PLit)` ~2568; `recordNumObligation`/`numIfaceRegistered` ~2701+ (reuse);
+`generalizeGroup` 4306 (defaulting insertion); `scopeArities`
+9225 (**the `fromInt 0` workaround's reconciliation — reverting changes inferred
+arities here**). `setNumlitFloats` 7088.
 
-**Ripples beyond typecheck:** `lib/eval.ml:788` + typed elaboration/`dict_pass` stage
+**Ripples beyond typecheck:** `lib/eval.ml:790` + `ENumLit` arm :794 + typed elaboration/`dict_pass` stage
 (literal re-tag — **mandatory**, Fact B); native emitter `selfhost/backend/llvm_emit.mdk`
-(re-tag mirror — `i64` vs `double` constant); `stdlib/core.mdk:745,750` (optional revert).
+(re-tag mirror — `i64` vs `double` constant); `stdlib/core.mdk:755,760` (optional revert — Stage 5).
 
 **The two PLAN sub-gaps (~332-336):** (a) RNone arg-tag for a `fromInt`/section in an
 *unconstrained* fn — **in-scope and unavoidable** (#11 creates unconstrained `Num a` vars;
@@ -192,8 +194,9 @@ both are done — exactly the parity risk to de-risk early).
   real time for Stage 3 diffing.
 
 ## Critical files
-- `lib/typecheck.ml` (litType 1775, ELit 1985, binop_type 2808, is_concrete 4083, generalize 937)
-- `selfhost/types/typecheck.mdk` (litType 2050, recordNumObligation 2701, generalizeGroup 3251, scopeArities 7206)
-- `lib/eval.ml` (ELit 788, eval_arith 1255 — mixed-tag crash / re-tag site)
+(Line numbers updated 2026-06-22 post-implementation; originals were pre-implementation reference.)
+- `lib/typecheck.ml` (type_lit 1879, ELit 2109, ENumLit 2118, binop_type 2981, is_concrete 4312, generalize 940, set_numlit_floats 4746)
+- `selfhost/types/typecheck.mdk` (litType 2631, recordNumObligation ~2701, generalizeGroup 4306, scopeArities 9225, setNumlitFloats 7088)
+- `lib/eval.ml` (ELit 790, ENumLit 794, eval_arith 1261 — re-tag site)
 - `selfhost/backend/llvm_emit.mdk` (native literal constant — re-tag mirror)
-- `stdlib/core.mdk` (Num interface 467, sum/product fromInt workaround 745/750)
+- `stdlib/core.mdk` (Num interface 467, sum/product fromInt workaround 755/760)

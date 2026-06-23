@@ -23,30 +23,36 @@ once the oracle is gone, native is the only error UX.
   convention. The carat gate (Stage C) compares native plain-text vs a positioned
   oracle leg byte-for-byte; it retires with the oracle.
 
-## Key facts (verified live on the binary, 2026-06-21)
+## Key facts (verified live on the binary, 2026-06-21; line refs updated 2026-06-22)
 
 - **Human messages already exist** for every class: `ppResError`
-  (`selfhost/frontend/resolve.mdk:858`) + typecheck `(msg, Option Loc)` pairs. The
-  raw sexp is only the plain-text path calling `resErrorSexp` (`resolve.mdk:805`).
+  (`selfhost/frontend/resolve.mdk:937`) + typecheck `(msg, Option Loc)` pairs. The
+  raw sexp is only the plain-text path calling `resErrorSexp` (`resolve.mdk:885`).
 - **Type-error positions are byte-identical to the oracle** in `--json` already
   (full `ELoc`/`currentLoc` threading done, gated green).
 - **Positions genuinely missing at the source for exactly two classes:** resolve
-  (`ResError` ctors `resolve.mdk:60-115` carry NO `Loc`) and exhaust/guard
-  warnings (`diagnostics.mdk:114` passes `None`). Parse errors have a near-correct
+  (`ResError` ctors `resolve.mdk:65-91` carry NO `Loc` — Stage B added them all;
+  `resErrorLoc` accessor :95-112) and exhaust/guard
+  warnings (`diagnostics.mdk:168` passes `None`). Parse errors have a near-correct
   loc with a **line off-by-one** + message-case mismatch (`"parse error"` vs
-  oracle `"Parse error"`, `medaka_cli.mdk:269-273`).
+  oracle `"Parse error"`, `medaka_cli.mdk:132-133`).
+
+*(These described the pre-Stage-A/B/C state; Stages A–C are now all DONE. The
+remaining two classes — exhaust/guard `None` spans and parse-error column accuracy
+— are tracked as residuals below.)*
 
 ## Render fork (today)
 
 CLI forks at `selfhost/driver/medaka_cli.mdk:124`:
-- **plain text** → `runCheckCmd` → `runCheck` (`selfhost/tools/check.mdk:50`) —
-  deliberately location-free; emits `resErrorSexp` for resolve, `"TYPE ERROR: …"`
-  for type, `"parse error"` for parse. Also emits the success `=== TYPES ===`
-  scheme dump (gated byte-identical — do NOT disturb).
-- **`--json`** → `runCheckJsonCmd` (`medaka_cli.mdk:263`) → `analyzeLocated`
-  (`selfhost/driver/diagnostics.mdk:92`) — already humane + positioned for type;
-  resolve gets the message but a **placeholder whole-doc range** (`loc=None`
-  fallback, `diagnostics.mdk:106`).
+- **plain text** → `runCheckCmd` → `checkRoute` → on error: `ppDiagCliSrc` (carat);
+  on success: `runCheck` (`selfhost/tools/check.mdk:49`) — full scheme dump
+  (gated byte-identical — do NOT disturb).
+- **`--json`** → `runCheckJsonCmd` (`medaka_cli.mdk:293`) → `analyzeLocated`
+  (`selfhost/driver/diagnostics.mdk:146`) — humane + positioned for all error types;
+  resolve now carries real spans (Stage B); `loc=None` fallback arm in `ppDiagCliSrc`
+  at `diagnostics.mdk:104`.
+
+*(Line numbers verified 2026-06-22; file grew ~80 lines after Stage A/B edits.)*
 
 ## Stages
 
@@ -97,16 +103,18 @@ capture (cheap); touching `check.mdk` text re-captures the `resolve_fixtures`
 
 ## Critical files
 
-- `selfhost/frontend/resolve.mdk` — `ResError` type :60, `resErrorSexp` :805,
-  `ppResError` :858 (S1 swap + S3 span threading).
-- `selfhost/driver/diagnostics.mdk` — `analyzeFrom` :99, resolve `loc=None` :106,
-  `ppDiag`/`ppDiagLoc` :70-73 (the loc seam).
-- `selfhost/driver/medaka_cli.mdk` — `runCheckCmd` :104, `runCheckJsonCmd` :263,
-  parse-err block :269 (plain re-route + parse fix).
-- `selfhost/tools/check.mdk` — `runCheck` :50, `routeImportCheck` :68 (message
+- `selfhost/frontend/resolve.mdk` — `ResError` type :65, `resErrorSexp` :885,
+  `ppResError` :937 (all ctors now carry `Option Loc` — Stage B complete).
+- `selfhost/driver/diagnostics.mdk` — `ppDiag` :71, `ppDiagCli`/`ppDiagCliSrc` :89-105,
+  `analyzeFrom` :153 (resolve `loc=None` pattern match at :104; `resErrorLoc e` used at :160).
+- `selfhost/driver/medaka_cli.mdk` — `runCheckCmd` :104, `runCheckJsonCmd` :293,
+  parse-err block :130-134 (inside `runCheckCmd`).
+- `selfhost/tools/check.mdk` — `runCheck` :49, `routeImportCheck` :67 (message
   swap; host of `diff_selfhost_check`).
 - `test/diff_selfhost_check_json.sh` + `test/check_json_fixtures/` — the only
-  position-sensitive gate (add parse/resolve fixtures).
+  position-sensitive gate (parse/type/resolve fixtures present).
+
+*(Line numbers verified 2026-06-22 — file grew ~80 lines post Stage A/B/C edits.)*
 
 ## Status + residuals (live)
 

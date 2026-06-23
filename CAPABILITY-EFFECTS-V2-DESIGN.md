@@ -1,6 +1,8 @@
 # Capability-Effects v2 — design doc (parameterized effects + IO decomposition)
 
-Status: **DESIGN — decision-ready, not implemented.** Companion to
+Status: **IMPLEMENTED (2026-06-21, verified done 2026-06-22).** See `EFFECTS-CONFORMANCE-ROADMAP.md`
+for the authoritative completion record (WS-1 through WS-4 done; WS-5 standing; WS-3b
+shared-runtime flip deferred to `lib/`-removal soak tail). Companion to
 [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) (the v1 atomic-effect feature, shipped),
 [`CAPABILITY-EFFECTS-RESEARCH.md`](./CAPABILITY-EFFECTS-RESEARCH.md) (manifest/host research),
 and [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) (the runtime that consumes this).
@@ -148,9 +150,12 @@ The known-prefix analysis (§2.4) reads **core** string-producing forms; desugar
 `medaka check-policy <file> [--allow L1,L2] [--fn name]` exists in `bin/main.ml` (lines
 413–540): parse → build a conservative `EVar` call graph (`collect_evars`) → read the entry
 fn's inferred row → check `inferred ⊆ allow` → accept (run on a sample) or reject with the
-introducing call chain. **It is OCaml-oracle-only — not yet in the native CLI**
-(`selfhost/driver/medaka_cli.mdk` line 14 stubs it). v2's manifest emission extends this path;
-the parameterized atoms become the per-label parameter the manifest carries.
+introducing call chain. **As of WS-1a/1b/1c (2026-06-21) this is FULLY PORTED to the native
+CLI** (`selfhost/driver/medaka_cli.mdk` + `selfhost/tools/check_policy.mdk`) with parameter-level
+policy comparison, and `medaka manifest` emits the security row as TOML `[package.capabilities]`.
+(Historical note: this section originally recorded it as OCaml-oracle-only; that was closed
+by WS-1a/1b/1c.) v2's manifest emission extended this path;
+the parameterized atoms are the per-label parameter the manifest carries.
 
 ### 1.6 Decided invariants honored by this design
 
@@ -433,8 +438,8 @@ byte-identical) and is **fixpoint-gated** (`selfcompile_fixpoint`) and different
 - Mint the narrow labels with domains + classification axis (§3.1, §4); `IO` widening alias (§3.2).
 - Re-annotate the 21 leaf externs (§3.3); inference propagates; existing `<IO>` annotations widen.
 - Extend `check-policy` + manifest emission to carry per-label params (`Net "idp.../*"` →
-  `allowed_outbound_hosts`), and port `check-policy` to the native CLI (currently OCaml-only,
-  §1.5). Filter internal labels out of the manifest (§4).
+  `allowed_outbound_hosts`), and port `check-policy` to the native CLI (done WS-1a/1b/1c —
+  see §1.5 update). Filter internal labels out of the manifest (§4).
 - **Gate:** re-capture the few inferred-row goldens; `check-policy` accept/reject on the demos
   with parameterized bounds; fixpoint.
 
@@ -457,15 +462,16 @@ is unaffected; params ride along as inert data on the row, joined at unification
 | **f** | `IO`-alias membership + whether `IO` stays user-writable | (1) `IO` = union of all security labels (excl. internal), stays user-writable; (2) deprecate `IO` as sugar | **(1)** — keep `IO` writable as the widening alias (zero-migration); revisit deprecation post-v2. |
 | **g** | How a label declares its domain + security/internal class | (1) `effect Net : Prefix` (domain after `:`), security default, `internal effect Mut` keyword for internal; (2) attribute syntax `effect Net @prefix`; (3) infer domain from first use | **(1)** — `effect Net : Prefix` reads naturally, slots into the existing decl grammar; `internal effect Foo` marks internal; default = security/`Unit`. |
 | **h** | (surfaced) Same-label-different-param semantics | (1) merge by join (≤1 atom/label); (2) distinct members | **(1) merge by join** — required for a well-defined `⊑`; the v2 prompt's "distinct members" holds *across* labels only. |
-| **i** | (surfaced) `check-policy`/manifest port to native CLI | (1) port in Stage 3 (it's OCaml-only today); (2) keep OCaml-only through soak | **(1)** — port in Stage 3 so the headline feature runs on the canonical native binary, not the frozen oracle. |
+| **i** | (surfaced) `check-policy`/manifest port to native CLI | (1) port in Stage 3 (it's OCaml-only today); (2) keep OCaml-only through soak | **(1) DONE (WS-1a/1b/1c, 2026-06-21)** — `check-policy` + parameter-level policy + `medaka manifest` all native. |
 
 ---
 
-## 8. Summary
+## 8. Summary (historical design summary — fully implemented 2026-06-21)
 
-v2 makes the parameterized-effect surface (today entirely parse-error and illustrative-only)
-**real**, on a **general refinement-domain representation** that implements **only the `Prefix`
-domain** now and admits `Set`/`Product` later with no rewrite. It decomposes the coarse `IO` into
+v2 made the parameterized-effect surface (which was entirely parse-error and illustrative-only
+before v2) **real**, on a **general refinement-domain representation** that first implemented
+`Prefix` (WS-2/WS-3), then added `Set` (WS-3, `<L {…}>` literals), `Product` (WS-4,
+`<Net Host=… Method=…>`), and `Env`/`Exec` domains (WS-3b). It decomposes the coarse `IO` into
 narrow security labels while keeping `<IO>` valid as a widening alias (zero-migration), and splits
 all labels on a security/internal axis that drives the manifest. The mechanics extend the existing
 sound, laundering-closed row system (`unify_row`, covariant re-open, binding-boundary escape) from

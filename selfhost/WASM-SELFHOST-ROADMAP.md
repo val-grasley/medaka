@@ -37,12 +37,12 @@ plus the shrinking census.
 | Array intrinsics | 86 | ✅ DONE | `arrayGetUnsafe`/`Length`/`FromList`/`MakeWith`/`Make`/`Copy`/`SetUnsafe` over `$arr`. |
 | Ref (`set_ref`/`.value`/`Ref`) | ~636 | ✅ DONE | `$refbox` 1-field mutable struct; `Ref x`→`struct.new`, `set_ref`→`struct.set 0`, `.value`→`struct.get 0`. |
 | `__fallthrough__` | 261 | ✅ DONE | multi-clause / guard-chain fall-through. Each clause body wraps in a `(block $cl_<name>_<i>)`; `labelFallthrough` rewrites `__fallthrough__` → label-carrying sentinel `__ft__<clLabel>` lowered to `br <clLabel>` (a PURE function of the var name — the lazily-assembled emitter can't thread a mutable "current label" ref reliably, since strings are forced at final assembly long after any `set_ref`). Single-clause guarded bodies divert to the chain path (block + trailing `unreachable`). A bare (unrewritten) `__fallthrough__` → `unreachable` trap (typechecker-proven-exhaustive context). Census 261 → 0, no new gaps. |
-| string-literal clause heads (`f "kw" =`) | 111 | ⬜ | lower to string-eq if-chain (MEDIUM codegen). |
-| string/char externs (subset) | 51 | ⬜ | extend `emitStrExternRef`. |
-| `CFieldAccess on unknown field` | 283 | 🟡 | mostly `.value` (Ref read) — closed by the Ref work; residual = other records. |
-| block-stmt in tail position | 35 | ⬜ | tail-position block lowering. |
-| IO externs (`readFile`/`args`/`getEnv`/`exit`) | 4 | ⬜ | the **host-surface workstream** (see below). |
-| misc (unknown ctor 8, non-Int switch heads 6, dict-param 4, PVar-only 3) | ~21 | ⬜ | small structural arms. |
+| string-literal clause heads (`f "kw" =`) | 111 | ✅ DONE | closed by step 4 (`d15d5bf`) — string-eq if-chain. |
+| string/char externs (subset) | 51 | ✅ DONE | charCode (step 4), stringToChars/charFromCode/stringFromChars (step 6 `ae16d02`), charIs*/charTo* (step 9 `a979385`). |
+| `CFieldAccess on unknown field` | 283 | ✅ DONE | mostly `.value` (Ref, closed step 2); structural batch (step 8 `945c685` `registerRecordCtors`). |
+| block-stmt in tail position | 35 | ✅ DONE | closed by step 5 (`38d45f8`) — CSLet/CSLetElse/CSAssign, tail-block 56→0. |
+| IO externs (`readFile`/`args`/`getEnv`/`exit`) | 4 | ✅ DONE | closed by step 10 (`6a90970`) — byte-channel host imports + JS virtual-FS shim. |
+| misc (unknown ctor 8, non-Int switch heads 6, dict-param 4, PVar-only 3) | ~21 | ✅ DONE | structural batch step 8 closed Char/String switch heads + dict-param + ctor-tuple params. |
 
 Plus ~111 "genuine in-body free-var losses" inside the 978 unbound-variable bucket —
 investigate after the big categories close (some are artifacts of the above).
@@ -59,8 +59,8 @@ investigate after the big categories close (some are artifacts of the above).
 8. ✅ structural batch — Char/String match-switch heads, ctor/tuple lambda-params, **record-ctor registration** (`registerRecordCtors` in `lowerProgramEmit` — IN-GRAPH, fixpoint C3a/C3b YES + diff_selfhost_build 35/0), W5 dict-param capture (`freeVarsExpr` CMethod/CDict arms) (`945c685`, →119; census →11)
 9. ✅ char-classification externs (charIs*/charTo*, 7) — pure-WAT ASCII (`a979385`, →126)
 10. ✅ IO host surface (readFile/args/getEnv/fileExists/exit) — byte-channel host imports + JS virtual-FS shim (`6a90970`, →129). **🏁 ALL-MODULES EMITTER-GAP CENSUS = 0.**
-11. 🟡 **Whole-program LINKAGE** (the self-host-proof layer — NEW frontier the per-binding census can't see). `check_main.mdk` (the real lex→parse→resolve→exhaust→typecheck front-end) emits a **6.77 MB / 241k-line WAT**, but `wasm-tools parse` finds **15 functions referenced-but-undefined** — all VALUE-only-used helpers (`map eqFieldCall fields`, `map (showArm …) variants`, `flatMap dataArity prog`): the emitter emits a closure-WRAPPER referencing them but not the underlying DEFINITION (the fn-emission loop only emits directly-called fns). DCE keeps them (native LLVM links check_main fine). Fix in progress (wasm-emitter fn-collection).
-12. ⬜ runtime validation — once it assembles, run check_main under Node (host shim feeds runtime/core/source) and diff its schemes output vs the native `check_main` oracle. Expect a runtime-correctness layer (miscompiles producing valid-but-wrong wasm), like LLVM's B1–B7 bootstrap stages.
+11. ✅ **Whole-program LINKAGE: CLOSED (`39fd801`)** (see narrative below).
+12. ✅ **runtime validation + self-host demo: CLOSED** (layers 2–16 complete, emitter runs in-browser — see narrative below).
 
 **🏁 MILESTONE (2026-06-22): the per-binding emitter-gap census is 0 — the WasmGC
 emitter can LOWER every construct in the whole compiler graph (1428→0, 9 categories).**

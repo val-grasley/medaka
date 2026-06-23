@@ -1,6 +1,6 @@
 # WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5)
 
-> **Status: DESIGN / SCOPING ONLY (read-only pass, 2026-06-22).** No source edited.
+> **Status: IMPLEMENTED — Stages 0–2 COMPLETE, layer-5 CLOSED (2026-06-22).** See §11 "AS BUILT" for the implementation log. This doc was originally a design/scoping pass; the implementation was added in §11 without updating this header. No source edited in the initial design pass.
 > Companion to `TRMC-DESIGN.md` (the LLVM-backend TRMC), `WASM-SELFHOST-ROADMAP.md`
 > (the layer log — this is **layer-5**), `WASMGC-DESIGN.md` (value rep). The next agent
 > implements; this doc only scopes the fix and surfaces the human-decision forks.
