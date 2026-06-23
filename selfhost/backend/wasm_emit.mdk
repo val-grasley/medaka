@@ -2802,7 +2802,15 @@ emitImplGroup prog (ImplG method tag arity clauses) =
       -- so the body's bare-CVar arithmetic lowers to f64.  `signum`/`abs`/`negate`/`add`/…
       -- all take Float args.  Reset for every other impl (Int/String/etc. stay i31).
       let _ = set_ref floatLocalsRef (if tag == "Float" then flatMap clausePatVars clauses else [])
+      -- layer-18: arm the plain-tail impl-method return_call context for THIS impl, so a
+      -- saturated tail-position self-call (`fold f (f z x) xs` → `CMethod "fold" (RKey
+      -- "List")`) lowers to `return_call $mdk_impl_List_fold` (constant stack) rather than a
+      -- recursive `call`.  Disarmed immediately after (default defines + everything else
+      -- must NOT see it).
+      let savedImplSelf = implSelfCtxRef.value
+      let _ = set_ref implSelfCtxRef (ImplSelfOn method tag arity)
       let bodyLines = emitClausesImpl prog fnName params arity clauses
+      let _ = set_ref implSelfCtxRef savedImplSelf
       let _ = set_ref floatLocalsRef []
       let allLocals = clauseLocals clauses
       let extraLocals = filterList (notIn params) (dedupKeep allLocals)
@@ -3939,6 +3947,22 @@ data WTrmcCtx = WTrmcOff | WTrmcOn SelfRef Int (List String) String Int String S
 wTrmcCtxRef : Ref WTrmcCtx
 wTrmcCtxRef = Ref WTrmcOff
 
+-- layer-18: the PLAIN-tail impl-method `return_call` context.  Set to `Some (method,
+-- tag, arity)` ONLY while emitting an ordinary (non-TMC, non-default) impl body in
+-- `emitImplGroup`; off everywhere else (top-level fns, default defines, dispatch
+-- chains).  Consulted by `emitAppTail`'s CMethod arm: a SATURATED tail-position
+-- self-call `CMethod method (RKey tag) …` matching THIS (method, tag) is rewritten
+-- from `call $mdk_impl_<tag>_<method>` to `return_call $mdk_impl_<tag>_<method>` — the
+-- impl-method analog of the top-level plain-tail return_call (so `fold`/`length`/`ap`/
+-- any accumulator-recursive impl method runs in constant wasm stack).  The TMC cons-tail
+-- case is handled separately by wTrmcImplTry (it never reaches this path); a NON-tail
+-- self-call never reaches emitAppTail (it goes through emitRefExpr), so it stays a plain
+-- `call` — the safety net.
+data ImplSelfCtx = ImplSelfOff | ImplSelfOn String String Int
+
+implSelfCtxRef : Ref ImplSelfCtx
+implSelfCtxRef = Ref ImplSelfOff
+
 -- the loop-local names used by the destination-passing emit.  `$__tmc_head` holds the
 -- first cell (the result returned at exit); `$__tmc_dest` holds the cell whose recursive
 -- slot the NEXT leaf must fill; `$__tmc_first` is 1 until the first cell is built.
@@ -4729,6 +4753,31 @@ emitWDispBase prog env e =
   ["global.get " ++ wDispFirstL, "if"] ++ indent seedBranch ++ ["else"] ++ indent storeBranch ++ ["end"]
     ++ ["global.get " ++ wDispHeadL, "ref.as_non_null", "return"]
 
+-- layer-18: the plain-tail impl-method return_call rewrite (helper for emitAppTail's
+-- CMethod arm).  Some instrs ⇒ this tail CMethod application is a saturated self-call to
+-- the impl `(method, tag)` we are currently emitting, lowered to `return_call
+-- $mdk_impl_<tag>_<method>` (the args + forwarded dict words, exactly as the ordinary RKey
+-- `call` arm builds them, but tail).  None ⇒ not a self-call (or no impl-self context) ⇒
+-- the caller keeps the ordinary `call … ; return`.  Gated on BOTH the impl-self context
+-- AND `isSelfSatApp (SelfByMethod …)`: a different-method/tag, unsaturated, or non-self
+-- call fails the gate and stays ordinary; a non-tail self-call never reaches here.
+implSelfReturnCall : Prog -> List String -> String -> Route -> List Route -> List Route -> CExpr -> List CExpr -> <Mut> Option (List String)
+implSelfReturnCall prog env name route methRoutes implRoutes app args = match implSelfCtxRef.value
+  ImplSelfOff => None
+  ImplSelfOn method tag arity =>
+    if name == method
+       && isSelfSatApp (SelfByMethod method tag) arity app then
+      match route
+        RKey rtag _ =>
+          match implForW prog name rtag
+            Some _ =>
+              let dictWords = flatMap (routeWitness prog env 0) (methRoutes ++ implRoutes)
+              let argInstrs = flatMap (a => emitRefExpr prog env 0 a) args
+              Some (dictWords ++ argInstrs ++ ["return_call $" ++ implFnSym rtag name])
+            None => None
+        _ => None
+    else None
+
 -- a tail application: saturated direct known-fn → return_call; ctor → value+return;
 -- everything else → indirect via return_call $mdk_apply.
 emitAppTail : Prog -> List String -> Int -> CExpr -> <Mut> List String
@@ -4755,7 +4804,20 @@ emitAppTail prog env arity app =
     -- specialization of the RKey direct call is deferred; the dispatch fixtures
     -- here are not deep-recursive through a method, so a plain return is sound.)
     CMethod name route implRoutes methRoutes =>
-      emitMethodRef prog env 0 name route implRoutes methRoutes args ++ ["return"]
+      -- layer-18: a PLAIN-tail impl-method self-call.  When we are emitting impl
+      -- `(method, tag)`'s ordinary body and THIS tail application is a saturated self-call
+      -- to exactly that `CMethod method (RKey tag)` (`isSelfSatApp (SelfByMethod …)`), emit
+      -- the recomputed args + `return_call $mdk_impl_<tag>_<method>` (a real tail call, zero
+      -- stack growth) instead of `call … ; return`.  This is the impl-method analog of the
+      -- top-level plain-tail return_call.  SAFETY NET: gated on the saturated-self-call
+      -- detection AND on being in tail position (only emitAppTail reaches here); a NON-tail
+      -- self-call goes through emitRefExpr/emitMethodRef and stays a plain `call`.  A
+      -- self-call to a DIFFERENT method/tag, or an unsaturated one, fails the gate and stays
+      -- ordinary.  (A cons-tail impl is already diverted to wTrmcImplTry's TMC loop and never
+      -- reaches this path.)
+      match implSelfReturnCall prog env name route methRoutes implRoutes app args
+        Some retInstrs => retInstrs
+        None => emitMethodRef prog env 0 name route implRoutes methRoutes args ++ ["return"]
     CDict name routes => emitDictRef prog env 0 name routes args ++ ["return"]
     _ =>
       let hi = emitRefExpr prog env 0 hd

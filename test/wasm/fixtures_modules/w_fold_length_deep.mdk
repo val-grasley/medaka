@@ -1,0 +1,12 @@
+-- layer-18: PLAIN-tail impl-method `return_call`.  `List` `length`/`fold` are
+-- plain-tail-recursive IMPL METHODS (`fold f z (x::xs) = fold f (f z x) xs` — the
+-- recursive call IS the whole clause result, a tail position, but it is a dispatched
+-- `CMethod "fold" (RKey "List")` self-call).  The OLD impl-method emit lowered it to a
+-- recursive `call $mdk_impl_List_fold`, growing the wasm stack to list length →
+-- overflow on a deep list.  Unlike w_flatmap_deep (tiny RESULT, to keep the deep path
+-- OFF the still-broken fold/length), this routes a deep list THROUGH both `length` AND
+-- `fold` directly: a 500000-long list summed (deep `fold`) and counted (deep `length`).
+-- The new plain-tail `return_call $mdk_impl_List_fold` / `_length` runs in constant
+-- stack.  Expected: fold-sum of [1..=500000] = 125000250000, length = 500000 →
+-- 125000750000.
+main = println (fold (x y => x + y) 0 [1..=500000] + length [1..=500000])
