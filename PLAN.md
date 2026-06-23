@@ -65,10 +65,15 @@ gaps** fixed.
    a parse-broken sibling: server does NOT crash but emits zero `publishDiagnostics`. Root:
    loader/`analyzeProject` panics on a graph-member parse error before diagnostics surface.
    Needs loader error-recovery. Memory: `project_lsp_fault_tolerance`. `lib/`-removal-relevant.
-2. **Latent `ppTy` drops effect rows** — `selfhost/types/typecheck.mdk`'s `ppTy` renders
-   interface-method effect rows wrong (drops `<IO>` etc.); `doc` port worked around with its
-   own `ppTyP`. Affects LSP hover / `check` errors / `doc` output broadly. Wide golden churn
-   risk — scope carefully.
+2. **`ppTy` dropped effect rows — ✅ DONE (2026-06-23, `067c897`, selfhost-only).** `ppTy`'s
+   `TyEffect` arm discarded the effect row (contradicting its "mirrors `lib/ast.ml` `pp_ty`
+   byte-for-byte" comment — OCaml `pp_ty` = `pp_ty_prec 0` renders `<…>`). Fixed to render
+   `<labels | tail> innertype` mirroring `pp_ty_prec` / the existing-correct `ppTyP`/`ppMono`.
+   **Documented scope was OVERSTATED** ("affects hover/errors/doc broadly"): hover/scheme-dump
+   use `ppMono`, `doc` uses `ppTyP` — both already correct; the buggy `ppTy` fed only two rare
+   diagnostics (`sigTooGeneralMsg`/`annotTooGeneralMsg`). Real fix was a one-arm change closing
+   a latent footgun (no golden churn). Gates: typecheck_errors/typecheck/check_json/doc all
+   0-failing, fixpoint C3a/C3b YES (orchestrator-re-verified).
 
 *Correctness:*
 3. **Interp-behind-`build` externs** — `medaka run` lacks `hashString`/`arrayBlit`/Map
