@@ -3941,16 +3941,32 @@ inferAnnot env e ty =
 -- checkAnnotTooGeneral skolemization guard — the pin's type variables are MEANT
 -- to ground (the container literal's element types).  Fixes `e`'s head tycon to
 -- the named container so `fromEntries`'s return-position dispatch resolves to
--- that container's impl.  Mirror of lib/typecheck.ml's EHeadAnnot arm.  The
--- selfhost lowering (desugar.mdk rewriteContainerLit) always supplies the head
--- tycon at its full declared arity (`Map _k _v`, `Set _a`), so unlike the
--- reference we need no arity-fix for empty literals.
+-- that container's impl.  Mirror of lib/typecheck.ml's EHeadAnnot arm.
+--
+-- Phase 114 (was wrongly dropped here): ignore the *arity* the lowering happened
+-- to supply and apply the head tycon to its *declared* arity of fresh vars.  The
+-- parser can't tell empty `Map { }` from `Set { }` — both have no entries, so
+-- classifyBrace falls through to `ESetLit name []` and the desugar pins a UNARY
+-- `Map _a`, the wrong arity for `Map k v` (→ `Map vs Map …`).  Looking the arity
+-- up by the head tycon makes empty literals work regardless of the lowering's
+-- guess; element vars stay free and ground via inference as before.
 inferHeadAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
 inferHeadAnnot env e ty =
   let t = infer env e
-  let annot = fst (astTypeFreshTbl ty)
+  let annot = headAnnotTy ty
   let _ = unify t annot
   t
+
+-- The head-pin's target type: if the annotation's head is a TyCon with a known
+-- declared arity (from `dataParamKindsRef`), rebuild it at that arity with fresh
+-- vars (so an empty literal's wrong-arity pin is corrected); otherwise fall back
+-- to the literal annotation type.
+headAnnotTy : Ty -> <Mut> Mono
+headAnnotTy ty = match tyAppSpine ty
+  (TyCon n, _) => match lookupAssoc n dataParamKindsRef.value
+    Some kinds => applyParams (TCon n) (freshVars (listLen kinds))
+    None => fst (astTypeFreshTbl ty)
+  _ => fst (astTypeFreshTbl ty)
 
 -- C3 (mirrors lib/typecheck.ml:1821-1842): each type variable named in the
 -- annotation asserts polymorphism, so after unification it must still be a
