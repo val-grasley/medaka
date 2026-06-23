@@ -1,0 +1,7 @@
+-- Importing both modules unqualified is fine; USING the colliding `size`
+-- unqualified is the use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md).
+import map.*
+import set.*
+
+f : Int -> Int
+f n = size n

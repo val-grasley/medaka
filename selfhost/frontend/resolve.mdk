@@ -50,6 +50,7 @@ import support.util.{
   listLen,
   escStr,
   joinNl,
+  joinWith,
   lookupAssoc,
   reverseL,
   initList,
@@ -88,6 +89,9 @@ public export data ResError
   | DuplicateBinding String (Option Loc)
   -- Phase 148: non-contiguous clauses of a top-level binding
   | AsPatternMisplaced (Option Loc)  -- `x@..` outside a binding LHS
+  -- name USED unqualified, exported by ≥2 non-`core` modules (use-time
+  -- ambiguity; MAP-SET-AMBIGUITY-DESIGN.md)
+  | AmbiguousOccurrence String (List String) (Option Loc)
 
 -- The source span carried by a ResError (Stage B): consumed by diagnostics.mdk
 -- to position the Diag (was uniformly `None` pre-Stage-B).
@@ -110,6 +114,7 @@ resErrorLoc (QuestionMisplaced l) = l
 resErrorLoc (NonRecursiveValueLet _ l) = l
 resErrorLoc (DuplicateBinding _ l) = l
 resErrorLoc (AsPatternMisplaced l) = l
+resErrorLoc (AmbiguousOccurrence _ _ l) = l
 
 -- ── The name environment ──────────────────────────────────────────────────
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
@@ -125,6 +130,9 @@ public export record Env
   ifaceMethods : List (String, List String)
   effects : List String
   imported : List String
+  -- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
+  -- non-`core` module ids that export it unqualified
+  ambiguous : List (String, List String)
 
 -- the owners registered for a field name in the field-owner multimap
 ownersOf : String -> List (String, String) -> List String
@@ -304,8 +312,22 @@ checkExpr cur env scope (EDoOrigin _ e) = checkExpr cur env scope e
 checkVar : Option Loc -> Env -> List String -> String -> List ResError
 checkVar cur env scope n
   | isHint n = []
-  | lookupValue env scope n = []
-  | otherwise = [UnboundVariable n cur]
+  | not (lookupValue env scope n) = [UnboundVariable n cur]
+  -- use-time ambiguity: resolves, not shadowed by a local, exported by ≥2
+  -- non-core modules (same-module top-levels already excluded from the set).
+  | not (contains n scope) && isAmbiguous env n =
+    [AmbiguousOccurrence n (ambigMods env n) cur]
+  | otherwise = []
+
+isAmbiguous : Env -> String -> Bool
+isAmbiguous env n = match lookupAssoc n env.ambiguous
+  Some _ => True
+  None => False
+
+ambigMods : Env -> String -> List String
+ambigMods env n = match lookupAssoc n env.ambiguous
+  Some mods => mods
+  None => []
 
 isHint : String -> Bool
 isHint n = startsWithAt (stringToChars n)
@@ -720,6 +742,7 @@ buildEnv runtimeDecls preludeDecls prog =
     ifaceMethods = pIfaces ++ uIfaces,
     effects = effectNames prog,
     imported = imported,
+    ambiguous = [],
   }
 
 whenL : Bool -> List a -> List a
@@ -922,6 +945,9 @@ resErrorSexp (NonRecursiveValueLet n _) = "(NonRecursiveValueLet "
   ++ ")"
 resErrorSexp (DuplicateBinding n _) = "(DuplicateBinding " ++ escStr n ++ ")"
 resErrorSexp (AsPatternMisplaced _) = "AsPatternMisplaced"
+resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
+  ++ joinWith " " (escStr n :: map escStr mods)
+  ++ ")"
 
 -- ── resolve_program ───────────────────────────────────────────────────────
 -- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.
@@ -972,6 +998,20 @@ ppResError (DuplicateBinding n _) = "the clauses of '"
   ++ "' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of '"
   ++ n
   ++ "' (and its type signature) together, or rename one."
+ppResError (AmbiguousOccurrence n mods _) = "ambiguous occurrence: `"
+  ++ n
+  ++ "` is exported by "
+  ++ ambigModPhrase mods
+  ++ " — qualify or select per-name with `import <mod>.{"
+  ++ n
+  ++ "}` / import only one."
+
+-- Mirror lib/resolve.ml's mod_phrase: two modules → "both `a` and `b`";
+-- otherwise a comma-separated list of backtick-quoted module names.
+ambigModPhrase : List String -> String
+ambigModPhrase mods = match mods
+  (a::b::[]) => "both `" ++ a ++ "` and `" ++ b ++ "`"
+  _ => joinWith ", " (map (m => "`" ++ m ++ "`") mods)
 
 -- one human-readable error message per line (the harness sorts)
 export
@@ -1132,6 +1172,59 @@ mergeAdds a b = ImportAdds {
 collectImports : List ModuleExports -> List Decl -> ImportAdds
 collectImports known prog = foldImports known (usePathsOf prog)
 
+-- ── use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md) ───────────────────────
+-- The VALUE names a single non-core import contributes, attributed to its
+-- DIRECTLY-imported module id (not the original definer → re-export safe).
+importValueNames : List ModuleExports -> UsePath -> List String
+importValueNames known path =
+  if useModId path == "core" then []
+  else match findExports (useModId path) known
+    None => []
+    Some exp =>
+      let (names, _) = importedNamesMM path exp
+      filterContains exp.expValues names
+
+-- Register one (name, mid) into a name→[mid] assoc, deduping mids.
+addProvenance : List (String, List String) -> String -> String -> List (String, List String)
+addProvenance [] n mid = [(n, [mid])]
+addProvenance ((k, mids)::rest) n mid
+  | k == n = if contains mid mids then (k, mids)::rest else (k, mids ++ [mid])::rest
+  | otherwise = (k, mids) :: addProvenance rest n mid
+
+-- Fold the value names of one import (all tagged with the same mid) into prov.
+addImportProvenance : List (String, List String) -> String -> List String -> List (String, List String)
+addImportProvenance prov _ [] = prov
+addImportProvenance prov mid (n::rest) =
+  addImportProvenance (addProvenance prov n mid) mid rest
+
+-- Provenance over every non-core import in the program, in decl order
+-- (mirrors lib/resolve.ml's left-to-right List.iter so mod-id order matches).
+valueProvenance : List ModuleExports -> List UsePath -> List (String, List String)
+valueProvenance known paths = foldProvenance known [] paths
+
+foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldProvenance _ prov [] = prov
+foldProvenance known prov (p::rest) =
+  let mid = useModId p
+  let prov2 = if mid == "core" then prov
+              else addImportProvenance prov mid (importValueNames known p)
+  foldProvenance known prov2 rest
+
+-- Keep only names with ≥2 distinct provenances AND no same-module top-level
+-- value shadow (a real local def wins).
+ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ambiguousSet known prog =
+  let prov = valueProvenance known (usePathsOf prog)
+  let sameMod = userValueNames prog
+  keepAmbiguous sameMod prov
+
+keepAmbiguous : List String -> List (String, List String) -> List (String, List String)
+keepAmbiguous _ [] = []
+keepAmbiguous sameMod ((n, mids)::rest)
+  | listLen mids >= 2 && not (contains n sameMod) =
+    (n, mids) :: keepAmbiguous sameMod rest
+  | otherwise = keepAmbiguous sameMod rest
+
 foldImports : List ModuleExports -> List UsePath -> ImportAdds
 foldImports _ [] = emptyAdds
 foldImports known (p::rest) =
@@ -1252,6 +1345,7 @@ buildEnvMM runtimeDecls preludeDecls known prog =
     ifaceMethods = pIfaces ++ uIfaces ++ impIfaceMethods,
     effects = effectNames prog ++ impEffects,
     imported = adds.iaImported,
+    ambiguous = ambiguousSet known prog,
   }
   (env, adds.iaErrors)
 

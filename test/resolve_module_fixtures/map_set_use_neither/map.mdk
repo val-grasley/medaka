@@ -1,0 +1,9 @@
+-- Minimal stand-in for stdlib/map: exports a standalone `size` (and `member`)
+-- that collides with set.mdk's same-named exports.
+export
+size : Int -> Int
+size n = n
+
+export
+member : Int -> Int
+member n = n

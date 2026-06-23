@@ -24,6 +24,7 @@ type error =
   | AsPatternMisplaced                       (* `x@..` outside a binding LHS (lambda param / do-bind / match) *)
   | NonRecursiveValueLet of ident           (* `let x = ... x ...` (no `rec`) where x is in scope on RHS *)
   | DuplicateBinding     of ident           (* non-contiguous clauses of a top-level binding (Phase 148) *)
+  | AmbiguousOccurrence  of ident * string list (* name USED unqualified, exported by ≥2 non-core modules *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -61,6 +62,15 @@ let pp_error = function
        Non-function `let` bindings are not recursive — write `let rec %s = ...` \
        to opt in to recursion (the RHS must be a lambda)."
       n n
+  | AmbiguousOccurrence (n, mods) ->
+    let mod_phrase = match mods with
+      | [a; b] -> Printf.sprintf "both `%s` and `%s`" a b
+      | _      -> String.concat ", " (List.map (fun m -> "`" ^ m ^ "`") mods)
+    in
+    Printf.sprintf
+      "ambiguous occurrence: `%s` is exported by %s \
+       — qualify or select per-name with `import <mod>.{%s}` / import only one."
+      n mod_phrase n
   | DuplicateBinding n ->
     Printf.sprintf
       "the clauses of '%s' must be contiguous: a same-named top-level binding \
@@ -195,6 +205,10 @@ type module_env = {
   iface_methods  : (ident, ident list) Hashtbl.t;  (* iface name → method names *)
   effects        : (ident, unit) Hashtbl.t;  (* known effect labels: builtins ∪ user `effect Foo` (Phase 146) *)
   imported       : (ident, unit) Hashtbl.t;
+  (* Use-time ambiguous-import set (MAP-SET-AMBIGUITY-DESIGN.md): name → the
+     ≥2 distinct non-`core` module ids that export it unqualified.  Populated
+     at the import seam in build_env; consulted at the EVar use seam. *)
+  ambiguous      : (ident, string list) Hashtbl.t;
   (* Alias map: for `use foo as F` or qualified `use foo`, F/foo → module_exports *)
   module_aliases : (ident, module_exports) Hashtbl.t;
 }
@@ -210,6 +224,7 @@ let create_env ?(with_prelude=true) () =
     iface_methods  = Hashtbl.create 8;
     effects        = Hashtbl.create 8;
     imported       = Hashtbl.create 8;
+    ambiguous      = Hashtbl.create 4;
     module_aliases = Hashtbl.create 4;
   } in
   List.iter (fun n -> Hashtbl.replace env.types n ()) primitive_types;
@@ -334,6 +349,17 @@ let build_env ?(known_modules : module_exports list = [])
   let env = create_env ~with_prelude:(not (program_is_core prog)) () in
   let errors = ref [] in
   let report e = errors := (e, None) :: !errors in
+  (* Use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): per imported VALUE name,
+     accumulate the directly-imported module ids that contribute it.  After the
+     decl walk, a name with ≥2 DISTINCT non-`core` provenances (and not also a
+     same-module top-level) lands in env.ambiguous. *)
+  let provenance : (ident, string list) Hashtbl.t = Hashtbl.create 16 in
+  let add_provenance n mid =
+    let prev = try Hashtbl.find provenance n with Not_found -> [] in
+    if not (List.mem mid prev) then Hashtbl.replace provenance n (prev @ [mid])
+  in
+  (* Same-module top-level value names (a real local def shadows the import). *)
+  let same_module_vals : (ident, unit) Hashtbl.t = Hashtbl.create 16 in
   let add_unique tbl kind name =
     if Hashtbl.mem tbl name then
       report (DuplicateDefinition (kind, name))
@@ -350,16 +376,20 @@ let build_env ?(known_modules : module_exports list = [])
     match Ast.inner_decl d with
     | DTypeSig (_, n, _) ->
       (* Type sig pairs with later fun_def; either order works *)
+      Hashtbl.replace same_module_vals n ();
       add_or_skip env.values n
     | DExtern (_, n, _) ->
+      Hashtbl.replace same_module_vals n ();
       add_or_skip env.values n
     | DFunDef (_, n, _, _) ->
       if List.mem n extern_names then report (ExternWithBody n);
       (* Multi-clause definitions add the same name repeatedly *)
+      Hashtbl.replace same_module_vals n ();
       add_or_skip env.values n
     | DLetGroup (_, bs) ->
       List.iter (fun (n, _) ->
         if List.mem n extern_names then report (ExternWithBody n);
+        Hashtbl.replace same_module_vals n ();
         add_or_skip env.values n
       ) bs
     | DTypeAlias (_, n, _, _) ->
@@ -387,7 +417,9 @@ let build_env ?(known_modules : module_exports list = [])
       ) fs
     | DInterface { iface_name; methods; _ } ->
       add_unique env.interfaces "interface" iface_name;
-      List.iter (fun m -> add_or_skip env.values m.method_name) methods;
+      List.iter (fun m ->
+        Hashtbl.replace same_module_vals m.method_name ();
+        add_or_skip env.values m.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.method_name) methods)
     | DImpl _ -> ()
@@ -428,7 +460,12 @@ let build_env ?(known_modules : module_exports list = [])
          List.iter (fun n ->
            add_or_skip env.imported n;
            (* Add to values/types/constructors as appropriate *)
-           if Hashtbl.mem exp.exp_values n then add_or_skip env.values n;
+           if Hashtbl.mem exp.exp_values n then begin
+             add_or_skip env.values n;
+             (* Record this VALUE name's provenance by the DIRECTLY-imported
+                module id (mod_id), not the original definer (re-export safe). *)
+             add_provenance n mod_id
+           end;
            if Hashtbl.mem exp.exp_types  n then add_or_skip env.types  n;
            if Hashtbl.mem exp.exp_constructors n then
              add_or_skip env.constructors n;
@@ -464,6 +501,12 @@ let build_env ?(known_modules : module_exports list = [])
           | None   -> ()))
     | DAttrib _ -> ()
   ) prog;
+  (* Finalize the ambiguous set: a value name with ≥2 distinct non-`core`
+     provenances AND no same-module top-level shadow (MAP-SET-AMBIGUITY §1). *)
+  Hashtbl.iter (fun n mods ->
+    if List.length mods >= 2 && not (Hashtbl.mem same_module_vals n) then
+      Hashtbl.replace env.ambiguous n mods
+  ) provenance;
   env, List.rev !errors
 
 (* ── Phase 2: walk decls checking references ──── *)
@@ -552,6 +595,11 @@ let rec check_expr env scope errors e =
   | EVar n ->
     if not (lookup_value env scope n) then
       emit errors (UnboundVariable n)
+    else if not (List.mem n scope) && Hashtbl.mem env.ambiguous n then
+      (* Use-time ambiguity: the name is not shadowed by a local and is exported
+         by ≥2 non-`core` modules (same-module top-levels already excluded from
+         env.ambiguous at the import seam).  MAP-SET-AMBIGUITY-DESIGN.md §2. *)
+      emit errors (AmbiguousOccurrence (n, Hashtbl.find env.ambiguous n))
   | EApp (f, x) ->
     check_expr env scope errors f;
     check_expr env scope errors x

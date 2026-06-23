@@ -75,6 +75,8 @@ let sexp_error : Resolve.error -> string = function
   | Resolve.AsPatternMisplaced       -> "AsPatternMisplaced"
   | Resolve.NonRecursiveValueLet n   -> node "NonRecursiveValueLet" [esc_str n]
   | Resolve.DuplicateBinding n       -> node "DuplicateBinding" [esc_str n]
+  | Resolve.AmbiguousOccurrence (n, mods) ->
+    node "AmbiguousOccurrence" (esc_str n :: List.map esc_str mods)
 
 type mode = Resolve_m | Exhaust_m | CheckMatch_m | ResolveModules_m | Analyze_m
 

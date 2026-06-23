@@ -1,0 +1,7 @@
+-- Importing both modules unqualified but using NO colliding name stays valid
+-- (the use-time payoff over import-time ambiguity).
+import map.*
+import set.*
+
+g : Int -> Int
+g n = n
