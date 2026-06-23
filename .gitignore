@@ -11,3 +11,7 @@ _build/
 
 # Native gate oracles (built by test/build_oracles.sh)
 /test/bin/
+
+# Playground dist artifacts (built by playground/build_playground_wasm.sh; not committed)
+/playground/dist/*.wasm
+/playground/dist/*.mdk

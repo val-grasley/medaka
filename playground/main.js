@@ -1,6 +1,16 @@
-// main.js — playground page glue.
-// Wires: Run button → POST /compile → Worker → console pane.
-// Also: WasmGC feature-detect, diagnostics pane, timeout/kill.
+// main.js — playground page glue (Stage 3: fully client-side, no server compile).
+//
+// Data flow (server-free after first page load):
+//   page load : fetch once (cached) dist/playground.wasm, dist/runtime.mdk,
+//               dist/core.mdk, vendor/wat2wasm/wat2wasm_bg.wasm
+//   Run click : compiler-worker.js compiles source → { ok:false, diagnostics }
+//               | { ok:true, wasm: ArrayBuffer }
+//             : on success → worker.js runner receives the wasm bytes and posts
+//               stdout/stderr/done/error back.
+//
+// The compiler-worker (type:'module') imports compile.mjs + wat2wasm.js — all the
+// heavy work runs off the main thread.  The runner-worker (worker.js, classic) is
+// unchanged; its 10 s kill-timer is preserved.
 
 const RUN_TIMEOUT_MS = 10000; // 10 s wall-clock budget per run
 
@@ -35,8 +45,12 @@ if (!hasWasmGC()) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let activeWorker = null;
-let killTimer    = null;
+let activeRunner   = null;  // current worker.js runner worker
+let compileWorker  = null;  // persistent compiler-worker.js (reused across runs)
+let killTimer      = null;
+// Cached assets (fetched once, reused across all runs)
+let cachedAssets   = null;  // { wasm: ArrayBuffer, runtime: string, core: string, wat2wasmBytes: ArrayBuffer }
+let assetsLoading  = null;  // pending Promise<assets> (dedupe concurrent runs)
 
 function clearOutput() {
   stdoutPane.textContent = '';
@@ -55,8 +69,8 @@ function setStatus(msg, cls) {
   statusLine.className = 'status ' + (cls || '');
 }
 
-function killWorker(reason) {
-  if (activeWorker) { activeWorker.terminate(); activeWorker = null; }
+function killRunner(reason) {
+  if (activeRunner) { activeRunner.terminate(); activeRunner = null; }
   if (killTimer)    { clearTimeout(killTimer); killTimer = null; }
   if (reason) appendTo(stderrPane, '\n[' + reason + ']\n');
   runBtn.disabled = false;
@@ -65,7 +79,7 @@ function killWorker(reason) {
 
 // ── Diagnostics renderer ──────────────────────────────────────────────────────
 function renderDiagnostics(files) {
-  // files = [{file, diagnostics: [{message, range:{start:{line,character}}, severity}]}]
+  // files = [{file, diagnostics:[{message,range:{start:{line,character}},severity}]}]
   const lines = [];
   for (const f of files) {
     for (const d of f.diagnostics) {
@@ -78,88 +92,155 @@ function renderDiagnostics(files) {
   problemPane.textContent = lines.join('\n') || '(no diagnostics)';
 }
 
+// ── Asset loader ──────────────────────────────────────────────────────────────
+// Fetches the four static assets once; subsequent calls reuse the cache.
+// Throws on any network / non-ok response.
+async function loadAssets() {
+  if (cachedAssets) return cachedAssets;
+  if (assetsLoading) return assetsLoading;
+
+  assetsLoading = (async () => {
+    const [wasmResp, runtimeResp, coreResp, wat2wasmResp] = await Promise.all([
+      fetch('dist/playground.wasm'),
+      fetch('dist/runtime.mdk'),
+      fetch('dist/core.mdk'),
+      fetch('vendor/wat2wasm/wat2wasm_bg.wasm'),
+    ]);
+    for (const [name, r] of [
+      ['dist/playground.wasm', wasmResp],
+      ['dist/runtime.mdk',     runtimeResp],
+      ['dist/core.mdk',        coreResp],
+      ['vendor/wat2wasm/wat2wasm_bg.wasm', wat2wasmResp],
+    ]) {
+      if (!r.ok) throw new Error('failed to fetch ' + name + ' (' + r.status + ')');
+    }
+    const [wasm, runtime, core, wat2wasmBytes] = await Promise.all([
+      wasmResp.arrayBuffer(),
+      runtimeResp.text(),
+      coreResp.text(),
+      wat2wasmResp.arrayBuffer(),
+    ]);
+    cachedAssets = { wasm, runtime, core, wat2wasmBytes };
+    assetsLoading = null;
+    return cachedAssets;
+  })();
+
+  return assetsLoading;
+}
+
+// ── Compiler worker ───────────────────────────────────────────────────────────
+// Returns the persistent module-type compiler worker, creating it on first call.
+function getCompilerWorker() {
+  if (!compileWorker) {
+    compileWorker = new Worker('compiler-worker.js', { type: 'module' });
+    compileWorker.onerror = (e) => {
+      // Surface worker-level errors (e.g. import failure) as a rejected promise
+      // via the pending request's reject, if any.
+      if (compileWorker._reject) {
+        compileWorker._reject(new Error('compiler-worker error: ' + e.message));
+      }
+      // The worker may be broken; recreate on next run.
+      compileWorker = null;
+    };
+  }
+  return compileWorker;
+}
+
+// Send a compile request to the compiler worker and return a Promise<result>.
+// The worker is reused between runs (playground.wasm stays instantiated).
+// Assets are passed by ArrayBuffer reference (NOT transferred, so the cache stays valid).
+function requestCompile(source, assets) {
+  return new Promise((resolve, reject) => {
+    const worker = getCompilerWorker();
+    worker._resolve = resolve;
+    worker._reject  = reject;
+    worker.onmessage = (e) => { worker._resolve = null; worker._reject = null; resolve(e.data); };
+    // Clone the ArrayBuffers (structured-clone, not transfer) so cachedAssets stays intact.
+    worker.postMessage({ source, assets });
+  });
+}
+
 // ── Run ───────────────────────────────────────────────────────────────────────
 runBtn.addEventListener('click', async () => {
-  // Kill any prior run.
-  if (activeWorker) killWorker('superseded');
+  // Kill any prior runner (compile-worker is persistent, leave it).
+  if (activeRunner) killRunner('superseded');
 
   clearOutput();
   runBtn.disabled = true;
+  setStatus('loading compiler…');
+
+  // Fetch/cache assets (noop after first successful load).
+  let assets;
+  try {
+    assets = await loadAssets();
+  } catch (e) {
+    setStatus('asset load failed: ' + e.message, 'error');
+    runBtn.disabled = false;
+    return;
+  }
+
   setStatus('compiling…');
 
   const source = editor.value;
 
-  let resp;
+  let result;
   try {
-    resp = await fetch('/compile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source }),
-    });
+    result = await requestCompile(source, assets);
   } catch (e) {
-    setStatus('network error: ' + e.message, 'error');
+    setStatus('compiler error: ' + e.message, 'error');
     runBtn.disabled = false;
     return;
   }
 
-  // Error response: JSON with { errors: [...] }
-  if (!resp.ok || resp.headers.get('content-type') === 'application/json') {
-    let body;
-    try { body = await resp.json(); } catch { body = {}; }
-    if (body.errors) {
-      renderDiagnostics(body.errors);
-      setStatus('compile error', 'error');
+  if (!result.ok) {
+    // Diagnostics: type/parse error or internal assembler/compile error.
+    if (result.diagnostics && result.diagnostics.files) {
+      renderDiagnostics(result.diagnostics.files);
     } else {
-      problemPane.textContent = 'server error: ' + resp.status;
-      setStatus('error', 'error');
+      problemPane.textContent = 'compile failed (no diagnostics)';
     }
+    setStatus('compile error', 'error');
     runBtn.disabled = false;
     return;
   }
 
-  // Success: wasm bytes
-  let wasmBuf;
-  try {
-    wasmBuf = await resp.arrayBuffer();
-  } catch (e) {
-    setStatus('failed to read wasm: ' + e.message, 'error');
-    runBtn.disabled = false;
-    return;
-  }
-
+  // result.ok = true: result.wasm is an ArrayBuffer of assembled user wasm.
   setStatus('running…');
 
-  // Fresh worker per run — lets us terminate it cleanly.
-  const worker = new Worker('worker.js');
-  activeWorker = worker;
+  // Fresh runner per run — lets us terminate it cleanly within the 10 s budget.
+  const runner = new Worker('worker.js');
+  activeRunner = runner;
 
-  killTimer = setTimeout(() => killWorker('killed: time limit'), RUN_TIMEOUT_MS);
+  killTimer = setTimeout(() => killRunner('killed: time limit'), RUN_TIMEOUT_MS);
 
-  worker.onmessage = (e) => {
+  runner.onmessage = (e) => {
     const { type, text, message } = e.data;
     if (type === 'stdout') appendTo(stdoutPane, text);
     else if (type === 'stderr') appendTo(stderrPane, text);
     else if (type === 'error') {
       appendTo(stderrPane, '\n[' + message + ']\n');
       clearTimeout(killTimer); killTimer = null;
-      activeWorker = null;
+      activeRunner = null;
       runBtn.disabled = false;
       setStatus('runtime error', 'error');
     } else if (type === 'done') {
       clearTimeout(killTimer); killTimer = null;
-      activeWorker = null;
+      activeRunner = null;
       runBtn.disabled = false;
       setStatus('done', 'ok');
     }
   };
 
-  worker.onerror = (e) => {
-    appendTo(stderrPane, '\n[worker error: ' + e.message + ']\n');
+  runner.onerror = (e) => {
+    appendTo(stderrPane, '\n[runner error: ' + e.message + ']\n');
     clearTimeout(killTimer); killTimer = null;
-    activeWorker = null;
+    activeRunner = null;
     runBtn.disabled = false;
-    setStatus('worker error', 'error');
+    setStatus('runner error', 'error');
   };
 
-  worker.postMessage({ wasm: wasmBuf }, [wasmBuf]);
+  // Transfer the wasm ArrayBuffer to the runner (result.wasm came from the
+  // compiler-worker already as a fresh ArrayBuffer via structured-clone on the
+  // worker's postMessage, so it's transferable).
+  runner.postMessage({ wasm: result.wasm }, [result.wasm]);
 });
