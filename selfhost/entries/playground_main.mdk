@@ -1,0 +1,219 @@
+-- playground_main.mdk — COMBINED diagnostics + WasmGC-emit entry for the
+-- server-free in-browser Medaka playground (Stage 2).
+--
+-- WHY this entry exists
+-- ---------------------
+-- The bare emit entry (entries/wasm_emit_modules_main.mdk), when fed a
+-- type-broken or parse-broken program, compiles its native diagnostic/panic path
+-- to a wasm `unreachable` trap that aborts with ZERO bytes on stdout/stderr — so
+-- a browser host cannot surface compile errors through it.  This entry runs the
+-- REAL front end ONCE (the same `analyzeLocated`/`analyzeProject` path the native
+-- `medaka check --json` uses), and:
+--   * if there are check errors → prints JSON diagnostics in the SAME shape
+--     `medaka check --json` emits ({"files":[{"file","diagnostics":[...]}]}),
+--     then exits 0 cleanly — NO trap;
+--   * if clean → emits the program's WAT (exactly as wasm_emit_modules_main does).
+-- Because emit runs only AFTER a clean analyze, a well-typed program never reaches
+-- the emit-panic path.
+--
+-- ARG CONTRACT (identical to wasm_emit_modules_main):
+--   <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--   (roots default to [dirOf entry] when omitted)
+--
+-- OUTPUT-MARKER PROTOCOL (first line of stdout is the marker, rest is payload):
+--   __MEDAKA_DIAGNOSTICS__\n<one-line JSON {"files":[...]}>\n   ← had check errors
+--   __MEDAKA_WAT__\n<the WAT text>                            ← clean, emitted WAT
+-- The caller (playground/compile.mjs) splits on the first newline: marker selects
+-- the branch, the remainder is the payload.  Diagnostics JSON is byte-identical to
+-- `medaka check --json` (the cj* renderers below mirror medaka_cli.mdk).
+--
+-- This entry is OUTSIDE the self-host compiler graph (an entry, not imported), so
+-- it needs no fixpoint/seed: the decisive checks are wasm-tools assemble/validate
+-- plus the Node round-trip.  It composes EXISTING analyze + emit functions; only
+-- the thin cj* JSON shaping is reproduced (those live in medaka_cli.mdk, which is
+-- itself an entry and cannot be imported).
+
+import frontend.ast.{Decl, Loc(..)}
+import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import driver.diagnostics.{analyzeProject, analyzeLocated, Diag(..), Severity(..)}
+import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
+import support.path.{dirOf}
+import types.typecheck.{
+  elaborateModules,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  enableEmitArgStampPasses,
+}
+import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
+import backend.private_mangle.{mangleUnits}
+import ir.dce.{dceFilter}
+import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes}
+
+main : <IO, Mut, Panic> Unit
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: playground_main <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+-- ── driver ────────────────────────────────────────────────────────────────
+-- Read runtime + core, then run the front end ONCE.  Parse the user entry with
+-- the non-panicking parseResult FIRST (so a parse-broken file becomes a clean
+-- JSON diagnostic instead of a loader panic / wasm trap — the key playground
+-- requirement).  Then route exactly as `medaka check --json` does:
+--   parse error          → single located diagnostic
+--   load error           → single diagnostic (missing import etc.)
+--   1 module             → analyzeLocated (single-file path)
+--   N modules            → analyzeProject (loader path)
+-- If analysis is clean, fall through to emit.
+run : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => emitLoadFail entry e
+  Ok rsrc => match readFile coreP
+    Err e => emitLoadFail entry e
+    Ok csrc => match readFile entry
+      Err e => emitLoadFail entry e
+      Ok tsrc => match parseResult tsrc
+        Err pe => emitParseError entry pe
+        Ok _ => match loadProgram entry roots
+          Err lmsg => emitDiagnostics (cjAllToJson [(entry, tsrc, [Diag SevError lmsg None])])
+          Ok mods => match mods
+            [_] => analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots
+            _   => analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots mods
+
+-- Single module: analyzeLocated (correct single-file type errors).  Clean ⇒ emit.
+analyzeSingle : String -> String -> String -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
+  let diags = analyzeLocated rsrc csrc tsrc
+  match any isDiagError diags
+    True  => emitDiagnostics (cjAllToJson [(entry, tsrc, diags)])
+    False => doEmit rsrc csrc entry roots
+
+-- Multi-module: analyzeProject (loader path).  Clean ⇒ emit.
+analyzeMulti : String -> String -> String -> String -> String -> String -> List String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
+  let cacheRef = Ref []
+  let parseCacheRef = Ref []
+  let results = analyzeProject cacheRef parseCacheRef (_ => None) entry roots rsrc csrc
+  let triples = map readDiagSrc results
+  match any cjHasErr results
+    True  => emitDiagnostics (cjAllToJson triples)
+    False => doEmit rsrc csrc entry roots
+
+-- ── emit (clean path) ───────────────────────────────────────────────────────
+-- Identical to wasm_emit_modules_main.runEmit, prefixed by the WAT marker.  Re-
+-- loads modules (the analyze phase did not retain the elaborated tree); a clean
+-- analyze guarantees this load + emit cannot hit the diagnostic/panic path.
+doEmit : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+doEmit rsrc csrc entry roots = match loadProgram entry roots
+  Err e => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError e None])])
+  Ok mods =>
+    let _ = putStr "__MEDAKA_WAT__\n"
+    runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit runtimeDecls coreDecls modules =
+  let _ = enableEmitArgStampPasses ()
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  let allDecls0 = coreD ++ flatMap snd modules2
+  let allDecls = dceFilter allDecls0
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
+  let _ = installMethodIface (methodIfaceTable allDecls)
+  let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  putStr (emitProgram (lowerProgramEmit allDecls))
+
+-- ── diagnostics emit helpers ──────────────────────────────────────────────────
+-- Print the marker then the one-line JSON, then exit 0 (NO trap).
+emitDiagnostics : String -> <IO> Unit
+emitDiagnostics json =
+  let _ = putStr "__MEDAKA_DIAGNOSTICS__\n"
+  putStr (json ++ "\n")
+
+-- Parse error: single located diagnostic (mirrors medaka_cli runCheckJsonCmd).
+emitParseError : String -> ParseError -> <IO> Unit
+emitParseError entry pe =
+  let ln = parseErrorLine pe
+  let col = parseErrorCol pe
+  let r = cjRange ln col ln (col + 1)
+  let diagJson = jObject [("message", JString (parseErrorMessage pe)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")]
+  let filesJson = jObject [("file", JString entry), ("diagnostics", JArray (arrayFromList [diagJson]))]
+  emitDiagnostics (stringify (jObject [("files", JArray (arrayFromList [filesJson]))]))
+
+-- A failed stdlib read becomes a single diagnostic too (never a trap).
+emitLoadFail : String -> String -> <IO> Unit
+emitLoadFail entry msg =
+  emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError msg None])])
+
+readDiagSrc : (String, List Diag) -> <IO> (String, String, List Diag)
+readDiagSrc (path, diags) = match readFile path
+  Ok src => (path, src, diags)
+  Err _ => (path, "", diags)
+
+cjHasErr : (String, List Diag) -> Bool
+cjHasErr (_, diags) = any isDiagError diags
+
+isDiagError : Diag -> Bool
+isDiagError (Diag SevError _ _) = True
+isDiagError _ = False
+
+-- ── check --json JSON shaping (mirror of medaka_cli.mdk cj* renderers) ─────────
+-- Field/key ordering matches OCaml/Yojson alphabetical insertion so the JSON is
+-- byte-identical to `medaka check --json`:
+--   file entry: file, diagnostics ; diagnostic: message, range, severity, source
+--   range: end, start ; position: character, line
+cjPosition : Int -> Int -> Json
+cjPosition line ch = jObject [("character", JInt ch), ("line", JInt line)]
+
+cjRange : Int -> Int -> Int -> Int -> Json
+cjRange sl sc el ec =
+  jObject [("end", cjPosition el ec), ("start", cjPosition sl sc)]
+
+cjRangeOfLoc : String -> Option Loc -> Json
+cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
+cjRangeOfLoc src None = cjRange 0 0 0 0
+
+cjSevCode : Severity -> Int
+cjSevCode SevError = 1
+cjSevCode _ = 2
+
+cjDiagnostic : String -> String -> Diag -> Json
+cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) =
+  jObject
+    [
+      ("message", JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg)),
+      ("range", cjRange 0 0 0 0),
+      ("severity", JInt 2),
+      ("source", JString "medaka"),
+    ]
+cjDiagnostic _ src (Diag sev msg loc) =
+  jObject
+    [
+      ("message", JString msg),
+      ("range", cjRangeOfLoc src loc),
+      ("severity", JInt (cjSevCode sev)),
+      ("source", JString "medaka"),
+    ]
+
+cjFileEntry : String -> String -> List Diag -> Json
+cjFileEntry path src diags =
+  jObject
+    [
+      ("file", JString path),
+      ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
+    ]
+
+cjTriple : (String, String, List Diag) -> Json
+cjTriple (path, src, diags) = cjFileEntry path src diags
+
+cjAllToJson : List (String, String, List Diag) -> String
+cjAllToJson triples =
+  stringify (jObject [("files", JArray (arrayFromList (map cjTriple triples)))])
