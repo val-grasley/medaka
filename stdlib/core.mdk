@@ -617,6 +617,39 @@ export default impl Thenable (Result e) where
   andThen (Err e) _ = Err e
   andThen (Ok a) f = f a
 
+{- | Nondeterministic choice.  `noMatch` is the always-failing alternative
+   (identity for `orElse`); `orElse a b` tries `a` and, if it
+   "fails"/is-empty, falls back to `b` (left-biased).
+
+   Laws:
+       orElse noMatch x == x          (left identity)
+       orElse x noMatch == x          (right identity)
+       orElse (orElse x y) z == orElse x (orElse y z)  (associativity)
+
+   > length (orElse [1, 2] [3])
+   3
+   > isEmpty (orElse ([] : List Int) [1])
+   False
+   > isSome (orElse (Some 1) (Some 2))
+   True
+   > isSome (orElse None (Some 2))
+   True
+   > isSome (orElse None (None : Option Int))
+   False -}
+export interface Alternative f requires Applicative f where
+  noMatch : f a
+  orElse  : f a -> f a -> f a
+
+export impl Alternative List where
+  noMatch = []
+  orElse xs ys = xs ++ ys
+
+export impl Alternative Option where
+  noMatch = None
+  orElse a b = match a
+    Some _ => a
+    None => b
+
 {- | Collapse a container down to a summary value.
 
    `fold` is a strict left fold; `foldRight` is the natural recursive form

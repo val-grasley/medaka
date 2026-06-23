@@ -9,22 +9,27 @@ running doctests in stdlib/core.mdk
   ok   stdlib/core.mdk:506: (minBound : Int) < (maxBound : Int)
   ok   stdlib/core.mdk:513: charCode (minBound : Char)
   ok   stdlib/core.mdk:515: charCode (maxBound : Char)
-  ok   stdlib/core.mdk:621: isEmpty (None : Option Int)
-  ok   stdlib/core.mdk:623: length (Some 5)
-  ok   stdlib/core.mdk:700: any (x => x > 2) [1, 2, 3]
-  ok   stdlib/core.mdk:702: any (x => x > 10) [1, 2, 3]
-  ok   stdlib/core.mdk:711: all (x => x > 0) [1, 2, 3]
-  ok   stdlib/core.mdk:713: all (x => x > 0) []
-  ok   stdlib/core.mdk:765: maximum [3, 1, 2]
-  ok   stdlib/core.mdk:767: maximum ([] : List Int)
-  ok   stdlib/core.mdk:778: minimum [3, 1, 2]
-  ok   stdlib/core.mdk:791: filter (x => x > 2) [1, 2, 3, 4]
-  ok   stdlib/core.mdk:846: fromOption 0 (Some 42)
-  ok   stdlib/core.mdk:848: fromOption 0 None
-  ok   stdlib/core.mdk:905: fst (1, 2)
-  ok   stdlib/core.mdk:912: snd ("a", True)
+  ok   stdlib/core.mdk:629: length (orElse [1, 2] [3])
+  ok   stdlib/core.mdk:631: isEmpty (orElse ([] : List Int) [1])
+  ok   stdlib/core.mdk:633: isSome (orElse (Some 1) (Some 2))
+  ok   stdlib/core.mdk:635: isSome (orElse None (Some 2))
+  ok   stdlib/core.mdk:637: isSome (orElse None (None : Option Int))
+  ok   stdlib/core.mdk:664: isEmpty (None : Option Int)
+  ok   stdlib/core.mdk:666: length (Some 5)
+  ok   stdlib/core.mdk:743: any (x => x > 2) [1, 2, 3]
+  ok   stdlib/core.mdk:745: any (x => x > 10) [1, 2, 3]
+  ok   stdlib/core.mdk:754: all (x => x > 0) [1, 2, 3]
+  ok   stdlib/core.mdk:756: all (x => x > 0) []
+  ok   stdlib/core.mdk:808: maximum [3, 1, 2]
+  ok   stdlib/core.mdk:810: maximum ([] : List Int)
+  ok   stdlib/core.mdk:821: minimum [3, 1, 2]
+  ok   stdlib/core.mdk:834: filter (x => x > 2) [1, 2, 3, 4]
+  ok   stdlib/core.mdk:889: fromOption 0 (Some 42)
+  ok   stdlib/core.mdk:891: fromOption 0 None
+  ok   stdlib/core.mdk:948: fst (1, 2)
+  ok   stdlib/core.mdk:955: snd ("a", True)
 
-stdlib/core.mdk: 24/24 passed
+stdlib/core.mdk: 29/29 passed
 Testing "neq is the negation of eq" ... OK (100 tests)
 Testing "compare agrees with lt/gt/eq" ... OK (100 tests)
 Testing "clamp keeps values inside the interval" ... OK (100 tests)
