@@ -474,6 +474,23 @@ routes land. Detail lives in the owning doc cited.
 
 ### Compiler / language
 
+- **Unqualified-import name collision — use-time ambiguity error — ✅ DONE (2026-06-23, `421a4bd`,
+  both compilers).** Two non-`core` modules exporting the same unqualified standalone (e.g. `map`
+  and `set` both export `size`/`fromList`/…; also `list`+`set` share `singleton`) previously
+  produced a SILENT single-binding collision that differed by compiler (native=leftmost-import wins,
+  oracle=rightmost) → wrong-module dispatch (native crash / oracle silent-wrong). Now an unqualified
+  USE of such a name emits a located `AmbiguousOccurrence(name, modA, modB)` resolve error (Haskell
+  "Ambiguous occurrence" / use-time, user-locked over import-time). Importing both but using no
+  colliding name STAYS valid; escape hatch = explicit `import map.{size}` groups or a single import.
+  Clean on the 3 risky interactions (Bug-C method+standalone single-module shadow still routes the
+  standalone; local-binding shadow wins; disjoint explicit groups). Both `lib/resolve.ml` +
+  `selfhost/frontend/resolve.mdk` (frozen oracle edited for gate parity, the known exception). Design:
+  [`MAP-SET-AMBIGUITY-DESIGN.md`](./MAP-SET-AMBIGUITY-DESIGN.md). Gates: `diff_selfhost_resolve` 16/0,
+  `_resolve_modules` 12/0 (incl. 2 new `test/resolve_module_fixtures/` + corpus no-false-positives),
+  check/typecheck differentials 0-failing, fixpoint C3a/C3b YES (orchestrator-re-verified). **Note:**
+  the surfacing of this was a multi-step soak find — see the Bug-C / container-literal entries below;
+  the `dropShadowedExp`/`toList`-shadow theories along the way were red herrings.
+
 - **Bug C — `toList` on an imported `Map` — ✅ DONE (2026-06-23, `0d40398`, native).**
   Native `check`/`run`/`build` now route the bare name `toList m` (for `m : Map k v`) to
   `map.mdk`'s standalone, not the `Foldable` method, byte-identical to the OCaml oracle
