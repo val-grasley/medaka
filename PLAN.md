@@ -260,7 +260,7 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Empty annotated multi-type-param container literal (`Map { } : Map Int Int`) rejected at `check` | Compiler / language | ✅ DONE (2026-06-23, `98afb77`) — see [Compiler / language](#compiler--language) |
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
-| D7 / D8 / D9, `foldMap` RNone emit-site, helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
+| D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
 | Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
 | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint string indexing; effect-label refinement | Stdlib | [`STDLIB.md`](./STDLIB.md) §"Remaining work" / §"Label refinement roadmap" |
 | Diagnostic-position follow-ups (parse-error column accuracy; pattern-position spans; guard-exhaustiveness + multi-module match warnings still `None`) | Tooling / diagnostics | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10); [`selfhost/DIAGNOSTICS-SURFACING-PLAN.md`](./selfhost/DIAGNOSTICS-SURFACING-PLAN.md) |
@@ -445,19 +445,38 @@ Carried from the self-host audit docs; surfaced here so they're locatable from t
 covers the dispatch ones); they bite when arg-tag retires or structured `requires`
 routes land. Detail lives in the owning doc cited.
 
+Carried from the self-host audit docs; surfaced here so they're locatable from the
+[Open issues index](#open-issues-index). None block the soak today (arg-tag dispatch
+covers the dispatch ones); they bite when arg-tag retires or structured `requires`
+routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-verified
+2026-06-23 as confirmed-latent — not observable on the current binary; D9 closed.)**
+
 - **D7 — `activeDictVars` interface-blind.** Keyed by tyvar id only, not `(iface, id)`,
   so two constraints on one tyvar (`Eq a, Hash a`) could forward the wrong dict slot
-  once structured `requires` routes land. Latent. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D7.
+  once structured `requires` routes land. **Confirmed LATENT (2026-06-23):** two
+  constraints on one tyvar (`(Tagger a, Sizer a) => a`) dispatch correctly on native
+  run/build AND oracle — not observable today. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D7.
 - **D8 — `annotate.mdk` `DoLet` ignores `rec`.** The `DoLet` arm annotates the RHS
   before pushing the binding, so a `let rec` inside a `do`-block can't see its own name
-  during annotation (`eval.mdk` has the rec-aware form it should mirror). Owner:
-  [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D8.
-- **D9 — `@Impl` hint evaluates to `VUnit`.** Explicit impl-disambiguation syntax
-  silently no-ops at runtime (no `VNamedImpl` value); possibly deliberate scope — decide
-  or implement. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D9.
+  during annotation. **Confirmed DORMANT (2026-06-23):** `annotate.mdk` is the reverted
+  lexical-addressing pass — NO driver runs it (eval.mdk:966-974), so this is dead code; a
+  recursive do-let works on native run/build/oracle. Fix only if `annotate` is ever
+  reactivated. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D8.
+- **D9 — `@Impl` named-instance-selection hint — ✅ DONE (2026-06-23, `45d52f7`, native).**
+  Was a REAL observable divergence (the audit's "→VUnit" symptom had shifted to native
+  `check` rejecting `combine @Additive` as `Unbound variable: @Additive`; oracle returned
+  `7`/`12`). Ported to native per [`AT-IMPL-PORT-DESIGN.md`](./AT-IMPL-PORT-DESIGN.md): the
+  feature was ~80% present (parser/resolve-exemption/named-impl-key-storage/`VTypedImpl`
+  value-rep done); added the typecheck `EApp(f, EVar "@hint")` arm + `currentImplHintRef`,
+  stamped `RKey` with the named impl key (reuses C7 narrow-by-key — no new value variant),
+  an eval arm dropping the stray hint node, and the emit-path (`core_ir_lower.mdk`) hint-drop.
+  Unknown hint → clean `No impl named 'X' found for …` (`UnknownImplName`), not `Unbound`.
+  Byte-identical to the oracle on check/run/build (`7`/`12`); fixpoint C3a/C3b YES
+  (orchestrator-re-verified); gates incl. llvm 181 / build 35 / diff_native_cli 100/0.
 - **`foldMap` Monoid-default seed emits `RNone` on the LLVM path** (emitter falls back to
-  arg-tag — safe now, wrong when arg-tag retires). Distinct from the eval-path `foldMap`
-  dict gap already closed. Owner: [`selfhost/DISPATCH-INVENTORY.md`](./selfhost/DISPATCH-INVENTORY.md) §D3a.
+  arg-tag — safe now, wrong when arg-tag retires). **Confirmed LATENT/safe-now (2026-06-23):**
+  `foldMap (x => [x,x]) xs` via the Monoid default works on native build AND oracle. Distinct
+  from the eval-path `foldMap` dict gap already closed. Owner: [`selfhost/DISPATCH-INVENTORY.md`](./selfhost/DISPATCH-INVENTORY.md) §D3a.
 - **Helper duplication (code quality).** ~38 generic-helper clusters duplicated across
   selfhost stages; `joinWith`/`joinNl` in `typecheck.mdk`/`eval.mdk` are O(n²) local copies
   despite the O(n) canonical in `support/util.mdk`. Consolidate into `support/`. Owner:
