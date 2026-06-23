@@ -170,18 +170,20 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
     `$mdk_impl_*`/`$mdk_w_*`/`$mdk_default_*`) → `wasm-tools validate` OK (2.3 MB wasm). Gate `rp_filter_list.mdk`,
     `diff_wasm_modules` 17. Deferred (would surface as new undefined symbols, not needed for filter@List):
     cross-iface method-level dicts (foldMap's Monoid `empty`), parametric element `requires` (Ord `lt`→`compare`).
-  - **🟡 layer-16 (NEXT — the emitter-RUN blocker) — non-tail-recursive runtime list-JOIN helpers overflow.**
-    The emitter assembles+validates but CANNOT RUN under Node: even `main = println (1+2)` emits a ~52,419-line
-    WAT (every program includes the whole prelude), and joining ~52K WAT-line-strings overflows the wasm stack —
-    `RangeError: Maximum call stack size exceeded` in **`$mdk_append`** (the preamble WAT list-append helper,
-    non-tail-recursive `Cons(h, append(t,b))`) and **`support_util__intersperseStr`** (a Medaka helper). EVERY
-    emitter invocation hits this (not an edge case). Fix spans TWO classes: **(a)** rewrite the preamble WAT
-    list/string-join helpers (`$mdk_append`, …) as ITERATIVE loops using the `mut $C_Cons` tail field (from TRMC
-    Stage 0) — emitter-only (`wasm_preamble.mdk`); **(b)** the emitter's own Medaka join helpers
-    (`intersperseStr`/`intercalate` in `support/util.mdk`) are non-tail-recursive over the line list — make them
-    tail-recursive/accumulator or TRMC-eligible; `support/util.mdk` is IN the compiler graph → fixpoint + seed
-    (native unaffected — deep C stack). Native's append is an iterative C extern (`mdk_list_append`,
-    medaka_rt.c:258) — the reference shape. SCOPE FIRST (census which helpers overflow, preamble vs Medaka).
+  - **🏁🏁 layer-16 CLOSED (`ca2cdc5` step1 + `e9dd965` step2) — THE EMITTER RUNS ON WasmGC.** The two
+    non-tail-recursive list-JOIN overflows (depth ≈ total WAT lines) are gone: **step 1** (`$mdk_append`,
+    emitter-only) → iterative destination-passing loop via the `mut $C_Cons` tail (mirrors native
+    `mdk_list_append`); **step 2** (`intersperseStr`, IN-GRAPH `support/util.mdk`) → single-self-call
+    tail-recursive accumulator (`interspGo`+`reverseL` → `return_call`, byte-identical output; fixpoint
+    C3a/C3b YES; seed re-minted). **ORCHESTRATOR-VERIFIED on the binary:** the WasmGC-compiled emitter runs
+    end-to-end under Node, compiles `println (1+2)` to a 52,443-line WAT, **that wasm-emitted program
+    assembles + runs + prints `3`** — the WasmGC backend compiles a Medaka program to a working module
+    entirely in WasmGC (the in-browser-compiler milestone). Gates: native diff 181/13/41/35/92 unchanged,
+    diff_wasm 138/6/17, fixpoint YES. **Residual (layer-17, pre-existing, NOT a regression):** the
+    wasm-emitter's WAT differs from native's ONLY in `i32.const` dispatch-hash values (deltas of exactly
+    2^30) — `hashName`/`dictTag` (`wasm_emit.mdk:3028`, `posMod (hashName s) 2^30`) uses i32 djb2 `acc*33`
+    that overflows in the wasm runtime where native stays i64. Self-consistent (the emitted program runs
+    correctly), so functional milestone is met; true byte-identity-to-native needs the i32↔i64 hash-width fix.
 - **LLVM (b′) dispatch-TMC port — SCOPED & DEFERRED (2026-06-22, user-confirmed).** Attempted to mirror
   the WasmGC (b′) TMC into the native backend for "backend sync"; hit a FUNDAMENTAL ISA wall — LLVM
   `musttail` requires caller/callee arity match, but (b′) groups are heterogeneous-arity (router
