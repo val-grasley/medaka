@@ -1339,7 +1339,7 @@ emitScalarProgram fnNames valNames groups =
   joinNl (header ++ globals ++ fns ++ ioRuntimeLines ++ initLines ++ [")"])
 
 oneGlobalI32 : String -> String
-oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i32) (i32.const 0))"
+oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i64) (i64.const 0))"
 
 emitScalarInit : List String -> List String -> List CBind -> <Mut> List String
 emitScalarInit fnNames valNames groups =
@@ -1372,8 +1372,10 @@ emitScalarMain fnNames valNames groups = match findMain groups
   None => gapL "no `main` binding"
 
 printFor : WTy -> <Mut> List String
-printFor WInt = ["    i64.extend_i32_s", "    call $mdk_print_int"]
-printFor WBool = ["    call $mdk_print_bool"]
+-- layer-17 §2.1: scalar values are uniformly i64 now.  Int prints directly; Bool is
+-- an i64 0/1, so wrap to i32 for $mdk_print_bool.
+printFor WInt = ["    call $mdk_print_int"]
+printFor WBool = ["    i32.wrap_i64", "    call $mdk_print_bool"]
 printFor WUnit = gapL "scalar-mode: Unit main has no scalar value to print"
 printFor WStr = gapL "scalar-mode main produced a String — internal mode mismatch (strings force ref-mode)"
 printFor WChar = gapL "scalar-mode main produced a Char — internal mode mismatch (Char main forces ref-mode)"
@@ -1388,7 +1390,7 @@ emitScalarFnBind fnNames valNames (CBind name [(CClause pats body)]) =
   let instrs = emitScalarTail fnNames valNames env body
   let sig = "  (func $" ++ gname name
     ++ joinWith "" (map paramDeclI32 params)
-    ++ " (result i32)"
+    ++ " (result i64)"
   let localDecls = map localDeclI32 extraLocals
   [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
 emitScalarFnBind _ _ (CBind name _) =
@@ -1406,7 +1408,7 @@ emitScalarTail fnNames valNames env e = match e
     let (ci, _) = emitScalarExpr fnNames valNames env c
     let ti = emitScalarTail fnNames valNames env t
     let fi = emitScalarTail fnNames valNames env f
-    ci ++ ["if (result i32)"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end", "unreachable"]
+    ci ++ ["i64.const 0", "i64.ne", "if (result i64)"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end", "unreachable"]
   CLet False (PVar x) e1 e2 =>
     let (i1, _) = emitScalarExpr fnNames valNames env e1
     i1 ++ ["local.set $" ++ gname x] ++ emitScalarTail fnNames valNames (x :: env) e2
@@ -1434,10 +1436,10 @@ emitScalarAppTail fnNames valNames env app =
       i ++ ["return"]
 
 paramDeclI32 : String -> String
-paramDeclI32 p = " (param $" ++ gname p ++ " i32)"
+paramDeclI32 p = " (param $" ++ gname p ++ " i64)"
 
 localDeclI32 : String -> String
-localDeclI32 l = "(local $" ++ gname l ++ " i32)"
+localDeclI32 l = "(local $" ++ gname l ++ " i64)"
 
 emitScalarExpr : List String -> List String -> List String -> CExpr -> <Mut> (List String, WTy)
 emitScalarExpr fnNames valNames env e = match e
@@ -1452,9 +1454,11 @@ emitScalarExpr fnNames valNames env e = match e
   other => gapLTy ("scalar-mode: unsupported Core IR node " ++ ctag other)
 
 emitLitI32 : Lit -> <Mut> (List String, WTy)
-emitLitI32 (LInt n) = (["i32.const " ++ intToString n], WInt)
-emitLitI32 (LBool b) = ([if b then "i32.const 1" else "i32.const 0"], WBool)
-emitLitI32 LUnit = (["i32.const 0"], WUnit)
+-- layer-17 §2.1: scalar mode is now uniformly i64 (Int/Bool/Unit all i64 0/1/value)
+-- so >2^30 Int arithmetic computes in i64 and never truncates.
+emitLitI32 (LInt n) = (["i64.const " ++ intToString n], WInt)
+emitLitI32 (LBool b) = ([if b then "i64.const 1" else "i64.const 0"], WBool)
+emitLitI32 LUnit = (["i64.const 0"], WUnit)
 emitLitI32 (LFloat _) = gapLTy "Float literal (boxed (struct f64)) is deferred — no scalar Float fixture"
 emitLitI32 (LString _) = gapLTy "String literal (the (array i8) rep) is W6"
 emitLitI32 (LChar _) = gapLTy "Char literal is W6 (string/unicode slice)"
@@ -1470,15 +1474,19 @@ emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CEx
 emitBinI32 fnNames valNames env op l r =
   let (li, _) = emitScalarExpr fnNames valNames env l
   let (ri, _) = emitScalarExpr fnNames valNames env r
-  (li ++ ri ++ [wasmBinOp op], binOpTy op)
+  -- layer-17 §2.1: i64 arithmetic.  A comparison yields wasm i32 0/1, so extend it
+  -- back to the uniform i64 value rep.
+  if isCmpOp op then (li ++ ri ++ [wasmBinOp64 op, "i64.extend_i32_u"], binOpTy op)
+  else (li ++ ri ++ [wasmBinOp64 op], binOpTy op)
 
 emitUnI32 : List String -> List String -> List String -> String -> CExpr -> <Mut> (List String, WTy)
 emitUnI32 fnNames valNames env "-" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
-  (["i32.const 0"] ++ xi ++ ["i32.sub"], WInt)
+  (["i64.const 0"] ++ xi ++ ["i64.sub"], WInt)
 emitUnI32 fnNames valNames env "!" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
-  (xi ++ ["i32.eqz"], WBool)
+  -- i64 Bool -> negate: i64.eqz yields i32, extend back to i64.
+  (xi ++ ["i64.eqz", "i64.extend_i32_u"], WBool)
 emitUnI32 _ _ _ op _ = gapLTy ("scalar-mode: unsupported unary op '" ++ op ++ "'")
 
 emitIfI32 : List String -> List String -> List String -> CExpr -> CExpr -> CExpr -> <Mut> (List String, WTy)
@@ -1486,7 +1494,8 @@ emitIfI32 fnNames valNames env c t f =
   let (ci, _) = emitScalarExpr fnNames valNames env c
   let (ti, tty) = emitScalarExpr fnNames valNames env t
   let (fi, _) = emitScalarExpr fnNames valNames env f
-  (ci ++ ["if (result i32)"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end"], tty)
+  -- the condition is an i64 Bool; wasm `if` consumes i32, so test against zero.
+  (ci ++ ["i64.const 0", "i64.ne", "if (result i64)"] ++ indent ti ++ ["else"] ++ indent fi ++ ["end"], tty)
 
 emitLetI32 : List String -> List String -> List String -> Bool -> Pat -> CExpr -> CExpr -> <Mut> (List String, WTy)
 emitLetI32 fnNames valNames env False (PVar x) e1 e2 =
@@ -1678,6 +1687,8 @@ emitTypeSection prog =
   let w7Types = emitW7Types ()
   ["  ;; ── §3 type section (rec group) — §3.4 ADT structs + §8.6 (ref eq)/i31 ──",
    "  (rec",
+   "    ;; layer-17 §2.1: boxed Int outside ±2^30 (the $mdk_box_int/$mdk_unbox_int seam).",
+   "    (type $boxint (sub (struct (field i64))))",
    "    ;; boxed Float (§3.3) — declared, unused until a Float fixture needs it.",
    "    (type $float (sub (struct (field f64))))",
    -- W5 nested requires-dict cell (mirrors llvm_emit's `[ i64 head_tag | i64 reqdict_0 | … ]`).
@@ -2097,7 +2108,7 @@ appHead (CApp f _) = appHead f
 appHead e = e
 
 refPrintFor : WTy -> <Mut> List String
-refPrintFor WInt = ["    ref.cast (ref i31)", "    i31.get_s", "    i64.extend_i32_s", "    call $mdk_print_int"]
+refPrintFor WInt = ["    call $mdk_unbox_int", "    call $mdk_print_int"]
 refPrintFor WBool = ["    ref.cast (ref i31)", "    i31.get_u", "    call $mdk_print_bool"]
 refPrintFor WStr = ["    ref.cast (ref $str)", "    call $mdk_print_strln"]
 -- a Char main: an i31 codepoint → encode to a $str via $mdk_char_to_str → print + '\n'
@@ -3070,7 +3081,11 @@ emitRefExpr prog env d e = match e
 -- a scalar literal → an i31 immediate.  Int: ref.i31 of the value.  Bool: 1/0.
 -- Unit: i31 0 (a placeholder immediate; Unit is never inspected in this slice).
 emitLitRef : Lit -> <Mut> List String
-emitLitRef (LInt n) = ["i32.const " ++ intToString n, "ref.i31"]
+emitLitRef (LInt n) =
+  -- layer-17 §2.1: in-range Ints stay i31 immediates (byte-identical to before);
+  -- literals outside ±2^30 box into $boxint via the i64 seam so they don't truncate.
+  if n >= (0 - 1073741824) && n < 1073741824 then ["i32.const " ++ intToString n, "ref.i31"]
+  else ["i64.const " ++ intToString n, "call $mdk_box_int"]
 emitLitRef (LBool b) = [if b then "i32.const 1" else "i32.const 0", "ref.i31"]
 emitLitRef LUnit = ["i32.const 0", "ref.i31"]
 -- W8b: a Float literal in ref-mode boxes the double into a `(struct $float (f64))`.
@@ -3306,9 +3321,13 @@ emitBinRef prog env d op l r =
     let _ = set_ref useStrLeafRef True
     emitValueCmpRef prog env d op l r
   else
-    let li = emitRefExpr prog env d l ++ ["ref.cast (ref i31)", "i31.get_s"]
-    let ri = emitRefExpr prog env d r ++ ["ref.cast (ref i31)", "i31.get_s"]
-    li ++ ri ++ [wasmBinOp op, "ref.i31"]
+    -- layer-17 §2.1: Int arithmetic/comparison computes in i64 over the box/unbox
+    -- seam ($mdk_unbox_int / $mdk_box_int), so values outside ±2^30 no longer
+    -- truncate.  Arithmetic re-boxes the i64 result; comparisons yield an i31 Bool.
+    let li = emitRefExpr prog env d l ++ ["call $mdk_unbox_int"]
+    let ri = emitRefExpr prog env d r ++ ["call $mdk_unbox_int"]
+    if isCmpOp op then li ++ ri ++ [wasmBinOp64 op, "ref.i31"]
+    else li ++ ri ++ [wasmBinOp64 op, "call $mdk_box_int"]
 
 -- layer-9: emit a runtime-shape-dispatched comparison.  `==`/`!=` go through
 -- $mdk_value_eq (-> i31 Bool); ordering ops call $mdk_value_cmp (-> plain i32 -1/0/1)
@@ -3396,8 +3415,9 @@ emitUnRef prog env d "-" x =
   if cexprIsFloat prog env x then
     emitRefExpr prog env d x ++ ["ref.cast (ref $float)", "struct.get $float 0", "f64.neg", "struct.new $float"]
   else
-    let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_s"]
-    ["i32.const 0"] ++ xi ++ ["i32.sub", "ref.i31"]
+    -- layer-17 §2.1: integer negate over the i64 box/unbox seam.
+    let xi = emitRefExpr prog env d x ++ ["call $mdk_unbox_int"]
+    ["i64.const 0"] ++ xi ++ ["i64.sub", "call $mdk_box_int"]
 emitUnRef prog env d "!" x =
   let xi = emitRefExpr prog env d x ++ ["ref.cast (ref i31)", "i31.get_u"]
   xi ++ ["i32.eqz", "ref.i31"]
@@ -3547,7 +3567,7 @@ emitAppRef prog env d app =
 -- stringConcat takes a `List String`, which needs W7 list support).
 emitStrExternRef : Prog -> List String -> Int -> String -> List CExpr -> <Mut> List String
 emitStrExternRef prog env d "intToString" args = match args
-  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref i31)", "i31.get_s", "i64.extend_i32_s", "call $mdk_int_to_str"]
+  [a] => emitRefExpr prog env d a ++ ["call $mdk_unbox_int", "call $mdk_int_to_str"]
   _ => gapL "wasm W6: intToString takes exactly one argument"
 emitStrExternRef prog env d "stringLength" args = match args
   [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "struct.get $str $cp_count", "ref.i31"]
@@ -5786,6 +5806,23 @@ wasmBinOp "<=" = "i32.le_s"
 wasmBinOp ">=" = "i32.ge_s"
 wasmBinOp op = gapS ("unsupported binary operator '" ++ op
   ++ "' (`::`/`++` are list/string ops — W6/W7)")
+
+-- layer-17 §2.1: the i64 peer of wasmBinOp for ref-mode Int arithmetic over the
+-- box/unbox seam.  Division/modulo are i64 signed (i64.div_s/i64.rem_s) — matching
+-- native's truncated-toward-zero div and sign-of-dividend rem (medaka_rt.c).
+wasmBinOp64 : String -> <Mut> String
+wasmBinOp64 "+" = "i64.add"
+wasmBinOp64 "-" = "i64.sub"
+wasmBinOp64 "*" = "i64.mul"
+wasmBinOp64 "/" = "i64.div_s"
+wasmBinOp64 "%" = "i64.rem_s"
+wasmBinOp64 "==" = "i64.eq"
+wasmBinOp64 "!=" = "i64.ne"
+wasmBinOp64 "<" = "i64.lt_s"
+wasmBinOp64 ">" = "i64.gt_s"
+wasmBinOp64 "<=" = "i64.le_s"
+wasmBinOp64 ">=" = "i64.ge_s"
+wasmBinOp64 op = gapS ("unsupported i64 binary operator '" ++ op ++ "'")
 
 binOpTy : String -> WTy
 binOpTy op =
