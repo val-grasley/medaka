@@ -252,7 +252,7 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
 | `wasm-opt` perf pass (eventual) | WasmGC backend | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 |
 | **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | ✅ DONE (2026-06-23, `0d40398`) — see [Compiler / language](#compiler--language) |
-| Definer-shadow eval path — `medaka test stdlib/map.mdk` fails (`no matching impl for dispatch`) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| Empty annotated multi-type-param container literal (`Map { } : Map Int Int`) rejected at `check` | Compiler / language | ✅ DONE (2026-06-23, `98afb77`) — see [Compiler / language](#compiler--language) |
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 / D8 / D9, `foldMap` RNone emit-site, helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
@@ -497,11 +497,27 @@ routes land. Detail lives in the owning doc cited.
   from the importer-shadow result-type routing fixed here. See [Compiler / language
   residual](#compiler--language) below.
 
-- **Definer-shadow eval path — `medaka test stdlib/map.mdk` fails.** A module's OWN doctests
-  calling its OWN standalone that shadows an interface method (map's `toList` internally) hit
-  `no matching impl for dispatch` at eval. Distinct from Bug C (importer-shadow, now closed):
-  this is the definer-shadow eval/dict routing. Pre-existing, verified on clean main. Skill:
-  **add-language-feature** (resolve/typecheck/eval dispatch).
+- **Empty annotated multi-type-param container literal — ✅ DONE (2026-06-23, `98afb77`, native).**
+  Native `check` rejected `Map { } : Map Int Int` with `Type mismatch: Map vs Map Int` where the
+  oracle accepts (`run`/`build` → `0`). Non-empty `Map { 1 => 10 }` and empty/non-empty `Set { }`
+  (1-param) were fine — only the EMPTY literal on a MULTI-param container failed. This ALSO
+  surfaced as `medaka test stdlib/map.mdk` panicking `no matching impl for dispatch` (the doctest
+  harness's arg-tag fallback masked the check failure into an eval panic; map.mdk's `size (Map { }
+  : Map Int Int)` doctest is the trigger). **Investigation note (3 wrong diagnoses before the
+  real one):** first filed as a "definer-shadow `toList`/`Foldable`" eval-dict bug, then as
+  `dropShadowedExp` being too narrow — BOTH disproved by minimal repros. A strict mechanical
+  bisection found the true trigger; the `Ord k`/`FromEntries` framing was a red herring. **Real
+  root cause:** the selfhost parser can't distinguish an empty `Map { }` from `Set { }`
+  (`classifyBrace`, `selfhost/frontend/parser.mdk:727`, finds no `=>` entry → `ESetLit "Map" []`),
+  so desugar pins a UNARY `Map _a` (wrong arity for binary `Map k v`) and the `EHeadAnnot` unify
+  `Map _a` vs `Map Int Int` fails. **Fix** (`selfhost/types/typecheck.mdk`, `inferHeadAnnot`,
+  mirrors oracle `lib/typecheck.ml:2554` Phase 114): rebuild the head-pin from the head tycon's
+  DECLARED arity (`dataParamKindsRef`) instead of the literal annotation — `applyParams (TCon n)
+  (freshVars arity)`, element vars ground via inference. Gates: repro flips (check/run/build → `0`,
+  empty/non-empty Map+Set all correct); `medaka test stdlib/map.mdk` → 40 doctests + 7 props, 0
+  failed; check/typecheck/eval differentials 0-failing; fixpoint C3a/C3b YES (orchestrator-
+  re-verified). **Note:** importing both `map.*` and `set.*` in one file collides on
+  `size`/`fromEntries` — pre-existing, unrelated, surfaced only in a combined-import test harness.
 
 - **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
   Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and
