@@ -110,7 +110,7 @@ parentDir : String -> String
 parentDir path = parentGo path (stringLength path)
 
 parentGo : String -> Int -> String
-parentGo path 0 = ""
+parentGo path 0 = "."
 parentGo path i =
   if stringSlice (i - 1) i path == "/" then
     stringSlice 0 (i - 1) path

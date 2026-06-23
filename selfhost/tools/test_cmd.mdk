@@ -62,7 +62,7 @@ import tools.doctest.{
 }
 import tools.prop_runner.{runAllProps, hasProps}
 import support.util.{listLen}
-import support.path.{dirOf, stripMdk}
+import support.path.{dirOf}
 
 export
 rootsOrDefault : String -> List String -> List String
@@ -167,32 +167,19 @@ runMulti runtimeDecls coreDecls target _userDecls roots examples synthDecls = ma
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 
--- Append synth decls to whichever loaded module's id matches the target's base
--- module name.  The loader keys modules by module-id (basename without `.mdk`),
--- so match the target's basename; the root is conventionally last.
+-- Append synth decls to the ROOT (last) module in the loaded list.  The
+-- loader returns modules in dependency-first order, so the entry (target)
+-- is always last.  Using the last module avoids having to recompute the
+-- module id from the target path + roots (which is how the loader keyed it),
+-- making the injection robust to both relative and absolute target paths and
+-- to nested module ids like "lib.probe" vs bare ids like "probe".
 injectIntoRoot : String -> List Decl -> List (String, List Decl) -> List (String, List Decl)
-injectIntoRoot target synthDecls mods =
-  let rootId = baseModuleId target
-  map (injectIf rootId synthDecls) mods
+injectIntoRoot _ synthDecls mods = injectIntoLast synthDecls mods
 
-injectIf : String -> List Decl -> (String, List Decl) -> (String, List Decl)
-injectIf rootId synthDecls (mid, decls)
-  | mid == rootId = (mid, decls ++ synthDecls)
-  | otherwise = (mid, decls)
-
--- "stdlib/json.mdk" → "json"
-baseModuleId : String -> String
-baseModuleId path =
-  let base = afterLastSlash path (stringLength path)
-  stripMdk base
-
-afterLastSlash : String -> Int -> String
-afterLastSlash path 0 = path
-afterLastSlash path i =
-  if stringSlice (i - 1) i path == "/" then
-    stringSlice i (stringLength path) path
-  else
-    afterLastSlash path (i - 1)
+injectIntoLast : List Decl -> List (String, List Decl) -> List (String, List Decl)
+injectIntoLast _ [] = []
+injectIntoLast synthDecls [(mid, decls)] = [(mid, decls ++ synthDecls)]
+injectIntoLast synthDecls (x::rest) = x :: injectIntoLast synthDecls rest
 
 -- ── doctest reporting (mirrors lib/test_cmd.ml) ──────────────────────────────
 
@@ -287,12 +274,16 @@ runPropsMulti runtimeDecls coreDecls target userDecls roots = match loadProgram 
 -- sites) when the loader kept a module whose id matches the target's basename;
 -- otherwise fall back to the raw userDecls (preserves the pre-Phase-2 behaviour for
 -- any path where the root module isn't separately present).
+-- The root module is the LAST in the list (dependency-first order — entry is last).
 elaboratedRootProps : String -> List (String, List Decl) -> List Decl -> List Decl
-elaboratedRootProps target modules userDecls =
-  let rootId = baseModuleId target
-  match lookupModuleDecls rootId modules
-    Some decls => decls
-    None => userDecls
+elaboratedRootProps _ modules userDecls = match lastModule modules
+  Some decls => decls
+  None => userDecls
+
+lastModule : List (String, List Decl) -> Option (List Decl)
+lastModule [] = None
+lastModule [(_, decls)] = Some decls
+lastModule (_::rest) = lastModule rest
 
 lookupModuleDecls : String -> List (String, List Decl) -> Option (List Decl)
 lookupModuleDecls _ [] = None

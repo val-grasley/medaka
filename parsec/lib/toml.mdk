@@ -58,6 +58,8 @@ data TomlDoc = TomlDoc (List TomlTable)
 -- ---------------------------------------------------------------------------
 
 export
+-- > showTomlValue (TInt 42)
+-- "TInt 42"
 showTomlValue : TomlValue -> String
 showTomlValue v = match v
   TStr s   => "TStr \{s}"
