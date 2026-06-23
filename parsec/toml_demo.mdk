@@ -1,0 +1,34 @@
+-- toml_demo.mdk — demonstrates the TOML parser built on the parsec library.
+--
+-- Parse a realistic multi-section TOML sample, pretty-print the result,
+-- and also show the error path on a malformed input.
+--
+-- Run with:
+--   cd parsec && MEDAKA_ROOT=<root> <root>/medaka run toml_demo.mdk
+
+import lib.toml.{parseToml, showTomlDoc, TomlDoc}
+
+-- A sample TOML document with multiple sections, mixed value types,
+-- a comment, and an array.
+sampleToml : String
+sampleToml = "# medaka example project\nname = \"my-project\"\nversion = \"0.2.0\"\ndebug = false\nworkers = 4\n\n[build]\noptimize = true\npasses = 3\ntargets = [\"native\", \"wasm\"]\n\n[profile]\nauthor = \"Val\"\ntags = [\"functional\", \"self-hosted\"]\n"
+
+-- A malformed TOML: missing closing quote.
+badToml : String
+badToml = "key = \"unterminated\n"
+
+printResult : Result String TomlDoc -> <IO> Unit
+printResult r = match r
+  Err msg => println "PARSE ERROR: \{msg}"
+  Ok doc  => println (showTomlDoc doc)
+
+main =
+  println "=== TOML parser demo ==="
+  println ""
+  println "--- input ---"
+  println sampleToml
+  println "--- parsed ---"
+  printResult (parseToml sampleToml)
+  println ""
+  println "--- malformed input error path ---"
+  printResult (parseToml badToml)
