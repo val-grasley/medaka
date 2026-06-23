@@ -2,7 +2,7 @@
 
 **Status:** roadmap (forward plan). **Target spec:**
 [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md). **Findings:**
-[`EFFECTS-CONFORMANCE-AUDIT.md`](EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
+[`archive/EFFECTS-CONFORMANCE-AUDIT.md`](archive/EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
 
 > **WS-1 — Capability manifest realization: ✅ DONE (2026-06-21, `main = 41509f6`).**
 > The headline gap E1/E6 (a verified row nothing consumes on the canonical binary)

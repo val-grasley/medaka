@@ -1,5 +1,7 @@
 # LAYOUT-CONFORMANCE-AUDIT.md
 
+> **📦 ARCHIVED — historical record (moved 2026-06-22).** This conformance doc is CLOSED; all tracked items are resolved. Any open residual is now tracked in [`PLAN.md`](../PLAN.md). Kept for provenance; not a living roadmap.
+
 **Date:** 2026-06-21 · **Tree:** current `main` (post-WS-4 effects work,
 `e7b2bd0`) · **Method:** every rule reproduced *on the binary*, not recited from
 code or status docs.

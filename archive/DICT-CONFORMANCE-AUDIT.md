@@ -1,6 +1,8 @@
 # Dictionary-Passing Conformance Audit
 
-**Status:** audit (findings). **Target spec:** [`DICT-SEMANTICS.md`](DICT-SEMANTICS.md)
+> **📦 ARCHIVED — historical record (moved 2026-06-22).** This conformance doc is CLOSED; all tracked items are resolved. Any open residual is now tracked in [`PLAN.md`](../PLAN.md). Kept for provenance; not a living roadmap.
+
+**Status:** audit (findings). **Target spec:** [`DICT-SEMANTICS.md`](../DICT-SEMANTICS.md)
 (theory-first, written without consulting the implementation). **Audited tree:**
 `HEAD = 14a3b58` (`20a5c45` argstamp-unify confirmed ancestor). **Canonical
 implementation under audit:** the native self-hosted compiler (`selfhost/*.mdk`,

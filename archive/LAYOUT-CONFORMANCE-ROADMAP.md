@@ -1,5 +1,7 @@
 # LAYOUT-CONFORMANCE-ROADMAP.md
 
+> **📦 ARCHIVED — historical record (moved 2026-06-22).** This conformance doc is CLOSED; all tracked items are resolved. Any open residual is now tracked in [`PLAN.md`](../PLAN.md). Kept for provenance; not a living roadmap.
+
 > **STATUS — substantially CLOSED (2026-06-21, `main` = `5a767bb`).** WS-1·WS-2·WS-3·WS-5·WS-6·WS-7
 > all landed; WS-4 is out of scope by design (cross-ref only). Two merges:
 > `eb01df3` (WS-1/3/5/6 — erased SYNTAX/PLAN/AGENTS doc drift, seated `LAYOUT-SEMANTICS.md`

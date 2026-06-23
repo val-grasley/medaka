@@ -3,7 +3,7 @@
 Closes the native-CLI diagnostics-quality gap: `medaka check` prints errors as raw
 OCaml-style constructor sexps with no source position
 (`(UnboundVariable "foo")`), while the frozen OCaml oracle prints a positioned,
-carat-rendered, human-readable diagnostic. Source: `LAYOUT-CONFORMANCE-AUDIT.md`
+carat-rendered, human-readable diagnostic. Source: `../archive/LAYOUT-CONFORMANCE-AUDIT.md`
 F6 (recorded there as out-of-*layout*-scope; this is the diagnostics workstream).
 Tracked in PLAN.md Stage-4 as "Diagnostics surfacing layer". **`lib/`-removal-relevant:**
 once the oracle is gone, native is the only error UX.

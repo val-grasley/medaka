@@ -161,9 +161,11 @@ both are done — exactly the parity risk to de-risk early).
   defaulting order. Gate: `diff_selfhost_typecheck_golden*`, `diff_selfhost_check`.
 - **Stage 4 (native emitter re-tag):** mirror in `llvm_emit.mdk`. Gate: `diff_selfhost_llvm`/
   `_build`, then `selfcompile_fixpoint`.
-- **Stage 5 (optional workaround revert):** `fromInt 0/1`→`0/1` in `core.mdk`; re-verify
-  `scopeArities` + `-O2` `sum`/`product`. Gate: full bench + fixpoint. **Land last, separately
-  — riskiest, NOT required for the feature.**
+- **Stage 5 (optional workaround revert): ❌ DECIDED WON'T-DO (2026-06-16).** `fromInt 0/1`→`0/1`
+  in `core.mdk` was tried and reverted: the OCaml oracle's `fromInt`-routing misses the point-free
+  seed position (`fold (+) 0`) and **panics on Float** there, while native is correct — so the bare
+  literal diverges from the oracle for zero gain. The `fromInt 0/1` form stays. See PLAN.md
+  → Compiler/language (Num-poly literals) and memory `project_oracle_fromint_pointfree_gap`.
 
 ## 6. Design forks (need a human decision)
 1. **Integer literals only, or also float?** Only `Num` exists. (i) **Int-only** — `1.0` stays

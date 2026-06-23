@@ -135,7 +135,8 @@ load the matching skill before planning.
 PLAN.md is the **hub**. Each workstream below has an **owning doc** that holds the
 detailed, living roadmap; this file keeps only the one-line status + a pointer.
 Edit the owning doc for detail; update the status line here when a workstream's
-state changes.
+state changes. **Every open item — across all workstreams and owning docs — is
+enumerated in the [Open issues index](#open-issues-index) below.**
 
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
@@ -173,7 +174,7 @@ Three stages, each a gate on the next.
 
 Stages 0 (prerequisites), 1 (self-host on the interpreter), and 2 (LLVM backend)
 are done — Medaka self-hosts and the native backend compiles it to a reproducing
-fixpoint (see [Current status](#current-status-2026-06-14)). Full per-stage detail
+fixpoint (see [Current status](#current-status-2026-06-18)). Full per-stage detail
 archived in [`PLAN-ARCHIVE.md` → Archived north star stages 0 to 2](./PLAN-ARCHIVE.md#archived-north-star-stages-0-to-2);
 owning docs: `selfhost/README.md` (Stage 1), `selfhost/STAGE2-DESIGN.md` +
 `selfhost/BOOTSTRAP.md` (Stage 2). Forward work is
@@ -233,6 +234,35 @@ backend** are the product horizon (see the Workstreams table).
 
 Each item is independently shippable; pick one per session. Grouped by area, not
 strict priority.
+
+### Open issues index
+
+**Single locator for every open item.** If work is open, it is in this table — either
+defined below in this file or with a pointer to its owning doc. Statuses stay terse here;
+the linked location holds live detail. (Keep this table in sync when an item opens/closes.)
+
+| Open item | Area | Tracked in |
+|-----------|------|-----------|
+| Confidence-gated `lib/` (OCaml) removal — the soak tail | Retirement | this file → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) |
+| Manifest emission (`[package.capabilities]` from a verified entry's effect row) | Capability-effects | this file → [wedge sequence](#capability-effects-wedge--near-term-sequence); [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §5a |
+| WS-3b builtin-extern label flip (`getEnv`/`runCommand`) — rides `lib/`-removal | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
+| WS-5 extern-row assurance (standing discipline) | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
+| Phase 146b — parameterized effects (`<Fetch "x.com">`, `<KV "ns">`) | Capability-effects | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §6a |
+| `hashName`/`dictTag` i32-vs-i64 width (layer-17, self-consistent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
+| `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
+| `wasm-opt` perf pass (eventual) | WasmGC backend | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 |
+| **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | this file → [Compiler / language](#compiler--language); [`archive/DICT-CONFORMANCE-ROADMAP.md`](./archive/DICT-CONFORMANCE-ROADMAP.md) |
+| Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| D7 / D8 / D9, `foldMap` RNone emit-site, helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
+| Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
+| `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint string indexing; effect-label refinement | Stdlib | [`STDLIB.md`](./STDLIB.md) §"Remaining work" / §"Label refinement roadmap" |
+| Diagnostic-position follow-ups (parse-error column accuracy; pattern-position spans; guard-exhaustiveness + multi-module match warnings still `None`) | Tooling / diagnostics | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10); [`selfhost/DIAGNOSTICS-SURFACING-PLAN.md`](./selfhost/DIAGNOSTICS-SURFACING-PLAN.md) |
+| Auxiliary port: `coverage.ml` + `bench_runner.ml` (port last) | Tooling | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10) |
+| Effect-reannotation utility; stack-performance recursion lint; bare effectful statements (drop `let _ =`) | Parked ideas | this file → the three "Future idea (parked)" sections below |
+| `medaka add`/`remove`/`update` + `medaka.lock` | Blocked (needs package manager) | this file → [Blocked on a package manager](#blocked-on-a-package-manager-out-of-scope-until-one-exists) |
+
+*Won't-do decisions (NUMLIT `fromInt` revert, Phase 78c, the rejected-features list) are in the [Won't-do](#wont-do-kept-intentional) section, not here.*
 
 ### Stage 4 — full tooling port → native `medaka`, retire OCaml (decided 2026-06-10)
 
@@ -402,6 +432,37 @@ cover the corpus; these are known holes outside it.
   bytecode VM (§2.2) that previously held this note was removed 2026-06-10. Do not
   re-attempt on the tree-walker. See `selfhost/PERF-NOTES.md`.
 
+#### Self-host typecheck / dispatch / runtime — known open items
+
+Carried from the self-host audit docs; surfaced here so they're locatable from the
+[Open issues index](#open-issues-index). None block the soak today (arg-tag dispatch
+covers the dispatch ones); they bite when arg-tag retires or structured `requires`
+routes land. Detail lives in the owning doc cited.
+
+- **D7 — `activeDictVars` interface-blind.** Keyed by tyvar id only, not `(iface, id)`,
+  so two constraints on one tyvar (`Eq a, Hash a`) could forward the wrong dict slot
+  once structured `requires` routes land. Latent. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D7.
+- **D8 — `annotate.mdk` `DoLet` ignores `rec`.** The `DoLet` arm annotates the RHS
+  before pushing the binding, so a `let rec` inside a `do`-block can't see its own name
+  during annotation (`eval.mdk` has the rec-aware form it should mirror). Owner:
+  [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D8.
+- **D9 — `@Impl` hint evaluates to `VUnit`.** Explicit impl-disambiguation syntax
+  silently no-ops at runtime (no `VNamedImpl` value); possibly deliberate scope — decide
+  or implement. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D9.
+- **`foldMap` Monoid-default seed emits `RNone` on the LLVM path** (emitter falls back to
+  arg-tag — safe now, wrong when arg-tag retires). Distinct from the eval-path `foldMap`
+  dict gap already closed. Owner: [`selfhost/DISPATCH-INVENTORY.md`](./selfhost/DISPATCH-INVENTORY.md) §D3a.
+- **Helper duplication (code quality).** ~38 generic-helper clusters duplicated across
+  selfhost stages; `joinWith`/`joinNl` in `typecheck.mdk`/`eval.mdk` are O(n²) local copies
+  despite the O(n) canonical in `support/util.mdk`. Consolidate into `support/`. Owner:
+  [`selfhost/HELPER-CENSUS.md`](./selfhost/HELPER-CENSUS.md).
+- **Deferred design seams (not pending work, tracked for provenance):** the `set_ref` write
+  barrier (needed only if Boehm GC is ever replaced — [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7);
+  TRMC Phase 2 F1(b)/F2(b) + the Phase 3 b′ dispatch variant (no corpus target; emit seams
+  pre-parameterized — [`selfhost/TRMC-DESIGN.md`](./selfhost/TRMC-DESIGN.md)). *(The `panic`
+  unwind model is resolved by decision — abort, not catchable — see memory
+  `no-catchable-panics-isolation`; not an open item.)*
+
 > **Note for OCaml-compiler tasks below:** the self-host port mirrors the OCaml
 > pipeline stage-for-stage (`selfhost/{lexer,parser,desugar,resolve,marker,
 > exhaust,typecheck,eval}.mdk`). A change to a *ported* stage in `lib/` must be
@@ -411,6 +472,14 @@ cover the corpus; these are known holes outside it.
 > no self-hosted counterpart.
 
 ### Compiler / language
+
+- **Bug C — `toList` on an imported `Map` rejects.** Native `check` resolves `toList m`
+  (for `m : Map k v`) to the `Foldable` *method* rather than `map.mdk`'s standalone
+  function, so it demands `Foldable (Map a)` and fails with `No impl of Foldable for Map a`
+  (and misdispatches at runtime); the OCaml oracle accepts it. Phase-112 standalone-vs-method
+  resolution territory. Repro: `import map.*` then `toList (fromList [("a",1)])` → native
+  `check` errors. Owner: [`archive/DICT-CONFORMANCE-ROADMAP.md`](./archive/DICT-CONFORMANCE-ROADMAP.md)
+  "Bug C". Skill: **add-language-feature** (resolve/typecheck dispatch).
 
 - **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
   Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and

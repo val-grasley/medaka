@@ -1,5 +1,7 @@
 # Effect-and-Capability Conformance Audit
 
+> **📦 ARCHIVED — historical record (moved 2026-06-22).** This conformance doc is CLOSED; all tracked items are resolved. Any open residual is now tracked in [`PLAN.md`](../PLAN.md). Kept for provenance; not a living roadmap.
+
 > **⚠️ STATUS UPDATE (2026-06-21, `main = 9cc7c9f`): the gaps this audit found have been
 > substantially CLOSED.** This document is the original point-in-time findings snapshot
 > (`HEAD = bb0bf8d`) — kept as the historical record; it is NOT rewritten. Current state:
@@ -10,12 +12,12 @@
 > WS-2 (scope-seeding, both compilers). **E4** (only Net/FileRead/FileWrite parameterized) →
 > native machinery DONE (WS-3b); the builtin-extern flip rides the `lib/`-removal soak tail.
 > **E5** (extern-row trust boundary) → standing discipline, not closeable. See
-> [`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md) §"Workstream status"
+> [`EFFECTS-CONFORMANCE-ROADMAP.md`](../EFFECTS-CONFORMANCE-ROADMAP.md) §"Workstream status"
 > for the authoritative current state. The probe results below describe the binary *as it
 > was at the audit*, not as it is now.
 
 **Status:** audit (findings). **Target spec:**
-[`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) (theory-first, *idealized*, written
+[`EFFECTS-SEMANTICS.md`](../EFFECTS-SEMANTICS.md) (theory-first, *idealized*, written
 without conforming to the implementation). **Audited tree:** `HEAD = bb0bf8d`.
 **Canonical binary:** native `./medaka` (built 2026-06-21 12:42), with the OCaml
 `lib/*.ml` oracle (`_build/default/bin/main.exe`) used as the differential second
@@ -312,4 +314,4 @@ is no oracle-vs-native effect divergence to retire. (Contrast the dictionary aud
 where the oracle diverged on superclass evidence and arg-tag dispatch.)
 
 The forward plan to close E1–E4 is in
-[`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md).
+[`EFFECTS-CONFORMANCE-ROADMAP.md`](../EFFECTS-CONFORMANCE-ROADMAP.md).

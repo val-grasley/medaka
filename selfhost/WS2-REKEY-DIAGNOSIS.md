@@ -6,7 +6,7 @@
 > `check` passes, `run` crashes, `build` prints garbage, `run`≠`build`). It is now CLOSED
 > with the same proven additive pattern (`crossModuleMethodConstraintsQualRef` +
 > `scopeMethodArities`), **no** AST/resolve change. The full re-key described below
-> (retiring the bare tables entirely) remains deferred. See DICT-CONFORMANCE-ROADMAP.md
+> (retiring the bare tables entirely) remains deferred. See ../archive/DICT-CONFORMANCE-ROADMAP.md
 > WS-2 UPDATE.
 
 **Status: DEFERRED to a supervised landing.** The observable bug is already

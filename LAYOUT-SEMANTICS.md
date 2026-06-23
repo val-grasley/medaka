@@ -17,7 +17,7 @@ must both conform to *this document*.
 >
 > Cross-references: `SYNTAX.md` "Layout notes" is the operational *what-parses*
 > cheat-sheet (doc drift erased by WS-1, `eb01df3`, 2026-06-21 — see
-> `LAYOUT-CONFORMANCE-AUDIT.md`); `language-design.md` is intent/rationale. When
+> `archive/LAYOUT-CONFORMANCE-AUDIT.md`); `language-design.md` is intent/rationale. When
 > any of those disagree with the **binary**, the binary wins and this file is
 > updated to match it.
 
@@ -238,7 +238,7 @@ Multiple blocks can close on one line. Note `top == col` stops the pop (no
 > no context at column `col` — but neither lexer raises here; the resulting
 > stream is handed to the parser, which rejects it. (Haskell's `L` raises an
 > explicit error in this case; Medaka's lexer is silent and defers to the
-> parser. Specified behavior, see `LAYOUT-CONFORMANCE-AUDIT.md` A-DEDENT.)
+> parser. Specified behavior, see `archive/LAYOUT-CONFORMANCE-AUDIT.md` A-DEDENT.)
 
 ---
 
@@ -293,7 +293,7 @@ enforced in two complementary places, and **both** are required:
 > `resolveCont` + a pure-list `elseFilter`. These are *different code* computing
 > the *same relation*; they are verified equivalent across the audit battery, but
 > a future edit to one without the other is the single most likely way to
-> reintroduce a layout divergence. See `LAYOUT-CONFORMANCE-ROADMAP.md` WS-2.
+> reintroduce a layout divergence. See `archive/LAYOUT-CONFORMANCE-ROADMAP.md` WS-2.
 
 ---
 

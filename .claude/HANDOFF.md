@@ -263,7 +263,7 @@ self-hosting the compiler (the frontend-only-playground goal). Owning doc:
 ## RESUME — Effect-and-capability conformance roadmap substantially CLOSED (2026-06-21). `main` = `9cc7c9f`
 
 **The effect/capability conformance roadmap (`EFFECTS-CONFORMANCE-ROADMAP.md`, audit
-`EFFECTS-CONFORMANCE-AUDIT.md`, spec `EFFECTS-SEMANTICS.md`) is substantially CLOSED — E1·E2·E3
+`archive/EFFECTS-CONFORMANCE-AUDIT.md`, spec `EFFECTS-SEMANTICS.md`) is substantially CLOSED — E1·E2·E3
 fully closed, E4 native-done, E5 standing.** Authoritative status: the roadmap's "✅ Workstream
 status" block + memory `project_effects_semantics_spec`. Every landing was native-canonical,
 reproduced on the binary, fixpoint-gated (C3a/C3b YES), and merged; seed re-minted (`9cc7c9f`,
@@ -299,7 +299,7 @@ reproduced on the binary, fixpoint-gated (C3a/C3b YES), and merged; seed re-mint
 
 ## RESUME — Dict-passing conformance roadmap CLOSED (2026-06-21). `main` = `5d5bd08`
 
-**The dict-passing conformance roadmap (`DICT-CONFORMANCE-ROADMAP.md`, audit `DICT-CONFORMANCE-AUDIT.md`,
+**The dict-passing conformance roadmap (`archive/DICT-CONFORMANCE-ROADMAP.md`, audit `archive/DICT-CONFORMANCE-AUDIT.md`,
 spec `DICT-SEMANTICS.md`) is substantially CLOSED — D1 through D10 all resolved.** Authoritative status:
 the roadmap's top "STATUS" block + memory `project_dict_semantics_spec`. Each landing was reproduced on the
 binary, fixpoint-verified (C3a/C3b YES), and merged. Seed re-minted (`bootstrap_from_seed` PASS).

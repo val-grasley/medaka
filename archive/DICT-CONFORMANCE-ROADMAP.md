@@ -1,7 +1,9 @@
 # Dictionary-Passing Conformance Roadmap
 
+> **📦 ARCHIVED — historical record (moved 2026-06-22).** This conformance doc is CLOSED; all tracked items are resolved. Any open residual is now tracked in [`PLAN.md`](../PLAN.md). Kept for provenance; not a living roadmap.
+
 **Companion to** [`DICT-CONFORMANCE-AUDIT.md`](DICT-CONFORMANCE-AUDIT.md) and the
-target spec [`DICT-SEMANTICS.md`](DICT-SEMANTICS.md). This document sequences the
+target spec [`DICT-SEMANTICS.md`](../DICT-SEMANTICS.md). This document sequences the
 work to bring the **canonical** implementation (`selfhost/*.mdk` → `./medaka`)
 into conformance with the formal dict-passing semantics.
 
