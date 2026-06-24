@@ -1,0 +1,70 @@
+-- | byteparser example: exercises the core combinators and binary parsers.
+--
+-- Run with:
+--   _build/default/bin/main.exe run byteparser/main.mdk
+
+import lib.byteparser.{
+  runByteParser, byte, anyByte, bSatisfy, bEof, bMany, bSome,
+  bOptional, bBetween, bSepBy, bChoice, takeBytes,
+  beUint, beSint, sqVarint, beFloat64
+}
+
+-- ─── helpers ───────────────────────────────────────────────────────────────
+
+showResult : Display a => String -> Result String a -> String
+showResult label r = match r
+  Ok a  => "\{label}: Ok \{a}"
+  Err e => "\{label}: Err \{e}"
+
+-- ─── main ──────────────────────────────────────────────────────────────────
+-- IO sequencing uses a bare indented block (not `do` — IO is not a monad).
+
+main =
+  println "=== satisfy / anyByte / byte ==="
+  println (showResult "anyByte [65,66,67]"         (runByteParser anyByte (arrayFromList [65, 66, 67])))
+  println (showResult "byte 65 [65,66,67]"         (runByteParser (byte 65) (arrayFromList [65, 66, 67])))
+  println (showResult "byte 66 [65,66,67] (fail)"  (runByteParser (byte 66) (arrayFromList [65, 66, 67])))
+  println (showResult "bSatisfy (>64)"             (runByteParser (bSatisfy (b => b > 64)) (arrayFromList [65, 66, 67])))
+  println ""
+  println "=== bMany / bSome ==="
+  println (showResult "bMany (byte 1) [1,2,3]"     (runByteParser (bMany (byte 1)) (arrayFromList [1, 2, 3])))
+  println (showResult "bSome (byte 65) [65,65,66]" (runByteParser (bSome (byte 65)) (arrayFromList [65, 65, 66])))
+  println ""
+  println "=== bOptional ==="
+  println (showResult "bOptional (byte 65) [65,66]" (runByteParser (bOptional (byte 65)) (arrayFromList [65, 66])))
+  println (showResult "bOptional (byte 90) [65,66]" (runByteParser (bOptional (byte 90)) (arrayFromList [65, 66])))
+  println ""
+  println "=== takeBytes ==="
+  println (showResult "takeBytes 2 [65,66,67]" (runByteParser (takeBytes 2) (arrayFromList [65, 66, 67])))
+  println ""
+  println "=== beUint (big-endian unsigned) ==="
+  println (showResult "beUint 2 [0x01,0x02] -> 258"   (runByteParser (beUint 2) (arrayFromList [1, 2])))
+  println (showResult "beUint 2 [0xFF,0xFF] -> 65535"  (runByteParser (beUint 2) (arrayFromList [255, 255])))
+  println (showResult "beUint 1 [0xFF] -> 255"         (runByteParser (beUint 1) (arrayFromList [255])))
+  println ""
+  println "=== beSint (big-endian signed) ==="
+  println (showResult "beSint 2 [0xFF,0xFF] -> -1"    (runByteParser (beSint 2) (arrayFromList [255, 255])))
+  println (showResult "beSint 1 [0x80] -> -128"       (runByteParser (beSint 1) (arrayFromList [128])))
+  println (showResult "beSint 1 [0x7F] -> 127"        (runByteParser (beSint 1) (arrayFromList [127])))
+  println (showResult "beSint 4 [0,0,1,0] -> 256"     (runByteParser (beSint 4) (arrayFromList [0, 0, 1, 0])))
+  println ""
+  println "=== sqVarint ==="
+  println (showResult "sqVarint [0x00] -> 0"                (runByteParser sqVarint (arrayFromList [0])))
+  println (showResult "sqVarint [0x7F] -> 127"              (runByteParser sqVarint (arrayFromList [127])))
+  println (showResult "sqVarint [0x81,0x00] -> 128"         (runByteParser sqVarint (arrayFromList [129, 0])))
+  println (showResult "sqVarint [0x81,0x80,0x01] -> 16385"  (runByteParser sqVarint (arrayFromList [129, 128, 1])))
+  println ""
+  println "=== beFloat64 (stub) ==="
+  println (showResult "beFloat64 [8 zeros]" (runByteParser beFloat64 (arrayFromList [0, 0, 0, 0, 0, 0, 0, 0])))
+  println ""
+  println "=== bSepBy ==="
+  println (showResult "bSepBy (byte 1) (byte 2) [1,2,1,2,1]"
+    (runByteParser (bSepBy (byte 1) (byte 2)) (arrayFromList [1, 2, 1, 2, 1])))
+  println ""
+  println "=== bChoice ==="
+  println (showResult "bChoice [byte 65, byte 66] [66]"
+    (runByteParser (bChoice [byte 65, byte 66]) (arrayFromList [66, 65])))
+  println ""
+  println "=== bBetween ==="
+  println (showResult "bBetween (byte 40) (byte 41) (beUint 1) [40,99,41]"
+    (runByteParser (bBetween (byte 40) (byte 41) (beUint 1)) (arrayFromList [40, 99, 41])))
