@@ -1212,7 +1212,15 @@ lookupVarG e env x = match lookupAssoc x env
 -- word is a uniform i64 — a downstream container op re-derives its shape).
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
-emitLit _ (LInt n) = (intToString (n * 2 + 1), LTInt)
+-- Tag boundary: n*2+1 overflows the emitter's own 63-bit Medaka Int when |n| >= 2^61.
+-- For those literals, emit 64-bit shl+or instructions so tagging is done at full
+-- i64 width by LLVM rather than in Medaka arithmetic (which would wrap).
+-- tagSafeMax = 2^61 - 1 = 2305843009213693951: largest n where n*2+1 stays in range.
+emitLit e (LInt n) =
+  let tagSafeMax = 2305843009213693951
+  if n >= -tagSafeMax - 1 && n <= tagSafeMax
+    then (intToString (n * 2 + 1), LTInt)
+    else (tagInt e (intToString n), LTInt)
 emitLit _ (LBool b) = (if b then "3" else "1", LTBool)
 emitLit e (LFloat f) =
   let w = boxFloat e (ensureFloatDot (floatToString f))
