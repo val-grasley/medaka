@@ -1,0 +1,294 @@
+-- | bytebuilder — a byte-level output builder for Medaka.
+--
+-- Symmetric inverse of `byteparser`: where `byteparser` DECODES byte arrays
+-- into values, `bytebuilder` ENCODES values INTO byte arrays.  Backed by a
+-- reversed accumulator list (prepend is O(1); `buildArray` reverses once at the
+-- end via `arrayFromList`).
+--
+-- All `emit*` functions write bytes in the byte order that `byteparser`'s
+-- matching decoder expects, so a round-trip `encode → decode` reproduces the
+-- original value exactly.
+
+import lib.byteparser.{runByteParser, beUint, beSint, sqVarint, takeBytes}
+
+-- ---------------------------------------------------------------------------
+-- Builder type
+-- ---------------------------------------------------------------------------
+
+-- | A byte output buffer backed by a reversed accumulator list.
+--   Bytes are prepended in O(1); `buildArray` reverses once at the end.
+public export data Builder = Builder (Ref (List Int))
+
+-- | Create a new, empty builder.
+export
+newBuilder : Unit -> Builder
+newBuilder _ = Builder (Ref [])
+
+-- ---------------------------------------------------------------------------
+-- Emit primitives
+-- ---------------------------------------------------------------------------
+
+-- | Emit one byte (masked to low 8 bits).
+export
+emitU8 : Int -> Builder -> <Mut> Unit
+emitU8 b (Builder r) = set_ref r (bitAnd b 255 :: r.value)
+
+-- | Emit a big-endian 2-byte unsigned integer.
+--   Inverse of `beUint 2`.
+export
+emitU16BE : Int -> Builder -> <Mut> Unit
+emitU16BE v buf =
+  emitU8 (bitAnd (v / 256) 255) buf
+  emitU8 (bitAnd v 255) buf
+
+-- | Emit a big-endian 3-byte unsigned integer.
+--   Inverse of `beUint 3`.
+export
+emitU24BE : Int -> Builder -> <Mut> Unit
+emitU24BE v buf =
+  emitU8 (bitAnd (v / 65536) 255) buf
+  emitU8 (bitAnd (v / 256) 255) buf
+  emitU8 (bitAnd v 255) buf
+
+-- | Emit a big-endian 4-byte unsigned integer.
+--   Inverse of `beUint 4`.
+export
+emitU32BE : Int -> Builder -> <Mut> Unit
+emitU32BE v buf =
+  emitU8 (bitAnd (v / 16777216) 255) buf
+  emitU8 (bitAnd (v / 65536) 255) buf
+  emitU8 (bitAnd (v / 256) 255) buf
+  emitU8 (bitAnd v 255) buf
+
+-- | Emit a list of byte values, each masked to low 8 bits.
+--   Inverse of `takeBytes (length xs)`.
+export
+emitBytes : List Int -> Builder -> <Mut> Unit
+emitBytes [] _ = ()
+emitBytes (b::rest) buf =
+  emitU8 b buf
+  emitBytes rest buf
+
+-- ---------------------------------------------------------------------------
+-- SQLite varint encoder
+-- ---------------------------------------------------------------------------
+--
+-- `sqVarint` decoder: bytes 1-8 have a continuation bit in the high bit (1 =
+-- more bytes); payload bits are bits 6..0 (7 bits each), assembled big-endian.
+-- Byte 9, if reached, uses ALL 8 bits.  The decoded integer is therefore:
+--   v = b1[6:0] ++ b2[6:0] ++ ... ++ b8[6:0] ++ b9[7:0]   (big-endian cat)
+--
+-- To encode, we split `v` into groups:
+--  - If v < 2^7  (128):  one byte,  no continuation bit.
+--  - If v < 2^14 (16384): two bytes (7 bits each).
+--  - ... up to 8 groups of 7 bits.
+--  - If v >= 2^56: nine bytes — first 8 carry 7 bits each (with continuation
+--    bit 0x80 = 128 set), last byte carries the low 8 bits with no continuation.
+--
+-- Each intermediate byte has 128 added (continuation bit set).
+
+-- Threshold: 2^56 — above this we need 9 bytes.
+sqVarint9Threshold : Int
+sqVarint9Threshold = 72057594037927936
+
+-- Collect the 7-bit groups of `v` in big-endian (most-significant first) order
+-- into the accumulator.  The result is the raw payload bits with no continuation
+-- flags; call `addContBits` on the result to produce the on-wire bytes.
+sqVarintGroups : Int -> List Int -> List Int
+sqVarintGroups v acc
+  | v < 128   = v :: acc               -- highest group prepended last ⇒ first in list
+  | otherwise = sqVarintGroups (v / 128) (bitAnd v 127 :: acc)
+
+-- Set the continuation bit (bit 7 = 128) on every byte except the last.
+addContBits : List Int -> List Int
+addContBits [] = []
+addContBits [last] = [last]
+addContBits (x::rest) = (x + 128) :: addContBits rest
+
+-- Build the on-wire byte list for 1..8 bytes (values < 2^56).
+sqVarintBytes : Int -> List Int
+sqVarintBytes v = addContBits (sqVarintGroups v [])
+
+-- Append a single byte to the end of a list.
+appendByte : List Int -> Int -> List Int
+appendByte [] b = [b]
+appendByte (x::rest) b = x :: appendByte rest b
+
+-- Build the byte list for 9 bytes (values >= 2^56).
+-- First 8 bytes carry 7 bits each (56 bits) with continuation bits;
+-- 9th byte carries the low 8 bits (all 8, no masking, no continuation bit).
+sqVarint9Bytes : Int -> List Int
+sqVarint9Bytes v =
+  let low8 = bitAnd v 255
+  let high = v / 256
+  appendByte (sqVarintBytes high) low8
+
+-- | Emit a SQLite variable-length integer (1–9 bytes, big-endian).
+--   Exact inverse of `sqVarint` in `byteparser`.
+--
+-- Encoding:
+--   - v in [0, 127]              → 1 byte  (bare value)
+--   - v in [128, 16383]          → 2 bytes (7 bits each, continuation bit on first)
+--   - v in [16384, 2097151]      → 3 bytes
+--   - ... up to 8×7-bit groups
+--   - v >= 2^56 (72057594037927936) → 9 bytes (8×7 bits + 1×8 bits)
+export
+emitSqVarint : Int -> Builder -> <Mut> Unit
+emitSqVarint v buf =
+  let bytes =
+    if v >= sqVarint9Threshold
+    then sqVarint9Bytes v
+    else sqVarintBytes v
+  emitBytes bytes buf
+
+-- ---------------------------------------------------------------------------
+-- Big-endian signed integer encoder
+-- ---------------------------------------------------------------------------
+--
+-- `beSint n` reads `n` bytes as unsigned, then if the value >= 2^(8n-1)
+-- (sign bit set) subtracts 2^(8n) to get the negative.
+--
+-- Inverse: for v >= 0, emit as unsigned.
+--          for v < 0, emit (v + 2^(8*nbytes)) as unsigned.
+--          This is the standard two's-complement encoding.
+
+-- | Emit an `nbytes`-wide big-endian two's-complement signed integer.
+--   Inverse of `beSint nbytes`.
+export
+emitBeSint : Int -> Int -> Builder -> <Mut> Unit
+emitBeSint nbytes v buf =
+  let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
+  emitBEUnsignedN nbytes unsigned buf
+
+-- Emit exactly `n` bytes of a non-negative integer in big-endian order.
+-- Recursively fills from the high byte down.
+emitBEUnsignedN : Int -> Int -> Builder -> <Mut> Unit
+emitBEUnsignedN 0 _ _ = ()
+emitBEUnsignedN n v buf =
+  emitBEUnsignedN (n - 1) (v / 256) buf
+  emitU8 (bitAnd v 255) buf
+
+-- ---------------------------------------------------------------------------
+-- Finalise
+-- ---------------------------------------------------------------------------
+
+-- | Extract the accumulated bytes as a fixed-size `Array Int`.
+--   The internal accumulator is reversed (bytes were prepended), so this
+--   function reverses it back to emission order.
+export
+buildArray : Builder -> Array Int
+buildArray (Builder r) = arrayFromList (reverseList r.value)
+
+-- Reverse a list (standard; not importing list.mdk to keep the module lightweight).
+reverseList : List a -> List a
+reverseList xs = reverseGo xs []
+
+reverseGo : List a -> List a -> List a
+reverseGo [] acc = acc
+reverseGo (x::rest) acc = reverseGo rest (x::acc)
+
+-- ---------------------------------------------------------------------------
+-- Doctest helpers
+-- ---------------------------------------------------------------------------
+
+-- | Build bytes by running an emit action on a fresh builder and return the
+--   resulting `Array Int`.  Used in round-trip doctests below.
+build1 : (Builder -> <Mut> Unit) -> <Mut> Array Int
+build1 f =
+  let buf = newBuilder ()
+  f buf
+  buildArray buf
+
+-- ---------------------------------------------------------------------------
+-- Doctests — round-trip: emit → buildArray → runByteParser decoder == value
+-- ---------------------------------------------------------------------------
+
+-- emitU8 ↔ beUint 1
+-- > runByteParser (beUint 1) (build1 (emitU8 0))
+-- Ok 0
+-- > runByteParser (beUint 1) (build1 (emitU8 255))
+-- Ok 255
+-- > runByteParser (beUint 1) (build1 (emitU8 127))
+-- Ok 127
+
+-- emitU16BE ↔ beUint 2
+-- > runByteParser (beUint 2) (build1 (emitU16BE 0))
+-- Ok 0
+-- > runByteParser (beUint 2) (build1 (emitU16BE 256))
+-- Ok 256
+-- > runByteParser (beUint 2) (build1 (emitU16BE 65535))
+-- Ok 65535
+-- > runByteParser (beUint 2) (build1 (emitU16BE 258))
+-- Ok 258
+
+-- emitU24BE ↔ beUint 3
+-- > runByteParser (beUint 3) (build1 (emitU24BE 0))
+-- Ok 0
+-- > runByteParser (beUint 3) (build1 (emitU24BE 16777215))
+-- Ok 16777215
+-- > runByteParser (beUint 3) (build1 (emitU24BE 65536))
+-- Ok 65536
+
+-- emitU32BE ↔ beUint 4
+-- > runByteParser (beUint 4) (build1 (emitU32BE 0))
+-- Ok 0
+-- > runByteParser (beUint 4) (build1 (emitU32BE 4294967295))
+-- Ok 4294967295
+-- > runByteParser (beUint 4) (build1 (emitU32BE 1048576))
+-- Ok 1048576
+
+-- emitBytes ↔ takeBytes
+-- > runByteParser (takeBytes 3) (build1 (emitBytes [10, 20, 30]))
+-- Ok [10, 20, 30]
+-- > runByteParser (takeBytes 0) (build1 (emitBytes []))
+-- Ok []
+-- > runByteParser (takeBytes 4) (build1 (emitBytes [0, 128, 255, 1]))
+-- Ok [0, 128, 255, 1]
+
+-- emitSqVarint ↔ sqVarint  (1-byte: 0..127)
+-- > runByteParser sqVarint (build1 (emitSqVarint 0))
+-- Ok 0
+-- > runByteParser sqVarint (build1 (emitSqVarint 127))
+-- Ok 127
+
+-- emitSqVarint ↔ sqVarint  (2-byte: 128..16383)
+-- > runByteParser sqVarint (build1 (emitSqVarint 128))
+-- Ok 128
+-- > runByteParser sqVarint (build1 (emitSqVarint 16383))
+-- Ok 16383
+
+-- emitSqVarint ↔ sqVarint  (3-byte: 16384..2097151)
+-- > runByteParser sqVarint (build1 (emitSqVarint 16384))
+-- Ok 16384
+-- > runByteParser sqVarint (build1 (emitSqVarint 2097151))
+-- Ok 2097151
+
+-- emitSqVarint ↔ sqVarint  (large multi-byte)
+-- > runByteParser sqVarint (build1 (emitSqVarint 268435456))
+-- Ok 268435456
+
+-- emitBeSint ↔ beSint  (1-byte)
+-- > runByteParser (beSint 1) (build1 (emitBeSint 1 127))
+-- Ok 127
+-- > runByteParser (beSint 1) (build1 (emitBeSint 1 (-1)))
+-- Ok -1
+-- > runByteParser (beSint 1) (build1 (emitBeSint 1 (-128)))
+-- Ok -128
+-- > runByteParser (beSint 1) (build1 (emitBeSint 1 0))
+-- Ok 0
+
+-- emitBeSint ↔ beSint  (2-byte)
+-- > runByteParser (beSint 2) (build1 (emitBeSint 2 32767))
+-- Ok 32767
+-- > runByteParser (beSint 2) (build1 (emitBeSint 2 (-32768)))
+-- Ok -32768
+-- > runByteParser (beSint 2) (build1 (emitBeSint 2 (-1)))
+-- Ok -1
+
+-- emitBeSint ↔ beSint  (4-byte)
+-- > runByteParser (beSint 4) (build1 (emitBeSint 4 2147483647))
+-- Ok 2147483647
+-- > runByteParser (beSint 4) (build1 (emitBeSint 4 (-2147483648)))
+-- Ok -2147483648
+-- > runByteParser (beSint 4) (build1 (emitBeSint 4 (-1)))
+-- Ok -1
