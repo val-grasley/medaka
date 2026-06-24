@@ -33,6 +33,7 @@ import byteparser.lib.byteparser.{
   sqVarint,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, parseRecord}
+import list.{reverse}
 
 -- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
 --   Used for the right-most-child pointer and interior-cell left-child pointer.
@@ -97,7 +98,7 @@ decodeLeafPage bytes pageBase hdrOffset =
 -- Iterate the cell-pointer array, decoding each table-leaf cell.
 decodeCells : Array Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
 decodeCells bytes pageBase cpArrayStart nCells i acc
-  | i >= nCells = Ok (reverseRows acc)
+  | i >= nCells = Ok (reverse acc)
   | otherwise =
       -- cell pointer i is a uint16 at cpArrayStart + i*2; it is a page-relative
       -- offset, so the absolute cell offset is pageBase + cellPtr.
@@ -173,7 +174,7 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
       let rmHdr = if rightmost == 1 then 100 else (rightmost - 1) * pageSize
       match scanTablePage bytes pageSize rightmost rmHdr
         Err e => Err e
-        Ok rows => Ok (appendRows acc rows)
+        Ok rows => Ok (acc ++ rows)
   | otherwise =
       let cellPtr = beU16 bytes (cpArrayStart + i * 2)
       let cellOff = pageBase + cellPtr
@@ -182,39 +183,23 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
       let childHdr = if leftChild == 1 then 100 else (leftChild - 1) * pageSize
       match scanTablePage bytes pageSize leftChild childHdr
         Err e => Err e
-        Ok rows => scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (appendRows acc rows)
-
--- Concatenate two row lists: put all of `xs` before `ys`.
--- Used to combine accumulated rows with a newly-scanned child's rows.
-appendRows : List Row -> List Row -> List Row
-appendRows [] ys = ys
-appendRows (x::xs) ys = x :: appendRows xs ys
+        Ok rows => scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
 
 -- ---------------------------------------------------------------------------
 
 -- | Render a decoded row (or error) as "rowid: cell|cell|..." for doctests.
 export
 showRow : Result String Row -> String
-showRow r = match r
-  Err e => "Err: \{e}"
-  Ok (Row rid cells) => stringConcat [intToString rid, ": ", showCellsBT cells]
+showRow (Err e)           = "Err: \{e}"
+showRow (Ok (Row rid cells)) = stringConcat [intToString rid, ": ", showCellsBT cells]
 
 showCellsBT : List Cell -> String
-showCellsBT cells = match cells
-  [] => ""
-  c::[] => showCellBT c
-  c::rest => stringConcat [showCellBT c, "|", showCellsBT rest]
+showCellsBT []        = ""
+showCellsBT (c::[])   = showCellBT c
+showCellsBT (c::rest) = stringConcat [showCellBT c, "|", showCellsBT rest]
 
 showCellBT : Cell -> String
-showCellBT c = match c
-  CNull   => "NULL"
-  CInt n  => intToString n
-  CText s => s
-  CBlob _ => "<blob>"
-
-reverseRows : List Row -> List Row
-reverseRows xs = revRows xs []
-
-revRows : List Row -> List Row -> List Row
-revRows [] acc = acc
-revRows (x::xs) acc = revRows xs (x::acc)
+showCellBT CNull   = "NULL"
+showCellBT (CInt n)  = intToString n
+showCellBT (CText s) = s
+showCellBT (CBlob _) = "<blob>"

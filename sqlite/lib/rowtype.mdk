@@ -27,6 +27,7 @@
 -- float column already yields `Err` at the record-decode layer (recordfmt.mdk).
 
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
+import list.{take, drop}
 
 -- | A row decoder: how wide a slice of columns it consumes, and the closure
 --   that turns that slice into a typed value (or an error message).
@@ -61,10 +62,9 @@ tInt : RowType Int
 tInt = mkRowType 1 decodeInt
 
 decodeInt : List Cell -> Result String Int
-decodeInt cells = match cells
-  CInt n :: [] => Ok n
-  c :: []      => Err "tInt: expected integer column, got \{cellShape c}"
-  _            => Err "tInt: expected exactly 1 column"
+decodeInt (CInt n :: []) = Ok n
+decodeInt (c :: [])      = Err "tInt: expected integer column, got \{cellShape c}"
+decodeInt _              = Err "tInt: expected exactly 1 column"
 
 -- | Decode a single text column.
 export
@@ -72,10 +72,9 @@ tText : RowType String
 tText = mkRowType 1 decodeText
 
 decodeText : List Cell -> Result String String
-decodeText cells = match cells
-  CText s :: [] => Ok s
-  c :: []       => Err "tText: expected text column, got \{cellShape c}"
-  _             => Err "tText: expected exactly 1 column"
+decodeText (CText s :: []) = Ok s
+decodeText (c :: [])       = Err "tText: expected text column, got \{cellShape c}"
+decodeText _               = Err "tText: expected exactly 1 column"
 
 -- | Decode a single boolean column (SQLite stores booleans as 0/1 integers).
 export
@@ -83,10 +82,9 @@ tBool : RowType Bool
 tBool = mkRowType 1 decodeBool
 
 decodeBool : List Cell -> Result String Bool
-decodeBool cells = match cells
-  CInt n :: [] => if n == 0 then Ok False else if n == 1 then Ok True else Err "tBool: expected 0 or 1, got \{n}"
-  c :: []      => Err "tBool: expected integer column, got \{cellShape c}"
-  _            => Err "tBool: expected exactly 1 column"
+decodeBool (CInt n :: []) = if n == 0 then Ok False else if n == 1 then Ok True else Err "tBool: expected 0 or 1, got \{n}"
+decodeBool (c :: [])      = Err "tBool: expected integer column, got \{cellShape c}"
+decodeBool _              = Err "tBool: expected exactly 1 column"
 
 -- | Decode a single blob column.
 export
@@ -94,10 +92,9 @@ tBlob : RowType (Array Int)
 tBlob = mkRowType 1 decodeBlob
 
 decodeBlob : List Cell -> Result String (Array Int)
-decodeBlob cells = match cells
-  CBlob b :: [] => Ok b
-  c :: []       => Err "tBlob: expected blob column, got \{cellShape c}"
-  _             => Err "tBlob: expected exactly 1 column"
+decodeBlob (CBlob b :: []) = Ok b
+decodeBlob (c :: [])       = Err "tBlob: expected blob column, got \{cellShape c}"
+decodeBlob _               = Err "tBlob: expected exactly 1 column"
 
 -- | Wrap an inner decoder so that a NULL (across ALL its `width` columns)
 --   decodes to `None`; otherwise the inner decoder runs and the result is
@@ -118,15 +115,13 @@ optionDecoder inner cells =
     Ok v  => Ok (Some v)
 
 cellCount : List Cell -> Int
-cellCount cells = match cells
-  []     => 0
-  _ :: r => 1 + cellCount r
+cellCount []       = 0
+cellCount (_ :: r) = 1 + cellCount r
 
 allNull : List Cell -> Bool
-allNull cells = match cells
-  []         => True
-  CNull :: r => allNull r
-  _ :: _     => False
+allNull []          = True
+allNull (CNull :: r) = allNull r
+allNull (_ :: _)    = False
 
 -- ---------------------------------------------------------------------------
 -- Product combinators
@@ -145,9 +140,9 @@ t2 : RowType a -> RowType b -> RowType (a, b)
 t2 ra rb = mkRowType (rtWidth ra + rtWidth rb) (decode2 (rtWidth ra) ra rb)
 
 decode2 : Int -> RowType a -> RowType b -> List Cell -> Result String (a, b)
-decode2 wa ra rb cells = match rtDecode ra (takeCells wa cells)
+decode2 wa ra rb cells = match rtDecode ra (take wa cells)
   Err e  => Err e
-  Ok va  => match rtDecode rb (dropCells wa cells)
+  Ok va  => match rtDecode rb (drop wa cells)
     Err e => Err e
     Ok vb => Ok (va, vb)
 
@@ -160,11 +155,11 @@ t3 ra rb rc =
 
 decode3 : Int -> Int -> RowType a -> RowType b -> RowType c -> List Cell -> Result String (a, b, c)
 decode3 wa wb ra rb rc cells =
-  match rtDecode ra (takeCells wa cells)
+  match rtDecode ra (take wa cells)
     Err e => Err e
-    Ok va => match rtDecode rb (takeCells wb (dropCells wa cells))
+    Ok va => match rtDecode rb (take wb (drop wa cells))
       Err e => Err e
-      Ok vb => match rtDecode rc (dropCells (wa + wb) cells)
+      Ok vb => match rtDecode rc (drop (wa + wb) cells)
         Err e => Err e
         Ok vc => Ok (va, vb, vc)
 
@@ -177,13 +172,13 @@ t4 ra rb rc rd =
 
 decode4 : Int -> Int -> Int -> RowType a -> RowType b -> RowType c -> RowType d -> List Cell -> Result String (a, b, c, d)
 decode4 wa wb wc ra rb rc rd cells =
-  match rtDecode ra (takeCells wa cells)
+  match rtDecode ra (take wa cells)
     Err e => Err e
-    Ok va => match rtDecode rb (takeCells wb (dropCells wa cells))
+    Ok va => match rtDecode rb (take wb (drop wa cells))
       Err e => Err e
-      Ok vb => match rtDecode rc (takeCells wc (dropCells (wa + wb) cells))
+      Ok vb => match rtDecode rc (take wc (drop (wa + wb) cells))
         Err e => Err e
-        Ok vc => match rtDecode rd (dropCells (wa + wb + wc) cells)
+        Ok vc => match rtDecode rd (drop (wa + wb + wc) cells)
           Err e => Err e
           Ok vd => Ok (va, vb, vc, vd)
 
@@ -210,24 +205,12 @@ tRaw : Int -> (List Cell -> Result String a) -> RowType a
 tRaw = mkRowType
 
 -- ---------------------------------------------------------------------------
--- Cell-list helpers (kept local; selfhost/stdlib-free style -- though this is a
--- regular library, the reader deliberately avoids `import list` for parity)
+-- Cell-shape helper
 -- ---------------------------------------------------------------------------
-
-takeCells : Int -> List Cell -> List Cell
-takeCells n xs = if n <= 0 then [] else match xs
-  []      => []
-  x :: r  => x :: takeCells (n - 1) r
-
-dropCells : Int -> List Cell -> List Cell
-dropCells n xs = if n <= 0 then xs else match xs
-  []      => []
-  _ :: r  => dropCells (n - 1) r
 
 -- A short human label for a cell's runtime shape (for error messages).
 cellShape : Cell -> String
-cellShape c = match c
-  CNull   => "NULL"
-  CInt _  => "Int"
-  CText _ => "Text"
-  CBlob _ => "Blob"
+cellShape CNull   = "NULL"
+cellShape (CInt _)  = "Int"
+cellShape (CText _) = "Text"
+cellShape (CBlob _) = "Blob"

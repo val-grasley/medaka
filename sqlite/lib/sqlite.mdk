@@ -28,6 +28,7 @@ import lib.btree.{
   scanTablePage,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
+import list.{reverse}
 
 -- | An open database: the parsed header plus the whole-file bytes.
 public export data Db = Db DbHeader (Array Int)
@@ -115,15 +116,13 @@ schemaOfRow row = match rowCells row
   _ => Err "sqlite_master row: expected 5 columns"
 
 cellText : Cell -> String
-cellText c = match c
-  CText s => s
-  CNull   => ""
-  other   => cellToString other
+cellText (CText s) = s
+cellText CNull     = ""
+cellText other     = cellToString other
 
 cellInt : Cell -> Int
-cellInt c = match c
-  CInt n => n
-  _      => 0
+cellInt (CInt n) = n
+cellInt _        = 0
 
 -- | Find a user table by name in the schema.
 export
@@ -133,9 +132,8 @@ findTable db name = match readSchema db
   Ok entries => findTableGo name entries
 
 findTableGo : String -> List SchemaEntry -> Result String SchemaEntry
-findTableGo name entries = match entries
-  [] => Err "table not found: \{name}"
-  e::rest =>
+findTableGo name []         = Err "table not found: \{name}"
+findTableGo name (e::rest)  =
     if e.etype == "table" && e.ename == name
     then Ok e
     else findTableGo name rest
@@ -223,31 +221,22 @@ rowCellsWithIpk pkIdx row =
   substituteIpk pkIdx 0 (rowRowid row) (rowCells row)
 
 substituteIpk : Option Int -> Int -> Int -> List Cell -> List Cell
-substituteIpk pkIdx idx rowid cells = match cells
-  [] => []
-  c :: rest =>
+substituteIpk pkIdx idx rowid []         = []
+substituteIpk pkIdx idx rowid (c :: rest) =
     let cell = match pkIdx
                  Some p => if p == idx then CInt rowid else c
                  None   => c
     cell :: substituteIpk pkIdx (idx + 1) rowid rest
 
 -- ---------------------------------------------------------------------------
--- Result-list helper (avoids importing list)
+-- Result-list helper (no stdlib traverse/mapM equivalent)
 -- ---------------------------------------------------------------------------
 
 mapResult : (a -> Result String b) -> List a -> Result String (List b)
 mapResult f xs = mapResultGo f xs []
 
 mapResultGo : (a -> Result String b) -> List a -> List b -> Result String (List b)
-mapResultGo f xs acc = match xs
-  [] => Ok (reverseL acc)
-  x::rest => match f x
+mapResultGo f [] acc = Ok (reverse acc)
+mapResultGo f (x::rest) acc = match f x
     Err e => Err e
     Ok y  => mapResultGo f rest (y::acc)
-
-reverseL : List a -> List a
-reverseL xs = revL xs []
-
-revL : List a -> List a -> List a
-revL [] acc = acc
-revL (x::xs) acc = revL xs (x::acc)
