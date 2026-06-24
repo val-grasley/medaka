@@ -533,17 +533,22 @@ cover the corpus; these are known holes outside it.
 - **SQLite-dogfood findings (2026-06-23, minor — DEFERRED, workarounds exist; affect BOTH
   compilers, so not selfhost-only gaps).** Surfaced building the pure-Medaka SQLite reader;
   also documented in `SQLITE-DESIGN.md`:
-  1. **`record` is a reserved keyword**, so a module file `record.mdk` can't be imported as
-     `lib.record` (parse failure). Workaround used: rename (`recordfmt.mdk`). Fix candidate:
-     allow `record` as a module-path segment.
+  1. ✅ **`record` is a reserved keyword**, so a module file `record.mdk` couldn't be imported.
+     **FIXED (2026-06-24, `ff658b2`, native).** `parser.mdk`'s `importIdentFor` now accepts `TRecord`
+     (and the obviously-safe `TData`/`TType`) as module-path segments. `import record.*` resolves
+     (`test/native_fixtures/keyword_import_record/`); fixpoint C3a/C3b YES.
   2. **`/=` mis-lexes** as `/` then `=` (not-equal is `!=`), producing a *misleading,
      locationless* "Parse error". Diagnostic-quality bug — the lexer should accept `/=` or
      emit a located "did you mean `!=`?" hint.
   3. **Layout parse error**: a leading `let x = e` followed by a multi-line `if/then/else`
      whose `else` branch has further `let`s. Workaround: inline the leading `let`. Worth a
      focused layout repro.
-  4. **Multi-line `->` type signatures parse-error on native** — a type sig split across lines
-     is rejected; keep sigs single-line. (Surfaced by the RowType layer.)
+  4. ✅ **Multi-line `->` type signatures** — a type sig split across lines.
+     **FIXED (2026-06-24, `ff658b2`, native).** `parser.mdk`'s `tyArrowTail` is now layout-aware:
+     after `->` it consumes the trailing `TIndent`/`TNewline` (and unwinds the matching
+     `TNewline TDedent`), so `f : Int ->⏎  Int -> Int` parses (`test/native_fixtures/multiline_ty_arrow.mdk`);
+     fixpoint C3a/C3b YES. (A bare `skipNewlines` was insufficient — the indented continuation emits
+     `TIndent`, not `TNewline`.)
   5. ✅ **Spurious non-exhaustive-match warning on a partial record pattern** (`RowType { width = w }`).
      **FIXED (2026-06-24, `b0cfb71`, native).** `exhaust.mdk`'s `desugarPat` lowered a partial record
      pattern `PRec name _ False` to a sentinel literal the Maranget matrix never recognized as a ctor;
@@ -573,9 +578,14 @@ cover the corpus; these are known holes outside it.
      `RowType a -> RowType b` body makes the frozen OCaml oracle reject ("signature more general
      than body" / "infinite type involving a"); native accepts + runs correctly. Auto-resolves at
      `lib/` removal. (These sqlite modules are native-only checkable anyway.)
-  8. **`intBitsToFloat` with a literal bit-pattern ≥ 2^61 fails in `medaka build`** — pre-existing
-     emitter literal-encoding overflow (tagged `n*2+1` exceeds 63-bit). Does NOT affect
-     `bytesToFloat64` (C path) or `intBitsToFloat` on runtime-computed values.
+  8. ✅ **Large integer literal (|n| ≥ 2^61) mis-tagged in `medaka build`.**
+     **FIXED (2026-06-24, `9a7ace0`, native, emitter — out of self-compile graph so no fixpoint/seed).**
+     `llvm_emit.mdk`'s `emitLit` computed the tagged immediate `n*2+1` in the emitter's own 63-bit
+     Medaka Int, which overflowed for |n| ≥ 2^61 (e.g. the IEEE-754 bits for `1.0`,
+     `4607182418800017408`, built to `-inf`). Now, for |n| ≥ 2^61 it emits a full-width LLVM
+     `shl i64 n, 1` + `or i64 …, 1` (via the existing `tagInt` helper); small literals keep the direct
+     immediate path unchanged. Fixture `test/llvm_fixtures/lit_int_large_tag.mdk`; `diff_selfhost_llvm`
+     182→183, build 35/35.
 
 - ✅ **`let … in` as an indented clause body. CLOSED (both compilers, 2026-06-21).**
   Previously selfhost-only; now both accept e.g. `f x =⏎  let go n = … in go x`.
