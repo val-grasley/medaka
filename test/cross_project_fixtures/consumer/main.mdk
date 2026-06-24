@@ -1,5 +1,7 @@
 import minilib.lib.minilib.{revSorted, double}
+import minilib.lib.extra.{revDoubled}
 
 main =
   println "revSorted [3,1,2,5,4] = \{revSorted [3, 1, 2, 5, 4]}"
   println "double 21 = \{double 21}"
+  println "revDoubled [3,1,2] = \{revDoubled [3, 1, 2]}"
