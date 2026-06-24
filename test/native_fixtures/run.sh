@@ -52,5 +52,14 @@ case "$out" in
   *) echo "FAIL method_shadow_run: expected True, got [$out]"; fail=1 ;;
 esac
 
+# inline-let missing-in: located error at the `let` keyword with a hint.
+# Before the fix, native reported 2:0 ("if" line) with no hint.
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/inline_let_missing_in.mdk" 2>&1)"
+case "$out" in
+  *"inline 'let' requires 'in'"*)
+    echo "ok   inline_let_missing_in (located helpful diagnostic at let keyword)" ;;
+  *) echo "FAIL inline_let_missing_in: got [$out]"; fail=1 ;;
+esac
+
 [ $fail -eq 0 ] && echo "all native_fixtures pass" || echo "native_fixtures FAILED"
 exit $fail

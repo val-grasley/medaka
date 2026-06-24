@@ -3256,6 +3256,39 @@ firstSlashEqIdx toks i
   | peekTok toks i == TSlashEq = i
   | otherwise = firstSlashEqIdx toks (i + 1)
 
+-- Scan forward from token index `i` (depth=accumulated INDENT/DEDENT) looking
+-- for `TIn` at depth=0 before the enclosing block exits (a `TDedent` that would
+-- take depth below 0, or `TEof`).  Returns True if the inline `let` is
+-- well-formed (has a matching `in`), False if it is missing one.
+scanForLetIn : Array Token -> Int -> Int -> Bool
+scanForLetIn toks i depth
+  | i >= arrayLength toks = False
+  | peekTok toks i == TIn && depth == 0 = True
+  | peekTok toks i == TIndent = scanForLetIn toks (i + 1) (depth + 1)
+  | peekTok toks i == TDedent && depth == 0 = False
+  | peekTok toks i == TDedent = scanForLetIn toks (i + 1) (depth - 1)
+  | peekTok toks i == TEof = False
+  | otherwise = scanForLetIn toks (i + 1) depth
+
+-- Find the first inline `let` that follows `else` or `then` and is missing
+-- its `in` (the continuation body is on the next line instead).  Returns the
+-- token index of the offending `let`, or -1 if no such pattern is found.
+-- Called as a pre-scan in `parseResult` so the helpful error is surfaced
+-- before the grammar absorbs the failure as a "leftover tokens" error at 2:0.
+firstInlineLetMissingIn : Array Token -> Int -> Int
+firstInlineLetMissingIn toks i
+  | i + 1 >= arrayLength toks = 0 - 1
+  | (peekTok toks i == TElse || peekTok toks i == TThen) &&
+    peekTok toks (i + 1) == TLet =
+      if scanForLetIn toks (i + 2) 0
+      then firstInlineLetMissingIn toks (i + 1)
+      else i + 1
+  | otherwise = firstInlineLetMissingIn toks (i + 1)
+
+inlineLetMissingInMsg : String
+inlineLetMissingInMsg =
+  "inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block"
+
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
@@ -3267,6 +3300,9 @@ parseResult src = match tokenizeWithOffsets src
     let offs = arrayFromList offList
     let srcLen = stringLength src
     let seIdx = firstSlashEqIdx toks 0
+    let ilIdx = firstInlineLetMissingIn toks 0
     if seIdx >= 0
     then Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
+    else if ilIdx >= 0
+    then Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
     else resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

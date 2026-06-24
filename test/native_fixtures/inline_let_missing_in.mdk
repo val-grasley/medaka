@@ -1,0 +1,12 @@
+-- Regression for `else let x = e` with the body on the next line.
+-- This is a parse error BY DESIGN (inline `let` requires `in`).
+-- Before the fix, native reported: `<file>:2:0: Parse error` — mislocated to
+-- the `if` line with no hint.  After the fix, native reports the `let` keyword
+-- with a helpful message (line 5, col 7 for this fixture).
+-- (Native-only: the frozen OCaml oracle says `<file>:6:0: Parse error`.)
+f c =
+  if c
+  then 0
+  else let x = 1
+         x + 1
+main = println (debug (f True))
