@@ -1,0 +1,17 @@
+-- Negative fixture: genuinely non-exhaustive matches must still warn.
+--
+-- Case A: two-constructor sum with one arm missing.
+data Shape = Circle Int | Square Int
+
+area s = match s
+  Circle r => r * r
+
+-- Case B: record type with two constructors (via DData ConNamed), only one matched.
+data Animal
+  = Cat { name : String }
+  | Dog { name : String }
+
+animalName a = match a
+  Cat { name = n } => n
+
+main = debug (area (Circle 3))

@@ -1,0 +1,9 @@
+-- Positive fixture: partial record pattern on a single-constructor type
+-- should NOT warn "non-exhaustive" — the constructor is the only one and
+-- unmentioned fields are irrelevant to coverage.
+data Point = Point { x : Int, y : Int }
+
+getX p = match p
+  Point { x = v } => v
+
+main = debug (getX (Point { x = 42, y = 7 }))

@@ -4086,7 +4086,7 @@ checkMatchExhaustive scrutTy arms =
 -- one single-column matrix row per non-guarded arm (its desugared pattern)
 nonGuardedRows : List Arm -> List (List Pat)
 nonGuardedRows [] = []
-nonGuardedRows ((Arm pat [] _)::rest) = [desugarPat pat] :: nonGuardedRows rest
+nonGuardedRows ((Arm pat [] _)::rest) = [desugarPat matchOracle.value pat] :: nonGuardedRows rest
 nonGuardedRows ((Arm _ _ _)::rest) = nonGuardedRows rest
 
 -- the head type name of the scrutinee, for the matrix's column-0 oracle: a

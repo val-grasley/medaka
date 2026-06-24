@@ -110,6 +110,8 @@ public export record Oracle
   typeCtors : List (String, List String)
   ctorArity : List (String, Int)
   ctorType : List (String, String)
+  -- ctor → declared field names in order (DRecord + DData ConNamed variants)
+  ctorFields : List (String, List String)
 
 export
 buildOracle : List Decl -> Oracle
@@ -117,6 +119,7 @@ buildOracle prog = Oracle {
   typeCtors = flatMap dataTypeCtors prog ++ builtinTypeCtors,
   ctorArity = flatMap dataArity prog ++ builtinArity,
   ctorType = flatMap dataCtorType prog ++ builtinCtorType,
+  ctorFields = flatMap dataCtorFields prog,
 }
 
 builtinTypeCtors : List (String, List String)
@@ -160,6 +163,21 @@ variantArity (Variant n (ConNamed fs)) = (n, listLen fs)
 variantCtorType : String -> Variant -> (String, String)
 variantCtorType tyname (Variant n _) = (n, tyname)
 
+dataCtorFields : Decl -> List (String, List String)
+dataCtorFields (DData _ _ _ variants _) = flatMap variantCtorFields variants
+dataCtorFields (DRecord _ tyname _ fields _) = [(tyname, map fieldName fields)]
+dataCtorFields _ = []
+
+variantCtorFields : Variant -> List (String, List String)
+variantCtorFields (Variant n (ConNamed fs)) = [(n, map fieldName fs)]
+variantCtorFields _ = []
+
+fieldName : Field -> String
+fieldName (Field n _) = n
+
+oGetCtorFields : Oracle -> String -> Option (List String)
+oGetCtorFields oracle c = lookupAssoc c oracle.ctorFields
+
 oGetCtors : Oracle -> String -> Option (List String)
 oGetCtors oracle t
   | (Some _) <- tupleArityOfName t = Some [t]
@@ -177,23 +195,42 @@ oGetArity oracle c
 
 -- ── pattern → canonical matrix pattern ────────────────────────────────────
 export
-desugarPat : Pat -> Pat
-desugarPat PWild = PWild
-desugarPat (PVar _) = PWild
-desugarPat (PLit (LBool True)) = PCon "True" []
-desugarPat (PLit (LBool False)) = PCon "False" []
-desugarPat (PLit LUnit) = PCon "Unit" []
-desugarPat (PLit l) = PLit l
-desugarPat (PTuple ps) = PCon (tupleCtorName (listLen ps)) (map desugarPat ps)
-desugarPat (PCon c args) = PCon c (map desugarPat args)
-desugarPat (PCons h t) = PCon "Cons" [desugarPat h, desugarPat t]
-desugarPat (PList []) = PCon "Nil" []
-desugarPat (PList (h::rest)) =
-  PCon "Cons" [desugarPat h, desugarPat (PList rest)]
-desugarPat (PAs _ p) = desugarPat p
-desugarPat (PRec _ _ True) = PWild
-desugarPat (PRec name _ False) = PLit (LString "__partial_rec_\{name}__")
-desugarPat (PRng _ _ _) = PWild
+desugarPat : Oracle -> Pat -> Pat
+desugarPat _ PWild = PWild
+desugarPat _ (PVar _) = PWild
+desugarPat _ (PLit (LBool True)) = PCon "True" []
+desugarPat _ (PLit (LBool False)) = PCon "False" []
+desugarPat _ (PLit LUnit) = PCon "Unit" []
+desugarPat _ (PLit l) = PLit l
+desugarPat oracle (PTuple ps) = PCon (tupleCtorName (listLen ps)) (map (desugarPat oracle) ps)
+desugarPat oracle (PCon c args) = PCon c (map (desugarPat oracle) args)
+desugarPat oracle (PCons h t) = PCon "Cons" [desugarPat oracle h, desugarPat oracle t]
+desugarPat _ (PList []) = PCon "Nil" []
+desugarPat oracle (PList (h::rest)) =
+  PCon "Cons" [desugarPat oracle h, desugarPat oracle (PList rest)]
+desugarPat oracle (PAs _ p) = desugarPat oracle p
+desugarPat _ (PRec _ _ True) = PWild
+desugarPat oracle (PRec name fields _) =
+  -- Lower a record pattern to a constructor-tagged row.
+  -- For each declared field (in declaration order) use the sub-pattern if
+  -- mentioned in this pattern, otherwise PWild.  Falls back to PWild if the
+  -- constructor's field layout is unknown (e.g. builtins).
+  match oGetCtorFields oracle name
+    None => PWild
+    Some fieldOrder => PCon name (map (lookupRecField oracle fields) fieldOrder)
+desugarPat _ (PRng _ _ _) = PWild
+
+lookupRecField : Oracle -> List RecPatField -> String -> Pat
+lookupRecField oracle fields fn = match findRecField fn fields
+  None => PWild
+  Some None => PWild      -- field pun: binds, irrefutable → wildcard for coverage
+  Some (Some p) => desugarPat oracle p
+
+findRecField : String -> List RecPatField -> Option (Option Pat)
+findRecField _ [] = None
+findRecField fn ((RecPatField f mPat)::rest)
+  | f == fn = Some mPat
+  | otherwise = findRecField fn rest
 
 -- ── matrix operations ─────────────────────────────────────────────────────
 filterMapRows : (List Pat -> Option (List Pat)) -> List (List Pat) -> List (List Pat)
@@ -348,8 +385,8 @@ checkGroup oracle clauses
 checkGroupCovered : Oracle -> List (List Pat, Expr) -> List String
 checkGroupCovered oracle clauses =
   let arity = groupArity clauses
-  let rows = totalClauseRows clauses
-  let query = [desugarPat (PTuple (replicate arity PWild))]
+  let rows = totalClauseRows oracle clauses
+  let query = [desugarPat oracle (PTuple (replicate arity PWild))]
   if useful oracle (Some (tupleCtorName arity)) rows query then [guardWarning] else []
 
 groupArity : List (List Pat, Expr) -> Int
@@ -357,11 +394,11 @@ groupArity [] = 0
 groupArity (c::_) = listLen (clausePats c)
 
 -- one matrix row per non-falling-through clause (its params wrapped as a tuple)
-totalClauseRows : List (List Pat, Expr) -> List (List Pat)
-totalClauseRows [] = []
-totalClauseRows (c::rest)
-  | clauseGuardsTotal c = [desugarPat (PTuple (clausePats c))] :: totalClauseRows rest
-  | otherwise = totalClauseRows rest
+totalClauseRows : Oracle -> List (List Pat, Expr) -> List (List Pat)
+totalClauseRows _ [] = []
+totalClauseRows oracle (c::rest)
+  | clauseGuardsTotal c = [desugarPat oracle (PTuple (clausePats c))] :: totalClauseRows oracle rest
+  | otherwise = totalClauseRows oracle rest
 
 -- ── group same-name (name, clause) pairs, first-seen order ────────────────
 groupByName : List (String, (List Pat, Expr)) -> List (List (List Pat, Expr))
