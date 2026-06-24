@@ -662,6 +662,32 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   (AST-origin threading through resolve/ast/typecheck/eval — AGENTS.md Phase 134 documents how this
   area repeatedly mis-diagnoses); do it **supervised**, not as a soak-tail drive-by. Owners:
   AGENTS.md Phase 134 gotcha + memory `project_dict_semantics_spec` (D2).
+- **F1b — loader does NOT canonicalize module identity (cross-package double-load). BACKLOGGED workstream
+  (2026-06-24, SQLite-write dogfood; well-diagnosed, STOPped per guardrail).** The loader keys modules by
+  the dotted module-id STRING (`visitMod`/visited/`acc` in `selfhost/driver/loader.mdk`). The SAME file
+  reached via two import spellings — a dep's relative `import lib.byteparser` (rebased to the dep root by
+  the F1 fix `ec8c19c`) vs the dep-name `import byteparser.lib.byteparser` — gets two modIds → loads TWICE
+  → two copies of its decls/impls → `conflicting impl Alternative` (raised in `typecheck.mdk`
+  `checkCoherence`). **Repro:** a `sqlite/lib/` file importing BOTH `byteparser.lib.bytebuilder` and
+  `lib.recordenc` (each alone is fine). **Why it's not loader-contained:** path-dedup at load is easy and
+  sound (both spellings resolve to a byte-identical path; different packages → different roots → no
+  over-merge), BUT `resolve.mdk` `findExports` matches by modId string and each importer's `DUse` is looked
+  up by its literal spelling — collapsing the load to one entry makes the OTHER importer's reference fail
+  (`Unknown module`). The real fix must make BOTH spellings resolve to ONE canonical module across
+  loader+resolve+typecheck+eval (the differential-gated module-identity model). **Options:** (A) rewrite
+  each `DUse` to a canonical **dep-prefixed** modId at load (smaller; needs an `owningRoot→depName` reverse
+  lookup + correct handling of all `UsePath` variants / self-refs / transitive deps / bare names — over/
+  under-merge risk); (B) thread the canonical path into module identity end-to-end (bigger, coordinated).
+  **Impact:** the shared `byteparser/lib/bytebuilder.mdk` can't be used alongside `recordenc`; the SQLite
+  write path stays self-contained (modest emit-logic duplication). Owner: `selfhost/driver/loader.mdk` +
+  `selfhost/frontend/resolve.mdk`. Cheap interim workaround if needed: make `bytebuilder` import-free of
+  `byteparser` (move its round-trip doctests to a standalone test file).
+- **`CFieldAccess` cross-module record dot-access (emitter limitation, pre-existing, tracked).** The native
+  emitter panics `CFieldAccess: unknown field '<f>'` on DOT-access (`r.field`) of a record type imported
+  from ANOTHER module — the field-label table is built by scanning `CRecord` ctor exprs in the current
+  compilation unit only. Workaround: destructure (`match r { R { field = x } => … }`) instead of `r.field`.
+  Surfaced by the SQLite-write P4 API. Owner: `selfhost/backend/llvm_emit.mdk` (the `CFieldAccess` field
+  resolution).
 - **Pre-existing failing gates (surfaced by the 2026-06-24 full sweep; NOT stale goldens — real
   native-vs-OCaml behavioral divergences; confirmed unrelated to that session's lexer/parser/exhaust
   batch by code inspection):**
