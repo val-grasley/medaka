@@ -1,0 +1,9 @@
+-- Facet 2: a DIRECT call to a user fn that shadows an interface method must
+-- resolve to the USER's definition on the EVAL path too (run==build==oracle),
+-- even when the receiver type HAS an impl of the interface (`List Int` has `Eq`).
+-- The eval path used to arg-stamp `eq [1] [2]` to the `Eq (List a)` impl
+-- (structural → False); it must use the user's `eq` (→ True).
+eq : List Int -> List Int -> Bool
+eq a b = True
+
+main = println (debug (eq [1] [2]))

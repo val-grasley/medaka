@@ -1318,6 +1318,19 @@ methodIfaceParamsRef = Ref []
 standaloneValuesRef : Ref (List String)
 standaloneValuesRef = Ref []
 
+-- DEFINER-shadow names (facet 2): the names THIS module declares as a top-level
+-- funDef that ALSO name an interface method (buildDefinerShadows) — e.g. a user
+-- `eq : List Int -> List Int -> Bool`.  A DIRECT call `eq [1] [2]` in user code
+-- must resolve to the user's OWN definition (RLocal), NOT to a method impl, even
+-- when the receiver's head HAS an impl of the interface (`List` has `Eq`).  The
+-- arg-stamp pass would otherwise stamp `RKey:List` (the impl), making the eval path
+-- dispatch to the prelude `Eq (List a)` impl (`[1] ≠ [2]` → False) instead of the
+-- user's fn (True) — a run≠build divergence (the EMIT path already routes to the
+-- user's def).  resolveRLocalSite stamps these RLocal unconditionally.  Populated
+-- per-module in checkModuleFullImpl from buildDefinerShadows; reset by resetState.
+definerShadowNamesRef : Ref (List String)
+definerShadowNamesRef = Ref []
+
 -- Bug C: importer-shadow method names → their IMPORTED STANDALONE scheme (e.g.
 -- `toList` → `Map k v -> List (k, v)`).  env1 rebinds these names to the polymorphic
 -- INTERFACE-METHOD scheme (so a genuine method call types polymorphically), which
@@ -1347,6 +1360,16 @@ shadowKeyTableRef = Ref []
 -- the module path populates only for the module's OWN interfaces).
 methodDispatchIdxRef : Ref (List (String, Int))
 methodDispatchIdxRef = Ref []
+
+-- FLAT-PATH SHADOW FIX (facet 1): interface-method names that a USER top-level fn
+-- shadows on the single-file flat check path.  processSCC drops a scheme with one
+-- of these names from the env it THREADS FORWARD, so a later prelude binding
+-- (`neq x y = not (eq x y)`) resolves the name to the METHOD scheme (kept in the
+-- base env / globalS) rather than the user's shadowing fn.  Set by checkProgramSeeded
+-- right before processTopGroups; empty everywhere else (multi-module path checks
+-- core in isolation and never needs this).  See checkProgramSeeded for rationale.
+methodShadowNamesRef : Ref (List String)
+methodShadowNamesRef = Ref []
 
 -- C5: arg-position method occurrences whose name is a standalone-shadow, recorded
 -- UNGATED (the ordinary arg-stamp machinery is emit-path-only, but eval also
@@ -1812,6 +1835,7 @@ resolveArgStamp implTable keyTable name tagRef implRef am encl hint = match acti
       let dictName = if implDefinesMethodAt implTable name tag then name else innerDefaultMethod name
       set_ref implRef (argImplDictRoutesFor implTable dictName tag am)
     None => ()
+
 -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a BY-NAME
 -- relational method (`lt`/`gt`/…) at a parametric Ord head (tuple/`List a`/`Box a`)
 -- has NO own impl, so its element `requires` dicts must be keyed off the inner
@@ -1967,6 +1991,7 @@ resetState _ =
   let _ = set_ref pendingSites []
   let _ = set_ref pendingRLocalSites []
   let _ = set_ref shadowStandaloneSchemesRef []
+  let _ = set_ref definerShadowNamesRef []
   let _ = set_ref shadowKeyTableRef []
   let _ = set_ref pendingBinopSites []
   let _ = set_ref methodIfaceParamsRef []
@@ -1992,6 +2017,7 @@ resetState _ =
   let _ = set_ref methodSiteFns []
   let _ = set_ref dictAppFns []
   let _ = set_ref promotedRef []
+  let _ = set_ref methodShadowNamesRef []
   let _ = set_ref typeErrors []
   let _ = set_ref occursCheckFailed False
   set_ref currentLevel 0
@@ -5313,9 +5339,16 @@ resolveRLocalSites keyTable ((name, tagRef, am)::rest) =
 -- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
 resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
-resolveRLocalSite keyTable name tagRef am = match headTyconMono am
-  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
-  None => ()
+resolveRLocalSite keyTable name tagRef am
+  -- Facet 2: a DEFINER shadow (user's OWN top-level fn shadowing a method) ALWAYS
+  -- routes RLocal — a direct call resolves to the user's definition, even when the
+  -- receiver's head has an impl of the interface (`eq [1] [2]` → the user's `eq`,
+  -- NOT the `Eq (List a)` impl).  This overrides resolveArgStamps' RKey<head> stamp,
+  -- bringing the eval path into agreement with the emit path + the oracle (run==build).
+  | contains name definerShadowNamesRef.value = set_ref tagRef RLocal
+  | otherwise = match headTyconMono am
+    Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
+    None => ()
 
 -- C5: hasImpl ⇒ genuine method; route already correct (RNone for arg-tag eval,
 -- or RKey stamped by resolveArgStamps on emit) — leave untouched.
@@ -7053,10 +7086,28 @@ checkProgramSeeded seed prog =
   let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
+  -- FLAT-PATH SHADOW FIX (facet 1): record interface-method names so processSCC
+  -- keeps a method-shadowing USER fn out of the env it threads forward (so a later
+  -- prelude binding like `neq x y = not (eq x y)` resolves `eq` to the METHOD, not
+  -- the user's `eq`).  See methodShadowNamesRef.  Empty on the multi-module path.
+  let methodNames = map fst (ifaceMethodSchemes prog)
+  let _ = set_ref methodShadowNamesRef methodNames
   let topSchemes = processTopGroups env1 sigs defs (groupNames defs OTip)
-  let _ = inferImplBodiesIfEnabled (extendVars env1 topSchemes) prog
-  let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
-  let _ = inferPropBodies (extendVars env1 topSchemes) prog
+  -- FLAT-PATH SHADOW FIX (cont.): when a USER top-level fn shares a name with an
+  -- interface method (e.g. user `eq : List Int -> List Int -> Bool` vs core's
+  -- `Eq.eq`), the prelude's OWN prop/default/impl bodies still reference that name
+  -- as the METHOD (core.mdk:1089 `prop … = … gt x y …`).  The multi-module path
+  -- checks core in ISOLATION, so its bodies always see the method scheme; the
+  -- single-file FLAT path flattens core+user and would let the user's scheme shadow
+  -- the method here, unifying the user's applied param type against the prop's
+  -- element → spurious "List Int vs Int".  The oracle avoids this by method-MARKING
+  -- (the prop's `gt` becomes EMethodRef); we lack that arm, so for the prelude-body
+  -- passes we drop any user scheme whose name is an interface method, leaving the
+  -- method scheme (in env1/globalS) visible — the isolation the multi-module path gives.
+  let preludeBodyEnv = extendVars env1 (dropSchemesNamed methodNames topSchemes)
+  let _ = inferImplBodiesIfEnabled preludeBodyEnv prog
+  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog
+  let _ = inferPropBodies preludeBodyEnv prog
   let _ = groundMultiParamObligations prog pendingImplObligations.value
   let _ = checkImplObligations prog pendingImplObligations.value
   let _ = checkCallObligations prog pendingCallObligations.value
@@ -7148,6 +7199,12 @@ inferImplBodiesIfEnabled env prog
 -- the plain-check path (activeDictVars mutation is harmless; reset by resetState).
 inferDefaultBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
 inferDefaultBodiesIfEnabled env prog = inferDefaultBodies env prog
+
+-- drop every (name, scheme) whose name is in [names] (the flat-path prelude-body
+-- shadow fix: remove user schemes that shadow an interface-method name so the
+-- method scheme stays visible to the prelude's own bodies).
+dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
+dropSchemesNamed names schemes = filterList (s => not (contains (fst s) names)) schemes
 
 inferDefaultBodies : TcEnv -> List Decl -> <Mut> Unit
 inferDefaultBodies _ [] = ()
@@ -8118,7 +8175,11 @@ processSCC env sigs grouped members =
   let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
   let _ = registerSchemeObligations addedObls schemes
   let _ = registerInferredConstraints sigs schemes
-  (extendVars env schemes, schemes)
+  -- FLAT-PATH SHADOW FIX (facet 1): thread forward only the NON-method-shadowing
+  -- schemes, so a method name a user fn shadows keeps resolving to the METHOD
+  -- (base env / globalS) for later prelude bindings.  The shadowing scheme is still
+  -- RETURNED (second tuple slot) for the scheme dump + final env.
+  (extendVars env (dropSchemesNamed methodShadowNamesRef.value schemes), schemes)
 
 -- A multi-member SCC is a mutually-recursive group (always a function group, like
 -- the oracle's DLetGroup); a singleton is a plain binding gated on its RHS.  Self-
@@ -8740,6 +8801,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let importerShadows = buildStandaloneShadows implDecls prog
   let definerShadows = buildDefinerShadows implDecls prog
   let _ = set_ref standaloneValuesRef (dedup (importerShadows ++ definerShadows))
+  let _ = set_ref definerShadowNamesRef definerShadows
   -- Bug C: stash each importer shadow's IMPORTED STANDALONE scheme (e.g. `toList` →
   -- `Map k v -> List (k, v)`) BEFORE env1 rebinds the name to the interface-method
   -- scheme, so inferAppExpr can recover the standalone result type for a no-impl

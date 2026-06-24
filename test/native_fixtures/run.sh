@@ -30,5 +30,27 @@ else
   echo "FAIL let_multiline_rhs_if: check returned non-zero"; fail=1
 fi
 
+# method-name shadow (facet 1): a user top-level fn shadowing a prelude interface
+# method (`eq`/`gt`) with applied-type params must `check` cleanly (exit 0).  The
+# flat single-file path used to flatten core+user and let the user scheme shadow
+# the method in core's own prop/`neq` bodies → spurious "List Int vs Int".  The
+# oracle accepts it (method-marks the prop ref), so this is NATIVE-only assurance.
+perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/method_shadow_check.mdk" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+  echo "ok   method_shadow_check (user fn shadowing eq/gt checks)"
+else
+  echo "FAIL method_shadow_check: check returned non-zero"; fail=1
+fi
+
+# method-name shadow (facet 2): a DIRECT call to the user's shadowing `eq` must
+# resolve to the USER's definition on the EVAL path (run), matching build + the
+# oracle, even though `List Int` HAS an `Eq` impl (the eval path used to arg-stamp
+# the `Eq (List a)` impl → False; the user's `eq` returns True).
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" run "$FIX/method_shadow_run.mdk" 2>&1)"
+case "$out" in
+  True) echo "ok   method_shadow_run (eval routes to user's eq, run==build==oracle)" ;;
+  *) echo "FAIL method_shadow_run: expected True, got [$out]"; fail=1 ;;
+esac
+
 [ $fail -eq 0 ] && echo "all native_fixtures pass" || echo "native_fixtures FAILED"
 exit $fail

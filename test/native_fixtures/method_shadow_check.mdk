@@ -1,0 +1,14 @@
+-- Facet 1: a user top-level fn that shadows a prelude interface method
+-- (`eq`/`gt`/`lt` are Ord/Eq methods) with applied-type params must TYPE-CHECK.
+-- The single-file flat check path used to flatten core+user and let the user's
+-- scheme shadow the method in core's own prop/`neq` bodies → spurious
+-- "List Int vs Int".  The oracle accepts this (OK — N bindings).
+eq : List Int -> List Int -> Bool
+eq a b = True
+
+gt : Exp Int -> Exp Int -> Exp Bool
+gt a b = MkExp
+
+data Exp a = MkExp
+
+main = println "ok"
