@@ -25,6 +25,7 @@ import byteparser.lib.byteparser.{
   takeBytes,
   bFailWith,
 }
+import list.{reverse}
 
 -- | One decoded column value.
 public export data Cell
@@ -35,11 +36,10 @@ public export data Cell
 
 export
 cellToString : Cell -> String
-cellToString c = match c
-  CNull   => ""
-  CInt n  => intToString n
-  CText s => s
-  CBlob _ => "<blob>"
+cellToString CNull   = ""
+cellToString (CInt n)  = intToString n
+cellToString (CText s) = s
+cellToString (CBlob _) = "<blob>"
 
 -- A serial type's interpretation.  We keep just enough to drive the body parse.
 public export data SerialType
@@ -102,22 +102,19 @@ parseRecord = ByteParser parseRecordGo
 --   Used by the doctests above to print results without a Debug instance.
 export
 showCells : Result String (List Cell) -> String
-showCells r = match r
-  Err e => "Err: \{e}"
-  Ok cells => showCellsGo cells
+showCells (Err e)     = "Err: \{e}"
+showCells (Ok cells)  = showCellsGo cells
 
 showCellsGo : List Cell -> String
-showCellsGo cells = match cells
-  [] => ""
-  c::[] => showCell c
-  c::rest => stringConcat [showCell c, "|", showCellsGo rest]
+showCellsGo []       = ""
+showCellsGo (c::[])  = showCell c
+showCellsGo (c::rest) = stringConcat [showCell c, "|", showCellsGo rest]
 
 showCell : Cell -> String
-showCell c = match c
-  CNull   => "NULL"
-  CInt n  => intToString n
-  CText s => s
-  CBlob _ => "<blob>"
+showCell CNull   = "NULL"
+showCell (CInt n)  = intToString n
+showCell (CText s) = s
+showCell (CBlob _) = "<blob>"
 
 -- The pure driver: we drop to BResult-level position threading so we can
 -- compute the header boundary precisely.
@@ -136,7 +133,7 @@ parseRecordGo input pos =
 -- Read serial-type varints until `pos >= headerEnd`.
 readSerialTypes : Array Int -> Int -> Int -> List SerialType -> BResult (List SerialType)
 readSerialTypes input pos headerEnd acc
-  | pos >= headerEnd = BOk (reverseSTs acc) pos
+  | pos >= headerEnd = BOk (reverse acc) pos
   | otherwise =
       match runBP sqVarint input pos
         BErr m ep => BErr m ep
@@ -147,34 +144,31 @@ readSerialTypes input pos headerEnd acc
 
 -- Read the body bytes for each serial type in order.
 readBodies : Array Int -> Int -> List SerialType -> List Cell -> BResult (List Cell)
-readBodies input pos sts acc = match sts
-  [] => BOk (reverseCells acc) pos
-  st::rest =>
+readBodies input pos [] acc = BOk (reverse acc) pos
+readBodies input pos (st::rest) acc =
     match readBody input pos st
       BErr m ep => BErr m ep
       BOk cell pos2 => readBodies input pos2 rest (cell::acc)
 
 -- Read one cell's body given its serial type.
 readBody : Array Int -> Int -> SerialType -> BResult Cell
-readBody input pos st = match st
-  STNull    => BOk CNull pos
-  STIntZero => BOk (CInt 0) pos
-  STIntOne  => BOk (CInt 1) pos
-  STInt nbytes => mapBR CInt (runBP (beSint nbytes) input pos)
-  STText nbytes =>
+readBody input pos STNull    = BOk CNull pos
+readBody input pos STIntZero = BOk (CInt 0) pos
+readBody input pos STIntOne  = BOk (CInt 1) pos
+readBody input pos (STInt nbytes) = mapBR CInt (runBP (beSint nbytes) input pos)
+readBody input pos (STText nbytes) =
     mapBR (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
-  STBlob nbytes =>
+readBody input pos (STBlob nbytes) =
     mapBR CBlob (runBP (takeSlice nbytes) input pos)
-  STFloat => BErr "float column (serial type 7) not supported this slice" pos
+readBody input pos STFloat = BErr "float column (serial type 7) not supported this slice" pos
 
 -- ---------------------------------------------------------------------------
 -- BResult helpers (the byteparser BResult is re-exported via its data decl)
 -- ---------------------------------------------------------------------------
 
 mapBR : (a -> b) -> BResult a -> BResult b
-mapBR f r = match r
-  BOk a p   => BOk (f a) p
-  BErr m ep => BErr m ep
+mapBR f (BOk a p)   = BOk (f a) p
+mapBR f (BErr m ep) = BErr m ep
 
 -- Decode a list of UTF-8 bytes to a String.
 --
@@ -186,9 +180,8 @@ bytesToString bs = stringFromChars (arrayFromList (codepointsToChars (utf8Codepo
 
 -- Convert decoded codepoints to Chars (charFromCode is the prelude extern).
 codepointsToChars : List Int -> List Char
-codepointsToChars cps = match cps
-  [] => []
-  cp::rest => match charFromCode cp
+codepointsToChars []          = []
+codepointsToChars (cp::rest)  = match charFromCode cp
     Some c => c :: codepointsToChars rest
     None   => codepointsToChars rest
 
@@ -208,31 +201,18 @@ utf8Codepoints bs = match bs
 
 -- Take 1 continuation byte (2-byte sequence).
 utf8Take1 : Int -> List Int -> List Int
-utf8Take1 acc bs = match bs
-  b1::rest => (acc * 64 + (b1 - 0x80)) :: utf8Codepoints rest
-  [] => [acc]
+utf8Take1 acc (b1::rest) = (acc * 64 + (b1 - 0x80)) :: utf8Codepoints rest
+utf8Take1 acc []         = [acc]
 
 -- Take 2 continuation bytes (3-byte sequence).
 utf8Take2 : Int -> List Int -> List Int
-utf8Take2 acc bs = match bs
-  b1::b2::rest =>
+utf8Take2 acc (b1::b2::rest) =
     ((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) :: utf8Codepoints rest
-  _ => [acc]
+utf8Take2 acc _ = [acc]
 
 -- Take 3 continuation bytes (4-byte sequence).
 utf8Take3 : Int -> List Int -> List Int
-utf8Take3 acc bs = match bs
-  b1::b2::b3::rest =>
+utf8Take3 acc (b1::b2::b3::rest) =
     (((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) * 64 + (b3 - 0x80))
       :: utf8Codepoints rest
-  _ => [acc]
-
-reverseSTs : List SerialType -> List SerialType
-reverseSTs xs = revGo xs []
-
-revGo : List a -> List a -> List a
-revGo [] acc = acc
-revGo (x::xs) acc = revGo xs (x::acc)
-
-reverseCells : List Cell -> List Cell
-reverseCells xs = revGo xs []
+utf8Take3 acc _ = [acc]

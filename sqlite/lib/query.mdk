@@ -13,6 +13,7 @@
 import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
+import list.{reverse}
 
 -- | Full-table scan with a post-decode predicate.
 --
@@ -37,18 +38,10 @@ fetchAll : Db -> String -> RowType r -> Result String (List r)
 fetchAll db table rt = scanTable db table (_ => True) rt
 
 decodeRows : RowType r -> (r -> Bool) -> Option Int -> List Row -> List r -> Result String (List r)
-decodeRows rt keep pkIdx rows acc = match rows
-  [] => Ok (reverseR acc)
-  row :: rest => match rtDecode rt (rowCellsWithIpk pkIdx row)
+decodeRows rt keep pkIdx [] acc = Ok (reverse acc)
+decodeRows rt keep pkIdx (row :: rest) acc = match rtDecode rt (rowCellsWithIpk pkIdx row)
     Err e => Err e
     Ok v  => if keep v
              then decodeRows rt keep pkIdx rest (v :: acc)
              else decodeRows rt keep pkIdx rest acc
 
-reverseR : List a -> List a
-reverseR xs = revR xs []
-
-revR : List a -> List a -> List a
-revR xs acc = match xs
-  []      => acc
-  x :: r  => revR r (x :: acc)

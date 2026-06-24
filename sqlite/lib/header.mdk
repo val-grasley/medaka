@@ -117,9 +117,8 @@ parseHeader = do
 --   doctests.
 export
 showHeader : Result String DbHeader -> String
-showHeader r = match r
-  Err e => "Err: \{e}"
-  Ok h => stringConcat
+showHeader (Err e) = "Err: \{e}"
+showHeader (Ok h)  = stringConcat
     [ intToString h.pageSize, "|"
     , intToString h.pageCount, "|"
     , intToString h.encoding ]

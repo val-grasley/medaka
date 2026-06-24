@@ -22,17 +22,7 @@
 --   `sqVarint`  — SQLite variable-length integer (1–9 bytes)
 --   `beFloat64` — 64-bit IEEE 754 float
 
--- ---------------------------------------------------------------------------
--- Local helpers (avoid stdlib imports so doctests run standalone)
--- ---------------------------------------------------------------------------
-
--- Tail-recursive list reversal (not in core; list.mdk not imported).
-reverseList : List a -> List a
-reverseList xs = reverseListGo xs []
-
-reverseListGo : List a -> List a -> List a
-reverseListGo [] acc = acc
-reverseListGo (x::xs) acc = reverseListGo xs (x::acc)
+import list.{reverse}
 
 -- ---------------------------------------------------------------------------
 -- Result and parser types
@@ -172,10 +162,10 @@ bMany p = ByteParser (input pos => bManyGo p input pos [])
 
 bManyGo : ByteParser a -> Array Int -> Int -> List a -> BResult (List a)
 bManyGo p input pos acc = match runBP p input pos
-  BErr _ _ => BOk (reverseList acc) pos
+  BErr _ _ => BOk (reverse acc) pos
   BOk a pos2 =>
     if pos2 == pos then
-      BOk (reverseList acc) pos2  -- no progress: stop to avoid infinite loop
+      BOk (reverse acc) pos2  -- no progress: stop to avoid infinite loop
     else
       bManyGo p input pos2 (a::acc)
 
@@ -264,7 +254,7 @@ takeBytes n = ByteParser (takeBytesGo n [])
 
 takeBytesGo : Int -> List Int -> Array Int -> Int -> BResult (List Int)
 takeBytesGo n acc input pos
-  | n <= 0 = BOk (reverseList acc) pos
+  | n <= 0 = BOk (reverse acc) pos
   | pos >= arrayLength input = BErr "unexpected end of input" pos
   | otherwise = takeBytesGo (n - 1) ((arrayGetUnsafe pos input)::acc) input (pos + 1)
 
