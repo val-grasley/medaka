@@ -210,8 +210,12 @@ readDeps root =
 
 -- if modId's first dotted segment names a declared dependency, resolve the
 -- REMAINING segments under that dep's root (existence-checked); else None so the
--- caller falls through to the normal `roots` search.
-resolveDepFile : List (String, String) -> String -> <IO> Option String
+-- caller falls through to the normal `roots` search.  Returns (path, depRoot) so
+-- the caller can REMEMBER which package the resolved module belongs to: that
+-- dep's OWN intra-package (relative/bare) imports must rebase to its `depRoot`,
+-- not the entry project's root (else `byteparser.lib.bytebuilder`'s sibling
+-- `import lib.byteparser` would be looked up under the entry project and fail).
+resolveDepFile : List (String, String) -> String -> <IO> Option (String, String)
 resolveDepFile deps modId = match splitOnChar "." modId
   [] => None
   (seg0::restSegs) => match lookupAssoc seg0 deps
@@ -220,7 +224,7 @@ resolveDepFile deps modId = match splitOnChar "." modId
       [] => None
       _ =>
         let path = fileOfModuleId depRoot (joinDot restSegs)
-        if fileExists path then Some path else None
+        if fileExists path then Some (path, depRoot) else None
 
 
 -- ── dependency extraction (mirrors loader.ml's direct_imports) ──
@@ -246,23 +250,28 @@ directImports (_::rest) = directImports rest
 
 -- ── file resolution + parsing ──
 
-findModuleFile : List (String, String) -> List String -> String -> <IO> Option String
+-- Resolve a module ID to (filePath, owningRoot).  `owningRoot` is the package
+-- root the module was found under — a declared dep's root if the import was
+-- dep-prefixed, else the entry root (or stdlib root) it matched in `roots`.  The
+-- caller threads `owningRoot` so the module's OWN intra-package imports rebase to
+-- it (see visitMod).
+findModuleFile : List (String, String) -> List String -> String -> <IO> Option (String, String)
 findModuleFile deps roots modId = match resolveDepFile deps modId
-  Some path => Some path
+  Some pathRoot => Some pathRoot
   None => findInRoots roots modId
 
-findInRoots : List String -> String -> <IO> Option String
+findInRoots : List String -> String -> <IO> Option (String, String)
 findInRoots [] _ = None
 findInRoots (r::rs) modId =
   let path = fileOfModuleId r modId
-  if fileExists path then Some path else findInRoots rs modId
+  if fileExists path then Some (path, r) else findInRoots rs modId
 
-readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (List Decl)
+readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (String, List Decl)
 readModuleProg deps roots modId = match findModuleFile deps roots modId
   None => Err (stringConcat ["unknown module: ", modId])
-  Some path => match readFile path
+  Some (path, owningRoot) => match readFile path
     Err e => Err e
-    Ok src => Ok (parse src)
+    Ok src => Ok (owningRoot, parse src)
 
 -- ── read-callback variant (B.10.5: unsaved-editor-buffer overrides) ──
 --
@@ -280,14 +289,14 @@ readModuleProg deps roots modId = match findModuleFile deps roots modId
 -- caller can bucket diagnostics BY FILE.  `read` is the path-keyed override;
 -- `parseFn` is the parser to apply (so the located variant can carry real ELoc
 -- spans via parseLocated while the plain variant uses placeholder-loc parse).
-readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> String -> <IO, Mut> Result String (String, List Decl)
+readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> String -> <IO, Mut> Result String (String, String, List Decl)
 readModuleProgF parseFn read deps roots modId = match findModuleFile deps roots modId
   None => Err (stringConcat ["unknown module: ", modId])
-  Some path => match read path
-    Some src => Ok (path, parseFn src)
+  Some (path, owningRoot) => match read path
+    Some src => Ok (owningRoot, path, parseFn src)
     None => match readFile path
       Err e => Err e
-      Ok src => Ok (path, parseFn src)
+      Ok src => Ok (owningRoot, path, parseFn src)
 -- unsaved editor buffer shadows disk
 
 -- ── DFS topological sort (dependency-first; leaves before roots) ──
@@ -313,6 +322,33 @@ joinArrow [] = ""
 joinArrow [x] = x
 joinArrow (x::xs) = stringConcat [x, " → ", joinArrow xs]
 
+-- ── owning-package rebasing for a dep's intra-package imports ─────────────────
+--
+-- When a module is loaded from a dependency package (`owningRoot` ≠ the entry
+-- root), its OWN imports must resolve against THAT package, not the entry
+-- project:
+--   * its intra-package (relative/bare) imports — `import lib.byteparser`,
+--     `import foo` — rebase to `owningRoot` (prepended to `roots` so the dep's
+--     copy is preferred over a same-named entry-project module);
+--   * its OWN `[dependencies]` (a transitive dep — a dep importing ITS dep by
+--     name) become visible by reading `<owningRoot>/medaka.toml`'s deps and
+--     appending them.  The entry's deps stay first so the entry's view wins on a
+--     name clash, and a dep's stdlib imports keep flowing through the original
+--     `roots` (the stdlib root is never dropped).
+-- For a module found under a root already in `roots` (entry / stdlib / a root we
+-- already entered), nothing changes — this is purely additive.
+
+childRoots : String -> List String -> List String
+childRoots owningRoot roots =
+  if contains owningRoot roots then roots else owningRoot :: roots
+
+-- The deps in effect for a module owned by `owningRoot`: the inherited `deps`
+-- plus, when we've crossed into a new package (owningRoot not yet in `roots`),
+-- that package's own declared dependencies (resolved against owningRoot).
+childDeps : List (String, String) -> String -> List String -> <IO> List (String, String)
+childDeps deps owningRoot roots =
+  if contains owningRoot roots then deps else deps ++ readDeps owningRoot
+
 visitMod : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
 visitMod deps roots stack visited acc modId =
   if contains modId visited then Ok (visited, acc)
@@ -321,9 +357,12 @@ visitMod deps roots stack visited acc modId =
     else
       match readModuleProg deps roots modId
         Err e => Err e
-        Ok prog => match visitMods deps roots (modId :: stack) visited acc (directImports prog)
-          Err e => Err e
-          Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
+        Ok (owningRoot, prog) =>
+          let croots = childRoots owningRoot roots
+          let cdeps = childDeps deps owningRoot roots
+          match visitMods cdeps croots (modId :: stack) visited acc (directImports prog)
+            Err e => Err e
+            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
 
 visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
 visitMods _ _ _ visited acc [] = Ok (visited, acc)
@@ -360,9 +399,12 @@ visitModF parseFn read deps roots stack visited acc modId =
     else
       match readModuleProgF parseFn read deps roots modId
         Err e => Err e
-        Ok (path, prog) => match visitModsF parseFn read deps roots (modId :: stack) visited acc (directImports prog)
-          Err e => Err e
-          Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
+        Ok (owningRoot, path, prog) =>
+          let croots = childRoots owningRoot roots
+          let cdeps = childDeps deps owningRoot roots
+          match visitModsF parseFn read cdeps croots (modId :: stack) visited acc (directImports prog)
+            Err e => Err e
+            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
 
 visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
 visitModsF _ _ _ _ _ visited acc [] = Ok (visited, acc)

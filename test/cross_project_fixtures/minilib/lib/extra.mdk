@@ -1,0 +1,14 @@
+-- A SECOND module in the minilib dependency package that imports a SIBLING
+-- within its own package (`import lib.minilib`).  This exercises the loader's
+-- owning-package rebasing: when the consumer imports `minilib.lib.extra`, this
+-- module's intra-package `import lib.minilib` must resolve under minilib's OWN
+-- root, not the consumer's (else: `unknown module: lib.minilib`).
+import lib.minilib.{revSorted, double}
+
+export
+revDoubled : List Int -> List Int
+revDoubled xs = revSorted (mapDouble xs)
+
+mapDouble : List Int -> List Int
+mapDouble [] = []
+mapDouble (x::rest) = double x :: mapDouble rest
