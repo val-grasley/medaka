@@ -1,0 +1,376 @@
+-- | sqlite.lib.recordenc — SQLite record (payload) ENCODER.
+--
+-- The exact inverse of `recordfmt.parseRecord`.  Encodes a list of `Cell`
+-- values into the SQLite on-disk record format:
+--
+--   [header-len : varint] [serial-type-N : varint] ... [body bytes]
+--
+-- `header-len` counts itself (i.e. includes its own varint width).
+--
+-- ## Note: builder is self-contained here (simple forward-list approach)
+--
+-- `byteparser/lib/bytebuilder.mdk` is the canonical byte builder, but
+-- importing it cross-package fails because `bytebuilder.mdk` uses an
+-- intra-package import (`lib.byteparser`) that the loader does not rebase
+-- when loading it as a transitive dependency from the `sqlite` package.
+-- **COMPILER FINDING (F1)**: the loader does not rebase intra-package import
+-- paths of a dependency when loading it transitively from another package.
+-- `bytebuilder.mdk`'s `import lib.byteparser.{…}` resolves correctly within
+-- the byteparser package but fails as `unknown module: lib.byteparser` when
+-- loaded via `byteparser.lib.bytebuilder` from the sqlite package.  Fix:
+-- the loader should resolve a dependency module's intra-package imports
+-- relative to that dependency's package root.  Tracked; P3/P4 can switch to
+-- bytebuilder once fixed.
+--
+-- We encode using simple forward `List Int` accumulation: sections are built
+-- as plain lists and concatenated (safe for SQLite rows with ≤ hundreds of
+-- columns; each section is small).
+--
+-- ## Doctest note
+-- `Cell` and `Array Int` have no `Debug` instance; doctest expressions
+-- returning them cause `ppValue` to dispatch to `Debug Int` and panic in
+-- the native driver.  All round-trip doctests use `roundTripShow` (returns
+-- `String`) and the byte-level test uses `encodeToList` (returns
+-- `Result String (List Int)`, where `List Int` has `Debug`).  This mirrors
+-- how `recordfmt.mdk`'s own doctests use `showCells`.
+--
+-- ## Serial-type selection (inverse of `serialOf` in recordfmt.mdk)
+--
+--   CNull        → serial 0  (no body bytes)
+--   CInt 0       → serial 8  (literal 0; no body bytes)
+--   CInt 1       → serial 9  (literal 1; no body bytes)
+--   CInt n       → smallest serial by magnitude:
+--                    serial 1 (i8,  1 byte): n in [-128, 127]
+--                    serial 2 (i16, 2 bytes): n in [-32768, 32767]
+--                    serial 3 (i24, 3 bytes): n in [-8388608, 8388607]
+--                    serial 4 (i32, 4 bytes): n in [-2147483648, 2147483647]
+--                    serial 6 (i64, 8 bytes): everything else
+--                  (Serial 5 / i48 intentionally skipped for simplicity.)
+--   CText s      → serial 2*len(s)+13  (body = UTF-8 bytes of s)
+--   CBlob a      → serial 2*len(a)+12  (body = raw bytes of a)
+--   CFloat _     → Err (deferred to P5; needs floatToBytes64 extern)
+--
+-- ## Header-len self-counting
+--
+-- The header is `[header-len varint] ++ [serial varints]`.  Because
+-- header-len includes its own varint, we first encode the serial varints
+-- to know their byte count, then compute:
+--
+--   header_len = len(serial_bytes) + varint_size(header_len)
+--
+-- This is stable after at most one adjustment:
+--   - If len(serial_bytes)+1 < 128: header_len = len(serial_bytes)+1 (1-byte varint)
+--   - Else:                         header_len = len(serial_bytes)+2 (2-byte varint)
+
+import byteparser.lib.byteparser.{runByteParser}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord, showCells}
+
+-- ---------------------------------------------------------------------------
+-- List helpers (no stdlib import to keep the module lightweight)
+-- ---------------------------------------------------------------------------
+
+-- | Append list `ys` after list `xs`.
+appendList : List a -> List a -> List a
+appendList [] ys      = ys
+appendList (x::xs) ys = x :: appendList xs ys
+
+-- | Concatenate a list of lists.
+concatLists : List (List a) -> List a
+concatLists []          = []
+concatLists (xs::rest)  = appendList xs (concatLists rest)
+
+-- | Count elements in a list.
+listLength : List a -> Int
+listLength []      = 0
+listLength (_::xs) = 1 + listLength xs
+
+-- Reverse a list.
+revList : List a -> List a
+revList xs = revGo xs []
+
+revGo : List a -> List a -> List a
+revGo [] acc     = acc
+revGo (x::r) acc = revGo r (x::acc)
+
+-- ---------------------------------------------------------------------------
+-- SQLite varint encoder (forward list)
+-- ---------------------------------------------------------------------------
+
+-- | Number of bytes in the varint encoding of v.
+sqVarintSize : Int -> Int
+sqVarintSize n
+  | n < 128         = 1
+  | n < 16384       = 2
+  | n < 2097152     = 3
+  | n < 268435456   = 4
+  | n < 34359738368 = 5
+  | otherwise       = 6
+
+-- Collect the 7-bit groups of v (big-endian) into acc.
+sqVarintGroups : Int -> List Int -> List Int
+sqVarintGroups v acc
+  | v < 128   = v :: acc
+  | otherwise = sqVarintGroups (v / 128) (bitAnd v 127 :: acc)
+
+-- Set continuation bit (0x80) on all bytes except the last.
+addContBits : List Int -> List Int
+addContBits []        = []
+addContBits [last]    = [last]
+addContBits (x::rest) = (x + 128) :: addContBits rest
+
+-- Append a byte to the END of a list (used only for the 9-byte varint).
+appendEnd : List Int -> Int -> List Int
+appendEnd [] b      = [b]
+appendEnd (x::r) b  = x :: appendEnd r b
+
+-- | Encode a varint as a forward `List Int`.
+sqVarintBytes : Int -> List Int
+sqVarintBytes v =
+  if v >= 72057594037927936
+  then
+    let low8 = bitAnd v 255
+    let high = v / 256
+    appendEnd (addContBits (sqVarintGroups high [])) low8
+  else addContBits (sqVarintGroups v [])
+
+-- ---------------------------------------------------------------------------
+-- Big-endian signed integer encoder (forward list)
+-- ---------------------------------------------------------------------------
+
+-- | Encode an nbytes-wide big-endian two's-complement signed integer as a
+--   forward `List Int`.
+beSintBytes : Int -> Int -> List Int
+beSintBytes nbytes v =
+  let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
+  beUnsignedNBytes nbytes unsigned
+
+-- Emit exactly n big-endian bytes of a non-negative integer.
+-- Builds in REVERSE (prepend low byte, recurse), then reverses.
+beUnsignedNBytes : Int -> Int -> List Int
+beUnsignedNBytes nbytes v = revList (beUnsignedNGo nbytes v)
+
+beUnsignedNGo : Int -> Int -> List Int
+beUnsignedNGo 0 _ = []
+beUnsignedNGo n v = bitAnd v 255 :: beUnsignedNGo (n - 1) (v / 256)
+
+-- ---------------------------------------------------------------------------
+-- UTF-8 helpers
+-- ---------------------------------------------------------------------------
+
+-- | Byte count of a string when encoded as UTF-8.
+stringByteLength : String -> Int
+stringByteLength s =
+  let chars = stringToChars s
+  utf8ByteCount chars 0 0
+
+utf8ByteCount : Array Char -> Int -> Int -> Int
+utf8ByteCount chars i acc
+  | i >= arrayLength chars = acc
+  | otherwise =
+      let cp = charCode (arrayGetUnsafe i chars)
+      let n =
+        if cp < 0x80 then 1
+        else if cp < 0x800 then 2
+        else if cp < 0x10000 then 3
+        else 4
+      utf8ByteCount chars (i + 1) (acc + n)
+
+-- | Encode a String as forward-order UTF-8 bytes.
+stringToUtf8 : String -> List Int
+stringToUtf8 s =
+  let chars = stringToChars s
+  charsToUtf8 chars 0
+
+charsToUtf8 : Array Char -> Int -> List Int
+charsToUtf8 chars i
+  | i >= arrayLength chars = []
+  | otherwise =
+      let cp = charCode (arrayGetUnsafe i chars)
+      appendList (cpToUtf8Bytes cp) (charsToUtf8 chars (i + 1))
+
+-- | Encode a single codepoint as UTF-8 bytes (forward order).
+cpToUtf8Bytes : Int -> List Int
+cpToUtf8Bytes cp
+  | cp < 0x80 = [cp]
+  | cp < 0x800 =
+      [ bitOr 0xC0 (shiftRight cp 6)
+      , bitOr 0x80 (bitAnd cp 0x3F)
+      ]
+  | cp < 0x10000 =
+      [ bitOr 0xE0 (shiftRight cp 12)
+      , bitOr 0x80 (bitAnd (shiftRight cp 6) 0x3F)
+      , bitOr 0x80 (bitAnd cp 0x3F)
+      ]
+  | otherwise =
+      [ bitOr 0xF0 (shiftRight cp 18)
+      , bitOr 0x80 (bitAnd (shiftRight cp 12) 0x3F)
+      , bitOr 0x80 (bitAnd (shiftRight cp 6) 0x3F)
+      , bitOr 0x80 (bitAnd cp 0x3F)
+      ]
+
+-- | Convert an Array Int to a List Int (forward order).
+arrayToList : Array Int -> List Int
+arrayToList a = arrayToListGo a 0
+
+arrayToListGo : Array Int -> Int -> List Int
+arrayToListGo a i
+  | i >= arrayLength a = []
+  | otherwise = arrayGetUnsafe i a :: arrayToListGo a (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Serial-type selection
+-- ---------------------------------------------------------------------------
+
+-- | Compute the SQLite serial-type code for a Cell.
+cellSerial : Cell -> Result String Int
+cellSerial CNull       = Ok 0
+cellSerial (CFloat _)  = Err "CFloat encoding deferred to P5 (needs floatToBytes64 extern)"
+cellSerial (CBlob a)   = Ok (2 * arrayLength a + 12)
+cellSerial (CText s)   = Ok (2 * stringByteLength s + 13)
+cellSerial (CInt 0)    = Ok 8
+cellSerial (CInt 1)    = Ok 9
+cellSerial (CInt n)    =
+  if n >= -128 && n <= 127 then Ok 1
+  else if n >= -32768 && n <= 32767 then Ok 2
+  else if n >= -8388608 && n <= 8388607 then Ok 3
+  else if n >= -2147483648 && n <= 2147483647 then Ok 4
+  else Ok 6
+
+-- ---------------------------------------------------------------------------
+-- Body encoding (forward list)
+-- ---------------------------------------------------------------------------
+
+-- | Encode the body bytes for a Cell as a forward `List Int`.
+cellBodyBytes : Cell -> List Int
+cellBodyBytes CNull      = []
+cellBodyBytes (CInt 0)   = []
+cellBodyBytes (CInt 1)   = []
+cellBodyBytes (CInt n) =
+  if n >= -128 && n <= 127 then beSintBytes 1 n
+  else if n >= -32768 && n <= 32767 then beSintBytes 2 n
+  else if n >= -8388608 && n <= 8388607 then beSintBytes 3 n
+  else if n >= -2147483648 && n <= 2147483647 then beSintBytes 4 n
+  else beSintBytes 8 n
+cellBodyBytes (CText s)  = stringToUtf8 s
+cellBodyBytes (CBlob a)  = arrayToList a
+cellBodyBytes (CFloat _) = []  -- never reached (guarded by Err in encodeRecord)
+
+-- ---------------------------------------------------------------------------
+-- Main encoder
+-- ---------------------------------------------------------------------------
+
+-- | Encode a list of Cell values into a SQLite on-disk record byte array.
+--   Returns Err if any cell is CFloat (deferred to P5).
+--
+-- Round-trip: `runByteParser parseRecord (encodeRecord cells) == Ok cells`
+-- holds for all cell lists with no CFloat.
+export
+encodeRecord : List Cell -> Result String (Array Int)
+encodeRecord cells =
+  -- 1. Collect serial codes; fail fast on CFloat.
+  match collectSerials cells []
+    Err e => Err e
+    Ok serials =>
+      -- 2. Encode serial varints as a forward list.
+      let serialBytesList = concatLists (map sqVarintBytes serials)
+      let serialLen       = listLength serialBytesList
+
+      -- 3. Header-len self-counting fixpoint.
+      --    header_len = serialLen + varint_size(header_len)
+      let h0 = serialLen + 1
+      let hdrLen = if sqVarintSize h0 == 1 then h0 else serialLen + 2
+
+      -- 4. Assemble: [hdrLen varint] ++ [serial varints] ++ [body bytes].
+      let hdrBytes  = sqVarintBytes hdrLen
+      let bodyBytes = concatLists (map cellBodyBytes cells)
+      Ok (arrayFromList (appendList hdrBytes (appendList serialBytesList bodyBytes)))
+
+collectSerials : List Cell -> List Int -> Result String (List Int)
+collectSerials [] acc = Ok (revList acc)
+collectSerials (c::rest) acc =
+  match cellSerial c
+    Err e => Err e
+    Ok s  => collectSerials rest (s::acc)
+
+-- ---------------------------------------------------------------------------
+-- Doctest helpers
+-- ---------------------------------------------------------------------------
+--
+-- `Cell` and `Array Int` have no `Debug` instance; doctest expressions that
+-- return them directly cause `ppValue` to panic in the native `medaka test`
+-- driver.  All doctests use helpers that return `String` (via `showCells`)
+-- or `List Int` (via `encodeToList`), both of which have `Debug` instances.
+
+-- | Encode cells and return the bytes as a `List Int` (has `Debug`).
+encodeToList : List Cell -> Result String (List Int)
+encodeToList cells =
+  match encodeRecord cells
+    Err e => Err e
+    Ok bs => Ok (arrayToList bs)
+
+-- | Round-trip: encode → decode → render as a "|"-joined cell string.
+--   Returns the `showCells` rendering of the decoded result (or the Err).
+roundTripShow : List Cell -> String
+roundTripShow cells =
+  match encodeRecord cells
+    Err e => "Err: " ++ e
+    Ok bs => showCells (runByteParser parseRecord bs)
+
+-- ---------------------------------------------------------------------------
+-- Doctests
+-- ---------------------------------------------------------------------------
+--
+-- All expressions return `String` or `Result String (List Int)` — both
+-- have `Debug` instances.  (Returning `Cell`, `List Cell`, or `Array Int`
+-- bare would cause `ppValue` to panic in the native driver.)
+
+-- All-NULL record round-trips.
+-- > roundTripShow [CNull, CNull, CNull]
+-- "NULL|NULL|NULL"
+
+-- Integer edge cases covering all serial codes used by the encoder:
+--   CInt 0   → serial 8  (literal 0, no body)
+--   CInt 1   → serial 9  (literal 1, no body)
+--   CInt 127 → serial 1  (i8; fits in [-128,127])
+--   CInt 128 → serial 2  (i16; 128 > 127)
+--   CInt -1  → serial 1  (i8; -1 in [-128,127])
+--   CInt 65535   → serial 3  (i24; 65535 > 32767)
+--   CInt 1000000 → serial 4  (i32)
+-- > roundTripShow [CInt 0, CInt 1, CInt 127, CInt 128, CInt (-1), CInt 65535, CInt 1000000]
+-- "0|1|127|128|-1|65535|1000000"
+
+-- Mixed text + int.
+-- > roundTripShow [CText "Bob", CInt 25]
+-- "Bob|25"
+
+-- Blob round-trip (showCells renders blobs as "<blob>").
+-- > roundTripShow [CBlob (arrayFromList [1, 2, 3, 255])]
+-- "<blob>"
+
+-- IPK pattern: NULL in position 0 (value lives in the rowid varint, not the record).
+-- > roundTripShow [CNull, CText "Bob", CInt 25]
+-- "NULL|Bob|25"
+
+-- CFloat returns Err without panicking.
+-- > roundTripShow [CFloat 1.5]
+-- "Err: CFloat encoding deferred to P5 (needs floatToBytes64 extern)"
+
+-- ---------------------------------------------------------------------------
+-- Real-DB byte verification
+-- ---------------------------------------------------------------------------
+--
+-- The user-table row (id=NULL-IPK, name="Bo", age=25) encodes to:
+--
+--   CNull     → serial 0  (varint: 0x00)
+--   CText "Bo" → serial 17 = 2*2+13  (varint: 0x11 = 17)
+--   CInt 25   → serial 1  (i8, fits in [-128,127])  (varint: 0x01)
+--
+--   serial bytes = [0x00, 0x11, 0x01]  = [0, 17, 1]  (3 bytes)
+--   header-len = 3 + 1 = 4  (1-byte varint: 0x04; h0=4 < 128)
+--   header: [0x04, 0x00, 0x11, 0x01] = [4, 0, 17, 1]
+--   body: 'B'=0x42=66  'o'=0x6f=111  25=0x19=25
+--   body bytes: [66, 111, 25]
+--
+-- `encodeToList` converts the Array to a List for the doctest Debug requirement.
+-- > encodeToList [CNull, CText "Bo", CInt 25]
+-- Ok [4, 0, 17, 1, 66, 111, 25]
