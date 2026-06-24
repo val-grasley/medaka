@@ -1,0 +1,388 @@
+-- | byteparser — a binary parser-combinator library for Medaka.
+--
+-- A structural transcription of `parsec/lib/parser.mdk` with `Array Char`
+-- replaced by `Array Int` (bytes), `Char` replaced by `Int`, and
+-- char-specific helpers replaced by byte/binary-specific primitives.
+--
+-- A `ByteParser a` wraps a function from (byte array + position) to a
+-- `BResult a`, which is either success (value + new position) or failure
+-- (message + position).  Position threading is EXPLICIT — there is no hidden
+-- state monad; every primitive returns the position it consumed up to.
+--
+-- The type is given `Mappable` / `Applicative` / `Thenable` instances so that
+-- `do`-notation sequences parsers, and an `Alternative` instance whose
+-- `orElse` is LEFT-BIASED with FULL BACKTRACKING: `orElse p q` tries `p` at
+-- the current position; if `p` fails it runs `q` at the SAME position (the
+-- input is immutable and we never mutate the position on failure, so
+-- backtracking is automatic).
+--
+-- Binary-specific primitives:
+--   `beUint n`  — big-endian unsigned n-byte integer
+--   `beSint n`  — big-endian signed n-byte integer (two's-complement)
+--   `sqVarint`  — SQLite variable-length integer (1–9 bytes)
+--   `beFloat64` — 64-bit IEEE 754 float  *** STUB: pending `bytesToFloat64` extern ***
+
+-- ---------------------------------------------------------------------------
+-- Local helpers (avoid stdlib imports so doctests run standalone)
+-- ---------------------------------------------------------------------------
+
+-- Tail-recursive list reversal (not in core; list.mdk not imported).
+reverseList : List a -> List a
+reverseList xs = reverseListGo xs []
+
+reverseListGo : List a -> List a -> List a
+reverseListGo [] acc = acc
+reverseListGo (x::xs) acc = reverseListGo xs (x::acc)
+
+-- ---------------------------------------------------------------------------
+-- Result and parser types
+-- ---------------------------------------------------------------------------
+
+-- | Parse result: success carries the value and the position just past what
+--   was consumed; failure carries an error message and the failure position.
+export data BResult a = BOk a Int | BErr String Int
+
+-- | A byte-level parser is a function from (byte array, position) to BResult.
+export data ByteParser a = ByteParser (Array Int -> Int -> BResult a)
+
+-- | Run the wrapped function directly.
+export
+runBP : ByteParser a -> Array Int -> Int -> BResult a
+runBP (ByteParser f) input pos = f input pos
+
+-- ---------------------------------------------------------------------------
+-- Typeclass instances
+-- ---------------------------------------------------------------------------
+--
+-- Higher-kinded impls use the BARE constructor head: `ByteParser`, not
+-- `ByteParser a`.
+
+export impl Mappable ByteParser where
+  map g p = ByteParser (input pos =>
+    match runBP p input pos
+      BOk a pos2 => BOk (g a) pos2
+      BErr m ep  => BErr m ep)
+
+export impl Applicative ByteParser where
+  pure a = ByteParser (_ pos => BOk a pos)
+  ap pf pa = ByteParser (input pos =>
+    match runBP pf input pos
+      BErr m ep  => BErr m ep
+      BOk f pos2 => match runBP pa input pos2
+        BOk a pos3  => BOk (f a) pos3
+        BErr m2 ep2 => BErr m2 ep2)
+
+export impl Thenable ByteParser where
+  andThen p k = ByteParser (input pos =>
+    match runBP p input pos
+      BErr m ep  => BErr m ep
+      BOk a pos2 => runBP (k a) input pos2)
+
+-- | Left-biased, full-backtracking alternative.
+--   `noMatch` always fails; `orElse p q` tries `p`, and on failure re-runs
+--   `q` from the ORIGINAL position.
+export impl Alternative ByteParser where
+  noMatch = ByteParser (_ pos => BErr "noMatch" pos)
+  orElse p q = ByteParser (input pos =>
+    match runBP p input pos
+      BOk a pos2 => BOk a pos2
+      BErr _ _   => runBP q input pos)
+
+-- ---------------------------------------------------------------------------
+-- Primitives
+-- ---------------------------------------------------------------------------
+
+-- | Fail unconditionally with a message.
+export
+bFailWith : String -> ByteParser a
+bFailWith msg = ByteParser (_ pos => BErr msg pos)
+
+-- | Consume one byte if it satisfies the predicate.
+--
+-- > runByteParser (bSatisfy (b => b == 65)) (arrayFromList [65, 66, 67])
+-- Ok 65
+-- > runByteParser (bSatisfy (b => b == 65)) (arrayFromList [99])
+-- Err "unexpected byte at byte 0"
+export
+bSatisfy : (Int -> Bool) -> ByteParser Int
+bSatisfy pred = ByteParser (bSatisfyStep pred)
+
+bSatisfyStep : (Int -> Bool) -> Array Int -> Int -> BResult Int
+bSatisfyStep pred input pos
+  | pos >= arrayLength input = BErr "unexpected end of input" pos
+  | pred (arrayGetUnsafe pos input) = BOk (arrayGetUnsafe pos input) (pos + 1)
+  | otherwise = BErr "unexpected byte" pos
+
+-- | Consume any single byte.
+--
+-- > runByteParser anyByte (arrayFromList [42])
+-- Ok 42
+export
+anyByte : ByteParser Int
+anyByte = bSatisfy (_ => True)
+
+-- | Consume exactly the given byte value.
+--
+-- > runByteParser (byte 0xFF) (arrayFromList [255, 0])
+-- Ok 255
+-- > runByteParser (byte 0x00) (arrayFromList [1])
+-- Err "unexpected byte at byte 0"
+export
+byte : Int -> ByteParser Int
+byte b = bSatisfy (x => x == b)
+
+-- | Match the end of input.  Yields Unit; consumes nothing.
+--
+-- > runByteParser bEof (arrayFromList [])
+-- Ok ()
+-- > runByteParser bEof (arrayFromList [1])
+-- Err "expected end of input at byte 0"
+export
+bEof : ByteParser Unit
+bEof = ByteParser bEofStep
+
+bEofStep : Array Int -> Int -> BResult Unit
+bEofStep input pos
+  | pos >= arrayLength input = BOk () pos
+  | otherwise = BErr "expected end of input" pos
+
+-- | Peek at the current byte without consuming it.
+export
+peek : ByteParser Int
+peek = ByteParser (input pos =>
+  if pos >= arrayLength input
+  then BErr "unexpected end of input" pos
+  else BOk (arrayGetUnsafe pos input) pos)
+
+-- ---------------------------------------------------------------------------
+-- Combinators
+-- ---------------------------------------------------------------------------
+
+-- | Zero-or-more.  Uses explicit position threading (a loop), since `bMany`
+--   of a parser that consumes nothing must terminate.
+--
+-- > runByteParser (bMany (byte 1)) (arrayFromList [1, 1, 1, 2])
+-- Ok [1, 1, 1]
+export
+bMany : ByteParser a -> ByteParser (List a)
+bMany p = ByteParser (input pos => bManyGo p input pos [])
+
+bManyGo : ByteParser a -> Array Int -> Int -> List a -> BResult (List a)
+bManyGo p input pos acc = match runBP p input pos
+  BErr _ _ => BOk (reverseList acc) pos
+  BOk a pos2 =>
+    if pos2 == pos then
+      BOk (reverseList acc) pos2  -- no progress: stop to avoid infinite loop
+    else
+      bManyGo p input pos2 (a::acc)
+
+-- | One-or-more.
+--
+-- > runByteParser (bSome (byte 2)) (arrayFromList [2, 2, 3])
+-- Ok [2, 2]
+-- > runByteParser (bSome (byte 2)) (arrayFromList [3])
+-- Err "unexpected byte at byte 0"
+export
+bSome : ByteParser a -> ByteParser (List a)
+bSome p = do
+  x  <- p
+  xs <- bMany p
+  pure (x::xs)
+
+-- | Alias for `bSome`.
+export
+bMany1 : ByteParser a -> ByteParser (List a)
+bMany1 p = bSome p
+
+-- | One-or-more `p` separated by `sep`.
+export
+bSepBy1 : ByteParser a -> ByteParser b -> ByteParser (List a)
+bSepBy1 p sep = do
+  x  <- p
+  xs <- bMany (do
+    _ <- sep
+    p)
+  pure (x::xs)
+
+-- | Zero-or-more `p` separated by `sep`.
+export
+bSepBy : ByteParser a -> ByteParser b -> ByteParser (List a)
+bSepBy p sep = orElse (bSepBy1 p sep) (pure [])
+
+-- | Try `p`; produce `Some` on success, `None` (consuming nothing) on failure.
+--
+-- > runByteParser (bOptional (byte 5)) (arrayFromList [5])
+-- Ok Some 5
+-- > runByteParser (bOptional (byte 5)) (arrayFromList [9])
+-- Ok None
+export
+bOptional : ByteParser a -> ByteParser (Option a)
+bOptional p = orElse (map Some p) (pure None)
+
+-- | `bBetween open close p` parses `open`, then `p`, then `close`, yielding `p`.
+export
+bBetween : ByteParser open -> ByteParser close -> ByteParser a -> ByteParser a
+bBetween open close p = do
+  _ <- open
+  x <- p
+  _ <- close
+  pure x
+
+-- | First successful parser in the list; fails if all fail.
+export
+bChoice : List (ByteParser a) -> ByteParser a
+bChoice [] = bFailWith "bChoice: no alternatives"
+bChoice (q::rest) = orElse q (bChoice rest)
+
+-- | Left-associative chaining of `p` separated by operator parser `op`
+--   whose value is a binary function.
+export
+bChainl1 : ByteParser a -> ByteParser (a -> a -> a) -> ByteParser a
+bChainl1 p op = do
+  x <- p
+  bChainl1Rest p op x
+
+bChainl1Rest : ByteParser a -> ByteParser (a -> a -> a) -> a -> ByteParser a
+bChainl1Rest p op acc =
+  orElse
+    (do
+      f <- op
+      y <- p
+      bChainl1Rest p op (f acc y))
+    (pure acc)
+
+-- | Read exactly N bytes, returning them as a List Int.
+--
+-- > runByteParser (takeBytes 3) (arrayFromList [10, 20, 30, 40])
+-- Ok [10, 20, 30]
+export
+takeBytes : Int -> ByteParser (List Int)
+takeBytes n = ByteParser (takeBytesGo n [])
+
+takeBytesGo : Int -> List Int -> Array Int -> Int -> BResult (List Int)
+takeBytesGo n acc input pos
+  | n <= 0 = BOk (reverseList acc) pos
+  | pos >= arrayLength input = BErr "unexpected end of input" pos
+  | otherwise = takeBytesGo (n - 1) ((arrayGetUnsafe pos input)::acc) input (pos + 1)
+
+-- | Read exactly N bytes, returning them as an Array Int slice.
+export
+takeSlice : Int -> ByteParser (Array Int)
+takeSlice n = map arrayFromList (takeBytes n)
+
+-- ---------------------------------------------------------------------------
+-- Binary-specific primitives
+-- ---------------------------------------------------------------------------
+
+-- | Read a big-endian unsigned integer of exactly N bytes (N in 1..8).
+--
+-- Examples (big-endian 2-byte: [0x01, 0x02] → 258):
+-- > runByteParser (beUint 2) (arrayFromList [1, 2])
+-- Ok 258
+-- > runByteParser (beUint 1) (arrayFromList [255])
+-- Ok 255
+-- > runByteParser (beUint 4) (arrayFromList [0, 0, 1, 0])
+-- Ok 256
+export
+beUint : Int -> ByteParser Int
+beUint n = ByteParser (beUintGo n 0)
+
+beUintGo : Int -> Int -> Array Int -> Int -> BResult Int
+beUintGo n acc input pos
+  | n <= 0                   = BOk acc pos
+  | pos >= arrayLength input = BErr "unexpected end of input" pos
+  | otherwise                = beUintGo (n - 1) (acc * 256 + (arrayGetUnsafe pos input)) input (pos + 1)
+
+-- | Read a big-endian SIGNED integer of exactly N bytes (N in 1..8),
+--   two's-complement.
+--
+-- The sign bit is the MSB of the first byte.  For an N-byte integer the sign
+-- threshold is 128 * 256^(N-1) = 2^(8*N-1).
+--
+-- > runByteParser (beSint 1) (arrayFromList [255])
+-- Ok -1
+-- > runByteParser (beSint 1) (arrayFromList [127])
+-- Ok 127
+-- > runByteParser (beSint 2) (arrayFromList [255, 255])
+-- Ok -1
+-- > runByteParser (beSint 2) (arrayFromList [0, 1])
+-- Ok 1
+export
+beSint : Int -> ByteParser Int
+beSint n = do
+  u <- beUint n
+  let threshold = pow2 (8 * n - 1)
+  pure (if u >= threshold then u - (threshold * 2) else u)
+
+-- | 2^n implemented with left-shift (works for n in 0..62 on 63-bit Int).
+pow2 : Int -> Int
+pow2 n = shiftLeft 1 n
+
+-- | Read a SQLite variable-length integer (1–9 bytes).
+--
+-- Format: bytes 1–8 have a continuation flag in the high bit (1 = more bytes
+-- follow), with 7 payload bits each.  Byte 9 (if reached) uses all 8 bits.
+-- The decoded value is the big-endian concatenation of payload bits.
+--
+-- > runByteParser sqVarint (arrayFromList [0])
+-- Ok 0
+-- > runByteParser sqVarint (arrayFromList [127])
+-- Ok 127
+-- > runByteParser sqVarint (arrayFromList [129, 0])
+-- Ok 128
+-- > runByteParser sqVarint (arrayFromList [0x81, 0x80, 0x01])
+-- Ok 16385
+export
+sqVarint : ByteParser Int
+sqVarint = ByteParser sqVarintGo
+
+-- Decode up to 9 bytes.  `byteNum` counts which byte we are on (1-indexed).
+sqVarintGo : Array Int -> Int -> BResult Int
+sqVarintGo input pos = sqVarintLoop input pos 0 1
+
+-- Process one byte of a varint.  `b` is the byte value, already fetched.
+sqVarintStep : Array Int -> Int -> Int -> Int -> Int -> BResult Int
+sqVarintStep input pos acc byteNum b
+  | byteNum == 9 = BOk (acc * 256 + b) (pos + 1)
+  | b >= 128     = sqVarintLoop input (pos + 1) (acc * 128 + b - (b / 128 * 128)) (byteNum + 1)
+  | otherwise    = BOk (acc * 128 + b - (b / 128 * 128)) (pos + 1)
+
+sqVarintLoop : Array Int -> Int -> Int -> Int -> BResult Int
+sqVarintLoop input pos acc byteNum
+  | pos >= arrayLength input = BErr "unexpected end of input (varint)" pos
+  | otherwise = sqVarintStep input pos acc byteNum (arrayGetUnsafe pos input)
+
+-- | Read a 64-bit IEEE 754 big-endian float as a Medaka Float.
+--
+-- *** STUB: pending `bytesToFloat64` extern ***
+-- The `bytesToFloat64 : Array Int -> Int -> Float` extern does not yet exist.
+-- Reconstructing an IEEE 754 double from raw bytes requires C-level bit
+-- manipulation (OCaml `Int64.float_of_bits`) — pure Medaka arithmetic cannot
+-- safely reconstruct a `Float` from 8 `Int` bytes because the 64-bit bit
+-- pattern may not round-trip through 63-bit tagged Int arithmetic.
+--
+-- TODO (Fork C in SQLITE-DESIGN.md): Add `bytesToFloat64 : Array Int -> Int -> Float`
+-- to `stdlib/runtime.mdk` + `lib/eval.ml`, then replace this stub body with:
+--   beFloat64 = do
+--     arr <- takeSlice 8
+--     pure (bytesToFloat64 arr 0)
+export
+beFloat64 : ByteParser Float
+beFloat64 = bFailWith "beFloat64: pending bytesToFloat64 extern (see SQLITE-DESIGN.md Fork C)"
+
+-- ---------------------------------------------------------------------------
+-- Entry point
+-- ---------------------------------------------------------------------------
+
+-- | Run a `ByteParser` over the full byte array starting at position 0.
+--   Reports the success value or a positioned error message.
+--
+-- > runByteParser (byte 42) (arrayFromList [42])
+-- Ok 42
+-- > runByteParser (byte 42) (arrayFromList [7])
+-- Err "unexpected byte at byte 0"
+export
+runByteParser : ByteParser a -> Array Int -> Result String a
+runByteParser p bytes = match runBP p bytes 0
+  BOk a _   => Ok a
+  BErr m pos => Err "\{m} at byte \{pos}"
