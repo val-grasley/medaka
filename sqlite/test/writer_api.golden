@@ -1,0 +1,45 @@
+### schema: users (INTEGER PRIMARY KEY + NULL)
+# integrity_check
+ok
+# schema
+table|users|2
+# sqlite3 SELECT
+1|Alice|30
+2|Bob|
+5|Carol|-5
+10|Dave|1000000
+# medaka reader
+1|Alice|30
+2|Bob|
+5|Carol|-5
+10|Dave|1000000
+
+### schema: kv (no IPK, auto rowid)
+# integrity_check
+ok
+# schema
+table|kv|2
+# sqlite3 SELECT
+alpha|1
+beta|42
+gamma|
+delta|-7
+# medaka reader
+alpha|1
+beta|42
+gamma|
+delta|-7
+
+### schema: blobs (BLOB column)
+# integrity_check
+ok
+# schema
+table|blobs|2
+# sqlite3 SELECT (id, blob length)
+1|5
+2|4
+3|
+# medaka reader
+1|<blob>
+2|<blob>
+3|

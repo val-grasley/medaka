@@ -1,0 +1,99 @@
+-- sqlite writer_api_demo — entry point for writer_api_oracle.sh.
+--
+-- Usage: medaka build sqlite/writer_api_demo.mdk ; ./writer_api_demo <cmd> <out.db>
+--
+-- Commands:
+--   users   <out.db>   — table WITH INTEGER PRIMARY KEY + NULL
+--   kv      <out.db>   — table WITHOUT IPK (auto rowid)
+--   blob    <out.db>   — table with a BLOB column
+
+import lib.writer.{
+  ColType, TInteger, TText, TBlob,
+  Column,
+  TableSchema,
+  writeTable,
+}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+
+-- ---------------------------------------------------------------------------
+-- Schema 1: users — WITH INTEGER PRIMARY KEY + NULL
+-- ---------------------------------------------------------------------------
+
+usersSchema : TableSchema
+usersSchema = TableSchema
+  { schemaTableName = "users"
+  , columns =
+      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = True  }
+      , Column { colName = "name", colType = TText,    isPrimaryKey = False }
+      , Column { colName = "age",  colType = TInteger, isPrimaryKey = False }
+      ]
+  }
+
+usersRows : List (List Cell)
+usersRows =
+  [ [ CInt 1,  CText "Alice", CInt 30  ]
+  , [ CInt 2,  CText "Bob",   CNull    ]
+  , [ CInt 5,  CText "Carol", CInt (-5) ]
+  , [ CInt 10, CText "Dave",  CInt 1000000 ]
+  ]
+
+-- ---------------------------------------------------------------------------
+-- Schema 2: kv — WITHOUT IPK (auto rowid)
+-- ---------------------------------------------------------------------------
+
+kvSchema : TableSchema
+kvSchema = TableSchema
+  { schemaTableName = "kv"
+  , columns =
+      [ Column { colName = "k", colType = TText,    isPrimaryKey = False }
+      , Column { colName = "v", colType = TInteger, isPrimaryKey = False }
+      ]
+  }
+
+kvRows : List (List Cell)
+kvRows =
+  [ [ CText "alpha",   CInt 1    ]
+  , [ CText "beta",    CInt 42   ]
+  , [ CText "gamma",   CNull     ]
+  , [ CText "delta",   CInt (-7) ]
+  ]
+
+-- ---------------------------------------------------------------------------
+-- Schema 3: blobs — WITH BLOB column
+-- ---------------------------------------------------------------------------
+
+blobSchema : TableSchema
+blobSchema = TableSchema
+  { schemaTableName = "blobs"
+  , columns =
+      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = False }
+      , Column { colName = "data", colType = TBlob,    isPrimaryKey = False }
+      ]
+  }
+
+blobRows : List (List Cell)
+blobRows =
+  [ [ CInt 1, CBlob (arrayFromList [72, 101, 108, 108, 111]) ]   -- "Hello"
+  , [ CInt 2, CBlob (arrayFromList [0, 1, 2, 255])            ]   -- binary data
+  , [ CInt 3, CNull                                           ]   -- NULL blob
+  ]
+
+-- ---------------------------------------------------------------------------
+-- Dispatch
+-- ---------------------------------------------------------------------------
+
+main : <IO, Mut> Unit
+main = match args ()
+  [cmd, out] => dispatch cmd out
+  _ => println "usage: writer_api_demo <users|kv|blob> <out.db>"
+
+dispatch : String -> String -> <IO, Mut> Unit
+dispatch "users" out = run usersSchema usersRows out
+dispatch "kv"    out = run kvSchema    kvRows    out
+dispatch "blob"  out = run blobSchema  blobRows  out
+dispatch cmd     _   = println "unknown command: \{cmd}"
+
+run : TableSchema -> List (List Cell) -> String -> <IO, Mut> Unit
+run schema rows out = match writeTable out schema rows
+  Err e => println "Error: \{e}"
+  Ok _  => println "wrote \{out}"

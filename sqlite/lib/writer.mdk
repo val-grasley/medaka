@@ -1,0 +1,181 @@
+-- | sqlite.lib.writer — ergonomic CREATE TABLE + INSERT API on top of P3's
+-- `buildDatabase`/`writeDatabase`.
+--
+-- This module provides a typed, schema-driven API for creating single-table
+-- SQLite databases from Medaka values.  It sits one level above `dbwriter.mdk`
+-- and handles:
+--
+--   * Column type descriptors (`ColType`) and column metadata (`Column`).
+--   * `TableSchema` — a table name + ordered list of columns.
+--   * `createTableSql` — generates the exact `CREATE TABLE …` text that
+--     sqlite3 and the Medaka reader's `pkColumnIndex` expect.
+--   * `writeTable` — one-shot: schema + rows → `.db` file on disk.
+--   * Row validation (width == column count) with a clean `Err`.
+--   * IPK derivation from the schema (finds the `isPrimaryKey = True` column).
+--
+-- v1 scope: INTEGER / TEXT / BLOB / NULL-affinity columns; no floats
+-- (CFloat returns `Err` from `encodeRecord`); single leaf page.
+--
+-- Note on field access: the native emitter discovers record field labels by
+-- scanning CRecord constructor expressions in the current compilation unit.
+-- Cross-module record field dot-access (`col.colName`) therefore panics in the
+-- emitter if no CRecord literal for that type appears locally.  We use pattern
+-- destructuring throughout to stay emitter-compatible.
+
+import lib.dbwriter.{buildDatabase, writeDatabase}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+
+-- ---------------------------------------------------------------------------
+-- Column-type affinity
+-- ---------------------------------------------------------------------------
+
+-- | The affinity of a column (v1: INTEGER, TEXT, BLOB; no FLOAT).
+public export data ColType
+  = TInteger   -- INTEGER affinity (may also hold an IPK)
+  | TText      -- TEXT affinity
+  | TBlob      -- BLOB / NONE affinity
+
+-- | One column definition.
+public export data Column = Column
+  { colName      : String
+  , colType      : ColType
+  , isPrimaryKey : Bool
+  }
+
+-- | A table schema: a name and an ordered list of columns.
+public export data TableSchema = TableSchema
+  { schemaTableName : String
+  , columns         : List Column
+  }
+
+-- ---------------------------------------------------------------------------
+-- CREATE TABLE SQL generation
+-- ---------------------------------------------------------------------------
+
+-- | Render the SQL affinity keyword for a column type.
+colTypeSql : ColType -> String
+colTypeSql TInteger = "INTEGER"
+colTypeSql TText    = "TEXT"
+colTypeSql TBlob    = "BLOB"
+
+-- | Render one column definition, appending " PRIMARY KEY" if flagged.
+--
+-- > colDefSql (Column { colName = "id", colType = TInteger, isPrimaryKey = True })
+-- "id INTEGER PRIMARY KEY"
+--
+-- > colDefSql (Column { colName = "name", colType = TText, isPrimaryKey = False })
+-- "name TEXT"
+colDefSql : Column -> String
+colDefSql (Column { colName, colType, isPrimaryKey }) =
+  let base = stringConcat [colName, " ", colTypeSql colType]
+  if isPrimaryKey
+  then stringConcat [base, " PRIMARY KEY"]
+  else base
+
+-- | Join a list of strings with a separator (no stdlib import to stay lean).
+intercalateStr : String -> List String -> String
+intercalateStr _   []         = ""
+intercalateStr _   [x]        = x
+intercalateStr sep (x::rest)  = stringConcat [x, sep, intercalateStr sep rest]
+
+mapColDefs : List Column -> List String
+mapColDefs []        = []
+mapColDefs (c::rest) = colDefSql c :: mapColDefs rest
+
+-- | Generate the `CREATE TABLE …` text from a `TableSchema`.
+-- The IPK column is rendered as `INTEGER PRIMARY KEY` (the exact text that
+-- the Medaka reader's `pkColumnIndex` and sqlite3 expect).
+--
+-- > createTableSql (TableSchema { schemaTableName = "users", columns = [Column { colName = "id", colType = TInteger, isPrimaryKey = True }, Column { colName = "name", colType = TText, isPrimaryKey = False }, Column { colName = "age", colType = TInteger, isPrimaryKey = False }] })
+-- "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+--
+-- > createTableSql (TableSchema { schemaTableName = "kv", columns = [Column { colName = "k", colType = TText, isPrimaryKey = False }, Column { colName = "v", colType = TInteger, isPrimaryKey = False }] })
+-- "CREATE TABLE kv(k TEXT, v INTEGER)"
+export
+createTableSql : TableSchema -> String
+createTableSql (TableSchema { schemaTableName, columns }) =
+  let colDefs = mapColDefs columns
+  stringConcat
+    [ "CREATE TABLE "
+    , schemaTableName
+    , "("
+    , intercalateStr ", " colDefs
+    , ")"
+    ]
+
+-- ---------------------------------------------------------------------------
+-- IPK index derivation
+-- ---------------------------------------------------------------------------
+
+-- | Find the 0-based index of the first column with `isPrimaryKey = True`,
+-- or `None` if no such column exists.
+export
+schemaIpkIndex : TableSchema -> Option Int
+schemaIpkIndex (TableSchema { columns, ... }) = findIpk columns 0
+
+findIpk : List Column -> Int -> Option Int
+findIpk []       _ = None
+findIpk (c::rest) i =
+  match c
+    Column { isPrimaryKey = True,  ... } => Some i
+    Column { isPrimaryKey = False, ... } => findIpk rest (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Column count validation
+-- ---------------------------------------------------------------------------
+
+listLen : List a -> Int
+listLen []      = 0
+listLen (_::xs) = 1 + listLen xs
+
+-- | Validate that every row has exactly `expected` cells.
+validateRows : Int -> List (List Cell) -> Result String Unit
+validateRows _ []               = Ok ()
+validateRows expected (r::rest) =
+  let got = listLen r
+  if got == expected
+  then validateRows expected rest
+  else Err "row has \{intToString got} cells, expected \{intToString expected}"
+
+-- ---------------------------------------------------------------------------
+-- One-shot write API
+-- ---------------------------------------------------------------------------
+
+-- | Build and write a single-table SQLite database from a schema + rows.
+--
+-- * The schema drives `createTableSql` (used as the stored `CREATE TABLE`
+--   text and as the IPK index oracle).
+-- * Each row is a `List Cell` matching the schema's column order.
+-- * Rows with `isPrimaryKey = True` on column `i` must supply a `CInt` value
+--   at position `i`; that value becomes the cell's rowid and is stored as
+--   `CNull` in the record (IPK affinity).  For tables without an IPK the
+--   rowid auto-increments 1..N.
+-- * Returns `Err` on a row width mismatch, an IPK type mismatch, or a
+--   single-page overflow.
+export
+writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
+writeTable path schema rows =
+  match schema
+    TableSchema { schemaTableName = name, columns } =>
+      let colCount = listLen columns
+      match validateRows colCount rows
+        Err e => Err e
+        Ok _ =>
+          let sql = createTableSql schema
+          let ipk = schemaIpkIndex schema
+          writeDatabase path name sql colCount ipk rows
+
+-- | Like `writeTable` but returns the raw byte image instead of writing to
+-- disk.  Useful for testing and round-trip inspection.
+export
+buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
+buildTable schema rows =
+  match schema
+    TableSchema { schemaTableName = name, columns } =>
+      let colCount = listLen columns
+      match validateRows colCount rows
+        Err e => Err e
+        Ok _ =>
+          let sql = createTableSql schema
+          let ipk = schemaIpkIndex schema
+          buildDatabase name sql colCount ipk rows
