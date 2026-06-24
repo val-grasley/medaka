@@ -88,6 +88,7 @@ public export data Token
   | TMinus
   | TStar
   | TSlash
+  | TSlashEq
   | TMod
   | TEqEq
   | TNeq
@@ -186,6 +187,7 @@ tokenToString TPlus = "PLUS"
 tokenToString TMinus = "MINUS"
 tokenToString TStar = "STAR"
 tokenToString TSlash = "SLASH"
+tokenToString TSlashEq = "SLASHEQ"
 tokenToString TMod = "MOD"
 tokenToString TEqEq = "EQ_EQ"
 tokenToString TNeq = "NEQ"
@@ -735,6 +737,7 @@ scanOp src len pos depth id c
   | is2 src len pos '+' '+' = emit src len pos depth id TPlusPlus 2 0
   | is2 src len pos '=' '=' = emit src len pos depth id TEqEq 2 0
   | is2 src len pos '!' '=' = emit src len pos depth id TNeq 2 0
+  | is2 src len pos '/' '=' = emit src len pos depth id TSlashEq 2 0
   | is2 src len pos '<' '=' = emit src len pos depth id TLeq 2 0
   | is2 src len pos '>' '=' = emit src len pos depth id TGeq 2 0
   | is2 src len pos '&' '&' = emit src len pos depth id TAnd 2 0

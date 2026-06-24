@@ -2778,6 +2778,15 @@ parseDo = do
   pure (EDo stmts)
 
 -- statements, NEWLINE-separated, until the block's DEDENT
+-- A statement-let / where RHS expression: a bare-INDENT block (the RHS sits on
+-- its own indented line, e.g. `let n =\n    length pairs`), or an ordinary
+-- expression.  Mirrors parser.mly's `expr_no_block` including the
+-- `INDENT nonempty_list(stmt) DEDENT` production, which lets a let binding's RHS
+-- be an indented block.  Without this the lexer's (correct, oracle-identical)
+-- `LET n EQUAL INDENT … DEDENT` stream had no parser rule and failed to parse.
+parseRhsExpr : Parser Expr
+parseRhsExpr = orElse parseBracketBlock parseExpr
+
 parseStmts : Parser (List DoStmt)
 parseStmts = do
   skipNewlines
@@ -2815,7 +2824,7 @@ letKind TMut = do
   advance
   pat <- parsePat
   expectTok TEqual
-  e1 <- parseExpr
+  e1 <- parseRhsExpr
   pure (DoLet True False pat e1)
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
@@ -2826,7 +2835,7 @@ letIdent name = do
   advance
   pats <- many parseParamPat
   expectTok TEqual
-  e1 <- parseExpr
+  e1 <- parseRhsExpr
   letIdentRest name pats e1
 
 letIdentRest : String -> List Pat -> Expr -> Parser DoStmt
@@ -2851,7 +2860,7 @@ letPat : Parser DoStmt
 letPat = do
   pat <- parsePat
   expectTok TEqual
-  e1 <- parseExpr
+  e1 <- parseRhsExpr
   t <- peekP
   letTailFor pat e1 t
 
@@ -3237,6 +3246,16 @@ mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseE
 mkLocated src toks offs srcLen msg pos = match offsetToLineCol src (locateOffset toks offs srcLen pos)
   (line, col) => ParseError line col msg
 
+-- `/=` is not a Medaka operator (not-equal is spelled `!=`); the lexer tags it
+-- as a distinct `TSlashEq` so we can locate it precisely and suggest the fix,
+-- rather than letting it split into `/` `=` and mislocate to end-of-file.
+-- Index of the first `TSlashEq` in the stream, or -1 if absent.
+firstSlashEqIdx : Array Token -> Int -> Int
+firstSlashEqIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TSlashEq = i
+  | otherwise = firstSlashEqIdx toks (i + 1)
+
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
@@ -3247,4 +3266,7 @@ parseResult src = match tokenizeWithOffsets src
     let toks = arrayFromList tokList
     let offs = arrayFromList offList
     let srcLen = stringLength src
-    resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
+    let seIdx = firstSlashEqIdx toks 0
+    if seIdx >= 0
+    then Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
+    else resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
