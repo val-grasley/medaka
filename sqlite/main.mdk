@@ -23,60 +23,20 @@ import lib.sqlite.{
   schemaSql,
   schemaRootPage,
   SchemaEntry,
+  pkColumnIndex,
+  rowCellsWithIpk,
 }
 import lib.btree.{Row, rowRowid, rowCells}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
 
--- The index of an INTEGER PRIMARY KEY column in the CREATE statement, if any.
--- We scan the stored sql for "INTEGER PRIMARY KEY" and count which top-level
--- (comma-separated, inside the outer parens) column it falls in.  A light
--- heuristic, sufficient for the v1 milestone tables.
-pkColumnIndex : String -> Option Int
-pkColumnIndex sql = pkScan (stringToChars sql)
-
-pkScan : Array Char -> Option Int
-pkScan arr = pkGo arr 0 (arrayLength arr) (0 - 1) 0 False
-
--- state: i cursor; col current column (-1 before first '('); depth paren depth;
---        started whether we've seen the opening '('.
-pkGo : Array Char -> Int -> Int -> Int -> Int -> Bool -> Option Int
-pkGo arr i n col depth started
-  | i >= n = None
-  | otherwise = pkStep arr i n col depth started (arrayGetUnsafe i arr)
-
-pkStep : Array Char -> Int -> Int -> Int -> Int -> Bool -> Char -> Option Int
-pkStep arr i n col depth started c
-  | charCode c == 40 && started = pkGo arr (i + 1) n col (depth + 1) started
-  | charCode c == 40 = pkGo arr (i + 1) n 0 (depth + 1) True
-  | charCode c == 41 = pkGo arr (i + 1) n col (depth - 1) started
-  | charCode c == 44 && depth == 1 = pkGo arr (i + 1) n (col + 1) depth started
-  | started && depth >= 1 && matchesAt arr i "INTEGER PRIMARY KEY" = Some col
-  | otherwise = pkGo arr (i + 1) n col depth started
-
--- True if the (case-sensitive) needle starts at index i in arr.
-matchesAt : Array Char -> Int -> String -> Bool
-matchesAt arr i needle = matchesGo arr i (stringToChars needle) 0
-
-matchesGo : Array Char -> Int -> Array Char -> Int -> Bool
-matchesGo arr i needle j
-  | j >= arrayLength needle = True
-  | i + j >= arrayLength arr = False
-  | charCode (arrayGetUnsafe (i + j) arr) == charCode (arrayGetUnsafe j needle) = matchesGo arr i needle (j + 1)
-  | otherwise = False
-
 -- Render a row to a "|"-joined line, substituting the rowid for the PK column.
 renderRow : Option Int -> Row -> String
-renderRow pkIdx row = joinPipe (renderCells pkIdx 0 (rowRowid row) (rowCells row))
+renderRow pkIdx row = joinPipe (renderCells (rowCellsWithIpk pkIdx row))
 
-renderCells : Option Int -> Int -> Int -> List Cell -> List String
-renderCells pkIdx idx rowid cells = match cells
+renderCells : List Cell -> List String
+renderCells cells = match cells
   [] => []
-  c::rest => renderCellAt pkIdx idx rowid c :: renderCells pkIdx (idx + 1) rowid rest
-
-renderCellAt : Option Int -> Int -> Int -> Cell -> String
-renderCellAt pkIdx idx rowid c = match pkIdx
-  Some p => if p == idx then intToString rowid else cellToString c
-  None   => cellToString c
+  c::rest => cellToString c :: renderCells rest
 
 joinPipe : List String -> String
 joinPipe xs = match xs

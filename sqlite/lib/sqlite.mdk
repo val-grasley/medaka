@@ -157,6 +157,80 @@ scanTableRows db name = match findTable db name
     let hdrOff = hdrOffsetOf db n
     scanTablePage bytes ps n hdrOff
 
+-- | Like `scanTableRows` but also returns the INTEGER PRIMARY KEY column index
+--   (if any) parsed from the schema's CREATE TABLE SQL.  Both the dump path and
+--   the typed query path should use this so the IPK substitution is shared.
+export
+scanTableRowsIpk : Db -> String -> Result String (Option Int, List Row)
+scanTableRowsIpk db name = match findTable db name
+  Err e => Err e
+  Ok entry =>
+    let bytes = dbBytes db
+    let ps = headerPageSize (dbHeader db)
+    let n = entry.rootPage
+    let hdrOff = hdrOffsetOf db n
+    match scanTablePage bytes ps n hdrOff
+      Err e => Err e
+      Ok rows => Ok (pkColumnIndex (schemaSql entry), rows)
+
+-- ---------------------------------------------------------------------------
+-- INTEGER PRIMARY KEY detection and rowid substitution (shared by dump + typed)
+-- ---------------------------------------------------------------------------
+
+-- | The index (0-based) of an INTEGER PRIMARY KEY column in the CREATE TABLE
+--   statement, if any.  Scans the stored sql for "INTEGER PRIMARY KEY" and counts
+--   which top-level comma-separated column definition it falls in.
+export
+pkColumnIndex : String -> Option Int
+pkColumnIndex sql = pkScan (stringToChars sql)
+
+pkScan : Array Char -> Option Int
+pkScan arr = pkGo arr 0 (arrayLength arr) (0 - 1) 0 False
+
+-- state: i cursor; n length; col current column (-1 before first '(');
+--        depth paren depth; started whether we've seen the opening '('.
+pkGo : Array Char -> Int -> Int -> Int -> Int -> Bool -> Option Int
+pkGo arr i n col depth started
+  | i >= n = None
+  | otherwise = pkStep arr i n col depth started (arrayGetUnsafe i arr)
+
+pkStep : Array Char -> Int -> Int -> Int -> Int -> Bool -> Char -> Option Int
+pkStep arr i n col depth started c
+  | charCode c == 40 && started = pkGo arr (i + 1) n col (depth + 1) started
+  | charCode c == 40 = pkGo arr (i + 1) n 0 (depth + 1) True
+  | charCode c == 41 = pkGo arr (i + 1) n col (depth - 1) started
+  | charCode c == 44 && depth == 1 = pkGo arr (i + 1) n (col + 1) depth started
+  | started && depth >= 1 && matchesAt arr i "INTEGER PRIMARY KEY" = Some col
+  | otherwise = pkGo arr (i + 1) n col depth started
+
+-- True if the (case-sensitive) needle starts at index i in arr.
+matchesAt : Array Char -> Int -> String -> Bool
+matchesAt arr i needle = matchesGo arr i (stringToChars needle) 0
+
+matchesGo : Array Char -> Int -> Array Char -> Int -> Bool
+matchesGo arr i needle j
+  | j >= arrayLength needle = True
+  | i + j >= arrayLength arr = False
+  | charCode (arrayGetUnsafe (i + j) arr) == charCode (arrayGetUnsafe j needle) = matchesGo arr i needle (j + 1)
+  | otherwise = False
+
+-- | Given the IPK column index (if any), a row's rowid, and its raw cells,
+--   return the cells with the IPK column replaced by the rowid.
+--   For non-IPK tables (pkIdx = None) the cells are returned unchanged.
+export
+rowCellsWithIpk : Option Int -> Row -> List Cell
+rowCellsWithIpk pkIdx row =
+  substituteIpk pkIdx 0 (rowRowid row) (rowCells row)
+
+substituteIpk : Option Int -> Int -> Int -> List Cell -> List Cell
+substituteIpk pkIdx idx rowid cells = match cells
+  [] => []
+  c :: rest =>
+    let cell = match pkIdx
+                 Some p => if p == idx then CInt rowid else c
+                 None   => c
+    cell :: substituteIpk pkIdx (idx + 1) rowid rest
+
 -- ---------------------------------------------------------------------------
 -- Result-list helper (avoids importing list)
 -- ---------------------------------------------------------------------------

@@ -10,8 +10,8 @@
 -- query with that row's error (fail-fast), so a caller never sees a partially
 -- typed result.  No panics.
 
-import lib.sqlite.{Db, scanTableRows}
-import lib.btree.{Row, rowCells}
+import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk}
+import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
 
 -- | Full-table scan with a post-decode predicate.
@@ -21,25 +21,29 @@ import lib.rowtype.{RowType, rtDecode}
 --   * decodes each via `rt` (a `RowType r`),
 --   * keeps those for which `keep` returns True,
 --   * returns `Ok rows` (typed) or the first decode/scan error.
+--
+-- INTEGER PRIMARY KEY columns are stored as NULL in the B-tree record;
+-- we substitute the rowid at that position (identified from the schema SQL)
+-- so `tInt` sees the real key value rather than NULL.
 export
 scanTable : Db -> String -> (r -> Bool) -> RowType r -> Result String (List r)
-scanTable db table keep rt = match scanTableRows db table
-  Err e   => Err e
-  Ok rows => decodeRows rt keep rows []
+scanTable db table keep rt = match scanTableRowsIpk db table
+  Err e             => Err e
+  Ok (pkIdx, rows)  => decodeRows rt keep pkIdx rows []
 
 -- | Convenience: every row, no filter.
 export
 fetchAll : Db -> String -> RowType r -> Result String (List r)
 fetchAll db table rt = scanTable db table (_ => True) rt
 
-decodeRows : RowType r -> (r -> Bool) -> List Row -> List r -> Result String (List r)
-decodeRows rt keep rows acc = match rows
+decodeRows : RowType r -> (r -> Bool) -> Option Int -> List Row -> List r -> Result String (List r)
+decodeRows rt keep pkIdx rows acc = match rows
   [] => Ok (reverseR acc)
-  row :: rest => match rtDecode rt (rowCells row)
+  row :: rest => match rtDecode rt (rowCellsWithIpk pkIdx row)
     Err e => Err e
     Ok v  => if keep v
-             then decodeRows rt keep rest (v :: acc)
-             else decodeRows rt keep rest acc
+             then decodeRows rt keep pkIdx rest (v :: acc)
+             else decodeRows rt keep pkIdx rest acc
 
 reverseR : List a -> List a
 reverseR xs = revR xs []

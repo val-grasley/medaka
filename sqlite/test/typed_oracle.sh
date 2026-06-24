@@ -19,10 +19,10 @@ trap 'rm -rf "$TMP"' EXIT
 DB="$TMP/users.db"
 BIN="$TMP/qdemo"
 
-sqlite3 "$DB" "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER); \
+sqlite3 "$DB" "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER); \
   INSERT INTO users VALUES (1,'Alice',30),(2,'Bob',NULL),(3,'Carol',25),(4,'Dave',40);"
 
-"$MEDAKA" build query_demo.mdk -o "$BIN" >/dev/null 2>&1 || { echo "FAIL: build"; exit 1; }
+"$MEDAKA" build sqlite/query_demo.mdk -o "$BIN" >/dev/null 2>&1 || { echo "FAIL: build"; exit 1; }
 
 got="$("$BIN" "$DB")"
 
