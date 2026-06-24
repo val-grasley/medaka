@@ -1,0 +1,8 @@
+-- Multi-line type signature: -> at end of line, continuation on next.
+-- Finding #4: tyArrowTail now calls skipNewlines after expectTok TArrow.
+add : Int ->
+  Int ->
+  Int
+add x y = x + y
+
+main = println (debug (add 3 4))

@@ -1765,8 +1765,25 @@ upperNameFor _ = failP "expected effect label"
 tyArrowTail : Ty -> Parser Ty
 tyArrowTail left = do
   expectTok TArrow
+  t <- peekP
+  indented <- tyArrowSkipLayout t
   right <- parseTy
+  if indented then do
+    skipNewlines
+    expectTok TDedent
+  else pure ()
   pure (TyFun left right)
+
+-- Skip NEWLINE or INDENT that can follow a trailing `->` in a type signature.
+-- Returns True if an INDENT was consumed (caller must then consume the matching DEDENT).
+tyArrowSkipLayout : Token -> Parser Bool
+tyArrowSkipLayout TNewline = do
+  advance
+  pure False
+tyArrowSkipLayout TIndent = do
+  advance
+  pure True
+tyArrowSkipLayout _ = pure False
 
 parseTyApp : Parser Ty
 parseTyApp = do
@@ -2041,11 +2058,15 @@ importIdent = do
   importIdentFor t
 
 -- a path component: a lowercase module name, an Uppercase name (e.g.
--- `collections.HashMap`), or `test` (a keyword still legal as a path component).
+-- `collections.HashMap`), or a keyword that is legal as a path component
+-- (`test`, `record`, `data`, `type`).
 importIdentFor : Token -> Parser String
 importIdentFor (TIdent x) = emit x
 importIdentFor (TUpper x) = emit x
 importIdentFor TTest = emit "test"
+importIdentFor TRecord = emit "record"
+importIdentFor TData = emit "data"
+importIdentFor TType = emit "type"
 importIdentFor _ = failP "expected import path component"
 
 importPathFor : List String -> Parser UsePath

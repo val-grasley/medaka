@@ -1,0 +1,5 @@
+-- Test module with a keyword (record) as its filename.
+-- Exports a simple value for testing import record.* syntax.
+export
+greet : String
+greet = "hello from record module"
