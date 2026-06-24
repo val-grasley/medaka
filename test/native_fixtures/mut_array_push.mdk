@@ -1,0 +1,16 @@
+-- Regression for native-interp missing arrayBlit / arraySetUnsafe primitives.
+-- MutArray.push uses arraySetUnsafe on the fast path (capacity not exceeded)
+-- and arrayBlit when growing the backing array (capacity exceeded).
+-- Previously, native `medaka run` panicked with "unbound identifier: arrayBlit"
+-- on the 3rd push (first grow from capacity 2→4).
+-- `medaka build` always worked (LLVM backend handles both as intrinsics).
+import mut_array.{new, push}
+
+main =
+  let m = new ()
+  push 1 m
+  push 2 m
+  push 3 m
+  push 4 m
+  push 5 m
+  println "ok"

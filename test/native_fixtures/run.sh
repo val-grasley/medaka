@@ -61,5 +61,13 @@ case "$out" in
   *) echo "FAIL inline_let_missing_in: got [$out]"; fail=1 ;;
 esac
 
+# arrayBlit + arraySetUnsafe in native interpreter: MutArray.push triggers both.
+# Before the fix: "unbound identifier: arrayBlit" on the 3rd push (first grow).
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" run "$FIX/mut_array_push.mdk" 2>&1)"
+case "$out" in
+  ok) echo "ok   mut_array_push (arrayBlit + arraySetUnsafe in native interp)" ;;
+  *) echo "FAIL mut_array_push: expected 'ok', got [$out]"; fail=1 ;;
+esac
+
 [ $fail -eq 0 ] && echo "all native_fixtures pass" || echo "native_fixtures FAILED"
 exit $fail

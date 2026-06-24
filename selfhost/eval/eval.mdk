@@ -1630,6 +1630,12 @@ prim3 f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
 prim2M : (Value -> Value -> <Mut> Value) -> Value
 prim2M f = VPrim (a => VPrim (b => f a b))
 
+prim3M : (Value -> Value -> Value -> <Mut> Value) -> Value
+prim3M f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
+
+prim5M : (Value -> Value -> Value -> Value -> Value -> <Mut> Value) -> Value
+prim5M f = VPrim (a => VPrim (b => VPrim (c => VPrim (d => VPrim (x => f a b c d x)))))
+
 prim1M : (Value -> <Mut> Value) -> Value
 prim1M f = VPrim f
 
@@ -1787,6 +1793,8 @@ externBindings = [
   ("arrayMake", prim2 pArrayMake),
   ("arrayMakeWith", prim2M pArrayMakeWith),
   ("arrayCopy", prim1 pArrayCopy),
+  ("arraySetUnsafe", prim3M pArraySetUnsafe),
+  ("arrayBlit", prim5M pArrayBlit),
   ("Ref", prim1 pRef),
   ("set_ref", prim2M pSetRef),
   ("putStr", prim1M pPutStr),
@@ -1977,6 +1985,31 @@ pArrayMakeWith _ _ = panic "arrayMakeWith: bad operands"
 pArrayCopy : Value -> Value
 pArrayCopy (VArray a) = VArray (arrayCopy a)
 pArrayCopy _ = panic "arrayCopy: not an Array"
+
+-- arraySetUnsafe : Int -> a -> Array a -> <Mut> Unit — mutate slot i in place.
+-- Routes to the host arraySetUnsafe extern (the native Array is mutable).
+pArraySetUnsafe : Value -> Value -> Value -> <Mut> Value
+pArraySetUnsafe (VInt i) v (VArray a) =
+  let _ = arraySetUnsafe i v a
+  VUnit
+pArraySetUnsafe _ _ _ = panic "arraySetUnsafe: bad operands"
+
+-- arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+-- Copies len elements from src[srcOff..] into dst[dstOff..] in place.
+-- Mirrors OCaml Array.blit semantics (memmove; handles overlapping regions).
+blitGo : Array Value -> Int -> Array Value -> Int -> Int -> <Mut> Unit
+blitGo src srcOff dst dstOff len
+  | len <= 0 = ()
+  | otherwise =
+    let v = arrayGetUnsafe srcOff src
+    arraySetUnsafe dstOff v dst
+    blitGo src (srcOff + 1) dst (dstOff + 1) (len - 1)
+
+pArrayBlit : Value -> Value -> Value -> Value -> Value -> <Mut> Value
+pArrayBlit (VArray src) (VInt srcOff) (VArray dst) (VInt dstOff) (VInt len) =
+  blitGo src srcOff dst dstOff len
+  VUnit
+pArrayBlit _ _ _ _ _ = panic "arrayBlit: bad operands"
 
 buildWith : Value -> Int -> Int -> <Mut> List Value
 buildWith f i n =
