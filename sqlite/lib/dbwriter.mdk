@@ -1,0 +1,442 @@
+-- | sqlite.lib.dbwriter — build a fresh single-table SQLite `.db` from scratch.
+--
+-- The EXACT inverse of the read path (`header.mdk` + `btree.mdk` + `recordfmt`/
+-- `recordenc.mdk`).  Produces the bytes of a valid 2-page SQLite database:
+--
+--   * page 1 = the `sqlite_master` table-leaf (one row describing the table), and
+--   * page 2 = the table's own data leaf (the user rows).
+--
+-- `writeFileBytes`-ing the result yields a file that `sqlite3` can query and
+-- that `integrity_check` accepts.
+--
+-- ## What we EMIT (verified against `header.mdk` / `btree.mdk`)
+--
+-- ### 100-byte file header (inverse of `parseHeader`)
+--   0..15   magic "SQLite format 3\0"
+--   16  u16  page size            = 4096   (0x1000)
+--   18  u8   write version        = 1      (legacy rollback)
+--   19  u8   read version         = 1
+--   20  u8   reserved-per-page    = 0
+--   21  u8   max payload frac     = 64     (0x40)
+--   22  u8   min payload frac     = 32     (0x20)
+--   23  u8   leaf payload frac    = 32     (0x20)
+--   24  u32  change counter       = 1
+--   28  u32  page count           = 2
+--   32  u32  freelist trunk       = 0
+--   36  u32  freelist count       = 0
+--   40  u32  schema cookie        = 1
+--   44  u32  schema format        = 4
+--   48  u32  default cache size   = 0
+--   52  u32  largest-root (avac)  = 0
+--   56  u32  text encoding        = 1      (UTF-8)
+--   60  u32  user version         = 0
+--   64  u32  incremental vacuum   = 0
+--   68  u32  application id       = 0
+--   72..91  reserved (20 bytes)   = 0
+--   92  u32  version-valid-for    = 1      (= change counter)
+--   96  u32  sqlite version number= 3046000
+--
+-- ### Table-leaf page (inverse of `decodeLeafPage`) — 4096 bytes, zero-filled
+--   8-byte page header at the page's b-tree-header offset (file offset 100 for
+--   page 1; page base for page 2):
+--     +0  u8   0x0D (table leaf)
+--     +1  u16  first freeblock   = 0
+--     +3  u16  cell count N
+--     +5  u16  cell-content-area start (lowest cell offset)
+--     +7  u8   fragmented free   = 0
+--   then the N×u16 page-relative cell-pointer array (rowid-ascending), then the
+--   cell content area packed from the page END downward.  A table-leaf cell is
+--   `[payload-len varint][rowid varint][record bytes]`.
+--
+-- ### IPK handling (mandatory; mirrors `rowCellsWithIpk` on the read side)
+-- If the table has an `INTEGER PRIMARY KEY` column (located by
+-- `pkColumnIndex`), that column is stored as `CNull` in the record and its
+-- integer value becomes the cell's **rowid**.  Otherwise the rowid
+-- auto-increments 1..N in row order.
+--
+-- ### Single-leaf-page cap
+-- If the cells + pointer array do not fit in the available page space the
+-- writer returns a clean `Err` — it never silently overflows.
+
+-- ## Self-contained byte emission (NOT bytebuilder — see COMPILER FINDING)
+--
+-- This module emits the per-cell / per-header byte strings using plain
+-- `List Int` accumulation + `arrayFromList`, mirroring `recordenc.mdk`.  It
+-- deliberately does NOT import `byteparser.lib.bytebuilder`.
+--
+-- COMPILER FINDING (F1, incomplete): a module cannot import BOTH
+-- `byteparser.lib.bytebuilder` AND (transitively) `byteparser.lib.byteparser`.
+-- `bytebuilder` imports its sibling via the intra-package path `lib.byteparser`,
+-- while `recordenc` (a transitive dep here) imports it as the cross-package
+-- `byteparser.lib.byteparser`.  The loader instantiates the SAME physical file
+-- twice under the two path spellings, so its `impl Alternative` collides
+-- (`conflicting impl Alternative: defined in byteparser.lib.byteparser and
+-- lib.byteparser`).  `bytebuilder` alone and `recordenc` alone each load fine;
+-- only the combination conflicts.  The F1 fix resolved bytebuilder's import for
+-- standalone use but did not CANONICALISE the module identity, so a relative
+-- intra-package import still aliases a cross-package one.  Until that lands,
+-- `dbwriter` stays bytebuilder-free (single byteparser path spelling, via
+-- recordenc).
+
+import lib.recordenc.{encodeRecord}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+
+-- ---------------------------------------------------------------------------
+-- Constants
+-- ---------------------------------------------------------------------------
+
+pageSize : Int
+pageSize = 4096
+
+-- Page 1's b-tree header starts at file offset 100 (after the file header).
+fileHeaderSize : Int
+fileHeaderSize = 100
+
+-- Leaf b-tree page header is 8 bytes.
+leafHeaderSize : Int
+leafHeaderSize = 8
+
+pageTableLeafByte : Int
+pageTableLeafByte = 13   -- 0x0D
+
+-- A valid sqlite-version-number constant (integrity_check ignores it).
+sqliteVersionNumber : Int
+sqliteVersionNumber = 3046000
+
+-- ---------------------------------------------------------------------------
+-- List / array helpers (no stdlib import — keep the module lightweight)
+-- ---------------------------------------------------------------------------
+
+listLen : List a -> Int
+listLen []      = 0
+listLen (_::xs) = 1 + listLen xs
+
+appendList : List a -> List a -> List a
+appendList []      ys = ys
+appendList (x::xs) ys = x :: appendList xs ys
+
+revList : List a -> List a
+revList xs = revGo xs []
+
+revGo : List a -> List a -> List a
+revGo []      acc = acc
+revGo (x::xs) acc = revGo xs (x::acc)
+
+arrayToList : Array Int -> List Int
+arrayToList a = arrToListGo a 0
+
+arrToListGo : Array Int -> Int -> List Int
+arrToListGo a i
+  | i >= arrayLength a = []
+  | otherwise = arrayGetUnsafe i a :: arrToListGo a (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Self-contained byte emitters (List Int, big-endian) — inverse of byteparser
+-- ---------------------------------------------------------------------------
+
+-- A big-endian n-byte unsigned integer as a forward List Int.
+beBytes : Int -> Int -> List Int
+beBytes nbytes v = revList (beGo nbytes v)
+
+beGo : Int -> Int -> List Int
+beGo 0 _ = []
+beGo n v = bitAnd v 255 :: beGo (n - 1) (v / 256)
+
+-- A SQLite varint (1..9 bytes) as a forward List Int.  Mirrors recordenc's
+-- sqVarintBytes (covers the full 1..9-byte range).
+sqVarintBytes : Int -> List Int
+sqVarintBytes v =
+  if v >= 72057594037927936
+  then
+    let low8 = bitAnd v 255
+    let high = v / 256
+    appendList (sqContBytes high) [low8]
+  else sqContBytes v
+
+-- Collect 7-bit groups (big-endian) and set continuation bits on all but last.
+sqContBytes : Int -> List Int
+sqContBytes v = sqAddCont (sqGroups v [])
+
+sqGroups : Int -> List Int -> List Int
+sqGroups v acc
+  | v < 128   = v :: acc
+  | otherwise = sqGroups (v / 128) (bitAnd v 127 :: acc)
+
+sqAddCont : List Int -> List Int
+sqAddCont []        = []
+sqAddCont [last]    = [last]
+sqAddCont (x::rest) = (x + 128) :: sqAddCont rest
+
+-- ---------------------------------------------------------------------------
+-- Leaf-cell encoding: [payload-len varint][rowid varint][record bytes]
+-- ---------------------------------------------------------------------------
+
+-- | Encode one table-leaf cell given its rowid and its record bytes.
+--   payload-len is the byte length of the record (the payload), as a varint.
+encodeLeafCell : Int -> Array Int -> Array Int
+encodeLeafCell rowid recBytes =
+  let lenBytes   = sqVarintBytes (arrayLength recBytes)
+  let rowidBytes = sqVarintBytes rowid
+  arrayFromList (appendList lenBytes (appendList rowidBytes (arrayToList recBytes)))
+
+-- ---------------------------------------------------------------------------
+-- Page assembly
+-- ---------------------------------------------------------------------------
+--
+-- A leaf page needs RANDOM-ACCESS layout (header forward, cells from the end),
+-- so we allocate `arrayMake pageSize 0` and write at absolute offsets.  Cells
+-- are packed back-to-front; pointers go right after the page header in the same
+-- order the cells were supplied (rowid-ascending).
+--
+-- `hdrOff` is where this page's 8-byte b-tree header begins WITHIN the page
+-- buffer: 0 for an ordinary page, 100 for page 1 (its file header occupies
+-- bytes 0..99 of the same page).
+
+-- | Build a 4096-byte table-leaf page image from a list of already-encoded
+--   leaf cells (each a full `[len][rowid][record]` byte array), in
+--   rowid-ascending order.  `hdrOff` = 0 for page 2, 100 for page 1.
+--   Returns `Err` if the cells + pointer array overflow the page.
+buildLeafPage : Int -> List (Array Int) -> <Mut> Result String (Array Int)
+buildLeafPage hdrOff cells =
+  let nCells   = listLen cells
+  let page     = arrayMake pageSize 0
+  -- The cell-pointer array sits right after the 8-byte page header.
+  let cpStart  = hdrOff + leafHeaderSize
+  let cpEnd    = cpStart + nCells * 2
+  -- Cells pack downward from the page end; `packCells` returns the lowest
+  -- cell offset reached (the content-area start) after writing every cell and
+  -- its pointer, or Err on overflow.
+  match packCells page cells cpStart pageSize cpEnd 0
+    Err e => Err e
+    Ok contentStart =>
+      writeLeafHeader page hdrOff nCells contentStart
+      Ok page
+
+-- Pack cells back-to-front; write each cell's page-relative pointer into the
+-- cell-pointer array as we go (pointer index 0 = first/lowest-rowid cell).
+-- `contentTop` is the current bottom of used content (cells fill DOWN from
+-- pageSize); `floor` is the highest offset the cells may not cross (= cpEnd,
+-- the end of the pointer array).  Returns the final content-area start.
+packCells : Array Int -> List (Array Int) -> Int -> Int -> Int -> Int -> <Mut> Result String Int
+packCells page []            cpStart contentTop floor i = Ok contentTop
+packCells page (cell::rest)  cpStart contentTop floor i =
+  let clen   = arrayLength cell
+  let newTop = contentTop - clen
+  if newTop < floor
+  then Err "table exceeds one page; multi-page not supported in v1"
+  else
+    -- Blit the cell bytes into the page at newTop.
+    arrayBlit cell 0 page newTop clen
+    -- Write the page-relative pointer (u16, big-endian) for cell i.
+    let ptrOff = cpStart + i * 2
+    arraySetUnsafe ptrOff       (bitAnd (newTop / 256) 255) page
+    arraySetUnsafe (ptrOff + 1) (bitAnd newTop 255)         page
+    packCells page rest cpStart newTop floor (i + 1)
+
+-- Write the 8-byte leaf page header at `hdrOff`.
+writeLeafHeader : Array Int -> Int -> Int -> Int -> <Mut> Unit
+writeLeafHeader page hdrOff nCells contentStart =
+  -- +0 page type
+  arraySetUnsafe hdrOff pageTableLeafByte page
+  -- +1 first freeblock (u16) = 0
+  arraySetUnsafe (hdrOff + 1) 0 page
+  arraySetUnsafe (hdrOff + 2) 0 page
+  -- +3 cell count (u16)
+  arraySetUnsafe (hdrOff + 3) (bitAnd (nCells / 256) 255) page
+  arraySetUnsafe (hdrOff + 4) (bitAnd nCells 255)         page
+  -- +5 cell-content-area start (u16; 0 means 65536, but our pages are 4096 so
+  --    contentStart is always in range and never 0 unless empty — an empty
+  --    page writes contentStart = pageSize = 4096, which is the correct value)
+  arraySetUnsafe (hdrOff + 5) (bitAnd (contentStart / 256) 255) page
+  arraySetUnsafe (hdrOff + 6) (bitAnd contentStart 255)         page
+  -- +7 fragmented free bytes = 0
+  arraySetUnsafe (hdrOff + 7) 0 page
+
+-- ---------------------------------------------------------------------------
+-- File header (100 bytes), written into the first 100 bytes of page 1
+-- ---------------------------------------------------------------------------
+
+magicBytes : List Int
+magicBytes =
+  [ 83, 81, 76, 105, 116, 101, 32   -- "SQLite "
+  , 102, 111, 114, 109, 97, 116     -- "format"
+  , 32, 51, 0 ]                     -- " 3\0"
+
+-- | Build the 100-byte file header (page count = total pages) as an Array Int.
+--   Assembled as a flat List Int of fixed-width big-endian fields, in offset
+--   order, then `arrayFromList`.
+buildFileHeader : Int -> Array Int
+buildFileHeader pageCount =
+  let fields =
+        concatListOfLists
+          [ magicBytes              -- 0..15  magic (16 bytes)
+          , beBytes 2 pageSize      -- 16     page size
+          , [1]                     -- 18     write version
+          , [1]                     -- 19     read version
+          , [0]                     -- 20     reserved per page
+          , [64]                    -- 21     max payload frac
+          , [32]                    -- 22     min payload frac
+          , [32]                    -- 23     leaf payload frac
+          , beBytes 4 1             -- 24     change counter
+          , beBytes 4 pageCount     -- 28     page count
+          , beBytes 4 0             -- 32     freelist trunk
+          , beBytes 4 0             -- 36     freelist count
+          , beBytes 4 1             -- 40     schema cookie
+          , beBytes 4 4             -- 44     schema format
+          , beBytes 4 0             -- 48     default cache size
+          , beBytes 4 0             -- 52     largest-root (autovacuum)
+          , beBytes 4 1             -- 56     text encoding (UTF-8)
+          , beBytes 4 0             -- 60     user version
+          , beBytes 4 0             -- 64     incremental vacuum
+          , beBytes 4 0             -- 68     application id
+          , beBytes 4 0             -- 72     reserved
+          , beBytes 4 0             -- 76     reserved
+          , beBytes 4 0             -- 80     reserved
+          , beBytes 4 0             -- 84     reserved
+          , beBytes 4 0             -- 88     reserved
+          , beBytes 4 1             -- 92     version-valid-for
+          , beBytes 4 sqliteVersionNumber  -- 96  sqlite version number
+          ]
+  arrayFromList fields
+
+concatListOfLists : List (List Int) -> List Int
+concatListOfLists []           = []
+concatListOfLists (xs::rest)   = appendList xs (concatListOfLists rest)
+
+-- ---------------------------------------------------------------------------
+-- Row → leaf cell (with IPK handling)
+-- ---------------------------------------------------------------------------
+--
+-- For a table WITH an INTEGER PRIMARY KEY at column `p`:
+--   the rowid is that column's integer value, and that column is encoded as
+--   CNull in the record (`encodeRecord` emits serial 0 / no body).
+-- For a table WITHOUT an IPK: the rowid auto-increments 1..N and the record
+--   contains the cells unchanged.
+
+-- | Determine the rowid for a row given the optional IPK column index and the
+--   auto-increment fallback `autoRowid`.
+rowidFor : Option Int -> Int -> List Cell -> Result String Int
+rowidFor None         autoRowid _     = Ok autoRowid
+rowidFor (Some p)     _         cells =
+  match nthCell p cells
+    None              => Err "IPK column index out of range for row"
+    Some (CInt v)     => Ok v
+    Some CNull        => Err "INTEGER PRIMARY KEY column must be a non-NULL integer"
+    Some _            => Err "INTEGER PRIMARY KEY column must be an integer"
+
+-- | Replace the IPK column with CNull (so it is stored serial-0 in the record).
+nullifyIpk : Option Int -> List Cell -> List Cell
+nullifyIpk None     cells = cells
+nullifyIpk (Some p) cells = nullifyGo p 0 cells
+
+nullifyGo : Int -> Int -> List Cell -> List Cell
+nullifyGo _ _   []         = []
+nullifyGo p idx (c::rest)  =
+  let c2 = if idx == p then CNull else c
+  c2 :: nullifyGo p (idx + 1) rest
+
+nthCell : Int -> List Cell -> Option Cell
+nthCell _ []        = None
+nthCell 0 (c::_)    = Some c
+nthCell n (_::rest) = nthCell (n - 1) rest
+
+-- | Encode one user row into a full leaf cell, computing its rowid (IPK or
+--   auto-increment) and storing the IPK column as NULL in the record.
+encodeRow : Option Int -> Int -> List Cell -> Result String (Array Int)
+encodeRow ipk autoRowid cells =
+  match rowidFor ipk autoRowid cells
+    Err e => Err e
+    Ok rowid =>
+      match encodeRecord (nullifyIpk ipk cells)
+        Err e => Err e
+        Ok recBytes => Ok (encodeLeafCell rowid recBytes)
+
+-- Encode every user row, threading the auto-increment rowid.  Cells come back
+-- in input order (which must already be rowid-ascending for the writer).
+encodeRows : Option Int -> Int -> List (List Cell) -> List (Array Int) -> Result String (List (Array Int))
+encodeRows _   _         []           acc = Ok (revAcc acc [])
+encodeRows ipk autoRowid (row::rest)  acc =
+  match encodeRow ipk autoRowid row
+    Err e => Err e
+    Ok cell => encodeRows ipk (autoRowid + 1) rest (cell::acc)
+
+revAcc : List a -> List a -> List a
+revAcc []        acc = acc
+revAcc (x::rest) acc = revAcc rest (x::acc)
+
+-- ---------------------------------------------------------------------------
+-- sqlite_master row (page 1)
+-- ---------------------------------------------------------------------------
+--
+-- One row per table: (type="table", name, tbl_name=name, rootpage, sql).
+-- This is an ordinary table WITHOUT an IPK; its rowid is 1.
+
+masterCells : String -> String -> Int -> List Cell
+masterCells name createSql rootPage =
+  [ CText "table", CText name, CText name, CInt rootPage, CText createSql ]
+
+-- ---------------------------------------------------------------------------
+-- Top-level: buildDatabase
+-- ---------------------------------------------------------------------------
+
+-- | Build the byte image of a single-table 2-page SQLite database.
+--
+--   * `name`      — the table name.
+--   * `createSql` — the exact `CREATE TABLE …` text stored in sqlite_master.
+--   * `colCount`  — number of columns (currently informational; the row cell
+--                   counts are authoritative).
+--   * `ipkColIdx` — `Some i` if column `i` is an INTEGER PRIMARY KEY, else None.
+--   * `rows`      — the table's rows, each a list of Cell, in rowid-ascending
+--                   order (for an IPK table, supply rows sorted by the IPK).
+--
+--   Page 1 holds the sqlite_master leaf (table rootpage = 2); page 2 holds the
+--   data leaf.  Returns `Err` on overflow or any record-encoding error.
+export
+buildDatabase : String -> String -> Int -> Option Int -> List (List Cell) -> <Mut> Result String (Array Int)
+buildDatabase name createSql colCount ipkColIdx rows =
+  -- 1. Encode the data-page (page 2) user rows.
+  match encodeRows ipkColIdx 1 rows []
+    Err e => Err e
+    Ok dataCells =>
+      -- 2. Build the page-2 leaf (b-tree header at offset 0).
+      match buildLeafPage 0 dataCells
+        Err e => Err "data page: \{e}"
+        Ok page2 =>
+          -- 3. Build the sqlite_master row (rowid 1, no IPK) → leaf cell.
+          match encodeRecord (masterCells name createSql 2)
+            Err e => Err "sqlite_master record: \{e}"
+            Ok masterRec =>
+              let masterCell = encodeLeafCell 1 masterRec
+              -- 4. Build the page-1 leaf (b-tree header at offset 100).
+              match buildLeafPage fileHeaderSize [masterCell]
+                Err e => Err "schema page: \{e}"
+                Ok page1 =>
+                  -- 5. Blit the 100-byte file header over page 1's first 100 bytes.
+                  let fileHdr = buildFileHeader 2
+                  arrayBlit fileHdr 0 page1 0 fileHeaderSize
+                  -- 6. Concatenate page 1 ++ page 2 into the whole-file image.
+                  Ok (concatPages page1 page2)
+
+-- Concatenate two equal-sized page images into one byte array.
+concatPages : Array Int -> Array Int -> <Mut> Array Int
+concatPages p1 p2 =
+  let n1   = arrayLength p1
+  let n2   = arrayLength p2
+  let file = arrayMake (n1 + n2) 0
+  arrayBlit p1 0 file 0 n1
+  arrayBlit p2 0 file n1 n2
+  file
+
+-- ---------------------------------------------------------------------------
+-- writeDatabase — the IO wrapper
+-- ---------------------------------------------------------------------------
+
+-- | Build the database image and `writeFileBytes` it to `path`.  Returns
+--   `Err` on a build error (overflow / encoding); the file-write Result is
+--   propagated otherwise.
+export
+writeDatabase : String -> String -> String -> Int -> Option Int -> List (List Cell) -> <FileWrite, Mut> Result String Unit
+writeDatabase path name createSql colCount ipkColIdx rows =
+  match buildDatabase name createSql colCount ipkColIdx rows
+    Err e  => Err e
+    Ok img => writeFileBytes path img

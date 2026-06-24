@@ -1,0 +1,16 @@
+# integrity_check
+ok
+# schema
+table|users|2
+# sqlite3 SELECT
+1|Alice|30
+2|Bob|
+3|Carol|-5
+7|Dave|1000000
+42|Eve|127
+# medaka reader
+1|Alice|30
+2|Bob|
+3|Carol|-5
+7|Dave|1000000
+42|Eve|127

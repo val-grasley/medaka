@@ -1,0 +1,47 @@
+-- sqlite writer demo / writer-oracle entry.
+--
+-- Usage: medaka build sqlite/writer_demo.mdk ... ; ./writer_demo <out.db>
+--
+-- Builds a 2-page SQLite database with a single table
+--   CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)
+-- and a handful of rows (incl. a NULL age, varied integer widths, and the
+-- mandatory INTEGER PRIMARY KEY → rowid mapping), then writeFileBytes it.
+
+import lib.dbwriter.{writeDatabase}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+
+tableName : String
+tableName = "users"
+
+createSql : String
+createSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+
+-- column 0 (id) is the INTEGER PRIMARY KEY → stored as rowid.
+ipkIdx : Option Int
+ipkIdx = Some 0
+
+-- Rows, rowid-ascending by the IPK (id).  The id cell value becomes the rowid;
+-- it is encoded as NULL in the record (IPK affinity).
+--   1  "Alice"   30        (i8 age)
+--   2  "Bob"     NULL      (NULL age)
+--   3  "Carol"   -5        (negative i8 age)
+--   7  "Dave"    1000000   (i32 age; non-contiguous rowid)
+--   42 "Eve"     127       (i8 boundary)
+rows : List (List Cell)
+rows =
+  [ [ CInt 1,  CText "Alice", CInt 30 ]
+  , [ CInt 2,  CText "Bob",   CNull ]
+  , [ CInt 3,  CText "Carol", CInt (-5) ]
+  , [ CInt 7,  CText "Dave",  CInt 1000000 ]
+  , [ CInt 42, CText "Eve",   CInt 127 ]
+  ]
+
+main : <IO, Mut> Unit
+main = match args ()
+  [out] => run out
+  _ => println "usage: writer_demo <out.db>"
+
+run : String -> <IO, Mut> Unit
+run out = match writeDatabase out tableName createSql 3 ipkIdx rows
+  Err e => println "Error: \{e}"
+  Ok _  => println "wrote \{out}"
