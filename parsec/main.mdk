@@ -5,7 +5,18 @@
 -- `main` is a BARE indented block of IO statements (NOT `do` — IO is not a
 -- monad here).
 
-import lib.parser.{Parser, runParser, digit, some, char, sepBy, chainl1, spaces, between, string}
+import lib.parser.{
+  Parser,
+  runParser,
+  digit,
+  some,
+  char,
+  sepBy,
+  chainl1,
+  spaces,
+  between,
+  string,
+}
 -- `intToString` is a global builtin (not a `string` export) — used unqualified below.
 
 -- A natural number: one-or-more digits, folded into an Int.
@@ -14,14 +25,14 @@ number = map (digits => foldDigits digits 0) (some digit)
 
 foldDigits : List Char -> Int -> Int
 foldDigits [] acc = acc
-foldDigits (c :: rest) acc = foldDigits rest (acc * 10 + (charCode c - 48))
+foldDigits (c::rest) acc = foldDigits rest (acc * 10 + (charCode c - 48))
 
 -- '+' and '-' as operator parsers yielding the binary function.
 addOp : Parser (Int -> Int -> Int)
-addOp = map (_ => (x y => x + y)) (char '+')
+addOp = map (_ => x y => x + y) (char '+')
 
 subOp : Parser (Int -> Int -> Int)
-subOp = map (_ => (x y => x - y)) (char '-')
+subOp = map (_ => x y => x - y) (char '-')
 
 -- A left-associative sum/difference of numbers.
 expr : Parser Int
@@ -32,7 +43,7 @@ intList : Parser (List Int)
 intList = between (char '[') (char ']') (sepBy number (char ','))
 
 showResult : Result String Int -> String
-showResult (Ok n)  = "Ok \{n}"
+showResult (Ok n) = "Ok \{n}"
 showResult (Err m) = "Err \{m}"
 
 showListResult : Result String (List Int) -> String
@@ -44,15 +55,15 @@ main =
   println (showResult (runParser expr "1+2+3"))
   println (showResult (runParser expr "10-3-2"))
   println (showResult (runParser expr "7"))
-  println (showResult (runParser expr "+5"))        -- failure: no leading number
+  println (showResult (runParser expr "+5"))  -- failure: no leading number
   println "=== intList ==="
   println (showListResult (runParser intList "[1,2,3]"))
   println (showListResult (runParser intList "[]"))
   println (showListResult (runParser intList "[1,x]"))  -- failure path
   println "=== string ==="
   println (showStr (runParser (string "hi") "hi there"))
-  println (showStr (runParser (string "hi") "bye"))     -- failure path
+  println (showStr (runParser (string "hi") "bye"))  -- failure path
 
 showStr : Result String String -> String
-showStr (Ok s)  = "Ok \{s}"
+showStr (Ok s) = "Ok \{s}"
 showStr (Err m) = "Err \{m}"

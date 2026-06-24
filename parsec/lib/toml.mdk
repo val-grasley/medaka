@@ -23,12 +23,28 @@
 -}
 
 import lib.parser.{
-  Parser, PResult, runParser, runP,
-  satisfy, char, anyChar, string, eof,
-  digit, letter, space, spaces,
-  many, some, many1, optional,
-  between, sepBy, sepBy1, choice,
-  failWith
+  Parser,
+  PResult,
+  runParser,
+  runP,
+  satisfy,
+  char,
+  anyChar,
+  string,
+  eof,
+  digit,
+  letter,
+  space,
+  spaces,
+  many,
+  some,
+  many1,
+  optional,
+  between,
+  sepBy,
+  sepBy1,
+  choice,
+  failWith,
 }
 import list.{reverse}
 import string.{fromChars}
@@ -37,56 +53,53 @@ import string.{fromChars}
 -- Value ADT
 -- ---------------------------------------------------------------------------
 
-export
-data TomlValue
-  = TStr String
+export data TomlValue =
+  | TStr String
   | TInt Int
   | TBool Bool
   | TArray (List TomlValue)
 
 -- | A table: a name (empty string for the implicit top-level table) and
 --   a list of key/value pairs.
-export
-data TomlTable = TomlTable String (List (String, TomlValue))
+export data TomlTable = TomlTable String (List (String, TomlValue))
 
 -- | A parsed TOML document: a list of tables (first one may be top-level).
-export
-data TomlDoc = TomlDoc (List TomlTable)
+export data TomlDoc = TomlDoc (List TomlTable)
 
 -- ---------------------------------------------------------------------------
 -- Rendering helpers (for doctests and demos)
 -- ---------------------------------------------------------------------------
 
 export
--- > showTomlValue (TInt 42)
+showTomlValue : TomlValue -> String  -- > showTomlValue (TInt 42)
 -- "TInt 42"
-showTomlValue : TomlValue -> String
-showTomlValue (TStr s)    = "TStr \{s}"
-showTomlValue (TInt n)    = "TInt \{n}"
-showTomlValue (TBool b)   = if b then "TBool true" else "TBool false"
+
+showTomlValue (TStr s) = "TStr \{s}"
+showTomlValue (TInt n) = "TInt \{n}"
+showTomlValue (TBool b) = if b then "TBool true" else "TBool false"
 showTomlValue (TArray xs) = "TArray [\{showTomlValues xs}]"
 
 showTomlValues : List TomlValue -> String
-showTomlValues []         = ""
-showTomlValues (v :: [])  = showTomlValue v
-showTomlValues (v :: rest) = "\{showTomlValue v}, \{showTomlValues rest}"
+showTomlValues [] = ""
+showTomlValues (v::[]) = showTomlValue v
+showTomlValues (v::rest) = "\{showTomlValue v}, \{showTomlValues rest}"
 
 showPair : (String, TomlValue) -> String
 showPair (k, v) = "\{k} = \{showTomlValue v}"
 
 showPairs : List (String, TomlValue) -> String
-showPairs []          = "(empty)"
-showPairs (p :: [])   = showPair p
-showPairs (p :: rest) = "\{showPair p}\n  \{showPairs rest}"
+showPairs [] = "(empty)"
+showPairs (p::[]) = showPair p
+showPairs (p::rest) = "\{showPair p}\n  \{showPairs rest}"
 
 export
 showTomlDoc : TomlDoc -> String
 showTomlDoc (TomlDoc tables) = joinTables tables
 
 joinTables : List TomlTable -> String
-joinTables []          = ""
-joinTables (t :: [])   = showTable t
-joinTables (t :: rest) = "\{showTable t}\n\{joinTables rest}"
+joinTables [] = ""
+joinTables (t::[]) = showTable t
+joinTables (t::rest) = "\{showTable t}\n\{joinTables rest}"
 
 showTable : TomlTable -> String
 showTable (TomlTable name pairs) =
@@ -173,12 +186,12 @@ escapedChar = do
   interpretEscape c
 
 interpretEscape : Char -> Parser Char
-interpretEscape '"'  = pure '"'
+interpretEscape '"' = pure '"'
 interpretEscape '\\' = pure '\\'
-interpretEscape 'n'  = pure '\n'
-interpretEscape 't'  = pure '\t'
-interpretEscape 'r'  = pure '\r'
-interpretEscape _    = failWith "unknown escape sequence"
+interpretEscape 'n' = pure '\n'
+interpretEscape 't' = pure '\t'
+interpretEscape 'r' = pure '\r'
+interpretEscape _ = failWith "unknown escape sequence"
 
 regularStringChar : Parser Char
 regularStringChar = satisfy (c => c != '"' && c != '\\' && c != '\n')
@@ -198,17 +211,17 @@ export
 parseInt : Parser Int
 parseInt = do
   neg <- optional (char '-')
-  ds  <- some digit
+  ds <- some digit
   let n = foldDigits ds 0
   pure (applySign neg n)
 
 applySign : Option Char -> Int -> Int
-applySign None   n = n
+applySign None n = n
 applySign (Some _) n = 0 - n
 
 foldDigits : List Char -> Int -> Int
-foldDigits []         acc = acc
-foldDigits (d :: rest) acc = foldDigits rest (acc * 10 + (charCode d - 48))
+foldDigits [] acc = acc
+foldDigits (d::rest) acc = foldDigits rest (acc * 10 + (charCode d - 48))
 
 -- ---------------------------------------------------------------------------
 -- Boolean parser
@@ -217,9 +230,8 @@ foldDigits (d :: rest) acc = foldDigits rest (acc * 10 + (charCode d - 48))
 -- Boolean parser.
 export
 parseBool : Parser Bool
-parseBool = orElse
-  (map (_ => True)  (string "true"))
-  (map (_ => False) (string "false"))
+parseBool =
+  orElse (map (_ => True) (string "true")) (map (_ => False) (string "false"))
 
 -- ---------------------------------------------------------------------------
 -- Array parser (forward-declared via mutual helpers)
@@ -236,9 +248,10 @@ parseArrayElement = do
   pure v
 
 parseArray : Parser TomlValue
-parseArray = map TArray
-  (between (char '[') (char ']')
-    (sepBy parseArrayElement (char ',')))
+parseArray =
+  map
+    TArray
+    (between (char '[') (char ']') (sepBy parseArrayElement (char ',')))
 
 -- ---------------------------------------------------------------------------
 -- Value parser
@@ -248,12 +261,9 @@ parseArray = map TArray
 -- prefix-free from each other; try string before int; try int before array
 -- (no ambiguity, but keep consistent ordering).
 parseValue : Parser TomlValue
-parseValue = choice
-  [ parseArray
-  , map TStr quotedString
-  , map TBool parseBool
-  , map TInt parseInt
-  ]
+parseValue =
+  choice
+    [parseArray, map TStr quotedString, map TBool parseBool, map TInt parseInt]
 
 -- ---------------------------------------------------------------------------
 -- Key = value line
@@ -318,7 +328,7 @@ tomlDoc = do
   _ <- skipBlankLines
   _ <- eof
   let topTable = TomlTable "" topPairs
-  pure (TomlDoc (topTable :: sections))
+  pure (TomlDoc (topTable::sections))
 
 -- ---------------------------------------------------------------------------
 -- Public entry point

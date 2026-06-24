@@ -19,7 +19,7 @@ badToml = "key = \"unterminated\n"
 
 printResult : Result String TomlDoc -> <IO> Unit
 printResult (Err msg) = println "PARSE ERROR: \{msg}"
-printResult (Ok doc)  = println (showTomlDoc doc)
+printResult (Ok doc) = println (showTomlDoc doc)
 
 main =
   println "=== TOML parser demo ==="

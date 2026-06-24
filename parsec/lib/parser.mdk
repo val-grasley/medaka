@@ -18,12 +18,10 @@ import string.{toChars, isDigit, isAlpha, isSpace}
 
 -- | Parse result: success carries the value and the position just past what was
 --   consumed; failure carries a message and the position at which it occurred.
-export
-data PResult a = POk a Int | PErr String Int
+export data PResult a = POk a Int | PErr String Int
 
 -- | A parser is a function from (input, position) to a result.
-export
-data Parser a = Parser (Array Char -> Int -> PResult a)
+export data Parser a = Parser (Array Char -> Int -> PResult a)
 
 -- Run the wrapped function.
 export
@@ -42,30 +40,34 @@ runP (Parser f) input pos = f input pos
 -- top-level functions since multi-clause guard syntax can't be inlined.
 
 export impl Mappable Parser where
-  map g p = Parser (input pos => match (runP p input pos)
-    POk a pos2 => POk (g a) pos2
-    PErr m ep  => PErr m ep)
+  map g p = Parser (input pos =>
+    match runP p input pos
+      POk a pos2 => POk (g a) pos2
+      PErr m ep => PErr m ep)
 
 export impl Applicative Parser where
   pure a = Parser (_ pos => POk a pos)
-  ap pf pa = Parser (input pos => match (runP pf input pos)
-    PErr m ep  => PErr m ep
-    POk f pos2 => match (runP pa input pos2)
-      POk a pos3 => POk (f a) pos3
-      PErr m2 ep2 => PErr m2 ep2)
+  ap pf pa = Parser (input pos =>
+    match runP pf input pos
+      PErr m ep => PErr m ep
+      POk f pos2 => match runP pa input pos2
+        POk a pos3 => POk (f a) pos3
+        PErr m2 ep2 => PErr m2 ep2)
 
 export impl Thenable Parser where
-  andThen p k = Parser (input pos => match (runP p input pos)
-    PErr m ep  => PErr m ep
-    POk a pos2 => runP (k a) input pos2)
+  andThen p k = Parser (input pos =>
+    match runP p input pos
+      PErr m ep => PErr m ep
+      POk a pos2 => runP (k a) input pos2)
 
 -- Left-biased, full-backtracking alternative.  `noMatch` always fails;
 -- `orElse p q` tries `p`, and on failure re-runs `q` from the ORIGINAL pos.
 export impl Alternative Parser where
   noMatch = Parser (_ pos => PErr "noMatch" pos)
-  orElse p q = Parser (input pos => match (runP p input pos)
-    POk a pos2 => POk a pos2
-    PErr _ _   => runP q input pos)
+  orElse p q = Parser (input pos =>
+    match runP p input pos
+      POk a pos2 => POk a pos2
+      PErr _ _ => runP q input pos)
 
 -- ---------------------------------------------------------------------------
 -- Primitives
@@ -105,7 +107,7 @@ char c = satisfy (x => x == c)
 -- | Match the empty input (end of input).  Yields Unit; consumes nothing.
 export
 eof : Parser Unit
-eof = Parser (eofStep)
+eof = Parser eofStep
 
 eofStep : Array Char -> Int -> PResult Unit
 eofStep input pos
@@ -139,9 +141,10 @@ manyGo : Parser a -> Array Char -> Int -> List a -> PResult (List a)
 manyGo p input pos acc = match runP p input pos
   PErr _ _ => POk (reverse acc) pos
   POk a pos2 =>
-    if pos2 == pos
-      then POk (reverse acc) pos2          -- no progress: stop to avoid a loop
-      else manyGo p input pos2 (a :: acc)
+    if pos2 == pos then
+      POk (reverse acc) pos2  -- no progress: stop to avoid a loop
+    else
+      manyGo p input pos2 (a::acc)
 
 -- | One-or-more.  Written with `do`-notation to EXERCISE Thenable Parser.
 export
@@ -149,7 +152,7 @@ some : Parser a -> Parser (List a)
 some p = do
   x <- p
   xs <- many p
-  pure (x :: xs)
+  pure (x::xs)
 
 -- | Alias for `some`.
 export
@@ -164,7 +167,7 @@ sepBy1 p sep = do
   xs <- many (do
     _ <- sep
     p)
-  pure (x :: xs)
+  pure (x::xs)
 
 -- | Zero-or-more `p` separated by `sep`.
 export
@@ -188,8 +191,8 @@ between open close p = do
 -- | First successful parser in the list; fails if all fail.
 export
 choice : List (Parser a) -> Parser a
-choice []         = failWith "choice: no alternatives"
-choice (q :: rest) = orElse q (choice rest)
+choice [] = failWith "choice: no alternatives"
+choice (q::rest) = orElse q (choice rest)
 
 -- | Match a literal string, yielding it back.
 export
@@ -198,15 +201,14 @@ string s = Parser (input pos => stringGo (toChars s) 0 input pos s)
 
 stringGo : Array Char -> Int -> Array Char -> Int -> String -> PResult String
 stringGo want wi input pos original =
-  if wi >= arrayLength want
-    then POk original pos
-    else
-      if pos >= arrayLength input
-        then PErr "unexpected end of input" pos
-        else
-          if arrayGetUnsafe pos input == arrayGetUnsafe wi want
-            then stringGo want (wi + 1) input (pos + 1) original
-            else PErr "string: mismatch" pos
+  if wi >= arrayLength want then
+    POk original pos
+  else if pos >= arrayLength input then
+    PErr "unexpected end of input" pos
+  else if arrayGetUnsafe pos input == arrayGetUnsafe wi want then
+    stringGo want (wi + 1) input (pos + 1) original
+  else
+    PErr "string: mismatch" pos
 
 -- | Left-associative chaining of `p` separated by an operator parser `op`
 --   whose value is a binary function.  `1-2-3` parses as `((1-2)-3)`.
@@ -217,10 +219,13 @@ chainl1 p op = do
   chainl1Rest p op x
 
 chainl1Rest : Parser a -> Parser (a -> a -> a) -> a -> Parser a
-chainl1Rest p op acc = orElse (do
-  f <- op
-  y <- p
-  chainl1Rest p op (f acc y)) (pure acc)
+chainl1Rest p op acc =
+  orElse
+    (do
+      f <- op
+      y <- p
+      chainl1Rest p op (f acc y))
+    (pure acc)
 
 -- | Skip zero-or-more whitespace.
 export
@@ -229,12 +234,12 @@ spaces = Parser (input pos => POk () (skipSpaces input pos))
 
 skipSpaces : Array Char -> Int -> Int
 skipSpaces input pos =
-  if pos >= arrayLength input
-    then pos
-    else
-      if isSpace (arrayGetUnsafe pos input)
-        then skipSpaces input (pos + 1)
-        else pos
+  if pos >= arrayLength input then
+    pos
+  else if isSpace (arrayGetUnsafe pos input) then
+    skipSpaces input (pos + 1)
+  else
+    pos
 
 -- ---------------------------------------------------------------------------
 -- Entry point
@@ -250,5 +255,5 @@ skipSpaces input pos =
 export
 runParser : Parser a -> String -> Result String a
 runParser p s = match runP p (toChars s) 0
-  POk a _    => Ok a
+  POk a _ => Ok a
   PErr m pos => Err "\{m} at \{pos}"
