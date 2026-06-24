@@ -94,7 +94,20 @@ page number (int), the exact `CREATE TABLE …` text.
 - **P2 — (original sketch)** record encoder `sqlite/lib/recordenc.mdk`: `encodeRecord : List Cell -> Array Int`
   (inverse of `parseRecord`, incl. IPK-as-NULL). Verify by self round-trip through
   `parseRecord` + against captured real-DB record bytes.
-- **P3 — single-leaf-page DB writer** `sqlite/lib/dbwriter.mdk`: header + page-1
+- **P3 — single-leaf-page DB writer ✅ DONE (`691baa1`) — 🏁 Medaka GENERATES a valid `.sqlite`.**
+  `sqlite/lib/dbwriter.mdk` `buildDatabase`/`writeDatabase`: 100-byte header + page-1 `sqlite_master`
+  leaf + page-2 table leaf (random-access page via `arrayMake`+`arraySetUnsafe`/`arrayBlit`, cells
+  back-to-front, u16 pointers rowid-ascending), IPK-as-rowid, single-page overflow `Err`.
+  **Independently verified:** `sqlite3 PRAGMA integrity_check`=ok, `SELECT`/aggregates work, the Medaka
+  reader round-trips (writer == inverse of reader), across NULL/negative/varied-width ints + non-contiguous
+  IPK rowids. Gate `sqlite/test/writer_oracle.sh`. **Self-contained byte emission (NOT `bytebuilder`)** —
+  P3 surfaced **F1b** (loader, deeper than F1): a module importing BOTH `byteparser.lib.bytebuilder` AND
+  (transitively, via `recordenc`) `byteparser.lib.byteparser` double-loads the byteparser core under two
+  path spellings (`lib.byteparser` vs `byteparser.lib.byteparser`) → `conflicting impl Alternative`. F1
+  fixed *resolution* of a dep's relative imports but did NOT *canonicalize module identity*, so a relative
+  import still aliases the cross-package one. The shared `bytebuilder` remains unusable alongside `recordenc`
+  until F1b is fixed; the write path stays self-contained (modest emit-logic duplication).
+- **P3 — (original)** single-leaf-page DB writer `sqlite/lib/dbwriter.mdk`: header + page-1
   `sqlite_master` leaf + page-N table leaf; `writeFileBytes`. Verify: `PRAGMA
   integrity_check`=ok, `SELECT` matches, the Medaka reader re-reads the same rows.
 - **P4 — `CREATE TABLE` + multi-row `INSERT` API** within one page (compute IPK/rowid;
