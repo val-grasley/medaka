@@ -705,6 +705,16 @@ ifRhsBody c t elsePart =
 
 ifRhsElsePart : Bool -> Expr -> Doc
 ifRhsElsePart True _ = Nil
+ifRhsElsePart False (ELoc _ els) = ifRhsElsePart False els
+-- An `if` in else position laddering into an `else if … then …` cascade, kept in
+-- the SAME enclosing group as the outer `if` so the width-fit decision (and thus
+-- the line-breaking of every `then`/`else` line) is uniform — the cascade never
+-- collapses onto one over-wide line.  Only flatten the chain when the nested `if`
+-- itself qualifies for the flat ladder (simple, non-block branches); otherwise
+-- fall back to a fresh `else` block with the nested `if` rendered on its own.
+ifRhsElsePart False (EIf c2 t2 els2)
+  | not (isBlockBody t2) && (isUnitLit els2 || not (isBlockBody els2)) =
+    Cat Line (Cat (text "else if ") (Cat (printExpr precTop c2) (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t2))) (ifRhsElsePart (isUnitLit els2) els2)))))
 ifRhsElsePart False els =
   Cat Line (Cat (text "else") (nest (Cat Line (printExpr precTop els))))
 
@@ -736,9 +746,51 @@ printAppSpine e =
   let headArgs = collectApp [] e
   match headArgs
     (head, []) => printExpr precTop e
+    -- A function/constructor head with a SINGLE argument: keep the head inline
+    -- with the argument's opening (don't isolate the head on its own line) and
+    -- break INSIDE the argument instead.  Only when the lone argument is itself
+    -- breakable (a parenthesized lambda whose body can fold) — otherwise fall
+    -- back to the generic spine (so a single unbreakable atom still hangs below
+    -- the head when too wide).
+    (head, [arg]) =>
+      if isBreakableArg arg then
+        Cat (printExpr precApp head) (Cat (text " ") (breakableArg arg))
+      else
+        group (Nest 2 (Cat (printExpr precApp head) (Cat Line (printExpr precPostfix arg))))
     (head, args) =>
       let tail = concatD (map (a => Cat Line (printExpr precPostfix a)) args)
       group (Nest 2 (Cat (printExpr precApp head) tail))
+
+-- A single application argument worth keeping inline with its head: a lambda
+-- (whose body we can fold across lines) or a nested application (its own spine
+-- breaks).  ELoc-transparent.
+isBreakableArg : Expr -> Bool
+isBreakableArg (ELoc _ e) = isBreakableArg e
+isBreakableArg (ELam _ _) = True
+isBreakableArg _ = False
+
+-- An application whose spine is exactly one breakable argument — the shape that
+-- keeps its head inline (on the `=` line / with the call head) and folds inside
+-- the argument rather than dropping the head onto its own line.
+isSingleBreakableApp : Expr -> Bool
+isSingleBreakableApp e = match collectApp [] e
+  (_, [arg]) => isBreakableArg arg
+  _ => False
+
+-- Render a single inline argument so its interior can break.  A lambda renders
+-- parenthesized with its body folded through the body printer (app spines /
+-- continuation chains break); the whole thing is a group so it stays flat until
+-- it overflows.
+breakableArg : Expr -> Doc
+breakableArg (ELoc _ e) = breakableArg e
+breakableArg (ELam pats body) =
+  group
+    (Cat
+      (text "(")
+      (Cat
+        (sepBy (text " ") (map printPatAtom pats))
+        (Cat (text " =>") (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
+breakableArg e = printExpr precPostfix e
 
 collectApp : List Expr -> Expr -> (Expr, List Expr)
 collectApp acc (EApp f x) = collectApp (x :: acc) f
@@ -874,7 +926,13 @@ printDefRhsGeneral body = match printIfRhs body
     EMatch sc arms => Cat (text " = ") (printExprBody (EMatch sc arms))
     EDo stmts => Cat (text " = ") (printExprBody (EDo stmts))
     EFunction arms => Cat (text " = ") (printExprBody (EFunction arms))
-    EApp f x => Cat (text " =") (group (nest (Cat Line (printAppSpine (EApp f x)))))
+    EApp f x =>
+      if isSingleBreakableApp (EApp f x) then
+        -- head + single breakable argument: keep the head on the `=` line and
+        -- break inside the argument (printAppSpine handles the inline join).
+        Cat (text " = ") (printAppSpine (EApp f x))
+      else
+        Cat (text " =") (group (nest (Cat Line (printAppSpine (EApp f x)))))
     EBinOp op l r rf =>
       if isContinuationOp op then
         Cat (text " = ") (printExprBody (EBinOp op l r rf))
