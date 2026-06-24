@@ -196,6 +196,40 @@ flatMap children nodes               -- plain flatten: flatMap beats a comprehen
 [x | x <- xs, p x]                   -- guard present: comprehension beats flatMap
 ```
 
+## 8. Prefer multi-clause functions over a `match` on an immediate parameter
+
+When a function body is a `match` directly on one of its **bare parameters**, write
+it as **multi-clause** definitions instead — one clause per pattern. The arm
+patterns move into the parameter position; any other parameters keep their plain
+names, repeated in each clause. It reads as the function's shape rather than a
+nested expression, and it scales cleanly as cases grow.
+
+```
+-- BAD: match on a bare parameter
+choice ps = match ps
+  []        => failWith "choice: no alternatives"
+  q :: rest => orElse q (choice rest)
+
+-- GOOD: multi-clause
+choice []         = failWith "choice: no alternatives"
+choice (q :: rest) = orElse q (choice rest)
+
+-- GOOD: match on a non-final param — repeat the others
+applySign None    n = n
+applySign (Some _) n = 0 - n
+```
+
+This is the **immediate** complement to §3: §3 converts a `match` on a *computed*
+value (`match (lookup n table) …`) into a **guard**; §8 converts a `match` on a
+*parameter already in hand* into **clauses**. A computed scrutinee is not a §8
+case — keep it a `match` (or make it a guard per §3).
+
+When **not** to convert: a single-arm match (no shape to spread across clauses);
+a body with `let`/`where` bindings shared by every arm (clauses would duplicate
+them — leave it a `match`, or hoist the shared work); or where splitting would
+separate same-named clauses (they must stay **contiguous**). As in §3, convert on
+each function's own merit, but keep a family of same-shaped functions uniform.
+
 Reserve a `support/` helper for functionality the prelude genuinely lacks (a
 fold shape it doesn't expose) — not for re-spelling one it has. (Contrast §5,
 which is about reaching for a helper instead of hand-threading an index: there
