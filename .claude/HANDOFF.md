@@ -7,6 +7,69 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🏁 SQLite READ **+ WRITE** library complete + a long soak run (2026-06-24). `main` = `e68913a`
+
+**Medaka now READS and GENERATES real `.sqlite` files** — a database it builds from scratch passes
+`sqlite3 PRAGMA integrity_check`, and `sqlite3` queries/aggregates over it. This session extended the
+read-path capstone with full **v1 write support** plus a long soak run that flushed five real
+compiler/tooling bugs. Owning docs: **`SQLITE-WRITE-DESIGN.md`** (write design + byte-format map + slice
+log), `SQLITE-DESIGN.md` (read). Every landing was reproduced on the binary, gated, merged; **seed is
+CURRENT** (re-minted at `6053bc3`; cold `bootstrap_from_seed` PASS; all subsequent slices were pure-library
+so no re-mint pending).
+
+**SQLite WRITE v1 (P0–P4, all merged):** `writeFileBytes` extern (`a97e34b`, 5 sites incl. `llvm_preamble`,
+re-minted); `byteparser/lib/bytebuilder.mdk` byte builder (`75ccf95`); `sqlite/lib/recordenc.mdk` record
+encoder (`c4b9731`); `sqlite/lib/dbwriter.mdk` byte-perfect single-page writer (`691baa1`); `sqlite/lib/
+writer.mdk` typed `CREATE TABLE`+`INSERT` API (`4e582a6`). int/text/null/blob, IPK-as-rowid or auto-rowid,
+single leaf page (clean `Err` on overflow). Each slice `sqlite3`-verified (integrity_check + SELECT +
+Medaka-reader round-trip). **Deferred (write):** floats (needs a `floatToBytes64` extern); page
+splits/multi-page; `UPDATE`/`DELETE`; overflow pages; transactions/journal/WAL.
+
+**Compiler/tooling bugs the dogfood surfaced + FIXED this session:**
+- **Native method-shadow run≠build soundness bug** (`96529b3`) — a user fn shadowing a prelude interface
+  method (`eq`/`gt`/…): `check` wrongly rejected, `run` silently dispatched to the *prelude* method (wrong
+  answer), `build` was correct. Fixed both facets (check prelude-isolation + eval dispatch precedence) to
+  match the oracle. Found via the Phase-2 phantom-`Expr` design.
+- **`arrayBlit`/`arraySetUnsafe` missing from the native interpreter** (`ecd2eee`) — `MutArray.push` panicked
+  under `run`/`test`, worked under `build`+oracle. Added to `selfhost/eval/eval.mdk`.
+- **Loader cross-package relative-import resolution, F1** (`ec8c19c`) — a dependency module's intra-package
+  `import lib.X` now rebases to the dep root (+ transitive deps). Native-only (cross-project deps are
+  native-only).
+- (earlier soak) 6 deferred dogfood findings fixed (#1–5, #8), #6 documented; the inline-`let`-missing-`in`
+  located diagnostic (`8686e26`).
+
+**Diagnosed + BACKLOGGED (PLAN open-items, full diagnoses there):**
+- **F1b** — loader does NOT canonicalize module identity: the same file under two import spellings
+  (`lib.byteparser` vs `byteparser.lib.byteparser`) double-loads → `conflicting impl`. NOT loader-contained
+  (path-dedup at load breaks `resolve.mdk`'s string-keyed `findExports`); needs a cross-cutting
+  loader+resolve+typecheck module-identity change (Option A canonical dep-prefixed modId rewrite, or B
+  path-based identity end-to-end). The agent STOPped per guardrail with a clear scoping. **Impact:** the
+  shared `bytebuilder` can't be used alongside `recordenc`; the write path stays self-contained.
+- **`CFieldAccess` cross-module record dot-access** — emitter panics on `r.field` for a record imported from
+  another module (field-label table is current-unit-only); workaround = destructure.
+
+**Also this session (earlier):** stale-gate hygiene — 4 stale-golden gates fixed (`diff_selfhost_check`
+17/57→74/0, `desugar`/`mark` 98/1→99/0, `lex_files` 12/1→13/0; all un-recaptured-golden debt from prior
+sessions). 2 PRE-EXISTING failing gates filed (`effect_hole` 4/4 — a possible capability-soundness gap, WS-2
+territory; `lsp_b4` 1/1 completion-env). SQLite **float read path** (`tFloat` coerces `CInt`, per SQLite's
+REAL-as-integer affinity) + **Phase-2 typed query ADT** (`Select`/`SqlExpr`/phantom `Expr a`/injection-safe
+`render`/ADT-driven `query`).
+
+**NEXT (clean bites):** write float columns (P5, needs `floatToBytes64` extern — a 4-site fixpoint cycle);
+then the harder write phases (page splits/multi-page → `UPDATE`/`DELETE`). Or a fast-follow: WasmGC SQLite
+in the browser (bytes-first API makes it additive), async SQL server. Or tackle a backlogged bug (F1b
+module-identity; the `effect_hole` capability-soundness divergence).
+
+**METHODOLOGY notes:** (1) the dogfood thesis held all session — building a real read+write library flushed
+5 genuine bugs the corpus never hit; lean into it. (2) Every "fix the X" turned out deeper than framed
+(method-shadow was 2 facets not applied-params; F1 was really F1+F1b) — the DIAGNOSE-FIRST + STOP guardrail
+caught each; re-surface the corrected scope to the user before forcing. (3) Verify every landing on the
+*fresh binary* (run `sqlite3 integrity_check` yourself), not the agent's prose — agents committed to
+self-named branches (`sqlite-phase2-select`) and to a SHARED branch despite isolation; merge by reported
+SHA + confirm `MAIN_CONTAINS`. (4) Adding an extern/stdlib decl ripples to `runtime.{desugar,mark}` goldens
+— recapture. (5) Seed currency: P*-pure-library slices don't stale the seed; check `git log <lastmint>..main
+-- selfhost/ lib/ stdlib/ runtime/` before deciding to re-mint.
+
 ## RESUME — 🏁 SQLite read-path library v1 COMPLETE (dogfood capstone) (2026-06-23). `main` = `de44b58`
 
 **A pure-Medaka SQLite library reads real `.sqlite` files of any size and returns TYPED Medaka values,
