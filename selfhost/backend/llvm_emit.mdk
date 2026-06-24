@@ -1691,6 +1691,7 @@ isFileExtern name =
       "readFile",
       "readFileBytes",
       "writeFile",
+      "writeFileBytes",
       "appendFile",
       "fileExists",
       "listDir",
@@ -1721,6 +1722,12 @@ emitFileExtern e env "writeFile" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_write_file(i64 " ++ p ++ ", i64 " ++ c ++ ")")
     (r, LTCon)
   _ => panic "llvm spike: writeFile takes two arguments (slice 13)"
+emitFileExtern e env "writeFileBytes" args = match emitArgs e env args
+  [p, a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_write_file_bytes(i64 " ++ p ++ ", i64 " ++ a ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: writeFileBytes takes two arguments"
 emitFileExtern e env "appendFile" args = match emitArgs e env args
   [p, c] =>
     let r = freshReg e

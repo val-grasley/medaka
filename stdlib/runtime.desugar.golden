@@ -19,6 +19,7 @@
 (DExtern false "shiftRight" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DExtern false "bitNot" (TyFun (TyCon "Int") (TyCon "Int")))
 (DExtern false "writeFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("FileWrite") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
+(DExtern false "writeFileBytes" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyEffect ("FileWrite") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
 (DExtern false "runCommand" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Exec") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyTuple (TyCon "Int") (TyCon "String") (TyCon "String")))))))
 (DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))

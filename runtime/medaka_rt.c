@@ -751,6 +751,24 @@ long long mdk_write_file(long long path, long long content)  { return mdk_write_
 /* appendFile : String -> String -> Result String Unit — append (create if absent). */
 long long mdk_append_file(long long path, long long content) { return mdk_write_impl(path, content, "ab"); }
 
+/* writeFileBytes : String -> Array Int -> Result String Unit — write raw bytes.
+ * arr[0] = length; arr[i+1] = tagged int byte ((byte << 1)|1) for i in 0..len-1.
+ * Untag each element: (elem >> 1) & 0xFF.  Byte-clean write counterpart of
+ * mdk_read_file_bytes. */
+long long mdk_write_file_bytes(long long path, long long arr) {
+  const char *p = (const char *)path + 24;
+  const long long *a = (const long long *)arr;
+  long long n = a[0];
+  FILE *f = fopen(p, "wb");
+  if (!f) return mdk_err(mdk_str_cstr(strerror(errno)));
+  for (long long i = 0; i < n; i++) {
+    unsigned char b = (unsigned char)((a[i + 1] >> 1) & 0xFF);
+    fputc(b, f);
+  }
+  fclose(f);
+  return mdk_ok(1);  /* Ok () — Unit field, value irrelevant */
+}
+
 /* fileExists : String -> Bool — raw 0/1, emitter tags via tagInt. */
 long long mdk_file_exists(long long path) {
   return access((const char *)path + 24, F_OK) == 0 ? 1 : 0;

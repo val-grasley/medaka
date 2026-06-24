@@ -43,6 +43,10 @@ extern shiftLeft : Int -> Int -> Int
 extern shiftRight : Int -> Int -> Int
 extern bitNot : Int -> Int
 extern writeFile : String -> String -> <FileWrite> Result String Unit
+-- Write raw bytes (Array Int, values 0..255) to a file, truncating.  The
+-- byte-clean write counterpart of readFileBytes.  Returns Ok () on success
+-- or Err msg on failure.
+extern writeFileBytes : String -> Array Int -> <FileWrite> Result String Unit
 -- Run a subprocess: prog args -> Ok (exitCode, stdout, stderr) | Err osError.
 -- Return type: Result String (Int, String, String) (Result e a: e=error, a=ok).
 -- stdout and stderr are captured as strings.  On spawn failure (e.g. ENOENT)

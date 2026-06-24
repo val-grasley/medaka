@@ -1435,6 +1435,20 @@ let primitives : (string * value) list =
              VCon ("Ok", [VUnit])
            with Sys_error msg -> VCon ("Err", [VString msg]))
         | _ -> raise (Eval_error ("writeFile: expected String String", None)))));
+    ("writeFileBytes", VPrim (fun path ->
+      VPrim (fun bytes ->
+        match path, bytes with
+        | VString p, VArray arr ->
+          (try
+             let oc = open_out_bin p in
+             Array.iter (function
+               | VInt b -> output_char oc (Char.chr (b land 0xFF))
+               | _ -> raise (Eval_error ("writeFileBytes: expected Int in Array", None)))
+               arr;
+             close_out oc;
+             VCon ("Ok", [VUnit])
+           with Sys_error msg -> VCon ("Err", [VString msg]))
+        | _ -> raise (Eval_error ("writeFileBytes: expected String (Array Int)", None)))));
     (* runCommand prog args: spawn a subprocess, capture stdout+stderr.
        Returns Ok (exitCode, stdout, stderr) on spawn success (any exit code),
        or Err osError if the process could not be created. *)
