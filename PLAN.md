@@ -8,6 +8,29 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
+## Current status (2026-06-23) — block-expressions inside brackets (LAYOUT §6.1)
+
+**`match`/`do`/`function`/`record` block-expressions can now appear directly inside `( ) [ ] { }`**
+(`main` = `5e041ab`, seed re-minted, `bootstrap_from_seed` C3a byte-for-byte PASS, fixpoint
+C3a/C3b YES). Grew out of the dogfood session below — `parsec` had to lift every `=> match` body into
+a named top-level helper because brackets fully disabled layout (the deliberate `LAYOUT-SEMANTICS §6`
+rule). Design + locked scope: [`LAYOUT-BRACKETS-DESIGN.md`](./LAYOUT-BRACKETS-DESIGN.md). Staged:
+- **Design pass** reproduced the boundary; found it was TWO gates (lexer §6 + a presumed grammar gap).
+- **Stage 1+2 grammar** (`2ca1df3`) — KEY finding: `match`/`do`/`function`/`record` ALREADY parsed
+  inside brackets (`expr_no_block → expr_lam`); only the bare-`INDENT` block was a real grammar gap
+  (added via a contained `bracket_block` nonterminal, **zero new Menhir conflicts**). The design's
+  "Gate B excludes block forms" was a misread — caught by `menhir --interpret`.
+- **Stage 3 lexer** (`8abe0aa`, the crux) — a **bracket-frame stack** in BOTH lexers (byte-identical):
+  inside brackets, free-form stays the default; a herald (`match`/`do`/`function`/`record` via
+  `isOpener`) arms a nested layout context, closed on dedent-≤-herald-col OR the matching closer
+  (force-flush). Free-form continuation UNCHANGED (`diff_selfhost_lexer` 57/0, `bootstrap_lex` 57/0).
+- **Dogfood payoff** (`5e041ab`) — reverted `parsec`'s 6 lifted helpers to inline bracketed blocks,
+  output byte-identical to before. (`satisfyStep`/`eofStep` stay — multi-clause guard syntax, a
+  different shape.)
+- **Deferred (by design):** `let…in` & `if/then/else` blocks inside brackets; the bare-`INDENT` block
+  herald (no keyword to arm it without regressing free-form); a closer on its OWN line after a herald
+  block (grammar shape — keep the closer on the last arm's line).
+
 ## Current status (2026-06-23) — dogfood soak session 2
 
 **A parser-combinator dogfood library + 4 compiler/tooling bugs it surfaced**

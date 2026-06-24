@@ -7,6 +7,34 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — Block-expressions inside brackets LANDED (2026-06-23). `main` = `5e041ab`
+
+**`match`/`do`/`function`/`record` blocks can now sit directly inside `( ) [ ] { }`** — the layout wart
+that forced `parsec` to lift every `=> match` body into a named helper. Grew out of the dogfood session
+below. Design + LOCKED scope: `LAYOUT-BRACKETS-DESIGN.md`; spec `LAYOUT-SEMANTICS.md §6.1`; memory
+`project_layout_brackets`. Staged, each gated + merged; seed re-minted (`bootstrap_from_seed` C3a
+byte-for-byte PASS; fixpoint C3a/C3b YES throughout).
+
+- **Design pass** (read-only Plan agent) reproduced the boundary, wrote the design. CAVEAT: it claimed
+  "two gates" with the grammar excluding block forms — Stage 1+2 EMPIRICALLY DISPROVED that half via
+  `menhir --interpret` (match/do/function/record already parsed in brackets via `expr_no_block→expr_lam`;
+  only the bare-`INDENT` block was a real grammar gap). Reproduce-before-trust beat the design doc again.
+- **Stage 1+2 grammar** (`2ca1df3`) — added a contained `bracket_block` nonterminal in both `lib/parser.mly`
+  and `selfhost/frontend/parser.mdk`, **zero new Menhir conflicts** (5→5).
+- **Stage 3 lexer** (`8abe0aa`, the crux) — a **bracket-frame stack** in BOTH lexers, byte-identical:
+  free-form is the default inside brackets; a herald (`isOpener`: match/do/function/record) arms a nested
+  layout context, closed on dedent-≤-herald-col OR the matching closer (force-flush pending DEDENTs).
+  Free-form continuation UNCHANGED — `diff_selfhost_lexer`/`bootstrap_lex` 57/0 (the byte-identical-lexer
+  invariant held). bare-`INDENT` block DEFERRED (no keyword to arm it without regressing free-form).
+- **Dogfood payoff** (`5e041ab`) — reverted 6 `parsec` helpers to inline bracketed blocks, byte-identical
+  output.
+- **Deferred (by design):** `let…in` & `if/then/else` inside brackets; bare-`INDENT` block; closer on its
+  own line after a herald block (grammar shape — closer must be on the last arm's line).
+- **METHOD:** the design→staged-by-ascending-risk→isolate-the-lexer playbook worked; the grammar was
+  isolated from the lexer so the crux was localizable. Two agent self-assessments needed orchestrator
+  correction (the grammar misread above; earlier the loader-in-emitter-graph claim) — verify load-bearing
+  claims yourself.
+
 ## RESUME — Dogfood parser-combinator library + 4 bugs it surfaced (2026-06-23). `main` = `5855012`
 
 **A soak session driven by building a REAL library** (user goal: dogfood important language features).
