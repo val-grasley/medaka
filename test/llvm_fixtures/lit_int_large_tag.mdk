@@ -1,0 +1,7 @@
+-- Regression: large Int literal whose tagged form (n*2+1) exceeds the emitter's
+-- own 63-bit Medaka Int range.  4607182418800017408 = 0x3FF0000000000000, the
+-- IEEE-754 bit pattern for 1.0.  As a Medaka Int it is valid (< 2^62), but
+-- n*2+1 = 9214364837600034817 > 2^62-1, so emitLit's `n*2+1` in Medaka
+-- arithmetic used to overflow to -9007199254740991, producing garbage (-inf).
+-- Fixed by emitting a 64-bit shl+or in LLVM IR for |n| >= 2^61.
+main = floatToString (intBitsToFloat 4607182418800017408)
