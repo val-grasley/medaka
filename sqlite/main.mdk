@@ -27,7 +27,7 @@ import lib.sqlite.{
   rowCellsWithIpk,
 }
 import lib.btree.{Row, rowRowid, rowCells}
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
 
 -- Render a row to a "|"-joined line, substituting the rowid for the PK column.
 renderRow : Option Int -> Row -> String

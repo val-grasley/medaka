@@ -9,8 +9,8 @@
 -- header-length.  We parse the serial types from the header region, then the
 -- bodies, threading the ByteParser position.
 --
--- Serial types → `Cell` values.  Float (serial 7) is OUT OF SCOPE this slice
--- (the `beFloat64` extern is stubbed); a float column yields `Err`.
+-- Serial types → `Cell` values.  Float (serial 7) decodes via `beFloat64`
+-- (8-byte big-endian IEEE 754) into a `CFloat Float` cell.
 
 import byteparser.lib.byteparser.{
   ByteParser,
@@ -24,6 +24,7 @@ import byteparser.lib.byteparser.{
   takeSlice,
   takeBytes,
   bFailWith,
+  beFloat64,
 }
 import list.{reverse}
 
@@ -33,6 +34,7 @@ public export data Cell
   | CInt Int
   | CText String
   | CBlob (Array Int)
+  | CFloat Float
 
 export
 cellToString : Cell -> String
@@ -40,6 +42,7 @@ cellToString CNull   = ""
 cellToString (CInt n)  = intToString n
 cellToString (CText s) = s
 cellToString (CBlob _) = "<blob>"
+cellToString (CFloat f) = floatToString f
 
 -- A serial type's interpretation.  We keep just enough to drive the body parse.
 public export data SerialType
@@ -47,7 +50,7 @@ public export data SerialType
   | STInt Int    -- signed integer of this many body bytes (1,2,3,4,6,8)
   | STIntZero    -- literal 0, no body bytes
   | STIntOne     -- literal 1, no body bytes
-  | STFloat      -- 8 body bytes (UNSUPPORTED this slice)
+  | STFloat      -- 8 body bytes, big-endian IEEE 754 double
   | STText Int   -- text of this many body bytes
   | STBlob Int   -- blob of this many body bytes
 
@@ -94,6 +97,13 @@ intDiv a b = a / b
 --
 -- > showCells (runByteParser parseRecord (arrayFromList [3, 1, 2, 9, 1, 0]))
 -- "9|256"
+--
+-- A single float column (serial 7, 8-byte big-endian IEEE 754):
+-- bytes [2, 7] are header (len=2, serial=7); then [63, 248, 0, 0, 0, 0, 0, 0]
+-- is the big-endian encoding of 1.5:
+--
+-- > showCells (runByteParser parseRecord (arrayFromList [2, 7, 63, 248, 0, 0, 0, 0, 0, 0]))
+-- "1.5"
 export
 parseRecord : ByteParser (List Cell)
 parseRecord = ByteParser parseRecordGo
@@ -115,6 +125,7 @@ showCell CNull   = "NULL"
 showCell (CInt n)  = intToString n
 showCell (CText s) = s
 showCell (CBlob _) = "<blob>"
+showCell (CFloat f) = floatToString f
 
 -- The pure driver: we drop to BResult-level position threading so we can
 -- compute the header boundary precisely.
@@ -160,7 +171,7 @@ readBody input pos (STText nbytes) =
     mapBR (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
 readBody input pos (STBlob nbytes) =
     mapBR CBlob (runBP (takeSlice nbytes) input pos)
-readBody input pos STFloat = BErr "float column (serial type 7) not supported this slice" pos
+readBody input pos STFloat = mapBR CFloat (runBP beFloat64 input pos)
 
 -- ---------------------------------------------------------------------------
 -- BResult helpers (the byteparser BResult is re-exported via its data decl)

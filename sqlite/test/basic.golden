@@ -2,6 +2,7 @@
 table|users|2
 table|items|3
 table|notes|4
+table|prices|5
 # table users
 1|Alice|30
 2|Bob|
@@ -14,3 +15,8 @@ table|notes|4
 # table notes
 hello
 world
+# table prices
+half|0.5
+one-and-half|1.5
+neg-half|-0.5
+quarter|0.25

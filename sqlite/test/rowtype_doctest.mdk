@@ -6,9 +6,9 @@
 
 import lib.rowtype.{
   RowType, rtDecode, rtWidth,
-  tInt, tText, tBool, tBlob, tOption, t2, t3, t4, tCustom,
+  tInt, tText, tBool, tBlob, tOption, tFloat, t2, t3, t4, tCustom,
 }
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 
 data User = User { id : Int, name : String, age : Option Int }
 
@@ -105,6 +105,20 @@ showP2 : Result String (Int, String) -> String
 showP2 r = match r
   Ok p  => match p
     (a, b) => "(\{a}, \{b})"
+  Err e => "Err: \{e}"
+
+-- | tFloat decodes a CFloat cell; errors on any other cell type.
+--
+-- > showF (rtDecode tFloat [CFloat 1.5])
+-- "1.5"
+-- > showF (rtDecode tFloat [CFloat (-2.0)])
+-- "-2.0"
+-- > showF (rtDecode tFloat [CInt 7])
+-- "Err: tFloat: expected float column, got Int"
+export
+showF : Result String Float -> String
+showF r = match r
+  Ok f  => floatToString f
   Err e => "Err: \{e}"
 
 main = println "rowtype_doctest: run via `medaka test`"

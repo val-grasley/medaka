@@ -21,12 +21,11 @@
 -- widths.  An arity or type mismatch yields `Err` -- there are no panics
 -- (Medaka has no catchable exceptions).
 --
--- NOTE: `tFloat` is intentionally absent.  Float columns (serial type 7) need
--- the `bytesToFloat64` / `beFloat64` extern, which is still stubbed (a parallel
--- task is adding it).  Until then stick to int/text/bool/blob/option columns; a
--- float column already yields `Err` at the record-decode layer (recordfmt.mdk).
+-- NOTE: `tFloat` decodes a float column (serial type 7) via the `CFloat`
+-- constructor added to `Cell` in recordfmt.mdk.  Use `tCustom` for affinity-
+-- flexible reads (e.g. accepting both `CInt` and `CFloat` for a NUMERIC column).
 
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
 import list.{take, drop}
 
 -- | A row decoder: how wide a slice of columns it consumes, and the closure
@@ -95,6 +94,17 @@ decodeBlob : List Cell -> Result String (Array Int)
 decodeBlob (CBlob b :: []) = Ok b
 decodeBlob (c :: [])       = Err "tBlob: expected blob column, got \{cellShape c}"
 decodeBlob _               = Err "tBlob: expected exactly 1 column"
+
+-- | Decode a single float column (serial type 7, IEEE 754 big-endian double).
+--   Errors on any non-`CFloat` cell — use `tCustom` for affinity-flexible reads.
+export
+tFloat : RowType Float
+tFloat = mkRowType 1 decodeFloat
+
+decodeFloat : List Cell -> Result String Float
+decodeFloat (CFloat f :: []) = Ok f
+decodeFloat (c :: [])        = Err "tFloat: expected float column, got \{cellShape c}"
+decodeFloat _                = Err "tFloat: expected exactly 1 column"
 
 -- | Wrap an inner decoder so that a NULL (across ALL its `width` columns)
 --   decodes to `None`; otherwise the inner decoder runs and the result is
@@ -214,3 +224,4 @@ cellShape CNull   = "NULL"
 cellShape (CInt _)  = "Int"
 cellShape (CText _) = "Text"
 cellShape (CBlob _) = "Blob"
+cellShape (CFloat _) = "Float"

@@ -10,3 +10,8 @@ INSERT INTO items VALUES (4, 'neg', -42);
 CREATE TABLE notes (n TEXT);
 INSERT INTO notes VALUES ('hello');
 INSERT INTO notes VALUES ('world');
+CREATE TABLE prices (label TEXT, amount REAL);
+INSERT INTO prices VALUES ('half', 0.5);
+INSERT INTO prices VALUES ('one-and-half', 1.5);
+INSERT INTO prices VALUES ('neg-half', -0.5);
+INSERT INTO prices VALUES ('quarter', 0.25);

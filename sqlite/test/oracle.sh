@@ -10,6 +10,7 @@
 #   users  — INTEGER PRIMARY KEY + TEXT + nullable INTEGER
 #   items  — UTF-8 text + multi-width / negative integers
 #   notes  — a table with no INTEGER PRIMARY KEY
+#   prices — TEXT + REAL (float, serial type 7)
 #
 # Usage:
 #   sqlite/test/oracle.sh            # build reader, generate db, diff vs sqlite3
@@ -45,7 +46,7 @@ sqlite3 "$DB" < "$SQL"
 {
   echo "# schema"
   "$READER" "$DB"
-  for t in users items notes; do
+  for t in users items notes prices; do
     echo "# table $t"
     "$READER" "$DB" "$t"
   done
@@ -64,7 +65,7 @@ ORACLE="$(mktemp)"
 {
   echo "# schema"
   sqlite3 "$DB" "SELECT type, name, rootpage FROM sqlite_master"
-  for t in users items notes; do
+  for t in users items notes prices; do
     echo "# table $t"
     sqlite3 "$DB" "SELECT * FROM $t"
   done
