@@ -13,9 +13,8 @@ number : Parser Int
 number = map (digits => foldDigits digits 0) (some digit)
 
 foldDigits : List Char -> Int -> Int
-foldDigits ds acc = match ds
-  [] => acc
-  (c :: rest) => foldDigits rest (acc * 10 + (charCode c - 48))
+foldDigits [] acc = acc
+foldDigits (c :: rest) acc = foldDigits rest (acc * 10 + (charCode c - 48))
 
 -- '+' and '-' as operator parsers yielding the binary function.
 addOp : Parser (Int -> Int -> Int)
@@ -33,14 +32,12 @@ intList : Parser (List Int)
 intList = between (char '[') (char ']') (sepBy number (char ','))
 
 showResult : Result String Int -> String
-showResult r = match r
-  Ok n  => "Ok \{n}"
-  Err m => "Err \{m}"
+showResult (Ok n)  = "Ok \{n}"
+showResult (Err m) = "Err \{m}"
 
 showListResult : Result String (List Int) -> String
-showListResult r = match r
-  Ok ns => "Ok \{ns}"
-  Err m => "Err \{m}"
+showListResult (Ok ns) = "Ok \{ns}"
+showListResult (Err m) = "Err \{m}"
 
 main =
   println "=== expr ==="
@@ -57,6 +54,5 @@ main =
   println (showStr (runParser (string "hi") "bye"))     -- failure path
 
 showStr : Result String String -> String
-showStr r = match r
-  Ok s  => "Ok \{s}"
-  Err m => "Err \{m}"
+showStr (Ok s)  = "Ok \{s}"
+showStr (Err m) = "Err \{m}"

@@ -18,9 +18,8 @@ badToml : String
 badToml = "key = \"unterminated\n"
 
 printResult : Result String TomlDoc -> <IO> Unit
-printResult r = match r
-  Err msg => println "PARSE ERROR: \{msg}"
-  Ok doc  => println (showTomlDoc doc)
+printResult (Err msg) = println "PARSE ERROR: \{msg}"
+printResult (Ok doc)  = println (showTomlDoc doc)
 
 main =
   println "=== TOML parser demo ==="
