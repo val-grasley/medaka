@@ -1,0 +1,574 @@
+-- | sqlite.lib.select — a typed ADT query model over the B-tree read path.
+--
+-- This module is a B-tree READER, not a SQL engine.  A `Select` value (an ADT)
+-- DRIVES the existing table scanner (`sqlite/lib/query.mdk`): we compile its
+-- `where_` predicate to a closure over the raw `List Cell` and filter the scan,
+-- then `offset`/`limit`, then decode survivors via a `RowType a`.
+--
+-- Three public surfaces:
+--   * Untyped core (`Literal`/`CmpOp`/`SqlExpr`/`Select`) — ships execution.
+--   * Phantom `Expr a` smart-constructor layer — zero-cost type safety
+--     (`eEq (eColInt "age") (eLitT "x")` is a `medaka check` ERROR).
+--   * `render : Select -> Result String (String, List Literal)` — an
+--     injection-safe SQL-string projection for the oracle/display (every literal
+--     becomes a `?` placeholder with its value pushed to the ordered bind list).
+--
+-- Names are deliberately OFF the prelude (`eGt`/`eEq`/`eAnd`/...) so they never
+-- collide with `Ord`/`Eq`/`Bool` methods (`gt`/`eq`/`and`/...).
+
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, findTable, schemaSql}
+import lib.btree.{Row}
+import lib.rowtype.{RowType, rtDecode}
+import list.{reverse}
+
+-- ---------------------------------------------------------------------------
+-- Untyped core
+-- ---------------------------------------------------------------------------
+
+-- | A literal value that can appear in a query.  Mirrors `Cell` minus the
+--   "decoded from a column" provenance.
+public export data Literal
+  = LInt Int
+  | LText String
+  | LFloat Float
+  | LBlob (Array Int)
+  | LNull
+
+-- | A comparison operator.
+public export data CmpOp = OpEq | OpNe | OpLt | OpLe | OpGt | OpGe
+
+-- | An untyped boolean/value expression tree.  `ECol`/`ELit` are leaves;
+--   `EBin` is a comparison; `EAnd`/`EOr`/`ENot` are logical; `EIsNull`/`ENotNull`
+--   are the null tests.
+public export data SqlExpr
+  = ECol String
+  | ELit Literal
+  | EBin CmpOp SqlExpr SqlExpr
+  | EAnd SqlExpr SqlExpr
+  | EOr SqlExpr SqlExpr
+  | ENot SqlExpr
+  | EIsNull SqlExpr
+  | ENotNull SqlExpr
+
+-- | A whole SELECT: source table, optional WHERE, optional limit/offset.
+--   Projection is the `RowType` passed to `query`, NOT a field here (decision d2).
+public export data Select = Select
+  { from   : String
+  , where_ : Option SqlExpr
+  , limit  : Option Int
+  , offset : Option Int
+  }
+
+-- ---------------------------------------------------------------------------
+-- Phantom type-safe layer: Expr a
+--
+-- `Expr a` is a zero-cost wrapper around `SqlExpr`; the phantom `a` exists only
+-- for the type checker.  Users NEVER construct `MkExpr` directly — the smart
+-- constructors below are the entire public surface, and they alone decide the
+-- phantom type.  This buys: a comparison forces both sides to the same `a`, a
+-- column witness fixes `a`, and the logical ops force `Expr Bool`.
+-- ---------------------------------------------------------------------------
+
+public export data Expr a = MkExpr SqlExpr
+
+-- | Recover the untyped expression (e.g. to put it in `where_`).
+export
+unExpr : Expr a -> SqlExpr
+unExpr e = match e
+  MkExpr x => x
+
+-- | Wrap an untyped expression at an arbitrary phantom type (internal).
+export
+mkE : SqlExpr -> Expr a
+mkE x = MkExpr x
+
+-- Column references, each fixing the phantom witness type.
+export
+eColInt : String -> Expr Int
+eColInt name = MkExpr (ECol name)
+
+export
+eColText : String -> Expr String
+eColText name = MkExpr (ECol name)
+
+export
+eColFloat : String -> Expr Float
+eColFloat name = MkExpr (ECol name)
+
+-- | An untyped column reference (when you don't want a witness).
+export
+eCol : String -> Expr a
+eCol name = MkExpr (ECol name)
+
+-- Literals.
+export
+eLitI : Int -> Expr Int
+eLitI n = MkExpr (ELit (LInt n))
+
+export
+eLitT : String -> Expr String
+eLitT s = MkExpr (ELit (LText s))
+
+export
+eLitF : Float -> Expr Float
+eLitF f = MkExpr (ELit (LFloat f))
+
+-- Comparisons: both operands share the phantom `a`, result is `Expr Bool`.
+export
+eEq : Expr a -> Expr a -> Expr Bool
+eEq l r = MkExpr (EBin OpEq (unExpr l) (unExpr r))
+
+export
+eNe : Expr a -> Expr a -> Expr Bool
+eNe l r = MkExpr (EBin OpNe (unExpr l) (unExpr r))
+
+export
+eLt : Expr a -> Expr a -> Expr Bool
+eLt l r = MkExpr (EBin OpLt (unExpr l) (unExpr r))
+
+export
+eLe : Expr a -> Expr a -> Expr Bool
+eLe l r = MkExpr (EBin OpLe (unExpr l) (unExpr r))
+
+export
+eGt : Expr a -> Expr a -> Expr Bool
+eGt l r = MkExpr (EBin OpGt (unExpr l) (unExpr r))
+
+export
+eGe : Expr a -> Expr a -> Expr Bool
+eGe l r = MkExpr (EBin OpGe (unExpr l) (unExpr r))
+
+-- Logical combinators: force `Expr Bool` operands and result.
+export
+eAnd : Expr Bool -> Expr Bool -> Expr Bool
+eAnd l r = MkExpr (EAnd (unExpr l) (unExpr r))
+
+export
+eOr : Expr Bool -> Expr Bool -> Expr Bool
+eOr l r = MkExpr (EOr (unExpr l) (unExpr r))
+
+export
+eNot : Expr Bool -> Expr Bool
+eNot e = MkExpr (ENot (unExpr e))
+
+-- Null tests over any column type.
+export
+eIsNull : Expr a -> Expr Bool
+eIsNull e = MkExpr (EIsNull (unExpr e))
+
+export
+eNotNull : Expr a -> Expr Bool
+eNotNull e = MkExpr (ENotNull (unExpr e))
+
+-- ---------------------------------------------------------------------------
+-- Select builders
+-- ---------------------------------------------------------------------------
+
+-- | A bare SELECT over a table: no WHERE, no limit/offset.
+export
+selectFrom : String -> Select
+selectFrom tbl = Select { from = tbl, where_ = None, limit = None, offset = None }
+
+-- | Attach a typed `Expr Bool` predicate as the WHERE clause.  The phantom
+--   wrapper is stripped here — this is the type-safe boundary at which an
+--   `Expr Bool` becomes an untyped `SqlExpr`.
+export
+withWhere : Expr Bool -> Select -> Select
+withWhere e sel = match sel
+  Select { from = f, limit = lm, offset = of_ } =>
+    Select { from = f, where_ = Some (unExpr e), limit = lm, offset = of_ }
+
+export
+withLimit : Int -> Select -> Select
+withLimit n sel = match sel
+  Select { from = f, where_ = w, offset = of_ } =>
+    Select { from = f, where_ = w, limit = Some n, offset = of_ }
+
+export
+withOffset : Int -> Select -> Select
+withOffset n sel = match sel
+  Select { from = f, where_ = w, limit = lm } =>
+    Select { from = f, where_ = w, limit = lm, offset = Some n }
+
+-- ---------------------------------------------------------------------------
+-- render : injection-safe SQL projection
+-- ---------------------------------------------------------------------------
+
+-- | Project a `Select` to a parameterized SQL string plus its ordered binds.
+--   Every `ELit` emits a `?` and pushes its `Literal` to the bind list
+--   (left-to-right); literal values are NEVER inlined into the SQL text.
+--   Identifiers (table + column names) are charset-asserted (`[A-Za-z0-9_]`);
+--   an illegal identifier yields `Err`.
+export
+render : Select -> Result String (String, List Literal)
+render sel = match sel
+  Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
+    if not (validIdent tbl)
+    then Err "render: invalid table name: \{tbl}"
+    else match renderWhere w
+      Err e => Err e
+      Ok (whereSql, binds) =>
+        let limOff = renderLimitOffset lm of_
+        let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
+        Ok (sql, binds ++ limOffBinds limOff lm of_)
+
+-- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
+-- the placeholders parameterized too (LIMIT ? / OFFSET ?) for uniformity.
+-- `limOff` is just the text; binds are appended by the caller.
+renderLimitOffset : Option Int -> Option Int -> String
+renderLimitOffset lm of_ =
+  let l = match lm
+            Some _ => " LIMIT ?"
+            None   => ""
+  let o = match of_
+            Some _ => " OFFSET ?"
+            None   => ""
+  "\{l}\{o}"
+
+limOffSql : String -> String
+limOffSql s = s
+
+limOffBinds : String -> Option Int -> Option Int -> List Literal
+limOffBinds _ lm of_ =
+  let lb = match lm
+             Some n => [LInt n]
+             None   => []
+  let ob = match of_
+             Some n => [LInt n]
+             None   => []
+  lb ++ ob
+
+-- Render the WHERE clause (with leading " WHERE ") and collect its binds.
+renderWhere : Option SqlExpr -> Result String (String, List Literal)
+renderWhere w = match w
+  None   => Ok ("", [])
+  Some e => match renderExpr e
+    Err msg          => Err msg
+    Ok (sql, binds)  => Ok (" WHERE \{sql}", binds)
+
+-- Render an expression to (sql, binds).  Binds accumulate left-to-right.
+renderExpr : SqlExpr -> Result String (String, List Literal)
+renderExpr e = match e
+  ECol name =>
+    if validIdent name
+    then Ok (name, [])
+    else Err "render: invalid column name: \{name}"
+  ELit lit => Ok ("?", [lit])
+  EBin op l r => renderBinary (cmpSql op) l r
+  EAnd l r    => renderBinary "AND" l r
+  EOr l r     => renderBinary "OR" l r
+  ENot inner  => match renderExpr inner
+    Err msg         => Err msg
+    Ok (sql, binds) => Ok ("(NOT \{sql})", binds)
+  EIsNull inner => match renderExpr inner
+    Err msg         => Err msg
+    Ok (sql, binds) => Ok ("(\{sql} IS NULL)", binds)
+  ENotNull inner => match renderExpr inner
+    Err msg         => Err msg
+    Ok (sql, binds) => Ok ("(\{sql} IS NOT NULL)", binds)
+
+renderBinary : String -> SqlExpr -> SqlExpr -> Result String (String, List Literal)
+renderBinary opSql l r = match renderExpr l
+  Err msg => Err msg
+  Ok (lsql, lbinds) => match renderExpr r
+    Err msg => Err msg
+    Ok (rsql, rbinds) => Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
+
+cmpSql : CmpOp -> String
+cmpSql OpEq = "="
+cmpSql OpNe = "<>"
+cmpSql OpLt = "<"
+cmpSql OpLe = "<="
+cmpSql OpGt = ">"
+cmpSql OpGe = ">="
+
+-- | A valid SQL identifier for our purposes: non-empty, all chars in
+--   `[A-Za-z0-9_]`.  (Quoting/escaping is out of scope; we reject instead.)
+validIdent : String -> Bool
+validIdent s =
+  let chars = stringToChars s
+  if arrayLength chars == 0 then False else validIdentGo chars 0 (arrayLength chars)
+
+validIdentGo : Array Char -> Int -> Int -> Bool
+validIdentGo chars i n =
+  if i >= n then True
+  else if identChar (charCode (arrayGetUnsafe i chars))
+       then validIdentGo chars (i + 1) n
+       else False
+
+identChar : Int -> Bool
+identChar c =
+  (c >= 48 && c <= 57)        -- 0-9
+  || (c >= 65 && c <= 90)     -- A-Z
+  || (c >= 97 && c <= 122)    -- a-z
+  || c == 95                  -- _
+
+-- ---------------------------------------------------------------------------
+-- compilePred : SqlExpr -> (List Cell -> Bool)
+--
+-- Compile a predicate to a closure over the RAW cell list (so we can filter on
+-- columns the RowType doesn't project).  SQL three-valued logic is collapsed to
+-- two-valued at the WHERE boundary: any comparison touching a NULL is false-ish,
+-- matching `sqlite3`'s `WHERE` (a row is kept only when the predicate is TRUE).
+-- ---------------------------------------------------------------------------
+
+-- | Compile `expr` against a column-name→index resolver into a row predicate.
+--   `Err` on an unknown column name.
+export
+compilePred : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Bool)
+compilePred lookup expr = match expr
+  ECol name => match lookup name
+    None   => Err "compilePred: unknown column: \{name}"
+    Some i => Ok (cells => cellTruthy (nthCell cells i))
+  ELit lit => Ok (_ => litTruthy lit)
+  EBin op l r => compileCmp lookup op l r
+  EAnd l r => match compilePred lookup l
+    Err e => Err e
+    Ok pl => match compilePred lookup r
+      Err e => Err e
+      Ok pr => Ok (cells => pl cells && pr cells)
+  EOr l r => match compilePred lookup l
+    Err e => Err e
+    Ok pl => match compilePred lookup r
+      Err e => Err e
+      Ok pr => Ok (cells => pl cells || pr cells)
+  ENot inner => match compilePred lookup inner
+    Err e => Err e
+    Ok p  => Ok (cells => not (p cells))
+  EIsNull inner => match compileOperand lookup inner
+    Err e => Err e
+    Ok g  => Ok (cells => cellIsNull (g cells))
+  ENotNull inner => match compileOperand lookup inner
+    Err e => Err e
+    Ok g  => Ok (cells => not (cellIsNull (g cells)))
+
+-- Compile a comparison.  Both operands resolve to a `List Cell -> Cell`
+-- accessor; the result row is kept only when the comparison is definitively
+-- TRUE (any NULL operand ⇒ False, matching SQL WHERE semantics).
+compileCmp : (String -> Option Int) -> CmpOp -> SqlExpr -> SqlExpr -> Result String (List Cell -> Bool)
+compileCmp lookup op l r = match compileOperand lookup l
+  Err e => Err e
+  Ok gl => match compileOperand lookup r
+    Err e => Err e
+    Ok gr => Ok (cells => cmpCells op (gl cells) (gr cells))
+
+-- An operand is either a column (resolved to an index accessor) or a literal
+-- (a constant cell).  Returns a `List Cell -> Cell` accessor.
+compileOperand : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
+compileOperand lookup e = match e
+  ECol name => match lookup name
+    None   => Err "compilePred: unknown column: \{name}"
+    Some i => Ok (cells => nthCell cells i)
+  ELit lit => Ok (_ => litToCell lit)
+  _ => Err "compilePred: operand must be a column or literal"
+
+-- ---------------------------------------------------------------------------
+-- Cell / comparison helpers (used by compilePred)
+-- ---------------------------------------------------------------------------
+
+nthCell : List Cell -> Int -> Cell
+nthCell []        _ = CNull
+nthCell (c :: rest) i = if i <= 0 then c else nthCell rest (i - 1)
+
+cellIsNull : Cell -> Bool
+cellIsNull CNull = True
+cellIsNull _     = False
+
+-- A bare column/literal in a boolean position: SQLite treats nonzero numeric as
+-- true, NULL/zero/empty as false-ish.
+cellTruthy : Cell -> Bool
+cellTruthy CNull      = False
+cellTruthy (CInt n)   = n != 0
+cellTruthy (CFloat f) = f != 0.0
+cellTruthy (CText s)  = stringLength s > 0
+cellTruthy (CBlob _)  = True
+
+litTruthy : Literal -> Bool
+litTruthy LNull      = False
+litTruthy (LInt n)   = n != 0
+litTruthy (LFloat f) = f != 0.0
+litTruthy (LText s)  = stringLength s > 0
+litTruthy (LBlob _)  = True
+
+litToCell : Literal -> Cell
+litToCell (LInt n)   = CInt n
+litToCell (LText s)  = CText s
+litToCell (LFloat f) = CFloat f
+litToCell (LBlob b)  = CBlob b
+litToCell LNull      = CNull
+
+-- Compare two cells under `op`.  Any NULL operand ⇒ False (SQL WHERE).
+-- Numeric cells (CInt/CFloat) compare numerically across the int/float split.
+cmpCells : CmpOp -> Cell -> Cell -> Bool
+cmpCells op a b =
+  if cellIsNull a || cellIsNull b
+  then False
+  else match cmpOrder a b
+    None   => False                 -- incomparable shapes ⇒ not matched
+    Some o => applyCmp op o
+
+-- A three-way ordering of two non-null cells (Some LT/EQ/GT as -1/0/1), or None
+-- if the shapes are not comparable.
+cmpOrder : Cell -> Cell -> Option Int
+cmpOrder a b = match (a, b)
+  (CInt x, CInt y)     => Some (cmpInt x y)
+  (CFloat x, CFloat y) => Some (cmpFloat x y)
+  (CInt x, CFloat y)   => Some (cmpFloat (intToFloat x) y)
+  (CFloat x, CInt y)   => Some (cmpFloat x (intToFloat y))
+  (CText x, CText y)   => Some (cmpString x y)
+  (CBlob x, CBlob y)   => Some (cmpInt (arrayLength x) (arrayLength y))
+  _                    => None
+
+cmpInt : Int -> Int -> Int
+cmpInt x y = if x < y then (0 - 1) else if x > y then 1 else 0
+
+cmpFloat : Float -> Float -> Int
+cmpFloat x y = if x < y then (0 - 1) else if x > y then 1 else 0
+
+cmpString : String -> String -> Int
+cmpString x y = if x < y then (0 - 1) else if x > y then 1 else 0
+
+applyCmp : CmpOp -> Int -> Bool
+applyCmp OpEq o = o == 0
+applyCmp OpNe o = o != 0
+applyCmp OpLt o = o < 0
+applyCmp OpLe o = o <= 0
+applyCmp OpGt o = o > 0
+applyCmp OpGe o = o >= 0
+
+-- ---------------------------------------------------------------------------
+-- query : run a Select against a Db, decoding survivors via a RowType
+-- ---------------------------------------------------------------------------
+
+-- | Execute a `Select`:  resolve `where_` to a cell predicate over the table's
+--   column-index map, scan the table (rowid ascending), filter on cells, drop
+--   `offset`, take `limit`, and decode each survivor via `rt`.  A decode error
+--   on any survivor aborts the whole query (fail-fast).
+export
+query : Db -> Select -> RowType a -> Result String (List a)
+query db sel rt = match sel
+  Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
+    match findTable db tbl
+      Err e => Err e
+      Ok entry =>
+        let lookup = mkLookup (schemaSql entry)
+        match compileWhere lookup w
+          Err e => Err e
+          Ok pred => match scanTableRowsIpk db tbl
+            Err e => Err e
+            Ok (pkIdx, rows) =>
+              let kept = filterRows pkIdx pred rows
+              let sliced = applyOffsetLimit of_ lm kept
+              decodeAll rt pkIdx sliced []
+
+-- Resolve column names against a CREATE TABLE statement (via columnIndex).
+mkLookup : String -> (String -> Option Int)
+mkLookup createSql = (name => columnIndex createSql name)
+
+compileWhere : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Bool)
+compileWhere _      None     = Ok (_ => True)
+compileWhere lookup (Some e) = compilePred lookup e
+
+-- Keep rows (in rowid order) whose IPK-substituted cells pass the predicate.
+filterRows : Option Int -> (List Cell -> Bool) -> List Row -> List Row
+filterRows _     _    []           = []
+filterRows pkIdx pred (row :: rest) =
+  if pred (rowCellsWithIpk pkIdx row)
+  then row :: filterRows pkIdx pred rest
+  else filterRows pkIdx pred rest
+
+-- Drop `offset` rows then keep at most `limit`.
+applyOffsetLimit : Option Int -> Option Int -> List Row -> List Row
+applyOffsetLimit of_ lm rows =
+  let afterOffset = match of_
+                      Some n => dropN n rows
+                      None   => rows
+  match lm
+    Some n => takeN n afterOffset
+    None   => afterOffset
+
+dropN : Int -> List Row -> List Row
+dropN n xs = if n <= 0 then xs else match xs
+  []        => []
+  _ :: rest => dropN (n - 1) rest
+
+takeN : Int -> List Row -> List Row
+takeN n xs = if n <= 0 then [] else match xs
+  []          => []
+  x :: rest   => x :: takeN (n - 1) rest
+
+decodeAll : RowType a -> Option Int -> List Row -> List a -> Result String (List a)
+decodeAll _  _     []           acc = Ok (reverse acc)
+decodeAll rt pkIdx (row :: rest) acc = match rtDecode rt (rowCellsWithIpk pkIdx row)
+  Err e => Err e
+  Ok v  => decodeAll rt pkIdx rest (v :: acc)
+
+-- ---------------------------------------------------------------------------
+-- Render doctests (the injection-safety regression backbone — no DB).
+--
+-- `renderShow` projects `render`'s `(sql, binds)` result to a plain String so
+-- the doctest compares against an exact, Debug-independent string.  Every
+-- literal MUST appear as a `?` in the SQL and as a bind on the right of `##`.
+-- ---------------------------------------------------------------------------
+
+-- | A simple WHERE with one comparison: the literal becomes `?` + one bind.
+--
+-- > renderShow (render (withWhere (eGt (eColInt "age") (eLitI 18)) (selectFrom "users")))
+-- "SELECT * FROM users WHERE (age > ?) ## [LInt 18]"
+--
+-- Nested AND with a NOT NULL test, plus LIMIT/OFFSET — binds are ordered
+-- left-to-right, LIMIT then OFFSET appended last.
+--
+-- > renderShow (render andLimitSel)
+-- "SELECT * FROM users WHERE ((age > ?) AND (email IS NOT NULL)) LIMIT ? OFFSET ? ## [LInt 18, LInt 10, LInt 5]"
+--
+-- An OR of two comparisons plus an IS NULL node.
+--
+-- > renderShow (render orNullSel)
+-- "SELECT * FROM t WHERE (((a = ?) OR (b < ?)) AND (c IS NULL)) ## [LText hi, LInt 3]"
+--
+-- A bare select (no where/limit/offset) has empty binds.
+--
+-- > renderShow (render (selectFrom "notes"))
+-- "SELECT * FROM notes ## []"
+--
+-- An invalid identifier is rejected (never inlined).
+--
+-- > renderShow (render (selectFrom "bad name"))
+-- "ERR render: invalid table name: bad name"
+export
+renderShow : Result String (String, List Literal) -> String
+renderShow r = match r
+  Err e            => "ERR \{e}"
+  Ok (sql, binds)  => "\{sql} ## \{showBinds binds}"
+
+andLimitSel : Select
+andLimitSel =
+  withOffset 5 (withLimit 10
+    (withWhere (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
+      (selectFrom "users")))
+
+orNullSel : Select
+orNullSel =
+  withWhere
+    (eAnd (eOr (eEq (eColText "a") (eLitT "hi")) (eLt (eColInt "b") (eLitI 3)))
+          (eIsNull (eColInt "c")))
+    (selectFrom "t")
+
+-- Render a bind list as `[LInt 18, LInt 10]` (Debug-independent).
+showBinds : List Literal -> String
+showBinds binds = "[\{showBindsGo binds True}]"
+
+showBindsGo : List Literal -> Bool -> String
+showBindsGo []           _     = ""
+showBindsGo (x :: rest)  first =
+  let sep = if first then "" else ", "
+  "\{sep}\{showLit x}\{showBindsGo rest False}"
+
+showLit : Literal -> String
+showLit (LInt n)   = "LInt \{n}"
+showLit (LText s)  = "LText \{s}"
+showLit (LFloat f) = "LFloat \{f}"
+showLit (LBlob _)  = "LBlob"
+showLit LNull      = "LNull"

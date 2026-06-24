@@ -1,0 +1,26 @@
+-- | NEGATIVE typecheck fixture for the phantom `Expr a` layer.
+--
+-- This file MUST be REJECTED by `medaka check`.  It is the only proof the
+-- phantom type guarantee is real: comparing an `Expr Int` column to an
+-- `Expr String` literal (`eEq (eColInt "age") (eLitT "x")`) must fail
+-- unification (`Int` vs `String`), and `eAnd` on a non-`Bool` operand must
+-- fail too.  See test/select_oracle.sh / the doctests for the POSITIVE side.
+--
+-- Run:  medaka check sqlite/test/select_typeerror.mdk   => expect FAILURE.
+
+import lib.select.{
+  Expr, Select,
+  eEq, eAnd, eColInt, eLitT, eLitI,
+  selectFrom, withWhere,
+}
+
+-- ERROR 1: comparing an Int column to a Text literal — `Int` vs `String`.
+bad1 : Expr Bool
+bad1 = eEq (eColInt "age") (eLitT "x")
+
+-- ERROR 2: eAnd requires `Expr Bool`, but `eColInt "age"` is `Expr Int`.
+bad2 : Expr Bool
+bad2 = eAnd (eColInt "age") (eEq (eColInt "age") (eLitI 1))
+
+main : <IO> Unit
+main = println "should never check"

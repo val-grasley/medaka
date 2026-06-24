@@ -1,0 +1,76 @@
+-- | Typed ADT-query differential demo (Phase 2).
+--
+-- Reads a real sqlite3-created DB and runs several `query db (Select{...}) rt`
+-- calls through the ADT query model in lib.select.  Prints one line per typed
+-- row, prefixed by a label per query, for diffing against `sqlite3` in
+-- test/select_oracle.sh.
+--
+-- Usage: medaka build sqlite/select_demo.mdk -o /tmp/sdemo && /tmp/sdemo <db>
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{
+  Select, SqlExpr, Literal,
+  ECol, ELit, EBin, EAnd, EOr, EIsNull, ENotNull,
+  OpEq, OpGt, OpLt,
+  selectFrom, withWhere, withLimit, withOffset, query,
+  eGt, eLt, eEq, eAnd, eOr, eIsNull, eNotNull,
+  eColInt, eColText, eLitI, eLitT,
+}
+import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}
+
+data User = User { id : Int, name : String, age : Option Int }
+
+mkUser : (Int, String, Option Int) -> Result String User
+mkUser t = match t
+  (i, n, a) => Ok (User { id = i, name = n, age = a })
+
+userRow : RowType User
+userRow = tCustom mkUser (t3 tInt tText (tOption tInt))
+
+showUser : User -> String
+showUser u = match u
+  User { id = i, name = n, age = a } => "\{i}|\{n}|\{showOpt a}"
+
+showOpt : Option Int -> String
+showOpt None     = ""
+showOpt (Some n) = intToString n
+
+printRows : List User -> <IO> Unit
+printRows []          = ()
+printRows (u :: rest) =
+  let _ = println (showUser u)
+  printRows rest
+
+runQ : Db -> String -> Select -> <IO> Unit
+runQ db label sel =
+  let _ = println label
+  match query db sel userRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printRows rows
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: sdemo <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      let _ = runQ db "-- age > 25 --"
+                (withWhere (eGt (eColInt "age") (eLitI 25)) (selectFrom "users"))
+      let _ = runQ db "-- age > 20 AND age < 40 --"
+                (withWhere (eAnd (eGt (eColInt "age") (eLitI 20))
+                                 (eLt (eColInt "age") (eLitI 40)))
+                           (selectFrom "users"))
+      let _ = runQ db "-- name = Bob OR age = 40 --"
+                (withWhere (eOr (eEq (eColText "name") (eLitT "Bob"))
+                                (eEq (eColInt "age") (eLitI 40)))
+                           (selectFrom "users"))
+      let _ = runQ db "-- age IS NULL --"
+                (withWhere (eIsNull (eColInt "age")) (selectFrom "users"))
+      let _ = runQ db "-- age IS NOT NULL --"
+                (withWhere (eNotNull (eColInt "age")) (selectFrom "users"))
+      let _ = runQ db "-- limit 2 --"
+                (withLimit 2 (selectFrom "users"))
+      let _ = runQ db "-- limit 2 offset 1 --"
+                (withOffset 1 (withLimit 2 (selectFrom "users")))
+      runQ db "-- age > 25 limit 1 --"
+        (withLimit 1 (withWhere (eGt (eColInt "age") (eLitI 25)) (selectFrom "users")))
