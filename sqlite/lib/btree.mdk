@@ -1,4 +1,5 @@
--- | sqlite.lib.btree — B-tree page parsing (table leaf pages, type 0x0D).
+-- | sqlite.lib.btree — B-tree page parsing for table pages (leaf 0x0D and
+--   interior 0x05).
 --
 -- A page is `pageSize` bytes.  Page 1 is special: its B-tree header begins at
 -- byte offset 100 (after the database header), not 0.  All other pages begin
@@ -10,13 +11,20 @@
 --   3  2  number of cells
 --   5  2  start of cell content area (0 = 65536)
 --   7  1  fragmented free bytes
---   8  4  right-most pointer (interior pages only)
+--   8  4  right-most pointer (interior pages only; absent in leaf header)
 --
--- The cell pointer array immediately follows the header: `numCells` big-endian
--- uint16 byte offsets (relative to the page start).
+-- Leaf page header  = 8 bytes.
+-- Interior page header = 12 bytes (includes the 4-byte right-most pointer).
+--
+-- The cell pointer array immediately follows the page header.
 --
 -- Table-leaf cell (§3): [payload-len varint] [rowid varint] [payload].
--- We decode each into a `Row` = (rowid, cells).
+-- Table-interior cell (§3): [left-child-page 4-byte BE] [rowid varint].
+--
+-- We decode each row into a `Row` = (rowid, cells).
+-- `scanTablePage` recursively walks interior pages, collecting all leaf rows
+-- in key order: left-child of cell[0], left-child of cell[1], ...,
+-- left-child of cell[n-1], rightmost-child.
 
 import byteparser.lib.byteparser.{
   BOk,
@@ -25,6 +33,16 @@ import byteparser.lib.byteparser.{
   sqVarint,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, parseRecord}
+
+-- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
+--   Used for the right-most-child pointer and interior-cell left-child pointer.
+beU32 : Array Int -> Int -> Int
+beU32 bytes off =
+  let b0 = arrayGetUnsafe off bytes
+  let b1 = arrayGetUnsafe (off + 1) bytes
+  let b2 = arrayGetUnsafe (off + 2) bytes
+  let b3 = arrayGetUnsafe (off + 3) bytes
+  b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
 
 -- | A decoded table row: its rowid and the column cells.
 public export data Row = Row Int (List Cell)
@@ -110,6 +128,69 @@ decodeLeafCell bytes off =
           match runBP parseRecord bytes pos2
             BErr m ep => Err "record: \{m} at \{intToString ep}"
             BOk cells _ => Ok (Row rowid cells)
+
+-- ---------------------------------------------------------------------------
+-- Multi-page recursive B-tree scan
+-- ---------------------------------------------------------------------------
+
+-- | Scan all rows reachable from page `pageNum` (1-indexed) in the whole-file
+--   byte array `bytes`, where each page is `pageSize` bytes.
+--
+-- Handles both table-leaf (0x0D) and table-interior (0x05) pages recursively.
+-- Interior pages are traversed left-to-right (all left-children in cell order,
+-- then the right-most child), yielding rows in rowid order.
+--
+-- `hdrOffset` for page 1 = `pageBase + 100`; for all other pages = `pageBase`.
+export
+scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
+scanTablePage bytes pageSize pageNum hdrOffset =
+  let ptype = pageType bytes hdrOffset
+  if ptype == pageTableLeaf then
+    let pageBase = (pageNum - 1) * pageSize
+    decodeCells bytes pageBase (hdrOffset + 8) (pageCellCount bytes hdrOffset) 0 []
+  else if ptype == pageTableInterior then
+    scanInteriorPage bytes pageSize pageNum hdrOffset
+  else
+    Err "scanTablePage: unexpected page type \{intToString ptype} on page \{intToString pageNum}"
+
+-- Scan an interior page: recurse into all left-children then the rightmost child.
+scanInteriorPage : Array Int -> Int -> Int -> Int -> Result String (List Row)
+scanInteriorPage bytes pageSize pageNum hdrOffset =
+  let pageBase = (pageNum - 1) * pageSize
+  let nCells = pageCellCount bytes hdrOffset
+  -- right-most child pointer is at hdrOffset + 8
+  let rightmost = beU32 bytes (hdrOffset + 8)
+  -- interior page cell-pointer array starts at hdrOffset + 12
+  let cpArrayStart = hdrOffset + 12
+  scanInteriorCells bytes pageSize cpArrayStart pageBase nCells 0 rightmost []
+
+-- Iterate interior cells; each cell gives us a left-child page to recurse into.
+-- After all left-children, recurse into rightmost.
+scanInteriorCells : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
+scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
+  | i >= nCells =
+      -- all left-children visited; now the rightmost child
+      let rmHdr = if rightmost == 1 then 100 else (rightmost - 1) * pageSize
+      match scanTablePage bytes pageSize rightmost rmHdr
+        Err e => Err e
+        Ok rows => Ok (appendRows acc rows)
+  | otherwise =
+      let cellPtr = beU16 bytes (cpArrayStart + i * 2)
+      let cellOff = pageBase + cellPtr
+      -- interior cell: [4-byte left-child] [rowid varint] — we only need left-child
+      let leftChild = beU32 bytes cellOff
+      let childHdr = if leftChild == 1 then 100 else (leftChild - 1) * pageSize
+      match scanTablePage bytes pageSize leftChild childHdr
+        Err e => Err e
+        Ok rows => scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (appendRows acc rows)
+
+-- Concatenate two row lists: put all of `xs` before `ys`.
+-- Used to combine accumulated rows with a newly-scanned child's rows.
+appendRows : List Row -> List Row -> List Row
+appendRows [] ys = ys
+appendRows (x::xs) ys = x :: appendRows xs ys
+
+-- ---------------------------------------------------------------------------
 
 -- | Render a decoded row (or error) as "rowid: cell|cell|..." for doctests.
 export

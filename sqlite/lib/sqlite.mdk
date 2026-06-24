@@ -8,8 +8,9 @@
 -- have columns (type, name, tbl_name, rootpage, sql).  We scan them to find a
 -- user table's rootpage, then full-table-scan that page's rows.
 --
--- v1 LIMIT: single table-leaf root page per table (no interior-page B-tree
--- traversal; no overflow chains).  A multi-page table yields a clean Err.
+-- Multi-page B-trees (interior root page 0x05 pointing to leaf children 0x0D)
+-- are supported via `scanTablePage` in btree.mdk.  Overflow pages remain out
+-- of scope (phase 2).
 
 import byteparser.lib.byteparser.{runByteParser}
 import lib.header.{
@@ -24,8 +25,7 @@ import lib.btree.{
   rowRowid,
   rowCells,
   decodeLeafPage,
-  pageType,
-  pageTableLeaf,
+  scanTablePage,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
 
@@ -140,23 +140,22 @@ findTableGo name entries = match entries
     then Ok e
     else findTableGo name rest
 
--- | Scan all rows of a table (v1: the rootpage must be a single table-leaf).
+-- | Scan all rows of a table B-tree, handling both single-leaf and multi-page
+--   (interior + leaf) B-trees recursively.
 --
--- Returns Err "multi-page B-tree not supported (v1 single-leaf-page only)"
--- if the rootpage is an interior page — the documented v1 residual.
+-- Walks table-interior pages (0x05) recursively — left-children in cell order
+-- then the right-most child — and table-leaf pages (0x0D) directly, returning
+-- all rows in rowid order across all pages.
 export
 scanTableRows : Db -> String -> Result String (List Row)
 scanTableRows db name = match findTable db name
   Err e => Err e
   Ok entry =>
     let bytes = dbBytes db
+    let ps = headerPageSize (dbHeader db)
     let n = entry.rootPage
     let hdrOff = hdrOffsetOf db n
-    let ptype = pageType bytes hdrOff
-    if ptype != pageTableLeaf then
-      Err "multi-page B-tree not supported (v1 single-leaf-page only): root page \{intToString n} type=\{intToString ptype}"
-    else
-      decodeLeafPage bytes (pageBaseOf db n) hdrOff
+    scanTablePage bytes ps n hdrOff
 
 -- ---------------------------------------------------------------------------
 -- Result-list helper (avoids importing list)
