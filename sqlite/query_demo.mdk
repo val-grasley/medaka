@@ -1,0 +1,60 @@
+-- | Typed-query differential demo.
+--
+-- Reads a real sqlite3-created DB, runs a typed SELECT via `RowType`, and prints
+-- the typed rows.  Compared against `sqlite3` output by test/typed_oracle.sh.
+--
+-- Usage (build path — readFileBytes works only when compiled):
+--   medaka build sqlite/query_demo.mdk -o /tmp/qdemo && /tmp/qdemo <db-path>
+
+import lib.sqlite.{Db, openDb}
+import lib.query.{scanTable, fetchAll}
+import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}
+import lib.recordfmt.{Cell}
+
+data User = User { id : Int, name : String, age : Option Int }
+
+mkUser : (Int, String, Option Int) -> Result String User
+mkUser t = match t
+  (i, n, a) => Ok (User { id = i, name = n, age = a })
+
+userRow : RowType User
+userRow = tCustom mkUser (t3 tInt tText (tOption tInt))
+
+showUser : User -> String
+showUser u = match u
+  User { id = i, name = n, age = a } =>
+    "User { id=\{i}, name=\"\{n}\", age=\{showOpt a} }"
+
+showOpt : Option Int -> String
+showOpt o = match o
+  None   => "None"
+  Some n => "Some \{n}"
+
+-- age > 25 (None counts as not > 25)
+ageOver25 : User -> Bool
+ageOver25 u = match u
+  User { age = a } => match a
+    Some n => n > 25
+    None   => False
+
+printUsers : List User -> <IO> Unit
+printUsers us = match us
+  [] => ()
+  u :: rest =>
+    let _ = println (showUser u)
+    printUsers rest
+
+main : <IO> Unit
+main = match args ()
+    [] => println "usage: qdemo <db-path>"
+    path :: _ => match openDb path
+      Err e => println "open error: \{e}"
+      Ok db =>
+        let _ = println "-- fetchAll users --"
+        let _ = match fetchAll db "users" userRow
+          Err e   => println "query error: \{e}"
+          Ok rows => printUsers rows
+        let _ = println "-- scanTable users WHERE age > 25 --"
+        match scanTable db "users" ageOver25 userRow
+          Err e   => println "query error: \{e}"
+          Ok rows => printUsers rows

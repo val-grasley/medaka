@@ -1,0 +1,110 @@
+-- | Doctest suite for the typed-result layer (RowType combinators).
+--
+-- Run with: `medaka test test/rowtype_doctest.mdk` from the sqlite project root.
+-- These exercise the PURE decoders against literal `List Cell` inputs (no IO),
+-- covering int/text/bool/option/product/custom and the error paths.
+
+import lib.rowtype.{
+  RowType, rtDecode, rtWidth,
+  tInt, tText, tBool, tBlob, tOption, t2, t3, t4, tCustom,
+}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+
+data User = User { id : Int, name : String, age : Option Int }
+
+mkUser : (Int, String, Option Int) -> Result String User
+mkUser t = match t
+  (i, n, a) => Ok (User { id = i, name = n, age = a })
+
+-- | A User row decoder built from t3 + tCustom.
+--
+-- > rtWidth userRow
+-- 3
+export
+userRow : RowType User
+userRow = tCustom mkUser (t3 tInt tText (tOption tInt))
+
+-- Render a User compactly (no Debug derivation needed for doctest comparison).
+showUser : User -> String
+showUser u = match u
+  User { id = i, name = n, age = a } => "User(\{i}, \{n}, \{showOpt a})"
+
+showOpt : Option Int -> String
+showOpt o = match o
+  None   => "None"
+  Some n => "Some \{n}"
+
+-- | Decode a User and render it (Ok/Err as a flat String for doctests).
+--
+-- > decodeUser [CInt 1, CText "Alice", CInt 30]
+-- "User(1, Alice, Some 30)"
+-- > decodeUser [CInt 2, CText "Bob", CNull]
+-- "User(2, Bob, None)"
+-- > decodeUser [CInt 1, CText "x"]
+-- "Err: tOption: expected 1 column(s), got 0"
+export
+decodeUser : List Cell -> String
+decodeUser cells = match rtDecode userRow cells
+  Ok u  => showUser u
+  Err e => "Err: \{e}"
+
+-- ---------------------------------------------------------------------------
+-- Primitive + combinator doctests (rendered through these String helpers so
+-- comparison is on a plain String, independent of any Debug instance).
+-- ---------------------------------------------------------------------------
+
+-- | tInt against literal cells.
+--
+-- > showI (rtDecode tInt [CInt 7])
+-- "7"
+-- > showI (rtDecode tInt [CText "x"])
+-- "Err: tInt: expected integer column, got Text"
+-- > showI (rtDecode tInt [CInt 1, CInt 2])
+-- "Err: tInt: expected exactly 1 column"
+export
+showI : Result String Int -> String
+showI r = match r
+  Ok n  => intToString n
+  Err e => "Err: \{e}"
+
+-- | tBool maps 0/1 to False/True; anything else errors.
+--
+-- > showB (rtDecode tBool [CInt 1])
+-- "True"
+-- > showB (rtDecode tBool [CInt 0])
+-- "False"
+-- > showB (rtDecode tBool [CInt 5])
+-- "Err: tBool: expected 0 or 1, got 5"
+export
+showB : Result String Bool -> String
+showB r = match r
+  Ok True  => "True"
+  Ok False => "False"
+  Err e    => "Err: \{e}"
+
+-- | tOption: a NULL across the inner width decodes to None; a value to Some.
+--
+-- > showOptR (rtDecode (tOption tInt) [CNull])
+-- "None"
+-- > showOptR (rtDecode (tOption tInt) [CInt 9])
+-- "Some 9"
+export
+showOptR : Result String (Option Int) -> String
+showOptR r = match r
+  Ok o  => showOpt o
+  Err e => "Err: \{e}"
+
+-- | t2 product splits the cell list by the children's widths.
+--
+-- > showP2 (rtDecode (t2 tInt tText) [CInt 2, CText "Bob"])
+-- "(2, Bob)"
+-- > showP2 (rtDecode (t2 tInt tText) [CText "no", CText "Bob"])
+-- "Err: tInt: expected integer column, got Text"
+export
+showP2 : Result String (Int, String) -> String
+showP2 r = match r
+  Ok p  => match p
+    (a, b) => "(\{a}, \{b})"
+  Err e => "Err: \{e}"
+
+main = println "rowtype_doctest: run via `medaka test`"

@@ -1,0 +1,50 @@
+-- | sqlite.lib.query — typed SELECT executor over the read path.
+--
+-- Bridges the raw row reader (`scanTableRows : Db -> String -> ... List Row`)
+-- and the typed-result layer (`RowType a`).  Decodes every row of a table into
+-- a typed value, optionally filtering by a predicate applied AFTER decoding
+-- (decode-then-filter — phase 1).  WHERE push-down is the phase-2 ADT model and
+-- is out of scope here.
+--
+-- Everything is `Result String _`: a decode failure on ANY row aborts the whole
+-- query with that row's error (fail-fast), so a caller never sees a partially
+-- typed result.  No panics.
+
+import lib.sqlite.{Db, scanTableRows}
+import lib.btree.{Row, rowCells}
+import lib.rowtype.{RowType, rtDecode}
+
+-- | Full-table scan with a post-decode predicate.
+--
+-- `scanTable db table keep rt`:
+--   * reads every row of `table` (across all B-tree pages),
+--   * decodes each via `rt` (a `RowType r`),
+--   * keeps those for which `keep` returns True,
+--   * returns `Ok rows` (typed) or the first decode/scan error.
+export
+scanTable : Db -> String -> (r -> Bool) -> RowType r -> Result String (List r)
+scanTable db table keep rt = match scanTableRows db table
+  Err e   => Err e
+  Ok rows => decodeRows rt keep rows []
+
+-- | Convenience: every row, no filter.
+export
+fetchAll : Db -> String -> RowType r -> Result String (List r)
+fetchAll db table rt = scanTable db table (_ => True) rt
+
+decodeRows : RowType r -> (r -> Bool) -> List Row -> List r -> Result String (List r)
+decodeRows rt keep rows acc = match rows
+  [] => Ok (reverseR acc)
+  row :: rest => match rtDecode rt (rowCells row)
+    Err e => Err e
+    Ok v  => if keep v
+             then decodeRows rt keep rest (v :: acc)
+             else decodeRows rt keep rest acc
+
+reverseR : List a -> List a
+reverseR xs = revR xs []
+
+revR : List a -> List a -> List a
+revR xs acc = match xs
+  []      => acc
+  x :: r  => revR r (x :: acc)
