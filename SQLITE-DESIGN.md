@@ -826,7 +826,7 @@ under the doctest runner.
 | 6 | **B-tree walk (multi-page)** (`sqlite/btree.mdk` extended) | Walks interior + leaf pages recursively for `multipage.db`; total row count = `SELECT count(*) FROM ...` |
 | 7 | **SELECT executor + full table scan** (`sqlite/query.mdk`) | `fetchAll db "users" (t3 tInt tText (tOption tInt))` output diff = oracle for `basic.db` |
 | 8 | **RowType marshalling** (`sqlite/row_type.mdk`) | Custom `userRow : RowType User` round-trips; `tOption` handles NULL; all fixtures pass |
-| 9 | **Phase 2 query ADT** (`sqlite/select.mdk`) | `render (Select { from = "users", where_ = Some (gt (colInt "age") (litInt 18)), ... })` produces correct SQL; parameterized query output matches oracle |
+| 9 | **Phase 2 query ADT** (`sqlite/lib/select.mdk`) — ✅ DONE (`e9fd54e`) | `render` produces injection-safe `?`-parameterized SQL + ordered binds; `query` (ADT drives the scanner: WHERE-pushdown over raw cells + limit/offset, then `RowType` decode) matches `sqlite3` on 17 rows (`select_oracle.sh`); phantom `Expr a` type-safety proven by a should-fail `check` fixture. Forks resolved: a1 ADT-drives-executor (render secondary), b1 parameterized binds, d2 WHERE+limit/offset (ORDER BY = rowid), e1 `RowType`+predicate API kept alongside. Constructors named off prelude methods (`eGt`/`eEq`/…) per the method-shadow finding. |
 
 ---
 
