@@ -699,13 +699,19 @@ braceItemsFor x _ = do
 -- key is parsed at the pipe level (like the reference `expr_pipe`) so a `=>`
 -- ends the key rather than starting a lambda.
 parseKvOrE : Parser KvItem
-parseKvOrE = orElse parseKvField parseKvKVorElem
+parseKvOrE = orElse parseKvField (orElse parseKvBlockElem parseKvKVorElem)
+
+-- Gate B: a bare-INDENT block as a record-field / set-element value.
+parseKvBlockElem : Parser KvItem
+parseKvBlockElem = do
+  e <- parseBracketBlock
+  pure (KvElem e)
 
 parseKvField : Parser KvItem
 parseKvField = do
   name <- identNameP
   expectTok TEqual
-  e <- parseExpr
+  e <- parseBracketElem
   pure (KvField name e)
 
 parseKvKVorElem : Parser KvItem
@@ -783,7 +789,7 @@ recordFieldExpr = do
 recordFieldExprRest : List String -> Token -> Parser (List String, Expr)
 recordFieldExprRest path TEqual = do
   advance
-  e <- parseExpr
+  e <- parseBracketElem
   pure (path, e)
 recordFieldExprRest [x] _ = pure ([x], EVar x)
 recordFieldExprRest _ _ = failP "expected = in record-update field"
@@ -840,6 +846,30 @@ tupleOrSingle : List Expr -> Expr
 tupleOrSingle [e] = e
 tupleOrSingle es = ETuple es
 
+-- Bracket block-expressions (LAYOUT-BRACKETS-DESIGN.md, Gate B).  The locked
+-- herald set is match/do/function/record/bare-INDENT block.  All of those
+-- EXCEPT the bare-INDENT block already reach bracket element positions because
+-- parseAtomRaw dispatches TMatch/TFunction/TDo (and records via TUpper/TLBrace)
+-- as atoms, so parseExpr reaches them.  The one herald NOT reachable from the
+-- expression chain is the bare-INDENT block (it lives only in the decl-body
+-- `indentedBody`).  parseBracketBlock is the dedicated, contained reader for it;
+-- parseBracketElem admits it in bracket element positions WITHOUT folding the
+-- bare-INDENT block into parseAtom/parseExpr generally (mirrors parser.mly's
+-- `bracket_block`/`bracket_elem`).
+-- NOTE (staging): the LEXER does not yet emit INDENT/NEWLINE/DEDENT inside
+-- brackets (Stage 3, pending), so these readers are not reachable on real input
+-- yet — they exist so the grammar has a target the future lexer tokens land on.
+parseBracketBlock : Parser Expr
+parseBracketBlock = do
+  expectTok TIndent
+  stmts <- parseStmts
+  expectTok TDedent
+  pure (blockOrExpr stmts)
+
+-- a bracket element: a bare-INDENT block, or an ordinary expression.
+parseBracketElem : Parser Expr
+parseBracketElem = orElse parseBracketBlock parseExpr
+
 parseParen : Parser Expr
 parseParen = do
   expectTok TLParen
@@ -883,7 +913,7 @@ sectionTail op _ = do
 
 parseParenExpr : Parser Expr
 parseParenExpr = do
-  es <- sepBy1 parseExpr (expectTok TComma)
+  es <- sepBy1 parseBracketElem (expectTok TComma)
   optTrailingCommaTuple es
   expectTok TRParen
   pure (parenResult es)
@@ -937,7 +967,7 @@ parseListE = do
 listFor : Token -> Parser Expr
 listFor TRBracket = emit (EListLit [])
 listFor _ = do
-  first <- parseExpr
+  first <- parseBracketElem
   t <- peekP
   listRest first t
 
@@ -963,7 +993,7 @@ listAfterComma first TRBracket = do
   advance
   pure (EListLit [first])
 listAfterComma first _ = do
-  rest <- sepBy1 parseExpr (expectTok TComma)
+  rest <- sepBy1 parseBracketElem (expectTok TComma)
   optTrailingComma
   expectTok TRBracket
   pure (EListLit (first :: rest))
@@ -1035,7 +1065,7 @@ parseArray = do
 arrayFor : Token -> Parser Expr
 arrayFor TRArray = emit (EArrayLit [])
 arrayFor _ = do
-  first <- parseExpr
+  first <- parseBracketElem
   t <- peekP
   arrayRest first t
 
@@ -1058,7 +1088,7 @@ arrayAfterComma first TRArray = do
   advance
   pure (EArrayLit [first])
 arrayAfterComma first _ = do
-  rest <- sepBy1 parseExpr (expectTok TComma)
+  rest <- sepBy1 parseBracketElem (expectTok TComma)
   optTrailingComma
   expectTok TRArray
   pure (EArrayLit (first :: rest))

@@ -612,6 +612,33 @@ param_pat:
 expr_no_block:
   | expr_annot  { $1 }
 
+(* Bracket block-expressions (LAYOUT-BRACKETS-DESIGN.md, Gate B).  The locked
+   herald set is `match`/`do`/`function`/record/bare-`INDENT` block.  All of
+   those EXCEPT the bare-`INDENT` block already reach bracket element positions
+   through `expr_no_block -> expr_annot -> expr_lam` (which carries `MATCH …`,
+   `DO …`, `FUNCTION …`) and, for records, through `expr_atom`'s `UPPER LBRACE …`
+   / record-field `IDENT EQUAL expr_no_block`.  The one herald NOT reachable from
+   the expression chain is the bare-`INDENT` block — it lived only in `fun_body`
+   (:457).  `bracket_block` is the dedicated, contained nonterminal that admits
+   the bare-`INDENT` block in bracket element positions WITHOUT folding it back
+   into `expr_no_block`/`expr_lam` (that split is what keeps the LR table free of
+   the historical pat-vs-expr conflict family; do not re-merge it).
+   NOTE (staging): the LEXER does not yet emit INDENT/NEWLINE/DEDENT inside
+   brackets (Stage 3, pending), so these productions are not reachable on real
+   input yet — they exist so the grammar has a target the future lexer tokens
+   can land on.  No new Menhir conflicts vs baseline. *)
+bracket_block:
+  | INDENT nonempty_list(stmt) DEDENT  { stmts_to_expr $2 }
+
+(* A bracket *element* is either an ordinary expression or a bare-`INDENT`
+   block.  Used only in plain list / array / tuple element positions where a
+   single element with no following operator can be a bare block.  NOT used for
+   range (`a .. b`) or comprehension (`e | quals`) leading elements — those keep
+   `expr_no_block` so the `.. `/`|` continuations stay unambiguous. *)
+bracket_elem:
+  | expr_no_block  { $1 }
+  | bracket_block  { $1 }
+
 expr_annot:
   | expr_lam COLON ty  { EAnnot ($1, $3) }
   | expr_lam           { $1 }
@@ -805,18 +832,21 @@ expr_atom:
       | EBinOp (op, lhs, rhs, _) when (match strip rhs with EVar "_" -> true | _ -> false) ->
           ELoc (of_pos $startpos $endpos, ESection (SecLeft (lhs, op)))
       | _ -> $2 }
+  (* Gate B: bare-`INDENT` block directly inside parens — `( INDENT stmts DEDENT )`. *)
+  | LPAREN bracket_block RPAREN
+    { $2 }
   | LPAREN expr_no_block COMMA
-      separated_nonempty_list(COMMA, expr_no_block) RPAREN
+      separated_nonempty_list(COMMA, bracket_elem) RPAREN
     { ELoc (of_pos $startpos $endpos, ETuple ($2 :: $4)) }
   | LBRACKET RBRACKET
     { ELoc (of_pos $startpos $endpos, EListLit []) }
   | LBRACKET expr_no_block PIPE separated_nonempty_list(COMMA, lc_qual) RBRACKET
     { ELoc (of_pos $startpos $endpos, EListComp ($2, $4)) }
-  | LBRACKET separated_nonempty_list(COMMA, expr_no_block) RBRACKET
+  | LBRACKET separated_nonempty_list(COMMA, bracket_elem) RBRACKET
     { ELoc (of_pos $startpos $endpos, EListLit $2) }
   | LARRAY RARRAY
     { ELoc (of_pos $startpos $endpos, EArrayLit []) }
-  | LARRAY separated_nonempty_list(COMMA, expr_no_block) RARRAY
+  | LARRAY separated_nonempty_list(COMMA, bracket_elem) RARRAY
     { ELoc (of_pos $startpos $endpos, EArrayLit $2) }
   | LBRACKET expr_no_block DOTDOT    expr_no_block RBRACKET
     { ELoc (of_pos $startpos $endpos, ERangeList ($2, $4, false)) }
@@ -869,12 +899,17 @@ expr_atom:
 
 record_field_expr:
   | separated_nonempty_list(DOT, IDENT) EQUAL expr_no_block  { ($1, $3) }
+  (* Gate B: bare-`INDENT` block as a record-update field value. *)
+  | separated_nonempty_list(DOT, IDENT) EQUAL bracket_block  { ($1, $3) }
   | IDENT                      { ([$1], ELoc (of_pos $startpos $endpos, EVar $1)) }
 
 kv_or_e:
   | IDENT EQUAL expr_no_block          { Field ($1, $3) }
+  (* Gate B: bare-`INDENT` block as a record-field / set-element value. *)
+  | IDENT EQUAL bracket_block          { Field ($1, $3) }
   | expr_pipe FAT_ARROW expr_no_block  { KV ($1, $3) }
   | expr_no_block                      { Elem $1 }
+  | bracket_block                      { Elem $1 }
 
 (* ── Match arms ──────────────────────────────────────── *)
 

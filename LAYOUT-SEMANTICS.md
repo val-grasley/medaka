@@ -324,6 +324,80 @@ inside a `--` line comment or a `{- … -}` block comment **never** perturbs the
 depth counter. This closes a historically recurring bug class (an unbalanced `{`
 in a comment throwing off brace counting).
 
+### 6.1 Bracket block-expressions — herald-armed nested layout (NEW)
+
+> **Status (staging).** The model below is the *locked* design
+> (`LAYOUT-BRACKETS-DESIGN.md`, LOCKED SCOPE 2026-06-23). It is being landed in
+> stages: the **grammar** side (productions that *accept* the nested tokens) is
+> implemented; the **lexer** side (Stage A actually *emitting* the nested
+> `INDENT`/`NEWLINE`/`DEDENT` for the herald block) is **Stage 3, pending**.
+> Until Stage 3 lands, the prior rule (§6, above) still holds in practice — the
+> lexer emits no layout tokens inside brackets, so a bracketed herald block does
+> not yet parse end-to-end. This subsection documents the target so spec and
+> grammar stay honest about the seam.
+
+**Prior rule (unchanged default).** Inside a bracket pair layout stays **OFF by
+default** — newlines are invisible, indentation is free-form, exactly as §6
+describes. This is load-bearing: every existing multi-line list/record/operator
+wrap (`(x +\n y)`, `[1,\n 2]`, `Name { a = 1\n , b = 2 }`) keeps working
+byte-for-byte. **Nothing about the free-form default changes.**
+
+**NEW exception — a herald arms a one-shot nested layout context.** When, inside
+a bracket frame, a **herald** introduces a block, that bracket frame opens a
+**nested layout context**: Stage A *does* emit `INDENT`/`NEWLINE`/`DEDENT` for
+the herald's block (structuring its arms/statements), even though it is inside
+brackets. The locked herald set is:
+
+```
+match    do    function    record    bare-INDENT block
+```
+
+(`let … in` multi-binding groups and bracketed `if/then/else` are **DEFERRED** —
+they stay rejected inside brackets, owing to the own-line-`in` and dangling-else
+hazards. Do not extend the herald set without revisiting `LAYOUT-BRACKETS-DESIGN.md`.)
+
+The arming is **one-shot and per-bracket-frame**: a non-herald line inside a
+bracket (e.g. the `,`-led shallow continuation `[1,\n 2]`) does **not** open a
+nested context — only an `isOpener` herald (§7.3, extended to this set) does.
+This confines the change; the free-form default still governs every non-herald
+line.
+
+**Newline required after the herald.** Same-line arms are rejected: `(match x 0
+=> 1 _ => 2)` stays a parse error, matching the bare (non-bracketed) `match`
+form. The block must begin on a deeper line — the herald is then followed by an
+`INDENT`.
+
+**Close rule.** A herald-armed nested context inside a bracket closes on
+**whichever comes first**:
+- a **dedent to ≤ the herald block's column** (the ordinary block-close, §4
+  rule III), **or**
+- the **matching bracket closer**. When the closer arrives with arms still
+  pending, it **force-flushes** all `DEDENT`s for contexts opened in this bracket
+  frame *before* the closer token, so the bracket pair stays balanced and the
+  grammar sees `… DEDENT )` rather than `… )`.
+
+No `parse-error(t)`-style close is used (consistent with the decided
+no-parser→layout-feedback rule); the close is driven by the explicit
+bracket-aware frame, not by parser feedback.
+
+**Frame model.** Each open bracket carries a small **bracket frame**
+`(entryDepth, openedContexts)` interleaved with the bracket-depth counter; nested
+heralds push further contexts onto the same frame. This is a *targeted* extension
+(not a full Haskell `L` rewrite): the free-form default is preserved, and layout
+is re-enabled only on the herald-armed path.
+
+**Grammar side (implemented now).** In the grammar, the four herald forms
+`match`/`do`/`function`/record already reach bracket element positions through
+the ordinary expression chain (`expr_no_block → expr_lam` in `lib/parser.mly`;
+`parseAtomRaw`'s `TMatch`/`TFunction`/`TDo`/record dispatch in
+`selfhost/frontend/parser.mdk`). The one herald not reachable there is the
+**bare-`INDENT` block**, which previously lived only in the decl-body production.
+A dedicated, contained nonterminal (`bracket_block` / `parseBracketBlock`) admits
+it in the paren, list, array, tuple, and record-field-value element positions,
+without re-merging the bare block into the general expression grammar (that split
+exists to keep the LR table conflict-free). These productions are **unreachable
+on current input** until the Stage-3 lexer emits the nested tokens.
+
 ---
 
 ## 7. Heralds, and the predicates that define them
