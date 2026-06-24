@@ -593,8 +593,9 @@ cover the corpus; these are known holes outside it.
      continuation, not a new block; and the inline `let` form requires `in`. The spec gives the
      analogous failing example (`x = id⏎ let …`). **Valid forms:** `else let x = e in body` (one-liner)
      or `else` on its own line + an indented `let … ⏎ body` block. Documented in SYNTAX.md +
-     LAYOUT-SEMANTICS.md §9. (Separately, a diagnostic-quality nit — the native parse error was
-     *mislocated* — is being improved.)
+     LAYOUT-SEMANTICS.md §9. (The native parse error was *mislocated* (`2:0`) — IMPROVED `8686e26`: a
+     token pre-scan now emits a located, hinted error at the `let` (`inline 'let' requires 'in' …; or
+     put 'else' on its own line and indent the block`).)
 
 - ✅ **`let … in` as an indented clause body. CLOSED (both compilers, 2026-06-21).**
   Previously selfhost-only; now both accept e.g. `f x =⏎  let go n = … in go x`.
