@@ -7,6 +7,54 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🏁 SQLite read-path library v1 COMPLETE (dogfood capstone) (2026-06-23). `main` = `de44b58`
+
+**A pure-Medaka SQLite library reads real `.sqlite` files of any size and returns TYPED Medaka values,
+byte-identical to the `sqlite3` CLI.** This was a soak/dogfood capstone (user idea): build a real library
+to flush compiler bugs + exercise IO/parsing/the type system. Owning doc: **`SQLITE-DESIGN.md`** (scope,
+phasing, RowType API, effects, slice plan, all decisions). PLAN.md hub row updated. Every landing was
+reproduced on the binary, gated, and merged; **all emitter-graph changes fixpoint-verified; seed re-minted
+(`848f712`), `bootstrap_from_seed` cold-start PASS.**
+
+**Landed (in order):** `readFileBytes` + bitwise externs (`1b25c9b`, fixpoint YES — String is NOT byte-clean,
+so binary IO needs this); `byteparser/` binary parser-combinator lib (`986bbd4`, own project); **cross-project
+`[dependencies]` in the native loader** (`0ad8ae9`, fixpoint YES — a real gap the capstone surfaced + closed:
+`medaka.toml [dependencies] name = "../path"`, resolved in `selfhost/driver/loader.mdk`); file-format reader
+(`6657238`); multi-page B-tree interior-page traversal (`86b1ffa`); typed `RowType` combinators + SELECT
+executor (`8d4c39c`, the Caqti no-GADT model — phantom param + closure decoder); INTEGER PRIMARY KEY rowid-
+substitution fix in the typed path (`ccd650a`); `bytesToFloat64` extern + un-stub `beFloat64` (`359957a`,
+fixpoint YES); library hygiene — stdlib de-dup + STYLE §8 multi-clause (`de44b58`).
+
+**What works:** open a real DB → header → B-tree (leaf + interior) → records (NULL/8–64-bit int/text/blob) →
+`sqlite_master` schema → SELECT with a typed `RowType` + optional predicate → `List` of typed Medaka records,
+IPK rowid correct. Float **decode** works (`bytesToFloat64`/`beFloat64`); 31+ doctests; differential oracles
+vs `sqlite3` (`sqlite/test/{oracle,multipage_oracle,typed_oracle}.sh`).
+
+**NEXT (all pure-library, clean first tasks):** (1) wire `tFloat` into `RowType` (now `bytesToFloat64` exists);
+(2) float columns (serial-type 7) in the reader's record decoder; (3) Phase-2 **ADT query model** (`Select`/
+`SqlExpr` sum types + injection-safe `render` + phantom-typed `Expr a`). **Fast-follows** (PLAN tasks): WasmGC
+port (bytes-first `fromBytes : Array Int -> Result String Db` API makes it additive — browser SQLite +
+capability-wedge demo) + async SQL server (the real `<Net>`/async forcing function; SQLite itself is sync).
+
+**Deferred / parked:** 8 dogfood compiler findings (PLAN.md → Known parser gaps: `record` keyword blocks a
+`record.mdk` module; `/=` mis-lex w/ misleading error; layout parse error w/ leading-`let`+multiline-if;
+multi-line `->` sigs; spurious non-exhaustive on partial record patterns; in-module doctest parse error;
+OCaml-oracle-only false-reject on `let`-bound width in a phantom-poly body — native correct; `intBitsToFloat`
+≥2^61 literal emitter overflow). All have workarounds. A **`medaka lint`** future workstream was filed
+(PLAN.md) for issues detectable-but-inappropriate-for-`fmt` (the STYLE §8 immediate-match→multi-clause that
+was hand-cleaned here is the motivating case).
+
+**METHODOLOGY learnings (important):** (1) **Verify-with-your-OWN-data, not the agent's fixtures.** The IPK
+bug (`ccd650a`) typechecked + ran but failed on any `INTEGER PRIMARY KEY` table — the agent's fixture used a
+plain `INTEGER` id and hid it; a 1-minute hand-probe with my own schema caught it. (2) **`isolation:"worktree"`
+is NOT reliable** — agent #11 (`bytesToFloat64`) committed to the SHARED orchestrator branch (`orch-sqlite`)
+despite an isolation request, and rode into `main` under a later docs merge **unverified**. ALWAYS, before
+merging ANY branch (including your own working branch), check the FULL commit range (`git diff --stat
+<merge-base>..<tip>` + `git log`), not just the commit you think you made. I caught it post-merge and verified
+(fixpoint YES) but it could have shipped unverified. (3) Cross-project deps + a dep importing stdlib both
+work (proven by the `minilib` gate + parsec). (4) For user libraries, the no-stdlib rule does NOT apply
+(that's selfhost-only) — they SHOULD import stdlib; the de-dup pass fixed this.
+
 ## RESUME — Formatter hardening (3 fmt bugs + style rules) (2026-06-23). `main` = `966b546`
 
 **Dogfooding `fmt` on `parsec` surfaced + fixed 3 formatter bugs and settled 2 style rules.** All
