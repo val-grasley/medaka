@@ -188,9 +188,8 @@ between open close p = do
 -- | First successful parser in the list; fails if all fail.
 export
 choice : List (Parser a) -> Parser a
-choice ps = match ps
-  [] => failWith "choice: no alternatives"
-  (q :: rest) => orElse q (choice rest)
+choice []         = failWith "choice: no alternatives"
+choice (q :: rest) = orElse q (choice rest)
 
 -- | Match a literal string, yielding it back.
 export

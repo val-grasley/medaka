@@ -61,36 +61,32 @@ export
 -- > showTomlValue (TInt 42)
 -- "TInt 42"
 showTomlValue : TomlValue -> String
-showTomlValue v = match v
-  TStr s   => "TStr \{s}"
-  TInt n   => "TInt \{n}"
-  TBool b  => if b then "TBool true" else "TBool false"
-  TArray xs => "TArray [\{showTomlValues xs}]"
+showTomlValue (TStr s)    = "TStr \{s}"
+showTomlValue (TInt n)    = "TInt \{n}"
+showTomlValue (TBool b)   = if b then "TBool true" else "TBool false"
+showTomlValue (TArray xs) = "TArray [\{showTomlValues xs}]"
 
 showTomlValues : List TomlValue -> String
-showTomlValues xs = match xs
-  []        => ""
-  (v :: []) => showTomlValue v
-  (v :: rest) => "\{showTomlValue v}, \{showTomlValues rest}"
+showTomlValues []         = ""
+showTomlValues (v :: [])  = showTomlValue v
+showTomlValues (v :: rest) = "\{showTomlValue v}, \{showTomlValues rest}"
 
 showPair : (String, TomlValue) -> String
 showPair (k, v) = "\{k} = \{showTomlValue v}"
 
 showPairs : List (String, TomlValue) -> String
-showPairs pairs = match pairs
-  []         => "(empty)"
-  (p :: [])  => showPair p
-  (p :: rest) => "\{showPair p}\n  \{showPairs rest}"
+showPairs []          = "(empty)"
+showPairs (p :: [])   = showPair p
+showPairs (p :: rest) = "\{showPair p}\n  \{showPairs rest}"
 
 export
 showTomlDoc : TomlDoc -> String
 showTomlDoc (TomlDoc tables) = joinTables tables
 
 joinTables : List TomlTable -> String
-joinTables ts = match ts
-  []         => ""
-  (t :: [])  => showTable t
-  (t :: rest) => "\{showTable t}\n\{joinTables rest}"
+joinTables []          = ""
+joinTables (t :: [])   = showTable t
+joinTables (t :: rest) = "\{showTable t}\n\{joinTables rest}"
 
 showTable : TomlTable -> String
 showTable (TomlTable name pairs) =
@@ -177,13 +173,12 @@ escapedChar = do
   interpretEscape c
 
 interpretEscape : Char -> Parser Char
-interpretEscape c = match c
-  '"'  => pure '"'
-  '\\' => pure '\\'
-  'n'  => pure '\n'
-  't'  => pure '\t'
-  'r'  => pure '\r'
-  _    => failWith "unknown escape sequence"
+interpretEscape '"'  = pure '"'
+interpretEscape '\\' = pure '\\'
+interpretEscape 'n'  = pure '\n'
+interpretEscape 't'  = pure '\t'
+interpretEscape 'r'  = pure '\r'
+interpretEscape _    = failWith "unknown escape sequence"
 
 regularStringChar : Parser Char
 regularStringChar = satisfy (c => c != '"' && c != '\\' && c != '\n')
@@ -208,14 +203,12 @@ parseInt = do
   pure (applySign neg n)
 
 applySign : Option Char -> Int -> Int
-applySign neg n = match neg
-  None   => n
-  Some _ => 0 - n
+applySign None   n = n
+applySign (Some _) n = 0 - n
 
 foldDigits : List Char -> Int -> Int
-foldDigits ds acc = match ds
-  []         => acc
-  (d :: rest) => foldDigits rest (acc * 10 + (charCode d - 48))
+foldDigits []         acc = acc
+foldDigits (d :: rest) acc = foldDigits rest (acc * 10 + (charCode d - 48))
 
 -- ---------------------------------------------------------------------------
 -- Boolean parser
