@@ -1,0 +1,12 @@
+-- A tiny single-module dependency used by the cross-project resolution gate.
+-- Imports stdlib `list` (so the gate also exercises "a dep's OWN stdlib imports
+-- still resolve via the normal stdlib root").
+import list.{reverse, sort}
+
+export
+revSorted : List Int -> List Int
+revSorted xs = reverse (sort xs)
+
+export
+double : Int -> Int
+double x = x * 2

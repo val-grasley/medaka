@@ -21,6 +21,8 @@ import support.util.{
   endsWith,
   joinDot,
   lookupAssoc,
+  splitNl,
+  stringTrim,
 }
 
 -- ── small list helpers (no stdlib import — selfhost is single-root) ──
@@ -117,6 +119,110 @@ parentGo path i =
   else
     parentGo path (i - 1)
 
+-- ── cross-project dependencies (medaka.toml [dependencies]) ──────────────────
+--
+-- A project's `medaka.toml` may carry a `[dependencies]` section of the form
+--
+--     [dependencies]
+--     byteparser = "../byteparser"
+--
+-- where each value is a path string relative to the project root (the directory
+-- containing the medaka.toml).  `readDeps root` reads that file, finds the
+-- `[dependencies]` section, and returns a list of (depName, depRootAbsPath) with
+-- the relative path resolved against `root` (left literal — the OS resolves any
+-- `..` when the path later reaches fileExists/readFile).  No stdlib/parsec import:
+-- a tiny hand-rolled line scanner (mirrors loader.mdk's no-stdlib style).
+--
+-- Threading: an import whose FIRST dotted segment equals a declared dep name is
+-- resolved by stripping that segment and resolving the REMAINDER under the dep's
+-- root (`byteparser.lib.byteparser` → `<depRoot>/lib/byteparser.mdk`).  A dep's
+-- OWN imports (stdlib `array`/`list`/… or its sibling modules) still flow through
+-- the normal `roots` list, so this is purely additive on top of single-root.
+
+-- strip surrounding ASCII double-quotes from a trimmed value, if present.
+unquote : String -> String
+unquote s =
+  let n = stringLength s
+  if n >= 2 && stringSlice 0 1 s == "\"" && stringSlice (n - 1) n s == "\"" then
+    stringSlice 1 (n - 1) s
+  else
+    s
+
+-- the substring before the first `=` (trimmed); "" if there is no `=`.
+keyBeforeEq : String -> String
+keyBeforeEq line = keyEqGo line 0 (stringLength line)
+
+keyEqGo : String -> Int -> Int -> String
+keyEqGo line i n =
+  if i >= n then ""
+  else if stringSlice i (i + 1) line == "=" then stringTrim (stringSlice 0 i line)
+  else keyEqGo line (i + 1) n
+
+-- the substring after the first `=` (trimmed + unquoted); "" if there is no `=`.
+valAfterEq : String -> String
+valAfterEq line = valEqGo line 0 (stringLength line)
+
+valEqGo : String -> Int -> Int -> String
+valEqGo line i n =
+  if i >= n then ""
+  else if stringSlice i (i + 1) line == "=" then unquote (stringTrim (stringSlice (i + 1) n line))
+  else valEqGo line (i + 1) n
+
+-- scan the lines of a medaka.toml: once we cross the `[dependencies]` header,
+-- collect `name = "path"` entries until the next `[section]` header (or EOF).
+-- `inDeps` tracks whether we are currently inside the dependencies section.
+collectDeps : String -> List String -> List (String, String)
+collectDeps root [] = []
+collectDeps root (line::rest) =
+  let t = stringTrim line
+  if t == "[dependencies]" then collectDepsIn root rest
+  else collectDeps root rest
+
+collectDepsIn : String -> List String -> List (String, String)
+collectDepsIn root [] = []
+collectDepsIn root (line::rest) =
+  let t = stringTrim line
+  if startsWith "[" t then collectDeps root (line::rest)
+  else
+    let k = keyBeforeEq t
+    if k == "" then collectDepsIn root rest
+    else (k, joinPathL root (valAfterEq t)) :: collectDepsIn root rest
+
+-- join a project root with a (possibly `..`-relative) dep path.  An absolute dep
+-- path (leading `/`) is used as-is; otherwise it is appended under root and the
+-- OS resolves `..` later at fileExists/readFile time.
+joinPathL : String -> String -> String
+joinPathL root p =
+  if startsWith "/" p then p
+  else if root == "" then p
+  else stringConcat [root, "/", p]
+
+-- read + parse `<root>/medaka.toml`'s [dependencies]; [] if missing/none.
+export
+readDeps : String -> <IO> List (String, String)
+readDeps root =
+  let tomlPath = stringConcat [root, "/medaka.toml"]
+  if fileExists tomlPath then
+    match readFile tomlPath
+      Err _ => []
+      Ok src => collectDeps root (splitNl src)
+  else []
+
+-- if modId's first dotted segment names a declared dependency, resolve the
+-- REMAINING segments under that dep's root (existence-checked); else None so the
+-- caller falls through to the normal `roots` search.
+resolveDepFile : List (String, String) -> String -> <IO> Option String
+resolveDepFile deps modId = match splitOnChar "." modId
+  [] => None
+  (seg0::restSegs) => match lookupAssoc seg0 deps
+    None => None
+    Some depRoot => match restSegs
+      [] => None
+      _ =>
+        let path = fileOfModuleId depRoot (joinDot restSegs)
+        if fileExists path then Some path else None
+
+
 -- ── dependency extraction (mirrors loader.ml's direct_imports) ──
 
 -- "core" is the implicit prelude — its names are already in scope, so an
@@ -140,14 +246,19 @@ directImports (_::rest) = directImports rest
 
 -- ── file resolution + parsing ──
 
-findModuleFile : List String -> String -> <IO> Option String
-findModuleFile [] _ = None
-findModuleFile (r::rs) modId =
-  let path = fileOfModuleId r modId
-  if fileExists path then Some path else findModuleFile rs modId
+findModuleFile : List (String, String) -> List String -> String -> <IO> Option String
+findModuleFile deps roots modId = match resolveDepFile deps modId
+  Some path => Some path
+  None => findInRoots roots modId
 
-readModuleProg : List String -> String -> <IO> Result String (List Decl)
-readModuleProg roots modId = match findModuleFile roots modId
+findInRoots : List String -> String -> <IO> Option String
+findInRoots [] _ = None
+findInRoots (r::rs) modId =
+  let path = fileOfModuleId r modId
+  if fileExists path then Some path else findInRoots rs modId
+
+readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (List Decl)
+readModuleProg deps roots modId = match findModuleFile deps roots modId
   None => Err (stringConcat ["unknown module: ", modId])
   Some path => match readFile path
     Err e => Err e
@@ -169,8 +280,8 @@ readModuleProg roots modId = match findModuleFile roots modId
 -- caller can bucket diagnostics BY FILE.  `read` is the path-keyed override;
 -- `parseFn` is the parser to apply (so the located variant can carry real ELoc
 -- spans via parseLocated while the plain variant uses placeholder-loc parse).
-readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> String -> <IO, Mut> Result String (String, List Decl)
-readModuleProgF parseFn read roots modId = match findModuleFile roots modId
+readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> String -> <IO, Mut> Result String (String, List Decl)
+readModuleProgF parseFn read deps roots modId = match findModuleFile deps roots modId
   None => Err (stringConcat ["unknown module: ", modId])
   Some path => match read path
     Some src => Ok (path, parseFn src)
@@ -202,31 +313,35 @@ joinArrow [] = ""
 joinArrow [x] = x
 joinArrow (x::xs) = stringConcat [x, " → ", joinArrow xs]
 
-visitMod : List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
-visitMod roots stack visited acc modId =
+visitMod : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
+visitMod deps roots stack visited acc modId =
   if contains modId visited then Ok (visited, acc)
   else
     if contains modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
     else
-      match readModuleProg roots modId
+      match readModuleProg deps roots modId
         Err e => Err e
-        Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)
+        Ok prog => match visitMods deps roots (modId :: stack) visited acc (directImports prog)
           Err e => Err e
           Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
 
-visitMods : List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
-visitMods _ _ visited acc [] = Ok (visited, acc)
-visitMods roots stack visited acc (d::ds) = match visitMod roots stack visited acc d
+visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
+visitMods _ _ _ visited acc [] = Ok (visited, acc)
+visitMods deps roots stack visited acc (d::ds) = match visitMod deps roots stack visited acc d
   Err e => Err e
-  Ok (v2, a2) => visitMods roots stack v2 a2 ds
+  Ok (v2, a2) => visitMods deps roots stack v2 a2 ds
 
 -- Load a root file + all transitive deps, dependency-first.  roots resolves
--- module IDs to file paths (selfhost: a single project dir).
+-- module IDs to file paths (selfhost: a single project dir).  Cross-project
+-- dependencies declared in the entry project's medaka.toml are read here and
+-- consulted before `roots` (see resolveDepFile).
 export
 loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
-loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots entry)
-  Err e => Err e
-  Ok (_, acc) => Ok acc
+loadProgram entry roots =
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  match visitMod deps roots [] [] [] (moduleIdOfPath roots entry)
+    Err e => Err e
+    Ok (_, acc) => Ok acc
 
 -- ── path-carrying read-callback topo-sort (B.10.5) ──
 --
@@ -237,23 +352,23 @@ loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots en
 -- (readModuleProgF) and the acc tuple shape differ — so the cycle detection and
 -- ordering guarantees carry over verbatim.
 
-visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
-visitModF parseFn read roots stack visited acc modId =
+visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModF parseFn read deps roots stack visited acc modId =
   if contains modId visited then Ok (visited, acc)
   else
     if contains modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
     else
-      match readModuleProgF parseFn read roots modId
+      match readModuleProgF parseFn read deps roots modId
         Err e => Err e
-        Ok (path, prog) => match visitModsF parseFn read roots (modId :: stack) visited acc (directImports prog)
+        Ok (path, prog) => match visitModsF parseFn read deps roots (modId :: stack) visited acc (directImports prog)
           Err e => Err e
           Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
 
-visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
-visitModsF _ _ _ _ visited acc [] = Ok (visited, acc)
-visitModsF parseFn read roots stack visited acc (d::ds) = match visitModF parseFn read roots stack visited acc d
+visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModsF _ _ _ _ _ visited acc [] = Ok (visited, acc)
+visitModsF parseFn read deps roots stack visited acc (d::ds) = match visitModF parseFn read deps roots stack visited acc d
   Err e => Err e
-  Ok (v2, a2) => visitModsF parseFn read roots stack v2 a2 ds
+  Ok (v2, a2) => visitModsF parseFn read deps roots stack v2 a2 ds
 
 -- Load a root file + transitive deps, dependency-first, with an unsaved-buffer
 -- override and FILE PATHS in the result.  Mirrors lib/diagnostics.ml's
@@ -262,9 +377,11 @@ visitModsF parseFn read roots stack visited acc (d::ds) = match visitModF parseF
 -- Uses placeholder-loc `parse`.
 export
 loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
-loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (moduleIdOfPath roots entry)
-  Err e => Err e
-  Ok (_, acc) => Ok acc
+loadProgramFiles read entry roots =
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  match visitModF parse read deps roots [] [] [] (moduleIdOfPath roots entry)
+    Err e => Err e
+    Ok (_, acc) => Ok acc
 
 -- Like loadProgramFiles but parses every module with `parseLocated`, so the
 -- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
@@ -272,9 +389,11 @@ loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (m
 -- `analyzeLocated`.
 export
 loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
-loadProgramFilesLocated read entry roots = match visitModF parseLocated read roots [] [] [] (moduleIdOfPath roots entry)
-  Err e => Err e
-  Ok (_, acc) => Ok acc
+loadProgramFilesLocated read entry roots =
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  match visitModF parseLocated read deps roots [] [] [] (moduleIdOfPath roots entry)
+    Err e => Err e
+    Ok (_, acc) => Ok acc
 
 -- ── LSP latency: source-keyed parse memoization (per-keystroke dep reuse) ────
 --
@@ -327,6 +446,7 @@ takeFirst n (x::xs)
 export
 loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
 loadProgramFilesLocatedCached parseCacheRef read entry roots =
-  match visitModF (s => parseCachedLocated parseCacheRef s) read roots [] [] [] (moduleIdOfPath roots entry)
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  match visitModF (s => parseCachedLocated parseCacheRef s) read deps roots [] [] [] (moduleIdOfPath roots entry)
     Err e => Err e
     Ok (_, acc) => Ok acc
