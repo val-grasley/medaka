@@ -73,6 +73,17 @@
 > fixpoint-proven. (Footgun: editing `runtime.mdk` stale-bakes the oracle until `dune
 > build bin/main.exe` regenerates the embed.)
 
+> **Design note — file-path domain refinement (for the soak tail):** When IO externs
+> get domains assigned, `FileRead`/`FileWrite` should carry a `Prefix` or `Set` domain
+> for path-level precision (e.g. `<FileRead "/data/app/*.sqlite">`). Implement as a
+> **backward-compatible refinement**: bare `<FileRead>`/`<FileWrite>` must remain valid
+> and elaborate to ⊤ (any path), so NO existing annotation needs migration. This is
+> sound: an atom is always `L·p`, ⊤ is always a valid element, specific ⊑ ⊤, and the
+> parameter is inert row data that is never routed (EFFECTS-SEMANTICS.md §1–§2).
+> Note: SQLite's DB path is a runtime dynamic value, so it degrades to ⊤ (not the
+> motivating case). Static-path consumers — config readers, asset loaders, log writers
+> — are the payoff. Sequence with WS-3b's builtin-extern flip (soak tail).
+
 > **Remaining:** WS-4 (`Product`/structured Net — largest), WS-5 (extern-row
 > assurance — standing). WS-3b's shared-runtime flip rides the `lib/`-removal soak tail.
 

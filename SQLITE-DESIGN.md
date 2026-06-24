@@ -1,8 +1,7 @@
 # SQLite Read-Path Library — Design
 
-**Status:** draft design (2026-06-23). Authored as a capstone dogfood project for
-the Medaka language. READ-ONLY: this file is the design doc — do not modify PLAN.md
-or other existing files (the orchestrator adds the hub entry at merge).
+**Status:** design document (2026-06-23). Authored as a capstone dogfood project for
+the Medaka language. Foundation externs landed `1b25c9b`; read-path slices in progress.
 
 ---
 
@@ -38,19 +37,26 @@ BLOB storage overflow chains > one page (document limit), the write path.
 
 | Phase | What ships |
 |-------|-----------|
-| **0** | Foundation externs: `readFileBytes` + bitwise ops (in progress on another branch — Step 0 for this work) |
+| **0** | Foundation externs: `readFileBytes` + bitwise ops — **LANDED** `1b25c9b`, fixpoint C3a/C3b YES |
 | **1** | ByteParser module + header parser + B-tree page/cell walker + record decoder + `sqlite_master` schema read + simple `SELECT … WHERE` executor + `RowType` marshalling |
 | **2** | Typed query ADT (`Select`/`SqlExpr`/`Expr a` phantom) + `render` + injection-safe param binding |
 | **3** | *(Optional)* `deriving RowType` for records |
 
 ---
 
-## The foundation (Phase 0)
+## The foundation (Phase 0) — LANDED `1b25c9b`, fixpoint YES
+
+**Status:** `readFileBytes` and all six bitwise externs are in the native runtime
+and stdlib; the fixpoint self-compile confirms the change propagated correctly
+(C3a/C3b PASS). Residual: `readFileBytes` is **not** available in the native
+interpreter (`medaka run`) — the native interpreter has no file-IO surface. The
+SQLite lib must be compiled with `medaka build` to exercise any code path that
+reads a file; `medaka run` suffices only for pure unit tests and doctests.
 
 ### readFileBytes
 
 ```
--- extern (being added on parallel branch):
+-- extern (landed in 1b25c9b):
 readFileBytes : String -> <FileRead> Result String (Array Int)
 ```
 
@@ -62,7 +68,7 @@ byte ≥ 0x80 (replaced by U+FFFD). All SQLite file access goes through `readFil
 ### Bitwise externs
 
 ```
--- externs (being added on parallel branch):
+-- externs (landed in 1b25c9b):
 bitAnd     : Int -> Int -> Int
 bitOr      : Int -> Int -> Int
 bitXor     : Int -> Int -> Int
@@ -306,7 +312,9 @@ Estimated size: ~120 lines. No algorithmic changes from `parser.mdk`.
 
 ### Location
 
-`sqlite/byte_parser.mdk` (new file under a new `sqlite/` library directory).
+`byteparser/byte_parser.mdk` inside the standalone `byteparser/` library project
+(its own `medaka.toml`, mirroring `parsec/`). Imported by `sqlite/` as a
+cross-project dependency.
 
 ### ByteParser API
 
@@ -771,8 +779,8 @@ Each slice is a mergeable increment that passes a concrete gate.
 
 | # | Slice | Gate |
 |---|-------|------|
-| 0 | **Foundation externs** (`readFileBytes` + bitwise) | `medaka run` can read a file as bytes and print the first 4 bytes of a `.sqlite` file as integers |
-| 1 | **ByteParser module** (`sqlite/byte_parser.mdk`) | `medaka test sqlite/byte_parser.mdk` — doctests covering `byte`, `beUint 4`, `sqVarint`, `bMany` |
+| 0 | **Foundation externs** (`readFileBytes` + bitwise) — **DONE** `1b25c9b` | fixpoint C3a/C3b YES; `medaka build` reads `.sqlite` bytes; `medaka run` can't (no file IO in native interp) |
+| 1 | **ByteParser module** (`byteparser/byte_parser.mdk`) | `medaka test byteparser/byte_parser.mdk` — doctests covering `byte`, `beUint 4`, `sqVarint`, `bMany` |
 | 2 | **Header parser** (`sqlite/header.mdk`) | Parses the 100-byte header from `basic.db`; prints page size, page count, encoding; matches `sqlite3 "PRAGMA page_size"` etc. |
 | 3 | **Page/cell parser** (`sqlite/btree.mdk`) | Walks all table-leaf cells of page 1 (`sqlite_master` B-tree) for `basic.db`; prints raw cell byte counts = expected row count |
 | 4 | **Record decoder** (`sqlite/record.mdk`) | Decodes the `Cell` list from each raw record; round-trips all serial types in `types.db` |
@@ -784,95 +792,133 @@ Each slice is a mergeable increment that passes a concrete gate.
 
 ---
 
-## Design forks (decisions needed)
+## Design decisions (RESOLVED)
 
-These are genuine design questions not yet resolved by the locked decisions.
+The five forks from the initial design draft are all resolved. Decisions recorded here;
+rationale collapsed since they are no longer open questions.
 
-### Fork A: ByteParser location — new top-level module or inside sqlite/?
+### A — ByteParser location: own `byteparser/` project ✅ DECIDED
 
-**Option 1:** `sqlite/byte_parser.mdk` — ByteParser lives inside the sqlite library.
-- Pro: no dependency management, zero blast radius if the API changes.
-- Con: not reusable for future binary libraries (msgpack, protobuf, etc.).
+**Decision:** ByteParser is its own library project under `byteparser/` with its own
+`medaka.toml`, mirroring the layout of `parsec/`. It is NOT nested inside `sqlite/`.
 
-**Option 2:** `stdlib/byte_parser.mdk` — add ByteParser to the stdlib.
-- Pro: reusable; the same combinator model is useful for any binary format.
-- Con: requires touching the stdlib; a new stdlib module has more ceremony.
+Rationale: ByteParser is independently useful for any future binary format library
+(msgpack, protobuf, PNG, etc.). A standalone project with its own toml gives it clean
+import paths and makes `medaka test byteparser/` work. The `parsec/` precedent is clear.
 
-**Option 3:** `support/byte_parser.mdk` inside a new `sqlite/` project with its own
-`medaka.toml`.
-- Pro: cleanest isolation; sqlite is a library, not a stdlib concern.
-- Con: adds a new project directory; import paths get longer.
+### B — Project structure: `sqlite/` is a `medaka.toml` project ✅ DECIDED
 
-**Recommendation:** Option 1 for the initial slice (ship fast, validate the API),
-with a planned promotion to stdlib or `support/` after the API stabilises. Document
-the intent so the refactor is expected.
+**Decision:** `sqlite/` is a full `medaka.toml` project, mirroring `parsec/`. It
+imports `byteparser/` as a cross-project dependency (see caveat below).
 
-### Fork B: Project structure — flat files or medaka.toml project?
+### C — Float decoding: `bytesToFloat64` is a new extern ✅ DECIDED
 
-**Option 1:** Flat files alongside existing stdlib: `sqlite/header.mdk`,
-`sqlite/btree.mdk`, etc. as sibling `.mdk` files.
-- Pro: consistent with how `parsec/` is laid out (it has a `medaka.toml`).
-- Con: no medaka.toml → no `medaka build` producing a library artifact.
+**Decision:** Add `bytesToFloat64 : Array Int -> Int -> Float` as a new extern,
+sequenced at the record-decoder slice (slice 4).
 
-**Option 2:** A full `medaka.toml` project under `sqlite/`.
-- Pro: `medaka build` works; `medaka test` works per-module; consistent with parsec.
-- Con: slightly more setup.
+Rationale: Medaka's `Int` is 63-bit (OCaml/native tagged). Reconstructing a 64-bit
+IEEE double from 8 raw bytes in pure Medaka is impossible without losing the sign bit
+or the 64th mantissa bit. The extern is one line in `eval.ml` (OCaml's
+`Int64.float_of_bits`) + the native runtime counterpart. Same argument as
+`readFileBytes`: a bits-to-float reinterpret is inherently a machine primitive.
 
-**Recommendation:** Use Option 2 (medaka.toml project under `sqlite/`), mirroring
-the parsec layout. The parsec precedent is clear.
+### D — SQL text parsing: skip in Phase 1 (position-based) ✅ DECIDED
 
-### Fork C: Float decoding — how to handle `beFloat64`?
+**Decision:** Do not parse the `CREATE TABLE` SQL text from `sqlite_master` in
+Phase 1. `RowType` is position-based by design (the decoder closure receives a
+`List Cell` in column order). Column names are optional metadata needed only for
+Phase 2's `colInt "name"` smart constructors.
 
-IEEE 754 doubles must be reconstructed from 8 raw bytes. The current `runtime.mdk`
-primitive catalog does NOT include a `bytesToFloat64 : Array Int -> Float` extern.
-Two paths:
+Phase 2 can add a light SQL parser (using `parsec`) to validate that
+`colInt "age"` refers to an INTEGER column. That is a Phase 2 concern.
 
-**Option 1:** Add a new `bytesToFloat64 : Array Int -> Int -> Float` extern to
-`runtime.mdk` + `eval.ml` that takes a byte array and an offset, reads 8 bytes,
-and returns the double.
+### E — Overflow pages: clean error in Phase 1, transparent walk in Phase 2 ✅ DECIDED
 
-**Option 2:** Decode the double in pure Medaka using the bit-level float structure
-(sign bit, 11-bit exponent, 52-bit mantissa) and `fromInt` math. Correct but
-complex and slow.
+**Decision:** Phase 1 returns `Err "overflow payload not supported"` when a
+table-leaf cell payload exceeds the usable per-page size. Phase 2 adds transparent
+overflow-chain walking inside `btree.mdk`; the caller never needs to think about it.
 
-**Recommendation:** Option 1. A `bytesToFloat64` extern is clean and principled —
-the same argument as why `readFileBytes` is an extern (bits-to-float is inherently
-a machine primitive). This is one line in `eval.ml` (OCaml's `Int64.float_of_bits`
-or `Bytes.get_uint64_be` + cast) and a corresponding native runtime entry.
+---
 
-### Fork D: SQL text parsing for schema extraction
+## Portability / bytes-first API (v1 API-shape DECISION)
 
-To match query columns against table columns by name, we need to parse the `sql`
-column from `sqlite_master` (e.g. `"CREATE TABLE users (id INTEGER PRIMARY KEY,
-name TEXT, age INTEGER)"`).
+The core constructor is:
 
-**Option 1:** Light regex-free parser: extract the column list using string
-splitting + trimming. Fragile but sufficient for well-formed schemas.
+```
+fromBytes : Array Int -> Result String Db
+```
 
-**Option 2:** Use `parsec` (the char-level combinator library) to parse the CREATE
-TABLE SQL minimally — just enough to extract column names and types.
+This is **pure** — no effects, no filesystem access. The full file-open convenience
+is a thin wrapper:
 
-**Option 3:** Don't parse the SQL at all. Rely on column POSITION (ordinal) in the
-record, not name. The `RowType` model is already position-based (the decoder closure
-receives a `List Cell` in record order). Column names are optional metadata.
+```
+openDb : String -> <FileRead> Result String Db
+openDb path = readFileBytes path >>= fromBytes
+```
 
-**Recommendation:** Option 3 for Phase 1. The `RowType` API is position-based by
-design; names are only needed for Phase 2's `colInt "name"` smart constructors.
-Phase 2 can add a light SQL parser (Option 2 using parsec) to validate that
-`colInt "age"` refers to an INTEGER column.
+**Rationale:** This design isolates the one impure call to a single thin combinator.
+The rest of the library — `scanTable`, `fetchAll`, `query`, `render`, all `RowType`
+combinators — is pure given a `Db`. This has three concrete payoffs:
 
-### Fork E: Overflow page handling
+1. **Testability without a filesystem.** Unit tests and doctests can feed a
+   hand-crafted `Array Int` (the bytes of a known sqlite header, a synthetic record,
+   etc.) directly to `fromBytes` without touching disk. Doctests in particular run
+   under `medaka test` which uses the native interpreter — which does NOT have
+   `readFileBytes`. The bytes-first API lets every parsing combinator be doctest-able.
+2. **WasmGC port is additive.** A future browser-side SQLite needs only one new
+   host seam: a `readFileBytes` equivalent on the wasm side (e.g. reading from an
+   `ArrayBuffer`). The library itself is unchanged.
+3. **Clean effects manifest.** A function that only calls `fromBytes` and `scanTable`
+   has effect row `⟨⟩` — statically IO-free. Only callers that invoke `openDb`
+   acquire `<FileRead>`.
 
-Table-leaf cells whose payload exceeds the usable-per-page size spill into
-overflow pages (a linked list of page numbers). Phase 1 documents the limit and
-returns `Err`.
+**Phase 2 note:** A windowed / seek-based access path (for large databases) would
+replace the whole-file slurp with a page-reader abstraction of the shape:
 
-For Phase 2: should overflow be transparent (silently walk the chain) or surfaced
-as a query option?
+```
+-- Read `len` bytes starting at byte offset `off`:
+type PageReader = Int -> Int -> <FileRead> Result String (Array Int)
+```
 
-**Recommendation:** Make it transparent in Phase 2. The user should not need to
-think about overflow; it is a B-tree storage detail. Add overflow chain walking to
-`btree.mdk` as a follow-on slice after the basic read path is solid.
+This is a Phase 2 concern. For Phase 1, `fromBytes` over a whole-file slurp is
+correct and sufficient.
+
+**Cross-project import caveat:** `sqlite/` imports `byteparser/` as a
+cross-project dependency. This may surface a loader / `medaka.toml` cross-project
+dependency gap — `parsec/`'s Finding-#3 fix (2026-06-23) closed the intra-project
+walk-up, but cross-project dependency resolution has not been exercised. This is a
+good forcing function to handle when wiring the import, not before.
+
+---
+
+## v2 fast-follows
+
+These are NOT in scope for the v1 read path. Recorded here so the design has
+natural next-steps when v1 ships.
+
+### WasmGC port
+
+The library is ~99% pure compute over `Array Int`; the only OS touchpoint is
+`readFileBytes`. The bytes-first API makes the wasm port additive:
+
+- Add `readFileBytes` to the wasm host-import surface (read from an `ArrayBuffer`).
+- Add `bytesToFloat64` to the wasm host-import surface (pure on wasm via
+  `f64.reinterpret_i64`; no host round-trip needed, but the extern surface is the
+  same pattern).
+- The rest of the library recompiles unchanged.
+
+Payoff: a 3-way native / `medaka build` / wasm differential oracle. Also a
+concrete capability-wedge demo: a browser-side SQLite with `<FileRead>` capability
+visible in the manifest, enforceable by a wasm host policy.
+
+### Async SQL server
+
+A network SQL server in front of the sync SQLite lib is the real async forcing
+function — SQLite itself is synchronous, so `<Net>` sockets + an async reactor
+are needed to serve multiple clients. This is the motivating use case for `<Net>`
+sockets and the async monad design (see `ASYNC-DESIGN.md`).
+
+Both fast-follows are blocked on the v1 read-path being solid.
 
 ---
 
