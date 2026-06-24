@@ -708,6 +708,34 @@ long long mdk_read_file(long long path) {
   return mdk_ok(mdk_str_lit(buf, (long long)got));
 }
 
+/* readFileBytes : String -> Result String (Array Int) — raw bytes, no decode.
+ * Builds an Array cell [len, b0<<1|1, b1<<1|1, ...] of TAGGED int byte values
+ * 0..255 (mirrors mdk_array_from_list element tagging). */
+long long mdk_read_file_bytes(long long path) {
+  const char *p = (const char *)path + 24;
+  FILE *f = fopen(p, "rb");
+  if (!f) return mdk_err(mdk_str_cstr(strerror(errno)));
+  fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+  unsigned char *buf = (unsigned char *)mdk_alloc(n + 1);
+  size_t got = fread(buf, 1, (size_t)n, f); fclose(f);
+  long long *cell = (long long *)mdk_alloc(8 * ((long long)got + 1));
+  cell[0] = (long long)got;
+  for (size_t i = 0; i < got; i++) cell[i + 1] = (((long long)buf[i]) << 1) | 1;
+  return mdk_ok((long long)cell);
+}
+
+/* Bitwise / shift primitives.  Args arrive UNTAGGED (emitter untagInts them)
+ * and the result is retagged by the emitter (tagInt: (r<<1)|1, which discards
+ * the top bit so bitNot matches OCaml lnot on the 63-bit rep).  shiftRight is
+ * LOGICAL: >> on the untagged non-negative 63-bit value == OCaml lsr for the
+ * non-negative (binary-decoding) case. */
+long long mdk_bit_and(long long a, long long b)    { return a & b; }
+long long mdk_bit_or(long long a, long long b)     { return a | b; }
+long long mdk_bit_xor(long long a, long long b)    { return a ^ b; }
+long long mdk_shift_left(long long a, long long b)  { return a << b; }
+long long mdk_shift_right(long long a, long long b) { return a >> b; }
+long long mdk_bit_not(long long a)                 { return ~a; }
+
 static long long mdk_write_impl(long long path, long long content, const char *mode) {
   const char *p = (const char *)path + 24;
   const char *c = (const char *)content + 24;

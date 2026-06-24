@@ -1667,6 +1667,7 @@ isFileExtern name =
     name
     [
       "readFile",
+      "readFileBytes",
       "writeFile",
       "appendFile",
       "fileExists",
@@ -1686,6 +1687,12 @@ emitFileExtern e env "readFile" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_file(i64 " ++ p ++ ")")
     (r, LTCon)
   _ => panic "llvm spike: readFile takes one argument (slice 13)"
+emitFileExtern e env "readFileBytes" args = match emitArgs e env args
+  [p] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_file_bytes(i64 " ++ p ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: readFileBytes takes one argument"
 emitFileExtern e env "writeFile" args = match emitArgs e env args
   [p, c] =>
     let r = freshReg e
@@ -1814,6 +1821,40 @@ emitPerfExtern _ _ name _ = gapE ("unsupported perf extern " ++ name)
 -- Each unpacks the native arg the C helper wants (untagged int / codepoint /
 -- unboxed double / String cell pointer) and tags the RAW Int result.  hashBool
 -- untags the 0/1 bool word.  See runtime/medaka_rt.c mdk_hash_*.
+-- Bitwise / shift externs (PURE).  Args are tagged ints — untag each operand,
+-- call the C helper on the raw values, retag the result.  shiftRight is LOGICAL
+-- (C >> on the untagged non-negative value == OCaml lsr for non-negative);
+-- bitNot's retag (shl/or) drops the top bit so it matches OCaml lnot on the
+-- 63-bit rep.  See runtime/medaka_rt.c mdk_bit_*/mdk_shift_*.
+isBitExtern : String -> Bool
+isBitExtern name =
+  contains name ["bitAnd", "bitOr", "bitXor", "shiftLeft", "shiftRight", "bitNot"]
+
+emitBitBin : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitBitBin e env sym args = match emitArgs e env args
+  [a, b] =>
+    let x = untagInt e a
+    let y = untagInt e b
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @" ++ sym ++ "(i64 " ++ x ++ ", i64 " ++ y ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic ("llvm spike: " ++ sym ++ " takes two arguments")
+
+emitBitExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitBitExtern e env "bitAnd" args = emitBitBin e env "mdk_bit_and" args
+emitBitExtern e env "bitOr" args = emitBitBin e env "mdk_bit_or" args
+emitBitExtern e env "bitXor" args = emitBitBin e env "mdk_bit_xor" args
+emitBitExtern e env "shiftLeft" args = emitBitBin e env "mdk_shift_left" args
+emitBitExtern e env "shiftRight" args = emitBitBin e env "mdk_shift_right" args
+emitBitExtern e env "bitNot" args = match emitArgs e env args
+  [a] =>
+    let x = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_bit_not(i64 " ++ x ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: bitNot takes one argument"
+emitBitExtern _ _ name _ = gapE ("unsupported bit extern " ++ name)
+
 isHashExtern : String -> Bool
 isHashExtern name =
   contains name ["hashInt", "hashChar", "hashBool", "hashFloat", "hashString"]
@@ -1900,6 +1941,7 @@ isAnyExtern name = isStrExtern name
   || isFileExtern name
   || isRngExtern name
   || isHashExtern name
+  || isBitExtern name
   || isDebugLitExtern name
   || isPerfExtern name
 
@@ -1915,7 +1957,7 @@ emitExternApplied e env fname args =
   if isStrExtern fname then
     emitStrExtern e env fname args
   else
-    if isNumExtern fname then emitNumExtern e env fname args else if isIoExtern fname then emitIoExtern e env fname args else if isAbortExtern fname then emitAbortExtern e env fname args else if isArrIntrinsic fname then emitArrIntrinsic e env fname args else if fname == "arrayMakeWith" then emitArrayMakeWith e env args else if isArrLeafExtern fname then emitArrLeafExtern e env fname args else if isCharExtern fname then emitCharExtern e env fname args else if isStrCharExtern fname then emitStrCharExtern e env fname args else if isUnicodeExtern fname then emitUnicodeExtern e env fname args else if isAdtExtern fname then emitAdtExtern e env fname args else if isEnvExtern fname then emitEnvExtern e env fname args else if isFileExtern fname then emitFileExtern e env fname args else if isRngExtern fname then emitRngExtern e env fname args else if isHashExtern fname then emitHashExtern e env fname args else if isPerfExtern fname then emitPerfExtern e env fname args else emitDebugLitExtern e env fname args
+    if isNumExtern fname then emitNumExtern e env fname args else if isIoExtern fname then emitIoExtern e env fname args else if isAbortExtern fname then emitAbortExtern e env fname args else if isArrIntrinsic fname then emitArrIntrinsic e env fname args else if fname == "arrayMakeWith" then emitArrayMakeWith e env args else if isArrLeafExtern fname then emitArrLeafExtern e env fname args else if isCharExtern fname then emitCharExtern e env fname args else if isStrCharExtern fname then emitStrCharExtern e env fname args else if isUnicodeExtern fname then emitUnicodeExtern e env fname args else if isAdtExtern fname then emitAdtExtern e env fname args else if isEnvExtern fname then emitEnvExtern e env fname args else if isFileExtern fname then emitFileExtern e env fname args else if isRngExtern fname then emitRngExtern e env fname args else if isHashExtern fname then emitHashExtern e env fname args else if isBitExtern fname then emitBitExtern e env fname args else if isPerfExtern fname then emitPerfExtern e env fname args else emitDebugLitExtern e env fname args
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r

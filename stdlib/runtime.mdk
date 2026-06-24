@@ -29,6 +29,19 @@ extern pi : Float
 extern e : Float
 extern readLine : Unit -> <Stdin> String
 extern readFile : String -> <FileRead> Result String String
+-- Read a file as RAW BYTES (no UTF-8 decode): Ok (Array Int) of byte values
+-- 0..255, or Err msg on failure.  Mirrors readFile but builds an Array of
+-- tagged ints instead of a String.  For SQLite/binary read paths.
+extern readFileBytes : String -> <FileRead> Result String (Array Int)
+-- Bitwise / shift primitives (PURE).  Defined on the 63-bit Int rep; native
+-- (C) == OCaml for NON-NEGATIVE operands (the binary-decoding case).
+-- shiftRight is LOGICAL (unsigned): OCaml lsr, C >> on the untagged value.
+extern bitAnd : Int -> Int -> Int
+extern bitOr : Int -> Int -> Int
+extern bitXor : Int -> Int -> Int
+extern shiftLeft : Int -> Int -> Int
+extern shiftRight : Int -> Int -> Int
+extern bitNot : Int -> Int
 extern writeFile : String -> String -> <FileWrite> Result String Unit
 -- Run a subprocess: prog args -> Ok (exitCode, stdout, stderr) | Err osError.
 -- Return type: Result String (Int, String, String) (Result e a: e=error, a=ok).

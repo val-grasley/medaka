@@ -1758,6 +1758,12 @@ externBindings = [
   ("wallTimeSec", prim1M pWallTimeSec),
   ("allocBytes", prim1M pAllocBytes),
   ("intToString", prim1 pIntToString),
+  ("bitAnd", prim2 pBitAnd),
+  ("bitOr", prim2 pBitOr),
+  ("bitXor", prim2 pBitXor),
+  ("shiftLeft", prim2 pShiftLeft),
+  ("shiftRight", prim2 pShiftRight),
+  ("bitNot", prim1 pBitNot),
   ("intToFloat", prim1 pIntToFloat),
   ("floatToInt", prim1 pFloatToInt),
   ("floatToString", prim1 pFloatToString),
@@ -1823,6 +1829,30 @@ charPred _ _ = panic "char predicate: not a Char"
 pIntToString : Value -> Value
 pIntToString (VInt n) = VString (intToString n)
 pIntToString _ = panic "intToString: not an Int"
+
+pBitAnd : Value -> Value -> Value
+pBitAnd (VInt a) (VInt b) = VInt (bitAnd a b)
+pBitAnd _ _ = panic "bitAnd: not Ints"
+
+pBitOr : Value -> Value -> Value
+pBitOr (VInt a) (VInt b) = VInt (bitOr a b)
+pBitOr _ _ = panic "bitOr: not Ints"
+
+pBitXor : Value -> Value -> Value
+pBitXor (VInt a) (VInt b) = VInt (bitXor a b)
+pBitXor _ _ = panic "bitXor: not Ints"
+
+pShiftLeft : Value -> Value -> Value
+pShiftLeft (VInt a) (VInt b) = VInt (shiftLeft a b)
+pShiftLeft _ _ = panic "shiftLeft: not Ints"
+
+pShiftRight : Value -> Value -> Value
+pShiftRight (VInt a) (VInt b) = VInt (shiftRight a b)
+pShiftRight _ _ = panic "shiftRight: not Ints"
+
+pBitNot : Value -> Value
+pBitNot (VInt a) = VInt (bitNot a)
+pBitNot _ = panic "bitNot: not an Int"
 
 pIntToFloat : Value -> Value
 pIntToFloat (VInt n) = VFloat (intToFloat n)

@@ -1388,6 +1388,42 @@ let primitives : (string * value) list =
            VCon ("Ok", [VString s])
          with Sys_error msg -> VCon ("Err", [VString msg]))
       | _ -> raise (Eval_error ("readFile: expected String", None))));
+    ("readFileBytes", VPrim (fun path ->
+      match path with
+      | VString p ->
+        (try
+           let ic = open_in_bin p in
+           let n = in_channel_length ic in
+           let s = really_input_string ic n in
+           close_in ic;
+           VCon ("Ok", [VArray (Array.init n (fun i -> VInt (Char.code s.[i])))])
+         with Sys_error msg -> VCon ("Err", [VString msg]))
+      | _ -> raise (Eval_error ("readFileBytes: expected String", None))));
+    (* Bitwise / shift primitives.  shiftRight is LOGICAL (lsr). *)
+    ("bitAnd", VPrim (fun a -> VPrim (fun b ->
+      match a, b with
+      | VInt x, VInt y -> VInt (x land y)
+      | _ -> raise (Eval_error ("bitAnd: expected Int", None)))));
+    ("bitOr", VPrim (fun a -> VPrim (fun b ->
+      match a, b with
+      | VInt x, VInt y -> VInt (x lor y)
+      | _ -> raise (Eval_error ("bitOr: expected Int", None)))));
+    ("bitXor", VPrim (fun a -> VPrim (fun b ->
+      match a, b with
+      | VInt x, VInt y -> VInt (x lxor y)
+      | _ -> raise (Eval_error ("bitXor: expected Int", None)))));
+    ("shiftLeft", VPrim (fun a -> VPrim (fun b ->
+      match a, b with
+      | VInt x, VInt y -> VInt (x lsl y)
+      | _ -> raise (Eval_error ("shiftLeft: expected Int", None)))));
+    ("shiftRight", VPrim (fun a -> VPrim (fun b ->
+      match a, b with
+      | VInt x, VInt y -> VInt (x lsr y)
+      | _ -> raise (Eval_error ("shiftRight: expected Int", None)))));
+    ("bitNot", VPrim (fun a ->
+      match a with
+      | VInt x -> VInt (lnot x)
+      | _ -> raise (Eval_error ("bitNot: expected Int", None))));
     ("writeFile", VPrim (fun path ->
       VPrim (fun content ->
         match path, content with
