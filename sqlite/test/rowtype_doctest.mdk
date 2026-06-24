@@ -107,14 +107,17 @@ showP2 r = match r
     (a, b) => "(\{a}, \{b})"
   Err e => "Err: \{e}"
 
--- | tFloat decodes a CFloat cell; errors on any other cell type.
+-- | tFloat decodes a CFloat cell; COERCES a CInt cell to float (SQLite stores
+--   whole-number REALs as integer serial types); errors on non-numeric cells.
 --
 -- > showF (rtDecode tFloat [CFloat 1.5])
 -- "1.5"
 -- > showF (rtDecode tFloat [CFloat (-2.0)])
 -- "-2.0"
 -- > showF (rtDecode tFloat [CInt 7])
--- "Err: tFloat: expected float column, got Int"
+-- "7.0"
+-- > showF (rtDecode tFloat [CText "x"])
+-- "Err: tFloat: expected numeric column, got Text"
 export
 showF : Result String Float -> String
 showF r = match r

@@ -95,15 +95,17 @@ decodeBlob (CBlob b :: []) = Ok b
 decodeBlob (c :: [])       = Err "tBlob: expected blob column, got \{cellShape c}"
 decodeBlob _               = Err "tBlob: expected exactly 1 column"
 
--- | Decode a single float column (serial type 7, IEEE 754 big-endian double).
---   Errors on any non-`CFloat` cell — use `tCustom` for affinity-flexible reads.
+-- | Decode a single float column.  COERCES integer cells to float, because
+--   SQLite stores whole-number REAL values as integer serial types (so a REAL
+--   column commonly yields `CInt`).  Non-numeric cells error.
 export
 tFloat : RowType Float
 tFloat = mkRowType 1 decodeFloat
 
 decodeFloat : List Cell -> Result String Float
 decodeFloat (CFloat f :: []) = Ok f
-decodeFloat (c :: [])        = Err "tFloat: expected float column, got \{cellShape c}"
+decodeFloat (CInt n :: [])   = Ok (intToFloat n)
+decodeFloat (c :: [])        = Err "tFloat: expected numeric column, got \{cellShape c}"
 decodeFloat _                = Err "tFloat: expected exactly 1 column"
 
 -- | Wrap an inner decoder so that a NULL (across ALL its `width` columns)
