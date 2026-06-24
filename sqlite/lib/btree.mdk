@@ -1,0 +1,139 @@
+-- | sqlite.lib.btree — B-tree page parsing (table leaf pages, type 0x0D).
+--
+-- A page is `pageSize` bytes.  Page 1 is special: its B-tree header begins at
+-- byte offset 100 (after the database header), not 0.  All other pages begin
+-- their B-tree header at offset 0 within the page.
+--
+-- Page header (SQLITE-DESIGN.md §2):
+--   0  1  page type flag (0x0D = table leaf, 0x05 = table interior, ...)
+--   1  2  first freeblock offset
+--   3  2  number of cells
+--   5  2  start of cell content area (0 = 65536)
+--   7  1  fragmented free bytes
+--   8  4  right-most pointer (interior pages only)
+--
+-- The cell pointer array immediately follows the header: `numCells` big-endian
+-- uint16 byte offsets (relative to the page start).
+--
+-- Table-leaf cell (§3): [payload-len varint] [rowid varint] [payload].
+-- We decode each into a `Row` = (rowid, cells).
+
+import byteparser.lib.byteparser.{
+  BOk,
+  BErr,
+  runBP,
+  sqVarint,
+}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, parseRecord}
+
+-- | A decoded table row: its rowid and the column cells.
+public export data Row = Row Int (List Cell)
+
+export
+rowRowid : Row -> Int
+rowRowid (Row rid _) = rid
+
+export
+rowCells : Row -> List Cell
+rowCells (Row _ cs) = cs
+
+-- Page-type constants.
+export
+pageTableLeaf : Int
+pageTableLeaf = 13      -- 0x0D
+
+export
+pageTableInterior : Int
+pageTableInterior = 5   -- 0x05
+
+-- | Read the page-type byte of the page whose B-tree header starts at
+--   `hdrOffset` in the whole-file byte array.
+export
+pageType : Array Int -> Int -> Int
+pageType bytes hdrOffset = arrayGetUnsafe hdrOffset bytes
+
+-- | Read the cell count from a page B-tree header at `hdrOffset`.
+export
+pageCellCount : Array Int -> Int -> Int
+pageCellCount bytes hdrOffset = beU16 bytes (hdrOffset + 3)
+
+-- Read a big-endian uint16 at absolute byte offset `off`.
+beU16 : Array Int -> Int -> Int
+beU16 bytes off = arrayGetUnsafe off bytes * 256 + arrayGetUnsafe (off + 1) bytes
+
+-- | Decode all rows of a TABLE-LEAF page.
+--
+-- `pageBase` is the absolute byte offset of the start of the page (for page N
+-- this is (N-1)*pageSize).  `hdrOffset` is where the B-tree header starts
+-- (= pageBase, except page 1 where it is pageBase + 100).
+--
+-- Returns Err if the page is not a table-leaf page.
+export
+decodeLeafPage : Array Int -> Int -> Int -> Result String (List Row)
+decodeLeafPage bytes pageBase hdrOffset =
+  if pageType bytes hdrOffset != pageTableLeaf then
+    Err "decodeLeafPage: page type \{intToString (pageType bytes hdrOffset)} is not a table-leaf page (0x0D)"
+  else
+    decodeCells bytes pageBase (hdrOffset + 8) (pageCellCount bytes hdrOffset) 0 []
+
+-- Iterate the cell-pointer array, decoding each table-leaf cell.
+decodeCells : Array Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
+decodeCells bytes pageBase cpArrayStart nCells i acc
+  | i >= nCells = Ok (reverseRows acc)
+  | otherwise =
+      -- cell pointer i is a uint16 at cpArrayStart + i*2; it is a page-relative
+      -- offset, so the absolute cell offset is pageBase + cellPtr.
+      let cellPtr = beU16 bytes (cpArrayStart + i * 2)
+      let cellOffset = pageBase + cellPtr
+      match decodeLeafCell bytes cellOffset
+        Err e => Err e
+        Ok row => decodeCells bytes pageBase cpArrayStart nCells (i + 1) (row::acc)
+
+-- | Decode one table-leaf cell at absolute byte offset `off`:
+--   [payload-len varint] [rowid varint] [record payload].
+--
+-- A complete leaf cell for rowid 3, record (NULL, "Carol", 25): payload-length
+-- 10, rowid 3, then the 10-byte record (header 4: NULL, text-5, int8):
+--
+-- > showRow (decodeLeafCell (arrayFromList [10, 3, 4, 0, 23, 1, 67, 97, 114, 111, 108, 25]) 0)
+-- "3: NULL|Carol|25"
+export
+decodeLeafCell : Array Int -> Int -> Result String Row
+decodeLeafCell bytes off =
+  match runBP sqVarint bytes off
+    BErr m ep => Err "payload-length varint: \{m} at \{intToString ep}"
+    BOk payloadLen pos1 =>
+      match runBP sqVarint bytes pos1
+        BErr m ep => Err "rowid varint: \{m} at \{intToString ep}"
+        BOk rowid pos2 =>
+          -- pos2 is the start of the record payload.
+          match runBP parseRecord bytes pos2
+            BErr m ep => Err "record: \{m} at \{intToString ep}"
+            BOk cells _ => Ok (Row rowid cells)
+
+-- | Render a decoded row (or error) as "rowid: cell|cell|..." for doctests.
+export
+showRow : Result String Row -> String
+showRow r = match r
+  Err e => "Err: \{e}"
+  Ok (Row rid cells) => stringConcat [intToString rid, ": ", showCellsBT cells]
+
+showCellsBT : List Cell -> String
+showCellsBT cells = match cells
+  [] => ""
+  c::[] => showCellBT c
+  c::rest => stringConcat [showCellBT c, "|", showCellsBT rest]
+
+showCellBT : Cell -> String
+showCellBT c = match c
+  CNull   => "NULL"
+  CInt n  => intToString n
+  CText s => s
+  CBlob _ => "<blob>"
+
+reverseRows : List Row -> List Row
+reverseRows xs = revRows xs []
+
+revRows : List Row -> List Row -> List Row
+revRows [] acc = acc
+revRows (x::xs) acc = revRows xs (x::acc)

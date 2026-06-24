@@ -773,9 +773,47 @@ Each slice's gate (see below) should pass the relevant fixtures.
 
 ---
 
-## Staged slice plan
+## Milestone status (2026-06-23) — single-leaf-page read path LANDED
 
-Each slice is a mergeable increment that passes a concrete gate.
+The core file-format reader is implemented and differentially verified against
+the real `sqlite3` CLI. Project: `sqlite/` (imports `byteparser/` cross-project).
+
+**What works** (byte-identical to `sqlite3` output):
+- 100-byte header parse + validate (magic, page size, encoding, read version).
+- Table-leaf page (0x0D) header + cell-pointer array.
+- Table-leaf cell decode: payload-length varint, rowid varint, record.
+- Record decode: header serial-type varints + body → typed `Cell`s
+  (NULL / 8–64-bit signed ints / int-0 / int-1 / UTF-8 text / blob).
+- `sqlite_master` schema read (type, name, tbl_name, rootpage, sql).
+- Full single-leaf-page table scan with rowid substitution for the
+  `INTEGER PRIMARY KEY` column (stored as NULL, value = rowid).
+- UTF-8 text (multi-byte), multiple tables, multi-width / negative integers.
+
+Verified: 31 doctests (header/record/cell decoders on literal bytes) +
+`sqlite/test/oracle.sh` (generates a DB from `sqlite/test/basic.sql`, diffs the
+Medaka reader vs `sqlite3` for schema + 3 tables — both match).
+
+**Documented residual** (fork E / slice 6): a table whose root page is a B-tree
+*interior* page (0x05 — e.g. >~100 rows) is rejected with a clean error
+`"multi-page B-tree not supported (v1 single-leaf-page only): ..."`. Multi-page
+interior-node traversal is the next slice. Float columns (serial 7) stay out of
+scope (the `beFloat64` extern is still stubbed) — they yield a clean `Err`.
+
+**Loader/language gotchas surfaced while building (real findings):**
+1. `record` is a reserved keyword, so a module file `record.mdk` imported as
+   `lib.record` fails to parse (the dotted-import segment collides with the
+   keyword). The record module is named `recordfmt.mdk`. *(Candidate compiler
+   fix: allow keyword-named path segments in import resolution.)*
+2. Medaka's not-equal operator is `!=`, not `/=` — `/=` lexes as `/` then `=`
+   and produces a misleading "Parse error" with no useful location.
+3. A `let x = e` immediately followed by a multi-line `if/then/else` whose
+   `else` branch contains multiple further `let`s hits a layout parse error;
+   inlining the leading `let` avoided it.
+The cross-project `[dependencies]` resolution from `0ad8ae9` works for the
+SQLite use case, *including transitively* (sqlite module → byteparser dep) and
+under the doctest runner.
+
+## Staged slice plan
 
 | # | Slice | Gate |
 |---|-------|------|

@@ -1,0 +1,238 @@
+-- | sqlite.lib.recordfmt — SQLite record (payload) decoding.
+--
+-- A record encodes one row.  Layout (SQLITE-DESIGN.md §4):
+--
+--   [header-length : varint] [serial-type-1 : varint] ... [serial-type-N]
+--   [value-1 : bytes] ... [value-N : bytes]
+--
+-- `header-length` counts itself, so the body starts at record_start +
+-- header-length.  We parse the serial types from the header region, then the
+-- bodies, threading the ByteParser position.
+--
+-- Serial types → `Cell` values.  Float (serial 7) is OUT OF SCOPE this slice
+-- (the `beFloat64` extern is stubbed); a float column yields `Err`.
+
+import byteparser.lib.byteparser.{
+  ByteParser,
+  BResult,
+  BOk,
+  BErr,
+  runBP,
+  runByteParser,
+  sqVarint,
+  beSint,
+  takeSlice,
+  takeBytes,
+  bFailWith,
+}
+
+-- | One decoded column value.
+public export data Cell
+  = CNull
+  | CInt Int
+  | CText String
+  | CBlob (Array Int)
+
+export
+cellToString : Cell -> String
+cellToString c = match c
+  CNull   => ""
+  CInt n  => intToString n
+  CText s => s
+  CBlob _ => "<blob>"
+
+-- A serial type's interpretation.  We keep just enough to drive the body parse.
+public export data SerialType
+  = STNull
+  | STInt Int    -- signed integer of this many body bytes (1,2,3,4,6,8)
+  | STIntZero    -- literal 0, no body bytes
+  | STIntOne     -- literal 1, no body bytes
+  | STFloat      -- 8 body bytes (UNSUPPORTED this slice)
+  | STText Int   -- text of this many body bytes
+  | STBlob Int   -- blob of this many body bytes
+
+-- | Map a raw serial-type code to a `SerialType`.
+serialOf : Int -> Result String SerialType
+serialOf n
+  | n == 0 = Ok STNull
+  | n == 1 = Ok (STInt 1)
+  | n == 2 = Ok (STInt 2)
+  | n == 3 = Ok (STInt 3)
+  | n == 4 = Ok (STInt 4)
+  | n == 5 = Ok (STInt 6)
+  | n == 6 = Ok (STInt 8)
+  | n == 7 = Ok STFloat
+  | n == 8 = Ok STIntZero
+  | n == 9 = Ok STIntOne
+  | n == 10 = Err "reserved serial type 10"
+  | n == 11 = Err "reserved serial type 11"
+  | n >= 12 = if isEven n
+              then Ok (STBlob (intDiv (n - 12) 2))
+              else Ok (STText (intDiv (n - 13) 2))
+  | otherwise = Err "negative serial type"
+
+isEven : Int -> Bool
+isEven n = n - (intDiv n 2) * 2 == 0
+
+intDiv : Int -> Int -> Int
+intDiv a b = a / b
+
+-- | Decode a full record into its column cells.
+--
+-- Parsing strategy: read the header-length varint, then read serial-type
+-- varints until we've consumed (header-length - bytes-of-header-length-varint)
+-- bytes' worth of serial types.  Because the ByteParser threads position, we
+-- track the absolute end-of-header position and loop until we reach it.
+--
+-- A real sqlite3 record for the row (id-as-NULL, "Carol", 25): header-length 4,
+-- serial 0 (NULL), serial 23 (text, (23-13)/2 = 5 bytes), serial 1 (int8):
+--
+-- > showCells (runByteParser parseRecord (arrayFromList [4, 0, 23, 1, 67, 97, 114, 111, 108, 25]))
+-- "NULL|Carol|25"
+--
+-- A two-int record (header 3, serial 1, serial 2): bytes 0x09 then 0x0100=256:
+--
+-- > showCells (runByteParser parseRecord (arrayFromList [3, 1, 2, 9, 1, 0]))
+-- "9|256"
+export
+parseRecord : ByteParser (List Cell)
+parseRecord = ByteParser parseRecordGo
+
+-- | Render a decoded record (or a parse error) to a compact "|"-joined string.
+--   Used by the doctests above to print results without a Debug instance.
+export
+showCells : Result String (List Cell) -> String
+showCells r = match r
+  Err e => "Err: \{e}"
+  Ok cells => showCellsGo cells
+
+showCellsGo : List Cell -> String
+showCellsGo cells = match cells
+  [] => ""
+  c::[] => showCell c
+  c::rest => stringConcat [showCell c, "|", showCellsGo rest]
+
+showCell : Cell -> String
+showCell c = match c
+  CNull   => "NULL"
+  CInt n  => intToString n
+  CText s => s
+  CBlob _ => "<blob>"
+
+-- The pure driver: we drop to BResult-level position threading so we can
+-- compute the header boundary precisely.
+parseRecordGo : Array Int -> Int -> BResult (List Cell)
+parseRecordGo input pos =
+  match runBP sqVarint input pos
+    BErr m ep => BErr m ep
+    BOk hdrLen hdrStart =>
+      -- header region spans [pos, pos + hdrLen); serial types live in
+      -- [hdrStart, pos + hdrLen); bodies begin at pos + hdrLen.
+      let headerEnd = pos + hdrLen
+      match readSerialTypes input hdrStart headerEnd []
+        BErr m ep => BErr m ep
+        BOk sts _ => readBodies input headerEnd sts []
+
+-- Read serial-type varints until `pos >= headerEnd`.
+readSerialTypes : Array Int -> Int -> Int -> List SerialType -> BResult (List SerialType)
+readSerialTypes input pos headerEnd acc
+  | pos >= headerEnd = BOk (reverseSTs acc) pos
+  | otherwise =
+      match runBP sqVarint input pos
+        BErr m ep => BErr m ep
+        BOk code pos2 =>
+          match serialOf code
+            Err e => BErr e pos
+            Ok st => readSerialTypes input pos2 headerEnd (st::acc)
+
+-- Read the body bytes for each serial type in order.
+readBodies : Array Int -> Int -> List SerialType -> List Cell -> BResult (List Cell)
+readBodies input pos sts acc = match sts
+  [] => BOk (reverseCells acc) pos
+  st::rest =>
+    match readBody input pos st
+      BErr m ep => BErr m ep
+      BOk cell pos2 => readBodies input pos2 rest (cell::acc)
+
+-- Read one cell's body given its serial type.
+readBody : Array Int -> Int -> SerialType -> BResult Cell
+readBody input pos st = match st
+  STNull    => BOk CNull pos
+  STIntZero => BOk (CInt 0) pos
+  STIntOne  => BOk (CInt 1) pos
+  STInt nbytes => mapBR CInt (runBP (beSint nbytes) input pos)
+  STText nbytes =>
+    mapBR (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
+  STBlob nbytes =>
+    mapBR CBlob (runBP (takeSlice nbytes) input pos)
+  STFloat => BErr "float column (serial type 7) not supported this slice" pos
+
+-- ---------------------------------------------------------------------------
+-- BResult helpers (the byteparser BResult is re-exported via its data decl)
+-- ---------------------------------------------------------------------------
+
+mapBR : (a -> b) -> BResult a -> BResult b
+mapBR f r = match r
+  BOk a p   => BOk (f a) p
+  BErr m ep => BErr m ep
+
+-- Decode a list of UTF-8 bytes to a String.
+--
+-- Decodes 1–4 byte UTF-8 sequences into Unicode codepoints, then builds the
+-- String from the resulting chars.  Invalid/truncated sequences fall back to
+-- treating the byte as a raw codepoint (Latin-1-ish) so decoding never panics.
+bytesToString : List Int -> String
+bytesToString bs = stringFromChars (arrayFromList (codepointsToChars (utf8Codepoints bs)))
+
+-- Convert decoded codepoints to Chars (charFromCode is the prelude extern).
+codepointsToChars : List Int -> List Char
+codepointsToChars cps = match cps
+  [] => []
+  cp::rest => match charFromCode cp
+    Some c => c :: codepointsToChars rest
+    None   => codepointsToChars rest
+
+-- UTF-8 byte sequence → list of codepoints.
+utf8Codepoints : List Int -> List Int
+utf8Codepoints bs = match bs
+  [] => []
+  b0::rest =>
+    if b0 < 0x80 then
+      b0 :: utf8Codepoints rest
+    else if b0 < 0xE0 then
+      utf8Take1 (b0 - 0xC0) rest
+    else if b0 < 0xF0 then
+      utf8Take2 (b0 - 0xE0) rest
+    else
+      utf8Take3 (b0 - 0xF0) rest
+
+-- Take 1 continuation byte (2-byte sequence).
+utf8Take1 : Int -> List Int -> List Int
+utf8Take1 acc bs = match bs
+  b1::rest => (acc * 64 + (b1 - 0x80)) :: utf8Codepoints rest
+  [] => [acc]
+
+-- Take 2 continuation bytes (3-byte sequence).
+utf8Take2 : Int -> List Int -> List Int
+utf8Take2 acc bs = match bs
+  b1::b2::rest =>
+    ((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) :: utf8Codepoints rest
+  _ => [acc]
+
+-- Take 3 continuation bytes (4-byte sequence).
+utf8Take3 : Int -> List Int -> List Int
+utf8Take3 acc bs = match bs
+  b1::b2::b3::rest =>
+    (((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) * 64 + (b3 - 0x80))
+      :: utf8Codepoints rest
+  _ => [acc]
+
+reverseSTs : List SerialType -> List SerialType
+reverseSTs xs = revGo xs []
+
+revGo : List a -> List a -> List a
+revGo [] acc = acc
+revGo (x::xs) acc = revGo xs (x::acc)
+
+reverseCells : List Cell -> List Cell
+reverseCells xs = revGo xs []

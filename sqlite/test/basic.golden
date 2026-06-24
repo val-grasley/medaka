@@ -1,0 +1,16 @@
+# schema
+table|users|2
+table|items|3
+table|notes|4
+# table users
+1|Alice|30
+2|Bob|
+3|Carol|25
+# table items
+1|café ☕|7
+2|日本語|1000
+3|big|300000
+4|neg|-42
+# table notes
+hello
+world

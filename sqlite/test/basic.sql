@@ -1,0 +1,12 @@
+CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);
+INSERT INTO users VALUES (1, 'Alice', 30);
+INSERT INTO users VALUES (2, 'Bob', NULL);
+INSERT INTO users VALUES (3, 'Carol', 25);
+CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT, qty INTEGER);
+INSERT INTO items VALUES (1, 'café ☕', 7);
+INSERT INTO items VALUES (2, '日本語', 1000);
+INSERT INTO items VALUES (3, 'big', 300000);
+INSERT INTO items VALUES (4, 'neg', -42);
+CREATE TABLE notes (n TEXT);
+INSERT INTO notes VALUES ('hello');
+INSERT INTO notes VALUES ('world');

@@ -1,0 +1,125 @@
+-- | sqlite.lib.header — the 100-byte SQLite database header.
+--
+-- Parses and validates the database header (first 100 bytes of page 1) per
+-- the SQLite file format spec.  Only the fields the read path needs are kept;
+-- the rest are skipped.
+--
+-- Offsets (from SQLITE-DESIGN.md §1, verified against a real sqlite3 file):
+--   0  16  magic string "SQLite format 3\000"
+--   16  2  page size (big-endian uint16; 1 means 65536)
+--   18  1  file format write version
+--   19  1  file format read version (1=legacy, 2=WAL)
+--   20  1  reserved bytes per page
+--   28  4  database page count
+--   40  4  schema cookie
+--   56  4  text encoding (1=UTF-8)
+
+import byteparser.lib.byteparser.{
+  ByteParser,
+  runByteParser,
+  beUint,
+  takeBytes,
+  bFailWith,
+  anyByte,
+}
+
+-- | The parsed header fields the read path uses.
+public export data DbHeader = DbHeader
+  { pageSize     : Int
+  , pageCount    : Int
+  , encoding     : Int
+  , reserved     : Int
+  , schemaCookie : Int
+  , readVersion  : Int
+  }
+
+export
+headerPageSize : DbHeader -> Int
+headerPageSize h = h.pageSize
+
+export
+headerPageCount : DbHeader -> Int
+headerPageCount h = h.pageCount
+
+export
+headerEncoding : DbHeader -> Int
+headerEncoding h = h.encoding
+
+export
+headerReserved : DbHeader -> Int
+headerReserved h = h.reserved
+
+export
+headerReadVersion : DbHeader -> Int
+headerReadVersion h = h.readVersion
+
+-- The expected magic bytes: "SQLite format 3\000".
+magicBytes : List Int
+magicBytes =
+  [ 83, 81, 76, 105, 116, 101, 32  -- "SQLite "
+  , 102, 111, 114, 109, 97, 116    -- "format"
+  , 32, 51, 0 ]                    -- " 3\000"
+
+-- | Compare a parsed byte list with the expected magic; fail with a message.
+checkMagic : List Int -> ByteParser Unit
+checkMagic got =
+  if listIntEq got magicBytes
+  then pure ()
+  else bFailWith "not a SQLite database (bad magic string)"
+
+-- Structural equality on List Int (avoids importing list/core derive here).
+listIntEq : List Int -> List Int -> Bool
+listIntEq [] [] = True
+listIntEq (x::xs) (y::ys) = if x == y then listIntEq xs ys else False
+listIntEq _ _ = False
+
+-- | The header parser: reads and validates the 100-byte header.
+--
+-- A page size of `1` in the file means 65536 (the only out-of-range encoding).
+--
+-- A real 100-byte header from a `sqlite3`-created DB (page size 4096, UTF-8,
+-- 2 pages, read version 1) decodes to "4096|2|1":
+--
+-- > showHeader (runByteParser parseHeader (arrayFromList [83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0, 16, 0, 1, 1, 12, 64, 32, 32, 0, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 46, 141, 248]))
+-- "4096|2|1"
+--
+-- A bad magic string (16 wrong bytes) is rejected:
+--
+-- > showHeader (runByteParser parseHeader (arrayFromList [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]))
+-- "Err: not a SQLite database (bad magic string) at byte 16"
+export
+parseHeader : ByteParser DbHeader
+parseHeader = do
+  magic <- takeBytes 16
+  _ <- checkMagic magic
+  rawPageSize <- beUint 2
+  _ <- anyByte                  -- write version (offset 18): skip 1 byte
+  readVer <- beUint 1           -- read version (offset 19)
+  reserved <- beUint 1          -- reserved per page (offset 20)
+  _ <- takeBytes 7              -- offsets 21..27: payload fractions, change ctr
+  pageCount <- beUint 4         -- offset 28
+  _ <- takeBytes 8              -- offsets 32..39: freelist trunk + count
+  schemaCookie <- beUint 4      -- offset 40
+  _ <- takeBytes 12             -- offsets 44..55
+  encoding <- beUint 4          -- offset 56
+  _ <- takeBytes 40             -- offsets 60..99: remainder of header
+  let pageSize = if rawPageSize == 1 then 65536 else rawPageSize
+  pure (DbHeader
+    { pageSize = pageSize
+    , pageCount = pageCount
+    , encoding = encoding
+    , reserved = reserved
+    , schemaCookie = schemaCookie
+    , readVersion = readVer
+    })
+
+-- | Render a parsed header (or error) as "pageSize|pageCount|encoding" for
+--   doctests.
+export
+showHeader : Result String DbHeader -> String
+showHeader r = match r
+  Err e => "Err: \{e}"
+  Ok h => stringConcat
+    [ intToString h.pageSize, "|"
+    , intToString h.pageCount, "|"
+    , intToString h.encoding ]

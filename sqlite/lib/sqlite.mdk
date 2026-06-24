@@ -1,0 +1,180 @@
+-- | sqlite.lib.sqlite — the read-path entry points.
+--
+-- `fromBytes` is the PURE core: it takes a whole-file byte image and produces a
+-- `Db` (the parsed header + the raw bytes).  `openDb` is the thin native
+-- wrapper that slurps the file via `readFileBytes` and calls `fromBytes`.
+--
+-- Schema discovery: page 1 holds the `sqlite_master` table B-tree.  Its rows
+-- have columns (type, name, tbl_name, rootpage, sql).  We scan them to find a
+-- user table's rootpage, then full-table-scan that page's rows.
+--
+-- v1 LIMIT: single table-leaf root page per table (no interior-page B-tree
+-- traversal; no overflow chains).  A multi-page table yields a clean Err.
+
+import byteparser.lib.byteparser.{runByteParser}
+import lib.header.{
+  DbHeader,
+  parseHeader,
+  headerPageSize,
+  headerReadVersion,
+  headerReserved,
+}
+import lib.btree.{
+  Row,
+  rowRowid,
+  rowCells,
+  decodeLeafPage,
+  pageType,
+  pageTableLeaf,
+}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, cellToString}
+
+-- | An open database: the parsed header plus the whole-file bytes.
+public export data Db = Db DbHeader (Array Int)
+
+export
+dbHeader : Db -> DbHeader
+dbHeader (Db h _) = h
+
+export
+dbBytes : Db -> Array Int
+dbBytes (Db _ b) = b
+
+-- | A schema-table entry (one row of sqlite_master).
+public export data SchemaEntry = SchemaEntry
+  { etype    : String   -- "table", "index", ...
+  , ename    : String   -- object name
+  , tblName  : String   -- the table it belongs to
+  , rootPage : Int      -- 1-indexed B-tree root page
+  , sql      : String   -- the original CREATE statement
+  }
+
+export
+schemaName : SchemaEntry -> String
+schemaName e = e.ename
+
+export
+schemaType : SchemaEntry -> String
+schemaType e = e.etype
+
+export
+schemaRootPage : SchemaEntry -> Int
+schemaRootPage e = e.rootPage
+
+export
+schemaSql : SchemaEntry -> String
+schemaSql e = e.sql
+
+-- | Parse a whole-file byte image into a `Db`.  PURE — no IO.
+export
+fromBytes : Array Int -> Result String Db
+fromBytes bytes = match runByteParser parseHeader bytes
+  Err e => Err "header: \{e}"
+  Ok h =>
+    if headerReadVersion h == 2
+    then Err "WAL-mode databases are not supported (read version 2)"
+    else Ok (Db h bytes)
+
+-- | Open a database file: read its bytes, then parse.  Carries <FileRead>.
+export
+openDb : String -> <FileRead> Result String Db
+openDb path = match readFileBytes path
+  Err e => Err "readFileBytes: \{e}"
+  Ok bytes => fromBytes bytes
+
+-- The absolute byte offset of the start of page N (1-indexed).
+pageBaseOf : Db -> Int -> Int
+pageBaseOf db n = (n - 1) * headerPageSize (dbHeader db)
+
+-- The B-tree header offset within a page: 100 for page 1, else the page base.
+hdrOffsetOf : Db -> Int -> Int
+hdrOffsetOf db n =
+  let base = pageBaseOf db n
+  if n == 1 then base + 100 else base
+
+-- | Read the full schema (all rows of sqlite_master on page 1).
+export
+readSchema : Db -> Result String (List SchemaEntry)
+readSchema db =
+  let bytes = dbBytes db
+  match decodeLeafPage bytes (pageBaseOf db 1) (hdrOffsetOf db 1)
+    Err e => Err "sqlite_master: \{e}"
+    Ok rows => mapResult schemaOfRow rows
+
+-- Convert one sqlite_master row into a SchemaEntry.
+schemaOfRow : Row -> Result String SchemaEntry
+schemaOfRow row = match rowCells row
+  [tc, nc, tnc, rpc, sqlc] =>
+    Ok (SchemaEntry
+      { etype = cellText tc
+      , ename = cellText nc
+      , tblName = cellText tnc
+      , rootPage = cellInt rpc
+      , sql = cellText sqlc
+      })
+  _ => Err "sqlite_master row: expected 5 columns"
+
+cellText : Cell -> String
+cellText c = match c
+  CText s => s
+  CNull   => ""
+  other   => cellToString other
+
+cellInt : Cell -> Int
+cellInt c = match c
+  CInt n => n
+  _      => 0
+
+-- | Find a user table by name in the schema.
+export
+findTable : Db -> String -> Result String SchemaEntry
+findTable db name = match readSchema db
+  Err e => Err e
+  Ok entries => findTableGo name entries
+
+findTableGo : String -> List SchemaEntry -> Result String SchemaEntry
+findTableGo name entries = match entries
+  [] => Err "table not found: \{name}"
+  e::rest =>
+    if e.etype == "table" && e.ename == name
+    then Ok e
+    else findTableGo name rest
+
+-- | Scan all rows of a table (v1: the rootpage must be a single table-leaf).
+--
+-- Returns Err "multi-page B-tree not supported (v1 single-leaf-page only)"
+-- if the rootpage is an interior page — the documented v1 residual.
+export
+scanTableRows : Db -> String -> Result String (List Row)
+scanTableRows db name = match findTable db name
+  Err e => Err e
+  Ok entry =>
+    let bytes = dbBytes db
+    let n = entry.rootPage
+    let hdrOff = hdrOffsetOf db n
+    let ptype = pageType bytes hdrOff
+    if ptype != pageTableLeaf then
+      Err "multi-page B-tree not supported (v1 single-leaf-page only): root page \{intToString n} type=\{intToString ptype}"
+    else
+      decodeLeafPage bytes (pageBaseOf db n) hdrOff
+
+-- ---------------------------------------------------------------------------
+-- Result-list helper (avoids importing list)
+-- ---------------------------------------------------------------------------
+
+mapResult : (a -> Result String b) -> List a -> Result String (List b)
+mapResult f xs = mapResultGo f xs []
+
+mapResultGo : (a -> Result String b) -> List a -> List b -> Result String (List b)
+mapResultGo f xs acc = match xs
+  [] => Ok (reverseL acc)
+  x::rest => match f x
+    Err e => Err e
+    Ok y  => mapResultGo f rest (y::acc)
+
+reverseL : List a -> List a
+reverseL xs = revL xs []
+
+revL : List a -> List a -> List a
+revL [] acc = acc
+revL (x::xs) acc = revL xs (x::acc)

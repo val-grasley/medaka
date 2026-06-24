@@ -40,10 +40,13 @@ reverseListGo (x::xs) acc = reverseListGo xs (x::acc)
 
 -- | Parse result: success carries the value and the position just past what
 --   was consumed; failure carries an error message and the failure position.
-export data BResult a = BOk a Int | BErr String Int
+--   `public export` so downstream modules (e.g. a SQLite record decoder) can
+--   pattern-match `BOk`/`BErr` directly when they need byte-precise position
+--   control beyond what the monadic combinators give.
+public export data BResult a = BOk a Int | BErr String Int
 
 -- | A byte-level parser is a function from (byte array, position) to BResult.
-export data ByteParser a = ByteParser (Array Int -> Int -> BResult a)
+public export data ByteParser a = ByteParser (Array Int -> Int -> BResult a)
 
 -- | Run the wrapped function directly.
 export
