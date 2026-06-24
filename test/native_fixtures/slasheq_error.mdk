@@ -1,0 +1,5 @@
+-- Finding #2: `/=` is not a Medaka operator (not-equal is `!=`).
+-- `medaka check` must report a LOCATED error at the `/=` with a hint:
+--   <file>:<line>:7: unexpected '/=' (did you mean '!=' for not-equal?)
+-- (native-only; the frozen OCaml oracle mislocates this to end-of-file.)
+x = (1 /= 2)
