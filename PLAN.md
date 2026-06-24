@@ -8,6 +8,30 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
+## Current status (2026-06-23) — formatter hardening (fmt bugs + style rules)
+
+**Driven by dogfooding `fmt` on the `parsec` library; `main` = `966b546`.** All native-only
+(`printer.mdk`/`fmt.mdk` are OUTSIDE the emitter self-compile graph; the one in-graph helper
+`util.mdk` had its seed re-minted at `5a1f3be`, `bootstrap_from_seed` C3a PASS). Each landing
+recaptured the native-sourced fmt/printer goldens and kept `diff_selfhost_fmt`/`diff_selfhost_printer`
+green:
+- **3 `fmt` bugs fixed:** (a) inner-block trailing comments were relocated below the block — now stay
+  inline (`838f21d`, `fmt.mdk` per-source-line splice); (b) a nested `if`/`else-if` in `else` position
+  collapsed onto one >80-char line — now ladders as an `else if … then` cascade (`226f139`); (c) an
+  overflowing single-arg application isolated its head — now keeps `= head (…` inline and breaks inside
+  the argument (`226f139`).
+- **Style rule applied:** cons `::` renders **tight everywhere** (expression position now matches
+  patterns; other operators unaffected) — `9c14bcb`, STYLE.md **§9**.
+- **STYLE.md §10** documents the intentional `export`-on-its-own-line rule above a value signature
+  (Idris-style; avoids reading as a type export). `export data`/`export impl` still collapse (they ARE
+  type-level). This was reviewed and kept BY DESIGN, not "fixed."
+- **Regression fixture** `test/fmt_fixtures/wrap_elseif_headarg` gates the else-if-laddering +
+  head-inline fixes (they had no golden coverage); `diff_selfhost_fmt` 44→45/0.
+- **`parsec` formatted** (`b9cd7b3`) — semantics unchanged (check clean, run==build byte-identical).
+- **Deferred (cosmetic):** import overflow goes one-name-per-line; a fill-to-width packing is a possible
+  future tweak. The frozen OCaml `lib/fmt.ml` still has the old comment/spacing behavior — irrelevant,
+  the gates are native-sourced.
+
 ## Current status (2026-06-23) — block-expressions inside brackets (LAYOUT §6.1)
 
 **`match`/`do`/`function`/`record` block-expressions can now appear directly inside `( ) [ ] { }`**

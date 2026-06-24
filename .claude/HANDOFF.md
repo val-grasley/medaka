@@ -7,6 +7,35 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — Formatter hardening (3 fmt bugs + style rules) (2026-06-23). `main` = `966b546`
+
+**Dogfooding `fmt` on `parsec` surfaced + fixed 3 formatter bugs and settled 2 style rules.** All
+NATIVE-ONLY: `printer.mdk`/`fmt.mdk` are OUTSIDE the emitter self-compile graph (so no fixpoint for
+them); the one in-graph helper `util.mdk` had its seed re-minted (`5a1f3be`, `bootstrap_from_seed`
+C3a PASS). The `diff_selfhost_fmt`/`_printer` goldens are **native-sourced** (reroot made them
+native-vs-native), so each fix recaptured them and the frozen OCaml `lib/fmt.ml` was left alone.
+Memory: `project_formatter_doc_ir` (updated). Authoritative detail: PLAN.md top formatter block.
+
+- **fmt bug — inner-block comment relocation** (`838f21d`): trailing comments on a bare block's inner
+  statements (all but the last) were dumped below the block; `fmt.mdk` now splices them back inline by
+  source-line. (Both compilers had it; native-only fix since goldens are native-sourced.)
+- **fmt bug — nested if/else-if collapse** (`226f139`): an `else`-position `if` was flattened to one
+  >80-char line; now ladders (`else if … then` cascade, recursive, width-respecting).
+- **fmt bug — head-alone wrapping** (`226f139`): an overflowing single-arg application isolated its
+  head (`Parser`/`orElse` alone); now keeps `= head (…` inline and breaks inside the argument.
+- **`::` tight everywhere** (`9c14bcb`, STYLE §9): expression-position cons now matches patterns; only
+  `::` affected (`+`/`++`/`==` stay spaced). User decision; Medaka has no user-defined operators.
+- **STYLE §10 — `export` on its own line** above a value signature is INTENTIONAL (Idris-style; reviewed
+  and kept, documented so it isn't "fixed" as an inconsistency). `export data`/`export impl` collapse.
+- **Regression fixture** `test/fmt_fixtures/wrap_elseif_headarg` gates the two wrapping fixes (no prior
+  golden coverage); `diff_selfhost_fmt` 45/0.
+- **`parsec` formatted** (`b9cd7b3`), semantics unchanged (run==build byte-identical).
+- **Deferred (cosmetic):** import overflow = one-per-line; fill-to-width is a possible future tweak.
+- **METHOD note:** the `diff_selfhost_fmt` golden being native-sourced is what makes these native-only
+  (no need to touch frozen `lib/`). Verify that for any future fmt change. Also: when adding a fmt
+  fixture, `capture_goldens.sh fmt` writes only the new fixture's golden (others byte-identical) —
+  clean, no corpus churn.
+
 ## RESUME — Block-expressions inside brackets LANDED (2026-06-23). `main` = `5e041ab`
 
 **`match`/`do`/`function`/`record` blocks can now sit directly inside `( ) [ ] { }`** — the layout wart
