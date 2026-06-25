@@ -299,6 +299,73 @@ readModuleProgF parseFn read deps roots modId = match findModuleFile deps roots 
       Ok src => Ok (owningRoot, path, parseFn src)
 -- unsaved editor buffer shadows disk
 
+-- ── canonical module-id rewrite (F1b loader module identity) ─────────────────
+--
+-- A physical file reachable under two import SPELLINGS — e.g. the entry's
+-- dep-prefixed `byteparser.lib.byteparser` and a sibling module's intra-package
+-- `lib.byteparser` — is otherwise loaded TWICE under two distinct modIds, so any
+-- `export impl` it declares is double-counted → a spurious `conflicting impl`.
+-- Fix: canonicalize every import to a single dep-name-prefixed modId derived from
+-- WHERE the import resolves, and rewrite each `DUse` so resolve / typecheck / eval
+-- (which key strictly by the literal modId string) collapse the two spellings
+-- with ZERO changes — they keep reading `useModId(DUse)`, now canonical.
+--
+-- The canonical id is a deterministic function of the resolved file: an import
+-- resolving UNDER a declared dep's root becomes `<depName>.<relIdUnderDepRoot>`;
+-- one resolving under the entry / stdlib root (or unresolved) keeps its modId
+-- unchanged.  Two spellings of one file → one resolved path → one owningRoot →
+-- one canonical id, so both `DUse`s rewrite to the SAME string and dedup at
+-- visitMod.  Single-root loads (no `[dependencies]`) are a NO-OP: no owningRoot is
+-- a dep root, so every canonical id equals the original and no DUse is touched.
+-- (Path-keyed identity needs no realpath: the same dep root string is threaded as
+-- `owningRoot` to BOTH spellings, so they share an identical canonical id.)
+
+splitDot : String -> List String
+splitDot s = splitOnChar "." s
+
+-- reverse-lookup a declared dependency NAME by its resolved root path.
+revLookupRoot : String -> List (String, String) -> Option String
+revLookupRoot _ [] = None
+revLookupRoot r ((n, dr)::rest) = if dr == r then Some n else revLookupRoot r rest
+
+-- the canonical modId for an import string `m`, resolved against (deps, roots).
+-- Under a declared dep's root → prefix the dep name onto the module's path-
+-- relative id; otherwise (entry / stdlib root, or unresolved) leave `m` as-is.
+canonicalModId : List (String, String) -> List String -> String -> <IO> String
+canonicalModId deps roots m = match findModuleFile deps roots m
+  None => m
+  Some (path, owningRoot) => match revLookupRoot owningRoot deps
+    None => m
+    Some depName => stringConcat [depName, ".", moduleIdOfPath [owningRoot] path]
+
+-- rewrite a UsePath so its `importModId` yields the canonical id `c`, preserving
+-- the imported member list / wildcard / alias / single name.  (For UseName the
+-- imported NAME is the last segment; the module path is the prefix — so appending
+-- the original last segment onto `splitDot c` makes `importModId` recover `c`.)
+rewriteUsePath : String -> UsePath -> UsePath
+rewriteUsePath c (UseName ns) = UseName (splitDot c ++ [lastOr "" ns])
+rewriteUsePath c (UseGroup _ ms) = UseGroup (splitDot c) ms
+rewriteUsePath c (UseWild _) = UseWild (splitDot c)
+rewriteUsePath c (UseAlias _ a) = UseAlias (splitDot c) a
+
+-- rewrite one decl: a `DUse` whose import resolves under a dep root is rebased to
+-- its canonical modId (core + already-canonical imports stay byte-identical).
+rewriteDecl : List (String, String) -> List String -> Decl -> <IO> Decl
+rewriteDecl deps roots (DUse exported path) =
+  let m = importModId path
+  if m == "core" then DUse exported path
+  else
+    let c = canonicalModId deps roots m
+    if c == m then DUse exported path else DUse exported (rewriteUsePath c path)
+rewriteDecl _ _ d = d
+
+-- rewrite every `DUse` in a module's decls to its canonical modId.
+rewriteDecls : List (String, String) -> List String -> List Decl -> <IO> List Decl
+rewriteDecls _ _ [] = []
+rewriteDecls deps roots (d::ds) =
+  let d2 = rewriteDecl deps roots d
+  d2 :: rewriteDecls deps roots ds
+
 -- ── DFS topological sort (dependency-first; leaves before roots) ──
 --
 -- threads (visited, acc): visited = modules fully processed (Done); the stack
@@ -360,9 +427,10 @@ visitMod deps roots stack visited acc modId =
         Ok (owningRoot, prog) =>
           let croots = childRoots owningRoot roots
           let cdeps = childDeps deps owningRoot roots
-          match visitMods cdeps croots (modId :: stack) visited acc (directImports prog)
+          let prog2 = rewriteDecls cdeps croots prog
+          match visitMods cdeps croots (modId :: stack) visited acc (directImports prog2)
             Err e => Err e
-            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
+            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog2)])
 
 visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
 visitMods _ _ _ visited acc [] = Ok (visited, acc)
@@ -402,9 +470,10 @@ visitModF parseFn read deps roots stack visited acc modId =
         Ok (owningRoot, path, prog) =>
           let croots = childRoots owningRoot roots
           let cdeps = childDeps deps owningRoot roots
-          match visitModsF parseFn read cdeps croots (modId :: stack) visited acc (directImports prog)
+          let prog2 = rewriteDecls cdeps croots prog
+          match visitModsF parseFn read cdeps croots (modId :: stack) visited acc (directImports prog2)
             Err e => Err e
-            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
+            Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog2)])
 
 visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
 visitModsF _ _ _ _ _ visited acc [] = Ok (visited, acc)

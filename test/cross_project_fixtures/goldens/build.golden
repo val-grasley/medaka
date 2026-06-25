@@ -1,3 +1,4 @@
 revSorted [3,1,2,5,4] = [5, 4, 3, 2, 1]
 double 21 = 42
 revDoubled [3,1,2] = [6, 4, 2]
+triple 14 = 42
