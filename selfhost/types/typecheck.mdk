@@ -7666,12 +7666,70 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
   Some (ifaceParams, mty) =>
     let _ = set_ref currentFn ""
     let _ = set_ref currentImplBody True
-    let expected = expectedMethodType ifaceParams headMonos mty
+    -- build the method type's tv map explicitly (instead of expectedMethodType,
+    -- which hides it) so the impl method's OWN method-level constraint vars
+    -- (`Thenable m => …`) can be registered into activeDictVars below.
+    let baseMap = zipL ifaceParams headMonos
+    let extraMap = freshTvMap (removeAllS ifaceParams (dedup (tyVarNames mty)))
+    let expected = fromAstType (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
     let _ = unify expected actual
+    -- Eval-path method-dict threading (parity with inferDefaultMethod's
+    -- registerMethodDictSlots): an impl method with its OWN method-level constraint
+    -- (`wrap : Thenable m => … -> m (List b)`) whose body returns a constraint-var
+    -- method (`pure []`) needs that inner site routed RDictFwd $dict_<mname>_<slot>
+    -- — the leading method-dict param implDictPassMethods prepends — so eval narrows
+    -- it by the dict supplied at the call site (resolveMethodDicts) instead of
+    -- falling to arg-tag dispatch and panicking `no matching impl for dispatch`.
+    -- The EMIT path already worked because the emitter restamps impl-body
+    -- return-position methods to the dict param directly; the eval path relies on
+    -- the route, so register the var → dict-param mapping here (AFTER body inference,
+    -- so each var is its surviving union-find root, mirroring registerMethodDictSlots).
+    let _ = registerImplMethodDicts mname ifaceParams mty extraMap
     set_ref currentImplBody False
 -- G4: mark binop sites recorded while inferring this impl body so resolveBinopSite
 -- routes their element dict (RDict) — and ONLY theirs, not top-level operators.
+
+-- Register an impl method's OWN method-level constraints (`Thenable m => …`) into
+-- activeDictVars, one slot per constraint, so a return-position method in the impl
+-- body whose result type is the constraint var routes RDictFwd $dict_<mname>_<slot>.
+-- [tvMap] maps the method type's non-interface-param tyvar names → the fresh vars
+-- expected/the body unified against; normalize each to its surviving root before
+-- registering.  Slot numbering matches methodConstraintSlotIds (same flatMap order),
+-- so it lines up with implDictPassMethods' prepended params and the call-site
+-- methodRoutes resolveMethodDicts fills.
+registerImplMethodDicts : String -> List String -> Ty -> List (String, Mono) -> <Mut> Unit
+registerImplMethodDicts mname ifaceParams mty tvMap =
+  registerImplMethodDictsGo mname 0 (methodLevelConstraintVarNames ifaceParams mty) tvMap
+
+registerImplMethodDictsGo : String -> Int -> List String -> List (String, Mono) -> <Mut> Unit
+registerImplMethodDictsGo _ _ [] _ = ()
+registerImplMethodDictsGo mname slot (vname::rest) tvMap =
+  let _ = registerImplMethodDictOne mname slot vname tvMap
+  registerImplMethodDictsGo mname (slot + 1) rest tvMap
+
+registerImplMethodDictOne : String -> Int -> String -> List (String, Mono) -> <Mut> Unit
+registerImplMethodDictOne mname slot vname tvMap = match lookupAssoc vname tvMap
+  None => ()
+  Some m => match normalize m
+    TVar cell => set_ref activeDictVars ((tyvarId cell, dictParamName mname slot) :: activeDictVars.value)
+    _ => ()
+
+-- the non-interface-param dispatch var name of each method-level constraint, in
+-- declaration order — the name-returning mirror of methodConstraintSlotIds (which
+-- returns the ids).  One name per constraint slot; a constraint over only interface
+-- params contributes nothing (it dispatches via the impl, not a dict).
+methodLevelConstraintVarNames : List String -> Ty -> List String
+methodLevelConstraintVarNames typarams (TyConstrained cs t) =
+  flatMap (constraintFirstNonParam typarams) cs ++ methodLevelConstraintVarNames typarams t
+methodLevelConstraintVarNames typarams (TyEffect _ _ t) =
+  methodLevelConstraintVarNames typarams t
+methodLevelConstraintVarNames _ _ = []
+
+constraintFirstNonParam : List String -> Constraint -> List String
+constraintFirstNonParam typarams c = match constraintNonParamVars typarams c
+  [] => []
+  n::_ => [n]
 
 -- the method type's interface-param substitution: each interface typaram maps to
 -- the corresponding impl head mono (so `def : a` becomes `def : List a_impl`); any

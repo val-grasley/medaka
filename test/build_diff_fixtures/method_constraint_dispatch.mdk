@@ -1,0 +1,23 @@
+-- Regression (build path) for the dispatched-interface-method-with-method-level-
+-- constraint shape.  Companion to the eval-path fixture
+-- test/eval_typed_modules_fixtures/method_constraint_dispatch/ and the free-fn
+-- twin pointfree_caf.mdk.  `wrap` is an interface METHOD whose signature carries
+-- a method-level `Thenable m` constraint and whose body returns a constraint-var
+-- method (`pure []`); native `build` was already correct here (the emitter
+-- restamps impl-body return-position methods to the dict param) while native `run`
+-- panicked — fixed in selfhost/types/typecheck.mdk inferImplMethod /
+-- registerImplMethodDicts.  This fixture pins the build output stays correct.
+--
+-- GOLDEN IS NATIVE-SOURCED (native>oracle): the frozen OCaml oracle mis-evaluates
+-- this shape (returns `[[1, 2, 3]]`); the .build.golden is captured from native
+-- `medaka build`+exec, which matches native `run`.
+interface Box t where
+  wrap : Thenable m => (a -> m b) -> t a -> m (List b)
+
+impl Box List where
+  wrap f xs = match xs
+    []        => pure []
+    (x::rest) => andThen (f x) (y => andThen (wrap f rest) (ys => pure (y :: ys)))
+
+main : <IO> Unit
+main = println (debug (wrap (x => if x > 0 then Some x else None) [1, 2, 3]))
