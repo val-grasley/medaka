@@ -1694,6 +1694,7 @@ isFileExtern name =
       "writeFileBytes",
       "appendFile",
       "fileExists",
+      "canonicalizePath",
       "listDir",
       "readLine",
       "readLineOpt",
@@ -1740,6 +1741,12 @@ emitFileExtern e env "fileExists" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_file_exists(i64 " ++ p ++ ")")
     (tagInt e r, LTBool)
   _ => panic "llvm spike: fileExists takes one argument (slice 13)"
+emitFileExtern e env "canonicalizePath" args = match emitArgs e env args
+  [p] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_canonicalize_path(i64 " ++ p ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: canonicalizePath takes one argument"
 emitFileExtern e env "listDir" args = match emitArgs e env args
   [p] =>
     let r = freshReg e

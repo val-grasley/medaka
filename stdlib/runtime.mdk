@@ -61,6 +61,7 @@ extern panic : String -> a
 extern args : Unit -> <Env> List String  -- program args after the script name
 extern getEnv : String -> <Env> Option String  -- environment variable, or None
 extern fileExists : String -> <FileRead> Bool
+extern canonicalizePath : String -> <FileRead> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
 extern appendFile : String -> String -> <FileWrite> Result String Unit
 extern listDir : String -> <FileRead> Result String (List String)  -- directory entries (names)
 extern makeDir : String -> <FileWrite> Result String Unit            -- create directory (mkdir 0o755)

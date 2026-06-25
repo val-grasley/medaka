@@ -1518,6 +1518,10 @@ let primitives : (string * value) list =
     ("fileExists", VPrim (fun path -> match path with
        | VString p -> VBool (Sys.file_exists p)
        | _ -> raise (Eval_error ("fileExists: expected String", None))));
+    (* realpath(3): canonicalize ./../symlinks; input unchanged on failure. *)
+    ("canonicalizePath", VPrim (fun path -> match path with
+       | VString p -> VString (try Unix.realpath p with _ -> p)
+       | _ -> raise (Eval_error ("canonicalizePath: expected String", None))));
     (* Append to a file (creating it if absent): Ok () or Err message. *)
     ("appendFile", VPrim (fun path ->
       VPrim (fun content ->

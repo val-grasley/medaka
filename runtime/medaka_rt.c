@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <stdnoreturn.h>
 #include <sys/stat.h>
@@ -772,6 +773,15 @@ long long mdk_write_file_bytes(long long path, long long arr) {
 /* fileExists : String -> Bool — raw 0/1, emitter tags via tagInt. */
 long long mdk_file_exists(long long path) {
   return access((const char *)path + 24, F_OK) == 0 ? 1 : 0;
+}
+
+/* canonicalizePath : String -> String — realpath(3); input unchanged on failure
+ * (matches the OCaml oracle's `try Unix.realpath p with _ -> p`). */
+long long mdk_canonicalize_path(long long path) {
+  const char *p = (const char *)path + 24;
+  char buf[PATH_MAX];
+  if (realpath(p, buf) != 0) return mdk_str_cstr(buf);
+  return mdk_str_cstr(p);
 }
 
 /* listDir : String -> Result String (List String).

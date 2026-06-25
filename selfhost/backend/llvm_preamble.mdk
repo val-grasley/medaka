@@ -81,6 +81,7 @@ preambleLines = [
   "declare i64 @mdk_write_file_bytes(i64, i64)",
   "declare i64 @mdk_append_file(i64, i64)",
   "declare i64 @mdk_file_exists(i64)",
+  "declare i64 @mdk_canonicalize_path(i64)",
   "declare i64 @mdk_list_dir(i64)",
   "declare i64 @mdk_read_line(i64)",
   "declare i64 @mdk_read_line_opt(i64)",
