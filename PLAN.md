@@ -366,6 +366,7 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Generic `Thenable m =>` multi-clause fn w/ return-pos `pure` stack-overflows in eval (use single-clause `match`) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Point-free constrained binding (`f = g identity`) mis-dispatches return-pos `pure` to wrong instance (eta-expand) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| Per-method-constraint dict conflated w/ dispatch type's own instance — blocks `Traversable` interface (traverse/sequence stay list fns) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
 | Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
@@ -769,6 +770,31 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   with no argument to anchor the dict. Likely same dict-pass seam as the entry above;
   root cause not localized — only worked around. See memory
   `project_generic_monadic_dispatch_gaps`.
+
+- **Per-method-constraint dict conflated with the dispatch type's own instance — blocks
+  `Traversable` as an interface — OPEN (filed 2026-06-24).** A `traverse`/`sequence`
+  generalization to a proper `Traversable t requires Mappable t, Foldable t` interface
+  (method `traverse : Thenable m => (a -> <e> m b) -> t a -> <e> m (t b)`, mirroring
+  `Foldable`'s `foldMap : Monoid m => …`) is **expressible and typechecks**, but
+  mis-evaluates: when the method dispatches on a container `t` that is **itself** a
+  `Thenable` (e.g. `List`), the per-method `Thenable m` dict gets bound to the
+  CONTAINER's `Thenable` instead of the caller's `m`, so a return-position `pure` in the
+  body lifts into the wrong monad. Repro (the interface form):
+  ```
+  traverse (x => if x > 0 then Some x else None) [1, 2, 3]
+    -- expected Some [1, 2, 3]; got [[1, 2, 3]]  (List's pure, not Option's)
+  ```
+  Short-circuit cases (`None`/`Err`) pass — only the success path that reaches the rebuild
+  exposes it. **Not source-workable:** delegating the impl body to a free helper that
+  carries `m`'s dict explicitly (the form that works as a *standalone* function — that's
+  why the shipped `list.traverse` is correct) still fails, because the method receives the
+  wrong `m` dict *before* it forwards. `foldMap` is the same shape and presumably has the
+  same latent bug, just never exercised with a return-position superclass method on a
+  self-`Thenable` container. **Decision:** `traverse`/`sequence` stay free functions in
+  `stdlib/list.mdk` until this is fixed; promoting to `Traversable` is gated on
+  distinguishing a per-method-constraint dict from an in-scope instance of the same class
+  for the dispatch type (dict-pass/typecheck/eval seam, same area as the two entries above
+  + the frozen `lib/` oracle). See memory `project_generic_monadic_dispatch_gaps`.
 
 - **Unqualified-import name collision — use-time ambiguity error — ✅ DONE (2026-06-23, `421a4bd`,
   both compilers).** Two non-`core` modules exporting the same unqualified standalone (e.g. `map`
