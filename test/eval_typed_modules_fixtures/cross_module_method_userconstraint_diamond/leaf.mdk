@@ -1,0 +1,6 @@
+public export data Box a = Box a deriving (Debug)
+export interface BoxTrav t where
+  btraverse : Thenable m => (a -> m b) -> t a -> m (t b)
+export impl BoxTrav Box where
+  btraverse f b = match b
+    (Box x) => andThen (f x) (y => pure (Box y))
