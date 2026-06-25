@@ -28,7 +28,7 @@ import lib.btree.{
   scanTablePage,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
-import list.{reverse}
+import list.{reverse, traverse}
 
 -- | An open database: the parsed header plus the whole-file bytes.
 public export data Db = Db DbHeader (Array Int)
@@ -100,7 +100,7 @@ readSchema db =
   let bytes = dbBytes db
   match decodeLeafPage bytes (pageBaseOf db 1) (hdrOffsetOf db 1)
     Err e => Err "sqlite_master: \{e}"
-    Ok rows => mapResult schemaOfRow rows
+    Ok rows => traverse schemaOfRow rows
 
 -- Convert one sqlite_master row into a SchemaEntry.
 schemaOfRow : Row -> Result String SchemaEntry
@@ -343,16 +343,3 @@ substituteIpk pkIdx idx rowid (c :: rest) =
                  Some p => if p == idx then CInt rowid else c
                  None   => c
     cell :: substituteIpk pkIdx (idx + 1) rowid rest
-
--- ---------------------------------------------------------------------------
--- Result-list helper (no stdlib traverse/mapM equivalent)
--- ---------------------------------------------------------------------------
-
-mapResult : (a -> Result String b) -> List a -> Result String (List b)
-mapResult f xs = mapResultGo f xs []
-
-mapResultGo : (a -> Result String b) -> List a -> List b -> Result String (List b)
-mapResultGo f [] acc = Ok (reverse acc)
-mapResultGo f (x::rest) acc = match f x
-    Err e => Err e
-    Ok y  => mapResultGo f rest (y::acc)

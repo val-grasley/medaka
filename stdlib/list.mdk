@@ -534,6 +534,41 @@ unzip : List (a, b) -> (List a, List b)
 unzip [] = ([], [])
 unzip ((x, y)::xys) = let (xs, ys) = unzip xys in (x :: xs, y :: ys)
 
+-- Effectful traversal
+
+{- | Map an effectful function over a list, collecting the results inside the
+   effect.  Short-circuits on the first failure for `Result`/`Option`, threads
+   state for any other `Thenable` — `traverse f` is the list traversal of
+   `andThen`/`pure`.
+
+   > traverse (x => if x > 0 then Some x else None) [1, 2, 3]
+   Some [1, 2, 3]
+   > traverse (x => if x > 0 then Some x else None) [1, -2, 3]
+   None -}
+export
+traverse : Thenable m => (a -> <e> m b) -> List a -> <e> m (List b)
+-- Kept as a SINGLE clause with an inner `match`, not separate
+-- `traverse f [] = …` / `traverse f (x::xs) = …` clauses: the multi-clause form
+-- of a generic `Thenable m =>` function whose body has a return-position `pure`
+-- loops in eval (dict-passing × multi-clause desugar).  Do not split it back out.
+traverse f xs = match xs
+  []        => pure []
+  (x::rest) => andThen (f x) (y => andThen (traverse f rest) (ys => pure (y :: ys)))
+
+{- | Flip the nesting of a list of effects into an effect of a list, collecting
+   each result.  `sequence == traverse identity`.
+
+   > sequence [Some 1, Some 2, Some 3]
+   Some [1, 2, 3]
+   > sequence [Some 1, None, Some 3]
+   None -}
+export
+sequence : Thenable m => List (m a) -> m (List a)
+-- Eta-expanded (`sequence xs = …`, not point-free `sequence = traverse identity`):
+-- the point-free form loses the `m` dictionary and mis-dispatches `pure` to the
+-- List instance (returns `[[…]]` instead of `Some […]`).
+sequence xs = traverse identity xs
+
 -- ── Properties (executed by `medaka test`) ──────────────────────────────────
 
 -- Ascending check used by the sort properties below.

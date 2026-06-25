@@ -364,6 +364,8 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | ✅ DONE (2026-06-23, `0d40398`) — see [Compiler / language](#compiler--language) |
 | Empty annotated multi-type-param container literal (`Map { } : Map Int Int`) rejected at `check` | Compiler / language | ✅ DONE (2026-06-23, `98afb77`) — see [Compiler / language](#compiler--language) |
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| Generic `Thenable m =>` multi-clause fn w/ return-pos `pure` stack-overflows in eval (use single-clause `match`) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| Point-free constrained binding (`f = g identity`) mis-dispatches return-pos `pure` to wrong instance (eta-expand) | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
 | Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
@@ -721,6 +723,52 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 > no self-hosted counterpart.
 
 ### Compiler / language
+
+- **Generic `Thenable m =>` multi-clause function with return-position `pure`
+  stack-overflows in eval — OPEN (filed 2026-06-24).** A constrained, self-recursive
+  function whose body returns via `pure` loops forever / overflows the stack at eval
+  when written as **separate pattern clauses**, but works when written as a **single
+  clause with an inner `match`**. Minimal repro (bisected — see below):
+  ```
+  -- overflows
+  t f []        = pure []
+  t f (x::rest) = andThen (f x) (y => andThen (t f rest) (ys => pure (y :: ys)))
+  -- works (the only difference is multi-clause → single-clause match)
+  t f xs = match xs
+    []        => pure []
+    (x::rest) => andThen (f x) (y => andThen (t f rest) (ys => pure (y :: ys)))
+  ```
+  Surfaced adding `traverse`/`sequence` to `stdlib/list.mdk` (replacing sqlite's local
+  `mapResult`); `stdlib/list.mdk`'s `traverse` carries an inline comment pinning the
+  single-clause form so nobody "simplifies" it back. **Bisection localized the trigger to
+  the multi-clause-ness ITSELF** — NOT the `<e>` effect row, NOT the function argument,
+  and NOT generic-recursion-with-`pure` on its own (a single-clause generic `rep n x = if
+  n<=0 then pure [] else andThen (rep (n-1) x) (ys => pure (x::ys))` runs fine). Suspected
+  interaction: multi-clause desugar (clauses → one lambda matching a tuple of all args)
+  × dict-passing of the leading `Thenable` dict on the recursive self-reference — the
+  recursive call appears to drop/re-resolve the dict, building unbounded structure. **Bug
+  confirmed on the OCaml oracle (`Fatal error: exception Stack overflow`); native repro
+  status UNVERIFIED** (the shipped stdlib uses the single-clause workaround, which runs
+  correctly on native + passes `diff_selfhost_test list`) — native dict-passing differs,
+  so step 0 is to check whether the multi-clause form also overflows native. Fix likely
+  lands in the desugar→dict-pass→eval seam (`selfhost/frontend/desugar.mdk` /
+  dict-pass / `selfhost/eval/*`, mirror in the frozen `lib/` oracle for gate parity).
+  Root cause NOT yet localized in the compiler; only worked around. See memory
+  `project_generic_monadic_dispatch_gaps`.
+
+- **Point-free constrained binding mis-dispatches return-position `pure` to the wrong
+  instance — OPEN (filed 2026-06-24).** A point-free top-level binding that is generic
+  over a return-position class loses its dictionary and defaults to the first/wrong impl.
+  Repro: `sequence = traverse identity` evaluated `sequence [Some 1, Some 2, Some 3]` to
+  `[[1, 2, 3]]` (the **List** `pure`) instead of `Some [1, 2, 3]`; **eta-expanding** to
+  `sequence xs = traverse identity xs` threads the `m` dict from the call site and fixes
+  it. `stdlib/list.mdk`'s `sequence` ships eta-expanded with an inline warning comment.
+  Confirmed on the OCaml oracle; native run of the eta-expanded form is correct (native
+  repro of the point-free bug unverified). This is the return-position-dispatch ambiguity
+  the dict-passing machinery is meant to resolve from the result type, failing for a CAF
+  with no argument to anchor the dict. Likely same dict-pass seam as the entry above;
+  root cause not localized — only worked around. See memory
+  `project_generic_monadic_dispatch_gaps`.
 
 - **Unqualified-import name collision — use-time ambiguity error — ✅ DONE (2026-06-23, `421a4bd`,
   both compilers).** Two non-`core` modules exporting the same unqualified standalone (e.g. `map`

@@ -326,6 +326,11 @@ implementations here — use the dispatch path instead:
 - ✅ `zipWith : (a -> b -> <e> c) -> List a -> List b -> <e> List c` — generalised `zip`; result length is the shorter input (`list.mdk:521`)
 - ✅ `unzip : List (a, b) -> (List a, List b)` — split a list of pairs into two parallel lists (`list.mdk:533`)
 
+### Effectful traversal
+
+- ✅ `traverse : Thenable m => (a -> <e> m b) -> List a -> <e> m (List b)` — map an effectful function over a list, collecting results inside the effect; short-circuits on the first `Err`/`None` (`list.mdk`)
+- ✅ `sequence : Thenable m => List (m a) -> m (List a)` — flip a list of effects into an effect of a list (`sequence == traverse identity`) (`list.mdk`)
+
 ### Sorting
 
 - ✅ `sort : Ord a => List a -> List a` — ascending sort (stable merge sort)
