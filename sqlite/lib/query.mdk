@@ -28,9 +28,9 @@ import list.{reverse}
 -- so `tInt` sees the real key value rather than NULL.
 export
 scanTable : Db -> String -> (r -> Bool) -> RowType r -> Result String (List r)
-scanTable db table keep rt = match scanTableRowsIpk db table
-  Err e             => Err e
-  Ok (pkIdx, rows)  => decodeRows rt keep pkIdx rows []
+scanTable db table keep rt =
+  let (pkIdx, rows) = scanTableRowsIpk db table ?
+  decodeRows rt keep pkIdx rows []
 
 -- | Convenience: every row, no filter.
 export
@@ -39,9 +39,9 @@ fetchAll db table rt = scanTable db table (_ => True) rt
 
 decodeRows : RowType r -> (r -> Bool) -> Option Int -> List Row -> List r -> Result String (List r)
 decodeRows rt keep pkIdx [] acc = Ok (reverse acc)
-decodeRows rt keep pkIdx (row :: rest) acc = match rtDecode rt (rowCellsWithIpk pkIdx row)
-    Err e => Err e
-    Ok v  => if keep v
-             then decodeRows rt keep pkIdx rest (v :: acc)
-             else decodeRows rt keep pkIdx rest acc
+decodeRows rt keep pkIdx (row :: rest) acc =
+  let v = rtDecode rt (rowCellsWithIpk pkIdx row) ?
+  if keep v
+  then decodeRows rt keep pkIdx rest (v :: acc)
+  else decodeRows rt keep pkIdx rest acc
 

@@ -268,29 +268,27 @@ export
 encodeRecord : List Cell -> Result String (Array Int)
 encodeRecord cells =
   -- 1. Collect serial codes; fail fast on CFloat.
-  match collectSerials cells []
-    Err e => Err e
-    Ok serials =>
-      -- 2. Encode serial varints as a forward list.
-      let serialBytesList = concatLists (map sqVarintBytes serials)
-      let serialLen       = listLength serialBytesList
+  let serials = collectSerials cells [] ?
 
-      -- 3. Header-len self-counting fixpoint.
-      --    header_len = serialLen + varint_size(header_len)
-      let h0 = serialLen + 1
-      let hdrLen = if sqVarintSize h0 == 1 then h0 else serialLen + 2
+  -- 2. Encode serial varints as a forward list.
+  let serialBytesList = concatLists (map sqVarintBytes serials)
+  let serialLen       = listLength serialBytesList
 
-      -- 4. Assemble: [hdrLen varint] ++ [serial varints] ++ [body bytes].
-      let hdrBytes  = sqVarintBytes hdrLen
-      let bodyBytes = concatLists (map cellBodyBytes cells)
-      Ok (arrayFromList (appendList hdrBytes (appendList serialBytesList bodyBytes)))
+  -- 3. Header-len self-counting fixpoint.
+  --    header_len = serialLen + varint_size(header_len)
+  let h0 = serialLen + 1
+  let hdrLen = if sqVarintSize h0 == 1 then h0 else serialLen + 2
+
+  -- 4. Assemble: [hdrLen varint] ++ [serial varints] ++ [body bytes].
+  let hdrBytes  = sqVarintBytes hdrLen
+  let bodyBytes = concatLists (map cellBodyBytes cells)
+  Ok (arrayFromList (appendList hdrBytes (appendList serialBytesList bodyBytes)))
 
 collectSerials : List Cell -> List Int -> Result String (List Int)
 collectSerials [] acc = Ok (revList acc)
 collectSerials (c::rest) acc =
-  match cellSerial c
-    Err e => Err e
-    Ok s  => collectSerials rest (s::acc)
+  let s = cellSerial c ?
+  collectSerials rest (s::acc)
 
 -- ---------------------------------------------------------------------------
 -- Doctest helpers
@@ -304,9 +302,7 @@ collectSerials (c::rest) acc =
 -- | Encode cells and return the bytes as a `List Int` (has `Debug`).
 encodeToList : List Cell -> Result String (List Int)
 encodeToList cells =
-  match encodeRecord cells
-    Err e => Err e
-    Ok bs => Ok (arrayToList bs)
+  map arrayToList (encodeRecord cells)
 
 -- | Round-trip: encode → decode → render as a "|"-joined cell string.
 --   Returns the `showCells` rendering of the decoded result (or the Err).

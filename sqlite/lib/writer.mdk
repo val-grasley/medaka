@@ -158,12 +158,10 @@ writeTable path schema rows =
   match schema
     TableSchema { schemaTableName = name, columns } =>
       let colCount = listLen columns
-      match validateRows colCount rows
-        Err e => Err e
-        Ok _ =>
-          let sql = createTableSql schema
-          let ipk = schemaIpkIndex schema
-          writeDatabase path name sql colCount ipk rows
+      let _ = validateRows colCount rows ?
+      let sql = createTableSql schema
+      let ipk = schemaIpkIndex schema
+      writeDatabase path name sql colCount ipk rows
 
 -- | Like `writeTable` but returns the raw byte image instead of writing to
 -- disk.  Useful for testing and round-trip inspection.
@@ -173,9 +171,7 @@ buildTable schema rows =
   match schema
     TableSchema { schemaTableName = name, columns } =>
       let colCount = listLen columns
-      match validateRows colCount rows
-        Err e => Err e
-        Ok _ =>
-          let sql = createTableSql schema
-          let ipk = schemaIpkIndex schema
-          buildDatabase name sql colCount ipk rows
+      let _ = validateRows colCount rows ?
+      let sql = createTableSql schema
+      let ipk = schemaIpkIndex schema
+      buildDatabase name sql colCount ipk rows

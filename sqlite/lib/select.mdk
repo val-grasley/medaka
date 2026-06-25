@@ -206,12 +206,11 @@ render sel = match sel
   Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
     if not (validIdent tbl)
     then Err "render: invalid table name: \{tbl}"
-    else match renderWhere w
-      Err e => Err e
-      Ok (whereSql, binds) =>
-        let limOff = renderLimitOffset lm of_
-        let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
-        Ok (sql, binds ++ limOffBinds limOff lm of_)
+    else
+      let (whereSql, binds) = renderWhere w ?
+      let limOff = renderLimitOffset lm of_
+      let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
+      Ok (sql, binds ++ limOffBinds limOff lm of_)
 
 -- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
 -- the placeholders parameterized too (LIMIT ? / OFFSET ?) for uniformity.
@@ -243,9 +242,7 @@ limOffBinds _ lm of_ =
 renderWhere : Option SqlExpr -> Result String (String, List Literal)
 renderWhere w = match w
   None   => Ok ("", [])
-  Some e => match renderExpr e
-    Err msg          => Err msg
-    Ok (sql, binds)  => Ok (" WHERE \{sql}", binds)
+  Some e => map ((sql, binds) => (" WHERE \{sql}", binds)) (renderExpr e)
 
 -- Render an expression to (sql, binds).  Binds accumulate left-to-right.
 renderExpr : SqlExpr -> Result String (String, List Literal)
@@ -258,22 +255,15 @@ renderExpr e = match e
   EBin op l r => renderBinary (cmpSql op) l r
   EAnd l r    => renderBinary "AND" l r
   EOr l r     => renderBinary "OR" l r
-  ENot inner  => match renderExpr inner
-    Err msg         => Err msg
-    Ok (sql, binds) => Ok ("(NOT \{sql})", binds)
-  EIsNull inner => match renderExpr inner
-    Err msg         => Err msg
-    Ok (sql, binds) => Ok ("(\{sql} IS NULL)", binds)
-  ENotNull inner => match renderExpr inner
-    Err msg         => Err msg
-    Ok (sql, binds) => Ok ("(\{sql} IS NOT NULL)", binds)
+  ENot inner  => map ((sql, binds) => ("(NOT \{sql})", binds)) (renderExpr inner)
+  EIsNull inner => map ((sql, binds) => ("(\{sql} IS NULL)", binds)) (renderExpr inner)
+  ENotNull inner => map ((sql, binds) => ("(\{sql} IS NOT NULL)", binds)) (renderExpr inner)
 
 renderBinary : String -> SqlExpr -> SqlExpr -> Result String (String, List Literal)
-renderBinary opSql l r = match renderExpr l
-  Err msg => Err msg
-  Ok (lsql, lbinds) => match renderExpr r
-    Err msg => Err msg
-    Ok (rsql, rbinds) => Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
+renderBinary opSql l r =
+  let (lsql, lbinds) = renderExpr l ?
+  let (rsql, rbinds) = renderExpr r ?
+  Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
 
 cmpSql : CmpOp -> String
 cmpSql OpEq = "="
@@ -323,35 +313,32 @@ compilePred lookup expr = match expr
     Some i => Ok (cells => cellTruthy (nthCell cells i))
   ELit lit => Ok (_ => litTruthy lit)
   EBin op l r => compileCmp lookup op l r
-  EAnd l r => match compilePred lookup l
-    Err e => Err e
-    Ok pl => match compilePred lookup r
-      Err e => Err e
-      Ok pr => Ok (cells => pl cells && pr cells)
-  EOr l r => match compilePred lookup l
-    Err e => Err e
-    Ok pl => match compilePred lookup r
-      Err e => Err e
-      Ok pr => Ok (cells => pl cells || pr cells)
-  ENot inner => match compilePred lookup inner
-    Err e => Err e
-    Ok p  => Ok (cells => not (p cells))
-  EIsNull inner => match compileOperand lookup inner
-    Err e => Err e
-    Ok g  => Ok (cells => cellIsNull (g cells))
-  ENotNull inner => match compileOperand lookup inner
-    Err e => Err e
-    Ok g  => Ok (cells => not (cellIsNull (g cells)))
+  EAnd l r =>
+    let pl = compilePred lookup l ?
+    let pr = compilePred lookup r ?
+    Ok (cells => pl cells && pr cells)
+  EOr l r =>
+    let pl = compilePred lookup l ?
+    let pr = compilePred lookup r ?
+    Ok (cells => pl cells || pr cells)
+  ENot inner =>
+    let p = compilePred lookup inner ?
+    Ok (cells => not (p cells))
+  EIsNull inner =>
+    let g = compileOperand lookup inner ?
+    Ok (cells => cellIsNull (g cells))
+  ENotNull inner =>
+    let g = compileOperand lookup inner ?
+    Ok (cells => not (cellIsNull (g cells)))
 
 -- Compile a comparison.  Both operands resolve to a `List Cell -> Cell`
 -- accessor; the result row is kept only when the comparison is definitively
 -- TRUE (any NULL operand ⇒ False, matching SQL WHERE semantics).
 compileCmp : (String -> Option Int) -> CmpOp -> SqlExpr -> SqlExpr -> Result String (List Cell -> Bool)
-compileCmp lookup op l r = match compileOperand lookup l
-  Err e => Err e
-  Ok gl => match compileOperand lookup r
-    Err e => Err e
-    Ok gr => Ok (cells => cmpCells op (gl cells) (gr cells))
+compileCmp lookup op l r =
+  let gl = compileOperand lookup l ?
+  let gr = compileOperand lookup r ?
+  Ok (cells => cmpCells op (gl cells) (gr cells))
 
 -- An operand is either a column (resolved to an index accessor) or a literal
 -- (a constant cell).  Returns a `List Cell -> Cell` accessor.
@@ -449,18 +436,13 @@ export
 query : Db -> Select -> RowType a -> Result String (List a)
 query db sel rt = match sel
   Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
-    match findTable db tbl
-      Err e => Err e
-      Ok entry =>
-        let lookup = mkLookup (schemaSql entry)
-        match compileWhere lookup w
-          Err e => Err e
-          Ok pred => match scanTableRowsIpk db tbl
-            Err e => Err e
-            Ok (pkIdx, rows) =>
-              let kept = filterRows pkIdx pred rows
-              let sliced = applyOffsetLimit of_ lm kept
-              decodeAll rt pkIdx sliced []
+    let entry = findTable db tbl ?
+    let lookup = mkLookup (schemaSql entry)
+    let pred = compileWhere lookup w ?
+    let (pkIdx, rows) = scanTableRowsIpk db tbl ?
+    let kept = filterRows pkIdx pred rows
+    let sliced = applyOffsetLimit of_ lm kept
+    decodeAll rt pkIdx sliced []
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
 mkLookup : String -> (String -> Option Int)
@@ -500,9 +482,9 @@ takeN n xs = if n <= 0 then [] else match xs
 
 decodeAll : RowType a -> Option Int -> List Row -> List a -> Result String (List a)
 decodeAll _  _     []           acc = Ok (reverse acc)
-decodeAll rt pkIdx (row :: rest) acc = match rtDecode rt (rowCellsWithIpk pkIdx row)
-  Err e => Err e
-  Ok v  => decodeAll rt pkIdx rest (v :: acc)
+decodeAll rt pkIdx (row :: rest) acc =
+  let v = rtDecode rt (rowCellsWithIpk pkIdx row) ?
+  decodeAll rt pkIdx rest (v :: acc)
 
 -- ---------------------------------------------------------------------------
 -- Render doctests (the injection-safety regression backbone — no DB).

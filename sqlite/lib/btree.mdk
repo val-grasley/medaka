@@ -104,9 +104,8 @@ decodeCells bytes pageBase cpArrayStart nCells i acc
       -- offset, so the absolute cell offset is pageBase + cellPtr.
       let cellPtr = beU16 bytes (cpArrayStart + i * 2)
       let cellOffset = pageBase + cellPtr
-      match decodeLeafCell bytes cellOffset
-        Err e => Err e
-        Ok row => decodeCells bytes pageBase cpArrayStart nCells (i + 1) (row::acc)
+      let row = decodeLeafCell bytes cellOffset ?
+      decodeCells bytes pageBase cpArrayStart nCells (i + 1) (row::acc)
 
 -- | Decode one table-leaf cell at absolute byte offset `off`:
 --   [payload-len varint] [rowid varint] [record payload].
@@ -172,18 +171,16 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
   | i >= nCells =
       -- all left-children visited; now the rightmost child
       let rmHdr = if rightmost == 1 then 100 else (rightmost - 1) * pageSize
-      match scanTablePage bytes pageSize rightmost rmHdr
-        Err e => Err e
-        Ok rows => Ok (acc ++ rows)
+      let rows = scanTablePage bytes pageSize rightmost rmHdr ?
+      Ok (acc ++ rows)
   | otherwise =
       let cellPtr = beU16 bytes (cpArrayStart + i * 2)
       let cellOff = pageBase + cellPtr
       -- interior cell: [4-byte left-child] [rowid varint] — we only need left-child
       let leftChild = beU32 bytes cellOff
       let childHdr = if leftChild == 1 then 100 else (leftChild - 1) * pageSize
-      match scanTablePage bytes pageSize leftChild childHdr
-        Err e => Err e
-        Ok rows => scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
+      let rows = scanTablePage bytes pageSize leftChild childHdr ?
+      scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
 
 -- ---------------------------------------------------------------------------
 
