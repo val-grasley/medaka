@@ -1,0 +1,13 @@
+import geom.{Point, mkPoint, sumXY}
+
+getX : Point -> Int
+getX p = p.x
+
+shift : Point -> Point
+shift (Point { x = xv, y = yv }) = mkPoint (xv + 1) (yv + 1)
+
+main =
+  let p = mkPoint 3 4
+  println (getX p)
+  println (sumXY p)
+  println (getX (shift p))

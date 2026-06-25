@@ -1,0 +1,9 @@
+public export record Point
+  x : Int
+  y : Int
+
+export mkPoint : Int -> Int -> Point
+mkPoint a b = Point { x = a, y = b }
+
+export sumXY : Point -> Int
+sumXY (Point { x = xv, y = yv }) = xv + yv
