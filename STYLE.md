@@ -93,7 +93,7 @@ distinct:
 1. **Local synthetic binder names** (`"__fn_arg"`, `"__do_x"`, `"__a"`/`"__b"`,
    `"__r"`). Gensym-style names produced *and consumed* within one desugaring.
    Fine inline; keep the `__`-prefix and make the stem name the site
-   (`__lc_x` = list-comprehension scrutinee). They never cross a module boundary,
+   (`__do_x` = a do-block bind's scrutinee). They never cross a module boundary,
    so a local literal is correct.
 2. **Cross-module protocol names** (`"__fallthrough__"` — referenced in
    `desugar.mdk`, `eval.mdk`, *and* `llvm_emit.mdk`). These MUST be a single

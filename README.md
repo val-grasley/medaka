@@ -36,7 +36,7 @@ OCaml `lib/` removal (Stage 3 tail).
   constraint checking and constraint syntax in signatures, effect tracking,
   exhaustiveness/usefulness)
 - **Desugar** — `lib/desugar.ml` (`deriving` → impls, record field punning,
-  list-comprehension lowering)
+  do-block lowering)
 - **Loader** — `lib/loader.ml` (multi-file dependency walk, cycle detection)
 - **Evaluator** — `lib/eval.ml` (tree-walking interpreter with VMulti-based
   typeclass dispatch)
@@ -335,7 +335,7 @@ lib/
   resolve.ml      Name resolution (single-file and multi-module)
   typecheck.ml    Hindley-Milner + interfaces + effects + exhaustiveness
   exhaust.ml      Maranget's pattern-matrix algorithm
-  desugar.ml      `deriving` expansion, record field puns, list comprehensions
+  desugar.ml      `deriving` expansion, record field puns, do-blocks
   loader.ml       Multi-file dependency walk + topological sort
   eval.ml         Tree-walking interpreter (VMulti dispatch for typeclasses)
   prelude.ml      Parses and caches `stdlib/core.mdk` for implicit prelude
