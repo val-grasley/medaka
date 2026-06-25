@@ -9244,12 +9244,37 @@ importSeed ((DUse _ path)::rest) depEnv =
       ++ importSeed rest depEnv
 importSeed (_::rest) depEnv = importSeed rest depEnv
 
+-- the (key, scheme) pairs a module RE-EXPORTS via `export import` (`DUse True`).
+-- Mirrors resolve's re-export set (resolve.pubUsePaths filters the same `DUse True`)
+-- into the typecheck seed: walk the export-flagged DUse decls and, for each, pick the
+-- re-exported member names out of the SOURCE dependency's public schemes already in
+-- depEnv — the exact member resolution importSeed uses (importFormSchemes /
+-- resolveMemberSchemes), so it works on both golden and mangled emit paths.  Schemes
+-- come from depEnv by IDENTITY (the definer's original schemes, never re-generalized),
+-- which preserves the original-definer constraint ids (D2 diamond-safety).  ONLY
+-- `DUse True` is threaded, so a plain `import` never leaks the importer's names
+-- downstream.  Transitivity is automatic: pubV accumulates these and is carried
+-- forward as depEnv, so a second `export import` hop re-resolves against the enriched
+-- pubV.  Methods need no special case — the source module's pubV already holds the
+-- method scheme (publicValNames includes DInterface method names).
+reexportSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+reexportSeed [] _ = []
+reexportSeed ((DAttrib _ d)::rest) depEnv = reexportSeed [d] depEnv
+  ++ reexportSeed rest depEnv
+reexportSeed ((DUse True path)::rest) depEnv =
+  let depId = usePathModuleId path
+  match lookupAssoc depId depEnv
+    None => reexportSeed rest depEnv
+    Some depSchemes => importFormSchemes path depSchemes
+      ++ reexportSeed rest depEnv
+reexportSeed (_::rest) depEnv = reexportSeed rest depEnv
+
 checkModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
 checkModulesGo _ _ _ [] = []
 checkModulesGo baseSeed depEnv accData ((mid, prog)::rest) =
   let seed = baseSeed ++ importSeed prog depEnv
   let schemes = checkModuleFull seed accData prog
-  let pubV = pickSchemes (publicValNames prog) schemes
+  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed prog depEnv
   (mid, schemes) :: checkModulesGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
 
 -- check every module in dependency order against a shared prelude + runtime.
@@ -9325,7 +9350,7 @@ checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Schem
 checkModulesDiagsGo _ _ _ _ [] = []
 checkModulesDiagsGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
   let (schemes, errs, warns) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
-  let pubV = pickSchemes (publicValNames prog) schemes
+  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed prog depEnv
   (mid, (errs, warns)) :: checkModulesDiagsGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
 
 export
@@ -9398,7 +9423,7 @@ checkModulesEntryFullGo baseSeed depEnv accData accAll [(_, prog)] =
   checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
 checkModulesEntryFullGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
   let (schemes, errs, _) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
-  let pubV = pickSchemes (publicValNames prog) schemes
+  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed prog depEnv
   let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
   (eSchemes, errs ++ eErrs, eWarns)
 
@@ -9935,7 +9960,7 @@ elabModulesGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
   let _ = match lookupAssoc "main" schemes
     Some s => set_ref mainSchemeRef (Some s)
     None => ()
-  let pubV = pickSchemes (publicValNames prog) schemes
+  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed prog depEnv
   elabModulesGo
     baseSeed
     ((mid, pubV) :: depEnv)
