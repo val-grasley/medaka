@@ -7,6 +7,55 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🎯 TOMORROW: fix the 3 return-position-`pure` dispatch gaps (unblocks `Traversable`) (2026-06-24). `main` = `1e889fe`
+
+**This is the task to start on.** Adding generic `traverse`/`sequence` to the stdlib (dogfooding the
+sqlite library, which had a hand-rolled `mapResult`) surfaced **three related compiler dispatch gaps**,
+all in the same area: **return-position `pure` dispatch through the dict-passing machinery**. They are
+filed as three OPEN items in **PLAN.md → "Compiler / language"** (+ the Open issues index table) and in
+memory **`project_generic_monadic_dispatch_gaps`**. Fixing them (likely one shared root in the
+dict-pass/typecheck/eval seam) would unblock promoting `traverse`/`sequence` to a real `Traversable t`
+interface AND fix a latent `foldMap` bug.
+
+**What shipped (working, on `main`):** `traverse : Thenable m => (a -> <e> m b) -> List a -> <e> m (List b)`
+and `sequence : Thenable m => List (m a) -> m (List a)` as **free functions in `stdlib/list.mdk`**
+(`4ff3b68`); sqlite uses `traverse` (`mapResult` deleted). 67/67 list doctests, native run, all sqlite
+oracle suites green, `diff_selfhost_test list` byte-identical. The functions carry inline warning comments
+pinning the workaround forms — **do not "simplify" them** (each simplification re-triggers a gap below).
+
+**The three gaps (ordered easiest→hardest to reason about):**
+1. **Multi-clause generic-`pure` overflow.** A generic `Thenable m =>` self-recursive fn whose body has a
+   return-position `pure`, written as SEPARATE clauses (`t f [] = pure []` / `t f (x::xs) = …`),
+   **stack-overflows in eval**; the single-clause inner-`match` form works. Bisected: it's the
+   multi-clause-ness itself (NOT the `<e>` row, NOT the fn arg, NOT generic-recursion-with-`pure` alone).
+   Confirmed on the OCaml oracle; **native repro UNVERIFIED** — step 0 is to check whether native also
+   overflows (native dict-passing differs). Suspect: multi-clause desugar (clauses → one tuple-matching
+   lambda) × dict-passing of the leading dict on the recursive self-ref.
+2. **Point-free constrained binding mis-dispatch.** `sequence = traverse identity` (point-free) returns
+   `[[1,2,3]]` (List's `pure`) instead of `Some [1,2,3]`; **eta-expanding** to `sequence xs = traverse
+   identity xs` fixes it. A CAF with no argument to anchor the `m` dict defaults to the wrong instance.
+3. **Per-method-constraint dict conflation — THE `Traversable` blocker.** Generalizing to `interface
+   Traversable t requires Mappable t, Foldable t` with `traverse : Thenable m => …` (exactly the shape of
+   `Foldable`'s `foldMap : Monoid m => …`) **typechecks but mis-evaluates**: when the method dispatches on
+   a container `t` that is ITSELF a `Thenable` (List), the per-method `m` dict is bound to the
+   *container's* Thenable, so return-position `pure` lifts into the wrong monad
+   (`traverse (Some-fn) [1,2,3]` → `[[1,2,3]]`). **Not source-workable** — delegating the impl body to a
+   free helper that takes `m`'s dict explicitly STILL fails (method gets the wrong dict before forwarding).
+   `foldMap` is the same latent shape, just never exercised this way. The interface IS expressible (no
+   language-capability gap) — it's purely an eval/dict dispatch bug. Repro recipe: re-add the `Traversable`
+   interface + List/Option/Result instances to `stdlib/core.mdk` (after the `Foldable` impls, ~line 731)
+   and `medaka test stdlib/core.mdk` — the `Some [1,2,3]` doctests FAIL with `[[1,2,3]]`, the `None`
+   short-circuit cases pass. (This was tried + reverted this session; it's clean to reconstruct.)
+
+**Likely shared root:** all three are the dict-passing machinery failing to thread/distinguish the correct
+dictionary for a return-position method/`pure` — gap 3 is the sharpest (a per-method constraint dict vs an
+in-scope instance of the same class for the dispatch type). Fix lands in `selfhost/` (dict_pass / typecheck
+/ eval) and must mirror into the frozen `lib/` oracle for gate parity. **Verify gap 1 reproduces on native
+first** before assuming all three are oracle-only. **Reach for the `debug-pipeline` skill** + instrument
+eval's `EVar`/`EMethodRef`/`EDictApp` resolution arms (the technique that nailed Phase 134 — see AGENTS.md
+Gotchas). **Payoff when fixed:** promote `traverse`/`sequence` from `list.mdk` to a `Traversable` interface
+in `core.mdk` (List/Option/Result/Array instances) + a correct `foldMap`.
+
 ## RESUME — 🏁 SQLite READ **+ WRITE** library complete + a long soak run (2026-06-24). `main` = `e68913a`
 
 **Medaka now READS and GENERATES real `.sqlite` files** — a database it builds from scratch passes
