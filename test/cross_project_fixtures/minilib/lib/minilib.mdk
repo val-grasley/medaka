@@ -10,3 +10,14 @@ revSorted xs = reverse (sort xs)
 export
 double : Int -> Int
 double x = x * 2
+
+-- A trivial typeclass + impl declared in THIS module.  Because the loader
+-- double-loads this file (once as `minilib.lib.minilib` from the consumer's
+-- direct import, once as `lib.minilib` from extra.mdk's sibling import), the
+-- impl is double-counted → `conflicting impl` UNLESS the loader collapses both
+-- spellings to one canonical module id (the F1b module-identity fix).
+export interface Tripler a where
+  triple : a -> a
+
+export impl Tripler Int where
+  triple x = x * 3
