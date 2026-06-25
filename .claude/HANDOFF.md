@@ -3,9 +3,46 @@
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
 delegate work to subagents, verify their output against gates, and keep `main` + docs
-coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.md` first**
+coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.md` first`**
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
+
+## RESUME — D2 method-constraint + export-import re-export CLOSED (2026-06-25). `main` = `a35c87b`
+
+**Two soundness fixes landed, sealing the last cross-module method-dispatch gap and general re-export support.**
+
+- **D2 cross-module method-constraint dict mis-dispatch CLOSED (`221af36`).** Non-prelude sibling-module
+  interface methods carrying a USER `=>` constraint (the `btraverse : Thenable m => …` / `foldMap` shape)
+  mis-dispatched cross-module: `check` silently accepted, `run` panicked, `build` SIGSEGVd. Root: NOT the
+  bare-name collision the `EVarFrom` re-key targets — it was **stale-sweep first-match shadowing**:
+  `methodConstraintsRef` accumulated multiple entries per (uniquely-named) method from successive elaborate
+  sweeps; `crossModuleMethodConstraintsRef` wasn't re-keyed, so bare first-match returned a STALE entry
+  with ids disjoint from the live instantiation subst → empty dict route. Fix: read-side
+  `alignedMethodConstraintIds` helper in `recordMethodDicts` (`selfhost/types/typecheck.mdk`). The fn-level
+  `EVarFrom` re-key (`selfhost/WS2-REKEY-DIAGNOSIS.md`) remains deferred (separate collision class).
+  Fixture: `test/eval_typed_modules_fixtures/cross_module_method_userconstraint/`.
+
+- **`export import` re-export seed gap CLOSED (`a35c87b`).** A value/fn/method re-exported through an
+  intermediate module via `export import` was `Unbound` at the downstream importer. Root: `publicValNames`
+  collected only DEFINED names; `DUse` fell through its catch-all → a re-export-only module seeded an empty
+  `pubV` into typecheck's `depEnv`. Fix: `reexportSeed prog depEnv` helper (typecheck.mdk) walks `DUse True`
+  decls, threads each re-exported member's scheme by IDENTITY (no re-generalization — preserves original-definer
+  constraint ids so `221af36`'s alignment stays diamond-safe), appended to `pubV` at all four driver loops.
+  General (value/fn/method), transitive, no private-name leak. New fixture:
+  `cross_module_method_userconstraint_diamond/` (leaf→mid→main via `export import`). Design doc:
+  `REEXPORT-METHOD-SCHEME-DESIGN.md` (committed). Design record: `D2-REKEY-DESIGN.md` (also committed).
+
+**Gates (all green, `a35c87b`):** `diff_selfhost_eval_typed_modules` 8/0, `diff_selfhost_eval_dict` 28/0,
+`diff_selfhost_typecheck_errors` 40/0, `diff_selfhost_build` 36/0, `selfcompile_fixpoint` C3a/C3b YES,
+diamond + 4-module chain verified run AND build. Seed re-minted (batched). `diff_native_cli` 57-failing =
+pre-existing baseline (stale `check/*` Alternative+ordering goldens), unchanged.
+
+**What to do next:** continue the soak. The outstanding pre-existing open items are the fn-level D2
+`EVarFrom` re-key (supervised, deferred), F1b loader module-identity, and `CFieldAccess` cross-module
+dot-access. The `sequence` default/free-fn dispatch residuals (from the Traversable session) are still
+open but do not block any feature.
+
+
 
 ## RESUME — 🎯 TOMORROW: fix the 3 return-position-`pure` dispatch gaps (unblocks `Traversable`) (2026-06-24). `main` = `1e889fe`
 

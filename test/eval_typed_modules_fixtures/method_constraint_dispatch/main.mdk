@@ -14,9 +14,13 @@
 -- captured from native `medaka run` == native `medaka build`+exec.
 --
 -- NOTE: the interface/impl are defined IN this entry module on purpose.  The
--- cross-module variant (interface/impl imported from a sibling) hits a SEPARATE,
--- pre-existing gap that fails on BOTH backends (eval panics, build SIGSEGVs) —
--- the cross-module method-scheme identity (D2) problem — and is out of scope here.
+-- cross-module variant (interface/impl imported from a sibling) is now COVERED
+-- by the sibling fixtures `cross_module_method_userconstraint/` (direct sibling
+-- import) and `cross_module_method_userconstraint_diamond/` (re-export via an
+-- intermediate module using `export import`).  Fixed at `221af36` (dict-id
+-- alignment — `alignedMethodConstraintIds` read-side fix in `recordMethodDicts`)
+-- + `a35c87b` (export-import re-export seed — `reexportSeed` helper threads
+-- `DUse True` schemes into the typecheck depEnv at all four driver loops).
 interface Box t where
   wrap : Thenable m => (a -> m b) -> t a -> m (List b)
 

@@ -657,12 +657,12 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   arg-tag — safe now, wrong when arg-tag retires). **Confirmed LATENT/safe-now (2026-06-23):**
   `foldMap (x => [x,x]) xs` via the Monoid default works on native build AND oracle. Distinct
   from the eval-path `foldMap` dict gap already closed. Owner: [`selfhost/DISPATCH-INVENTORY.md`](./selfhost/DISPATCH-INVENTORY.md) §D3a.
-- **Cross-module bare-name dict-arity collision (the D2 re-key / Phase 134 root).** `Dict_pass.
-  collect_arities` keys function arity by **bare name**, so when the prelude + all modules are
+- **Cross-module bare-name dict-arity collision (the D2 re-key / Phase 134 root) — fn-level deferred; method-level cross-module CLOSED.**
+  `Dict_pass.collect_arities` keys function arity by **bare name**, so when the prelude + all modules are
   dict-passed *jointly*, a genuinely-constrained function in one module (or the synthetic doctest
   bindings) can force spurious leading dict params onto an *unconstrained, same-named or unannotated*
   function elsewhere — its call site then under-applies / it becomes a constrained fn whose dict is
-  never bound. **Observable manifestation today:** the doctest finding #6 above (an unannotated
+  never bound. **Observable manifestation today (fn-level):** the doctest finding #6 above (an unannotated
   cross-module fn in a doctest expr → `unbound constrained fn`); workaround = annotate the fn.
   **Principled fix = re-key arity by module-qualified name (DICT-CONFORMANCE "Option B", deferred
   net-negative there as a zero-observable-gain cleanup).** That earlier deferral predates the doctest
@@ -670,6 +670,30 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   (AST-origin threading through resolve/ast/typecheck/eval — AGENTS.md Phase 134 documents how this
   area repeatedly mis-diagnoses); do it **supervised**, not as a soak-tail drive-by. Owners:
   AGENTS.md Phase 134 gotcha + memory `project_dict_semantics_spec` (D2).
+  **CORRECTION (2026-06-25):** A DISTINCT cross-module method-constraint failure — where a non-prelude
+  sibling-module `interface` method carrying a USER `=>` constraint (`btraverse : Thenable m => …`)
+  mis-dispatched cross-module (`check` accepted, `run` panicked, `build` SIGSEGVd) — is **CLOSED
+  (`221af36`)** via a read-side `alignedMethodConstraintIds` helper in `recordMethodDicts`
+  (`selfhost/types/typecheck.mdk`). Its root was **stale-sweep first-match shadowing** (NOT the
+  bare-name collision the D2 fn-level EVarFrom re-key addresses): `methodConstraintsRef` accumulates
+  multiple entries per method from successive elaborate sweeps; `recordMethodDicts` took the bare
+  first-match whose ids were disjoint from the live instantiation subst → empty dict route.
+  The fix picks the entry whose ids most-overlap the live subst (falls back to first-match when
+  none overlap — byte-identical on single-sweep fixtures). Fixture: `cross_module_method_userconstraint/`
+  (direct sibling import). The fn-level `EVarFrom` re-key remains deferred (separate collision class).
+- **`export import` re-export not threaded into the typecheck seed — CLOSED (`a35c87b`).** A value /
+  function / interface-method re-exported through an intermediate module via `export import` was
+  `Unbound` at the importer (any number of hops). Root: `publicValNames` collected only DEFINED names;
+  `DUse` (what `export import` lowers to) fell through its catch-all, so a re-export-only module seeded
+  an EMPTY `pubV` into typecheck's `depEnv`. Resolve already had the full re-export set — typecheck
+  never mirrored it. Fix: a general `reexportSeed prog depEnv` helper (typecheck.mdk) walks `DUse True`
+  decls, resolves each re-exported member against the source dep's `pubV` via `importFormSchemes` /
+  `usePathModuleId` (schemes threaded by IDENTITY — never re-generalized, preserving original-definer
+  constraint ids so `221af36`'s alignment stays diamond-safe), appended to `pubV` at all four driver
+  loops. Covers value/fn/method re-exports, transitive chains, no private-name leak. New fixture:
+  `cross_module_method_userconstraint_diamond/` (leaf→mid→main via `export import`). Gates:
+  `diff_selfhost_eval_typed_modules` 8/0, `diff_selfhost_eval_dict` 28/0,
+  `diff_selfhost_typecheck_errors` 40/0, `diff_selfhost_build` 36/0, fixpoint C3a/C3b YES.
 - **F1b — loader does NOT canonicalize module identity (cross-package double-load). BACKLOGGED workstream
   (2026-06-24, SQLite-write dogfood; well-diagnosed, STOPped per guardrail).** The loader keys modules by
   the dotted module-id STRING (`visitMod`/visited/`acc` in `selfhost/driver/loader.mdk`). The SAME file

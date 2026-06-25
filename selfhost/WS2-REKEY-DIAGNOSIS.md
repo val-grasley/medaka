@@ -1,5 +1,19 @@
 # WS-2 full re-key — diagnosis & deferral (module-qualified dict-arity identity)
 
+> **Follow-up (2026-06-25, `221af36`):** the LIVE manifestation that forced the D2 revisit
+> (a non-prelude sibling-module `interface` method with a USER `=>` constraint — `btraverse :
+> Thenable m => …` — panicking on `run` and SIGSEGVing on `build` cross-module while `check`
+> accepted) turned out to be a **DIFFERENT problem from the bare-name collision this doc designs
+> `EVarFrom` for.** Root = **stale-sweep first-match shadowing in `recordMethodDicts`**: a uniquely-
+> named method gets multiple `methodConstraintsRef` entries from successive elaborate sweeps;
+> `crossModuleMethodConstraintsRef` accumulates them un-re-keyed; bare first-match returns a STALE
+> entry whose ids are disjoint from the live instantiation subst → empty dict route. Fixed by a
+> read-side `alignedMethodConstraintIds` helper that selects the entry whose ids most-overlap the
+> live subst (no AST/resolve change; falls back to bare first-match when no overlap — byte-identical
+> on single-sweep fixtures). Fixture: `test/eval_typed_modules_fixtures/cross_module_method_userconstraint/`.
+> The fn-level `EVarFrom` re-key described in this document targets a DIFFERENT class (bare-name
+> arity collision across same-named fns in distinct modules) and remains correctly deferred.
+
 > **Follow-up (2026-06-21, `880e0fe`):** a bare-name cross-module scan prompted by this
 > diagnosis found the **method-level twin** of D2 — `methodConstraintsRef` had the same
 > collision with **no** qualified mirror (a genuine *unmitigated* silent soundness bug:
