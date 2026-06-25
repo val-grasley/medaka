@@ -62,12 +62,8 @@ running doctests in stdlib/list.mdk
   ok   stdlib/list.mdk:518: zipWith (x y => x * y) [1, 2, 3, 4] [10, 20]
   ok   stdlib/list.mdk:528: unzip [(1, 2), (3, 4)]
   ok   stdlib/list.mdk:530: unzip []
-  ok   stdlib/list.mdk:544: traverse (x => if x > 0 then Some x else None) [1, 2, 3]
-  ok   stdlib/list.mdk:546: traverse (x => if x > 0 then Some x else None) [1, -2, 3]
-  ok   stdlib/list.mdk:561: sequence [Some 1, Some 2, Some 3]
-  ok   stdlib/list.mdk:563: sequence [Some 1, None, Some 3]
 
-stdlib/list.mdk: 67/67 passed
+stdlib/list.mdk: 63/63 passed
 Testing "reverse is an involution" ... OK (100 tests)
 Testing "take n ++ drop n recovers the list" ... OK (100 tests)
 Testing "splitAt agrees with take/drop" ... OK (100 tests)

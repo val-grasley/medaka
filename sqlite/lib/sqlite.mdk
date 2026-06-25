@@ -28,7 +28,7 @@ import lib.btree.{
   scanTablePage,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
-import list.{reverse, traverse}
+import list.{reverse}
 
 -- | An open database: the parsed header plus the whole-file bytes.
 public export data Db = Db DbHeader (Array Int)
