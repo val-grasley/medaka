@@ -144,8 +144,8 @@ findTableGo name (e::rest)  =
 -- all rows in rowid order across all pages.
 export
 scanTableRows : Db -> String -> Result String (List Row)
-scanTableRows db name =
-  let entry = findTable db name ?
+scanTableRows db name = do
+  entry <- findTable db name
   let bytes = dbBytes db
   let ps = headerPageSize (dbHeader db)
   let n = entry.rootPage
@@ -157,13 +157,13 @@ scanTableRows db name =
 --   the typed query path should use this so the IPK substitution is shared.
 export
 scanTableRowsIpk : Db -> String -> Result String (Option Int, List Row)
-scanTableRowsIpk db name =
-  let entry = findTable db name ?
+scanTableRowsIpk db name = do
+  entry <- findTable db name
   let bytes = dbBytes db
   let ps = headerPageSize (dbHeader db)
   let n = entry.rootPage
   let hdrOff = hdrOffsetOf db n
-  let rows = scanTablePage bytes ps n hdrOff ?
+  rows <- scanTablePage bytes ps n hdrOff
   Ok (pkColumnIndex (schemaSql entry), rows)
 
 -- ---------------------------------------------------------------------------

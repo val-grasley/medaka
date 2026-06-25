@@ -9606,7 +9606,7 @@ scopeArities promotedQ scopeMods scope =
   let scopeNames = namesToSet (declTopFnNames scope) OTip
   let nameInScope = filterList (e => omHasKey (snd (fst e)) scopeNames) promotedQ
   -- names that have at least one in-scope-module entry → drop their out-of-scope-module twins
-  let resolvedNames = namesToSet [snd (fst e) | e <- nameInScope, modInScope (fst (fst e)) scopeMods] OTip
+  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) nameInScope)) OTip
   let inferredQ = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) nameInScope
   let inferred = map (e => (snd (fst e), snd e)) inferredQ
   let inferredNames = namesToSet (map fst inferred) OTip
@@ -9625,7 +9625,7 @@ scopeArities promotedQ scopeMods scope =
 -- table → byte-identical method dict-pass (every existing fixture, and the fixpoint).
 scopeMethodArities : List ((String, String), List Int) -> OrdMap Unit -> List (String, List Int)
 scopeMethodArities promotedMQ scopeMods =
-  let resolvedNames = namesToSet [snd (fst e) | e <- promotedMQ, modInScope (fst (fst e)) scopeMods] OTip
+  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) promotedMQ)) OTip
   let kept = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) promotedMQ
   map (e => (snd (fst e), snd e)) kept
 
@@ -9637,7 +9637,7 @@ modInScope mid scopeMods = mid == "" || omHasKey mid scopeMods
 attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArities mid prog entries =
   let progNames = namesToSet (declTopFnNames prog) OTip
-  [((mid, fst e), snd e) | e <- entries, omHasKey (fst e) progNames]
+  map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progNames) entries)
 
 -- WS-2/D2 method analog: attribute each method whose INTERFACE is declared in [prog]
 -- (carrying a methodConstraintsRef entry) to [mid].  Keyed by the interface's module —
@@ -9646,7 +9646,7 @@ attributeModuleArities mid prog entries =
 attributeMethodModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeMethodModuleArities mid prog entries =
   let progMethods = namesToSet (allIfaceMethodNames prog) OTip
-  [((mid, fst e), snd e) | e <- entries, omHasKey (fst e) progMethods]
+  map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progMethods) entries)
 -- membership-only sets (built once) instead of O(N) contains scans per entry:
 -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).
 

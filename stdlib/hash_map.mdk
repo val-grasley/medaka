@@ -233,7 +233,7 @@ toList m = entries m
    [5] -}
 export
 keys : HashMap k v -> List k
-keys m = [k | (k, _) <- entries m]
+keys m = map fst (entries m)
 
 {- | All values, in unspecified order.
 
@@ -241,7 +241,7 @@ keys m = [k | (k, _) <- entries m]
    [50] -}
 export
 values : HashMap k v -> List v
-values m = [v | (_, v) <- entries m]
+values m = map snd (entries m)
 
 -- ── Instances ───────────────────────────────────────────────────────────
 

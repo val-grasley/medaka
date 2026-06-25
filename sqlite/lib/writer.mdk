@@ -156,9 +156,9 @@ export
 writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
 writeTable path schema rows =
   match schema
-    TableSchema { schemaTableName = name, columns } =>
+    TableSchema { schemaTableName = name, columns } => do
       let colCount = listLen columns
-      let _ = validateRows colCount rows ?
+      _ <- validateRows colCount rows
       let sql = createTableSql schema
       let ipk = schemaIpkIndex schema
       writeDatabase path name sql colCount ipk rows
@@ -169,9 +169,9 @@ export
 buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
 buildTable schema rows =
   match schema
-    TableSchema { schemaTableName = name, columns } =>
+    TableSchema { schemaTableName = name, columns } => do
       let colCount = listLen columns
-      let _ = validateRows colCount rows ?
+      _ <- validateRows colCount rows
       let sql = createTableSql schema
       let ipk = schemaIpkIndex schema
       buildDatabase name sql colCount ipk rows

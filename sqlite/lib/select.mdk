@@ -206,8 +206,8 @@ render sel = match sel
   Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
     if not (validIdent tbl)
     then Err "render: invalid table name: \{tbl}"
-    else
-      let (whereSql, binds) = renderWhere w ?
+    else do
+      (whereSql, binds) <- renderWhere w
       let limOff = renderLimitOffset lm of_
       let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
       Ok (sql, binds ++ limOffBinds limOff lm of_)
@@ -260,9 +260,9 @@ renderExpr e = match e
   ENotNull inner => map ((sql, binds) => ("(\{sql} IS NOT NULL)", binds)) (renderExpr inner)
 
 renderBinary : String -> SqlExpr -> SqlExpr -> Result String (String, List Literal)
-renderBinary opSql l r =
-  let (lsql, lbinds) = renderExpr l ?
-  let (rsql, rbinds) = renderExpr r ?
+renderBinary opSql l r = do
+  (lsql, lbinds) <- renderExpr l
+  (rsql, rbinds) <- renderExpr r
   Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
 
 cmpSql : CmpOp -> String
@@ -313,31 +313,31 @@ compilePred lookup expr = match expr
     Some i => Ok (cells => cellTruthy (nthCell cells i))
   ELit lit => Ok (_ => litTruthy lit)
   EBin op l r => compileCmp lookup op l r
-  EAnd l r =>
-    let pl = compilePred lookup l ?
-    let pr = compilePred lookup r ?
+  EAnd l r => do
+    pl <- compilePred lookup l
+    pr <- compilePred lookup r
     Ok (cells => pl cells && pr cells)
-  EOr l r =>
-    let pl = compilePred lookup l ?
-    let pr = compilePred lookup r ?
+  EOr l r => do
+    pl <- compilePred lookup l
+    pr <- compilePred lookup r
     Ok (cells => pl cells || pr cells)
-  ENot inner =>
-    let p = compilePred lookup inner ?
+  ENot inner => do
+    p <- compilePred lookup inner
     Ok (cells => not (p cells))
-  EIsNull inner =>
-    let g = compileOperand lookup inner ?
+  EIsNull inner => do
+    g <- compileOperand lookup inner
     Ok (cells => cellIsNull (g cells))
-  ENotNull inner =>
-    let g = compileOperand lookup inner ?
+  ENotNull inner => do
+    g <- compileOperand lookup inner
     Ok (cells => not (cellIsNull (g cells)))
 
 -- Compile a comparison.  Both operands resolve to a `List Cell -> Cell`
 -- accessor; the result row is kept only when the comparison is definitively
 -- TRUE (any NULL operand ⇒ False, matching SQL WHERE semantics).
 compileCmp : (String -> Option Int) -> CmpOp -> SqlExpr -> SqlExpr -> Result String (List Cell -> Bool)
-compileCmp lookup op l r =
-  let gl = compileOperand lookup l ?
-  let gr = compileOperand lookup r ?
+compileCmp lookup op l r = do
+  gl <- compileOperand lookup l
+  gr <- compileOperand lookup r
   Ok (cells => cmpCells op (gl cells) (gr cells))
 
 -- An operand is either a column (resolved to an index accessor) or a literal
@@ -435,11 +435,11 @@ applyCmp OpGe o = o >= 0
 export
 query : Db -> Select -> RowType a -> Result String (List a)
 query db sel rt = match sel
-  Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
-    let entry = findTable db tbl ?
+  Select { from = tbl, where_ = w, limit = lm, offset = of_ } => do
+    entry <- findTable db tbl
     let lookup = mkLookup (schemaSql entry)
-    let pred = compileWhere lookup w ?
-    let (pkIdx, rows) = scanTableRowsIpk db tbl ?
+    pred <- compileWhere lookup w
+    (pkIdx, rows) <- scanTableRowsIpk db tbl
     let kept = filterRows pkIdx pred rows
     let sliced = applyOffsetLimit of_ lm kept
     decodeAll rt pkIdx sliced []
@@ -482,8 +482,8 @@ takeN n xs = if n <= 0 then [] else match xs
 
 decodeAll : RowType a -> Option Int -> List Row -> List a -> Result String (List a)
 decodeAll _  _     []           acc = Ok (reverse acc)
-decodeAll rt pkIdx (row :: rest) acc =
-  let v = rtDecode rt (rowCellsWithIpk pkIdx row) ?
+decodeAll rt pkIdx (row :: rest) acc = do
+  v <- rtDecode rt (rowCellsWithIpk pkIdx row)
   decodeAll rt pkIdx rest (v :: acc)
 
 -- ---------------------------------------------------------------------------

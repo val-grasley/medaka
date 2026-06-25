@@ -266,9 +266,9 @@ cellBodyBytes (CFloat _) = []  -- never reached (guarded by Err in encodeRecord)
 -- holds for all cell lists with no CFloat.
 export
 encodeRecord : List Cell -> Result String (Array Int)
-encodeRecord cells =
+encodeRecord cells = do
   -- 1. Collect serial codes; fail fast on CFloat.
-  let serials = collectSerials cells [] ?
+  serials <- collectSerials cells []
 
   -- 2. Encode serial varints as a forward list.
   let serialBytesList = concatLists (map sqVarintBytes serials)
@@ -286,8 +286,8 @@ encodeRecord cells =
 
 collectSerials : List Cell -> List Int -> Result String (List Int)
 collectSerials [] acc = Ok (revList acc)
-collectSerials (c::rest) acc =
-  let s = cellSerial c ?
+collectSerials (c::rest) acc = do
+  s <- cellSerial c
   collectSerials rest (s::acc)
 
 -- ---------------------------------------------------------------------------

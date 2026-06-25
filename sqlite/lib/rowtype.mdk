@@ -150,9 +150,9 @@ t2 : RowType a -> RowType b -> RowType (a, b)
 t2 ra rb = mkRowType (rtWidth ra + rtWidth rb) (decode2 (rtWidth ra) ra rb)
 
 decode2 : Int -> RowType a -> RowType b -> List Cell -> Result String (a, b)
-decode2 wa ra rb cells =
-  let va = rtDecode ra (take wa cells) ?
-  let vb = rtDecode rb (drop wa cells) ?
+decode2 wa ra rb cells = do
+  va <- rtDecode ra (take wa cells)
+  vb <- rtDecode rb (drop wa cells)
   Ok (va, vb)
 
 -- | Three columns (or column groups).
@@ -163,10 +163,10 @@ t3 ra rb rc =
     (decode3 (rtWidth ra) (rtWidth rb) ra rb rc)
 
 decode3 : Int -> Int -> RowType a -> RowType b -> RowType c -> List Cell -> Result String (a, b, c)
-decode3 wa wb ra rb rc cells =
-  let va = rtDecode ra (take wa cells) ?
-  let vb = rtDecode rb (take wb (drop wa cells)) ?
-  let vc = rtDecode rc (drop (wa + wb) cells) ?
+decode3 wa wb ra rb rc cells = do
+  va <- rtDecode ra (take wa cells)
+  vb <- rtDecode rb (take wb (drop wa cells))
+  vc <- rtDecode rc (drop (wa + wb) cells)
   Ok (va, vb, vc)
 
 -- | Four columns (or column groups).
@@ -177,11 +177,11 @@ t4 ra rb rc rd =
     (decode4 (rtWidth ra) (rtWidth rb) (rtWidth rc) ra rb rc rd)
 
 decode4 : Int -> Int -> Int -> RowType a -> RowType b -> RowType c -> RowType d -> List Cell -> Result String (a, b, c, d)
-decode4 wa wb wc ra rb rc rd cells =
-  let va = rtDecode ra (take wa cells) ?
-  let vb = rtDecode rb (take wb (drop wa cells)) ?
-  let vc = rtDecode rc (take wc (drop (wa + wb) cells)) ?
-  let vd = rtDecode rd (drop (wa + wb + wc) cells) ?
+decode4 wa wb wc ra rb rc rd cells = do
+  va <- rtDecode ra (take wa cells)
+  vb <- rtDecode rb (take wb (drop wa cells))
+  vc <- rtDecode rc (take wc (drop (wa + wb) cells))
+  vd <- rtDecode rd (drop (wa + wb + wc) cells)
   Ok (va, vb, vc, vd)
 
 -- ---------------------------------------------------------------------------
