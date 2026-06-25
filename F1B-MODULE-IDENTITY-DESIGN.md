@@ -1,8 +1,12 @@
 # F1b Loader Module-Identity — Decision-Ready Design
 
-Status: design complete (2026-06-25), reproduced on `main` = `50ca332`. **Scope LOCKED to the
-HYBRID (Option A+) — see §5a.** Option B's identity model (the file *is* the module) at Option A's
-loader-only blast radius.
+Status: ✅ **LANDED 2026-06-25** (`ac4b04a` + extern `33972aa`, seed re-minted `6a1a67e`). Built per the
+HYBRID (Option A+) below. AS-BUILT: the deterministic-derivation form (no threaded memo) was used —
+both spellings already share the same `owningRoot`, so they collapse without a memo; the
+**two-dep-NAMES** corner is closed via a new `canonicalizePath` (realpath) extern that normalizes roots
+before the dep-name reverse-lookup (first-declared name wins deterministically). resolve/typecheck/eval
+were NOT touched (containment held). Gates: `cross_project_twonames` 3/3, `cross_project_deps` 3/3,
+fixpoint C3a/C3b YES, cold `bootstrap_from_seed` PASS. Original decision-ready design follows.
 
 ## 0. Base
 Reproduced on `main` = `50ca332` (native binary built OCaml-free via `make medaka`).
