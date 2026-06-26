@@ -1,0 +1,6 @@
+-- `Point` resolves (used in the signature) but its field `x` is not accessible
+-- because Point was exported abstractly.
+import shapes.{Point}
+
+getx : Point -> Int
+getx (Point { x = v }) = v

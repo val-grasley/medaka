@@ -1,0 +1,4 @@
+-- `export data` (no `public`) exports the TYPE abstractly: its NAME resolves but
+-- its fields are not in scope, so a record-pattern field access on it elsewhere
+-- is AbstractFieldAccess (not a bare UnknownField).
+export data Point = Point { x : Int, y : Int }

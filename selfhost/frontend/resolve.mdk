@@ -78,6 +78,9 @@ public export data ResError
   -- name, owning module
   | NoExportedConstructors String String (Option Loc)
   -- type, owning module (exported abstractly)
+  | AbstractFieldAccess String String (Option Loc)
+  -- type name, field name: a record-pattern field on a type whose fields are not
+  -- in scope because the type was exported abstractly (`export` without `public`)
   | UnknownModule String (Option Loc)
   -- `import` of a module not among known exports
   -- misplaced surface constructs that survive desugar
@@ -106,6 +109,7 @@ resErrorLoc (MethodNotInInterface _ _ l) = l
 resErrorLoc (ExternWithBody _ l) = l
 resErrorLoc (PrivateNameAccess _ _ l) = l
 resErrorLoc (NoExportedConstructors _ _ l) = l
+resErrorLoc (AbstractFieldAccess _ _ l) = l
 resErrorLoc (UnknownModule _ l) = l
 resErrorLoc (NonRecursiveValueLet _ l) = l
 resErrorLoc (DuplicateBinding _ l) = l
@@ -220,15 +224,32 @@ checkRecField cur env owner (RecPatField fname popt) = fieldCheck cur env owner 
 fieldCheck : Option Loc -> Env -> String -> String -> List ResError
 fieldCheck cur env owner fname =
   let owners = ownersOf fname env.fieldOwners
-  fieldVerdict cur owner fname owners
+  fieldVerdict cur env owner fname owners
 
-fieldVerdict : Option Loc -> String -> String -> List String -> List ResError
-fieldVerdict cur owner fname [] = [UnknownField fname cur]
-fieldVerdict cur owner fname owners =
+-- No record in scope declares `fname`.  If the pattern head `owner` IS a known
+-- type (it resolved past recPatHead) yet owns NO fields at all, its fields were
+-- never registered — the only way a local record/named-field-variant reaches here
+-- with zero owners is that it was exported abstractly (`export` without `public`),
+-- whereas a local definition always registers its fields.  Distinguish that case
+-- from a genuinely-unknown field with a clearer message.
+fieldVerdict : Option Loc -> Env -> String -> String -> List String -> List ResError
+fieldVerdict cur env owner fname [] =
+  if contains owner env.types && not (ownsAnyField owner env.fieldOwners) then
+    [AbstractFieldAccess owner fname cur]
+  else
+    [UnknownField fname cur]
+fieldVerdict cur env owner fname owners =
   if contains owner owners then
     []
   else
     [FieldNotInRecord fname owner cur]
+
+-- does `owner` own ANY field in the field-owner multimap?
+ownsAnyField : String -> List (String, String) -> Bool
+ownsAnyField _ [] = False
+ownsAnyField owner ((_, o)::rest)
+  | o == owner = True
+  | otherwise = ownsAnyField owner rest
 
 recFieldSub : Option Loc -> Env -> Option Pat -> List ResError
 recFieldSub _ _ None = []
@@ -441,7 +462,7 @@ recCreateHead cur env name fs
 
 recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
 recCreateField cur env owner (FieldAssign fname _) =
-  fieldVerdict cur owner fname (ownersOf fname env.fieldOwners)
+  fieldVerdict cur env owner fname (ownersOf fname env.fieldOwners)
 
 -- record update `{ e | f = v, … }`: the receiver's type isn't pinned, so only
 -- flag a field unknown to *every* record (no FieldNotInRecord here)
@@ -915,6 +936,11 @@ resErrorSexp (NoExportedConstructors n m _) = "(NoExportedConstructors "
   ++ " "
   ++ escStr m
   ++ ")"
+resErrorSexp (AbstractFieldAccess t f _) = "(AbstractFieldAccess "
+  ++ escStr t
+  ++ " "
+  ++ escStr f
+  ++ ")"
 resErrorSexp (UnknownModule n _) = "(UnknownModule " ++ escStr n ++ ")"
 resErrorSexp (NonRecursiveValueLet n _) = "(NonRecursiveValueLet "
   ++ escStr n
@@ -961,6 +987,11 @@ ppResError (NoExportedConstructors n m _) = "'"
   ++ "' exports no constructors from module "
   ++ m
   ++ " (it is exported abstractly); remove the `(..)` or export it with `public export`."
+ppResError (AbstractFieldAccess t f _) = "'"
+  ++ t
+  ++ "' is exported abstractly; its field '"
+  ++ f
+  ++ "' is not accessible (declare it `public export` to expose its fields)."
 ppResError (UnknownModule n _) = "Unknown module: " ++ n
 ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
 ppResError (NonRecursiveValueLet n _) = "'"
