@@ -167,8 +167,9 @@ splits/multi-page; `UPDATE`/`DELETE`; overflow pages; transactions/journal/WAL.
   loader+resolve+typecheck module-identity change (Option A canonical dep-prefixed modId rewrite, or B
   path-based identity end-to-end). The agent STOPped per guardrail with a clear scoping. **Impact:** the
   shared `bytebuilder` can't be used alongside `recordenc`; the write path stays self-contained.
-- **`CFieldAccess` cross-module record dot-access** — emitter panics on `r.field` for a record imported from
-  another module (field-label table is current-unit-only); workaround = destructure.
+- **`CFieldAccess` cross-module record dot-access** — ✅ RESOLVED 2026-06-25 (`e3e7e1b`; see top RESUME).
+  Was a non-bug (canonical compiler correct with `public export`); the filed emitter-panic framing was
+  stale. Original note: ~~emitter panics on `r.field` for an imported record; workaround = destructure.~~
 
 **Also this session (earlier):** stale-gate hygiene — 4 stale-golden gates fixed (`diff_selfhost_check`
 17/57→74/0, `desugar`/`mark` 98/1→99/0, `lex_files` 12/1→13/0; all un-recaptured-golden debt from prior
