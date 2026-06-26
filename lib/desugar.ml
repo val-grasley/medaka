@@ -892,9 +892,9 @@ let merge_iface_defaults prog =
    native/oracle desugar+mark text parity).  For each DImpl, synthesize a
    concrete-receiver impl method for every interface default the impl does not
    explicitly define, so the more-specific tagged copy is what dispatch picks.
-   Ord and Foldable are held back: their specialized defaults trip deferred
-   native emitter gaps (see TRAVERSABLE-DEFAULT-METHOD-DESIGN.md §9) — keeping
-   them on the untagged fallback is a zero-regression no-op. *)
+   Universal — no interface is held back (the native emitter now threads the
+   per-method requires/method-level dicts the specialized Ord/Foldable defaults
+   need; see TRAVERSABLE-DEFAULT-METHOD-DESIGN.md §9). *)
 let iface_defaults_for name prog =
   List.fold_left (fun acc d -> match d with
     | DInterface i when i.iface_name = name ->
@@ -905,7 +905,7 @@ let iface_defaults_for name prog =
 
 let fill_impl_defaults prog =
   List.map (function
-    | DImpl impl when impl.iface_name <> "Ord" && impl.iface_name <> "Foldable" ->
+    | DImpl impl ->
       let explicit = List.map (fun (n, _, _) -> n) impl.methods in
       let defaults = iface_defaults_for impl.iface_name prog in
       let synth = List.filter_map (fun (n, ps, e) ->

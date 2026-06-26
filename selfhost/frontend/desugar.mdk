@@ -732,23 +732,21 @@ fillImplDefaults prog = map (fillImplDecl prog) prog
 
 fillImplDecl : List Decl -> Decl -> Decl
 fillImplDecl prog (d@DImpl { iface, methods, ... })
-  -- Two interfaces are held back from specialization because their defaults trip
-  -- DEFERRED emitter gaps (gap-1/gap-3 class, TRAVERSABLE-DEFAULT-METHOD-DESIGN.md
-  -- §9) once specialized — keeping them on their working untagged `lowerDefault`
-  -- fallback is a zero-regression no-op (they already resolve that way today):
-  --   * Ord — its comparison defaults (lt/gt/lte/gte/min/max) are dispatched by
-  --     GENERIC `Ord a =>` free functions (e.g. `clamp`); a tagged per-impl copy
-  --     turns them dict-dispatched and the generic caller then needs a per-method
-  --     dict witness (`$dict_max` …) the emitter does not thread (slice-6 "dict
-  --     not threaded") — breaks the self-compile.
-  --   * Foldable — `foldMap`'s default body DIRECTLY uses its `Monoid m`
-  --     method-level constraint (`empty`/`++`); the specialized copy segfaults at
-  --     run on the built binary (interp/`run` is correct).
-  -- Every other interface (Eq/Debug/Traversable/…) IS specialized; in particular
-  -- Traversable.sequence delegates to a sibling (`traverse`) rather than using its
-  -- own `Thenable m` constraint directly, so it codegens correctly.
-  -- Lift these exclusions once the emitter threads the constraint/dispatch dict.
-  | iface == "Ord" || iface == "Foldable" = d
+  -- UNIVERSAL: every interface's missing defaults are specialized per impl, with no
+  -- exclusions.  Ord and Foldable were formerly held back because their specialized
+  -- defaults tripped two emitter dict-threading gaps, both now CLOSED (see
+  -- TRAVERSABLE-DEFAULT-METHOD-DESIGN.md §9):
+  --   * Ord — registerImplRequires keys EVERY method of an impl under the same impl
+  --     tyvar id, so specializing lt/gt/min/max alongside compare made the global
+  --     route lookup return the LAST-registered `$dict_<m>_<slot>` for ALL bodies
+  --     (compare's element dispatch wrongly forwarded `$dict_max_0` → "unbound dict
+  --     witness").  Fixed by encl-aware requires routing (typecheck.mdk
+  --     activeDictVarForEncl / argImplDictRoutesForEncl).
+  --   * Foldable — `foldMap f = fold (acc x => acc ++ f x) empty` is ETA-SHORT (binds
+  --     only `f` + its `Monoid m` dict, returns a partial awaiting the container); the
+  --     tagged copy wasn't eta-expanded so a saturated call dropped the container and
+  --     returned an unapplied PAP → SIGSEGV.  Fixed by counting leading dict params in
+  --     gatherGroup's eta-expansion target (llvm_emit.mdk).
   | otherwise = DImpl { d | methods = methods ++ synthDefaultMethods methods (ifaceDefaults iface prog) }
 fillImplDecl _ d = d
 
