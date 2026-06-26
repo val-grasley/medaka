@@ -3016,8 +3016,8 @@ emitMethod e env name route implRoutes methRoutes argOps = match route
         (methodArityOf name + lengthS dictWords)
         resTy
     None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
-  RDict d => emitMethodDispatch e env name d argOps
-  RDictFwd d => emitMethodDispatch e env name d argOps
+  RDict d => emitMethodDispatch e env name d methRoutes argOps
+  RDictFwd d => emitMethodDispatch e env name d methRoutes argOps
   RNone => emitMethodArgDispatch e name argOps
   RLocal => emitKnownFnSat e ("mdk_" ++ name) argOps (fnArity e name) (fnRetTy e name)
 -- native backend: a method whose RESULT mentions the interface/self
@@ -3283,8 +3283,8 @@ implEntryIface (CImplEntry _ _ (CImplDefault _ _)) = ""
 -- 1..n, PREPEND them to argOps (the impl fn's leading element-dict params), call
 -- that impl's lifted fn into a result slot and branch to the end; an exhausted
 -- chain is `unreachable`.
-emitMethodDispatch : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
-emitMethodDispatch e env name d argOps = match soleImplDirect e name
+emitMethodDispatch : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List String -> <Mut> (String, LTy)
+emitMethodDispatch e env name d methRoutes argOps = match soleImplDirect e name
   Some ent =>
     -- WS-1b: the method has exactly ONE impl with no `requires` element dicts, so a
     -- well-typed call always reaches that impl regardless of the runtime dict (mirrors
@@ -3297,7 +3297,7 @@ emitMethodDispatch e env name d argOps = match soleImplDirect e name
     -- direct call is the same impl the tag-dispatch chain would have selected.
     let symTag = implFnSymOf (implEntriesOf e) name ent
     emitImplCall e (implFnName symTag name) argOps LTInt
-  None => emitMethodDispatchChain e env name d argOps
+  None => emitMethodDispatchChain e env name d methRoutes argOps
 
 -- WS-1b: Some impl iff [name] has exactly one tagged impl AND that impl takes no
 -- leading `requires` element-dict params (reqCount 0) — the case where a direct call
@@ -3309,19 +3309,27 @@ soleImplDirect e name = match implsOf e name
   [ent] => if implReqCount e name ent <= 0 then Some ent else None
   _ => None
 
-emitMethodDispatchChain : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
-emitMethodDispatchChain e env name d argOps =
+emitMethodDispatchChain : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List String -> <Mut> (String, LTy)
+emitMethodDispatchChain e env name d methRoutes argOps =
   let dictPtr = dictOperand env d
   let headTag = loadTag e dictPtr
   let impls = implsOf e name
+  -- METHOD-LEVEL constraint dicts (`traverse : Thenable m => …`, over a tyvar that
+  -- is NOT the dispatch receiver) are passed as AMBIENT dict args at the call site,
+  -- resolved from `env` here — NOT from the runtime dispatch-dict cell (which only
+  -- holds the impl's per-instance `requires` dicts).  Materialize them ONCE in this
+  -- block (dominates every dispatch arm); emitDispatchChain prepends them ahead of
+  -- the cell-sourced per-instance requires, matching the lifted fn's leading
+  -- dict-param order (dict_pass binds methRoutes ++ implRoutes).
+  let methWords = dictWordsOf e env methRoutes
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "dispend" ++ intToString (freshId e)
   let _ = match impls
     [] => match defaultFor e name
       Some entry => emitDefaultDispatchChain e dictPtr headTag (ifaceTags e (methodIfaceOf name)) name entry argOps slot endL
-      None => emitDispatchChain e dictPtr headTag impls name argOps slot endL
-    _ => emitDispatchChain e dictPtr headTag impls name argOps slot endL
+      None => emitDispatchChain e dictPtr headTag impls name methWords argOps slot endL
+    _ => emitDispatchChain e dictPtr headTag impls name methWords argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
@@ -3396,9 +3404,9 @@ loadReqDicts e dictPtr n i
   | i >= n = []
   | otherwise = loadField e dictPtr i :: loadReqDicts e dictPtr n (i + 1)
 
-emitDispatchChain : Emit -> String -> String -> List CImplEntry -> String -> List String -> String -> String -> <Mut> Unit
-emitDispatchChain e _ _ [] _ _ _ _ = emit e "  unreachable"
-emitDispatchChain e dictPtr headTag (ent::rest) name argOps slot endL =
+emitDispatchChain : Emit -> String -> String -> List CImplEntry -> String -> List String -> List String -> String -> String -> <Mut> Unit
+emitDispatchChain e _ _ [] _ _ _ _ _ = emit e "  unreachable"
+emitDispatchChain e dictPtr headTag (ent::rest) name methWords argOps slot endL =
   let routeKey = implEntryRouteKey (implEntriesOf e) ent
   let symTag = implFnSymOf (implEntriesOf e) name ent
   let cmp = freshReg e
@@ -3408,13 +3416,21 @@ emitDispatchChain e dictPtr headTag (ent::rest) name argOps slot endL =
   let next = "dispnext" ++ n
   let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
   let _ = emit e (yes ++ ":")
-  let reqCount = implReqCount e name ent
-  let reqDicts = loadReqDicts e dictPtr reqCount 0
-  let (rv, _) = emitImplCall e (implFnName symTag name) (reqDicts ++ argOps) LTInt
+  -- The matched impl's lifted fn expects `implReqCount` leading dict params, ordered
+  -- methRoutes ++ implRoutes.  The first `lengthS methWords` are METHOD-LEVEL
+  -- constraint dicts — already materialized from the caller's ambient args (env);
+  -- the remaining are this impl's per-instance `requires` dicts, loaded from the
+  -- runtime dispatch-dict cell's fields 0..k-1.  Sourcing the method-level ones from
+  -- the cell (the old behavior) was an OUT-OF-BOUNDS load whenever the dispatch dict
+  -- was a bare tag (no requires) → a garbage dict → SIGSEGV (e.g. `traverse` whose
+  -- `Thenable m =>` is over a tyvar that is not the `Traversable` receiver).
+  let cellCount = implReqCount e name ent - lengthS methWords
+  let cellDicts = loadReqDicts e dictPtr cellCount 0
+  let (rv, _) = emitImplCall e (implFnName symTag name) (methWords ++ cellDicts ++ argOps) LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
-  emitDispatchChain e dictPtr headTag rest name argOps slot endL
+  emitDispatchChain e dictPtr headTag rest name methWords argOps slot endL
 -- GAP 1: prepend the matched impl's nested element-dicts (cell fields 1..reqCount)
 -- ahead of the real args, matching its leading dict-param order (dict_pass's
 -- methRoutes ++ implRoutes; here the impl's own requires, stored in cell order).
