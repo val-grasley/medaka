@@ -1,14 +1,14 @@
 ---
 name: add-primitive
-description: Add or modify a Medaka stdlib primitive (extern) — declare its type signature in stdlib/runtime.mdk and implement it in lib/eval.ml. Use when a built-in function/operation is needed that can't be written in Medaka itself.
+description: Add or modify a Medaka stdlib primitive (extern) — declare its type signature in stdlib/runtime.mdk and implement it in compiler/eval/eval.mdk. Use when a built-in function/operation is needed that can't be written in Medaka itself.
 ---
 
 # Add a stdlib primitive (extern)
 
 Primitives are the native operations exposed to Medaka programs. Their
-signatures live in `stdlib/runtime.mdk` (embedded into the compiler at build
-time) and their implementations in the `primitives` list in `lib/eval.ml`. See
-`stdlib/README.md` for the canonical conventions.
+signatures live in `stdlib/runtime.mdk` (loaded by the compiler at startup)
+and their implementations in the `primitives` list in `compiler/eval/eval.mdk`.
+See `stdlib/README.md` for the canonical conventions.
 
 When you write **Medaka** code (e.g. wrappers in `core.mdk`/`list.mdk`), use
 `x y => body`, never curried `x => y => body`.
@@ -28,22 +28,31 @@ When you write **Medaka** code (e.g. wrappers in `core.mdk`/`list.mdk`), use
    Type variables are implicitly universally quantified.
 
 2. **Implement it** — add a matching entry to the `primitives` list in
-   `lib/eval.ml` (around the `let primitives : (string * value) list =`
+   `compiler/eval/eval.mdk` (around the `primitives : List (String, Value)`
    binding). The name must match the extern exactly. A startup completeness
    assertion fails at runtime if an extern has no implementation (or vice
    versa), so the two lists must stay in sync.
 
-3. **Rebuild** — `dune build`. The dune rule reruns `gen/embed.ml` to
-   regenerate `lib/stdlib_content.ml` from `runtime.mdk`, making the new extern
-   visible to the type checker and evaluator immediately.
+3. **Rebuild** — `make medaka`. This recompiles the native compiler from
+   `compiler/` source; the new extern becomes visible to the type checker and
+   evaluator immediately.
 
 ## Verify
 
 ```sh
-./_build/default/test/test_eval.exe --compact
-./_build/default/test/test_run.exe --compact
+./medaka test stdlib/core.mdk        # run doctests
+./medaka check stdlib/runtime.mdk    # extern signatures parse cleanly
 ```
 
-Write an end-to-end program that calls the primitive and add it to
-`test/test_run.ml`. For a quick manual check, write a scratch `.mdk` and run
-`./_build/default/bin/main.exe run scratch.mdk`.
+Write an end-to-end program that calls the primitive and confirm it runs:
+
+```sh
+./medaka run scratch.mdk
+```
+
+For a broader gate, run the diff suite that exercises eval:
+
+```sh
+bash test/diff_compiler_eval.sh
+bash test/diff_compiler_check.sh
+```

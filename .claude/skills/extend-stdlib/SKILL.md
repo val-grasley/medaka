@@ -53,9 +53,10 @@ Do NOT follow the old advice in stale comments/docs that says otherwise.
 ## Build & test loop
 
 1. Edit the `.mdk` file (full **worktree** path).
-2. `dune build --root .` — **required after `core.mdk` edits** (prelude is
-   embedded; `run`/imports use the embedded snapshot).
-3. `./_build/default/bin/main.exe test stdlib/<mod>.mdk` — runs doctests + props.
+2. `make medaka` — **required after `core.mdk` edits** (prelude is loaded at
+   startup; imports use the on-disk snapshot, so the rebuild is needed for the
+   new compiler to pick up the change).
+3. `./medaka test stdlib/<mod>.mdk` — runs doctests + props.
    Doctest form: `-- > expr` then `-- result` (or inside a `{- … -}` docstring).
    Probes: `main = println …` (a zero-arg value, NOT `main () = …`).
 
@@ -65,7 +66,7 @@ Do NOT follow the old advice in stale comments/docs that says otherwise.
 `__dt_N__ = show (example)`) as one program. If ONE example fails to typecheck,
 **every** example falls back to broken dispatch and ERRORs with
 `intToString: expected Int`. To find the culprit fast: strip the `import` line,
-append `dN = show (<example>)` per example, run `medaka check` — it names the
+append `dN = show (<example>)` per example, run `./medaka check` — it names the
 failing decl.
 
 - A doctest's **result type needs a `Show` impl reachable in that file's context**
@@ -81,10 +82,9 @@ failing decl.
 ## Verify
 
 ```sh
-./_build/default/bin/main.exe test stdlib/core.mdk   # and list/string/array
-./_build/default/test/test_doctest.exe --compact
-./_build/default/test/test_typecheck.exe --compact
-dune build @thorough --root .
+./medaka test stdlib/core.mdk   # and list/string/array
+bash test/diff_compiler_check.sh
+bash test/diff_compiler_eval.sh
 ```
 
 See memories `project_medaka_eval_harness_gotchas`,
