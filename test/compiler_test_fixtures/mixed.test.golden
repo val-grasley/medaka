@@ -1,11 +1,11 @@
-running doctests in test/selfhost_test_fixtures/mixed.mdk
-  ok   test/selfhost_test_fixtures/mixed.mdk:4: double 21
-  FAIL test/selfhost_test_fixtures/mixed.mdk:10: triple 2
+running doctests in test/compiler_test_fixtures/mixed.mdk
+  ok   test/compiler_test_fixtures/mixed.mdk:4: double 21
+  FAIL test/compiler_test_fixtures/mixed.mdk:10: triple 2
        expected: 7
          actual: 6
-  ok   test/selfhost_test_fixtures/mixed.mdk:16: addOne 4
+  ok   test/compiler_test_fixtures/mixed.mdk:16: addOne 4
 
-test/selfhost_test_fixtures/mixed.mdk: 2/3 passed (1 failed, 0 errors)
+test/compiler_test_fixtures/mixed.mdk: 2/3 passed (1 failed, 0 errors)
 Testing "double is add-to-self" ... OK (100 tests)
 
 1 passed, 0 failed

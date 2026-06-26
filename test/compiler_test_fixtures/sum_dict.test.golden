@@ -1,6 +1,6 @@
-running doctests in test/selfhost_test_fixtures/sum_dict.mdk
-  ok   test/selfhost_test_fixtures/sum_dict.mdk:14: sum [1, 2, 3, 4]
-  ok   test/selfhost_test_fixtures/sum_dict.mdk:16: product [2, 3, 4]
-  ok   test/selfhost_test_fixtures/sum_dict.mdk:18: sum [10]
+running doctests in test/compiler_test_fixtures/sum_dict.mdk
+  ok   test/compiler_test_fixtures/sum_dict.mdk:14: sum [1, 2, 3, 4]
+  ok   test/compiler_test_fixtures/sum_dict.mdk:16: product [2, 3, 4]
+  ok   test/compiler_test_fixtures/sum_dict.mdk:18: sum [10]
 
-test/selfhost_test_fixtures/sum_dict.mdk: 3/3 passed
+test/compiler_test_fixtures/sum_dict.mdk: 3/3 passed

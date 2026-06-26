@@ -1,6 +1,6 @@
-running doctests in test/selfhost_test_fixtures/shadow_impl_tolist.mdk
-  ok   test/selfhost_test_fixtures/shadow_impl_tolist.mdk:25: debug (Bag [1, 2, 3]) == "[1, 2, 3]"
-  ok   test/selfhost_test_fixtures/shadow_impl_tolist.mdk:27: eq (Bag [1, 2]) (Bag [1, 2])
-  ok   test/selfhost_test_fixtures/shadow_impl_tolist.mdk:29: eq (Bag [1, 2]) (Bag [3, 4])
+running doctests in test/compiler_test_fixtures/shadow_impl_tolist.mdk
+  ok   test/compiler_test_fixtures/shadow_impl_tolist.mdk:25: debug (Bag [1, 2, 3]) == "[1, 2, 3]"
+  ok   test/compiler_test_fixtures/shadow_impl_tolist.mdk:27: eq (Bag [1, 2]) (Bag [1, 2])
+  ok   test/compiler_test_fixtures/shadow_impl_tolist.mdk:29: eq (Bag [1, 2]) (Bag [3, 4])
 
-test/selfhost_test_fixtures/shadow_impl_tolist.mdk: 3/3 passed
+test/compiler_test_fixtures/shadow_impl_tolist.mdk: 3/3 passed

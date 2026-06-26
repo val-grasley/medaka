@@ -1,4 +1,4 @@
-running doctests in test/selfhost_test_fixtures/mappable_not_foldable.mdk
-  ok   test/selfhost_test_fixtures/mappable_not_foldable.mdk:24: unBox (mapBox (n => n + 1) (Box 41))
+running doctests in test/compiler_test_fixtures/mappable_not_foldable.mdk
+  ok   test/compiler_test_fixtures/mappable_not_foldable.mdk:24: unBox (mapBox (n => n + 1) (Box 41))
 
-test/selfhost_test_fixtures/mappable_not_foldable.mdk: 1/1 passed
+test/compiler_test_fixtures/mappable_not_foldable.mdk: 1/1 passed
