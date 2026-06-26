@@ -18,8 +18,6 @@ EOF
 === AST ===
 main = if True then println "yes" else println "no"
 === TYPES ===
-noMatch : a b
-orElse : a b -> a b -> a b
 abs : a -> a
 add : a -> a -> a
 all : (a -> Bool) -> b a -> Bool
@@ -86,15 +84,18 @@ minimum : a b -> Option b
 mul : a -> a -> a
 negate : a -> a
 neq : a -> a -> Bool
+noMatch : a b
 not : Bool -> Bool
 notElem : a -> b a -> Bool
 or : Bool -> Bool -> Bool
+orElse : a b -> a b -> a b
 otherwise : Bool
 pipe : (a -> b) -> (b -> c) -> a -> c
 print : a -> <IO> Unit
 println : a -> <IO> Unit
 product : a b -> b
 pure : a -> b a
+sequence : a (b c) -> b (a c)
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b
@@ -104,6 +105,7 @@ thenCmp : Ordering -> Ordering -> Ordering
 toList : a b -> List b
 toResult : a -> Option b -> Result a b
 to_rep : a -> Rep
+traverse : (a -> b c) -> d a -> b (d c)
 unless : Bool -> a Unit -> a Unit
 when : Bool -> a Unit -> a Unit
 xor : Bool -> Bool -> Bool
