@@ -1853,7 +1853,7 @@ resolveArgStamp implTable keyTable name tagRef implRef am encl hint = match acti
       let routeKey = fromOption (fromOption tag (keyForSite keyTable name am)) (namedImplKey keyTable name tag hint)
       let _ = set_ref tagRef (RKey routeKey [])
       let dictName = if implDefinesMethodAt implTable name tag then name else innerDefaultMethod name
-      set_ref implRef (argImplDictRoutesFor implTable dictName tag am)
+      set_ref implRef (argImplDictRoutesForEncl implTable encl dictName tag am)
     None => ()
 
 -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a BY-NAME
@@ -5424,6 +5424,31 @@ activeDictVarOf m = match normalize m
   TApp a _ => activeDictVarOf a
   _ => None
 
+-- activeDictVarOf, but PREFER the activeDictVars entry whose dict-param name belongs
+-- to the enclosing method [encl] (`$dict_<encl>_<slot>`).  registerImplRequires
+-- registers EVERY method of an impl under the SAME impl tyvar id (`impl Ord (List a)`
+-- registers `a`'s id once per compare/lt/gt/min/max/… each to `$dict_<method>_<slot>`),
+-- so the global first-match `activeDictVarOf` returns whichever method registered
+-- LAST — inside `compare`'s body that wrongly yields `$dict_max_0` (out of compare's
+-- scope → emitter "unbound dict witness").  Picking the [encl]-owned entry keeps each
+-- method body's element-dict route bound to ITS OWN leading param.  encl == "" or no
+-- match ⇒ fall back to the global lookup (genuine element dict from another impl).
+activeDictVarForEncl : Mono -> String -> Option String
+activeDictVarForEncl m encl
+  | encl == "" = activeDictVarOf m
+  | otherwise = match normalize m
+    TVar cell => match firstDictForEncl (tyvarId cell) ("$dict_" ++ encl ++ "_") activeDictVars.value
+      Some dname => Some dname
+      None => activeDictVarOf m
+    TApp a _ => activeDictVarForEncl a encl
+    _ => None
+
+firstDictForEncl : Int -> String -> List (Int, String) -> Option String
+firstDictForEncl _ _ [] = None
+firstDictForEncl id pfx ((eid, ename)::rest)
+  | eid == id && startsWith pfx ename = Some ename
+  | otherwise = firstDictForEncl id pfx rest
+
 -- activeDictVarOf, but for a constraint var that is the ENCLOSING fn's OWN constraint
 -- var, return [encl]'s in-scope dict param (the slot it sits at) rather than the
 -- GLOBAL activeDictVars entry.  In a mutually-recursive group the constraint vars of
@@ -5436,7 +5461,7 @@ activeDictVarOf m = match normalize m
 activeDictVarOfEncl : Mono -> String -> <Mut> Option String
 activeDictVarOfEncl m encl = match enclDictVarOf m encl
   Some dname => Some dname
-  None => activeDictVarOf m
+  None => activeDictVarForEncl m encl
 
 enclDictVarOf : Mono -> String -> <Mut> Option String
 enclDictVarOf m encl
@@ -6584,6 +6609,18 @@ routeOfMono implTable m = match activeDictVarOf m
     Some tag => RKey tag (argImplRequiresRoutesRec implTable tag m)
     None => RNone
 
+-- encl-aware analogue of routeOfMono: when the element mono is one of the enclosing
+-- method [encl]'s own constraint vars, route to [encl]'s `$dict_<encl>_<slot>` param
+-- (activeDictVarForEncl) rather than the global last-registered name.  Recurses
+-- encl-aware so nested element dicts (`List (k, v)` under a `requires Ord k, Ord v`)
+-- forward [encl]'s params at every level.  encl == "" ⇒ identical to routeOfMono.
+routeOfMonoEncl : List ImplEntry -> String -> Mono -> <Mut> Route
+routeOfMonoEncl implTable encl m = match activeDictVarForEncl m encl
+  Some dname => RDict dname
+  None => match headTyconMono m
+    Some tag => RKey tag (argImplRequiresRoutesRecEncl implTable encl tag m)
+    None => RNone
+
 -- Native #54/#21 residual: the activeDictVar-AWARE analogue of
 -- implRequiresRoutesRec, used ONLY by the arg-position routeOfMono recursion.
 -- The return-position implRequiresRoutesRec recurses through reqRoute, which is
@@ -6599,9 +6636,12 @@ routeOfMono implTable m = match activeDictVarOf m
 -- through a 0 dict).  Kept SEPARATE from implRequiresRoutesRec so the golden
 -- return-position routing stays byte-identical.
 argImplRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
-argImplRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
+argImplRequiresRoutesRec implTable tag m = argImplRequiresRoutesRecEncl implTable "" tag m
+
+argImplRequiresRoutesRecEncl : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+argImplRequiresRoutesRecEncl implTable encl tag m = match findImplEntry implTable tag m
   Some (ImplEntry _ _ headTy reqs _) => match matchTyMono headTy m
-    Some subst => argImplReqRoutes implTable subst reqs
+    Some subst => argImplReqRoutes implTable encl subst reqs
     None => []
   None => []
 
@@ -6616,7 +6656,15 @@ argImplRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
 -- golden path's routing is untouched (this runs only for emit-path arg stamps).
 argImplDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
 argImplDictRoutesFor implTable name tag mono =
-  argImplDictRoutesForGo implTable implTable name tag mono
+  argImplDictRoutesForEncl implTable "" name tag mono
+
+-- encl-aware variant: thread the ENCLOSING method [encl] so the recursively-routed
+-- element dicts forward [encl]'s own `$dict_<encl>_<slot>` params (not whichever
+-- method registered the shared impl tyvar id LAST — see activeDictVarForEncl).  encl
+-- == "" recovers the original global routing (binop path, single-method impls).
+argImplDictRoutesForEncl : List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argImplDictRoutesForEncl implTable encl name tag mono =
+  argImplDictRoutesForGo implTable implTable encl name tag mono
 
 -- #21 (G4): element routes (argImplReqRoutes) must search the FULL impl table, not
 -- the suffix from the matched outer entry.  The original recursion passed
@@ -6626,23 +6674,23 @@ argImplDictRoutesFor implTable name tag mono =
 -- inner per-element dispatch read a missing field → SIGSEGV.  `Box (Box X)` worked by
 -- accident (element tag == matched head, so it was the suffix head).  [full] keeps the
 -- whole table for the nested routeOfMono recursion; [scan] walks to find the head.
-argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> <Mut> List Route
-argImplDictRoutesForGo _ [] _ _ _ = []
-argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _)::rest) name tag mono
+argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argImplDictRoutesForGo _ [] _ _ _ _ = []
+argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _)::rest) encl name tag mono
   | tag2 == tag && contains name methodNames = match matchTyMono headTy mono
-    Some subst => argImplReqRoutes full subst reqs
-    None => argImplDictRoutesForGo full rest name tag mono
-  | otherwise = argImplDictRoutesForGo full rest name tag mono
+    Some subst => argImplReqRoutes full encl subst reqs
+    None => argImplDictRoutesForGo full rest encl name tag mono
+  | otherwise = argImplDictRoutesForGo full rest encl name tag mono
 
-argImplReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
-argImplReqRoutes _ _ [] = []
-argImplReqRoutes implTable subst ((Require _ rargs)::rest) =
-  argReqRoute implTable subst rargs :: argImplReqRoutes implTable subst rest
+argImplReqRoutes : List ImplEntry -> String -> List (String, Mono) -> List Require -> <Mut> List Route
+argImplReqRoutes _ _ _ [] = []
+argImplReqRoutes implTable encl subst ((Require _ rargs)::rest) =
+  argReqRoute implTable encl subst rargs :: argImplReqRoutes implTable encl subst rest
 
-argReqRoute : List ImplEntry -> List (String, Mono) -> List Ty -> <Mut> Route
-argReqRoute _ _ [] = RNone
-argReqRoute implTable subst (arg::_) =
-  routeOfMono implTable (fromAstType subst arg)
+argReqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> <Mut> Route
+argReqRoute _ _ _ [] = RNone
+argReqRoute implTable encl subst (arg::_) =
+  routeOfMonoEncl implTable encl (fromAstType subst arg)
 
 -- Phase 69.x-e: fill each method occurrence's method-dicts ref — one route per
 -- method-level constraint, from the instantiated constraint mono.  A concrete head
@@ -7758,7 +7806,16 @@ inferImplMethod : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mo
 inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats body) = match ifaceMethodTy allProg iface mname
   None => ()
   Some (ifaceParams, mty) =>
-    let _ = set_ref currentFn ""
+    -- currentFn = the method name (NOT "") so arg-/return-position sites in THIS
+    -- body record `encl = mname`.  registerImplRequires keys every method of an impl
+    -- under the SAME impl tyvar id (`impl Ord (List a)` registers `a` once per
+    -- compare/lt/min/max/…), so the global first-match route resolution returns the
+    -- LAST-registered method's `$dict_<m>_<slot>` for ALL bodies — corrupting e.g.
+    -- compare's element dispatch to `$dict_max_0` (unbound in compare's scope).  With
+    -- encl = mname, activeDictVarOfEncl/argImplDictRoutesForEncl prefer THIS method's
+    -- own `$dict_<mname>_<slot>`.  Pre-specialization each Ord impl defined only
+    -- compare so there was no collision; universal default specialization exposes it.
+    let _ = set_ref currentFn mname
     let _ = set_ref currentImplBody True
     -- build the method type's tv map explicitly (instead of expectedMethodType,
     -- which hides it) so the impl method's OWN method-level constraint vars
@@ -7780,7 +7837,8 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- the route, so register the var → dict-param mapping here (AFTER body inference,
     -- so each var is its surviving union-find root, mirroring registerMethodDictSlots).
     let _ = registerImplMethodDicts mname ifaceParams mty extraMap
-    set_ref currentImplBody False
+    let _ = set_ref currentImplBody False
+    set_ref currentFn ""
 -- G4: mark binop sites recorded while inferring this impl body so resolveBinopSite
 -- routes their element dict (RDict) — and ONLY theirs, not top-level operators.
 

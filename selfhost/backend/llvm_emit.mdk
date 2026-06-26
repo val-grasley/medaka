@@ -4336,7 +4336,17 @@ gatherGroup entries (method, key) =
   let symTag = implFnSymTag entries method tag key
   let cls0 = gatherClauses method key entries
   let positions = groupPositions method key entries
-  let arity = maxInt (clauseArity cls0) (methodArityOf method)
+  -- Eta-expand a point-free / ETA-SHORT impl clause up to the method's FULL arity
+  -- INCLUDING its leading dict params: `methodArityOf` counts only the source value
+  -- params, so a default like `foldMap f = fold (acc x => acc ++ f x) empty`
+  -- (synthesized into an impl, clause `[$dict_foldMap_0, f]`) must expand to
+  -- `dict + f + container`, not stop at `dict + f`.  Adding `nDicts` (the leading
+  -- `$dict_*` params dict_pass prepended) makes the lifted fn take every call-site
+  -- arg (RKey/arg-tag callers use `methodArityOf + dictWords`), so the unapplied PAP
+  -- (container dropped) → SIGSEGV no longer happens.  nDicts = 0 for a concrete impl
+  -- ⇒ identical to the old `maxInt (clauseArity) (methodArityOf)`.
+  let nDicts = leadingDictPats (firstClausePats cls0)
+  let arity = maxInt (clauseArity cls0) (methodArityOf method + nDicts)
   let cls = map (etaExpandClause arity) cls0
   ImplGroup method tag symTag positions arity cls
 
@@ -4369,6 +4379,11 @@ groupPositions method key (_::rest) = groupPositions method key rest
 clauseArity : List (List Pat, CExpr) -> Int
 clauseArity ((pats, _)::_) = lengthS pats
 clauseArity [] = 0
+
+-- the first clause's patterns (for counting leading dict params); [] when no clause.
+firstClausePats : List (List Pat, CExpr) -> List Pat
+firstClausePats ((pats, _)::_) = pats
+firstClausePats [] = []
 
 -- ── closures + higher-order functions (slice 4) ─────────────────────────────
 -- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.5 "Closures"): a closure value is a
