@@ -1,16 +1,16 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_desugar.sh — amortizes the per-process
+# Batched variant of diff_compiler_desugar.sh — amortizes the per-process
 # module-load cost.  The original ran `medaka run desugar_main.mdk <file>` once
 # per corpus file (~92 processes), each re-loading the self-hosted
 # parser/desugar/sexp modules; that fixed per-process cost dominated once the
 # interpreter env-lookup win made per-file desugaring cheap.
 #
-# This runs selfhost/entries/desugar_batch.mdk ONCE over the whole corpus (modules loaded
+# This runs compiler/entries/desugar_batch.mdk ONCE over the whole corpus (modules loaded
 # once), splits the delimited output per file in a single awk pass, and compares
 # each section against dev/astdump.exe --desugar.  FLOAT literal text is
 # normalized away (OCaml %g vs floatToString), like the original.
 #
-# Usage:  sh test/diff_selfhost_desugar_batch.sh [file.mdk ...]
+# Usage:  sh test/diff_compiler_desugar_batch.sh [file.mdk ...]
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/desugar_batch"
@@ -21,7 +21,7 @@ norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/selfhost/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
 fi
 
 # Stable list of existing files.

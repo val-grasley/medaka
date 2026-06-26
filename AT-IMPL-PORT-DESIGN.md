@@ -1,7 +1,7 @@
 # `@Impl` Named-Instance-Selection Hint — Native Port Design
 
 Status: DESIGN ONLY (read-only task; this doc is the only write).
-Date: 2026-06-23. Oracle = frozen `lib/` (complete). Native = `selfhost/` (gap).
+Date: 2026-06-23. Oracle = frozen `lib/` (complete). Native = `compiler/` (gap).
 
 ## TL;DR
 
@@ -34,28 +34,28 @@ through; needs verification, not new machinery.
 ## 1. Native has-vs-needs (cited)
 
 ### HAS
-- **Parser** — `selfhost/frontend/parser.mdk:632-638` `parseAtHint` → `EVar ("@"
+- **Parser** — `compiler/frontend/parser.mdk:632-638` `parseAtHint` → `EVar ("@"
   ++ name)`. Mirrors `lib/parser.mly`. DONE both sides.
-- **Resolve exemption** — `selfhost/frontend/resolve.mdk:312-319` `checkVar`, first
+- **Resolve exemption** — `compiler/frontend/resolve.mdk:312-319` `checkVar`, first
   guard `| isHint n = []` (`isHint` = `startsWithAt`, line 332-336). Mirrors
   `lib/resolve.ml:591`. DONE. (Empirically: `medaka check` still prints
   `Unbound variable: @Additive`, but that string comes from TYPECHECK
   `unboundVarFresh` at `typecheck.mdk:3399/3641`, NOT resolve — `resolve.mdk:964`
   renders the same text. The resolve pass already passes the hint through.)
-- **Named-impl storage** — `selfhost/frontend/ast.mdk:294` `DImpl { … name :
+- **Named-impl storage** — `compiler/frontend/ast.mdk:294` `DImpl { … name :
   Option String … }`. The name survives the whole pipeline.
 - **Canonical key embeds the name** —
-  `selfhost/types/typecheck.mdk:5901-5909` `keyEntryOf` → one `KeyEntry` per impl;
+  `compiler/types/typecheck.mdk:5901-5909` `keyEntryOf` → one `KeyEntry` per impl;
   `implKeyTc iface tys name` (`:5912-5918`) = `iface ++ "|" ++ args ++ "|" ++
   fromOption "" nm`, byte-identical to `lib/ast.ml`'s `impl_key`. So two impls of
   `Combine Int` named `Additive`/`Multiplicative` already produce DISTINCT keys.
-- **Value rep keyed by impl key** — `selfhost/eval/eval.mdk:88` `VTypedImpl String
+- **Value rep keyed by impl key** — `compiler/eval/eval.mdk:88` `VTypedImpl String
   String (List Int) Int Value` (2nd field = key). `narrowMethod`
   (`eval.mdk:776-790`) → `pickByTag` → `hasTag` selects the VMulti candidate whose
   key matches the route key. This is the native analogue of the oracle's
   `VNamedImpl` + `candidate_key`/key-narrow (`lib/eval.ml:592-690`).
 - **Coherence exemption for named impls** —
-  `selfhost/types/typecheck.mdk:5383` `cohImplsOfMid` records `isSome name` as the
+  `compiler/types/typecheck.mdk:5383` `cohImplsOfMid` records `isSome name` as the
   `isNamed` flag; `cohAnonConflict` (`:5557`, `| named = cohConflictWith e1 rest`)
   SKIPS the OverlappingImpls error when either impl is named. Mirrors
   `lib/typecheck.ml:4176`. DONE — so two named overlapping impls already coexist
@@ -78,7 +78,7 @@ through; needs verification, not new machinery.
 
 ### Resolve — DONE (no work)
 - Oracle: `lib/resolve.ml:591` (`EVar n when n.[0]='@' -> ()`).
-- Native: `selfhost/frontend/resolve.mdk:314` (`| isHint n = []`). Already present.
+- Native: `compiler/frontend/resolve.mdk:314` (`| isHint n = []`). Already present.
 - ACTION: none. Add a resolve fixture (regression) only.
 
 ### Typecheck — the main work
@@ -88,7 +88,7 @@ through; needs verification, not new machinery.
   hint. The pending hint is read at the method occurrence to narrow dispatch to
   the named impl. Ambiguity diagnostic `lib/typecheck.ml:1248` ("…use @ImplName to
   disambiguate"); `UnknownImplName` for a bad name.
-- Native target: `selfhost/types/typecheck.mdk:3701` `inferAppExpr` (the `match
+- Native target: `compiler/types/typecheck.mdk:3701` `inferAppExpr` (the `match
   lamUnderLoc x` … else `inferApp …` arm). Plus `infer env (EApp f x)` dispatch at
   `:2745`.
 - Native mirror plan:
@@ -116,7 +116,7 @@ through; needs verification, not new machinery.
      only upgrades to canonical key on head COLLISION but still picks deterministi-
      cally). The oracle defers this to `check_method_usages` (lazy). For parity,
      stamping the hint is the priority; the unhinted-ambiguous diagnostic is a
-     secondary parity item (gate `diff_selfhost_errors`).
+     secondary parity item (gate `diff_compiler_errors`).
 - Coherence/orphan exemption: coherence DONE (`:5557`). Orphan — audit whether
   native has an orphan-impl check; if yes, add `isSome name` skip mirroring
   `lib/typecheck.ml:4241`; if no native orphan check exists, nothing to do.
@@ -182,25 +182,25 @@ tag. If it keys off the bare head only, two named same-head impls collide at emi
 - **S1 (typecheck infer arm)** — add `currentImplHintRef` + the `inferAppExpr`
   hint arm that drops the hint arg and infers `f`. After S1: `medaka check`
   should stop reporting `Unbound variable: @Additive` (no more spurious value
-  lookup). Gate: `diff_selfhost_typecheck`, `diff_selfhost_check_json`,
-  `diff_selfhost_errors`.
+  lookup). Gate: `diff_compiler_typecheck`, `diff_compiler_check_json`,
+  `diff_compiler_errors`.
 - **S2 (route stamp)** — thread the hint into `resolveSite` so the method site
   gets `RKey (implKeyTc … (Some name))`. Add `UnknownImplName` for a bad hint.
-  Gate: `diff_selfhost_typecheck`, `diff_selfhost_errors`.
+  Gate: `diff_compiler_typecheck`, `diff_compiler_errors`.
 - **S3 (eval verify)** — `medaka run` on the repro must print `7` then `12`.
-  Gate: `diff_selfhost_eval`, `diff_selfhost_dict`. If a stray hint node survives,
+  Gate: `diff_compiler_eval`, `diff_compiler_dict`. If a stray hint node survives,
   add the strip (marker/eval).
 - **S4 (ambiguity diagnostic, parity)** — native `AmbiguousImpl` for an UNHINTED
-  ambiguous use. Gate: `diff_selfhost_errors`. Lower priority; can ship after S3.
+  ambiguous use. Gate: `diff_compiler_errors`. Lower priority; can ship after S3.
 - **S5 (build)** — `medaka build` on the repro; verify impl-symbol mangling
-  includes the name. Gate: `diff_selfhost_llvm`/`_build`, `selfcompile_fixpoint`.
+  includes the name. Gate: `diff_compiler_llvm`/`_build`, `selfcompile_fixpoint`.
 
 ### Gates
-- `diff_selfhost_resolve*` — should stay green throughout (resolve unchanged).
-- `diff_selfhost_typecheck` / `diff_selfhost_errors` / `diff_selfhost_check_json`
+- `diff_compiler_resolve*` — should stay green throughout (resolve unchanged).
+- `diff_compiler_typecheck` / `diff_compiler_errors` / `diff_compiler_check_json`
   — go from native-diverges to native-matches on the new fixtures (S1/S2/S4).
-- `diff_selfhost_eval` / `diff_selfhost_dict` — S3.
-- `diff_selfhost_llvm` / `diff_selfhost_build` + `selfcompile_fixpoint` — S5.
+- `diff_compiler_eval` / `diff_compiler_dict` — S3.
+- `diff_compiler_llvm` / `diff_compiler_build` + `selfcompile_fixpoint` — S5.
 - `bootstrap_*` / fixpoint — the compiler self-compiles after each native edit.
   FOOTGUN (from memory): `FORCE_EMITTER_REBUILD=1 make medaka` after a
   graph/typecheck change; rebuild `./medaka` fresh before trusting `diff_native_cli`

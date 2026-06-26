@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the self-hosted EVAL stage WITH the prelude loaded
-# (slice 4b).  Where diff_selfhost_eval.sh isolates the engine (prelude:false),
+# (slice 4b).  Where diff_compiler_eval.sh isolates the engine (prelude:false),
 # this exercises real prelude dispatch: typeclass methods defined in core.mdk
 # (Eq/Ord/Debug/Display/Num + deriving) running through the self-hosted eval.
 #
@@ -11,7 +11,7 @@
 # test/bin/eval_prelude_main (built by test/build_oracles.sh) prepends the *parsed*
 # stdlib/core.mdk, then evaluates — pp_value of `main` must match byte-for-byte.
 #
-# Usage:  sh test/diff_selfhost_eval_prelude.sh
+# Usage:  sh test/diff_compiler_eval_prelude.sh
 # Exit:   0 if every fixture matches.
 set -u
 

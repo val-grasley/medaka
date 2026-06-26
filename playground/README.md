@@ -35,7 +35,7 @@ Data flow: `source → compile.mjs (playground.wasm) → diagnostics | WAT → w
 
 | File | Role |
 |------|------|
-| `selfhost/entries/playground_main.mdk` | Combined compiler entry: runs the front-end once; outputs `__MEDAKA_DIAGNOSTICS__` + JSON (check errors) or `__MEDAKA_WAT__` + WAT (clean) |
+| `compiler/entries/playground_main.mdk` | Combined compiler entry: runs the front-end once; outputs `__MEDAKA_DIAGNOSTICS__` + JSON (check errors) or `__MEDAKA_WAT__` + WAT (clean) |
 | `playground/compile.mjs` | Env-agnostic compile seam: `compile(source,{wasm,stdlib})` → `{ok:true,wat}` or `{ok:false,diagnostics}` |
 | `playground/compiler-worker.js` | Module Worker: runs compile + wat2wasm assembly off the UI thread |
 | `playground/worker.js` | Runner Worker: instantiates the assembled user wasm with host-import glue + 10 s kill-timer |

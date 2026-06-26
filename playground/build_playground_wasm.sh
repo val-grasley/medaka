@@ -2,7 +2,7 @@
 # build_playground_wasm.sh — Stage-2 playground artifact builder.
 #
 # Produces the in-browser Medaka COMBINED compiler: the diagnostics+emit entry
-# (selfhost/entries/playground_main.mdk) self-compiled to a WasmGC module.  Unlike
+# (compiler/entries/playground_main.mdk) self-compiled to a WasmGC module.  Unlike
 # compiler.wasm (the bare emit entry, which TRAPS on a broken program), this module
 # runs the front end once and EITHER prints check --json diagnostics (broken) OR
 # emits the program's WAT (clean), demuxed by a first-line marker — so the browser
@@ -17,11 +17,11 @@
 # Pipeline:
 #   1. make medaka                         -> native OCaml-free compiler (./medaka)
 #      test/wasm/build_wasm_oracle.sh       -> test/bin/wasm_emit_modules_main
-#   2. wasm_emit_modules_main <runtime> <core> <ENTRY=playground_main.mdk> selfhost stdlib
+#   2. wasm_emit_modules_main <runtime> <core> <ENTRY=playground_main.mdk> compiler stdlib
 #        -> playground.wat ; wasm-tools parse -> playground.wasm ; validate
 #
-# NOTE the two ROOT dirs `selfhost stdlib`: playground_main.mdk imports both
-# selfhost modules AND stdlib/json (+ transitively hash_map via dce.mdk), so BOTH
+# NOTE the two ROOT dirs `compiler stdlib`: playground_main.mdk imports both
+# compiler modules AND stdlib/json (+ transitively hash_map via dce.mdk), so BOTH
 # roots are required or the loader reports `unknown module: …`.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ DIST="$ROOT/playground/dist"
 MEDAKA="$ROOT/medaka"
 EMITTER="$ROOT/medaka_emitter"
 EMITBIN="$ROOT/test/bin/wasm_emit_modules_main"
-ENTRY="$ROOT/selfhost/entries/playground_main.mdk"
+ENTRY="$ROOT/compiler/entries/playground_main.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
@@ -51,7 +51,7 @@ echo "[1/2] building native compiler + wasm emitter binary ..."
 echo "[2/2] compiling the combined diagnostics+emit entry to WasmGC ..."
 WAT="$DIST/playground.wat"
 WASM="$DIST/playground.wasm"
-"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$ROOT/selfhost" "$ROOT/stdlib" > "$WAT"
+"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$ROOT/compiler" "$ROOT/stdlib" > "$WAT"
 [ -s "$WAT" ] || { echo "FAIL: emitter produced empty WAT"; exit 1; }
 echo "  playground.wat: $(wc -l < "$WAT") lines"
 

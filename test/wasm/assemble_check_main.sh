@@ -2,7 +2,7 @@
 # assemble_check_main.sh — whole-program LINKAGE gate for the WasmGC backend.
 #
 # The milestone: the front-end compiler entry (lex→parse→resolve→exhaust→typecheck,
-# `selfhost/entries/check_main.mdk`) emits to WAT through the FULL `medaka build`
+# `compiler/entries/check_main.mdk`) emits to WAT through the FULL `medaka build`
 # front end (loader → elaborateModules with the real core.mdk prelude → core_ir_lower
 # → DCE → wasm_emit) and that WAT must ASSEMBLE: every `$mdk_w_*` function referenced
 # (by a closure wrapper / ref.func) must also be DEFINED.
@@ -40,8 +40,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 EMITBIN="$ROOT/test/bin/wasm_emit_modules_main"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-ENTRY="$ROOT/selfhost/entries/check_main.mdk"
-SELFHOST="$ROOT/selfhost"
+ENTRY="$ROOT/compiler/entries/check_main.mdk"
+SELFHOST="$ROOT/compiler"
 
 command -v wasm-tools >/dev/null 2>&1 || { echo "wasm-tools not on PATH — skipping linkage gate"; exit 2; }
 [ -x "$EMITBIN" ] || { echo "build the wasm modules emitter: sh test/wasm/build_wasm_oracle.sh (missing $EMITBIN)"; exit 2; }

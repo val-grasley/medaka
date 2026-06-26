@@ -3,12 +3,12 @@
 #
 #   WARM (./medaka_emitter present — the day-to-day loop): a 2-stage rebuild from
 #   CURRENT source with NO seed, NO OCaml, NO C3a gate.
-#     stage A: the existing emitter compiles selfhost/entries/llvm_emit_modules_main.mdk
+#     stage A: the existing emitter compiles compiler/entries/llvm_emit_modules_main.mdk
 #              -> a FRESH ./medaka_emitter (re-emits its own graph; clang).
-#     stage B: the fresh emitter compiles selfhost/driver/medaka_cli.mdk -> ./medaka.
+#     stage B: the fresh emitter compiles compiler/driver/medaka_cli.mdk -> ./medaka.
 #   Always-2-stage is correct; the rebuilt emitter's self-consistency is guaranteed
 #   separately by test/selfcompile_fixpoint.sh (not run here), so the warm loop is
-#   sound.  A timestamp short-circuit skips stage A when no selfhost/**.mdk source is
+#   sound.  A timestamp short-circuit skips stage A when no compiler/**.mdk source is
 #   newer than ./medaka_emitter (correctness-preserving; can be disabled with
 #   FORCE_EMITTER_REBUILD=1).
 #
@@ -36,9 +36,9 @@ EMITTER="$ROOT/medaka_emitter"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-DRIVER="$ROOT/selfhost/entries/llvm_emit_modules_main.mdk"
-CLI="$ROOT/selfhost/driver/medaka_cli.mdk"
-SELFHOST="$ROOT/selfhost"
+DRIVER="$ROOT/compiler/entries/llvm_emit_modules_main.mdk"
+CLI="$ROOT/compiler/driver/medaka_cli.mdk"
+SELFHOST="$ROOT/compiler"
 STDLIB="$ROOT/stdlib"
 FORCE_EMITTER_REBUILD="${FORCE_EMITTER_REBUILD:-0}"
 
@@ -104,13 +104,13 @@ emit_graph() {
 
 
 # ---- STAGE A (WARM): existing emitter rebuilds itself from CURRENT source --------
-# Skip if no selfhost/**.mdk source is newer than the emitter binary (correctness-
+# Skip if no compiler/**.mdk source is newer than the emitter binary (correctness-
 # preserving: an up-to-date emitter re-emits byte-identically anyway).
 NEWER="$(find "$SELFHOST" -name '*.mdk' -newer "$EMITTER" -print 2>/dev/null | head -1)"
 if [ "$FORCE_EMITTER_REBUILD" != "1" ] && [ -z "$NEWER" ]; then
-  echo "stage A: emitter up-to-date (no selfhost/*.mdk newer than $EMITTER) — skipping rebuild."
+  echo "stage A: emitter up-to-date (no compiler/*.mdk newer than $EMITTER) — skipping rebuild."
 else
-  [ -n "$NEWER" ] && echo "stage A: selfhost source changed ($NEWER) — rebuilding emitter from current source ..."
+  [ -n "$NEWER" ] && echo "stage A: compiler source changed ($NEWER) — rebuilding emitter from current source ..."
   [ "$FORCE_EMITTER_REBUILD" = "1" ] && echo "stage A: FORCE_EMITTER_REBUILD=1 — rebuilding emitter from current source ..."
   EMIT_LL="$WORK/emitter.ll"
   if ! emit_graph "$EMIT_LL" "$WORK/emitA.err" "$DRIVER"; then

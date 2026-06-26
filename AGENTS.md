@@ -11,25 +11,25 @@ linear pipeline; each stage is one file.
 
 > **Medaka self-hosts and compiles to native code.** Besides the OCaml reference
 > compiler (`lib/`, described below), the whole pipeline is rewritten in Medaka
-> (`selfhost/*.mdk`) and a native **LLVM backend** (`selfhost/llvm_emit.mdk` → text
+> (`compiler/*.mdk`) and a native **LLVM backend** (`compiler/llvm_emit.mdk` → text
 > IR → `clang`; C runtime `runtime/medaka_rt.c` + Boehm GC) compiles it. As of
 > 2026-06-08 all 7 stages are native-compiled byte-identical to the interpreter
-> and the compiler self-hosts to a **reproducing fixpoint** (`selfhost/BOOTSTRAP.md`).
+> and the compiler self-hosts to a **reproducing fixpoint** (`compiler/BOOTSTRAP.md`).
 > As of 2026-06-10 the **Stage-4 tooling is ported** (fmt/test/new/repl/build/lsp, all
 > differential-tested vs OCaml) and the **Phase-C native CLI capstone is complete**:
-> `selfhost/medaka_cli.mdk` native-compiles into a single OCaml-free `medaka` binary
+> `compiler/medaka_cli.mdk` native-compiles into a single OCaml-free `medaka` binary
 > that does all 8 subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`repl`/`lsp`) with no
 > OCaml at runtime. **As of 2026-06-12 the native `medaka` is CANONICAL (milestone flip):** all
 > PRE-FLIP-GAPS.md soundness/capability gaps (G1–G9) are closed, and **`make medaka` builds the
 > native compiler OCaml-free** — day-to-day a 2-stage warm rebuild from current source
 > (`build_native_medaka.sh`, no seed), and on a fresh clone a cold bootstrap from the
-> gzipped checked-in IR seed (`selfhost/seed/emitter.ll.gz` → `bootstrap_from_seed.sh` →
+> gzipped checked-in IR seed (`compiler/seed/emitter.ll.gz` → `bootstrap_from_seed.sh` →
 > `build_native_medaka.sh`). The OCaml compiler (`lib/`+`bin/`) is now
 > the **frozen soak-period differential oracle** — **retired (≠ removed; see PLAN.md "Retirement ≠
 > removal" + [[retirement-is-not-removal]])**. **Current focus (2026-06-14) = the soak tail.
-> DONE: gate re-rooting (all correctness gates now OCaml-free — `selfhost/REROOT-PLAN.md`);
+> DONE: gate re-rooting (all correctness gates now OCaml-free — `compiler/REROOT-PLAN.md`);
 > the DRIVER COLLAPSE (single-file typecheck+eval folded into the 1-module case of the
-> multi-module path — `selfhost/DRIVER-COLLAPSE-PLAN.md`, closes audit §6's recurring
+> multi-module path — `compiler/DRIVER-COLLAPSE-PLAN.md`, closes audit §6's recurring
 > single-vs-multi defect; `medaka check` now resolves imports); native dispatch fixes #55
 > (sum/product, both build AND eval paths), #21 (binop over-application on parametric user
 > impls), and the map `Foldable (Map a)` typecheck false-positive + `medaka test` SIGBUS;
@@ -37,18 +37,18 @@ linear pipeline; each stage is one file.
 > (`fuzz_diff.sh` OCaml-free); the native-emitter cross-module **constructor-name collision**
 > (the fuzzer's find — mis-filed as "mixed-ADT match", really bare-name ctor-table collapse)
 > fixed via universal ctor mangling; the **`argStampEnabled` eval-vs-emit dispatch unification
-> COMPLETE** (`selfhost/ARGSTAMP-UNIFY-PLAN.md` — eval now threads dicts; the GENUINE #21
+> COMPLETE** (`compiler/ARGSTAMP-UNIFY-PLAN.md` — eval now threads dicts; the GENUINE #21
 > nested-element-dict flattening solved, not contained; `evalDictLayerActive` retired); and
 > the **emit-path Set-literal / mutual-rec-Monoid dict gaps** (#44) fixed. **REMAINING = the
 > soak itself:** a clean bug-free stretch of native-only dev, then the confidence-gated `lib/`
-> removal.** Native-backend docs: `selfhost/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `selfhost/PRE-FLIP-GAPS.md`
-> (the closed pre-flip punch list), `selfhost/EMITTER-GAPS.md`
-> (closed/residual emitter gaps), `selfhost/DISPATCH-GAPS-SCOPE.md` (repro-verified scope of
-> the now-CLOSED native dispatch gaps #54/#55/#50/#21 — all four resolved as of 2026-06-14), `selfhost/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
-> scoping) + `selfhost/PERF-RESULTS.md` (**bar-4 EXECUTED 2026-06-11: self-compile 5.68× / ~59× vs
+> removal.** Native-backend docs: `compiler/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `compiler/PRE-FLIP-GAPS.md`
+> (the closed pre-flip punch list), `compiler/EMITTER-GAPS.md`
+> (closed/residual emitter gaps), `compiler/DISPATCH-GAPS-SCOPE.md` (repro-verified scope of
+> the now-CLOSED native dispatch gaps #54/#55/#50/#21 — all four resolved as of 2026-06-14), `compiler/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
+> scoping) + `compiler/PERF-RESULTS.md` (**bar-4 EXECUTED 2026-06-11: self-compile 5.68× / ~59× vs
 > the OCaml interpreter, 18 fixpoint-gated wins; harness `test/bench.sh`**),
-> `selfhost/STAGE2-DESIGN.md` + `selfhost/RUNTIME-DESIGN.md`
-> (design), `selfhost/README.md` (slice log). Harnesses: `test/bootstrap_*.sh`
+> `compiler/STAGE2-DESIGN.md` + `compiler/RUNTIME-DESIGN.md`
+> (design), `compiler/README.md` (slice log). Harnesses: `test/bootstrap_*.sh`
 > (native stage == interpreter), `test/selfcompile_*.sh` (emitter self-compile).
 
 ## Pipeline — where each stage lives
@@ -161,14 +161,14 @@ Dev probes (build to `_build/default/dev/`):
 
 ## Gotchas
 
-- **The compiler (`selfhost/*.mdk`) must NEVER import `stdlib/`.** The native
-  `medaka` binary bootstraps from its own source only. So `selfhost/` carries its
+- **The compiler (`compiler/*.mdk`) must NEVER import `stdlib/`.** The native
+  `medaka` binary bootstraps from its own source only. So `compiler/` carries its
   own small helpers: `support/util.mdk`, `support/ordmap.mdk`, or inline
   duplications (this is *why* SMap/EMap were hand-rolled rather than reusing
   `stdlib/map.mdk`). When you need a stdlib-shaped function (`intercalate`,
   `intersperse`, etc.) in compiler code, add it to `support/` or inline it — do
   **not** `import list`/`import string`. Enforced by convention, not the build;
-  check `grep -rn 'import ' selfhost/ | grep -v support` stays clean of stdlib
+  check `grep -rn 'import ' compiler/ | grep -v support` stays clean of stdlib
   module names.
   - **Why (the real reasons — *not* just binary size).** The emit-path DCE
     (`ir/dce.mdk`) already tree-shakes unreached plain top-level functions, so the
@@ -183,7 +183,7 @@ Dev probes (build to `_build/default/dev/`):
     (3) **isolation + bootstrap** — the compiler stays independent of the thing it
     compiles, and the cold-bootstrap seed's provenance stays small. This becomes
     cheap to revisit only if/when the backend gains **instance-level DCE via
-    monomorphization** (the deferred backend item). Until then: keep selfhost
+    monomorphization** (the deferred backend item). Until then: keep compiler
     stdlib-free; `support/` is the compiler's private mini-stdlib.
 - **Environment is pre-set.** opam env vars (switch `5.4.1`, PATH) are already
   exported via `.claude/settings.local.json`. **Never** prefix commands with
@@ -265,13 +265,13 @@ Dev probes (build to `_build/default/dev/`):
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
 - **Match-arm guards (`match … pat if guard => body`) lower natively (`CTGuard` CLOSED, 2026-06-08); refutable pattern-guards (`Pat <- e`) work fully in both forms (native-resolve/typecheck guard-binder scoping fixed 2026-06-15).** Historically the native emitter could not lower a guard — `emitTree`'s `CTGuard` arm gapped, silently blanking the body to `0` under the gap-tolerant self-compile build (this bit `llvm_emit.mdk`'s own source at self-compile step C1). `emitTree` now emits a real guard test + branch (`emitGuardedArm`/`emitGuardChain`). Both refutable-guard forms now work, verified native==OCaml:
   - **Function-clause refutable guards** (`f n | Some v <- e = v`) — guard gating *and* the bound var scoping into the body. (They desugar to if-chains, not `CTGuard`.)
-  - **Match-arm refutable guards** (`x if Some v <- e => body`) — gate correctly, bind scopes rightward into *later qualifiers* (`Some v <- e, v > 0`) **and into the arm body** (`=> v`). This last part was a **native-only** bug (OCaml `lib/resolve.ml` + `lib/typecheck.ml` always threaded the binder; the selfhost `frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArm` did not, so the body saw `UnboundVariable`). Fixed 2026-06-15 by threading the guard binders through later qualifiers and into the body in both selfhost passes — `medaka run` always evaluated it correctly, only `check` rejected it.
+  - **Match-arm refutable guards** (`x if Some v <- e => body`) — gate correctly, bind scopes rightward into *later qualifiers* (`Some v <- e, v > 0`) **and into the arm body** (`=> v`). This last part was a **native-only** bug (OCaml `lib/resolve.ml` + `lib/typecheck.ml` always threaded the binder; the compiler `frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArm` did not, so the body saw `UnboundVariable`). Fixed 2026-06-15 by threading the guard binders through later qualifiers and into the body in both compiler passes — `medaka run` always evaluated it correctly, only `check` rejected it.
   Fixtures: `test/llvm_fixtures/guard_match_{chain,ctor}.mdk`.
 - **For layout questions** (what indentation shapes are legal, leading-op set, then/else, tabs, let…in wrapping), `LAYOUT-SEMANTICS.md` is the ground truth. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug.
 
 ## Dogfooding the language
 
-The stdlib and `selfhost/` are written *in* Medaka, so prefer its idioms. A
+The stdlib and `compiler/` are written *in* Medaka, so prefer its idioms. A
 handful of constructs parse and work but are **under-used** — when you touch
 nearby code, consider them, but **only where they genuinely improve
 readability**. Don't force-fit: most candidate sites aren't improvements, and a
@@ -289,7 +289,7 @@ the body matches the *bare last param*, not `match (g param)`).
 
 `SYNTAX.md` is the ground-truth list of what parses; `test/parse_fixtures/rare_constructs.mdk`
 has minimal examples. The self-hosted parser doesn't cover all of these yet —
-see PLAN.md "Known parser gaps" before assuming `selfhost/` can parse one.
+see PLAN.md "Known parser gaps" before assuming `compiler/` can parse one.
 
 ## Writing tests
 
@@ -358,13 +358,13 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
 | `STDLIB.md` | Stdlib module plan |
 | `stdlib/README.md` | Conventions for adding extern primitives |
-| `selfhost/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
-| `selfhost/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the residual: the emitter's **refutable** `CGBind` (`Just x <- e`) lowering is a contained `gapU` (not produced by current source; the front-end resolve/typecheck side of refutable match-arm guards was fixed 2026-06-15, see the guard note above). The mixed-nullary/payload-ADT fuzzer crash was CLOSED 2026-06-13 — root cause was a cross-module **constructor-name collision** in the emitter's bare-name ctor tables (fixed by universal ctor mangling in `backend/private_mangle.mdk`), NOT match field mis-extraction as first filed. |
-| `selfhost/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `selfhost/ARGSTAMP-UNIFY-PLAN.md`. |
-| `selfhost/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
-| `selfhost/PERF-RESULTS.md` | **Bar-4 EXECUTED (2026-06-11), extended session 2 (2026-06-14).** Measured log of the perf wins: self-compile **12.04 s → ~1.72 s (~7×); ~73× vs the OCaml interpreter**. Session 1 (18 wins): `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Session 2 (3 wins, 2.57→1.72 s): two MISATTRIBUTED-symbol O(N²) sites session 1 missed — `scopeArities` (~23%) + `maybeInferConstraint` (~7.5%) membership→SMap — plus `GC_malloc_atomic` for pointer-free string cells (~3%). Reusable patterns (map the lam-id to source before trusting a filed hotspot; verify by wall-clock not sample count), every dead-end, and the supervised-only remaining levers (threaded float-augmented sig tree, GC allocation density). Harness: `test/bench.sh` |
-| `selfhost/STAGE2-DESIGN.md` / `selfhost/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
-| `selfhost/README.md` | Self-host port slice log + roadmap |
-| `selfhost/REROOT-PLAN.md` | The plan that took every differential gate OCaml-free (DONE 2026-06-13): gate categories (HOST/eval-probe-oracle/front-end/build), golden-capture infra, native-interp oracle, phasing. |
-| `selfhost/DRIVER-COLLAPSE-PLAN.md` | The plan that folded single-file typecheck+eval into the 1-module case of the multi-module path (DONE 2026-06-13, closes audit §6): 5 phases (scaffold→test→dict→eval→check→delete), `check`-option-A (resolves imports), risk register. |
-| `selfhost/ARGSTAMP-UNIFY-PLAN.md` | The approved plan (2026-06-14, IN PROGRESS) to retire the `argStampEnabled` eval-vs-emit dispatch fork (the finer split the driver collapse left; shared root of #55/#21): flip eval to full dict-threading, arg-tag survives only for the irreducible primitive residual; 6 phases, fork inventory, arg-tag dependency map. |
+| `compiler/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
+| `compiler/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the residual: the emitter's **refutable** `CGBind` (`Just x <- e`) lowering is a contained `gapU` (not produced by current source; the front-end resolve/typecheck side of refutable match-arm guards was fixed 2026-06-15, see the guard note above). The mixed-nullary/payload-ADT fuzzer crash was CLOSED 2026-06-13 — root cause was a cross-module **constructor-name collision** in the emitter's bare-name ctor tables (fixed by universal ctor mangling in `backend/private_mangle.mdk`), NOT match field mis-extraction as first filed. |
+| `compiler/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `compiler/ARGSTAMP-UNIFY-PLAN.md`. |
+| `compiler/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
+| `compiler/PERF-RESULTS.md` | **Bar-4 EXECUTED (2026-06-11), extended session 2 (2026-06-14).** Measured log of the perf wins: self-compile **12.04 s → ~1.72 s (~7×); ~73× vs the OCaml interpreter**. Session 1 (18 wins): `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Session 2 (3 wins, 2.57→1.72 s): two MISATTRIBUTED-symbol O(N²) sites session 1 missed — `scopeArities` (~23%) + `maybeInferConstraint` (~7.5%) membership→SMap — plus `GC_malloc_atomic` for pointer-free string cells (~3%). Reusable patterns (map the lam-id to source before trusting a filed hotspot; verify by wall-clock not sample count), every dead-end, and the supervised-only remaining levers (threaded float-augmented sig tree, GC allocation density). Harness: `test/bench.sh` |
+| `compiler/STAGE2-DESIGN.md` / `compiler/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
+| `compiler/README.md` | Self-host port slice log + roadmap |
+| `compiler/REROOT-PLAN.md` | The plan that took every differential gate OCaml-free (DONE 2026-06-13): gate categories (HOST/eval-probe-oracle/front-end/build), golden-capture infra, native-interp oracle, phasing. |
+| `compiler/DRIVER-COLLAPSE-PLAN.md` | The plan that folded single-file typecheck+eval into the 1-module case of the multi-module path (DONE 2026-06-13, closes audit §6): 5 phases (scaffold→test→dict→eval→check→delete), `check`-option-A (resolves imports), risk register. |
+| `compiler/ARGSTAMP-UNIFY-PLAN.md` | The approved plan (2026-06-14, IN PROGRESS) to retire the `argStampEnabled` eval-vs-emit dispatch fork (the finer split the driver collapse left; shared root of #55/#21): flip eval to full dict-threading, arg-tag survives only for the irreducible primitive residual; 6 phases, fork inventory, arg-tag dependency map. |

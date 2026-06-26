@@ -10,10 +10,10 @@
 #
 # OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted eval runs as the pre-compiled
 # native binary test/bin/eval_main (built by test/build_oracles.sh) instead of
-# `main.exe run selfhost/entries/eval_main.mdk`.  It must render the SAME pp_value as
+# `main.exe run compiler/entries/eval_main.mdk`.  It must render the SAME pp_value as
 # the golden.
 #
-# Usage:  sh test/diff_selfhost_eval.sh
+# Usage:  sh test/diff_compiler_eval.sh
 # Exit:   0 if every fixture matches.
 set -u
 

@@ -15,7 +15,7 @@
 # Normalization: the native binary prints the bare error message to stderr; a
 # defensive ".*panic: " strip handles any runtime that prefixes it.
 #
-# Usage:  sh test/diff_selfhost_parse_errors.sh
+# Usage:  sh test/diff_compiler_parse_errors.sh
 # Exit:   0 if every fixture passes, else 1.
 set -u
 
@@ -43,12 +43,12 @@ for f in "$FIXDIR"/*.mdk; do
   # B. Self-hosted must exit non-zero
   "$RUN" "$f" >/dev/null 2>&1
   exit_code=$?
-  [ "$exit_code" -ne 0 ] || { ok=0; reason="selfhost exited 0 (should reject)"; }
+  [ "$exit_code" -ne 0 ] || { ok=0; reason="compiler exited 0 (should reject)"; }
 
   # C. Self-hosted message must match golden
   if [ "$ok" -eq 1 ]; then
     self_out="$("$RUN" "$f" 2>&1 >/dev/null | norm_self)"
-    [ "$self_out" = "$golden" ] || { ok=0; reason="selfhost: got \"$self_out\" want \"$golden\""; }
+    [ "$self_out" = "$golden" ] || { ok=0; reason="compiler: got \"$self_out\" want \"$golden\""; }
   fi
 
   if [ "$ok" -eq 1 ]; then

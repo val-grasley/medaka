@@ -1,0 +1,34 @@
+-- Run a program for its OUTPUT through the self-hosted eval:
+--
+--   medaka run compiler/entries/eval_run_main.mdk <prelude.mdk>... <source.mdk>
+--
+-- prepends the prelude file(s) (core.mdk [list.mdk …]), evaluates the program,
+-- and prints the captured stdout (putStr/putStrLn output) — diffs against the
+-- === EVAL === goldens.  This is the "true execution" path (vs eval_main, which
+-- renders pp_value of `main`): the program actually runs its IO.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import support.util.{splitLast}
+import eval.eval.{evalOutputWith}
+
+main = match splitLast (args ())
+  Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
+  None => ePutStrLn "usage: medaka run compiler/entries/eval_run_main.mdk <prelude.mdk>... <file.mdk>"
+
+withPreludes preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget preludeDecls targetPath = match readFile targetPath
+  Ok targetSrc => putStr (evalOutputWith preludeDecls (desugar (parse targetSrc)))
+  Err msg => ePutStrLn msg
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

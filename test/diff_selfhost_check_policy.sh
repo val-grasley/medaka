@@ -1,8 +1,8 @@
 #!/bin/sh
-# diff_selfhost_check_policy.sh — `medaka check-policy` gate.
+# diff_compiler_check_policy.sh — `medaka check-policy` gate.
 #
 # WS-1a (bare-label policy compare): the native `medaka check-policy <file>
-# [--allow …] [--fn …]` (selfhost/tools/check_policy.mdk via medaka_cli.mdk) must
+# [--allow …] [--fn …]` (compiler/tools/check_policy.mdk via medaka_cli.mdk) must
 # be BYTE-IDENTICAL to a committed native golden
 # (test/check_policy_fixtures/ws1a_<case>.golden + .rc) over the capability demo
 # plugins (demo/plugin_good.mdk, demo/plugin_malicious.mdk), across a permissive
@@ -16,7 +16,7 @@
 # Path-stable: the plugin path is the only absolute path that can appear; we strip
 # it (sed) so goldens never bake /Users/.
 #
-# Usage:  sh test/diff_selfhost_check_policy.sh
+# Usage:  sh test/diff_compiler_check_policy.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE="$ROOT/medaka"

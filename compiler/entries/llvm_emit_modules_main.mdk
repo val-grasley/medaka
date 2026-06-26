@@ -1,0 +1,113 @@
+-- MULTI-MODULE LLVM emit driver — the emit analog of eval_typed_modules_main.mdk
+-- and the multi-module counterpart of llvm_emit_typed_main.mdk.  It is the
+-- emitting half of the multi-module emit+RUN gate (test/diff_compiler_llvm_modules.sh),
+-- the validation foundation for the whole-compiler native push: where
+-- llvm_emit_gaps_main.mdk only MEASURES emittability of the multi-module path
+-- (emitProgramGaps), this driver runs the REAL emitter (emitProgram) so the
+-- gate can link + run + byte-diff the oracle.
+--
+--   medaka run compiler/entries/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars each +
+-- core, then `elaborateModules` threads the marker + typecheck route-stamping
+-- through the loader's module graph (mirroring eval_typed_modules_main.mdk).  The
+-- elaborated core + flattened module decls are lowered to Core IR and emitted as
+-- textual LLVM IR to stdout — same shape as llvm_emit_typed_main.mdk.
+--
+-- E4 (LANDED): the driver calls enableEmitArgStampPasses (), so elaborateModules's
+-- dictPassModulesIfEnabled enabled branch runs the joint arg-position dict-pass
+-- (constrained-fn dict params threaded through call sites cross-module).  The
+-- earlier "Pre-E4 no-op" note here was STALE — arg-position dict-passing IS active
+-- on this path (verified: a cross-module `Eq a => x == y` builds + runs native ==
+-- oracle; TYPECHECK-AUDIT.md §L1).  The joint keying it consumes is made SAFE by
+-- universal per-module mangling (mangleUnits, run below before elaborateModules):
+-- every top-level fn is `<mid>__<name>`, so two modules' same-named constrained/
+-- unconstrained fns can never share a dict-arity key (the former L1 hazard).
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{
+  elaborateModules,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  enableEmitArgStampPasses,
+}
+import ir.core_ir_lower.{
+  lowerProgramEmit,
+  returnsSelfTable,
+  selfFnParamTable,
+  methodIfaceTable,
+  methodConstraintIfaces,
+  ctorFieldTypeNames,
+  declSigTypeNames,
+}
+import backend.llvm_emit.{
+  emitProgram,
+  installReturnsSelf,
+  installSelfFnParams,
+  installMethodIface,
+  installMethodConstraintIfaces,
+  installCtorFieldTypes,
+  installDeclSigTypes,
+}
+import backend.private_mangle.{mangleUnits}
+import ir.dce.{dceFilter}
+import support.path.{dirOf}
+
+main : <IO, Mut> Unit
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit runtimeDecls coreDecls modules =
+  let _ = enableEmitArgStampPasses ()
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  let allDecls0 = coreD ++ flatMap snd modules2
+  let allDecls = dceFilter allDecls0
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
+  let _ = installReturnsSelf (returnsSelfTable allDecls)
+  let _ = installSelfFnParams (selfFnParamTable allDecls)
+  let _ = installMethodIface (methodIfaceTable allDecls)
+  let _ = installMethodConstraintIfaces (methodConstraintIfaces allDecls)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
+  let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  putStr (emitProgram (lowerProgramEmit allDecls))
+-- Module-qualify module-PRIVATE top-level functions whose bare name collides
+-- across units, BEFORE elaborateModules flattens the boundaries away (same
+-- flat-emit @mdk_<name> collision risk the bootstrap driver fixes).  The gate
+-- diffs OUTPUT, not symbols, so renaming uncollided privates is a no-op and the
+-- gate stays byte-identical; it only matters when two units share a private name.
+
+-- DEAD-CODE ELIMINATION (Stage 3 #2a): drop plain top-level functions unreached
+-- from main + impl/interface bodies, so an unreached-but-gapped prelude binding
+-- (core.mdk's maximum/minimum/clamp → the open max/min gap) no longer aborts the
+-- whole build.  CONSERVATIVE + SOUND: all impls/interfaces (dynamic-dispatch
+-- targets) are retained whole; only unreachable DFunDefs are removed.  Order-
+-- preserving ⇒ IR stays byte-stable.  See compiler/dce.mdk.
+
+-- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
+-- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
+-- (the result is discarded) — the real arg-/return-position dict-passing happens
+-- INSIDE elaborateModules above (E4 landed; enableEmitArgStampPasses drives it).  Kept for
+-- parity with the single-file typed driver.

@@ -1,0 +1,41 @@
+-- compiler/entries/diagnostics_project_main.mdk — CLI driver for the PROJECT-WIDE
+-- (multi-file) diagnostics layer (Stage 4 Phase B.10.5).
+--
+--   medaka run compiler/entries/diagnostics_project_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- Loads <entry.mdk> + its transitive imports, runs resolve/typecheck per module
+-- bucketing diagnostics BY FILE, and prints one block per file:
+--
+--   ## FILE <path>
+--   <severity>: <message>
+--   ...
+--
+-- (clean files still emit their `## FILE` header with no diagnostic lines).  The
+-- diff gate (test/diff_compiler_analyze_project.sh) splits on the `## FILE`
+-- markers and diffs each file's sorted diagnostics against `medaka check --json`
+-- (the OCaml analyze_project).  Disk-only here (read = (_ => None)); the unsaved-
+-- buffer override path is exercised by the LSP (lsp.mdk).
+
+import driver.diagnostics.{analyzeProjectToLines}
+import support.path.{dirOf}
+
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/diagnostics_project_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+-- disk-only read callback (no editor-buffer overrides on the CLI path).
+noOverride : String -> Option String
+noOverride _ = None
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc =>
+      let cacheRef = Ref []
+      putStr (analyzeProjectToLines cacheRef noOverride entry roots rsrc csrc)

@@ -1,7 +1,7 @@
 #!/bin/sh
 # BOOTSTRAP (B6) — natively compiled self-hosted TYPECHECK stage == reference over
 # typecheck_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
-# captured from `main.exe run selfhost/entries/typecheck_main.mdk <fixture>`
+# captured from `main.exe run compiler/entries/typecheck_main.mdk <fixture>`
 # (test/capture_goldens.sh boot_typecheck); native = test/bin/typecheck_main.
 # Strip the native trailing "()" before the diff.  See bootstrap_lex.sh.
 #

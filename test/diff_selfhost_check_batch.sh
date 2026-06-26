@@ -1,5 +1,5 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_check.sh — PROTOTYPE for prelude caching.
+# Batched variant of diff_compiler_check.sh — PROTOTYPE for prelude caching.
 # Runs test/bin/check_batch ONCE over all diff_fixtures + resolve_fixtures
 # in a single process (prelude parsed once), then splits the delimited output
 # per fixture and compares each against the same committed golden the per-file

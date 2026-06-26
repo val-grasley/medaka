@@ -10,7 +10,7 @@
 # stripping that segment and resolving the remainder under the dep's root
 # (`minilib.lib.minilib` -> `<minilib-root>/lib/minilib.mdk`).  A dep's OWN
 # stdlib imports still resolve via the normal stdlib root.  This is a NATIVE /
-# loader-only feature (selfhost/driver/loader.mdk); the frozen OCaml oracle is
+# loader-only feature (compiler/driver/loader.mdk); the frozen OCaml oracle is
 # untouched, so this is a fresh dedicated gate (no oracle leg).
 #
 # Fixture (test/cross_project_fixtures/):

@@ -1,5 +1,5 @@
 #!/bin/sh
-# test/diff_selfhost_repl.sh
+# test/diff_compiler_repl.sh
 #
 # Gate for the self-hosted REPL (Stage 4, Phase B.9), RE-ROOTED off the OCaml
 # oracle (REROOT-PLAN §2d).
@@ -27,7 +27,7 @@
 # Oracle: native test/bin/repl_main (built by sh test/build_oracles.sh) reading
 # stdin, vs the committed golden (captured by sh test/capture_goldens.sh repl).
 #
-# Usage:  sh test/diff_selfhost_repl.sh
+# Usage:  sh test/diff_compiler_repl.sh
 # Exit:   0 if native repl stdout == golden; 1 on mismatch; 2 if oracle missing.
 set -u
 
@@ -46,7 +46,7 @@ SELF_OUT=$(perl -e 'alarm 180; exec @ARGV' -- "$RUN" "$RUNTIME" "$CORE" < "$INPU
 EXPECTED=$(cat "$GOLDEN")
 
 if [ "$SELF_OUT" = "$EXPECTED" ]; then
-  echo "PASS: native selfhost repl output matches golden"
+  echo "PASS: native compiler repl output matches golden"
   exit 0
 else
   echo "FAIL: native repl output differs from golden"

@@ -1,11 +1,11 @@
 #!/bin/sh
 # SELF-COMPILE C3 for the BUILD DRIVER — verify the STRICT multi-module emit driver
-# (selfhost/entries/llvm_emit_modules_main.mdk, the one `medaka build` actually shells out to)
+# (compiler/entries/llvm_emit_modules_main.mdk, the one `medaka build` actually shells out to)
 # fixpoints, not just the gap-tolerant bootstrap driver.
 #
 # ── OCaml-FREE (REROOT-PLAN Phase 0, §2f) ──────────────────────────────────────
 # Reference emission is bootstrapped from the COMMITTED gzipped seed
-# (selfhost/seed/emitter.ll.gz), not from `main.exe run` (no OCaml, no `dune`).
+# (compiler/seed/emitter.ll.gz), not from `main.exe run` (no OCaml, no `dune`).
 # The seed IS minted from THIS build driver's graph, so the seed converges on it
 # in a single re-emit (empirically SEED_IR == REF, and REF == the OCaml
 # interpreter's emission, byte-for-byte — 2026-06-12).  The three-stage chain below
@@ -25,12 +25,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SEED_GZ="$ROOT/selfhost/seed/emitter.ll.gz"
-DRIVER="$ROOT/selfhost/entries/llvm_emit_modules_main.mdk"
+SEED_GZ="$ROOT/compiler/seed/emitter.ll.gz"
+DRIVER="$ROOT/compiler/entries/llvm_emit_modules_main.mdk"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-SELFHOST="$ROOT/selfhost"
+SELFHOST="$ROOT/compiler"
 STDLIB="$ROOT/stdlib"
 CC="${CC:-clang}"
 STACK_SIZE="${STACK_SIZE:-0x20000000}"

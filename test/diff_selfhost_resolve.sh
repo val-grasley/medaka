@@ -8,11 +8,11 @@
 # .mdk with a committed <name>.expected golden):
 #   A. reference stability — diagdump output must equal the committed golden
 #      (so the harness is green and self-documenting now, before any port).
-#   B. if selfhost/entries/resolve_main.mdk exists — the self-hosted resolve's output
+#   B. if compiler/entries/resolve_main.mdk exists — the self-hosted resolve's output
 #      (sorted) must equal the same golden.
 #
-# Usage:  sh test/diff_selfhost_resolve.sh
-# Exit:   0 if every fixture passes (B skipped until the selfhost side lands).
+# Usage:  sh test/diff_compiler_resolve.sh
+# Exit:   0 if every fixture passes (B skipped until the compiler side lands).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,7 +32,7 @@ for f in "$FIXDIR"/*.mdk; do
   golden="$(cat "${f%.mdk}.expected")"
   ok=1
   self="$("$RUN" "$ROOT/stdlib/runtime.mdk" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
-  [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from golden"; }
+  [ "$self" = "$golden" ] || { ok=0; reason="compiler differs from golden"; }
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s (%s)\n' "$name" "$reason"; fi
 done

@@ -3,7 +3,7 @@
 # foundation for the whole-compiler push (STAGE2-DESIGN.md §2.4 / PLAN.md "Native
 # backend").
 #
-# The multi-module analog of diff_selfhost_llvm_typed.sh: emit a multi-module
+# The multi-module analog of diff_compiler_llvm_typed.sh: emit a multi-module
 # program, link it, run it, and diff the committed value golden.
 #
 # For each fixture SET (a subdirectory of test/llvm_fixtures_modules/ holding an
@@ -32,7 +32,7 @@
 # binary test/bin/llvm_emit_modules_main (built by test/build_oracles.sh); the
 # reference is the committed entry.eval.golden.
 #
-# Usage:  sh test/diff_selfhost_llvm_modules.sh
+# Usage:  sh test/diff_compiler_llvm_modules.sh
 # Exit:   0 if every fixture's native stdout matches the golden; 2 if the build is
 #         missing, no C compiler is available, or libgc is absent (opt-in).
 set -u

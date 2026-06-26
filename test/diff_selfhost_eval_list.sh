@@ -10,7 +10,7 @@
 # test/bin/eval_prelude_main (built by test/build_oracles.sh) parses the SAME files
 # with the self-host front-end; pp_value of `main` must match the golden.
 #
-# Usage:  sh test/diff_selfhost_eval_list.sh
+# Usage:  sh test/diff_compiler_eval_list.sh
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

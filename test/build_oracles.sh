@@ -1,15 +1,15 @@
 #!/bin/sh
-# build_oracles.sh — compile the selfhost STAGE ENTRIES the OCaml-free gates need
+# build_oracles.sh — compile the compiler STAGE ENTRIES the OCaml-free gates need
 # into native binaries under test/bin/<entry>, via the native `./medaka build`.
 #
 # This is the category-C re-root build step (REROOT-PLAN.md §3b / Phase 2): each
-# gate that used to host a selfhost entry on the OCaml interpreter
-# (`main.exe run selfhost/entries/<entry>.mdk …`) instead runs the pre-compiled
+# gate that used to host a compiler entry on the OCaml interpreter
+# (`main.exe run compiler/entries/<entry>.mdk …`) instead runs the pre-compiled
 # native binary `test/bin/<entry>` with the SAME positional args. Building these
 # binaries is the whole OCaml-removal lever for those gates — no OCaml at gate time.
 #
 # Design:
-#   * Idempotent: a binary is rebuilt only if it is older than ANY selfhost/**.mdk
+#   * Idempotent: a binary is rebuilt only if it is older than ANY compiler/**.mdk
 #     (or absent). FORCE=1 rebuilds unconditionally.
 #   * Bootstraps ./medaka + ./medaka_emitter (warm `make medaka`) if absent — both
 #     are OCaml-free (cold path bootstraps from the gz seed).
@@ -31,59 +31,59 @@ EMITTER="$ROOT/medaka_emitter"
 CC="${CC:-clang}"
 
 # ── Entries the step-1 OCaml-free gates need (one per line; no extension) ──────
-#   eval_run_main     — diff_selfhost_eval_run.sh        (=== EVAL === goldens)
-#   eval_run_batch    — diff_selfhost_eval_run_batch.sh  (=== EVAL === goldens)
-#   core_ir_run_main  — diff_selfhost_core_ir_run.sh     (=== EVAL === goldens)
-#   core_ir_dump_main — diff_selfhost_core_ir_sexp.sh    (.sexp snapshot goldens)
+#   eval_run_main     — diff_compiler_eval_run.sh        (=== EVAL === goldens)
+#   eval_run_batch    — diff_compiler_eval_run_batch.sh  (=== EVAL === goldens)
+#   core_ir_run_main  — diff_compiler_core_ir_run.sh     (=== EVAL === goldens)
+#   core_ir_dump_main — diff_compiler_core_ir_sexp.sh    (.sexp snapshot goldens)
 #   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden ──
-#   eval_main             — diff_selfhost_eval.sh
-#   eval_prelude_main     — diff_selfhost_eval_prelude.sh + diff_selfhost_eval_list.sh
-#   eval_prelude_batch    — diff_selfhost_eval_prelude_batch.sh
-#   eval_list_batch       — diff_selfhost_eval_list_batch.sh
-#   eval_dict_main        — diff_selfhost_eval_dict.sh
-#   eval_dict_batch       — diff_selfhost_eval_dict_batch.sh
-#   eval_typed_main       — diff_selfhost_eval_typed.sh
-#   eval_typed_batch      — diff_selfhost_eval_typed_batch.sh
-#   eval_typed_modules_main — diff_selfhost_eval_typed_modules.sh
-#   eval_modules_main     — diff_selfhost_eval_modules.sh
-#   core_ir_main          — diff_selfhost_core_ir.sh
-#   core_ir_prelude_main  — diff_selfhost_core_ir_prelude.sh + diff_selfhost_core_ir_list.sh
-#   core_ir_typed_main    — diff_selfhost_core_ir_typed.sh
-#   core_ir_roundtrip_main — diff_selfhost_core_ir_roundtrip.sh
-#   core_ir_modules_main  — diff_selfhost_core_ir_modules.sh
-#   llvm_emit_main        — diff_selfhost_llvm.sh        (emit → clang → run vs golden)
-#   llvm_emit_typed_main  — diff_selfhost_llvm_typed.sh
-#   llvm_emit_modules_main — diff_selfhost_llvm_modules.sh
+#   eval_main             — diff_compiler_eval.sh
+#   eval_prelude_main     — diff_compiler_eval_prelude.sh + diff_compiler_eval_list.sh
+#   eval_prelude_batch    — diff_compiler_eval_prelude_batch.sh
+#   eval_list_batch       — diff_compiler_eval_list_batch.sh
+#   eval_dict_main        — diff_compiler_eval_dict.sh
+#   eval_dict_batch       — diff_compiler_eval_dict_batch.sh
+#   eval_typed_main       — diff_compiler_eval_typed.sh
+#   eval_typed_batch      — diff_compiler_eval_typed_batch.sh
+#   eval_typed_modules_main — diff_compiler_eval_typed_modules.sh
+#   eval_modules_main     — diff_compiler_eval_modules.sh
+#   core_ir_main          — diff_compiler_core_ir.sh
+#   core_ir_prelude_main  — diff_compiler_core_ir_prelude.sh + diff_compiler_core_ir_list.sh
+#   core_ir_typed_main    — diff_compiler_core_ir_typed.sh
+#   core_ir_roundtrip_main — diff_compiler_core_ir_roundtrip.sh
+#   core_ir_modules_main  — diff_compiler_core_ir_modules.sh
+#   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs golden)
+#   llvm_emit_typed_main  — diff_compiler_llvm_typed.sh
+#   llvm_emit_modules_main — diff_compiler_llvm_modules.sh
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
-#   lex_main              — diff_selfhost_lexer.sh / diff_selfhost_lex_files.sh
-#   parse_main            — diff_selfhost_parse.sh
-#   parse_result_main     — diff_selfhost_parse_result.sh
-#   desugar_main          — diff_selfhost_desugar.sh
-#   desugar_batch         — diff_selfhost_desugar_batch.sh
-#   mark_main             — diff_selfhost_mark.sh
-#   mark_batch            — diff_selfhost_mark_batch.sh
-#   resolve_main          — diff_selfhost_resolve.sh
-#   resolve_batch         — diff_selfhost_resolve_batch.sh
-#   resolve_modules_main  — diff_selfhost_resolve_modules.sh
-#   printer_main          — diff_selfhost_printer.sh
-#   positions_main        — diff_selfhost_positions.sh
-#   lex_comments_main     — diff_selfhost_comments.sh
+#   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
+#   parse_main            — diff_compiler_parse.sh
+#   parse_result_main     — diff_compiler_parse_result.sh
+#   desugar_main          — diff_compiler_desugar.sh
+#   desugar_batch         — diff_compiler_desugar_batch.sh
+#   mark_main             — diff_compiler_mark.sh
+#   mark_batch            — diff_compiler_mark_batch.sh
+#   resolve_main          — diff_compiler_resolve.sh
+#   resolve_batch         — diff_compiler_resolve_batch.sh
+#   resolve_modules_main  — diff_compiler_resolve_modules.sh
+#   printer_main          — diff_compiler_printer.sh
+#   positions_main        — diff_compiler_positions.sh
+#   lex_comments_main     — diff_compiler_comments.sh
 #   ── Phase 2 §2b typecheck/check/error gates ──
-#   typecheck_main          — diff_selfhost_typecheck.sh / _errors / _panic_errors / _golden
-#   typecheck_golden_batch  — diff_selfhost_typecheck_golden_batch.sh
-#   check_main              — diff_selfhost_typecheck_errors.sh (driver B) / diff_selfhost_check.sh
-#   check_batch             — diff_selfhost_check_batch.sh
-#   check_modules_main      — diff_selfhost_check_modules.sh
-#   check_all_main          — diff_selfhost_check_modules_batch.sh
-#   check_match_main        — diff_selfhost_check_match.sh
-#   exhaust_main            — diff_selfhost_exhaust.sh
-#   diagnostics_main        — diff_selfhost_diagnostics.sh
-#   diagnostics_project_main — diff_selfhost_analyze_project.sh
+#   typecheck_main          — diff_compiler_typecheck.sh / _errors / _panic_errors / _golden
+#   typecheck_golden_batch  — diff_compiler_typecheck_golden_batch.sh
+#   check_main              — diff_compiler_typecheck_errors.sh (driver B) / diff_compiler_check.sh
+#   check_batch             — diff_compiler_check_batch.sh
+#   check_modules_main      — diff_compiler_check_modules.sh
+#   check_all_main          — diff_compiler_check_modules_batch.sh
+#   check_match_main        — diff_compiler_check_match.sh
+#   exhaust_main            — diff_compiler_exhaust.sh
+#   diagnostics_main        — diff_compiler_diagnostics.sh
+#   diagnostics_project_main — diff_compiler_analyze_project.sh
 #   ── Phase 2 §2c tooling gates (fmt/new/test/repl/lsp) ──
-#   fmt_main    — diff_selfhost_fmt.sh        (native host vs .fmt.golden)
-#   new_main    — diff_selfhost_new.sh        (native scaffold tree vs golden tree)
-#   test_main   — diff_selfhost_test.sh       (native test report vs .test.golden)
-#   repl_main   — diff_selfhost_repl.sh       (SKIPPED re-root; see capture_goldens.sh)
+#   fmt_main    — diff_compiler_fmt.sh        (native host vs .fmt.golden)
+#   new_main    — diff_compiler_new.sh        (native scaffold tree vs golden tree)
+#   test_main   — diff_compiler_test.sh       (native test report vs .test.golden)
+#   repl_main   — diff_compiler_repl.sh       (SKIPPED re-root; see capture_goldens.sh)
 #   (lsp_main is NOT a build target: `medaka build lsp_main.mdk` fails the native G1
 #    typecheck gate — tools.lsp imports don't resolve under the build path's roots.
 #    The 3 lsp gates stay on the OCaml oracle.  See REROOT-PLAN STOP guardrail.)
@@ -125,16 +125,16 @@ if [ ! -x "$MEDAKA" ] || [ ! -x "$EMITTER" ]; then
 fi
 [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "FAIL: ./medaka or ./medaka_emitter still missing"; exit 1; }
 
-# ── newest selfhost/*.mdk mtime — any source newer than a binary => rebuild it ─
+# ── newest compiler/*.mdk mtime — any source newer than a binary => rebuild it ─
 newest_src=0
-for f in $(find "$ROOT/selfhost" -name '*.mdk'); do
+for f in $(find "$ROOT/compiler" -name '*.mdk'); do
   m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
   [ "$m" -gt "$newest_src" ] && newest_src=$m
 done
 
 built=0; uptodate=0
 for e in $ENTRIES; do
-  src="$ROOT/selfhost/entries/$e.mdk"
+  src="$ROOT/compiler/entries/$e.mdk"
   out="$BINDIR/$e"
   [ -f "$src" ] || { echo "FAIL: missing entry $src"; exit 1; }
   if [ "${FORCE:-0}" != "1" ] && [ -x "$out" ]; then

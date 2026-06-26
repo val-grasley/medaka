@@ -2,7 +2,7 @@
 # bench.sh — native-backend performance harness for Medaka.
 #
 # Times the standard workloads on the CURRENT sources/binary and prints a table.
-# Companion to selfhost/PERF-SCOPE.md (plan) and selfhost/PERF-RESULTS.md (log).
+# Companion to compiler/PERF-SCOPE.md (plan) and compiler/PERF-RESULTS.md (log).
 #
 # Workloads:
 #   fib 38      test/bench_fixtures/fib.mdk     — pure compute, NO heap alloc.
@@ -28,11 +28,11 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Prefer the native `medaka` (the OCaml `medaka build` path is dead — its
-# interpreter can no longer parse the selfhost emitter source). Builds shell out
+# interpreter can no longer parse the compiler emitter source). Builds shell out
 # to an emitter, so point MEDAKA_EMITTER at the native emitter for OCaml-free builds.
 MAIN="$ROOT/medaka"
 [ -x "$ROOT/medaka_emitter" ] && export MEDAKA_EMITTER="$ROOT/medaka_emitter"
-EMIT_DRIVER="selfhost/entries/llvm_emit_modules_main.mdk"
+EMIT_DRIVER="compiler/entries/llvm_emit_modules_main.mdk"
 RUNTIME="stdlib/runtime.mdk"
 CORE="stdlib/core.mdk"
 
@@ -91,7 +91,7 @@ echo "building listsum..."; "$MAIN" build test/bench_fixtures/listsum.mdk -o /tm
 printf 'listsum      %s\n' "$(time_min /tmp/_bench_ls)"
 
 # ── runtime micro-suite (float/ADT/list/closure/string) ──────────────────────
-# See selfhost/PERF-RUNTIME.md. floatsum/mandel isolate float boxing (Win 1/2:
+# See compiler/PERF-RUNTIME.md. floatsum/mandel isolate float boxing (Win 1/2:
 # fusion + let-unboxing); bintrees = ADT/GC; listops/closures = cons/closure churn.
 for b in intsum floatsum floatsum_guard mandel mandel_let bintrees closures strbuild dispatch strlit listlit taylor fhelp; do
   src="test/bench_fixtures/$b.mdk"
@@ -109,16 +109,16 @@ if [ "$DO_SELFCOMPILE" -eq 1 ]; then
   echo "building native emitter (slow: clang of ~10 MB IR)..."
   "$MAIN" build "$EMIT_DRIVER" -o /tmp/_bench_emitter >/dev/null 2>&1 \
     || { echo "emitter build FAILED"; exit 2; }
-  /tmp/_bench_emitter "$RUNTIME" "$CORE" "$EMIT_DRIVER" selfhost stdlib >/dev/null 2>&1 # warm
+  /tmp/_bench_emitter "$RUNTIME" "$CORE" "$EMIT_DRIVER" compiler stdlib >/dev/null 2>&1 # warm
   printf 'selfcompile  %s\n' \
-    "$(time_min /tmp/_bench_emitter "$RUNTIME" "$CORE" "$EMIT_DRIVER" selfhost stdlib)"
+    "$(time_min /tmp/_bench_emitter "$RUNTIME" "$CORE" "$EMIT_DRIVER" compiler stdlib)"
 
   if [ "$DO_INTERP" -eq 1 ]; then
     echo "timing OCaml interpreter self-compile (slow, ~2 min/run)..."
     printf 'selfcompile(interp)  %s\n' \
-      "$(time_min "$MAIN" run "$EMIT_DRIVER" "$RUNTIME" "$CORE" "$EMIT_DRIVER" selfhost stdlib)"
+      "$(time_min "$MAIN" run "$EMIT_DRIVER" "$RUNTIME" "$CORE" "$EMIT_DRIVER" compiler stdlib)"
   fi
 fi
 
 echo
-echo "done. log results in selfhost/PERF-RESULTS.md"
+echo "done. log results in compiler/PERF-RESULTS.md"

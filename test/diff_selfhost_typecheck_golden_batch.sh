@@ -1,12 +1,12 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_typecheck_golden.sh — prelude caching.
+# Batched variant of diff_compiler_typecheck_golden.sh — prelude caching.
 # Parses runtime + core ONCE; infers schemes for (core ++ fixture) per fixture.
 #
 # OCaml-free (REROOT-PLAN §2b): native host test/bin/typecheck_golden_batch vs the
 # FROZEN === TYPES === section of diff_fixtures/*.golden.
 #
 # #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: both the
-# OCaml oracle (eac278b) and the selfhost typecheck now infer `sum`/`product :
+# OCaml oracle (eac278b) and the compiler typecheck now infer `sum`/`product :
 # a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting, so the
 # goldens and the native typecheck agree — this gate is now all-pass.
 set -u

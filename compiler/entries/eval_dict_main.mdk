@@ -1,0 +1,57 @@
+-- DICT-PASSING execution path: like the typed path, but also dictionary-passes
+-- the *user* program's `=>`-constrained functions, so a return-position method
+-- used at a constraint variable's type inside a constrained function (e.g.
+-- `empty` inside `f : Monoid a => a -> a`) resolves through the dict parameter
+-- the caller supplies — which plain arg-tag / RKey dispatch cannot do.
+--
+--   medaka run compiler/entries/eval_dict_main.mdk <runtime.mdk> <prelude.mdk>... <source.mdk>
+--
+-- The shared tree is: desugar → elaborateDict (RKey rewrite + EDictAt rewrite of
+-- the user's constrained fns, typecheck stamps every route, then dict_pass
+-- prepends the matching leading dict params) → eval.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateOne}
+import support.util.{splitLast}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+
+main = match args ()
+  runtimePath::rest => withRuntime runtimePath rest
+  _ => ePutStrLn "usage: medaka run compiler/entries/eval_dict_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withRuntime runtimePath rest = match splitLast rest
+  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withFiles runtimePath preludePaths targetPath = match readFile runtimePath
+  Ok rsrc => withPreludes rsrc preludePaths targetPath
+  Err msg => ePutStrLn msg
+
+withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget rsrc preludeDecls targetPath = match readFile targetPath
+  Ok tsrc => putStr (runDict (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
+  Err msg => ePutStrLn msg
+
+runDict : List Decl -> List Decl -> List Decl -> <Mut> String
+runDict runtimeDecls preludeDecls userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+-- DRIVER-COLLAPSE Phase 5: route through the 1-module case of the multi-module
+-- path (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the
+-- old flat elaborateDict→evalOutput by diff_flat_vs_onemodule.sh.
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

@@ -1,10 +1,10 @@
 # `runtime/` — native C runtime for the LLVM backend
 
 The C-ABI runtime that compiled Medaka links against. See
-[`../selfhost/RUNTIME-DESIGN.md`](../selfhost/RUNTIME-DESIGN.md) for the full
+[`../compiler/RUNTIME-DESIGN.md`](../compiler/RUNTIME-DESIGN.md) for the full
 extern-disposition strategy (all 71 primitives) and the value-representation +
 calling-convention proposal (§8), and
-[`../selfhost/STAGE2-DESIGN.md`](../selfhost/STAGE2-DESIGN.md) §2.4 for where this
+[`../compiler/STAGE2-DESIGN.md`](../compiler/STAGE2-DESIGN.md) §2.4 for where this
 fits in the backend plan.
 
 ## Status: canonical LLVM runtime (verified done 2026-06-22)
@@ -15,7 +15,7 @@ fits in the backend plan.
 > (`GC_malloc`/`GC_malloc_atomic` — not malloc-and-leak), strings are full UTF-8
 > with cached codepoint counts, and IO/file/stdio/hash/sort/RNG/time externs all land
 > here. The "build slice-by-slice later" plan is done. See
-> [`../selfhost/BOOTSTRAP.md`](../selfhost/BOOTSTRAP.md) for the completion log.
+> [`../compiler/BOOTSTRAP.md`](../compiler/BOOTSTRAP.md) for the completion log.
 
 What the file provides (functions grouped by role — see source for the full list):
 
@@ -66,13 +66,13 @@ the runtime stays a plain C-ABI leaf with no knowledge of the tag scheme beyond 
 You don't invoke this directly — the equivalence gate does:
 
 ```sh
-sh test/diff_selfhost_llvm.sh   # emit each fixture's .ll, clang it with medaka_rt.c, run, diff
+sh test/diff_compiler_llvm.sh   # emit each fixture's .ll, clang it with medaka_rt.c, run, diff
 ```
 
 Manual one-off:
 
 ```sh
-medaka run selfhost/entries/llvm_emit_main.mdk test/llvm_fixtures/int_arith.mdk > /tmp/x.ll
+medaka run compiler/entries/llvm_emit_main.mdk test/llvm_fixtures/int_arith.mdk > /tmp/x.ll
 clang /tmp/x.ll runtime/medaka_rt.c -o /tmp/x && /tmp/x
 ```
 

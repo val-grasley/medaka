@@ -4,7 +4,7 @@
 # C1 (test/selfcompile_emit.sh) proved a NATIVE-compiled emitter reproduces the
 # INTERPRETED emitter's LLVM IR byte-for-byte on small module fixtures.  C2 takes
 # the next step: use a NATIVE-compiled, gap-TOLERANT emitter to compile the
-# self-hosted LEXER DRIVER (selfhost/entries/lex_main.mdk) end-to-end — the first time the
+# self-hosted LEXER DRIVER (compiler/entries/lex_main.mdk) end-to-end — the first time the
 # native compiler compiles a REAL, prelude-bearing program.
 #
 # This is the same end state as B1 (test/bootstrap_lex.sh, 19/19) EXCEPT the emit
@@ -17,7 +17,7 @@
 # clang + runtime + libgc + a big stack → native `bootstrap-emit`.
 #
 # NATIVE-EMIT (step 2).  Run ./bootstrap-emit <runtime> <core> lex_main.mdk
-# <selfhost> → lex.ll.  This is the BIG, REAL emit — the native emitter recurses
+# <compiler> → lex.ll.  This is the BIG, REAL emit — the native emitter recurses
 # over lex_main's whole graph (lexer + util + prelude) and builds a multi-MB IR
 # string.  This is where it may overflow the native emitter's stack (see below).
 #
@@ -50,14 +50,14 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BOOTEMIT="$ROOT/test/bin/llvm_bootstrap_lex_main"
-DRIVER="$ROOT/selfhost/entries/llvm_bootstrap_lex_main.mdk"
+DRIVER="$ROOT/compiler/entries/llvm_bootstrap_lex_main.mdk"
 LEXORACLE="$ROOT/test/bin/lex_main"
-ORACLE="$ROOT/selfhost/entries/lex_main.mdk"
+ORACLE="$ROOT/compiler/entries/lex_main.mdk"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 STDLIB="$ROOT/stdlib"
-SELFHOST="$ROOT/selfhost"
+SELFHOST="$ROOT/compiler"
 FIXDIR="$ROOT/test/diff_fixtures"
 CC="${CC:-clang}"
 

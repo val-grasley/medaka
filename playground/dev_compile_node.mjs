@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // dev_compile_node.mjs — drive the WasmGC-compiled COMBINED Medaka compiler
-// (playground.wasm = selfhost/entries/playground_main.mdk self-compiled to wasm)
+// (playground.wasm = compiler/entries/playground_main.mdk self-compiled to wasm)
 // entirely in Node, via the SHARED playground/compile.mjs seam (the same module the
 // browser Stage-3 worker will import) and an IN-MEMORY vfs.  NO native binary, NO
 // server.  This dogfoods compile.mjs: it does no host-ABI/vfs work itself.

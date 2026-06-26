@@ -1,0 +1,67 @@
+-- compiler/entries/build_main.mdk — driver for the self-hosted `medaka build`
+-- (Stage 4 Phase B.11).  Parses `<entry.mdk> [-o <out>]` from args and invokes
+-- compiler/build_cmd.mdk to emit + clang a native binary.
+--
+--   MEDAKA=<exe> MEDAKA_ROOT=<repo-root> \
+--     medaka run compiler/entries/build_main.mdk <entry.mdk> [-o <out>]
+--
+-- MEDAKA      = path to the medaka exe used for the emit shell-out (default "medaka")
+-- MEDAKA_ROOT = repo root holding compiler/, stdlib/, runtime/ (default ".")
+-- CC          = C compiler (default "clang")
+--
+-- Selfhost has no Sys.executable_name / getcwd extern, so those two paths come
+-- from the environment (the gate script sets them).  Output defaults to the
+-- input's basename sans .mdk, mirroring lib/build_cmd.ml.
+
+import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
+import support.util.{reverseL}
+import support.path.{baseOf, chopExt}
+
+main : <IO, Mut, Panic> Unit
+main = match parseArgs (args ())
+  Err msg =>
+    let _ = ePutStrLn msg
+    exit 1
+  Ok (input, outOpt) => if not (fileExists input) then
+    let _ = ePutStrLn ("error: no such file: " ++ input)
+    exit 1
+  else
+    let root = envOr "MEDAKA_ROOT" "."
+    let medaka = envOr "MEDAKA" "medaka"
+    let cc = envOr "CC" "clang"
+    let inputAbs = absPath root input
+    let outPath = match outOpt
+      Some o => o
+      None => chopExt (baseOf input)
+    match runBuild root medaka cc inputAbs outPath
+      BuildOk msg => println msg
+      BuildErr msg =>
+        let _ = ePutStrLn msg
+        exit 1
+
+-- Make a relative input absolute against the repo root's parent is wrong; the
+-- emitter needs a path it can readFile.  build_cmd.ml joins relatives against
+-- getcwd; with no getcwd extern we leave relative paths as-is (resolved against
+-- the process cwd by readFile) and only absolutize when already absolute.
+absPath : String -> String -> String
+absPath _ input =
+  if stringLength input > 0 && stringSlice 0 1 input == "/" then
+    input
+  else
+    input
+
+-- Parse a single optional `-o <out>`; the first remaining positional is input.
+parseArgs : List String -> Result String (String, Option String)
+parseArgs argv = parseGo argv [] None
+
+parseGo : List String -> List String -> Option String -> Result String (String, Option String)
+parseGo [] acc out = finishArgs (reverseL acc) out
+parseGo ("-o"::v::rest) acc out = parseGo rest acc (Some v)
+parseGo ["-o"] _ _ = Err "error: -o requires an argument"
+parseGo (x::rest) acc out = parseGo rest (x :: acc) out
+
+finishArgs : List String -> Option String -> Result String (String, Option String)
+finishArgs [] _ =
+  Err "usage: medaka run compiler/entries/build_main.mdk <file.mdk> [-o <out>]"
+finishArgs [input] out = Ok (input, out)
+finishArgs _ _ = Err "error: medaka build takes exactly one input file"

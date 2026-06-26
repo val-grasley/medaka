@@ -14,12 +14,12 @@
 # `method_constraint_foldmap_string`, `method_constraint_user_iface`) are now GREEN:
 # the method-level-constraint `foldMap : Monoid m =>` gap was CLOSED 2026-06-15 via
 # a `crossModuleMethodConstraintsRef` accumulator + registering method dict slots AFTER
-# body inference (surviving union-find root), in `selfhost/types/typecheck.mdk`.
+# body inference (surviving union-find root), in `compiler/types/typecheck.mdk`.
 # Self-host (OCaml-free, REROOT-PLAN.md Phase 2): the pre-compiled native binary
 # test/bin/eval_dict_main (built by test/build_oracles.sh) runs the self-hosted dict
 # elaboration + eval; its stdout must match the golden.
 #
-# Usage:  sh test/diff_selfhost_eval_dict.sh
+# Usage:  sh test/diff_compiler_eval_dict.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DICT="$ROOT/test/bin/eval_dict_main"

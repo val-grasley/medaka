@@ -1,7 +1,7 @@
 #!/bin/sh
 # BOOTSTRAP (B7) — natively compiled self-hosted EVAL stage == reference over
 # eval_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
-# captured from `main.exe run selfhost/entries/eval_main.mdk <fixture>`
+# captured from `main.exe run compiler/entries/eval_main.mdk <fixture>`
 # (test/capture_goldens.sh boot_eval); native = test/bin/eval_main.
 #
 # eval_main's `main` `putStrLn`s "<value>\n"; the native binary additionally

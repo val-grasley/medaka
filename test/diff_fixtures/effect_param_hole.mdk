@@ -8,7 +8,7 @@
 --   * delimiter-aware subsumption — the wildcard `<Net "a.com/*">` on `fetch`
 --                             must ADMIT the α-derived `<Net "a.com/foo">`.
 -- The reject side (sibling-host + computed/function-derived URL ⇒ α=Unknown⇒⊤,
--- both rejected) is exercised by the companion gate diff_selfhost_effect_hole.sh.
+-- both rejected) is exercised by the companion gate diff_compiler_effect_hole.sh.
 effect Net Prefix
 
 extern netGet : String -> <Net _> String

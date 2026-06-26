@@ -9,18 +9,18 @@
 # legs are committed goldens (per-fixture <dir>/oracle.tcmod, captured by
 # test/capture_goldens.sh) — no live tc_module_probe / main.exe.
 #
-# NOTE: the $MODULES per-library-module leg below targets selfhost/<m>.mdk paths
-# that no longer exist (the modules moved into selfhost/frontend/ etc.), so it has
+# NOTE: the $MODULES per-library-module leg below targets compiler/<m>.mdk paths
+# that no longer exist (the modules moved into compiler/frontend/ etc.), so it has
 # been DORMANT (skips every module) since before this re-root — preserved verbatim
 # so the gate's live legs (the fixtures + the cycle check) are unchanged.
 #
-# Usage:  sh test/diff_selfhost_check_modules.sh
+# Usage:  sh test/diff_compiler_check_modules.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SELF="$ROOT/test/bin/check_modules_main"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
-SHDIR="$ROOT/selfhost"
+SHDIR="$ROOT/compiler"
 [ -x "$SELF" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
@@ -30,7 +30,7 @@ MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader ty
 FIXDIR="$ROOT/test/check_module_fixtures"
 pass=0; fail=0
 
-# ── 1. selfhost library modules (each as the entry) — DORMANT (see header) ──
+# ── 1. compiler library modules (each as the entry) — DORMANT (see header) ──
 for m in $MODULES; do
   [ -f "$SHDIR/$m.mdk" ] || continue
   golden="$SHDIR/$m.tcmod.golden"
@@ -58,13 +58,13 @@ if [ -d "$FIXDIR" ]; then
     golden="$(LC_ALL=C sort < "$d/oracle.tcmod")"
     self="$("$SELF" "$RUNTIME" "$CORE" "$entry" "$root" 2>/dev/null | strip_unit | LC_ALL=C sort)"
     if [ "$self" = "$golden" ]; then pass=$((pass+1)); printf 'ok   fixture/%s\n' "$name"
-    else fail=$((fail+1)); printf 'FAIL fixture/%s (selfhost differs from golden)\n' "$name"; fi
+    else fail=$((fail+1)); printf 'FAIL fixture/%s (compiler differs from golden)\n' "$name"; fi
   done
 fi
 
 # ── 3. R2: cycle-chain error format (loader.mdk) ────────────────────────────
 # Create a minimal a→b→a cycle in a tmpdir, run check_modules_main over it, and
-# verify the selfhost emits the full chain "cyclic dependency: a → b → a".
+# verify the compiler emits the full chain "cyclic dependency: a → b → a".
 CTMP="$(mktemp -d)"
 trap 'rm -rf "$CTMP"' EXIT
 printf 'import b.{bar}\nexport foo : Int\nfoo = 1\n' > "$CTMP/a.mdk"

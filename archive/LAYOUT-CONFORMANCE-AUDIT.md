@@ -7,9 +7,9 @@
 code or status docs.
 
 - **Canonical** = native `test/bin/lex_main <file>` — the self-hosted lexer
-  (`selfhost/frontend/lexer.mdk`) compiled to native and run on
-  `selfhost/entries/lex_main.mdk`. Built with `sh test/build_oracles.sh` (or
-  directly: `./medaka build selfhost/entries/lex_main.mdk -o test/bin/lex_main`).
+  (`compiler/frontend/lexer.mdk`) compiled to native and run on
+  `compiler/entries/lex_main.mdk`. Built with `sh test/build_oracles.sh` (or
+  directly: `./medaka build compiler/entries/lex_main.mdk -o test/bin/lex_main`).
 - **Oracle** = `./_build/default/dev/lextok.exe <file>` — the OCaml reference
   lexer (`lib/lexer.mll`, `Lexer.tokenize_string`). Built with
   `dune build dev/lextok.exe`.
@@ -21,7 +21,7 @@ code or status docs.
 **Headline result.** Across the seed cases + ≈65 probes (a curated battery beyond
 the `test/diff_fixtures` corpus), the canonical and oracle lexers produce
 **byte-identical token streams on every probe** — zero layout-token divergence.
-The differential gates (`diff_selfhost_lexer`, `diff_selfhost_lex_files`) keep
+The differential gates (`diff_compiler_lexer`, `diff_compiler_lex_files`) keep
 the two lexers locked; this audit confirms they stay locked well outside the
 gated corpus, and confirms each spec rule holds on the binary. The *findings*
 below are therefore **not** native↔oracle layout divergences (there are none);
@@ -122,7 +122,7 @@ defect.)*
   of the 7 ops `|> >> << && || ++ ::` on a deeper line glues to the prev line
   (`x = a⏎  |> b` → `… IDENT "a" PIPE_RIGHT IDENT "b" …`). **All 7 AGREE /
   CONFORMS.** ✅ Confirmed source-of-truth set is `|> >> << && || ++ ::` in
-  **both** lexers (`selfhost/frontend/lexer.mdk:851-857`; `lib/lexer.mll:345`).
+  **both** lexers (`compiler/frontend/lexer.mdk:851-857`; `lib/lexer.mll:345`).
 - **Leading `-` is NOT a continuation** (`to4`, `x = 1⏎  - 2`):
   `… INT 1 INDENT MINUS INT 2 …` — opens a block (asymmetry §5.0). **AGREE /
   CONFORMS.** ✅
@@ -181,7 +181,7 @@ And it correctly predicts the failures: `x = 1⏎  - 2` (`to4`) and
 
 ### F4 — PLAN.md "Known parser gaps → `let … in` as indented clause body" is **STALE** (doc drift)
 
-PLAN.md (verified 2026-06-09) claims the selfhost parser rejects
+PLAN.md (verified 2026-06-09) claims the compiler parser rejects
 ```
 f x =
   let go n = if n == 0 then 0 else go (n - 1) in go x
@@ -189,7 +189,7 @@ f x =
 On current `main`, **both** native and oracle **ACCEPT** it (probe `letin_plan`,
 exit 0 / exit 0). The gap is **closed**; the PLAN.md note has drifted. (Note: the
 *own-line* `in` form — `let y = …⏎ in y` — is still rejected by both, but that is
-a **language rule both honor** (§9, §11 — no `parse-error(t)`), not a selfhost
+a **language rule both honor** (§9, §11 — no `parse-error(t)`), not a compiler
 divergence.) → ROADMAP **WS-1**.
 
 ### F5 — Leading-pipe `data` decl: token stream AGREES, **parsers diverge** (parser-level, intentional)
@@ -209,7 +209,7 @@ ground truth). → ROADMAP **WS-5** (track, no fix).
 ### F6 — Native `check` diagnostics lack source positions (out of layout scope)
 
 > **UPDATE (2026-06-21): CLOSED.** Pursued as a separate diagnostics workstream
-> (`selfhost/DIAGNOSTICS-SURFACING-PLAN.md`, S1–S4; merges `1cbe1e1`/`dd05010`/`395a276`/`ca1876f`).
+> (`compiler/DIAGNOSTICS-SURFACING-PLAN.md`, S1–S4; merges `1cbe1e1`/`dd05010`/`395a276`/`ca1876f`).
 > Native `medaka check` now prints positioned, humane, carat-rendered diagnostics
 > byte-identical to the oracle (parse/type/resolve spans + non-exhaustive-match warning spans).
 > The original finding text is preserved below for audit-log integrity.
@@ -224,7 +224,7 @@ completeness; **out of scope** for the layout roadmap.~~ → ROADMAP **WS-4**
 ### F7 — `then`/`else` dual mechanism: equivalent today, **latent divergence** (idealized-spec gap)
 
 `§5.4`: the oracle implements then/else gluing as `filter_newline` (1-token
-lookahead) + `resolve_pending`; the selfhost lexer as `resolveCont` + a pure-list
+lookahead) + `resolve_pending`; the compiler lexer as `resolveCont` + a pure-list
 `elseFilter` post-pass. Different code, same relation — verified across
 `if1`/`if2`/`if3`/`te1`–`te4`/`x_multi_blank_before_else`/`x_extreme_dedent_then`.
 No current defect, but the two mechanisms can drift independently. → ROADMAP
@@ -270,9 +270,9 @@ diff <(./_build/default/dev/lextok.exe f.mdk) \
      <(test/bin/lex_main f.mdk | sed '$ s/()$//; ${/^$/d;}')
 
 # the gates this audit corroborates
-sh test/diff_selfhost_lexer.sh        # curated corpus
-sh test/diff_selfhost_lex_files.sh    # stdlib + lexer.mdk self-lex
-sh test/diff_selfhost_parse.sh        # parser-level (catches F5-class)
+sh test/diff_compiler_lexer.sh        # curated corpus
+sh test/diff_compiler_lex_files.sh    # stdlib + lexer.mdk self-lex
+sh test/diff_compiler_parse.sh        # parser-level (catches F5-class)
 ```
 The probe fixtures used here are catalogued in `LAYOUT-CONFORMANCE-ROADMAP.md`
 WS-7 for promotion into `test/diff_fixtures/`.

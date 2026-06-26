@@ -8,7 +8,7 @@
 # NOTE: this covers GUARD coverage only; match/clause exhaustiveness lives in
 # the typecheck-internal check_match and is validated through that stage.
 #
-# Usage:  sh test/diff_selfhost_exhaust.sh
+# Usage:  sh test/diff_compiler_exhaust.sh
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +27,7 @@ for f in "$FIXDIR"/*.mdk; do
   golden="$(cat "${f%.mdk}.expected")"
   self="$("$RUN" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
   if [ "$self" = "$golden" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
-  else fail=$((fail+1)); printf 'FAIL %s (selfhost differs from golden)\n' "$name"; fi
+  else fail=$((fail+1)); printf 'FAIL %s (compiler differs from golden)\n' "$name"; fi
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

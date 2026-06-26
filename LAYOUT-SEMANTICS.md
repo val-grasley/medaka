@@ -4,7 +4,7 @@
 **Scope:** the indentation-sensitive token-stream transformation that inserts
 `INDENT` / `DEDENT` / `NEWLINE` (Medaka's "offside rule").
 **Audience:** compiler maintainers; the two lexers
-(`selfhost/frontend/lexer.mdk` — canonical; `lib/lexer.mll` — frozen oracle)
+(`compiler/frontend/lexer.mdk` — canonical; `lib/lexer.mll` — frozen oracle)
 must both conform to *this document*.
 
 > **Why this file exists.** The layout rule lives only as imperative code in two
@@ -13,7 +13,7 @@ must both conform to *this document*.
 > two implementations can be audited against one definition rather than against
 > each other. When `lib/` is removed (the soak-tail plan, AGENTS.md), this file —
 > not the OCaml oracle — is the conformance anchor that
-> `selfhost/frontend/lexer.mdk` is validated against. Written to outlive `lib/`.
+> `compiler/frontend/lexer.mdk` is validated against. Written to outlive `lib/`.
 >
 > Cross-references: `SYNTAX.md` "Layout notes" is the operational *what-parses*
 > cheat-sheet (doc drift erased by WS-1, `eb01df3`, 2026-06-21 — see
@@ -67,7 +67,7 @@ is closed instead. This couples the lexer to the parser.
 ## 1. The pipeline: three idealized stages
 
 The transformation `source → cooked token stream` factors into three stages. The
-canonical lexer (`selfhost/frontend/lexer.mdk`) implements them as three
+canonical lexer (`compiler/frontend/lexer.mdk`) implements them as three
 literal passes; the OCaml oracle (`lib/lexer.mll`) **fuses** all three into one
 stateful ocamllex pass with a pending-token queue, but computes the identical
 relation. This document specifies the *relation*; either factoring conforms.
@@ -124,7 +124,7 @@ Each entry is the **column** of an open implicit layout block. The stack is
 initialized `[0]` and the base `0` is never popped before `EOF`. `INDENT` pushes
 a column; `DEDENT` pops one. (Both lexers store exactly this: `indent_stack`
 in `lib/lexer.mll`, the `List Int` argument to `layout` in
-`selfhost/frontend/lexer.mdk`.)
+`compiler/frontend/lexer.mdk`.)
 
 ---
 
@@ -289,7 +289,7 @@ enforced in two complementary places, and **both** are required:
 
 > **Implementation note / latent-divergence site.** The OCaml oracle fuses these
 > as `filter_newline` (one-token lookahead, drop `NEWLINE` before `THEN`/`ELSE`)
-> plus `resolve_pending` (the deferred-INDENT path). The selfhost lexer uses
+> plus `resolve_pending` (the deferred-INDENT path). The compiler lexer uses
 > `resolveCont` + a pure-list `elseFilter`. These are *different code* computing
 > the *same relation*; they are verified equivalent across the audit battery, but
 > a future edit to one without the other is the single most likely way to
@@ -328,7 +328,7 @@ in a comment throwing off brace counting).
 
 > **Status: LANDED (2026-06-23).** The model below is the *locked* design
 > (`LAYOUT-BRACKETS-DESIGN.md`, LOCKED SCOPE 2026-06-23), now implemented in BOTH
-> lexers (Stage 3 — the lexer Gate A — complete): `selfhost/frontend/lexer.mdk`
+> lexers (Stage 3 — the lexer Gate A — complete): `compiler/frontend/lexer.mdk`
 > threads a bracket-frame stack (`frames`) through the layout pass
 > (`flushClose`/`applyNlFrame`/`armsHerald`); `lib/lexer.mll` mirrors it
 > byte-identically (`bracket_frames` + `flush_close` + the free-form branch in
@@ -396,7 +396,7 @@ is re-enabled only on the herald-armed path.
 `match`/`do`/`function`/record already reach bracket element positions through
 the ordinary expression chain (`expr_no_block → expr_lam` in `lib/parser.mly`;
 `parseAtomRaw`'s `TMatch`/`TFunction`/`TDo`/record dispatch in
-`selfhost/frontend/parser.mdk`). The one herald not reachable there is the
+`compiler/frontend/parser.mdk`). The one herald not reachable there is the
 **bare-`INDENT` block**, which previously lived only in the decl-body production.
 A dedicated, contained nonterminal (`bracket_block` / `parseBracketBlock`) admits
 it in the paren, list, array, tuple, and record-field-value element positions,
@@ -546,22 +546,22 @@ left-shifted.
 ## 12. Conformance contract
 
 1. **Both lexers compute the relation L of §4 plus the Stage-A/§5/§6 rules,
-   bit-for-bit.** The differential gates `test/diff_selfhost_lexer.sh`
-   (curated corpus) and `test/diff_selfhost_lex_files.sh` (the stdlib + the
+   bit-for-bit.** The differential gates `test/diff_compiler_lexer.sh`
+   (curated corpus) and `test/diff_compiler_lex_files.sh` (the stdlib + the
    lexer itself) enforce token-stream identity. As of this writing they pass and
    the audit battery (≈65 probes beyond the corpus) finds **zero** token-level
    divergence.
 
 2. **Dump probes (how to observe the relation):**
    - canonical: `test/bin/lex_main <file>` (the native lexer on the interpreter
-     entry `selfhost/entries/lex_main.mdk`; build via `sh test/build_oracles.sh`),
+     entry `compiler/entries/lex_main.mdk`; build via `sh test/build_oracles.sh`),
    - oracle: `./_build/default/dev/lextok.exe <file>` (OCaml
      `Lexer.tokenize_string`; build via `dune build dev/lextok.exe`).
    Both print one token per line in the canonical `token_to_string` form,
    including `INDENT` / `DEDENT` / `NEWLINE`.
 
 3. **When `lib/` is removed,** §4–§8 of this file replace the oracle as the
-   definition `selfhost/frontend/lexer.mdk` is held to; the audit's probe battery
+   definition `compiler/frontend/lexer.mdk` is held to; the audit's probe battery
    (promoted to fixtures per ROADMAP WS-7) becomes the regression net.
 
 4. **This file is updated to track the binary, never the reverse for accepted

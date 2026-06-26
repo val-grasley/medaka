@@ -84,8 +84,8 @@ Every delegated task prompt should contain, in order:
 5. **The task**, with latitude on implementation where the approach is uncertain.
 6. **Gates:** the exact commands + expected numbers that prove correctness
    (differential suites, fixpoint, a minimal repro). Be explicit — "byte-identical"
-   with counts. **For any gate that reads `test/bin/*` oracle binaries (`diff_selfhost_test`,
-   `diff_selfhost_eval_*`, …), prefix it with `FORCE=1 bash test/build_oracles.sh`** — that
+   with counts. **For any gate that reads `test/bin/*` oracle binaries (`diff_compiler_test`,
+   `diff_compiler_eval_*`, …), prefix it with `FORCE=1 bash test/build_oracles.sh`** — that
    builder *mtime-skips* rebuilds, so after a `typecheck.mdk`/`eval.mdk` change the gate
    otherwise silently runs a STALE oracle (see Failure modes). Tell the agent to rebuild
    `./medaka` (`make medaka`) AND force-rebuild oracles after every source change before gating.
@@ -296,12 +296,12 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 
 - **Build:** `dune build --root .` inside a `.claude/worktrees/<name>` worktree
   (plain `dune build` climbs to the parent checkout and fails). Never `dune test`
-  (hangs) — run individual suites / `test/diff_selfhost_*.sh` / `test/*_fixpoint.sh`.
+  (hangs) — run individual suites / `test/diff_compiler_*.sh` / `test/*_fixpoint.sh`.
 - **Local main is ahead of origin.** Orchestrator merges agent branches into LOCAL
   main; never fetch/push. `main` is checked out in the primary checkout
   `/Users/val/medaka` — merge there (`git -C /Users/val/medaka merge <branch>`).
-- **Emitter-graph changes (`selfhost/llvm_emit.mdk` etc.) leave the committed seed
-  `selfhost/seed/emitter.ll` STALE.** Agents do NOT re-mint — they verify
+- **Emitter-graph changes (`compiler/llvm_emit.mdk` etc.) leave the committed seed
+  `compiler/seed/emitter.ll` STALE.** Agents do NOT re-mint — they verify
   `test/selfcompile_fixpoint.sh` (C3a/C3b YES; it self-compiles fresh, doesn't read
   the committed seed) and SKIP `bootstrap_from_seed.sh`. The orchestrator re-mints
   (`test/refresh_seed.sh`, OCaml-only, then verify `bootstrap_from_seed.sh`) only at
@@ -309,12 +309,12 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   commits. `bootstrap_from_seed` red is expected while the seed is deferred-stale.
 - **The decisive emitter gate is the fixpoint** (C3a = native == interpreted
   emission; C3b = native reproduces its own IR). Plus the byte-identical differential
-  suite vs the OCaml oracle: `diff_selfhost_llvm` (172) / `_modules` (8) / `_typed`
-  (37) / `diff_selfhost_build` (9), and the front-end/typecheck/eval `diff_selfhost_*`
+  suite vs the OCaml oracle: `diff_compiler_llvm` (172) / `_modules` (8) / `_typed`
+  (37) / `diff_compiler_build` (9), and the front-end/typecheck/eval `diff_compiler_*`
   gates for those stages.
 - **The OTHER stale-binary footgun: the `test/bin/*` oracle binaries.** Gates like
-  `diff_selfhost_test` / `diff_selfhost_eval_*` run a committed native oracle binary built from
-  `selfhost/` source by `test/build_oracles.sh` — which **mtime-skips rebuilds** ("N up-to-date").
+  `diff_compiler_test` / `diff_compiler_eval_*` run a committed native oracle binary built from
+  `compiler/` source by `test/build_oracles.sh` — which **mtime-skips rebuilds** ("N up-to-date").
   After a `typecheck.mdk`/`eval.mdk` change the oracle is often NOT rebuilt → the gate silently
   runs OLD source. This bit **three times in one session** (two agents reached opposite
   conclusions; a real prop regression read as "unchanged"). **RULE: `FORCE=1 bash test/build_oracles.sh`
@@ -326,5 +326,5 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   no catchable panics.
 - **A new gap in a tool's native compile** (a tool pulled into the native graph for
   the first time) is the recurring shape: census it gap-tolerantly
-  (`selfhost/entries/llvm_emit_gaps_main.mdk` over the tool's entry), then close each gap
+  (`compiler/entries/llvm_emit_gaps_main.mdk` over the tool's entry), then close each gap
   principled. EMITTER-GAPS.md is the gap ledger.

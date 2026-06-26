@@ -1,8 +1,8 @@
 #!/bin/sh
-# test/diff_selfhost_lsp.sh — differential gate for the self-hosted LSP
+# test/diff_compiler_lsp.sh — differential gate for the self-hosted LSP
 # (Stage 4 Phase B.10, slices B.10.0 + B.10.1).
 #
-# Drives selfhost/entries/lsp_main.mdk with hand-framed Content-Length JSON-RPC requests
+# Drives compiler/entries/lsp_main.mdk with hand-framed Content-Length JSON-RPC requests
 # on stdin and checks the framed JSON responses against the OCaml reference:
 #
 #   • initialize          — the response is a well-formed JSON-RPC result whose
@@ -22,17 +22,17 @@
 #                           position matches the OCaml LSP's expr range exactly.
 #
 # Message TEXT is intentionally NOT diffed (unification order differs from the
-# oracle — the documented selfhost limitation, cf. diff_selfhost_diagnostics.sh).
+# oracle — the documented compiler limitation, cf. diff_compiler_diagnostics.sh).
 #
 # RANGE (B.10.2b): the start position is asserted to match the OCaml LSP's
-# expr-level range exactly.  The END position is an APPROXIMATION: the selfhost
+# expr-level range exactly.  The END position is an APPROXIMATION: the compiler
 # parser derives a token span from token START offsets (`locOfSpan`), so a
 # single-token expr yields an empty span (end == start) where OCaml's `$endpos`
 # reaches the token's end.  True end positions need token lengths threaded
 # through the lexer's layout pass (a cross-cutting lexer change deferred here);
 # the start — the position editors anchor a squiggle at — is exact.
 #
-# Usage: sh test/diff_selfhost_lsp.sh
+# Usage: sh test/diff_compiler_lsp.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # OCaml-free: drive the CANONICAL native LSP (the shipped binary, same one Cursor
@@ -56,7 +56,7 @@ sys.stdout.buffer.write(b)
 PY
 }
 
-# Run the selfhost LSP over a framed stdin stream (built from the JSON messages
+# Run the compiler LSP over a framed stdin stream (built from the JSON messages
 # passed as args), capture stdout, and split it into one JSON object per frame.
 # Writes the decoded JSON objects (one per line) to $TMP/out.json.
 drive_lsp() {
@@ -218,7 +218,7 @@ python3 - "$TMP/out.json" "$ORACLE_PROJ" <<'PY'
 import sys, json, os
 objs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 pubs = [o for o in objs if o.get("method") == "textDocument/publishDiagnostics"]
-# selfhost: {basename: [(sev, msg, start)]}
+# compiler: {basename: [(sev, msg, start)]}
 self = {}
 for p in pubs:
     base = os.path.basename(p["params"]["uri"])

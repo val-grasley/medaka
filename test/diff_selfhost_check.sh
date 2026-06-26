@@ -1,5 +1,5 @@
 #!/bin/sh
-# Validation for the COMPOSED self-hosted front-end (selfhost/tools/check.mdk): one
+# Validation for the COMPOSED self-hosted front-end (compiler/tools/check.mdk): one
 # driver runs parse → desugar → resolve → exhaust → typecheck and must reproduce
 # each stage's oracle depending on the input category:
 #   • diff_fixtures (clean, prelude-using) → the FROZEN === TYPES === golden (full
@@ -18,11 +18,11 @@
 # DRIVER-COLLAPSE Phase 4 RE-ROOT (OPTION A, 2026-06-13): the real `medaka check`
 # CLI now RESOLVES imports (loadProgram → multi-module typecheck) instead of
 # emitting `UnknownModule` for non-core imports.  This gate's host (check_main) is
-# the SINGLE-FILE front-end (selfhost/tools/check.mdk runCheck) and is UNCHANGED —
+# the SINGLE-FILE front-end (compiler/tools/check.mdk runCheck) and is UNCHANGED —
 # it still exercises the 1-module degenerate case, so the no-import fixtures below
 # stay byte-identical (the CLI routes 1-module loads through this same runCheck).
 # The import-bearing `check` behaviour (option A) is verified ELSEWHERE, not here:
-#   • diff_selfhost_check_modules.sh — native multi-module typecheck vs the OCaml
+#   • diff_compiler_check_modules.sh — native multi-module typecheck vs the OCaml
 #     MULTI-module oracle (the import-aware path `check` now shares with run/build);
 #   • diff_native_cli.sh — the real `./medaka check` CLI vs committed goldens
 #     (no-import goldens prove byte-identity), plus its check/repl/run legs.
@@ -30,11 +30,11 @@
 # module that does not exist), so check_main still emits UnknownModule for them.
 #
 # #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: the OCaml
-# oracle (eac278b) and the selfhost typecheck now both infer `sum`/`product :
+# oracle (eac278b) and the compiler typecheck now both infer `sum`/`product :
 # a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting, so the TYPES
 # leg agrees with the golden — this gate is now all-pass.
 #
-# Usage:  sh test/diff_selfhost_check.sh
+# Usage:  sh test/diff_compiler_check.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$ROOT/test/bin/check_main"

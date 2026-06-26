@@ -10,7 +10,7 @@
 # Self-host (OCaml-free, REROOT-PLAN.md Phase 2): the pre-compiled native binary
 # test/bin/eval_typed_main (built by test/build_oracles.sh); its stdout must match.
 #
-# Usage:  sh test/diff_selfhost_eval_typed.sh
+# Usage:  sh test/diff_compiler_eval_typed.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TYPED="$ROOT/test/bin/eval_typed_main"

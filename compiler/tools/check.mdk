@@ -1,0 +1,165 @@
+-- Composed self-hosted front-end LOGIC — wires the stage ports into one
+-- `runCheck`, the way bin/main.ml's `check` runs the OCaml pipeline:
+--
+--   parse → desugar → resolve → exhaust → typecheck
+--
+-- Run via the thin driver: medaka run compiler/entries/check_main.mdk <rt> <core> <src>
+--
+-- Output (location-free, so it diffs against the location-stripped oracles):
+--   • if resolve reports errors, print them (sorted by the harness) and stop —
+--     downstream stages can't run with unbound names;
+--   • otherwise print guard-exhaustiveness warnings (exhaust, on the RAW AST)
+--     followed by the inferred top-level schemes (typecheck, over core + prog).
+--
+-- A clean prelude-using program therefore prints exactly its === TYPES ===
+-- schemes; a resolve fixture prints its resolve diagnostics; an exhaust fixture
+-- prints its guard warning(s) ahead of the schemes.  runtime.mdk seeds the
+-- extern signatures; core.mdk is the prelude prepended for resolve + typecheck.
+
+-- LOGIC-ONLY module (Phase C Slice 0): the `main` + `withFiles`/`withCore`/
+-- `withTarget` driver moved to compiler/entries/check_main.mdk so two private `main`s
+-- (this driver's + the native CLI dispatcher's) don't collide under
+-- private_mangle.  This module now exposes only `runCheck` + its helpers, so it
+-- composes cleanly into compiler/medaka_cli.mdk and the batch/modules harnesses.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import support.util.{joinNl}
+import frontend.resolve.{
+  resolveToLines,
+  resolveModulesToLines,
+  resolveModulesToHumane,
+  singleFileImportErrors,
+  ppResError,
+}
+import frontend.exhaust.{exhaustToLines}
+import types.typecheck.{
+  checkToLinesWithRuntime,
+  setCoherenceUserDecls,
+  collectDoWellformedErrors,
+  checkErrorsWithRuntime,
+  checkModulesEntryReport,
+  checkModulesEntryHasErrors,
+}
+
+-- exported so the batch typecheck harness's synthetic entry can pull this
+-- module into a single union closure (does not change its inferred schemes),
+-- and so compiler/entries/check_main.mdk + compiler/medaka_cli.mdk can drive it.
+export
+runCheck : String -> String -> String -> <Mut> String
+runCheck rsrc csrc tsrc =
+  let raw = parse tsrc
+  let doErrs = collectDoWellformedErrors raw
+  match doErrs
+    e::_ => e ++ "\n"
+    [] =>
+      let desugared = desugar raw
+      let runtimeP = parse rsrc
+      let coreP = parse csrc
+      let importErrs = singleFileImportErrors desugared
+      let importDiags = joinNl (map ppResError importErrs)
+      routeImportCheck importDiags runtimeP coreP raw desugared
+-- R3: check for imports of unknown modules before resolve so we emit
+-- UnknownModule (right category) rather than falling through to a
+-- spurious typecheck "Unbound variable".  In single-file mode there is
+-- no loader, so any non-core import is by definition unknown.
+
+routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+routeImportCheck "" runtimeP coreP raw desugared =
+  let resDiags = resolveToLines runtimeP coreP desugared
+  reportFor resDiags runtimeP coreP raw desugared
+routeImportCheck diags _ _ _ _ = diags
+
+reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+reportFor "" runtimeP coreP raw desugared =
+  cleanReport runtimeP coreP raw desugared
+reportFor resDiags _ _ _ _ = resDiags
+
+cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+cleanReport runtimeP coreP raw desugared =
+  let exWarns = exhaustToLines raw
+  let _ = setCoherenceUserDecls desugared
+  let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+  joinNonEmpty exWarns schemes
+-- TYPECHECK-AUDIT S3: stage the USER decls (NO prelude) for the coherence check
+-- so a user impl overriding a prelude impl is not flagged as overlapping.
+
+joinNonEmpty : String -> String -> String
+joinNonEmpty "" b = b
+joinNonEmpty a "" = a
+joinNonEmpty a b = a ++ "\n" ++ b
+
+-- G1 (SOUNDNESS): does the same front-end pipeline runCheck drives report ANY
+-- error?  This is the exit-code predicate for the native CLI: runCheck returns a
+-- REPORT string whose success path is a NON-empty signature dump, so "report
+-- non-empty" is NOT "had an error".  checkHasErrors instead mirrors runCheck's
+-- exact short-circuit ROUTING (do-wellformedness → single-file imports → resolve
+-- → typecheck) and tests each error CATEGORY for content, reusing the same error
+-- sources, while ignoring exhaustiveness WARNINGS (not errors) and the success
+-- scheme dump.  Keeping this separate from runCheck leaves its stdout byte-
+-- identical (the diff_native_cli gate stays green); only the exit code is gated.
+export
+checkHasErrors : String -> String -> String -> <Mut> Bool
+checkHasErrors rsrc csrc tsrc =
+  let raw = parse tsrc
+  let doErrs = collectDoWellformedErrors raw
+  match doErrs
+    _::_ => True
+    [] =>
+      let desugared = desugar raw
+      let runtimeP = parse rsrc
+      let coreP = parse csrc
+      let importErrs = singleFileImportErrors desugared
+      match importErrs
+        _::_ => True
+        [] =>
+          let resDiags = resolveToLines runtimeP coreP desugared
+          match resDiags
+            "" =>
+              let _ = setCoherenceUserDecls desugared
+              checkErrorsWithRuntime
+                (desugar runtimeP)
+                (desugar coreP ++ desugared)
+            _ => True
+
+-- ── multi-module `check` (DRIVER-COLLAPSE Phase 4, OPTION A) ───────────────
+-- The unified `medaka check` path for IMPORT-BEARING files.  The CLI loads the
+-- entry + its transitive imports (loadProgram, entry LAST in dependency-first
+-- order) and DESUGARS each, then calls these.  This RESOLVES imports (vs the
+-- single-file path's `UnknownModule`), mirroring how `build`/`run` route through
+-- loadProgram → the multi-module typecheck.  Output mirrors runCheck's shape over
+-- the entry module: multi-module resolve diagnostics short-circuit first, else the
+-- entry module's schemes/type-errors/match-warnings via checkModulesEntryReport.
+-- `rtD`/`coreD` are the DESUGARED runtime/core decls; `mods` are the DESUGARED
+-- loaded modules (entry last).  Kept separate from runCheck so the no-import path
+-- stays byte-identical (the CLI routes 1-module loads through runCheck).
+export
+runCheckModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+runCheckModules rtD coreD mods =
+  let resDiags = resolveModulesToHumane rtD coreD mods
+  match resDiags
+    "" =>
+      let exWarns = entryExhaust mods
+      let report = checkModulesEntryReport rtD coreD mods
+      joinNonEmpty exWarns report
+    _ => resDiags
+
+-- exit-code predicate analog of checkHasErrors for the multi-module path: a
+-- resolve error OR any type error in the entry module.
+export
+checkModulesHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+checkModulesHasErrors rtD coreD mods =
+  let resDiags = resolveModulesToLines rtD coreD mods
+  match resDiags
+    "" => checkModulesEntryHasErrors rtD coreD mods
+    _ => True
+
+-- guard-exhaustiveness warnings on the ENTRY module (last) — the multi-module
+-- analog of runCheck's `exhaustToLines raw`.  exhaustToLines runs on the desugared
+-- decls here (the loaded mods are already desugared); guard-coverage lowering does
+-- not erase the `match` shape exhaust inspects, so this surfaces the same warnings.
+entryExhaust : List (String, List Decl) -> String
+entryExhaust [] = ""
+entryExhaust [(_, prog)] = exhaustToLines prog
+entryExhaust (_::rest) = entryExhaust rest

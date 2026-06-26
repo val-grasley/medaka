@@ -1,7 +1,7 @@
 # Making `sequence` a default method of `Traversable t`
 
 > **AS-BUILT (2026-06-26, `main` = `f333125`): IMPLEMENTED, Fork 1 UNIVERSAL.** `fillImplDefaults`
-> landed in `selfhost/frontend/desugar.mdk` (+ `lib/desugar.ml` mirror); `sequence` is a real
+> landed in `compiler/frontend/desugar.mdk` (+ `lib/desugar.ml` mirror); `sequence` is a real
 > `Traversable` default. Literal universal (no Ord/Foldable exclusion) required two emitter/typecheck
 > dict-threading fixes the design's "universal just works" premise missed: encl-aware
 > `registerImplRequires` routing (`typecheck.mdk`) and eta-expanding eta-short defaults INCLUDING
@@ -31,7 +31,7 @@ residual; all three were re-verified empirically in this pass (reproduce-before-
 trust), not taken on faith.
 
 ### Gap 1 — user-file generic free-fn build SIGSEGV: CLOSED
-Closed by `066b9ea` (`selfhost/backend/llvm_emit.mdk`): `emitDispatchChain` now
+Closed by `066b9ea` (`compiler/backend/llvm_emit.mdk`): `emitDispatchChain` now
 sources a dispatched impl-method's method-level `=>` constraint dict (e.g.
 `traverse`'s `Thenable m`) from the caller's ambient dict arg instead of an
 out-of-bounds load from the runtime dispatch-dict cell. (Confirmed in base:
@@ -40,14 +40,14 @@ out-of-bounds load from the runtime dispatch-dict cell. (Confirmed in base:
 ### Gap 2 — default-method form (THE TARGET): broken on the dispatch/eval path
 Default methods install as a **single untagged fallback**, never specialized
 per impl:
-- lowering: `selfhost/ir/core_ir_lower.mdk:783-785` `lowerDefault` emits ONE
+- lowering: `compiler/ir/core_ir_lower.mdk:783-785` `lowerDefault` emits ONE
   `CImplEntry mname (CImplDefault pats body)` per interface default (no per-impl
   tag); `lowerDeclImpl` (@766-770) maps an impl's *explicit* methods to tagged
   `CImplTagged` entries but an interface's defaults to that single untagged entry.
-- eval: `selfhost/eval/eval.mdk:1549-1551` `defaultEntry` installs the default
+- eval: `compiler/eval/eval.mdk:1549-1551` `defaultEntry` installs the default
   body as an untagged `VClosure` fallback.
 - typecheck: `inferDefaultMethod`/`inferDefaultMethodBody`
-  (`selfhost/types/typecheck.mdk:7313-7358`) infer the default body once,
+  (`compiler/types/typecheck.mdk:7313-7358`) infer the default body once,
   generically, with `methodDictArityOf` covering only the method-level
   constraint (`Thenable m`) — **no receiver (`t`) dict slot**.
 
@@ -139,7 +139,7 @@ concretely `List`/`Option`/`Result e`). Downstream (typecheck dict-pass →
 byte-identical to today's shipped form.
 
 Touchpoints:
-- **Injection stage — `selfhost/frontend/desugar.mdk`** (runs FIRST, before
+- **Injection stage — `compiler/frontend/desugar.mdk`** (runs FIRST, before
   resolve/mark/typecheck, sees the whole decl list). Add a pass `fillImplDefaults
   : List Decl -> List Decl`: collect `(ifaceName, [defaults])` from every
   `DInterface`, then for each `DImpl { iface, methods, … }` append a synthesized
@@ -163,9 +163,9 @@ defaults from interfaces in the SAME module. For the Traversable goal the
 interface + all three impls are co-located in `core.mdk`, so this is sufficient.
 To generalize to USER impls of PRELUDE interfaces, the fill must run where the
 prelude interface is visible alongside the user impl — the driver assembles
-`markedPrelude ++ user` before the joint dict-pass (`selfhost/frontend/marker.mdk`
+`markedPrelude ++ user` before the joint dict-pass (`compiler/frontend/marker.mdk`
 `markProgram`/`markerForWithPrelude` @92/@466-479; driver in
-`selfhost/driver/`), so a whole-program variant of the pass would live there.
+`compiler/driver/`), so a whole-program variant of the pass would live there.
 Recommend shipping the same-module desugar pass first (covers the goal) and
 noting the whole-program lift as a follow-up.
 
@@ -185,7 +185,7 @@ most-specific first). Option (b) is cleaner and closes the whole class.
 Mechanism: extend the default-method ABI so the untagged fallback also carries
 the receiver `t` dict; register it active in
 `inferDefaultMethod`/`inferDefaultMethodBody`
-(`selfhost/types/typecheck.mdk:7313-7358`) so the in-body sibling call
+(`compiler/types/typecheck.mdk:7313-7358`) so the in-body sibling call
 `traverse` stamps RDict off it; supply it at the dispatch site in eval
 (`eval.mdk` `defaultEntry`/dispatch) and emit (`llvm_emit.mdk`).
 
@@ -246,14 +246,14 @@ Stage 0 — Pin baseline. Confirm `066b9ea` in base (done: BASE_OK) and the
 shipped per-impl `sequence` builds+runs (done: Experiment 2). No edits.
 
 Stage 1 — desugar fill pass (compiler change, lowest behavioral risk).
-- File: `selfhost/frontend/desugar.mdk` — add `fillImplDefaults` and wire it into
+- File: `compiler/frontend/desugar.mdk` — add `fillImplDefaults` and wire it into
   the desugar pipeline (before resolve). No `core.mdk` edit yet, so the synthesized
   copies are byte-identical no-ops over today's explicit methods (the impls
   already define `sequence`) — pure refactor.
 - Gate: emitter/compiler-graph change ⇒ `FORCE_EMITTER_REBUILD=1 make medaka` +
   **self-compile fixpoint** must hold (`test/selfcompile_*.sh`); re-mint the seed
-  (`selfhost/seed/`) at the checkpoint, not per-iteration (per "defer seed
-  re-mints"). Plus `diff_selfhost_*` green and core/list doctests pass.
+  (`compiler/seed/`) at the checkpoint, not per-iteration (per "defer seed
+  re-mints"). Plus `diff_compiler_*` green and core/list doctests pass.
 
 Stage 2 — move `sequence` to a real default (`core.mdk` edit).
 - File: `stdlib/core.mdk` — add the interface default body, delete the 3 per-impl
@@ -265,7 +265,7 @@ Stage 2 — move `sequence` to a real default (`core.mdk` edit).
   BOTH `medaka run` and the `medaka build`-ed binary. Plus `medaka test
   stdlib/core.mdk` (38 doctests + 9 props) and `stdlib/list.mdk`.
 - Goldens that ripple (a `core.mdk` edit ripples the frontend goldens): recapture
-  desugar / mark / lextok / sexp goldens for core, plus any `diff_selfhost_*`
+  desugar / mark / lextok / sexp goldens for core, plus any `diff_compiler_*`
   corpus that embeds core. (Per memory: editing core.mdk ripples
   desugar/mark/lextok/sexp goldens, not just `test`.) Use the project's
   `capture_goldens` flow; watch the documented blank-golden footgun.
@@ -285,5 +285,5 @@ a TRULY GENERIC prelude free function with a `(Traversable t, Thenable m) =>`
 signature still fails `medaka build` with the slice-7 error (Experiment 1). If a
 future stdlib helper needs to be a generic prelude free fn over a typeclass with
 a primitive/generic receiver, gap 3 must be fixed in the emitter
-(`selfhost/backend/llvm_emit.mdk` slice-7 dispatch path) independently. Track it
+(`compiler/backend/llvm_emit.mdk` slice-7 dispatch path) independently. Track it
 as its own backlog entry, not a blocker for this task.

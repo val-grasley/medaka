@@ -4,11 +4,11 @@
 # Runs the eval-dict corpus under BOTH argStampEnabled settings (EMIT/ON vs EVAL/OFF)
 # and diffs PROGRAM OUTPUT (not IR).  Establishes the Phase-0 baseline:
 #   • per-fixture: output under ON, output under OFF, and whether they match
-#   • the OFF column is the current eval-driver behaviour (== diff_selfhost_eval_dict golden)
+#   • the OFF column is the current eval-driver behaviour (== diff_compiler_eval_dict golden)
 #   • SAME under both  => fixture is fork-invariant at the OUTPUT level (plan's prediction)
 #   • DIFFERS          => a fixture the unification must reconcile; named for phase ownership
 #
-# Driver: test/bin/argstamp_parity_probe (built from selfhost/entries/argstamp_parity_probe.mdk
+# Driver: test/bin/argstamp_parity_probe (built from compiler/entries/argstamp_parity_probe.mdk
 # via test/build_oracles.sh-style native build).  Arg1 = ON|OFF mode switch.
 #
 # Usage:  sh test/argstamp_parity_probe.sh
@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROBE="$ROOT/test/bin/argstamp_parity_probe"
 RT="$ROOT/stdlib/runtime.mdk"; CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/eval_dict_fixtures"
-[ -x "$PROBE" ] || { echo "build probe first: MEDAKA_ROOT=\$ROOT MEDAKA_EMITTER=\$ROOT/medaka_emitter ./medaka build selfhost/entries/argstamp_parity_probe.mdk -o $PROBE"; exit 2; }
+[ -x "$PROBE" ] || { echo "build probe first: MEDAKA_ROOT=\$ROOT MEDAKA_EMITTER=\$ROOT/medaka_emitter ./medaka build compiler/entries/argstamp_parity_probe.mdk -o $PROBE"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 
 same=0; differ=0; total=0

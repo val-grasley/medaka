@@ -6,7 +6,7 @@ completed Phases (1–145+, with their detailed implementation notes) live in
 [`PLAN-ARCHIVE.md`](./PLAN-ARCHIVE.md). When a phase here is finished, move its
 write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
-living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
+living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
 ## Current status (2026-06-26) — `sequence` default method + universal default-method specialization
 
@@ -31,7 +31,7 @@ reproduced on the binary, gated, merged:
   dict params (fixed: include leading dict pats). **Also fixed a pre-existing parametric `Ord`
   soundness bug** — `max [1, 2] [1, 3]` returned `[1, 2]`. Then the Ord/Foldable exclusion was removed
   (`265b0a2`) → specialization is literally universal.
-- **Verification:** fixpoint C3a/C3b YES; `diff_selfhost_build` 36/0 (foldMap fixture green),
+- **Verification:** fixpoint C3a/C3b YES; `diff_compiler_build` 36/0 (foldMap fixture green),
   `_llvm` 183/0, `_eval_dict` 28/0, `_typecheck`/`_errors` 12/40, `_typecheck_golden` 57/0 (recaptured —
   `sequence`/`traverse` now appear as prelude schemes); core 38 doctests + 9 props, list 63 + 12;
   `run == build` on `sequence`/`clamp`/parametric-`max`/`foldMap`.
@@ -81,7 +81,7 @@ reproduced on the binary, gated, merged, seed re-minted at checkpoints (cold
 **Driven by dogfooding `fmt` on the `parsec` library; `main` = `966b546`.** All native-only
 (`printer.mdk`/`fmt.mdk` are OUTSIDE the emitter self-compile graph; the one in-graph helper
 `util.mdk` had its seed re-minted at `5a1f3be`, `bootstrap_from_seed` C3a PASS). Each landing
-recaptured the native-sourced fmt/printer goldens and kept `diff_selfhost_fmt`/`diff_selfhost_printer`
+recaptured the native-sourced fmt/printer goldens and kept `diff_compiler_fmt`/`diff_compiler_printer`
 green:
 - **3 `fmt` bugs fixed:** (a) inner-block trailing comments were relocated below the block — now stay
   inline (`838f21d`, `fmt.mdk` per-source-line splice); (b) a nested `if`/`else-if` in `else` position
@@ -94,7 +94,7 @@ green:
   (Idris-style; avoids reading as a type export). `export data`/`export impl` still collapse (they ARE
   type-level). This was reviewed and kept BY DESIGN, not "fixed."
 - **Regression fixture** `test/fmt_fixtures/wrap_elseif_headarg` gates the else-if-laddering +
-  head-inline fixes (they had no golden coverage); `diff_selfhost_fmt` 44→45/0.
+  head-inline fixes (they had no golden coverage); `diff_compiler_fmt` 44→45/0.
 - **`parsec` formatted** (`b9cd7b3`) — semantics unchanged (check clean, run==build byte-identical).
 - **Deferred (cosmetic):** import overflow goes one-name-per-line; a fill-to-width packing is a possible
   future tweak. The frozen OCaml `lib/fmt.ml` still has the old comment/spacing behavior — irrelevant,
@@ -115,7 +115,7 @@ rule). Design + locked scope: [`LAYOUT-BRACKETS-DESIGN.md`](./LAYOUT-BRACKETS-DE
 - **Stage 3 lexer** (`8abe0aa`, the crux) — a **bracket-frame stack** in BOTH lexers (byte-identical):
   inside brackets, free-form stays the default; a herald (`match`/`do`/`function`/`record` via
   `isOpener`) arms a nested layout context, closed on dedent-≤-herald-col OR the matching closer
-  (force-flush). Free-form continuation UNCHANGED (`diff_selfhost_lexer` 57/0, `bootstrap_lex` 57/0).
+  (force-flush). Free-form continuation UNCHANGED (`diff_compiler_lexer` 57/0, `bootstrap_lex` 57/0).
 - **Dogfood payoff** (`5e041ab`) — reverted `parsec`'s 6 lifted helpers to inline bracketed blocks,
   output byte-identical to before. (`satisfyStep`/`eofStep` stay — multi-clause guard syntax, a
   different shape.)
@@ -144,7 +144,7 @@ reproduced on the binary, gated (run==build byte-identical where applicable), an
 - **Finding #2 — humane resolve-error rendering** (`521a96e`) — native multi-module `check` raw-ADT
   printed `(PrivateNameAccess …)`; now all 18 `ResError` variants render humanely, byte-identical to
   the OCaml oracle (`'X' is private to module Y`).
-- **Finding #1b — selfhost source violated its own Phase-148 contiguity rule** (`a987a7a`,
+- **Finding #1b — compiler source violated its own Phase-148 contiguity rule** (`a987a7a`,
   unmasked by #1) — `eval`/`declSexp` were split by intervening decls; `dropS`/`clauseArity`/
   `isDictParamName`/`startsWithStr` were **dead duplicate definitions**. Made contiguous / removed the
   dead copies (pure reorg, fixpoint-proven behavior-preserving).
@@ -183,9 +183,9 @@ each independently re-verified before merge:
 
 **Post-flip soak progress (since the 2026-06-12 native-canonical flip):** the
 **gate suite is fully re-rooted off the OCaml oracle** — every correctness gate is
-OCaml-free (`selfhost/REROOT-PLAN.md`); capture/mint tooling and the perf-baseline
+OCaml-free (`compiler/REROOT-PLAN.md`); capture/mint tooling and the perf-baseline
 gates keep OCaml at capture time by design until `lib/` removal. The **driver
-collapse** is done (`selfhost/DRIVER-COLLAPSE-PLAN.md`): single-file typecheck+eval
+collapse** is done (`compiler/DRIVER-COLLAPSE-PLAN.md`): single-file typecheck+eval
 now run as the 1-module case of the multi-module path (closes audit §6's recurring
 single-vs-multi defect), and `medaka check` resolves imports. Native dispatch fixes
 landed: **#55** (sum/product two-constraint, on both the build AND eval paths),
@@ -196,7 +196,7 @@ false-positive + `medaka test` SIGBUS. Native stdlib test coverage expanded
 (`fuzz_diff.sh` OCaml-free). The native-emitter **cross-module constructor-name
 collision** fixed via universal ctor mangling; the **`argStampEnabled` eval-vs-emit
 dispatch unification COMPLETE** (eval threads dicts; `evalDictLayerActive` retired;
-`selfhost/ARGSTAMP-UNIFY-PLAN.md`); **emit-path Set-literal / mutual-rec-Monoid dict
+`compiler/ARGSTAMP-UNIFY-PLAN.md`); **emit-path Set-literal / mutual-rec-Monoid dict
 gaps** fixed.
 
 **2026-06-18 correctness arc — ALL LANDED** (`main` = `e638673`, seed re-minted, C3a PASS):
@@ -204,7 +204,7 @@ gaps** fixed.
 - ✅ **Cross-module Num-obligation soundness hole FIXED** — native `check` was accepting
   imported calls where a numeric literal unified with a non-`Num` type (e.g. `member s 3`
   with `s : Set Int`). Root: typecheck-module path passed `implDecls=[]` → obligation
-  dropped. Fixed in `selfhost/types/typecheck.mdk` (register iface params over full universe
+  dropped. Fixed in `compiler/types/typecheck.mdk` (register iface params over full universe
   + `checkImplObligations` on typecheck path). Broad fix — every imported numeric-literal
   call was affected.
 - ✅ **Top-level `DLetGroup` (`let rec … with …`) — RUN + BUILD both work** (A7/D10 FULLY
@@ -223,9 +223,9 @@ gaps** fixed.
   mis-dispatched to the method in `run`. Fixed in `rewriteArgScoped` (scope-blind return-pos
   arm now skips locally-bound names). Coverage: `test/eval_fixtures/local_shadow_method.mdk`.
 - ✅ **`medaka check --json` ported to native** — byte-identical to OCaml. Gate:
-  `test/diff_selfhost_check_cli_modules.sh`.
-- ✅ **`medaka doc` ported to native** — `selfhost/tools/doc.mdk` + `medaka_cli` wiring;
-  byte-identical, single-file scope. Gate: `test/diff_selfhost_doc.sh` (14 fixtures). Fixed a
+  `test/diff_compiler_check_cli_modules.sh`.
+- ✅ **`medaka doc` ported to native** — `compiler/tools/doc.mdk` + `medaka_cli` wiring;
+  byte-identical, single-file scope. Gate: `test/diff_compiler_doc.sh` (14 fixtures). Fixed a
   scheme name-collision (`lookupScheme` last-match → user-schemes-first ordering).
 - ✅ **Native LSP `No impl` diagnostic range** fixed (was `{0,0}`; now carries `ELoc` span).
 
@@ -236,7 +236,7 @@ gaps** fixed.
    a parse-broken sibling: server does NOT crash but emits zero `publishDiagnostics`. Root:
    loader/`analyzeProject` panics on a graph-member parse error before diagnostics surface.
    Needs loader error-recovery. Memory: `project_lsp_fault_tolerance`. `lib/`-removal-relevant.
-2. **`ppTy` dropped effect rows — ✅ DONE (2026-06-23, `067c897`, selfhost-only).** `ppTy`'s
+2. **`ppTy` dropped effect rows — ✅ DONE (2026-06-23, `067c897`, compiler-only).** `ppTy`'s
    `TyEffect` arm discarded the effect row (contradicting its "mirrors `lib/ast.ml` `pp_ty`
    byte-for-byte" comment — OCaml `pp_ty` = `pp_ty_prec 0` renders `<…>`). Fixed to render
    `<labels | tail> innertype` mirroring `pp_ty_prec` / the existing-correct `ppTyP`/`ppMono`.
@@ -261,14 +261,14 @@ gaps** fixed.
 5. **Phase 147 ctor disambiguation** and other proposed compiler diagnostics — as-is.
 
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
-Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
+Medaka (`compiler/`), and the native **LLVM backend now compiles it**: all seven
 pipeline stages (lex → parse → desugar → resolve → mark → typecheck → eval) are
 native-compiled and **byte-identical to the tree-walker interpreter** (141
 fixtures across `test/bootstrap_*.sh`), and the **self-compile fixpoint is
 reached** — the native-compiled emitter emits the whole emitter graph (~10.6 MB
 IR), reproduces the interpreter's IR byte-for-byte (C3a), and a second-generation
 native emitter reproduces that IR exactly (C3b: `IR1 == IR2`). See
-`selfhost/BOOTSTRAP.md` for the B1–B7 + C1–C3 log and `selfhost/EMITTER-GAPS.md`
+`compiler/BOOTSTRAP.md` for the B1–B7 + C1–C3 log and `compiler/EMITTER-GAPS.md`
 for the closed/residual emitter gaps. The native lexer runs ~90× faster than the
 tree-walker.
 
@@ -296,7 +296,7 @@ The stdlib in Medaka is **complete** across `core`, `list`, `array`, `string`
 all eight pipeline stages ported to Medaka and validated byte-for-byte, the
 bootstrap closure landed for Legs A–D, and the LLVM backend promoted from spike to
 a self-hosting native compiler (the C1–C3 fixpoint above). The forward-looking
-interpreter-perf levers are all resolved (`selfhost/PERF-NOTES.md`).
+interpreter-perf levers are all resolved (`compiler/PERF-NOTES.md`).
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
@@ -316,12 +316,12 @@ enumerated in the [Open issues index](#open-issues-index) below.**
 
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
-| **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
-| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **`argStampEnabled` eval-vs-emit dispatch unification ✅ DONE (2026-06-14, [`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)).** Soak tail: confidence-gated `lib/` removal. |
+| **Self-hosting (Stage 1)** | [`compiler/README.md`](./compiler/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
+| **Native backend (Stage 2)** | [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md) + [`compiler/BOOTSTRAP.md`](./compiler/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **`argStampEnabled` eval-vs-emit dispatch unification ✅ DONE (2026-06-14, [`ARGSTAMP-UNIFY-PLAN.md`](./compiler/ARGSTAMP-UNIFY-PLAN.md)).** Soak tail: confidence-gated `lib/` removal. |
 | **Capability-effects wedge (Phase 146)** | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) (v2 conformance) + [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟢 **conformance substantially CLOSED (2026-06-21)** | E1/E6 manifest (WS-1a/b/c `41509f6`), E3 α scope-seeding (WS-2 `98bf22b`, both compilers), E2 `Set` (WS-3 `5a1d215`) + `Product`/structured Net (WS-4 `b948ff3`), E4 Env/Exec native machinery (WS-3b `2188e6a`) — all native-canonical, fixpoint-gated. **Open:** only WS-3b's builtin-extern flip in `runtime.mdk` (blocked on frozen oracle → rides `lib/`-removal soak tail) + WS-5 (extern-row assurance, standing discipline) + Phase 146b. WS-4 design banked in `WS-4-DESIGN.md`. |
-| **WasmGC backend (2nd backend)** | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 (slices) + [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) (self-host gap-closing) + [`selfhost/WASMGC-TRMC-DESIGN.md`](./selfhost/WASMGC-TRMC-DESIGN.md) (stack-safety) | 🟢🏁 **self-hosted FRONT-END runs on WasmGC byte-identical to native; browser playground LIVE** (2026-06-22) | Direct Core IR→WAT emitter. Compute+print MVP (W1–W9b+W8b) byte-identical to `medaka build`. **Playground Stages 0–4 DONE** (`playground/`): compiler-as-wasm runs fully client-side, static-only server, WAT assembly via committed `vendor/wat2wasm/` blob. Done: per-binding emitter-gap census **1428→0**; whole-program linkage + `wasm-tools validate` (`check_main` = 6.77 MB WAT); runtime layers 1–4 (escape runtime, value-global init topo-sort, list-`++`, UTF-8 cp_count); **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, `8c69296`/`8737d11`/`2688edb`)** ported the LLVM TMC (`TRMC-DESIGN.md`) + a novel **dispatch-into-single-target (b′)** TMC for the lexer; the self-hosted **lexer now runs to completion under Node** (flat `tokenize→parse→runCheck` trace). **layer-6 CLOSED** — `stringToFloat` via host seam (`a332da7`). **layers 7–13 CLOSED** — parser/resolve/typecheck correctness bugs; `check_main` runs to completion byte-identical to native. **THE EMITTER RUNS ON WasmGC (2026-06-22)** — WasmGC-compiled emitter compiles `println (1+2)` → 52K-line WAT, assembles + runs + prints `3`. `wasm_emit.mdk` is OUTSIDE the compiler graph → emitter changes need no fixpoint/seed. **Remaining:** `hashName`/`dictTag` i32-vs-i64 width (layer-17, pre-existing, self-consistent); `List_andThen`/`flatMap` overflow (layer-18, latent); eventual `wasm-opt` perf pass. See `WASM-SELFHOST-ROADMAP.md` for full layer log. |
-| **SQLite read-path library (capstone)** | [`SQLITE-DESIGN.md`](./SQLITE-DESIGN.md) | 🟢 **v1 read + WRITE COMPLETE — reads AND generates real `.sqlite` files, verified vs `sqlite3`** | LANDED (`main` @ `de44b58`): foundation externs (`readFileBytes` + bitwise, `1b25c9b`); `byteparser/` (`986bbd4`); cross-project `[dependencies]` in the native loader (`0ad8ae9`); file-format reader (`6657238`); multi-page B-tree (`86b1ffa`); typed `RowType` combinators + SELECT executor (`8d4c39c`); INTEGER PRIMARY KEY rowid-substitution fix in the typed path (`ccd650a`); `bytesToFloat64` extern + `beFloat64` (`359957a`); library hygiene — stdlib de-dup + STYLE §8 multi-clause (`de44b58`). All emitter-graph changes fixpoint-verified; **seed re-minted (`848f712`), cold-bootstrap PASS**. Reads single-leaf + multi-page tables, NULL/int/text/blob, IPK rowid, typed Medaka records — byte-identical to `sqlite3`. **Float read path COMPLETE (2026-06-24, `72b4c58`, pure-library):** `CFloat` cell + serial-type-7 (8-byte IEEE) decode via `beFloat64`, and a `tFloat : RowType Float` combinator. `tFloat` **coerces `CInt → Float`** (decided after a dogfood finding: SQLite stores whole-number REAL values as *integer* serial types — its storage optimization — so a faithful REAL-column reader must coerce; non-numeric cells still error). **Phase-2 ADT query model COMPLETE (2026-06-24, `e9fd54e`, pure-library):** `sqlite/lib/select.mdk` — `Literal`/`CmpOp`/`SqlExpr`/`Select` core + a phantom-typed `Expr a` layer (smart constructors `eCol*`/`eLit*`/`eEq`/`eGt`/…/`eAnd`/`eNot` named off prelude methods; type-safe — `eEq (eColInt "age") (eLitT "x")` is a `check` error), injection-safe `render` (`?` placeholders + ordered `List Literal`), `compilePred` (SqlExpr → `List Cell -> Bool`, SQL 3-valued NULL logic), and `query` (ADT drives the scanner — WHERE pushdown over raw cells + limit/offset, then `RowType` decode). Differential `select_oracle.sh` matches `sqlite3` (17 rows). **The whole read-path NEXT list is done.** **🏁 WRITE path v1 COMPLETE (2026-06-24, P0–P4):** Medaka GENERATES a fresh single-table `.sqlite` that `sqlite3` validates + queries (`PRAGMA integrity_check`=ok). `writeFileBytes` extern (`a97e34b`); `byteparser/lib/bytebuilder.mdk` (`75ccf95`); `sqlite/lib/recordenc.mdk` record encoder (`c4b9731`); `sqlite/lib/dbwriter.mdk` byte-perfect single-page writer (`691baa1`); `sqlite/lib/writer.mdk` typed `CREATE TABLE`+`INSERT` API (`4e582a6`). int/text/null/blob, IPK-as-rowid or auto-rowid, single leaf page (clean `Err` on overflow). Owning doc [`SQLITE-WRITE-DESIGN.md`](./SQLITE-WRITE-DESIGN.md). **Deferred (write):** floats (needs `floatToBytes64` extern); page splits/multi-page; `UPDATE`/`DELETE`; overflow pages; transactions/journal/WAL. **Write-workstream compiler/tooling bugs found+fixed:** native method-shadow run≠build (`96529b3`); `arrayBlit`/`arraySetUnsafe` missing from the native interp (`ecd2eee`); loader cross-package relative-import resolution F1 (`ec8c19c`). **Open from write workstream:** ~~F1b~~ ✅ DONE 2026-06-25 (`ac4b04a`, loader module identity canonicalized — both two-spellings AND two-dep-names corners closed via a `canonicalizePath` realpath extern); `CFieldAccess` cross-module record dot-access ✅ RESOLVED 2026-06-25 (`e3e7e1b` — was a non-bug; canonical compiler correct with `public export`, filed emitter framing stale; fixed the misleading abstract-export diagnostic instead). Fast-follows (PLAN tasks, not started): WasmGC port (bytes-first API makes it additive) + async SQL server. Dogfood findings → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) (#1/#2/#3/#4/#5/#8 FIXED 2026-06-24; #6 deferred-documented; #7 oracle-only; +the method-shadow check/eval bug found via the phantom-`Expr` design, FIXED `96529b3`); future `medaka lint` → its workstream row below. |
+| **WasmGC backend (2nd backend)** | [`compiler/WASMGC-DESIGN.md`](./compiler/WASMGC-DESIGN.md) §9 (slices) + [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) (self-host gap-closing) + [`compiler/WASMGC-TRMC-DESIGN.md`](./compiler/WASMGC-TRMC-DESIGN.md) (stack-safety) | 🟢🏁 **self-hosted FRONT-END runs on WasmGC byte-identical to native; browser playground LIVE** (2026-06-22) | Direct Core IR→WAT emitter. Compute+print MVP (W1–W9b+W8b) byte-identical to `medaka build`. **Playground Stages 0–4 DONE** (`playground/`): compiler-as-wasm runs fully client-side, static-only server, WAT assembly via committed `vendor/wat2wasm/` blob. Done: per-binding emitter-gap census **1428→0**; whole-program linkage + `wasm-tools validate` (`check_main` = 6.77 MB WAT); runtime layers 1–4 (escape runtime, value-global init topo-sort, list-`++`, UTF-8 cp_count); **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, `8c69296`/`8737d11`/`2688edb`)** ported the LLVM TMC (`TRMC-DESIGN.md`) + a novel **dispatch-into-single-target (b′)** TMC for the lexer; the self-hosted **lexer now runs to completion under Node** (flat `tokenize→parse→runCheck` trace). **layer-6 CLOSED** — `stringToFloat` via host seam (`a332da7`). **layers 7–13 CLOSED** — parser/resolve/typecheck correctness bugs; `check_main` runs to completion byte-identical to native. **THE EMITTER RUNS ON WasmGC (2026-06-22)** — WasmGC-compiled emitter compiles `println (1+2)` → 52K-line WAT, assembles + runs + prints `3`. `wasm_emit.mdk` is OUTSIDE the compiler graph → emitter changes need no fixpoint/seed. **Remaining:** `hashName`/`dictTag` i32-vs-i64 width (layer-17, pre-existing, self-consistent); `List_andThen`/`flatMap` overflow (layer-18, latent); eventual `wasm-opt` perf pass. See `WASM-SELFHOST-ROADMAP.md` for full layer log. |
+| **SQLite read-path library (capstone)** | [`SQLITE-DESIGN.md`](./SQLITE-DESIGN.md) | 🟢 **v1 read + WRITE COMPLETE — reads AND generates real `.sqlite` files, verified vs `sqlite3`** | LANDED (`main` @ `de44b58`): foundation externs (`readFileBytes` + bitwise, `1b25c9b`); `byteparser/` (`986bbd4`); cross-project `[dependencies]` in the native loader (`0ad8ae9`); file-format reader (`6657238`); multi-page B-tree (`86b1ffa`); typed `RowType` combinators + SELECT executor (`8d4c39c`); INTEGER PRIMARY KEY rowid-substitution fix in the typed path (`ccd650a`); `bytesToFloat64` extern + `beFloat64` (`359957a`); library hygiene — stdlib de-dup + STYLE §8 multi-clause (`de44b58`). All emitter-graph changes fixpoint-verified; **seed re-minted (`848f712`), cold-bootstrap PASS**. Reads single-leaf + multi-page tables, NULL/int/text/blob, IPK rowid, typed Medaka records — byte-identical to `sqlite3`. **Float read path COMPLETE (2026-06-24, `72b4c58`, pure-library):** `CFloat` cell + serial-type-7 (8-byte IEEE) decode via `beFloat64`, and a `tFloat : RowType Float` combinator. `tFloat` **coerces `CInt → Float`** (decided after a dogfood finding: SQLite stores whole-number REAL values as *integer* serial types — its storage optimization — so a faithful REAL-column reader must coerce; non-numeric cells still error). **Phase-2 ADT query model COMPLETE (2026-06-24, `e9fd54e`, pure-library):** `sqlite/lib/select.mdk` — `Literal`/`CmpOp`/`SqlExpr`/`Select` core + a phantom-typed `Expr a` layer (smart constructors `eCol*`/`eLit*`/`eEq`/`eGt`/…/`eAnd`/`eNot` named off prelude methods; type-safe — `eEq (eColInt "age") (eLitT "x")` is a `check` error), injection-safe `render` (`?` placeholders + ordered `List Literal`), `compilePred` (SqlExpr → `List Cell -> Bool`, SQL 3-valued NULL logic), and `query` (ADT drives the scanner — WHERE pushdown over raw cells + limit/offset, then `RowType` decode). Differential `select_oracle.sh` matches `sqlite3` (17 rows). **The whole read-path NEXT list is done.** **🏁 WRITE path v1 COMPLETE (2026-06-24, P0–P4):** Medaka GENERATES a fresh single-table `.sqlite` that `sqlite3` validates + queries (`PRAGMA integrity_check`=ok). `writeFileBytes` extern (`a97e34b`); `byteparser/lib/bytebuilder.mdk` (`75ccf95`); `sqlite/lib/recordenc.mdk` record encoder (`c4b9731`); `sqlite/lib/dbwriter.mdk` byte-perfect single-page writer (`691baa1`); `sqlite/lib/writer.mdk` typed `CREATE TABLE`+`INSERT` API (`4e582a6`). int/text/null/blob, IPK-as-rowid or auto-rowid, single leaf page (clean `Err` on overflow). Owning doc [`SQLITE-WRITE-DESIGN.md`](./SQLITE-WRITE-DESIGN.md). **Deferred (write):** floats (needs `floatToBytes64` extern); page splits/multi-page; `UPDATE`/`DELETE`; overflow pages; transactions/journal/WAL. **Write-workstream compiler/tooling bugs found+fixed:** native method-shadow run≠build (`96529b3`); `arrayBlit`/`arraySetUnsafe` missing from the native interp (`ecd2eee`); loader cross-package relative-import resolution F1 (`ec8c19c`). **Open from write workstream:** ~~F1b~~ ✅ DONE 2026-06-25 (`ac4b04a`, loader module identity canonicalized — both two-spellings AND two-dep-names corners closed via a `canonicalizePath` realpath extern); `CFieldAccess` cross-module record dot-access ✅ RESOLVED 2026-06-25 (`e3e7e1b` — was a non-bug; canonical compiler correct with `public export`, filed emitter framing stale; fixed the misleading abstract-export diagnostic instead). Fast-follows (PLAN tasks, not started): WasmGC port (bytes-first API makes it additive) + async SQL server. Dogfood findings → [Known parser gaps](#known-parser-gaps-compiler-parsermdk) (#1/#2/#3/#4/#5/#8 FIXED 2026-06-24; #6 deferred-documented; #7 oracle-only; +the method-shadow check/eval bug found via the phantom-`Expr` design, FIXED `96529b3`); future `medaka lint` → its workstream row below. |
 
 | **Linter (`medaka lint`) — FUTURE** | **this file** (idea; no design doc yet) | 💡 **idea / not started** | Build a lint pass for issues that are DETECTABLE but **inappropriate to auto-fix with the formatter** — `fmt` must preserve a definition's *shape*/structure, so these can't live there. Motivating case (and proof of need): STYLE §8 immediate-`match`-on-a-**bare param** → multi-clause functions, which had to be cleaned up BY HAND in the SQLite dogfood. Other seed rules from STYLE.md: §3 `match`-on-a-computed-value → guard; §6 hand-rolled `Eq`/`Ord`/`Debug` → `deriving`; §7 re-implemented prelude idioms; and **stdlib-function duplication inside user libraries** (also surfaced by the SQLite dogfood — `byteparser`/`sqlite` re-spelled `reverse`/`take`/`drop`). Default = warn/suggest (a definition-shape change is semantics-adjacent, not a pure reformat); an opt-in autofix could follow. Distinct from `fmt` precisely because it changes structure, not just layout. |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
@@ -354,8 +354,8 @@ Stages 0 (prerequisites), 1 (self-host on the interpreter), and 2 (LLVM backend)
 are done — Medaka self-hosts and the native backend compiles it to a reproducing
 fixpoint (see [Current status](#current-status-2026-06-18)). Full per-stage detail
 archived in [`PLAN-ARCHIVE.md` → Archived north star stages 0 to 2](./PLAN-ARCHIVE.md#archived-north-star-stages-0-to-2);
-owning docs: `selfhost/README.md` (Stage 1), `selfhost/STAGE2-DESIGN.md` +
-`selfhost/BOOTSTRAP.md` (Stage 2). Forward work is
+owning docs: `compiler/README.md` (Stage 1), `compiler/STAGE2-DESIGN.md` +
+`compiler/BOOTSTRAP.md` (Stage 2). Forward work is
 [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml).
 
 ### Stage 3 — Make the LLVM backend canonical, retire OCaml
@@ -381,15 +381,15 @@ The native LLVM backend is canonical (2026-06-12 flip): `make medaka` builds it
 OCaml-free; all PRE-FLIP-GAPS soundness/capability gaps (G1–G9) closed; the full
 TYPECHECK-AUDIT (16 findings — S1·S2·T1·T1b·T2·S3·C1·C2·C3·C6·C7·C8·C9·OBS3·OBS4)
 closed; the construct-coverage sweep + all four native dispatch gaps (#54/#55/#50/#21)
-closed; perf bar-4 done (5.68× self-compile / ~59× vs interp — `selfhost/PERF-RESULTS.md`);
+closed; perf bar-4 done (5.68× self-compile / ~59× vs interp — `compiler/PERF-RESULTS.md`);
 the Phase-C native-CLI capstone + Stage-4 tooling port (fmt/test/new/repl/build/lsp) done;
-**gate re-rooting done** (all correctness gates OCaml-free — `selfhost/REROOT-PLAN.md`);
-the **single-file/multi-module driver collapse done** (`selfhost/DRIVER-COLLAPSE-PLAN.md`,
+**gate re-rooting done** (all correctness gates OCaml-free — `compiler/REROOT-PLAN.md`);
+the **single-file/multi-module driver collapse done** (`compiler/DRIVER-COLLAPSE-PLAN.md`,
 closes audit §6; `medaka check` now resolves imports).
 
 **Soak tail (remaining, see "Current status" above for live state):** a clean bug-free
 soak stretch and the confidence-gated `lib/` removal. (Closed 2026-06-14: `argStampEnabled`
-eval-vs-emit dispatch unification — `selfhost/ARGSTAMP-UNIFY-PLAN.md`, STATUS: COMPLETE,
+eval-vs-emit dispatch unification — `compiler/ARGSTAMP-UNIFY-PLAN.md`, STATUS: COMPLETE,
 retires the finer dispatch fork the driver collapse left, the shared root of #55/#21. Closed
 2026-06-15: native-emit scale failure `unbound 'not'` — fuzzer 5%→100%; foldMap
 method-level-constraint dict gap — eval_dict 25/0; whole-float rendering canonical `1.0`.)
@@ -397,11 +397,11 @@ method-level-constraint dict gap — eval_dict 25/0; whole-float rendering canon
 **Gated milestone — retire `lib/*.ml`.** ✅ **Native is now the default build (2026-06-12
 flip):** `make medaka` builds the canonical native compiler OCaml-free from the seed; docs
 updated; OCaml frozen as the soak oracle. **Re-rooting ✅ DONE (2026-06-13):** every
-correctness gate runs OCaml-free (`selfhost/REROOT-PLAN.md`); only the capture/mint tooling
-(`capture_goldens.sh`/`refresh_seed.sh`) and the perf-baseline gates (`bench.sh`/`profile_selfhost.sh`)
+correctness gate runs OCaml-free (`compiler/REROOT-PLAN.md`); only the capture/mint tooling
+(`capture_goldens.sh`/`refresh_seed.sh`) and the perf-baseline gates (`bench.sh`/`profile_compiler.sh`)
 still invoke OCaml — by design, deleted with `lib/`. **Remaining gated steps (post-soak):**
 a clean bug-free soak stretch, then archive/delete the OCaml compiler. Sequenced toward, not dated.
-(Soak tail: ~~the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`)~~ — ✅ DONE 2026-06-14.)
+(Soak tail: ~~the `argStampEnabled` eval-vs-emit dispatch unification (`compiler/ARGSTAMP-UNIFY-PLAN.md`)~~ — ✅ DONE 2026-06-14.)
 
 After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
 backend** are the product horizon (see the Workstreams table).
@@ -426,9 +426,9 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | WS-3b builtin-extern label flip (`getEnv`/`runCommand`) — rides `lib/`-removal | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
 | WS-5 extern-row assurance (standing discipline) | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
 | Phase 146b — parameterized effects (`<Fetch "x.com">`, `<KV "ns">`) | Capability-effects | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §6a |
-| `hashName`/`dictTag` i32-vs-i64 width (layer-17, self-consistent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
-| `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`selfhost/WASM-SELFHOST-ROADMAP.md`](./selfhost/WASM-SELFHOST-ROADMAP.md) |
-| `wasm-opt` perf pass (eventual) | WasmGC backend | [`selfhost/WASMGC-DESIGN.md`](./selfhost/WASMGC-DESIGN.md) §9 |
+| `hashName`/`dictTag` i32-vs-i64 width (layer-17, self-consistent) | WasmGC backend | [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) |
+| `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) |
+| `wasm-opt` perf pass (eventual) | WasmGC backend | [`compiler/WASMGC-DESIGN.md`](./compiler/WASMGC-DESIGN.md) §9 |
 | **Bug C** — `toList` on an imported `Map` mis-resolves to the `Foldable` method | Compiler / language | ✅ DONE (2026-06-23, `0d40398`) — see [Compiler / language](#compiler--language) |
 | Empty annotated multi-type-param container literal (`Map { } : Map Int Int`) rejected at `check` | Compiler / language | ✅ DONE (2026-06-23, `98afb77`) — see [Compiler / language](#compiler--language) |
 | Phase 101b — `Arbitrary`-driven nested parametric generators (deferred) | Compiler / language | this file → [Compiler / language](#compiler--language) |
@@ -440,9 +440,9 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | OCaml oracle can no longer typecheck the prelude (`sequence` default body) → brings `lib/` removal forward | Retirement | this file → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
-| Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
+| Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-compiler-parsermdk) |
 | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint string indexing; effect-label refinement | Stdlib | [`STDLIB.md`](./STDLIB.md) §"Remaining work" / §"Label refinement roadmap" |
-| Diagnostic-position follow-ups (parse-error column accuracy; pattern-position spans; guard-exhaustiveness + multi-module match warnings still `None`) | Tooling / diagnostics | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10); [`selfhost/DIAGNOSTICS-SURFACING-PLAN.md`](./selfhost/DIAGNOSTICS-SURFACING-PLAN.md) |
+| Diagnostic-position follow-ups (parse-error column accuracy; pattern-position spans; guard-exhaustiveness + multi-module match warnings still `None`) | Tooling / diagnostics | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10); [`compiler/DIAGNOSTICS-SURFACING-PLAN.md`](./compiler/DIAGNOSTICS-SURFACING-PLAN.md) |
 | Auxiliary port: `coverage.ml` + `bench_runner.ml` (port last) | Tooling | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10) |
 | Effect-reannotation utility; stack-performance recursion lint; bare effectful statements (drop `let _ =`) | Parked ideas | this file → the three "Future idea (parked)" sections below |
 | `medaka add`/`remove`/`update` + `medaka.lock` | Blocked (needs package manager) | this file → [Blocked on a package manager](#blocked-on-a-package-manager-out-of-scope-until-one-exists) |
@@ -454,18 +454,18 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 **Stage 4 (full tooling port → native `medaka`) — ✅ COMPLETE.** All six tools —
 `fmt` / `test` / `new` / `repl` / `build` / `lsp` — were ported to Medaka and
 differential-tested byte-identical vs OCaml, and the **Phase-C native-CLI capstone**
-(`selfhost/driver/medaka_cli.mdk`, Slices 0–4) is done: the native `medaka` binary does
+(`compiler/driver/medaka_cli.mdk`, Slices 0–4) is done: the native `medaka` binary does
 all 8 subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`repl`/`lsp`) with no OCaml at
 runtime. Full per-tool / per-slice completion log archived in
 [PLAN-ARCHIVE.md → Stage 4 — tooling-port completion log](./PLAN-ARCHIVE.md#stage-4--tooling-port-completion-log-archived-2026-06-14).
 
 **Remaining (minor, not retirement-blocking):**
 - **Diagnostics surfacing layer** — ✅ **substantially DONE (2026-06-21, WS-4/F6,
-  `selfhost/DIAGNOSTICS-SURFACING-PLAN.md`).** Native `medaka check` now prints
+  `compiler/DIAGNOSTICS-SURFACING-PLAN.md`).** Native `medaka check` now prints
   positioned, humane, **carat-rendered** diagnostics (`file:L:C: message` + source line
   + `^`, on stderr) for parse/type/resolve, byte-identical to the OCaml oracle; resolve
   errors carry real spans (`Option Loc` threaded through the resolve walk); non-exhaustive
-  match warnings carry a span. Gates: `diff_selfhost_check_json` 9/0, `diff_native_cli`
+  match warnings carry a span. Gates: `diff_compiler_check_json` 9/0, `diff_native_cli`
   `error/*` 7/7 vs live oracle + 99/0 overall, fixpoint C3a/C3b YES, seed re-minted.
   **Open position-accuracy follow-ups** (separate, not blocking): parse-error column is
   "which-token"-wrong on non-trivial inputs (deeper self-hosted-parser position tracking);
@@ -519,7 +519,7 @@ after #56). The complement to the TRMC + big-stack stack-safety work, not a bloc
 
 **Problem (the `let _ =` tax):** sequencing Unit-returning effects (`putStr`, `writeFile`, `set_ref`,
 `logLine`, dispatch handlers) is written as a stack of `let _ = action` bindings — ~1450 occurrences
-across `selfhost/`. The `_` exists only to give the effect a place in a `let`-chain; the binding
+across `compiler/`. The `_` exists only to give the effect a place in a `let`-chain; the binding
 carries no value. Verbose, and `do`-notation doesn't cover it (no monad to thread in plain Unit-IO).
 The **same `let _ =` tax also applies *inside* a `do` block** for an effect statement: a bare statement
 in a monadic block is a `>>` and must be in the block's monad, so an `<IO>`/`<Mut>` call there must be
@@ -556,7 +556,7 @@ labels also drive [`STDLIB.md`](./STDLIB.md) §"Label refinement roadmap".
 
 **Done (foundation):** effect soundness — propagation/inference, higher-order `<e>`
 composition, binding-boundary escape, laundering soundness — gap 1, reference +
-selfhost mirror ✅; user-definable fine-grained labels (`effect Foo` declaration) —
+compiler mirror ✅; user-definable fine-grained labels (`effect Foo` declaration) —
 gap 2 ✅; cross-module effect label export (`exp_effects` across the loader
 boundary) — gap 3 ✅; stdlib capability audit ✅; the minimal **"wow" demo** ✅
 (`demo/plugin_good.mdk` + `demo/plugin_malicious.mdk` + `medaka check-policy`: the
@@ -588,17 +588,17 @@ Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 The D0–D4 dispatch-staging + native-extern-catalog build log (how the spike
 became a self-hosting native compiler) is archived in
 [`PLAN-ARCHIVE.md` → Archived native backend build log](./PLAN-ARCHIVE.md#archived-native-backend-build-log).
-Current native-backend state + residual gaps: `selfhost/BOOTSTRAP.md`,
-`selfhost/EMITTER-GAPS.md`. Forward work:
+Current native-backend state + residual gaps: `compiler/BOOTSTRAP.md`,
+`compiler/EMITTER-GAPS.md`. Forward work:
 [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml).
 
 ### Self-host (Stage 1 tail)
 
-#### Known parser gaps (selfhost `parser.mdk`)
+#### Known parser gaps (compiler `parser.mdk`)
 
-Constructs the **OCaml parser accepts but `selfhost/parser.mdk` rejects** — check
-here before assuming `selfhost/` can parse a construct (AGENTS.md points here).
-The differential `test/diff_selfhost_parse*` / `diff_selfhost_check*` gates only
+Constructs the **OCaml parser accepts but `compiler/parser.mdk` rejects** — check
+here before assuming `compiler/` can parse a construct (AGENTS.md points here).
+The differential `test/diff_compiler_parse*` / `diff_compiler_check*` gates only
 cover the corpus; these are known holes outside it.
 
 - **Leading-`|` `data` declarations.** Native parser accepts `data T =⏎ | A | B`;
@@ -610,7 +610,7 @@ cover the corpus; these are known holes outside it.
   §9/§11 and `no-parser-layout-feedback` decision memory.
 
 - **SQLite-dogfood findings (2026-06-23, minor — DEFERRED, workarounds exist; affect BOTH
-  compilers, so not selfhost-only gaps).** Surfaced building the pure-Medaka SQLite reader;
+  compilers, so not compiler-only gaps).** Surfaced building the pure-Medaka SQLite reader;
   also documented in `SQLITE-DESIGN.md`:
   1. ✅ **`record` is a reserved keyword**, so a module file `record.mdk` couldn't be imported.
      **FIXED (2026-06-24, `ff658b2`, native).** `parser.mdk`'s `importIdentFor` now accepts `TRecord`
@@ -663,7 +663,7 @@ cover the corpus; these are known holes outside it.
      Medaka Int, which overflowed for |n| ≥ 2^61 (e.g. the IEEE-754 bits for `1.0`,
      `4607182418800017408`, built to `-inf`). Now, for |n| ≥ 2^61 it emits a full-width LLVM
      `shl i64 n, 1` + `or i64 …, 1` (via the existing `tagInt` helper); small literals keep the direct
-     immediate path unchanged. Fixture `test/llvm_fixtures/lit_int_large_tag.mdk`; `diff_selfhost_llvm`
+     immediate path unchanged. Fixture `test/llvm_fixtures/lit_int_large_tag.mdk`; `diff_compiler_llvm`
      182→183, build 35/35.
   9. ✅ **`else let x = e` + indented body — BY-DESIGN, not a bug (2026-06-24, SQLite Phase-2 dogfood).**
      `… else let x = e` with the body on the NEXT line parse-errors **in both compilers** — they
@@ -677,7 +677,7 @@ cover the corpus; these are known holes outside it.
      put 'else' on its own line and indent the block`).)
 
 - ✅ **`let … in` as an indented clause body. CLOSED (both compilers, 2026-06-21).**
-  Previously selfhost-only; now both accept e.g. `f x =⏎  let go n = … in go x`.
+  Previously compiler-only; now both accept e.g. `f x =⏎  let go n = … in go x`.
 
 - ✅ **Lexical-addressing perf hook — eval-consumption half. CLOSED (non-win on
   the tree-walker; 2026-06-05).** Wired `annotateProgram` into the single-file eval
@@ -687,7 +687,7 @@ cover the corpus; these are known holes outside it.
   (list-indexed neutral, array frames −14%). Reverted the wiring; the `EVarAt` arm
   stays dormant. The lever's payoff is captured by the native LLVM backend; the
   bytecode VM (§2.2) that previously held this note was removed 2026-06-10. Do not
-  re-attempt on the tree-walker. See `selfhost/PERF-NOTES.md`.
+  re-attempt on the tree-walker. See `compiler/PERF-NOTES.md`.
 
 #### Self-host typecheck / dispatch / runtime — known open items
 
@@ -706,13 +706,13 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   so two constraints on one tyvar (`Eq a, Hash a`) could forward the wrong dict slot
   once structured `requires` routes land. **Confirmed LATENT (2026-06-23):** two
   constraints on one tyvar (`(Tagger a, Sizer a) => a`) dispatch correctly on native
-  run/build AND oracle — not observable today. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D7.
+  run/build AND oracle — not observable today. Owner: [`compiler/TYPECHECK-AUDIT.md`](./compiler/TYPECHECK-AUDIT.md) §D7.
 - **D8 — `annotate.mdk` `DoLet` ignores `rec`.** The `DoLet` arm annotates the RHS
   before pushing the binding, so a `let rec` inside a `do`-block can't see its own name
   during annotation. **Confirmed DORMANT (2026-06-23):** `annotate.mdk` is the reverted
   lexical-addressing pass — NO driver runs it (eval.mdk:966-974), so this is dead code; a
   recursive do-let works on native run/build/oracle. Fix only if `annotate` is ever
-  reactivated. Owner: [`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md) §D8.
+  reactivated. Owner: [`compiler/TYPECHECK-AUDIT.md`](./compiler/TYPECHECK-AUDIT.md) §D8.
 - **D9 — `@Impl` named-instance-selection hint — ✅ DONE (2026-06-23, `45d52f7`, native).**
   Was a REAL observable divergence (the audit's "→VUnit" symptom had shifted to native
   `check` rejecting `combine @Additive` as `Unbound variable: @Additive`; oracle returned
@@ -727,7 +727,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 - **`foldMap` Monoid-default seed emits `RNone` on the LLVM path** (emitter falls back to
   arg-tag — safe now, wrong when arg-tag retires). **Confirmed LATENT/safe-now (2026-06-23):**
   `foldMap (x => [x,x]) xs` via the Monoid default works on native build AND oracle. Distinct
-  from the eval-path `foldMap` dict gap already closed. Owner: [`selfhost/DISPATCH-INVENTORY.md`](./selfhost/DISPATCH-INVENTORY.md) §D3a.
+  from the eval-path `foldMap` dict gap already closed. Owner: [`compiler/DISPATCH-INVENTORY.md`](./compiler/DISPATCH-INVENTORY.md) §D3a.
 - **Cross-module bare-name dict-arity collision (the D2 re-key / Phase 134 root) — fn-level deferred; method-level cross-module CLOSED.**
   `Dict_pass.collect_arities` keys function arity by **bare name**, so when the prelude + all modules are
   dict-passed *jointly*, a genuinely-constrained function in one module (or the synthetic doctest
@@ -745,7 +745,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   sibling-module `interface` method carrying a USER `=>` constraint (`btraverse : Thenable m => …`)
   mis-dispatched cross-module (`check` accepted, `run` panicked, `build` SIGSEGVd) — is **CLOSED
   (`221af36`)** via a read-side `alignedMethodConstraintIds` helper in `recordMethodDicts`
-  (`selfhost/types/typecheck.mdk`). Its root was **stale-sweep first-match shadowing** (NOT the
+  (`compiler/types/typecheck.mdk`). Its root was **stale-sweep first-match shadowing** (NOT the
   bare-name collision the D2 fn-level EVarFrom re-key addresses): `methodConstraintsRef` accumulates
   multiple entries per method from successive elaborate sweeps; `recordMethodDicts` took the bare
   first-match whose ids were disjoint from the live instantiation subst → empty dict route.
@@ -763,8 +763,8 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   constraint ids so `221af36`'s alignment stays diamond-safe), appended to `pubV` at all four driver
   loops. Covers value/fn/method re-exports, transitive chains, no private-name leak. New fixture:
   `cross_module_method_userconstraint_diamond/` (leaf→mid→main via `export import`). Gates:
-  `diff_selfhost_eval_typed_modules` 8/0, `diff_selfhost_eval_dict` 28/0,
-  `diff_selfhost_typecheck_errors` 40/0, `diff_selfhost_build` 36/0, fixpoint C3a/C3b YES.
+  `diff_compiler_eval_typed_modules` 8/0, `diff_compiler_eval_dict` 28/0,
+  `diff_compiler_typecheck_errors` 40/0, `diff_compiler_build` 36/0, fixpoint C3a/C3b YES.
 - **F1b — loader module identity (cross-package double-load) — ✅ DONE (2026-06-25, `ac4b04a` + extern
   `33972aa`, seed re-minted `6a1a67e`; native-only).** The loader keyed modules by the dotted module-id
   STRING, so the SAME file reached via two import spellings (a dep's rebased `import lib.byteparser` vs the
@@ -772,7 +772,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   `checkCoherence`. **Fix (loader-contained, design [`F1B-MODULE-IDENTITY-DESIGN.md`](./F1B-MODULE-IDENTITY-DESIGN.md)):**
   the loader now rewrites every `DUse` to ONE canonical dep-name-prefixed modId derived from WHERE the
   import resolves (`canonicalModId`/`revLookupRoot`/`rewriteUsePath`/`rewriteDecls` in
-  `selfhost/driver/loader.mdk`, applied in `visitMod`/`visitModF`). Both spellings collapse to one string
+  `compiler/driver/loader.mdk`, applied in `visitMod`/`visitModF`). Both spellings collapse to one string
   before resolve/typecheck/eval (which stay string-keyed) see them — so resolve/typecheck/eval were NOT
   touched (containment held; verified by fixpoint). Single-root loads are a provable no-op (`deps=[]` →
   `revLookupRoot` always `None` → no rewrite). **Two-dep-NAMES corner also closed** (`ac4b04a`): the same
@@ -783,7 +783,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   deterministically. Gates: new `test/cross_project_twonames.sh` 3/3 (red→green), `cross_project_deps`
   3/3, bootstrap suites at baseline, `diff_native_cli` no new failures, fixpoint C3a/C3b YES, cold
   `bootstrap_from_seed` PASS. **Residual:** none observed — the extern is unwired on the WasmGC leg (the
-  loader never runs under wasm; stubbed/noted), and not added to `selfhost/eval/eval.mdk` (that eval-probe
+  loader never runs under wasm; stubbed/noted), and not added to `compiler/eval/eval.mdk` (that eval-probe
   interp omits all file-IO externs by design — the loader only runs as compiled native code).
 - **`CFieldAccess` cross-module record dot-access — ✅ RESOLVED as a NON-BUG + diagnostic fix
   (2026-06-25, `e3e7e1b`).** The filed "native emitter panics `CFieldAccess: unknown field`" was DOUBLY
@@ -801,7 +801,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   4 false-positive probes pass). Native-only (the frozen oracle has a SEPARATE pre-existing
   `data X=X{}` dot-access defect — left alone, it's retiring). Regression: `test/eval_typed_modules_fixtures/
   cross_module_record_fields/` (working behavior) + `test/resolve_module_fixtures/abstract_record_field/`
-  (the message). Gates: `diff_selfhost_typecheck_errors` 40/0, `eval_typed_modules` 9/0, `resolve_modules`
+  (the message). Gates: `diff_compiler_typecheck_errors` 40/0, `eval_typed_modules` 9/0, `resolve_modules`
   13/0, fixpoint C3a/C3b YES, cold bootstrap PASS. **Residual (low, noted):** the dot-access message has
   no native-sourced *multi-module check-error* regression gate (none exists — `check_modules` captures
   from the diverging oracle); verified by probes. A latent LSP edge: `abstractRecordTypesRef` is
@@ -812,32 +812,32 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 - **Pre-existing failing gates (surfaced by the 2026-06-24 full sweep; NOT stale goldens — real
   native-vs-OCaml behavioral divergences; confirmed unrelated to that session's lexer/parser/exhaust
   batch by code inspection):**
-  - **`diff_selfhost_effect_hole` — 4 ok / 4 failing.** `reject_sibling` / `reject_computed` /
+  - **`diff_compiler_effect_hole` — 4 ok / 4 failing.** `reject_sibling` / `reject_computed` /
     `reject_outer_computed` + a WS-2 outer-let row all report `native_rejected=0, ocaml_rejected=1` —
     i.e. **native ACCEPTS capability/effect programs that the OCaml oracle REJECTS** on α-precision
     grounds (native less strict). Potential **capability-soundness gap** (or the gate encodes
     behavior native's WS-2 α-precision never shipped). Effects-roadmap WS-2 territory; needs a
     dedicated effects-session diagnosis (is native genuinely under-rejecting, or is the gate ahead of
     native?). Owners: `EFFECTS-SEMANTICS.md` / memory `project_effects_semantics_spec` (WS-2).
-  - **`diff_selfhost_lsp_b4` — 5 ok / 1 failing.** `completion empty prefix → full env == OCaml
+  - **`diff_compiler_lsp_b4` — 5 ok / 1 failing.** `completion empty prefix → full env == OCaml
     (incl alpha,beta)` — native completion environment differs from the OCaml set. Cosmetic-ish
-    (completion list), not a soundness issue. Owner: `lib/lsp_server.ml` ↔ selfhost LSP.
+    (completion list), not a soundness issue. Owner: `lib/lsp_server.ml` ↔ compiler LSP.
 - **Helper duplication (code quality).** ~38 generic-helper clusters duplicated across
-  selfhost stages; `joinWith`/`joinNl` in `typecheck.mdk`/`eval.mdk` are O(n²) local copies
+  compiler stages; `joinWith`/`joinNl` in `typecheck.mdk`/`eval.mdk` are O(n²) local copies
   despite the O(n) canonical in `support/util.mdk`. Consolidate into `support/`. Owner:
-  [`selfhost/HELPER-CENSUS.md`](./selfhost/HELPER-CENSUS.md).
+  [`compiler/HELPER-CENSUS.md`](./compiler/HELPER-CENSUS.md).
 - **Deferred design seams (not pending work, tracked for provenance):** the `set_ref` write
-  barrier (needed only if Boehm GC is ever replaced — [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7);
+  barrier (needed only if Boehm GC is ever replaced — [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §7);
   TRMC Phase 2 F1(b)/F2(b) + the Phase 3 b′ dispatch variant (no corpus target; emit seams
-  pre-parameterized — [`selfhost/TRMC-DESIGN.md`](./selfhost/TRMC-DESIGN.md)). *(The `panic`
+  pre-parameterized — [`compiler/TRMC-DESIGN.md`](./compiler/TRMC-DESIGN.md)). *(The `panic`
   unwind model is resolved by decision — abort, not catchable — see memory
   `no-catchable-panics-isolation`; not an open item.)*
 
 > **Note for OCaml-compiler tasks below:** the self-host port mirrors the OCaml
-> pipeline stage-for-stage (`selfhost/{lexer,parser,desugar,resolve,marker,
+> pipeline stage-for-stage (`compiler/{lexer,parser,desugar,resolve,marker,
 > exhaust,typecheck,eval}.mdk`). A change to a *ported* stage in `lib/` must be
-> mirrored into the corresponding `selfhost/*.mdk` and re-validated with that
-> stage's `test/diff_selfhost_*.sh`, or the differential harness breaks. Changes
+> mirrored into the corresponding `compiler/*.mdk` and re-validated with that
+> stage's `test/diff_compiler_*.sh`, or the differential harness breaks. Changes
 > to *non-ported* parts (printer/`fmt`, diagnostics, the CLI driver, doctest) have
 > no self-hosted counterpart.
 
@@ -856,19 +856,19 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   - **Gap 2 (point-free `sequence = traverse identity`) — fixed `bf7243c`.** Native `run` was
     already correct; native `build` SIGSEGV'd (the filed `[[1,2,3]]` was the *oracle*). Root: an
     under-applied **CDict-spine** body the emitter's eta-saturation (`methodBodyDeficit` in
-    `selfhost/backend/llvm_emit.mdk`) skipped (it handled CMethod/CLam spines, not CDict). Fixed
+    `compiler/backend/llvm_emit.mdk`) skipped (it handled CMethod/CLam spines, not CDict). Fixed
     by mirroring the CMethod handling for CDict.
   - **Gap 3 (per-method-constraint dict conflation — THE interface blocker) — fixed `104c69a`.**
     Native `run` panicked "no matching impl"; native `build` was correct. Root: `inferImplMethod`
     never registered its method-level `=>` constraint dicts into `activeDictVars` (only
     `inferDefaultMethod` did), so the impl body's inner `pure []` routed `RNone` → arg-tag →
     panic. Fixed via a new `registerImplMethodDicts` (the impl-body analog of
-    `registerMethodDictSlots`) in `selfhost/types/typecheck.mdk`.
+    `registerMethodDictSlots`) in `compiler/types/typecheck.mdk`.
 
   Gaps 2 and 3 are **distinct roots** (opposite halves of the eval/emit path-parity fork —
   emit-hole vs eval-hole — that ARGSTAMP-UNIFY only partly closed), not one shared root. The D2
   re-key hypothesis was disproven (all three repro single-module). Gates: core 38 doctests / 9
-  props, list 63 / 12, `diff_selfhost_test` 10/0, fixpoint C3a/C3b YES, cold `bootstrap_from_seed`
+  props, list 63 / 12, `diff_compiler_test` 10/0, fixpoint C3a/C3b YES, cold `bootstrap_from_seed`
   C3a PASS. See memory `project_generic_monadic_dispatch_gaps`.
 
 - **`sequence` dispatch residual — ✅ DONE (2026-06-26, `f333125`).** Closed principledly: `sequence`
@@ -886,7 +886,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   A user-file free fn with the same signature builds fine (it monomorphizes at the call). The
   `sequence` work DODGED this by specializing to concrete receivers; it only bites a future generic
   prelude free-fn over a typeclass with a generic receiver. Fix would land in the emitter slice-7
-  dispatch path (`selfhost/backend/llvm_emit.mdk`). Not a blocker. See `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md` §9.
+  dispatch path (`compiler/backend/llvm_emit.mdk`). Not a blocker. See `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md` §9.
 
 - **Unqualified-import name collision — use-time ambiguity error — ✅ DONE (2026-06-23, `421a4bd`,
   both compilers).** Two non-`core` modules exporting the same unqualified standalone (e.g. `map`
@@ -898,8 +898,8 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   colliding name STAYS valid; escape hatch = explicit `import map.{size}` groups or a single import.
   Clean on the 3 risky interactions (Bug-C method+standalone single-module shadow still routes the
   standalone; local-binding shadow wins; disjoint explicit groups). Both `lib/resolve.ml` +
-  `selfhost/frontend/resolve.mdk` (frozen oracle edited for gate parity, the known exception). Design:
-  [`MAP-SET-AMBIGUITY-DESIGN.md`](./MAP-SET-AMBIGUITY-DESIGN.md). Gates: `diff_selfhost_resolve` 16/0,
+  `compiler/frontend/resolve.mdk` (frozen oracle edited for gate parity, the known exception). Design:
+  [`MAP-SET-AMBIGUITY-DESIGN.md`](./MAP-SET-AMBIGUITY-DESIGN.md). Gates: `diff_compiler_resolve` 16/0,
   `_resolve_modules` 12/0 (incl. 2 new `test/resolve_module_fixtures/` + corpus no-false-positives),
   check/typecheck differentials 0-failing, fixpoint C3a/C3b YES (orchestrator-re-verified). **Note:**
   the surfacing of this was a multi-step soak find — see the Bug-C / container-literal entries below;
@@ -914,7 +914,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   so `buildStandaloneShadows` never saw map's imported `toList` → empty shadow set; (2) the
   call typed against the rebound *method* scheme leaving the result element free → `debug`/
   `println` mis-dispatch (`intToString: not an Int` garbage at runtime); (3) `pickSchemes`
-  first-match picked the method scheme over the standalone. Fix (`selfhost/types/typecheck.mdk`,
+  first-match picked the method scheme over the standalone. Fix (`compiler/types/typecheck.mdk`,
   mirrors oracle `lib/typecheck.ml:2293-2329`): thread the full impl universe into the check
   driver; add a standalone-shadow arm to `inferAppExpr` (single-param interface method that is a
   registered importer shadow whose receiver has no impl → type against the standalone, stamp
@@ -938,10 +938,10 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   real one):** first filed as a "definer-shadow `toList`/`Foldable`" eval-dict bug, then as
   `dropShadowedExp` being too narrow — BOTH disproved by minimal repros. A strict mechanical
   bisection found the true trigger; the `Ord k`/`FromEntries` framing was a red herring. **Real
-  root cause:** the selfhost parser can't distinguish an empty `Map { }` from `Set { }`
-  (`classifyBrace`, `selfhost/frontend/parser.mdk:727`, finds no `=>` entry → `ESetLit "Map" []`),
+  root cause:** the compiler parser can't distinguish an empty `Map { }` from `Set { }`
+  (`classifyBrace`, `compiler/frontend/parser.mdk:727`, finds no `=>` entry → `ESetLit "Map" []`),
   so desugar pins a UNARY `Map _a` (wrong arity for binary `Map k v`) and the `EHeadAnnot` unify
-  `Map _a` vs `Map Int Int` fails. **Fix** (`selfhost/types/typecheck.mdk`, `inferHeadAnnot`,
+  `Map _a` vs `Map Int Int` fails. **Fix** (`compiler/types/typecheck.mdk`, `inferHeadAnnot`,
   mirrors oracle `lib/typecheck.ml:2554` Phase 114): rebuild the head-pin from the head tycon's
   DECLARED arity (`dataParamKindsRef`) instead of the literal annotation — `applyParams (TCon n)
   (freshVars arity)`, element vars ground via inference. Gates: repro flips (check/run/build → `0`,
@@ -952,11 +952,11 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 
 - **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
   Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and
-  the selfhost/native compiler; `x : Float; x = 0`, `1.0 + 2`, `g : Float -> Float; g x = x + 1`,
+  the compiler/native compiler; `x : Float; x = 0`, `1.0 + 2`, `g : Float -> Float; g x = x + 1`,
   and **polymorphic literal-bearing fns** (`inc x = x + 1` applied to `2.5` → `3.5`) all typecheck,
   `run`, AND `build` correctly (oracle == `medaka run` == `medaka build`). Full design + locked
   decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). **Landing log:** Stages 0-2 OCaml (`eac278b`);
-  Stages 3-4 selfhost+native (`7424b64`); **soundness fix** OCaml (`e7031e6`) + selfhost (`183b7b4`);
+  Stages 3-4 compiler+native (`7424b64`); **soundness fix** OCaml (`e7031e6`) + compiler (`183b7b4`);
   **emitter Gap E/C4 closure** (`a8b95d7`). Mechanism: a transparent `ENumLit` AST node (renders
   identically to `ELit (LInt n)` so sexp/round-trip unaffected) carries a `Num` obligation; a
   **defaulting pass** at every generalization boundary grounds an *ambiguous* Num-constrained var
@@ -976,7 +976,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
     List/Option/Result/Ordering Foldable-dispatch sibling. Fixpoint C3a/C3b held byte-for-byte.
   - **Soak found 3 more native/oracle divergences (all closed) — #11 was bug-dense:** (3) native
     `check` accepted `g = f "hello"` (`f : Num a => a -> a`, a concrete `Num String` obligation at a
-    let-binding) → typechecked then crashed; the selfhost constraint tracking was fused with the
+    let-binding) → typechecked then crashed; the compiler constraint tracking was fused with the
     dict/emit machinery and empty on the plain check path — fixed with always-on
     `schemeObligationsRef`/`checkCallObligations` mirroring the oracle's `is_concrete` (`68d9da1`).
     (4) two typecheck differential gates went blind (goldens from a no-prelude probe that #11's
@@ -1010,7 +1010,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
     is the [Capability-effects wedge](#capability-effects-wedge--near-term-sequence)
     section above.
   - **Done:** gap 1 (soundness — propagation, laundering, directional subsumption),
-    reference + selfhost mirror ✅; gap 2 (user-definable `effect Foo` labels) ✅;
+    reference + compiler mirror ✅; gap 2 (user-definable `effect Foo` labels) ✅;
     gap 3 (cross-module label export, `exp_effects` across the loader boundary) ✅ (2026-06-07).
   - **Remaining:** manifest emission (final Phase 146 item, waits on label refinement);
     **Phase 146b** parameterized effects `<Fetch "x.com">` /
@@ -1047,7 +1047,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   The resolver already detects `Duplicate constructor: Bar`, so duplicate-detection
   exists for the *constructor* namespace but not for value/function bindings, and
   there is no "equations must be contiguous" check (Haskell errors *Multiple
-  declarations of foo* here). Fix: in `resolve` (+ selfhost `resolve.mdk` mirror),
+  declarations of foo* here). Fix: in `resolve` (+ compiler `resolve.mdk` mirror),
   treat a same-named top-level binding separated from its earlier clauses by an
   intervening declaration as an error (`DuplicateBinding` / "clauses of `foo` must be
   contiguous"); adjacent multi-clause stays valid. Lands in resolve + diagnostics,
@@ -1075,7 +1075,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
     `ERecordUpdate` (bare record types). Pattern rest-bind → bind the matched
     `VCon`/`VRecord` value (`eval.ml:431-466`). No new typecheck/eval *machinery*,
     no new runtime value shape.
-  - **The work (thread through the pipeline + selfhost mirror):**
+  - **The work (thread through the pipeline + compiler mirror):**
     1. **Parser** (`parser.mly:538`, `record_pat_rest`): the rest tail is currently
        an anonymous `ELLIPSIS` (= "ignore remaining fields"); extend to
        `ELLIPSIS IDENT` to carry a **bind name**. Add `...IDENT` spread to the
@@ -1091,10 +1091,10 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
        Construction spread is pure desugar → existing update eval, so no new arm.
     5. **Exhaust** (`exhaust.ml:65`): unchanged — rest fields already map to
        wildcards.
-    6. **Selfhost mirror** (`selfhost/{parser,desugar,typecheck,eval}.mdk`) +
+    6. **Selfhost mirror** (`compiler/{parser,desugar,typecheck,eval}.mdk`) +
        `SYNTAX.md` entry + `test/parse_fixtures` / round-trip / eval fixtures.
   - Estimate: ~a day (Full scope). Skill: **add-language-feature** (cross-cutting —
-    new pattern + construction syntax through parser/ast/typecheck/eval + selfhost).
+    new pattern + construction syntax through parser/ast/typecheck/eval + compiler).
 
 - **Phase 150 — ✅ DONE (2026-06-16, `5d11e77`, both compilers) — better error for `do` used on a non-monad.** Implemented via a transparent `EDoOrigin loc expr` node (desugar wraps the lowered do-chain; typecheck raises `DoRequiresMonad` on a non-monad shape). Using `do`
   to sequence IO (a common newcomer mistake, since Medaka IO is **not** a monad —
@@ -1115,14 +1115,14 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   `andThen`/`Monad`/`Mappable` constraint for a do-lowered node, emits a tailored
   `type_error`: *"`do` requires a monad (e.g. `Option`/`Result`); for imperative IO
   sequencing use a bare indented block."* Lands in `desugar.ml` (provenance) +
-  `typecheck.ml` (the tailored error) + selfhost `{desugar,typecheck}.mdk` mirror.
+  `typecheck.ml` (the tailored error) + compiler `{desugar,typecheck}.mdk` mirror.
   Surfaced when an orchestrated agent misused `do` for IO and mis-filed the failure
   as a "missing IO monad gap" (2026-06-09) — the language is fine; the *diagnostic*
   is the gap. Skill: **add-language-feature** (desugar+typecheck provenance thread;
   not pure harden-typechecker — it needs the desugar tag).
 
 - ~~**Phase 83 / 84 #5 — recursive/nested instance dictionaries**~~ **DONE
-  (reference + selfhost mirror, 2026-06-05).** Structured/recursive runtime dicts
+  (reference + compiler mirror, 2026-06-05).** Structured/recursive runtime dicts
   (`VDict`/`VDictHead` + `RKey` routes) replaced the flat impl-key strings;
   `def : List (List Int)` → `[[0]]` etc. on both loader paths. Closing this also
   lifted the Phase 101b nesting limit. Write-up moved to PLAN-ARCHIVE.md (§"Phase
@@ -1185,14 +1185,14 @@ non-package-manager gaps:
 
 - **`medaka build`** ✅ **MVP done (2026-06-09, `39f3318`)** — `medaka build
   foo.mdk [-o out]` compiles arbitrary user programs to native binaries:
-  self-hosted emitter (`selfhost/entries/llvm_emit_modules_main.mdk`, run as a subprocess
+  self-hosted emitter (`compiler/entries/llvm_emit_modules_main.mdk`, run as a subprocess
   capturing IR) → `clang` + `runtime/medaka_rt.c` + libgc → binary.
   `lib/build_cmd.ml`, `test/build_cmd.sh` (build+run+diff vs interpreter oracle).
   Full `core.mdk` prelude supported (the old `max`/`min` + no-DCE block is LIFTED,
   verified 2026-06-18 audit). `import map/set/array/list/string` all work in `medaka build`.
   **Deferred:** a build-artifact CACHE — the serialized Core IR exists
-  (`selfhost/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`, round-trip
-  proven; `test/diff_selfhost_core_ir_roundtrip.sh`) but a cache-key strategy
+  (`compiler/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`, round-trip
+  proven; `test/diff_compiler_core_ir_roundtrip.sh`) but a cache-key strategy
   (content hash of source + transitive imports) + on-disk layout remain unbuilt;
   also install-prefix asset packaging (assets resolved repo-relative today).
 - **`medaka doc`** ✅ — done: `lib/doc.ml` + `test/test_doc.ml`.  Comment→decl
@@ -1200,13 +1200,13 @@ non-package-manager gaps:
   signature renderer via `Typecheck.pp_scheme` for values / AST renderers for
   types, Markdown output (one `## name` section per public decl).  Single-file
   typecheck path; multi-module follow-up tracked separately.
-  **PORTED TO NATIVE CLI** ✅ (2026-06-18, single-file) — `selfhost/tools/doc.mdk`
+  **PORTED TO NATIVE CLI** ✅ (2026-06-18, single-file) — `compiler/tools/doc.mdk`
   (a faithful port of `lib/doc.ml`: `commentBody`/`expandComment`/`findDocForLine`,
   `renderSig`/`ppDataVariant`/`ppRecordFields`/`ppRequiresDoc`, a precise pre-desugar
-  `ppTyP` mirroring `Ast.pp_ty_prec` since selfhost `ppTy` drops effect rows) +
+  `ppTyP` mirroring `Ast.pp_ty_prec` since compiler `ppTy` drops effect rows) +
   `runDocCmd` in `medaka_cli.mdk`.  Schemes via the single-file
   `checkProgramSchemesWithRuntime` path (like lsp/repl).  Byte-identical to the
-  OCaml oracle over `test/doc_fixtures` — gate `test/diff_selfhost_doc.sh` (14/0).
+  OCaml oracle over `test/doc_fixtures` — gate `test/diff_compiler_doc.sh` (14/0).
   Known scoped divergence: a value whose inferred scheme hits the native-vs-OCaml
   ambiguous-Num/var-naming defaulting fork renders different type-var names — a
   pre-existing typechecker soak-tail issue, NOT a doc bug (doc renders whatever

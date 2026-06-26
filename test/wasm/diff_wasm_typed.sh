@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # diff_wasm_typed.sh — Slice W5 differential gate (WASMGC-DESIGN §8, typeclass
 # dispatch).  The DISPATCH peer of test/wasm/diff_wasm.sh, mirroring the LLVM split
-# (diff_selfhost_llvm_typed.sh): the W1–W4 scalar/ADT/closure fixtures stay on the
+# (diff_compiler_llvm_typed.sh): the W1–W4 scalar/ADT/closure fixtures stay on the
 # PRELUDE-FREE annotate entry (wasm_emit_main, never produces CMethod/CDict); the W5
 # DISPATCH fixtures go through the TYPED single-file entry (wasm_emit_typed_main),
 # which runs elaborateDict and so DOES produce CMethod/CDict/CImplEntry.
 #
-# Entry strategy = DUAL-ENTRY (see selfhost/entries/wasm_emit_typed_main.mdk header).
+# Entry strategy = DUAL-ENTRY (see compiler/entries/wasm_emit_typed_main.mdk header).
 # The wholesale modules+DCE switch is NOT usable: DCE retains every prelude
 # impl/interface whole (dict-passing dispatch can't prune an impl soundly), so a
 # real `medaka build` of even a minimal `Eq Color` fixture emits ~274 prelude impl

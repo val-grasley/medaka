@@ -1,5 +1,5 @@
 #!/bin/sh
-# Differential gate: selfhost/entries/new_main.mdk vs the `medaka new` scaffold.
+# Differential gate: compiler/entries/new_main.mdk vs the `medaka new` scaffold.
 #
 # OCaml-free (REROOT-PLAN §2c): native host test/bin/new_main scaffolds a project
 # tree in a temp dir; the reference is a committed golden tree under
@@ -23,7 +23,7 @@ TMPSELF="$(mktemp -d)"
 cleanup() { rm -rf "$TMPSELF"; }
 trap cleanup EXIT
 
-# Run the native selfhost scaffolder in an isolated temp dir.
+# Run the native compiler scaffolder in an isolated temp dir.
 (cd "$TMPSELF" && "$RUN" "$NAME" > /dev/null 2>&1) \
   || { echo "FAIL: test/bin/new_main exited non-zero"; fail=$((fail+1)); }
 

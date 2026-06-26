@@ -19,7 +19,7 @@
 # binary test/bin/llvm_emit_main (built by test/build_oracles.sh) instead of
 # `main.exe run`; the reference is the committed .eval.golden.
 #
-# Usage:  sh test/diff_selfhost_llvm.sh
+# Usage:  sh test/diff_compiler_llvm.sh
 # Exit:   0 if every fixture's native stdout matches the golden; 2 if the build is
 #         missing or no C compiler is available (spike is opt-in).
 set -u

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the self-hosted parser's POSITION side channel
-# (selfhost/entries/positions_main.mdk: parse → parseWithPositions) against the OCaml
+# (compiler/entries/positions_main.mdk: parse → parseWithPositions) against the OCaml
 # reference dev/positions_dump.exe (lib/parser_state.ml's decl_positions /
 # variant_lines / last_content_line, filled via lib/fmt.ml's tracking_token).
 #
@@ -9,7 +9,7 @@
 #   === VARIANTS ===  start line of each `data` variant (flat, decl order)
 #   === LASTLINE ===  last_content_line
 #
-# This proves the selfhost parser surfaces the same position channel
+# This proves the compiler parser surfaces the same position channel
 # lib/printer.ml's format_program buckets comments against — the prerequisite
 # for porting the comment-preserving formatter (`medaka fmt`).  Positions are
 # OUT OF BAND: the parsed token stream / AST is untouched (see the parse / parse-
@@ -18,7 +18,7 @@
 # Fixtures: test/positions_fixtures/*.mdk (multiple decls, multi-line decls,
 # `data` decls with several variants, decls separated by blank lines, a mix).
 #
-# Usage:  sh test/diff_selfhost_positions.sh [file.mdk ...]
+# Usage:  sh test/diff_compiler_positions.sh [file.mdk ...]
 # Exit:   0 if every file's position dump matches, else 1.
 set -u
 
@@ -52,7 +52,7 @@ for f in $files; do
   else
     fail=$((fail + 1))
     printf 'FAIL %s\n' "$name"
-    printf '  --- expected (lib/) ---\n%s\n  --- actual (selfhost) ---\n%s\n' "$expected" "$actual"
+    printf '  --- expected (lib/) ---\n%s\n  --- actual (compiler) ---\n%s\n' "$expected" "$actual"
   fi
 done
 

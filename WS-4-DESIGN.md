@@ -1,6 +1,6 @@
 # WS-4 Design — `Product` refinement domain (structure-aware `Net = Host(Prefix) × Method(Set)`)
 
-**Status:** IMPLEMENTED (verified done 2026-06-22 — `PProduct` arm in `selfhost/types/typecheck.mdk:116`, `encodeProductParam` in `selfhost/frontend/parser.mdk:1699`, `test/effect_product_domain.sh` gate exists). The design-pass recommendation to DEFER was superseded. **Roadmap item:**
+**Status:** IMPLEMENTED (verified done 2026-06-22 — `PProduct` arm in `compiler/types/typecheck.mdk:116`, `encodeProductParam` in `compiler/frontend/parser.mdk:1699`, `test/effect_product_domain.sh` gate exists). The design-pass recommendation to DEFER was superseded. **Roadmap item:**
 [`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md) §WS-4 (E2, "largest, last").
 **Spec:** [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) §2.1 domain interface, §2.3
 delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** WS-3
@@ -9,8 +9,8 @@ delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** W
 > **Scope: NATIVE-ONLY.** The frozen OCaml oracle (`lib/typecheck.ml`) has no
 > Set/Product domain and is slated for removal (soak tail). This design adds a new
 > `RefinementDomain` instance + parser clause + literal syntax to the **canonical**
-> selfhost compiler only. It must NOT require any OCaml `lib/` edit, and must keep
-> every existing `diff_selfhost_*` gate byte-identical (the abstraction-leak canary).
+> compiler compiler only. It must NOT require any OCaml `lib/` edit, and must keep
+> every existing `diff_compiler_*` gate byte-identical (the abstraction-leak canary).
 
 ---
 
@@ -18,7 +18,7 @@ delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** W
 
 Read at HEAD; line numbers as observed:
 
-- **`Param` type** (`selfhost/types/typecheck.mdk:108`):
+- **`Param` type** (`compiler/types/typecheck.mdk:108`):
   `data Param = PUnit | PPrefix (Option String) | PSet (Option (List String))`.
   `None` = ⊤ in each parameterized arm. (Spec/roadmap's "tuple of sub-domains" is
   not yet an arm — WS-4 adds it.)
@@ -229,11 +229,11 @@ Doing so would re-interpret every existing `<Net "…">` and break the canary. I
 
 | Gate / fixture | Why it stays green |
 |---|---|
-| `diff_selfhost_typecheck` (12/0), `_error`, `_golden` | builtin `Net`=Prefix untouched; no inferred-row change on existing syntax |
-| `diff_selfhost_check_policy` (4/0 + 7/0) | policy compare reaches `dsub`; `PPrefix`-vs-`PPrefix` path unchanged; oracle reads only Prefix |
+| `diff_compiler_typecheck` (12/0), `_error`, `_golden` | builtin `Net`=Prefix untouched; no inferred-row change on existing syntax |
+| `diff_compiler_check_policy` (4/0 + 7/0) | policy compare reaches `dsub`; `PPrefix`-vs-`PPrefix` path unchanged; oracle reads only Prefix |
 | `manifest_emit.sh` (6/0) | manifest emits Prefix params via the existing `PPrefix (Some s)` arm; product programs are new fixtures only |
 | `effect_set_domain.sh` (5/0), `effect_param_domain.sh` (6/0) | Set/Env/Exec arms untouched |
-| `diff_selfhost_parse` (27/0) | `<Net "x">`/`<Net {a,b}>`/`<Net _>` parse paths unchanged; product syntax is a new clause reached only by the new token shape |
+| `diff_compiler_parse` (27/0) | `<Net "x">`/`<Net {a,b}>`/`<Net _>` parse paths unchanged; product syntax is a new clause reached only by the new token shape |
 | `selfcompile_fixpoint` C3a/C3b | no AST/carrier shape change (sentinel reuse); ops are additive arms |
 | no-exfiltration adversarial corpus | product strictly *refines* — adds a method axis; host confinement is at-least as tight |
 

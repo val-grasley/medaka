@@ -1,8 +1,8 @@
 -- Finding #3: a `let` binding whose RHS sits on its own indented line
 -- (a bare-INDENT block), followed by sibling statements. The lexer emits
 -- `LET n EQUAL INDENT … DEDENT` (byte-identical to the OCaml oracle); the
--- selfhost parser must accept that INDENT-block RHS. `medaka check` → exit 0.
--- (native-only: the frozen OCaml oracle accepts it; the bug was selfhost-parser.)
+-- compiler parser must accept that INDENT-block RHS. `medaka check` → exit 0.
+-- (native-only: the frozen OCaml oracle accepts it; the bug was compiler-parser.)
 f pairs =
   let n =
     length pairs

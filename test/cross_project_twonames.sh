@@ -9,7 +9,7 @@
 # realpath to the same directory.  The shared module declares an `export impl`, so
 # loading it twice (under two canonical ids) trips `conflicting impl` — UNLESS the
 # loader realpath-canonicalizes both dep roots so both spellings collapse to one
-# canonical module id and the file loads ONCE (selfhost/driver/loader.mdk's
+# canonical module id and the file loads ONCE (compiler/driver/loader.mdk's
 # canonicalizePath in canonicalModId / revLookupRoot).
 #
 # Fixture (test/cross_project_fixtures/twonames/):

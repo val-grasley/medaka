@@ -1,0 +1,59 @@
+-- TYPED Core IR entry point (STAGE2-DESIGN §2.1) — the Core-IR analog of
+-- compiler/entries/eval_typed_main.mdk:
+--
+--   medaka run compiler/entries/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <source.mdk>
+--
+-- desugar → elaborate (typecheck stamps the EMethodAt/EDictAt dispatch routes) →
+-- LOWER to Core IR (the routes read out into immutable CMethod/CDict) → evaluate
+-- the Core IR for its stdout.  This is the ONLY corpus that drives the Core-IR
+-- evaluator's CMethod arm: return-position dispatch (`pure`/`empty`/…) routed by
+-- the concrete return type (RKey) rather than the untyped arg-tag fallback — e.g.
+-- a user Applicative's `pure`.  Diffs byte-for-byte against the reference TYPED
+-- path (`medaka run <file>`), the SAME oracle compiler/entries/eval_typed_main.mdk uses.
+--
+-- Note: like eval_typed_main, this does NOT run annotateProgram — the elaborated
+-- tree carries EMethodAt/EDictAt, and lexical addresses are unconsumed anyway, so
+-- lowering leaves every CVar at AGlobal (harmless: ceval resolves by name).
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateOne}
+import eval.eval.{funNamesOf, dropShadowedExp}
+import ir.core_ir_lower.{lowerProgram}
+import support.util.{splitLast}
+import ir.core_ir_eval.{cevalOutput}
+
+main = match args ()
+  runtimePath::rest => withRuntime runtimePath rest
+  _ => ePutStrLn "usage: medaka run compiler/entries/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withRuntime runtimePath rest = match splitLast rest
+  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withFiles runtimePath preludePaths targetPath = match readFile runtimePath
+  Ok rsrc => withPreludes rsrc preludePaths targetPath
+  Err msg => ePutStrLn msg
+
+withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget rsrc preludeDecls targetPath = match readFile targetPath
+  Ok tsrc => putStr (runTyped (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
+  Err msg => ePutStrLn msg
+
+runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
+runTyped runtimeDecls preludeDecls userDecls =
+  let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
+  cevalOutput
+    (lowerProgram (elaborateOne runtimeDecls livePrelude ("__user__", userDecls)))
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

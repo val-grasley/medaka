@@ -7,7 +7,7 @@
 #
 # OCaml-free (REROOT-PLAN §2e).  Both legs are now off the OCaml oracle:
 #   reference (the "interpreter stage"): a committed golden per fixture, captured
-#     from `main.exe run selfhost/entries/lex_main.mdk <fixture>` while OCaml was
+#     from `main.exe run compiler/entries/lex_main.mdk <fixture>` while OCaml was
 #     trusted (test/capture_goldens.sh boot_lex) — frozen as <fixture>.boot_lex.golden.
 #   native   : test/bin/lex_main <fixture>  — the lex_main entry native-compiled by
 #     `./medaka build` (test/build_oracles.sh), i.e. lex_main's graph emitted to
@@ -20,7 +20,7 @@
 # that trailing "()" from the native output (strip_unit) before the diff — the
 # golden is the raw reference token stream.
 #
-# This gate is now nearly redundant with diff_selfhost_lexer.sh (native lex stage
+# This gate is now nearly redundant with diff_compiler_lexer.sh (native lex stage
 # == golden over the same diff_fixtures corpus, via the TOKENS golden section);
 # kept distinct per REROOT-PLAN §2e (could fold later).
 #

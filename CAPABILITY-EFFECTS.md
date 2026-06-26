@@ -4,14 +4,14 @@ Status: **substantially complete** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
 *propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
 holes that made the manifest forgeable are closed for the open/closed AND
 closed-closed point-free cases (the latter via variance-aware covariant re-open),
-and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
-`selfhost/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
-(gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + selfhost
+and the **compiler mirror is done** (2026-06-06: full effect subsystem ported into
+`compiler/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
+(gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + compiler
 mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. **Manifest
 emission shipped 2026-06-21** (`medaka check-policy` + parameter-level policy +
 `medaka manifest` TOML — WS-1a/1b/1c per `EFFECTS-CONFORMANCE-ROADMAP.md`).
 See **§5a (current state)** for the precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
-(effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
+(effect rows as they exist today) and [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
 examples) is in [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md).
@@ -204,7 +204,7 @@ bound's labels (closed extras still flow into the open sink — legit calls
 unchanged). New `EffectLeak` error. Closes: effectful lambda → pure value
 signature; → pure-callback parameter; → pure-arrow data field; → typeclass-method
 impl whose interface row is pure. **Zero regressions** across all unit suites,
-`@thorough`, and the selfhost typecheck/check/selfproc harnesses (no legitimate
+`@thorough`, and the compiler typecheck/check/selfproc harnesses (no legitimate
 code relied on the laundering). Regression tests in `test_typecheck.ml`
 (`effects` group).
 
@@ -219,27 +219,27 @@ covariant (positive) positions** (the value's own arrows), so the existing
 open/closed subset check fires. Contravariant rows (a ctor field / parameter the
 scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)`) stay closed, preserving
 safe subsumption (a pure argument into a `<Mut>`-allowing slot is fine).
-Measurement surfaced exactly **one** genuine latent unsoundness in the selfhost
+Measurement surfaced exactly **one** genuine latent unsoundness in the compiler
 source — `concatMapList`'s pure callback signature hid a `<Mut>` effect — fixed
 by making it effect-polymorphic (`(a -> <e> List b) -> List a -> <e> List b`).
-Zero spurious regressions across all unit suites, `@thorough`, and the selfhost
+Zero spurious regressions across all unit suites, `@thorough`, and the compiler
 harnesses (typecheck/check/check_modules/golden/selfproc/eval_run/eval_modules/
 eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`,
 `t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
 
-**Done (Phase 146 selfhost mirror, 2026-06-06):** the full effect-tracking
-subsystem is now ported into `selfhost/typecheck.mdk`. The earlier "remaining" note
+**Done (Phase 146 compiler mirror, 2026-06-06):** the full effect-tracking
+subsystem is now ported into `compiler/typecheck.mdk`. The earlier "remaining" note
 ("the `unify_row` subset rule and the instantiation re-opening are not yet
-mirrored") understated it: selfhost had **no effect rows at all** (effects were a
+mirrored") understated it: compiler had **no effect rows at all** (effects were a
 bare `List String` on `TFun`, discarded by unify; no effvars, no ambient state).
 The port reproduces Phase 79 (propagation) + 79e (escape) + 146 (laundering) across
 four committed stages (representation → propagation → escape → laundering). New
 fixtures `effect_leak`/`effect_escape` (reject) and `effect_subsume` (accept),
-verified against `dev/tc_probe.exe` first. Every `diff_selfhost_*` typecheck/error/
+verified against `dev/tc_probe.exe` first. Every `diff_compiler_*` typecheck/error/
 golden/check/check_modules/selfproc/eval harness is byte-identical; `@thorough`
 green. The self-hosted typechecker now rejects laundering identically to the
 reference. (Expected proportionate cost: ~+20% per-decl typecheck overhead from
-per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
+per-arrow effvar allocation — see `compiler/PERF-NOTES.md`.)
 
 **Done (2026-06-21, WS-1a/1b/1c per `EFFECTS-CONFORMANCE-ROADMAP.md`):** manifest
 emission. `medaka check-policy` ported to the native CLI (WS-1a), extended to
@@ -253,11 +253,11 @@ boundary — importing modules see `<Foo>` as a known label in effect rows rathe
 than `UnknownEffect`. Implementation: `exp_effects` added to `module_exports` in
 `lib/resolve.ml`; populated from public `DEffect` decls + UseWild re-exports in
 `build_exports`; installed into `env.effects` on import (same pattern as Phase 130
-iface-methods). Selfhost mirror in `selfhost/resolve.mdk`: `expEffects` on
+iface-methods). Selfhost mirror in `compiler/resolve.mdk`: `expEffects` on
 `ModuleExports`, `expEffectsDirect`/`reExpEffects`, `importedEffects`/
 `oneImportEffects`, `buildEnvMM` extended. Fixtures: `effect_export` (valid) +
 `effect_not_exported` (reject) in `test/resolve_module_fixtures/`; 2 inline
-`test_resolve.ml` cases; diff_selfhost_resolve_modules 10/10; @thorough green.
+`test_resolve.ml` cases; diff_compiler_resolve_modules 10/10; @thorough green.
 
 **Done (Phase 146 gap 2, 2026-06-06):** user/platform-definable effect labels. A
 top-level `effect Foo` declaration (`DEffect of bool * ident`; `export effect Foo`
@@ -419,7 +419,7 @@ core) first; this is **Phase 146b**.
   tracking for ergonomics, host-as-grantor at the boundary — looks best, but the
   attenuation story (a function *removing* a capability before calling another)
   needs design.
-- **Effect-label declaration syntax** — **pinned & shipped** (gap 2 + gap 3 DONE): top-level `effect Foo` (gap 2, 2026-06-06) + cross-module `export effect Foo` visibility (gap 3, 2026-06-07). Both reference + selfhost. See §3a and §5a.
+- **Effect-label declaration syntax** — **pinned & shipped** (gap 2 + gap 3 DONE): top-level `effect Foo` (gap 2, 2026-06-06) + cross-module `export effect Foo` visibility (gap 3, 2026-06-07). Both reference + compiler. See §3a and §5a.
 - **Parameterized effects** — **DONE (2026-06-21, verified done 2026-06-22)**: `CAPABILITY-EFFECTS-V2-DESIGN.md` implemented in full (WS-1 through WS-4 per `EFFECTS-CONFORMANCE-ROADMAP.md`). `Prefix`/`Set`/`Product` domains; parameter-level `check-policy`; `medaka manifest` TOML emission. Two sub-questions from §6a remain deferred: precision through wrappers (singleton-typed args) and the Wasm custom-section manifest format.
 - **Manifest emission/consumption** — **TOML `[package.capabilities]` DONE (2026-06-21, `medaka manifest`)**. Open: Wasm custom-section embedding (touches `wasm_emit.mdk`, deferred until WasmGC backend); mapping to WASI component-model world declarations (no blocking work — `CAPABILITY-EFFECTS-RESEARCH.md` §1 has the dual-layer design).
 - **Typeclass interaction** — effects in method signatures and how they interact
@@ -431,11 +431,11 @@ core) first; this is **Phase 146b**.
 
 Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
 (open/closed rows + closed-closed point-free via instantiation re-opening)
-shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is done**
+shipped this phase (§5a) — gap 1 is now sound, and the **compiler mirror is done**
 (full subsystem ported, 2026-06-06, §5a). The sequence was:
 
 1. **Fine-grained labels** (gap 2): ✅ **shipped 2026-06-06** — the `effect Foo`
-   declaration form + resolve registration (reference + selfhost mirror), so the
+   declaration form + resolve registration (reference + compiler mirror), so the
    manifest vocabulary is user/platform-definable. §3a / §5a. (Cross-module label
    export: ✅ **DONE** as gap 3, 2026-06-07 — see §5a and PLAN.md.)
 2. **Research** (for the manifest layer): ✅ **DONE** — `CAPABILITY-EFFECTS-RESEARCH.md`

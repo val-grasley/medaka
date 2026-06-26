@@ -4,17 +4,17 @@
 # profilers over representative targets, collecting N timed runs and reporting
 # per-stage minimums as tables.
 #
-# Usage:  sh test/profile_selfhost.sh [N]
+# Usage:  sh test/profile_compiler.sh [N]
 #
 # N defaults to 3 (min-of-3 is the standard baseline per PERF-NOTES.md).
 # Results go to stdout; progress/debug goes to stderr.
 #
 # Single-file targets:
-#   selfhost/frontend/lexer.mdk     — self-contained (no imports); all stages accurate
-#   selfhost/frontend/parser.mdk    — large file with imports; parse+desugar accurate
+#   compiler/frontend/lexer.mdk     — self-contained (no imports); all stages accurate
+#   compiler/frontend/parser.mdk    — large file with imports; parse+desugar accurate
 #
 # Multi-module target:
-#   selfhost/entries/all_modules_entry.mdk — full 15-module selfhost closure;
+#   compiler/entries/all_modules_entry.mdk — full 15-module compiler closure;
 #       reports parse, load, desugar, mark, typecheck per-stage (no eval)
 #
 # Output columns: stage, min elapsed, alloc-delta (MB, Gc.allocated_bytes proxy),
@@ -31,8 +31,8 @@ set -u
 N=${1:-3}
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/medaka"
-SINGLE_DRIVER="$ROOT/selfhost/entries/profile_main.mdk"
-MODULES_DRIVER="$ROOT/selfhost/entries/profile_modules_main.mdk"
+SINGLE_DRIVER="$ROOT/compiler/entries/profile_main.mdk"
+MODULES_DRIVER="$ROOT/compiler/entries/profile_modules_main.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
@@ -115,6 +115,6 @@ profile_modules() {
   printf '\n'
 }
 
-profile_single "$ROOT/selfhost/frontend/lexer.mdk"
-profile_single "$ROOT/selfhost/frontend/parser.mdk"
-profile_modules "$ROOT/selfhost/entries/all_modules_entry.mdk" "$ROOT/selfhost"
+profile_single "$ROOT/compiler/frontend/lexer.mdk"
+profile_single "$ROOT/compiler/frontend/parser.mdk"
+profile_modules "$ROOT/compiler/entries/all_modules_entry.mdk" "$ROOT/compiler"

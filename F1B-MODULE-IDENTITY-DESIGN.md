@@ -33,20 +33,20 @@ identical double-load (silently — `minilib.mdk` declares no impl, so coherence
 ## 2. TOUCHPOINT MAP
 All three native stages key identity by the dotted modId STRING; every importer looks up by its
 literal `useModId path` spelling.
-- **`selfhost/driver/loader.mdk`** — `moduleIdOfPath` (`:381`,`:88-90`); `visitMod` keys
+- **`compiler/driver/loader.mdk`** — `moduleIdOfPath` (`:381`,`:88-90`); `visitMod` keys
   visited/stack/acc by `modId` string (`:354` dedup, `:356` cycle, `:365` acc). The two spellings
   arise because `directImports prog` (`:244-249`) returns each import's `importModId` (`:234-242`)
   verbatim — no canonicalization. `owningRoot` is known at `:360` but unused for canonicalization.
-- **`selfhost/frontend/resolve.mdk`** — `findExports mid` string-equals `ModuleExports.modId`
+- **`compiler/frontend/resolve.mdk`** — `findExports mid` string-equals `ModuleExports.modId`
   (`:1052-1056`); import resolution looks up by literal `useModId path` (`:1156`,`:1213`,`:1275`,
   `:1295`,`:1510`); `buildExports` tags exports with the loader's `mid` (`:1329`,`:1520`). `known`
   currently holds TWO entries from `byteparser.mdk` → resolve does NOT error today (each literal
   spelling finds its own copy).
-- **`selfhost/types/typecheck.mdk`** — `cohImplsOfMid` stamps each impl with its mid (`:5520-5522`);
+- **`compiler/types/typecheck.mdk`** — `cohImplsOfMid` stamps each impl with its mid (`:5520-5522`);
   `cohCollectModuleImpls` flat-collects over `(mid,prog)` (`:5962-5965`) → impl appears under both
   mids; `cohCrossModuleMsg` (`:5704-5712`) prints the observed message. The `:5957-5959` comment
   ASSUMES imports don't copy impls — the double-load violates that invariant.
-- **eval `selfhost/eval/eval.mdk`** — `evalModules` flat-maps decls (`:2112`, impls coalesce
+- **eval `compiler/eval/eval.mdk`** — `evalModules` flat-maps decls (`:2112`, impls coalesce
   `:2127`); `exportsMap` keyed by `mid` (`:2136-2142`); imports resolved by literal spelling
   (`:2220`,`:2231`).
 - **Frozen OCaml `lib/`** — NO `[dependencies]`/cross-project support. Cross-project deps are

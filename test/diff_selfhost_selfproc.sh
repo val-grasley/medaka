@@ -1,14 +1,14 @@
 #!/bin/sh
 # THE SELF-PROCESSING CLOSURE — the decisive self-hosting milestone
-# (selfhost/README.md §"The bootstrap (#3)" -> "Self-processing target").
+# (compiler/README.md §"The bootstrap (#3)" -> "Self-processing target").
 #
-# Runs the self-hosted compiler over the selfhost/*.mdk sources THEMSELVES and
+# Runs the self-hosted compiler over the compiler/*.mdk sources THEMSELVES and
 # diffs against the OCaml reference doing the same.  Two legs:
 #
 #  LEG A — front-end "checks itself" (typecheck closure).
-#    Feeds the WHOLE selfhost source through the self-hosted multi-module
+#    Feeds the WHOLE compiler source through the self-hosted multi-module
 #    front-end (loader -> desugar -> checkModules) in ONE process, using
-#    selfhost/entries/all_modules_entry.mdk as the aggregate entry (its imports force
+#    compiler/entries/all_modules_entry.mdk as the aggregate entry (its imports force
 #    loadProgram to pull every module into a single union closure).
 #    check_all_main.mdk emits every module's inferred schemes, each section
 #    preceded by `## MODULE <mid>`; we diff each module's section against the
@@ -19,16 +19,16 @@
 #    front-end, for all 12 modules of its own source.
 #
 #  LEG B — eval engine "runs itself" (eval_modules over a real stage module).
-#    Runs a real selfhost stage module (the lexer) through the SELF-HOSTED eval
+#    Runs a real compiler stage module (the lexer) through the SELF-HOSTED eval
 #    path (eval.mdk's evalModules) over an embedded Medaka snippet, and diffs its
 #    token stream against the eval_modules oracle (`medaka run <probe>` = OCaml
 #    Loader -> typecheck -> eval_modules).  Byte-identical output proves the
-#    self-hosted untyped evaluator correctly EXECUTES a real selfhost stage.
+#    self-hosted untyped evaluator correctly EXECUTES a real compiler stage.
 #    (The parser/typecheck stages use return-position Parser-monad dispatch the
 #    untyped self-hosted eval cannot yet resolve — see PLAN.md; the lexer uses
 #    none, so it is the executable slice today.)
 #
-# Usage:  sh test/diff_selfhost_selfproc.sh
+# Usage:  sh test/diff_compiler_selfproc.sh
 # Exit:   0 iff every module's front-end output matches AND the eval leg matches.
 # OCaml-free (REROOT-PLAN.md Phase 3 / §2c):
 #   * HOST: the self-hosted entries run as pre-compiled native binaries under
@@ -44,22 +44,22 @@
 #     is preserved verbatim (sans OCaml) as a no-op; its reference would be a
 #     per-module golden under test/selfproc_goldens/legA/.
 #
-# Usage:  sh test/diff_selfhost_selfproc.sh
+# Usage:  sh test/diff_compiler_selfproc.sh
 # Exit:   0 iff every module's front-end output matches AND the eval leg matches.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK_ALL="$ROOT/test/bin/check_all_main"
 EVAL_MODS="$ROOT/test/bin/eval_modules_main"
 EVAL_TYPED_MODS="$ROOT/test/bin/eval_typed_modules_main"
-ENTRY="$ROOT/selfhost/entries/all_modules_entry.mdk"
-LEXPROBE="$ROOT/selfhost/entries/selfproc_lex_probe.mdk"
-PARSEPROBE="$ROOT/selfhost/entries/selfproc_parse_probe.mdk"
-TCPROBE="$ROOT/selfhost/entries/selfproc_tc_probe.mdk"
+ENTRY="$ROOT/compiler/entries/all_modules_entry.mdk"
+LEXPROBE="$ROOT/compiler/entries/selfproc_lex_probe.mdk"
+PARSEPROBE="$ROOT/compiler/entries/selfproc_parse_probe.mdk"
+TCPROBE="$ROOT/compiler/entries/selfproc_tc_probe.mdk"
 GOLDDIR="$ROOT/test/selfproc_goldens"
 LEGA_GOLD="$GOLDDIR/legA"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
-SHDIR="$ROOT/selfhost"
+SHDIR="$ROOT/compiler"
 [ -x "$CHECK_ALL" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $CHECK_ALL)"; exit 2; }
 [ -x "$EVAL_MODS" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_MODS)"; exit 2; }
 [ -x "$EVAL_TYPED_MODS" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_TYPED_MODS)"; exit 2; }
@@ -110,7 +110,7 @@ done
 
 # ── LEG B: eval engine self-execution (eval_modules over a real stage) ─────
 echo
-echo "== LEG B: self-hosted eval executes a real selfhost stage (lexer) =="
+echo "== LEG B: self-hosted eval executes a real compiler stage (lexer) =="
 ref_b="$(cat "$GOLDDIR/lex_probe.golden")"
 self_b="$(strip_unit "$("$EVAL_MODS" "$CORE" "$LEXPROBE" "$SHDIR" 2>/dev/null)")"
 if [ "$ref_b" = "$self_b" ] && [ -n "$ref_b" ]; then
@@ -122,7 +122,7 @@ else
 fi
 
 # ── LEG C: TYPED eval runs a stage that needs return-position dispatch ─────
-# The parser (selfhost/frontend/parser.mdk) is built on a `Parser` monad whose
+# The parser (compiler/frontend/parser.mdk) is built on a `Parser` monad whose
 # `pure`/`andThen` are return-position method dispatch — which the UNTYPED
 # eval_modules path (Leg B) cannot resolve (it panics "no matching clause").
 # The TYPED multi-module path threads the marker + typecheck.elaborate route-
@@ -144,7 +144,7 @@ else
 fi
 
 # ── LEG D: TYPED eval runs the TYPECHECKER stage (typecheck.mdk) ───────────
-# The typechecker (selfhost/types/typecheck.mdk) is the deepest stage to execute on
+# The typechecker (compiler/types/typecheck.mdk) is the deepest stage to execute on
 # the self-hosted eval: it drives Ref-based union-find mutation (the `<Mut>`
 # effect) over a larger primitive surface than the parser, and — like the
 # parser — threads return-position dispatch through its monadic surface, so the
@@ -153,7 +153,7 @@ fi
 # then evalModules runs it on the self-hosted eval's <Mut> kernel.  Running
 # checkToLines over an embedded snippet and matching the eval_modules oracle
 # proves the typed self-hosted eval EXECUTES the typechecker stage of the
-# compiler's own source — at which point EVERY monadic selfhost stage runs on
+# compiler's own source — at which point EVERY monadic compiler stage runs on
 # the self-hosted eval.
 echo
 echo "== LEG D: TYPED self-hosted eval executes the TYPECHECKER stage (typecheck) =="

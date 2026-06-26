@@ -1,0 +1,100 @@
+-- BOOTSTRAP (B1) emit driver — the gap-TOLERANT multi-module emitter behind the
+-- FIRST native self-compile slice (test/bootstrap_lex.sh).  It is a near-clone of
+-- llvm_emit_modules_main.mdk (runs the REAL emitProgram so the native binary can
+-- be linked + run + byte-diffed against the interpreter), with ONE difference:
+--
+--   it calls enableGapRecord () BEFORE emitProgram.
+--
+-- Why.  The bootstrap forces the REAL stdlib/core.mdk prelude through emitProgram
+-- (unlike llvm_emit_modules_main.mdk's deliberately EMPTY prelude).  core.mdk
+-- still contains 8 UNREACHABLE dead-code emitter gaps (`max`/`min` in
+-- maximum/minimum, the Arbitrary impls — census-B excluded).  With gap-recording
+-- OFF, emitProgram's `gapE`/`gapU`/`gapStr` would `panic` on those sites, even
+-- though the LEXER never reaches them.  Turning recording ON makes each gap a
+-- harmless placeholder ("0") instead of an abort.
+--
+-- This is SAFE precisely because the harness byte-diffs the native token stream
+-- against the interpreter: if any gap the lexer ACTUALLY reaches got a "0"
+-- placeholder, the output diverges and the diff FAILS.  A passing diff therefore
+-- proves every placeholder was dead code.  (We reuse llvm_emit_gaps_main.mdk's
+-- recording mechanism — enableGapRecord — but keep the REAL emitProgram, not the
+-- measure-only emitProgramGaps.)
+--
+--   medaka run compiler/entries/llvm_bootstrap_lex_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{
+  elaborateModules,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  enableEmitArgStampPasses,
+}
+import ir.core_ir_lower.{
+  lowerProgramEmit,
+  returnsSelfTable,
+  selfFnParamTable,
+  methodIfaceTable,
+  methodConstraintIfaces,
+  ctorFieldTypeNames,
+  declSigTypeNames,
+}
+import backend.llvm_emit.{
+  emitProgram,
+  enableGapRecord,
+  installReturnsSelf,
+  installSelfFnParams,
+  installMethodIface,
+  installMethodConstraintIfaces,
+  installCtorFieldTypes,
+  installDeclSigTypes,
+}
+import backend.private_mangle.{mangleUnits}
+import support.path.{dirOf}
+
+main : <IO, Mut> Unit
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_bootstrap_lex_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit runtimeDecls coreDecls modules =
+  let _ = enableEmitArgStampPasses ()
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  let allDecls = coreD ++ flatMap snd modules2
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
+  let _ = installReturnsSelf (returnsSelfTable allDecls)
+  let _ = installSelfFnParams (selfFnParamTable allDecls)
+  let _ = installMethodIface (methodIfaceTable allDecls)
+  let _ = installMethodConstraintIfaces (methodConstraintIfaces allDecls)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
+  let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  let _ = enableGapRecord ()
+  putStr (emitProgram (lowerProgramEmit allDecls))
+-- Module-qualify module-PRIVATE top-level functions whose bare name collides
+-- across units, BEFORE elaborateModules flattens the boundaries away.  Without
+-- this, two modules' same-named privates (e.g. lex_main.emit vs lexer.emit) both
+-- mangle to @mdk_emit and only one survives → @main calls the wrong arity.
+
+-- gap-TOLERANT: unreachable dead-code gaps in core.mdk become "0" placeholders
+-- instead of aborting.  The harness byte-diff is the safety net.

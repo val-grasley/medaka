@@ -4,8 +4,8 @@
 > Medaka compiler runs fully client-side as a WasmGC module; `playground/server.js`
 > is a static file server only. See `playground/README.md` for build + run
 > instructions. The original server-side compile plan (§6.1 below) is marked
-> SUPERSEDED. Companion to `selfhost/WASMGC-DESIGN.md` (the WasmGC backend this
-> rides on), `ASYNC-DESIGN.md` (the locked async contract), `selfhost/RUNTIME-DESIGN.md`
+> SUPERSEDED. Companion to `compiler/WASMGC-DESIGN.md` (the WasmGC backend this
+> rides on), `ASYNC-DESIGN.md` (the locked async contract), `compiler/RUNTIME-DESIGN.md`
 > §6a (the capability-interface/extern disposition model), and `CAPABILITY-PLATFORM.md`
 > (the product vision this is an instance of — §388 there already names "a web
 > playground" as the highest-leverage next step past v1).
@@ -23,9 +23,9 @@ stale engine caveat.
 *compute + print* programs to WasmGC that run **byte-identically to `medaka build`**.
 Slices W5 (dispatch/dict-passing), W6 (strings), W7 (collections), and W9 (multi-
 module / real programs) land this, riding the real `medaka build` front end through
-`selfhost/entries/wasm_emit_modules_main.mdk` (loader → `elaborateModules` with the
+`compiler/entries/wasm_emit_modules_main.mdk` (loader → `elaborateModules` with the
 REAL `core.mdk` prelude → `lowerProgramEmit` → DCE → `emitProgram`). *Caveat for the
-reader: the committed `selfhost/WASMGC-DESIGN.md` §9 at this base still marks only
+reader: the committed `compiler/WASMGC-DESIGN.md` §9 at this base still marks only
 W1–W4 DONE and reads "not yet implemented" in its header — that doc is being updated
 by a parallel effort to reflect the met MVP; trust the MVP-met status, not the stale
 slice ticks.* This plan therefore treats the client target as **available**, not a
@@ -51,15 +51,15 @@ rule: trust the empirical W1–W9b result, not §8.
   `runtime.mdk` returns nothing). The server forces a brand-new extern surface.
 - **`<Net>` already exists in both typecheckers** as a **Prefix-classified** builtin
   effect label (`lib/typecheck.ml`: `"Net", PPrefix None, ESecurity`; mirrored in
-  `selfhost/types/typecheck.mdk`: `("Net", PPrefix None)`), alongside `FileRead`/
+  `compiler/types/typecheck.mdk`: `("Net", PPrefix None)`), alongside `FileRead`/
   `FileWrite`. Prefix = it carries a string domain param (a `<Net "host:port">` pin),
   exactly the shape the capability-platform wants. **No extern binds to it today.**
 - The full builtin label set: `Stdout Stdin Stderr FileRead FileWrite Env Exec Panic
   IO Rand Clock Mut Net`.
-- `medaka check --json` exists in `selfhost/driver/medaka_cli.mdk` (`runCheckJsonCmd`,
+- `medaka check --json` exists in `compiler/driver/medaka_cli.mdk` (`runCheckJsonCmd`,
   mirrors `bin/main.ml`'s `analyze_project → all_diagnostics_to_json`) — diagnostics
   are already machine-readable for the editor UI.
-- The LLVM build driver (`lib/build_cmd.ml` + native dual `selfhost/driver/build_cmd.mdk`)
+- The LLVM build driver (`lib/build_cmd.ml` + native dual `compiler/driver/build_cmd.mdk`)
   runs the emitter as a **subprocess capturing stdout** (`medaka run <emitter-entry>
   <runtime> <core> <entry> <roots…> > out.ll`), then shells out to `clang`. No
   `--target` flag exists anywhere yet. `ASYNC-DESIGN.md` is **DESIGN LOCKED** with a
@@ -117,15 +117,15 @@ simply wouldn't be *granted* a network import — a live, in-browser instance of
 ### 2.1 `medaka build --target wasm` CLI (DONE — see Stage 1 in §6; this section preserved as design rationale)
 
 Today the WasmGC emitter runs only via gate entry binaries
-(`selfhost/entries/wasm_emit_modules_main.mdk`, invoked as a subprocess capturing WAT).
+(`compiler/entries/wasm_emit_modules_main.mdk`, invoked as a subprocess capturing WAT).
 Wire it into the build driver as a real subcommand, **paralleling the LLVM path exactly**.
 
 The LLVM path (verified, `lib/build_cmd.ml` lines ~219–275, native dual
-`selfhost/driver/build_cmd.mdk`):
+`compiler/driver/build_cmd.mdk`):
 ```
 1. medaka check <input>                                              # G1 typecheck gate
-2. medaka run selfhost/entries/llvm_emit_modules_main.mdk \
-     <runtime.mdk> <core.mdk> <input> <input-dir> <selfhost> <stdlib>  > out.ll   # capture stdout
+2. medaka run compiler/entries/llvm_emit_modules_main.mdk \
+     <runtime.mdk> <core.mdk> <input> <input-dir> <compiler> <stdlib>  > out.ll   # capture stdout
 3. clang -O2 <gc-flags> out.ll runtime/medaka_rt.c <gc-libs> -o <bin>
 ```
 
@@ -133,14 +133,14 @@ The **`--target wasm`** path, structurally identical (already sketched in
 `WASMGC-DESIGN.md` §7 line 324):
 ```
 1. medaka check <input>                                              # G1 gate, UNCHANGED
-2. medaka run selfhost/entries/wasm_emit_modules_main.mdk \
+2. medaka run compiler/entries/wasm_emit_modules_main.mdk \
      <runtime.mdk> <core.mdk> <input> <roots…>                       > out.wat   # capture stdout
 3. wasm-tools parse    out.wat  -o out.wasm                          # the clang analogue (assemble)
    wasm-tools validate out.wasm                                      # GC validation on by default
 ```
 
 Concrete wiring, both drivers (mirror every LLVM change across the OCaml `lib/build_cmd.ml`
-and the native `selfhost/driver/build_cmd.mdk` — they are duals):
+and the native `compiler/driver/build_cmd.mdk` — they are duals):
 - **Arg parse.** Extend `parseBuildArgs` (`medaka_cli.mdk` ~line 445) to accept
   `--target <name>` (default `native`), carry a target tag into `runBuildCmd`.
 - **Backend dispatch.** `runBuild` takes the target; on `wasm` it swaps the emitter
@@ -149,7 +149,7 @@ and the native `selfhost/driver/build_cmd.mdk` — they are duals):
   harness (`run_capture` in OCaml; the native `runCommand`-based dual) is **reused
   unchanged** — both targets are "run the emitter, capture stdout, assemble."
 - **Repo-root marker.** Both drivers locate the repo root off
-  `selfhost/entries/llvm_emit_modules_main.mdk`; the wasm path needs its sibling
+  `compiler/entries/llvm_emit_modules_main.mdk`; the wasm path needs its sibling
   `wasm_emit_modules_main.mdk` reachable from the same root — no second marker needed,
   same directory.
 - **Toolchain assertion.** `wasm-tools` is an external dependency (like `clang`). Probe
@@ -171,7 +171,7 @@ const imports = { env: {
 WebAssembly.instantiate(bytes, imports).then(() => { /* UTF-8 decode acc/eacc */ });
 ```
 The module produces **all** its own output bytes (real `intToString`/string codegen +
-the byte-write print runtime in `selfhost/backend/wasm_preamble.mdk`); the runner only
+the byte-write print runtime in `compiler/backend/wasm_preamble.mdk`); the runner only
 decodes. **`(start $__init)` drives instantiation** — the value-binding prologue + `main`
 run *during* `WebAssembly.instantiate`, so there is **no named entry to call**; instantiate
 == run. (Browser caveat: a long-running or infinite-loop user program blocks the main
@@ -351,7 +351,7 @@ broader than the capability-platform narrative; folding it in would unbalance th
    doc — listed here only to mark the dependency satisfied.* The playground can run
    any compute+print program today.
 2. **Stage 1 — `medaka build --target wasm`** (§2.1): ✅ **DONE (2026-06-19, native-only).**
-   Wired the wasm entry into the native build driver (`selfhost/driver/{medaka_cli,build_cmd}.mdk`):
+   Wired the wasm entry into the native build driver (`compiler/driver/{medaka_cli,build_cmd}.mdk`):
    `--target native|wasm` flag (default native, purely additive), wasm branch runs
    `wasm_emit_modules_main` → captures WAT → `wasm-tools parse`+`validate`. Gate
    `test/build_wasm_cmd.sh` (4/0: rp_int_arith→14, rp_sum_list→10, rp_length_list→3, mm_sum→43),
@@ -517,12 +517,12 @@ platform doc already *names* the playground (§388) — that's the anchor for th
 
 | Need | Source (verified) |
 |---|---|
-| WasmGC backend status, host-import ABI, engine caveats, `--target wasm` sketch | `selfhost/WASMGC-DESIGN.md` §6/§7/§8/§9/§11 |
-| LLVM build-driver shape to parallel | `lib/build_cmd.ml` + `selfhost/driver/build_cmd.mdk`; dispatch in `selfhost/driver/medaka_cli.mdk` |
+| WasmGC backend status, host-import ABI, engine caveats, `--target wasm` sketch | `compiler/WASMGC-DESIGN.md` §6/§7/§8/§9/§11 |
+| LLVM build-driver shape to parallel | `lib/build_cmd.ml` + `compiler/driver/build_cmd.mdk`; dispatch in `compiler/driver/medaka_cli.mdk` |
 | Browser runtime glue | `test/wasm/run.js` |
 | Locked async contract (the swap) | `ASYNC-DESIGN.md` §0/§4/§5 |
 | Existing IO externs + the no-socket gap | `stdlib/runtime.mdk` |
-| `<Net>` Prefix label (both backends) | `lib/typecheck.ml`, `selfhost/types/typecheck.mdk` |
-| Extern disposition (C-shim/LEAF) + capability-interface model | `selfhost/RUNTIME-DESIGN.md` §6a + §5 |
+| `<Net>` Prefix label (both backends) | `lib/typecheck.ml`, `compiler/types/typecheck.mdk` |
+| Extern disposition (C-shim/LEAF) + capability-interface model | `compiler/RUNTIME-DESIGN.md` §6a + §5 |
 | Product vision + the wedge demo this instantiates | `CAPABILITY-PLATFORM.md` §7c/§8/§388 |
 | Two-site extern add convention | `stdlib/runtime.mdk` + `lib/eval.ml` (+ `runtime/medaka_rt.c` native) |

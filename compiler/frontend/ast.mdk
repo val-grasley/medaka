@@ -1,0 +1,297 @@
+-- Self-hosted Medaka AST — mirror of lib/ast.ml's surface (pre-desugar) nodes,
+-- the target the self-host parser builds.  Post-parse-only nodes (EMethodRef,
+-- EDictApp, EHeadAnnot) are intentionally omitted — the parser never produces
+-- them.  Constructor names match lib/ast.ml so the structural dump
+-- (compiler/sexp.mdk ↔ dev/astdump.ml) stays in lockstep.
+--
+-- Coverage grows with the parser port.  This is the core node set; more expr,
+-- pat, ty, and decl variants are added per slice.
+
+public export data Lit
+  = LInt Int
+  | LFloat Float
+  | LString String
+  | LChar String
+  | LBool Bool
+  | LUnit
+deriving (Eq)
+
+-- A source-location span for an expression (mirror of lib/ast.ml's `loc`):
+-- file, 1-based start line, 0-based start col, 1-based end line, 0-based end col.
+-- Carried by the transparent `ELoc` wrapper the parser puts on atom/leaf and
+-- statement-form expressions.  The `file` is filled by the caller (B.10.2b) —
+-- the parser leaves it "".  Transparent to all semantics: every stage either
+-- recurses through `ELoc` or strips it (sexp/Core-IR lowering), so emitted IR
+-- and structural dumps are byte-identical to the un-wrapped tree.
+public export data Loc = Loc String Int Int Int Int
+
+public export data Ty
+  = TyCon String
+  | TyVar String
+  | TyApp Ty Ty
+  | TyFun Ty Ty
+  | TyTuple (List Ty)
+  | TyEffect (List (String, Option String)) (Option String) Ty
+  | TyConstrained (List Constraint) Ty
+
+-- an interface constraint `Iface arg…` on the LHS of a `=>` in a type
+public export data Constraint = Constraint String (List Ty)
+
+-- a resolved typeclass-dispatch route (filled by the typed-pipeline typechecker).
+-- RNone = unresolved / no dispatch (eval keeps the VMulti for arg-tag fallback);
+-- RKey = a concrete impl head tag (or, for two same-head impls, the canonical impl
+--   key — TYPECHECK-AUDIT C7) plus its own requires routes recursively (Phase
+--   83/84 #5: the nested element-dict routes so dict_of_route builds a structured
+--   VDict carrying every element dict the impl body needs);
+-- RDict = read the named dict parameter at runtime (enclosing constraint);
+-- RDictFwd = like RDict but for return-position sites: also forward the structured
+--   dict's own requires into the selected impl body (Phase 83/84 #5).
+-- RLocal = NOT a method dispatch (Phase 112 / TYPECHECK-AUDIT C5): at this call
+--   site the interface has no impl for the concrete receiver, but an explicitly-
+--   imported/local standalone function shadows the method name, so eval ignores
+--   VMulti dispatch and evaluates the bound name as the plain standalone (no
+--   narrowing, no dicts).  Mirrors lib/ast.ml's RLocal.
+public export data Route
+  = RNone
+  | RKey String (List Route)
+  | RDict String
+  | RDictFwd String
+  | RLocal
+
+-- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the
+-- de-risked first half: resolve EMITS the slot; eval does NOT yet consume it —
+-- the tree-walker keeps its by-name frame scan).  ALocal frame slot mirrors the
+-- runtime env shape `EvalEnv (List (List (String, Ref Value)))` exactly: `frame`
+-- is how many frames down the stack the binder sits (0 = innermost), `slot` is
+-- its index within that frame (the order matchPat binds names).  AGlobal = not
+-- lexically bound (top-level / prelude / extern) — eval resolves it by name, so
+-- the slot would not help; the address still records that resolve looked.
+public export data Addr = ALocal Int Int | AGlobal
+
+public export data Pat
+  = PVar String
+  | PWild
+  | PLit Lit
+  | PCon String (List Pat)
+  | PCons Pat Pat
+  | PTuple (List Pat)
+  | PList (List Pat)
+  | PAs String Pat
+  | PRng Lit Lit Bool
+  | PRec String (List RecPatField) Bool
+
+-- one field of a record pattern: `field` (pun, None) or `field = pat`
+public export data RecPatField = RecPatField String (Option Pat)
+
+public export data Guard = GBool Expr | GBind Pat Expr
+
+-- match arm: pattern, guard qualifiers, body
+public export data Arm = Arm Pat (List Guard) Expr
+
+-- statements in a bare block (EBlock) or monadic do-block (EDo)
+public export data DoStmt
+  = DoExpr Expr
+  | DoBind Pat Expr
+  | DoLet Bool Bool Pat Expr
+  | DoAssign String Expr
+  | DoFieldAssign String (List String) Expr
+  | DoLetElse Pat Expr Expr
+
+-- parts of an interpolated string `"…\{expr}…"`
+public export data InterpPart = InterpStr String | InterpExpr Expr
+
+-- a function/where guard arm: `| guards = body`
+public export data GuardArm = GuardArm (List Guard) Expr
+
+-- a record field assignment: `field = expr`
+public export data FieldAssign = FieldAssign String Expr
+
+-- an operator section: `(op)` / `(op e)` / `(e op _)`
+public export data Section
+  = SecBare String
+  | SecRight String Expr
+  | SecLeft Expr String
+
+-- one clause of a `where`/let-group binding: parameter patterns + body
+public export data FunClause = FunClause (List Pat) Expr
+
+-- a `where`/let-group binding: a name with one or more (coalesced) clauses
+public export data LetBind = LetBind String (List FunClause)
+
+public export data Expr
+  = ELit Lit
+  | EVar String
+  | EApp Expr Expr
+  | ELam (List Pat) Expr
+  | ELet Bool Bool Pat Expr Expr
+  | EMatch Expr (List Arm)
+  | EIf Expr Expr Expr
+  -- Phase 151 / Gap G: the trailing route ref is filled by the typed pipeline
+  -- (resolveBinopSites) for comparison/equality operators (== != < > <= >=) whose
+  -- operand grounds to a NON-primitive Eq/Ord type; dictPass then rewrites such a
+  -- stamped node into the method application (==→eq, !=→not(eq …), <→lt, …) so eval
+  -- dispatches to the user/derived impl.  RNone for primitives / arithmetic / other
+  -- operators → the structural-builtin EBinOp eval path (unchanged, no recursion).
+  -- The parser always builds a fresh `Ref RNone`; sexp/astdump ignore the ref.
+  | EBinOp String Expr Expr (Ref Route)
+  | EUnOp String Expr
+  | EInfix String Expr Expr
+  | EFieldAccess Expr String
+  | ETuple (List Expr)
+  | EListLit (List Expr)
+  | EArrayLit (List Expr)
+  | ERangeList Expr Expr Bool
+  | ERangeArray Expr Expr Bool
+  | ESlice Expr Expr Expr Bool
+  | ELetGroup (List LetBind) Expr
+  | ESection Section
+  | EFunction (List Arm)
+  | EIndex Expr Expr
+  | EAnnot Expr Ty
+  -- Head-pinned type annotation (`e :~ T`).  The parser never produces this, but
+  -- desugar's container-literal lowering does: `Map { … }`/`Set { … }` become
+  -- `(fromEntries [...] :~ Name …)`, pinning the result type so `fromEntries`
+  -- dispatches by the literal's named type (mirror of lib/ast.ml's EHeadAnnot).
+  | EHeadAnnot Expr Ty
+  | EBlock (List DoStmt)
+  | EDo (List DoStmt)
+  | EStringInterp (List InterpPart)
+  | EGuards (List GuardArm)
+  | ERecordCreate String (List FieldAssign)
+  | ERecordUpdate Expr (List FieldAssign)
+  | EVariantUpdate String Expr (List FieldAssign)
+  | EMapLit String (List (Expr, Expr))
+  | ESetLit String (List Expr)
+  -- `x@subpat` in a binding LHS (lambda/do-bind param): the parser emits EAsPat,
+  -- which exprToPat lowers to PAs.  Elsewhere resolve would reject it, so it
+  -- never survives into a typed program (the reference's `EAsPat`).
+  | EAsPat String Expr
+  -- Method_marker output (the parser never produces these; the typecheck-filled
+  -- ref the reference carries is irrelevant pre-typecheck, so just the name).
+  | EMethodRef String
+  | EDictApp String
+  -- A variable reference annotated with its resolved lexical address (STAGE2-
+  -- DESIGN §2.0).  The parser never produces this — it emits plain `EVar`; the
+  -- self-hosted resolve's `annotateProgram` pass rewrites `EVar n` → `EVarAt n
+  -- addr`, carrying the (frame, slot) the eventual slot-indexing eval will read.
+  -- The name is kept for the AGlobal by-name fallback and method/shadow lookup.
+  -- Unconsumed today (no eval arm, no sexp/astdump clause), so every dump stays
+  -- byte-identical: this node only ever lives in resolve's annotated output.
+  | EVarAt String Addr
+  -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
+  -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
+  -- RKey = the concrete impl's head type — or, when two impls share that head type
+  -- (TYPECHECK-AUDIT C7), the canonical impl key (`iface|args|name`); eval narrows the
+  -- VMulti by matching EITHER against each candidate's head tag or its key.  RDict =
+  -- the enclosing constrained function's dict parameter (read at runtime, then
+  -- narrow).  Only appears in the typed eval pipeline, never in parse/mark output.
+  --
+  -- The second ref carries the SELECTED impl's `requires` dicts (the reference's
+  -- res_impl_dicts): when the route resolves to a parametric impl with a `requires`
+  -- (e.g. `impl Default (List a) requires Default a`), each constraint becomes one
+  -- route, eval folds them onto the narrowed impl value as leading args so the
+  -- element dict reaches a return-position ref inside the impl body (`def` in
+  -- `def = [def]`).  Empty for every ordinary site (no requires) — eval's fold is a
+  -- no-op then.  Single-level only (`def : List Int`); nested dicts are residual #5.
+  --
+  -- The THIRD ref carries the method's OWN method-level-constraint dicts (the
+  -- reference's res_method_dicts): a method whose signature has a `=>` constraint
+  -- over a tyvar that is NOT the interface param (the canonical case is
+  -- `foldMap : Monoid m => (a -> m) -> t a -> m`, where `Monoid m` constrains the
+  -- result monoid `m`, independent of the container `t`).  At a call site the
+  -- constraint's concrete type → one RKey route; eval folds them onto the method
+  -- value as leading args BEFORE the impl-requires dicts, matching the params
+  -- dict_pass prepends to the method's default body / impl clauses, so a
+  -- return-position ref inside that body (`empty` in foldMap's default) reads the
+  -- caller-supplied dict.  Empty for every ordinary site — eval's fold is a no-op.
+  | EMethodAt String (Ref Route) (Ref (List Route)) (Ref (List Route))
+  -- Constrained-function occurrence (`f` where `f : C a => …`) rewritten by the
+  -- same pre-pass: the function name + one route per `=>` constraint, filled by
+  -- the typechecker.  Eval applies the matching dictionaries as leading args,
+  -- lining up with the dict params dict_pass prepended to f's definition.
+  | EDictAt String (Ref (List Route))
+  -- Transparent source-location wrapper (mirror of lib/ast.ml:193 `ELoc of
+  -- loc * expr`).  The parser wraps atom/leaf and statement-form productions
+  -- (matching parser.mly's atoms + let/if/match/function/do/lambda/as-pat) so
+  -- typecheck/resolve can attribute errors to a precise expression span via a
+  -- `currentLoc` ref.  Semantically transparent: every stage either recurses
+  -- through it or strips it.  sexp.mdk renders it transparently and core_ir_
+  -- lower.mdk strips it before Core IR, so all parse/sexp/IR gates stay
+  -- byte-identical.  The parser never builds nested binop/app wrappers (it
+  -- wraps leaves + statement forms only, exactly like parser.mly).
+  | ELoc Loc Expr
+  -- Phase 150: transparent marker wrapping a do-lowered andThen/pure chain;
+  -- carries the do-block's loc so typecheck can emit a tailored "do requires a
+  -- monad" error.  Desugar-introduced, never parsed/round-tripped.
+  | EDoOrigin Loc Expr
+  -- PLAN.md #11: a *source* integer literal in EXPRESSION position, polymorphic
+  -- over `Num a` (mirror of lib/ast.ml's `ENumLit of int * float option ref`).
+  -- The parser emits this (never `ELit (LInt)`) for an integer in expression
+  -- position; pattern-position int literals stay `PLit (LInt)` Int (locked §0.4).
+  -- typecheck infers a fresh `Num`-obligated var; the post-HM defaulting pass
+  -- grounds an ambiguous Num-only var to Int; then a final pass stamps the ref
+  -- `Some f` iff the literal's inferred type ground to Float.  dictPass rewrites
+  -- the node to `ELit (LFloat f)` (float ref = Some f), `ELit (LInt n)` (both
+  -- cells empty), or — the #11 soundness arm, mirror of lib/ast.ml's third payload
+  -- `resolved option ref` — `EApp (EMethodAt "fromInt" …) (ELit (LInt n))` when the
+  -- literal stays a polymorphic `Num a` (the `1` in `inc x = x + 1`): the third
+  -- field is the `fromInt`-route cell (`Ref Route`), filled by resolveSites with
+  -- the RDictFwd route onto the enclosing `Num a` dict (exactly core.mdk's
+  -- `fromInt 0` in `sum`), so the runtime Num dict elaborates the literal and
+  -- `inc 2.5` no longer crashes `VFloat + VInt`.  Before eval/emit, dictPass
+  -- rewrites every `ENumLit` away, so eval/emit never see it.  sexp/astdump render
+  -- it identically to `(ELit (LInt n))` so the OCaml↔compiler sexp diff is unchanged
+  -- (the compiler AST node is new but renders to the same S-expression).
+  | ENumLit Int (Ref (Option Float)) (Ref Route)
+
+-- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
+public export data UseMember = UseMember String Bool
+public export data UsePath
+  = UseName (List String)
+  | UseGroup (List String) (List UseMember)
+  | UseWild (List String)
+  | UseAlias (List String) String
+
+-- a property-test parameter `(name : ty)`
+public export data PropParam = PropParam String Ty
+
+-- interface / impl pieces
+public export data MethodDefault = MethodDefault (List Pat) Expr
+public export data IfaceMethod = IfaceMethod String Ty (Option MethodDefault)
+public export data Super = Super String (List String)
+public export data Require = Require String (List Ty)
+public export data ImplMethod = ImplMethod String (List Pat) Expr
+
+-- data/record declarations
+public export data DataVis = VisPrivate | VisAbstract | VisPublic
+public export data Field = Field String Ty
+public export data ConPayload = ConPos (List Ty) | ConNamed (List Field)
+public export data Variant = Variant String ConPayload
+
+-- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`
+public export data Attr = AttrDeprecated String | AttrInline | AttrMustUse
+
+public export data Decl
+  = DTypeSig Bool String Ty
+  | DExtern Bool String Ty
+  | DFunDef Bool String (List Pat) Expr
+  | DData DataVis String (List String) (List Variant) (List String)
+  | DRecord DataVis String (List String) (List Field) (List String)
+  | DUse Bool UsePath
+  -- pub? name domain? internal?  `effect Foo` (atomic security capability),
+  -- `effect Net Prefix` (domain-carrying), `internal effect Mut` (purity-only,
+  -- never granted/parameterized).  v2 Stage 2a: domain = Some "Prefix" or None.
+  | DEffect Bool String (Option String) Bool
+  | DProp Bool String (List PropParam) Expr
+  | DTest Bool String Expr
+  | DBench Bool String Expr
+  | DInterface { pub : Bool, def : Bool, name : String, typarams : List String, supers : List Super, methods : List IfaceMethod }
+  | DImpl { pub : Bool, def : Bool, iface : String, tys : List Ty, name : Option String, reqs : List Require, methods : List ImplMethod }
+  -- pub? name typarams rhs
+  | DTypeAlias Bool String (List String) Ty
+  -- pub? tyname typarams conname fieldty derives
+  | DNewtype Bool String (List String) String Ty (List String)
+  -- top-level `let rec … with …` mutually-recursive group
+  | DLetGroup Bool (List LetBind)
+  -- `@attr…` annotations wrapping the next decl
+  | DAttrib (List Attr) Decl

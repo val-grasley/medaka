@@ -1,11 +1,11 @@
 #!/bin/sh
-# test/diff_selfhost_analyze_project.sh — differential gate for the self-hosted
+# test/diff_compiler_analyze_project.sh — differential gate for the self-hosted
 # PROJECT-WIDE diagnostics (Stage 4 Phase B.10.5: analyzeProject).
 #
 # Mirrors lib/diagnostics.ml's analyze_project: load a root file's transitive
 # import graph, run resolve/typecheck per module, and BUCKET diagnostics BY FILE
-# (clean files publish []).  The self-hosted analyzeProject (selfhost/
-# diagnostics.mdk, driven by selfhost/entries/diagnostics_project_main.mdk) is diffed
+# (clean files publish []).  The self-hosted analyzeProject (compiler/
+# diagnostics.mdk, driven by compiler/entries/diagnostics_project_main.mdk) is diffed
 # against the OCaml oracle `medaka check --json <entry>`, which routes through the
 # real analyze_project and emits a per-file "files" array.
 #
@@ -22,15 +22,15 @@
 # ELoc substrate), diagnostics_project_main emits it as `severity@line:col:` —
 # this gate additionally asserts that START position equals the OCaml LSP range
 # start for the matching diagnostic.  Resolve diagnostics carry no span on the
-# selfhost side (None → positionless), matching analyze_project's resolve loc
+# compiler side (None → positionless), matching analyze_project's resolve loc
 # fallback; those are compared on (severity,message) only.
 #
 # Message TEXT for TYPE errors can diverge by unification order (the documented
-# selfhost limitation, cf. diff_selfhost_diagnostics.sh).  Fixtures here use type
+# compiler limitation, cf. diff_compiler_diagnostics.sh).  Fixtures here use type
 # errors whose message is stable across both pipelines (`Type mismatch: A vs B`);
 # if a future fixture's type message diverges, compare its (count,severity) only.
 #
-# Usage: sh test/diff_selfhost_analyze_project.sh
+# Usage: sh test/diff_compiler_analyze_project.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SELF="$ROOT/test/bin/diagnostics_project_main"
@@ -74,7 +74,7 @@ for f in oj.get("files", []):
         items.append((x["severity"], x["message"], r.get("line"), r.get("character")))
     oracle[base] = items
 
-# ── selfhost: parse "## FILE <path>" blocks, lines are
+# ── compiler: parse "## FILE <path>" blocks, lines are
 #    "<sev>@<line>:<col>: <msg>"  or  "<sev>: <msg>" ──
 SEVCODE = {"error": 1, "warning": 2}
 self = {}
@@ -89,7 +89,7 @@ for line in os.environ["SELF_TEXT"].splitlines():
             self[cur].append((SEVCODE[m.group(1)], m.group(4), int(m.group(2)), int(m.group(3))))
         else:
             m2 = re.match(r'^(error|warning): (.*)$', line)
-            assert m2, "unparsable selfhost diag line: %r" % line
+            assert m2, "unparsable compiler diag line: %r" % line
             self[cur].append((SEVCODE[m2.group(1)], m2.group(2), None, None))
 
 # Compare the FILE SETS first.
@@ -99,7 +99,7 @@ if ofiles != sfiles:
     sys.exit(1)
 
 # Per file, compare the (severity,message) MULTISET (sorted) and, for any
-# diagnostic the selfhost located, assert its START matches the oracle's start
+# diagnostic the compiler located, assert its START matches the oracle's start
 # for the same (severity,message).
 ok = True
 for base in sorted(ofiles):
@@ -111,7 +111,7 @@ for base in sorted(ofiles):
                          % (name, base, o_sm, s_sm))
         ok = False
         continue
-    # Located-diagnostic START check: for each selfhost diag that carries a
+    # Located-diagnostic START check: for each compiler diag that carries a
     # position, find an oracle diag with the same (sev,msg) and equal start.
     for (sev, msg, ln, col) in s:
         if ln is None:

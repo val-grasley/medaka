@@ -12,11 +12,11 @@
 # #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: previously
 # the native typecheck inferred `sum`/`product : a b -> b` where the OCaml golden
 # had `a Int -> Int`, mismatching every fixture's whole-prelude TYPES dump.  Both
-# the OCaml oracle (commit eac278b) and the selfhost typecheck now infer the
+# the OCaml oracle (commit eac278b) and the compiler typecheck now infer the
 # polymorphic `a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting,
 # so the goldens and the native typecheck agree — this gate is now all-pass.
 #
-# Usage:  sh test/diff_selfhost_typecheck_golden.sh
+# Usage:  sh test/diff_compiler_typecheck_golden.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/typecheck_main"

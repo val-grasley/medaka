@@ -14,7 +14,7 @@
 -- `Eq2 Int` dict instead of the gapping arg-tag fallback.
 --
 -- NOTE: exported interface METHODS do not yet resolve cross-module through the
--- selfhost typed pipeline, so the interface/impls stay in the entry; only the
+-- compiler typed pipeline, so the interface/impls stay in the entry; only the
 -- parametric DATA TYPE (`Box`) crosses (same convention as prim_arg_dispatch).
 import box.{Box(..)}
 

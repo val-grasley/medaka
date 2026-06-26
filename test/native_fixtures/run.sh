@@ -1,9 +1,9 @@
 #!/bin/sh
-# Native-only regression assertions for two selfhost lexer/parser fixes.
+# Native-only regression assertions for two compiler lexer/parser fixes.
 # Requires ./medaka built (FORCE_EMITTER_REBUILD=1 make medaka).
 #   #2  `/=` → located, helpful error (not a mislocated "Parse error").
 #   #3  multiline `let` RHS (bare-INDENT block) followed by `if/then/else`
-#       must `check` cleanly (oracle accepts it; the bug was selfhost-parser).
+#       must `check` cleanly (oracle accepts it; the bug was compiler-parser).
 # These are NATIVE-ONLY: the frozen OCaml oracle mislocates #2 and accepts #3
 # (so they are deliberately NOT in test/diff_fixtures/).
 set -u

@@ -7,10 +7,10 @@
 # parse → Desugar → Typecheck.check_program_no_prelude, ONLY non-exhaustive-MATCH
 # warnings, location-stripped).  The non-exhaustive fixtures hold one warning, the
 # exhaustive controls hold an empty golden.  Native output sorted before compare.
-# NOTE: this is the type-aware counterpart of diff_selfhost_exhaust.sh (which
+# NOTE: this is the type-aware counterpart of diff_compiler_exhaust.sh (which
 # covers the standalone GUARD-coverage pass on the raw AST).
 #
-# Usage:  sh test/diff_selfhost_check_match.sh
+# Usage:  sh test/diff_compiler_check_match.sh
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,7 +30,7 @@ for f in "$FIXDIR"/*.mdk; do
   golden="$(cat "${f%.mdk}.expected")"
   self="$("$RUN" "$RUNTIME" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
   if [ "$self" = "$golden" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
-  else fail=$((fail+1)); printf 'FAIL %s (selfhost differs from golden)\n' "$name"; fi
+  else fail=$((fail+1)); printf 'FAIL %s (compiler differs from golden)\n' "$name"; fi
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

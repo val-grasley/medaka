@@ -1,6 +1,6 @@
 -- Perf microbenchmark: allocation + GC pressure (cons cells).
 -- Self-contained (no stdlib import) so it builds via `medaka build`.
--- See selfhost/PERF-SCOPE.md.
+-- See compiler/PERF-SCOPE.md.
 build : Int -> List Int -> List Int
 build n acc = match n
   0 => acc

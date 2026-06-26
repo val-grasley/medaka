@@ -81,12 +81,12 @@ page number (int), the exact `CREATE TABLE …` text.
 ## Phased slice plan (each independently `sqlite3`-verifiable)
 
 - **P0 — `writeFileBytes` extern. ✅ DONE (`a97e34b`, re-minted `29d7a9d`, cold-bootstrap PASS).**
-  5 sites (the 4 below + `selfhost/backend/llvm_preamble.mdk` `declare`). Native build == oracle byte-identical.
+  5 sites (the 4 below + `compiler/backend/llvm_preamble.mdk` `declare`). Native build == oracle byte-identical.
   Original P0 detail: 4 sites (`stdlib/runtime.mdk` declare; `lib/eval.ml`
   VPrim oracle; `runtime/medaka_rt.c` `mdk_write_file_bytes` — untag `(arr[i+1]>>1)`, `"wb"`;
-  `selfhost/backend/llvm_emit.mdk` register + `emitFileExtern` arm). Fixpoint + seed re-mint +
+  `compiler/backend/llvm_emit.mdk` register + `emitFileExtern` arm). Fixpoint + seed re-mint +
   oracle parity. Verify: write `[72,73]` → `xxd` shows `48 49`.
-- **P1 — byte builder ✅ DONE (`75ccf95`).** `byteparser/lib/bytebuilder.mdk` — `emitU8/U16BE/U24BE/U32BE/Bytes/SqVarint/BeSint` + `buildArray`; 33/33 round-trip doctests vs the byteparser decoders. **Builder is backed by `Ref (List Int)`** (O(1) prepend + reverse-on-build), NOT `MutArray` as originally sketched: P1 surfaced a compiler finding — **`arrayBlit` is missing from the native interpreter's primitives table** (`selfhost/eval/eval.mdk`; present in `lib/eval.ml` + the build path), so `MutArray.push` panics `unbound identifier: arrayBlit` under native `run`/`test` (works under `build` + oracle — a run-vs-build gap). Fix = add an `arrayBlit` entry to `selfhost/eval/eval.mdk` (analogous to `arrayCopy` :1789). FIXED `ecd2eee` (added arrayBlit + arraySetUnsafe to the native interp primitives table). The Ref-List builder needs no MutArray so the write path is unblocked.
+- **P1 — byte builder ✅ DONE (`75ccf95`).** `byteparser/lib/bytebuilder.mdk` — `emitU8/U16BE/U24BE/U32BE/Bytes/SqVarint/BeSint` + `buildArray`; 33/33 round-trip doctests vs the byteparser decoders. **Builder is backed by `Ref (List Int)`** (O(1) prepend + reverse-on-build), NOT `MutArray` as originally sketched: P1 surfaced a compiler finding — **`arrayBlit` is missing from the native interpreter's primitives table** (`compiler/eval/eval.mdk`; present in `lib/eval.ml` + the build path), so `MutArray.push` panics `unbound identifier: arrayBlit` under native `run`/`test` (works under `build` + oracle — a run-vs-build gap). Fix = add an `arrayBlit` entry to `compiler/eval/eval.mdk` (analogous to `arrayCopy` :1789). FIXED `ecd2eee` (added arrayBlit + arraySetUnsafe to the native interp primitives table). The Ref-List builder needs no MutArray so the write path is unblocked.
 - **P1 — (original sketch)** byte builder `byteparser/lib/bytebuilder.mdk` (`MutArray Int`-backed):
   `emitU8/U16BE/U24BE/U32BE/Bytes/SqVarint/BeSint`, `buildArray`. Differentially test each
   `emit*` against its `byteparser` decoder (`emitSqVarint`↔`sqVarint`, `emitU32BE`↔`beUint 4`).
@@ -142,6 +142,6 @@ Goldens must strip absolute build paths (MEMORY footgun).
 
 ## Implementation pointers
 - `readFileBytes` wiring (the P0 template): `stdlib/runtime.mdk:35`, `lib/eval.ml:1391`,
-  `runtime/medaka_rt.c:714`, `selfhost/backend/llvm_emit.mdk:1692/1718` (commit `1b25c9b`).
+  `runtime/medaka_rt.c:714`, `compiler/backend/llvm_emit.mdk:1692/1718` (commit `1b25c9b`).
 - Readers to invert: `sqlite/lib/{header,btree,recordfmt}.mdk`; IPK locator
   `pkColumnIndex` in `sqlite/lib/sqlite.mdk`. Buffer: `stdlib/mut_array.mdk`.

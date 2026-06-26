@@ -181,7 +181,7 @@ A single language-level stage, fixpoint-gated like the capability-effects stages
 3. **[DONE]** Vocabulary cleanup (D7): dropped `Async`/`Time` from `builtInEffects` / `builtin_effects`
    (both backends); `<Async>`/`<Time>` now resolve to `UnknownEffect`. SYNTAX.md de-staled.
 4. **[DONE]** Gates: fixpoint C3a/C3b green (no re-mint); new `async` doctests 7/7 both backends; the
-   diff_selfhost battery byte-identical (async is additive — only `builtInEffects` removal moved, no
+   diff_compiler battery byte-identical (async is additive — only `builtInEffects` removal moved, no
    golden printed those labels); `medaka test stdlib/async.mdk` green on both backends.
 
 No backend (eval.ml / runtime.c) changes in this stage — that's the deferred robust-runtime swap.

@@ -1,0 +1,104 @@
+-- Multi-module per-stage timing driver for the self-hosted front-end.
+-- Times each pipeline stage individually over a representative multi-module entry,
+-- breaking the `elaborate` composite from perf_main.mdk into separate mark and
+-- typecheck phases.
+--
+--   MEDAKA_PERF=1 medaka run compiler/entries/profile_modules_main.mdk \
+--       stdlib/runtime.mdk stdlib/core.mdk compiler/entries/all_modules_entry.mdk compiler
+--
+-- Stages timed:
+--   parse      parse + desugar runtime.mdk + core.mdk (fixed setup cost)
+--   load       loadProgram: read + lex + parse all transitive imports
+--   desugar    desugar every loaded module
+--   mark       returnPosMethodNames + prePassDict over all modules (RKey-only)
+--   typecheck  checkModules over pre-marked modules (HM inference)
+--
+-- Alloc column (MB): Gc.allocated_bytes proxy — bytes allocated in each phase.
+-- This is MEASUREMENT ONLY: no eval is performed.
+-- Without MEDAKA_PERF set the driver exits silently.
+-- Use test/profile_compiler.sh [N] to collect min-of-N and print a table.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModules, markModules}
+import support.timer.{
+  perfEnabled,
+  now,
+  emitPhaseA,
+  emitTotalA,
+  allocSnap,
+  totalDecls,
+}
+import support.util.{listLen}
+import support.path.{dirOf}
+
+main : <IO, Mut> Unit
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run compiler/entries/profile_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => runStaged (perfEnabled ()) rsrc csrc entry roots
+
+-- Time each pipeline stage with wall-clock and allocation deltas.
+-- Stages: parse, load, desugar, mark, typecheck.  No eval (measurement only).
+runStaged : Bool -> String -> String -> String -> List String -> <IO, Mut> Unit
+runStaged on rsrc csrc entry roots =
+  let tTotal = now ()
+  let aTotal = allocSnap ()
+  let tP0 = now ()
+  let aP0 = allocSnap ()
+  let rDecls = desugar (parse rsrc)
+  let cDecls = desugar (parse csrc)
+  let tP1 = now ()
+  let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) "runtime+core"
+  let tL0 = now ()
+  let aL0 = allocSnap ()
+  match loadProgram entry roots
+    Err e => ePutStrLn e
+    Ok rawMods =>
+      let tL1 = now ()
+      let nMods = listLen rawMods
+      let _ = emitPhaseA on "load" (tL1 - tL0) (allocSnap () - aL0) (intToString nMods ++ " modules")
+      let tD0 = now ()
+      let aD0 = allocSnap ()
+      let mods = map desugarPair rawMods
+      let nDecls = totalDecls mods
+      let declsOp = intToString nDecls ++ " decls"
+      let tD1 = now ()
+      let _ = emitPhaseA on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp
+      let tM0 = now ()
+      let aM0 = allocSnap ()
+      let markedPair = markModules cDecls mods
+      let core2 = fst markedPair
+      let mods2 = snd markedPair
+      let tM1 = now ()
+      let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
+      let tT0 = now ()
+      let aT0 = allocSnap ()
+      let _ = checkModules rDecls core2 mods2
+      let tT1 = now ()
+      let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
+      emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)
+-- parse: parse + desugar runtime.mdk and core.mdk
+
+-- load: loadProgram traverses transitive imports, lex+parse each file
+
+-- desugar: lower surface sugar in all loaded modules
+
+-- mark: compute rpNames over full closure, prePassDict each module (RKey-only)
+
+-- typecheck: HM inference over pre-marked modules in dependency order

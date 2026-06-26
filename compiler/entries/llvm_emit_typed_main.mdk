@@ -1,0 +1,87 @@
+-- TYPED driver for the Stage 2.4 LLVM de-risking spike (slice 6 — typeclass
+-- dispatch).  The typed analog of llvm_emit_main.mdk: it runs the SAME front end
+-- the typed Core IR gate uses (desugar → elaborateDict: RKey/EDictAt route
+-- stamping + dict_pass leading-dict params → lower to Core IR), then swaps the
+-- final consumer to EMIT textual LLVM IR (llvm_emit.emitProgram) instead of
+-- evaluating.  This is the ONLY LLVM driver that produces CMethod/CDict nodes
+-- (the plain llvm_emit_main path never marks, so it never dispatches).
+--
+--   medaka run compiler/entries/llvm_emit_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>
+--
+-- The dispatch fixtures are prelude-free (their own interfaces + impls), so the
+-- harness passes ONLY runtime.mdk: elaborateDict resolves every route without
+-- pulling core.mdk's machinery into the emitted module (the spike's scalar subset).
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{
+  elaborateDict,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  enableEmitArgStampPasses,
+}
+import eval.eval.{funNamesOf, dropShadowedExp}
+import ir.core_ir_lower.{
+  lowerProgramEmit,
+  returnsSelfTable,
+  selfFnParamTable,
+  methodIfaceTable,
+  methodConstraintIfaces,
+  ctorFieldTypeNames,
+  declSigTypeNames,
+}
+import support.util.{splitLast}
+import backend.llvm_emit.{
+  emitProgram,
+  installReturnsSelf,
+  installSelfFnParams,
+  installMethodIface,
+  installMethodConstraintIfaces,
+  installCtorFieldTypes,
+  installDeclSigTypes,
+}
+
+main = match args ()
+  runtimePath::rest => withRuntime runtimePath rest
+  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withRuntime runtimePath rest = match splitLast rest
+  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withFiles runtimePath preludePaths targetPath = match readFile runtimePath
+  Ok rsrc => withPreludes rsrc preludePaths targetPath
+  Err msg => ePutStrLn msg
+
+withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget rsrc preludeDecls targetPath = match readFile targetPath
+  Ok tsrc => putStr (runEmit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
+  Err msg => ePutStrLn msg
+
+runEmit : List Decl -> List Decl -> List Decl -> <Mut> String
+runEmit runtimeDecls preludeDecls userDecls =
+  let _ = enableEmitArgStampPasses ()
+  let userNames = funNamesOf userDecls
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  let combined = livePrelude ++ userDecls
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ preludeArgPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  let _ = installReturnsSelf (returnsSelfTable combined)
+  let _ = installSelfFnParams (selfFnParamTable combined)
+  let _ = installMethodIface (methodIfaceTable combined)
+  let _ = installMethodConstraintIfaces (methodConstraintIfaces combined)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames combined)
+  let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames combined)
+  emitProgram
+    (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

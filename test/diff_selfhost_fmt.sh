@@ -1,5 +1,5 @@
 #!/bin/sh
-# Differential gate for the self-hosted FORMATTER (selfhost/entries/fmt_main.mdk).
+# Differential gate for the self-hosted FORMATTER (compiler/entries/fmt_main.mdk).
 #
 # OCaml-free (REROOT-PLAN §2c): native host test/bin/fmt_main vs a committed
 # golden captured from `main.exe fmt --stdout <f>` (test/capture_goldens.sh fmt).
@@ -7,7 +7,7 @@
 # native output, and strip_unit's the native binary's trailing "()" Unit auto-print
 # before the compare.  Sibling golden: <fixture>.fmt.golden.
 #
-# Usage:  sh test/diff_selfhost_fmt.sh [files...]
+# Usage:  sh test/diff_compiler_fmt.sh [files...]
 # Exit:   0 if every fixture's native formatting matches the golden;
 #         2 if the oracle binary is missing (run sh test/build_oracles.sh first).
 set -u

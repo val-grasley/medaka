@@ -2,7 +2,7 @@
 # Differential validation for the self-hosted MULTI-MODULE resolve path
 # (Resolve.resolve_module — imports validated against real exports, privacy,
 # abstract-type ctor exports, re-exports).  This is the path the single-file
-# --resolve harness (diff_selfhost_resolve.sh) deliberately stubs out.
+# --resolve harness (diff_compiler_resolve.sh) deliberately stubs out.
 #
 # Oracle: dev/diagdump.exe --resolve-modules <mod1> <mod2> ...  — threads
 # Resolve.resolve_module over the given files IN ORDER (caller supplies
@@ -17,11 +17,11 @@
 #      committed `expected` golden.  For each:
 #        A. reference stability — diagdump output must equal the golden.
 #        B. self-host parity     — resolve_modules_main.mdk output must too.
-#   2. Corpus no-false-positives — run both over the whole selfhost module graph
+#   2. Corpus no-false-positives — run both over the whole compiler module graph
 #      (dependency order); both must be empty (a valid program has no errors)
 #      and must agree.
 #
-# Usage:  sh test/diff_selfhost_resolve_modules.sh
+# Usage:  sh test/diff_compiler_resolve_modules.sh
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,7 +29,7 @@ RUN="$ROOT/test/bin/resolve_modules_main"
 FIXDIR="$ROOT/test/resolve_module_fixtures"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-SHDIR="$ROOT/selfhost"
+SHDIR="$ROOT/compiler"
 
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
@@ -50,13 +50,13 @@ for d in "$FIXDIR"/*/; do
   golden="$(cat "$d/expected")"
   ok=1
   self="$("$RUN" "$RUNTIME" "$CORE" $files 2>/dev/null | strip_unit | LC_ALL=C sort)"
-  [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from golden"; }
+  [ "$self" = "$golden" ] || { ok=0; reason="compiler differs from golden"; }
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s (%s)\n' "$name" "$reason"; fi
 done
 
 # ── 2. corpus no-false-positives ────────────────────────────────────────────
-# The selfhost library modules in dependency-first order (deps before users):
+# The compiler library modules in dependency-first order (deps before users):
 # leaves (util/ast/lexer) → single-dep stages → parser → loader → typecheck →
 # the composed check front-end.  A valid program ⇒ zero resolve diagnostics.
 CORPUS="util ast lexer sexp desugar exhaust eval resolve marker parser loader typecheck check"
@@ -69,7 +69,7 @@ done
 # native resolve_modules over the corpus must produce no output.
 cself="$("$RUN" "$RUNTIME" "$CORE" $cfiles 2>/dev/null | strip_unit | LC_ALL=C sort)"
 ok=1; reason=""
-[ -z "$cself" ] || { ok=0; reason="selfhost reports errors on the valid corpus"; }
+[ -z "$cself" ] || { ok=0; reason="compiler reports errors on the valid corpus"; }
 if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   corpus (no false positives)\n'
 else fail=$((fail+1)); printf 'FAIL corpus (%s)\n' "$reason"; fi
 

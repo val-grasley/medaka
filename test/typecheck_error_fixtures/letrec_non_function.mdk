@@ -1,5 +1,5 @@
 -- D2: a `let rec` binding whose right-hand side is not a function.
--- Both oracle (tc_probe) and selfhost must emit LetRecNonFunction.
+-- Both oracle (tc_probe) and compiler must emit LetRecNonFunction.
 -- Oracle: TYPE ERROR: 'f' is bound by 'let rec' but ...
 -- Selfhost fix: checkLetRecDecls in checkProgramSeeded (typecheck.mdk).
 let rec f = f + 1

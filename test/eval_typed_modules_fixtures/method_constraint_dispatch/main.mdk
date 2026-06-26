@@ -1,5 +1,5 @@
 -- Regression for the eval-path method-constraint dict-threading SOUNDNESS bug
--- (selfhost/types/typecheck.mdk inferImplMethod / registerImplMethodDicts):
+-- (compiler/types/typecheck.mdk inferImplMethod / registerImplMethodDicts):
 -- a dispatched interface method whose OWN signature carries a method-level `=>`
 -- constraint (`Thenable m`) and whose body returns a constraint-var method
 -- (`pure []`) PANICKED in native `run` (`no matching impl for dispatch`) while

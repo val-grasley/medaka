@@ -13,10 +13,10 @@
    revert `sum`/`product` `fromInt 0/1`→`0/1` only as a separate gated follow-up.
 4. **`PLit (LInt)` patterns stay `Int`** (fork 4). Only `ELit` goes polymorphic.
 
-**Landing status:** Stages 0-2 (OCaml oracle) DONE `eac278b`; Stages 3-4 (selfhost + native)
+**Landing status:** Stages 0-2 (OCaml oracle) DONE `eac278b`; Stages 3-4 (compiler + native)
 DONE `7424b64` — both verified independently (fixpoint C3a/C3b YES, 5 `numlit_*` fixtures
-oracle==run==build, `diff_selfhost_typecheck_golden` 23/5→33/0). Mechanism landed: transparent
-`ENumLit` node in BOTH compilers (selfhost chose the same node, not in-typecheck-only, because
+oracle==run==build, `diff_compiler_typecheck_golden` 23/5→33/0). Mechanism landed: transparent
+`ENumLit` node in BOTH compilers (compiler chose the same node, not in-typecheck-only, because
 the Float re-tag needs a per-occurrence stamp surviving into the emit rewrite). Stage 5 (revert
 the `fromInt` workaround) optional/remaining.
 
@@ -67,18 +67,18 @@ genuine fork (§6.1).
 
 ### 2.1 The `litType` change (the easy 5%)
 - OCaml `lib/typecheck.ml:1775-1777` `type_lit` (used by `ELit` :1985 and `PLit` :1791).
-- Selfhost `selfhost/types/typecheck.mdk:2050-2052` `litType` (used by `inferPat (PLit)`
+- Selfhost `compiler/types/typecheck.mdk:2050-2052` `litType` (used by `inferPat (PLit)`
   :1987 and `infer (ELit)` :2121).
 
 Change `LInt _ -> Int` to: fresh tyvar `a` + a `Num a` obligation. The operator path
 **already does exactly this** for `+ - * /` (oracle `binop_type:2833-2834`
-`record_iface_usage "Num" "add"`; selfhost `recordNumObligation:2701-2706`). So the literal
+`record_iface_usage "Num" "add"`; compiler `recordNumObligation:2701-2706`). So the literal
 change reuses the operator machinery wholesale.
 
 ### 2.2 The hard 95%: where defaulting fires, and the eval problem
 
 **Fact A — no defaulting step exists, by design.** Both checkers defer any obligation whose
-head type is non-concrete (`lib/typecheck.ml:4085-4093` `is_concrete`; selfhost
+head type is non-concrete (`lib/typecheck.ml:4085-4093` `is_concrete`; compiler
 `allConcreteHeads`). A `Num a` with `a` unbound is **silently dropped**. Today benign because
 `litType` grounds the var to `Int`. Under #11 the var stays unbound through generalization:
 either it generalizes (`n = 1` → `Num a => a`, surfacing in every type dump) or it leaks an
@@ -96,7 +96,7 @@ tag and **errors on mixed tags**. So even if `x : Float; x = 0` typechecks, eval
 
 ### 2.3 HM levels / value restriction / monomorphism
 - **Levels:** the fresh literal var is at `current_level`; defaulting must run **at
-  generalization boundaries** (oracle `generalize:940`, selfhost `generalizeGroup:4306`).
+  generalization boundaries** (oracle `generalize:940`, compiler `generalizeGroup:4306`).
 - **Value restriction:** `ELit` is non-expansive, so `n = 1` *would* generalize to
   `Num a => a`. Defaulting at the group close intercepts this → policy decision (§6.2).
 - **No existing monomorphism rule.** Defaulting must define one for the `Num`-only case, or
@@ -106,7 +106,7 @@ tag and **errors on mixed tags**. So even if `x : Float; x = 0` typechecks, eval
 ### 2.4 Two-compiler parity (the headline risk)
 The defaulting decision must be **byte-identical** between the two checkers in every case:
 which vars are "Num-only", iteration order over the constraint set, per-group vs module-end,
-interaction with deferred obligations. Gated by `diff_selfhost_typecheck_golden*.sh` and the
+interaction with deferred obligations. Gated by `diff_compiler_typecheck_golden*.sh` and the
 self-compile fixpoint. Any asymmetry → fixpoint divergence.
 
 ## 3. Touchpoint map
@@ -117,14 +117,14 @@ self-compile fixpoint. Any asymmetry → fixpoint divergence.
 4312+ + generalize sites 940 + `set_numlit_floats` 4746 (**landed defaulting**);
 value-restriction ~1060+.
 
-**Selfhost `selfhost/types/typecheck.mdk`:** `litType` 2631 + `infer (ELit)` ~2703 +
+**Selfhost `compiler/types/typecheck.mdk`:** `litType` 2631 + `infer (ELit)` ~2703 +
 `inferPat (PLit)` ~2568; `recordNumObligation`/`numIfaceRegistered` ~2701+ (reuse);
 `generalizeGroup` 4306 (defaulting insertion); `scopeArities`
 9225 (**the `fromInt 0` workaround's reconciliation — reverting changes inferred
 arities here**). `setNumlitFloats` 7088.
 
 **Ripples beyond typecheck:** `lib/eval.ml:790` + `ENumLit` arm :794 + typed elaboration/`dict_pass` stage
-(literal re-tag — **mandatory**, Fact B); native emitter `selfhost/backend/llvm_emit.mdk`
+(literal re-tag — **mandatory**, Fact B); native emitter `compiler/backend/llvm_emit.mdk`
 (re-tag mirror — `i64` vs `double` constant); `stdlib/core.mdk:755,760` (optional revert — Stage 5).
 
 **The two PLAN sub-gaps (~332-336):** (a) RNone arg-tag for a `fromInt`/section in an
@@ -142,13 +142,13 @@ fine; a *consequence* of the defaulting policy, not separable.
   `Num a` var survive generalization → inferred arity == sig arity, *removing* the divergence
   the workaround dodges — **but only if dict-passing now threads the `Num` dict to call
   sites**; get it wrong and `sum` SIGSEGVs at `-O2`. Highest-risk interaction.
-- **Fixpoint risk (selfhost half):** defaulting-order asymmetry breaks `selfcompile_fixpoint`;
-  native re-tag must match interp or `diff_selfhost_llvm`/`_build` (output-compared) fails.
+- **Fixpoint risk (compiler half):** defaulting-order asymmetry breaks `selfcompile_fixpoint`;
+  native re-tag must match interp or `diff_compiler_llvm`/`_build` (output-compared) fails.
 - **Eval gates:** `test_eval`/`test_run`/doctests mixing int/float literals could shift.
 
 ## 5. Staged plan (OCaml-first-then-mirror, each independently gated)
 Rationale: the frozen OCaml oracle is the differential reference; land defaulting there first
-so every selfhost stage diffs against a known-correct oracle (lockstep has no oracle until
+so every compiler stage diffs against a known-correct oracle (lockstep has no oracle until
 both are done — exactly the parity risk to de-risk early).
 
 - **Stage 0 (spike, no commit):** OCaml only — `litType (LInt)`→fresh `Num a` var + minimal
@@ -157,9 +157,9 @@ both are done — exactly the parity risk to de-risk early).
   (§6.2). Gate: `test_typecheck`, re-capture type-dump goldens, `@thorough`.
 - **Stage 2 (OCaml eval elaboration):** literal re-tag `LInt`→`LFloat` in the typed pipeline.
   Gate: `test_eval`/`test_run`, float-mix programs run.
-- **Stage 3 (selfhost typecheck + defaulting):** mirror Stages 1-2, byte-matching oracle
-  defaulting order. Gate: `diff_selfhost_typecheck_golden*`, `diff_selfhost_check`.
-- **Stage 4 (native emitter re-tag):** mirror in `llvm_emit.mdk`. Gate: `diff_selfhost_llvm`/
+- **Stage 3 (compiler typecheck + defaulting):** mirror Stages 1-2, byte-matching oracle
+  defaulting order. Gate: `diff_compiler_typecheck_golden*`, `diff_compiler_check`.
+- **Stage 4 (native emitter re-tag):** mirror in `llvm_emit.mdk`. Gate: `diff_compiler_llvm`/
   `_build`, then `selfcompile_fixpoint`.
 - **Stage 5 (optional workaround revert): ❌ DECIDED WON'T-DO (2026-06-16).** `fromInt 0/1`→`0/1`
   in `core.mdk` was tried and reverted: the OCaml oracle's `fromInt`-routing misses the point-free
@@ -198,7 +198,7 @@ both are done — exactly the parity risk to de-risk early).
 ## Critical files
 (Line numbers updated 2026-06-22 post-implementation; originals were pre-implementation reference.)
 - `lib/typecheck.ml` (type_lit 1879, ELit 2109, ENumLit 2118, binop_type 2981, is_concrete 4312, generalize 940, set_numlit_floats 4746)
-- `selfhost/types/typecheck.mdk` (litType 2631, recordNumObligation ~2701, generalizeGroup 4306, scopeArities 9225, setNumlitFloats 7088)
+- `compiler/types/typecheck.mdk` (litType 2631, recordNumObligation ~2701, generalizeGroup 4306, scopeArities 9225, setNumlitFloats 7088)
 - `lib/eval.ml` (ELit 790, ENumLit 794, eval_arith 1261 — re-tag site)
-- `selfhost/backend/llvm_emit.mdk` (native literal constant — re-tag mirror)
+- `compiler/backend/llvm_emit.mdk` (native literal constant — re-tag mirror)
 - `stdlib/core.mdk` (Num interface 467, sum/product fromInt workaround 755/760)

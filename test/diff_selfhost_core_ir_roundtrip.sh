@@ -6,7 +6,7 @@
 # byte-identical to the reference — the committed test/eval_fixtures/<name>.eval.golden
 # (captured from dev/eval_probe.exe, the AST tree-walker).
 #
-# This is a stronger claim than the snapshot gate (diff_selfhost_core_ir_sexp.sh):
+# This is a stronger claim than the snapshot gate (diff_compiler_core_ir_sexp.sh):
 # the round-trip checks that a deserialized CProgram evaluates identically to a
 # freshly-lowered one, proving the serialization is semantics-faithful / lossless.
 #
@@ -18,7 +18,7 @@
 # OCaml-free (REROOT-PLAN.md Phase 2): runs as the pre-compiled native binary
 # test/bin/core_ir_roundtrip_main (built by build_oracles.sh).
 #
-# Usage:  sh test/diff_selfhost_core_ir_roundtrip.sh
+# Usage:  sh test/diff_compiler_core_ir_roundtrip.sh
 # Exit:   0 if every fixture passes the round-trip.
 set -u
 

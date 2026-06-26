@@ -1,0 +1,45 @@
+-- Entry point for the self-hosted MULTI-MODULE resolve stage (resolve_module):
+--
+--   medaka run compiler/entries/resolve_modules_main.mdk \
+--     <runtime.mdk> <core.mdk> <mod1.mdk> [mod2.mdk ...]
+--
+-- resolves the given module files IN ORDER (caller supplies dependency-first
+-- order, like the loader would), threading `resolveModule` over them so each
+-- module's imports are validated against the REAL exports of the earlier ones —
+-- the privacy / abstract-ctor / unknown-module checks the single-file path
+-- (resolve_main) stubs out.  Prints one S-expression per diagnostic across all
+-- modules — diffs against `dev/diagdump.exe --resolve-modules` (the harness
+-- sorts).  Module IDs are the file basenames sans `.mdk`, matching `import
+-- foo.{…}`.  runtime.mdk + core.mdk are NOT desugared (their NAMES seed the env,
+-- as in resolve_main); the module files ARE desugared (matching the oracle).
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveModulesToLines}
+import support.path.{modIdOf}
+
+main = match args ()
+  runtimeP::coreP::f::rest => run runtimeP coreP (f :: rest)
+  _ => ePutStrLn "usage: medaka run compiler/entries/resolve_modules_main.mdk <runtime.mdk> <core.mdk> <mod1.mdk> [mod2.mdk ...]"
+
+-- last path component, with the `.mdk` suffix stripped (flat module IDs):
+-- modIdOf now lives in support/path.mdk.
+
+-- read + parse + desugar each module into a (modId, decls) pair, in order
+readModules : List String -> <IO> Result String (List (String, List Decl))
+readModules [] = Ok []
+readModules (f::rest) = match readFile f
+  Err e => Err e
+  Ok src => match readModules rest
+    Err e => Err e
+    Ok ms => Ok ((modIdOf f, desugar (parse src)) :: ms)
+
+run : String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP files = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match readModules files
+      Err e => ePutStrLn e
+      Ok mods => putStr (resolveModulesToLines (parse rsrc) (parse csrc) mods)

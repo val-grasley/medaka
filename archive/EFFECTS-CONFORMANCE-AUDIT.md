@@ -85,9 +85,9 @@ every probe; the gaps are the **unrealized manifest** (E1, the important one) an
 
 | Clause | Verdict | Evidence (canonical unless noted) |
 |---|---|---|
-| §1 effect on every arrow; schemes quantify effect vars | **CONFORMS** | `TFun of mono * effrow * mono` `typecheck.ml:67`; `Forall of int list * int list * mono` (tyvars **and** effvars) `:92`; selfhost `TFun Mono EffRow Mono` `typecheck.mdk:81` |
+| §1 effect on every arrow; schemes quantify effect vars | **CONFORMS** | `TFun of mono * effrow * mono` `typecheck.ml:67`; `Forall of int list * int list * mono` (tyvars **and** effvars) `:92`; compiler `TFun Mono EffRow Mono` `typecheck.mdk:81` |
 | §2.1 domain family `Unit/Prefix/Set/Product` | **PARTIAL (E2)** | only `PUnit \| PPrefix` `typecheck.ml:53-54`; `<Net {..}>` ⇒ parse error (probe P4) |
-| §2.1 domain-generic machinery (`RefinementDomain`) | **CONFORMS** | abstraction in place (`dtop_for`/`dsub`/`djoin`); Stage-1 commit `255d186` "atoms over a RefinementDomain"; selfhost `dsubN/djoinN` `typecheck.mdk:208-220` |
+| §2.1 domain-generic machinery (`RefinementDomain`) | **CONFORMS** | abstraction in place (`dtop_for`/`dsub`/`djoin`); Stage-1 commit `255d186` "atoms over a RefinementDomain"; compiler `dsubN/djoinN` `typecheck.mdk:208-220` |
 | §2.3 `Prefix` + delimiter discipline | **CONFORMS** | `prefix_pattern_ok` `typecheck.ml:529`; probe **P2** rejects bare `<Net "a.com">` with the sibling-host lint |
 | §2.4 sub-effecting order `≤` (specific ⊑ general) | **CONFORMS** | `atoms_escape` `typecheck.ml:516` + `dsub`; probe **A2** (`evil.com/x ⋢ a.com/*` ⇒ reject), **P8** (`Stdout ≤ IO` ⇒ accept) |
 | §3 `var/app/lam/let/sub` effect flow | **CONFORMS** | `cur_effect` accumulator; union at application; probe **C3** (body unions `<Rand>` ⇒ escape) |
@@ -135,7 +135,7 @@ a conservative `EVar` call graph → read the entry fn's inferred row → check
 `inferred ⊆ policy` → accept/reject. Two coupled gaps:
 
 1. **Oracle-only.** The headline capability feature runs on the *being-retired*
-   differential oracle, not the canonical toolchain (`selfhost/driver/medaka_cli.mdk`
+   differential oracle, not the canonical toolchain (`compiler/driver/medaka_cli.mdk`
    stubs it). The verified row is *computed* by both binaries but *consumable* only
    by the wrong one.
 2. **Label-granularity, not parameter-aware.** Even on the oracle, the policy check
@@ -169,7 +169,7 @@ against one `RefinementDomain` interface so new domains are "a new instance + a
 parser clause — no change to unification, escape, or the manifest extractor."
 
 **Finding:** the implemented `param` type is `PUnit | PPrefix of string option`
-(`typecheck.ml:53-54`; selfhost `data Param = PUnit | PPrefix (Option String)`
+(`typecheck.ml:53-54`; compiler `data Param = PUnit | PPrefix (Option String)`
 `typecheck.mdk:108`). `Set` and `Product` are absent. The set-literal surface
 `<Net {"a.com","b.com"}>` is a **parse error** (probe **P4**, native and oracle),
 so a disjunctive multi-host allow-list — exactly the capability grant the v1 §6a

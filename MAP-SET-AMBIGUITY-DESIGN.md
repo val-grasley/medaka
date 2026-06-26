@@ -34,7 +34,7 @@ Two parts:
    the name is in the ambiguous set (and isn't a same-module top-level), emit
    `AmbiguousOccurrence` located at the use.
 
-## 2. Both-compiler touchpoints (file:line) — MUST move together or `diff_selfhost_*` diverge
+## 2. Both-compiler touchpoints (file:line) — MUST move together or `diff_compiler_*` diverge
 
 ### Import seam (compute + thread the ambiguous set)
 - **OCaml** `lib/resolve.ml`: `build_env` `DUse` arm (`:401-464`); names via
@@ -44,7 +44,7 @@ Two parts:
   unqualified names**. `core` excluded `:405`. **Add** a pre-pass building
   `name → module-id list` from each non-`core`/non-bare-alias import, keep ≥2-distinct;
   store in new env field `env.ambiguous` (name → source modules).
-- **selfhost** `frontend/resolve.mdk`: `buildEnvMM` (`:1232`) →
+- **compiler** `frontend/resolve.mdk`: `buildEnvMM` (`:1232`) →
   `collectImports`/`oneImport`/`realImport` (`:1132-1185`); per-form names in
   `importedNamesMM` (`:1066-1077`, exact mirror). `core` excluded `:1143`. **Add** the
   same fold in `collectImports`; add `ambiguous : List (String, List String)` to the
@@ -56,7 +56,7 @@ Two parts:
   the unbound check: if `not (List.mem n scope) && not (Hashtbl.mem env.values n) &&
   Hashtbl.mem env.ambiguous n` → `emit (AmbiguousOccurrence (n, …))` (emit attaches
   `!current_loc`, `:477`).
-- **selfhost** `frontend/resolve.mdk`: `checkVar` (`:304-307`) via `lookupValue`
+- **compiler** `frontend/resolve.mdk`: `checkVar` (`:304-307`) via `lookupValue`
   (`:316-320`, `contains n scope` first). **Add** the mirror guarded by
   `not (contains n scope) && not (contains n env.values) && isAmbiguous env n` →
   `AmbiguousOccurrence n (ambigMods env n) cur` (`cur` = the same use-site loc
@@ -83,7 +83,7 @@ New `AmbiguousOccurrence (name, source_modules)`, located at the **use site**,
 mirroring `UnboundVariable`'s located shape exactly (byte-identical positions):
 - OCaml: `| AmbiguousOccurrence of ident * string list` in `type error`; pretty-print;
   emitted via `emit` so it carries `!current_loc`.
-- selfhost: `| AmbiguousOccurrence String (List String) (Option Loc)` in `data
+- compiler: `| AmbiguousOccurrence String (List String) (Option Loc)` in `data
   ResError`; add to `resErrorLoc` + `resErrorSexp` serializer (lockstep with OCaml
   `--resolve-modules` diagdump).
 - Message: ``ambiguous occurrence: `size` is exported by both `map` and `set` —
@@ -103,13 +103,13 @@ mirroring `UnboundVariable`'s located shape exactly (byte-identical positions):
 
 Only newly-rejected shape: **using** a name from ≥2 non-`core` modules (incl.
 `list.*`+`set.*` iff the shared `singleton` is actually used). No corpus file does
-this; the selfhost graph is grep-clean of overlapping wildcards → fixpoint unaffected.
+this; the compiler graph is grep-clean of overlapping wildcards → fixpoint unaffected.
 
 ## 6. Gate plan + staging
 Both compilers change identically → differential gates stay **0-failing** (both newly
 reject the same uses, byte-identical S-exprs at identical locs).
-- Gates: `diff_selfhost_resolve` / `_resolve_modules` (primary), `diff_selfhost_check_modules`
-  / `_check_json` / `_check_cli_modules` (carat parity), `diff_selfhost_typecheck` +
+- Gates: `diff_compiler_resolve` / `_resolve_modules` (primary), `diff_compiler_check_modules`
+  / `_check_json` / `_check_cli_modules` (carat parity), `diff_compiler_typecheck` +
   `_errors`, **fixpoint** (`resolve.mdk` in-graph).
 - New fixtures in `test/resolve_fixtures/`: `map_set_ambiguous_use.mdk` (import both +
   USE `size` → error) and `map_set_use_neither.mdk` (import both, use neither → clean).
@@ -125,7 +125,7 @@ check/typecheck_errors diffs → 0 failures. (5) `FORCE_EMITTER_REBUILD=1 make m
 verify fixpoint, re-mint seed at the checkpoint (orchestrator).
 
 ## 7. Risks
-- **Frozen `lib/` MUST be edited for gate parity** (the oracle drives `diff_selfhost_*`).
+- **Frozen `lib/` MUST be edited for gate parity** (the oracle drives `diff_compiler_*`).
   Known parity exception to "lib is frozen" (cf. effects WS-2, floatToString).
 - **Re-export provenance:** attribute a name by the **directly-imported** module-id,
   not the original definer, so a legit single re-export path isn't counted as 2.

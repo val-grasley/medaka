@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # fuzz_diff.sh — differential fuzzer driver for the Medaka compiler (Stage-0/1 MVP).
 #
-# Generates well-typed Medaka programs with the NATIVE selfhost generator
-# (test/bin/fuzz_gen_main, compiled from selfhost/entries/fuzz_gen_main.mdk by
+# Generates well-typed Medaka programs with the NATIVE compiler generator
+# (test/bin/fuzz_gen_main, compiled from compiler/entries/fuzz_gen_main.mdk by
 # test/build_oracles.sh — the OCaml-free port of the former OCaml dev generator, #36).
 # The whole gate is now OCaml-free (the value oracle was already native, REROOT
 # Phase 3).  The generator emits the SAME kind of program (type-directed,
@@ -16,8 +16,8 @@
 #     (Eq reflexive/symmetric, (a==b)==(eq a b), (a<b)==(lt a b), Ord
 #     totality/antisymmetry/transitivity, arithmetic identities a+0/a*1/(a+b)-b).
 #     Any `INV False`, or a nonzero oracle exit (a generator well-typedness hole),
-#     is a finding.  (The former Tier-B — oracle vs selfhost-on-the-OCaml-host — is
-#     retired: post-reroot the oracle IS the native selfhost tree-walker, so the
+#     is a finding.  (The former Tier-B — oracle vs compiler-on-the-OCaml-host — is
+#     retired: post-reroot the oracle IS the native compiler tree-walker, so the
 #     genuine cross-implementation check is Tier-C below, native-compiled vs
 #     native-interp.)
 #
@@ -54,9 +54,9 @@
 # unnecessary: (1) the RNG DRAW differs (OCaml masked a raw next64() and took `rem
 # n`; the native port draws via the shared SplitMix64 `randomInt 0 (n-1)` extern —
 # same algorithm + seed, different consumption), and (2) the printer differs
-# (selfhost width-80 / string_of_float vs OCaml width-200 %g) — layout/float-digit
+# (compiler width-80 / string_of_float vs OCaml width-200 %g) — layout/float-digit
 # only, never validity.  So a given seed still maps to ONE program (replayable), but
-# a DIFFERENT program than the old OCaml seed.  See selfhost/entries/fuzz_gen_main.mdk.
+# a DIFFERENT program than the old OCaml seed.  See compiler/entries/fuzz_gen_main.mdk.
 #
 # Usage: test/fuzz_diff.sh [START_SEED] [COUNT] [TIER] [BATCH] [NATIVE] [NATIVE_COUNT]
 #   defaults: START_SEED=1 COUNT=200 TIER=2 BATCH=12 NATIVE=0 NATIVE_COUNT=40
@@ -96,7 +96,7 @@ BATCH="${4:-12}"
 NATIVE="${5:-0}"
 NATIVE_COUNT="${6:-40}"
 
-[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (native selfhost entry) must be built: sh test/build_oracles.sh"; exit 2; }
+[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (native compiler entry) must be built: sh test/build_oracles.sh"; exit 2; }
 [ -x "$ORACLE" ] || { echo "missing $ORACLE — run: sh test/build_oracles.sh"; exit 2; }
 if [ "$NATIVE" = "1" ]; then
   [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "missing $MEDAKA / $EMITTER — run: make medaka"; exit 2; }
@@ -177,7 +177,7 @@ for seed in $(seq "$START" "$end"); do
   # surfaces as a printer NULL-deref / empty output; most prevalent at TIER=1,
   # absent at the default TIER=2).  Empty output ⇒ generator crashed, NOT a
   # compiler-under-test finding: count as a known native gap and skip.  See
-  # selfhost/entries/fuzz_gen_main.mdk ("native-generator gap").
+  # compiler/entries/fuzz_gen_main.mdk ("native-generator gap").
   if [ ! -s "$SRC" ]; then
     known=$((known + 1)); continue
   fi

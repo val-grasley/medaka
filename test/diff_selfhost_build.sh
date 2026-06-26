@@ -1,10 +1,10 @@
 #!/bin/sh
-# diff_selfhost_build.sh — gate for the SELF-HOSTED `medaka build`, RE-ROOTED off
+# diff_compiler_build.sh — gate for the SELF-HOSTED `medaka build`, RE-ROOTED off
 # the OCaml oracle (REROOT-PLAN §2d).
 #
 # The binary under test is produced by the NATIVE `./medaka build` CLI, whose
 # emit host is the native ./medaka_emitter (MEDAKA_EMITTER) — i.e. the self-hosted
-# build driver (selfhost/entries/build_main.mdk) + the Medaka-hosted LLVM emitter
+# build driver (compiler/entries/build_main.mdk) + the Medaka-hosted LLVM emitter
 # + clang, with NO OCaml in the loop.  For each fixture (test/build_diff_fixtures/
 # *.mdk, formerly inline heredocs) it builds the native binary and diffs its stdout
 # against the committed `<fixture>.build.golden`.
@@ -17,7 +17,7 @@
 # (#54/#21/#55 — e.g. map_impl exercises Map `toList`/compare).  Only stdout is
 # compared (not exit code), matching the original `2>/dev/null` discipline.
 #
-# Usage:  sh test/diff_selfhost_build.sh
+# Usage:  sh test/diff_compiler_build.sh
 # Exit:   0 if every native binary's stdout == golden;
 #         1 on any build/diff failure;
 #         2 if the native medaka/emitter is missing, no C compiler, or libgc

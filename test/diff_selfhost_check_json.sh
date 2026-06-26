@@ -1,5 +1,5 @@
 #!/bin/sh
-# test/diff_selfhost_check_json.sh — gate for `medaka check --json`.
+# test/diff_compiler_check_json.sh — gate for `medaka check --json`.
 #
 # OCaml-free (LIB-REMOVAL-DESIGN §6 Stage A): compares ./medaka check --json
 # <fixture> against a committed native golden
@@ -18,7 +18,7 @@
 #
 # To regenerate the goldens: sh test/capture_goldens.sh check_json
 #
-# Usage:  sh test/diff_selfhost_check_json.sh
+# Usage:  sh test/diff_compiler_check_json.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE="$ROOT/medaka"

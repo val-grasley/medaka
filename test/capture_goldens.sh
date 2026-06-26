@@ -140,8 +140,8 @@ for row in $ROWS; do
   done
 done
 
-# ── directory + selfhost-oracle fixtures (not a single-glob/single-arg shape) ──
-# These goldens are captured from the EXACT OCaml oracle each gate used (a selfhost
+# ── directory + compiler-oracle fixtures (not a single-glob/single-arg shape) ──
+# These goldens are captured from the EXACT OCaml oracle each gate used (a compiler
 # entry run via main.exe, or `main.exe run <entry>` per fixture dir), so the
 # re-rooted gate diffs its native host's stdout against this committed reference.
 
@@ -153,7 +153,7 @@ want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
 }
 
 # eval_modules : golden = native `./medaka run <entry>` per dir.
-# (Fixture files are plain Medaka programs — no selfhost args() dependency —
+# (Fixture files are plain Medaka programs — no compiler args() dependency —
 #  so the native interpreter produces byte-identical output to the OCaml oracle.)
 if want eval_modules; then
   total=$((total+1))
@@ -178,7 +178,7 @@ fi
 
 # selfproc : FROZEN — selfproc_*_probe.mdk entries call args() (native-only extern);
 # `./medaka run` (interpreter) returns empty output → cannot recapture.
-# Committed selfproc_goldens/*.golden files are the reference for diff_selfhost_selfproc.sh.
+# Committed selfproc_goldens/*.golden files are the reference for diff_compiler_selfproc.sh.
 
 # ── §2b multi-glob corpus gates (parse / desugar / mark / lex_files) ──────────
 # These read a multi-directory corpus that the line-split ROWS loop can't express
@@ -191,7 +191,7 @@ fi
 
 # desugar + mark : FROZEN (native canonical; astdump.exe --desugar/--mark had no
 # native equivalent).  Committed .desugar.golden/.mark.golden files are the reference.
-DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/selfhost/*.mdk"
+DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
 
 # parse_result : FROZEN (native canonical; astdump.exe had no native equivalent).
 # Committed .parse_result_oracle files are the reference.
@@ -204,7 +204,7 @@ DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fi
 
 # analyze_project fixtures : FROZEN — native `./medaka check --json` produces a
 # different file-traversal order than the OCaml oracle; committed oracle.json files
-# were captured from the OCaml oracle.  diff_selfhost_analyze_project.sh compares
+# were captured from the OCaml oracle.  diff_compiler_analyze_project.sh compares
 # by basename (ordering-insensitive), so the existing goldens remain valid.
 # Re-root by running `./medaka check --json` with sorted output if goldens need refresh.
 
@@ -245,11 +245,11 @@ capture_build_golden() {  # $1=fixture .mdk  $2=golden path
 # ── §2d `repl` golden — captured from the NATIVE repl (CANONICAL), NOT OCaml ──
 # DESIGN CALL (flagged for maintainer): the OCaml `medaka repl` and the self-hosted
 #   repl diverge on the post-error command sequence — after an unbound-variable line
-#   the OCaml repl keeps emitting prompts for the remaining commands; the selfhost
+#   the OCaml repl keeps emitting prompts for the remaining commands; the compiler
 #   repl (both interpreted AND native-compiled, which AGREE byte-for-byte) stops
 #   short.  Per REROOT-PLAN the self-hosted backend is CANONICAL, so the golden is
 #   captured from the NATIVE repl binary (test/bin/repl_main), the OCaml leg is
-#   dropped, and diff_selfhost_repl.sh gates native-vs-golden.  The native output is
+#   dropped, and diff_compiler_repl.sh gates native-vs-golden.  The native output is
 #   DETERMINISTIC across runs (the :browse sort bug was fixed in cc49e60).
 if want repl; then
   total=$((total+1)); fixtures=$((fixtures+1))
@@ -272,10 +272,10 @@ if want repl; then
 fi
 
 # ── §2c `lsp` goldens — SKIPPED (REROOT-PLAN STOP guardrail) ──────────────────
-# lsp: `medaka build selfhost/entries/lsp_main.mdk` fails the native G1 typecheck
-#   gate (selfhost/driver/medaka_cli.mdk typecheckGate uses roots
-#   [inputDir, stdlib] — missing `selfhost` — so tools.lsp's transitive imports
-#   don't resolve; check_all_main with explicit [selfhost, stdlib] roots typechecks
+# lsp: `medaka build compiler/entries/lsp_main.mdk` fails the native G1 typecheck
+#   gate (compiler/driver/medaka_cli.mdk typecheckGate uses roots
+#   [inputDir, stdlib] — missing `compiler` — so tools.lsp's transitive imports
+#   don't resolve; check_all_main with explicit [compiler, stdlib] roots typechecks
 #   lsp_main cleanly).  No native lsp host binary can be built → the 3 lsp gates
 #   cannot be re-rooted onto a native host.  Gates left on the OCaml oracle.
 
@@ -293,7 +293,7 @@ fi
 # lsp_goldens/ were captured from the OCaml reference server + `check --json`.
 # The native `./medaka lsp` is canonical but re-capture requires a live LSP
 # session; committed goldens in test/lsp_goldens/ remain valid for
-# diff_selfhost_lsp{,_b3,_b4}.sh gates (OCaml-free; they drive native lsp vs
+# diff_compiler_lsp{,_b3,_b4}.sh gates (OCaml-free; they drive native lsp vs
 # these committed goldens).  Re-mint by running `sh test/capture_goldens.sh lsp`
 # with an up-to-date native binary if LSP responses change.
 

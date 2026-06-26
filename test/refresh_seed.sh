@@ -1,7 +1,7 @@
-# RE-MINT the checked-in IR seed (selfhost/seed/emitter.ll.gz) — OCaml-FREE.
+# RE-MINT the checked-in IR seed (compiler/seed/emitter.ll.gz) — OCaml-FREE.
 #
 # The seed is the textual LLVM IR of the BUILD driver
-# (selfhost/entries/llvm_emit_modules_main.mdk) emitting its OWN module graph.  It is the
+# (compiler/entries/llvm_emit_modules_main.mdk) emitting its OWN module graph.  It is the
 # COLD-START bootstrap entry point: test/bootstrap_from_seed.sh rebuilds a native
 # emitter from it WITHOUT OCaml.  Because the native emitter reproduces this IR
 # byte-for-byte (the C3b fixpoint property), the seed can be minted by the NATIVE
@@ -11,9 +11,9 @@
 #   1. Ensure ./medaka_emitter is CURRENT: warm-rebuild it from source via
 #      build_native_medaka.sh (OCaml-free; cold-bootstraps from the existing seed if
 #      there is no emitter yet).  This is what makes the mint reflect current source.
-#   2. ./medaka_emitter <runtime> <core> <build-driver> <selfhost> <stdlib>  ->  IR
+#   2. ./medaka_emitter <runtime> <core> <build-driver> <compiler> <stdlib>  ->  IR
 #      (the native emitter emitting the build driver's own graph; trim trailing ()).
-#   3. gzip -> selfhost/seed/emitter.ll.gz   (committed; ~1.7 MB vs ~11.5 MB raw).
+#   3. gzip -> compiler/seed/emitter.ll.gz   (committed; ~1.7 MB vs ~11.5 MB raw).
 #
 # Run on-demand (per-release / deliberate refresh), NOT per-PR.
 #
@@ -21,12 +21,12 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMITTER="$ROOT/medaka_emitter"
-DRIVER="$ROOT/selfhost/entries/llvm_emit_modules_main.mdk"
+DRIVER="$ROOT/compiler/entries/llvm_emit_modules_main.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-SELFHOST="$ROOT/selfhost"
+SELFHOST="$ROOT/compiler"
 STDLIB="$ROOT/stdlib"
-SEED_GZ="$ROOT/selfhost/seed/emitter.ll.gz"
+SEED_GZ="$ROOT/compiler/seed/emitter.ll.gz"
 
 # 1. Make the native emitter current from CURRENT source (OCaml-free; cold-bootstraps
 #    from the existing seed if no emitter binary exists yet).  Build to a scratch

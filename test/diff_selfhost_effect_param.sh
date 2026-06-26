@@ -1,5 +1,5 @@
 #!/bin/sh
-# test/diff_selfhost_effect_param.sh
+# test/diff_compiler_effect_param.sh
 #
 # CLI-LEVEL differential gate for capability-effects v2 Stage 2a's PARAMETERIZED
 # effect surface syntax.  This is the guard the unit-test suite never provided:
@@ -12,7 +12,7 @@
 #   * the native self-host CLI      (./medaka check)
 #
 # and against the OCaml-free native single-file host (test/bin/check_main, the
-# same host diff_selfhost_check.sh uses) cross-checked to the FROZEN-NATIVE
+# same host diff_compiler_check.sh uses) cross-checked to the FROZEN-NATIVE
 # === TYPES === golden baked into test/diff_fixtures/effect_param.golden.
 #
 # OCaml-free (LIB-REMOVAL-DESIGN §6 Stage A): the OCaml reference-CLI leg is
@@ -28,7 +28,7 @@
 # Prereqs: `make medaka` (native CLI + medaka_emitter) and
 #          `FORCE=1 sh test/build_oracles.sh` (test/bin/check_main).
 #
-# Usage:  sh test/diff_selfhost_effect_param.sh
+# Usage:  sh test/diff_compiler_effect_param.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIX="$ROOT/test/diff_fixtures/effect_param.mdk"

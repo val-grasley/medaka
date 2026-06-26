@@ -9,9 +9,9 @@
 > is closed. All three sub-items landed native-canonical, fixpoint-gated (C3a/C3b
 > YES), differential-gated, and independently re-verified before merge:
 > - **WS-1a** (`f9abda9`) — `medaka check-policy` ported from the OCaml oracle to the
->   native CLI (`selfhost/tools/check_policy.mdk` + `runCheckPolicyCmd`). Bare-label
+>   native CLI (`compiler/tools/check_policy.mdk` + `runCheckPolicyCmd`). Bare-label
 >   compare, byte-identical to the oracle on the demos. Gate
->   `test/diff_selfhost_check_policy.sh` (4/0).
+>   `test/diff_compiler_check_policy.sh` (4/0).
 > - **WS-1b** (`a5b057a`) — parameter-level policy: `--allow 'Net=host/*'` compared
 >   via the domain `dsub` (`inferred ⊑ policy`); effect read widened `String → Atom`
 >   to carry the param. **Native-only** (the frozen oracle stays bare-label, so the
@@ -31,8 +31,8 @@
 > (an `alphaLets`/`alpha_lets` field on the inference env, accumulated in the let-arms,
 > read at `fillHolesInRow`). **Landed in BOTH compilers in lockstep** (it changes
 > inferred rows on existing syntax). Intraprocedural only — helper-laundered literals
-> stay ⊤ by design (spec §5 non-goal). Gates: `diff_selfhost_effect_hole` (incl.
-> `reject_outer_computed` soundness guard), `diff_selfhost_typecheck` 12/0, fixpoint
+> stay ⊤ by design (spec §5 non-goal). Gates: `diff_compiler_effect_hole` (incl.
+> `reject_outer_computed` soundness guard), `diff_compiler_typecheck` 12/0, fixpoint
 > C3a/C3b YES. A4/outer flips reject→accept; A3/computed stays reject (verified).
 >
 > **WS-3 — `Set` refinement domain: ✅ DONE (2026-06-21, `5a1d215`, NATIVE-ONLY).** E2
@@ -67,7 +67,7 @@
 > `Env` AND `Exec` as **atomic** (`PUnit`, `lib/typecheck.ml:333-339`) and reads the
 > **embedded** `runtime.mdk` (`lib/stdlib_content.ml`), so the param annotation makes
 > the oracle reject runtime.mdk (`label 'Exec' is atomic and takes no parameter`) →
-> breaks the oracle-gated `diff_selfhost_check_policy`. The flip lands with **zero
+> breaks the oracle-gated `diff_compiler_check_policy`. The flip lands with **zero
 > further native work** once the Set/Prefix-Env/Exec domains reach OCaml `lib/` OR
 > `lib/` is removed (soak tail) — the domain-directed fill is already in place and
 > fixpoint-proven. (Footgun: editing `runtime.mdk` stale-bakes the oracle until `dune
@@ -137,9 +137,9 @@ discipline, not a closeable item.
 ## 0. Principles
 
 - **Target the canonical binary.** Both typecheckers move in lockstep
-  (selfhost `types/typecheck.mdk` canonical + OCaml `lib/typecheck.ml` frozen
+  (compiler `types/typecheck.mdk` canonical + OCaml `lib/typecheck.ml` frozen
   oracle), every change fixpoint-gated (`selfcompile_fixpoint`) and differential-
-  gated (`diff_selfhost_typecheck`/`_error`/`_golden`). This is the v2 working
+  gated (`diff_compiler_typecheck`/`_error`/`_golden`). This is the v2 working
   invariant; keep it.
 - **The manifest is the deliverable.** The typing exists to produce a verified
   capability manifest a host can enforce. E1 is therefore first priority despite
@@ -154,7 +154,7 @@ discipline, not a closeable item.
   parser clauses with **zero** change to `unify_row`, the escape check, or the
   manifest extractor. If a domain addition touches those, the abstraction leaked —
   fix the abstraction, not the call sites.
-- **Verify on the binary, differentially.** Every change keeps `diff_selfhost_*`
+- **Verify on the binary, differentially.** Every change keeps `diff_compiler_*`
   green and adds a fixture failing-before / passing-after. The frozen oracle is a
   second opinion during the soak (the effect typing is currently byte-identical;
   keep it so until `lib/` is removed).
@@ -194,7 +194,7 @@ naturally in order.
 
 **1a — Port `check-policy` to the native CLI.** Today `medaka check-policy` is
 OCaml-oracle-only (`bin/main.ml:413-660`); the native CLI stubs it
-(`selfhost/driver/medaka_cli.mdk`). Port the call-graph + entry-row read + policy
+(`compiler/driver/medaka_cli.mdk`). Port the call-graph + entry-row read + policy
 compare into the canonical toolchain. *Gate:* `./medaka check-policy` on the demos
 matches the oracle's accept/reject; differential fixture.
 
@@ -285,7 +285,7 @@ Two mitigations, ongoing:
 
 - **Differential, both binaries, fixpoint-gated** — unchanged from v2. Type-system
   changes (WS-3/3b/4, WS-2) land in *both* typecheckers in lockstep and must keep
-  `selfcompile_fixpoint` and `diff_selfhost_typecheck`/`_error`/`_golden` green.
+  `selfcompile_fixpoint` and `diff_compiler_typecheck`/`_error`/`_golden` green.
 - **Fixture-per-finding** — each audit probe becomes a regression fixture: the
   reject-cases (A2/A3/C1/C2b/P9) guard soundness; the accept-cases (A1/B1/B2/P7/P8)
   guard precision; the gap-cases (P4, A4/outer, P11) flip on the WS that closes them.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Validation for the NATIVE medaka CLI (Phase C), RE-ROOTED off the OCaml oracle
-# (REROOT-PLAN §2d).  selfhost/driver/medaka_cli.mdk, native-compiled to ./medaka,
+# (REROOT-PLAN §2d).  compiler/driver/medaka_cli.mdk, native-compiled to ./medaka,
 # must reproduce committed goldens for check / fmt / new / repl / run / test / build.
 #
 # Per subtest the OCaml oracle leg is replaced by a committed golden captured NOW
@@ -21,7 +21,7 @@
 #
 # DOCUMENTED EXCEPTIONS (REROOT-PLAN STOP guardrail):
 #   repl/session — the OCaml `medaka repl` and the self-hosted repl DIVERGE on
-#     post-error prompt behaviour (see diff_selfhost_repl.sh header).  The native
+#     post-error prompt behaviour (see diff_compiler_repl.sh header).  The native
 #     repl is CANONICAL, so this subtest diffs native `./medaka repl` against the
 #     SAME canonical native golden (test/repl_fixtures/session.golden), NOT OCaml.
 #   lsp/session — the native `./medaka lsp` host is now buildable (import-scoped

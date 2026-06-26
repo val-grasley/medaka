@@ -6,8 +6,8 @@
 # Reference: the committed <dir>/main.eval.golden, captured (test/capture_goldens.sh)
 # from the OCaml reference `main.exe run <entry>` (real Loader → typecheck →
 # eval_modules) while OCaml was trusted.  This is the eval analog of
-# diff_selfhost_check_modules.sh and the multi-module analog of
-# diff_selfhost_eval_run.sh.
+# diff_compiler_check_modules.sh and the multi-module analog of
+# diff_compiler_eval_run.sh.
 #
 # Each fixture is a directory under test/eval_modules_fixtures/ holding a single
 # `main_*.mdk` entry plus its sibling modules.  Fixtures stay on the UNTYPED eval
@@ -16,7 +16,7 @@
 # OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted loader-eval runs as the
 # pre-compiled native binary test/bin/eval_modules_main (built by build_oracles.sh).
 #
-# Usage:  sh test/diff_selfhost_eval_modules.sh
+# Usage:  sh test/diff_compiler_eval_modules.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SELF="$ROOT/test/bin/eval_modules_main"

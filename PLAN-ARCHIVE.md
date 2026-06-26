@@ -3976,9 +3976,9 @@ non-package-manager gaps:
   1 iff any `Error`-severity diagnostic. **Single-file only** — `analyze` does
   not invoke the multi-file loader (see §5); multi-file `--json` is a follow-up.
 - `medaka build` — ✅ DONE (2026-06-09, `39f3318`; full prelude 2026-06-18). LLVM backend via
-  selfhost emitter + `clang`. Artifact cache deferred. (Was: ⏳ TODO at time of Phase 82 entry.)
+  compiler emitter + `clang`. Artifact cache deferred. (Was: ⏳ TODO at time of Phase 82 entry.)
 - `medaka doc` — ✅ DONE (`lib/doc.ml` + `test/test_doc.ml`; ported to native CLI 2026-06-18).
-  Comment→decl matcher + signature renderer + Markdown output; ported to `selfhost/tools/doc.mdk`.
+  Comment→decl matcher + signature renderer + Markdown output; ported to `compiler/tools/doc.mdk`.
   (Was: ⏳ TODO at time of Phase 82 entry.)
 
 (`add`/`remove`/`update` need a package manager — out of scope until one
@@ -4332,7 +4332,7 @@ Three related guard gaps, all observed writing `list.mdk`:
 
 2. **…detect non-exhaustive guards at compile time** (`exhaust.ml` handles
    pattern matrices but not guard coverage) — today it's a runtime error. ✅ DONE
-   (Phase 91(2), `lib/exhaust.ml` `check_guard_exhaustiveness` + selfhost mirror `checkGuardExhaustiveness`).
+   (Phase 91(2), `lib/exhaust.ml` `check_guard_exhaustiveness` + compiler mirror `checkGuardExhaustiveness`).
 3. **No inline guard form**: `f n _ | n <= 0 = []` is a parse error; guards must
    be on indented continuation lines. ✅ DONE (verified 2026-06-22 — `f n _ | n <= 0 = []` parses and runs correctly in both compilers; inline guards are supported).
 
@@ -5190,7 +5190,7 @@ elements ARE its `toList`), so `toList`/`elem`/`length` resolve cleanly from use
 files. Both: removed the name from `resolve.ml`'s `primitive_types`. Skill:
 **extend-stdlib**. See [[project_module5_map]].
 
-### Phase 83/84 residual #5: true recursive/nested instance dictionaries ✅ DONE (reference + selfhost, 2026-06-05)
+### Phase 83/84 residual #5: true recursive/nested instance dictionaries ✅ DONE (reference + compiler, 2026-06-05)
 
 The last Phase 83/84 dispatch residual. #5 — the `List (List Int)` case — replaces
 the flat impl-key strings with **structured/recursive** runtime dicts. (#1–#2 closed
@@ -5217,7 +5217,7 @@ machinery:
    **no** change (param count unchanged; depth lives in the value). Regression test:
    `test_run.ml t_nested_instance_dicts`.
 
-**Self-host mirror — DONE (2026-06-05).** `selfhost/ast.mdk`/`typecheck.mdk`/
+**Self-host mirror — DONE (2026-06-05).** `compiler/ast.mdk`/`typecheck.mdk`/
 `eval.mdk` + fixture `test/eval_dict_fixtures/nested_instance_dicts.mdk`; all three
 cases match `medaka run`. Selfhost-specific gotchas: `implDictRoutesFor` must thread
 the **full** implTable (not `rest`) so sub-route lookup re-finds the `"List"` impl for
@@ -5232,7 +5232,7 @@ return-position methods on the typed/dict paths (a `VTypedImpl` wrapper-strip bu
 etc., 4-step port); Method-level-constraint dicts (Phase 69.x-e) in the self-host
 (`foldMap : Monoid m => …` threads the caller `Monoid m` dict into the default body;
 `foldMap dup [1,2,3]` → `[1,1,2,2,3,3]`). Fixtures under `test/eval_dict_fixtures/`;
-per-file detail in `selfhost/README.md`. Out of scope: multi-impl *overrides* of a
+per-file detail in `compiler/README.md`. Out of scope: multi-impl *overrides* of a
 method-constrained method. Skill: **add-language-feature** (cross-cutting).
 
 ### Phase 83/84 (sub-part): instance-`requires` dict-threading into return-position impl bodies ✅ DONE (2026-06-02, single-level)
@@ -5672,7 +5672,7 @@ Why this clears 124's two objections:
   identical after the change).
 - **The churn now pays**: against the post-137 arg-per-line baseline (not 124's
   flat baseline), the hang is a clear readability win wherever it fires, and the
-  repo got *shorter* (−88 lines over stdlib + selfhost) as 3-line spine forms
+  repo got *shorter* (−88 lines over stdlib + compiler) as 3-line spine forms
   collapsed to 2-line hangs. `sexp.mdk` (full of `node "Tag" [...]` dumps) and
   `desugar.mdk` (AST-constructor bodies) benefit most.
 
@@ -5682,7 +5682,7 @@ the glued-head alternative would need a 3-way choice combinator the IR lacks.
 
 Tests: `test_fmt` "wide application hangs as whole" / "huge application spine-breaks
 under hung head" (+ idempotency for each), replacing the old "wraps spine" case that
-codified the pre-hang behavior. All selfhost diff harnesses stay byte-identical (the
+codified the pre-hang behavior. All compiler diff harnesses stay byte-identical (the
 reformat is semantics-preserving). See [[project-formatter-doc-ir]].
 
 ---
@@ -5794,7 +5794,7 @@ char literals being inconsistent is a genuine gap, not intentional design.
   embedded in quotes).
 - `lib/eval.ml`: added `escape_char_lit` (same logic); `debugCharLit` updated to
   use it and the stale "no escape processing" comment removed.
-- `selfhost/lexer.mdk`: replaced `charCode`-comparison workarounds for
+- `compiler/lexer.mdk`: replaced `charCode`-comparison workarounds for
   `\t`/`\n`/`\r`/`'`/`\` with direct char literals (`'\t'`, `'\n'`, etc.); stale
   comment removed.
 - `test/test_parser.ml`: 7 new cases in "char and string upgrades" suite covering
@@ -5833,15 +5833,15 @@ type only the provided overrides; non-named-field ctor → error), `lib/eval.ml`
 
 **Verified**: `test_parser` (3 cases), `test_typecheck` (1 positive + 4 negative),
 `test_eval` (update + wrong-ctor runtime error), `test_roundtrip`, `test_run`, and
-`@thorough` all green; selfhost diff harnesses byte-identical (the `astdump` arm is
+`@thorough` all green; compiler diff harnesses byte-identical (the `astdump` arm is
 additive). `SYNTAX.md` updated.
 
-**Deferred (not blocking, but limit ergonomics for the motivating selfhost `DImpl`
+**Deferred (not blocking, but limit ergonomics for the motivating compiler `DImpl`
 rebuild)**: (1) as-patterns in *parameter* position fail to parse even for positional
 ctors (`f (C x as d) = …`), and (2) field access on a variant value (`d.field`) is
 unsupported — so destructuring-and-keeping-the-whole-value in one pattern isn't yet
 possible; you keep the value in a plain binding and update it. Adopting this in the
-selfhost AST (named-field variants for `DImpl`/`DInterface` + extending the
+compiler AST (named-field variants for `DImpl`/`DInterface` + extending the
 self-hosted parser/`sexp.mdk`) is a separate follow-on.
 
 ### Phase 140: cross-module named-field variant constructors ✅ DONE (2026-06-04)
@@ -5851,7 +5851,7 @@ its field metadata wasn't exported, so an importing module's `C { x = v }` /
 `C { x, … }` / `C { e | x = v }` failed with "Unknown record type: C" (positional
 `C 1 2` worked — only the field-name→position mapping was missing). RECORDS already
 crossed modules; named-field *variant* constructors didn't. Surfaced while adopting
-named-field variants in the selfhost AST (the importers of `ast.mdk`).
+named-field variants in the compiler AST (the importers of `ast.mdk`).
 
 The gap was entirely in `typecheck.ml`'s multi-module exports — `resolve.ml` already
 exports/imports variant field-owners, and `eval.ml`'s `collect_ctors_and_dispatch`
@@ -5887,12 +5887,12 @@ ambiguity. **Parser conflicts unchanged at 5.** The `@` RHS is an atom (compound
 sub-pattern parenthesised, `d@(a :: b)`), matching how function args already need
 parens for applied constructors. Tests: `test_parser` "param as-pattern" (+ multi-arg).
 
-This is the lib (OCaml) compiler. **The self-hosted parser (`selfhost/parser.mdk`,
-Phase 135) does NOT yet parse clause-position `@`**, so selfhost source can't use it
-— the selfhost rebuild sites (`mapDecl`/`applyDeriveParams`/`mergeIfaceDecl`) stay on
+This is the lib (OCaml) compiler. **The self-hosted parser (`compiler/parser.mdk`,
+Phase 135) does NOT yet parse clause-position `@`**, so compiler source can't use it
+— the compiler rebuild sites (`mapDecl`/`applyDeriveParams`/`mergeIfaceDecl`) stay on
 the `match d { … }` form until the self-host parser gains `param_pat` (a follow-on for
-the parser port). Same class of constraint as not running `medaka fmt` on selfhost
-files: selfhost source is bounded by what `parser.mdk` parses, not by what the
+the parser port). Same class of constraint as not running `medaka fmt` on compiler
+files: compiler source is bounded by what `parser.mdk` parses, not by what the
 language accepts.
 
 ### Phase 127: unit testing library (`test` keyword + `stdlib/test.mdk`) ✅ DONE (2026-06-03)
@@ -5942,27 +5942,27 @@ Token-stream section deferred to Phase 131.
 
 ### Phase 132: self-host Stage 1 — port the lexer to Medaka ✅ DONE (2026-06-03)
 
-First self-host stage. `selfhost/lexer.mdk` (+ `lex_main.mdk`,
-`test/diff_selfhost_lexer.sh`): the full tokenizer — literals (incl. hex/bin/oct
+First self-host stage. `compiler/lexer.mdk` (+ `lex_main.mdk`,
+`test/diff_compiler_lexer.sh`): the full tokenizer — literals (incl. hex/bin/oct
 ints, char + string escapes, `\u{…}`), idents/keywords, operators/punctuation, line
 + nestable `{- … -}` block comments, string interpolation, triple-quoted strings
 (+ `stripIndent`), the `@`/`AS_AT` adjacency rule, and a faithful port of
 `lib/lexer.mll`'s INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
 leading-operator continuation. Pure two-pass design (scan → RawTok stream with
-`RNewline` markers → layout pass). Prelude + global externs only (so `selfhost/` is a
+`RNewline` markers → layout pass). Prelude + global externs only (so `compiler/` is a
 single-root project). Validated byte-for-byte two ways: 17/17 curated fixtures, and
 all 13 real `.mdk` files (every stdlib module + the lexer self-lexing) via
 `dev/lextok.exe` (FLOAT text normalized: `%g` vs `floatToString`; non-ASCII byte
 escaping differs in debug rendering only — token *values* match). Incorporated Phase
 133 (char-literal escapes). The one construct neither lexer handles is *nested*
 string interpolation, which the OCaml reference rejects too. Full slice log:
-`selfhost/README.md`.
+`compiler/README.md`.
 
 ### Phase 134: `<IO>` helper from a `match` arm produced no output — a cross-module dict-passing name collision ✅ DONE (2026-06-03)
 
 Surfaced by Phase 132. **Symptom:** factoring an `<IO>` body into a helper called
 from a `match` arm made the program exit 0 with **no output**; the inline form ran
-correctly. Only reproduced with the real `selfhost/lexer.mdk` — every minimal analog
+correctly. Only reproduced with the real `compiler/lexer.mdk` — every minimal analog
 worked, which made it look like a deferred-thunk / eval-driver bug (Phases
 96/103/121/125). It was **not** the eval driver. **Root cause:** `lexer.mdk` defines
 a private, genuinely `Num`-constrained 8-arg `emit` (the `+` on `pos`/`depth` leaves
@@ -5980,18 +5980,18 @@ module's own decls ∪ the decls of its **transitive importers**. The prelude, i
 by everyone, keeps the full joint scope. **Regression test:**
 `test_loader.ml` `test_eval_dict_arity_no_cross_module_collision` (drives
 `Eval.eval_modules`; the flat path can't express two top-level `emit`s, so it masks
-this). `selfhost/entries/lex_main.mdk` now uses the helper form on purpose.
+this). `compiler/entries/lex_main.mdk` now uses the helper form on purpose.
 
 ### Phase 135: self-host Stage 1 — port the parser to Medaka ✅ DONE (2026-06-03)
 
-Second self-host stage. `selfhost/parser.mdk`: the Menhir LR grammar (`lib/parser.mly`)
+Second self-host stage. `compiler/parser.mdk`: the Menhir LR grammar (`lib/parser.mly`)
 reimplemented as a **monadic combinator** parser over `List Token` — a `Parser` monad
 (`Mappable`/`Applicative`/`Thenable`) with `do`-notation + `many`/`sepBy1`/`choice`/
 `chainl1`; precedence is the stratified ladder, one function per level; emits the
 **pre-desugar** surface AST (`EGuards`/`EDo`/`EStringInterp`/`EListComp`/`ESection`/
 `EQuestion`). **Validation = structural S-expression dump** — added `dev/astdump.ml`
-(`Ast→sexp`, location-stripped) + a Medaka mirror `selfhost/sexp.mdk`, diffed by
-`test/diff_selfhost_parse.sh`. **Complete:** validated byte-for-byte on all 13 stdlib
+(`Ast→sexp`, location-stripped) + a Medaka mirror `compiler/sexp.mdk`, diffed by
+`test/diff_compiler_parse.sh`. **Complete:** validated byte-for-byte on all 13 stdlib
 files, 23/23 curated `test/parse_fixtures/`, the 15 `test/diff_fixtures/`, and the
 6-file self-source (incl. `lexer.mdk`/`parser.mdk` parsing themselves). All
 surface-grammar gaps closed (list comprehensions, `function`, `?`, array slice/index
@@ -6003,7 +6003,7 @@ port rejected/mis-parsed (expression-level `let` forms, as-pattern lambda params
 record update, type aliases/newtypes/`let rec … with`/attributes, `Map`/`Set`
 literals). Gotcha for combinators under strict eval: recursive parsers must recurse
 via a `do`-continuation, not by passing themselves as a strict argument
-(recursive-value init cycle → see Phase 138). Full slice log: `selfhost/README.md`.
+(recursive-value init cycle → see Phase 138). Full slice log: `compiler/README.md`.
 
 ### Phase 136: typechecker — generalize mutually-recursive binding groups ✅ DONE (2026-06-03)
 
@@ -6073,7 +6073,7 @@ loop and multi-module driver inherit the catch via `lookup`. Regression tests in
 
 A line-wrapped `::` chain (e.g. a long cons-chain RHS spanning multiple lines)
 was a parse error because the lexer's leading-operator continuation gate did not
-include `::`.  The repro was hit while writing `selfhost/resolve.mdk`'s
+include `::`.  The repro was hit while writing `compiler/resolve.mdk`'s
 `annotateStmts`:
 
 ```
@@ -6083,7 +6083,7 @@ annotate fr (DoLetElse p e alt :: rest) =
 ```
 
 **Fix:** added `"::"` to the alternation in `lib/lexer.mll`'s leading-operator
-continuation regex and its match arm (`CONS`), mirrored into `selfhost/lexer.mdk`
+continuation regex and its match arm (`CONS`), mirrored into `compiler/lexer.mdk`
 (`isContinuation` / `continuationTok`).  The continuation is purely subtractive
 (suppresses a would-be `INDENT`/`NEWLINE` without changing the token stream),
 so the wrapped form parses to the identical AST as the one-liner.
@@ -6092,8 +6092,8 @@ so the wrapped form parses to the identical AST as the one-liner.
 Tests: `test_parser` "cons (::) across lines" (same AST as one-liner) +
 "cons pattern still ok" (regression for `f (x :: xs) = x`).  New differential
 fixture `test/diff_fixtures/cons_cont.mdk` passes all four golden sections
-(TOKENS / AST / TYPES / EVAL).  `diff_selfhost_lexer.sh` 18/18,
-`diff_selfhost_parse.sh` 25/25, `diff_selfhost_lex_files.sh` 13/13.
+(TOKENS / AST / TYPES / EVAL).  `diff_compiler_lexer.sh` 18/18,
+`diff_compiler_parse.sh` 25/25, `diff_compiler_lex_files.sh` 13/13.
 
 ### Phase 142: `fmt` list-literal explosion mid-expression ✅ DONE (2026-06-05)
 
@@ -6131,7 +6131,7 @@ tokens, not the group itself. Changed `delimited` to use `flat_group`. Regular
 unaffected — those still break normally, which is what `rt_wide_pipeline_splits`
 requires. Genuinely wide container literals (flat content > `width - i`) still break.
 
-The `coalesceStep` clause in `selfhost/parser.mdk` now formats as one 83-char line
+The `coalesceStep` clause in `compiler/parser.mdk` now formats as one 83-char line
 with `[FunClause ps b]` flat — consistent with Phase 124's "flat, may-overflow"
 policy for groups whose content fits at their indent level.
 
@@ -6172,7 +6172,7 @@ entry `apply:Int->Int->Int`.
 **Tests.** `test_loader.ml`: `test_import_shadows_prelude` (Phase 145 regression,
 verifies `apply 3 4 = 7`). `test/resolve_module_fixtures/import_shadows_prelude/`
 added to the resolve-modules diff harness (valid program, empty expected errors).
-`diff_selfhost_resolve_modules.sh`: 8/8 ok. All test suites clean.
+`diff_compiler_resolve_modules.sh`: 8/8 ok. All test suites clean.
 
 ### Phase 143: block-`let` with parameters is self-recursive ✅ DONE (2026-06-05)
 
@@ -6206,7 +6206,7 @@ production. Value bindings and `let mut` bindings remain `is_fun = false`.
 - **All other consumers** (`printer.ml`, `method_marker.ml`, `coverage.ml`, `dev/astdump.ml`):
   wildcard on the new field.
 
-**Selfhost parity:** `selfhost/ast.mdk` `DoLet Bool Bool Pat Expr`. Parser (`letIdentRest`)
+**Selfhost parity:** `compiler/ast.mdk` `DoLet Bool Bool Pat Expr`. Parser (`letIdentRest`)
 sets `True` for function form. `desugar.mdk` `lowerDo` threads `isFun`. `eval.mdk`
 `evalBlock` dispatches on `DoLet _ True (PVar f)` via new `blockRecLet` helper.
 `typecheck.mdk` `inferStmt` dispatches on `DoLet _ True (PVar x)` via new `blockRecLet`.
@@ -6215,7 +6215,7 @@ wildcard on the new field.
 
 **Tests.** `test_typecheck.ml`: `t_block_let_recursive` (type is `a -> a`, not error).
 `test_eval.ml`: `t_block_let_recursive` (result = 42 for countdown repro).
-All selfhost harnesses (`diff_selfhost_eval_dict`, `diff_selfhost_selfproc`) and
+All compiler harnesses (`diff_compiler_eval_dict`, `diff_compiler_selfproc`) and
 `@thorough` clean.
 
 ---
@@ -6570,12 +6570,12 @@ open work**, consolidated so the next session can pick from one list.
 
 ## Archived native backend build log
 
-> Moved from `PLAN.md` 2026-06-09: the D0–D4 dispatch-staging + native-extern-catalog build log. Stage 2 is ✅ COMPLETE (the native compiler self-hosts to a fixpoint) — current state in `selfhost/BOOTSTRAP.md` / `EMITTER-GAPS.md`; forward work in PLAN.md Stage 3. Reference only.
+> Moved from `PLAN.md` 2026-06-09: the D0–D4 dispatch-staging + native-extern-catalog build log. Stage 2 is ✅ COMPLETE (the native compiler self-hosts to a fixpoint) — current state in `compiler/BOOTSTRAP.md` / `EMITTER-GAPS.md`; forward work in PLAN.md Stage 3. Reference only.
 
 ### Native backend (Stage 2) — near-term sequence — ✅ COMPLETE (historical record)
 
-**Owning roadmap:** [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
-§"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8.
+**Owning roadmap:** [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md)
+§"Staged plan" + [`RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §7–8.
 
 > ✅ **DONE (2026-06-08).** The D0–D4 narrative below is the AS-BUILT historical
 > record of how the spike became a native self-hosting compiler — kept for the
@@ -6584,11 +6584,11 @@ open work**, consolidated so the next session can pick from one list.
 > Summary: all 7 stages native==interpreter (141 fixtures); self-compile fixpoint
 > reached (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3
 > `IR1==IR2`); runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard
-> lowered; ~14 emitter bugs fixed (`selfhost/BOOTSTRAP.md` / `EMITTER-GAPS.md`).
+> lowered; ~14 emitter bugs fixed (`compiler/BOOTSTRAP.md` / `EMITTER-GAPS.md`).
 > Residual: `max`/`min` over primitive `Ord` (dead code → Stage 3 item 2); stack
 > band-aid maxed at arm64's 512 MB (→ Stage 3 worker-thread/TRMC).
 >
-> **Open emitter CAPABILITY gaps** (see `selfhost/EMITTER-GAPS.md` "Open emitter CAPABILITY gaps"):
+> **Open emitter CAPABILITY gaps** (see `compiler/EMITTER-GAPS.md` "Open emitter CAPABILITY gaps"):
 > 1. **`CTGuard` — clause/match guards.** ✅ **CLOSED (2026-06-08)** — `emitTree`'s `CTGuard` arm emits a real guard test + branch (`emitGuardedArm`/`emitGuardChain`); `match pat if guard => body` now lowers natively (refutable `p <- e` pattern-guards remain a contained gap). Retires the guard-free convention. Fixtures `test/llvm_fixtures/guard_match_{chain,ctor}.mdk`.
 > 2. **`max`/`min` over PRIMITIVE `Ord` receivers** — generic default-method dispatch over primitives (no runtime cell tag); deferred D3b. Dead code for the bootstrap (`maximum`/`minimum` unused by the compiler).
 > 3. **Stack scalability** — non-tail `x :: recurse` list-builders overflow the default stack on real-file inputs; band-aid `-Wl,-stack_size` (512MB). Principled: worker-thread big-stack (general, first) + narrow TRMC (cons-loops). Forced by C2.
@@ -6612,7 +6612,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
    miscompile class; the separate `decodeHead` reserved-name aliasing bug is now
    fixed — see Compiler / language); **uniform
    one-word heap header** kept; `Float` boxed-first; scalars not self-describing
-   (compile-time `Debug`). Record: [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md)
+   (compile-time `Debug`). Record: [`RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md)
    §8 status banner + §8.4. This unblocks item 2.
 2. **Promote the spike to the real LLVM backend** (§2.4). The de-risking spike has
    now closed every lift it was scoped to prove — what remains is turning that probe
@@ -6637,7 +6637,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
    **REMAINING (the spike→real-backend gap):**
    - ~~`inspect : a -> <IO> Unit` → `→METHOD`~~ **DONE 2026-06-07**: `inspect x = putStrLn (debug x)` in `stdlib/io.mdk`; reflective extern gone.
    - ~~**Finish the `→MEDAKA` sort/builder cutover.**~~ **DONE 2026-06-07** — `arrayMakeWith`
-     emitted as an inline INTRINSIC in `selfhost/llvm_emit.mdk` (`emitArrayMakeWith`):
+     emitted as an inline INTRINSIC in `compiler/llvm_emit.mdk` (`emitArrayMakeWith`):
      alloca-counter loop calls the Medaka closure directly, no FFI. `array.mdk` unchanged.
      Dead `arraySortBy`/`arraySortInPlaceBy` externs remain in interpreter (harmless).
    - **Typeclass dispatch in the backend (the bootstrap-critical lift).** Both spike
@@ -6656,7 +6656,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
      separate-compilation/dynamic-plugin boundary, so dict-passing is the correct
      baseline; specialize statically-known sites later if perf needs it). Full analysis:
      [`project_backend_dispatch_strategy`] memory + STAGE2-DESIGN §2.4c. **Staging
-     RE-SCOPED 2026-06-07 by the D0+D0.5 inventory (`selfhost/DISPATCH-INVENTORY.md`)** —
+     RE-SCOPED 2026-06-07 by the D0+D0.5 inventory (`compiler/DISPATCH-INVENTORY.md`)** —
      the real compiler has **0 nested dicts, 0 CDict sites, 0 first-class method values**;
      return-position dispatch is done (only 1 RNone `empty` panics). The whole remaining
      gap is **1013 directly-applied arg-position method occurrences**, splitting **903
@@ -6732,7 +6732,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        if profiling demands it (it would collapse the 110 to concrete RKey per instance).
    - **Emitter completeness (E-series) — close the construct-shape gaps so the emitter can
      LOWER real modules** (orthogonal to dispatch, which is done). Inventory +
-     staging: [`selfhost/EMITTER-GAPS.md`](./selfhost/EMITTER-GAPS.md). Milestone =
+     staging: [`compiler/EMITTER-GAPS.md`](./compiler/EMITTER-GAPS.md). Milestone =
      fully emit `stdlib/core.mdk` (core.mdk-first).
      - ✅ **E1a — multi-clause + patterned top-level fns.** DONE (2026-06-07). Routed
        ordinary multi-clause fn-binds (and single-clause fns with non-variable params)
@@ -6881,7 +6881,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `dict_when.mdk` (→1, `when True (Some ())` at Option); both byte-identical (31/31
        typed gate). **EMITTER-GAPS #11 closure half closed.**
      - ✅ **E9 — impl-body dict-capture (#11 impl-body events).** DONE (2026-06-08).
-       The complement to E8 in the front end: `usesImplDict` in `selfhost/typecheck.mdk`
+       The complement to E8 in the front end: `usesImplDict` in `compiler/typecheck.mdk`
        decides whether to prepend an impl method its `$dict_<m>_<slot>` param by scanning
        the body for an RDict route to that param, but its scanner `bodyRDictNames` →
        `collectMethodSites` only visited `EMethodAt` nodes (route ref `Ref Route`), NOT
@@ -6993,15 +6993,15 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        for the now-resolved constrained fns, not a routing regression.
      - ✅ **Multi-module emit+RUN gate — E4's harness / whole-compiler validation
        foundation.** DONE (2026-06-08). The multi-module analog of the single-file LLVM
-       gates: until now `diff_selfhost_llvm_typed.sh` byte-validated only `core.mdk`'s
+       gates: until now `diff_compiler_llvm_typed.sh` byte-validated only `core.mdk`'s
        single-file subset and `llvm_emit_gaps_main.mdk` only MEASURED the multi-module
        path — nothing emitted a multi-module program, linked, ran, and diffed the oracle.
-       New driver `selfhost/entries/llvm_emit_modules_main.mdk` (arg handling +
+       New driver `compiler/entries/llvm_emit_modules_main.mdk` (arg handling +
        `loadProgram`/`elaborateModules` modeled on `eval_typed_modules_main.mdk`, then
        `censusWhole`'s flatten `coreD ++ concatMapList snd modules` but through the REAL
        `emitProgram`; `enableArgStamp` + prelude dict-name wiring mirror
        `llvm_emit_typed_main.mdk` so it is E4-ready — a no-op on the module path pre-E4).
-       New gate `test/diff_selfhost_llvm_modules.sh` (libgc/skip/exit-2 discipline
+       New gate `test/diff_compiler_llvm_modules.sh` (libgc/skip/exit-2 discipline
        VERBATIM from the typed gate): per fixture set under `test/llvm_fixtures_modules/`
        (one subdir = `entry.mdk` + imported sibling module(s)), `ref` =
        `eval_typed_modules_main` IO stdout, `self` = `emit→clang→run`, diffed
@@ -7018,10 +7018,10 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        E4 unlocks — this gate is its byte-verified harness). All five gates byte-identical
        (160/33/20/20 + 3/3).
        **Investigated parser gaps (2026-06-08): two apparent gaps from writing these fixtures
-       confirmed as reference-correct, NOT selfhost defects.** (1) `public export interface`:
+       confirmed as reference-correct, NOT compiler defects.** (1) `public export interface`:
        the OCaml parser (`PUBLIC EXPORT` → `inner_data_or_record`) only allows `data`/`record`
        after `public export`; interfaces use `export interface` (without `public`).
-       `afterPublicFor` in `selfhost/parser.mdk` is correct to reject it. (2) `match` in
+       `afterPublicFor` in `compiler/parser.mdk` is correct to reject it. (2) `match` in
        argument position (`f (match x …)`): the Medaka lexer suppresses INDENT/DEDENT inside
        `(…)` (`paren_depth > 0` → `handle_indent` no-op), so the `MATCH expr_or INDENT arms
        DEDENT` rule can never fire inside parentheses — both parsers reject this form for the
@@ -7029,9 +7029,9 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `return_dispatch/entry.mdk` does with `flagVal`).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
      — the spike gates against `test/llvm_fixtures/`; the real backend must compile
-     `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of
+     `compiler/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of
      the remaining work and feeds directly into item 3.
-   Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`). Gate: native
+   Skill: none specific (lands in `compiler/llvm_emit*.mdk` + `runtime/`). Gate: native
    stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable oracle).
 3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a
    standalone native binary (the finish line, STAGE2-DESIGN §2.4).
@@ -7049,10 +7049,10 @@ constraints are already design inputs to the shared layers).
 The catalog re-implementation (item 2 above) is decomposed into the small, ordered
 slices below. **Each slice follows the String-slice template verbatim**
 (STAGE2-DESIGN §2.4a-7 / commit `797bd32`): add a C helper to `runtime/medaka_rt.c`,
-intercept the extern in `selfhost/llvm_emit.mdk` (`emitApp`'s `CVar` arm for a
+intercept the extern in `compiler/llvm_emit.mdk` (`emitApp`'s `CVar` arm for a
 LEAF/IO call, or an inline emit for an INTRINSIC), add fixtures to
 `test/llvm_fixtures/` (+ `_typed/` if dispatch-relevant), and gate **byte-identical
-vs the tree-walker oracle** (`test/diff_selfhost_llvm{,_typed}.sh`). The value/String
+vs the tree-walker oracle** (`test/diff_compiler_llvm{,_typed}.sh`). The value/String
 reps are LOCKED, so **no design work** is required in the mechanical slices — they
 are sized for a **Sonnet agent**. Verify each extern's oracle rendering empirically
 (`dev/eval_probe.exe`) before chasing the emitter, exactly as the String slice did.
@@ -7079,7 +7079,7 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
 **Tier B — gated behind the Char-rep lock:**
 
 - ✅ **Slice 9 — string↔char + codepoint slicing** (dep: 8, 6/7). **DONE 2026-06-07.** `stringToChars` → `mdk_string_to_chars` (walk UTF-8, emit one Char immediate per codepoint into a raw-length Array cell); `stringFromChars` → `mdk_string_from_chars` (two-pass: sum UTF-8 widths, alloc, encode each Char); `stringSlice` → `mdk_string_slice` (codepoint-indexed, CLAMPED: `mdk_utf8_byte_offset` converts lo/hi codepoint indices to byte offsets). `mdk_utf8_decode` added to medaka_rt.c alongside `mdk_utf8_byte_offset`. 91/91 plain + 15/15 typed fixtures byte-identical; unicode round-trip (`wörld`) and codepoint-indexed slice (`café` → `af`) verified.
-- ✅ **Slice 14 — unicode (ASCII subset)** (dep: 8). **DONE 2026-06-07.** `charIsAlpha/Space/Upper/Lower/Punct`, `charToUpper/Lower`, `stringToUpper/Lower`. Nine C helpers in `medaka_rt.c`; `isUnicodeExtern`/`emitUnicodeExtern` added to `selfhost/llvm_emit.mdk` (predicates call C and tag raw 0/1 to Bool via `tagInt`; case-mappers return `LTChar`/`LTStr`). `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps ASCII members — NOT `ispunct()` — so `+`/`$`/`=`/`^`/`` ` ``/`|`/`~` (Unicode symbols Sm/Sc/Sk) correctly return `False`. String case-map is byte-wise ASCII (bytes ≥ 0x80 pass through, so UTF-8 multi-byte codepoints are unchanged). 10 plain fixtures (including `uni_punct_sym.mdk` proving `charIsPunct '+' = False`) + 1 typed fixture; 101/101 plain + 16/16 typed byte-identical. Full-Unicode classification (a Rust `unicode-*` crate) deferred; see RUNTIME-DESIGN §6.
+- ✅ **Slice 14 — unicode (ASCII subset)** (dep: 8). **DONE 2026-06-07.** `charIsAlpha/Space/Upper/Lower/Punct`, `charToUpper/Lower`, `stringToUpper/Lower`. Nine C helpers in `medaka_rt.c`; `isUnicodeExtern`/`emitUnicodeExtern` added to `compiler/llvm_emit.mdk` (predicates call C and tag raw 0/1 to Bool via `tagInt`; case-mappers return `LTChar`/`LTStr`). `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps ASCII members — NOT `ispunct()` — so `+`/`$`/`=`/`^`/`` ` ``/`|`/`~` (Unicode symbols Sm/Sc/Sk) correctly return `False`. String case-map is byte-wise ASCII (bytes ≥ 0x80 pass through, so UTF-8 multi-byte codepoints are unchanged). 10 plain fixtures (including `uni_punct_sym.mdk` proving `charIsPunct '+' = False`) + 1 typed fixture; 101/101 plain + 16/16 typed byte-identical. Full-Unicode classification (a Rust `unicode-*` crate) deferred; see RUNTIME-DESIGN §6.
 
 **Tier C — gated behind the reserved-ADT-tag precursor:**
 
@@ -7108,7 +7108,7 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
   `getEnv` (Option String). Plumb `argc`/`argv` by changing the emitted entry to
   `main(i32 %argc, ptr %argv)` and stashing them for the extern. **DONE 2026-06-07.**
   `mdk_set_args`/`mdk_args`/`mdk_get_env` in `runtime/medaka_rt.c`; `isEnvExtern`/
-  `emitEnvExtern` in `selfhost/llvm_emit.mdk`; `emitProgram` entry changed to 2-arg
+  `emitEnvExtern` in `compiler/llvm_emit.mdk`; `emitProgram` entry changed to 2-arg
   `@main(i32 %argc, ptr %argv)` (harmless for non-args programs); `LUnit` literal
   added to `emitLit`. Fixtures: `env_args_empty` ([] case — both oracle and native
   see no extra args), `env_getenv_none` (unset var → None → 0), `env_getenv_some`
@@ -7121,7 +7121,7 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
   `appendFile` (Result String String/Unit), `fileExists` (Bool), `listDir`
   (Result String (List String)), `readLine`/`readLineOpt`/`readAll` (stdin).
   `mdk_str_cstr` helper + seven C functions in `runtime/medaka_rt.c`; `isFileExtern`/
-  `emitFileExtern` in `selfhost/llvm_emit.mdk` (wired after `isEnvExtern`); 8 new
+  `emitFileExtern` in `compiler/llvm_emit.mdk` (wired after `isEnvExtern`); 8 new
   `declare i64` entries in `emitPreamble`. 6 fixtures: `s13_write_read` (write+read
   → length 5), `s13_append` (write+append+read → length 3), `s13_exists_true`,
   `s13_exists_false`, `s13_listdir_ok`, `s13_listdir_err`. All byte-identical vs
@@ -7159,12 +7159,12 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
 Dependency order for execution: **2–7 in any order (no deps) → 8 → {9, 14} → 10 →
 {11, 12, 13}**; 15 / RNG / hash are independent and separately scoped. Slices 2–9 and
 14 clear the bulk the self-host source leans on (string/char/array ops); 10–13 unlock
-the IO-and-`args`-heavy driver paths (`args` 140×, `readFile` 106× in `selfhost/`).
+the IO-and-`args`-heavy driver paths (`args` 140×, `readFile` 106× in `compiler/`).
 
 
 ## Archived north star stages 0 to 2
 
-> Moved from `PLAN.md` 2026-06-09: Stages 0–2 are ✅ COMPLETE. Owning docs `selfhost/README.md`, `selfhost/STAGE2-DESIGN.md`, `selfhost/BOOTSTRAP.md`. Reference only.
+> Moved from `PLAN.md` 2026-06-09: Stages 0–2 are ✅ COMPLETE. Owning docs `compiler/README.md`, `compiler/STAGE2-DESIGN.md`, `compiler/BOOTSTRAP.md`. Reference only.
 
 ### Stage 0 — Prerequisites before self-hosting can begin — ✅ COMPLETE
 
@@ -7178,18 +7178,18 @@ All Stage-0 prerequisites are met (details in PLAN-ARCHIVE.md):
   Phase 83/84 below; it does not block the port).
 - **Interpreter performance** — "good enough to bootstrap" confirmed; the cost is
   typeclass dispatch + persistent-tree allocation, addressed opportunistically in
-  the self-host perf work (`selfhost/PERF-NOTES.md`), not a blocker.
+  the self-host perf work (`compiler/PERF-NOTES.md`), not a blocker.
 - **Multi-file ergonomics at scale** — scale-probed; cross-module user-defined
   interfaces (the one hard gap) closed by Phase 130.
 
 ### Stage 1 — Self-host on the interpreter — ✅ COMPLETE
 
 Port the pipeline into Medaka, one stage at a time, checked against the OCaml
-reference. The self-host tree lives in `selfhost/`, each stage validated against
+reference. The self-host tree lives in `compiler/`, each stage validated against
 the OCaml reference via a differential harness on the interpreter.
 
 **All eight stages are ported and validated byte-for-byte** (full per-stage slice
-logs in `selfhost/README.md`):
+logs in `compiler/README.md`):
 
 | Stage | Status | Validated against |
 |-------|--------|-------------------|
@@ -7203,29 +7203,29 @@ logs in `selfhost/README.md`):
 | typecheck | ✅ | `tc_probe` + all 16 `=== TYPES ===` goldens |
 
 **Integration milestones beyond per-stage validation:**
-- **Composed front-end** (`selfhost/check.mdk`) — parse → desugar → resolve →
+- **Composed front-end** (`compiler/check.mdk`) — parse → desugar → resolve →
   exhaust → typecheck in one program; reproduces all 16 TYPES goldens + the
   resolve diagnostics.
-- **True execution** (`selfhost/entries/eval_run_main.mdk`) — runs programs for stdout,
+- **True execution** (`compiler/entries/eval_run_main.mdk`) — runs programs for stdout,
   matching all 16 `=== EVAL ===` goldens.
-- **Typed eval path / return-position dispatch** (`selfhost/entries/eval_typed_main.mdk`).
+- **Typed eval path / return-position dispatch** (`compiler/entries/eval_typed_main.mdk`).
 
 **The bootstrap closure** ("the compiler processes its own source"), validated by
-`test/diff_selfhost_selfproc.sh`:
-- ✅ **Leg A** — the self-hosted multi-module front-end typechecks all 12 selfhost
+`test/diff_compiler_selfproc.sh`:
+- ✅ **Leg A** — the self-hosted multi-module front-end typechecks all 12 compiler
   modules of its own source and matches the OCaml reference.
-- ✅ **Leg B** — the self-hosted eval engine executes a real selfhost stage (the
+- ✅ **Leg B** — the self-hosted eval engine executes a real compiler stage (the
   lexer) identically to the `eval_modules` oracle.
 - ✅ **Leg C** — the *typed* self-hosted eval executes a `Parser`-monad stage (the
   parser) identically to the oracle, via `typecheck.elaborateModules`.
 - ✅ **Leg D** — the *typed* self-hosted eval executes the `typecheck.mdk` stage
   (also monadic → return-position dispatch) through `eval_typed_modules_main.mdk`,
-  validated the same way Leg C validates the parser. See `selfhost/README.md`.
+  validated the same way Leg C validates the parser. See `compiler/README.md`.
 
 **Dictionary passing** for user `=>`-constrained functions is also ported
 (`eval_dict_main.mdk` + `typecheck.elaborateDict`), including inferred/unsignatured
 constraints and self/mutual recursion — beyond the RKey-only minimum the bootstrap
-source needs (the selfhost source has no `=>`-constrained user polymorphism).
+source needs (the compiler source has no `=>`-constrained user polymorphism).
 
 **Forward-looking performance levers** (backend-independent, cheap now / expensive
 to retrofit — recorded so they aren't lost; not blocking):
@@ -7238,10 +7238,10 @@ to retrofit — recorded so they aren't lost; not blocking):
   never fires) but **measured twice as a non-win** (list-indexed ~neutral-to-2.5%
   slower, array frames −14%) — the address resolution is itself interpreted, so it
   can't beat the by-name scan. Kept DORMANT by design; do not re-attempt on the
-  tree-walker. See `selfhost/PERF-NOTES.md`.
+  tree-walker. See `compiler/PERF-NOTES.md`.
 - ✅ **Stdlib string builder** — killed the O(n²) `++` string-building in
   lexer/formatter via native `stringConcat` over cons-built lists (2026-06-05; see
-  `selfhost/PERF-NOTES.md`).
+  `compiler/PERF-NOTES.md`).
 - Larger levers (bytecode VM, decision-tree match compilation) are recorded as
   post-profiling work, and feed Stage 2.
 
@@ -7249,12 +7249,12 @@ to retrofit — recorded so they aren't lost; not blocking):
 
 > ✅ **DONE (2026-06-08).** The LLVM backend is built and the compiler self-hosts
 > natively: all 7 stages native==interpreter (141 fixtures) and the self-compile
-> fixpoint is reached (C1–C3, `selfhost/BOOTSTRAP.md`). The design below is the
+> fixpoint is reached (C1–C3, `compiler/BOOTSTRAP.md`). The design below is the
 > as-built record; the next phase ([Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml))
 > hardens it toward canonical.
 
 > **Backend-architecture decision (bytecode VM first vs. straight to LLVM):** see
-> [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md). Recommends a Core IR
+> [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md). Recommends a Core IR
 > + bytecode VM as a "Stage 1.5" on-ramp (conditionally), on differential-testing
 > grounds — the bytecode VM is gated against the existing tree-walker oracle per
 > slice, where LLVM-first is not. The staged plan there feeds the work items below.
@@ -7274,7 +7274,7 @@ deliberately deferred to here:
   model) vs. monomorphization.
 - **Memory model & value representation:** heap allocation, closure layout,
   tagged ADTs/records, boxing/unboxing. **Proposal + recommendation now written:**
-  [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §8 recommends a
+  [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §8 recommends a
   uniform **tagged word** (OCaml-style, lossless for Medaka's 63-bit `Int`),
   rejects NaN-boxing (breaks conservative GC), and sketches the calling convention
   (commits to `musttail`). **Provisional, pending human ratification** — surfaced by
@@ -7283,14 +7283,14 @@ deliberately deferred to here:
   vs. a precise collector.
 - **Runtime library:** re-implement the `extern` catalog against the native
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
-  is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
+  is in [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
   - ✅ **Toolchain de-risking spike COMPLETE** (2026-06-07) — *ahead
     of the strict VM-first ordering by design* (front-loads the riskiest lift; uses
     only the tree-walker oracle). Proves the decided toolchain end-to-end (EMIT
     textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings):
-    `selfhost/llvm_emit.mdk` + `llvm_emit_main.mdk` + `runtime/medaka_rt.c`
-    (Boehm `GC_malloc` allocator since 2026-06-07; was a malloc-and-leak stub), gated by `test/diff_selfhost_llvm.sh`
+    `compiler/llvm_emit.mdk` + `llvm_emit_main.mdk` + `runtime/medaka_rt.c`
+    (Boehm `GC_malloc` allocator since 2026-06-07; was a malloc-and-leak stub), gated by `test/diff_compiler_llvm.sh`
     (emit → clang → link → run → diff vs `dev/eval_probe.exe`, **43/43
     byte-identical**). Slices cover scalars (1), top-level fns + `musttail`
     self-recursion (2), Bool/Float boundaries (2b), ADT ctors + decision-tree match
@@ -7302,7 +7302,7 @@ deliberately deferred to here:
     impl's lifted `@mdk_impl_<tag>_<method>`; `RDict`/`RDictFwd` read a runtime dict
     witness word → an inline if-chain over the method's impls. Dispatch needs types,
     so it has its OWN typed driver (`llvm_emit_typed_main.mdk`, desugar →
-    `elaborateDict` → lower → emit) and gate (`test/diff_selfhost_llvm_typed.sh`,
+    `elaborateDict` → lower → emit) and gate (`test/diff_compiler_llvm_typed.sh`,
     oracle = the TYPED Core-IR tree-walker `core_ir_dict_pp_main.mdk` — `eval_probe`
     is untyped and leaks the dispatch wrapper) over `test/llvm_fixtures_typed/`
     (**3/3 byte-identical**: single-impl `RKey`, multi-impl `RKey` narrowed at two
@@ -7334,30 +7334,30 @@ deliberately deferred to here:
     arg-tag call-site / impl-coalescing / bool-ctor notes (n)–(p), the slice-8
     array-cell / bounds-check / range-loop / slice-loop notes (q)–(t), and the slice-9
     list inline-fold / range-list back-to-front notes (u)–(v) — live in
-    [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4/§2.4a
+    [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md) §2.4/§2.4a
     (the spike's owning doc; rep decisions belong to the real backend).
-- ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
+- ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `compiler/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
-  fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
-- ✅ **§2.2 — Bytecode VM (all 6 slices + capstone) DONE (2026-06-06).** `selfhost/bytecode.mdk`
+  fixtures byte-identical across 6 corpora. See `compiler/README.md`.
+- ✅ **§2.2 — Bytecode VM (all 6 slices + capstone) DONE (2026-06-06).** `compiler/bytecode.mdk`
   (compiler + stack VM) + single-file driver + multi-module driver. 22/22 fixtures
   (18 single-file slices 1–5 + 4 multi-module slice 6). Capstone: lexer selfproc
   probe runs byte-for-byte through the bytecode multi-module VM
-  (`test/diff_selfhost_bytecode_selfproc.sh`, 1 real pass + 2 documented
+  (`test/diff_compiler_bytecode_selfproc.sh`, 1 real pass + 2 documented
   expected-gaps for parse/tc probes that need return-pos dispatch — closed by §2.3).
-  Zero `eval.mdk` changes — full Axis-2 reuse. See `selfhost/README.md`.
+  Zero `eval.mdk` changes — full Axis-2 reuse. See `compiler/README.md`.
 - **§2.3 — Close front-end gaps the VM surfaces.** Three concrete items; see
-  `selfhost/STAGE2-DESIGN.md` §2.3 for detail:
+  `compiler/STAGE2-DESIGN.md` §2.3 for detail:
   - ✅ **DONE (2026-06-06) — Typed multi-module bytecode VM path** (`eval_bytecode_typed_modules_main.mdk`)
     — `elaborateModules` (route-stamping) + `annotateProgram` per module +
     `bcEvalModulesOutput`; all three selfproc probes (lex/parse/tc) pass through
-    the typed VM (`test/diff_selfhost_bytecode_selfproc.sh` §2.3 section, 3/3).
+    the typed VM (`test/diff_compiler_bytecode_selfproc.sh` §2.3 section, 3/3).
     Also closed `EVariantUpdate` → `CVariantUpdate` Core IR gap (named-field
     constructor updates in `typecheck.mdk`'s `DImpl`/`DInterface` clauses).
   - ✅ **DONE (2026-06-06) — Dict-passing corpus through typed bytecode VM**
     (`eval_bytecode_typed_dict_main.mdk`) — `elaborateDict` + `lowerProgram` +
     `bcEvalOutput`; all 17 `test/eval_dict_fixtures/` pass byte-for-byte
-    (`test/diff_selfhost_bytecode_eval_dict.sh`, 17/17). Also fixed the Core IR
+    (`test/diff_compiler_bytecode_eval_dict.sh`, 17/17). Also fixed the Core IR
     `CMethod` lowering gap: `EMethodAt`'s `implRef`/`methodRef` were dropped; now
     `CMethod String Route (List Route) (List Route)` carries all three dispatch
     components (topRoute + implRoutes + methRoutes), mirroring the tree-walker's
@@ -7371,7 +7371,7 @@ deliberately deferred to here:
     effect node/param/dispatch). Documented in the `core_ir.mdk` header; gate
     `test/eval_fixtures/effect_poly.mdk` (a `<e>`-polymorphic combinator at
     `<Mut>` + pure rows) byte-identical across tree-walker / Core IR / bytecode
-    VM (19/19 in `diff_selfhost_eval.sh` / `_core_ir.sh` / `_eval_bytecode.sh`).
+    VM (19/19 in `diff_compiler_eval.sh` / `_core_ir.sh` / `_eval_bytecode.sh`).
 - **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
   standalone native binary — the finish line.
 
@@ -7388,7 +7388,7 @@ deliberately deferred to here:
 > capability surface parameterized (`RUNTIME-DESIGN.md` §6a), guaranteed TCO assumed
 > uniformly. **Verified 2026-06-06:** WASM tail calls + WasmGC (Wasm 3.0) are
 > supported on both V8/Cloudflare and Wasmtime/Fastly — `STAGE2-DESIGN.md` §2.4b.
-> Full rationale: `selfhost/STAGE2-DESIGN.md` §2.4/§2.4b, `RUNTIME-DESIGN.md`
+> Full rationale: `compiler/STAGE2-DESIGN.md` §2.4/§2.4b, `RUNTIME-DESIGN.md`
 > §6a/§7.1.
 
 ---
@@ -7423,12 +7423,12 @@ DONE; forward work lives in PLAN.md "Open roadmap" + the dedicated plan docs._
    arbitrary irrefutable pattern (`PCon`/`PCons`/`PList`/`PAs`/nested) — mid-block + last-position —
    via the existing `bindPattern` destructure (was `PVar`/`PWild`/`PTuple` only → `gapE`). Unblocked
    Phase-C Slice 3 `test` (pulls `prop_runner`'s constructor block-let into the native graph). See
-   `selfhost/EMITTER-GAPS.md`.
+   `compiler/EMITTER-GAPS.md`.
 2. ✅ **Effectively done.** Behavior suites ported to `medaka test` (`test_run`/`test_eval`/`test_loader`);
    the rest is internal OCaml API, intrinsically non-portable.
 3. ✅ **Done.** Differential fuzzer (MVP + native Tier-C, 1080 native programs clean, found+fixed
    named-field deriving).
-4. ✅ **DONE 2026-06-11 (`selfhost/PERF-RESULTS.md`, 18 fixpoint-gated wins).** Performance —
+4. ✅ **DONE 2026-06-11 (`compiler/PERF-RESULTS.md`, 18 fixpoint-gated wins).** Performance —
    emitter self-compile **12.04 s → 2.12 s (5.68×); ~59× faster than the OCaml interpreter**
    (125 s), peak RSS 770 → 200 MB. `-O2` flipped in both build drivers (the predicted `mem2reg`
    alloca win → 4.7× RSS drop); Boehm `GC_set_free_space_divisor(1)` (−36% alone); then a sweep of
@@ -7445,7 +7445,7 @@ DONE; forward work lives in PLAN.md "Open roadmap" + the dedicated plan docs._
 
 5. ✅ **DONE 2026-06-10 (`44f5433`).** OCaml-free seed bootstrap. The strict `medaka build` driver
    (`llvm_emit_modules_main.mdk`) **fixpoints** (C3a/C3b YES — the one real gap, now verified via
-   `test/selfcompile_build_fixpoint.sh`). Committed seed `selfhost/seed/emitter.ll` (~9.6 MB text IR,
+   `test/selfcompile_build_fixpoint.sh`). Committed seed `compiler/seed/emitter.ll` (~9.6 MB text IR,
    deterministic); `test/bootstrap_from_seed.sh` = `clang(seed)→seed_emitter→re-emit→cmp→clang→medaka_emitter`,
    **no `medaka run` anywhere** (opt-in gate). `build_cmd.mdk` reads `MEDAKA_EMITTER` env (native emitter
    binary) with the `medaka run` fallback. Self-refresh confirmed (native emitter reproduces the seed = C3b);
@@ -7484,7 +7484,7 @@ construction — see Phase C #12 below).
 **Deferred (user, not near/mid-term):** GC, cross-platform (arm64-first accepted).
 
 **🔝 TOP PRIORITY (set 2026-06-09): close the TYPECHECK-AUDIT findings.** The
-2026-06-09 audit ([`selfhost/TYPECHECK-AUDIT.md`](./selfhost/TYPECHECK-AUDIT.md)) —
+2026-06-09 audit ([`compiler/TYPECHECK-AUDIT.md`](./compiler/TYPECHECK-AUDIT.md)) —
 4 confirmed divergences (2 soundness-class), no coherence checking, 2 latent
 Phase-134-class hazards, plus C/D correctness + diagnostic gaps — is the owning doc
 and the front of the queue, ahead of the construct-sweep / test-port / fuzzer below
@@ -7493,8 +7493,8 @@ arms + first-match dispatch + arg-tag chains are sound only under guarantees the
 *OCaml* typechecker currently enforces. **Fix order (the audit's own):**
 `S1 → S2 → T1 → T2 → S3 → L1+L2 (before E4) → C-series → D-series`, each with a
 repro + oracle-reference + fix location in the doc. Most are "port the oracle
-behavior into `selfhost/{typecheck,eval,marker}.mdk`" — re-validate each with the
-stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items first:
+behavior into `compiler/{typecheck,eval,marker}.mdk`" — re-validate each with the
+stage's `diff_compiler_*` / `bootstrap_*` harness. Confirmed soundness items first:
 - **S1** — ✅ **CLOSED (`69b3400`).** `EMethodAt` applied dicts without the
   awaits-args gate → valid programs panicked. Ported the gate into `eval.mdk`
   (758-771, reuses `awaitsArgs`); repro yields `[]` == oracle; all gates green.
@@ -7525,31 +7525,31 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `blockLet` (`typecheck.mdk:1436,1451`) → `(not isMut) && isNonexpansive e`. Now
   rejects `Type mismatch` identically; valid mut still typechecks. Fixture
   `test/typecheck_error_fixtures/mut_generalization.mdk`. All gates green. Audit §T1.
-- **OBS1** (selfhost missing diagnostic, surfaced during T1) — selfhost does NOT
+- **OBS1** (compiler missing diagnostic, surfaced during T1) — compiler does NOT
   enforce the oracle's `let mut not allowed inside a do block` prohibition; an
-  invalid `do { let mut … }` is wrongly accepted by selfhost (oracle rejects).
+  invalid `do { let mut … }` is wrongly accepted by compiler (oracle rejects).
   Separate from value restriction; a missing-diagnostic divergence. Low priority.
 - **T2** — ✅ **CLOSED (`9dfb9e5`).** Inline `let … in` dropped `mut`/`is_fun` →
   recursive inline let panicked `unbound variable`. Split the `ELet` arm
   (`inferLet`): `is_fun`+`PVar` → `inferRecLet` (placeholder pre-bind + generalize
   via `genRestricted`); `mut` → `MutLetRequiresBlock` error. Repro accepts == oracle;
   inline `let mut … in` rejected == oracle; T1 generalize interaction clean.
-- **OBS2** (selfhost parser gap, surfaced during T2) — selfhost can't parse a
+- **OBS2** (compiler parser gap, surfaced during T2) — compiler can't parse a
   `let … in` as an indented clause body (oracle accepts). Moved to the canonical
-  [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) list; verified repro
+  [Known parser gaps](#known-parser-gaps-compiler-parsermdk) list; verified repro
   there.
-- **OBS3** (selfhost typed-path gap, surfaced during C3) — ✅ **CLOSED 2026-06-10** (as a
-  side-effect of the medaka-test GAP-C work). selfhost now has an `infer` arm for
+- **OBS3** (compiler typed-path gap, surfaced during C3) — ✅ **CLOSED 2026-06-10** (as a
+  side-effect of the medaka-test GAP-C work). compiler now has an `infer` arm for
   `EHeadAnnot` (head annotations like `Map`/`Set` literal head-pins via `fromEntries`):
   `infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty` (`typecheck.mdk:1385`, helper
   `:2038`) — was `panic "unsupported expression (slice 1)"`. `check.mdk` on `map.mdk`/`set.mdk`
-  now typechecks (schemes, no panic); their doctests are in the `diff_selfhost_test` gate.
+  now typechecks (schemes, no panic); their doctests are in the `diff_compiler_test` gate.
 - **OBS4** — ✅ **CLOSED (2026-06-10, during the medaka-test GAP-C work).** Record
   *construction* `MissingField` check: `checkMissingFields`/`missingFieldMsg`
-  (`selfhost/typecheck.mdk:1981-1993`, called from `inferRecordCreateWith`) — message
+  (`compiler/typecheck.mdk:1981-1993`, called from `inferRecordCreateWith`) — message
   `"Missing field <f> in construction of record <r>"` byte-identical to oracle
   (`lib/typecheck.ml:718`). Fixture `test/typecheck_error_fixtures/missing_field.mdk`;
-  `test_typecheck` 482/482, `diff_selfhost_check` 40/40, C3a/C3b fixpoint green.
+  `test_typecheck` 482/482, `diff_compiler_check` 40/40, C3a/C3b fixpoint green.
 - **C3** — ✅ **CLOSED (`d4f1469`).** Added `AnnotationTooGeneral` — after
   `inferAnnot`'s unify, requires the annotation's tyvars to stay distinct unbound
   (flags grounding + collapse via `sigTvarIds`/`hasDupI`); message byte-identical
@@ -7566,7 +7566,7 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   to the module path (`checkModuleFullImpl`), gated identically → two-entry-point
   parity. Multi-module fixture + all gates green (also fixed a trailing-slash root
   bug in the modules harness). **Residual (C8b, follow-up):** default-body inference
-  only covers *constraint-carrying* defaults on BOTH selfhost entry points, and is
+  only covers *constraint-carrying* defaults on BOTH compiler entry points, and is
   gated OFF on the plain-check path; the oracle type-checks ALL default bodies
   unconditionally. Full oracle-parity on *unconstrained* default-body diagnostics
   needs extending `inferDefaultBodies` to all defaults + ungating — out of C8 scope.
@@ -7613,7 +7613,7 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   decision** (eager vs lazy top-level nullary effects). Deferred for user input; NOT
   closed autonomously.
 - **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
-  selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
+  compiler as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
   (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
   anonymous non-default non-specialization overlap → `Overlapping impls`; named /
   strict-specialization accepted). Runs over USER decls only (prelude excluded → no
@@ -7627,7 +7627,7 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   it before retirement. See TYPECHECK-AUDIT §OH1.
 
 **Oracle (hybrid).** As OCaml recedes, ground truth = the Medaka tree-walker
-(`eval.mdk`) for runtime BEHAVIOR (native diffed vs interpreted-selfhost — the
+(`eval.mdk`) for runtime BEHAVIOR (native diffed vs interpreted-compiler — the
 bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 (tokens/AST/Core-IR/types). Belt-and-suspenders; neither depends on `lib/`.
 
@@ -7637,7 +7637,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >
 > **TYPECHECK-AUDIT — autonomous phase COMPLETE, 16 findings closed** (all verified
 > on main, all gates incl. native self-compile fixpoint green): S1 S2 T1 **T1b**
-> T2 S3 · C1 C2 C3 C6 C7 C8 C9 · D1 D2 · OBS4. Detail in `selfhost/TYPECHECK-AUDIT.md`.
+> T2 S3 · C1 C2 C3 C6 C7 C8 C9 · D1 D2 · OBS4. Detail in `compiler/TYPECHECK-AUDIT.md`.
 > - **Deferred (need oversight / gated):** C4 (design — Phase-125 lazy nullary),
 >   C5 (route-taxonomy `RLocal` + uncertain blast radius), L1/L2 (E4-gated /
 >   route-fragile), D3 (scope-cut) D4 (route) D7 (dispatch-latent) D8 (annotate
@@ -7646,7 +7646,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   (native same-head dispatch), OBS1 (let-mut-in-do diag), OBS2 (parser: let..in
 >   indented clause body). [OBS3 EHeadAnnot typed-path — ✅ CLOSED 2026-06-10.]
 >
-> **Construct-coverage sweep (Stage 3 #2b)** — `selfhost/CONSTRUCT-COVERAGE.md` +
+> **Construct-coverage sweep (Stage 3 #2b)** — `compiler/CONSTRUCT-COVERAGE.md` +
 > gate `test/build_construct_coverage.sh`. Started 114 PASS / 15 GAP; **closed
 > F1·H-a·D1·D2·B1·B2 + the OBS5 DCE-`collectVars` soundness audit → 123 PASS**,
 > fixpoint intact throughout.
@@ -7656,14 +7656,14 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   for unannotated polymorphic constrained fn), D3/D4, let-else-refutable-nonctor.
 >   - **✅ Gap G — CLOSED (Phase 151, A2 type-directed rewrite): comparison/equality
 >   OPERATORS now dispatch to user/derived `Eq`/`Ord` impls.** `==`/`!=`/`<`/`>`/`<=`/`>=`
->   carry a dispatch ref on `EBinOp` (`lib/ast.ml` + `selfhost/ast.mdk`); typecheck
+>   carry a dispatch ref on `EBinOp` (`lib/ast.ml` + `compiler/ast.mdk`); typecheck
 >   stamps it (RKey) ONLY when the operand grounds to a **non-primitive** with an
->   Eq/Ord impl (`lib/typecheck.ml` `check_binop_usages`; `selfhost/typecheck.mdk`
+>   Eq/Ord impl (`lib/typecheck.ml` `check_binop_usages`; `compiler/typecheck.mdk`
 >   `resolveBinopSites`), and the dict-pass rewrites the stamped node into the method
 >   application (`<`→`lt`, `==`→`eq`, `!=`→`not (eq …)`, …) — `lib/dict_pass.ml`
 >   `rewrite_binops` (wired into `Dict_pass.run` + `Eval.eval_modules`) and
->   `selfhost/typecheck.mdk` `dictPass` (`rewriteBinopExpr`). Interpreter + selfhost
->   eval + native `==` on a user ADT all dispatch to the impl; selfhost == OCaml oracle
+>   `compiler/typecheck.mdk` `dictPass` (`rewriteBinopExpr`). Interpreter + compiler
+>   eval + native `==` on a user ADT all dispatch to the impl; compiler == OCaml oracle
 >   on user-written impls. Primitive operands stay the structural builtin EBinOp (zero
 >   churn — primitive-only IR byte-identical; no recursion). **✅ Native `<`/`lt`/`>`/`<=`/`>=`
 >   on a user/derived `Ord` ADT — CLOSED 2026-06-10 (slice-7, `13af6ab`).** Emitter-only
@@ -7676,22 +7676,22 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   native == oracle; fixpoint held byte-identical (no re-baseline). `max`/`min` over
 >   generic `Ord a` NOT closed (separate — pure default methods, no concrete tag; needs
 >   RDict→default-body synthesis; scoped 2026-06-10). Fixtures
->   `test/llvm_fixtures_typed/disp_ord_default_{lt,gt,lte,gte}.mdk`. (A pre-existing, independent selfhost-vs-oracle
+>   `test/llvm_fixtures_typed/disp_ord_default_{lt,gt,lte,gte}.mdk`. (A pre-existing, independent compiler-vs-oracle
 >   divergence on *derived* `Ord` `compare`/`lt` — present on `main`, untouched by this
->   change — was **CLOSED 2026-06-10**: `selfhost/desugar.mdk` `deriveForData` was missing
+>   change — was **CLOSED 2026-06-10**: `compiler/desugar.mdk` `deriveForData` was missing
 >   the `"Ord"` arm, so derived `Ord` on `data`/record types was silently dropped → inverted
 >   ctor-tag fallback. Added the one arm mirroring `lib/desugar.ml:574`
 >   (`deriveOrdData` generator already existed, wired only into newtype); `compare Red Blue` =
->   `Lt` and `Red < Blue` = `True` selfhost == oracle, nullary + payload. Fixpoint untouched.
+>   `Lt` and `Red < Blue` = `True` compiler == oracle, nullary + payload. Fixpoint untouched.
 >   Fixtures `test/{diff_fixtures,eval_dict_fixtures}/adt_deriving_ord.{mdk,golden}`. **Follow-up
 >   CLOSED 2026-06-10:** `deriveForRecord` was a full stub — records derived NO interfaces.
 >   Added `Eq`/`Ord`/`Debug`/`Display`/`Generic` arms (dedicated field-access generators
 >   mirroring `lib/desugar.ml`'s `derive_*_record` family — records read fields by name via
 >   `EFieldAccess`, not positional ctor patterns, so they do NOT reuse the data derivers).
->   `Point { x:Int, y:Int } deriving (Eq, Ord, Debug)`: `==`/`compare`/`debug` selfhost == oracle,
+>   `Point { x:Int, y:Int } deriving (Eq, Ord, Debug)`: `==`/`compare`/`debug` compiler == oracle,
 >   byte-identical desugar dump. Fixtures `test/diff_fixtures/record_deriving.{mdk,golden}` +
 >   `test/eval_dict_fixtures/record_deriving_ord.mdk` (typed-path `<` dispatch). Fixpoint
->   untouched — no `selfhost/*.mdk` record derives.)
+>   untouched — no `compiler/*.mdk` record derives.)
 >
 > **Bar-item-2 (port tests to `medaka test`) — STARTED:** `test/ported/test_run_ported.mdk`
 > = 40/46 `test_run.ml` cases → 96 assertions, all green + deterministic, no source
@@ -7720,13 +7720,13 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   Gap C C2/C3-unannotated. (Trap: subtract the seed from the promoted set + `resetState`
 >   after discovery, else prelude listItems arities get re-captured → SIGSEGV.)
 > - **✅ Gap G native ordering operators (`13af6ab`)** — see the Phase-151 entry above
->   (now updated). Gap G fully closed across interp / selfhost / native for `==` and
+>   (now updated). Gap G fully closed across interp / compiler / native for `==` and
 >   `< > <= >=` on user/derived `Ord`.
 > - **✅ Differential fuzzer (MVP + native Tier-C)** — see near-term #4 (updated). 1080
 >   native programs byte-identical; found + fixed the named-field-data deriving divergence.
 > - **✅ Named-field-data deriving (`e695539`)** — `data Box = Box { v : Int } deriving (Debug)`
->   panicked in the selfhost tree-walker. NOT a desugar bug (oracle also builds positional
->   `PCon` for ConNamed): the fix is value-representation in `selfhost/eval.mdk` —
+>   panicked in the compiler tree-walker. NOT a desugar bug (oracle also builds positional
+>   `PCon` for ConNamed): the fix is value-representation in `compiler/eval.mdk` —
 >   `evalProgram` never populated `ctorFieldOrdersRef` + `ERecordCreate` always built
 >   `VRecord`; now mirrors `lib/eval.ml` (registered named-field ctor → positional `VCon`).
 >   All 5 deriver kinds fixed. (Recurring "looks like desugar, is the eval driver" trap.)
@@ -7755,7 +7755,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    foo.mdk [-o out]` emits IR via the self-hosted emitter → `clang` → native
    binary, for arbitrary user programs. `lib/build_cmd.ml` + `bin/main.ml`
    dispatch + `test/build_cmd.sh` (build+run+diff, 6 programs). Shell-out MVP
-   (subprocess `run`s `selfhost/entries/llvm_emit_modules_main.mdk`, captures stdout —
+   (subprocess `run`s `compiler/entries/llvm_emit_modules_main.mdk`, captures stdout —
    clean Ref-state isolation); repo-relative asset resolution; no artifact cache;
    gap policy = hard error (default non-gap-tolerant path). **Key boundary
    finding:** the build passes an **EMPTY prelude** — the full `stdlib/core.mdk`
@@ -7773,7 +7773,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    useful for real programs** (anything using `println`/typeclasses), not tail-end
    polish. Sub-goal **(a) make the real `stdlib/core.mdk` prelude emittable — DONE
    (2026-06-09):**
-   - ✅ **DCE (`08be86a`).** `selfhost/dce.mdk` (`dceFilter`) filters `allDecls` in
+   - ✅ **DCE (`08be86a`).** `compiler/dce.mdk` (`dceFilter`) filters `allDecls` in
      `llvm_emit_modules_main.mdk`'s `runEmit` before lowering: drops plain
      (`DFunDef`) bindings unreachable from `main` + emitting-decl roots; **retains
      ALL impls/interfaces whole** (sound — impls are dynamic-dispatch targets, off
@@ -7787,7 +7787,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
      `CTBranch HUnit` as an irrefutable no-test head (emit the branch, no
      discriminant) — emit-only, `canonPat`/Core-IR untouched. Closes the last
      census-A gap; `Arbitrary` impls (`arbitrary () = …`) emit. Fixture
-     `test/llvm_fixtures/unit_head.mdk`; 170/170 `diff_selfhost_llvm` byte-identical.
+     `test/llvm_fixtures/unit_head.mdk`; 170/170 `diff_compiler_llvm` byte-identical.
    - ✅ **Prelude flip (`1bde51a`).** `lib/build_cmd.ml` now passes the real
      `stdlib/core.mdk`. Verified native==interpreter for `debug`/`Debug`, `==`/`Eq`,
      `compare`/`Ord`, `map`/`Foldable`, `data … deriving (Eq, Debug)`. `test/build_cmd.sh`
@@ -7796,7 +7796,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    - ✅ **`Unit`-return auto-print FIXED (Stage 3 2b, `35ff12a`).** Was: a
      `main : <IO> Unit` program appended a spurious `0` (native `println "hello"` →
      `hello\n0\n` vs interpreter `hello\n`). Root: `callRetTy` (in the emitter's
-     pure inference pass, `selfhost/llvm_emit.mdk` ~line 4040) defaulted unknown
+     pure inference pass, `compiler/llvm_emit.mdk` ~line 4040) defaulted unknown
      callees to `LTInt`, and IO output externs (`putStr`/`putStrLn`/`ePutStr`/
      `ePutStrLn`) weren't in the sig table → `println` (`= putStrLn (display x)`)
      inferred `LTInt`, propagating to `main`'s result → auto-print routed through
@@ -7829,7 +7829,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    well-typed-by-construction programs (Tiers 0–2: scalars/arithmetic → ADTs/records/
    match/tuples → `deriving (Eq,Ord,Debug)` + comparison/equality operators), 0% oracle
    rejection. Driver `test/fuzz_diff.sh`: **Tier-A** oracle + oracle-independent invariants
-   (Eq/Ord laws, operator↔method, arithmetic identities); **Tier-B** oracle vs selfhost
+   (Eq/Ord laws, operator↔method, arithmetic identities); **Tier-B** oracle vs compiler
    tree-walker (`eval_dict_main`, batched ~12 blocks/program); **Tier-C** oracle vs
    `medaka build` native (`948329b`). Deterministic `--seed`, known-gap allowlist,
    self-tested. **Results:** 680 programs clean Tier-A/B; **1080 native programs
@@ -7850,14 +7850,14 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   `take`/hand-rolled `myMap`, single-clause guarded + multi-clause) lower to an
   O(1)-stack destination-passing loop; `upto 1 2_000_000` SIGSEGV(139)→`2000000`.
   Structural+deterministic (fixpoint C3a/C3b YES). Gate `test/diff_native_stack.sh`.
-  See `selfhost/TRMC-DESIGN.md`. **Phase 2 deferred:** dict-passed methods (stdlib
+  See `compiler/TRMC-DESIGN.md`. **Phase 2 deferred:** dict-passed methods (stdlib
   `map`/`filterMap` still overflow), match/if-arm in-position cons, non-`::` last-field
   TMC. (OCaml `[@tail_mod_cons]` is the blueprint.)
 - **Error-path / diagnostics parity — AUDITED 2026-06-10 + BLOCKERs closing.** Full
-  read-only sweep (lex/parse/resolve/typecheck/eval) found **6 BLOCKERs** (selfhost
+  read-only sweep (lex/parse/resolve/typecheck/eval) found **6 BLOCKERs** (compiler
   false-accepts an invalid program or crashes uninformatively) + 7 MAJORs + 3 MINORs;
   all 51 pre-existing error fixtures pass. **5 of 6 BLOCKERs CLOSED:** B1/B2/B3 lexer
-  false-accepts (unterminated string/comment, bad escape — `selfhost/lexer.mdk` now
+  false-accepts (unterminated string/comment, bad escape — `compiler/lexer.mdk` now
   raises like `lexer.mll`, `9867626`); B4 missing-impl never rejected (ported
   `NoImplFound` from `lib/typecheck.ml`, `5d78c61` — no over-rejection, self-compile
   held); B6 `eval_run_main` silent no-main (now errors like oracle). **In flight:** B5
@@ -7867,8 +7867,8 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   R3 (bad import → unbound-var not unknown-module), E10/C4 (eval_run suppresses top-level
   side-effect thunks — the Phase-125 lazy-nullary design point), E8/TC5/E9 (typecheck-error
   → runtime-panic degradation, intrinsic to the untyped `eval_main` driver). Full inventory
-  + repros in the 2026-06-10 progress log below + memory `project_selfhost_error_path_gap`.
-- **Performance** — ✅ **DONE 2026-06-11 (bar-item 4, `selfhost/PERF-RESULTS.md`).** `-O2` on,
+  + repros in the 2026-06-10 progress log below + memory `project_compiler_error_path_gap`.
+- **Performance** — ✅ **DONE 2026-06-11 (bar-item 4, `compiler/PERF-RESULTS.md`).** `-O2` on,
   Boehm GC tuned, ~18 emitter/typecheck O(N²) hot paths fixed: self-compile **12.04 s → 2.12 s
   (5.68×); ~59× faster than the OCaml interpreter**. Remaining levers (dict-passing membership,
   threaded-sig tree, TRMC #56) are supervised-only / stack-scalability, mapped in PERF-RESULTS.md.
@@ -7885,7 +7885,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   Boehm conservative GC today. Precise GC + the WasmGC path (the wedge target needs WasmGC, a
   sibling backend off the Core IR seam — §2.4b) are eventual, not roadmap-blocking.
 - **Housekeeping refactor of the compiler** — now that it works + self-compiles,
-  a general code-quality pass over `selfhost/*.mdk` (+ `llvm_emit.mdk`,
+  a general code-quality pass over `compiler/*.mdk` (+ `llvm_emit.mdk`,
   `runtime/medaka_rt.c`): style + readability + naming consistency, **DRY**
   (consolidate duplicated helpers — e.g. `util.mdk` vs prelude, repeated emit
   patterns), remove dead/historical code + stale comments, and dogfood Medaka
@@ -7903,7 +7903,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 _Moved verbatim from PLAN.md on 2026-06-14. Per-tool / per-slice completion record of the
 Stage-4 tooling port (fmt/test/new/repl/build/lsp) + the Phase-C native-CLI capstone. All DONE._
 
-The compiler pipeline self-hosts (`selfhost/`); the native backend compiles it. What
+The compiler pipeline self-hosts (`compiler/`); the native backend compiles it. What
 remains in OCaml (`lib/`+`bin/`) is the **tooling around** the pipeline. **Decision
 (2026-06-10): port ALL of it to Medaka, targeting a natively-compiled `medaka` binary
 (LSP + REPL in scope) — the full-purity retirement endpoint.** Each tool is
@@ -7918,7 +7918,7 @@ and a TOML reader (for `medaka.toml`).
 **Phase A — prerequisites (parallelizable; independent of the emitter-gap work):**
 1. ✅ **`printer.mdk`** (AST→source, mirror `lib/printer.ml`) — DONE 2026-06-10. Full
    Wadler/Leijen doc algebra, every AST node, **26/26 byte-identical** to OCaml
-   `program_to_string`; `dev/print_probe.ml` oracle + `test/diff_selfhost_printer.sh`.
+   `program_to_string`; `dev/print_probe.ml` oracle + `test/diff_compiler_printer.sh`.
    NOTE: this is `program_to_string` (AST→source core), NOT `format_program` (comment-
    preserving) — see A.5.
 2. ✅ **Subprocess extern `runCommand`** — interpreter side DONE 2026-06-10
@@ -7929,26 +7929,26 @@ and a TOML reader (for `medaka.toml`).
 3. ✅ **TOML reader** (`stdlib/toml.mdk`) — DONE 2026-06-10. Mirrors `project_config.ml`'s
    subset (`[section]`, `key="string"`, string arrays, `#` comments); 12/12 doctests.
 4. ✅ **Diagnostics surfacing layer** (mirror `lib/diagnostics.ml` 479) — structured errors
-   the CLI + LSP consume. **DONE (WS-4/F6, 2026-06-21, `selfhost/DIAGNOSTICS-SURFACING-PLAN.md`).**
+   the CLI + LSP consume. **DONE (WS-4/F6, 2026-06-21, `compiler/DIAGNOSTICS-SURFACING-PLAN.md`).**
    Native `medaka check` now prints positioned, humane, carat-rendered diagnostics
    byte-identical to the OCaml oracle; gate `diff_native_cli error/*` 7/7.
-5. ✅ **Comment side-channel** (selfhost lexer) — DONE 2026-06-10. `RComment` in
+5. ✅ **Comment side-channel** (compiler lexer) — DONE 2026-06-10. `RComment` in
    `lexer.mdk` (stripped before layout → token stream byte-identical); `collectComments`
    surfaces line/col/text; **8/8 byte-identical** to `lib/`'s channel. Unblocks the fmt port.
 
 **Phase B — tools (each differential-tested vs OCaml):**
-6. ✅ Formatter `medaka fmt` — DONE 2026-06-10 (`a933af9`). `selfhost/{fmt,printer}.mdk` +
+6. ✅ Formatter `medaka fmt` — DONE 2026-06-10 (`a933af9`). `compiler/{fmt,printer}.mdk` +
    `fmt_main.mdk`; comment interleaving over the position+comment channels; **37/37 byte-identical**
-   to `medaka fmt` (11 comment-heavy + 26 comment-free). Gate `test/diff_selfhost_fmt.sh`.
-7. ✅ `medaka test` — DONE 2026-06-10 (`c6a4fd0`). `selfhost/{doctest,prop_runner,test_main}.mdk`;
+   to `medaka fmt` (11 comment-heavy + 26 comment-free). Gate `test/diff_compiler_fmt.sh`.
+7. ✅ `medaka test` — DONE 2026-06-10 (`c6a4fd0`). `compiler/{doctest,prop_runner,test_main}.mdk`;
    **6/6 byte-identical** (both doctest paths + passing props + FAIL path); `eval.mdk` gained an RNG +
-   `evalModulesRootEnv` + eval-entry exports. Gate `test/diff_selfhost_test.sh`.
+   `evalModulesRootEnv` + eval-entry exports. Gate `test/diff_compiler_test.sh`.
    **Completeness follow-ups (B.7, not blocking — task #28):**
    - **(a) Error-path doctests not mirrorable** — OCaml `eval_suppressed` traps a per-example runtime
-     panic → one `ERROR …` line; the selfhost eval oracle has NO per-binding exception recovery (a
-     panic aborts the whole run). Needs per-binding panic trapping in selfhost eval.
+     panic → one `ERROR …` line; the compiler eval oracle has NO per-binding exception recovery (a
+     panic aborts the whole run). Needs per-binding panic trapping in compiler eval.
    - **(b) Prop RNG parity (failing props only)** — 3 RNGs in play (reference SplitMix64 externs, OCaml
-     `Random` in `prop_runner.ml`, selfhost's new LCG); passing props are RNG-independent (match), but a
+     `Random` in `prop_runner.ml`, compiler's new LCG); passing props are RNG-independent (match), but a
      FAILING prop's shrunk counterexample diverges. Reference uses OCaml `Random`, NOT the SplitMix64
      externs (see [[project_rng_splitmix64]]).
    - **(c) Selfhost eval-oracle extern/typecheck gaps block doctests on some stdlib files** (pre-existing,
@@ -7956,10 +7956,10 @@ and a TOML reader (for `medaka.toml`).
      expression (slice 1)`; `array.mdk` needs `arrayCopy`; `hash_map`/`hash_set` need `hashInt`;
      `core.mdk` char doctest hits `charCode: not a Char`. **Most actionable cluster** — closing it widens
      doctest coverage to the full stdlib.
-8. ✅ `medaka new` — DONE 2026-06-10 (`88c3b55`). `selfhost/new_cmd.mdk` + `new_main.mdk`; 4
-   scaffolded files byte-identical; added `makeDir` extern. Gate `diff_selfhost_new.sh`.
-9. ✅ REPL — DONE 2026-06-10 (`a300f73c` merge). `selfhost/repl.mdk` + `repl_main.mdk`; banner/
-   prompt/`:type`/`:browse`/`:reset`/`:quit` + error recovery; gate `diff_selfhost_repl.sh`.
+8. ✅ `medaka new` — DONE 2026-06-10 (`88c3b55`). `compiler/new_cmd.mdk` + `new_main.mdk`; 4
+   scaffolded files byte-identical; added `makeDir` extern. Gate `diff_compiler_new.sh`.
+9. ✅ REPL — DONE 2026-06-10 (`a300f73c` merge). `compiler/repl.mdk` + `repl_main.mdk`; banner/
+   prompt/`:type`/`:browse`/`:reset`/`:quit` + error recovery; gate `diff_compiler_repl.sh`.
    (`:load`/`:reload` deferred → process isolation, per [[no-catchable-panics-isolation]].)
 10. LSP (`lsp_server.ml`+`lsp_log.ml`, 912+83) — **SCOPED 2026-06-10 (7-slice plan, task #36).**
     Expr-level locations are CHEAP (transparent `ELoc` wrapper, fixpoint-safe via sexp+core_ir
@@ -7967,12 +7967,12 @@ and a TOML reader (for `medaka.toml`).
     env/`ppScheme` exposure** (hover/completion/inlay). parse-error-as-Result ✅ (`1fa79c0`),
     diagnostic-loc via `ELoc` (B.10.2). Slices: JSON-RPC skeleton → diagnostics → ELoc → located
     diags → fmt/symbols/def/highlight → hover/completion/inlay → analyze_project.
-11. ✅ `build` driver — DONE 2026-06-10 (`1bc6005`). `selfhost/build_cmd.mdk` + `build_main.mdk`;
+11. ✅ `build` driver — DONE 2026-06-10 (`1bc6005`). `compiler/build_cmd.mdk` + `build_main.mdk`;
     shell-out emit (Ref isolation) + `runCommand`→clang; 9/9 differential builds == OCaml `medaka
     build`. (`runCommand`/`makeDir` native-emit done, #18 `a0c7b111`.)
 
 **Phase C — capstone (#57, ✅ COMPLETE 2026-06-11 — Slices 0–4 DONE):**
-12. CLI dispatcher `selfhost/medaka_cli.mdk` (replaces `bin/main.ml`, 1076 LOC), native-compiled into
+12. CLI dispatcher `compiler/medaka_cli.mdk` (replaces `bin/main.ml`, 1076 LOC), native-compiled into
     the `medaka` binary — the retirement integration piece. Converges with bar-item-5 (self-bootstrap).
     **UNBLOCKED 2026-06-10** by clause-label SSA (#53). **Slices landed:**
     - **Slice 0+1 ✅ (`8a6c2f7`):** split `check.mdk` into logic (`runCheck`) + driver `check_main.mdk`
@@ -7996,8 +7996,8 @@ and a TOML reader (for `medaka.toml`).
       + a `("test" :: rest)` arm — mirroring `runRunCmd`/`runBuildCmd`. `test` pulls `prop_runner` into the
       native module graph for the FIRST time, which surfaced (and is gated by) the closed **emitBlock
       arbitrary-irrefutable block-let gap** (`prop_runner.mdk:265` `let PropParam x ty = …`; see Stage-3
-      bar item 1 + `selfhost/EMITTER-GAPS.md`). `test_cmd`/`medaka_cli` are NOT in the emitter graph →
-      seed byte-identical. Gates: `diff_selfhost_test` byte-identical (10/10), `diff_native_cli` 53/0
+      bar item 1 + `compiler/EMITTER-GAPS.md`). `test_cmd`/`medaka_cli` are NOT in the emitter graph →
+      seed byte-identical. Gates: `diff_compiler_test` byte-identical (10/10), `diff_native_cli` 53/0
       (extended with `test/{doc,prop,nodoc}` — `test/prop` is the native prop_runner block-let proof).
     - **Slice 4 ✅ (CAPSTONE COMPLETE, `repl`/`lsp`):** added `runReplCmd` + `runLspCmd` directly to
       `medaka_cli.mdk` importing `repl.{initSession, replLoop}` + `lsp.{runServer}` (no new `*_cmd.mdk`
@@ -8005,10 +8005,10 @@ and a TOML reader (for `medaka.toml`).
       bare-invocation → REPL behavior. `MEDAKA_ROOT` for stdlib path (same `envOr` convention as other
       arms). The universal per-module name-mangling fix (`332ef41`, merged pre-work) resolved any
       cross-module name collisions (e.g. `isIdentChar` in repl.mdk/lsp.mdk) without function renames.
-      `diff_native_cli.sh` extended with `repl/session` (same input as `diff_selfhost_repl.sh` piped
+      `diff_native_cli.sh` extended with `repl/session` (same input as `diff_compiler_repl.sh` piped
       to native `medaka repl`, strip_unit trailing `0`) and `lsp/session` (initialize+didOpen+exit
       framed to native `medaka lsp`, compared semantically vs interpreted `lsp_main.mdk`). Gates:
-      `diff_selfhost_repl` PASS; `diff_selfhost_lsp` 5/0; `diff_native_cli` 54/0; fixpoint C3a YES /
+      `diff_compiler_repl` PASS; `diff_compiler_lsp` 5/0; `diff_native_cli` 54/0; fixpoint C3a YES /
       C3b YES; seed byte-identical. **Phase C capstone: native `medaka` does
       check/fmt/new/build/run/test/repl/lsp OCaml-free.**
     - **Remaining:** ~~Slice 4 (`repl`/`lsp`)~~ — DONE.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# test/diff_selfhost_lsp_b4.sh — differential gate for the self-hosted LSP
+# test/diff_compiler_lsp_b4.sh — differential gate for the self-hosted LSP
 # (Stage 4 Phase B.10, slice B.10.4: hover / completion / inlayHint).
 #
 # Drives BOTH servers with the same hand-framed Content-Length JSON-RPC requests
@@ -23,7 +23,7 @@
 # OCaml `initialize` REQUIRES a `capabilities` field in params (it rejects the
 # bare `{}` the self-host tolerates), so we send one to both.
 #
-# Usage: sh test/diff_selfhost_lsp_b4.sh
+# Usage: sh test/diff_compiler_lsp_b4.sh
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

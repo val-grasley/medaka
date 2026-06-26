@@ -1,7 +1,7 @@
 #!/bin/sh
 # Snapshot gate for the Core IR S-expression serializer (STAGE2-DESIGN §2.1).
 #
-# There is no OCaml reference for the Core IR dump — Core IR is selfhost-only.
+# There is no OCaml reference for the Core IR dump — Core IR is compiler-only.
 # This harness validates by SELF-CONSISTENCY (snapshot goldens): the first run
 # establishes what the serializer produces; future runs detect any accidental
 # drift in the lowering or the serializer without needing an external oracle.
@@ -17,7 +17,7 @@
 #       > test/core_ir_sexp_fixtures/"$name".sexp
 #   done
 #
-# Usage:  sh test/diff_selfhost_core_ir_sexp.sh
+# Usage:  sh test/diff_compiler_core_ir_sexp.sh
 # Exit:   0 if every fixture matches its golden.
 set -u
 

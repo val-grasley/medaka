@@ -1,7 +1,7 @@
 #!/bin/sh
 # test/lsp_harness.sh — native LSP test harness gate.
 #
-# Compiles selfhost/entries/lsp_harness_main.mdk and runs it: it drives the
+# Compiles compiler/entries/lsp_harness_main.mdk and runs it: it drives the
 # native `medaka lsp` binary over real JSON-RPC (batch — `medaka lsp < requests`)
 # and asserts on the framed responses.  v1 fixtures (test/lsp_fixtures/):
 #   1. frame-integrity  — every response frame's Content-Length matches the actual
@@ -33,7 +33,7 @@ trap 'rm -f "$BIN"' EXIT
 
 # Build the harness from current source (picks up fixture/library edits).
 if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" "$MEDAKA" \
-       build selfhost/entries/lsp_harness_main.mdk -o "$BIN" >/dev/null 2>&1; then
+       build compiler/entries/lsp_harness_main.mdk -o "$BIN" >/dev/null 2>&1; then
   echo "FAIL: could not build the LSP harness." >&2
   exit 1
 fi

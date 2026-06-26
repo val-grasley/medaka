@@ -39,7 +39,7 @@ trap 'rm -rf "$WORK"' EXIT
 #       backtick_infix  — `divide` not a known emitter fn (operator-section gap)
 #       tuple_neq       — `not` not a known emitter fn (operator-section gap)
 #   4 native typecheck-GATE gaps — OCaml `medaka build` accepts them, but the
-#     native CLI's G1 typecheck gate (selfhost/driver/medaka_cli.mdk) rejects them.
+#     native CLI's G1 typecheck gate (compiler/driver/medaka_cli.mdk) rejects them.
 #     Same medaka_cli typecheck-gate family as the deferred lsp host; surfaced by
 #     re-rooting the build host from OCaml to native.  Pre-existing native-CLI
 #     limitations, NOT a backend regression:

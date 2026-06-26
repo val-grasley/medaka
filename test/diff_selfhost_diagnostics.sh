@@ -1,11 +1,11 @@
 #!/bin/sh
-# Validation for selfhost/driver/diagnostics.mdk: compares structured diagnostic
+# Validation for compiler/driver/diagnostics.mdk: compares structured diagnostic
 # output against a committed golden captured from dev/diagdump.exe --analyze.
 #
 # OCaml-free (REROOT-PLAN §2b): native host test/bin/diagnostics_main vs the
 # committed <name>.analyze.golden (sorted diagdump --analyze output, captured by
 # test/capture_goldens.sh).  The oracle strips source locations from messages
-# (the selfhost AST is location-stripped and cannot reproduce them).  Native
+# (the compiler AST is location-stripped and cannot reproduce them).  Native
 # output sorted before comparison.
 #
 # Coverage:
@@ -13,11 +13,11 @@
 #   • exhaust_fixtures  — guard-exhaustiveness warnings
 #   • check_match_fixtures — non-exhaustive-match warnings
 #
-# Parse-error fixtures are excluded: the selfhost parser panics on parse errors.
-# Type-error oracle/selfhost messages differ in unification order (pre-existing
-# selfhost limitation) — excluded; covered by diff_selfhost_check.
+# Parse-error fixtures are excluded: the compiler parser panics on parse errors.
+# Type-error oracle/compiler messages differ in unification order (pre-existing
+# compiler limitation) — excluded; covered by diff_compiler_check.
 #
-# Usage: sh test/diff_selfhost_diagnostics.sh
+# Usage: sh test/diff_compiler_diagnostics.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/diagnostics_main"

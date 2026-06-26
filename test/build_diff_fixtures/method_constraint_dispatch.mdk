@@ -5,7 +5,7 @@
 -- a method-level `Thenable m` constraint and whose body returns a constraint-var
 -- method (`pure []`); native `build` was already correct here (the emitter
 -- restamps impl-body return-position methods to the dict param) while native `run`
--- panicked — fixed in selfhost/types/typecheck.mdk inferImplMethod /
+-- panicked — fixed in compiler/types/typecheck.mdk inferImplMethod /
 -- registerImplMethodDicts.  This fixture pins the build output stays correct.
 --
 -- GOLDEN IS NATIVE-SOURCED (native>oracle): the frozen OCaml oracle mis-evaluates

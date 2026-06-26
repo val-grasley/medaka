@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # diff_wasm.sh — Slice W2 differential gate (WASMGC-DESIGN.md §8).  Peer of
-# test/diff_selfhost_llvm.sh: for every fixture in the W2 corpus, emit a WasmGC
+# test/diff_compiler_llvm.sh: for every fixture in the W2 corpus, emit a WasmGC
 # WAT module, assemble+validate it with wasm-tools, run it under a WasmGC engine
 # (Node >= 22), and diff its stdout against the ORACLE.
 #

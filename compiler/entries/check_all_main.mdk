@@ -1,0 +1,35 @@
+-- Batch multi-module typecheck front-end: like check_modules_main.mdk, but
+-- loads <entry.mdk> + its transitive imports and prints EVERY module's bindings
+-- (each section preceded by `## MODULE <mid>`), not just the entry's.  One
+-- full-closure run thus covers every module in the closure at once; the batch
+-- harness (diff_compiler_check_modules_batch.sh) splits on the marker and diffs
+-- each section against its per-module oracle.
+--
+--   medaka run compiler/entries/check_all_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModulesAllLines}
+import support.path.{dirOf}
+
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/check_all_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => putStr (checkModulesAllLines (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods))

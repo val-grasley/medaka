@@ -2,7 +2,7 @@
 # build_compiler_wasm.sh — Stage-0 playground artifact builder.
 #
 # Produces the in-browser Medaka compiler: the multi-module WasmGC emitter
-# (selfhost/entries/wasm_emit_modules_main.mdk) self-compiled to a wasm module.
+# (compiler/entries/wasm_emit_modules_main.mdk) self-compiled to a wasm module.
 # Running that wasm under a WasmGC host (Node>=22 now, the browser later) with the
 # host IO ABI in test/wasm/run.js + an in-memory vfs takes a user .mdk program and
 # emits the user program's WAT on stdout — NO server, NO native binary at runtime.
@@ -15,11 +15,11 @@
 # Pipeline (steps 1-2 of the Stage-0 task):
 #   1. make medaka                     -> native OCaml-free compiler  (./medaka)
 #      bash test/wasm/build_wasm_oracle.sh -> test/bin/wasm_emit_modules_main
-#   2. wasm_emit_modules_main <runtime> <core> <ENTRY=the emitter itself> selfhost stdlib
+#   2. wasm_emit_modules_main <runtime> <core> <ENTRY=the emitter itself> compiler stdlib
 #        -> compiler.wat ; wasm-tools parse -> compiler.wasm ; validate
 #
-# NOTE the two ROOT dirs `selfhost stdlib`: the emitter graph imports both selfhost
-# modules AND stdlib/hash_map (selfhost/ir/dce.mdk), so BOTH roots are required or
+# NOTE the two ROOT dirs `compiler stdlib`: the emitter graph imports both compiler
+# modules AND stdlib/hash_map (compiler/ir/dce.mdk), so BOTH roots are required or
 # the loader reports `unknown module: hash_map`.
 set -euo pipefail
 
@@ -28,7 +28,7 @@ DIST="$ROOT/playground/dist"
 MEDAKA="$ROOT/medaka"
 EMITTER="$ROOT/medaka_emitter"
 EMITBIN="$ROOT/test/bin/wasm_emit_modules_main"
-ENTRY="$ROOT/selfhost/entries/wasm_emit_modules_main.mdk"
+ENTRY="$ROOT/compiler/entries/wasm_emit_modules_main.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
@@ -51,7 +51,7 @@ echo "[1/2] building native compiler + wasm emitter binary ..."
 echo "[2/2] self-compiling the emitter to WasmGC ..."
 WAT="$DIST/compiler.wat"
 WASM="$DIST/compiler.wasm"
-"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$ROOT/selfhost" "$ROOT/stdlib" > "$WAT"
+"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$ROOT/compiler" "$ROOT/stdlib" > "$WAT"
 [ -s "$WAT" ] || { echo "FAIL: emitter produced empty WAT"; exit 1; }
 echo "  compiler.wat: $(wc -l < "$WAT") lines"
 

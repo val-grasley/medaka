@@ -1,6 +1,6 @@
 # fuzz_allowlist.txt — documented-open gaps the differential fuzzer must not
 # treat as new findings.  KEEP MINIMAL: only gaps that are already filed in
-# PLAN.md / selfhost/CONSTRUCT-COVERAGE.md, each with its citation.
+# PLAN.md / compiler/CONSTRUCT-COVERAGE.md, each with its citation.
 #
 # Format: one extended-regexp per line (matched by `grep -E` against a failing
 # program's SOURCE and/or against the divergence output).  Lines starting with
@@ -14,7 +14,7 @@
 # hand-added corpus program, is correctly classified rather than mis-reported).
 #
 # NOTE on operator dispatch: Gap G (==/!=/</>/<=/>= dispatching to user/derived
-# Eq/Ord) is CLOSED on synced main for the interpreter + selfhost tree-walker
+# Eq/Ord) is CLOSED on synced main for the interpreter + compiler tree-walker
 # (PLAN.md Phase 151 / MEMORY project_phase151_gapg_operator_dispatch).  The
 # fuzzer's Tier-B target IS the tree-walker, so derived-ADT comparison is
 # EXPECTED to agree — NOT allowlisted.  (Only native-`<` is deferred, and the
@@ -22,7 +22,7 @@
 #
 # NOTE on named-field `data` deriving: derived Eq/Ord/Debug on a named-field
 # `data` variant (`data T = C { f : .. } deriving (..)`) is now CLOSED on the
-# selfhost tree-walker too — the tree-walker's ERecordCreate produces a
+# compiler tree-walker too — the tree-walker's ERecordCreate produces a
 # positional VCon for registered named-field constructors (mirroring lib/eval.ml
 # ctor_field_order), so the derived positional `PCon` impl bodies match.  This
 # was previously allowlisted as a known divergence; it is now fixed and EXPECTED
@@ -46,14 +46,14 @@
 #
 # Gap C (RESIDUAL) — arg-tag dispatch on a constructorless PRIMITIVE / polymorphic
 # receiver (the tuple case is CLOSED; primitive/polymorphic still open).
-# selfhost/CONSTRUCT-COVERAGE.md §"Gap C"; selfhost/EMITTER-GAPS.md row 2.  Exact
+# compiler/CONSTRUCT-COVERAGE.md §"Gap C"; compiler/EMITTER-GAPS.md row 2.  Exact
 # emitter panic:
 arg-tag dispatch on impl type that owns no constructors
 no impl groups
 #
-# max/min over a generic Ord receiver — selfhost/EMITTER-GAPS.md §"Open emitter
+# max/min over a generic Ord receiver — compiler/EMITTER-GAPS.md §"Open emitter
 # CAPABILITY gaps" + TOTAL-row residual (2 events).  In `medaka build` the DCE
-# pass (selfhost/dce.mdk) prunes the unreachable core.mdk `maximum`/`minimum`
+# pass (compiler/dce.mdk) prunes the unreachable core.mdk `maximum`/`minimum`
 # bodies, so this should NOT fire from `medaka build`; the entry is here only so
 # a program that calls `max`/`min` itself (keeping them reachable) is classified
 # rather than mis-reported.  Emitter signature mentions the unresolved compare:
@@ -61,7 +61,7 @@ no impl of method 'max'
 no impl of method 'min'
 #
 # Two-level nested dicts (`Box (List (List Int))`) — SIGSEGV, emitter value-rep
-# limit.  selfhost/EMITTER-GAPS.md / PLAN.md Stage 3.  The type-directed generator
+# limit.  compiler/EMITTER-GAPS.md / PLAN.md Stage 3.  The type-directed generator
 # never nests containers inside ADT fields (variant fields are scalar-only,
 # fuzz_gen.ml `field_tys`), so this is unreachable today; entry is documentation.
 # (No reliable text signature — a SIGSEGV is caught by the harness as a build/run

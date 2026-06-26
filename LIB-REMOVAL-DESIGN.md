@@ -31,7 +31,7 @@ Evidence:
   `bootstrap_from_seed.sh`; `seed:` → `refresh_seed.sh`. The ONLY `dune build --root .`
   is the `reference:` target — i.e. building the OCaml oracle itself.
 - `test/selfcompile_fixpoint.sh`: header §"OCaml-FREE (REROOT-PLAN Phase 0)" — the C3a/C3b
-  fixpoint is bootstrapped from the committed `selfhost/seed/emitter.ll.gz`, no `main.exe`,
+  fixpoint is bootstrapped from the committed `compiler/seed/emitter.ll.gz`, no `main.exe`,
   no `dune`. This is the decisive spine gate and is already OCaml-free.
 
 Consequence: **Stage P (re-point seed mint to native) is a NO-OP — already done.** The
@@ -42,33 +42,33 @@ reference and is deleted as cleanup, not as a blocker.
 
 ## 2. OCaml-oracle gate census
 
-68 `diff_selfhost_*` gates total; the reroot (REROOT-PLAN.md) converted the bulk to
+68 `diff_compiler_*` gates total; the reroot (REROOT-PLAN.md) converted the bulk to
 native `test/bin/<entry>` oracles (built by `test/build_oracles.sh` via native `./medaka build`)
 comparing against COMMITTED goldens. Verified samples:
-- `diff_selfhost_eval_run.sh` L24 `RUN="$ROOT/test/bin/eval_run_main"` (native) + committed `=== EVAL ===` golden.
-- `diff_selfhost_typecheck.sh` L9 `RUN="$ROOT/test/bin/typecheck_main"` (native) + committed golden.
-- `diff_selfhost_llvm.sh` L28 `EMITBIN="$ROOT/test/bin/llvm_emit_main"` (native) + `.eval.golden`.
+- `diff_compiler_eval_run.sh` L24 `RUN="$ROOT/test/bin/eval_run_main"` (native) + committed `=== EVAL ===` golden.
+- `diff_compiler_typecheck.sh` L9 `RUN="$ROOT/test/bin/typecheck_main"` (native) + committed golden.
+- `diff_compiler_llvm.sh` L28 `EMITBIN="$ROOT/test/bin/llvm_emit_main"` (native) + `.eval.golden`.
 
 The ONLY gates with a LIVE (non-comment) OCaml invocation (`grep -vE '^#'`):
 
 | Gate | OCaml use (file:line) | Class | Fate on removal |
 |------|----------------------|-------|-----------------|
-| `diff_selfhost_check_json.sh` | L25/L45 `$ORACLE check --json` | **(b) live-oracle, NO golden** | DIES wholesale — coverage LOST unless re-rooted to native golden first |
-| `diff_selfhost_check_policy.sh` | L24/L43 `$ORACLE check-policy` | **(b) live-oracle, NO golden** (L14 "No committed goldens") | DIES wholesale — coverage LOST |
-| `diff_selfhost_doc.sh` | L28/L44 `$ORACLE doc` | **(b) live-oracle, NO golden** (L17 "No committed goldens") | DIES wholesale — coverage LOST |
-| `diff_selfhost_effect_hole.sh` | L36/L58/L172 `$OCAML check` | **(b) but ALSO native HOST + committed golden** (L41/L44) | OCaml LEG dies; native+golden legs SURVIVE — surgical edit, not delete |
-| `diff_selfhost_effect_param.sh` | L34/L51 `$OCAML check` | same as above | OCaml leg dies; native+golden survive |
+| `diff_compiler_check_json.sh` | L25/L45 `$ORACLE check --json` | **(b) live-oracle, NO golden** | DIES wholesale — coverage LOST unless re-rooted to native golden first |
+| `diff_compiler_check_policy.sh` | L24/L43 `$ORACLE check-policy` | **(b) live-oracle, NO golden** (L14 "No committed goldens") | DIES wholesale — coverage LOST |
+| `diff_compiler_doc.sh` | L28/L44 `$ORACLE doc` | **(b) live-oracle, NO golden** (L17 "No committed goldens") | DIES wholesale — coverage LOST |
+| `diff_compiler_effect_hole.sh` | L36/L58/L172 `$OCAML check` | **(b) but ALSO native HOST + committed golden** (L41/L44) | OCaml LEG dies; native+golden legs SURVIVE — surgical edit, not delete |
+| `diff_compiler_effect_param.sh` | L34/L51 `$OCAML check` | same as above | OCaml leg dies; native+golden survive |
 | `diff_native_cli.sh` | L255-267 `$ORACLE check` for `error/*` carat | **(b) live-oracle leg, already skip-guarded** (`if [ -x "$ORACLE" ]`) | error/* leg auto-skips; rest of gate is native-vs-golden, survives |
 | `test/capture_goldens.sh` | L37 `MAIN=…main.exe`; L228/245/255/269/302-303 `$MAIN run`; L36-55 OCaml `dev/*.exe` probes | **golden PROVENANCE tool** | Re-capture path dies; committed goldens (which already == native output) remain. Needs re-point to native to stay regenerable |
 | `test/bench.sh` | L37 fallback only (`[ -x medaka ]` prefers native) | (a) native-first | survives; dead OCaml fallback removed |
-| `test/profile_selfhost.sh` | L33 `MAIN=…main.exe` | perf profiling tool | non-gate; re-point or drop |
+| `test/profile_compiler.sh` | L33 `MAIN=…main.exe` | perf profiling tool | non-gate; re-point or drop |
 | `test/refresh_seed.sh` | L62-72 optional `CHECK_OCAML` cross-check | seed cross-check | delete the optional leg (see §1) |
 
 **(c) OCaml-only unit/thorough suites** (all die with `medaka_lib`, all reference it in dune):
 - `test/dune` L2-3: 18 suites (`test_parser … test_doc`) `(libraries medaka_lib alcotest …)`.
 - `test/thorough/dune`: 7 `thorough_*` suites (`medaka_lib` ref count 2).
 - `dev/dune`: 14 OCaml dev probes (`debug tc_debug … positions_dump`) `(libraries medaka_lib unix)` —
-  several still consumed by `capture_goldens.sh` (L36-55) and `diff_selfhost_effect_hole.sh` L113
+  several still consumed by `capture_goldens.sh` (L36-55) and `diff_compiler_effect_hole.sh` L113
   (`dev/gen_golden.exe`) to GENERATE goldens.
 
 No CI/workflow config exists (`.github` absent), so there is no pipeline file to update —
@@ -99,7 +99,7 @@ goldens, which never invoke dune.
 `gen/embed.ml` embeds `stdlib/runtime.mdk`+`core.mdk` into `lib/stdlib_content.ml`/
 `prelude_content.ml` (`lib/dune` L1-19), consumed ONLY by `medaka_lib` (it is in the
 library `(modules …)` list). Verified nothing native reads it:
-`grep -rln 'stdlib_content|prelude_content' selfhost/ runtime/` → **0 hits**. The native
+`grep -rln 'stdlib_content|prelude_content' compiler/ runtime/` → **0 hits**. The native
 compiler reads `stdlib/*.mdk` from disk directly. embed/stdlib_content are pure OCaml-compiler
 machinery and die cleanly with `lib/`.
 
@@ -107,8 +107,8 @@ machinery and die cleanly with `lib/`.
 
 ## 5. Other references / doc updates required
 
-- `selfhost/` source: only doc-comment mentions of the old path
-  (`selfhost/tools/test_cmd.mdk` L10, `selfhost/entries/test_main.mdk` L8 — "Mirrors
+- `compiler/` source: only doc-comment mentions of the old path
+  (`compiler/tools/test_cmd.mdk` L10, `compiler/entries/test_main.mdk` L8 — "Mirrors
   `main.exe test`"). No live invocation. Cosmetic comment updates, non-blocking.
 - Docs heavily describing the `lib/` pipeline (need rewrite, NOT rewritten here):
   - `AGENTS.md` — the entire "Pipeline — where each stage lives" table, "Support files",
@@ -118,7 +118,7 @@ machinery and die cleanly with `lib/`.
   - `Makefile` — delete the `reference:` target + the two-compiler header comment.
   - `PLAN.md` / `PLAN-ARCHIVE.md` / various `*-DESIGN.md` — historical `lib/eval.ml` etc.
     references; leave archival, update only forward-looking PLAN.md.
-  - `selfhost/REROOT-PLAN.md` §5 blocker #3 (the "run OCaml-oracle'd fixpoint once per soak
+  - `compiler/REROOT-PLAN.md` §5 blocker #3 (the "run OCaml-oracle'd fixpoint once per soak
     checkpoint" compensating control) becomes void — note it as retired.
 
 ---
@@ -134,7 +134,7 @@ If those pass, native canonicity is intact.
   `refresh_seed.sh` L60-72. Not a blocker, not a prerequisite.
 
 - **Stage A — preserve-or-drop the live-oracle-only gates (DO BEFORE deletion).** This is
-  the only stage with potential coverage LOSS. For `diff_selfhost_check_json/check_policy/doc`
+  the only stage with potential coverage LOSS. For `diff_compiler_check_json/check_policy/doc`
   (no goldens, native-vs-live-OCaml only): EITHER (A1) re-root each to a committed golden
   captured from native `./medaka` (preserves json/policy/doc differential coverage), OR (A2)
   accept the loss (native is canonical; a one-time native capture + commit is cheap and
@@ -151,8 +151,8 @@ If those pass, native canonicity is intact.
   declared frozen. This is the largest discretionary work item — see Fork F3.
 
 - **Stage C — delete orphaned OCaml-oracle gate remnants + perf fallbacks.** Remove
-  `diff_selfhost_check_json/check_policy/doc` (if not re-rooted in A1), the `error/*` ORACLE
-  leg of `diff_native_cli.sh`, and the OCaml fallback in `bench.sh`/`profile_selfhost.sh`.
+  `diff_compiler_check_json/check_policy/doc` (if not re-rooted in A1), the `error/*` ORACLE
+  leg of `diff_native_cli.sh`, and the OCaml fallback in `bench.sh`/`profile_compiler.sh`.
   Gate: full native gate sweep green; no `.sh` references `main.exe`/`dune` (audit grep == 0).
 
 - **Stage D — delete the OCaml compiler + dune graph.** Delete `lib/`, `bin/`, `gen/`,

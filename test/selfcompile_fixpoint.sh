@@ -6,7 +6,7 @@
 # INTERPRETED emitter's IR on small fixtures.  C2 (test/selfcompile_lex.sh) had the
 # native emitter compile the REAL self-hosted lexer driver, native-emitted IR
 # byte-identical to the interpreter's.  C3 closes the loop: use the gap-tolerant
-# emitter driver (selfhost/entries/llvm_bootstrap_lex_main.mdk) — whose module graph IS the
+# emitter driver (compiler/entries/llvm_bootstrap_lex_main.mdk) — whose module graph IS the
 # whole emitter + front-end + prelude, the LARGEST program in the tree — as BOTH the
 # compiler AND the program being compiled.  "The compiler compiles itself and
 # reproduces itself."
@@ -14,7 +14,7 @@
 # ── OCaml-FREE (REROOT-PLAN Phase 0, §2f) ──────────────────────────────────────
 # This gate NO LONGER invokes the OCaml host (`main.exe run`) or `dune`.  The
 # reference emission is bootstrapped from the COMMITTED gzipped seed
-# (selfhost/seed/emitter.ll.gz) — exactly the cold path of build_native_medaka.sh /
+# (compiler/seed/emitter.ll.gz) — exactly the cold path of build_native_medaka.sh /
 # bootstrap_from_seed.sh — instead of from the interpreter.
 #
 # SEMANTIC NOTE (what the gate now proves vs. before):
@@ -64,12 +64,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SEED_GZ="$ROOT/selfhost/seed/emitter.ll.gz"
-DRIVER="$ROOT/selfhost/entries/llvm_bootstrap_lex_main.mdk"
+SEED_GZ="$ROOT/compiler/seed/emitter.ll.gz"
+DRIVER="$ROOT/compiler/entries/llvm_bootstrap_lex_main.mdk"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-SELFHOST="$ROOT/selfhost"
+SELFHOST="$ROOT/compiler"
 CC="${CC:-clang}"
 
 STACK_SIZE="${STACK_SIZE:-0x20000000}"

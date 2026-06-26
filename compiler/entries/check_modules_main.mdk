@@ -1,0 +1,35 @@
+-- Multi-module typecheck front-end (the bootstrap front-end driver):
+--
+--   medaka run compiler/entries/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars each,
+-- typechecks them all in order against the shared prelude (core) + runtime
+-- externs, and prints the ENTRY module's own bindings as `name : scheme` (one per
+-- line; the harness sorts) — the self-hosted analog of dev/tc_module_probe.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModulesEntryLines}
+import support.path.{dirOf}
+
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => putStr (checkModulesEntryLines (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods))

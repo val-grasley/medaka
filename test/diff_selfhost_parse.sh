@@ -1,6 +1,6 @@
 #!/bin/sh
-# Differential validation for the self-hosted parser: selfhost/entries/parse_main.mdk
-# (lex → parse → selfhost/ir/sexp.mdk structural dump) vs the OCaml reference
+# Differential validation for the self-hosted parser: compiler/entries/parse_main.mdk
+# (lex → parse → compiler/ir/sexp.mdk structural dump) vs the OCaml reference
 # dev/astdump.exe (parse → strip_locs → canonical S-expression).
 #
 # Runs over test/parse_fixtures/ + test/parse_only_fixtures/ — small .mdk programs
@@ -12,9 +12,9 @@
 # parse_only_fixtures/ holds constructs the parser accepts but the *downstream*
 # self-host stages (desugar/mark/…) don't handle yet — type aliases, newtypes,
 # Map/Set literals, attributes, top-level let-groups — so they must NOT go in the
-# shared parse_fixtures/ corpus that diff_selfhost_{desugar,mark}.sh also read.
+# shared parse_fixtures/ corpus that diff_compiler_{desugar,mark}.sh also read.
 #
-# Usage:  sh test/diff_selfhost_parse.sh [file.mdk ...]
+# Usage:  sh test/diff_compiler_parse.sh [file.mdk ...]
 # Exit:   0 if every file's AST dump matches, else 1.
 set -u
 

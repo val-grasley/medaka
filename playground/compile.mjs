@@ -1,6 +1,6 @@
 // compile.mjs — reusable, environment-agnostic seam between the WasmGC-compiled
 // Medaka compiler (playground.wasm = the COMBINED diagnostics+emit entry,
-// selfhost/entries/playground_main.mdk) and its callers (the Node dev driver now,
+// compiler/entries/playground_main.mdk) and its callers (the Node dev driver now,
 // the browser Web Worker in Stage 3).
 //
 // It instantiates playground.wasm with the host IO ABI (a port of test/wasm/run.js)

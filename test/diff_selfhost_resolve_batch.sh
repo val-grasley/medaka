@@ -1,5 +1,5 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_resolve.sh — prelude caching.
+# Batched variant of diff_compiler_resolve.sh — prelude caching.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/resolve_batch"
@@ -20,7 +20,7 @@ for f in "$FIXDIR"/*.mdk; do
   golden="$(cat "${f%.mdk}.expected")"
   ok=1
   self="$(printf '%s' "$ALL" | section "$f" | LC_ALL=C sort)"
-  [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from golden"; }
+  [ "$self" = "$golden" ] || { ok=0; reason="compiler differs from golden"; }
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s (%s)\n' "$name" "$reason"; fi
 done

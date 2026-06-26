@@ -1,0 +1,17 @@
+-- Entry point for the self-hosted parser, driving it as a runnable program so
+-- the differential harness can shell out to it:
+--
+--   medaka run compiler/entries/parse_main.mdk <source.mdk>
+--
+-- reads <source.mdk>, parses it, and prints the canonical structural
+-- S-expression of the AST (one decl per line) — the same format as
+-- dev/astdump.exe, so the two can be diffed (test/diff_compiler_parse.sh).
+
+import frontend.parser.{parse}
+import ir.sexp.{programToSexp}
+
+main = match args ()
+  [path] => match readFile path
+    Ok src => putStr (programToSexp (parse src))
+    Err msg => ePutStrLn msg
+  _ => ePutStrLn "usage: medaka run compiler/entries/parse_main.mdk <file>"

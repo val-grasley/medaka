@@ -1,6 +1,6 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_mark.sh — PROTOTYPE for prelude caching.
-# Runs selfhost/entries/mark_batch.mdk ONCE over the whole corpus (prelude parsed once),
+# Batched variant of diff_compiler_mark.sh — PROTOTYPE for prelude caching.
+# Runs compiler/entries/mark_batch.mdk ONCE over the whole corpus (prelude parsed once),
 # splits the delimited output per file, and compares each against astdump --mark.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,7 +13,7 @@ norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/selfhost/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
 fi
 
 # Expand to a stable list of existing files.

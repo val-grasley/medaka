@@ -1,0 +1,21 @@
+-- Entry point for the self-hosted exhaust stage:
+--
+--   medaka run compiler/entries/exhaust_main.mdk <source.mdk>
+--
+-- parses the target (NO desugar — guard exhaustiveness runs on the RAW AST,
+-- before EGuards is lowered), checks guard exhaustiveness, and prints one
+-- warning per line — diffs against `dev/diagdump.exe --exhaust` (the harness
+-- sorts).  No prelude needed: the oracle is built from the file's own data
+-- decls plus the syntactic builtins.
+
+import frontend.parser.{parse}
+import frontend.exhaust.{exhaustToLines}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run compiler/entries/exhaust_main.mdk <file.mdk>"
+
+withTarget : String -> <IO> Unit
+withTarget targetPath = match readFile targetPath
+  Ok targetSrc => putStr (exhaustToLines (parse targetSrc))
+  Err msg => ePutStrLn msg

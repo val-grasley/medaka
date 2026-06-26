@@ -6,7 +6,7 @@
 # (core_ir_lower.mdk), evaluate the Core IR (core_ir_eval.mdk), and diff its
 # pp_value against the AST tree-walker reference — the committed
 # test/eval_fixtures/<name>.eval.golden (captured from dev/eval_probe.exe, the
-# SAME oracle diff_selfhost_eval.sh uses).  Core IR is correct iff evaluating it
+# SAME oracle diff_compiler_eval.sh uses).  Core IR is correct iff evaluating it
 # matches evaluating the AST.
 #
 # Scope: the FULL prelude-free engine corpus in test/eval_fixtures/.
@@ -14,7 +14,7 @@
 # OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted Core-IR eval runs as the
 # pre-compiled native binary test/bin/core_ir_main (built by build_oracles.sh).
 #
-# Usage:  sh test/diff_selfhost_core_ir.sh
+# Usage:  sh test/diff_compiler_core_ir.sh
 # Exit:   0 if every fixture matches the golden.
 set -u
 

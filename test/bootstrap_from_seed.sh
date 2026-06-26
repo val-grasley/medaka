@@ -1,6 +1,6 @@
 #!/bin/sh
 # OCAML-FREE BOOTSTRAP / SEED-CURRENCY GATE — rebuild the native Medaka emitter from
-# the checked-in gzipped IR seed (selfhost/seed/emitter.ll.gz), NO `medaka run`/OCaml.
+# the checked-in gzipped IR seed (compiler/seed/emitter.ll.gz), NO `medaka run`/OCaml.
 #
 # Two roles:
 #   • `make bootstrap` (strict, default): release/CI gate that the committed seed is
@@ -14,7 +14,7 @@
 # Flow (mirrors test/selfcompile_fixpoint.sh MINUS the interpreted `$MAIN run` emit
 # step — the seed REPLACES it):
 #   1. gunzip(seed.gz) -> seed.ll ; clang(seed.ll)+runtime+libgc -> seed_emitter
-#   2. seed_emitter <runtime> <core> <build-driver> <selfhost> <stdlib> -> emitter2.ll
+#   2. seed_emitter <runtime> <core> <build-driver> <compiler> <stdlib> -> emitter2.ll
 #      (the seed emitter re-emitting the build driver's own graph; trim trailing ()).
 #   3. C3a check:  cmp -s seed.ll  emitter2.ll  (strict: fail; tolerant: warn).
 #   4. clang(emitter2.ll) -> medaka_emitter   (the bootstrapped native emitter binary,
@@ -32,12 +32,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SEED_GZ="$ROOT/selfhost/seed/emitter.ll.gz"
-DRIVER="$ROOT/selfhost/entries/llvm_emit_modules_main.mdk"
+SEED_GZ="$ROOT/compiler/seed/emitter.ll.gz"
+DRIVER="$ROOT/compiler/entries/llvm_emit_modules_main.mdk"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-SELFHOST="$ROOT/selfhost"
+SELFHOST="$ROOT/compiler"
 STDLIB="$ROOT/stdlib"
 CC="${CC:-clang}"
 STACK_SIZE="${STACK_SIZE:-0x20000000}"

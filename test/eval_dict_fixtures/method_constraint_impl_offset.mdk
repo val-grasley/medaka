@@ -3,7 +3,7 @@
 -- dict param (`$dict_build_0`, from `Num e`) must lead the impl clause's params;
 -- dropping it (the old DImpl `match reqs []=>d` early-out) mis-bound the dict into
 -- the first VALUE parameter `n`, so `n + n` panicked `unknown op '+'`. After the
--- k-offset fix (dictParams n k prepended in implDictPassMethods), selfhost prints
+-- k-offset fix (dictParams n k prepended in implDictPassMethods), compiler prints
 -- `6` matching the oracle.
 interface Builder t where
   build : Num e => e -> t

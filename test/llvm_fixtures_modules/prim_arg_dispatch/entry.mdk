@@ -11,7 +11,7 @@
 -- constructor receiver.
 --
 -- NOTE: exported interface METHODS do not yet resolve cross-module through the
--- selfhost typed pipeline, so the interface/impls stay in the entry; only the
+-- compiler typed pipeline, so the interface/impls stay in the entry; only the
 -- DATA TYPE crosses (same shape as adt_dispatch).
 import widget.{Widget(..)}
 

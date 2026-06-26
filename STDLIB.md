@@ -10,7 +10,7 @@ roadmap.
 
 > **Forward direction — capability stratification (decided 2026-06-06).** For the
 > multi-target future (general-purpose LLVM-native + WASM-edge; see
-> [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §6a and
+> [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §6a and
 > [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md)), the stdlib will be
 > **stratified** into a **pure core** (data structures, algorithms — capability-free,
 > byte-identical on every target) vs. **capability modules** (file IO, net, KV, time,

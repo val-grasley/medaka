@@ -17,7 +17,7 @@ red squiggles, hover-types, autocomplete. **Read-only design pass — nothing im
 **Out for v1:** go-to-definition, find-references, rename, formatting-on-save, document
 symbols/outline, inlay hints, semantic-token highlighting (we use a lexer grammar instead),
 signature help, multi-file projects in the editor (single buffer only — the playground is
-one file today). All of these have selfhost implementations already (`selfhost/tools/lsp.mdk`)
+one file today). All of these have compiler implementations already (`compiler/tools/lsp.mdk`)
 and can be added later through the same seam; they are deferred only to bound v1.
 
 ---
@@ -26,7 +26,7 @@ and can be added later through the same seam; they are deferred only to bound v1
 
 **Editor: CodeMirror 6.** **Language service: stateless per-request wasm entries** (NOT an
 LSP server loop in wasm). **Highlighting: a hand-written stream tokenizer** (CM6
-`StreamLanguage`) derived from the selfhost lexer's token classes. **Bundling: ESM via an
+`StreamLanguage`) derived from the compiler lexer's token classes. **Bundling: ESM via an
 import-map + pinned CDN URLs, vendored into `playground/vendor/` so the static-site /
 zero-network-after-load property holds** — no bundler/build step added.
 
@@ -45,7 +45,7 @@ analyze→JSON path — and reuse the LSP's already-pure hover/complete function
 ### Verdict: **The persistent LSP server loop CANNOT run in the browser wasm host. Use stateless one-shot entries instead.** (High confidence.)
 
 **Evidence — the LSP is a blocking stdio loop:**
-- `serve`/`serveOnce` (`selfhost/tools/lsp.mdk:1507`) repeatedly read one JSON-RPC message,
+- `serve`/`serveOnce` (`compiler/tools/lsp.mdk:1507`) repeatedly read one JSON-RPC message,
   dispatch, and loop until EOF/`exit`.
 - `readHeaders` (`lsp.mdk:882`) is a **blocking recursive `readLineOpt ()` loop** accumulating
   `Content-Length`; `readExactly len` (`lsp.mdk:1487`) then blocks for exactly N bytes of body.
@@ -77,7 +77,7 @@ caches are only an import-graph optimization, irrelevant to a single-file playgr
 - (inlay hints `lsp.mdk:760-798` likewise, deferred.)
 
 So each becomes a **one-shot wasm entry** structured exactly like the proven
-`playground_main.mdk` (`selfhost/entries/playground_main.mdk`): read `runtime.mdk`/`core.mdk`/
+`playground_main.mdk` (`compiler/entries/playground_main.mdk`): read `runtime.mdk`/`core.mdk`/
 the user buffer from the vfs, run the existing analyze/hover/complete function, print a
 one-line `__MEDAKA_*__\n<json>` marker, `mdk_exit`. The JS seam (`compile.mjs`) already
 demuxes that exact marker protocol (`compile.mjs:171-188`). This is a small, low-risk port
@@ -98,7 +98,7 @@ that reuses the LSP's own logic.
    + a new marker (`__MEDAKA_HOVER__`, `__MEDAKA_COMPLETE__`) + a thin `compile.mjs` sibling fn
    (`analyze(src)`, `hover(src,line,col)`, `complete(src,line,col)`) that passes line/col as extra
    argv and demuxes the new marker. The vfs/host-ABI boilerplate (`runGuest`) is reused verbatim.
-3. **The highlighting grammar is already documented** (§5) from the selfhost lexer — no need to
+3. **The highlighting grammar is already documented** (§5) from the compiler lexer — no need to
    reverse-engineer `parser.mly`/`lexer.mdk` again.
 4. **The WasmGC self-host trick** (`build_playground_wasm.sh`: native emitter → WAT →
    `wasm-tools` → validate) is the build recipe for any new entry; a new `*_main.mdk` entry
@@ -106,7 +106,7 @@ that reuses the LSP's own logic.
 
 ---
 
-## 5. Highlighting grammar — token-class census (from `selfhost/frontend/lexer.mdk` + `SYNTAX.md`)
+## 5. Highlighting grammar — token-class census (from `compiler/frontend/lexer.mdk` + `SYNTAX.md`)
 
 Derived empirically; cite-backed. **A stateless regex tokenizer suffices for *coloring*** (we do
 NOT need layout for highlighting — INDENT/DEDENT/NEWLINE are synthetic and invisible to the user).
@@ -203,7 +203,7 @@ loaded, so a fresh parse+typecheck of a single playground buffer is sub-100ms ra
 |-------|------|----------------|--------|------|
 | **S1 — Highlighting** | Swap `<textarea>`→CM6; vendor CM6 ESM + import-map; write the `StreamLanguage` tokenizer (§5); dark theme matching `index.html` palette (`#0d1117`/`#c9d1d9`, accents `#e2b96f`/`#58a6ff`). | **No** (pure frontend) | M | Low — token classes fully specced; only risk is the CM6-vendor/import-map plumbing. |
 | **S2 — Squiggles** | Add a `language-worker.js`; on debounced change call `analyze` (reuse existing `__MEDAKA_DIAGNOSTICS__` path — **already emitted by `playground_main.mdk`**, no new entry needed); map `check --json` ranges → CM6 `setDiagnostics`. | **No** (the analyze JSON already exists) | S–M | Low — near-free; the diagnostics object is already produced and field-compatible. |
-| **S3 — Hover entry** | New selfhost entry `hover_main.mdk` wrapping `hoverFor` (`lsp.mdk:515`); argv adds `line col`; new `__MEDAKA_HOVER__` marker; build via `build_playground_wasm.sh` recipe. Add `compile.mjs` `hover()` sibling. | **Yes** (1 new wasm entry) | M | Med — first new entry; must thread cursor argv + confirm single-file hover env path (`lsp.mdk:533-548`) works without project graph. |
+| **S3 — Hover entry** | New compiler entry `hover_main.mdk` wrapping `hoverFor` (`lsp.mdk:515`); argv adds `line col`; new `__MEDAKA_HOVER__` marker; build via `build_playground_wasm.sh` recipe. Add `compile.mjs` `hover()` sibling. | **Yes** (1 new wasm entry) | M | Med — first new entry; must thread cursor argv + confirm single-file hover env path (`lsp.mdk:533-548`) works without project graph. |
 | **S4 — Completion entry** | New `complete_main.mdk` wrapping `completionFor` (`lsp.mdk:681`); `__MEDAKA_COMPLETE__`; `compile.mjs` `complete()`; CM6 `autocompletion` source. | **Yes** (1 new wasm entry) | M | Med — same shape as S3; plus the prefix-extraction at cursor. |
 | **S4.5 — CM6 providers** | Wire `hoverTooltip` (S3) + `autocompletion` (S4) into the CM6 instance. | **No** | S | Low. |
 

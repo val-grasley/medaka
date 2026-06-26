@@ -1,6 +1,6 @@
 -- C8(a): a non-core module's PUBLIC interface must export its method schemes so
 -- an importer can typecheck a call to the method.  Before the publicValNames fix
--- the selfhost typed module path omitted `show2` from mod_a's exports and the
+-- the compiler typed module path omitted `show2` from mod_a's exports and the
 -- importer panicked `unbound variable: show2`.
 export interface Show2 a where
   show2 : a -> String

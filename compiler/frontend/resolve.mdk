@@ -1,0 +1,1589 @@
+-- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
+-- path: `resolve_program`).  Runs after desugar.  Collects every binding name
+-- into a name environment (seeded with primitives + runtime externs + the
+-- prelude) and walks the decls reporting references that aren't in scope:
+-- unbound variables, unknown constructors / types / effects / interfaces,
+-- methods not in their interface, duplicate definitions, and extern-with-body.
+--
+-- Pure-functional: each check returns a `List ResError` rather than mutating a
+-- ref; locations are dropped (the self-host AST has none), so the dump is the
+-- sorted error structure — matching `dev/diagdump.exe --resolve`
+-- (test/diff_compiler_resolve.sh).  The multi-module path (imports validated
+-- against real exports, privacy, aliases) is the reference's resolve_module and
+-- is NOT needed here: single-file mode stubs imports into scope.
+
+import frontend.ast.{
+  Loc(..),
+  Lit(..),
+  Ty(..),
+  Constraint(..),
+  Addr(..),
+  Pat(..),
+  RecPatField(..),
+  Guard(..),
+  Arm(..),
+  DoStmt(..),
+  InterpPart(..),
+  GuardArm(..),
+  FieldAssign(..),
+  Section(..),
+  FunClause(..),
+  LetBind(..),
+  Expr(..),
+  UseMember(..),
+  UsePath(..),
+  PropParam(..),
+  MethodDefault(..),
+  IfaceMethod(..),
+  Super(..),
+  Require(..),
+  ImplMethod(..),
+  DataVis(..),
+  Field(..),
+  ConPayload(..),
+  Variant(..),
+  Decl(..),
+}
+import support.util.{
+  contains,
+  listLen,
+  escStr,
+  joinNl,
+  joinWith,
+  lookupAssoc,
+  reverseL,
+  initList,
+  joinDot,
+}
+
+-- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
+-- Stage B (WS-4 / F6): every ctor carries a trailing `Option Loc` — the source
+-- span of the offending node (mirror of lib/resolve.ml pairing each error with
+-- `!current_loc`).  Expression-position errors carry the enclosing `ELoc` span
+-- threaded through the walk; decl/build-phase errors with no node in scope carry
+-- `None` (rendered as the oracle's dummy {0,0} range / `<unknown location>`).
+public export data ResError
+  = UnboundVariable String (Option Loc)
+  | UnknownConstructor String (Option Loc)
+  | UnknownType String (Option Loc)
+  | UnknownEffect String (Option Loc)
+  | UnknownField String (Option Loc)
+  | FieldNotInRecord String String (Option Loc)
+  | DuplicateDefinition String String (Option Loc)
+  | UnknownInterface String (Option Loc)
+  | MethodNotInInterface String String (Option Loc)
+  | ExternWithBody String (Option Loc)
+  -- multi-module path (resolve_module): import validation against real exports
+  | PrivateNameAccess String String (Option Loc)
+  -- name, owning module
+  | NoExportedConstructors String String (Option Loc)
+  -- type, owning module (exported abstractly)
+  | AbstractFieldAccess String String (Option Loc)
+  -- type name, field name: a record-pattern field on a type whose fields are not
+  -- in scope because the type was exported abstractly (`export` without `public`)
+  | UnknownModule String (Option Loc)
+  -- `import` of a module not among known exports
+  -- misplaced surface constructs that survive desugar
+  | NonRecursiveValueLet String (Option Loc)
+  -- `let x = … x …` (no `rec`) referencing itself
+  | DuplicateBinding String (Option Loc)
+  -- Phase 148: non-contiguous clauses of a top-level binding
+  | AsPatternMisplaced (Option Loc)  -- `x@..` outside a binding LHS
+  -- name USED unqualified, exported by ≥2 non-`core` modules (use-time
+  -- ambiguity; MAP-SET-AMBIGUITY-DESIGN.md)
+  | AmbiguousOccurrence String (List String) (Option Loc)
+
+-- The source span carried by a ResError (Stage B): consumed by diagnostics.mdk
+-- to position the Diag (was uniformly `None` pre-Stage-B).
+export
+resErrorLoc : ResError -> Option Loc
+resErrorLoc (UnboundVariable _ l) = l
+resErrorLoc (UnknownConstructor _ l) = l
+resErrorLoc (UnknownType _ l) = l
+resErrorLoc (UnknownEffect _ l) = l
+resErrorLoc (UnknownField _ l) = l
+resErrorLoc (FieldNotInRecord _ _ l) = l
+resErrorLoc (DuplicateDefinition _ _ l) = l
+resErrorLoc (UnknownInterface _ l) = l
+resErrorLoc (MethodNotInInterface _ _ l) = l
+resErrorLoc (ExternWithBody _ l) = l
+resErrorLoc (PrivateNameAccess _ _ l) = l
+resErrorLoc (NoExportedConstructors _ _ l) = l
+resErrorLoc (AbstractFieldAccess _ _ l) = l
+resErrorLoc (UnknownModule _ l) = l
+resErrorLoc (NonRecursiveValueLet _ l) = l
+resErrorLoc (DuplicateBinding _ l) = l
+resErrorLoc (AsPatternMisplaced l) = l
+resErrorLoc (AmbiguousOccurrence _ _ l) = l
+
+-- ── The name environment ──────────────────────────────────────────────────
+-- Name-category sets, as plain lists (the self-host is prelude-only, so no
+-- hash_map; membership is a linear `contains`).
+-- `fieldOwners` is (field, owner) pairs; `ifaceMethods` is (iface, methods).
+public export record Env
+  values : List String
+  types : List String
+  ctors : List String
+  fields : List String
+  fieldOwners : List (String, String)
+  interfaces : List String
+  ifaceMethods : List (String, List String)
+  effects : List String
+  imported : List String
+  -- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
+  -- non-`core` module ids that export it unqualified
+  ambiguous : List (String, List String)
+
+-- the owners registered for a field name in the field-owner multimap
+ownersOf : String -> List (String, String) -> List String
+ownersOf _ [] = []
+ownersOf field ((f, owner)::rest)
+  | f == field = owner :: ownersOf field rest
+  | otherwise = ownersOf field rest
+
+-- ── pat_bindings ──────────────────────────────────────────────────────────
+patBindings : Pat -> List String
+patBindings (PVar x) = [x]
+patBindings PWild = []
+patBindings (PLit _) = []
+patBindings (PCon _ ps) = flatMap patBindings ps
+patBindings (PCons a b) = patBindings a ++ patBindings b
+patBindings (PTuple ps) = flatMap patBindings ps
+patBindings (PList ps) = flatMap patBindings ps
+patBindings (PAs x p) = x :: patBindings p
+patBindings (PRng _ _ _) = []
+patBindings (PRec _ fields _) = flatMap recFieldBindings fields
+
+recFieldBindings : RecPatField -> List String
+recFieldBindings (RecPatField fname None) = [fname]
+recFieldBindings (RecPatField _ (Some p)) = patBindings p
+
+patsBindings : List Pat -> List String
+patsBindings ps = flatMap patBindings ps
+
+-- ── check_type ────────────────────────────────────────────────────────────
+-- `cur` (Stage B) is the enclosing `ELoc` span threaded from the expr walk (or
+-- `None` at decl level), mirroring lib/resolve.ml's `!current_loc`.
+checkType : Option Loc -> Env -> Ty -> List ResError
+checkType cur env (TyCon n) =
+  if contains n env.types || contains n env.imported then
+    []
+  else
+    [UnknownType n cur]
+checkType _ _ (TyVar _) = []
+checkType cur env (TyApp a b) = checkType cur env a ++ checkType cur env b
+checkType cur env (TyFun a b) = checkType cur env a ++ checkType cur env b
+checkType cur env (TyTuple ts) = flatMap (checkType cur env) ts
+checkType cur env (TyEffect labels _ t) = flatMap (checkEffect cur env) (map fst labels)
+  ++ checkType cur env t
+checkType cur env (TyConstrained cs t) = flatMap (checkConstraint cur env) cs
+  ++ checkType cur env t
+
+builtInEffects : List String
+builtInEffects = ["IO", "Mut", "Panic", "Rand",
+  "Stdout", "Stderr", "Stdin", "Clock", "Env", "Exec",
+  "Net", "FileRead", "FileWrite"]
+
+checkEffect : Option Loc -> Env -> String -> List ResError
+checkEffect cur env e =
+  if contains e builtInEffects || contains e env.effects then
+    []
+  else
+    [UnknownEffect e cur]
+
+checkConstraint : Option Loc -> Env -> Constraint -> List ResError
+checkConstraint cur env (Constraint iface args) = (if contains iface env.interfaces then [] else [UnknownInterface iface cur])
+  ++ flatMap (checkType cur env) args
+
+-- ── check_pat ─────────────────────────────────────────────────────────────
+checkPat : Option Loc -> Env -> Pat -> List ResError
+checkPat cur env (PCon c ps) = (if contains c env.ctors || contains c env.imported then [] else [UnknownConstructor c cur])
+  ++ flatMap (checkPat cur env) ps
+checkPat cur env (PCons a b) = checkPat cur env a ++ checkPat cur env b
+checkPat cur env (PTuple ps) = flatMap (checkPat cur env) ps
+checkPat cur env (PList ps) = flatMap (checkPat cur env) ps
+checkPat cur env (PAs _ p) = checkPat cur env p
+checkPat cur env (PRec name fields _) = checkRecPat cur env name fields
+checkPat _ _ _ = []
+
+checkRecPat : Option Loc -> Env -> String -> List RecPatField -> List ResError
+checkRecPat cur env name fields = recPatHead cur env name
+  ++ flatMap (checkRecField cur env name) fields
+
+recPatHead : Option Loc -> Env -> String -> List ResError
+recPatHead cur env name =
+  if contains name env.types || contains name env.ctors then
+    []
+  else
+    [UnknownType name cur]
+
+checkRecField : Option Loc -> Env -> String -> RecPatField -> List ResError
+checkRecField cur env owner (RecPatField fname popt) = fieldCheck cur env owner fname
+  ++ recFieldSub cur env popt
+
+fieldCheck : Option Loc -> Env -> String -> String -> List ResError
+fieldCheck cur env owner fname =
+  let owners = ownersOf fname env.fieldOwners
+  fieldVerdict cur env owner fname owners
+
+-- No record in scope declares `fname`.  If the pattern head `owner` IS a known
+-- type (it resolved past recPatHead) yet owns NO fields at all, its fields were
+-- never registered — the only way a local record/named-field-variant reaches here
+-- with zero owners is that it was exported abstractly (`export` without `public`),
+-- whereas a local definition always registers its fields.  Distinguish that case
+-- from a genuinely-unknown field with a clearer message.
+fieldVerdict : Option Loc -> Env -> String -> String -> List String -> List ResError
+fieldVerdict cur env owner fname [] =
+  if contains owner env.types && not (ownsAnyField owner env.fieldOwners) then
+    [AbstractFieldAccess owner fname cur]
+  else
+    [UnknownField fname cur]
+fieldVerdict cur env owner fname owners =
+  if contains owner owners then
+    []
+  else
+    [FieldNotInRecord fname owner cur]
+
+-- does `owner` own ANY field in the field-owner multimap?
+ownsAnyField : String -> List (String, String) -> Bool
+ownsAnyField _ [] = False
+ownsAnyField owner ((_, o)::rest)
+  | o == owner = True
+  | otherwise = ownsAnyField owner rest
+
+recFieldSub : Option Loc -> Env -> Option Pat -> List ResError
+recFieldSub _ _ None = []
+recFieldSub cur env (Some p) = checkPat cur env p
+
+-- ── check_expr (scope = locally-bound names) ──────────────────────────────
+-- `cur` (Stage B): the innermost enclosing `ELoc` span, threaded so every error
+-- emitted while walking the expr carries that span (mirror lib/resolve.ml's
+-- `!current_loc`, set by its `ELoc` arm).  `None` until the first ELoc.
+checkExpr : Option Loc -> Env -> List String -> Expr -> List ResError
+checkExpr _ _ _ (ELit _) = []
+checkExpr _ _ _ (ENumLit _ _ _) = []   -- PLAN.md #11: a literal, nothing to bind
+checkExpr _ _ _ (EMethodRef _) = []
+checkExpr _ _ _ (EDictApp _) = []
+checkExpr cur env scope (EVar n) = checkVar cur env scope n
+checkExpr cur env scope (EApp f x) = checkExpr cur env scope f ++ checkExpr cur env scope x
+checkExpr cur env scope (ELam pats body) = flatMap (checkPat cur env) pats
+  ++ checkExpr cur env (patsBindings pats ++ scope) body
+checkExpr cur env scope (ELet _ isRec pat e1 e2) =
+  checkLet cur env scope isRec pat e1 e2
+checkExpr cur env scope (ELetGroup binds body) = checkLetGroup cur env scope binds body
+checkExpr cur env scope (EMatch e0 arms) = checkExpr cur env scope e0
+  ++ flatMap (checkArm cur env scope) arms
+checkExpr cur env scope (EIf c t el) = checkExpr cur env scope c
+  ++ checkExpr cur env scope t
+  ++ checkExpr cur env scope el
+checkExpr cur env scope (EBinOp _ a b _) = checkExpr cur env scope a
+  ++ checkExpr cur env scope b
+checkExpr cur env scope (EUnOp _ a) = checkExpr cur env scope a
+checkExpr cur env scope (EInfix op a b) = checkVar cur env scope op
+  ++ checkExpr cur env scope a
+  ++ checkExpr cur env scope b
+checkExpr cur env scope (EFieldAccess e0 _) = checkExpr cur env scope e0
+checkExpr cur env scope (ETuple es) = flatMap (checkExpr cur env scope) es
+checkExpr cur env scope (EListLit es) = flatMap (checkExpr cur env scope) es
+checkExpr cur env scope (EArrayLit es) = flatMap (checkExpr cur env scope) es
+checkExpr cur env scope (ERangeList lo hi _) = checkExpr cur env scope lo
+  ++ checkExpr cur env scope hi
+checkExpr cur env scope (ERangeArray lo hi _) = checkExpr cur env scope lo
+  ++ checkExpr cur env scope hi
+checkExpr cur env scope (ESlice e0 lo hi _) = checkExpr cur env scope e0
+  ++ checkExpr cur env scope lo
+  ++ checkExpr cur env scope hi
+checkExpr cur env scope (EIndex e0 i) = checkExpr cur env scope e0
+  ++ checkExpr cur env scope i
+checkExpr cur env scope (EAnnot e0 t) = checkExpr cur env scope e0 ++ checkType cur env t
+-- EHeadAnnot is the synthetic `:~` head-pin desugar emits for Map/Set literals
+-- (`fromEntries [...] :~ Map _k _v`).  The container type (Map/Set/…) is a real
+-- type, so validate it like EAnnot via checkType — except the multi-module env
+-- already carries imported types so an `import map`-bearing program resolves
+-- `Map`, while a bare `Map { … }` with no import resolves to UnknownType, both
+-- matching the OCaml oracle (lib/resolve.ml EHeadAnnot arm, Phase 108).
+checkExpr cur env scope (EHeadAnnot e0 t) = checkExpr cur env scope e0 ++ checkType cur env t
+checkExpr cur env scope (EBlock stmts) = checkStmts cur env scope stmts
+checkExpr cur env scope (EDo stmts) = checkStmts cur env scope stmts
+checkExpr cur env scope (EStringInterp parts) =
+  flatMap (checkInterp cur env scope) parts
+checkExpr cur env scope (EGuards arms) =
+  flatMap (checkGuardArm cur env scope) arms
+checkExpr cur env scope (EFunction arms) = flatMap (checkArm cur env scope) arms
+checkExpr cur env scope (ERecordCreate name fs) =
+  checkRecordCreate cur env scope name fs
+checkExpr cur env scope (ERecordUpdate e0 fs) = checkRecordUpdate cur env scope e0 fs
+checkExpr cur env scope (EVariantUpdate con e0 fs) = checkExpr cur env scope e0
+  ++ checkRecordCreate cur env scope con fs
+checkExpr cur env scope (EAsPat _ e0) = AsPatternMisplaced cur :: checkExpr cur env scope e0
+checkExpr cur env scope (ESection s) = checkSection cur env scope s
+-- ELoc captures its span into `cur` (Stage B), then recurses — so any error in
+-- the wrapped subtree is attributed to this span (mirror lib/resolve.ml's ELoc
+-- arm setting `current_loc`).
+checkExpr _ env scope (ELoc l e) = checkExpr (Some l) env scope e
+checkExpr cur env scope (EDoOrigin _ e) = checkExpr cur env scope e
+
+-- an `@Name` impl hint is not a value reference (resolve must not flag it)
+checkVar : Option Loc -> Env -> List String -> String -> List ResError
+checkVar cur env scope n
+  | isHint n = []
+  | not (lookupValue env scope n) = [UnboundVariable n cur]
+  -- use-time ambiguity: resolves, not shadowed by a local, exported by ≥2
+  -- non-core modules (same-module top-levels already excluded from the set).
+  | not (contains n scope) && isAmbiguous env n =
+    [AmbiguousOccurrence n (ambigMods env n) cur]
+  | otherwise = []
+
+isAmbiguous : Env -> String -> Bool
+isAmbiguous env n = match lookupAssoc n env.ambiguous
+  Some _ => True
+  None => False
+
+ambigMods : Env -> String -> List String
+ambigMods env n = match lookupAssoc n env.ambiguous
+  Some mods => mods
+  None => []
+
+isHint : String -> Bool
+isHint n = startsWithAt (stringToChars n)
+
+startsWithAt : Array Char -> Bool
+startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
+
+lookupValue : Env -> List String -> String -> Bool
+lookupValue env scope n = contains n scope
+  || contains n env.values
+  || contains n env.ctors
+  || contains n env.imported
+
+checkLet : Option Loc -> Env -> List String -> Bool -> Pat -> Expr -> Expr -> List ResError
+checkLet cur env scope True (PVar f) e1 e2 = checkExpr cur env (f :: scope) e1
+  ++ checkExpr cur env (f :: scope) e2
+-- non-recursive (or rec with non-var pat): the bound names are NOT in scope on
+-- the RHS.  An UnboundVariable for one of them ⇒ the user likely forgot `rec`,
+-- so re-target it as NonRecursiveValueLet (mirrors lib/resolve.ml's rewrite).
+checkLet cur env scope _ pat e1 e2 =
+  let bound = patBindings pat
+  checkPat cur env pat
+    ++ map (rewriteNonRec bound) (checkExpr cur env scope e1)
+    ++ checkExpr cur env (bound ++ scope) e2
+
+rewriteNonRec : List String -> ResError -> ResError
+rewriteNonRec bound (UnboundVariable n l) =
+  if contains n bound then
+    NonRecursiveValueLet n l
+  else
+    UnboundVariable n l
+rewriteNonRec _ e = e
+
+-- where-group: all group names are in scope for every clause body + the result
+checkLetGroup : Option Loc -> Env -> List String -> List LetBind -> Expr -> List ResError
+checkLetGroup cur env scope binds body =
+  let scope2 = map letBindName binds ++ scope
+  flatMap (checkLetBind cur env scope2) binds ++ checkExpr cur env scope2 body
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
+
+checkLetBind : Option Loc -> Env -> List String -> LetBind -> List ResError
+checkLetBind cur env scope (LetBind _ clauses) =
+  flatMap (checkFunClause cur env scope) clauses
+
+checkFunClause : Option Loc -> Env -> List String -> FunClause -> List ResError
+checkFunClause cur env scope (FunClause pats body) = flatMap (checkPat cur env) pats
+  ++ checkExpr cur env (patsBindings pats ++ scope) body
+
+checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
+checkArm cur env scope (Arm pat gs body) =
+  let scope0 = patBindings pat ++ scope
+  let (gErrs, scope2) = checkArmGuards cur env scope0 gs
+  checkPat cur env pat ++ gErrs ++ checkExpr cur env scope2 body
+
+-- Resolve an arm's guard qualifiers left-to-right, threading each pattern-bind's
+-- binders into the LATER qualifiers AND the arm body (mirror of lib/resolve.ml's
+-- EMatch fold).  Returns the accumulated errors and the body's scope.  A `GBind`
+-- also resolves its bind expression in the pre-bind scope and checks its pattern.
+checkArmGuards : Option Loc -> Env -> List String -> List Guard -> (List ResError, List String)
+checkArmGuards _ _ scope [] = ([], scope)
+checkArmGuards cur env scope ((GBool e)::rest) =
+  let (rErrs, scope2) = checkArmGuards cur env scope rest
+  (checkExpr cur env scope e ++ rErrs, scope2)
+checkArmGuards cur env scope ((GBind p e)::rest) =
+  let here = checkExpr cur env scope e ++ checkPat cur env p
+  let (rErrs, scope2) = checkArmGuards cur env (patBindings p ++ scope) rest
+  (here ++ rErrs, scope2)
+
+checkGuardArm : Option Loc -> Env -> List String -> GuardArm -> List ResError
+checkGuardArm cur env scope (GuardArm gs body) = flatMap (checkGuard cur env scope) gs
+  ++ checkExpr cur env scope body
+
+checkGuard : Option Loc -> Env -> List String -> Guard -> List ResError
+checkGuard cur env scope (GBool e) = checkExpr cur env scope e
+checkGuard cur env scope (GBind _ e) = checkExpr cur env scope e
+
+checkStmts : Option Loc -> Env -> List String -> List DoStmt -> List ResError
+checkStmts _ _ _ [] = []
+checkStmts cur env scope (s::rest) =
+  let (errs, scope2) = checkStmt cur env scope s
+  errs ++ checkStmts cur env scope2 rest
+
+checkStmt : Option Loc -> Env -> List String -> DoStmt -> (List ResError, List String)
+checkStmt cur env scope (DoExpr e) = (checkExpr cur env scope e, scope)
+checkStmt cur env scope (DoBind p e) = (checkPat cur env p ++ checkExpr cur env scope e, patBindings p ++ scope)
+checkStmt cur env scope (DoLet _ False p e) = (checkPat cur env p ++ checkExpr cur env scope e, patBindings p ++ scope)
+checkStmt cur env scope (DoLet _ True p e) = (
+  checkPat cur env p ++ checkExpr cur env (patBindings p ++ scope) e,
+  patBindings p ++ scope,
+)
+checkStmt cur env scope (DoAssign _ e) = (checkExpr cur env scope e, scope)
+checkStmt cur env scope (DoFieldAssign _ _ e) = (checkExpr cur env scope e, scope)
+checkStmt cur env scope (DoLetElse p e alt) = (
+  checkPat cur env p ++ checkExpr cur env scope e ++ checkExpr cur env scope alt,
+  patBindings p ++ scope,
+)
+
+checkInterp : Option Loc -> Env -> List String -> InterpPart -> List ResError
+checkInterp _ _ _ (InterpStr _) = []
+checkInterp cur env scope (InterpExpr e) = checkExpr cur env scope e
+
+checkFieldAssign : Option Loc -> Env -> List String -> FieldAssign -> List ResError
+checkFieldAssign cur env scope (FieldAssign _ e) = checkExpr cur env scope e
+
+-- record create `C { f = v, … }`: head must be a record type / named ctor; if so,
+-- each field must belong to it; then check the value exprs
+checkRecordCreate : Option Loc -> Env -> List String -> String -> List FieldAssign -> List ResError
+checkRecordCreate cur env scope name fs = recCreateHead cur env name fs
+  ++ flatMap (checkFieldAssign cur env scope) fs
+
+recCreateHead : Option Loc -> Env -> String -> List FieldAssign -> List ResError
+recCreateHead cur env name fs
+  | contains name env.types || contains name env.imported || contains name env.ctors = flatMap (recCreateField cur env name) fs
+  | otherwise = [UnknownType name cur]
+
+recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
+recCreateField cur env owner (FieldAssign fname _) =
+  fieldVerdict cur env owner fname (ownersOf fname env.fieldOwners)
+
+-- record update `{ e | f = v, … }`: the receiver's type isn't pinned, so only
+-- flag a field unknown to *every* record (no FieldNotInRecord here)
+checkRecordUpdate : Option Loc -> Env -> List String -> Expr -> List FieldAssign -> List ResError
+checkRecordUpdate cur env scope e0 fs = checkExpr cur env scope e0
+  ++ flatMap (recUpdateField cur env scope) fs
+
+recUpdateField : Option Loc -> Env -> List String -> FieldAssign -> List ResError
+recUpdateField cur env scope (FieldAssign fname v) = checkExpr cur env scope v
+  ++ fieldKnownErr cur env fname
+
+fieldKnownErr : Option Loc -> Env -> String -> List ResError
+fieldKnownErr cur env fname =
+  recUpdateVerdict cur fname (ownersOf fname env.fieldOwners)
+
+recUpdateVerdict : Option Loc -> String -> List String -> List ResError
+recUpdateVerdict cur fname [] = [UnknownField fname cur]
+recUpdateVerdict _ _ _ = []
+
+checkSection : Option Loc -> Env -> List String -> Section -> List ResError
+checkSection _ _ _ (SecBare _) = []
+checkSection cur env scope (SecRight _ e) = checkExpr cur env scope e
+checkSection cur env scope (SecLeft e _) = checkExpr cur env scope e
+
+-- ── check_decl ────────────────────────────────────────────────────────────
+-- Decl-level entry: `cur` starts at `None` (no enclosing expr span yet, mirror
+-- lib/resolve.ml resetting `current_loc := None` per decl); the body's `ELoc`
+-- wrappers re-set it as the expr walk descends.
+checkDecl : Env -> Decl -> List ResError
+checkDecl env (DFunDef _ _ pats body) = flatMap (checkPat None env) pats  ++ checkExpr None env (patsBindings pats) body
+checkDecl env (DLetGroup _ binds) =
+  -- top-level where-group: all group names are in scope for every clause body
+  -- (mutual recursion), mirroring lib/resolve.ml's DLetGroup arm.
+  flatMap (checkLetBind None env (map letBindName binds)) binds
+checkDecl env (DTypeSig _ _ t) = checkType None env t
+checkDecl env (DExtern _ _ t) = checkType None env t
+checkDecl env (DData _ _ _ vs _) = flatMap (checkVariant env) vs
+checkDecl env (DRecord _ _ _ fs _) = flatMap (checkFieldType env) fs
+checkDecl env (DProp _ _ params body) = checkProp env params body
+checkDecl env (DTest _ _ body) = checkExpr None env [] body
+checkDecl env (DBench _ _ body) = checkExpr None env [] body
+checkDecl env DInterface { supers, methods, ... } =
+  checkInterfaceDecl env supers methods
+checkDecl env DImpl { iface, tys, reqs, methods, ... } =
+  checkImplDecl env iface tys reqs methods
+checkDecl env (DTypeAlias _ _ _ rhs) = checkType None env rhs
+checkDecl env (DNewtype _ _ _ _ fty _) = checkType None env fty
+checkDecl env (DAttrib _ inner) = checkDecl env inner
+checkDecl _ _ = []
+
+checkVariant : Env -> Variant -> List ResError
+checkVariant env (Variant _ (ConPos tys)) = flatMap (checkType None env) tys
+checkVariant env (Variant _ (ConNamed fs)) =
+  flatMap (checkFieldType env) fs
+
+checkFieldType : Env -> Field -> List ResError
+checkFieldType env (Field _ t) = checkType None env t
+
+checkProp : Env -> List PropParam -> Expr -> List ResError
+checkProp env params body = flatMap (checkPropParamTy env) params
+  ++ checkExpr None env (map propParamName params) body
+
+checkPropParamTy : Env -> PropParam -> List ResError
+checkPropParamTy env (PropParam _ t) = checkType None env t
+
+propParamName : PropParam -> String
+propParamName (PropParam x _) = x
+
+checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
+checkInterfaceDecl env supers methods = flatMap (checkSuper env) supers
+  ++ flatMap (checkIfaceMethod env) methods
+
+checkSuper : Env -> Super -> List ResError
+checkSuper env (Super iface _) =
+  if contains iface env.interfaces then
+    []
+  else
+    [UnknownInterface iface None]
+
+checkIfaceMethod : Env -> IfaceMethod -> List ResError
+checkIfaceMethod env (IfaceMethod _ t None) = checkType None env t
+checkIfaceMethod env (IfaceMethod _ t (Some (MethodDefault pats body))) = checkType None env t
+  ++ flatMap (checkPat None env) pats
+  ++ checkExpr None env (patsBindings pats) body
+
+checkImplDecl : Env -> String -> List Ty -> List Require -> List ImplMethod -> List ResError
+checkImplDecl env iface tyargs reqs methods = flatMap (checkType None env) tyargs
+  ++ flatMap (checkRequire env) reqs
+  ++ flatMap (checkImplMethod env) methods
+  ++ checkImplIface env iface methods
+
+checkRequire : Env -> Require -> List ResError
+checkRequire env (Require iface tys) = (if contains iface env.interfaces then [] else [UnknownInterface iface None])
+  ++ flatMap (checkType None env) tys
+
+checkImplMethod : Env -> ImplMethod -> List ResError
+checkImplMethod env (ImplMethod _ pats body) = flatMap (checkPat None env) pats
+  ++ checkExpr None env (patsBindings pats) body
+
+checkImplIface : Env -> String -> List ImplMethod -> List ResError
+checkImplIface env iface methods
+  | not (contains iface env.interfaces) = [UnknownInterface iface None]
+  | otherwise = flatMap (checkMethodMember iface (ifaceMethodsOf iface env.ifaceMethods)) methods
+
+ifaceMethodsOf : String -> List (String, List String) -> List String
+ifaceMethodsOf _ [] = []
+ifaceMethodsOf iface ((i, ms)::rest)
+  | i == iface = ms
+  | otherwise = ifaceMethodsOf iface rest
+
+checkMethodMember : String -> List String -> ImplMethod -> List ResError
+checkMethodMember iface known (ImplMethod mname _ _) =
+  if contains mname known then
+    []
+  else
+    [MethodNotInInterface mname iface None]
+
+-- ── Primitives (hardcoded, mirror lib/resolve.ml) ────────────────────────
+primitiveTypes : List String
+primitiveTypes = ["Int", "Float", "String", "Char", "Bool", "Unit", "List", "Ref", "Array"]
+
+primitiveConstructors : List String
+primitiveConstructors = ["True", "False"]
+
+-- ── Name extractors (over runtime / prelude / user decls) ─────────────────
+externNames : List Decl -> List String
+externNames [] = []
+externNames ((DExtern _ n _)::rest) = n :: externNames rest
+externNames (_::rest) = externNames rest
+
+dataRecordNames : List Decl -> List String
+dataRecordNames [] = []
+dataRecordNames ((DData _ n _ _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DRecord _ n _ _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DTypeAlias _ n _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DNewtype _ n _ _ _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DAttrib _ d)::rest) = dataRecordNames (d :: rest)
+dataRecordNames (_::rest) = dataRecordNames rest
+
+-- user/platform effect labels declared with `effect Foo` (Phase 146 gap 2)
+effectNames : List Decl -> List String
+effectNames [] = []
+effectNames ((DEffect _ n _ _)::rest) = n :: effectNames rest
+effectNames ((DAttrib _ d)::rest) = effectNames (d :: rest)
+effectNames (_::rest) = effectNames rest
+
+ctorNames : List Decl -> List String
+ctorNames [] = []
+ctorNames ((DData _ _ _ vs _)::rest) = map variantName vs ++ ctorNames rest
+ctorNames ((DNewtype _ _ _ con _ _)::rest) = con :: ctorNames rest
+ctorNames ((DAttrib _ d)::rest) = ctorNames (d :: rest)
+ctorNames (_::rest) = ctorNames rest
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+ifaceMethodNm : IfaceMethod -> String
+ifaceMethodNm (IfaceMethod n _ _) = n
+
+implMethodNm : ImplMethod -> String
+implMethodNm (ImplMethod n _ _) = n
+
+interfaceList : List Decl -> List (String, List String)
+interfaceList [] = []
+interfaceList (DInterface { name = n, methods, ... }::rest) =
+  (n, map ifaceMethodNm methods) :: interfaceList rest
+interfaceList (_::rest) = interfaceList rest
+
+-- prelude value names (DFunDef/DTypeSig + DImpl & DInterface method names)
+preludeValueNames : List Decl -> List String
+preludeValueNames [] = []
+preludeValueNames ((DFunDef _ n _ _)::rest) = n :: preludeValueNames rest
+preludeValueNames ((DTypeSig _ n _)::rest) = n :: preludeValueNames rest
+preludeValueNames (DImpl { methods, ... }::rest) = map implMethodNm methods
+  ++ preludeValueNames rest
+preludeValueNames (DInterface { methods, ... }::rest) = map ifaceMethodNm methods
+  ++ preludeValueNames rest
+preludeValueNames (_::rest) = preludeValueNames rest
+
+-- user value names (DFunDef/DTypeSig/DExtern + DInterface methods; NOT DImpl)
+userValueNames : List Decl -> List String
+userValueNames [] = []
+userValueNames ((DFunDef _ n _ _)::rest) = n :: userValueNames rest
+userValueNames ((DTypeSig _ n _)::rest) = n :: userValueNames rest
+userValueNames ((DExtern _ n _)::rest) = n :: userValueNames rest
+userValueNames ((DLetGroup _ bs)::rest) = map letBindName bs ++ userValueNames rest
+userValueNames (DInterface { methods, ... }::rest) = map ifaceMethodNm methods
+  ++ userValueNames rest
+userValueNames (_::rest) = userValueNames rest
+
+fieldOwnersOf : List Decl -> List (String, String)
+fieldOwnersOf [] = []
+fieldOwnersOf ((DRecord _ n _ fs _)::rest) = map (recordFieldOwner n) fs
+  ++ fieldOwnersOf rest
+fieldOwnersOf ((DData _ _ _ vs _)::rest) = flatMap variantFieldOwners vs
+  ++ fieldOwnersOf rest
+fieldOwnersOf (_::rest) = fieldOwnersOf rest
+
+recordFieldOwner : String -> Field -> (String, String)
+recordFieldOwner owner (Field fname _) = (fname, owner)
+
+variantFieldOwners : Variant -> List (String, String)
+variantFieldOwners (Variant cname (ConNamed fs)) =
+  map (recordFieldOwner cname) fs
+variantFieldOwners (Variant _ (ConPos _)) = []
+
+-- single-file import stub: names brought into scope (core import = no-op)
+importedNames : List Decl -> List String
+importedNames [] = []
+importedNames ((DUse _ path)::rest) = useImportNames path ++ importedNames rest
+importedNames (_::rest) = importedNames rest
+
+useImportNames : UsePath -> List String
+useImportNames path = if useModId path == "core" then [] else useStubNames path
+
+useStubNames : UsePath -> List String
+useStubNames (UseName ns) = [lastOf ns]
+useStubNames (UseGroup _ ms) = map memberName ms
+useStubNames (UseWild _) = []
+useStubNames (UseAlias _ a) = [a]
+
+memberName : UseMember -> String
+memberName (UseMember n _) = n
+
+useModId : UsePath -> String
+useModId (UseName ns) =
+  if listLen ns > 1 then
+    joinDot (initList ns)
+  else
+    firstOr "" ns
+useModId (UseGroup ns _) = joinDot ns
+useModId (UseWild ns) = joinDot ns
+useModId (UseAlias ns _) = joinDot ns
+
+lastOf : List String -> String
+lastOf [] = ""
+lastOf [x] = x
+lastOf (_::rest) = lastOf rest
+
+firstOr : String -> List String -> String
+firstOr d [] = d
+firstOr _ (x::_) = x
+
+programIsCore : List Decl -> Bool
+programIsCore prog = hasOrdering prog && hasFoldable prog
+
+hasOrdering : List Decl -> Bool
+hasOrdering [] = False
+hasOrdering ((DData _ "Ordering" _ _ _)::_) = True
+hasOrdering (_::rest) = hasOrdering rest
+
+hasFoldable : List Decl -> Bool
+hasFoldable [] = False
+hasFoldable (DInterface { name = "Foldable", ... }::_) = True
+hasFoldable (_::rest) = hasFoldable rest
+
+-- ── build_env ─────────────────────────────────────────────────────────────
+buildEnv : List Decl -> List Decl -> List Decl -> Env
+buildEnv runtimeDecls preludeDecls prog =
+  let seed = not (programIsCore prog)
+  let pTypes = whenL seed (dataRecordNames preludeDecls)
+  let pCtors = whenL seed (ctorNames preludeDecls)
+  let pIfaces = whenL seed (interfaceList preludeDecls)
+  let pValues = whenL seed (preludeValueNames preludeDecls)
+  let pFieldOwners = whenL seed (fieldOwnersOf preludeDecls)
+  let uIfaces = interfaceList prog
+  let imported = importedNames prog
+  Env {
+    values = externNames runtimeDecls ++ pValues ++ userValueNames prog ++ imported,
+    types = primitiveTypes ++ pTypes ++ dataRecordNames prog ++ imported,
+    ctors = primitiveConstructors ++ pCtors ++ ctorNames prog,
+    fields = map fst pFieldOwners ++ map fst (fieldOwnersOf prog),
+    fieldOwners = pFieldOwners ++ fieldOwnersOf prog,
+    interfaces = map fst pIfaces ++ map fst uIfaces,
+    ifaceMethods = pIfaces ++ uIfaces,
+    effects = effectNames prog,
+    imported = imported,
+    ambiguous = [],
+  }
+
+whenL : Bool -> List a -> List a
+whenL True xs = xs
+whenL False _ = []
+
+-- ── build-time errors: ExternWithBody + DuplicateDefinition ──────────────
+buildErrors : List Decl -> List Decl -> List ResError
+buildErrors preludeDecls prog = externWithBodyErrors (externNames prog) prog
+  ++ duplicateErrors preludeDecls prog
+  ++ contiguityErrors prog
+
+-- Phase 148: the clauses of a top-level value binding must be contiguous.  Two
+-- same-named DFunDef/DLetGroup clause-runs separated by an intervening clause-body
+-- decl are silently coalesced into one multi-clause function; flag the gap.
+-- Mirrors lib/resolve.ml's check_contiguous_bindings.  Walk decls tracking opened
+-- (names in their current contiguous run of clause bodies) and closed (a run that
+-- ended); reaching a closed name re-opens it AND is the error.  A clause-body decl
+-- closes every open name it does not itself bind.  Type signatures (DTypeSig) are
+-- TRANSPARENT — they neither open nor close a run, so the "all sigs, then all
+-- defs" grouping of a mutually-recursive pair is accepted.
+declBindNames : Decl -> List String
+declBindNames (DAttrib _ d) = declBindNames d
+declBindNames (DFunDef _ n _ _) = [n]
+declBindNames (DLetGroup _ bs) = map letBindName bs
+declBindNames _ = []
+
+-- a transparent decl (DTypeSig) is skipped entirely by the contiguity walk
+isTransparentDecl : Decl -> Bool
+isTransparentDecl (DAttrib _ d) = isTransparentDecl d
+isTransparentDecl (DTypeSig _ _ _) = True
+isTransparentDecl _ = False
+
+contiguityErrors : List Decl -> List ResError
+contiguityErrors prog = contigGo [] [] prog
+
+-- closed = names whose run ended; opened = names in their current run
+contigGo : List String -> List String -> List Decl -> List ResError
+contigGo _ _ [] = []
+contigGo closed opened (d::rest)
+  | isTransparentDecl d = contigGo closed opened rest
+  | otherwise =
+    let ns = declBindNames d
+    -- close every open name not bound by this decl
+    let stillOpen = filterKeepOpen ns opened
+    let nowClosed = appendMissing opened stillOpen closed
+    -- process this decl's bound names against the closed set
+    let errs = newlyDuplicated (declLoc d) nowClosed ns
+    -- re-open the names this decl binds (whether fresh or re-opened)
+    let opened2 = unionStr stillOpen ns
+    -- a re-opened (previously closed) name leaves the closed set; harmless to keep,
+    -- but removing it avoids a second spurious flag on a third occurrence
+    let closed2 = removeAll ns nowClosed
+    errs ++ contigGo closed2 opened2 rest
+
+-- names from `opened` that are still bound by the current decl (stay open)
+filterKeepOpen : List String -> List String -> List String
+filterKeepOpen _ [] = []
+filterKeepOpen ns (o::os)
+  | contains o ns = o :: filterKeepOpen ns os
+  | otherwise = filterKeepOpen ns os
+
+-- add every `opened` name NOT in `stillOpen` to the closed accumulator
+appendMissing : List String -> List String -> List String -> List String
+appendMissing [] _ closed = closed
+appendMissing (o::os) stillOpen closed
+  | contains o stillOpen = appendMissing os stillOpen closed
+  | otherwise = appendMissing os stillOpen (unionStr closed [o])
+
+-- a bound name that is in the closed set is a non-contiguous re-appearance.
+-- Stage B: carry the offending decl's source span (first ELoc in its body, mirror
+-- lib/resolve.ml's `decl_loc`).
+newlyDuplicated : Option Loc -> List String -> List String -> List ResError
+newlyDuplicated _ _ [] = []
+newlyDuplicated loc closed (n::ns)
+  | contains n closed = DuplicateBinding n loc :: newlyDuplicated loc closed ns
+  | otherwise = newlyDuplicated loc closed ns
+
+-- decl_loc: the first ELoc span found in a pre-order walk of a decl's body
+-- (mirror lib/resolve.ml's `decl_loc`, which uses Desugar.map_expr to grab the
+-- first ELoc).  DFunDef only; other decls have no body span → None.
+declLoc : Decl -> Option Loc
+declLoc (DAttrib _ d) = declLoc d
+declLoc (DFunDef _ _ _ body) = firstExprLoc body
+declLoc _ = None
+
+-- First ELoc span in a pre-order traversal of an expr (None if the subtree has
+-- no ELoc wrapper).  Pre-order so it matches map_expr's outermost-first order.
+firstExprLoc : Expr -> Option Loc
+firstExprLoc (ELoc l _) = Some l
+firstExprLoc (EApp f x) = orElseLocL (firstExprLoc f) (firstExprLoc x)
+firstExprLoc (ELam _ body) = firstExprLoc body
+firstExprLoc (ELet _ _ _ e1 e2) = orElseLocL (firstExprLoc e1) (firstExprLoc e2)
+firstExprLoc (ELetGroup _ body) = firstExprLoc body
+firstExprLoc (EMatch e0 _) = firstExprLoc e0
+firstExprLoc (EIf c t el) = orElseLocL (firstExprLoc c) (orElseLocL (firstExprLoc t) (firstExprLoc el))
+firstExprLoc (EBinOp _ a b _) = orElseLocL (firstExprLoc a) (firstExprLoc b)
+firstExprLoc (EUnOp _ a) = firstExprLoc a
+firstExprLoc (EInfix _ a b) = orElseLocL (firstExprLoc a) (firstExprLoc b)
+firstExprLoc (EFieldAccess e0 _) = firstExprLoc e0
+firstExprLoc (ETuple es) = firstLocList es
+firstExprLoc (EListLit es) = firstLocList es
+firstExprLoc (EArrayLit es) = firstLocList es
+firstExprLoc (EAnnot e0 _) = firstExprLoc e0
+firstExprLoc (EHeadAnnot e0 _) = firstExprLoc e0
+firstExprLoc (ERangeList lo hi _) = orElseLocL (firstExprLoc lo) (firstExprLoc hi)
+firstExprLoc (ERangeArray lo hi _) = orElseLocL (firstExprLoc lo) (firstExprLoc hi)
+firstExprLoc (EIndex e0 i) = orElseLocL (firstExprLoc e0) (firstExprLoc i)
+firstExprLoc (ESlice e0 lo hi _) = orElseLocL (firstExprLoc e0) (orElseLocL (firstExprLoc lo) (firstExprLoc hi))
+firstExprLoc (EDoOrigin _ e) = firstExprLoc e
+firstExprLoc _ = None
+
+firstLocList : List Expr -> Option Loc
+firstLocList [] = None
+firstLocList (e::rest) = orElseLocL (firstExprLoc e) (firstLocList rest)
+
+orElseLocL : Option Loc -> Option Loc -> Option Loc
+orElseLocL (Some l) _ = Some l
+orElseLocL None r = r
+
+unionStr : List String -> List String -> List String
+unionStr acc [] = acc
+unionStr acc (x::xs)
+  | contains x acc = unionStr acc xs
+  | otherwise = unionStr (acc ++ [x]) xs
+
+removeAll : List String -> List String -> List String
+removeAll _ [] = []
+removeAll ns (x::xs)
+  | contains x ns = removeAll ns xs
+  | otherwise = x :: removeAll ns xs
+
+externWithBodyErrors : List String -> List Decl -> List ResError
+externWithBodyErrors _ [] = []
+externWithBodyErrors externs ((DFunDef _ n _ _)::rest) = (if contains n externs then [ExternWithBody n None] else [])
+  ++ externWithBodyErrors externs rest
+externWithBodyErrors externs (_::rest) = externWithBodyErrors externs rest
+
+duplicateErrors : List Decl -> List Decl -> List ResError
+duplicateErrors preludeDecls prog =
+  let seed = not (programIsCore prog)
+  let typeSeed = primitiveTypes ++ whenL seed (dataRecordNames preludeDecls)
+  let ctorSeed = primitiveConstructors ++ whenL seed (ctorNames preludeDecls)
+  let ifaceSeed = whenL seed (map fst (interfaceList preludeDecls))
+  map (dupErr "type") (findDups typeSeed (dataRecordNames prog))
+    ++ map (dupErr "constructor") (findDups ctorSeed (ctorNames prog))
+    ++ map (dupErr "interface") (findDups ifaceSeed (map fst (interfaceList prog)))
+
+dupErr : String -> String -> ResError
+dupErr kind n = DuplicateDefinition kind n None
+
+-- names that are already present when declared (order-sensitive, like add_unique)
+findDups : List String -> List String -> List String
+findDups _ [] = []
+findDups seen (n::rest)
+  | contains n seen = n :: findDups seen rest
+  | otherwise = findDups (n :: seen) rest
+
+-- ── Serialization (matches dev/diagdump.ml's sexp_error) ─────────────────
+-- The loc field (Stage B) is dropped here — the sexp form mirrors the OCaml
+-- diagdump's location-stripped serialization.
+export
+resErrorSexp : ResError -> String
+resErrorSexp (UnboundVariable n _) = "(UnboundVariable " ++ escStr n ++ ")"
+resErrorSexp (UnknownConstructor n _) = "(UnknownConstructor " ++ escStr n ++ ")"
+resErrorSexp (UnknownType n _) = "(UnknownType " ++ escStr n ++ ")"
+resErrorSexp (UnknownEffect n _) = "(UnknownEffect " ++ escStr n ++ ")"
+resErrorSexp (UnknownField n _) = "(UnknownField " ++ escStr n ++ ")"
+resErrorSexp (FieldNotInRecord f r _) = "(FieldNotInRecord "
+  ++ escStr f
+  ++ " "
+  ++ escStr r
+  ++ ")"
+resErrorSexp (DuplicateDefinition k n _) = "(DuplicateDefinition "
+  ++ escStr k
+  ++ " "
+  ++ escStr n
+  ++ ")"
+resErrorSexp (UnknownInterface n _) = "(UnknownInterface " ++ escStr n ++ ")"
+resErrorSexp (MethodNotInInterface m i _) = "(MethodNotInInterface "
+  ++ escStr m
+  ++ " "
+  ++ escStr i
+  ++ ")"
+resErrorSexp (ExternWithBody n _) = "(ExternWithBody " ++ escStr n ++ ")"
+resErrorSexp (PrivateNameAccess n m _) = "(PrivateNameAccess "
+  ++ escStr n
+  ++ " "
+  ++ escStr m
+  ++ ")"
+resErrorSexp (NoExportedConstructors n m _) = "(NoExportedConstructors "
+  ++ escStr n
+  ++ " "
+  ++ escStr m
+  ++ ")"
+resErrorSexp (AbstractFieldAccess t f _) = "(AbstractFieldAccess "
+  ++ escStr t
+  ++ " "
+  ++ escStr f
+  ++ ")"
+resErrorSexp (UnknownModule n _) = "(UnknownModule " ++ escStr n ++ ")"
+resErrorSexp (NonRecursiveValueLet n _) = "(NonRecursiveValueLet "
+  ++ escStr n
+  ++ ")"
+resErrorSexp (DuplicateBinding n _) = "(DuplicateBinding " ++ escStr n ++ ")"
+resErrorSexp (AsPatternMisplaced _) = "AsPatternMisplaced"
+resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
+  ++ joinWith " " (escStr n :: map escStr mods)
+  ++ ")"
+
+-- ── resolve_program ───────────────────────────────────────────────────────
+-- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.
+export
+resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
+resolveProgram runtimeDecls preludeDecls prog =
+  let env = buildEnv runtimeDecls preludeDecls prog
+  buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog
+
+-- Human-readable message for a ResError (mirrors lib/resolve.ml's pp_error).
+-- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
+export
+ppResError : ResError -> String
+ppResError (UnboundVariable n _) = "Unbound variable: " ++ n
+ppResError (UnknownConstructor n _) = "Unknown constructor: " ++ n
+ppResError (UnknownType n _) = "Unknown type: " ++ n
+ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
+ppResError (UnknownField n _) = "Unknown field: " ++ n
+ppResError (FieldNotInRecord f r _) = "Field "
+  ++ f
+  ++ " does not belong to record "
+  ++ r
+ppResError (DuplicateDefinition k n _) = "Duplicate " ++ k ++ ": " ++ n
+ppResError (UnknownInterface n _) = "Unknown interface: " ++ n
+ppResError (MethodNotInInterface m i _) = "Method '"
+  ++ m
+  ++ "' is not part of interface "
+  ++ i
+ppResError (ExternWithBody n _) = "extern '"
+  ++ n
+  ++ "' must not have a definition body"
+ppResError (PrivateNameAccess n m _) = "'" ++ n ++ "' is private to module " ++ m
+ppResError (NoExportedConstructors n m _) = "'"
+  ++ n
+  ++ "' exports no constructors from module "
+  ++ m
+  ++ " (it is exported abstractly); remove the `(..)` or export it with `public export`."
+ppResError (AbstractFieldAccess t f _) = "'"
+  ++ t
+  ++ "' is exported abstractly; its field '"
+  ++ f
+  ++ "' is not accessible (declare it `public export` to expose its fields)."
+ppResError (UnknownModule n _) = "Unknown module: " ++ n
+ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
+ppResError (NonRecursiveValueLet n _) = "'"
+  ++ n
+  ++ "' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec "
+  ++ n
+  ++ " = ...` to opt in to recursion (the RHS must be a lambda)."
+ppResError (DuplicateBinding n _) = "the clauses of '"
+  ++ n
+  ++ "' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of '"
+  ++ n
+  ++ "' (and its type signature) together, or rename one."
+ppResError (AmbiguousOccurrence n mods _) = "ambiguous occurrence: `"
+  ++ n
+  ++ "` is exported by "
+  ++ ambigModPhrase mods
+  ++ " — qualify or select per-name with `import <mod>.{"
+  ++ n
+  ++ "}` / import only one."
+
+-- Mirror lib/resolve.ml's mod_phrase: two modules → "both `a` and `b`";
+-- otherwise a comma-separated list of backtick-quoted module names.
+ambigModPhrase : List String -> String
+ambigModPhrase mods = match mods
+  (a::b::[]) => "both `" ++ a ++ "` and `" ++ b ++ "`"
+  _ => joinWith ", " (map (m => "`" ++ m ++ "`") mods)
+
+-- one human-readable error message per line (the harness sorts)
+export
+resolveToLines : List Decl -> List Decl -> List Decl -> String
+resolveToLines runtimeDecls preludeDecls prog =
+  joinNl (map ppResError (resolveProgram runtimeDecls preludeDecls prog))
+
+-- ── Single-file import validation ─────────────────────────────────────────
+-- In single-file mode the loader is absent, so resolve_program stubs unknown
+-- imports into scope (mirroring lib/resolve.ml's behaviour when known_modules=[]).
+-- This function catches DUse declarations that reference a non-core module and
+-- emits UnknownModule — used by check.mdk BEFORE running resolveToLines so the
+-- pipeline halts with the correct error category rather than falling through to
+-- a spurious typecheck "Unbound variable".
+export
+singleFileImportErrors : List Decl -> List ResError
+singleFileImportErrors [] = []
+singleFileImportErrors ((DUse _ path)::rest) =
+  let mid = useModId path
+  if mid == "core" || mid == "" then singleFileImportErrors rest else UnknownModule mid None :: singleFileImportErrors rest
+singleFileImportErrors (_::rest) = singleFileImportErrors rest
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Multi-module path — port of lib/resolve.ml's `resolve_module`.
+--
+-- Resolves one module against the EXPORTS of previously-resolved modules
+-- (dependency-first), so imports are validated against what a module actually
+-- makes public — the privacy / abstract-ctor / unknown-module checks the
+-- single-file path stubs out (PrivateNameAccess / NoExportedConstructors /
+-- UnknownModule).  `buildExports` then computes this module's own public
+-- interface, threaded into the next module's `known` set by the driver.
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- The public interface of a resolved module (mirror lib/resolve.ml's
+-- module_exports; exp_fields is dropped — consumers only read field OWNERS).
+public export record ModuleExports
+  modId : String
+  expValues : List String
+  expTypes : List String
+  expCtors : List String
+  expTypeCtors : List (String, List String)
+  expFieldOwners : List (String, String)
+  expInterfaces : List String
+  expIfaceMethods : List (String, List String)
+  expEffects : List String  -- exported effect labels (Phase 146)
+-- public type → its exported ctors
+-- (field, owner type/ctor)
+
+-- iface → method names
+
+-- ── small generic helpers ──────────────────────────────────────────────────
+isNonEmpty : List a -> Bool
+isNonEmpty [] = False
+isNonEmpty _ = True
+
+-- keep the elements of `names` that are members of `domain`
+filterContains : List String -> List String -> List String
+filterContains _ [] = []
+filterContains domain (n::rest)
+  | contains n domain = n :: filterContains domain rest
+  | otherwise = filterContains domain rest
+
+findExports : String -> List ModuleExports -> Option ModuleExports
+findExports _ [] = None
+findExports mid (e::rest)
+  | e.modId == mid = Some e
+  | otherwise = findExports mid rest
+
+-- exported under any value/type/ctor/interface category (lib's imported_names is_pub)
+isPubExp : ModuleExports -> String -> Bool
+isPubExp exp n = contains n exp.expValues
+  || contains n exp.expTypes
+  || contains n exp.expCtors
+  || contains n exp.expInterfaces
+
+typeCtorsOf : String -> ModuleExports -> Option (List String)
+typeCtorsOf name exp = lookupAssoc name exp.expTypeCtors
+
+-- ── usePaths / pubUsePaths ─────────────────────────────────────────────────
+usePathsOf : List Decl -> List UsePath
+usePathsOf [] = []
+usePathsOf ((DUse _ path)::rest) = path :: usePathsOf rest
+usePathsOf (_::rest) = usePathsOf rest
+
+pubUsePaths : List Decl -> List UsePath
+pubUsePaths [] = []
+pubUsePaths ((DUse True path)::rest) = path :: pubUsePaths rest
+pubUsePaths (_::rest) = pubUsePaths rest
+
+-- ── imported_names + expand_member ─────────────────────────────────────────
+-- Names a use-path brings into scope, plus the privacy / abstract-ctor errors.
+importedNamesMM : UsePath -> ModuleExports -> (List String, List ResError)
+importedNamesMM (UseName ns) exp =
+  if listLen ns > 1 then
+    let nm = lastOf ns
+    ([nm], pubErr exp nm)
+  else ([], [])
+importedNamesMM (UseGroup _ members) exp =
+  let names = flatMap (expandMemberNames exp) members
+  let expandErrs = flatMap (expandMemberErrs exp) members
+  (names, expandErrs ++ flatMap (pubErr exp) names)
+importedNamesMM (UseWild _) exp = (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
+importedNamesMM (UseAlias _ a) exp = ([a], [])
+
+pubErr : ModuleExports -> String -> List ResError
+pubErr exp n = if isPubExp exp n then [] else [PrivateNameAccess n exp.modId None]
+
+-- expand_member: `T(..)` → the type plus its exported ctors; a plain member is
+-- itself.  `T(..)` on an abstractly-exported type is a NoExportedConstructors.
+expandMemberNames : ModuleExports -> UseMember -> List String
+expandMemberNames _ (UseMember name False) = [name]
+expandMemberNames exp (UseMember name True) = match typeCtorsOf name exp
+  Some ctors => name :: ctors
+  None => [name]
+
+expandMemberErrs : ModuleExports -> UseMember -> List ResError
+expandMemberErrs _ (UseMember _ False) = []
+expandMemberErrs exp (UseMember name True) = match typeCtorsOf name exp
+  Some _ => []
+  None =>
+    if contains name exp.expTypes then
+      [NoExportedConstructors name exp.modId None]
+    else
+      []
+
+-- ── import contributions to the env ────────────────────────────────────────
+public export record ImportAdds
+  iaImported : List String
+  iaValues : List String
+  iaTypes : List String
+  iaCtors : List String
+  iaIfaces : List String
+  iaFieldOwners : List (String, String)
+  iaErrors : List ResError
+
+emptyAdds : ImportAdds
+emptyAdds = ImportAdds {
+  iaImported = [],
+  iaValues = [],
+  iaTypes = [],
+  iaCtors = [],
+  iaIfaces = [],
+  iaFieldOwners = [],
+  iaErrors = [],
+}
+
+mergeAdds : ImportAdds -> ImportAdds -> ImportAdds
+mergeAdds a b = ImportAdds {
+  iaImported = a.iaImported ++ b.iaImported,
+  iaValues = a.iaValues ++ b.iaValues,
+  iaTypes = a.iaTypes ++ b.iaTypes,
+  iaCtors = a.iaCtors ++ b.iaCtors,
+  iaIfaces = a.iaIfaces ++ b.iaIfaces,
+  iaFieldOwners = a.iaFieldOwners ++ b.iaFieldOwners,
+  iaErrors = a.iaErrors ++ b.iaErrors,
+}
+
+collectImports : List ModuleExports -> List Decl -> ImportAdds
+collectImports known prog = foldImports known (usePathsOf prog)
+
+-- ── use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md) ───────────────────────
+-- The VALUE names a single non-core import contributes, attributed to its
+-- DIRECTLY-imported module id (not the original definer → re-export safe).
+importValueNames : List ModuleExports -> UsePath -> List String
+importValueNames known path =
+  if useModId path == "core" then []
+  else match findExports (useModId path) known
+    None => []
+    Some exp =>
+      let (names, _) = importedNamesMM path exp
+      filterContains exp.expValues names
+
+-- Register one (name, mid) into a name→[mid] assoc, deduping mids.
+addProvenance : List (String, List String) -> String -> String -> List (String, List String)
+addProvenance [] n mid = [(n, [mid])]
+addProvenance ((k, mids)::rest) n mid
+  | k == n = if contains mid mids then (k, mids)::rest else (k, mids ++ [mid])::rest
+  | otherwise = (k, mids) :: addProvenance rest n mid
+
+-- Fold the value names of one import (all tagged with the same mid) into prov.
+addImportProvenance : List (String, List String) -> String -> List String -> List (String, List String)
+addImportProvenance prov _ [] = prov
+addImportProvenance prov mid (n::rest) =
+  addImportProvenance (addProvenance prov n mid) mid rest
+
+-- Provenance over every non-core import in the program, in decl order
+-- (mirrors lib/resolve.ml's left-to-right List.iter so mod-id order matches).
+valueProvenance : List ModuleExports -> List UsePath -> List (String, List String)
+valueProvenance known paths = foldProvenance known [] paths
+
+foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldProvenance _ prov [] = prov
+foldProvenance known prov (p::rest) =
+  let mid = useModId p
+  let prov2 = if mid == "core" then prov
+              else addImportProvenance prov mid (importValueNames known p)
+  foldProvenance known prov2 rest
+
+-- Keep only names with ≥2 distinct provenances AND no same-module top-level
+-- value shadow (a real local def wins).
+ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ambiguousSet known prog =
+  let prov = valueProvenance known (usePathsOf prog)
+  let sameMod = userValueNames prog
+  keepAmbiguous sameMod prov
+
+keepAmbiguous : List String -> List (String, List String) -> List (String, List String)
+keepAmbiguous _ [] = []
+keepAmbiguous sameMod ((n, mids)::rest)
+  | listLen mids >= 2 && not (contains n sameMod) =
+    (n, mids) :: keepAmbiguous sameMod rest
+  | otherwise = keepAmbiguous sameMod rest
+
+foldImports : List ModuleExports -> List UsePath -> ImportAdds
+foldImports _ [] = emptyAdds
+foldImports known (p::rest) =
+  mergeAdds (oneImport known p) (foldImports known rest)
+
+oneImport : List ModuleExports -> UsePath -> ImportAdds
+oneImport known path =
+  let mid = useModId path
+  if mid == "core" then emptyAdds
+  else
+    match findExports mid known
+      None => stubOrUnknown known path mid
+      Some exp => realImport exp path
+
+-- module not in `known`: in multi-module mode (known non-empty) this is an
+-- UnknownModule; the first module (known empty) keeps the single-file stub.
+stubOrUnknown : List ModuleExports -> UsePath -> String -> ImportAdds
+stubOrUnknown known path mid =
+  if isNonEmpty known then ImportAdds {
+    iaImported = [],
+    iaValues = [],
+    iaTypes = [],
+    iaCtors = [],
+    iaIfaces = [],
+    iaFieldOwners = [],
+    iaErrors = [UnknownModule mid None],
+  }
+  else
+    let names = useStubNames path
+    ImportAdds {
+      iaImported = names,
+      iaValues = names,
+      iaTypes = names,
+      iaCtors = [],
+      iaIfaces = [],
+      iaFieldOwners = [],
+      iaErrors = [],
+    }
+
+realImport : ModuleExports -> UsePath -> ImportAdds
+realImport exp path =
+  let (names, errs) = importedNamesMM path exp
+  ImportAdds {
+    iaImported = names,
+    iaValues = filterContains exp.expValues names,
+    iaTypes = filterContains exp.expTypes names,
+    iaCtors = filterContains exp.expCtors names,
+    iaIfaces = filterContains exp.expInterfaces names,
+    iaFieldOwners = ownedFieldOwners exp exp.expFieldOwners,
+    iaErrors = errs,
+  }
+
+-- field-ownership pairs whose owner is an exported type/ctor (copied into scope
+-- so field access / record patterns over imported records resolve)
+ownedFieldOwners : ModuleExports -> List (String, String) -> List (String, String)
+ownedFieldOwners _ [] = []
+ownedFieldOwners exp ((f, o)::rest)
+  | contains o exp.expTypes || contains o exp.expCtors = (f, o) :: ownedFieldOwners exp rest
+  | otherwise = ownedFieldOwners exp rest
+
+-- iface-method memberships for imported interfaces (so an `impl` of an imported
+-- interface validates against its real method set — Phase 130).  Only for
+-- interfaces actually in scope (baseIfaces = prelude + user + imported-by-name).
+importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
+importedIfaceMethods known prog baseIfaces =
+  flatMap (oneImportIfaceMethods known baseIfaces) (usePathsOf prog)
+
+oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
+oneImportIfaceMethods known baseIfaces path =
+  let mid = useModId path
+  if mid == "core" then []
+  else
+    match findExports mid known
+      None => []
+      Some exp => filterIfaceMethods baseIfaces exp.expIfaceMethods
+
+filterIfaceMethods : List String -> List (String, List String) -> List (String, List String)
+filterIfaceMethods _ [] = []
+filterIfaceMethods baseIfaces ((iface, ms)::rest)
+  | contains iface baseIfaces = (iface, ms) :: filterIfaceMethods baseIfaces rest
+  | otherwise = filterIfaceMethods baseIfaces rest
+
+-- Install exported effect labels from all imported modules (Phase 146).
+importedEffects : List ModuleExports -> List Decl -> List String
+importedEffects known prog =
+  flatMap (oneImportEffects known) (usePathsOf prog)
+
+oneImportEffects : List ModuleExports -> UsePath -> List String
+oneImportEffects known path =
+  let mid = useModId path
+  if mid == "core" then []
+  else
+    match findExports mid known
+      None => []
+      Some exp => exp.expEffects
+
+-- ── buildEnv (multi-module): like buildEnv but validating imports ──────────
+buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> (Env, List ResError)
+buildEnvMM runtimeDecls preludeDecls known prog =
+  let seed = not (programIsCore prog)
+  let pTypes = whenL seed (dataRecordNames preludeDecls)
+  let pCtors = whenL seed (ctorNames preludeDecls)
+  let pIfaces = whenL seed (interfaceList preludeDecls)
+  let pValues = whenL seed (preludeValueNames preludeDecls)
+  let pFieldOwners = whenL seed (fieldOwnersOf preludeDecls)
+  let uIfaces = interfaceList prog
+  let adds = collectImports known prog
+  let baseIfaces = map fst pIfaces ++ map fst uIfaces ++ adds.iaIfaces
+  let impIfaceMethods = importedIfaceMethods known prog baseIfaces
+  let impEffects = importedEffects known prog
+  let env = Env {
+    values = externNames runtimeDecls ++ pValues ++ userValueNames prog ++ adds.iaValues,
+    types = primitiveTypes ++ pTypes ++ dataRecordNames prog ++ adds.iaTypes,
+    ctors = primitiveConstructors ++ pCtors ++ ctorNames prog ++ adds.iaCtors,
+    fields = map fst pFieldOwners ++ map fst (fieldOwnersOf prog) ++ map fst adds.iaFieldOwners,
+    fieldOwners = pFieldOwners ++ fieldOwnersOf prog ++ adds.iaFieldOwners,
+    interfaces = baseIfaces,
+    ifaceMethods = pIfaces ++ uIfaces ++ impIfaceMethods,
+    effects = effectNames prog ++ impEffects,
+    imported = adds.iaImported,
+    ambiguous = ambiguousSet known prog,
+  }
+  (env, adds.iaErrors)
+
+-- ── build_exports ──────────────────────────────────────────────────────────
+buildExports : List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+buildExports known modId prog env = ModuleExports {
+  modId = modId,
+  expValues = expValuesDirect prog ++ publicIfaceMethodVals prog env ++ reExpValues known prog,
+  expTypes = expTypesDirect prog ++ reExpTypes known prog,
+  expCtors = expCtorsDirect prog ++ reExpCtors known prog,
+  expTypeCtors = expTypeCtorsDirect prog,
+  expFieldOwners = expFieldOwnersDirect prog ++ reExpFieldOwners known prog,
+  expInterfaces = expInterfacesDirect prog ++ reExpInterfaces known prog,
+  expIfaceMethods = expIfaceMethodsDirect prog ++ reExpIfaceMethods known prog,
+  expEffects = expEffectsDirect prog ++ reExpEffects known prog,
+}
+
+-- pub DTypeSig/DExtern/DFunDef
+expValuesDirect : List Decl -> List String
+expValuesDirect [] = []
+expValuesDirect ((DTypeSig True n _)::rest) = n :: expValuesDirect rest
+expValuesDirect ((DExtern True n _)::rest) = n :: expValuesDirect rest
+expValuesDirect ((DFunDef True n _ _)::rest) = n :: expValuesDirect rest
+expValuesDirect (_::rest) = expValuesDirect rest
+
+-- methods of PUBLIC interfaces that are bound as values (lib's final iter loop)
+publicIfaceMethodVals : List Decl -> Env -> List String
+publicIfaceMethodVals prog env =
+  flatMap (keepBoundMethods env) (pubIfaceMethodSets prog)
+
+keepBoundMethods : Env -> List String -> List String
+keepBoundMethods env ms = filterContains env.values ms
+
+pubIfaceMethodSets : List Decl -> List (List String)
+pubIfaceMethodSets [] = []
+pubIfaceMethodSets (DInterface { pub = True, methods, ... }::rest) =
+  map ifaceMethodNm methods :: pubIfaceMethodSets rest
+pubIfaceMethodSets (_::rest) = pubIfaceMethodSets rest
+
+-- pub newtype + VisPublic/VisAbstract data & record (the type name only)
+expTypesDirect : List Decl -> List String
+expTypesDirect [] = []
+expTypesDirect ((DNewtype True n _ _ _ _)::rest) = n :: expTypesDirect rest
+expTypesDirect ((DData VisPublic n _ _ _)::rest) = n :: expTypesDirect rest
+expTypesDirect ((DData VisAbstract n _ _ _)::rest) = n :: expTypesDirect rest
+expTypesDirect ((DRecord VisPublic n _ _ _)::rest) = n :: expTypesDirect rest
+expTypesDirect ((DRecord VisAbstract n _ _ _)::rest) = n :: expTypesDirect rest
+expTypesDirect (_::rest) = expTypesDirect rest
+
+-- pub newtype ctor + VisPublic data ctors (VisAbstract exports NO ctors)
+expCtorsDirect : List Decl -> List String
+expCtorsDirect [] = []
+expCtorsDirect ((DNewtype True _ _ con _ _)::rest) = con :: expCtorsDirect rest
+expCtorsDirect ((DData VisPublic _ _ vs _)::rest) = map variantName vs
+  ++ expCtorsDirect rest
+expCtorsDirect (_::rest) = expCtorsDirect rest
+
+expTypeCtorsDirect : List Decl -> List (String, List String)
+expTypeCtorsDirect [] = []
+expTypeCtorsDirect ((DNewtype True n _ con _ _)::rest) =
+  (n, [con]) :: expTypeCtorsDirect rest
+expTypeCtorsDirect ((DData VisPublic n _ vs _)::rest) =
+  (n, map variantName vs) :: expTypeCtorsDirect rest
+expTypeCtorsDirect (_::rest) = expTypeCtorsDirect rest
+
+-- field owners for PUBLIC data (named-field variants) + record
+expFieldOwnersDirect : List Decl -> List (String, String)
+expFieldOwnersDirect [] = []
+expFieldOwnersDirect ((DRecord VisPublic n _ fs _)::rest) = map (recordFieldOwner n) fs
+  ++ expFieldOwnersDirect rest
+expFieldOwnersDirect ((DData VisPublic _ _ vs _)::rest) = flatMap variantFieldOwners vs
+  ++ expFieldOwnersDirect rest
+expFieldOwnersDirect (_::rest) = expFieldOwnersDirect rest
+
+expInterfacesDirect : List Decl -> List String
+expInterfacesDirect [] = []
+expInterfacesDirect (DInterface { pub = True, name = n, ... }::rest) =
+  n :: expInterfacesDirect rest
+expInterfacesDirect (_::rest) = expInterfacesDirect rest
+
+expIfaceMethodsDirect : List Decl -> List (String, List String)
+expIfaceMethodsDirect [] = []
+expIfaceMethodsDirect (DInterface { pub = True, name = n, methods, ... }::rest) = (n, map ifaceMethodNm methods) :: expIfaceMethodsDirect rest
+expIfaceMethodsDirect (_::rest) = expIfaceMethodsDirect rest
+
+expEffectsDirect : List Decl -> List String
+expEffectsDirect [] = []
+expEffectsDirect ((DEffect True n _ _)::rest) = n :: expEffectsDirect rest
+expEffectsDirect (_::rest) = expEffectsDirect rest
+
+reExpEffects : List ModuleExports -> List Decl -> List String
+reExpEffects known prog =
+  flatMap (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
+
+reExpEffectsFrom : UsePath -> ModuleExports -> List String
+reExpEffectsFrom (UseWild _) src = src.expEffects
+reExpEffectsFrom _ _ = []
+
+-- ── pub-import re-export (export import …) — mirror lib's reexport_name ──────
+-- The names a pub use-path re-exports from its source module (errors suppressed
+-- here — they were already reported when the module imported them).
+reexportNamesOf : UsePath -> ModuleExports -> List String
+reexportNamesOf (UseName ns) _ = if listLen ns > 1 then [lastOf ns] else []
+reexportNamesOf (UseGroup _ members) src =
+  flatMap (expandMemberNames src) members
+reexportNamesOf (UseWild _) src = src.expValues
+  ++ src.expTypes
+  ++ src.expCtors
+  ++ src.expInterfaces
+reexportNamesOf (UseAlias _ _) _ = []
+
+reExpValues : List ModuleExports -> List Decl -> List String
+reExpValues known prog =
+  flatMap (overPubUse known reExpValuesFrom) (pubUsePaths prog)
+
+reExpValuesFrom : UsePath -> ModuleExports -> List String
+reExpValuesFrom path src =
+  let names = reexportNamesOf path src
+  filterContains src.expValues names ++ flatMap (ifaceValsOf src) names
+
+ifaceValsOf : ModuleExports -> String -> List String
+ifaceValsOf src n =
+  if contains n src.expInterfaces then
+    filterContains src.expValues (ifaceMethodsOf n src.expIfaceMethods)
+  else
+    []
+
+reExpTypes : List ModuleExports -> List Decl -> List String
+reExpTypes known prog =
+  flatMap (overPubUse known reExpTypesFrom) (pubUsePaths prog)
+
+reExpTypesFrom : UsePath -> ModuleExports -> List String
+reExpTypesFrom path src = filterContains src.expTypes (reexportNamesOf path src)
+
+reExpCtors : List ModuleExports -> List Decl -> List String
+reExpCtors known prog =
+  flatMap (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
+
+reExpCtorsFrom : UsePath -> ModuleExports -> List String
+reExpCtorsFrom path src = filterContains src.expCtors (reexportNamesOf path src)
+
+reExpInterfaces : List ModuleExports -> List Decl -> List String
+reExpInterfaces known prog =
+  flatMap (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
+
+reExpInterfacesFrom : UsePath -> ModuleExports -> List String
+reExpInterfacesFrom path src =
+  filterContains src.expInterfaces (reexportNamesOf path src)
+
+reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethods known prog =
+  flatMap (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
+
+reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
+reExpIfaceMethodsFrom path src =
+  ifaceMethodPairs
+    src
+    (filterContains src.expInterfaces (reexportNamesOf path src))
+
+ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
+ifaceMethodPairs _ [] = []
+ifaceMethodPairs src (i::rest) =
+  (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
+
+reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwners known prog =
+  flatMap (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
+
+reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
+reExpFieldOwnersFrom path src =
+  ownersForTypes
+    (filterContains src.expTypes (reexportNamesOf path src))
+    src.expFieldOwners
+
+ownersForTypes : List String -> List (String, String) -> List (String, String)
+ownersForTypes _ [] = []
+ownersForTypes types ((f, o)::rest)
+  | contains o types = (f, o) :: ownersForTypes types rest
+  | otherwise = ownersForTypes types rest
+
+-- run `f` against a pub use-path's resolved source exports (skip core/unknown)
+overPubUse : List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
+overPubUse known f path =
+  let mid = useModId path
+  if mid == "core" then []
+  else
+    match findExports mid known
+      None => []
+      Some src => f path src
+
+-- ── resolve_module + multi-module driver ───────────────────────────────────
+export
+resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+resolveModule runtimeDecls preludeDecls known modId prog =
+  let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog
+  let errs = buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog
+  let exp = buildExports known modId prog env
+  (exp, errs)
+
+-- thread resolveModule over modules in dependency-first order, accumulating
+-- exports; collect the union of every module's errors (the harness sorts).
+resolveModulesErrors : List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrors _ _ _ [] = []
+resolveModulesErrors rt pre known ((mid, prog)::rest) =
+  let (exp, errs) = resolveModule rt pre known mid prog
+  errs ++ resolveModulesErrors rt pre (exp :: known) rest
+
+-- one S-expression per diagnostic (the harness sorts); matches
+-- `diagdump --resolve-modules` over the same ordered module list.
+export
+resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToLines runtimeDecls preludeDecls mods =
+  joinNl
+    (map resErrorSexp (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+
+-- HUMANE multi-module resolve diagnostics for the `medaka check` CLI (vs the
+-- S-expression `resolveModulesToLines`, which the differential resolve-modules
+-- harness diffs).  Each error is rendered through `ppResError` with a location
+-- prefix mirroring the OCaml oracle: `file:line:col: msg` when located, else
+-- `<unknown location>: msg` (PrivateNameAccess et al. carry no loc).  Kept
+-- separate so `resolveModulesToLines`'s sexp output stays byte-stable for the
+-- harness golden.
+export
+resolveModulesToHumane : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumane runtimeDecls preludeDecls mods =
+  joinNl
+    (map ppResErrorLocated (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+
+-- A single located humane line for a resolve error.
+export
+ppResErrorLocated : ResError -> String
+ppResErrorLocated e = match resErrorLoc e
+  None => "<unknown location>: " ++ ppResError e
+  Some (Loc f sl sc _ _) =>
+    f ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ ppResError e

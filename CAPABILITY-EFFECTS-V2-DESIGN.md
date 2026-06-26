@@ -30,7 +30,7 @@ All §7 forks are resolved as follows (authoritative for implementation):
 - **(i) `check-policy`/manifest → native CLI:** port to the canonical native toolchain (the headline feature must run on the canonical binary), in the Stage-3 manifest work.
 - **NON-GOAL (firm):** `Throws`/typed-error effects. `Result` is the canonical error representation; `panic` is the sole uncatchable/unrecoverable escape hatch (honors `no-catchable-panics-isolation`). Param representation stays DATA-shaped — no type-parameter domain.
 
-**Both typecheckers (selfhost `typecheck.mdk` + OCaml `lib/typecheck.ml`) must change in lockstep; every stage is fixpoint-gated.**
+**Both typecheckers (compiler `typecheck.mdk` + OCaml `lib/typecheck.ml`) must change in lockstep; every stage is fixpoint-gated.**
 
 ---
 
@@ -95,7 +95,7 @@ So v2's job is to make the parameterized surface real, on a general domain repre
   `TFun (a,r,b) -> TFun (walk (not pos) a, reopen pos r, walk pos b)`) — closes closed-closed
   point-free laundering.
 
-**Selfhost canonical — `selfhost/types/typecheck.mdk` (byte-identical mirror):**
+**Selfhost canonical — `compiler/types/typecheck.mdk` (byte-identical mirror):**
 
 - `data EffRow = EffRow (List String) (Option (Ref Effvar))` (line 91).
 - `data Effvar = EUnbound Int Int | ELink EffRow` (line 92).
@@ -116,7 +116,7 @@ representation. The parser (`lib/parser.mly`):
 ### 1.3 Current effect vocabulary (probed `stdlib/runtime.mdk`)
 
 The **builtin label vocabulary** is 6: `["IO"; "Mut"; "Async"; "Panic"; "Rand"; "Time"]`
-(`lib/resolve.ml` ~94 / `selfhost/frontend/resolve.mdk` ~143 — membership = builtins ∪
+(`lib/resolve.ml` ~94 / `compiler/frontend/resolve.mdk` ~143 — membership = builtins ∪
 user-declared; an undeclared label in a row is `UnknownEffect`). Of these, only **4 are actually
 carried by stdlib externs** (`Async`/`Time` are reserved, no extern uses them). 79 externs total;
 32 annotated, 47 pure:
@@ -151,7 +151,7 @@ The known-prefix analysis (§2.4) reads **core** string-producing forms; desugar
 413–540): parse → build a conservative `EVar` call graph (`collect_evars`) → read the entry
 fn's inferred row → check `inferred ⊆ allow` → accept (run on a sample) or reject with the
 introducing call chain. **As of WS-1a/1b/1c (2026-06-21) this is FULLY PORTED to the native
-CLI** (`selfhost/driver/medaka_cli.mdk` + `selfhost/tools/check_policy.mdk`) with parameter-level
+CLI** (`compiler/driver/medaka_cli.mdk` + `compiler/tools/check_policy.mdk`) with parameter-level
 policy comparison, and `medaka manifest` emits the security row as TOML `[package.capabilities]`.
 (Historical note: this section originally recorded it as OCaml-oracle-only; that was closed
 by WS-1a/1b/1c.) v2's manifest emission extended this path;
@@ -224,7 +224,7 @@ type effect_set  = atom list        (* ≤ one atom per label; sorted by label *
 ```
 
 ```
--- selfhost (selfhost/types/typecheck.mdk) — mirror
+-- compiler (compiler/types/typecheck.mdk) — mirror
 data Param = PUnit | PPrefix (Option String)
 data Atom  = Atom String Param
 -- EffRow (List Atom) (Option (Ref Effvar))
@@ -350,7 +350,7 @@ tracked separately and were never part of `IO` semantically.
 ### 3.3 Migration steps + cost
 
 1. **Define the labels** as builtins with domains (resolver vocabulary + the `IO` alias
-   expansion). One edit each in `lib/resolve.ml` builtins + `selfhost/.../resolve.mdk`.
+   expansion). One edit each in `lib/resolve.ml` builtins + `compiler/.../resolve.mdk`.
 2. **Re-annotate the 21 `IO` leaf externs** in `stdlib/runtime.mdk` to their narrow labels
    (table §3.1) — 21 single-line edits. `Mut`/`Rand`/`Panic` externs unchanged.
 3. **Let inference propagate upward.** The ~7 stdlib wrappers (`println`/`print` in `core.mdk`;
@@ -408,16 +408,16 @@ builtin/`effect`-decl record; internal labels reject a domain clause at parse/re
 
 ## 6. Staged implementation plan
 
-Each stage touches **both typecheckers** (selfhost canonical + OCaml frozen oracle — must stay
+Each stage touches **both typecheckers** (compiler canonical + OCaml frozen oracle — must stay
 byte-identical) and is **fixpoint-gated** (`selfcompile_fixpoint`) and differential-gated
-(`diff_selfhost_typecheck` / `_error` / `_golden` and `eval_dict`). The representation work
+(`diff_compiler_typecheck` / `_error` / `_golden` and `eval_dict`). The representation work
 (domain abstraction + taxonomy axis) is done up front; the domain *content* is narrow.
 
 **Stage 1 — row repr = parameterized atoms + domain abstraction (no new surface yet).**
 - `effect_set : string list → atom list`; add `param` + the `RefinementDomain` interface with
   only `Unit` instantiated. Rewrite `diff`/`mem`/subset in `unify_row` to atom-wise + per-domain
   (with `Unit` everything reduces to today's behavior). Widen `EffectLeak`/`EffectEscape`
-  payloads to carry atoms. Mirror in `selfhost`.
+  payloads to carry atoms. Mirror in `compiler`.
 - **Gate:** every existing program is unchanged (all atoms are `PUnit`); goldens byte-identical;
   fixpoint holds. This is the riskiest stage (touches the delicate core unify path) but has the
   cleanest oracle: *no behavior change*.
@@ -430,7 +430,7 @@ byte-identical) and is **fixpoint-gated** (`selfcompile_fixpoint`) and different
   (§4.5 fork g). Mind the existing zero-conflict property — a bare `UPPER` stays the `Unit` case.
 - The known-prefix analysis (§2.4) runs from typecheck at each parameterized-primitive call site
   (like `Exhaust.check_match`), over the **desugared** tree.
-- Mirror in `selfhost`. **Gate:** new accept/reject fixtures (`<Net "a/*">` admits `"a/x"`,
+- Mirror in `compiler`. **Gate:** new accept/reject fixtures (`<Net "a/*">` admits `"a/x"`,
   rejects computed-URL and sibling-host); the demos' `<Fetch "...">` now actually parse + check;
   fixpoint + diff goldens.
 

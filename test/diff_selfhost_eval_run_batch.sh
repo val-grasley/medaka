@@ -1,5 +1,5 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_eval_run.sh — PROTOTYPE for prelude caching.
+# Batched variant of diff_compiler_eval_run.sh — PROTOTYPE for prelude caching.
 # One process: parse core.mdk + list.mdk once, run every diff_fixtures program,
 # split the delimited output, compare each against its === EVAL === golden.
 #

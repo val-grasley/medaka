@@ -6,9 +6,9 @@
 # loader + elaborateModules path → the same hadTypeErrors verdict).
 #
 # It complements (does NOT duplicate):
-#   • diff_selfhost_check.sh         — single-file check_main host; no-import
+#   • diff_compiler_check.sh         — single-file check_main host; no-import
 #     byte-identity + UnknownModule for genuinely-missing imports (unchanged).
-#   • diff_selfhost_check_modules.sh — native multi typecheck vs the OCaml MULTI
+#   • diff_compiler_check_modules.sh — native multi typecheck vs the OCaml MULTI
 #     oracle goldens (the import-aware path check now shares with run/build).
 #   • diff_native_cli.sh check/*     — the CLI's no-import goldens (byte-identical).
 #
@@ -23,7 +23,7 @@
 #   4. agree:    on that type-error project, `build` ALSO rejects (exit 1) — check
 #                and build agree via the unified path.
 #
-# Usage:  sh test/diff_selfhost_check_cli_modules.sh
+# Usage:  sh test/diff_compiler_check_cli_modules.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MEDAKA="$ROOT/medaka"

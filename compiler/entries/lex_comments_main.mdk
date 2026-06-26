@@ -1,0 +1,56 @@
+-- Entry point that drives the self-hosted lexer's COMMENT side channel as a
+-- runnable program, so the differential harness can shell out to it:
+--
+--   medaka run compiler/entries/lex_comments_main.mdk <source.mdk>
+--
+-- reads <source.mdk>, captures its comments (line `--` and block `{- -}`), and
+-- prints one comment per line in the canonical form
+--
+--   <line>:<col>:<text>
+--
+-- where <line> is 1-based, <col> 0-based, and <text> the full lexeme (with the
+-- `--` / `{- … -}` delimiters).  This mirrors the OCaml reference's comment
+-- channel dumped by dev/comment_dump.exe (`Lexer.take_comments`).  A block
+-- comment's text may itself span lines; newlines inside it are escaped to `\n`
+-- so each comment stays on a single output line (matching the reference).
+--
+-- Uses only prelude + global externs (no stdlib import), so it resolves with
+-- `compiler/` as the sole project root.
+
+import frontend.lexer.{
+  Comment,
+  collectComments,
+  commentLine,
+  commentCol,
+  commentText,
+}
+import support.util.{joinNl}
+
+-- Escape embedded newlines so a multi-line block comment renders on one line.
+escNl : String -> String
+escNl s = stringConcat (escNlFrom (stringToChars s) 0)
+
+escNlFrom : Array Char -> Int -> List String
+escNlFrom cs i
+  | i >= arrayLength cs = []
+  | arrayGetUnsafe i cs == '\n' = "\\n" :: escNlFrom cs (i + 1)
+  | otherwise = charToStr (arrayGetUnsafe i cs) :: escNlFrom cs (i + 1)
+
+renderComment : Comment -> String
+renderComment c = intToString (commentLine c)
+  ++ ":"
+  ++ intToString (commentCol c)
+  ++ ":"
+  ++ escNl (commentText c)
+
+renderComments : List Comment -> String
+renderComments cs = joinNl (map renderComment cs)
+
+emit : String -> <IO> Unit
+emit path = match readFile path
+  Ok src => putStr (renderComments (collectComments src))
+  Err msg => ePutStrLn msg
+
+main = match args ()
+  [path] => emit path
+  _ => ePutStrLn "usage: medaka run compiler/entries/lex_comments_main.mdk <file>"

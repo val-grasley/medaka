@@ -1,0 +1,20 @@
+-- Entry point for the self-hosted eval stage (SLICE 1):
+--
+--   medaka run compiler/entries/eval_main.mdk <source.mdk>
+--
+-- parses + desugars the target (which must be self-contained / prelude-free for
+-- this slice), evaluates it, and prints `pp_value` of the `main` binding —
+-- diffs against dev/eval_probe.exe (Eval.eval_program ~prelude:false → pp_value).
+
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalMain}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run compiler/entries/eval_main.mdk <file.mdk>"
+
+withTarget : String -> <IO, Mut> Unit
+withTarget targetPath = match readFile targetPath
+  Ok targetSrc => putStrLn (evalMain (desugar (parse targetSrc)))
+  Err msg => ePutStrLn msg

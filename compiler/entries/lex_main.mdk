@@ -1,0 +1,36 @@
+-- Entry point that drives the self-hosted lexer as a runnable program, so the
+-- differential harness can shell out to it:
+--
+--   medaka run compiler/entries/lex_main.mdk <source.mdk>
+--
+-- reads <source.mdk>, tokenizes it, and prints one token per line in the same
+-- canonical form as the OCaml reference's `Lexer.tokenize_string`.  Uses only
+-- prelude + global externs (no stdlib import), so it resolves with `compiler/`
+-- as the sole project root.
+
+import frontend.lexer.{Token, tokenize, tokenToString}
+import support.util.{joinNl}
+
+-- Render the token stream, one per line, no trailing newline (matches the
+-- golden TOKENS section).  `joinNl` joins in O(total) via `stringConcat`; the
+-- old right-recursive `tokenToString t ++ "\n" ++ renderToks rest` re-copied
+-- the growing tail at every token — O(n^2) in the output (see PERF-NOTES.md).
+renderToks : List Token -> String
+renderToks toks = joinNl (map tokenToString toks)
+
+-- Read <path>, tokenize, and print the canonical token stream.  Factored into an
+-- `emit` helper called from `main`'s match arm — the obvious refactor, unblocked
+-- by Phase 134.  Before that fix an `<IO>` helper called from a `match` arm could
+-- silently produce no output (it returned an un-run partial closure) when its
+-- name collided with a *constrained* same-named function in another module, via
+-- the loader's joint dict-pass.  That dict-pass bug is guarded by `test_loader`;
+-- lexer.mdk's `emit` now carries a concrete signature, so it no longer collides
+-- here.
+emit : String -> <IO> Unit
+emit path = match readFile path
+  Ok src => putStr (renderToks (tokenize src))
+  Err msg => ePutStrLn msg
+
+main = match args ()
+  [path] => emit path
+  _ => ePutStrLn "usage: medaka run compiler/entries/lex_main.mdk <file>"

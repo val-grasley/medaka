@@ -1,7 +1,7 @@
 # Medaka style guide
 
 Conventions for hand-written Medaka source — primarily the self-hosted compiler
-(`selfhost/*.mdk`) and stdlib (`stdlib/*.mdk`). These are the rules the formatter
+(`compiler/*.mdk`) and stdlib (`stdlib/*.mdk`). These are the rules the formatter
 **cannot** enforce (it preserves your choices); they live here so reviewers and
 agents apply them consistently. For what the formatter *does* enforce
 (indentation, width-breaking, trailing commas, import wrapping) see `fmt`.
@@ -72,7 +72,7 @@ classify n
 ```
 
 Note: in a **match-arm** guard (`x if Some v <- e => body`) the bound `v` reaches
-both later guard qualifiers **and the arm body** (fixed 2026-06-15 in the selfhost
+both later guard qualifiers **and the arm body** (fixed 2026-06-15 in the compiler
 resolve/typecheck passes). Both forms are now safe.
 
 The strength of the rewrite scales with whether the `Some`-arm actually
@@ -113,7 +113,7 @@ inline.
 When you find yourself threading an explicit index/accumulator through a fold
 just to join or separate elements (commas between fields, newlines between
 clauses), prefer a named helper — `intersperseStr`, `intercalate`-shaped — from
-`selfhost/support/util.mdk`. It states intent and removes the off-by-one surface.
+`compiler/support/util.mdk`. It states intent and removes the off-by-one surface.
 
 Compiler code may **not** `import` stdlib (`list`/`string`/…) for this — see the
 no-stdlib-in-compiler rule in AGENTS.md. Add the helper to `support/` (or inline
@@ -131,7 +131,7 @@ intercalateStr ", " fields
 
 ## 6. Derive `Eq`/`Ord`/`Debug` — don't hand-roll structural equality
 
-`deriving (Eq)` works in selfhost on payload-bearing types, not just nullary
+`deriving (Eq)` works in compiler on payload-bearing types, not just nullary
 enums — `Eq`/`Ord`/`Debug` are in scope via the implicit `core.mdk` prelude (the
 no-stdlib rule bans `import list`/`string`/… *modules*, not the prelude). So
 **derive** these instances unless you have a **concrete** reason not to:
@@ -141,7 +141,7 @@ no-stdlib rule bans `import list`/`string`/… *modules*, not the prelude). So
   over runtime `Value`). Keep these hand-rolled; they're a different relation.
 - **Measured hot path** — a derived `==` dispatches through the `Eq` dict; a
   hand-rolled `litEq : Lit -> Lit -> Bool` is a direct monomorphic call. Only
-  invoke this for a *profiled* hotspot (see `selfhost/PERF-RESULTS.md`), not a
+  invoke this for a *profiled* hotspot (see `compiler/PERF-RESULTS.md`), not a
   hunch. The bar is high: we A/B-tested exactly this shape (`concatMapList` →
   the prelude's dict-dispatched `flatMap`, ~414 sites, whole self-compile) and
   measured **no difference** — dict witnesses are hoisted to global constants
@@ -258,7 +258,7 @@ go []         acc = acc
 go (x::xs) acc = go xs (x::acc)
 ```
 
-The formatter enforces this rule (`selfhost/tools/printer.mdk`): `::` is
+The formatter enforces this rule (`compiler/tools/printer.mdk`): `::` is
 handled by `opSpace`/`isConstructorOp` which suppresses the surrounding spaces.
 Medaka has no user-defined infix constructors, so `::` is the only case.
 

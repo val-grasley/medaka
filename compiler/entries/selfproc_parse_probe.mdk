@@ -1,0 +1,32 @@
+-- Self-processing EVAL probe for the bootstrap milestone harness — the TYPED
+-- leg (Leg C of test/diff_compiler_selfproc.sh).
+--
+-- It exercises a REAL self-hosted stage that uses the Parser MONAD — the parser
+-- (compiler/parser.mdk) — by parsing an embedded Medaka snippet and rendering
+-- the canonical AST S-expression (the same `programToSexp` form parse_main.mdk
+-- emits).  The harness runs this probe TWO ways and diffs:
+--   * the reference eval_modules oracle:  medaka run compiler/entries/selfproc_parse_probe.mdk
+--     (OCaml Loader -> typecheck -> eval_modules drives the probe + its imports)
+--   * the self-hosted TYPED eval path:    medaka run compiler/entries/eval_typed_modules_main.mdk
+--     stdlib/runtime.mdk stdlib/core.mdk compiler/entries/selfproc_parse_probe.mdk compiler
+-- Byte-identical output proves the self-hosted TYPED multi-module eval (eval.mdk's
+-- evalTypedModules — marker + typecheck.elaborate RKey routing threaded through
+-- the loader-driven per-module-frame evaluator) correctly EXECUTES a real
+-- compiler stage whose dispatch needs return-position routing.
+--
+-- Scope note: unlike selfproc_lex_probe (the lexer, no return-position dispatch),
+-- the parser's `Parser` monad uses `pure`/`andThen` return-position dispatch the
+-- UNTYPED eval_modules path cannot resolve.  This probe is the executable slice
+-- the typed path unlocks.
+
+import frontend.parser.{parse}
+import ir.sexp.{programToSexp}
+
+-- A small Medaka snippet covering the constructs the parser threads through the
+-- monad: data decl, signature, lambda, list literal, if/then/else, match, and
+-- application.  Kept as a literal so the probe needs no file IO (the self-hosted
+-- eval is a pure evaluator with no readFile/args primitive).
+src : String
+src = "data Color = Red | Green | Blue\n\nlabel : Color -> String\nlabel c = match c\n  Red => \"red\"\n  Green => \"green\"\n  Blue => \"blue\"\n\nbump : Int -> Int\nbump n = if n > 0 then n + 1 else 0\n\nmain = map (x => bump x) [1, 2, 3]\n"
+
+main = putStr (programToSexp (parse src))

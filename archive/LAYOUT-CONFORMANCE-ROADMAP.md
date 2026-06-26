@@ -10,7 +10,7 @@
 > gated layout fixtures in `test/diff_fixtures/` + WS-2 then/else dual-mechanism source-comment
 > cross-links in both lexers). No lexer behavior change — edits were docs, fixtures, and comments
 > only; fixpoint C3a/C3b held byte-for-byte (comment-only lexer edits → IR identical). Gates on
-> merged main: `diff_selfhost_lexer` 57/0, `diff_selfhost_parse` 27/0, `diff_selfhost_lex_files`
+> merged main: `diff_compiler_lexer` 57/0, `diff_compiler_parse` 27/0, `diff_compiler_lex_files`
 > 13/0. **Excluded:** `data_leading_pipe` fixture — the frozen OCaml parser rejects leading-`|`
 > `data`, so `gen_golden` can't emit the AST/TYPES/EVAL sections `@thorough` needs (F5/WS-5,
 > auto-resolves at `lib/` removal). **Open:** WS-4 (native `check` error positions) stays out of
@@ -31,10 +31,10 @@ battery into the gates as a permanent net, and (4) formally seat
 removed. Most items are doc/test work; none requires a lexer behavior change.
 
 Each gate references: **fixpoint** = `sh test/selfcompile_fixpoint.sh` (native
-emitter reproduces its own IR — required after any `selfhost/` lexer edit);
-**lexer gates** = `sh test/diff_selfhost_lexer.sh` + `sh
-test/diff_selfhost_lex_files.sh`; **parse gate** = `sh
-test/diff_selfhost_parse.sh`.
+emitter reproduces its own IR — required after any `compiler/` lexer edit);
+**lexer gates** = `sh test/diff_compiler_lexer.sh` + `sh
+test/diff_compiler_lex_files.sh`; **parse gate** = `sh
+test/diff_compiler_parse.sh`.
 
 Priority order: **WS-1 → WS-7 → WS-2 → WS-3** (core), then **WS-5 / WS-6 / WS-4**
 (track / optional / cross-ref).
@@ -54,7 +54,7 @@ spec), do **not** change the lexer.
 | 1 | `SYNTAX.md:426` | "`then` cannot start a line." | `then` **may** start a line; like `else`, a leading `then` continues the enclosing `if` (§5.4). |
 | 2 | `SYNTAX.md:424` | leading set `\|> >> << && \|\| ++` | add `::` → `\|> >> << && \|\| ++ ::` (7 ops, §5.0). |
 | 3 | `SYNTAX.md:423-425` | "RHS cannot wrap … except leading-op" | replace with a pointer to `LAYOUT-SEMANTICS.md` §11 (trailing-op **and** atom continuations also wrap). |
-| 4 | `PLAN.md` "Known parser gaps → `let … in` as indented clause body" | selfhost rejects | **closed** — both accept on `main`; delete the bullet (keep only the still-true own-line-`in` language rule, cross-ref §9/§11). |
+| 4 | `PLAN.md` "Known parser gaps → `let … in` as indented clause body" | compiler rejects | **closed** — both accept on `main`; delete the bullet (keep only the still-true own-line-`in` language rule, cross-ref §9/§11). |
 | 5 | `AGENTS.md` (Gotchas, guard/layout area) | — | add a one-line pointer to `LAYOUT-SEMANTICS.md` as the layout ground truth. |
 
 **Failing-before fixture** (a doc-vs-binary check, no lexer change):
@@ -68,7 +68,7 @@ main =          -- SYNTAX.md:426 says this can't parse; it does:
 
 **Passing-after:** SYNTAX.md/PLAN.md edited; the example is reflected in
 `LAYOUT-SEMANTICS.md` §10. **Gate:** doc review + `grep` self-check that
-SYNTAX.md's leading-op set matches `selfhost/frontend/lexer.mdk:851-857`. No
+SYNTAX.md's leading-op set matches `compiler/frontend/lexer.mdk:851-857`. No
 fixpoint/lexer-gate run needed (no code change).
 
 ---
@@ -93,7 +93,7 @@ F2 misses), `rhs_atom_wrap`, `paren_multiline`, `brace_in_comment`,
 
 **Failing-before:** revert any one historical layout fix (e.g. the comment-line
 transparency fix) → the matching fixture's golden mismatches.
-**Passing-after:** `diff_selfhost_lexer` covers all of them; both lexers match
+**Passing-after:** `diff_compiler_lexer` covers all of them; both lexers match
 the golden.
 **Gate:** lexer gates green with the new fixtures; goldens captured via
 `sh test/capture_goldens.sh` (the OCaml-oracle path).
@@ -112,7 +112,7 @@ the golden.
 **Source:** F7. **Risk:** none if scoped to tests+docs. **Effort:** ~1 h.
 
 `§5.4`: gluing `then`/`else` is computed by *different code* in the two lexers
-(oracle `filter_newline`+`resolve_pending`; selfhost `resolveCont`+`elseFilter`).
+(oracle `filter_newline`+`resolve_pending`; compiler `resolveCont`+`elseFilter`).
 Equivalent today, but the two can drift independently — the highest-probability
 way to reintroduce a layout divergence. **Do not refactor the lexers** (risky,
 no behavior win). Instead, *pin* the equivalence:
@@ -123,18 +123,18 @@ no behavior win). Instead, *pin* the equivalence:
    blank-line / comment-line-before-`then` variants. (Several already pass — the
    point is to *gate* them so they can't silently regress.)
 2. Add a cross-link in **both** lexers' source at the then/else code
-   (`selfhost/frontend/lexer.mdk` `elseFilter`/`resolveCont`;
+   (`compiler/frontend/lexer.mdk` `elseFilter`/`resolveCont`;
    `lib/lexer.mll` `filter_newline`/`resolve_pending`) → "conforms to
    `LAYOUT-SEMANTICS.md` §5.4; edits must keep both mechanisms in step
    (LAYOUT-CONFORMANCE-ROADMAP WS-2)."
 
-**Failing-before:** hand-perturb the selfhost `elseFilter` to only match `TElse`
+**Failing-before:** hand-perturb the compiler `elseFilter` to only match `TElse`
 (not `TThen`) → the `then`-leading-a-line fixtures diverge from the oracle in the
 lexer gate.
 **Passing-after:** the fixtures pin all four paths; lexer gates + parse gate
-green; fixpoint holds (no source-behavior change, but run it since `selfhost/`
+green; fixpoint holds (no source-behavior change, but run it since `compiler/`
 comment edits touch the emitter input).
-**Gate:** lexer gates + `diff_selfhost_parse` + fixpoint.
+**Gate:** lexer gates + `diff_compiler_parse` + fixpoint.
 
 ---
 
@@ -184,7 +184,7 @@ memory `project_diff`-style frozen-oracle rule.)
 **Failing-before:** `d1` fixture — native ACCEPT, oracle `2:0: Parse error`.
 **Passing-after (at `lib/` removal):** only the native parser remains; the case
 is plainly accepted; the diff gate is retired with the oracle.
-**Gate:** `diff_selfhost_parse` documents the known exclusion until then.
+**Gate:** `diff_compiler_parse` documents the known exclusion until then.
 
 ---
 
@@ -212,7 +212,7 @@ print without `file:line:col`; the oracle is positioned. This is a CLI
 diagnostics-quality gap, independent of the lexer (token streams agree).
 
 > **UPDATE (2026-06-21): pursued + DONE as a separate diagnostics workstream —
-> `selfhost/DIAGNOSTICS-SURFACING-PLAN.md` (S1–S4).** Native `medaka check` now
+> `compiler/DIAGNOSTICS-SURFACING-PLAN.md` (S1–S4).** Native `medaka check` now
 > prints positioned, humane, carat-rendered diagnostics byte-identical to the
 > oracle (parse/type/resolve spans + non-exhaustive-match warning spans). It is
 > NOT a layout change — recorded here only because F6 surfaced it during the
@@ -228,7 +228,7 @@ diagnostics-quality gap, independent of the lexer (token streams agree).
 | 7 | Promote probe battery to `diff_fixtures` | test infra | no | lexer gates (batch capture) |
 | 2 | Lock then/else dual mechanism (F7) | test + source comment | no | lexer + parse gates + fixpoint |
 | 3 | Seat spec as anchor; ratify no-`parse-error(t)` | spec/decision | no | review + AGENTS.md index |
-| 5 | Track leading-`\|` `data` (F5) | track | no (auto at `lib/` removal) | `diff_selfhost_parse` note |
+| 5 | Track leading-`\|` `data` (F5) | track | no (auto at `lib/` removal) | `diff_compiler_parse` note |
 | 6 | Tab/mixed-ws policy | docs (+opt lint) | no | review |
 | 4 | Native error positions (F6) | cross-ref | n/a (out of scope) | — |
 

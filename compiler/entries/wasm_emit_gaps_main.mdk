@@ -1,0 +1,99 @@
+-- WasmGC GAP-CENSUS driver — copy of wasm_emit_modules_main.mdk, but instead of
+-- emitting WAT it runs emitProgramGaps over the whole module graph and prints one
+-- recorded gap per line ("<binding>\t<reason>").  Needs NO `main` in the input.
+--
+-- ORIGINAL HEADER (multi-module emit driver) ---------------------------------
+-- MULTI-MODULE WasmGC emit driver (slice W9) — the WasmGC peer of
+-- entries/llvm_emit_modules_main.mdk, and the MVP capstone for the WasmGC
+-- backend.  Where wasm_emit_typed_main.mdk runs the single-file TYPED path with
+-- its OWN minimal interfaces (no real prelude, no DCE, no loader), THIS driver
+-- runs the REAL `medaka build` front end:
+--
+--   driver.loader.loadProgram  (multi-file, dependency-first)
+--     -> types.typecheck.elaborateModules  (REAL core.mdk prelude + dict-passing)
+--     -> ir.core_ir_lower.lowerProgramEmit
+--     -> ir.dce.dceFilter  (prunes the real prelude to reached decls)
+--     -> backend.wasm_emit.emitProgram
+--
+-- so typeclass dispatch flows through the REAL `core.mdk` prelude (Eq/Ord/Num/
+-- Show/Debug over real Int/Bool/String/List), and DCE shrinks that prelude to
+-- exactly what each program reaches.  This is the deferred W5 integration
+-- (real-prelude dispatch) plus multi-module loading.
+--
+--   medaka run compiler/entries/wasm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--   (or, OCaml-free: the compiled binary test/bin/wasm_emit_modules_main <runtime.mdk> <core.mdk> <entry.mdk> [root ...])
+--
+-- NOTE vs the LLVM modules entry: wasm_emit exposes ONE install* hook —
+-- installMethodIface (W9b), feeding the method→declared-arity table wasm_emit needs
+-- to eta-expand the real prelude's point-free impls.  The other llvm install* hooks
+-- (installReturnsSelf / installSelfFnParams / installCtorFieldTypes / …) feed
+-- llvm-specific mutable state with no wasm analogue and stay omitted.  Everything up
+-- to lowerProgramEmit (loader, mangle, elaborateModules, dceFilter) is identical to
+-- the LLVM modules driver.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{
+  elaborateModules,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  enableEmitArgStampPasses,
+}
+import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
+import backend.private_mangle.{mangleUnits}
+import ir.dce.{dceFilter}
+import support.path.{dirOf}
+import backend.wasm_emit.{emitProgram, emitProgramGaps, installMethodIface, installDeclRetTypes}
+
+main : <IO, Mut> Unit
+main = match args ()
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/wasm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit runtimeDecls coreDecls modules =
+  let _ = enableEmitArgStampPasses ()
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  let allDecls0 = coreD ++ flatMap snd modules2
+  -- GAP CENSUS: do NOT run dceFilter.  DCE roots reachability from `main`, and the
+  -- census input (all_modules_entry) has NO main — DCE would prune EVERY plain
+  -- top-level function and the census would see nothing.  We want to emit the FULL
+  -- graph to measure every node, so keep all decls.
+  let allDecls = allDecls0
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
+  -- W9b: install the method → declared-interface-arity table so wasm_emit can
+  -- eta-expand the REAL prelude's point-free impls (`length = fold g 0`, `toList =
+  -- identity`, `foldMap`, `filter`) to the method's full arity — the precise
+  -- real-prelude MVP blocker.  Mirrors llvm_emit_modules_main's installMethodIface.
+  let _ = installMethodIface (methodIfaceTable allDecls)
+  -- W9b: install declared return-type heads so a Unit-returning value main
+  -- (`main = println …`) suppresses its auto-print (the trailing-`0` bug).
+  let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  let gaps = emitProgramGaps (lowerProgramEmit allDecls)
+  printGaps gaps
+
+printGaps : List String -> <IO, Mut> Unit
+printGaps [] = ()
+printGaps (g::rest) =
+  let _ = putStrLn g
+  printGaps rest

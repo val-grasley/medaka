@@ -17,7 +17,7 @@ needs INDENT/DEDENT to delimit arms — not merely a newline issue).
 - OCaml `lib/lexer.mll:148` — `handle_indent` opens `if !paren_depth > 0 then ()`; `paren_depth`
   bumped by every opener (`(`:467, `[`:469, `{`/`[|`/`.{`:433,449,472). The newline rule (`:373`)
   computes the column but `handle_indent` discards it inside brackets ⇒ no NEWLINE/INDENT/DEDENT.
-- Selfhost `selfhost/frontend/lexer.mdk:833` — `afterNl … | depth > 0 = scan …` emits no
+- Selfhost `compiler/frontend/lexer.mdk:833` — `afterNl … | depth > 0 = scan …` emits no
   `RNewline`; depth bumped in `scanOp`/`openBrace` (`:762-768,:804`); 2nd-pass `layout` (`:881`)
   never sees a bracket-interior newline. Structurally mirrors OCaml.
 
@@ -27,7 +27,7 @@ needs INDENT/DEDENT to delimit arms — not merely a newline issue).
   (`:667`), `DO INDENT stmts DEDENT` (`:671`), `FUNCTION …` (`:669`), bare-block `INDENT stmt+ DEDENT`
   (`:457`) — those live in `expr`, deliberately excluded. `[ ]` (`:811-823`) and records likewise
   consume `expr_no_block`. So even with tokens present, `(MATCH … INDENT …)` has NO production.
-- Mirror in `selfhost/frontend/parser.mdk` (recursive-descent; same expr-vs-expr_no_block split).
+- Mirror in `compiler/frontend/parser.mdk` (recursive-descent; same expr-vs-expr_no_block split).
 
 The `expr_no_block`/`expr` split exists PRECISELY to avoid LR conflicts → re-merging is the main
 cost driver.
@@ -50,11 +50,11 @@ the decided no-parser→layout-feedback rule); use an explicit bracket-aware clo
 
 ## 3. Blast radius + risk
 
-- `grep '(match'/'(do'/'(let'` over `stdlib/ selfhost/` → ZERO in code (only docs): GAINING the
+- `grep '(match'/'(do'/'(let'` over `stdlib/ compiler/` → ZERO in code (only docs): GAINING the
   feature breaks nothing. Risk is entirely in NOT regressing free-form continuation of existing
   multi-line list/record/operator wraps (~20 files have trailing-`(` lines). Those are the
   regression-fixture targets.
-- Two lexers must stay BYTE-IDENTICAL (`diff_selfhost_lexer`, `diff_selfhost_lex_files`,
+- Two lexers must stay BYTE-IDENTICAL (`diff_compiler_lexer`, `diff_compiler_lex_files`,
   `bootstrap_lex`). Selfhost lexer is in the emitter self-compile graph ⇒ `selfcompile_fixpoint.sh`
   C3a/C3b + seed re-mint at the checkpoint.
 - Grammar: new Menhir productions risk shift/reduce + reduce/reduce conflicts (the very split being
@@ -84,27 +84,27 @@ the decided no-parser→layout-feedback rule); use an explicit bracket-aware clo
 
 1. **Spec** — extend `LAYOUT-SEMANTICS.md §6` with the bracket-frame model + (a)-(e). Zero binary risk.
 2. **Grammar** (before the lexer, so tokens have a target) — add a `bracket_block` nonterminal +
-   productions to `lib/parser.mly` and mirror in `selfhost/frontend/parser.mdk`. Gate: `dune build`
+   productions to `lib/parser.mly` and mirror in `compiler/frontend/parser.mdk`. Gate: `dune build`
    (Menhir conflict count must not regress), `test_parser`, `test_roundtrip`. Iterate conflicts here.
-3. **Lexer — selfhost FIRST** (canonical), bracket frame + herald-armed context in
+3. **Lexer — compiler FIRST** (canonical), bracket frame + herald-armed context in
    `afterNl`/`scanOp`/`closeBrace` + close-flush; then mirror BYTE-IDENTICALLY into `lib/lexer.mll`
-   `handle_indent` + bracket rules. Gate: `diff_selfhost_lexer`, `diff_selfhost_lex_files`,
+   `handle_indent` + bracket rules. Gate: `diff_compiler_lexer`, `diff_compiler_lex_files`,
    `bootstrap_lex`, lextok dumps on new fixtures AND the full existing corpus (free-form regression).
 4. **Fixtures** — positives (bracketed match/do/function/record, one level + nested) + negatives/
    regressions (`[1,⏎2]`, `({a=1⏎,b=2})`, `(x +⏎ y)`, own-line `let…in`) in `test/parse_fixtures` +
    layout probes; capture goldens (mind path-stability + capture_goldens corpus-wide footgun).
-5. **E2E + fixpoint + seed** — `diff_selfhost_*` (typecheck/eval/build), `selfcompile_fixpoint.sh`
+5. **E2E + fixpoint + seed** — `diff_compiler_*` (typecheck/eval/build), `selfcompile_fixpoint.sh`
    C3a/C3b, re-mint the emitter seed. Dogfood: revert `parsec/lib/parser.mdk`'s lifted helpers to
    inline `=> match` and confirm it checks.
 
-Decisive gates: byte-identical-lexer (`diff_selfhost_lexer` + `bootstrap_lex`) = hard wall;
+Decisive gates: byte-identical-lexer (`diff_compiler_lexer` + `bootstrap_lex`) = hard wall;
 `selfcompile_fixpoint` + seed = release wall; Menhir conflict count = grammar wall.
 
 ## Critical files
-- `selfhost/frontend/lexer.mdk` (canonical lexer; gate `:833` `afterNl`, frame in
+- `compiler/frontend/lexer.mdk` (canonical lexer; gate `:833` `afterNl`, frame in
   `scanOp`/`openBrace`/`closeBrace`, layout pass `:881`)
 - `lib/lexer.mll` (oracle lexer; gate `:148` `handle_indent`, bracket depth `:433-472`)
-- `selfhost/frontend/parser.mdk` (native grammar; bracket-block productions)
+- `compiler/frontend/parser.mdk` (native grammar; bracket-block productions)
 - `lib/parser.mly` (oracle grammar; `expr_no_block` `:612`, paren atom `:800`, block forms `:457,667,671`)
 - `LAYOUT-SEMANTICS.md` (§6 spec, ground truth both lexers are held to)
 

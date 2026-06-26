@@ -1,19 +1,19 @@
 #!/bin/sh
 # Differential validation for the self-hosted parser's NON-panicking, structured
-# parse-error path (selfhost/frontend/parser.mdk `parseResult`), driven by
-# selfhost/entries/parse_result_main.mdk.
+# parse-error path (compiler/frontend/parser.mdk `parseResult`), driven by
+# compiler/entries/parse_result_main.mdk.
 #
 # This is the LSP prerequisite (Stage 4 task #24): a parser should yield parse
 # errors as DATA (a structured, located `Result ParseError (List Decl)`), not
 # abort the process.  The legacy `parse` entry still panics (validated by
-# diff_selfhost_parse_errors.sh); `parseResult` is purely additive and must
+# diff_compiler_parse_errors.sh); `parseResult` is purely additive and must
 # return a structured value instead.
 #
 # Per parser-error fixture, the gate asserts:
 #   A. Oracle agreement — astdump.exe (the OCaml reference) reports a parse error
 #      with an `L:C` location, confirming the fixture is a genuine parse error.
-#   B. NO PANIC — `medaka run selfhost/entries/parse_result_main.mdk <fix>` exits 0.
-#      (Contrast diff_selfhost_parse_errors.sh, which requires the panicking
+#   B. NO PANIC — `medaka run compiler/entries/parse_result_main.mdk <fix>` exits 0.
+#      (Contrast diff_compiler_parse_errors.sh, which requires the panicking
 #       parse_main to exit NON-zero on the same inputs.)
 #   C. Structured + located — the driver prints `parse error L:C` with L a real
 #      source line (>= the first non-comment line) and C >= 0 — i.e. the error
@@ -29,9 +29,9 @@
 #   without rewriting the combinator's failure positions — out of scope for an
 #   ADDITIVE error-as-value entry.  The oracle's L:C is recorded per fixture for
 #   transparency (line agreement is reported, not enforced).  See the matching
-#   note in diff_selfhost_parse_errors.sh.
+#   note in diff_compiler_parse_errors.sh.
 #
-# Usage:  sh test/diff_selfhost_parse_result.sh
+# Usage:  sh test/diff_compiler_parse_result.sh
 # Exit:   0 if every fixture passes, else 1.
 
 set -u
@@ -74,11 +74,11 @@ for name in $PARSER_FIXTURES; do
   if [ "$ok" -eq 1 ]; then
     sout="$(run_self "$f")"; scode=$?
     if [ "$scode" -ne 0 ]; then
-      ok=0; reason="selfhost exited $scode (parseResult must NOT panic; out=[$sout])"
+      ok=0; reason="compiler exited $scode (parseResult must NOT panic; out=[$sout])"
     else
       slc="$(printf '%s\n' "$sout" | sed -n 's/^parse error \([0-9]*:[0-9]*\)$/\1/p' | head -1)"
       if [ -z "$slc" ]; then
-        ok=0; reason="selfhost did not emit a structured 'parse error L:C' (got [$sout])"
+        ok=0; reason="compiler did not emit a structured 'parse error L:C' (got [$sout])"
       else
         sline="${slc%%:*}"; scol="${slc##*:}"
         # Real source begins after the 2-line `-- …` header in each fixture.

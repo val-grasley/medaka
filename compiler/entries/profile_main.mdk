@@ -1,0 +1,101 @@
+-- Single-file per-stage timing driver for the self-hosted front-end.
+-- Times each pipeline stage individually so the cost of each is visible
+-- rather than buried in a composite (e.g. elaborate = mark + typecheck).
+--
+--   MEDAKA_PERF=1 medaka run compiler/entries/profile_main.mdk \
+--       stdlib/runtime.mdk stdlib/core.mdk <target.mdk>
+--
+-- Stages timed:
+--   parse-prelude   parse + desugar runtime.mdk + core.mdk (fixed setup cost)
+--   parse           lex + parse the target file  (internal: tokenize then parse)
+--   desugar         lower surface sugar in the target AST
+--   resolve         name resolution (resolveToLines; raw prelude, desugared target)
+--   mark            method-reference marking (markWithPrelude; desugared core)
+--   typecheck       HM type inference (checkToLinesWithRuntime; desugared runtime+core)
+--
+-- Without MEDAKA_PERF set the driver exits silently (no useful stdout output —
+-- this is a measurement tool, not a pipeline validator).
+--
+-- For min-of-N timings use test/profile_compiler.sh, which runs this driver N
+-- times and reports per-stage minimums.  Complements perf_main.mdk (which
+-- times the full multi-module loader path with elaborate as a single phase).
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveToLines}
+import frontend.marker.{markWithPrelude}
+import types.typecheck.{checkToLinesWithRuntime}
+import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
+import support.util.{listLen}
+
+main = match args ()
+  runtimePath::corePath::targetPath::_ => run runtimePath corePath targetPath
+  _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run compiler/entries/profile_main.mdk <runtime.mdk> <core.mdk> <target.mdk>"
+
+run : String -> String -> String -> <IO, Mut> Unit
+run runtimePath corePath targetPath = match readFile runtimePath
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile corePath
+    Err e => ePutStrLn e
+    Ok csrc => match readFile targetPath
+      Err e => ePutStrLn e
+      Ok tsrc => runStaged (perfEnabled ()) rsrc csrc tsrc
+
+-- Time each self-hosted pipeline stage; emit [perf] lines to stderr when on.
+-- Follows check.mdk's single-file path:
+--   parse-prelude  → parse target → desugar → resolve(raw prelude)
+--   → mark(desugared core) → typecheck(desugared runtime+core)
+-- Each line includes an allocation-delta column (Gc.allocated_bytes proxy, in MB).
+runStaged : Bool -> String -> String -> String -> <IO, Mut> Unit
+runStaged on rsrc csrc tsrc =
+  let tTotal = now ()
+  let aTotal = allocSnap ()
+  let tPP0 = now ()
+  let aPP0 = allocSnap ()
+  let rRaw = parse rsrc
+  let cRaw = parse csrc
+  let rDecls = desugar rRaw
+  let cDecls = desugar cRaw
+  let tPP1 = now ()
+  let _ = emitPhaseA on "parse-prelude" (tPP1 - tPP0) (allocSnap () - aPP0) "runtime+core"
+  let tP0 = now ()
+  let aP0 = allocSnap ()
+  let raw = parse tsrc
+  let tP1 = now ()
+  let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) (intToString (listLen raw) ++ " decls")
+  let tD0 = now ()
+  let aD0 = allocSnap ()
+  let desugared = desugar raw
+  let tD1 = now ()
+  let nDecls = listLen desugared
+  let declsOp = intToString nDecls ++ " decls"
+  let _ = emitPhaseA on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp
+  let tR0 = now ()
+  let aR0 = allocSnap ()
+  let _ = resolveToLines rRaw cRaw desugared
+  let tR1 = now ()
+  let _ = emitPhaseA on "resolve" (tR1 - tR0) (allocSnap () - aR0) declsOp
+  let tM0 = now ()
+  let aM0 = allocSnap ()
+  let _ = markWithPrelude cDecls desugared
+  let tM1 = now ()
+  let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
+  let tT0 = now ()
+  let aT0 = allocSnap ()
+  let _ = checkToLinesWithRuntime rDecls (cDecls ++ desugared)
+  let tT1 = now ()
+  let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
+  emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)
+-- parse-prelude: parse + desugar runtime.mdk and core.mdk.
+-- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
+
+-- parse: lex + parse the target file (tokenize is called inside `parse`)
+
+-- desugar: lower surface sugar in the target AST
+
+-- resolve: name resolution (mirrors check.mdk: raw prelude, desugared target)
+
+-- mark: method-reference marking (desugared core as the prelude)
+
+-- typecheck: HM inference over desugared runtime + core ++ target

@@ -1,5 +1,5 @@
 #!/bin/sh
-# test/diff_selfhost_lsp_b3.sh — differential gate for the self-hosted LSP
+# test/diff_compiler_lsp_b3.sh — differential gate for the self-hosted LSP
 # (Stage 4 Phase B.10, slice B.10.3: formatting / documentSymbol / definition /
 # documentHighlight).
 #
@@ -20,15 +20,15 @@
 #                           start..end), vs OCaml (textual, so byte-identical).
 #
 # DECL-vs-EXPR caveat (asserted at decl granularity, like test/test_lsp.ml's
-# own fixtures, which check `range.start.line`): the selfhost AST is
+# own fixtures, which check `range.start.line`): the compiler AST is
 # location-stripped of COLUMNS and its per-decl END line is the last *content*
 # token (parser DeclPos), whereas the OCaml decl `loc.end_line` spans to the
 # trailing-blank / next-decl boundary.  So symbol/definition START lines, names,
 # kinds, and the highlight FULL range match byte-for-byte; decl END lines do
 # NOT (and are not diffed).  The OCaml symbols also carry a `detail` (pp_ty)
-# the selfhost AST cannot produce — additive, not diffed.
+# the compiler AST cannot produce — additive, not diffed.
 #
-# Usage: sh test/diff_selfhost_lsp_b3.sh
+# Usage: sh test/diff_compiler_lsp_b3.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # OCaml-free: drive the CANONICAL native LSP and diff vs committed goldens
@@ -103,7 +103,7 @@ check() {
   else fail=$((fail+1)); printf 'FAIL %s\n' "$1"; fi
 }
 
-# A valid OCaml InitializeParams requires `capabilities`; the selfhost server
+# A valid OCaml InitializeParams requires `capabilities`; the compiler server
 # ignores extras, so one stream drives both.
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}'
 INITED='{"jsonrpc":"2.0","method":"initialized","params":{}}'

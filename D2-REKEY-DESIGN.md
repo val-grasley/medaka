@@ -52,7 +52,7 @@ backends (eval panics, build SIGSEGVs) — the cross-module method-scheme identi
 ### Containment still holds (additive fix intact)
 The existing fn-level + arg-position method-level collision fixtures all pass on
 the loader-driven typed-modules gate
-(`sh test/diff_selfhost_eval_typed_modules.sh` → **6 ok, 0 failing**), including
+(`sh test/diff_compiler_eval_typed_modules.sh` → **6 ok, 0 failing**), including
 `cross_module_dict_arity` (1/2/3-arity), `cross_module_dict_arity_rev`
 (reversed import order), and `cross_module_method_arity` (arg-position `Num e =>`
 1-vs-2 arity). So the 2026-06-20/21 additive define-side mirrors
@@ -86,7 +86,7 @@ application) or the inner constraint-var method (`pure`/`andThen`) routes `RNone
 → arg-tag → no impl (return case).
 
 ### Why this is identity, not collision
-The WS2 Option-B re-key (`selfhost/WS2-REKEY-DIAGNOSIS.md`) targets the **bare-name
+The WS2 Option-B re-key (`compiler/WS2-REKEY-DIAGNOSIS.md`) targets the **bare-name
 first-match COLLISION**: two *distinct same-named* callees in different modules,
 disambiguated by an AST `EVarFrom`-style definer origin. **My repro has no name
 collision** — `btraverse`/`sizeWith` are unique across the project. A single,
@@ -186,7 +186,7 @@ path; the `EVarFrom` AST/resolve work is orthogonal and can stay deferred.
 
 ## 5. Staged plan (ascending risk; gates per stage)
 
-All stages after Stage 0 edit `selfhost/types/typecheck.mdk` ⇒ they **share one
+All stages after Stage 0 edit `compiler/types/typecheck.mdk` ⇒ they **share one
 file and must land sequentially** (no parallel branches). Stages that change the
 method-constraint snapshot or `recordMethodDicts` feed the emitter self-compile
 graph ⇒ require `selfcompile_fixpoint` C3a/C3b green and a **seed re-mint at the
@@ -206,7 +206,7 @@ very end** (one re-mint, not per-stage — per memory `feedback_defer_seed_remin
   module defining `interface BoxTrav`/`impl BoxTrav Box` with `btraverse :
   Thenable m => …`, importer `main` calling it), golden captured **native-leg**
   (native > frozen oracle here — oracle mis-evaluates; do **not** capture from the
-  oracle). It will FAIL until Stage 2/3. Gate: `diff_selfhost_eval_typed_modules`
+  oracle). It will FAIL until Stage 2/3. Gate: `diff_compiler_eval_typed_modules`
   (the new fixture red, the other 6 green). Oracle-mirror impact: **none**
   (fixture-only, native golden). Touches fixpoint graph: no.
 
@@ -220,8 +220,8 @@ very end** (one re-mint, not per-stage — per memory `feedback_defer_seed_remin
   (ii) carry the constraint ids *with* the import-seed method scheme so the
   snapshot and the instantiation share ids by construction (define-side, larger).
   Shares `typecheck.mdk`. Gates: the new fixture flips to green AND all 6
-  typed-modules fixtures stay green; `diff_selfhost_eval_dict` 26/0;
-  `diff_selfhost_typecheck_errors` (no new accept/reject drift). Touches fixpoint
+  typed-modules fixtures stay green; `diff_compiler_eval_dict` 26/0;
+  `diff_compiler_typecheck_errors` (no new accept/reject drift). Touches fixpoint
   graph: **yes** (typecheck is in the emitter graph) → `selfcompile_fixpoint`
   C3a/C3b must hold.
 
@@ -229,16 +229,16 @@ very end** (one re-mint, not per-stage — per memory `feedback_defer_seed_remin
   `emitArgStampPasses` (build) path; if the snapshot is shared the eval fix may
   cover it, but the SIGSEGV proves the emit side independently under-fills today.
   Add a `build`-exec assertion for the new shape. Gates:
-  `diff_selfhost_build` 35/0 + the new fixture built+exec == native run golden.
+  `diff_compiler_build` 35/0 + the new fixture built+exec == native run golden.
   Touches fixpoint graph: **yes**.
 
 - **Stage 4 — re-mint seed + full gate sweep + (optional) doc retire.** One seed
-  re-mint (`selfhost/seed/`), full differential sweep, update
+  re-mint (`compiler/seed/`), full differential sweep, update
   `method_constraint_dispatch/main.mdk`'s "out of scope" comment to point at the
   now-covered fixture. Gates: §6 full list. Oracle-mirror impact: **none of these
   gates compares against a live `lib/` oracle for this shape** — all the relevant
   goldens are native-sourced (oracle mis-evaluates), so **no `lib/` change is
-  forced**. (Confirm: `diff_selfhost_typecheck_errors` compares native vs native
+  forced**. (Confirm: `diff_compiler_typecheck_errors` compares native vs native
   goldens; if any added case is captured against the OCaml oracle it would force a
   `lib/` mirror — avoid by keeping new goldens native-leg.)
 
@@ -250,11 +250,11 @@ RED→GREEN ordering). Stage 0 is independent and first.
 Run `FORCE=1 bash test/build_oracles.sh` before any `test/bin/*` gate (mtime-skip
 → false pass). Required green:
 
-- `sh test/diff_selfhost_eval_typed_modules.sh` — was 6/0, becomes **7/0** with
+- `sh test/diff_compiler_eval_typed_modules.sh` — was 6/0, becomes **7/0** with
   the new `cross_module_method_userconstraint` fixture.
-- `sh test/diff_selfhost_eval_dict.sh` — **26/0**.
-- `diff_selfhost_build` — **35/0** (+ new shape built+exec == run).
-- `diff_selfhost_typecheck_errors` — **40/0** (no accept/reject drift; today
+- `sh test/diff_compiler_eval_dict.sh` — **26/0**.
+- `diff_compiler_build` — **35/0** (+ new shape built+exec == run).
+- `diff_compiler_typecheck_errors` — **40/0** (no accept/reject drift; today
   `check` wrongly accepts the bug — after the fix it must still typecheck, now
   with a real dict route, *not* start rejecting).
 - `selfcompile_fixpoint` **C3a/C3b YES** (Stages 2–4 touch the emitter graph).

@@ -1,0 +1,39 @@
+-- Self-processing EVAL probe for the bootstrap milestone harness — the TYPED
+-- TYPECHECK leg (Leg D of test/diff_compiler_selfproc.sh).
+--
+-- It exercises a REAL self-hosted stage that uses the HM TYPECHECKER —
+-- typecheck.mdk — by inferring the schemes of an embedded Medaka snippet and
+-- rendering them as `name : scheme` lines (the same `checkToLines` form
+-- typecheck_main.mdk emits).  The harness runs this probe TWO ways and diffs:
+--   * the reference eval_modules oracle:  medaka run compiler/entries/selfproc_tc_probe.mdk
+--     (OCaml Loader -> typecheck -> eval_modules drives the probe + its imports)
+--   * the self-hosted TYPED eval path:    medaka run compiler/entries/eval_typed_modules_main.mdk
+--     stdlib/runtime.mdk stdlib/core.mdk compiler/entries/selfproc_tc_probe.mdk compiler
+-- Byte-identical output proves the self-hosted TYPED multi-module eval correctly
+-- EXECUTES the typechecker stage of the compiler's own source.
+--
+-- Scope note: typecheck.mdk uses Ref-based union-find mutation (the `<Mut>`
+-- effect) and a larger primitive surface than the lexer/parser, so this leg
+-- stresses the self-hosted eval's extern / <Mut> kernel rather than its
+-- dispatch.  Unlike the lexer (Leg B, no return-position dispatch), the
+-- typechecker also threads return-position dispatch through its monadic surface,
+-- so it runs through the typed path (Leg C/D), not the untyped eval_modules path.
+
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkToLines}
+
+-- A SELF-CONTAINED (prelude-free) Medaka snippet — checkToLines seeds no
+-- prelude, so every free name must be bound in the snippet itself (like the
+-- test/typecheck_fixtures).  Covers a broad cross-section of the constructs HM
+-- inference threads through, so the self-hosted eval's <Mut> kernel (Ref-based
+-- union-find, the tyvar-id counter, level enter/exit) gets a real workout:
+--   * data + record decls, constructor schemes, record create/update/access;
+--   * a signature (sigToScheme), multi-clause match + patterns (tuple, ctor);
+--   * if/then/else, lambdas, recursion (letrec SCC ordering), application;
+--   * let-polymorphism + generalize/instantiate (`poly`/`twice`);
+--   * pp_mono rendering of TApp / TFun / tuple / record types.
+src : String
+src = "record Pt\n  x : Int\n  y : Int\ndata Opt a = Non | Som a\nmkP a b = Pt { x = a, y = b }\nmoveX p d = { p | x = p.x + d }\nfromOpt d o = match o\n  Som v => v\n  Non => d\ndist p = p.x * p.x + p.y * p.y\nswap (a, b) = (b, a)\npoly x = x\ntwice f x = f (f x)\nbig a b c = if a == b then c else a\nmain = fromOpt 0 (Som 5)\n"
+
+main = putStr (checkToLines (desugar (parse src)))

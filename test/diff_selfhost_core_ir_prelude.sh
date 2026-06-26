@@ -1,19 +1,19 @@
 #!/bin/sh
 # Prelude-loaded equivalence gate for the Core IR (STAGE2-DESIGN §2.1).
 #
-# Where diff_selfhost_core_ir.sh isolates the engine on prelude-free fixtures,
+# Where diff_compiler_core_ir.sh isolates the engine on prelude-free fixtures,
 # this exercises real prelude dispatch — the typeclass methods defined in
 # core.mdk (Eq/Ord/Debug/Display/Num + deriving) — flowing through the Core IR's
 # slice-5 impl install + arg-tag VMultis.
 #
 # Reference: the committed test/eval_prelude_fixtures/<name>.eval.golden (captured
-# from dev/eval_probe.exe --prelude, the SAME oracle diff_selfhost_eval_prelude.sh
+# from dev/eval_probe.exe --prelude, the SAME oracle diff_compiler_eval_prelude.sh
 # uses).
 #
 # OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted Core-IR eval runs as the
 # pre-compiled native binary test/bin/core_ir_prelude_main (build_oracles.sh).
 #
-# Usage:  sh test/diff_selfhost_core_ir_prelude.sh
+# Usage:  sh test/diff_compiler_core_ir_prelude.sh
 # Exit:   0 if every fixture matches.
 set -u
 

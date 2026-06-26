@@ -5,7 +5,7 @@
 **Status:** audit (findings). **Target spec:** [`DICT-SEMANTICS.md`](../DICT-SEMANTICS.md)
 (theory-first, written without consulting the implementation). **Audited tree:**
 `HEAD = 14a3b58` (`20a5c45` argstamp-unify confirmed ancestor). **Canonical
-implementation under audit:** the native self-hosted compiler (`selfhost/*.mdk`,
+implementation under audit:** the native self-hosted compiler (`compiler/*.mdk`,
 compiled to the `./medaka` binary). The OCaml compiler (`lib/*.ml`) is the
 **frozen differential oracle** being retired; its divergences are recorded but are
 out of scope for the conformance verdict except where it usefully contrasts.
@@ -92,7 +92,7 @@ The real divergences are narrower and cluster as follows:
 requires the superclass impl to exist and its evidence to equal the canonical
 `D`-dict. §5 requires return-position dispatch to come from the static dict.
 
-**Finding (canonical / selfhost):** the interface `supers` field is parsed
+**Finding (canonical / compiler):** the interface `supers` field is parsed
 (`parser.mdk:2060-2088`), plumbed through annotate/desugar/marker/exhaust
 unchanged, and checked only for *name existence* (`resolve.mdk:473-498`
 `checkSuper`). **It never reaches typecheck's constraint solving, dispatch, or any
@@ -113,7 +113,7 @@ Same divergence for `impl Ord Color` without `impl Eq Color`.
 **Two coupled gaps:**
 1. **No impl-declaration existence gate.** Native ships `impl Mon Bag` without
    `impl Sem Bag`. OCaml gates this (`check_superinterface_obligations`,
-   `lib/typecheck.ml:4857-4875` → `MissingSuperImpl`); selfhost never ported it.
+   `lib/typecheck.ml:4857-4875` → `MissingSuperImpl`); compiler never ported it.
 2. **No `supers` evidence path.** Superclass methods reach an impl by **arg-tag on
    their own arguments**, not by projecting a `supers` dict. For an *argument*-position
    superclass method with the impl present this happens to work; where a
@@ -144,7 +144,7 @@ OCaml during the self-host.
 > `crossModuleMethodConstraintsQualRef`) consulted per dict-pass scope. The
 > method-level case was a genuine *unmitigated* soundness bug (silent: `check`
 > passes, `run`/`build` diverge into crash/garbage). The bare tables are KEPT
-> (load-bearing — see below); full retirement is deferred (`selfhost/WS2-REKEY-DIAGNOSIS.md`).
+> (load-bearing — see below); full retirement is deferred (`compiler/WS2-REKEY-DIAGNOSIS.md`).
 > EMPIRICAL CORRECTION: the bare arity table is **not** redundant at the call site —
 > neutering the inference seed (`typecheck.mdk:8136`) under-applies cross-module calls;
 > it is the sole source of constraint-slot ids (the `Scheme` carries no constraint list).
@@ -156,7 +156,7 @@ dictionary parameters onto an unconstrained binding, whose use sites then under-
 or over-apply — a coherence and a type-preservation break."
 
 **Finding:** arity is stored keyed by **bare `String`**:
-- selfhost: `funConstraintsRef : Ref (List (String, List Int))` `typecheck.mdk:1117`;
+- compiler: `funConstraintsRef : Ref (List (String, List Int))` `typecheck.mdk:1117`;
   registered by `registerMember m` keyed by `m`; `scopeArities` keys by `fst e`
   `typecheck.mdk:8036-8051`; `dictParamName encl slot` bare `typecheck.mdk:5336`.
 - OCaml: `collect_arities : program -> (ident, int) Hashtbl.t`, `ident = string`,
@@ -185,7 +185,7 @@ case, not constrained-vs-constrained).
 
 ### D3 — No global instance environment — **COHERENCE (latent), both impls** — ✅ CLOSED (`84642d0`)
 
-> **RESOLUTION (2026-06-21):** `checkGlobalCoherence` added — a joint coherence pass over the USER-only impl set (prelude excluded) across all modules. Orphan cross-module `impl C T` conflicts (two different modules each defining the same instance, no import edge) are now rejected with a diagnostic naming both modules. Fixpoint = selfhost-self-coherence canary.
+> **RESOLUTION (2026-06-21):** `checkGlobalCoherence` added — a joint coherence pass over the USER-only impl set (prelude excluded) across all modules. Orphan cross-module `impl C T` conflicts (two different modules each defining the same instance, no import edge) are now rejected with a diagnostic naming both modules. Fixpoint = compiler-self-coherence canary.
 
 *(Historical audit finding preserved below.)*
 
@@ -194,7 +194,7 @@ modules resolving the same predicate must consult the same instance set.
 
 **Finding:** each module is type-checked against a **fresh per-module instance
 set** = (seeded prelude ∪ this module's imports' public impls ∪ own impls).
-selfhost: `checkModulesGo` seeds `baseSeed ++ importSeed prog depEnv`
+compiler: `checkModulesGo` seeds `baseSeed ++ importSeed prog depEnv`
 (`typecheck.mdk:7717-7780`); `importSeed` admits only explicitly-imported schemes;
 `checkCoherence prog` runs on **this module's** decls only (`typecheck.mdk:7351`).
 OCaml: `env.impls := te.te_impls @ !(env.impls)` per imported module
@@ -245,7 +245,7 @@ No cycle/acyclicity check on the interface `requires` graph anywhere
 (`checkSuper` verifies only that the named interface exists; `register_interface`
 records `iface_supers` with no guard). `interface A requires B` /
 `interface B requires A` is unchecked. OCaml's `expand_supers` is one-level with a
-`seen` dedup so it won't itself loop; in selfhost supers are inert so a cycle
+`seen` dedup so it won't itself loop; in compiler supers are inert so a cycle
 can't *execute* today — but **the moment superclass evidence is wired in (D1's
 fix), a cyclic `requires` becomes a compile-time hang.** W1 must land *before*
 super-wiring.
@@ -286,7 +286,7 @@ A method whose class param is **absent from its type** (e.g.
 `interface Named a where typeName : String`) has no argument and no result type to
 fix the instance. Native `check` accepts the declaration; `run` produces garbage
 (`putStrLn: not a String`) — dispatch silently does not occur. **No such method
-exists in stdlib or selfhost** (every interface mentions its param in a method
+exists in stdlib or compiler** (every interface mentions its param in a method
 signature), and the near-case `fromEntries` was fixed to classify by the receiver
 typaram. Latent front-end gap; recommend rejecting at `check` or documenting as
 unsupported.
@@ -314,11 +314,11 @@ representation-only difference with **no observable divergence**
 *(Historical audit finding preserved below.)*
 
 Verified-false against the audited binary; will mislead the next auditor:
-- `selfhost/DISPATCH-GAPS-SCOPE.md:411-476` + `selfhost/EMITTER-GAPS.md:74` —
+- `compiler/DISPATCH-GAPS-SCOPE.md:411-476` + `compiler/EMITTER-GAPS.md:74` —
   claim #21 `Box (List (List Int))` SIGSEGVs. **Refuted**: native build+exec → `True`.
-- `selfhost/ARGSTAMP-UNIFY-PLAN.md:95` — "emit path of `monoid_mutual_recursive`
-  still fails". **Refuted**: `diff_selfhost_build` 29/0 includes it.
-- `selfhost/types/typecheck.mdk:1290-1298, 4674-4683` (and ~`1295, 4550, 7954`) —
+- `compiler/ARGSTAMP-UNIFY-PLAN.md:95` — "emit path of `monoid_mutual_recursive`
+  still fails". **Refuted**: `diff_compiler_build` 29/0 includes it.
+- `compiler/types/typecheck.mdk:1290-1298, 4674-4683` (and ~`1295, 4550, 7954`) —
   "`argStampEnabled` OFF on the eval path → arg-tag". **Stale**: gates removed,
   arg-dispatch is unconditional on both paths.
 - `lib/typecheck.ml:4494` — "`select_impl_by_head` enforces uniqueness". **False**:
@@ -339,8 +339,8 @@ Verified-false against the audited binary; will mislead the next auditor:
 
 Plus, from the agent runs (independently reproduced): `pure 1 : Option Int`→`Some 1`
 vs `: List Int`→`[1]` (§5 return-position); three-level `List (List (List Int))`
-default →`[[[0]]]` (#5); `diff_selfhost_eval_dict` 26/0, `diff_selfhost_build`
-29/0, `diff_selfhost_llvm` 181/0, `argstamp_parity_probe` 26/26 (§7);
+default →`[[[0]]]` (#5); `diff_compiler_eval_dict` 26/0, `diff_compiler_build`
+29/0, `diff_compiler_llvm` 181/0, `argstamp_parity_probe` 26/26 (§7);
 #54/#55/#50/#21 all `run == build`.
 
 ## 5. Out of scope (frozen OCaml oracle)
@@ -355,7 +355,7 @@ retired, so they do not affect the canonical verdict:
 - **§3 `super`:** OCaml's `expand_supers` *flattens* a superclass into a sibling
   dict slot resolved by `assum` — sound, but re-resolution into a parallel slot,
   not the spec's projection. (It is, however, the porting source for D1's
-  minimal fix: it carries the existence gate selfhost lacks.)
+  minimal fix: it carries the existence gate compiler lacks.)
 
 The forward plan to close D1–D6 is in
 [`DICT-CONFORMANCE-ROADMAP.md`](DICT-CONFORMANCE-ROADMAP.md).

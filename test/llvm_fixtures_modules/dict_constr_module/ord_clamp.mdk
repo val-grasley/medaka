@@ -2,7 +2,7 @@
 -- (threading `=>`-constrained-function dict params on the `elaborateModules`
 -- emit path) unlocks.  `Ord2` + its `Int` impl + the constrained helper
 -- `clampU : Ord2 a => a -> a -> a -> a` all live HERE (methods do not yet
--- resolve cross-module through the selfhost typed pipeline); the ENTRY imports
+-- resolve cross-module through the compiler typed pipeline); the ENTRY imports
 -- `clampU` and applies it at the concrete `Int` type.
 --
 -- `clampU`'s body dispatches `lt2`/`gt2` on the constraint variable `a`.  Under

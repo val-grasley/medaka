@@ -1,9 +1,9 @@
 #!/bin/sh
-# test/diff_selfhost_effect_hole.sh
+# test/diff_compiler_effect_hole.sh
 #
 # CLI-LEVEL gate for capability-effects v2 Stage 2b: the INFERRED-HOLE surface
 # form `<Net _>` + the known-prefix abstract analysis α.  Companion to
-# diff_selfhost_effect_param.sh (Stage 2a's concrete rows); like it, this gate
+# diff_compiler_effect_param.sh (Stage 2a's concrete rows); like it, this gate
 # runs THROUGH the real `check` front-end (so a CLI-only regression the
 # raw-Parser unit tests would miss is caught):
 #
@@ -28,7 +28,7 @@
 # Prereqs: `make medaka` (native CLI + medaka_emitter),
 #          `FORCE=1 sh test/build_oracles.sh` (test/bin/check_main).
 #
-# Usage:  sh test/diff_selfhost_effect_hole.sh
+# Usage:  sh test/diff_compiler_effect_hole.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIX="$ROOT/test/diff_fixtures/effect_param_hole.mdk"

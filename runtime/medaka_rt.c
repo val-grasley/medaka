@@ -2,8 +2,8 @@
  *
  * This is NOT the real runtime.  It is the minimal C stub the spike's emitted
  * LLVM IR links against to prove the emit -> clang -> link -> run -> diff
- * toolchain end-to-end (see selfhost/STAGE2-DESIGN.md §2.4 and the "Value
- * representation & calling convention" section of selfhost/RUNTIME-DESIGN.md).
+ * toolchain end-to-end (see compiler/STAGE2-DESIGN.md §2.4 and the "Value
+ * representation & calling convention" section of compiler/RUNTIME-DESIGN.md).
  *
  * Scope discipline (matches the emitter): integers, floats, booleans, let, if,
  * functions, (slice 3) algebraic data types + pattern matching, and (native
@@ -56,7 +56,7 @@
  * GC_malloc would otherwise lazily init on its first call. */
 __attribute__((constructor)) static void mdk_gc_init(void) {
   GC_INIT();
-  /* Perf tuning (selfhost/PERF-RESULTS.md): Medaka workloads are
+  /* Perf tuning (compiler/PERF-RESULTS.md): Medaka workloads are
    * allocation-heavy and mostly short-lived (the emitter alone allocates
    * ~4200 cells/run plus every cons/closure/ADT).  The default free-space
    * divisor (3) collects aggressively to keep RSS low; we trade some memory
@@ -185,7 +185,7 @@ long long mdk_value_eq(long long a, long long b) {
 }
 
 /* Print a String RAW (no quoting).  Matches Eval.pp_value (VString s) = s, then
- * the oracle's trailing newline (eval_probe / selfhost ppValue). */
+ * the oracle's trailing newline (eval_probe / compiler ppValue). */
 void mdk_print_str(long long w) {
   const char *cell = (const char *)w;
   long long byte_len = ((const long long *)cell)[1];
@@ -488,7 +488,7 @@ long long mdk_string_to_lower(long long s) {
 /* ── Reserved ADT tags + cell constructors (native extern catalog, slice 10) ──
  * The runtime ADTs (List, Option, Result, Ordering) get FIXED composite tags so a C
  * extern can construct their cells with a tag a later Medaka `match` agrees with.
- * These MUST stay in sync with selfhost/llvm_emit.mdk `reservedTag` / `ctorTagShift`:
+ * These MUST stay in sync with compiler/llvm_emit.mdk `reservedTag` / `ctorTagShift`:
  *   cellTag = (reservedTypeBase + typeId) * 2^32 + ordinal.
  * Nullary ctors are IMMEDIATE ((tag<<1)|1, RUNTIME-DESIGN §8.1); ctors with fields
  * are boxed cells [i64 tag | field… ] (fields at offset 8*(i+1)), matching

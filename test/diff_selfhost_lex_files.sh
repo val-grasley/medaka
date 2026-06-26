@@ -12,7 +12,7 @@
 # float token *presence* but not its rendered text.  Any reported diff is a real
 # token-kind/position divergence.
 #
-# Usage:  sh test/diff_selfhost_lex_files.sh [file.mdk ...]
+# Usage:  sh test/diff_compiler_lex_files.sh [file.mdk ...]
 # Exit:   0 if every file's token stream matches (modulo float text), else 1.
 set -u
 
@@ -29,7 +29,7 @@ norm() { sed 's/^FLOAT .*/FLOAT/'; }
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/selfhost/frontend/lexer.mdk"
+  files="$ROOT/compiler/frontend/lexer.mdk"
   for f in core list array string map set io hash_map hash_set mut_array json test; do
     files="$files $ROOT/stdlib/$f.mdk"
   done

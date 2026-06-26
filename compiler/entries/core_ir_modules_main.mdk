@@ -1,0 +1,45 @@
+-- Multi-module execution through the Core IR (STAGE2-DESIGN §2.1) — the
+-- loader-driven Core-IR path, the analog of compiler/entries/eval_modules_main.mdk:
+--
+--   medaka run compiler/entries/core_ir_modules_main.mdk <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars +
+-- annotates each (so each module's CVars are born lexically addressed, §2.0),
+-- LOWERS them per-module to Core IR and evaluates them in per-module frames over
+-- the shared prelude (core_ir_eval.cevalModules), forces the entry module's `main`
+-- for its IO side-effects, and prints the captured stdout — the multi-module
+-- analog of core_ir_main / core_ir_prelude_main.  Diffs byte-for-byte against
+-- `medaka run <entry.mdk>` (the reference Loader → eval_modules), the SAME oracle
+-- eval_modules_main uses.  Equal output is the §2.1 equivalence proof for the
+-- loader-driven path: lowering + Core-IR evaluation preserve the AST semantics
+-- across module boundaries.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import driver.loader.{loadProgram}
+import ir.core_ir_eval.{cevalModulesOutput}
+import support.path.{dirOf}
+
+main = match args ()
+  coreP::entry::roots => run coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run compiler/entries/core_ir_modules_main.mdk <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+-- desugar + annotate each loaded module (the loader returns parsed-not-desugared
+-- decls); annotateProgram is the §2.0 EMIT pass, run per-module so each module's
+-- Core IR is born lexically addressed (the address is unconsumed by ceval, so it
+-- stays byte-identical to the AST path — see core_ir_main).
+annotatePair : (String, List Decl) -> (String, List Decl)
+annotatePair (mid, p) = (mid, annotateProgram (desugar p))
+
+run : String -> String -> List String -> <IO, Mut> Unit
+run coreP entry roots = match readFile coreP
+  Err e => ePutStrLn e
+  Ok csrc => match loadProgram entry roots
+    Err e => ePutStrLn e
+    Ok mods => putStr (cevalModulesOutput (annotateProgram (desugar (parse csrc))) (map annotatePair mods))

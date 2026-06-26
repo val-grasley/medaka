@@ -18,7 +18,7 @@
 # auto-prints main's Unit return as a trailing "()" line; strip_unit removes it
 # (the goldens, captured from OCaml `run`, carry no such line).
 #
-# Usage:  sh test/diff_selfhost_eval_run.sh
+# Usage:  sh test/diff_compiler_eval_run.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/eval_run_main"

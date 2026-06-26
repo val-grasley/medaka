@@ -6,7 +6,7 @@
 -- arg-tag dispatch over ADT-only ctors is slice 7 — already emittable.
 --
 -- NOTE: exported interface METHODS do not yet resolve cross-module through the
--- selfhost typed pipeline, so the interface/impls stay in the entry; the DATA TYPES
+-- compiler typed pipeline, so the interface/impls stay in the entry; the DATA TYPES
 -- are what cross.
 import animals.{Dog(..), Cat(..)}
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Batched variant of diff_selfhost_eval_list.sh — prelude caching.
+# Batched variant of diff_compiler_eval_list.sh — prelude caching.
 #
 # OCaml-free (REROOT-PLAN.md Phase 2): one process, the pre-compiled native binary
 # test/bin/eval_list_batch (built by test/build_oracles.sh), parses core.mdk +

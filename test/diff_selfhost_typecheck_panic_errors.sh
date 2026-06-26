@@ -3,9 +3,9 @@
 # shapes that resolve normally pre-screens — TYPECHECK-AUDIT finding D1.
 #
 # These programs reference an unknown constructor / record / field, or an
-# unbound variable.  In the FULL front-end (selfhost/tools/check.mdk) resolve catches
+# unbound variable.  In the FULL front-end (compiler/tools/check.mdk) resolve catches
 # them first, so the typecheck stage never sees them.  But on the no-resolve
-# differential path (the tc_probe oracle vs selfhost/entries/typecheck_main.mdk) the
+# differential path (the tc_probe oracle vs compiler/entries/typecheck_main.mdk) the
 # typecheck stage IS the one that reaches the error.  Before D1 the self-hosted
 # typechecker PANICKED (uncatchable interpreter abort) on these; the oracle
 # accumulates a `TYPE ERROR: …`.  D1 converts those panics into accumulated
@@ -17,7 +17,7 @@
 # test/capture_goldens.sh.  Driver = typecheck_main (the full-front-end check.mdk
 # driver is deliberately NOT tested here: it stops at resolve for these shapes).
 #
-# Usage:  sh test/diff_selfhost_typecheck_panic_errors.sh
+# Usage:  sh test/diff_compiler_typecheck_panic_errors.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/typecheck_main"

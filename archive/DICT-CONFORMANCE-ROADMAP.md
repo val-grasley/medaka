@@ -4,7 +4,7 @@
 
 **Companion to** [`DICT-CONFORMANCE-AUDIT.md`](DICT-CONFORMANCE-AUDIT.md) and the
 target spec [`DICT-SEMANTICS.md`](../DICT-SEMANTICS.md). This document sequences the
-work to bring the **canonical** implementation (`selfhost/*.mdk` → `./medaka`)
+work to bring the **canonical** implementation (`compiler/*.mdk` → `./medaka`)
 into conformance with the formal dict-passing semantics.
 
 ## STATUS — overnight 2026-06-21: roadmap substantially CLOSED
@@ -17,8 +17,8 @@ and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
 |------|--------|---------------|
 | **D1** existence gate (WS-1a) | ✅ closed | `afe4b89` + multi-module over-reject fix `00cf2f7` |
 | **D1** dispatch (WS-1b) | ✅ closed | sole-impl emit fix `83bb5c7` + `expand_supers` flatten `db091fd` + **ambiguity-defaulting `72a1477`** (sole→default / ≥2→`AmbiguousImpl`). Return-pos superclass under a `=>` constraint now run==build==oracle (sole 43, chain3b 1005). |
-| **D2** cross-module arity collision | ✅ closed (fn + method arity collision); ✅ method-scheme id identity CLOSED `221af36` | `e488cd9` (module-qualified define-side FN arity) + **method-level twin `880e0fe`** (`crossModuleMethodConstraintsQualRef` + `scopeMethodArities`). **Full re-key (Option B) DEFERRED — zero observable payoff, highest-footgun path** (`selfhost/WS2-REKEY-DIAGNOSIS.md`, `56ad164`). NOTE — prior agent `a95c…`'s "call site already definer-correct, bare table redundant" claim was **EMPIRICALLY REFUTED**: neutering the seed at `typecheck.mdk:8136` → `intToString: not an Int` under-application. The bare table is **load-bearing** (the `Scheme` carries no constraint list, so it is the sole source of which callee ids are dict slots); it is benign only by construction (dep-order + most-recent-prepend + per-module import-scoped env). Retiring it needs an AST `EVar` definer-origin pass (does not exist; `annotateProgram`/`EVarAt` is unwired + single-module). Verified: fn 3-way 1/2/3 + reversed-order; method-arity 1-vs-2 collision (`cross_module_method_arity`, was a silent `check`-passes/`run`-crashes/`build`-garbage soundness bug). **ADDITIONAL D2 FIX (2026-06-25, `221af36`):** a DISTINCT cross-module gap — method-level `=>` constraint dict mis-dispatch for non-prelude sibling modules (a different collision class: stale-sweep first-match shadowing, not bare-name arity collision) — is now CLOSED. Root: `methodConstraintsRef` accumulates multiple entries per (uniquely-named) method from successive elaborate sweeps; `crossModuleMethodConstraintsRef` is not re-keyed before `recordMethodDicts` reads it, so bare first-match returns a STALE entry whose ids are disjoint from the live instantiation subst → empty dict route → `run` panics / `build` SIGSEGVs on cross-module method calls with user `=>` constraints. Fix = read-side `alignedMethodConstraintIds` helper in `recordMethodDicts` that selects the entry whose ids most-overlap the live subst. The fn-level `EVarFrom` re-key this doc describes remains deferred (different problem). |
-| **D3** global coherence | ✅ closed | `84642d0` — orphan cross-module `impl C T` conflicts rejected (names both modules); user-only impl set (prelude excluded); fixpoint = selfhost-self-coherence canary. |
+| **D2** cross-module arity collision | ✅ closed (fn + method arity collision); ✅ method-scheme id identity CLOSED `221af36` | `e488cd9` (module-qualified define-side FN arity) + **method-level twin `880e0fe`** (`crossModuleMethodConstraintsQualRef` + `scopeMethodArities`). **Full re-key (Option B) DEFERRED — zero observable payoff, highest-footgun path** (`compiler/WS2-REKEY-DIAGNOSIS.md`, `56ad164`). NOTE — prior agent `a95c…`'s "call site already definer-correct, bare table redundant" claim was **EMPIRICALLY REFUTED**: neutering the seed at `typecheck.mdk:8136` → `intToString: not an Int` under-application. The bare table is **load-bearing** (the `Scheme` carries no constraint list, so it is the sole source of which callee ids are dict slots); it is benign only by construction (dep-order + most-recent-prepend + per-module import-scoped env). Retiring it needs an AST `EVar` definer-origin pass (does not exist; `annotateProgram`/`EVarAt` is unwired + single-module). Verified: fn 3-way 1/2/3 + reversed-order; method-arity 1-vs-2 collision (`cross_module_method_arity`, was a silent `check`-passes/`run`-crashes/`build`-garbage soundness bug). **ADDITIONAL D2 FIX (2026-06-25, `221af36`):** a DISTINCT cross-module gap — method-level `=>` constraint dict mis-dispatch for non-prelude sibling modules (a different collision class: stale-sweep first-match shadowing, not bare-name arity collision) — is now CLOSED. Root: `methodConstraintsRef` accumulates multiple entries per (uniquely-named) method from successive elaborate sweeps; `crossModuleMethodConstraintsRef` is not re-keyed before `recordMethodDicts` reads it, so bare first-match returns a STALE entry whose ids are disjoint from the live instantiation subst → empty dict route → `run` panics / `build` SIGSEGVs on cross-module method calls with user `=>` constraints. Fix = read-side `alignedMethodConstraintIds` helper in `recordMethodDicts` that selects the entry whose ids most-overlap the live subst. The fn-level `EVarFrom` re-key this doc describes remains deferred (different problem). |
+| **D3** global coherence | ✅ closed | `84642d0` — orphan cross-module `impl C T` conflicts rejected (names both modules); user-only impl set (prelude excluded); fixpoint = compiler-self-coherence canary. |
 | **D4** return/phantom overlap | ✅ closed | `fdaefda` (WS-3) — most-specific-wins route stamped for ground return-position. |
 | **D5/D6** well-formedness (WS-4) | ✅ closed | `adbbb97` — cyclic-superinterface rejected; instance-termination depth fuse. |
 | **D7** supers fidelity | ✅ sufficient | `expand_supers` flatten (`db091fd`) closes the dispatch gap; the two-field `VDict.supers` record (deluxe form) is non-defect / observationally-equivalent — not pursued. |
@@ -37,7 +37,7 @@ and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
 
 - **Target the canonical binary.** The OCaml `lib/*.ml` oracle is frozen and being
   retired; do not invest in its divergences except as a *porting source* (it
-  already implemented some checks selfhost lacked — D1, D4, both now closed).
+  already implemented some checks compiler lacked — D1, D4, both now closed).
 - **Close gaps generally, not per-symptom** (project ethos). D2 and D3 share one
   root (identity is bare-name, IE is per-module); fix the root, retire the
   containment workarounds — don't add another scope filter.
@@ -46,7 +46,7 @@ and merged to local `main`. Sequence of commits: `afe4b89`→`72a1477` (+ D9).
   (D4) are *not* defects to "fix"; they are non-goals (§6) unless a real
   divergence forces them.
 - **Verify on the binary, differentially.** Every change must keep
-  `diff_selfhost_*` green and add a fixture that fails before / passes after. The
+  `diff_compiler_*` green and add a fixture that fails before / passes after. The
   frozen oracle remains a useful second opinion during the soak (D1's fix should
   make native *match* the oracle's `MissingSuperImpl` rejection).
 
@@ -91,16 +91,16 @@ WS-6.
 ### WS-1 — Superclass evidence (closes D1; folds in D7) — **highest priority**
 
 **Spec:** §3 `super` (projection), §6 C2 (existence + consistency), §5
-(return-position superclass dispatch). **Lands in:** `selfhost/types/typecheck.mdk`
-(+ `selfhost/frontend/ast.mdk` for the new route, `selfhost/eval/eval.mdk` and
-`selfhost/backend/llvm_emit.mdk` + `wasm_emit.mdk` for projection). **Skill:**
+(return-position superclass dispatch). **Lands in:** `compiler/types/typecheck.mdk`
+(+ `compiler/frontend/ast.mdk` for the new route, `compiler/eval/eval.mdk` and
+`compiler/backend/llvm_emit.mdk` + `wasm_emit.mdk` for projection). **Skill:**
 `add-language-feature` (threads a route through ast → typecheck → eval → emit).
 
 Two stages; ship 1a first (restores soundness floor), then 1b (spec-true form).
 
 **WS-1a — existence gate (minimal, restores oracle parity). ✅ DONE (2026-06-20, `afe4b89`).**
 Ported as `checkSuperImpls` (+ `ifaceSupersOf`/`superImplExists`/`tyIsConcrete` helpers) in
-`selfhost/types/typecheck.mdk`, wired at all 5 `checkCoherence` driver sites; needed `Super(..)`
+`compiler/types/typecheck.mdk`, wired at all 5 `checkCoherence` driver sites; needed `Super(..)`
 added to the `frontend.ast` import (the missing ctor import was SIGTRAPping under the gap-tolerant
 emitter). Concreteness gate mirrors the oracle: parametric `impl Monoid (Bag a)` is deferred;
 concrete `impl Monoid Color` without `impl Semigroup Color` now rejects with the byte-identical
@@ -114,10 +114,10 @@ real multi-module defect was the OPPOSITE — an **over-rejection**: `checkModul
 Fixed with a parallel `accImpls` accumulator (`allImplDecls`, threaded through `checkModulesDiagsGo`/
 `checkModulesEntryFullGo`, seeded from `coreDecls`) feeding `checkSuperImpls prog (accImpls ++ accData
 ++ prog)` — `accData` left untouched so `buildOracle`/`registerAllData` are unperturbed. Guard legs in
-`test/diff_selfhost_check_cli_modules.sh` (7/0). **No residual under-rejection.**
+`test/diff_compiler_check_cli_modules.sh` (7/0). **No residual under-rejection.**
 
 Port `check_superinterface_obligations` (`lib/typecheck.ml:4857-4875`) into
-selfhost as a self-contained post-pass over the impl table using the already-stored
+compiler as a self-contained post-pass over the impl table using the already-stored
 interface `supers` field: for each `impl C T`, require `impl D T` to exist for every
 `D ∈ super(C)`, else emit `MissingSuperImpl`. Wire it into the same driver sites as
 `checkCoherence` (`typecheck.mdk:4915` neighborhood; the 6 invocation sites). This
@@ -125,7 +125,7 @@ alone closes the **declaration-site** half of D1 and makes
 arg-position superclass dispatch *sound* (the impl is guaranteed present).
 - *Gate:* a fixture `impl Mon Bag` without `impl Sem Bag` must move from native
   `check` rc 0 → rc 1 with `MissingSuperImpl`, matching the oracle. Existing
-  `diff_selfhost_*` stay green.
+  `diff_compiler_*` stay green.
 - *Effort:* low. *Risk:* low (additive check; the only risk is over-rejecting a
   legitimate program — mirror the oracle's exact predicate, including default/named
   impl handling).
@@ -140,13 +140,13 @@ the spec-true `expand_supers` evidence is DEFERRED behind WS-2 (see below).**
 > ran correctly in the interpreter (`107`) but the native binary **SIGTRAPped**.
 > Diagnosed: the ambiguous constraint var is unpinned, so the site routes `RNone`
 > → passes a **null dict** (`i64 0`); `emitMethodDispatch` did `inttoptr 0; load`
-> → null-deref. Fixed narrowly + generally in `selfhost/backend/llvm_emit.mdk`: a
+> → null-deref. Fixed narrowly + generally in `compiler/backend/llvm_emit.mdk`: a
 > **sole-impl method** (one tagged impl, no `requires` element dicts) now dispatches
 > by **direct call**, skipping the dict head-tag load — mirroring eval's
 > `narrowMethod`/`oneOrMultiV` sole-impl pick and the existing arg-position
 > single-impl-group optimization. Grounded callers unaffected; null/sole-impl
 > callers no longer deref null. Fixture `test/build_diff_fixtures/super_returnpos.mdk`
-> (golden `43`); gates `diff_selfhost_build` 30/0, `eval_dict` 26/0, fixpoint
+> (golden `43`); gates `diff_compiler_build` 30/0, `eval_dict` 26/0, fixpoint
 > C3a/C3b YES.
 >
 > **The prescribed `expand_supers` flatten was implemented, tested, and REVERTED:**
@@ -226,7 +226,7 @@ methods dispatch from the static dict, not arg-tag:
 > cross-module callees). It is benign today only **by construction** (dependency-order
 > processing + most-recent-prepend + per-module import-scoped env), not because it is
 > redundant. The re-key is deferred for the honest reason — **zero observable payoff,
-> highest-footgun path** — see `selfhost/WS2-REKEY-DIAGNOSIS.md` (`56ad164`) for the
+> highest-footgun path** — see `compiler/WS2-REKEY-DIAGNOSIS.md` (`56ad164`) for the
 > file:line supervised-landing roadmap. (1) the principled full re-key + **retirement of the
 > bare `crossModuleFunConstraintsRef` + Phase-134 per-scope decl-filter + empty-entry
 > seeding** — the qualified table is an additive mirror, the workarounds stay; (2) the AST
@@ -237,10 +237,10 @@ methods dispatch from the static dict, not arg-tag:
 
 
 **Spec:** §8 I1 (identity-keyed arity), §6 C4 / §8 I2 (single global IE). **Lands
-in:** `selfhost/frontend/resolve.mdk` (qualified identity), `selfhost/driver/loader.mdk`
-(global IE assembly after topo-sort), `selfhost/types/typecheck.mdk`
+in:** `compiler/frontend/resolve.mdk` (qualified identity), `compiler/driver/loader.mdk`
+(global IE assembly after topo-sort), `compiler/types/typecheck.mdk`
 (`funConstraintsRef`, `scopeArities`, `registerMember`, `checkCoherence`,
-`dictParamName`), `selfhost/eval/eval.mdk` (lookup). **Skill:**
+`dictParamName`), `compiler/eval/eval.mdk` (lookup). **Skill:**
 `add-language-feature` (threads `module_id` resolve → typecheck → dict-keys → eval).
 
 These two divergences share one root and should be fixed together:
@@ -255,21 +255,21 @@ These two divergences share one root and should be fixed together:
    Import scoping then governs *name visibility* only, not evidence identity (§8 I2).
    This makes C2/C4 globally true and removes the "coherence holds only per-module"
    gap (D3).
-- *Gate:* a new `test_loader`/`diff_selfhost` fixture with two modules each defining
+- *Gate:* a new `test_loader`/`diff_compiler` fixture with two modules each defining
   `impl C T` (no import edge) must be rejected by the global coherence check; a
   fixture with two public constrained same-named cross-module bindings of different
   arity must compile and run correctly (the D2 latent repro). All existing gates green.
 - *Effort:* high (cross-cutting, touches resolve/loader/typecheck/eval). *Risk:*
   medium-high — the per-module assembly is load-bearing for import scoping and the
-  `resetState` discipline; do it as its own change with the full `diff_selfhost_*`
+  `resetState` discipline; do it as its own change with the full `diff_compiler_*`
   suite + `selfcompile_fixpoint` as the safety net. Land **after** WS-1 so the
   superclass evidence is already identity-correct when it goes global.
 
 ### WS-3 — Dispatch-lookup uniqueness for overlap in return/phantom position (closes D4)
 
-**Spec:** §6 C1, §5 side condition. **Lands in:** `selfhost/types/typecheck.mdk`
+**Spec:** §6 C1, §5 side condition. **Lands in:** `compiler/types/typecheck.mdk`
 (stamp a key route at the use site for a most-specific-wins pair) and/or
-`selfhost/eval/eval.mdk` + emitters (error on non-unique match in
+`compiler/eval/eval.mdk` + emitters (error on non-unique match in
 return/phantom position). **Skill:** `harden-typechecker` (the decision is
 elaboration-time; runtime is a guard).
 
@@ -286,8 +286,8 @@ at `lib/typecheck.ml:4494`.
 
 ### WS-4 — Well-formedness guards (closes D5, D6)
 
-**Spec:** §3 W1, W2. **Lands in:** `selfhost/frontend/resolve.mdk` (W1, at
-`checkSuper`/`registerInterface`) and `selfhost/types/typecheck.mdk` (W2, at
+**Spec:** §3 W1, W2. **Lands in:** `compiler/frontend/resolve.mdk` (W1, at
+`checkSuper`/`registerInterface`) and `compiler/types/typecheck.mdk` (W2, at
 `implRequiresRoutesRec`). **Skill:** `harden-typechecker`.
 
 - **WS-4a (W1, do early — gates WS-1b):** DFS cycle check over the interface
@@ -302,7 +302,7 @@ at `lib/typecheck.ml:4494`.
 
 ### WS-5 — Phantom-position decision (closes D8)
 
-**Spec:** §5 phantom position. **Lands in:** `selfhost/types/typecheck.mdk`
+**Spec:** §5 phantom position. **Lands in:** `compiler/types/typecheck.mdk`
 (classifier already exists: `returnPosMethodNames` / `dispatchTyparams`). **Skill:**
 `harden-typechecker`.
 
@@ -315,7 +315,7 @@ Today it silently mis-runs. *Effort:* low (a) / high (b). *Risk:* low.
 
 ### WS-6 — Strict-§7 cleanup + doc/comment hygiene (closes D9, D10) — cheap wins
 
-**Lands in:** `selfhost/types/typecheck.mdk`, the stale docs. **Skill:** none
+**Lands in:** `compiler/types/typecheck.mdk`, the stale docs. **Skill:** none
 (mechanical).
 
 - **D9:** stamp the standalone-shadow site (`typecheck.mdk:4567`)
@@ -349,10 +349,10 @@ Today it silently mis-runs. *Effort:* low (a) / high (b). *Risk:* low.
 
 - **Per-workstream fixture:** each WS adds a fixture that *fails before, passes after*,
   placed in the gate that drives the affected path — `test_loader` for cross-module
-  (D2/D3, never `test_run`/doctest, which mask loader-only bugs), the `diff_selfhost`
+  (D2/D3, never `test_run`/doctest, which mask loader-only bugs), the `diff_compiler`
   build/eval gates for dispatch (D1/D4).
-- **Differential safety net:** keep `diff_selfhost_eval_dict` (26/0),
-  `diff_selfhost_build` (29/0), `diff_selfhost_llvm` (181/0),
+- **Differential safety net:** keep `diff_compiler_eval_dict` (26/0),
+  `diff_compiler_build` (29/0), `diff_compiler_llvm` (181/0),
   `argstamp_parity_probe` (26/26), and `selfcompile_fixpoint` green across every
   change. A dict-passing change that breaks the fixpoint is a self-miscompile.
 - **Oracle as second opinion during soak:** for D1 specifically, the frozen oracle

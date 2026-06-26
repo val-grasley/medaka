@@ -1,0 +1,43 @@
+-- Batched variant of mark_main.mdk — PROTOTYPE for prelude caching.
+--
+--   medaka run compiler/entries/mark_batch.mdk <prelude.mdk> <file.mdk>...
+--
+-- Parses + desugars the prelude ONCE, then marks each target against it,
+-- emitting one delimited section per target:
+--   ===SELFHOST-FIX=== <path>
+--   <sexp dump>
+-- so the harness can split one process's output back per fixture.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.marker.{markerFor}
+import ir.sexp.{programToSexp}
+
+main = match args ()
+  preludePath::targets => markFiles preludePath targets
+  _ => ePutStrLn "usage: medaka run compiler/entries/mark_batch.mdk <prelude.mdk> <file.mdk>..."
+
+markFiles : String -> List String -> <IO> Unit
+markFiles preludePath targets = match readFile preludePath
+  Err msg => ePutStrLn msg
+  Ok preludeSrc => match readAllSources targets
+    Err msg => ePutStrLn msg
+    Ok srcs => putStr (renderAll (markerFor (desugar (parse preludeSrc))) srcs)
+
+readAllSources : List String -> <IO> Result String (List (String, String))
+readAllSources [] = Ok []
+readAllSources (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllSources rest
+    Err msg => Err msg
+    Ok more => Ok ((p, src) :: more)
+
+renderAll : (List Decl -> List Decl) -> List (String, String) -> String
+renderAll mark [] = ""
+renderAll mark ((path, src)::rest) = "===SELFHOST-FIX=== "
+  ++ path
+  ++ "\n"
+  ++ programToSexp (mark (desugar (parse src)))
+  ++ "\n"
+  ++ renderAll mark rest

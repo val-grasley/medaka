@@ -1,0 +1,386 @@
+-- compiler/entries/lsp_harness_main.mdk — runs the v1 LSP harness fixtures.
+--
+-- Compile + run (the harness uses writeFile/runCommand, which the native
+-- interpreter doesn't bind — it must be BUILT):
+--   medaka build compiler/entries/lsp_harness_main.mdk -o /tmp/lsp_harness
+--   MEDAKA=<medaka-bin> MEDAKA_ROOT=<repo> /tmp/lsp_harness
+-- Prints PASS/FAIL per fixture + a `HARNESS: N passed, M failed` summary.
+-- (The gate test/lsp_harness.sh wires this up.)
+
+import tools.lsp_harness.{
+  initializeMsg,
+  initializedMsg,
+  didOpenMsg,
+  didChangeMsg,
+  requestMsg,
+  docParams,
+  docPosParams,
+  shutdownMsg,
+  exitMsg,
+  runSession,
+  parseFrames,
+  allByteValid,
+  diagCountFor,
+  diagPublishedFor,
+  lastDiagCountFor,
+  responseById,
+  semanticData,
+  decodeSemToks,
+  lenTokensShareType,
+  hasTokenType,
+  hoverValue,
+  strContains,
+  completionHasLabel,
+  check,
+  summary,
+}
+
+envOr : String -> String -> <IO> String
+envOr name dflt = match getEnv name
+  Some v => if v == "" then dflt else v
+  None => dflt
+
+fileUri : String -> String
+fileUri path = stringConcat ["file://", path]
+
+nonEmpty : List a -> Bool
+nonEmpty [] = False
+nonEmpty _ = True
+
+-- Fixture 1: frame integrity over a file whose diagnostic carries an em-dash.
+fixtureFrameIntegrity : String -> String -> <IO, Mut> Unit
+fixtureFrameIntegrity medaka fixDir =
+  let path = stringConcat [fixDir, "/multibyte.mdk"]
+  match readFile path
+    Err _ => check "frame-integrity (multibyte)" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/documentSymbol" (docParams uri),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 7 0),
+        shutdownMsg 4,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "frame-integrity (multibyte)" False
+        Ok out => match parseFrames out
+          (frames, clean) => check "frame-integrity (multibyte)" (clean && allByteValid frames && nonEmpty frames)
+
+-- Fixture 2: opening proj/main.mdk drives the multi-module path, which checks the
+-- sibling helper.mdk's exhaustive Option match.  helper.mdk must be published AND
+-- carry 0 diagnostics (the multi-module exhaustiveness-oracle regression guard).
+fixtureMultiModuleClean : String -> String -> <IO, Mut> Unit
+fixtureMultiModuleClean medaka fixDir =
+  let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
+  let helperUri = fileUri (stringConcat [fixDir, "/proj/helper.mdk"])
+  match readFile mainPath
+    Err _ => check "multi-module clean (0 diagnostics)" False
+    Ok src =>
+      let uri = fileUri mainPath
+      let msgs = [initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg]
+      match runSession medaka msgs
+        Err _ => check "multi-module clean (0 diagnostics)" False
+        Ok out => match parseFrames out
+          (frames, _) => check "multi-module clean (0 diagnostics)" (diagPublishedFor helperUri frames && diagCountFor helperUri frames == 0)
+
+-- Fixture 3: a genuine type error must surface ≥1 diagnostic.
+fixtureTypeError : String -> String -> <IO, Mut> Unit
+fixtureTypeError medaka fixDir =
+  let path = stringConcat [fixDir, "/typeerror.mdk"]
+  match readFile path
+    Err _ => check "type-error surfaces (>=1 diagnostic)" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg]
+      match runSession medaka msgs
+        Err _ => check "type-error surfaces (>=1 diagnostic)" False
+        Ok out => match parseFrames out
+          (frames, _) => check "type-error surfaces (>=1 diagnostic)" (diagCountFor uri frames >= 1)
+
+-- Fixture 4: documentSymbol on an UNPARSEABLE file must not crash the server.
+-- parseWithPositions used to panic on a parse failure (files are unparseable
+-- constantly mid-edit); the handler now uses the non-panicking variant.  Assert
+-- the documentSymbol request (id 2) still gets a response (server survived).
+fixtureUnparseableNoCrash : String -> String -> <IO, Mut> Unit
+fixtureUnparseableNoCrash medaka fixDir =
+  let path = stringConcat [fixDir, "/unparseable.mdk"]
+  match readFile path
+    Err _ => check "unparseable file: server survives documentSymbol" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/documentSymbol" (docParams uri),
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "unparseable file: server survives documentSymbol" False
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let responded = match responseById 2 frames
+              Some _ => True
+              None => False
+            check "unparseable file: server survives documentSymbol" responded
+
+{- Fixture 5: semanticTokens/full over `f : List (Expr, Expr) -> Expr`.  The three
+   `Expr` type names (each 4 chars) must all classify to the SAME tokenType — the
+   `type` index in the legend.  The regex TextMate grammar mis-scopes the
+   comma-followed `Expr` differently from the trailing one; the lexer-driven
+   semantic tokens fix it.  We decode the delta-encoded `data` array back to
+   absolute tokens and assert the length-4 tokens (>=3 of them) share a type. -}
+fixtureSemanticTokens : String -> String -> <IO, Mut> Unit
+fixtureSemanticTokens medaka fixDir =
+  let path = stringConcat [fixDir, "/semantic.mdk"]
+  match readFile path
+    Err _ => check "semantic tokens: Expr names share one type" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/semanticTokens/full" (docParams uri),
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "semantic tokens: Expr names share one type" False
+        Ok out => match parseFrames out
+          (frames, _) => match semanticData 2 frames
+            None => check "semantic tokens: Expr names share one type" False
+            Some ints => check "semantic tokens: Expr names share one type" (lenTokensShareType 4 3 (decodeSemToks ints))
+
+{- Fixture 6: semanticTokens/full over roles.mdk — type (`Color`→legend 1),
+   constructor (`Red`→2), and typeclass (`Show`→7) must ALL be emitted, i.e. the
+   classifier separates type / constructor / interface (v1 colored all uppercase
+   the same). -}
+fixtureSemanticRoles : String -> String -> <IO, Mut> Unit
+fixtureSemanticRoles medaka fixDir =
+  let path = stringConcat [fixDir, "/roles.mdk"]
+  match readFile path
+    Err _ => check "semantic tokens: type/ctor/typeclass distinct" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/semanticTokens/full" (docParams uri),
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "semantic tokens: type/ctor/typeclass distinct" False
+        Ok out => match parseFrames out
+          (frames, _) => match semanticData 2 frames
+            None => check "semantic tokens: type/ctor/typeclass distinct" False
+            Some ints =>
+              let toks = decodeSemToks ints
+              check "semantic tokens: type/ctor/typeclass distinct"
+                (hasTokenType 1 toks && hasTokenType 2 toks && hasTokenType 7 toks)
+
+-- Fixture 7: hover type resolution over hover_local.mdk's `let input = readLine
+-- ()` / `putStrLn input` buffer.  Regression for the top-level-only hover env:
+--   • LOCAL binders (let/param/match) were invisible — assert `input` at its USE
+--     (line 3) and BINDER (line 2) sites → `input : String` (also proves runtime
+--     externs are seeded, else `input` types as a free `a`).
+--   • EXTERNS (seed schemes, excluded from the returned env) were invisible —
+--     assert `putStrLn` / `readLine` hover their full signatures incl. effects.
+fixtureHoverLocal : String -> String -> <IO, Mut> Unit
+fixtureHoverLocal medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_local.mdk"]
+  match readFile path
+    Err _ => hoverFail ()
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 3 12),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 2 7),
+        requestMsg 4 "textDocument/hover" (docPosParams uri 3 4),
+        requestMsg 5 "textDocument/hover" (docPosParams uri 2 16),
+        requestMsg 6 "textDocument/hover" (docPosParams uri 0 0),
+        shutdownMsg 7,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => hoverFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let _ = check "hover local: use site → input : String" (hoverContains 2 frames "input : String")
+            let _ = check "hover local: binder site → input : String" (hoverContains 3 frames "input : String")
+            let _ = check "hover extern: putStrLn full signature" (hoverContains 4 frames "putStrLn : String -> <Stdout> Unit")
+            let _ = check "hover extern: readLine full signature" (hoverContains 5 frames "readLine : Unit -> <Stdin> String")
+            check "hover leading-effect: main : <IO> Unit" (hoverContains 6 frames "main : <IO> Unit")
+
+-- All four hover checks fail (file unreadable / session error).  Arity-1 (NOT a
+-- nullary CAF — a top-level nullary effectful binding is lazy + force-once, which
+-- would fire these checks at startup regardless of the branch taken).
+hoverFail : Unit -> <IO, Mut> Unit
+hoverFail _ =
+  let _ = check "hover local: use site → input : String" False
+  let _ = check "hover local: binder site → input : String" False
+  let _ = check "hover extern: putStrLn full signature" False
+  let _ = check "hover extern: readLine full signature" False
+  check "hover leading-effect: main : <IO> Unit" False
+
+hoverContains : Int -> List Frame -> String -> Bool
+hoverContains idn frames needle = match hoverValue idn frames
+  Some v => strContains v needle
+  None => False
+
+-- Fixture 8: hover over an IMPORTED name resolves its type via the multi-module
+-- project pipeline (regression for the single-file hover env, which never loaded
+-- sibling/stdlib imports).  hover_import.mdk imports `list.{reverse}` and uses it;
+-- hovering the use site must report `reverse : List a -> List a`.
+fixtureHoverImport : String -> String -> <IO, Mut> Unit
+fixtureHoverImport medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_import.mdk"]
+  match readFile path
+    Err _ => check "hover import: reverse : List a -> List a" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 3 9),
+        shutdownMsg 3,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "hover import: reverse : List a -> List a" False
+        Ok out => match parseFrames out
+          (frames, _) => check "hover import: reverse : List a -> List a" (hoverContains 2 frames "reverse : List a -> List a")
+
+-- Fixture 9: completion over a project buffer suggests IMPORTED names (and core/
+-- runtime), not just the buffer's own.  completion_import.mdk imports
+-- `list.{reverse}` and types `rev`; the completion list must include `reverse`.
+fixtureCompletionImport : String -> String -> <IO, Mut> Unit
+fixtureCompletionImport medaka fixDir =
+  let path = stringConcat [fixDir, "/completion_import.mdk"]
+  match readFile path
+    Err _ => check "completion import: reverse suggested" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/completion" (docPosParams uri 3 10),
+        shutdownMsg 3,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "completion import: reverse suggested" False
+        Ok out => match parseFrames out
+          (frames, _) => check "completion import: reverse suggested" (completionHasLabel 2 frames "reverse")
+
+-- Fixture 10: parse-cache correctness across a didChange burst (LSP latency win).
+-- The per-keystroke parse-cache must NOT serve stale diagnostics: a buffer's
+-- import graph is reused across edits, but the (changed) ENTRY buffer is always
+-- re-analyzed.  Drive proj/main.mdk (imports the sibling `helper`) through a burst
+-- good → BAD → good → BAD → good, all keeping the `import helper` (so the
+-- multi-module project path + parse-cache stay engaged across every edit).  Assert:
+--   (a) a BAD edit surfaces ≥1 diagnostic for the entry (the cache didn't suppress
+--       the freshly-introduced error by reusing an earlier clean parse), AND
+--   (b) the FINAL (good) edit CONVERGES to 0 diagnostics (the last publish reflects
+--       the final text, not a stale cached one).
+-- The bad variant adds an entry-module function whose body mis-applies the
+-- imported `describe` (Option String -> String) to an Int and returns it as Int —
+-- a clear entry-module type error, while helper.mdk (the reused dep) is unchanged.
+fixtureDidChangeConverges : String -> String -> <IO, Mut> Unit
+fixtureDidChangeConverges medaka fixDir =
+  let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
+  match readFile mainPath
+    Err _ => didChangeFail ()
+    Ok good =>
+      let uri = fileUri mainPath
+      let bad = "import helper.{describe}\n\ng : Int -> Int\ng x = describe x\n\nmain = println (describe (Some \"x\"))\n"
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri good,
+        didChangeMsg uri bad,
+        didChangeMsg uri good,
+        didChangeMsg uri bad,
+        didChangeMsg uri good,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => didChangeFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let sawError = diagCountFor uri frames >= 1
+            let converged = match lastDiagCountFor uri frames
+              Some n => n == 0
+              None => False
+            let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" sawError
+            check "didChange burst: converges to clean on final edit" converged
+
+didChangeFail : Unit -> <IO, Mut> Unit
+didChangeFail _ =
+  let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" False
+  check "didChange burst: converges to clean on final edit" False
+
+-- Fixture 11: expected-type propagation for a do-bind/higher-order lambda
+-- argument (compiler/types/typecheck.mdk inferAppExpr/inferLamChecked).  In
+-- hover_dobind.mdk, `do { stream <- mkStream input; Ok [JArray stream] }` lowers
+-- to `andThen e (stream => …)`; the application pushes andThen's continuation
+-- param type (`List Json`) onto the binder `stream` BEFORE the body is inferred.
+-- Even though `JArray stream` is a downstream conflicting use (wants `Array
+-- Json`), hovering `stream` at BOTH its binder site (line 16) and its use site
+-- (line 17) must report `stream : List Json` — without the push it reported
+-- `Array Json` and the error mislocalized to the binding.  The file is expected
+-- to carry exactly one diagnostic (the `List vs Array` mismatch at the USE).
+fixtureHoverDoBind : String -> String -> <IO, Mut> Unit
+fixtureHoverDoBind medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_dobind.mdk"]
+  match readFile path
+    Err _ => hoverDoBindFail ()
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 16 2),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 17 13),
+        shutdownMsg 9,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => hoverDoBindFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let _ = check "hover do-bind: binder site -> stream : List Json" (hoverContains 2 frames "stream : List Json")
+            let _ = check "hover do-bind: use site -> stream : List Json" (hoverContains 3 frames "stream : List Json")
+            check "hover do-bind: one diagnostic (mismatch at the use)" (diagPublishedFor uri frames && diagCountFor uri frames == 1)
+
+hoverDoBindFail : Unit -> <IO, Mut> Unit
+hoverDoBindFail _ =
+  let _ = check "hover do-bind: binder site -> stream : List Json" False
+  let _ = check "hover do-bind: use site -> stream : List Json" False
+  check "hover do-bind: one diagnostic (mismatch at the use)" False
+
+main =
+  let medaka = envOr "MEDAKA" "./medaka"
+  let root = envOr "MEDAKA_ROOT" "."
+  let fixDir = stringConcat [root, "/test/lsp_fixtures"]
+  let _ = fixtureFrameIntegrity medaka fixDir
+  let _ = fixtureMultiModuleClean medaka fixDir
+  let _ = fixtureTypeError medaka fixDir
+  let _ = fixtureUnparseableNoCrash medaka fixDir
+  let _ = fixtureSemanticTokens medaka fixDir
+  let _ = fixtureSemanticRoles medaka fixDir
+  let _ = fixtureHoverLocal medaka fixDir
+  let _ = fixtureHoverImport medaka fixDir
+  let _ = fixtureCompletionImport medaka fixDir
+  let _ = fixtureDidChangeConverges medaka fixDir
+  let _ = fixtureHoverDoBind medaka fixDir
+  summary 18

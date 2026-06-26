@@ -1,7 +1,7 @@
 #!/bin/sh
 # BOOTSTRAP (B4) — natively compiled self-hosted RESOLVE stage == reference over
 # resolve_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
-# captured from `main.exe run selfhost/entries/resolve_main.mdk runtime core <fixture>`
+# captured from `main.exe run compiler/entries/resolve_main.mdk runtime core <fixture>`
 # (test/capture_goldens.sh boot_resolve); native = test/bin/resolve_main with the
 # SAME positional args (runtime core fixture).  Strip the native trailing "()"
 # before the diff.  See bootstrap_lex.sh for the full rationale.

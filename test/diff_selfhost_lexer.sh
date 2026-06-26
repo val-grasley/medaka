@@ -1,15 +1,15 @@
 #!/bin/sh
-# Differential validation for the self-hosted Medaka lexer (selfhost/frontend/lexer.mdk)
+# Differential validation for the self-hosted Medaka lexer (compiler/frontend/lexer.mdk)
 # against the OCaml reference.
 #
 # For each fixture in test/diff_fixtures/, run the Medaka lexer ON THE
 # INTERPRETER over the fixture source and diff its token stream against the
 # golden's `=== TOKENS ===` section (those goldens are produced by the OCaml
 # `Lexer.tokenize_string` — see test/thorough/gen_golden.ml). As lib/lexer.mll
-# is ported into selfhost/frontend/lexer.mdk, fixtures flip from FAIL to ok; the port is
+# is ported into compiler/frontend/lexer.mdk, fixtures flip from FAIL to ok; the port is
 # done for this stage when all pass.
 #
-# Usage:  sh test/diff_selfhost_lexer.sh
+# Usage:  sh test/diff_compiler_lexer.sh
 # Exit:   0 if every fixture matches, 1 otherwise.
 set -u
 
@@ -26,7 +26,7 @@ strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 # Normalize float-token text: collapse "FLOAT <value>" → "FLOAT" so that host
 # float-formatting differences (OCaml %g "2" vs native "2.0") don't cause false
-# failures.  This mirrors the normalization in diff_selfhost_lex_files.sh.
+# failures.  This mirrors the normalization in diff_compiler_lex_files.sh.
 norm() { sed 's/^FLOAT .*/FLOAT/'; }
 
 # Extract the lines between '=== TOKENS ===' and the next '=== ' header.

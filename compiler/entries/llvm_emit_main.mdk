@@ -1,0 +1,32 @@
+-- Driver for the Stage 2.4 LLVM de-risking spike (STAGE2-DESIGN.md §2.4).
+--
+--   medaka run compiler/entries/llvm_emit_main.mdk <file.mdk>
+--
+-- Parses + desugars the (prelude-free, scalar) target, runs annotateProgram (the
+-- §2.0 lexical-addressing EMIT half — so the Core IR is born addressed, exactly
+-- as core_ir_main.mdk does), LOWERS to Core IR (core_ir_lower.mdk), and EMITS a
+-- textual LLVM IR module (llvm_emit.mdk) to stdout.  The harness
+-- (test/diff_compiler_llvm.sh) captures that .ll, compiles it with clang against
+-- runtime/medaka_rt.c, runs the binary, and diffs its stdout against the
+-- tree-walker oracle (dev/eval_probe.exe) — the same equivalence-gate shape every
+-- other compiler stage uses.  Equal output == emit->clang->link->run preserves
+-- the AST semantics for the slice-1 subset.
+--
+-- This shares the ENTIRE front-end + lowering with core_ir_main.mdk and only
+-- swaps the final consumer (emit LLVM instead of ceval) — the Axis-1 discipline
+-- (Core IR is backend-neutral; backends are sibling consumers) in miniature.
+
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgramEmit}
+import backend.llvm_emit.{emitProgram}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_main.mdk <file.mdk>"
+
+withTarget : String -> <IO, Mut> Unit
+withTarget targetPath = match readFile targetPath
+  Ok targetSrc => putStr (emitProgram (lowerProgramEmit (annotateProgram (desugar (parse targetSrc)))))
+  Err msg => ePutStrLn msg

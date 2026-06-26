@@ -1,20 +1,20 @@
 #!/bin/sh
 # Differential validation for the self-hosted pretty printer:
-# selfhost/entries/printer_main.mdk (lex → parse → printer.programToString) vs the OCaml
+# compiler/entries/printer_main.mdk (lex → parse → printer.programToString) vs the OCaml
 # reference dev/print_probe.exe (parse → Printer.program_to_string).
 #
 # Both sides go parse → AST→source.  This isolates the printer: it diffs the
 # AST→source rendering only, NOT the comment-interleaving format_program path
 # (which depends on the lexer comment side-channel the self-host parser does not
-# surface).  A byte-identical match means selfhost/tools/printer.mdk reproduces
+# surface).  A byte-identical match means compiler/tools/printer.mdk reproduces
 # lib/printer.ml's layout, precedence, and spelling exactly.
 #
-# Runs over test/parse_fixtures/ — the same small corpus diff_selfhost_parse.sh
+# Runs over test/parse_fixtures/ — the same small corpus diff_compiler_parse.sh
 # uses.  FLOAT literal text would be normalized away (OCaml %g vs floatToString),
 # like the parser/lexer harnesses, though no fixture currently contains a float
 # literal.
 #
-# Usage:  sh test/diff_selfhost_printer.sh [file.mdk ...]
+# Usage:  sh test/diff_compiler_printer.sh [file.mdk ...]
 # Exit:   0 if every file's reprint matches, else 1.
 
 set -u
@@ -28,7 +28,7 @@ RUN="$ROOT/test/bin/printer_main"
 # Printer output ends in a newline, so the "()" is a sole final line here.
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-# Normalize float-literal text (OCaml %g vs selfhost floatToString) so a float
+# Normalize float-literal text (OCaml %g vs compiler floatToString) so a float
 # literal does not spuriously fail; no fixture exercises this today.
 norm() { sed -E 's/-?[0-9]+\.[0-9eE+-]+/<F>/g'; }
 

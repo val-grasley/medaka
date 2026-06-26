@@ -1,5 +1,5 @@
 -- Perf microbenchmark: exponential tree recursion, no I/O.
--- fib 38 ~ 126M recursive calls. See selfhost/PERF-SCOPE.md.
+-- fib 38 ~ 126M recursive calls. See compiler/PERF-SCOPE.md.
 fib : Int -> Int
 fib n = match n
   0 => 0

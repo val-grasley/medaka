@@ -4,11 +4,11 @@ A pragmatic, modern functional programming language. Sits at the intersection of
 a cleaned-up OCaml, a practical Haskell, and a more functional, garbage-collected
 Rust. See [language-design.md](./language-design.md) for the full design.
 
-The compiler is rewritten in Medaka (`selfhost/`) and a
+The compiler is rewritten in Medaka (`compiler/`) and a
 native **LLVM backend** compiles it — all seven pipeline stages are native-compiled
 and byte-identical to the interpreter, and the compiler reproduces itself
 byte-for-byte (the self-compile fixpoint). See [PLAN.md](./PLAN.md) and
-[selfhost/BOOTSTRAP.md](./selfhost/BOOTSTRAP.md). **As of the 2026-06-12 milestone
+[compiler/BOOTSTRAP.md](./compiler/BOOTSTRAP.md). **As of the 2026-06-12 milestone
 flip the native `medaka` is CANONICAL** (the one users invoke, built OCaml-free from
 a checked-in IR seed); the OCaml reference compiler (`lib/`+`bin/`) is kept **frozen**
 as the differential oracle during the soak period (retirement ≠ removal).
@@ -51,9 +51,9 @@ OCaml `lib/` removal (Stage 3 tail).
   highlight, completion, inlay hints)
 - **Test suite** — parser, roundtrip, resolve, typecheck, eval, run,
   repl, loader, diagnostics, fmt, project_config, new_cmd, and doc suites
-- **Self-hosted compiler** — `selfhost/*.mdk` (the whole pipeline rewritten in
+- **Self-hosted compiler** — `compiler/*.mdk` (the whole pipeline rewritten in
   Medaka), validated byte-for-byte against the OCaml reference
-- **Native LLVM backend** — `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR →
+- **Native LLVM backend** — `compiler/llvm_emit.mdk` (Core IR → textual LLVM IR →
   `clang`), `runtime/medaka_rt.c` (C runtime + Boehm GC); `test/bootstrap_*.sh` +
   `test/selfcompile_*.sh` are the differential + self-compile gates
 
@@ -76,8 +76,8 @@ Medaka has **two** compilers (see [AGENTS.md](./AGENTS.md)):
 ```sh
 make medaka          # WARM (./medaka_emitter present): 2-stage rebuild from
                      # current source, no seed.  COLD (fresh clone): bootstraps
-                     # the emitter from selfhost/seed/emitter.ll.gz first, then
-                     # compiles selfhost/driver/medaka_cli.mdk → ./medaka
+                     # the emitter from compiler/seed/emitter.ll.gz first, then
+                     # compiles compiler/driver/medaka_cli.mdk → ./medaka
 ./medaka run yourfile.mdk
 ```
 The result is a self-contained ~1.9 MB native binary doing
