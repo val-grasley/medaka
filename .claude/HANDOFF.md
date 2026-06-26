@@ -7,6 +7,23 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🏁 OCaml reference compiler REMOVED + `selfhost/`→`compiler/` rename (2026-06-26). `main` = `f6ff59d`
+
+**The soak tail is DONE: the OCaml `lib/` is deleted and the compiler source dir is renamed. Medaka is now a single, native, self-hosting compiler with no OCaml anywhere.** Memory: `project_ocaml_removed_selfhost_renamed_compiler`. Design/scoping: `LIB-REMOVAL-DESIGN.md`. Tag `oracle-frozen` preserves the last `lib/`-present commit.
+
+**Why now:** making `sequence` a default method (entry below) put `identity` in a default-method body the frozen OCaml resolver couldn't bind → the oracle could no longer typecheck the prelude, so its differential value was already gone. User decided: proceed to removal. Seed-mint independence was verified first (`test/refresh_seed.sh` uses the native emitter; no OCaml blocker).
+
+**Staged, each gated + merged (orchestrator re-verified cold bootstrap + fixpoint independently):**
+- **A+B (`a3f2e05`)** — de-OCaml'd the kept gates: re-rooted `diff_compiler_check_json`/`check_policy` to native committed goldens; stripped the OCaml leg from `effect_hole`/`effect_param`; deleted the `doc` differential gate. (User chose: re-root json+policy, drop doc.)
+- **`oracle-frozen` tag** on `a3f2e05` (the last lib/-present commit).
+- **C+D (`06356a8`)** — `git rm -r` `lib/`+`bin/`+`gen/`+`dev/`, 18 `test/test_*.ml`, `test/thorough/`, all dune stanzas, `dune-project`, Makefile `reference:` target (−46k lines). Re-pointed `capture_goldens`/`bench`/`profile`/`refresh_seed`/`diff_native_cli` off OCaml. Cold `make clean && make emitter && make medaka` + `selfcompile_fixpoint` C3a/C3b YES, independently re-run.
+- **F (`fa5983c`)** — `git mv selfhost compiler` + `selfhost`→`compiler` token sweep (incl. docs) + 67 `diff_selfhost_*.sh`→`diff_compiler_*.sh` + lockstep golden updates. **Seed re-mint REQUIRED** (the build-driver entry's usage-string literal embeds the path → emitted IR changed). `selfcompile_fixpoint` C3a passed current-vs-current but strict `bootstrap_from_seed` caught the committed-seed drift; re-minted native, cold C3a PASS byte-for-byte. **LESSON: `selfcompile_fixpoint` C3a does NOT detect committed-seed staleness — only `bootstrap_from_seed.sh` does; run it after any string-literal/path change to the build-driver graph.**
+- **E (`f6ff59d`)** — semantic docs reframe: AGENTS.md/README.md/PLAN.md now describe the native-only `compiler/` pipeline (the old OCaml `lib/` pipeline tables/build instructions are gone). `.claude/skills/` + the triage hook path updates are a follow-up in flight.
+
+**Carried-over PRE-EXISTING gate debt** (NOT caused by this milestone — the rename is C3b-proven semantically null; the deletion touched only test scripts): `diff_native_cli` `check/` family ~57 stale goldens; `bootstrap_typecheck` 2; `bootstrap_resolve` ~15 (stale OCaml-sexp error-tag goldens that reroot never recaptured). **Recommended next:** a golden-recapture pass at a soak checkpoint to clear these.
+
+**What to do next:** normal native-only dev. The big architectural cleanup is complete. Open items unchanged: gap 3 (generic prelude free-fn slice-7), fn-level D2 `EVarFrom` re-key (deferred), broader dogfood/library work.
+
 ## RESUME — `sequence` default method + UNIVERSAL default-method specialization (2026-06-26). `main` = `f333125`
 
 **The `sequence`-per-impl residual is closed *principledly*, and the mechanism generalizes. Seed re-minted, cold `bootstrap_from_seed` C3a PASS. ⚠️ This change retires the OCaml oracle in practice — see the consequence below.**
