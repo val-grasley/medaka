@@ -4,58 +4,43 @@ A pragmatic, modern functional programming language. Sits at the intersection of
 a cleaned-up OCaml, a practical Haskell, and a more functional, garbage-collected
 Rust. See [language-design.md](./language-design.md) for the full design.
 
-The compiler is rewritten in Medaka (`compiler/`) and a
+The compiler is written in Medaka (`compiler/`) and a
 native **LLVM backend** compiles it — all seven pipeline stages are native-compiled
 and byte-identical to the interpreter, and the compiler reproduces itself
 byte-for-byte (the self-compile fixpoint). See [PLAN.md](./PLAN.md) and
-[compiler/BOOTSTRAP.md](./compiler/BOOTSTRAP.md). **As of the 2026-06-12 milestone
-flip the native `medaka` is CANONICAL** (the one users invoke, built OCaml-free from
-a checked-in IR seed); the OCaml reference compiler (`lib/`+`bin/`) is kept **frozen**
-as the differential oracle during the soak period (retirement ≠ removal).
+[compiler/BOOTSTRAP.md](./compiler/BOOTSTRAP.md). **As of 2026-06-26 the OCaml
+reference compiler (`lib/`+`bin/`) is REMOVED** (tag `oracle-frozen` preserves
+the last lib/-present commit); native is the sole compiler. **`make medaka`**
+builds it OCaml-free from a checked-in IR seed.
 
 ## Status
 
 Frontend, interpreter, and standard library complete; **self-hosting + native LLVM
 codegen done** (the native compiler self-hosts to a reproducing fixpoint — PLAN.md).
-**Native backend is canonical** (2026-06-12): all PRE-FLIP-GAPS soundness/capability
-gaps closed; `make medaka` builds it OCaml-free. **Soak tail in progress (2026-06-22):**
-gate re-rooting done (all correctness gates OCaml-free), the single-file/multi-module
-driver collapse done, native dispatch gaps #55/#21 + the map Foldable false-positive
-fixed, fuzzer ported to native, constructor-name collision (mis-filed as "mixed-ADT match")
-fixed via universal ctor mangling, `argStampEnabled` eval-vs-emit dispatch unification
-complete (eval now threads dicts; `evalDictLayerActive` retired). Next: confidence-gated
-OCaml `lib/` removal (Stage 3 tail).
+**Native backend is canonical** (2026-06-12); **OCaml compiler removed** (2026-06-26,
+tag `oracle-frozen`): `make medaka` builds the compiler OCaml-free. Native dispatch
+gaps #55/#21 fixed; constructor-name collision fixed via universal ctor mangling;
+`argStampEnabled` eval-vs-emit dispatch unification complete; `Traversable t` typeclass
+shipped (2026-06-25); `sequence` default method landed (2026-06-26).
 
-- **AST** — `lib/ast.ml`
-- **Lexer** — `lib/lexer.mll` (indentation-sensitive, OCaml-style)
-- **Parser** — `lib/parser.mly` (Menhir)
-- **Printer** — `lib/printer.ml` (AST → parseable source)
-- **Resolver** — `lib/resolve.ml` (every reference is bound; multi-module aware)
-- **Type checker** — `lib/typecheck.ml` (Hindley-Milner with let-polymorphism,
-  ADTs, records, type aliases, newtypes, pattern matching, interfaces with
-  constraint checking and constraint syntax in signatures, effect tracking,
-  exhaustiveness/usefulness)
-- **Desugar** — `lib/desugar.ml` (`deriving` → impls, record field punning,
-  do-block lowering)
-- **Loader** — `lib/loader.ml` (multi-file dependency walk, cycle detection)
-- **Evaluator** — `lib/eval.ml` (tree-walking interpreter with VMulti-based
-  typeclass dispatch)
-- **REPL** — `lib/repl.ml` (incremental parse/typecheck/eval with persistent env)
-- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, `doc`, `new`, and `check-policy` subcommands
-- **Doc generator** — `lib/doc.ml` (comment→decl matcher, signature renderer, Markdown output)
-- **Formatter** — `lib/fmt.ml` (comment-preserving pretty printer with `--check` / `--write` / `--stdout`)
-- **Project config** — `lib/project_config.ml` (minimal `medaka.toml` reader; shared project-root walk-up between CLI and LSP)
-- **Diagnostics** — `lib/diagnostics.ml` (accumulating error pipeline)
-- **Language server** — `lib/lsp_server.ml` (stdio LSP server: diagnostics,
-  formatting, document symbols, hover, go-to-definition, document
-  highlight, completion, inlay hints)
-- **Test suite** — parser, roundtrip, resolve, typecheck, eval, run,
-  repl, loader, diagnostics, fmt, project_config, new_cmd, and doc suites
-- **Self-hosted compiler** — `compiler/*.mdk` (the whole pipeline rewritten in
-  Medaka), validated byte-for-byte against the OCaml reference
-- **Native LLVM backend** — `compiler/llvm_emit.mdk` (Core IR → textual LLVM IR →
-  `clang`), `runtime/medaka_rt.c` (C runtime + Boehm GC); `test/bootstrap_*.sh` +
-  `test/selfcompile_*.sh` are the differential + self-compile gates
+The compiler lives in `compiler/` (subfolders: `frontend/ types/ ir/ backend/ eval/
+driver/ tools/ support/ entries/ seed/`):
+
+- **Lexer** — `compiler/frontend/lexer.mdk` (indentation-sensitive)
+- **Parser** — `compiler/frontend/parser.mdk` (recursive-descent)
+- **AST** — `compiler/frontend/ast.mdk`
+- **Desugar** — `compiler/frontend/desugar.mdk` (`deriving` → impls, record punning, do-blocks, default-method specialization)
+- **Resolver** — `compiler/frontend/resolve.mdk` (every reference bound; multi-module aware)
+- **Method marker** — `compiler/frontend/marker.mdk` (EVar → EMethodRef rewrite for dispatch)
+- **Type checker** — `compiler/types/typecheck.mdk` (Hindley-Milner + interfaces + effects + exhaustiveness)
+- **Exhaustiveness** — `compiler/frontend/exhaust.mdk` (Maranget pattern-matrix; called from typecheck)
+- **Evaluator** — `compiler/eval/eval.mdk` (tree-walking interpreter with dict-passing typeclass dispatch)
+- **Core IR / LLVM emit** — `compiler/ir/core_ir_lower.mdk` → `compiler/backend/llvm_emit.mdk` → `clang`
+- **WasmGC backend** — `compiler/backend/wasm_emit.mdk` (2nd backend, browser playground)
+- **Loader / CLI** — `compiler/driver/loader.mdk` + `compiler/driver/medaka_cli.mdk`
+- **Tools** — `compiler/tools/` (fmt, printer, LSP, doctest, doc, repl, new_cmd, test_cmd, check)
+- **Self-hosted compiler** — `compiler/*.mdk` (the whole pipeline), validated at a
+  byte-for-byte self-compile fixpoint (`test/selfcompile_fixpoint.sh`)
 
 The standard library is developed in Medaka itself on top of the `extern`
 primitives — see [STDLIB.md](./STDLIB.md). Self-hosting + native LLVM codegen are
@@ -65,73 +50,53 @@ done (the native compiler self-hosts to a reproducing fixpoint). See
 
 ## Building
 
-Medaka has **two** compilers (see [AGENTS.md](./AGENTS.md)):
-
-- the **native, self-hosted `medaka`** — the **canonical** compiler (as of the
-  2026-06-12 milestone flip), built **OCaml-free** from a checked-in LLVM IR seed;
-- the **OCaml reference compiler** (`lib/`+`bin/`) — kept **frozen** as the
-  differential oracle during the soak period (retirement ≠ removal).
-
-**Build the native compiler (no OCaml — just clang + Boehm GC):**
+**Build the native compiler (requires clang + Boehm GC — no OCaml):**
 ```sh
 make medaka          # WARM (./medaka_emitter present): 2-stage rebuild from
-                     # current source, no seed.  COLD (fresh clone): bootstraps
-                     # the emitter from compiler/seed/emitter.ll.gz first, then
-                     # compiles compiler/driver/medaka_cli.mdk → ./medaka
+                     # current source.  COLD (fresh clone): bootstraps
+                     # the emitter from compiler/seed/emitter.ll.gz first.
 ./medaka run yourfile.mdk
 ```
 The result is a self-contained ~1.9 MB native binary doing
-check/fmt/new/build/run/test/repl/lsp with no OCaml at build *or* run time. For
-fully OCaml-free user builds, `export MEDAKA_EMITTER=$(pwd)/medaka_emitter` so
-`medaka build` uses the native emitter. (`make help` lists all targets.)
-
-**Build the OCaml reference compiler (the frozen oracle):**
-```sh
-opam install dune menhir alcotest
-dune build           # or: make reference
-```
+check/fmt/new/build/run/test/repl/lsp. For fully OCaml-free user builds,
+`export MEDAKA_EMITTER=$(pwd)/medaka_emitter` so `medaka build` uses the
+native emitter. (`make help` lists all targets.)
 
 ## Running tests
 
 ```sh
-dune test
-```
-
-Or run individual suites directly (preferred — `dune test` can hang):
-
-```sh
-./_build/default/test/test_parser.exe    --compact
-./_build/default/test/test_typecheck.exe --compact
-./_build/default/test/test_eval.exe      --compact
-./_build/default/test/test_run.exe       --compact
+bash test/diff_compiler_*.sh        # differential gates: native output vs goldens (~67 suites)
+bash test/selfcompile_fixpoint.sh   # emitter self-compile fixpoint
+bash test/bootstrap_*.sh            # each pipeline stage == interpreter
+FORCE=1 bash test/build_oracles.sh  # force-rebuild oracle goldens (always use FORCE=1)
 ```
 
 ## Using the compiler
 
 **Type-check a file:**
 ```sh
-./_build/default/bin/main.exe check path/to/file.mdk
+medaka check path/to/file.mdk
 ```
 
 **Run a file** (requires a `main : <IO> Unit` binding):
 ```sh
-./_build/default/bin/main.exe run path/to/file.mdk
+medaka run path/to/file.mdk
 ```
 
 **Interactive REPL:**
 ```sh
-./_build/default/bin/main.exe repl
+medaka repl
 ```
 
 **Language server** (for editor integration — speaks LSP over stdio):
 ```sh
-./_build/default/bin/main.exe lsp
+medaka lsp
 ```
 
 **Scaffold a new project:**
 ```sh
-./_build/default/bin/main.exe new myproj
-cd myproj && ../_build/default/bin/main.exe run
+medaka new myproj
+cd myproj && medaka run
 ```
 
 This creates `myproj/` containing `medaka.toml`, `main.mdk`,
@@ -152,9 +117,9 @@ are resolved relative to the root.
 
 **Format source code:**
 ```sh
-./_build/default/bin/main.exe fmt path/to/file.mdk        # rewrite in place
-./_build/default/bin/main.exe fmt --check src/            # report-only, exit 1 if any
-./_build/default/bin/main.exe fmt --stdout one_file.mdk   # print to stdout
+medaka fmt path/to/file.mdk        # rewrite in place
+medaka fmt --check src/            # report-only, exit 1 if any
+medaka fmt --stdout one_file.mdk   # print to stdout
 ```
 
 The formatter parses, re-prints, and verifies the output reparses to
@@ -163,7 +128,7 @@ nesting) are preserved at their original positions.
 
 **Generate Markdown documentation:**
 ```sh
-./_build/default/bin/main.exe doc path/to/file.mdk
+medaka doc path/to/file.mdk
 ```
 
 Outputs one `## name` section per public declaration with the
@@ -219,8 +184,8 @@ val insert : a -> BTree a -> BTree a
 ## Standard library
 
 The stdlib lives in `stdlib/`. `stdlib/runtime.mdk` is the authoritative catalog
-of extern primitives — their type signatures are embedded at build time and
-available in all programs without an explicit import. See
+of extern primitives — their type signatures are loaded at startup and available
+in all programs without an explicit import. See
 [stdlib/README.md](stdlib/README.md) for conventions on adding new primitives.
 
 `stdlib/core.mdk` is automatically prepended (as a "prelude") to every user
@@ -326,63 +291,74 @@ npx tree-sitter test       # run corpus tests
 ## Layout
 
 ```
-lib/
-  ast.ml          AST type definitions
-  builtins.ml     Compiler-side registry of operator → stdlib method names
-  lexer.mll       Tokenizer with INDENT/DEDENT handling
-  parser.mly      Menhir grammar
-  printer.ml      AST → source (round-trip)
-  resolve.ml      Name resolution (single-file and multi-module)
-  typecheck.ml    Hindley-Milner + interfaces + effects + exhaustiveness
-  exhaust.ml      Maranget's pattern-matrix algorithm
-  desugar.ml      `deriving` expansion, record field puns, do-blocks
-  loader.ml       Multi-file dependency walk + topological sort
-  eval.ml         Tree-walking interpreter (VMulti dispatch for typeclasses)
-  prelude.ml      Parses and caches `stdlib/core.mdk` for implicit prelude
-  runtime.ml      Parses `stdlib/runtime.mdk` to derive primitive schemes
-  repl.ml         REPL loop (`:load`, `:reload`, `:browse`, `:type`, …)
-  diagnostics.ml  Accumulating parse/resolve/typecheck pipeline (no exit-on-error)
-  lsp_server.ml   LSP server: stdio JSON-RPC, diagnostics + formatting,
-                  document symbols, hover, definition, highlight,
-                  completion, inlay hints
-  doc.ml          `medaka doc` — doc-comment→Markdown extractor
-  fmt.ml          `medaka fmt` — comment-preserving formatter
-  new_cmd.ml      `medaka new` — project scaffolder
-  project_config.ml  `medaka.toml` reader + project-root walk-up
-bin/
-  main.ml         CLI entry point (check / run / repl / lsp / fmt / doc / new)
-  repl.ml         Interactive REPL loop shim
-gen/
-  embed.ml        Build-time helper: embeds runtime.mdk/core.mdk as an OCaml string
+compiler/
+  frontend/
+    ast.mdk         AST type definitions
+    lexer.mdk       Tokenizer with INDENT/DEDENT handling
+    parser.mdk      Recursive-descent grammar
+    desugar.mdk     `deriving` expansion, record puns, do-blocks, default methods
+    resolve.mdk     Name resolution (single-file and multi-module)
+    marker.mdk      EVar→EMethodRef rewrite for dispatch
+    exhaust.mdk     Maranget's pattern-matrix exhaustiveness algorithm
+  types/
+    typecheck.mdk   Hindley-Milner + interfaces + effects + exhaustiveness
+    annotate.mdk    Type annotation helpers
+  ir/
+    core_ir.mdk         Core IR type definitions
+    core_ir_lower.mdk   AST → Core IR lowering
+    core_ir_sexp.mdk    Core IR S-expr serializer
+    dce.mdk             Dead code elimination
+  backend/
+    llvm_emit.mdk       Core IR → LLVM text IR → clang
+    wasm_emit.mdk       Core IR → WasmGC text IR (2nd backend)
+    private_mangle.mdk  Universal constructor name mangling
+    trmc_analysis.mdk   Tail-recursion-modulo-cons analysis
+  eval/
+    eval.mdk        Tree-walking interpreter (dict-passing dispatch for typeclasses)
+  driver/
+    loader.mdk      Multi-file dependency walk + topological sort + medaka.toml walk-up
+    diagnostics.mdk Accumulating parse/resolve/typecheck pipeline (no exit-on-error)
+    build_cmd.mdk   `medaka build` — LLVM pipeline driver
+    medaka_cli.mdk  CLI entry point (check / run / repl / lsp / fmt / doc / new / build)
+  tools/
+    printer.mdk     AST → source (round-trip)
+    fmt.mdk         `medaka fmt` — comment-preserving formatter
+    lsp.mdk         LSP server: stdio JSON-RPC, diagnostics + formatting,
+                    document symbols, hover, definition, highlight,
+                    completion, inlay hints
+    doc.mdk         `medaka doc` — doc-comment→Markdown extractor
+    doctest.mdk     `medaka test` — doctest extractor + runner
+    test_cmd.mdk    `medaka test` — test command driver + prop tests
+    repl.mdk        `medaka repl` — interactive REPL loop
+    new_cmd.mdk     `medaka new` — project scaffolder
+    check.mdk       `medaka check` — type-check entry
+    check_policy.mdk  `medaka check-policy` — policy checker
+  support/
+    util.mdk        Generic helpers (compiler private mini-stdlib)
+    ordmap.mdk      Ordered map (SMap/EMap)
+    char.mdk        Character utilities
+    path.mdk        Path utilities
+    timer.mdk       Timing utilities
+  entries/           Per-stage probe entry points
+  seed/
+    emitter.ll.gz   Gzipped LLVM IR seed for cold bootstrap
 stdlib/
-  runtime.mdk     Extern primitive catalog (embedded at build time)
+  runtime.mdk     Extern primitive catalog (loaded at startup)
   core.mdk        Core interfaces, instances, helpers (implicit prelude)
   list.mdk        List operations
   string.mdk      String operations
   array.mdk       Array operations
+runtime/
+  medaka_rt.c     C runtime + Boehm GC
 test/
-  test_parser.ml      AST shape per construct
-  test_roundtrip.ml   parse → print → parse stability
-  test_resolve.ml     Resolution errors
-  test_typecheck.ml   Inferred types, type errors, exhaustiveness warnings
-  test_eval.ml        Interpreter correctness
-  test_run.ml         End-to-end program runs
-  test_repl.ml        REPL meta-commands and load atomicity
-  test_loader.ml      Module loader and cross-file imports
-  test_diagnostics.ml Diagnostics module — parse/resolve/typecheck → diagnostic list
-  test_fmt.ml         Formatter: idempotency, round-trip, comment preservation
-  test_project_config.ml  `medaka.toml` parsing + project-root walk-up
-  test_new_cmd.ml     `medaka new` scaffolding
-  test_doc.ml         `medaka doc` — comment matching, entry extraction, Markdown output
-  test_lsp.ml         LSP request handlers (formatting, hover, definition,
-                      highlight, completion, inlay hints, …)
-  thorough/           Exhaustive edge-case suites: typecheck, eval,
-                      cross-feature interactions, stdlib usage, recent
-                      phase coverage (run via `dune build @thorough`)
-dev/
-  debug.ml            Ad-hoc parse-and-print probe
-  tc_debug.ml         Ad-hoc type-check probe
-  lsp_smoke.sh        End-to-end smoke driver for `medaka lsp` (not run by `dune test`)
+  diff_compiler_*.sh   Differential golden-diff test gates (~67 suites)
+  bootstrap_*.sh       Per-stage native==interpreter gates
+  selfcompile_*.sh     Emitter self-compile fixpoint gates
+  build_oracles.sh     Oracle golden capture / force-rebuild
+  capture_goldens.sh   Golden capture helper
+  bench.sh             Performance benchmark harness
+  *_fixtures/          Input fixture files for each gate
+  *_goldens/           Golden output files for each gate
 tree-sitter-medaka/
   grammar.js          Tree-sitter grammar definition
   src/parser.c        Generated parser (committed)

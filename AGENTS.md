@@ -1,106 +1,99 @@
 # AGENTS.md
 
 Orientation for AI agents working on **Medaka**, a pragmatic functional
-language implemented in OCaml. This file is a *router*: maps, gotchas, and
-links. For prose and rationale, follow the links — don't assume detail that
-isn't here.
+language that self-hosts: the compiler is written in Medaka in `compiler/` and
+compiles via an LLVM backend (`compiler/backend/llvm_emit.mdk` → text IR →
+`clang`; C runtime `runtime/medaka_rt.c` + Boehm GC) to a native OCaml-free
+`medaka` binary. This file is a *router*: maps, gotchas, and links. For prose
+and rationale, follow the links — don't assume detail that isn't here.
 
-The compiler is one OCaml library, `medaka_lib` (everything in `lib/`).
-**There are no `.mli` files** — modules expose everything. Compilation is a
-linear pipeline; each stage is one file.
+`compiler/` is organized into subfolders: `frontend/` (lex/parse/AST/desugar/
+resolve/marker/exhaust), `types/` (typecheck + annotate), `ir/` (Core IR, DCE,
+S-expr), `backend/` (LLVM + WasmGC emit, TRMC, name mangling), `eval/` (tree-walk
+interpreter), `driver/` (loader, diagnostics, build, CLI), `tools/` (fmt/printer/
+LSP/test/repl/doc/new), `support/` (compiler private mini-stdlib: util/ordmap/
+char/path/timer), `entries/` (per-stage probe entry points), `seed/` (checked-in
+LLVM IR seed for cold bootstrap). The compiler source is ONE Medaka project
+(`compiler/medaka.toml`); each stage is one `.mdk` file under its subfolder.
 
-> **Medaka self-hosts and compiles to native code.** Besides the OCaml reference
-> compiler (`lib/`, described below), the whole pipeline is rewritten in Medaka
-> (`compiler/*.mdk`) and a native **LLVM backend** (`compiler/llvm_emit.mdk` → text
-> IR → `clang`; C runtime `runtime/medaka_rt.c` + Boehm GC) compiles it. As of
-> 2026-06-08 all 7 stages are native-compiled byte-identical to the interpreter
-> and the compiler self-hosts to a **reproducing fixpoint** (`compiler/BOOTSTRAP.md`).
-> As of 2026-06-10 the **Stage-4 tooling is ported** (fmt/test/new/repl/build/lsp, all
-> differential-tested vs OCaml) and the **Phase-C native CLI capstone is complete**:
-> `compiler/medaka_cli.mdk` native-compiles into a single OCaml-free `medaka` binary
-> that does all 8 subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`repl`/`lsp`) with no
-> OCaml at runtime. **As of 2026-06-12 the native `medaka` is CANONICAL (milestone flip):** all
-> PRE-FLIP-GAPS.md soundness/capability gaps (G1–G9) are closed, and **`make medaka` builds the
-> native compiler OCaml-free** — day-to-day a 2-stage warm rebuild from current source
-> (`build_native_medaka.sh`, no seed), and on a fresh clone a cold bootstrap from the
-> gzipped checked-in IR seed (`compiler/seed/emitter.ll.gz` → `bootstrap_from_seed.sh` →
-> `build_native_medaka.sh`). The OCaml compiler (`lib/`+`bin/`) is now
-> the **frozen soak-period differential oracle** — **retired (≠ removed; see PLAN.md "Retirement ≠
-> removal" + [[retirement-is-not-removal]])**. **Current focus (2026-06-14) = the soak tail.
-> DONE: gate re-rooting (all correctness gates now OCaml-free — `compiler/REROOT-PLAN.md`);
-> the DRIVER COLLAPSE (single-file typecheck+eval folded into the 1-module case of the
-> multi-module path — `compiler/DRIVER-COLLAPSE-PLAN.md`, closes audit §6's recurring
-> single-vs-multi defect; `medaka check` now resolves imports); native dispatch fixes #55
-> (sum/product, both build AND eval paths), #21 (binop over-application on parametric user
-> impls), and the map `Foldable (Map a)` typecheck false-positive + `medaka test` SIGBUS;
-> expanded native stdlib test coverage (json/toml/list/set); fuzzer ported to native
-> (`fuzz_diff.sh` OCaml-free); the native-emitter cross-module **constructor-name collision**
-> (the fuzzer's find — mis-filed as "mixed-ADT match", really bare-name ctor-table collapse)
-> fixed via universal ctor mangling; the **`argStampEnabled` eval-vs-emit dispatch unification
-> COMPLETE** (`compiler/ARGSTAMP-UNIFY-PLAN.md` — eval now threads dicts; the GENUINE #21
-> nested-element-dict flattening solved, not contained; `evalDictLayerActive` retired); and
-> the **emit-path Set-literal / mutual-rec-Monoid dict gaps** (#44) fixed. **REMAINING = the
-> soak itself:** a clean bug-free stretch of native-only dev, then the confidence-gated `lib/`
-> removal.** Native-backend docs: `compiler/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `compiler/PRE-FLIP-GAPS.md`
-> (the closed pre-flip punch list), `compiler/EMITTER-GAPS.md`
-> (closed/residual emitter gaps), `compiler/DISPATCH-GAPS-SCOPE.md` (repro-verified scope of
-> the now-CLOSED native dispatch gaps #54/#55/#50/#21 — all four resolved as of 2026-06-14), `compiler/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
-> scoping) + `compiler/PERF-RESULTS.md` (**bar-4 EXECUTED 2026-06-11: self-compile 5.68× / ~59× vs
-> the OCaml interpreter, 18 fixpoint-gated wins; harness `test/bench.sh`**),
-> `compiler/STAGE2-DESIGN.md` + `compiler/RUNTIME-DESIGN.md`
-> (design), `compiler/README.md` (slice log). Harnesses: `test/bootstrap_*.sh`
-> (native stage == interpreter), `test/selfcompile_*.sh` (emitter self-compile).
+> **Medaka self-hosts to a reproducing fixpoint.** The whole pipeline is written
+> in Medaka (`compiler/*.mdk`) and compiles via a native **LLVM backend**
+> (`compiler/backend/llvm_emit.mdk` → text IR → `clang`; C runtime
+> `runtime/medaka_rt.c` + Boehm GC) to an OCaml-free `medaka` binary. As of
+> 2026-06-12 the native `medaka` is CANONICAL (`make medaka` builds it OCaml-free
+> from a checked-in IR seed). **As of 2026-06-26 the OCaml reference compiler
+> (`lib/`+`bin/`+`gen/`+`dev/`) is REMOVED** — tag `oracle-frozen` preserves the
+> last lib/-present commit; native is the sole compiler.
+>
+> Key docs: `compiler/BOOTSTRAP.md` (B1–B7 + C1–C3 bootstrap log),
+> `compiler/EMITTER-GAPS.md` (closed/residual emitter gaps),
+> `compiler/DISPATCH-GAPS-SCOPE.md` (all four native dispatch gaps #54/#55/#50/#21
+> now CLOSED), `compiler/PERF-RESULTS.md` (bar-4 perf: self-compile ~7× faster,
+> ~73× vs the old interpreter; harness `test/bench.sh`),
+> `compiler/STAGE2-DESIGN.md` + `compiler/RUNTIME-DESIGN.md` (design),
+> `compiler/README.md` (slice log). Harnesses: `test/bootstrap_*.sh` (each
+> native stage == interpreter output), `test/selfcompile_fixpoint.sh` (emitter
+> self-compile fixpoint C3a/C3b).
 
 ## Pipeline — where each stage lives
 
-**Execution order** (the drivers in `diagnostics.ml` / `bin/main.ml` run it this
-way — *not* the order files happen to be listed):
+**Execution order** (driven by `compiler/driver/medaka_cli.mdk` — *not* the
+order files are listed):
 
 ```
-lexer.mll → parser.mly → ast.ml → desugar.ml → resolve.ml → method_marker.ml
-  → typecheck.ml (runs exhaust.ml internally) → eval.ml
+lexer.mdk → parser.mdk → ast.mdk → desugar.mdk → resolve.mdk → marker.mdk
+  → typecheck.mdk (runs exhaust.mdk internally) → eval.mdk
+  [all in compiler/frontend/ except typecheck.mdk (compiler/types/) and eval.mdk (compiler/eval/)]
 ```
 
 Two non-obvious facts that bite when deciding *where* a check belongs:
-- **`desugar.ml` runs first**, before resolve/typecheck. So surface-sugar nodes
+- **`desugar.mdk` runs first**, before resolve/typecheck. So surface-sugar nodes
   (`EGuards`, `EFunction`, `ESection`, string interp) are
   **already lowered to core** by the time typecheck/exhaust/eval see the tree. A
   check that needs the sugar shape (e.g. guard *coverage* on `EGuards`) cannot
-  live in typecheck/exhaust — it must run pre-desugar (see `Exhaust.
-  check_guard_exhaustiveness`, a standalone pass on the raw AST).
-- **`exhaust.ml` is not a standalone later stage** — `Exhaust.check_match` is
-  *called from inside* `typecheck.ml` (once per `EMatch`, with the scrutinee type
-  known). It only ever sees core patterns.
+  live in typecheck/exhaust — it must run pre-desugar (see `checkGuardExhaust`
+  in `compiler/frontend/exhaust.mdk`, a standalone pass on the raw AST).
+- **`exhaust.mdk` is not a standalone later stage** — `checkMatch` is
+  *called from inside* `compiler/types/typecheck.mdk` (once per `EMatch`, with
+  the scrutinee type known). It only ever sees core patterns.
 
 | Stage | File | Role |
 |-------|------|------|
-| Lex | `lib/lexer.mll` | Indentation-sensitive; emits INDENT/DEDENT/NEWLINE |
-| Parse | `lib/parser.mly` | Menhir grammar |
-| AST | `lib/ast.ml` | Node types + source locations |
-| Desugar | `lib/desugar.ml` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, `EGuards`/`EFunction`/`ESection`/string-interp, `EDo` (do-blocks → nested `andThen`/`pure`, Phase 99) |
-| Resolve | `lib/resolve.ml` | Name binding, single- and multi-module |
-| Mark | `lib/method_marker.ml` | Phase 69: runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
-| Typecheck | `lib/typecheck.ml` | Hindley-Milner + interfaces + effects; invokes Exhaust per `EMatch` |
-| Exhaust | `lib/exhaust.ml` | Maranget pattern-matrix algorithm; called *from* typecheck, not standalone |
-| Eval | `lib/eval.ml` | Tree-walking interpreter; VMulti typeclass dispatch |
+| Lex | `compiler/frontend/lexer.mdk` | Indentation-sensitive; emits INDENT/DEDENT/NEWLINE |
+| Parse | `compiler/frontend/parser.mdk` | Recursive-descent grammar |
+| AST | `compiler/frontend/ast.mdk` | Node types + source locations |
+| Desugar | `compiler/frontend/desugar.mdk` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, `EGuards`/`EFunction`/`ESection`/string-interp, `EDo` (do-blocks → nested `andThen`/`pure`), default-method specialization |
+| Resolve | `compiler/frontend/resolve.mdk` | Name binding, single- and multi-module |
+| Mark | `compiler/frontend/marker.mdk` | Runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
+| Typecheck | `compiler/types/typecheck.mdk` | Hindley-Milner + interfaces + effects; invokes Exhaust per `EMatch` |
+| Exhaust | `compiler/frontend/exhaust.mdk` | Maranget pattern-matrix algorithm; called *from* typecheck, not standalone |
+| Eval | `compiler/eval/eval.mdk` | Tree-walking interpreter; dict-passing typeclass dispatch |
 
 Support files:
 
 | File | Role |
 |------|------|
-| `lib/loader.ml` | Multi-file dependency walk, topo sort, cycle detection; structured `ParseError` (file/line/col) |
-| `lib/prelude.ml` | Caches `stdlib/core.mdk` as the implicit prelude |
-| `lib/runtime.ml` | Parses `stdlib/runtime.mdk` to derive primitive signatures |
-| `lib/diagnostics.ml` | Accumulating error pipeline — phases collect errors, no exit-on-error |
-| `lib/printer.ml` / `lib/fmt.ml` | AST→source round-trip / comment-preserving formatter |
-| `lib/builtins.ml` | Operator → stdlib method-name registry |
-| `lib/lsp_server.ml` | LSP over stdio: diagnostics, formatting, symbols, hover, definition, highlight, completion, inlay hints |
-| `lib/project_config.ml` | `medaka.toml` reader + project-root walk-up |
-| `lib/doctest.ml` | Extracts + runs doctests for `medaka test`. Reads the lexer comment side-channel: `-- > expr` then `-- result` lines (block comments `{- … > expr … -}` are expanded to the same line form). Synthesizes one `__dt_i__ = debug (...)` binding per example, then **two paths** (Phase 92): a file importing a real sibling module goes through `run_file_multi` (the multi-module `typecheck_module` chain — keeps modules separate, reports typecheck failures honestly per-example); a file with no imports (or whose only imports were the prelude `core`, which the loader filters) takes the single-file `check_program` path, which `prelude_for`-shadow-drops redefined names and on typecheck failure falls back to arg-tag dispatch. The single-file fallback is deliberate: the multi-module path's full `marked_prelude` would coalesce a redefined prelude standalone (e.g. `string.mdk`'s `count`) and ERROR every example at once |
-| `gen/embed.ml` | Build-time: embeds `runtime.mdk`/`core.mdk` into generated `lib/stdlib_content.ml` |
-| `bin/main.ml` | CLI: `check` / `run` / `test` (doctests + prop tests) / `repl` / `lsp` / `fmt` / `new` |
+| `compiler/driver/loader.mdk` | Multi-file dependency walk, topo sort, cycle detection; `medaka.toml` project-root walk-up |
+| `compiler/driver/diagnostics.mdk` | Accumulating error pipeline — phases collect errors, no exit-on-error |
+| `compiler/tools/printer.mdk` / `compiler/tools/fmt.mdk` | AST→source round-trip / comment-preserving formatter |
+| `compiler/tools/lsp.mdk` | LSP over stdio: diagnostics, formatting, symbols, hover, definition, highlight, completion, inlay hints |
+| `compiler/tools/doctest.mdk` | Extracts + runs doctests for `medaka test`. Two paths (Phase 92): import-bearing files → multi-module typecheck chain; prelude-only files → single-file path with arg-tag fallback. Single-file fallback is deliberate: the multi-module path's `marked_prelude` would coalesce a redefined prelude standalone (e.g. `string.mdk`'s `count`) and ERROR every example at once |
+| `compiler/tools/doc.mdk` | `medaka doc` — doc-comment→Markdown extractor |
+| `compiler/tools/new_cmd.mdk` | `medaka new` — project scaffolder |
+| `compiler/tools/repl.mdk` | `medaka repl` — interactive REPL |
+| `compiler/tools/check.mdk` / `compiler/tools/check_policy.mdk` | `medaka check` type-check entry + policy checker |
+| `compiler/tools/test_cmd.mdk` / `compiler/tools/prop_runner.mdk` | `medaka test` — doctests + property tests |
+| `compiler/driver/build_cmd.mdk` | `medaka build` — Core IR lower → LLVM emit → clang |
+| `compiler/driver/medaka_cli.mdk` | CLI entry point: all 8 subcommands |
+| `compiler/ir/core_ir.mdk` + siblings | Core IR type definitions, lowering (`core_ir_lower.mdk`), S-expr (`core_ir_sexp.mdk`), DCE (`dce.mdk`) |
+| `compiler/backend/llvm_emit.mdk` | LLVM text IR emitter |
+| `compiler/backend/wasm_emit.mdk` | WasmGC text IR emitter (2nd backend) |
+| `compiler/backend/private_mangle.mdk` | Universal constructor name mangling |
+| `compiler/backend/trmc_analysis.mdk` | Tail-recursion-modulo-cons analysis |
+| `compiler/types/annotate.mdk` | Type annotation helpers |
+| `compiler/support/util.mdk` + siblings | Compiler private mini-stdlib (no `stdlib/` imports allowed) |
 
-`stdlib/`: `runtime.mdk` (extern primitive catalog, embedded), `core.mdk`
+`stdlib/`: `runtime.mdk` (extern primitive catalog, read from disk at runtime), `core.mdk`
 (implicit prelude — `Eq`/`Ord`/`Debug`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`/`hash_map.mdk`/`hash_set.mdk`/`mut_array.mdk`/`json.mdk`
 (written in Medaka; `map.mdk`/`set.mdk` are weight-balanced ordered `Map`/`Set`;
 `hash_map.mdk`/`hash_set.mdk` are mutable hash tables; `mut_array.mdk` is a
@@ -111,53 +104,28 @@ is a recursive-descent JSON parser/serializer with an `Array`-backed `Json` ADT;
 ## Build & test
 
 ```sh
-dune build      # also regenerates lib/stdlib_content.ml from gen/embed.ml
+make medaka     # WARM (./medaka_emitter present): 2-stage rebuild from current source.
+                # COLD (fresh clone): bootstraps emitter from compiler/seed/emitter.ll.gz first.
+                # Equivalent scripts: test/build_native_medaka.sh (warm), test/bootstrap_from_seed.sh (cold)
+./medaka run yourfile.mdk
 ```
 
-**In a `.claude/worktrees/<name>` worktree, use `dune build --root .`** (and
-the same `--root .` for `@thorough`). Plain `dune build` fails with `No rule
-found for alias .../default`: the worktree lives physically inside the main
-checkout, so dune walks up to the parent repo and treats the worktree as a
-subdir. `--root .` pins the worktree as the project root. The built exes still
-run from `./_build/default/...` as below.
-
-**Do NOT run `dune test` — it can hang.** Run individual suites instead:
+Correctness gates (all shell-based, golden-diff style):
 
 ```sh
-./_build/default/test/test_<name>.exe --compact
+bash test/diff_compiler_*.sh           # differential: native output vs captured goldens (~67 suites)
+bash test/selfcompile_fixpoint.sh      # emitter self-compile fixpoint (C3a/C3b)
+bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
+FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (always use FORCE=1 — stale-prone)
 ```
 
-Suites: `test_parser` `test_roundtrip` `test_resolve` `test_typecheck`
-`test_eval` `test_run` `test_repl` `test_loader` `test_diagnostics` `test_fmt`
-`test_project_config` `test_new_cmd` `test_doctest` `test_snapshot`
-`test_coverage` `test_lsp`.
+**In a `.claude/worktrees/<name>` worktree:** `make medaka` works from the worktree
+root. Since the shell cwd resets between calls, use `make -C /absolute/path/to/worktree medaka`
+or `cd` to the worktree root. The `./medaka` binary is written to the worktree directory.
 
-Exhaustive edge-case suites: `dune build @thorough` — this **runs** them (the
-`thorough` alias's rules execute each `thorough_*.exe`, so a failing assertion
-fails the build and `dune` exits non-zero). It is *not* in `dune test`/`runtest`
-(deliberately, to avoid the hang above). A new suite needs both a `(names …)`
-entry and its own `(rule (alias thorough) (action (run …)))` runner in
-`test/thorough/dune`. Caching is by content: edit a suite or `lib/` and the run
-re-fires; otherwise it's cached. (Historically this alias only *built* the exes
-without running them, so the suites silently drifted — don't regress that.)
-
-Dev probes (build to `_build/default/dev/`):
-
-```sh
-./_build/default/dev/debug.exe      # parse-and-print probe
-./_build/default/dev/tc_debug.exe   # typecheck probe
-./_build/default/dev/module_debug.exe [entry.mdk [root ...]]
-                                    # multi-module probe: runs the full loader→
-                                    # mark→typecheck_module→eval_modules pipeline,
-                                    # dumps the dict-passed user decls, and evals
-                                    # the SAME tree through both eval_modules (the
-                                    # loader path) and eval_program (the flat
-                                    # single-file path) — diff the two to localize
-                                    # a loader-vs-flat divergence to typecheck/
-                                    # dict_pass (trees differ) vs the eval driver
-                                    # (trees identical, outputs differ). No arg ⇒
-                                    # runs the Phase-125 repro from a temp dir.
-```
+**Note on stale oracles:** `diff_native_cli` and the bootstrap suites are especially
+stale-prone. Always force-rebuild (`FORCE=1 bash test/build_oracles.sh`) before trusting
+a pass/fail result from those gates.
 
 ## Gotchas
 
@@ -185,40 +153,21 @@ Dev probes (build to `_build/default/dev/`):
     cheap to revisit only if/when the backend gains **instance-level DCE via
     monomorphization** (the deferred backend item). Until then: keep compiler
     stdlib-free; `support/` is the compiler's private mini-stdlib.
-- **Environment is pre-set.** opam env vars (switch `5.4.1`, PATH) are already
-  exported via `.claude/settings.local.json`. **Never** prefix commands with
-  `eval $(opam env)` — it's redundant. *Exception:* a sandboxed shell sometimes
-  strips PATH, so `dune` reports `command not found`. If that happens, prepend
-  the switch bin inline — `export PATH="$HOME/.opam/5.4.1/bin:$PATH"` — rather
-  than reaching for `eval $(opam env)`.
-- **In a worktree, build with `dune build --root .`.** When the working
-  directory is under `.claude/worktrees/`, a plain `dune build` climbs to the
-  parent checkout and fails with `No rule found for alias …/default`. Pass
-  `--root .` to pin the build (and tests) to the worktree. Combine with the
-  PATH fix above if the sandbox also stripped PATH.
+- **Environment.** opam/dune are NOT needed — the native build uses only clang + Boehm GC. If clang is not on PATH, check your system's package install.
+- **In a worktree, build with `make -C /absolute/path/to/worktree medaka`.** The shell cwd resets to the main checkout root each call; running `make medaka` from there would build in main, not the worktree.
 - **In a worktree, edit the worktree's files — use the full worktree path.**
   The shell cwd resets to the main checkout root each call, so a relative
-  `grep -n lib/foo.ml` runs there and prints `lib/foo.ml:NN`; Read/Edit that
-  bare path and you've silently changed the **main checkout**, which the
-  `--root .` build never sees (and which dirties `git status` in main). Always
-  target `/…/.claude/worktrees/<name>/lib/foo.ml`. If you slip: `cp` the edited
+  `grep -n compiler/foo.mdk` runs there and prints `compiler/foo.mdk:NN`; Read/Edit that
+  bare path and you've silently changed the **main checkout**,
+  which the worktree build never sees (and which dirties `git status` in main). Always
+  target `/…/.claude/worktrees/<name>/compiler/foo.mdk`. If you slip: `cp` the edited
   files into the worktree, then `git -C <main> checkout -- <files>` to restore
   main.
 - **Medaka multi-arg lambdas are `x y => body`**, not curried
   `x => y => body`. Curried forms predating Phase 59.6 are legacy artifacts,
   not the current style — match the `x y => body` form in new code.
-- **Errors accumulate.** Phases push into `diagnostics.ml` rather than raising
-  on the first error; don't add early `exit`/`raise` paths.
-- **`lib/dune` has an explicit `(modules …)` list.** A new `lib/<name>.ml` is
-  *not* picked up automatically — add it to that stanza or the build fails with
-  `Unbound module Medaka_lib.<Name>`.
-- **The prelude (`core.mdk`) is embedded at build time** (`gen/embed.ml` →
-  `lib/stdlib_content.ml`). After editing `core.mdk`/`runtime.mdk` you **must
-  `dune build`** before `run`/cross-module tests reflect it — they read the
-  *embedded* snapshot. Confusing split: `medaka test stdlib/core.mdk` reads the
-  file directly (sees edits immediately), but a *different* file importing the
-  prelude uses the stale embed until rebuild — symptom is an error citing an old
-  `core.mdk` line number.
+- **Errors accumulate.** Phases push into `compiler/driver/diagnostics.mdk` rather than raising
+  on the first error; don't add early exit/raise paths.
 - **To run a whole program, `main` must be a zero-arg value** (`main = …`), not
   `main () = …`: `medaka run` evaluates top-level bindings and checks `main`
   exists but never *applies* it, so `main () = …` is a silent no-op (exit 0, no
@@ -233,7 +182,7 @@ Dev probes (build to `_build/default/dev/`):
   `Eval.eval_program` (default `~prelude:true`, no marker/typecheck — e.g. quick
   eval tests) prepends the *raw* prelude and falls back to arg-tag "first impl
   wins" for return-position methods: `pure` needs types to dispatch, so route it
-  through the typed pipeline (see `run_typed` in `test/test_eval.ml`).
+  through the typed pipeline.
 - **A dispatch bug that reproduces through the loader but is a green single-file
   doctest is *usually* the EVAL DRIVER, not typecheck/dict-passing** — even when a
   PLAN entry says otherwise. This shape recurred at Phases 96, 103, 121, and 125,
@@ -242,30 +191,32 @@ Dev probes (build to `_build/default/dev/`):
   forces deferred thunks only after every impl is installed; the loader's
   `eval_modules` uses per-module frames and a separate prelude/Phase-B install
   order, so **binding-order and impl-install-order** bugs surface *only* there.
-  Diagnose with `dev/module_debug.exe`: it evals the *same* typechecked +
-  dict-passed tree through both drivers — identical tree but only `eval_modules`
-  panics ⇒ eval driver (load **debug-pipeline**, fix in `lib/eval.ml`).
+  Diagnose via native entry points in `compiler/entries/`: run
+  `compiler/entries/eval_modules_main.mdk` (drives `eval_modules`, the loader
+  path) and `compiler/entries/eval_typed_main.mdk` (the single-file path) on the
+  same input — identical input but only the modules path errors ⇒ eval driver
+  (fix in `compiler/eval/eval.mdk`).
   **But VERIFY empirically — this heuristic has a documented exception (Phase
   134), where a loader-only bug WAS dict-passing.** `eval_modules` dict-passes
   the prelude + all modules *jointly* and `Dict_pass.collect_arities` keys arity
   by **bare name**, so a genuinely-constrained function in one module forces
   spurious leading dict params onto an *unconstrained same-named* function in
   another → its call site under-applies → an un-run partial closure (clean exit,
-  no output). Two traps that hid it: (1) `module_debug` mirrors that joint
-  dict-pass for its flat path too, so both drivers behaved identically — **"no
+  no output). Two traps that hid it: (1) running `eval_modules_main.mdk` vs
+  `eval_typed_main.mdk` on the same input showed both behaving identically — **"no
   divergence" does NOT exonerate dict-passing**; (2) the printer renders
   `EDictApp`/`EMethodRef` transparently as the bare name, so the dict-passed dump
   *looks* clean. What nailed it: instrument eval's `EVar`/`EMethodRef`/`EDictApp`
   arms to see how the name *actually* resolves (Phase 134 was a secret `EDictApp`
   with `routes=None arity=3`). Corollary (unchanged): because single-file masks
-  these, the regression test must go in `test_loader` (drives `eval_modules`),
-  never `test_run`/doctest.
+  these, the regression test must exercise the multi-module path
+  (`diff_compiler_eval_modules.sh` drives `eval_modules`), not a single-file doctest.
 - Development is organized by numbered **Phases**. Open/forward work is in
   `PLAN.md`; the completed Phases 1–97 (with implementation notes) are in
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
 - **Match-arm guards (`match … pat if guard => body`) lower natively (`CTGuard` CLOSED, 2026-06-08); refutable pattern-guards (`Pat <- e`) work fully in both forms (native-resolve/typecheck guard-binder scoping fixed 2026-06-15).** Historically the native emitter could not lower a guard — `emitTree`'s `CTGuard` arm gapped, silently blanking the body to `0` under the gap-tolerant self-compile build (this bit `llvm_emit.mdk`'s own source at self-compile step C1). `emitTree` now emits a real guard test + branch (`emitGuardedArm`/`emitGuardChain`). Both refutable-guard forms now work, verified native==OCaml:
   - **Function-clause refutable guards** (`f n | Some v <- e = v`) — guard gating *and* the bound var scoping into the body. (They desugar to if-chains, not `CTGuard`.)
-  - **Match-arm refutable guards** (`x if Some v <- e => body`) — gate correctly, bind scopes rightward into *later qualifiers* (`Some v <- e, v > 0`) **and into the arm body** (`=> v`). This last part was a **native-only** bug (OCaml `lib/resolve.ml` + `lib/typecheck.ml` always threaded the binder; the compiler `frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArm` did not, so the body saw `UnboundVariable`). Fixed 2026-06-15 by threading the guard binders through later qualifiers and into the body in both compiler passes — `medaka run` always evaluated it correctly, only `check` rejected it.
+  - **Match-arm refutable guards** (`x if Some v <- e => body`) — gate correctly, bind scopes rightward into *later qualifiers* (`Some v <- e, v > 0`) **and into the arm body** (`=> v`). This last part was a native-only bug (the compiler `frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArm` did not thread the guard binder, so the body saw `UnboundVariable`). Fixed 2026-06-15 by threading the guard binders through later qualifiers and into the body — `medaka run` always evaluated it correctly, only `check` rejected it.
   Fixtures: `test/llvm_fixtures/guard_match_{chain,ctor}.mdk`.
 - **For layout questions** (what indentation shapes are legal, leading-op set, then/else, tabs, let…in wrapping), `LAYOUT-SEMANTICS.md` is the ground truth. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug.
 
@@ -293,9 +244,16 @@ see PLAN.md "Known parser gaps" before assuming `compiler/` can parse one.
 
 ## Writing tests
 
-alcotest-based. Tests are self-diagnosing: embed the source under test in the
-assertion so failures are readable. Add cases to the suite matching the stage
-you changed (e.g. parser change → `test/test_parser.ml`).
+Tests are shell-based golden-diff harnesses. Each `test/diff_compiler_*.sh`
+runs a native pipeline stage against golden output files in
+`test/*_fixtures/` or `test/*_goldens/`. To add a test:
+1. Add a fixture file to the appropriate `test/` fixture directory.
+2. Capture a golden: `bash test/capture_goldens.sh` (or the specific
+   `diff_compiler_*.sh` with `CAPTURE=1`).
+3. Verify: `bash test/diff_compiler_<name>.sh` passes.
+
+Add cases to the gate matching the stage you changed (e.g. parser change →
+`test/diff_compiler_parse*.sh` or `test/diff_compiler_check*.sh`).
 
 ## Task playbooks (skills)
 
@@ -308,18 +266,18 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 `.claude/hooks/skill-triage.py`, nudges this on PLAN.md/Phase prompts.)
 
 - **add-language-feature** — thread a new construct through the whole pipeline.
-- **add-primitive** — add/modify a stdlib `extern` primitive (native, in `eval.ml`).
+- **add-primitive** — add/modify a stdlib `extern` primitive (native, in `compiler/eval/eval.mdk`).
 - **extend-stdlib** — implement/extend a *pure-Medaka* stdlib function, impl,
   doctest, or prop in `stdlib/{core,list,string,array}.mdk` (per STDLIB.md). Not
   for externs — that's add-primitive. Normally user-reserved; load when asked.
 - **debug-pipeline** — diagnose a parse/typecheck/eval failure. **Reach here
   first for a dispatch bug that reproduces through the loader but works
-  single-file** (Phases 96/103/121/125): that shape is *usually* an `eval.ml`
-  ordering bug, not the dict-passing machinery a PLAN entry may name. But confirm
-  empirically — Phase 134 was the inverse (loader-only AND dict-passing: the
-  *joint* dict-pass conflating same-named cross-module fns), and `module_debug`
-  did not flag it. See Gotchas for the full counterexample and the
-  instrument-eval's-resolution-arms technique.
+  single-file** (Phases 96/103/121/125): that shape is *usually* a
+  `compiler/eval/eval.mdk` ordering bug, not the dict-passing machinery a PLAN
+  entry may name. But confirm empirically — Phase 134 was the inverse (loader-only
+  AND dict-passing: the *joint* dict-pass conflating same-named cross-module fns),
+  and the eval-modules vs single-file comparison did not flag it. See Gotchas for
+  the full counterexample and the instrument-eval's-resolution-arms technique.
 - **add-lsp-capability** — add/extend an LSP feature.
 - **harden-typechecker** — typechecker-*internal* correctness/diagnostics work
   (much of the Phase 62–72 arc): add a `type_error`, tighten constraint/
@@ -329,18 +287,18 @@ fix lands, then load. (A `UserPromptSubmit` hook,
   this skill. Cross-cutting work is **add-language-feature** instead:
   - Phase 69 dispatch / 69.x dictionary passing — touches resolve/typecheck/eval
     + a marker pass.
-  - Phase 63 — `desugar.ml`-rooted (`deriving` for parametric types).
+  - Phase 63 — `compiler/frontend/desugar.mdk`-rooted (`deriving` for parametric types).
   - Phase 72 (done) — field-name reuse / receiver-directed resolution: added the
-    `AmbiguousField` `type_error` but the bulk was a `field_owners` multimap
-    threaded through *both* `resolve.ml` and `typecheck.ml`. Looked like harden;
+    `AmbiguousField` type_error but the bulk was a `field_owners` multimap
+    threaded through *both* `compiler/frontend/resolve.mdk` and `compiler/types/typecheck.mdk`. Looked like harden;
     wasn't.
   - Phase 73 (TODO) — signature-driven parameter typing (bidirectional checking):
     pure inference work, yet a delicate cross-cutting change to the letrec-group
     path, so add-language-feature.
   - Phase 83/84 dict-threading (e.g. instance-`requires` dicts into return-position
     impl bodies) — feels like typechecker-internal dispatch work, but a route
-    threads through `ast.ml` (resolved record) + `typecheck.ml` + `dict_pass.ml` +
-    `eval.ml` together, so add-language-feature. Gotchas: register dict-route
+    threads through `compiler/frontend/ast.mdk` (resolved record) + `compiler/types/typecheck.mdk` + dict_pass logic +
+    `compiler/eval/eval.mdk` together, so add-language-feature. Gotchas: register dict-route
     var-ids *after* inference (unify picks the surviving id); gate to
     return-position methods (arg-position stay on arg-tag); the flat impl-key dict
     can't carry nested dicts.
@@ -351,7 +309,7 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | Doc | What's in it |
 |-----|--------------|
 | `README.md` | Full build/test/CLI usage, editor setup, layout |
-| `SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `parser.mly`. Ground truth over `language-design.md` when they disagree |
+| `SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `compiler/frontend/parser.mdk`. Ground truth over `language-design.md` when they disagree |
 | `LAYOUT-SEMANTICS.md` | Offside-rule layout spec — the formal ground truth for layout work. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug (§12.4). Start here for any layout investigation |
 | `language-design.md` | Language design & semantics (intent/rationale — may describe unimplemented features) |
 | `PLAN.md` | Forward-looking roadmap (open phases) |
