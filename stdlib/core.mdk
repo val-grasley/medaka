@@ -760,12 +760,13 @@ export default impl Foldable (Result e) where
 export interface Traversable t requires Mappable t, Foldable t where
   traverse : Thenable m => (a -> <e> m b) -> t a -> <e> m (t b)
   sequence : Thenable m => t (m a) -> <e> m (t a)
-  -- Eta-expanded (`sequence ta = …`, not point-free `sequence = traverse
-  -- identity`): the point-free form loses the `m` dictionary and mis-dispatches
-  -- the inner `pure` to the `t` instance.  Each impl spells it out concretely
-  -- (a *default* method `sequence ta = traverse identity ta` fails to dispatch
-  -- on the eval path, and a generic free-function form SIGSEGVs the build path —
-  -- the per-impl form is what dispatches AND codegens correctly).
+  sequence ta = traverse identity ta
+  -- `sequence` is an interface DEFAULT: the desugar fill pass (fillImplDefaults)
+  -- synthesizes a concrete-receiver per-impl copy of this body into every impl,
+  -- so each List/Option/Result instance dispatches `traverse` on its concrete
+  -- receiver and codegens correctly.  Written eta-expanded (`sequence ta = …`,
+  -- not point-free `sequence = traverse identity`): the point-free form loses the
+  -- `m` dictionary and mis-dispatches the inner `pure` to the `t` instance.
 
 {- Each `traverse` impl is a SINGLE clause with an inner `match`, not separate
    per-constructor clauses: the multi-clause form of a generic `Thenable m =>`
@@ -775,13 +776,11 @@ export impl Traversable List where
   traverse f xs = match xs
     []        => pure []
     (x::rest) => andThen (f x) (y => andThen (traverse f rest) (ys => pure (y :: ys)))
-  sequence ta = traverse identity ta
 
 export impl Traversable Option where
   traverse f opt = match opt
     None     => pure None
     (Some x) => andThen (f x) (y => pure (Some y))
-  sequence ta = traverse identity ta
 
 {- `default` mirrors the `Foldable`/`Mappable (Result e)` impls so a
    user-defined alternative can coexist without qualifying call sites. -}
@@ -789,7 +788,6 @@ export default impl Traversable (Result e) where
   traverse f res = match res
     (Err e)  => pure (Err e)
     (Ok x)   => andThen (f x) (y => pure (Ok y))
-  sequence ta = traverse identity ta
 
 -- ─── 3. Standalone helpers ──────────────────────────────────────────────
 

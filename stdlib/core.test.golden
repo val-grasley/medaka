@@ -25,18 +25,18 @@ running doctests in stdlib/core.mdk
   ok   stdlib/core.mdk:754: sequence [Some 1, None, Some 3]
   ok   stdlib/core.mdk:756: sequence [Ok 1, Ok 2, Ok 3]
   ok   stdlib/core.mdk:758: sequence [Ok 1, Err 99, Ok 3]
-  ok   stdlib/core.mdk:804: any (x => x > 2) [1, 2, 3]
-  ok   stdlib/core.mdk:806: any (x => x > 10) [1, 2, 3]
-  ok   stdlib/core.mdk:815: all (x => x > 0) [1, 2, 3]
-  ok   stdlib/core.mdk:817: all (x => x > 0) []
-  ok   stdlib/core.mdk:869: maximum [3, 1, 2]
-  ok   stdlib/core.mdk:871: maximum ([] : List Int)
-  ok   stdlib/core.mdk:882: minimum [3, 1, 2]
-  ok   stdlib/core.mdk:895: filter (x => x > 2) [1, 2, 3, 4]
-  ok   stdlib/core.mdk:950: fromOption 0 (Some 42)
-  ok   stdlib/core.mdk:952: fromOption 0 None
-  ok   stdlib/core.mdk:1009: fst (1, 2)
-  ok   stdlib/core.mdk:1016: snd ("a", True)
+  ok   stdlib/core.mdk:802: any (x => x > 2) [1, 2, 3]
+  ok   stdlib/core.mdk:804: any (x => x > 10) [1, 2, 3]
+  ok   stdlib/core.mdk:813: all (x => x > 0) [1, 2, 3]
+  ok   stdlib/core.mdk:815: all (x => x > 0) []
+  ok   stdlib/core.mdk:867: maximum [3, 1, 2]
+  ok   stdlib/core.mdk:869: maximum ([] : List Int)
+  ok   stdlib/core.mdk:880: minimum [3, 1, 2]
+  ok   stdlib/core.mdk:893: filter (x => x > 2) [1, 2, 3, 4]
+  ok   stdlib/core.mdk:948: fromOption 0 (Some 42)
+  ok   stdlib/core.mdk:950: fromOption 0 None
+  ok   stdlib/core.mdk:1007: fst (1, 2)
+  ok   stdlib/core.mdk:1014: snd ("a", True)
 
 stdlib/core.mdk: 38/38 passed
 Testing "neq is the negation of eq" ... OK (100 tests)
