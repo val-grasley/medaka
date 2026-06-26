@@ -7,6 +7,42 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — F1b loader module-identity + CFieldAccess (abstract-export diagnostic) BOTH CLOSED (2026-06-25). `main` = `542be47`
+
+**Two backlog items closed; seed re-minted twice at checkpoints; cold `bootstrap_from_seed` PASS. Clean soak checkpoint.**
+
+- **F1b loader module identity — ✅ DONE (`cf8e12d` core + `33972aa`/`ac4b04a` realpath, seed `6a1a67e`).**
+  The cross-package double-load (same file under two import spellings → `conflicting impl`) is fixed
+  **loader-contained**: the loader rewrites every `DUse` to one canonical dep-name-prefixed modId derived
+  from where the import resolves (`canonicalModId`/`rewriteDecls` in `selfhost/driver/loader.mdk`), so both
+  spellings collapse BEFORE resolve/typecheck/eval (which stay string-keyed and were NOT touched —
+  containment is the whole point, fixpoint-verified). Single-root loads = provable no-op. The exotic
+  **two-dep-NAMES** corner (same file under two different dep names) is ALSO closed via a new
+  `canonicalizePath : String -> <FileRead> String` realpath extern (`33972aa`: `runtime.mdk` +
+  `medaka_rt.c` + `llvm_preamble`/`llvm_emit` + `lib/eval.ml` parity) that realpath-normalizes roots so the
+  first-declared name wins. Native-only (no oracle mirror). Design: `F1B-MODULE-IDENTITY-DESIGN.md`. GOTCHA:
+  a *compiler-used* extern makes the standard `selfcompile_fixpoint` fail on the stale seed (chicken-egg) —
+  verify via re-mint + cold bootstrap. Gates: `cross_project_twonames` 3/3, `cross_project_deps` 3/3,
+  fixpoint YES.
+
+- **CFieldAccess cross-module record dot-access — ✅ RESOLVED as a NON-BUG + diagnostic fix (`4710d3a`
+  resolve + `e3e7e1b` typecheck, seed `542be47`).** The filed "native emitter panics `CFieldAccess`" was
+  DOUBLY stale (gap-docs-lie): it's a typecheck/resolve rejection (emitter never reached) AND the canonical
+  compiler is CORRECT — cross-module record fields work with `public export data` (or the `record` keyword).
+  The repro tripped on `export data` being **abstract by design** (exports the type name, not its fields).
+  Real fix = the misleading diagnostic: both destructure (resolve, local signal: type in `env.types` owns
+  no fields) and dot-access (typecheck, needed threading — abstract tycon names reach neither `recordsRef`
+  nor `dataParamKindsRef`; a whole-program `abstractRecordTypesRef` is overwrite-seeded by the multi-module
+  check drivers) now say `'Point' is exported abstractly; … declare it \`public export\` to expose its
+  fields.` Native-only. A SIGSEGV (2nd under-applied `fieldVerdict` caller) was caught + fixed mid-flight.
+  Fixtures: `test/eval_typed_modules_fixtures/cross_module_record_fields/` +
+  `test/resolve_module_fixtures/abstract_record_field/`. Memory: `project_abstract_export_field_diagnostic`.
+
+**What to do next:** continue the soak. Outstanding open items: the residual monadic gap 1 (generic
+multi-clause `pure` overflow — oracle-only, native repro UNVERIFIED), the fn-level D2 `EVarFrom` re-key
+(supervised, deferred), `sequence` per-impl dispatch residual, and broader dogfood/library work. The
+`lib/` removal soak tail continues.
+
 ## RESUME — D2 method-constraint + export-import re-export CLOSED (2026-06-25). `main` = `a35c87b`
 
 **Two soundness fixes landed, sealing the last cross-module method-dispatch gap and general re-export support.**

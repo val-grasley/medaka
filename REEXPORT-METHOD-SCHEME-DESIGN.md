@@ -18,8 +18,8 @@ work cross-module via the flat-union `accAll`/`implDecls`, so once the scheme
 reaches the importer's seed the method dispatches correctly — verified by the
 fact that a **direct** (2-module) method import works end-to-end today.
 
-This is **orthogonal to the F1b loader module-identity backlog item** (that is
-about the same file double-loading under two import spellings; here each module
+This is **orthogonal to the F1b loader module-identity item** (✅ since DONE 2026-06-25, `ac4b04a`;
+that was about the same file double-loading under two import spellings; here each module
 loads exactly once and the loader/resolve export sets are correct).
 
 ## Problem — reproduced verbatim (current `main`, native `./medaka` + frozen oracle)

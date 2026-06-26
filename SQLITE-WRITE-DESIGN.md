@@ -115,10 +115,13 @@ page number (int), the exact `CREATE TABLE …` text.
   + sqlite3 expect; 4 doctests), `writeTable`/`buildTable` (validates row width, derives IPK/rowid,
   calls `buildDatabase`). Multi-schema `sqlite3`-verified (`writer_api_oracle.sh`): IPK+NULL table,
   no-IPK auto-rowid table, BLOB column — each integrity_check ok + SELECT match + Medaka-reader round-trip.
-  **Finding (pre-existing, tracked):** the native emitter panics `CFieldAccess: unknown field '<f>'` on
-  DOT-access of a record type imported from another module (the field-label table is built from `CRecord`
-  ctor exprs in the current unit) — worked around with destructuring patterns. Not new; flag for a future
-  emitter fix.
+  **Finding (UPDATE 2026-06-25 — was a NON-BUG, now RESOLVED, `e3e7e1b`):** originally filed as "the
+  native emitter panics `CFieldAccess: unknown field`" on DOT-access of a record imported from another
+  module. That framing was stale on both counts — it's a typecheck/resolve rejection (emitter never
+  reached) AND the canonical compiler is correct: cross-module record fields work with `public export
+  data` (or the `record` keyword). The destructure "workaround" hit the same path. The real issue was the
+  misleading diagnostic on `export data` (abstract-by-design), now fixed to point at `public export`. See
+  PLAN.md → Compiler/language and memory `project_abstract_export_field_diagnostic`.
 - **P4 — (original)** `CREATE TABLE` + multi-row `INSERT` API within one page (compute IPK/rowid;
   `Err` on overflow). Verify across schemas.
 
