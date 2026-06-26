@@ -1,16 +1,12 @@
 # Medaka — convenience targets.
 #
-# Two compilers live here (see AGENTS.md):
-#   • the native, self-hosted `medaka` (CANONICAL post-2026-06-12 flip) — built
-#     OCaml-free.  Day-to-day: a 2-stage rebuild from current source (no seed).
-#     Fresh clone: cold-bootstrapped once from the gzipped IR seed.  This is what
-#     users invoke.
-#   • the OCaml reference compiler (`lib/`+`bin/`, built with dune) — kept FROZEN
-#     as the soak-period differential oracle (retirement ≠ removal); not removed.
+# The native, self-hosted `medaka` (CANONICAL post-2026-06-12 flip) — built
+# OCaml-free.  Day-to-day: a 2-stage rebuild from current source (no seed).
+# Fresh clone: cold-bootstrapped once from the gzipped IR seed.
 #
-# Quick start (native, no OCaml):   make medaka && ./medaka run yourfile.mdk
+# Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed reference bootstrap clean help
+.PHONY: medaka emitter seed bootstrap clean help
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -30,10 +26,6 @@ bootstrap:
 ## seed    — RE-MINT the gzipped IR seed via the NATIVE emitter (OCaml-free)
 seed:
 	sh test/refresh_seed.sh
-
-## reference — build the OCaml reference compiler + tools (the frozen oracle)
-reference:
-	dune build --root .
 
 ## clean   — remove native build artifacts (keeps the checked-in seed)
 clean:

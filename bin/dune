@@ -1,4 +1,0 @@
-(executable
- (name main)
- (modules main repl)
- (libraries medaka_lib))

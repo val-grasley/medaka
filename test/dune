@@ -1,3 +1,0 @@
-(tests
- (names test_parser test_roundtrip test_resolve test_typecheck test_eval test_run test_repl test_loader test_diagnostics test_fmt test_project_config test_new_cmd test_doctest test_snapshot test_coverage test_lsp test_doc)
- (libraries medaka_lib alcotest lsp unix))

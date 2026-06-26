@@ -9,7 +9,7 @@ Run with:
     medaka test test/ported/test_eval_ported.mdk
     medaka test test/ported/test_loader_ported.mdk
 
-(Or via the built binary: `./_build/default/bin/main.exe test test/ported/test_run_ported.mdk`)
+(Or via the built binary: `./medaka test test/ported/test_run_ported.mdk`)
 
 ## test_loader_ported.mdk
 
@@ -257,10 +257,11 @@ cases not yet ported. They could be added in a follow-up pass:
   must be extracted to top-level bindings; `.mdk` won't let a test body wrap to a
   deeper line (except leading-operator continuation).
 
-## Non-portable suites (intrinsically `lib/`-bound)
+## Non-portable suites (intrinsically `lib/`-bound — now deleted)
 
 The following suites were audited and found to have **no portable cases**.
-Every case tests an internal OCaml API with no `medaka test` equivalent.
+Every case tested an internal OCaml API with no `medaka test` equivalent.
+They were deleted as part of the OCaml lib/ retirement (LIB-REMOVAL-DESIGN §6).
 
 ### test_diagnostics.ml (20 cases) — NOT portable
 

@@ -1,3 +1,0 @@
-(executables
- (names debug tc_debug fmt_dump module_debug gen_golden lextok astdump diagdump eval_probe tc_probe tc_module_probe fuzz_gen print_probe comment_dump positions_dump)
- (libraries medaka_lib unix))
