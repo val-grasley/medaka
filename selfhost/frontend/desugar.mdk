@@ -42,7 +42,7 @@ import frontend.ast.{
   Decl(..),
   Route(..),
 }
-import support.util.{listLen, contains, allList, fallthroughName}
+import support.util.{listLen, contains, allList, fallthroughName, filterList, anyList}
 
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
@@ -715,6 +715,75 @@ containsMethod name (x::xs) = methodName x == name || containsMethod name xs
 methodName : IfaceMethod -> String
 methodName (IfaceMethod n _ _) = n
 
+-- ── Pass: fill_impl_defaults (specialize interface defaults per impl) ──
+-- For each DImpl, synthesize a concrete-receiver ImplMethod for every interface
+-- default method the impl does not explicitly define.  The synthesized clause is
+-- byte-identical to the hand-written per-impl form (receiver concreteness comes
+-- from the impl's type, not the body text); the tagged copy is strictly more
+-- specific than the untagged `lowerDefault` fallback, so `coalesceImpls` picks
+-- it.  Universal across all interfaces; same-module only (sees just DInterface
+-- defaults co-located in this decl list — a user impl of a prelude interface in
+-- another module keeps using the fallback, as intended).  Runs after
+-- mergeIfaceDefaults (so each IfaceMethod carries its merged default) and before
+-- the later sugar passes (so the copied body lowers exactly like the original).
+-- See TRAVERSABLE-DEFAULT-METHOD-DESIGN.md Fork 1.
+fillImplDefaults : List Decl -> List Decl
+fillImplDefaults prog = map (fillImplDecl prog) prog
+
+fillImplDecl : List Decl -> Decl -> Decl
+fillImplDecl prog (d@DImpl { iface, methods, ... })
+  -- Two interfaces are held back from specialization because their defaults trip
+  -- DEFERRED emitter gaps (gap-1/gap-3 class, TRAVERSABLE-DEFAULT-METHOD-DESIGN.md
+  -- §9) once specialized — keeping them on their working untagged `lowerDefault`
+  -- fallback is a zero-regression no-op (they already resolve that way today):
+  --   * Ord — its comparison defaults (lt/gt/lte/gte/min/max) are dispatched by
+  --     GENERIC `Ord a =>` free functions (e.g. `clamp`); a tagged per-impl copy
+  --     turns them dict-dispatched and the generic caller then needs a per-method
+  --     dict witness (`$dict_max` …) the emitter does not thread (slice-6 "dict
+  --     not threaded") — breaks the self-compile.
+  --   * Foldable — `foldMap`'s default body DIRECTLY uses its `Monoid m`
+  --     method-level constraint (`empty`/`++`); the specialized copy segfaults at
+  --     run on the built binary (interp/`run` is correct).
+  -- Every other interface (Eq/Debug/Traversable/…) IS specialized; in particular
+  -- Traversable.sequence delegates to a sibling (`traverse`) rather than using its
+  -- own `Thenable m` constraint directly, so it codegens correctly.
+  -- Lift these exclusions once the emitter threads the constraint/dispatch dict.
+  | iface == "Ord" || iface == "Foldable" = d
+  | otherwise = DImpl { d | methods = methods ++ synthDefaultMethods methods (ifaceDefaults iface prog) }
+fillImplDecl _ d = d
+
+-- The named interface's default methods (those carrying a MethodDefault body).
+ifaceDefaults : String -> List Decl -> List IfaceMethod
+ifaceDefaults _ [] = []
+ifaceDefaults target (d::rest) = ifaceDefaultsStep target d rest
+
+ifaceDefaultsStep : String -> Decl -> List Decl -> List IfaceMethod
+ifaceDefaultsStep target (DInterface { name, methods, ... }) rest
+  | name == target = filterList ifaceMethodHasDefault methods
+  | otherwise = ifaceDefaults target rest
+ifaceDefaultsStep target _ rest = ifaceDefaults target rest
+
+ifaceMethodHasDefault : IfaceMethod -> Bool
+ifaceMethodHasDefault (IfaceMethod _ _ (Some _)) = True
+ifaceMethodHasDefault (IfaceMethod _ _ None) = False
+
+-- Synthesize an ImplMethod from each default whose name is not already explicit.
+synthDefaultMethods : List ImplMethod -> List IfaceMethod -> List ImplMethod
+synthDefaultMethods _ [] = []
+synthDefaultMethods explicit (m::rest)
+  | implDefines (methodName m) explicit = synthDefaultMethods explicit rest
+  | otherwise = synthFromDefault m :: synthDefaultMethods explicit rest
+
+implDefines : String -> List ImplMethod -> Bool
+implDefines name explicit = anyList (implMethodNamed name) explicit
+
+implMethodNamed : String -> ImplMethod -> Bool
+implMethodNamed name (ImplMethod n _ _) = n == name
+
+synthFromDefault : IfaceMethod -> ImplMethod
+synthFromDefault (IfaceMethod n _ (Some (MethodDefault ps body))) = ImplMethod n ps body
+synthFromDefault (IfaceMethod n _ None) = ImplMethod n [] (EVar n)
+
 concatMapDecl : (Decl -> List Decl) -> List Decl -> List Decl
 concatMapDecl f prog = concatLists (map f prog)
 
@@ -791,6 +860,7 @@ pinTypeGo acc (t::ts) = pinTypeGo (TyApp acc t) ts
 export
 desugar : List Decl -> List Decl
 desugar prog = mergeIfaceDefaults prog
+  |> fillImplDefaults
   |> concatMapDecl expandDecl
   |> desugarRecordPuns
   |> lowerContainerLiterals

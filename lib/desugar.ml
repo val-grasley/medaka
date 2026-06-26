@@ -888,6 +888,32 @@ let merge_iface_defaults prog =
     | d -> d
   ) prog
 
+(* Mirror of selfhost frontend/desugar.mdk's fillImplDefaults (kept for
+   native/oracle desugar+mark text parity).  For each DImpl, synthesize a
+   concrete-receiver impl method for every interface default the impl does not
+   explicitly define, so the more-specific tagged copy is what dispatch picks.
+   Ord and Foldable are held back: their specialized defaults trip deferred
+   native emitter gaps (see TRAVERSABLE-DEFAULT-METHOD-DESIGN.md §9) — keeping
+   them on the untagged fallback is a zero-regression no-op. *)
+let iface_defaults_for name prog =
+  List.fold_left (fun acc d -> match d with
+    | DInterface i when i.iface_name = name ->
+      List.filter_map (fun m -> match m.method_default with
+        | Some (ps, e) -> Some (m.method_name, ps, e)
+        | None -> None) i.methods
+    | _ -> acc) [] prog
+
+let fill_impl_defaults prog =
+  List.map (function
+    | DImpl impl when impl.iface_name <> "Ord" && impl.iface_name <> "Foldable" ->
+      let explicit = List.map (fun (n, _, _) -> n) impl.methods in
+      let defaults = iface_defaults_for impl.iface_name prog in
+      let synth = List.filter_map (fun (n, ps, e) ->
+        if List.mem n explicit then None else Some (n, ps, e)) defaults in
+      DImpl { impl with methods = impl.methods @ synth }
+    | d -> d
+  ) prog
+
 (* ── Surface-sugar lowering ───────────────────────────────────────────────
    The parser keeps function/where guards, the `function` keyword, and
    operator sections as dedicated nodes so the formatter can round-trip them.
@@ -938,6 +964,7 @@ let desugar_sugar prog = List.map (map_decl rewrite_sugar) prog
 
 let desugar_program (prog : program) : program =
   let prog = merge_iface_defaults prog in
+  let prog = fill_impl_defaults prog in
   let expanded = List.concat_map expand_decl prog in
   let record_names = List.filter_map (function
     | DRecord (_, name, _, _, _) -> Some name
