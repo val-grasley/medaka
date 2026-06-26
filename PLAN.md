@@ -8,6 +8,45 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
+## Current status (2026-06-26) — `sequence` default method + universal default-method specialization
+
+**`main` = `f333125`, seed re-minted, cold `bootstrap_from_seed` C3a PASS.** Closed the
+`sequence`-per-impl residual *principledly* — `sequence` is now a real `Traversable` default
+method (the three per-impl copies are gone), and the mechanism generalizes. Five-commit arc, each
+reproduced on the binary, gated, merged:
+- **B — emit dict-source (`066b9ea`).** `emitDispatchChain` now sources a dispatched impl-method's
+  method-level `=>` constraint dict (e.g. `traverse`'s `Thenable m`) from the caller's ambient dict
+  arg, not an OOB load from the dispatch-dict cell → fixes the user-file generic free-fn build SIGSEGV.
+- **Universal default-method specialization (`8a9aa3e`).** New `fillImplDefaults` desugar pass
+  (mirrored in `lib/desugar.ml`) synthesizes a concrete-receiver per-impl copy of every same-module
+  interface default into each impl that omits it — so a default that *sibling-dispatches on the
+  receiver* (like `sequence ta = traverse identity ta`) gets a concrete receiver and dispatches/codegens
+  correctly. Closes the whole class, not just `sequence`. Design: [`TRAVERSABLE-DEFAULT-METHOD-DESIGN.md`](./TRAVERSABLE-DEFAULT-METHOD-DESIGN.md).
+- **`sequence` as a default (`f6c7f33`).** Moved `sequence` into the `Traversable` interface body,
+  deleted the 3 per-impl copies.
+- **Emitter dict-threading for true universal (`6ae5248`).** Two further gaps that blocked literal
+  universal: (1) `typecheck.mdk registerImplRequires` keyed every method under one impl tyvar id →
+  encl-blind first-match returned the wrong witness (fixed: encl-aware `activeDictVarForEncl` etc.);
+  (2) `llvm_emit.mdk gatherGroup` eta-expanded eta-short defaults to `methodArityOf`, dropping leading
+  dict params (fixed: include leading dict pats). **Also fixed a pre-existing parametric `Ord`
+  soundness bug** — `max [1, 2] [1, 3]` returned `[1, 2]`. Then the Ord/Foldable exclusion was removed
+  (`265b0a2`) → specialization is literally universal.
+- **Verification:** fixpoint C3a/C3b YES; `diff_selfhost_build` 36/0 (foldMap fixture green),
+  `_llvm` 183/0, `_eval_dict` 28/0, `_typecheck`/`_errors` 12/40, `_typecheck_golden` 57/0 (recaptured —
+  `sequence`/`traverse` now appear as prelude schemes); core 38 doctests + 9 props, list 63 + 12;
+  `run == build` on `sequence`/`clamp`/parametric-`max`/`foldMap`.
+- **⚠️ Native-only consequence — the OCaml oracle no longer typechecks the prelude.** Making
+  `sequence` a default puts `identity` in a default-method body the frozen OCaml resolver can't bind
+  (`core.mdk:764: Unbound variable: identity`), so `_build/default/bin/main.exe check <anything>` now
+  fails. Foreseen (design §7) and accepted (native-canonical; all native gates green and rerooted
+  off OCaml), but it degrades the OCaml-pipeline gates (`@thorough`, dune unit suites) for **all**
+  prelude-using programs — the oracle is effectively retired for typecheck/eval. This brings the
+  **`lib/` removal** decision forward.
+- **Gap 3 stays OPEN (dodged, not fixed):** a truly generic prelude *free function* over a typeclass
+  with a generic/primitive receiver still fails `medaka build` with the slice-7 `arg-tag dispatch on
+  impl type that owns no constructors` error. Specialization dodges it (concrete receivers); it only
+  bites a future generic prelude free-fn. Filed below + in the Open issues index.
+
 ## Current status (2026-06-25) — soak tail: Traversable shipped + cross-module dispatch + loader identity
 
 **`main` = `8d93c8e`.** A run of soak landings since the 2026-06-23 entries below; each
@@ -17,8 +56,8 @@ reproduced on the binary, gated, merged, seed re-minted at checkpoints (cold
   the three "return-position `pure`" dispatch gaps are closed; `traverse`/`sequence` are a real
   interface in `stdlib/core.mdk` (List/Option/Result). Gap 1 was an oracle-only artifact (already
   correct on native); gap 2 = CDict-spine eta-saturation in the emitter; gap 3 = impl-body
-  method-level constraint dicts unregistered in eval. Residual: `sequence` ships per-impl (the
-  default-method/free-fn forms still misdispatch). See [Compiler / language](#compiler--language).
+  method-level constraint dicts unregistered in eval. Residual (`sequence` per-impl) **now CLOSED**
+  2026-06-26 — see the top status entry. See [Compiler / language](#compiler--language).
 - **D2 cross-module method-constraint dispatch** (`221af36`) + **`export import` re-export**
   (`a35c87b`) — sibling-module interface methods carrying a user `=>` constraint now dispatch
   correctly cross-module (root was stale-sweep first-match shadowing, NOT the bare-name collision
@@ -396,7 +435,9 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Generic `Thenable m =>` multi-clause fn w/ return-pos `pure` stack-overflows in eval | Compiler / language | ✅ DONE (2026-06-25) — was an oracle-only artifact, already correct on canonical native; see [Compiler / language](#compiler--language) |
 | Point-free constrained binding (`f = g identity`) mis-dispatches return-pos `pure` | Compiler / language | ✅ DONE (2026-06-25, `bf7243c`) — CDict-spine eta-saturation; see [Compiler / language](#compiler--language) |
 | Per-method-constraint dict conflated w/ dispatch type's own instance — blocked `Traversable` interface | Compiler / language | ✅ DONE (2026-06-25, `104c69a` + `b5ae3a2`) — `Traversable t` shipped; see [Compiler / language](#compiler--language) |
-| `sequence` only dispatches correctly per-impl; default-method + generic-free-fn forms misdispatch (residual of the above) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| `sequence` only dispatches per-impl; default-method form misdispatches | Compiler / language | ✅ DONE (2026-06-26, `f333125`) — `sequence` is now a `Traversable` default via universal default-method specialization; see [Compiler / language](#compiler--language) |
+| Generic prelude free-fn over a typeclass with generic/primitive receiver fails `build` (slice-7) | Compiler / language | this file → [Compiler / language](#compiler--language) |
+| OCaml oracle can no longer typecheck the prelude (`sequence` default body) → brings `lib/` removal forward | Retirement | this file → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) |
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
 | Leading-`|` `data` decls (native-only by design; auto-resolves at `lib/` removal) | Parser | this file → [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) |
@@ -830,12 +871,22 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   props, list 63 / 12, `diff_selfhost_test` 10/0, fixpoint C3a/C3b YES, cold `bootstrap_from_seed`
   C3a PASS. See memory `project_generic_monadic_dispatch_gaps`.
 
-- **`sequence` dispatch residual (of the above) — OPEN (filed 2026-06-25).** `sequence` only
-  dispatches correctly in **per-impl** form (`sequence ta = traverse identity ta` written into
-  each instance, which is how it ships). The **default-method** form panics ("no matching impl")
-  and the **generic free-function** form SIGSEGVs — the same dispatch-limitation family as gaps
-  2/3 above, contained by shipping per-impl. Not a feature blocker. Same dict-pass/typecheck/eval
-  seam. See memory `project_generic_monadic_dispatch_gaps`.
+- **`sequence` dispatch residual — ✅ DONE (2026-06-26, `f333125`).** Closed principledly: `sequence`
+  is now a real `Traversable` default method (per-impl copies removed) via universal default-method
+  specialization (`fillImplDefaults`), plus the emitter/typecheck dict-threading fixes that let
+  specialization be universal (encl-aware `registerImplRequires` routing; eta-expand eta-short defaults
+  including dict params). Also fixed a pre-existing parametric `Ord` bug (`max [1,2] [1,3]`). See the
+  top status entry + `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md` + memory `project_generic_monadic_dispatch_gaps`.
+
+- **Generic prelude free-function over a typeclass with a generic/primitive receiver fails `build`
+  (slice-7) — OPEN (filed 2026-06-26).** A truly generic *prelude* free function (e.g. `sequence` as a
+  free fn rather than a method) typechecks and RUNS correctly but fails `medaka build` with `arg-tag
+  dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)` —
+  the generically-emitted prelude copy can't arg-tag-dispatch a method on a type-variable receiver.
+  A user-file free fn with the same signature builds fine (it monomorphizes at the call). The
+  `sequence` work DODGED this by specializing to concrete receivers; it only bites a future generic
+  prelude free-fn over a typeclass with a generic receiver. Fix would land in the emitter slice-7
+  dispatch path (`selfhost/backend/llvm_emit.mdk`). Not a blocker. See `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md` §9.
 
 - **Unqualified-import name collision — use-time ambiguity error — ✅ DONE (2026-06-23, `421a4bd`,
   both compilers).** Two non-`core` modules exporting the same unqualified standalone (e.g. `map`

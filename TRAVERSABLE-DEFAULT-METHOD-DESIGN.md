@@ -1,5 +1,15 @@
 # Making `sequence` a default method of `Traversable t`
 
+> **AS-BUILT (2026-06-26, `main` = `f333125`): IMPLEMENTED, Fork 1 UNIVERSAL.** `fillImplDefaults`
+> landed in `selfhost/frontend/desugar.mdk` (+ `lib/desugar.ml` mirror); `sequence` is a real
+> `Traversable` default. Literal universal (no Ord/Foldable exclusion) required two emitter/typecheck
+> dict-threading fixes the design's "universal just works" premise missed: encl-aware
+> `registerImplRequires` routing (`typecheck.mdk`) and eta-expanding eta-short defaults INCLUDING
+> leading dict params (`llvm_emit.mdk gatherGroup`). Also fixed a pre-existing parametric `Ord` bug
+> (`max [1,2] [1,3]`). Gap 3 (§9) confirmed DODGED (stays open). The §7 native-only acceptance is
+> realized and stronger than anticipated: the OCaml oracle can no longer typecheck the prelude at all
+> (`identity` unbound in the `sequence` default body) — see PLAN.md top status + HANDOFF.
+
 Status: DESIGN (decision-ready). Native-only target (the frozen OCaml oracle
 cannot express the working end state — see §7). Read-only design pass; all
 experiments below were run and reverted, tree left clean.

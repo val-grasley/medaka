@@ -7,6 +7,50 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — `sequence` default method + UNIVERSAL default-method specialization (2026-06-26). `main` = `f333125`
+
+**The `sequence`-per-impl residual is closed *principledly*, and the mechanism generalizes. Seed re-minted, cold `bootstrap_from_seed` C3a PASS. ⚠️ This change retires the OCaml oracle in practice — see the consequence below.**
+
+Five-commit arc (all merged, each gated + reproduced on the binary):
+- **B — emit dict-source (`066b9ea`):** `emitDispatchChain` sources a dispatched impl-method's
+  method-level `=>` constraint dict (`traverse`'s `Thenable m`) from the caller's ambient dict arg, not
+  an OOB dispatch-cell load → fixes the user-file generic free-fn build SIGSEGV.
+- **Universal default-method specialization (`8a9aa3e`):** new `fillImplDefaults` desugar pass
+  (`selfhost/frontend/desugar.mdk` + `lib/desugar.ml` mirror) synthesizes a concrete-receiver per-impl
+  copy of every same-module interface default into each impl that omits it. A default that
+  *sibling-dispatches on the receiver* (`sequence ta = traverse identity ta`) thus gets a concrete
+  receiver (RKey) and works. Closes the whole class. Design: `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md`.
+- **`sequence` as a default (`f6c7f33`):** moved into the `Traversable` interface; 3 per-impl copies deleted.
+- **Emitter dict-threading for *literal* universal (`6ae5248` + guard removal `265b0a2`):** two more gaps
+  blocked specializing Ord/Foldable — (1) `typecheck.mdk registerImplRequires` keyed every method under
+  one impl tyvar id (encl-blind first-match → wrong witness; fixed with encl-aware
+  `activeDictVarForEncl`), (2) `llvm_emit.mdk gatherGroup` eta-expanded eta-short defaults to
+  `methodArityOf`, dropping leading dict params (fixed: include dict pats). **Bonus: fixed a pre-existing
+  parametric `Ord` soundness bug** — `max [1,2] [1,3]`→`[1,2]`. Then the Ord/Foldable blocklist was removed.
+- **Verification (orchestrator-independent):** fixpoint C3a/C3b YES; `diff_selfhost_build` 36/0 (foldMap
+  fixture green), `_llvm` 183/0, `_eval_dict` 28/0, `_typecheck`/`_errors` 12/40, **`_typecheck_golden`
+  57/0** (I recaptured these — the agent had mislabeled them "pre-existing"; they were the benign
+  `sequence`/`traverse` prelude-scheme ripple, verified uniform across all 57); core 38 doctests + 9 props,
+  list 63 + 12; `run == build` on `sequence`/`clamp`/parametric-`max`/`foldMap`.
+
+**⚠️ CONSEQUENCE — the OCaml oracle no longer typechecks the prelude.** `sequence` as a default puts
+`identity` in a default-method body the frozen OCaml resolver can't bind (`core.mdk:764: Unbound
+variable: identity`), so `_build/default/bin/main.exe check <anything>` now FAILS. Foreseen (design §7),
+accepted (native-canonical; all native gates rerooted off OCaml and green), but the OCaml-pipeline gates
+(`@thorough`, dune unit suites) are now broken for **all** prelude-using programs — the oracle is
+effectively retired for typecheck/eval. **This brings the `lib/` removal decision forward** — worth
+raising next session: the soak's differential-oracle safety net is largely gone, so either accept and
+proceed toward `lib/` removal, or (if the oracle's value is still wanted) fix the OCaml resolver to bind
+`identity` in default bodies (un-freezing `lib/`).
+
+**Gap 3 (OPEN, dodged):** a truly generic *prelude free function* over a typeclass with a
+generic/primitive receiver still fails `build` (slice-7 `arg-tag dispatch on impl type that owns no
+constructors`). Specialization dodges it (concrete receivers); only bites a future generic prelude
+free-fn. Filed in PLAN. Memory: `project_generic_monadic_dispatch_gaps` (updated).
+
+**What to do next:** continue the soak; raise the `lib/`-removal question (see consequence above). Other
+open items unchanged: gap 3, fn-level D2 `EVarFrom` re-key (deferred), broader dogfood/library work.
+
 ## RESUME — F1b loader module-identity + CFieldAccess (abstract-export diagnostic) BOTH CLOSED (2026-06-25). `main` = `542be47`
 
 **Two backlog items closed; seed re-minted twice at checkpoints; cold `bootstrap_from_seed` PASS. Clean soak checkpoint.**
