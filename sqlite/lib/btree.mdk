@@ -59,11 +59,11 @@ rowCells (Row _ cs) = cs
 -- Page-type constants.
 export
 pageTableLeaf : Int
-pageTableLeaf = 13      -- 0x0D
+pageTableLeaf = 0x0D
 
 export
 pageTableInterior : Int
-pageTableInterior = 5   -- 0x05
+pageTableInterior = 0x05
 
 -- | Read the page-type byte of the page whose B-tree header starts at
 --   `hdrOffset` in the whole-file byte array.
