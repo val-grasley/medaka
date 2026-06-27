@@ -35,15 +35,27 @@ import byteparser.lib.byteparser.{
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord}
 import list.{reverse}
 
+-- | Bounds-checked single-byte read.  Every structural read in this module
+--   funnels through here so that a truncated / corrupt / hostile `.sqlite`
+--   yields a recoverable `Err` instead of an unchecked `arrayGetUnsafe` off the
+--   heap (memory-unsafe) — mirroring the validate-then-read contract the
+--   `byteparser` layer already enforces for cell payloads.
+byteAt : Array Int -> Int -> Result String Int
+byteAt bytes off =
+  if off < 0 || off >= arrayLength bytes then
+    Err "byte offset \{intToString off} out of bounds (length \{intToString (arrayLength bytes)})"
+  else
+    Ok (arrayGetUnsafe off bytes)
+
 -- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
 --   Used for the right-most-child pointer and interior-cell left-child pointer.
-beU32 : Array Int -> Int -> Int
-beU32 bytes off =
-  let b0 = arrayGetUnsafe off bytes
-  let b1 = arrayGetUnsafe (off + 1) bytes
-  let b2 = arrayGetUnsafe (off + 2) bytes
-  let b3 = arrayGetUnsafe (off + 3) bytes
-  b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+beU32 : Array Int -> Int -> Result String Int
+beU32 bytes off = do
+  b0 <- byteAt bytes off
+  b1 <- byteAt bytes (off + 1)
+  b2 <- byteAt bytes (off + 2)
+  b3 <- byteAt bytes (off + 3)
+  Ok (b0 * 16777216 + b1 * 65536 + b2 * 256 + b3)
 
 -- | A decoded table row: its rowid and the column cells.
 public export data Row = Row Int (List Cell)
@@ -68,17 +80,20 @@ pageTableInterior = 0x05
 -- | Read the page-type byte of the page whose B-tree header starts at
 --   `hdrOffset` in the whole-file byte array.
 export
-pageType : Array Int -> Int -> Int
-pageType bytes hdrOffset = arrayGetUnsafe hdrOffset bytes
+pageType : Array Int -> Int -> Result String Int
+pageType bytes hdrOffset = byteAt bytes hdrOffset
 
 -- | Read the cell count from a page B-tree header at `hdrOffset`.
 export
-pageCellCount : Array Int -> Int -> Int
+pageCellCount : Array Int -> Int -> Result String Int
 pageCellCount bytes hdrOffset = beU16 bytes (hdrOffset + 3)
 
 -- Read a big-endian uint16 at absolute byte offset `off`.
-beU16 : Array Int -> Int -> Int
-beU16 bytes off = arrayGetUnsafe off bytes * 256 + arrayGetUnsafe (off + 1) bytes
+beU16 : Array Int -> Int -> Result String Int
+beU16 bytes off = do
+  b0 <- byteAt bytes off
+  b1 <- byteAt bytes (off + 1)
+  Ok (b0 * 256 + b1)
 
 -- | Decode all rows of a TABLE-LEAF page.
 --
@@ -89,11 +104,13 @@ beU16 bytes off = arrayGetUnsafe off bytes * 256 + arrayGetUnsafe (off + 1) byte
 -- Returns Err if the page is not a table-leaf page.
 export
 decodeLeafPage : Array Int -> Int -> Int -> Result String (List Row)
-decodeLeafPage bytes pageBase hdrOffset =
-  if pageType bytes hdrOffset != pageTableLeaf then
-    Err "decodeLeafPage: page type \{intToString (pageType bytes hdrOffset)} is not a table-leaf page (0x0D)"
-  else
-    decodeCells bytes pageBase (hdrOffset + 8) (pageCellCount bytes hdrOffset) 0 []
+decodeLeafPage bytes pageBase hdrOffset = do
+  pt <- pageType bytes hdrOffset
+  if pt != pageTableLeaf then
+    Err "decodeLeafPage: page type \{intToString pt} is not a table-leaf page (0x0D)"
+  else do
+    nc <- pageCellCount bytes hdrOffset
+    decodeCells bytes pageBase (hdrOffset + 8) nc 0 []
 
 -- Iterate the cell-pointer array, decoding each table-leaf cell.
 decodeCells : Array Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
@@ -102,7 +119,7 @@ decodeCells bytes pageBase cpArrayStart nCells i acc
   | otherwise = do
       -- cell pointer i is a uint16 at cpArrayStart + i*2; it is a page-relative
       -- offset, so the absolute cell offset is pageBase + cellPtr.
-      let cellPtr = beU16 bytes (cpArrayStart + i * 2)
+      cellPtr <- beU16 bytes (cpArrayStart + i * 2)
       let cellOffset = pageBase + cellPtr
       row <- decodeLeafCell bytes cellOffset
       decodeCells bytes pageBase cpArrayStart nCells (i + 1) (row::acc)
@@ -143,11 +160,12 @@ decodeLeafCell bytes off =
 -- `hdrOffset` for page 1 = `pageBase + 100`; for all other pages = `pageBase`.
 export
 scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
-scanTablePage bytes pageSize pageNum hdrOffset =
-  let ptype = pageType bytes hdrOffset
-  if ptype == pageTableLeaf then
+scanTablePage bytes pageSize pageNum hdrOffset = do
+  ptype <- pageType bytes hdrOffset
+  if ptype == pageTableLeaf then do
     let pageBase = (pageNum - 1) * pageSize
-    decodeCells bytes pageBase (hdrOffset + 8) (pageCellCount bytes hdrOffset) 0 []
+    nc <- pageCellCount bytes hdrOffset
+    decodeCells bytes pageBase (hdrOffset + 8) nc 0 []
   else if ptype == pageTableInterior then
     scanInteriorPage bytes pageSize pageNum hdrOffset
   else
@@ -155,11 +173,11 @@ scanTablePage bytes pageSize pageNum hdrOffset =
 
 -- Scan an interior page: recurse into all left-children then the rightmost child.
 scanInteriorPage : Array Int -> Int -> Int -> Int -> Result String (List Row)
-scanInteriorPage bytes pageSize pageNum hdrOffset =
+scanInteriorPage bytes pageSize pageNum hdrOffset = do
   let pageBase = (pageNum - 1) * pageSize
-  let nCells = pageCellCount bytes hdrOffset
+  nCells <- pageCellCount bytes hdrOffset
   -- right-most child pointer is at hdrOffset + 8
-  let rightmost = beU32 bytes (hdrOffset + 8)
+  rightmost <- beU32 bytes (hdrOffset + 8)
   -- interior page cell-pointer array starts at hdrOffset + 12
   let cpArrayStart = hdrOffset + 12
   scanInteriorCells bytes pageSize cpArrayStart pageBase nCells 0 rightmost []
@@ -174,10 +192,10 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
       rows <- scanTablePage bytes pageSize rightmost rmHdr
       Ok (acc ++ rows)
   | otherwise = do
-      let cellPtr = beU16 bytes (cpArrayStart + i * 2)
+      cellPtr <- beU16 bytes (cpArrayStart + i * 2)
       let cellOff = pageBase + cellPtr
       -- interior cell: [4-byte left-child] [rowid varint] — we only need left-child
-      let leftChild = beU32 bytes cellOff
+      leftChild <- beU32 bytes cellOff
       let childHdr = if leftChild == 1 then 100 else (leftChild - 1) * pageSize
       rows <- scanTablePage bytes pageSize leftChild childHdr
       scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
