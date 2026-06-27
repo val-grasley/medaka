@@ -1177,6 +1177,8 @@ emitExpr e env (CIndex a i) = emitArrayIndex e env a i
 emitExpr e env (CSlice a lo hi incl) = emitArraySlice e env a lo hi incl
 emitExpr e env (CStringIndex a i) = emitStringIndex e env a i
 emitExpr e env (CStringSlice a lo hi incl) = emitStringSlice e env a lo hi incl
+emitExpr e env (CListIndex a i) = emitListIndex e env a i
+emitExpr e env (CListSlice a lo hi incl) = emitListSlice e env a lo hi incl
 emitExpr e env (CList es) = emitList e env es
 emitExpr e env (CRangeList lo hi incl) = emitRangeList e env lo hi incl
 emitExpr _ _ other = gapE ("unsupported Core IR node " ++ ctag other)
@@ -4080,6 +4082,10 @@ restampIfaceDicts tbl iface tag rr (CStringIndex a b) =
   CStringIndex
     (restampIfaceDicts tbl iface tag rr a)
     (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CListIndex a b) =
+  CListIndex
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
 restampIfaceDicts _ _ _ _ other = other
 
 -- prefer the threaded element dict routes [rr] when present; else keep whatever the
@@ -4152,6 +4158,10 @@ restampCrossIface tbl method difs (CIndex a b) =
     (restampCrossIface tbl method difs b)
 restampCrossIface tbl method difs (CStringIndex a b) =
   CStringIndex
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CListIndex a b) =
+  CListIndex
     (restampCrossIface tbl method difs a)
     (restampCrossIface tbl method difs b)
 restampCrossIface _ _ _ other = other
@@ -6795,6 +6805,10 @@ eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
 eagerVars b (CStringIndex a i) = eagerVars b a ++ eagerVars b i
 eagerVars b (CStringSlice a lo hi _) = eagerVars b a
+eagerVars b (CListIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CListSlice a lo hi _) = eagerVars b a
+  ++ eagerVars b lo
+  ++ eagerVars b hi
 eagerVars b (CSlice a lo hi _) = eagerVars b a
   ++ eagerVars b lo
   ++ eagerVars b hi
@@ -7589,6 +7603,10 @@ scanExprRecords (CRangeList lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CIndex a i) = scanExprRecords a ++ scanExprRecords i
 scanExprRecords (CStringIndex a i) = scanExprRecords a ++ scanExprRecords i
 scanExprRecords (CStringSlice a lo hi _) = scanExprRecords a
+scanExprRecords (CListIndex a i) = scanExprRecords a ++ scanExprRecords i
+scanExprRecords (CListSlice a lo hi _) = scanExprRecords a
+  ++ scanExprRecords lo
+  ++ scanExprRecords hi
 scanExprRecords (CSlice a lo hi _) = scanExprRecords a
   ++ scanExprRecords lo
   ++ scanExprRecords hi
@@ -7878,6 +7896,40 @@ emitStringSlice e env a lo hi incl =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo_w ++ ", i64 " ++ hi_adj ++ ", i64 " ++ str_w ++ ")")
   (r, LTStr)
+
+-- CListIndex xs i: walk the Cons chain to the i-th element.  A List is a chain of
+-- Cons cells ([tag|head@8|tail@16], Nil = odd immediate), NOT an i64-element
+-- array, so we can't array-GEP it.  Mirror the interpreter's listNthAt: walk
+-- (i decrementing) returning the head once i<=0, panic (@mdk_oob) on running off
+-- the end.  @mdk_list_index does the walk in C (>>1-untags the tagged index).
+-- Result word is the stored head (same shape as an array load → LTInt).
+emitListIndex : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitListIndex e env a i =
+  let (lst_w, _) = emitExpr e env a
+  let (idx_w, _) = emitExpr e env i
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_list_index(i64 " ++ lst_w ++ ", i64 " ++ idx_w ++ ")")
+  (r, LTInt)
+
+-- CListSlice xs lo hi incl: collect elements at indices [lo, hi) into a NEW list.
+-- Mirror the interpreter's listSliceV/listSliceGo — which CLAMPS (no OOB panic):
+-- walks the chain with a running index, keeps heads in [lo, hi), stops at hi or
+-- end-of-list.  @mdk_list_slice does the walk + rebuild in C (>>1-untags lo/hi);
+-- for the inclusive form hi+1 in value space is +2 on the tagged word (tag n*2+1).
+-- Result is a boxed Cons/Nil list → LTCon (same as the array slice).
+emitListSlice : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> CExpr -> Bool -> <Mut> (String, LTy)
+emitListSlice e env a lo hi incl =
+  let (lst_w, _) = emitExpr e env a
+  let (lo_w, _) = emitExpr e env lo
+  let (hi_w, _) = emitExpr e env hi
+  let hi_adj = if incl then
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_w ++ ", 2")
+    r
+  else hi_w
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_list_slice(i64 " ++ lst_w ++ ", i64 " ++ lo_w ++ ", i64 " ++ hi_adj ++ ")")
+  (r, LTCon)
 
 -- arrayMakeWith n f: INLINE INTRINSIC.  Allocates a dynamic array of `n` elements;
 -- fills element i by calling the Medaka closure `f` with the tagged index `i`.
@@ -8225,6 +8277,8 @@ ctag (CIndex _ _) = "CIndex"
 ctag (CSlice _ _ _ _) = "CSlice"
 ctag (CStringIndex _ _) = "CStringIndex"
 ctag (CStringSlice _ _ _ _) = "CStringSlice"
+ctag (CListIndex _ _) = "CListIndex"
+ctag (CListSlice _ _ _ _) = "CListSlice"
 ctag (CMethod _ _ _ _) = "CMethod (typeclass dispatch)"
 ctag (CDict _ _) = "CDict (dictionary)"
 ctag (CVariantUpdate _ _ _) = "CVariantUpdate (named-field variant update)"

@@ -132,6 +132,9 @@ ceval env (CSlice a lo hi incl) =
 ceval env (CStringIndex a i) = evalIndex (ceval env a) (ceval env i)
 ceval env (CStringSlice a lo hi incl) =
   evalSlice (ceval env a) (ceval env lo) (ceval env hi) incl
+ceval env (CListIndex a i) = evalIndex (ceval env a) (ceval env i)
+ceval env (CListSlice a lo hi incl) =
+  evalSlice (ceval env a) (ceval env lo) (ceval env hi) incl
 ceval env (CRangeList lo hi incl) =
   evalRange (ceval env lo) (ceval env hi) incl rangeListMk
 ceval env (CRangeArray lo hi incl) =

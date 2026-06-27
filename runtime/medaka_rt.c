@@ -281,6 +281,50 @@ long long mdk_list_append(long long xs, long long ys) {
   return acc;
 }
 
+/* List index `xs.[i]` (Medaka EIndex on a List receiver).  A List is a chain of
+ * Cons cells ([tag@0 | head@8 | tail@16], Nil = odd immediate), NOT an array, so
+ * we walk the chain.  Mirrors the interpreter's listNthAt (eval.mdk): `i <= 0`
+ * returns the current head (negative index returns the head, NOT a panic);
+ * running off the end (hitting Nil) panics via @mdk_oob.  `idx` is a tagged Int
+ * (>> 1 to untag).  Returns the stored head word verbatim. */
+long long mdk_list_index(long long xs, long long idx) {
+  long long i = idx >> 1;
+  for (long long w = xs; (w & 1) == 0; w = ((const long long *)w)[2]) {
+    if (i <= 0) return ((const long long *)w)[1];
+    i--;
+  }
+  mdk_oob();
+  return 0; /* unreachable */
+}
+
+/* List slice `xs.[lo..hi]` (Medaka ESlice on a List receiver).  Collects the
+ * elements at indices [lo, hi) into a NEW list.  Mirrors the interpreter's
+ * listSliceV/listSliceGo (eval.mdk): CLAMPS (no OOB panic) — walks with a running
+ * index, keeps heads where lo <= i < hi, stops at hi or end-of-list.  `lo`/`hi`
+ * are tagged Ints (>> 1 to untag); the emitter has already applied the inclusive
+ * hi+1 adjustment.  Two passes (count then cons back-to-front) so the result is in
+ * original order; the result is always Nil-terminated (mdk_nil). */
+long long mdk_nil(void);
+long long mdk_list_slice(long long xs, long long lo, long long hi) {
+  long long l = lo >> 1, h = hi >> 1;
+  long long n = 0, i = 0;
+  for (long long w = xs; (w & 1) == 0; w = ((const long long *)w)[2], i++) {
+    if (i >= h) break;
+    if (i >= l) n++;
+  }
+  if (n == 0) return mdk_nil();
+  long long *heads = (long long *)mdk_alloc(8 * n);
+  long long k = 0;
+  i = 0;
+  for (long long w = xs; (w & 1) == 0; w = ((const long long *)w)[2], i++) {
+    if (i >= h) break;
+    if (i >= l) heads[k++] = ((const long long *)w)[1];
+  }
+  long long acc = mdk_nil();
+  for (long long j = n - 1; j >= 0; j--) acc = mdk_cons(heads[j], acc);
+  return acc;
+}
+
 /* Runtime header-dispatch fallback for `++` (Medaka concat) whose operand
  * static LTy the emitter cannot recover (census-B gap #3 residual: the
  * scanTriple/splitLines string-builders).  A `++` left operand is always

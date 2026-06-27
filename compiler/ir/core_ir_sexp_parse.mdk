@@ -312,6 +312,9 @@ toCExpr (SList ((SAtom "CSlice")::[a, lo, hi, incl])) =
 toCExpr (SList ((SAtom "CStringIndex")::[a, i])) = CStringIndex (toCExpr a) (toCExpr i)
 toCExpr (SList ((SAtom "CStringSlice")::[a, lo, hi, incl])) =
   CStringSlice (toCExpr a) (toCExpr lo) (toCExpr hi) (toBool incl)
+toCExpr (SList ((SAtom "CListIndex")::[a, i])) = CListIndex (toCExpr a) (toCExpr i)
+toCExpr (SList ((SAtom "CListSlice")::[a, lo, hi, incl])) =
+  CListSlice (toCExpr a) (toCExpr lo) (toCExpr hi) (toBool incl)
 toCExpr (SList ((SAtom "CBlock")::stmts)) = CBlock (map toCStmt stmts)
 toCExpr (SList ((SAtom "CMethod")::[name, route, (SList implRoutes), (SList methRoutes)])) = CMethod (toStr name) (toRoute route) (map toRoute implRoutes) (map toRoute methRoutes)
 toCExpr (SList ((SAtom "CDict")::[name, (SList routes)])) =

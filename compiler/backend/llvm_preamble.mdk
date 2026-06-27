@@ -38,6 +38,8 @@ preambleLines = [
   "declare i64 @mdk_string_eq(i64, i64)",
   "declare i64 @mdk_value_eq(i64, i64)",
   "declare i64 @mdk_list_append(i64, i64)",
+  "declare i64 @mdk_list_index(i64, i64)",
+  "declare i64 @mdk_list_slice(i64, i64, i64)",
   "declare i64 @mdk_append(i64, i64)",
   "declare void @mdk_putstr(i64)",
   "declare void @mdk_putstrln(i64)",

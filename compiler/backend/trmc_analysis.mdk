@@ -76,6 +76,8 @@ freeVars b (CIndex a i) = freeVars b a ++ freeVars b i
 freeVars b (CSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
 freeVars b (CStringIndex a i) = freeVars b a ++ freeVars b i
 freeVars b (CStringSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
+freeVars b (CListIndex a i) = freeVars b a ++ freeVars b i
+freeVars b (CListSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
 freeVars b (CMethod _ route implRoutes methRoutes) =
   routeDictNames b (route :: implRoutes ++ methRoutes)
 freeVars b (CDict _ routes) = routeDictNames b routes
@@ -390,6 +392,11 @@ mentionsSelfMethod method tag (CSlice a lo hi _) = mentionsSelfMethod method tag
 mentionsSelfMethod method tag (CStringIndex a i) = mentionsSelfMethod method tag a
   || mentionsSelfMethod method tag i
 mentionsSelfMethod method tag (CStringSlice a lo hi _) = mentionsSelfMethod method tag a
+  || mentionsSelfMethod method tag lo
+  || mentionsSelfMethod method tag hi
+mentionsSelfMethod method tag (CListIndex a i) = mentionsSelfMethod method tag a
+  || mentionsSelfMethod method tag i
+mentionsSelfMethod method tag (CListSlice a lo hi _) = mentionsSelfMethod method tag a
   || mentionsSelfMethod method tag lo
   || mentionsSelfMethod method tag hi
 mentionsSelfMethod _ _ _ = False

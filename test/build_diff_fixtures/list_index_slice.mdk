@@ -1,0 +1,17 @@
+-- List `.[]` index/slice sugar on the build path (run≠build regression, sibling
+-- of the String Bug-3 fix).  A List is a chain of Cons cells ([tag|head@8|tail@16],
+-- Nil = odd immediate), NOT a contiguous i64-element array, so index/slice lower to
+-- CListIndex/CListSlice (a cons-cell walk via @mdk_list_index / @mdk_list_slice)
+-- rather than the array GEP path (which read garbage past index 0).  Covers: index
+-- 0/mid/last, exclusive + inclusive slice, slice clamped past the end, an empty
+-- slice, and a nested-list element.
+main : <IO> Unit
+main =
+  let _ = putStrLn (intToString ([10, 20, 30].[0]))
+  let _ = putStrLn (intToString ([10, 20, 30].[1]))
+  let _ = putStrLn (intToString ([10, 20, 30].[2]))
+  let _ = putStrLn (debug ([10, 20, 30, 40].[1..3]))
+  let _ = putStrLn (debug ([10, 20, 30, 40].[0..=2]))
+  let _ = putStrLn (debug ([10, 20, 30].[1..10]))
+  let _ = putStrLn (debug ([10, 20, 30].[2..2]))
+  putStrLn (debug ([[1, 2], [3, 4], [5, 6]].[1]))
