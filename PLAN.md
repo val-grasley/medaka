@@ -8,6 +8,32 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
+## Current status (2026-06-27) — D2 fn-level cross-module dict-arity collision FIXED (run-crash)
+
+Closed the **fn-level** half of the long-deferred D2 re-key — and in the process **refuted its
+"benign by construction" framing**. Reproduction (verify-before-documenting) found a genuine
+**run≠build crash**, not the zero-payoff cleanup the diagnosis predicted: a module that *directly
+imports* a constrained fn while a *different-`=>`-arity* same-named constrained fn lives in another
+dependency hits the bare-name first-match in the jointly-seeded `funConstraintsRef` (most-recent
+prepend = a FOREIGN module's arity) → the call over-applies → `medaka run` aborts `applied
+non-function`, while `check` accepts and `build` is saved by universal mangling.
+
+**Fix (contained, `compiler/types/typecheck.mdk` only, NO AST node, seed re-minted):**
+`inferDictAtFound` resolves a cross-module constrained callee's dict arity by **module identity** —
+a per-module `currentImportDefinersRef` (imported value name → import-source module id, from `prog`'s
+`DUse`) keys the existing `(definer,name)` qual arity table plus a new slot-parallel ifaces mirror
+`crossModuleFunConstraintIfacesQualRef`; bare first-match remains only as the fallback for wildcard
+`import mod.*` and re-exports. Byte-identical on the corpus (the qual entry is the same ids the bare
+first-match already returned absent a collision). Regression:
+`test/eval_typed_modules_fixtures/cross_module_dict_arity_direct/` (both collision orientations, drives
+`evalModules`). **Gates:** all `diff_compiler_*` 0-failing (incl. eval_typed_modules 11/0, build 36/0,
+llvm 183/0, typecheck_golden 57/0; `effect_hole`/`lsp_b4` now also 0 after the FORCE oracle rebuild),
+fixpoint **C3a/C3b YES**, cold `bootstrap_from_seed` PASS, bootstrap_typecheck 12/0, bootstrap_eval 23/0.
+**Residual (deferred, now purely hygienic):** retiring the bare fallback for the wildcard/re-export
+corner needs the full AST-origin `EVarFrom` re-key (resolve→original-definer-through-diamonds) designed
+in `compiler/WS2-REKEY-DIAGNOSIS.md`. See the standing item in
+[Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items).
+
 ## Current status (2026-06-26) — OCaml compiler REMOVED; `selfhost/` → `compiler/` rename
 
 **`main` = `fa5983c`.** Two milestones landed in a single mechanical sweep:
@@ -695,6 +721,14 @@ cover the corpus; these are known holes outside it.
      sidesteps it. **DEFERRED by decision (2026-06-24):** the fix means touching dict-passing internals
      during the soak (high-risk/low-reward, clean workaround exists); fix it via the *general* bare-name
      re-key, not a doctest-path patch.
+     **UPDATE (2026-06-27):** the general fn-level re-key LANDED — `inferDictAtFound` now keys a
+     cross-module constrained callee's dict arity by import-source module (the `(definer,name)` qual
+     tables) instead of bare first-match. The same root also produced a sharper, separately-reproduced
+     symptom: a direct cross-module import of two same-named different-`=>`-arity constrained fns
+     **crashes `medaka run`** (`applied non-function`), not just the doctest `unbound constrained fn`.
+     Both are addressed for DIRECT/explicit imports; a doctest that imports the fn via wildcard
+     `import sibling.*` still falls back to bare (annotate, or use an explicit-name import). See the
+     standing item below + `compiler/WS2-REKEY-DIAGNOSIS.md`.
   7. **OCaml-oracle-only false-reject (resolved — oracle removed 2026-06-26):** `let w = rtWidth ra` inside a
      `RowType a -> RowType b` body made the frozen OCaml oracle reject ("signature more general
      than body"); native always accepted + ran correctly. Non-issue now that native is the sole compiler.
@@ -780,19 +814,32 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   arg-tag — safe now, wrong when arg-tag retires). **Confirmed LATENT/safe-now (2026-06-23):**
   `foldMap (x => [x,x]) xs` via the Monoid default works on native build AND oracle. Distinct
   from the eval-path `foldMap` dict gap already closed. Owner: [`compiler/DISPATCH-INVENTORY.md`](./compiler/DISPATCH-INVENTORY.md) §D3a.
-- **Cross-module bare-name dict-arity collision (the D2 re-key / Phase 134 root) — fn-level deferred; method-level cross-module CLOSED.**
+- **Cross-module bare-name dict-arity collision (the D2 re-key / Phase 134 root) — fn-level OBSERVABLE collision CLOSED (2026-06-27); only the wildcard/re-export bare-fallback residual remains.**
   `Dict_pass.collect_arities` keys function arity by **bare name**, so when the prelude + all modules are
   dict-passed *jointly*, a genuinely-constrained function in one module (or the synthetic doctest
   bindings) can force spurious leading dict params onto an *unconstrained, same-named or unannotated*
   function elsewhere — its call site then under-applies / it becomes a constrained fn whose dict is
-  never bound. **Observable manifestation today (fn-level):** the doctest finding #6 above (an unannotated
-  cross-module fn in a doctest expr → `unbound constrained fn`); workaround = annotate the fn.
-  **Principled fix = re-key arity by module-qualified name (DICT-CONFORMANCE "Option B", deferred
-  net-negative there as a zero-observable-gain cleanup).** That earlier deferral predates the doctest
-  manifestation, which makes the re-key now *observably* useful, not just hygienic. Higher-risk
-  (AST-origin threading through resolve/ast/typecheck/eval — AGENTS.md Phase 134 documents how this
-  area repeatedly mis-diagnoses); do it **supervised**, not as a soak-tail drive-by. Owners:
-  AGENTS.md Phase 134 gotcha + memory `project_dict_semantics_spec` (D2).
+  never bound. **Observable manifestation (fn-level) — a run≠build CRASH, not the previously-filed
+  doctest `unbound constrained fn`:** a module that **imports** a constrained fn directly while a
+  *different-`=>`-arity* same-named constrained fn lives in another dependency hits the bare first-match
+  in the jointly-seeded `funConstraintsRef`, which returns the most-recently-PREPENDED *foreign* module's
+  arity → the call over-applies → `medaka run` crashes `applied non-function`; `check` accepts and `build`
+  is saved by universal mangling.
+  **✅ FIXED (2026-06-27, fn-level, `compiler/types/typecheck.mdk` only, NO AST node, seed re-minted).**
+  The `WS2-REKEY-DIAGNOSIS.md` "benign by construction" verdict was **REFUTED by reproduction** (it
+  assumed the importer *defines* the colliding callee; the wrapper-isolated fixtures hid the direct-import
+  shape). Fix: `inferDictAtFound` resolves a cross-module constrained callee's dict arity by MODULE
+  IDENTITY — a per-module `currentImportDefinersRef` (imported value name → import-source module id from
+  `prog`'s `DUse`, via `importDefinersOf`) keys the existing `(definer,name)` qual arity table
+  `crossModuleFunConstraintsQualRef` + a new slot-parallel ifaces mirror
+  `crossModuleFunConstraintIfacesQualRef`; the bare first-match survives only as the fallback for wildcard
+  `import mod.*` and re-exports (import source ≠ definer). Byte-identical on the corpus; regression
+  `test/eval_typed_modules_fixtures/cross_module_dict_arity_direct/` (both orientations, drives
+  `evalModules`). All `diff_compiler_*` 0-failing, fixpoint C3a/C3b YES, cold `bootstrap_from_seed` PASS.
+  **Residual (deferred, now purely hygienic — zero observable payoff):** retiring the bare fallback for the
+  wildcard/re-export corner needs the full AST-origin `EVarFrom` re-key (resolve must resolve a reference
+  to its ORIGINAL definer through diamonds) designed in `WS2-REKEY-DIAGNOSIS.md`. Owners:
+  `compiler/WS2-REKEY-DIAGNOSIS.md` + memory `project_dict_semantics_spec` (D2).
   **CORRECTION (2026-06-25):** A DISTINCT cross-module method-constraint failure — where a non-prelude
   sibling-module `interface` method carrying a USER `=>` constraint (`btraverse : Thenable m => …`)
   mis-dispatched cross-module (`check` accepted, `run` panicked, `build` SIGSEGVd) — is **CLOSED
@@ -803,7 +850,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   first-match whose ids were disjoint from the live instantiation subst → empty dict route.
   The fix picks the entry whose ids most-overlap the live subst (falls back to first-match when
   none overlap — byte-identical on single-sweep fixtures). Fixture: `cross_module_method_userconstraint/`
-  (direct sibling import). The fn-level `EVarFrom` re-key remains deferred (separate collision class).
+  (direct sibling import). (The fn-level collision is now CLOSED — see the ✅ FIXED note above; only the bare-fallback wildcard/re-export corner of the `EVarFrom` full re-key stays deferred.)
 - **`export import` re-export not threaded into the typecheck seed — CLOSED (`a35c87b`).** A value /
   function / interface-method re-exported through an intermediate module via `export import` was
   `Unbound` at the importer (any number of hops). Root: `publicValNames` collected only DEFINED names;

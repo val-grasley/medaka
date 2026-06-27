@@ -1,0 +1,6 @@
+export interface Tag a where
+  tagOf : a -> Int
+export impl Tag Int where
+  tagOf x = 1
+export wrap : Tag a => a -> Int
+wrap x = tagOf x + 10

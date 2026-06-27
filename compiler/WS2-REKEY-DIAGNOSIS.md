@@ -1,5 +1,37 @@
 # WS-2 full re-key — diagnosis & deferral (module-qualified dict-arity identity)
 
+> **Follow-up (2026-06-27, FN-LEVEL OBSERVABLE BUG FOUND + FIXED — supersedes the
+> "benign by construction" verdict below).** That verdict was REFUTED. It assumed the
+> importing module *defines* the colliding callee; but a module that **imports** a
+> constrained fn directly, while a *different-`=>`-arity* same-named constrained fn lives
+> in another dependency, hits the bare-name first-match in the jointly-seeded
+> `funConstraintsRef` — which returns the most-recently-PREPENDED (FOREIGN) module's
+> arity, not the importer's actual callee. Result: a `medaka run` **crash**
+> (`applied non-function`) while `check` accepts and `build` is saved by universal
+> mangling — a real run≠build divergence. Minimal repro: `dcalla.mdk` does
+> `import aleaf.{wrap}` (a `Tag a =>` arity-1 wrap) AND `import bleaf.{pof}` (forcing
+> bleaf's `(P a, Q a) =>` arity-2 `wrap` into the joint seed) → `wrap 7` is sized to 2
+> dict params → over-applied.
+>
+> **FIXED — contained, `compiler/types/typecheck.mdk` ONLY, NO AST `EVarFrom` node.**
+> `inferDictAtFound` now resolves a cross-module constrained callee's dict arity by MODULE
+> IDENTITY: a per-module `currentImportDefinersRef` (imported value name → import-source
+> module id, built from `prog`'s `DUse` decls via `importDefinersOf`) keys the existing
+> `(definer,name)` qualified arity table `crossModuleFunConstraintsQualRef` plus a new
+> slot-parallel ifaces mirror `crossModuleFunConstraintIfacesQualRef`. The bare first-match
+> survives ONLY as the fallback for wildcard `import mod.*` (can't enumerate names here) and
+> re-exports (import source ≠ definer). Byte-identical on the corpus (the qual entry is the
+> same module's same ids the bare first-match already returned absent a collision); the only
+> behavioural change is fixing the collision crash. **The full AST-origin `EVarFrom` re-key
+> designed in the body below is NO LONGER NEEDED for the observable bug** — it is now purely
+> the way to ALSO retire the bare fallback for the wildcard/re-export corner (still deferred,
+> still zero observable payoff there). Regression:
+> `test/eval_typed_modules_fixtures/cross_module_dict_arity_direct/` (both collision
+> orientations; drives `evalModules` — the loader path that single-file masks). Gates: all
+> `diff_compiler_*` 0-failing, fixpoint C3a/C3b YES, cold `bootstrap_from_seed` PASS, seed
+> re-minted. **Lesson: "benign by construction" is a hypothesis, not a proof — reproduce on
+> the binary (the wrapper-isolated fixtures hid a direct-import shape).**
+
 > **Follow-up (2026-06-25, `221af36`):** the LIVE manifestation that forced the D2 revisit
 > (a non-prelude sibling-module `interface` method with a USER `=>` constraint — `btraverse :
 > Thenable m => …` — panicking on `run` and SIGSEGVing on `build` cross-module while `check`
