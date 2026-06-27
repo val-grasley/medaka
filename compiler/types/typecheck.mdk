@@ -1580,6 +1580,19 @@ pendingDictApps = Ref []
 methodConstraintsRef : Ref (List (String, List Int))
 methodConstraintsRef = Ref []
 
+-- Per method name, the POSITIONS (indices into the scheme's ordered quantified id
+-- list) of its constraint slots.  Positions are allocation-INDEPENDENT: the env
+-- scheme and the registry scheme are separate `sigToSchemeTvs mty` instantiations
+-- with DIFFERENT fresh ids, but the SAME var order, so a slot's index is stable.
+-- recordMethodDicts indexes THIS occurrence's ordered subst at these positions to
+-- get the exact live constraint monos — sidestepping the cross-sweep/parametric-
+-- sibling id-overlap that defeats countInSubst's overlap heuristic (a stale id can
+-- land in the live range mapping to the container `t` instead of the applicative
+-- `m`; the position never confuses the two).  One entry per method (dedup);
+-- cleared in resetState.  Absent ⇒ fall back to alignedMethodConstraintIds.
+methodConstraintPositionsRef : Ref (List (String, List Int))
+methodConstraintPositionsRef = Ref []
+
 -- Cross-module analog of methodConstraintsRef, mirroring crossModuleFunConstraintsRef
 -- exactly.  resetState wipes methodConstraintsRef at each module start, then
 -- checkModuleFullImpl re-registers via `ifaceMethodSchemes prog` over the CURRENT
@@ -2028,6 +2041,7 @@ resetState _ =
   let _ = set_ref pendingCallObligations []
   let _ = set_ref schemeObligationsRef []
   let _ = set_ref methodConstraintsRef []
+  let _ = set_ref methodConstraintPositionsRef []
   let _ = set_ref pendingMethodDicts []
   let _ = set_ref pendingRecDictApps []
   let _ = set_ref currentFn ""
@@ -2986,12 +3000,39 @@ recordMethodDicts name methodRef subst = match alignedMethodConstraintIds name s
 -- which alignment selects regardless of intermediate sweeps.
 alignedMethodConstraintIds : String -> List (Int, Mono) -> <Mut> Option (List Int)
 alignedMethodConstraintIds name subst =
-  let entries = filterList (e => fst e == name) methodConstraintsRef.value
-  match entries
-    [] => None
-    _ => match bestAlignedEntry subst entries (0 - 1) None
-      Some ids => Some ids
-      None => lookupAssocSL2 name methodConstraintsRef.value
+  match positionMatch name subst methodConstraintPositionsRef.value
+    Some ids => Some ids
+    None =>
+      let entries = filterList (e => fst e == name) methodConstraintsRef.value
+      match entries
+        [] => None
+        _ => match bestAlignedEntry subst entries (0 - 1) None
+          Some ids => Some ids
+          None => lookupAssocSL2 name methodConstraintsRef.value
+
+-- The DEFINITIVE slot ids for THIS occurrence: index the occurrence's ORDERED subst
+-- (instantiateTracked keys subst by the scheme's own ids via freshSubst, preserving
+-- var order) at the method's stable constraint-slot POSITIONS.  Allocation-
+-- independent, so it picks the applicative `m` slot regardless of cross-sweep id
+-- overlap (where a stale id maps to the container `t` — both Thenable).  None when
+-- the method has no recorded positions, or a position is out of range (e.g. an empty
+-- subst from a monomorphic recursive call) ⇒ caller falls back to countInSubst.
+positionMatch : String -> List (Int, Mono) -> List (String, List Int) -> Option (List Int)
+positionMatch name subst positionsTbl = match lookupAssocSL2 name positionsTbl
+  None => None
+  Some positions =>
+    let keys = map fst subst
+    let n = listLen keys
+    if allInRange positions n then Some (map (p => nthInt p keys) positions) else None
+
+allInRange : List Int -> Int -> Bool
+allInRange [] _ = True
+allInRange (p::rest) n = p >= 0 && p < n && allInRange rest n
+
+nthInt : Int -> List Int -> Int
+nthInt _ [] = 0 - 1
+nthInt 0 (x::_) = x
+nthInt i (_::xs) = nthInt (i - 1) xs
 
 -- among [entries] (all the same-named method-constraint records), the ids of the one
 -- with the most slots present in [subst]; None until a positive-overlap entry is seen.
@@ -8100,7 +8141,7 @@ methodSchemes : List String -> List IfaceMethod -> <Mut> List (String, Scheme)
 methodSchemes _ [] = []
 methodSchemes typarams ((IfaceMethod mname mty _)::rest) =
   let st = sigToSchemeTvs mty
-  let _ = registerMethodConstraints typarams mname mty (snd st)
+  let _ = registerMethodConstraints typarams mname mty (snd st) (schemeIds (fst st))
   (mname, fst st) :: methodSchemes typarams rest
 
 -- like methodSchemes but WITHOUT the registerMethodConstraints side effect — for
@@ -8115,10 +8156,21 @@ methodSchemesPure ((IfaceMethod mname mty _)::rest) =
 -- the method-level-constraint slot ids of [mname]: one id per `=>` constraint over
 -- a non-interface-param tyvar, looked up in the scheme's tvs map.  Registered only
 -- when non-empty (so methodConstraintsRef holds only genuinely-constrained methods).
-registerMethodConstraints : List String -> String -> Ty -> List (String, Mono) -> <Mut> Unit
-registerMethodConstraints typarams mname mty tvs =
+registerMethodConstraints : List String -> String -> Ty -> List (String, Mono) -> List Int -> <Mut> Unit
+registerMethodConstraints typarams mname mty tvs fullIds =
   let ids = methodConstraintSlotIds typarams mty tvs
-  if isEmptyL ids then () else if hasAssocSL2 mname methodConstraintsRef.value then () else set_ref methodConstraintsRef ((mname, ids) :: methodConstraintsRef.value)
+  if isEmptyL ids || hasAssocSL2 mname methodConstraintsRef.value then ()
+  else
+    let _ = set_ref methodConstraintsRef ((mname, ids) :: methodConstraintsRef.value)
+    set_ref methodConstraintPositionsRef ((mname, map (id => indexOfInt id fullIds) ids) :: methodConstraintPositionsRef.value)
+
+-- index of [x] in [xs] (0-based; -1 if absent — absent shouldn't happen, slot ids
+-- are always quantified ids of the same scheme).
+indexOfInt : Int -> List Int -> Int
+indexOfInt x xs = indexOfIntGo x xs 0
+indexOfIntGo : Int -> List Int -> Int -> Int
+indexOfIntGo _ [] _ = 0 - 1
+indexOfIntGo x (y::ys) i = if x == y then i else indexOfIntGo x ys (i + 1)
 -- DRIVER-COLLAPSE Phase 2: skip when [mname] is ALREADY registered in THIS pass.
 -- The ids must be the SAME quantified ids the call-site instantiation maps through
 -- its subst (see methodConstraintsRef doc).  The module path's checkModuleFullImpl

@@ -1,0 +1,5 @@
+-- A PARAMETRIC sibling type. Importing this shifts the typechecker's fresh-id
+-- allocation, which used to misroute traverse's `Thenable m` dict to the
+-- element/container type instead of the applicative (Result). Regression guard
+-- for the position-based method-constraint routing fix.
+public export data Box a = Box a
