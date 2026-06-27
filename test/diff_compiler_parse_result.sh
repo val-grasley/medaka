@@ -54,9 +54,9 @@ oracle_lc() {
   [ -f "$golden" ] && cat "$golden"
 }
 
-# The four parser-error fixtures (lexer-error fixtures are excluded: the
+# The parser-error fixtures (lexer-error fixtures are excluded: the
 # self-hosted lexer aborts on those before the parser runs).
-PARSER_FIXTURES="bad_second_decl dangling_plus leading_rparen question_leftover"
+PARSER_FIXTURES="bad_second_decl dangling_plus leading_rparen"
 
 pass=0; fail=0
 

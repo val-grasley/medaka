@@ -59,6 +59,10 @@ drive_self() {
 
 # OCAML reference responses are committed goldens (captured by capture_goldens.sh
 # while OCaml was trusted).  $1 = golden basename under $GOLD.
+# NOTE: b4_compl_full.ndjson (empty-prefix completion = the whole prelude env) was
+# RE-CAPTURED from the canonical native `medaka lsp` on 2026-06-27 — the OCaml-era
+# snapshot predated prelude growth (Traversable's traverse/sequence, etc.) and OCaml
+# is removed, so native is the reference for the full-env set.
 load_golden() {
   cp "$GOLD/$1" "$TMP/ocaml.json"
 }
