@@ -1,0 +1,3 @@
+import dcalla.{callDA}
+import dcallb.{callDB}
+main = println (intToString callDA ++ " " ++ intToString callDB)

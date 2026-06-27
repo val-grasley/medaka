@@ -1,0 +1,5 @@
+import aleaf.{wrap, Tag(..), tagOf}
+import bleaf.{pof}
+
+export callDA : Int
+callDA = wrap 7

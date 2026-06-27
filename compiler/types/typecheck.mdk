@@ -1558,6 +1558,34 @@ crossModuleFunConstraintsQualRef = Ref []
 crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
 crossModuleFunConstraintIfacesRef = Ref []
 
+-- WS-2/D2 (ifaces analog of crossModuleFunConstraintsQualRef): module-attributed
+-- mirror of crossModuleFunConstraintIfacesRef, keyed by (DEFINER module id, fn name),
+-- slot-parallel to crossModuleFunConstraintsQualRef.  inferDictAtFound reads the
+-- callee's dict ids AND their ifaces from the SAME qualified (definer,name) source so
+-- the two stay aligned across a bare-name cross-module collision (a foreign same-named
+-- fn of different `=>`-arity must not contribute its ifaces).  Populated/reset in
+-- lockstep with the ids qual ref (checkModuleFullImpl / elaborateModules).
+crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String))
+crossModuleFunConstraintIfacesQualRef = Ref []
+
+-- WS-2/D2: the current module's imported VALUE name → its source module id (the dotted
+-- id its `import` form names == the loader mid == the qual tables' DEFINER key for a
+-- DIRECT import).  Lets inferDictAtFound resolve a cross-module constrained callee's
+-- dict arity by MODULE IDENTITY (the (definer,name)-keyed qual tables) instead of the
+-- bare-name first-match over the jointly-seeded funConstraintsRef — which picks the
+-- MOST-RECENTLY-PREPENDED same-named entry, i.e. a FOREIGN module's `wrap` when the
+-- importer merely imports a different `wrap`.  That bare-name collision is an
+-- observable run-crash today (`applied non-function`) on `medaka run` of a direct
+-- cross-module import of two same-named, different-`=>`-arity constrained fns, while
+-- `check` accepts and `build` is saved by universal mangling.  Set per-module in
+-- checkModuleFullImpl from `prog`'s DUse decls; only EXPLICIT imports
+-- (UseName/UseGroup/UseAlias) are mapped — a wildcard `import mod.*` can't enumerate
+-- names here, and a re-exported fn's import source ≠ its definer, so both fall back to
+-- the bare table (correct, byte-identical; the qual path is the fix for the common
+-- direct-import case).  Reset by resetState (per module).
+currentImportDefinersRef : Ref (List (String, String))
+currentImportDefinersRef = Ref []
+
 -- WS-1c: the third field is the slot-parallel interface-name list (one per mono),
 -- so resolveDictApps can resolve an UNDETERMINED top-level constraint (a constraint
 -- tyvar pinned by neither arg nor result) by counting that interface's impls: sole
@@ -2037,6 +2065,7 @@ resetState _ =
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
   let _ = set_ref funConstraintIfacesRef []
+  let _ = set_ref currentImportDefinersRef []
   let _ = set_ref pendingDictApps []
   let _ = set_ref pendingCallObligations []
   let _ = set_ref schemeObligationsRef []
@@ -3108,11 +3137,48 @@ inferDictAt env name routesRef =
 -- recursive call's route ref stays empty while dictPass still prepends the param → the
 -- call under-applies → dispatch fails.  Detect (2) as "no registered id is pinned by
 -- the instantiation subst" (mirrors the oracle's empty-`sub` self-recursion case).
+-- WS-2/D2: a cross-module constrained callee's (dict ids, slot-parallel ifaces) by
+-- MODULE IDENTITY.  When [name] is an EXPLICITLY-imported value (currentImportDefinersRef)
+-- whose import SOURCE module owns a (source,name) entry in the qualified arity tables,
+-- return that entry — the definer-keyed arity, immune to the bare-name most-recent-prepend
+-- collision in the jointly-seeded funConstraintsRef.  None ⇒ local fn / wildcard import /
+-- re-export / check path (mid ""): inferDictAtFound falls back to the bare funConstraintsRef
+-- + funConstraintIfacesRef path (today's behavior; byte-identical when no collision, since
+-- the qual entry is the same module's same ids the bare first-match returns sans collision).
+qualConstraintFor : String -> Option (List Int, List String)
+qualConstraintFor name = match lookupAssoc name currentImportDefinersRef.value
+  None => None
+  Some src => match lookupQualArity src name crossModuleFunConstraintsQualRef.value
+    None => None
+    Some ids => Some (ids, fromOption [] (lookupQualIfaces src name crossModuleFunConstraintIfacesQualRef.value))
+
+lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
+lookupQualArity _ _ [] = None
+lookupQualArity src name (((m, n), v)::rest)
+  | m == src && n == name = Some v
+  | otherwise = lookupQualArity src name rest
+
+lookupQualIfaces : String -> String -> List ((String, String), List String) -> Option (List String)
+lookupQualIfaces _ _ [] = None
+lookupQualIfaces src name (((m, n), v)::rest)
+  | m == src && n == name = Some v
+  | otherwise = lookupQualIfaces src name rest
+
 inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
-inferDictAtFound name routesRef inst
-  | hasKeySL2 name funConstraintsRef.value && anyIdPinned (fromOption [] (lookupAssocSL2 name funConstraintsRef.value)) (snd inst) =
-    let declaredIds = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
-    let declaredIfaces = fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+inferDictAtFound name routesRef inst =
+  -- WS-2/D2: prefer the (import-source, name)-keyed qual arity for a cross-module callee;
+  -- fall back to the bare-name funConstraintsRef first-match for local / wildcard / re-export.
+  let q = qualConstraintFor name
+  let declaredIds = match q
+        Some (ids, _) => ids
+        None => fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
+  let declaredIfaces = match q
+        Some (_, ifs) => ifs
+        None => fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+  let known = match q
+        Some _ => True
+        None => hasKeySL2 name funConstraintsRef.value
+  if known && anyIdPinned declaredIds (snd inst) then
     -- WS-1b: expand the callee's constraint slots with their transitive supers HERE
     -- (the global table isn't expanded until expandSupersTable runs after inference),
     -- so this call site applies one dict per EXPANDED slot — matching the def params
@@ -3130,7 +3196,7 @@ inferDictAtFound name routesRef inst
     -- (`Num String` from `f "hello"` where `f : Num a => a -> a`) becomes an error.
     let _ = recordCallObligations ifaces monos
     fst inst
-  | otherwise =
+  else
     let _ = set_ref pendingRecDictApps (RecDictApp routesRef name currentFn.value (fst inst) :: pendingRecDictApps.value)
     fst inst
 
@@ -9127,6 +9193,10 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = set_ref methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = set_ref funConstraintsRef crossModuleFunConstraintsRef.value
   let _ = set_ref funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
+  -- WS-2/D2: map THIS module's imported value names to their import-source module id,
+  -- so inferDictAtFound can route a cross-module constrained callee's dict arity by
+  -- module identity (the qual tables) rather than the collision-prone bare first-match.
+  let _ = set_ref currentImportDefinersRef (importDefinersOf prog)
   -- #11 soundness: register the interface method→iface-param map over the FULL
   -- visible universe (accData carries core's + earlier modules' PUBLIC interfaces,
   -- implDecls the emit-path impl universe, prog this module).  The check path passes
@@ -9161,6 +9231,12 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- the first-match if a name recurs across the graph.
   let _ = set_ref crossModuleFunConstraintsQualRef
             (attributeModuleArities mid prog funConstraintsRef.value ++ crossModuleFunConstraintsQualRef.value)
+  -- WS-2/D2: the slot-parallel ifaces analog of the qual arity snapshot above, keyed by
+  -- the same (mid,name), so inferDictAtFound reads a cross-module callee's ids AND ifaces
+  -- from one definer-aligned source.  funConstraintIfacesRef here is this module's
+  -- super-EXPANDED ifaces (expandSupersTable ran above), matching the expanded ids.
+  let _ = set_ref crossModuleFunConstraintIfacesQualRef
+            (attributeModuleArrIfaces mid prog funConstraintIfacesRef.value ++ crossModuleFunConstraintIfacesQualRef.value)
   let _ = set_ref crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
   let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   -- WS-2/D2 (method analog of the qual snapshot above): attribute each method whose
@@ -9495,6 +9571,25 @@ importSeed ((DUse _ path)::rest) depEnv =
       ++ importSeed rest depEnv
 importSeed (_::rest) depEnv = importSeed rest depEnv
 
+-- WS-2/D2: THIS module's imported value name → import-source module id, from its DUse
+-- decls.  Mirrors importSeed's walk but records (memberName, depId) for EXPLICIT imports
+-- only (importedMembers = Some names); a wildcard `import mod.*` (None) is skipped — it
+-- can't enumerate names here, so those names fall back to the bare arity table at the
+-- call site.  `core` is skipped (core fns route via the prelude dict machinery, never the
+-- cross-module qual tables).  depId == usePathModuleId == the loader mid == the qual
+-- tables' definer key for a DIRECT import; a re-exported fn's depId is the intermediate
+-- (≠ definer), so its qual lookup misses and it too falls back to bare (correct).
+importDefinersOf : List Decl -> List (String, String)
+importDefinersOf [] = []
+importDefinersOf ((DAttrib _ d)::rest) = importDefinersOf [d] ++ importDefinersOf rest
+importDefinersOf ((DUse _ path)::rest) =
+  let depId = usePathModuleId path
+  if depId == "core" then importDefinersOf rest
+  else match importedMembers path
+    None => importDefinersOf rest
+    Some names => map (n => (n, depId)) names ++ importDefinersOf rest
+importDefinersOf (_::rest) = importDefinersOf rest
+
 -- the (key, scheme) pairs a module RE-EXPORTS via `export import` (`DUse True`).
 -- Mirrors resolve's re-export set (resolve.pubUsePaths filters the same `DUse True`)
 -- into the typecheck seed: walk the export-flagged DUse decls and, for each, pick the
@@ -9760,6 +9855,7 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref mainSchemeRef None
   let _ = set_ref crossModuleFunConstraintsRef []
   let _ = set_ref crossModuleFunConstraintsQualRef []
+  let _ = set_ref crossModuleFunConstraintIfacesQualRef []
   let _ = set_ref crossModuleMethodConstraintsRef []
   let _ = set_ref crossModuleMethodConstraintsQualRef []
   let allDecls = coreDecls ++ flatMap snd modules
@@ -9976,6 +10072,14 @@ modInScope mid scopeMods = mid == "" || omHasKey mid scopeMods
 -- attribute each fn DEFINED in [prog] that carries a funConstraintsRef entry to [mid].
 attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArities mid prog entries =
+  let progNames = namesToSet (declTopFnNames prog) OTip
+  map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progNames) entries)
+
+-- WS-2/D2: ifaces analog of attributeModuleArities — attribute each fn DEFINED in [prog]
+-- that carries a funConstraintIfacesRef entry to [mid], slot-parallel to the arity qual
+-- snapshot, so inferDictAtFound reads a callee's ids + ifaces from one (mid,name) source.
+attributeModuleArrIfaces : String -> List Decl -> List (String, List String) -> List ((String, String), List String)
+attributeModuleArrIfaces mid prog entries =
   let progNames = namesToSet (declTopFnNames prog) OTip
   map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progNames) entries)
 
