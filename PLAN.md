@@ -641,6 +641,16 @@ cover the corpus; these are known holes outside it.
   parsers by design** — no `parse-error(t)` feedback loop; see `LAYOUT-SEMANTICS.md`
   §9/§11 and `no-parser-layout-feedback` decision memory.
 
+- **Scientific-notation float literals (`1e12`, `1.5e-3`) rejected (lexer gap, native).**
+  The lexer's `scanNumber` (`compiler/frontend/lexer.mdk`) does not recognize an exponent
+  marker, so `1e12` lexes as `1` followed by the identifier `e12` ("Unbound variable: e12")
+  and `1.5e-3` becomes a type error. **Radix/separator literals already work** — hex/bin/oct
+  (`0x0D`/`0b1010`/`0o17`) and `_` digit separators (`1_000`) all parse and eval today; the
+  exponent form is the one remaining numeric-literal representation still missing. Cross-ref
+  the `float-literal-native-gaps` memory (gap B). Low priority (workaround: write the expanded
+  decimal, e.g. `1000000000000.0`); fix is contained to the lexer's number scanner +
+  parser/AST float construction. Verified open 2026-06-26.
+
 - **SQLite-dogfood findings (2026-06-23, minor — DEFERRED, workarounds exist; affect BOTH
   compilers, so not compiler-only gaps).** Surfaced building the pure-Medaka SQLite reader;
   also documented in `SQLITE-DESIGN.md`:
