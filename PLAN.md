@@ -956,11 +956,13 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
     `defArityOf` (signature arity ≠ define arity; the fnArity shortcut broke self-compile). All 7
     case-matrix rows incl. the hardest (bare escaping return) build==run. Ledger EMITTER-GAPS.md **E22**.
     (memory `project_partial_method_closure_dict_capture_bug`)
-  - **Bug 3 — String `.[]` index/slice sugar — ✅ FIXED (`493a5eb`).** Root cause held. Fix: typecheck stamps
+  - **Bug 3 — String `.[]` index/slice — ✅ FIXED (`493a5eb`).** Root cause held. Fix: typecheck stamps
     a receiver-kind discriminator (AST `Ref String`, the `EBinOp` Route idiom) → new `CStringIndex`/
     `CStringSlice` Core IR nodes (leaves `CIndex`/`CSlice` + the hot array emit arms byte-identical) →
-    UTF-8/codepoint-aware string emit. Residual (separate pre-existing gap): **List**-index on build still
-    on the array path. (memory `project_string_index_slice_emit_bug`)
+    UTF-8/codepoint-aware string emit. **Sibling Bug 5 — List `.[]` index/slice — ✅ FIXED (`b9739ee`):**
+    Bug 3 left List on the array path → garbage on build; mirrored option B with `CListIndex`/`CListSlice`
+    + cons-walk C externs `mdk_list_index`/`mdk_list_slice` matching the interpreter exactly. String,
+    Array, List `.[]` now all build==run. (memory `project_string_index_slice_emit_bug`)
   - **Bug 4 — polymorphic-Unit `main` spurious `0` — ✅ FIXED (`9f83b42`).** Root cause held. Main's zonked
     result type WAS reachable via `mainSchemeRef` (the channel backing `mainTypeIsAsync`); new
     `mainTypeIsUnit` (normalize scheme → `TCon "Unit"`) threaded to the emitter via `installMainIsUnitHint`,

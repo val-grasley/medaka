@@ -7,12 +7,13 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — ✅ four `run≠build` codegen bugs FIXED (2026-06-27). `main` = `9f83b42` (+ seed re-mint)
+## RESUME — ✅ FIVE `run≠build` codegen bugs FIXED (2026-06-27). `main` = `b9739ee` (+ seed re-mint)
 
 A reproduce-first sweep (while re-checking the already-DONE L2 structured-dict task) surfaced four
 distinct bugs where `medaka run` (interpreter, the correct oracle) was right but `medaka build`
-(native LLVM) miscompiled — `medaka check` accepted all four. They survived self-compile because the
-compiler's own source never uses these forms. **All four are now fixed**, each diagnose-first,
+(native LLVM) miscompiled — `medaka check` accepted all four. A fifth (List `.[]` index/slice — the
+sibling of Bug 3) was found while verifying the handoff. They survived self-compile because the
+compiler's own source never uses these forms. **All five are now fixed**, each diagnose-first,
 independently gated (fixpoint C3a/C3b YES + the relevant `diff_compiler_*` 0-fail), and merged;
 **seed re-minted, cold `bootstrap_from_seed` C3a byte-for-byte PASS.** Per-bug result (run==build on
 every repro now):
@@ -38,6 +39,12 @@ every repro now):
   `mainSchemeRef` (the channel backing `mainTypeIsAsync`). New `mainTypeIsUnit` (normalize the scheme
   → `TCon "Unit"`) threaded to the emitter via `installMainIsUnitHint`, consulted by `mainIsUnit`.
   Value mains still auto-print (no `pp_value` regression). Root cause HELD.
+- **Bug 5 — List `.[]` index/slice (`b9739ee`):** the sibling of Bug 3 for **List** receivers
+  (`[10,20,30].[1]` → run `20`, build garbage; index 0 worked only by offset coincidence). Typecheck's
+  `indexKind` already stamped `"List"`, so AST/typecheck needed no change; mirrored Bug 3's option B —
+  new `CListIndex`/`CListSlice` Core IR nodes (Array `CIndex`/`CSlice` hot path byte-identical) emitting
+  two new C runtime externs `mdk_list_index`/`mdk_list_slice` that walk cons cells, matching the
+  interpreter EXACTLY (negative index → head; past-end → `@mdk_oob` panic; slice clamps, no panic).
 
 **Common thread:** three of four were "type/dict info known at typecheck but lost or not-threaded at
 emit" — the same class as the historical float-arith bugs (`project_arith_on_typelost_floats_bug`).
@@ -52,15 +59,12 @@ C3a/C3b YES; then re-mint the seed (`sh test/refresh_seed.sh`) + `bootstrap_from
 `FORCE=1 bash test/build_oracles.sh` before trusting any `test/bin/*` gate.
 
 **What's next (verified current 2026-06-27):**
-- **A live List-index/slice-on-build bug** — the exact sibling of Bug 3 for **List** receivers:
-  `[10,20,30].[1]` → run `20`, build `2153523168` (garbage); `[..].[1..3]` → run correct, build empty.
-  (Index `0` works only by offset coincidence.) Bug 3's fix deliberately left List on the array path;
-  a List is cons-cells, not array-laid-out, so the emitter reads garbage. Same "type-lost at emit"
-  class — likely wants a `CListIndex`/`CListSlice` analog or runtime-tag dispatch.
 - **gap 3 (generic prelude free-fn slice-7)** — genuinely DEFERRED by design (`GAP3-SLICE7-DESIGN.md`,
   zero current callers, the "irreducible primitive residual" scheduled in `ARGSTAMP-UNIFY-PLAN.md`).
   Needs cross-cutting Fix A (arg-stamp grounding) + Fix B (generic-receiver dict ABI) shipped together.
-- **broader dogfood/library work.**
+- **broader dogfood/library work** — the recurring soak thesis (a real library flushes real bugs); the
+  String/List `.[]` bugs were exactly this class. The `.[]`-on-other-containers question is now settled
+  (String, Array, List all build==run); a future dogfood may surface a Map/Set/other index path.
 
 The **D2 fn-level cross-module dict-arity collision is CLOSED** (`6e73a15`/`d759765`, on main) — routes
 by import-source module identity. Only a *purely hygienic* AST-origin `EVarFrom` re-key remains (no
