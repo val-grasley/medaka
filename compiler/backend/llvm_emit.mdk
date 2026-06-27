@@ -8146,16 +8146,30 @@ emitTopGlobals _ ((CBind name _)::_) =
   panic
     ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
 
--- Is `main` Unit-returning (→ suppress the auto-print of its result)?  Prefers
--- the DECLARED return type (effects already stripped to the head by
--- core_ir_lower.methodRetTy, so `<IO> Unit` → "Unit"); falls back to the body's
--- emit-time LTy for an unannotated main.
+-- Hint from the driver: True when typecheck resolved main's inferred return type to
+-- Unit (e.g. via a polymorphic HOF whose result specialises to Unit with no explicit
+-- annotation).  Set by the emit driver after elaborateModules via installMainIsUnitHint.
+mainIsUnitHintRef : Ref Bool
+mainIsUnitHintRef = Ref False
+
+export
+installMainIsUnitHint : Bool -> <Mut> Unit
+installMainIsUnitHint b = set_ref mainIsUnitHintRef b
+
+-- Is `main` Unit-returning (→ suppress the auto-print of its result)?  Three checks:
+-- 1. The typecheck-inferred-Unit hint (installMainIsUnitHint) — catches unannotated
+--    mains whose return type resolved to Unit through a polymorphic HOF.
+-- 2. The DECLARED return type (declSigOf "main" → "Unit") — catches the annotated
+--    case `main : <IO> Unit`; effects already stripped by core_ir_lower.methodRetTy.
+-- 3. The body's emit-time LTy (LTUnit) — catches the simple `main = putStrLn …` case.
 mainIsUnit : Emit -> LTy -> <Mut> Bool
-mainIsUnit e mty = match declSigOf "main"
-  Some (_, "Unit") => True
-  _ => match mty
-    LTUnit => True
-    _ => False
+mainIsUnit e mty =
+  if mainIsUnitHintRef.value then True
+  else match declSigOf "main"
+    Some (_, "Unit") => True
+    _ => match mty
+      LTUnit => True
+      _ => False
 
 emitPrint : Emit -> String -> LTy -> <Mut> Unit
 emitPrint e v LTInt =

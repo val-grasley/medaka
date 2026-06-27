@@ -2023,6 +2023,19 @@ mainTypeIsAsync _ = match mainSchemeRef.value
   Some (Forall _ _ t) => monoHeadCon t == Some "Async"
   None => False
 
+-- Stage 3 query: did the last-elaborated `main` infer to a bare Unit return type
+-- (with effects stripped at each arrow, mono resolves to TCon "Unit")?  Used by
+-- the LLVM emitter to suppress the auto-print of Unit-returning mains even when no
+-- explicit `main : <IO> Unit` annotation is present — e.g. `main = applyEff f 42`
+-- where `applyEff : (a -> <IO> b) -> a -> <IO> b` and `f : Int -> <IO> Unit`.
+export
+mainTypeIsUnit : Unit -> <Mut> Bool
+mainTypeIsUnit _ = match mainSchemeRef.value
+  Some (Forall _ _ t) => match normalize t
+    TCon "Unit" => True
+    _ => False
+  None => False
+
 -- ── non-exhaustive-match warning accumulator (the type-aware `check_match`) ──
 -- `inferMatch` pushes a warning here for every `match` whose non-guarded arms
 -- don't cover the scrutinee's type.  `matchOracle` is the ctor oracle the matrix

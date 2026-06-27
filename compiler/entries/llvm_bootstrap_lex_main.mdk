@@ -32,6 +32,7 @@ import types.typecheck.{
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
+  mainTypeIsUnit,
 }
 import ir.core_ir_lower.{
   lowerProgramEmit,
@@ -51,6 +52,7 @@ import backend.llvm_emit.{
   installMethodConstraintIfaces,
   installCtorFieldTypes,
   installDeclSigTypes,
+  installMainIsUnitHint,
 }
 import backend.private_mangle.{mangleUnits}
 import support.path.{dirOf}
@@ -89,6 +91,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = installMethodConstraintIfaces (methodConstraintIfaces allDecls)
   let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  let _ = installMainIsUnitHint (mainTypeIsUnit ())
   let _ = enableGapRecord ()
   putStr (emitProgram (lowerProgramEmit allDecls))
 -- Module-qualify module-PRIVATE top-level functions whose bare name collides

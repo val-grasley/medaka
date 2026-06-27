@@ -20,6 +20,7 @@ import types.typecheck.{
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
+  mainTypeIsUnit,
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{
@@ -40,6 +41,7 @@ import backend.llvm_emit.{
   installMethodConstraintIfaces,
   installCtorFieldTypes,
   installDeclSigTypes,
+  installMainIsUnitHint,
 }
 
 main = match args ()
@@ -75,6 +77,7 @@ runEmit runtimeDecls preludeDecls userDecls =
   let _ = installMethodConstraintIfaces (methodConstraintIfaces combined)
   let _ = installCtorFieldTypes (ctorFieldTypeNames combined)
   let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames combined)
+  let _ = installMainIsUnitHint (mainTypeIsUnit ())
   emitProgram
     (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
 

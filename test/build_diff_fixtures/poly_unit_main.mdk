@@ -1,0 +1,6 @@
+-- Regression: a main whose return type infers to Unit through a polymorphic HOF
+-- (no explicit annotation) must NOT auto-print its result on `build`.
+-- Bug: `build` used to print `42\n0`; `run` correctly printed only `42`.
+applyEff : (a -> <IO> b) -> a -> <IO> b
+applyEff f x = f x
+main = applyEff (n => println (debug n)) 42
