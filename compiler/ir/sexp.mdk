@@ -144,13 +144,13 @@ exprSexp (ERangeList lo hi incl) =
   node "ERangeList" [exprSexp lo, exprSexp hi, boolStr incl]
 exprSexp (ERangeArray lo hi incl) =
   node "ERangeArray" [exprSexp lo, exprSexp hi, boolStr incl]
-exprSexp (ESlice e lo hi incl) =
+exprSexp (ESlice e lo hi incl _) =
   node "ESlice" [exprSexp e, exprSexp lo, exprSexp hi, boolStr incl]
 exprSexp (ELetGroup binds body) =
   node "ELetGroup" [slist (map letBindSexp binds), exprSexp body]
 exprSexp (ESection s) = node "ESection" [sectionSexp s]
 exprSexp (EFunction arms) = node "EFunction" (map armSexp arms)
-exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
+exprSexp (EIndex a i _) = node "EIndex" [exprSexp a, exprSexp i]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
 exprSexp (EHeadAnnot e t) = node "EHeadAnnot" [exprSexp e, tySexp t]
 exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)

@@ -1143,6 +1143,8 @@ emitExpr e env (CArray es) = emitArrayCreate e env es
 emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
 emitExpr e env (CIndex a i) = emitArrayIndex e env a i
 emitExpr e env (CSlice a lo hi incl) = emitArraySlice e env a lo hi incl
+emitExpr e env (CStringIndex a i) = emitStringIndex e env a i
+emitExpr e env (CStringSlice a lo hi incl) = emitStringSlice e env a lo hi incl
 emitExpr e env (CList es) = emitList e env es
 emitExpr e env (CRangeList lo hi incl) = emitRangeList e env lo hi incl
 emitExpr _ _ other = gapE ("unsupported Core IR node " ++ ctag other)
@@ -3959,6 +3961,10 @@ restampIfaceDicts tbl iface tag rr (CIndex a b) =
   CIndex
     (restampIfaceDicts tbl iface tag rr a)
     (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CStringIndex a b) =
+  CStringIndex
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
 restampIfaceDicts _ _ _ _ other = other
 
 -- prefer the threaded element dict routes [rr] when present; else keep whatever the
@@ -4027,6 +4033,10 @@ restampCrossIface tbl method difs (CFieldAccess a f) =
   CFieldAccess (restampCrossIface tbl method difs a) f
 restampCrossIface tbl method difs (CIndex a b) =
   CIndex
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CStringIndex a b) =
+  CStringIndex
     (restampCrossIface tbl method difs a)
     (restampCrossIface tbl method difs b)
 restampCrossIface _ _ _ other = other
@@ -6668,6 +6678,8 @@ eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
 eagerVars b (CArray es) = eagerVarsList b es
 eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CStringIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CStringSlice a lo hi _) = eagerVars b a
 eagerVars b (CSlice a lo hi _) = eagerVars b a
   ++ eagerVars b lo
   ++ eagerVars b hi
@@ -7460,6 +7472,8 @@ scanExprRecords (CArray es) = scanExprsRecords es
 scanExprRecords (CRangeArray lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CRangeList lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CIndex a i) = scanExprRecords a ++ scanExprRecords i
+scanExprRecords (CStringIndex a i) = scanExprRecords a ++ scanExprRecords i
+scanExprRecords (CStringSlice a lo hi _) = scanExprRecords a
 scanExprRecords (CSlice a lo hi _) = scanExprRecords a
   ++ scanExprRecords lo
   ++ scanExprRecords hi
@@ -7699,6 +7713,56 @@ emitArraySlice e env a lo hi incl =
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
   (w, LTCon)
+
+-- CStringIndex s i: codepoint-indexed Char.  The String runtime rep is a packed
+-- UTF-8 cell (NOT an i64-element array), so we mirror the interpreter's
+-- stringIndexCp: convert to a Char array via @mdk_string_to_chars (each element
+-- already a Char immediate (cp<<1)|1, header = codepoint count), bounds-check the
+-- codepoint index against that count, then load element i.  Result LTy = LTChar.
+-- Bounds violation calls @mdk_oob (matching the interpreter's index-OOB panic).
+emitStringIndex : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitStringIndex e env a i =
+  let (str_w, _) = emitExpr e env a
+  let (idx_w, _) = emitExpr e env i
+  let chars = freshReg e
+  let _ = emit e ("  " ++ chars ++ " = call i64 @mdk_string_to_chars(i64 " ++ str_w ++ ")")
+  let idx_raw = untagInt e idx_w
+  let arr_len = loadTag e chars
+  let c1 = freshReg e
+  let _ = emit e ("  " ++ c1 ++ " = icmp slt i64 " ++ idx_raw ++ ", 0")
+  let c2 = freshReg e
+  let _ = emit e ("  " ++ c2 ++ " = icmp sge i64 " ++ idx_raw ++ ", " ++ arr_len)
+  let oob = freshReg e
+  let _ = emit e ("  " ++ oob ++ " = or i1 " ++ c1 ++ ", " ++ c2)
+  let n = intToString (freshId e)
+  let oobL = "soob" ++ n
+  let okL = "sidx_ok" ++ n
+  let _ = emit e ("  br i1 " ++ oob ++ ", label %" ++ oobL ++ ", label %" ++ okL)
+  let _ = emit e (oobL ++ ":")
+  let _ = emit e "  call void @mdk_oob()"
+  let _ = emit e "  unreachable"
+  let _ = emit e (okL ++ ":")
+  let r = loadFieldDyn e chars idx_raw
+  (r, LTChar)
+
+-- CStringSlice s lo hi incl: codepoint substring.  Mirror the interpreter's
+-- evalSliceInt VString = stringSlice lo (incl ? hi+1 : hi) s — which CLAMPS lo/hi
+-- to [0, cp_count] (no OOB panic, unlike the array slice).  Reuse the
+-- @mdk_string_slice extern (it >>1-untags the tagged Int bounds internally); for
+-- the inclusive form hi+1 in value space is +2 on the tagged word (tag = n*2+1).
+emitStringSlice : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> CExpr -> Bool -> <Mut> (String, LTy)
+emitStringSlice e env a lo hi incl =
+  let (str_w, _) = emitExpr e env a
+  let (lo_w, _) = emitExpr e env lo
+  let (hi_w, _) = emitExpr e env hi
+  let hi_adj = if incl then
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_w ++ ", 2")
+    r
+  else hi_w
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo_w ++ ", i64 " ++ hi_adj ++ ", i64 " ++ str_w ++ ")")
+  (r, LTStr)
 
 -- arrayMakeWith n f: INLINE INTRINSIC.  Allocates a dynamic array of `n` elements;
 -- fills element i by calling the Medaka closure `f` with the tagged index `i`.
@@ -8029,6 +8093,8 @@ ctag (CRangeList _ _ _) = "CRangeList"
 ctag (CRangeArray _ _ _) = "CRangeArray"
 ctag (CIndex _ _) = "CIndex"
 ctag (CSlice _ _ _ _) = "CSlice"
+ctag (CStringIndex _ _) = "CStringIndex"
+ctag (CStringSlice _ _ _ _) = "CStringSlice"
 ctag (CMethod _ _ _ _) = "CMethod (typeclass dispatch)"
 ctag (CDict _ _) = "CDict (dictionary)"
 ctag (CVariantUpdate _ _ _) = "CVariantUpdate (named-field variant update)"

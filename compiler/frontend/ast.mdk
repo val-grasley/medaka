@@ -142,11 +142,17 @@ public export data Expr
   | EArrayLit (List Expr)
   | ERangeList Expr Expr Bool
   | ERangeArray Expr Expr Bool
-  | ESlice Expr Expr Expr Bool
+  -- index/slice sugar.  The trailing `Ref String` is a receiver-kind discriminator
+  -- ("Array" by default, "String" stamped by typecheck's inferIndexElem/inferSlice).
+  -- Lowering reads it to route a String receiver to CStringIndex/CStringSlice (the
+  -- String runtime rep is NOT an i64-cell array), mirroring how the interpreter's
+  -- evalIndex dispatches on the runtime value tag.  Same Ref-stamp idiom as
+  -- EBinOp's `Ref Route`; sexp/printer ignore the ref.
+  | ESlice Expr Expr Expr Bool (Ref String)
   | ELetGroup (List LetBind) Expr
   | ESection Section
   | EFunction (List Arm)
-  | EIndex Expr Expr
+  | EIndex Expr Expr (Ref String)
   | EAnnot Expr Ty
   -- Head-pinned type annotation (`e :~ T`).  The parser never produces this, but
   -- desugar's container-literal lowering does: `Map { … }`/`Set { … }` become

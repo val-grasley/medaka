@@ -274,10 +274,10 @@ collectVars (EVariantUpdate _ e0 fs) = collectVars e0
 collectVars (EArrayLit es) = flatMap collectVars es
 collectVars (EListLit es) = flatMap collectVars es
 collectVars (ETuple es) = flatMap collectVars es
-collectVars (EIndex e0 i) = collectVars e0 ++ collectVars i
+collectVars (EIndex e0 i _) = collectVars e0 ++ collectVars i
 collectVars (ERangeList lo hi _) = collectVars lo ++ collectVars hi
 collectVars (ERangeArray lo hi _) = collectVars lo ++ collectVars hi
-collectVars (ESlice e0 lo hi _) = collectVars e0
+collectVars (ESlice e0 lo hi _ _) = collectVars e0
   ++ collectVars lo
   ++ collectVars hi
 collectVars (EBlock stmts) = flatMap doStmtVars stmts
@@ -389,10 +389,10 @@ localBoundExpr (EVariantUpdate _ e0 fs) =
 localBoundExpr (EArrayLit es) = flatMap localBoundExpr es
 localBoundExpr (EListLit es) = flatMap localBoundExpr es
 localBoundExpr (ETuple es) = flatMap localBoundExpr es
-localBoundExpr (EIndex e0 i) = localBoundExpr e0 ++ localBoundExpr i
+localBoundExpr (EIndex e0 i _) = localBoundExpr e0 ++ localBoundExpr i
 localBoundExpr (ERangeList lo hi _) = localBoundExpr lo ++ localBoundExpr hi
 localBoundExpr (ERangeArray lo hi _) = localBoundExpr lo ++ localBoundExpr hi
-localBoundExpr (ESlice e0 lo hi _) =
+localBoundExpr (ESlice e0 lo hi _ _) =
   localBoundExpr e0 ++ localBoundExpr lo ++ localBoundExpr hi
 localBoundExpr (EBlock stmts) = flatMap doStmtBound stmts
 localBoundExpr (EDo stmts) = flatMap doStmtBound stmts

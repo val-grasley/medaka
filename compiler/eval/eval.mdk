@@ -1048,8 +1048,8 @@ eval env (EFieldAccess e field) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
 eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
-eval env (EIndex arr idx) = evalIndex (eval env arr) (eval env idx)
-eval env (ESlice arr lo hi incl) =
+eval env (EIndex arr idx _) = evalIndex (eval env arr) (eval env idx)
+eval env (ESlice arr lo hi incl _) =
   evalSlice (eval env arr) (eval env lo) (eval env hi) incl
 eval env (ERangeList lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeListMk

@@ -453,10 +453,10 @@ collectLetBinds (EVariantUpdate _ e0 fs) = collectLetBinds e0
 collectLetBinds (EArrayLit es) = flatMap collectLetBinds es
 collectLetBinds (EListLit es) = flatMap collectLetBinds es
 collectLetBinds (ETuple es) = flatMap collectLetBinds es
-collectLetBinds (EIndex e0 i) = collectLetBinds e0 ++ collectLetBinds i
+collectLetBinds (EIndex e0 i _) = collectLetBinds e0 ++ collectLetBinds i
 collectLetBinds (ERangeList lo hi _) = collectLetBinds lo ++ collectLetBinds hi
 collectLetBinds (ERangeArray lo hi _) = collectLetBinds lo ++ collectLetBinds hi
-collectLetBinds (ESlice e0 lo hi _) = collectLetBinds e0
+collectLetBinds (ESlice e0 lo hi _ _) = collectLetBinds e0
   ++ collectLetBinds lo
   ++ collectLetBinds hi
 collectLetBinds (EBlock stmts) = flatMap doStmtBinds stmts

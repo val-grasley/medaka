@@ -74,6 +74,8 @@ freeVars b (CArray es) = freeVarsList b es
 freeVars b (CRangeArray lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CIndex a i) = freeVars b a ++ freeVars b i
 freeVars b (CSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
+freeVars b (CStringIndex a i) = freeVars b a ++ freeVars b i
+freeVars b (CStringSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
 freeVars b (CMethod _ route implRoutes methRoutes) =
   routeDictNames b (route :: implRoutes ++ methRoutes)
 freeVars b (CDict _ routes) = routeDictNames b routes
@@ -383,6 +385,11 @@ mentionsSelfMethod method tag (CVariantUpdate _ base ups) = mentionsSelfMethod m
 mentionsSelfMethod method tag (CIndex a i) = mentionsSelfMethod method tag a
   || mentionsSelfMethod method tag i
 mentionsSelfMethod method tag (CSlice a lo hi _) = mentionsSelfMethod method tag a
+  || mentionsSelfMethod method tag lo
+  || mentionsSelfMethod method tag hi
+mentionsSelfMethod method tag (CStringIndex a i) = mentionsSelfMethod method tag a
+  || mentionsSelfMethod method tag i
+mentionsSelfMethod method tag (CStringSlice a lo hi _) = mentionsSelfMethod method tag a
   || mentionsSelfMethod method tag lo
   || mentionsSelfMethod method tag hi
 mentionsSelfMethod _ _ _ = False

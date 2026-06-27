@@ -638,14 +638,15 @@ renameScoped rm bound (ERangeList lo hi i) =
   ERangeList (renameScoped rm bound lo) (renameScoped rm bound hi) i
 renameScoped rm bound (ERangeArray lo hi i) =
   ERangeArray (renameScoped rm bound lo) (renameScoped rm bound hi) i
-renameScoped rm bound (ESlice e0 lo hi i) =
+renameScoped rm bound (ESlice e0 lo hi i r) =
   ESlice
     (renameScoped rm bound e0)
     (renameScoped rm bound lo)
     (renameScoped rm bound hi)
     i
-renameScoped rm bound (EIndex e0 i) =
-  EIndex (renameScoped rm bound e0) (renameScoped rm bound i)
+    r
+renameScoped rm bound (EIndex e0 i r) =
+  EIndex (renameScoped rm bound e0) (renameScoped rm bound i) r
 renameScoped rm bound (EAnnot e0 t) = EAnnot (renameScoped rm bound e0) t
 renameScoped rm bound (EHeadAnnot e0 t) =
   EHeadAnnot (renameScoped rm bound e0) t

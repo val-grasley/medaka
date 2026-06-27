@@ -566,7 +566,7 @@ indexOrSliceRest e lo TDotDot = sliceHi e lo False
 indexOrSliceRest e lo TDotDotEq = sliceHi e lo True
 indexOrSliceRest e lo TRBracket = do
   advance
-  postfixTail (EIndex e lo)
+  postfixTail (EIndex e lo (Ref "Array"))
 indexOrSliceRest _ _ _ = failP "expected .. ..= or ] in index/slice"
 
 sliceHi : Expr -> Expr -> Bool -> Parser Expr
@@ -574,7 +574,7 @@ sliceHi e lo incl = do
   advance
   hi <- parseExpr
   expectTok TRBracket
-  postfixTail (ESlice e lo hi incl)
+  postfixTail (ESlice e lo hi incl (Ref "Array"))
 
 -- Atom level (`expr_atom` + the statement-form productions in parser.mly).
 -- Wrapped in a transparent ELoc capturing the atom's token span, mirroring

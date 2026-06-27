@@ -108,8 +108,12 @@ lower (EListLit es) = CList (map lower es)
 lower (EArrayLit es) = CArray (map lower es)
 lower (ERangeList lo hi incl) = CRangeList (lower lo) (lower hi) incl
 lower (ERangeArray lo hi incl) = CRangeArray (lower lo) (lower hi) incl
-lower (EIndex a i) = CIndex (lower a) (lower i)
-lower (ESlice a lo hi incl) = CSlice (lower a) (lower lo) (lower hi) incl
+lower (EIndex a i r) =
+  if r.value == "String" then CStringIndex (lower a) (lower i)
+  else CIndex (lower a) (lower i)
+lower (ESlice a lo hi incl r) =
+  if r.value == "String" then CStringSlice (lower a) (lower lo) (lower hi) incl
+  else CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f) = CFieldAccess (lower e) f
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
 lower (ERecordUpdate base fields) =
@@ -624,6 +628,9 @@ rewriteExprRP fo (CRangeArray lo hi incl) =
 rewriteExprRP fo (CIndex a i) = CIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
 rewriteExprRP fo (CSlice a lo hi incl) =
   CSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CStringIndex a i) = CStringIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
+rewriteExprRP fo (CStringSlice a lo hi incl) =
+  CStringSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
 rewriteExprRP fo (CBlock stmts) = CBlock (map (rewriteStmtRP fo) stmts)
 rewriteExprRP _ (CMethod name r ir mr) = CMethod name r ir mr
 rewriteExprRP _ (CDict name rs) = CDict name rs

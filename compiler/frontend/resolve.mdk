@@ -290,10 +290,10 @@ checkExpr cur env scope (ERangeList lo hi _) = checkExpr cur env scope lo
   ++ checkExpr cur env scope hi
 checkExpr cur env scope (ERangeArray lo hi _) = checkExpr cur env scope lo
   ++ checkExpr cur env scope hi
-checkExpr cur env scope (ESlice e0 lo hi _) = checkExpr cur env scope e0
+checkExpr cur env scope (ESlice e0 lo hi _ _) = checkExpr cur env scope e0
   ++ checkExpr cur env scope lo
   ++ checkExpr cur env scope hi
-checkExpr cur env scope (EIndex e0 i) = checkExpr cur env scope e0
+checkExpr cur env scope (EIndex e0 i _) = checkExpr cur env scope e0
   ++ checkExpr cur env scope i
 checkExpr cur env scope (EAnnot e0 t) = checkExpr cur env scope e0 ++ checkType cur env t
 -- EHeadAnnot is the synthetic `:~` head-pin desugar emits for Map/Set literals
@@ -848,8 +848,8 @@ firstExprLoc (EAnnot e0 _) = firstExprLoc e0
 firstExprLoc (EHeadAnnot e0 _) = firstExprLoc e0
 firstExprLoc (ERangeList lo hi _) = orElseLocL (firstExprLoc lo) (firstExprLoc hi)
 firstExprLoc (ERangeArray lo hi _) = orElseLocL (firstExprLoc lo) (firstExprLoc hi)
-firstExprLoc (EIndex e0 i) = orElseLocL (firstExprLoc e0) (firstExprLoc i)
-firstExprLoc (ESlice e0 lo hi _) = orElseLocL (firstExprLoc e0) (orElseLocL (firstExprLoc lo) (firstExprLoc hi))
+firstExprLoc (EIndex e0 i _) = orElseLocL (firstExprLoc e0) (firstExprLoc i)
+firstExprLoc (ESlice e0 lo hi _ _) = orElseLocL (firstExprLoc e0) (orElseLocL (firstExprLoc lo) (firstExprLoc hi))
 firstExprLoc (EDoOrigin _ e) = firstExprLoc e
 firstExprLoc _ = None
 

@@ -82,6 +82,9 @@ cexprSexp (CRangeArray lo hi incl) =
 cexprSexp (CIndex a i) = node "CIndex" [cexprSexp a, cexprSexp i]
 cexprSexp (CSlice a lo hi incl) =
   node "CSlice" [cexprSexp a, cexprSexp lo, cexprSexp hi, boolStr incl]
+cexprSexp (CStringIndex a i) = node "CStringIndex" [cexprSexp a, cexprSexp i]
+cexprSexp (CStringSlice a lo hi incl) =
+  node "CStringSlice" [cexprSexp a, cexprSexp lo, cexprSexp hi, boolStr incl]
 cexprSexp (CBlock stmts) = node "CBlock" (map cstmtSexp stmts)
 cexprSexp (CMethod name route implRoutes methRoutes) =
   node

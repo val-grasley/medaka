@@ -1,0 +1,15 @@
+-- String `.[]` index/slice sugar on the build path (run≠build regression).
+-- The String runtime rep is a packed UTF-8 cell, not an i64-element array, so
+-- index/slice lower to CStringIndex/CStringSlice (codepoint-indexed) rather than
+-- the array GEP path.  Covers: char index, char-equality, exclusive/inclusive
+-- slice, charCode-of-index (the former OOB-panic repro), and a multibyte case
+-- (length is CODE POINTS — "héllo→世" has 7).
+main : <IO> Unit
+main =
+  let _ = putStrLn (charToStr ("hello".[0]))
+  let _ = putStrLn (if "hello".[0] == 'h' then "eq-ok" else "eq-bad")
+  let _ = putStrLn ("hello".[1..3])
+  let _ = putStrLn ("hello".[1..=3])
+  let _ = putStrLn (intToString (charCode ("hello".[0])))
+  let _ = putStrLn (charToStr ("héllo→世".[6]))
+  putStrLn ("héllo→世".[1..=5])

@@ -94,6 +94,13 @@ public export data CExpr
   | CRangeArray CExpr CExpr Bool
   | CIndex CExpr CExpr
   | CSlice CExpr CExpr CExpr Bool
+  -- String-receiver index/slice (lowered from EIndex/ESlice whose receiver-kind
+  -- discriminator is "String").  The String runtime rep is a packed UTF-8 cell,
+  -- NOT an i64-element array, so these emit codepoint-indexed char extract /
+  -- substring (via @mdk_string_to_chars / @mdk_string_slice) instead of the
+  -- array GEP path.  CIndex/CSlice stay array-only (byte-identical emit).
+  | CStringIndex CExpr CExpr
+  | CStringSlice CExpr CExpr CExpr Bool
   -- a bare sequential block (desugar's EBlock — imperative IO / let-sequencing)
   | CBlock (List CStmt)
   -- typeclass dispatch, dicts explicit (slice 5; Route read out of the AST's

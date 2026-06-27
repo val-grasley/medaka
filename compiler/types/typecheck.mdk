@@ -1065,7 +1065,7 @@ collectExprErrors (EVariantUpdate _ e fs) = match collectExprErrors e
 collectExprErrors (EArrayLit es) = collectExprsErrors es
 collectExprErrors (EListLit es) = collectExprsErrors es
 collectExprErrors (ETuple es) = collectExprsErrors es
-collectExprErrors (EIndex e i) = match collectExprErrors e
+collectExprErrors (EIndex e i _) = match collectExprErrors e
   [] => collectExprErrors i
   errs => errs
 collectExprErrors (ERangeList lo hi _) = match collectExprErrors lo
@@ -1074,7 +1074,7 @@ collectExprErrors (ERangeList lo hi _) = match collectExprErrors lo
 collectExprErrors (ERangeArray lo hi _) = match collectExprErrors lo
   [] => collectExprErrors hi
   errs => errs
-collectExprErrors (ESlice e lo hi _) = match collectExprErrors e
+collectExprErrors (ESlice e lo hi _ _) = match collectExprErrors e
   [] => match collectExprErrors lo
     [] => collectExprErrors hi
     errs => errs
@@ -2875,8 +2875,8 @@ infer env (EDictAt name routesRef) = inferDictAt env name routesRef
 infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
-infer env (EIndex arr idx) = inferIndex env arr idx
-infer env (ESlice arr lo hi _) = inferSlice env arr lo hi
+infer env (EIndex arr idx r) = inferIndex env arr idx r
+infer env (ESlice arr lo hi _ r) = inferSlice env arr lo hi r
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
 -- recorded while inferring the wrapped expr is attributable to this position,
@@ -2912,11 +2912,21 @@ inferIntRange env lo hi container =
 -- a.[i] : index preserves container element type, mirroring the oracle
 -- (typecheck.ml:2198-2210): String -> Char (codepoint), Array a -> a, List a -> a,
 -- and an UNDETERMINED receiver (or a clean mismatch) defaults to Array, NOT List.
-inferIndex : TcEnv -> Expr -> Expr -> <Mut> Mono
-inferIndex env arr idx =
+inferIndex : TcEnv -> Expr -> Expr -> Ref String -> <Mut> Mono
+inferIndex env arr idx r =
   let _ = unify (infer env idx) (TCon "Int")
   let at = infer env arr
-  inferIndexElem at (normalize at)
+  let nat = normalize at
+  let _ = set_ref r (indexKind nat)
+  inferIndexElem at nat
+
+-- receiver-kind discriminator stamped onto the EIndex/ESlice Ref: lowering routes
+-- "String" to CStringIndex/CStringSlice; "List"/"Array" stay on the array path
+-- (List indexing on the build path is a separate pre-existing gap, unchanged).
+indexKind : Mono -> String
+indexKind (TCon "String") = "String"
+indexKind (TApp (TCon "List") _) = "List"
+indexKind _ = "Array"
 
 -- normalize-and-branch on the receiver head; `at` is the raw receiver mono, `nat`
 -- its normalized form. String -> Char; List -> element; everything else (Array,
@@ -2933,11 +2943,13 @@ indexElemAs at con =
   elem
 
 -- a.[lo..hi] : same container type as a
-inferSlice : TcEnv -> Expr -> Expr -> Expr -> <Mut> Mono
-inferSlice env arr lo hi =
+inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> <Mut> Mono
+inferSlice env arr lo hi r =
   let _ = unify (infer env lo) (TCon "Int")
   let _ = unify (infer env hi) (TCon "Int")
-  infer env arr
+  let at = infer env arr
+  let _ = set_ref r (indexKind (normalize at))
+  at
 
 -- a method occurrence.  Return-position: record (routeRef, result mono) so
 -- resolveSites can stamp RKey/RDict.  D3a arg-position (emitArgStampPasses + name in
@@ -5299,14 +5311,15 @@ rewriteArgScoped rw bound (ERangeList lo hi i) =
   ERangeList (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
 rewriteArgScoped rw bound (ERangeArray lo hi i) =
   ERangeArray (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
-rewriteArgScoped rw bound (ESlice e0 lo hi i) =
+rewriteArgScoped rw bound (ESlice e0 lo hi i r) =
   ESlice
     (rewriteArgScoped rw bound e0)
     (rewriteArgScoped rw bound lo)
     (rewriteArgScoped rw bound hi)
     i
-rewriteArgScoped rw bound (EIndex e0 i) =
-  EIndex (rewriteArgScoped rw bound e0) (rewriteArgScoped rw bound i)
+    r
+rewriteArgScoped rw bound (EIndex e0 i r) =
+  EIndex (rewriteArgScoped rw bound e0) (rewriteArgScoped rw bound i) r
 rewriteArgScoped rw bound (EAnnot e0 t) =
   EAnnot (rewriteArgScoped rw bound e0) t
 rewriteArgScoped rw bound (EHeadAnnot e0 t) =
@@ -7198,10 +7211,10 @@ collectMethodSites (ERangeList a b _) = collectMethodSites a
   ++ collectMethodSites b
 collectMethodSites (ERangeArray a b _) = collectMethodSites a
   ++ collectMethodSites b
-collectMethodSites (ESlice e a b _) = collectMethodSites e
+collectMethodSites (ESlice e a b _ _) = collectMethodSites e
   ++ collectMethodSites a
   ++ collectMethodSites b
-collectMethodSites (EIndex e i) = collectMethodSites e ++ collectMethodSites i
+collectMethodSites (EIndex e i _) = collectMethodSites e ++ collectMethodSites i
 collectMethodSites (EAnnot e _) = collectMethodSites e
 collectMethodSites (EBlock stmts) = flatMap doStmtSites stmts
 collectMethodSites (ERecordCreate _ fs) = flatMap fieldAssignSites fs
@@ -7267,10 +7280,10 @@ collectDictSites (EListLit es) = flatMap collectDictSites es
 collectDictSites (EArrayLit es) = flatMap collectDictSites es
 collectDictSites (ERangeList a b _) = collectDictSites a ++ collectDictSites b
 collectDictSites (ERangeArray a b _) = collectDictSites a ++ collectDictSites b
-collectDictSites (ESlice e a b _) = collectDictSites e
+collectDictSites (ESlice e a b _ _) = collectDictSites e
   ++ collectDictSites a
   ++ collectDictSites b
-collectDictSites (EIndex e i) = collectDictSites e ++ collectDictSites i
+collectDictSites (EIndex e i _) = collectDictSites e ++ collectDictSites i
 collectDictSites (EAnnot e _) = collectDictSites e
 collectDictSites (EBlock stmts) = flatMap doStmtDictSites stmts
 collectDictSites (ERecordCreate _ fs) = flatMap fieldAssignDictSites fs
@@ -8299,8 +8312,8 @@ allEVars (EListLit es) = flatMap allEVars es
 allEVars (EArrayLit es) = flatMap allEVars es
 allEVars (ERangeList a b _) = allEVars a ++ allEVars b
 allEVars (ERangeArray a b _) = allEVars a ++ allEVars b
-allEVars (ESlice e a b _) = allEVars e ++ allEVars a ++ allEVars b
-allEVars (EIndex e i) = allEVars e ++ allEVars i
+allEVars (ESlice e a b _ _) = allEVars e ++ allEVars a ++ allEVars b
+allEVars (EIndex e i _) = allEVars e ++ allEVars i
 allEVars (EAnnot e _) = allEVars e
 allEVars (EBlock stmts) = flatMap doStmtEVars stmts
 allEVars (ERecordCreate _ fs) = flatMap fieldAssignEVars fs
