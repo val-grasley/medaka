@@ -775,6 +775,38 @@ sigMapRef = Ref None
 installSigMap : List (String, FnSig) -> <Mut> Unit
 installSigMap t = set_ref sigMapRef (Some (omFromPairs (reverseL t) OTip))
 
+-- E22: the EMITTED define arity per top-level fn (post eta-saturate), the truth a
+-- CDict call site needs to decide under-application.  Computed by replaying
+-- etaSaturateMethodBody (deterministic, side-effect-free reads only) — the
+-- SIGNATURE arity is NOT a safe proxy: a closure-returning constrained fn's define
+-- has `nDicts + sigValueArity` params (eta-saturated), while a fn whose body is a
+-- non-CLam expression keeps its bare clause arity (eta-saturate does not fire), so
+-- the two diverge and only the replayed arity tracks the real `@mdk_<fn>` define.
+defArityMapRef : Ref (Option (OrdMap Int))
+defArityMapRef = Ref None
+
+installDefArityMap : Emit -> List CBind -> <Mut> Unit
+installDefArityMap e binds =
+  set_ref defArityMapRef (Some (omFromPairs (defArityPairs e binds) OTip))
+
+defArityPairs : Emit -> List CBind -> <Mut> List (String, Int)
+defArityPairs _ [] = []
+defArityPairs e (b::rest) = defArityPair e b :: defArityPairs e rest
+
+defArityPair : Emit -> CBind -> <Mut> (String, Int)
+defArityPair e (CBind name [(CClause pats body)]) =
+  let (pats2, _) = etaSaturateMethodBody e name pats body
+  (name, listLen pats2)
+defArityPair e (CBind name (c::rest)) = (name, clauseArityC (c :: rest))
+defArityPair _ (CBind name []) = (name, 0)
+
+-- the recorded emitted define arity of `name` (None when the table is uninstalled
+-- or the name is absent — fall back to the unconditional direct call).
+defArityOf : String -> <Mut> Option Int
+defArityOf name = match defArityMapRef.value
+  Some m => omLookup name m
+  None => None
+
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = match knownFnMapRef.value
   Some m => match omLookup name m
@@ -3001,6 +3033,19 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 -- dicts come from the call-site routes (methRoutes ++ implRoutes); each such
 -- route's nested reqs are materialized recursively inside dictWordOfRoute.
 emitMethod : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> List String -> <Mut> (String, LTy)
+emitMethod e env name route implRoutes methRoutes argOps
+  -- UNDER-APPLICATION of a runtime-dict-routed method (E22).  A partially-applied
+  -- method whose dispatch reads a forwarded `$dict_<method>_<slot>` param (RDict/
+  -- RDictFwd) — e.g. `eq y` (arity 2, one arg) passed to a HOF inside a
+  -- `Eq a =>` fn — must become a residual PAP closure, NOT a truncated dispatch.
+  -- emitMethodDispatch assumes a SATURATED arg list, so calling it with too few
+  -- args runs the impl on garbage and the (scalar) result is then INDIRECTLY
+  -- called as a closure → SIGSEGV.  The RKey/RNone paths already PAP correctly
+  -- (emitImplCallSat/emitMethodArgDispatch → emitPapClosure); this is the missing
+  -- RDict/RDictFwd analogue.  The PAP captures the route's dict word(s) + the
+  -- supplied args; its forwarder rebinds them and re-emits the saturated dispatch.
+  | dictRoutedUnderApplied route name argOps =
+      emitMethodPap e env name route implRoutes methRoutes argOps (methodArityOf name)
 emitMethod e env name route implRoutes methRoutes argOps = match route
   RKey tag _ => match implFor e name tag
     Some entry =>
@@ -3083,6 +3128,56 @@ emitMethodValDefine e env lamName name route implRoutes methRoutes arity capName
   let _ = emit e "entry:"
   let cenv = loadCaptures e env capNames 0
   let synArgs = etaArgOps arity 0
+  let (r, _) = emitMethod e cenv name route implRoutes methRoutes synArgs
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
+  set_ref (bufRef e) saved
+
+-- E22: a runtime-dict-routed (RDict/RDictFwd) method occurrence is UNDER-APPLIED —
+-- arity known, fewer real args than that, and the route reads a forwarded dict
+-- param.  (RKey/RNone routes PAP through their own emitImplCallSat/arg-dispatch
+-- paths, so they are excluded here and keep their existing lowering.)
+dictRoutedUnderApplied : Route -> String -> List String -> <Mut> Bool
+dictRoutedUnderApplied (RDict _) name argOps = lengthS argOps < methodArityOf name
+dictRoutedUnderApplied (RDictFwd _) name argOps = lengthS argOps < methodArityOf name
+dictRoutedUnderApplied _ _ _ = False
+
+-- E22: build the residual PAP closure for an under-applied dict-routed method.
+-- Captures the route's dict word(s) (so the runtime impl switch still reads the
+-- caller's forwarded dict after the closure escapes) PLUS the already-supplied
+-- args; the forwarder rebinds both and re-emits the SATURATED `emitMethod` once
+-- the remaining args arrive.  Mirrors emitMethodValue (Gap #50, the zero-supplied
+-- case) generalised to N supplied args.  Recorded arity is the RESIDUAL value
+-- arity so a later over-application of the PAP also splits correctly.
+emitMethodPap : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> List String -> Int -> <Mut> (String, LTy)
+emitMethodPap e env name route implRoutes methRoutes argOps arity =
+  let capNames = dedupS (routeDictNames [] (route :: implRoutes ++ methRoutes))
+  let dictWords = capDictWords env capNames
+  let remaining = arity - lengthS argOps
+  let lamName = "mdk_methpap_" ++ name ++ "_" ++ intToString (freshId e)
+  let _ = emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capNames (lengthS argOps)
+  emitClosureAllocA e lamName remaining (dictWords ++ argOps)
+
+-- emit the under-applied-method PAP forwarder.  Closure cell layout:
+-- field 0 = code_ptr, fields 1..K = captured dict words (K = listLen capNames),
+-- fields K+1..K+S = the S supplied arg words.  The forwarder takes `remaining`
+-- fresh `%argK` params; its body rebinds the dict names from fields 1..K, reloads
+-- the supplied args from fields K+1.., then re-emits the saturated dispatch over
+-- (supplied ++ fresh) under the method's own route.
+emitMethodPapDefine : Emit -> List (String, (String, LTy)) -> String -> String -> Route -> List Route -> List Route -> Int -> List String -> Int -> <Mut> Unit
+emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capNames supplied =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let remaining = arity - supplied
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e env capNames 0
+  let capCount = listLen capNames
+  let suppliedOps = loadPapCaptures e (capCount + supplied) capCount
+  let synArgs = suppliedOps ++ etaArgOps remaining 0
   let (r, _) = emitMethod e cenv name route implRoutes methRoutes synArgs
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
@@ -3578,10 +3673,30 @@ emitDictApp : Emit -> List (String, (String, LTy)) -> String -> List Route -> Li
 emitDictApp e env name routes argOps =
   if isKnownFn e name then
     let dictWords = dictWordsOf e env routes
-    let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls (dictWords ++ argOps) ++ ")")
-    (r, fnRetTy e name)
+    let allWords = dictWords ++ argOps
+    -- E22: a constrained fn that RETURNS A CLOSURE is under-applied at the call site
+    -- (`mkEq : Eq a => a -> (a -> Bool); mkEq y = (z => eq y z)` called `mkEq 1`).
+    -- Its #12-eta-saturated define has `nDicts + sigValueArity` params, but the site
+    -- supplies fewer value args (the rest go to the returned closure).  A direct call
+    -- would under-supply the trailing param (garbage → a bad closure word indirectly
+    -- called → SIGSEGV).  When the RECORDED define arity says we are short, build a
+    -- residual PAP capturing the dict + supplied words.  Saturated sites (the only
+    -- shape the compiler's own source produces) keep the byte-identical direct call
+    -- below, so the self-compile fixpoint is unaffected.
+    match defArityOf name
+      Some n => if lengthS allWords < n then
+          emitPapClosure e ("mdk_" ++ name) allWords n
+        else emitDictAppDirect e name allWords
+      None => emitDictAppDirect e name allWords
   else gapE ("CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
+
+-- the plain direct constrained-fn call: dict words followed by the real arg words,
+-- in the order dict_pass bound `name`'s leading dict params (the historical lowering).
+emitDictAppDirect : Emit -> String -> List String -> <Mut> (String, LTy)
+emitDictAppDirect e name allWords =
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls allWords ++ ")")
+  (r, fnRetTy e name)
 
 -- the dict witness words for a constrained-function call's routes (note (j)).
 dictWordsOf : Emit -> List (String, (String, LTy)) -> List Route -> <Mut> List String
@@ -7962,6 +8077,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
+  let _ = installDefArityMap e (fnBinds groups)
   let _ = set_ref floatFwSetRef (collectFloatFw e (fnBinds groups))
   let _ = set_ref floatClosureFnsRef (collectFloatClosureFns e (fnBinds groups))
   let _ = resetEmittedDefaults ()
@@ -8126,6 +8242,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
+  let _ = installDefArityMap e (fnBinds groups)
   let _ = set_ref floatFwSetRef (collectFloatFw e (fnBinds groups))
   let _ = set_ref floatClosureFnsRef (collectFloatClosureFns e (fnBinds groups))
   let _ = resetGaps ()

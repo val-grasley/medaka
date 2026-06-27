@@ -685,3 +685,44 @@ The **whole compiler (B)** then adds only *scale* of the same kinds plus the E4
 routing port — no new gap categories beyond core's set except the global-`Ref`
 volume (#7). The map is closed: **emit the real
 compiler = E1b → E4, in that leverage order.**
+
+## E22 — under-applied dict-routed method / closure-returning constrained fn (run≠build, 2026-06-27)
+
+A **partially-applied typeclass method** (`eq y` — fewer args than its arity)
+passed as a first-class value to a HOF, *inside* a `Eq a =>`/`Ord a =>`-constrained
+fn (so the method dispatches via a forwarded `$dict_<method>_<slot>` param),
+miscompiled on `medaka build` — empty output or SIGSEGV (139) — while `medaka run`
+was correct. Affects even primitive `Int` (it is the under-applied-method closure,
+not a type issue). Two distinct emitter holes, both on the runtime-dict path; the
+RKey (ground) and RNone (arg-tag) paths already PAP'd correctly:
+
+- **Hole A — under-applied RDict/RDictFwd method occurrence** (`apply1 (eq y) z`,
+  `map (eq y) xs`). `emitApp`'s `CMethod` arm called `emitMethod` regardless of
+  arity; the RDict/RDictFwd route (`emitMethodDispatch`) **assumes a saturated arg
+  list**, so it dispatched the impl with too few args (garbage) and the scalar
+  result was then INDIRECTLY called as a closure → SIGSEGV. Fix: `emitMethod` now
+  guards `dictRoutedUnderApplied` and routes to **`emitMethodPap`** — a residual
+  PAP closure capturing the route's dict word(s) + the supplied args, whose
+  forwarder rebinds them and re-emits the *saturated* dispatch once the rest
+  arrive (the N-supplied generalisation of Gap #50's `emitMethodValue`).
+
+- **Hole B — closure-returning constrained fn under-applied at the call site**
+  (`mkEq : Eq a => a -> (a -> Bool); mkEq y = (z => eq y z)` called `mkEq 1`). The
+  #12 eta-saturate makes `mkEq`'s define arity `nDicts + sigValueArity` (here 3 =
+  dict+y+`__eta`), ASSUMING every call site supplies all value args — false here,
+  the rest go to the *returned* closure. `emitDictApp` did an unconditional direct
+  call, under-supplying the trailing param (garbage closure word → SIGSEGV). The
+  signature arity is **not** a safe proxy for the define arity (a non-CLam-bodied
+  constrained fn keeps its bare clause arity — eta-saturate does not fire — so the
+  two diverge; two attempts to derive the define arity from `fnArity` at the call
+  site broke the self-compile). Fix: a **define-arity table** (`defArityMapRef`,
+  installed beside `installSigMap`) records each fn's TRUE emitted arity by
+  replaying `etaSaturateMethodBody` in a pre-pass; `emitDictApp` consults
+  `defArityOf` and builds a PAP only when genuinely short. Saturated sites (the
+  only shape the compiler's own source produces) keep the byte-identical direct
+  call, so the **selfcompile fixpoint is unaffected** (C3a/C3b YES).
+
+Gates: `diff_compiler_build` 38→39 (new fixture `method_closure_dict.mdk` covers
+rows 1/2/4/5/ground), `diff_compiler_llvm` 183/0, `_llvm_typed` 41/0,
+`_llvm_modules` 13/0, `eval_dict` 28/0, selfcompile fixpoint C3a/C3b YES.
+

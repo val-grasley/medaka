@@ -1,0 +1,40 @@
+-- E20 — under-applied typeclass method / closure-returning constrained fn passed
+-- as a first-class value under a forwarded class dict (run≠build regression).
+-- Each row miscompiled on `build` before E20 (empty / SIGSEGV); `run` was correct.
+
+apply1 : (a -> b) -> a -> b
+apply1 g x = g x
+
+-- row 1: partial method `eq y` escapes into a HOF, consumed there
+f1 : Eq a => a -> a -> Bool
+f1 y z = apply1 (eq y) z
+
+-- row 2: `map (eq y) xs` — under-applied method through `map`
+f2 : Eq a => a -> List a -> List Bool
+f2 y xs = map (eq y) xs
+
+-- row 4: bare escaping closure returned as the DIRECT return value
+mkEq : Eq a => a -> (a -> Bool)
+mkEq y = (z => eq y z)
+
+-- row 5: escaping closure RETURNED WRAPPED in a record ctor
+data Checker a = Checker { check : a -> Bool }
+mkC : Eq a => a -> Checker a
+mkC y = Checker { check = (z => eq y z) }
+
+main =
+  let c = mkC 7
+  let p = mkEq 5
+  println (debug [
+    f1 1 1,                       -- row1: True
+    f1 2 3,                       -- row1: False
+    c.check 7,                    -- row5: True
+    c.check 8,                    -- row5: False
+    p 5,                          -- row4: True
+    p 6,                          -- row4: False
+    debugEq (f2 1 [1, 2, 1]) [True, False, True],   -- row2
+    debugEq (map (eq 9) [9, 1, 9]) [True, False, True]   -- row7 (ground)
+  ])
+
+debugEq : List Bool -> List Bool -> Bool
+debugEq a b = a == b
