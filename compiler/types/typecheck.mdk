@@ -1309,7 +1309,11 @@ pendingSites = Ref []
 -- structural-builtin EBinOp eval path handles primitive / ungroundable operands
 -- (so `eq a b = a == b` on Int never recurses).  dictPass then rewrites the
 -- stamped node into the method application.
-pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool))
+-- (method, route ref, operand mono, inImpl-flag, enclosing-fn name).  The 5th
+-- field is currentFn at record time: for a TOP-LEVEL constrained fn an operator on
+-- its own constraint var routes RDict $dict_<encl>_<slot> (via enclDictVarOf), the
+-- operator analogue of the direct `eq x y` arg-stamp path.
+pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
 pendingBinopSites = Ref []
 
 -- Error-path BLOCKER B4 (audit finding D3): missing-impl dispatch obligations.
@@ -3731,7 +3735,7 @@ inferBinopE env op l r dref =
 -- in-impl-body sites (a top-level operand may collide with stale activeDictVars ids).
 recordBinopSite : String -> Ref Route -> Mono -> <Mut> Unit
 recordBinopSite op dref m = match binopMethod op
-  Some method => set_ref pendingBinopSites ((method, dref, m, currentImplBody.value) :: pendingBinopSites.value)
+  Some method => set_ref pendingBinopSites ((method, dref, m, currentImplBody.value, currentFn.value) :: pendingBinopSites.value)
   None => ()
 
 binopMethod : String -> Option String
@@ -5691,10 +5695,10 @@ enclDictVarOf m encl
 binopPrimitiveHead : String -> Bool
 binopPrimitiveHead h = contains h ["Int", "Float", "String", "Bool", "Char"]
 
-resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool) -> <Mut> Unit
+resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> <Mut> Unit
 resolveBinopSites _ _ [] = ()
-resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl)::rest) =
-  let _ = resolveBinopSite implTable keyTable method tagRef operandMono inImpl
+resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
+  let _ = resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl
   resolveBinopSites implTable keyTable rest
 
 -- G4: an `==`/`<`/… INSIDE an impl body ([inImpl]) whose operand is the enclosing
@@ -5706,16 +5710,26 @@ resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl)::res
 -- operand never grounds to a head tycon → the route stayed RNone → the SHALLOW
 -- structural builtin (`mdk_value_eq` / pointer-eq), silently mis-comparing any non-Int
 -- element (List → False, nested Box → False) and crashing once the dicts were threaded.
--- The [inImpl] gate is REQUIRED: activeDictVars is global + uncleared, so a TOP-LEVEL
--- comparison's operand tyvar id can collide with a stale impl element-var entry → a
--- spurious RDict (this flipped the repl's String-keyed `:browse` sort).  A concrete
--- operand (no active dict var, grounds to Some tag) keeps the existing RKey path.
-resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> <Mut> Unit
-resolveBinopSite implTable keyTable method tagRef operandMono inImpl = match if inImpl then activeDictVarOf operandMono else None
-  Some dname => set_ref tagRef (RDict dname)
-  None => match headTyconMono operandMono
-    Some tag => stampBinopRoute implTable keyTable method tagRef operandMono tag
-    None => ()
+-- The [inImpl] gate is REQUIRED for the GLOBAL activeDictVars route: activeDictVars
+-- is global + uncleared, so a TOP-LEVEL comparison's operand tyvar id can collide
+-- with a stale impl element-var entry → a spurious RDict (this flipped the repl's
+-- String-keyed `:browse` sort).  But a legitimately-constrained TOP-LEVEL operator
+-- (`f x y = x == y` under `Eq a =>`) must STILL forward the enclosing fn's own class
+-- dict, exactly as the direct `eq x y` arg-stamp path does.  enclDictVarOf draws that
+-- line PRECISELY: it consults `funConstraintsRef[encl]` (the enclosing fn's OWN
+-- declared constraint slots, keyed by fn name) — NOT the global activeDictVars — so
+-- it fires ONLY when the operand var is genuinely one of encl's constraint vars, and
+-- can never pick up a stale cross-impl element-var id.  In-impl operator sites keep
+-- activeDictVarOf (impl methods register their element vars in activeDictVars via
+-- registerImplRequires, not funConstraintsRef).  A concrete operand (no active dict
+-- var / not a constraint var, grounds to Some tag) keeps the existing RKey path.
+resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
+resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl =
+  match if inImpl then activeDictVarOf operandMono else enclDictVarOf operandMono encl
+    Some dname => set_ref tagRef (RDict dname)
+    None => match headTyconMono operandMono
+      Some tag => stampBinopRoute implTable keyTable method tagRef operandMono tag
+      None => ()
 
 -- Native Gap C: a tuple (or other parametric-with-requires) Eq/Ord impl carries
 -- element `requires` dicts (Eq a, Eq b) that the rewritten `eq`/`compare` method body

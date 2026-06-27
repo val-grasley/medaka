@@ -1,0 +1,27 @@
+-- Comparison OPERATORS (`==`/`!=`/`<`/…) on a bare constraint-var operand inside a
+-- top-level CONSTRAINED fn (run≠build regression).  Before the fix, resolveBinopSite
+-- left the route RNone for a top-level operand (the [inImpl] gate excluded ALL
+-- top-level sites), so the operator lowered to the shallow structural builtin and
+-- silently mis-compared any NON-primitive operand (List/tuple → wrong result) on
+-- the build path, while `medaka run` and the direct `eq x y` method call were
+-- correct.  Fix: route the operator to the enclosing fn's OWN forwarded class dict
+-- ($dict_<fn>_<slot>) via enclDictVarOf — the operator analogue of the direct
+-- arg-stamp path — gated on funConstraintsRef[encl] so a legitimate top-level
+-- constraint operand is distinguished from a stale global-activeDictVars id.
+-- Covers: Eq over List, Eq over a tuple (nested List), Ord `<` over List, and the
+-- ground-Int case (must STILL use the primitive builtin, unchanged).
+feq : Eq a => a -> a -> Bool
+feq x y = x == y
+
+flt : Ord a => a -> a -> Bool
+flt x y = x < y
+
+main : <IO> Unit
+main =
+  let _ = putStrLn (debug (feq [1, 2] [1, 2]))
+  let _ = putStrLn (debug (feq [1, 2] [9, 9]))
+  let _ = putStrLn (debug (feq (1, [2]) (1, [2])))
+  let _ = putStrLn (debug (feq (1, [2]) (1, [9])))
+  let _ = putStrLn (debug (flt [1, 2] [1, 3]))
+  let _ = putStrLn (debug (flt [1, 9] [1, 3]))
+  putStrLn (debug (feq 3 3))
