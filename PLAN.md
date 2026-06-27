@@ -21,14 +21,14 @@ living record of the self-host port is [`compiler/README.md`](./compiler/README.
    (`diff_selfhost_*` → `diff_compiler_*`), and goldens all updated in
    lockstep; seed re-minted (`fa5983c`), cold `bootstrap_from_seed` C3a PASS.
 
-**Pre-existing gate debt carried forward** (not regressions from this sweep;
-surfaced at the 2026-06-24 full-sweep audit, deferred at the time):
-- `diff_native_cli` `check/` family: ~57 failures (stale OCaml-sexp-tag goldens
-  — need a targeted recapture when a soak session hits the CLI).
-- `bootstrap_typecheck`: 2 failures (stale OCaml sexp format).
-- `bootstrap_resolve`: ~15 failures (stale OCaml sexp-tag goldens).
-These are golden-format mismatches, not behavioral regressions. Address at a
-soak checkpoint with `FORCE=1 bash test/build_oracles.sh`.
+**Pre-existing gate debt — ✅ RESOLVED 2026-06-26** (recapture `357e2ad`/`e6409e5`/`c5bf490`,
+golden-only, fixpoint C3a/C3b YES). Diagnosed all BENIGN (no native bug), recaptured to native:
+- `diff_native_cli` `check/` family: ~57 → **93/0** — the diff was uniformly the `sequence`/`traverse`
+  prelude-method signature-dump lag (not OCaml drift).
+- `bootstrap_typecheck`: 2 → **12/0** — `index_default`/`poly_let`; native defaults Num-poly literals
+  to `Int` and is strictly more precise/sound than the un-defaulted OCaml goldens.
+- `bootstrap_resolve`: ~15 → **15/0** — OCaml sexp error tags → native human-readable messages
+  (same errors, same locations, none dropped).
 
 ## Current status (2026-06-26) — `sequence` default method + universal default-method specialization
 
