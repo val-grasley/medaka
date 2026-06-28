@@ -64,10 +64,14 @@
 -- `sqlite.lib.varint` (`sqVarintBytes`).  Since `byteparser`/`bytebuilder` are
 -- now stdlib modules (imported by the single bare-name spelling `import
 -- byteparser`), there is just one module identity for them and the shared
--- import resolves cleanly.  The remaining non-varint big-endian
--- emitters (`beBytes`) stay local — they are trivial and SQLite-specific here.
+-- import resolves cleanly.  Sequential byte encoders (`buildFileHeader`,
+-- `encodeLeafCell`) use the `bytebuilder` Builder for append-only emission;
+-- random-access page layout stays on `Array` (set/blit) because Builder cannot
+-- express positional writes.
 
 import array.{set, blit}
+import bytebuilder.{newBuilder, emitU8, emitU16BE, emitU32BE, emitBytes, emitBeUint, buildArray}
+import list.{reverse, get}
 import lib.varint.{sqVarintBytes}
 import lib.recordenc.{encodeRecord}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
@@ -95,43 +99,14 @@ sqliteVersionNumber : Int
 sqliteVersionNumber = 3046000
 
 -- ---------------------------------------------------------------------------
--- List / array helpers (no stdlib import — keep the module lightweight)
+-- Magic bytes: "SQLite format 3\0"
 -- ---------------------------------------------------------------------------
 
-listLen : List a -> Int
-listLen []      = 0
-listLen (_::xs) = 1 + listLen xs
-
-appendList : List a -> List a -> List a
-appendList []      ys = ys
-appendList (x::xs) ys = x :: appendList xs ys
-
-revList : List a -> List a
-revList xs = revGo xs []
-
-revGo : List a -> List a -> List a
-revGo []      acc = acc
-revGo (x::xs) acc = revGo xs (x::acc)
-
-arrayToList : Array Int -> List Int
-arrayToList a = arrToListGo a 0
-
-arrToListGo : Array Int -> Int -> List Int
-arrToListGo a i
-  | i >= arrayLength a = []
-  | otherwise = a.[i] :: arrToListGo a (i + 1)
-
--- ---------------------------------------------------------------------------
--- Self-contained byte emitters (List Int, big-endian) — inverse of byteparser
--- ---------------------------------------------------------------------------
-
--- A big-endian n-byte unsigned integer as a forward List Int.
-beBytes : Int -> Int -> List Int
-beBytes nbytes v = revList (beGo nbytes v)
-
-beGo : Int -> Int -> List Int
-beGo 0 _ = []
-beGo n v = bitAnd v 255 :: beGo (n - 1) (v / 256)
+magicBytes : List Int
+magicBytes =
+  [ 83, 81, 76, 105, 116, 101, 32   -- "SQLite "
+  , 102, 111, 114, 109, 97, 116     -- "format"
+  , 32, 51, 0 ]                     -- " 3\0"
 
 -- ---------------------------------------------------------------------------
 -- Leaf-cell encoding: [payload-len varint][rowid varint][record bytes]
@@ -139,11 +114,13 @@ beGo n v = bitAnd v 255 :: beGo (n - 1) (v / 256)
 
 -- | Encode one table-leaf cell given its rowid and its record bytes.
 --   payload-len is the byte length of the record (the payload), as a varint.
-encodeLeafCell : Int -> Array Int -> Array Int
+encodeLeafCell : Int -> Array Int -> <Mut> Array Int
 encodeLeafCell rowid recBytes =
-  let lenBytes   = sqVarintBytes (arrayLength recBytes)
-  let rowidBytes = sqVarintBytes rowid
-  arrayFromList (appendList lenBytes (appendList rowidBytes (arrayToList recBytes)))
+  let buf = newBuilder ()
+  emitBytes (sqVarintBytes (arrayLength recBytes)) buf
+  emitBytes (sqVarintBytes rowid) buf
+  emitBytes (toList recBytes) buf
+  buildArray buf
 
 -- ---------------------------------------------------------------------------
 -- Page assembly
@@ -164,7 +141,7 @@ encodeLeafCell rowid recBytes =
 --   Returns `Err` if the cells + pointer array overflow the page.
 buildLeafPage : Int -> List (Array Int) -> <Mut> Result String (Array Int)
 buildLeafPage hdrOff cells = do
-  let nCells   = listLen cells
+  let nCells   = length cells
   let page     = arrayMake pageSize 0
   -- The cell-pointer array sits right after the 8-byte page header.
   let cpStart  = hdrOff + leafHeaderSize
@@ -221,52 +198,39 @@ writeLeafHeader page hdrOff nCells contentStart =
 -- File header (100 bytes), written into the first 100 bytes of page 1
 -- ---------------------------------------------------------------------------
 
-magicBytes : List Int
-magicBytes =
-  [ 83, 81, 76, 105, 116, 101, 32   -- "SQLite "
-  , 102, 111, 114, 109, 97, 116     -- "format"
-  , 32, 51, 0 ]                     -- " 3\0"
-
 -- | Build the 100-byte file header (page count = total pages) as an Array Int.
---   Assembled as a flat List Int of fixed-width big-endian fields, in offset
---   order, then `arrayFromList`.
-buildFileHeader : Int -> Array Int
+--   Emitted field by field via `bytebuilder` in offset order.
+buildFileHeader : Int -> <Mut> Array Int
 buildFileHeader pageCount =
-  let fields =
-        concatListOfLists
-          [ magicBytes              -- 0..15  magic (16 bytes)
-          , beBytes 2 pageSize      -- 16     page size
-          , [1]                     -- 18     write version
-          , [1]                     -- 19     read version
-          , [0]                     -- 20     reserved per page
-          , [64]                    -- 21     max payload frac
-          , [32]                    -- 22     min payload frac
-          , [32]                    -- 23     leaf payload frac
-          , beBytes 4 1             -- 24     change counter
-          , beBytes 4 pageCount     -- 28     page count
-          , beBytes 4 0             -- 32     freelist trunk
-          , beBytes 4 0             -- 36     freelist count
-          , beBytes 4 1             -- 40     schema cookie
-          , beBytes 4 4             -- 44     schema format
-          , beBytes 4 0             -- 48     default cache size
-          , beBytes 4 0             -- 52     largest-root (autovacuum)
-          , beBytes 4 1             -- 56     text encoding (UTF-8)
-          , beBytes 4 0             -- 60     user version
-          , beBytes 4 0             -- 64     incremental vacuum
-          , beBytes 4 0             -- 68     application id
-          , beBytes 4 0             -- 72     reserved
-          , beBytes 4 0             -- 76     reserved
-          , beBytes 4 0             -- 80     reserved
-          , beBytes 4 0             -- 84     reserved
-          , beBytes 4 0             -- 88     reserved
-          , beBytes 4 1             -- 92     version-valid-for
-          , beBytes 4 sqliteVersionNumber  -- 96  sqlite version number
-          ]
-  arrayFromList fields
-
-concatListOfLists : List (List Int) -> List Int
-concatListOfLists []           = []
-concatListOfLists (xs::rest)   = appendList xs (concatListOfLists rest)
+  let buf = newBuilder ()
+  emitBytes magicBytes buf              -- 0..15  magic (16 bytes)
+  emitU16BE pageSize buf                -- 16     page size
+  emitU8 1 buf                          -- 18     write version
+  emitU8 1 buf                          -- 19     read version
+  emitU8 0 buf                          -- 20     reserved per page
+  emitU8 64 buf                         -- 21     max payload frac
+  emitU8 32 buf                         -- 22     min payload frac
+  emitU8 32 buf                         -- 23     leaf payload frac
+  emitU32BE 1 buf                       -- 24     change counter
+  emitU32BE pageCount buf               -- 28     page count
+  emitU32BE 0 buf                       -- 32     freelist trunk
+  emitU32BE 0 buf                       -- 36     freelist count
+  emitU32BE 1 buf                       -- 40     schema cookie
+  emitU32BE 4 buf                       -- 44     schema format
+  emitU32BE 0 buf                       -- 48     default cache size
+  emitU32BE 0 buf                       -- 52     largest-root (autovacuum)
+  emitU32BE 1 buf                       -- 56     text encoding (UTF-8)
+  emitU32BE 0 buf                       -- 60     user version
+  emitU32BE 0 buf                       -- 64     incremental vacuum
+  emitU32BE 0 buf                       -- 68     application id
+  emitU32BE 0 buf                       -- 72     reserved
+  emitU32BE 0 buf                       -- 76     reserved
+  emitU32BE 0 buf                       -- 80     reserved
+  emitU32BE 0 buf                       -- 84     reserved
+  emitU32BE 0 buf                       -- 88     reserved
+  emitU32BE 1 buf                       -- 92     version-valid-for
+  emitU32BE sqliteVersionNumber buf     -- 96     sqlite version number
+  buildArray buf
 
 -- ---------------------------------------------------------------------------
 -- Row → leaf cell (with IPK handling)
@@ -283,7 +247,7 @@ concatListOfLists (xs::rest)   = appendList xs (concatListOfLists rest)
 rowidFor : Option Int -> Int -> List Cell -> Result String Int
 rowidFor None         autoRowid _     = Ok autoRowid
 rowidFor (Some p)     _         cells =
-  match nthCell p cells
+  match get p cells
     None              => Err "IPK column index out of range for row"
     Some (CInt v)     => Ok v
     Some CNull        => Err "INTEGER PRIMARY KEY column must be a non-NULL integer"
@@ -300,14 +264,9 @@ nullifyGo p idx (c::rest)  =
   let c2 = if idx == p then CNull else c
   c2 :: nullifyGo p (idx + 1) rest
 
-nthCell : Int -> List Cell -> Option Cell
-nthCell _ []        = None
-nthCell 0 (c::_)    = Some c
-nthCell n (_::rest) = nthCell (n - 1) rest
-
 -- | Encode one user row into a full leaf cell, computing its rowid (IPK or
 --   auto-increment) and storing the IPK column as NULL in the record.
-encodeRow : Option Int -> Int -> List Cell -> Result String (Array Int)
+encodeRow : Option Int -> Int -> List Cell -> <Mut> Result String (Array Int)
 encodeRow ipk autoRowid cells = do
   rowid <- rowidFor ipk autoRowid cells
   recBytes <- encodeRecord (nullifyIpk ipk cells)
@@ -315,15 +274,11 @@ encodeRow ipk autoRowid cells = do
 
 -- Encode every user row, threading the auto-increment rowid.  Cells come back
 -- in input order (which must already be rowid-ascending for the writer).
-encodeRows : Option Int -> Int -> List (List Cell) -> List (Array Int) -> Result String (List (Array Int))
-encodeRows _   _         []           acc = Ok (revAcc acc [])
+encodeRows : Option Int -> Int -> List (List Cell) -> List (Array Int) -> <Mut> Result String (List (Array Int))
+encodeRows _   _         []           acc = Ok (reverse acc)
 encodeRows ipk autoRowid (row::rest)  acc = do
   cell <- encodeRow ipk autoRowid row
   encodeRows ipk (autoRowid + 1) rest (cell::acc)
-
-revAcc : List a -> List a -> List a
-revAcc []        acc = acc
-revAcc (x::rest) acc = revAcc rest (x::acc)
 
 -- ---------------------------------------------------------------------------
 -- sqlite_master row (page 1)
@@ -355,26 +310,14 @@ masterCells name createSql rootPage =
 export
 buildDatabase : String -> String -> Int -> Option Int -> List (List Cell) -> <Mut> Result String (Array Int)
 buildDatabase name createSql colCount ipkColIdx rows = do
-  -- 1. Encode the data-page (page 2) user rows.
   dataCells <- encodeRows ipkColIdx 1 rows []
-  -- 2. Build the page-2 leaf (b-tree header at offset 0).
-  match buildLeafPage 0 dataCells
-    Err e => Err "data page: \{e}"
-    Ok page2 =>
-      -- 3. Build the sqlite_master row (rowid 1, no IPK) → leaf cell.
-      match encodeRecord (masterCells name createSql 2)
-        Err e => Err "sqlite_master record: \{e}"
-        Ok masterRec =>
-          let masterCell = encodeLeafCell 1 masterRec
-          -- 4. Build the page-1 leaf (b-tree header at offset 100).
-          match buildLeafPage fileHeaderSize [masterCell]
-            Err e => Err "schema page: \{e}"
-            Ok page1 =>
-              -- 5. Blit the 100-byte file header over page 1's first 100 bytes.
-              let fileHdr = buildFileHeader 2
-              blit fileHdr 0 page1 0 fileHeaderSize
-              -- 6. Concatenate page 1 ++ page 2 into the whole-file image.
-              Ok (concatPages page1 page2)
+  page2 <- mapErr (e => "data page: \{e}") (buildLeafPage 0 dataCells)
+  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name createSql 2))
+  let masterCell = encodeLeafCell 1 masterRec
+  page1 <- mapErr (e => "schema page: \{e}") (buildLeafPage fileHeaderSize [masterCell])
+  let fileHdr = buildFileHeader 2
+  let _ = blit fileHdr 0 page1 0 fileHeaderSize
+  Ok (concatPages page1 page2)
 
 -- Concatenate two equal-sized page images into one byte array.
 concatPages : Array Int -> Array Int -> <Mut> Array Int

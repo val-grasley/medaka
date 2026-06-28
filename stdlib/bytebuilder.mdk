@@ -89,14 +89,17 @@ export
 emitBeSint : Int -> Int -> Builder -> <Mut> Unit
 emitBeSint nbytes v buf =
   let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
-  emitBEUnsignedN nbytes unsigned buf
+  emitBeUint nbytes unsigned buf
 
--- Emit exactly `n` bytes of a non-negative integer in big-endian order.
--- Recursively fills from the high byte down.
-emitBEUnsignedN : Int -> Int -> Builder -> <Mut> Unit
-emitBEUnsignedN 0 _ _ = ()
-emitBEUnsignedN n v buf =
-  emitBEUnsignedN (n - 1) (shiftRight v 8) buf
+-- | Emit exactly `nbytes` bytes of a non-negative integer in big-endian order.
+--   Inverse of `beUint nbytes`.
+--   The unsigned mirror of `emitBeSint`; useful when the value is always
+--   non-negative and you want to choose the width dynamically at runtime.
+export
+emitBeUint : Int -> Int -> Builder -> <Mut> Unit
+emitBeUint 0 _ _ = ()
+emitBeUint n v buf =
+  emitBeUint (n - 1) (shiftRight v 8) buf
   emitU8 (bitAnd v 255) buf
 
 -- ---------------------------------------------------------------------------
@@ -195,3 +198,15 @@ build1 f =
 -- Ok -2147483648
 -- > runByteParser (beSint 4) (build1 (emitBeSint 4 (-1)))
 -- Ok -1
+
+-- emitBeUint ↔ beUint  (variable-width unsigned)
+-- > runByteParser (beUint 1) (build1 (emitBeUint 1 0))
+-- Ok 0
+-- > runByteParser (beUint 1) (build1 (emitBeUint 1 255))
+-- Ok 255
+-- > runByteParser (beUint 2) (build1 (emitBeUint 2 256))
+-- Ok 256
+-- > runByteParser (beUint 3) (build1 (emitBeUint 3 65536))
+-- Ok 65536
+-- > runByteParser (beUint 4) (build1 (emitBeUint 4 4294967295))
+-- Ok 4294967295
