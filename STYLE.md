@@ -235,32 +235,37 @@ fold shape it doesn't expose) — not for re-spelling one it has. (Contrast §5,
 which is about reaching for a helper instead of hand-threading an index: there
 the helper *adds* intent; here the bespoke helper merely *shadows* the prelude.)
 
-## §9 — Write `::` tight, everywhere
+## §9 — Write `::` tight when both operands are atoms
 
 The cons operator `::` signals **structure** (list construction), not
-computation, so it carries no surrounding spaces in either patterns or
-expressions. All other binary operators (`+`, `==`, `++`, `&&`, `|>`, …) are
-spaced.
+computation. It is written **tight** (no surrounding spaces) only when **both
+operands are atoms**; it is **spaced** when either operand is an application or a
+binop, so the visual grouping matches the parse. (Supersedes the prior
+"tight everywhere" rule.) An *atom* is a variable, a literal, an index access
+(`a.[i]`), a field access (`r.x`), or a parenthesized/delimited expression
+(tuple, list/array/map/set literal, record, range, section). All other binary
+operators (`+`, `==`, `++`, `&&`, `|>`, …) are always spaced.
 
 ```
--- BAD: spaces around :: in expression position
-cons x xs = x :: xs
-prepend h t = h :: t
-build n acc = n :: acc
-
--- GOOD: tight :: in expression position
-cons x xs = x::xs
+-- Tight: both operands are atoms (variable :: variable, index :: variable, …)
 prepend h t = h::t
 build n acc = n::acc
+takeOne input pos acc = input.[pos]::acc
+keep x = pure (x::xs)
 
--- Pattern position is already tight — keep it that way
-go []         acc = acc
+-- Spaced: an operand is an application or a binop
+emitU8 b r = set_ref r (bitAnd b 255 :: r.value)   -- left is an application
+addContBits (x::rest) = x + 128 :: addContBits rest -- left binop, right app
+
+-- Pattern position is already all-atoms — stays tight
+go []       acc = acc
 go (x::xs) acc = go xs (x::acc)
 ```
 
-The formatter enforces this rule (`compiler/tools/printer.mdk`): `::` is
-handled by `opSpace`/`isConstructorOp` which suppresses the surrounding spaces.
-Medaka has no user-defined infix constructors, so `::` is the only case.
+The formatter enforces this rule (`compiler/tools/printer.mdk`): `consTight`
+gates the tight rendering on `isConstructorOp op && isConsAtomOperand l &&
+isConsAtomOperand r`. Medaka has no user-defined infix constructors, so `::` is
+the only case.
 
 ## 10. `export` sits on its own line above a value's type signature
 

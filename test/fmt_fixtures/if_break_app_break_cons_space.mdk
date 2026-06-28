@@ -1,0 +1,28 @@
+-- Regression fixtures for three formatter fixes:
+--   #1 an over-width `if/then/else` in body/statement position breaks `then`/
+--      `else` onto their own lines instead of overflowing a single line;
+--   #2 `println (nested call)` breaks INSIDE the argument (nested-app spine)
+--      rather than a no-op head-break that still overflows;
+--   #3 `::` is tight only when BOTH operands are atoms, else spaced.
+
+-- #1: function body is an over-width if/then/else
+peekByte input pos =
+  if pos >= arrayLength input then errorResult "unexpected end of input here" pos else okResult input.[pos] pos
+
+-- #1: `let x = if …` statement RHS (own line) also breaks
+emitVarint v buf =
+  let bytes = if v >= varint9Threshold then varint9Bytes v else varintBytesEncoding v
+  appendAll bytes buf
+
+-- #2: println of a nested call — break inside the argument, not after the head
+demo =
+  println (showResult "anyByte [65,66,67] sample label" (runByteParser anyByte (arrayFromList [65, 66, 67])))
+  println (showResult "bBetween long descriptive label here" (runByteParser (bBetween (byte 40) (byte 41) (beUint 1)) (arrayFromList [40, 99, 41])))
+
+-- #3: `::` spacing by operand atomhood
+consAtoms x acc = x::acc
+consIndex input pos acc = input.[pos]::acc
+consChain rest = 1::2::rest
+consSpacedLeft b r = bitAnd b 255 :: r.value
+consSpacedBoth x rest = x + 128 :: addContBits rest
+consSpacedRight x rest b = x :: appendByte rest b

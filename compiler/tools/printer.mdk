@@ -428,10 +428,26 @@ isContinuationOp op = op == "|>"
 isConstructorOp : String -> Bool
 isConstructorOp op = op == "::"
 
--- Space around an infix operator: empty for constructor ops (tight), a single
--- space for everything else.
-opSpace : String -> Doc
-opSpace op = if isConstructorOp op then Nil else text " "
+-- An "atom" operand for the `::` spacing heuristic: a variable, literal, index
+-- access (`a.[i]`), field access (`r.x`), or a parenthesized/delimited atom
+-- (tuple, list/array/map/set literal, record, range, section).  Applications and
+-- binops are NOT atoms.  exprPrec already gives precAtom to the delimited atoms
+-- and precPostfix to index/field access, so test by precedence.
+isConsAtomOperand : Expr -> Bool
+isConsAtomOperand e =
+  let p = exprPrec e
+  p == precAtom || p == precPostfix
+
+-- `::` is tight (no surrounding spaces) ONLY when both operands are atoms;
+-- spaced when either operand is an application or a binop, so the visual
+-- grouping matches the parse (`bitAnd b 255 :: r.value`, not the misleading
+-- `bitAnd b 255::r.value`).  All other operators are always spaced.
+consTight : String -> Expr -> Expr -> Bool
+consTight op l r = isConstructorOp op && isConsAtomOperand l && isConsAtomOperand r
+
+-- Context-aware operator spacing: tight only for an all-atom `::`, else a space.
+binopSpace : String -> Expr -> Expr -> Doc
+binopSpace op l r = if consTight op l r then Nil else text " "
 
 exprPrec : Expr -> Int
 exprPrec (ELit _) = precAtom
@@ -525,9 +541,10 @@ printExprRaw (EIf c t e) = printEIf c t e
 printExprRaw (EBinOp op l r _) =
   let prec = binopPrec op
   let ra = isRightAssoc op
+  let sp = binopSpace op l r
   Cat
     (printExpr (if ra then prec + 1 else prec) l)
-    (Cat (opSpace op) (Cat (text op) (Cat (opSpace op) (printExpr (if ra then prec else prec + 1) r))))
+    (Cat sp (Cat (text op) (Cat sp (printExpr (if ra then prec else prec + 1) r))))
 printExprRaw (EUnOp op e) = Cat (text op) (printExpr precUnary e)
 printExprRaw (EFieldAccess e f) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
@@ -640,7 +657,31 @@ letGroupClauseRhs rhs = Cat (text " = ") (printExpr precTop rhs)
 printEIf : Expr -> Expr -> Expr -> Doc
 printEIf c t e
   | isBlockBody t || isBlockBody e = Cat (text "if ") (Cat (printExpr precTop c) (Cat (text " ") (Cat (ifBranch "then" t) (Cat Hardline (ifBranch "else" e)))))
+  -- EXPRESSION position (nested arg, let..in rhs, record/tuple element): keep the
+  -- if flat on one line.  Breaking here would inject newlines an inline context
+  -- (a trailing `in`, a closing `)`) cannot absorb → unparseable output.  Width-
+  -- aware breaking happens only in BODY/STATEMENT position via `printIfBody`.
   | otherwise = Cat (text "if ") (Cat (printExpr precTop c) (Cat (text " then ") (Cat (printExpr precTop t) (Cat (text " else ") (printExpr precTop e)))))
+
+-- BODY/STATEMENT position `if c then t else e` (a function/lambda body, a do/
+-- block statement, a `let x = if …` binding RHS): rendered in a group so the
+-- whole thing collapses onto one line only when it fits the width budget at this
+-- indent; otherwise `then`/`else` break onto their own lines.  Safe to break
+-- because the if sits on its own line (no trailing inline context to misplace).
+printIfBody : Expr -> Expr -> Expr -> Doc
+printIfBody c t e
+  | isBlockBody t || isBlockBody e = printEIf c t e
+  | otherwise =
+    group
+      (Cat
+        (text "if ")
+        (Cat
+          (printExpr precTop c)
+          (Cat
+            (text " then")
+            (Cat
+              (nest (Cat Line (printExpr precTop t)))
+              (Cat Line (Cat (text "else") (nest (Cat Line (printExpr precTop e)))))))))
 
 -- EBlock self-indents; a block body indents; a simple body inlines.
 ifBranch : String -> Expr -> Doc
@@ -670,7 +711,7 @@ printExprBodyW wrapApp (EIf c t els)
   | isUnitLit els =
     let thenPart = elseLessThen t
     Cat (text "if ") (Cat (printExpr precTop c) (Cat (text " then") thenPart))
-  | otherwise = printExpr precTop (EIf c t els)
+  | otherwise = printIfBody c t els
 printExprBodyW _ e = printExpr precTop e
 
 elseLessThen : Expr -> Doc
@@ -750,8 +791,17 @@ printAppSpine e =
       else
         group (Nest 2 (Cat (printExpr precApp head) (Cat Line (printExpr precPostfix arg))))
     (head, args) =>
-      let tail = concatD (map (a => Cat Line (printExpr precPostfix a)) args)
+      let tail = concatD (map (a => Cat Line (spineArg a)) args)
       group (Nest 2 (Cat (printExpr precApp head) tail))
+
+-- A multi-arg-spine argument: a NESTED application is parenthesized and rendered
+-- through printAppSpine so its own spine can break when over-width (otherwise a
+-- wide nested-call argument would overflow its single line).  Anything else
+-- renders flat at postfix precedence, unchanged.
+spineArg : Expr -> Doc
+spineArg (ELoc _ e) = spineArg e
+spineArg (EApp f x) = Cat (text "(") (Cat (printAppSpine (EApp f x)) (text ")"))
+spineArg e = printExpr precPostfix e
 
 -- A single application argument worth keeping inline with its head: a lambda
 -- (whose body we can fold across lines) or a nested application (its own spine
@@ -759,6 +809,11 @@ printAppSpine e =
 isBreakableArg : Expr -> Bool
 isBreakableArg (ELoc _ e) = isBreakableArg e
 isBreakableArg (ELam _ _) = True
+-- A nested application argument: keep the call head inline and break the
+-- nested app's OWN spine (recursively), instead of dropping the head onto its
+-- own line where the still-flat argument line keeps overflowing.  Only when the
+-- nested app actually has arguments (a bare head has nothing to break).
+isBreakableArg (EApp f x) = True
 isBreakableArg _ = False
 
 -- An application whose spine is exactly one breakable argument — the shape that
@@ -782,6 +837,10 @@ breakableArg (ELam pats body) =
       (Cat
         (sepBy (text " ") (map printPatAtom pats))
         (Cat (text " =>") (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
+-- A nested application: parenthesize and let printAppSpine break its own spine
+-- so over-width nested calls wrap rather than overflowing a single arg line.
+breakableArg (EApp f x) =
+  Cat (text "(") (Cat (printAppSpine (EApp f x)) (text ")"))
 breakableArg e = printExpr precPostfix e
 
 collectApp : List Expr -> Expr -> (Expr, List Expr)
@@ -836,6 +895,16 @@ guardArmBodyNoIf (EBlock stmts) =
   Cat (text " =") (printExprBodyW False (EBlock stmts))
 guardArmBodyNoIf body = Cat (text " = ") (printExprBodyW False body)
 
+-- A `let pat = <rhs>` statement RHS (own line in a do/bare block): an `if` is
+-- break-capable here (statement position), reusing the body-position renderer so
+-- an over-width if breaks `then`/`else` instead of overflowing.  Everything else
+-- renders flat at top precedence, unchanged.
+doLetRhs : Expr -> Doc
+doLetRhs (ELoc _ e) = doLetRhs e
+doLetRhs (EIf c t els)
+  | not (isUnitLit els) = printIfBody c t els
+doLetRhs e = printExpr precTop e
+
 printDoStmt : DoStmt -> Doc
 printDoStmt (DoBind pat e) =
   Cat (printPat pat) (Cat (text " <- ") (printExpr precTop e))
@@ -848,7 +917,7 @@ printDoStmt (DoExpr e) = match e
 printDoStmt (DoLet isMut _ pat e) =
   Cat
     (text "let ")
-    (Cat (if isMut then text "mut " else Nil) (Cat (printPat pat) (Cat (text " = ") (printExpr precTop e))))
+    (Cat (if isMut then text "mut " else Nil) (Cat (printPat pat) (Cat (text " = ") (doLetRhs e))))
 printDoStmt (DoAssign x e) =
   Cat (text x) (Cat (text " = ") (printExpr precTop e))
 printDoStmt (DoFieldAssign x fields e) =
@@ -943,10 +1012,10 @@ printBinOpTrailing op l r =
   let ra = isRightAssoc op
   let lp = if ra then prec + 1 else prec
   let rp = if ra then prec else prec + 1
-  -- constructor ops (::) are tight: no space flat, break-only newline when broken.
-  let afterOp = if isConstructorOp op then Softline else Line
+  -- constructor ops (::) are tight ONLY when both operands are atoms.
+  let afterOp = if consTight op l r then Softline else Line
   group
-    (nest (Cat (printOperand lp l) (Cat (opSpace op) (Cat (text op) (Cat afterOp (printOperand rp r))))))
+    (nest (Cat (printOperand lp l) (Cat (binopSpace op l r) (Cat (text op) (Cat afterOp (printOperand rp r))))))
 
 -- An operand of a trailing-break binop: an application breaks its own spine
 -- (cascade step 3) when over-width; anything else renders at the given prec.

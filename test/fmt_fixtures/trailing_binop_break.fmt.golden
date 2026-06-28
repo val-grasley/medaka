@@ -1,11 +1,11 @@
 expandData vis name params variants derives =
-  DData vis name params variants []::
+  DData vis name params variants [] ::
     deriveImpls (deriveForData name params variants) derives
 
 expandRecord vis name params fields derives =
-  DRecord vis name params fields []::
+  DRecord vis name params fields [] ::
     deriveImpls (deriveForRecord name params fields) derives
 
 expandNewtype vis name params inner derives =
-  DNewtype vis name params inner []::
+  DNewtype vis name params inner [] ::
     deriveImpls (deriveForNewtype name params inner) derives
