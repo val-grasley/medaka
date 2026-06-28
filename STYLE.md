@@ -336,3 +336,50 @@ openDb path = match readFileBytes path
   Err e => Err "readFileBytes: \{e}"   -- does something with the error
   Ok bytes => fromBytes bytes
 ```
+
+## 12. Binary constants: name the meaning, express the structure — folding makes it free
+
+Low-level code (byte encoders/decoders, bit twiddling) is full of magic numbers.
+Opaque decimal literals hide the structure they encode; pull the meaning-bearing
+ones into **named top-level constants**, and express powers of two as **shifts of
+literals** rather than the expanded decimal.
+
+This costs nothing at runtime, because of two facts about how Medaka runs:
+
+- **On `build`**, the native path shells out to **clang `-O2`**, which constant-
+  folds literal-operand arithmetic. `shiftLeft 1 56` becomes an immediate — there
+  is no shift at runtime.
+- **On `run`**, the interpreter doesn't fold, but a **top-level binding is a lazy
+  nullary** (§ lazy-toplevel-nullary): it is evaluated **once** on first use and
+  cached, not recomputed per call.
+
+The one rule that makes this safe: **the operands must be literals.** Folding
+applies to `shiftLeft 1 56`, not to `pow2 n` where `n` is a runtime parameter —
+that is a genuine per-call computation. Never trade a literal expression for a
+runtime function call expecting the optimizer to erase it.
+
+Be **selective**: name the constants whose *meaning* carries the code (thresholds,
+continuation/flag bits, field masks), and prefer a shift that *shows* the byte
+position. Leave the universally-idiomatic `255`/`256` bare — a `byteRadix` alias
+for `256` is noise, not clarity.
+
+```
+-- BAD: opaque decimal; the "2^56" structure and the byte positions are hidden
+emitSqVarint v buf =
+  if v >= 72057594037927936 then ... else ...
+emitU32BE v buf =
+  emitU8 (bitAnd (v / 16777216) 255) buf   -- which byte is this?
+  emitU8 (bitAnd (v / 65536) 255) buf
+
+-- GOOD: named threshold as a literal shift (clang folds it); shifts show the byte
+sqVarint9Threshold : Int
+sqVarint9Threshold = shiftLeft 1 56          -- 9-byte varint boundary, 2^56
+
+contBit : Int
+contBit = 128                                -- varint continuation bit (meaning, not 0x80)
+
+emitU32BE v buf =
+  emitU8 (bitAnd (shiftRight v 24) 255) buf  -- high byte
+  emitU8 (bitAnd (shiftRight v 16) 255) buf
+  -- 255 stays bare: the byte mask is idiomatic, naming it adds nothing
+```
