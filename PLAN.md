@@ -8,6 +8,10 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
+## Current status (2026-06-27) — internal-only array externs restricted (--allow-internal)
+
+**SHIPPED** (`1b94b42` enforcement + `f2e6019` dogfood rewrites + `8e0390f` seed re-mint; cold `bootstrap_from_seed` C3a PASS, fixpoint C3a/C3b YES, full `diff_compiler_*` 0-fail incl. new `diff_compiler_internal_extern` 8/0). Referencing `arrayGetUnsafe`/`arraySetUnsafe`/`arrayBlit`/`arrayFill`/`arraySortInPlaceBy` from a non-stdlib module is now a resolve-phase compile error (`InternalExternAccess`), unless `--allow-internal` is passed (run/build/check). Trust is per-module via the loader's **owning root** (`stdlibTrustedMods` in `loader.mdk`), not modId; `--allow-internal` also trusts the entry project. `__fallthrough__` excluded (desugar-generated → would false-flag guards). The compiler self-compiles via the emitter entry which never runs resolve, so `make medaka`/fixpoint are unaffected; only `build_oracles`' `medaka build` of compiler entries got the flag. Dogfood libs (sqlite/parsec/byteparser) rewritten to safe public API (reads `arr.[i]`, writes `Array.set`, new safe `Array.blit` in `stdlib/array.mdk`); sqlite oracles byte-identical. Memory: `project_internal_extern_restriction`.
+
 ## Current status (2026-06-27) — D2 fn-level cross-module dict-arity collision FIXED (run-crash)
 
 Closed the **fn-level** half of the long-deferred D2 re-key — and in the process **refuted its
