@@ -2,8 +2,8 @@
 --   interior 0x05).
 --
 -- A page is `pageSize` bytes.  Page 1 is special: its B-tree header begins at
--- byte offset 100 (after the database header), not 0.  All other pages begin
--- their B-tree header at offset 0 within the page.
+-- byte offset dbHeaderSize (100, after the database header), not 0.  All other
+-- pages begin their B-tree header at offset 0 within the page.
 --
 -- Page header (SQLITE-DESIGN.md §2):
 --   0  1  page type flag (0x0D = table leaf, 0x05 = table interior, ...)
@@ -13,8 +13,9 @@
 --   7  1  fragmented free bytes
 --   8  4  right-most pointer (interior pages only; absent in leaf header)
 --
--- Leaf page header  = 8 bytes.
--- Interior page header = 12 bytes (includes the 4-byte right-most pointer).
+-- Leaf page header  = leafHeaderSize (8) bytes.
+-- Interior page header = interiorHeaderSize (12) bytes (includes the 4-byte
+-- right-most pointer).
 --
 -- The cell pointer array immediately follows the page header.
 --
@@ -34,6 +35,32 @@ import byteparser.{
 import lib.varint.{sqVarint}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord}
 import list.{reverse}
+import string.{join}
+
+-- ---------------------------------------------------------------------------
+-- Named structural constants (STYLE §12)
+-- ---------------------------------------------------------------------------
+
+-- | Byte offset of the B-tree header on page 1 (follows the 100-byte database
+--   file header).  All other pages' B-tree headers start at their page base.
+dbHeaderSize : Int
+dbHeaderSize = 100
+
+-- | Size of the leaf-page B-tree header (bytes: type + freeblock + cell-count
+--   + content-area start + fragmented-free).  The cell-pointer array follows.
+leafHeaderSize : Int
+leafHeaderSize = 8
+
+-- | Size of the interior-page B-tree header: the 8 common bytes plus the
+--   4-byte right-most child pointer.
+interiorHeaderSize : Int
+interiorHeaderSize = 12
+
+-- | Byte offset of the cell-count uint16 within the page B-tree header.
+cellCountOffset : Int
+cellCountOffset = 3
+
+-- ---------------------------------------------------------------------------
 
 -- | Bounds-checked single-byte read.  Every structural read in this module
 --   funnels through here so that a truncated / corrupt / hostile `.sqlite`
@@ -55,7 +82,7 @@ beU32 bytes off = do
   b1 <- byteAt bytes (off + 1)
   b2 <- byteAt bytes (off + 2)
   b3 <- byteAt bytes (off + 3)
-  Ok (b0 * 16777216 + b1 * 65536 + b2 * 256 + b3)
+  Ok (shiftLeft b0 24 + shiftLeft b1 16 + shiftLeft b2 8 + b3)
 
 -- | A decoded table row: its rowid and the column cells.
 public export data Row = Row Int (List Cell)
@@ -67,6 +94,9 @@ rowRowid (Row rid _) = rid
 export
 rowCells : Row -> List Cell
 rowCells (Row _ cs) = cs
+
+export impl Display Row where
+  display (Row rid cells) = "\{intToString rid}: \{join "|" (map display cells)}"
 
 -- Page-type constants.
 export
@@ -86,20 +116,28 @@ pageType bytes hdrOffset = byteAt bytes hdrOffset
 -- | Read the cell count from a page B-tree header at `hdrOffset`.
 export
 pageCellCount : Array Int -> Int -> Result String Int
-pageCellCount bytes hdrOffset = beU16 bytes (hdrOffset + 3)
+pageCellCount bytes hdrOffset = beU16 bytes (hdrOffset + cellCountOffset)
 
 -- Read a big-endian uint16 at absolute byte offset `off`.
 beU16 : Array Int -> Int -> Result String Int
 beU16 bytes off = do
   b0 <- byteAt bytes off
   b1 <- byteAt bytes (off + 1)
-  Ok (b0 * 256 + b1)
+  Ok (shiftLeft b0 8 + b1)
+
+-- | Step one BResult in a flat continuation chain, attaching a per-step label
+--   to any error.  Used in `decodeLeafCell` to replace three nested match
+--   arms while keeping the label on each failure.  Plain `onOk`/`Mappable`
+--   can't carry the per-step label; hence this local helper.
+--   Module-private (no export).
+bStep label (BErr m ep) _ = Err "\{label}: \{m} at \{intToString ep}"
+bStep label (BOk a pos) k = k a pos
 
 -- | Decode all rows of a TABLE-LEAF page.
 --
 -- `pageBase` is the absolute byte offset of the start of the page (for page N
 -- this is (N-1)*pageSize).  `hdrOffset` is where the B-tree header starts
--- (= pageBase, except page 1 where it is pageBase + 100).
+-- (= pageBase, except page 1 where it is pageBase + dbHeaderSize).
 --
 -- Returns Err if the page is not a table-leaf page.
 export
@@ -110,7 +148,7 @@ decodeLeafPage bytes pageBase hdrOffset = do
     Err "decodeLeafPage: page type \{intToString pt} is not a table-leaf page (0x0D)"
   else do
     nc <- pageCellCount bytes hdrOffset
-    decodeCells bytes pageBase (hdrOffset + 8) nc 0 []
+    decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
 
 -- Iterate the cell-pointer array, decoding each table-leaf cell.
 decodeCells : Array Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
@@ -135,20 +173,22 @@ decodeCells bytes pageBase cpArrayStart nCells i acc
 export
 decodeLeafCell : Array Int -> Int -> Result String Row
 decodeLeafCell bytes off =
-  match runBP sqVarint bytes off
-    BErr m ep => Err "payload-length varint: \{m} at \{intToString ep}"
-    BOk payloadLen pos1 =>
-      match runBP sqVarint bytes pos1
-        BErr m ep => Err "rowid varint: \{m} at \{intToString ep}"
-        BOk rowid pos2 =>
-          -- pos2 is the start of the record payload.
-          match runBP parseRecord bytes pos2
-            BErr m ep => Err "record: \{m} at \{intToString ep}"
-            BOk cells _ => Ok (Row rowid cells)
+  bStep "payload-length varint" (runBP sqVarint bytes off) (payloadLen pos1 =>
+    bStep "rowid varint" (runBP sqVarint bytes pos1) (rowid pos2 =>
+      bStep "record" (runBP parseRecord bytes pos2) (cells _ =>
+        Ok (Row rowid cells))))
 
 -- ---------------------------------------------------------------------------
 -- Multi-page recursive B-tree scan
 -- ---------------------------------------------------------------------------
+
+-- | Byte offset of the B-tree header for page `pageNum` in the whole-file
+--   byte array.  Page 1's header is displaced by `dbHeaderSize`; all others
+--   start at the page base `(pageNum-1)*pageSize`.
+--   Centralises the page-1-is-special rule used by `scanInteriorCells`.
+pageHdrOffset : Int -> Int -> Int
+pageHdrOffset pageSize pageNum =
+  if pageNum == 1 then dbHeaderSize else (pageNum - 1) * pageSize
 
 -- | Scan all rows reachable from page `pageNum` (1-indexed) in the whole-file
 --   byte array `bytes`, where each page is `pageSize` bytes.
@@ -157,7 +197,7 @@ decodeLeafCell bytes off =
 -- Interior pages are traversed left-to-right (all left-children in cell order,
 -- then the right-most child), yielding rows in rowid order.
 --
--- `hdrOffset` for page 1 = `pageBase + 100`; for all other pages = `pageBase`.
+-- `hdrOffset` for page 1 = dbHeaderSize; for all other pages = pageBase.
 export
 scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
 scanTablePage bytes pageSize pageNum hdrOffset = do
@@ -165,7 +205,7 @@ scanTablePage bytes pageSize pageNum hdrOffset = do
   if ptype == pageTableLeaf then do
     let pageBase = (pageNum - 1) * pageSize
     nc <- pageCellCount bytes hdrOffset
-    decodeCells bytes pageBase (hdrOffset + 8) nc 0 []
+    decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
   else if ptype == pageTableInterior then
     scanInteriorPage bytes pageSize pageNum hdrOffset
   else
@@ -176,10 +216,10 @@ scanInteriorPage : Array Int -> Int -> Int -> Int -> Result String (List Row)
 scanInteriorPage bytes pageSize pageNum hdrOffset = do
   let pageBase = (pageNum - 1) * pageSize
   nCells <- pageCellCount bytes hdrOffset
-  -- right-most child pointer is at hdrOffset + 8
-  rightmost <- beU32 bytes (hdrOffset + 8)
-  -- interior page cell-pointer array starts at hdrOffset + 12
-  let cpArrayStart = hdrOffset + 12
+  -- right-most child pointer is at hdrOffset + leafHeaderSize
+  rightmost <- beU32 bytes (hdrOffset + leafHeaderSize)
+  -- interior page cell-pointer array starts at hdrOffset + interiorHeaderSize
+  let cpArrayStart = hdrOffset + interiorHeaderSize
   scanInteriorCells bytes pageSize cpArrayStart pageBase nCells 0 rightmost []
 
 -- Iterate interior cells; each cell gives us a left-child page to recurse into.
@@ -188,7 +228,7 @@ scanInteriorCells : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> List 
 scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
   | i >= nCells = do
       -- all left-children visited; now the rightmost child
-      let rmHdr = if rightmost == 1 then 100 else (rightmost - 1) * pageSize
+      let rmHdr = pageHdrOffset pageSize rightmost
       rows <- scanTablePage bytes pageSize rightmost rmHdr
       Ok (acc ++ rows)
   | otherwise = do
@@ -196,7 +236,7 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
       let cellOff = pageBase + cellPtr
       -- interior cell: [4-byte left-child] [rowid varint] — we only need left-child
       leftChild <- beU32 bytes cellOff
-      let childHdr = if leftChild == 1 then 100 else (leftChild - 1) * pageSize
+      let childHdr = pageHdrOffset pageSize leftChild
       rows <- scanTablePage bytes pageSize leftChild childHdr
       scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
 
@@ -205,17 +245,5 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
 -- | Render a decoded row (or error) as "rowid: cell|cell|..." for doctests.
 export
 showRow : Result String Row -> String
-showRow (Err e)           = "Err: \{e}"
-showRow (Ok (Row rid cells)) = stringConcat [intToString rid, ": ", showCellsBT cells]
-
-showCellsBT : List Cell -> String
-showCellsBT []        = ""
-showCellsBT (c::[])   = showCellBT c
-showCellsBT (c::rest) = stringConcat [showCellBT c, "|", showCellsBT rest]
-
-showCellBT : Cell -> String
-showCellBT CNull   = "NULL"
-showCellBT (CInt n)  = intToString n
-showCellBT (CText s) = s
-showCellBT (CBlob _) = "<blob>"
-showCellBT (CFloat f) = floatToString f
+showRow (Err e)  = "Err: \{e}"
+showRow (Ok row) = display row
