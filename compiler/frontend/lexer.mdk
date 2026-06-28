@@ -86,6 +86,7 @@ public export data Token
   | TFunction
   | TPlus
   | TMinus
+  | TMinusTight
   | TStar
   | TSlash
   | TSlashEq
@@ -184,6 +185,7 @@ tokenToString TInternal = "INTERNAL"
 tokenToString TFunction = "FUNCTION"
 tokenToString TPlus = "PLUS"
 tokenToString TMinus = "MINUS"
+tokenToString TMinusTight = "MINUS_TIGHT"
 tokenToString TStar = "STAR"
 tokenToString TSlash = "SLASH"
 tokenToString TSlashEq = "SLASHEQ"
@@ -750,7 +752,8 @@ scanOp src len pos depth id c
 
 singleOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 singleOp src len pos depth id '+' = emit src len pos depth id TPlus 1 0
-singleOp src len pos depth id '-' = emit src len pos depth id TMinus 1 0
+singleOp src len pos depth id '-' =
+  emit src len pos depth id (minusTok src len pos) 1 0
 singleOp src len pos depth id '*' = emit src len pos depth id TStar 1 0
 singleOp src len pos depth id '/' = emit src len pos depth id TSlash 1 0
 singleOp src len pos depth id '<' = emit src len pos depth id TLt 1 0
@@ -783,6 +786,16 @@ atToken src pos
   | pos <= 0 = TAt
   | isAlnum (at src (pos - 1)) && identStartLower src (identRunStart src (pos - 1)) = TAsAt
   | otherwise = TAt
+
+-- A bare `-` lexes as TMinusTight (a distinct token the parser can grab as a
+-- negative-literal argument) exactly when it has a space/tab to its LEFT and a
+-- digit to its RIGHT — the `f -1` / `5 -1` asymmetric-spacing shape.  Every
+-- TMinus matcher in the parser also accepts TMinusTight, so this only changes
+-- parsing in application argument position (where the head is non-numeric).
+minusTok : Array Char -> Int -> Int -> Token
+minusTok src len pos
+  | pos > 0 && pos + 1 < len && isSpace (at src (pos - 1)) && isDigit (at src (pos + 1)) = TMinusTight
+  | otherwise = TMinus
 
 identRunStart : Array Char -> Int -> Int
 identRunStart src p

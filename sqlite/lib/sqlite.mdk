@@ -178,7 +178,7 @@ pkColumnIndex : String -> Option Int
 pkColumnIndex sql = pkScan (stringToChars sql)
 
 pkScan : Array Char -> Option Int
-pkScan arr = pkGo arr 0 (arrayLength arr) (0 - 1) 0 False
+pkScan arr = pkGo arr 0 (arrayLength arr) -1 0 False
 
 -- state: i cursor; n length; col current column (-1 before first '(');
 --        depth paren depth; started whether we've seen the opening '('.
@@ -234,7 +234,7 @@ lowerCharsGo arr i n acc =
     lowerCharsGo arr (i + 1) n (lc :: acc)
 
 ciScan : Array Char -> Array Char -> Option Int
-ciScan arr needle = ciGo arr needle 0 (arrayLength arr) (0 - 1) 0 False True
+ciScan arr needle = ciGo arr needle 0 (arrayLength arr) -1 0 False True
 
 -- state: i cursor; n length; col current column idx (-1 before first '(');
 --        depth paren depth; started seen opening '('; atColStart whether the
@@ -287,7 +287,7 @@ columnNames : Db -> String -> Result String (List String)
 columnNames db name = map (entry => colNamesOf (schemaSql entry)) (findTable db name)
 
 colNamesOf : String -> List String
-colNamesOf sql = cnGather (stringToChars sql) 0 (arrayLength (stringToChars sql)) (0 - 1) 0 False True []
+colNamesOf sql = cnGather (stringToChars sql) 0 (arrayLength (stringToChars sql)) -1 0 False True []
 
 cnGather : Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> List String -> List String
 cnGather arr i n col depth started atColStart acc
