@@ -22,12 +22,13 @@ import byteparser.{
   runByteParser,
   beSint,
   takeSlice,
-  takeBytes,
   failWith,
   beFloat64,
 }
 import lib.varint.{sqVarint}
 import list.{reverse}
+import array
+import string.{join, fromUtf8}
 
 -- | One decoded column value.
 public export data Cell
@@ -36,6 +37,14 @@ public export data Cell
   | CText String
   | CBlob (Array Int)
   | CFloat Float
+  deriving (Debug)
+
+export impl Display Cell where
+  display CNull     = "NULL"
+  display (CInt n)  = intToString n
+  display (CText s) = s
+  display (CBlob _) = "<blob>"
+  display (CFloat f) = floatToString f
 
 export
 cellToString : Cell -> String
@@ -70,16 +79,10 @@ serialOf n
   | n == 9 = Ok STIntOne
   | n == 10 = Err "reserved serial type 10"
   | n == 11 = Err "reserved serial type 11"
-  | n >= 12 = if isEven n
-              then Ok (STBlob (intDiv (n - 12) 2))
-              else Ok (STText (intDiv (n - 13) 2))
+  | n >= 12 = if n % 2 == 0
+              then Ok (STBlob ((n - 12) / 2))
+              else Ok (STText ((n - 13) / 2))
   | otherwise = Err "negative serial type"
-
-isEven : Int -> Bool
-isEven n = n - (intDiv n 2) * 2 == 0
-
-intDiv : Int -> Int -> Int
-intDiv a b = a / b
 
 -- | Decode a full record into its column cells.
 --
@@ -113,20 +116,8 @@ parseRecord = ByteParser parseRecordGo
 --   Used by the doctests above to print results without a Debug instance.
 export
 showCells : Result String (List Cell) -> String
-showCells (Err e)     = "Err: \{e}"
-showCells (Ok cells)  = showCellsGo cells
-
-showCellsGo : List Cell -> String
-showCellsGo []       = ""
-showCellsGo (c::[])  = showCell c
-showCellsGo (c::rest) = stringConcat [showCell c, "|", showCellsGo rest]
-
-showCell : Cell -> String
-showCell CNull   = "NULL"
-showCell (CInt n)  = intToString n
-showCell (CText s) = s
-showCell (CBlob _) = "<blob>"
-showCell (CFloat f) = floatToString f
+showCells (Err e)    = "Err: \{e}"
+showCells (Ok cells) = join "|" (map display cells)
 
 -- The pure driver: we drop to BResult-level position threading so we can
 -- compute the header boundary precisely.
@@ -164,56 +155,7 @@ readBody input pos STIntZero = BOk (CInt 0) pos
 readBody input pos STIntOne  = BOk (CInt 1) pos
 readBody input pos (STInt nbytes) = map CInt (runBP (beSint nbytes) input pos)
 readBody input pos (STText nbytes) =
-    map (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
+    map (bs => CText (fromUtf8 bs)) (runBP (takeSlice nbytes) input pos)
 readBody input pos (STBlob nbytes) =
     map CBlob (runBP (takeSlice nbytes) input pos)
 readBody input pos STFloat = map CFloat (runBP beFloat64 input pos)
-
--- ---------------------------------------------------------------------------
-
--- Decode a list of UTF-8 bytes to a String.
---
--- Decodes 1–4 byte UTF-8 sequences into Unicode codepoints, then builds the
--- String from the resulting chars.  Invalid/truncated sequences fall back to
--- treating the byte as a raw codepoint (Latin-1-ish) so decoding never panics.
-bytesToString : List Int -> String
-bytesToString bs = stringFromChars (arrayFromList (codepointsToChars (utf8Codepoints bs)))
-
--- Convert decoded codepoints to Chars (charFromCode is the prelude extern).
-codepointsToChars : List Int -> List Char
-codepointsToChars []          = []
-codepointsToChars (cp::rest)  = match charFromCode cp
-    Some c => c :: codepointsToChars rest
-    None   => codepointsToChars rest
-
--- UTF-8 byte sequence → list of codepoints.
-utf8Codepoints : List Int -> List Int
-utf8Codepoints bs = match bs
-  [] => []
-  b0::rest =>
-    if b0 < 0x80 then
-      b0 :: utf8Codepoints rest
-    else if b0 < 0xE0 then
-      utf8Take1 (b0 - 0xC0) rest
-    else if b0 < 0xF0 then
-      utf8Take2 (b0 - 0xE0) rest
-    else
-      utf8Take3 (b0 - 0xF0) rest
-
--- Take 1 continuation byte (2-byte sequence).
-utf8Take1 : Int -> List Int -> List Int
-utf8Take1 acc (b1::rest) = (acc * 64 + (b1 - 0x80)) :: utf8Codepoints rest
-utf8Take1 acc []         = [acc]
-
--- Take 2 continuation bytes (3-byte sequence).
-utf8Take2 : Int -> List Int -> List Int
-utf8Take2 acc (b1::b2::rest) =
-    ((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) :: utf8Codepoints rest
-utf8Take2 acc _ = [acc]
-
--- Take 3 continuation bytes (4-byte sequence).
-utf8Take3 : Int -> List Int -> List Int
-utf8Take3 acc (b1::b2::b3::rest) =
-    (((acc * 64 + (b1 - 0x80)) * 64 + (b2 - 0x80)) * 64 + (b3 - 0x80))
-      :: utf8Codepoints rest
-utf8Take3 acc _ = [acc]
