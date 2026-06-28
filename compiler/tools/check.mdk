@@ -30,6 +30,8 @@ import frontend.resolve.{
   resolveToLines,
   resolveModulesToLines,
   resolveModulesToHumane,
+  resolveModulesToLinesG,
+  resolveModulesToHumaneG,
   singleFileImportErrors,
   ppResError,
 }
@@ -135,9 +137,9 @@ checkHasErrors rsrc csrc tsrc =
 -- loaded modules (entry last).  Kept separate from runCheck so the no-import path
 -- stays byte-identical (the CLI routes 1-module loads through runCheck).
 export
-runCheckModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
-runCheckModules rtD coreD mods =
-  let resDiags = resolveModulesToHumane rtD coreD mods
+runCheckModules : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+runCheckModules allowInternal trustedMods rtD coreD mods =
+  let resDiags = resolveModulesToHumaneG allowInternal trustedMods rtD coreD mods
   match resDiags
     "" =>
       let exWarns = entryExhaust mods
@@ -148,9 +150,9 @@ runCheckModules rtD coreD mods =
 -- exit-code predicate analog of checkHasErrors for the multi-module path: a
 -- resolve error OR any type error in the entry module.
 export
-checkModulesHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
-checkModulesHasErrors rtD coreD mods =
-  let resDiags = resolveModulesToLines rtD coreD mods
+checkModulesHasErrors : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+checkModulesHasErrors allowInternal trustedMods rtD coreD mods =
+  let resDiags = resolveModulesToLinesG allowInternal trustedMods rtD coreD mods
   match resDiags
     "" => checkModulesEntryHasErrors rtD coreD mods
     _ => True

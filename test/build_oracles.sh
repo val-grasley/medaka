@@ -144,7 +144,10 @@ for e in $ENTRIES; do
     fi
   fi
   printf 'building    %s ...\n' "$e"
-  if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" "$MEDAKA" build "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
+  # The probe entries are COMPILER internals (compiler/entries/*) whose graphs use
+  # the internal-only array-kernel externs (arrayGetUnsafe, …); pass --allow-internal
+  # so the resolve-phase guard trusts them (they are part of this project).
+  if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" "$MEDAKA" build --allow-internal "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
     echo "FAIL: could not native-compile $e:"; tail -8 "$BINDIR/$e.buildlog"; exit 1
   fi
   [ -x "$out" ] || { echo "FAIL: $e build produced no binary"; tail -8 "$BINDIR/$e.buildlog"; exit 1; }

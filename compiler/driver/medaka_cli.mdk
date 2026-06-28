@@ -29,9 +29,9 @@ import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
-import frontend.resolve.{resolveModulesToHumane}
-import driver.loader.{loadProgram, findProjectRoot}
-import driver.diagnostics.{analyzeProject, analyzeLocated, ppDiagCli, ppDiagCliSrc, Diag(..), Severity(..), SevError}
+import frontend.resolve.{resolveModulesToHumane, resolveModulesToHumaneG}
+import driver.loader.{loadProgram, findProjectRoot, stdlibTrustedMods}
+import driver.diagnostics.{analyzeProject, analyzeLocated, analyzeLocatedG, ppDiagCli, ppDiagCliSrc, Diag(..), Severity(..), SevError}
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors, mainTypeIsAsync}
 import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
@@ -105,6 +105,7 @@ notYet sub =
 runCheckCmd : List String -> <IO, Mut, Panic> Unit
 runCheckCmd argv =
   let jsonMode = hasFlag "--json" argv
+  let allowInternal = hasFlag "--allow-internal" argv
   let argv2 = dropFlags argv
   match argv2
     [target] =>
@@ -122,7 +123,7 @@ runCheckCmd argv =
             let _ = ePutStrLn msg
             exit 1
           Ok csrc =>
-            if jsonMode then runCheckJsonCmd rsrc csrc target roots
+            if jsonMode then runCheckJsonCmd allowInternal rsrc csrc target roots
             else
               match readFile target
                 Err msg =>
@@ -137,9 +138,11 @@ runCheckCmd argv =
                     Err lmsg =>
                       let _ = ePutStrLn lmsg
                       exit 1
-                    Ok mods => checkRoute rsrc csrc tsrc target mods
+                    Ok mods =>
+                      let trusted = stdlibTrustedMods target roots stdlibDir mods
+                      checkRoute allowInternal trusted rsrc csrc tsrc target mods
     _ =>
-      let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
+      let _ = ePutStrLn "usage: medaka check [--json] [--allow-internal] <file.mdk>"
       exit 1
 -- G1: print the report (byte-identical stdout for no-import files:
 -- diff_native_cli gate), then gate the EXIT CODE on the error predicate
@@ -152,9 +155,9 @@ runCheckCmd argv =
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
 -- import-resolving report.  `mods` is dependency-first, entry last.
 -- `target` is passed for positioned error output (Stage-A: file:line:col: message).
-checkRoute : String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute rsrc csrc tsrc target [_] =
-  let diags = analyzeLocated rsrc csrc tsrc
+checkRoute : Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+checkRoute allowInternal _ rsrc csrc tsrc target [_] =
+  let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
     [] =>
@@ -163,12 +166,12 @@ checkRoute rsrc csrc tsrc target [_] =
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
-checkRoute rsrc csrc tsrc _ mods =
+checkRoute allowInternal trusted rsrc csrc tsrc _ mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
-  let _ = putStr (runCheckModules rtD coreD modsD)
-  match checkModulesHasErrors rtD coreD modsD
+  let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
+  match checkModulesHasErrors allowInternal trusted rtD coreD modsD
     True => exit 1
     False => ()
 
@@ -178,6 +181,7 @@ dropFlags : List String -> List String
 dropFlags [] = []
 dropFlags ("--json"::rest) = dropFlags rest
 dropFlags ("--release"::rest) = dropFlags rest
+dropFlags ("--allow-internal"::rest) = dropFlags rest
 dropFlags (x::rest) = x :: dropFlags rest
 
 -- True if the flag appears anywhere in argv.
@@ -291,8 +295,8 @@ cjTriple (path, src, diags) = cjFileEntry path src diags
 -- Parse errors are detected FIRST (before loadProgram panics) via parseResult.
 -- Output: {"files":[{"file":<path>,"diagnostics":[...]}]}
 -- Exits 1 if any error diagnostic; 0 otherwise.
-runCheckJsonCmd : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
-runCheckJsonCmd rsrc csrc target roots =
+runCheckJsonCmd : Bool -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+runCheckJsonCmd allowInternal rsrc csrc target roots =
   let src = readFileSafe target
   match parseResult src
     Err e =>
@@ -315,7 +319,7 @@ runCheckJsonCmd rsrc csrc target roots =
         Ok mods => match mods
           [_] =>
             -- Single module: analyzeLocated (single-file path, correct for type errors).
-            let diags = analyzeLocated rsrc csrc src
+            let diags = analyzeLocatedG allowInternal rsrc csrc src
             let _ = println (cjAllToJson [(target, src, diags)])
             let hasErr = any isDiagError diags
             if hasErr then exit 1 else ()
@@ -428,10 +432,11 @@ runBuildCmd argv = match parseBuildArgs argv
     let medaka = envOr "MEDAKA" "medaka"
     let cc = envOr "CC" "clang"
     let inputAbs = input
+    let allowInternal = hasFlag "--allow-internal" argv
     let outPath = match outOpt
       Some o => o
       None => defaultOutPath target input
-    match typecheckGate root inputAbs
+    match typecheckGate allowInternal root inputAbs
       TGErr msg =>
         let _ = ePutStrLn msg
         exit 1
@@ -464,8 +469,8 @@ data TypecheckGate = TGOk | TGFail | TGErr String
 -- whether any type error fired.  Read/load failures become TGErr (surfaced as-is)
 -- so the caller mirrors runBuild/loadProgram's own diagnostics.  Shared by build
 -- (here) — run inlines the same shape since it already holds the loaded mods.
-typecheckGate : String -> String -> <IO, Mut, Panic> TypecheckGate
-typecheckGate root input =
+typecheckGate : Bool -> String -> String -> <IO, Mut, Panic> TypecheckGate
+typecheckGate allowInternal root input =
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
   let stdlibDir = root ++ "/stdlib"
@@ -480,7 +485,8 @@ typecheckGate root input =
           let rtD = desugar (parse rsrc)
           let coreD = desugar (parse csrc)
           let modsD = map desugarPair mods
-          let resDiags = resolveModulesToHumane rtD coreD modsD
+          let trusted = stdlibTrustedMods input roots stdlibDir mods
+          let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
           match resDiags
             "" =>
               let _ = resetTypeErrorsSticky ()
@@ -510,6 +516,7 @@ parseBuildGo ("--target"::v::rest) acc out _ = match parseTarget v
   Err msg => Err msg
   Ok t => parseBuildGo rest acc out t
 parseBuildGo ["--target"] _ _ _ = Err "error: --target requires an argument (native|wasm)"
+parseBuildGo ("--allow-internal"::rest) acc out target = parseBuildGo rest acc out target
 parseBuildGo (x::rest) acc out target = parseBuildGo rest (x :: acc) out target
 
 parseTarget : String -> Result String BuildTarget
@@ -550,6 +557,7 @@ runRunCmd argv = match dropFlags argv
     let corePath = root ++ "/stdlib/core.mdk"
     let stdlibDir = root ++ "/stdlib"
     let roots = [findProjectRoot (dirOf2 target), stdlibDir]
+    let allowInternal = hasFlag "--allow-internal" argv
     match readFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
@@ -566,7 +574,8 @@ runRunCmd argv = match dropFlags argv
             let rtD = desugar (parse rsrc)
             let coreD = desugar (parse csrc)
             let modsD = map desugarPair mods
-            let resDiags = resolveModulesToHumane rtD coreD modsD
+            let trusted = stdlibTrustedMods target roots stdlibDir mods
+            let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
             match resDiags
               "" =>
                 let _ = resetTypeErrorsSticky ()

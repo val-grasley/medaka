@@ -461,6 +461,30 @@ visitMods deps roots stack visited acc (d::ds) = match visitMod deps roots stack
 -- module IDs to file paths (compiler: a single project dir).  Cross-project
 -- dependencies declared in the entry project's medaka.toml are read here and
 -- consulted before `roots` (see resolveDepFile).
+-- ── internal-extern trust signal ──
+--
+-- The modIds among `mods` that are TRUSTED to reference internal-only externs
+-- (arrayGetUnsafe, …) because their owning package root is `stdlibRoot` (where
+-- core.mdk/runtime.mdk live).  Re-resolves each modId's file via the same
+-- deps/roots the load used and compares the owning root — robust where modId is
+-- not (an `import array` yields the bare modId "array", indistinguishable from a
+-- user file).  GENERIC: compares against the caller-supplied `stdlibRoot`, no
+-- literal path baked in.  The caller (driver) ADDITIONALLY honours
+-- `--allow-internal` to trust the entry project's own modules.
+export
+stdlibTrustedMods : String -> List String -> String -> List (String, List Decl) -> <IO> List String
+stdlibTrustedMods entry roots stdlibRoot mods =
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  trustedModsGo deps roots stdlibRoot (map fst mods)
+
+trustedModsGo : List (String, String) -> List String -> String -> List String -> <IO> List String
+trustedModsGo _ _ _ [] = []
+trustedModsGo deps roots stdlibRoot (m::ms) = match findModuleFile deps roots m
+  Some (_, owningRoot) =>
+    if owningRoot == stdlibRoot then m :: trustedModsGo deps roots stdlibRoot ms
+    else trustedModsGo deps roots stdlibRoot ms
+  None => trustedModsGo deps roots stdlibRoot ms
+
 export
 loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
 loadProgram entry roots =

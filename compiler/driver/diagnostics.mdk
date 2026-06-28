@@ -30,6 +30,8 @@ import frontend.parser.{
 import frontend.desugar.{desugar}
 import frontend.resolve.{
   resolveProgram,
+  resolveProgramG2,
+  internalGuardFor,
   ppResError,
   resErrorLoc,
   resolveModule,
@@ -136,7 +138,7 @@ nthLineGo cs i len cur target acc
 export
 analyze : String -> String -> String -> <Mut> List Diag
 analyze runtimeSrc coreSrc progSrc =
-  analyzeFrom runtimeSrc coreSrc (parse progSrc)
+  analyzeFrom runtimeSrc coreSrc (parse progSrc) []
 
 -- B.10.2b: the LSP path runs the same pipeline but parses the target with
 -- `parseLocated` so the ELoc wrappers carry REAL line/col spans (the pure
@@ -145,18 +147,27 @@ analyze runtimeSrc coreSrc progSrc =
 export
 analyzeLocated : String -> String -> String -> <Mut> List Diag
 analyzeLocated runtimeSrc coreSrc progSrc =
-  analyzeFrom runtimeSrc coreSrc (parseLocated progSrc)
+  analyzeFrom runtimeSrc coreSrc (parseLocated progSrc) []
+
+-- B.10.x: like analyzeLocated but enforcing the internal-extern guard unless
+-- `allowInternal` is set (the single-file `medaka check` error path).  Other
+-- callers (LSP, playground) keep `analyzeLocated`, which is unguarded.
+export
+analyzeLocatedG : Bool -> String -> String -> String -> <Mut> List Diag
+analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc =
+  analyzeFrom runtimeSrc coreSrc (parseLocated progSrc) (internalGuardFor allowInternal)
 
 -- Shared analysis body, parameterised over the already-parsed target program
 -- (so `analyze` can pass placeholder-loc `parse` decls and `analyzeLocated` can
 -- pass real-loc `parseLocated` decls without duplicating the pipeline).
-analyzeFrom : String -> String -> List Decl -> <Mut> List Diag
-analyzeFrom runtimeSrc coreSrc raw =
+-- `internalGuard` is the internal-extern guard list (empty ⇒ unrestricted).
+analyzeFrom : String -> String -> List Decl -> List String -> <Mut> List Diag
+analyzeFrom runtimeSrc coreSrc raw internalGuard =
   let guardWarns = checkGuardExhaustiveness raw
   let desugared = desugar raw
   let runtimeP = desugar (parse runtimeSrc)
   let coreP = desugar (parse coreSrc)
-  let resErrs = resolveProgram runtimeP coreP desugared
+  let resErrs = resolveProgramG2 internalGuard runtimeP coreP desugared
   let resDiags = map (e => Diag SevError (ppResError e) (resErrorLoc e)) resErrs
   let _ = setCoherenceUserDecls desugared
   let tcDiags = match resErrs

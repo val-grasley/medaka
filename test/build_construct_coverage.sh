@@ -62,7 +62,7 @@ check() {
     fail=$((fail+1)); printf 'FAIL %s (no .build.golden — run sh test/capture_goldens.sh build_construct)\n' "$label"; return
   fi
   if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" \
-       "$MEDAKA" build "$src" -o "$bin" >"$WORK/$label.out" 2>"$WORK/$label.err"; then
+       "$MEDAKA" build --allow-internal "$src" -o "$bin" >"$WORK/$label.out" 2>"$WORK/$label.err"; then
     fail=$((fail+1)); printf 'FAIL %s (native build)\n' "$label"
     sed 's/^/    /' "$WORK/$label.err" | head -5
     return
