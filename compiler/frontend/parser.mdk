@@ -464,7 +464,7 @@ parseAppend : Parser Expr
 parseAppend = chainl1 parseAdd (binOp TPlusPlus "++")
 
 parseAdd : Parser Expr
-parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-"])
+parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-", binOp TMinusTight "-"])
 
 parseMul : Parser Expr
 parseMul =
@@ -480,6 +480,10 @@ parseUnary = do
 
 unaryFor : Token -> Parser Expr
 unaryFor TMinus = do
+  advance
+  e <- parseUnary
+  pure (EUnOp "-" e)
+unaryFor TMinusTight = do
   advance
   e <- parseUnary
   pure (EUnOp "-" e)
@@ -510,8 +514,43 @@ backtickNameFor _ = failP "expected backtick operator"
 parseApp : Parser Expr
 parseApp = do
   head <- parseAspat
-  args <- many parseAspat
+  args <- many (appArg (headIsNumeric head))
   pure (applyAll head args)
+
+-- One application argument.  Normally an aspat, but a TIGHT negative literal
+-- (`f -1` / `f -1.5`, lexed as TMinusTight INT/FLOAT) is grabbed as a
+-- negative-numeric argument when the application HEAD is non-numeric.  A numeric
+-- head (`5 -1`) never grabs, so the TMinusTight falls through to parseAdd's
+-- binary minus and stays subtraction (Rule C, head-gated).
+appArg : Bool -> Parser Expr
+appArg headNum = orElse (negLitArg headNum) parseAspat
+
+negLitArg : Bool -> Parser Expr
+negLitArg True = failP "numeric head: tight minus stays subtraction"
+negLitArg False = do
+  t <- peekP
+  t2 <- peek2P
+  negLitArgFor t t2
+
+negLitArgFor : Token -> Token -> Parser Expr
+negLitArgFor TMinusTight (TInt n) = do
+  advance
+  advance
+  pure (ENumLit (negate n) (Ref None) (Ref RNone))
+negLitArgFor TMinusTight (TFloat f) = do
+  advance
+  advance
+  pure (ELit (LFloat (negate f)))
+negLitArgFor _ _ = failP "not a tight negative literal argument"
+
+-- Is the application head a numeric literal (so a following `-N` is subtraction,
+-- not a negative argument)?  Strip the transparent ELoc wrapper first.
+headIsNumeric : Expr -> Bool
+headIsNumeric (ELoc _ e) = headIsNumeric e
+headIsNumeric (ENumLit _ _ _) = True
+headIsNumeric (ELit (LInt _)) = True
+headIsNumeric (ELit (LFloat _)) = True
+headIsNumeric _ = False
 
 -- the as-pattern operator level (`expr_aspat`): `IDENT AS_AT postfix` → EAsPat
 -- (a binding-LHS as-pattern, e.g. a lambda param `xs@rest =>`); else a postfix.
@@ -863,6 +902,7 @@ parseParen = do
 parenFor : Token -> Parser Expr
 parenFor TRParen = emit (ELit LUnit)
 parenFor TMinus = orElse bareMinusSection parseParenExpr
+parenFor TMinusTight = orElse bareMinusSection parseParenExpr
 parenFor t = parenSectionOr t
 
 parenSectionOr : Token -> Parser Expr
@@ -874,9 +914,21 @@ parenSectionOr t = match sectionOpStr t
 -- through). MINUS is excluded from the SecRight form, matching the grammar.
 bareMinusSection : Parser Expr
 bareMinusSection = do
-  expectTok TMinus
+  expectMinus
   expectTok TRParen
   pure (ESection (SecBare "-"))
+
+-- Accept either spacing of bare minus (TMinus or the asymmetric-spaced
+-- TMinusTight) wherever a `-` operator token is required.
+expectMinus : Parser Unit
+expectMinus = do
+  t <- peekP
+  expectMinusGo t
+
+expectMinusGo : Token -> Parser Unit
+expectMinusGo TMinus = emit ()
+expectMinusGo TMinusTight = emit ()
+expectMinusGo _ = failP "expected -"
 
 parseSectionOp : String -> Parser Expr
 parseSectionOp op = do
@@ -1350,6 +1402,7 @@ parsePatAtom = do
     TUnderscore => emit PWild
     TInt n => intPatRest (LInt n)
     TMinus => negIntPat
+    TMinusTight => negIntPat
     TFloat f => emit (PLit (LFloat f))
     TString s => emit (PLit (LString s))
     TChar s => charPatRest (LChar s)
@@ -1443,6 +1496,12 @@ intBound = do
 intBoundFor : Token -> Parser Lit
 intBoundFor (TInt n) = emit (LInt n)
 intBoundFor TMinus = do
+  advance
+  t <- peekP
+  match t
+    TInt n => emit (LInt (negate n))
+    _ => failP "expected integer after - in range bound"
+intBoundFor TMinusTight = do
   advance
   t <- peekP
   match t
