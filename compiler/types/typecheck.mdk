@@ -8593,10 +8593,34 @@ processSCCs env sigs grouped (scc::rest) =
   let er = processSCC env sigs grouped scc
   snd er ++ processSCCs (fst er) sigs grouped rest
 
+-- #23 support: synthesize impl-obligation-shaped Num entries from a group's
+-- pendingCallObligations / pendingDictApps deltas.  The Num constraint of an
+-- ambiguous var reaching a group ONLY through a constrained-callee instantiation
+-- (`main = println (app2 (==))`) is recorded on those refs, never on
+-- pendingImplObligations, so the group-level Num defaulting (defaultGroupNum /
+-- groundNumVars, which both reads candidate ids AND finds the live var to ground
+-- from impl-shaped entries) never saw it — leaving an ungrounded var whose Num dict
+-- route resolves RNone → a NULL dict word → build-time SIGTRAP (run is correct).
+-- Only field 0 (iface) and field 3 (the live operand mono) are read downstream;
+-- the rest mirror inferNumLitBare's placeholder shape.
+numCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
+numCallObls [] = []
+numCallObls ((iface, mono, loc)::rest)
+  | iface == "Num" = ("Num", ["a"], TyVar "a", mono, loc) :: numCallObls rest
+  | otherwise = numCallObls rest
+
+numDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
+numDictObls [] = []
+numDictObls ((_, monos, ifaces)::rest) =
+  flatMap (p => if fst p == "Num" then [("Num", ["a"], TyVar "a", snd p, currentLoc.value)] else []) (zipL ifaces monos)
+  ++ numDictObls rest
+
 processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
   let _ = enterLevel ()
   let oblN0 = listLen pendingImplObligations.value
+  let callN0 = listLen pendingCallObligations.value
+  let dictN0 = listLen pendingDictApps.value
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
@@ -8614,8 +8638,17 @@ processSCC env sigs grouped members =
   -- generalized var is never touched.  Mirrors lib/typecheck.ml's
   -- process_letrec_group group-level pass + per-binding default_ambiguous_num.
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
-  let _ = defaultGroupNum addedObls (map snd placeholders)
-  let _ = defaultEachMember addedObls placeholders
+  -- #23: also ground an ambiguous Num var that reaches this group ONLY through a
+  -- constrained-callee instantiation (its Num obligation lives on the call/dict deltas,
+  -- not pendingImplObligations).  See numCallObls/numDictObls.  The synthetic entries
+  -- feed ONLY the Num-defaulting search; addedObls alone still drives the
+  -- ambiguous-constraint/scheme-obligation registration below.
+  let extraNumObls =
+        numCallObls (takeFirst (listLen pendingCallObligations.value - callN0) pendingCallObligations.value)
+        ++ numDictObls (takeFirst (listLen pendingDictApps.value - dictN0) pendingDictApps.value)
+  let defaultObls = addedObls ++ extraNumObls
+  let _ = defaultGroupNum defaultObls (map snd placeholders)
+  let _ = defaultEachMember defaultObls placeholders
   let _ = registerAmbiguousConstraints addedObls (map snd placeholders)   -- RETPOS soundness
   let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
   let _ = registerSchemeObligations addedObls schemes
@@ -9085,9 +9118,61 @@ registerInferredFor : String -> List Int -> <Mut> Unit
 registerInferredFor _ [] = ()
 registerInferredFor m ids =
   let _ = setRef funConstraintsRef ((m, ids) :: funConstraintsRef.value)
-  let _ = setRef funConstraintIfacesRef ((m, map ifaceForConstraintId ids) :: funConstraintIfacesRef.value)
+  let _ = setRef funConstraintIfacesRef ((m, map (ifaceForInferredId m) ids) :: funConstraintIfacesRef.value)
   let _ = registerActiveDictVars m 0 ids
   setRef promotedRef (m :: promotedRef.value)
+
+-- #23: the iface name for an inferred constraint var.  `ifaceForConstraintId` only
+-- recovers it from a pendingImplObligation whose `occ` is a BARE `TVar id`; a
+-- constraint induced by a `fromInt`/method site records a COMPOUND occ (the whole
+-- method type), so it returns "" — leaving the call site's dict route unkeyed
+-- (`routeUndeterminedTop ""` → RNone → a NULL Num dict word → build SIGTRAP, while
+-- `medaka run` is correct).  Two FALLBACKS recover the name when ifaceForConstraintId
+-- returns "" (so existing non-"" routes stay byte-identical):
+--   (1) `schemeObligationsRef` pairs each scheme var with its iface via
+--       `dispatchMonosOf` (robust to compound occs); covers a fn whose own body has
+--       the literal/method site (`app2 f = f 2 3`).
+--   (2) a constraint FORWARDED from a constrained callee (`useApp g = app2 g`) never
+--       lands in pendingImplObligations/schemeObligations — its iface lives in the
+--       `pendingDictApps` entry the callee's inferDictAtFound recorded (slot-parallel
+--       monos/ifaces).  Scan it for the var at a slot whose iface is now known.
+-- Both run AFTER the callee's own constraints are registered (topological SCC order),
+-- so the forwarded callee's ifaces are populated.
+ifaceForInferredId : String -> Int -> <Mut> String
+ifaceForInferredId m id =
+  let direct = ifaceForConstraintId id
+  if direct != "" then direct
+  else match lookupSchemeIface m id schemeObligationsRef.value
+    Some s => s
+    None => ifaceFromDictApps id pendingDictApps.value
+
+lookupSchemeIface : String -> Int -> List (String, List (String, Int)) -> Option String
+lookupSchemeIface _ _ [] = None
+lookupSchemeIface m id ((m2, obs)::rest)
+  | m == m2 = match lookupIfaceById id obs
+    Some iface => Some iface
+    None => lookupSchemeIface m id rest
+  | otherwise = lookupSchemeIface m id rest
+
+lookupIfaceById : Int -> List (String, Int) -> Option String
+lookupIfaceById _ [] = None
+lookupIfaceById id ((iface, oid)::rest)
+  | id == oid = Some iface
+  | otherwise = lookupIfaceById id rest
+
+-- Scan pendingDictApps for [id] at a slot (bare-TVar mono) whose iface is non-empty.
+ifaceFromDictApps : Int -> List (Ref (List Route), List Mono, List String) -> <Mut> String
+ifaceFromDictApps _ [] = ""
+ifaceFromDictApps id ((_, monos, ifaces)::rest) = match ifaceAtMonoId id monos ifaces
+  Some s => s
+  None => ifaceFromDictApps id rest
+
+ifaceAtMonoId : Int -> List Mono -> List String -> <Mut> Option String
+ifaceAtMonoId _ [] _ = None
+ifaceAtMonoId _ _ [] = None
+ifaceAtMonoId id (m::ms) (i::is) = match normalize m
+  TVar cell => if tyvarId cell == id && i != "" then Some i else ifaceAtMonoId id ms is
+  _ => ifaceAtMonoId id ms is
 
 -- recover the interface name of an INFERRED constraint var (unsignatured fn like
 -- `f x = x + 1`): the var was recorded in a pendingImplObligation by the method

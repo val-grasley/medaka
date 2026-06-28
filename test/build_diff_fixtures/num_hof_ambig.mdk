@@ -1,0 +1,22 @@
+-- Regression (#23): a HOF generalized to `(Num a, Num b) =>` from literals applied
+-- INSIDE its body (`app2 f = f 2 3`), called with a function that ties those Num
+-- vars to ANOTHER class (Eq) and yields a concrete result whose own type is
+-- discarded (`main : Unit`).  The Num var is grounded by neither an argument nor the
+-- caller's result, so it is genuinely ambiguous and MUST default to Int (PLAN #11).
+-- Before the fix the callee's Num dict route resolved RNone — a NULL dict word →
+-- `inttoptr 0; load` build-time SIGTRAP — while `medaka run` was correct (run≠build).
+-- Root cause: the INFERRED constraint's iface was lost ("") because
+-- `ifaceForConstraintId` only reads a bare-`TVar` obligation occ, but a `fromInt`/
+-- method-site constraint records a COMPOUND occ; recovered from `schemeObligations`
+-- (own-body literal) and the forwarded `pendingDictApps` slot (transitive `useApp`).
+-- Each println must print its run-identical value (all `2 == 3` ⇒ False).
+app2 f = f 2 3
+useIt h = h 2 3
+eqBoth a b = a == b
+useApp g = app2 g
+
+main =
+  println (app2 (==))
+  println (useIt eqBoth)
+  println (app2 (x y => x == y))
+  println (useApp (==))

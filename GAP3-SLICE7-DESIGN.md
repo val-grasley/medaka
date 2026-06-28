@@ -19,16 +19,23 @@
 >    a NON-method param name, e.g. `pickEq f x y = f x y; pickEq (==) …`) already
 >    BUILDS+runs correctly via E22/E23. See EMITTER-GAPS.md **E24**.
 >
-> 2. **FACE 2 (#23 SIGTRAP) = a TYPECHECK Num-defaulting bug, OPEN (deferred).**
+> 2. **FACE 2 (#23 SIGTRAP) = a TYPECHECK inferred-constraint iface-loss bug, ✅ FIXED (2026-06-28).**
 >    A HOF generalized to `(Num a, Num b) =>` from internal literals, called with
 >    a fn that makes the var `Num`+`Eq` and the result concrete (`app2 (==)`),
->    leaves the ambiguous Num var UNGROUNDED — its callee `CDict` Num-dict routes
->    resolve `RNone` → a NULL dict word → `inttoptr 0; load` SIGTRAP. Root cause:
->    `processSCC`'s Num-defaulting reads only `pendingImplObligations`, but the
->    callee's instantiated Num constraints flow through `pendingCallObligations` /
->    (for inferred-constraint promoted fns) `pendingDictApps`. Two targeted fix
->    attempts failed; a clean STOP. See EMITTER-GAPS.md **#23 / slice-7 SIGTRAP**
->    for the full verified diagnosis + next step.
+>    SIGTRAP'd the build (callee `CDict` Num route → RNone → NULL dict word →
+>    `inttoptr 0; load`) while `medaka run` was correct. The prior session's
+>    "`processSCC` defaulting reads only `pendingImplObligations`" framing was a
+>    SYMPTOM, not the root: the real cause is that the inferred constraint's IFACE
+>    NAME was lost — `ifaceForConstraintId` only reads a bare-`TVar` obligation
+>    occ, but a `fromInt`/method-site constraint records a COMPOUND occ → `""` →
+>    `routeUndeterminedTop ""` → silent RNone (and `recordCallObligations` skips
+>    the empty-iface slot, so defaulting never saw it as Num). Fix (typecheck-only):
+>    (A) `ifaceForInferredId` recovers the name from `schemeObligationsRef` /
+>    forwarded `pendingDictApps` when `ifaceForConstraintId` returns `""`; (B)
+>    `processSCC` Num-defaulting also feeds the call/dict-app Num deltas, grounding
+>    the now-identifiable ambiguous var to Int before route resolution. ALL gates +
+>    fixpoint + cold bootstrap green; regression fixture `num_hof_ambig`. See
+>    EMITTER-GAPS.md **#23 / slice-7 SIGTRAP** for the full closed write-up.
 >
 > The `debug (sequence …)` repro below is a THIRD manifestation (a genuinely-
 > generic prelude free fn over a typeclass); §6 F3's "no current caller, keep the
