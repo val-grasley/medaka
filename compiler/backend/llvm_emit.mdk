@@ -2907,7 +2907,18 @@ emitApp e env app =
     else
       if fname == "setRef" then emitSetRef e env args
       else
-        if isAnyExtern fname && hasArgs args then emitExternApplied e env fname args
+        -- A LOCALLY-BOUND name (param / let-binding) SHADOWS any same-named ctor /
+        -- known top-level fn / interface method / extern: it is a runtime closure
+        -- value, so applying it is an INDIRECT call, never a ctor alloc / direct
+        -- call / method dispatch.  Without this, a HOF param named like a method
+        -- (`pickEq eq x y = eq x y`, or `cmp`/`compare`) fell to the isImplMethod
+        -- arm → emitMethodArgDispatch arg-tag-dispatched over the method's impl
+        -- groups (incl. PRIMITIVE Int/String/… that own no ctor cell tag) →
+        -- emitTagMatch [] slice-7 build reject — while `medaka run` was always
+        -- correct (eval treats the param as the local it is).  Mirrors emitVar's
+        -- isLocal-first priority for the same name in VALUE position.
+        if isLocal env fname then emitIndirect e env hd args
+        else if isAnyExtern fname && hasArgs args then emitExternApplied e env fname args
         else
           if isCtor e fname then
             let argOps = emitArgs e env args
