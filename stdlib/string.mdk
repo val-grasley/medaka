@@ -156,6 +156,33 @@ export
 fromChars : List Char -> String
 fromChars cs = stringFromChars (arrayFromList cs)
 
+{- | The raw UTF-8 bytes of a string as an `Array Int` (each 0..255), in order.
+   This is the encoded byte stream, NOT the codepoints — a multi-byte codepoint
+   contributes several bytes (`toChars` gives codepoints instead).
+
+   > arrayLength (toUtf8 "héllo")
+   6 -}
+export
+toUtf8 : String -> Array Int
+toUtf8 s = stringToUtf8Bytes s
+
+{- | Rebuild a string from a UTF-8 `Array Int` byte stream (low 8 bits of each).
+   The inverse of `toUtf8` on valid UTF-8: `fromUtf8 (toUtf8 s) == s`.
+
+   > fromUtf8 (toUtf8 "héllo→")
+   "héllo→" -}
+export
+fromUtf8 : Array Int -> String
+fromUtf8 bytes = stringFromUtf8Bytes bytes
+
+{- | The number of UTF-8 bytes a string encodes to (>= its codepoint count).
+
+   > utf8ByteLength "héllo"
+   6 -}
+export
+utf8ByteLength : String -> Int
+utf8ByteLength s = arrayLength (toUtf8 s)
+
 {- | Parse a decimal integer, an optional leading `-`/`+` allowed; `None` on
    any other character or on the empty string.
 

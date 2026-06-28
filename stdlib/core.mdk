@@ -264,6 +264,25 @@ export impl Debug Ordering where
   debug Eq = "Eq"
   debug Gt = "Gt"
 
+-- Eq/Ord for Ordering are HAND-WRITTEN (not `deriving`): the `Eq` data
+-- CONSTRUCTOR collides with the `Eq` class name, so `deriving (Eq)` is
+-- ambiguous.  Without these, `o == Lt` check-accepts and `run`s but `build`
+-- FAILS (no Ord/Eq Ordering binary).  Rank Lt < Eq < Gt.
+export impl Eq Ordering where
+  eq Lt Lt = True
+  eq Eq Eq = True
+  eq Gt Gt = True
+  eq _ _ = False
+
+export impl Ord Ordering where
+  compare Lt Lt = Eq
+  compare Lt _ = Lt
+  compare _ Lt = Gt
+  compare Eq Eq = Eq
+  compare Eq _ = Lt
+  compare _ Eq = Gt
+  compare Gt Gt = Eq
+
 -- `Debug String`/`Debug Char` render a *quoted, escaped literal* (`debug "hi"` is
 -- `"hi"`, `debug 'a'` is `'a'`) via the `debugStringLit`/`debugCharLit` externs —
 -- round-trippable, matching Haskell, and distinct from `println`'s raw output.

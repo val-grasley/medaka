@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 #include <stdnoreturn.h>
 #include <sys/stat.h>
@@ -450,6 +451,30 @@ long long mdk_string_from_chars(long long arr) {
   for (long long i = 0; i < n; i++) off += mdk_utf8_encode(a[i+1] >> 1, buf + off);
   return mdk_str_lit(buf, total);
 }
+/* stringToUtf8Bytes : String -> Array Int.  Expose the String cell's raw UTF-8
+ * backing as an Array of tagged Int bytes 0..255 (O(n) copy, NO codepoint
+ * re-encode).  Array cell: [i64 count | elem0@8 | ...]; Int elems are tagged. */
+long long mdk_string_to_utf8_bytes(long long s) {
+  const char *cell = (const char *)s;
+  long long byte_len = ((const long long *)cell)[1];
+  const unsigned char *bytes = (const unsigned char *)(cell + 24);
+  long long *arr = (long long *)mdk_alloc(8 * (byte_len + 1));
+  arr[0] = byte_len;
+  for (long long i = 0; i < byte_len; i++)
+    arr[i + 1] = (((long long)bytes[i]) << 1) | 1;
+  return (long long)arr;
+}
+/* stringFromUtf8Bytes : Array Int -> String.  Blit the low 8 bits of each tagged
+ * Int element into a fresh String cell.  PERMISSIVE: bytes are copied verbatim;
+ * mdk_str_lit recomputes cp_count by the standard non-continuation-byte rule, so
+ * valid UTF-8 round-trips byte-for-byte and codepoint-count-for-count. */
+long long mdk_string_from_utf8_bytes(long long arr) {
+  const long long *a = (const long long *)arr;
+  long long n = a[0];
+  char *buf = (char *)mdk_alloc_atomic(n + 1);
+  for (long long i = 0; i < n; i++) buf[i] = (char)((a[i + 1] >> 1) & 0xFF);
+  return mdk_str_lit(buf, n);
+}
 long long mdk_string_slice(long long lo_t, long long hi_t, long long s) {
   const char *cell = (const char *)s;
   long long byte_len = ((const long long *)cell)[1];
@@ -629,6 +654,11 @@ long long mdk_num_mod(long long l, long long r) {
   if (mdk_is_int(l)) return (((l >> 1) % (r >> 1)) << 1) | 1;
   double a = ((double *)l)[1], b = ((double *)r)[1];
   return mdk_box_float(a - b * (double)((long long)(a / b)));
+}
+/* floatRem : Float -> Float -> Float — fmod, which is bit-for-bit LLVM `frem`
+ * (the inline emit for `Float % Float`) so the interpreter's `%` matches build. */
+double mdk_float_rem(double a, double b) {
+  return fmod(a, b);
 }
 
 /* Print a polymorphic numeric value (LTNum result of `Num a =>` arithmetic):

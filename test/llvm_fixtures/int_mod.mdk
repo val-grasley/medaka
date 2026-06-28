@@ -1,0 +1,3 @@
+-- Int `%` (srem): encodes three cases as one scalar so the build can auto-print.
+-- 7 % 2 == 1 (×100), 10 % 3 == 1 (×10), (-7) % 2 == -1 (sign of dividend) → 109.
+main = (7 % 2) * 100 + (10 % 3) * 10 + (0 - 7) % 2

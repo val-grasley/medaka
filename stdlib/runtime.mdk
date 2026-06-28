@@ -86,6 +86,10 @@ extern setSeed : Int -> <Rand> Unit
 extern charToStr : Char -> String
 extern intToFloat : Int -> Float
 extern floatToInt : Float -> Int
+-- floatRem a b = a - b * trunc(a/b)  (C fmod == LLVM frem == OCaml Float.rem).
+-- Backs the `Float % Float` operator in the interpreter so `run` matches `build`
+-- (which emits `frem` inline) EXACTLY.  Pure.
+extern floatRem : Float -> Float -> Float
 -- Bit-level reinterpretation of a 64-bit Int as an IEEE 754 double.
 -- Inverse of Int64.bits_of_float / C memcpy(&bits,&d,8).  Pure.
 extern intBitsToFloat : Int -> Float
@@ -135,6 +139,14 @@ extern arrayFromList : List a -> Array a
 -- folding (charIs*/charTo*, needs a Unicode database) lands separately.
 extern stringToChars : String -> Array Char
 extern stringFromChars : Array Char -> String
+-- UTF-8 codec (BOTH directions).  stringToUtf8Bytes exposes the String's raw
+-- UTF-8 backing as Int bytes 0..255 (O(n) copy, NO codepoint re-encode);
+-- stringFromUtf8Bytes blits Int bytes (low 8 bits each) back into a String.
+-- Decode is PERMISSIVE (bytes are blitted verbatim; the cached codepoint count
+-- is recomputed by the standard non-continuation-byte rule).  For valid UTF-8
+-- (e.g. SQLite text) `fromUtf8 (toUtf8 s) == s` byte-for-byte.
+extern stringToUtf8Bytes : String -> Array Int
+extern stringFromUtf8Bytes : Array Int -> String
 extern charCode : Char -> Int
 extern charFromCode : Int -> Option Char
 extern stringLength : String -> Int
