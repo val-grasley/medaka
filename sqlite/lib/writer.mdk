@@ -24,6 +24,8 @@
 
 import lib.dbwriter.{buildDatabase, writeDatabase}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+import string.{join}
+import list.{findIndex}
 
 -- ---------------------------------------------------------------------------
 -- Column-type affinity
@@ -72,15 +74,6 @@ colDefSql (Column { colName, colType, isPrimaryKey }) =
   then stringConcat [base, " PRIMARY KEY"]
   else base
 
--- | Join a list of strings with a separator (no stdlib import to stay lean).
-intercalateStr : String -> List String -> String
-intercalateStr _   []         = ""
-intercalateStr _   [x]        = x
-intercalateStr sep (x::rest)  = stringConcat [x, sep, intercalateStr sep rest]
-
-mapColDefs : List Column -> List String
-mapColDefs []        = []
-mapColDefs (c::rest) = colDefSql c :: mapColDefs rest
 
 -- | Generate the `CREATE TABLE …` text from a `TableSchema`.
 -- The IPK column is rendered as `INTEGER PRIMARY KEY` (the exact text that
@@ -94,12 +87,12 @@ mapColDefs (c::rest) = colDefSql c :: mapColDefs rest
 export
 createTableSql : TableSchema -> String
 createTableSql (TableSchema { schemaTableName, columns }) =
-  let colDefs = mapColDefs columns
+  let colDefs = map colDefSql columns
   stringConcat
     [ "CREATE TABLE "
     , schemaTableName
     , "("
-    , intercalateStr ", " colDefs
+    , join ", " colDefs
     , ")"
     ]
 
@@ -111,28 +104,20 @@ createTableSql (TableSchema { schemaTableName, columns }) =
 -- or `None` if no such column exists.
 export
 schemaIpkIndex : TableSchema -> Option Int
-schemaIpkIndex (TableSchema { columns, ... }) = findIpk columns 0
-
-findIpk : List Column -> Int -> Option Int
-findIpk []       _ = None
-findIpk (c::rest) i =
-  match c
-    Column { isPrimaryKey = True,  ... } => Some i
-    Column { isPrimaryKey = False, ... } => findIpk rest (i + 1)
+schemaIpkIndex (TableSchema { columns, ... }) =
+  findIndex (c =>
+    match c
+      Column { isPrimaryKey, ... } => isPrimaryKey) columns
 
 -- ---------------------------------------------------------------------------
 -- Column count validation
 -- ---------------------------------------------------------------------------
 
-listLen : List a -> Int
-listLen []      = 0
-listLen (_::xs) = 1 + listLen xs
-
 -- | Validate that every row has exactly `expected` cells.
 validateRows : Int -> List (List Cell) -> Result String Unit
 validateRows _ []               = Ok ()
 validateRows expected (r::rest) =
-  let got = listLen r
+  let got = length r
   if got == expected
   then validateRows expected rest
   else Err "row has \{intToString got} cells, expected \{intToString expected}"
@@ -157,7 +142,7 @@ writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Resul
 writeTable path schema rows =
   match schema
     TableSchema { schemaTableName = name, columns } => do
-      let colCount = listLen columns
+      let colCount = length columns
       _ <- validateRows colCount rows
       let sql = createTableSql schema
       let ipk = schemaIpkIndex schema
@@ -170,7 +155,7 @@ buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
 buildTable schema rows =
   match schema
     TableSchema { schemaTableName = name, columns } => do
-      let colCount = listLen columns
+      let colCount = length columns
       _ <- validateRows colCount rows
       let sql = createTableSql schema
       let ipk = schemaIpkIndex schema
