@@ -6,43 +6,39 @@ running doctests in stdlib/core.mdk
   ok   stdlib/core.mdk:168: clamp 0 10 5
   ok   stdlib/core.mdk:170: clamp 0 10 (-3)
   ok   stdlib/core.mdk:172: clamp 0 10 99
-  ok   stdlib/core.mdk:180: isEven 4
-  ok   stdlib/core.mdk:182: isEven 7
-  ok   stdlib/core.mdk:190: isOdd 3
-  ok   stdlib/core.mdk:192: isOdd 8
-  ok   stdlib/core.mdk:526: (minBound : Int) < (maxBound : Int)
-  ok   stdlib/core.mdk:533: charCode (minBound : Char)
-  ok   stdlib/core.mdk:535: charCode (maxBound : Char)
-  ok   stdlib/core.mdk:649: length (orElse [1, 2] [3])
-  ok   stdlib/core.mdk:651: isEmpty (orElse ([] : List Int) [1])
-  ok   stdlib/core.mdk:653: isSome (orElse (Some 1) (Some 2))
-  ok   stdlib/core.mdk:655: isSome (orElse None (Some 2))
-  ok   stdlib/core.mdk:657: isSome (orElse None (None : Option Int))
-  ok   stdlib/core.mdk:684: isEmpty (None : Option Int)
-  ok   stdlib/core.mdk:686: length (Some 5)
-  ok   stdlib/core.mdk:762: traverse (x => if x > 0 then Some x else None) [1, 2, 3]
-  ok   stdlib/core.mdk:764: traverse (x => if x > 0 then Some x else None) [1, -2, 3]
-  ok   stdlib/core.mdk:766: traverse (x => if x > 0 then Some (x + 1) else None) (Some 5)
-  ok   stdlib/core.mdk:768: traverse (x => if x > 0 then Ok x else Err x) [1, 2, 3]
-  ok   stdlib/core.mdk:770: traverse (x => if x > 0 then Ok x else Err x) [1, -2, 3]
-  ok   stdlib/core.mdk:772: sequence [Some 1, Some 2, Some 3]
-  ok   stdlib/core.mdk:774: sequence [Some 1, None, Some 3]
-  ok   stdlib/core.mdk:776: sequence [Ok 1, Ok 2, Ok 3]
-  ok   stdlib/core.mdk:778: sequence [Ok 1, Err 99, Ok 3]
-  ok   stdlib/core.mdk:822: any (x => x > 2) [1, 2, 3]
-  ok   stdlib/core.mdk:824: any (x => x > 10) [1, 2, 3]
-  ok   stdlib/core.mdk:833: all (x => x > 0) [1, 2, 3]
-  ok   stdlib/core.mdk:835: all (x => x > 0) []
-  ok   stdlib/core.mdk:887: maximum [3, 1, 2]
-  ok   stdlib/core.mdk:889: maximum ([] : List Int)
-  ok   stdlib/core.mdk:900: minimum [3, 1, 2]
-  ok   stdlib/core.mdk:913: filter (x => x > 2) [1, 2, 3, 4]
-  ok   stdlib/core.mdk:968: fromOption 0 (Some 42)
-  ok   stdlib/core.mdk:970: fromOption 0 None
-  ok   stdlib/core.mdk:1027: fst (1, 2)
-  ok   stdlib/core.mdk:1034: snd ("a", True)
+  ok   stdlib/core.mdk:525: (minBound : Int) < (maxBound : Int)
+  ok   stdlib/core.mdk:532: charCode (minBound : Char)
+  ok   stdlib/core.mdk:534: charCode (maxBound : Char)
+  ok   stdlib/core.mdk:648: length (orElse [1, 2] [3])
+  ok   stdlib/core.mdk:650: isEmpty (orElse ([] : List Int) [1])
+  ok   stdlib/core.mdk:652: isSome (orElse (Some 1) (Some 2))
+  ok   stdlib/core.mdk:654: isSome (orElse None (Some 2))
+  ok   stdlib/core.mdk:656: isSome (orElse None (None : Option Int))
+  ok   stdlib/core.mdk:683: isEmpty (None : Option Int)
+  ok   stdlib/core.mdk:685: length (Some 5)
+  ok   stdlib/core.mdk:761: traverse (x => if x > 0 then Some x else None) [1, 2, 3]
+  ok   stdlib/core.mdk:763: traverse (x => if x > 0 then Some x else None) [1, -2, 3]
+  ok   stdlib/core.mdk:765: traverse (x => if x > 0 then Some (x + 1) else None) (Some 5)
+  ok   stdlib/core.mdk:767: traverse (x => if x > 0 then Ok x else Err x) [1, 2, 3]
+  ok   stdlib/core.mdk:769: traverse (x => if x > 0 then Ok x else Err x) [1, -2, 3]
+  ok   stdlib/core.mdk:771: sequence [Some 1, Some 2, Some 3]
+  ok   stdlib/core.mdk:773: sequence [Some 1, None, Some 3]
+  ok   stdlib/core.mdk:775: sequence [Ok 1, Ok 2, Ok 3]
+  ok   stdlib/core.mdk:777: sequence [Ok 1, Err 99, Ok 3]
+  ok   stdlib/core.mdk:821: any (x => x > 2) [1, 2, 3]
+  ok   stdlib/core.mdk:823: any (x => x > 10) [1, 2, 3]
+  ok   stdlib/core.mdk:832: all (x => x > 0) [1, 2, 3]
+  ok   stdlib/core.mdk:834: all (x => x > 0) []
+  ok   stdlib/core.mdk:886: maximum [3, 1, 2]
+  ok   stdlib/core.mdk:888: maximum ([] : List Int)
+  ok   stdlib/core.mdk:899: minimum [3, 1, 2]
+  ok   stdlib/core.mdk:912: filter (x => x > 2) [1, 2, 3, 4]
+  ok   stdlib/core.mdk:967: fromOption 0 (Some 42)
+  ok   stdlib/core.mdk:969: fromOption 0 None
+  ok   stdlib/core.mdk:1026: fst (1, 2)
+  ok   stdlib/core.mdk:1033: snd ("a", True)
 
-stdlib/core.mdk: 42/42 passed
+stdlib/core.mdk: 38/38 passed
 Testing "neq is the negation of eq" ... OK (100 tests)
 Testing "compare agrees with lt/gt/eq" ... OK (100 tests)
 Testing "clamp keeps values inside the interval" ... OK (100 tests)
