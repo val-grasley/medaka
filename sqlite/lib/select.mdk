@@ -20,7 +20,7 @@ import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, findTable, schemaSql}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
-import list.{reverse}
+import list.{reverse, take, drop}
 
 -- ---------------------------------------------------------------------------
 -- Untyped core
@@ -175,21 +175,15 @@ selectFrom tbl = Select { from = tbl, where_ = None, limit = None, offset = None
 --   `Expr Bool` becomes an untyped `SqlExpr`.
 export
 withWhere : Expr Bool -> Select -> Select
-withWhere e sel = match sel
-  Select { from = f, limit = lm, offset = of_ } =>
-    Select { from = f, where_ = Some (unExpr e), limit = lm, offset = of_ }
+withWhere e sel = { sel | where_ = Some (unExpr e) }
 
 export
 withLimit : Int -> Select -> Select
-withLimit n sel = match sel
-  Select { from = f, where_ = w, offset = of_ } =>
-    Select { from = f, where_ = w, limit = Some n, offset = of_ }
+withLimit n sel = { sel | limit = Some n }
 
 export
 withOffset : Int -> Select -> Select
-withOffset n sel = match sel
-  Select { from = f, where_ = w, limit = lm } =>
-    Select { from = f, where_ = w, limit = lm, offset = Some n }
+withOffset n sel = { sel | offset = Some n }
 
 -- ---------------------------------------------------------------------------
 -- render : injection-safe SQL projection
@@ -202,15 +196,14 @@ withOffset n sel = match sel
 --   an illegal identifier yields `Err`.
 export
 render : Select -> Result String (String, List Literal)
-render sel = match sel
-  Select { from = tbl, where_ = w, limit = lm, offset = of_ } =>
-    if not (validIdent tbl)
-    then Err "render: invalid table name: \{tbl}"
-    else do
-      (whereSql, binds) <- renderWhere w
-      let limOff = renderLimitOffset lm of_
-      let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
-      Ok (sql, binds ++ limOffBinds limOff lm of_)
+render (Select { from = tbl, where_ = w, limit = lm, offset = of_ }) =
+  if not (validIdent tbl)
+  then Err "render: invalid table name: \{tbl}"
+  else do
+    (whereSql, binds) <- renderWhere w
+    let limOff = renderLimitOffset lm of_
+    let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
+    Ok (sql, binds ++ limOffBinds limOff lm of_)
 
 -- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
 -- the placeholders parameterized too (LIMIT ? / OFFSET ?) for uniformity.
@@ -395,34 +388,29 @@ cmpCells op a b =
     None   => False                 -- incomparable shapes ⇒ not matched
     Some o => applyCmp op o
 
--- A three-way ordering of two non-null cells (Some LT/EQ/GT as -1/0/1), or None
--- if the shapes are not comparable.
-cmpOrder : Cell -> Cell -> Option Int
+-- A three-way ordering of two non-null cells, or None if the shapes are not comparable.
+cmpOrder : Cell -> Cell -> Option Ordering
 cmpOrder a b = match (a, b)
-  (CInt x, CInt y)     => Some (cmpInt x y)
-  (CFloat x, CFloat y) => Some (cmpFloat x y)
-  (CInt x, CFloat y)   => Some (cmpFloat (intToFloat x) y)
-  (CFloat x, CInt y)   => Some (cmpFloat x (intToFloat y))
-  (CText x, CText y)   => Some (cmpString x y)
-  (CBlob x, CBlob y)   => Some (cmpInt (arrayLength x) (arrayLength y))
+  (CInt x, CInt y)     => Some (compare x y)
+  (CFloat x, CFloat y) => Some (compare x y)
+  (CInt x, CFloat y)   => Some (compare (intToFloat x) y)
+  (CFloat x, CInt y)   => Some (compare x (intToFloat y))
+  (CText x, CText y)   => Some (compare x y)
+  (CBlob x, CBlob y)   => Some (compare (arrayLength x) (arrayLength y))
   _                    => None
 
-cmpInt : Int -> Int -> Int
-cmpInt x y = if x < y then (0 - 1) else if x > y then 1 else 0
-
-cmpFloat : Float -> Float -> Int
-cmpFloat x y = if x < y then (0 - 1) else if x > y then 1 else 0
-
-cmpString : String -> String -> Int
-cmpString x y = if x < y then (0 - 1) else if x > y then 1 else 0
-
-applyCmp : CmpOp -> Int -> Bool
-applyCmp OpEq o = o == 0
-applyCmp OpNe o = o != 0
-applyCmp OpLt o = o < 0
-applyCmp OpLe o = o <= 0
-applyCmp OpGt o = o > 0
-applyCmp OpGe o = o >= 0
+applyCmp : CmpOp -> Ordering -> Bool
+applyCmp op o = match (op, o)
+  (OpEq, Eq) => True
+  (OpNe, Eq) => False
+  (OpNe, _)  => True
+  (OpLt, Lt) => True
+  (OpLe, Gt) => False
+  (OpLe, _)  => True
+  (OpGt, Gt) => True
+  (OpGe, Lt) => False
+  (OpGe, _)  => True
+  _          => False
 
 -- ---------------------------------------------------------------------------
 -- query : run a Select against a Db, decoding survivors via a RowType
@@ -434,15 +422,14 @@ applyCmp OpGe o = o >= 0
 --   on any survivor aborts the whole query (fail-fast).
 export
 query : Db -> Select -> RowType a -> Result String (List a)
-query db sel rt = match sel
-  Select { from = tbl, where_ = w, limit = lm, offset = of_ } => do
-    entry <- findTable db tbl
-    let lookup = mkLookup (schemaSql entry)
-    pred <- compileWhere lookup w
-    (pkIdx, rows) <- scanTableRowsIpk db tbl
-    let kept = filterRows pkIdx pred rows
-    let sliced = applyOffsetLimit of_ lm kept
-    decodeAll rt pkIdx sliced []
+query db (Select { from = tbl, where_ = w, limit = lm, offset = of_ }) rt = do
+  entry <- findTable db tbl
+  let lookup = mkLookup (schemaSql entry)
+  pred <- compileWhere lookup w
+  (pkIdx, rows) <- scanTableRowsIpk db tbl
+  let kept = filterRows pkIdx pred rows
+  let sliced = applyOffsetLimit of_ lm kept
+  decodeAll rt pkIdx sliced []
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
 mkLookup : String -> (String -> Option Int)
@@ -454,31 +441,17 @@ compileWhere lookup (Some e) = compilePred lookup e
 
 -- Keep rows (in rowid order) whose IPK-substituted cells pass the predicate.
 filterRows : Option Int -> (List Cell -> Bool) -> List Row -> List Row
-filterRows _     _    []           = []
-filterRows pkIdx pred (row :: rest) =
-  if pred (rowCellsWithIpk pkIdx row)
-  then row :: filterRows pkIdx pred rest
-  else filterRows pkIdx pred rest
+filterRows pkIdx pred rows = filter (row => pred (rowCellsWithIpk pkIdx row)) rows
 
 -- Drop `offset` rows then keep at most `limit`.
 applyOffsetLimit : Option Int -> Option Int -> List Row -> List Row
 applyOffsetLimit of_ lm rows =
   let afterOffset = match of_
-                      Some n => dropN n rows
+                      Some n => drop n rows
                       None   => rows
   match lm
-    Some n => takeN n afterOffset
+    Some n => take n afterOffset
     None   => afterOffset
-
-dropN : Int -> List Row -> List Row
-dropN n xs = if n <= 0 then xs else match xs
-  []        => []
-  _ :: rest => dropN (n - 1) rest
-
-takeN : Int -> List Row -> List Row
-takeN n xs = if n <= 0 then [] else match xs
-  []          => []
-  x :: rest   => x :: takeN (n - 1) rest
 
 decodeAll : RowType a -> Option Int -> List Row -> List a -> Result String (List a)
 decodeAll _  _     []           acc = Ok (reverse acc)
