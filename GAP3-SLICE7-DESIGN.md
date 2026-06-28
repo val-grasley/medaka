@@ -1,5 +1,43 @@
 # Gap 3 — slice-7 arg-tag dispatch on a generic prelude free function
 
+> **RE-DIAGNOSIS UPDATE (2026-06-28, current main).** This design (below) was
+> written on stale commit `197e550` against the `debug (sequence …)` repro. On
+> current main the manifestation has SHIFTED (post-#21/#22, which closed the
+> constrained-value-as-HOF-arg path). The two repros in the picked-up brief
+> (`pickEq eq x y = eq x y` build-reject; `app2 f = f 2 3; main = println (app2
+> (==))` SIGTRAP) reduce to **TWO DISTINCT bugs, NEITHER of which is the
+> arg-stamp prelude/user grounding asymmetry §2 describes:**
+>
+> 1. **FACE 1 (build-reject) = an EMITTER name-shadowing bug, now FIXED (E24).**
+>    A HOF PARAMETER named like an interface method (`eq`/`compare`/…) applied in
+>    the body (`eq x y`) was mis-routed by `llvm_emit.mdk`'s `emitApp` to
+>    `emitMethodArgDispatch` (arg-tag over primitive Int/String impl groups →
+>    `emitTagMatch []` slice-7) because it checked `isImplMethod` before
+>    recognising the head as a local. This is the emitter-side analogue of the
+>    front-end E15/E18 scope guards. Fix: an `isLocal env fname` guard at the top
+>    of `emitApp`'s CVar arm. The GENUINE constrained-value-as-HOF-arg case (with
+>    a NON-method param name, e.g. `pickEq f x y = f x y; pickEq (==) …`) already
+>    BUILDS+runs correctly via E22/E23. See EMITTER-GAPS.md **E24**.
+>
+> 2. **FACE 2 (#23 SIGTRAP) = a TYPECHECK Num-defaulting bug, OPEN (deferred).**
+>    A HOF generalized to `(Num a, Num b) =>` from internal literals, called with
+>    a fn that makes the var `Num`+`Eq` and the result concrete (`app2 (==)`),
+>    leaves the ambiguous Num var UNGROUNDED — its callee `CDict` Num-dict routes
+>    resolve `RNone` → a NULL dict word → `inttoptr 0; load` SIGTRAP. Root cause:
+>    `processSCC`'s Num-defaulting reads only `pendingImplObligations`, but the
+>    callee's instantiated Num constraints flow through `pendingCallObligations` /
+>    (for inferred-constraint promoted fns) `pendingDictApps`. Two targeted fix
+>    attempts failed; a clean STOP. See EMITTER-GAPS.md **#23 / slice-7 SIGTRAP**
+>    for the full verified diagnosis + next step.
+>
+> The `debug (sequence …)` repro below is a THIRD manifestation (a genuinely-
+> generic prelude free fn over a typeclass); §6 F3's "no current caller, keep the
+> per-impl specialization" disposition still stands for THAT case.
+
+---
+
+# Gap 3 — slice-7 arg-tag dispatch on a generic prelude free function
+
 Status: DESIGN (decision-ready). Read-only diagnostic pass on `main`
 (`197e550`, BASE_OK). All experiments below were run on a freshly-built
 `./medaka` (`FORCE_EMITTER_REBUILD=1 make medaka`) and the tree was reverted

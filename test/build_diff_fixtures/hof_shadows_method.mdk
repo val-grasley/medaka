@@ -1,0 +1,15 @@
+-- Regression: a higher-order-function PARAMETER whose name SHADOWS an interface
+-- method (`eq`, `compare`) must be treated as a local closure value, applied via an
+-- INDIRECT call — NOT mis-routed to the method's arg-tag dispatch.  Before the
+-- emitApp isLocal-first fix, `pickEq eq x y = eq x y` (and the `compare`/`cmp` twins)
+-- fell to the isImplMethod arm → emitMethodArgDispatch over the method's PRIMITIVE
+-- impl groups (Int/String, which own no ctor cell tag) → emitTagMatch [] slice-7
+-- BUILD REJECTION, even though `medaka run` was always correct (eval treats the
+-- param as the local it is).  Each line must print its run-identical value.
+pickEq eq x y = eq x y
+pickCmp compare x y = compare x y
+
+main =
+  println (pickEq (==) 2 3)
+  println (pickEq (==) "ab" "ab")
+  println (pickCmp (<) 2 3)
