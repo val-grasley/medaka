@@ -54,37 +54,19 @@
 import byteparser.{runByteParser}
 import lib.varint.{sqVarintBytes, sqVarintSize}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord, showCells}
+import string.{toUtf8, utf8ByteLength}
+import list.{reverse}
+import array
 
 -- ---------------------------------------------------------------------------
--- List helpers (no stdlib import to keep the module lightweight)
+-- Big-endian signed integer encoder (pure List — no Mut effect)
 -- ---------------------------------------------------------------------------
-
--- | Append list `ys` after list `xs`.
-appendList : List a -> List a -> List a
-appendList [] ys      = ys
-appendList (x::xs) ys = x :: appendList xs ys
-
--- | Concatenate a list of lists.
-concatLists : List (List a) -> List a
-concatLists []          = []
-concatLists (xs::rest)  = appendList xs (concatLists rest)
-
--- | Count elements in a list.
-listLength : List a -> Int
-listLength []      = 0
-listLength (_::xs) = 1 + listLength xs
-
--- Reverse a list.
-revList : List a -> List a
-revList xs = revGo xs []
-
-revGo : List a -> List a -> List a
-revGo [] acc     = acc
-revGo (x::r) acc = revGo r (x::acc)
-
--- ---------------------------------------------------------------------------
--- Big-endian signed integer encoder (forward list)
--- ---------------------------------------------------------------------------
+--
+-- `bytebuilder.emitBeSint` is the canonical BE-signed encoder but requires
+-- a mutable `Builder` (`<Mut>`).  There is no `runMut` scoping combinator,
+-- so using it here would propagate `<Mut>` through `encodeRecord` and all
+-- callers.  This pure-list mirror stays local to avoid that effect
+-- propagation.
 
 -- | Encode an nbytes-wide big-endian two's-complement signed integer as a
 --   forward `List Int`.
@@ -96,75 +78,11 @@ beSintBytes nbytes v =
 -- Emit exactly n big-endian bytes of a non-negative integer.
 -- Builds in REVERSE (prepend low byte, recurse), then reverses.
 beUnsignedNBytes : Int -> Int -> List Int
-beUnsignedNBytes nbytes v = revList (beUnsignedNGo nbytes v)
+beUnsignedNBytes nbytes v = reverse (beUnsignedNGo nbytes v)
 
 beUnsignedNGo : Int -> Int -> List Int
 beUnsignedNGo 0 _ = []
 beUnsignedNGo n v = bitAnd v 255 :: beUnsignedNGo (n - 1) (v / 256)
-
--- ---------------------------------------------------------------------------
--- UTF-8 helpers
--- ---------------------------------------------------------------------------
-
--- | Byte count of a string when encoded as UTF-8.
-stringByteLength : String -> Int
-stringByteLength s =
-  let chars = stringToChars s
-  utf8ByteCount chars 0 0
-
-utf8ByteCount : Array Char -> Int -> Int -> Int
-utf8ByteCount chars i acc
-  | i >= arrayLength chars = acc
-  | otherwise =
-      let cp = charCode (chars.[i])
-      let n =
-        if cp < 0x80 then 1
-        else if cp < 0x800 then 2
-        else if cp < 0x10000 then 3
-        else 4
-      utf8ByteCount chars (i + 1) (acc + n)
-
--- | Encode a String as forward-order UTF-8 bytes.
-stringToUtf8 : String -> List Int
-stringToUtf8 s =
-  let chars = stringToChars s
-  charsToUtf8 chars 0
-
-charsToUtf8 : Array Char -> Int -> List Int
-charsToUtf8 chars i
-  | i >= arrayLength chars = []
-  | otherwise =
-      let cp = charCode (chars.[i])
-      appendList (cpToUtf8Bytes cp) (charsToUtf8 chars (i + 1))
-
--- | Encode a single codepoint as UTF-8 bytes (forward order).
-cpToUtf8Bytes : Int -> List Int
-cpToUtf8Bytes cp
-  | cp < 0x80 = [cp]
-  | cp < 0x800 =
-      [ bitOr 0xC0 (shiftRight cp 6)
-      , bitOr 0x80 (bitAnd cp 0x3F)
-      ]
-  | cp < 0x10000 =
-      [ bitOr 0xE0 (shiftRight cp 12)
-      , bitOr 0x80 (bitAnd (shiftRight cp 6) 0x3F)
-      , bitOr 0x80 (bitAnd cp 0x3F)
-      ]
-  | otherwise =
-      [ bitOr 0xF0 (shiftRight cp 18)
-      , bitOr 0x80 (bitAnd (shiftRight cp 12) 0x3F)
-      , bitOr 0x80 (bitAnd (shiftRight cp 6) 0x3F)
-      , bitOr 0x80 (bitAnd cp 0x3F)
-      ]
-
--- | Convert an Array Int to a List Int (forward order).
-arrayToList : Array Int -> List Int
-arrayToList a = arrayToListGo a 0
-
-arrayToListGo : Array Int -> Int -> List Int
-arrayToListGo a i
-  | i >= arrayLength a = []
-  | otherwise = a.[i] :: arrayToListGo a (i + 1)
 
 -- ---------------------------------------------------------------------------
 -- Serial-type selection
@@ -175,7 +93,7 @@ cellSerial : Cell -> Result String Int
 cellSerial CNull       = Ok 0
 cellSerial (CFloat _)  = Err "CFloat encoding deferred to P5 (needs floatToBytes64 extern)"
 cellSerial (CBlob a)   = Ok (2 * arrayLength a + 12)
-cellSerial (CText s)   = Ok (2 * stringByteLength s + 13)
+cellSerial (CText s)   = Ok (2 * utf8ByteLength s + 13)
 cellSerial (CInt 0)    = Ok 8
 cellSerial (CInt 1)    = Ok 9
 cellSerial (CInt n)    =
@@ -200,8 +118,8 @@ cellBodyBytes (CInt n) =
   else if n >= -8388608 && n <= 8388607 then beSintBytes 3 n
   else if n >= -2147483648 && n <= 2147483647 then beSintBytes 4 n
   else beSintBytes 8 n
-cellBodyBytes (CText s)  = stringToUtf8 s
-cellBodyBytes (CBlob a)  = arrayToList a
+cellBodyBytes (CText s)  = toList (toUtf8 s)
+cellBodyBytes (CBlob a)  = toList a
 cellBodyBytes (CFloat _) = []  -- never reached (guarded by Err in encodeRecord)
 
 -- ---------------------------------------------------------------------------
@@ -220,8 +138,8 @@ encodeRecord cells = do
   serials <- collectSerials cells []
 
   -- 2. Encode serial varints as a forward list.
-  let serialBytesList = concatLists (map sqVarintBytes serials)
-  let serialLen       = listLength serialBytesList
+  let serialBytesList = foldRight (++) [] (map sqVarintBytes serials)
+  let serialLen       = length serialBytesList
 
   -- 3. Header-len self-counting fixpoint.
   --    header_len = serialLen + varint_size(header_len)
@@ -230,11 +148,11 @@ encodeRecord cells = do
 
   -- 4. Assemble: [hdrLen varint] ++ [serial varints] ++ [body bytes].
   let hdrBytes  = sqVarintBytes hdrLen
-  let bodyBytes = concatLists (map cellBodyBytes cells)
-  Ok (arrayFromList (appendList hdrBytes (appendList serialBytesList bodyBytes)))
+  let bodyBytes = foldRight (++) [] (map cellBodyBytes cells)
+  Ok (arrayFromList (hdrBytes ++ serialBytesList ++ bodyBytes))
 
 collectSerials : List Cell -> List Int -> Result String (List Int)
-collectSerials [] acc = Ok (revList acc)
+collectSerials [] acc = Ok (reverse acc)
 collectSerials (c::rest) acc = do
   s <- cellSerial c
   collectSerials rest (s::acc)
@@ -251,7 +169,7 @@ collectSerials (c::rest) acc = do
 -- | Encode cells and return the bytes as a `List Int` (has `Debug`).
 encodeToList : List Cell -> Result String (List Int)
 encodeToList cells =
-  map arrayToList (encodeRecord cells)
+  map toList (encodeRecord cells)
 
 -- | Round-trip: encode → decode → render as a "|"-joined cell string.
 --   Returns the `showCells` rendering of the decoded result (or the Err).
