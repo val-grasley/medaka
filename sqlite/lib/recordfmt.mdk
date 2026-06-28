@@ -17,6 +17,7 @@ import byteparser.lib.byteparser.{
   BResult,
   BOk,
   BErr,
+  onOk,
   runBP,
   runByteParser,
   beSint,
@@ -131,55 +132,44 @@ showCell (CFloat f) = floatToString f
 -- compute the header boundary precisely.
 parseRecordGo : Array Int -> Int -> BResult (List Cell)
 parseRecordGo input pos =
-  match runBP sqVarint input pos
-    BErr m ep => BErr m ep
-    BOk hdrLen hdrStart =>
-      -- header region spans [pos, pos + hdrLen); serial types live in
-      -- [hdrStart, pos + hdrLen); bodies begin at pos + hdrLen.
-      let headerEnd = pos + hdrLen
-      match readSerialTypes input hdrStart headerEnd []
-        BErr m ep => BErr m ep
-        BOk sts _ => readBodies input headerEnd sts []
+  onOk (runBP sqVarint input pos) (parseRecordAfterHdr input pos)
+
+parseRecordAfterHdr : Array Int -> Int -> Int -> Int -> BResult (List Cell)
+parseRecordAfterHdr input pos hdrLen hdrStart =
+  let headerEnd = pos + hdrLen
+  onOk (readSerialTypes input hdrStart headerEnd []) (sts _ =>
+    readBodies input headerEnd sts [])
 
 -- Read serial-type varints until `pos >= headerEnd`.
 readSerialTypes : Array Int -> Int -> Int -> List SerialType -> BResult (List SerialType)
 readSerialTypes input pos headerEnd acc
   | pos >= headerEnd = BOk (reverse acc) pos
   | otherwise =
-      match runBP sqVarint input pos
-        BErr m ep => BErr m ep
-        BOk code pos2 =>
-          match serialOf code
-            Err e => BErr e pos
-            Ok st => readSerialTypes input pos2 headerEnd (st::acc)
+      onOk (runBP sqVarint input pos) (code pos2 =>
+        match serialOf code
+          Err e => BErr e pos
+          Ok st => readSerialTypes input pos2 headerEnd (st::acc))
 
 -- Read the body bytes for each serial type in order.
 readBodies : Array Int -> Int -> List SerialType -> List Cell -> BResult (List Cell)
 readBodies input pos [] acc = BOk (reverse acc) pos
 readBodies input pos (st::rest) acc =
-    match readBody input pos st
-      BErr m ep => BErr m ep
-      BOk cell pos2 => readBodies input pos2 rest (cell::acc)
+    onOk (readBody input pos st) (cell pos2 =>
+      readBodies input pos2 rest (cell::acc))
 
 -- Read one cell's body given its serial type.
 readBody : Array Int -> Int -> SerialType -> BResult Cell
 readBody input pos STNull    = BOk CNull pos
 readBody input pos STIntZero = BOk (CInt 0) pos
 readBody input pos STIntOne  = BOk (CInt 1) pos
-readBody input pos (STInt nbytes) = mapBR CInt (runBP (beSint nbytes) input pos)
+readBody input pos (STInt nbytes) = map CInt (runBP (beSint nbytes) input pos)
 readBody input pos (STText nbytes) =
-    mapBR (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
+    map (bs => CText (bytesToString bs)) (runBP (takeBytes nbytes) input pos)
 readBody input pos (STBlob nbytes) =
-    mapBR CBlob (runBP (takeSlice nbytes) input pos)
-readBody input pos STFloat = mapBR CFloat (runBP beFloat64 input pos)
+    map CBlob (runBP (takeSlice nbytes) input pos)
+readBody input pos STFloat = map CFloat (runBP beFloat64 input pos)
 
 -- ---------------------------------------------------------------------------
--- BResult helpers (the byteparser BResult is re-exported via its data decl)
--- ---------------------------------------------------------------------------
-
-mapBR : (a -> b) -> BResult a -> BResult b
-mapBR f (BOk a p)   = BOk (f a) p
-mapBR f (BErr m ep) = BErr m ep
 
 -- Decode a list of UTF-8 bytes to a String.
 --

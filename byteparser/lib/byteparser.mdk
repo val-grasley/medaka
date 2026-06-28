@@ -43,6 +43,26 @@ runBP : ByteParser a -> Array Int -> Int -> BResult a
 runBP (ByteParser f) input pos = f input pos
 
 -- ---------------------------------------------------------------------------
+-- BResult helpers
+-- ---------------------------------------------------------------------------
+
+-- | Mappable instance for BResult: map over the success value; pass errors
+--   through unchanged.  Higher-kinded impl uses the BARE head `BResult`.
+export impl Mappable BResult where
+  map f (BOk a p)  = BOk (f a) p
+  map _ (BErr m p) = BErr m p
+
+-- | Position-threading bind for BResult.  On success, passes the value and
+--   the new position to the continuation; on failure, short-circuits.
+--
+--   Lets callers chain position-threading steps without repeating the
+--   `BErr m ep => BErr m ep` pass-through boilerplate.
+export
+onOk : BResult a -> (a -> Int -> BResult b) -> BResult b
+onOk (BErr m ep) _ = BErr m ep
+onOk (BOk a pos) k = k a pos
+
+-- ---------------------------------------------------------------------------
 -- Typeclass instances
 -- ---------------------------------------------------------------------------
 --
@@ -51,24 +71,17 @@ runBP (ByteParser f) input pos = f input pos
 
 export impl Mappable ByteParser where
   map g p = ByteParser (input pos =>
-    match runBP p input pos
-      BOk a pos2 => BOk (g a) pos2
-      BErr m ep  => BErr m ep)
+    onOk (runBP p input pos) (a p2 => BOk (g a) p2))
 
 export impl Applicative ByteParser where
   pure a = ByteParser (_ pos => BOk a pos)
   ap pf pa = ByteParser (input pos =>
-    match runBP pf input pos
-      BErr m ep  => BErr m ep
-      BOk f pos2 => match runBP pa input pos2
-        BOk a pos3  => BOk (f a) pos3
-        BErr m2 ep2 => BErr m2 ep2)
+    onOk (runBP pf input pos) (f p2 =>
+      onOk (runBP pa input p2) (a p3 => BOk (f a) p3)))
 
 export impl Thenable ByteParser where
   andThen p k = ByteParser (input pos =>
-    match runBP p input pos
-      BErr m ep  => BErr m ep
-      BOk a pos2 => runBP (k a) input pos2)
+    onOk (runBP p input pos) (a p2 => runBP (k a) input p2))
 
 -- | Left-biased, full-backtracking alternative.
 --   `noMatch` always fails; `orElse p q` tries `p`, and on failure re-runs
