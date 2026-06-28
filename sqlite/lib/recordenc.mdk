@@ -167,7 +167,7 @@ utf8ByteCount : Array Char -> Int -> Int -> Int
 utf8ByteCount chars i acc
   | i >= arrayLength chars = acc
   | otherwise =
-      let cp = charCode (arrayGetUnsafe i chars)
+      let cp = charCode (chars.[i])
       let n =
         if cp < 0x80 then 1
         else if cp < 0x800 then 2
@@ -185,7 +185,7 @@ charsToUtf8 : Array Char -> Int -> List Int
 charsToUtf8 chars i
   | i >= arrayLength chars = []
   | otherwise =
-      let cp = charCode (arrayGetUnsafe i chars)
+      let cp = charCode (chars.[i])
       appendList (cpToUtf8Bytes cp) (charsToUtf8 chars (i + 1))
 
 -- | Encode a single codepoint as UTF-8 bytes (forward order).
@@ -215,7 +215,7 @@ arrayToList a = arrayToListGo a 0
 arrayToListGo : Array Int -> Int -> List Int
 arrayToListGo a i
   | i >= arrayLength a = []
-  | otherwise = arrayGetUnsafe i a :: arrayToListGo a (i + 1)
+  | otherwise = a.[i] :: arrayToListGo a (i + 1)
 
 -- ---------------------------------------------------------------------------
 -- Serial-type selection

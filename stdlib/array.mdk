@@ -285,6 +285,25 @@ export
 fill : a -> Array a -> <Mut> Unit
 fill x arr = arrayFill x arr
 
+-- | Bounds-checked bulk copy: copies `len` elements from `src` at offset
+--   `srcOff` into `dst` at offset `dstOff`.  Panics when any argument is
+--   negative or the copy would exceed either array's bounds.
+export
+blit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+blit src srcOff dst dstOff len =
+  if len < 0 then
+    panic "Array.blit: negative length"
+  else if srcOff < 0 then
+    panic "Array.blit: negative srcOff"
+  else if dstOff < 0 then
+    panic "Array.blit: negative dstOff"
+  else if srcOff + len > arrayLength src then
+    panic "Array.blit: source out of bounds"
+  else if dstOff + len > arrayLength dst then
+    panic "Array.blit: destination out of bounds"
+  else
+    arrayBlit src srcOff dst dstOff len
+
 -- | Sort in place using the supplied comparison.
 export
 sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <Mut | e> Unit

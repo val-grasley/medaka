@@ -45,7 +45,7 @@ byteAt bytes off =
   if off < 0 || off >= arrayLength bytes then
     Err "byte offset \{intToString off} out of bounds (length \{intToString (arrayLength bytes)})"
   else
-    Ok (arrayGetUnsafe off bytes)
+    Ok (bytes.[off])
 
 -- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
 --   Used for the right-most-child pointer and interior-cell left-child pointer.

@@ -103,7 +103,7 @@ bSatisfy pred = ByteParser (bSatisfyStep pred)
 bSatisfyStep : (Int -> Bool) -> Array Int -> Int -> BResult Int
 bSatisfyStep pred input pos
   | pos >= arrayLength input = BErr "unexpected end of input" pos
-  | pred (arrayGetUnsafe pos input) = BOk (arrayGetUnsafe pos input) (pos + 1)
+  | pred (input.[pos]) = BOk (input.[pos]) (pos + 1)
   | otherwise = BErr "unexpected byte" pos
 
 -- | Consume any single byte.
@@ -145,7 +145,7 @@ peek : ByteParser Int
 peek = ByteParser (input pos =>
   if pos >= arrayLength input
   then BErr "unexpected end of input" pos
-  else BOk (arrayGetUnsafe pos input) pos)
+  else BOk (input.[pos]) pos)
 
 -- ---------------------------------------------------------------------------
 -- Combinators
@@ -256,7 +256,7 @@ takeBytesGo : Int -> List Int -> Array Int -> Int -> BResult (List Int)
 takeBytesGo n acc input pos
   | n <= 0 = BOk (reverse acc) pos
   | pos >= arrayLength input = BErr "unexpected end of input" pos
-  | otherwise = takeBytesGo (n - 1) ((arrayGetUnsafe pos input)::acc) input (pos + 1)
+  | otherwise = takeBytesGo (n - 1) ((input.[pos])::acc) input (pos + 1)
 
 -- | Read exactly N bytes, returning them as an Array Int slice.
 export
@@ -284,7 +284,7 @@ beUintGo : Int -> Int -> Array Int -> Int -> BResult Int
 beUintGo n acc input pos
   | n <= 0                   = BOk acc pos
   | pos >= arrayLength input = BErr "unexpected end of input" pos
-  | otherwise                = beUintGo (n - 1) (acc * 256 + (arrayGetUnsafe pos input)) input (pos + 1)
+  | otherwise                = beUintGo (n - 1) (acc * 256 + (input.[pos])) input (pos + 1)
 
 -- | Read a big-endian SIGNED integer of exactly N bytes (N in 1..8),
 --   two's-complement.
@@ -343,7 +343,7 @@ sqVarintStep input pos acc byteNum b
 sqVarintLoop : Array Int -> Int -> Int -> Int -> BResult Int
 sqVarintLoop input pos acc byteNum
   | pos >= arrayLength input = BErr "unexpected end of input (varint)" pos
-  | otherwise = sqVarintStep input pos acc byteNum (arrayGetUnsafe pos input)
+  | otherwise = sqVarintStep input pos acc byteNum (input.[pos])
 
 -- | Read a 64-bit IEEE 754 big-endian float as a Medaka Float.
 -- Consumes exactly 8 bytes in big-endian order and reinterprets their bit

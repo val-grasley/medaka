@@ -86,7 +86,7 @@ satisfy pred = Parser (satisfyStep pred)
 satisfyStep : (Char -> Bool) -> Array Char -> Int -> PResult Char
 satisfyStep pred input pos
   | pos >= arrayLength input = PErr "unexpected end of input" pos
-  | pred (arrayGetUnsafe pos input) = POk (arrayGetUnsafe pos input) (pos + 1)
+  | pred (input.[pos]) = POk (input.[pos]) (pos + 1)
   | otherwise = PErr "unexpected character" pos
 
 -- | Consume any single char.
@@ -205,7 +205,7 @@ stringGo want wi input pos original =
     POk original pos
   else if pos >= arrayLength input then
     PErr "unexpected end of input" pos
-  else if arrayGetUnsafe pos input == arrayGetUnsafe wi want then
+  else if input.[pos] == want.[wi] then
     stringGo want (wi + 1) input (pos + 1) original
   else
     PErr "string: mismatch" pos
@@ -236,7 +236,7 @@ skipSpaces : Array Char -> Int -> Int
 skipSpaces input pos =
   if pos >= arrayLength input then
     pos
-  else if isSpace (arrayGetUnsafe pos input) then
+  else if isSpace (input.[pos]) then
     skipSpaces input (pos + 1)
   else
     pos

@@ -185,7 +185,7 @@ pkScan arr = pkGo arr 0 (arrayLength arr) (0 - 1) 0 False
 pkGo : Array Char -> Int -> Int -> Int -> Int -> Bool -> Option Int
 pkGo arr i n col depth started
   | i >= n = None
-  | otherwise = pkStep arr i n col depth started (arrayGetUnsafe i arr)
+  | otherwise = pkStep arr i n col depth started (arr.[i])
 
 pkStep : Array Char -> Int -> Int -> Int -> Int -> Bool -> Char -> Option Int
 pkStep arr i n col depth started c
@@ -204,7 +204,7 @@ matchesGo : Array Char -> Int -> Array Char -> Int -> Bool
 matchesGo arr i needle j
   | j >= arrayLength needle = True
   | i + j >= arrayLength arr = False
-  | charCode (arrayGetUnsafe (i + j) arr) == charCode (arrayGetUnsafe j needle) = matchesGo arr i needle (j + 1)
+  | charCode (arr.[i + j]) == charCode (needle.[j]) = matchesGo arr i needle (j + 1)
   | otherwise = False
 
 -- ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ lowerCharsGo : Array Char -> Int -> Int -> List Char -> List Char
 lowerCharsGo arr i n acc =
   if i >= n then reverse acc
   else
-    let c = arrayGetUnsafe i arr
+    let c = arr.[i]
     let lc = match charFromCode (lowerCode (charCode c))
                Some ch => ch
                None    => c
@@ -242,7 +242,7 @@ ciScan arr needle = ciGo arr needle 0 (arrayLength arr) (0 - 1) 0 False True
 ciGo : Array Char -> Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> Option Int
 ciGo arr needle i n col depth started atColStart
   | i >= n = None
-  | otherwise = ciStep arr needle i n col depth started atColStart (arrayGetUnsafe i arr)
+  | otherwise = ciStep arr needle i n col depth started atColStart (arr.[i])
 
 ciStep : Array Char -> Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> Char -> Option Int
 ciStep arr needle i n col depth started atColStart c
@@ -266,7 +266,7 @@ identMatchGo : Array Char -> Int -> Array Char -> Int -> Bool
 identMatchGo arr i needle j
   | j >= arrayLength needle = identBoundaryAt arr (i + j)
   | i + j >= arrayLength arr = False
-  | lowerCode (charCode (arrayGetUnsafe (i + j) arr)) == charCode (arrayGetUnsafe j needle) = identMatchGo arr i needle (j + 1)
+  | lowerCode (charCode (arr.[i + j])) == charCode (needle.[j]) = identMatchGo arr i needle (j + 1)
   | otherwise = False
 
 -- The char after the identifier must NOT be an identifier char (so "id" does
@@ -275,7 +275,7 @@ identBoundaryAt : Array Char -> Int -> Bool
 identBoundaryAt arr k =
   if k >= arrayLength arr then True
   else
-    let c = charCode (arrayGetUnsafe k arr)
+    let c = charCode (arr.[k])
     not ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95)
 
 lowerCode : Int -> Int
@@ -292,7 +292,7 @@ colNamesOf sql = cnGather (stringToChars sql) 0 (arrayLength (stringToChars sql)
 cnGather : Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> List String -> List String
 cnGather arr i n col depth started atColStart acc
   | i >= n = reverse acc
-  | otherwise = cnStep arr i n col depth started atColStart acc (arrayGetUnsafe i arr)
+  | otherwise = cnStep arr i n col depth started atColStart acc (arr.[i])
 
 cnStep : Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> List String -> Char -> List String
 cnStep arr i n col depth started atColStart acc c
@@ -310,7 +310,7 @@ identLenGo : Array Char -> Int -> Int -> Int
 identLenGo arr i j =
   if i + j >= arrayLength arr then j
   else
-    let c = charCode (arrayGetUnsafe (i + j) arr)
+    let c = charCode (arr.[i + j])
     if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
     then identLenGo arr i (j + 1) else if j == 0 then 1 else j
 
@@ -319,7 +319,7 @@ readIdent arr i = stringFromChars (arrayFromList (readIdentTake arr i 0 (identLe
 readIdentTake : Array Char -> Int -> Int -> Int -> List Char -> List Char
 readIdentTake arr i j len acc =
   if j >= len then reverse acc
-  else readIdentTake arr i (j + 1) len (arrayGetUnsafe (i + j) arr :: acc)
+  else readIdentTake arr i (j + 1) len (arr.[i + j] :: acc)
 
 -- | Given the IPK column index (if any), a row's rowid, and its raw cells,
 --   return the cells with the IPK column replaced by the rowid.

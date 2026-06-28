@@ -78,6 +78,7 @@
 -- `dbwriter` stays bytebuilder-free (single byteparser path spelling, via
 -- recordenc).
 
+import array.{set, blit}
 import lib.recordenc.{encodeRecord}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 
@@ -128,7 +129,7 @@ arrayToList a = arrToListGo a 0
 arrToListGo : Array Int -> Int -> List Int
 arrToListGo a i
   | i >= arrayLength a = []
-  | otherwise = arrayGetUnsafe i a :: arrToListGo a (i + 1)
+  | otherwise = a.[i] :: arrToListGo a (i + 1)
 
 -- ---------------------------------------------------------------------------
 -- Self-contained byte emitters (List Int, big-endian) — inverse of byteparser
@@ -225,31 +226,31 @@ packCells page (cell::rest)  cpStart contentTop floor i =
   then Err "table exceeds one page; multi-page not supported in v1"
   else
     -- Blit the cell bytes into the page at newTop.
-    arrayBlit cell 0 page newTop clen
+    blit cell 0 page newTop clen
     -- Write the page-relative pointer (u16, big-endian) for cell i.
     let ptrOff = cpStart + i * 2
-    arraySetUnsafe ptrOff       (bitAnd (newTop / 256) 255) page
-    arraySetUnsafe (ptrOff + 1) (bitAnd newTop 255)         page
+    set ptrOff       (bitAnd (newTop / 256) 255) page
+    set (ptrOff + 1) (bitAnd newTop 255)         page
     packCells page rest cpStart newTop floor (i + 1)
 
 -- Write the 8-byte leaf page header at `hdrOff`.
 writeLeafHeader : Array Int -> Int -> Int -> Int -> <Mut> Unit
 writeLeafHeader page hdrOff nCells contentStart =
   -- +0 page type
-  arraySetUnsafe hdrOff pageTableLeafByte page
+  set hdrOff pageTableLeafByte page
   -- +1 first freeblock (u16) = 0
-  arraySetUnsafe (hdrOff + 1) 0 page
-  arraySetUnsafe (hdrOff + 2) 0 page
+  set (hdrOff + 1) 0 page
+  set (hdrOff + 2) 0 page
   -- +3 cell count (u16)
-  arraySetUnsafe (hdrOff + 3) (bitAnd (nCells / 256) 255) page
-  arraySetUnsafe (hdrOff + 4) (bitAnd nCells 255)         page
+  set (hdrOff + 3) (bitAnd (nCells / 256) 255) page
+  set (hdrOff + 4) (bitAnd nCells 255)         page
   -- +5 cell-content-area start (u16; 0 means 65536, but our pages are 4096 so
   --    contentStart is always in range and never 0 unless empty — an empty
   --    page writes contentStart = pageSize = 4096, which is the correct value)
-  arraySetUnsafe (hdrOff + 5) (bitAnd (contentStart / 256) 255) page
-  arraySetUnsafe (hdrOff + 6) (bitAnd contentStart 255)         page
+  set (hdrOff + 5) (bitAnd (contentStart / 256) 255) page
+  set (hdrOff + 6) (bitAnd contentStart 255)         page
   -- +7 fragmented free bytes = 0
-  arraySetUnsafe (hdrOff + 7) 0 page
+  set (hdrOff + 7) 0 page
 
 -- ---------------------------------------------------------------------------
 -- File header (100 bytes), written into the first 100 bytes of page 1
@@ -406,7 +407,7 @@ buildDatabase name createSql colCount ipkColIdx rows = do
             Ok page1 =>
               -- 5. Blit the 100-byte file header over page 1's first 100 bytes.
               let fileHdr = buildFileHeader 2
-              arrayBlit fileHdr 0 page1 0 fileHeaderSize
+              blit fileHdr 0 page1 0 fileHeaderSize
               -- 6. Concatenate page 1 ++ page 2 into the whole-file image.
               Ok (concatPages page1 page2)
 
@@ -416,8 +417,8 @@ concatPages p1 p2 =
   let n1   = arrayLength p1
   let n2   = arrayLength p2
   let file = arrayMake (n1 + n2) 0
-  arrayBlit p1 0 file 0 n1
-  arrayBlit p2 0 file n1 n2
+  blit p1 0 file 0 n1
+  blit p2 0 file n1 n2
   file
 
 -- ---------------------------------------------------------------------------

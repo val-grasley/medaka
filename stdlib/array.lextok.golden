@@ -1236,6 +1236,108 @@ IDENT "arr"
 NEWLINE
 EXPORT
 NEWLINE
+IDENT "blit"
+COLON
+UPPER "Array"
+IDENT "a"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Array"
+IDENT "a"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+LT
+UPPER "Mut"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "blit"
+IDENT "src"
+IDENT "srcOff"
+IDENT "dst"
+IDENT "dstOff"
+IDENT "len"
+EQUAL
+INDENT
+IF
+IDENT "len"
+LT
+INT 0
+THEN
+INDENT
+IDENT "panic"
+STRING "Array.blit: negative length"
+NEWLINE
+DEDENT
+ELSE
+IF
+IDENT "srcOff"
+LT
+INT 0
+THEN
+INDENT
+IDENT "panic"
+STRING "Array.blit: negative srcOff"
+NEWLINE
+DEDENT
+ELSE
+IF
+IDENT "dstOff"
+LT
+INT 0
+THEN
+INDENT
+IDENT "panic"
+STRING "Array.blit: negative dstOff"
+NEWLINE
+DEDENT
+ELSE
+IF
+IDENT "srcOff"
+PLUS
+IDENT "len"
+GT
+IDENT "arrayLength"
+IDENT "src"
+THEN
+INDENT
+IDENT "panic"
+STRING "Array.blit: source out of bounds"
+NEWLINE
+DEDENT
+ELSE
+IF
+IDENT "dstOff"
+PLUS
+IDENT "len"
+GT
+IDENT "arrayLength"
+IDENT "dst"
+THEN
+INDENT
+IDENT "panic"
+STRING "Array.blit: destination out of bounds"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "arrayBlit"
+IDENT "src"
+IDENT "srcOff"
+IDENT "dst"
+IDENT "dstOff"
+IDENT "len"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+NEWLINE
 IDENT "sortInPlaceBy"
 COLON
 LPAREN

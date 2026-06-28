@@ -283,7 +283,7 @@ validIdent s =
 validIdentGo : Array Char -> Int -> Int -> Bool
 validIdentGo chars i n =
   if i >= n then True
-  else if identChar (charCode (arrayGetUnsafe i chars))
+  else if identChar (charCode (chars.[i]))
        then validIdentGo chars (i + 1) n
        else False
 
