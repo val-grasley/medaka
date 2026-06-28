@@ -7,7 +7,17 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — ✅ sqlite dogfood review batch (2026-06-27). `main` = `29c2120` (+ seed re-mint)
+## RESUME — ✅ E24 emitter name-shadowing FIXED; #23 SIGTRAP deferred (2026-06-28). `main` = `5942477` (worktree branch, + seed re-mint)
+
+Re-diagnosed the gap-3/slice-7/#23 cluster on current main (`GAP3-SLICE7-DESIGN.md` was stale at `197e550`; the manifestation shifted post-#21/#22). The two brief repros are TWO DISTINCT bugs, NEITHER being the doc's `debug`/`sequence` arg-stamp framing. Memory: `project_gap3_slice7_two_distinct_bugs`.
+
+- **FACE 1 — `pickEq eq x y = eq x y` build-reject — ✅ FIXED (E24, emitter-only LLVM).** A HOF PARAMETER named like an interface method (`eq`/`compare`/`cmp`/`show`/`map`) applied in the body was mis-routed by `llvm_emit.mdk`'s `emitApp` → `emitMethodArgDispatch` → arg-tag over primitive Int/String impl groups (no ctor cell tag) → `emitTagMatch []` slice-7. The emitter-side analogue of the front-end E15/E18 scope guards. Fix: `if isLocal env fname then emitIndirect` as the first check in `emitApp`'s CVar arm (mirrors `emitVar`'s isLocal-first priority). Fixture `test/build_diff_fixtures/hof_shadows_method.mdk`. Gates: 68/68 `diff_compiler_*` + 41 build + fixpoint C3a/C3b YES + cold `bootstrap_from_seed` PASS; seed re-minted. Ledger: EMITTER-GAPS.md **E24**.
+- **FACE 2 — `app2 f = f 2 3; main = println (app2 (==))` SIGTRAP (#23) — 🔴 OPEN (clean STOP, verified diagnosis).** A HOF generalized to `(Num a, Num b) =>` from internal literals, called with a fn making the var `Num`+`Eq` and the result concrete, leaves the ambiguous Num var ungrounded → callee `CDict` Num-dict routes `RNone` → NULL dict word → `inttoptr 0; load` SIGTRAP. Root: `processSCC`'s Num-defaulting reads only `pendingImplObligations`, but the callee's instantiated Num constraints flow through `pendingCallObligations` / (inferred-constraint promoted fns) `pendingDictApps`. Two targeted fix attempts failed; full diagnosis + next step in EMITTER-GAPS.md "#23 / slice-7 SIGTRAP". HIGH-traffic defaulting path — gate hard. Niche (no current stdlib caller).
+
+### ⏳ PENDING WasmGC FIXES (carry forward)
+- **WasmGC parallel of E24 — HOF param shadowing an interface method (`pickEq eq x y = eq x y`).** `medaka build --target wasm` of the same repro FAILS wasm VALIDATION (`type mismatch: expected (ref eq) but nothing on stack`). NOT a clean mirror of the one-line LLVM `isLocal` guard: `wasm_emit.mdk`'s `emitAppRef` already routes an unknown CVar head to `emitIndirectApp`, so the wasm failure is a DISTINCT manifestation needing its own diagnosis (likely the method-named local is being treated as a fn/method ref upstream, or `emitIndirectApp`/`emitVarRef` mishandles a method-named local — instrument which arm `eq` resolves through). LLVM is canonical; deferred. (Found while fixing E24, 2026-06-28.)
+
+
 
 A file-by-file review of the sqlite library produced a 10-task batch, ALL merged + verified (full `diff_compiler_*` 0-fail, fixpoint C3a/C3b YES, cold `bootstrap_from_seed` PASS, every sqlite oracle byte-identical throughout). Memory: `project_sqlite_review_batch`.
 
