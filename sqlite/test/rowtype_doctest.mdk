@@ -58,7 +58,7 @@ decodeUser cells = match rtDecode userRow cells
 -- > showI (rtDecode tInt [CInt 7])
 -- "7"
 -- > showI (rtDecode tInt [CText "x"])
--- "Err: tInt: expected integer column, got Text"
+-- "Err: tInt: expected integer column, got CText \"x\""
 -- > showI (rtDecode tInt [CInt 1, CInt 2])
 -- "Err: tInt: expected exactly 1 column"
 export
@@ -99,7 +99,7 @@ showOptR r = match r
 -- > showP2 (rtDecode (t2 tInt tText) [CInt 2, CText "Bob"])
 -- "(2, Bob)"
 -- > showP2 (rtDecode (t2 tInt tText) [CText "no", CText "Bob"])
--- "Err: tInt: expected integer column, got Text"
+-- "Err: tInt: expected integer column, got CText \"no\""
 export
 showP2 : Result String (Int, String) -> String
 showP2 r = match r
@@ -117,7 +117,7 @@ showP2 r = match r
 -- > showF (rtDecode tFloat [CInt 7])
 -- "7.0"
 -- > showF (rtDecode tFloat [CText "x"])
--- "Err: tFloat: expected numeric column, got Text"
+-- "Err: tFloat: expected numeric column, got CText \"x\""
 export
 showF : Result String Float -> String
 showF r = match r

@@ -62,7 +62,7 @@ tInt = mkRowType 1 decodeInt
 
 decodeInt : List Cell -> Result String Int
 decodeInt (CInt n :: []) = Ok n
-decodeInt (c :: [])      = Err "tInt: expected integer column, got \{cellShape c}"
+decodeInt (c :: [])      = Err "tInt: expected integer column, got \{debug c}"
 decodeInt _              = Err "tInt: expected exactly 1 column"
 
 -- | Decode a single text column.
@@ -72,7 +72,7 @@ tText = mkRowType 1 decodeText
 
 decodeText : List Cell -> Result String String
 decodeText (CText s :: []) = Ok s
-decodeText (c :: [])       = Err "tText: expected text column, got \{cellShape c}"
+decodeText (c :: [])       = Err "tText: expected text column, got \{debug c}"
 decodeText _               = Err "tText: expected exactly 1 column"
 
 -- | Decode a single boolean column (SQLite stores booleans as 0/1 integers).
@@ -82,7 +82,7 @@ tBool = mkRowType 1 decodeBool
 
 decodeBool : List Cell -> Result String Bool
 decodeBool (CInt n :: []) = if n == 0 then Ok False else if n == 1 then Ok True else Err "tBool: expected 0 or 1, got \{n}"
-decodeBool (c :: [])      = Err "tBool: expected integer column, got \{cellShape c}"
+decodeBool (c :: [])      = Err "tBool: expected integer column, got \{debug c}"
 decodeBool _              = Err "tBool: expected exactly 1 column"
 
 -- | Decode a single blob column.
@@ -92,7 +92,7 @@ tBlob = mkRowType 1 decodeBlob
 
 decodeBlob : List Cell -> Result String (Array Int)
 decodeBlob (CBlob b :: []) = Ok b
-decodeBlob (c :: [])       = Err "tBlob: expected blob column, got \{cellShape c}"
+decodeBlob (c :: [])       = Err "tBlob: expected blob column, got \{debug c}"
 decodeBlob _               = Err "tBlob: expected exactly 1 column"
 
 -- | Decode a single float column.  COERCES integer cells to float, because
@@ -105,7 +105,7 @@ tFloat = mkRowType 1 decodeFloat
 decodeFloat : List Cell -> Result String Float
 decodeFloat (CFloat f :: []) = Ok f
 decodeFloat (CInt n :: [])   = Ok (intToFloat n)
-decodeFloat (c :: [])        = Err "tFloat: expected numeric column, got \{cellShape c}"
+decodeFloat (c :: [])        = Err "tFloat: expected numeric column, got \{debug c}"
 decodeFloat _                = Err "tFloat: expected exactly 1 column"
 
 -- | Wrap an inner decoder so that a NULL (across ALL its `width` columns)
@@ -203,15 +203,3 @@ customDecoder f inner cells = flatMap f (rtDecode inner cells)
 export
 tRaw : Int -> (List Cell -> Result String a) -> RowType a
 tRaw = mkRowType
-
--- ---------------------------------------------------------------------------
--- Cell-shape helper
--- ---------------------------------------------------------------------------
-
--- A short human label for a cell's runtime shape (for error messages).
-cellShape : Cell -> String
-cellShape CNull   = "NULL"
-cellShape (CInt _)  = "Int"
-cellShape (CText _) = "Text"
-cellShape (CBlob _) = "Blob"
-cellShape (CFloat _) = "Float"
