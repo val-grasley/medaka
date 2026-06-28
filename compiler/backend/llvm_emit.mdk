@@ -1376,7 +1376,7 @@ emitStrExtern _ _ name _ = gapE ("unsupported string extern " ++ name)
 -- floatToString is a LEAF: delegates to mdk_float_to_string (mirrors mdk_print_float's
 -- %.12g+dot logic but returns a mdk_str_lit box instead of printf-ing).
 isNumExtern : String -> Bool
-isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64"]
+isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64", "floatRem"]
 
 emitNumExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitNumExtern e env "intToFloat" args = match emitArgs e env args
@@ -1414,6 +1414,16 @@ emitNumExtern e env "bytesToFloat64" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_bytes_to_float64(i64 " ++ arr ++ ", i64 " ++ oi ++ ")")
     (r, LTFloat)
   _ => panic "llvm spike: bytesToFloat64 takes two arguments"
+-- floatRem a b = fmod(a, b); both operands unbox to double, result reboxes.
+-- Same value as the inline `frem` the `Float % Float` operator emits.
+emitNumExtern e env "floatRem" args = match emitArgs e env args
+  [a, b] =>
+    let da = unboxFloat e a
+    let db = unboxFloat e b
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call double @mdk_float_rem(double " ++ da ++ ", double " ++ db ++ ")")
+    (boxFloat e r, LTFloat)
+  _ => panic "llvm spike: floatRem takes two arguments"
 emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 
 -- IO-output externs (native extern catalog slice 3).
@@ -1556,7 +1566,8 @@ emitCharExtern _ _ name _ = gapE ("unsupported char extern " ++ name)
 -- slice 9: string↔char conversions + codepoint slicing.
 isStrCharExtern : String -> Bool
 isStrCharExtern name =
-  contains name ["stringToChars", "stringFromChars", "stringSlice"]
+  contains name ["stringToChars", "stringFromChars", "stringSlice",
+                 "stringToUtf8Bytes", "stringFromUtf8Bytes"]
 
 emitStrCharExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitStrCharExtern e env "stringToChars" args = match emitArgs e env args
@@ -1577,6 +1588,19 @@ emitStrCharExtern e env "stringSlice" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo ++ ", i64 " ++ hi ++ ", i64 " ++ s ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: stringSlice takes three arguments (slice 9)"
+-- UTF-8 codec: stringToUtf8Bytes -> Array Int ($arr-shaped, LTCon); stringFromUtf8Bytes -> String.
+emitStrCharExtern e env "stringToUtf8Bytes" args = match emitArgs e env args
+  [s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_utf8_bytes(i64 " ++ s ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: stringToUtf8Bytes takes one argument"
+emitStrCharExtern e env "stringFromUtf8Bytes" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_from_utf8_bytes(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringFromUtf8Bytes takes one argument"
 emitStrCharExtern _ _ name _ = gapE ("unsupported str-char extern " ++ name)
 
 -- slice 14: ASCII char classification + case mapping (unicode subset).

@@ -1,0 +1,3 @@
+-- Float `%` (frem == C fmod == OCaml Float.rem); eval routes through the
+-- floatRem extern so `run` matches this build-path golden exactly.
+main = 7.5 % 2.0

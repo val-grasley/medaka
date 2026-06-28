@@ -175,6 +175,26 @@ export
 clamp : Ord a => a -> a -> a -> a
 clamp lo hi = min hi >> max lo
 
+{- | `isEven n` is `True` when `n` is divisible by 2 (negatives included).
+
+   > isEven 4
+   True
+   > isEven 7
+   False -}
+export
+isEven : Int -> Bool
+isEven n = n % 2 == 0
+
+{- | `isOdd n` is `True` when `n` is not divisible by 2.
+
+   > isOdd 3
+   True
+   > isOdd 8
+   False -}
+export
+isOdd : Int -> Bool
+isOdd n = n % 2 != 0
+
 export impl Ord Int where
   compare a b = if a < b then Lt else if a > b then Gt else Eq
 

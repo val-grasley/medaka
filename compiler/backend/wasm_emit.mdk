@@ -725,6 +725,8 @@ isStrExternW name = contains name [
   -- charFromCode : Int -> Option Char is range-check + i31 rebox.  Routed here so they
   -- reach emitStrExternRef (all touch $str / Char codepoints).
   "stringToChars", "stringFromChars", "charFromCode",
+  -- W11b: the UTF-8 byte codec ($str <-> Array Int) — raw backing bytes 0..255.
+  "stringToUtf8Bytes", "stringFromUtf8Bytes",
   -- W9: the Debug-quoting externs render a String/Char as a quoted+escaped literal
   -- ("hi" / 'a').  Both produce a fresh $str via the $mdk_dbg_quote runtime (which
   -- reuses $mdk_cp_count + $mdk_char_to_str, both in strLeafRuntimeLines).
@@ -779,6 +781,8 @@ externArityW name =
     "panic", "arrayLength", "arrayFromList", "arrayCopy",
     -- W11b: stringToChars/stringFromChars/charFromCode are each 1-arg.
     "stringToChars", "stringFromChars", "charFromCode",
+    -- W11b: the UTF-8 byte codec externs are each 1-arg.
+    "stringToUtf8Bytes", "stringFromUtf8Bytes",
     -- W12: readFile/fileExists/getEnv/exit take 1 arg; args takes a Unit arg
     -- (emitted + dropped, like randomFloat).
     "readFile", "fileExists", "getEnv", "exit", "args",
@@ -987,6 +991,10 @@ noteW8Extern name =
   -- ($mdk_char_to_str, reused by stringFromChars), and the codec runtime itself.
   let _ = if contains name ["stringToChars", "stringFromChars"]
           then let _ = setRef useStrCodecRef True in let _ = setRef useStrRef True in let _ = setRef useArrayRef True in setRef useStrLeafRef True else ()
+  -- W11b: the UTF-8 byte codec ($str <-> Array Int).  Force the codec runtime (carries
+  -- $mdk_str_to_utf8_bytes / $mdk_utf8_bytes_to_str), the $str rep, and the $arr rep.
+  let _ = if contains name ["stringToUtf8Bytes", "stringFromUtf8Bytes"]
+          then let _ = setRef useStrCodecRef True in let _ = setRef useStrRef True in setRef useArrayRef True else ()
   -- W9: debugStringLit/debugCharLit quote+escape into a fresh $str via $mdk_dbg_quote,
   -- which reuses $mdk_cp_count + $mdk_char_to_str (both in strLeafRuntimeLines).  Force
   -- the $str rep + the strLeaf runtime.  (No $arr needed.)
@@ -2086,7 +2094,9 @@ isStrReturningExtern name = contains name [
   -- W8b: floatToString returns a String.
   "floatToString",
   -- W11b: stringFromChars : Array Char -> String.
-  "stringFromChars"]
+  "stringFromChars",
+  -- W11b: stringFromUtf8Bytes : Array Int -> String.
+  "stringFromUtf8Bytes"]
 
 -- the Unit-RESULT IO externs: a `main = putStrLn …` produces Unit and must NOT be
 -- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
@@ -3352,18 +3362,20 @@ emitValueCmpRef prog env d op l r =
     lv ++ rv ++ ["call $mdk_value_cmp", "i32.const 0", wasmBinOp op, "ref.i31"]
 
 
--- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  Comparison
--- (==,!=,<,>,<=,>=) → unbox both, f64 compare → i31 Bool.  (`%` is integer-only and
--- never reaches here for Float.)
+-- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  `%` has no
+-- f64 instruction, so it calls $mdk_float_rem (a - b*trunc(a/b) == fmod == LLVM frem).
+-- Comparison (==,!=,<,>,<=,>=) → unbox both, f64 compare → i31 Bool.
 emitFloatBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
 emitFloatBinRef prog env d op l r =
   let lf = emitRefExpr prog env d l ++ ["ref.cast (ref $float)", "struct.get $float 0"]
   let rf = emitRefExpr prog env d r ++ ["ref.cast (ref $float)", "struct.get $float 0"]
   if isCmpOp op then lf ++ rf ++ [wasmFloatCmp op, "ref.i31"]
+  else if op == "%" then
+    lf ++ rf ++ ["call $mdk_float_rem", "struct.new $float"]
   else lf ++ rf ++ [wasmFloatArith op, "struct.new $float"]
 
 isArithOrCmp : String -> Bool
-isArithOrCmp op = contains op ["+", "-", "*", "/", "==", "!=", "<", ">", "<=", ">="]
+isArithOrCmp op = contains op ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">="]
 
 isCmpOp : String -> Bool
 isCmpOp op = contains op ["==", "!=", "<", ">", "<=", ">="]
@@ -3409,7 +3421,7 @@ cexprIsFloat prog env e = match e
   _ => False
 
 isArithOp : String -> Bool
-isArithOp op = contains op ["+", "-", "*", "/"]
+isArithOp op = contains op ["+", "-", "*", "/", "%"]
 
 cexprIsFloatBlock : Prog -> List String -> List CStmt -> Bool
 cexprIsFloatBlock _ _ [] = False
@@ -3646,6 +3658,15 @@ emitStrExternRef prog env d "stringToChars" args = match args
 emitStrExternRef prog env d "stringFromChars" args = match args
   [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "call $mdk_chars_to_str"]
   _ => gapL "wasm W11b: stringFromChars takes exactly one argument"
+-- W11b: stringToUtf8Bytes : String -> Array Int.  Copy the $str's $u8arr backing into
+-- a fresh $arr of i31 Int bytes (0..255).  stringFromUtf8Bytes : Array Int -> String —
+-- blit the low 8 bits of each i31 back into a $u8arr + struct.new $str.
+emitStrExternRef prog env d "stringToUtf8Bytes" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $str)", "call $mdk_str_to_utf8_bytes"]
+  _ => gapL "wasm W11b: stringToUtf8Bytes takes exactly one argument"
+emitStrExternRef prog env d "stringFromUtf8Bytes" args = match args
+  [a] => emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "call $mdk_utf8_bytes_to_str"]
+  _ => gapL "wasm W11b: stringFromUtf8Bytes takes exactly one argument"
 -- W11b: charFromCode : Int -> Option Char.  Range-check the i31 Int (valid = 0..0x10FFFF
 -- EXCLUDING surrogates 0xD800..0xDFFF, byte-identical to medaka_rt.c mdk_char_from_code)
 -- → Some <char i31> (struct.new $C_Some, ordinal 0) / None (i31 ordinal 1).  Inlined

@@ -1402,6 +1402,7 @@ evalArith "+" (VFloat a) (VFloat b) = VFloat (a + b)
 evalArith "-" (VFloat a) (VFloat b) = VFloat (a - b)
 evalArith "*" (VFloat a) (VFloat b) = VFloat (a * b)
 evalArith "/" (VFloat a) (VFloat b) = VFloat (a / b)
+evalArith "%" (VFloat a) (VFloat b) = VFloat (floatRem a b)
 evalArith "==" a b = VBool (valueEq a b)
 evalArith "!=" a b = VBool (not (valueEq a b))
 evalArith "<" a b = VBool (ordLt (valueCompare a b))
@@ -1782,6 +1783,9 @@ externBindings = [
   ("stringConcat", prim1 pStringConcat),
   ("stringToChars", prim1 pStringToChars),
   ("stringFromChars", prim1 pStringFromChars),
+  ("stringToUtf8Bytes", prim1 pStringToUtf8Bytes),
+  ("stringFromUtf8Bytes", prim1 pStringFromUtf8Bytes),
+  ("floatRem", prim2 pFloatRem),
   ("stringToUpper", prim1 pStringToUpper),
   ("stringToLower", prim1 pStringToLower),
   ("stringCompare", prim2 pStringCompare),
@@ -1934,6 +1938,24 @@ pStringFromChars : Value -> Value
 pStringFromChars (VArray vs) =
   VString (stringFromChars (arrayFromList (map unChar (arrayToListG vs))))
 pStringFromChars _ = panic "stringFromChars: not an Array"
+
+unInt : Value -> Int
+unInt (VInt n) = n
+unInt _ = panic "unInt: not an Int"
+
+pStringToUtf8Bytes : Value -> Value
+pStringToUtf8Bytes (VString s) =
+  VArray (arrayFromList (map VInt (arrayToListG (stringToUtf8Bytes s))))
+pStringToUtf8Bytes _ = panic "stringToUtf8Bytes: not a String"
+
+pStringFromUtf8Bytes : Value -> Value
+pStringFromUtf8Bytes (VArray vs) =
+  VString (stringFromUtf8Bytes (arrayFromList (map unInt (arrayToListG vs))))
+pStringFromUtf8Bytes _ = panic "stringFromUtf8Bytes: not an Array"
+
+pFloatRem : Value -> Value -> Value
+pFloatRem (VFloat a) (VFloat b) = VFloat (floatRem a b)
+pFloatRem _ _ = panic "floatRem: bad operands"
 
 pStringToUpper : Value -> Value
 pStringToUpper (VString s) = VString (stringToUpper s)

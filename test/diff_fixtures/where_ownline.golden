@@ -83,7 +83,9 @@ hashListItems : Int -> List a -> Int
 identity : a -> a
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
+isEven : Int -> Bool
 isNone : Option a -> Bool
+isOdd : Int -> Bool
 isOk : Result a b -> Bool
 isSome : Option a -> Bool
 length : a b -> Int
