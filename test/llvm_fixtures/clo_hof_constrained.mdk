@@ -1,0 +1,14 @@
+-- slice 6 / EMITTER-GAPS #18 E23 (value facet): pass a `=>`-CONSTRAINED named
+-- function as a FIRST-CLASS VALUE to a higher-order function.  `isEv : Integral a
+-- => a -> Bool` (via `%` and `==`) is dict-passed by elaboration, so a bare
+-- occurrence lowers to a `CDict "isEv" routes` node — NOT a plain `CVar`/eta
+-- closure.  Used as a value (the `f` arg of `pick`, not the head of a saturated
+-- call), it must become a closure that captures its constraint dict route(s) and
+-- forwards them ahead of the value args to @mdk_isEv when `pick` invokes it
+-- indirectly.  Before the fix the emitter hit its emitExpr catch-all →
+-- "unsupported Core IR node CDict"; the interpreter was always correct, so a green
+-- build here proves run==build for a constrained-fn HOF argument.  `isEv 4` is True
+-- ⇒ 100 (an Int result keeps the golden render unambiguous).
+isEv x = x % 2 == 0
+pick f y = if f y then 100 else 200
+main = pick isEv 4

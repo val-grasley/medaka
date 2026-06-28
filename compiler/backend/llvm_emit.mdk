@@ -1171,6 +1171,7 @@ emitExpr e env (CVariantUpdate con base updates) =
   emitVariantUpdate e env con base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) =
   emitMethodValue e env name route implRoutes methRoutes
+emitExpr e env (CDict name routes) = emitDictValue e env name routes
 emitExpr e env (CArray es) = emitArrayCreate e env es
 emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
 emitExpr e env (CIndex a i) = emitArrayIndex e env a i
@@ -3155,6 +3156,54 @@ emitMethodValDefine e env lamName name route implRoutes methRoutes arity capName
   let cenv = loadCaptures e env capNames 0
   let synArgs = etaArgOps arity 0
   let (r, _) = emitMethod e cenv name route implRoutes methRoutes synArgs
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  setRef (bufRef e) saved
+
+-- CDict in VALUE position (EMITTER-GAPS #18, value facet): a `=>`-constrained
+-- NAMED function used as a FIRST-CLASS value — passed unapplied to a higher-order
+-- combinator (`filter myParity xs`, `map inc xs`, a user HOF `apply isEv 4`).  The
+-- dict_pass-elaborated define `@mdk_<name>` takes `listLen routes` leading dict
+-- PARAMS + the value args; emitDictApp handles the CALL (head) position, but a bare
+-- occurrence used as a value reached emitExpr's catch-all and panicked
+-- "unsupported Core IR node CDict".  Mirror emitMethodValue (the CMethod-as-value
+-- path): build the route dict words at THIS site, capture them in a closure cell,
+-- and emit a forwarder that reloads them and prepends them ahead of the `%argK`
+-- value words when the HOF invokes the closure — yielding a plain closure VALUE with
+-- the ABI filter/map/apply expect (field 0 = code_ptr, fields 1.. = captured dicts).
+-- The forwarder body is a DIRECT `@mdk_<name>` call (vs emitMethodValue's dispatch).
+-- A nullary value arity (the constrained fn takes no value args) degenerates to the
+-- plain saturated dict call.
+emitDictValue : Emit -> List (String, (String, LTy)) -> String -> List Route -> <Mut> (String, LTy)
+emitDictValue e env name routes =
+  if isKnownFn e name then
+    let valArity = fnArity e name - listLen routes
+    if valArity <= 0 then emitDictApp e env name routes []
+    else
+      let dictWords = dictWordsOf e env routes
+      let lamName = "mdk_dictval_" ++ name ++ "_" ++ intToString (freshId e)
+      let _ = emitDictValDefine e lamName name (lengthS dictWords) valArity
+      emitClosureAllocA e lamName valArity dictWords
+  else gapE ("CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
+
+-- emit the lifted constrained-fn value forwarder.  Closure cell layout: field 0 =
+-- code_ptr, fields 1..nDicts = captured dict words.  The forwarder takes `valArity`
+-- fresh `%argK` params, reloads the dict words from %clos fields 1..nDicts, and
+-- calls `@mdk_<name>(dicts.., %arg0.., %arg(valArity-1))` — the same leading-dict-then-
+-- value-arg order emitDictApp / dict_pass use at every direct call site.
+emitDictValDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
+emitDictValDefine e lamName name nDicts valArity =
+  let saved = (bufRef e).value
+  let _ = setRef (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls valArity ++ ") {")
+  let _ = emit e "entry:"
+  let dictOps = loadPapCaptures e nDicts 0
+  let synArgs = dictOps ++ etaArgOps valArity 0
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls synArgs ++ ")")
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
   let _ = emit e ""
