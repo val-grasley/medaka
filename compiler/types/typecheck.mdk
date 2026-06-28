@@ -4970,7 +4970,18 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   let dictSeed = moduleDictNames coreDecls joint modules
   let savedSticky = typeErrorsSticky.value
   let savedErrors = typeErrors.value
-  let grown = discoverPromotedJoint runtimeDecls joint rpNames argNames dictSeed
+  -- Drop the prelude/core defs AND signatures shadowed by a same-named user-module
+  -- fn before the SCRATCH joint typecheck.  The joint flatten is bare-name, so a
+  -- core fn with a concrete signature (e.g. `isEven : Int -> Bool`) would otherwise
+  -- PIN the user's same-named fn's inferred scheme to that concrete type — the
+  -- user's genuinely-constrained `isEven x = x % 2 == 0` (inferred `Num a => …`)
+  -- would NOT be discovered as promoted, so its define gets no leading dict param
+  -- while its body still routes `$dict_isEven_0` (the real per-module pass, where the
+  -- user fn shadows the prelude in its own scope, DOES infer the constraint) →
+  -- `unbound identifier: $dict_isEven_0` on the run/loader path.  The real per-module
+  -- pass already honours shadowing; mirror it here so discovery promotes the user fn.
+  let discoveryJoint = dropShadowedCore (moduleUserFnNames modules) coreDecls ++ flatMap snd modules
+  let grown = discoverPromotedJoint runtimeDecls discoveryJoint rpNames argNames dictSeed
   let promoted = filterList (n => not (contains n dictSeed)) grown
   let snapshot = promotedConstraints promoted funConstraintsRef.value
   let snapshotIfaces = promotedConstraintIfaces promoted funConstraintIfacesRef.value
@@ -5049,6 +5060,22 @@ promotedConstraintIfaces promoted entries =
 moduleUserFnNames : List (String, List Decl) -> List String
 moduleUserFnNames modules =
   dedup (flatMap (p => map fst (funDefs (snd p))) modules)
+
+-- Drop every core/prelude DEF and TYPE SIGNATURE whose name a user module
+-- redefines, for the SCRATCH joint-discovery typecheck.  Unlike eval's
+-- dropShadowed (DFunDef only), this ALSO drops the shadowed DTypeSig — the
+-- signature is precisely what would pin the user fn's inferred scheme to the
+-- prelude's concrete type and suppress its promotion.  Non-fn decls (impls,
+-- interfaces, data) are kept (a user fn name can't shadow them).
+dropShadowedCore : List String -> List Decl -> List Decl
+dropShadowedCore _ [] = []
+dropShadowedCore names ((DFunDef pub n pats body)::rest)
+  | contains n names = dropShadowedCore names rest
+  | otherwise = DFunDef pub n pats body :: dropShadowedCore names rest
+dropShadowedCore names ((DTypeSig pub n ty)::rest)
+  | contains n names = dropShadowedCore names rest
+  | otherwise = DTypeSig pub n ty :: dropShadowedCore names rest
+dropShadowedCore names (d::rest) = d :: dropShadowedCore names rest
 
 -- the user program's top-level functions carrying a `=>` constraint in their
 -- signature — the set elaborateDict dict-passes

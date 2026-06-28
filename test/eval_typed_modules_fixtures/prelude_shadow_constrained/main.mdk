@@ -1,0 +1,14 @@
+-- A constrained user free function shadowing a same-named prelude free function
+-- (core's `isEven`/`isOdd : Int -> Bool`).  The user defs are unsignatured and
+-- infer `Num a => a -> Bool` (constrained, dict-passed).  Regression for the
+-- joint-discovery bare-name collision: the prelude's concrete signature must NOT
+-- pin the user fn's inferred scheme and suppress its promotion on the loader/run
+-- path (was: `unbound identifier: $dict_isEven_0` on run, while build worked).
+isEven x = x % 2 == 0
+isOdd x = x % 2 != 0
+
+main =
+  let _ = println (isEven 4)
+  let _ = println (isOdd 4)
+  let _ = println (isEven 7)
+  println (isOdd 7)
