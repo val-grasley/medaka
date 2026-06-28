@@ -7,6 +7,23 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ sqlite dogfood review batch (2026-06-27). `main` = `29c2120` (+ seed re-mint)
+
+A file-by-file review of the sqlite library produced a 10-task batch, ALL merged + verified (full `diff_compiler_*` 0-fail, fixpoint C3a/C3b YES, cold `bootstrap_from_seed` PASS, every sqlite oracle byte-identical throughout). Memory: `project_sqlite_review_batch`.
+
+**New language/stdlib features (run==build, fixpoint-verified):**
+- **UTF-8 codec externs** — `stringToUtf8Bytes`/`stringFromUtf8Bytes` (expose the runtime String's UTF-8 backing / build a String from bytes) + `stdlib/string.mdk` `toUtf8`/`fromUtf8`/`utf8ByteLength`. Filled a real gap (string.mdk was codepoint-only).
+- **Float `%` completed** — `%` was ~90% built; eval lacked the `VFloat` arm (run errored, build worked). Fixed via a `floatRem` extern (C fmod == LLVM frem). REPRODUCE-FIRST WIN — almost reimplemented a working operator.
+- **Negative literal in application position** — `f -1` → `f (-1)` ("Rule C": lexer `TMinusTight` for `<space>-<digit>`; `parseApp` grabs it only when the head is non-numeric, so `5 -1` stays subtraction). All 6 `TMinus` parser sites broadened.
+- **`Ordering` Eq/Ord** — fixed a run≠build bug (`o == Lt` check-accepted + run=True but BUILD FAILED; no Eq instance). Hand-written impls (the `Eq` constructor collides with the `Eq` class → `deriving (Eq)` ambiguous).
+- **`bytebuilder.emitBeUint`** promoted (public unsigned mirror of `emitBeSint`).
+
+**🔴 OPEN BUG (filed, NOT fixed):** a user fn defining a CONSTRAINED free function whose name SHADOWS a prelude free function fails on `medaka run` (loader path) with `unbound identifier: $dict_<name>_0` while `build` works — Phase-134-class joint dict-pass collision (`collect_arities` keys arity by bare name). Surfaced because adding prelude `isEven` broke a trivial `isEven x = x % 2 == 0` user program → **`isEven`/`isOdd` were DROPPED from the batch** (recordfmt uses inline `n % 2 == 0`). Likely live on main via any existing constrained prelude free fn (shadow `traverse`/`sequence`). Fix in the dict-pass/loader seam; re-add isEven after. See PLAN open-issues + memory.
+
+**Cleanups:** five dogfood libs (dbwriter/recordenc/select/writer/main) had each RE-ROLLED the stdlib list/string toolkit under a misapplied "no stdlib import — keep lightweight" comment (that's compiler-only) — all de-rolled to stdlib. Plus: select `cmp*`→prelude `compare`/`Ordering` + Select param-destructure/record-update; btree §12 constants + `pageHdrOffset` + `bStep`; `Display Cell` (recordfmt) / `Display Row` (btree) consolidation; rowtype `cellShape`→derived `debug`; dbwriter/recordenc adopted the MutArray `bytebuilder` Builder for sequential encoding.
+
+**What to do next:** the dict-pass shadowing bug is the notable open item (worth fixing → unblocks `isEven`). Otherwise normal native-only dev / continued dogfood soak.
+
 ## RESUME — ✅ Internal-only array externs RESTRICTED behind `--allow-internal` (2026-06-27). `main` = `8e0390f` (+ seed re-mint)
 
 Referencing `arrayGetUnsafe`/`arraySetUnsafe`/`arrayBlit`/`arrayFill`/`arraySortInPlaceBy` from a
