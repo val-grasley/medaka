@@ -28,21 +28,16 @@ import lib.sqlite.{
 }
 import lib.btree.{Row, rowRowid, rowCells}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
+import string.{join}
 
 -- Render a row to a "|"-joined line, substituting the rowid for the PK column.
 renderRow : Option Int -> Row -> String
-renderRow pkIdx row = joinPipe (renderCells (rowCellsWithIpk pkIdx row))
+renderRow pkIdx row = join "|" (renderCells (rowCellsWithIpk pkIdx row))
 
 renderCells : List Cell -> List String
 renderCells cells = match cells
   [] => []
   c::rest => cellToString c :: renderCells rest
-
-joinPipe : List String -> String
-joinPipe xs = match xs
-  [] => ""
-  x::[] => x
-  x::rest => stringConcat [x, "|", joinPipe rest]
 
 -- Dump the stored CREATE statement + all rows of a table.
 dumpTable : Db -> String -> <IO> Unit
