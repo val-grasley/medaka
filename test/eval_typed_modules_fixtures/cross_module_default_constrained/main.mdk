@@ -1,0 +1,36 @@
+-- Regression for the eval-path CONSTRAINED-DEFAULT cross-module dispatch bug
+-- (compiler/eval/eval.mdk `pickByTag`):
+-- `foldMap : Monoid m => (a -> m) -> t a -> m` carries a method-level `=>`
+-- constraint and comes with an interface DEFAULT body (`fold (acc x => acc ++ f x)
+-- empty`).  A cross-module impl (`Foldable Bag`, defined here, NOT co-located with
+-- core.mdk's `Foldable` interface) does NOT override `foldMap`, so it inherits the
+-- default.  desugar's `fillImplDefaults` only specializes defaults into SAME-module
+-- impls, so eval reaches `foldMap`@Bag via the untagged default-fallback candidate.
+--
+-- Native `run` PANICKED `no matching impl for dispatch` while native `build` was
+-- correct: route=Bag matched no Bag-tagged `foldMap` candidate, and `pickByTag`
+-- returned the WHOLE VMulti instead of the untagged default — so every sibling
+-- impl's List/Option/Result-specialized default ran on the Bag receiver and the
+-- first one hard-panicked before the real default could be tried.  Fix: when the
+-- route tag matches no impl, `pickByTag` selects the untagged interface DEFAULT
+-- candidate (mirrors the LLVM `emitDefaultRKey` default-fallback path).
+--
+-- The UNCONSTRAINED default `length`@Bag (no method-level dict) already worked and
+-- is kept here as the control — it must not regress.
+--
+-- Drives the LOADER / elaborateModules + eval_modules path (what `medaka run`
+-- uses), where this dispatch class is historically masked single-file.  GOLDEN IS
+-- NATIVE-SOURCED: golden == native `medaka build`+exec (== fixed native `run`).
+
+data Bag a = Bag (List a)
+
+impl Foldable Bag where
+  fold f z (Bag xs) = fold f z xs
+  foldRight f z (Bag xs) = foldRight f z xs
+  toList (Bag xs) = xs
+
+main =
+  println (foldMap (x => [x, x]) (Bag [1, 2, 3]))
+  println (length (Bag [10, 20, 30]))
+  println (foldMap (x => [x, x]) [1, 2, 3])
+  println (foldMap (x => [x]) (Some 5))

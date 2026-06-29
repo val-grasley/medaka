@@ -787,8 +787,27 @@ narrowMethod (VTypedImpl t k p s inner) _ =
   stripResolved (VTypedImpl t k p s inner)
 narrowMethod v _ = v
 
+-- A concrete route tag picks the impl whose VTypedImpl tag matches.  When NO
+-- candidate carries the tag, the receiver's impl does not override this method —
+-- it inherits the interface DEFAULT.  This is the cross-module case: desugar's
+-- same-module `fillImplDefaults` never specialized the default into a tagged
+-- VTypedImpl for this impl, so the only correct candidate is the untagged default
+-- (installed as a bare VClosure / VThunk, never a VTypedImpl).  Select it so a
+-- CONSTRAINED default body (e.g. `foldMap`'s `Monoid m =>`) runs with its
+-- forwarded method-level dict instead of leaving the whole VMulti — which would
+-- apply every sibling impl's specialized default to the wrong receiver and hard-
+-- panic.  Mirrors the LLVM `emitDefaultRKey` default-fallback path.  Only when
+-- there is ALSO no default do we leave the whole VMulti for arg-tag fallback.
 pickByTag : List Value -> String -> Value
-pickByTag vs tag = oneOrMultiV (filterList (hasTag tag) vs) vs
+pickByTag vs tag = match filterList (hasTag tag) vs
+  [] => oneOrMultiV (filterList isDefaultCand vs) vs
+  matched => oneOrMultiV matched vs
+
+-- an interface-default fallback candidate: installed untagged (VClosure / VThunk),
+-- never wrapped in a VTypedImpl dispatch tag.
+isDefaultCand : Value -> Bool
+isDefaultCand (VTypedImpl _ _ _ _ _) = False
+isDefaultCand _ = True
 
 -- @Impl: strip the leading `@` off a hint name (`@Additive` → `Additive`).
 dropAtPrefix : String -> String
