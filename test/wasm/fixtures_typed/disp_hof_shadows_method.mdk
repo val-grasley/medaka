@@ -1,0 +1,28 @@
+-- W5/E24 (wasm peer): a higher-order-function PARAMETER named like an interface
+-- method (`eq`) and APPLIED in the body must be an INDIRECT call to the local
+-- closure value — NOT a direct call to a same-named TOP-LEVEL FN.  Before the
+-- emitAppRef/emitAppTail isLocal-first guard (mirroring emitVarRefPlain's
+-- `contains x env`-first priority and the LLVM emitApp E24 fix), `applyEq eq x y =
+-- eq x y` (with a top-level `eq` in scope) mis-routed `eq x y` to
+-- `(return_)call $eq` — the WRONG, top-level callee — a SILENT MISCOMPILE
+-- (`medaka run` and the LLVM build were always correct).  Peer of the LLVM
+-- build_diff_fixtures/hof_shadows_method.mdk.  Also exercises E23: the method
+-- `eqy` is passed UNAPPLIED (CMethod value → eta closure) into the shadowing param.
+interface Eqy a where
+  eqy : a -> a -> Bool
+
+impl Eqy Int where
+  eqy a b = a == b
+
+-- a top-level function whose name COLLIDES with the `eq` PARAMETER below.
+eq : Int -> Int -> Int
+eq a b = a + b + 100
+
+-- the HOF: `eq` is a PARAMETER (a closure value) applied in the body.  It shadows
+-- the top-level `eq`; without the fix the body emits a direct call to top-level `eq`.
+applyEq eq x y = eq x y
+
+main =
+  let same = applyEq eqy 4 4
+  let diff = applyEq eqy 4 5
+  if same then (if diff then 0 else 9) else 0

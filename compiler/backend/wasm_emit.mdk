@@ -1239,41 +1239,53 @@ scanStmtValueUses fnNames fnArs ctorArs (CSLetElse _ e f) = scanExprValueUses fn
 scanStmtValueUses _ _ _ _ = []
 
 clauseUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CClause -> Bool
-clauseUsesClosures fnNames fnArs ctorArs (CClause _ body) = exprUsesClosures fnNames fnArs ctorArs body
+clauseUsesClosures fnNames fnArs ctorArs (CClause pats body) = exprUsesClosures fnNames fnArs ctorArs (flatMap patVars pats) body
 
 -- a CLam anywhere; an application whose head is not a saturated known-fn/ctor call;
 -- a bare CVar referencing a top-level fn in NON-call (value) position.
-exprUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CExpr -> Bool
-exprUsesClosures fnNames fnArs ctorArs e = match e
+-- `locals` = the in-scope LOCALLY-BOUND names (clause params, let/lambda binders).
+-- A CVar matching a local SHADOWS any same-named top-level fn / ctor, so applying it
+-- is an INDIRECT (closure) call — the analysis MUST agree with emitAppRef/emitAppTail's
+-- `contains f0 env`-first guard, else a shadowing-local call (`applyEq eq x y = eq x y`
+-- with a top-level `eq` in scope) is mis-judged "saturated direct call, no closure" and
+-- the closure types are never emitted though emit uses them (parse/validate failure).
+exprUsesClosures : List String -> List (String, Int) -> List (String, Int) -> List String -> CExpr -> Bool
+exprUsesClosures fnNames fnArs ctorArs locals e = match e
   CLam _ _ => True
-  CApp f a => appUsesClosures fnNames fnArs ctorArs (CApp f a)
-  CVar x _ => contains x fnNames
+  CApp f a => appUsesClosures fnNames fnArs ctorArs locals (CApp f a)
+  CVar x _ => not (contains x locals) && contains x fnNames
   CLit _ => False
-  CBinPrim _ l r => exprUsesClosures fnNames fnArs ctorArs l || exprUsesClosures fnNames fnArs ctorArs r
-  CUnOp _ x => exprUsesClosures fnNames fnArs ctorArs x
-  CIf c t f => exprUsesClosures fnNames fnArs ctorArs c || exprUsesClosures fnNames fnArs ctorArs t || exprUsesClosures fnNames fnArs ctorArs f
-  CLet _ _ a b => exprUsesClosures fnNames fnArs ctorArs a || exprUsesClosures fnNames fnArs ctorArs b
-  CBlock stmts => anyList (stmtUsesClosures fnNames fnArs ctorArs) stmts
-  CDecision scrut arms _ => exprUsesClosures fnNames fnArs ctorArs scrut || anyList (a => exprUsesClosures fnNames fnArs ctorArs (armBody a)) arms
-  CMatch scrut arms => exprUsesClosures fnNames fnArs ctorArs scrut || anyList (a => exprUsesClosures fnNames fnArs ctorArs (armBody a)) arms
+  CBinPrim _ l r => exprUsesClosures fnNames fnArs ctorArs locals l || exprUsesClosures fnNames fnArs ctorArs locals r
+  CUnOp _ x => exprUsesClosures fnNames fnArs ctorArs locals x
+  CIf c t f => exprUsesClosures fnNames fnArs ctorArs locals c || exprUsesClosures fnNames fnArs ctorArs locals t || exprUsesClosures fnNames fnArs ctorArs locals f
+  CLet _ pat a b => exprUsesClosures fnNames fnArs ctorArs locals a || exprUsesClosures fnNames fnArs ctorArs (patVars pat ++ locals) b
+  CBlock stmts => blockUsesClosures fnNames fnArs ctorArs locals stmts
+  CDecision scrut arms _ => exprUsesClosures fnNames fnArs ctorArs locals scrut || anyList (a => exprUsesClosures fnNames fnArs ctorArs locals (armBody a)) arms
+  CMatch scrut arms => exprUsesClosures fnNames fnArs ctorArs locals scrut || anyList (a => exprUsesClosures fnNames fnArs ctorArs locals (armBody a)) arms
   _ => False
 
-stmtUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CStmt -> Bool
-stmtUsesClosures fnNames fnArs ctorArs (CSExpr e) = exprUsesClosures fnNames fnArs ctorArs e
-stmtUsesClosures fnNames fnArs ctorArs (CSLet _ _ e) = exprUsesClosures fnNames fnArs ctorArs e
-stmtUsesClosures _ _ _ _ = False
+-- thread let-bound names through a block so a later statement's shadowing local is seen.
+blockUsesClosures : List String -> List (String, Int) -> List (String, Int) -> List String -> List CStmt -> Bool
+blockUsesClosures _ _ _ _ [] = False
+blockUsesClosures fnNames fnArs ctorArs locals ((CSLet _ pat e)::rest) =
+  exprUsesClosures fnNames fnArs ctorArs locals e || blockUsesClosures fnNames fnArs ctorArs (patVars pat ++ locals) rest
+blockUsesClosures fnNames fnArs ctorArs locals ((CSExpr e)::rest) =
+  exprUsesClosures fnNames fnArs ctorArs locals e || blockUsesClosures fnNames fnArs ctorArs locals rest
+blockUsesClosures fnNames fnArs ctorArs locals (_::rest) =
+  blockUsesClosures fnNames fnArs ctorArs locals rest
 
 -- an application uses closures unless it is a saturated direct call to a known
 -- top-level fn (exact arity) or a ctor application.  Over/under application of a
 -- known fn, or a non-variable / non-fn / non-ctor head, is a closure use.  The args
 -- are also scanned (a saturated call passing a lambda is still a closure use).
-appUsesClosures : List String -> List (String, Int) -> List (String, Int) -> CExpr -> Bool
-appUsesClosures fnNames fnArs ctorArs app =
+appUsesClosures : List String -> List (String, Int) -> List (String, Int) -> List String -> CExpr -> Bool
+appUsesClosures fnNames fnArs ctorArs locals app =
   let (hd, args) = flattenApp app []
-  let argsClos = anyList (exprUsesClosures fnNames fnArs ctorArs) args
+  let argsClos = anyList (exprUsesClosures fnNames fnArs ctorArs locals) args
   match hd
     CVar f _ =>
-      if contains f fnNames then
+      if contains f locals then True   -- a shadowing local/param head → indirect (closure) call
+      else if contains f fnNames then
         not (arityOf fnArs f == listLen args) || argsClos
       else if isSome (lookupAssoc f ctorArs) || isReservedCtor f then argsClos
       else True   -- a local/param/let-bound head → an indirect (closure) call
@@ -3625,6 +3637,16 @@ emitAppRef prog env d app =
       -- arg, lower the sentinel (br to the clause label, or trap stub).  The bare-CVar
       -- form is handled by emitVarRef; this catches the applied form guard chains make.
       if isFtSentinel f0 then ftSentinelInstrs f0
+      -- E24 (wasm peer): a LOCALLY-BOUND name (param / let-binding) SHADOWS any same-named
+      -- ctor / known top-level fn / extern: it is a runtime closure VALUE, so applying it
+      -- is an INDIRECT call, never a direct `call $fn` / ctor.new.  Without this, a HOF
+      -- param named like an interface method (`pickEq eq x y = eq x y`, or `cmp`/`compare`/
+      -- `map`) that ALSO collides with a top-level fn name fell to the `progFnNames` arm →
+      -- a direct `call $<toplevel>` over the WRONG callee (silent miscompile: the top-level
+      -- fn ran instead of the param), while `medaka run` and the LLVM build were always
+      -- correct.  Mirrors emitVarRefPlain's `contains x env`-first priority for the bare
+      -- VALUE reference, and the LLVM emitApp E24 `isLocal`-first guard.
+      else if contains f0 env then emitIndirectApp prog env d hd args
       else if isCtor prog f then emitCtorConstruct prog env d f args
       else if f == "Ref" then emitRefBoxNew prog env d args
       else if f == "setRef" then emitRefBoxSet prog env d args
@@ -4879,6 +4901,15 @@ emitAppTail prog env arity app =
       -- tail-position `__fallthrough__ ()` / `__ft__<label> ()`: lower the sentinel
       -- (a `br`, NOT a `return` — control leaves the clause, not the function).
       if isFtSentinel f0 then ftSentinelInstrs f0
+      -- E24 (wasm peer): a LOCALLY-BOUND name shadows any same-named ctor / known top-level
+      -- fn / extern — applying it is an INDIRECT tail call (`return_call $mdk_apply`), never a
+      -- direct `return_call $<toplevel>`.  Same guard as emitAppRef's CVar arm; without it a
+      -- method-named HOF param colliding with a top-level fn (`pickEq eq x y = eq x y`) tail-
+      -- called the WRONG callee.  Mirrors emitVarRefPlain's `contains x env`-first priority.
+      else if contains f0 env then
+        let hi = emitRefExpr prog env 0 hd
+        let arr = emitArgsArray prog env 0 args
+        hi ++ arr ++ ["return_call $mdk_apply"]
       else if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
       else if f == "Ref" || f == "setRef" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
