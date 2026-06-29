@@ -7,7 +7,7 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — ✅ SQLite write: P5 float (REAL) + P6 multi-page + P7 multi-table DONE; seed re-minted (2026-06-29). `main` = `6c383d0`
+## RESUME — ✅ SQLite write P5/P6/P7 + query ORDER BY DONE; seed re-minted (2026-06-29). `main` = `ad22486`
 
 Continued the SQLite library write path. Three bites landed, each verified vs the `sqlite3` CLI by the orchestrator with independent data; seed re-minted ONCE (P5 added an extern; P6/P7 were library-only), cold `bootstrap_from_seed` C3a PASS. Owning doc `SQLITE-WRITE-DESIGN.md` (updated through P7); design menu came from a read-only scout. Memory: `project_sqlite_capstone`.
 
