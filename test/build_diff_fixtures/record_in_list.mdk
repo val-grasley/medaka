@@ -1,0 +1,22 @@
+-- Gap 6a: a record CONSTRUCTED inside a list literal must have its field layout
+-- registered by the emitter's record-field scanner.  Before the `CList` arm in
+-- `scanExprRecords`, the scanner descended into `CArray` but not `CList`, so the
+-- record below — built directly inside a `[ ... ]` list literal — had no field
+-- table and `r.x` failed `llvm spike: CFieldAccess: unknown field 'x'`.
+data R = R { x : Int }
+
+rs : List R
+rs = [R { x = 1 }, R { x = 2 }, R { x = 3 }]
+
+-- nested list-of-lists of records (general descent, not just one level)
+nested : List (List R)
+nested = [[R { x = 10 }], [R { x = 20 }, R { x = 30 }]]
+
+-- list of tuples carrying a record
+pairs : List (Int, R)
+pairs = [(1, R { x = 100 }), (2, R { x = 200 })]
+
+main =
+  println (sum (map (r => r.x) rs))
+  println (sum (map (rs2 => sum (map (r => r.x) rs2)) nested))
+  println (sum (map (p => (snd p).x) pairs))

@@ -7692,6 +7692,7 @@ scanExprRecords (CDecision scrut arms _) = scanExprRecords scrut
 scanExprRecords (CMatch scrut arms) = scanExprRecords scrut
   ++ scanArmsRecords arms
 scanExprRecords (CArray es) = scanExprsRecords es
+scanExprRecords (CList es) = scanExprsRecords es
 scanExprRecords (CRangeArray lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CRangeList lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CIndex a i) = scanExprRecords a ++ scanExprRecords i
