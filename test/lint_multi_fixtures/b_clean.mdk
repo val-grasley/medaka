@@ -1,0 +1,3 @@
+-- Multi-file lint fixture B: no findings.
+add : Int -> Int -> Int
+add x y = x + y

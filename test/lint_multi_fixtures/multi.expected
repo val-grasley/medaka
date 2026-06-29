@@ -1,0 +1,5 @@
+ROOT/test/lint_multi_fixtures/a_findings.mdk:
+ROOT/test/lint_multi_fixtures/a_findings.mdk:3:1: [rule-match-on-param] function 'greet' matches on parameter 'x' — consider a multi-clause function definition
+  |
+3 | greet x = match x
+  |  ^

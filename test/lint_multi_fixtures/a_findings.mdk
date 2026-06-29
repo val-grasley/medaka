@@ -1,0 +1,6 @@
+-- Multi-file lint fixture A: has a match-on-param finding.
+greet : String -> String
+greet x = match x
+  "Alice" => "Hello Alice!"
+  "Bob" => "Hey Bob!"
+  _ => "Hi there!"

@@ -24,7 +24,7 @@ import tools.check.{
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{BuildResult, BuildOk, BuildErr, BuildTarget, TNative, TWasm, runBuild, envOr}
-import support.util.{reverseL, joinNl, startsWith, anyList, contains}
+import support.util.{reverseL, joinNl, startsWith, endsWith, anyList, contains, sortUniqS}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseWithPositions, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
@@ -80,7 +80,7 @@ usage _ =
       "  medaka test [file.mdk]    Run doctests + prop tests.\n",
       "  medaka bench [file.mdk]   Run bench declarations.\n",
       "  medaka doc [file.mdk]     Generate Markdown documentation.\n",
-      "  medaka lint [file.mdk]    Lint a file (style rules; --fix, --disable/--only/--deny=<rules,...>).\n",
+      "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>).\n",
       "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n",
       "  medaka new <name>         Scaffold a new project directory.\n",
       "  medaka lsp                Run the language server over stdio.\n",
@@ -746,62 +746,135 @@ runManifestCmd argv = match parseManifestArgs argv
             putStr (runManifest rsrc csrc tsrc fn)
 
 -- ── lint ──────────────────────────────────────────────────────────────────
--- Parse the target file and run lint rules over the raw pre-desugar AST.
+-- Parse target file(s) and run lint rules over the raw pre-desugar AST.
 -- Flags:
+--   --fix                rewrite fixable findings in-place
 --   --disable=r1,r2,...  suppress findings from the named rules
 --   --only=r1,...        keep only findings from the named rules
 --   --deny=r1,...        promote findings from the named rules to SevError
--- Exit 0 unless a SevError finding exists (only via --deny in v1).
+-- Target resolution:
+--   ≥1 explicit file args   → lint each in order
+--   single directory arg    → lint all top-level .mdk files in that dir (sorted)
+--   no file arg             → find medaka.toml project root, lint top-level .mdk files
+--     (note: top-level only — subdirectory .mdk files are not walked recursively)
+-- Exit 0 unless a SevError finding exists (only via --deny in v1 report mode).
 runLintCmd : List String -> <IO, Mut, Panic> Unit
 runLintCmd argv =
   let disableNames = parseLintFlagList "--disable=" argv
   let onlyNames = parseLintFlagList "--only=" argv
   let denyNames = parseLintFlagList "--deny=" argv
   let fixMode = hasFlag "--fix" argv
-  match lintTarget argv
-    None =>
-      let _ = ePutStrLn "usage: medaka lint [--fix] [--disable=R,...] [--only=R,...] [--deny=R,...] <file.mdk>"
-      exit 1
-    Some target =>
-      match readFile target
-        Err msg =>
-          let _ = ePutStrLn msg
-          exit 1
-        Ok src =>
-          if fixMode then runLintFix onlyNames disableNames src target
-          else runLintReport disableNames onlyNames denyNames src target
+  let fileArgs = lintTargets argv
+  let files = resolveLintTargets fileArgs
+  let multiFile = match files
+    (_::_::_) => True
+    _ => False
+  let hadErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
+  if hadErr then exit 1 else ()
 
--- Default behavior: parse, lint, print positioned diagnostics, exit per --deny.
-runLintReport : List String -> List String -> List String -> String -> String -> <IO, Mut, Panic> Unit
-runLintReport disableNames onlyNames denyNames src target =
-  let (decls, pos) = parseWithPositions src
-  let allFindings = lintProgram allRules pos decls
-  let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
-  let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
-  let _ = if stringLength output > 0 then putStrLn output else ()
-  if anyList isFindingError findings then exit 1 else ()
-
--- `--fix`: parse with positions, apply the fixable rules' fixers, write back.
--- All Rule-record access happens inside lint.applyFixes (field-scanner gap).
-runLintFix : List String -> List String -> String -> String -> <IO, Mut, Panic> Unit
-runLintFix onlyNames disableNames src target =
-  let (decls, pos) = parseWithPositions src
-  let (newSrc, n) = applyFixes onlyNames disableNames src decls pos
-  if newSrc == src then
-    putStrLn ("fixed 0 finding(s) in " ++ target)
+-- Resolve file args to a concrete list of .mdk paths.
+-- Empty args → project root mode (find medaka.toml, list top-level .mdk files).
+-- Single arg that listDir succeeds on → treat as directory; else file.
+-- Multiple args → use as-is.
+resolveLintTargets : List String -> <IO, Mut, Panic> List String
+resolveLintTargets [] =
+  let cwd = canonicalizePath "."
+  let root = findProjectRoot cwd
+  if not (fileExists (root ++ "/medaka.toml")) then
+    let _ = ePutStrLn "medaka lint: no medaka.toml found; run from a project directory or pass file/dir paths"
+    let _ = exit 1
+    []
   else
-    match writeFile target newSrc
-      Err msg =>
-        let _ = ePutStrLn (target ++ ": " ++ msg)
-        exit 2
-      Ok _ => putStrLn ("fixed " ++ intToString n ++ " finding(s) in " ++ target)
+    collectMdkFiles root
+resolveLintTargets [target] =
+  match listDir target
+    Ok entries =>
+      let names = sortUniqS (filterMdkNames entries)
+      map (n => lintPathJoin target n) names
+    Err _ => [target]
+resolveLintTargets targets = targets
 
--- First non-flag arg (flags all start with --).
-lintTarget : List String -> Option String
-lintTarget [] = None
-lintTarget (x::rest)
-  | startsWith "--" x = lintTarget rest
-  | otherwise = Some x
+-- Filter a list of entry names to those ending in ".mdk".
+filterMdkNames : List String -> List String
+filterMdkNames [] = []
+filterMdkNames (n::rest)
+  | endsWith ".mdk" n = n :: filterMdkNames rest
+  | otherwise = filterMdkNames rest
+
+-- Join a directory path with an entry name (handles trailing slash).
+lintPathJoin : String -> String -> String
+lintPathJoin dir name =
+  if endsWith "/" dir then dir ++ name
+  else dir ++ "/" ++ name
+
+-- List top-level .mdk files in a directory, sorted alphabetically.
+collectMdkFiles : String -> <IO, Mut, Panic> List String
+collectMdkFiles dir =
+  match listDir dir
+    Err msg =>
+      let _ = ePutStrLn ("medaka lint: cannot list directory " ++ dir ++ ": " ++ msg)
+      []
+    Ok entries =>
+      let names = sortUniqS (filterMdkNames entries)
+      map (n => lintPathJoin dir n) names
+
+-- Fold over file list, running lint on each.  acc = whether any SevError seen.
+lintFilesGo : Bool -> Bool -> List String -> List String -> List String -> List String -> Bool -> <IO, Mut, Panic> Bool
+lintFilesGo _ _ _ _ _ [] acc = acc
+lintFilesGo fixMode multiFile disableNames onlyNames denyNames (f::rest) acc =
+  let hadErr =
+    if fixMode then lintOneFileFix onlyNames disableNames f
+    else lintOneFileReport multiFile disableNames onlyNames denyNames f
+  lintFilesGo fixMode multiFile disableNames onlyNames denyNames rest (acc || hadErr)
+
+-- Lint a single file in report mode.
+-- multiFile=False: output is byte-for-byte identical to single-file v1 behavior.
+-- multiFile=True: prints "path:" header before findings (only when there are findings).
+lintOneFileReport : Bool -> List String -> List String -> List String -> String -> <IO, Mut, Panic> Bool
+lintOneFileReport multiFile disableNames onlyNames denyNames target =
+  match readFile target
+    Err msg =>
+      let _ = ePutStrLn msg
+      True
+    Ok src =>
+      let (decls, pos) = parseWithPositions src
+      let allFindings = lintProgram allRules pos decls
+      let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
+      let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
+      let hasOutput = stringLength output > 0
+      let _ = if multiFile && hasOutput then putStrLn (target ++ ":") else ()
+      let _ = if hasOutput then putStrLn output else ()
+      anyList isFindingError findings
+
+-- Fix a single file in-place.  Returns True only on I/O error (write errors exit 2).
+lintOneFileFix : List String -> List String -> String -> <IO, Mut, Panic> Bool
+lintOneFileFix onlyNames disableNames target =
+  match readFile target
+    Err msg =>
+      let _ = ePutStrLn msg
+      True
+    Ok src =>
+      let (decls, pos) = parseWithPositions src
+      let (newSrc, n) = applyFixes onlyNames disableNames src decls pos
+      if newSrc == src then
+        let _ = putStrLn ("fixed 0 finding(s) in " ++ target)
+        False
+      else
+        match writeFile target newSrc
+          Err msg =>
+            let _ = ePutStrLn (target ++ ": " ++ msg)
+            let _ = exit 2
+            True
+          Ok _ =>
+            let _ = putStrLn ("fixed " ++ intToString n ++ " finding(s) in " ++ target)
+            False
+
+-- All non-flag args in order (flags all start with --).
+lintTargets : List String -> List String
+lintTargets [] = []
+lintTargets (x::rest)
+  | startsWith "--" x = lintTargets rest
+  | otherwise = x :: lintTargets rest
 
 -- Parse --prefix=v1,v2,... from argv; returns [] if not present.
 parseLintFlagList : String -> List String -> List String
