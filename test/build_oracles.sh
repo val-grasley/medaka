@@ -77,6 +77,7 @@ CC="${CC:-clang}"
 #   check_all_main          — diff_compiler_check_modules_batch.sh
 #   check_match_main        — diff_compiler_check_match.sh
 #   exhaust_main            — diff_compiler_exhaust.sh
+#   lint_main               — diff_compiler_lint.sh (added by the lint workstream)
 #   diagnostics_main        — diff_compiler_diagnostics.sh
 #   diagnostics_project_main — diff_compiler_analyze_project.sh
 #   ── Phase 2 §2c tooling gates (fmt/new/test/repl/lsp) ──
@@ -99,7 +100,7 @@ desugar_main desugar_batch mark_main mark_batch \
 resolve_main resolve_batch resolve_modules_main \
 printer_main positions_main lex_comments_main \
 typecheck_main typecheck_golden_batch check_main check_batch \
-check_modules_main check_all_main check_match_main exhaust_main \
+check_modules_main check_all_main check_match_main exhaust_main lint_main \
 diagnostics_main diagnostics_project_main \
 fmt_main new_main test_main repl_main fuzz_gen_main"
 

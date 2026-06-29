@@ -1,0 +1,251 @@
+-- compiler/tools/lint.mdk — the `medaka lint` framework + seed rules.
+--
+-- A lint pass runs on the RAW pre-desugar AST (`parse src : List Decl`), exactly
+-- like compiler/frontend/exhaust.mdk's standalone `checkGuardExhaustiveness`.
+-- The seed rules detect SURFACE shapes (`match` on a bare param, a hand-written
+-- `impl Eq`, a fn shadowing a stdlib name) that desugar.mdk lowers away, so this
+-- pass must NEVER call desugar — it consumes `parse` output directly.
+--
+-- Design: adding a rule = write one `List Decl -> List Finding` function and
+-- append one `Rule { … }` entry to `allRules` (THE REGISTRY).  The CLI layer (a
+-- later agent) filters/severity-overrides that list and passes it to
+-- `lintProgram`, so this module knows nothing about flags.
+--
+-- No stdlib imports (compiler isolation): generic helpers come from
+-- support.util, everything else is inline.
+
+import frontend.ast.{
+  Loc(..),
+  Ty(..),
+  Pat(..),
+  Arm(..),
+  ImplMethod(..),
+  Expr(..),
+  Decl(..),
+}
+import driver.diagnostics.{Severity(..), Diag(..), ppSeverity}
+import support.util.{contains, listLen, anyList, filterList, joinNl, sortUniqS}
+
+-- ── public types ───────────────────────────────────────────────────────────
+
+-- One lint hit: which rule produced it, the human message, its severity (the
+-- CLI may promote this via `lintProgram`), and an optional source span.
+public export record Finding
+  rule : String
+  message : String
+  severity : Severity
+  loc : Option Loc
+
+-- A registered rule.  `check` is the whole pass for that rule: raw decls → hits.
+-- `enabled`/`severity` are the defaults the CLI may override before running.
+public export record Rule
+  name : String
+  descr : String
+  severity : Severity
+  enabled : Bool
+  check : List Decl -> List Finding
+
+-- ── rule names (kept in sync between the Rule entry and its Findings) ─────────
+ruleNameMatchParam : String
+ruleNameMatchParam = "rule-match-on-param"
+
+ruleNameDerivable : String
+ruleNameDerivable = "rule-hand-rolled-derivable"
+
+ruleNameStdlibReimpl : String
+ruleNameStdlibReimpl = "rule-stdlib-reimpl"
+
+-- ── the registry ─────────────────────────────────────────────────────────────
+-- Each Rule is its own top-level binding (rather than an inline element of the
+-- `allRules` list literal) so the LLVM emitter's record-field scanner — which
+-- traverses binding bodies but not into list-literal elements — registers the
+-- `Rule` field layout.  Adding a rule = write its `check` fn + one `Rule` binding
+-- + append it to `allRules`.
+matchParamRule : Rule
+matchParamRule = Rule {
+  name = ruleNameMatchParam,
+  descr = "function body is a `match` on a bare parameter (prefer multi-clause; STYLE §8)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleMatchOnParam,
+}
+
+derivableRule : Rule
+derivableRule = Rule {
+  name = ruleNameDerivable,
+  descr = "hand-written Eq/Ord/Debug impl that could be `deriving` (STYLE §6)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleDerivable,
+}
+
+stdlibReimplRule : Rule
+stdlibReimplRule = Rule {
+  name = ruleNameStdlibReimpl,
+  descr = "top-level function shadows a common stdlib/prelude name (STYLE §7a)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleStdlibReimpl,
+}
+
+export
+allRules : List Rule
+allRules = [matchParamRule, derivableRule, stdlibReimplRule]
+
+-- ── runner ───────────────────────────────────────────────────────────────────
+
+-- Run the enabled rules over a program, collecting every finding.  Each rule's
+-- findings are re-stamped with the rule's (possibly CLI-overridden) severity so
+-- a `--deny` promotion propagates without the rule knowing about flags.
+export
+lintProgram : List Rule -> List Decl -> List Finding
+lintProgram rules prog = flatMap (runRuleOn prog) rules
+
+runRuleOn : List Decl -> Rule -> List Finding
+runRuleOn prog r
+  | r.enabled = map (restampSeverity r.severity) (r.check prog)
+  | otherwise = []
+
+restampSeverity : Severity -> Finding -> Finding
+restampSeverity sev f =
+  Finding { rule = f.rule, message = f.message, severity = sev, loc = f.loc }
+
+-- ── rendering ─────────────────────────────────────────────────────────────────
+
+export
+findingToDiag : Finding -> Diag
+findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
+
+-- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
+-- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.
+export
+lintToLines : List Decl -> String
+lintToLines prog = joinNl (map findingLine (lintProgram allRules prog))
+
+findingLine : Finding -> String
+findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
+
+-- ── small AST helpers ─────────────────────────────────────────────────────────
+
+-- strip the transparent ELoc wrapper(s) to reach the real node
+unwrapLoc : Expr -> Expr
+unwrapLoc (ELoc _ e) = unwrapLoc e
+unwrapLoc e = e
+
+-- the span carried by the enclosing ELoc, if any
+locOf : Expr -> Option Loc
+locOf (ELoc l _) = Some l
+locOf _ = None
+
+-- ── rule: match-on-param (STYLE §8) ───────────────────────────────────────────
+-- A `DFunDef _ name pats body` (or an impl method) whose body is a `match` with
+-- ≥2 arms over an `EVar p` where `p` is a bare `PVar p` parameter.  Single-arm
+-- matches are skipped (STYLE's "when not to convert").
+ruleMatchOnParam : List Decl -> List Finding
+ruleMatchOnParam prog = flatMap matchParamDecl prog
+
+matchParamDecl : Decl -> List Finding
+matchParamDecl (DFunDef _ name pats body) = matchParamFinding name pats body
+matchParamDecl DImpl { methods, ... } = flatMap matchParamMethod methods
+matchParamDecl (DAttrib _ d) = matchParamDecl d
+matchParamDecl _ = []
+
+matchParamMethod : ImplMethod -> List Finding
+matchParamMethod (ImplMethod name pats body) = matchParamFinding name pats body
+
+matchParamFinding : String -> List Pat -> Expr -> List Finding
+matchParamFinding name pats body = match unwrapLoc body
+  EMatch scrut arms => matchParamArms name pats (locOf body) scrut arms
+  _ => []
+
+matchParamArms : String -> List Pat -> Option Loc -> Expr -> List Arm -> List Finding
+matchParamArms name pats loc scrut arms
+  | listLen arms < 2 = []
+  | otherwise = match unwrapLoc scrut
+      EVar p => matchParamHit name pats loc p
+      _ => []
+
+matchParamHit : String -> List Pat -> Option Loc -> String -> List Finding
+matchParamHit name pats loc p
+  | anyList (isBareParam p) pats =
+      [Finding {
+        rule = ruleNameMatchParam,
+        message = "function '" ++ name ++ "' matches on parameter '" ++ p
+          ++ "' — consider a multi-clause function definition",
+        severity = SevWarning,
+        loc = loc,
+      }]
+  | otherwise = []
+
+isBareParam : String -> Pat -> Bool
+isBareParam p (PVar q) = p == q
+isBareParam _ _ = False
+
+-- ── rule: hand-rolled-derivable (STYLE §6) ────────────────────────────────────
+-- A `DImpl` for Eq/Ord/Debug over a single named (TyCon-headed) type.  DImpl
+-- carries no loc, so loc = None.
+derivableIfaces : List String
+derivableIfaces = ["Eq", "Ord", "Debug"]
+
+ruleDerivable : List Decl -> List Finding
+ruleDerivable prog = flatMap derivableDecl prog
+
+derivableDecl : Decl -> List Finding
+derivableDecl DImpl { iface, tys, ... } = derivableHit iface tys
+derivableDecl (DAttrib _ d) = derivableDecl d
+derivableDecl _ = []
+
+derivableHit : String -> List Ty -> List Finding
+derivableHit iface tys
+  | contains iface derivableIfaces = match singleNamedType tys
+      Some tyName => [Finding {
+        rule = ruleNameDerivable,
+        message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName
+          ++ "' — consider `deriving (" ++ iface ++ ")` instead",
+        severity = SevWarning,
+        loc = None,
+      }]
+      None => []
+  | otherwise = []
+
+-- the head type name iff `tys` is exactly one TyCon-headed type
+singleNamedType : List Ty -> Option String
+singleNamedType [t] = tyHeadName t
+singleNamedType _ = None
+
+tyHeadName : Ty -> Option String
+tyHeadName (TyCon n) = Some n
+tyHeadName (TyApp f _) = tyHeadName f
+tyHeadName _ = None
+
+-- ── rule: stdlib-reimpl (STYLE §7a) ───────────────────────────────────────────
+-- A top-level `DFunDef` whose name is a common stdlib/prelude function.  Extend
+-- this curated set as the stdlib grows.
+stdlibNames : List String
+stdlibNames = [
+  "reverse", "take", "drop", "map", "filter", "flatMap", "concatMap",
+  "foldl", "foldr", "length", "elem", "intercalate", "intersperse",
+  "zip", "zipWith",
+]
+
+ruleStdlibReimpl : List Decl -> List Finding
+ruleStdlibReimpl prog =
+  -- dedupe so a multi-clause function (consecutive DFunDefs) fires once
+  map stdlibFinding (filterList inStdlib (sortUniqS (flatMap topDefName prog)))
+
+topDefName : Decl -> List String
+topDefName (DFunDef _ name _ _) = [name]
+topDefName (DAttrib _ d) = topDefName d
+topDefName _ = []
+
+inStdlib : String -> Bool
+inStdlib n = contains n stdlibNames
+
+stdlibFinding : String -> Finding
+stdlibFinding name = Finding {
+  rule = ruleNameStdlibReimpl,
+  message = "top-level '" ++ name
+    ++ "' shadows a stdlib function — prefer the stdlib version",
+  severity = SevWarning,
+  loc = None,
+}
