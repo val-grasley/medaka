@@ -37,7 +37,7 @@
 --                  (Serial 5 / i48 intentionally skipped for simplicity.)
 --   CText s      → serial 2*len(s)+13  (body = UTF-8 bytes of s)
 --   CBlob a      → serial 2*len(a)+12  (body = raw bytes of a)
---   CFloat _     → Err (deferred to P5; needs floatToBytes64 extern)
+--   CFloat f     → serial 7 (body = 8 big-endian IEEE 754 bytes via floatToBytes64)
 --
 -- ## Header-len self-counting
 --
@@ -91,7 +91,7 @@ beUnsignedNGo n v = bitAnd v 255 :: beUnsignedNGo (n - 1) (v / 256)
 -- | Compute the SQLite serial-type code for a Cell.
 cellSerial : Cell -> Result String Int
 cellSerial CNull       = Ok 0
-cellSerial (CFloat _)  = Err "CFloat encoding deferred to P5 (needs floatToBytes64 extern)"
+cellSerial (CFloat _)  = Ok 7
 cellSerial (CBlob a)   = Ok (2 * arrayLength a + 12)
 cellSerial (CText s)   = Ok (2 * utf8ByteLength s + 13)
 cellSerial (CInt 0)    = Ok 8
@@ -120,21 +120,20 @@ cellBodyBytes (CInt n) =
   else beSintBytes 8 n
 cellBodyBytes (CText s)  = toList (toUtf8 s)
 cellBodyBytes (CBlob a)  = toList a
-cellBodyBytes (CFloat _) = []  -- never reached (guarded by Err in encodeRecord)
+cellBodyBytes (CFloat f) = toList (floatToBytes64 f)
 
 -- ---------------------------------------------------------------------------
 -- Main encoder
 -- ---------------------------------------------------------------------------
 
 -- | Encode a list of Cell values into a SQLite on-disk record byte array.
---   Returns Err if any cell is CFloat (deferred to P5).
 --
 -- Round-trip: `runByteParser parseRecord (encodeRecord cells) == Ok cells`
--- holds for all cell lists with no CFloat.
+-- holds for all cell lists including CFloat.
 export
 encodeRecord : List Cell -> Result String (Array Int)
 encodeRecord cells = do
-  -- 1. Collect serial codes; fail fast on CFloat.
+  -- 1. Collect serial codes.
   serials <- collectSerials cells []
 
   -- 2. Encode serial varints as a forward list.
@@ -214,9 +213,9 @@ roundTripShow cells =
 -- > roundTripShow [CNull, CText "Bob", CInt 25]
 -- "NULL|Bob|25"
 
--- CFloat returns Err without panicking.
+-- CFloat encodes as serial type 7 (8-byte big-endian IEEE 754) and round-trips.
 -- > roundTripShow [CFloat 1.5]
--- "Err: CFloat encoding deferred to P5 (needs floatToBytes64 extern)"
+-- "1.5"
 
 -- ---------------------------------------------------------------------------
 -- Real-DB byte verification

@@ -97,6 +97,9 @@ extern intBitsToFloat : Int -> Float
 -- reinterpret as an IEEE 754 double.  Bytes in `arr` are Int values 0..255.
 -- Pure (no IO; the array is read-only).
 extern bytesToFloat64 : Array Int -> Int -> Float
+-- Inverse of `bytesToFloat64`: encode a Float as 8 big-endian IEEE 754 bytes
+-- and return them as an Array of 8 Ints (each 0..255).  Pure.
+extern floatToBytes64 : Float -> Array Int
 -- Platform bounds backing `impl Bounded Int`/`Bounded Char` in core.mdk.
 -- Int bounds are the 63-bit OCaml `int` limits; Char bounds are U+0000 / U+10FFFF.
 extern intMinBound : Int

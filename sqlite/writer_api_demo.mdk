@@ -6,14 +6,15 @@
 --   users   <out.db>   — table WITH INTEGER PRIMARY KEY + NULL
 --   kv      <out.db>   — table WITHOUT IPK (auto rowid)
 --   blob    <out.db>   — table with a BLOB column
+--   reals   <out.db>   — table with a REAL column (floats)
 
 import lib.writer.{
-  ColType, TInteger, TText, TBlob,
+  ColType, TInteger, TText, TBlob, TReal,
   Column,
   TableSchema,
   writeTable,
 }
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 
 -- ---------------------------------------------------------------------------
 -- Schema 1: users — WITH INTEGER PRIMARY KEY + NULL
@@ -79,18 +80,41 @@ blobRows =
   ]
 
 -- ---------------------------------------------------------------------------
+-- Schema 4: reals — WITH REAL (float) column
+-- ---------------------------------------------------------------------------
+
+realsSchema : TableSchema
+realsSchema = TableSchema
+  { schemaTableName = "reals"
+  , columns =
+      [ Column { colName = "id",  colType = TInteger, isPrimaryKey = False }
+      , Column { colName = "val", colType = TReal,    isPrimaryKey = False }
+      ]
+  }
+
+realsRows : List (List Cell)
+realsRows =
+  [ [ CInt 1, CFloat 3.14       ]
+  , [ CInt 2, CFloat 0.0        ]
+  , [ CInt 3, CFloat (-2.718)   ]
+  , [ CInt 4, CFloat 9999999.9  ]
+  , [ CInt 5, CNull             ]
+  ]
+
+-- ---------------------------------------------------------------------------
 -- Dispatch
 -- ---------------------------------------------------------------------------
 
 main : <IO, Mut> Unit
 main = match args ()
   [cmd, out] => dispatch cmd out
-  _ => println "usage: writer_api_demo <users|kv|blob> <out.db>"
+  _ => println "usage: writer_api_demo <users|kv|blob|reals> <out.db>"
 
 dispatch : String -> String -> <IO, Mut> Unit
 dispatch "users" out = run usersSchema usersRows out
 dispatch "kv"    out = run kvSchema    kvRows    out
 dispatch "blob"  out = run blobSchema  blobRows  out
+dispatch "reals" out = run realsSchema realsRows out
 dispatch cmd     _   = println "unknown command: \{cmd}"
 
 run : TableSchema -> List (List Cell) -> String -> <IO, Mut> Unit

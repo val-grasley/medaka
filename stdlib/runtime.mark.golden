@@ -50,6 +50,7 @@
 (DExtern false "floatRem" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Float"))))
 (DExtern false "intBitsToFloat" (TyFun (TyCon "Int") (TyCon "Float")))
 (DExtern false "bytesToFloat64" (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyCon "Float"))))
+(DExtern false "floatToBytes64" (TyFun (TyCon "Float") (TyApp (TyCon "Array") (TyCon "Int"))))
 (DExtern false "intMinBound" (TyCon "Int"))
 (DExtern false "intMaxBound" (TyCon "Int"))
 (DExtern false "charMinBound" (TyCon "Char"))

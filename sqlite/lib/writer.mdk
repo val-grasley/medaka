@@ -13,8 +13,8 @@
 --   * Row validation (width == column count) with a clean `Err`.
 --   * IPK derivation from the schema (finds the `isPrimaryKey = True` column).
 --
--- v1 scope: INTEGER / TEXT / BLOB / NULL-affinity columns; no floats
--- (CFloat returns `Err` from `encodeRecord`); single leaf page.
+-- v1 scope: INTEGER / TEXT / BLOB / REAL / NULL-affinity columns;
+-- single leaf page.
 --
 -- Note on field access: the native emitter discovers record field labels by
 -- scanning CRecord constructor expressions in the current compilation unit.
@@ -31,11 +31,12 @@ import list.{findIndex}
 -- Column-type affinity
 -- ---------------------------------------------------------------------------
 
--- | The affinity of a column (v1: INTEGER, TEXT, BLOB; no FLOAT).
+-- | The affinity of a column (v1: INTEGER, TEXT, BLOB, REAL).
 public export data ColType
   = TInteger   -- INTEGER affinity (may also hold an IPK)
   | TText      -- TEXT affinity
   | TBlob      -- BLOB / NONE affinity
+  | TReal      -- REAL affinity (8-byte IEEE 754 float on disk)
 
 -- | One column definition.
 public export data Column = Column
@@ -59,6 +60,7 @@ colTypeSql : ColType -> String
 colTypeSql TInteger = "INTEGER"
 colTypeSql TText    = "TEXT"
 colTypeSql TBlob    = "BLOB"
+colTypeSql TReal    = "REAL"
 
 -- | Render one column definition, appending " PRIMARY KEY" if flagged.
 --

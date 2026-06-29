@@ -53,10 +53,12 @@ write_section () {
 DB_USERS="$TMPDIR_LOC/users.db"
 DB_KV="$TMPDIR_LOC/kv.db"
 DB_BLOB="$TMPDIR_LOC/blob.db"
+DB_REALS="$TMPDIR_LOC/reals.db"
 
 write_section users "$DB_USERS"
 write_section kv    "$DB_KV"
 write_section blob  "$DB_BLOB"
+write_section reals "$DB_REALS"
 
 # 4. Produce the combined report.
 {
@@ -91,6 +93,17 @@ write_section blob  "$DB_BLOB"
   sqlite3 "$DB_BLOB" "SELECT id, length(data) FROM blobs ORDER BY rowid;"
   echo "# medaka reader"
   "$READER" "$DB_BLOB" blobs
+
+  echo ""
+  echo "### schema: reals (REAL column)"
+  echo "# integrity_check"
+  sqlite3 "$DB_REALS" "PRAGMA integrity_check;"
+  echo "# schema"
+  sqlite3 "$DB_REALS" "SELECT type, name, rootpage FROM sqlite_master;"
+  echo "# sqlite3 SELECT"
+  sqlite3 "$DB_REALS" "SELECT * FROM reals ORDER BY rowid;"
+  echo "# medaka reader"
+  "$READER" "$DB_REALS" reals
 } > "$OUT"
 
 if [ "${1:-}" = "--capture" ]; then
@@ -237,11 +250,55 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# Schema 4: reals — REAL (float) column
+# -----------------------------------------------------------------------
+
+echo ""
+echo "=== Schema 4: reals (REAL column) ==="
+
+echo "--- Gate 4a: integrity_check ---"
+IC_REALS="$(sqlite3 "$DB_REALS" "PRAGMA integrity_check;")"
+if [ "$IC_REALS" = "ok" ]; then
+  echo "OK: integrity_check = ok"
+else
+  echo "FAIL: integrity_check = $IC_REALS"
+  fail=1
+fi
+
+echo "--- Gate 4b: sqlite3 SELECT vs intended rows ---"
+INTENDED_REALS="$(mktemp)"
+cat > "$INTENDED_REALS" <<'EOF'
+1|3.14
+2|0.0
+3|-2.718
+4|9999999.9
+5|
+EOF
+SEL_REALS="$(mktemp)"
+sqlite3 "$DB_REALS" "SELECT * FROM reals ORDER BY rowid;" > "$SEL_REALS"
+if diff -u "$INTENDED_REALS" "$SEL_REALS"; then
+  echo "OK: sqlite3 SELECT matches intended (reals)"
+else
+  echo "FAIL: sqlite3 SELECT differs from intended (reals)"
+  fail=1
+fi
+
+echo "--- Gate 4c: Medaka reader self round-trip ---"
+RD_REALS="$(mktemp)"
+"$READER" "$DB_REALS" reals > "$RD_REALS"
+if diff -u "$INTENDED_REALS" "$RD_REALS"; then
+  echo "OK: Medaka reader matches intended (reals)"
+else
+  echo "FAIL: Medaka reader differs from intended (reals)"
+  fail=1
+fi
+
+# -----------------------------------------------------------------------
 # Full report golden
 # -----------------------------------------------------------------------
 
 echo ""
-echo "=== Gate 4: combined report vs committed golden ==="
+echo "=== Gate 5: combined report vs committed golden ==="
 if diff -u "$GOLDEN" "$OUT"; then
   echo "OK: report matches golden"
 else

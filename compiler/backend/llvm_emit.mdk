@@ -1377,7 +1377,7 @@ emitStrExtern _ _ name _ = gapE ("unsupported string extern " ++ name)
 -- floatToString is a LEAF: delegates to mdk_float_to_string (mirrors mdk_print_float's
 -- %.12g+dot logic but returns a mdk_str_lit box instead of printf-ing).
 isNumExtern : String -> Bool
-isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64", "floatRem"]
+isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64", "floatRem", "floatToBytes64"]
 
 emitNumExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitNumExtern e env "intToFloat" args = match emitArgs e env args
@@ -1415,6 +1415,16 @@ emitNumExtern e env "bytesToFloat64" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_bytes_to_float64(i64 " ++ arr ++ ", i64 " ++ oi ++ ")")
     (r, LTFloat)
   _ => panic "llvm spike: bytesToFloat64 takes two arguments"
+-- floatToBytes64 d — encode a Float as 8 big-endian IEEE 754 bytes → Array Int.
+-- The Float is unboxed to `double` then passed to mdk_float_to_bytes64; the result
+-- is a freshly-allocated Array cell (LTCon, a heap-pointer word).
+emitNumExtern e env "floatToBytes64" args = match emitArgs e env args
+  [a] =>
+    let d = unboxFloat e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_float_to_bytes64(double " ++ d ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: floatToBytes64 takes one argument"
 -- floatRem a b = fmod(a, b); both operands unbox to double, result reboxes.
 -- Same value as the inline `frem` the `Float % Float` operator emits.
 emitNumExtern e env "floatRem" args = match emitArgs e env args

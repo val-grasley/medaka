@@ -43,3 +43,21 @@ table|blobs|2
 1|<blob>
 2|<blob>
 3|
+
+### schema: reals (REAL column)
+# integrity_check
+ok
+# schema
+table|reals|2
+# sqlite3 SELECT
+1|3.14
+2|0.0
+3|-2.718
+4|9999999.9
+5|
+# medaka reader
+1|3.14
+2|0.0
+3|-2.718
+4|9999999.9
+5|

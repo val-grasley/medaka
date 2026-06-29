@@ -1140,6 +1140,23 @@ long long mdk_bytes_to_float64(long long arr_word, long long off) {
   return mdk_box_float(d);
 }
 
+/* floatToBytes64 : Float -> Array Int.  Encode `d` as 8 big-endian IEEE 754
+ * bytes and return a Medaka Array of 8 tagged Ints (each 0..255).
+ * The emitter calls unboxFloat before passing, so `d` arrives as a raw double.
+ * Array cell layout: [i64 count=8 | tagged_byte0 | ... | tagged_byte7].
+ * Tagged Int encoding: (byte << 1) | 1 (same as all Medaka Int immediates). */
+long long mdk_float_to_bytes64(double d) {
+  unsigned long long bits;
+  memcpy(&bits, &d, 8);
+  long long *cell = (long long *)mdk_alloc(8 * 9);  /* 9 words: count + 8 elems */
+  cell[0] = 8;  /* count (raw, untagged) */
+  for (long long i = 0; i < 8; i++) {
+    unsigned char b = (unsigned char)((bits >> (8 * (7 - i))) & 0xFF);
+    cell[i + 1] = ((long long)b << 1) | 1;  /* tag as Medaka Int */
+  }
+  return (long long)cell;
+}
+
 /* ── debug literal externs — quoted/escaped rendering, byte-exact, no oracle ───
  * Mirror escape_string_lit / escape_char_lit in lib/eval.ml (the same escapes the
  * lexer's read_string/read_char understand), so `debug` of a String/Char round-

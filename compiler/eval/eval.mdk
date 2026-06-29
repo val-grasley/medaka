@@ -1840,6 +1840,7 @@ externBindings = [
   ("e", VFloat e),
   ("intBitsToFloat", prim1 pIntBitsToFloat),
   ("bytesToFloat64", prim2 pBytesToFloat64),
+  ("floatToBytes64", prim1 pFloatToBytes64),
   (fallthroughName, VPrim (_ => VFallthrough)),
 ]
 
@@ -1910,8 +1911,18 @@ assembleBits b0 b1 b2 b3 b4 b5 b6 b7 =
 
 pBytesToFloat64 : Value -> Value -> Value
 pBytesToFloat64 (VArray arr) (VInt off) =
-  VFloat (intBitsToFloat (assembleBits (getByte64 off arr 0) (getByte64 off arr 1) (getByte64 off arr 2) (getByte64 off arr 3) (getByte64 off arr 4) (getByte64 off arr 5) (getByte64 off arr 6) (getByte64 off arr 7)))
+  -- Build a host Array Int of 8 bytes, then delegate to the C bytesToFloat64.
+  -- Avoids the 63-bit integer overflow that plagues assembleBits+intBitsToFloat
+  -- when the MSB byte produces a bit pattern > 2^62 - 1.
+  let intArr = arrayMakeWith 8 (i => getByte64 off arr i)
+  VFloat (bytesToFloat64 intArr 0)
 pBytesToFloat64 _ _ = panic "bytesToFloat64: expected Array Int"
+
+pFloatToBytes64 : Value -> Value
+pFloatToBytes64 (VFloat f) =
+  let bs = floatToBytes64 f
+  VArray (arrayMakeWith 8 (i => VInt (arrayGetUnsafe i bs)))
+pFloatToBytes64 _ = panic "floatToBytes64: not a Float"
 
 pFloatToString : Value -> Value
 pFloatToString (VFloat f) = VString (floatToString f)
