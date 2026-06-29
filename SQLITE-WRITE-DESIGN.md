@@ -128,8 +128,21 @@ page number (int), the exact `CREATE TABLE …` text.
 **🏁 v1 write path COMPLETE (P0–P4):** Medaka builds a fresh single-table `.sqlite` (int/text/null/blob,
 IPK-as-rowid or auto-rowid, single leaf page) that `sqlite3` validates + queries, byte-perfect.
 
-**Deferred:** floats (P5, needs `floatToBytes64` extern); page splits / multi-page;
-`UPDATE`/`DELETE`; overflow pages; transactions/journal/WAL; concurrency/locking.
+**🏁 P5 — REAL columns COMPLETE (2026-06-29, `0bfc328`):** added the `floatToBytes64 : Float -> Array Int`
+extern (inverse of `bytesToFloat64`; native+interp, fixpoint-verified, seed re-minted `5a17cd6`); `recordenc`
+encodes serial-type-7 (8-byte big-endian IEEE-754); `writer.mdk` gained a `TReal` column type. `sqlite3`
+reads the column as `real` and float arithmetic over it is correct. (Bonus: fixed a latent `pBytesToFloat64`
+interpreter overflow for floats with MSB byte ≥ 0x40.)
+
+**🏁 P6 — multi-page write COMPLETE (2026-06-29, `aed32e3`, pure-library):** the single-leaf cap is removed.
+Rows bin-pack into leaf pages under ONE table-interior (0x05) root (page 1 = sqlite_master leaf, rootpage=2;
+single-leaf input keeps the old byte-identical 2-page output, else page 2 = interior, leaves = 3..N).
+Valid-but-**unbalanced** (no redistribution — out of scope). Verified vs `sqlite3` `integrity_check` + leaf-
+crossing queries/aggregates at 700/937/1000+ rows; gate `sqlite/test/multipage_write_oracle.sh`.
+
+**Deferred:** overflow pages (a single row > ~4088 B → clean `Err`); multi-INTERIOR trees (≳tens of thousands
+of rows / ~450 leaves → clean `Err`); full b-tree balancing/redistribution; `UPDATE`/`DELETE`;
+transactions/journal/WAL; concurrency/locking. (~~floats~~ P5 done; ~~page splits/multi-page~~ P6 done.)
 
 ## Verification strategy (per slice, on the compiled binary)
 

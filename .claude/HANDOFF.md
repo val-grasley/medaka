@@ -7,6 +7,15 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ SQLite write: P5 float (REAL) + P6 multi-page DONE; seed re-minted (2026-06-29). `main` = `5a17cd6`
+
+Continued the SQLite library write path. Both bites landed, each verified vs the `sqlite3` CLI by the orchestrator with independent data; seed re-minted ONCE at the end (P5 added an extern; P6 was library-only), cold `bootstrap_from_seed` C3a PASS. Owning doc `SQLITE-WRITE-DESIGN.md` (updated); design menu came from a read-only scout. Memory: `project_sqlite_capstone`.
+
+- **P5 — REAL column write (`0bfc328`).** New extern `floatToBytes64 : Float -> Array Int` (exact inverse of `bytesToFloat64`), mirrored at its sites (`stdlib/runtime.mdk`, `runtime/medaka_rt.c` memcpy+BE-bytes, `compiler/backend/llvm_preamble.mdk`+`llvm_emit.mdk` `isNumExtern`, `compiler/eval/eval.mdk` host-delegating prim). `recordenc.mdk` encodes serial-type-7; `writer.mdk` gained `TReal`/`colTypeSql TReal = "REAL"`. Verified: `sqlite3` reports the column `real` and `sum()` over it is correct. **Bonus fix:** `pBytesToFloat64` (the READ-side interp arm) overflowed Medaka's 63-bit int for floats with MSB byte ≥ 0x40 (e.g. `3.14`) — rerouted through the host C `bytesToFloat64`; run==build now. Fixpoint C3a/C3b YES; goldens `runtime.{desugar,mark}` recaptured.
+- **P6 — multi-page write (`aed32e3`, pure-library, `sqlite/lib/dbwriter.mdk`).** Removed the single-leaf cap. Rows bin-pack into leaf pages under ONE table-interior (0x05) root: page 1 = sqlite_master leaf (rootpage stays 2); single-leaf input keeps the OLD byte-identical 2-page output (degenerate path preserved); else page 2 = interior, leaves = 3..N, each non-rightmost leaf an interior cell `[4-byte BE child][max-rowid varint]`, last leaf in the header's right-most-pointer. Unbalanced (no redistribution — out of scope; `integrity_check` accepts valid trees). Verified vs `sqlite3` at 700/937/1000+ rows: `integrity_check` ok, leaf-crossing filters + aggregates correct. Gate `sqlite/test/multipage_write_oracle.sh` (≥3 leaves). All existing sqlite oracles re-run green.
+- **Residual (write, deferred, clean `Err`):** overflow pages (single row > ~4088 B); multi-INTERIOR trees (≳tens of thousands of rows / ~450 leaves); full b-tree balancing; `UPDATE`/`DELETE`; transactions/journal/WAL.
+- **Next clean SQLite bites (from the scout):** ORDER BY in the query ADT (small, pure-lib, `select.mdk`); multi-table write (medium, builds on P6); UPDATE/DELETE; WasmGC port of the bytes-first API; async SQL server.
+
 ## RESUME — ✅ WasmGC E24-peer FIXED; #24 elevated (masks ALL real-prelude wasm) (2026-06-29). `main` = `d143972`
 
 Closed the WasmGC parallel of E24 (the LLVM-E24 wasm follow-up that was carried "PENDING"). Emitter-only, no seed/fixpoint (wasm_emit.mdk is outside the self-compile graph). Ledger: EMITTER-GAPS.md **E24 → wasm residual NOW CLOSED**. Branch `fix/wasm-e24-hof-shadows-method`, commit `d143972` (merged to local main).
