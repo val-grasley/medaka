@@ -7,6 +7,17 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ WasmGC E24-peer FIXED; #24 elevated (masks ALL real-prelude wasm) (2026-06-29). `main` = `d143972`
+
+Closed the WasmGC parallel of E24 (the LLVM-E24 wasm follow-up that was carried "PENDING"). Emitter-only, no seed/fixpoint (wasm_emit.mdk is outside the self-compile graph). Ledger: EMITTER-GAPS.md **E24 → wasm residual NOW CLOSED**. Branch `fix/wasm-e24-hof-shadows-method`, commit `d143972` (merged to local main).
+
+- **DIAGNOSE-FIRST overturned the filed repro.** The literal `pickEq (==) 2 3` `--target wasm` failure (`expected (ref eq) but nothing on stack` at `$mdk_impl_List_foldMap`) is **NOT a pickEq bug** — it's the SEPARATE pre-existing **#24** real-prelude point-free impl-arity gap, which blocks **EVERY** real-prelude modules-path program (verified: even `main = 5` fails identically). So #24 is more impactful than its "low pri" label suggested — it gates the entire `diff_wasm_modules` path (0 ok / 20 gap).
+- **The genuine E24-peer** reproduces in the prelude-free path when a method-named HOF param ALSO collides with a top-level fn name and is applied: `eq a b = 999; pickEq eq x y = eq x y; main = pickEq (a b => a+b) 2 3` → oracle/LLVM `5`, wasm emitted `return_call $eq` (wrong top-level callee) → silent miscompile `999`. **Root cause (both `compiler/backend/wasm_emit.mdk`):** (1) `emitAppRef`/`emitAppTail` CVar arms resolved a head to a direct `call $<toplevel>`/ctor WITHOUT a leading `contains f0 env` check; (2) the closure-usage scan (`exprUsesClosures`/`appUsesClosures`, now thread a `locals` set; `stmtUsesClosures`→`blockUsesClosures`) didn't count a shadowing-local head → `$argarr`/`$clos` types undeclared → parse failure. **Fix:** both check `contains … env` FIRST (mirrors `emitVarRefPlain` + LLVM `isLocal`) → local head applies indirectly.
+- **Gates (re-run by orchestrator under node v24):** `diff_wasm` 139/0, `diff_wasm_typed` 8/0 (new fixture `test/wasm/fixtures_typed/disp_hof_shadows_method.mdk`), `diff_wasm_modules` 0/20-gap/0-fail (unchanged), LLVM `diff_compiler_llvm` 186/0.
+
+### ⏭️ NEXT: #24 — wasm real-prelude point-free impl arity (now the top wasm item)
+foldMap-class impls emit an UNDER-APPLIED `fold step empty` (missing the container arg) → `assemble_check_main` validate fails + `diff_wasm_modules` 0/20-gap. Blocks all real-prelude wasm validation. Wasm-only. (Being worked next this session.)
+
 ## RESUME — ✅ #23 SIGTRAP FIXED (inferred-constraint iface-loss) (2026-06-28). `main` = `a57378b` (worktree branch, + seed re-mint)
 
 Closed FACE 2 of the gap-3/slice-7/#23 cluster — the last run≠build silent miscompile in the cluster. `app2 f = f 2 3; main = println (app2 (==))` (and `useIt eqBoth`, the lambda form, and the transitive `useApp g = app2 g`) BUILT but exited 133 (SIGTRAP) while `medaka run` was correct. Memory: `project_gap3_slice7_two_distinct_bugs`. Ledger: EMITTER-GAPS.md **#23 / slice-7 SIGTRAP** (now CLOSED).
@@ -17,7 +28,7 @@ Closed FACE 2 of the gap-3/slice-7/#23 cluster — the last run≠build silent m
 - **LESSON:** the prior "next step" (ground via pendingDictApps delta) was necessary but INSUFFICIENT — the var was unidentifiable-as-Num (empty iface) until (A).
 
 ### ⏳ Still pending (carry forward)
-- **WasmGC parallel of E24** (below, low pri, LLVM canonical) — unchanged.
+- **WasmGC parallel of E24** — ✅ FIXED 2026-06-29 (`d143972`, see top RESUME).
 
 ## RESUME — ✅ E24 emitter name-shadowing FIXED; #23 SIGTRAP deferred (2026-06-28). `main` = `5942477` (worktree branch, + seed re-mint)
 
@@ -27,7 +38,7 @@ Re-diagnosed the gap-3/slice-7/#23 cluster on current main (`GAP3-SLICE7-DESIGN.
 - **FACE 2 — `app2 f = f 2 3; main = println (app2 (==))` SIGTRAP (#23) — ✅ NOW FIXED (2026-06-28, see the RESUME entry above).** ~~🔴 OPEN~~ The "Num-defaulting reads only `pendingImplObligations`" diagnosis here was a symptom; the real root was inferred-constraint iface-loss. Closed typecheck-only via `ifaceForInferredId` + processSCC call/dict-delta defaulting.
 
 ### ⏳ PENDING WasmGC FIXES (carry forward)
-- **WasmGC parallel of E24 — HOF param shadowing an interface method (`pickEq eq x y = eq x y`).** `medaka build --target wasm` of the same repro FAILS wasm VALIDATION (`type mismatch: expected (ref eq) but nothing on stack`). NOT a clean mirror of the one-line LLVM `isLocal` guard: `wasm_emit.mdk`'s `emitAppRef` already routes an unknown CVar head to `emitIndirectApp`, so the wasm failure is a DISTINCT manifestation needing its own diagnosis (likely the method-named local is being treated as a fn/method ref upstream, or `emitIndirectApp`/`emitVarRef` mishandles a method-named local — instrument which arm `eq` resolves through). LLVM is canonical; deferred. (Found while fixing E24, 2026-06-28.)
+- **WasmGC parallel of E24 — ✅ FIXED 2026-06-29 (`d143972`).** See top RESUME entry. Was NOT the literal `pickEq (==)` repro (that's #24); the real bug was a method-named HOF param colliding with a top-level fn → `emitAppRef`/`emitAppTail` + closure-usage scan now check `contains … env` first.
 
 ## RESUME — ✅ sqlite dogfood review batch + 7 run≠build bugs (2026-06-27/28). `main` = `d843ae3` (+ seed re-mints)
 
