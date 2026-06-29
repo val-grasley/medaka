@@ -2787,9 +2787,31 @@ gatherImplGroup entries (m, tag) =
   -- $mdk_impl_<tag>_<method> takes every call-site arg.  maxI keeps a multi-clause
   -- or already-full-arity impl unchanged (etaExpandClause is a no-op when have >=
   -- arity).  An empty iface table ⇒ methodArityOf 0 ⇒ no-op (W2/W5 entries).
-  let arity = maxI (implGroupArity clauses) (methodArityOf m)
+  --
+  -- #24: methodArityOf counts only the source VALUE params, but a point-free impl
+  -- that carries a leading `requires`-dict (`foldMap f = fold (step f) empty`, which
+  -- `requires Monoid m`) has clause pats `[$dict_Monoid, f]` — so the FULL define
+  -- arity is the method's user arity PLUS the leading dict count, not just one or the
+  -- other.  Mirrors llvm_emit's gatherGroup (`methodArityOf method + nDicts`): without
+  -- the `+ nDicts`, max(implGroupArity 2, methodArityOf 2) = 2 leaves the container arg
+  -- dropped → the lifted fn returns an under-applied `fold step empty` PAP → wasm
+  -- validate fails at `$mdk_impl_List_foldMap` (expected (ref eq) but nothing on stack).
+  -- nDicts = 0 for a dict-free impl (`length`/`toList`) ⇒ identical to the old maxI.
+  let nDicts = wLeadingDictPats (firstImplClausePats clauses)
+  let arity = maxI (implGroupArity clauses) (methodArityOf m + nDicts)
   let clauses2 = map (etaExpandClause arity) clauses
   ImplG m tag arity clauses2
+
+-- count of leading `$dict_…` param patterns the dict-pass prepends ahead of the
+-- source value params (mirror of llvm_emit's leadingDictPats; uses wIsDictParamName).
+wLeadingDictPats : List Pat -> Int
+wLeadingDictPats ((PVar x)::rest) = if wIsDictParamName x then 1 + wLeadingDictPats rest else 0
+wLeadingDictPats _ = 0
+
+-- the first clause's patterns (for counting leading dict params); [] when no clause.
+firstImplClausePats : List CClause -> List Pat
+firstImplClausePats ((CClause pats _)::_) = pats
+firstImplClausePats [] = []
 
 -- eta-expand one impl clause's (pats, body) to `arity` (no-op when already there).
 -- The added trailing params are fresh `$etaN` PVars, and the body is APPLIED to each

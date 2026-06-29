@@ -1,0 +1,7 @@
+-- #24 real-prelude: foldMap over a real List into the List Monoid.  The prelude's
+-- point-free `foldMap f = fold (acc x => acc ++ f x) empty` carries a leading
+-- `requires Monoid m` dict, so its impl clause is `[$dict_Monoid, f]`.  The wasm
+-- define arity must be the method's user arity (2) PLUS the leading dict count (1)
+-- = 3, or the lifted $mdk_impl_List_foldMap drops the container arg and emits an
+-- under-applied `fold step empty` PAP that fails wasm validate.
+main = println (foldMap (x => [x, x]) [1, 2, 3])
