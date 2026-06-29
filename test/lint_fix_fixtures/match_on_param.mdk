@@ -1,0 +1,8 @@
+-- Fixable: guard-free match on a bare parameter (STYLE §8).
+greet : String -> String
+greet x = match x
+  "Alice" => "Hello Alice!"
+  "Bob" => "Hey Bob!"
+  _ => "Hi there!"
+
+main = println (greet "Bob")

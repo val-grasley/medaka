@@ -100,7 +100,7 @@ desugar_main desugar_batch mark_main mark_batch \
 resolve_main resolve_batch resolve_modules_main \
 printer_main positions_main lex_comments_main \
 typecheck_main typecheck_golden_batch check_main check_batch \
-check_modules_main check_all_main check_match_main exhaust_main lint_main \
+check_modules_main check_all_main check_match_main exhaust_main lint_main lint_fix_main \
 diagnostics_main diagnostics_project_main \
 fmt_main new_main test_main repl_main fuzz_gen_main"
 

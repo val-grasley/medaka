@@ -1,0 +1,6 @@
+-- NOT fixable: a guarded arm — must be left UNCHANGED (safe-subset guard).
+classify n = match n
+  x if x > 0 => "pos"
+  _ => "nonpos"
+
+main = println (classify 3)

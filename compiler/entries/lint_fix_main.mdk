@@ -1,0 +1,23 @@
+-- Entry point for the self-hosted lint AUTOFIX driver:
+--
+--   medaka run compiler/entries/lint_fix_main.mdk <source.mdk>
+--
+-- parses the target WITH positions (no desugar), applies every fixable rule's
+-- fixer over the program (no --only/--disable filters), and prints the rewritten
+-- source to stdout.  Drives `tools.lint.applyFixes` — the gate
+-- (test/diff_compiler_lint_fix.sh) compares its output to a `.fixed` golden.
+
+import frontend.parser.{parseWithPositions}
+import tools.lint.{applyFixes}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run compiler/entries/lint_fix_main.mdk <file.mdk>"
+
+withTarget : String -> <IO> Unit
+withTarget targetPath = match readFile targetPath
+  Ok targetSrc =>
+    let (decls, pos) = parseWithPositions targetSrc
+    let (newSrc, _) = applyFixes [] [] targetSrc decls pos
+    putStr newSrc
+  Err msg => ePutStrLn msg

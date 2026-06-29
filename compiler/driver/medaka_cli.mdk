@@ -27,7 +27,7 @@ import driver.build_cmd.{BuildResult, BuildOk, BuildErr, BuildTarget, TNative, T
 import support.util.{reverseL, joinNl, startsWith, anyList, contains}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
-import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
+import frontend.parser.{parse, parseWithPositions, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveModulesToHumane, resolveModulesToHumaneG}
 import driver.loader.{loadProgram, findProjectRoot, stdlibTrustedMods}
@@ -39,7 +39,7 @@ import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
 import tools.doc.{runDoc}
-import tools.lint.{allRules, lintProgram, findingToDiag, Finding}
+import tools.lint.{allRules, lintProgram, findingToDiag, Finding, applyFixes}
 import tools.check_policy.{runCheckPolicy, runAcceptedPlugin, PolicyArgs(..), parsePolicyArgs, PolicyOutcome(..), runManifest, parseManifestArgs, ManifestArgs(..)}
 
 main : <IO, Mut, Panic> Unit
@@ -80,7 +80,7 @@ usage _ =
       "  medaka test [file.mdk]    Run doctests + prop tests.\n",
       "  medaka bench [file.mdk]   Run bench declarations.\n",
       "  medaka doc [file.mdk]     Generate Markdown documentation.\n",
-      "  medaka lint [file.mdk]    Lint a file (style rules; --disable/--only/--deny=<rules,...>).\n",
+      "  medaka lint [file.mdk]    Lint a file (style rules; --fix, --disable/--only/--deny=<rules,...>).\n",
       "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n",
       "  medaka new <name>         Scaffold a new project directory.\n",
       "  medaka lsp                Run the language server over stdio.\n",
@@ -757,9 +757,10 @@ runLintCmd argv =
   let disableNames = parseLintFlagList "--disable=" argv
   let onlyNames = parseLintFlagList "--only=" argv
   let denyNames = parseLintFlagList "--deny=" argv
+  let fixMode = hasFlag "--fix" argv
   match lintTarget argv
     None =>
-      let _ = ePutStrLn "usage: medaka lint [--disable=R,...] [--only=R,...] [--deny=R,...] <file.mdk>"
+      let _ = ePutStrLn "usage: medaka lint [--fix] [--disable=R,...] [--only=R,...] [--deny=R,...] <file.mdk>"
       exit 1
     Some target =>
       match readFile target
@@ -767,11 +768,33 @@ runLintCmd argv =
           let _ = ePutStrLn msg
           exit 1
         Ok src =>
-          let allFindings = lintProgram allRules (parse src)
-          let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
-          let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
-          let _ = if stringLength output > 0 then putStrLn output else ()
-          if anyList isFindingError findings then exit 1 else ()
+          if fixMode then runLintFix onlyNames disableNames src target
+          else runLintReport disableNames onlyNames denyNames src target
+
+-- Default behavior: parse, lint, print positioned diagnostics, exit per --deny.
+runLintReport : List String -> List String -> List String -> String -> String -> <IO, Mut, Panic> Unit
+runLintReport disableNames onlyNames denyNames src target =
+  let (decls, pos) = parseWithPositions src
+  let allFindings = lintProgram allRules pos decls
+  let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
+  let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
+  let _ = if stringLength output > 0 then putStrLn output else ()
+  if anyList isFindingError findings then exit 1 else ()
+
+-- `--fix`: parse with positions, apply the fixable rules' fixers, write back.
+-- All Rule-record access happens inside lint.applyFixes (field-scanner gap).
+runLintFix : List String -> List String -> String -> String -> <IO, Mut, Panic> Unit
+runLintFix onlyNames disableNames src target =
+  let (decls, pos) = parseWithPositions src
+  let (newSrc, n) = applyFixes onlyNames disableNames src decls pos
+  if newSrc == src then
+    putStrLn ("fixed 0 finding(s) in " ++ target)
+  else
+    match writeFile target newSrc
+      Err msg =>
+        let _ = ePutStrLn (target ++ ": " ++ msg)
+        exit 2
+      Ok _ => putStrLn ("fixed " ++ intToString n ++ " finding(s) in " ++ target)
 
 -- First non-flag arg (flags all start with --).
 lintTarget : List String -> Option String

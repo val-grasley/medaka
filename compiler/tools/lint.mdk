@@ -18,13 +18,17 @@ import frontend.ast.{
   Loc(..),
   Ty(..),
   Pat(..),
+  Guard(..),
   Arm(..),
   ImplMethod(..),
   Expr(..),
   Decl(..),
 }
+import frontend.parser.{Positions, DeclPos, positionsDecls, declPosLine, declPosEndLine}
 import driver.diagnostics.{Severity(..), Diag(..), ppSeverity}
-import support.util.{contains, listLen, anyList, filterList, joinNl, sortUniqS}
+import support.util.{contains, listLen, anyList, filterList, joinNl, isEmptyL, reverseL, splitNl}
+import tools.printer.{declToString, exprToString}
+import support.char.{isAlnum}
 
 -- ── public types ───────────────────────────────────────────────────────────
 
@@ -36,14 +40,19 @@ public export record Finding
   severity : Severity
   loc : Option Loc
 
--- A registered rule.  `check` is the whole pass for that rule: raw decls → hits.
+-- A registered rule.  `check` is the whole pass for that rule: Positions (for
+-- per-decl source locations) + raw decls → hits.  `fix`, when `Some f`, is a
+-- per-decl autofixer: given a single decl, it returns `Some replacementDecls`
+-- if the rule can safely rewrite that decl, else `None`.  `None` = the rule is
+-- not auto-fixable (only the safely-fixable rule provides a fixer).
 -- `enabled`/`severity` are the defaults the CLI may override before running.
 public export record Rule
   name : String
   descr : String
   severity : Severity
   enabled : Bool
-  check : List Decl -> List Finding
+  check : Positions -> List Decl -> List Finding
+  fix : Option (Decl -> Option (List Decl))
 
 -- ── rule names (kept in sync between the Rule entry and its Findings) ─────────
 ruleNameMatchParam : String
@@ -68,6 +77,7 @@ matchParamRule = Rule {
   severity = SevWarning,
   enabled = True,
   check = ruleMatchOnParam,
+  fix = Some matchParamFix,
 }
 
 derivableRule : Rule
@@ -77,6 +87,7 @@ derivableRule = Rule {
   severity = SevWarning,
   enabled = True,
   check = ruleDerivable,
+  fix = None,
 }
 
 stdlibReimplRule : Rule
@@ -86,6 +97,7 @@ stdlibReimplRule = Rule {
   severity = SevWarning,
   enabled = True,
   check = ruleStdlibReimpl,
+  fix = None,
 }
 
 export
@@ -94,21 +106,110 @@ allRules = [matchParamRule, derivableRule, stdlibReimplRule]
 
 -- ── runner ───────────────────────────────────────────────────────────────────
 
--- Run the enabled rules over a program, collecting every finding.  Each rule's
--- findings are re-stamped with the rule's (possibly CLI-overridden) severity so
--- a `--deny` promotion propagates without the rule knowing about flags.
+-- Run the enabled rules over a program, collecting every finding.  `pos` carries
+-- per-decl source spans so each rule can stamp its finding with the decl's real
+-- location.  Each rule's findings are re-stamped with the rule's (possibly
+-- CLI-overridden) severity so a `--deny` promotion propagates without the rule
+-- knowing about flags.
 export
-lintProgram : List Rule -> List Decl -> List Finding
-lintProgram rules prog = flatMap (runRuleOn prog) rules
+lintProgram : List Rule -> Positions -> List Decl -> List Finding
+lintProgram rules pos prog = flatMap (runRuleOn pos prog) rules
 
-runRuleOn : List Decl -> Rule -> List Finding
-runRuleOn prog r
-  | r.enabled = map (restampSeverity r.severity) (r.check prog)
+runRuleOn : Positions -> List Decl -> Rule -> List Finding
+runRuleOn pos prog r
+  | r.enabled = map (restampSeverity r.severity) (r.check pos prog)
   | otherwise = []
 
 restampSeverity : Severity -> Finding -> Finding
 restampSeverity sev f =
   Finding { rule = f.rule, message = f.message, severity = sev, loc = f.loc }
+
+-- ── autofix driver (Task A3) ───────────────────────────────────────────────────
+-- The CLI calls this for `--fix`.  It is the ONLY place that touches the new
+-- `Rule.fix` field (and any other Rule record field): per the documented native
+-- field-scanner SIGSEGV gap, all `Rule`-record access must stay inside this
+-- module, so the CLI passes only plain data (the `--only`/`--disable` name lists,
+-- the source text, the parsed decls + `Positions`) and gets plain data back.
+--
+-- Algorithm: for each decl, the first active fixable rule whose fixer applies
+-- yields `Some replacementDecls`; we render those via the printer and record a
+-- splice over the decl's own source line range (`DeclPos` start..end).  Splices
+-- are applied bottom-up (descending start line) so earlier line numbers stay
+-- valid.  Returns `(rewrittenSource, fixedCount)`; unchanged source if no fix.
+export
+applyFixes : List String -> List String -> String -> List Decl -> Positions -> (String, Int)
+applyFixes only disable src prog pos =
+  let rules = filterList (ruleActiveFixable only disable) allRules
+  let splices = collectSplices rules (zipDeclPos prog (positionsDecls pos))
+  (applySplices src splices, listLen splices)
+
+-- a rule participates in `--fix` iff it is enabled, passes the --only/--disable
+-- filters, AND carries a fixer.
+ruleActiveFixable : List String -> List String -> Rule -> Bool
+ruleActiveFixable only disable r =
+  r.enabled
+    && (isEmptyL only || contains r.name only)
+    && not (contains r.name disable)
+    && ruleHasFixer r
+
+ruleHasFixer : Rule -> Bool
+ruleHasFixer r = match r.fix
+  Some _ => True
+  None => False
+
+zipDeclPos : List Decl -> List DeclPos -> List (Decl, DeclPos)
+zipDeclPos [] _ = []
+zipDeclPos _ [] = []
+zipDeclPos (d::ds) (p::ps) = (d, p) :: zipDeclPos ds ps
+
+-- one (startLine, endLine, replacementText) per fixed decl, in source order.
+collectSplices : List Rule -> List (Decl, DeclPos) -> List (Int, Int, String)
+collectSplices _ [] = []
+collectSplices rules ((d, dp)::rest) = match firstFix rules d
+  Some newDecls =>
+    (declPosLine dp, declPosEndLine dp, renderDecls newDecls) :: collectSplices rules rest
+  None => collectSplices rules rest
+
+firstFix : List Rule -> Decl -> Option (List Decl)
+firstFix [] _ = None
+firstFix (r::rs) d = match applyRuleFix r d
+  Some newDecls => Some newDecls
+  None => firstFix rs d
+
+applyRuleFix : Rule -> Decl -> Option (List Decl)
+applyRuleFix r d = match r.fix
+  Some f => f d
+  None => None
+
+-- render replacement decls, one per line (printer emits a single decl, no NL).
+renderDecls : List Decl -> String
+renderDecls ds = joinNl (map declToString ds)
+
+-- apply splices to the source.  `collectSplices` yields them ascending by start
+-- line; reversing → descending so each edit leaves lower line numbers valid.
+applySplices : String -> List (Int, Int, String) -> String
+applySplices src splices =
+  joinNl (foldSplices (splitNl src) (reverseL splices))
+
+foldSplices : List String -> List (Int, Int, String) -> List String
+foldSplices lines [] = lines
+foldSplices lines ((s, e, txt)::rest) = foldSplices (spliceLines lines s e txt) rest
+
+-- replace the 1-based inclusive line range [s..e] with `txt`'s own lines.
+spliceLines : List String -> Int -> Int -> String -> List String
+spliceLines lines s e txt =
+  takeN (s - 1) lines ++ splitNl txt ++ dropN e lines
+
+takeN : Int -> List a -> List a
+takeN n _ | n <= 0 = []
+takeN _ [] = []
+takeN n (x::xs) = x :: takeN (n - 1) xs
+
+dropN : Int -> List a -> List a
+dropN n xs | n <= 0 = xs
+dropN _ [] = []
+dropN n (_::xs) = dropN (n - 1) xs
+
 
 -- ── rendering ─────────────────────────────────────────────────────────────────
 
@@ -119,8 +220,8 @@ findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
 -- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.
 export
-lintToLines : List Decl -> String
-lintToLines prog = joinNl (map findingLine (lintProgram allRules prog))
+lintToLines : Positions -> List Decl -> String
+lintToLines pos prog = joinNl (map findingLine (lintProgram allRules pos prog))
 
 findingLine : Finding -> String
 findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
@@ -132,41 +233,56 @@ unwrapLoc : Expr -> Expr
 unwrapLoc (ELoc _ e) = unwrapLoc e
 unwrapLoc e = e
 
--- the span carried by the enclosing ELoc, if any
-locOf : Expr -> Option Loc
-locOf (ELoc l _) = Some l
-locOf _ = None
+-- ── per-decl source locations (Task B) ─────────────────────────────────────────
+-- `Positions` carries one `DeclPos` per top-level decl, parallel to the decl
+-- list.  We pair each decl with `Some (Loc … startLine 1 startLine 1)` so a rule
+-- can stamp its finding with the decl's REAL start line (decls themselves carry
+-- no `Loc`).  This is the only location source the carat path (CLI) needs; the
+-- golden line format (`findingLine`) ignores it, so goldens stay location-stripped.
+declLocList : Positions -> List Decl -> List (Decl, Option Loc)
+declLocList pos prog = zipDeclLoc prog (positionsDecls pos)
+
+zipDeclLoc : List Decl -> List DeclPos -> List (Decl, Option Loc)
+zipDeclLoc [] _ = []
+zipDeclLoc (d::ds) [] = (d, None) :: zipDeclLoc ds []
+zipDeclLoc (d::ds) (p::ps) = (d, Some (declPosToLoc p)) :: zipDeclLoc ds ps
+
+declPosToLoc : DeclPos -> Loc
+declPosToLoc p = let l = declPosLine p in Loc "" l 1 l 1
 
 -- ── rule: match-on-param (STYLE §8) ───────────────────────────────────────────
 -- A `DFunDef _ name pats body` (or an impl method) whose body is a `match` with
 -- ≥2 arms over an `EVar p` where `p` is a bare `PVar p` parameter.  Single-arm
 -- matches are skipped (STYLE's "when not to convert").
-ruleMatchOnParam : List Decl -> List Finding
-ruleMatchOnParam prog = flatMap matchParamDecl prog
+ruleMatchOnParam : Positions -> List Decl -> List Finding
+ruleMatchOnParam pos prog = flatMap matchParamDeclL (declLocList pos prog)
 
-matchParamDecl : Decl -> List Finding
-matchParamDecl (DFunDef _ name pats body) = matchParamFinding name pats body
-matchParamDecl DImpl { methods, ... } = flatMap matchParamMethod methods
-matchParamDecl (DAttrib _ d) = matchParamDecl d
-matchParamDecl _ = []
+matchParamDeclL : (Decl, Option Loc) -> List Finding
+matchParamDeclL (d, loc) = matchParamDecl loc d
 
-matchParamMethod : ImplMethod -> List Finding
-matchParamMethod (ImplMethod name pats body) = matchParamFinding name pats body
+matchParamDecl : Option Loc -> Decl -> List Finding
+matchParamDecl loc (DFunDef _ name pats body) = matchParamFinding loc name pats body
+matchParamDecl loc DImpl { methods, ... } = flatMap (matchParamMethod loc) methods
+matchParamDecl loc (DAttrib _ d) = matchParamDecl loc d
+matchParamDecl _ _ = []
 
-matchParamFinding : String -> List Pat -> Expr -> List Finding
-matchParamFinding name pats body = match unwrapLoc body
-  EMatch scrut arms => matchParamArms name pats (locOf body) scrut arms
+matchParamMethod : Option Loc -> ImplMethod -> List Finding
+matchParamMethod loc (ImplMethod name pats body) = matchParamFinding loc name pats body
+
+matchParamFinding : Option Loc -> String -> List Pat -> Expr -> List Finding
+matchParamFinding loc name pats body = match unwrapLoc body
+  EMatch scrut arms => matchParamArms loc name pats scrut arms
   _ => []
 
-matchParamArms : String -> List Pat -> Option Loc -> Expr -> List Arm -> List Finding
-matchParamArms name pats loc scrut arms
+matchParamArms : Option Loc -> String -> List Pat -> Expr -> List Arm -> List Finding
+matchParamArms loc name pats scrut arms
   | listLen arms < 2 = []
   | otherwise = match unwrapLoc scrut
-      EVar p => matchParamHit name pats loc p
+      EVar p => matchParamHit loc name pats p
       _ => []
 
-matchParamHit : String -> List Pat -> Option Loc -> String -> List Finding
-matchParamHit name pats loc p
+matchParamHit : Option Loc -> String -> List Pat -> String -> List Finding
+matchParamHit loc name pats p
   | anyList (isBareParam p) pats =
       [Finding {
         rule = ruleNameMatchParam,
@@ -181,29 +297,122 @@ isBareParam : String -> Pat -> Bool
 isBareParam p (PVar q) = p == q
 isBareParam _ _ = False
 
+-- ── §8 autofixer (Task A) ──────────────────────────────────────────────────────
+-- Rewrites `f x = match x { p1 => e1; p2 => e2 }` → `f p1 = e1` / `f p2 = e2`.
+-- SAFE SUBSET ONLY — returns `None` (rule still warns) unless ALL hold:
+--   * the decl is a bare `DFunDef` (not attributed: splitting an attributed fn
+--     into clauses would duplicate/move the attribute),
+--   * its body (under `ELoc`) is an `EMatch` on a bare param `p` with ≥2 arms,
+--   * NO arm has a guard — function-clause guards don't round-trip through
+--     `DFunDef` (no guard slot),
+--   * NO arm body references the scrutinee param `p` — after the rewrite `p` is
+--     replaced by the arm pattern, so a body still mentioning `p` would be left
+--     unbound (e.g. `f x = match x { Some v => g x }`).  We test this by a
+--     conservative whole-word scan of the PRINTED arm body: the printer renders
+--     every `EVar p` as the token `p`, so a real reference is never missed (the
+--     scan can only over-bail, which is safe).
+matchParamFix : Decl -> Option (List Decl)
+matchParamFix (DFunDef vis name pats body) = matchParamFixBody vis name pats body
+matchParamFix _ = None
+
+matchParamFixBody : Bool -> String -> List Pat -> Expr -> Option (List Decl)
+matchParamFixBody vis name pats body = match unwrapLoc body
+  EMatch scrut arms => matchParamFixMatch vis name pats scrut arms
+  _ => None
+
+matchParamFixMatch : Bool -> String -> List Pat -> Expr -> List Arm -> Option (List Decl)
+matchParamFixMatch vis name pats scrut arms
+  | listLen arms < 2 = None
+  | otherwise = match unwrapLoc scrut
+      EVar p => matchParamFixVar vis name pats p arms
+      _ => None
+
+matchParamFixVar : Bool -> String -> List Pat -> String -> List Arm -> Option (List Decl)
+matchParamFixVar vis name pats p arms
+  | not (anyList (isBareParam p) pats) = None
+  | anyList armHasGuard arms = None
+  | anyList (armMentionsParam p) arms = None
+  | otherwise = match paramIndex p pats
+      Some k => Some (map (armToClause vis name pats k) arms)
+      None => None
+
+-- an arm with any guard qualifier (refutable bind or boolean) can't be a clause
+armHasGuard : Arm -> Bool
+armHasGuard (Arm _ guards _) = not (isEmptyL guards)
+
+-- does the arm body still reference the scrutinee param (conservative, printed)
+armMentionsParam : String -> Arm -> Bool
+armMentionsParam p (Arm _ _ body) = wholeWordIn p (exprToString body)
+
+-- position of the first bare-`PVar p` parameter
+paramIndex : String -> List Pat -> Option Int
+paramIndex p pats = paramIndexGo p pats 0
+
+paramIndexGo : String -> List Pat -> Int -> Option Int
+paramIndexGo _ [] _ = None
+paramIndexGo p (pat::rest) i
+  | isBareParam p pat = Some i
+  | otherwise = paramIndexGo p rest (i + 1)
+
+-- one clause: replace the param at position k with the arm pattern, body = arm rhs
+armToClause : Bool -> String -> List Pat -> Int -> Arm -> Decl
+armToClause vis name pats k (Arm pat _ body) =
+  DFunDef vis name (replaceAt k pat pats) body
+
+replaceAt : Int -> a -> List a -> List a
+replaceAt _ _ [] = []
+replaceAt 0 x (_::rest) = x :: rest
+replaceAt n x (y::rest) = y :: replaceAt (n - 1) x rest
+
+-- whole-word (identifier-token) occurrence of `name` in `s`.  Boundaries are any
+-- non-identifier char (isAlnum covers alnum/_/').  Over-matches into string
+-- literals etc. — that only makes the fix gate MORE conservative, never less.
+wholeWordIn : String -> String -> Bool
+wholeWordIn name s =
+  let cs = stringToChars s
+  let nlen = stringLength name
+  wholeWordGo name nlen s cs (arrayLength cs) 0
+
+wholeWordGo : String -> Int -> String -> Array Char -> Int -> Int -> Bool
+wholeWordGo name nlen s cs n i
+  | i + nlen > n = False
+  | boundaryAt cs i && boundaryAt cs (i + nlen) && stringSlice i (i + nlen) s == name = True
+  | otherwise = wholeWordGo name nlen s cs n (i + 1)
+
+-- position j is a boundary iff at least one neighbour across the candidate edge
+-- is NOT an identifier char (or off the ends of the string).
+boundaryAt : Array Char -> Int -> Bool
+boundaryAt cs j
+  | j == 0 = True
+  | j >= arrayLength cs = True
+  | otherwise = not (isAlnum (arrayGetUnsafe (j - 1) cs)) || not (isAlnum (arrayGetUnsafe j cs))
+
 -- ── rule: hand-rolled-derivable (STYLE §6) ────────────────────────────────────
 -- A `DImpl` for Eq/Ord/Debug over a single named (TyCon-headed) type.  DImpl
 -- carries no loc, so loc = None.
 derivableIfaces : List String
 derivableIfaces = ["Eq", "Ord", "Debug"]
 
-ruleDerivable : List Decl -> List Finding
-ruleDerivable prog = flatMap derivableDecl prog
+ruleDerivable : Positions -> List Decl -> List Finding
+ruleDerivable pos prog = flatMap derivableDeclL (declLocList pos prog)
 
-derivableDecl : Decl -> List Finding
-derivableDecl DImpl { iface, tys, ... } = derivableHit iface tys
-derivableDecl (DAttrib _ d) = derivableDecl d
-derivableDecl _ = []
+derivableDeclL : (Decl, Option Loc) -> List Finding
+derivableDeclL (d, loc) = derivableDecl loc d
 
-derivableHit : String -> List Ty -> List Finding
-derivableHit iface tys
+derivableDecl : Option Loc -> Decl -> List Finding
+derivableDecl loc DImpl { iface, tys, ... } = derivableHit loc iface tys
+derivableDecl loc (DAttrib _ d) = derivableDecl loc d
+derivableDecl _ _ = []
+
+derivableHit : Option Loc -> String -> List Ty -> List Finding
+derivableHit loc iface tys
   | contains iface derivableIfaces = match singleNamedType tys
       Some tyName => [Finding {
         rule = ruleNameDerivable,
         message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName
           ++ "' — consider `deriving (" ++ iface ++ ")` instead",
         severity = SevWarning,
-        loc = None,
+        loc = loc,
       }]
       None => []
   | otherwise = []
@@ -228,24 +437,39 @@ stdlibNames = [
   "zip", "zipWith",
 ]
 
-ruleStdlibReimpl : List Decl -> List Finding
-ruleStdlibReimpl prog =
-  -- dedupe so a multi-clause function (consecutive DFunDefs) fires once
-  map stdlibFinding (filterList inStdlib (sortUniqS (flatMap topDefName prog)))
+ruleStdlibReimpl : Positions -> List Decl -> List Finding
+ruleStdlibReimpl pos prog =
+  -- dedupe by name so a multi-clause function (consecutive DFunDefs) fires once,
+  -- keeping the FIRST clause's location.
+  map stdlibFinding
+    (dedupeNamesLoc (filterList inStdlibPair (flatMap topDefNameL (declLocList pos prog))))
 
-topDefName : Decl -> List String
-topDefName (DFunDef _ name _ _) = [name]
-topDefName (DAttrib _ d) = topDefName d
-topDefName _ = []
+topDefNameL : (Decl, Option Loc) -> List (String, Option Loc)
+topDefNameL (DFunDef _ name _ _, loc) = [(name, loc)]
+topDefNameL (DAttrib _ d, loc) = topDefNameL (d, loc)
+topDefNameL _ = []
+
+inStdlibPair : (String, Option Loc) -> Bool
+inStdlibPair (n, _) = inStdlib n
+
+-- keep the first (name, loc) per distinct name, preserving order
+dedupeNamesLoc : List (String, Option Loc) -> List (String, Option Loc)
+dedupeNamesLoc xs = dedupeNamesLocGo [] xs
+
+dedupeNamesLocGo : List String -> List (String, Option Loc) -> List (String, Option Loc)
+dedupeNamesLocGo _ [] = []
+dedupeNamesLocGo seen ((n, l)::rest)
+  | contains n seen = dedupeNamesLocGo seen rest
+  | otherwise = (n, l) :: dedupeNamesLocGo (n :: seen) rest
 
 inStdlib : String -> Bool
 inStdlib n = contains n stdlibNames
 
-stdlibFinding : String -> Finding
-stdlibFinding name = Finding {
+stdlibFinding : (String, Option Loc) -> Finding
+stdlibFinding (name, loc) = Finding {
   rule = ruleNameStdlibReimpl,
   message = "top-level '" ++ name
     ++ "' shadows a stdlib function — prefer the stdlib version",
   severity = SevWarning,
-  loc = None,
+  loc = loc,
 }

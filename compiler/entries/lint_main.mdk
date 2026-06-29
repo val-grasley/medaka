@@ -7,7 +7,7 @@
 -- per line as `<severity>: [<rule>] <message>` (location-stripped; the golden
 -- harness sorts).  Mirror of compiler/entries/exhaust_main.mdk.
 
-import frontend.parser.{parse}
+import frontend.parser.{parseWithPositions}
 import tools.lint.{lintToLines}
 
 main = match args ()
@@ -16,5 +16,7 @@ main = match args ()
 
 withTarget : String -> <IO> Unit
 withTarget targetPath = match readFile targetPath
-  Ok targetSrc => putStr (lintToLines (parse targetSrc))
+  Ok targetSrc =>
+    let (decls, pos) = parseWithPositions targetSrc
+    putStr (lintToLines pos decls)
   Err msg => ePutStrLn msg
