@@ -22,10 +22,10 @@
 -- emitter if no CRecord literal for that type appears locally.  We use pattern
 -- destructuring throughout to stay emitter-compatible.
 
-import lib.dbwriter.{buildDatabase, writeDatabase}
+import lib.dbwriter.{buildDatabase, writeDatabase, buildDatabaseMulti}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
 import string.{join}
-import list.{findIndex}
+import list.{findIndex, reverse}
 
 -- ---------------------------------------------------------------------------
 -- Column-type affinity
@@ -162,3 +162,52 @@ buildTable schema rows =
       let sql = createTableSql schema
       let ipk = schemaIpkIndex schema
       buildDatabase name sql colCount ipk rows
+
+-- ---------------------------------------------------------------------------
+-- Multi-table write API
+-- ---------------------------------------------------------------------------
+--
+-- Write N tables into ONE `.sqlite` file.  Each entry is a `(schema, rows)`
+-- pair; the tables are laid out in the order given (page 1 = sqlite_master with
+-- one record per table, then each table's contiguous page range).  Each table
+-- may be single-leaf or multi-page independently.  Residual: the N
+-- sqlite_master records must fit one leaf page (multi-page sqlite_master is out
+-- of scope — overflow yields a clean `Err "sqlite_master overflow: …"`).
+
+-- | Convert one `(schema, rows)` entry into the low-level dbwriter spec,
+-- validating row width and deriving the CREATE text + IPK index from the
+-- schema.  Pure (Result monad); no effect.
+tableSpec : (TableSchema, List (List Cell)) -> Result String (String, String, Option Int, List (List Cell))
+tableSpec (schema, rows) =
+  match schema
+    TableSchema { schemaTableName = name, columns } => do
+      let colCount = length columns
+      _ <- validateRows colCount rows
+      let sql = createTableSql schema
+      let ipk = schemaIpkIndex schema
+      Ok (name, sql, ipk, rows)
+
+-- Map every `(schema, rows)` entry to its spec, short-circuiting on the first
+-- validation error.
+collectSpecs : List (TableSchema, List (List Cell)) -> List (String, String, Option Int, List (List Cell)) -> Result String (List (String, String, Option Int, List (List Cell)))
+collectSpecs []        acc = Ok (reverse acc)
+collectSpecs (t::rest) acc = do
+  spec <- tableSpec t
+  collectSpecs rest (spec :: acc)
+
+-- | Build the byte image of a multi-table SQLite database from a list of
+-- `(schema, rows)` entries.  The single-table case (`[entry]`) produces the
+-- same image as `buildTable` (both route through the parameterized page
+-- builder).
+export
+buildTables : List (TableSchema, List (List Cell)) -> <Mut> Result String (Array Int)
+buildTables tables = do
+  specs <- collectSpecs tables []
+  buildDatabaseMulti specs
+
+-- | Build a multi-table SQLite database and `writeFileBytes` it to `path`.
+export
+writeTables : String -> List (TableSchema, List (List Cell)) -> <FileWrite, Mut> Result String Unit
+writeTables path tables = do
+  img <- buildTables tables
+  writeFileBytes path img

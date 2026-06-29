@@ -1,4 +1,4 @@
--- | sqlite.lib.dbwriter — build a fresh single-table SQLite `.db` from scratch.
+-- | sqlite.lib.dbwriter — build a fresh SQLite `.db` (one OR many tables) from scratch.
 --
 -- The EXACT inverse of the read path (`header.mdk` + `btree.mdk` + `recordfmt`/
 -- `recordenc.mdk`).  Produces the bytes of a valid 2-page SQLite database:
@@ -438,41 +438,111 @@ lastRowid (_::rest) = lastRowid rest
 --   record-encoding error.
 export
 buildDatabase : String -> String -> Int -> Option Int -> List (List Cell) -> <Mut> Result String (Array Int)
-buildDatabase name createSql colCount ipkColIdx rows = do
-  dataPairs <- encodeRows ipkColIdx 1 rows []
-  batches   <- packLeaves dataPairs [] [] 0
+buildDatabase name createSql colCount ipkColIdx rows =
+  buildDatabaseMulti [(name, createSql, ipkColIdx, rows)]
+
+-- ---------------------------------------------------------------------------
+-- Per-table b-tree, parameterized by the table's BASE page number
+-- ---------------------------------------------------------------------------
+--
+-- A table's pages are laid out CONTIGUOUSLY starting at `basePage`, which is
+-- also the table's `rootpage`.  Two shapes (mirrors the single-table layout,
+-- but offset by `basePage` instead of being hardcoded to page 2):
+--
+--   * one batch  → a single leaf page IS the root (page `basePage`).
+--   * N batches  → page `basePage` is the table-interior (0x05) root, and the
+--     N data leaves are pages `basePage+1 .. basePage+N`.  Every interior-cell
+--     child pointer and the right-most-child pointer are ABSOLUTE final-file
+--     page numbers (computed from `basePage`), which is what makes a table
+--     placeable anywhere in the file — the core of multi-table support.
+--
+-- Returns the pages in file order; the table's rootpage is always `basePage`.
+
+buildTablePages : Int -> List (List (Int, Array Int)) -> <Mut> Result String (List (Array Int))
+buildTablePages basePage batches =
   match batches
-    [single] => buildSingleLeafDb name createSql single
-    _        => buildMultiLeafDb name createSql batches
+    [single] => do
+      leaf <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map snd single))
+      Ok [leaf]
+    _        => do
+      let nLeaves   = length batches
+      -- Leaves occupy pages basePage+1 .. basePage+nLeaves; interior is basePage.
+      leafPages <- buildLeafPages batches (basePage + 1) []
+      let entries   = interiorEntries batches (basePage + 1) []
+      let rightmost = basePage + nLeaves
+      interior  <- mapErr (e => "interior page: \{e}") (buildInteriorPage entries rightmost)
+      Ok (interior :: leafPages)
 
--- Single-leaf layout: page 1 = sqlite_master leaf, page 2 = data leaf.
--- Byte-identical to the original 2-page writer.
-buildSingleLeafDb : String -> String -> List (Int, Array Int) -> <Mut> Result String (Array Int)
-buildSingleLeafDb name createSql cells = do
-  page2 <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map snd cells))
-  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name createSql 2))
-  let masterCell = encodeLeafCell 1 masterRec
-  page1 <- mapErr (e => "schema page: \{e}") (buildLeafPage fileHeaderSize [masterCell])
-  let fileHdr = buildFileHeader 2
-  let _ = blit fileHdr 0 page1 0 fileHeaderSize
-  Ok (concatPages page1 page2)
+-- | How many file pages a table with these leaf batches occupies:
+--   1 for a single leaf, else 1 (interior root) + one per leaf.
+pageCountOf : List (List (Int, Array Int)) -> Int
+pageCountOf batches =
+  match batches
+    [_] => 1
+    _   => 1 + length batches
 
--- Multi-leaf layout: page 1 = sqlite_master leaf (rootpage = 2), page 2 = the
--- table-interior root, pages 3..N = the data leaves in rowid-ascending order.
-buildMultiLeafDb : String -> String -> List (List (Int, Array Int)) -> <Mut> Result String (Array Int)
-buildMultiLeafDb name createSql batches = do
-  let nLeaves   = length batches
-  -- Leaves occupy pages 3 .. 2+nLeaves; interior is page 2.
-  leafPages <- buildLeafPages batches 3 []
-  let entries   = interiorEntries batches 3 []
-  let rightmost = 2 + nLeaves
-  interior  <- mapErr (e => "interior page: \{e}") (buildInteriorPage entries rightmost)
-  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name createSql 2))
-  let masterCell = encodeLeafCell 1 masterRec
-  page1 <- mapErr (e => "schema page: \{e}") (buildLeafPage fileHeaderSize [masterCell])
-  let fileHdr = buildFileHeader (2 + nLeaves)
-  let _ = blit fileHdr 0 page1 0 fileHeaderSize
-  Ok (concatPageList (page1 :: interior :: leafPages))
+-- ---------------------------------------------------------------------------
+-- Multi-table: N tables in one file
+-- ---------------------------------------------------------------------------
+--
+-- Page allocation:
+--   * page 1                  = the `sqlite_master` leaf (one record/table).
+--   * pages 2 ..              = the tables' b-trees, in input order, each
+--     assigned a CONTIGUOUS range; table i's `rootpage` = the first page of its
+--     range (computed by walking `pageCountOf` from page 2).
+--
+-- Each spec is `(name, createSql, ipkColIdx, rows)`.  `rows` must be in
+-- rowid-ascending order (IPK tables sorted by their IPK).  Each table may be a
+-- single leaf OR a multi-page interior tree independently.
+--
+-- The N `sqlite_master` records must fit ONE leaf page (page 1).  If they do
+-- not, the writer returns a clean `Err` with a recognizable marker
+-- (`sqlite_master overflow`) — multi-page sqlite_master is out of scope.
+
+-- A planned table: its name, CREATE text, and rows partitioned into leaf
+-- batches (so its page count is known before page assignment).
+export
+buildDatabaseMulti : List (String, String, Option Int, List (List Cell)) -> <Mut> Result String (Array Int)
+buildDatabaseMulti specs = do
+  plans  <- planTables specs []
+  result <- buildAllTables plans 2 1 [] []
+  match result
+    (masterCellList, tablePages) => do
+      page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize masterCellList)
+      let fileHdr = buildFileHeader (totalPageCount plans 1)
+      let _ = blit fileHdr 0 page1 0 fileHeaderSize
+      Ok (concatPageList (page1 :: tablePages))
+
+-- Encode each table's rows and partition them into leaf batches, yielding a
+-- plan `(name, createSql, batches)` per table (page count is then known).
+planTables : List (String, String, Option Int, List (List Cell)) -> List (String, String, List (List (Int, Array Int))) -> <Mut> Result String (List (String, String, List (List (Int, Array Int))))
+planTables []                              acc = Ok (reverse acc)
+planTables ((name, sql, ipk, rows)::rest)  acc = do
+  dataPairs <- encodeRows ipk 1 rows []
+  batches   <- packLeaves dataPairs [] [] 0
+  planTables rest ((name, sql, batches) :: acc)
+
+-- Walk the plans assigning each a contiguous page range from `base` upward;
+-- build its pages (rooted at `base`) and its sqlite_master record (rowid `rid`,
+-- rootpage = `base`).  Returns (master cells in order, all table pages in file
+-- order).
+buildAllTables : List (String, String, List (List (Int, Array Int))) -> Int -> Int -> List (Array Int) -> List (List (Array Int)) -> <Mut> Result String (List (Array Int), List (Array Int))
+buildAllTables []                          _    _   mAcc pAcc = Ok (reverse mAcc, flattenPages (reverse pAcc))
+buildAllTables ((name, sql, batches)::rest) base rid mAcc pAcc = do
+  pages     <- buildTablePages base batches
+  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name sql base))
+  let mcell = encodeLeafCell rid masterRec
+  buildAllTables rest (base + pageCountOf batches) (rid + 1) (mcell :: mAcc) (pages :: pAcc)
+
+-- Total file pages: page 1 (sqlite_master) plus every table's page span.
+totalPageCount : List (String, String, List (List (Int, Array Int))) -> Int -> Int
+totalPageCount []                       acc = acc
+totalPageCount ((_, _, batches)::rest)  acc = totalPageCount rest (acc + pageCountOf batches)
+
+-- Flatten a list of per-table page lists into one file-ordered page list.
+flattenPages : List (List (Array Int)) -> List (Array Int)
+flattenPages []        = []
+flattenPages (p::rest) = p ++ flattenPages rest
 
 -- Build one leaf page per batch, numbering pages from `pageNum` upward.
 buildLeafPages : List (List (Int, Array Int)) -> Int -> List (Array Int) -> <Mut> Result String (List (Array Int))
@@ -488,16 +558,6 @@ interiorEntries []        _       acc = reverse acc
 interiorEntries [_]       _       acc = reverse acc
 interiorEntries (b::rest) pageNum acc =
   interiorEntries rest (pageNum + 1) ((pageNum, lastRowid b) :: acc)
-
--- Concatenate two equal-sized page images into one byte array.
-concatPages : Array Int -> Array Int -> <Mut> Array Int
-concatPages p1 p2 =
-  let n1   = arrayLength p1
-  let n2   = arrayLength p2
-  let file = arrayMake (n1 + n2) 0
-  blit p1 0 file 0 n1
-  blit p2 0 file n1 n2
-  file
 
 -- Concatenate a list of equal-sized page images into one byte array, in order.
 concatPageList : List (Array Int) -> <Mut> Array Int

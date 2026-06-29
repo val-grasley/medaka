@@ -1,0 +1,25 @@
+# integrity_check
+ok
+# schema
+table|users|2
+table|big|3
+table|kv|7
+# page layout
+pages=7 interior=1 leaves=5 types=1313513131313
+# counts
+users=3
+big=700
+kv=3
+# users
+1|alice
+2|bob
+3|carol
+# kv
+one|1
+two|2
+three|3
+# big first/last
+1|item_1
+2|item_2
+699|item_699
+700|item_700

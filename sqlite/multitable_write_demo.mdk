@@ -1,0 +1,90 @@
+-- Multi-table writer demo / oracle entry.
+--
+-- Usage: medaka build sqlite/multitable_write_demo.mdk
+--        ./multitable_write_demo <n> <out.db>
+--
+-- Writes THREE tables into one `.sqlite` file via `writeTables`:
+--   * users(id INTEGER PRIMARY KEY, name TEXT)   — small, single leaf page
+--   * big(id INTEGER PRIMARY KEY, val TEXT)       — <n> rows (1.."item_n");
+--                                                   large n forces a multi-page
+--                                                   interior-root b-tree
+--   * kv(k TEXT, v INTEGER)                        — small, NO ipk, single leaf
+--
+-- This exercises the page-allocation scheme end to end: page 1 = sqlite_master
+-- with three records (distinct rootpages), then each table's contiguous page
+-- range, mixing single-leaf and multi-page tables in one file.
+
+import lib.writer.{TableSchema, Column, ColType, TInteger, TText, writeTables}
+import lib.recordfmt.{Cell, CInt, CText}
+import string.{toInt}
+import list.{reverse}
+
+usersSchema : TableSchema
+usersSchema = TableSchema
+  { schemaTableName = "users"
+  , columns =
+      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = True }
+      , Column { colName = "name", colType = TText,    isPrimaryKey = False }
+      ]
+  }
+
+bigSchema : TableSchema
+bigSchema = TableSchema
+  { schemaTableName = "big"
+  , columns =
+      [ Column { colName = "id",  colType = TInteger, isPrimaryKey = True }
+      , Column { colName = "val", colType = TText,    isPrimaryKey = False }
+      ]
+  }
+
+kvSchema : TableSchema
+kvSchema = TableSchema
+  { schemaTableName = "kv"
+  , columns =
+      [ Column { colName = "k", colType = TText,    isPrimaryKey = False }
+      , Column { colName = "v", colType = TInteger, isPrimaryKey = False }
+      ]
+  }
+
+usersRows : List (List Cell)
+usersRows =
+  [ [ CInt 1, CText "alice" ]
+  , [ CInt 2, CText "bob" ]
+  , [ CInt 3, CText "carol" ]
+  ]
+
+kvRows : List (List Cell)
+kvRows =
+  [ [ CText "one",   CInt 1 ]
+  , [ CText "two",   CInt 2 ]
+  , [ CText "three", CInt 3 ]
+  ]
+
+bigRow : Int -> List Cell
+bigRow i = [ CInt i, CText "item_\{intToString i}" ]
+
+bigRows : Int -> Int -> List (List Cell) -> List (List Cell)
+bigRows i n acc =
+  if i > n then reverse acc
+  else bigRows (i + 1) n (bigRow i :: acc)
+
+parseN : String -> Int
+parseN s = match toInt s
+  Some n => n
+  None   => 0
+
+main : <IO, Mut> Unit
+main = match args ()
+  [nStr, out] => run (parseN nStr) out
+  _ => println "usage: multitable_write_demo <n> <out.db>"
+
+run : Int -> String -> <IO, Mut> Unit
+run n out =
+  let tables =
+        [ (usersSchema, usersRows)
+        , (bigSchema,   bigRows 1 n [])
+        , (kvSchema,    kvRows)
+        ]
+  match writeTables out tables
+    Err e => println "Error: \{e}"
+    Ok _  => println "wrote \{out} (users=3 big=\{intToString n} kv=3)"

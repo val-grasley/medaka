@@ -140,9 +140,27 @@ single-leaf input keeps the old byte-identical 2-page output, else page 2 = inte
 Valid-but-**unbalanced** (no redistribution — out of scope). Verified vs `sqlite3` `integrity_check` + leaf-
 crossing queries/aggregates at 700/937/1000+ rows; gate `sqlite/test/multipage_write_oracle.sh`.
 
+**🏁 P7 — multi-TABLE write COMPLETE (2026-06-29, pure-library):** N tables in one `.sqlite`.
+The per-table b-tree builder is parameterized by a BASE page number (`buildTablePages basePage batches`
+in `dbwriter.mdk`): a table's pages are contiguous from `basePage` (= its `rootpage`), and every
+interior child / right-most pointer is the ABSOLUTE final-file page number (no longer hardcoded to 2).
+**Page allocation:** page 1 = `sqlite_master` leaf (one record/table); then walk the tables in order,
+giving each a contiguous range — `rootpage` = the range's first page, span = `pageCountOf` (1 for a
+single leaf, else 1 interior + 1/leaf). `buildDatabase` (single-table) now routes through the new
+`buildDatabaseMulti : List (name, createSql, ipkColIdx, rows) -> Result (Array Int)` as the N=1 case
+(byte-identical output — old single/multi-leaf goldens unchanged). Public typed API in `writer.mdk`:
+`writeTables`/`buildTables : List (TableSchema, List (List Cell)) -> …`. Each table is independently
+single-leaf OR multi-page. Verified vs `sqlite3` `integrity_check` = ok + per-table `SELECT`/`count`
++ Medaka reader round-trip on a mixed 3-table db (single-leaf users + interior-root big over ≥3 leaves
++ no-ipk single-leaf kv); gate `sqlite/test/multitable_write_oracle.sh`, demo
+`sqlite/multitable_write_demo.mdk`. **Residual:** the N `sqlite_master` records must fit ONE leaf page
+(≈ tens of tables); overflow yields a clean `Err "sqlite_master overflow: …"` — multi-page sqlite_master
+is out of scope.
+
 **Deferred:** overflow pages (a single row > ~4088 B → clean `Err`); multi-INTERIOR trees (≳tens of thousands
-of rows / ~450 leaves → clean `Err`); full b-tree balancing/redistribution; `UPDATE`/`DELETE`;
-transactions/journal/WAL; concurrency/locking. (~~floats~~ P5 done; ~~page splits/multi-page~~ P6 done.)
+of rows / ~450 leaves → clean `Err`); multi-page `sqlite_master` (≳ tens of tables → clean `Err`); full
+b-tree balancing/redistribution; `UPDATE`/`DELETE`; transactions/journal/WAL; concurrency/locking.
+(~~floats~~ P5 done; ~~page splits/multi-page~~ P6 done; ~~multi-table~~ P7 done.)
 
 ## Verification strategy (per slice, on the compiled binary)
 
