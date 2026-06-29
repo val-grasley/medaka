@@ -3037,16 +3037,31 @@ ensureDefaultEmittedW prog fname tag method entry =
 -- method's full declared arity, restamp inner SAME-interface method calls to a
 -- concrete `RKey tag` (so the inner `filterMap` is a direct impl call, not an
 -- un-dispatchable arg-tag site), then emit it with the SAME clause machinery an impl
--- group uses.  NOTE: cross-interface method-level dicts (foldMap's Monoid `empty`)
--- and parametric element `requires` (Ord's `lt`→`compare`) are NOT needed for the
--- `filter`@List case (filter's default calls only same-interface filterMap, no
--- requires) — those llvm restampCrossIface / reqDict paths are deferred until a
--- fixture needs them (a constrained default would surface as a NEW undefined symbol).
+-- group uses.  The define arity counts the dict-pass's leading `$dict_<method>` params
+-- (the method-level `=>` constraint dicts, e.g. foldMap's `Monoid m`) ON TOP of the
+-- method's user arity (#24-peer, below) — a constrained point-free default would
+-- otherwise drop the container arg.  Cross-interface method-level dicts (the Monoid
+-- `empty` in foldMap's default) and the inner same-interface call are already routed
+-- by the dict-pass (RDict `$dict_<method>`) / restampIfaceDictsW respectively, so no
+-- emitter-side restampCrossIface is needed here (unlike llvm_emit, which re-derives it).
+-- Interface-level `requires` element dicts (the llvm reqDict path) are still deferred —
+-- no current interface pairs a `requires`-bearing head with a constrained default.
 emitDefaultDefineW : Prog -> String -> String -> String -> CImplEntry -> <Mut> List String
 emitDefaultDefineW prog fname tag method entry =
   let pats0 = implDefaultPats entry
   let body0 = implDefaultBody entry
-  let arity = maxI (listLen pats0) (methodArityOf method)
+  -- #24-peer (default path): the dict-pass PREPENDS one `$dict_<method>_<slot>` param per
+  -- method-level `=>` constraint (foldMap's `Monoid m`) to the default's pats, so the full
+  -- arity is that leading-dict count PLUS the method's user arity.  `methodArityOf` counts
+  -- only the interface's user args (f + container); without the `+ nDicts` term,
+  -- max(listLen pats0 = 2, methodArityOf = 2) = 2 leaves the container arg unbound — the
+  -- body stays the under-applied `fold step empty` PAP and the lifted $mdk_default_<m>_<tag>
+  -- drops the container, failing wasm validate ("expected (ref eq) but nothing on stack").
+  -- Mirrors gatherImplGroup's `methodArityOf m + nDicts` (the #24 concrete-impl fix); the
+  -- cross-interface `empty` and the inner same-interface `fold` are already routed by the
+  -- dict-pass / restampIfaceDictsW (an unconstrained default ⇒ nDicts = 0 ⇒ byte-identical).
+  let nDicts = wLeadingDictPats pats0
+  let arity = maxI (listLen pats0) (methodArityOf method + nDicts)
   let (pats1, body1) = etaExpandTo pats0 body0 arity (listLen pats0)
   let body = restampIfaceDictsW methodIfaceTableRef.value (methodIfaceOf method) tag body1
   emitDefaultDefnGroup prog fname tag method arity [CClause pats1 body]

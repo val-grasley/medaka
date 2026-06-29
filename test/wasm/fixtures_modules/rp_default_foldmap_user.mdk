@@ -1,0 +1,23 @@
+-- #24-PEER (default path): a user type `Bag` impls the REAL prelude `Foldable`
+-- WITHOUT overriding `foldMap`.  Because the impl is NOT co-located with the
+-- `Foldable` DInterface (which lives in core.mdk), desugar's fillImplDefaults does
+-- NOT specialize `foldMap` into a concrete `$mdk_impl_Bag_foldMap`; the call uses
+-- the DEFAULT fallback (emitDefaultRKeyRef -> emitDefaultDefineW), synthesizing
+-- `$mdk_default_foldMap_Bag` from the interface default body.
+--
+-- `foldMap f = fold (acc x => acc ++ f x) empty` is point-free in the container AND
+-- carries a leading `Monoid m =>` dict, so the dict-pass gives its clause pats
+-- `[$dict_foldMap_0, f]`.  The wasm define arity must be the method's user arity (2)
+-- PLUS the leading-dict count (1) = 3, or the synthesized default drops the container
+-- arg and emits an under-applied `fold step empty` PAP that fails wasm validate
+-- ("expected (ref eq) but nothing on stack" — the same underflow #24 had on the
+-- CONCRETE-impl path, here on its default sibling).  Oracle (medaka build / LLVM):
+-- [1, 1, 2, 2, 3, 3].
+data Bag a = Bag (List a)
+
+impl Foldable Bag where
+  fold f z (Bag xs) = fold f z xs
+  foldRight f z (Bag xs) = foldRight f z xs
+  toList (Bag xs) = xs
+
+main = println (foldMap (x => [x, x]) (Bag [1, 2, 3]))
