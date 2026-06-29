@@ -1,0 +1,3 @@
+warning: [rule-hand-rolled-derivable] hand-written `impl Eq` for 'Shape' — consider `deriving (Eq)` instead
+warning: [rule-match-on-param] function 'classify' matches on parameter 'n' — consider a multi-clause function definition
+warning: [rule-stdlib-reimpl] top-level 'reverse' shadows a stdlib function — prefer the stdlib version

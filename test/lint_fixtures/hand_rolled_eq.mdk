@@ -1,0 +1,9 @@
+-- Positive fixture for rule-hand-rolled-derivable (STYLE §6):
+-- hand-written impl Eq that could use deriving.
+data Color = Red | Green | Blue
+
+impl Eq Color where
+  eq Red Red = True
+  eq Green Green = True
+  eq Blue Blue = True
+  eq _ _ = False

@@ -1,0 +1,1 @@
+warning: [rule-stdlib-reimpl] top-level 'reverse' shadows a stdlib function — prefer the stdlib version

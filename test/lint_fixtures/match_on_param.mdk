@@ -1,0 +1,7 @@
+-- Positive fixture for rule-match-on-param (STYLE §8):
+-- function body is a multi-arm match over a bare parameter.
+greet : String -> String
+greet x = match x
+  "Alice" => "Hello Alice!"
+  "Bob" => "Hey Bob!"
+  _ => "Hi there!"

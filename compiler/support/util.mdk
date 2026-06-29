@@ -95,6 +95,22 @@ splitNlGo chars n start i
     stringFromChars (arraySubChars chars start i) :: splitNlGo chars n (i + 1) (i + 1)
   | otherwise = splitNlGo chars n start (i + 1)
 
+-- Split a string on a given character.  Like splitNl but parameterised on the
+-- separator.  An empty string yields [""] (one empty segment); a trailing
+-- separator yields a final empty string.
+export
+splitOnChar : Char -> String -> List String
+splitOnChar sep s =
+  let chars = stringToChars s
+  splitOnCharGo chars sep (arrayLength chars) 0 0
+
+splitOnCharGo : Array Char -> Char -> Int -> Int -> Int -> List String
+splitOnCharGo chars sep n start i
+  | i >= n = [stringFromChars (arraySubChars chars start n)]
+  | arrayGetUnsafe i chars == sep =
+    stringFromChars (arraySubChars chars start i) :: splitOnCharGo chars sep n (i + 1) (i + 1)
+  | otherwise = splitOnCharGo chars sep n start (i + 1)
+
 -- Join dotted path components with "." in O(total length) (see joinWith).
 export
 joinDot : List String -> String

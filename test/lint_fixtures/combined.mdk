@@ -1,0 +1,17 @@
+-- Combined fixture: triggers all three lint rules.
+data Shape = Circle | Square
+
+impl Eq Shape where
+  eq Circle Circle = True
+  eq Square Square = True
+  eq _ _ = False
+
+reverse : List a -> List a
+reverse [] = []
+reverse (x::xs) = reverse xs ++ [x]
+
+classify : Int -> String
+classify n = match n
+  0 => "zero"
+  1 => "one"
+  _ => "other"

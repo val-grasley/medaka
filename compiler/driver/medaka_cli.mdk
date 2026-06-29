@@ -24,7 +24,7 @@ import tools.check.{
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{BuildResult, BuildOk, BuildErr, BuildTarget, TNative, TWasm, runBuild, envOr}
-import support.util.{reverseL, joinNl}
+import support.util.{reverseL, joinNl, startsWith, anyList, contains}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
@@ -39,6 +39,7 @@ import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
 import tools.doc.{runDoc}
+import tools.lint.{allRules, lintProgram, findingToDiag, Finding}
 import tools.check_policy.{runCheckPolicy, runAcceptedPlugin, PolicyArgs(..), parsePolicyArgs, PolicyOutcome(..), runManifest, parseManifestArgs, ManifestArgs(..)}
 
 main : <IO, Mut, Panic> Unit
@@ -54,6 +55,7 @@ main = match args ()
   "run"::rest => runRunCmd rest
   "test"::rest => runTestCmd rest
   "doc"::rest => runDocCmd rest
+  "lint"::rest => runLintCmd rest
   "check-policy"::rest => runCheckPolicyCmd rest
   "manifest"::rest => runManifestCmd rest
   "repl"::rest => runReplCmd rest
@@ -78,6 +80,7 @@ usage _ =
       "  medaka test [file.mdk]    Run doctests + prop tests.\n",
       "  medaka bench [file.mdk]   Run bench declarations.\n",
       "  medaka doc [file.mdk]     Generate Markdown documentation.\n",
+      "  medaka lint [file.mdk]    Lint a file (style rules; --disable/--only/--deny=<rules,...>).\n",
       "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n",
       "  medaka new <name>         Scaffold a new project directory.\n",
       "  medaka lsp                Run the language server over stdio.\n",
@@ -741,6 +744,107 @@ runManifestCmd argv = match parseManifestArgs argv
             exit 1
           Ok tsrc =>
             putStr (runManifest rsrc csrc tsrc fn)
+
+-- ── lint ──────────────────────────────────────────────────────────────────
+-- Parse the target file and run lint rules over the raw pre-desugar AST.
+-- Flags:
+--   --disable=r1,r2,...  suppress findings from the named rules
+--   --only=r1,...        keep only findings from the named rules
+--   --deny=r1,...        promote findings from the named rules to SevError
+-- Exit 0 unless a SevError finding exists (only via --deny in v1).
+runLintCmd : List String -> <IO, Mut, Panic> Unit
+runLintCmd argv =
+  let disableNames = parseLintFlagList "--disable=" argv
+  let onlyNames = parseLintFlagList "--only=" argv
+  let denyNames = parseLintFlagList "--deny=" argv
+  match lintTarget argv
+    None =>
+      let _ = ePutStrLn "usage: medaka lint [--disable=R,...] [--only=R,...] [--deny=R,...] <file.mdk>"
+      exit 1
+    Some target =>
+      match readFile target
+        Err msg =>
+          let _ = ePutStrLn msg
+          exit 1
+        Ok src =>
+          let allFindings = lintProgram allRules (parse src)
+          let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
+          let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
+          let _ = if stringLength output > 0 then putStrLn output else ()
+          if anyList isFindingError findings then exit 1 else ()
+
+-- First non-flag arg (flags all start with --).
+lintTarget : List String -> Option String
+lintTarget [] = None
+lintTarget (x::rest)
+  | startsWith "--" x = lintTarget rest
+  | otherwise = Some x
+
+-- Parse --prefix=v1,v2,... from argv; returns [] if not present.
+parseLintFlagList : String -> List String -> List String
+parseLintFlagList prefix [] = []
+parseLintFlagList prefix (x::rest)
+  | startsWith prefix x = splitLintNames (stringSlice (stringLength prefix) (stringLength x) x)
+  | otherwise = parseLintFlagList prefix rest
+
+-- Split a comma-separated string.  Uses literal ',' to avoid Char-param issues.
+splitLintNames : String -> List String
+splitLintNames s = splitLintNamesGo (stringToChars s) s 0 0 (stringLength s)
+
+splitLintNamesGo : Array Char -> String -> Int -> Int -> Int -> List String
+splitLintNamesGo chars s start i n
+  | i >= n = [stringSlice start n s]
+  | arrayGetUnsafe i chars == ',' =
+    stringSlice start i s :: splitLintNamesGo chars s (i + 1) (i + 1) n
+  | otherwise = splitLintNamesGo chars s start (i + 1) n
+
+-- Apply finding-level filters.  Operates on Finding.rule (a String) so no
+-- Rule-record field access is needed in medaka_cli.mdk.
+applyFindingFilters : List String -> List String -> List String -> List Finding -> List Finding
+applyFindingFilters disable only deny findings =
+  let after1 = applyFindingOnly only findings
+  let after2 = applyFindingDisable disable after1
+  applyFindingDeny deny after2
+
+-- --only: keep findings whose rule is in the list (no-op when empty).
+applyFindingOnly : List String -> List Finding -> List Finding
+applyFindingOnly [] findings = findings
+applyFindingOnly names findings = lintFindingOnlyGo names findings
+
+lintFindingOnlyGo : List String -> List Finding -> List Finding
+lintFindingOnlyGo _ [] = []
+lintFindingOnlyGo names (f::rest)
+  | contains f.rule names = f :: lintFindingOnlyGo names rest
+  | otherwise = lintFindingOnlyGo names rest
+
+-- --disable: remove findings whose rule is in the list (no-op when empty).
+applyFindingDisable : List String -> List Finding -> List Finding
+applyFindingDisable [] findings = findings
+applyFindingDisable names findings = lintFindingDisableGo names findings
+
+lintFindingDisableGo : List String -> List Finding -> List Finding
+lintFindingDisableGo _ [] = []
+lintFindingDisableGo names (f::rest)
+  | contains f.rule names = lintFindingDisableGo names rest
+  | otherwise = f :: lintFindingDisableGo names rest
+
+-- --deny: promote findings to SevError when their rule is in the list.
+applyFindingDeny : List String -> List Finding -> List Finding
+applyFindingDeny [] findings = findings
+applyFindingDeny names findings = lintFindingDenyGo names findings
+
+lintFindingDenyGo : List String -> List Finding -> List Finding
+lintFindingDenyGo _ [] = []
+lintFindingDenyGo names (f::rest)
+  | contains f.rule names =
+      Finding { rule = f.rule, message = f.message, severity = SevError, loc = f.loc }
+        :: lintFindingDenyGo names rest
+  | otherwise = f :: lintFindingDenyGo names rest
+
+isFindingError : Finding -> Bool
+isFindingError f = match f.severity
+  SevError => True
+  SevWarning => False
 
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
 -- import of a non-exported helper).
