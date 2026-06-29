@@ -20,7 +20,7 @@ import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, findTable, schemaSql}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
-import list.{reverse, take, drop}
+import list.{reverse, take, drop, sortBy}
 
 -- ---------------------------------------------------------------------------
 -- Untyped core
@@ -51,13 +51,15 @@ public export data SqlExpr
   | EIsNull SqlExpr
   | ENotNull SqlExpr
 
--- | A whole SELECT: source table, optional WHERE, optional limit/offset.
+-- | A whole SELECT: source table, optional WHERE, optional ORDER BY,
+--   optional limit/offset.
 --   Projection is the `RowType` passed to `query`, NOT a field here (decision d2).
 public export data Select = Select
-  { from   : String
-  , where_ : Option SqlExpr
-  , limit  : Option Int
-  , offset : Option Int
+  { from    : String
+  , where_  : Option SqlExpr
+  , orderBy : Option (String, Bool)
+  , limit   : Option Int
+  , offset  : Option Int
   }
 
 -- ---------------------------------------------------------------------------
@@ -165,10 +167,10 @@ eNotNull e = MkExpr (ENotNull (unExpr e))
 -- Select builders
 -- ---------------------------------------------------------------------------
 
--- | A bare SELECT over a table: no WHERE, no limit/offset.
+-- | A bare SELECT over a table: no WHERE, no ORDER BY, no limit/offset.
 export
 selectFrom : String -> Select
-selectFrom tbl = Select { from = tbl, where_ = None, limit = None, offset = None }
+selectFrom tbl = Select { from = tbl, where_ = None, orderBy = None, limit = None, offset = None }
 
 -- | Attach a typed `Expr Bool` predicate as the WHERE clause.  The phantom
 --   wrapper is stripped here — this is the type-safe boundary at which an
@@ -185,6 +187,13 @@ export
 withOffset : Int -> Select -> Select
 withOffset n sel = { sel | offset = Some n }
 
+-- | Order the results by `col`, ascending when `asc = True`, descending when
+--   `asc = False`.  Sorting applies BEFORE offset/limit, matching SQL semantics.
+--   Single-column ORDER BY only; multi-column is a clean future extension.
+export
+withOrderBy : String -> Bool -> Select -> Select
+withOrderBy col asc sel = { sel | orderBy = Some (col, asc) }
+
 -- ---------------------------------------------------------------------------
 -- render : injection-safe SQL projection
 -- ---------------------------------------------------------------------------
@@ -196,13 +205,14 @@ withOffset n sel = { sel | offset = Some n }
 --   an illegal identifier yields `Err`.
 export
 render : Select -> Result String (String, List Literal)
-render (Select { from = tbl, where_ = w, limit = lm, offset = of_ }) =
+render (Select { from = tbl, where_ = w, orderBy = ob, limit = lm, offset = of_ }) =
   if not (validIdent tbl)
   then Err "render: invalid table name: \{tbl}"
   else do
     (whereSql, binds) <- renderWhere w
+    ordSql <- renderOrderBy ob
     let limOff = renderLimitOffset lm of_
-    let sql = "SELECT * FROM \{tbl}\{whereSql}\{limOffSql limOff}"
+    let sql = "SELECT * FROM \{tbl}\{whereSql}\{ordSql}\{limOffSql limOff}"
     Ok (sql, binds ++ limOffBinds limOff lm of_)
 
 -- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
@@ -217,6 +227,17 @@ renderLimitOffset lm of_ =
             Some _ => " OFFSET ?"
             None   => ""
   "\{l}\{o}"
+
+-- Render the ORDER BY clause (no bind params — column name is a validated
+-- identifier, not a parameter).  Returns `Err` if the column name is illegal.
+renderOrderBy : Option (String, Bool) -> Result String String
+renderOrderBy None = Ok ""
+renderOrderBy (Some (col, asc)) =
+  if not (validIdent col)
+  then Err "render: invalid ORDER BY column: \{col}"
+  else
+    let dir = if asc then "ASC" else "DESC"
+    Ok " ORDER BY \{col} \{dir}"
 
 limOffSql : String -> String
 limOffSql s = s
@@ -417,18 +438,20 @@ applyCmp op o = match (op, o)
 -- ---------------------------------------------------------------------------
 
 -- | Execute a `Select`:  resolve `where_` to a cell predicate over the table's
---   column-index map, scan the table (rowid ascending), filter on cells, drop
---   `offset`, take `limit`, and decode each survivor via `rt`.  A decode error
---   on any survivor aborts the whole query (fail-fast).
+--   column-index map, scan the table (rowid ascending), filter on cells, sort by
+--   ORDER BY (if specified), drop `offset`, take `limit`, and decode each survivor
+--   via `rt`.  A decode error on any survivor aborts the whole query (fail-fast).
+--   SQL semantics: ORDER BY is applied BEFORE LIMIT/OFFSET.
 export
 query : Db -> Select -> RowType a -> Result String (List a)
-query db (Select { from = tbl, where_ = w, limit = lm, offset = of_ }) rt = do
+query db (Select { from = tbl, where_ = w, orderBy = ob, limit = lm, offset = of_ }) rt = do
   entry <- findTable db tbl
   let lookup = mkLookup (schemaSql entry)
   pred <- compileWhere lookup w
   (pkIdx, rows) <- scanTableRowsIpk db tbl
   let kept = filterRows pkIdx pred rows
-  let sliced = applyOffsetLimit of_ lm kept
+  let sorted = sortRows pkIdx lookup ob kept
+  let sliced = applyOffsetLimit of_ lm sorted
   decodeAll rt pkIdx sliced []
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
@@ -442,6 +465,46 @@ compileWhere lookup (Some e) = compilePred lookup e
 -- Keep rows (in rowid order) whose IPK-substituted cells pass the predicate.
 filterRows : Option Int -> (List Cell -> Bool) -> List Row -> List Row
 filterRows pkIdx pred rows = filter (row => pred (rowCellsWithIpk pkIdx row)) rows
+
+-- Sort rows by the ORDER BY column (if specified).  Resolves the column name to
+-- an index via `lookup`; if the column is unknown, rows are returned unsorted.
+-- Sorting uses SQLite value ordering: NULL < Int/Float (numeric) < Text < Blob.
+-- ASC puts NULLs first; DESC reverses the comparator (NULLs become last).
+sortRows : Option Int -> (String -> Option Int) -> Option (String, Bool) -> List Row -> List Row
+sortRows _     _      None              rows = rows
+sortRows pkIdx lookup (Some (col, asc)) rows =
+  match lookup col
+    None     => rows
+    Some idx =>
+      let getCell = (row => nthCell (rowCellsWithIpk pkIdx row) idx)
+      if asc
+      then sortBy (a b => cellOrder (getCell a) (getCell b)) rows
+      else sortBy (a b => cellOrder (getCell b) (getCell a)) rows
+
+-- | Three-way ordering of two Cell values following SQLite's type ordering:
+--   NULL < Int/Float (numeric, interleaved) < Text (lexicographic) < Blob.
+--   Used by sortRows for ORDER BY.
+cellOrder : Cell -> Cell -> Ordering
+cellOrder CNull      CNull      = Eq
+cellOrder CNull      _          = Lt
+cellOrder _          CNull      = Gt
+cellOrder (CInt x)   (CInt y)   = compare x y
+cellOrder (CFloat x) (CFloat y) = compare x y
+cellOrder (CInt x)   (CFloat y) = compare (intToFloat x) y
+cellOrder (CFloat x) (CInt y)   = compare x (intToFloat y)
+cellOrder (CText x)  (CText y)  = compare x y
+cellOrder (CBlob x)  (CBlob y)  = compare (arrayLength x) (arrayLength y)
+cellOrder a          b          = compare (cellTypeRank a) (cellTypeRank b)
+
+-- Type affinity rank: numeric=1, text=2, blob=3.  Used by cellOrder's catch-all
+-- for cross-type comparisons (e.g. Int vs Text, Float vs Blob, Text vs Blob).
+-- NULL (rank 0) is already handled explicitly above.
+cellTypeRank : Cell -> Int
+cellTypeRank CNull      = 0
+cellTypeRank (CInt _)   = 1
+cellTypeRank (CFloat _) = 1
+cellTypeRank (CText _)  = 2
+cellTypeRank (CBlob _)  = 3
 
 -- Drop `offset` rows then keep at most `limit`.
 applyOffsetLimit : Option Int -> Option Int -> List Row -> List Row
@@ -492,6 +555,21 @@ decodeAll rt pkIdx (row :: rest) acc = do
 --
 -- > renderShow (render (selectFrom "bad name"))
 -- "ERR render: invalid table name: bad name"
+--
+-- ORDER BY ASC: clause appears after WHERE, before LIMIT/OFFSET.
+--
+-- > renderShow (render (withOrderBy "age" True (selectFrom "users")))
+-- "SELECT * FROM users ORDER BY age ASC ## []"
+--
+-- ORDER BY DESC combined with WHERE: ORDER BY follows WHERE.
+--
+-- > renderShow (render (withOrderBy "age" False (withWhere (eGt (eColInt "age") (eLitI 0)) (selectFrom "users"))))
+-- "SELECT * FROM users WHERE (age > ?) ORDER BY age DESC ## [LInt 0]"
+--
+-- ORDER BY before LIMIT (proves clause ordering: WHERE ORDER LIMIT OFFSET).
+--
+-- > renderShow (render (withOrderBy "age" True (withLimit 5 (selectFrom "users"))))
+-- "SELECT * FROM users ORDER BY age ASC LIMIT ? ## [LInt 5]"
 export
 renderShow : Result String (String, List Literal) -> String
 renderShow r = match r

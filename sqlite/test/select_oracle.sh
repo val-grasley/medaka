@@ -4,9 +4,9 @@
 # Builds select_demo.mdk (native), runs it against a sqlite3-created DB, and
 # checks each labelled query block against sqlite3's own answer for the
 # equivalent SELECT (ORDER BY rowid for determinism).  This proves the ADT
-# query executor (compilePred + scan + offset/limit + RowType decode) agrees
-# with the engine across comparison / AND / OR / IS NULL / IS NOT NULL /
-# LIMIT / OFFSET.
+# query executor (compilePred + scan + offset/limit + ORDER BY + RowType decode)
+# agrees with the engine across comparison / AND / OR / IS NULL / IS NOT NULL /
+# LIMIT / OFFSET / ORDER BY.
 #
 # Run from the sqlite/ project dir.  Requires: sqlite3 on PATH, a built native
 # `medaka` (../medaka) + its emitter, MEDAKA_ROOT pointing at the repo root.
@@ -46,6 +46,16 @@ add  "-- age IS NOT NULL --";         addq x "SELECT id,name,age FROM users WHER
 add  "-- limit 2 --";                 addq x "SELECT id,name,age FROM users ORDER BY rowid LIMIT 2;"
 add  "-- limit 2 offset 1 --";        addq x "SELECT id,name,age FROM users ORDER BY rowid LIMIT 2 OFFSET 1;"
 add  "-- age > 25 limit 1 --";        addq x "SELECT id,name,age FROM users WHERE age > 25 ORDER BY rowid LIMIT 1;"
+# ORDER BY cases: diff Medaka executor sort against sqlite3's sort.
+# ASC: NULLs first (Bob/NULL age appears before numeric values).
+add  "-- order by age asc --";              addq x "SELECT id,name,age FROM users ORDER BY age ASC;"
+# DESC: NULLs last (Bob/NULL age appears after numeric values).
+add  "-- order by age desc --";             addq x "SELECT id,name,age FROM users ORDER BY age DESC;"
+# TEXT column ascending: lexicographic order, no NULLs in name column.
+add  "-- order by name asc --";             addq x "SELECT id,name,age FROM users ORDER BY name ASC;"
+# ORDER BY combined with LIMIT/OFFSET: sort first, then slice.
+# ASC age: NULL,22,25,30,40 → offset 1 → 22,25 → limit 2 → Eve(22),Carol(25).
+add  "-- order by age asc limit 2 offset 1 --"; addq x "SELECT id,name,age FROM users ORDER BY age ASC LIMIT 2 OFFSET 1;"
 exp="${exp%$'\n'}"
 
 if [ "$got" = "$exp" ]; then

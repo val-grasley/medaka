@@ -12,7 +12,7 @@ import lib.select.{
   Select, SqlExpr, Literal,
   ECol, ELit, EBin, EAnd, EOr, EIsNull, ENotNull,
   OpEq, OpGt, OpLt,
-  selectFrom, withWhere, withLimit, withOffset, query,
+  selectFrom, withWhere, withLimit, withOffset, withOrderBy, query,
   eGt, eLt, eEq, eAnd, eOr, eIsNull, eNotNull,
   eColInt, eColText, eLitI, eLitT,
 }
@@ -72,5 +72,13 @@ main = match args ()
                 (withLimit 2 (selectFrom "users"))
       let _ = runQ db "-- limit 2 offset 1 --"
                 (withOffset 1 (withLimit 2 (selectFrom "users")))
-      runQ db "-- age > 25 limit 1 --"
-        (withLimit 1 (withWhere (eGt (eColInt "age") (eLitI 25)) (selectFrom "users")))
+      let _ = runQ db "-- age > 25 limit 1 --"
+                (withLimit 1 (withWhere (eGt (eColInt "age") (eLitI 25)) (selectFrom "users")))
+      let _ = runQ db "-- order by age asc --"
+                (withOrderBy "age" True (selectFrom "users"))
+      let _ = runQ db "-- order by age desc --"
+                (withOrderBy "age" False (selectFrom "users"))
+      let _ = runQ db "-- order by name asc --"
+                (withOrderBy "name" True (selectFrom "users"))
+      runQ db "-- order by age asc limit 2 offset 1 --"
+        (withOffset 1 (withLimit 2 (withOrderBy "age" True (selectFrom "users"))))
