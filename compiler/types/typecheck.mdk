@@ -1256,6 +1256,15 @@ public export data Kind = KType | KRow
 dataParamKindsRef : Ref (List (String, List Kind))
 dataParamKindsRef = Ref []
 
+-- Transparent type aliases (`type Foo = Int`, `type Pair a = (a, a)`).  Keyed by
+-- alias name → (params, RHS surface type).  Populated in a pre-pass by
+-- `registerData`'s DTypeAlias arm (mirrors `dataParamKindsRef`); consulted
+-- on-demand at the `Ty→Mono` seam (`fromAstTypeE`) to expand an alias to its RHS.
+-- The param list is stored even though stage 2 only expands the zero-param case,
+-- so parameterized expansion (stage 3) can extend this without reshaping the table.
+aliasTableRef : Ref (List (String, (List String, Ty)))
+aliasTableRef = Ref []
+
 -- Names of record/named-field types exported ABSTRACTLY (`export data`/`export
 -- record` without `public`).  Seeded ONCE (over EVERY module's decls, prelude
 -- included) by the multi-module check drivers, BEFORE per-module checking, and
@@ -2067,6 +2076,7 @@ resetState _ =
   let _ = setRef curEffect (EffRow [] None)
   let _ = setRef recordsRef []
   let _ = setRef dataParamKindsRef []
+  let _ = setRef aliasTableRef []
   let _ = setRef pendingSites []
   let _ = setRef pendingRLocalSites []
   let _ = setRef shadowStandaloneSchemesRef []
@@ -2590,7 +2600,14 @@ tyAppSpine (TyApp a b) = match tyAppSpine a
 tyAppSpine t = (t, [])
 
 fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> Mono
-fromAstTypeE etbl tvs (TyCon n) = TCon n
+fromAstTypeE etbl tvs (TyCon n) = match lookupAssoc n aliasTableRef.value
+  -- Transparent non-parameterized alias (`type Foo = Int`): expand to its RHS,
+  -- recursively so alias-of-alias (`type A = Int; type B = A`) flattens.  Cycle
+  -- rejection is deferred (stage 4); the non-cyclic corpus terminates.
+  -- Parameterized aliases (non-empty params) used here unapplied stay opaque for
+  -- now (stage 3 handles applied/arity); leave them as a bare TCon.
+  Some (params, rhs) if listLen params == 0 => fromAstTypeE etbl tvs rhs
+  _ => TCon n
 fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssoc n tvs)
 fromAstTypeE etbl tvs (TyApp a b) = match tyAppSpine (TyApp a b)
   (TyCon n, args) =>
@@ -4407,6 +4424,9 @@ registerData env (DData _ name params variants _) =
   registerVariants env name params variants
 registerData env (DRecord _ name params fields _) =
   let _ = registerRecordInfo name params fields
+  env
+registerData env (DTypeAlias _ name params rhs) =
+  let _ = setRef aliasTableRef ((name, (params, rhs)) :: aliasTableRef.value)
   env
 registerData env _ = env
 
