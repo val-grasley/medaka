@@ -782,6 +782,8 @@ externArityW name =
     "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat",
     -- W10: panic msg (1); arrayLength/arrayFromList/arrayCopy (1).
     "panic", "arrayLength", "arrayFromList", "arrayCopy",
+    -- stage-B: floatToBytes64 : Float -> Array Int (1-arg).
+    "floatToBytes64",
     -- W11b: stringToChars/stringFromChars/charFromCode are each 1-arg.
     "stringToChars", "stringFromChars", "charFromCode",
     -- W11b: the UTF-8 byte codec externs are each 1-arg.
@@ -795,7 +797,9 @@ externArityW name =
     -- W10: arrayGetUnsafe (idx, arr); arrayMake (size, init); arrayMakeWith (size, f).
     "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
     -- stage-A: 2-arg bitwise (Int->Int->Int) and arrayFill (val->arr->Unit).
-    "bitAnd", "shiftLeft", "shiftRight", "arrayFill"] then 2
+    "bitAnd", "shiftLeft", "shiftRight", "arrayFill",
+    -- stage-B: bytesToFloat64 : Array Int -> Int -> Float (2-arg).
+    "bytesToFloat64"] then 2
   else if contains name ["stringSlice", "arraySetUnsafe"] then 3
   -- stage-A: arrayBlit src srcOff dst dstOff len (5 args).
   else if name == "arrayBlit" then 5
@@ -815,7 +819,11 @@ isArrayExternW name = contains name [
   "arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
   "arrayCopy", "arraySetUnsafe", "arrayFromList",
   -- stage-A: arrayBlit (offset copy) and arrayFill (bulk fill).
-  "arrayBlit", "arrayFill"]
+  "arrayBlit", "arrayFill",
+  -- stage-B: float-reinterpret externs build/read the $arr rep (8-byte big-endian
+  -- IEEE-754 (de)serialization).  floatToBytes64 : Float -> Array Int (produces $arr);
+  -- bytesToFloat64 : Array Int -> Int -> Float (reads $arr).
+  "floatToBytes64", "bytesToFloat64"]
 
 -- ── W8b: the ONE residual deferred extern ────────────────────────────────────
 -- All other Float externs (floatToString / intToFloat / floatToInt / hashFloat /
@@ -1022,7 +1030,13 @@ noteW8Extern name =
   let _ = if contains name ["arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
             "arrayCopy", "arraySetUnsafe", "arrayFromList",
             -- stage-A: arrayBlit/arrayFill also operate on $arr.
-            "arrayBlit", "arrayFill"] then setRef useArrayRef True else ()
+            "arrayBlit", "arrayFill",
+            -- stage-B: float-reinterpret externs build/read $arr.
+            "floatToBytes64", "bytesToFloat64"] then setRef useArrayRef True else ()
+  -- stage-B: float-reinterpret externs consume/produce a boxed $float — force the
+  -- Float rep + runtime ($float is unconditionally declared, but useFloatRef gates the
+  -- float runtime helpers a printed/used Float result may reach).
+  let _ = if contains name ["floatToBytes64", "bytesToFloat64"] then setRef useFloatRef True else ()
   let _ = if name == "arrayFromList" then setRef useListRef True else ()
   -- W12: the IO host-surface externs.  readFile/fileExists/getEnv/args all build a $str
   -- (path/result), so force the $str rep; args additionally builds a Cons list (force
@@ -4118,7 +4132,50 @@ emitArrayExternRef prog env d "arrayFill" args = match args
       ++ ["br $afll" ++ sfx, "end", "end"]
       ++ ["i32.const 0", "ref.i31"]
   _ => gapL "wasm stage-A: arrayFill takes exactly two arguments"
+-- stage-B: floatToBytes64 : Float -> Array Int — reinterpret the boxed $float's f64 to
+-- an i64 via i64.reinterpret_f64, then extract 8 bytes BIG-ENDIAN (byte 0 = bits>>56,
+-- byte 7 = bits&0xFF) into a fresh 8-element $arr, each byte a boxed Int.  Matches
+-- runtime/medaka_rt.c:mdk_float_to_bytes64 exactly (cell[i+1] = byte at (bits>>(8*(7-i)))&0xFF).
+emitArrayExternRef prog env d "floatToBytes64" args = match args
+  [f] =>
+    let sfx = intToString d
+    let arrL = "$__aexarr" ++ sfx
+    let bitsL = "$__aexbits" ++ sfx
+    emitRefExpr prog env d f ++ ["ref.cast (ref $float)", "struct.get $float 0", "i64.reinterpret_f64", "local.set " ++ bitsL]
+      -- alloc 8 slots (placeholder element, overwritten below)
+      ++ ["i32.const 0", "ref.i31", "i32.const 8", "array.new $arr", "local.set " ++ arrL]
+      ++ flatMap (i => f2bByteSet arrL bitsL i) [0, 1, 2, 3, 4, 5, 6, 7]
+      ++ ["local.get " ++ arrL, "ref.as_non_null"]
+  _ => gapL "wasm stage-B: floatToBytes64 takes exactly one argument"
+-- stage-B: bytesToFloat64 : Array Int -> Int -> Float — read 8 bytes BIG-ENDIAN from the
+-- $arr starting at index `off`, assemble an i64 (byte at off+0 → bits 56..63), then
+-- f64.reinterpret_i64 + box into a $float.  Matches runtime/medaka_rt.c:mdk_bytes_to_float64.
+emitArrayExternRef prog env d "bytesToFloat64" args = match args
+  [arr, off] =>
+    let sfx = intToString d
+    let arrL = "$__aexarr" ++ sfx
+    let offL = "$__aexi" ++ sfx
+    let bitsL = "$__aexbits" ++ sfx
+    emitRefExpr prog env d arr ++ ["ref.cast (ref $arr)", "local.set " ++ arrL]
+      ++ emitRefExpr prog env d off ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ offL]
+      ++ ["i64.const 0", "local.set " ++ bitsL]
+      ++ flatMap (i => b2fByteRead arrL offL bitsL i) [0, 1, 2, 3, 4, 5, 6, 7]
+      ++ ["local.get " ++ bitsL, "f64.reinterpret_i64", "struct.new $float"]
+  _ => gapL "wasm stage-B: bytesToFloat64 takes exactly two arguments"
 emitArrayExternRef _ _ _ name _ = gapL ("wasm W10: unsupported array extern '" ++ name ++ "'")
+
+-- stage-B helpers: set arr[i] = boxed byte ((bits >> (8*(7-i))) & 0xFF); big-endian.
+f2bByteSet : String -> String -> Int -> List String
+f2bByteSet arrL bitsL i =
+  ["local.get " ++ arrL, "ref.as_non_null", "i32.const " ++ intToString i,
+   "local.get " ++ bitsL, "i64.const " ++ intToString (8 * (7 - i)), "i64.shr_u", "i64.const 255", "i64.and", "call $mdk_box_int",
+   "array.set $arr"]
+-- read arr[off+i] (a boxed Int 0..255), shift to its big-endian position, OR into bits.
+b2fByteRead : String -> String -> String -> Int -> List String
+b2fByteRead arrL offL bitsL i =
+  ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ offL, "i32.const " ++ intToString i, "i32.add", "array.get $arr", "ref.as_non_null", "call $mdk_unbox_int",
+   "i64.const 255", "i64.and", "i64.const " ++ intToString (8 * (7 - i)), "i64.shl",
+   "local.get " ++ bitsL, "i64.or", "local.set " ++ bitsL]
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
 -- into an $argarr, and `call $mdk_apply` — which dispatches on the closure's arity
@@ -6049,7 +6106,9 @@ w7LocalsAtDepth d =
   let ra = if useArrayRef.value then ["(local $__raarr" ++ sfx ++ " (ref null $arr))", "(local $__rai" ++ sfx ++ " i32)", "(local $__ralo" ++ sfx ++ " i32)", "(local $__racnt" ++ sfx ++ " i32)", "(local $__ixarr" ++ sfx ++ " (ref null $arr))", "(local $__ixi" ++ sfx ++ " i32)", "(local $__slsrc" ++ sfx ++ " (ref null $arr))", "(local $__sldst" ++ sfx ++ " (ref null $arr))", "(local $__sllo" ++ sfx ++ " i32)", "(local $__sllen" ++ sfx ++ " i32)",
     -- W10 array-intrinsic-extern scratch (loop counter, size, result array, list cursor,
     -- closure/init value) for arrayMake/arrayMakeWith/arrayFromList/arraySetUnsafe.
-    "(local $__aexi" ++ sfx ++ " i32)", "(local $__aexn" ++ sfx ++ " i32)", "(local $__aexarr" ++ sfx ++ " (ref null $arr))", "(local $__aexlst" ++ sfx ++ " (ref eq))", "(local $__aexf" ++ sfx ++ " (ref eq))", "(local $__aexv" ++ sfx ++ " (ref eq))"] else []
+    "(local $__aexi" ++ sfx ++ " i32)", "(local $__aexn" ++ sfx ++ " i32)", "(local $__aexarr" ++ sfx ++ " (ref null $arr))", "(local $__aexlst" ++ sfx ++ " (ref eq))", "(local $__aexf" ++ sfx ++ " (ref eq))", "(local $__aexv" ++ sfx ++ " (ref eq))",
+    -- stage-B: i64 bit accumulator for floatToBytes64/bytesToFloat64 reinterpret.
+    "(local $__aexbits" ++ sfx ++ " i64)"] else []
   let ru = if not (isEmptyList recFieldsRef.value) then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
   rl ++ ra ++ ru
 

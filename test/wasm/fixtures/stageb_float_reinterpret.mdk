@@ -1,0 +1,37 @@
+-- stage-B float-reinterpret externs: floatToBytes64 / bytesToFloat64.
+-- 8-byte big-endian IEEE-754, must match runtime/medaka_rt.c byte order exactly.
+import array
+
+extern floatToBytes64 : Float -> Array Int
+extern bytesToFloat64 : Array Int -> Int -> Float
+
+main =
+  -- big-endian byte extraction: 3.14 -> [64, 9, 30, 184, 81, 235, 133, 31].
+  let b = floatToBytes64 3.14
+  let _ = putStrLn (intToString (arrayGetUnsafe 0 b))   -- 64  (MSB, bits>>56)
+  let _ = putStrLn (intToString (arrayGetUnsafe 1 b))   -- 9
+  let _ = putStrLn (intToString (arrayGetUnsafe 6 b))   -- 133
+  let _ = putStrLn (intToString (arrayGetUnsafe 7 b))   -- 31  (LSB, bits&0xFF)
+
+  -- whole-number REAL: 42.0 -> [64, 69, 0, 0, 0, 0, 0, 0].
+  let w = floatToBytes64 42.0
+  let _ = putStrLn (intToString (arrayGetUnsafe 0 w))   -- 64
+  let _ = putStrLn (intToString (arrayGetUnsafe 1 w))   -- 69
+  let _ = putStrLn (intToString (arrayGetUnsafe 2 w))   -- 0
+
+  -- negative: -1.5 -> [191, 248, 0, 0, 0, 0, 0, 0] (sign bit set in byte 0).
+  let n = floatToBytes64 (-1.5)
+  let _ = putStrLn (intToString (arrayGetUnsafe 0 n))   -- 191
+  let _ = putStrLn (intToString (arrayGetUnsafe 1 n))   -- 248
+
+  -- round-trip several doubles back to Float.
+  let _ = putStrLn (floatToString (bytesToFloat64 (floatToBytes64 3.14) 0))      -- 3.14
+  let _ = putStrLn (floatToString (bytesToFloat64 (floatToBytes64 42.0) 0))      -- 42.0
+  let _ = putStrLn (floatToString (bytesToFloat64 (floatToBytes64 (-1.5)) 0))    -- -1.5
+  let _ = putStrLn (floatToString (bytesToFloat64 (floatToBytes64 0.0) 0))       -- 0.0
+  let _ = putStrLn (floatToString (bytesToFloat64 (floatToBytes64 123456.789) 0))-- 123456.789
+
+  -- round-trip from a non-zero offset: read 8 bytes starting at index 2.
+  let pad = arrayMake 10 0
+  let _ = arrayBlit (floatToBytes64 (-2.5)) 0 pad 2 8
+  putStrLn (floatToString (bytesToFloat64 pad 2))                                -- -2.5
