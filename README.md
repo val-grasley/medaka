@@ -136,6 +136,27 @@ inferred type signature and any `--` doc comments immediately above
 the declaration. Run inside a project (`medaka.toml`) and the file
 argument may be omitted.
 
+**Lint for style issues:**
+```sh
+medaka lint path/to/file.mdk       # lint one file
+medaka lint src/                   # lint a directory (recursive)
+medaka lint                        # lint the whole medaka.toml project
+medaka lint --fix file.mdk         # apply safe autofixes in place
+medaka lint --deny=rule-name f.mdk # treat a rule's findings as errors (exit 1)
+medaka lint --disable=r1,r2 src/   # turn rules off (or --only=r1,r2)
+```
+
+A modular, rule-based linter for style issues that the formatter
+deliberately won't auto-change (they alter a definition's *shape*, not
+just layout). Per-file rules flag immediate `match`-on-a-bare-param
+(→ multi-clause), hand-rolled `Eq`/`Ord`/`Debug` (→ `deriving`), and
+re-implemented stdlib functions; a cross-file rule flags structurally
+duplicated function bodies across modules. Rules are warnings by
+default (exit 0); `--deny` promotes a rule to an error (exit 1). `--fix`
+applies the safe autofixes (currently the match-on-param → multi-clause
+rewrite). Adding a custom rule is one function plus one registry entry
+in `compiler/tools/lint.mdk`.
+
 ```
 medaka repl  (:quit to exit, :reset to clear session)
 > x = 42

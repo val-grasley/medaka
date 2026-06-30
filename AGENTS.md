@@ -82,9 +82,10 @@ Support files:
 | `compiler/tools/new_cmd.mdk` | `medaka new` — project scaffolder |
 | `compiler/tools/repl.mdk` | `medaka repl` — interactive REPL |
 | `compiler/tools/check.mdk` / `compiler/tools/check_policy.mdk` | `medaka check` type-check entry + policy checker |
+| `compiler/tools/lint.mdk` | `medaka lint` — modular AST linter. Runs on the RAW pre-desugar AST (mirrors `checkGuardExhaustiveness`). Per-file `Rule` registry + cross-file `CrossFileRule` registry (add a rule = one fn + one list entry); `--fix` autofix; ESLint-style severity + `--deny`/`--disable`/`--only`; files/dir/`medaka.toml`-project targets, recursive |
 | `compiler/tools/test_cmd.mdk` / `compiler/tools/prop_runner.mdk` | `medaka test` — doctests + property tests |
 | `compiler/driver/build_cmd.mdk` | `medaka build` — Core IR lower → LLVM emit → clang |
-| `compiler/driver/medaka_cli.mdk` | CLI entry point: all 8 subcommands |
+| `compiler/driver/medaka_cli.mdk` | CLI entry point: all subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`doc`/`lint`/`manifest`/`repl`/`lsp`) |
 | `compiler/ir/core_ir.mdk` + siblings | Core IR type definitions, lowering (`core_ir_lower.mdk`), S-expr (`core_ir_sexp.mdk`), DCE (`dce.mdk`) |
 | `compiler/backend/llvm_emit.mdk` | LLVM text IR emitter |
 | `compiler/backend/wasm_emit.mdk` | WasmGC text IR emitter (2nd backend) |
