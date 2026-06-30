@@ -21,6 +21,7 @@ SELF="$ROOT/test/bin/check_modules_main"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 [ -x "$SELF" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
@@ -36,7 +37,7 @@ for m in $MODULES; do
   golden="$SHDIR/$m.tcmod.golden"
   [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL %s (no .tcmod.golden)\n' "$m"; continue; }
   ref="$(LC_ALL=C sort < "$golden")"
-  self="$("$SELF" "$RUNTIME" "$CORE" "$SHDIR/$m.mdk" "$SHDIR" 2>/dev/null | strip_unit | LC_ALL=C sort)"
+  self="$("$SELF" "$RUNTIME" "$CORE" "$SHDIR/$m.mdk" "$SHDIR" "$STDLIB" 2>/dev/null | strip_unit | LC_ALL=C sort)"
   if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$m"
   else fail=$((fail+1)); printf 'FAIL %s\n' "$m"; fi
 done

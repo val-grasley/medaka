@@ -107,7 +107,7 @@ profile_modules() {
   tmpfile="$(mktemp)"
   i=1
   while [ "$i" -le "$N" ]; do
-    MEDAKA_PERF=1 "$MAIN" run "$MODULES_DRIVER" "$RUNTIME" "$CORE" "$entry" "$root" 2>>"$tmpfile" >/dev/null
+    MEDAKA_PERF=1 "$MAIN" run "$MODULES_DRIVER" "$RUNTIME" "$CORE" "$entry" "$root" "$ROOT/stdlib" 2>>"$tmpfile" >/dev/null
     i=$((i + 1))
   done
   print_min_table "$tmpfile"

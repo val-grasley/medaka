@@ -23,6 +23,7 @@ SELF="$ROOT/test/bin/check_all_main"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 [ -x "$SELF" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
 
 TARGETS="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
@@ -36,7 +37,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Run check_all_main once per covering entry; save each combined --all dump.
 for e in $ENTRIES; do
-  "$SELF" "$RUNTIME" "$CORE" "$SHDIR/entries/$e.mdk" "$SHDIR" 2>/dev/null | strip_unit > "$TMP/run_$e.txt"
+  "$SELF" "$RUNTIME" "$CORE" "$SHDIR/entries/$e.mdk" "$SHDIR" "$STDLIB" 2>/dev/null | strip_unit > "$TMP/run_$e.txt"
 done
 
 # Extract module <mid>'s section from a combined dump; empty if absent.

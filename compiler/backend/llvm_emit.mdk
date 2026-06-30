@@ -190,7 +190,7 @@ import support.util.{
   fallthroughName,
 }
 import backend.llvm_preamble.{preambleLines}
-import support.ordmap.{OrdMap(..), omInsert, omLookup, omFromNames, omFromPairs}
+import support.ordmap.{OrdMap, omInsert, omLookup, omFromNames, omFromPairs, omEmpty}
 -- backend-agnostic TRMC eligibility analysis (lifted out per WASMGC-TRMC-DESIGN §5/§7-Stage-0;
 -- also consumed by wasm_emit.mdk from Stage 1).  The structural CExpr helpers (freeVars/
 -- flattenApp/lengthS/pattern + bind helpers) live there too so the analysis is self-contained.
@@ -754,14 +754,14 @@ knownFnMapRef : Ref (Option (OrdMap Unit))
 knownFnMapRef = Ref None
 
 installKnownFnMap : List String -> <Mut> Unit
-installKnownFnMap fns = setRef knownFnMapRef (Some (omFromNames fns OTip))
+installKnownFnMap fns = setRef knownFnMapRef (Some (omFromNames fns omEmpty))
 
 -- ctor-arity table index (ct field is set once at Emit construction, constant).
 ctorMapRef : Ref (Option (OrdMap Int))
 ctorMapRef = Ref None
 
 installCtorMap : List (String, Int) -> <Mut> Unit
-installCtorMap t = setRef ctorMapRef (Some (omFromPairs (reverseL t) OTip))
+installCtorMap t = setRef ctorMapRef (Some (omFromPairs (reverseL t) omEmpty))
 
 -- sig table index — ONLY for the GLOBAL-`sigs` users (fnRetTy/fnArity), which read
 -- the Emit's `sigs` field. That field is set once at construction and never
@@ -773,7 +773,7 @@ sigMapRef : Ref (Option (OrdMap FnSig))
 sigMapRef = Ref None
 
 installSigMap : List (String, FnSig) -> <Mut> Unit
-installSigMap t = setRef sigMapRef (Some (omFromPairs (reverseL t) OTip))
+installSigMap t = setRef sigMapRef (Some (omFromPairs (reverseL t) omEmpty))
 
 -- E22: the EMITTED define arity per top-level fn (post eta-saturate), the truth a
 -- CDict call site needs to decide under-application.  Computed by replaying
@@ -787,7 +787,7 @@ defArityMapRef = Ref None
 
 installDefArityMap : Emit -> List CBind -> <Mut> Unit
 installDefArityMap e binds =
-  setRef defArityMapRef (Some (omFromPairs (defArityPairs e binds) OTip))
+  setRef defArityMapRef (Some (omFromPairs (defArityPairs e binds) omEmpty))
 
 defArityPairs : Emit -> List CBind -> <Mut> List (String, Int)
 defArityPairs _ [] = []

@@ -70,6 +70,7 @@ RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 SELFHOST="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 CC="${CC:-clang}"
 
 STACK_SIZE="${STACK_SIZE:-0x20000000}"
@@ -99,7 +100,7 @@ trim_unit() {
 }
 
 # emit <binary> -> stdout : run a native emitter over the gap-tolerant driver graph.
-emit() { "$1" "$RUNTIME" "$CORE" "$DRIVER" "$SELFHOST"; }
+emit() { "$1" "$RUNTIME" "$CORE" "$DRIVER" "$SELFHOST" "$STDLIB"; }
 clang_ir() { # clang_ir <in.ll> <out-bin>  (errfile $WORK/$(basename out).cc.err)
   "$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$1" "$RT" $GC_LIBS -o "$2" 2>"$WORK/$(basename "$2").cc.err"
 }

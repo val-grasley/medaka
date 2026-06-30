@@ -49,7 +49,7 @@ import frontend.desugar.{mapProg}
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
 -- the typechecked program's data decls + the inferred scrutinee type).
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
-import support.ordmap.{OrdMap(..), omEmpty, omInsert, omLookup, omHasKey}
+import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import support.util.{
   listLen,
   lookupAssoc,
@@ -1735,7 +1735,7 @@ dictEligibleRef = Ref []
 -- sites).  maybeInferConstraint tests it per SCC member per discovery pass — an
 -- O(members × eligible) scan over the whole program when it was a list.
 dictEligibleSetRef : Ref (OrdMap Unit)
-dictEligibleSetRef = Ref OTip
+dictEligibleSetRef = Ref omEmpty
 
 -- Whether checkProgramSeeded ALSO infers each parametric impl's return-position
 -- method bodies (instance-`requires` dict-passing, Phase 83/84 single-level).  ON
@@ -4933,7 +4933,7 @@ elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> Li
 elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = setRef superDeclsRef prog
   let _ = setRef dictEligibleRef eligibleNames
-  let _ = setRef dictEligibleSetRef (namesToSet eligibleNames OTip)
+  let _ = setRef dictEligibleSetRef (namesToSet eligibleNames omEmpty)
   let _ = setRef implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let _ = setRef argDispatchIdxRef (argDispatchIndices prog)
@@ -7483,7 +7483,7 @@ checkProgramSeeded seed prog =
   -- the user's `eq`).  See methodShadowNamesRef.  Empty on the multi-module path.
   let methodNames = map fst (ifaceMethodSchemes prog)
   let _ = setRef methodShadowNamesRef methodNames
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs OTip)
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
   -- FLAT-PATH SHADOW FIX (cont.): when a USER top-level fn shares a name with an
   -- interface method (e.g. user `eq : List Int -> List Int -> Bool` vs core's
   -- `Eq.eq`), the prelude's OWN prop/default/impl bodies still reference that name
@@ -8456,7 +8456,7 @@ registerAllData env (d::rest) = registerAllData (registerData env d) rest
 -- reset at the start of each run (processTopGroups runs sequentially per module).
 
 depGraphMap : List String -> OrdMap (List (List Pat, Expr)) -> OrdMap (List String)
-depGraphMap names grouped = buildAdj names (namesToSet names OTip) grouped OTip
+depGraphMap names grouped = buildAdj names (namesToSet names omEmpty) grouped omEmpty
 
 -- name-membership set, built ONCE, so `keepGroupNames` is O(log n)/ref instead of
 -- O(names)/ref (the dep-graph build was O(names²·refs)). Output-order-preserving:
@@ -8471,7 +8471,7 @@ namesToSet (n::rest) m = namesToSet rest (omInsert n () m)
 -- restore defs order — so the per-name clause list is identical to the old
 -- `clausesFor name defs`, keeping dep lists / SCC order / output byte-identical.
 groupClauses : List (String, (List Pat, Expr)) -> OrdMap (List (List Pat, Expr))
-groupClauses defs = groupClausesGo defs OTip
+groupClauses defs = groupClausesGo defs omEmpty
 groupClausesGo : List (String, (List Pat, Expr)) -> OrdMap (List (List Pat, Expr)) -> OrdMap (List (List Pat, Expr))
 groupClausesGo [] m = m
 groupClausesGo ((n, c)::rest) m =
@@ -8499,11 +8499,11 @@ tjCounter = Ref 0
 tjStack : Ref (List String)
 tjStack = Ref []
 tjIndex : Ref (OrdMap Int)
-tjIndex = Ref OTip
+tjIndex = Ref omEmpty
 tjLow : Ref (OrdMap Int)
-tjLow = Ref OTip
+tjLow = Ref omEmpty
 tjOn : Ref (OrdMap Bool)
-tjOn = Ref OTip
+tjOn = Ref omEmpty
 tjOut : Ref (List (List String))
 tjOut = Ref []
 
@@ -8518,9 +8518,9 @@ tarjanSCCs : List String -> OrdMap (List String) -> <Mut> List (List String)
 tarjanSCCs names adj =
   let _ = setRef tjCounter 0
   let _ = setRef tjStack []
-  let _ = setRef tjIndex OTip
-  let _ = setRef tjLow OTip
-  let _ = setRef tjOn OTip
+  let _ = setRef tjIndex omEmpty
+  let _ = setRef tjLow omEmpty
+  let _ = setRef tjOn omEmpty
   let _ = setRef tjOut []
   let _ = tarjanAll names adj
   reverseL tjOut.value
@@ -8578,7 +8578,7 @@ tjPop v acc = match tjStack.value
 -- (was O(members·sigs) over the whole compiler). Module-level ref, matching the
 -- `currentFn`/`curEffect` idiom; processing is sequential per module.
 sigNameSetRef : Ref (OrdMap Unit)
-sigNameSetRef = Ref OTip
+sigNameSetRef = Ref omEmpty
 
 sigNamesToSet : List (String, Ty) -> OrdMap Unit -> OrdMap Unit
 sigNamesToSet [] m = m
@@ -8586,7 +8586,7 @@ sigNamesToSet ((n, _)::rest) m = sigNamesToSet rest (omInsert n () m)
 
 processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
 processTopGroups env sigs defs names =
-  let _ = setRef sigNameSetRef (sigNamesToSet sigs OTip)
+  let _ = setRef sigNameSetRef (sigNamesToSet sigs omEmpty)
   let grouped = groupClauses defs
   let ordered = tarjanSCCs names (depGraphMap names grouped)
   processSCCs env sigs grouped ordered
@@ -9390,7 +9390,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs OTip)
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
   let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
@@ -10043,7 +10043,7 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = setRef argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst argDispatchIdxRef.value
   let _ = setRef dictEligibleRef (moduleUserFnNames modules)
-  let _ = setRef dictEligibleSetRef (namesToSet (moduleUserFnNames modules) OTip)
+  let _ = setRef dictEligibleSetRef (namesToSet (moduleUserFnNames modules) omEmpty)
   let promoted = discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames
   let dictNames = dedup (moduleDictNames coreDecls allDecls modules ++ promoted)
   let markRpNames = dedup (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (flatMap snd modules))
@@ -10156,7 +10156,7 @@ dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) 
 dictPassModulesIfEnabled dictNames core2 modules2 =
   let allModDecls = flatMap snd modules2
   let promotedQ = crossModuleFunConstraintsQualRef.value
-  let allMods = namesToSet (map fst modules2) OTip
+  let allMods = namesToSet (map fst modules2) omEmpty
   let _ = setRef funConstraintsRef (scopeArities promotedQ allMods (core2 ++ allModDecls))
   let _ = setRef methodConstraintsRef (scopeMethodArities crossModuleMethodConstraintsQualRef.value allMods)
   let core2' = dictPass dictNames core2
@@ -10182,7 +10182,7 @@ dictPassModulesScoped _ _ _ _ [] = []
 dictPassModulesScoped dictNames promotedQ core2 allModules ((mid, prog)::rest) =
   let importerDecls = transitiveImporterDecls mid allModules
   let scope = core2 ++ prog ++ importerDecls
-  let scopeMods = namesToSet (mid :: transitiveImporterIds mid allModules) OTip
+  let scopeMods = namesToSet (mid :: transitiveImporterIds mid allModules) omEmpty
   let _ = setRef funConstraintsRef (scopeArities promotedQ scopeMods scope)
   let _ = setRef methodConstraintsRef (scopeMethodArities crossModuleMethodConstraintsQualRef.value scopeMods)
   (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedQ core2 allModules rest
@@ -10217,13 +10217,13 @@ dictPassModulesScoped dictNames promotedQ core2 allModules ((mid, prog)::rest) =
 -- Reduces the qualified entries to the bare (name,ids) form downstream readers expect.
 scopeArities : List ((String, String), List Int) -> OrdMap Unit -> List Decl -> List (String, List Int)
 scopeArities promotedQ scopeMods scope =
-  let scopeNames = namesToSet (declTopFnNames scope) OTip
+  let scopeNames = namesToSet (declTopFnNames scope) omEmpty
   let nameInScope = filterList (e => omHasKey (snd (fst e)) scopeNames) promotedQ
   -- names that have at least one in-scope-module entry → drop their out-of-scope-module twins
-  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) nameInScope)) OTip
+  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) nameInScope)) omEmpty
   let inferredQ = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) nameInScope
   let inferred = map (e => (snd (fst e), snd e)) inferredQ
-  let inferredNames = namesToSet (map fst inferred) OTip
+  let inferredNames = namesToSet (map fst inferred) omEmpty
   let sigEntries = filterList (e => not (omHasKey (fst e) inferredNames)) (flatMap constrainedSigArity scope)
   inferred ++ sigEntries
 
@@ -10239,7 +10239,7 @@ scopeArities promotedQ scopeMods scope =
 -- table → byte-identical method dict-pass (every existing fixture, and the fixpoint).
 scopeMethodArities : List ((String, String), List Int) -> OrdMap Unit -> List (String, List Int)
 scopeMethodArities promotedMQ scopeMods =
-  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) promotedMQ)) OTip
+  let resolvedNames = namesToSet (map (e => snd (fst e)) (filterList (e => modInScope (fst (fst e)) scopeMods) promotedMQ)) omEmpty
   let kept = filterList (e => modInScope (fst (fst e)) scopeMods || not (omHasKey (snd (fst e)) resolvedNames)) promotedMQ
   map (e => (snd (fst e), snd e)) kept
 
@@ -10250,7 +10250,7 @@ modInScope mid scopeMods = mid == "" || omHasKey mid scopeMods
 -- attribute each fn DEFINED in [prog] that carries a funConstraintsRef entry to [mid].
 attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArities mid prog entries =
-  let progNames = namesToSet (declTopFnNames prog) OTip
+  let progNames = namesToSet (declTopFnNames prog) omEmpty
   map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progNames) entries)
 
 -- WS-2/D2: ifaces analog of attributeModuleArities — attribute each fn DEFINED in [prog]
@@ -10258,7 +10258,7 @@ attributeModuleArities mid prog entries =
 -- snapshot, so inferDictAtFound reads a callee's ids + ifaces from one (mid,name) source.
 attributeModuleArrIfaces : String -> List Decl -> List (String, List String) -> List ((String, String), List String)
 attributeModuleArrIfaces mid prog entries =
-  let progNames = namesToSet (declTopFnNames prog) OTip
+  let progNames = namesToSet (declTopFnNames prog) omEmpty
   map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progNames) entries)
 
 -- WS-2/D2 method analog: attribute each method whose INTERFACE is declared in [prog]
@@ -10267,7 +10267,7 @@ attributeModuleArrIfaces mid prog entries =
 -- ifaceMethodSchemes pass.
 attributeMethodModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeMethodModuleArities mid prog entries =
-  let progMethods = namesToSet (allIfaceMethodNames prog) OTip
+  let progMethods = namesToSet (allIfaceMethodNames prog) omEmpty
   map (e => ((mid, fst e), snd e)) (filterList (e => omHasKey (fst e) progMethods) entries)
 -- membership-only sets (built once) instead of O(N) contains scans per entry:
 -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).

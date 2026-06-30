@@ -1,98 +1,54 @@
--- Shared ordered-map for the self-hosted compiler.  A String-keyed
--- weight-balanced tree (Adams' 3:1 balance factor) giving O(log n) insert and
--- lookup.  This is the bottom (`support`) layer — it depends only on the
--- `stringCompare` extern and basic list operations, so any stage may import it
--- without creating an upward layer dependency.
+-- Shared ordered-map for the self-hosted compiler, backed by the STANDARD
+-- LIBRARY `map` (stdlib/map.mdk) rather than a hand-rolled tree.  This is the
+-- first piece of the "compiler may use stdlib" migration: it retires the
+-- duplicate weight-balanced tree that used to live here in favour of the
+-- canonical stdlib `Map`, so a fix/improvement to `stdlib/map.mdk` can no longer
+-- silently diverge from the compiler's copy.
 --
--- History: this consolidates the two near-identical inline ordered-maps that
--- used to live in the stages — `SMap` (types/typecheck.mdk, backing `TcEnv` +
--- the dep-graph / dispatch membership sets) and `EMap` (backend/llvm_emit.mdk,
--- backing the constant-table indexes `sigMapRef`/`knownFnMapRef`/`ctorMapRef`).
--- Both were O(N²)→O(N·log N) self-compile fixes; SMap was already
--- weight-balanced, EMap was a plain unbalanced BST.  The canonical shape kept
--- here is the *balanced* one (a strict perf superset), so EMap's constant-table
--- lookups are now guaranteed O(log n) regardless of insertion order.
+-- The `om*` String-keyed API is preserved verbatim so the consumers
+-- (types/typecheck.mdk, backend/llvm_emit.mdk, support/util.mdk) only had to swap
+-- `OTip` -> `omEmpty`.  `OrdMap a` wraps `Map String a` (a `type OrdMap a =
+-- Map String a` alias would be cleaner, but this typechecker does not expand type
+-- aliases — confirmed — so a wrapper is required).
+--
+-- NOTE the two constructors: `OEmpty` is a NULLARY value so `omEmpty` generalizes
+-- over `a` (see the comment there); real entries live in a `Map String a` under
+-- `OMap`.  Importing `map` deliberately pulls its instance surface (Eq/Ord/Debug/
+-- Display/Mappable/Monoid for `Map`) into the compiler — measured cost ~+34 KB.
 
-public export data OrdMap a = OTip | OBin Int String a (OrdMap a) (OrdMap a)
+import map.{Map(..), insert, lookup, member, size}
+
+-- `OEmpty` is a NULLARY constructor — a syntactic value — so `omEmpty = OEmpty`
+-- generalizes over `a` exactly as the old `OTip` did.  (A `Map`-application empty
+-- like `OMap Tip` / `OMap (fromList [])` is a constructor application, which this
+-- typechecker does NOT generalize → it monomorphises to `OrdMap Unit` and every
+-- `OrdMap Scheme` use then fails with "Scheme vs Unit".)  Real entries live in a
+-- stdlib `Map String a` under `OMap`.
+public export data OrdMap a = OEmpty | OMap (Map String a)
 
 export
 omEmpty : OrdMap a
-omEmpty = OTip
+omEmpty = OEmpty
 
 export
 omSize : OrdMap a -> Int
-omSize OTip = 0
-omSize (OBin n _ _ _ _) = n
-
-omBin : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omBin k v l r = OBin (omSize l + omSize r + 1) k v l r
-
-omBalance : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omBalance k v l r
-  | omSize l + omSize r <= 1 = omBin k v l r
-  | omSize r > 3 * omSize l = omRotateL k v l r
-  | omSize l > 3 * omSize r = omRotateR k v l r
-  | otherwise = omBin k v l r
-
-omRotateL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omRotateL k v l r = match r
-  OBin _ _ _ rl rr =>
-    if omSize rl < 2 * omSize rr then
-      omSingleL k v l r
-    else
-      omDoubleL k v l r
-  OTip => panic "OrdMap.rotateL: empty right subtree"
-
-omRotateR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omRotateR k v l r = match l
-  OBin _ _ _ ll lr =>
-    if omSize lr < 2 * omSize ll then
-      omSingleR k v l r
-    else
-      omDoubleR k v l r
-  OTip => panic "OrdMap.rotateR: empty left subtree"
-
-omSingleL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omSingleL k1 v1 t1 r = match r
-  OBin _ k2 v2 t2 t3 => omBin k2 v2 (omBin k1 v1 t1 t2) t3
-  OTip => panic "OrdMap.singleL: empty right subtree"
-
-omSingleR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omSingleR k1 v1 l t3 = match l
-  OBin _ k2 v2 t1 t2 => omBin k2 v2 t1 (omBin k1 v1 t2 t3)
-  OTip => panic "OrdMap.singleR: empty left subtree"
-
-omDoubleL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omDoubleL k1 v1 t1 r = match r
-  OBin _ k2 v2 (OBin _ k3 v3 t2 t3) t4 => omBin k3 v3 (omBin k1 v1 t1 t2) (omBin k2 v2 t3 t4)
-  _ => panic "OrdMap.doubleL: malformed right subtree"
-
-omDoubleR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
-omDoubleR k1 v1 l t4 = match l
-  OBin _ k2 v2 t1 (OBin _ k3 v3 t2 t3) => omBin k3 v3 (omBin k2 v2 t1 t2) (omBin k1 v1 t3 t4)
-  _ => panic "OrdMap.doubleR: malformed left subtree"
+omSize OEmpty = 0
+omSize (OMap m) = size m
 
 export
 omInsert : String -> a -> OrdMap a -> OrdMap a
-omInsert k v OTip = OBin 1 k v OTip OTip
-omInsert k v (OBin n k2 v2 l r) = match stringCompare k k2
-  Lt => omBalance k2 v2 (omInsert k v l) r
-  Gt => omBalance k2 v2 l (omInsert k v r)
-  Eq => OBin n k v l r
+omInsert k v OEmpty = OMap (insert k v Tip)
+omInsert k v (OMap m) = OMap (insert k v m)
 
 export
 omLookup : String -> OrdMap a -> Option a
-omLookup k OTip = None
-omLookup k (OBin _ k2 v l r) = match stringCompare k k2
-  Lt => omLookup k l
-  Gt => omLookup k r
-  Eq => Some v
+omLookup k OEmpty = None
+omLookup k (OMap m) = lookup k m
 
 export
 omHasKey : String -> OrdMap a -> Bool
-omHasKey k m = match omLookup k m
-  Some _ => True
-  None => False
+omHasKey k OEmpty = False
+omHasKey k (OMap m) = member k m
 
 -- Build a membership set from a name list.
 export

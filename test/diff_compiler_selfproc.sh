@@ -60,6 +60,7 @@ LEGA_GOLD="$GOLDDIR/legA"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 [ -x "$CHECK_ALL" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $CHECK_ALL)"; exit 2; }
 [ -x "$EVAL_MODS" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_MODS)"; exit 2; }
 [ -x "$EVAL_TYPED_MODS" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_TYPED_MODS)"; exit 2; }
@@ -86,7 +87,7 @@ MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader ty
 # One full-closure run emits every module's schemes (sections marked
 # `## MODULE <mid>`).  all_modules_entry imports one name from each module so the
 # loader pulls them all into a single union closure.
-"$CHECK_ALL" "$RUNTIME" "$CORE" "$ENTRY" "$SHDIR" 2>/dev/null > "$TMP/all.txt"
+"$CHECK_ALL" "$RUNTIME" "$CORE" "$ENTRY" "$SHDIR" "$STDLIB" 2>/dev/null > "$TMP/all.txt"
 
 # Extract module <mid>'s section (lines between its marker and the next).
 section() {  # section <dumpfile> <mid>
@@ -112,7 +113,7 @@ done
 echo
 echo "== LEG B: self-hosted eval executes a real compiler stage (lexer) =="
 ref_b="$(cat "$GOLDDIR/lex_probe.golden")"
-self_b="$(strip_unit "$("$EVAL_MODS" "$CORE" "$LEXPROBE" "$SHDIR" 2>/dev/null)")"
+self_b="$(strip_unit "$("$EVAL_MODS" "$CORE" "$LEXPROBE" "$SHDIR" "$STDLIB" 2>/dev/null)")"
 if [ "$ref_b" = "$self_b" ] && [ -n "$ref_b" ]; then
   pass=$((pass+1)); printf 'ok   %-10s (self-hosted eval == golden reference)\n' "lex_probe"
 else
@@ -134,7 +135,7 @@ fi
 echo
 echo "== LEG C: TYPED self-hosted eval executes a Parser-monad stage (parser) =="
 ref_c="$(cat "$GOLDDIR/parse_probe.golden")"
-self_c="$(strip_unit "$("$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$PARSEPROBE" "$SHDIR" 2>/dev/null)")"
+self_c="$(strip_unit "$("$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$PARSEPROBE" "$SHDIR" "$STDLIB" 2>/dev/null)")"
 if [ "$ref_c" = "$self_c" ] && [ -n "$ref_c" ]; then
   pass=$((pass+1)); printf 'ok   %-10s (typed self-hosted eval == golden reference)\n' "parse_probe"
 else
@@ -158,7 +159,7 @@ fi
 echo
 echo "== LEG D: TYPED self-hosted eval executes the TYPECHECKER stage (typecheck) =="
 ref_d="$(cat "$GOLDDIR/tc_probe.golden")"
-self_d="$(strip_unit "$("$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$TCPROBE" "$SHDIR" 2>/dev/null)")"
+self_d="$(strip_unit "$("$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$TCPROBE" "$SHDIR" "$STDLIB" 2>/dev/null)")"
 if [ "$ref_d" = "$self_d" ] && [ -n "$ref_d" ]; then
   pass=$((pass+1)); printf 'ok   %-10s (typed self-hosted eval == golden reference)\n' "tc_probe"
 else

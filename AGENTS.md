@@ -92,7 +92,7 @@ Support files:
 | `compiler/backend/private_mangle.mdk` | Universal constructor name mangling |
 | `compiler/backend/trmc_analysis.mdk` | Tail-recursion-modulo-cons analysis |
 | `compiler/types/annotate.mdk` | Type annotation helpers |
-| `compiler/support/util.mdk` + siblings | Compiler private mini-stdlib (no `stdlib/` imports allowed) |
+| `compiler/support/util.mdk` + siblings | Compiler helpers — private mini-stdlib + thin wrappers over `stdlib/` (e.g. `ordmap` wraps stdlib `Map`); stdlib imports are now allowed, weighed per module (see Gotchas) |
 
 `stdlib/`: `runtime.mdk` (extern primitive catalog, read from disk at runtime), `core.mdk`
 (implicit prelude — `Eq`/`Ord`/`Debug`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`/`hash_map.mdk`/`hash_set.mdk`/`mut_array.mdk`/`json.mdk`/`byteparser.mdk`/`bytebuilder.mdk`
@@ -134,30 +134,38 @@ a pass/fail result from those gates.
 
 ## Gotchas
 
-- **The compiler (`compiler/*.mdk`) must NEVER import `stdlib/`.** The native
-  `medaka` binary bootstraps from its own source only. So `compiler/` carries its
-  own small helpers: `support/util.mdk`, `support/ordmap.mdk`, or inline
-  duplications (this is *why* SMap/EMap were hand-rolled rather than reusing
-  `stdlib/map.mdk`). When you need a stdlib-shaped function (`intercalate`,
-  `intersperse`, etc.) in compiler code, add it to `support/` or inline it — do
-  **not** `import list`/`import string`. Enforced by convention, not the build;
-  check `grep -rn 'import ' compiler/ | grep -v support` stays clean of stdlib
-  module names.
-  - **Why (the real reasons — *not* just binary size).** The emit-path DCE
-    (`ir/dce.mdk`) already tree-shakes unreached plain top-level functions, so the
-    *unused-function* bloat argument is weak on its own. What DCE can **not** do is
-    the load-bearing part: (1) **un-prunable instance surface** — DCE retains every
-    `DImpl`/`DInterface` *whole* (dispatch is runtime dict-passing, so pruning an
-    impl would be a silent miscompile), and the stdlib is interface-heavy
-    (`core`'s Eq/Ord/Debug/Num/Foldable/… × every type), so `import list` drags in
-    that entire instance surface just to reach one plain function; (2) **compile-time
-    tax** — DCE runs *after* lex/parse/typecheck, so importing stdlib taxes every
-    compile (and the self-compile/fixpoint loop) regardless of what's later dropped;
-    (3) **isolation + bootstrap** — the compiler stays independent of the thing it
-    compiles, and the cold-bootstrap seed's provenance stays small. This becomes
-    cheap to revisit only if/when the backend gains **instance-level DCE via
-    monomorphization** (the deferred backend item). Until then: keep compiler
-    stdlib-free; `support/` is the compiler's private mini-stdlib.
+- **The compiler (`compiler/*.mdk`) MAY import `stdlib/` — deliberately, per module (policy changed 2026-06-29).** The old blanket "NEVER import stdlib" rule
+  was retired after a measurement spike: `import` from compiler code resolves fine
+  (the build already passes the stdlib root to the emitter — `build_native_medaka.sh`
+  passes `$STDLIB`), and the cost of pulling stdlib `map`'s whole instance surface
+  into the compiler is small (**~+34 KB binary, ~+5% self-compile**). So the
+  long-feared blocker (monomorphization / instance-level DCE) was never actually a
+  blocker; it was a cost decision, and the cost is low. First migration step:
+  `support/ordmap.mdk` now wraps stdlib `Map` (`59f0545`), retiring the duplicate
+  weight-balanced tree. Prefer reusing stdlib over hand-rolling/duplicating in
+  `support/` where it's a clear win (kills divergence between `support/` and
+  `stdlib/`); `support/` remains for genuinely compiler-private helpers.
+  - **The cost is real but low — weigh it per module, don't import reflexively.**
+    (1) **Un-prunable instance surface** — DCE keeps every `DImpl`/`DInterface`
+    *whole* (runtime dict-passing → pruning an impl would be a silent miscompile),
+    so `import list` drags in `core`'s Eq/Ord/Debug/Num/Foldable × that type. Measured
+    at tens of KB per module — acceptable, not free. (2) **Compile-time tax** — the
+    imported module is lexed/parsed/typechecked on every compile + every
+    self-compile/fixpoint iteration. (3) **Bidirectional coupling** — once the
+    compiler imports a stdlib module, a change to that module that perturbs emitted
+    IR forces a **seed re-mint + fixpoint re-validation**. This is a *feature* (it
+    converts silent `support/`-vs-`stdlib/` divergence into a build-time gate) but
+    it is more re-mint churn on stdlib work. Instance-level DCE via monomorphization
+    (the deferred backend item) would shrink (1) but is **not** needed for this.
+  - **Gotchas when migrating a `support/` structure to stdlib** (learned on ordmap):
+    a polymorphic empty must be a **nullary constructor** (a constructor
+    *application* like `OMap Tip` is NOT generalized by this typechecker → it
+    monomorphises to `…Unit` → "Scheme vs Unit" cascades); **type aliases are not
+    expanded** (`type X = Y` → "X vs Y" mismatch) so you must `data`-wrap; and any
+    **test harness that runs the emitter/probes over compiler source with only the
+    compiler root must also pass `$STDLIB`** (already fixed: `selfcompile_fixpoint`,
+    `diff_compiler_{selfproc,check_modules,check_modules_batch,resolve_modules}`,
+    `profile_compiler`).
 - **Environment.** opam/dune are NOT needed — the native build uses only clang + Boehm GC. If clang is not on PATH, check your system's package install.
 - **In a worktree, build with `make -C /absolute/path/to/worktree medaka`.** The shell cwd resets to the main checkout root each call; running `make medaka` from there would build in main, not the worktree.
 - **In a worktree, edit the worktree's files — use the full worktree path.**

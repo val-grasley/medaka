@@ -30,6 +30,7 @@ FIXDIR="$ROOT/test/resolve_module_fixtures"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 SHDIR="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
@@ -67,7 +68,7 @@ done
 # A valid program ⇒ zero resolve diagnostics: the frozen golden here is the
 # EMPTY error set (captured while OCaml was trusted; REROOT-PLAN §2b).  The
 # native resolve_modules over the corpus must produce no output.
-cself="$("$RUN" "$RUNTIME" "$CORE" $cfiles 2>/dev/null | strip_unit | LC_ALL=C sort)"
+cself="$("$RUN" "$RUNTIME" "$CORE" $cfiles "$STDLIB" 2>/dev/null | strip_unit | LC_ALL=C sort)"
 ok=1; reason=""
 [ -z "$cself" ] || { ok=0; reason="compiler reports errors on the valid corpus"; }
 if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   corpus (no false positives)\n'

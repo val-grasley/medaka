@@ -6,7 +6,7 @@
 -- Companion themed modules: support/char.mdk (ASCII char predicates),
 -- support/path.mdk (filesystem path string ops), support/ordmap.mdk (OrdMap).
 
-import support.ordmap.{OrdMap(..), omLookup, omInsert}
+import support.ordmap.{OrdMap, omLookup, omInsert, omEmpty}
 
 export
 contains : String -> List String -> Bool
@@ -122,7 +122,7 @@ joinDot xs = joinWith "." xs
 -- list-scan copies the stages used to carry.
 export
 dedup : List String -> List String
-dedup xs = dedupGo xs OTip
+dedup xs = dedupGo xs omEmpty
 
 dedupGo : List String -> OrdMap Unit -> List String
 dedupGo [] _ = []
