@@ -1,0 +1,7 @@
+-- Fixable: a wildcard arm whose body references the scrutinee `batches` is
+-- rewritten with the param name (re-binding the scrutinee), not `_` (STYLE §8).
+pageCountOf : List Int -> Int
+pageCountOf [_] = 1
+pageCountOf batches = 1 + length batches
+
+main = println (pageCountOf [1, 2, 3])

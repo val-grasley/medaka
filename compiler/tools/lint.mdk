@@ -365,12 +365,15 @@ isBareParam _ _ = False
 --   * its body (under `ELoc`) is an `EMatch` on a bare param `p` with ≥2 arms,
 --   * NO arm has a guard — function-clause guards don't round-trip through
 --     `DFunDef` (no guard slot),
---   * NO arm body references the scrutinee param `p` — after the rewrite `p` is
---     replaced by the arm pattern, so a body still mentioning `p` would be left
---     unbound (e.g. `f x = match x { Some v => g x }`).  We test this by a
---     conservative whole-word scan of the PRINTED arm body: the printer renders
---     every `EVar p` as the token `p`, so a real reference is never missed (the
---     scan can only over-bail, which is safe).
+--   * NO arm with a NON-wildcard pattern references the scrutinee param `p` —
+--     after the rewrite `p` is replaced by the arm pattern, so a non-wildcard arm
+--     body still mentioning `p` would be left unbound (e.g.
+--     `f x = match x { Some v => g x }`).  A `PWild` arm referencing `p` is the
+--     EXCEPTION: it is rewritten with `PVar p` (not `_`), which re-binds the
+--     scrutinee, so it converts safely.  We test the reference by a conservative
+--     whole-word scan of the PRINTED arm body: the printer renders every `EVar p`
+--     as the token `p`, so a real reference is never missed (the scan can only
+--     over-bail, which is safe).
 matchParamFix : Oracle -> Decl -> Option (List Decl)
 matchParamFix _ (DFunDef vis name pats body) = matchParamFixBody vis name pats body
 matchParamFix _ _ = None
@@ -391,9 +394,9 @@ matchParamFixVar : Bool -> String -> List Pat -> String -> List Arm -> Option (L
 matchParamFixVar vis name pats p arms
   | not (anyList (isBareParam p) pats) = None
   | anyList armHasGuard arms = None
-  | anyList (armMentionsParam p) arms = None
+  | anyList (armUnsafeMention p) arms = None
   | otherwise = match paramIndex p pats
-      Some k => Some (map (armToClause vis name pats k) arms)
+      Some k => Some (map (armToClause vis name p pats k) arms)
       None => None
 
 -- an arm with any guard qualifier (refutable bind or boolean) can't be a clause
@@ -403,6 +406,21 @@ armHasGuard (Arm _ guards _) = not (isEmptyL guards)
 -- does the arm body still reference the scrutinee param (conservative, printed)
 armMentionsParam : String -> Arm -> Bool
 armMentionsParam p (Arm _ _ body) = wholeWordIn p (exprToString body)
+
+-- an arm that mentions the scrutinee but CAN'T be safely re-bound.  A `PWild`
+-- arm can: we re-emit the clause pattern as `PVar p`, re-binding the scrutinee
+-- so the body's reference stays valid.  Any non-wildcard pattern (`c::rest`, or
+-- a bare `PVar y` that renames) can't re-bind `p`, so we keep the conservative
+-- bail there.
+armUnsafeMention : String -> Arm -> Bool
+armUnsafeMention p arm = armMentionsParam p arm && not (armPatIsWild arm)
+
+armPatIsWild : Arm -> Bool
+armPatIsWild (Arm pat _ _) = patIsWild pat
+
+patIsWild : Pat -> Bool
+patIsWild PWild = True
+patIsWild _ = False
 
 -- position of the first bare-`PVar p` parameter
 paramIndex : String -> List Pat -> Option Int
@@ -414,10 +432,15 @@ paramIndexGo p (pat::rest) i
   | isBareParam p pat = Some i
   | otherwise = paramIndexGo p rest (i + 1)
 
--- one clause: replace the param at position k with the arm pattern, body = arm rhs
-armToClause : Bool -> String -> List Pat -> Int -> Arm -> Decl
-armToClause vis name pats k (Arm pat _ body) =
-  DFunDef vis name (replaceAt k pat pats) body
+-- one clause: replace the param at position k with the arm pattern, body = arm
+-- rhs.  Special case: a `PWild` arm whose body references the scrutinee `p` is
+-- rendered with `PVar p` instead of `_`, re-binding the scrutinee so the body's
+-- reference stays valid (the bail in `matchParamFixVar` has already rejected any
+-- UNSAFE — non-wildcard — mention).
+armToClause : Bool -> String -> String -> List Pat -> Int -> Arm -> Decl
+armToClause vis name p pats k (Arm pat _ body) =
+  let cpat = if patIsWild pat && wholeWordIn p (exprToString body) then PVar p else pat
+  DFunDef vis name (replaceAt k cpat pats) body
 
 replaceAt : Int -> a -> List a -> List a
 replaceAt _ _ [] = []
