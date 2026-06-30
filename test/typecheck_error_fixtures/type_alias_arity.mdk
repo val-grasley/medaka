@@ -1,0 +1,5 @@
+-- A parameterized type alias applied to the wrong number of arguments is a
+-- type error (stage 3 arity checking): `Pair` takes 1 argument, given 2.
+type Pair a = (a, a)
+bad : Pair Int Int -> Int
+bad p = 0

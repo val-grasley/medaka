@@ -2589,7 +2589,7 @@ tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
 tailCell _ None = None
 tailCell etbl (Some n) = lookupAssoc n etbl
 
-fromAstType : List (String, Mono) -> Ty -> Mono
+fromAstType : List (String, Mono) -> Ty -> <Mut> Mono
 fromAstType tvs ty = fromAstTypeE [] tvs ty
 
 -- un-curry a left-nested TyApp chain into (head, args).  `headTyconTy` only
@@ -2599,19 +2599,22 @@ tyAppSpine (TyApp a b) = match tyAppSpine a
   (head, args) => (head, args ++ [b])
 tyAppSpine t = (t, [])
 
-fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> Mono
+fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> <Mut> Mono
 fromAstTypeE etbl tvs (TyCon n) = match lookupAssoc n aliasTableRef.value
   -- Transparent non-parameterized alias (`type Foo = Int`): expand to its RHS,
   -- recursively so alias-of-alias (`type A = Int; type B = A`) flattens.  Cycle
   -- rejection is deferred (stage 4); the non-cyclic corpus terminates.
-  -- Parameterized aliases (non-empty params) used here unapplied stay opaque for
-  -- now (stage 3 handles applied/arity); leave them as a bare TCon.
   Some (params, rhs) if listLen params == 0 => fromAstTypeE etbl tvs rhs
+  -- A parameterized alias used UNAPPLIED (`x : Pair`): a type alias is not a
+  -- first-class type constructor (DESIGN §3/§9 fork 2), so it must be saturated.
+  -- Reject with an arity error and keep the bare TCon so inference continues.
+  Some (params, _) =>
+    let _ = pushTypeErrorOnce (aliasArityMsg n (listLen params) 0)
+    TCon n
   _ => TCon n
 fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssoc n tvs)
 fromAstTypeE etbl tvs (TyApp a b) = match tyAppSpine (TyApp a b)
-  (TyCon n, args) =>
-    fromAstTypeApp etbl tvs n args (TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b))
+  (TyCon n, args) => fromAstTypeApp etbl tvs n args
   _ => TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b)
 fromAstTypeE etbl tvs (TyFun a b) =
   TFun
@@ -2622,24 +2625,65 @@ fromAstTypeE etbl tvs (TyTuple ts) = TTuple (map (fromAstTypeE etbl tvs) ts)
 fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
 fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 
--- a TyCon-headed type-app: when the head is a data type with a KRow param, refold
--- the spine kind-directed (KRow arg → TEff row); otherwise use the plain fallback
--- (byte-identical to the legacy left-nested TApp recursion → additive).
-fromAstTypeApp : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> Mono -> Mono
-fromAstTypeApp etbl tvs n args fallback = match lookupAssoc n dataParamKindsRef.value
-  Some kinds if listLen kinds == listLen args =>
-    foldAppKinds etbl tvs (TCon n) kinds args
-  _ => fallback
+-- A type alias applied to the wrong number of arguments — over-applied,
+-- under-applied, or (got=0) used unapplied.  v1 requires a parameterized alias
+-- to be saturated; an alias is not a first-class type constructor (DESIGN §3/§9
+-- fork 2).  Deduped (pushTypeErrorOnce) since a signature's `Ty` is converted to
+-- `Mono` repeatedly during inference.
+aliasArityMsg : String -> Int -> Int -> String
+aliasArityMsg n expected got = "Type alias `"
+  ++ n
+  ++ "` expects "
+  ++ intToString expected
+  ++ " argument(s), got "
+  ++ intToString got
+
+-- the opaque fall-through for a TyCon-headed spine: keep the head as a bare
+-- `TCon n` and apply the (alias-expanded) argument Monos left-nested.  This is
+-- byte-identical to the legacy `TApp (fromAstTypeE a) (fromAstTypeE b)` recursion
+-- for a non-alias head, but it does NOT re-dispatch the head through
+-- `fromAstTypeE` — critical now that the head being an *alias* has side-effects
+-- (the unapplied-alias arity error), and Medaka is strict so a pre-built fallback
+-- would fire that error even on the expansion path.
+appFallback : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> <Mut> Mono
+appFallback _ _ n [] = TCon n
+appFallback etbl tvs n (a::as2) =
+  foldAppFallback etbl tvs (TApp (TCon n) (fromAstTypeE etbl tvs a)) as2
+
+foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> <Mut> Mono
+foldAppFallback _ _ acc [] = acc
+foldAppFallback etbl tvs acc (a::as2) =
+  foldAppFallback etbl tvs (TApp acc (fromAstTypeE etbl tvs a)) as2
+
+-- a TyCon-headed type-app: a parameterized type-ALIAS head is expanded by binding
+-- its params to the supplied argument Monos and recursing on the RHS (transparent,
+-- transitive — an alias RHS that names another alias re-expands).  Otherwise: when
+-- the head is a data type with a KRow param, refold the spine kind-directed (KRow
+-- arg → TEff row); else the opaque `appFallback`.
+fromAstTypeApp : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> <Mut> Mono
+fromAstTypeApp etbl tvs n args = match lookupAssoc n aliasTableRef.value
+  -- Saturated parameterized alias: bind params → arg Monos (alias params shadow
+  -- outer tvs of the same name) and expand the RHS through the same seam.
+  Some (params, rhs) if listLen params == listLen args =>
+    fromAstTypeE etbl (zipL params (map (fromAstTypeE etbl tvs) args) ++ tvs) rhs
+  -- Alias applied to the wrong arity: reject, keep the opaque fallback.
+  Some (params, _) =>
+    let _ = pushTypeErrorOnce (aliasArityMsg n (listLen params) (listLen args))
+    appFallback etbl tvs n args
+  _ => match lookupAssoc n dataParamKindsRef.value
+    Some kinds if listLen kinds == listLen args =>
+      foldAppKinds etbl tvs (TCon n) kinds args
+    _ => appFallback etbl tvs n args
 
 -- refold a kinded type-app spine: a KType arg recurses, a KRow arg becomes a
 -- TEff row (resolved through the shared etbl, so it aliases the field/sig tail).
-foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> Mono
+foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> <Mut> Mono
 foldAppKinds _ _ acc [] [] = acc
 foldAppKinds etbl tvs acc (k::ks) (a::as2) =
   foldAppKinds etbl tvs (TApp acc (kindArgMono etbl tvs k a)) ks as2
 foldAppKinds _ _ acc _ _ = acc
 
-kindArgMono : List (String, Ref Effvar) -> List (String, Mono) -> Kind -> Ty -> Mono
+kindArgMono : List (String, Ref Effvar) -> List (String, Mono) -> Kind -> Ty -> <Mut> Mono
 kindArgMono etbl tvs KType arg = fromAstTypeE etbl tvs arg
 kindArgMono etbl tvs KRow arg = TEff (rowArgOf etbl arg)
 
@@ -4448,7 +4492,7 @@ registerRecordInfoKeyed key typeName params fields =
     recordsRef
     ((key, RecordInfo (map monoTyvarId paramVars) result fieldMonos) :: recordsRef.value)
 
-recFieldMono : List (String, Mono) -> Field -> (String, Mono)
+recFieldMono : List (String, Mono) -> Field -> <Mut> (String, Mono)
 recFieldMono tvs (Field fn ty) = (fn, fromAstType tvs ty)
 
 lookupRecordByName : String -> Option RecordInfo
@@ -4551,18 +4595,18 @@ applyParams : Mono -> List Mono -> Mono
 applyParams head [] = head
 applyParams head (p::ps) = applyParams (TApp head p) ps
 
-addVariants : TcEnv -> List (String, Mono) -> List (String, Ref Effvar) -> List Int -> List Int -> Mono -> List Variant -> TcEnv
+addVariants : TcEnv -> List (String, Mono) -> List (String, Ref Effvar) -> List Int -> List Int -> Mono -> List Variant -> <Mut> TcEnv
 addVariants env _ _ _ _ _ [] = env
 addVariants env tvs etbl paramTyIds rowEffvarIds result ((Variant cname payload)::rest) =
   let ctorType = foldrFun (payloadTypesE etbl tvs payload) result
   let env2 = addCtor env cname (Forall paramTyIds rowEffvarIds ctorType)
   addVariants env2 tvs etbl paramTyIds rowEffvarIds result rest
 
-payloadTypesE : List (String, Ref Effvar) -> List (String, Mono) -> ConPayload -> List Mono
+payloadTypesE : List (String, Ref Effvar) -> List (String, Mono) -> ConPayload -> <Mut> List Mono
 payloadTypesE etbl tvs (ConPos tys) = map (fromAstTypeE etbl tvs) tys
 payloadTypesE etbl tvs (ConNamed fields) = map (fieldTypeE etbl tvs) fields
 
-fieldTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Field -> Mono
+fieldTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Field -> <Mut> Mono
 fieldTypeE etbl tvs (Field _ ty) = fromAstTypeE etbl tvs ty
 
 -- ── top-level driver ──────────────────────────────────────────────────────
