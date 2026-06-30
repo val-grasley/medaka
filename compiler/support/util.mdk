@@ -7,6 +7,8 @@
 -- support/path.mdk (filesystem path string ops), support/ordmap.mdk (OrdMap).
 
 import support.ordmap.{OrdMap, omLookup, omInsert, omEmpty}
+import list.{reverse, zip}
+import string.{join}
 
 export
 contains : String -> List String -> Bool
@@ -26,11 +28,7 @@ replicate n x
 
 export
 reverseL : List a -> List a
-reverseL xs = reverseGo xs []
-
-reverseGo : List a -> List a -> List a
-reverseGo [] acc = acc
-reverseGo (x::xs) acc = reverseGo xs (x :: acc)
+reverseL xs = reverse xs
 
 export
 anyList : (a -> Bool) -> List a -> Bool
@@ -50,28 +48,15 @@ lookupAssoc k ((k2, v)::rest)
   | k == k2 = Some v
   | otherwise = lookupAssoc k rest
 
--- Join string pieces with a separator in O(total length): cons the pieces and
--- separators into a list (O(1) per piece) then `stringConcat` once (a single
--- native pass).  This replaces the old right-recursive `x ++ sep ++ join rest`,
--- which re-copied the growing tail at every step — O(n^2) in the output size
--- (each `++` allocates a fresh String and blits both operands).  See
--- compiler/PERF-NOTES.md (2026-06-05 string-building).
+-- Join string pieces with a separator.  Delegates to stdlib `string.join`
+-- (`stringConcat (intersperse sep parts)` — the same O(total length) one-pass
+-- build util used to hand-roll via intersperseStr).  Kept as a named export so
+-- the compiler consumers stay unedited.  Importing `string` is near-free here:
+-- String's instances live in `core` (always-present prelude), so the import adds
+-- no new instance surface — only `join` itself (2026-06-30 util migration note).
 export
 joinWith : String -> List String -> String
-joinWith sep xs = stringConcat (intersperseStr sep xs)
-
--- Tail-recursive accumulator form: the recursive `interspGo` call is the whole
--- body (tail position) so it compiles to `return_call` (zero stack growth),
--- where the old double-cons `x :: sep :: self …` grew the stack to depth =
--- list length and overflowed the WasmGC emitter on big inputs.  Output order is
--- byte-identical: go sep [a,b,c] [] -> [c,sep,b,sep,a] -> reverseL -> [a,sep,b,sep,c].
-intersperseStr : String -> List String -> List String
-intersperseStr sep xs = reverseL (interspGo sep xs [])
-
-interspGo : String -> List String -> List String -> List String
-interspGo _ [] acc = acc
-interspGo _ [x] acc = x :: acc
-interspGo sep (x::rest) acc = interspGo sep rest (sep :: x :: acc)
+joinWith sep xs = join sep xs
 
 export
 joinNl : List String -> String
@@ -186,9 +171,7 @@ initList (x::xs) = x :: initList xs
 
 export
 zipL : List a -> List b -> List (a, b)
-zipL [] _ = []
-zipL _ [] = []
-zipL (x::xs) (y::ys) = (x, y) :: zipL xs ys
+zipL xs ys = zip xs ys
 
 export
 maxI : Int -> Int -> Int
