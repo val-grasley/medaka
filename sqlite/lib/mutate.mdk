@@ -1,4 +1,4 @@
--- | sqlite.lib.mutate — DELETE via read-transform-rewrite.
+-- | sqlite.lib.mutate — DELETE and UPDATE via read-transform-rewrite.
 --
 -- Pipeline (DELETE):
 --   1. Open the database; read the schema.
@@ -15,6 +15,12 @@
 --      rowid (gaps included) and every non-target table byte-for-byte-equivalently.
 --   6. Return `Ok deletedCount`.
 --
+-- Pipeline (UPDATE):
+--   Same as DELETE, but instead of filtering rows, each matching row has its
+--   cells at the assigned-column positions replaced by the literal values.
+--   The row's rowid is always preserved (only non-IPK cells may be changed;
+--   assigning the IPK column is refused with a clean `Err`).
+--
 -- Refusal cases (clean `Err`, never silent corruption):
 --   * Any schema entry with `type='index'` (secondary index would be silently
 --     dropped; `integrity_check` can't detect the loss).
@@ -22,13 +28,15 @@
 --     outside the write path's rowid model).
 --   * Unknown target table name.
 --   * `compilePred` error (unknown column in WHERE).
+--   * UPDATE targeting the INTEGER PRIMARY KEY column (would move the rowid).
+--   * UPDATE assigning an unknown column name.
 --   * Write-path errors (row too large, sqlite_master overflow, etc.) propagate.
 
 import lib.sqlite.{Db, openDb, readSchema, scanTableRowsIpk, schemaSql, schemaName, schemaType, SchemaEntry, pkColumnIndex, rowCellsWithIpk, columnIndex}
 import lib.btree.{Row, rowRowid}
 import lib.dbwriter.{buildDatabaseMultiExplicit}
-import lib.recordfmt.{Cell}
-import lib.select.{Expr, SqlExpr, unExpr, compilePred}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat, CBlob}
+import lib.select.{Expr, SqlExpr, unExpr, compilePred, Literal, LInt, LText, LFloat, LBlob, LNull}
 import list.{reverse}
 
 -- ---------------------------------------------------------------------------
@@ -181,3 +189,131 @@ buildImage db table whereExpr =
                       match buildDatabaseMultiExplicit newSpecs
                         Err e  => Err e
                         Ok img => Ok (img, cnt)
+
+-- ---------------------------------------------------------------------------
+-- Assign — a SET assignment for UPDATE
+-- ---------------------------------------------------------------------------
+
+-- | A single SET assignment: column name + new literal value.
+public export data Assign = Assign String Literal
+
+-- ---------------------------------------------------------------------------
+-- UPDATE — read-transform-rewrite
+-- ---------------------------------------------------------------------------
+
+-- | Update all rows of `table` in the SQLite file at `path` where `where_`
+--   evaluates to true, applying each `Assign` to the matching rows.
+--   Returns `Ok n` where `n` is the count of rows updated.
+--
+--   Refused (clean `Err`) when:
+--     * The database has secondary indexes or WITHOUT ROWID tables.
+--     * Any `Assign` targets the table's INTEGER PRIMARY KEY column.
+--     * Any `Assign` names an unknown column.
+--     * The target table is not found.
+export
+update : String -> String -> List Assign -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
+update path table assigns where_ =
+  match openDb path
+    Err e  => Err e
+    Ok db  =>
+      match buildUpdateImage db table assigns (unExpr where_)
+        Err e         => Err e
+        Ok (img, cnt) =>
+          match writeFileBytes path img
+            Err e => Err e
+            Ok _  => Ok cnt
+
+-- Build the new database image after applying the SET assignments to matching rows.
+buildUpdateImage : Db -> String -> List Assign -> SqlExpr -> <Mut> Result String (Array Int, Int)
+buildUpdateImage db table assigns whereExpr =
+  match readSchema db
+    Err e     => Err e
+    Ok schema =>
+      match refuseIfUnsupported schema
+        Err e  => Err e
+        Ok _   =>
+          match collectTableSpecs db schema []
+            Err e    => Err e
+            Ok specs =>
+              match requireSome "update: table not found: \{table}" (findSpecByName specs table)
+                Err e                    => Err e
+                Ok (_, sql, pkIdx, rows) =>
+                  let lookup = columnIndex sql
+                  match refuseIpkAssign pkIdx sql assigns
+                    Err e => Err e
+                    Ok _  =>
+                      match resolveAssigns lookup assigns []
+                        Err e          => Err e
+                        Ok idxedAssign =>
+                          match compilePred lookup whereExpr
+                            Err e   => Err e
+                            Ok pred =>
+                              let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
+                              let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
+                              match buildDatabaseMultiExplicit newSpecs
+                                Err e  => Err e
+                                Ok img => Ok (img, cnt)
+
+-- Refuse if any Assign targets the IPK column.
+refuseIpkAssign : Option Int -> String -> List Assign -> Result String Unit
+refuseIpkAssign None   _   _            = Ok ()
+refuseIpkAssign _      _   []           = Ok ()
+refuseIpkAssign pkIdx  sql (Assign col _ :: rest) =
+  match pkIdx
+    None     => refuseIpkAssign pkIdx sql rest
+    Some idx =>
+      match columnIndex sql col
+        None       => refuseIpkAssign pkIdx sql rest
+        Some colIdx =>
+          if colIdx == idx
+          then Err "cannot UPDATE the INTEGER PRIMARY KEY column"
+          else refuseIpkAssign pkIdx sql rest
+
+-- Resolve each Assign's column name to an index.  Unknown column → Err.
+resolveAssigns : (String -> Option Int) -> List Assign -> List (Int, Cell) -> Result String (List (Int, Cell))
+resolveAssigns _      []                        acc = Ok (reverse acc)
+resolveAssigns lookup (Assign col lit :: rest)  acc =
+  match lookup col
+    None     => Err "update: unknown column: \{col}"
+    Some idx =>
+      resolveAssigns lookup rest ((idx, litToCell lit) :: acc)
+
+-- Convert a Literal to the corresponding Cell value.
+litToCell : Literal -> Cell
+litToCell (LInt n)   = CInt n
+litToCell (LText s)  = CText s
+litToCell (LFloat f) = CFloat f
+litToCell (LBlob b)  = CBlob b
+litToCell LNull      = CNull
+
+-- Apply the resolved assignments to all rows matching the predicate.
+-- Returns the (possibly-modified) row list and the count of rows changed.
+applyUpdate : (List Cell -> Bool) -> List (Int, Cell) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
+applyUpdate pred assigns rows = applyUpdateGo pred assigns rows [] 0
+
+applyUpdateGo : (List Cell -> Bool) -> List (Int, Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
+applyUpdateGo _    _       []                    acc n = (reverse acc, n)
+applyUpdateGo pred assigns ((rowid, cells)::rest) acc n =
+  if pred cells
+  then
+    let newCells = applyCellAssigns assigns cells
+    applyUpdateGo pred assigns rest ((rowid, newCells) :: acc) (n + 1)
+  else
+    applyUpdateGo pred assigns rest ((rowid, cells) :: acc) n
+
+-- Apply a list of (index, Cell) replacements to a cell list.
+applyCellAssigns : List (Int, Cell) -> List Cell -> List Cell
+applyCellAssigns assigns cells = applyCellAssignsGo assigns cells 0 []
+
+applyCellAssignsGo : List (Int, Cell) -> List Cell -> Int -> List Cell -> List Cell
+applyCellAssignsGo _       []           _   acc = reverse acc
+applyCellAssignsGo assigns (c :: rest)  idx acc =
+  let newCell = findAssign assigns idx c
+  applyCellAssignsGo assigns rest (idx + 1) (newCell :: acc)
+
+-- Look up whether this index has an assignment; return the replacement or the original.
+findAssign : List (Int, Cell) -> Int -> Cell -> Cell
+findAssign []                   _   orig = orig
+findAssign ((i, cell) :: rest)  idx orig =
+  if i == idx then cell
+  else findAssign rest idx orig

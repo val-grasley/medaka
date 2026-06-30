@@ -1,0 +1,51 @@
+-- UPDATE probe for the sqlite/test/update_oracle.sh gate.
+--
+-- Usage: medaka build sqlite/update_demo.mdk
+--        ./update_demo <path> <table> <set-col> <set-type> <set-val> <where-col> <op> <int-value>
+--
+-- Performs a single-column integer comparison UPDATE, setting one column:
+--   UPDATE <table> SET <set-col> = <set-val> WHERE <where-col> <op> <int-value>
+--
+-- <set-type> is one of: int text
+-- <op>       is one of: eq ne lt le gt ge
+--
+-- Prints "updated N rows" on success or an error string on failure.
+
+import lib.mutate.{update, Assign}
+import lib.select.{eColInt, eLitI, eLitT, eEq, eNe, eLt, eLe, eGt, eGe, Literal, LInt, LText}
+import string.{toInt}
+
+makeAssign : String -> String -> String -> Option Assign
+makeAssign col setType val =
+  match setType
+    "int" => match toInt val
+               None   => None
+               Some n => Some (Assign col (LInt n))
+    "text" => Some (Assign col (LText val))
+    _      => None
+
+runUpdate : String -> String -> Assign -> String -> String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+runUpdate path table asgn whereCol op whereVal =
+  let expr = match op
+               "eq" => eEq (eColInt whereCol) (eLitI whereVal)
+               "ne" => eNe (eColInt whereCol) (eLitI whereVal)
+               "lt" => eLt (eColInt whereCol) (eLitI whereVal)
+               "le" => eLe (eColInt whereCol) (eLitI whereVal)
+               "gt" => eGt (eColInt whereCol) (eLitI whereVal)
+               "ge" => eGe (eColInt whereCol) (eLitI whereVal)
+               _    => eEq (eColInt whereCol) (eLitI whereVal)
+  match update path table [asgn] expr
+    Err e => println "Error: \{e}"
+    Ok n  => println "updated \{n} rows"
+
+main : <IO, FileRead, FileWrite, Mut> Unit
+main = match args ()
+  [path, table, setCol, setType, setVal, whereCol, op, whereIntVal] =>
+    match toInt whereIntVal
+      None   => println "Error: invalid WHERE integer: \{whereIntVal}"
+      Some n =>
+        match makeAssign setCol setType setVal
+          None      => println "Error: invalid set-type or set-val"
+          Some asgn => runUpdate path table asgn whereCol op n
+
+  _ => println "usage: update_demo <path> <table> <set-col> <set-type:int|text> <set-val> <where-col> <op:eq|ne|lt|le|gt|ge> <int-value>"

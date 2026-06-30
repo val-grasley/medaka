@@ -1,0 +1,18 @@
+# integrity_check users/kv db
+ok
+# update users result
+updated 2 rows
+# update kv result
+updated 2 rows
+# users after (rowid,id,name,age)
+1|1|alice|25
+5|5|bob|99
+9|9|carol|99
+# kv after (rowid,k,v)
+1|a|10
+3|b|0
+4|c|0
+# negative: SET IPK column result
+Error: cannot UPDATE the INTEGER PRIMARY KEY column
+# negative: db unchanged (0 = identical)
+0
