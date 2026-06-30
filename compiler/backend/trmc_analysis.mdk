@@ -65,7 +65,7 @@ freeVars b (CTuple es) = freeVarsList b es
 freeVars b (CList es) = freeVarsList b es
 freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
-freeVars b (CFieldAccess ex _) = freeVars b ex
+freeVars b (CFieldAccess ex _ _) = freeVars b ex
 freeVars b (CRecordUpdate base updates) = freeVars b base
   ++ freeVarsFields b updates
 freeVars b (CVariantUpdate _ base updates) = freeVars b base
@@ -378,7 +378,7 @@ mentionsSelfMethod method tag (CRangeArray lo hi _) = mentionsSelfMethod method 
   || mentionsSelfMethod method tag hi
 mentionsSelfMethod method tag (CRecord _ fields) =
   mentionsSelfMethodFields method tag fields
-mentionsSelfMethod method tag (CFieldAccess ex _) =
+mentionsSelfMethod method tag (CFieldAccess ex _ _) =
   mentionsSelfMethod method tag ex
 mentionsSelfMethod method tag (CRecordUpdate base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups

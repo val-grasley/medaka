@@ -124,8 +124,8 @@ ceval env (CRecordUpdate base fields) =
   evalRecordUpdate (ceval env base) (map (cevalField env) fields)
 ceval env (CVariantUpdate con base fields) =
   evalVariantUpdate con (ceval env base) (map (cevalField env) fields)
-ceval env (CFieldAccess e "value") = evalValueField (ceval env e)
-ceval env (CFieldAccess e field) = evalField (ceval env e) field
+ceval env (CFieldAccess e "value" _) = evalValueField (ceval env e)
+ceval env (CFieldAccess e field _) = evalField (ceval env e) field
 ceval env (CIndex a i) = evalIndex (ceval env a) (ceval env i)
 ceval env (CSlice a lo hi incl) =
   evalSlice (ceval env a) (ceval env lo) (ceval env hi) incl

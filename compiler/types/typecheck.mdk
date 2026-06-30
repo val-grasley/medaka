@@ -54,6 +54,7 @@ import support.util.{
   listLen,
   lookupAssoc,
   contains,
+  endsWith,
   reverseL,
   joinWith,
   joinNl,
@@ -1054,7 +1055,7 @@ collectExprErrors (EUnOp _ e) = collectExprErrors e
 collectExprErrors (EInfix _ a b) = match collectExprErrors a
   [] => collectExprErrors b
   errs => errs
-collectExprErrors (EFieldAccess e _) = collectExprErrors e
+collectExprErrors (EFieldAccess e _ _) = collectExprErrors e
 collectExprErrors (ERecordCreate _ fs) = collectFieldAssignErrors fs
 collectExprErrors (ERecordUpdate e fs) = match collectExprErrors e
   [] => collectFieldAssignErrors fs
@@ -2881,7 +2882,7 @@ infer env (EBinOp op l r dref) = inferBinopE env op l r dref
 infer env (EUnOp op e) = inferUnop op (infer env e)
 infer env (EInfix op l r) = inferInfix env op l r
 infer env (ERecordCreate name fields) = inferRecordCreate env name fields
-infer env (EFieldAccess e fname) = inferFieldAccess env e fname
+infer env (EFieldAccess e fname r) = inferFieldAccess env e fname r
 infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
 infer env (EVariantUpdate cname base fields) =
   inferVariantUpdate env cname base fields
@@ -3525,14 +3526,16 @@ fieldAssignContains fname ((FieldAssign fn _)::rest)
 -- field_owners multimap).  `value` keeps the Ref-projection special case (no
 -- record in compiler/stdlib declares a `value` field, so this matches the
 -- oracle's structural `(Ref a).value → a`).
-inferFieldAccess : TcEnv -> Expr -> String -> <Mut> Mono
-inferFieldAccess env e fname
+inferFieldAccess : TcEnv -> Expr -> String -> Ref String -> <Mut> Mono
+inferFieldAccess env e fname r
   | fname == "value" = inferValueField env e
   | otherwise =
     let te = normalize (infer env e)
     match resolveFieldRecord te fname
       None => freshVar ()
-      Some (rname, ri) => inferFieldOfRecord te rname ri fname
+      Some (rname, ri) =>
+        let _ = setRef r rname
+        inferFieldOfRecord te rname ri fname
 
 -- `cell.value` projects a Ref's contents.  Unify the receiver with `Ref a`
 -- (forcing it, like the reference's `(Ref a).value → a` special case) and return
@@ -3584,13 +3587,36 @@ resolveFieldRecord : Mono -> String -> <Mut> Option (String, RecordInfo)
 resolveFieldRecord te fname = match headTyconMono te
   Some r => match lookupRecordByName r
     Some ri => Some (r, ri)
-    None =>
-      if contains r abstractRecordTypesRef.value then
-        let _ = pushTypeError (abstractFieldMsg r fname)
-        None
-      else
-        resolveFieldByOwners te fname
+    None => match lookupRecordByMangledHead r fname
+      Some pair => Some pair
+      None =>
+        if contains r abstractRecordTypesRef.value then
+          let _ = pushTypeError (abstractFieldMsg r fname)
+          None
+        else
+          resolveFieldByOwners te fname
   None => resolveFieldByOwners te fname
+
+-- Mangle-aware record lookup for the emit path.  `backend/private_mangle.mdk`
+-- renames a record's DECL name (a record's name IS its constructor) to
+-- `<mid>__<name>`, so `recordsRef` is keyed by the mangled name — but a TYPE
+-- reference like `r : Rule` is NOT mangled, so the receiver's head tycon stays
+-- `Rule` and the exact `lookupRecordByName` above misses.  Recover by finding the
+-- registry entry whose key suffix-matches `__<head>` AND owns `fname`; only when
+-- it is UNIQUE (else ambiguous → None, so the caller's owners path keeps today's
+-- behavior).  No-op off the emit path (unmangled key hits the exact lookup).
+lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)
+lookupRecordByMangledHead head fname =
+  match mangledHeadCandidates head fname recordsRef.value
+    [pair] => Some pair
+    _ => None
+
+mangledHeadCandidates : String -> String -> List (String, RecordInfo) -> List (String, RecordInfo)
+mangledHeadCandidates _ _ [] = []
+mangledHeadCandidates head fname ((key, ri)::rest)
+  | endsWith ("__" ++ head) key && recordHasField fname ri =
+    (key, ri) :: mangledHeadCandidates head fname rest
+  | otherwise = mangledHeadCandidates head fname rest
 
 resolveFieldByOwners : Mono -> String -> <Mut> Option (String, RecordInfo)
 resolveFieldByOwners te fname = match fieldOwnerNames fname
@@ -5343,8 +5369,8 @@ rewriteArgScoped rw bound (EBinOp op l r dr) =
 rewriteArgScoped rw bound (EUnOp op x) = EUnOp op (rewriteArgScoped rw bound x)
 rewriteArgScoped rw bound (EInfix op l r) =
   EInfix op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r)
-rewriteArgScoped rw bound (EFieldAccess e0 n) =
-  EFieldAccess (rewriteArgScoped rw bound e0) n
+rewriteArgScoped rw bound (EFieldAccess e0 n r) =
+  EFieldAccess (rewriteArgScoped rw bound e0) n r
 rewriteArgScoped rw bound (ETuple es) =
   ETuple (map (rewriteArgScoped rw bound) es)
 rewriteArgScoped rw bound (EListLit es) =
@@ -7257,7 +7283,7 @@ collectMethodSites (EBinOp _ l r _) = collectMethodSites l
   ++ collectMethodSites r
 collectMethodSites (EUnOp _ e) = collectMethodSites e
 collectMethodSites (EInfix _ l r) = collectMethodSites l ++ collectMethodSites r
-collectMethodSites (EFieldAccess e _) = collectMethodSites e
+collectMethodSites (EFieldAccess e _ _) = collectMethodSites e
 collectMethodSites (ETuple es) = flatMap collectMethodSites es
 collectMethodSites (EListLit es) = flatMap collectMethodSites es
 collectMethodSites (EArrayLit es) = flatMap collectMethodSites es
@@ -7328,7 +7354,7 @@ collectDictSites (EIf c t e) = collectDictSites c
 collectDictSites (EBinOp _ l r _) = collectDictSites l ++ collectDictSites r
 collectDictSites (EUnOp _ e) = collectDictSites e
 collectDictSites (EInfix _ l r) = collectDictSites l ++ collectDictSites r
-collectDictSites (EFieldAccess e _) = collectDictSites e
+collectDictSites (EFieldAccess e _ _) = collectDictSites e
 collectDictSites (ETuple es) = flatMap collectDictSites es
 collectDictSites (EListLit es) = flatMap collectDictSites es
 collectDictSites (EArrayLit es) = flatMap collectDictSites es
@@ -8360,7 +8386,7 @@ allEVars (EIf c t e) = allEVars c ++ allEVars t ++ allEVars e
 allEVars (EBinOp _ l r _) = allEVars l ++ allEVars r
 allEVars (EUnOp _ e) = allEVars e
 allEVars (EInfix op l r) = op :: allEVars l ++ allEVars r
-allEVars (EFieldAccess e _) = allEVars e
+allEVars (EFieldAccess e _ _) = allEVars e
 allEVars (ETuple es) = flatMap allEVars es
 allEVars (EListLit es) = flatMap allEVars es
 allEVars (EArrayLit es) = flatMap allEVars es

@@ -1062,8 +1062,8 @@ eval env (ERecordCreate name fields) =
     None => VRecord name assigns
 eval env (ERecordUpdate base fields) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
-eval env (EFieldAccess e "value") = evalValueField (eval env e)
-eval env (EFieldAccess e field) = evalField (eval env e) field
+eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
+eval env (EFieldAccess e field _) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
 eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts

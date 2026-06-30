@@ -69,7 +69,7 @@ cexprSexp (CTuple es) = node "CTuple" (map cexprSexp es)
 cexprSexp (CList es) = node "CList" (map cexprSexp es)
 cexprSexp (CRecord name fields) =
   node "CRecord" (escStr name :: map cfieldSexp fields)
-cexprSexp (CFieldAccess e f) = node "CFieldAccess" [cexprSexp e, escStr f]
+cexprSexp (CFieldAccess e f n) = node "CFieldAccess" [cexprSexp e, escStr f, escStr n]
 cexprSexp (CRecordUpdate base fields) =
   node "CRecordUpdate" (cexprSexp base :: map cfieldSexp fields)
 cexprSexp (CVariantUpdate con base fields) =

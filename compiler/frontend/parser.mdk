@@ -591,7 +591,7 @@ dotFor : Expr -> Token -> Parser Expr
 dotFor e TLBracket = indexOrSlice e
 dotFor e _ = do
   f <- identNameP
-  postfixTail (EFieldAccess e f)
+  postfixTail (EFieldAccess e f (Ref ""))
 
 indexOrSlice : Expr -> Parser Expr
 indexOrSlice e = do
@@ -821,13 +821,13 @@ recordFieldExprRest _ _ = failP "expected = in record-update field"
 desugarDottedField : Expr -> (List String, Expr) -> FieldAssign
 desugarDottedField base (path, value) = match path
   [field] => FieldAssign field value
-  field::rest => FieldAssign field (dottedGo (EFieldAccess base field) rest value)
+  field::rest => FieldAssign field (dottedGo (EFieldAccess base field (Ref "")) rest value)
   [] => FieldAssign "_" value
 
 dottedGo : Expr -> List String -> Expr -> Expr
 dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value]
 dottedGo cur (f::fs) value =
-  ERecordUpdate cur [FieldAssign f (dottedGo (EFieldAccess cur f) fs value)]
+  ERecordUpdate cur [FieldAssign f (dottedGo (EFieldAccess cur f (Ref "")) fs value)]
 dottedGo cur [] value = value
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
@@ -2901,7 +2901,7 @@ assignFromLhs lhs rhs = match flattenFieldPath lhs
 flattenFieldPath : Expr -> Option (String, List String)
 flattenFieldPath (ELoc _ e) = flattenFieldPath e
 flattenFieldPath (EVar x) = Some (x, [])
-flattenFieldPath (EFieldAccess inner f) =
+flattenFieldPath (EFieldAccess inner f _) =
   fieldPathExtend (flattenFieldPath inner) f
 flattenFieldPath _ = None
 

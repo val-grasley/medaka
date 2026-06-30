@@ -918,7 +918,7 @@ scanExprW7 e = match e
   CIndex a i => let _ = setRef useArrayRef True in let _ = scanExprW7 a in scanExprW7 i
   CSlice a lo hi _ => let _ = setRef useArrayRef True in let _ = scanExprW7 a in let _ = scanExprW7 lo in scanExprW7 hi
   CRecord _ fields => forEachU (f => scanExprW7 (cFieldExpr f)) fields
-  CFieldAccess ex _ => scanExprW7 ex
+  CFieldAccess ex _ _ => scanExprW7 ex
   CRecordUpdate base fields => let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
   CVariantUpdate _ base fields => let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
   CApp f a =>
@@ -1098,7 +1098,7 @@ collectRecFieldsBind (CBind _ clauses) = flatMap (c => scanRecFields (clauseBody
 scanRecFields : CExpr -> List (String, List String)
 scanRecFields e = match e
   CRecord name fields => (name, map cFieldName fields) :: flatMap (f => scanRecFields (cFieldExpr f)) fields
-  CFieldAccess ex _ => scanRecFields ex
+  CFieldAccess ex _ _ => scanRecFields ex
   CRecordUpdate base fields => scanRecFields base ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
   CVariantUpdate _ base fields => scanRecFields base ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
   CTuple es => flatMap scanRecFields es
@@ -1214,7 +1214,7 @@ scanExprValueUses fnNames fnArs ctorArs e = match e
   CList xs => flatMap (scanExprValueUses fnNames fnArs ctorArs) xs
   CArray xs => flatMap (scanExprValueUses fnNames fnArs ctorArs) xs
   CRecord _ fs => flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
-  CFieldAccess r _ => scanExprValueUses fnNames fnArs ctorArs r
+  CFieldAccess r _ _ => scanExprValueUses fnNames fnArs ctorArs r
   CRecordUpdate r fs => scanExprValueUses fnNames fnArs ctorArs r ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
   CVariantUpdate _ r fs => scanExprValueUses fnNames fnArs ctorArs r ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
   CRangeList lo hi _ => scanExprValueUses fnNames fnArs ctorArs lo ++ scanExprValueUses fnNames fnArs ctorArs hi
@@ -1903,7 +1903,7 @@ eagerVars b (CArray es) = flatMap (eagerVars b) es
 eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CRecord _ fields) = flatMap (eagerVarsField b) fields
-eagerVars b (CFieldAccess ex _) = eagerVars b ex
+eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
 eagerVars b (CRecordUpdate base updates) = eagerVars b base ++ flatMap (eagerVarsField b) updates
 eagerVars b (CVariantUpdate _ base updates) = eagerVars b base ++ flatMap (eagerVarsField b) updates
 eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
@@ -3125,8 +3125,8 @@ restampIfaceDictsW tbl iface tag (CTuple xs) =
   CTuple (map (restampIfaceDictsW tbl iface tag) xs)
 restampIfaceDictsW tbl iface tag (CList xs) =
   CList (map (restampIfaceDictsW tbl iface tag) xs)
-restampIfaceDictsW tbl iface tag (CFieldAccess a f) =
-  CFieldAccess (restampIfaceDictsW tbl iface tag a) f
+restampIfaceDictsW tbl iface tag (CFieldAccess a f n) =
+  CFieldAccess (restampIfaceDictsW tbl iface tag a) f n
 restampIfaceDictsW tbl iface tag (CIndex a b) =
   CIndex (restampIfaceDictsW tbl iface tag a) (restampIfaceDictsW tbl iface tag b)
 restampIfaceDictsW _ _ _ other = other
@@ -3209,7 +3209,7 @@ emitRefExpr prog env d e = match e
   CIndex a i => emitIndexRef prog env d a i
   CSlice a lo hi incl => emitSliceRef prog env d a lo hi incl
   CRecord name fields => emitRecordRef prog env d name fields
-  CFieldAccess ex label => emitFieldAccessRef prog env d ex label
+  CFieldAccess ex label _ => emitFieldAccessRef prog env d ex label
   CRecordUpdate base fields => emitRecordUpdateRef prog env d base fields
   CVariantUpdate con base fields => emitVariantUpdateRef prog env d con base fields
   other => gapL ("ref-mode: unsupported Core IR node " ++ ctag other ++ " [in " ++ curBindRef.value ++ "]")
@@ -4677,7 +4677,7 @@ allCallHeads prog e = match e
   CList es => flatMap (allCallHeads prog) es
   CArray es => flatMap (allCallHeads prog) es
   CRecord _ fs => flatMap (f => allCallHeads prog (cfieldExpr f)) fs
-  CFieldAccess x _ => allCallHeads prog x
+  CFieldAccess x _ _ => allCallHeads prog x
   CIndex a i => allCallHeads prog a ++ allCallHeads prog i
   _ => []
 
@@ -5350,7 +5350,7 @@ freeVarsExpr bound e = match e
   CList es => flatMap (freeVarsExpr bound) es
   CArray es => flatMap (freeVarsExpr bound) es
   CRecord _ fields => flatMap (freeVarsField bound) fields
-  CFieldAccess e _ => freeVarsExpr bound e
+  CFieldAccess e _ _ => freeVarsExpr bound e
   CRecordUpdate e fields => freeVarsExpr bound e ++ flatMap (freeVarsField bound) fields
   CVariantUpdate _ e fields => freeVarsExpr bound e ++ flatMap (freeVarsField bound) fields
   CRangeList lo hi _ => freeVarsExpr bound lo ++ freeVarsExpr bound hi
@@ -6280,7 +6280,7 @@ maxIndexAt e d = match e
   CRecord _ fields => foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields)
   CRecordUpdate b fields => maxI (maxIndexAt b d) (foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields))
   CVariantUpdate _ b fields => maxI (maxIndexAt b d) (foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields))
-  CFieldAccess e1 _ => maxIndexAt e1 d
+  CFieldAccess e1 _ _ => maxIndexAt e1 d
   CRangeList lo hi _ => maxI (maxIndexAt lo d) (maxIndexAt hi d)
   CRangeArray lo hi _ => maxI (maxIndexAt lo d) (maxIndexAt hi d)
   CIndex a i => maxI (maxIndexAt a d) (maxIndexAt i d)
@@ -6466,7 +6466,7 @@ ctag (CTuple _) = "CTuple (W7)"
 ctag (CList _) = "CList (W7)"
 ctag (CArray _) = "CArray (W7)"
 ctag (CRecord _ _) = "CRecord (W7)"
-ctag (CFieldAccess _ _) = "CFieldAccess (W7)"
+ctag (CFieldAccess _ _ _) = "CFieldAccess (W7)"
 ctag (CRecordUpdate _ _) = "CRecordUpdate (W7)"
 ctag (CVariantUpdate _ _ _) = "CVariantUpdate (W7)"
 ctag (CRangeList _ _ _) = "CRangeList (W7)"

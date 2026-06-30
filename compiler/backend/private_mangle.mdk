@@ -628,8 +628,8 @@ renameScoped rm bound (EBinOp op l r dr) =
 renameScoped rm bound (EUnOp op x) = EUnOp op (renameScoped rm bound x)
 renameScoped rm bound (EInfix op l r) =
   EInfix op (renameScoped rm bound l) (renameScoped rm bound r)
-renameScoped rm bound (EFieldAccess e0 n) =
-  EFieldAccess (renameScoped rm bound e0) n
+renameScoped rm bound (EFieldAccess e0 n r) =
+  EFieldAccess (renameScoped rm bound e0) n r
 renameScoped rm bound (ETuple es) = ETuple (map (renameScoped rm bound) es)
 renameScoped rm bound (EListLit es) = EListLit (map (renameScoped rm bound) es)
 renameScoped rm bound (EArrayLit es) =

@@ -84,7 +84,9 @@ public export data CExpr
   | CList (List CExpr)
   -- record create / field access / update (slice 3)
   | CRecord String (List CField)
-  | CFieldAccess CExpr String
+  -- field access `r.f`; 3rd = resolved record name ("" = unknown) so emit can
+  -- resolve the field index by (recName, label) instead of label alone.
+  | CFieldAccess CExpr String String
   | CRecordUpdate CExpr (List CField)
   -- named-field variant (constructor) update: `Con { base | f = v … }` (§2.3)
   | CVariantUpdate String CExpr (List CField)

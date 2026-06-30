@@ -68,7 +68,7 @@ check() { # $1=label  $2=mdk-path
   fi
 }
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list field_collision"
 for p in $PROGRAMS; do
   check "$p" "$FIX/$p.mdk"
 done

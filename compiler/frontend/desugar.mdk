@@ -66,7 +66,7 @@ mapKids f (EIf c t el) = EIf (mapExpr f c) (mapExpr f t) (mapExpr f el)
 mapKids f (EBinOp op a b r) = EBinOp op (mapExpr f a) (mapExpr f b) r
 mapKids f (EUnOp op a) = EUnOp op (mapExpr f a)
 mapKids f (EInfix op a b) = EInfix op (mapExpr f a) (mapExpr f b)
-mapKids f (EFieldAccess e0 n) = EFieldAccess (mapExpr f e0) n
+mapKids f (EFieldAccess e0 n r) = EFieldAccess (mapExpr f e0) n r
 mapKids f (ERecordCreate n fs) = ERecordCreate n (map (mapFieldAssign f) fs)
 mapKids f (ERecordUpdate e0 fs) =
   ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs)
@@ -167,7 +167,7 @@ binOp op a b = EBinOp op a b (Ref RNone)
 
 -- field read off a named variable: `v.n`
 fieldOf : String -> String -> Expr
-fieldOf v n = EFieldAccess (EVar v) n
+fieldOf v n = EFieldAccess (EVar v) n (Ref "")
 
 -- a derived impl head with the fixed pub / non-default / no-name shape;
 -- applyDeriveParams rewrites tys + reqs afterwards for the type's params.

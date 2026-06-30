@@ -467,7 +467,7 @@ exprPrec (EVariantUpdate _ _ _) = precAtom
 exprPrec (ERangeList _ _ _) = precAtom
 exprPrec (ERangeArray _ _ _) = precAtom
 exprPrec (ESlice _ _ _ _ _) = precAtom
-exprPrec (EFieldAccess _ _) = precPostfix
+exprPrec (EFieldAccess _ _ _) = precPostfix
 exprPrec (EIndex _ _ _) = precPostfix
 exprPrec (EUnOp _ _) = precUnary
 exprPrec (EApp _ _) = precApp
@@ -546,7 +546,7 @@ printExprRaw (EBinOp op l r _) =
     (printExpr (if ra then prec + 1 else prec) l)
     (Cat sp (Cat (text op) (Cat sp (printExpr (if ra then prec else prec + 1) r))))
 printExprRaw (EUnOp op e) = Cat (text op) (printExpr precUnary e)
-printExprRaw (EFieldAccess e f) =
+printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =
   Cat (text n) (Cat (text " ") (braced (map fieldAssignDoc fs)))

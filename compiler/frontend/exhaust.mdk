@@ -444,7 +444,7 @@ collectLetBinds (EIf c t el) = collectLetBinds c
 collectLetBinds (EBinOp _ a b _) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (EUnOp _ a) = collectLetBinds a
 collectLetBinds (EInfix _ a b) = collectLetBinds a ++ collectLetBinds b
-collectLetBinds (EFieldAccess e0 _) = collectLetBinds e0
+collectLetBinds (EFieldAccess e0 _ _) = collectLetBinds e0
 collectLetBinds (ERecordCreate _ fs) = flatMap fieldAssignBinds fs
 collectLetBinds (ERecordUpdate e0 fs) = collectLetBinds e0
   ++ flatMap fieldAssignBinds fs

@@ -1,0 +1,46 @@
+-- Regression: type-directed record field resolution on the BUILD path.
+-- Two records sharing a field name at DIFFERENT indices must resolve to the
+-- correct offset (was a label-only emitter lookup → wrong offset → garbage/SIGSEGV).
+-- Covers: Int collision, function-typed-field collision (was SIGSEGV), and an
+-- Int/Float collision (exercises the float-field-label routing fix).  Invisible to
+-- `run` (the interpreter resolves fields by the value's own assoc list); only the
+-- native build path was wrong.
+record Other
+  check : Int
+  tag : String
+record Rule
+  name : String
+  enabled : Bool
+  check : Int
+record A
+  handler : Int -> Int
+  size : Int
+record B
+  size : Int
+  label : String
+  handler : Int -> Int
+record Pt
+  ptag : String
+  amount : Float
+record Cnt
+  amount : Int
+  cname : String
+
+o : Other
+o = Other { check = 7, tag = "o" }
+r : Rule
+r = Rule { name = "r", enabled = True, check = 42 }
+a : A
+a = A { handler = (x => x + 1), size = 10 }
+b : B
+b = B { size = 5, label = "b", handler = (x => x * 100) }
+p : Pt
+p = Pt { ptag = "p", amount = 2.5 }
+c : Cnt
+c = Cnt { amount = 7, cname = "c" }
+
+main =
+  println (r.check + o.check)
+  println ((a.handler 3) + (b.handler 3))
+  println p.amount
+  println c.amount

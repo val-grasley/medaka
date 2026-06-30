@@ -136,7 +136,12 @@ public export data Expr
   | EBinOp String Expr Expr (Ref Route)
   | EUnOp String Expr
   | EInfix String Expr Expr
-  | EFieldAccess Expr String
+  -- field access `r.f`.  The trailing `Ref String` is the resolved record name
+  -- (stamped by typecheck's inferFieldAccess; "" = unknown).  The emitter reads
+  -- it to pick the record by (recName, label) so two records sharing a field
+  -- name at different indices resolve to the correct offset.  Same Ref-stamp
+  -- idiom as EIndex/ESlice; sexp/printer ignore the ref.
+  | EFieldAccess Expr String (Ref String)
   | ETuple (List Expr)
   | EListLit (List Expr)
   | EArrayLit (List Expr)

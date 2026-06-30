@@ -139,7 +139,7 @@ annotateExpr fr (EBinOp op a b r) =
 annotateExpr fr (EUnOp op a) = EUnOp op (annotateExpr fr a)
 annotateExpr fr (EInfix op a b) =
   EInfix op (annotateExpr fr a) (annotateExpr fr b)
-annotateExpr fr (EFieldAccess e0 f) = EFieldAccess (annotateExpr fr e0) f
+annotateExpr fr (EFieldAccess e0 f r) = EFieldAccess (annotateExpr fr e0) f r
 annotateExpr fr (ETuple es) = ETuple (map (annotateExpr fr) es)
 annotateExpr fr (EListLit es) = EListLit (map (annotateExpr fr) es)
 annotateExpr fr (EArrayLit es) = EArrayLit (map (annotateExpr fr) es)

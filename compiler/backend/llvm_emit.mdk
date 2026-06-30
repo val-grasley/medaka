@@ -1164,7 +1164,7 @@ emitExpr e env (CLam pats body) = emitLam e env pats body
 emitExpr e env (CDecision scrut arms tree) = emitDecision e env scrut arms tree
 emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
-emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
+emitExpr e env (CFieldAccess ex label recName) = emitFieldAccess e env ex label recName
 emitExpr e env (CRecordUpdate base updates) =
   emitRecordUpdate e env base updates
 emitExpr e env (CVariantUpdate con base updates) =
@@ -2273,17 +2273,30 @@ emitArith e env op l r =
 -- to emitFieldAccess's returned LTy), so field accesses flowing elsewhere — e.g.
 -- arg-tag dispatch — keep LTInt and the emitter's own self-compile is unperturbed.
 isFloatFieldAccess : Emit -> CExpr -> <Mut> Bool
-isFloatFieldAccess e (CFieldAccess _ label) = isFloatFieldLabel e label
+isFloatFieldAccess e (CFieldAccess _ label recName) = isFloatFieldLabel e recName label
 isFloatFieldAccess _ _ = False
 
-isFloatFieldLabel : Emit -> String -> <Mut> Bool
-isFloatFieldLabel e label = match findRecordByLabel (recFieldTable e) label
-  Some (name, labels) => match indexOfStr label labels
-    Some pos =>
-      let tns = ctorFieldTypeNamesOf name
-      if pos < listLen tns then nthStr tns pos == "Float" else False
+isFloatFieldLabel : Emit -> String -> String -> <Mut> Bool
+isFloatFieldLabel e recName label =
+  match floatFieldRecord e recName label
+    Some (name, labels) => match indexOfStr label labels
+      Some pos =>
+        let tns = ctorFieldTypeNamesOf name
+        if pos < listLen tns then nthStr tns pos == "Float" else False
+      None => False
     None => False
-  None => False
+
+-- Pick the record owning `label` for float-ness: by the typecheck-stamped name
+-- when known + present, else the label-only search (same fallback rule as
+-- fieldIdxByName, so an Int/Float collision on the same field name routes float
+-- arithmetic by the receiver's actual record).
+floatFieldRecord : Emit -> String -> String -> <Mut> Option (String, List String)
+floatFieldRecord e recName label =
+  if recName == "" then findRecordByLabel (recFieldTable e) label
+  else match lookupAssoc recName (recFieldTable e)
+    Some labels => if contains label labels then Some (recName, labels)
+      else findRecordByLabel (recFieldTable e) label
+    None => findRecordByLabel (recFieldTable e) label
 
 -- fused statically-Float arithmetic: both operands as unboxed doubles, one float
 -- op, box ONCE (replaces N intermediate boxes with 1).
@@ -4166,8 +4179,8 @@ restampIfaceDicts tbl iface tag rr (CTuple xs) =
   CTuple (map (restampIfaceDicts tbl iface tag rr) xs)
 restampIfaceDicts tbl iface tag rr (CList xs) =
   CList (map (restampIfaceDicts tbl iface tag rr) xs)
-restampIfaceDicts tbl iface tag rr (CFieldAccess a f) =
-  CFieldAccess (restampIfaceDicts tbl iface tag rr a) f
+restampIfaceDicts tbl iface tag rr (CFieldAccess a f n) =
+  CFieldAccess (restampIfaceDicts tbl iface tag rr a) f n
 restampIfaceDicts tbl iface tag rr (CIndex a b) =
   CIndex
     (restampIfaceDicts tbl iface tag rr a)
@@ -4244,8 +4257,8 @@ restampCrossIface tbl method difs (CTuple xs) =
   CTuple (map (restampCrossIface tbl method difs) xs)
 restampCrossIface tbl method difs (CList xs) =
   CList (map (restampCrossIface tbl method difs) xs)
-restampCrossIface tbl method difs (CFieldAccess a f) =
-  CFieldAccess (restampCrossIface tbl method difs a) f
+restampCrossIface tbl method difs (CFieldAccess a f n) =
+  CFieldAccess (restampCrossIface tbl method difs a) f n
 restampCrossIface tbl method difs (CIndex a b) =
   CIndex
     (restampCrossIface tbl method difs a)
@@ -6889,7 +6902,7 @@ eagerVars b (CTuple es) = eagerVarsList b es
 eagerVars b (CList es) = eagerVarsList b es
 eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CRecord _ fields) = eagerVarsFields b fields
-eagerVars b (CFieldAccess ex _) = eagerVars b ex
+eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
 eagerVars b (CRecordUpdate base updates) = eagerVars b base
   ++ eagerVarsFields b updates
 eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
@@ -7549,16 +7562,30 @@ emitRecordCreate e env name fields =
   let words = emitFieldExprs e env fields
   if allConstWords words then (emitConstDictCell e (cellTag e name) words, LTCon) else emitCtorAlloc e name words
 
-emitFieldAccess : Emit -> List (String, (String, LTy)) -> CExpr -> String -> <Mut> (String, LTy)
-emitFieldAccess e env ex label =
+emitFieldAccess : Emit -> List (String, (String, LTy)) -> CExpr -> String -> String -> <Mut> (String, LTy)
+emitFieldAccess e env ex label recName =
   let (w, _) = emitExpr e env ex
   if label == "value" then
     let f = loadField e w 0
     (f, LTInt)
   else
-    let idx = findFieldIdx (recFieldTable e) label
+    let idx = fieldIdxByName (recFieldTable e) recName label
     let f = loadField e w idx
     (f, LTInt)
+
+-- Resolve a field's positional index by the typecheck-stamped record name when
+-- known (recName ≠ "" and that record actually has the label); otherwise fall
+-- back to today's label-only search (safety for unstamped / synthesized
+-- accesses).  The by-name path is what makes two records sharing a field name at
+-- DIFFERENT indices resolve to the correct offset.
+fieldIdxByName : List (String, List String) -> String -> String -> Int
+fieldIdxByName table recName label =
+  if recName == "" then findFieldIdx table label
+  else match lookupAssoc recName table
+    Some labels => match indexOfStr label labels
+      Some i => i
+      None => findFieldIdx table label
+    None => findFieldIdx table label
 
 emitRecordUpdate : Emit -> List (String, (String, LTy)) -> CExpr -> List CField -> <Mut> (String, LTy)
 emitRecordUpdate e env base updates =
@@ -7670,7 +7697,7 @@ collectRecordsClauses ((CClause _ body)::rest) = scanExprRecords body
 scanExprRecords : CExpr -> List (String, List String)
 scanExprRecords (CRecord name fields) =
   (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
-scanExprRecords (CFieldAccess ex _) = scanExprRecords ex
+scanExprRecords (CFieldAccess ex _ _) = scanExprRecords ex
 scanExprRecords (CRecordUpdate base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
 scanExprRecords (CVariantUpdate _ base updates) = scanExprRecords base
@@ -8364,7 +8391,7 @@ ctag (CTuple _) = "CTuple"
 ctag (CList _) = "CList"
 ctag (CArray _) = "CArray"
 ctag (CRecord _ _) = "CRecord"
-ctag (CFieldAccess _ _) = "CFieldAccess"
+ctag (CFieldAccess _ _ _) = "CFieldAccess"
 ctag (CRecordUpdate _ _) = "CRecordUpdate"
 ctag (CRangeList _ _ _) = "CRangeList"
 ctag (CRangeArray _ _ _) = "CRangeArray"
