@@ -759,7 +759,10 @@ isLeafExternW name = contains name [
   -- W10: `panic : String -> a` lowers to a `unreachable` trap (stack-polymorphic,
   -- validates as any result type — matches the native @mdk_panic abort).  The message
   -- arg is emitted-then-dropped; printing it to stderr is a nice-to-have not done here.
-  "panic"]
+  "panic",
+  -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Pure i64 ops over the
+  -- box/unbox seam; no $str/$arr/$float dependencies.
+  "bitAnd", "shiftLeft", "shiftRight"]
 
 -- W9: arity of a str/leaf extern (the param count its emit* arm consumes).  Used to
 -- build an eta closure when the extern is referenced as a VALUE (point-free / passed
@@ -790,8 +793,12 @@ externArityW name =
     "stringToFloat"] then 1
   else if contains name ["randomInt", "stringIndexOf", "stringCompare",
     -- W10: arrayGetUnsafe (idx, arr); arrayMake (size, init); arrayMakeWith (size, f).
-    "arrayGetUnsafe", "arrayMake", "arrayMakeWith"] then 2
+    "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
+    -- stage-A: 2-arg bitwise (Int->Int->Int) and arrayFill (val->arr->Unit).
+    "bitAnd", "shiftLeft", "shiftRight", "arrayFill"] then 2
   else if contains name ["stringSlice", "arraySetUnsafe"] then 3
+  -- stage-A: arrayBlit src srcOff dst dstOff len (5 args).
+  else if name == "arrayBlit" then 5
   else 1
 
 isWasmEtaExtern : String -> Bool
@@ -806,7 +813,9 @@ isWasmEtaExtern name = isStrExternW name || isLeafExternW name || isArrayExternW
 isArrayExternW : String -> Bool
 isArrayExternW name = contains name [
   "arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
-  "arrayCopy", "arraySetUnsafe", "arrayFromList"]
+  "arrayCopy", "arraySetUnsafe", "arrayFromList",
+  -- stage-A: arrayBlit (offset copy) and arrayFill (bulk fill).
+  "arrayBlit", "arrayFill"]
 
 -- ── W8b: the ONE residual deferred extern ────────────────────────────────────
 -- All other Float externs (floatToString / intToFloat / floatToInt / hashFloat /
@@ -1011,7 +1020,9 @@ noteW8Extern name =
   -- W10: the array intrinsic externs all build/read the $arr rep (and arrayFromList
   -- consumes a cons list).  Force useArrayRef; arrayFromList also forces useListRef.
   let _ = if contains name ["arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
-            "arrayCopy", "arraySetUnsafe", "arrayFromList"] then setRef useArrayRef True else ()
+            "arrayCopy", "arraySetUnsafe", "arrayFromList",
+            -- stage-A: arrayBlit/arrayFill also operate on $arr.
+            "arrayBlit", "arrayFill"] then setRef useArrayRef True else ()
   let _ = if name == "arrayFromList" then setRef useListRef True else ()
   -- W12: the IO host-surface externs.  readFile/fileExists/getEnv/args all build a $str
   -- (path/result), so force the $str rep; args additionally builds a Cons list (force
@@ -3952,6 +3963,25 @@ emitLeafExternRef prog env d "exit" args = match args
 emitLeafExternRef prog env d "panic" args = match args
   [msg] => emitRefExpr prog env d msg ++ ["drop", "unreachable"]
   _ => gapL "wasm W10: panic takes exactly one argument"
+-- stage-A: bitwise / shift externs (Int -> Int -> Int).  Args are (ref eq) boxed Ints;
+-- unbox both to i64 via $mdk_unbox_int, apply the i64 op, rebox via $mdk_box_int.
+-- shiftRight uses i64.shr_u (LOGICAL) — shiftRight is defined as logical in runtime/medaka_rt.c
+-- (">> on the untagged non-negative 63-bit value == OCaml lsr").
+emitLeafExternRef prog env d "bitAnd" args = match args
+  [a, b] => emitRefExpr prog env d a ++ ["call $mdk_unbox_int"]
+    ++ emitRefExpr prog env d b ++ ["call $mdk_unbox_int"]
+    ++ ["i64.and", "call $mdk_box_int"]
+  _ => gapL "wasm stage-A: bitAnd takes exactly two arguments"
+emitLeafExternRef prog env d "shiftLeft" args = match args
+  [a, b] => emitRefExpr prog env d a ++ ["call $mdk_unbox_int"]
+    ++ emitRefExpr prog env d b ++ ["call $mdk_unbox_int"]
+    ++ ["i64.shl", "call $mdk_box_int"]
+  _ => gapL "wasm stage-A: shiftLeft takes exactly two arguments"
+emitLeafExternRef prog env d "shiftRight" args = match args
+  [a, b] => emitRefExpr prog env d a ++ ["call $mdk_unbox_int"]
+    ++ emitRefExpr prog env d b ++ ["call $mdk_unbox_int"]
+    ++ ["i64.shr_u", "call $mdk_box_int"]
+  _ => gapL "wasm stage-A: shiftRight takes exactly two arguments"
 emitLeafExternRef _ _ _ name _ = gapL ("wasm W8: unsupported leaf extern '" ++ name ++ "'")
 
 -- ── W10: Array intrinsic externs ─────────────────────────────────────────────
@@ -4054,6 +4084,40 @@ emitArrayExternRef prog env d "arrayFromList" args = match args
       ++ ["br $aexfl" ++ sfx, "end", "end"]
       ++ ["local.get " ++ arrL, "ref.as_non_null"]
   _ => gapL "wasm W10: arrayFromList takes exactly one argument"
+-- stage-A: arrayBlit src srcOff dst dstOff len — copies `len` elements from src[srcOff..]
+-- into dst[dstOff..] using `array.copy $arr $arr`.  Arg order from runtime.mdk: src, srcOff,
+-- dst, dstOff, len.  Wasm array.copy takes: [dst, dstOff, src, srcOff, len] (all i32).
+-- Int args (offsets/len) are i31 small ints; unbox with i31.get_s to i32.  Result = Unit.
+emitArrayExternRef prog env d "arrayBlit" args = match args
+  [src, srcOff, dst, dstOff, len] =>
+    emitRefExpr prog env d dst ++ ["ref.cast (ref $arr)"]
+      ++ emitRefExpr prog env d dstOff ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ emitRefExpr prog env d src ++ ["ref.cast (ref $arr)"]
+      ++ emitRefExpr prog env d srcOff ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ emitRefExpr prog env d len ++ ["ref.cast (ref i31)", "i31.get_s"]
+      ++ ["array.copy $arr $arr", "i32.const 0", "ref.i31"]
+  _ => gapL "wasm stage-A: arrayBlit takes exactly five arguments"
+-- stage-A: arrayFill val arr — sets every element of arr to val via a loop.
+-- Reuses the $__aex* locals declared by w7LocalsAtDepth when useArrayRef.
+emitArrayExternRef prog env d "arrayFill" args = match args
+  [val, arr] =>
+    let sfx = intToString d
+    let arrL = "$__aexarr" ++ sfx
+    let iL = "$__aexi" ++ sfx
+    let nL = "$__aexn" ++ sfx
+    let vL = "$__aexv" ++ sfx
+    emitRefExpr prog env d arr ++ ["ref.cast (ref $arr)", "local.set " ++ arrL]
+      ++ ["local.get " ++ arrL, "ref.as_non_null", "array.len", "local.set " ++ nL]
+      ++ emitRefExpr prog env d val ++ ["local.set " ++ vL]
+      ++ ["i32.const 0", "local.set " ++ iL]
+      ++ ["block $afld" ++ sfx, "loop $afll" ++ sfx]
+      ++ ["local.get " ++ iL, "local.get " ++ nL, "i32.ge_s", "br_if $afld" ++ sfx]
+      ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ iL, "local.get " ++ vL]
+      ++ ["array.set $arr"]
+      ++ ["local.get " ++ iL, "i32.const 1", "i32.add", "local.set " ++ iL]
+      ++ ["br $afll" ++ sfx, "end", "end"]
+      ++ ["i32.const 0", "ref.i31"]
+  _ => gapL "wasm stage-A: arrayFill takes exactly two arguments"
 emitArrayExternRef _ _ _ name _ = gapL ("wasm W10: unsupported array extern '" ++ name ++ "'")
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args

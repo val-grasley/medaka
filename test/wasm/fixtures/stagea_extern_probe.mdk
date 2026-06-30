@@ -1,0 +1,45 @@
+-- stage-A extern probe: bitAnd, shiftLeft, shiftRight, arrayBlit, arrayFill
+import array
+
+extern bitAnd : Int -> Int -> Int
+extern shiftLeft : Int -> Int -> Int
+extern shiftRight : Int -> Int -> Int
+extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+extern arrayFill : a -> Array a -> <Mut> Unit
+
+main =
+  -- varint-style: 3 continuation bytes -> value 16385
+  let a0 = bitAnd 0x81 0x7F    -- 1
+  let a1 = bitAnd 0x80 0x7F    -- 0
+  let a2 = bitAnd 0x01 0x7F    -- 1
+  let varint = shiftLeft a0 14 + shiftLeft a1 7 + a2
+  let _ = putStrLn (intToString varint)  -- 16385
+
+  -- big-endian 3-byte: 1<<16 | 2<<8 | 3 = 66051
+  let beVal = shiftLeft 1 16 + shiftLeft 2 8 + 3
+  let _ = putStrLn (intToString beVal)  -- 66051
+
+  -- logical right shift: 255 >> 4 = 15
+  let _ = putStrLn (intToString (shiftRight 255 4))  -- 15
+
+  -- bitAnd: 255 & 240 = 240
+  let _ = putStrLn (intToString (bitAnd 255 240))  -- 240
+
+  -- arrayBlit: copy srcArr[1..3] (3 elements: 20,30,40) into dstArr[0..2]
+  let srcArr = arrayFromList [10, 20, 30, 40, 50]
+  let dstArr = arrayMake 5 0
+  let _ = arrayBlit srcArr 1 dstArr 0 3
+  -- dstArr should be [20,30,40,0,0]
+  let _ = putStrLn (intToString (arrayGetUnsafe 0 dstArr))  -- 20
+  let _ = putStrLn (intToString (arrayGetUnsafe 1 dstArr))  -- 30
+  let _ = putStrLn (intToString (arrayGetUnsafe 2 dstArr))  -- 40
+  let _ = putStrLn (intToString (arrayGetUnsafe 3 dstArr))  -- 0
+  let _ = putStrLn (intToString (arrayGetUnsafe 4 dstArr))  -- 0
+
+  -- arrayFill: fill 4 slots with 99
+  let arr = arrayMake 4 0
+  let _ = arrayFill 99 arr
+  let _ = putStrLn (intToString (arrayGetUnsafe 0 arr))  -- 99
+  let _ = putStrLn (intToString (arrayGetUnsafe 1 arr))  -- 99
+  let _ = putStrLn (intToString (arrayGetUnsafe 2 arr))  -- 99
+  putStrLn (intToString (arrayGetUnsafe 3 arr))          -- 99
