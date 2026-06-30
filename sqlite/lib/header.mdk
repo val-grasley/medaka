@@ -54,6 +54,7 @@ headerReadVersion : DbHeader -> Int
 headerReadVersion h = h.readVersion
 
 -- The expected magic bytes: "SQLite format 3\000".
+export
 magicBytes : List Int
 magicBytes =
   [ 83, 81, 76, 105, 116, 101, 32  -- "SQLite "

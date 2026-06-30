@@ -72,6 +72,7 @@
 import array.{set, blit}
 import bytebuilder.{newBuilder, emitU8, emitU16BE, emitU32BE, emitBytes, emitBeUint, buildArray}
 import list.{reverse, get}
+import lib.header.{magicBytes}
 import lib.varint.{sqVarintBytes}
 import lib.recordenc.{encodeRecord}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
@@ -115,16 +116,6 @@ interiorCapacity = pageSize - interiorHeaderSize  -- 4084
 -- A valid sqlite-version-number constant (integrity_check ignores it).
 sqliteVersionNumber : Int
 sqliteVersionNumber = 3046000
-
--- ---------------------------------------------------------------------------
--- Magic bytes: "SQLite format 3\0"
--- ---------------------------------------------------------------------------
-
-magicBytes : List Int
-magicBytes =
-  [ 83, 81, 76, 105, 116, 101, 32   -- "SQLite "
-  , 102, 111, 114, 109, 97, 116     -- "format"
-  , 32, 51, 0 ]                     -- " 3\0"
 
 -- ---------------------------------------------------------------------------
 -- Leaf-cell encoding: [payload-len varint][rowid varint][record bytes]
@@ -504,14 +495,12 @@ pageCountOf batches =
 export
 buildDatabaseMulti : List (String, String, Option Int, List (List Cell)) -> <Mut> Result String (Array Int)
 buildDatabaseMulti specs = do
-  plans  <- planTables specs []
-  result <- buildAllTables plans 2 1 [] []
-  match result
-    (masterCellList, tablePages) => do
-      page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize masterCellList)
-      let fileHdr = buildFileHeader (totalPageCount plans 1)
-      let _ = blit fileHdr 0 page1 0 fileHeaderSize
-      Ok (concatPageList (page1 :: tablePages))
+  plans <- planTables specs []
+  (masterCellList, tablePages) <- buildAllTables plans 2 1 [] []
+  page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize masterCellList)
+  let fileHdr = buildFileHeader (totalPageCount plans 1)
+  let _ = blit fileHdr 0 page1 0 fileHeaderSize
+  Ok (concatPageList (page1::tablePages))
 
 -- Encode each table's rows and partition them into leaf batches, yielding a
 -- plan `(name, createSql, batches)` per table (page count is then known).

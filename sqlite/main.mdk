@@ -35,9 +35,8 @@ renderRow : Option Int -> Row -> String
 renderRow pkIdx row = join "|" (renderCells (rowCellsWithIpk pkIdx row))
 
 renderCells : List Cell -> List String
-renderCells cells = match cells
-  [] => []
-  c::rest => cellToString c :: renderCells rest
+renderCells [] = []
+renderCells (c::rest) = cellToString c :: renderCells rest
 
 -- Dump the stored CREATE statement + all rows of a table.
 dumpTable : Db -> String -> <IO> Unit
@@ -51,11 +50,10 @@ dumpTableRows db table entry = match scanTableRows db table
   Ok rows => printRows (pkColumnIndex (schemaSql entry)) rows
 
 printRows : Option Int -> List Row -> <IO> Unit
-printRows pkIdx rows = match rows
-  [] => ()
-  r::rest =>
-    println (renderRow pkIdx r)
-    printRows pkIdx rest
+printRows pkIdx [] = ()
+printRows pkIdx (r::rest) =
+  println (renderRow pkIdx r)
+  printRows pkIdx rest
 
 -- Dump the schema (type|name|rootpage) — the schema gate.
 dumpSchema : Db -> <IO> Unit
@@ -64,11 +62,10 @@ dumpSchema db = match readSchema db
   Ok entries => printSchema entries
 
 printSchema : List SchemaEntry -> <IO> Unit
-printSchema entries = match entries
-  [] => ()
-  e::rest =>
-    println "\{schemaType e}|\{schemaName e}|\{intToString (schemaRootPage e)}"
-    printSchema rest
+printSchema [] = ()
+printSchema (e::rest) =
+  println "\{schemaType e}|\{schemaName e}|\{intToString (schemaRootPage e)}"
+  printSchema rest
 
 main : <IO> Unit
 main = match args ()

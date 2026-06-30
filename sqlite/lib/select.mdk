@@ -254,24 +254,27 @@ limOffBinds _ lm of_ =
 
 -- Render the WHERE clause (with leading " WHERE ") and collect its binds.
 renderWhere : Option SqlExpr -> Result String (String, List Literal)
-renderWhere w = match w
-  None   => Ok ("", [])
-  Some e => map ((sql, binds) => (" WHERE \{sql}", binds)) (renderExpr e)
+renderWhere None = Ok ("", [])
+renderWhere (Some e) =
+  map ((sql, binds) => (" WHERE \{sql}", binds)) (renderExpr e)
 
 -- Render an expression to (sql, binds).  Binds accumulate left-to-right.
 renderExpr : SqlExpr -> Result String (String, List Literal)
-renderExpr e = match e
-  ECol name =>
-    if validIdent name
-    then Ok (name, [])
-    else Err "render: invalid column name: \{name}"
-  ELit lit => Ok ("?", [lit])
-  EBin op l r => renderBinary (cmpSql op) l r
-  EAnd l r    => renderBinary "AND" l r
-  EOr l r     => renderBinary "OR" l r
-  ENot inner  => map ((sql, binds) => ("(NOT \{sql})", binds)) (renderExpr inner)
-  EIsNull inner => map ((sql, binds) => ("(\{sql} IS NULL)", binds)) (renderExpr inner)
-  ENotNull inner => map ((sql, binds) => ("(\{sql} IS NOT NULL)", binds)) (renderExpr inner)
+renderExpr (ECol name) =
+  if validIdent name then
+    Ok (name, [])
+  else
+    Err "render: invalid column name: \{name}"
+renderExpr (ELit lit) = Ok ("?", [lit])
+renderExpr (EBin op l r) = renderBinary (cmpSql op) l r
+renderExpr (EAnd l r) = renderBinary "AND" l r
+renderExpr (EOr l r) = renderBinary "OR" l r
+renderExpr (ENot inner) =
+  map ((sql, binds) => ("(NOT \{sql})", binds)) (renderExpr inner)
+renderExpr (EIsNull inner) =
+  map ((sql, binds) => ("(\{sql} IS NULL)", binds)) (renderExpr inner)
+renderExpr (ENotNull inner) =
+  map ((sql, binds) => ("(\{sql} IS NOT NULL)", binds)) (renderExpr inner)
 
 renderBinary : String -> SqlExpr -> SqlExpr -> Result String (String, List Literal)
 renderBinary opSql l r = do
@@ -321,29 +324,28 @@ identChar c =
 --   `Err` on an unknown column name.
 export
 compilePred : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Bool)
-compilePred lookup expr = match expr
-  ECol name => match lookup name
-    None   => Err "compilePred: unknown column: \{name}"
-    Some i => Ok (cells => cellTruthy (nthCell cells i))
-  ELit lit => Ok (_ => litTruthy lit)
-  EBin op l r => compileCmp lookup op l r
-  EAnd l r => do
-    pl <- compilePred lookup l
-    pr <- compilePred lookup r
-    Ok (cells => pl cells && pr cells)
-  EOr l r => do
-    pl <- compilePred lookup l
-    pr <- compilePred lookup r
-    Ok (cells => pl cells || pr cells)
-  ENot inner => do
-    p <- compilePred lookup inner
-    Ok (cells => not (p cells))
-  EIsNull inner => do
-    g <- compileOperand lookup inner
-    Ok (cells => cellIsNull (g cells))
-  ENotNull inner => do
-    g <- compileOperand lookup inner
-    Ok (cells => not (cellIsNull (g cells)))
+compilePred lookup (ECol name) = match lookup name
+  None => Err "compilePred: unknown column: \{name}"
+  Some i => Ok (cells => cellTruthy (nthCell cells i))
+compilePred lookup (ELit lit) = Ok (_ => litTruthy lit)
+compilePred lookup (EBin op l r) = compileCmp lookup op l r
+compilePred lookup (EAnd l r) = do
+  pl <- compilePred lookup l
+  pr <- compilePred lookup r
+  Ok (cells => pl cells && pr cells)
+compilePred lookup (EOr l r) = do
+  pl <- compilePred lookup l
+  pr <- compilePred lookup r
+  Ok (cells => pl cells || pr cells)
+compilePred lookup (ENot inner) = do
+  p <- compilePred lookup inner
+  Ok (cells => not (p cells))
+compilePred lookup (EIsNull inner) = do
+  g <- compileOperand lookup inner
+  Ok (cells => cellIsNull (g cells))
+compilePred lookup (ENotNull inner) = do
+  g <- compileOperand lookup inner
+  Ok (cells => not (cellIsNull (g cells)))
 
 -- Compile a comparison.  Both operands resolve to a `List Cell -> Cell`
 -- accessor; the result row is kept only when the comparison is definitively
@@ -357,12 +359,11 @@ compileCmp lookup op l r = do
 -- An operand is either a column (resolved to an index accessor) or a literal
 -- (a constant cell).  Returns a `List Cell -> Cell` accessor.
 compileOperand : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
-compileOperand lookup e = match e
-  ECol name => match lookup name
-    None   => Err "compilePred: unknown column: \{name}"
-    Some i => Ok (cells => nthCell cells i)
-  ELit lit => Ok (_ => litToCell lit)
-  _ => Err "compilePred: operand must be a column or literal"
+compileOperand lookup (ECol name) = match lookup name
+  None => Err "compilePred: unknown column: \{name}"
+  Some i => Ok (cells => nthCell cells i)
+compileOperand lookup (ELit lit) = Ok (_ => litToCell lit)
+compileOperand lookup _ = Err "compilePred: operand must be a column or literal"
 
 -- ---------------------------------------------------------------------------
 -- Cell / comparison helpers (used by compilePred)
@@ -572,9 +573,8 @@ decodeAll rt pkIdx (row :: rest) acc = do
 -- "SELECT * FROM users ORDER BY age ASC LIMIT ? ## [LInt 5]"
 export
 renderShow : Result String (String, List Literal) -> String
-renderShow r = match r
-  Err e            => "ERR \{e}"
-  Ok (sql, binds)  => "\{sql} ## \{showBinds binds}"
+renderShow (Err e) = "ERR \{e}"
+renderShow (Ok (sql, binds)) = "\{sql} ## \{showBinds binds}"
 
 andLimitSel : Select
 andLimitSel =
