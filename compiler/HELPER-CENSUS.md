@@ -1,7 +1,12 @@
 # compiler/ generic-helper census
 
+> **⚠️ UPDATE 2026-06-30 — this doc predates the stdlib-import policy change and two measured migrations. Read this box first.**
+> 1. The compiler **MAY** now import `stdlib/` (policy changed 2026-06-29). OrdMap→stdlib `Map` (step 1) and `util.mdk`'s `reverseL`/`zipL`/`joinWith`→stdlib `list`/`string` (step 2) have shipped.
+> 2. **Cost rule (measured):** importing a stdlib module whose types' instances are **core-defined** (`list`/`string`) is **near-free** (no new instance surface; DCE trims to referenced fns; −256 B, +2%). Importing one that defines a **new type** (`map`) pulls its whole instance surface (+34 KB, +4.8%).
+> 3. **ANTI-PATTERN (measured, rejected):** delegating the compiler's HOT monomorphic helpers (`contains`/`listLen`/`anyList`/`allList`) to the prelude Foldable methods (`elem`/`any`/`all`/`length`) cost **+56% self-compile** — those methods lose `||`/`&&` short-circuiting and become dict-passed fold+closure. **The remaining cross-file dedup below must fold local duplicates into util's FAST monomorphic helpers, NOT into prelude methods.** Where this doc says "canonical = the prelude/Foldable method," override it: prefer util's monomorphic short-circuiting form for hot paths.
+
 READ-ONLY analysis (no `.mdk` changed). Input to the planned
-`support/`-centralization refactor. The compiler deliberately does **not** import
+`support/`-centralization refactor. (Historical framing below:) The compiler deliberately does **not** import
 `stdlib/`, so each stage hand-rolls small list/string/option/assoc helpers. This
 file enumerates every duplicated *generic* helper (one that could live in a
 stdlib), clusters by semantic equivalence (not name), and marks

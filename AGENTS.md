@@ -146,10 +146,22 @@ a pass/fail result from those gates.
   `support/` where it's a clear win (kills divergence between `support/` and
   `stdlib/`); `support/` remains for genuinely compiler-private helpers.
   - **The cost is real but low — weigh it per module, don't import reflexively.**
-    (1) **Un-prunable instance surface** — DCE keeps every `DImpl`/`DInterface`
-    *whole* (runtime dict-passing → pruning an impl would be a silent miscompile),
-    so `import list` drags in `core`'s Eq/Ord/Debug/Num/Foldable × that type. Measured
-    at tens of KB per module — acceptable, not free. (2) **Compile-time tax** — the
+    (1) **Un-prunable instance surface — but ONLY for a module that defines a NEW
+    type.** DCE keeps every `DImpl`/`DInterface` *whole* (runtime dict-passing →
+    pruning an impl would be a silent miscompile). Measured rule (steps 1+2,
+    2026-06-29/30): `import map` introduced a *new type* `Map` → its whole
+    Eq/Ord/Debug/Display/Mappable/Monoid surface came in (**+34 KB / +4.8%
+    self-compile**). But `import list`/`import string` drag **no new instance
+    surface** — List/String instances live in `core` (the always-present prelude),
+    so DCE trims to just the referenced standalone fns (`reverse`/`zip`/`join`):
+    **−256 B, +2% (noise)**. So: importing a stdlib module whose types' instances
+    are core-defined is **near-free**; importing one that defines a new type is not.
+    ⚠️ **Anti-pattern (measured): do NOT delegate the compiler's hot monomorphic
+    helpers to prelude Foldable methods** (`elem`/`any`/`all`/`length`) — they lose
+    `||`/`&&` short-circuiting and become dict-passed fold+closure; doing this to
+    `util.mdk`'s hottest helpers cost **+56% self-compile**. Keep hot inner-loop
+    helpers monomorphic + short-circuiting; the cross-file dedup should fold dups
+    into util's FAST helpers, not the prelude methods. (2) **Compile-time tax** — the
     imported module is lexed/parsed/typechecked on every compile + every
     self-compile/fixpoint iteration. (3) **Bidirectional coupling** — once the
     compiler imports a stdlib module, a change to that module that perturbs emitted
