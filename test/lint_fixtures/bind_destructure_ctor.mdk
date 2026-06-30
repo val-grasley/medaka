@@ -1,0 +1,20 @@
+-- rule-bind-then-destructure with CONSTRUCTOR patterns (Tier 0 syntactic oracle).
+-- The single-ctor `data` decls are what let the oracle prove irrefutability.
+
+data Box a = Box a
+data Two = First Int | Second Int
+
+-- POSITIVE: `Box` is the SOLE constructor of its datatype → the single-arm
+-- match is irrefutable → fires.
+unwrap : Box Int -> Box Int
+unwrap b0 = do
+  b <- mkBox b0
+  match b
+    Box x => pure x
+
+-- NEGATIVE: `First` is one of TWO constructors → refutable → does NOT fire.
+pick : Two -> Two
+pick t0 = do
+  t <- mkTwo t0
+  match t
+    First v => pure v

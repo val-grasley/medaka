@@ -177,11 +177,13 @@ fieldName (Field n _) = n
 oGetCtorFields : Oracle -> String -> Option (List String)
 oGetCtorFields oracle c = lookupAssoc c oracle.ctorFields
 
+export
 oGetCtors : Oracle -> String -> Option (List String)
 oGetCtors oracle t
   | (Some _) <- tupleArityOfName t = Some [t]
   | otherwise = lookupAssoc t oracle.typeCtors
 
+export
 oGetCtorType : Oracle -> String -> Option String
 oGetCtorType oracle c
   | (Some _) <- tupleArityOfName c = Some c

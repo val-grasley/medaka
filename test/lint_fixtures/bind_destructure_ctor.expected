@@ -1,0 +1,1 @@
+warning: [rule-bind-then-destructure] binds 'b' then immediately destructures it in a final `match` — inline the pattern into the bind

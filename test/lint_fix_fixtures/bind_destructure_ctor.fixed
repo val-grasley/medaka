@@ -1,0 +1,11 @@
+-- rule-bind-then-destructure --fix on a single-constructor wrapper (Tier 0).
+-- The `data Box` decl lets the oracle prove `Box` is the sole constructor, so the
+-- irrefutable single-arm match collapses into the bind pattern.
+data Box a = Box a
+
+unwrap : Box Int -> Result String Int
+unwrap b0 = do
+  (Box x) <- mkBox b0
+  Ok x
+
+main = println "x"
