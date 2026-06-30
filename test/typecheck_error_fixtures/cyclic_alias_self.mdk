@@ -1,0 +1,6 @@
+-- A self-referential type alias (`type R = List R`) must be rejected — it would
+-- infinite-loop during expansion (stage 4 cycle detection).
+type R = List R
+
+f : R -> Int
+f _ = 0

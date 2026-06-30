@@ -2518,6 +2518,94 @@ constraintArgVarNames (Constraint _ tys) = flatMap tyVarNames tys
 tyVarNamesWithConstraints : Ty -> List String
 tyVarNamesWithConstraints ty = dedup (tyVarNames ty ++ constraintVarNamesTy ty)
 
+-- ── alias cycle detection (stage 4) ──────────────────────────────────────────
+-- Collect all TyCon (type-constructor) names referenced anywhere in a surface
+-- Ty.  Mirrors tyVarNames but for constructor slots.  TyVar names are alias
+-- params and never alias dependencies, so they are excluded.
+tyConNamesInTy : Ty -> List String
+tyConNamesInTy (TyCon n) = [n]
+tyConNamesInTy (TyVar _) = []
+tyConNamesInTy (TyApp a b) = tyConNamesInTy a ++ tyConNamesInTy b
+tyConNamesInTy (TyFun a b) = tyConNamesInTy a ++ tyConNamesInTy b
+tyConNamesInTy (TyTuple ts) = flatMap tyConNamesInTy ts
+tyConNamesInTy (TyEffect _ _ t) = tyConNamesInTy t
+tyConNamesInTy (TyConstrained cs t) =
+  flatMap tyConNamesInConstraint cs ++ tyConNamesInTy t
+
+tyConNamesInConstraint : Constraint -> List String
+tyConNamesInConstraint (Constraint iname tys) = iname :: flatMap tyConNamesInTy tys
+
+-- Collect all elements from the HEAD of a list up to and including `target`.
+-- The on-stack list is newest-first; when a back-edge to `target` is detected,
+-- everything from the head down to `target` (inclusive) is on the cycle path.
+takeUntilInclusiveS : String -> List String -> List String
+takeUntilInclusiveS _ [] = []
+takeUntilInclusiveS target (x::xs) =
+  if x == target then [x] else x :: takeUntilInclusiveS target xs
+
+-- Build the alias-dependency entry for one table entry: alias name → list of
+-- other alias keys mentioned in its RHS (the dependency edges).
+buildAliasGraphEntry : List String -> (String, (List String, Ty)) -> (String, List String)
+buildAliasGraphEntry aliasKeys entry = match entry
+  (name, paramsRhs) =>
+    let rhs = snd paramsRhs
+    (name, filterList (k => contains k aliasKeys) (dedup (tyConNamesInTy rhs)))
+
+-- DFS over the alias dependency graph.  Detects back-edges (a node is reached
+-- while it is already on the current path) → cycle.  On a back-edge to `target`,
+-- marks every node on the stack from the head down to and including `target` as
+-- cyclic (they are all on the same cycle path).
+aliasDfsVisit : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> String -> <Mut> Unit
+aliasDfsVisit graph visitedRef onStackRef cyclicOut name =
+  if contains name visitedRef.value then ()
+  else if contains name onStackRef.value then
+    setRef cyclicOut (dedup (takeUntilInclusiveS name onStackRef.value ++ cyclicOut.value))
+  else
+    let _ = setRef onStackRef (name :: onStackRef.value)
+    let _ = aliasDfsVisitNeighbors graph visitedRef onStackRef cyclicOut
+              (fromOption [] (lookupAssoc name graph))
+    let _ = setRef onStackRef (filterList (n => n != name) onStackRef.value)
+    setRef visitedRef (name :: visitedRef.value)
+
+aliasDfsVisitNeighbors : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
+aliasDfsVisitNeighbors _ _ _ _ [] = ()
+aliasDfsVisitNeighbors graph visitedRef onStackRef cyclicOut (n::ns) =
+  let _ = aliasDfsVisit graph visitedRef onStackRef cyclicOut n
+  aliasDfsVisitNeighbors graph visitedRef onStackRef cyclicOut ns
+
+aliasDfsVisitAll : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
+aliasDfsVisitAll _ _ _ _ [] = ()
+aliasDfsVisitAll graph visitedRef onStackRef cyclicOut (k::ks) =
+  let _ = aliasDfsVisit graph visitedRef onStackRef cyclicOut k
+  aliasDfsVisitAll graph visitedRef onStackRef cyclicOut ks
+
+emitCyclicAliasErrors : List String -> <Mut> Unit
+emitCyclicAliasErrors [] = ()
+emitCyclicAliasErrors (name::rest) =
+  let _ = pushTypeErrorOnce
+    ("Recursive type alias `" ++ name ++ "` — type aliases cannot be recursive or cyclic")
+  emitCyclicAliasErrors rest
+
+-- Cycle-detection pre-pass over aliasTableRef.  MUST run immediately after
+-- registerAllData has fully populated the table and BEFORE any fromAstType*
+-- call (which would infinite-loop on a cyclic alias via the recursive expansion
+-- added in stages 2–3).  For each alias found on a cycle:
+--   (1) emits a deduped type_error naming the offending alias;
+--   (2) removes it from aliasTableRef so the expansion seam falls through to an
+--       opaque TCon and cannot recurse → no stack overflow.
+rejectCyclicAliases : Unit -> <Mut> Unit
+rejectCyclicAliases _ =
+  let table = aliasTableRef.value
+  let aliasKeys = map fst table
+  let graph = map (buildAliasGraphEntry aliasKeys) table
+  let visitedRef = Ref []
+  let onStackRef = Ref []
+  let cyclicOut = Ref []
+  let _ = aliasDfsVisitAll graph visitedRef onStackRef cyclicOut aliasKeys
+  let cyclic = cyclicOut.value
+  let _ = emitCyclicAliasErrors cyclic
+  setRef aliasTableRef (filterList (entry => not (contains (fst entry) cyclic)) table)
+
 -- an annotation / signature mono with free tyvars realized as fresh vars
 astTypeFresh : Ty -> <Mut> Mono
 astTypeFresh ty =
@@ -7536,6 +7624,7 @@ checkProgramSeeded seed prog =
   let _ = checkEffectParams prog
   let _ = checkLetRecDecls prog
   let dataEnv = registerAllData initialEnv prog
+  let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let _ = registerMethodIfaceParamsAll prog
   let env1 = extendVars (extendVars dataEnv seed) globalS
@@ -9448,6 +9537,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- suppressed (numIfaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
   let _ = registerMethodIfaceParamsAll (accData ++ implDecls ++ prog)
   let dataEnv = registerAllData initialEnv (accData ++ prog)
+  let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let shadowMethodSchemes = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
   let _ = setRef methodConstraintsRef (methodConstraintsRef.value ++ crossModuleMethodConstraintsRef.value)

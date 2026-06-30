@@ -1,0 +1,7 @@
+-- Mutually recursive type aliases (`type A = B; type B = A`) must be rejected —
+-- they form a cycle and would infinite-loop during expansion (stage 4 cycle detection).
+type A = B
+type B = A
+
+g : A -> Int
+g _ = 0
