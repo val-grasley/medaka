@@ -56,7 +56,7 @@ import frontend.lexer.{
   tokenizeWithOffsetPairs,
   offsetToLineCol,
 }
-import support.util.{reverseL}
+import support.util.{reverseL, joinWith}
 import support.char.{isUpper}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -1722,14 +1722,10 @@ encodeAxis : (String, String) -> String
 encodeAxis (name, v) = name ++ "=" ++ v
 
 joinSemi : List String -> String
-joinSemi [] = ""
-joinSemi [x] = x
-joinSemi (x::xs) = x ++ ";" ++ joinSemi xs
+joinSemi xs = joinWith ";" xs
 
 joinComma : List String -> String
-joinComma [] = ""
-joinComma [x] = x
-joinComma (x::xs) = x ++ "," ++ joinComma xs
+joinComma xs = joinWith "," xs
 
 pipeTail : Parser (Option String)
 pipeTail = do

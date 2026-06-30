@@ -39,6 +39,7 @@ import support.char.{
   isAlnum,
   isHexDigit,
 }
+import support.util.{joinWith}
 
 public export data Token
   = TInt Int
@@ -650,9 +651,7 @@ dropCharsToStr cs k n
   | otherwise = charToStr (at cs k) ++ dropCharsToStr cs (k + 1) n
 
 joinNlStr : List String -> String
-joinNlStr [] = ""
-joinNlStr [x] = x
-joinNlStr (y::rest) = y ++ "\n" ++ joinNlStr rest
+joinNlStr xs = joinWith "\n" xs
 
 -- char literals — escapes processed into the value, mirroring lib/lexer.mll's
 -- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to

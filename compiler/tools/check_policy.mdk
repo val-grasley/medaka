@@ -622,9 +622,7 @@ axisToAllow (name, PSet (Some xs)) = name ++ "={" ++ joinWith "," xs ++ "}"
 axisToAllow (name, _) = name ++ "=true"
 
 joinSemiTok : List String -> String
-joinSemiTok [] = ""
-joinSemiTok [x] = x
-joinSemiTok (x::xs) = x ++ ";" ++ joinSemiTok xs
+joinSemiTok xs = joinWith ";" xs
 
 -- Full manifest extraction returning the atom list (for round-trip gate).
 export
