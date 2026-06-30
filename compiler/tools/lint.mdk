@@ -26,9 +26,10 @@ import frontend.ast.{
 }
 import frontend.parser.{Positions, DeclPos, positionsDecls, declPosLine, declPosEndLine}
 import driver.diagnostics.{Severity(..), Diag(..), ppSeverity}
-import support.util.{contains, listLen, anyList, filterList, joinNl, isEmptyL, reverseL, splitNl}
+import support.util.{contains, listLen, anyList, filterList, joinNl, isEmptyL, reverseL, splitNl, joinWith, sortUniqS}
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum}
+import ir.sexp.{exprSexp, patSexp}
 
 -- ── public types ───────────────────────────────────────────────────────────
 
@@ -54,6 +55,20 @@ public export record Rule
   check : Positions -> List Decl -> List Finding
   fix : Option (Decl -> Option (List Decl))
 
+-- A registered CROSS-FILE rule.  Unlike `Rule` (one file at a time), `check`
+-- sees EVERY target file's `(path, Positions, decls)` triple at once, so it can
+-- relate definitions across files (e.g. duplicate bodies).  Findings stamp the
+-- file path into their `loc`.  Same field-scanner gap as `Rule`: ALL
+-- CrossFileRule-record access stays inside this module (the CLI passes/receives
+-- only plain data).  Adding a cross-file rule = one `check` fn + one binding +
+-- one `allCrossFileRules` entry.
+public export record CrossFileRule
+  name : String
+  descr : String
+  severity : Severity
+  enabled : Bool
+  check : List (String, Positions, List Decl) -> List Finding
+
 -- ── rule names (kept in sync between the Rule entry and its Findings) ─────────
 ruleNameMatchParam : String
 ruleNameMatchParam = "rule-match-on-param"
@@ -63,6 +78,9 @@ ruleNameDerivable = "rule-hand-rolled-derivable"
 
 ruleNameStdlibReimpl : String
 ruleNameStdlibReimpl = "rule-stdlib-reimpl"
+
+ruleNameDuplicateBody : String
+ruleNameDuplicateBody = "rule-duplicate-body"
 
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
@@ -103,6 +121,23 @@ stdlibReimplRule = Rule {
 export
 allRules : List Rule
 allRules = [matchParamRule, derivableRule, stdlibReimplRule]
+
+-- ── the cross-file registry ───────────────────────────────────────────────────
+-- Each CrossFileRule is its own top-level binding (same field-scanner reason as
+-- `Rule`).  Adding a cross-file rule = write its `check` fn + one binding here +
+-- append it to `allCrossFileRules`.
+duplicateBodyRule : CrossFileRule
+duplicateBodyRule = CrossFileRule {
+  name = ruleNameDuplicateBody,
+  descr = "top-level function body is structurally identical to one in another file (copy-paste; consolidate)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleDuplicateBody,
+}
+
+export
+allCrossFileRules : List CrossFileRule
+allCrossFileRules = [duplicateBodyRule]
 
 -- ── runner ───────────────────────────────────────────────────────────────────
 
@@ -473,3 +508,132 @@ stdlibFinding (name, loc) = Finding {
   severity = SevWarning,
   loc = loc,
 }
+
+-- ── cross-file runner ─────────────────────────────────────────────────────────
+-- Run the enabled cross-file rules over every target file, honoring the same
+-- --only/--disable name filters the per-file rules use.  ALL CrossFileRule-record
+-- access is confined to this runner (and the registry bindings above), so the CLI
+-- stays clear of the field-scanner gap.  --deny promotion is left to the CLI
+-- (which already owns it for per-file findings).
+export
+runCrossFileRules : List String -> List String -> List (String, Positions, List Decl) -> List Finding
+runCrossFileRules only disable files =
+  flatMap (runCrossRuleOn only disable files) allCrossFileRules
+
+runCrossRuleOn : List String -> List String -> List (String, Positions, List Decl) -> CrossFileRule -> List Finding
+runCrossRuleOn only disable files r
+  | crossRuleActive only disable r = map (restampSeverity r.severity) (r.check files)
+  | otherwise = []
+
+crossRuleActive : List String -> List String -> CrossFileRule -> Bool
+crossRuleActive only disable r =
+  r.enabled
+    && (isEmptyL only || contains r.name only)
+    && not (contains r.name disable)
+
+-- ── cross-file rule: duplicate-body (copy-paste detector) ──────────────────────
+-- Flags a top-level `DFunDef` whose ELoc-stripped body (+ param-pattern shape) is
+-- structurally identical to a top-level function in a DIFFERENT file.  The
+-- structural key reuses `ir.sexp.exprSexp` — the location-stripped AST serializer
+-- the parse/sexp gates already rely on — so two copy-pasted bodies render to the
+-- same string.  HIGH-SIGNAL: only bodies at/above `dupComplexityThreshold` AST
+-- nodes are eligible, so trivial bodies (`main = …`, `f x = x`, one-field
+-- accessors) never fire.  Same-file duplicates are out of scope (≥2 distinct
+-- files required).  Deterministic: keys processed in sorted order, occurrences
+-- sorted by (file, line).
+
+-- minimum body complexity (count of AST nodes) to be eligible.  Calibrated so the
+-- real stdlib/compiler libraries stay quiet absent genuine duplication.
+dupComplexityThreshold : Int
+dupComplexityThreshold = 10
+
+-- structural identity key: param-pattern shapes ++ ELoc-stripped body sexp.
+structuralKey : List Pat -> Expr -> String
+structuralKey pats body = joinWith "|" (map patSexp pats) ++ " => " ++ exprSexp body
+
+-- complexity proxy: every `node`/`slist` in the sexp dump emits a '(', so counting
+-- '(' counts AST nodes without a second traversal.
+bodyComplexity : Expr -> Int
+bodyComplexity body =
+  let cs = stringToChars (exprSexp body)
+  countOpenParens cs (arrayLength cs) 0 0
+
+countOpenParens : Array Char -> Int -> Int -> Int -> Int
+countOpenParens cs n i acc
+  | i >= n = acc
+  | arrayGetUnsafe i cs == '(' = countOpenParens cs n (i + 1) (acc + 1)
+  | otherwise = countOpenParens cs n (i + 1) acc
+
+ruleDuplicateBody : List (String, Positions, List Decl) -> List Finding
+ruleDuplicateBody files =
+  let occs = flatMap fileDupOccs files
+  let keys = sortUniqS (map occKey occs)
+  flatMap (emitDupGroup occs) keys
+
+-- one occurrence per eligible top-level DFunDef: (file, line, name, structuralKey)
+fileDupOccs : (String, Positions, List Decl) -> List (String, Int, String, String)
+fileDupOccs (path, pos, decls) = flatMap (dupOccOfDecl path) (declLocList pos decls)
+
+dupOccOfDecl : String -> (Decl, Option Loc) -> List (String, Int, String, String)
+dupOccOfDecl path (d, loc) = match d
+  DFunDef _ name pats body =>
+    if bodyComplexity body >= dupComplexityThreshold then [(path, locLineOf loc, name, structuralKey pats body)]
+    else []
+  DAttrib _ inner => dupOccOfDecl path (inner, loc)
+  _ => []
+
+locLineOf : Option Loc -> Int
+locLineOf (Some (Loc _ l _ _ _)) = l
+locLineOf None = 1
+
+occFile : (String, Int, String, String) -> String
+occFile (f, _, _, _) = f
+
+occLine : (String, Int, String, String) -> Int
+occLine (_, l, _, _) = l
+
+occName : (String, Int, String, String) -> String
+occName (_, _, n, _) = n
+
+occKey : (String, Int, String, String) -> String
+occKey (_, _, _, k) = k
+
+-- emit findings for one structural-key group, but only when it spans ≥2 files.
+emitDupGroup : List (String, Int, String, String) -> String -> List Finding
+emitDupGroup occs key =
+  let grp = filterList (o => occKey o == key) occs
+  let distinctFiles = sortUniqS (map occFile grp)
+  if listLen distinctFiles < 2 then []
+  else map (dupFinding distinctFiles) (sortDupOccs grp)
+
+dupFinding : List String -> (String, Int, String, String) -> Finding
+dupFinding distinctFiles occ =
+  let file = occFile occ
+  let line = occLine occ
+  let others = filterList (s => not (s == file)) distinctFiles
+  Finding {
+    rule = ruleNameDuplicateBody,
+    message = "function '" ++ occName occ
+      ++ "' has a body structurally identical to a definition in "
+      ++ joinWith ", " others
+      ++ " — consider consolidating into a shared module",
+    severity = SevWarning,
+    loc = Some (Loc file line 1 line 1),
+  }
+
+-- insertion sort occurrences by (file, line) for deterministic output.
+sortDupOccs : List (String, Int, String, String) -> List (String, Int, String, String)
+sortDupOccs [] = []
+sortDupOccs (x::xs) = dupInsert x (sortDupOccs xs)
+
+dupInsert : (String, Int, String, String) -> List (String, Int, String, String) -> List (String, Int, String, String)
+dupInsert x [] = [x]
+dupInsert x (y::ys)
+  | dupOccLe x y = x :: y :: ys
+  | otherwise = y :: dupInsert x ys
+
+dupOccLe : (String, Int, String, String) -> (String, Int, String, String) -> Bool
+dupOccLe a b = match stringCompare (occFile a) (occFile b)
+  Lt => True
+  Gt => False
+  Eq => occLine a <= occLine b

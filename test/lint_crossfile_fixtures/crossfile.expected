@@ -1,0 +1,9 @@
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:8:1: [rule-match-on-param] function 'describe' matches on parameter 's' — consider a multi-clause function definition
+  |
+8 | describe s = match s
+  |  ^
+
+cross-file:
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:14:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/top.mdk — consider consolidating into a shared module
+ROOT/test/lint_crossfile_fixtures/top.mdk:5:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/nested/deep.mdk — consider consolidating into a shared module

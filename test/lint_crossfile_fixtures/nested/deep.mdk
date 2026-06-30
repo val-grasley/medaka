@@ -1,0 +1,25 @@
+-- Cross-file lint fixture (NESTED subdir — proves the recursive walk reaches it).
+-- `describe` is a per-file match-on-param finding: a top-level-only walk would
+-- miss it entirely, so its presence in the output proves recursion (Task 1).
+-- `classify` is duplicated verbatim from top.mdk → rule-duplicate-body (Task 2).
+-- `helper` (trivial) and `uniqueOne` (a body unique to this file) must NOT be
+-- flagged by the cross-file rule.
+describe : String -> String
+describe s = match s
+  "a" => "first"
+  "b" => "second"
+  _ => "other"
+
+classify : Int -> String
+classify n =
+  if n > 100 then "big"
+  else if n > 10 then "medium"
+  else "small"
+
+helper : Int -> Int
+helper x = x
+
+uniqueOne : Int -> String
+uniqueOne n =
+  if n > 5 then "five-plus"
+  else "small-only"

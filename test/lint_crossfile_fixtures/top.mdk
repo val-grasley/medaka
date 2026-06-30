@@ -1,0 +1,11 @@
+-- Cross-file lint fixture (top level).
+-- `classify` is duplicated verbatim in nested/deep.mdk → rule-duplicate-body.
+-- `helper` is a trivial identity body → below complexity threshold, never flagged.
+classify : Int -> String
+classify n =
+  if n > 100 then "big"
+  else if n > 10 then "medium"
+  else "small"
+
+helper : Int -> Int
+helper x = x

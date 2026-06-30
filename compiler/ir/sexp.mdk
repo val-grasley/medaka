@@ -115,6 +115,7 @@ armSexp : Arm -> String
 armSexp (Arm p gs body) =
   node "arm" [patSexp p, slist (map guardSexp gs), exprSexp body]
 
+export
 exprSexp : Expr -> String
 -- ELoc is TRANSPARENT in the structural dump (mirror of dev/astdump.ml:69
 -- `ELoc(_,e) -> sexp_expr e`): the parse/sexp gates stay byte-identical to the
