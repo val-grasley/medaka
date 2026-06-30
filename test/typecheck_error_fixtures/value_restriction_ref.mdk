@@ -1,0 +1,9 @@
+-- `Ref` is the sole uppercase constructor that builds a mutable cell.
+-- Generalizing `Ref x` would be unsound (write at one type, read at another).
+-- This binding must NOT generalize — using it at two incompatible types must error.
+-- The exclusion in isCtorAppHead is by the name "Ref" so it works regardless of
+-- whether Ref is declared locally or comes from the stdlib prelude.
+extern Ref : a -> Ref a
+r = Ref (x => x)
+-- Using r at two different function types in one tuple must produce a type error.
+pair = ((r : Ref (Int -> Int)), (r : Ref (String -> String)))

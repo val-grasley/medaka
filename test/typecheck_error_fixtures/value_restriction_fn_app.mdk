@@ -1,0 +1,9 @@
+-- A function application (lowercase-head) is always expansive — the value
+-- restriction must still reject using the binding at two incompatible types.
+-- `mkbox` is a lowercase wrapper, so `xs = mkbox (y => y)` is expansive and
+-- must NOT generalize.  This proves the VR still bites where it must.
+data Box a = MkBox a
+mkbox x = MkBox x
+xs = mkbox (y => y)
+-- Using xs at two different instantiations in one tuple must produce a type error.
+pair = ((xs : Box (Int -> Int)), (xs : Box (String -> String)))

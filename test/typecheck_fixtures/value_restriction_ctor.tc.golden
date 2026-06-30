@@ -1,0 +1,12 @@
+e : Box (a -> a)
+ei : Box (Int -> Int)
+es : Box (String -> String)
+g : a -> Two (b -> b) a
+gi : Box (Int -> Int) -> Two (Int -> Int) (Box (Int -> Int))
+gs : Box (String -> String) -> Two (String -> String) (Box (String -> String))
+v : Box (Box (a -> a))
+vi : Box (Box (Int -> Int))
+vs : Box (Box (String -> String))
+p : Pair a
+pi : Pair Int
+ps : Pair String

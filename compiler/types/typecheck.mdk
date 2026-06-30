@@ -49,6 +49,7 @@ import frontend.desugar.{mapProg}
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
 -- the typechecked program's data decls + the inferred scrutinee type).
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
+import support.char.{isUpper}
 import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import support.util.{
   listLen,
@@ -2258,12 +2259,17 @@ mapLocalSchemes ((n, m)::rest) = (n, generalize m) :: mapLocalSchemes rest
 -- ── value restriction (T1) ────────────────────────────────────────────────
 -- A binding RHS is *non-expansive* (a syntactic value) iff it cannot allocate a
 -- mutable cell: literals, variables and lambdas are values; annotations are
--- transparent; tuples/lists are values iff their elements are.  EVERY
--- application is expansive — including constructor applications (`Ref []`,
--- `Some x`), since a constructor may build a mutable cell.  Mirrors the oracle
--- `lib/typecheck.ml:545-549` exactly.  Note: this ignores the `mut` flag (like
--- the oracle), so `let mut x = []` generalizes — the separate `mut`-gen hole is
--- a both-sides follow-up (T1b), deliberately not handled here.
+-- transparent; tuples/lists are values iff their elements are.  Constructor
+-- applications of non-expansive arguments are non-expansive (SML value
+-- restriction relaxation, Phase 66 extension) EXCEPT `Ref`, which is the sole
+-- uppercase constructor that builds a mutable cell (`extern Ref : a -> Ref a` in
+-- stdlib/runtime.mdk).  Generalizing `Ref x` would be unsound (polymorphic
+-- reference: write at one type, read at another).  ANY future uppercase
+-- mutable-cell extern MUST be added to the exclusion in `isCtorAppHead` below
+-- — audit with `grep '^extern [A-Z]' stdlib/runtime.mdk` to find candidates.
+-- Record creates are non-expansive iff all field expressions are.
+-- Note: this ignores the `mut` flag (like the oracle), so `let mut x = []`
+-- generalizes — the separate `mut`-gen hole is a both-sides follow-up (T1b).
 isNonexpansive : Expr -> Bool
 isNonexpansive (ELoc _ e) = isNonexpansive e
 isNonexpansive (EDoOrigin _ e) = isNonexpansive e
@@ -2274,7 +2280,34 @@ isNonexpansive (EAnnot e _) = isNonexpansive e
 isNonexpansive (EHeadAnnot e _) = isNonexpansive e
 isNonexpansive (ETuple es) = allList isNonexpansive es
 isNonexpansive (EListLit es) = allList isNonexpansive es
+-- Constructor application: non-expansive iff the spine head is an
+-- uppercase-initial EVar (a data/record constructor) that is NOT `Ref`, and
+-- every spine argument is itself non-expansive.  Partial ctor applications
+-- (e.g. `MkTwo []`) are also non-expansive — they are closures, not mutable
+-- cells.  `isCtorAppHead` strips ELoc/EDoOrigin wrappers before testing.
+isNonexpansive (EApp f x) = isCtorAppHead (EApp f x) && isNonexpansive x
+-- Record creation: non-expansive iff every field expression is non-expansive.
+isNonexpansive (ERecordCreate _ fs) = allList (fa => match fa
+  FieldAssign _ e => isNonexpansive e) fs
 isNonexpansive _ = False
+
+-- Walk the left spine of an application to its head and test whether the
+-- head is a data/record constructor (uppercase-initial EVar) that is safe to
+-- generalize.  `Ref` is excluded because it is the only uppercase extern that
+-- builds a mutable cell — see the comment on `isNonexpansive` above.
+isCtorAppHead : Expr -> Bool
+isCtorAppHead (ELoc _ e) = isCtorAppHead e
+isCtorAppHead (EDoOrigin _ e) = isCtorAppHead e
+isCtorAppHead (EApp f _) = isCtorAppHead f
+isCtorAppHead (EVar name) = name != "Ref" && ctorHeadIsUpper name
+isCtorAppHead _ = False
+
+-- True iff the first character of a name is an ASCII uppercase letter,
+-- i.e. the name looks like a data constructor or type name.
+ctorHeadIsUpper : String -> Bool
+ctorHeadIsUpper name =
+  let cs = stringToChars name
+  arrayLength cs > 0 && isUpper (arrayGetUnsafe 0 cs)
 
 -- Lower every unbound var in [t] deeper than the current level down to the
 -- current level, so a value-restricted (non-generalized) binding's vars can't be
