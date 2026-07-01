@@ -1,0 +1,99 @@
+-- | In-memory aggregate probe — the stage-C WasmGC tandem oracle for aggregates.
+--
+-- Builds an `emp` table entirely in memory (`Array Int` image, no file I/O) and
+-- runs COUNT(*)/COUNT(col)/SUM/AVG/MIN/MAX, GROUP BY (single + multi-column),
+-- and HAVING through `lib.aggregate.queryAgg`, printing one line per output
+-- group.  Because it is bytes-first (buildDatabase → fromBytes → queryAgg) it
+-- emits + runs IDENTICALLY under the native LLVM backend and the WasmGC backend;
+-- `test/wasm/diff_sqlite.sh` builds it for both targets and diffs stdout.
+
+import lib.dbwriter.{buildDatabase}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
+import lib.aggregate.{
+  Agg, AggCountStar, AggCount, AggSum, AggAvg, AggMin, AggMax,
+  AggQuery, aggFrom, withGroupBy, withHaving,
+  eCountStar, queryAgg,
+}
+import lib.select.{eGt, eLitI}
+import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3}
+
+empSql : String
+empSql = "CREATE TABLE emp(id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER, bonus REAL)"
+
+empRows : List (List Cell)
+empRows =
+  [ [ CInt 1, CText "eng",   CInt 100, CFloat 1.5 ]
+  , [ CInt 2, CText "eng",   CInt 250, CNull ]
+  , [ CInt 3, CText "sales", CInt 100, CFloat 2.5 ]
+  , [ CInt 4, CText "sales", CNull,    CFloat 3.0 ]
+  , [ CInt 5, CText "sales", CInt 200, CNull ]
+  , [ CInt 6, CText "hr",    CNull,    CNull ]
+  ]
+
+ipk : Option Int
+ipk = Some 0
+
+showOptI : Option Int -> String
+showOptI None     = ""
+showOptI (Some n) = intToString n
+
+showOptF : Option Float -> String
+showOptF None     = ""
+showOptF (Some f) = floatToString f
+
+printRows : (a -> String) -> List a -> <IO> Unit
+printRows _   []          = ()
+printRows shw (r :: rest) =
+  let _ = println (shw r)
+  printRows shw rest
+
+runQ : Db -> String -> AggQuery -> RowType a -> (a -> String) -> <IO> Unit
+runQ db label q rt shw =
+  let _ = println label
+  match queryAgg db q rt
+    Err e   => println "query error: \{e}"
+    Ok rows => printRows shw rows
+
+runAll : Db -> <IO> Unit
+runAll db =
+  let _ = runQ db "-- whole: count* count(sal) sum avg min max --"
+            (aggFrom "emp"
+              [ AggCountStar, AggCount "salary", AggSum "salary"
+              , AggAvg "salary", AggMin "salary", AggMax "salary" ])
+            (t2 (t3 tInt tInt tInt) (t3 tFloat tInt tInt))
+            (((cs, cn, sm), (av, mn, mx)) => "\{cs}|\{cn}|\{sm}|\{floatToString av}|\{mn}|\{mx}")
+  let _ = runQ db "-- group dept: count* sum(sal) --"
+            (withGroupBy ["dept"] (aggFrom "emp" [AggCountStar, AggSum "salary"]))
+            (t3 tText tInt (tOption tInt))
+            ((d, c, s) => "\{d}|\{c}|\{showOptI s}")
+  let _ = runQ db "-- group dept: avg(sal) --"
+            (withGroupBy ["dept"] (aggFrom "emp" [AggAvg "salary"]))
+            (t2 tText (tOption tFloat))
+            ((d, a) => "\{d}|\{showOptF a}")
+  let _ = runQ db "-- group dept having count* > 1 --"
+            (withHaving (eGt eCountStar (eLitI 1))
+              (withGroupBy ["dept"] (aggFrom "emp" [AggCountStar])))
+            (t2 tText tInt)
+            ((d, c) => "\{d}|\{c}")
+  let _ = runQ db "-- group dept,salary: count* --"
+            (withGroupBy ["dept", "salary"] (aggFrom "emp" [AggCountStar]))
+            (t3 tText (tOption tInt) tInt)
+            ((d, s, c) => "\{d}|\{showOptI s}|\{c}")
+  let _ = runQ db "-- group dept: sum(bonus) [real] --"
+            (withGroupBy ["dept"] (aggFrom "emp" [AggSum "bonus"]))
+            (t2 tText (tOption tFloat))
+            ((d, s) => "\{d}|\{showOptF s}")
+  runQ db "-- group dept: min(sal) max(sal) --"
+    (withGroupBy ["dept"] (aggFrom "emp" [AggMin "salary", AggMax "salary"]))
+    (t3 tText (tOption tInt) (tOption tInt))
+    ((d, mn, mx) => "\{d}|\{showOptI mn}|\{showOptI mx}")
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE emp (in-memory) --"
+  match buildDatabase "emp" empSql 4 ipk empRows
+    Err e    => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db => runAll db

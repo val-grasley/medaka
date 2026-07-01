@@ -1,0 +1,105 @@
+-- | Aggregates + GROUP BY + HAVING differential demo.
+--
+-- Reads a real sqlite3-created DB and runs several `queryAgg db (AggQuery{...}) rt`
+-- calls through the aggregate model in lib.aggregate.  Prints one line per output
+-- group, prefixed by a per-query label, for diffing against `sqlite3` in
+-- test/aggregate_oracle.sh.
+--
+-- Usage: medaka build sqlite/aggregate_demo.mdk -o /tmp/adem && /tmp/adem <db>
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{ eEq, eGt, eColText, eLitT, eLitI }
+import lib.aggregate.{
+  Agg, AggCountStar, AggCount, AggSum, AggAvg, AggMin, AggMax,
+  AggQuery, aggFrom, withAggWhere, withGroupBy, withHaving,
+  eCountStar, queryAgg,
+}
+import lib.rowtype.{ RowType, tInt, tText, tFloat, tOption, t2, t3 }
+
+-- Render helpers (NULL → empty, matching sqlite3's default -list output).
+showOptI : Option Int -> String
+showOptI None     = ""
+showOptI (Some n) = intToString n
+
+showOptF : Option Float -> String
+showOptF None     = ""
+showOptF (Some f) = floatToString f
+
+-- ── generic per-query runner ────────────────────────────────────────────────
+runQ : Db -> String -> AggQuery -> RowType a -> (a -> String) -> <IO> Unit
+runQ db label q rt shw =
+  let _ = println label
+  match queryAgg db q rt
+    Err e   => println "query error: \{e}"
+    Ok rows => printRows shw rows
+
+printRows : (a -> String) -> List a -> <IO> Unit
+printRows _   []          = ()
+printRows shw (r :: rest) =
+  let _ = println (shw r)
+  printRows shw rest
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: adem <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      -- A. whole-table aggregates: count(*), count(salary), sum, avg, min, max
+      let _ = runQ db "-- whole: count* count(sal) sum avg min max --"
+                (aggFrom "emp"
+                  [ AggCountStar, AggCount "salary", AggSum "salary"
+                  , AggAvg "salary", AggMin "salary", AggMax "salary" ])
+                (t2 (t3 tInt tInt tInt) (t3 tFloat tInt tInt))
+                (((cs, cn, sm), (av, mn, mx)) => "\{cs}|\{cn}|\{sm}|\{floatToString av}|\{mn}|\{mx}")
+      -- B. group by dept: count(*), sum(salary)
+      let _ = runQ db "-- group dept: count* sum(sal) --"
+                (withGroupBy ["dept"] (aggFrom "emp" [AggCountStar, AggSum "salary"]))
+                (t3 tText tInt (tOption tInt))
+                ((d, c, s) => "\{d}|\{c}|\{showOptI s}")
+      -- C. group by dept: avg(salary) [float, NULL for all-null group]
+      let _ = runQ db "-- group dept: avg(sal) --"
+                (withGroupBy ["dept"] (aggFrom "emp" [AggAvg "salary"]))
+                (t2 tText (tOption tFloat))
+                ((d, a) => "\{d}|\{showOptF a}")
+      -- D. HAVING count(*) > 1
+      let _ = runQ db "-- group dept having count* > 1 --"
+                (withHaving (eGt eCountStar (eLitI 1))
+                  (withGroupBy ["dept"] (aggFrom "emp" [AggCountStar])))
+                (t2 tText tInt)
+                ((d, c) => "\{d}|\{c}")
+      -- E. multi-column GROUP BY dept, salary
+      let _ = runQ db "-- group dept,salary: count* --"
+                (withGroupBy ["dept", "salary"] (aggFrom "emp" [AggCountStar]))
+                (t3 tText (tOption tInt) tInt)
+                ((d, s, c) => "\{d}|\{showOptI s}|\{c}")
+      -- F. sum over a REAL column
+      let _ = runQ db "-- group dept: sum(bonus) [real] --"
+                (withGroupBy ["dept"] (aggFrom "emp" [AggSum "bonus"]))
+                (t2 tText (tOption tFloat))
+                ((d, s) => "\{d}|\{showOptF s}")
+      -- G. min/max with NULLs
+      let _ = runQ db "-- group dept: min(sal) max(sal) --"
+                (withGroupBy ["dept"] (aggFrom "emp" [AggMin "salary", AggMax "salary"]))
+                (t3 tText (tOption tInt) (tOption tInt))
+                ((d, mn, mx) => "\{d}|\{showOptI mn}|\{showOptI mx}")
+      -- H. WHERE + group: pre-aggregation filter (only sales rows)
+      let _ = runQ db "-- where dept=sales, group dept: count* sum --"
+                (withGroupBy ["dept"]
+                  (withAggWhere (eEq (eColText "dept") (eLitT "sales"))
+                    (aggFrom "emp" [AggCountStar, AggSum "salary"])))
+                (t3 tText tInt (tOption tInt))
+                ((d, c, s) => "\{d}|\{c}|\{showOptI s}")
+      -- I. whole-table over an EMPTY filtered set: count=0, sum=NULL, one row
+      let _ = runQ db "-- where none, whole: count* sum(sal) --"
+                (withAggWhere (eEq (eColText "dept") (eLitT "zzz"))
+                  (aggFrom "emp" [AggCountStar, AggSum "salary"]))
+                (t2 tInt (tOption tInt))
+                ((c, s) => "\{c}|\{showOptI s}")
+      -- J. group over an EMPTY filtered set: ZERO output rows
+      runQ db "-- where none, group dept: count* (no rows) --"
+        (withGroupBy ["dept"]
+          (withAggWhere (eEq (eColText "dept") (eLitT "zzz"))
+            (aggFrom "emp" [AggCountStar])))
+        (t2 tText tInt)
+        ((d, c) => "\{d}|\{c}")

@@ -1,0 +1,386 @@
+-- | sqlite.lib.aggregate — aggregates + GROUP BY + HAVING over the read path.
+--
+-- Sibling of `lib.select`: where `Select`/`query` project & filter individual
+-- rows, `AggQuery`/`queryAgg` GROUP filtered rows by one or more columns and
+-- REDUCE each group to a row of aggregate values.  It reuses the whole WHERE
+-- machinery from `lib.select` (`compilePred` over the raw `List Cell`) for the
+-- pre-aggregation filter, and reuses `lib.select`'s phantom `Expr a` layer for
+-- HAVING (a predicate over the SYNTHETIC aggregate-output row).
+--
+-- Pipeline:  findTable → scan → WHERE filter → GROUP BY key → reduce to
+-- aggregate cells → HAVING filter → decode via `RowType`.
+--
+-- Output-row layout (PINNED): the group-by key cells (in `groupBy` order) FIRST,
+-- then the aggregate value cells (in `aggs` order).  A caller's `RowType` decodes
+-- exactly that flat layout.  With no GROUP BY there is always EXACTLY ONE group
+-- over the whole filtered table (even when empty — `count(*)` = 0), matching
+-- `sqlite3`.  With a GROUP BY over zero rows there are ZERO output rows.
+--
+-- SQL semantics (verified against `sqlite3`):
+--   * `COUNT(*)` counts rows incl. NULLs; `COUNT(col)`/`SUM`/`AVG`/`MIN`/`MAX`
+--     SKIP NULLs.
+--   * `AVG` is a Float (= SUM / COUNT over the non-NULLs).
+--   * `SUM`/`AVG`/`MIN`/`MAX` over an all-NULL / empty group = NULL; `COUNT` = 0.
+--   * `SUM` of an all-integer column is an integer; a float value makes it float.
+--   * MIN/MAX/ordering use SQLite value ordering (NULL < numeric < text < blob).
+--
+-- HAVING reuses `lib.select`'s `Expr Bool`.  Aggregates are referenced in a
+-- HAVING predicate via the smart constructors `eCountStar`/`eCount`/`eSum`/
+-- `eAvg`/`eMin`/`eMax` (each names the aggregate by its canonical SQL text, e.g.
+-- `"count(*)"`, `"sum(salary)"`); group-by columns are referenced with the usual
+-- `eCol*` constructors.  The HAVING lookup resolves both against the output row.
+
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, findTable, schemaSql}
+import lib.btree.{Row}
+import lib.rowtype.{RowType, rtDecode}
+import lib.select.{SqlExpr, ECol, Expr, mkE, unExpr, compilePred}
+import list.{reverse, sortBy}
+
+-- ---------------------------------------------------------------------------
+-- Aggregate descriptors
+-- ---------------------------------------------------------------------------
+
+-- | One aggregate function in the select-list.  `AggCountStar` is `COUNT(*)`;
+--   the rest carry the column name they aggregate over.
+public export data Agg
+  = AggCountStar
+  | AggCount String
+  | AggSum String
+  | AggAvg String
+  | AggMin String
+  | AggMax String
+
+-- | The canonical SQL text of an aggregate — also the name a HAVING predicate
+--   uses to reference it (see `eCountStar`/`eSum`/...).
+export
+aggName : Agg -> String
+aggName AggCountStar = "count(*)"
+aggName (AggCount c) = "count(\{c})"
+aggName (AggSum c)   = "sum(\{c})"
+aggName (AggAvg c)   = "avg(\{c})"
+aggName (AggMin c)   = "min(\{c})"
+aggName (AggMax c)   = "max(\{c})"
+
+-- ---------------------------------------------------------------------------
+-- AggQuery + builders
+-- ---------------------------------------------------------------------------
+
+-- | An aggregate query: source table, optional WHERE, GROUP BY columns (empty =
+--   whole-table single group), the aggregate select-list, optional HAVING.
+public export data AggQuery = AggQuery
+  { from    : String
+  , where_  : Option SqlExpr
+  , groupBy : List String
+  , aggs    : List Agg
+  , having  : Option SqlExpr
+  }
+
+-- | A bare aggregate query over a table with an aggregate select-list, no
+--   WHERE / GROUP BY / HAVING.
+export
+aggFrom : String -> List Agg -> AggQuery
+aggFrom tbl aggs =
+  AggQuery { from = tbl, where_ = None, groupBy = [], aggs = aggs, having = None }
+
+-- | Attach a pre-aggregation WHERE (typed `Expr Bool`, same as `withWhere`).
+export
+withAggWhere : Expr Bool -> AggQuery -> AggQuery
+withAggWhere e q = { q | where_ = Some (unExpr e) }
+
+-- | Group by one or more columns (left-to-right key order).
+export
+withGroupBy : List String -> AggQuery -> AggQuery
+withGroupBy cols q = { q | groupBy = cols }
+
+-- | Attach a HAVING predicate over the aggregate-output row.
+export
+withHaving : Expr Bool -> AggQuery -> AggQuery
+withHaving e q = { q | having = Some (unExpr e) }
+
+-- ---------------------------------------------------------------------------
+-- HAVING aggregate references (phantom smart constructors)
+--
+-- These name an aggregate by its canonical SQL text so a HAVING predicate can
+-- reference it through the normal `Expr a` comparison combinators, e.g.
+--   withHaving (eGt eCountStar (eLitI 1)) q
+-- ---------------------------------------------------------------------------
+
+export
+eCountStar : Expr Int
+eCountStar = mkE (ECol (aggName AggCountStar))
+
+export
+eCount : String -> Expr Int
+eCount c = mkE (ECol (aggName (AggCount c)))
+
+export
+eSum : String -> Expr a
+eSum c = mkE (ECol (aggName (AggSum c)))
+
+export
+eAvg : String -> Expr Float
+eAvg c = mkE (ECol (aggName (AggAvg c)))
+
+export
+eMin : String -> Expr a
+eMin c = mkE (ECol (aggName (AggMin c)))
+
+export
+eMax : String -> Expr a
+eMax c = mkE (ECol (aggName (AggMax c)))
+
+-- ---------------------------------------------------------------------------
+-- queryAgg : execute an AggQuery, decoding each output group via a RowType
+-- ---------------------------------------------------------------------------
+
+-- | Execute an `AggQuery`: filter (WHERE), group by the GROUP BY columns, reduce
+--   each group to its aggregate cells, filter groups (HAVING), then decode each
+--   output row (= key cells ++ aggregate cells) via `rt`.  Output groups are
+--   ordered by their group-by key ascending (SQLite value ordering), matching
+--   `sqlite3 ... GROUP BY k ORDER BY k`.
+export
+queryAgg : Db -> AggQuery -> RowType a -> Result String (List a)
+queryAgg db q rt = match q
+  AggQuery { from = tbl, where_ = w, groupBy = gcols, aggs = aggs, having = h } => do
+    entry <- findTable db tbl
+    let createSql = schemaSql entry
+    let lookup = (name => columnIndex createSql name)
+    pred <- compileMaybe lookup w
+    (pkIdx, rows) <- scanTableRowsIpk db tbl
+    let keptCells = keepCells pkIdx pred rows
+    gIdxs <- resolveCols lookup gcols
+    let groups = groupRows gcols gIdxs keptCells
+    outRows <- reduceGroups aggs lookup groups
+    hpred <- compileMaybe (havingLookup gcols aggs) h
+    let finalRows = filter (cells => hpred cells) outRows
+    decodeAll rt finalRows []
+
+-- Compile an optional predicate; None → always true.
+compileMaybe : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Bool)
+compileMaybe _      None     = Ok (_ => True)
+compileMaybe lookup (Some e) = compilePred lookup e
+
+-- Materialize the IPK-substituted cells of every row that passes the predicate.
+keepCells : Option Int -> (List Cell -> Bool) -> List Row -> List (List Cell)
+keepCells _     _    []           = []
+keepCells pkIdx pred (row :: rest) =
+  let cells = rowCellsWithIpk pkIdx row
+  if pred cells
+  then cells :: keepCells pkIdx pred rest
+  else keepCells pkIdx pred rest
+
+-- Resolve each GROUP BY column name to its index (Err on an unknown column).
+resolveCols : (String -> Option Int) -> List String -> Result String (List Int)
+resolveCols _      []          = Ok []
+resolveCols lookup (c :: rest) = match lookup c
+  None   => Err "queryAgg: unknown GROUP BY column: \{c}"
+  Some i => map (is => i :: is) (resolveCols lookup rest)
+
+-- ---------------------------------------------------------------------------
+-- Grouping
+-- ---------------------------------------------------------------------------
+
+-- Group filtered rows by their group-by key.  With NO group-by columns there is
+-- always exactly one group over the whole (possibly empty) input.  Otherwise the
+-- distinct keys are collected in encounter order, each key's rows gathered, and
+-- the groups sorted by key ascending (SQLite value ordering).
+groupRows : List String -> List Int -> List (List Cell) -> List (List Cell, List (List Cell))
+groupRows gcols gIdxs cells = match gcols
+  [] => [([], cells)]
+  _  =>
+    let keys = distinctKeys gIdxs cells
+    let grouped = map (k => (k, filter (c => cellListEq (keyOf gIdxs c) k) cells)) keys
+    sortBy (a b => match (a, b)
+                     ((ka, _), (kb, _)) => cellListOrder ka kb)
+           grouped
+
+-- Extract the key cells (in group-by order) from a row's cells.
+keyOf : List Int -> List Cell -> List Cell
+keyOf idxs cells = map (i => nthCell cells i) idxs
+
+-- Distinct keys, in first-encounter order.
+distinctKeys : List Int -> List (List Cell) -> List (List Cell)
+distinctKeys gIdxs cells = reverse (dkGo gIdxs cells [])
+
+dkGo : List Int -> List (List Cell) -> List (List Cell) -> List (List Cell)
+dkGo _     []           acc = acc
+dkGo gIdxs (c :: rest)  acc =
+  let k = keyOf gIdxs c
+  if containsKey k acc then dkGo gIdxs rest acc else dkGo gIdxs rest (k :: acc)
+
+containsKey : List Cell -> List (List Cell) -> Bool
+containsKey _ []        = False
+containsKey k (x :: xs) = if cellListEq k x then True else containsKey k xs
+
+-- ---------------------------------------------------------------------------
+-- Reduction — one output row per group
+-- ---------------------------------------------------------------------------
+
+reduceGroups : List Agg -> (String -> Option Int) -> List (List Cell, List (List Cell)) -> Result String (List (List Cell))
+reduceGroups _    _      []             = Ok []
+reduceGroups aggs lookup (g :: rest)    = do
+  row  <- reduceGroup aggs lookup g
+  rows <- reduceGroups aggs lookup rest
+  Ok (row :: rows)
+
+reduceGroup : List Agg -> (String -> Option Int) -> (List Cell, List (List Cell)) -> Result String (List Cell)
+reduceGroup aggs lookup g = match g
+  (key, rows) => map (aggCells => key ++ aggCells) (reduceAggs aggs lookup rows)
+
+reduceAggs : List Agg -> (String -> Option Int) -> List (List Cell) -> Result String (List Cell)
+reduceAggs []          _      _    = Ok []
+reduceAggs (a :: rest) lookup rows = do
+  c  <- aggregateOne a lookup rows
+  cs <- reduceAggs rest lookup rows
+  Ok (c :: cs)
+
+-- Reduce a single aggregate over a group's rows to one Cell.
+aggregateOne : Agg -> (String -> Option Int) -> List (List Cell) -> Result String Cell
+aggregateOne AggCountStar _      rows = Ok (CInt (length rows))
+aggregateOne (AggCount c) lookup rows = map (i => CInt (length (nonNull (colCells i rows)))) (resolveCol lookup c)
+aggregateOne (AggSum c)   lookup rows = map (i => sumCells (nonNull (colCells i rows))) (resolveCol lookup c)
+aggregateOne (AggAvg c)   lookup rows = map (i => avgCells (nonNull (colCells i rows))) (resolveCol lookup c)
+aggregateOne (AggMin c)   lookup rows = map (i => minCells (nonNull (colCells i rows))) (resolveCol lookup c)
+aggregateOne (AggMax c)   lookup rows = map (i => maxCells (nonNull (colCells i rows))) (resolveCol lookup c)
+
+resolveCol : (String -> Option Int) -> String -> Result String Int
+resolveCol lookup c = match lookup c
+  None   => Err "queryAgg: unknown aggregate column: \{c}"
+  Some i => Ok i
+
+-- The cell at column `idx` for every row in the group.
+colCells : Int -> List (List Cell) -> List Cell
+colCells idx rows = map (r => nthCell r idx) rows
+
+nonNull : List Cell -> List Cell
+nonNull cells = filter (c => not (cellIsNull c)) cells
+
+-- SUM: NULL over an empty set; integer if all values are integers, else float.
+sumCells : List Cell -> Cell
+sumCells [] = CNull
+sumCells cells =
+  if any isFloatCell cells
+  then CFloat (sumFloat cells)
+  else CInt (sumInt cells)
+
+sumFloat : List Cell -> Float
+sumFloat cells = fold (acc c => faddF acc (cellNumF c)) 0.0 cells
+
+-- Float addition through a WasmGC seam.  On the WasmGC backend a `Float` that is
+-- a plain function parameter / fold accumulator has an ERASED static type, so the
+-- structural `cexprIsFloat` detector treats bare-variable `acc + x` as INTEGER
+-- arithmetic and traps ("illegal cast", unboxing a boxed `$float` as an i31).
+-- Seeding EACH operand with `+ 0.0` puts a Float literal in the expression so the
+-- detector unboxes both operands as `$float` (`a + 0.0 == a`, an identity on the
+-- finite non-signed-zero values aggregates sum).  A no-op on the native backend.
+-- (See EMITTER-GAPS.md: type-erased Float arithmetic on WasmGC.)
+faddF : Float -> Float -> Float
+faddF a b = (a + 0.0) + (b + 0.0)
+
+sumInt : List Cell -> Int
+sumInt cells = fold (acc c => acc + cellNumI c) 0 cells
+
+-- AVG: NULL over an empty set; else Float sum / count.
+avgCells : List Cell -> Cell
+avgCells [] = CNull
+avgCells cells = CFloat (sumFloat cells / intToFloat (length cells))
+
+-- MIN/MAX by SQLite value ordering over the non-null cells.
+minCells : List Cell -> Cell
+minCells []           = CNull
+minCells (c :: rest)  = fold (acc x => if cellOrder x acc == Lt then x else acc) c rest
+
+maxCells : List Cell -> Cell
+maxCells []           = CNull
+maxCells (c :: rest)  = fold (acc x => if cellOrder x acc == Gt then x else acc) c rest
+
+-- ---------------------------------------------------------------------------
+-- HAVING lookup — resolve names against the synthetic output row
+-- ---------------------------------------------------------------------------
+
+-- Output row = group-by key cells (0 .. k-1) ++ aggregate cells (k .. k+m-1).
+-- Group-by columns resolve by their real name; aggregates by their canonical
+-- SQL text (`aggName`).
+havingLookup : List String -> List Agg -> (String -> Option Int)
+havingLookup gcols aggs = (name =>
+  match indexOfString name gcols 0
+    Some i => Some i
+    None   => indexOfAgg name aggs (length gcols))
+
+indexOfString : String -> List String -> Int -> Option Int
+indexOfString _    []          _ = None
+indexOfString name (x :: rest) i = if name == x then Some i else indexOfString name rest (i + 1)
+
+indexOfAgg : String -> List Agg -> Int -> Option Int
+indexOfAgg _    []          _ = None
+indexOfAgg name (a :: rest) i = if name == aggName a then Some i else indexOfAgg name rest (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Decode output rows via the caller's RowType
+-- ---------------------------------------------------------------------------
+
+decodeAll : RowType a -> List (List Cell) -> List a -> Result String (List a)
+decodeAll _  []             acc = Ok (reverse acc)
+decodeAll rt (cells :: rest) acc = do
+  v <- rtDecode rt cells
+  decodeAll rt rest (v :: acc)
+
+-- ---------------------------------------------------------------------------
+-- Cell helpers (kept local to avoid re-exporting lib.select internals)
+-- ---------------------------------------------------------------------------
+
+nthCell : List Cell -> Int -> Cell
+nthCell []          _ = CNull
+nthCell (c :: rest) i = if i <= 0 then c else nthCell rest (i - 1)
+
+cellIsNull : Cell -> Bool
+cellIsNull CNull = True
+cellIsNull _     = False
+
+isFloatCell : Cell -> Bool
+isFloatCell (CFloat _) = True
+isFloatCell _          = False
+
+cellNumF : Cell -> Float
+cellNumF (CInt n)   = intToFloat n
+cellNumF (CFloat f) = f
+cellNumF _          = 0.0
+
+cellNumI : Cell -> Int
+cellNumI (CInt n) = n
+cellNumI _        = 0
+
+cellListEq : List Cell -> List Cell -> Bool
+cellListEq []        []        = True
+cellListEq (a :: xs) (b :: ys) = if cellOrder a b == Eq then cellListEq xs ys else False
+cellListEq _         _         = False
+
+cellListOrder : List Cell -> List Cell -> Ordering
+cellListOrder []        []        = Eq
+cellListOrder []        _         = Lt
+cellListOrder _         []        = Gt
+cellListOrder (a :: xs) (b :: ys) = match cellOrder a b
+  Eq => cellListOrder xs ys
+  o  => o
+
+-- | Three-way ordering of two Cell values (SQLite type ordering):
+--   NULL < Int/Float (numeric, interleaved) < Text < Blob.
+cellOrder : Cell -> Cell -> Ordering
+cellOrder CNull      CNull      = Eq
+cellOrder CNull      _          = Lt
+cellOrder _          CNull      = Gt
+cellOrder (CInt x)   (CInt y)   = compare x y
+cellOrder (CFloat x) (CFloat y) = compare x y
+cellOrder (CInt x)   (CFloat y) = compare (intToFloat x) y
+cellOrder (CFloat x) (CInt y)   = compare x (intToFloat y)
+cellOrder (CText x)  (CText y)  = compare x y
+cellOrder (CBlob x)  (CBlob y)  = compare (arrayLength x) (arrayLength y)
+cellOrder a          b          = compare (cellTypeRank a) (cellTypeRank b)
+
+cellTypeRank : Cell -> Int
+cellTypeRank CNull      = 0
+cellTypeRank (CInt _)   = 1
+cellTypeRank (CFloat _) = 1
+cellTypeRank (CText _)  = 2
+cellTypeRank (CBlob _)  = 3
