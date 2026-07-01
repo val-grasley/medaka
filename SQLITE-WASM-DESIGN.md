@@ -235,3 +235,16 @@ lib refactor:                     none required
 - **C — in-memory CRUD proof + shared oracle** `test/wasm/diff_sqlite.sh`: an in-memory sqlite probe (build db → read → mutate → read) run under both targets, diffed. **Sonnet.** This is the milestone that proves wasm CRUD == native + the tandem harness.
 - **D — host I/O externs** `readFileBytes` (byte-channel exists in `run.js`) + `writeFileBytes` (new host import + Node `fs` write) in `wasm_emit.mdk` + `test/wasm/run.js`. **Opus.** Gate: a FILE-based sqlite demo runs under wasm == native; extend `diff_sqlite.sh` with a file arm.
 - (Cross-project deps: MOOT — `sqlite/` has no `[deps]`, all imports are stdlib.)
+
+---
+
+## AS-BUILT (shipped 2026-06-30, main `3a633d7`)
+
+WasmGC port COMPLETE — SQLite (in-memory + file, full CRUD) runs under `--target wasm` == native. All wasm-backend work (no seed re-mint / LLVM fixpoint); gated by `test/wasm/diff_wasm.sh` (141/0) + the new `test/wasm/diff_sqlite.sh` (2/0, in-memory + file arms). The lib is UNCHANGED (target-agnostic; only externs differ).
+
+- **Stage A (`8cff4f3`):** 5 pure-compute externs → WAT (`bitAnd`→`i64.and`, `shiftLeft`→`i64.shl`, `shiftRight`→`i64.shr_u` LOGICAL, `arrayBlit`→`array.copy`, `arrayFill`→store loop). Wasm Int rep is UNTAGGED raw i64 → trivial.
+- **Stage B (`b9d05c3`):** 2 float-reinterpret externs (`floatToBytes64`/`bytesToFloat64`, 8-byte big-endian IEEE-754 via `i64.reinterpret_f64`/`f64.reinterpret_i64`) matching `medaka_rt.c` byte-for-byte (incl. `-0.0` sign).
+- **Stage C (`3d15756`):** in-memory CRUD proof + shared `diff_sqlite.sh` oracle. Closed 2 emitter gaps (W-SQLITE-1 eta-array, W-SQLITE-2 tuple-pattern freeVars — see EMITTER-GAPS.md).
+- **Stage D (`3a633d7`):** host I/O externs `readFileBytes` (reuses the existing read byte-channel) + `writeFileBytes` (new `mdk_write_file_reset/push/commit` host imports → Node `fs.writeFileSync`), so file-based SQLite incl. `delete`/`update` runs under wasm. Closed 1 more emitter gap (W-SQLITE-3 maxIndexAt undercount).
+
+**Tandem workflow now live:** add a probe to `diff_sqlite.sh`'s `CORPUS` → it builds under both native + wasm and diffs. Every future in-memory SQL feature gets a wasm test for free.

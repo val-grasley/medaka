@@ -734,3 +734,15 @@ Gates: `diff_compiler_build` 38→39 (new fixture `method_closure_dict.mdk` cove
 rows 1/2/4/5/ground), `diff_compiler_llvm` 183/0, `_llvm_typed` 41/0,
 `_llvm_modules` 13/0, `eval_dict` 28/0, selfcompile fixpoint C3a/C3b YES.
 
+
+---
+
+## W-SQLITE — three WasmGC gaps closed by the SQLite WasmGC port (2026-06-30)
+
+Surfaced by porting the pure-Medaka SQLite library to `--target wasm` (the census ran ref-mode and missed all three — they only appear on a full emit of the read/write path). All three are GENERAL wasm-emitter bugs, not sqlite-specific. `wasm_emit.mdk` is outside the LLVM self-compile graph → gated by the wasm oracles (`diff_wasm` 141/0, `diff_sqlite` 2/0), no seed re-mint.
+
+- **W-SQLITE-1 — array extern in point-free position (`3d15756`).** `emitExternEtaDefine` (`wasm_emit.mdk` ~3421) dispatched `isStrExternW → emitStrExternRef else emitLeafExternRef`, with NO `isArrayExternW` branch → a point-free array extern (e.g. `arrayFromList` in the byteparser parse path) fell to the leaf path → "unsupported leaf extern". Fix: added the `isArrayExternW → emitArrayExternRef` branch (mirrors the direct-call arm at ~3717) + a new `arrayEtaScratchLocals` helper so the synthesized eta `(func …)` declares the depth-0 array scratch locals (it previously declared only param locals).
+- **W-SQLITE-2 — tuple-pattern lambda param in the free-var walk (`3d15756`).** `freeVarsExpr` CLam case used `map patName pats`, which gaps on any non-`PVar`/`PWild` param — so a `do`-bind with a tuple LHS (`(a,b) <- m` → `andThen m (\(a,b) => …)`) broke, even though `emitClosure`/`emitLamDefine` already destructure such params via `bindPatRef`. Fix: `flatMap patVars pats` (matching the CLet case). General — affects ANY wasm program with a tuple/ctor-pattern lambda param.
+- **W-SQLITE-3 — `maxIndexAt` scratch-local undercount (`3a633d7`).** `CIndex`/`CSlice`/`CRangeList`/`CRangeArray`/`CRecordUpdate`/`CVariantUpdate` allocate depth-`d` scratch locals at their emit site but didn't contribute `d` to the depth bound → masked at depths 0/1 by the `maxI maxDepth 1` floor, but an `arr[i]` nested ≥2 matches deep (the sqlite mutate/select path) left `$__ixarr2` undeclared → wasm-tools "unknown local". Fix widens the bound (over-declaring locals is harmless). General — any ≥2-deep nested array index.
+
+Residual (non-blocking, out of scope): scalar-mode (`emitScalarFnBind`) + TRMC `patName` sites still reject pattern params, but are gated/unreachable for the ref-mode sqlite path.
