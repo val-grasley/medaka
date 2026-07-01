@@ -1377,7 +1377,16 @@ emitStrExtern _ _ name _ = gapE ("unsupported string extern " ++ name)
 -- floatToString is a LEAF: delegates to mdk_float_to_string (mirrors mdk_print_float's
 -- %.12g+dot logic but returns a mdk_str_lit box instead of printf-ing).
 isNumExtern : String -> Bool
-isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64", "floatRem", "floatToBytes64"]
+isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString", "intBitsToFloat", "bytesToFloat64", "floatRem", "floatToBytes64"] || isMathUnary name || isMathBinary name
+
+-- libm one-arg Float -> Float externs (native/LLVM only).  Each emits a
+-- direct `call double @mdk_<name>(double x)`, unbox in / rebox out.
+isMathUnary : String -> Bool
+isMathUnary name = contains name ["sqrt", "cbrt", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "floor", "ceil", "round", "trunc"]
+
+-- libm two-arg Float -> Float -> Float externs (native/LLVM only).
+isMathBinary : String -> Bool
+isMathBinary name = contains name ["pow", "atan2", "hypot"]
 
 emitNumExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitNumExtern e env "intToFloat" args = match emitArgs e env args
@@ -1435,6 +1444,23 @@ emitNumExtern e env "floatRem" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call double @mdk_float_rem(double " ++ da ++ ", double " ++ db ++ ")")
     (boxFloat e r, LTFloat)
   _ => panic "llvm spike: floatRem takes two arguments"
+-- libm one-arg math externs: unbox one double, call mdk_<name>, rebox.
+emitNumExtern e env name args | isMathUnary name = match emitArgs e env args
+  [a] =>
+    let d = unboxFloat e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ name ++ "(double " ++ d ++ ")")
+    (boxFloat e r, LTFloat)
+  _ => panic "llvm spike: unary math extern takes one argument"
+-- libm two-arg math externs: unbox two doubles, call mdk_<name>, rebox.
+emitNumExtern e env name args | isMathBinary name = match emitArgs e env args
+  [a, b] =>
+    let da = unboxFloat e a
+    let db = unboxFloat e b
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ name ++ "(double " ++ da ++ ", double " ++ db ++ ")")
+    (boxFloat e r, LTFloat)
+  _ => panic "llvm spike: binary math extern takes two arguments"
 emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 
 -- IO-output externs (native extern catalog slice 3).
