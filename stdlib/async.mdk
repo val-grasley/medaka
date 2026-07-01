@@ -23,10 +23,7 @@
 -- next step.  This is the trampoline / free-monad-ish encoding (ASYNC-DESIGN
 -- §2.1) — `Suspend` boundaries are the yield points the scheduler interleaves
 -- on.  The thunk performs `<e>`, so `e` is the row this computation rides.
-export
-data Async e a
-  = Done a
-  | Suspend (Unit -> <e> Async e a)
+export data Async e a = Done a | Suspend (Unit -> <e> Async e a)
 
 -- The interface instances are over `Async e` (the row fixed, the value varying)
 -- — the standard partially-applied `* -> *` instance head, like `Mappable (Map
@@ -46,15 +43,13 @@ export impl Thenable (Async e) where
 -- | Lift an effectful (or pure) thunk into `Async`, deferring it behind one
 -- `Suspend` boundary.  `liftIO (u => putStrLn "hi") : Async <Stdout> Unit`;
 -- `runAsync`-ing it performs the `<Stdout>`.  A pure thunk yields `Async <> a`.
-export
-liftIO : (Unit -> <e> a) -> Async e a
+export liftIO : (Unit -> <e> a) -> Async e a
 liftIO act = Suspend (u => Done (act u))
 
 -- | A cooperative yield point: hand control back to the scheduler, then resume.
 -- Inert for a single chain; observable only once `concurrent` interleaves tasks.
 -- Performs nothing, so it rides any row `e`.
-export
-yield : Async e Unit
+export yield : Async e Unit
 yield = Suspend (_ => Done ())
 
 -- | Drive one computation to its value (ASYNC-DESIGN §2.2), performing exactly
@@ -62,33 +57,28 @@ yield = Suspend (_ => Done ())
 -- a single chain it is just sequential execution.  (Compiled code TCOs this via
 -- `-O2`, so a single chain is unbounded; the `medaka run` interpreter caps deep
 -- chains at ~100–500k.  No stdlib rewrite needed when the runtime swap lands.)
-export
-runAsync : Async e a -> <e> a
-runAsync m =
-  match m
-    Done a => a
-    Suspend t => runAsync (t ())
+export runAsync : Async e a -> <e> a
+runAsync m = match m
+  Done a => a
+  Suspend t => runAsync (t ())
 
 -- internal — advance one step (a `Suspend` round, or stay `Done`).
 stepAsync : Async e a -> <e> Async e a
-stepAsync m =
-  match m
-    Done a => Done a
-    Suspend t => t ()
+stepAsync m = match m
+  Done a => Done a
+  Suspend t => t ()
 
 -- internal — is this computation finished?
 isDone : Async e a -> Bool
-isDone m =
-  match m
-    Done _ => True
-    Suspend _ => False
+isDone m = match m
+  Done _ => True
+  Suspend _ => False
 
 -- internal — extract a finished value (only called once every task is `Done`).
 forceVal : Async e a -> a
-forceVal m =
-  match m
-    Done a => a
-    Suspend _ => panic "async: forceVal on an unfinished computation"
+forceVal m = match m
+  Done a => a
+  Suspend _ => panic "async: forceVal on an unfinished computation"
 
 -- | Run N computations concurrently, collecting results in input order once all
 -- complete (ASYNC-DESIGN §2.3, D8 structured concurrency).  v1 advances each
@@ -96,8 +86,7 @@ forceVal m =
 -- the sequential scheduler — surfaces order-dependent bugs before the real
 -- scheduler lands.  Because v1 I/O externs block, this gains no wall-clock
 -- overlap; the *semantics* are the production semantics (the point of D3).
-export
-concurrent : List (Async e a) -> <e> Async e (List a)
+export concurrent : List (Async e a) -> <e> Async e (List a)
 concurrent asyncs
   | all isDone asyncs = Done (map forceVal asyncs)
 concurrent asyncs = Suspend (_ => concurrent (map stepAsync asyncs))

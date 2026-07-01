@@ -26,7 +26,8 @@ main = match args ()
   runtimePath::rest => withRuntime runtimePath rest
   _ => ePutStrLn "usage"
 withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  Some (preludePaths, targetPath) =>
+    withFiles runtimePath preludePaths targetPath
   None => ePutStrLn "usage"
 withFiles runtimePath preludePaths targetPath = match readFile runtimePath
   Ok rsrc => withPreludes rsrc preludePaths targetPath
@@ -43,8 +44,11 @@ runDict runtimeDecls preludeDecls userDecls =
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls
   let dictNames = preludeReturnPosDictNames livePrelude combined ++ preludeArgPosDictNames livePrelude combined ++ constrainedSigNames userDecls
-  cevalMain
-    (lowerProgram (elaborateDict runtimeDecls dictNames userNames combined))
+  cevalMain (lowerProgram (elaborateDict
+    runtimeDecls
+    dictNames
+    userNames
+    combined))
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
 readAllDecls (p::rest) = match readFile p

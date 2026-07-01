@@ -179,7 +179,8 @@ fixtureSemanticRoles medaka fixDir =
             None => check "semantic tokens: type/ctor/typeclass distinct" False
             Some ints =>
               let toks = decodeSemToks ints
-              check "semantic tokens: type/ctor/typeclass distinct"
+              check
+                "semantic tokens: type/ctor/typeclass distinct"
                 (hasTokenType 1 toks && hasTokenType 2 toks && hasTokenType 7 toks)
 
 -- Fixture 7: hover type resolution over hover_local.mdk's `let input = readLine
@@ -216,7 +217,9 @@ fixtureHoverLocal medaka fixDir =
             let _ = check "hover local: binder site → input : String" (hoverContains 3 frames "input : String")
             let _ = check "hover extern: putStrLn full signature" (hoverContains 4 frames "putStrLn : String -> <Stdout> Unit")
             let _ = check "hover extern: readLine full signature" (hoverContains 5 frames "readLine : Unit -> <Stdin> String")
-            check "hover leading-effect: main : <IO> Unit" (hoverContains 6 frames "main : <IO> Unit")
+            check
+              "hover leading-effect: main : <IO> Unit"
+              (hoverContains 6 frames "main : <IO> Unit")
 
 -- All four hover checks fail (file unreadable / session error).  Arity-1 (NOT a
 -- nullary CAF — a top-level nullary effectful binding is lazy + force-once, which
@@ -360,7 +363,9 @@ fixtureHoverDoBind medaka fixDir =
           (frames, _) =>
             let _ = check "hover do-bind: binder site -> stream : List Json" (hoverContains 2 frames "stream : List Json")
             let _ = check "hover do-bind: use site -> stream : List Json" (hoverContains 3 frames "stream : List Json")
-            check "hover do-bind: one diagnostic (mismatch at the use)" (diagPublishedFor uri frames && diagCountFor uri frames == 1)
+            check
+              "hover do-bind: one diagnostic (mismatch at the use)"
+              (diagPublishedFor uri frames && diagCountFor uri frames == 1)
 
 hoverDoBindFail : Unit -> <IO, Mut> Unit
 hoverDoBindFail _ =

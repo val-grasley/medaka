@@ -9,7 +9,8 @@
 import driver.diagnostics.{analyzeToLines}
 
 main = match args ()
-  [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
+  [runtimePath, corePath, targetPath] =>
+    withFiles runtimePath corePath targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/diagnostics_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
 
 withFiles : String -> String -> String -> <IO, Mut> Unit

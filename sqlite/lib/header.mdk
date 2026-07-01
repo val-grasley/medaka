@@ -24,38 +24,33 @@ import byteparser.{
 }
 
 -- | The parsed header fields the read path uses.
-public export data DbHeader = DbHeader
-  { pageSize     : Int
-  , pageCount    : Int
-  , encoding     : Int
-  , reserved     : Int
-  , schemaCookie : Int
-  , readVersion  : Int
-  }
+public export data DbHeader =
+  | DbHeader
+    { pageSize : Int
+    , pageCount : Int
+    , encoding : Int
+    , reserved : Int
+    , schemaCookie : Int
+    , readVersion : Int
+    }
 
-export
-headerPageSize : DbHeader -> Int
+export headerPageSize : DbHeader -> Int
 headerPageSize h = h.pageSize
 
-export
-headerPageCount : DbHeader -> Int
+export headerPageCount : DbHeader -> Int
 headerPageCount h = h.pageCount
 
-export
-headerEncoding : DbHeader -> Int
+export headerEncoding : DbHeader -> Int
 headerEncoding h = h.encoding
 
-export
-headerReserved : DbHeader -> Int
+export headerReserved : DbHeader -> Int
 headerReserved h = h.reserved
 
-export
-headerReadVersion : DbHeader -> Int
+export headerReadVersion : DbHeader -> Int
 headerReadVersion h = h.readVersion
 
 -- The expected magic bytes: "SQLite format 3\000".
-export
-magicBytes : List Int
+export magicBytes : List Int
 magicBytes =
   [ 83, 81, 76, 105, 116, 101, 32  -- "SQLite "
   , 102, 111, 114, 109, 97, 116    -- "format"
@@ -64,9 +59,10 @@ magicBytes =
 -- | Compare a parsed byte list with the expected magic; fail with a message.
 checkMagic : List Int -> ByteParser Unit
 checkMagic got =
-  if listIntEq got magicBytes
-  then pure ()
-  else failWith "not a SQLite database (bad magic string)"
+  if listIntEq got magicBytes then
+    pure ()
+  else
+    failWith "not a SQLite database (bad magic string)"
 
 -- Structural equality on List Int (avoids importing list/core derive here).
 listIntEq : List Int -> List Int -> Bool
@@ -88,8 +84,7 @@ listIntEq _ _ = False
 --
 -- > showHeader (runByteParser parseHeader (arrayFromList [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]))
 -- "Err: not a SQLite database (bad magic string) at byte 16"
-export
-parseHeader : ByteParser DbHeader
+export parseHeader : ByteParser DbHeader
 parseHeader = do
   magic <- takeBytes 16
   _ <- checkMagic magic
@@ -116,10 +111,13 @@ parseHeader = do
 
 -- | Render a parsed header (or error) as "pageSize|pageCount|encoding" for
 --   doctests.
-export
-showHeader : Result String DbHeader -> String
+export showHeader : Result String DbHeader -> String
 showHeader (Err e) = "Err: \{e}"
-showHeader (Ok h)  = stringConcat
-    [ intToString h.pageSize, "|"
-    , intToString h.pageCount, "|"
-    , intToString h.encoding ]
+showHeader (Ok h) = stringConcat
+  [
+    intToString h.pageSize,
+    "|",
+    intToString h.pageCount,
+    "|",
+    intToString h.encoding,
+  ]

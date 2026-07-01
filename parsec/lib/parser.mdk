@@ -24,8 +24,7 @@ export data PResult a = POk a Int | PErr String Int
 export data Parser a = Parser (Array Char -> Int -> PResult a)
 
 -- Run the wrapped function.
-export
-runP : Parser a -> Array Char -> Int -> PResult a
+export runP : Parser a -> Array Char -> Int -> PResult a
 runP (Parser f) input pos = f input pos
 
 -- ---------------------------------------------------------------------------
@@ -74,24 +73,21 @@ export impl Alternative Parser where
 -- ---------------------------------------------------------------------------
 
 -- | Fail unconditionally with a message.
-export
-failWith : String -> Parser a
+export failWith : String -> Parser a
 failWith msg = Parser (_ pos => PErr msg pos)
 
 -- | Consume one char if it satisfies the predicate.
-export
-satisfy : (Char -> Bool) -> Parser Char
+export satisfy : (Char -> Bool) -> Parser Char
 satisfy pred = Parser (satisfyStep pred)
 
 satisfyStep : (Char -> Bool) -> Array Char -> Int -> PResult Char
 satisfyStep pred input pos
   | pos >= arrayLength input = PErr "unexpected end of input" pos
-  | pred (input.[pos]) = POk (input.[pos]) (pos + 1)
+  | pred input.[pos] = POk input.[pos] (pos + 1)
   | otherwise = PErr "unexpected character" pos
 
 -- | Consume any single char.
-export
-anyChar : Parser Char
+export anyChar : Parser Char
 anyChar = satisfy (_ => True)
 
 -- | Consume exactly the given char.
@@ -100,13 +96,11 @@ anyChar = satisfy (_ => True)
 -- Ok 'a'
 -- > runParser (char 'a') "xyz"
 -- Err "unexpected character at 0"
-export
-char : Char -> Parser Char
+export char : Char -> Parser Char
 char c = satisfy (x => x == c)
 
 -- | Match the empty input (end of input).  Yields Unit; consumes nothing.
-export
-eof : Parser Unit
+export eof : Parser Unit
 eof = Parser eofStep
 
 eofStep : Array Char -> Int -> PResult Unit
@@ -115,16 +109,13 @@ eofStep input pos
   | otherwise = PErr "expected end of input" pos
 
 -- Convenience character classes.
-export
-digit : Parser Char
+export digit : Parser Char
 digit = satisfy isDigit
 
-export
-letter : Parser Char
+export letter : Parser Char
 letter = satisfy isAlpha
 
-export
-space : Parser Char
+export space : Parser Char
 space = satisfy isSpace
 
 -- ---------------------------------------------------------------------------
@@ -133,8 +124,7 @@ space = satisfy isSpace
 
 -- | Zero-or-more.  Uses explicit position threading (a loop), since `many` of
 --   a parser that consumes nothing must terminate.
-export
-many : Parser a -> Parser (List a)
+export many : Parser a -> Parser (List a)
 many p = Parser (input pos => manyGo p input pos [])
 
 manyGo : Parser a -> Array Char -> Int -> List a -> PResult (List a)
@@ -147,21 +137,18 @@ manyGo p input pos acc = match runP p input pos
       manyGo p input pos2 (a::acc)
 
 -- | One-or-more.  Written with `do`-notation to EXERCISE Thenable Parser.
-export
-some : Parser a -> Parser (List a)
+export some : Parser a -> Parser (List a)
 some p = do
   x <- p
   xs <- many p
   pure (x::xs)
 
 -- | Alias for `some`.
-export
-many1 : Parser a -> Parser (List a)
+export many1 : Parser a -> Parser (List a)
 many1 p = some p
 
 -- | One-or-more `p` separated by `sep`.
-export
-sepBy1 : Parser a -> Parser b -> Parser (List a)
+export sepBy1 : Parser a -> Parser b -> Parser (List a)
 sepBy1 p sep = do
   x <- p
   xs <- many (do
@@ -170,18 +157,15 @@ sepBy1 p sep = do
   pure (x::xs)
 
 -- | Zero-or-more `p` separated by `sep`.
-export
-sepBy : Parser a -> Parser b -> Parser (List a)
+export sepBy : Parser a -> Parser b -> Parser (List a)
 sepBy p sep = orElse (sepBy1 p sep) (pure [])
 
 -- | Try `p`; produce `Some` on success, `None` (consuming nothing) on failure.
-export
-optional : Parser a -> Parser (Option a)
+export optional : Parser a -> Parser (Option a)
 optional p = orElse (map Some p) (pure None)
 
 -- | `between open close p` parses `open`, then `p`, then `close`, yielding `p`.
-export
-between : Parser open -> Parser close -> Parser a -> Parser a
+export between : Parser open -> Parser close -> Parser a -> Parser a
 between open close p = do
   _ <- open
   x <- p
@@ -189,14 +173,12 @@ between open close p = do
   pure x
 
 -- | First successful parser in the list; fails if all fail.
-export
-choice : List (Parser a) -> Parser a
+export choice : List (Parser a) -> Parser a
 choice [] = failWith "choice: no alternatives"
 choice (q::rest) = orElse q (choice rest)
 
 -- | Match a literal string, yielding it back.
-export
-string : String -> Parser String
+export string : String -> Parser String
 string s = Parser (input pos => stringGo (toChars s) 0 input pos s)
 
 stringGo : Array Char -> Int -> Array Char -> Int -> String -> PResult String
@@ -212,31 +194,28 @@ stringGo want wi input pos original =
 
 -- | Left-associative chaining of `p` separated by an operator parser `op`
 --   whose value is a binary function.  `1-2-3` parses as `((1-2)-3)`.
-export
-chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
+export chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
 chainl1 p op = do
   x <- p
   chainl1Rest p op x
 
 chainl1Rest : Parser a -> Parser (a -> a -> a) -> a -> Parser a
-chainl1Rest p op acc =
-  orElse
-    (do
-      f <- op
-      y <- p
-      chainl1Rest p op (f acc y))
-    (pure acc)
+chainl1Rest p op acc = orElse
+  (do
+    f <- op
+    y <- p
+    chainl1Rest p op (f acc y))
+  (pure acc)
 
 -- | Skip zero-or-more whitespace.
-export
-spaces : Parser Unit
+export spaces : Parser Unit
 spaces = Parser (input pos => POk () (skipSpaces input pos))
 
 skipSpaces : Array Char -> Int -> Int
 skipSpaces input pos =
   if pos >= arrayLength input then
     pos
-  else if isSpace (input.[pos]) then
+  else if isSpace input.[pos] then
     skipSpaces input (pos + 1)
   else
     pos
@@ -252,8 +231,7 @@ skipSpaces input pos =
 -- Ok "ab"
 -- > runParser digit "x"
 -- Err "unexpected character at 0"
-export
-runParser : Parser a -> String -> Result String a
+export runParser : Parser a -> String -> Result String a
 runParser p s = match runP p (toChars s) 0
   POk a _ => Ok a
   PErr m pos => Err "\{m} at \{pos}"

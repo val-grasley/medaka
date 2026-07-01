@@ -57,8 +57,7 @@ import support.util.{
 -- ── synthetic tuple constructor names ─────────────────────────────────────
 -- (exported so the type-aware `check_match` exhaustiveness in typecheck.mdk can
 -- reuse the same synthetic per-arity tuple constructor names.)
-export
-tupleCtorName : Int -> String
+export tupleCtorName : Int -> String
 tupleCtorName n = "__tuple\{n}__"
 
 -- recover the arity from a tupleCtorName result, else None
@@ -69,7 +68,8 @@ tupleArityOfName c =
 
 tupleArityCheck : Array Char -> Int -> Option Int
 tupleArityCheck cs n
-  | n > 9 && charsPrefixTuple cs && charsSuffixUnder cs n = parseDigits cs 7 (n - 2)
+  | n > 9 && charsPrefixTuple cs && charsSuffixUnder cs n =
+    parseDigits cs 7 (n - 2)
   | otherwise = None
 
 charsPrefixTuple : Array Char -> Bool
@@ -112,8 +112,7 @@ public export record Oracle
   -- ctor → declared field names in order (DRecord + DData ConNamed variants)
   ctorFields : List (String, List String)
 
-export
-buildOracle : List Decl -> Oracle
+export buildOracle : List Decl -> Oracle
 buildOracle prog = Oracle {
   typeCtors = flatMap dataTypeCtors prog ++ builtinTypeCtors,
   ctorArity = flatMap dataArity prog ++ builtinArity,
@@ -122,7 +121,8 @@ buildOracle prog = Oracle {
 }
 
 builtinTypeCtors : List (String, List String)
-builtinTypeCtors = [("Bool", ["True", "False"]), ("List", ["Cons", "Nil"]), ("Unit", ["Unit"])]
+builtinTypeCtors =
+  [("Bool", ["True", "False"]), ("List", ["Cons", "Nil"]), ("Unit", ["Unit"])]
 
 builtinArity : List (String, Int)
 builtinArity = [("True", 0), ("False", 0), ("Cons", 2), ("Nil", 0), ("Unit", 0)]
@@ -137,7 +137,8 @@ builtinCtorType = [
 ]
 
 dataTypeCtors : Decl -> List (String, List String)
-dataTypeCtors (DData _ tyname _ variants _) = [(tyname, map variantName variants)]
+dataTypeCtors (DData _ tyname _ variants _) =
+  [(tyname, map variantName variants)]
 dataTypeCtors (DRecord _ tyname _ _ _) = [(tyname, [tyname])]
 dataTypeCtors _ = []
 
@@ -177,14 +178,12 @@ fieldName (Field n _) = n
 oGetCtorFields : Oracle -> String -> Option (List String)
 oGetCtorFields oracle c = lookupAssoc c oracle.ctorFields
 
-export
-oGetCtors : Oracle -> String -> Option (List String)
+export oGetCtors : Oracle -> String -> Option (List String)
 oGetCtors oracle t
   | (Some _) <- tupleArityOfName t = Some [t]
   | otherwise = lookupAssoc t oracle.typeCtors
 
-export
-oGetCtorType : Oracle -> String -> Option String
+export oGetCtorType : Oracle -> String -> Option String
 oGetCtorType oracle c
   | (Some _) <- tupleArityOfName c = Some c
   | otherwise = lookupAssoc c oracle.ctorType
@@ -195,17 +194,18 @@ oGetArity oracle c
   | otherwise = fromOption 0 (lookupAssoc c oracle.ctorArity)
 
 -- ── pattern → canonical matrix pattern ────────────────────────────────────
-export
-desugarPat : Oracle -> Pat -> Pat
+export desugarPat : Oracle -> Pat -> Pat
 desugarPat _ PWild = PWild
 desugarPat _ (PVar _) = PWild
 desugarPat _ (PLit (LBool True)) = PCon "True" []
 desugarPat _ (PLit (LBool False)) = PCon "False" []
 desugarPat _ (PLit LUnit) = PCon "Unit" []
 desugarPat _ (PLit l) = PLit l
-desugarPat oracle (PTuple ps) = PCon (tupleCtorName (listLen ps)) (map (desugarPat oracle) ps)
+desugarPat oracle (PTuple ps) =
+  PCon (tupleCtorName (listLen ps)) (map (desugarPat oracle) ps)
 desugarPat oracle (PCon c args) = PCon c (map (desugarPat oracle) args)
-desugarPat oracle (PCons h t) = PCon "Cons" [desugarPat oracle h, desugarPat oracle t]
+desugarPat oracle (PCons h t) =
+  PCon "Cons" [desugarPat oracle h, desugarPat oracle t]
 desugarPat _ (PList []) = PCon "Nil" []
 desugarPat oracle (PList (h::rest)) =
   PCon "Cons" [desugarPat oracle h, desugarPat oracle (PList rest)]
@@ -282,8 +282,7 @@ tryEachType oracle (c::cs) = match oGetCtorType oracle c
   None => tryEachType oracle cs
 
 -- ── usefulness (the Maranget recursion) ───────────────────────────────────
-export
-useful : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
+export useful : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
 useful _ _ [] _ = True
 useful _ _ (_::_) [] = False
 useful oracle col0 pmat (h::restQ) = usefulHead oracle col0 pmat h restQ
@@ -312,7 +311,8 @@ usefulWildCtors oracle (Some ctors) pmat restQ =
 
 usefulCovered : Oracle -> List String -> List (List Pat) -> List Pat -> Bool
 usefulCovered oracle ctors pmat restQ
-  | allCovered ctors (headCtors pmat) = anyList (usefulBranch oracle pmat restQ) ctors
+  | allCovered ctors (headCtors pmat) =
+    anyList (usefulBranch oracle pmat restQ) ctors
   | otherwise = useful oracle None (defaultMatrix pmat) restQ
 
 allCovered : List String -> List String -> Bool
@@ -364,11 +364,11 @@ guardArmTotal (GuardArm gs _) = guardsDecidablyExhaustive gs
 
 -- a clause is (params, body); decide guard totality / guarded-partiality
 clauseGuardsTotal : (List Pat, Expr) -> Bool
-clauseGuardsTotal (_, (EGuards arms)) = guardArmsTotal arms
+clauseGuardsTotal (_, EGuards arms) = guardArmsTotal arms
 clauseGuardsTotal _ = True
 
 clauseIsGuardedPartial : (List Pat, Expr) -> Bool
-clauseIsGuardedPartial (_, (EGuards arms)) = not (guardArmsTotal arms)
+clauseIsGuardedPartial (_, EGuards arms) = not (guardArmsTotal arms)
 clauseIsGuardedPartial _ = False
 
 clausePats : (List Pat, Expr) -> List Pat
@@ -388,7 +388,10 @@ checkGroupCovered oracle clauses =
   let arity = groupArity clauses
   let rows = totalClauseRows oracle clauses
   let query = [desugarPat oracle (PTuple (replicate arity PWild))]
-  if useful oracle (Some (tupleCtorName arity)) rows query then [guardWarning] else []
+  if useful oracle (Some (tupleCtorName arity)) rows query then
+    [guardWarning]
+  else
+    []
 
 groupArity : List (List Pat, Expr) -> Int
 groupArity [] = 0
@@ -398,7 +401,8 @@ groupArity (c::_) = listLen (clausePats c)
 totalClauseRows : Oracle -> List (List Pat, Expr) -> List (List Pat)
 totalClauseRows _ [] = []
 totalClauseRows oracle (c::rest)
-  | clauseGuardsTotal c = [desugarPat oracle (PTuple (clausePats c))] :: totalClauseRows oracle rest
+  | clauseGuardsTotal c =
+    [desugarPat oracle (PTuple (clausePats c))] :: totalClauseRows oracle rest
   | otherwise = totalClauseRows oracle rest
 
 -- ── group same-name (name, clause) pairs, first-seen order ────────────────
@@ -409,7 +413,7 @@ firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
 firstSeenNames [] seen = []
 firstSeenNames ((n, _)::rest) seen
   | contains n seen = firstSeenNames rest seen
-  | otherwise = n :: firstSeenNames rest (n :: seen)
+  | otherwise = n :: firstSeenNames rest (n::seen)
 
 clausesForName : List (String, (List Pat, Expr)) -> String -> List (List Pat, Expr)
 clausesForName [] _ = []
@@ -474,23 +478,20 @@ collectLetBinds (EDoOrigin _ e) = collectLetBinds e
 collectLetBinds _ = []
 
 collectLetBindInner : LetBind -> List LetBind
-collectLetBindInner (LetBind _ funclauses) =
-  flatMap funClauseBinds funclauses
+collectLetBindInner (LetBind _ funclauses) = flatMap funClauseBinds funclauses
 
 funClauseBinds : FunClause -> List LetBind
 funClauseBinds (FunClause _ body) = collectLetBinds body
 
 collectArmBinds : Arm -> List LetBind
-collectArmBinds (Arm _ gs body) = flatMap guardBinds gs
-  ++ collectLetBinds body
+collectArmBinds (Arm _ gs body) = flatMap guardBinds gs ++ collectLetBinds body
 
 guardBinds : Guard -> List LetBind
 guardBinds (GBool e) = collectLetBinds e
 guardBinds (GBind _ e) = collectLetBinds e
 
 guardArmBinds : GuardArm -> List LetBind
-guardArmBinds (GuardArm gs body) = flatMap guardBinds gs
-  ++ collectLetBinds body
+guardArmBinds (GuardArm gs body) = flatMap guardBinds gs ++ collectLetBinds body
 
 fieldAssignBinds : FieldAssign -> List LetBind
 fieldAssignBinds (FieldAssign _ e) = collectLetBinds e
@@ -508,8 +509,7 @@ interpBinds (InterpStr _) = []
 interpBinds (InterpExpr e) = collectLetBinds e
 
 -- ── top-level entry ───────────────────────────────────────────────────────
-export
-checkGuardExhaustiveness : List Decl -> List String
+export checkGuardExhaustiveness : List Decl -> List String
 checkGuardExhaustiveness prog =
   let oracle = buildOracle prog
   flatMap (checkGroup oracle) (groupByName (topFunDefClauses prog))
@@ -523,9 +523,9 @@ topFunDefClauses (_::rest) = topFunDefClauses rest
 
 declBodyWarnings : Oracle -> Decl -> List String
 declBodyWarnings oracle (DFunDef _ _ _ body) = letGroupWarnings oracle body
-declBodyWarnings oracle DImpl { methods, ... } = flatMap (checkGroup oracle) (groupByName (implClauses methods))
+declBodyWarnings oracle (DImpl { methods, ... }) = flatMap (checkGroup oracle) (groupByName (implClauses methods))
   ++ flatMap (implMethodBodyWarnings oracle) methods
-declBodyWarnings oracle DInterface { methods, ... } =
+declBodyWarnings oracle (DInterface { methods, ... }) =
   flatMap (ifaceMethodWarnings oracle) methods
 declBodyWarnings oracle (DProp _ _ _ body) = letGroupWarnings oracle body
 declBodyWarnings oracle (DTest _ _ body) = letGroupWarnings oracle body
@@ -547,6 +547,5 @@ ifaceMethodWarnings oracle (IfaceMethod _ _ (Some (MethodDefault _ body))) =
   letGroupWarnings oracle body
 
 -- one warning per line (the harness sorts)
-export
-exhaustToLines : List Decl -> String
+export exhaustToLines : List Decl -> String
 exhaustToLines prog = joinNl (checkGuardExhaustiveness prog)

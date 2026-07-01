@@ -44,29 +44,28 @@ specOf db entry = do
 
 -- Build an explicit-rowid spec for every `type='table'` schema entry.
 specsOf : Db -> List SchemaEntry -> List (String, String, Option Int, List (Int, List Cell)) -> Result String (List (String, String, Option Int, List (Int, List Cell)))
-specsOf _  []           acc = Ok (reverse acc)
-specsOf db (e::rest)    acc =
-  if schemaType e == "table"
-  then do
+specsOf _ [] acc = Ok (reverse acc)
+specsOf db (e::rest) acc =
+  if schemaType e == "table" then do
     spec <- specOf db e
-    specsOf db rest (spec :: acc)
+    specsOf db rest (spec::acc)
   else specsOf db rest acc
 
 roundtrip : String -> String -> <IO, FileRead, FileWrite, Mut> Unit
 roundtrip inPath outPath = match openDb inPath
-  Err e  => println "Error opening \{inPath}: \{e}"
-  Ok db  => match readSchema db
-    Err e     => println "Error reading schema: \{e}"
+  Err e => println "Error opening \{inPath}: \{e}"
+  Ok db => match readSchema db
+    Err e => println "Error reading schema: \{e}"
     Ok schema => match specsOf db schema []
-      Err e    => println "Error scanning tables: \{e}"
+      Err e => println "Error scanning tables: \{e}"
       Ok specs => writeOut outPath specs
 
 writeOut : String -> List (String, String, Option Int, List (Int, List Cell)) -> <IO, FileWrite, Mut> Unit
 writeOut outPath specs = match buildDatabaseMultiExplicit specs
-  Err e   => println "Error building: \{e}"
-  Ok img  => match writeFileBytes outPath img
+  Err e => println "Error building: \{e}"
+  Ok img => match writeFileBytes outPath img
     Err e => println "Error writing \{outPath}: \{e}"
-    Ok _  => println "wrote \{outPath}"
+    Ok _ => println "wrote \{outPath}"
 
 main : <IO, FileRead, FileWrite, Mut> Unit
 main = match args ()

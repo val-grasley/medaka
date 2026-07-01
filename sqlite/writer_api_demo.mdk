@@ -9,7 +9,11 @@
 --   reals   <out.db>   — table with a REAL column (floats)
 
 import lib.writer.{
-  ColType, TInteger, TText, TBlob, TReal,
+  ColType,
+  TInteger,
+  TText,
+  TBlob,
+  TReal,
   Column,
   TableSchema,
   writeTable,
@@ -21,56 +25,56 @@ import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 -- ---------------------------------------------------------------------------
 
 usersSchema : TableSchema
-usersSchema = TableSchema
-  { schemaTableName = "users"
-  , columns =
-      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = True  }
-      , Column { colName = "name", colType = TText,    isPrimaryKey = False }
-      , Column { colName = "age",  colType = TInteger, isPrimaryKey = False }
-      ]
-  }
+usersSchema = TableSchema {
+  schemaTableName = "users",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "name", colType = TText, isPrimaryKey = False },
+    Column { colName = "age", colType = TInteger, isPrimaryKey = False },
+  ],
+}
 
 usersRows : List (List Cell)
-usersRows =
-  [ [ CInt 1,  CText "Alice", CInt 30  ]
-  , [ CInt 2,  CText "Bob",   CNull    ]
-  , [ CInt 5,  CText "Carol", CInt (-5) ]
-  , [ CInt 10, CText "Dave",  CInt 1000000 ]
-  ]
+usersRows = [
+  [CInt 1, CText "Alice", CInt 30],
+  [CInt 2, CText "Bob", CNull],
+  [CInt 5, CText "Carol", CInt (-5)],
+  [CInt 10, CText "Dave", CInt 1000000],
+]
 
 -- ---------------------------------------------------------------------------
 -- Schema 2: kv — WITHOUT IPK (auto rowid)
 -- ---------------------------------------------------------------------------
 
 kvSchema : TableSchema
-kvSchema = TableSchema
-  { schemaTableName = "kv"
-  , columns =
-      [ Column { colName = "k", colType = TText,    isPrimaryKey = False }
-      , Column { colName = "v", colType = TInteger, isPrimaryKey = False }
-      ]
-  }
+kvSchema = TableSchema {
+  schemaTableName = "kv",
+  columns = [
+    Column { colName = "k", colType = TText, isPrimaryKey = False },
+    Column { colName = "v", colType = TInteger, isPrimaryKey = False },
+  ],
+}
 
 kvRows : List (List Cell)
-kvRows =
-  [ [ CText "alpha",   CInt 1    ]
-  , [ CText "beta",    CInt 42   ]
-  , [ CText "gamma",   CNull     ]
-  , [ CText "delta",   CInt (-7) ]
-  ]
+kvRows = [
+  [CText "alpha", CInt 1],
+  [CText "beta", CInt 42],
+  [CText "gamma", CNull],
+  [CText "delta", CInt (-7)],
+]
 
 -- ---------------------------------------------------------------------------
 -- Schema 3: blobs — WITH BLOB column
 -- ---------------------------------------------------------------------------
 
 blobSchema : TableSchema
-blobSchema = TableSchema
-  { schemaTableName = "blobs"
-  , columns =
-      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = False }
-      , Column { colName = "data", colType = TBlob,    isPrimaryKey = False }
-      ]
-  }
+blobSchema = TableSchema {
+  schemaTableName = "blobs",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = False },
+    Column { colName = "data", colType = TBlob, isPrimaryKey = False },
+  ],
+}
 
 blobRows : List (List Cell)
 blobRows =
@@ -84,22 +88,22 @@ blobRows =
 -- ---------------------------------------------------------------------------
 
 realsSchema : TableSchema
-realsSchema = TableSchema
-  { schemaTableName = "reals"
-  , columns =
-      [ Column { colName = "id",  colType = TInteger, isPrimaryKey = False }
-      , Column { colName = "val", colType = TReal,    isPrimaryKey = False }
-      ]
-  }
+realsSchema = TableSchema {
+  schemaTableName = "reals",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = False },
+    Column { colName = "val", colType = TReal, isPrimaryKey = False },
+  ],
+}
 
 realsRows : List (List Cell)
-realsRows =
-  [ [ CInt 1, CFloat 3.14       ]
-  , [ CInt 2, CFloat 0.0        ]
-  , [ CInt 3, CFloat (-2.718)   ]
-  , [ CInt 4, CFloat 9999999.9  ]
-  , [ CInt 5, CNull             ]
-  ]
+realsRows = [
+  [CInt 1, CFloat 3.14],
+  [CInt 2, CFloat 0.0],
+  [CInt 3, CFloat (-2.718)],
+  [CInt 4, CFloat 9999999.9],
+  [CInt 5, CNull],
+]
 
 -- ---------------------------------------------------------------------------
 -- Dispatch
@@ -112,12 +116,12 @@ main = match args ()
 
 dispatch : String -> String -> <IO, Mut> Unit
 dispatch "users" out = run usersSchema usersRows out
-dispatch "kv"    out = run kvSchema    kvRows    out
-dispatch "blob"  out = run blobSchema  blobRows  out
+dispatch "kv" out = run kvSchema kvRows out
+dispatch "blob" out = run blobSchema blobRows out
 dispatch "reals" out = run realsSchema realsRows out
-dispatch cmd     _   = println "unknown command: \{cmd}"
+dispatch cmd _ = println "unknown command: \{cmd}"
 
 run : TableSchema -> List (List Cell) -> String -> <IO, Mut> Unit
 run schema rows out = match writeTable out schema rows
   Err e => println "Error: \{e}"
-  Ok _  => println "wrote \{out}"
+  Ok _ => println "wrote \{out}"

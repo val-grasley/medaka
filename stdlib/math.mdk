@@ -31,16 +31,14 @@
 --
 -- > toRadians 0.0
 -- 0.0
-export
-toRadians : Float -> Float
+export toRadians : Float -> Float
 toRadians deg = deg * pi / 180.0
 
 -- | Convert radians to degrees.
 --
 -- > toDegrees 0.0
 -- 0.0
-export
-toDegrees : Float -> Float
+export toDegrees : Float -> Float
 toDegrees rad = rad * 180.0 / pi
 
 -- ── Float predicates ────────────────────────────────────────────────────
@@ -49,8 +47,7 @@ toDegrees rad = rad * 180.0 / pi
 --
 -- > isNaN 1.0
 -- False
-export
-isNaN : Float -> Bool
+export isNaN : Float -> Bool
 isNaN x = x != x
 
 -- | True iff the argument is positive or negative infinity.  A finite `x`
@@ -58,8 +55,7 @@ isNaN x = x != x
 --
 -- > isInfinite 1.0
 -- False
-export
-isInfinite : Float -> Bool
+export isInfinite : Float -> Bool
 isInfinite x = not (isNaN x) && isNaN (x - x)
 
 -- ── Logarithms ──────────────────────────────────────────────────────────
@@ -70,8 +66,7 @@ isInfinite x = not (isNaN x) && isNaN (x - x)
 -- 3.0
 -- > logBase 10.0 1000.0
 -- 3.0
-export
-logBase : Float -> Float -> Float
+export logBase : Float -> Float -> Float
 logBase base x = log x / log base
 
 -- ── Pure integer helpers ────────────────────────────────────────────────
@@ -83,8 +78,7 @@ logBase base x = log x / log base
 -- 6
 -- > gcdInt 17 5
 -- 1
-export
-gcdInt : Int -> Int -> Int
+export gcdInt : Int -> Int -> Int
 gcdInt a b = gcdGo (absInt a) (absInt b)
 
 gcdGo : Int -> Int -> Int
@@ -97,8 +91,7 @@ gcdGo a b = gcdGo b (a % b)
 -- 12
 -- > lcmInt 3 5
 -- 15
-export
-lcmInt : Int -> Int -> Int
+export lcmInt : Int -> Int -> Int
 lcmInt 0 _ = 0
 lcmInt _ 0 = 0
 lcmInt a b = absInt (a / gcdInt a b * b)
@@ -112,8 +105,7 @@ lcmInt a b = absInt (a / gcdInt a b * b)
 -- 1
 -- > powInt 5 3
 -- 125
-export
-powInt : Int -> Int -> Int
+export powInt : Int -> Int -> Int
 powInt _ 0 = 1
 powInt b n = if n < 0 then 1 else powGo b n 1
 
@@ -185,7 +177,7 @@ prop "gcdInt is commutative" (a : Int) (b : Int) = eq (gcdInt a b) (gcdInt b a)
 
 prop "gcdInt divides both arguments (when nonzero)" (a : Int) (b : Int) =
   let g = gcdInt a b
-  eq g 0 || (a % g == 0 && b % g == 0)
+  eq g 0 || a % g == 0 && b % g == 0
 
 prop "lcmInt is commutative" (a : Int) (b : Int) = eq (lcmInt a b) (lcmInt b a)
 

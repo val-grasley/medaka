@@ -65,7 +65,7 @@ b64Val c urlSafe =
 
 encodeGo : Array Int -> Int -> Int -> Bool -> List Char -> List Char
 encodeGo bytes i n urlSafe acc
-  | i >= n    = acc
+  | i >= n = acc
   | otherwise =
     let remain = n - i
     let b0 = byteAt i bytes
@@ -98,17 +98,25 @@ encodeGo bytes i n urlSafe acc
    "Zm9vYmE="
    > encode (toUtf8 "foobar")
    "Zm9vYmFy" -}
-export
-encode : Array Int -> String
-encode bytes = stringFromChars (arrayFromList (encodeGo bytes 0 (arrayLength bytes) False []))
+export encode : Array Int -> String
+encode bytes = stringFromChars (arrayFromList (encodeGo
+  bytes
+  0
+  (arrayLength bytes)
+  False
+  []))
 
 {- | Bytes → URL-and-filename-safe base64 (`-`/`_`, still `=`-padded).
 
    > encodeUrlSafe (fromList [255, 239, 191])
    "_--_" -}
-export
-encodeUrlSafe : Array Int -> String
-encodeUrlSafe bytes = stringFromChars (arrayFromList (encodeGo bytes 0 (arrayLength bytes) True []))
+export encodeUrlSafe : Array Int -> String
+encodeUrlSafe bytes = stringFromChars (arrayFromList (encodeGo
+  bytes
+  0
+  (arrayLength bytes)
+  True
+  []))
 
 -- ── Decode ──────────────────────────────────────────────────────────────────
 
@@ -128,25 +136,30 @@ tok c urlSafe =
 -- | Decode one 4-char group.  `isLast` gates whether `=` padding is legal
 --   here (only the final group of a well-formed input may be padded).
 decodeQuad : Char -> Char -> Char -> Char -> Bool -> Bool -> Result String (List Int)
-decodeQuad c0 c1 c2 c3 urlSafe isLast =
-  match (b64Val c0 urlSafe, b64Val c1 urlSafe, tok c2 urlSafe, tok c3 urlSafe)
-    (Some a, Some b, TokVal c, TokVal d) =>
-      Ok [bitOr (shiftLeft a 2) (shiftRight b 4),
-          bitOr (shiftLeft (bitAnd b 15) 4) (shiftRight c 2),
-          bitOr (shiftLeft (bitAnd c 3) 6) d]
-    (Some a, Some b, TokVal c, TokPad) =>
-      if isLast then
-        Ok [bitOr (shiftLeft a 2) (shiftRight b 4),
-            bitOr (shiftLeft (bitAnd b 15) 4) (shiftRight c 2)]
-      else Err "base64.decode: misplaced padding"
-    (Some a, Some b, TokPad, TokPad) =>
-      if isLast then Ok [bitOr (shiftLeft a 2) (shiftRight b 4)]
-      else Err "base64.decode: misplaced padding"
-    _ => Err "base64.decode: invalid character or padding"
+decodeQuad c0 c1 c2 c3 urlSafe isLast = match (b64Val c0 urlSafe, b64Val c1 urlSafe, tok c2 urlSafe, tok c3 urlSafe)
+  (Some a, Some b, TokVal c, TokVal d) => Ok [
+    bitOr (shiftLeft a 2) (shiftRight b 4),
+    bitOr (shiftLeft (bitAnd b 15) 4) (shiftRight c 2),
+    bitOr (shiftLeft (bitAnd c 3) 6) d,
+  ]
+  (Some a, Some b, TokVal c, TokPad) =>
+    if isLast then
+      Ok [
+        bitOr (shiftLeft a 2) (shiftRight b 4),
+        bitOr (shiftLeft (bitAnd b 15) 4) (shiftRight c 2),
+      ]
+    else
+      Err "base64.decode: misplaced padding"
+  (Some a, Some b, TokPad, TokPad) =>
+    if isLast then
+      Ok [bitOr (shiftLeft a 2) (shiftRight b 4)]
+    else
+      Err "base64.decode: misplaced padding"
+  _ => Err "base64.decode: invalid character or padding"
 
 decodeGo : Array Char -> Int -> Int -> Bool -> List Int -> Result String (List Int)
 decodeGo chars i n urlSafe acc
-  | i >= n    = Ok acc
+  | i >= n = Ok acc
   | otherwise =
     let isLast = i + 4 == n
     match decodeQuad (charAt i chars) (charAt (i + 1) chars) (charAt (i + 2) chars) (charAt (i + 3) chars) urlSafe isLast
@@ -157,12 +170,10 @@ decodeWith : String -> Bool -> Result String (Array Int)
 decodeWith s urlSafe =
   let chars = toChars s
   let n = arrayLength chars
-  if n % 4 != 0 then
-    Err "base64.decode: length not a multiple of 4"
-  else
-    match decodeGo chars 0 n urlSafe []
-      Ok bytes => Ok (arrayFromList bytes)
-      Err e => Err e
+  if n % 4 != 0 then Err "base64.decode: length not a multiple of 4"
+  else match decodeGo chars 0 n urlSafe []
+    Ok bytes => Ok (arrayFromList bytes)
+    Err e => Err e
 
 {- | Standard base64 → bytes.  Strict: `Err` on bad length, invalid
    character, or misplaced padding.
@@ -181,16 +192,14 @@ decodeWith s urlSafe =
    Err "base64.decode: length not a multiple of 4"
    > decode "Z@=="
    Err "base64.decode: invalid character or padding" -}
-export
-decode : String -> Result String (Array Int)
+export decode : String -> Result String (Array Int)
 decode s = decodeWith s False
 
 {- | URL-and-filename-safe base64 → bytes.
 
    > decodeUrlSafe "_--_"
    Ok [|255, 239, 191|] -}
-export
-decodeUrlSafe : String -> Result String (Array Int)
+export decodeUrlSafe : String -> Result String (Array Int)
 decodeUrlSafe s = decodeWith s True
 
 -- ── String convenience ───────────────────────────────────────────────────────
@@ -199,16 +208,14 @@ decodeUrlSafe s = decodeWith s True
 
    > encodeString "foo"
    "Zm9v" -}
-export
-encodeString : String -> String
+export encodeString : String -> String
 encodeString s = encode (toUtf8 s)
 
 {- | Standard base64 → UTF-8-decoded String.
 
    > decodeString "Zm9v"
    Ok "foo" -}
-export
-decodeString : String -> Result String String
+export decodeString : String -> Result String String
 decodeString s = match decode s
   Ok bytes => Ok (fromUtf8 bytes)
   Err e => Err e
@@ -216,7 +223,7 @@ decodeString s = match decode s
 -- ── Properties ──────────────────────────────────────────────────────────────
 
 toByteArray : List Int -> Array Int
-toByteArray xs = arrayFromList (map (b => ((b % 256) + 256) % 256) xs)
+toByteArray xs = arrayFromList (map (b => (b % 256 + 256) % 256) xs)
 
 prop "base64 round-trip: decode (encode bs) == Ok bs" (xs : List Int) =
   let bs = toByteArray xs

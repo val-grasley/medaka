@@ -64,13 +64,11 @@ import tools.prop_runner.{runAllProps, hasProps}
 import support.util.{listLen}
 import support.path.{dirOf}
 
-export
-rootsOrDefault : String -> List String -> List String
+export rootsOrDefault : String -> List String -> List String
 rootsOrDefault target [] = [dirOf target]
 rootsOrDefault _ roots = roots
 
-export
-runTest : String -> String -> String -> List String -> <IO, Mut> Unit
+export runTest : String -> String -> String -> List String -> <IO, Mut> Unit
 runTest runtimeP coreP target roots = match readFile runtimeP
   Err e => ePutStrLn e
   Ok rsrc => match readFile coreP
@@ -103,7 +101,8 @@ runDoctests runtimeDecls coreDecls target tsrc userDecls roots =
 
 runChosen : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO, Mut> RunResult
 runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
-  | hasUseDecls userDecls = runMulti runtimeDecls coreDecls target userDecls roots examples synthDecls
+  | hasUseDecls userDecls =
+    runMulti runtimeDecls coreDecls target userDecls roots examples synthDecls
   | otherwise = runSingle runtimeDecls coreDecls userDecls examples synthDecls
 
 -- Single-file path: drop shadowed prelude, append synth, dict-elaborate, run.
@@ -125,7 +124,10 @@ runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> 
 runSingle runtimeDecls coreDecls userDecls examples synthDecls =
   let allUser = userDecls ++ synthDecls
   let userNames = funNamesOf allUser
-  let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
+  let livePrelude = if programIsCore userDecls then
+    []
+  else
+    dropShadowedExp userNames coreDecls
   let elaborated = elaborateOne runtimeDecls livePrelude ("__user__", allUser)
   let env = evalOne [] ("__main__", elaborated)
   buildDetails (Ok env) examples
@@ -150,7 +152,7 @@ pcHasOrdering (_::rest) = pcHasOrdering rest
 
 pcHasFoldable : List Decl -> Bool
 pcHasFoldable [] = False
-pcHasFoldable (DInterface { name = "Foldable", ... }::_) = True
+pcHasFoldable ((DInterface { name = "Foldable", ... })::_) = True
 pcHasFoldable (_::rest) = pcHasFoldable rest
 
 -- Multi-module path: load the module graph, inject synth into the root module,
@@ -227,7 +229,8 @@ printOne target ex res =
 runProps : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
 runProps runtimeDecls coreDecls target userDecls roots
   | not (hasProps userDecls) = True
-  | hasUseDecls userDecls = runPropsMulti runtimeDecls coreDecls target userDecls roots
+  | hasUseDecls userDecls =
+    runPropsMulti runtimeDecls coreDecls target userDecls roots
   | otherwise = runPropsSingle runtimeDecls coreDecls userDecls
 
 -- Single-file (no-import) prop path, DRIVER-COLLAPSE Phase 1+3: same multi-module
@@ -242,7 +245,10 @@ runProps runtimeDecls coreDecls target userDecls roots
 runPropsSingle : List Decl -> List Decl -> List Decl -> <IO, Mut> Bool
 runPropsSingle runtimeDecls coreDecls userDecls =
   let userNames = funNamesOf userDecls
-  let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
+  let livePrelude = if programIsCore userDecls then
+    []
+  else
+    dropShadowedExp userNames coreDecls
   let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
   let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
   let rootProps = match lookupModuleDecls "__user__" (snd elaborated)

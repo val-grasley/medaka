@@ -17,17 +17,19 @@ createSql : String
 createSql = "CREATE TABLE t(id INTEGER PRIMARY KEY, val TEXT)"
 
 mkRow : Int -> List Cell
-mkRow i = [ CInt i, CText "item_\{intToString i}" ]
+mkRow i = [CInt i, CText "item_\{intToString i}"]
 
 mkRows : Int -> Int -> List (List Cell) -> List (List Cell)
 mkRows i n acc =
-  if i > n then reverse acc
-  else mkRows (i + 1) n (mkRow i :: acc)
+  if i > n then
+    reverse acc
+  else
+    mkRows (i + 1) n (mkRow i :: acc)
 
 parseN : String -> Int
 parseN s = match toInt s
   Some n => n
-  None   => 0
+  None => 0
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -39,4 +41,4 @@ run n out =
   let rows = mkRows 1 n []
   match writeDatabase out tableName createSql 2 (Some 0) rows
     Err e => println "Error: \{e}"
-    Ok _  => println "wrote \{out} (\{intToString n} rows)"
+    Ok _ => println "wrote \{out} (\{intToString n} rows)"

@@ -15,7 +15,13 @@
 -- precise ppTyP that renders <eff> like OCaml's pp_ty_prec.
 
 import frontend.lexer.{Comment, collectComments, commentLine, commentText}
-import frontend.parser.{parseWithPositions, Positions, DeclPos, positionsDecls, declPosLine}
+import frontend.parser.{
+  parseWithPositions,
+  Positions,
+  DeclPos,
+  positionsDecls,
+  declPosLine,
+}
 import frontend.ast.{
   Decl(..),
   Ty(..),
@@ -107,10 +113,14 @@ ppTyDoc t = ppTyP 0 t
 --   "--foo"         -> "foo"   (len>2, drop first 2)
 commentBody : String -> String
 commentBody t =
-  if t == "--" then ""
-  else if dlen t >= 3 && dsub 0 3 t == "-- " then dsub 3 (dlen t) t
-  else if dlen t > 2 then dsub 2 (dlen t) t
-  else ""
+  if t == "--" then
+    ""
+  else if dlen t >= 3 && dsub 0 3 t == "-- " then
+    dsub 3 (dlen t) t
+  else if dlen t > 2 then
+    dsub 2 (dlen t) t
+  else
+    ""
 
 -- Expand a comment into (line, text) pairs.  Block comments expand to one entry
 -- per inner line (bare trimmed, like lib/doc.ml expand_comment — NOT the
@@ -141,7 +151,8 @@ splitNlDoc s =
 splitNlGoDoc : Array Char -> Int -> Int -> Int -> List String
 splitNlGoDoc cs n start i
   | i >= n = [charsSliceDoc cs start n]
-  | arrayGetUnsafe i cs == '\n' = charsSliceDoc cs start i :: splitNlGoDoc cs n (i + 1) (i + 1)
+  | arrayGetUnsafe i cs == '\n' =
+    charsSliceDoc cs start i :: splitNlGoDoc cs n (i + 1) (i + 1)
   | otherwise = splitNlGoDoc cs n start (i + 1)
 
 charsSliceDoc : Array Char -> Int -> Int -> String
@@ -173,8 +184,10 @@ lookupLineLast tbl line = lookupLineLastGo tbl line None
 lookupLineLastGo : List (Int, String) -> Int -> Option String -> Option String
 lookupLineLastGo [] _ acc = acc
 lookupLineLastGo ((l, t)::rest) line acc =
-  if l == line then lookupLineLastGo rest line (Some t)
-  else lookupLineLastGo rest line acc
+  if l == line then
+    lookupLineLastGo rest line (Some t)
+  else
+    lookupLineLastGo rest line acc
 
 -- Return doc prose for the decl at [startLine]: the maximal consecutive block
 -- of comments immediately above it (no line gap).  Newline-joined + trimmed.
@@ -186,16 +199,19 @@ findDocForLine tbl startLine =
 collectDocLines : List (Int, String) -> Int -> List String -> List String
 collectDocLines tbl line acc = match lookupLineLast tbl line
   None => acc
-  Some text => collectDocLines tbl (line - 1) (text :: acc)
+  Some text => collectDocLines tbl (line - 1) (text::acc)
 
 -- ── signature rendering (mirror lib/doc.ml) ─────────────────────────────────
 
 ppDataVariant : Variant -> String
 ppDataVariant (Variant name (ConPos [])) = name
-ppDataVariant (Variant name (ConPos tys)) =
-  name ++ " " ++ joinWith " " (map (ppTyP 2) tys)
-ppDataVariant (Variant name (ConNamed fs)) =
-  name ++ " { " ++ joinWith ", " (map ppFieldDoc fs) ++ " }"
+ppDataVariant (Variant name (ConPos tys)) = name
+  ++ " "
+  ++ joinWith " " (map (ppTyP 2) tys)
+ppDataVariant (Variant name (ConNamed fs)) = name
+  ++ " { "
+  ++ joinWith ", " (map ppFieldDoc fs)
+  ++ " }"
 
 ppFieldDoc : Field -> String
 ppFieldDoc (Field fn ft) = fn ++ " : " ++ ppTyDoc ft
@@ -232,8 +248,10 @@ lookupScheme name schemes = lookupSchemeGo name schemes None
 lookupSchemeGo : String -> List (String, Scheme) -> Option Scheme -> Option Scheme
 lookupSchemeGo _ [] acc = acc
 lookupSchemeGo name ((n, s)::rest) acc =
-  if name == n then lookupSchemeGo name rest (Some s)
-  else lookupSchemeGo name rest acc
+  if name == n then
+    lookupSchemeGo name rest (Some s)
+  else
+    lookupSchemeGo name rest acc
 
 -- A rendered interface method line: `  name : ty`.
 ppIfaceMethod : IfaceMethod -> String
@@ -252,29 +270,29 @@ renderSig (DLetGroup True bindings) schemes = match bindings
   [] => None
 renderSig (DData vis name params variants _) _
   | not (dataVisPrivate vis) =
-    let head = joinWith " " (name :: params)
+    let head = joinWith " " (name::params)
     let body = match variants
       [] => ""
       _ => "\n  = " ++ joinWith "\n  | " (map ppDataVariant variants)
     Some (name, "data " ++ head ++ body)
 renderSig (DRecord vis name params fields _) _
   | not (dataVisPrivate vis) =
-    let head = joinWith " " (name :: params)
+    let head = joinWith " " (name::params)
     Some (name, "record " ++ head ++ " " ++ ppRecordFields fields)
-renderSig DInterface { pub = True, name, typarams, methods } _ =
-  let head = joinWith " " (name :: typarams)
+renderSig (DInterface { pub = True, name, typarams, methods }) _ =
+  let head = joinWith " " (name::typarams)
   let ms = map ppIfaceMethod methods
   let body = match ms
     [] => ""
     _ => "\n" ++ joinWith "\n" ms
   Some (name, "interface " ++ head ++ body)
 renderSig (DTypeAlias True name params ty) _ =
-  let head = joinWith " " (name :: params)
+  let head = joinWith " " (name::params)
   Some (name, "type " ++ head ++ " = " ++ ppTyDoc ty)
 renderSig (DNewtype True name params ctor ty _) _ =
-  let head = joinWith " " (name :: params)
+  let head = joinWith " " (name::params)
   Some (name, "newtype " ++ head ++ " = " ++ ctor ++ " " ++ ppTyP 2 ty)
-renderSig DImpl { pub = True, iface, tys, reqs } _ =
+renderSig (DImpl { pub = True, iface, tys, reqs }) _ =
   let args = match tys
     [] => ""
     _ => " " ++ joinWith " " (map (ppTyP 2) tys)
@@ -321,18 +339,24 @@ extractFold ((decl, dp)::rest) schemes tbl revEntries seen =
       extractFold rest schemes tbl (fst acc) (snd acc)
     None => match renderSig decl schemes
       None => extractFold rest schemes tbl revEntries seen
-      Some (name, sigStr) =>
-        if memberStr name seen then extractFold rest schemes tbl revEntries seen
-        else
-          let doc = findDocForLine tbl line
-          extractFold rest schemes tbl (DocEntry name sigStr doc :: revEntries) (name :: seen)
+      Some (name, sigStr) => if memberStr name seen then extractFold rest schemes tbl revEntries seen
+      else
+        let doc = findDocForLine tbl line
+        extractFold
+          rest
+          schemes
+          tbl
+          (DocEntry name sigStr doc :: revEntries)
+          (name::seen)
 
 -- Add each letgroup extra if its name is unseen (first wins).
 foldExtras : List (String, DocEntry) -> List DocEntry -> List String -> (List DocEntry, List String)
 foldExtras [] revEntries seen = (revEntries, seen)
 foldExtras ((name, e)::rest) revEntries seen =
-  if memberStr name seen then foldExtras rest revEntries seen
-  else foldExtras rest (e :: revEntries) (name :: seen)
+  if memberStr name seen then
+    foldExtras rest revEntries seen
+  else
+    foldExtras rest (e::revEntries) (name::seen)
 
 -- Match a DLetGroup, returning (is_pub, bindings) or None.
 letgroupOf : Decl -> Option (Bool, List LetBind)
@@ -354,7 +378,7 @@ zipDoc (x::xs) (y::ys) = (x, y) :: zipDoc xs ys
 
 renderMarkdown : String -> List DocEntry -> String
 renderMarkdown moduleName entries =
-  stringConcat (("# " ++ moduleName ++ "\n\n") :: map renderEntry entries)
+  stringConcat ("# " ++ moduleName ++ "\n\n" :: map renderEntry entries)
 
 renderEntry : DocEntry -> String
 renderEntry (DocEntry name sig doc) =
@@ -371,8 +395,7 @@ renderEntry (DocEntry name sig doc) =
 -- runtimeSrc / coreSrc are the prelude sources (runtime.mdk + core.mdk), read
 -- by the caller from MEDAKA_ROOT; src is the target file; filename gives the
 -- module-name basename.
-export
-runDoc : String -> String -> String -> String -> <Mut> String
+export runDoc : String -> String -> String -> String -> <Mut> String
 runDoc runtimeSrc coreSrc src filename =
   let parsed = parseWithPositions src
   let rawDecls = fst parsed

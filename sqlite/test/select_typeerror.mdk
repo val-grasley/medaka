@@ -9,9 +9,15 @@
 -- Run:  medaka check sqlite/test/select_typeerror.mdk   => expect FAILURE.
 
 import lib.select.{
-  Expr, Select,
-  eEq, eAnd, eColInt, eLitT, eLitI,
-  selectFrom, withWhere,
+  Expr,
+  Select,
+  eEq,
+  eAnd,
+  eColInt,
+  eLitT,
+  eLitI,
+  selectFrom,
+  withWhere,
 }
 
 -- ERROR 1: comparing an Int column to a Text literal — `Int` vs `String`.

@@ -28,9 +28,7 @@ import string.{trim, lines}
 
 -- ── Value type ──────────────────────────────────────────────────────────────
 
-public export data TomlValue
-  = TStr String
-  | TArr (List String)
+public export data TomlValue = TStr String | TArr (List String)
 
 -- | A parsed TOML document: a flat list of (qualifiedKey, value) pairs.
 public export data Toml = Toml (List (String, TomlValue))
@@ -42,7 +40,7 @@ listReverse = listRevGo []
 
 listRevGo : List a -> List a -> List a
 listRevGo acc [] = acc
-listRevGo acc (x::xs) = listRevGo (x :: acc) xs
+listRevGo acc (x::xs) = listRevGo (x::acc) xs
 
 -- ── Comment stripping ────────────────────────────────────────────────────────
 
@@ -61,9 +59,10 @@ stripCommentGo arr i n inStr acc
 
 stripCommentStep : Array Char -> Int -> Int -> Bool -> List Char -> Char -> String
 stripCommentStep arr i n inStr acc c
-  | charCode c == 34 = stripCommentGo arr (i + 1) n (not inStr) (c :: acc)
-  | charCode c == 35 && not inStr = stringFromChars (arrayFromList (listReverse acc))
-  | otherwise = stripCommentGo arr (i + 1) n inStr (c :: acc)
+  | charCode c == 34 = stripCommentGo arr (i + 1) n (not inStr) (c::acc)
+  | charCode c == 35 && not inStr =
+    stringFromChars (arrayFromList (listReverse acc))
+  | otherwise = stripCommentGo arr (i + 1) n inStr (c::acc)
 
 -- ── String value parser ──────────────────────────────────────────────────────
 
@@ -78,7 +77,8 @@ parseQuotedStr arr i
 parseQuotedBody : Array Char -> Int -> List Char -> Result String (String, Int)
 parseQuotedBody arr i acc
   | i >= arrayLength arr = Err "unterminated string"
-  | arrayGetUnsafe i arr == '"' = Ok (stringFromChars (arrayFromList (listReverse acc)), i + 1)
+  | arrayGetUnsafe i arr == '"' =
+    Ok (stringFromChars (arrayFromList (listReverse acc)), i + 1)
   | otherwise = parseQuotedBody arr (i + 1) (arrayGetUnsafe i arr :: acc)
 
 -- ── Array value parser ───────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ parseArrayItems arr i acc
 parseArrayItemStr : Array Char -> Int -> List String -> Result String (List String, Int)
 parseArrayItemStr arr i acc = match parseQuotedStr arr i
   Err e => Err e
-  Ok (s, j) => parseArrayItems arr j (s :: acc)
+  Ok (s, j) => parseArrayItems arr j (s::acc)
 
 -- ── Key-value line parser ────────────────────────────────────────────────────
 
@@ -175,14 +175,12 @@ parseLinesAcc : List String -> String -> List (String, TomlValue) -> Result Stri
 parseLinesAcc [] _ acc = Ok (listReverse acc)
 parseLinesAcc (l::ls) section acc =
   let trimmed = trim (stripComment l)
-  if trimmed == "" then
-    parseLinesAcc ls section acc
-  else
-    match parseHeader trimmed
-      Some hdr => parseLinesAcc ls hdr acc
-      None => match parseKv trimmed
-        Err e => Err e
-        Ok (k, v) => parseLinesAcc ls section ((qualifyKey section k, v) :: acc)
+  if trimmed == "" then parseLinesAcc ls section acc
+  else match parseHeader trimmed
+    Some hdr => parseLinesAcc ls hdr acc
+    None => match parseKv trimmed
+      Err e => Err e
+      Ok (k, v) => parseLinesAcc ls section ((qualifyKey section k, v)::acc)
 
 {- | Parse a TOML string (supported subset) into a `Toml` document, or an
    error message describing the first parse failure.
@@ -206,8 +204,7 @@ parseLinesAcc (l::ls) section acc =
 
    > parse "name = \"hello\" # a comment" == Ok (Toml [("name", TStr "hello")])
    True -}
-export
-parse : String -> Result String Toml
+export parse : String -> Result String Toml
 parse s = match parseLinesAcc (lines s) "" []
   Err e => Err e
   Ok kvs => Ok (Toml kvs)
@@ -281,8 +278,7 @@ parseWorkspaceMembers src = match parse src
 
    > parseGetStr "server.host" "[package]\nname = \"x\""
    None -}
-export
-getString : String -> Toml -> Option String
+export getString : String -> Toml -> Option String
 getString key (Toml kvs) = match lookupKvs key kvs
   None => None
   Some (TStr s) => Some s
@@ -308,8 +304,7 @@ getString key (Toml kvs) = match lookupKvs key kvs
 
    > parseGetArr "workspace.members" "[workspace]\nmembers = []"
    Some [] -}
-export
-getArray : String -> Toml -> Option (List String)
+export getArray : String -> Toml -> Option (List String)
 getArray key (Toml kvs) = match lookupKvs key kvs
   None => None
   Some (TArr xs) => Some xs
@@ -326,8 +321,7 @@ getArray key (Toml kvs) = match lookupKvs key kvs
 
    > parsePackageName "[package]\nversion = \"0.1.0\""
    None -}
-export
-packageName : Toml -> Option String
+export packageName : Toml -> Option String
 packageName doc = getString "name" doc
 
 {- | Extract `version` from a parsed `[package]` section.
@@ -339,8 +333,7 @@ packageName doc = getString "name" doc
 
    > parsePackageVersion "[package]\nname = \"x\""
    None -}
-export
-packageVersion : Toml -> Option String
+export packageVersion : Toml -> Option String
 packageVersion doc = getString "version" doc
 
 {- | Extract `entry` from a parsed `[package]` section.
@@ -352,8 +345,7 @@ packageVersion doc = getString "version" doc
 
    > parsePackageEntry "[package]\nname = \"x\""
    None -}
-export
-packageEntry : Toml -> Option String
+export packageEntry : Toml -> Option String
 packageEntry doc = getString "entry" doc
 
 {- | Extract `members` from a parsed `[workspace]` section.
@@ -365,8 +357,7 @@ packageEntry doc = getString "entry" doc
 
    > parseWorkspaceMembers "[package]\nname = \"x\""
    None -}
-export
-workspaceMembers : Toml -> Option (List String)
+export workspaceMembers : Toml -> Option (List String)
 workspaceMembers doc = getArray "workspace.members" doc
 
 -- ── Eq and Debug instances ──────────────────────────────────────────────────
@@ -395,7 +386,9 @@ eqStrLists _ _ = False
 
 eqKvList : List (String, TomlValue) -> List (String, TomlValue) -> Bool
 eqKvList [] [] = True
-eqKvList ((k1, v1)::rest1) ((k2, v2)::rest2) = k1 == k2 && eqTomlValue v1 v2 && eqKvList rest1 rest2
+eqKvList ((k1, v1)::rest1) ((k2, v2)::rest2) = k1 == k2
+  && eqTomlValue v1 v2
+  && eqKvList rest1 rest2
 eqKvList _ _ = False
 
 export impl Eq TomlValue where
@@ -454,7 +447,8 @@ prop "packageName is stable regardless of the version value" (n : Int) =
   parsePackageName (mkPackage (intToString n)) == Some "demo"
 
 prop "packageVersion agrees with getString version" (n : Int) =
-  parsePackageVersion (mkPackage (intToString n)) == parseGetStr "version" (mkPackage (intToString n))
+  parsePackageVersion (mkPackage (intToString n)) ==
+    parseGetStr "version" (mkPackage (intToString n))
 
 prop "parse is deterministic" (n : Int) =
   parse (mkPackage (intToString n)) == parse (mkPackage (intToString n))

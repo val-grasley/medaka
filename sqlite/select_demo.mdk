@@ -9,13 +9,41 @@
 
 import lib.sqlite.{Db, openDb}
 import lib.select.{
-  Select, SqlExpr, Literal,
-  ECol, ELit, EBin, EAnd, EOr, EIsNull, ENotNull,
-  OpEq, OpGt, OpLt,
-  selectFrom, withWhere, withLimit, withOffset, withOrderBy, query,
-  eGt, eGe, eLt, eEq, eAnd, eOr, eIsNull, eNotNull,
-  eAdd, eMul, eDiv, eMod,
-  eColInt, eColText, eLitI, eLitT,
+  Select,
+  SqlExpr,
+  Literal,
+  ECol,
+  ELit,
+  EBin,
+  EAnd,
+  EOr,
+  EIsNull,
+  ENotNull,
+  OpEq,
+  OpGt,
+  OpLt,
+  selectFrom,
+  withWhere,
+  withLimit,
+  withOffset,
+  withOrderBy,
+  query,
+  eGt,
+  eGe,
+  eLt,
+  eEq,
+  eAnd,
+  eOr,
+  eIsNull,
+  eNotNull,
+  eAdd,
+  eMul,
+  eDiv,
+  eMod,
+  eColInt,
+  eColText,
+  eLitI,
+  eLitT,
 }
 import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}
 
@@ -23,7 +51,7 @@ data User = User { id : Int, name : String, age : Option Int }
 
 mkUser : (Int, String, Option Int) -> Result String User
 mkUser t = match t
-  (i, n, a) => Ok (User { id = i, name = n, age = a })
+  (i, n, a) => Ok User { id = i, name = n, age = a }
 
 userRow : RowType User
 userRow = tCustom mkUser (t3 tInt tText (tOption tInt))
@@ -33,12 +61,12 @@ showUser u = match u
   User { id = i, name = n, age = a } => "\{i}|\{n}|\{showOpt a}"
 
 showOpt : Option Int -> String
-showOpt None     = ""
+showOpt None = ""
 showOpt (Some n) = intToString n
 
 printRows : List User -> <IO> Unit
-printRows []          = ()
-printRows (u :: rest) =
+printRows [] = ()
+printRows (u::rest) =
   let _ = println (showUser u)
   printRows rest
 
@@ -46,7 +74,7 @@ runQ : Db -> String -> Select -> <IO> Unit
 runQ db label sel =
   let _ = println label
   match query db sel userRow
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printRows rows
 
 main : <IO> Unit

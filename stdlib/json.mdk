@@ -38,8 +38,8 @@ import list.{reverse}
 import array
 import string.{join, fromChars, isDigit, toInt}
 
-public export data Json
-  = JNull
+public export data Json =
+  | JNull
   | JBool Bool
   | JInt Int
   | JFloat Float
@@ -55,8 +55,7 @@ public export data Json
    True
    > stringify (jArray []) == "[]"
    True -}
-export
-jArray : List Json -> Json
+export jArray : List Json -> Json
 jArray xs = JArray (arrayFromList xs)
 
 {- | Build a `JObject` from a list of key/value pairs (order preserved).
@@ -65,8 +64,7 @@ jArray xs = JArray (arrayFromList xs)
    True
    > stringify (jObject []) == "{}"
    True -}
-export
-jObject : List (String, Json) -> Json
+export jObject : List (String, Json) -> Json
 jObject xs = JObject (arrayFromList xs)
 
 -- A codepoint to a `Char` (the `\u` escape target is always valid here).
@@ -127,7 +125,8 @@ escapeString s =
 elemStrings : Array Json -> Int -> List String -> List String
 elemStrings arr i acc
   | i < 0 = acc
-  | otherwise = elemStrings arr (i - 1) (stringify (arrayGetUnsafe i arr) :: acc)
+  | otherwise =
+    elemStrings arr (i - 1) (stringify (arrayGetUnsafe i arr) :: acc)
 
 memberStrings : Array (String, Json) -> Int -> List String -> List String
 memberStrings pairs i acc
@@ -135,7 +134,7 @@ memberStrings pairs i acc
   | otherwise =
     let p = arrayGetUnsafe i pairs
     let s = stringConcat [escapeString (fst p), ":", stringify (snd p)]
-    memberStrings pairs (i - 1) (s :: acc)
+    memberStrings pairs (i - 1) (s::acc)
 
 {- | Serialize a `Json` to compact JSON text (no insignificant whitespace).
 
@@ -147,8 +146,7 @@ memberStrings pairs i acc
    True
    > stringify (JFloat 1000.0) == "1000.0"
    True -}
-export
-stringify : Json -> String
+export stringify : Json -> String
 stringify JNull = "null"
 stringify (JBool True) = "true"
 stringify (JBool False) = "false"
@@ -187,7 +185,7 @@ parseStrChar : Array Char -> Int -> List Char -> Char -> Result String (String, 
 parseStrChar arr i acc c
   | charCode c == 34 = Ok (fromChars (reverse acc), i + 1)
   | charCode c == 92 = parseEsc arr (i + 1) acc
-  | otherwise = parseStr arr (i + 1) (c :: acc)
+  | otherwise = parseStr arr (i + 1) (c::acc)
 
 parseEsc : Array Char -> Int -> List Char -> Result String (String, Int)
 parseEsc arr i acc
@@ -196,9 +194,9 @@ parseEsc arr i acc
 
 parseEscChar : Array Char -> Int -> List Char -> Char -> Result String (String, Int)
 parseEscChar arr i acc c
-  | charCode c == 34 = parseStr arr (i + 1) (c :: acc)
-  | charCode c == 92 = parseStr arr (i + 1) (c :: acc)
-  | charCode c == 47 = parseStr arr (i + 1) (c :: acc)
+  | charCode c == 34 = parseStr arr (i + 1) (c::acc)
+  | charCode c == 92 = parseStr arr (i + 1) (c::acc)
+  | charCode c == 47 = parseStr arr (i + 1) (c::acc)
   | c == 'n' = parseStr arr (i + 1) (charOfCode 10 :: acc)
   | c == 't' = parseStr arr (i + 1) (charOfCode 9 :: acc)
   | c == 'r' = parseStr arr (i + 1) (charOfCode 13 :: acc)
@@ -253,33 +251,30 @@ skipSign arr i
 
 skipDigits : Array Char -> Int -> Int
 skipDigits arr i
-  | i < arrayLength arr && isDigit (arrayGetUnsafe i arr) = skipDigits arr (i + 1)
+  | i < arrayLength arr && isDigit (arrayGetUnsafe i arr) =
+    skipDigits arr (i + 1)
   | otherwise = i
 
 -- (newPosition, sawFraction)
 skipFrac : Array Char -> Int -> (Int, Bool)
 skipFrac arr i
-  | i < arrayLength arr && arrayGetUnsafe i arr == '.' = (
-    skipDigits arr (i + 1),
-    True
-  )
+  | i < arrayLength arr && arrayGetUnsafe i arr == '.' =
+    (skipDigits arr (i + 1), True)
   | otherwise = (i, False)
 
 skipExp : Array Char -> Int -> (Int, Bool)
 skipExp arr i
-  | i < arrayLength arr && isExpChar (arrayGetUnsafe i arr) = (
-    skipDigits arr (skipSign arr (i + 1)),
-    True
-  )
+  | i < arrayLength arr && isExpChar (arrayGetUnsafe i arr) =
+    (skipDigits arr (skipSign arr (i + 1)), True)
   | otherwise = (i, False)
 
 isExpChar : Char -> Bool
 isExpChar c = c == 'e' || c == 'E'
 
 subString : Array Char -> Int -> Int -> String
-subString arr start end =
-  stringFromChars
-    (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
+subString arr start end = stringFromChars (arrayMakeWith
+  (end - start)
+  (k => arrayGetUnsafe (start + k) arr))
 
 parseNumber : Array Char -> Int -> Result String (Json, Int)
 parseNumber arr start =
@@ -310,7 +305,8 @@ matchLit : Array Char -> Int -> Array Char -> Int -> Int -> Bool
 matchLit arr j litArr k m
   | k >= m = True
   | j + k >= arrayLength arr = False
-  | arrayGetUnsafe (j + k) arr == arrayGetUnsafe k litArr = matchLit arr j litArr (k + 1) m
+  | arrayGetUnsafe (j + k) arr == arrayGetUnsafe k litArr =
+    matchLit arr j litArr (k + 1) m
   | otherwise = False
 
 parseLit : Array Char -> Int -> String -> Json -> Result String (Json, Int)
@@ -329,10 +325,8 @@ parseArray arr i = parseArrayAt arr (skipWs arr i)
 
 parseArrayAt : Array Char -> Int -> Result String (Json, Int)
 parseArrayAt arr j
-  | j < arrayLength arr && arrayGetUnsafe j arr == ']' = Ok (
-    JArray (arrayFromList []),
-    j + 1
-  )
+  | j < arrayLength arr && arrayGetUnsafe j arr == ']' =
+    Ok (JArray (arrayFromList []), j + 1)
   | otherwise = do
     (xs, k) <- parseElems arr j []
     Ok (JArray (arrayFromList (reverse xs)), k)
@@ -340,7 +334,7 @@ parseArrayAt arr j
 parseElems : Array Char -> Int -> List Json -> Result String (List Json, Int)
 parseElems arr i acc = do
   (v, j) <- parseValue arr i
-  parseElemsCont arr (skipWs arr j) (v :: acc)
+  parseElemsCont arr (skipWs arr j) (v::acc)
 
 parseElemsCont : Array Char -> Int -> List Json -> Result String (List Json, Int)
 parseElemsCont arr k acc
@@ -354,10 +348,8 @@ parseObject arr i = parseObjectAt arr (skipWs arr i)
 
 parseObjectAt : Array Char -> Int -> Result String (Json, Int)
 parseObjectAt arr j
-  | j < arrayLength arr && arrayGetUnsafe j arr == '}' = Ok (
-    JObject (arrayFromList []),
-    j + 1
-  )
+  | j < arrayLength arr && arrayGetUnsafe j arr == '}' =
+    Ok (JObject (arrayFromList []), j + 1)
   | otherwise = do
     (ms, k) <- parseMembers arr j []
     Ok (JObject (arrayFromList (reverse ms)), k)
@@ -378,7 +370,7 @@ parseAfterKey arr k key acc
   | k >= arrayLength arr = Err "unterminated object"
   | arrayGetUnsafe k arr == ':' = do
     (v, m) <- parseValue arr (k + 1)
-    parseMemberCont arr (skipWs arr m) ((key, v) :: acc)
+    parseMemberCont arr (skipWs arr m) ((key, v)::acc)
   | otherwise = Err "expected ':' after object key"
 
 parseMemberCont : Array Char -> Int -> List (String, Json) -> Result String (List (String, Json), Int)
@@ -421,8 +413,7 @@ dispatchValue arr j c
    True
    > parse "nope"
    Err "invalid literal, expected 'null'" -}
-export
-parse : String -> Result String Json
+export parse : String -> Result String Json
 parse s = parseTop (stringToChars s)
 
 parseTop : Array Char -> Result String Json
@@ -443,8 +434,7 @@ ensureEnd arr j v
    True
    > lookup "z" (jObject [("a", JInt 1)]) == None
    True -}
-export
-lookup : String -> Json -> Option Json
+export lookup : String -> Json -> Option Json
 lookup key (JObject pairs) = lookupGo key pairs 0 (arrayLength pairs)
 lookup _ _ = None
 
@@ -462,8 +452,7 @@ lookupGo key pairs i n
    True
    > index 0 (JInt 1) == None
    True -}
-export
-index : Int -> Json -> Option Json
+export index : Int -> Json -> Option Json
 index k (JArray arr)
   | k >= 0 && k < arrayLength arr = Some (arrayGetUnsafe k arr)
   | otherwise = None
@@ -475,8 +464,7 @@ index _ _ = None
    True
    > asString (JInt 1) == None
    True -}
-export
-asString : Json -> Option String
+export asString : Json -> Option String
 asString (JString s) = Some s
 asString _ = None
 
@@ -486,8 +474,7 @@ asString _ = None
    True
    > asInt JNull == None
    True -}
-export
-asInt : Json -> Option Int
+export asInt : Json -> Option Int
 asInt (JInt n) = Some n
 asInt _ = None
 
@@ -497,8 +484,7 @@ asInt _ = None
    True
    > asFloat (JInt 1) == None
    True -}
-export
-asFloat : Json -> Option Float
+export asFloat : Json -> Option Float
 asFloat (JFloat f) = Some f
 asFloat _ = None
 
@@ -508,8 +494,7 @@ asFloat _ = None
    True
    > asBool JNull == None
    True -}
-export
-asBool : Json -> Option Bool
+export asBool : Json -> Option Bool
 asBool (JBool b) = Some b
 asBool _ = None
 
@@ -521,8 +506,7 @@ asBool _ = None
    True
    > asArray (JInt 1) == None
    True -}
-export
-asArray : Json -> Option (Array Json)
+export asArray : Json -> Option (Array Json)
 asArray (JArray a) = Some a
 asArray _ = None
 
@@ -577,8 +561,7 @@ export impl Display Json where
 prop "parse-then-stringify round-trips a JInt" (n : Int) =
   parse (stringify (JInt n)) == Ok (JInt n)
 
-prop "parse-then-stringify round-trips a JString (exercises escaping)" (s : String) =
-  parse (stringify (JString s)) == Ok (JString s)
+prop "parse-then-stringify round-trips a JString (exercises escaping)" (s : String) = parse (stringify (JString s)) == Ok (JString s)
 
 prop "parse-then-stringify round-trips a JBool" (b : Bool) =
   parse (stringify (JBool b)) == Ok (JBool b)
@@ -592,7 +575,8 @@ prop "parse-then-stringify round-trips a JObject" (xs : List Int) =
   parse (stringify j) == Ok j
 
 prop "asInt (JInt n) == Some n" (n : Int) = asInt (JInt n) == Some n
-prop "asString (JString s) == Some s" (s : String) = asString (JString s) == Some s
+prop "asString (JString s) == Some s" (s : String) =
+  asString (JString s) == Some s
 prop "asBool (JBool b) == Some b" (b : Bool) = asBool (JBool b) == Some b
 prop "asFloat (JFloat f) == Some f" (f : Float) = asFloat (JFloat f) == Some f
 

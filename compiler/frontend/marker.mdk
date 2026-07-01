@@ -51,7 +51,7 @@ import support.util.{contains}
 -- Interface method names declared across the decls (DInterface methods).
 interfaceMethodNames : List Decl -> List String
 interfaceMethodNames [] = []
-interfaceMethodNames (DInterface { methods, ... }::rest) = map ifaceMethodName methods
+interfaceMethodNames ((DInterface { methods, ... })::rest) = map ifaceMethodName methods
   ++ interfaceMethodNames rest
 interfaceMethodNames (_::rest) = interfaceMethodNames rest
 
@@ -66,7 +66,7 @@ constrainedFnNames ((DTypeSig _ name ty)::rest) =
 constrainedFnNames (_::rest) = constrainedFnNames rest
 
 constrainedAdd : String -> Ty -> List String -> List String
-constrainedAdd name (TyConstrained _ _) acc = name :: acc
+constrainedAdd name (TyConstrained _ _) acc = name::acc
 constrainedAdd _ _ acc = acc
 
 -- ── The marking rewrite ───────────────────────────────────────────────────
@@ -90,8 +90,7 @@ markInfix methods constrained op l r
   | otherwise = EInfix op l r
 
 markProgram : List String -> List String -> List Decl -> List Decl
-markProgram methods constrained prog =
-  map (markDecl methods constrained) prog
+markProgram methods constrained prog = map (markDecl methods constrained) prog
 
 -- desugar.mapDecl's catch-all SKIPS DLetGroup (and DBench) bodies, so a
 -- constrained-fn reference or interface-method occurrence inside a top-level
@@ -129,8 +128,9 @@ shadowRename preludeMethods prog =
   applyRenames (shadowRenames preludeMethods prog) prog
 
 shadowRenames : List String -> List Decl -> List String
-shadowRenames preludeMethods prog =
-  keepNotIn (localBoundNames prog) (keepIn preludeMethods (userValueNames prog))
+shadowRenames preludeMethods prog = keepNotIn
+  (localBoundNames prog)
+  (keepIn preludeMethods (userValueNames prog))
 
 userValueNames : List Decl -> List String
 userValueNames [] = []
@@ -204,22 +204,20 @@ declExternalRefs d = keepNotIn (declDefines d) (declRefs d)
 
 declDefines : Decl -> List String
 declDefines (DFunDef _ n _ _) = [n]
-declDefines DImpl { methods, ... } = map implMethodNameOf methods
-declDefines DInterface { methods, ... } = map ifaceMethodName methods
+declDefines (DImpl { methods, ... }) = map implMethodNameOf methods
+declDefines (DInterface { methods, ... }) = map ifaceMethodName methods
 declDefines _ = []
 
 implMethodNameOf : ImplMethod -> String
 implMethodNameOf (ImplMethod n _ _) = n
 
-export
-declRefs : Decl -> List String
+export declRefs : Decl -> List String
 declRefs d = flatMap collectVars (declBodies d)
 
-export
-declBodies : Decl -> List Expr
+export declBodies : Decl -> List Expr
 declBodies (DFunDef _ _ _ body) = [body]
-declBodies DImpl { methods, ... } = map implMethodBody methods
-declBodies DInterface { methods, ... } = flatMap ifaceMethodBodies methods
+declBodies (DImpl { methods, ... }) = map implMethodBody methods
+declBodies (DInterface { methods, ... }) = flatMap ifaceMethodBodies methods
 declBodies (DProp _ _ _ body) = [body]
 declBodies (DTest _ _ body) = [body]
 declBodies (DBench _ _ body) = [body]
@@ -267,8 +265,7 @@ collectVars (EUnOp _ a) = collectVars a
 collectVars (EInfix op a b) = op :: collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _ _) = collectVars e0
 collectVars (ERecordCreate _ fs) = flatMap fieldAssignVars fs
-collectVars (ERecordUpdate e0 fs) = collectVars e0
-  ++ flatMap fieldAssignVars fs
+collectVars (ERecordUpdate e0 fs) = collectVars e0 ++ flatMap fieldAssignVars fs
 collectVars (EVariantUpdate _ e0 fs) = collectVars e0
   ++ flatMap fieldAssignVars fs
 collectVars (EArrayLit es) = flatMap collectVars es
@@ -369,31 +366,33 @@ recFieldBindings (RecPatField _ (Some p)) = patBindings p
 -- Names bound by local patterns *within* an expression tree.
 localBoundExpr : Expr -> List String
 localBoundExpr (ELam ps b) = flatMap patBindings ps ++ localBoundExpr b
-localBoundExpr (ELet _ _ p e1 e2) =
-  patBindings p ++ localBoundExpr e1 ++ localBoundExpr e2
-localBoundExpr (ELetGroup bs e2) =
-  flatMap letBindBound bs ++ localBoundExpr e2
+localBoundExpr (ELet _ _ p e1 e2) = patBindings p
+  ++ localBoundExpr e1
+  ++ localBoundExpr e2
+localBoundExpr (ELetGroup bs e2) = flatMap letBindBound bs ++ localBoundExpr e2
 localBoundExpr (EMatch e0 arms) = localBoundExpr e0 ++ flatMap armBound arms
 localBoundExpr (EApp a b) = localBoundExpr a ++ localBoundExpr b
-localBoundExpr (EIf c t el) =
-  localBoundExpr c ++ localBoundExpr t ++ localBoundExpr el
+localBoundExpr (EIf c t el) = localBoundExpr c
+  ++ localBoundExpr t
+  ++ localBoundExpr el
 localBoundExpr (EBinOp _ a b _) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EUnOp _ a) = localBoundExpr a
 localBoundExpr (EInfix _ a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EFieldAccess e0 _ _) = localBoundExpr e0
 localBoundExpr (ERecordCreate _ fs) = flatMap fieldAssignBound fs
-localBoundExpr (ERecordUpdate e0 fs) =
-  localBoundExpr e0 ++ flatMap fieldAssignBound fs
-localBoundExpr (EVariantUpdate _ e0 fs) =
-  localBoundExpr e0 ++ flatMap fieldAssignBound fs
+localBoundExpr (ERecordUpdate e0 fs) = localBoundExpr e0
+  ++ flatMap fieldAssignBound fs
+localBoundExpr (EVariantUpdate _ e0 fs) = localBoundExpr e0
+  ++ flatMap fieldAssignBound fs
 localBoundExpr (EArrayLit es) = flatMap localBoundExpr es
 localBoundExpr (EListLit es) = flatMap localBoundExpr es
 localBoundExpr (ETuple es) = flatMap localBoundExpr es
 localBoundExpr (EIndex e0 i _) = localBoundExpr e0 ++ localBoundExpr i
 localBoundExpr (ERangeList lo hi _) = localBoundExpr lo ++ localBoundExpr hi
 localBoundExpr (ERangeArray lo hi _) = localBoundExpr lo ++ localBoundExpr hi
-localBoundExpr (ESlice e0 lo hi _ _) =
-  localBoundExpr e0 ++ localBoundExpr lo ++ localBoundExpr hi
+localBoundExpr (ESlice e0 lo hi _ _) = localBoundExpr e0
+  ++ localBoundExpr lo
+  ++ localBoundExpr hi
 localBoundExpr (EBlock stmts) = flatMap doStmtBound stmts
 localBoundExpr (EDo stmts) = flatMap doStmtBound stmts
 localBoundExpr (EAnnot e0 _) = localBoundExpr e0
@@ -414,20 +413,20 @@ letBindBound : LetBind -> List String
 letBindBound (LetBind _ clauses) = flatMap funClauseBound clauses
 
 funClauseBound : FunClause -> List String
-funClauseBound (FunClause ps body) =
-  flatMap patBindings ps ++ localBoundExpr body
+funClauseBound (FunClause ps body) = flatMap patBindings ps
+  ++ localBoundExpr body
 
 armBound : Arm -> List String
-armBound (Arm p gs body) =
-  patBindings p ++ flatMap guardBound gs ++ localBoundExpr body
+armBound (Arm p gs body) = patBindings p
+  ++ flatMap guardBound gs
+  ++ localBoundExpr body
 
 guardBound : Guard -> List String
 guardBound (GBool e) = localBoundExpr e
 guardBound (GBind p e) = patBindings p ++ localBoundExpr e
 
 guardArmBound : GuardArm -> List String
-guardArmBound (GuardArm gs body) =
-  flatMap guardBound gs ++ localBoundExpr body
+guardArmBound (GuardArm gs body) = flatMap guardBound gs ++ localBoundExpr body
 
 fieldAssignBound : FieldAssign -> List String
 fieldAssignBound (FieldAssign _ e) = localBoundExpr e
@@ -438,8 +437,9 @@ doStmtBound (DoBind p e) = patBindings p ++ localBoundExpr e
 doStmtBound (DoLet _ _ p e) = patBindings p ++ localBoundExpr e
 doStmtBound (DoAssign _ e) = localBoundExpr e
 doStmtBound (DoFieldAssign _ _ e) = localBoundExpr e
-doStmtBound (DoLetElse p e alt) =
-  patBindings p ++ localBoundExpr e ++ localBoundExpr alt
+doStmtBound (DoLetElse p e alt) = patBindings p
+  ++ localBoundExpr e
+  ++ localBoundExpr alt
 
 interpBound : InterpPart -> List String
 interpBound (InterpStr _) = []
@@ -452,8 +452,8 @@ mapLitPairBound (k, v) = localBoundExpr k ++ localBoundExpr v
 -- (DFunDef/DImpl method/DInterface default/DLetGroup clauses) plus every binder
 -- in its body expressions.
 declLocalBound : Decl -> List String
-declLocalBound (DFunDef _ _ ps body) =
-  flatMap patBindings ps ++ localBoundExpr body
+declLocalBound (DFunDef _ _ ps body) = flatMap patBindings ps
+  ++ localBoundExpr body
 declLocalBound (DAttrib _ d) = declLocalBound d
 declLocalBound (DLetGroup _ binds) = flatMap letBindBound binds
 declLocalBound d = flatMap localBoundExpr (declBodies d)
@@ -478,22 +478,19 @@ markWith preludeMethods preludeDroppable preludeConstrained prog =
   let constrained = keepNotIn toRemove (preludeConstrained ++ userConstrained)
   markProgram methods constrained prog2
 
-export
-markWithPrelude : List Decl -> List Decl -> List Decl
-markWithPrelude preludeProg prog =
-  markWith
-    (interfaceMethodNames preludeProg)
-    (droppablePreludeFns preludeProg)
-    (constrainedFnNames preludeProg)
-    prog
+export markWithPrelude : List Decl -> List Decl -> List Decl
+markWithPrelude preludeProg prog = markWith
+  (interfaceMethodNames preludeProg)
+  (droppablePreludeFns preludeProg)
+  (constrainedFnNames preludeProg)
+  prog
 
 -- Curried marker: scans the (fixed) prelude ONCE and returns a closure that
 -- marks each target file.  A batch harness that marks many files against one
 -- prelude should `let mark = markerFor preludeProg` once and call `mark` per
 -- file — the prelude scans (interfaceMethodNames/droppablePreludeFns/
 -- constrainedFnNames) then happen once instead of per file.
-export
-markerFor : List Decl -> List Decl -> List Decl
+export markerFor : List Decl -> List Decl -> List Decl
 markerFor preludeProg =
   let preludeMethods = interfaceMethodNames preludeProg
   let preludeDroppable = droppablePreludeFns preludeProg

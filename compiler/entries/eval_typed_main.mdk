@@ -20,7 +20,8 @@ main = match args ()
   _ => ePutStrLn "usage: medaka run compiler/entries/eval_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  Some (preludePaths, targetPath) =>
+    withFiles runtimePath preludePaths targetPath
   None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withFiles runtimePath preludePaths targetPath = match readFile runtimePath

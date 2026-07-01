@@ -39,8 +39,7 @@ import hash_map.{HashMap, new, insert, member, findWithDefault}
 -- ── entry point ────────────────────────────────────────────────────────────
 -- Filter `decls` (the flattened, elaborated whole-program decl list) to retain
 -- every non-DFunDef decl plus the DFunDefs reachable from main + impls/interfaces.
-export
-dceFilter : List Decl -> <Mut> List Decl
+export dceFilter : List Decl -> <Mut> List Decl
 dceFilter decls = filterReachable (reachableNames decls) decls
 
 -- Drop only unreachable DFunDefs; keep everything else verbatim, in order.
@@ -130,8 +129,8 @@ emittingRoots (d::rest)
 -- DLetGroup also lowers to emitted code (funClausesOf/lowerGroups in core_ir_lower)
 -- so its refs must seed reachability, or DFunDefs called only from a let-group are DCE'd.
 isEmittingDecl : Decl -> Bool
-isEmittingDecl DImpl { ... } = True
-isEmittingDecl DInterface { ... } = True
+isEmittingDecl (DImpl { ... }) = True
+isEmittingDecl (DInterface { ... }) = True
 isEmittingDecl (DLetGroup _ _) = True
 isEmittingDecl _ = False
 

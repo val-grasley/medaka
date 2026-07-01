@@ -36,7 +36,8 @@ import support.path.{dirOf}
 
 main : <IO, Mut> Unit
 main = match args ()
-  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots =>
+    run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run compiler/entries/profile_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String

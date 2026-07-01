@@ -31,8 +31,7 @@ count (MutArray _ len) = len.value
 
 {- | A fresh, empty vector (capacity 0; grows on first `push`).  Takes `Unit`,
    not a nullary value, so each call allocates its own cells. -}
-export
-new : Unit -> MutArray a
+export new : Unit -> MutArray a
 new _ = MutArray (Ref [||]) (Ref 0)
 
 {- | Build a vector from a list, preserving order.  Capacity equals the length
@@ -40,16 +39,14 @@ new _ = MutArray (Ref [||]) (Ref 0)
 
    > length (fromList [1, 2, 3])
    3 -}
-export
-fromList : List a -> MutArray a
+export fromList : List a -> MutArray a
 fromList xs =
   let arr = arrayFromList xs
   MutArray (Ref arr) (Ref (arrayLength arr))
 
 {- | Wrap a *copy* of an array as a vector (so later mutation does not disturb
    the caller's array). -}
-export
-fromArray : Array a -> MutArray a
+export fromArray : Array a -> MutArray a
 fromArray arr =
   let c = arrayCopy arr
   MutArray (Ref c) (Ref (arrayLength c))
@@ -60,8 +57,7 @@ fromArray arr =
 
    > capacity (fromList [1, 2, 3])
    3 -}
-export
-capacity : MutArray a -> Int
+export capacity : MutArray a -> Int
 capacity (MutArray backing _) = arrayLength backing.value
 
 {- | Element at an index, or `None` when out of the live range `[0, length)`.
@@ -70,8 +66,7 @@ capacity (MutArray backing _) = arrayLength backing.value
    Some 20
    > get 5 (fromList [10, 20, 30])
    None -}
-export
-get : Int -> MutArray a -> Option a
+export get : Int -> MutArray a -> Option a
 get i (MutArray backing len)
   | i >= 0 && i < len.value = Some (arrayGetUnsafe i backing.value)
   | otherwise = None
@@ -80,16 +75,14 @@ get i (MutArray backing len)
 
    > first (fromList [10, 20, 30])
    Some 10 -}
-export
-first : MutArray a -> Option a
+export first : MutArray a -> Option a
 first ma = get 0 ma
 
 {- | Last element, or `None` when empty.
 
    > last (fromList [10, 20, 30])
    Some 30 -}
-export
-last : MutArray a -> Option a
+export last : MutArray a -> Option a
 last ma = get (count ma - 1) ma
 
 -- ── Conversion ──────────────────────────────────────────────────────────
@@ -109,8 +102,7 @@ elems (MutArray backing len) = elemsGo backing.value (len.value - 1) []
 
    > arrayLength (toArray (fromList [1, 2, 3]))
    3 -}
-export
-toArray : MutArray a -> Array a
+export toArray : MutArray a -> Array a
 toArray (MutArray backing len) =
   let arr = backing.value
   arrayMakeWith len.value (i => arrayGetUnsafe i arr)
@@ -119,8 +111,7 @@ toArray (MutArray backing len) =
 
 {- | Append an element, growing (doubling) the backing store when it is full.
    Amortized O(1). -}
-export
-push : a -> MutArray a -> <Mut> Unit
+export push : a -> MutArray a -> <Mut> Unit
 push x (MutArray backing len)
   | len.value < arrayLength backing.value =
     arraySetUnsafe len.value x backing.value
@@ -136,8 +127,7 @@ push x (MutArray backing len)
 
 {- | Remove and return the last element, or `None` when empty.  Keeps capacity
    (no shrink). -}
-export
-pop : MutArray a -> <Mut> Option a
+export pop : MutArray a -> <Mut> Option a
 pop (MutArray backing len)
   | len.value == 0 = None
   | otherwise =
@@ -148,15 +138,13 @@ pop (MutArray backing len)
 
 {- | Overwrite the element at an index.  Panics when out of the live range
    `[0, length)` (use `push` to extend). -}
-export
-set : Int -> a -> MutArray a -> <Mut> Unit
+export set : Int -> a -> MutArray a -> <Mut> Unit
 set i x (MutArray backing len)
   | i >= 0 && i < len.value = arraySetUnsafe i x backing.value
   | otherwise = panic "MutArray.set: index out of bounds"
 
 {- | Exchange the elements at two indices.  Caller ensures both are in range. -}
-export
-swap : Int -> Int -> MutArray a -> <Mut> Unit
+export swap : Int -> Int -> MutArray a -> <Mut> Unit
 swap i j (MutArray backing _) =
   let arr = backing.value
   let xi = arrayGetUnsafe i arr
@@ -165,8 +153,7 @@ swap i j (MutArray backing _) =
   arraySetUnsafe j xi arr
 
 {- | Drop all elements (length 0), retaining the allocated capacity. -}
-export
-clear : MutArray a -> <Mut> Unit
+export clear : MutArray a -> <Mut> Unit
 clear (MutArray _ len) = setRef len 0
 
 mapInPlaceGo : (a -> a) -> Array a -> Int -> Int -> <Mut> Unit
@@ -177,8 +164,7 @@ mapInPlaceGo f arr i n
     mapInPlaceGo f arr (i + 1) n
 
 {- | Apply `f` to every live element in place. -}
-export
-mapInPlace : (a -> a) -> MutArray a -> <Mut> Unit
+export mapInPlace : (a -> a) -> MutArray a -> <Mut> Unit
 mapInPlace f (MutArray backing len) = mapInPlaceGo f backing.value 0 len.value
 
 -- ── Folds (index-based; never allocate a list) ──────────────────────────

@@ -26,16 +26,16 @@ usersSql : String
 usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
 
 baseRows : List (List Cell)
-baseRows =
-  [ [ CInt 1, CText "Alice", CInt 30 ]
-  , [ CInt 2, CText "Bob",   CNull ]
-  , [ CInt 3, CText "Carol", CInt (-5) ]
-  , [ CInt 7, CText "Dave",  CInt 1000000 ]
-  ]
+baseRows = [
+  [CInt 1, CText "Alice", CInt 30],
+  [CInt 2, CText "Bob", CNull],
+  [CInt 3, CText "Carol", CInt (-5)],
+  [CInt 7, CText "Dave", CInt 1000000],
+]
 
 printRows : List Row -> <IO> Unit
 printRows [] = ()
-printRows (r :: rest) =
+printRows (r::rest) =
   let _ = println (display r)
   printRows rest
 
@@ -44,7 +44,7 @@ readUsers : String -> <IO, FileRead> Unit
 readUsers path = match openDb path
   Err e => println "open error: \{e}"
   Ok db => match scanTableRows db "users"
-    Err e    => println "scan error: \{e}"
+    Err e => println "scan error: \{e}"
     Ok found => printRows found
 
 runProbe : String -> <IO, FileRead, FileWrite, Mut> Unit

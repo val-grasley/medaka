@@ -29,7 +29,8 @@ main = match args ()
   _ => ePutStrLn "usage: medaka run compiler/entries/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  Some (preludePaths, targetPath) =>
+    withFiles runtimePath preludePaths targetPath
   None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withFiles runtimePath preludePaths targetPath = match readFile runtimePath
@@ -47,8 +48,10 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
 runTyped runtimeDecls preludeDecls userDecls =
   let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
-  cevalOutput
-    (lowerProgram (elaborateOne runtimeDecls livePrelude ("__user__", userDecls)))
+  cevalOutput (lowerProgram (elaborateOne
+    runtimeDecls
+    livePrelude
+    ("__user__", userDecls)))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

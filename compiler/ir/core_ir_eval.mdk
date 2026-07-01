@@ -94,8 +94,7 @@ import eval.eval.{
 }
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
-export
-ceval : EvalEnv -> CExpr -> <Mut> Value
+export ceval : EvalEnv -> CExpr -> <Mut> Value
 ceval _ (CLit l) = litValue l
 ceval env (CVar x _) = if startsWithAt x then VUnit else lookupEnv env x
 ceval env (CApp f x) = applyValue (ceval env f) (ceval env x)
@@ -237,7 +236,8 @@ cevalArmBody env root pat body = match matchPat pat root
 -- current column context, so its switches read the same live sub-values).
 cevalGuardedArm : EvalEnv -> Value -> List CArm -> List Value -> Int -> CTree -> <Mut> Value
 cevalGuardedArm env root arms occs i fail = match nthArm arms i
-  Some (CArm pat guards body) => cevalGuardedBody env root arms occs pat guards body fail
+  Some (CArm pat guards body) =>
+    cevalGuardedBody env root arms occs pat guards body fail
   None => panic "core_ir decision tree: guarded arm index out of range"
 
 -- `None` from matchPat is a fall-through, not a panic: PRng/PRec arms
@@ -320,14 +320,14 @@ cevalLet env pat e1 e2 = match matchPat pat (ceval env e1)
 -- DoAssign is carried for slice 3; slice-1 fixtures use only let + expr.)
 cevalBlock : EvalEnv -> List CStmt -> <Mut> Value
 cevalBlock _ [] = VUnit
-cevalBlock env [(CSExpr e)] = ceval env e
-cevalBlock env [(CSLet _ pat e)] = cBlockLetLast env pat e
+cevalBlock env [CSExpr e] = ceval env e
+cevalBlock env [CSLet _ pat e] = cBlockLetLast env pat e
 cevalBlock env ((CSExpr e)::rest) =
   let _ = ceval env e
   cevalBlock env rest
 cevalBlock env ((CSLet _ pat e)::rest) = cBlockLet env pat e rest
 cevalBlock env ((CSLetElse pat e alt)::rest) = cBlockLetElse env pat e alt rest
-cevalBlock env [(CSAssign _ e)] =
+cevalBlock env [CSAssign _ e] =
   let _ = ceval env e
   VUnit
 cevalBlock env ((CSAssign x e)::rest) =
@@ -368,7 +368,7 @@ cInstallGroup env cells ((CBind name clauses)::rest) =
 -- let-group binding value: a nullary single clause is eager (recursive let);
 -- multi-clause coalesces into a VMulti dispatched by arg pattern + fall-through.
 cGroupValue : EvalEnv -> List CClause -> <Mut> Value
-cGroupValue env [(CClause pats body)]
+cGroupValue env [CClause pats body]
   | isNullary pats = ceval env body
   | otherwise = cClauseClosure env (CClause pats body)
 cGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
@@ -380,8 +380,7 @@ cClauseClosure env (CClause pats body) = VClosureF env pats (e => ceval e body)
 -- Mirror of eval.mdk's evalProgram, but installs Core IR groups.  A nullary
 -- top-level binding becomes a deferred VThunk (forced on first lookup) so
 -- point-free defs can reference values installed later, in any order.
-export
-cevalProgram : CProgram -> <Mut> List (String, Value)
+export cevalProgram : CProgram -> <Mut> List (String, Value)
 cevalProgram (CProgram groups ctorArs ctorToType implEntries) =
   let _ = setRef ctorToTypeRef ctorToType
   let ctors = map ctorBinding ctorArs
@@ -413,7 +412,8 @@ cImplEntryName : CImplEntry -> String
 cImplEntryName (CImplEntry n _ _) = n
 
 cImplEntryValue : EvalEnv -> CImplEntry -> (String, (Int, Value))
-cImplEntryValue env (CImplEntry name score body) = (name, (score, cImplBodyValue env body))
+cImplEntryValue env (CImplEntry name score body) =
+  (name, (score, cImplBodyValue env body))
 
 cImplBodyValue : EvalEnv -> CImplBody -> Value
 cImplBodyValue env (CImplTagged tag key iface positions pats body) =
@@ -439,14 +439,13 @@ cInstallTopGroups env cells ((CBind n clauses)::rest) =
   cInstallTopGroups env cells rest
 
 cTopGroupValue : EvalEnv -> List CClause -> Value
-cTopGroupValue env [(CClause pats body)]
+cTopGroupValue env [CClause pats body]
   | isNullary pats = VThunk (_ => ceval env body)
   | otherwise = VClosureF env pats (e => ceval e body)
 cTopGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
 
 -- ── entry point (pure-value path, diffed via pp_value of `main`) ───────────
-export
-cevalMain : CProgram -> <Mut> String
+export cevalMain : CProgram -> <Mut> String
 cevalMain prog = match lookupBinding "main" (cevalProgram prog)
   Some v => ppValue (force v)
   None => panic "core_ir eval: no `main` binding"
@@ -455,8 +454,7 @@ cevalMain prog = match lookupBinding "main" (cevalProgram prog)
 -- append to eval.mdk's outputRef) and return the captured stdout — the Core-IR
 -- analog of eval.mdk's evalOutput, for the typed / run corpora that diff stdout
 -- (=== EVAL === goldens) rather than pp_value of `main`.
-export
-cevalOutput : CProgram -> <Mut> String
+export cevalOutput : CProgram -> <Mut> String
 cevalOutput prog =
   let _ = setRef outputRef ""
   let binds = cevalProgram prog
@@ -486,11 +484,10 @@ cRunMainForEffect binds = match lookupBinding "main" binds
 -- dispatch positions).  The value-agnostic import-frame machinery (importFrameOf /
 -- pubReexports — they thread only cells + DUse paths, never Values) is reused
 -- verbatim from eval.mdk.  UNTYPED path, like cevalProgram / evalModules.
-data CModInfo
-  = CModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
+data CModInfo =
+  | CModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
 
-export
-cevalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+export cevalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
 cevalModules preludeDecls modules =
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
@@ -525,7 +522,7 @@ cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
   let exports = localCells ++ pubReexports exportsMap decls
-  CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports) :: exportsMap) rest
+  CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
 
 -- a module's impl methods / interface defaults close over ITS env but coalesce
 -- into the shared global VMulti (mirror of eval.mdk's modImplEntries)
@@ -543,14 +540,13 @@ cInstallModGroups ((CModInfo _ _ cbinds _ cells menv)::rest) =
 -- the root module is last in dependency order; its locals hold `main`
 cRootLocals : List CModInfo -> <Mut> List (String, Value)
 cRootLocals [] = []
-cRootLocals [(CModInfo _ _ _ _ cells _)] = map cellResult cells
+cRootLocals [CModInfo _ _ _ _ cells _] = map cellResult cells
 cRootLocals (_::rest) = cRootLocals rest
 
 -- Run a multi-module Core-IR program for its OUTPUT (the loader-driven analog of
 -- cevalOutput): evaluate every module in dependency order, force the root module's
 -- `main` for its IO side-effects, return the captured stdout.
-export
-cevalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+export cevalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
 cevalModulesOutput preludeDecls modules =
   let _ = setRef outputRef ""
   let binds = cevalModules preludeDecls modules

@@ -30,7 +30,8 @@ withMode mode runtimePath rest =
   withRuntime runtimePath rest
 
 withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  Some (preludePaths, targetPath) =>
+    withFiles runtimePath preludePaths targetPath
   None => ePutStrLn "usage: (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withFiles runtimePath preludePaths targetPath = match readFile runtimePath

@@ -21,7 +21,11 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import types.annotate.{annotateProgram}
 import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
-import backend.wasm_emit.{emitProgram, installDeclRetTypes, installCtorFloatFields}
+import backend.wasm_emit.{
+  emitProgram,
+  installDeclRetTypes,
+  installCtorFloatFields,
+}
 
 main = match args ()
   [targetPath] => withTarget targetPath

@@ -17,7 +17,8 @@ import ir.core_ir_eval.{cevalMain}
 
 main = match args ()
   [targetPath] => withTarget targetPath
-  _ => ePutStrLn "usage: medaka run compiler/entries/core_ir_main.mdk <file.mdk>"
+  _ =>
+    ePutStrLn "usage: medaka run compiler/entries/core_ir_main.mdk <file.mdk>"
 
 -- parse → desugar → annotateProgram (resolve's §2.0 EMIT half: EVar → EVarAt with
 -- a (frame,slot) lexical address) → lower to Core IR → evaluate.  Running

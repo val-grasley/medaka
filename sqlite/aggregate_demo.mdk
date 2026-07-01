@@ -8,21 +8,32 @@
 -- Usage: medaka build sqlite/aggregate_demo.mdk -o /tmp/adem && /tmp/adem <db>
 
 import lib.sqlite.{Db, openDb}
-import lib.select.{ eEq, eGt, eColText, eLitT, eLitI }
+import lib.select.{eEq, eGt, eColText, eLitT, eLitI}
 import lib.aggregate.{
-  Agg, AggCountStar, AggCount, AggSum, AggAvg, AggMin, AggMax,
-  AggQuery, aggFrom, withAggWhere, withGroupBy, withHaving,
-  eCountStar, queryAgg,
+  Agg,
+  AggCountStar,
+  AggCount,
+  AggSum,
+  AggAvg,
+  AggMin,
+  AggMax,
+  AggQuery,
+  aggFrom,
+  withAggWhere,
+  withGroupBy,
+  withHaving,
+  eCountStar,
+  queryAgg,
 }
-import lib.rowtype.{ RowType, tInt, tText, tFloat, tOption, t2, t3 }
+import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3}
 
 -- Render helpers (NULL → empty, matching sqlite3's default -list output).
 showOptI : Option Int -> String
-showOptI None     = ""
+showOptI None = ""
 showOptI (Some n) = intToString n
 
 showOptF : Option Float -> String
-showOptF None     = ""
+showOptF None = ""
 showOptF (Some f) = floatToString f
 
 -- ── generic per-query runner ────────────────────────────────────────────────
@@ -30,12 +41,12 @@ runQ : Db -> String -> AggQuery -> RowType a -> (a -> String) -> <IO> Unit
 runQ db label q rt shw =
   let _ = println label
   match queryAgg db q rt
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printRows shw rows
 
 printRows : (a -> String) -> List a -> <IO> Unit
-printRows _   []          = ()
-printRows shw (r :: rest) =
+printRows _ [] = ()
+printRows shw (r::rest) =
   let _ = println (shw r)
   printRows shw rest
 

@@ -20,7 +20,7 @@ import frontend.resolve.{resolveModulesToLines}
 import support.path.{modIdOf}
 
 main = match args ()
-  runtimeP::coreP::f::rest => run runtimeP coreP (f :: rest)
+  runtimeP::coreP::f::rest => run runtimeP coreP (f::rest)
   _ => ePutStrLn "usage: medaka run compiler/entries/resolve_modules_main.mdk <runtime.mdk> <core.mdk> <mod1.mdk> [mod2.mdk ...]"
 
 -- last path component, with the `.mdk` suffix stripped (flat module IDs):
@@ -33,7 +33,7 @@ readModules (f::rest) = match readFile f
   Err e => Err e
   Ok src => match readModules rest
     Err e => Err e
-    Ok ms => Ok ((modIdOf f, desugar (parse src)) :: ms)
+    Ok ms => Ok ((modIdOf f, desugar (parse src))::ms)
 
 run : String -> String -> List String -> <IO, Mut> Unit
 run runtimeP coreP files = match readFile runtimeP

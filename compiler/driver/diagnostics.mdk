@@ -61,16 +61,14 @@ public export data Diag = Diag Severity String (Option Loc)
 
 -- ── rendering ──────────────────────────────────────────────────────────────
 
-export
-ppSeverity : Severity -> String
+export ppSeverity : Severity -> String
 ppSeverity SevError = "error"
 ppSeverity SevWarning = "warning"
 
 -- Render a diagnostic as "severity: message" (loc-free, diffable against
 -- the location-stripped oracle — the loc is consumed by the LSP, not this text
 -- form, so the diff gate stays byte-identical).
-export
-ppDiag : Diag -> String
+export ppDiag : Diag -> String
 ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
 
 -- Plain-text CLI renderer (Stage-A positioned output, Stage-C carat block).
@@ -87,24 +85,26 @@ ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
 -- whole-doc range).  `src` is the target file's source text (to echo the
 -- offending line); when the source line can't be read the carat block is
 -- omitted (mirrors `show_snippet`'s `None -> ()`), leaving just the header.
-export
-ppDiagCli : String -> Diag -> String
+export ppDiagCli : String -> Diag -> String
 ppDiagCli file diag = ppDiagCliSrc "" file diag
 
 -- Stage-C: carat-aware renderer.  `src` carries the file's source text.
-export
-ppDiagCliSrc : String -> String -> Diag -> String
+export ppDiagCliSrc : String -> String -> Diag -> String
 ppDiagCliSrc src file (Diag _ msg (Some (Loc _ sl sc _ _))) =
   let header = file ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ msg
   match nthLine src sl
     None => header
-    Some lineText =>
-      header ++ "\n"
-        ++ "  |\n"
-        ++ intToString sl ++ " | " ++ lineText ++ "\n"
-        ++ "  | " ++ spaces sc ++ "^"
-ppDiagCliSrc _ _ (Diag _ msg None) =
-  "<unknown location>: " ++ msg
+    Some lineText => header
+      ++ "\n"
+      ++ "  |\n"
+      ++ intToString sl
+      ++ " | "
+      ++ lineText
+      ++ "\n"
+      ++ "  | "
+      ++ spaces sc
+      ++ "^"
+ppDiagCliSrc _ _ (Diag _ msg None) = "<unknown location>: " ++ msg
 
 -- `spaces n` = a string of n space characters (the oracle's `String.make col ' '`).
 spaces : Int -> String
@@ -121,10 +121,11 @@ nthLineGo : Array Char -> Int -> Int -> Int -> Int -> String -> Option String
 nthLineGo cs i len cur target acc
   | i >= len = if cur == target then Some acc else None
   | arrayGetUnsafe i cs == '\n' =
-      if cur == target then Some acc
-      else nthLineGo cs (i + 1) len (cur + 1) target ""
+    if cur == target then
+      Some acc
+    else
+      nthLineGo cs (i + 1) len (cur + 1) target ""
   | otherwise = nthLineGo cs (i + 1) len cur target (acc ++ charToStr (arrayGetUnsafe i cs))
-
 
 -- ── single-file analysis ───────────────────────────────────────────────────
 --
@@ -135,8 +136,7 @@ nthLineGo cs i len cur target acc
 -- Arguments: runtimeSrc (runtime.mdk source), coreSrc (core.mdk source),
 -- progSrc (target source).
 
-export
-analyze : String -> String -> String -> <Mut> List Diag
+export analyze : String -> String -> String -> <Mut> List Diag
 analyze runtimeSrc coreSrc progSrc =
   analyzeFrom runtimeSrc coreSrc (parse progSrc) []
 
@@ -144,18 +144,19 @@ analyze runtimeSrc coreSrc progSrc =
 -- `parseLocated` so the ELoc wrappers carry REAL line/col spans (the pure
 -- `parse` carries placeholder locs).  Type-error Diags then surface the true
 -- expr-level span; runtime/core stay on `parse` (their locs are never reported).
-export
-analyzeLocated : String -> String -> String -> <Mut> List Diag
+export analyzeLocated : String -> String -> String -> <Mut> List Diag
 analyzeLocated runtimeSrc coreSrc progSrc =
   analyzeFrom runtimeSrc coreSrc (parseLocated progSrc) []
 
 -- B.10.x: like analyzeLocated but enforcing the internal-extern guard unless
 -- `allowInternal` is set (the single-file `medaka check` error path).  Other
 -- callers (LSP, playground) keep `analyzeLocated`, which is unguarded.
-export
-analyzeLocatedG : Bool -> String -> String -> String -> <Mut> List Diag
-analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc =
-  analyzeFrom runtimeSrc coreSrc (parseLocated progSrc) (internalGuardFor allowInternal)
+export analyzeLocatedG : Bool -> String -> String -> String -> <Mut> List Diag
+analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc = analyzeFrom
+  runtimeSrc
+  coreSrc
+  (parseLocated progSrc)
+  (internalGuardFor allowInternal)
 
 -- Shared analysis body, parameterised over the already-parsed target program
 -- (so `analyze` can pass placeholder-loc `parse` decls and `analyzeLocated` can
@@ -199,8 +200,7 @@ stripWarnPrefix s =
 
 -- ── text entry point (for diff gate) ──────────────────────────────────────
 
-export
-analyzeToLines : String -> String -> String -> <Mut> String
+export analyzeToLines : String -> String -> String -> <Mut> String
 analyzeToLines runtimeSrc coreSrc progSrc =
   joinNl (map ppDiag (analyze runtimeSrc coreSrc progSrc))
 
@@ -247,7 +247,7 @@ lookupBucket f ((k, v)::rest)
 putBucket : String -> List Diag -> List (String, List Diag) -> List (String, List Diag)
 putBucket f v [] = [(f, v)]
 putBucket f v ((k, old)::rest)
-  | k == f = (f, v) :: rest
+  | k == f = (f, v)::rest
   | otherwise = (k, old) :: putBucket f v rest
 
 -- Append one diagnostic to a file's bucket (seeding the bucket if absent).
@@ -298,7 +298,7 @@ wrappedRead cacheRef staleRef read path = match read path
       Some src
     Err e =>
       let diag = Diag SevError (parseErrorMessage e) (Some (parseErrLoc path e))
-      let _ = setRef staleRef ((path, diag) :: staleRef.value)
+      let _ = setRef staleRef ((path, diag)::staleRef.value)
       match lookupAssoc path cacheRef.value
         Some good => Some good
         None => Some src  -- no cached version → use the broken one
@@ -334,11 +334,10 @@ preludeDesugared parseCacheRef src = match lookupAssoc src parseCacheRef.value
   Some decls => decls
   None =>
     let decls = desugar (parse src)
-    let _ = setRef parseCacheRef ((src, decls) :: parseCacheRef.value)
+    let _ = setRef parseCacheRef ((src, decls)::parseCacheRef.value)
     decls
 
-export
-analyzeProject : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
+export analyzeProject : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
 analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
@@ -363,8 +362,7 @@ analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
 -- module (checked last), so its locals and its import-scoped seed (runtime + core
 -- + imported names) are available to the hover lookup fallback chain.  None on a
 -- load error (a buffer with an unresolved import) — hover then degrades to null.
-export
-projectEntrySchemes : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
+export projectEntrySchemes : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
 projectEntrySchemes cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
@@ -412,7 +410,7 @@ resolvePass rt core known ((mid, path, prog)::rest) buckets =
   let desugared = desugar prog
   let (exp, errs) = resolveModule rt core known mid desugared
   let diags = map (e => Diag SevError (ppResError e) (resErrorLoc e)) errs
-  resolvePass rt core (exp :: known) rest (pushDiags path diags buckets)
+  resolvePass rt core (exp::known) rest (pushDiags path diags buckets)
 
 -- ── typecheck pass (per module, ISOLATED) ───────────────────────────────────
 -- Run the shared multi-module typecheck (`checkModulesDiags`): core + runtime are
@@ -459,12 +457,17 @@ lookupTcDiags mid ((m, d)::rest)
 --   "## FILE <path>"  followed by each diag's "severity: message" line.
 -- The harness splits on the marker and sorts each file's lines, diffing against
 -- the OCaml analyze_project's per-file buckets.
-export
-analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
+export analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
 analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
   let parseCacheRef = Ref []
-  joinNl
-    (projectLines (analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc))
+  joinNl (projectLines (analyzeProject
+    cacheRef
+    parseCacheRef
+    read
+    entry
+    roots
+    runtimeSrc
+    coreSrc))
 
 projectLines : List (String, List Diag) -> List String
 projectLines [] = []

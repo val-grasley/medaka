@@ -59,8 +59,7 @@ preludeNamesRef : Ref (List String)
 preludeNamesRef = Ref []
 
 -- ── Initialise session ────────────────────────────────────────────────────
-export
-initSession : List Decl -> List Decl -> <Mut> Unit
+export initSession : List Decl -> List Decl -> <Mut> Unit
 initSession runtimeDecls preludeDecls =
   let _ = setRef runtimeDeclsRef runtimeDecls
   let _ = setRef preludeDeclsRef preludeDecls
@@ -100,11 +99,10 @@ looksLikeDecl : List Token -> Bool
 looksLikeDecl toks = match skipNoiseToks toks
   [] => False
   first::rest => if isDeclStartToken first then True
-  else
-    match first
-      TIdent _ => afterIdentToks (skipNoiseToks rest)
-      TUpper _ => afterIdentToks (skipNoiseToks rest)
-      _ => False
+  else match first
+    TIdent _ => afterIdentToks (skipNoiseToks rest)
+    TUpper _ => afterIdentToks (skipNoiseToks rest)
+    _ => False
 
 -- After an identifier on the LHS: skip more LHS tokens, look for `=` not `==`.
 afterIdentToks : List Token -> Bool
@@ -122,8 +120,7 @@ afterParenToks [] = False
 afterParenToks (TRParen::rest) = afterIdentToks (skipNoiseToks rest)
 afterParenToks (_::rest) = afterParenToks rest
 
-export
-isDecl : String -> Bool
+export isDecl : String -> Bool
 isDecl src = looksLikeDecl (tokenize src)
 
 -- ── Multi-line continuation heuristic ────────────────────────────────────
@@ -143,7 +140,10 @@ endsWithKeyword line kw =
   if ls < lk then False
   else
     let suffix = stringSlice (ls - lk) ls s
-    if suffix == kw then if ls == lk then True else not (isIdentChar (stringSlice (ls - lk - 1) (ls - lk) s)) else False
+    if suffix == kw then
+      if ls == lk then True else not (isIdentChar (stringSlice (ls - lk - 1) (ls - lk) s))
+    else
+      False
 
 filterEmpty : List String -> List String
 filterEmpty [] = []
@@ -161,8 +161,7 @@ endsWithBlankLine src =
   let len = stringLength src
   if len >= 2 then stringSlice (len - 2) len src == "\n\n" else False
 
-export
-needsMore : String -> Bool
+export needsMore : String -> Bool
 needsMore source =
   if endsWithBlankLine source then False
   else
@@ -186,7 +185,7 @@ declTypeAnnotations ((DData _ n _ _ _)::rest) =
   ("type", n) :: declTypeAnnotations rest
 declTypeAnnotations ((DRecord _ n _ _ _)::rest) =
   ("record", n) :: declTypeAnnotations rest
-declTypeAnnotations (DInterface { name = n, ... }::rest) =
+declTypeAnnotations ((DInterface { name = n, ... })::rest) =
   ("interface", n) :: declTypeAnnotations rest
 declTypeAnnotations (_::rest) = declTypeAnnotations rest
 
@@ -294,7 +293,7 @@ processExprInput src =
       let valOpt = lookupBinding "__repl__" bindings
       let schemeOpt = lookupScheme "__repl__" allSchemes
       match (valOpt, schemeOpt)
-        ((Some v), (Some scheme)) =>
+        (Some v, Some scheme) =>
           let vStr = ppValue (force v)
           let tStr = ppScheme scheme
           putStrLn (vStr ++ " : " ++ tStr)
@@ -339,7 +338,7 @@ sortByKey (x::rest) = insertSorted x (sortByKey rest)
 insertSorted : (String, String) -> List (String, String) -> List (String, String)
 insertSorted x [] = [x]
 insertSorted (k, v) ((k2, v2)::rest)
-  | k <= k2 = (k, v) :: (k2, v2) :: rest
+  | k <= k2 = (k, v) :: (k2, v2)::rest
   | otherwise = (k2, v2) :: insertSorted (k, v) rest
 
 -- ── Process :reset command ────────────────────────────────────────────────
@@ -378,8 +377,7 @@ processCommand cmd =
             True
 
 -- ── Main REPL loop ────────────────────────────────────────────────────────
-export
-replLoop : Unit -> <IO, Mut> Unit
+export replLoop : Unit -> <IO, Mut> Unit
 replLoop _ =
   let _ = putStrLn "medaka repl  (:quit to exit, :reset to clear session)"
   replLoopGo "" False
@@ -410,7 +408,12 @@ replLoopGo buf cont =
 dispatchInput : String -> <IO, Mut> Unit
 dispatchInput src =
   let trimmed = stringTrim src
-  if trimmed == "" then () else if isDecl src then processDeclInput src else processExprInput src
+  if trimmed == "" then
+    ()
+  else if isDecl src then
+    processDeclInput src
+  else
+    processExprInput src
 
 -- ── String utilities ──────────────────────────────────────────────────────
 -- stringTrim moved to support/util.mdk (imported above).
@@ -425,5 +428,6 @@ stringSplitNewlines s = stringSplitOn "\n" s 0 0 (stringLength s)
 stringSplitOn : String -> String -> Int -> Int -> Int -> List String
 stringSplitOn sep s start cur len
   | cur >= len = [stringSlice start len s]
-  | stringSlice cur (cur + 1) s == sep = stringSlice start cur s :: stringSplitOn sep s (cur + 1) (cur + 1) len
+  | stringSlice cur (cur + 1) s == sep =
+    stringSlice start cur s :: stringSplitOn sep s (cur + 1) (cur + 1) len
   | otherwise = stringSplitOn sep s start (cur + 1) len

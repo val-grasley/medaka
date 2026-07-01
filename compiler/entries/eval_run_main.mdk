@@ -22,7 +22,8 @@ withPreludes preludePaths targetPath = match readAllDecls preludePaths
   Err msg => ePutStrLn msg
 
 withTarget preludeDecls targetPath = match readFile targetPath
-  Ok targetSrc => putStr (evalOutputWith preludeDecls (desugar (parse targetSrc)))
+  Ok targetSrc =>
+    putStr (evalOutputWith preludeDecls (desugar (parse targetSrc)))
   Err msg => ePutStrLn msg
 
 readAllDecls : List String -> <IO> Result String (List Decl)

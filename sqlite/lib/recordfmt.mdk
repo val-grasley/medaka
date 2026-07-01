@@ -31,38 +31,37 @@ import array
 import string.{join, fromUtf8}
 
 -- | One decoded column value.
-public export data Cell
-  = CNull
+public export data Cell =
+  | CNull
   | CInt Int
   | CText String
   | CBlob (Array Int)
   | CFloat Float
-  deriving (Debug)
+deriving (Debug)
 
 export impl Display Cell where
-  display CNull     = "NULL"
-  display (CInt n)  = intToString n
+  display CNull = "NULL"
+  display (CInt n) = intToString n
   display (CText s) = s
   display (CBlob _) = "<blob>"
   display (CFloat f) = floatToString f
 
-export
-cellToString : Cell -> String
-cellToString CNull   = ""
-cellToString (CInt n)  = intToString n
+export cellToString : Cell -> String
+cellToString CNull = ""
+cellToString (CInt n) = intToString n
 cellToString (CText s) = s
 cellToString (CBlob _) = "<blob>"
 cellToString (CFloat f) = floatToString f
 
 -- A serial type's interpretation.  We keep just enough to drive the body parse.
-public export data SerialType
-  = STNull
-  | STInt Int    -- signed integer of this many body bytes (1,2,3,4,6,8)
-  | STIntZero    -- literal 0, no body bytes
-  | STIntOne     -- literal 1, no body bytes
-  | STFloat      -- 8 body bytes, big-endian IEEE 754 double
-  | STText Int   -- text of this many body bytes
-  | STBlob Int   -- blob of this many body bytes
+public export data SerialType =
+  | STNull
+  | STInt Int  -- signed integer of this many body bytes (1,2,3,4,6,8)
+  | STIntZero  -- literal 0, no body bytes
+  | STIntOne  -- literal 1, no body bytes
+  | STFloat  -- 8 body bytes, big-endian IEEE 754 double
+  | STText Int  -- text of this many body bytes
+  | STBlob Int  -- blob of this many body bytes
 
 -- | Map a raw serial-type code to a `SerialType`.
 serialOf : Int -> Result String SerialType
@@ -79,9 +78,11 @@ serialOf n
   | n == 9 = Ok STIntOne
   | n == 10 = Err "reserved serial type 10"
   | n == 11 = Err "reserved serial type 11"
-  | n >= 12 = if n % 2 == 0
-              then Ok (STBlob ((n - 12) / 2))
-              else Ok (STText ((n - 13) / 2))
+  | n >= 12 =
+    if n % 2 == 0 then
+      Ok (STBlob ((n - 12) / 2))
+    else
+      Ok (STText ((n - 13) / 2))
   | otherwise = Err "negative serial type"
 
 -- | Decode a full record into its column cells.
@@ -108,15 +109,13 @@ serialOf n
 --
 -- > showCells (runByteParser parseRecord (arrayFromList [2, 7, 63, 248, 0, 0, 0, 0, 0, 0]))
 -- "1.5"
-export
-parseRecord : ByteParser (List Cell)
+export parseRecord : ByteParser (List Cell)
 parseRecord = ByteParser parseRecordGo
 
 -- | Render a decoded record (or a parse error) to a compact "|"-joined string.
 --   Used by the doctests above to print results without a Debug instance.
-export
-showCells : Result String (List Cell) -> String
-showCells (Err e)    = "Err: \{e}"
+export showCells : Result String (List Cell) -> String
+showCells (Err e) = "Err: \{e}"
 showCells (Ok cells) = join "|" (map display cells)
 
 -- The pure driver: we drop to BResult-level position threading so we can
@@ -128,34 +127,33 @@ parseRecordGo input pos =
 parseRecordAfterHdr : Array Int -> Int -> Int -> Int -> BResult (List Cell)
 parseRecordAfterHdr input pos hdrLen hdrStart =
   let headerEnd = pos + hdrLen
-  onOk (readSerialTypes input hdrStart headerEnd []) (sts _ =>
-    readBodies input headerEnd sts [])
+  onOk
+    (readSerialTypes input hdrStart headerEnd [])
+    (sts _ => readBodies input headerEnd sts [])
 
 -- Read serial-type varints until `pos >= headerEnd`.
 readSerialTypes : Array Int -> Int -> Int -> List SerialType -> BResult (List SerialType)
 readSerialTypes input pos headerEnd acc
   | pos >= headerEnd = BOk (reverse acc) pos
-  | otherwise =
-      onOk (runBP sqVarint input pos) (code pos2 =>
-        match serialOf code
-          Err e => BErr e pos
-          Ok st => readSerialTypes input pos2 headerEnd (st::acc))
+  | otherwise = onOk (runBP sqVarint input pos) (code pos2 => match serialOf code
+    Err e => BErr e pos
+    Ok st => readSerialTypes input pos2 headerEnd (st::acc))
 
 -- Read the body bytes for each serial type in order.
 readBodies : Array Int -> Int -> List SerialType -> List Cell -> BResult (List Cell)
 readBodies input pos [] acc = BOk (reverse acc) pos
-readBodies input pos (st::rest) acc =
-    onOk (readBody input pos st) (cell pos2 =>
-      readBodies input pos2 rest (cell::acc))
+readBodies input pos (st::rest) acc = onOk
+  (readBody input pos st)
+  (cell pos2 => readBodies input pos2 rest (cell::acc))
 
 -- Read one cell's body given its serial type.
 readBody : Array Int -> Int -> SerialType -> BResult Cell
-readBody input pos STNull    = BOk CNull pos
+readBody input pos STNull = BOk CNull pos
 readBody input pos STIntZero = BOk (CInt 0) pos
-readBody input pos STIntOne  = BOk (CInt 1) pos
+readBody input pos STIntOne = BOk (CInt 1) pos
 readBody input pos (STInt nbytes) = map CInt (runBP (beSint nbytes) input pos)
 readBody input pos (STText nbytes) =
-    map (bs => CText (fromUtf8 bs)) (runBP (takeSlice nbytes) input pos)
+  map (bs => CText (fromUtf8 bs)) (runBP (takeSlice nbytes) input pos)
 readBody input pos (STBlob nbytes) =
-    map CBlob (runBP (takeSlice nbytes) input pos)
+  map CBlob (runBP (takeSlice nbytes) input pos)
 readBody input pos STFloat = map CFloat (runBP beFloat64 input pos)

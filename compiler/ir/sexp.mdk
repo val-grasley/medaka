@@ -36,8 +36,7 @@ import frontend.ast.{
 }
 import support.util.{escStr, joinNl, joinWith}
 
-export
-boolStr : Bool -> String
+export boolStr : Bool -> String
 boolStr True = "true"
 boolStr False = "false"
 
@@ -46,16 +45,13 @@ boolStr False = "false"
 joinSp : List String -> String
 joinSp xs = joinWith " " xs
 
-export
-node : String -> List String -> String
-node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
+export node : String -> List String -> String
+node tag parts = "(" ++ joinSp (tag::parts) ++ ")"
 
-export
-slist : List String -> String
+export slist : List String -> String
 slist xs = "(" ++ joinSp xs ++ ")"
 
-export
-litSexp : Lit -> String
+export litSexp : Lit -> String
 litSexp (LInt n) = node "LInt" [intToString n]
 litSexp (LFloat f) = node "LFloat" [floatToString f]
 litSexp (LString s) = node "LString" [escStr s]
@@ -63,8 +59,7 @@ litSexp (LChar s) = node "LChar" [escStr s]
 litSexp (LBool b) = node "LBool" [boolStr b]
 litSexp LUnit = "LUnit"
 
-export
-patSexp : Pat -> String
+export patSexp : Pat -> String
 patSexp (PVar x) = node "PVar" [escStr x]
 patSexp PWild = "PWild"
 patSexp (PLit l) = node "PLit" [litSexp l]
@@ -96,15 +91,14 @@ constraintSexp : Constraint -> String
 constraintSexp (Constraint iface args) =
   node "cstr" (escStr iface :: map tySexp args)
 
-export
-optStrSexp : Option String -> String
+export optStrSexp : Option String -> String
 optStrSexp (Some s) = node "Some" [escStr s]
 optStrSexp None = "None"
 
 -- a row atom: a bare label, or `(atom Net "pat")` when parameterized.
 effAtomSexp : (String, Option String) -> String
 effAtomSexp (l, None) = escStr l
-effAtomSexp (l, Some "_") = node "hole" [escStr l]   -- v2 Stage 2b inferred hole
+effAtomSexp (l, Some "_") = node "hole" [escStr l]  -- v2 Stage 2b inferred hole
 effAtomSexp (l, Some s) = node "atom" [escStr l, escStr s]
 
 guardSexp : Guard -> String
@@ -115,8 +109,7 @@ armSexp : Arm -> String
 armSexp (Arm p gs body) =
   node "arm" [patSexp p, slist (map guardSexp gs), exprSexp body]
 
-export
-exprSexp : Expr -> String
+export exprSexp : Expr -> String
 -- ELoc is TRANSPARENT in the structural dump (mirror of dev/astdump.ml:69
 -- `ELoc(_,e) -> sexp_expr e`): the parse/sexp gates stay byte-identical to the
 -- OCaml oracle, which strips locs before dumping.
@@ -228,78 +221,72 @@ declSexp (DTypeSig p n t) = node "DTypeSig" [boolStr p, escStr n, tySexp t]
 declSexp (DExtern p n t) = node "DExtern" [boolStr p, escStr n, tySexp t]
 declSexp (DFunDef p n ps b) =
   node "DFunDef" [boolStr p, escStr n, slist (map patSexp ps), exprSexp b]
-declSexp (DData vis n ps vs ds) =
-  node
-    "DData"
-    [
-      visSexp vis,
-      escStr n,
-      slist (map escStr ps),
-      slist (map variantSexp vs),
-      slist (map escStr ds),
-    ]
-declSexp (DRecord vis n ps fs ds) =
-  node
-    "DRecord"
-    [
-      visSexp vis,
-      escStr n,
-      slist (map escStr ps),
-      slist (map fieldSexp fs),
-      slist (map escStr ds),
-    ]
+declSexp (DData vis n ps vs ds) = node
+  "DData"
+  [
+    visSexp vis,
+    escStr n,
+    slist (map escStr ps),
+    slist (map variantSexp vs),
+    slist (map escStr ds),
+  ]
+declSexp (DRecord vis n ps fs ds) = node
+  "DRecord"
+  [
+    visSexp vis,
+    escStr n,
+    slist (map escStr ps),
+    slist (map fieldSexp fs),
+    slist (map escStr ds),
+  ]
 declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
 declSexp (DEffect pub n dom isInternal) =
   node "DEffect" [boolStr pub, escStr n, optStrSexp dom, boolStr isInternal]
-declSexp (DProp pub name params body) =
-  node
-    "DProp"
-    [boolStr pub, escStr name, slist (map propParamSexp params), exprSexp body]
+declSexp (DProp pub name params body) = node
+  "DProp"
+  [boolStr pub, escStr name, slist (map propParamSexp params), exprSexp body]
 declSexp (DTest pub name body) =
   node "DTest" [boolStr pub, escStr name, exprSexp body]
 declSexp (DBench pub name body) =
   node "DBench" [boolStr pub, escStr name, exprSexp body]
 declSexp (DTypeAlias p n ps t) =
   node "DTypeAlias" [boolStr p, escStr n, slist (map escStr ps), tySexp t]
-declSexp (DNewtype p n ps con fty ds) =
-  node
-    "DNewtype"
-    [
-      boolStr p,
-      escStr n,
-      slist (map escStr ps),
-      escStr con,
-      tySexp fty,
-      slist (map escStr ds),
-    ]
+declSexp (DNewtype p n ps con fty ds) = node
+  "DNewtype"
+  [
+    boolStr p,
+    escStr n,
+    slist (map escStr ps),
+    escStr con,
+    tySexp fty,
+    slist (map escStr ds),
+  ]
 declSexp (DLetGroup p binds) =
   node "DLetGroup" [boolStr p, slist (map letBindSexp binds)]
 declSexp (DAttrib attrs d) =
   node "DAttrib" [slist (map attrSexp attrs), declSexp d]
 
-declSexp DInterface { pub, def, name, typarams, supers, methods } =
-  node
-    "DInterface"
-    [
-      boolStr pub,
-      boolStr def,
-      escStr name,
-      slist (map escStr typarams),
-      slist (map superSexp supers),
-      slist (map ifaceMethodSexp methods),
-    ]
-declSexp DImpl { pub, def, iface, tys, name, reqs, methods } =
-  node
-    "DImpl"
-    [
-      boolStr pub,
-      boolStr def,
-      escStr iface,
-      slist (map tySexp tys),
-      optStrSexp name,
-      slist (map requireSexp reqs),
-      slist (map implMethodSexp methods),
-    ]
+declSexp (DInterface { pub, def, name, typarams, supers, methods }) = node
+  "DInterface"
+  [
+    boolStr pub,
+    boolStr def,
+    escStr name,
+    slist (map escStr typarams),
+    slist (map superSexp supers),
+    slist (map ifaceMethodSexp methods),
+  ]
+declSexp (DImpl { pub, def, iface, tys, name, reqs, methods }) = node
+  "DImpl"
+  [
+    boolStr pub,
+    boolStr def,
+    escStr iface,
+    slist (map tySexp tys),
+    optStrSexp name,
+    slist (map requireSexp reqs),
+    slist (map implMethodSexp methods),
+  ]
 
 attrSexp : Attr -> String
 attrSexp (AttrDeprecated s) = node "AttrDeprecated" [escStr s]
@@ -341,6 +328,5 @@ usePathSexp (UseWild ids) = node "UseWild" [slist (map escStr ids)]
 usePathSexp (UseAlias ids a) =
   node "UseAlias" [slist (map escStr ids), escStr a]
 
-export
-programToSexp : List Decl -> String
+export programToSexp : List Decl -> String
 programToSexp prog = joinNl (map declSexp prog)

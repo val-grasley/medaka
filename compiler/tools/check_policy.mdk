@@ -65,8 +65,7 @@ import support.util.{sortUniqS, joinWith, reverseL, escStr}
 -- positional is the file.  Defaults: allow "Cache,Log", fn "transform".
 public export data PolicyArgs = PolicyArgs (Option String) String String
 
-export
-parsePolicyArgs : List String -> PolicyArgs
+export parsePolicyArgs : List String -> PolicyArgs
 parsePolicyArgs argv = parsePolicyGo argv None "Cache,Log" "transform"
 
 parsePolicyGo : List String -> Option String -> String -> String -> PolicyArgs
@@ -80,7 +79,12 @@ parsePolicyGo (f::rest) file allow fn = match file
 -- Split the --allow value on ',', dropping empties (mirror String.split_on_char
 -- ',' then filter (<> "")).
 splitComma : String -> List String
-splitComma s = filterNonEmpty (splitCommaGo (stringToChars s) (arrayLength (stringToChars s)) 0 0 0)
+splitComma s = filterNonEmpty (splitCommaGo
+  (stringToChars s)
+  (arrayLength (stringToChars s))
+  0
+  0
+  0)
 
 -- WS-4: brace-depth-aware label split.  Commas INSIDE `{…}` (a product Method
 -- set, e.g. `Method={GET,POST}`) do NOT separate policy labels.  `depth` tracks
@@ -91,7 +95,8 @@ splitCommaGo cs n start i depth
   | i >= n = [sliceStr cs start n]
   | arrayGetUnsafe i cs == '{' = splitCommaGo cs n start (i + 1) (depth + 1)
   | arrayGetUnsafe i cs == '}' = splitCommaGo cs n start (i + 1) (depth - 1)
-  | arrayGetUnsafe i cs == ',' && depth == 0 = sliceStr cs start i :: splitCommaGo cs n (i + 1) (i + 1) depth
+  | arrayGetUnsafe i cs == ',' && depth == 0 =
+    sliceStr cs start i :: splitCommaGo cs n (i + 1) (i + 1) depth
   | otherwise = splitCommaGo cs n start (i + 1) depth
 
 sliceStr : Array Char -> Int -> Int -> String
@@ -104,7 +109,11 @@ sliceGo cs a b
 
 filterNonEmpty : List String -> List String
 filterNonEmpty [] = []
-filterNonEmpty (x::xs) = if x == "" then filterNonEmpty xs else x :: filterNonEmpty xs
+filterNonEmpty (x::xs) =
+  if x == "" then
+    filterNonEmpty xs
+  else
+    x :: filterNonEmpty xs
 
 -- ── WS-1b: policy as (label, param) ─────────────────────────────────────────
 -- Each comma-separated token is either a bare label `L` (→ policy param ⊤ =
@@ -162,7 +171,7 @@ splitOnFirstEq cs n i
 -- entry renders `L "pat"`).
 policyLabels : List (String, Param) -> List String
 policyLabels [] = []
-policyLabels ((l, p)::rest) = (l ++ drender p) :: policyLabels rest
+policyLabels ((l, p)::rest) = l ++ drender p :: policyLabels rest
 
 lookupParam : String -> List (String, Param) -> Option Param
 lookupParam _ [] = None
@@ -181,7 +190,8 @@ collectEVars (EDictApp n) = [n]
 collectEVars (EApp f x) = collectEVars f ++ collectEVars x
 collectEVars (ELam _ body) = collectEVars body
 collectEVars (ELet _ _ _ v body) = collectEVars v ++ collectEVars body
-collectEVars (ELetGroup binds body) = concatMapCP collectBind binds ++ collectEVars body
+collectEVars (ELetGroup binds body) = concatMapCP collectBind binds
+  ++ collectEVars body
 collectEVars (EMatch e arms) = collectEVars e ++ concatMapCP collectArm arms
 collectEVars (EIf c t f) = collectEVars c ++ collectEVars t ++ collectEVars f
 collectEVars (EBinOp _ a b _) = collectEVars a ++ collectEVars b
@@ -191,14 +201,18 @@ collectEVars (EAnnot e _) = collectEVars e
 collectEVars (EHeadAnnot e _) = collectEVars e
 collectEVars (EFieldAccess e _ _) = collectEVars e
 collectEVars (ERecordCreate _ flds) = concatMapCP collectFieldAssign flds
-collectEVars (ERecordUpdate e flds) = collectEVars e ++ concatMapCP collectFieldAssign flds
-collectEVars (EVariantUpdate _ e flds) = collectEVars e ++ concatMapCP collectFieldAssign flds
+collectEVars (ERecordUpdate e flds) = collectEVars e
+  ++ concatMapCP collectFieldAssign flds
+collectEVars (EVariantUpdate _ e flds) = collectEVars e
+  ++ concatMapCP collectFieldAssign flds
 collectEVars (ETuple es) = concatMapCP collectEVars es
 collectEVars (EListLit es) = concatMapCP collectEVars es
 collectEVars (EArrayLit es) = concatMapCP collectEVars es
 collectEVars (ERangeList a b _) = collectEVars a ++ collectEVars b
 collectEVars (ERangeArray a b _) = collectEVars a ++ collectEVars b
-collectEVars (ESlice a b c _ _) = collectEVars a ++ collectEVars b ++ collectEVars c
+collectEVars (ESlice a b c _ _) = collectEVars a
+  ++ collectEVars b
+  ++ collectEVars c
 collectEVars (EIndex a b _) = collectEVars a ++ collectEVars b
 collectEVars (EBlock stmts) = concatMapCP collectStmt stmts
 collectEVars (EDo stmts) = concatMapCP collectStmt stmts
@@ -211,7 +225,8 @@ collectClause : FunClause -> List String
 collectClause (FunClause _ body) = collectEVars body
 
 collectArm : Arm -> List String
-collectArm (Arm _ guards body) = concatMapCP collectGuard guards ++ collectEVars body
+collectArm (Arm _ guards body) = concatMapCP collectGuard guards
+  ++ collectEVars body
 
 collectGuard : Guard -> List String
 collectGuard (GBool e) = collectEVars e
@@ -219,7 +234,6 @@ collectGuard (GBind _ e) = collectEVars e
 
 collectFieldAssign : FieldAssign -> List String
 collectFieldAssign (FieldAssign _ e) = collectEVars e
-
 
 collectStmt : DoStmt -> List String
 collectStmt (DoExpr e) = collectEVars e
@@ -262,7 +276,11 @@ intersectStr xs ys = filterMember xs ys
 
 filterMember : List String -> List String -> List String
 filterMember [] _ = []
-filterMember (x::xs) ys = if memberStr x ys then x :: filterMember xs ys else filterMember xs ys
+filterMember (x::xs) ys =
+  if memberStr x ys then
+    x :: filterMember xs ys
+  else
+    filterMember xs ys
 
 collectOpts : List (Option a) -> List a
 collectOpts [] = []
@@ -305,8 +323,10 @@ sortAtoms (x::xs) = insertAtom x (sortAtoms xs)
 insertAtom : Atom -> List Atom -> List Atom
 insertAtom x [] = [x]
 insertAtom x (y::ys) =
-  if stringLeq (atomLabel x) (atomLabel y) then x :: y :: ys
-  else y :: insertAtom x ys
+  if stringLeq (atomLabel x) (atomLabel y) then
+    x :: y::ys
+  else
+    y :: insertAtom x ys
 
 stringLeq : String -> String -> Bool
 stringLeq a b = match stringCompare a b
@@ -317,15 +337,17 @@ dedupAtoms : List Atom -> List Atom
 dedupAtoms [] = []
 dedupAtoms [x] = [x]
 dedupAtoms (x::y::rest) =
-  if atomLabel x == atomLabel y then dedupAtoms (x :: rest)
-  else x :: dedupAtoms (y :: rest)
+  if atomLabel x == atomLabel y then
+    dedupAtoms (x::rest)
+  else
+    x :: dedupAtoms (y::rest)
 
 -- The label view of an atom list (for header rendering + chain keys).  Each atom
 -- renders `label` (⊤ param) or `label "pat"` (concrete) via drender — byte-
 -- identical to WS-1a for ⊤ params (drender ⊤ = "").
 atomLabels : List Atom -> List String
 atomLabels [] = []
-atomLabels (a::rest) = (atomLabel a ++ drender (atomParam a)) :: atomLabels rest
+atomLabels (a::rest) = atomLabel a ++ drender (atomParam a) :: atomLabels rest
 
 -- (name, effect-atoms) for every fn whose scheme carries a non-empty effect set.
 fnEffectsTable : List (String, Scheme) -> List (String, List Atom)
@@ -364,7 +386,10 @@ traceChain callGraph effTable forbiddenLabel fn visited =
 firstWithEffect : List (String, List Atom) -> String -> List String -> Option String
 firstWithEffect _ _ [] = None
 firstWithEffect effTable label (c::rest) =
-  if fnHasEffect effTable c label then Some c else firstWithEffect effTable label rest
+  if fnHasEffect effTable c label then
+    Some c
+  else
+    firstWithEffect effTable label rest
 
 -- ── 5. policy filtering (WS-1b: parameter-level compare via dsub) ────────────
 -- An atom is FORBIDDEN iff EITHER its label is absent from the policy, OR (label
@@ -379,8 +404,10 @@ forbiddenLabels effs policy = filterForbidden effs policy
 filterForbidden : List Atom -> List (String, Param) -> List String
 filterForbidden [] _ = []
 filterForbidden (a::rest) policy =
-  if atomPermitted a policy then filterForbidden rest policy
-  else atomLabel a :: filterForbidden rest policy
+  if atomPermitted a policy then
+    filterForbidden rest policy
+  else
+    atomLabel a :: filterForbidden rest policy
 
 -- Permitted iff the label is in the policy AND the inferred param is ⊑ the
 -- policy param.
@@ -396,11 +423,12 @@ atomPermitted a policy = match lookupParam (atomLabel a) policy
 -- buffer (eval forces putStr → outputRef), so the log lines land BEFORE the
 -- transform-result line we print afterward — matching the oracle's ordering.
 stubSource : String
-stubSource = stringConcat [
-  "cacheGet req = \"\"\n",
-  "cacheSet req result = ()\n",
-  "logEvent s = putStr (stringConcat [\"   [LOG] \", s, \"\\n\"])\n",
-]
+stubSource = stringConcat
+  [
+    "cacheGet req = \"\"\n",
+    "cacheSet req result = ()\n",
+    "logEvent s = putStr (stringConcat [\"   [LOG] \", s, \"\\n\"])\n",
+  ]
 
 -- Run `fn` on the sample request "X-Forwarded-For: 192.168.1.1" with stub
 -- platform impls, returning the captured stdout (LOG lines) ++ the transform
@@ -417,7 +445,12 @@ runPlugin fnName rtD coreD userD =
       let sample = "X-Forwarded-For: 192.168.1.1"
       let result = apply fnVal (VString sample)
       let logged = outputRef.value
-      logged ++ "   transform " ++ escStr sample ++ " = " ++ ppValue result ++ "\n"
+      logged
+        ++ "   transform "
+        ++ escStr sample
+        ++ " = "
+        ++ ppValue result
+        ++ "\n"
 
 lookupValue : String -> List (String, Value) -> Option Value
 lookupValue _ [] = None
@@ -433,12 +466,11 @@ lookupValue k ((n, v)::rest) = if k == n then Some v else lookupValue k rest
 -- stdout BEFORE the run — which may panic on an unstubbed extern, exactly like
 -- the OCaml arm prints the accept line then lets the eval panic hit stderr).
 -- Reject carries the full report; the run never happens.
-public export data PolicyOutcome
-  = PolicyAccept String String (List Decl) (List Decl) (List Decl)  -- header fn coreD rtD userD
+public export data PolicyOutcome =
+  | PolicyAccept String String (List Decl) (List Decl) (List Decl)  -- header fn coreD rtD userD
   | PolicyReject String
 
-export
-runCheckPolicy : String -> String -> String -> String -> String -> <Mut> PolicyOutcome
+export runCheckPolicy : String -> String -> String -> String -> String -> <Mut> PolicyOutcome
 runCheckPolicy rtSrc coreSrc src allowStr fnName =
   let policy = parsePolicy allowStr
   let rawUser = parse src
@@ -454,22 +486,22 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
   let forbidden = forbiddenLabels fnEffects policy
   match forbidden
     [] =>
-      let effStr = if listIsEmpty fnEffects then "pure"
-        else "<" ++ joinWith ", " (atomLabels fnEffects) ++ ">"
+      let effStr = if listIsEmpty fnEffects then
+        "pure"
+      else
+        "<" ++ joinWith ", " (atomLabels fnEffects) ++ ">"
       let header = "✅ accepted — " ++ fnName ++ " requires only " ++ effStr ++ "\n"
       PolicyAccept header fnName coreD rtD userD
     _ =>
       let chain = findChain callGraph effTable fnName (firstOf forbidden)
-      let header = "❌ rejected — " ++ fnName ++ " requires <" ++ joinWith ", " (atomLabels fnEffects)
-        ++ "> — not permitted by policy {" ++ joinWith ", " (policyLabels policy) ++ "}\n"
+      let header = "❌ rejected — " ++ fnName ++ " requires <" ++ joinWith ", " (atomLabels fnEffects) ++ "> — not permitted by policy {" ++ joinWith ", " (policyLabels policy) ++ "}\n"
       let via = "   reached via: " ++ joinWith " → " chain ++ "\n"
       PolicyReject (header ++ via)
 
 -- Run the accepted plugin and return the captured run output (LOG lines + the
 -- transform-result line).  Called by the CLI AFTER it has printed the accept
 -- header, so a panic on an unstubbed extern surfaces post-header (oracle parity).
-export
-runAcceptedPlugin : String -> List Decl -> List Decl -> List Decl -> <Mut> String
+export runAcceptedPlugin : String -> List Decl -> List Decl -> List Decl -> <Mut> String
 runAcceptedPlugin fnName coreD rtD userD = runPlugin fnName rtD coreD userD
 
 firstOf : List String -> String
@@ -529,7 +561,10 @@ productTomlInline ax = joinWith ", " (map axisToToml ax)
 
 axisToToml : (String, Param) -> String
 axisToToml (name, PPrefix (Some s)) = lowerFirst name ++ " = \"" ++ s ++ "\""
-axisToToml (name, PSet (Some xs)) = lowerFirst name ++ " = [" ++ joinWith ", " (map quoteTok xs) ++ "]"
+axisToToml (name, PSet (Some xs)) = lowerFirst name
+  ++ " = ["
+  ++ joinWith ", " (map quoteTok xs)
+  ++ "]"
 axisToToml (name, _) = lowerFirst name ++ " = true"
 
 quoteTok : String -> String
@@ -539,8 +574,7 @@ quoteTok s = "\"" ++ s ++ "\""
 lowerFirst : String -> String
 lowerFirst s =
   let n = stringLength s
-  if n == 0 then s
-  else lowerChar (stringSlice 0 1 s) ++ stringSlice 1 n s
+  if n == 0 then s else lowerChar (stringSlice 0 1 s) ++ stringSlice 1 n s
 
 lowerChar : String -> String
 lowerChar "H" = "h"
@@ -551,8 +585,7 @@ lowerChar c = c
 
 -- Filter atoms to security labels only, then render TOML.
 -- Returns the full TOML block (empty string if no security effects).
-export
-manifestToml : List Atom -> String
+export manifestToml : List Atom -> String
 manifestToml atoms =
   let secAtoms = filterSecurity atoms
   match secAtoms
@@ -568,16 +601,17 @@ joinTomlLines (x::xs) = x ++ "\n" ++ joinTomlLines xs
 filterSecurity : List Atom -> List Atom
 filterSecurity [] = []
 filterSecurity (a::rest) =
-  if isSecurity (atomLabel a) then a :: filterSecurity rest
-  else filterSecurity rest
+  if isSecurity (atomLabel a) then
+    a :: filterSecurity rest
+  else
+    filterSecurity rest
 
 -- Parse args for `medaka manifest <file.mdk> [--fn name]`.
 -- Default fn name: "main" (the conventional entry point for manifest extraction;
 -- differs from check-policy's "transform" which is the plugin convention).
 public export data ManifestArgs = ManifestArgs (Option String) String
 
-export
-parseManifestArgs : List String -> ManifestArgs
+export parseManifestArgs : List String -> ManifestArgs
 parseManifestArgs argv = parseManifestGo argv None "main"
 
 parseManifestGo : List String -> Option String -> String -> ManifestArgs
@@ -590,8 +624,7 @@ parseManifestGo (f::rest) file fn = match file
 -- Run manifest extraction: typecheck the file, read the named fn's inferred
 -- effect row, filter to security labels, return TOML.
 -- Returns (toml, fnEffects) so the caller can also drive round-trip validation.
-export
-runManifest : String -> String -> String -> String -> <Mut> String
+export runManifest : String -> String -> String -> String -> <Mut> String
 runManifest rtSrc coreSrc src fnName =
   let rawUser = parse src
   let userD = desugar rawUser
@@ -608,8 +641,7 @@ runManifest rtSrc coreSrc src fnName =
 -- PPrefix (Some s) → "Label=s"
 -- PUnit / PPrefix None → "Label"
 -- Returns a comma-joined string suitable for --allow.
-export
-manifestToAllowStr : List Atom -> String
+export manifestToAllowStr : List Atom -> String
 manifestToAllowStr atoms =
   let secAtoms = filterSecurity atoms
   let toks = map atomToAllowTok secAtoms
@@ -639,8 +671,7 @@ joinSemiTok : List String -> String
 joinSemiTok xs = joinWith ";" xs
 
 -- Full manifest extraction returning the atom list (for round-trip gate).
-export
-runManifestAtoms : String -> String -> String -> String -> <Mut> List Atom
+export runManifestAtoms : String -> String -> String -> String -> <Mut> List Atom
 runManifestAtoms rtSrc coreSrc src fnName =
   let rawUser = parse src
   let userD = desugar rawUser

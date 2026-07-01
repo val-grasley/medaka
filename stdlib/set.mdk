@@ -21,7 +21,18 @@
    and avoids the per-node `Unit` payload. The balancing mirrors map.mdk's,
    which the property tests below re-verify. -}
 
-import core.{Eq, Ord, Debug, Display, Foldable, Semigroup, Monoid, Ordering, Option, FromEntries}
+import core.{
+  Eq,
+  Ord,
+  Debug,
+  Display,
+  Foldable,
+  Semigroup,
+  Monoid,
+  Ordering,
+  Option,
+  FromEntries,
+}
 
 {- The representation. `Tip` is the empty set; `Bin size elem left right` is an
    interior node whose cached `size` is `1 + size left + size right`. -}
@@ -89,8 +100,7 @@ doubleR x1 l t4 = match l
 
    > size (singleton 5)
    1 -}
-export
-singleton : a -> Set a
+export singleton : a -> Set a
 singleton x = Bin 1 x Tip Tip
 
 {- | Build a set from a list, dropping duplicates.
@@ -108,8 +118,7 @@ singleton x = Bin 1 x Tip Tip
 
    > size (Set { } : Set Int)
    0 -}
-export
-fromList : Ord a => List a -> Set a
+export fromList : Ord a => List a -> Set a
 fromList xs = fold (s x => insert x s) Tip xs
 
 -- ── Query ───────────────────────────────────────────────────────────────
@@ -118,8 +127,7 @@ fromList xs = fold (s x => insert x s) Tip xs
 
    > size (fromList [1, 2, 3, 2])
    3 -}
-export
-size : Set a -> Int
+export size : Set a -> Int
 size Tip = 0
 size (Bin s _ _ _) = s
 
@@ -129,8 +137,7 @@ size (Bin s _ _ _) = s
    True
    > member 9 (fromList [1, 2, 3])
    False -}
-export
-member : Ord a => a -> Set a -> Bool
+export member : Ord a => a -> Set a -> Bool
 member x Tip = False
 member x (Bin _ y l r) = match compare x y
   Lt => member x l
@@ -145,8 +152,7 @@ member x (Bin _ y l r) = match compare x y
    3
    > size (insert 9 (fromList [1, 2, 3]))
    4 -}
-export
-insert : Ord a => a -> Set a -> Set a
+export insert : Ord a => a -> Set a -> Set a
 insert x Tip = singleton x
 insert x (Bin s y l r) = match compare x y
   Lt => balance y (insert x l) r
@@ -164,8 +170,7 @@ insert x (Bin s y l r) = match compare x y
    [1, 2, 3]
    > size (delete 9 (fromList [1, 2, 3]))
    3 -}
-export
-delete : Ord a => a -> Set a -> Set a
+export delete : Ord a => a -> Set a -> Set a
 delete x Tip = Tip
 delete x (Bin _ y l r) = match compare x y
   Lt => balance y (delete x l) r
@@ -198,8 +203,7 @@ glueMin l r = match minView r
 
    > minView (Set { } : Set Int)
    None -}
-export
-minView : Set a -> Option (a, Set a)
+export minView : Set a -> Option (a, Set a)
 minView Tip = None
 minView (Bin _ x l r) = match minView l
   None => Some (x, r)
@@ -209,8 +213,7 @@ minView (Bin _ x l r) = match minView l
 
    > maxView (Set { } : Set Int)
    None -}
-export
-maxView : Set a -> Option (a, Set a)
+export maxView : Set a -> Option (a, Set a)
 maxView Tip = None
 maxView (Bin _ x l r) = match maxView r
   None => Some (x, l)
@@ -220,8 +223,7 @@ maxView (Bin _ x l r) = match maxView r
 
    > lookupMin (fromList [3, 1, 2])
    Some 1 -}
-export
-lookupMin : Set a -> Option a
+export lookupMin : Set a -> Option a
 lookupMin s = match minView s
   None => None
   Some (x, _) => Some x
@@ -230,8 +232,7 @@ lookupMin s = match minView s
 
    > lookupMax (fromList [3, 1, 2])
    Some 3 -}
-export
-lookupMax : Set a -> Option a
+export lookupMax : Set a -> Option a
 lookupMax s = match maxView s
   None => None
   Some (x, _) => Some x
@@ -240,8 +241,7 @@ lookupMax s = match maxView s
 
    > toList (deleteMin (fromList [3, 1, 2]))
    [2, 3] -}
-export
-deleteMin : Set a -> Set a
+export deleteMin : Set a -> Set a
 deleteMin s = match minView s
   None => Tip
   Some (_, s') => s'
@@ -250,8 +250,7 @@ deleteMin s = match minView s
 
    > toList (deleteMax (fromList [3, 1, 2]))
    [1, 2] -}
-export
-deleteMax : Set a -> Set a
+export deleteMax : Set a -> Set a
 deleteMax s = match maxView s
   None => Tip
   Some (_, s') => s'
@@ -279,8 +278,7 @@ foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
    [1, 2, 3, 4]
    > toList (union (fromList [1, 2, 3]) (fromList [2]))
    [1, 2, 3] -}
-export
-union : Ord a => Set a -> Set a -> Set a
+export union : Ord a => Set a -> Set a -> Set a
 union a b = foldrSet (x acc => insert x acc) b a
 
 {- | Intersection — elements in both sets.
@@ -294,8 +292,7 @@ union a b = foldrSet (x acc => insert x acc) b a
    []
    > toList (intersection (fromList [1, 2, 3]) (fromList [2]))
    [2] -}
-export
-intersection : Ord a => Set a -> Set a -> Set a
+export intersection : Ord a => Set a -> Set a -> Set a
 intersection a b = foldrSet (intersectStep b) Tip a
 
 intersectStep : Ord a => Set a -> a -> Set a -> Set a
@@ -312,8 +309,7 @@ intersectStep b x acc = if member x b then insert x acc else acc
    [1, 2]
    > toList (difference (fromList [1, 2, 3]) (fromList [1, 2, 3]))
    [] -}
-export
-difference : Ord a => Set a -> Set a -> Set a
+export difference : Ord a => Set a -> Set a -> Set a
 difference a b = foldrSet (x acc => delete x acc) a b
 
 {- | `True` when every element of the first set is in the second.
@@ -322,8 +318,7 @@ difference a b = foldrSet (x acc => delete x acc) a b
    True
    > isSubsetOf (fromList [1, 4]) (fromList [1, 2, 3])
    False -}
-export
-isSubsetOf : Ord a => Set a -> Set a -> Bool
+export isSubsetOf : Ord a => Set a -> Set a -> Bool
 isSubsetOf a b = foldrSet (x acc => acc && member x b) True a
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
@@ -340,7 +335,7 @@ isSubsetOf a b = foldrSet (x acc => acc && member x b) True a
 export default impl Foldable Set where
   fold f z s = foldlSet f z s
   foldRight f z s = foldrSet f z s
-  toList s = foldrSet (x acc => x :: acc) [] s
+  toList s = foldrSet (x acc => x::acc) [] s
   isEmpty Tip = True
   isEmpty _ = False
   length s = size s
@@ -416,8 +411,7 @@ export default impl Monoid (Set a) requires Ord a where
    True
    > wellFormed (Set { } : Set Int)
    True -}
-export
-wellFormed : Ord a => Set a -> Bool
+export wellFormed : Ord a => Set a -> Bool
 wellFormed Tip = True
 wellFormed (Bin s x l r) =
   let sizeOk = size l + size r + 1 == s
@@ -437,7 +431,7 @@ balancedAt l r =
 ascending : Ord a => List a -> Bool
 ascending [] = True
 ascending [x] = True
-ascending (x::y::rest) = lt x y && ascending (y :: rest)
+ascending (x::y::rest) = lt x y && ascending (y::rest)
 
 -- ── Properties ──────────────────────────────────────────────────────────
 

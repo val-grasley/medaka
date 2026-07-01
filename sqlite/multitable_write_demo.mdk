@@ -20,58 +20,53 @@ import string.{toInt}
 import list.{reverse}
 
 usersSchema : TableSchema
-usersSchema = TableSchema
-  { schemaTableName = "users"
-  , columns =
-      [ Column { colName = "id",   colType = TInteger, isPrimaryKey = True }
-      , Column { colName = "name", colType = TText,    isPrimaryKey = False }
-      ]
-  }
+usersSchema = TableSchema {
+  schemaTableName = "users",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "name", colType = TText, isPrimaryKey = False },
+  ],
+}
 
 bigSchema : TableSchema
-bigSchema = TableSchema
-  { schemaTableName = "big"
-  , columns =
-      [ Column { colName = "id",  colType = TInteger, isPrimaryKey = True }
-      , Column { colName = "val", colType = TText,    isPrimaryKey = False }
-      ]
-  }
+bigSchema = TableSchema {
+  schemaTableName = "big",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "val", colType = TText, isPrimaryKey = False },
+  ],
+}
 
 kvSchema : TableSchema
-kvSchema = TableSchema
-  { schemaTableName = "kv"
-  , columns =
-      [ Column { colName = "k", colType = TText,    isPrimaryKey = False }
-      , Column { colName = "v", colType = TInteger, isPrimaryKey = False }
-      ]
-  }
+kvSchema = TableSchema {
+  schemaTableName = "kv",
+  columns = [
+    Column { colName = "k", colType = TText, isPrimaryKey = False },
+    Column { colName = "v", colType = TInteger, isPrimaryKey = False },
+  ],
+}
 
 usersRows : List (List Cell)
 usersRows =
-  [ [ CInt 1, CText "alice" ]
-  , [ CInt 2, CText "bob" ]
-  , [ CInt 3, CText "carol" ]
-  ]
+  [[CInt 1, CText "alice"], [CInt 2, CText "bob"], [CInt 3, CText "carol"]]
 
 kvRows : List (List Cell)
-kvRows =
-  [ [ CText "one",   CInt 1 ]
-  , [ CText "two",   CInt 2 ]
-  , [ CText "three", CInt 3 ]
-  ]
+kvRows = [[CText "one", CInt 1], [CText "two", CInt 2], [CText "three", CInt 3]]
 
 bigRow : Int -> List Cell
-bigRow i = [ CInt i, CText "item_\{intToString i}" ]
+bigRow i = [CInt i, CText "item_\{intToString i}"]
 
 bigRows : Int -> Int -> List (List Cell) -> List (List Cell)
 bigRows i n acc =
-  if i > n then reverse acc
-  else bigRows (i + 1) n (bigRow i :: acc)
+  if i > n then
+    reverse acc
+  else
+    bigRows (i + 1) n (bigRow i :: acc)
 
 parseN : String -> Int
 parseN s = match toInt s
   Some n => n
-  None   => 0
+  None => 0
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -80,11 +75,7 @@ main = match args ()
 
 run : Int -> String -> <IO, Mut> Unit
 run n out =
-  let tables =
-        [ (usersSchema, usersRows)
-        , (bigSchema,   bigRows 1 n [])
-        , (kvSchema,    kvRows)
-        ]
+  let tables = [(usersSchema, usersRows), (bigSchema, bigRows 1 n []), (kvSchema, kvRows)]
   match writeTables out tables
     Err e => println "Error: \{e}"
-    Ok _  => println "wrote \{out} (users=3 big=\{intToString n} kv=3)"
+    Ok _ => println "wrote \{out} (users=3 big=\{intToString n} kv=3)"

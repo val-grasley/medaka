@@ -12,8 +12,16 @@
 
 import lib.sqlite.{Db, openDb}
 import lib.select.{
-  Select, selectFrom, innerJoin, withWhere, withOrderBy, query,
-  eEq, eGt, eColInt, eLitI,
+  Select,
+  selectFrom,
+  innerJoin,
+  withWhere,
+  withOrderBy,
+  query,
+  eEq,
+  eGt,
+  eColInt,
+  eLitI,
 }
 import lib.rowtype.{RowType, tInt, tText, t2, t3, tCustom}
 
@@ -26,24 +34,26 @@ data UO = UO { uid : Int, uname : String, oid : Int, oUser : Int, amount : Int }
 
 mkUO : ((Int, String), (Int, Int, Int)) -> Result String UO
 mkUO t = match t
-  ((i, n), (o, u, a)) => Ok (UO { uid = i, uname = n, oid = o, oUser = u, amount = a })
+  ((i, n), (o, u, a)) =>
+    Ok UO { uid = i, uname = n, oid = o, oUser = u, amount = a }
 
 uoRow : RowType UO
 uoRow = tCustom mkUO (t2 (t2 tInt tText) (t3 tInt tInt tInt))
 
 showUO : UO -> String
 showUO r = match r
-  UO { uid = i, uname = n, oid = o, oUser = u, amount = a } => "\{i}|\{n}|\{o}|\{u}|\{a}"
+  UO { uid = i, uname = n, oid = o, oUser = u, amount = a } =>
+    "\{i}|\{n}|\{o}|\{u}|\{a}"
 
 printUO : List UO -> <IO> Unit
-printUO []          = ()
-printUO (r :: rest) = let _ = println (showUO r) in printUO rest
+printUO [] = ()
+printUO (r::rest) = let _ = println (showUO r) in printUO rest
 
 runUO : Db -> String -> Select -> <IO> Unit
 runUO db label sel =
   let _ = println label
   match query db sel uoRow
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printUO rows
 
 -- ---------------------------------------------------------------------------
@@ -51,12 +61,13 @@ runUO db label sel =
 --   combined row = ta.aid, ta.av, tb.bid, tb.aref, tc.cid, tc.bref
 -- ---------------------------------------------------------------------------
 
-data ABC = ABC { aid : Int, av : Int, bid : Int, aref : Int, cid : Int, bref : Int }
+data ABC =
+  | ABC { aid : Int, av : Int, bid : Int, aref : Int, cid : Int, bref : Int }
 
 mkABC : ((Int, Int), (Int, Int), (Int, Int)) -> Result String ABC
 mkABC t = match t
   ((a1, a2), (b1, b2), (c1, c2)) =>
-    Ok (ABC { aid = a1, av = a2, bid = b1, aref = b2, cid = c1, bref = c2 })
+    Ok ABC { aid = a1, av = a2, bid = b1, aref = b2, cid = c1, bref = c2 }
 
 abcRow : RowType ABC
 abcRow = tCustom mkABC (t3 (t2 tInt tInt) (t2 tInt tInt) (t2 tInt tInt))
@@ -67,14 +78,14 @@ showABC r = match r
     "\{a1}|\{a2}|\{b1}|\{b2}|\{c1}|\{c2}"
 
 printABC : List ABC -> <IO> Unit
-printABC []          = ()
-printABC (r :: rest) = let _ = println (showABC r) in printABC rest
+printABC [] = ()
+printABC (r::rest) = let _ = println (showABC r) in printABC rest
 
 runABC : Db -> String -> Select -> <IO> Unit
 runABC db label sel =
   let _ = println label
   match query db sel abcRow
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printABC rows
 
 main : <IO> Unit

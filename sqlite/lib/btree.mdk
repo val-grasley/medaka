@@ -27,11 +27,7 @@
 -- in key order: left-child of cell[0], left-child of cell[1], ...,
 -- left-child of cell[n-1], rightmost-child.
 
-import byteparser.{
-  BOk,
-  BErr,
-  runBP,
-}
+import byteparser.{BOk, BErr, runBP}
 import lib.varint.{sqVarint}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord}
 import list.{reverse}
@@ -72,7 +68,7 @@ byteAt bytes off =
   if off < 0 || off >= arrayLength bytes then
     Err "byte offset \{intToString off} out of bounds (length \{intToString (arrayLength bytes)})"
   else
-    Ok (bytes.[off])
+    Ok bytes.[off]
 
 -- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
 --   Used for the right-most-child pointer and interior-cell left-child pointer.
@@ -87,35 +83,30 @@ beU32 bytes off = do
 -- | A decoded table row: its rowid and the column cells.
 public export data Row = Row Int (List Cell)
 
-export
-rowRowid : Row -> Int
+export rowRowid : Row -> Int
 rowRowid (Row rid _) = rid
 
-export
-rowCells : Row -> List Cell
+export rowCells : Row -> List Cell
 rowCells (Row _ cs) = cs
 
 export impl Display Row where
-  display (Row rid cells) = "\{intToString rid}: \{join "|" (map display cells)}"
+  display (Row rid cells) =
+    "\{intToString rid}: \{join "|" (map display cells)}"
 
 -- Page-type constants.
-export
-pageTableLeaf : Int
-pageTableLeaf = 0x0D
+export pageTableLeaf : Int
+pageTableLeaf = 13
 
-export
-pageTableInterior : Int
-pageTableInterior = 0x05
+export pageTableInterior : Int
+pageTableInterior = 5
 
 -- | Read the page-type byte of the page whose B-tree header starts at
 --   `hdrOffset` in the whole-file byte array.
-export
-pageType : Array Int -> Int -> Result String Int
+export pageType : Array Int -> Int -> Result String Int
 pageType bytes hdrOffset = byteAt bytes hdrOffset
 
 -- | Read the cell count from a page B-tree header at `hdrOffset`.
-export
-pageCellCount : Array Int -> Int -> Result String Int
+export pageCellCount : Array Int -> Int -> Result String Int
 pageCellCount bytes hdrOffset = beU16 bytes (hdrOffset + cellCountOffset)
 
 -- Read a big-endian uint16 at absolute byte offset `off`.
@@ -140,12 +131,10 @@ bStep label (BOk a pos) k = k a pos
 -- (= pageBase, except page 1 where it is pageBase + dbHeaderSize).
 --
 -- Returns Err if the page is not a table-leaf page.
-export
-decodeLeafPage : Array Int -> Int -> Int -> Result String (List Row)
+export decodeLeafPage : Array Int -> Int -> Int -> Result String (List Row)
 decodeLeafPage bytes pageBase hdrOffset = do
   pt <- pageType bytes hdrOffset
-  if pt != pageTableLeaf then
-    Err "decodeLeafPage: page type \{intToString pt} is not a table-leaf page (0x0D)"
+  if pt != pageTableLeaf then Err "decodeLeafPage: page type \{intToString pt} is not a table-leaf page (0x0D)"
   else do
     nc <- pageCellCount bytes hdrOffset
     decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
@@ -170,13 +159,11 @@ decodeCells bytes pageBase cpArrayStart nCells i acc
 --
 -- > showRow (decodeLeafCell (arrayFromList [10, 3, 4, 0, 23, 1, 67, 97, 114, 111, 108, 25]) 0)
 -- "3: NULL|Carol|25"
-export
-decodeLeafCell : Array Int -> Int -> Result String Row
-decodeLeafCell bytes off =
-  bStep "payload-length varint" (runBP sqVarint bytes off) (payloadLen pos1 =>
-    bStep "rowid varint" (runBP sqVarint bytes pos1) (rowid pos2 =>
-      bStep "record" (runBP parseRecord bytes pos2) (cells _ =>
-        Ok (Row rowid cells))))
+export decodeLeafCell : Array Int -> Int -> Result String Row
+decodeLeafCell bytes off = bStep
+  "payload-length varint"
+  (runBP sqVarint bytes off)
+  (payloadLen pos1 => bStep "rowid varint" (runBP sqVarint bytes pos1) (rowid pos2 => bStep "record" (runBP parseRecord bytes pos2) (cells _ => Ok (Row rowid cells))))
 
 -- ---------------------------------------------------------------------------
 -- Multi-page recursive B-tree scan
@@ -188,7 +175,10 @@ decodeLeafCell bytes off =
 --   Centralises the page-1-is-special rule used by `scanInteriorCells`.
 pageHdrOffset : Int -> Int -> Int
 pageHdrOffset pageSize pageNum =
-  if pageNum == 1 then dbHeaderSize else (pageNum - 1) * pageSize
+  if pageNum == 1 then
+    dbHeaderSize
+  else
+    (pageNum - 1) * pageSize
 
 -- | Scan all rows reachable from page `pageNum` (1-indexed) in the whole-file
 --   byte array `bytes`, where each page is `pageSize` bytes.
@@ -198,18 +188,14 @@ pageHdrOffset pageSize pageNum =
 -- then the right-most child), yielding rows in rowid order.
 --
 -- `hdrOffset` for page 1 = dbHeaderSize; for all other pages = pageBase.
-export
-scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
+export scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
 scanTablePage bytes pageSize pageNum hdrOffset = do
   ptype <- pageType bytes hdrOffset
   if ptype == pageTableLeaf then do
     let pageBase = (pageNum - 1) * pageSize
     nc <- pageCellCount bytes hdrOffset
     decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
-  else if ptype == pageTableInterior then
-    scanInteriorPage bytes pageSize pageNum hdrOffset
-  else
-    Err "scanTablePage: unexpected page type \{intToString ptype} on page \{intToString pageNum}"
+  else if ptype == pageTableInterior then scanInteriorPage bytes pageSize pageNum hdrOffset else Err "scanTablePage: unexpected page type \{intToString ptype} on page \{intToString pageNum}"
 
 -- Scan an interior page: recurse into all left-children then the rightmost child.
 scanInteriorPage : Array Int -> Int -> Int -> Int -> Result String (List Row)
@@ -243,7 +229,6 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
 -- ---------------------------------------------------------------------------
 
 -- | Render a decoded row (or error) as "rowid: cell|cell|..." for doctests.
-export
-showRow : Result String Row -> String
-showRow (Err e)  = "Err: \{e}"
+export showRow : Result String Row -> String
+showRow (Err e) = "Err: \{e}"
 showRow (Ok row) = display row

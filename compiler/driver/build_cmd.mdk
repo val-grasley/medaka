@@ -41,7 +41,10 @@ public export data BuildTarget = TNative | TWasm
 trimNL : String -> String
 trimNL s =
   let n = stringLength s
-  if n > 0 && stringSlice (n - 1) n s == "\n" then stringSlice 0 (n - 1) s else s
+  if n > 0 && stringSlice (n - 1) n s == "\n" then
+    stringSlice 0 (n - 1) s
+  else
+    s
 
 -- Strip leading/trailing ASCII whitespace: stringTrim (from support/util.mdk).
 
@@ -66,8 +69,7 @@ splitWSGo s i start acc =
 
 -- ---- environment / asset resolution ----
 
-export
-envOr : String -> String -> <IO> String
+export envOr : String -> String -> <IO> String
 envOr name dflt = match getEnv name
   Some v => if v == "" then dflt else v
   None => dflt
@@ -79,7 +81,10 @@ envOr name dflt = match getEnv name
 stripTrailingUnit : String -> String
 stripTrailingUnit s =
   let n = stringLength s
-  if n >= 3 && stringSlice (n - 3) n s == "()\n" then stringSlice 0 (n - 3) s else s
+  if n >= 3 && stringSlice (n - 3) n s == "()\n" then
+    stringSlice 0 (n - 3) s
+  else
+    s
 
 -- ---- Boehm GC flag detection (pkg-config → brew → bare -lgc) ----
 -- Returns Some (cflags, libs) or None.  Mirrors detect_gc in build_cmd.ml and
@@ -101,10 +106,13 @@ detectGCBrew : String -> <IO> Option (List String, List String)
 detectGCBrew cc = match runCommand "brew" ["--prefix", "bdw-gc"]
   Ok (0, out, _) =>
     let prefix = stringTrim out
-    if prefix != "" && fileExists (joinPath prefix "include/gc.h") then Some (
-      ["-I" ++ joinPath prefix "include"],
-      ["-L" ++ joinPath prefix "lib", "-lgc"],
-    ) else detectGCBare cc
+    if prefix != "" && fileExists (joinPath prefix "include/gc.h") then
+      Some (
+        ["-I" ++ joinPath prefix "include"],
+        ["-L" ++ joinPath prefix "lib", "-lgc"],
+      )
+    else
+      detectGCBare cc
   _ => detectGCBare cc
 
 -- Bare -lgc probe: compile a trivial gc.h program from a temp source.
@@ -123,8 +131,7 @@ detectGCBare cc =
 -- target = TNative (LLVM/clang) | TWasm (WasmGC + wasm-tools)
 -- inputAbs = absolute path of the user .mdk entry
 -- outPath  = output binary path
-export
-runBuild : String -> String -> String -> BuildTarget -> String -> String -> <IO> BuildResult
+export runBuild : String -> String -> String -> BuildTarget -> String -> String -> <IO> BuildResult
 runBuild root medaka cc target inputAbs outPath = match target
   TNative => runBuildNative root medaka cc inputAbs outPath
   TWasm => runBuildWasm root medaka inputAbs outPath
@@ -144,17 +151,20 @@ runBuildNative root medaka cc inputAbs outPath =
   let emitter2 = envOr "MEDAKA_EMITTER" ""
   let useNative = emitter2 != ""
   let emitProg = if useNative then emitter2 else medaka
-  let emitArgs = if useNative then emitArgsBase else "run" :: emitter :: emitArgsBase
+  let emitArgs = if useNative then
+    emitArgsBase
+  else
+    "run" :: emitter::emitArgsBase
   match runCommand emitProg emitArgs
-    Err e => BuildErr ("error: could not run emitter (" ++ emitProg ++ "): " ++ e)
+    Err e =>
+      BuildErr ("error: could not run emitter (" ++ emitProg ++ "): " ++ e)
     Ok (code, irRaw, emitErr) => if code != 0 then BuildErr ("error: emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
     else
       let ir = stripTrailingUnit irRaw
       if stringLength ir == 0 then BuildErr ("error: emitter produced empty IR for " ++ inputAbs ++ "\n" ++ emitErr)
-      else
-        match writeFile llPath ir
-          Err e => BuildErr ("error: could not write IR: " ++ e)
-          Ok _ => clangLink cc rtC llPath outPath inputAbs
+      else match writeFile llPath ir
+        Err e => BuildErr ("error: could not write IR: " ++ e)
+        Ok _ => clangLink cc rtC llPath outPath inputAbs
 
 -- ---- wasm (WasmGC + wasm-tools) target ----
 -- Structurally identical to runBuildNative: run the emitter (here the WasmGC
@@ -187,7 +197,10 @@ runBuildWasm root medaka inputAbs outPath =
   let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
   let useNativeBin = wasmEmitter != ""
   let emitProg = if useNativeBin then wasmEmitter else medaka
-  let emitArgs = if useNativeBin then emitArgsBase else "run" :: emitter :: emitArgsBase
+  let emitArgs = if useNativeBin then
+    emitArgsBase
+  else
+    "run" :: emitter::emitArgsBase
   match probeWasmTools ()
     None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm."
     Some _ => match runCommand emitProg emitArgs
@@ -196,10 +209,9 @@ runBuildWasm root medaka inputAbs outPath =
       else
         let wat = stripTrailingUnit watRaw
         if stringLength wat == 0 then BuildErr ("error: wasm emitter produced empty WAT for " ++ inputAbs ++ "\n" ++ emitErr)
-        else
-          match writeFile watPath wat
-            Err e => BuildErr ("error: could not write WAT: " ++ e)
-            Ok _ => wasmAssemble watPath outPath inputAbs
+        else match writeFile watPath wat
+          Err e => BuildErr ("error: could not write WAT: " ++ e)
+          Ok _ => wasmAssemble watPath outPath inputAbs
 
 -- Probe `wasm-tools` up front (the wasm analogue of the implicit clang
 -- requirement).  `wasm-tools --version` exits 0 iff the tool is reachable.
@@ -242,4 +254,5 @@ clangLink cc rtC llPath outPath inputAbs = match detectGC cc
     match runCommand cc clangArgs
       Err e => BuildErr ("error: could not run clang (" ++ cc ++ "): " ++ e)
       Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)
-      Ok (_, _, ccErr) => BuildErr ("error: clang failed linking " ++ inputAbs ++ "\n" ++ ccErr)
+      Ok (_, _, ccErr) =>
+        BuildErr ("error: clang failed linking " ++ inputAbs ++ "\n" ++ ccErr)

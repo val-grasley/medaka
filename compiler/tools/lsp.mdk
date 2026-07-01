@@ -61,7 +61,14 @@ import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import support.char.{isIdentChar, isDigit}
 import support.util.{maxI, utf8Len, joinWith}
 import frontend.desugar.{desugar}
-import types.typecheck.{checkProgramSchemes, checkProgramSchemesWithRuntime, ppScheme, Scheme(..), currentLocalSchemes, currentSeedSchemes}
+import types.typecheck.{
+  checkProgramSchemes,
+  checkProgramSchemesWithRuntime,
+  ppScheme,
+  Scheme(..),
+  currentLocalSchemes,
+  currentSeedSchemes,
+}
 import tools.fmt.{formatSource}
 import frontend.ast.{
   Decl,
@@ -127,14 +134,13 @@ jRange sl sc el ec =
 
 -- A single LSP Diagnostic object.  severity: 1=Error, 2=Warning (LSP spec).
 jDiagnostic : Int -> Json -> String -> Json
-jDiagnostic sev range msg =
-  jObject
-    [
-      ("range", range),
-      ("severity", JInt sev),
-      ("source", JString "medaka"),
-      ("message", JString msg),
-    ]
+jDiagnostic sev range msg = jObject
+  [
+    ("range", range),
+    ("severity", JInt sev),
+    ("source", JString "medaka"),
+    ("message", JString msg),
+  ]
 
 severityCode : Severity -> Int
 severityCode SevError = 1
@@ -223,7 +229,10 @@ formattingEdits src = match parseResult src
   Err _ => []
   Ok _ =>
     let formatted = formatSource src
-    if formatted == src then [] else [jObject [("range", fullDocRangeFmt src), ("newText", JString formatted)]]
+    if formatted == src then
+      []
+    else
+      [jObject [("range", fullDocRangeFmt src), ("newText", JString formatted)]]
 -- unparseable → no edits (client keeps buffer)
 
 -- ── identifier-at-cursor + occurrence scan (pure string ops) ────────────────
@@ -240,7 +249,8 @@ offsetGo arr len i curLine lineStart line col
     let pos = lineStart + col
     if pos >= 0 && pos < len then Some pos else None
   | i >= len = None
-  | arrayGetUnsafe i arr == '\n' = offsetGo arr len (i + 1) (curLine + 1) (i + 1) line col
+  | arrayGetUnsafe i arr == '\n' =
+    offsetGo arr len (i + 1) (curLine + 1) (i + 1) line col
   | otherwise = offsetGo arr len (i + 1) curLine lineStart line col
 -- ran out before reaching `line`
 
@@ -327,15 +337,14 @@ innerDecl (DAttrib _ d) = innerDecl d
 innerDecl d = d
 
 jSymbol : String -> Int -> Json -> List Json -> Json
-jSymbol name kind range children =
-  jObject
-    [
-      ("name", JString name),
-      ("kind", JInt kind),
-      ("range", range),
-      ("selectionRange", range),
-      ("children", jArray children),
-    ]
+jSymbol name kind range children = jObject
+  [
+    ("name", JString name),
+    ("kind", JInt kind),
+    ("range", range),
+    ("selectionRange", range),
+    ("children", jArray children),
+  ]
 
 jChild : String -> Int -> Json -> Json
 jChild name kind range = jSymbol name kind range []
@@ -462,7 +471,8 @@ definitionRange src name = match parseWithPositionsOpt src
 
 defZip : List Decl -> List DeclPos -> String -> Option Json
 defZip (d::ds) (p::ps) name
-  | declDefines d name = Some (jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0)
+  | declDefines d name =
+    Some (jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0)
   | otherwise = defZip ds ps name
 defZip _ _ _ = None
 
@@ -514,7 +524,7 @@ lookupSchemeL name ((n, s)::rest)
 -- off-identifier hover never pays for a typecheck/load.
 hoverFor : String -> String -> String -> String -> Json -> Docs -> <IO, Mut> Json
 hoverFor runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match identifierAt src line col
+  (Some line, Some col) => match identifierAt src line col
     None => JNull
     Some name => match hoverEnvFor runtimeSrc coreSrc uri src docs
       None => JNull
@@ -545,7 +555,14 @@ projectEntryEnv runtimeSrc coreSrc uri docs =
   let projectDir = findProjectRoot (dirOfPath rootFile)
   let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
   let read = path => docsGet (uriOfPath path) docs
-  projectEntrySchemes projectCache projectParseCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+  projectEntrySchemes
+    projectCache
+    projectParseCache
+    read
+    rootFile
+    [projectDir, stdlibDir]
+    runtimeSrc
+    coreSrc
 
 -- Resolve a hovered name's scheme: the returned typecheck env (globals +
 -- top-level) first, then the hover-only side-channels — locals (let/param/match
@@ -576,7 +593,8 @@ sigLeadingEffOne name (DTypeSig _ n ty)
 sigLeadingEffOne _ _ = None
 
 leadingEffOf : Ty -> Option String
-leadingEffOf (TyEffect labels tail _) = Some (stringConcat [renderEffRow labels tail, " "])
+leadingEffOf (TyEffect labels tail _) =
+  Some (stringConcat [renderEffRow labels tail, " "])
 leadingEffOf _ = None
 
 -- Render a written effect row to surface syntax: `<IO>`, `<IO, State>`,
@@ -648,7 +666,8 @@ lineStartGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Option Int
 lineStartGo arr len i curLine lineStart line
   | curLine == line = Some lineStart
   | i >= len = None
-  | arrayGetUnsafe i arr == '\n' = lineStartGo arr len (i + 1) (curLine + 1) (i + 1) line
+  | arrayGetUnsafe i arr == '\n' =
+    lineStartGo arr len (i + 1) (curLine + 1) (i + 1) line
   | otherwise = lineStartGo arr len (i + 1) curLine lineStart line
 
 -- Walk left from `stop` over identifier chars, not past the line start.
@@ -669,18 +688,18 @@ startsWith p n =
 filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
 filterCompletions _ _ [] = []
 filterCompletions prefix seen ((n, s)::rest)
-  | startsWith prefix n && not (anyName seen n) = jCompletionItem n (ppScheme s) :: filterCompletions prefix (n :: seen) rest
+  | startsWith prefix n && not (anyName seen n) =
+    jCompletionItem n (ppScheme s) :: filterCompletions prefix (n::seen) rest
   | otherwise = filterCompletions prefix seen rest
 
 -- One CompletionItem { label, kind, detail }.  kind 3 = Function (LSP spec).
 jCompletionItem : String -> String -> Json
-jCompletionItem label detail =
-  jObject
-    [("label", JString label), ("kind", JInt 3), ("detail", JString detail)]
+jCompletionItem label detail = jObject
+  [("label", JString label), ("kind", JInt 3), ("detail", JString detail)]
 
 completionFor : String -> String -> String -> String -> Json -> Docs -> <IO, Mut> Json
 completionFor runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match completionEnvFor runtimeSrc coreSrc uri src docs
+  (Some line, Some col) => match completionEnvFor runtimeSrc coreSrc uri src docs
     None => JNull
     Some env =>
       let prefix = prefixBefore src line col
@@ -762,30 +781,29 @@ inlayHints runtimeSrc coreSrc src = match docSchemes runtimeSrc coreSrc src
   None => []
   Some env => match parseWithPositionsOpt src
     None => []
-    Some (decls, positions) => inlayZip src decls decls (positionsDecls positions) env
+    Some (decls, positions) =>
+      inlayZip src decls decls (positionsDecls positions) env
 
 -- decls passed twice: `allDecls` for the has-explicit-sig scan, `ds` walked.
 inlayZip : String -> List Decl -> List Decl -> List DeclPos -> List (String, Scheme) -> <Mut> List Json
 inlayZip src allDecls (d::ds) (p::ps) env = match declBindingName d
   None => inlayZip src allDecls ds ps env
   Some name => if hasExplicitSig allDecls name then inlayZip src allDecls ds ps env
-  else
-    match lookupSchemeL name env
+  else match lookupSchemeL name env
+    None => inlayZip src allDecls ds ps env
+    Some sch => match columnAfterName src (declPosLine p - 1)
       None => inlayZip src allDecls ds ps env
-      Some sch => match columnAfterName src (declPosLine p - 1)
-        None => inlayZip src allDecls ds ps env
-        Some col => jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppScheme sch]) :: inlayZip src allDecls ds ps env
+      Some col => jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppScheme sch]) :: inlayZip src allDecls ds ps env
 inlayZip _ _ _ _ _ = []
 
 -- One InlayHint { position, label, paddingLeft } (mirror the OCaml create).
 jInlayHint : Int -> Int -> String -> Json
-jInlayHint line col label =
-  jObject
-    [
-      ("position", jPosition line col),
-      ("label", JString label),
-      ("paddingLeft", JBool True),
-    ]
+jInlayHint line col label = jObject
+  [
+    ("position", jPosition line col),
+    ("label", JString label),
+    ("paddingLeft", JBool True),
+  ]
 
 handleInlayHint : String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit
 handleInlayHint runtimeSrc coreSrc idJson params docs =
@@ -866,9 +884,8 @@ responseMsg idJson result =
 
 -- A JSON-RPC notification envelope: { jsonrpc, method, params }.
 notificationMsg : String -> Json -> Json
-notificationMsg meth params =
-  jObject
-    [("jsonrpc", JString "2.0"), ("method", JString meth), ("params", params)]
+notificationMsg meth params = jObject
+  [("jsonrpc", JString "2.0"), ("method", JString meth), ("params", params)]
 
 -- ── header reading ──────────────────────────────────────────────────────────
 --
@@ -898,7 +915,10 @@ readHeaders lenAcc = match readLineOpt ()
 chompCR : String -> String
 chompCR s =
   let n = stringLength s
-  if n > 0 && stringSlice (n - 1) n s == "\r" then stringSlice 0 (n - 1) s else s
+  if n > 0 && stringSlice (n - 1) n s == "\r" then
+    stringSlice 0 (n - 1) s
+  else
+    s
 
 -- Parse "Content-Length: <n>" (case-sensitive, as clients emit it).  Returns
 -- the integer N or None if this header line is something else.
@@ -906,7 +926,10 @@ parseContentLength : String -> Option Int
 parseContentLength line =
   let prefix = "Content-Length:"
   let pn = stringLength prefix
-  if stringLength line >= pn && stringSlice 0 pn line == prefix then parseDigits (stringToChars (stringSlice pn (stringLength line) line)) 0 (arrayLength (stringToChars (stringSlice pn (stringLength line) line))) 0 False else None
+  if stringLength line >= pn && stringSlice 0 pn line == prefix then
+    parseDigits (stringToChars (stringSlice pn (stringLength line) line)) 0 (arrayLength (stringToChars (stringSlice pn (stringLength line) line))) 0 False
+  else
+    None
 
 -- Parse a run of ASCII digits (skipping leading spaces) into an Int.  `seen`
 -- tracks whether at least one digit was consumed.
@@ -951,21 +974,29 @@ parseDigits arr i n acc seen
 --   0 keyword  1 class(type)  2 macro(constructor)  3 function  4 property(field)
 --   5 string   6 number  7 selfParameter(typeclass/interface)
 semanticLegend : List String
-semanticLegend = ["keyword", "class", "macro", "function", "property", "string", "number", "selfParameter"]
+semanticLegend = [
+  "keyword",
+  "class",
+  "macro",
+  "function",
+  "property",
+  "string",
+  "number",
+  "selfParameter",
+]
 
 semanticTokensOptions : Json
-semanticTokensOptions =
-  jObject
-    [
-      (
-        "legend",
-        jObject [
-          ("tokenTypes", jArray (map JString semanticLegend)),
-          ("tokenModifiers", jArray []),
-        ],
-      ),
-      ("full", JBool True),
-    ]
+semanticTokensOptions = jObject
+  [
+    (
+      "legend",
+      jObject [
+        ("tokenTypes", jArray (map JString semanticLegend)),
+        ("tokenModifiers", jArray []),
+      ],
+    ),
+    ("full", JBool True),
+  ]
 
 {- Token → semantic role, threaded with a small syntactic CONTEXT so the same
    token SHAPE colors by ROLE: an uppercase name is a `type` in type position but
@@ -978,7 +1009,15 @@ semanticTokensOptions =
    no token.  Robust on unparseable buffers (pure token walk). -}
 
 -- Decides how an uppercase name (and record fields) is colored at this point.
-data SMode = MExpr | MType | MDataHead | MDataVariant | MDataPayload | MRecord | MIfaceOne | MIfaceMany
+data SMode =
+  | MExpr
+  | MType
+  | MDataHead
+  | MDataVariant
+  | MDataPayload
+  | MRecord
+  | MIfaceOne
+  | MIfaceMany
 
 -- depth (indent nesting; 0 = top level), lineStart (next token begins a logical
 -- line), mode.
@@ -1027,8 +1066,8 @@ upperRole _ = 1
 
 -- The legend index for a token (None = leave default fg), given depth/lineStart/mode.
 roleOf : Token -> Int -> Bool -> SMode -> Option Int
-roleOf (TUpper _) _ _ MIfaceOne = Some 7         -- interface/impl name → typeclass
-roleOf (TUpper _) _ _ MIfaceMany = Some 7        -- requires/deriving names → typeclass
+roleOf (TUpper _) _ _ MIfaceOne = Some 7  -- interface/impl name → typeclass
+roleOf (TUpper _) _ _ MIfaceMany = Some 7  -- requires/deriving names → typeclass
 roleOf (TUpper _) _ _ mode = Some (upperRole mode)
 roleOf (TIdent _) depth lineStart mode =
   if lineStart && (depth == 0) then Some 3      -- top-level definition head
@@ -1096,12 +1135,13 @@ semToksOf _ _ [] _ = []
 semToksOf arr (t::ts) ((s, e)::ps) ctx = match classify t ctx
   (roleOpt, ctx2) => match roleOpt
     None => semToksOf arr ts ps ctx2
-    Some ty =>
-      if s >= e then semToksOf arr ts ps ctx2
-      else match (posOfOffset arr s, posOfOffset arr e)
-        ((sl, sc), (el, ec)) =>
-          if sl == el then SemTok sl sc (ec - sc) ty :: semToksOf arr ts ps ctx2
-          else semToksOf arr ts ps ctx2
+    Some ty => if s >= e then semToksOf arr ts ps ctx2
+    else match (posOfOffset arr s, posOfOffset arr e)
+      ((sl, sc), (el, ec)) =>
+        if sl == el then
+          SemTok sl sc (ec - sc) ty :: semToksOf arr ts ps ctx2
+        else
+          semToksOf arr ts ps ctx2
 
 {- Delta-encode the (start-ordered) SemTok list into the flat 5-int LSP array.
    prevLine/prevChar start at 0, so the first token's deltaLine is its absolute
@@ -1118,7 +1158,8 @@ semanticTokensData : String -> List Int
 semanticTokensData src =
   let arr = stringToChars src
   match tokenizeWithOffsetPairs src
-    (toks, pairs) => encodeSemToks 0 0 (semToksOf arr toks pairs (SemCtx 0 True MExpr))
+    (toks, pairs) =>
+      encodeSemToks 0 0 (semToksOf arr toks pairs (SemCtx 0 True MExpr))
 
 -- ── request dispatch ────────────────────────────────────────────────────────
 --
@@ -1132,28 +1173,27 @@ semanticTokensData src =
 -- `true`, mirroring lib/lsp_server.ml's `Bool true`).  The richer providers
 -- (hover/completion/inlayHint) and ELoc expr-precise ranges are later slices.
 initializeResult : Json
-initializeResult =
-  jObject
-    [
-      (
-        "capabilities",
-        jObject [
-          ("textDocumentSync", JInt 1),
-          ("documentFormattingProvider", JBool True),
-          ("documentSymbolProvider", JBool True),
-          ("definitionProvider", JBool True),
-          ("documentHighlightProvider", JBool True),
-          ("hoverProvider", JBool True),
-          ("completionProvider", jObject []),
-          ("inlayHintProvider", JBool True),
-          ("semanticTokensProvider", semanticTokensOptions),
-        ],
-      ),
-      (
-        "serverInfo",
-        jObject [("name", JString "medaka-lsp"), ("version", JString "0.1.0")],
-      ),
-    ]
+initializeResult = jObject
+  [
+    (
+      "capabilities",
+      jObject [
+        ("textDocumentSync", JInt 1),
+        ("documentFormattingProvider", JBool True),
+        ("documentSymbolProvider", JBool True),
+        ("definitionProvider", JBool True),
+        ("documentHighlightProvider", JBool True),
+        ("hoverProvider", JBool True),
+        ("completionProvider", jObject []),
+        ("inlayHintProvider", JBool True),
+        ("semanticTokensProvider", semanticTokensOptions),
+      ],
+    ),
+    (
+      "serverInfo",
+      jObject [("name", JString "medaka-lsp"), ("version", JString "0.1.0")],
+    ),
+  ]
 
 -- Build + send a publishDiagnostics notification for one uri.
 publishDiagnostics : String -> String -> String -> String -> <IO, Mut> Unit
@@ -1354,7 +1394,7 @@ handleDefinition idJson params docs =
 
 definitionResult : String -> String -> Json -> Json
 definitionResult uri src params = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match identifierAt src line col
+  (Some line, Some col) => match identifierAt src line col
     None => JNull
     Some name => match definitionRange src name
       None => JNull
@@ -1373,7 +1413,7 @@ handleHighlight idJson params docs =
 
 highlightResult : String -> Json -> Json
 highlightResult src params = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match identifierAt src line col
+  (Some line, Some col) => match identifierAt src line col
     None => JNull
     Some name => jArray (highlightRanges src name)
   _ => JNull
@@ -1511,8 +1551,7 @@ serve runtimeSrc coreSrc docs = match serveOnce runtimeSrc coreSrc docs
   Step docs2 True => serve runtimeSrc coreSrc docs2
 
 -- Public entry point for the driver.
-export
-runServer : String -> String -> <IO, Mut> Unit
+export runServer : String -> String -> <IO, Mut> Unit
 runServer runtimeSrc coreSrc =
   let _ = logLine "=== medaka-lsp session start ==="
   serve runtimeSrc coreSrc emptyDocs

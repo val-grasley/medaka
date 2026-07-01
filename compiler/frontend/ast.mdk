@@ -7,8 +7,8 @@
 -- Coverage grows with the parser port.  This is the core node set; more expr,
 -- pat, ty, and decl variants are added per slice.
 
-public export data Lit
-  = LInt Int
+public export data Lit =
+  | LInt Int
   | LFloat Float
   | LString String
   | LChar String
@@ -25,8 +25,8 @@ deriving (Eq)
 -- and structural dumps are byte-identical to the un-wrapped tree.
 public export data Loc = Loc String Int Int Int Int
 
-public export data Ty
-  = TyCon String
+public export data Ty =
+  | TyCon String
   | TyVar String
   | TyApp Ty Ty
   | TyFun Ty Ty
@@ -57,8 +57,8 @@ public export data Constraint = Constraint String (List Ty)
 -- tag field and the native emitter picks the Float primitive without re-deriving
 -- the operand LTy structurally (SHARED-FLOAT-RESIDUAL-DESIGN §3(C), the type-lost
 -- monomorphic-Float residual).  Absent → RNone → today's structural/dict path.
-public export data Route
-  = RNone
+public export data Route =
+  | RNone
   | RKey String (List Route)
   | RDict String
   | RDictFwd String
@@ -75,8 +75,8 @@ public export data Route
 -- the slot would not help; the address still records that resolve looked.
 public export data Addr = ALocal Int Int | AGlobal
 
-public export data Pat
-  = PVar String
+public export data Pat =
+  | PVar String
   | PWild
   | PLit Lit
   | PCon String (List Pat)
@@ -96,8 +96,8 @@ public export data Guard = GBool Expr | GBind Pat Expr
 public export data Arm = Arm Pat (List Guard) Expr
 
 -- statements in a bare block (EBlock) or monadic do-block (EDo)
-public export data DoStmt
-  = DoExpr Expr
+public export data DoStmt =
+  | DoExpr Expr
   | DoBind Pat Expr
   | DoLet Bool Bool Pat Expr
   | DoAssign String Expr
@@ -114,8 +114,8 @@ public export data GuardArm = GuardArm (List Guard) Expr
 public export data FieldAssign = FieldAssign String Expr
 
 -- an operator section: `(op)` / `(op e)` / `(e op _)`
-public export data Section
-  = SecBare String
+public export data Section =
+  | SecBare String
   | SecRight String Expr
   | SecLeft Expr String
 
@@ -125,8 +125,8 @@ public export data FunClause = FunClause (List Pat) Expr
 -- a `where`/let-group binding: a name with one or more (coalesced) clauses
 public export data LetBind = LetBind String (List FunClause)
 
-public export data Expr
-  = ELit Lit
+public export data Expr =
+  | ELit Lit
   | EVar String
   | EApp Expr Expr
   | ELam (List Pat) Expr
@@ -264,8 +264,8 @@ public export data Expr
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool
-public export data UsePath
-  = UseName (List String)
+public export data UsePath =
+  | UseName (List String)
   | UseGroup (List String) (List UseMember)
   | UseWild (List String)
   | UseAlias (List String) String
@@ -289,8 +289,8 @@ public export data Variant = Variant String ConPayload
 -- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`
 public export data Attr = AttrDeprecated String | AttrInline | AttrMustUse
 
-public export data Decl
-  = DTypeSig Bool String Ty
+public export data Decl =
+  | DTypeSig Bool String Ty
   | DExtern Bool String Ty
   | DFunDef Bool String (List Pat) Expr
   | DData DataVis String (List String) (List Variant) (List String)
@@ -303,8 +303,23 @@ public export data Decl
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr
-  | DInterface { pub : Bool, def : Bool, name : String, typarams : List String, supers : List Super, methods : List IfaceMethod }
-  | DImpl { pub : Bool, def : Bool, iface : String, tys : List Ty, name : Option String, reqs : List Require, methods : List ImplMethod }
+  | DInterface
+    { pub : Bool
+    , def : Bool
+    , name : String
+    , typarams : List String
+    , supers : List Super
+    , methods : List IfaceMethod
+    }
+  | DImpl
+    { pub : Bool
+    , def : Bool
+    , iface : String
+    , tys : List Ty
+    , name : Option String
+    , reqs : List Require
+    , methods : List ImplMethod
+    }
   -- pub? name typarams rhs
   | DTypeAlias Bool String (List String) Ty
   -- pub? tyname typarams conname fieldty derives

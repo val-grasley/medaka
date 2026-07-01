@@ -16,7 +16,8 @@
 import tools.check.{runCheck}
 
 main = match args ()
-  [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
+  [runtimePath, corePath, targetPath] =>
+    withFiles runtimePath corePath targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/check_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
 
 withFiles : String -> String -> String -> <IO, Mut> Unit

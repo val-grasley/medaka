@@ -56,8 +56,8 @@ import support.util.{joinWith, listLen, allList, reverseL, isEmptyL}
 -- ── Document algebra ──────────────────────────────
 -- Mirror of lib/printer.ml's `doc` type and combinators.
 
-public export data Doc
-  = Nil
+public export data Doc =
+  | Nil
   | Text String
   | Cat Doc Doc
   | Line
@@ -121,9 +121,13 @@ indentBlock d = Nest 2 (Cat Hardline d)
 -- comma-separated sequence inside open/close delimiters, no inner padding.
 delimited : String -> String -> List Doc -> Doc
 delimited open_ close_ [] = Cat (text open_) (text close_)
-delimited open_ close_ items =
-  flatGroup
-    (Cat (text open_) (Cat (nest (Cat Softline (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items)))) (Cat Softline (text close_))))
+delimited open_ close_ items = flatGroup (Cat
+  (text open_)
+  (Cat
+    (nest (Cat
+      Softline
+      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+    (Cat Softline (text close_))))
 
 -- like `delimited`, but width-triggered off the CURRENT column (`Group`, not
 -- `FlatGroup`), so a wide group wraps even when its body alone would fit from
@@ -131,16 +135,24 @@ delimited open_ close_ items =
 -- `import mod.{…}` line overflows.
 delimitedG : String -> String -> List Doc -> Doc
 delimitedG open_ close_ [] = Cat (text open_) (text close_)
-delimitedG open_ close_ items =
-  group
-    (Cat (text open_) (Cat (nest (Cat Softline (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items)))) (Cat Softline (text close_))))
+delimitedG open_ close_ items = group (Cat
+  (text open_)
+  (Cat
+    (nest (Cat
+      Softline
+      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+    (Cat Softline (text close_))))
 
 -- brace-delimited sequence with inner padding (record literals).
 braced : List Doc -> Doc
 braced [] = text "{}"
-braced items =
-  group
-    (Cat (text "{") (Cat (nest (Cat Line (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items)))) (Cat Line (text "}"))))
+braced items = group (Cat
+  (text "{")
+  (Cat
+    (nest (Cat
+      Line
+      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+    (Cat Line (text "}"))))
 
 -- ── Layout engine ─────────────────────────────────
 -- mode = Flat | Break ; a render item = (indent, mode, doc).
@@ -196,16 +208,21 @@ go _ ((Item i Break Softline)::z) = newlineStr i :: go i z
 go _ ((Item i _ Hardline)::z) = newlineStr i :: go i z
 go col ((Item i _ (Group d))::z) =
   let flat = Item i Flat d :: z
-  if col >= defaultWidth || fits (defaultWidth - col) flat then go col flat else go col (Item i Break d :: z)
+  if col >= defaultWidth || fits (defaultWidth - col) flat then
+    go col flat
+  else
+    go col (Item i Break d :: z)
 go col ((Item i _ (FlatGroup d))::z) =
   let flat = Item i Flat d :: z
-  if col >= defaultWidth || fits (defaultWidth - col) flat || fits (defaultWidth - i) [Item i Flat d] then go col flat else go col (Item i Break d :: z)
+  if col >= defaultWidth || fits (defaultWidth - col) flat || fits (defaultWidth - i) [Item i Flat d] then
+    go col flat
+  else
+    go col (Item i Break d :: z)
 -- FlatAlt: in Flat mode render the flat alternative `b`; in Break mode render `a`.
 go col ((Item i Flat (FlatAlt _ b))::z) = go col (Item i Flat b :: z)
 go col ((Item i Break (FlatAlt a _))::z) = go col (Item i Break a :: z)
 
-export
-render : Doc -> String
+export render : Doc -> String
 render doc = stringConcat (go 0 [Item 0 Break doc])
 
 -- ── Literals ──────────────────────────────────────
@@ -328,10 +345,13 @@ printPat (PVar x) = text x
 printPat PWild = text "_"
 printPat (PLit l) = printLit l
 printPat (PCon c []) = text c
-printPat (PCon c pats) =
-  Cat
-    (text "(")
-    (Cat (text c) (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (text ")")))
+printPat (PCon c pats) = Cat
+  (text "(")
+  (Cat
+    (text c)
+    (Cat
+      (concatD (map (p => Cat (text " ") (printPatAtom p)) pats))
+      (text ")")))
 printPat (PCons a b) = Cat (printPatAtom a) (Cat (text "::") (printPat b))
 printPat (PTuple ps) =
   Cat (text "(") (Cat (sepBy (text ", ") (map printPatArm ps)) (text ")"))
@@ -369,7 +389,7 @@ printPatAtom p = Cat (text "(") (Cat (printPat p) (text ")"))
 -- `Some i =>` needs no parens; nested args still route through printPatAtom.
 printPatArm : Pat -> Doc
 printPatArm (PCon c (p::ps)) =
-  Cat (text c) (concatD (map (q => Cat (text " ") (printPatAtom q)) (p :: ps)))
+  Cat (text c) (concatD (map (q => Cat (text " ") (printPatAtom q)) (p::ps)))
 printPatArm p = printPat p
 
 -- ── Expression precedence ─────────────────────────
@@ -459,7 +479,9 @@ isConsAtomOperand e =
 -- grouping matches the parse (`bitAnd b 255 :: r.value`, not the misleading
 -- `bitAnd b 255::r.value`).  All other operators are always spaced.
 consTight : String -> Expr -> Expr -> Bool
-consTight op l r = isConstructorOp op && isConsAtomOperand l && isConsAtomOperand r
+consTight op l r = isConstructorOp op
+  && isConsAtomOperand l
+  && isConsAtomOperand r
 
 -- Context-aware operator spacing: tight only for an all-atom `::`, else a space.
 binopSpace : String -> Expr -> Expr -> Doc
@@ -554,15 +576,15 @@ printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
 printExprRaw (EApp f x) =
   Cat (printExpr precApp f) (Cat (text " ") (printExpr precPostfix x))
-printExprRaw (ELam pats body) =
-  Cat
-    (sepBy (text " ") (map printPatAtom pats))
-    (Cat (text " => ") (printExpr precTop body))
+printExprRaw (ELam pats body) = Cat
+  (sepBy (text " ") (map printPatAtom pats))
+  (Cat (text " => ") (printExpr precTop body))
 printExprRaw (ELet isMut isf pat rhs e2) = printELet isMut isf pat rhs e2
-printExprRaw (ELetGroup bindings body) =
-  Cat
-    (printExpr precTop body)
-    (Nest 2 (Cat Hardline (Cat (text "where") (Nest 2 (letGroupClauses bindings)))))
+printExprRaw (ELetGroup bindings body) = Cat
+  (printExpr precTop body)
+  (Nest
+    2
+    (Cat Hardline (Cat (text "where") (Nest 2 (letGroupClauses bindings)))))
 printExprRaw (EIf c t e) = printEIf c t e
 printExprRaw (EBinOp op l r _) =
   let prec = binopPrec op
@@ -570,48 +592,55 @@ printExprRaw (EBinOp op l r _) =
   let sp = binopSpace op l r
   Cat
     (printExpr (if ra then prec + 1 else prec) l)
-    (Cat sp (Cat (text op) (Cat sp (printExpr (if ra then prec else prec + 1) r))))
+    (Cat
+      sp
+      (Cat (text op) (Cat sp (printExpr (if ra then prec else prec + 1) r))))
 printExprRaw (EUnOp op e) = Cat (text op) (printExpr precUnary e)
 printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =
   Cat (text n) (Cat (text " ") (braced (map fieldAssignDoc fs)))
-printExprRaw (ERecordUpdate e fs) =
-  Cat
-    (text "{ ")
-    (Cat (printExpr precTop e) (Cat (text " | ") (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }"))))
-printExprRaw (EVariantUpdate c e fs) =
-  Cat
-    (text c)
-    (Cat (text " { ") (Cat (printExpr precTop e) (Cat (text " | ") (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }")))))
+printExprRaw (ERecordUpdate e fs) = Cat
+  (text "{ ")
+  (Cat
+    (printExpr precTop e)
+    (Cat
+      (text " | ")
+      (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }"))))
+printExprRaw (EVariantUpdate c e fs) = Cat
+  (text c)
+  (Cat
+    (text " { ")
+    (Cat
+      (printExpr precTop e)
+      (Cat
+        (text " | ")
+        (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }")))))
 printExprRaw (EArrayLit es) = delimited "[|" "|]" (map (printExpr precTop) es)
 printExprRaw (EListLit es) = delimited "[" "]" (map (printExpr precTop) es)
-printExprRaw (EMapLit n kvs) =
-  Cat
-    (text n)
-    (Cat (text " { ") (Cat (sepBy (text ", ") (map mapKvDoc kvs)) (text " }")))
-printExprRaw (ESetLit n es) =
-  Cat
-    (text n)
-    (Cat (text " { ") (Cat (sepBy (text ", ") (map (printExpr precTop) es)) (text " }")))
+printExprRaw (EMapLit n kvs) = Cat
+  (text n)
+  (Cat (text " { ") (Cat (sepBy (text ", ") (map mapKvDoc kvs)) (text " }")))
+printExprRaw (ESetLit n es) = Cat
+  (text n)
+  (Cat
+    (text " { ")
+    (Cat (sepBy (text ", ") (map (printExpr precTop) es)) (text " }")))
 printExprRaw (ETuple es) = delimited "(" ")" (map (printExpr precTop) es)
-printExprRaw (EIndex e i _) =
-  Cat
-    (printExpr precPostfix e)
-    (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
+printExprRaw (EIndex e i _) = Cat
+  (printExpr precPostfix e)
+  (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
 printExprRaw (EMatch sc arms) =
   Cat (text "match ") (Cat (printExpr precTop sc) (printMatchArms arms))
 printExprRaw (EFunction arms) = Cat (text "function") (printMatchArms arms)
 printExprRaw (EGuards arms) = printGuardArms arms
 printExprRaw (ESection (SecBare op)) = Cat (text "(") (Cat (text op) (text ")"))
-printExprRaw (ESection (SecRight op e)) =
-  Cat
-    (text "(")
-    (Cat (text op) (Cat (text " ") (Cat (printExpr precTop e) (text ")"))))
-printExprRaw (ESection (SecLeft e op)) =
-  Cat
-    (text "(")
-    (Cat (printExpr precTop e) (Cat (text " ") (Cat (text op) (text " _)"))))
+printExprRaw (ESection (SecRight op e)) = Cat
+  (text "(")
+  (Cat (text op) (Cat (text " ") (Cat (printExpr precTop e) (text ")"))))
+printExprRaw (ESection (SecLeft e op)) = Cat
+  (text "(")
+  (Cat (printExpr precTop e) (Cat (text " ") (Cat (text op) (text " _)"))))
 printExprRaw (EAsPat x e) = Cat (text x) (Cat (text "@") (printExpr precAtom e))
 printExprRaw (EBlock stmts) =
   indentBlock (sepBy Hardline (map printDoStmt stmts))
@@ -620,24 +649,36 @@ printExprRaw (EDo stmts) =
 printExprRaw (EAnnot e t) =
   Cat (printExpr precTop e) (Cat (text " : ") (printType t))
 printExprRaw (EHeadAnnot e _) = printExpr precTop e
-printExprRaw (EInfix op l r) =
-  Cat
-    (printExpr (precInfix + 1) l)
-    (Cat (text " `") (Cat (text op) (Cat (text "` ") (printExpr (precInfix + 1) r))))
+printExprRaw (EInfix op l r) = Cat
+  (printExpr (precInfix + 1) l)
+  (Cat
+    (text " `")
+    (Cat (text op) (Cat (text "` ") (printExpr (precInfix + 1) r))))
 printExprRaw (EStringInterp parts) =
   Cat (text "\"") (Cat (concatD (map interpPartDoc parts)) (text "\""))
-printExprRaw (ERangeList lo hi incl) =
-  Cat
-    (text "[")
-    (Cat (printExpr precTop lo) (Cat (text (if incl then "..=" else "..")) (Cat (printExpr precTop hi) (text "]"))))
-printExprRaw (ERangeArray lo hi incl) =
-  Cat
-    (text "[|")
-    (Cat (printExpr precTop lo) (Cat (text (if incl then "..=" else "..")) (Cat (printExpr precTop hi) (text "|]"))))
-printExprRaw (ESlice e lo hi incl _) =
-  Cat
-    (printExpr precPostfix e)
-    (Cat (text ".[") (Cat (printExpr precTop lo) (Cat (text (if incl then "..=" else "..")) (Cat (printExpr precTop hi) (text "]")))))
+printExprRaw (ERangeList lo hi incl) = Cat
+  (text "[")
+  (Cat
+    (printExpr precTop lo)
+    (Cat
+      (text (if incl then "..=" else ".."))
+      (Cat (printExpr precTop hi) (text "]"))))
+printExprRaw (ERangeArray lo hi incl) = Cat
+  (text "[|")
+  (Cat
+    (printExpr precTop lo)
+    (Cat
+      (text (if incl then "..=" else ".."))
+      (Cat (printExpr precTop hi) (text "|]"))))
+printExprRaw (ESlice e lo hi incl _) = Cat
+  (printExpr precPostfix e)
+  (Cat
+    (text ".[")
+    (Cat
+      (printExpr precTop lo)
+      (Cat
+        (text (if incl then "..=" else ".."))
+        (Cat (printExpr precTop hi) (text "]")))))
 -- typed-pipeline-only nodes: print the name / inner transparently (parser never
 -- produces them, but keep the match total).
 printExprRaw (EVarAt n _) = text n
@@ -653,10 +694,17 @@ printELet isMut True (PVar f) rhs e2 =
   let argsBody = unwrapLams [] rhs
   match argsBody
     (args, body) => Cat (text (if isMut then "let mut " else "let ")) (Cat (text f) (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) args)) (Cat (text " = ") (Cat (printExpr precTop body) (Cat (text " in ") (printExpr precTop e2))))))
-printELet isMut _ pat e1 e2 =
-  Cat
-    (text "let ")
-    (Cat (if isMut then text "mut " else Nil) (Cat (printPat pat) (Cat (text " = ") (Cat (printExpr precTop e1) (Cat (text " in ") (printExpr precTop e2))))))
+printELet isMut _ pat e1 e2 = Cat
+  (text "let ")
+  (Cat
+    (if isMut then text "mut " else Nil)
+    (Cat
+      (printPat pat)
+      (Cat
+        (text " = ")
+        (Cat
+          (printExpr precTop e1)
+          (Cat (text " in ") (printExpr precTop e2))))))
 
 unwrapLams : List Pat -> Expr -> (List Pat, Expr)
 unwrapLams acc (ELoc _ e) = unwrapLams acc e
@@ -671,10 +719,13 @@ letBindClauses (LetBind name clauses) =
   concatD (map (letGroupClause name) clauses)
 
 letGroupClause : String -> FunClause -> Doc
-letGroupClause name (FunClause pats rhs) =
-  Cat
-    Hardline
-    (Cat (text name) (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (letGroupClauseRhs rhs)))
+letGroupClause name (FunClause pats rhs) = Cat
+  Hardline
+  (Cat
+    (text name)
+    (Cat
+      (concatD (map (p => Cat (text " ") (printPatAtom p)) pats))
+      (letGroupClauseRhs rhs)))
 
 letGroupClauseRhs : Expr -> Doc
 letGroupClauseRhs (EGuards arms) = printGuardArms arms
@@ -761,14 +812,18 @@ printIfRhs : Expr -> Option Doc
 printIfRhs (ELoc _ e) = printIfRhs e
 printIfRhs (EIf c t els) =
   let isUnit = isUnitLit els
-  if not (isBlockBody t) && (isUnit || not (isBlockBody els)) then Some (group (nest (Cat Line (ifRhsBody c t (ifRhsElsePart isUnit els))))) else None
+  if not (isBlockBody t) && (isUnit || not (isBlockBody els)) then
+    Some (group (nest (Cat Line (ifRhsBody c t (ifRhsElsePart isUnit els)))))
+  else
+    None
 printIfRhs _ = None
 
 ifRhsBody : Expr -> Expr -> Doc -> Doc
-ifRhsBody c t elsePart =
-  Cat
-    (text "if ")
-    (Cat (printExpr precTop c) (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t))) elsePart)))
+ifRhsBody c t elsePart = Cat
+  (text "if ")
+  (Cat
+    (printExpr precTop c)
+    (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t))) elsePart)))
 
 ifRhsElsePart : Bool -> Expr -> Doc
 ifRhsElsePart True _ = Nil
@@ -780,8 +835,7 @@ ifRhsElsePart False (ELoc _ els) = ifRhsElsePart False els
 -- itself qualifies for the flat ladder (simple, non-block branches); otherwise
 -- fall back to a fresh `else` block with the nested `if` rendered on its own.
 ifRhsElsePart False (EIf c2 t2 els2)
-  | not (isBlockBody t2) && (isUnitLit els2 || not (isBlockBody els2)) =
-    Cat Line (Cat (text "else if ") (Cat (printExpr precTop c2) (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t2))) (ifRhsElsePart (isUnitLit els2) els2)))))
+  | not (isBlockBody t2) && (isUnitLit els2 || not (isBlockBody els2)) = Cat Line (Cat (text "else if ") (Cat (printExpr precTop c2) (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t2))) (ifRhsElsePart (isUnitLit els2) els2)))))
 ifRhsElsePart False els =
   Cat Line (Cat (text "else") (nest (Cat Line (printExpr precTop els))))
 
@@ -808,7 +862,7 @@ collectChain : String -> List (String, Expr) -> Expr -> (Expr, List (String, Exp
 -- parens, the two forms would otherwise never converge (non-idempotent).
 collectChain op acc (ELoc _ e) = collectChain op acc e
 collectChain op acc (EBinOp op2 l r rf)
-  | op2 == op = collectChain op ((op2, r) :: acc) l
+  | op2 == op = collectChain op ((op2, r)::acc) l
   | otherwise = (EBinOp op2 l r rf, acc)
 collectChain _ acc head = (head, acc)
 
@@ -870,13 +924,11 @@ isSingleBreakableApp e = match collectApp [] e
 -- it overflows.
 breakableArg : Expr -> Doc
 breakableArg (ELoc _ e) = breakableArg e
-breakableArg (ELam pats body) =
-  group
-    (Cat
-      (text "(")
-      (Cat
-        (sepBy (text " ") (map printPatAtom pats))
-        (Cat (text " =>") (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
+breakableArg (ELam pats body) = group (Cat
+  (text "(")
+  (Cat
+    (sepBy (text " ") (map printPatAtom pats))
+    (Cat (text " =>") (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
 -- A nested application: parenthesize and let printAppSpine break its own spine
 -- so over-width nested calls wrap rather than overflowing a single arg line.
 breakableArg (EApp f x) =
@@ -884,7 +936,7 @@ breakableArg (EApp f x) =
 breakableArg e = printExpr precPostfix e
 
 collectApp : List Expr -> Expr -> (Expr, List Expr)
-collectApp acc (EApp f x) = collectApp (x :: acc) f
+collectApp acc (EApp f x) = collectApp (x::acc) f
 collectApp acc head = (head, acc)
 
 -- Shared by EMatch and `function`: indented block of `pat [if guards] => body`.
@@ -962,20 +1014,27 @@ printDoStmt (DoExpr e) = match e
     Cat (text "if ") (Cat (printExpr precTop c) (Cat (text " then") thenPart))
   else printExprBody e
   _ => printExprBody e
-printDoStmt (DoLet isMut _ pat e) =
-  Cat
-    (text "let ")
-    (Cat (if isMut then text "mut " else Nil) (Cat (printPat pat) (Cat (text " = ") (doLetRhs e))))
+printDoStmt (DoLet isMut _ pat e) = Cat
+  (text "let ")
+  (Cat
+    (if isMut then text "mut " else Nil)
+    (Cat (printPat pat) (Cat (text " = ") (doLetRhs e))))
 printDoStmt (DoAssign x e) =
   Cat (text x) (Cat (text " = ") (printExpr precTop e))
-printDoStmt (DoFieldAssign x fields e) =
-  Cat
-    (text x)
-    (Cat (text ".") (Cat (text (joinWith "." fields)) (Cat (text " = ") (printExpr precTop e))))
-printDoStmt (DoLetElse pat e alt) =
-  Cat
-    (text "let ")
-    (Cat (printPat pat) (Cat (text " = ") (Cat (printExpr precTop e) (Cat (text " else ") (printExpr precTop alt)))))
+printDoStmt (DoFieldAssign x fields e) = Cat
+  (text x)
+  (Cat
+    (text ".")
+    (Cat (text (joinWith "." fields)) (Cat (text " = ") (printExpr precTop e))))
+printDoStmt (DoLetElse pat e alt) = Cat
+  (text "let ")
+  (Cat
+    (printPat pat)
+    (Cat
+      (text " = ")
+      (Cat
+        (printExpr precTop e)
+        (Cat (text " else ") (printExpr precTop alt)))))
 
 interpPartDoc : InterpPart -> Doc
 interpPartDoc (InterpStr s) = text (stringEscaped s)
@@ -1066,11 +1125,9 @@ bodyBreakAtEq bodyDoc = hangAtSep " =" bodyDoc
 -- hang arm, the inner `group` then picks inline-vs-hang by whether `sep body`
 -- fits from the current column.
 hangAtSep : String -> Doc -> Doc
-hangAtSep sep bodyDoc =
-  FlatGroup
-    (FlatAlt
-      (Cat (text sep) (Cat (text " ") bodyDoc))
-      (Cat (text sep) (group (nest (Cat Line bodyDoc)))))
+hangAtSep sep bodyDoc = FlatGroup (FlatAlt
+  (Cat (text sep) (Cat (text " ") bodyDoc))
+  (Cat (text sep) (group (nest (Cat Line bodyDoc)))))
 -- Width cascade for a too-wide `=` binding RHS (Option B):
 --   1. hang the RHS one line below `=` (the outer `group`/`Line`);
 --   2. if still over width, break the OUTERMOST binop with the operator
@@ -1106,10 +1163,9 @@ printOperand prec e = printExpr prec e
 
 printUsePath : UsePath -> Doc
 printUsePath (UseName names) = text (joinWith "." names)
-printUsePath (UseGroup names members) =
-  Cat
-    (text (joinWith "." names))
-    (Cat (text ".") (delimitedG "{" "}" (map useMemberDoc members)))
+printUsePath (UseGroup names members) = Cat
+  (text (joinWith "." names))
+  (Cat (text ".") (delimitedG "{" "}" (map useMemberDoc members)))
 printUsePath (UseWild names) = Cat (text (joinWith "." names)) (text ".*")
 printUsePath (UseAlias names alias) =
   Cat (text (joinWith "." names)) (Cat (text " as ") (text alias))
@@ -1135,7 +1191,9 @@ printVariant (Variant name (ConNamed fields)) =
   let openB = FlatAlt (Cat Line (text "{ ")) (text " { ")
   let closeB = FlatAlt (Cat Line (text "}")) (text " }")
   let sep = FlatAlt (Cat Line (text ", ")) (text ", ")
-  group (Cat (text name) (nest (Cat openB (Cat (sepBy sep (map fieldTyDoc fields)) closeB))))
+  group (Cat
+    (text name)
+    (nest (Cat openB (Cat (sepBy sep (map fieldTyDoc fields)) closeB))))
 
 fieldTyDoc : Field -> Doc
 fieldTyDoc (Field fn ft) = Cat (text fn) (Cat (text " : ") (printType ft))
@@ -1153,14 +1211,17 @@ fieldTyDoc (Field fn ft) = Cat (text fn) (Cat (text " : ") (printType ft))
 -- lines align 1:1 with the source field lines, so fmt's generic interior-comment
 -- splice re-attaches each field's trailing comment by source-line index.  Falls
 -- back to the plain renderer for any non-single-ConNamed shape.
-export
-printNamedFieldData : DataVis -> String -> List String -> List Variant -> List String -> Doc
+export printNamedFieldData : DataVis -> String -> List String -> List Variant -> List String -> Doc
 printNamedFieldData vis n params [Variant cname (ConNamed fields)] derives =
   let head = Cat (text "data ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) (Cat (text " = ") (text cname))))
   let body = indentBlock (Cat (text "{ ") (Cat (sepBy (Cat Hardline (text ", ")) (map fieldTyDoc fields)) (Cat Hardline (text "}"))))
-  let deriveDoc = if isEmptyL derives then Nil else Cat Hardline (printDerives derives)
+  let deriveDoc = if isEmptyL derives then
+    Nil
+  else
+    Cat Hardline (printDerives derives)
   Cat (visPrefix vis) (Cat head (Cat body deriveDoc))
-printNamedFieldData vis n params variants derives = printDecl (DData vis n params variants derives)
+printNamedFieldData vis n params variants derives =
+  printDecl (DData vis n params variants derives)
 
 printDerives : List String -> Doc
 printDerives [] = Nil
@@ -1183,13 +1244,13 @@ visPrefix VisPrivate = Nil
 -- header line (outside `nest`); the variants `nest` by 2.
 dataVariantDocs : List Variant -> Doc
 dataVariantDocs [] = Nil
-dataVariantDocs (v::vs) =
-  Cat
-    (text " =")
-    (nest
-      (Cat
-        (Cat (FlatAlt (Cat Line (text "| ")) (text " ")) (printVariant v))
-        (concatD (map (v2 => Cat (FlatAlt (Cat Line (text "| ")) (text " | ")) (printVariant v2)) vs))))
+dataVariantDocs (v::vs) = Cat
+  (text " =")
+  (nest (Cat
+    (Cat (FlatAlt (Cat Line (text "| ")) (text " ")) (printVariant v))
+    (concatD (map
+      (v2 => Cat (FlatAlt (Cat Line (text "| ")) (text " | ")) (printVariant v2))
+      vs))))
 
 -- Render a `data` declaration with interior comments interleaved.  Mirror of
 -- lib/printer.ml's `print_data_decl_commented`.  `vcomments` is parallel to
@@ -1198,12 +1259,14 @@ dataVariantDocs (v::vs) =
 -- stays inline after it (`| Field String  -- .foo`).  Any non-empty entry forces
 -- the one-variant-per-line layout via `Hardline` (never the soft `Line`
 -- `dataVariantDocs` uses), so a documented `data` is never reflowed flat.
-export
-printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String, List String) -> Doc
+export printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String, List String) -> Doc
 printDataDeclCommented vis n params variants derives vcomments =
   let head = Cat (text "data ") (Cat (text n) (concatD (map (p => Cat (text " ") (text p)) params)))
   let variantDocs = dataVariantDocsCommented variants vcomments
-  let deriveDoc = if isEmptyL derives then Nil else Cat Hardline (printDerives derives)
+  let deriveDoc = if isEmptyL derives then
+    Nil
+  else
+    Cat Hardline (printDerives derives)
   Cat (visPrefix vis) (Cat head (Cat variantDocs deriveDoc))
 
 -- One Hardline + comment text per leading comment of a variant.
@@ -1218,16 +1281,18 @@ trailingCommentsDoc cs = concatD (map (c => Cat (text "  ") (text c)) cs)
 -- One variant line: its leading comments (own lines) + `| Variant` + any inline
 -- trailing comment.
 variantCommentedDoc : Variant -> (List String, List String) -> Doc
-variantCommentedDoc v (leading, trailing) =
-  Cat (commentLinesDoc leading) (Cat Hardline (Cat (text "| ") (Cat (printVariant v) (trailingCommentsDoc trailing))))
+variantCommentedDoc v (leading, trailing) = Cat
+  (commentLinesDoc leading)
+  (Cat
+    Hardline
+    (Cat (text "| ") (Cat (printVariant v) (trailingCommentsDoc trailing))))
 
 dataVariantDocsCommented : List Variant -> List (List String, List String) -> Doc
 dataVariantDocsCommented [] _ = Nil
 dataVariantDocsCommented _ [] = Nil
-dataVariantDocsCommented (v::vs) (vc::vcs) =
-  Cat
-    (text " =")
-    (nest (Cat (variantCommentedDoc v vc) (concatD (map2VariantComment vs vcs))))
+dataVariantDocsCommented (v::vs) (vc::vcs) = Cat
+  (text " =")
+  (nest (Cat (variantCommentedDoc v vc) (concatD (map2VariantComment vs vcs))))
 
 -- Mirror of List.map2 (fun v vc -> variantCommentedDoc v vc).
 map2VariantComment : List Variant -> List (List String, List String) -> List Doc
@@ -1236,16 +1301,13 @@ map2VariantComment _ [] = []
 map2VariantComment (v::vs) (vc::vcs) =
   variantCommentedDoc v vc :: map2VariantComment vs vcs
 
-export
-printDecl : Decl -> Doc
-printDecl (DTypeSig pub n t) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text n) (Cat (text " : ") (printType t)))
-printDecl (DExtern pub n t) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "extern ") (Cat (text n) (Cat (text " : ") (printType t))))
+export printDecl : Decl -> Doc
+printDecl (DTypeSig pub n t) = Cat
+  (if pub then text "export " else Nil)
+  (Cat (text n) (Cat (text " : ") (printType t)))
+printDecl (DExtern pub n t) = Cat
+  (if pub then text "export " else Nil)
+  (Cat (text "extern ") (Cat (text n) (Cat (text " : ") (printType t))))
 printDecl (DFunDef pub n pats body) =
   let header = Cat (if pub then text "export " else Nil) (Cat (text n) (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)))
   Cat header (printDefRhs body)
@@ -1254,46 +1316,98 @@ printDecl (DLetGroup pub bindings) =
 printDecl (DData vis n params variants derives) =
   let head = Cat (text "data ") (Cat (text n) (concatD (map (p => Cat (text " ") (text p)) params)))
   let variantDocs = dataVariantDocs variants
-  let deriveDoc = if isEmptyL derives then Nil else Cat Line (printDerives derives)
+  let deriveDoc = if isEmptyL derives then
+    Nil
+  else
+    Cat Line (printDerives derives)
   group (Cat (visPrefix vis) (Cat head (Cat variantDocs deriveDoc)))
-printDecl (DRecord vis n params fields derives) =
-  Cat
-    (visPrefix vis)
-    (Cat (text "record ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) (Cat (indentBlock (sepBy Hardline (map fieldTyDoc fields))) (if isEmptyL derives then Nil else Cat Hardline (Cat (text "deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))
-printDecl (DTypeAlias pub n params rhs) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "type ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) (Cat (text " = ") (printType rhs)))))
-printDecl (DNewtype pub n params con fty derives) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "newtype ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) (Cat (text " = ") (Cat (text con) (Cat (text " ") (Cat (printTypeAtom fty) (if isEmptyL derives then Nil else Cat (text " deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))))
-printDecl DInterface { pub, def, name, typarams, supers, methods } =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (if def then text "default " else Nil) (Cat (text "interface ") (Cat (text name) (Cat (concatD (map (p => Cat (text " ") (text p)) typarams)) (Cat (superDoc supers) (Cat (text " where") (indentBlock (sepBy Hardline (map ifaceMethodDoc methods)))))))))
-printDecl DImpl { pub, def, iface, tys, name, reqs, methods } =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (if def then text "default " else Nil) (Cat (text "impl ") (Cat (implHead iface tys name) (Cat (reqsDoc reqs) (Cat (text " where") (indentBlock (sepBy Hardline (map implMethodDoc methods))))))))
-printDecl (DUse pub path) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "import ") (printUsePath path))
+printDecl (DRecord vis n params fields derives) = Cat
+  (visPrefix vis)
+  (Cat
+    (text "record ")
+    (Cat
+      (text n)
+      (Cat
+        (concatD (map (p => Cat (text " ") (text p)) params))
+        (Cat
+          (indentBlock (sepBy Hardline (map fieldTyDoc fields)))
+          (if isEmptyL derives then Nil else Cat Hardline (Cat (text "deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))
+printDecl (DTypeAlias pub n params rhs) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (text "type ")
+    (Cat
+      (text n)
+      (Cat
+        (concatD (map (p => Cat (text " ") (text p)) params))
+        (Cat (text " = ") (printType rhs)))))
+printDecl (DNewtype pub n params con fty derives) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (text "newtype ")
+    (Cat
+      (text n)
+      (Cat
+        (concatD (map (p => Cat (text " ") (text p)) params))
+        (Cat
+          (text " = ")
+          (Cat
+            (text con)
+            (Cat
+              (text " ")
+              (Cat
+                (printTypeAtom fty)
+                (if isEmptyL derives then Nil else Cat (text " deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))))
+printDecl (DInterface { pub, def, name, typarams, supers, methods }) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (if def then text "default " else Nil)
+    (Cat
+      (text "interface ")
+      (Cat
+        (text name)
+        (Cat
+          (concatD (map (p => Cat (text " ") (text p)) typarams))
+          (Cat
+            (superDoc supers)
+            (Cat
+              (text " where")
+              (indentBlock (sepBy Hardline (map ifaceMethodDoc methods)))))))))
+printDecl (DImpl { pub, def, iface, tys, name, reqs, methods }) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (if def then text "default " else Nil)
+    (Cat
+      (text "impl ")
+      (Cat
+        (implHead iface tys name)
+        (Cat
+          (reqsDoc reqs)
+          (Cat
+            (text " where")
+            (indentBlock (sepBy Hardline (map implMethodDoc methods))))))))
+printDecl (DUse pub path) = Cat
+  (if pub then text "export " else Nil)
+  (Cat (text "import ") (printUsePath path))
 printDecl (DEffect pub name domain isInternal) =
   Cat (effDeclHead pub isInternal) (Cat (text name) (effDomainDoc domain))
-printDecl (DProp pub propName propParams propBody) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "prop ") (Cat (text (escStringLit propName)) (Cat (concatD (map propParamDoc propParams)) (printDefRhs propBody))))
-printDecl (DTest pub testName testBody) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "test ") (Cat (text (escStringLit testName)) (printDefRhs testBody)))
-printDecl (DBench pub benchName benchBody) =
-  Cat
-    (if pub then text "export " else Nil)
-    (Cat (text "bench ") (Cat (text (escStringLit benchName)) (printDefRhs benchBody)))
+printDecl (DProp pub propName propParams propBody) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (text "prop ")
+    (Cat
+      (text (escStringLit propName))
+      (Cat (concatD (map propParamDoc propParams)) (printDefRhs propBody))))
+printDecl (DTest pub testName testBody) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (text "test ")
+    (Cat (text (escStringLit testName)) (printDefRhs testBody)))
+printDecl (DBench pub benchName benchBody) = Cat
+  (if pub then text "export " else Nil)
+  (Cat
+    (text "bench ")
+    (Cat (text (escStringLit benchName)) (printDefRhs benchBody)))
 printDecl (DAttrib attrs inner) =
   Cat (concatD (map attrDoc attrs)) (printDecl inner)
 
@@ -1327,13 +1441,16 @@ letGroupBindClauses first name (c::cs) =
   let d = letGroupDeclClause first name c
   let r = letGroupBindClauses False name cs
   match r
-    (rest, lastFirst) => (d :: rest, lastFirst)
+    (rest, lastFirst) => (d::rest, lastFirst)
 
 letGroupDeclClause : Bool -> String -> FunClause -> Doc
-letGroupDeclClause first name (FunClause pats body) =
-  Cat
-    (if first then text "let rec " else Cat Hardline (text "with "))
-    (Cat (text name) (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (Cat (text " =") (letGroupDeclClauseBody body))))
+letGroupDeclClause first name (FunClause pats body) = Cat
+  (if first then text "let rec " else Cat Hardline (text "with "))
+  (Cat
+    (text name)
+    (Cat
+      (concatD (map (p => Cat (text " ") (printPatAtom p)) pats))
+      (Cat (text " =") (letGroupDeclClauseBody body))))
 
 letGroupDeclClauseBody : Expr -> Doc
 letGroupDeclClauseBody (ELoc _ e) = letGroupDeclClauseBody e
@@ -1354,18 +1471,22 @@ oneSuper (Super n ps) =
 ifaceMethodDoc : IfaceMethod -> Doc
 ifaceMethodDoc (IfaceMethod n ty None) =
   Cat (text n) (Cat (text " : ") (printType ty))
-ifaceMethodDoc (IfaceMethod n _ (Some (MethodDefault pats body))) =
-  Cat
-    (text n)
-    (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (Cat (text " = ") (printExprBody body)))
+ifaceMethodDoc (IfaceMethod n _ (Some (MethodDefault pats body))) = Cat
+  (text n)
+  (Cat
+    (concatD (map (p => Cat (text " ") (printPatAtom p)) pats))
+    (Cat (text " = ") (printExprBody body)))
 
 implHead : String -> List Ty -> Option String -> Doc
 implHead iface tys None =
   Cat (text iface) (concatD (map (t => Cat (text " ") (printTypeAtom t)) tys))
-implHead iface tys (Some name) =
-  Cat
-    (text name)
-    (Cat (text " of ") (Cat (text iface) (concatD (map (t => Cat (text " ") (printTypeAtom t)) tys))))
+implHead iface tys (Some name) = Cat
+  (text name)
+  (Cat
+    (text " of ")
+    (Cat
+      (text iface)
+      (concatD (map (t => Cat (text " ") (printTypeAtom t)) tys))))
 
 reqsDoc : List Require -> Doc
 reqsDoc [] = Nil
@@ -1376,10 +1497,11 @@ oneReq (Require iface args) =
   Cat (text iface) (concatD (map (t => Cat (text " ") (printTypeAtom t)) args))
 
 implMethodDoc : ImplMethod -> Doc
-implMethodDoc (ImplMethod n pats body) =
-  Cat
-    (text n)
-    (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (printDefRhs body))
+implMethodDoc (ImplMethod n pats body) = Cat
+  (text n)
+  (Cat
+    (concatD (map (p => Cat (text " ") (printPatAtom p)) pats))
+    (printDefRhs body))
 
 -- ── pp_ty (the precedence type printer used by prop params) ─────────
 -- Mirror of lib/ast.ml's pp_ty_prec / pp_ty.  Distinct from printType: it
@@ -1440,17 +1562,14 @@ ppConstr (Constraint iface args) =
 
 -- ── Public entry points ───────────────────────────
 
-export
-exprToString : Expr -> String
+export exprToString : Expr -> String
 exprToString e = render (printExpr precTop e)
 
-export
-declToString : Decl -> String
+export declToString : Decl -> String
 declToString d = render (printDecl d)
 
 -- program_to_string: each decl rendered + a trailing newline, concatenated.
-export
-programToString : List Decl -> String
+export programToString : List Decl -> String
 programToString decls = stringConcat (map declLine decls)
 
 declLine : Decl -> String

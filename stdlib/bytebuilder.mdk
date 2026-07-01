@@ -23,8 +23,7 @@ import mut_array.{MutArray, new, push, toArray}
 export data Builder = Builder (MutArray Int)
 
 -- | Create a new, empty builder.
-export
-newBuilder : Unit -> Builder
+export newBuilder : Unit -> Builder
 newBuilder _ = Builder (new ())
 
 -- ---------------------------------------------------------------------------
@@ -32,22 +31,19 @@ newBuilder _ = Builder (new ())
 -- ---------------------------------------------------------------------------
 
 -- | Emit one byte (masked to low 8 bits).
-export
-emitU8 : Int -> Builder -> <Mut> Unit
+export emitU8 : Int -> Builder -> <Mut> Unit
 emitU8 b (Builder a) = push (bitAnd b 255) a
 
 -- | Emit a big-endian 2-byte unsigned integer.
 --   Inverse of `beUint 2`.
-export
-emitU16BE : Int -> Builder -> <Mut> Unit
+export emitU16BE : Int -> Builder -> <Mut> Unit
 emitU16BE v buf =
   emitU8 (bitAnd (shiftRight v 8) 255) buf
   emitU8 (bitAnd v 255) buf
 
 -- | Emit a big-endian 3-byte unsigned integer.
 --   Inverse of `beUint 3`.
-export
-emitU24BE : Int -> Builder -> <Mut> Unit
+export emitU24BE : Int -> Builder -> <Mut> Unit
 emitU24BE v buf =
   emitU8 (bitAnd (shiftRight v 16) 255) buf
   emitU8 (bitAnd (shiftRight v 8) 255) buf
@@ -55,8 +51,7 @@ emitU24BE v buf =
 
 -- | Emit a big-endian 4-byte unsigned integer.
 --   Inverse of `beUint 4`.
-export
-emitU32BE : Int -> Builder -> <Mut> Unit
+export emitU32BE : Int -> Builder -> <Mut> Unit
 emitU32BE v buf =
   emitU8 (bitAnd (shiftRight v 24) 255) buf
   emitU8 (bitAnd (shiftRight v 16) 255) buf
@@ -65,8 +60,7 @@ emitU32BE v buf =
 
 -- | Emit a list of byte values, each masked to low 8 bits.
 --   Inverse of `takeBytes (length xs)`.
-export
-emitBytes : List Int -> Builder -> <Mut> Unit
+export emitBytes : List Int -> Builder -> <Mut> Unit
 emitBytes [] _ = ()
 emitBytes (b::rest) buf =
   emitU8 b buf
@@ -85,8 +79,7 @@ emitBytes (b::rest) buf =
 
 -- | Emit an `nbytes`-wide big-endian two's-complement signed integer.
 --   Inverse of `beSint nbytes`.
-export
-emitBeSint : Int -> Int -> Builder -> <Mut> Unit
+export emitBeSint : Int -> Int -> Builder -> <Mut> Unit
 emitBeSint nbytes v buf =
   let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
   emitBeUint nbytes unsigned buf
@@ -95,8 +88,7 @@ emitBeSint nbytes v buf =
 --   Inverse of `beUint nbytes`.
 --   The unsigned mirror of `emitBeSint`; useful when the value is always
 --   non-negative and you want to choose the width dynamically at runtime.
-export
-emitBeUint : Int -> Int -> Builder -> <Mut> Unit
+export emitBeUint : Int -> Int -> Builder -> <Mut> Unit
 emitBeUint 0 _ _ = ()
 emitBeUint n v buf =
   emitBeUint (n - 1) (shiftRight v 8) buf
@@ -108,8 +100,7 @@ emitBeUint n v buf =
 
 -- | Extract the accumulated bytes as a fixed-size `Array Int`.
 --   Bytes are already in emission order (no reverse pass needed).
-export
-buildArray : Builder -> Array Int
+export buildArray : Builder -> Array Int
 buildArray (Builder a) = toArray a
 
 -- ---------------------------------------------------------------------------

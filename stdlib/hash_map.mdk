@@ -41,8 +41,7 @@ slotOf key cap = hash key % cap
 
 {- | A fresh, empty hash table. Takes `Unit` (not a nullary value) so each call
    allocates its own table rather than sharing one mutable cell. -}
-export
-new : Unit -> HashMap k v
+export new : Unit -> HashMap k v
 new _ = HashMap (Ref (arrayMake initialCapacity [])) (Ref 0)
 
 -- ── Query (pure reads) ──────────────────────────────────────────────────
@@ -51,16 +50,14 @@ new _ = HashMap (Ref (arrayMake initialCapacity [])) (Ref 0)
 
    > size (fromList [(1, 10), (2, 20), (1, 30)])
    2 -}
-export
-size : HashMap k v -> Int
+export size : HashMap k v -> Int
 size (HashMap _ count) = count.value
 
 {- | `True` when there are no entries.
 
    > isEmpty (new () : HashMap Int Int)
    True -}
-export
-isEmpty : HashMap k v -> Bool
+export isEmpty : HashMap k v -> Bool
 isEmpty m = size m == 0
 
 bucketLookup : Eq k => k -> List (k, v) -> Option v
@@ -75,8 +72,7 @@ bucketLookup key ((k, v)::rest)
    Some 20
    > get 9 (fromList [(1, 10), (2, 20)])
    None -}
-export
-get : (Eq k, Hashable k) => k -> HashMap k v -> Option v
+export get : (Eq k, Hashable k) => k -> HashMap k v -> Option v
 get key (HashMap buckets _) =
   let arr = buckets.value
   bucketLookup key (arrayGetUnsafe (slotOf key (arrayLength arr)) arr)
@@ -85,16 +81,14 @@ get key (HashMap buckets _) =
 
    > member 2 (fromList [(1, 10), (2, 20)])
    True -}
-export
-member : (Eq k, Hashable k) => k -> HashMap k v -> Bool
+export member : (Eq k, Hashable k) => k -> HashMap k v -> Bool
 member key m = isSome (get key m)
 
 {- | Value at a key, or a fallback.
 
    > findWithDefault 0 9 (fromList [(1, 10)])
    0 -}
-export
-findWithDefault : (Eq k, Hashable k) => v -> k -> HashMap k v -> v
+export findWithDefault : (Eq k, Hashable k) => v -> k -> HashMap k v -> v
 findWithDefault d key m = fromOption d (get key m)
 
 -- ── Bucket helpers (for insert/delete) ──────────────────────────────────
@@ -108,7 +102,7 @@ bucketHas key ((k, _)::rest)
 bucketReplace : Eq k => k -> v -> List (k, v) -> List (k, v)
 bucketReplace _ _ [] = []
 bucketReplace key val ((k, v)::rest)
-  | key == k = (key, val) :: rest
+  | key == k = (key, val)::rest
   | otherwise = (k, v) :: bucketReplace key val rest
 
 bucketRemove : Eq k => k -> List (k, v) -> List (k, v)
@@ -121,8 +115,7 @@ bucketRemove key ((k, v)::rest)
 
 {- | Insert (or overwrite) the value at a key, in place. Resizes (doubling)
    when the load factor passes 0.75. -}
-export
-insert : (Eq k, Hashable k) => k -> v -> HashMap k v -> <Mut> Unit
+export insert : (Eq k, Hashable k) => k -> v -> HashMap k v -> <Mut> Unit
 insert key val (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
@@ -130,7 +123,8 @@ insert key val (HashMap buckets count) =
 
 insertAt : (Eq k, Hashable k) => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 insertAt key val arr idx buckets count
-  | bucketHas key (arrayGetUnsafe idx arr) = arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
+  | bucketHas key (arrayGetUnsafe idx arr) =
+    arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
   | otherwise =
     arraySetUnsafe idx ((key, val) :: arrayGetUnsafe idx arr) arr
     setRef count (count.value + 1)
@@ -174,8 +168,7 @@ putRaw key val buckets count =
 
    > size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
    8 -}
-export
-fromList : (Eq k, Hashable k) => List (k, v) -> <Mut> HashMap k v
+export fromList : (Eq k, Hashable k) => List (k, v) -> <Mut> HashMap k v
 fromList pairs =
   let m = new ()
   insertAll pairs m
@@ -190,8 +183,7 @@ insertAll ((k, v)::rest) m =
 -- ── Deletion (mutating) ─────────────────────────────────────────────────
 
 {- | Remove a key, in place. A no-op when absent. -}
-export
-delete : (Eq k, Hashable k) => k -> HashMap k v -> <Mut> Unit
+export delete : (Eq k, Hashable k) => k -> HashMap k v -> <Mut> Unit
 delete key (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
@@ -217,30 +209,26 @@ collectBuckets arr i n acc
    `toList` would be shadowed by the method and mistyped (`List v` vs the
    pairs `List (k, v)`). `toList` below is a thin exported alias, never used
    internally. -}
-export
-entries : HashMap k v -> List (k, v)
+export entries : HashMap k v -> List (k, v)
 entries (HashMap buckets _) =
   collectBuckets buckets.value 0 (arrayLength buckets.value) []
 
 {- | Conventional alias for `entries` (all key/value pairs). -}
-export
-toList : HashMap k v -> List (k, v)
+export toList : HashMap k v -> List (k, v)
 toList m = entries m
 
 {- | All keys, in unspecified order.
 
    > keys (fromList [(5, 50)])
    [5] -}
-export
-keys : HashMap k v -> List k
+export keys : HashMap k v -> List k
 keys m = map fst (entries m)
 
 {- | All values, in unspecified order.
 
    > values (fromList [(5, 50)])
    [50] -}
-export
-values : HashMap k v -> List v
+export values : HashMap k v -> List v
 values m = map snd (entries m)
 
 -- ── Instances ───────────────────────────────────────────────────────────

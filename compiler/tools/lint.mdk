@@ -32,9 +32,26 @@ import frontend.ast.{
   Expr(..),
   Decl(..),
 }
-import frontend.parser.{Positions, DeclPos, positionsDecls, declPosLine, declPosEndLine}
+import frontend.parser.{
+  Positions,
+  DeclPos,
+  positionsDecls,
+  declPosLine,
+  declPosEndLine,
+}
 import driver.diagnostics.{Severity(..), Diag(..), ppSeverity}
-import support.util.{contains, listLen, anyList, filterList, joinNl, isEmptyL, reverseL, splitNl, joinWith, sortUniqS}
+import support.util.{
+  contains,
+  listLen,
+  anyList,
+  filterList,
+  joinNl,
+  isEmptyL,
+  reverseL,
+  splitNl,
+  joinWith,
+  sortUniqS,
+}
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum}
 import ir.sexp.{exprSexp, patSexp}
@@ -142,9 +159,9 @@ bindThenDestructureRule = Rule {
   fix = Some bindThenDestructureFix,
 }
 
-export
-allRules : List Rule
-allRules = [matchParamRule, derivableRule, stdlibReimplRule, bindThenDestructureRule]
+export allRules : List Rule
+allRules =
+  [matchParamRule, derivableRule, stdlibReimplRule, bindThenDestructureRule]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
 -- Each CrossFileRule is its own top-level binding (same field-scanner reason as
@@ -159,8 +176,7 @@ duplicateBodyRule = CrossFileRule {
   check = ruleDuplicateBody,
 }
 
-export
-allCrossFileRules : List CrossFileRule
+export allCrossFileRules : List CrossFileRule
 allCrossFileRules = [duplicateBodyRule]
 
 -- ── runner ───────────────────────────────────────────────────────────────────
@@ -170,8 +186,7 @@ allCrossFileRules = [duplicateBodyRule]
 -- location.  Each rule's findings are re-stamped with the rule's (possibly
 -- CLI-overridden) severity so a `--deny` promotion propagates without the rule
 -- knowing about flags.
-export
-lintProgram : List Rule -> Positions -> List Decl -> List Finding
+export lintProgram : List Rule -> Positions -> List Decl -> List Finding
 lintProgram rules pos prog = flatMap (runRuleOn pos prog) rules
 
 runRuleOn : Positions -> List Decl -> Rule -> List Finding
@@ -195,8 +210,7 @@ restampSeverity sev f =
 -- splice over the decl's own source line range (`DeclPos` start..end).  Splices
 -- are applied bottom-up (descending start line) so earlier line numbers stay
 -- valid.  Returns `(rewrittenSource, fixedCount)`; unchanged source if no fix.
-export
-applyFixes : List String -> List String -> String -> List Decl -> Positions -> (String, Int)
+export applyFixes : List String -> List String -> String -> List Decl -> Positions -> (String, Int)
 applyFixes only disable src prog pos =
   let rules = filterList (ruleActiveFixable only disable) allRules
   let orc = buildOracle prog
@@ -206,11 +220,10 @@ applyFixes only disable src prog pos =
 -- a rule participates in `--fix` iff it is enabled, passes the --only/--disable
 -- filters, AND carries a fixer.
 ruleActiveFixable : List String -> List String -> Rule -> Bool
-ruleActiveFixable only disable r =
-  r.enabled
-    && (isEmptyL only || contains r.name only)
-    && not (contains r.name disable)
-    && ruleHasFixer r
+ruleActiveFixable only disable r = r.enabled
+  && (isEmptyL only || contains r.name only)
+  && not (contains r.name disable)
+  && ruleHasFixer r
 
 ruleHasFixer : Rule -> Bool
 ruleHasFixer r = match r.fix
@@ -226,8 +239,7 @@ zipDeclPos (d::ds) (p::ps) = (d, p) :: zipDeclPos ds ps
 collectSplices : Oracle -> List Rule -> List (Decl, DeclPos) -> List (Int, Int, String)
 collectSplices _ _ [] = []
 collectSplices orc rules ((d, dp)::rest) = match firstFix orc rules d
-  Some newDecls =>
-    (declPosLine dp, declPosEndLine dp, renderDecls newDecls) :: collectSplices orc rules rest
+  Some newDecls => (declPosLine dp, declPosEndLine dp, renderDecls newDecls) :: collectSplices orc rules rest
   None => collectSplices orc rules rest
 
 firstFix : Oracle -> List Rule -> Decl -> Option (List Decl)
@@ -248,39 +260,37 @@ renderDecls ds = joinNl (map declToString ds)
 -- apply splices to the source.  `collectSplices` yields them ascending by start
 -- line; reversing → descending so each edit leaves lower line numbers valid.
 applySplices : String -> List (Int, Int, String) -> String
-applySplices src splices =
-  joinNl (foldSplices (splitNl src) (reverseL splices))
+applySplices src splices = joinNl (foldSplices (splitNl src) (reverseL splices))
 
 foldSplices : List String -> List (Int, Int, String) -> List String
 foldSplices lines [] = lines
-foldSplices lines ((s, e, txt)::rest) = foldSplices (spliceLines lines s e txt) rest
+foldSplices lines ((s, e, txt)::rest) =
+  foldSplices (spliceLines lines s e txt) rest
 
 -- replace the 1-based inclusive line range [s..e] with `txt`'s own lines.
 spliceLines : List String -> Int -> Int -> String -> List String
-spliceLines lines s e txt =
-  takeN (s - 1) lines ++ splitNl txt ++ dropN e lines
+spliceLines lines s e txt = takeN (s - 1) lines ++ splitNl txt ++ dropN e lines
 
 takeN : Int -> List a -> List a
-takeN n _ | n <= 0 = []
+takeN n _
+  | n <= 0 = []
 takeN _ [] = []
 takeN n (x::xs) = x :: takeN (n - 1) xs
 
 dropN : Int -> List a -> List a
-dropN n xs | n <= 0 = xs
+dropN n xs
+  | n <= 0 = xs
 dropN _ [] = []
 dropN n (_::xs) = dropN (n - 1) xs
 
-
 -- ── rendering ─────────────────────────────────────────────────────────────────
 
-export
-findingToDiag : Finding -> Diag
+export findingToDiag : Finding -> Diag
 findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
 
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
 -- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.
-export
-lintToLines : Positions -> List Decl -> String
+export lintToLines : Positions -> List Decl -> String
 lintToLines pos prog = joinNl (map findingLine (lintProgram allRules pos prog))
 
 findingLine : Finding -> String
@@ -321,13 +331,16 @@ matchParamDeclL : (Decl, Option Loc) -> List Finding
 matchParamDeclL (d, loc) = matchParamDecl loc d
 
 matchParamDecl : Option Loc -> Decl -> List Finding
-matchParamDecl loc (DFunDef _ name pats body) = matchParamFinding loc name pats body
-matchParamDecl loc DImpl { methods, ... } = flatMap (matchParamMethod loc) methods
+matchParamDecl loc (DFunDef _ name pats body) =
+  matchParamFinding loc name pats body
+matchParamDecl loc (DImpl { methods, ... }) =
+  flatMap (matchParamMethod loc) methods
 matchParamDecl loc (DAttrib _ d) = matchParamDecl loc d
 matchParamDecl _ _ = []
 
 matchParamMethod : Option Loc -> ImplMethod -> List Finding
-matchParamMethod loc (ImplMethod name pats body) = matchParamFinding loc name pats body
+matchParamMethod loc (ImplMethod name pats body) =
+  matchParamFinding loc name pats body
 
 matchParamFinding : Option Loc -> String -> List Pat -> Expr -> List Finding
 matchParamFinding loc name pats body = match unwrapLoc body
@@ -338,19 +351,19 @@ matchParamArms : Option Loc -> String -> List Pat -> Expr -> List Arm -> List Fi
 matchParamArms loc name pats scrut arms
   | listLen arms < 2 = []
   | otherwise = match unwrapLoc scrut
-      EVar p => matchParamHit loc name pats p
-      _ => []
+    EVar p => matchParamHit loc name pats p
+    _ => []
 
 matchParamHit : Option Loc -> String -> List Pat -> String -> List Finding
 matchParamHit loc name pats p
-  | anyList (isBareParam p) pats =
-      [Finding {
-        rule = ruleNameMatchParam,
-        message = "function '" ++ name ++ "' matches on parameter '" ++ p
-          ++ "' — consider a multi-clause function definition",
-        severity = SevWarning,
-        loc = loc,
-      }]
+  | anyList (isBareParam p) pats = [
+    Finding {
+      rule = ruleNameMatchParam,
+      message = "function '" ++ name ++ "' matches on parameter '" ++ p ++ "' — consider a multi-clause function definition",
+      severity = SevWarning,
+      loc = loc,
+    }
+  ]
   | otherwise = []
 
 isBareParam : String -> Pat -> Bool
@@ -375,7 +388,8 @@ isBareParam _ _ = False
 --     as the token `p`, so a real reference is never missed (the scan can only
 --     over-bail, which is safe).
 matchParamFix : Oracle -> Decl -> Option (List Decl)
-matchParamFix _ (DFunDef vis name pats body) = matchParamFixBody vis name pats body
+matchParamFix _ (DFunDef vis name pats body) =
+  matchParamFixBody vis name pats body
 matchParamFix _ _ = None
 
 matchParamFixBody : Bool -> String -> List Pat -> Expr -> Option (List Decl)
@@ -387,8 +401,8 @@ matchParamFixMatch : Bool -> String -> List Pat -> Expr -> List Arm -> Option (L
 matchParamFixMatch vis name pats scrut arms
   | listLen arms < 2 = None
   | otherwise = match unwrapLoc scrut
-      EVar p => matchParamFixVar vis name pats p arms
-      _ => None
+    EVar p => matchParamFixVar vis name pats p arms
+    _ => None
 
 matchParamFixVar : Bool -> String -> List Pat -> String -> List Arm -> Option (List Decl)
 matchParamFixVar vis name pats p arms
@@ -396,8 +410,8 @@ matchParamFixVar vis name pats p arms
   | anyList armHasGuard arms = None
   | anyList (armUnsafeMention p) arms = None
   | otherwise = match paramIndex p pats
-      Some k => Some (map (armToClause vis name p pats k) arms)
-      None => None
+    Some k => Some (map (armToClause vis name p pats k) arms)
+    None => None
 
 -- an arm with any guard qualifier (refutable bind or boolean) can't be a clause
 armHasGuard : Arm -> Bool
@@ -439,12 +453,15 @@ paramIndexGo p (pat::rest) i
 -- UNSAFE — non-wildcard — mention).
 armToClause : Bool -> String -> String -> List Pat -> Int -> Arm -> Decl
 armToClause vis name p pats k (Arm pat _ body) =
-  let cpat = if patIsWild pat && wholeWordIn p (exprToString body) then PVar p else pat
+  let cpat = if patIsWild pat && wholeWordIn p (exprToString body) then
+    PVar p
+  else
+    pat
   DFunDef vis name (replaceAt k cpat pats) body
 
 replaceAt : Int -> a -> List a -> List a
 replaceAt _ _ [] = []
-replaceAt 0 x (_::rest) = x :: rest
+replaceAt 0 x (_::rest) = x::rest
 replaceAt n x (y::rest) = y :: replaceAt (n - 1) x rest
 
 -- whole-word (identifier-token) occurrence of `name` in `s`.  Boundaries are any
@@ -468,7 +485,8 @@ boundaryAt : Array Char -> Int -> Bool
 boundaryAt cs j
   | j == 0 = True
   | j >= arrayLength cs = True
-  | otherwise = not (isAlnum (arrayGetUnsafe (j - 1) cs)) || not (isAlnum (arrayGetUnsafe j cs))
+  | otherwise = not (isAlnum (arrayGetUnsafe (j - 1) cs))
+    || not (isAlnum (arrayGetUnsafe j cs))
 
 -- ── rule: hand-rolled-derivable (STYLE §6) ────────────────────────────────────
 -- A `DImpl` for Eq/Ord/Debug over a single named (TyCon-headed) type.  DImpl
@@ -483,21 +501,22 @@ derivableDeclL : (Decl, Option Loc) -> List Finding
 derivableDeclL (d, loc) = derivableDecl loc d
 
 derivableDecl : Option Loc -> Decl -> List Finding
-derivableDecl loc DImpl { iface, tys, ... } = derivableHit loc iface tys
+derivableDecl loc (DImpl { iface, tys, ... }) = derivableHit loc iface tys
 derivableDecl loc (DAttrib _ d) = derivableDecl loc d
 derivableDecl _ _ = []
 
 derivableHit : Option Loc -> String -> List Ty -> List Finding
 derivableHit loc iface tys
   | contains iface derivableIfaces = match singleNamedType tys
-      Some tyName => [Finding {
+    Some tyName => [
+      Finding {
         rule = ruleNameDerivable,
-        message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName
-          ++ "' — consider `deriving (" ++ iface ++ ")` instead",
+        message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName ++ "' — consider `deriving (" ++ iface ++ ")` instead",
         severity = SevWarning,
         loc = loc,
-      }]
-      None => []
+      }
+    ]
+    None => []
   | otherwise = []
 
 -- the head type name iff `tys` is exactly one TyCon-headed type
@@ -515,9 +534,21 @@ tyHeadName _ = None
 -- this curated set as the stdlib grows.
 stdlibNames : List String
 stdlibNames = [
-  "reverse", "take", "drop", "map", "filter", "flatMap", "concatMap",
-  "foldl", "foldr", "length", "elem", "intercalate", "intersperse",
-  "zip", "zipWith",
+  "reverse",
+  "take",
+  "drop",
+  "map",
+  "filter",
+  "flatMap",
+  "concatMap",
+  "foldl",
+  "foldr",
+  "length",
+  "elem",
+  "intercalate",
+  "intersperse",
+  "zip",
+  "zipWith",
 ]
 
 ruleStdlibReimpl : Positions -> List Decl -> List Finding
@@ -543,7 +574,7 @@ dedupeNamesLocGo : List String -> List (String, Option Loc) -> List (String, Opt
 dedupeNamesLocGo _ [] = []
 dedupeNamesLocGo seen ((n, l)::rest)
   | contains n seen = dedupeNamesLocGo seen rest
-  | otherwise = (n, l) :: dedupeNamesLocGo (n :: seen) rest
+  | otherwise = (n, l) :: dedupeNamesLocGo (n::seen) rest
 
 inStdlib : String -> Bool
 inStdlib n = contains n stdlibNames
@@ -551,8 +582,7 @@ inStdlib n = contains n stdlibNames
 stdlibFinding : (String, Option Loc) -> Finding
 stdlibFinding (name, loc) = Finding {
   rule = ruleNameStdlibReimpl,
-  message = "top-level '" ++ name
-    ++ "' shadows a stdlib function — prefer the stdlib version",
+  message = "top-level '" ++ name ++ "' shadows a stdlib function — prefer the stdlib version",
   severity = SevWarning,
   loc = loc,
 }
@@ -587,7 +617,8 @@ irrefutablePat _ (PVar _) = True
 irrefutablePat _ PWild = True
 irrefutablePat orc (PTuple ps) = not (anyList (refutablePat orc) ps)
 irrefutablePat orc (PRec _ fields _) = not (anyList (refutableField orc) fields)
-irrefutablePat orc (PCon c subps) = ctorIsSole orc c && not (anyList (refutablePat orc) subps)
+irrefutablePat orc (PCon c subps) = ctorIsSole orc c
+  && not (anyList (refutablePat orc) subps)
 irrefutablePat _ _ = False
 
 -- the constructor `c` is the unique constructor of its datatype (single-variant
@@ -617,9 +648,7 @@ bindMatchTail orc stmts = match splitTail2 stmts
 
 bindMatchArm : Oracle -> List DoStmt -> String -> Expr -> Expr -> Option (List DoStmt, String, Pat, Expr, Expr)
 bindMatchArm orc prefix v boundE (EMatch scrut [Arm pat [] body])
-  | scrutIsVar v (unwrapLoc scrut)
-    && irrefutablePat orc pat
-    && not (wholeWordIn v (exprToString body)) = Some (prefix, v, pat, boundE, body)
+  | scrutIsVar v (unwrapLoc scrut) && irrefutablePat orc pat && not (wholeWordIn v (exprToString body)) = Some (prefix, v, pat, boundE, body)
   | otherwise = None
 bindMatchArm _ _ _ _ _ = None
 
@@ -640,7 +669,8 @@ ruleBindThenDestructure pos prog =
   flatMap (bindDestructureDeclL orc) (declLocList pos prog)
 
 bindDestructureDeclL : Oracle -> (Decl, Option Loc) -> List Finding
-bindDestructureDeclL orc (d, loc) = map (bindDestructureFinding loc) (declBindHits orc d)
+bindDestructureDeclL orc (d, loc) =
+  map (bindDestructureFinding loc) (declBindHits orc d)
 
 declBindHits : Oracle -> Decl -> List String
 declBindHits orc (DFunDef _ _ _ body) = collectBindHits orc body
@@ -650,15 +680,15 @@ declBindHits _ _ = []
 bindDestructureFinding : Option Loc -> String -> Finding
 bindDestructureFinding loc v = Finding {
   rule = ruleNameBindThenDestructure,
-  message = "binds '" ++ v
-    ++ "' then immediately destructures it in a final `match` — inline the pattern into the bind",
+  message = "binds '" ++ v ++ "' then immediately destructures it in a final `match` — inline the pattern into the bind",
   severity = SevWarning,
   loc = loc,
 }
 
 -- collect every collapsible tail's bound-var name, recursing into all sub-exprs.
 collectBindHits : Oracle -> Expr -> List String
-collectBindHits orc e = tailHitOf orc e ++ flatMap (collectBindHits orc) (childExprs e)
+collectBindHits orc e = tailHitOf orc e
+  ++ flatMap (collectBindHits orc) (childExprs e)
 
 tailHitOf : Oracle -> Expr -> List String
 tailHitOf orc (EDo stmts) = hitNameOf orc stmts
@@ -754,7 +784,10 @@ kvExprs (k, v) = [k, v]
 bindThenDestructureFix : Oracle -> Decl -> Option (List Decl)
 bindThenDestructureFix orc (DFunDef vis name pats body) =
   let body2 = rewriteBindExpr orc body
-  if exprSexp body2 == exprSexp body then None else Some [DFunDef vis name pats body2]
+  if exprSexp body2 == exprSexp body then
+    None
+  else
+    Some [DFunDef vis name pats body2]
 bindThenDestructureFix orc (DAttrib a d) = match bindThenDestructureFix orc d
   Some [d2] => Some [DAttrib a d2]
   _ => None
@@ -764,34 +797,57 @@ bindThenDestructureFix _ _ = None
 rewriteBindExpr : Oracle -> Expr -> Expr
 rewriteBindExpr orc (ELoc l e) = ELoc l (rewriteBindExpr orc e)
 rewriteBindExpr orc (EDoOrigin l e) = EDoOrigin l (rewriteBindExpr orc e)
-rewriteBindExpr orc (EApp f x) = EApp (rewriteBindExpr orc f) (rewriteBindExpr orc x)
+rewriteBindExpr orc (EApp f x) =
+  EApp (rewriteBindExpr orc f) (rewriteBindExpr orc x)
 rewriteBindExpr orc (ELam ps b) = ELam ps (rewriteBindExpr orc b)
-rewriteBindExpr orc (ELet m isf p e1 e2) = ELet m isf p (rewriteBindExpr orc e1) (rewriteBindExpr orc e2)
-rewriteBindExpr orc (EMatch s arms) = EMatch (rewriteBindExpr orc s) (map (rewriteBindArm orc) arms)
-rewriteBindExpr orc (EIf c t el) = EIf (rewriteBindExpr orc c) (rewriteBindExpr orc t) (rewriteBindExpr orc el)
-rewriteBindExpr orc (EBinOp op a b r) = EBinOp op (rewriteBindExpr orc a) (rewriteBindExpr orc b) r
+rewriteBindExpr orc (ELet m isf p e1 e2) =
+  ELet m isf p (rewriteBindExpr orc e1) (rewriteBindExpr orc e2)
+rewriteBindExpr orc (EMatch s arms) =
+  EMatch (rewriteBindExpr orc s) (map (rewriteBindArm orc) arms)
+rewriteBindExpr orc (EIf c t el) =
+  EIf (rewriteBindExpr orc c) (rewriteBindExpr orc t) (rewriteBindExpr orc el)
+rewriteBindExpr orc (EBinOp op a b r) =
+  EBinOp op (rewriteBindExpr orc a) (rewriteBindExpr orc b) r
 rewriteBindExpr orc (EUnOp op a) = EUnOp op (rewriteBindExpr orc a)
-rewriteBindExpr orc (EInfix op a b) = EInfix op (rewriteBindExpr orc a) (rewriteBindExpr orc b)
-rewriteBindExpr orc (EFieldAccess e f r) = EFieldAccess (rewriteBindExpr orc e) f r
+rewriteBindExpr orc (EInfix op a b) =
+  EInfix op (rewriteBindExpr orc a) (rewriteBindExpr orc b)
+rewriteBindExpr orc (EFieldAccess e f r) =
+  EFieldAccess (rewriteBindExpr orc e) f r
 rewriteBindExpr orc (ETuple es) = ETuple (map (rewriteBindExpr orc) es)
 rewriteBindExpr orc (EListLit es) = EListLit (map (rewriteBindExpr orc) es)
 rewriteBindExpr orc (EArrayLit es) = EArrayLit (map (rewriteBindExpr orc) es)
-rewriteBindExpr orc (ERangeList lo hi i) = ERangeList (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
-rewriteBindExpr orc (ERangeArray lo hi i) = ERangeArray (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
-rewriteBindExpr orc (ESlice e lo hi i r) = ESlice (rewriteBindExpr orc e) (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i r
-rewriteBindExpr orc (ELetGroup binds body) = ELetGroup (map (rewriteBindLet orc) binds) (rewriteBindExpr orc body)
+rewriteBindExpr orc (ERangeList lo hi i) =
+  ERangeList (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
+rewriteBindExpr orc (ERangeArray lo hi i) =
+  ERangeArray (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
+rewriteBindExpr orc (ESlice e lo hi i r) = ESlice
+  (rewriteBindExpr orc e)
+  (rewriteBindExpr orc lo)
+  (rewriteBindExpr orc hi)
+  i
+  r
+rewriteBindExpr orc (ELetGroup binds body) =
+  ELetGroup (map (rewriteBindLet orc) binds) (rewriteBindExpr orc body)
 rewriteBindExpr orc (ESection s) = ESection (rewriteBindSection orc s)
 rewriteBindExpr orc (EFunction arms) = EFunction (map (rewriteBindArm orc) arms)
-rewriteBindExpr orc (EIndex a i r) = EIndex (rewriteBindExpr orc a) (rewriteBindExpr orc i) r
+rewriteBindExpr orc (EIndex a i r) =
+  EIndex (rewriteBindExpr orc a) (rewriteBindExpr orc i) r
 rewriteBindExpr orc (EAnnot e t) = EAnnot (rewriteBindExpr orc e) t
 rewriteBindExpr orc (EHeadAnnot e t) = EHeadAnnot (rewriteBindExpr orc e) t
-rewriteBindExpr orc (EBlock stmts) = EBlock (collapseBindTail orc (map (rewriteBindStmt orc) stmts))
-rewriteBindExpr orc (EDo stmts) = EDo (collapseBindTail orc (map (rewriteBindStmt orc) stmts))
-rewriteBindExpr orc (EStringInterp parts) = EStringInterp (map (rewriteBindInterp orc) parts)
-rewriteBindExpr orc (EGuards arms) = EGuards (map (rewriteBindGuardArm orc) arms)
-rewriteBindExpr orc (ERecordCreate n fs) = ERecordCreate n (map (rewriteBindField orc) fs)
-rewriteBindExpr orc (ERecordUpdate e fs) = ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
-rewriteBindExpr orc (EVariantUpdate c e fs) = EVariantUpdate c (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
+rewriteBindExpr orc (EBlock stmts) =
+  EBlock (collapseBindTail orc (map (rewriteBindStmt orc) stmts))
+rewriteBindExpr orc (EDo stmts) =
+  EDo (collapseBindTail orc (map (rewriteBindStmt orc) stmts))
+rewriteBindExpr orc (EStringInterp parts) =
+  EStringInterp (map (rewriteBindInterp orc) parts)
+rewriteBindExpr orc (EGuards arms) =
+  EGuards (map (rewriteBindGuardArm orc) arms)
+rewriteBindExpr orc (ERecordCreate n fs) =
+  ERecordCreate n (map (rewriteBindField orc) fs)
+rewriteBindExpr orc (ERecordUpdate e fs) =
+  ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
+rewriteBindExpr orc (EVariantUpdate c e fs) =
+  EVariantUpdate c (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
 rewriteBindExpr orc (EMapLit n kvs) = EMapLit n (map (rewriteBindKv orc) kvs)
 rewriteBindExpr orc (ESetLit n es) = ESetLit n (map (rewriteBindExpr orc) es)
 rewriteBindExpr orc (EAsPat x e) = EAsPat x (rewriteBindExpr orc e)
@@ -802,7 +858,8 @@ rewriteBindExpr _ e = e
 -- arm body's statements spliced inline.
 collapseBindTail : Oracle -> List DoStmt -> List DoStmt
 collapseBindTail orc stmts = match bindMatchTail orc stmts
-  Some (prefix, _, pat, boundE, body) => prefix ++ (DoBind pat boundE :: bodyToStmts body)
+  Some (prefix, _, pat, boundE, body) => prefix
+    ++ (DoBind pat boundE :: bodyToStmts body)
   None => stmts
 
 -- the arm body as statements: a do/bare block contributes its own statements
@@ -818,21 +875,26 @@ rewriteBindStmt orc (DoExpr e) = DoExpr (rewriteBindExpr orc e)
 rewriteBindStmt orc (DoBind p e) = DoBind p (rewriteBindExpr orc e)
 rewriteBindStmt orc (DoLet m r p e) = DoLet m r p (rewriteBindExpr orc e)
 rewriteBindStmt orc (DoAssign x e) = DoAssign x (rewriteBindExpr orc e)
-rewriteBindStmt orc (DoFieldAssign x fs e) = DoFieldAssign x fs (rewriteBindExpr orc e)
-rewriteBindStmt orc (DoLetElse p e alt) = DoLetElse p (rewriteBindExpr orc e) (rewriteBindExpr orc alt)
+rewriteBindStmt orc (DoFieldAssign x fs e) =
+  DoFieldAssign x fs (rewriteBindExpr orc e)
+rewriteBindStmt orc (DoLetElse p e alt) =
+  DoLetElse p (rewriteBindExpr orc e) (rewriteBindExpr orc alt)
 
 rewriteBindArm : Oracle -> Arm -> Arm
-rewriteBindArm orc (Arm p gs body) = Arm p (map (rewriteBindGuard orc) gs) (rewriteBindExpr orc body)
+rewriteBindArm orc (Arm p gs body) =
+  Arm p (map (rewriteBindGuard orc) gs) (rewriteBindExpr orc body)
 
 rewriteBindGuard : Oracle -> Guard -> Guard
 rewriteBindGuard orc (GBool e) = GBool (rewriteBindExpr orc e)
 rewriteBindGuard orc (GBind p e) = GBind p (rewriteBindExpr orc e)
 
 rewriteBindLet : Oracle -> LetBind -> LetBind
-rewriteBindLet orc (LetBind n clauses) = LetBind n (map (rewriteBindClause orc) clauses)
+rewriteBindLet orc (LetBind n clauses) =
+  LetBind n (map (rewriteBindClause orc) clauses)
 
 rewriteBindClause : Oracle -> FunClause -> FunClause
-rewriteBindClause orc (FunClause ps body) = FunClause ps (rewriteBindExpr orc body)
+rewriteBindClause orc (FunClause ps body) =
+  FunClause ps (rewriteBindExpr orc body)
 
 rewriteBindSection : Oracle -> Section -> Section
 rewriteBindSection _ (SecBare op) = SecBare op
@@ -844,7 +906,8 @@ rewriteBindInterp _ (InterpStr s) = InterpStr s
 rewriteBindInterp orc (InterpExpr e) = InterpExpr (rewriteBindExpr orc e)
 
 rewriteBindGuardArm : Oracle -> GuardArm -> GuardArm
-rewriteBindGuardArm orc (GuardArm gs body) = GuardArm (map (rewriteBindGuard orc) gs) (rewriteBindExpr orc body)
+rewriteBindGuardArm orc (GuardArm gs body) =
+  GuardArm (map (rewriteBindGuard orc) gs) (rewriteBindExpr orc body)
 
 rewriteBindField : Oracle -> FieldAssign -> FieldAssign
 rewriteBindField orc (FieldAssign n e) = FieldAssign n (rewriteBindExpr orc e)
@@ -858,21 +921,20 @@ rewriteBindKv orc (k, v) = (rewriteBindExpr orc k, rewriteBindExpr orc v)
 -- access is confined to this runner (and the registry bindings above), so the CLI
 -- stays clear of the field-scanner gap.  --deny promotion is left to the CLI
 -- (which already owns it for per-file findings).
-export
-runCrossFileRules : List String -> List String -> List (String, Positions, List Decl) -> List Finding
+export runCrossFileRules : List String -> List String -> List (String, Positions, List Decl) -> List Finding
 runCrossFileRules only disable files =
   flatMap (runCrossRuleOn only disable files) allCrossFileRules
 
 runCrossRuleOn : List String -> List String -> List (String, Positions, List Decl) -> CrossFileRule -> List Finding
 runCrossRuleOn only disable files r
-  | crossRuleActive only disable r = map (restampSeverity r.severity) (r.check files)
+  | crossRuleActive only disable r =
+    map (restampSeverity r.severity) (r.check files)
   | otherwise = []
 
 crossRuleActive : List String -> List String -> CrossFileRule -> Bool
-crossRuleActive only disable r =
-  r.enabled
-    && (isEmptyL only || contains r.name only)
-    && not (contains r.name disable)
+crossRuleActive only disable r = r.enabled
+  && (isEmptyL only || contains r.name only)
+  && not (contains r.name disable)
 
 -- ── cross-file rule: duplicate-body (copy-paste detector) ──────────────────────
 -- Flags a top-level `DFunDef` whose ELoc-stripped body (+ param-pattern shape) is
@@ -892,7 +954,9 @@ dupComplexityThreshold = 10
 
 -- structural identity key: param-pattern shapes ++ ELoc-stripped body sexp.
 structuralKey : List Pat -> Expr -> String
-structuralKey pats body = joinWith "|" (map patSexp pats) ++ " => " ++ exprSexp body
+structuralKey pats body = joinWith "|" (map patSexp pats)
+  ++ " => "
+  ++ exprSexp body
 
 -- complexity proxy: every `node`/`slist` in the sexp dump emits a '(', so counting
 -- '(' counts AST nodes without a second traversal.
@@ -915,13 +979,16 @@ ruleDuplicateBody files =
 
 -- one occurrence per eligible top-level DFunDef: (file, line, name, structuralKey)
 fileDupOccs : (String, Positions, List Decl) -> List (String, Int, String, String)
-fileDupOccs (path, pos, decls) = flatMap (dupOccOfDecl path) (declLocList pos decls)
+fileDupOccs (path, pos, decls) =
+  flatMap (dupOccOfDecl path) (declLocList pos decls)
 
 dupOccOfDecl : String -> (Decl, Option Loc) -> List (String, Int, String, String)
 dupOccOfDecl path (d, loc) = match d
   DFunDef _ name pats body =>
-    if bodyComplexity body >= dupComplexityThreshold then [(path, locLineOf loc, name, structuralKey pats body)]
-    else []
+    if bodyComplexity body >= dupComplexityThreshold then
+      [(path, locLineOf loc, name, structuralKey pats body)]
+    else
+      []
   DAttrib _ inner => dupOccOfDecl path (inner, loc)
   _ => []
 
@@ -946,8 +1013,10 @@ emitDupGroup : List (String, Int, String, String) -> String -> List Finding
 emitDupGroup occs key =
   let grp = filterList (o => occKey o == key) occs
   let distinctFiles = sortUniqS (map occFile grp)
-  if listLen distinctFiles < 2 then []
-  else map (dupFinding distinctFiles) (sortDupOccs grp)
+  if listLen distinctFiles < 2 then
+    []
+  else
+    map (dupFinding distinctFiles) (sortDupOccs grp)
 
 dupFinding : List String -> (String, Int, String, String) -> Finding
 dupFinding distinctFiles occ =
@@ -956,10 +1025,7 @@ dupFinding distinctFiles occ =
   let others = filterList (s => not (s == file)) distinctFiles
   Finding {
     rule = ruleNameDuplicateBody,
-    message = "function '" ++ occName occ
-      ++ "' has a body structurally identical to a definition in "
-      ++ joinWith ", " others
-      ++ " — consider consolidating into a shared module",
+    message = "function '" ++ occName occ ++ "' has a body structurally identical to a definition in " ++ joinWith ", " others ++ " — consider consolidating into a shared module",
     severity = SevWarning,
     loc = Some (Loc file line 1 line 1),
   }
@@ -972,7 +1038,7 @@ sortDupOccs (x::xs) = dupInsert x (sortDupOccs xs)
 dupInsert : (String, Int, String, String) -> List (String, Int, String, String) -> List (String, Int, String, String)
 dupInsert x [] = [x]
 dupInsert x (y::ys)
-  | dupOccLe x y = x :: y :: ys
+  | dupOccLe x y = x :: y::ys
   | otherwise = y :: dupInsert x ys
 
 dupOccLe : (String, Int, String, String) -> (String, Int, String, String) -> Bool

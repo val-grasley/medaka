@@ -10,10 +10,20 @@
 
 import lib.sqlite.{Db, openDb}
 import lib.select.{
-  Select, SqlExpr,
-  selectFrom, withOrderBy, withColumns, innerJoin, query, queryDistinct,
-  eEq, eAdd, eMul,
-  eColInt, eColText, eLitI,
+  Select,
+  SqlExpr,
+  selectFrom,
+  withOrderBy,
+  withColumns,
+  innerJoin,
+  query,
+  queryDistinct,
+  eEq,
+  eAdd,
+  eMul,
+  eColInt,
+  eColText,
+  eLitI,
   unExpr,
 }
 import lib.rowtype.{RowType, tInt, tText, t2}
@@ -39,8 +49,8 @@ showI : Int -> String
 showI i = "\{i}"
 
 printLines : (a -> String) -> List a -> <IO> Unit
-printLines _ []          = ()
-printLines f (x :: rest) =
+printLines _ [] = ()
+printLines f (x::rest) =
   let _ = println (f x)
   printLines f rest
 
@@ -48,21 +58,21 @@ runIS : Db -> String -> Select -> <IO> Unit
 runIS db label sel =
   let _ = println label
   match query db sel rowIS
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printLines showIS rows
 
 runSI : Db -> String -> Select -> <IO> Unit
 runSI db label sel =
   let _ = println label
   match query db sel rowSI
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printLines showSI rows
 
 runIDistinct : Db -> String -> Select -> <IO> Unit
 runIDistinct db label sel =
   let _ = println label
   match queryDistinct db sel tInt
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printLines showI rows
 
 main : <IO> Unit

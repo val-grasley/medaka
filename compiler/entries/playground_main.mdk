@@ -34,10 +34,22 @@
 -- itself an entry and cannot be imported).
 
 import frontend.ast.{Decl, Loc(..)}
-import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
+import frontend.parser.{
+  parse,
+  parseResult,
+  ParseError,
+  parseErrorLine,
+  parseErrorCol,
+  parseErrorMessage,
+}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram}
-import driver.diagnostics.{analyzeProject, analyzeLocated, Diag(..), Severity(..)}
+import driver.diagnostics.{
+  analyzeProject,
+  analyzeLocated,
+  Diag(..),
+  Severity(..),
+}
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import support.path.{dirOf}
 import types.typecheck.{
@@ -51,11 +63,17 @@ import types.typecheck.{
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
-import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installMainIsFloatHint}
+import backend.wasm_emit.{
+  emitProgram,
+  installMethodIface,
+  installDeclRetTypes,
+  installMainIsFloatHint,
+}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
-  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots =>
+    run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: playground_main <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String
@@ -85,14 +103,14 @@ run runtimeP coreP entry roots = match readFile runtimeP
           Err lmsg => emitDiagnostics (cjAllToJson [(entry, tsrc, [Diag SevError lmsg None])])
           Ok mods => match mods
             [_] => analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots
-            _   => analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots mods
+            _ => analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots mods
 
 -- Single module: analyzeLocated (correct single-file type errors).  Clean ⇒ emit.
 analyzeSingle : String -> String -> String -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
 analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
   let diags = analyzeLocated rsrc csrc tsrc
   match any isDiagError diags
-    True  => emitDiagnostics (cjAllToJson [(entry, tsrc, diags)])
+    True => emitDiagnostics (cjAllToJson [(entry, tsrc, diags)])
     False => doEmit rsrc csrc entry roots
 
 -- Multi-module: analyzeProject (loader path).  Clean ⇒ emit.
@@ -103,7 +121,7 @@ analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
   let results = analyzeProject cacheRef parseCacheRef (_ => None) entry roots rsrc csrc
   let triples = map readDiagSrc results
   match any cjHasErr results
-    True  => emitDiagnostics (cjAllToJson triples)
+    True => emitDiagnostics (cjAllToJson triples)
     False => doEmit rsrc csrc entry roots
 
 -- ── emit (clean path) ───────────────────────────────────────────────────────
@@ -146,9 +164,15 @@ emitParseError entry pe =
   let ln = parseErrorLine pe
   let col = parseErrorCol pe
   let r = cjRange ln col ln (col + 1)
-  let diagJson = jObject [("message", JString (parseErrorMessage pe)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")]
+  let diagJson = jObject [
+    ("message", JString (parseErrorMessage pe)),
+    ("range", r),
+    ("severity", JInt 1),
+    ("source", JString "medaka"),
+  ]
   let filesJson = jObject [("file", JString entry), ("diagnostics", JArray (arrayFromList [diagJson]))]
-  emitDiagnostics (stringify (jObject [("files", JArray (arrayFromList [filesJson]))]))
+  emitDiagnostics (stringify (jObject
+    [("files", JArray (arrayFromList [filesJson]))]))
 
 -- A failed stdlib read becomes a single diagnostic too (never a trap).
 emitLoadFail : String -> String -> <IO> Unit
@@ -188,34 +212,34 @@ cjSevCode SevError = 1
 cjSevCode _ = 2
 
 cjDiagnostic : String -> String -> Diag -> Json
-cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) =
-  jObject
-    [
-      ("message", JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg)),
-      ("range", cjRange 0 0 0 0),
-      ("severity", JInt 2),
-      ("source", JString "medaka"),
-    ]
-cjDiagnostic _ src (Diag sev msg loc) =
-  jObject
-    [
-      ("message", JString msg),
-      ("range", cjRangeOfLoc src loc),
-      ("severity", JInt (cjSevCode sev)),
-      ("source", JString "medaka"),
-    ]
+cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) = jObject
+  [
+    (
+      "message",
+      JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg),
+    ),
+    ("range", cjRange 0 0 0 0),
+    ("severity", JInt 2),
+    ("source", JString "medaka"),
+  ]
+cjDiagnostic _ src (Diag sev msg loc) = jObject
+  [
+    ("message", JString msg),
+    ("range", cjRangeOfLoc src loc),
+    ("severity", JInt (cjSevCode sev)),
+    ("source", JString "medaka"),
+  ]
 
 cjFileEntry : String -> String -> List Diag -> Json
-cjFileEntry path src diags =
-  jObject
-    [
-      ("file", JString path),
-      ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
-    ]
+cjFileEntry path src diags = jObject
+  [
+    ("file", JString path),
+    ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
+  ]
 
 cjTriple : (String, String, List Diag) -> Json
 cjTriple (path, src, diags) = cjFileEntry path src diags
 
 cjAllToJson : List (String, String, List Diag) -> String
-cjAllToJson triples =
-  stringify (jObject [("files", JArray (arrayFromList (map cjTriple triples)))])
+cjAllToJson triples = stringify (jObject
+  [("files", JArray (arrayFromList (map cjTriple triples)))])

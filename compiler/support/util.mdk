@@ -10,39 +10,32 @@ import support.ordmap.{OrdMap, omLookup, omInsert, omEmpty}
 import list.{reverse, zip}
 import string.{join}
 
-export
-contains : String -> List String -> Bool
+export contains : String -> List String -> Bool
 contains _ [] = False
 contains x (y::ys) = x == y || contains x ys
 
-export
-listLen : List a -> Int
+export listLen : List a -> Int
 listLen [] = 0
 listLen (_::xs) = 1 + listLen xs
 
-export
-replicate : Int -> a -> List a
+export replicate : Int -> a -> List a
 replicate n x
-  | n <= 0    = []
+  | n <= 0 = []
   | otherwise = x :: replicate (n - 1) x
 
-export
-reverseL : List a -> List a
+export reverseL : List a -> List a
 reverseL xs = reverse xs
 
-export
-anyList : (a -> Bool) -> List a -> Bool
+export anyList : (a -> Bool) -> List a -> Bool
 anyList _ [] = False
 anyList p (x::xs) = p x || anyList p xs
 
-export
-allList : (a -> Bool) -> List a -> Bool
+export allList : (a -> Bool) -> List a -> Bool
 allList _ [] = True
 allList p (x::xs) = p x && allList p xs
 
 -- first value bound to a String key in an association list
-export
-lookupAssoc : String -> List (String, b) -> Option b
+export lookupAssoc : String -> List (String, b) -> Option b
 lookupAssoc _ [] = None
 lookupAssoc k ((k2, v)::rest)
   | k == k2 = Some v
@@ -54,12 +47,10 @@ lookupAssoc k ((k2, v)::rest)
 -- the compiler consumers stay unedited.  Importing `string` is near-free here:
 -- String's instances live in `core` (always-present prelude), so the import adds
 -- no new instance surface — only `join` itself (2026-06-30 util migration note).
-export
-joinWith : String -> List String -> String
+export joinWith : String -> List String -> String
 joinWith sep xs = join sep xs
 
-export
-joinNl : List String -> String
+export joinNl : List String -> String
 joinNl xs = joinWith "\n" xs
 
 -- Split a string on '\n' into its lines.  No newline is retained; a trailing
@@ -67,8 +58,7 @@ joinNl xs = joinWith "\n" xs
 -- of joinNl on newline-free pieces.  (Centralizes the latent splitNl cluster —
 -- see HELPER-CENSUS.md — used by the formatter to interleave inner-block
 -- trailing comments into a rendered decl's output lines.)
-export
-splitNl : String -> List String
+export splitNl : String -> List String
 splitNl s =
   let chars = stringToChars s
   splitNlGo chars (arrayLength chars) 0 0
@@ -76,15 +66,13 @@ splitNl s =
 splitNlGo : Array Char -> Int -> Int -> Int -> List String
 splitNlGo chars n start i
   | i >= n = [stringFromChars (arraySubChars chars start n)]
-  | arrayGetUnsafe i chars == '\n' =
-    stringFromChars (arraySubChars chars start i) :: splitNlGo chars n (i + 1) (i + 1)
+  | arrayGetUnsafe i chars == '\n' = stringFromChars (arraySubChars chars start i) :: splitNlGo chars n (i + 1) (i + 1)
   | otherwise = splitNlGo chars n start (i + 1)
 
 -- Split a string on a given character.  Like splitNl but parameterised on the
 -- separator.  An empty string yields [""] (one empty segment); a trailing
 -- separator yields a final empty string.
-export
-splitOnChar : Char -> String -> List String
+export splitOnChar : Char -> String -> List String
 splitOnChar sep s =
   let chars = stringToChars s
   splitOnCharGo chars sep (arrayLength chars) 0 0
@@ -92,21 +80,18 @@ splitOnChar sep s =
 splitOnCharGo : Array Char -> Char -> Int -> Int -> Int -> List String
 splitOnCharGo chars sep n start i
   | i >= n = [stringFromChars (arraySubChars chars start n)]
-  | arrayGetUnsafe i chars == sep =
-    stringFromChars (arraySubChars chars start i) :: splitOnCharGo chars sep n (i + 1) (i + 1)
+  | arrayGetUnsafe i chars == sep = stringFromChars (arraySubChars chars start i) :: splitOnCharGo chars sep n (i + 1) (i + 1)
   | otherwise = splitOnCharGo chars sep n start (i + 1)
 
 -- Join dotted path components with "." in O(total length) (see joinWith).
-export
-joinDot : List String -> String
+export joinDot : List String -> String
 joinDot xs = joinWith "." xs
 
 -- Deduplicate a String list keeping the FIRST occurrence in first-occurrence
 -- order (NOT sorted).  Uses the shared support.ordmap weight-balanced tree as a
 -- `seen` set for O(log n) membership → O(n·log n) overall, vs the naive O(n²)
 -- list-scan copies the stages used to carry.
-export
-dedup : List String -> List String
+export dedup : List String -> List String
 dedup xs = dedupGo xs omEmpty
 
 dedupGo : List String -> OrdMap Unit -> List String
@@ -118,18 +103,16 @@ dedupGo (x::xs) seen = match omLookup x seen
 -- Split a list into its leading prefix and final element: Some (init, last),
 -- or None for the empty list.  (Was duplicated byte-identically across ~10
 -- entry mains.)
-export
-splitLast : List a -> Option (List a, a)
+export splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
 splitLast (x::rest) = match splitLast rest
-  Some (init, lst) => Some (x :: init, lst)
+  Some (init, lst) => Some (x::init, lst)
   None => None
 
 -- minimal string escaping for the structural / diagnostic dumps (matches
 -- dev/astdump.ml's esc_str and dev/diagdump.ml): backslash, quote, \n \t \r.
-export
-escStr : String -> String
+export escStr : String -> String
 escStr s = "\"" ++ stringConcat (escFrom (stringToChars s) 0) ++ "\""
 
 -- Collect the per-character escapes into a list and let `stringConcat` join
@@ -151,62 +134,51 @@ escOne c
 
 -- ── More generic list/option/string/int helpers ───────────────────────────
 
-export
-isEmptyL : List a -> Bool
+export isEmptyL : List a -> Bool
 isEmptyL [] = True
 isEmptyL _ = False
 
-export
-filterList : (a -> Bool) -> List a -> List a
+export filterList : (a -> Bool) -> List a -> List a
 filterList _ [] = []
 filterList p (x::xs)
   | p x = x :: filterList p xs
   | otherwise = filterList p xs
 
-export
-initList : List a -> List a
+export initList : List a -> List a
 initList [] = []
 initList [_] = []
 initList (x::xs) = x :: initList xs
 
-export
-zipL : List a -> List b -> List (a, b)
+export zipL : List a -> List b -> List (a, b)
 zipL xs ys = zip xs ys
 
-export
-maxI : Int -> Int -> Int
+export maxI : Int -> Int -> Int
 maxI a b = if a >= b then a else b
 
-export
-minI : Int -> Int -> Int
+export minI : Int -> Int -> Int
 minI a b = if a <= b then a else b
 
 -- prefix/suffix tests: (prefix/suffix, string) argument order.
-export
-startsWith : String -> String -> Bool
+export startsWith : String -> String -> Bool
 startsWith pre s =
   let n = stringLength pre
   n <= stringLength s && stringSlice 0 n s == pre
 
-export
-endsWith : String -> String -> Bool
+export endsWith : String -> String -> Bool
 endsWith suf s =
   let n = stringLength s
   let k = stringLength suf
   k <= n && stringSlice (n - k) n s == suf
 
-export
-isSome : Option a -> Bool
+export isSome : Option a -> Bool
 isSome (Some _) = True
 isSome None = False
 
-export
-mapOption : (a -> b) -> Option a -> Option b
+export mapOption : (a -> b) -> Option a -> Option b
 mapOption _ None = None
 mapOption f (Some x) = Some (f x)
 
-export
-orElseOpt : Option a -> Option a -> Option a
+export orElseOpt : Option a -> Option a -> Option a
 orElseOpt (Some x) _ = Some x
 orElseOpt None y = y
 
@@ -235,30 +207,27 @@ trimLeftGo chars i len
 trimRightGo : Array Char -> Int -> String
 trimRightGo chars end
   | end <= 0 = ""
-  | isWs (charToStr (arrayGetUnsafe (end - 1) chars)) = trimRightGo chars (end - 1)
+  | isWs (charToStr (arrayGetUnsafe (end - 1) chars)) =
+    trimRightGo chars (end - 1)
   | otherwise = stringFromChars (arraySubChars chars 0 end)
 
-export
-stringTrimLeft : String -> String
+export stringTrimLeft : String -> String
 stringTrimLeft s =
   let chars = stringToChars s
   let len = arrayLength chars
   trimLeftGo chars 0 len
 
-export
-stringTrimRight : String -> String
+export stringTrimRight : String -> String
 stringTrimRight s =
   let chars = stringToChars s
   let len = arrayLength chars
   trimRightGo chars len
 
-export
-stringTrim : String -> String
+export stringTrim : String -> String
 stringTrim s = stringTrimRight (stringTrimLeft s)
 
 -- ── sorted-unique String list (insertion sort, dedups equal keys) ─────────
-export
-sortUniqS : List String -> List String
+export sortUniqS : List String -> List String
 sortUniqS xs = sortUniqSGo xs []
 
 sortUniqSGo : List String -> List String -> List String
@@ -268,15 +237,14 @@ sortUniqSGo (x::xs) acc = sortUniqSGo xs (sortInsertS x acc)
 sortInsertS : String -> List String -> List String
 sortInsertS x [] = [x]
 sortInsertS x (y::ys) = match stringCompare x y
-  Lt => x :: y :: ys
-  Eq => y :: ys
+  Lt => x :: y::ys
+  Eq => y::ys
   Gt => y :: sortInsertS x ys
 
 -- ── UTF-8 byte width ──────────────────────────────────────────────────────
 -- Content-Length frames count bytes; strings count codepoints — sum each
 -- codepoint's encoded width.
-export
-utf8CharWidth : Int -> Int
+export utf8CharWidth : Int -> Int
 utf8CharWidth cp
   | cp < 128 = 1
   | cp < 2048 = 2
@@ -288,8 +256,7 @@ utf8LenGo arr len i acc
   | i >= len = acc
   | otherwise = utf8LenGo arr len (i + 1) (acc + utf8CharWidth (charCode (arrayGetUnsafe i arr)))
 
-export
-utf8Len : String -> Int
+export utf8Len : String -> Int
 utf8Len s =
   let arr = stringToChars s
   utf8LenGo arr (arrayLength arr) 0 0
@@ -301,13 +268,11 @@ utf8Len s =
 -- The guard-desugar fallthrough sentinel: desugar emits `EVar fallthroughName`
 -- as a non-exhaustive-match trap, eval binds it to a VFallthrough prim, and the
 -- emitter intercepts it in emitApp.  All three MUST use the same string.
-export
-fallthroughName : String
+export fallthroughName : String
 fallthroughName = "__fallthrough__"
 
 -- Default head-tag for a None with no resolved type-constructor head; both the
 -- interpreter (eval) and the IR lowering compute dispatch off it, so they must
 -- agree on the literal.
-export
-noneHeadTag : String
+export noneHeadTag : String
 noneHeadTag = "__none__"

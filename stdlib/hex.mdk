@@ -34,14 +34,12 @@ charAt i arr = match get i arr
 
 digitChar : Int -> Bool -> Char
 digitChar n upper =
-  if upper then
-    match intToDigit n
-      Some c => charToUpper c
-      None => '?'
-  else
-    match intToDigit n
-      Some c => c
-      None => '?'
+  if upper then match intToDigit n
+    Some c => charToUpper c
+    None => '?'
+  else match intToDigit n
+    Some c => c
+    None => '?'
 
 byteToHexChars : Int -> Bool -> (Char, Char)
 byteToHexChars b upper =
@@ -52,10 +50,10 @@ byteToHexChars b upper =
 
 encodeGo : Array Int -> Int -> Bool -> List Char -> List Char
 encodeGo bytes i upper acc
-  | i < 0     = acc
+  | i < 0 = acc
   | otherwise =
     let (hi, lo) = byteToHexChars (byteAt i bytes) upper
-    encodeGo bytes (i - 1) upper (hi :: lo :: acc)
+    encodeGo bytes (i - 1) upper (hi :: lo::acc)
 
 {- | Bytes → lowercase hex string, two characters per byte, most-significant
    nibble first.
@@ -66,38 +64,41 @@ encodeGo bytes i upper acc
    ""
    > encode (fromList [0])
    "00" -}
-export
-encode : Array Int -> String
-encode bytes = stringFromChars (arrayFromList (encodeGo bytes (arrayLength bytes - 1) False []))
+export encode : Array Int -> String
+encode bytes = stringFromChars (arrayFromList (encodeGo
+  bytes
+  (arrayLength bytes - 1)
+  False
+  []))
 
 {- | Bytes → uppercase hex string.
 
    > encodeUpper (fromList [255, 0, 16])
    "FF0010" -}
-export
-encodeUpper : Array Int -> String
-encodeUpper bytes = stringFromChars (arrayFromList (encodeGo bytes (arrayLength bytes - 1) True []))
+export encodeUpper : Array Int -> String
+encodeUpper bytes = stringFromChars (arrayFromList (encodeGo
+  bytes
+  (arrayLength bytes - 1)
+  True
+  []))
 
 {- | UTF-8 bytes of `s` → lowercase hex string.
 
    > encodeString "Hello"
    "48656c6c6f" -}
-export
-encodeString : String -> String
+export encodeString : String -> String
 encodeString s = encode (toUtf8 s)
 
 -- ── Decode ──────────────────────────────────────────────────────────────────
 
 decodeGo : Array Char -> Int -> Int -> List Int -> Result String (List Int)
 decodeGo chars i n acc
-  | i >= n    = Ok acc
-  | otherwise =
-    match digitToInt (charAt i chars)
+  | i >= n = Ok acc
+  | otherwise = match digitToInt (charAt i chars)
+    None => Err "hex.decode: invalid hex digit"
+    Some hi => match digitToInt (charAt (i + 1) chars)
       None => Err "hex.decode: invalid hex digit"
-      Some hi =>
-        match digitToInt (charAt (i + 1) chars)
-          None => Err "hex.decode: invalid hex digit"
-          Some lo => decodeGo chars (i + 2) n (acc ++ [hi * 16 + lo])
+      Some lo => decodeGo chars (i + 2) n (acc ++ [hi * 16 + lo])
 
 {- | Hex string → bytes.  `Err` on odd length or any non-hex-digit character
    (uppercase and lowercase digits both accepted; no whitespace skipping).
@@ -112,24 +113,20 @@ decodeGo chars i n acc
    Err "hex.decode: odd-length input"
    > decode "zz"
    Err "hex.decode: invalid hex digit" -}
-export
-decode : String -> Result String (Array Int)
+export decode : String -> Result String (Array Int)
 decode s =
   let chars = toChars s
   let n = arrayLength chars
-  if n % 2 != 0 then
-    Err "hex.decode: odd-length input"
-  else
-    match decodeGo chars 0 n []
-      Ok bytes => Ok (arrayFromList bytes)
-      Err e => Err e
+  if n % 2 != 0 then Err "hex.decode: odd-length input"
+  else match decodeGo chars 0 n []
+    Ok bytes => Ok (arrayFromList bytes)
+    Err e => Err e
 
 {- | Hex string → UTF-8-decoded String.
 
    > decodeString "48656c6c6f"
    Ok "Hello" -}
-export
-decodeString : String -> Result String String
+export decodeString : String -> Result String String
 decodeString s = match decode s
   Ok bytes => Ok (fromUtf8 bytes)
   Err e => Err e
@@ -137,7 +134,7 @@ decodeString s = match decode s
 -- ── Properties ──────────────────────────────────────────────────────────────
 
 toByteArray : List Int -> Array Int
-toByteArray xs = arrayFromList (map (b => ((b % 256) + 256) % 256) xs)
+toByteArray xs = arrayFromList (map (b => (b % 256 + 256) % 256) xs)
 
 prop "hex round-trip: decode (encode bs) == Ok bs" (xs : List Int) =
   let bs = toByteArray xs

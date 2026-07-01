@@ -58,16 +58,19 @@ randBoolL _ = rngNextLocal () % 2 == 1
 
 -- ── tydef registry (built from the program's data/record decls) ─────────────
 
-public export data TyDef
-  = TDData (List String) (List Variant)
+public export data TyDef =
+  | TDData (List String) (List Variant)
   | TDRecord (List String) (List Field)
 
 buildTyDefs : List Decl -> List (String, TyDef)
 buildTyDefs [] = []
 buildTyDefs (d::rest) = match d
-  DData _ name params variants _ => (name, TDData params variants) :: buildTyDefs rest
-  DRecord _ name params fields _ => (name, TDRecord params fields) :: buildTyDefs rest
-  DNewtype _ name params con fty _ => (name, TDData params [Variant con (ConPos [fty])]) :: buildTyDefs rest
+  DData _ name params variants _ =>
+    (name, TDData params variants) :: buildTyDefs rest
+  DRecord _ name params fields _ =>
+    (name, TDRecord params fields) :: buildTyDefs rest
+  DNewtype _ name params con fty _ =>
+    (name, TDData params [Variant con (ConPos [fty])]) :: buildTyDefs rest
   _ => buildTyDefs rest
 
 -- ── type substitution + spine peeling (mirror lib/prop_runner.ml) ────────────
@@ -86,7 +89,7 @@ tySpine : Ty -> Option (String, List Ty)
 tySpine t = tySpineGo [] t
 
 tySpineGo : List Ty -> Ty -> Option (String, List Ty)
-tySpineGo acc (TyApp f a) = tySpineGo (a :: acc) f
+tySpineGo acc (TyApp f a) = tySpineGo (a::acc) f
 tySpineGo acc (TyCon n) = Some (n, acc)
 tySpineGo _ _ = None
 
@@ -104,7 +107,8 @@ genForType tydefs subst ty = match ty
   TyCon "String" => VString (genString ())
   TyCon "Unit" => VUnit
   TyApp (TyCon "List") t => VList (genList tydefs subst t (randIntRange 0 7))
-  TyApp (TyCon "Array") t => VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
+  TyApp (TyCon "Array") t =>
+    VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
   TyApp (TyCon "Option") t =>
     if randBoolL () then
       VCon "None" []
@@ -161,11 +165,17 @@ genUser tydefs subst name tydef args =
   let args2 = map (substTy subst) args
   match tydef
     TDData params variants =>
-      let subst2 = if listLen params == listLen args2 then zipL params args2 else []
+      let subst2 = if listLen params == listLen args2 then
+        zipL params args2
+      else
+        []
       let v = nthList variants (randIntRange 0 (listLen variants - 1))
       genVariant tydefs subst2 v
     TDRecord params fields =>
-      let subst2 = if listLen params == listLen args2 then zipL params args2 else []
+      let subst2 = if listLen params == listLen args2 then
+        zipL params args2
+      else
+        []
       VRecord name (map (genField tydefs subst2) fields)
 
 genVariant : List (String, TyDef) -> List (String, Ty) -> Variant -> <Mut> Value
@@ -188,23 +198,23 @@ nthList [] _ = panic "nthList: index out of range"
 
 shrinkValue : Ty -> Value -> List Value
 shrinkValue ty v = match (ty, v)
-  ((TyCon "Int"), (VInt n)) => shrinkInt n
-  ((TyCon "Bool"), (VBool True)) => [VBool False]
-  ((TyCon "Bool"), (VBool False)) => []
-  ((TyCon "Float"), (VFloat x)) =>
+  (TyCon "Int", VInt n) => shrinkInt n
+  (TyCon "Bool", VBool True) => [VBool False]
+  (TyCon "Bool", VBool False) => []
+  (TyCon "Float", VFloat x) =>
     if x == 0.0 then
       []
     else
       [VFloat 0.0, VFloat (x / 2.0)]
-  ((TyCon "String"), (VString s)) =>
+  (TyCon "String", VString s) =>
     if s == "" then
       []
     else
       [VString (stringSlice 0 (stringLength s / 2) s)]
-  ((TyApp (TyCon "List") _), (VList [])) => []
-  ((TyApp (TyCon "List") _), (VList (_::rest))) => [VList rest]
-  ((TyApp (TyCon "Option") _), (VCon "None" [])) => []
-  ((TyApp (TyCon "Option") _), (VCon "Some" _)) => [VCon "None" []]
+  (TyApp (TyCon "List") _, VList []) => []
+  (TyApp (TyCon "List") _, VList (_::rest)) => [VList rest]
+  (TyApp (TyCon "Option") _, VCon "None" []) => []
+  (TyApp (TyCon "Option") _, VCon "Some" _) => [VCon "None" []]
   _ => []
 
 shrinkInt : Int -> List Value
@@ -225,8 +235,8 @@ checkProp evalEnv body inputs =
 
 -- ── one prop run ─────────────────────────────────────────────────────────────
 
-public export data PropOutcome
-  = PropPassed
+public export data PropOutcome =
+  | PropPassed
   | PropFailed Int (List (String, Value))
 
 runProp : List (String, TyDef) -> List (String, Value) -> Decl -> Int -> <IO, Mut> Bool
@@ -303,7 +313,10 @@ findSmaller : List (String, Value) -> List PropParam -> Expr -> List (String, Va
 findSmaller _ _ _ _ _ [] = None
 findSmaller evalEnv params body candidate x (sv::rest) =
   let candidate2 = replaceVal x sv candidate
-  if checkProp evalEnv body candidate2 then findSmaller evalEnv params body candidate x rest else Some candidate2
+  if checkProp evalEnv body candidate2 then
+    findSmaller evalEnv params body candidate x rest
+  else
+    Some candidate2
 
 assocVal : String -> List (String, Value) -> Value
 assocVal x kvs = match lookupAssoc x kvs
@@ -334,8 +347,7 @@ filterDecls p (d::rest)
 -- Run every prop; print the trailing summary; return True iff all passed.
 -- Output exactly mirrors lib/prop_runner.ml's run_all (no leading line; one
 -- `Testing … OK/FAILED` per prop; a blank line then `N passed, M failed`).
-export
-runAllProps : List (String, Value) -> List Decl -> <IO, Mut> Bool
+export runAllProps : List (String, Value) -> List Decl -> <IO, Mut> Bool
 runAllProps evalEnv program =
   let props = filterProps program
   if isEmptyL props then True
@@ -357,8 +369,7 @@ countTrue [] = 0
 countTrue (True::rest) = 1 + countTrue rest
 countTrue (False::rest) = countTrue rest
 
-export
-hasProps : List Decl -> Bool
+export hasProps : List Decl -> Bool
 hasProps decls = anyDecl isProp decls
 
 anyDecl : (Decl -> Bool) -> List Decl -> Bool

@@ -70,8 +70,7 @@ export data TomlDoc = TomlDoc (List TomlTable)
 -- Rendering helpers (for doctests and demos)
 -- ---------------------------------------------------------------------------
 
-export
-showTomlValue : TomlValue -> String  -- > showTomlValue (TInt 42)
+export showTomlValue : TomlValue -> String  -- > showTomlValue (TInt 42)
 -- "TInt 42"
 
 showTomlValue (TStr s) = "TStr \{s}"
@@ -92,8 +91,7 @@ showPairs [] = "(empty)"
 showPairs (p::[]) = showPair p
 showPairs (p::rest) = "\{showPair p}\n  \{showPairs rest}"
 
-export
-showTomlDoc : TomlDoc -> String
+export showTomlDoc : TomlDoc -> String
 showTomlDoc (TomlDoc tables) = joinTables tables
 
 joinTables : List TomlTable -> String
@@ -207,8 +205,7 @@ quotedString = map fromChars (between (char '"') (char '"') (many stringChar))
 -- (NOTE: doctests using runParser cannot be run here because the doctest
 -- runner cannot resolve `lib.parser` for a nested project module.
 -- See the parseToml doctest below for a working test.)
-export
-parseInt : Parser Int
+export parseInt : Parser Int
 parseInt = do
   neg <- optional (char '-')
   ds <- some digit
@@ -228,8 +225,7 @@ foldDigits (d::rest) acc = foldDigits rest (acc * 10 + (charCode d - 48))
 -- ---------------------------------------------------------------------------
 
 -- Boolean parser.
-export
-parseBool : Parser Bool
+export parseBool : Parser Bool
 parseBool =
   orElse (map (_ => True) (string "true")) (map (_ => False) (string "false"))
 
@@ -248,10 +244,9 @@ parseArrayElement = do
   pure v
 
 parseArray : Parser TomlValue
-parseArray =
-  map
-    TArray
-    (between (char '[') (char ']') (sepBy parseArrayElement (char ',')))
+parseArray = map
+  TArray
+  (between (char '[') (char ']') (sepBy parseArrayElement (char ',')))
 
 -- ---------------------------------------------------------------------------
 -- Value parser
@@ -261,17 +256,15 @@ parseArray =
 -- prefix-free from each other; try string before int; try int before array
 -- (no ambiguity, but keep consistent ordering).
 parseValue : Parser TomlValue
-parseValue =
-  choice
-    [parseArray, map TStr quotedString, map TBool parseBool, map TInt parseInt]
+parseValue = choice
+  [parseArray, map TStr quotedString, map TBool parseBool, map TInt parseInt]
 
 -- ---------------------------------------------------------------------------
 -- Key = value line
 -- ---------------------------------------------------------------------------
 
 -- `key = value` on one line (inline spaces around `=` stripped).
-export
-keyValue : Parser (String, TomlValue)
+export keyValue : Parser (String, TomlValue)
 keyValue = do
   k <- bareKey
   _ <- inlineSpace
@@ -342,6 +335,5 @@ tomlDoc = do
 -- runner's multi-module path does not walk up to medaka.toml to find the
 -- project root). All parsing is verified via `medaka run toml_demo.mdk`
 -- and `medaka build toml_demo.mdk`.
-export
-parseToml : String -> Result String TomlDoc
+export parseToml : String -> Result String TomlDoc
 parseToml s = runParser tomlDoc s

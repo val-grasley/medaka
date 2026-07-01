@@ -9,29 +9,23 @@ import map.{Map(..), insert, lookup, member, size}
 
 export type OrdMap a = Map String a
 
-export
-omEmpty : OrdMap a
+export omEmpty : OrdMap a
 omEmpty = Tip
 
-export
-omSize : OrdMap a -> Int
+export omSize : OrdMap a -> Int
 omSize m = size m
 
-export
-omInsert : String -> a -> OrdMap a -> OrdMap a
+export omInsert : String -> a -> OrdMap a -> OrdMap a
 omInsert k v m = insert k v m
 
-export
-omLookup : String -> OrdMap a -> Option a
+export omLookup : String -> OrdMap a -> Option a
 omLookup k m = lookup k m
 
-export
-omHasKey : String -> OrdMap a -> Bool
+export omHasKey : String -> OrdMap a -> Bool
 omHasKey k m = member k m
 
 -- Build a membership set from a name list.
-export
-omFromNames : List String -> OrdMap Unit -> OrdMap Unit
+export omFromNames : List String -> OrdMap Unit -> OrdMap Unit
 omFromNames [] m = m
 omFromNames (x::rest) m = omFromNames rest (omInsert x () m)
 
@@ -39,7 +33,6 @@ omFromNames (x::rest) m = omFromNames rest (omInsert x () m)
 -- first-match semantics matter, insert the list REVERSED so the first list
 -- entry wins on a duplicate key (the caller does the reverse, matching the old
 -- `emFromPairs (reverseL t)` convention).
-export
-omFromPairs : List (String, a) -> OrdMap a -> OrdMap a
+export omFromPairs : List (String, a) -> OrdMap a -> OrdMap a
 omFromPairs [] m = m
 omFromPairs ((k, v)::rest) m = omFromPairs rest (omInsert k v m)

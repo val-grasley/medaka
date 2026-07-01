@@ -76,8 +76,7 @@ composeVar : String
 composeVar = "$cf"
 
 -- ── expressions ────────────────────────────────────────────────────────────
-export
-lower : Expr -> CExpr
+export lower : Expr -> CExpr
 lower (ELit l) = CLit l
 -- PLAN.md #11: dictPass rewrites every ENumLit to ELit before lowering; this
 -- arm is defensive (a non-rewritten path) — a Float-stamped ref lowers to a
@@ -110,13 +109,19 @@ lower (EArrayLit es) = CArray (map lower es)
 lower (ERangeList lo hi incl) = CRangeList (lower lo) (lower hi) incl
 lower (ERangeArray lo hi incl) = CRangeArray (lower lo) (lower hi) incl
 lower (EIndex a i r) =
-  if r.value == "String" then CStringIndex (lower a) (lower i)
-  else if r.value == "List" then CListIndex (lower a) (lower i)
-  else CIndex (lower a) (lower i)
+  if r.value == "String" then
+    CStringIndex (lower a) (lower i)
+  else if r.value == "List" then
+    CListIndex (lower a) (lower i)
+  else
+    CIndex (lower a) (lower i)
 lower (ESlice a lo hi incl r) =
-  if r.value == "String" then CStringSlice (lower a) (lower lo) (lower hi) incl
-  else if r.value == "List" then CListSlice (lower a) (lower lo) (lower hi) incl
-  else CSlice (lower a) (lower lo) (lower hi) incl
+  if r.value == "String" then
+    CStringSlice (lower a) (lower lo) (lower hi) incl
+  else if r.value == "List" then
+    CListSlice (lower a) (lower lo) (lower hi) incl
+  else
+    CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f r) = CFieldAccess (lower e) f r.value
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
 lower (ERecordUpdate base fields) =
@@ -182,7 +187,8 @@ lowerGuard (GBind p e) = CGBind p (lower e)
 -- the constructor/list/tuple/literal matches that dominate the lexer + parser.
 lowerMatch : CExpr -> List Arm -> CExpr
 lowerMatch cscrut arms
-  | allList armTreeable arms = CDecision cscrut (map lowerArm arms) (compileArms arms)
+  | allList armTreeable arms =
+    CDecision cscrut (map lowerArm arms) (compileArms arms)
   | otherwise = CMatch cscrut (map lowerArm arms)
 
 armTreeable : Arm -> Bool
@@ -241,10 +247,9 @@ initialRows ((Arm pat _ _)::rest) i =
 -- impl method's clauses into a decision tree via this same Maranget compiler —
 -- the backend-neutral transform Axis-1 designates as shared by both backends
 -- (only leaf emission differs: bytecode SWITCH vs LLVM switch/br).
-export
-compileTree : List Bool -> List (List Pat, Int) -> CTree
+export compileTree : List Bool -> List (List Pat, Int) -> CTree
 compileTree _ [] = CTFail
-compileTree guards (row::rest) = compileRows guards row rest (row :: rest)
+compileTree guards (row::rest) = compileRows guards row rest (row::rest)
 
 compileRows : List Bool -> (List Pat, Int) -> List (List Pat, Int) -> List (List Pat, Int) -> CTree
 compileRows guards (pats, i) rest rows
@@ -262,20 +267,18 @@ leafOrGuard guards i rest
   | otherwise = CTLeaf i
 
 buildConSwitch : List Bool -> List (List Pat, Int) -> CTree
-buildConSwitch guards rows =
-  CTSwitch
-    (map (conBranch guards rows) (distinctConHeads rows))
-    (compileTree guards (defaultMatrix rows))
+buildConSwitch guards rows = CTSwitch
+  (map (conBranch guards rows) (distinctConHeads rows))
+  (compileTree guards (defaultMatrix rows))
 
 conBranch : List Bool -> List (List Pat, Int) -> (String, Int) -> CTBranch
 conBranch guards rows (c, a) =
   CTBranch (decodeHead c a) (compileTree guards (specializeCon c a rows))
 
 buildLitSwitch : List Bool -> List (List Pat, Int) -> CTree
-buildLitSwitch guards rows =
-  CTSwitch
-    (map (litBranch guards rows) (distinctLits rows))
-    (compileTree guards (defaultMatrix rows))
+buildLitSwitch guards rows = CTSwitch
+  (map (litBranch guards rows) (distinctLits rows))
+  (compileTree guards (defaultMatrix rows))
 
 litBranch : List Bool -> List (List Pat, Int) -> Lit -> CTBranch
 litBranch guards rows l =
@@ -321,8 +324,7 @@ unitName = "__unit__"
 -- exported for the LLVM backend (slice 7): impl-method clauses are canonicalised
 -- into the matrix form before `compileTree` (same as `initialRows` does for match
 -- arms) — part of the shared backend-neutral decision-tree pass (Axis-1).
-export
-canonPat : Pat -> Pat
+export canonPat : Pat -> Pat
 canonPat (PVar _) = PWild
 canonPat PWild = PWild
 canonPat (PLit (LBool True)) = PCon "True" []
@@ -372,7 +374,7 @@ dedupHeads : List (String, Int) -> List String -> List (String, Int)
 dedupHeads [] _ = []
 dedupHeads ((c, a)::rest) seen
   | contains c seen = dedupHeads rest seen
-  | otherwise = (c, a) :: dedupHeads rest (c :: seen)
+  | otherwise = (c, a) :: dedupHeads rest (c::seen)
 
 distinctLits : List (List Pat, Int) -> List Lit
 distinctLits rows = dedupLits (colLits rows) []
@@ -386,7 +388,7 @@ dedupLits : List Lit -> List Lit -> List Lit
 dedupLits [] _ = []
 dedupLits (l::rest) seen
   | anyList (x => l == x) seen = dedupLits rest seen
-  | otherwise = l :: dedupLits rest (l :: seen)
+  | otherwise = l :: dedupLits rest (l::seen)
 
 -- ── matrix specialization / default (over index-carrying rows) ─────────────
 filterMapRows : ((List Pat, Int) -> Option (List Pat, Int)) -> List (List Pat, Int) -> List (List Pat, Int)
@@ -454,8 +456,7 @@ lowerStmt _ = panic "core_ir lower: unsupported block statement"
 -- Coalesce top-level multi-clause `DFunDef`s into one CBind per name (preserving
 -- first-appearance order, exactly as eval.mdk's funGroupNames), gather the ctor
 -- arity + ctor→type tables.  Interfaces/impls are slice-5 (no dispatch yet).
-export
-lowerProgram : List Decl -> <Mut> CProgram
+export lowerProgram : List Decl -> <Mut> CProgram
 lowerProgram prog =
   let _ = setRef ctorFieldOrdersRef (buildCtorFieldOrders prog)
   CProgram
@@ -484,10 +485,10 @@ lowerProgram prog =
 -- DECLARED order (DRecord field list + DData named-field variants), the same order
 -- the emitter's record cell layout / recFieldTable use, so the positional indices
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
-export
-lowerProgramEmit : List Decl -> <Mut> CProgram
-lowerProgramEmit prog =
-  registerRecordCtors prog (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
+export lowerProgramEmit : List Decl -> <Mut> CProgram
+lowerProgramEmit prog = registerRecordCtors
+  prog
+  (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
 
 -- EMIT-ONLY: register each single-constructor `record` decl's ctor in the Core IR
 -- ctor tables (ctorArs: name→field-count; ctorTypes: name→its own type name).  The
@@ -525,7 +526,8 @@ buildRecPatFieldOrders : List Decl -> List (String, List String)
 buildRecPatFieldOrders prog = flatMap recPatFieldOrderEntries prog
 
 recPatFieldOrderEntries : Decl -> List (String, List String)
-recPatFieldOrderEntries (DRecord _ name _ fields _) = [(name, map fieldLabel fields)]
+recPatFieldOrderEntries (DRecord _ name _ fields _) =
+  [(name, map fieldLabel fields)]
 recPatFieldOrderEntries (DData _ _ _ variants _) =
   flatMap variantNamedOrder variants
 recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner
@@ -580,12 +582,11 @@ rewriteRecPatField _ (RecPatField l None) = RecPatField l None
 -- built from the original PRec arms, which canonPat wildcarded; the rewritten PCon
 -- arms compile to a proper constructor switch with no needs-guard fall-through).
 rewriteProgramRecPats : List (String, List String) -> CProgram -> CProgram
-rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) =
-  CProgram
-    (map (rewriteBindRP fo) groups)
-    ctorArs
-    ctorTypes
-    (map (rewriteImplRP fo) implEntries)
+rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) = CProgram
+  (map (rewriteBindRP fo) groups)
+  ctorArs
+  ctorTypes
+  (map (rewriteImplRP fo) implEntries)
 
 rewriteBindRP : List (String, List String) -> CBind -> CBind
 rewriteBindRP fo (CBind n clauses) = CBind n (map (rewriteClauseRP fo) clauses)
@@ -595,16 +596,20 @@ rewriteClauseRP fo (CClause pats body) =
   CClause (map (rewritePat fo) pats) (rewriteExprRP fo body)
 
 rewriteImplRP : List (String, List String) -> CImplEntry -> CImplEntry
-rewriteImplRP fo (CImplEntry n s (CImplTagged tag key iface ps pats body)) =
-  CImplEntry
-    n
-    s
-    (CImplTagged tag key iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
-rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) =
-  CImplEntry
-    n
-    s
-    (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
+rewriteImplRP fo (CImplEntry n s (CImplTagged tag key iface ps pats body)) = CImplEntry
+  n
+  s
+  (CImplTagged
+    tag
+    key
+    iface
+    ps
+    (map (rewritePat fo) pats)
+    (rewriteExprRP fo body))
+rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) = CImplEntry
+  n
+  s
+  (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
 
 rewriteExprRP : List (String, List String) -> CExpr -> CExpr
 rewriteExprRP _ (CLit l) = CLit l
@@ -643,22 +648,29 @@ rewriteExprRP fo (CRangeArray lo hi incl) =
 rewriteExprRP fo (CIndex a i) = CIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
 rewriteExprRP fo (CSlice a lo hi incl) =
   CSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
-rewriteExprRP fo (CStringIndex a i) = CStringIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
-rewriteExprRP fo (CStringSlice a lo hi incl) =
-  CStringSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
-rewriteExprRP fo (CListIndex a i) = CListIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
-rewriteExprRP fo (CListSlice a lo hi incl) =
-  CListSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CStringIndex a i) =
+  CStringIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
+rewriteExprRP fo (CStringSlice a lo hi incl) = CStringSlice
+  (rewriteExprRP fo a)
+  (rewriteExprRP fo lo)
+  (rewriteExprRP fo hi)
+  incl
+rewriteExprRP fo (CListIndex a i) =
+  CListIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
+rewriteExprRP fo (CListSlice a lo hi incl) = CListSlice
+  (rewriteExprRP fo a)
+  (rewriteExprRP fo lo)
+  (rewriteExprRP fo hi)
+  incl
 rewriteExprRP fo (CBlock stmts) = CBlock (map (rewriteStmtRP fo) stmts)
 rewriteExprRP _ (CMethod name r ir mr) = CMethod name r ir mr
 rewriteExprRP _ (CDict name rs) = CDict name rs
 
 rewriteArmRP : List (String, List String) -> CArm -> CArm
-rewriteArmRP fo (CArm pat guards body) =
-  CArm
-    (rewritePat fo pat)
-    (map (rewriteGuardRP fo) guards)
-    (rewriteExprRP fo body)
+rewriteArmRP fo (CArm pat guards body) = CArm
+  (rewritePat fo pat)
+  (map (rewriteGuardRP fo) guards)
+  (rewriteExprRP fo body)
 
 rewriteGuardRP : List (String, List String) -> CGuard -> CGuard
 rewriteGuardRP fo (CGBool e) = CGBool (rewriteExprRP fo e)
@@ -690,8 +702,7 @@ cInitialRows ((CArm pat _ _)::rest) i =
 -- the top-level function-group half of lowerProgram, exposed for the multi-module
 -- driver (core_ir_eval.cevalModules), which lowers each module's groups separately
 -- (per-module local frames) rather than as one flat program.
-export
-lowerGroups : List Decl -> List CBind
+export lowerGroups : List Decl -> List CBind
 lowerGroups prog = lgGroup (funClausesOf prog)
 
 -- O(n log n) group-by-name, IDENTICAL output to
@@ -713,7 +724,7 @@ lgSplit [] = ([], [])
 lgSplit [x] = ([x], [])
 lgSplit (x::y::rest) =
   let (a, b) = lgSplit rest
-  (x :: a, y :: b)
+  (x::a, y::b)
 
 -- merge sort by name, ascending-index tiebreak (stable ⇒ clause order preserved).
 lgSortName : List ((String, Int), CClause) -> List ((String, Int), CClause)
@@ -727,13 +738,13 @@ lgMergeName : List ((String, Int), CClause) -> List ((String, Int), CClause) -> 
 lgMergeName [] ys = ys
 lgMergeName xs [] = xs
 lgMergeName (((n1, i1), c1)::xs) (((n2, i2), c2)::ys) = match stringCompare n1 n2
-  Lt => ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
-  Gt => ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
+  Lt => ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2)::ys)
+  Gt => ((n2, i2), c2) :: lgMergeName (((n1, i1), c1)::xs) ys
   Eq =>
     if i1 <= i2 then
-      ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
+      ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2)::ys)
     else
-      ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
+      ((n2, i2), c2) :: lgMergeName (((n1, i1), c1)::xs) ys
 
 -- collapse runs of equal name (now contiguous, index-ascending) into
 -- ((name, firstIdx), clausesInOrder).
@@ -741,15 +752,15 @@ lgRuns : List ((String, Int), CClause) -> List ((String, Int), List CClause)
 lgRuns [] = []
 lgRuns (((n, i), c)::rest) =
   let (cs, others) = lgSpan n rest
-  ((n, i), c :: cs) :: lgRuns others
+  ((n, i), c::cs) :: lgRuns others
 
 lgSpan : String -> List ((String, Int), CClause) -> (List CClause, List ((String, Int), CClause))
 lgSpan _ [] = ([], [])
 lgSpan n (((m, j), c)::rest) =
   if m == n then
     let (cs, o) = lgSpan n rest
-    (c :: cs, o)
-  else ([], ((m, j), c) :: rest)
+    (c::cs, o)
+  else ([], ((m, j), c)::rest)
 
 -- order groups by first-occurrence index (== groupNames order).
 lgSortIdx : List ((String, Int), List CClause) -> List ((String, Int), List CClause)
@@ -764,9 +775,9 @@ lgMergeIdx [] ys = ys
 lgMergeIdx xs [] = xs
 lgMergeIdx (((n1, i1), cs1)::xs) (((n2, i2), cs2)::ys) =
   if i1 <= i2 then
-    ((n1, i1), cs1) :: lgMergeIdx xs (((n2, i2), cs2) :: ys)
+    ((n1, i1), cs1) :: lgMergeIdx xs (((n2, i2), cs2)::ys)
   else
-    ((n2, i2), cs2) :: lgMergeIdx (((n1, i1), cs1) :: xs) ys
+    ((n2, i2), cs2) :: lgMergeIdx (((n1, i1), cs1)::xs) ys
 
 lgToBind : ((String, Int), List CClause) -> CBind
 lgToBind ((n, _), cs) = CBind n cs
@@ -784,14 +795,12 @@ lowerImpls prog = lowerImplsWith (buildIfaceDispatch prog) prog
 -- one `disp` from all modules' decls jointly (an impl in module B for an interface
 -- in the prelude needs the prelude's dispatch positions), then lowers each
 -- module's impls against it.
-export
-lowerImplsWith : List ((String, String), List Int) -> List Decl -> List CImplEntry
+export lowerImplsWith : List ((String, String), List Int) -> List Decl -> List CImplEntry
 lowerImplsWith disp prog = flatMap (lowerDeclImpl disp) prog
 
 lowerDeclImpl : List ((String, String), List Int) -> Decl -> List CImplEntry
-lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } =
-  map (lowerImplMethod disp ifaceName typeArgs implNm) methods
-lowerDeclImpl _ DInterface { typarams = typeParams, methods, ... } =
+lowerDeclImpl disp (DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... }) = map (lowerImplMethod disp ifaceName typeArgs implNm) methods
+lowerDeclImpl _ (DInterface { typarams = typeParams, methods, ... }) =
   flatMap (lowerDefault typeParams) methods
 lowerDeclImpl _ _ = []
 
@@ -821,16 +830,16 @@ lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
 -- list/string instruction instead of falling to the `LTInt` default (the last
 -- EMITTER-GAPS.md #3 residual: `ap@List` / `andThen@List`, whose `++` operand is
 -- a CALL result like `map f xs` / `f x`, not a param).
-export
-returnsSelfTable : List Decl -> List ((String, String), Bool)
+export returnsSelfTable : List Decl -> List ((String, String), Bool)
 returnsSelfTable prog = flatMap ifaceReturnsSelfEntries prog
 
 ifaceReturnsSelfEntries : Decl -> List ((String, String), Bool)
-ifaceReturnsSelfEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
+ifaceReturnsSelfEntries (DInterface { name = ifaceName, typarams = typeParams, methods, ... }) = map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
 ifaceReturnsSelfEntries _ = []
 
 ifaceReturnsSelfEntry : String -> List String -> IfaceMethod -> ((String, String), Bool)
-ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) = ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
+ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) =
+  ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
 
 -- the RESULT type of a method type: the final tail after stripping the TyFun
 -- argument chain (and any leading constraint/effect wrappers).
@@ -863,16 +872,16 @@ tyMentionsParams (TyConstrained _ t) params = tyMentionsParams t params
 -- where the `++` LEFT operand `f x` is an indirect call the method-call
 -- inference (returnsSelfTable) cannot reach.  Result-side analogue scoped to
 -- function-typed params, not the whole-method result.
-export
-selfFnParamTable : List Decl -> List ((String, String), List Int)
+export selfFnParamTable : List Decl -> List ((String, String), List Int)
 selfFnParamTable prog = flatMap ifaceSelfFnParamEntries prog
 
 ifaceSelfFnParamEntries : Decl -> List ((String, String), List Int)
-ifaceSelfFnParamEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
+ifaceSelfFnParamEntries (DInterface { name = ifaceName, typarams = typeParams, methods, ... }) = map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
 ifaceSelfFnParamEntries _ = []
 
 ifaceSelfFnParamEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
-ifaceSelfFnParamEntry ifaceName typeParams (IfaceMethod mname mty _) = ((ifaceName, mname), selfFnPositions 0 (methodArgTys mty) typeParams)
+ifaceSelfFnParamEntry ifaceName typeParams (IfaceMethod mname mty _) =
+  ((ifaceName, mname), selfFnPositions 0 (methodArgTys mty) typeParams)
 
 -- the argument types of a method type (the a's of `a -> a -> … -> r`).
 methodArgTys : Ty -> List Ty
@@ -892,17 +901,17 @@ methodArgTys _ = []
 -- partially-applied inner `filterMap` lowers to a direct `@mdk_impl_<tag>_filterMap`
 -- call instead of an un-dispatchable arg-tag fallback).  Keyed by BARE method name
 -- (interface method names are distinct across the prelude's interfaces).
-export
-methodIfaceTable : List Decl -> List (String, (String, Int))
+export methodIfaceTable : List Decl -> List (String, (String, Int))
 methodIfaceTable prog = flatMap ifaceMethodArityEntries prog
 
 ifaceMethodArityEntries : Decl -> List (String, (String, Int))
-ifaceMethodArityEntries DInterface { name = ifaceName, methods, ... } =
+ifaceMethodArityEntries (DInterface { name = ifaceName, methods, ... }) =
   map (m => ifaceMethodArityEntry ifaceName m) methods
 ifaceMethodArityEntries _ = []
 
 ifaceMethodArityEntry : String -> IfaceMethod -> (String, (String, Int))
-ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) = (mname, (ifaceName, listLen (methodArgTys mty)))
+ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) =
+  (mname, (ifaceName, listLen (methodArgTys mty)))
 
 -- ── method → method-level constraint INTERFACE names (native backend, G7) ────
 -- Per interface method that carries a method-level `=>` constraint (foldMap's
@@ -915,12 +924,11 @@ ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) = (mname, (ifaceName, 
 -- `@mdk_default_foldMap_List` serves both a List-monoid and a String-monoid fold.
 -- A constraint over ONLY interface params contributes no slot (it dispatches via
 -- the impl, not a per-call dict); mirrors typecheck's `constraintIsMethodLevel`.
-export
-methodConstraintIfaces : List Decl -> List (String, List String)
+export methodConstraintIfaces : List Decl -> List (String, List String)
 methodConstraintIfaces prog = flatMap methodConstraintIfaceEntries prog
 
 methodConstraintIfaceEntries : Decl -> List (String, List String)
-methodConstraintIfaceEntries DInterface { typarams, methods, ... } =
+methodConstraintIfaceEntries (DInterface { typarams, methods, ... }) =
   flatMap (m => methodConstraintIfaceEntry typarams m) methods
 methodConstraintIfaceEntries _ = []
 
@@ -973,19 +981,20 @@ tyMentionsNonParam (TyConstrained _ t) params = tyMentionsNonParam t params
 -- change is ADDITIVE: only fields with a known scalar head (Float/Bool/Int/…)
 -- change typing.  Both positional (`ConPos`) and named-field (`ConNamed`)
 -- payloads are covered, in the same DECLARED order the cell layout stores.
-export
-ctorFieldTypeNames : List Decl -> List (String, List String)
+export ctorFieldTypeNames : List Decl -> List (String, List String)
 ctorFieldTypeNames prog = flatMap ctorFieldTypeEntries prog
 
 ctorFieldTypeEntries : Decl -> List (String, List String)
 ctorFieldTypeEntries (DData _ _ _ variants _) =
   map variantFieldTypeEntry variants
-ctorFieldTypeEntries (DNewtype _ _ _ con fieldTy _) = [(con, [tyHeadName fieldTy])]
+ctorFieldTypeEntries (DNewtype _ _ _ con fieldTy _) =
+  [(con, [tyHeadName fieldTy])]
 ctorFieldTypeEntries _ = []
 
 variantFieldTypeEntry : Variant -> (String, List String)
 variantFieldTypeEntry (Variant name (ConPos tys)) = (name, map tyHeadName tys)
-variantFieldTypeEntry (Variant name (ConNamed fields)) = (name, map fieldTyHeadName fields)
+variantFieldTypeEntry (Variant name (ConNamed fields)) =
+  (name, map fieldTyHeadName fields)
 
 fieldTyHeadName : Field -> String
 fieldTyHeadName (Field _ ty) = tyHeadName ty
@@ -1018,13 +1027,14 @@ tyHeadName _ = ""
 -- applied / function / tuple) maps to "" and the emitter falls back to the
 -- existing guess, so the seed is ADDITIVE: only known-scalar declared params/
 -- returns change typing (and `Int`-annotated fns seed LTInt = current default).
-export
-declSigTypeNames : List Decl -> List (String, (List String, String))
+export declSigTypeNames : List Decl -> List (String, (List String, String))
 declSigTypeNames prog = flatMap declSigTypeEntries prog
 
 declSigTypeEntries : Decl -> List (String, (List String, String))
-declSigTypeEntries (DTypeSig _ name ty) = [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
-declSigTypeEntries (DExtern _ name ty) = [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
+declSigTypeEntries (DTypeSig _ name ty) =
+  [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
+declSigTypeEntries (DExtern _ name ty) =
+  [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
 declSigTypeEntries (DAttrib _ inner) = declSigTypeEntries inner
 declSigTypeEntries _ = []
 
@@ -1056,14 +1066,14 @@ funClausesOf ((DFunDef _ n pats body)::rest) =
   (n, CClause pats (lower body)) :: funClausesOf rest
 -- Top-level `let rec … with …` (DLetGroup): flatten each binding's clauses
 -- into (name, CClause) entries, mirroring eval.mdk's funDefs/letGroupDefs.
-funClausesOf ((DLetGroup _ binds)::rest) =
-  letGroupClausesOf binds ++ funClausesOf rest
+funClausesOf ((DLetGroup _ binds)::rest) = letGroupClausesOf binds
+  ++ funClausesOf rest
 funClausesOf (_::rest) = funClausesOf rest
 
 letGroupClausesOf : List LetBind -> List (String, CClause)
 letGroupClausesOf [] = []
-letGroupClausesOf ((LetBind n clauses)::rest) =
-  map (lowerLetBind n) clauses ++ letGroupClausesOf rest
+letGroupClausesOf ((LetBind n clauses)::rest) = map (lowerLetBind n) clauses
+  ++ letGroupClausesOf rest
 
 lowerLetBind : String -> FunClause -> (String, CClause)
 lowerLetBind n (FunClause pats body) = (n, CClause pats (lower body))
@@ -1072,7 +1082,7 @@ groupNames : List (String, CClause) -> List String -> List String
 groupNames [] _ = []
 groupNames ((n, _)::rest) seen
   | contains n seen = groupNames rest seen
-  | otherwise = n :: groupNames rest (n :: seen)
+  | otherwise = n :: groupNames rest (n::seen)
 
 clausesFor : String -> List (String, CClause) -> List CClause
 clausesFor _ [] = []

@@ -16,7 +16,12 @@
 
 import lib.sqlite.{Db, openDb}
 import lib.select.{
-  Select, selectFrom, withOrderBy, withLimit, withDistinct, queryDistinct,
+  Select,
+  selectFrom,
+  withOrderBy,
+  withLimit,
+  withDistinct,
+  queryDistinct,
 }
 import lib.rowtype.{RowType, tInt, t2}
 
@@ -25,32 +30,32 @@ showPair p = match p
   (a, b) => "\{a}|\{b}"
 
 printInts : List Int -> <IO> Unit
-printInts []          = ()
-printInts (n :: rest) =
+printInts [] = ()
+printInts (n::rest) =
   let _ = println (intToString n)
   printInts rest
 
 printPairs : List (Int, Int) -> <IO> Unit
-printPairs []          = ()
-printPairs (p :: rest) =
+printPairs [] = ()
+printPairs (p::rest) =
   let _ = println (showPair p)
   printPairs rest
 
 main : <IO> Unit
 main = match args ()
   [] => println "usage: ddemo <db-path>"
-  path :: _ => match openDb path
+  path::_ => match openDb path
     Err e => println "open error: \{e}"
     Ok db =>
       let _ = println "-- distinct n from nums order by n --"
       let _ = match queryDistinct db (withOrderBy "n" True (withDistinct (selectFrom "nums"))) tInt
-                Err e   => println "query error: \{e}"
-                Ok rows => printInts rows
+        Err e => println "query error: \{e}"
+        Ok rows => printInts rows
       let _ = println "-- distinct a,b from pairs order by a,b --"
       let _ = match queryDistinct db (withOrderBy "b" True (withOrderBy "a" True (withDistinct (selectFrom "pairs")))) (t2 tInt tInt)
-                Err e   => println "query error: \{e}"
-                Ok rows => printPairs rows
+        Err e => println "query error: \{e}"
+        Ok rows => printPairs rows
       let _ = println "-- distinct n from nums order by n limit 2 --"
       match queryDistinct db (withLimit 2 (withOrderBy "n" True (withDistinct (selectFrom "nums")))) tInt
-        Err e   => println "query error: \{e}"
+        Err e => println "query error: \{e}"
         Ok rows => printInts rows

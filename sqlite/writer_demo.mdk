@@ -28,13 +28,13 @@ ipkIdx = Some 0
 --   7  "Dave"    1000000   (i32 age; non-contiguous rowid)
 --   42 "Eve"     127       (i8 boundary)
 rows : List (List Cell)
-rows =
-  [ [ CInt 1,  CText "Alice", CInt 30 ]
-  , [ CInt 2,  CText "Bob",   CNull ]
-  , [ CInt 3,  CText "Carol", CInt (-5) ]
-  , [ CInt 7,  CText "Dave",  CInt 1000000 ]
-  , [ CInt 42, CText "Eve",   CInt 127 ]
-  ]
+rows = [
+  [CInt 1, CText "Alice", CInt 30],
+  [CInt 2, CText "Bob", CNull],
+  [CInt 3, CText "Carol", CInt (-5)],
+  [CInt 7, CText "Dave", CInt 1000000],
+  [CInt 42, CText "Eve", CInt 127],
+]
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -44,4 +44,4 @@ main = match args ()
 run : String -> <IO, Mut> Unit
 run out = match writeDatabase out tableName createSql 3 ipkIdx rows
   Err e => println "Error: \{e}"
-  Ok _  => println "wrote \{out}"
+  Ok _ => println "wrote \{out}"

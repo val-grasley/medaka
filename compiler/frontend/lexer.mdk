@@ -41,8 +41,8 @@ import support.char.{
 }
 import support.util.{joinWith}
 
-public export data Token
-  = TInt Int
+public export data Token =
+  | TInt Int
   | TFloat Float
   | TString String
   | TChar String
@@ -138,8 +138,7 @@ deriving (Eq)
 
 -- Mirrors `lib/lexer.mll` `token_to_string`.  String-bearing tokens use
 -- `debugStringLit` (the `%S`-style quoted/escaped form); ints use `intToString`.
-export
-tokenToString : Token -> String
+export tokenToString : Token -> String
 tokenToString (TInt n) = "INT " ++ intToString n
 tokenToString (TFloat f) = "FLOAT " ++ floatToString f
 tokenToString (TString s) = "STRING " ++ debugStringLit s
@@ -290,7 +289,8 @@ parseIntFrom : Array Char -> Int -> Int -> Int -> Int
 parseIntFrom src p endp acc
   | p >= endp = acc
   | at src p == '_' = parseIntFrom src (p + 1) endp acc
-  | otherwise = parseIntFrom src (p + 1) endp (acc * 10 + (charCode (at src p) - 48))
+  | otherwise =
+    parseIntFrom src (p + 1) endp (acc * 10 + (charCode (at src p) - 48))
 
 -- ── Keyword table ───────────────────────────────────────────────────────
 -- True/False are NOT here: they start uppercase, so the OCaml lexer emits them
@@ -352,7 +352,8 @@ scanAt src len pos depth id c
     let e = skipBlockComment src len (pos + 2) 1
     RComment pos (substr src pos e) :: scan src len e depth id
   | isDigit c = scanNumber src len pos depth id
-  | isQuote c && isTripleAt src len pos = scanTriple src len (pos + 3) depth id False ""
+  | isQuote c && isTripleAt src len pos =
+    scanTriple src len (pos + 3) depth id False ""
   | isQuote c = scanStr src len (pos + 1) depth id ""
   | isApos c = scanChar src len pos depth id
   | isLower c || c == '_' = scanLower src len pos depth id
@@ -372,8 +373,10 @@ skipBlockComment : Array Char -> Int -> Int -> Int -> Int
 skipBlockComment src len p d
   | d <= 0 = p
   | p >= len = panic "Unterminated block comment"
-  | at src p == '{' && p + 1 < len && at src (p + 1) == '-' = skipBlockComment src len (p + 2) (d + 1)
-  | at src p == '-' && p + 1 < len && at src (p + 1) == '}' = skipBlockComment src len (p + 2) (d - 1)
+  | at src p == '{' && p + 1 < len && at src (p + 1) == '-' =
+    skipBlockComment src len (p + 2) (d + 1)
+  | at src p == '-' && p + 1 < len && at src (p + 1) == '}' =
+    skipBlockComment src len (p + 2) (d - 1)
   | otherwise = skipBlockComment src len (p + 1) d
 
 -- identifiers / keywords / underscore
@@ -411,7 +414,8 @@ btClose src len p
 -- numbers (int / float; underscores allowed)
 digitsEnd : Array Char -> Int -> Int -> Int
 digitsEnd src len p
-  | p < len && (isDigit (at src p) || at src p == '_') = digitsEnd src len (p + 1)
+  | p < len && (isDigit (at src p) || at src p == '_') =
+    digitsEnd src len (p + 1)
   | otherwise = p
 
 -- `0x…` / `0b…` / `0o…` radix literals (require ≥1 valid digit after the prefix).
@@ -442,14 +446,16 @@ digitVal c
 
 radixEnd : Array Char -> Int -> Int -> Char -> Int
 radixEnd src len p k
-  | p < len && (isRadixDigit k (at src p) || at src p == '_') = radixEnd src len (p + 1) k
+  | p < len && (isRadixDigit k (at src p) || at src p == '_') =
+    radixEnd src len (p + 1) k
   | otherwise = p
 
 parseRadix : Array Char -> Int -> Int -> Int -> Int -> Int
 parseRadix src p endp base acc
   | p >= endp = acc
   | at src p == '_' = parseRadix src (p + 1) endp base acc
-  | otherwise = parseRadix src (p + 1) endp base (acc * base + digitVal (at src p))
+  | otherwise =
+    parseRadix src (p + 1) endp base (acc * base + digitVal (at src p))
 
 scanRadix : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanRadix src len pos depth id =
@@ -471,7 +477,8 @@ isFloatAt src len e1 = e1 < len
 numFinish : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
-  | otherwise = RTok (TInt (parseIntFrom src pos e1 0)) pos e1 :: scan src len e1 depth id
+  | otherwise =
+    RTok (TInt (parseIntFrom src pos e1 0)) pos e1 :: scan src len e1 depth id
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
@@ -482,8 +489,10 @@ floatTok src len pos e1 depth id =
 scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
 scanStr src len p depth id acc
   | p >= len = panic "Unterminated string literal"
-  | isQuote (at src p) = RTok (TString acc) p (p + 1) :: scan src len (p + 1) depth id
-  | isBackslash (at src p) && p + 1 < len = scanStrEsc src len p depth id acc (at src (p + 1))
+  | isQuote (at src p) =
+    RTok (TString acc) p (p + 1) :: scan src len (p + 1) depth id
+  | isBackslash (at src p) && p + 1 < len =
+    scanStrEsc src len p depth id acc (at src (p + 1))
   | isBackslash (at src p) = panic "Unterminated string literal"
   | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
 
@@ -496,17 +505,22 @@ scanStrEsc src len p depth id acc e
   | isBackslash e = scanStr src len (p + 2) depth id (acc ++ "\\")
   | e == 'r' = scanStr src len (p + 2) depth id (acc ++ "\r")
   | e == '0' = scanStr src len (p + 2) depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
+  | isUnicodeEsc src len p e =
+    scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
   | otherwise = panic "lexing: empty token"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpCont src len p depth acc
   | p >= len = RTok (TInterpEnd acc) p p :: scan src len p depth 0
-  | isQuote (at src p) = RTok (TInterpEnd acc) p (p + 1) :: scan src len (p + 1) depth 0
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) p (p + 2) :: scan src len (p + 2) depth 1
-  | isBackslash (at src p) && p + 1 < len = scanInterpEsc src len p depth acc (at src (p + 1))
-  | otherwise = scanInterpCont src len (p + 1) depth (acc ++ charToStr (at src p))
+  | isQuote (at src p) =
+    RTok (TInterpEnd acc) p (p + 1) :: scan src len (p + 1) depth 0
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
+    RTok (TInterpMid acc) p (p + 2) :: scan src len (p + 2) depth 1
+  | isBackslash (at src p) && p + 1 < len =
+    scanInterpEsc src len p depth acc (at src (p + 1))
+  | otherwise =
+    scanInterpCont src len (p + 1) depth (acc ++ charToStr (at src p))
 
 scanInterpEsc : Array Char -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanInterpEsc src len p depth acc e
@@ -542,14 +556,21 @@ maybeStrip False acc = acc
 
 scanTriple : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
 scanTriple src len p depth id leadingNl acc
-  | p >= len = RTok (TString (maybeStrip leadingNl acc)) p p :: scan src len p depth id
+  | p >= len =
+    RTok (TString (maybeStrip leadingNl acc)) p p :: scan src len p depth id
   | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) p (p + 3) :: scan src len (p + 3) depth id
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
-  | isBackslash (at src p) && p + 1 < len = scanTripleEsc src len p depth id leadingNl acc (at src (p + 1))
-  | isNL (at src p) = scanTriple src len (p + 1) depth id (firstNl leadingNl acc) (acc ++ "\n")
-  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"\"")
-  | isQuote (at src p) = scanTriple src len (p + 1) depth id leadingNl (acc ++ "\"")
-  | otherwise = scanTriple src len (p + 1) depth id leadingNl (acc ++ charToStr (at src p))
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
+    RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
+  | isBackslash (at src p) && p + 1 < len =
+    scanTripleEsc src len p depth id leadingNl acc (at src (p + 1))
+  | isNL (at src p) =
+    scanTriple src len (p + 1) depth id (firstNl leadingNl acc) (acc ++ "\n")
+  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) =
+    scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"\"")
+  | isQuote (at src p) =
+    scanTriple src len (p + 1) depth id leadingNl (acc ++ "\"")
+  | otherwise =
+    scanTriple src len (p + 1) depth id leadingNl (acc ++ charToStr (at src p))
 
 scanTripleEsc : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> Char -> List RawTok
 scanTripleEsc src len p depth id leadingNl acc e
@@ -560,7 +581,8 @@ scanTripleEsc src len p depth id leadingNl acc e
   | e == 'r' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\r")
   | e == '0' = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | isUnicodeEsc src len p e = scanTriple src len (uniEscEnd src len p) depth id leadingNl (acc ++ uniEscStr src len p)
-  | otherwise = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr e)
+  | otherwise =
+    scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr e)
 
 -- string part after an interpolation opened from a triple string closes
 -- (`"""`→INTERP_END with stripIndent, `\{`→INTERP_MID re-marking id = -1)
@@ -568,12 +590,17 @@ scanInterpTripleCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpTripleCont src len p depth acc
   | p >= len = RTok (TInterpEnd (stripIndent acc)) p p :: scan src len p depth 0
   | isTripleAt src len p = RTok (TInterpEnd (stripIndent acc)) p (p + 3) :: scan src len (p + 3) depth 0
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
-  | isBackslash (at src p) && p + 1 < len = scanInterpTripleEsc src len p depth acc (at src (p + 1))
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
+    RTok (TInterpMid acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
+  | isBackslash (at src p) && p + 1 < len =
+    scanInterpTripleEsc src len p depth acc (at src (p + 1))
   | isNL (at src p) = scanInterpTripleCont src len (p + 1) depth (acc ++ "\n")
-  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanInterpTripleCont src len (p + 2) depth (acc ++ "\"\"")
-  | isQuote (at src p) = scanInterpTripleCont src len (p + 1) depth (acc ++ "\"")
-  | otherwise = scanInterpTripleCont src len (p + 1) depth (acc ++ charToStr (at src p))
+  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) =
+    scanInterpTripleCont src len (p + 2) depth (acc ++ "\"\"")
+  | isQuote (at src p) =
+    scanInterpTripleCont src len (p + 1) depth (acc ++ "\"")
+  | otherwise =
+    scanInterpTripleCont src len (p + 1) depth (acc ++ charToStr (at src p))
 
 scanInterpTripleEsc : Array Char -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanInterpTripleEsc src len p depth acc e
@@ -662,7 +689,8 @@ scanChar src len pos depth id = readChar src len (pos + 1) depth id
 readChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readChar src len p depth id
   | isBackslash (at src p) && p + 2 < len && at src (p + 1) == 'u' && at src (p + 2) == '{' = readCharUnicode src len p depth id
-  | isBackslash (at src p) && p + 2 < len = escChar src len p depth id (at src (p + 1))
+  | isBackslash (at src p) && p + 2 < len =
+    escChar src len p depth id (at src (p + 1))
   | otherwise = rawChar src len p depth id
 
 -- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
@@ -674,7 +702,8 @@ escChar src len p depth id e
   | isApos e = RTok (TChar "'") p (p + 3) :: scan src len (p + 3) depth id
   | isBackslash e = RTok (TChar "\\") p (p + 3) :: scan src len (p + 3) depth id
   | e == '0' = RTok (TChar (charToStr (fromOption ' ' (charFromCode 0)))) p (p + 3) :: scan src len (p + 3) depth id
-  | otherwise = RTok (TChar (charToStr e)) p (p + 3) :: scan src len (p + 3) depth id
+  | otherwise =
+    RTok (TChar (charToStr e)) p (p + 3) :: scan src len (p + 3) depth id
 
 -- `[^'\\]+ '` — raw chars up to the closing quote.
 rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -711,9 +740,9 @@ isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
 
 uniEscStr : Array Char -> Int -> Int -> String
-uniEscStr src len p =
-  charToStr
-    (fromOption ' ' (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
+uniEscStr src len p = charToStr (fromOption
+  ' '
+  (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
 
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
@@ -813,7 +842,8 @@ openBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 openBrace src len pos depth id
   | id > 0 = RTok TLBrace pos (pos + 1) :: scan src len (pos + 1) depth (id + 1)
   | id < 0 = RTok TLBrace pos (pos + 1) :: scan src len (pos + 1) depth (id - 1)
-  | otherwise = RTok TLBrace pos (pos + 1) :: scan src len (pos + 1) (depth + 1) id
+  | otherwise =
+    RTok TLBrace pos (pos + 1) :: scan src len (pos + 1) (depth + 1) id
 
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 closeBrace src len pos depth id
@@ -821,7 +851,8 @@ closeBrace src len pos depth id
   | id == 1 = scanInterpCont src len (pos + 1) depth ""
   | id == 0 - 1 = scanInterpTripleCont src len (pos + 1) depth ""
   | id < 0 = RTok TRBrace pos (pos + 1) :: scan src len (pos + 1) depth (id + 1)
-  | otherwise = RTok TRBrace pos (pos + 1) :: scan src len (pos + 1) (depth - 1) id
+  | otherwise =
+    RTok TRBrace pos (pos + 1) :: scan src len (pos + 1) (depth - 1) id
 
 -- newline + indentation handling
 handleNewline : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -833,7 +864,8 @@ handleNewline src len pos depth id =
 consumeNl : Array Char -> Int -> Int -> Int -> (Int, Int)
 consumeNl src len p indent
   | p >= len = (indent, p)
-  | isCR (at src p) && p + 1 < len && isNL (at src (p + 1)) = consumeNl src len (p + 2) 0
+  | isCR (at src p) && p + 1 < len && isNL (at src (p + 1)) =
+    consumeNl src len (p + 2) 0
   | isNL (at src p) = consumeNl src len (p + 1) 0
   | isCR (at src p) = consumeNl src len (p + 1) 0
   | isSp (at src p) = consumeNl src len (p + 1) (indent + 1)
@@ -851,7 +883,8 @@ consumeNl src len p indent
 afterNl : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> List RawTok
 afterNl src len np depth id indent nlPos
   | nextIsComment src len np = scan src len np depth id
-  | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
+  | isContinuation src len np =
+    emit src len np depth id (continuationTok src len np) 2 0
   | otherwise = RNewline indent nlPos :: scan src len np depth id
 
 -- Comment-only line transparency: a line beginning with a comment (`--` or `{-`)
@@ -860,10 +893,8 @@ afterNl src len np depth id indent nlPos
 -- scanning; the newline ending the comment line re-enters afterNl and layout is
 -- decided by the next *code* line.  Mirrors lib/lexer.mll `next_is_comment`.
 nextIsComment : Array Char -> Int -> Int -> Bool
-nextIsComment src len p =
-  p + 1 < len
-  && ((at src p == '-' && at src (p + 1) == '-')
-      || (at src p == '{' && at src (p + 1) == '-'))
+nextIsComment src len p = p + 1 < len
+  && (at src p == '-' && at src (p + 1) == '-' || at src p == '{' && at src (p + 1) == '-')
 
 -- leading-operator line continuation (|> >> << && || ++ ::)
 isContinuation : Array Char -> Int -> Int -> Bool
@@ -910,10 +941,13 @@ continuationTok src len np
 layout : List RawTok -> List Int -> List Int -> Option Token -> Bool -> List (Token, Int)
 layout [] stack frames prev opener = closeAll stack 0
 layout ((RTok t off _)::rest) stack frames prev opener
-  | bracketOpener t = (t, off) :: layout rest stack (0 :: frames) (Some t) (opener || isOpener t)
+  | bracketOpener t =
+    (t, off) :: layout rest stack (0::frames) (Some t) (opener || isOpener t)
   | bracketCloser t = flushClose t off rest stack frames opener
-  | otherwise = (t, off) :: layout rest stack frames (Some t) (opener || isOpener t)
-layout ((RComment _ _)::rest) stack frames prev opener = layout rest stack frames prev opener
+  | otherwise =
+    (t, off) :: layout rest stack frames (Some t) (opener || isOpener t)
+layout ((RComment _ _)::rest) stack frames prev opener =
+  layout rest stack frames prev opener
 layout ((RNewline col off)::rest) stack frames prev opener =
   applyNl col off rest stack frames prev opener
 
@@ -928,15 +962,16 @@ layout ((RNewline col off)::rest) stack frames prev opener =
 flushClose : Token -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int)
 flushClose t off rest stack [] opener =
   (t, off) :: layout rest stack [] (Some t) (opener || isOpener t)
-flushClose t off rest stack (f :: fs) opener =
+flushClose t off rest stack (f::fs) opener =
   flushCloseGo t off rest stack f fs opener
 
 flushCloseGo : Token -> Int -> List RawTok -> List Int -> Int -> List Int -> Bool -> List (Token, Int)
-flushCloseGo t off rest [] f fs opener = (t, off) :: layout rest [] fs (Some t) (opener || isOpener t)
-flushCloseGo t off rest (top :: tl) f fs opener
-  | f <= 0 = (t, off) :: layout rest (top :: tl) fs (Some t) (opener || isOpener t)
-  | otherwise =
-    (TNewline, off) :: (TDedent, off) :: flushCloseGo t off rest tl (f - 1) fs opener
+flushCloseGo t off rest [] f fs opener =
+  (t, off) :: layout rest [] fs (Some t) (opener || isOpener t)
+flushCloseGo t off rest (top::tl) f fs opener
+  | f <= 0 =
+    (t, off) :: layout rest (top::tl) fs (Some t) (opener || isOpener t)
+  | otherwise = (TNewline, off) :: (TDedent, off) :: flushCloseGo t off rest tl (f - 1) fs opener
 
 bracketOpener : Token -> Bool
 bracketOpener TLParen = True
@@ -1049,18 +1084,18 @@ applyNl : Int -> Int -> List RawTok -> List Int -> List Int -> Option Token -> B
 applyNl col off rest [] frames prev opener =
   (TNewline, off) :: layout rest [] frames None False
 applyNl col off rest (top::tl) frames prev opener =
-  applyNlFrame col off top (top :: tl) rest frames prev opener
+  applyNlFrame col off top (top::tl) rest frames prev opener
 
 -- frames == [] (top level) is handled by the first applyNl clause; here frames
 -- is non-empty OR the indent stack is non-empty.  Decide by frame state.
 applyNlFrame : Int -> Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
 applyNlFrame col off top stack rest [] prev opener =
   applyNlTop col off top stack rest [] prev opener
-applyNlFrame col off top stack rest (f :: fs) prev opener
-  | f > 0 = applyNlTop col off top stack rest (f :: fs) prev opener
+applyNlFrame col off top stack rest (f::fs) prev opener
+  | f > 0 = applyNlTop col off top stack rest (f::fs) prev opener
   | col > top && not (prevIsTrailingOp prev) && armsHerald opener prev =
-    (TIndent, off) :: layout rest (col :: stack) (1 :: fs) None False
-  | otherwise = layout rest stack (f :: fs) prev opener
+    (TIndent, off) :: layout rest (col::stack) (1::fs) None False
+  | otherwise = layout rest stack (f::fs) prev opener
 
 applyNlTop : Int -> Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
 applyNlTop col off top stack rest frames prev opener
@@ -1073,18 +1108,19 @@ applyNlTop col off top stack rest frames prev opener
 wouldIndent : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
 wouldIndent col off stack rest frames prev opener
   | prevIsTrailingOp prev = layout rest stack frames prev opener
-  | opener || not (prevCanEnd prev) = (TIndent, off) :: layout rest (col :: stack) (bumpFrame frames) None False
+  | opener || not (prevCanEnd prev) =
+    (TIndent, off) :: layout rest (col::stack) (bumpFrame frames) None False
   | otherwise = resolveCont col off stack rest frames prev opener
 
 -- Increment the innermost bracket frame's open-context count (no-op at top level).
 bumpFrame : List Int -> List Int
 bumpFrame [] = []
-bumpFrame (f :: fs) = (f + 1) :: fs
+bumpFrame (f::fs) = f + 1 :: fs
 
 -- Decrement the innermost bracket frame's open-context count (no-op at top level).
 dropFrame : List Int -> List Int
 dropFrame [] = []
-dropFrame (f :: fs) = (f - 1) :: fs
+dropFrame (f::fs) = f - 1 :: fs
 
 -- conforms to LAYOUT-SEMANTICS.md §5.4 (Stage B deeper-line then/else path);
 -- edits must keep both mechanisms in step (LAYOUT-CONFORMANCE-ROADMAP WS-2).
@@ -1093,8 +1129,9 @@ resolveCont col off stack ((RTok t toff tend)::more) frames prev opener
   | canStartAtom t = layout (RTok t toff tend :: more) stack frames prev opener
   | t == TThen = layout (RTok t toff tend :: more) stack frames prev opener
   | t == TElse = layout (RTok t toff tend :: more) stack frames prev opener
-  | otherwise = (TIndent, off) :: layout (RTok t toff tend :: more) (col :: stack) (bumpFrame frames) None False
-resolveCont col off stack rest frames prev opener = layout rest stack frames None False
+  | otherwise = (TIndent, off) :: layout (RTok t toff tend :: more) (col::stack) (bumpFrame frames) None False
+resolveCont col off stack rest frames prev opener =
+  layout rest stack frames None False
 
 -- Pop indent contexts down to `col`, decrementing the innermost bracket frame
 -- for each context popped (so a herald block that dedents back below its column
@@ -1103,7 +1140,7 @@ popDedents : Int -> Int -> List Int -> List RawTok -> List Int -> List (Token, I
 popDedents col off [] rest frames = layout rest [] frames None False
 popDedents col off (top::tl) rest frames
   | top > col = (TDedent, off) :: (TNewline, off) :: popDedents col off tl rest (dropFrame frames)
-  | otherwise = layout rest (top :: tl) frames None False
+  | otherwise = layout rest (top::tl) frames None False
 
 -- end of input: NEWLINE, then DEDENT/NEWLINE pairs back to base, then EOF.
 -- `off` is the EOF char offset (source length) so the synthetic tail tokens
@@ -1149,9 +1186,10 @@ layoutWithOffsets src len =
 layoutPairs : List RawTok -> List Int -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 layoutPairs [] stack frames prev opener = closeAllPairs stack 0
 layoutPairs ((RTok t s e)::rest) stack frames prev opener
-  | bracketOpener t = (t, s, e) :: layoutPairs rest stack (0 :: frames) (Some t) (opener || isOpener t)
+  | bracketOpener t = (t, s, e) :: layoutPairs rest stack (0::frames) (Some t) (opener || isOpener t)
   | bracketCloser t = flushClosePairs t s e rest stack frames opener
-  | otherwise = (t, s, e) :: layoutPairs rest stack frames (Some t) (opener || isOpener t)
+  | otherwise =
+    (t, s, e) :: layoutPairs rest stack frames (Some t) (opener || isOpener t)
 layoutPairs ((RComment _ _)::rest) stack frames prev opener =
   layoutPairs rest stack frames prev opener
 layoutPairs ((RNewline col off)::rest) stack frames prev opener =
@@ -1160,49 +1198,53 @@ layoutPairs ((RNewline col off)::rest) stack frames prev opener =
 flushClosePairs : Token -> Int -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int, Int)
 flushClosePairs t s e rest stack [] opener =
   (t, s, e) :: layoutPairs rest stack [] (Some t) (opener || isOpener t)
-flushClosePairs t s e rest stack (f :: fs) opener =
+flushClosePairs t s e rest stack (f::fs) opener =
   flushClosePairsGo t s e rest stack f fs opener
 
 flushClosePairsGo : Token -> Int -> Int -> List RawTok -> List Int -> Int -> List Int -> Bool -> List (Token, Int, Int)
-flushClosePairsGo t s e rest [] f fs opener = (t, s, e) :: layoutPairs rest [] fs (Some t) (opener || isOpener t)
-flushClosePairsGo t s e rest (top :: tl) f fs opener
-  | f <= 0 = (t, s, e) :: layoutPairs rest (top :: tl) fs (Some t) (opener || isOpener t)
-  | otherwise =
-    (TNewline, s, s) :: (TDedent, s, s) :: flushClosePairsGo t s e rest tl (f - 1) fs opener
+flushClosePairsGo t s e rest [] f fs opener =
+  (t, s, e) :: layoutPairs rest [] fs (Some t) (opener || isOpener t)
+flushClosePairsGo t s e rest (top::tl) f fs opener
+  | f <= 0 =
+    (t, s, e) :: layoutPairs rest (top::tl) fs (Some t) (opener || isOpener t)
+  | otherwise = (TNewline, s, s) :: (TDedent, s, s) :: flushClosePairsGo t s e rest tl (f - 1) fs opener
 
 applyNlPairs : Int -> Int -> List RawTok -> List Int -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 applyNlPairs col off rest [] frames prev opener =
   (TNewline, off, off) :: layoutPairs rest [] frames None False
 applyNlPairs col off rest (top::tl) frames prev opener =
-  applyNlFramePairs col off top (top :: tl) rest frames prev opener
+  applyNlFramePairs col off top (top::tl) rest frames prev opener
 
 applyNlFramePairs : Int -> Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 applyNlFramePairs col off top stack rest [] prev opener =
   applyNlTopPairs col off top stack rest [] prev opener
-applyNlFramePairs col off top stack rest (f :: fs) prev opener
-  | f > 0 = applyNlTopPairs col off top stack rest (f :: fs) prev opener
+applyNlFramePairs col off top stack rest (f::fs) prev opener
+  | f > 0 = applyNlTopPairs col off top stack rest (f::fs) prev opener
   | col > top && not (prevIsTrailingOp prev) && armsHerald opener prev =
-    (TIndent, off, off) :: layoutPairs rest (col :: stack) (1 :: fs) None False
-  | otherwise = layoutPairs rest stack (f :: fs) prev opener
+    (TIndent, off, off) :: layoutPairs rest (col::stack) (1::fs) None False
+  | otherwise = layoutPairs rest stack (f::fs) prev opener
 
 applyNlTopPairs : Int -> Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 applyNlTopPairs col off top stack rest frames prev opener
   | col > top = wouldIndentPairs col off stack rest frames prev opener
-  | col == top = (TNewline, off, off) :: layoutPairs rest stack frames None False
-  | otherwise = (TNewline, off, off) :: popDedentsPairs col off stack rest frames
+  | col == top =
+    (TNewline, off, off) :: layoutPairs rest stack frames None False
+  | otherwise =
+    (TNewline, off, off) :: popDedentsPairs col off stack rest frames
 
 wouldIndentPairs : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 wouldIndentPairs col off stack rest frames prev opener
   | prevIsTrailingOp prev = layoutPairs rest stack frames prev opener
-  | opener || not (prevCanEnd prev) = (TIndent, off, off) :: layoutPairs rest (col :: stack) (bumpFrame frames) None False
+  | opener || not (prevCanEnd prev) = (TIndent, off, off) :: layoutPairs rest (col::stack) (bumpFrame frames) None False
   | otherwise = resolveContPairs col off stack rest frames prev opener
 
 resolveContPairs : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 resolveContPairs col off stack ((RTok t toff tend)::more) frames prev opener
-  | canStartAtom t = layoutPairs (RTok t toff tend :: more) stack frames prev opener
+  | canStartAtom t =
+    layoutPairs (RTok t toff tend :: more) stack frames prev opener
   | t == TThen = layoutPairs (RTok t toff tend :: more) stack frames prev opener
   | t == TElse = layoutPairs (RTok t toff tend :: more) stack frames prev opener
-  | otherwise = (TIndent, off, off) :: layoutPairs (RTok t toff tend :: more) (col :: stack) (bumpFrame frames) None False
+  | otherwise = (TIndent, off, off) :: layoutPairs (RTok t toff tend :: more) (col::stack) (bumpFrame frames) None False
 resolveContPairs col off stack rest frames prev opener =
   layoutPairs rest stack frames None False
 
@@ -1210,7 +1252,7 @@ popDedentsPairs : Int -> Int -> List Int -> List RawTok -> List Int -> List (Tok
 popDedentsPairs col off [] rest frames = layoutPairs rest [] frames None False
 popDedentsPairs col off (top::tl) rest frames
   | top > col = (TDedent, off, off) :: (TNewline, off, off) :: popDedentsPairs col off tl rest (dropFrame frames)
-  | otherwise = layoutPairs rest (top :: tl) frames None False
+  | otherwise = layoutPairs rest (top::tl) frames None False
 
 closeAllPairs : List Int -> Int -> List (Token, Int, Int)
 closeAllPairs stack off = (TNewline, off, off) :: closeDedentsPairs stack off
@@ -1230,12 +1272,14 @@ elseFilterPairs (t::rest) = t :: elseFilterPairs rest
 elseFilterPairs [] = []
 
 layoutWithOffsetPairs : Array Char -> Int -> List (Token, Int, Int)
-layoutWithOffsetPairs src len =
-  elseFilterPairs
-    (layoutPairs (stripComments (scan src len 0 0 0)) [0] [] None False)
+layoutWithOffsetPairs src len = elseFilterPairs (layoutPairs
+  (stripComments (scan src len 0 0 0))
+  [0]
+  []
+  None
+  False)
 
-export
-tokenize : String -> List Token
+export tokenize : String -> List Token
 tokenize s =
   let src = stringToChars s
   let len = arrayLength src
@@ -1245,8 +1289,7 @@ tokenize s =
 -- char offset.  The position side-channel (`compiler/parser.mdk`) consults the
 -- line array to record per-decl / per-variant source lines.  The Token stream
 -- (`map fst`) is byte-identical to `tokenize`.
-export
-tokenizeWithLines : String -> (List Token, List Int)
+export tokenizeWithLines : String -> (List Token, List Int)
 tokenizeWithLines s =
   let src = stringToChars s
   let len = arrayLength src
@@ -1261,8 +1304,7 @@ tokenizeWithLines s =
 -- token index — the structured parse-error path (`parser.mdk`'s `parseResult`)
 -- needs the column to mirror the OCaml oracle's `L:C` format.  The Token stream
 -- (`map fst`) is byte-identical to `tokenize`.
-export
-tokenizeWithOffsets : String -> (List Token, List Int)
+export tokenizeWithOffsets : String -> (List Token, List Int)
 tokenizeWithOffsets s =
   let src = stringToChars s
   let len = arrayLength src
@@ -1277,8 +1319,7 @@ tokenizeWithOffsets s =
 -- path (`parseLocated`) to give `locOfSpan` a true end offset so ELoc ranges
 -- match OCaml's `$endpos`-derived end_line/end_col exactly.  The Token stream
 -- (`map fst`) is byte-identical to `tokenize`.
-export
-tokenizeWithOffsetPairs : String -> (List Token, List (Int, Int))
+export tokenizeWithOffsetPairs : String -> (List Token, List (Int, Int))
 tokenizeWithOffsetPairs s =
   let src = stringToChars s
   let len = arrayLength src
@@ -1291,8 +1332,7 @@ tokenizeWithOffsetPairs s =
 -- pair, mirroring the OCaml `pos_lnum` / `pos_cnum - pos_bol` reported by the
 -- parse-error oracle.  Reuses `posLineColFrom` (the comment side-channel's
 -- offset→line/col walk).  Used by `parseResult` to locate a structured error.
-export
-offsetToLineCol : String -> Int -> (Int, Int)
+export offsetToLineCol : String -> Int -> (Int, Int)
 offsetToLineCol s off = posLineColFrom (stringToChars s) off 0 1 0
 
 -- Convert a list of char offsets (in non-decreasing-ish source order — the
@@ -1326,16 +1366,13 @@ advanceLine src target p line
 -- before layout — see `stripComments`).
 export data Comment = Comment Int Int String
 
-export
-commentLine : Comment -> Int
+export commentLine : Comment -> Int
 commentLine (Comment l _ _) = l
 
-export
-commentCol : Comment -> Int
+export commentCol : Comment -> Int
 commentCol (Comment _ c _) = c
 
-export
-commentText : Comment -> String
+export commentText : Comment -> String
 commentText (Comment _ _ t) = t
 
 -- Convert a source char offset to (1-based line, 0-based column) by scanning
@@ -1356,8 +1393,7 @@ rawToComments src ((RComment startPos text)::rest) = match posLineColFrom src st
 rawToComments src (_::rest) = rawToComments src rest
 
 -- Tokenize-and-collect the comment side channel, in source order.
-export
-collectComments : String -> List Comment
+export collectComments : String -> List Comment
 collectComments s =
   let src = stringToChars s
   let len = arrayLength src

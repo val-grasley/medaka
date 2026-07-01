@@ -24,7 +24,7 @@ readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
-    Ok more => Ok ((p, src) :: more)
+    Ok more => Ok ((p, src)::more)
 
 renderAll runtimeP coreP [] = ""
 renderAll runtimeP coreP ((path, src)::rest) = "===SELFHOST-FIX=== "

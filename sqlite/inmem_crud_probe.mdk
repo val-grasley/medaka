@@ -27,22 +27,18 @@ usersSql : String
 usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
 
 baseRows : List (List Cell)
-baseRows =
-  [ [ CInt 1, CText "Alice", CInt 30 ]
-  , [ CInt 2, CText "Bob",   CNull ]
-  , [ CInt 3, CText "Carol", CInt (-5) ]
-  , [ CInt 7, CText "Dave",  CInt 1000000 ]
-  ]
+baseRows = [
+  [CInt 1, CText "Alice", CInt 30],
+  [CInt 2, CText "Bob", CNull],
+  [CInt 3, CText "Carol", CInt (-5)],
+  [CInt 7, CText "Dave", CInt 1000000],
+]
 
 realsSql : String
 realsSql = "CREATE TABLE reals(id INTEGER PRIMARY KEY, val REAL)"
 
 realsRows : List (List Cell)
-realsRows =
-  [ [ CInt 1, CFloat 3.14 ]
-  , [ CInt 2, CFloat (-2.5) ]
-  , [ CInt 3, CNull ]
-  ]
+realsRows = [[CInt 1, CFloat 3.14], [CInt 2, CFloat (-2.5)], [CInt 3, CNull]]
 
 ipk : Option Int
 ipk = Some 0
@@ -50,44 +46,40 @@ ipk = Some 0
 -- The id is the first cell of a row.
 rowId : List Cell -> Int
 rowId cells = match cells
-  CInt n :: _ => n
+  (CInt n)::_ => n
   _ => -1
 
 -- Replace the age (3rd cell) of a row.
 setAge : List Cell -> Cell -> List Cell
 setAge cells age = match cells
-  i :: n :: _ :: [] => [i, n, age]
+  i::n::_::[] => [i, n, age]
   _ => cells
 
 printRows : List Row -> <IO> Unit
 printRows [] = ()
-printRows (r :: rest) =
+printRows (r::rest) =
   let _ = println (display r)
   printRows rest
 
 -- Build → parse → scan → print one table.
 readTable : String -> String -> Int -> List (List Cell) -> <IO, Mut> Unit
-readTable name createSql colCount rows =
-  match buildDatabase name createSql colCount ipk rows
-    Err e    => println "build error: \{e}"
-    Ok bytes => match fromBytes bytes
-      Err e => println "fromBytes error: \{e}"
-      Ok db => match scanTableRows db name
-        Err e    => println "scan error: \{e}"
-        Ok found => printRows found
+readTable name createSql colCount rows = match buildDatabase name createSql colCount ipk rows
+  Err e => println "build error: \{e}"
+  Ok bytes => match fromBytes bytes
+    Err e => println "fromBytes error: \{e}"
+    Ok db => match scanTableRows db name
+      Err e => println "scan error: \{e}"
+      Ok found => printRows found
 
 main : <IO, Mut> Unit
 main =
   let _ = println "-- CREATE+READ users --"
   let _ = readTable "users" usersSql 3 baseRows
-
   let _ = println "-- DELETE id=2, READ users --"
   let afterDelete = filter (r => rowId r != 2) baseRows
   let _ = readTable "users" usersSql 3 afterDelete
-
   let _ = println "-- UPDATE id=3 age:=99, READ users --"
   let afterUpdate = map (r => if rowId r == 3 then setAge r (CInt 99) else r) baseRows
   let _ = readTable "users" usersSql 3 afterUpdate
-
   let _ = println "-- CREATE+READ reals (float round-trip) --"
   readTable "reals" realsSql 2 realsRows

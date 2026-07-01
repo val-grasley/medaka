@@ -19,7 +19,8 @@ withFiles runtimePath corePath targets = match readFile runtimePath
     Err msg => ePutStrLn msg
     Ok csrc => match readAllSources targets
       Err msg => ePutStrLn msg
-      Ok srcs => putStr (renderAll (desugar (parse rsrc)) (desugar (parse csrc)) srcs)
+      Ok srcs =>
+        putStr (renderAll (desugar (parse rsrc)) (desugar (parse csrc)) srcs)
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
@@ -27,7 +28,7 @@ readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
-    Ok more => Ok ((p, src) :: more)
+    Ok more => Ok ((p, src)::more)
 
 renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
 renderAll runtimeDecls coreDecls [] = ""

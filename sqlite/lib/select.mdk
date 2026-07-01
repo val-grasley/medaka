@@ -17,7 +17,15 @@
 -- collide with `Ord`/`Eq`/`Bool` methods (`gt`/`eq`/`and`/...).
 
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
-import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, columnNames, findTable, schemaSql}
+import lib.sqlite.{
+  Db,
+  scanTableRowsIpk,
+  rowCellsWithIpk,
+  columnIndex,
+  columnNames,
+  findTable,
+  schemaSql,
+}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
 import list.{reverse, take, drop, sortBy, nub}
@@ -29,8 +37,8 @@ import string.{join}
 
 -- | A literal value that can appear in a query.  Mirrors `Cell` minus the
 --   "decoded from a column" provenance.
-public export data Literal
-  = LInt Int
+public export data Literal =
+  | LInt Int
   | LText String
   | LFloat Float
   | LBlob (Array Int)
@@ -45,8 +53,8 @@ public export data ArithOp = AAdd | ASub | AMul | ADiv | AMod
 -- | An untyped boolean/value expression tree.  `ECol`/`ELit` are leaves;
 --   `EBin` is a comparison; `EArith` is a numeric binary op; `EAnd`/`EOr`/`ENot`
 --   are logical; `EIsNull`/`ENotNull` are the null tests.
-public export data SqlExpr
-  = ECol String
+public export data SqlExpr =
+  | ECol String
   | ELit Literal
   | EBin CmpOp SqlExpr SqlExpr
   | EArith ArithOp SqlExpr SqlExpr
@@ -90,16 +98,17 @@ public export data Join = Join { table : String, kind : JoinKind, on : SqlExpr }
 --   row positionally, so it must match the projection's cell order/types.
 --   v1 limitation: WHERE/ORDER BY run on the raw row, so ORDER BY cannot
 --   reference a computed column.
-public export data Select = Select
-  { from     : String
-  , joins    : List Join
-  , where_   : Option SqlExpr
-  , orderBy  : List (String, Bool)
-  , limit    : Option Int
-  , offset   : Option Int
-  , distinct : Bool
-  , columns  : List SqlExpr
-  }
+public export data Select =
+  | Select
+    { from : String
+    , joins : List Join
+    , where_ : Option SqlExpr
+    , orderBy : List (String, Bool)
+    , limit : Option Int
+    , offset : Option Int
+    , distinct : Bool
+    , columns : List SqlExpr
+    }
 
 -- ---------------------------------------------------------------------------
 -- Phantom type-safe layer: Expr a
@@ -114,114 +123,89 @@ public export data Select = Select
 public export data Expr a = MkExpr SqlExpr
 
 -- | Recover the untyped expression (e.g. to put it in `where_`).
-export
-unExpr : Expr a -> SqlExpr
+export unExpr : Expr a -> SqlExpr
 unExpr e = match e
   MkExpr x => x
 
 -- | Wrap an untyped expression at an arbitrary phantom type (internal).
-export
-mkE : SqlExpr -> Expr a
+export mkE : SqlExpr -> Expr a
 mkE x = MkExpr x
 
 -- Column references, each fixing the phantom witness type.
-export
-eColInt : String -> Expr Int
+export eColInt : String -> Expr Int
 eColInt name = MkExpr (ECol name)
 
-export
-eColText : String -> Expr String
+export eColText : String -> Expr String
 eColText name = MkExpr (ECol name)
 
-export
-eColFloat : String -> Expr Float
+export eColFloat : String -> Expr Float
 eColFloat name = MkExpr (ECol name)
 
 -- | An untyped column reference (when you don't want a witness).
-export
-eCol : String -> Expr a
+export eCol : String -> Expr a
 eCol name = MkExpr (ECol name)
 
 -- Literals.
-export
-eLitI : Int -> Expr Int
+export eLitI : Int -> Expr Int
 eLitI n = MkExpr (ELit (LInt n))
 
-export
-eLitT : String -> Expr String
+export eLitT : String -> Expr String
 eLitT s = MkExpr (ELit (LText s))
 
-export
-eLitF : Float -> Expr Float
+export eLitF : Float -> Expr Float
 eLitF f = MkExpr (ELit (LFloat f))
 
 -- Comparisons: both operands share the phantom `a`, result is `Expr Bool`.
-export
-eEq : Expr a -> Expr a -> Expr Bool
+export eEq : Expr a -> Expr a -> Expr Bool
 eEq l r = MkExpr (EBin OpEq (unExpr l) (unExpr r))
 
-export
-eNe : Expr a -> Expr a -> Expr Bool
+export eNe : Expr a -> Expr a -> Expr Bool
 eNe l r = MkExpr (EBin OpNe (unExpr l) (unExpr r))
 
-export
-eLt : Expr a -> Expr a -> Expr Bool
+export eLt : Expr a -> Expr a -> Expr Bool
 eLt l r = MkExpr (EBin OpLt (unExpr l) (unExpr r))
 
-export
-eLe : Expr a -> Expr a -> Expr Bool
+export eLe : Expr a -> Expr a -> Expr Bool
 eLe l r = MkExpr (EBin OpLe (unExpr l) (unExpr r))
 
-export
-eGt : Expr a -> Expr a -> Expr Bool
+export eGt : Expr a -> Expr a -> Expr Bool
 eGt l r = MkExpr (EBin OpGt (unExpr l) (unExpr r))
 
-export
-eGe : Expr a -> Expr a -> Expr Bool
+export eGe : Expr a -> Expr a -> Expr Bool
 eGe l r = MkExpr (EBin OpGe (unExpr l) (unExpr r))
 
 -- Arithmetic combinators: both operands share the phantom `a`, result is
 -- `Expr a` (the value stays in the same numeric domain for the type checker).
-export
-eAdd : Expr a -> Expr a -> Expr a
+export eAdd : Expr a -> Expr a -> Expr a
 eAdd l r = MkExpr (EArith AAdd (unExpr l) (unExpr r))
 
-export
-eSub : Expr a -> Expr a -> Expr a
+export eSub : Expr a -> Expr a -> Expr a
 eSub l r = MkExpr (EArith ASub (unExpr l) (unExpr r))
 
-export
-eMul : Expr a -> Expr a -> Expr a
+export eMul : Expr a -> Expr a -> Expr a
 eMul l r = MkExpr (EArith AMul (unExpr l) (unExpr r))
 
-export
-eDiv : Expr a -> Expr a -> Expr a
+export eDiv : Expr a -> Expr a -> Expr a
 eDiv l r = MkExpr (EArith ADiv (unExpr l) (unExpr r))
 
-export
-eMod : Expr a -> Expr a -> Expr a
+export eMod : Expr a -> Expr a -> Expr a
 eMod l r = MkExpr (EArith AMod (unExpr l) (unExpr r))
 
 -- Logical combinators: force `Expr Bool` operands and result.
-export
-eAnd : Expr Bool -> Expr Bool -> Expr Bool
+export eAnd : Expr Bool -> Expr Bool -> Expr Bool
 eAnd l r = MkExpr (EAnd (unExpr l) (unExpr r))
 
-export
-eOr : Expr Bool -> Expr Bool -> Expr Bool
+export eOr : Expr Bool -> Expr Bool -> Expr Bool
 eOr l r = MkExpr (EOr (unExpr l) (unExpr r))
 
-export
-eNot : Expr Bool -> Expr Bool
+export eNot : Expr Bool -> Expr Bool
 eNot e = MkExpr (ENot (unExpr e))
 
 -- Null tests over any column type.
-export
-eIsNull : Expr a -> Expr Bool
+export eIsNull : Expr a -> Expr Bool
 eIsNull e = MkExpr (EIsNull (unExpr e))
 
-export
-eNotNull : Expr a -> Expr Bool
+export eNotNull : Expr a -> Expr Bool
 eNotNull e = MkExpr (ENotNull (unExpr e))
 
 -- ---------------------------------------------------------------------------
@@ -229,42 +213,51 @@ eNotNull e = MkExpr (ENotNull (unExpr e))
 -- ---------------------------------------------------------------------------
 
 -- | A bare SELECT over a table: no WHERE, no ORDER BY, no limit/offset.
-export
-selectFrom : String -> Select
-selectFrom tbl = Select { from = tbl, joins = [], where_ = None, orderBy = [], limit = None, offset = None, distinct = False, columns = [] }
+export selectFrom : String -> Select
+selectFrom tbl = Select {
+  from = tbl,
+  joins = [],
+  where_ = None,
+  orderBy = [],
+  limit = None,
+  offset = None,
+  distinct = False,
+  columns = [],
+}
 
 -- | Append an INNER JOIN of `tbl` with the type-safe `on` predicate.  Joins are
 --   applied in call order (each appends), so the combined row lays out the
 --   `from` columns first, then each joined table's columns in this order.  The
 --   phantom `Expr Bool` is stripped here, exactly like `withWhere`.
-export
-innerJoin : String -> Expr Bool -> Select -> Select
-innerJoin tbl onExpr sel =
-  { sel | joins = sel.joins ++ [Join { table = tbl, kind = JInner, on = unExpr onExpr }] }
+export innerJoin : String -> Expr Bool -> Select -> Select
+innerJoin tbl onExpr sel = { sel | joins = sel.joins ++ [Join {
+    table = tbl,
+    kind = JInner,
+    on = unExpr onExpr,
+  }] }
 
 -- | Append a LEFT [OUTER] JOIN of `tbl` with the type-safe `on` predicate.
 --   Every row of the accumulated left side is kept: when no right row matches
 --   `on`, the joined table's columns are null-padded instead of dropping the
 --   row.  Decode a LEFT-joined table's columns via `tOption` (see
 --   `lib.rowtype`) since they may be `CNull` when unmatched.
-export
-leftJoin : String -> Expr Bool -> Select -> Select
-leftJoin tbl onExpr sel =
-  { sel | joins = sel.joins ++ [Join { table = tbl, kind = JLeft, on = unExpr onExpr }] }
+export leftJoin : String -> Expr Bool -> Select -> Select
+leftJoin tbl onExpr sel = { sel | joins = sel.joins ++ [Join {
+    table = tbl,
+    kind = JLeft,
+    on = unExpr onExpr,
+  }] }
 
 -- | Attach a typed `Expr Bool` predicate as the WHERE clause.  The phantom
 --   wrapper is stripped here — this is the type-safe boundary at which an
 --   `Expr Bool` becomes an untyped `SqlExpr`.
-export
-withWhere : Expr Bool -> Select -> Select
+export withWhere : Expr Bool -> Select -> Select
 withWhere e sel = { sel | where_ = Some (unExpr e) }
 
-export
-withLimit : Int -> Select -> Select
+export withLimit : Int -> Select -> Select
 withLimit n sel = { sel | limit = Some n }
 
-export
-withOffset : Int -> Select -> Select
+export withOffset : Int -> Select -> Select
 withOffset n sel = { sel | offset = Some n }
 
 -- | Order the results by `col`, ascending when `asc = True`, descending when
@@ -272,16 +265,14 @@ withOffset n sel = { sel | offset = Some n }
 --   Multi-column ORDER BY: each call APPENDS a key, so the first call is the
 --   primary sort key, the second breaks ties on the first, etc. — matching
 --   `ORDER BY a ASC, b DESC` when chained `withOrderBy "a" True |> withOrderBy "b" False`.
-export
-withOrderBy : String -> Bool -> Select -> Select
+export withOrderBy : String -> Bool -> Select -> Select
 withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(col, asc)] }
 
 -- | Mark the SELECT as DISTINCT: `render` emits `SELECT DISTINCT`, and
 --   `queryDistinct` dedups the DECODED, projected rows (see `Select.distinct`
 --   doc comment for why this needs a separate `Eq a`-constrained entry point
 --   rather than living on plain `query`).
-export
-withDistinct : Select -> Select
+export withDistinct : Select -> Select
 withDistinct sel = { sel | distinct = True }
 
 -- | Set the PROJECTION column list (`SELECT <e1>, <e2>, … FROM …`).  The list is
@@ -293,8 +284,7 @@ withDistinct sel = { sel | distinct = True }
 --   the default `SELECT *` behaviour (raw cells pass through unchanged).
 --
 --   Example: `withColumns [unExpr (eAdd (eColInt "a") (eColInt "b")), unExpr (eColText "name")]`.
-export
-withColumns : List SqlExpr -> Select -> Select
+export withColumns : List SqlExpr -> Select -> Select
 withColumns cols sel = { sel | columns = cols }
 
 -- ---------------------------------------------------------------------------
@@ -306,11 +296,9 @@ withColumns cols sel = { sel | columns = cols }
 --   (left-to-right); literal values are NEVER inlined into the SQL text.
 --   Identifiers (table + column names) are charset-asserted (`[A-Za-z0-9_]`);
 --   an illegal identifier yields `Err`.
-export
-render : Select -> Result String (String, List Literal)
+export render : Select -> Result String (String, List Literal)
 render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, distinct = dst, columns = cols }) =
-  if not (validIdent tbl)
-  then Err "render: invalid table name: \{tbl}"
+  if not (validIdent tbl) then Err "render: invalid table name: \{tbl}"
   else do
     (joinSql, joinBinds) <- renderJoins js
     (colSql, colBinds) <- renderColumns cols
@@ -326,23 +314,23 @@ render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, o
 -- expr rendered via `renderExpr`, comma-joined, binds accumulated left-to-right.
 renderColumns : List SqlExpr -> Result String (String, List Literal)
 renderColumns [] = Ok ("*", [])
-renderColumns cols = map ((parts, binds) => (join ", " parts, binds)) (renderColumnParts cols)
+renderColumns cols =
+  map ((parts, binds) => (join ", " parts, binds)) (renderColumnParts cols)
 
 renderColumnParts : List SqlExpr -> Result String (List String, List Literal)
 renderColumnParts [] = Ok ([], [])
-renderColumnParts (e :: rest) = do
+renderColumnParts (e::rest) = do
   (sql, binds) <- renderExpr e
   (restParts, restBinds) <- renderColumnParts rest
-  Ok (sql :: restParts, binds ++ restBinds)
+  Ok (sql::restParts, binds ++ restBinds)
 
 -- Render the JOIN clauses (in order), each " INNER JOIN <table> ON <expr>" or
 -- " LEFT JOIN <table> ON <expr>" per its `kind`, accumulating their
 -- ON-expression binds left-to-right.  Empty ⇒ no clause.
 renderJoins : List Join -> Result String (String, List Literal)
-renderJoins []                                       = Ok ("", [])
-renderJoins (Join { table = t, kind = k, on = e } :: rest) =
-  if not (validIdent t)
-  then Err "render: invalid join table name: \{t}"
+renderJoins [] = Ok ("", [])
+renderJoins ((Join { table = t, kind = k, on = e })::rest) =
+  if not (validIdent t) then Err "render: invalid join table name: \{t}"
   else do
     (onSql, onBinds) <- renderExpr e
     (restSql, restBinds) <- renderJoins rest
@@ -350,7 +338,7 @@ renderJoins (Join { table = t, kind = k, on = e } :: rest) =
 
 joinKindSql : JoinKind -> String
 joinKindSql JInner = "INNER JOIN"
-joinKindSql JLeft  = "LEFT JOIN"
+joinKindSql JLeft = "LEFT JOIN"
 
 -- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
 -- the placeholders parameterized too (LIMIT ? / OFFSET ?) for uniformity.
@@ -358,11 +346,11 @@ joinKindSql JLeft  = "LEFT JOIN"
 renderLimitOffset : Option Int -> Option Int -> String
 renderLimitOffset lm of_ =
   let l = match lm
-            Some _ => " LIMIT ?"
-            None   => ""
+    Some _ => " LIMIT ?"
+    None => ""
   let o = match of_
-            Some _ => " OFFSET ?"
-            None   => ""
+    Some _ => " OFFSET ?"
+    None => ""
   "\{l}\{o}"
 
 -- Render the ORDER BY clause (no bind params — column names are validated
@@ -370,17 +358,17 @@ renderLimitOffset lm of_ =
 -- name.  Empty key list ⇒ no clause at all.
 renderOrderBy : List (String, Bool) -> Result String String
 renderOrderBy [] = Ok ""
-renderOrderBy keys = map (parts => " ORDER BY " ++ join ", " parts) (renderOrderByParts keys)
+renderOrderBy keys =
+  map (parts => " ORDER BY " ++ join ", " parts) (renderOrderByParts keys)
 
 renderOrderByParts : List (String, Bool) -> Result String (List String)
 renderOrderByParts [] = Ok []
-renderOrderByParts ((col, asc) :: rest) =
-  if not (validQualIdent col)
-  then Err "render: invalid ORDER BY column: \{col}"
+renderOrderByParts ((col, asc)::rest) =
+  if not (validQualIdent col) then Err "render: invalid ORDER BY column: \{col}"
   else do
     let dir = if asc then "ASC" else "DESC"
     restParts <- renderOrderByParts rest
-    Ok (("\{col} \{dir}") :: restParts)
+    Ok ("\{col} \{dir}"::restParts)
 
 limOffSql : String -> String
 limOffSql s = s
@@ -388,11 +376,11 @@ limOffSql s = s
 limOffBinds : String -> Option Int -> Option Int -> List Literal
 limOffBinds _ lm of_ =
   let lb = match lm
-             Some n => [LInt n]
-             None   => []
+    Some n => [LInt n]
+    None => []
   let ob = match of_
-             Some n => [LInt n]
-             None   => []
+    Some n => [LInt n]
+    None => []
   lb ++ ob
 
 -- Render the WHERE clause (with leading " WHERE ") and collect its binds.
@@ -446,14 +434,19 @@ cmpSql OpGe = ">="
 validIdent : String -> Bool
 validIdent s =
   let chars = stringToChars s
-  if arrayLength chars == 0 then False else validIdentGo chars 0 (arrayLength chars)
+  if arrayLength chars == 0 then
+    False
+  else
+    validIdentGo chars 0 (arrayLength chars)
 
 validIdentGo : Array Char -> Int -> Int -> Bool
 validIdentGo chars i n =
-  if i >= n then True
-  else if identChar (charCode (chars.[i]))
-       then validIdentGo chars (i + 1) n
-       else False
+  if i >= n then
+    True
+  else if identChar (charCode chars.[i]) then
+    validIdentGo chars (i + 1) n
+  else
+    False
 
 identChar : Int -> Bool
 identChar c =
@@ -472,13 +465,15 @@ validQualIdent s =
   match countDots chars 0 (arrayLength chars) 0
     0 => validIdent s
     1 => match splitOnDot s
-           (a, b) => validIdent a && validIdent b
+      (a, b) => validIdent a && validIdent b
     _ => False
 
 countDots : Array Char -> Int -> Int -> Int -> Int
 countDots chars i n acc =
-  if i >= n then acc
-  else countDots chars (i + 1) n (if charCode (chars.[i]) == 46 then acc + 1 else acc)
+  if i >= n then
+    acc
+  else
+    countDots chars (i + 1) n (if charCode chars.[i] == 46 then acc + 1 else acc)
 
 -- Split on the first '.' (caller guarantees exactly one).  Returns (before, after).
 splitOnDot : String -> (String, String)
@@ -490,9 +485,12 @@ splitOnDot s =
 
 dotIndex : Array Char -> Int -> Int -> Int
 dotIndex chars i n =
-  if i >= n then n
-  else if charCode (chars.[i]) == 46 then i
-  else dotIndex chars (i + 1) n
+  if i >= n then
+    n
+  else if charCode chars.[i] == 46 then
+    i
+  else
+    dotIndex chars (i + 1) n
 
 -- ---------------------------------------------------------------------------
 -- compilePred : SqlExpr -> (List Cell -> Bool)
@@ -505,8 +503,7 @@ dotIndex chars i n =
 
 -- | Compile `expr` against a column-name→index resolver into a row predicate.
 --   `Err` on an unknown column name.
-export
-compilePred : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Bool)
+export compilePred : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Bool)
 compilePred lookup (ECol name) = match lookup name
   None => Err "compilePred: unknown column: \{name}"
   Some i => Ok (cells => cellTruthy (nthCell cells i))
@@ -546,8 +543,7 @@ compileCmp lookup op l r = do
 -- cell), or an arithmetic expression (both sides compiled to accessors, then
 -- combined per row via `evalArith`).  Returns a `List Cell -> Cell` accessor.
 -- Exported so `lib.mutate` can evaluate UPDATE SET right-hand sides.
-export
-compileOperand : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
+export compileOperand : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
 compileOperand lookup (ECol name) = match lookup name
   None => Err "compilePred: unknown column: \{name}"
   Some i => Ok (cells => nthCell cells i)
@@ -560,8 +556,7 @@ compileOperand lookup _ = Err "compilePred: operand must be a column or literal"
 
 -- | Compile any `SqlExpr` value operand to a per-row `List Cell -> Cell`
 --   accessor (an alias of `compileOperand` for the UPDATE SET call site).
-export
-compileValue : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
+export compileValue : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
 compileValue = compileOperand
 
 -- ---------------------------------------------------------------------------
@@ -576,43 +571,42 @@ compileValue = compileOperand
 
 evalArith : ArithOp -> Cell -> Cell -> Cell
 evalArith op a b =
-  if cellIsNull a || cellIsNull b
-  then CNull
+  if cellIsNull a || cellIsNull b then CNull
   else match op
     AMod => evalMod a b
     ADiv => evalDiv a b
-    _    => evalAddSubMul op a b
+    _ => evalAddSubMul op a b
 
 -- `+ - *`: integer result when both operands are integers, else float.
 evalAddSubMul : ArithOp -> Cell -> Cell -> Cell
 evalAddSubMul op a b = match (a, b)
-  (CInt x,   CInt y)   => CInt (intArith op x y)
-  (CInt x,   CFloat y) => CFloat (floatArith op (intToFloat x) y)
-  (CFloat x, CInt y)   => CFloat (floatArith op x (intToFloat y))
+  (CInt x, CInt y) => CInt (intArith op x y)
+  (CInt x, CFloat y) => CFloat (floatArith op (intToFloat x) y)
+  (CFloat x, CInt y) => CFloat (floatArith op x (intToFloat y))
   (CFloat x, CFloat y) => CFloat (floatArith op x y)
-  _                    => CNull
+  _ => CNull
 
 intArith : ArithOp -> Int -> Int -> Int
 intArith AAdd x y = x + y
 intArith ASub x y = x - y
 intArith AMul x y = x * y
-intArith _    x _ = x   -- ADiv/AMod never reach here (handled upstream)
+intArith _ x _ = x  -- ADiv/AMod never reach here (handled upstream)
 
 floatArith : ArithOp -> Float -> Float -> Float
 floatArith AAdd x y = x + y
 floatArith ASub x y = x - y
 floatArith AMul x y = x * y
-floatArith _    x _ = x   -- ADiv/AMod never reach here (handled upstream)
+floatArith _ x _ = x  -- ADiv/AMod never reach here (handled upstream)
 
 -- Division: both-int ⇒ truncating integer division; any-float ⇒ float division.
 -- Division by zero (integer or real) ⇒ NULL, matching sqlite.
 evalDiv : Cell -> Cell -> Cell
 evalDiv a b = match (a, b)
-  (CInt x,   CInt y)   => if y == 0 then CNull else CInt (x / y)
-  (CInt x,   CFloat y) => if y == 0.0 then CNull else CFloat (intToFloat x / y)
-  (CFloat x, CInt y)   => if y == 0 then CNull else CFloat (x / intToFloat y)
+  (CInt x, CInt y) => if y == 0 then CNull else CInt (x / y)
+  (CInt x, CFloat y) => if y == 0.0 then CNull else CFloat (intToFloat x / y)
+  (CFloat x, CInt y) => if y == 0 then CNull else CFloat (x / intToFloat y)
   (CFloat x, CFloat y) => if y == 0.0 then CNull else CFloat (x / y)
-  _                    => CNull
+  _ => CNull
 
 -- Modulo: operate on the integer parts (floats truncate toward zero via the
 -- pattern below only reaching integer cells here); x%0 ⇒ NULL; sign follows the
@@ -620,48 +614,48 @@ evalDiv a b = match (a, b)
 evalMod : Cell -> Cell -> Cell
 evalMod a b = match (cellToIntPart a, cellToIntPart b)
   (Some x, Some y) => if y == 0 then CNull else CInt (x % y)
-  _                => CNull
+  _ => CNull
 
 -- Truncate a numeric cell to its integer part (toward zero).  Non-numeric ⇒ None.
 cellToIntPart : Cell -> Option Int
-cellToIntPart (CInt n)   = Some n
+cellToIntPart (CInt n) = Some n
 cellToIntPart (CFloat f) = Some (floatToInt f)
-cellToIntPart _          = None
+cellToIntPart _ = None
 
 -- ---------------------------------------------------------------------------
 -- Cell / comparison helpers (used by compilePred)
 -- ---------------------------------------------------------------------------
 
 nthCell : List Cell -> Int -> Cell
-nthCell []        _ = CNull
-nthCell (c :: rest) i = if i <= 0 then c else nthCell rest (i - 1)
+nthCell [] _ = CNull
+nthCell (c::rest) i = if i <= 0 then c else nthCell rest (i - 1)
 
 cellIsNull : Cell -> Bool
 cellIsNull CNull = True
-cellIsNull _     = False
+cellIsNull _ = False
 
 -- A bare column/literal in a boolean position: SQLite treats nonzero numeric as
 -- true, NULL/zero/empty as false-ish.
 cellTruthy : Cell -> Bool
-cellTruthy CNull      = False
-cellTruthy (CInt n)   = n != 0
+cellTruthy CNull = False
+cellTruthy (CInt n) = n != 0
 cellTruthy (CFloat f) = f != 0.0
-cellTruthy (CText s)  = stringLength s > 0
-cellTruthy (CBlob _)  = True
+cellTruthy (CText s) = stringLength s > 0
+cellTruthy (CBlob _) = True
 
 litTruthy : Literal -> Bool
-litTruthy LNull      = False
-litTruthy (LInt n)   = n != 0
+litTruthy LNull = False
+litTruthy (LInt n) = n != 0
 litTruthy (LFloat f) = f != 0.0
-litTruthy (LText s)  = stringLength s > 0
-litTruthy (LBlob _)  = True
+litTruthy (LText s) = stringLength s > 0
+litTruthy (LBlob _) = True
 
 litToCell : Literal -> Cell
-litToCell (LInt n)   = CInt n
-litToCell (LText s)  = CText s
+litToCell (LInt n) = CInt n
+litToCell (LText s) = CText s
 litToCell (LFloat f) = CFloat f
-litToCell (LBlob b)  = CBlob b
-litToCell LNull      = CNull
+litToCell (LBlob b) = CBlob b
+litToCell LNull = CNull
 
 -- Compare two cells under `op`.  Any NULL operand ⇒ False (SQL WHERE).
 -- Numeric cells (CInt/CFloat) compare numerically across the int/float split.
@@ -676,26 +670,26 @@ cmpCells op a b =
 -- A three-way ordering of two non-null cells, or None if the shapes are not comparable.
 cmpOrder : Cell -> Cell -> Option Ordering
 cmpOrder a b = match (a, b)
-  (CInt x, CInt y)     => Some (compare x y)
+  (CInt x, CInt y) => Some (compare x y)
   (CFloat x, CFloat y) => Some (compare x y)
-  (CInt x, CFloat y)   => Some (compare (intToFloat x) y)
-  (CFloat x, CInt y)   => Some (compare x (intToFloat y))
-  (CText x, CText y)   => Some (compare x y)
-  (CBlob x, CBlob y)   => Some (compare (arrayLength x) (arrayLength y))
-  _                    => None
+  (CInt x, CFloat y) => Some (compare (intToFloat x) y)
+  (CFloat x, CInt y) => Some (compare x (intToFloat y))
+  (CText x, CText y) => Some (compare x y)
+  (CBlob x, CBlob y) => Some (compare (arrayLength x) (arrayLength y))
+  _ => None
 
 applyCmp : CmpOp -> Ordering -> Bool
 applyCmp op o = match (op, o)
   (OpEq, Eq) => True
   (OpNe, Eq) => False
-  (OpNe, _)  => True
+  (OpNe, _) => True
   (OpLt, Lt) => True
   (OpLe, Gt) => False
-  (OpLe, _)  => True
+  (OpLe, _) => True
   (OpGt, Gt) => True
   (OpGe, Lt) => False
-  (OpGe, _)  => True
-  _          => False
+  (OpGe, _) => True
+  _ => False
 
 -- ---------------------------------------------------------------------------
 -- query : run a Select against a Db, decoding survivors via a RowType
@@ -706,8 +700,7 @@ applyCmp op o = match (op, o)
 --   ORDER BY (if specified), drop `offset`, take `limit`, and decode each survivor
 --   via `rt`.  A decode error on any survivor aborts the whole query (fail-fast).
 --   SQL semantics: ORDER BY is applied BEFORE LIMIT/OFFSET.
-export
-query : Db -> Select -> RowType a -> Result String (List a)
+export query : Db -> Select -> RowType a -> Result String (List a)
 query db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, columns = cols }) rt =
   match js
     [] => do
@@ -734,21 +727,19 @@ query db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm,
 --   slice that already-deduped set). `query` itself ignores `distinct` and
 --   stays unconstrained; this is the separate `Eq a`-constrained entry point
 --   DISTINCT execution needs (see the `Select.distinct` doc comment).
-export
-queryDistinct : Eq a => Db -> Select -> RowType a -> Result String (List a)
-queryDistinct db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, columns = cols }) rt =
-  match js
-    [] => do
-      entry <- findTable db tbl
-      let lookup = mkLookup (schemaSql entry)
-      (pkIdx, rows) <- scanTableRowsIpk db tbl
-      let rowsCells = map (rowCellsWithIpk pkIdx) rows
-      runOverCellsDistinct lookup w ob lm of_ cols rt rowsCells
-    _  => do
-      infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
-      let lookup = mkJoinLookup (map infoLookup infos)
-      joined <- runJoins lookup infos js
-      runOverCellsDistinct lookup w ob lm of_ cols rt joined
+export queryDistinct : Eq a => Db -> Select -> RowType a -> Result String (List a)
+queryDistinct db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, columns = cols }) rt = match js
+  [] => do
+    entry <- findTable db tbl
+    let lookup = mkLookup (schemaSql entry)
+    (pkIdx, rows) <- scanTableRowsIpk db tbl
+    let rowsCells = map (rowCellsWithIpk pkIdx) rows
+    runOverCellsDistinct lookup w ob lm of_ cols rt rowsCells
+  _ => do
+    infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
+    let lookup = mkJoinLookup (map infoLookup infos)
+    joined <- runJoins lookup infos js
+    runOverCellsDistinct lookup w ob lm of_ cols rt joined
 
 joinTable : Join -> String
 joinTable (Join { table = t }) = t
@@ -794,18 +785,18 @@ runOverCellsDistinct lookup w ob lm of_ cols rt rowsCells = do
 -- each row → `[ eval_1 row, eval_2 row, … ]`.  A compile error (unknown column /
 -- bad operand) aborts the whole query, matching WHERE's fail-fast.
 projectCells : (String -> Option Int) -> List SqlExpr -> List (List Cell) -> Result String (List (List Cell))
-projectCells _      []   rows = Ok rows
+projectCells _ [] rows = Ok rows
 projectCells lookup cols rows = do
   evals <- compileProjections lookup cols
   Ok (map (row => map (g => g row) evals) rows)
 
 -- Compile each projection expr to a per-row accessor (left-to-right, fail-fast).
 compileProjections : (String -> Option Int) -> List SqlExpr -> Result String (List (List Cell -> Cell))
-compileProjections _      []          = Ok []
-compileProjections lookup (e :: rest) = do
+compileProjections _ [] = Ok []
+compileProjections lookup (e::rest) = do
   g <- compileValue lookup e
   gs <- compileProjections lookup rest
-  Ok (g :: gs)
+  Ok (g::gs)
 
 -- Drop `offset` elements then keep at most `limit`, over a generic list —
 -- the DISTINCT-path sibling of `applyOffsetLimit`, which is specialized to
@@ -813,18 +804,18 @@ compileProjections lookup (e :: rest) = do
 dropTakeList : Option Int -> Option Int -> List a -> List a
 dropTakeList of_ lm xs =
   let afterOffset = match of_
-                      Some n => drop n xs
-                      None   => xs
+    Some n => drop n xs
+    None => xs
   match lm
     Some n => take n afterOffset
-    None   => afterOffset
+    None => afterOffset
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
-mkLookup : String -> (String -> Option Int)
-mkLookup createSql = (name => columnIndex createSql name)
+mkLookup : String -> String -> Option Int
+mkLookup createSql = name => columnIndex createSql name
 
 compileWhere : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Bool)
-compileWhere _      None     = Ok (_ => True)
+compileWhere _ None = Ok (_ => True)
 compileWhere lookup (Some e) = compilePred lookup e
 
 -- ---------------------------------------------------------------------------
@@ -838,14 +829,18 @@ compileWhere lookup (Some e) = compilePred lookup e
 -- `length (head rows)`), so it's correct even when the table has zero rows —
 -- needed to null-pad a LEFT JOIN's unmatched right side.
 gatherJoinInfos : Db -> List String -> Int -> List (String, String, List (List Cell), Int, Int) -> Result String (List (String, String, List (List Cell), Int, Int))
-gatherJoinInfos _  []           _   acc = Ok (reverse acc)
-gatherJoinInfos db (name :: rest) off acc = do
+gatherJoinInfos _ [] _ acc = Ok (reverse acc)
+gatherJoinInfos db (name::rest) off acc = do
   entry <- findTable db name
   (pkIdx, rows) <- scanTableRowsIpk db name
   cols <- columnNames db name
   let width = length cols
   let cellsRows = map (rowCellsWithIpk pkIdx) rows
-  gatherJoinInfos db rest (off + width) ((name, schemaSql entry, cellsRows, off, width) :: acc)
+  gatherJoinInfos
+    db
+    rest
+    (off + width)
+    ((name, schemaSql entry, cellsRows, off, width)::acc)
 
 -- Project a full info tuple to the (name, createSql, offset) triple the lookup needs.
 infoLookup : (String, String, List (List Cell), Int, Int) -> (String, String, Int)
@@ -860,26 +855,25 @@ infoWidth (_, _, _, _, w) = w
 -- Build the combined column resolver over the ordered table infos.  A qualified
 -- `table.column` resolves within that table (offset + its column index); a bare
 -- `column` searches tables in `from :: joins` order, first match wins.
-mkJoinLookup : List (String, String, Int) -> (String -> Option Int)
-mkJoinLookup infos = (name =>
-  match countDots (stringToChars name) 0 (stringLength name) 0
-    1 => match splitOnDot name
-           (tbl, col) => lookupQualified infos tbl col
-    _ => lookupBare infos name)
+mkJoinLookup : List (String, String, Int) -> String -> Option Int
+mkJoinLookup infos = name => match countDots (stringToChars name) 0 (stringLength name) 0
+  1 => match splitOnDot name
+    (tbl, col) => lookupQualified infos tbl col
+  _ => lookupBare infos name
 
 lookupQualified : List (String, String, Int) -> String -> String -> Option Int
-lookupQualified []                          _   _   = None
-lookupQualified ((name, sql, off) :: rest) tbl col =
-  if name == tbl
-  then map (i => off + i) (columnIndex sql col)
-  else lookupQualified rest tbl col
+lookupQualified [] _ _ = None
+lookupQualified ((name, sql, off)::rest) tbl col =
+  if name == tbl then
+    map (i => off + i) (columnIndex sql col)
+  else
+    lookupQualified rest tbl col
 
 lookupBare : List (String, String, Int) -> String -> Option Int
-lookupBare []                          _    = None
-lookupBare ((_, sql, off) :: rest) col =
-  match columnIndex sql col
-    Some i => Some (off + i)
-    None   => lookupBare rest col
+lookupBare [] _ = None
+lookupBare ((_, sql, off)::rest) col = match columnIndex sql col
+  Some i => Some (off + i)
+  None => lookupBare rest col
 
 -- Nested-loop the tables left-to-right: start with the `from` table's rows,
 -- then for each join apply its ON predicate (compiled over the COMBINED lookup)
@@ -887,19 +881,20 @@ lookupBare ((_, sql, off) :: rest) col =
 -- the next table's rows.  The `infos` head is the `from` table; the tail pairs
 -- 1:1 with `joins`.
 runJoins : (String -> Option Int) -> List (String, String, List (List Cell), Int, Int) -> List Join -> Result String (List (List Cell))
-runJoins _      []                  _  = Ok []
-runJoins lookup (headInfo :: tailInfos) js =
+runJoins _ [] _ = Ok []
+runJoins lookup (headInfo::tailInfos) js =
   nestLoop lookup (infoCells headInfo) (zipJoins js tailInfos)
 
 -- Pair each join with its table's cells + width (parallel lists; over-length is dropped).
 zipJoins : List Join -> List (String, String, List (List Cell), Int, Int) -> List (Join, List (List Cell), Int)
-zipJoins []          _                 = []
-zipJoins _           []                = []
-zipJoins (j :: js)   (info :: infos)   = (j, infoCells info, infoWidth info) :: zipJoins js infos
+zipJoins [] _ = []
+zipJoins _ [] = []
+zipJoins (j::js) (info::infos) =
+  (j, infoCells info, infoWidth info) :: zipJoins js infos
 
 nestLoop : (String -> Option Int) -> List (List Cell) -> List (Join, List (List Cell), Int) -> Result String (List (List Cell))
-nestLoop _      left []                        = Ok left
-nestLoop lookup left ((j, right, w) :: rest)   = do
+nestLoop _ left [] = Ok left
+nestLoop lookup left ((j, right, w)::rest) = do
   onPred <- compilePred lookup (joinOn j)
   nestLoop lookup (crossFilter (joinKind j) w onPred left right) rest
 
@@ -909,23 +904,25 @@ nestLoop lookup left ((j, right, w) :: rest)   = do
 -- with `w` `CNull` cells on the right (SQL LEFT JOIN semantics); `JInner`
 -- unmatched left rows simply vanish, unchanged from before.
 crossFilter : JoinKind -> Int -> (List Cell -> Bool) -> List (List Cell) -> List (List Cell) -> List (List Cell)
-crossFilter _    _ _      []           _      = []
-crossFilter kind w onPred (l :: lefts) rights = crossOne kind w onPred l rights ++ crossFilter kind w onPred lefts rights
+crossFilter _ _ _ [] _ = []
+crossFilter kind w onPred (l::lefts) rights = crossOne kind w onPred l rights
+  ++ crossFilter kind w onPred lefts rights
 
 crossOne : JoinKind -> Int -> (List Cell -> Bool) -> List Cell -> List (List Cell) -> List (List Cell)
 crossOne kind w onPred l rights =
   let matches = crossOneMatches onPred l rights
   match (kind, matches)
     (JLeft, []) => [l ++ nullPad w]
-    _           => matches
+    _ => matches
 
 crossOneMatches : (List Cell -> Bool) -> List Cell -> List (List Cell) -> List (List Cell)
-crossOneMatches _      _ []             = []
-crossOneMatches onPred l (r :: rights) =
+crossOneMatches _ _ [] = []
+crossOneMatches onPred l (r::rights) =
   let combined = l ++ r
-  if onPred combined
-  then combined :: crossOneMatches onPred l rights
-  else crossOneMatches onPred l rights
+  if onPred combined then
+    combined :: crossOneMatches onPred l rights
+  else
+    crossOneMatches onPred l rights
 
 -- `n` `CNull` cells, used to pad an unmatched LEFT JOIN right side.
 nullPad : Int -> List Cell
@@ -942,65 +939,65 @@ sortCells lookup keys rowsCells =
   let resolved = resolveOrderKeys lookup keys
   match resolved
     [] => rowsCells
-    _  => sortBy (a b => compareByKeys resolved a b) rowsCells
+    _ => sortBy (a b => compareByKeys resolved a b) rowsCells
 
 resolveOrderKeys : (String -> Option Int) -> List (String, Bool) -> List (Int, Bool)
-resolveOrderKeys _      []                = []
-resolveOrderKeys lookup ((col, asc) :: rest) =
-  match lookup col
-    None     => resolveOrderKeys lookup rest
-    Some idx => (idx, asc) :: resolveOrderKeys lookup rest
+resolveOrderKeys _ [] = []
+resolveOrderKeys lookup ((col, asc)::rest) = match lookup col
+  None => resolveOrderKeys lookup rest
+  Some idx => (idx, asc) :: resolveOrderKeys lookup rest
 
 compareByKeys : List (Int, Bool) -> List Cell -> List Cell -> Ordering
-compareByKeys []                   _ _ = Eq
-compareByKeys ((idx, asc) :: rest) a b =
-  let o = if asc
-          then cellOrder (nthCell a idx) (nthCell b idx)
-          else cellOrder (nthCell b idx) (nthCell a idx)
+compareByKeys [] _ _ = Eq
+compareByKeys ((idx, asc)::rest) a b =
+  let o = if asc then
+    cellOrder (nthCell a idx) (nthCell b idx)
+  else
+    cellOrder (nthCell b idx) (nthCell a idx)
   match o
     Eq => compareByKeys rest a b
-    _  => o
+    _ => o
 
 -- | Three-way ordering of two Cell values following SQLite's type ordering:
 --   NULL < Int/Float (numeric, interleaved) < Text (lexicographic) < Blob.
 --   Used by sortRows for ORDER BY.
 cellOrder : Cell -> Cell -> Ordering
-cellOrder CNull      CNull      = Eq
-cellOrder CNull      _          = Lt
-cellOrder _          CNull      = Gt
-cellOrder (CInt x)   (CInt y)   = compare x y
+cellOrder CNull CNull = Eq
+cellOrder CNull _ = Lt
+cellOrder _ CNull = Gt
+cellOrder (CInt x) (CInt y) = compare x y
 cellOrder (CFloat x) (CFloat y) = compare x y
-cellOrder (CInt x)   (CFloat y) = compare (intToFloat x) y
-cellOrder (CFloat x) (CInt y)   = compare x (intToFloat y)
-cellOrder (CText x)  (CText y)  = compare x y
-cellOrder (CBlob x)  (CBlob y)  = compare (arrayLength x) (arrayLength y)
-cellOrder a          b          = compare (cellTypeRank a) (cellTypeRank b)
+cellOrder (CInt x) (CFloat y) = compare (intToFloat x) y
+cellOrder (CFloat x) (CInt y) = compare x (intToFloat y)
+cellOrder (CText x) (CText y) = compare x y
+cellOrder (CBlob x) (CBlob y) = compare (arrayLength x) (arrayLength y)
+cellOrder a b = compare (cellTypeRank a) (cellTypeRank b)
 
 -- Type affinity rank: numeric=1, text=2, blob=3.  Used by cellOrder's catch-all
 -- for cross-type comparisons (e.g. Int vs Text, Float vs Blob, Text vs Blob).
 -- NULL (rank 0) is already handled explicitly above.
 cellTypeRank : Cell -> Int
-cellTypeRank CNull      = 0
-cellTypeRank (CInt _)   = 1
+cellTypeRank CNull = 0
+cellTypeRank (CInt _) = 1
 cellTypeRank (CFloat _) = 1
-cellTypeRank (CText _)  = 2
-cellTypeRank (CBlob _)  = 3
+cellTypeRank (CText _) = 2
+cellTypeRank (CBlob _) = 3
 
 -- Drop `offset` rows then keep at most `limit`.
 applyOffsetLimit : Option Int -> Option Int -> List (List Cell) -> List (List Cell)
 applyOffsetLimit of_ lm rows =
   let afterOffset = match of_
-                      Some n => drop n rows
-                      None   => rows
+    Some n => drop n rows
+    None => rows
   match lm
     Some n => take n afterOffset
-    None   => afterOffset
+    None => afterOffset
 
 decodeCells : RowType a -> List (List Cell) -> List a -> Result String (List a)
-decodeCells _  []             acc = Ok (reverse acc)
-decodeCells rt (cells :: rest) acc = do
+decodeCells _ [] acc = Ok (reverse acc)
+decodeCells rt (cells::rest) acc = do
   v <- rtDecode rt cells
-  decodeCells rt rest (v :: acc)
+  decodeCells rt rest (v::acc)
 
 -- ---------------------------------------------------------------------------
 -- Render doctests (the injection-safety regression backbone — no DB).
@@ -1089,37 +1086,39 @@ decodeCells rt (cells :: rest) acc = do
 --
 -- > renderShow (render (withColumns [unExpr (eAdd (eColInt "a") (eColInt "b")), unExpr (eColText "name")] (selectFrom "t")))
 -- "SELECT (a + b), name FROM t ## []"
-export
-renderShow : Result String (String, List Literal) -> String
+export renderShow : Result String (String, List Literal) -> String
 renderShow (Err e) = "ERR \{e}"
 renderShow (Ok (sql, binds)) = "\{sql} ## \{showBinds binds}"
 
 andLimitSel : Select
-andLimitSel =
-  withOffset 5 (withLimit 10
-    (withWhere (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
+andLimitSel = withOffset
+  5
+  (withLimit
+    10
+    (withWhere
+      (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
       (selectFrom "users")))
 
 orNullSel : Select
-orNullSel =
-  withWhere
-    (eAnd (eOr (eEq (eColText "a") (eLitT "hi")) (eLt (eColInt "b") (eLitI 3)))
-          (eIsNull (eColInt "c")))
-    (selectFrom "t")
+orNullSel = withWhere
+  (eAnd
+    (eOr (eEq (eColText "a") (eLitT "hi")) (eLt (eColInt "b") (eLitI 3)))
+    (eIsNull (eColInt "c")))
+  (selectFrom "t")
 
 -- Render a bind list as `[LInt 18, LInt 10]` (Debug-independent).
 showBinds : List Literal -> String
 showBinds binds = "[\{showBindsGo binds True}]"
 
 showBindsGo : List Literal -> Bool -> String
-showBindsGo []           _     = ""
-showBindsGo (x :: rest)  first =
+showBindsGo [] _ = ""
+showBindsGo (x::rest) first =
   let sep = if first then "" else ", "
   "\{sep}\{showLit x}\{showBindsGo rest False}"
 
 showLit : Literal -> String
-showLit (LInt n)   = "LInt \{n}"
-showLit (LText s)  = "LText \{s}"
+showLit (LInt n) = "LInt \{n}"
+showLit (LText s) = "LText \{s}"
 showLit (LFloat f) = "LFloat \{f}"
-showLit (LBlob _)  = "LBlob"
-showLit LNull      = "LNull"
+showLit (LBlob _) = "LBlob"
+showLit LNull = "LNull"

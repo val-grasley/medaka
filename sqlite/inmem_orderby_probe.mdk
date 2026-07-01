@@ -11,9 +11,7 @@
 import lib.dbwriter.{buildDatabase}
 import lib.sqlite.{Db, fromBytes}
 import lib.recordfmt.{Cell, CNull, CInt, CText}
-import lib.select.{
-  Select, selectFrom, withOrderBy, query,
-}
+import lib.select.{Select, selectFrom, withOrderBy, query}
 import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}
 
 usersSql : String
@@ -22,14 +20,14 @@ usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
 -- Two ties on age (Alice/Frank both 30) so a second ORDER BY key has
 -- something to break.
 usersRows : List (List Cell)
-usersRows =
-  [ [ CInt 1, CText "Alice", CInt 30 ]
-  , [ CInt 2, CText "Bob",   CNull ]
-  , [ CInt 3, CText "Carol", CInt 25 ]
-  , [ CInt 4, CText "Dave",  CInt 40 ]
-  , [ CInt 5, CText "Eve",   CInt 22 ]
-  , [ CInt 6, CText "Frank", CInt 30 ]
-  ]
+usersRows = [
+  [CInt 1, CText "Alice", CInt 30],
+  [CInt 2, CText "Bob", CNull],
+  [CInt 3, CText "Carol", CInt 25],
+  [CInt 4, CText "Dave", CInt 40],
+  [CInt 5, CText "Eve", CInt 22],
+  [CInt 6, CText "Frank", CInt 30],
+]
 
 ipk : Option Int
 ipk = Some 0
@@ -38,13 +36,13 @@ data User = User { id : Int, name : String, age : Option Int }
 
 mkUser : (Int, String, Option Int) -> Result String User
 mkUser t = match t
-  (i, n, a) => Ok (User { id = i, name = n, age = a })
+  (i, n, a) => Ok User { id = i, name = n, age = a }
 
 userRow : RowType User
 userRow = tCustom mkUser (t3 tInt tText (tOption tInt))
 
 showOpt : Option Int -> String
-showOpt None     = ""
+showOpt None = ""
 showOpt (Some n) = intToString n
 
 showUser : User -> String
@@ -52,8 +50,8 @@ showUser u = match u
   User { id = i, name = n, age = a } => "\{i}|\{n}|\{showOpt a}"
 
 printRows : List User -> <IO> Unit
-printRows []          = ()
-printRows (u :: rest) =
+printRows [] = ()
+printRows (u::rest) =
   let _ = println (showUser u)
   printRows rest
 
@@ -61,25 +59,24 @@ runQ : Db -> String -> Select -> <IO> Unit
 runQ db label sel =
   let _ = println label
   match query db sel userRow
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printRows rows
 
 runAll : Db -> <IO> Unit
 runAll db =
-  let _ = runQ db "-- order by age asc --"
-            (withOrderBy "age" True (selectFrom "users"))
-  let _ = runQ db "-- order by age desc --"
-            (withOrderBy "age" False (selectFrom "users"))
-  let _ = runQ db "-- order by age asc, name desc --"
-            (withOrderBy "name" False (withOrderBy "age" True (selectFrom "users")))
-  runQ db "-- order by age desc, name asc --"
+  let _ = runQ db "-- order by age asc --" (withOrderBy "age" True (selectFrom "users"))
+  let _ = runQ db "-- order by age desc --" (withOrderBy "age" False (selectFrom "users"))
+  let _ = runQ db "-- order by age asc, name desc --" (withOrderBy "name" False (withOrderBy "age" True (selectFrom "users")))
+  runQ
+    db
+    "-- order by age desc, name asc --"
     (withOrderBy "name" True (withOrderBy "age" False (selectFrom "users")))
 
 main : <IO, Mut> Unit
 main =
   let _ = println "-- CREATE users (in-memory) --"
   match buildDatabase "users" usersSql 4 ipk usersRows
-    Err e    => println "build error: \{e}"
+    Err e => println "build error: \{e}"
     Ok bytes => match fromBytes bytes
       Err e => println "fromBytes error: \{e}"
       Ok db => runAll db

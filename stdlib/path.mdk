@@ -42,8 +42,7 @@ import string.{split, startsWith, endsWith, contains}
 
    > dirname "c.txt"
    "." -}
-export
-dirname : String -> String
+export dirname : String -> String
 dirname path = dirnameGo path (stringLength path)
 
 dirnameGo : String -> Int -> String
@@ -52,8 +51,7 @@ dirnameGo path i =
   if stringSlice (i - 1) i path == "/" then
     let head = stringSlice 0 (i - 1) path
     if head == "" then "/" else head
-  else
-    dirnameGo path (i - 1)
+  else dirnameGo path (i - 1)
 
 {- | Final path component — the text after the last `/` (the whole string if
    there is none). A trailing `/` yields `""`, matching `path.Base`'s sibling
@@ -68,8 +66,7 @@ dirnameGo path i =
 
    > basename "a/b/"
    "" -}
-export
-basename : String -> String
+export basename : String -> String
 basename path = basenameGo path (stringLength path) (stringLength path)
 
 basenameGo : String -> Int -> Int -> String
@@ -91,8 +88,7 @@ basenameGo path end i =
 
    > extname ".bashrc"
    "" -}
-export
-extname : String -> String
+export extname : String -> String
 extname path =
   let b = basename path
   extnameGo b (stringLength b)
@@ -113,8 +109,7 @@ extnameGo b i =
 
    > stem ".bashrc"
    ".bashrc" -}
-export
-stem : String -> String
+export stem : String -> String
 stem path =
   let b = basename path
   let e = extname path
@@ -128,8 +123,7 @@ stem path =
 
    > hasExtension ".md" "a/b.txt"
    False -}
-export
-hasExtension : String -> String -> Bool
+export hasExtension : String -> String -> Bool
 hasExtension ext path = normalizeExt (extname path) == normalizeExt ext
 
 normalizeExt : String -> String
@@ -143,8 +137,7 @@ normalizeExt e = if startsWith "." e || e == "" then e else "." ++ e
 
    > withExtension "md" "a/b"
    "a/b.md" -}
-export
-withExtension : String -> String -> String
+export withExtension : String -> String -> String
 withExtension ext path =
   let base = basename path
   let e = extname path
@@ -164,18 +157,28 @@ withExtension ext path =
 
    > joinPath "" "c.txt"
    "c.txt" -}
-export
-joinPath : String -> String -> String
+export joinPath : String -> String -> String
 joinPath a b =
-  if a == "" then b
-  else if b == "" then a
-  else stripTrailingSlash a ++ "/" ++ stripLeadingSlash b
+  if a == "" then
+    b
+  else if b == "" then
+    a
+  else
+    stripTrailingSlash a ++ "/" ++ stripLeadingSlash b
 
 stripTrailingSlash : String -> String
-stripTrailingSlash s = if endsWith "/" s then stringSlice 0 (stringLength s - 1) s else s
+stripTrailingSlash s =
+  if endsWith "/" s then
+    stringSlice 0 (stringLength s - 1) s
+  else
+    s
 
 stripLeadingSlash : String -> String
-stripLeadingSlash s = if startsWith "/" s then stringSlice 1 (stringLength s) s else s
+stripLeadingSlash s =
+  if startsWith "/" s then
+    stringSlice 1 (stringLength s) s
+  else
+    s
 
 {- | Join every segment in order with `joinPath`; `""` for the empty list.
 
@@ -184,15 +187,14 @@ stripLeadingSlash s = if startsWith "/" s then stringSlice 1 (stringLength s) s 
 
    > joinAll []
    "" -}
-export
-joinAll : List String -> String
+export joinAll : List String -> String
 joinAll segs = match segs
   [] => ""
-  (s :: rest) => joinAllGo s rest
+  s::rest => joinAllGo s rest
 
 joinAllGo : String -> List String -> String
 joinAllGo acc [] = acc
-joinAllGo acc (s :: rest) = joinAllGo (joinPath acc s) rest
+joinAllGo acc (s::rest) = joinAllGo (joinPath acc s) rest
 
 {- | Split a path into its non-empty `/`-separated components (no `.`/`..`
    resolution — use `normalize` first if you want those collapsed).
@@ -202,13 +204,16 @@ joinAllGo acc (s :: rest) = joinAllGo (joinPath acc s) rest
 
    > segments "/a//b/"
    ["a", "b"] -}
-export
-segments : String -> List String
+export segments : String -> List String
 segments path = filterEmpty (split "/" path)
 
 filterEmpty : List String -> List String
 filterEmpty [] = []
-filterEmpty (s :: rest) = if s == "" then filterEmpty rest else s :: filterEmpty rest
+filterEmpty (s::rest) =
+  if s == "" then
+    filterEmpty rest
+  else
+    s :: filterEmpty rest
 
 -- ── Predicates ───────────────────────────────────────────────────────────
 
@@ -219,8 +224,7 @@ filterEmpty (s :: rest) = if s == "" then filterEmpty rest else s :: filterEmpty
 
    > isAbsolute "a/b"
    False -}
-export
-isAbsolute : String -> Bool
+export isAbsolute : String -> Bool
 isAbsolute path = startsWith "/" path
 
 {- | Drop `prefix` from the front of `path` if `path` starts with it as a
@@ -232,8 +236,7 @@ isAbsolute path = startsWith "/" path
 
    > stripPrefix "a/x" "a/b/c.txt"
    "a/b/c.txt" -}
-export
-stripPrefix : String -> String -> String
+export stripPrefix : String -> String -> String
 stripPrefix prefix path =
   let plen = stringLength prefix
   if prefix == "" then
@@ -265,49 +268,40 @@ stripPrefix prefix path =
 
    > normalize ""
    "." -}
-export
-normalize : String -> String
+export normalize : String -> String
 normalize path =
   let abs = isAbsolute path
   let cleaned = normGo abs (segments path) []
   let body = joinAll (reverse cleaned)
-  if abs then
-    "/" ++ body
-  else if body == "" then
-    "."
-  else
-    body
+  if abs then "/" ++ body else if body == "" then "." else body
 
 -- `abs`: on an absolute path, a `..` with nothing left to cancel is above the
 -- root and is simply dropped; on a relative path it has no target to cancel
 -- against, so it is kept (e.g. `../../b`).
 normGo : Bool -> List String -> List String -> List String
 normGo _ [] acc = acc
-normGo abs ("." :: rest) acc = normGo abs rest acc
-normGo abs (".." :: rest) acc = match acc
+normGo abs ("."::rest) acc = normGo abs rest acc
+normGo abs (".."::rest) acc = match acc
   [] => if abs then normGo abs rest [] else normGo abs rest [".."]
-  (top :: acc2) => if top == ".." then normGo abs rest (".." :: ".." :: acc2) else normGo abs rest acc2
-normGo abs (s :: rest) acc = normGo abs rest (s :: acc)
+  top::acc2 =>
+    if top == ".." then
+      normGo abs rest (".." :: ".."::acc2)
+    else
+      normGo abs rest acc2
+normGo abs (s::rest) acc = normGo abs rest (s::acc)
 
 reverse : List a -> List a
 reverse xs = reverseGo xs []
 
 reverseGo : List a -> List a -> List a
 reverseGo [] acc = acc
-reverseGo (x :: rest) acc = reverseGo rest (x :: acc)
+reverseGo (x::rest) acc = reverseGo rest (x::acc)
 
 -- ── Properties ───────────────────────────────────────────────────────────
 
-prop "normalize is idempotent" (p : String) = normalize (normalize p) == normalize p
+prop "normalize is idempotent" (p : String) =
+  normalize (normalize p) == normalize p
 
-prop "joinPath then split recovers both non-empty segments" (a : String) (b : String) =
-  if a == "" || b == "" || contains "/" a || contains "/" b then
-    True
-  else
-    segments (joinPath a b) == [a, b]
+prop "joinPath then split recovers both non-empty segments" (a : String) (b : String) = if a == "" || b == "" || contains "/" a || contains "/" b then True else segments (joinPath a b) == [a, b]
 
-prop "dirname ++ / ++ basename normalizes back to the original absolute path" (p : String) =
-  if p == "" || not (isAbsolute p) then
-    True
-  else
-    normalize (joinPath (dirname p) (basename p)) == normalize p
+prop "dirname ++ / ++ basename normalizes back to the original absolute path" (p : String) = if p == "" || not (isAbsolute p) then True else normalize (joinPath (dirname p) (basename p)) == normalize p

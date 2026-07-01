@@ -52,8 +52,8 @@
 import frontend.ast.{Lit, Pat, Addr, Route}
 
 -- ── expressions ────────────────────────────────────────────────────────────
-public export data CExpr
-  = CLit Lit
+public export data CExpr =
+  | CLit Lit
   -- a variable, carrying its resolved lexical address (slice-1: by-name lookup,
   -- address unconsumed — see header).  `AGlobal` = top-level / extern / ctor.
   | CVar String Addr
@@ -146,9 +146,9 @@ public export data CGuard = CGBool CExpr | CGBind Pat CExpr
 -- by CTGuard: a failed guard resumes the ordered semantics over the matrix rows
 -- below the guarded clause (its `fail` subtree, compiled at the same column
 -- context, so it reads the same live sub-values).
-public export data CTree
+public export data CTree =
   -- no arm matches → runtime error (mirrors falling off the ordered arms)
-  = CTFail
+  | CTFail
   -- arm i matched unconditionally → re-match it for bindings, eval its body
   | CTLeaf Int
   -- arm i matched but is guarded → eval its guards; on guard failure → CTree
@@ -168,8 +168,8 @@ public export data CTBranch = CTBranch CHead CTree
 -- dynamically test + decompose the Value via eval.mdk's `matchPat` — so the
 -- evaluator needs NO new value-decomposition code (lists are VList, tuples are
 -- VTuple, bools VBool, unit VUnit — `matchPat` already knows each).
-public export data CHead
-  = HCon String Int
+public export data CHead =
+  | HCon String Int
   -- a named constructor (incl. True/False), with its arity
   | HTuple Int
   -- a tuple of the given arity
@@ -182,8 +182,8 @@ public export data CHead
   | HLit Lit  -- a literal (Int/Float/String/Char), arity 0
 
 -- one block statement (mirrors ast.DoStmt, post-desugar core subset)
-public export data CStmt
-  = CSExpr CExpr
+public export data CStmt =
+  | CSExpr CExpr
   | CSLet Bool Pat CExpr
   | CSLetElse Pat CExpr CExpr
   | CSAssign String CExpr
@@ -214,8 +214,8 @@ public export data CClause = CClause (List Pat) CExpr
 --   CImplDefault = an untagged interface default (patterns + lowered body — the
 --     fallback).
 public export data CImplEntry = CImplEntry String Int CImplBody
-public export data CImplBody
-  = CImplTagged String String String (List Int) (List Pat) CExpr
+public export data CImplBody =
+  | CImplTagged String String String (List Int) (List Pat) CExpr
   | CImplDefault (List Pat) CExpr
 
 -- ── programs ───────────────────────────────────────────────────────────────
@@ -223,5 +223,5 @@ public export data CImplBody
 -- constructor table (name → arity, for building VCon makers), the ctor→type map
 -- eval needs for runtime type tags, and (slice 5) the lowered typeclass
 -- impl/default entries.  Slice-1 programs carry an empty impl list.
-public export data CProgram
-  = CProgram (List CBind) (List (String, Int)) (List (String, String)) (List CImplEntry)
+public export data CProgram =
+  | CProgram (List CBind) (List (String, Int)) (List (String, String)) (List CImplEntry)

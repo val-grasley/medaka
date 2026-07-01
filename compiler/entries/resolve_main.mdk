@@ -13,7 +13,8 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 
 main = match args ()
-  [runtimePath, preludePath, targetPath] => withRuntime runtimePath preludePath targetPath
+  [runtimePath, preludePath, targetPath] =>
+    withRuntime runtimePath preludePath targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/resolve_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
 
 withRuntime : String -> String -> String -> <IO> Unit

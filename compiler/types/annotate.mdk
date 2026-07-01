@@ -116,7 +116,7 @@ addrOfGo (frame::rest) n depth = match slotIn frame n 0
 -- ── annotateExpr (scope = framed lexical environment) ─────────────────────
 annotateExpr : List (List String) -> Expr -> Expr
 annotateExpr _ (ELit l) = ELit l
-annotateExpr _ (ENumLit n r d) = ENumLit n r d   -- PLAN.md #11: leaf, passthrough
+annotateExpr _ (ENumLit n r d) = ENumLit n r d  -- PLAN.md #11: leaf, passthrough
 annotateExpr _ (EMethodRef m) = EMethodRef m
 annotateExpr _ (EDictApp d) = EDictApp d
 annotateExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr
@@ -149,7 +149,8 @@ annotateExpr fr (ERangeArray lo hi incl) =
   ERangeArray (annotateExpr fr lo) (annotateExpr fr hi) incl
 annotateExpr fr (ESlice e0 lo hi incl r) =
   ESlice (annotateExpr fr e0) (annotateExpr fr lo) (annotateExpr fr hi) incl r
-annotateExpr fr (EIndex e0 i r) = EIndex (annotateExpr fr e0) (annotateExpr fr i) r
+annotateExpr fr (EIndex e0 i r) =
+  EIndex (annotateExpr fr e0) (annotateExpr fr i) r
 annotateExpr fr (EAnnot e0 t) = EAnnot (annotateExpr fr e0) t
 annotateExpr fr (EHeadAnnot e0 t) = EHeadAnnot (annotateExpr fr e0) t
 annotateExpr fr (EBlock stmts) = EBlock (annotateStmts fr stmts)
@@ -177,15 +178,14 @@ annotateExpr fr (EDoOrigin l e) = EDoOrigin l (annotateExpr fr e)
 -- OUTER scope and pushes the pattern's bindings for the body only (evalLet).
 annotateLet : List (List String) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
 annotateLet fr m True (PVar f) e1 e2 =
-  let inner = [f] :: fr
+  let inner = [f]::fr
   ELet m True (PVar f) (annotateExpr inner e1) (annotateExpr inner e2)
-annotateLet fr m isRec pat e1 e2 =
-  ELet
-    m
-    isRec
-    pat
-    (annotateExpr fr e1)
-    (annotateExpr (patBindings pat :: fr) e2)
+annotateLet fr m isRec pat e1 e2 = ELet
+  m
+  isRec
+  pat
+  (annotateExpr fr e1)
+  (annotateExpr (patBindings pat :: fr) e2)
 
 -- where-group: one frame holds all the group names, in scope for every clause
 -- body (under that clause's own per-param frames) and the result expression
@@ -242,7 +242,7 @@ annotateStmts fr ((DoLetElse p e alt)::rest) =
   let s2 = DoLetElse p (annotateExpr fr e) (annotateExpr fr alt)
   s2 :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoAssign x e)::rest) =
-  DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
+  DoAssign x (annotateExpr fr e) :: annotateStmts ([x]::fr) rest
 annotateStmts fr ((DoFieldAssign x fs e)::rest) =
   DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
 
@@ -273,8 +273,8 @@ annotateDecl (DTest p n body) = DTest p n (annotateExpr [] body)
 annotateDecl (DBench p n body) = DBench p n (annotateExpr [] body)
 annotateDecl (DLetGroup p binds) =
   DLetGroup p (map (annotateLetBind (map letBindName binds :: [])) binds)
-annotateDecl DInterface { pub, def, name, typarams, supers, methods } = DInterface { pub = pub, def = def, name = name, typarams = typarams, supers = supers, methods = map annotateIfaceMethod methods }
-annotateDecl DImpl { pub, def, iface, tys, name, reqs, methods } = DImpl {
+annotateDecl (DInterface { pub, def, name, typarams, supers, methods }) = DInterface { pub = pub, def = def, name = name, typarams = typarams, supers = supers, methods = map annotateIfaceMethod methods }
+annotateDecl (DImpl { pub, def, iface, tys, name, reqs, methods }) = DImpl {
   pub = pub,
   def = def,
   iface = iface,
@@ -288,11 +288,10 @@ annotateDecl d = d
 
 annotateIfaceMethod : IfaceMethod -> IfaceMethod
 annotateIfaceMethod (IfaceMethod nm ty None) = IfaceMethod nm ty None
-annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) =
-  IfaceMethod
-    nm
-    ty
-    (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
+annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) = IfaceMethod
+  nm
+  ty
+  (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
 
 annotateImplMethod : ImplMethod -> ImplMethod
 annotateImplMethod (ImplMethod nm pats body) =
@@ -300,6 +299,5 @@ annotateImplMethod (ImplMethod nm pats body) =
 
 -- EMIT the lexical addresses across a whole program.  The eval drivers run this
 -- right before eval and the EVarAt arm in eval.mdk indexes frames by it.
-export
-annotateProgram : List Decl -> List Decl
+export annotateProgram : List Decl -> List Decl
 annotateProgram prog = map annotateDecl prog

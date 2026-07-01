@@ -25,7 +25,13 @@
 -- accumulated reversed, then concatenated once at the end.
 
 import frontend.ast.{DataVis(..), Variant(..), ConPayload(..), Decl(..)}
-import tools.printer.{render, printDecl, printDataDeclCommented, printNamedFieldData, Doc}
+import tools.printer.{
+  render,
+  printDecl,
+  printDataDeclCommented,
+  printNamedFieldData,
+  Doc,
+}
 import frontend.lexer.{Comment, commentLine, commentText, collectComments}
 import frontend.parser.{
   parseWithPositions,
@@ -75,7 +81,7 @@ isSingleLine s = countNl s == 0
 blankLineIfNeeded : List String -> Int -> Int -> Bool -> List String
 blankLineIfNeeded pieces targetLine cursor started =
   if started && targetLine - cursor >= 2 then
-    "\n" :: pieces
+    "\n"::pieces
   else
     pieces
 
@@ -96,7 +102,7 @@ flushBefore (FmtState pieces (c::rest) vlines cursor started) line =
   if commentLine c < line then
     flushBefore (emitComment (FmtState pieces rest vlines cursor started) c) line
   else
-    FmtState pieces (c :: rest) vlines cursor started
+    FmtState pieces (c::rest) vlines cursor started
 
 -- ── Variant-line + interior-comment bucketing (DData) ─────
 
@@ -109,7 +115,7 @@ takeNVarGo vlines k acc
   | k <= 0 = (vlines, reverseL acc)
   | otherwise = match vlines
     [] => (vlines, reverseL acc)
-    x::rest => takeNVarGo rest (k - 1) (x :: acc)
+    x::rest => takeNVarGo rest (k - 1) (x::acc)
 
 -- Pop (WITHOUT emitting) the pending comments strictly above `line`, returning
 -- their lexemes in source order plus the leftover comment stream (OCaml
@@ -123,7 +129,7 @@ takeBeforeGo (c::rest) line acc =
   if commentLine c < line then
     takeBeforeGo rest line (commentText c :: acc)
   else
-    (reverseL acc, c :: rest)
+    (reverseL acc, c::rest)
 
 -- Pop the single-line comments ON `line` (a variant's TRAILING comments, e.g.
 -- `| Field String  -- .foo`).  Without this they leak into the NEXT variant's
@@ -131,11 +137,9 @@ takeBeforeGo (c::rest) line acc =
 takeSameLine : List Comment -> Int -> (List String, List Comment)
 takeSameLine [] _ = ([], [])
 takeSameLine (c::rest) line =
-  if commentLine c == line && isSingleLine (commentText c) then
-    match takeSameLine rest line
-      (more, leftover) => (commentText c :: more, leftover)
-  else
-    ([], c :: rest)
+  if commentLine c == line && isSingleLine (commentText c) then match takeSameLine rest line
+    (more, leftover) => (commentText c :: more, leftover)
+  else ([], c::rest)
 
 -- For each variant line, pop its preceding (leading) comments AND its same-line
 -- (trailing) comments.  Returns per-variant (leading, trailing) lexeme lists
@@ -145,7 +149,7 @@ vcommentsFor cs [] = ([], cs)
 vcommentsFor cs (l::ls) = match takeBefore cs l
   (leading, rest1) => match takeSameLine rest1 l
     (trailing, rest2) => match vcommentsFor rest2 ls
-      (more, leftover) => ((leading, trailing) :: more, leftover)
+      (more, leftover) => ((leading, trailing)::more, leftover)
 
 allEmptyPairs : List (List String, List String) -> Bool
 allEmptyPairs [] = True
@@ -192,7 +196,7 @@ takeTrailing cs endLine = (
 appendTrailing : List String -> List Comment -> List String
 appendTrailing pieces [] = pieces
 appendTrailing pieces (c::cs) =
-  appendTrailing (commentText c :: "  " :: pieces) cs
+  appendTrailing (commentText c :: "  "::pieces) cs
 
 -- ── Interior (inner-block) trailing comments ──────────────────────────────
 -- A single-line comment on a source line strictly *inside* a multi-line decl
@@ -235,12 +239,11 @@ isSingleNamedFieldData _ = False
 -- Render a single-variant named-field data decl one-field-per-line, consuming its
 -- one variant line (to keep vlines aligned, exactly as declDoc's DData arm does).
 renderNamedFieldMulti : FmtState -> Decl -> (String, FmtState)
-renderNamedFieldMulti (FmtState pieces cs vlines cursor started) (DData vis n params variants derives) =
-  match takeNVariantLines vlines 1
-    (vlinesRest, _) => (
-      render (printNamedFieldData vis n params variants derives),
-      FmtState pieces cs vlinesRest cursor started,
-    )
+renderNamedFieldMulti (FmtState pieces cs vlines cursor started) (DData vis n params variants derives) = match takeNVariantLines vlines 1
+  (vlinesRest, _) => (
+    render (printNamedFieldData vis n params variants derives),
+    FmtState pieces cs vlinesRest cursor started,
+  )
 renderNamedFieldMulti st decl = declDoc st decl
 
 -- Splice interior comments into the rendered decl string by output-line index.
@@ -258,20 +261,17 @@ spliceInterior declStr startLine interior =
 -- (reversed) the comments actually attached.
 attachInterior : List String -> Int -> Int -> Int -> List Comment -> List Comment -> (List String, List Comment)
 attachInterior [] _ _ _ _ consumed = ([], consumed)
-attachInterior (ln::rest) startLine idx n interior consumed =
-  match attachOnLine ln startLine idx interior consumed
-    (ln1, consumed1) => match attachInterior rest startLine (idx + 1) n interior consumed1
-      (rest1, consumed2) => (ln1 :: rest1, consumed2)
+attachInterior (ln::rest) startLine idx n interior consumed = match attachOnLine ln startLine idx interior consumed
+  (ln1, consumed1) => match attachInterior rest startLine (idx + 1) n interior consumed1
+    (rest1, consumed2) => (ln1::rest1, consumed2)
 
 -- Attach every interior comment whose output-line index == idx onto `ln`.
 attachOnLine : String -> Int -> Int -> List Comment -> List Comment -> (String, List Comment)
 attachOnLine ln _ _ [] consumed = (ln, consumed)
 attachOnLine ln startLine idx (c::cs) consumed =
-  if commentLine c - startLine == idx then
-    match attachOnLine ln startLine idx cs consumed
-      (ln1, consumed1) => (ln1 ++ "  " ++ commentText c, c :: consumed1)
-  else
-    attachOnLine ln startLine idx cs consumed
+  if commentLine c - startLine == idx then match attachOnLine ln startLine idx cs consumed
+    (ln1, consumed1) => (ln1 ++ "  " ++ commentText c, c::consumed1)
+  else attachOnLine ln startLine idx cs consumed
 
 -- Drop the consumed comments from the pending stream (order-preserving), by
 -- source line — interior comment lines are unique per output line.
@@ -300,7 +300,8 @@ anyLineEq l (c::cs) = if commentLine c == l then True else anyLineEq l cs
 -- Extract source lines [startLine .. endLine] (1-based, inclusive) and rejoin
 -- them exactly — the decl's original text, comments and all.
 verbatimSpan : List String -> Int -> Int -> String
-verbatimSpan srcLines startLine endLine = joinNl (spanLines srcLines 1 startLine endLine)
+verbatimSpan srcLines startLine endLine =
+  joinNl (spanLines srcLines 1 startLine endLine)
 
 spanLines : List String -> Int -> Int -> Int -> List String
 spanLines [] _ _ _ = []
@@ -368,7 +369,8 @@ stepDeclNormal (FmtState pieces2 cs1 vlines1 cursor1 started1) decl line endLine
 walkDecls : FmtState -> List String -> List Decl -> List DeclPos -> FmtState
 walkDecls st _ [] _ = st
 walkDecls st _ _ [] = st
-walkDecls st srcLines (d::ds) (p::ps) = walkDecls (stepDecl st srcLines d p) srcLines ds ps
+walkDecls st srcLines (d::ds) (p::ps) =
+  walkDecls (stepDecl st srcLines d p) srcLines ds ps
 
 -- ── Public entry ──────────────────────────────────
 
@@ -376,8 +378,7 @@ walkDecls st srcLines (d::ds) (p::ps) = walkDecls (stepDecl st srcLines d p) src
 -- position list and the decl list differ in length, fall back to the plain
 -- comment-free `programToString`-equivalent (render each decl + "\n").  Mirror
 -- of lib/printer.ml's length guard.
-export
-formatProgram : List Decl -> List DeclPos -> List Int -> List Comment -> Int -> String -> String
+export formatProgram : List Decl -> List DeclPos -> List Int -> List Comment -> Int -> String -> String
 formatProgram decls declPositions variantLines comments _lastContentLine src =
   if listLen declPositions != listLen decls then stringConcat (map (d => render (printDecl d) ++ "\n") decls)
   else
@@ -395,7 +396,6 @@ drainAll (FmtState pieces (c::rest) vlines cursor started) =
   drainAll (emitComment (FmtState pieces rest vlines cursor started) c)
 
 -- Convenience: parse + collect comments + format, from source text.
-export
-formatSource : String -> String
+export formatSource : String -> String
 formatSource src = match parseWithPositions src
   (decls, pos) => formatProgram decls (positionsDecls pos) (positionsVariantLines pos) (collectComments src) (positionsLastContentLine pos) src

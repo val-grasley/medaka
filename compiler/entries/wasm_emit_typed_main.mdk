@@ -37,14 +37,19 @@ import types.typecheck.{
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
 import support.util.{splitLast}
-import backend.wasm_emit.{emitProgram, installDeclRetTypes, installCtorFloatFields}
+import backend.wasm_emit.{
+  emitProgram,
+  installDeclRetTypes,
+  installCtorFloatFields,
+}
 
 main = match args ()
   runtimePath::rest => withRuntime runtimePath rest
   _ => ePutStrLn "usage: medaka run compiler/entries/wasm_emit_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  Some (preludePaths, targetPath) =>
+    withFiles runtimePath preludePaths targetPath
   None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withFiles runtimePath preludePaths targetPath = match readFile runtimePath

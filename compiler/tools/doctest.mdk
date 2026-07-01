@@ -23,13 +23,7 @@ import frontend.ast.{Decl, DUse}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
-import support.util.{
-  listLen,
-  reverseL,
-  joinNl,
-  startsWith,
-  stringTrim,
-}
+import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
 
@@ -37,45 +31,39 @@ import support.util.{
 -- rendering, and the 1-based source line of the input line (for `loc`).
 public export data Example = Example String (Option String) Int
 
-export
-exampleInput : Example -> String
+export exampleInput : Example -> String
 exampleInput (Example i _ _) = i
 
 exampleExpected : Example -> Option String
 exampleExpected (Example _ e _) = e
 
-export
-exampleLine : Example -> Int
+export exampleLine : Example -> Int
 exampleLine (Example _ _ l) = l
 
 -- The outcome of running one example.
-public export data ExResult
-  = Pass
+public export data ExResult =
+  | Pass
   | Fail String String
   -- expected, actual
   | Errored String  -- message
 
-public export data RunResult
-  = RunResult Int Int Int Int (List (Example, ExResult))
+public export data RunResult =
+  | RunResult Int Int Int Int (List (Example, ExResult))
 -- total passed failed errors details
 
 runTotal : RunResult -> Int
 runTotal (RunResult t _ _ _ _) = t
 
-export
-runPassed : RunResult -> Int
+export runPassed : RunResult -> Int
 runPassed (RunResult _ p _ _ _) = p
 
-export
-runFailed : RunResult -> Int
+export runFailed : RunResult -> Int
 runFailed (RunResult _ _ f _ _) = f
 
-export
-runErrors : RunResult -> Int
+export runErrors : RunResult -> Int
 runErrors (RunResult _ _ _ e _) = e
 
-export
-runDetails : RunResult -> List (Example, ExResult)
+export runDetails : RunResult -> List (Example, ExResult)
 runDetails (RunResult _ _ _ _ d) = d
 
 -- ── small string helpers (compiler avoids the stdlib) ──────────────────────
@@ -103,7 +91,8 @@ splitNl s = splitNlGo (stringToChars s) (arrayLength (stringToChars s)) 0 0
 splitNlGo : Array Char -> Int -> Int -> Int -> List String
 splitNlGo cs n start i
   | i >= n = [substrChars cs start n]
-  | arrayGetUnsafe i cs == '\n' = substrChars cs start i :: splitNlGo cs n (i + 1) (i + 1)
+  | arrayGetUnsafe i cs == '\n' =
+    substrChars cs start i :: splitNlGo cs n (i + 1) (i + 1)
   | otherwise = splitNlGo cs n start (i + 1)
 
 substrChars : Array Char -> Int -> Int -> String
@@ -191,7 +180,8 @@ blocksGo acc current lastLine (c::rest)
   | isBlankComment c =
     let acc2 = if isEmptyL current then acc else reverseL current :: acc
     blocksGo acc2 [] (clLine c) rest
-  | isEmptyL current || clLine c == lastLine + 1 = blocksGo acc (c :: current) (clLine c) rest
+  | isEmptyL current || clLine c == lastLine + 1 =
+    blocksGo acc (c::current) (clLine c) rest
   | otherwise = blocksGo (reverseL current :: acc) [c] (clLine c) rest
 
 isEmptyL : List a -> Bool
@@ -216,12 +206,12 @@ extractFromBlock block = reverseL (extractGo [] None [] block)
 extractGo : List Example -> Option (String, Int) -> List String -> List (Int, String) -> List Example
 extractGo examples curInput expectedRev [] = match sealExample curInput expectedRev
   None => examples
-  Some ex => ex :: examples
+  Some ex => ex::examples
 extractGo examples curInput expectedRev (c::rest)
   | isInputLine c =
     let examples2 = match sealExample curInput expectedRev
       None => examples
-      Some ex => ex :: examples
+      Some ex => ex::examples
     extractGo examples2 (Some (inputBody c, clLine c)) [] rest
   | isExpectedLine c = match curInput
     None => extractGo examples None [] rest
@@ -229,13 +219,12 @@ extractGo examples curInput expectedRev (c::rest)
   | otherwise =
     let examples2 = match sealExample curInput expectedRev
       None => examples
-      Some ex => ex :: examples
+      Some ex => ex::examples
     extractGo examples2 None [] rest
 
 -- ── Public extraction ───────────────────────────────────────────────────────
 
-export
-extractExamples : List Comment -> List Example
+export extractExamples : List Comment -> List Example
 extractExamples comments =
   let pairs = map commentToPair comments
   let expanded = concatMapC pairs
@@ -254,8 +243,7 @@ concatMapC (c::rest) = (if isBlockComment c then expandBlock c else [c])
 -- (so the comparison is against the language's own Debug contract, matching
 -- ppValue (VString s) = s); a smoke example stays raw.
 
-export
-synthName : Int -> String
+export synthName : Int -> String
 synthName i = "__dt_" ++ intToString i ++ "__"
 
 -- Build the synthetic source line for example i.
@@ -269,8 +257,7 @@ synthSrc i ex =
 -- All synth decls, parsed + desugared, concatenated.  (compiler `parse` panics
 -- on a malformed snippet rather than per-example Error, but stdlib doctests
 -- parse cleanly; see report.)
-export
-buildSynthDecls : List Example -> List Decl
+export buildSynthDecls : List Example -> List Decl
 buildSynthDecls examples = buildSynthGo 0 examples
 
 buildSynthGo : Int -> List Example -> List Decl
@@ -282,8 +269,7 @@ buildSynthGo i (ex::rest) = desugar (parse (synthSrc i ex))
 -- env is the post-run binding environment (Ok env) or a single whole-program
 -- error (Err msg) applying to every example.
 
-export
-buildDetails : Result String (List (String, Value)) -> List Example -> <Mut> RunResult
+export buildDetails : Result String (List (String, Value)) -> List Example -> <Mut> RunResult
 buildDetails envResult examples =
   let details = detailsGo envResult 0 examples
   let passed = countResult isPass details
@@ -326,8 +312,7 @@ countResult p ((_, r)::rest)
   | p r = 1 + countResult p rest
   | otherwise = countResult p rest
 
-export
-hasUseDecls : List Decl -> Bool
+export hasUseDecls : List Decl -> Bool
 hasUseDecls decls = anyUse decls
 
 anyUse : List Decl -> Bool

@@ -22,7 +22,12 @@
 -- emitter if no CRecord literal for that type appears locally.  We use pattern
 -- destructuring throughout to stay emitter-compatible.
 
-import lib.dbwriter.{buildDatabase, writeDatabase, buildDatabaseMulti, buildDatabaseMultiExplicit}
+import lib.dbwriter.{
+  buildDatabase,
+  writeDatabase,
+  buildDatabaseMulti,
+  buildDatabaseMultiExplicit,
+}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
 import string.{join}
 import list.{findIndex, reverse}
@@ -32,24 +37,19 @@ import list.{findIndex, reverse}
 -- ---------------------------------------------------------------------------
 
 -- | The affinity of a column (v1: INTEGER, TEXT, BLOB, REAL).
-public export data ColType
-  = TInteger   -- INTEGER affinity (may also hold an IPK)
-  | TText      -- TEXT affinity
-  | TBlob      -- BLOB / NONE affinity
-  | TReal      -- REAL affinity (8-byte IEEE 754 float on disk)
+public export data ColType =
+  | TInteger  -- INTEGER affinity (may also hold an IPK)
+  | TText  -- TEXT affinity
+  | TBlob  -- BLOB / NONE affinity
+  | TReal  -- REAL affinity (8-byte IEEE 754 float on disk)
 
 -- | One column definition.
-public export data Column = Column
-  { colName      : String
-  , colType      : ColType
-  , isPrimaryKey : Bool
-  }
+public export data Column =
+  | Column { colName : String, colType : ColType, isPrimaryKey : Bool }
 
 -- | A table schema: a name and an ordered list of columns.
-public export data TableSchema = TableSchema
-  { schemaTableName : String
-  , columns         : List Column
-  }
+public export data TableSchema =
+  | TableSchema { schemaTableName : String, columns : List Column }
 
 -- ---------------------------------------------------------------------------
 -- CREATE TABLE SQL generation
@@ -58,9 +58,9 @@ public export data TableSchema = TableSchema
 -- | Render the SQL affinity keyword for a column type.
 colTypeSql : ColType -> String
 colTypeSql TInteger = "INTEGER"
-colTypeSql TText    = "TEXT"
-colTypeSql TBlob    = "BLOB"
-colTypeSql TReal    = "REAL"
+colTypeSql TText = "TEXT"
+colTypeSql TBlob = "BLOB"
+colTypeSql TReal = "REAL"
 
 -- | Render one column definition, appending " PRIMARY KEY" if flagged.
 --
@@ -72,10 +72,7 @@ colTypeSql TReal    = "REAL"
 colDefSql : Column -> String
 colDefSql (Column { colName, colType, isPrimaryKey }) =
   let base = stringConcat [colName, " ", colTypeSql colType]
-  if isPrimaryKey
-  then stringConcat [base, " PRIMARY KEY"]
-  else base
-
+  if isPrimaryKey then stringConcat [base, " PRIMARY KEY"] else base
 
 -- | Generate the `CREATE TABLE …` text from a `TableSchema`.
 -- The IPK column is rendered as `INTEGER PRIMARY KEY` (the exact text that
@@ -86,17 +83,10 @@ colDefSql (Column { colName, colType, isPrimaryKey }) =
 --
 -- > createTableSql (TableSchema { schemaTableName = "kv", columns = [Column { colName = "k", colType = TText, isPrimaryKey = False }, Column { colName = "v", colType = TInteger, isPrimaryKey = False }] })
 -- "CREATE TABLE kv(k TEXT, v INTEGER)"
-export
-createTableSql : TableSchema -> String
+export createTableSql : TableSchema -> String
 createTableSql (TableSchema { schemaTableName, columns }) =
   let colDefs = map colDefSql columns
-  stringConcat
-    [ "CREATE TABLE "
-    , schemaTableName
-    , "("
-    , join ", " colDefs
-    , ")"
-    ]
+  stringConcat ["CREATE TABLE ", schemaTableName, "(", join ", " colDefs, ")"]
 
 -- ---------------------------------------------------------------------------
 -- IPK index derivation
@@ -104,12 +94,11 @@ createTableSql (TableSchema { schemaTableName, columns }) =
 
 -- | Find the 0-based index of the first column with `isPrimaryKey = True`,
 -- or `None` if no such column exists.
-export
-schemaIpkIndex : TableSchema -> Option Int
-schemaIpkIndex (TableSchema { columns, ... }) =
-  findIndex (c =>
-    match c
-      Column { isPrimaryKey, ... } => isPrimaryKey) columns
+export schemaIpkIndex : TableSchema -> Option Int
+schemaIpkIndex (TableSchema { columns, ... }) = findIndex
+  (c => match c
+    Column { isPrimaryKey, ... } => isPrimaryKey)
+  columns
 
 -- ---------------------------------------------------------------------------
 -- Column count validation
@@ -117,12 +106,13 @@ schemaIpkIndex (TableSchema { columns, ... }) =
 
 -- | Validate that every row has exactly `expected` cells.
 validateRows : Int -> List (List Cell) -> Result String Unit
-validateRows _ []               = Ok ()
+validateRows _ [] = Ok ()
 validateRows expected (r::rest) =
   let got = length r
-  if got == expected
-  then validateRows expected rest
-  else Err "row has \{intToString got} cells, expected \{intToString expected}"
+  if got == expected then
+    validateRows expected rest
+  else
+    Err "row has \{intToString got} cells, expected \{intToString expected}"
 
 -- ---------------------------------------------------------------------------
 -- One-shot write API
@@ -139,29 +129,25 @@ validateRows expected (r::rest) =
 --   rowid auto-increments 1..N.
 -- * Returns `Err` on a row width mismatch, an IPK type mismatch, or a
 --   single-page overflow.
-export
-writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
-writeTable path schema rows =
-  match schema
-    TableSchema { schemaTableName = name, columns } => do
-      let colCount = length columns
-      _ <- validateRows colCount rows
-      let sql = createTableSql schema
-      let ipk = schemaIpkIndex schema
-      writeDatabase path name sql colCount ipk rows
+export writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
+writeTable path schema rows = match schema
+  TableSchema { schemaTableName = name, columns } => do
+    let colCount = length columns
+    _ <- validateRows colCount rows
+    let sql = createTableSql schema
+    let ipk = schemaIpkIndex schema
+    writeDatabase path name sql colCount ipk rows
 
 -- | Like `writeTable` but returns the raw byte image instead of writing to
 -- disk.  Useful for testing and round-trip inspection.
-export
-buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
-buildTable schema rows =
-  match schema
-    TableSchema { schemaTableName = name, columns } => do
-      let colCount = length columns
-      _ <- validateRows colCount rows
-      let sql = createTableSql schema
-      let ipk = schemaIpkIndex schema
-      buildDatabase name sql colCount ipk rows
+export buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
+buildTable schema rows = match schema
+  TableSchema { schemaTableName = name, columns } => do
+    let colCount = length columns
+    _ <- validateRows colCount rows
+    let sql = createTableSql schema
+    let ipk = schemaIpkIndex schema
+    buildDatabase name sql colCount ipk rows
 
 -- ---------------------------------------------------------------------------
 -- Multi-table write API
@@ -178,36 +164,33 @@ buildTable schema rows =
 -- validating row width and deriving the CREATE text + IPK index from the
 -- schema.  Pure (Result monad); no effect.
 tableSpec : (TableSchema, List (List Cell)) -> Result String (String, String, Option Int, List (List Cell))
-tableSpec (schema, rows) =
-  match schema
-    TableSchema { schemaTableName = name, columns } => do
-      let colCount = length columns
-      _ <- validateRows colCount rows
-      let sql = createTableSql schema
-      let ipk = schemaIpkIndex schema
-      Ok (name, sql, ipk, rows)
+tableSpec (schema, rows) = match schema
+  TableSchema { schemaTableName = name, columns } => do
+    let colCount = length columns
+    _ <- validateRows colCount rows
+    let sql = createTableSql schema
+    let ipk = schemaIpkIndex schema
+    Ok (name, sql, ipk, rows)
 
 -- Map every `(schema, rows)` entry to its spec, short-circuiting on the first
 -- validation error.
 collectSpecs : List (TableSchema, List (List Cell)) -> List (String, String, Option Int, List (List Cell)) -> Result String (List (String, String, Option Int, List (List Cell)))
-collectSpecs []        acc = Ok (reverse acc)
+collectSpecs [] acc = Ok (reverse acc)
 collectSpecs (t::rest) acc = do
   spec <- tableSpec t
-  collectSpecs rest (spec :: acc)
+  collectSpecs rest (spec::acc)
 
 -- | Build the byte image of a multi-table SQLite database from a list of
 -- `(schema, rows)` entries.  The single-table case (`[entry]`) produces the
 -- same image as `buildTable` (both route through the parameterized page
 -- builder).
-export
-buildTables : List (TableSchema, List (List Cell)) -> <Mut> Result String (Array Int)
+export buildTables : List (TableSchema, List (List Cell)) -> <Mut> Result String (Array Int)
 buildTables tables = do
   specs <- collectSpecs tables []
   buildDatabaseMulti specs
 
 -- | Build a multi-table SQLite database and `writeFileBytes` it to `path`.
-export
-writeTables : String -> List (TableSchema, List (List Cell)) -> <FileWrite, Mut> Result String Unit
+export writeTables : String -> List (TableSchema, List (List Cell)) -> <FileWrite, Mut> Result String Unit
 writeTables path tables = do
   img <- buildTables tables
   writeFileBytes path img
@@ -225,41 +208,39 @@ writeTables path tables = do
 
 -- | Validate that every explicit-rowid row has exactly `expected` cells.
 validateRowsExplicit : Int -> List (Int, List Cell) -> Result String Unit
-validateRowsExplicit _        []                = Ok ()
+validateRowsExplicit _ [] = Ok ()
 validateRowsExplicit expected ((_, r)::rest) =
   let got = length r
-  if got == expected
-  then validateRowsExplicit expected rest
-  else Err "row has \{intToString got} cells, expected \{intToString expected}"
+  if got == expected then
+    validateRowsExplicit expected rest
+  else
+    Err "row has \{intToString got} cells, expected \{intToString expected}"
 
 -- | Convert one explicit-rowid `(schema, rows)` entry into the low-level
 -- dbwriter spec, validating row width and deriving CREATE text + IPK index.
 tableSpecExplicit : (TableSchema, List (Int, List Cell)) -> Result String (String, String, Option Int, List (Int, List Cell))
-tableSpecExplicit (schema, rows) =
-  match schema
-    TableSchema { schemaTableName = name, columns } => do
-      let colCount = length columns
-      _ <- validateRowsExplicit colCount rows
-      let sql = createTableSql schema
-      let ipk = schemaIpkIndex schema
-      Ok (name, sql, ipk, rows)
+tableSpecExplicit (schema, rows) = match schema
+  TableSchema { schemaTableName = name, columns } => do
+    let colCount = length columns
+    _ <- validateRowsExplicit colCount rows
+    let sql = createTableSql schema
+    let ipk = schemaIpkIndex schema
+    Ok (name, sql, ipk, rows)
 
 collectSpecsExplicit : List (TableSchema, List (Int, List Cell)) -> List (String, String, Option Int, List (Int, List Cell)) -> Result String (List (String, String, Option Int, List (Int, List Cell)))
-collectSpecsExplicit []        acc = Ok (reverse acc)
+collectSpecsExplicit [] acc = Ok (reverse acc)
 collectSpecsExplicit (t::rest) acc = do
   spec <- tableSpecExplicit t
-  collectSpecsExplicit rest (spec :: acc)
+  collectSpecsExplicit rest (spec::acc)
 
 -- | Build the byte image of a multi-table database from explicit-rowid entries.
-export
-buildTablesExplicit : List (TableSchema, List (Int, List Cell)) -> <Mut> Result String (Array Int)
+export buildTablesExplicit : List (TableSchema, List (Int, List Cell)) -> <Mut> Result String (Array Int)
 buildTablesExplicit tables = do
   specs <- collectSpecsExplicit tables []
   buildDatabaseMultiExplicit specs
 
 -- | Build an explicit-rowid multi-table database and `writeFileBytes` it.
-export
-writeTablesExplicit : String -> List (TableSchema, List (Int, List Cell)) -> <FileWrite, Mut> Result String Unit
+export writeTablesExplicit : String -> List (TableSchema, List (Int, List Cell)) -> <FileWrite, Mut> Result String Unit
 writeTablesExplicit path tables = do
   img <- buildTablesExplicit tables
   writeFileBytes path img

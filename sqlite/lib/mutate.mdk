@@ -32,7 +32,19 @@
 --   * UPDATE assigning an unknown column name.
 --   * Write-path errors (row too large, sqlite_master overflow, etc.) propagate.
 
-import lib.sqlite.{Db, openDb, readSchema, scanTableRowsIpk, schemaSql, schemaName, schemaType, SchemaEntry, pkColumnIndex, rowCellsWithIpk, columnIndex}
+import lib.sqlite.{
+  Db,
+  openDb,
+  readSchema,
+  scanTableRowsIpk,
+  schemaSql,
+  schemaName,
+  schemaType,
+  SchemaEntry,
+  pkColumnIndex,
+  rowCellsWithIpk,
+  columnIndex,
+}
 import lib.btree.{Row, rowRowid}
 import lib.dbwriter.{buildDatabaseMultiExplicit}
 import lib.recordfmt.{Cell}
@@ -46,13 +58,14 @@ import list.{reverse}
 -- | Scan every schema entry; return `Err` if any entry is a secondary index
 --   or a WITHOUT ROWID table.
 refuseIfUnsupported : List SchemaEntry -> Result String Unit
-refuseIfUnsupported []        = Ok ()
+refuseIfUnsupported [] = Ok ()
 refuseIfUnsupported (e::rest) =
-  if schemaType e == "index"
-  then Err "cannot mutate: database has indexes (would be silently dropped)"
-  else if schemaType e == "table" && containsWithoutRowid (schemaSql e)
-  then Err "cannot mutate: database has WITHOUT ROWID table (not supported)"
-  else refuseIfUnsupported rest
+  if schemaType e == "index" then
+    Err "cannot mutate: database has indexes (would be silently dropped)"
+  else if schemaType e == "table" && containsWithoutRowid (schemaSql e) then
+    Err "cannot mutate: database has WITHOUT ROWID table (not supported)"
+  else
+    refuseIfUnsupported rest
 
 containsWithoutRowid : String -> Bool
 containsWithoutRowid sql = stringContains (upperString sql) "WITHOUT ROWID"
@@ -60,41 +73,45 @@ containsWithoutRowid sql = stringContains (upperString sql) "WITHOUT ROWID"
 upperString : String -> String
 upperString s =
   let chars = stringToChars s
-  let n     = arrayLength chars
+  let n = arrayLength chars
   stringFromChars (arrayFromList (upperCharsGo chars 0 n []))
 
 upperCharsGo : Array Char -> Int -> Int -> List Char -> List Char
 upperCharsGo arr i n acc =
   if i >= n then reverse acc
   else
-    let c  = charCode (arr.[i])
+    let c = charCode arr.[i]
     let uc = if c >= 97 && c <= 122 then c - 32 else c
     let ch = match charFromCode uc
-               Some x => x
-               None   => arr.[i]
-    upperCharsGo arr (i + 1) n (ch :: acc)
+      Some x => x
+      None => arr.[i]
+    upperCharsGo arr (i + 1) n (ch::acc)
 
 stringContains : String -> String -> Bool
 stringContains haystack needle =
-  let h  = stringToChars haystack
+  let h = stringToChars haystack
   let nd = stringToChars needle
   let hl = arrayLength h
   let nl = arrayLength nd
-  if nl == 0 then True
-  else stringContainsGo h hl nd nl 0
+  if nl == 0 then True else stringContainsGo h hl nd nl 0
 
 stringContainsGo : Array Char -> Int -> Array Char -> Int -> Int -> Bool
 stringContainsGo h hl nd nl i =
-  if i + nl > hl then False
-  else if charsMatchAt h nd i 0 nl then True
-  else stringContainsGo h hl nd nl (i + 1)
+  if i + nl > hl then
+    False
+  else if charsMatchAt h nd i 0 nl then
+    True
+  else
+    stringContainsGo h hl nd nl (i + 1)
 
 charsMatchAt : Array Char -> Array Char -> Int -> Int -> Int -> Bool
 charsMatchAt h nd hi ni nl =
-  if ni >= nl then True
-  else if charCode (h.[hi + ni]) == charCode (nd.[ni])
-       then charsMatchAt h nd hi (ni + 1) nl
-       else False
+  if ni >= nl then
+    True
+  else if charCode h.[hi + ni] == charCode nd.[ni] then
+    charsMatchAt h nd hi (ni + 1) nl
+  else
+    False
 
 -- ---------------------------------------------------------------------------
 -- Spec helpers
@@ -102,34 +119,37 @@ charsMatchAt h nd hi ni nl =
 
 -- Collect an explicit-rowid spec for every `type='table'` schema entry.
 collectTableSpecs : Db -> List SchemaEntry -> List (String, String, Option Int, List (Int, List Cell)) -> Result String (List (String, String, Option Int, List (Int, List Cell)))
-collectTableSpecs _  []        acc = Ok (reverse acc)
+collectTableSpecs _ [] acc = Ok (reverse acc)
 collectTableSpecs db (e::rest) acc =
-  if schemaType e != "table"
-  then collectTableSpecs db rest acc
+  if schemaType e != "table" then collectTableSpecs db rest acc
   else
     let name = schemaName e
-    let sql  = schemaSql e
+    let sql = schemaSql e
     match scanTableRowsIpk db name
-      Err err          => Err err
+      Err err => Err err
       Ok (pkIdx, rows) =>
         let explicitRows = map (r => (rowRowid r, rowCellsWithIpk pkIdx r)) rows
-        collectTableSpecs db rest ((name, sql, pkIdx, explicitRows) :: acc)
+        collectTableSpecs db rest ((name, sql, pkIdx, explicitRows)::acc)
 
 findSpecByName : List (String, String, Option Int, List (Int, List Cell)) -> String -> Option (String, String, Option Int, List (Int, List Cell))
-findSpecByName []                 _   = None
-findSpecByName ((n,s,p,rs)::rest) tbl =
-  if n == tbl then Some (n, s, p, rs)
-  else findSpecByName rest tbl
+findSpecByName [] _ = None
+findSpecByName ((n, s, p, rs)::rest) tbl =
+  if n == tbl then
+    Some (n, s, p, rs)
+  else
+    findSpecByName rest tbl
 
 replaceSpec : List (String, String, Option Int, List (Int, List Cell)) -> String -> (String, String, Option Int, List (Int, List Cell)) -> List (String, String, Option Int, List (Int, List Cell))
-replaceSpec []                 _   _   = []
-replaceSpec ((n,s,p,rs)::rest) tbl new =
-  if n == tbl then (new :: rest)
-  else (n, s, p, rs) :: replaceSpec rest tbl new
+replaceSpec [] _ _ = []
+replaceSpec ((n, s, p, rs)::rest) tbl new =
+  if n == tbl then
+    new::rest
+  else
+    (n, s, p, rs) :: replaceSpec rest tbl new
 
 requireSome : String -> Option a -> Result String a
-requireSome _   (Some x) = Ok x
-requireSome msg None     = Err msg
+requireSome _ (Some x) = Ok x
+requireSome msg None = Err msg
 
 -- ---------------------------------------------------------------------------
 -- Row partition helpers
@@ -139,11 +159,12 @@ partitionRows : (List Cell -> Bool) -> List (Int, List Cell) -> (List (Int, List
 partitionRows pred rows = partitionGo pred rows [] 0
 
 partitionGo : (List Cell -> Bool) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
-partitionGo _    []                    acc n = (reverse acc, n)
+partitionGo _ [] acc n = (reverse acc, n)
 partitionGo pred ((rowid, cells)::rest) acc n =
-  if pred cells
-  then partitionGo pred rest acc (n + 1)
-  else partitionGo pred rest ((rowid, cells) :: acc) n
+  if pred cells then
+    partitionGo pred rest acc (n + 1)
+  else
+    partitionGo pred rest ((rowid, cells)::acc) n
 
 -- ---------------------------------------------------------------------------
 -- DELETE — read-transform-rewrite
@@ -151,44 +172,36 @@ partitionGo pred ((rowid, cells)::rest) acc n =
 
 -- | Delete all rows of `table` in the SQLite file at `path` where `where_`
 --   evaluates to true.  Returns `Ok n` where `n` is the count of rows deleted.
-export
-delete : String -> String -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-delete path table where_ =
-  match openDb path
-    Err e  => Err e
-    Ok db  =>
-      match buildImage db table (unExpr where_)
-        Err e         => Err e
-        Ok (img, cnt) =>
-          match writeFileBytes path img
-            Err e => Err e
-            Ok _  => Ok cnt
+export delete : String -> String -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
+delete path table where_ = match openDb path
+  Err e => Err e
+  Ok db => match buildImage db table (unExpr where_)
+    Err e => Err e
+    Ok (img, cnt) => match writeFileBytes path img
+      Err e => Err e
+      Ok _ => Ok cnt
 
 -- Build the new database image after filtering the target table.
 -- Pure-ish: only `buildDatabaseMultiExplicit` carries `<Mut>`.
 buildImage : Db -> String -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildImage db table whereExpr =
-  match readSchema db
-    Err e     => Err e
-    Ok schema =>
-      match refuseIfUnsupported schema
-        Err e  => Err e
-        Ok _   =>
-          match collectTableSpecs db schema []
-            Err e    => Err e
-            Ok specs =>
-              match requireSome "delete: table not found: \{table}" (findSpecByName specs table)
-                Err e                    => Err e
-                Ok (_, sql, pkIdx, rows) =>
-                  let lookup = columnIndex sql
-                  match compilePred lookup whereExpr
-                    Err e   => Err e
-                    Ok pred =>
-                      let (survivors, cnt) = partitionRows pred rows
-                      let newSpecs = replaceSpec specs table (table, sql, pkIdx, survivors)
-                      match buildDatabaseMultiExplicit newSpecs
-                        Err e  => Err e
-                        Ok img => Ok (img, cnt)
+buildImage db table whereExpr = match readSchema db
+  Err e => Err e
+  Ok schema => match refuseIfUnsupported schema
+    Err e => Err e
+    Ok _ => match collectTableSpecs db schema []
+      Err e => Err e
+      Ok specs => match requireSome "delete: table not found: \{table}" (findSpecByName specs table)
+        Err e => Err e
+        Ok (_, sql, pkIdx, rows) =>
+          let lookup = columnIndex sql
+          match compilePred lookup whereExpr
+            Err e => Err e
+            Ok pred =>
+              let (survivors, cnt) = partitionRows pred rows
+              let newSpecs = replaceSpec specs table (table, sql, pkIdx, survivors)
+              match buildDatabaseMultiExplicit newSpecs
+                Err e => Err e
+                Ok img => Ok (img, cnt)
 
 -- ---------------------------------------------------------------------------
 -- Assign — a SET assignment for UPDATE
@@ -203,8 +216,7 @@ public export data Assign = Assign String SqlExpr
 -- | Build an assignment from the type-safe phantom layer, e.g.
 --   `assign "total" (eAdd (eColInt "total") (eLitI 10))`.  The phantom wrapper
 --   is stripped here (the type-safe boundary), mirroring `withWhere`.
-export
-assign : String -> Expr a -> Assign
+export assign : String -> Expr a -> Assign
 assign col e = Assign col (unExpr e)
 
 -- ---------------------------------------------------------------------------
@@ -220,77 +232,64 @@ assign col e = Assign col (unExpr e)
 --     * Any `Assign` targets the table's INTEGER PRIMARY KEY column.
 --     * Any `Assign` names an unknown column.
 --     * The target table is not found.
-export
-update : String -> String -> List Assign -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-update path table assigns where_ =
-  match openDb path
-    Err e  => Err e
-    Ok db  =>
-      match buildUpdateImage db table assigns (unExpr where_)
-        Err e         => Err e
-        Ok (img, cnt) =>
-          match writeFileBytes path img
-            Err e => Err e
-            Ok _  => Ok cnt
+export update : String -> String -> List Assign -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
+update path table assigns where_ = match openDb path
+  Err e => Err e
+  Ok db => match buildUpdateImage db table assigns (unExpr where_)
+    Err e => Err e
+    Ok (img, cnt) => match writeFileBytes path img
+      Err e => Err e
+      Ok _ => Ok cnt
 
 -- Build the new database image after applying the SET assignments to matching rows.
 buildUpdateImage : Db -> String -> List Assign -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildUpdateImage db table assigns whereExpr =
-  match readSchema db
-    Err e     => Err e
-    Ok schema =>
-      match refuseIfUnsupported schema
-        Err e  => Err e
-        Ok _   =>
-          match collectTableSpecs db schema []
-            Err e    => Err e
-            Ok specs =>
-              match requireSome "update: table not found: \{table}" (findSpecByName specs table)
-                Err e                    => Err e
-                Ok (_, sql, pkIdx, rows) =>
-                  let lookup = columnIndex sql
-                  match refuseIpkAssign pkIdx sql assigns
+buildUpdateImage db table assigns whereExpr = match readSchema db
+  Err e => Err e
+  Ok schema => match refuseIfUnsupported schema
+    Err e => Err e
+    Ok _ => match collectTableSpecs db schema []
+      Err e => Err e
+      Ok specs => match requireSome "update: table not found: \{table}" (findSpecByName specs table)
+        Err e => Err e
+        Ok (_, sql, pkIdx, rows) =>
+          let lookup = columnIndex sql
+          match refuseIpkAssign pkIdx sql assigns
+            Err e => Err e
+            Ok _ => match resolveAssigns lookup assigns []
+              Err e => Err e
+              Ok idxedAssign => match compilePred lookup whereExpr
+                Err e => Err e
+                Ok pred =>
+                  let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
+                  let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
+                  match buildDatabaseMultiExplicit newSpecs
                     Err e => Err e
-                    Ok _  =>
-                      match resolveAssigns lookup assigns []
-                        Err e          => Err e
-                        Ok idxedAssign =>
-                          match compilePred lookup whereExpr
-                            Err e   => Err e
-                            Ok pred =>
-                              let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
-                              let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
-                              match buildDatabaseMultiExplicit newSpecs
-                                Err e  => Err e
-                                Ok img => Ok (img, cnt)
+                    Ok img => Ok (img, cnt)
 
 -- Refuse if any Assign targets the IPK column.
 refuseIpkAssign : Option Int -> String -> List Assign -> Result String Unit
-refuseIpkAssign None   _   _            = Ok ()
-refuseIpkAssign _      _   []           = Ok ()
-refuseIpkAssign pkIdx  sql (Assign col _ :: rest) =
-  match pkIdx
-    None     => refuseIpkAssign pkIdx sql rest
-    Some idx =>
-      match columnIndex sql col
-        None       => refuseIpkAssign pkIdx sql rest
-        Some colIdx =>
-          if colIdx == idx
-          then Err "cannot UPDATE the INTEGER PRIMARY KEY column"
-          else refuseIpkAssign pkIdx sql rest
+refuseIpkAssign None _ _ = Ok ()
+refuseIpkAssign _ _ [] = Ok ()
+refuseIpkAssign pkIdx sql ((Assign col _)::rest) = match pkIdx
+  None => refuseIpkAssign pkIdx sql rest
+  Some idx => match columnIndex sql col
+    None => refuseIpkAssign pkIdx sql rest
+    Some colIdx =>
+      if colIdx == idx then
+        Err "cannot UPDATE the INTEGER PRIMARY KEY column"
+      else
+        refuseIpkAssign pkIdx sql rest
 
 -- Resolve each Assign's column name to an index AND compile its RHS `SqlExpr`
 -- to a per-row `List Cell -> Cell` accessor (via the exported `compileValue`).
 -- Unknown SET column → Err; a bad column INSIDE the RHS expression → Err too.
 resolveAssigns : (String -> Option Int) -> List Assign -> List (Int, List Cell -> Cell) -> Result String (List (Int, List Cell -> Cell))
-resolveAssigns _      []                          acc = Ok (reverse acc)
-resolveAssigns lookup (Assign col rhs :: rest)    acc =
-  match lookup col
-    None     => Err "update: unknown column: \{col}"
-    Some idx =>
-      match compileValue lookup rhs
-        Err e => Err e
-        Ok g  => resolveAssigns lookup rest ((idx, g) :: acc)
+resolveAssigns _ [] acc = Ok (reverse acc)
+resolveAssigns lookup ((Assign col rhs)::rest) acc = match lookup col
+  None => Err "update: unknown column: \{col}"
+  Some idx => match compileValue lookup rhs
+    Err e => Err e
+    Ok g => resolveAssigns lookup rest ((idx, g)::acc)
 
 -- Apply the resolved assignments to all rows matching the predicate.
 -- Returns the (possibly-modified) row list and the count of rows changed.
@@ -300,7 +299,7 @@ applyUpdate : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int,
 applyUpdate pred assigns rows = applyUpdateGo pred assigns rows [] 0
 
 applyUpdateGo : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
-applyUpdateGo _    _       []                    acc n = (reverse acc, n)
+applyUpdateGo _ _ [] acc n = (reverse acc, n)
 applyUpdateGo pred assigns ((rowid, cells)::rest) acc n =
   if pred cells
   then
@@ -314,22 +313,25 @@ applyUpdateGo pred assigns ((rowid, cells)::rest) acc n =
 -- Evaluate each (idx, accessor) against the given (original) cells, yielding
 -- the constant (idx, Cell) replacements to apply.
 evalAssignsAt : List (Int, List Cell -> Cell) -> List Cell -> List (Int, Cell)
-evalAssignsAt []                    _     = []
-evalAssignsAt ((idx, g) :: rest)    cells = (idx, g cells) :: evalAssignsAt rest cells
+evalAssignsAt [] _ = []
+evalAssignsAt ((idx, g)::rest) cells =
+  (idx, g cells) :: evalAssignsAt rest cells
 
 -- Apply a list of (index, Cell) replacements to a cell list.
 applyCellAssigns : List (Int, Cell) -> List Cell -> List Cell
 applyCellAssigns assigns cells = applyCellAssignsGo assigns cells 0 []
 
 applyCellAssignsGo : List (Int, Cell) -> List Cell -> Int -> List Cell -> List Cell
-applyCellAssignsGo _       []           _   acc = reverse acc
-applyCellAssignsGo assigns (c :: rest)  idx acc =
+applyCellAssignsGo _ [] _ acc = reverse acc
+applyCellAssignsGo assigns (c::rest) idx acc =
   let newCell = findAssign assigns idx c
-  applyCellAssignsGo assigns rest (idx + 1) (newCell :: acc)
+  applyCellAssignsGo assigns rest (idx + 1) (newCell::acc)
 
 -- Look up whether this index has an assignment; return the replacement or the original.
 findAssign : List (Int, Cell) -> Int -> Cell -> Cell
-findAssign []                   _   orig = orig
-findAssign ((i, cell) :: rest)  idx orig =
-  if i == idx then cell
-  else findAssign rest idx orig
+findAssign [] _ orig = orig
+findAssign ((i, cell)::rest) idx orig =
+  if i == idx then
+    cell
+  else
+    findAssign rest idx orig

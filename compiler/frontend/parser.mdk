@@ -225,8 +225,8 @@ manyGo p toks pos acc = match runP p toks pos
 
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
 manyStep p toks pos pos2 acc x
-  | pos2 > pos = manyGo p toks pos2 (x :: acc)
-  | otherwise = POk (reverseL (x :: acc)) pos2
+  | pos2 > pos = manyGo p toks pos2 (x::acc)
+  | otherwise = POk (reverseL (x::acc)) pos2
 
 sepThen : Parser b -> Parser a -> Parser a
 sepThen sep p = do
@@ -237,7 +237,7 @@ sepBy1 : Parser a -> Parser b -> Parser (List a)
 sepBy1 p sep = do
   x <- p
   xs <- many (sepThen sep p)
-  pure (x :: xs)
+  pure (x::xs)
 
 -- Consume an OPTIONAL trailing comma that `sepBy1` left positioned at (a
 -- trailing comma backtracks the failed element parse, leaving the parser AT the
@@ -362,8 +362,8 @@ spineList e = spineOnto e []
 
 spineOnto : Expr -> List Expr -> List Expr
 spineOnto (ELoc _ e) acc = spineOnto e acc
-spineOnto (EApp f x) acc = spineOnto f (x :: acc)
-spineOnto e acc = e :: acc
+spineOnto (EApp f x) acc = spineOnto f (x::acc)
+spineOnto e acc = e::acc
 
 exprToPat : Expr -> Pat
 exprToPat (ELoc _ e) = exprToPat e
@@ -437,16 +437,15 @@ parseCmp : Parser Expr
 parseCmp = chainl1 parseCons cmpOp
 
 cmpOp : Parser (Expr -> Expr -> Expr)
-cmpOp =
-  choice
-    [
-      binOp TEqEq "==",
-      binOp TNeq "!=",
-      binOp TLt "<",
-      binOp TGt ">",
-      binOp TLeq "<=",
-      binOp TGeq ">=",
-    ]
+cmpOp = choice
+  [
+    binOp TEqEq "==",
+    binOp TNeq "!=",
+    binOp TLt "<",
+    binOp TGt ">",
+    binOp TLeq "<=",
+    binOp TGeq ">=",
+  ]
 
 -- `::` is right-associative
 parseCons : Parser Expr
@@ -464,13 +463,14 @@ parseAppend : Parser Expr
 parseAppend = chainl1 parseAdd (binOp TPlusPlus "++")
 
 parseAdd : Parser Expr
-parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-", binOp TMinusTight "-"])
+parseAdd = chainl1
+  parseMul
+  (choice [binOp TPlus "+", binOp TMinus "-", binOp TMinusTight "-"])
 
 parseMul : Parser Expr
-parseMul =
-  chainl1
-    parseUnary
-    (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
+parseMul = chainl1
+  parseUnary
+  (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
 
 -- unary minus, tighter than `*` (a leading `-` in operand position)
 parseUnary : Parser Expr
@@ -821,13 +821,15 @@ recordFieldExprRest _ _ = failP "expected = in record-update field"
 desugarDottedField : Expr -> (List String, Expr) -> FieldAssign
 desugarDottedField base (path, value) = match path
   [field] => FieldAssign field value
-  field::rest => FieldAssign field (dottedGo (EFieldAccess base field (Ref "")) rest value)
+  field::rest =>
+    FieldAssign field (dottedGo (EFieldAccess base field (Ref "")) rest value)
   [] => FieldAssign "_" value
 
 dottedGo : Expr -> List String -> Expr -> Expr
 dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value]
-dottedGo cur (f::fs) value =
-  ERecordUpdate cur [FieldAssign f (dottedGo (EFieldAccess cur f (Ref "")) fs value)]
+dottedGo cur (f::fs) value = ERecordUpdate
+  cur
+  [FieldAssign f (dottedGo (EFieldAccess cur f (Ref "")) fs value)]
 dottedGo cur [] value = value
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
@@ -1029,7 +1031,7 @@ listAfterComma first _ = do
   rest <- sepBy1 parseBracketElem (expectTok TComma)
   optTrailingComma
   expectTok TRBracket
-  pure (EListLit (first :: rest))
+  pure (EListLit (first::rest))
 
 rangeAfter : Expr -> Bool -> Parser Expr
 rangeAfter lo incl = do
@@ -1074,7 +1076,7 @@ arrayAfterComma first _ = do
   rest <- sepBy1 parseBracketElem (expectTok TComma)
   optTrailingComma
   expectTok TRArray
-  pure (EArrayLit (first :: rest))
+  pure (EArrayLit (first::rest))
 
 arrayRangeAfter : Expr -> Bool -> Parser Expr
 arrayRangeAfter lo incl = do
@@ -1277,7 +1279,7 @@ armsCons = do
   a <- parseArm
   skipNewlines
   rest <- armsLoop
-  pure (a :: rest)
+  pure (a::rest)
 
 parseArm : Parser Arm
 parseArm = do
@@ -1379,7 +1381,7 @@ recordPatFieldsRest f TComma = do
 recordPatFieldsRest f _ = pure ([f], False)
 
 consField : RecPatField -> (List RecPatField, Bool) -> (List RecPatField, Bool)
-consField f (fs, rest) = (f :: fs, rest)
+consField f (fs, rest) = (f::fs, rest)
 
 recordPatField : Parser RecPatField
 recordPatField = do
@@ -1650,7 +1652,7 @@ productAxes : Parser (List (String, String))
 productAxes = do
   a <- productAxis
   rest <- productAxesMore
-  pure (a :: rest)
+  pure (a::rest)
 
 productAxesMore : Parser (List (String, String))
 productAxesMore = do
@@ -1679,12 +1681,12 @@ productAxisVal = do
 productAxisValFor : Token -> Parser String
 productAxisValFor (TString s) = do
   advance
-  pure ("\"" ++ s ++ "\"")        -- Prefix axis: keep quoted for the decoder
+  pure ("\"" ++ s ++ "\"")  -- Prefix axis: keep quoted for the decoder
 productAxisValFor TLBrace = do
   expectTok TLBrace
   elems <- sepBy1 stringLitP (expectTok TComma)
   expectTok TRBrace
-  pure (encodeSetParam elems)       -- Set axis: `{a,b}` (same as the Set carrier)
+  pure (encodeSetParam elems)  -- Set axis: `{a,b}` (same as the Set carrier)
 productAxisValFor _ = failP "expected product axis value (\"prefix\" or {set})"
 
 effParamFor : Token -> Parser (Option String)
@@ -1693,7 +1695,7 @@ effParamFor (TString s) = do
   pure (Some s)
 effParamFor TUnderscore = do
   advance
-  pure (Some "_")           -- v2 Stage 2b inferred hole (`<Net _>`)
+  pure (Some "_")  -- v2 Stage 2b inferred hole (`<Net _>`)
 effParamFor TLBrace = do
   -- v2 WS-3 Set-domain literal `<Foo {"a", "b"}>`.  Encode the element strings
   -- into the existing `Option String` carrier as `{a,b}` (sentinel `{` prefix);
@@ -1957,7 +1959,7 @@ letRecDeclClauses = do
   c <- letRecDeclClause
   skipNewlines
   rest <- letRecDeclClausesRest
-  pure (c :: rest)
+  pure (c::rest)
 
 letRecDeclClausesRest : Parser (List (String, List Pat, Expr))
 letRecDeclClausesRest = do
@@ -2023,7 +2025,7 @@ importQuals : Parser (List String)
 importQuals = do
   first <- importIdent
   rest <- importQualRest
-  pure (first :: rest)
+  pure (first::rest)
 
 importQualRest : Parser (List String)
 importQualRest = do
@@ -2035,7 +2037,7 @@ importQualRestFor TDot = do
   advance
   x <- importIdent
   rest <- importQualRest
-  pure (x :: rest)
+  pure (x::rest)
 importQualRestFor _ = pure []
 
 importIdent : Parser String
@@ -2264,7 +2266,7 @@ ifaceMembersCons = do
   m <- ifaceMember
   skipNewlines
   rest <- ifaceMembersLoop
-  pure (m :: rest)
+  pure (m::rest)
 
 -- a method signature `name : ty`, or a default method `name pats = body`
 ifaceMember : Parser IfaceMethod
@@ -2385,7 +2387,7 @@ implMethodsCons = do
   m <- implMethod
   skipNewlines
   rest <- implMethodsLoop
-  pure (m :: rest)
+  pure (m::rest)
 
 -- impl methods are `name pats = body` (multi-clause = repeated entries)
 implMethod : Parser ImplMethod
@@ -2428,7 +2430,7 @@ guardArmsCons = do
   a <- parseGuardArm
   skipNewlines
   rest <- guardArmsLoop
-  pure (a :: rest)
+  pure (a::rest)
 
 parseGuardArm : Parser GuardArm
 parseGuardArm = do
@@ -2474,8 +2476,12 @@ parseData vis = do
   let blockDerives = snd bodyAndDerives
   outerDerives <- derivingClause
   skipNewlines
-  pure
-    (DData vis name params variants (combineDerives blockDerives outerDerives))
+  pure (DData
+    vis
+    name
+    params
+    variants
+    (combineDerives blockDerives outerDerives))
 -- block form may carry `deriving (…)` INSIDE the INDENT span (own line or
 -- trailing the last constructor); that is captured by dataBody.  The inline
 -- form leaves derives empty here and the trailing derivingClause picks it up.
@@ -2555,7 +2561,7 @@ dataVariants : Parser (List Variant)
 dataVariants = do
   v <- parseVariant
   rest <- variantsRest
-  pure (v :: rest)
+  pure (v::rest)
 
 variantsRest : Parser (List Variant)
 variantsRest = do
@@ -2568,7 +2574,7 @@ variantsRestFor TPipe = do
   advance
   v <- parseVariant
   rest <- variantsRest
-  pure (v :: rest)
+  pure (v::rest)
 variantsRestFor _ = pure []
 
 parseVariant : Parser Variant
@@ -2631,8 +2637,12 @@ parseRecord vis = do
   expectTok TDedent
   outerDerives <- derivingClause
   skipNewlines
-  pure
-    (DRecord vis name params fields (combineDerives blockDerives outerDerives))
+  pure (DRecord
+    vis
+    name
+    params
+    fields
+    (combineDerives blockDerives outerDerives))
 -- `deriving (…)` may sit INSIDE the block (indented line kept within the
 -- INDENT/DEDENT span), so consume it before the DEDENT; otherwise the inline
 -- form after the DEDENT is picked up below.  derivingClause stops at the
@@ -2643,7 +2653,7 @@ recordFields = do
   skipNewlines
   f <- parseField
   rest <- recordFieldsRest
-  pure (f :: rest)
+  pure (f::rest)
 
 recordFieldsRest : Parser (List Field)
 recordFieldsRest = do
@@ -2655,7 +2665,7 @@ recordFieldsRestFor : Token -> Parser (List Field)
 recordFieldsRestFor (TIdent _) = do
   f <- parseField
   rest <- recordFieldsRest
-  pure (f :: rest)
+  pure (f::rest)
 recordFieldsRestFor _ = pure []
 
 -- a decl body is an inline expr, or an INDENT block of statements: a single
@@ -2704,7 +2714,7 @@ whereBindingsCons = do
   b <- parseWhereBinding
   skipNewlines
   rest <- whereBindingsLoop
-  pure (b :: rest)
+  pure (b::rest)
 
 parseWhereBinding : Parser (String, List Pat, Expr)
 parseWhereBinding = do
@@ -2741,7 +2751,8 @@ coalesceGo name acc ((n, ps, b)::rest) = coalesceStep name acc n ps b rest
 coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
 coalesceStep name acc n ps b rest
   | n == name = coalesceGo name (FunClause ps b :: acc) rest
-  | otherwise = LetBind name (reverseL acc) :: coalesceGo n [FunClause ps b] rest
+  | otherwise =
+    LetBind name (reverseL acc) :: coalesceGo n [FunClause ps b] rest
 
 indentedBody : Parser Expr
 indentedBody = do
@@ -2751,7 +2762,7 @@ indentedBody = do
   pure (blockOrExpr stmts)
 
 blockOrExpr : List DoStmt -> Expr
-blockOrExpr [(DoExpr e)] = e
+blockOrExpr [DoExpr e] = e
 blockOrExpr stmts = EBlock stmts
 
 -- `do <INDENT stmt block DEDENT>` → a monadic do-block
@@ -2786,7 +2797,7 @@ stmtsCons = do
   s <- parseStmt
   skipNewlines
   rest <- stmtsLoop
-  pure (s :: rest)
+  pure (s::rest)
 
 parseStmt : Parser DoStmt
 parseStmt = do
@@ -2947,28 +2958,24 @@ parseProgram = do
 -- decl is parsed with its start/end token index captured via `getPos`; lines
 -- come from the parallel line array; variant start lines are re-derived from the
 -- decl's token span (the data-body's depth-0 `=`/`|` separators).
-public export data DeclPos = DeclPos Int Int  -- (line, end_line), 1-based
+public export data DeclPos =
+  | DeclPos Int Int  -- (line, end_line), 1-based
 public export data Positions = Positions (List DeclPos) (List Int) Int
 -- decl positions, variant start lines, last_content_line
 
-export
-positionsDecls : Positions -> List DeclPos
+export positionsDecls : Positions -> List DeclPos
 positionsDecls (Positions ds _ _) = ds
 
-export
-positionsVariantLines : Positions -> List Int
+export positionsVariantLines : Positions -> List Int
 positionsVariantLines (Positions _ vs _) = vs
 
-export
-positionsLastContentLine : Positions -> Int
+export positionsLastContentLine : Positions -> Int
 positionsLastContentLine (Positions _ _ l) = l
 
-export
-declPosLine : DeclPos -> Int
+export declPosLine : DeclPos -> Int
 declPosLine (DeclPos l _) = l
 
-export
-declPosEndLine : DeclPos -> Int
+export declPosEndLine : DeclPos -> Int
 declPosEndLine (DeclPos _ e) = e
 
 -- Parse one decl, capturing the (startTokIdx, endTokIdx) span around it.
@@ -3034,7 +3041,8 @@ variantStartsIn toks lines i e = variantStartsGo toks lines i e 0 False
 variantStartsGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
 variantStartsGo toks lines i e depth seenEq
   | i >= e = []
-  | otherwise = variantStartsAt toks lines i e depth seenEq (arrayGetUnsafe i toks)
+  | otherwise =
+    variantStartsAt toks lines i e depth seenEq (arrayGetUnsafe i toks)
 
 variantStartsAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
 variantStartsAt toks lines i e depth seenEq t
@@ -3100,12 +3108,11 @@ lastContentLineOf toks lines spans = lastContentLineGo toks lines spans 0
 
 lastContentLineGo : Array Token -> Array Int -> List (Decl, Int, Int) -> Int -> Int
 lastContentLineGo toks lines [] acc = acc
-lastContentLineGo toks lines ((_, s, e)::rest) acc =
-  lastContentLineGo
-    toks
-    lines
-    rest
-    (lineAt lines (lastContentIdx toks s (e - 1)))
+lastContentLineGo toks lines ((_, s, e)::rest) acc = lastContentLineGo
+  toks
+  lines
+  rest
+  (lineAt lines (lastContentIdx toks s (e - 1)))
 
 resultSpans : Array Token -> PR (List (Decl, Int, Int)) -> List (Decl, Int, Int)
 resultSpans _ (PErr _ _) = panic "parse error"
@@ -3116,8 +3123,7 @@ resultSpans toks (POk ds pos)
 -- Parse `src` and return the position side-channel alongside the decls.  The
 -- non-panicking `parseWithPositionsOpt` does the work; this wrapper preserves the
 -- panic-on-unparseable behaviour the compiler + `medaka fmt` rely on.
-export
-parseWithPositions : String -> (List Decl, Positions)
+export parseWithPositions : String -> (List Decl, Positions)
 parseWithPositions src = match parseWithPositionsOpt src
   Some r => r
   None => panic "parse error"
@@ -3126,8 +3132,7 @@ parseWithPositions src = match parseWithPositionsOpt src
 -- doesn't parse (instead of `panic "parse error"`), so documentSymbol / definition
 -- / inlayHint degrade to empty results rather than crashing the whole server —
 -- files are unparseable constantly mid-edit.
-export
-parseWithPositionsOpt : String -> Option (List Decl, Positions)
+export parseWithPositionsOpt : String -> Option (List Decl, Positions)
 parseWithPositionsOpt src = match tokenizeWithLines src
   (tokList, lineList) =>
     let toks = arrayFromList tokList
@@ -3150,8 +3155,7 @@ resultDecls toks (POk ds pos)
   | peekTok toks pos == TEof = ds
   | otherwise = panic "parse error"
 
-export
-parse : String -> List Decl
+export parse : String -> List Decl
 parse src =
   let toks = arrayFromList (tokenize src)
   resultDecls toks (runP parseProgram toks 0)
@@ -3161,8 +3165,7 @@ parse src =
 -- Separate from `parse` (which stays pure / placeholder-loc) because `setRef`
 -- is <Mut> and `parse` is called from pure contexts across the pipeline; the
 -- token stream is byte-identical (`tokenizeWithOffsets` vs `tokenize`).
-export
-parseLocated : String -> <Mut> List Decl
+export parseLocated : String -> <Mut> List Decl
 parseLocated src = match tokenizeWithOffsetPairs src
   (tokList, offPairs) =>
     let _ = setLocState src (arrayFromList offPairs)
@@ -3184,16 +3187,13 @@ parseLocated src = match tokenizeWithOffsetPairs src
 -- from the error token's char offset via the lexer's `offsetToLineCol`.
 public export data ParseError = ParseError Int Int String
 
-export
-parseErrorLine : ParseError -> Int
+export parseErrorLine : ParseError -> Int
 parseErrorLine (ParseError l _ _) = l
 
-export
-parseErrorCol : ParseError -> Int
+export parseErrorCol : ParseError -> Int
 parseErrorCol (ParseError _ c _) = c
 
-export
-parseErrorMessage : ParseError -> String
+export parseErrorMessage : ParseError -> String
 parseErrorMessage (ParseError _ _ m) = m
 
 -- Char offset of token index `i` from the parallel offset array.  Two synthetic
@@ -3264,22 +3264,16 @@ scanForLetIn toks i depth
 firstInlineLetMissingIn : Array Token -> Int -> Int
 firstInlineLetMissingIn toks i
   | i + 1 >= arrayLength toks = 0 - 1
-  | (peekTok toks i == TElse || peekTok toks i == TThen) &&
-    peekTok toks (i + 1) == TLet =
-      if scanForLetIn toks (i + 2) 0
-      then firstInlineLetMissingIn toks (i + 1)
-      else i + 1
+  | (peekTok toks i == TElse || peekTok toks i == TThen) && peekTok toks (i + 1) == TLet = if scanForLetIn toks (i + 2) 0 then firstInlineLetMissingIn toks (i + 1) else i + 1
   | otherwise = firstInlineLetMissingIn toks (i + 1)
 
 inlineLetMissingInMsg : String
-inlineLetMissingInMsg =
-  "inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block"
+inlineLetMissingInMsg = "inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block"
 
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
-export
-parseResult : String -> Result ParseError (List Decl)
+export parseResult : String -> Result ParseError (List Decl)
 parseResult src = match tokenizeWithOffsets src
   (tokList, offList) =>
     let toks = arrayFromList tokList
@@ -3287,8 +3281,9 @@ parseResult src = match tokenizeWithOffsets src
     let srcLen = stringLength src
     let seIdx = firstSlashEqIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
-    if seIdx >= 0
-    then Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
-    else if ilIdx >= 0
-    then Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
-    else resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
+    if seIdx >= 0 then
+      Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
+    else if ilIdx >= 0 then
+      Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
+    else
+      resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

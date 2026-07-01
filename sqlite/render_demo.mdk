@@ -2,20 +2,26 @@
 --   byte-identically for the render path of lib.select.
 
 import lib.select.{
-  Select, Literal,
-  selectFrom, withWhere, withLimit, withOffset, render,
-  eGt, eAnd, eNotNull, eColInt, eLitI,
+  Select,
+  Literal,
+  selectFrom,
+  withWhere,
+  withLimit,
+  withOffset,
+  render,
+  eGt,
+  eAnd,
+  eNotNull,
+  eColInt,
+  eLitI,
 }
 
 renderShowLocal : Result String (String, List Literal) -> String
 renderShowLocal r = match r
-  Err e           => "ERR \{e}"
-  Ok (sql, _)     => sql
+  Err e => "ERR \{e}"
+  Ok (sql, _) => sql
 
 main : <IO> Unit
 main =
-  let sel = withOffset 5 (withLimit 10
-              (withWhere (eAnd (eGt (eColInt "age") (eLitI 18))
-                               (eNotNull (eColInt "email")))
-                         (selectFrom "users")))
+  let sel = withOffset 5 (withLimit 10 (withWhere (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email"))) (selectFrom "users")))
   println (renderShowLocal (render sel))

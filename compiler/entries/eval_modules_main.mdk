@@ -33,4 +33,5 @@ run coreP entry roots = match readFile coreP
   Err e => ePutStrLn e
   Ok csrc => match loadProgram entry roots
     Err e => ePutStrLn e
-    Ok mods => putStr (evalModulesOutput (desugar (parse csrc)) (map desugarPair mods))
+    Ok mods =>
+      putStr (evalModulesOutput (desugar (parse csrc)) (map desugarPair mods))

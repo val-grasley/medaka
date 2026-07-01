@@ -38,15 +38,27 @@ import types.typecheck.{
   enableEmitArgStampPasses,
   mainTypeIsFloat,
 }
-import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames, ctorFieldTypeNames}
+import ir.core_ir_lower.{
+  lowerProgramEmit,
+  methodIfaceTable,
+  declSigTypeNames,
+  ctorFieldTypeNames,
+}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
 import support.path.{dirOf}
-import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installCtorFloatFields, installMainIsFloatHint}
+import backend.wasm_emit.{
+  emitProgram,
+  installMethodIface,
+  installDeclRetTypes,
+  installCtorFloatFields,
+  installMainIsFloatHint,
+}
 
 main : <IO, Mut> Unit
 main = match args ()
-  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots =>
+    run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: medaka run compiler/entries/wasm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String

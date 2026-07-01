@@ -15,8 +15,16 @@ import lib.dbwriter.{buildDatabaseMulti}
 import lib.sqlite.{Db, fromBytes}
 import lib.recordfmt.{Cell, CInt, CText}
 import lib.select.{
-  Select, selectFrom, innerJoin, withWhere, withOrderBy, query,
-  eEq, eGt, eColInt, eLitI,
+  Select,
+  selectFrom,
+  innerJoin,
+  withWhere,
+  withOrderBy,
+  query,
+  eEq,
+  eGt,
+  eColInt,
+  eLitI,
 }
 import lib.rowtype.{RowType, tInt, tText, t2, t3, tCustom}
 
@@ -24,76 +32,76 @@ usersSql : String
 usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)"
 
 ordersSql : String
-ordersSql = "CREATE TABLE orders(oid INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER)"
+ordersSql =
+  "CREATE TABLE orders(oid INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER)"
 
 usersRows : List (List Cell)
 usersRows =
-  [ [ CInt 1, CText "Alice" ]
-  , [ CInt 2, CText "Bob" ]
-  , [ CInt 3, CText "Carol" ]
-  ]
+  [[CInt 1, CText "Alice"], [CInt 2, CText "Bob"], [CInt 3, CText "Carol"]]
 
 ordersRows : List (List Cell)
-ordersRows =
-  [ [ CInt 10, CInt 1,  CInt 100 ]
-  , [ CInt 11, CInt 1,  CInt 250 ]
-  , [ CInt 12, CInt 2,  CInt 175 ]
-  , [ CInt 13, CInt 3,  CInt 50 ]
-  , [ CInt 14, CInt 99, CInt 999 ]
-  ]
+ordersRows = [
+  [CInt 10, CInt 1, CInt 100],
+  [CInt 11, CInt 1, CInt 250],
+  [CInt 12, CInt 2, CInt 175],
+  [CInt 13, CInt 3, CInt 50],
+  [CInt 14, CInt 99, CInt 999],
+]
 
 data UO = UO { uid : Int, uname : String, oid : Int, oUser : Int, amount : Int }
 
 mkUO : ((Int, String), (Int, Int, Int)) -> Result String UO
 mkUO t = match t
-  ((i, n), (o, u, a)) => Ok (UO { uid = i, uname = n, oid = o, oUser = u, amount = a })
+  ((i, n), (o, u, a)) =>
+    Ok UO { uid = i, uname = n, oid = o, oUser = u, amount = a }
 
 uoRow : RowType UO
 uoRow = tCustom mkUO (t2 (t2 tInt tText) (t3 tInt tInt tInt))
 
 showUO : UO -> String
 showUO r = match r
-  UO { uid = i, uname = n, oid = o, oUser = u, amount = a } => "\{i}|\{n}|\{o}|\{u}|\{a}"
+  UO { uid = i, uname = n, oid = o, oUser = u, amount = a } =>
+    "\{i}|\{n}|\{o}|\{u}|\{a}"
 
 printUO : List UO -> <IO> Unit
-printUO []          = ()
-printUO (r :: rest) = let _ = println (showUO r) in printUO rest
+printUO [] = ()
+printUO (r::rest) = let _ = println (showUO r) in printUO rest
 
 runUO : Db -> String -> Select -> <IO> Unit
 runUO db label sel =
   let _ = println label
   match query db sel uoRow
-    Err e   => println "query error: \{e}"
+    Err e => println "query error: \{e}"
     Ok rows => printUO rows
 
 runAll : Db -> <IO> Unit
 runAll db =
-  let _ = runUO db "-- join users/orders order oid --"
-            (withOrderBy "orders.oid" True
-              (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
-                (selectFrom "users")))
-  let _ = runUO db "-- join where amount>100 order amount --"
-            (withOrderBy "orders.amount" True
-              (withWhere (eGt (eColInt "orders.amount") (eLitI 100))
-                (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
-                  (selectFrom "users"))))
-  runUO db "-- join where users.id=1 order amount desc --"
-    (withOrderBy "orders.amount" False
-      (withWhere (eEq (eColInt "users.id") (eLitI 1))
-        (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+  let _ = runUO db "-- join users/orders order oid --" (withOrderBy "orders.oid" True (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid")) (selectFrom "users")))
+  let _ = runUO db "-- join where amount>100 order amount --" (withOrderBy "orders.amount" True (withWhere (eGt (eColInt "orders.amount") (eLitI 100)) (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid")) (selectFrom "users"))))
+  runUO
+    db
+    "-- join where users.id=1 order amount desc --"
+    (withOrderBy
+      "orders.amount"
+      False
+      (withWhere
+        (eEq (eColInt "users.id") (eLitI 1))
+        (innerJoin
+          "orders"
+          (eEq (eColInt "users.id") (eColInt "orders.uid"))
           (selectFrom "users"))))
 
 specs : List (String, String, Option Int, List (List Cell))
-specs =
-  [ ("users", usersSql, Some 0, usersRows)
-  , ("orders", ordersSql, Some 0, ordersRows)
-  ]
+specs = [
+  ("users", usersSql, Some 0, usersRows),
+  ("orders", ordersSql, Some 0, ordersRows),
+]
 
 main : <IO, Mut> Unit
 main =
   let _ = println "-- CREATE users+orders (in-memory) --"
   match buildDatabaseMulti specs
-    Err e    => println "build error: \{e}"
+    Err e => println "build error: \{e}"
     Ok bytes => match fromBytes bytes
       Err e => println "fromBytes error: \{e}"
       Ok db => runAll db
