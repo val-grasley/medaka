@@ -1,0 +1,148 @@
+{- hex.mdk — hex (base16) encoding/decoding of raw bytes.
+
+   Bytes are `Array Int` (each element `0..255`), matching the convention
+   used by `readFileBytes`/`writeFileBytes` (stdlib/runtime.mdk) and the
+   `byteparser`/`bytebuilder` codecs: two hex digits per byte, most
+   significant nibble first.
+
+   **Decode strictness.**  `decode` rejects (`Err`) an odd-length input and
+   any non-hex-digit character.  Whitespace is NOT skipped — a string with
+   embedded spaces/newlines is an error.  Both uppercase and lowercase hex
+   digits are accepted on decode (mirrors `string.digitToInt`, which already
+   treats `'a'..'f'`/`'A'..'F'` uniformly); `encode` always produces
+   lowercase, `encodeUpper` uppercase. -}
+
+import array.{get, fromList}
+import string.{digitToInt, intToDigit, toUtf8, fromUtf8, toChars}
+
+-- | In-bounds indexing via the safe `Array.get`, panicking on a miss.  Every
+--   call site below only ever indexes within the array's own known length,
+--   so the `None` arm is unreachable — this just avoids the internal-only
+--   `arrayGetUnsafe` primitive (stdlib code may still use it, but a plain
+--   `Array.get` reads just as well here and keeps this file simple).
+byteAt : Int -> Array Int -> Int
+byteAt i arr = match get i arr
+  Some b => b
+  None => panic "hex: index out of bounds"
+
+charAt : Int -> Array Char -> Char
+charAt i arr = match get i arr
+  Some c => c
+  None => panic "hex: index out of bounds"
+
+-- ── Encode ──────────────────────────────────────────────────────────────────
+
+digitChar : Int -> Bool -> Char
+digitChar n upper =
+  if upper then
+    match intToDigit n
+      Some c => charToUpper c
+      None => '?'
+  else
+    match intToDigit n
+      Some c => c
+      None => '?'
+
+byteToHexChars : Int -> Bool -> (Char, Char)
+byteToHexChars b upper =
+  let masked = bitAnd b 255
+  let hi = shiftRight masked 4
+  let lo = bitAnd masked 15
+  (digitChar hi upper, digitChar lo upper)
+
+encodeGo : Array Int -> Int -> Bool -> List Char -> List Char
+encodeGo bytes i upper acc
+  | i < 0     = acc
+  | otherwise =
+    let (hi, lo) = byteToHexChars (byteAt i bytes) upper
+    encodeGo bytes (i - 1) upper (hi :: lo :: acc)
+
+{- | Bytes → lowercase hex string, two characters per byte, most-significant
+   nibble first.
+
+   > encode (fromList [255, 0, 16])
+   "ff0010"
+   > encode ([||] : Array Int)
+   ""
+   > encode (fromList [0])
+   "00" -}
+export
+encode : Array Int -> String
+encode bytes = stringFromChars (arrayFromList (encodeGo bytes (arrayLength bytes - 1) False []))
+
+{- | Bytes → uppercase hex string.
+
+   > encodeUpper (fromList [255, 0, 16])
+   "FF0010" -}
+export
+encodeUpper : Array Int -> String
+encodeUpper bytes = stringFromChars (arrayFromList (encodeGo bytes (arrayLength bytes - 1) True []))
+
+{- | UTF-8 bytes of `s` → lowercase hex string.
+
+   > encodeString "Hello"
+   "48656c6c6f" -}
+export
+encodeString : String -> String
+encodeString s = encode (toUtf8 s)
+
+-- ── Decode ──────────────────────────────────────────────────────────────────
+
+decodeGo : Array Char -> Int -> Int -> List Int -> Result String (List Int)
+decodeGo chars i n acc
+  | i >= n    = Ok acc
+  | otherwise =
+    match digitToInt (charAt i chars)
+      None => Err "hex.decode: invalid hex digit"
+      Some hi =>
+        match digitToInt (charAt (i + 1) chars)
+          None => Err "hex.decode: invalid hex digit"
+          Some lo => decodeGo chars (i + 2) n (acc ++ [hi * 16 + lo])
+
+{- | Hex string → bytes.  `Err` on odd length or any non-hex-digit character
+   (uppercase and lowercase digits both accepted; no whitespace skipping).
+
+   > decode "ff0010"
+   Ok [|255, 0, 16|]
+   > decode "FF0010"
+   Ok [|255, 0, 16|]
+   > decode ""
+   Ok [||]
+   > decode "f"
+   Err "hex.decode: odd-length input"
+   > decode "zz"
+   Err "hex.decode: invalid hex digit" -}
+export
+decode : String -> Result String (Array Int)
+decode s =
+  let chars = toChars s
+  let n = arrayLength chars
+  if n % 2 != 0 then
+    Err "hex.decode: odd-length input"
+  else
+    match decodeGo chars 0 n []
+      Ok bytes => Ok (arrayFromList bytes)
+      Err e => Err e
+
+{- | Hex string → UTF-8-decoded String.
+
+   > decodeString "48656c6c6f"
+   Ok "Hello" -}
+export
+decodeString : String -> Result String String
+decodeString s = match decode s
+  Ok bytes => Ok (fromUtf8 bytes)
+  Err e => Err e
+
+-- ── Properties ──────────────────────────────────────────────────────────────
+
+toByteArray : List Int -> Array Int
+toByteArray xs = arrayFromList (map (b => ((b % 256) + 256) % 256) xs)
+
+prop "hex round-trip: decode (encode bs) == Ok bs" (xs : List Int) =
+  let bs = toByteArray xs
+  decode (encode bs) == Ok bs
+
+prop "hex encode length is 2x byte length" (xs : List Int) =
+  let bs = toByteArray xs
+  stringLength (encode bs) == 2 * arrayLength bs
