@@ -39,13 +39,17 @@ public export data Literal
 -- | A comparison operator.
 public export data CmpOp = OpEq | OpNe | OpLt | OpLe | OpGt | OpGe
 
+-- | An arithmetic operator: `+`, `-`, `*`, `/` (division), `%` (modulo).
+public export data ArithOp = AAdd | ASub | AMul | ADiv | AMod
+
 -- | An untyped boolean/value expression tree.  `ECol`/`ELit` are leaves;
---   `EBin` is a comparison; `EAnd`/`EOr`/`ENot` are logical; `EIsNull`/`ENotNull`
---   are the null tests.
+--   `EBin` is a comparison; `EArith` is a numeric binary op; `EAnd`/`EOr`/`ENot`
+--   are logical; `EIsNull`/`ENotNull` are the null tests.
 public export data SqlExpr
   = ECol String
   | ELit Literal
   | EBin CmpOp SqlExpr SqlExpr
+  | EArith ArithOp SqlExpr SqlExpr
   | EAnd SqlExpr SqlExpr
   | EOr SqlExpr SqlExpr
   | ENot SqlExpr
@@ -165,6 +169,28 @@ eGt l r = MkExpr (EBin OpGt (unExpr l) (unExpr r))
 export
 eGe : Expr a -> Expr a -> Expr Bool
 eGe l r = MkExpr (EBin OpGe (unExpr l) (unExpr r))
+
+-- Arithmetic combinators: both operands share the phantom `a`, result is
+-- `Expr a` (the value stays in the same numeric domain for the type checker).
+export
+eAdd : Expr a -> Expr a -> Expr a
+eAdd l r = MkExpr (EArith AAdd (unExpr l) (unExpr r))
+
+export
+eSub : Expr a -> Expr a -> Expr a
+eSub l r = MkExpr (EArith ASub (unExpr l) (unExpr r))
+
+export
+eMul : Expr a -> Expr a -> Expr a
+eMul l r = MkExpr (EArith AMul (unExpr l) (unExpr r))
+
+export
+eDiv : Expr a -> Expr a -> Expr a
+eDiv l r = MkExpr (EArith ADiv (unExpr l) (unExpr r))
+
+export
+eMod : Expr a -> Expr a -> Expr a
+eMod l r = MkExpr (EArith AMod (unExpr l) (unExpr r))
 
 -- Logical combinators: force `Expr Bool` operands and result.
 export
@@ -346,6 +372,7 @@ renderExpr (ECol name) =
     Err "render: invalid column name: \{name}"
 renderExpr (ELit lit) = Ok ("?", [lit])
 renderExpr (EBin op l r) = renderBinary (cmpSql op) l r
+renderExpr (EArith op l r) = renderBinary (arithSql op) l r
 renderExpr (EAnd l r) = renderBinary "AND" l r
 renderExpr (EOr l r) = renderBinary "OR" l r
 renderExpr (ENot inner) =
@@ -360,6 +387,13 @@ renderBinary opSql l r = do
   (lsql, lbinds) <- renderExpr l
   (rsql, rbinds) <- renderExpr r
   Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
+
+arithSql : ArithOp -> String
+arithSql AAdd = "+"
+arithSql ASub = "-"
+arithSql AMul = "*"
+arithSql ADiv = "/"
+arithSql AMod = "%"
 
 cmpSql : CmpOp -> String
 cmpSql OpEq = "="
@@ -440,6 +474,9 @@ compilePred lookup (ECol name) = match lookup name
   Some i => Ok (cells => cellTruthy (nthCell cells i))
 compilePred lookup (ELit lit) = Ok (_ => litTruthy lit)
 compilePred lookup (EBin op l r) = compileCmp lookup op l r
+compilePred lookup (EArith op l r) = do
+  g <- compileOperand lookup (EArith op l r)
+  Ok (cells => cellTruthy (g cells))
 compilePred lookup (EAnd l r) = do
   pl <- compilePred lookup l
   pr <- compilePred lookup r
@@ -467,14 +504,91 @@ compileCmp lookup op l r = do
   gr <- compileOperand lookup r
   Ok (cells => cmpCells op (gl cells) (gr cells))
 
--- An operand is either a column (resolved to an index accessor) or a literal
--- (a constant cell).  Returns a `List Cell -> Cell` accessor.
+-- An operand is a column (resolved to an index accessor), a literal (a constant
+-- cell), or an arithmetic expression (both sides compiled to accessors, then
+-- combined per row via `evalArith`).  Returns a `List Cell -> Cell` accessor.
+-- Exported so `lib.mutate` can evaluate UPDATE SET right-hand sides.
+export
 compileOperand : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
 compileOperand lookup (ECol name) = match lookup name
   None => Err "compilePred: unknown column: \{name}"
   Some i => Ok (cells => nthCell cells i)
 compileOperand lookup (ELit lit) = Ok (_ => litToCell lit)
+compileOperand lookup (EArith op l r) = do
+  gl <- compileOperand lookup l
+  gr <- compileOperand lookup r
+  Ok (cells => evalArith op (gl cells) (gr cells))
 compileOperand lookup _ = Err "compilePred: operand must be a column or literal"
+
+-- | Compile any `SqlExpr` value operand to a per-row `List Cell -> Cell`
+--   accessor (an alias of `compileOperand` for the UPDATE SET call site).
+export
+compileValue : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
+compileValue = compileOperand
+
+-- ---------------------------------------------------------------------------
+-- Arithmetic evaluation (SQLite semantics)
+--
+-- NULL propagation: either operand NULL ⇒ NULL.  `+ - *`: CInt⊕CInt ⇒ CInt,
+-- otherwise coerce to CFloat.  `/`: both-int ⇒ integer division truncating
+-- toward zero (÷0 ⇒ NULL); either-real ⇒ float division (÷0.0 ⇒ NULL).  `%`:
+-- integer modulo on the integer parts (sign follows the dividend; x%0 ⇒ NULL).
+-- A non-numeric (text/blob) operand is out of scope: yields NULL, never crashes.
+-- ---------------------------------------------------------------------------
+
+evalArith : ArithOp -> Cell -> Cell -> Cell
+evalArith op a b =
+  if cellIsNull a || cellIsNull b
+  then CNull
+  else match op
+    AMod => evalMod a b
+    ADiv => evalDiv a b
+    _    => evalAddSubMul op a b
+
+-- `+ - *`: integer result when both operands are integers, else float.
+evalAddSubMul : ArithOp -> Cell -> Cell -> Cell
+evalAddSubMul op a b = match (a, b)
+  (CInt x,   CInt y)   => CInt (intArith op x y)
+  (CInt x,   CFloat y) => CFloat (floatArith op (intToFloat x) y)
+  (CFloat x, CInt y)   => CFloat (floatArith op x (intToFloat y))
+  (CFloat x, CFloat y) => CFloat (floatArith op x y)
+  _                    => CNull
+
+intArith : ArithOp -> Int -> Int -> Int
+intArith AAdd x y = x + y
+intArith ASub x y = x - y
+intArith AMul x y = x * y
+intArith _    x _ = x   -- ADiv/AMod never reach here (handled upstream)
+
+floatArith : ArithOp -> Float -> Float -> Float
+floatArith AAdd x y = x + y
+floatArith ASub x y = x - y
+floatArith AMul x y = x * y
+floatArith _    x _ = x   -- ADiv/AMod never reach here (handled upstream)
+
+-- Division: both-int ⇒ truncating integer division; any-float ⇒ float division.
+-- Division by zero (integer or real) ⇒ NULL, matching sqlite.
+evalDiv : Cell -> Cell -> Cell
+evalDiv a b = match (a, b)
+  (CInt x,   CInt y)   => if y == 0 then CNull else CInt (x / y)
+  (CInt x,   CFloat y) => if y == 0.0 then CNull else CFloat (intToFloat x / y)
+  (CFloat x, CInt y)   => if y == 0 then CNull else CFloat (x / intToFloat y)
+  (CFloat x, CFloat y) => if y == 0.0 then CNull else CFloat (x / y)
+  _                    => CNull
+
+-- Modulo: operate on the integer parts (floats truncate toward zero via the
+-- pattern below only reaching integer cells here); x%0 ⇒ NULL; sign follows the
+-- dividend (Medaka `%` matches sqlite for negatives, verified).
+evalMod : Cell -> Cell -> Cell
+evalMod a b = match (cellToIntPart a, cellToIntPart b)
+  (Some x, Some y) => if y == 0 then CNull else CInt (x % y)
+  _                => CNull
+
+-- Truncate a numeric cell to its integer part (toward zero).  Non-numeric ⇒ None.
+cellToIntPart : Cell -> Option Int
+cellToIntPart (CInt n)   = Some n
+cellToIntPart (CFloat f) = Some (floatToInt f)
+cellToIntPart _          = None
 
 -- ---------------------------------------------------------------------------
 -- Cell / comparison helpers (used by compilePred)
@@ -839,6 +953,12 @@ decodeCells rt (cells :: rest) acc = do
 --
 -- > renderShow (render (withWhere (eGt (eColInt "age") (eLitI 18)) (selectFrom "users")))
 -- "SELECT * FROM users WHERE (age > ?) ## [LInt 18]"
+--
+-- Arithmetic in a WHERE comparison renders parenthesized, inner op first; each
+-- literal is a `?` bind, ordered left-to-right (the `+` operand before the `>`).
+--
+-- > renderShow (render (withWhere (eGt (eAdd (eColInt "age") (eLitI 5)) (eLitI 30)) (selectFrom "users")))
+-- "SELECT * FROM users WHERE ((age + ?) > ?) ## [LInt 5, LInt 30]"
 --
 -- Nested AND with a NOT NULL test, plus LIMIT/OFFSET — binds are ordered
 -- left-to-right, LIMIT then OFFSET appended last.

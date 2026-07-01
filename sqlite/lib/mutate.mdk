@@ -35,8 +35,8 @@
 import lib.sqlite.{Db, openDb, readSchema, scanTableRowsIpk, schemaSql, schemaName, schemaType, SchemaEntry, pkColumnIndex, rowCellsWithIpk, columnIndex}
 import lib.btree.{Row, rowRowid}
 import lib.dbwriter.{buildDatabaseMultiExplicit}
-import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat, CBlob}
-import lib.select.{Expr, SqlExpr, unExpr, compilePred, Literal, LInt, LText, LFloat, LBlob, LNull}
+import lib.recordfmt.{Cell}
+import lib.select.{Expr, SqlExpr, unExpr, compilePred, compileValue}
 import list.{reverse}
 
 -- ---------------------------------------------------------------------------
@@ -194,8 +194,18 @@ buildImage db table whereExpr =
 -- Assign — a SET assignment for UPDATE
 -- ---------------------------------------------------------------------------
 
--- | A single SET assignment: column name + new literal value.
-public export data Assign = Assign String Literal
+-- | A single SET assignment: column name + a value expression (`SqlExpr`).
+--   The RHS is a full expression tree, so it may reference the row's own
+--   columns and use arithmetic (`SET total = total + 10`).  A constant is just
+--   an `ELit` leaf, so the old literal-assignment behaviour is preserved.
+public export data Assign = Assign String SqlExpr
+
+-- | Build an assignment from the type-safe phantom layer, e.g.
+--   `assign "total" (eAdd (eColInt "total") (eLitI 10))`.  The phantom wrapper
+--   is stripped here (the type-safe boundary), mirroring `withWhere`.
+export
+assign : String -> Expr a -> Assign
+assign col e = Assign col (unExpr e)
 
 -- ---------------------------------------------------------------------------
 -- UPDATE — read-transform-rewrite
@@ -269,37 +279,43 @@ refuseIpkAssign pkIdx  sql (Assign col _ :: rest) =
           then Err "cannot UPDATE the INTEGER PRIMARY KEY column"
           else refuseIpkAssign pkIdx sql rest
 
--- Resolve each Assign's column name to an index.  Unknown column → Err.
-resolveAssigns : (String -> Option Int) -> List Assign -> List (Int, Cell) -> Result String (List (Int, Cell))
-resolveAssigns _      []                        acc = Ok (reverse acc)
-resolveAssigns lookup (Assign col lit :: rest)  acc =
+-- Resolve each Assign's column name to an index AND compile its RHS `SqlExpr`
+-- to a per-row `List Cell -> Cell` accessor (via the exported `compileValue`).
+-- Unknown SET column → Err; a bad column INSIDE the RHS expression → Err too.
+resolveAssigns : (String -> Option Int) -> List Assign -> List (Int, List Cell -> Cell) -> Result String (List (Int, List Cell -> Cell))
+resolveAssigns _      []                          acc = Ok (reverse acc)
+resolveAssigns lookup (Assign col rhs :: rest)    acc =
   match lookup col
     None     => Err "update: unknown column: \{col}"
     Some idx =>
-      resolveAssigns lookup rest ((idx, litToCell lit) :: acc)
-
--- Convert a Literal to the corresponding Cell value.
-litToCell : Literal -> Cell
-litToCell (LInt n)   = CInt n
-litToCell (LText s)  = CText s
-litToCell (LFloat f) = CFloat f
-litToCell (LBlob b)  = CBlob b
-litToCell LNull      = CNull
+      match compileValue lookup rhs
+        Err e => Err e
+        Ok g  => resolveAssigns lookup rest ((idx, g) :: acc)
 
 -- Apply the resolved assignments to all rows matching the predicate.
 -- Returns the (possibly-modified) row list and the count of rows changed.
-applyUpdate : (List Cell -> Bool) -> List (Int, Cell) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
+-- Each RHS accessor is evaluated against the row's ORIGINAL (pre-update) cells,
+-- so a `SET a = b, b = a` swap reads both originals before any assignment lands.
+applyUpdate : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
 applyUpdate pred assigns rows = applyUpdateGo pred assigns rows [] 0
 
-applyUpdateGo : (List Cell -> Bool) -> List (Int, Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
+applyUpdateGo : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
 applyUpdateGo _    _       []                    acc n = (reverse acc, n)
 applyUpdateGo pred assigns ((rowid, cells)::rest) acc n =
   if pred cells
   then
-    let newCells = applyCellAssigns assigns cells
+    -- Evaluate every RHS against the ORIGINAL cells first, then apply.
+    let resolved = evalAssignsAt assigns cells
+    let newCells = applyCellAssigns resolved cells
     applyUpdateGo pred assigns rest ((rowid, newCells) :: acc) (n + 1)
   else
     applyUpdateGo pred assigns rest ((rowid, cells) :: acc) n
+
+-- Evaluate each (idx, accessor) against the given (original) cells, yielding
+-- the constant (idx, Cell) replacements to apply.
+evalAssignsAt : List (Int, List Cell -> Cell) -> List Cell -> List (Int, Cell)
+evalAssignsAt []                    _     = []
+evalAssignsAt ((idx, g) :: rest)    cells = (idx, g cells) :: evalAssignsAt rest cells
 
 -- Apply a list of (index, Cell) replacements to a cell list.
 applyCellAssigns : List (Int, Cell) -> List Cell -> List Cell

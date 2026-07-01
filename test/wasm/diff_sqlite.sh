@@ -31,6 +31,7 @@ CORPUS=(
   "$ROOT/sqlite/inmem_crud_probe.mdk"
   "$ROOT/sqlite/inmem_aggregate_probe.mdk"
   "$ROOT/sqlite/inmem_orderby_probe.mdk"
+  "$ROOT/sqlite/inmem_arith_probe.mdk"
   "$ROOT/sqlite/inmem_join_probe.mdk"
   "$ROOT/sqlite/inmem_leftjoin_probe.mdk"
   "$ROOT/sqlite/inmem_distinct_probe.mdk"

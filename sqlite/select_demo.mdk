@@ -13,7 +13,8 @@ import lib.select.{
   ECol, ELit, EBin, EAnd, EOr, EIsNull, ENotNull,
   OpEq, OpGt, OpLt,
   selectFrom, withWhere, withLimit, withOffset, withOrderBy, query,
-  eGt, eLt, eEq, eAnd, eOr, eIsNull, eNotNull,
+  eGt, eGe, eLt, eEq, eAnd, eOr, eIsNull, eNotNull,
+  eAdd, eMul, eDiv, eMod,
   eColInt, eColText, eLitI, eLitT,
 }
 import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}
@@ -82,5 +83,14 @@ main = match args ()
                 (withOrderBy "name" True (selectFrom "users"))
       let _ = runQ db "-- order by age asc limit 2 offset 1 --"
                 (withOffset 1 (withLimit 2 (withOrderBy "age" True (selectFrom "users"))))
-      runQ db "-- order by age asc, name desc --"
+      let _ = runQ db "-- order by age asc, name desc --"
         (withOrderBy "name" False (withOrderBy "age" True (selectFrom "users")))
+      -- WHERE-arithmetic predicates (bonus: same compileOperand path as UPDATE SET).
+      let _ = runQ db "-- age + 5 > 30 --"
+                (withWhere (eGt (eAdd (eColInt "age") (eLitI 5)) (eLitI 30)) (selectFrom "users"))
+      let _ = runQ db "-- age * 2 >= 60 --"
+                (withWhere (eGe (eMul (eColInt "age") (eLitI 2)) (eLitI 60)) (selectFrom "users"))
+      let _ = runQ db "-- age % 10 = 0 --"
+                (withWhere (eEq (eMod (eColInt "age") (eLitI 10)) (eLitI 0)) (selectFrom "users"))
+      runQ db "-- age / 10 = 2 --"
+        (withWhere (eEq (eDiv (eColInt "age") (eLitI 10)) (eLitI 2)) (selectFrom "users"))

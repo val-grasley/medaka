@@ -17,8 +17,8 @@
 
 import lib.dbwriter.{writeDatabase}
 import lib.sqlite.{Db, openDb, scanTableRows}
-import lib.mutate.{delete, update, Assign}
-import lib.select.{eColInt, eLitI, eEq, eGt, Literal, LInt}
+import lib.mutate.{delete, update, assign}
+import lib.select.{eColInt, eLitI, eEq, eGt}
 import lib.recordfmt.{Cell, CNull, CInt, CText}
 import lib.btree.{Row}
 
@@ -61,7 +61,7 @@ runProbe path =
                 Ok n  => let _ = println "deleted \{n} rows" in readUsers path
       -- UPDATE age := 99 WHERE id = 3 (Carol) — reads + rewrites the file.
       let _ = println "-- UPDATE users SET age=99 WHERE id=3, READ back --"
-      match update path "users" [Assign "age" (LInt 99)] (eEq (eColInt "id") (eLitI 3))
+      match update path "users" [assign "age" (eLitI 99)] (eEq (eColInt "id") (eLitI 3))
         Err e => println "update error: \{e}"
         Ok n  => let _ = println "updated \{n} rows" in readUsers path
 

@@ -1,0 +1,57 @@
+-- UPDATE-SET-expression probe for sqlite/test/update_expr_oracle.sh.
+--
+-- Usage: medaka build sqlite/update_expr_demo.mdk
+--        ./update_expr_demo <path>
+--
+-- Applies a fixed battery of arithmetic UPDATE statements to the SQLite file at
+-- <path> (seeded by the oracle), exercising every arithmetic shape the library
+-- now supports.  Prints one "<table>: updated N rows" line per statement so the
+-- oracle can check the counts; the oracle separately diffs the resulting table
+-- state against the equivalent statements run through the sqlite3 CLI.
+--
+-- The WHERE clause `id >= 0` matches every row (ids start at 1) — the library
+-- has no "no WHERE" form, so a tautology stands in for a full-table UPDATE.
+
+import lib.mutate.{update, Assign, assign}
+import lib.select.{Expr, eColInt, eColFloat, eLitI, eLitF, eGe, eAdd, eMul, eDiv, eMod}
+
+allRows : Expr Bool
+allRows = eGe (eColInt "id") (eLitI 0)
+
+-- Run one UPDATE and print "<label>: updated N rows" (or an error).
+runOne : String -> String -> List Assign -> Expr Bool -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runOne path table asgns where_ label =
+  match update path table asgns where_
+    Err e => println "\{label}: Error: \{e}"
+    Ok n  => println "\{label}: updated \{n} rows"
+
+main : <IO, FileRead, FileWrite, Mut> Unit
+main = match args ()
+  [path] =>
+    let _ = runOne path "t1"
+              [assign "total" (eAdd (eColInt "total") (eLitI 10))]
+              (eGe (eColInt "total") (eLitI 50)) "t1 total+=10 WHERE total>=50"
+    let _ = runOne path "t2"
+              [assign "x" (eMul (eColInt "x") (eLitI 2))]
+              allRows "t2 x*=2"
+    let _ = runOne path "t3"
+              [assign "c" (eAdd (eColInt "a") (eColInt "b"))]
+              allRows "t3 c=a+b"
+    let _ = runOne path "t4"
+              [assign "n" (eDiv (eColInt "n") (eLitI 2))]
+              allRows "t4 n=n/2"
+    let _ = runOne path "t5"
+              [assign "n" (eDiv (eColInt "n") (eColInt "d"))]
+              allRows "t5 n=n/d (div by zero)"
+    let _ = runOne path "t6"
+              [assign "n" (eMod (eColInt "n") (eLitI 3))]
+              allRows "t6 n=n%3"
+    let _ = runOne path "t7"
+              [assign "a" (eColInt "b"), assign "b" (eColInt "a")]
+              allRows "t7 swap a,b"
+    -- Float-in-Cell arithmetic (the type-lost-Float-prone shape): p := p * 1.5.
+    runOne path "t8"
+      [assign "p" (eMul (eColFloat "p") (eLitF 1.5))]
+      allRows "t8 p*=1.5 (float)"
+
+  _ => println "usage: update_expr_demo <path>"

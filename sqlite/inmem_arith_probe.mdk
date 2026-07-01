@@ -1,0 +1,91 @@
+-- | In-memory WHERE-arithmetic probe — the stage-C WasmGC tandem oracle for the
+-- arithmetic evaluator (`lib.select.compileOperand`'s `EArith` arm).
+--
+-- Builds a `users` table entirely in memory (`Array Int` image, no file I/O) and
+-- runs `SELECT`s whose WHERE predicate contains arithmetic (`+ - * / %`, over
+-- both Int and Float columns) through `lib.select.query`, printing one line per
+-- row.  Because it is bytes-first (buildDatabase → fromBytes → query) it emits +
+-- runs IDENTICALLY under the native LLVM backend and the WasmGC backend;
+-- `test/wasm/diff_sqlite.sh` builds it for both targets and diffs stdout.
+
+import lib.dbwriter.{buildDatabase}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
+import lib.select.{
+  Select, selectFrom, withWhere, withOrderBy, query,
+  eGt, eGe, eEq, eLt,
+  eAdd, eSub, eMul, eDiv, eMod,
+  eColInt, eColFloat, eLitI, eLitF,
+}
+import lib.rowtype.{RowType, tInt, tText, tFloat, t4, tCustom}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER, bal REAL)"
+
+usersRows : List (List Cell)
+usersRows =
+  [ [ CInt 1, CText "Alice", CInt 30, CFloat 10.0 ]
+  , [ CInt 2, CText "Bob",   CInt 25, CFloat 4.5  ]
+  , [ CInt 3, CText "Carol", CInt 40, CFloat 20.0 ]
+  , [ CInt 4, CText "Dave",  CInt 22, CFloat 7.0  ]
+  , [ CInt 5, CText "Eve",   CInt 35, CFloat 2.5  ]
+  ]
+
+ipk : Option Int
+ipk = Some 0
+
+data User = User { id : Int, name : String, age : Int, bal : Float }
+
+mkUser : (Int, String, Int, Float) -> Result String User
+mkUser t = match t
+  (i, n, a, b) => Ok (User { id = i, name = n, age = a, bal = b })
+
+userRow : RowType User
+userRow = tCustom mkUser (t4 tInt tText tInt tFloat)
+
+showUser : User -> String
+showUser u = match u
+  User { id = i, name = n, age = a, bal = b } => "\{i}|\{n}|\{a}|\{b}"
+
+printRows : List User -> <IO> Unit
+printRows []          = ()
+printRows (u :: rest) =
+  let _ = println (showUser u)
+  printRows rest
+
+runQ : Db -> String -> Select -> <IO> Unit
+runQ db label sel =
+  let _ = println label
+  match query db sel userRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printRows rows
+
+runAll : Db -> <IO> Unit
+runAll db =
+  let _ = runQ db "-- age + 5 > 30 (ORDER BY id) --"
+            (withOrderBy "id" True
+              (withWhere (eGt (eAdd (eColInt "age") (eLitI 5)) (eLitI 30)) (selectFrom "users")))
+  let _ = runQ db "-- age * 2 >= 60 --"
+            (withOrderBy "id" True
+              (withWhere (eGe (eMul (eColInt "age") (eLitI 2)) (eLitI 60)) (selectFrom "users")))
+  let _ = runQ db "-- age % 10 = 0 --"
+            (withOrderBy "id" True
+              (withWhere (eEq (eMod (eColInt "age") (eLitI 10)) (eLitI 0)) (selectFrom "users")))
+  let _ = runQ db "-- age / 10 = 3 --"
+            (withOrderBy "id" True
+              (withWhere (eEq (eDiv (eColInt "age") (eLitI 10)) (eLitI 3)) (selectFrom "users")))
+  let _ = runQ db "-- age - 5 < 20 --"
+            (withOrderBy "id" True
+              (withWhere (eLt (eSub (eColInt "age") (eLitI 5)) (eLitI 20)) (selectFrom "users")))
+  runQ db "-- bal * 2.0 > 15.0 (float) --"
+    (withOrderBy "id" True
+      (withWhere (eGt (eMul (eColFloat "bal") (eLitF 2.0)) (eLitF 15.0)) (selectFrom "users")))
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE users (in-memory) --"
+  match buildDatabase "users" usersSql 4 ipk usersRows
+    Err e    => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db => runAll db

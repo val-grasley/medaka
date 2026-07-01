@@ -59,6 +59,12 @@ add  "-- order by age asc limit 2 offset 1 --"; addq x "SELECT id,name,age FROM 
 # Multi-column ORDER BY: Alice(30) and Frank(30) tie on age; name DESC breaks
 # the tie (Frank before Alice).  Proves per-key direction folding.
 add  "-- order by age asc, name desc --"; addq x "SELECT id,name,age FROM users ORDER BY age ASC, name DESC;"
+# WHERE-arithmetic predicates: the arithmetic evaluator (compileOperand) must
+# agree with sqlite3's arithmetic in a WHERE clause (+, *, %, /).
+add  "-- age + 5 > 30 --";  addq x "SELECT id,name,age FROM users WHERE age + 5 > 30 ORDER BY rowid;"
+add  "-- age * 2 >= 60 --"; addq x "SELECT id,name,age FROM users WHERE age * 2 >= 60 ORDER BY rowid;"
+add  "-- age % 10 = 0 --";  addq x "SELECT id,name,age FROM users WHERE age % 10 = 0 ORDER BY rowid;"
+add  "-- age / 10 = 2 --";  addq x "SELECT id,name,age FROM users WHERE age / 10 = 2 ORDER BY rowid;"
 exp="${exp%$'\n'}"
 
 if [ "$got" = "$exp" ]; then

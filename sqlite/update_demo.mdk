@@ -11,8 +11,8 @@
 --
 -- Prints "updated N rows" on success or an error string on failure.
 
-import lib.mutate.{update, Assign}
-import lib.select.{eColInt, eLitI, eLitT, eEq, eNe, eLt, eLe, eGt, eGe, Literal, LInt, LText}
+import lib.mutate.{update, Assign, assign}
+import lib.select.{eColInt, eLitI, eLitT, eEq, eNe, eLt, eLe, eGt, eGe}
 import string.{toInt}
 
 makeAssign : String -> String -> String -> Option Assign
@@ -20,8 +20,8 @@ makeAssign col setType val =
   match setType
     "int" => match toInt val
                None   => None
-               Some n => Some (Assign col (LInt n))
-    "text" => Some (Assign col (LText val))
+               Some n => Some (assign col (eLitI n))
+    "text" => Some (assign col (eLitT val))
     _      => None
 
 runUpdate : String -> String -> Assign -> String -> String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
