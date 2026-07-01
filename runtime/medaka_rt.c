@@ -661,6 +661,32 @@ double mdk_float_rem(double a, double b) {
   return fmod(a, b);
 }
 
+/* libm math shims (native/LLVM only) — each a thin wrapper over math.h.
+ * The evaluator (compiler/eval/eval.mdk) calls these via the runtime.mdk
+ * externs; the LLVM emitter emits direct `call double @mdk_<name>(...)`. */
+double mdk_sqrt(double a) { return sqrt(a); }
+double mdk_cbrt(double a) { return cbrt(a); }
+double mdk_exp(double a) { return exp(a); }
+double mdk_log(double a) { return log(a); }
+double mdk_log2(double a) { return log2(a); }
+double mdk_log10(double a) { return log10(a); }
+double mdk_sin(double a) { return sin(a); }
+double mdk_cos(double a) { return cos(a); }
+double mdk_tan(double a) { return tan(a); }
+double mdk_asin(double a) { return asin(a); }
+double mdk_acos(double a) { return acos(a); }
+double mdk_atan(double a) { return atan(a); }
+double mdk_sinh(double a) { return sinh(a); }
+double mdk_cosh(double a) { return cosh(a); }
+double mdk_tanh(double a) { return tanh(a); }
+double mdk_floor(double a) { return floor(a); }
+double mdk_ceil(double a) { return ceil(a); }
+double mdk_round(double a) { return round(a); }
+double mdk_trunc(double a) { return trunc(a); }
+double mdk_pow(double a, double b) { return pow(a, b); }
+double mdk_atan2(double a, double b) { return atan2(a, b); }
+double mdk_hypot(double a, double b) { return hypot(a, b); }
+
 /* Print a polymorphic numeric value (LTNum result of `Num a =>` arithmetic):
  * dispatch on the runtime tag like the arithmetic helpers above. */
 void mdk_print_num(long long w) {

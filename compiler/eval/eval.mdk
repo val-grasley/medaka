@@ -1805,6 +1805,28 @@ externBindings = [
   ("stringToUtf8Bytes", prim1 pStringToUtf8Bytes),
   ("stringFromUtf8Bytes", prim1 pStringFromUtf8Bytes),
   ("floatRem", prim2 pFloatRem),
+  ("sqrt", prim1 pSqrt),
+  ("cbrt", prim1 pCbrt),
+  ("exp", prim1 pExp),
+  ("log", prim1 pLog),
+  ("log2", prim1 pLog2),
+  ("log10", prim1 pLog10),
+  ("sin", prim1 pSin),
+  ("cos", prim1 pCos),
+  ("tan", prim1 pTan),
+  ("asin", prim1 pAsin),
+  ("acos", prim1 pAcos),
+  ("atan", prim1 pAtan),
+  ("sinh", prim1 pSinh),
+  ("cosh", prim1 pCosh),
+  ("tanh", prim1 pTanh),
+  ("floor", prim1 pFloor),
+  ("ceil", prim1 pCeil),
+  ("round", prim1 pRound),
+  ("trunc", prim1 pTrunc),
+  ("pow", prim2 pPow),
+  ("atan2", prim2 pAtan2),
+  ("hypot", prim2 pHypot),
   ("stringToUpper", prim1 pStringToUpper),
   ("stringToLower", prim1 pStringToLower),
   ("stringCompare", prim2 pStringCompare),
@@ -1986,6 +2008,75 @@ pStringFromUtf8Bytes _ = panic "stringFromUtf8Bytes: not an Array"
 pFloatRem : Value -> Value -> Value
 pFloatRem (VFloat a) (VFloat b) = VFloat (floatRem a b)
 pFloatRem _ _ = panic "floatRem: bad operands"
+
+-- libm math prims — each calls the runtime.mdk extern of the same name, which
+-- lowers to the C math.h shim (mirrors pFloatRem calling floatRem).  Native only.
+pSqrt : Value -> Value
+pSqrt (VFloat a) = VFloat (sqrt a)
+pSqrt _ = panic "sqrt: not a Float"
+pCbrt : Value -> Value
+pCbrt (VFloat a) = VFloat (cbrt a)
+pCbrt _ = panic "cbrt: not a Float"
+pExp : Value -> Value
+pExp (VFloat a) = VFloat (exp a)
+pExp _ = panic "exp: not a Float"
+pLog : Value -> Value
+pLog (VFloat a) = VFloat (log a)
+pLog _ = panic "log: not a Float"
+pLog2 : Value -> Value
+pLog2 (VFloat a) = VFloat (log2 a)
+pLog2 _ = panic "log2: not a Float"
+pLog10 : Value -> Value
+pLog10 (VFloat a) = VFloat (log10 a)
+pLog10 _ = panic "log10: not a Float"
+pSin : Value -> Value
+pSin (VFloat a) = VFloat (sin a)
+pSin _ = panic "sin: not a Float"
+pCos : Value -> Value
+pCos (VFloat a) = VFloat (cos a)
+pCos _ = panic "cos: not a Float"
+pTan : Value -> Value
+pTan (VFloat a) = VFloat (tan a)
+pTan _ = panic "tan: not a Float"
+pAsin : Value -> Value
+pAsin (VFloat a) = VFloat (asin a)
+pAsin _ = panic "asin: not a Float"
+pAcos : Value -> Value
+pAcos (VFloat a) = VFloat (acos a)
+pAcos _ = panic "acos: not a Float"
+pAtan : Value -> Value
+pAtan (VFloat a) = VFloat (atan a)
+pAtan _ = panic "atan: not a Float"
+pSinh : Value -> Value
+pSinh (VFloat a) = VFloat (sinh a)
+pSinh _ = panic "sinh: not a Float"
+pCosh : Value -> Value
+pCosh (VFloat a) = VFloat (cosh a)
+pCosh _ = panic "cosh: not a Float"
+pTanh : Value -> Value
+pTanh (VFloat a) = VFloat (tanh a)
+pTanh _ = panic "tanh: not a Float"
+pFloor : Value -> Value
+pFloor (VFloat a) = VFloat (floor a)
+pFloor _ = panic "floor: not a Float"
+pCeil : Value -> Value
+pCeil (VFloat a) = VFloat (ceil a)
+pCeil _ = panic "ceil: not a Float"
+pRound : Value -> Value
+pRound (VFloat a) = VFloat (round a)
+pRound _ = panic "round: not a Float"
+pTrunc : Value -> Value
+pTrunc (VFloat a) = VFloat (trunc a)
+pTrunc _ = panic "trunc: not a Float"
+pPow : Value -> Value -> Value
+pPow (VFloat a) (VFloat b) = VFloat (pow a b)
+pPow _ _ = panic "pow: bad operands"
+pAtan2 : Value -> Value -> Value
+pAtan2 (VFloat a) (VFloat b) = VFloat (atan2 a b)
+pAtan2 _ _ = panic "atan2: bad operands"
+pHypot : Value -> Value -> Value
+pHypot (VFloat a) (VFloat b) = VFloat (hypot a b)
+pHypot _ _ = panic "hypot: bad operands"
 
 pStringToUpper : Value -> Value
 pStringToUpper (VString s) = VString (stringToUpper s)

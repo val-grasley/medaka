@@ -90,6 +90,33 @@ extern floatToInt : Float -> Int
 -- Backs the `Float % Float` operator in the interpreter so `run` matches `build`
 -- (which emits `frem` inline) EXACTLY.  Pure.
 extern floatRem : Float -> Float -> Float
+-- ── libm math externs (native/LLVM only) ────────────────────────────────
+-- One-arg and two-arg transcendental / root / rounding functions, each a
+-- direct call into the C runtime's math.h shim (mirrors floatRem/fmod).
+-- All pure.  NOTE: wasm does NOT port these (they trap on wasm, like every
+-- non-ported float extern); native/LLVM is the only backend.
+extern sqrt : Float -> Float
+extern cbrt : Float -> Float
+extern exp : Float -> Float
+extern log : Float -> Float
+extern log2 : Float -> Float
+extern log10 : Float -> Float
+extern sin : Float -> Float
+extern cos : Float -> Float
+extern tan : Float -> Float
+extern asin : Float -> Float
+extern acos : Float -> Float
+extern atan : Float -> Float
+extern sinh : Float -> Float
+extern cosh : Float -> Float
+extern tanh : Float -> Float
+extern floor : Float -> Float
+extern ceil : Float -> Float
+extern round : Float -> Float
+extern trunc : Float -> Float
+extern pow : Float -> Float -> Float
+extern atan2 : Float -> Float -> Float
+extern hypot : Float -> Float -> Float
 -- Bit-level reinterpretation of a 64-bit Int as an IEEE 754 double.
 -- Inverse of Int64.bits_of_float / C memcpy(&bits,&d,8).  Pure.
 extern intBitsToFloat : Int -> Float
