@@ -1,0 +1,13 @@
+-- WS-3b/filerw-hole-flip FILEREAD hole-fill on the REAL stdlib builtin
+-- `readFile` (no local extern redeclaration, no per-program `effect FileRead
+-- Prefix` decl — FileRead is pre-registered as a Prefix domain in
+-- seedEffectDomains and stdlib/runtime.mdk's `readFile` now carries the
+-- universal inferred-hole marker `_`).  The call-site α recovers the literal
+-- path "/etc/app/config.toml" and fills the Prefix pattern
+-- <FileRead "/etc/app/config.toml">.  Declared bound <FileRead "/etc/app/*">
+-- ADMITS "/etc/app/config.toml" ⇒ ACCEPT.
+readCfg : Unit -> <FileRead "/etc/app/*"> Result String String
+readCfg _ = readFile "/etc/app/config.toml"
+
+main : <IO> Unit
+main = println "fileread builtin hole-fill accept"

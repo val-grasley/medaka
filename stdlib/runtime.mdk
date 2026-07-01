@@ -28,11 +28,11 @@ extern hashBool : Bool -> Int
 extern pi : Float
 extern e : Float
 extern readLine : Unit -> <Stdin> String
-extern readFile : String -> <FileRead> Result String String
+extern readFile : String -> <FileRead _> Result String String
 -- Read a file as RAW BYTES (no UTF-8 decode): Ok (Array Int) of byte values
 -- 0..255, or Err msg on failure.  Mirrors readFile but builds an Array of
 -- tagged ints instead of a String.  For SQLite/binary read paths.
-extern readFileBytes : String -> <FileRead> Result String (Array Int)
+extern readFileBytes : String -> <FileRead _> Result String (Array Int)
 -- Bitwise / shift primitives (PURE).  Defined on the 63-bit Int rep; native
 -- (C) == OCaml for NON-NEGATIVE operands (the binary-decoding case).
 -- shiftRight is LOGICAL (unsigned): OCaml lsr, C >> on the untagged value.
@@ -42,11 +42,11 @@ extern bitXor : Int -> Int -> Int
 extern shiftLeft : Int -> Int -> Int
 extern shiftRight : Int -> Int -> Int
 extern bitNot : Int -> Int
-extern writeFile : String -> String -> <FileWrite> Result String Unit
+extern writeFile : String -> String -> <FileWrite _> Result String Unit
 -- Write raw bytes (Array Int, values 0..255) to a file, truncating.  The
 -- byte-clean write counterpart of readFileBytes.  Returns Ok () on success
 -- or Err msg on failure.
-extern writeFileBytes : String -> Array Int -> <FileWrite> Result String Unit
+extern writeFileBytes : String -> Array Int -> <FileWrite _> Result String Unit
 -- Run a subprocess: prog args -> Ok (exitCode, stdout, stderr) | Err osError.
 -- Return type: Result String (Int, String, String) (Result e a: e=error, a=ok).
 -- stdout and stderr are captured as strings.  On spawn failure (e.g. ENOENT)
@@ -60,11 +60,11 @@ extern panic : String -> a
 -- stdlib/io.mdk; these are the irreducible host primitives.
 extern args : Unit -> <Env> List String  -- program args after the script name
 extern getEnv : String -> <Env _> Option String  -- environment variable, or None
-extern fileExists : String -> <FileRead> Bool
-extern canonicalizePath : String -> <FileRead> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
-extern appendFile : String -> String -> <FileWrite> Result String Unit
-extern listDir : String -> <FileRead> Result String (List String)  -- directory entries (names)
-extern makeDir : String -> <FileWrite> Result String Unit            -- create directory (mkdir 0o755)
+extern fileExists : String -> <FileRead _> Bool
+extern canonicalizePath : String -> <FileRead _> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
+extern appendFile : String -> String -> <FileWrite _> Result String Unit
+extern listDir : String -> <FileRead _> Result String (List String)  -- directory entries (names)
+extern makeDir : String -> <FileWrite _> Result String Unit            -- create directory (mkdir 0o755)
 extern ePutStr : String -> <Stderr> Unit  -- raw stderr output
 extern ePutStrLn : String -> <Stderr> Unit
 extern readLineOpt : Unit -> <Stdin> Option String  -- one stdin line, None at EOF

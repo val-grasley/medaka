@@ -1,0 +1,13 @@
+-- WS-3b/filerw-hole-flip FILEWRITE hole-fill on the REAL stdlib builtin
+-- `writeFile` (no local extern redeclaration, no per-program `effect
+-- FileWrite Prefix` decl — FileWrite is pre-registered as a Prefix domain in
+-- seedEffectDomains and stdlib/runtime.mdk's `writeFile` now carries the
+-- universal inferred-hole marker `_`).  The call-site α recovers the literal
+-- path "/var/log/app.log" and fills the Prefix pattern
+-- <FileWrite "/var/log/app.log">.  Declared bound <FileWrite "/var/log/*">
+-- ADMITS "/var/log/app.log" ⇒ ACCEPT.
+writeLog : Unit -> <FileWrite "/var/log/*"> Result String Unit
+writeLog _ = writeFile "/var/log/app.log" "x"
+
+main : <IO> Unit
+main = println "filewrite builtin hole-fill accept"

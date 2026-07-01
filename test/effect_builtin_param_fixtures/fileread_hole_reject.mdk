@@ -1,0 +1,10 @@
+-- WS-3b/filerw-hole-flip FILEREAD hole-fill on the REAL stdlib builtin
+-- `readFile` ⊄ REJECT.  α fills <FileRead "/etc/app/config.toml"> from the
+-- literal path; the declared bound <FileRead "/etc/other/*"> does not cover
+-- "/etc/app/config.toml" (different prefix) ⇒ REJECT
+-- (performs <FileRead "/etc/app/config.toml">).
+readCfg : Unit -> <FileRead "/etc/other/*"> Result String String
+readCfg _ = readFile "/etc/app/config.toml"
+
+main : <IO> Unit
+main = println "should not typecheck"
