@@ -529,6 +529,34 @@ useFileBytesRef = Ref False
 floatLocalsRef : Ref (List String)
 floatLocalsRef = Ref []
 
+-- W-SQLITE-4 stage 2: ctor name → field INDICES declared as Float (from
+-- ctorFieldTypeNames; installed by installCtorFloatFields from each wasm entry).
+-- Drives cexprIsFloat's CFieldAccess arm and ctor-payload Float binder seeding.
+-- Empty at startup (programs with no data decls stay unaffected).
+ctorFloatFieldsRef : Ref (List (String, List Int))
+ctorFloatFieldsRef = Ref []
+
+export
+installCtorFloatFields : List (String, List String) -> <Mut> Unit
+installCtorFloatFields entries =
+  setRef ctorFloatFieldsRef (map ctorToFloatIdxs entries)
+
+-- convert one ctorFieldTypeNames entry to (ctorName, [floatFieldIndex, …]).
+ctorToFloatIdxs : (String, List String) -> (String, List Int)
+ctorToFloatIdxs (ctor, typeNames) = (ctor, floatFieldIndices typeNames 0)
+
+-- collect the 0-based indices of "Float" fields from a type-head list.
+floatFieldIndices : List String -> Int -> List Int
+floatFieldIndices [] _ = []
+floatFieldIndices ("Float"::rest) i = i :: floatFieldIndices rest (i + 1)
+floatFieldIndices (_::rest) i = floatFieldIndices rest (i + 1)
+
+-- true iff the ctor's field at the given 0-based index has declared type Float.
+isFloatCtorField : String -> Int -> Bool
+isFloatCtorField ctor idx = match lookupAssoc ctor ctorFloatFieldsRef.value
+  Some idxs => containsInt idx idxs
+  None => False
+
 -- the distinct tuple arities used anywhere in the program (construction or match).
 tupleAritiesRef : Ref (List Int)
 tupleAritiesRef = Ref []
@@ -3656,10 +3684,34 @@ cexprIsFloat prog env e = match e
     CVar fn _ => not (contains fn env)
       && (contains fn ["intToFloat", "randomFloat"] || fnReturnsFloat fn)
     _ => False
+  -- W-SQLITE-4 stage 2: a record field access whose field is declared Float.
+  -- Look up the record ctor that owns `label` (via recFieldsRef) and check if
+  -- that field's 0-based index is in ctorFloatFieldsRef.
+  CFieldAccess _ label _ => match findRecByField recFieldsRef.value label
+    Some (ctor, labels) => isFloatCtorField ctor (orZeroIdx (indexOfL label labels))
+    None => False
   _ => False
 
 isArithOp : String -> Bool
 isArithOp op = contains op ["+", "-", "*", "/", "%"]
+
+-- W-SQLITE-4 stage 2: collect the PVar names that bind Float ctor-payload fields in
+-- a PCon pattern.  For `PCon c [PVar x, …]`, for each field index i where ctor c is
+-- declared Float (via ctorFloatFieldsRef), collect x if the i-th sub-pattern is a
+-- PVar.  Used by emitLeafRef/emitGuardArmRef to seed floatLocalsRef for the arm body.
+ctorPatFloatBinders : Pat -> List String
+ctorPatFloatBinders (PCon c args) = match lookupAssoc c ctorFloatFieldsRef.value
+  Some floatIdxs => ctorPatFloatBindersGo c floatIdxs args 0
+  None => []
+ctorPatFloatBinders _ = []
+
+ctorPatFloatBindersGo : String -> List Int -> List Pat -> Int -> List String
+ctorPatFloatBindersGo _ _ [] _ = []
+ctorPatFloatBindersGo c floatIdxs ((PVar x)::rest) i =
+  (if containsInt i floatIdxs then [x] else [])
+    ++ ctorPatFloatBindersGo c floatIdxs rest (i + 1)
+ctorPatFloatBindersGo c floatIdxs (_::rest) i =
+  ctorPatFloatBindersGo c floatIdxs rest (i + 1)
 
 cexprIsFloatBlock : Prog -> List String -> List CStmt -> Bool
 cexprIsFloatBlock _ _ [] = False
@@ -5256,24 +5308,38 @@ emitTreeTail prog env arity d root occs arms tree = match tree
   CTDrop sub => emitTreeTail prog env arity d root (tailList occs) arms sub
   CTSwitch branches dft => emitSwitchTail prog env arity d root occs arms branches dft
 
+-- W-SQLITE-4 stage 2: same ctor-payload Float binder seeding as emitLeafRef,
+-- but for arm bodies in TAIL POSITION (emitRefTail path).
 emitLeafTail : Prog -> List String -> Int -> List String -> List CArm -> Int -> <Mut> List String
 emitLeafTail prog env arity root arms i = match nthArm arms i
   Some (CArm pat _ body) =>
     let (binds, env2) = bindPatRef prog env pat root
-    binds ++ emitRefTail prog env2 arity body
+    let floatBinders = ctorPatFloatBinders pat
+    let savedFloat = floatLocalsRef.value
+    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let bodyCode = emitRefTail prog env2 arity body
+    let _ = setRef floatLocalsRef savedFloat
+    binds ++ bodyCode
   None => gapL "ref-mode: tail decision arm index out of range"
 
+-- W-SQLITE-4 stage 2: same ctor-payload Float binder seeding as emitGuardArmRef,
+-- for guarded arms in tail position.
 emitGuardArmTail : Prog -> List String -> Int -> Int -> List String -> List (List String) -> List CArm -> Int -> CTree -> <Mut> List String
 emitGuardArmTail prog env arity d root occs arms i fail = match nthArm arms i
   Some (CArm pat guards body) =>
     if allBoolGuards guards then
       let (binds, env2) = bindPatRef prog env pat root
+      let floatBinders = ctorPatFloatBinders pat
+      let savedFloat = floatLocalsRef.value
+      let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
       let gLabel = "$gt" ++ intToString d
-      ["block " ++ gLabel]
-        ++ indent (binds ++ flatMap (emitGuardTest prog env2 0 gLabel) guards
-                   ++ emitRefTail prog env2 arity body)
-        ++ ["end"]
-        ++ emitTreeTail prog env arity d root occs arms fail
+      let armCode =
+        ["block " ++ gLabel]
+          ++ indent (binds ++ flatMap (emitGuardTest prog env2 0 gLabel) guards
+                     ++ emitRefTail prog env2 arity body)
+          ++ ["end"]
+      let _ = setRef floatLocalsRef savedFloat
+      armCode ++ emitTreeTail prog env arity d root occs arms fail
     else gapL "ref-mode: refutable pattern guard (`p <- e`) in a tail match arm — not yet lowered"
   None => gapL "ref-mode: tail guarded arm index out of range"
 
@@ -5906,28 +5972,41 @@ emitTreeRef prog env d decLabel root occs arms tree = match tree
 
 -- a leaf: re-match arm i's pattern against `root` to bind its PVars (loading struct
 -- fields), then emit the body, then `br decLabel` with the value.
+-- W-SQLITE-4 stage 2: if the arm's pattern is a PCon with Float fields, temporarily
+-- add those binder names to floatLocalsRef so cexprIsFloat sees them in the body.
 emitLeafRef : Prog -> List String -> Int -> String -> List String -> List CArm -> Int -> <Mut> List String
 emitLeafRef prog env d decLabel root arms i = match nthArm arms i
   Some (CArm pat _ body) =>
     let (binds, env2) = bindPatRef prog env pat root
-    binds ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel]
+    let floatBinders = ctorPatFloatBinders pat
+    let savedFloat = floatLocalsRef.value
+    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let bodyCode = emitRefExpr prog env2 d body
+    let _ = setRef floatLocalsRef savedFloat
+    binds ++ bodyCode ++ ["br " ++ decLabel]
   None => gapL "ref-mode: decision arm index out of range"
 
 -- a guarded arm: bind the pattern, evaluate the guards; all-pass → body + br
 -- decLabel; any fail → the `fail` subtree (resumes at the same column context).
 -- Fall-through is a labelled block `$g<d>`: a failed guard `br_if $g<d>` skips the
 -- body, then control falls into the fail subtree after the block's `end`.
+-- W-SQLITE-4 stage 2: same ctor-payload Float binder seeding as emitLeafRef.
 emitGuardArmRef : Prog -> List String -> Int -> String -> List String -> List (List String) -> List CArm -> Int -> CTree -> <Mut> List String
 emitGuardArmRef prog env d decLabel root occs arms i fail = match nthArm arms i
   Some (CArm pat guards body) =>
     if allBoolGuards guards then
       let (binds, env2) = bindPatRef prog env pat root
+      let floatBinders = ctorPatFloatBinders pat
+      let savedFloat = floatLocalsRef.value
+      let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
       let gLabel = "$g" ++ intToString d
-      ["block " ++ gLabel]
-        ++ indent (binds ++ flatMap (emitGuardTest prog env2 d gLabel) guards
-                   ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel])
-        ++ ["end"]
-        ++ emitTreeRef prog env d decLabel root occs arms fail
+      let armCode =
+        ["block " ++ gLabel]
+          ++ indent (binds ++ flatMap (emitGuardTest prog env2 d gLabel) guards
+                     ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel])
+          ++ ["end"]
+      let _ = setRef floatLocalsRef savedFloat
+      armCode ++ emitTreeRef prog env d decLabel root occs arms fail
     else gapL "ref-mode: refutable pattern guard (`p <- e`) in a match arm — not yet lowered"
   None => gapL "ref-mode: guarded arm index out of range"
 

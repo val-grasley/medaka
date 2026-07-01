@@ -1,0 +1,23 @@
+-- W-SQLITE-4 stage 2: Float stored in a record field or constructor payload —
+-- `cexprIsFloat` now recognises CFieldAccess whose field is declared Float (via
+-- ctorFloatFieldsRef, seeded from ctorFieldTypeNames), and ctor-payload match
+-- binders (PCon arms in both emitLeafRef/emitLeafTail).  Before this fix both
+-- cases trapped at instantiate with `illegal cast` (an i31 unbox on a $float box).
+--
+--   * case (d): record-field Float arith — `r.u + r.v` where u,v : Float.
+--   * case (e): ctor-payload Float arith — `match b { Box f => f + f }` where
+--     `data Box = Box Float`.  This uses the TAIL-position path (emitLeafTail)
+--     since the match is the entire function body.
+
+data R = R { u : Float, v : Float }
+
+s : R -> Float
+s r = r.u + r.v
+
+data Box = Box Float
+
+un : Box -> Float
+un b = match b
+  Box f => f + f
+
+main = s (R { u = 1.5, v = 2.5 }) + un (Box 4.5)

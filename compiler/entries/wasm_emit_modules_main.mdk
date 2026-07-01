@@ -37,11 +37,11 @@ import types.typecheck.{
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
 }
-import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
+import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames, ctorFieldTypeNames}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
 import support.path.{dirOf}
-import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes}
+import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installCtorFloatFields}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -80,4 +80,7 @@ runEmit runtimeDecls coreDecls modules =
   -- W9b: install declared return-type heads so a Unit-returning value main
   -- (`main = println …`) suppresses its auto-print (the trailing-`0` bug).
   let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  -- W-SQLITE-4 stage 2: install ctor/record field Float indices so the emitter
+  -- recognises Float stored in a record field or constructor payload.
+  let _ = installCtorFloatFields (ctorFieldTypeNames allDecls)
   putStr (emitProgram (lowerProgramEmit allDecls))

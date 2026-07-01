@@ -35,9 +35,9 @@ import types.typecheck.{
   enableEmitArgStampPasses,
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
-import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames}
+import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
 import support.util.{splitLast}
-import backend.wasm_emit.{emitProgram, installDeclRetTypes}
+import backend.wasm_emit.{emitProgram, installDeclRetTypes, installCtorFloatFields}
 
 main = match args ()
   runtimePath::rest => withRuntime runtimePath rest
@@ -69,6 +69,8 @@ runEmit runtimeDecls preludeDecls userDecls =
   -- W-SQLITE-4: install declared sig type-heads for the float-return / float-param
   -- registries (this typed scalar entry previously installed nothing).
   let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames combined)
+  -- W-SQLITE-4 stage 2: install ctor/record field Float indices.
+  let _ = installCtorFloatFields (ctorFieldTypeNames combined)
   emitProgram
     (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
 

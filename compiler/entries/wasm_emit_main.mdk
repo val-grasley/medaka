@@ -20,8 +20,8 @@
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import types.annotate.{annotateProgram}
-import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames}
-import backend.wasm_emit.{emitProgram, installDeclRetTypes}
+import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
+import backend.wasm_emit.{emitProgram, installDeclRetTypes, installCtorFloatFields}
 
 main = match args ()
   [targetPath] => withTarget targetPath
@@ -35,5 +35,7 @@ withTarget targetPath = match readFile targetPath
     -- float-param registries see through type-erased Float arith (this scalar entry
     -- previously installed nothing; mirrors llvm_emit_modules_main's install hook).
     let _ = installDeclRetTypes (declSigTypeNames decls)
+    -- W-SQLITE-4 stage 2: install ctor/record field Float indices.
+    let _ = installCtorFloatFields (ctorFieldTypeNames decls)
     putStr (emitProgram (lowerProgramEmit (annotateProgram decls)))
   Err msg => ePutStrLn msg
