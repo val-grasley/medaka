@@ -49,11 +49,12 @@
 > all canaries byte-identical (parse 27/0, typecheck 12/0, check_policy 4/0+7/0,
 > manifest 6/0), fixpoint C3a/C3b YES.
 >
-> **Remaining:** WS-3b (parameterize Env(Set)/Exec(Prefix) — now unblocked by WS-3),
-> WS-4 (`Product`/structured Net — largest), WS-5 (extern-row assurance — standing).
+> **Remaining:** WS-3b ✅ DONE (2026-07-01, see below), WS-4 (`Product`/structured
+> Net — largest), WS-5 (extern-row assurance — standing).
 >
 > **WS-3b — Env/Exec domain-directed hole-fill: ✅ native machinery DONE (2026-06-21,
-> `2188e6a`); shared-runtime extern flip DEFERRED.** Landed (native-only): `Env`=`PSet`
+> `2188e6a`); shared-runtime extern flip ✅ DONE (2026-07-01, `25435fb` Env/Exec +
+> `2d010b2` FileRead/FileWrite).** Landed (native-only): `Env`=`PSet`
 > / `Exec`=`PPrefix` in `seedEffectDomains`; **domain-directed inferred-hole fill** —
 > `holeFillParam`/`fillHoleAtom` now build `PSet (Some [s])` for a Set label vs
 > `PPrefix (Some s)` for a Prefix label (unrecovered → `dtopFor label`, the domain ⊤);
@@ -62,30 +63,45 @@
 > Prefix` + local externs. Gate `test/effect_param_domain.sh` 6/0 (Env hole-fill + ∪
 > djoin, Exec hole-fill, accept/reject); all canaries byte-identical; fixpoint C3a/C3b
 > YES; `unify_row`/escape/manifest untouched.
-> **DEFERRED — the `getEnv`/`runCommand` re-annotation in `stdlib/runtime.mdk`** (so the
-> *builtin* externs carry `<Env _>`/`<Exec _>`): the FROZEN OCaml oracle registers BOTH
-> `Env` AND `Exec` as **atomic** (`PUnit`, `lib/typecheck.ml:333-339`) and reads the
-> **embedded** `runtime.mdk` (`lib/stdlib_content.ml`), so the param annotation makes
-> the oracle reject runtime.mdk (`label 'Exec' is atomic and takes no parameter`) →
-> breaks the oracle-gated `diff_compiler_check_policy`. The flip lands with **zero
-> further native work** once the Set/Prefix-Env/Exec domains reach OCaml `lib/` OR
-> `lib/` is removed (soak tail) — the domain-directed fill is already in place and
-> fixpoint-proven. (Footgun: editing `runtime.mdk` stale-bakes the oracle until `dune
-> build bin/main.exe` regenerates the embed.)
+> **AS-BUILT (2026-07-01) — the `getEnv`/`runCommand` re-annotation in
+> `stdlib/runtime.mdk`** (so the *builtin* externs carry `<Env _>`/`<Exec _>`): the
+> blocker was the FROZEN OCaml oracle, which registered BOTH `Env` AND `Exec` as
+> **atomic** (`PUnit`) and read the **embedded** `runtime.mdk`, so the param
+> annotation would have made the oracle reject runtime.mdk. That oracle is gone
+> (`lib/` removed 2026-06-26), so the flip landed with **zero further native work**
+> exactly as predicted — the domain-directed fill was already in place and
+> fixpoint-proven. `25435fb` flipped `getEnv : String -> <Env _> Option String` and
+> `runCommand : ... -> <Exec _> ...` (`args` left bare — Unit arg, nothing to
+> refine). Domains were already pre-registered in `seedEffectDomains`, so no
+> registry edit and no per-program `effect` decl were needed — call-site α
+> refinement fires automatically off the builtins (`getEnv "HOME"` → `<Env
+> {"HOME"}>`). Bonus fix surfaced by the flip (`5e7c856`): top-level `PSet` (the
+> Env Set-domain param) was missing from `check_policy.mdk`'s `atomToToml` /
+> `atomToAllowTok` / `parsePolicyTok`, so `medaka manifest` rendered `Env = true`
+> instead of `Env = ["HOME"]` and `--allow 'Env={HOME}'` wrongly rejected — added
+> the three `PSet` arms + exported `decodeSetParam` in `typecheck.mdk`. Measured
+> blast radius: 1 of ~300 file-IO call-sites passes a string literal; the rest pass
+> dynamic paths → the hole stays unfilled → degrades to ⊤ (identical to the old
+> bare label) → escape-safe, ZERO golden churn. NO seed re-mint needed (effects
+> erase at runtime; emitted IR unchanged). Fixpoint C3a/C3b YES throughout. Gate:
+> `test/effect_builtin_param_domain.sh` (12/0) drives the real stdlib builtins
+> (no local extern shadowing).
 
-> **Design note — file-path domain refinement (for the soak tail):** When IO externs
-> get domains assigned, `FileRead`/`FileWrite` should carry a `Prefix` or `Set` domain
-> for path-level precision (e.g. `<FileRead "/data/app/*.sqlite">`). Implement as a
-> **backward-compatible refinement**: bare `<FileRead>`/`<FileWrite>` must remain valid
-> and elaborate to ⊤ (any path), so NO existing annotation needs migration. This is
-> sound: an atom is always `L·p`, ⊤ is always a valid element, specific ⊑ ⊤, and the
-> parameter is inert row data that is never routed (EFFECTS-SEMANTICS.md §1–§2).
-> Note: SQLite's DB path is a runtime dynamic value, so it degrades to ⊤ (not the
-> motivating case). Static-path consumers — config readers, asset loaders, log writers
-> — are the payoff. Sequence with WS-3b's builtin-extern flip (soak tail).
+> **Design note — file-path domain refinement (for the soak tail): ✅ DONE
+> (2026-07-01, `2d010b2`).** `FileRead`/`FileWrite` now carry `Prefix`-domain-directed
+> hole-fill for path-level precision (e.g. `<FileRead "/etc/app/x">`), landed as a
+> **backward-compatible refinement**: bare `<FileRead>`/`<FileWrite>` remain valid
+> and elaborate to ⊤ (any path), so NO existing annotation needed migration. All
+> nine file-IO externs flipped to holes: `readFile`/`readFileBytes`/`fileExists`/
+> `canonicalizePath`/`listDir` → `<FileRead _>`; `writeFile`/`writeFileBytes`/
+> `appendFile`/`makeDir` → `<FileWrite _>`. As predicted, SQLite's DB path is a
+> runtime dynamic value, so it degrades to ⊤ (not the motivating case); static-path
+> consumers — config readers, asset loaders, log writers — are the payoff and are
+> now precisely tracked.
 
 > **Remaining:** WS-4 (`Product`/structured Net — largest), WS-5 (extern-row
-> assurance — standing). WS-3b's shared-runtime flip rides the `lib/`-removal soak tail.
+> assurance — standing). WS-3b's shared-runtime flip is DONE — nothing further
+> rides on it.
 
 > **WS-4 — `Product` refinement domain (structure-aware Net): ✅ DONE (2026-06-21,
 > `b948ff3`, NATIVE-ONLY).** E2 closed in full. `Net = Host(Prefix) × Method(Set)`,
@@ -111,22 +127,24 @@
 >   (typecheck 12/0, check_policy 4/0+7/0, set 5/0, param 6/0, manifest 6/0, parse 27/0,
 >   llvm 181/0); fixpoint C3a/C3b YES. `unify_row`/escape/manifest-extractor/AST sealed.
 
-> ## ✅ Workstream status (2026-06-21) — E1·E2·E3 CLOSED; E4 native-done; E5 standing
+> ## ✅ Workstream status (2026-07-01) — E1·E2·E3·E4 CLOSED; E5 standing
 >
 > The effect-and-capability conformance workstream is **substantially complete**:
 > - **E1/E6 (capability manifest)** — ✅ WS-1a/1b/1c (`check-policy` native + parameter-
 >   level + `medaka manifest`).
 > - **E3 (α precision)** — ✅ WS-2 (scope-seeding, both compilers).
 > - **E2 (domain expressiveness)** — ✅ WS-3 (`Set`) + WS-4 (`Product`/structured Net).
-> - **E4 (parameterize Env/Exec)** — ✅ native machinery (WS-3b); the **builtin-extern
->   flip in `stdlib/runtime.mdk` is the one deferred item**, blocked on the frozen OCaml
->   oracle (registers Env/Exec atomic + reads embedded runtime) → rides the `lib/`-removal
->   soak tail; lands with zero further native work.
+> - **E4 (parameterize Env/Exec)** — ✅ FULLY DONE: native machinery (WS-3b,
+>   `2188e6a`) + the builtin-extern flip in `stdlib/runtime.mdk` (2026-07-01,
+>   `25435fb` Env/Exec + `2d010b2` FileRead/FileWrite), including the file-path
+>   domain refinement design note. The OCaml-oracle blocker is gone (`lib/` removed
+>   2026-06-26); the flip landed with zero further native work.
 > - **E5 (extern-row assurance)** — a **standing discipline** (the extern catalog is the
 >   trusted base), not a closeable code task.
 >
-> **Open:** only the WS-3b shared-runtime flip (soak-tail) + WS-5 (standing). No further
-> domain/precision/manifest work outstanding.
+> **Open:** only WS-5 (standing) + Phase 146b (downstream, larger; not part of this
+> conformance roadmap). No further domain/precision/manifest/builtin-flip work
+> outstanding.
 
 The audit's verdict: the effect **typing core is sound and conformant**; the gaps
 are the **unrealized capability manifest** (E1 — the one that matters), **deferred
