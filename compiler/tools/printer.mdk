@@ -801,6 +801,12 @@ chainItem prec (o, r) =
   Cat Line (Cat (text o) (Cat (text " ") (printExpr (prec + 1) r)))
 
 collectChain : String -> List (String, Expr) -> Expr -> (Expr, List (String, Expr))
+-- ELoc is transparent: peel so a parenthesized left sub-chain (which the parser
+-- wraps in an ELoc atom) flattens into the same chain as its paren-free form.
+-- Without this, `(a ++ b ++ c) ++ d` collects head = ELoc(a++b++c) and stops,
+-- laying out differently from `a ++ b ++ c ++ d`; since fmt drops the redundant
+-- parens, the two forms would otherwise never converge (non-idempotent).
+collectChain op acc (ELoc _ e) = collectChain op acc e
 collectChain op acc (EBinOp op2 l r rf)
   | op2 == op = collectChain op ((op2, r) :: acc) l
   | otherwise = (EBinOp op2 l r rf, acc)

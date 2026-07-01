@@ -1,0 +1,28 @@
+-- Idempotency regression: a continuation-op (`++`) chain whose left sub-chain
+-- is explicitly parenthesized.  The parser wraps the paren group in a
+-- transparent ELoc; collectChain must peel it so `(a ++ b ++ c) ++ d ++ …`
+-- flattens into the same chain as its paren-free form.  Otherwise fmt drops the
+-- redundant parens on pass 1 and re-breaks the chain differently on pass 2.
+emitOne foc s a b = foc
+  ++ ["ref.cast (ref $str)"]
+  ++ emitLitRef (LString s)
+  ++ [
+    "call $mdk_str_compare",
+    "ref.cast (ref i31)",
+    "i31.get_u",
+    "i32.const 1",
+    "i32.eq",
+  ]
+  ++ ["if"]
+  ++ indent a
+  ++ ["else"]
+  ++ indent b
+  ++ ["end", "unreachable"]
+
+-- A continuation-op chain as an element of a tuple (the enclosing group forces
+-- the tuple to break); the chain still flattens across its parenthesized head.
+tupleChain foc a b s = (
+  foc ++ ["first-longish-element-here"] ++ ["second-longish-element-here"] ++ ["third"] ++ a,
+  b,
+  s,
+)
