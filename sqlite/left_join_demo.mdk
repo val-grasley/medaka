@@ -1,0 +1,113 @@
+-- | LEFT JOIN differential demo (lib.select join path).
+--
+-- Reads a real sqlite3-created DB and runs several `query db (Select{...}) rt`
+-- calls that use `leftJoin`, decoding the right side via `tOption` since it may
+-- be null-padded.  Prints one line per typed (wide) row, prefixed by a
+-- per-query label, for diffing against `sqlite3` in
+-- sqlite/test/left_join_oracle.sh.
+--
+-- Combined-row column order = `from` columns, then each join table's columns in
+-- `joins` order (same convention as join_demo.mdk).  These demos ORDER BY
+-- qualified columns for determinism.
+--
+-- Usage: medaka build sqlite/left_join_demo.mdk -o /tmp/ljdemo && /tmp/ljdemo <db>
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{
+  Select, selectFrom, innerJoin, leftJoin, withWhere, withOrderBy, query,
+  eEq, eGt, eColInt, eLitI,
+}
+import lib.rowtype.{RowType, tInt, tText, tOption, t2, t3, tCustom}
+
+-- ---------------------------------------------------------------------------
+-- 2-table left join: users(id, name)  LEFT JOIN  orders(oid, uid, amount)
+--   combined row = users.id, users.name, orders.oid, orders.uid, orders.amount
+--   the orders side may be entirely NULL (unmatched left row) — decoded via
+--   `tOption` into `Option (Int, Int, Int)`.
+-- ---------------------------------------------------------------------------
+
+data UO = UO { uid : Int, uname : String, orow : Option (Int, Int, Int) }
+
+mkUO : ((Int, String), Option (Int, Int, Int)) -> Result String UO
+mkUO t = match t
+  ((i, n), orow) => Ok (UO { uid = i, uname = n, orow = orow })
+
+uoRow : RowType UO
+uoRow = tCustom mkUO (t2 (t2 tInt tText) (tOption (t3 tInt tInt tInt)))
+
+showUO : UO -> String
+showUO r = match r
+  UO { uid = i, uname = n, orow = None } => "\{i}|\{n}|NULL|NULL|NULL"
+  UO { uid = i, uname = n, orow = Some (o, u, a) } => "\{i}|\{n}|\{o}|\{u}|\{a}"
+
+printUO : List UO -> <IO> Unit
+printUO []          = ()
+printUO (r :: rest) = let _ = println (showUO r) in printUO rest
+
+runUO : Db -> String -> Select -> <IO> Unit
+runUO db label sel =
+  let _ = println label
+  match query db sel uoRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printUO rows
+
+-- ---------------------------------------------------------------------------
+-- 3-table mixed join: ta(aid, av) INNER JOIN tb(bid, aref) ON ta.aid=tb.aref
+--   LEFT JOIN tc(cid, bref) ON tb.bid=tc.bref
+--   combined row = ta.aid, ta.av, tb.bid, tb.aref, tc.cid, tc.bref
+--   tc side may be NULL-padded (unmatched tb row).
+-- ---------------------------------------------------------------------------
+
+data ABC = ABC { aid : Int, av : Int, bid : Int, aref : Int, crow : Option (Int, Int) }
+
+mkABC : ((Int, Int), (Int, Int), Option (Int, Int)) -> Result String ABC
+mkABC t = match t
+  ((a1, a2), (b1, b2), crow) =>
+    Ok (ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = crow })
+
+abcRow : RowType ABC
+abcRow = tCustom mkABC (t3 (t2 tInt tInt) (t2 tInt tInt) (tOption (t2 tInt tInt)))
+
+showABC : ABC -> String
+showABC r = match r
+  ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = None } =>
+    "\{a1}|\{a2}|\{b1}|\{b2}|NULL|NULL"
+  ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = Some (c1, c2) } =>
+    "\{a1}|\{a2}|\{b1}|\{b2}|\{c1}|\{c2}"
+
+printABC : List ABC -> <IO> Unit
+printABC []          = ()
+printABC (r :: rest) = let _ = println (showABC r) in printABC rest
+
+runABC : Db -> String -> Select -> <IO> Unit
+runABC db label sel =
+  let _ = println label
+  match query db sel abcRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printABC rows
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: ljdemo <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      -- Plain LEFT JOIN, unmatched left rows -> NULLs on the right side.
+      let _ = runUO db "-- left join users/orders --"
+                (withOrderBy "orders.oid" True
+                  (withOrderBy "users.id" True
+                    (leftJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                      (selectFrom "users"))))
+      -- LEFT JOIN + WHERE on a right-table column: drops null-padded rows,
+      -- matching sqlite3's real behaviour (WHERE runs post-join).
+      let _ = runUO db "-- left join where amount>100 order amount --"
+                (withOrderBy "orders.amount" True
+                  (withWhere (eGt (eColInt "orders.amount") (eLitI 100))
+                    (leftJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                      (selectFrom "users"))))
+      -- Mixed 3-table chain: INNER JOIN then LEFT JOIN.
+      runABC db "-- inner ta/tb then left tc --"
+        (withOrderBy "tb.bid" True
+          (leftJoin "tc" (eEq (eColInt "tb.bid") (eColInt "tc.bref"))
+            (innerJoin "tb" (eEq (eColInt "ta.aid") (eColInt "tb.aref"))
+              (selectFrom "ta"))))

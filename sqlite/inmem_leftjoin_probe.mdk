@@ -1,0 +1,97 @@
+-- | In-memory LEFT JOIN probe — the stage-C WasmGC tandem oracle for the
+-- lib.select LEFT JOIN path.
+--
+-- Builds TWO tables (`users`, `orders`) entirely in memory
+-- (`buildDatabaseMulti` → `fromBytes`, no file I/O), seeded so a `users` row
+-- (`Dave`) has NO matching `orders` row, and runs `leftJoin` queries through
+-- `lib.select.query`, decoding the right side via `tOption`.  Prints one line
+-- per combined row.  Bytes-first, so it emits + runs IDENTICALLY under the
+-- native LLVM backend and the WasmGC backend; `test/wasm/diff_sqlite.sh` builds
+-- it for both targets and diffs stdout.
+--
+-- Combined-row column order = `from` columns (users.id, users.name), then the
+-- join table's columns (orders.oid, orders.uid, orders.amount).
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CInt, CText}
+import lib.select.{
+  Select, selectFrom, leftJoin, withWhere, withOrderBy, query,
+  eEq, eGt, eColInt, eLitI,
+}
+import lib.rowtype.{RowType, tInt, tText, tOption, t2, t3, tCustom}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)"
+
+ordersSql : String
+ordersSql = "CREATE TABLE orders(oid INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER)"
+
+usersRows : List (List Cell)
+usersRows =
+  [ [ CInt 1, CText "Alice" ]
+  , [ CInt 2, CText "Bob" ]
+  , [ CInt 3, CText "Carol" ]
+  , [ CInt 4, CText "Dave" ]   -- no matching orders row
+  ]
+
+ordersRows : List (List Cell)
+ordersRows =
+  [ [ CInt 10, CInt 1,  CInt 100 ]
+  , [ CInt 11, CInt 1,  CInt 250 ]
+  , [ CInt 12, CInt 2,  CInt 175 ]
+  , [ CInt 13, CInt 3,  CInt 50 ]
+  ]
+
+data UO = UO { uid : Int, uname : String, orow : Option (Int, Int, Int) }
+
+mkUO : ((Int, String), Option (Int, Int, Int)) -> Result String UO
+mkUO t = match t
+  ((i, n), orow) => Ok (UO { uid = i, uname = n, orow = orow })
+
+uoRow : RowType UO
+uoRow = tCustom mkUO (t2 (t2 tInt tText) (tOption (t3 tInt tInt tInt)))
+
+showUO : UO -> String
+showUO r = match r
+  UO { uid = i, uname = n, orow = None } => "\{i}|\{n}|NULL|NULL|NULL"
+  UO { uid = i, uname = n, orow = Some (o, u, a) } => "\{i}|\{n}|\{o}|\{u}|\{a}"
+
+printUO : List UO -> <IO> Unit
+printUO []          = ()
+printUO (r :: rest) = let _ = println (showUO r) in printUO rest
+
+runUO : Db -> String -> Select -> <IO> Unit
+runUO db label sel =
+  let _ = println label
+  match query db sel uoRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printUO rows
+
+runAll : Db -> <IO> Unit
+runAll db =
+  let _ = runUO db "-- left join users/orders order id,oid --"
+            (withOrderBy "orders.oid" True
+              (withOrderBy "users.id" True
+                (leftJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                  (selectFrom "users"))))
+  runUO db "-- left join where amount>100 order amount --"
+    (withOrderBy "orders.amount" True
+      (withWhere (eGt (eColInt "orders.amount") (eLitI 100))
+        (leftJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+          (selectFrom "users"))))
+
+specs : List (String, String, Option Int, List (List Cell))
+specs =
+  [ ("users", usersSql, Some 0, usersRows)
+  , ("orders", ordersSql, Some 0, ordersRows)
+  ]
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE users+orders (in-memory) --"
+  match buildDatabaseMulti specs
+    Err e    => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db => runAll db
