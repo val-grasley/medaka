@@ -1,0 +1,88 @@
+-- | In-memory DISTINCT probe — the stage-C WasmGC tandem oracle for
+-- `lib.select.queryDistinct`.
+--
+-- Builds `nums` (single-column, for single-column DISTINCT + DISTINCT+LIMIT)
+-- and `pairs` (two-column, for multi-column DISTINCT) tables entirely in
+-- memory (`Array Int` image, no file I/O) and runs `queryDistinct` through
+-- lib.select, printing one line per deduped row. Because it is bytes-first
+-- (buildDatabase → fromBytes → queryDistinct) it emits + runs IDENTICALLY
+-- under the native LLVM backend and the WasmGC backend;
+-- `test/wasm/diff_sqlite.sh` builds it for both targets and diffs stdout.
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CInt}
+import lib.select.{
+  Select, selectFrom, withOrderBy, withLimit, withDistinct, queryDistinct,
+}
+import lib.rowtype.{RowType, tInt, t2}
+
+numsSql : String
+numsSql = "CREATE TABLE nums(n INTEGER)"
+
+-- 5 rows, only 3 distinct values (1, 2, 3) — 2 is a triple-dup.
+numsRows : List (List Cell)
+numsRows =
+  [ [ CInt 2 ]
+  , [ CInt 1 ]
+  , [ CInt 2 ]
+  , [ CInt 3 ]
+  , [ CInt 2 ]
+  ]
+
+pairsSql : String
+pairsSql = "CREATE TABLE pairs(a INTEGER, b INTEGER)"
+
+-- 5 rows, only 3 distinct (a,b) tuples — proves dedup is on the TUPLE, not
+-- per-column: (1,1) and (1,2) share a=1 but are NOT duplicates of each other.
+pairsRows : List (List Cell)
+pairsRows =
+  [ [ CInt 1, CInt 1 ]
+  , [ CInt 1, CInt 2 ]
+  , [ CInt 1, CInt 1 ]
+  , [ CInt 2, CInt 1 ]
+  , [ CInt 1, CInt 2 ]
+  ]
+
+noIpk : Option Int
+noIpk = None
+
+showPair : (Int, Int) -> String
+showPair p = match p
+  (a, b) => "\{a}|\{b}"
+
+printInts : List Int -> <IO> Unit
+printInts []          = ()
+printInts (n :: rest) =
+  let _ = println (intToString n)
+  printInts rest
+
+printPairs : List (Int, Int) -> <IO> Unit
+printPairs []          = ()
+printPairs (p :: rest) =
+  let _ = println (showPair p)
+  printPairs rest
+
+runAll : Db -> <IO> Unit
+runAll db =
+  let _ = println "-- distinct n from nums order by n --"
+  let _ = match queryDistinct db (withOrderBy "n" True (withDistinct (selectFrom "nums"))) tInt
+            Err e   => println "query error: \{e}"
+            Ok rows => printInts rows
+  let _ = println "-- distinct a,b from pairs order by a,b --"
+  let _ = match queryDistinct db (withOrderBy "b" True (withOrderBy "a" True (withDistinct (selectFrom "pairs")))) (t2 tInt tInt)
+            Err e   => println "query error: \{e}"
+            Ok rows => printPairs rows
+  let _ = println "-- distinct n from nums order by n limit 2 --"
+  match queryDistinct db (withLimit 2 (withOrderBy "n" True (withDistinct (selectFrom "nums")))) tInt
+    Err e   => println "query error: \{e}"
+    Ok rows => printInts rows
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE nums, pairs (in-memory) --"
+  match buildDatabaseMulti [ ("nums", numsSql, noIpk, numsRows), ("pairs", pairsSql, noIpk, pairsRows) ]
+    Err e     => println "build error: \{e}"
+    Ok bytes  => match fromBytes bytes
+      Err e  => println "fromBytes error: \{e}"
+      Ok db  => runAll db

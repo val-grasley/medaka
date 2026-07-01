@@ -1,0 +1,56 @@
+-- | Typed ADT-query DISTINCT differential demo.
+--
+-- Reads a real sqlite3-created DB (with DUPLICATE values) and runs several
+-- `queryDistinct db (Select{...}) rt` calls through the ADT query model in
+-- lib.select.  Prints one line per typed row, prefixed by a label per query,
+-- for diffing against `sqlite3 SELECT DISTINCT ...` in test/distinct_oracle.sh.
+--
+-- The engine has NO projection field on `Select` (decision d2) — it always
+-- scans `SELECT *`.  So "distinct on a subset of columns" is modeled here by
+-- tables that only HAVE the columns of interest: `nums` (single column, for
+-- the single-column-DISTINCT + DISTINCT-then-LIMIT cases) and `pairs` (two
+-- columns, for the multi-column-DISTINCT case) — decoding the whole row IS
+-- the projection.
+--
+-- Usage: medaka build sqlite/distinct_demo.mdk -o /tmp/ddemo && /tmp/ddemo <db>
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{
+  Select, selectFrom, withOrderBy, withLimit, withDistinct, queryDistinct,
+}
+import lib.rowtype.{RowType, tInt, t2}
+
+showPair : (Int, Int) -> String
+showPair p = match p
+  (a, b) => "\{a}|\{b}"
+
+printInts : List Int -> <IO> Unit
+printInts []          = ()
+printInts (n :: rest) =
+  let _ = println (intToString n)
+  printInts rest
+
+printPairs : List (Int, Int) -> <IO> Unit
+printPairs []          = ()
+printPairs (p :: rest) =
+  let _ = println (showPair p)
+  printPairs rest
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: ddemo <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      let _ = println "-- distinct n from nums order by n --"
+      let _ = match queryDistinct db (withOrderBy "n" True (withDistinct (selectFrom "nums"))) tInt
+                Err e   => println "query error: \{e}"
+                Ok rows => printInts rows
+      let _ = println "-- distinct a,b from pairs order by a,b --"
+      let _ = match queryDistinct db (withOrderBy "b" True (withOrderBy "a" True (withDistinct (selectFrom "pairs")))) (t2 tInt tInt)
+                Err e   => println "query error: \{e}"
+                Ok rows => printPairs rows
+      let _ = println "-- distinct n from nums order by n limit 2 --"
+      match queryDistinct db (withLimit 2 (withOrderBy "n" True (withDistinct (selectFrom "nums")))) tInt
+        Err e   => println "query error: \{e}"
+        Ok rows => printInts rows

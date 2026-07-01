@@ -20,7 +20,7 @@ import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, columnNames, findTable, schemaSql}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
-import list.{reverse, take, drop, sortBy}
+import list.{reverse, take, drop, sortBy, nub}
 import string.{join}
 
 -- ---------------------------------------------------------------------------
@@ -65,19 +65,26 @@ public export data JoinKind = JInner | JLeft
 public export data Join = Join { table : String, kind : JoinKind, on : SqlExpr }
 
 -- | A whole SELECT: source table, INNER joins (applied in order), optional
---   WHERE, optional ORDER BY, optional limit/offset.
+--   WHERE, optional ORDER BY, optional limit/offset, optional DISTINCT.
 --   Projection is the `RowType` passed to `query`, NOT a field here (decision d2).
 --
 --   The COMBINED row (when `joins` is non-empty) lays out cells as: all of the
 --   `from` table's columns, then each join table's columns in `joins` order.
 --   The `RowType` passed to `query` decodes this wide row left-to-right.
+--
+--   `distinct` is a flag only — `render` reads it to emit `SELECT DISTINCT`,
+--   but `query` (unconstrained: no `Eq a`) ignores it entirely. DISTINCT
+--   *execution* dedups on the DECODED projected values, which needs `Eq a`,
+--   so it lives in the separate `queryDistinct` entry point below. Plain
+--   `query` MUST stay unconstrained — don't add `Eq a` here.
 public export data Select = Select
-  { from    : String
-  , joins   : List Join
-  , where_  : Option SqlExpr
-  , orderBy : List (String, Bool)
-  , limit   : Option Int
-  , offset  : Option Int
+  { from     : String
+  , joins    : List Join
+  , where_   : Option SqlExpr
+  , orderBy  : List (String, Bool)
+  , limit    : Option Int
+  , offset   : Option Int
+  , distinct : Bool
   }
 
 -- ---------------------------------------------------------------------------
@@ -188,7 +195,7 @@ eNotNull e = MkExpr (ENotNull (unExpr e))
 -- | A bare SELECT over a table: no WHERE, no ORDER BY, no limit/offset.
 export
 selectFrom : String -> Select
-selectFrom tbl = Select { from = tbl, joins = [], where_ = None, orderBy = [], limit = None, offset = None }
+selectFrom tbl = Select { from = tbl, joins = [], where_ = None, orderBy = [], limit = None, offset = None, distinct = False }
 
 -- | Append an INNER JOIN of `tbl` with the type-safe `on` predicate.  Joins are
 --   applied in call order (each appends), so the combined row lays out the
@@ -233,6 +240,14 @@ export
 withOrderBy : String -> Bool -> Select -> Select
 withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(col, asc)] }
 
+-- | Mark the SELECT as DISTINCT: `render` emits `SELECT DISTINCT`, and
+--   `queryDistinct` dedups the DECODED, projected rows (see `Select.distinct`
+--   doc comment for why this needs a separate `Eq a`-constrained entry point
+--   rather than living on plain `query`).
+export
+withDistinct : Select -> Select
+withDistinct sel = { sel | distinct = True }
+
 -- ---------------------------------------------------------------------------
 -- render : injection-safe SQL projection
 -- ---------------------------------------------------------------------------
@@ -244,7 +259,7 @@ withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(col, asc)] }
 --   an illegal identifier yields `Err`.
 export
 render : Select -> Result String (String, List Literal)
-render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_ }) =
+render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, distinct = dst }) =
   if not (validIdent tbl)
   then Err "render: invalid table name: \{tbl}"
   else do
@@ -252,7 +267,8 @@ render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, o
     (whereSql, binds) <- renderWhere w
     ordSql <- renderOrderBy ob
     let limOff = renderLimitOffset lm of_
-    let sql = "SELECT * FROM \{tbl}\{joinSql}\{whereSql}\{ordSql}\{limOffSql limOff}"
+    let selectSql = if dst then "SELECT DISTINCT *" else "SELECT *"
+    let sql = "\{selectSql} FROM \{tbl}\{joinSql}\{whereSql}\{ordSql}\{limOffSql limOff}"
     Ok (sql, joinBinds ++ binds ++ limOffBinds limOff lm of_)
 
 -- Render the JOIN clauses (in order), each " INNER JOIN <table> ON <expr>" or
@@ -559,6 +575,29 @@ query db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm,
       joined <- runJoins lookup infos js
       runOverCells lookup w ob lm of_ rt joined
 
+-- | Execute a `Select` with DISTINCT semantics: same resolve/scan/join/WHERE/
+--   ORDER BY as `query`, but dedups on the DECODED, PROJECTED rows (via `rt`)
+--   rather than the raw cells, and applies LIMIT/OFFSET AFTER dedup (matching
+--   SQL: DISTINCT collapses duplicates in the result set, and LIMIT/OFFSET
+--   slice that already-deduped set). `query` itself ignores `distinct` and
+--   stays unconstrained; this is the separate `Eq a`-constrained entry point
+--   DISTINCT execution needs (see the `Select.distinct` doc comment).
+export
+queryDistinct : Eq a => Db -> Select -> RowType a -> Result String (List a)
+queryDistinct db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_ }) rt =
+  match js
+    [] => do
+      entry <- findTable db tbl
+      let lookup = mkLookup (schemaSql entry)
+      (pkIdx, rows) <- scanTableRowsIpk db tbl
+      let rowsCells = map (rowCellsWithIpk pkIdx) rows
+      runOverCellsDistinct lookup w ob lm of_ rt rowsCells
+    _  => do
+      infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
+      let lookup = mkJoinLookup (map infoLookup infos)
+      joined <- runJoins lookup infos js
+      runOverCellsDistinct lookup w ob lm of_ rt joined
+
 joinTable : Join -> String
 joinTable (Join { table = t }) = t
 
@@ -577,6 +616,33 @@ runOverCells lookup w ob lm of_ rt rowsCells = do
   let sorted = sortCells lookup ob kept
   let sliced = applyOffsetLimit of_ lm sorted
   decodeCells rt sliced []
+
+-- DISTINCT sibling of `runOverCells`: filter, sort (on cells, same as
+-- `query`), decode ALL survivors, `nub` (dedup on the decoded, projected
+-- value — stable, keeps first occurrence, so sort order is preserved),
+-- THEN offset/limit over the deduped `List a`. Decode-then-dedup-then-slice
+-- (vs. `query`'s slice-then-decode) is the entire distinct-vs-plain
+-- difference; everything upstream (WHERE compile/filter/sort) is identical.
+runOverCellsDistinct : Eq a => (String -> Option Int) -> Option SqlExpr -> List (String, Bool) -> Option Int -> Option Int -> RowType a -> List (List Cell) -> Result String (List a)
+runOverCellsDistinct lookup w ob lm of_ rt rowsCells = do
+  pred <- compileWhere lookup w
+  let kept = filter pred rowsCells
+  let sorted = sortCells lookup ob kept
+  decoded <- decodeCells rt sorted []
+  let deduped = nub decoded
+  Ok (dropTakeList of_ lm deduped)
+
+-- Drop `offset` elements then keep at most `limit`, over a generic list —
+-- the DISTINCT-path sibling of `applyOffsetLimit`, which is specialized to
+-- `List (List Cell)` because it runs BEFORE decode on the non-distinct path.
+dropTakeList : Option Int -> Option Int -> List a -> List a
+dropTakeList of_ lm xs =
+  let afterOffset = match of_
+                      Some n => drop n xs
+                      None   => xs
+  match lm
+    Some n => take n afterOffset
+    None   => afterOffset
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
 mkLookup : String -> (String -> Option Int)
@@ -827,6 +893,14 @@ decodeCells rt (cells :: rest) acc = do
 --
 -- > renderShow (render (withOrderBy "tc.cid" True (innerJoin "tc" (eEq (eColInt "tb.bid") (eColInt "tc.bref")) (innerJoin "tb" (eEq (eColInt "ta.aid") (eColInt "tb.aref")) (selectFrom "ta")))))
 -- "SELECT * FROM ta INNER JOIN tb ON (ta.aid = tb.aref) INNER JOIN tc ON (tb.bid = tc.bref) ORDER BY tc.cid ASC ## []"
+--
+-- `withDistinct` inserts `DISTINCT` right after `SELECT`; the rest of the
+-- clause order (WHERE, ORDER BY, LIMIT/OFFSET) is unaffected. Note `render`
+-- ONLY affects the emitted SQL text (for the oracle/display) — execution of
+-- DISTINCT semantics goes through `queryDistinct`, not `render`/`query`.
+--
+-- > renderShow (render (withOrderBy "age" True (withDistinct (selectFrom "users"))))
+-- "SELECT DISTINCT * FROM users ORDER BY age ASC ## []"
 export
 renderShow : Result String (String, List Literal) -> String
 renderShow (Err e) = "ERR \{e}"
