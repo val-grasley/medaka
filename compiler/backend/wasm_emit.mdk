@@ -286,6 +286,22 @@ declRetTypeOf name = match lookupAssoc name declRetTypesRef.value
   Some (_, ret) => ret
   None => ""
 
+-- W-SQLITE-4: the declared param type-head names of a top-level fn ([] = unknown).
+declParamTypesOf : String -> <Mut> List String
+declParamTypesOf name = match lookupAssoc name declRetTypesRef.value
+  Some (ps, _) => ps
+  None => []
+
+-- W-SQLITE-4 (float-return registry): does this fn's DECLARED signature return a
+-- Float?  Consulted by `cexprIsFloat`'s CApp arm so Float arithmetic at a call to a
+-- user fn returning Float (`acc + cellNumF c`, `cellNumF : Cell -> Float`) is
+-- recognized even with no co-located Float literal — the analog of the native
+-- emitter's `declRetLTy`.  Additive: an unknown/Int-returning fn stays the Int path.
+fnReturnsFloat : String -> Bool
+fnReturnsFloat name = match lookupAssoc name declRetTypesRef.value
+  Some (_, ret) => ret == "Float"
+  None => False
+
 -- the declared arity (param count) of a top-level function, or -1 if not a fn.
 progFnArity : Prog -> String -> Int
 progFnArity prog n = match lookupAssoc n (progFnArs prog)
@@ -2145,10 +2161,13 @@ refMainKind prog e = match e
       else if contains fn ["randomChar", "charToUpper", "charToLower"] then WChar
       -- W8b: a Float-returning extern main (intToFloat/randomFloat) auto-prints as Float.
       else if contains fn ["intToFloat", "randomFloat"] then WFloat
+      -- W-SQLITE-4: a call to a user fn whose declared sig returns Float (`main = f 2.5`).
+      else if fnReturnsFloat fn then WFloat
       else if isUnitExtern fn then WUnit
       else refMainKind prog (appHead f)
     h => refMainKind prog h
-  CVar x _ => WInt
+  -- W-SQLITE-4: a nullary Float-typed binding used as a value main (`main = h`, `h : Float`).
+  CVar x _ => if fnReturnsFloat x then WFloat else WInt
   other => WInt
 
 -- the String-RESULT externs (drive value-main String auto-print).  `stringLength`
@@ -2216,6 +2235,10 @@ emitRefFnBind prog (CBind name clauses0) =
   -- body is an under-applied CMethod gets eta-saturated to the method's full arity
   -- so the emitted dispatch call pushes every operand (else a validate underflow).
   let clauses = map etaSaturateFnClause clauses0
+  -- W-SQLITE-4: seed (and reset) floatLocalsRef with this fn's declared Float
+  -- params before emitting its body, so type-erased Float arith on a param lowers
+  -- to f64 ops (mirrors emitImplGroup's `impl … Float` seeding, generalized).
+  let _ = setRef floatLocalsRef (floatParamNames name clauses)
   let arity = clauseArityOf clauses
   let params = synthParams arity
   -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level NON-DICT self-recursive define whose
@@ -2992,6 +3015,26 @@ emitImplGroup prog (ImplG method tag arity clauses) =
 clausePatVars : CClause -> List String
 clausePatVars (CClause pats _) = flatMap patVars pats
 
+-- W-SQLITE-4 (float-param registry): the pattern-var names bound at a fn's
+-- Float-typed parameter positions (from the installed `declSigTypeNames` table),
+-- unioned across clauses.  `emitRefFnBind` seeds `floatLocalsRef` with these before
+-- emitting the body, so `f (x : Float) = x + x` sees `x` as Float without a
+-- co-located literal — generalizing the `impl … Float` seeding at emitImplGroup to
+-- any sig'd top-level fn.  Empty (no sig / no Float param) resets floatLocalsRef,
+-- preserving the reset-before-body discipline.
+floatParamNames : String -> List CClause -> <Mut> List String
+floatParamNames name clauses = match declParamTypesOf name
+  [] => []
+  ptys => dedupKeep (flatMap (floatClausePatVars ptys) clauses)
+
+floatClausePatVars : List String -> CClause -> List String
+floatClausePatVars ptys (CClause pats _) = floatPatsAt ptys pats
+
+floatPatsAt : List String -> List Pat -> List String
+floatPatsAt (ty::tys) ((PVar x)::ps) = (if ty == "Float" then [x] else []) ++ floatPatsAt tys ps
+floatPatsAt (_::tys) (_::ps) = floatPatsAt tys ps
+floatPatsAt _ _ = []
+
 -- impl bodies use the SAME clause emission as top-level fns; the synthetic fn
 -- "name" (used only for the internal clause-block labels) is the impl symbol.
 emitClausesImpl : Prog -> String -> List String -> Int -> List CClause -> <Mut> List String
@@ -3606,8 +3649,12 @@ cexprIsFloat prog env e = match e
   CLet _ _ _ b => cexprIsFloat prog env b
   CBlock stmts => cexprIsFloatBlock prog env stmts
   CIf _ t f => cexprIsFloat prog env t || cexprIsFloat prog env f
+  -- W-SQLITE-4: a call to a Float-returning extern OR a user fn whose declared
+  -- signature returns Float (`cellNumF : Cell -> Float`) — additive over the two
+  -- externs, so a co-located literal is no longer required to detect Float arith.
   CApp f a => match appHead (CApp f a)
-    CVar fn _ => contains fn ["intToFloat", "randomFloat"] && not (contains fn env)
+    CVar fn _ => not (contains fn env)
+      && (contains fn ["intToFloat", "randomFloat"] || fnReturnsFloat fn)
     _ => False
   _ => False
 

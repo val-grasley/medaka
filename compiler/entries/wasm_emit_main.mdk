@@ -20,8 +20,8 @@
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import types.annotate.{annotateProgram}
-import ir.core_ir_lower.{lowerProgramEmit}
-import backend.wasm_emit.{emitProgram}
+import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames}
+import backend.wasm_emit.{emitProgram, installDeclRetTypes}
 
 main = match args ()
   [targetPath] => withTarget targetPath
@@ -29,5 +29,11 @@ main = match args ()
 
 withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
-  Ok targetSrc => putStr (emitProgram (lowerProgramEmit (annotateProgram (desugar (parse targetSrc)))))
+  Ok targetSrc =>
+    let decls = desugar (parse targetSrc)
+    -- W-SQLITE-4: install declared sig type-heads so the emitter's float-return /
+    -- float-param registries see through type-erased Float arith (this scalar entry
+    -- previously installed nothing; mirrors llvm_emit_modules_main's install hook).
+    let _ = installDeclRetTypes (declSigTypeNames decls)
+    putStr (emitProgram (lowerProgramEmit (annotateProgram decls)))
   Err msg => ePutStrLn msg

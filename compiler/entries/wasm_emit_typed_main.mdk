@@ -35,9 +35,9 @@ import types.typecheck.{
   enableEmitArgStampPasses,
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
-import ir.core_ir_lower.{lowerProgramEmit}
+import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames}
 import support.util.{splitLast}
-import backend.wasm_emit.{emitProgram}
+import backend.wasm_emit.{emitProgram, installDeclRetTypes}
 
 main = match args ()
   runtimePath::rest => withRuntime runtimePath rest
@@ -66,6 +66,9 @@ runEmit runtimeDecls preludeDecls userDecls =
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls
   let dictNames = preludeReturnPosDictNames livePrelude combined ++ preludeArgPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  -- W-SQLITE-4: install declared sig type-heads for the float-return / float-param
+  -- registries (this typed scalar entry previously installed nothing).
+  let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames combined)
   emitProgram
     (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
 

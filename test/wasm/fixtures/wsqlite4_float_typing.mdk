@@ -1,0 +1,26 @@
+-- W-SQLITE-4 (stage 1): type-erased Float arithmetic — a Float lowers to f64 ops
+-- even with NO co-located Float literal, via the float-return-fn + float-param
+-- registries seeded from the installed declSigTypeNames table.  Before the fix each
+-- of these trapped at instantiate with `illegal cast` (an i31 unbox on a $float box).
+--
+--   * `f (x:Float) = x + x`   — Float FN PARAM arith (float-param registry)
+--   * `cellNumF : Cell -> Float` used in `cellNumF c + sumCells rest` — a call to a
+--     user fn returning Float in arith with NO literal operand (float-return registry).
+--     This is the real `sumFloat`/`SUM(AVG)` reduction shape.
+
+data Cell = CInt Int | CFloat Float
+
+cellNumF : Cell -> Float
+cellNumF c = match c
+  CInt n => intToFloat n
+  CFloat f => f
+
+sumCells : List Cell -> Float
+sumCells cells = match cells
+  [] => 0.0
+  c :: rest => cellNumF c + sumCells rest
+
+dbl : Float -> Float
+dbl x = x + x
+
+main = dbl (sumCells [CInt 2, CFloat 3.5, CInt 4])
