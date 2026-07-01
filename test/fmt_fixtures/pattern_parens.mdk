@@ -1,0 +1,13 @@
+data Cell = CInt Int | CFloat Float
+
+data Point = MkPoint { x : Int, y : Int }
+
+sameKind p =
+  match p
+    (CInt a, CInt b) => a == b
+    (CInt a, CFloat b) => False
+    _ => False
+
+getX (MkPoint { x, y }) = x
+
+main = println (sameKind (CInt 1, CInt 2))
