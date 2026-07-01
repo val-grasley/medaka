@@ -7,6 +7,30 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ Type aliases + value restriction + stdlib-unification step 2 + SQLite UPDATE/DELETE + WasmGC port + aggregates + Float-on-wasm FULLY CLOSED (2026-06-30). `main` = `ee2b53e`
+
+A long, productive session. Nine distinct workstreams, each designed→staged→independently-verified→merged. **NO seed re-mints were needed this entire session** — a recurring happy outcome (the compiler's own source never hit the newly-fixed patterns, so `selfcompile_fixpoint` C3a kept passing against the committed seed; and all the wasm work is outside the LLVM self-compile graph). Verify fixpoint-against-committed-seed before assuming a self-compile-closure change needs a re-mint (the lesson from the type-lost-Float root fix). Owning memories listed per item.
+
+**Language / typechecker:**
+- **Transparent type-alias expansion (5 stages, `29efddf`→`6d9eaec`; payoff `22d6a88`):** `type X = Y`, parameterized `type Pair a=(a,a)` (+ arity check), `export type` across modules; cyclic aliases rejected (were a stack-overflow crash). Locus: typecheck pre-pass `aliasTableRef` expanded at `fromAstTypeE`/`fromAstTypeApp` + resolve `expTypesDirect` + typecheck `publicDataDecls` (cross-module = TWO layers, my repro found layer 1). `support/ordmap.mdk` dropped its `data OrdMap` wrapper for `export type OrdMap a = Map String a`. Memory `project_type_alias_expansion`. v1 wart: alias-error locs at the decl.
+- **Relaxed value restriction (`386a543`):** `isNonexpansive` now generalizes ctor-app/record of non-expansive args (SML non-expansive set) — `e = MkBox []` generalizes. SOUND: `Ref` (the sole uppercase mutable-cell extern) excluded by name. Memory `project_value_restriction_relaxed`.
+
+**Compiler↔stdlib unification (step 2, `09e0154` + `4621272`):** `support/util.mdk`'s `reverseL`/`zipL`/`joinWith` → stdlib `list`/`string`; then 4 quadratic local string-join re-rolls → `util.joinWith`. **Measurement FLIPPED the assumption:** `import list`/`string` is NEAR-FREE (core-defined instances → no new surface) while delegating hot helpers to prelude Foldable methods costs +56% (lost short-circuit). AGENTS.md cost bullet + `HELPER-CENSUS.md` corrected. Memory `project_compiler_stdlib_unification`.
+
+**SQLite (owning memories `project_sqlite_mutation_and_wasm`, `project_wasm_float_hardening`):**
+- **UPDATE/DELETE rowid-faithful CRUD (`a0fb00d`):** read-transform-rewrite via `select.compilePred`; new explicit-rowid writer (`d8cebbd`); `sqlite/lib/mutate.mdk`; refuses index/WITHOUT-ROWID/IPK-SET with clean `Err`.
+- **WasmGC port (`8cff4f3`→`3a633d7`):** SQLite (in-memory + file, full CRUD) runs `--target wasm` == native. ZERO emitter construct gaps — blocker was 9 missing externs. Shared tandem oracle `test/wasm/diff_sqlite.sh`. Closed 3 general wasm gaps (W-SQLITE-1/2/3).
+- **Aggregates + GROUP BY (`d493676`) — FIRST tandem feature:** COUNT/SUM/AVG/MIN/MAX + GROUP BY + HAVING; native byte-matches `sqlite3`, native==wasm via `diff_sqlite`. Surfaced the Float-on-wasm arc below.
+
+**Float on WasmGC — FULLY CLOSED** (EMITTER-GAPS.md "W-SQLITE-4 + type-lost-Float", designs `WASM-FLOAT-TYPING-DESIGN.md`/`SHARED-FLOAT-RESIDUAL-DESIGN.md`/`WASM-POLY-NUM-DESIGN.md`):
+- **W-SQLITE-4 (`b5eb960`/`2d321af`, faddF removal `f657831`):** wasm `cexprIsFloat` blind to Float param/return/field → registries from `declSigTypeNames`/`ctorFieldTypeNames`.
+- **Type-lost-Float ROOT fix, approach C (`f3d4f71` C-core + `27969e7` C3):** monomorphic concrete-Float binop anchored only via a poly-HOF value miscompiled (native garbage / wasm trap). Typecheck stamps a grounded-only binop scalar-tag (reusing the comparison-operator `pendingBinopSites` infra) → `CBinPrim` field → both emitters read it. GOTCHA: the `EBinOp` route `Ref` doesn't survive the dictPass→lower boundary → tag relocated into a surviving `EAnnot` node.
+- **Polymorphic-Num, approach A (`8afc613`):** `sq x=x*x`/`myMax` on Float trapped (wasm has no dict-dispatched arith path). Ported native's runtime value-tag dispatch: `$mdk_value_add/…` helpers + `$float` arms on `$mdk_value_cmp`/`_eq` (Ord/Eq sibling); `emitBinRef` routes ONLY polymorphic operands (`numPolyLocalsRef`), static fast path preserved. B (monomorphization) was the XL alternative — DEFERRED to the instance-DCE roadmap.
+- **C4 auto-print (`ee2b53e`):** bare Float value main printed garbage → `mainTypeIsFloat` hint (mirrors `mainTypeIsUnit`) → prints `6.0`.
+- **Net:** every Float shape now runs wasm==native — arithmetic (C+A) AND auto-print (C4), monomorphic AND polymorphic. Gates: `diff_wasm` 154/0, `diff_sqlite` 3/0, `diff_compiler_llvm` 186/0, fixpoint C3a/C3b YES throughout. Node v24 via nvm (default v20 too old for WasmGC).
+
+**Open / next (nothing blocking):** more tandem SQL features (JOINs, indexes, UPDATE SET expressions) — each auto-gets a wasm test via `diff_sqlite.sh`'s CORPUS; B/monomorphization (strategic, instance-DCE roadmap); the deferred wasm-modules single-file prelude-linkage gap (`fold`/`fromInt` in the single-file wasm entry — noted during the poly-Num probes, unrelated). `.gitignore` now covers the sqlite demo/probe root binaries.
+
 ## RESUME — ✅ fmt 3 bugs fixed + 2 new lint rules/upgrades + type-aware-lint design (sqlite fmt/lint dogfood review, 2026-06-29). `main` = `bb32190`
 
 A file-by-file review of the sqlite library through `medaka fmt` + `medaka lint` — "what do they catch, what do they miss, what should we fix in the tools." Six commits, each independently orchestrator-verified + merged; seed re-minted ONCE at checkpoint (fmt + exhaust touched the self-compile graph), cold `bootstrap_from_seed` C3a PASS, fixpoint C3a/C3b YES. Memory: `project_fmt_three_bugs_fixed`, `project_type_aware_lint_design`, `project_medaka_lint` (updated).
