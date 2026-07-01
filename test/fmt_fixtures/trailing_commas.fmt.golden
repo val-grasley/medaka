@@ -8,6 +8,6 @@ tup = (1, 2, 3)
 
 unpack (a, b) = a
 
-field MkPt { x, y } = x
+field (MkPt { x, y }) = x
 
 main = println lst

@@ -334,9 +334,9 @@ printPat (PCon c pats) =
     (Cat (text c) (Cat (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)) (text ")")))
 printPat (PCons a b) = Cat (printPatAtom a) (Cat (text "::") (printPat b))
 printPat (PTuple ps) =
-  Cat (text "(") (Cat (sepBy (text ", ") (map printPat ps)) (text ")"))
+  Cat (text "(") (Cat (sepBy (text ", ") (map printPatArm ps)) (text ")"))
 printPat (PList ps) =
-  Cat (text "[") (Cat (sepBy (text ", ") (map printPat ps)) (text "]"))
+  Cat (text "[") (Cat (sepBy (text ", ") (map printPatArm ps)) (text "]"))
 printPat (PAs x inner) = Cat (text x) (Cat (text "@") (printPatAtom inner))
 printPat (PRec name fields rest) =
   let fieldDocs = map recPatFieldDoc fields
@@ -351,6 +351,8 @@ recPatFieldDoc (RecPatField k (Some q)) =
   Cat (text k) (Cat (text " = ") (printPat q))
 
 -- PCon with args already self-parenthesizes in printPat, so it is atom-safe.
+-- A PRec with fields is NOT self-delimiting (`Con { .. }` binds as application),
+-- so in atom position (e.g. a function-clause arg) it must be parenthesized.
 printPatAtom : Pat -> Doc
 printPatAtom (PVar x) = printPat (PVar x)
 printPatAtom PWild = printPat PWild
@@ -358,7 +360,8 @@ printPatAtom (PLit l) = printPat (PLit l)
 printPatAtom (PCon c ps) = printPat (PCon c ps)
 printPatAtom (PTuple ps) = printPat (PTuple ps)
 printPatAtom (PList ps) = printPat (PList ps)
-printPatAtom (PRec n fs r) = printPat (PRec n fs r)
+printPatAtom (PRec n fs r) =
+  Cat (text "(") (Cat (printPat (PRec n fs r)) (text ")"))
 printPatAtom (PRng lo hi incl) = printPat (PRng lo hi incl)
 printPatAtom p = Cat (text "(") (Cat (printPat p) (text ")"))
 
