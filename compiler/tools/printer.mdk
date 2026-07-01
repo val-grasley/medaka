@@ -684,17 +684,12 @@ printEIf c t e
 printIfBody : Expr -> Expr -> Expr -> Doc
 printIfBody c t e
   | isBlockBody t || isBlockBody e = printEIf c t e
-  | otherwise =
-    group
-      (Cat
-        (text "if ")
-        (Cat
-          (printExpr precTop c)
-          (Cat
-            (text " then")
-            (Cat
-              (nest (Cat Line (printExpr precTop t)))
-              (Cat Line (Cat (text "else") (nest (Cat Line (printExpr precTop e)))))))))
+  -- Reuse the width-aware RHS laddering (`ifRhsBody`/`ifRhsElsePart`, shared
+  -- with `printIfRhs`): a qualifying nested `if` in else position ladders into
+  -- `else if …` with `Line`-based break points, so the whole cascade breaks
+  -- uniformly under the enclosing `group` when it doesn't fit (rather than
+  -- the old `else\n  if …` nesting, or a flat over-wide ladder).
+  | otherwise = group (ifRhsBody c t (ifRhsElsePart (isUnitLit e) e))
 
 -- EBlock self-indents; a block body indents; a simple body inlines.
 ifBranch : String -> Expr -> Doc

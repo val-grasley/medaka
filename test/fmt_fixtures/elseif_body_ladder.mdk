@@ -1,0 +1,13 @@
+-- Nested `if` in else position, in BODY/STATEMENT position (the `if` is the
+-- final statement after a `let`, not a direct `=` RHS), must ladder into
+-- `else if …` rather than nesting `else\n  if …`; and a wide chain must break
+-- each arm onto its own line uniformly (never a single over-wide flat ladder).
+dispatch : String -> String
+dispatch s =
+  let t = s
+  if t == "" then "empty" else if t == "k" then "key" else "other"
+
+classify : Int -> String
+classify n =
+  let label = "x"
+  if n < 0 then "negativeNumberBelowZeroDefinitely" else if n == 0 then "exactlyZeroValueHereYes" else if n < 100 then "smallPositiveNumberUnderOneHundred" else "largeNumberAtLeastOneHundredOrMore"
