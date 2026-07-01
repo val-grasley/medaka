@@ -952,9 +952,10 @@ sequence parsers, and a left-biased, full-backtracking `Alternative`
 primitives `satisfy`, `anyByte`, `byte`, `eof`, `peek`, `failWith`; combinators
 `many`, `some`, `many1`, `sepBy`, `sepBy1`, `optional`, `between`, `choice`,
 `chainl1`, `takeBytes`, `takeSlice`; big-endian binary readers `beUint`,
-`beSint`, `beFloat64`; entry point `runByteParser`.  24 doctests.  (The `be`
-prefix = big-endian and is semantic; the old `b`-prefixed combinator names were
-dropped on promotion.)
+`beSint`, `beFloat64` + **little-endian mirrors `leUint`, `leSint`, `leFloat64`**
+(P1, 2026-07-01); entry point `runByteParser`.  33 doctests.  (The `be`/`le`
+prefix = big-/little-endian and is semantic; the old `b`-prefixed combinator
+names were dropped on promotion.)
 
 ---
 
@@ -968,7 +969,9 @@ matching `byteparser` decoder expects, so `encode → decode` round-trips exactl
 Not auto-prelude — `import bytebuilder`.
 
 **Exports:** type `Builder`; `newBuilder`; `emitU8`, `emitU16BE`, `emitU24BE`,
-`emitU32BE`, `emitBytes`, `emitBeSint`; `buildArray`.  26 round-trip doctests.
+`emitU32BE`, `emitBytes`, `emitBeSint` + **little-endian mirrors `emitU16LE`,
+`emitU24LE`, `emitU32LE`, `emitLeUint`, `emitLeSint`** (P1, 2026-07-01);
+`buildArray`.  60 round-trip doctests + 4 props.
 
 ---
 
