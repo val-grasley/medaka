@@ -46,11 +46,12 @@ import types.typecheck.{
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
+  mainTypeIsFloat,
 }
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
-import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes}
+import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installMainIsFloatHint}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
@@ -129,6 +130,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   let _ = installMethodIface (methodIfaceTable allDecls)
   let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
+  let _ = installMainIsFloatHint (mainTypeIsFloat ())
   putStr (emitProgram (lowerProgramEmit allDecls))
 
 -- ── diagnostics emit helpers ──────────────────────────────────────────────────

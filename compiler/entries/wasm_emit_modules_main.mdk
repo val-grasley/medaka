@@ -36,12 +36,13 @@ import types.typecheck.{
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
+  mainTypeIsFloat,
 }
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames, ctorFieldTypeNames}
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
 import support.path.{dirOf}
-import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installCtorFloatFields}
+import backend.wasm_emit.{emitProgram, installMethodIface, installDeclRetTypes, installCtorFloatFields, installMainIsFloatHint}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -83,4 +84,5 @@ runEmit runtimeDecls coreDecls modules =
   -- W-SQLITE-4 stage 2: install ctor/record field Float indices so the emitter
   -- recognises Float stored in a record field or constructor payload.
   let _ = installCtorFloatFields (ctorFieldTypeNames allDecls)
+  let _ = installMainIsFloatHint (mainTypeIsFloat ())
   putStr (emitProgram (lowerProgramEmit allDecls))

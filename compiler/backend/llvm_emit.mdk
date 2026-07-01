@@ -8282,7 +8282,11 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   -- printed a stray `0`) OR a body LTy that is already LTUnit (an unannotated IO
   -- `main = putStrLn …`).  Value-returning mains keep auto-printing (the pp_value
   -- differential-test contract).
-  let _ = if mainIsUnit e mty then () else emitPrint e mv mty
+  -- C4: if the typecheck Float hint is set, override the structural LTy so the
+  -- print path uses the Float formatter even when emitExpr returns LTUnknown/LTInt
+  -- (the type-erased result from a polymorphic HOF like `fold`).
+  let mty2 = if mainIsFloatHintRef.value then LTFloat else mty
+  let _ = if mainIsUnit e mty2 then () else emitPrint e mv mty2
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   let _ = emitFns e (fnBinds groups)
@@ -8342,6 +8346,18 @@ mainIsUnitHintRef = Ref False
 export
 installMainIsUnitHint : Bool -> <Mut> Unit
 installMainIsUnitHint b = setRef mainIsUnitHintRef b
+
+-- Hint from the driver: True when typecheck resolved main's inferred return type to
+-- Float (e.g. via a polymorphic HOF whose result specialises to Float with no explicit
+-- annotation).  Set by the emit driver after elaborateModules via installMainIsFloatHint.
+-- C4 (SHARED-FLOAT-RESIDUAL-DESIGN §6): fixes bare Float value mains that print garbage
+-- because the structural mainKind sees LTInt on a type-erased polymorphic-HOF return.
+mainIsFloatHintRef : Ref Bool
+mainIsFloatHintRef = Ref False
+
+export
+installMainIsFloatHint : Bool -> <Mut> Unit
+installMainIsFloatHint b = setRef mainIsFloatHintRef b
 
 -- Is `main` Unit-returning (→ suppress the auto-print of its result)?  Three checks:
 -- 1. The typecheck-inferred-Unit hint (installMainIsUnitHint) — catches unannotated

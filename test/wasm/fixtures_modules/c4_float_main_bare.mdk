@@ -1,0 +1,10 @@
+-- C4 (SHARED-FLOAT-RESIDUAL-DESIGN §6): bare Float value main via a polymorphic HOF
+-- whose return type is structurally opaque.  `myId`'s declared return type is `a`, not
+-- `Float`, so `fnReturnsFloat "myId"` = False and the structural `refMainKind` defaults
+-- to WInt, printing garbage.  The typecheck hint (`mainTypeIsFloat` →
+-- `installMainIsFloatHint`) overrides refMainKind to WFloat so the auto-print uses the
+-- Float formatter.  Expected output: 6.0
+myId : a -> a
+myId x = x
+
+main = myId 6.0

@@ -1,0 +1,10 @@
+-- C4 (SHARED-FLOAT-RESIDUAL-DESIGN §6): bare Float value main via a polymorphic HOF
+-- whose return type is structurally opaque.  `myId`'s declared return type is `a`, not
+-- `Float`, so the structural `mainKind` can't determine Float and defaults to Int,
+-- printing garbage bits of the boxed-Float word.  The typecheck hint (`mainTypeIsFloat`
+-- → `installMainIsFloatHint`) overrides the structural LTy to LTFloat so `emitPrint`
+-- uses the float formatter.  Expected output: 6.0
+myId : a -> a
+myId x = x
+
+main = myId 6.0

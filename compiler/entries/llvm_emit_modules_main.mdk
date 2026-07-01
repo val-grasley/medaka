@@ -35,6 +35,7 @@ import types.typecheck.{
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
   mainTypeIsUnit,
+  mainTypeIsFloat,
 }
 import ir.core_ir_lower.{
   lowerProgramEmit,
@@ -54,6 +55,7 @@ import backend.llvm_emit.{
   installCtorFieldTypes,
   installDeclSigTypes,
   installMainIsUnitHint,
+  installMainIsFloatHint,
 }
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
@@ -95,6 +97,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
   let _ = installMainIsUnitHint (mainTypeIsUnit ())
+  let _ = installMainIsFloatHint (mainTypeIsFloat ())
   putStr (emitProgram (lowerProgramEmit allDecls))
 -- Module-qualify module-PRIVATE top-level functions whose bare name collides
 -- across units, BEFORE elaborateModules flattens the boundaries away (same

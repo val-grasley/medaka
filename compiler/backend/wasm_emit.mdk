@@ -265,6 +265,19 @@ methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (iface, _) => iface
   None => ""
 
+-- C4 (SHARED-FLOAT-RESIDUAL-DESIGN §6): hint from the driver: True when typecheck
+-- resolved main's inferred return type to Float (e.g. via a polymorphic HOF like
+-- `fold` whose result specialises to Float with no explicit annotation).  When set,
+-- `emitRefMain` overrides the structural `refMainKind` (which defaults to WInt on
+-- type-erased returns) and emits the WFloat auto-print path.  Set by the emit driver
+-- after elaborateModules via installMainIsFloatHint; False in prelude-free entries.
+mainIsFloatHintRef : Ref Bool
+mainIsFloatHintRef = Ref False
+
+export
+installMainIsFloatHint : Bool -> <Mut> Unit
+installMainIsFloatHint b = setRef mainIsFloatHintRef b
+
 -- ── decl → DECLARED return type-head name table (W9b — for Unit-main detection) ─
 -- `declSigTypeNames` maps a top-level binding name to (param-type-heads, return-type-
 -- head).  A value main `main = println (10 + 5)` whose head function `println` is
@@ -2105,7 +2118,13 @@ emitRefMain : Prog -> List CBind -> <Mut> List String
 emitRefMain prog groups = match findMain groups
   Some body =>
     let instrs = emitRefExpr prog [] 0 body
-    let k = if mainBodyIsUnit prog body then WUnit else refMainKind prog body
+    -- C4: if the typecheck Float hint is set, override the structural refMainKind
+    -- (which defaults to WInt on type-erased polymorphic-HOF returns) so bare Float
+    -- value mains (e.g. `main = fold (acc x => acc + x) 0.0 [1.0, 2.0, 3.0]`)
+    -- auto-print via the Float formatter instead of reinterpreting bits as an Int.
+    let k = if mainBodyIsUnit prog body then WUnit
+            else if mainIsFloatHintRef.value then WFloat
+            else refMainKind prog body
     -- a Unit main (a `putStrLn …` etc.) has already produced its IO effect; drop its
     -- i31-0 result and auto-print NOTHING (the "Unit main no auto-print" contract).
     match k
