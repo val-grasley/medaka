@@ -1013,6 +1013,25 @@ standard + URL-safe alphabets. Pure, no externs. Not auto-prelude —
 whitespace skipping), `decodeUrlSafe`, `decodeString`. 18 doctests + 3 round-trip
 props.
 
+## Module 16 — `math` ✅ implemented (P1, 2026-07-01) — native/LLVM only
+
+`stdlib/math.mdk` — floating-point math over **22 libm `extern` primitives**
+(native/LLVM backend only; on WasmGC these trap like `floatRem` — a real math
+story for wasm needs a host-import seam or polyfill, deferred). Not auto-prelude
+— `import math`.
+
+**Externs (in `runtime.mdk`):** roots `sqrt`/`cbrt`; transcendentals
+`exp`/`log`/`log2`/`log10`/`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`sinh`/`cosh`/`tanh`;
+rounding `floor`/`ceil`/`round`/`trunc`; two-arg `pow`/`atan2`/`hypot`. Each is a
+`math.h` shim (`runtime/medaka_rt.c`), threaded through `eval.mdk` prims +
+`llvm_preamble.mdk` declares + `llvm_emit.mdk` (`isMathUnary`/`isMathBinary` →
+`isNumExtern`, generic unbox/call/rebox emit arms).
+
+**Pure wrappers:** `toRadians`/`toDegrees`, `isNaN`/`isInfinite`, `logBase`,
+integer `gcdInt`/`lcmInt`/`powInt`. (Deliberately NOT re-adding `abs`/`signum`/
+`clamp` — `core.mdk` already provides them via `Num`/`Ord`.) 36 doctests + 6
+props.
+
 ---
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
