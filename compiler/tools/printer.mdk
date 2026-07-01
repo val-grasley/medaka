@@ -525,6 +525,16 @@ isUnitLit : Expr -> Bool
 isUnitLit (ELit LUnit) = True
 isUnitLit _ = False
 
+-- A body eligible to break AT its `=`/`=>` separator (drop the whole body one
+-- indent-line below when the `sep body` line is over-wide).  Excludes block
+-- bodies (do/match/if/function/guards — they own their layout) and
+-- continuation-op chains (`&&`/`||`/`|>`/… — they keep their head on the
+-- separator line and break at their leading operators instead).
+breakAtSepBody : Expr -> Bool
+breakAtSepBody (ELoc _ e) = breakAtSepBody e
+breakAtSepBody (EBinOp op _ _ _) = not (isContinuationOp op)
+breakAtSepBody b = not (isBlockBody b)
+
 -- ── Expressions ───────────────────────────────────
 
 printExpr : Int -> Expr -> Doc
@@ -893,7 +903,11 @@ matchBodyNoIf : Expr -> Doc
 matchBodyNoIf (ELoc _ e) = matchBodyNoIf e
 matchBodyNoIf (EBlock stmts) =
   Cat (text " =>") (printExprBodyW False (EBlock stmts))
-matchBodyNoIf body = Cat (text " => ") (printExprBodyW False body)
+matchBodyNoIf body
+  -- Offer break-at-`=>` (only when the body can then be one line — hangAtSep):
+  -- an over-wide `pat => body` drops the whole body one indent-line below `=>`.
+  | breakAtSepBody body = hangAtSep " =>" (printExprBodyW False body)
+  | otherwise = Cat (text " => ") (printExprBodyW False body)
 
 guardDoc : Guard -> Doc
 guardDoc (GBool g) = printExpr precTop g
@@ -917,7 +931,11 @@ guardArmBodyDoc body = match printIfRhs body
 guardArmBodyNoIf : Expr -> Doc
 guardArmBodyNoIf (EBlock stmts) =
   Cat (text " =") (printExprBodyW False (EBlock stmts))
-guardArmBodyNoIf body = Cat (text " = ") (printExprBodyW False body)
+guardArmBodyNoIf body
+  -- Offer break-at-`=` (only when the body can then be one line — hangAtSep):
+  -- an over-wide `| guards = body` drops the body one indent-line below `=`.
+  | breakAtSepBody body = hangAtSep " =" (printExprBodyW False body)
+  | otherwise = Cat (text " = ") (printExprBodyW False body)
 
 -- A `let pat = <rhs>` statement RHS (own line in a do/bare block): an `if` is
 -- break-capable here (statement position), reusing the body-position renderer so
@@ -1002,15 +1020,15 @@ printDefRhsGeneral body = match printIfRhs body
     EMatch sc arms => Cat (text " = ") (printExprBody (EMatch sc arms))
     EDo stmts => Cat (text " = ") (printExprBody (EDo stmts))
     EFunction arms => Cat (text " = ") (printExprBody (EFunction arms))
-    EApp f x =>
-      if isSingleBreakableApp (EApp f x) then
-        -- head + single breakable argument: keep the head on the `=` line and
-        -- break inside the argument (printAppSpine handles the inline join).
-        Cat (text " = ") (printAppSpine (EApp f x))
-      else
-        Cat (text " =") (group (nest (Cat Line (printAppSpine (EApp f x)))))
+    -- Application body: offer a break AT the `=` first (whole body drops one
+    -- indent-line below and stays flat there if it fits); only a body that
+    -- still overflows on its own line breaks its argument spine.
+    EApp f x => bodyBreakAtEq (printAppSpine (EApp f x))
     EBinOp op l r rf =>
       if isContinuationOp op then
+        -- Continuation-op chain (`&&`/`||`/`|>`/…): head stays on the `=` line
+        -- and the chain breaks at its leading operators (printChain).  Do NOT
+        -- route this through break-at-`=`.
         Cat (text " = ") (printExprBody (EBinOp op l r rf))
       else
         Cat (text " =") (group (nest (Cat Line (printBinOpTrailing op l r))))
@@ -1018,7 +1036,35 @@ printDefRhsGeneral body = match printIfRhs body
       if isBlockBody body then
         Cat (text " =") (indentBlock (printExprBody body))
       else
-        Cat (text " = ") (printExprBody body)
+        -- Non-block, non-chain body (record / tuple / list / literal / …):
+        -- offer break-at-`=` so an over-wide `= body` line drops the whole body
+        -- to the next line (where a record/tuple may fit on one line) before
+        -- exploding the body's own interior.
+        bodyBreakAtEq (printExprBody body)
+
+bodyBreakAtEq : Doc -> Doc
+bodyBreakAtEq bodyDoc = hangAtSep " =" bodyDoc
+
+-- Break AT the `=`/`=>` separator ONLY when the body can then be one line:
+--   * `sep body` fits on the current line     → inline (unchanged);
+--   * body fits flat on its own line (but the inline `sep body` does not)
+--                                             → hang the body one indent-line
+--                                               below `sep`;
+--   * body cannot be one line at all          → `sep ` + body breaks its own
+--     interior (the pre-existing inline form — the body's opener stays on the
+--     `sep` line, so an inherently-multi-line list/record/lambda-app does NOT
+--     gain a pointless extra hang line + deeper indent).
+-- The outer `FlatGroup` flattens (→ the FlatAlt `b`/hang arm) exactly when the
+-- body fits on one line at this indent (its cond-c `fits (width - i)` test);
+-- otherwise it breaks (→ the FlatAlt `a`/inline-interior-break arm).  Inside the
+-- hang arm, the inner `group` then picks inline-vs-hang by whether `sep body`
+-- fits from the current column.
+hangAtSep : String -> Doc -> Doc
+hangAtSep sep bodyDoc =
+  FlatGroup
+    (FlatAlt
+      (Cat (text sep) (Cat (text " ") bodyDoc))
+      (Cat (text sep) (group (nest (Cat Line bodyDoc)))))
 -- Width cascade for a too-wide `=` binding RHS (Option B):
 --   1. hang the RHS one line below `=` (the outer `group`/`Line`);
 --   2. if still over width, break the OUTERMOST binop with the operator
