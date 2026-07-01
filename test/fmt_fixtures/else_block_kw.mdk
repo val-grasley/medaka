@@ -1,0 +1,12 @@
+-- `else do` / `else match` keep the block keyword adjacent to `else`.
+compute x =
+  if x > 0 then x + 1
+  else do
+    println "neg"
+    x - 1
+
+classify op a b =
+  if a == 0 then 0
+  else match op
+    "add" => a + b
+    _ => a - b

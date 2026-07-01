@@ -1,0 +1,13 @@
+-- Wide single-variant record `data` wraps one-field-per-line (leading comma);
+-- a short one stays inline.
+public export data WideRec =
+  | WideRec
+    { alpha : String
+    , beta : List Int
+    , gamma : Option Bool
+    , delta : String
+    , epsilon : Int
+    , zeta : List (String, Bool)
+    }
+
+data Point = Point { x : Int, y : Int }

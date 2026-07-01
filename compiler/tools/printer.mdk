@@ -694,10 +694,23 @@ printIfBody c t e
   -- the old `else\n  if …` nesting, or a flat over-wide ladder).
   | otherwise = group (ifRhsBody c t (ifRhsElsePart (isUnitLit e) e))
 
--- EBlock self-indents; a block body indents; a simple body inlines.
+-- A `do`/`match`/`function` block body keeps its keyword ADJACENT to the branch
+-- keyword (`else do`, `else match sc`) with the body indented one step — the same
+-- shape a `=`-RHS renders (`f x = do\n  …`), since `printExprBody` on those kinds
+-- already emits `do\n  …`/`match sc\n  …`.  (peels ELoc.)
+isDoMatchFnBody : Expr -> Bool
+isDoMatchFnBody (ELoc _ e) = isDoMatchFnBody e
+isDoMatchFnBody (EDo _) = True
+isDoMatchFnBody (EMatch _ _) = True
+isDoMatchFnBody (EFunction _) = True
+isDoMatchFnBody _ = False
+
+-- EBlock self-indents; a do/match/function body keeps its keyword adjacent (`else
+-- do`); other block bodies indent onto their own line; a simple body inlines.
 ifBranch : String -> Expr -> Doc
 ifBranch kw (EBlock stmts) = Cat (text kw) (printExprBody (EBlock stmts))
 ifBranch kw b
+  | isDoMatchFnBody b = Cat (text kw) (Cat (text " ") (printExprBody b))
   | isBlockBody b = Cat (text kw) (indentBlock (printExprBody b))
   | otherwise = Cat (text kw) (Cat (text " ") (printExpr precTop b))
 
@@ -1060,10 +1073,17 @@ useMemberDoc (UseMember n allCtors) =
 printVariant : Variant -> Doc
 printVariant (Variant name (ConPos tys)) =
   Cat (text name) (concatD (map (t => Cat (text " ") (printTypeAtom t)) tys))
+-- Width-aware: stay inline `name { f0 : T0, f1 : T1 }` when the field list fits
+-- the width budget at the current indent; otherwise break to one-field-per-line
+-- LEADING-COMMA brace style (mirrors `printNamedFieldData`'s field format), so a
+-- wide single-variant record (e.g. `Select`'s 8 fields) wraps instead of
+-- collapsing onto one ~200-char line.  `FlatAlt` switches each separator by group
+-- mode; the `nest` indents the `{`/`,`/`}` one step under the variant name.
 printVariant (Variant name (ConNamed fields)) =
-  Cat
-    (text name)
-    (Cat (text " { ") (Cat (sepBy (text ", ") (map fieldTyDoc fields)) (text " }")))
+  let openB = FlatAlt (Cat Line (text "{ ")) (text " { ")
+  let closeB = FlatAlt (Cat Line (text "}")) (text " }")
+  let sep = FlatAlt (Cat Line (text ", ")) (text ", ")
+  group (Cat (text name) (nest (Cat openB (Cat (sepBy sep (map fieldTyDoc fields)) closeB))))
 
 fieldTyDoc : Field -> Doc
 fieldTyDoc (Field fn ft) = Cat (text fn) (Cat (text " : ") (printType ft))
