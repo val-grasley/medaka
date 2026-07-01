@@ -132,6 +132,17 @@ or `cd` to the worktree root. The `./medaka` binary is written to the worktree d
 stale-prone. Always force-rebuild (`FORCE=1 bash test/build_oracles.sh`) before trusting
 a pass/fail result from those gates.
 
+**Formatter pre-commit hook (ACTIVE, 2026-07-01).** The whole tree is `medaka fmt`-clean
+and a pre-commit hook (`.githooks/pre-commit`, installed at `$(git rev-parse
+--git-common-dir)/hooks/pre-commit`) **rejects any commit that stages an unformatted
+`.mdk`** (runs `medaka fmt --check`; `test/` fixtures excluded — they are intentionally
+unformatted golden inputs). **So: run `medaka fmt --write <changed.mdk>` and re-`git add`
+before committing any `.mdk` edit** (source only — never format `test/` fixtures). Emergency
+bypass: `git commit --no-verify`. If `medaka` isn't built the hook warns-and-allows. `medaka
+fmt` is safe (verified: 0 corruptions / 0 non-idempotent across the repo) and idempotent, so
+`fmt --write` on already-clean files is a no-op. Re-install after a fresh clone by copying
+`.githooks/pre-commit` into the hooks dir.
+
 ## Gotchas
 
 - **The compiler (`compiler/*.mdk`) MAY import `stdlib/` — deliberately, per module (policy changed 2026-06-29).** The old blanket "NEVER import stdlib" rule

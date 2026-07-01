@@ -8,6 +8,10 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
+## Current status (2026-07-01) — `medaka fmt` hardened → whole repo formatted → pre-commit hook LIVE (`2f36d92`)
+
+Dogfood arc: hardened `medaka fmt` (7 fixes — else-if ladder, pattern parens, record wrap, else-block, body break-at-`=`, verbatim comment safety-net, idempotency), proved safe+idempotent repo-wide (175 files, 0 corruptions/0 non-idempotent), bulk-formatted all 148 non-`test/` source `.mdk` (compiler rebuilt from its own reformatted source → fixpoint C3a/C3b, zero behavior change, no seed re-mint), and installed a pre-commit hook (`.githooks/pre-commit`) that rejects unformatted staged `.mdk`. **The hook is ACTIVE clone-wide — `medaka fmt --write` changed `.mdk` before committing** (see AGENTS.md). Deferred polish: T (single-app body ~80 chars spine-breaks vs hangs at `=`), L Stages 3-5 (full Doc-IR comment interleaving vs current verbatim-preserve — `compiler/FMT-COMMENT-INTERLEAVING-DESIGN.md`). Details: `.claude/HANDOFF.md` top entry, memory `project_fmt_hardening_and_commit_hook`.
+
 ## Current status (2026-07-01) — tandem SQL: ORDER BY + INNER/LEFT JOIN + DISTINCT + arithmetic/UPDATE-SET-expr + computed SELECT columns (`f4b437d`)
 
 Six tandem SQL features (each works identically native + wasm, auto-gated by `test/wasm/diff_sqlite.sh` — now 9/0), all **pure library** (`sqlite/lib/{select,mutate}.mdk`) → NO seed re-mint / fixpoint concern. Each independently orchestrator-verified vs the real `sqlite3` CLI AND native==wasm, then merged. Continues the dogfood-soak thesis (real library work flushes compiler bugs — none surfaced across all six; every order/join/distinct/arithmetic/projection shape ran `run`==`build`==native==wasm, including the type-lost-Float-prone Float-in-Cell arithmetic). Owning doc: SQLite design docs; memory: `project_sqlite_mutation_and_wasm` (tandem workflow).
