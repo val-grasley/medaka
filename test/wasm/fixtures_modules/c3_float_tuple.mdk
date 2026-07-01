@@ -1,0 +1,12 @@
+-- C3 case #6/#7: tuple-destructured Float — `addPair (1.5, 2.5)`.
+-- The tuple binders `a`, `b` are concrete Float but not structurally visible to
+-- cexprIsFloat; the typecheck-stamped "Float" tag on the `a + b` CBinPrim routes
+-- to the wasm float path via emitBinRef. Before C3 this TRAPPED.
+fid : Float -> Float
+fid x = x
+
+addPair : (Float, Float) -> Float
+addPair p = match p
+  (a, b) => a + b
+
+main = fid (addPair (1.5, 2.5))

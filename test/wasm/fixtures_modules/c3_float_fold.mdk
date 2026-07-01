@@ -1,0 +1,14 @@
+-- C3 case #5: fold accumulator with concrete Float — `myFold (acc x => acc + x) 0.0 [...]`.
+-- The accumulator lambda `acc x => acc + x` has concrete-Float operands whose type
+-- grounds after typecheck; the "Float" tag stamped on `acc + x` routes emitBinRef to
+-- the wasm float path. Before C3 this TRAPPED. Uses a local myFold to avoid the
+-- single-file fold-unbound gap; fid : Float -> Float anchors the auto-print.
+fid : Float -> Float
+fid x = x
+
+myFold : (b -> a -> b) -> b -> List a -> b
+myFold f acc xs = match xs
+  [] => acc
+  x :: rest => myFold f (f acc x) rest
+
+main = fid (myFold (acc x => acc + x) 0.0 [1.0, 2.0, 3.0])

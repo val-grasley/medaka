@@ -3314,7 +3314,7 @@ emitRefExpr : Prog -> List String -> Int -> CExpr -> <Mut> List String
 emitRefExpr prog env d e = match e
   CLit l => emitLitRef l
   CVar x _ => emitVarRef prog env d x
-  CBinPrim op l r _ => emitBinRef prog env d op l r
+  CBinPrim op l r tag => emitBinRef prog env d op l r tag
   CUnOp op x => emitUnRef prog env d op x
   CIf c t f => emitIfRef prog env d c t f
   CLet recF pat e1 e2 => emitLetRef prog env d recF pat e1 e2
@@ -3568,26 +3568,26 @@ emitCtorEtaDefine prog lamName ctor arity =
 
 -- arithmetic / comparison: unbox both operands from i31 to i32, do the i32 op, then
 -- re-box (arithmetic → i31 int; comparison → i31 0/1 bool).
-emitBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
+emitBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> String -> <Mut> List String
 -- W13: `++` is runtime-dispatched (Core IR is type-erased, so we can't tell a
 -- String `++` from a List `++` statically).  Both operands stay (ref eq) and
 -- $mdk_append inspects the left operand's shape ($str → string concat; i31/$C_Cons
 -- → list append), mirroring the LLVM backend's @mdk_append.
-emitBinRef prog env d "++" l r =
+emitBinRef prog env d "++" l r _ =
   emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["call $mdk_append"]
 -- W9: `::` is cons — build a $C_Cons cell {tag=0, head=l, tail=r} (same rep the W7
 -- list-literal / Cons match machinery uses).  Reached from prelude fns that cons in
 -- expression position (e.g. `gen () :: acc` in arbitraryList's where-go).
-emitBinRef prog env d "::" l r =
+emitBinRef prog env d "::" l r _ =
   ["i32.const 0"] ++ emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["struct.new $C_Cons"]
 -- W8b: Float arithmetic / comparison.  Core IR is type-erased (CBinPrim carries no
 -- LTy), so Float-ness is recovered STRUCTURALLY from the operands (a Float lit, pi/e,
--- a Float-returning extern, or a nested Float binop).  Both operands of a well-typed
--- binop share a type, so testing EITHER suffices.  Float operands are boxed $float
--- structs: unbox via `struct.get $float 0`, run f64 ops, then rebox arith results
--- (`struct.new $float`) / produce an i31 Bool for comparisons.
-emitBinRef prog env d op l r =
-  if isArithOrCmp op && (cexprIsFloat prog env l || cexprIsFloat prog env r) then
+-- a Float-returning extern, or a nested Float binop).  SHARED-FLOAT-RESIDUAL §6 C3:
+-- the typecheck-stamped scalar-type tag (CBinPrim's 4th field, "Float" when the
+-- operands ground to concrete Float) provides a direct route — additive over the
+-- structural check, so an absent/non-Float tag falls back to today's path.
+emitBinRef prog env d op l r tag =
+  if isArithOrCmp op && (tag == "Float" || cexprIsFloat prog env l || cexprIsFloat prog env r) then
     emitFloatBinRef prog env d op l r
   -- layer-9: a ref-mode comparison (`==`/`!=`/`<`/`>`/`<=`/`>=`) in a string-using
   -- program could have String OR Int operands (Core IR is type-erased), so the old
@@ -3671,7 +3671,9 @@ cexprIsFloat prog env e = match e
   CVar "e" _ => not (contains "e" env)
   -- W8b: a name known to be Float in the current body (an `impl Num Float` param).
   CVar x _ => contains x floatLocalsRef.value
-  CBinPrim op l r _ => isArithOp op && (cexprIsFloat prog env l || cexprIsFloat prog env r)
+  -- C3: also True when the binop itself carries an "Float" scalar-tag (e.g. a nested
+  -- Float binop whose operands are type-lost but the typecheck stamped the node).
+  CBinPrim op l r tag => isArithOp op && (tag == "Float" || cexprIsFloat prog env l || cexprIsFloat prog env r)
   CUnOp "-" x => cexprIsFloat prog env x
   CLet _ (PVar x) _ b => cexprIsFloat prog (x :: env) b
   CLet _ _ _ b => cexprIsFloat prog env b

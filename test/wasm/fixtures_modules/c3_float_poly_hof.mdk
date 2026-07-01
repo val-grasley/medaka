@@ -1,0 +1,12 @@
+-- C3 case #9: let-bound Float from a polymorphic HOF — `let y = identity 2.5; y + y`.
+-- `identity`'s return LTy is unknown (poly), so cexprIsFloat returns False for `y`.
+-- The typecheck-stamped "Float" tag on the `y + y` CBinPrim routes emitBinRef to the
+-- wasm float path. Before C3 this TRAPPED (and was also WRONG on native — the one
+-- genuinely-shared arithmetic bug: SHARED-FLOAT-RESIDUAL-DESIGN §1 case #9).
+fid : Float -> Float
+fid x = x
+
+identity : a -> a
+identity x = x
+
+main = fid (let y = identity 2.5 in y + y)

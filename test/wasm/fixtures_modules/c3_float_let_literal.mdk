@@ -1,0 +1,9 @@
+-- C3 case #8: let-bound Float literal — `let y = 2.5; y + y`.
+-- Before C3 this TRAPPED on wasm (i31 unbox on a $float box) because cexprIsFloat
+-- could not see through the let-binder. The CBinPrim scalar-tag "Float" stamped by
+-- the typechecker (C1/resolveBinopSites) now routes emitBinRef to the float path.
+-- Uses fid : Float -> Float to anchor the auto-print.
+fid : Float -> Float
+fid x = x
+
+main = fid (let y = 2.5 in y + y)
