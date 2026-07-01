@@ -1,7 +1,14 @@
 # SQLite Read-Path Library — Design
 
-**Status:** design document (2026-06-23). Authored as a capstone dogfood project for
-the Medaka language. Foundation externs landed `1b25c9b`; read-path slices in progress.
+**Status:** design document (2026-06-23), historical. Authored as a capstone dogfood
+project for the Medaka language. Foundation externs landed `1b25c9b`. **SUPERSEDED by
+the as-built state — see PLAN.md's top "tandem SQL" status entry.** The Phase-1 sketch
+comments below (e.g. "no JOIN, no ORDER BY") are historical: the query engine now
+supports multi-column ORDER BY, INNER + LEFT JOIN (single + N-way), DISTINCT, aggregates/
+GROUP BY/HAVING, arithmetic in WHERE, UPDATE…SET `<expr>`, and computed SELECT columns —
+all verified vs the `sqlite3` CLI and running identically on native + WasmGC (tandem
+oracle `test/wasm/diff_sqlite.sh`). Still deferred: indexes, WITHOUT-ROWID, overflow
+pages, b-tree balancing, durability/WAL, subqueries.
 
 ---
 
