@@ -248,3 +248,16 @@ per sub-stage; verify `selfcompile_fixpoint` once at the checkpoint).
 4. **§4 wasm polymorphic-Num arithmetic (#12–13)** — separate, larger (`$mdk_value_add` runtime
    dispatch or monomorphization). Decide independently; **not** part of this residual. Without it,
    generic Float math still needs a `Float` signature to run on wasm.
+
+---
+
+## LOCKED SCOPE (orchestrator + user decision, 2026-06-30)
+
+**GO on approach C (arithmetic-binop scalar-type stamp), full realistic residual (#5–9), THEN the wasm polymorphic-Num gap (§4) as a separate follow-up workstream.** Fork answers: (1) **C** (not A/B); (2) whole realistic residual, not native-#9-only; (3) native seed re-mint accepted (user wants Float closed for good); (4) the wasm polymorphic-Num arithmetic (#12–13, `sq x = x*x`) IS wanted — scoped as a SEPARATE next workstream after C, not part of C.
+
+**Execution:**
+- **C-core (Opus) = C0 + C1 + C2** as one coupled unit: add the scalar-tag field to `Route`/`CBinPrim` + `lowerBinop` passthrough (C0, do first + verify goldens inert/recaptured — IR-shape lockstep footgun); typecheck grounded-only stamp into the `pendingBinopSites` infra (C1); native `emitBin` reads the tag → `LTFloat` (C2). Gate: native #6/#9 fixtures run==build correct Float; `diff_compiler_llvm`/`check`/sexp-lower goldens recaptured; `selfcompile_fixpoint` C3a/C3b YES. Incremental-landing OK (land C0 alone + STOP if the AST lockstep balloons).
+- **C3 (Sonnet)** = wasm `emitBinRef`/`cexprIsFloat` read the tag → float path. Gate: wasm #5/#6/#8/#9 fixtures wasm==native; `diff_wasm` + `diff_sqlite` green.
+- **Seed re-mint ONCE** after C3 (orchestrator): C touches the native self-compile closure → one re-mint unit; verify `selfcompile_fixpoint` + cold `bootstrap_from_seed`.
+- **C4 (auto-print bare Float mains) DEFERRED** — orthogonal nicety, not part of the arithmetic fix.
+- **NEXT workstream (after C):** wasm polymorphic-Num arithmetic (§4, #12–13) — its own design pass (`$mdk_value_add` runtime dispatch vs monomorphization).
