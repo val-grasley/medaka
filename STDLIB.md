@@ -972,6 +972,49 @@ Not auto-prelude — `import bytebuilder`.
 
 ---
 
+## P1 stdlib (2026-07-01) — see [`P1-STDLIB-DESIGN.md`](./P1-STDLIB-DESIGN.md)
+
+The P1 stdlib expansion (batteries the P0 core omits — math, filesystem,
+networking, codecs, time, richer bytes) is designed in
+[`P1-STDLIB-DESIGN.md`](./P1-STDLIB-DESIGN.md) with a P1/P2/P3 tiering, a
+5-language comparison, and per-item implementation-cost tags. Modules land here
+as they ship.
+
+## Module 13 — `path` ✅ implemented (P1, 2026-07-01)
+
+`stdlib/path.mdk` — pure POSIX (`/`-separated) path manipulation, **no
+filesystem access, no effects**. Public sibling of the compiler-private
+`compiler/support/path.mdk`. Not auto-prelude — `import path`.
+
+**Exports:** `dirname`, `basename`, `extname` (dot-inclusive; a leading-dot-only
+name like `.bashrc` has no extension — Go `path.Ext`/Python `splitext`
+convention), `stem`, `hasExtension`, `withExtension`, `joinPath`, `joinAll`,
+`segments`, `isAbsolute`, `stripPrefix`, `normalize` (Go `path.Clean` lexical
+cleanup: collapse `//`, drop `.`, resolve `..`, drop `..` above an absolute
+root). 29 doctests + 3 props.
+
+## Module 14 — `hex` ✅ implemented (P1, 2026-07-01)
+
+`stdlib/hex.mdk` — RFC-style base16 encode/decode over `Array Int` bytes. Pure,
+no externs. Not auto-prelude — `import hex`.
+
+**Exports:** `encode`/`encodeUpper` (lower/upper hex), `encodeString` (UTF-8 →
+hex), `decode` (strict: odd length or non-hex digit → `Err`; accepts both
+cases), `decodeString`. 11 doctests + 2 round-trip props.
+
+## Module 15 — `base64` ✅ implemented (P1, 2026-07-01)
+
+`stdlib/base64.mdk` — RFC 4648 base64 encode/decode over `Array Int` bytes,
+standard + URL-safe alphabets. Pure, no externs. Not auto-prelude —
+`import base64`.
+
+**Exports:** `encode`/`encodeUrlSafe` (both `=`-padded), `encodeString`, `decode`
+(strict, Python `b64decode`-style: bad length/char/padding → `Err`, no
+whitespace skipping), `decodeUrlSafe`, `decodeString`. 18 doctests + 3 round-trip
+props.
+
+---
+
 ## Capability stratification audit (Phase 146, 2026-06-06)
 
 *Companion to [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §3a and
