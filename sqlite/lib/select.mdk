@@ -17,7 +17,7 @@
 -- collide with `Ord`/`Eq`/`Bool` methods (`gt`/`eq`/`and`/...).
 
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
-import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, findTable, schemaSql}
+import lib.sqlite.{Db, scanTableRowsIpk, rowCellsWithIpk, columnIndex, columnNames, findTable, schemaSql}
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
 import list.{reverse, take, drop, sortBy}
@@ -52,11 +52,23 @@ public export data SqlExpr
   | EIsNull SqlExpr
   | ENotNull SqlExpr
 
--- | A whole SELECT: source table, optional WHERE, optional ORDER BY,
---   optional limit/offset.
+-- | A single INNER JOIN clause: the joined table plus its ON predicate.  The
+--   ON expression references columns by qualified name (`table.column`) or by
+--   an unambiguous bare column name; it is compiled over the COMBINED row (all
+--   tables concatenated, `from`-table columns first, then each join's columns in
+--   `joins` order).
+public export data Join = Join { table : String, on : SqlExpr }
+
+-- | A whole SELECT: source table, INNER joins (applied in order), optional
+--   WHERE, optional ORDER BY, optional limit/offset.
 --   Projection is the `RowType` passed to `query`, NOT a field here (decision d2).
+--
+--   The COMBINED row (when `joins` is non-empty) lays out cells as: all of the
+--   `from` table's columns, then each join table's columns in `joins` order.
+--   The `RowType` passed to `query` decodes this wide row left-to-right.
 public export data Select = Select
   { from    : String
+  , joins   : List Join
   , where_  : Option SqlExpr
   , orderBy : List (String, Bool)
   , limit   : Option Int
@@ -171,7 +183,16 @@ eNotNull e = MkExpr (ENotNull (unExpr e))
 -- | A bare SELECT over a table: no WHERE, no ORDER BY, no limit/offset.
 export
 selectFrom : String -> Select
-selectFrom tbl = Select { from = tbl, where_ = None, orderBy = [], limit = None, offset = None }
+selectFrom tbl = Select { from = tbl, joins = [], where_ = None, orderBy = [], limit = None, offset = None }
+
+-- | Append an INNER JOIN of `tbl` with the type-safe `on` predicate.  Joins are
+--   applied in call order (each appends), so the combined row lays out the
+--   `from` columns first, then each joined table's columns in this order.  The
+--   phantom `Expr Bool` is stripped here, exactly like `withWhere`.
+export
+innerJoin : String -> Expr Bool -> Select -> Select
+innerJoin tbl onExpr sel =
+  { sel | joins = sel.joins ++ [Join { table = tbl, on = unExpr onExpr }] }
 
 -- | Attach a typed `Expr Bool` predicate as the WHERE clause.  The phantom
 --   wrapper is stripped here — this is the type-safe boundary at which an
@@ -208,15 +229,28 @@ withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(col, asc)] }
 --   an illegal identifier yields `Err`.
 export
 render : Select -> Result String (String, List Literal)
-render (Select { from = tbl, where_ = w, orderBy = ob, limit = lm, offset = of_ }) =
+render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_ }) =
   if not (validIdent tbl)
   then Err "render: invalid table name: \{tbl}"
   else do
+    (joinSql, joinBinds) <- renderJoins js
     (whereSql, binds) <- renderWhere w
     ordSql <- renderOrderBy ob
     let limOff = renderLimitOffset lm of_
-    let sql = "SELECT * FROM \{tbl}\{whereSql}\{ordSql}\{limOffSql limOff}"
-    Ok (sql, binds ++ limOffBinds limOff lm of_)
+    let sql = "SELECT * FROM \{tbl}\{joinSql}\{whereSql}\{ordSql}\{limOffSql limOff}"
+    Ok (sql, joinBinds ++ binds ++ limOffBinds limOff lm of_)
+
+-- Render the INNER JOIN clauses (in order), each " INNER JOIN <table> ON <expr>",
+-- accumulating their ON-expression binds left-to-right.  Empty ⇒ no clause.
+renderJoins : List Join -> Result String (String, List Literal)
+renderJoins []                              = Ok ("", [])
+renderJoins (Join { table = t, on = e } :: rest) =
+  if not (validIdent t)
+  then Err "render: invalid join table name: \{t}"
+  else do
+    (onSql, onBinds) <- renderExpr e
+    (restSql, restBinds) <- renderJoins rest
+    Ok (" INNER JOIN \{t} ON \{onSql}\{restSql}", onBinds ++ restBinds)
 
 -- The limit/offset clause is rendered as text + its (ordered) binds.  We keep
 -- the placeholders parameterized too (LIMIT ? / OFFSET ?) for uniformity.
@@ -241,7 +275,7 @@ renderOrderBy keys = map (parts => " ORDER BY " ++ join ", " parts) (renderOrder
 renderOrderByParts : List (String, Bool) -> Result String (List String)
 renderOrderByParts [] = Ok []
 renderOrderByParts ((col, asc) :: rest) =
-  if not (validIdent col)
+  if not (validQualIdent col)
   then Err "render: invalid ORDER BY column: \{col}"
   else do
     let dir = if asc then "ASC" else "DESC"
@@ -270,7 +304,7 @@ renderWhere (Some e) =
 -- Render an expression to (sql, binds).  Binds accumulate left-to-right.
 renderExpr : SqlExpr -> Result String (String, List Literal)
 renderExpr (ECol name) =
-  if validIdent name then
+  if validQualIdent name then
     Ok (name, [])
   else
     Err "render: invalid column name: \{name}"
@@ -319,6 +353,38 @@ identChar c =
   || (c >= 65 && c <= 90)     -- A-Z
   || (c >= 97 && c <= 122)    -- a-z
   || c == 95                  -- _
+
+-- | A valid (possibly qualified) identifier for the ON/render path: either a
+--   bare `validIdent`, or `table.column` with EXACTLY one `.` and each side a
+--   `validIdent`.  This does NOT loosen `validIdent` itself (still used for
+--   table names).
+validQualIdent : String -> Bool
+validQualIdent s =
+  let chars = stringToChars s
+  match countDots chars 0 (arrayLength chars) 0
+    0 => validIdent s
+    1 => match splitOnDot s
+           (a, b) => validIdent a && validIdent b
+    _ => False
+
+countDots : Array Char -> Int -> Int -> Int -> Int
+countDots chars i n acc =
+  if i >= n then acc
+  else countDots chars (i + 1) n (if charCode (chars.[i]) == 46 then acc + 1 else acc)
+
+-- Split on the first '.' (caller guarantees exactly one).  Returns (before, after).
+splitOnDot : String -> (String, String)
+splitOnDot s =
+  let chars = stringToChars s
+  let n = arrayLength chars
+  let di = dotIndex chars 0 n
+  (stringSlice 0 di s, stringSlice (di + 1) n s)
+
+dotIndex : Array Char -> Int -> Int -> Int
+dotIndex chars i n =
+  if i >= n then n
+  else if charCode (chars.[i]) == 46 then i
+  else dotIndex chars (i + 1) n
 
 -- ---------------------------------------------------------------------------
 -- compilePred : SqlExpr -> (List Cell -> Bool)
@@ -454,15 +520,40 @@ applyCmp op o = match (op, o)
 --   SQL semantics: ORDER BY is applied BEFORE LIMIT/OFFSET.
 export
 query : Db -> Select -> RowType a -> Result String (List a)
-query db (Select { from = tbl, where_ = w, orderBy = ob, limit = lm, offset = of_ }) rt = do
-  entry <- findTable db tbl
-  let lookup = mkLookup (schemaSql entry)
+query db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_ }) rt =
+  match js
+    [] => do
+      -- Single-table path: materialize IPK-substituted cells and run the shared
+      -- pipeline.  Byte-identical to the pre-join behaviour (joins = []).
+      entry <- findTable db tbl
+      let lookup = mkLookup (schemaSql entry)
+      (pkIdx, rows) <- scanTableRowsIpk db tbl
+      let rowsCells = map (rowCellsWithIpk pkIdx) rows
+      runOverCells lookup w ob lm of_ rt rowsCells
+    _  => do
+      -- Join path: gather every table (from :: joins) as materialized cell rows
+      -- with its base offset, build a combined lookup, nested-loop join on each
+      -- ON predicate, then run the same shared pipeline over the wide rows.
+      infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
+      let lookup = mkJoinLookup (map infoLookup infos)
+      joined <- runJoins lookup infos js
+      runOverCells lookup w ob lm of_ rt joined
+
+joinTable : Join -> String
+joinTable (Join { table = t }) = t
+
+joinOn : Join -> SqlExpr
+joinOn (Join { on = e }) = e
+
+-- Shared post-scan pipeline over already-materialized cell rows: compile WHERE,
+-- filter, sort by ORDER BY, offset/limit, decode.
+runOverCells : (String -> Option Int) -> Option SqlExpr -> List (String, Bool) -> Option Int -> Option Int -> RowType a -> List (List Cell) -> Result String (List a)
+runOverCells lookup w ob lm of_ rt rowsCells = do
   pred <- compileWhere lookup w
-  (pkIdx, rows) <- scanTableRowsIpk db tbl
-  let kept = filterRows pkIdx pred rows
-  let sorted = sortRows pkIdx lookup ob kept
+  let kept = filter pred rowsCells
+  let sorted = sortCells lookup ob kept
   let sliced = applyOffsetLimit of_ lm sorted
-  decodeAll rt pkIdx sliced []
+  decodeCells rt sliced []
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
 mkLookup : String -> (String -> Option Int)
@@ -472,26 +563,101 @@ compileWhere : (String -> Option Int) -> Option SqlExpr -> Result String (List C
 compileWhere _      None     = Ok (_ => True)
 compileWhere lookup (Some e) = compilePred lookup e
 
--- Keep rows (in rowid order) whose IPK-substituted cells pass the predicate.
-filterRows : Option Int -> (List Cell -> Bool) -> List Row -> List Row
-filterRows pkIdx pred rows = filter (row => pred (rowCellsWithIpk pkIdx row)) rows
+-- ---------------------------------------------------------------------------
+-- Join execution: gather tables, combined lookup, nested-loop join
+-- ---------------------------------------------------------------------------
 
--- Sort rows by the ORDER BY key list (if any).  Each key's column name is
--- resolved to an index via `lookup`; an unknown column DROPS just that key
--- (mirroring the old single-column "unknown column ⇒ unsorted" leniency) and
--- the remaining keys still apply.  An empty resolved key list leaves rows
--- unchanged.  Comparison folds left-to-right over the resolved (idx, asc)
--- keys: the first key that doesn't compare `Eq` decides, flipping the
--- operand order per-key when `asc = False`.  Sorting uses SQLite value
--- ordering: NULL < Int/Float (numeric) < Text < Blob.
-sortRows : Option Int -> (String -> Option Int) -> List (String, Bool) -> List Row -> List Row
-sortRows pkIdx lookup keys rows =
+-- Per-table join info: (name, createSql, materialized cell rows, base offset).
+-- The base offset is the number of columns in all PRECEDING tables — so a
+-- column at index `i` in this table sits at `offset + i` in the combined row.
+gatherJoinInfos : Db -> List String -> Int -> List (String, String, List (List Cell), Int) -> Result String (List (String, String, List (List Cell), Int))
+gatherJoinInfos _  []           _   acc = Ok (reverse acc)
+gatherJoinInfos db (name :: rest) off acc = do
+  entry <- findTable db name
+  (pkIdx, rows) <- scanTableRowsIpk db name
+  cols <- columnNames db name
+  let width = length cols
+  let cellsRows = map (rowCellsWithIpk pkIdx) rows
+  gatherJoinInfos db rest (off + width) ((name, schemaSql entry, cellsRows, off) :: acc)
+
+-- Project a full info tuple to the (name, createSql, offset) triple the lookup needs.
+infoLookup : (String, String, List (List Cell), Int) -> (String, String, Int)
+infoLookup (name, sql, _, off) = (name, sql, off)
+
+infoCells : (String, String, List (List Cell), Int) -> List (List Cell)
+infoCells (_, _, cells, _) = cells
+
+-- Build the combined column resolver over the ordered table infos.  A qualified
+-- `table.column` resolves within that table (offset + its column index); a bare
+-- `column` searches tables in `from :: joins` order, first match wins.
+mkJoinLookup : List (String, String, Int) -> (String -> Option Int)
+mkJoinLookup infos = (name =>
+  match countDots (stringToChars name) 0 (stringLength name) 0
+    1 => match splitOnDot name
+           (tbl, col) => lookupQualified infos tbl col
+    _ => lookupBare infos name)
+
+lookupQualified : List (String, String, Int) -> String -> String -> Option Int
+lookupQualified []                          _   _   = None
+lookupQualified ((name, sql, off) :: rest) tbl col =
+  if name == tbl
+  then map (i => off + i) (columnIndex sql col)
+  else lookupQualified rest tbl col
+
+lookupBare : List (String, String, Int) -> String -> Option Int
+lookupBare []                          _    = None
+lookupBare ((_, sql, off) :: rest) col =
+  match columnIndex sql col
+    Some i => Some (off + i)
+    None   => lookupBare rest col
+
+-- Nested-loop the tables left-to-right: start with the `from` table's rows,
+-- then for each join apply its ON predicate (compiled over the COMBINED lookup)
+-- as a cross-product filter with the next table's rows.  The `infos` head is
+-- the `from` table; the tail pairs 1:1 with `joins`.
+runJoins : (String -> Option Int) -> List (String, String, List (List Cell), Int) -> List Join -> Result String (List (List Cell))
+runJoins _      []                  _  = Ok []
+runJoins lookup (headInfo :: tailInfos) js =
+  nestLoop lookup (infoCells headInfo) (zipJoins js tailInfos)
+
+-- Pair each join with its table's info (parallel lists; over-length is dropped).
+zipJoins : List Join -> List (String, String, List (List Cell), Int) -> List (Join, List (List Cell))
+zipJoins []          _                 = []
+zipJoins _           []                = []
+zipJoins (j :: js)   (info :: infos)   = (j, infoCells info) :: zipJoins js infos
+
+nestLoop : (String -> Option Int) -> List (List Cell) -> List (Join, List (List Cell)) -> Result String (List (List Cell))
+nestLoop _      left []                    = Ok left
+nestLoop lookup left ((j, right) :: rest)  = do
+  onPred <- compilePred lookup (joinOn j)
+  nestLoop lookup (crossFilter onPred left right) rest
+
+-- For each left row, for each right row, keep `left ++ right` iff `onPred` holds
+-- on the combined cells.  Preserves left-major, right-minor order.
+crossFilter : (List Cell -> Bool) -> List (List Cell) -> List (List Cell) -> List (List Cell)
+crossFilter _      []           _      = []
+crossFilter onPred (l :: lefts) rights = crossOne onPred l rights ++ crossFilter onPred lefts rights
+
+crossOne : (List Cell -> Bool) -> List Cell -> List (List Cell) -> List (List Cell)
+crossOne _      _ []             = []
+crossOne onPred l (r :: rights) =
+  let combined = l ++ r
+  if onPred combined
+  then combined :: crossOne onPred l rights
+  else crossOne onPred l rights
+
+-- Sort cell rows by the ORDER BY key list (if any).  Each key's column name is
+-- resolved to a combined-row index via `lookup`; an unknown column DROPS just
+-- that key (single-column "unknown ⇒ unsorted" leniency) and the rest apply.
+-- Empty resolved list leaves rows unchanged.  Comparison folds left-to-right;
+-- the first key that isn't `Eq` decides, flipping operand order when `asc = False`.
+-- SQLite value ordering: NULL < Int/Float (numeric) < Text < Blob.
+sortCells : (String -> Option Int) -> List (String, Bool) -> List (List Cell) -> List (List Cell)
+sortCells lookup keys rowsCells =
   let resolved = resolveOrderKeys lookup keys
   match resolved
-    [] => rows
-    _  =>
-      let getCell = (row idx => nthCell (rowCellsWithIpk pkIdx row) idx)
-      sortBy (a b => compareByKeys getCell resolved a b) rows
+    [] => rowsCells
+    _  => sortBy (a b => compareByKeys resolved a b) rowsCells
 
 resolveOrderKeys : (String -> Option Int) -> List (String, Bool) -> List (Int, Bool)
 resolveOrderKeys _      []                = []
@@ -500,14 +666,14 @@ resolveOrderKeys lookup ((col, asc) :: rest) =
     None     => resolveOrderKeys lookup rest
     Some idx => (idx, asc) :: resolveOrderKeys lookup rest
 
-compareByKeys : (Row -> Int -> Cell) -> List (Int, Bool) -> Row -> Row -> Ordering
-compareByKeys _       []                    _ _ = Eq
-compareByKeys getCell ((idx, asc) :: rest) a b =
+compareByKeys : List (Int, Bool) -> List Cell -> List Cell -> Ordering
+compareByKeys []                   _ _ = Eq
+compareByKeys ((idx, asc) :: rest) a b =
   let o = if asc
-          then cellOrder (getCell a idx) (getCell b idx)
-          else cellOrder (getCell b idx) (getCell a idx)
+          then cellOrder (nthCell a idx) (nthCell b idx)
+          else cellOrder (nthCell b idx) (nthCell a idx)
   match o
-    Eq => compareByKeys getCell rest a b
+    Eq => compareByKeys rest a b
     _  => o
 
 -- | Three-way ordering of two Cell values following SQLite's type ordering:
@@ -536,7 +702,7 @@ cellTypeRank (CText _)  = 2
 cellTypeRank (CBlob _)  = 3
 
 -- Drop `offset` rows then keep at most `limit`.
-applyOffsetLimit : Option Int -> Option Int -> List Row -> List Row
+applyOffsetLimit : Option Int -> Option Int -> List (List Cell) -> List (List Cell)
 applyOffsetLimit of_ lm rows =
   let afterOffset = match of_
                       Some n => drop n rows
@@ -545,11 +711,11 @@ applyOffsetLimit of_ lm rows =
     Some n => take n afterOffset
     None   => afterOffset
 
-decodeAll : RowType a -> Option Int -> List Row -> List a -> Result String (List a)
-decodeAll _  _     []           acc = Ok (reverse acc)
-decodeAll rt pkIdx (row :: rest) acc = do
-  v <- rtDecode rt (rowCellsWithIpk pkIdx row)
-  decodeAll rt pkIdx rest (v :: acc)
+decodeCells : RowType a -> List (List Cell) -> List a -> Result String (List a)
+decodeCells _  []             acc = Ok (reverse acc)
+decodeCells rt (cells :: rest) acc = do
+  v <- rtDecode rt cells
+  decodeCells rt rest (v :: acc)
 
 -- ---------------------------------------------------------------------------
 -- Render doctests (the injection-safety regression backbone — no DB).
@@ -606,6 +772,17 @@ decodeAll rt pkIdx (row :: rest) acc = do
 --
 -- > renderShow (render (withOrderBy "name" False (withOrderBy "age" True (selectFrom "users"))))
 -- "SELECT * FROM users ORDER BY age ASC, name DESC ## []"
+--
+-- A 2-table INNER JOIN renders the join clause (with a qualified-column ON)
+-- before WHERE; ON binds precede WHERE binds.
+--
+-- > renderShow (render (withWhere (eGt (eColInt "orders.amount") (eLitI 100)) (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid")) (selectFrom "users"))))
+-- "SELECT * FROM users INNER JOIN orders ON (users.id = orders.uid) WHERE (orders.amount > ?) ## [LInt 100]"
+--
+-- A 3-table chained INNER JOIN renders both join clauses in order, then ORDER BY.
+--
+-- > renderShow (render (withOrderBy "tc.cid" True (innerJoin "tc" (eEq (eColInt "tb.bid") (eColInt "tc.bref")) (innerJoin "tb" (eEq (eColInt "ta.aid") (eColInt "tb.aref")) (selectFrom "ta")))))
+-- "SELECT * FROM ta INNER JOIN tb ON (ta.aid = tb.aref) INNER JOIN tc ON (tb.bid = tc.bref) ORDER BY tc.cid ASC ## []"
 export
 renderShow : Result String (String, List Literal) -> String
 renderShow (Err e) = "ERR \{e}"

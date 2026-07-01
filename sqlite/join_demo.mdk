@@ -1,0 +1,108 @@
+-- | INNER JOIN differential demo (lib.select join path).
+--
+-- Reads a real sqlite3-created DB and runs several `query db (Select{...}) rt`
+-- calls that use `innerJoin`.  Prints one line per typed (wide) row, prefixed
+-- by a per-query label, for diffing against `sqlite3` in
+-- sqlite/test/join_oracle.sh.
+--
+-- Combined-row column order = `from` columns, then each join table's columns in
+-- `joins` order.  These demos ORDER BY qualified columns for determinism.
+--
+-- Usage: medaka build sqlite/join_demo.mdk -o /tmp/jdemo && /tmp/jdemo <db>
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{
+  Select, selectFrom, innerJoin, withWhere, withOrderBy, query,
+  eEq, eGt, eColInt, eLitI,
+}
+import lib.rowtype.{RowType, tInt, tText, t2, t3, tCustom}
+
+-- ---------------------------------------------------------------------------
+-- 2-table join: users(id, name)  INNER JOIN  orders(oid, uid, amount)
+--   combined row = users.id, users.name, orders.oid, orders.uid, orders.amount
+-- ---------------------------------------------------------------------------
+
+data UO = UO { uid : Int, uname : String, oid : Int, oUser : Int, amount : Int }
+
+mkUO : ((Int, String), (Int, Int, Int)) -> Result String UO
+mkUO t = match t
+  ((i, n), (o, u, a)) => Ok (UO { uid = i, uname = n, oid = o, oUser = u, amount = a })
+
+uoRow : RowType UO
+uoRow = tCustom mkUO (t2 (t2 tInt tText) (t3 tInt tInt tInt))
+
+showUO : UO -> String
+showUO r = match r
+  UO { uid = i, uname = n, oid = o, oUser = u, amount = a } => "\{i}|\{n}|\{o}|\{u}|\{a}"
+
+printUO : List UO -> <IO> Unit
+printUO []          = ()
+printUO (r :: rest) = let _ = println (showUO r) in printUO rest
+
+runUO : Db -> String -> Select -> <IO> Unit
+runUO db label sel =
+  let _ = println label
+  match query db sel uoRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printUO rows
+
+-- ---------------------------------------------------------------------------
+-- 3-table join: ta(aid, av) JOIN tb(bid, aref) JOIN tc(cid, bref)
+--   combined row = ta.aid, ta.av, tb.bid, tb.aref, tc.cid, tc.bref
+-- ---------------------------------------------------------------------------
+
+data ABC = ABC { aid : Int, av : Int, bid : Int, aref : Int, cid : Int, bref : Int }
+
+mkABC : ((Int, Int), (Int, Int), (Int, Int)) -> Result String ABC
+mkABC t = match t
+  ((a1, a2), (b1, b2), (c1, c2)) =>
+    Ok (ABC { aid = a1, av = a2, bid = b1, aref = b2, cid = c1, bref = c2 })
+
+abcRow : RowType ABC
+abcRow = tCustom mkABC (t3 (t2 tInt tInt) (t2 tInt tInt) (t2 tInt tInt))
+
+showABC : ABC -> String
+showABC r = match r
+  ABC { aid = a1, av = a2, bid = b1, aref = b2, cid = c1, bref = c2 } =>
+    "\{a1}|\{a2}|\{b1}|\{b2}|\{c1}|\{c2}"
+
+printABC : List ABC -> <IO> Unit
+printABC []          = ()
+printABC (r :: rest) = let _ = println (showABC r) in printABC rest
+
+runABC : Db -> String -> Select -> <IO> Unit
+runABC db label sel =
+  let _ = println label
+  match query db sel abcRow
+    Err e   => println "query error: \{e}"
+    Ok rows => printABC rows
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: jdemo <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      -- Full 2-table equi-join, ordered by orders.oid.
+      let _ = runUO db "-- join users/orders --"
+                (withOrderBy "orders.oid" True
+                  (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                    (selectFrom "users")))
+      -- Same join + a WHERE filter on a joined column (amount > 100).
+      let _ = runUO db "-- join users/orders where amount>100 --"
+                (withOrderBy "orders.amount" True
+                  (withWhere (eGt (eColInt "orders.amount") (eLitI 100))
+                    (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                      (selectFrom "users"))))
+      -- WHERE on a from-table column + ON equi-join, ordered by amount desc.
+      let _ = runUO db "-- join users/orders where users.id=1 --"
+                (withOrderBy "orders.amount" False
+                  (withWhere (eEq (eColInt "users.id") (eLitI 1))
+                    (innerJoin "orders" (eEq (eColInt "users.id") (eColInt "orders.uid"))
+                      (selectFrom "users"))))
+      -- 3-table chained equi-join, ordered by tc.cid.
+      runABC db "-- join ta/tb/tc --"
+        (withOrderBy "tc.cid" True
+          (innerJoin "tc" (eEq (eColInt "tb.bid") (eColInt "tc.bref"))
+            (innerJoin "tb" (eEq (eColInt "ta.aid") (eColInt "tb.aref"))
+              (selectFrom "ta"))))
