@@ -8,6 +8,14 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
+## Current status (2026-06-30) — Float-on-wasm hardening + type-lost-Float ROOT fix (`27969e7`)
+
+Triggered by SQLite aggregates (SUM/AVG) trapping on wasm. Two arcs, all fixpoint/wasm-gated (see EMITTER-GAPS.md "W-SQLITE-4 + type-lost-Float"). Designs: `WASM-FLOAT-TYPING-DESIGN.md`, `SHARED-FLOAT-RESIDUAL-DESIGN.md`. Memory: `project_wasm_float_hardening`.
+
+- **W-SQLITE-4 (wasm signature-anchored Float, `b5eb960`/`2d321af`):** wasm `cexprIsFloat` couldn't see Float through fn param / Float-returning call / record-or-ctor field. Threaded `declSigTypeNames`/`ctorFieldTypeNames` into new registries + `cexprIsFloat` arms. Removed the `faddF` aggregate workaround (`f657831`). Wasm-only → no re-mint.
+- **Type-lost-Float ROOT fix (approach C, `f3d4f71`+`27969e7`):** a monomorphic concrete-Float binop anchored only through a poly-HOF-bound value (`let y = identity 2.5; y+y`, tuple, let-literal) miscompiled — native garbage, wasm trap. Typecheck stamps `RScalar "Float"` (grounded-only; poly `Num a` stays dict-routed) → `CBinPrim` scalar-tag → read by both emitters. Reuses the comparison-operator stamp infra. **No re-mint** (compiler's own IR unchanged; fixpoint C3a vs committed seed). Closed on BOTH backends.
+- **Deferred:** C4 bare-Float-main auto-print (orthogonal); the **wasm polymorphic-Num gap** (`sq x = x*x` — wasm has no dict-dispatched arith path; the NEXT workstream, needs its own design pass — `$mdk_value_add` runtime dispatch vs monomorphization).
+
 ## Current status (2026-06-30) — SQLite UPDATE/DELETE + WasmGC port (`66a8403`)
 
 **Full rowid-faithful CRUD + SQLite running on WasmGC == native.** Both pure-library/wasm-backend → NO seed re-mint / LLVM fixpoint. Designs: `SQLITE-MUTATION-DESIGN.md`, `SQLITE-WASM-DESIGN.md`. Memory: `project_sqlite_mutation_and_wasm`.
