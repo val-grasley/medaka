@@ -19,7 +19,10 @@
 -- Binary-specific primitives:
 --   `beUint n`  — big-endian unsigned n-byte integer
 --   `beSint n`  — big-endian signed n-byte integer (two's-complement)
---   `beFloat64` — 64-bit IEEE 754 float
+--   `beFloat64` — 64-bit IEEE 754 big-endian float
+--   `leUint n`  — little-endian unsigned n-byte integer
+--   `leSint n`  — little-endian signed n-byte integer (two's-complement)
+--   `leFloat64` — 64-bit IEEE 754 little-endian float
 
 import list.{reverse}
 
@@ -336,6 +339,60 @@ beFloat64 : ByteParser Float
 beFloat64 = do
   arr <- takeSlice 8
   pure (bytesToFloat64 arr 0)
+
+-- | Read a little-endian unsigned integer of exactly N bytes (N in 1..8).
+--   Least-significant byte first (mirror of `beUint`).
+--
+-- Examples (little-endian 2-byte: [0x02, 0x01] → 258):
+-- > runByteParser (leUint 2) (arrayFromList [2, 1])
+-- Ok 258
+-- > runByteParser (leUint 1) (arrayFromList [255])
+-- Ok 255
+-- > runByteParser (leUint 4) (arrayFromList [0, 1, 0, 0])
+-- Ok 256
+export
+leUint : Int -> ByteParser Int
+leUint n = ByteParser (leUintGo n 0 0)
+
+leUintGo : Int -> Int -> Int -> Array Int -> Int -> BResult Int
+leUintGo n shift acc input pos
+  | n <= 0                   = BOk acc pos
+  | pos >= arrayLength input = BErr "unexpected end of input" pos
+  | otherwise                = leUintGo (n - 1) (shift + 8) (acc + (input.[pos]) * pow2 shift) input (pos + 1)
+
+-- | Read a little-endian SIGNED integer of exactly N bytes (N in 1..8),
+--   two's-complement.  Mirror of `beSint`: least-significant byte first,
+--   with the sign bit in the MSB of the LAST byte.
+--
+-- > runByteParser (leSint 1) (arrayFromList [255])
+-- Ok -1
+-- > runByteParser (leSint 1) (arrayFromList [127])
+-- Ok 127
+-- > runByteParser (leSint 2) (arrayFromList [255, 255])
+-- Ok -1
+-- > runByteParser (leSint 2) (arrayFromList [1, 0])
+-- Ok 1
+export
+leSint : Int -> ByteParser Int
+leSint n = do
+  u <- leUint n
+  let threshold = pow2 (8 * n - 1)
+  pure (if u >= threshold then u - (threshold * 2) else u)
+
+-- | Read a 64-bit IEEE 754 little-endian float as a Medaka Float.
+--   Consumes exactly 8 bytes in little-endian order; reverses them before
+--   reinterpreting the bit pattern via `bytesToFloat64` (which expects
+--   big-endian byte order).
+--
+-- > runByteParser leFloat64 (arrayFromList [0, 0, 0, 0, 0, 0, 248, 63])
+-- Ok 1.5
+-- > runByteParser leFloat64 (arrayFromList [0, 0, 0, 0, 0, 0, 0, 192])
+-- Ok -2.0
+export
+leFloat64 : ByteParser Float
+leFloat64 = do
+  bytes <- takeBytes 8
+  pure (bytesToFloat64 (arrayFromList (reverse bytes)) 0)
 
 -- ---------------------------------------------------------------------------
 -- Entry point

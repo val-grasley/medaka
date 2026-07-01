@@ -9,8 +9,9 @@
 -- matching decoder expects, so a round-trip `encode → decode` reproduces the
 -- original value exactly.
 
-import byteparser.{runByteParser, beUint, beSint, takeBytes}
+import byteparser.{runByteParser, beUint, beSint, leUint, leSint, takeBytes}
 import mut_array.{MutArray, new, push, toArray}
+import list.{reverse}
 
 -- ---------------------------------------------------------------------------
 -- Builder type
@@ -63,6 +64,33 @@ emitU32BE v buf =
   emitU8 (bitAnd (shiftRight v 8) 255) buf
   emitU8 (bitAnd v 255) buf
 
+-- | Emit a little-endian 2-byte unsigned integer.
+--   Inverse of `leUint 2`.  Byte order is the reverse of `emitU16BE`.
+export
+emitU16LE : Int -> Builder -> <Mut> Unit
+emitU16LE v buf =
+  emitU8 (bitAnd v 255) buf
+  emitU8 (bitAnd (shiftRight v 8) 255) buf
+
+-- | Emit a little-endian 3-byte unsigned integer.
+--   Inverse of `leUint 3`.  Byte order is the reverse of `emitU24BE`.
+export
+emitU24LE : Int -> Builder -> <Mut> Unit
+emitU24LE v buf =
+  emitU8 (bitAnd v 255) buf
+  emitU8 (bitAnd (shiftRight v 8) 255) buf
+  emitU8 (bitAnd (shiftRight v 16) 255) buf
+
+-- | Emit a little-endian 4-byte unsigned integer.
+--   Inverse of `leUint 4`.  Byte order is the reverse of `emitU32BE`.
+export
+emitU32LE : Int -> Builder -> <Mut> Unit
+emitU32LE v buf =
+  emitU8 (bitAnd v 255) buf
+  emitU8 (bitAnd (shiftRight v 8) 255) buf
+  emitU8 (bitAnd (shiftRight v 16) 255) buf
+  emitU8 (bitAnd (shiftRight v 24) 255) buf
+
 -- | Emit a list of byte values, each masked to low 8 bits.
 --   Inverse of `takeBytes (length xs)`.
 export
@@ -101,6 +129,30 @@ emitBeUint 0 _ _ = ()
 emitBeUint n v buf =
   emitBeUint (n - 1) (shiftRight v 8) buf
   emitU8 (bitAnd v 255) buf
+
+-- ---------------------------------------------------------------------------
+-- Little-endian signed integer encoder
+-- ---------------------------------------------------------------------------
+--
+-- Mirror of `emitBeSint`/`emitBeUint`: same two's-complement masking, but
+-- bytes are emitted least-significant-first.
+
+-- | Emit an `nbytes`-wide little-endian two's-complement signed integer.
+--   Inverse of `leSint nbytes`.
+export
+emitLeSint : Int -> Int -> Builder -> <Mut> Unit
+emitLeSint nbytes v buf =
+  let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
+  emitLeUint nbytes unsigned buf
+
+-- | Emit exactly `nbytes` bytes of a non-negative integer in little-endian
+--   order.  Inverse of `leUint nbytes`.  The unsigned mirror of `emitLeSint`.
+export
+emitLeUint : Int -> Int -> Builder -> <Mut> Unit
+emitLeUint 0 _ _ = ()
+emitLeUint n v buf =
+  emitU8 (bitAnd v 255) buf
+  emitLeUint (n - 1) (shiftRight v 8) buf
 
 -- ---------------------------------------------------------------------------
 -- Finalise
@@ -162,6 +214,43 @@ build1 f =
 -- > runByteParser (beUint 4) (build1 (emitU32BE 1048576))
 -- Ok 1048576
 
+-- emitU16LE ↔ leUint 2
+-- > runByteParser (leUint 2) (build1 (emitU16LE 0))
+-- Ok 0
+-- > runByteParser (leUint 2) (build1 (emitU16LE 256))
+-- Ok 256
+-- > runByteParser (leUint 2) (build1 (emitU16LE 65535))
+-- Ok 65535
+-- > runByteParser (leUint 2) (build1 (emitU16LE 258))
+-- Ok 258
+
+-- emitU24LE ↔ leUint 3
+-- > runByteParser (leUint 3) (build1 (emitU24LE 0))
+-- Ok 0
+-- > runByteParser (leUint 3) (build1 (emitU24LE 16777215))
+-- Ok 16777215
+-- > runByteParser (leUint 3) (build1 (emitU24LE 65536))
+-- Ok 65536
+
+-- emitU32LE ↔ leUint 4
+-- > runByteParser (leUint 4) (build1 (emitU32LE 0))
+-- Ok 0
+-- > runByteParser (leUint 4) (build1 (emitU32LE 4294967295))
+-- Ok 4294967295
+-- > runByteParser (leUint 4) (build1 (emitU32LE 1048576))
+-- Ok 1048576
+
+-- LE emits the reverse byte sequence of the matching BE emit:
+-- emitU16LE 0x0102 -> [2, 1]; emitU16BE 0x0102 -> [1, 2].
+-- > runByteParser (takeBytes 2) (build1 (emitU16LE 0x0102))
+-- Ok [2, 1]
+-- > runByteParser (takeBytes 2) (build1 (emitU16BE 0x0102))
+-- Ok [1, 2]
+-- > runByteParser (takeBytes 4) (build1 (emitU32LE 0x01020304))
+-- Ok [4, 3, 2, 1]
+-- > runByteParser (takeBytes 4) (build1 (emitU32BE 0x01020304))
+-- Ok [1, 2, 3, 4]
+
 -- emitBytes ↔ takeBytes
 -- > runByteParser (takeBytes 3) (build1 (emitBytes [10, 20, 30]))
 -- Ok [10, 20, 30]
@@ -210,3 +299,83 @@ build1 f =
 -- Ok 65536
 -- > runByteParser (beUint 4) (build1 (emitBeUint 4 4294967295))
 -- Ok 4294967295
+
+-- emitLeSint ↔ leSint  (1-byte)
+-- > runByteParser (leSint 1) (build1 (emitLeSint 1 127))
+-- Ok 127
+-- > runByteParser (leSint 1) (build1 (emitLeSint 1 (-1)))
+-- Ok -1
+-- > runByteParser (leSint 1) (build1 (emitLeSint 1 (-128)))
+-- Ok -128
+-- > runByteParser (leSint 1) (build1 (emitLeSint 1 0))
+-- Ok 0
+
+-- emitLeSint ↔ leSint  (2-byte)
+-- > runByteParser (leSint 2) (build1 (emitLeSint 2 32767))
+-- Ok 32767
+-- > runByteParser (leSint 2) (build1 (emitLeSint 2 (-32768)))
+-- Ok -32768
+-- > runByteParser (leSint 2) (build1 (emitLeSint 2 (-1)))
+-- Ok -1
+
+-- emitLeSint ↔ leSint  (4-byte)
+-- > runByteParser (leSint 4) (build1 (emitLeSint 4 2147483647))
+-- Ok 2147483647
+-- > runByteParser (leSint 4) (build1 (emitLeSint 4 (-2147483648)))
+-- Ok -2147483648
+-- > runByteParser (leSint 4) (build1 (emitLeSint 4 (-1)))
+-- Ok -1
+
+-- emitLeUint ↔ leUint  (variable-width unsigned)
+-- > runByteParser (leUint 1) (build1 (emitLeUint 1 0))
+-- Ok 0
+-- > runByteParser (leUint 1) (build1 (emitLeUint 1 255))
+-- Ok 255
+-- > runByteParser (leUint 2) (build1 (emitLeUint 2 256))
+-- Ok 256
+-- > runByteParser (leUint 3) (build1 (emitLeUint 3 65536))
+-- Ok 65536
+-- > runByteParser (leUint 4) (build1 (emitLeUint 4 4294967295))
+-- Ok 4294967295
+
+-- ---------------------------------------------------------------------------
+-- Cross round-trip props — LE emit/parse agree with each other and with BE
+-- ---------------------------------------------------------------------------
+--
+-- Values are kept in-width (0..65535 for 16-bit, signed range for the signed
+-- prop) to avoid masking surprises from out-of-range inputs.
+
+-- | emitU16LE → leUint 2 recovers the original value.
+prop "emitU16LE/leUint 2 round-trip" (v : Int) =
+  let w = bitAnd v 65535
+  match runByteParser (leUint 2) (build1 (emitU16LE w))
+    Ok got => got == w
+    Err _  => False
+
+-- | emitU32LE → leUint 4 recovers the original value.
+prop "emitU32LE/leUint 4 round-trip" (v : Int) =
+  let w = bitAnd v 4294967295
+  match runByteParser (leUint 4) (build1 (emitU32LE w))
+    Ok got => got == w
+    Err _  => False
+
+-- | emitLeSint 2 → leSint 2 recovers a value clamped to the 16-bit signed
+--   two's-complement range.
+prop "emitLeSint 2/leSint 2 round-trip" (v : Int) =
+  let w = (bitAnd v 65535) - 32768
+  match runByteParser (leSint 2) (build1 (emitLeSint 2 w))
+    Ok got => got == w
+    Err _  => False
+
+-- | BE emit followed by byte-reversal then LE parse agrees with a direct BE
+--   parse of the same bytes — i.e. reversing a BE encoding and reading it LE
+--   reproduces the original value (16-bit width).
+prop "emitU16BE reversed bytes, leUint agrees with beUint" (v : Int) =
+  let w = bitAnd v 65535
+  match runByteParser (takeBytes 2) (build1 (emitU16BE w))
+    Err _ => False
+    Ok bytes =>
+      let reversedArr = arrayFromList (reverse bytes)
+      match runByteParser (leUint 2) reversedArr
+        Ok got => got == w
+        Err _  => False
