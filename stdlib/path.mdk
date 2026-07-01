@@ -1,0 +1,313 @@
+{- path.mdk — POSIX ("/"-separated) path manipulation.
+
+   Pure string work: no filesystem access, no effects, no `IO`. Every function
+   here treats a path as opaque text and reasons about it lexically, exactly
+   like Go's `path` package or Python's `posixpath` — it never looks at the
+   filesystem, so `normalize`/`dirname`/etc. can't tell a real directory from
+   a dangling symlink.
+
+   **Extension convention (documented choice).** `extname` returns the
+   extension **including** the leading dot (`extname "a.txt" == ".txt"`),
+   matching Go's `path.Ext` and Python's `os.path.splitext` (whose second
+   element also keeps the dot). `extname "a" == ""` (no dot ⇒ no extension),
+   and a leading-dot-only basename is treated as a hidden file with no
+   extension (`extname ".bashrc" == ""`, `extname "..." == ""`) — the dot must
+   have at least one non-dot character before it within the basename.
+
+   **`normalize` convention** mirrors Go's `path.Clean`:
+   - Collapse repeated `/`.
+   - Eliminate `.` segments (except when the whole path is `.`).
+   - Eliminate `..` together with the preceding non-`..` segment; a leading
+     `..` on a relative path is kept (can't be resolved without a root);
+     `..` at the root of an absolute path is dropped (`/..` → `/`).
+   - The empty path normalizes to `"."`.
+   - A trailing `/` is dropped unless the result is `/` itself.
+
+   This module is the public-API sibling of the compiler-private
+   `compiler/support/path.mdk` (which stays a minimal internal helper used by
+   the self-hosted compiler's own module loader) — the two are not merged
+   because `compiler/` deliberately avoids depending on `stdlib/`'s heavier
+   surface for its own bootstrap path. -}
+
+import string.{split, startsWith, endsWith, contains}
+
+-- ── Components ───────────────────────────────────────────────────────────
+
+{- | Directory portion of a path — everything up to (not including) the final
+   `/`. `"."` if the path has no `/`. A trailing `/` is ignored (the last
+   segment before it is still stripped as the basename).
+
+   > dirname "a/b/c.txt"
+   "a/b"
+
+   > dirname "c.txt"
+   "." -}
+export
+dirname : String -> String
+dirname path = dirnameGo path (stringLength path)
+
+dirnameGo : String -> Int -> String
+dirnameGo _ 0 = "."
+dirnameGo path i =
+  if stringSlice (i - 1) i path == "/" then
+    let head = stringSlice 0 (i - 1) path
+    if head == "" then "/" else head
+  else
+    dirnameGo path (i - 1)
+
+{- | Final path component — the text after the last `/` (the whole string if
+   there is none). A trailing `/` yields `""`, matching `path.Base`'s sibling
+   `path.Split` semantics (use `normalize` first if you want `basename` to
+   ignore a trailing slash).
+
+   > basename "a/b/c.txt"
+   "c.txt"
+
+   > basename "c.txt"
+   "c.txt"
+
+   > basename "a/b/"
+   "" -}
+export
+basename : String -> String
+basename path = basenameGo path (stringLength path) (stringLength path)
+
+basenameGo : String -> Int -> Int -> String
+basenameGo path end 0 = stringSlice 0 end path
+basenameGo path end i =
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice i end path
+  else
+    basenameGo path end (i - 1)
+
+{- | Extension of the final component, dot included (`""` if none). See the
+   module doc-comment for the exact dotfile convention.
+
+   > extname "a/b/c.txt"
+   ".txt"
+
+   > extname "README"
+   ""
+
+   > extname ".bashrc"
+   "" -}
+export
+extname : String -> String
+extname path =
+  let b = basename path
+  extnameGo b (stringLength b)
+
+extnameGo : String -> Int -> String
+extnameGo _ 0 = ""
+extnameGo b i =
+  if stringSlice (i - 1) i b == "." then
+    if i - 1 == 0 then "" else stringSlice (i - 1) (stringLength b) b
+  else
+    extnameGo b (i - 1)
+
+{- | Final component with its extension removed (the module-doc convention's
+   `""` extension leaves `stem` unchanged, e.g. dotfiles).
+
+   > stem "a/b/c.txt"
+   "c"
+
+   > stem ".bashrc"
+   ".bashrc" -}
+export
+stem : String -> String
+stem path =
+  let b = basename path
+  let e = extname path
+  if e == "" then b else stringSlice 0 (stringLength b - stringLength e) b
+
+{- | `True` if the final component has extension `ext` (leading dot optional
+   on either side — `hasExtension "txt"` and `hasExtension ".txt"` both match).
+
+   > hasExtension "txt" "a/b.txt"
+   True
+
+   > hasExtension ".md" "a/b.txt"
+   False -}
+export
+hasExtension : String -> String -> Bool
+hasExtension ext path = normalizeExt (extname path) == normalizeExt ext
+
+normalizeExt : String -> String
+normalizeExt e = if startsWith "." e || e == "" then e else "." ++ e
+
+{- | Replace the final component's extension with `ext` (leading dot on `ext`
+   is optional). If the path has no extension, `ext` is appended.
+
+   > withExtension ".md" "a/b.txt"
+   "a/b.md"
+
+   > withExtension "md" "a/b"
+   "a/b.md" -}
+export
+withExtension : String -> String -> String
+withExtension ext path =
+  let base = basename path
+  let e = extname path
+  let newBase = (if e == "" then base else stringSlice 0 (stringLength base - stringLength e) base) ++ normalizeExt ext
+  if contains "/" path then joinPath (dirname path) newBase else newBase
+
+-- ── Joining & splitting ─────────────────────────────────────────────────────
+
+{- | Join two path segments with a single `/`, collapsing any slashes already
+   present at the boundary. An empty first (or second) segment is skipped.
+
+   > joinPath "a/b" "c.txt"
+   "a/b/c.txt"
+
+   > joinPath "a/b/" "/c.txt"
+   "a/b/c.txt"
+
+   > joinPath "" "c.txt"
+   "c.txt" -}
+export
+joinPath : String -> String -> String
+joinPath a b =
+  if a == "" then b
+  else if b == "" then a
+  else stripTrailingSlash a ++ "/" ++ stripLeadingSlash b
+
+stripTrailingSlash : String -> String
+stripTrailingSlash s = if endsWith "/" s then stringSlice 0 (stringLength s - 1) s else s
+
+stripLeadingSlash : String -> String
+stripLeadingSlash s = if startsWith "/" s then stringSlice 1 (stringLength s) s else s
+
+{- | Join every segment in order with `joinPath`; `""` for the empty list.
+
+   > joinAll ["a", "b", "c.txt"]
+   "a/b/c.txt"
+
+   > joinAll []
+   "" -}
+export
+joinAll : List String -> String
+joinAll segs = match segs
+  [] => ""
+  (s :: rest) => joinAllGo s rest
+
+joinAllGo : String -> List String -> String
+joinAllGo acc [] = acc
+joinAllGo acc (s :: rest) = joinAllGo (joinPath acc s) rest
+
+{- | Split a path into its non-empty `/`-separated components (no `.`/`..`
+   resolution — use `normalize` first if you want those collapsed).
+
+   > segments "a/b/c.txt"
+   ["a", "b", "c.txt"]
+
+   > segments "/a//b/"
+   ["a", "b"] -}
+export
+segments : String -> List String
+segments path = filterEmpty (split "/" path)
+
+filterEmpty : List String -> List String
+filterEmpty [] = []
+filterEmpty (s :: rest) = if s == "" then filterEmpty rest else s :: filterEmpty rest
+
+-- ── Predicates ───────────────────────────────────────────────────────────
+
+{- | `True` if the path starts with `/`.
+
+   > isAbsolute "/a/b"
+   True
+
+   > isAbsolute "a/b"
+   False -}
+export
+isAbsolute : String -> Bool
+isAbsolute path = startsWith "/" path
+
+{- | Drop `prefix` from the front of `path` if `path` starts with it as a
+   whole component boundary (i.e. right after `prefix` comes either the end
+   of the string or a `/`); returns `path` unchanged otherwise.
+
+   > stripPrefix "a/b" "a/b/c.txt"
+   "c.txt"
+
+   > stripPrefix "a/x" "a/b/c.txt"
+   "a/b/c.txt" -}
+export
+stripPrefix : String -> String -> String
+stripPrefix prefix path =
+  let plen = stringLength prefix
+  if prefix == "" then
+    path
+  else if not (startsWith prefix path) then
+    path
+  else if stringLength path == plen then
+    ""
+  else if stringSlice plen (plen + 1) path == "/" then
+    stringSlice (plen + 1) (stringLength path) path
+  else
+    path
+
+-- ── Normalization ────────────────────────────────────────────────────────
+
+{- | Lexically simplify a path (Go `path.Clean` semantics — see the module
+   doc-comment): collapses repeated `/`, drops `.` segments, resolves `..`
+   against a preceding real segment, and drops a trailing `/`. The empty path
+   becomes `"."`.
+
+   > normalize "a//b/./c/../d"
+   "a/b/d"
+
+   > normalize "../a/../../b"
+   "../../b"
+
+   > normalize "/../a"
+   "/a"
+
+   > normalize ""
+   "." -}
+export
+normalize : String -> String
+normalize path =
+  let abs = isAbsolute path
+  let cleaned = normGo abs (segments path) []
+  let body = joinAll (reverse cleaned)
+  if abs then
+    "/" ++ body
+  else if body == "" then
+    "."
+  else
+    body
+
+-- `abs`: on an absolute path, a `..` with nothing left to cancel is above the
+-- root and is simply dropped; on a relative path it has no target to cancel
+-- against, so it is kept (e.g. `../../b`).
+normGo : Bool -> List String -> List String -> List String
+normGo _ [] acc = acc
+normGo abs ("." :: rest) acc = normGo abs rest acc
+normGo abs (".." :: rest) acc = match acc
+  [] => if abs then normGo abs rest [] else normGo abs rest [".."]
+  (top :: acc2) => if top == ".." then normGo abs rest (".." :: ".." :: acc2) else normGo abs rest acc2
+normGo abs (s :: rest) acc = normGo abs rest (s :: acc)
+
+reverse : List a -> List a
+reverse xs = reverseGo xs []
+
+reverseGo : List a -> List a -> List a
+reverseGo [] acc = acc
+reverseGo (x :: rest) acc = reverseGo rest (x :: acc)
+
+-- ── Properties ───────────────────────────────────────────────────────────
+
+prop "normalize is idempotent" (p : String) = normalize (normalize p) == normalize p
+
+prop "joinPath then split recovers both non-empty segments" (a : String) (b : String) =
+  if a == "" || b == "" || contains "/" a || contains "/" b then
+    True
+  else
+    segments (joinPath a b) == [a, b]
+
+prop "dirname ++ / ++ basename normalizes back to the original absolute path" (p : String) =
+  if p == "" || not (isAbsolute p) then
+    True
+  else
+    normalize (joinPath (dirname p) (basename p)) == normalize p
