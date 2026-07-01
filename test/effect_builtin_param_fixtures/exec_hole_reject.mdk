@@ -1,0 +1,9 @@
+-- WS-3b EXEC hole-fill on the REAL stdlib builtin `runCommand` ⊄ REJECT.  α
+-- fills <Exec "/usr/bin/ls"> from argv0; the declared bound <Exec "/bin/*">
+-- does not cover "/usr/bin/ls" (different prefix) ⇒ REJECT
+-- (performs <Exec "/usr/bin/ls">).
+runLs : Unit -> <Exec "/bin/*"> Result String (Int, String, String)
+runLs _ = runCommand "/usr/bin/ls" []
+
+main : <IO> Unit
+main = println "should not typecheck"

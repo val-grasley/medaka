@@ -1,0 +1,8 @@
+-- WS-3b ENV hole-fill on the REAL stdlib builtin `getEnv` ⊄ REJECT.  α fills
+-- <Env {"HOME"}> from the literal arg; the declared bound {"PATH"} does not
+-- contain HOME ⇒ {"HOME"} ⊄ {"PATH"} ⇒ REJECT (performs <Env {"HOME"}>).
+readHome : Unit -> <Env {"PATH"}> Option String
+readHome _ = getEnv "HOME"
+
+main : <IO> Unit
+main = println "should not typecheck"

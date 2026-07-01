@@ -1,0 +1,11 @@
+-- WS-3b ENV hole-fill on the REAL stdlib builtin `getEnv` (no local extern
+-- redeclaration, no per-program `effect Env Set` decl — Env is pre-registered
+-- as a Set domain in seedEffectDomains and stdlib/runtime.mdk's `getEnv` now
+-- carries the universal inferred-hole marker `_`).  The call-site α recovers
+-- the literal first arg "HOME" and fills <Env {"HOME"}>.  Declared bound is
+-- the SUPERSET {"HOME","PATH"} ⇒ {"HOME"} ⊆ {"HOME","PATH"} ⇒ ACCEPT.
+readHome : Unit -> <Env {"HOME", "PATH"}> Option String
+readHome _ = getEnv "HOME"
+
+main : <IO> Unit
+main = println "env builtin hole-fill accept"

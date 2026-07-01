@@ -52,14 +52,14 @@ extern writeFileBytes : String -> Array Int -> <FileWrite> Result String Unit
 -- stdout and stderr are captured as strings.  On spawn failure (e.g. ENOENT)
 -- returns Err with the OS error message; exit-code non-zero is still Ok.
 -- Used by a Medaka-hosted medaka build to invoke clang and the emitter.
-extern runCommand : String -> List String -> <Exec> Result String (Int, String, String)
+extern runCommand : String -> List String -> <Exec _> Result String (Int, String, String)
 extern exit : Int -> <Panic> Unit
 extern panic : String -> a
 
 -- io Module 7.  Higher-level ergonomics (eprint/eprintln/readLines) live in
 -- stdlib/io.mdk; these are the irreducible host primitives.
 extern args : Unit -> <Env> List String  -- program args after the script name
-extern getEnv : String -> <Env> Option String  -- environment variable, or None
+extern getEnv : String -> <Env _> Option String  -- environment variable, or None
 extern fileExists : String -> <FileRead> Bool
 extern canonicalizePath : String -> <FileRead> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
 extern appendFile : String -> String -> <FileWrite> Result String Unit
