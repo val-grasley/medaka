@@ -265,18 +265,7 @@ sumCells cells =
   else CInt (sumInt cells)
 
 sumFloat : List Cell -> Float
-sumFloat cells = fold (acc c => faddF acc (cellNumF c)) 0.0 cells
-
--- Float addition through a WasmGC seam.  On the WasmGC backend a `Float` that is
--- a plain function parameter / fold accumulator has an ERASED static type, so the
--- structural `cexprIsFloat` detector treats bare-variable `acc + x` as INTEGER
--- arithmetic and traps ("illegal cast", unboxing a boxed `$float` as an i31).
--- Seeding EACH operand with `+ 0.0` puts a Float literal in the expression so the
--- detector unboxes both operands as `$float` (`a + 0.0 == a`, an identity on the
--- finite non-signed-zero values aggregates sum).  A no-op on the native backend.
--- (See EMITTER-GAPS.md: type-erased Float arithmetic on WasmGC.)
-faddF : Float -> Float -> Float
-faddF a b = (a + 0.0) + (b + 0.0)
+sumFloat cells = fold (acc c => acc + cellNumF c) 0.0 cells
 
 sumInt : List Cell -> Int
 sumInt cells = fold (acc c => acc + cellNumI c) 0 cells
