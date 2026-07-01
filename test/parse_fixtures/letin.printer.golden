@@ -1,4 +1,5 @@
 double a = let s = a + 1 in s * 2
 swap p = let x = p.a in let y = p.b in (y, x)
 stepDown x = let go n = if n == 0 then 0 else go (n - 1) in go x
-counted x = let loop n acc = if n == 0 then acc else loop (n - 1) (acc + 1) in loop x 0
+counted x =
+  let loop n acc = if n == 0 then acc else loop (n - 1) (acc + 1) in loop x 0
