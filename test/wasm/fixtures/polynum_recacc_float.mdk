@@ -1,0 +1,10 @@
+-- A1 (design row 6, named form): a self-recursive poly `Num` accumulator whose `acc + y`
+-- is buried in a match arm — the seeding walker traverses match arms so `acc` is seeded.
+sumList acc xs = match xs
+  [] => acc
+  y :: rest => sumList (acc + y) rest
+
+anchor : Float -> Float
+anchor z = z
+
+main = anchor (sumList 0.0 [1.5, 2.5, 3.0])

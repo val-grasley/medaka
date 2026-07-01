@@ -1,0 +1,9 @@
+-- A1 (poly-`Num`-on-Float): an inferred `Num a` param applied to Float traps on the
+-- old wasm int fallback (`illegal cast`); now routes through $mdk_value_mul. Anchored
+-- through a Float->Float identity so the value main auto-prints as a Float.
+sq x = x * x
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (sq 2.5)

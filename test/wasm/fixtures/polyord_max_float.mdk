@@ -1,0 +1,8 @@
+-- A2 (poly-`Ord`-on-Float sibling): `a > b` on a poly `Ord` param at Float traps on the
+-- old int fallback; now routes through $mdk_value_cmp_num (num-only, no $str).
+myMax a b = if a > b then a else b
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (myMax 3.5 7.5)

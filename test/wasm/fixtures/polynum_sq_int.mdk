@@ -1,0 +1,4 @@
+-- A1 control: the SAME poly `Num a` shape at Int still works (Int is the fallback rep).
+sq x = x * x
+
+main = sq 3

@@ -176,7 +176,7 @@ import backend.wasm_preamble.{
   preambleHeadLines,
   closTypeLines, closApplyLines,
   ioByteImportLines, strTypeLines, ioRuntimeLines, ioStrRuntimeLines,
-  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines, appendRuntimeLines, valueEqRuntimeLines,
+  stderrByteImportLines, stderrRuntimeLines, strLeafRuntimeLines, strConcatRuntimeLines, appendRuntimeLines, valueEqRuntimeLines, valueArithRuntimeLines,
   rngStateGlobalLines, rngRuntimeLines, hashRuntimeLines, hashStringRuntimeLines,
   floatFmtImportLines, floatRuntimeLines, hashFloatRuntimeLines, randomFloatRuntimeLines,
   floatStrImportLines, floatStrRuntimeLines,
@@ -490,6 +490,22 @@ useStrSearchRef = Ref False
 useValueCmpRef : Ref Bool
 useValueCmpRef = Ref False
 
+-- A0/A1 (poly-`Num`-on-Float): the program routes an arithmetic binop through the
+-- runtime value-tag-dispatched $mdk_value_add/sub/mul/div/mod helpers (a polymorphic
+-- `Num a` operand — see numPolyLocalsRef).  Gates valueArithRuntimeLines.
+useValueArithRef : Ref Bool
+useValueArithRef = Ref False
+
+-- A1 (poly-`Num`-on-Float): the pattern-var names bound at the CURRENT function's
+-- POLYMORPHIC `Num`/`Ord` param positions — a param whose declared type head is a type
+-- VARIABLE (lowercase-initial) used arithmetically, OR (no declared sig) any param used
+-- arithmetically.  The wasm peer of native's `isNumPolyParam`/LTNum seed.  A binop with
+-- such an operand routes to the runtime value-dispatch helper instead of the trapping
+-- inline int primitive; the static Int/Float fast paths (declared `Int`/`Float`, literals,
+-- structural Float) are unchanged.  Seeded (and reset to []) per fn in emitRefFnBind.
+numPolyLocalsRef : Ref (List String)
+numPolyLocalsRef = Ref []
+
 -- W11b: the program uses stringToChars / stringFromChars (the UTF-8 codec runtime
 -- $mdk_str_to_chars / $mdk_chars_to_str, which decode/encode between a $str and an
 -- $arr of i31 Char codepoints).  Needs $str + $arr + the strLeaf char encoder.
@@ -623,6 +639,8 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useFloatStrRef False
   let _ = setRef useStrSearchRef False
   let _ = setRef useValueCmpRef False
+  let _ = setRef useValueArithRef False
+  let _ = setRef numPolyLocalsRef []
   let _ = setRef useStrCodecRef False
   let _ = setRef useCharFromCodeRef False
   let _ = setRef useCharClassRef False
@@ -688,6 +706,8 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useFloatStrRef False
   let _ = setRef useStrSearchRef False
   let _ = setRef useValueCmpRef False
+  let _ = setRef useValueArithRef False
+  let _ = setRef numPolyLocalsRef []
   let _ = setRef useStrCodecRef False
   let _ = setRef useCharFromCodeRef False
   let _ = setRef useCharClassRef False
@@ -1717,6 +1737,10 @@ emitRefProgram prog groups =
   -- Needs $str (forced via useStrRef when this is set) + $mdk_str_compare (forced via
   -- useStrSearchRef in emitValueCmpRef).
   let valueCmpRt = if useValueCmpRef.value then valueEqRuntimeLines else []
+  -- A0: runtime value-tag-dispatched arithmetic helpers ($mdk_value_add/…), emitted only
+  -- when a poly-`Num` operand is routed to them (A1).  Reference $float/$boxint (always
+  -- declared) + $mdk_unbox_int/$mdk_box_int (always in ioRuntimeLines).
+  let valueArithRt = if useValueArithRef.value then valueArithRuntimeLines else []
   let stderrRt = if useEPutRef.value then stderrRuntimeLines else []
   let rngRt = if useRngRef.value then rngRuntimeLines else []
   let hashRt = if useHashRef.value then hashRuntimeLines else []
@@ -1750,7 +1774,7 @@ emitRefProgram prog groups =
   let fileBytesRt = if useFileBytesRef.value then fileBytesRuntimeLines else []
   let dataSegs = emitDataSegs ()
   joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
-            ++ fns ++ implFns ++ defaultDefs ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt ++ valueCmpRt
+            ++ fns ++ implFns ++ defaultDefs ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt ++ valueCmpRt ++ valueArithRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
             ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt ++ fileBytesRt ++ floatStrRt
@@ -2267,6 +2291,10 @@ emitRefFnBind prog (CBind name clauses0) =
   -- params before emitting its body, so type-erased Float arith on a param lowers
   -- to f64 ops (mirrors emitImplGroup's `impl … Float` seeding, generalized).
   let _ = setRef floatLocalsRef (floatParamNames name clauses)
+  -- A1 (poly-`Num`-on-Float): seed the polymorphic-`Num`/`Ord` param names so this fn's
+  -- bare-CVar arithmetic on a type-var param routes to the runtime value-dispatch helper
+  -- (mirrors floatLocalsRef, and native's LTNum seed).  [] resets for monomorphic fns.
+  let _ = setRef numPolyLocalsRef (numPolyParamNames name clauses)
   let arity = clauseArityOf clauses
   let params = synthParams arity
   -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level NON-DICT self-recursive define whose
@@ -3020,6 +3048,8 @@ emitImplGroup prog (ImplG method tag arity clauses) =
       -- so the body's bare-CVar arithmetic lowers to f64.  `signum`/`abs`/`negate`/`add`/…
       -- all take Float args.  Reset for every other impl (Int/String/etc. stay i31).
       let _ = setRef floatLocalsRef (if tag == "Float" then flatMap clausePatVars clauses else [])
+      -- A1: impl-method params are concrete-typed (the impl tag), never poly-`Num`; reset.
+      let _ = setRef numPolyLocalsRef []
       -- layer-18: arm the plain-tail impl-method return_call context for THIS impl, so a
       -- saturated tail-position self-call (`fold f (f z x) xs` → `CMethod "fold" (RKey
       -- "List")`) lowers to `return_call $mdk_impl_List_fold` (constant stack) rather than a
@@ -3062,6 +3092,87 @@ floatPatsAt : List String -> List Pat -> List String
 floatPatsAt (ty::tys) ((PVar x)::ps) = (if ty == "Float" then [x] else []) ++ floatPatsAt tys ps
 floatPatsAt (_::tys) (_::ps) = floatPatsAt tys ps
 floatPatsAt _ _ = []
+
+-- A1 (poly-`Num`-on-Float): the pattern-var names bound at this fn's POLYMORPHIC
+-- `Num`/`Ord` param positions — the wasm peer of native's `isNumPolyParam`.  Two cases,
+-- matching native's `isNumPolyParam` (dsig Some → type-var head; dsig None → True):
+--   • declared sig present (declParamTypesOf non-empty): a param whose declared type
+--     head is a type VARIABLE (lowercase-initial, `Num a => a -> a`) and used arithmetically.
+--   • no declared sig: any param USED arithmetically (`sq x = x*x`) — the operand's type
+--     is only known at runtime, so it must dispatch (native seeds LTNum identically).
+-- A param declared with a concrete scalar (`: Int`/`: Float`) stays on the static fast
+-- path.  Unioned across clauses.  `paramUsedInArith` keeps `id x = x` off the list.
+numPolyParamNames : String -> List CClause -> <Mut> List String
+numPolyParamNames name clauses = match declParamTypesOf name
+  [] => dedupKeep (flatMap (noSigNumPolyPatVars) clauses)
+  ptys => dedupKeep (flatMap (numPolyClausePatVars ptys) clauses)
+
+-- declared-sig case: collect PVar params whose declared type head is a type var and
+-- which are used arithmetically in the clause body.
+numPolyClausePatVars : List String -> CClause -> List String
+numPolyClausePatVars ptys (CClause pats body) = numPolyPatsAt ptys pats body
+
+numPolyPatsAt : List String -> List Pat -> CExpr -> List String
+numPolyPatsAt (ty::tys) ((PVar x)::ps) body =
+  (if isTypeVarName ty && paramUsedInNumBinop x body then [x] else []) ++ numPolyPatsAt tys ps body
+numPolyPatsAt (_::tys) (_::ps) body = numPolyPatsAt tys ps body
+numPolyPatsAt _ _ _ = []
+
+-- no-declared-sig case: every PVar param used in an arithmetic OR comparison binop is
+-- poly-`Num`/`Ord` (its type is resolved only at runtime, so the op must dispatch).
+noSigNumPolyPatVars : CClause -> List String
+noSigNumPolyPatVars (CClause pats body) =
+  flatMap (p => match p
+    PVar x => if paramUsedInNumBinop x body then [x] else []
+    _ => []) pats
+
+-- A1 (design row 6): a lambda's PVar params used in a num/cmp binop — the lambda has no
+-- declared sig, so like the no-sig fn case its arith-used params are polymorphic `Num`.
+lamPolyParamNames : List Pat -> CExpr -> List String
+lamPolyParamNames pats body =
+  flatMap (p => match p
+    PVar x => if paramUsedInNumBinop x body then [x] else []
+    _ => []) pats
+
+-- a type-variable head name is lowercase-initial (`a`, `elem`); a concrete type
+-- (`Int`, `Float`, a user type) is uppercase-initial (peer of native's isTypeVarName).
+isTypeVarName : String -> Bool
+isTypeVarName n =
+  if stringLength n == 0 then False
+  else let f = stringSlice 0 1 n in "a" <= f && f <= "z"
+
+isVarNamed : String -> CExpr -> Bool
+isVarNamed p (CVar x _) = p == x
+isVarNamed _ _ = False
+
+-- True when param `p` appears as a direct operand of an arithmetic OR comparison binop
+-- anywhere in `body` (peer of native's paramUsedInArith, extended to `Ord` compares so
+-- the poly-`Ord`-on-Float sibling `myMax a b = if a > b …` is seeded).  Structural walk.
+paramUsedInNumBinop : String -> CExpr -> Bool
+paramUsedInNumBinop p (CBinPrim op l r _) =
+  if (isArithOp op || isCmpOp op) && (isVarNamed p l || isVarNamed p r) then True
+  else paramUsedInNumBinop p l || paramUsedInNumBinop p r
+paramUsedInNumBinop p (CUnOp _ x) = paramUsedInNumBinop p x
+paramUsedInNumBinop p (CIf c t f) = paramUsedInNumBinop p c || paramUsedInNumBinop p t || paramUsedInNumBinop p f
+paramUsedInNumBinop p (CLet _ _ e1 e2) = paramUsedInNumBinop p e1 || paramUsedInNumBinop p e2
+paramUsedInNumBinop p (CLetGroup _ b) = paramUsedInNumBinop p b
+paramUsedInNumBinop p (CBlock stmts) = anyNumStmt p stmts
+paramUsedInNumBinop p (CApp f a) = paramUsedInNumBinop p f || paramUsedInNumBinop p a
+-- match bodies: a param used arithmetically inside an arm (`sumOne acc xs = match xs {…
+-- y::rest => acc + y}`) must be seeded, so walk the scrutinee + every arm body.
+paramUsedInNumBinop p (CMatch scrut arms) = paramUsedInNumBinop p scrut || anyNumArm p arms
+paramUsedInNumBinop p (CDecision scrut arms _) = paramUsedInNumBinop p scrut || anyNumArm p arms
+paramUsedInNumBinop _ _ = False
+
+anyNumArm : String -> List CArm -> Bool
+anyNumArm _ [] = False
+anyNumArm p ((CArm _ _ body)::rest) = paramUsedInNumBinop p body || anyNumArm p rest
+
+anyNumStmt : String -> List CStmt -> Bool
+anyNumStmt _ [] = False
+anyNumStmt p ((CSExpr e)::rest) = paramUsedInNumBinop p e || anyNumStmt p rest
+anyNumStmt p ((CSLet _ _ e)::rest) = paramUsedInNumBinop p e || anyNumStmt p rest
+anyNumStmt p (_::rest) = anyNumStmt p rest
 
 -- impl bodies use the SAME clause emission as top-level fns; the synthetic fn
 -- "name" (used only for the internal clause-block labels) is the impl symbol.
@@ -3595,11 +3706,29 @@ emitBinRef prog env d op l r tag =
   -- `coalesceStep`'s `n == name`).  Route through the runtime-shape-dispatched
   -- $mdk_value_eq / $mdk_value_cmp ($str → byte compare; immediate → identity/i31).
   -- Pure-int programs (no $str rep) keep the i31 fast path below.
+  -- A1 (poly-`Ord`-on-Float sibling): a comparison whose operand is a polymorphic
+  -- `Num`/`Ord` param must dispatch on the operand's runtime shape (a boxed $float would
+  -- otherwise trap in the int fallback's $mdk_unbox_int ref.cast).  Two routes:
+  --   • string-using program (useStrRef, set by the pre-scan → $str declared): the
+  --     $str-capable $mdk_value_cmp / $mdk_value_eq, now with $float arms (A2), handle
+  --     String, Int AND Float — one path for a poly operand that could be any of them.
+  --   • string-free program: the num-only $mdk_value_cmp_num / $mdk_value_eq_num (A0),
+  --     which need only $float/$boxint (always declared) — no $str, so no type-section
+  --     dependency on the pre-scan's useStrRef (which body emission cannot retroactively set).
   else if isCmpOp op && useStrRef.value then
     let _ = setRef useValueCmpRef True
     let _ = setRef useStrSearchRef True
     let _ = setRef useStrLeafRef True
     emitValueCmpRef prog env d op l r
+  else if isCmpOp op && isPolyNumBinop l r then
+    let _ = setRef useValueArithRef True
+    emitValueCmpNumRef prog env d op l r
+  -- A1 (poly-`Num`-on-Float): arithmetic whose operand is a polymorphic `Num` param
+  -- routes through the runtime value-tag-dispatched $mdk_value_add/… helper (A0) instead
+  -- of the trapping inline int primitive.  The static Int/Float fast paths are unchanged.
+  else if isArithOp op && isPolyNumBinop l r then
+    let _ = setRef useValueArithRef True
+    emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["call $mdk_value_" ++ valueArithName op]
   else
     -- layer-17 §2.1: Int arithmetic/comparison computes in i64 over the box/unbox
     -- seam ($mdk_unbox_int / $mdk_box_int), so values outside ±2^30 no longer
@@ -3608,6 +3737,25 @@ emitBinRef prog env d op l r tag =
     let ri = emitRefExpr prog env d r ++ ["call $mdk_unbox_int"]
     if isCmpOp op then li ++ ri ++ [wasmBinOp64 op, "ref.i31"]
     else li ++ ri ++ [wasmBinOp64 op, "call $mdk_box_int"]
+
+-- A1: a binop with a POLYMORPHIC `Num`/`Ord` operand — a bare CVar bound to a param
+-- seeded into numPolyLocalsRef.  Only such operands route to the runtime value-dispatch
+-- helpers; literals / computed sub-expressions / concrete-scalar params stay on the fast path.
+isPolyNumBinop : CExpr -> CExpr -> <Mut> Bool
+isPolyNumBinop l r = isPolyNumOperand l || isPolyNumOperand r
+
+isPolyNumOperand : CExpr -> <Mut> Bool
+isPolyNumOperand (CVar x _) = contains x numPolyLocalsRef.value
+isPolyNumOperand _ = False
+
+-- A0: arithmetic op → the $mdk_value_<name> helper suffix.
+valueArithName : String -> String
+valueArithName "+" = "add"
+valueArithName "-" = "sub"
+valueArithName "*" = "mul"
+valueArithName "/" = "div"
+valueArithName "%" = "mod"
+valueArithName op = panic ("wasm A0: not a value-arith op '" ++ op ++ "'")
 
 -- layer-9: emit a runtime-shape-dispatched comparison.  `==`/`!=` go through
 -- $mdk_value_eq (-> i31 Bool); ordering ops call $mdk_value_cmp (-> plain i32 -1/0/1)
@@ -3622,6 +3770,20 @@ emitValueCmpRef prog env d op l r =
   else
     -- ordering: $mdk_value_cmp -> i32 -1/0/1, then compare against 0.
     lv ++ rv ++ ["call $mdk_value_cmp", "i32.const 0", wasmBinOp op, "ref.i31"]
+
+-- A1 (poly-`Ord`-on-Float, string-free program): the num-only peer of emitValueCmpRef.
+-- `==`/`!=` go through $mdk_value_eq_num (-> i31 Bool); ordering through $mdk_value_cmp_num
+-- (-> i32 -1/0/1).  Both dispatch $float vs int (i31/$boxint) ONLY — no $str — so they
+-- need no pre-scan-set type; gated by useValueArithRef alongside the arith helpers.
+emitValueCmpNumRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> <Mut> List String
+emitValueCmpNumRef prog env d op l r =
+  let lv = emitRefExpr prog env d l
+  let rv = emitRefExpr prog env d r
+  if op == "==" then lv ++ rv ++ ["call $mdk_value_eq_num"]
+  else if op == "!=" then
+    lv ++ rv ++ ["call $mdk_value_eq_num", "ref.cast (ref i31)", "i31.get_u", "i32.eqz", "ref.i31"]
+  else
+    lv ++ rv ++ ["call $mdk_value_cmp_num", "i32.const 0", wasmBinOp op, "ref.i31"]
 
 
 -- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  `%` has no
@@ -5487,7 +5649,14 @@ emitLamDefine prog lamName pats captured body =
   let savedDisp = wDispCtxRef.value
   let _ = setRef wTrmcCtxRef WTrmcOff
   let _ = setRef wDispCtxRef WDispOff
+  -- A1 (poly-`Num`-on-Float, design row 6): a lambda's own params carry no declared
+  -- sig, so its arith-used params are polymorphic `Num` (the arith-section accumulator
+  -- `a x => a + x` in `fold`).  Seed them (unioned with the enclosing poly set, whose
+  -- captured vars may also be poly) so the lambda body routes to the value helpers.
+  let savedNumPoly = numPolyLocalsRef.value
+  let _ = setRef numPolyLocalsRef (dedupKeep (lamPolyParamNames pats body ++ savedNumPoly))
   let bodyLines = emitRefTail prog bodyEnv arity body
+  let _ = setRef numPolyLocalsRef savedNumPoly
   let _ = setRef wTrmcCtxRef savedTrmc
   let _ = setRef wDispCtxRef savedDisp
   ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]

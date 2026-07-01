@@ -1,0 +1,7 @@
+-- A1 (poly-`Num`-on-Float): `+` on a `Num a` param at Float (was TRAP) -> $mdk_value_add.
+addSelf z = z + z
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (addSelf 4.5)

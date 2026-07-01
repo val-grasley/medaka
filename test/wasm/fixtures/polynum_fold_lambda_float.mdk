@@ -1,0 +1,11 @@
+-- A1 (design row 6): a poly `Num` LAMBDA accumulator (`a x => a + x`) applied at Float —
+-- the lambda has no signature, so its arith param is seeded poly and its body routes to
+-- $mdk_value_add.  Was TRAP (`illegal cast`) on the old int fallback.
+myFold f acc xs = match xs
+  [] => acc
+  y :: rest => myFold f (f acc y) rest
+
+anchor : Float -> Float
+anchor z = z
+
+main = anchor (myFold (a x => a + x) 0.0 [1.5, 2.5, 3.0])

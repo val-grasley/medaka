@@ -1,0 +1,7 @@
+-- A0 `%` on Float through the runtime helper (a - b*trunc(a/b) == native mdk_num_mod).
+modd a b = a % b
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (modd 7.5 2.0)

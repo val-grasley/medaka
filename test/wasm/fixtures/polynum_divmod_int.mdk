@@ -1,0 +1,6 @@
+-- A0 control: div/`%` on Int via the SAME poly path route through the value helper's int
+-- arm (i64.div_s / i64.rem_s) — byte-identical to native and to the static int path.
+divv a b = a / b
+modd a b = a % b
+
+main = divv 17 5 + modd 17 5

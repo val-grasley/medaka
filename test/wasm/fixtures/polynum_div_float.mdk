@@ -1,0 +1,7 @@
+-- A0 div on Float through the runtime helper ($mdk_value_div f64.div) — match native.
+divv a b = a / b
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (divv 7.5 2.0)

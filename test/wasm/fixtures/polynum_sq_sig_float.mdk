@@ -1,0 +1,9 @@
+-- A1: an EXPLICIT `Num a =>` signature at Float (the explicit-dict sig did not rescue
+-- wasm before this change; row 3 of the design table).
+sq : Num a => a -> a
+sq x = x * x
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (sq 2.5)

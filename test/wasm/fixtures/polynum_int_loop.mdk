@@ -1,0 +1,5 @@
+-- A1 control: a hot monomorphic int loop (no signature) stays correct — its poly-seeded
+-- params route through the value helpers' int arm, computing the same result as before.
+sumTo n acc = if n <= 0 then acc else sumTo (n - 1) (acc + n)
+
+main = sumTo 100 0
