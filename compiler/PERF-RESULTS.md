@@ -4,6 +4,20 @@ Running log of measured native-backend performance. Companion to
 `compiler/PERF-SCOPE.md` (the scoping/plan). Each entry: what changed, the
 gate state, and the numbers (min-of-N, single-threaded, quiet machine).
 
+> **STALE-NUMBER WARNING (2026-07-02).** The "2.12 s self-compile" TL;DR below is
+> from 2026-06-11 and no longer holds — the compiler + stdlib have grown, so the
+> emitter self-compile (emitter emitting its own `llvm_emit_modules_main` graph)
+> now measures **~5.4 s** on a 10-core M-series box (was ~6.1 s before the
+> 2026-07-02 session's two O(N²)→O(log n) fixes: `sigLookup` global-sig index in
+> `llvm_emit.mdk` + `private_mangle.mdk`'s rename map List→OrdMap). The dominant
+> cost is now Boehm GC (~40% of emit; the emitter churns ~15 GB transient garbage
+> over a ~100 MB live set → ~110 collections). Levers found that session:
+> `GC_INITIAL_HEAP_SIZE=1 GB` cuts collections ~110→9 (emit ~6.1→~4.7 s) but ONLY
+> helps SERIAL emitter runs (`make medaka` 16→11 s) — it commits the full heap, so
+> 10 concurrent oracle builds hit memory pressure and it backfires. Build/test
+> harness parallelization (NOT in this file — see `test/build_oracles.sh`,
+> `test/run_gates.sh`): oracle build 327→55 s, diff-gate suite 125→~34 s.
+
 ---
 
 ## TL;DR (overnight session 2026-06-10 → 11)
