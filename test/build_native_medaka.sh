@@ -31,6 +31,15 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CC="${CC:-clang}"
 STACK_SIZE="${STACK_SIZE:-0x20000000}"
+
+# Boehm collects when allocation since the last GC reaches ~heap size; the emitter
+# churns ~15 GB of transient garbage over a ~100 MB live set, so with the default
+# initial heap it collects ~110 times (~4 s of a ~6 s self-compile emit). A large
+# initial heap defers that to ~9 collections. These emitter runs are SERIAL (stage
+# A then B), so the extra RSS (~1 GB) doesn't contend. Measured: make medaka 16s→11s.
+# (Not applied to the parallel oracle build, where 10× the RSS causes memory
+# pressure that erases the win — see test/build_oracles.sh.) User env value wins.
+export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-1073741824}"
 OUT="${1:-$ROOT/medaka}"
 EMITTER="$ROOT/medaka_emitter"
 RT="$ROOT/runtime/medaka_rt.c"
