@@ -75,6 +75,13 @@ CC="${CC:-clang}"
 
 STACK_SIZE="${STACK_SIZE:-0x20000000}"
 
+# The fixpoint does three big SELF-COMPILE emits (REF, IR1, IR2) one after another
+# — the emitter churns ~15 GB transient garbage over a ~100 MB live set, so a large
+# GC heap defers collections (~110→9) and cuts each emit ~30%. These runs are
+# serial (no concurrency), so the extra RSS doesn't contend. Measured 27s→22s.
+# User env value wins.
+export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-1073741824}"
+
 [ -f "$SEED_GZ" ] || { echo "missing seed: $SEED_GZ (mint with test/refresh_seed.sh)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 command -v gunzip >/dev/null 2>&1 || { echo "gunzip not found (needed to expand the seed)"; exit 2; }
