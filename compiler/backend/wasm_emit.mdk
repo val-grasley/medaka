@@ -1569,7 +1569,7 @@ appUsesClosures fnNames fnArs ctorArs locals app =
     CVar f _ =>
       if contains f locals then True   -- a shadowing local/param head → indirect (closure) call
       else if contains f fnNames then
-        not (arityOf fnArs f == listLen args) || argsClos
+        arityOf fnArs f != listLen args || argsClos
       else if isSome (lookupAssoc f ctorArs) || isReservedCtor f then argsClos
       else True   -- a local/param/let-bound head → an indirect (closure) call
     _ => True
@@ -1586,7 +1586,7 @@ arityOf ars f = match lookupAssoc f ars
 -- Option/Result/Ordering ctors only enter the table when actually used, and a
 -- bare scalar program (the W2 corpus) has an empty ctor table + no CDecision.
 programUsesAdt : List CBind -> List (String, Int) -> Bool
-programUsesAdt groups ctorArs = not (listLen ctorArs == 0)
+programUsesAdt groups ctorArs = listLen ctorArs != 0
   || anyBindHasDecision groups
 
 anyBindHasDecision : List CBind -> Bool
@@ -3996,7 +3996,7 @@ emitVarRefPlain prog env d x =
      "array.new_fixed $argarr 0", "struct.new $clos"]
   -- W9: a bare prelude reference synthesized post-mangle (string-interp / `!=`) →
   -- resolve to its `core__`-mangled def and emit the closure wrapper for it.
-  else if not (canonFn prog x == x) then emitVarRef prog env d (canonFn prog x)
+  else if canonFn prog x != x then emitVarRef prog env d (canonFn prog x)
   -- W9: a str/leaf extern referenced as a VALUE (point-free / passed as an arg) —
   -- build an eta closure wrapping a lifted `$mdk_ext_<name>` that calls the extern
   -- (peer of the LLVM emitExternEtaClosure).  env = [] (externs capture nothing).
@@ -7043,7 +7043,7 @@ bindConFieldsGo prog env c (p::rest) v i =
 
 -- top-level binding classification (W2 + W3, identical).
 isValBind : CBind -> Bool
-isValBind (CBind name [CClause [] _]) = not (name == "main")
+isValBind (CBind name [CClause [] _]) = name != "main"
 isValBind _ = False
 
 isFnBind : CBind -> Bool

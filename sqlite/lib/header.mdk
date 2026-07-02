@@ -59,10 +59,9 @@ magicBytes =
 -- | Compare a parsed byte list with the expected magic; fail with a message.
 checkMagic : List Int -> ByteParser Unit
 checkMagic got =
-  if listIntEq got magicBytes then
-    pure ()
-  else
-    failWith "not a SQLite database (bad magic string)"
+  unless
+    (listIntEq got magicBytes)
+    (failWith "not a SQLite database (bad magic string)")
 
 -- Structural equality on List Int (avoids importing list/core derive here).
 listIntEq : List Int -> List Int -> Bool

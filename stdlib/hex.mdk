@@ -122,7 +122,7 @@ export decode : String -> Result String (Array Int)
 decode s =
   let chars = toChars s
   let n = arrayLength chars
-  if n % 2 != 0 then Err "hex.decode: odd-length input"
+  if isOdd n then Err "hex.decode: odd-length input"
   else match decodeGo chars 0 n []
     Ok bytes => Ok (arrayFromList bytes)
     Err e => Err e

@@ -1,0 +1,8 @@
+-- Fixture for rule-double-reverse autofix.
+
+dbl xs = xs
+dblApp f xs = f xs
+
+-- NEGATIVE: must stay untouched.
+single xs = reverse xs
+mapped f xs = reverse (map f xs)

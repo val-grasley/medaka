@@ -1,0 +1,14 @@
+-- Fixture for rule-bool-simplify autofix.
+
+ifTF c = if c then True else False
+ifFT c = if c then False else True
+eqT x = x == True
+eqF x = x == False
+neT x = x != True
+neF x = x != False
+notNot x = not (not x)
+
+-- NEGATIVE: must stay untouched.
+negOrShape c e = if c then True else e
+negBothLit = True == False
+negSingle x = not x

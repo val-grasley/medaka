@@ -79,7 +79,7 @@ serialOf n
   | n == 10 = Err "reserved serial type 10"
   | n == 11 = Err "reserved serial type 11"
   | n >= 12 =
-    if n % 2 == 0 then
+    if isEven n then
       Ok (STBlob ((n - 12) / 2))
     else
       Ok (STText ((n - 13) / 2))

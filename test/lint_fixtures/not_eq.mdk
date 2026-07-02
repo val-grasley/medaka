@@ -1,0 +1,24 @@
+-- Fixture for rule-not-eq: negated equality `not (a == b)` / `not (a != b)`
+-- (and the unary-`!` forms) → `a != b` / `a == b`.
+
+-- POSITIVE: `not` applied to `==` / `!=`.
+notEq a b = not (a == b)
+notNe a b = not (a != b)
+
+-- POSITIVE: unary `!` form.
+bangEq a b = !(a == b)
+bangNe a b = !(a != b)
+
+-- POSITIVE: nested anywhere in a body.
+nested a b c = if not (a == b) then c else a
+
+-- NEGATIVE: ordering complements are unsound for Float (NaN) — `<`/`>` excluded.
+negLt a b = not (a < b)
+negGt a b = not (a > b)
+negLe a b = not (a <= b)
+
+-- NEGATIVE: `not` of a non-comparison is a real negation, not this idiom.
+negFlag flag = not flag
+
+-- NEGATIVE: a bare equality is already canonical.
+negPlain a b = a == b

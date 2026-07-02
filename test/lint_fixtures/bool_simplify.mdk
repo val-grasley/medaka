@@ -1,0 +1,28 @@
+-- Fixture for rule-bool-simplify: redundant boolean shapes.
+
+-- POSITIVE: if selecting the two bool literals.
+ifTF c = if c then True else False
+ifFT c = if c then False else True
+
+-- POSITIVE: comparison against a bool literal (either side).
+eqT x = x == True
+eqF x = x == False
+neT x = x != True
+neF x = x != False
+tEq x = True == x
+
+-- POSITIVE: double negation (`not`/`!`).
+notNot x = not (not x)
+bangBang x = !(!x)
+
+-- NEGATIVE: `if c then True else e` (e not a literal) — excluded (short-circuit).
+negOrShape c e = if c then True else e
+
+-- NEGATIVE: only ONE branch is a literal.
+negOneLit c t = if c then t else False
+
+-- NEGATIVE: comparison of two bool literals is left alone.
+negBothLit = True == False
+
+-- NEGATIVE: single negation is not redundant.
+negSingle x = not x

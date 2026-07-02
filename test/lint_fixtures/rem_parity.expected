@@ -1,0 +1,12 @@
+warning: [rule-missing-signature] top-level 'evenFlipped' has no type signature — add a `evenFlipped : …` declaration
+warning: [rule-missing-signature] top-level 'evenTest' has no type signature — add a `evenTest : …` declaration
+warning: [rule-missing-signature] top-level 'isEven' has no type signature — add a `isEven : …` declaration
+warning: [rule-missing-signature] top-level 'isOdd' has no type signature — add a `isOdd : …` declaration
+warning: [rule-missing-signature] top-level 'negOne' has no type signature — add a `negOne : …` declaration
+warning: [rule-missing-signature] top-level 'negThree' has no type signature — add a `negThree : …` declaration
+warning: [rule-missing-signature] top-level 'nested' has no type signature — add a `nested : …` declaration
+warning: [rule-missing-signature] top-level 'oddTest' has no type signature — add a `oddTest : …` declaration
+warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test — rewrite as 'isOdd n'

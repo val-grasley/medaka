@@ -1,0 +1,22 @@
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'c'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'not c'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'not x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'not x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-missing-signature] top-level 'bangBang' has no type signature — add a `bangBang : …` declaration
+warning: [rule-missing-signature] top-level 'eqF' has no type signature — add a `eqF : …` declaration
+warning: [rule-missing-signature] top-level 'eqT' has no type signature — add a `eqT : …` declaration
+warning: [rule-missing-signature] top-level 'ifFT' has no type signature — add a `ifFT : …` declaration
+warning: [rule-missing-signature] top-level 'ifTF' has no type signature — add a `ifTF : …` declaration
+warning: [rule-missing-signature] top-level 'neF' has no type signature — add a `neF : …` declaration
+warning: [rule-missing-signature] top-level 'neT' has no type signature — add a `neT : …` declaration
+warning: [rule-missing-signature] top-level 'negBothLit' has no type signature — add a `negBothLit : …` declaration
+warning: [rule-missing-signature] top-level 'negOneLit' has no type signature — add a `negOneLit : …` declaration
+warning: [rule-missing-signature] top-level 'negOrShape' has no type signature — add a `negOrShape : …` declaration
+warning: [rule-missing-signature] top-level 'negSingle' has no type signature — add a `negSingle : …` declaration
+warning: [rule-missing-signature] top-level 'notNot' has no type signature — add a `notNot : …` declaration
+warning: [rule-missing-signature] top-level 'tEq' has no type signature — add a `tEq : …` declaration

@@ -7862,7 +7862,7 @@ ppConName n = match tupleTagArity n
 -- message.  A TVar-headed other side returns False (it can still bind).
 tupleUnifyClash : Mono -> Mono -> <Mut> Bool
 tupleUnifyClash a b = match (tupleSpine a, tupleSpine b)
-  (Some xs, Some ys) => not (listLen xs == listLen ys)
+  (Some xs, Some ys) => listLen xs != listLen ys
   (Some _, None) => monoSpineHeadIsCon b
   (None, Some _) => monoSpineHeadIsCon a
   (None, None) => False

@@ -1,0 +1,6 @@
+warning: [rule-double-reverse] `reverse (reverse …)` is a no-op — rewrite as 'f xs'
+warning: [rule-double-reverse] `reverse (reverse …)` is a no-op — rewrite as 'xs'
+warning: [rule-missing-signature] top-level 'dbl' has no type signature — add a `dbl : …` declaration
+warning: [rule-missing-signature] top-level 'dblApp' has no type signature — add a `dblApp : …` declaration
+warning: [rule-missing-signature] top-level 'mapped' has no type signature — add a `mapped : …` declaration
+warning: [rule-missing-signature] top-level 'single' has no type signature — add a `single : …` declaration

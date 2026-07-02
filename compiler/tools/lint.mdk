@@ -16,6 +16,7 @@
 
 import frontend.ast.{
   Loc(..),
+  Lit(..),
   Ty(..),
   Pat(..),
   RecPatField(..),
@@ -133,6 +134,21 @@ ruleNameDestructureInParam = "rule-destructure-in-param"
 ruleNameMissingSignature : String
 ruleNameMissingSignature = "rule-missing-signature"
 
+ruleNameNotEq : String
+ruleNameNotEq = "rule-not-eq"
+
+ruleNameBoolSimplify : String
+ruleNameBoolSimplify = "rule-bool-simplify"
+
+ruleNameRemParity : String
+ruleNameRemParity = "rule-rem-parity"
+
+ruleNameDoubleReverse : String
+ruleNameDoubleReverse = "rule-double-reverse"
+
+ruleNameWhenUnless : String
+ruleNameWhenUnless = "rule-when-unless"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -229,6 +245,56 @@ missingSignatureRule = Rule {
   fix = None,
 }
 
+notEqRule : Rule
+notEqRule = Rule {
+  name = ruleNameNotEq,
+  descr = "negated equality `not (a == b)` / `not (a != b)` — prefer `a != b` / `a == b`",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleNotEq,
+  fix = Some notEqFix,
+}
+
+boolSimplifyRule : Rule
+boolSimplifyRule = Rule {
+  name = ruleNameBoolSimplify,
+  descr = "redundant boolean shape (`if c then True else False`, `x == True`, `not (not x)`, …) — simplify",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleBoolSimplify,
+  fix = Some boolSimplifyFix,
+}
+
+remParityRule : Rule
+remParityRule = Rule {
+  name = ruleNameRemParity,
+  descr = "`n % 2 == 0` / `n % 2 != 0` parity test — prefer `isEven n` / `isOdd n`",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleRemParity,
+  fix = Some remParityFix,
+}
+
+doubleReverseRule : Rule
+doubleReverseRule = Rule {
+  name = ruleNameDoubleReverse,
+  descr = "`reverse (reverse x)` is `x` — drop the double reversal",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleDoubleReverse,
+  fix = Some doubleReverseFix,
+}
+
+whenUnlessRule : Rule
+whenUnlessRule = Rule {
+  name = ruleNameWhenUnless,
+  descr = "`if b then m else pure ()` / `if b then pure () else m` — prefer `when b m` / `unless b m`",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleWhenUnless,
+  fix = Some whenUnlessFix,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -240,6 +306,11 @@ allRules = [
   andThenPureMapRule,
   destructureInParamRule,
   missingSignatureRule,
+  notEqRule,
+  boolSimplifyRule,
+  remParityRule,
+  doubleReverseRule,
+  whenUnlessRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -526,7 +597,7 @@ parseRuleNames s =
   filterList nonEmptyStr (flatMap (splitOnChar ' ') (splitOnChar ',' s))
 
 nonEmptyStr : String -> Bool
-nonEmptyStr n = not (n == "")
+nonEmptyStr n = n != ""
 
 isSuppressed : List Directive -> Finding -> Bool
 isSuppressed dirs f = anyList (dirCoversFinding f) dirs
@@ -1437,7 +1508,7 @@ mentionsVar x e = match unwrapLoc e
 lamSection : List Pat -> Expr -> Option Section
 lamSection [PVar x] body = lamSection1 x (unwrapLoc body)
 lamSection [PVar x, PVar y] body
-  | not (x == y) = lamSection2 x y (unwrapLoc body)
+  | x != y = lamSection2 x y (unwrapLoc body)
   | otherwise = None
 lamSection _ _ = None
 
@@ -2178,6 +2249,413 @@ rewriteAndThenPureMapKv : (Expr, Expr) -> (Expr, Expr)
 rewriteAndThenPureMapKv (k, v) =
   (rewriteAndThenPureMapExpr k, rewriteAndThenPureMapExpr v)
 
+-- ══ batch of local-expression simplification rules (shared generic walk) ═══════
+-- The five rules below (`rule-not-eq`, `rule-bool-simplify`, `rule-rem-parity`,
+-- `rule-double-reverse`, `rule-when-unless`) are all pure LOCAL-NODE rewrites: a
+-- single AST node is recognised and replaced by an equivalent one, anywhere in a
+-- decl body.  Rather than each hand-rolling the ~90-line whole-tree walk the
+-- earlier rules use (`rewriteLamExpr` &c.), they share ONE generic bottom-up
+-- rewriter (`mapChildExprs`/`rewriteExprBU`) plus generic check/fix drivers.  A
+-- rule supplies only:
+--   * a detector `Expr -> Option Expr` matching the RAW node (NOT under its outer
+--     `ELoc` — `childExprs` descends through `ELoc`, so matching the wrapper too
+--     would double-count; mirrors `andThenPureMapHitOf`).  It returns the
+--     rewritten node.
+--   * an excluded-decl-name predicate (a rule whose target idiom IS the body of a
+--     stdlib primitive it rewrites TO — `isEven`/`isOdd` for rule-rem-parity,
+--     `when`/`unless` for rule-when-unless — must skip that primitive's own
+--     definition, or it would rewrite the body to an infinite self-reference).
+-- Every rewrite is EXACTLY equivalent (see each rule's soundness note), so the
+-- self-compile fixpoint stays byte-identical after the tree is fixed.
+
+-- rebuild every immediate child expr with `g`, reconstructing this node.  Faithful
+-- transcription of `rewriteLamExpr`'s node coverage MINUS its `ELam` special-case
+-- (here `ELam` is an ordinary node), so the recursion visits the exact same set of
+-- sub-expressions the other whole-tree rewriters do.
+mapChildExprs : (Expr -> Expr) -> Expr -> Expr
+mapChildExprs g (ELoc l e) = ELoc l (g e)
+mapChildExprs g (EDoOrigin l e) = EDoOrigin l (g e)
+mapChildExprs g (EApp f x) = EApp (g f) (g x)
+mapChildExprs g (ELam ps b) = ELam ps (g b)
+mapChildExprs g (ELet m isf p e1 e2) = ELet m isf p (g e1) (g e2)
+mapChildExprs g (EMatch s arms) = EMatch (g s) (map (mapChildArm g) arms)
+mapChildExprs g (EIf c t el) = EIf (g c) (g t) (g el)
+mapChildExprs g (EBinOp op a b r) = EBinOp op (g a) (g b) r
+mapChildExprs g (EUnOp op a) = EUnOp op (g a)
+mapChildExprs g (EInfix op a b) = EInfix op (g a) (g b)
+mapChildExprs g (EFieldAccess e f r) = EFieldAccess (g e) f r
+mapChildExprs g (ETuple es) = ETuple (map g es)
+mapChildExprs g (EListLit es) = EListLit (map g es)
+mapChildExprs g (EArrayLit es) = EArrayLit (map g es)
+mapChildExprs g (ERangeList lo hi i) = ERangeList (g lo) (g hi) i
+mapChildExprs g (ERangeArray lo hi i) = ERangeArray (g lo) (g hi) i
+mapChildExprs g (ESlice e lo hi i r) = ESlice (g e) (g lo) (g hi) i r
+mapChildExprs g (ELetGroup binds body) =
+  ELetGroup (map (mapChildLet g) binds) (g body)
+mapChildExprs g (ESection s) = ESection (mapChildSection g s)
+mapChildExprs g (EFunction arms) = EFunction (map (mapChildArm g) arms)
+mapChildExprs g (EIndex a i r) = EIndex (g a) (g i) r
+mapChildExprs g (EAnnot e t) = EAnnot (g e) t
+mapChildExprs g (EHeadAnnot e t) = EHeadAnnot (g e) t
+mapChildExprs g (EBlock stmts) = EBlock (map (mapChildStmt g) stmts)
+mapChildExprs g (EDo stmts) = EDo (map (mapChildStmt g) stmts)
+mapChildExprs g (EStringInterp parts) =
+  EStringInterp (map (mapChildInterp g) parts)
+mapChildExprs g (EGuards arms) = EGuards (map (mapChildGuardArm g) arms)
+mapChildExprs g (ERecordCreate n fs) =
+  ERecordCreate n (map (mapChildField g) fs)
+mapChildExprs g (ERecordUpdate e fs) =
+  ERecordUpdate (g e) (map (mapChildField g) fs)
+mapChildExprs g (EVariantUpdate c e fs) =
+  EVariantUpdate c (g e) (map (mapChildField g) fs)
+mapChildExprs g (EMapLit n kvs) = EMapLit n (map (mapChildKv g) kvs)
+mapChildExprs g (ESetLit n es) = ESetLit n (map g es)
+mapChildExprs g (EAsPat x e) = EAsPat x (g e)
+mapChildExprs _ e = e
+
+mapChildStmt : (Expr -> Expr) -> DoStmt -> DoStmt
+mapChildStmt g (DoExpr e) = DoExpr (g e)
+mapChildStmt g (DoBind p e) = DoBind p (g e)
+mapChildStmt g (DoLet m r p e) = DoLet m r p (g e)
+mapChildStmt g (DoAssign x e) = DoAssign x (g e)
+mapChildStmt g (DoFieldAssign x fs e) = DoFieldAssign x fs (g e)
+mapChildStmt g (DoLetElse p e alt) = DoLetElse p (g e) (g alt)
+
+mapChildArm : (Expr -> Expr) -> Arm -> Arm
+mapChildArm g (Arm p gs body) = Arm p (map (mapChildGuard g) gs) (g body)
+
+mapChildGuard : (Expr -> Expr) -> Guard -> Guard
+mapChildGuard g (GBool e) = GBool (g e)
+mapChildGuard g (GBind p e) = GBind p (g e)
+
+mapChildLet : (Expr -> Expr) -> LetBind -> LetBind
+mapChildLet g (LetBind n clauses) = LetBind n (map (mapChildClause g) clauses)
+
+mapChildClause : (Expr -> Expr) -> FunClause -> FunClause
+mapChildClause g (FunClause ps body) = FunClause ps (g body)
+
+mapChildSection : (Expr -> Expr) -> Section -> Section
+mapChildSection _ (SecBare op) = SecBare op
+mapChildSection g (SecRight op e) = SecRight op (g e)
+mapChildSection g (SecLeft e op) = SecLeft (g e) op
+
+mapChildInterp : (Expr -> Expr) -> InterpPart -> InterpPart
+mapChildInterp _ (InterpStr s) = InterpStr s
+mapChildInterp g (InterpExpr e) = InterpExpr (g e)
+
+mapChildGuardArm : (Expr -> Expr) -> GuardArm -> GuardArm
+mapChildGuardArm g (GuardArm gs body) =
+  GuardArm (map (mapChildGuard g) gs) (g body)
+
+mapChildField : (Expr -> Expr) -> FieldAssign -> FieldAssign
+mapChildField g (FieldAssign n e) = FieldAssign n (g e)
+
+mapChildKv : (Expr -> Expr) -> (Expr, Expr) -> (Expr, Expr)
+mapChildKv g (k, v) = (g k, g v)
+
+-- generic bottom-up rewrite: rebuild children first, THEN apply the node-local
+-- transform `f` at this (child-rewritten) node.  Bottom-up so a rewrite exposed by
+-- an inner one (`not (not (not x))`) is re-collapsed by the enclosing node.
+rewriteExprBU : (Expr -> Expr) -> Expr -> Expr
+rewriteExprBU f e = f (mapChildExprs (rewriteExprBU f) e)
+
+-- turn a detector into a total node transform (identity where it does not fire).
+detApply : (Expr -> Option Expr) -> Expr -> Expr
+detApply det e = match det e
+  Some e2 => e2
+  None => e
+
+-- ── generic check driver ──────────────────────────────────────────────────────
+-- Collect one finding per detector hit anywhere in a decl body, skipping decls
+-- whose name the exclusion predicate rejects.  `mkFinding loc rewritten` builds
+-- the rule's message from the rewritten node (for a helpful "prefer …" hint).
+exprRuleFindings : (String -> Bool) -> (Expr -> Option Expr) -> (Option Loc -> Expr -> Finding) -> Positions -> List Decl -> List Finding
+exprRuleFindings excl det mkFinding pos prog =
+  flatMap (exprRuleDeclL excl det mkFinding) (declLocList pos prog)
+
+exprRuleDeclL : (String -> Bool) -> (Expr -> Option Expr) -> (Option Loc -> Expr -> Finding) -> (Decl, Option Loc) -> List Finding
+exprRuleDeclL excl det mkFinding (d, loc) =
+  map (mkFinding loc) (declRewriteHits excl det d)
+
+declRewriteHits : (String -> Bool) -> (Expr -> Option Expr) -> Decl -> List Expr
+declRewriteHits excl det (DFunDef _ name _ body)
+  | excl name = []
+  | otherwise = collectRewrites det body
+declRewriteHits _ det (DImpl { methods, ... }) =
+  flatMap (implMethodRewriteHits det) methods
+declRewriteHits excl det (DAttrib _ d) = declRewriteHits excl det d
+declRewriteHits _ _ _ = []
+
+implMethodRewriteHits : (Expr -> Option Expr) -> ImplMethod -> List Expr
+implMethodRewriteHits det (ImplMethod _ _ body) = collectRewrites det body
+
+-- every detector hit anywhere in the tree.  The detector matches the RAW node, so
+-- an `ELoc`-wrapped node contributes nothing here and `childExprs` descends into
+-- it — each real node is counted exactly once (mirrors `collectLamSections`).
+collectRewrites : (Expr -> Option Expr) -> Expr -> List Expr
+collectRewrites det e = optExprToList (det e)
+  ++ flatMap (collectRewrites det) (childExprs e)
+
+-- ── generic fix driver ────────────────────────────────────────────────────────
+-- Rebuild the decl body applying `f` bottom-up; return `Some [newDecl]` only when
+-- the location-stripped sexp changed (same change-detection the other fixers use).
+-- Honors the excluded-decl-name predicate.
+exprRuleFix : (String -> Bool) -> (Expr -> Expr) -> Decl -> Option (List Decl)
+exprRuleFix excl f (DFunDef vis name pats body)
+  | excl name = None
+  | otherwise =
+    let body2 = rewriteExprBU f body
+    if exprSexp body2 == exprSexp body then
+      None
+    else
+      Some [DFunDef vis name pats body2]
+exprRuleFix excl f (DAttrib a d) = match exprRuleFix excl f d
+  Some [d2] => Some [DAttrib a d2]
+  _ => None
+exprRuleFix _ f (DImpl { pub, def, iface, tys, name, reqs, methods }) =
+  let methods2 = map (fixImplMethodWith f) methods
+  if implMethodsBodyKey methods2 == implMethodsBodyKey methods then
+    None
+  else
+    Some [
+      DImpl {
+        pub = pub,
+        def = def,
+        iface = iface,
+        tys = tys,
+        name = name,
+        reqs = reqs,
+        methods = methods2,
+      }
+    ]
+exprRuleFix _ _ _ = None
+
+fixImplMethodWith : (Expr -> Expr) -> ImplMethod -> ImplMethod
+fixImplMethodWith f (ImplMethod nm ps body) =
+  ImplMethod nm ps (rewriteExprBU f body)
+
+-- no decls are excluded by name (the common case)
+noExcl : String -> Bool
+noExcl _ = False
+
+-- ── shared node predicates ────────────────────────────────────────────────────
+
+-- `e` is a logical negation `not X` (the `not` prelude fn) or `!X` (unary `!`);
+-- return the negated operand `X`.  `not` parses to `EApp (EVar "not") X`.
+notArgOf : Expr -> Option Expr
+notArgOf (EApp hd x) = if isEVarNamed "not" hd then Some x else None
+notArgOf (EUnOp "!" x) = Some x
+notArgOf _ = None
+
+-- build `not e` in the canonical `not <e>` (prelude fn) form the printer renders.
+mkNot : Expr -> Expr
+mkNot e = EApp (EVar "not") e
+
+isTrueLit : Expr -> Bool
+isTrueLit e = isEVarNamed "True" e
+
+isFalseLit : Expr -> Bool
+isFalseLit e = isEVarNamed "False" e
+
+isBoolLit : Expr -> Bool
+isBoolLit e = isTrueLit e || isFalseLit e
+
+-- `e` is the integer literal `k` — either an `ELit (LInt k)` or a Num-poly
+-- `ENumLit k …` (the parser emits the latter for expression int literals; sexp
+-- renders both identically, so both must be recognised).
+isIntLit : Int -> Expr -> Bool
+isIntLit k e = match unwrapLoc e
+  ELit (LInt n) => n == k
+  ENumLit n _ _ => n == k
+  _ => False
+
+-- ── rule: not-eq ──────────────────────────────────────────────────────────────
+-- `not (a == b)` → `a != b`; `not (a != b)` → `a == b` (also the unary-`!` forms).
+-- ONLY `==`/`!=` — they are TOTAL, so De Morgan applies unconditionally.  `<`/`>`
+-- &c. are deliberately excluded: their complement is unsound for `Float` (NaN
+-- makes `not (a < b)` ≠ `a >= b`).  The flipped `EBinOp` reuses the original's
+-- route ref (an unresolved parse-time placeholder; re-resolved downstream).
+notEqOf : Expr -> Option Expr
+notEqOf e = match notArgOf e
+  Some inner => match unwrapLoc inner
+    EBinOp "==" a b r => Some (EBinOp "!=" a b r)
+    EBinOp "!=" a b r => Some (EBinOp "==" a b r)
+    _ => None
+  None => None
+
+ruleNotEq : String -> Positions -> List Decl -> List Finding
+ruleNotEq _ pos prog = exprRuleFindings noExcl notEqOf notEqFinding pos prog
+
+notEqFinding : Option Loc -> Expr -> Finding
+notEqFinding loc rewritten = Finding {
+  rule = ruleNameNotEq,
+  message = "negated equality — rewrite as '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+notEqFix : Oracle -> Decl -> Option (List Decl)
+notEqFix _ d = exprRuleFix noExcl (detApply notEqOf) d
+
+-- ── rule: bool-simplify ───────────────────────────────────────────────────────
+-- Redundant boolean shapes, each rewritten to an EXACTLY equivalent one:
+--   if c then True else False → c        if c then False else True → not c
+--   x == True → x        x == False → not x        (also True/False on the LEFT)
+--   x != True → not x    x != False → x
+--   not (not x) → x      (`!(!x)` too)
+-- Excluded (per spec): `if c then True else e` → `c || e` (short-circuit/effect
+-- risk).  A comparison with bool literals on BOTH sides is left alone.
+boolSimplifyOf : Expr -> Option Expr
+boolSimplifyOf (EIf c t el) = boolSimplifyIf c (unwrapLoc t) (unwrapLoc el)
+boolSimplifyOf (EBinOp op a b _)
+  | op == "==" || op == "!=" = boolSimplifyEq op a b
+boolSimplifyOf e = match notArgOf e
+  Some inner => match notArgOf (unwrapLoc inner)
+    Some y => Some y
+    None => None
+  None => None
+
+boolSimplifyIf : Expr -> Expr -> Expr -> Option Expr
+boolSimplifyIf c t el
+  | isTrueLit t && isFalseLit el = Some c
+  | isFalseLit t && isTrueLit el = Some (mkNot c)
+  | otherwise = None
+
+boolSimplifyEq : String -> Expr -> Expr -> Option Expr
+boolSimplifyEq op a b
+  | isBoolLit a && isBoolLit b = None
+  | isTrueLit b = Some (boolEqResult op a True)
+  | isFalseLit b = Some (boolEqResult op a False)
+  | isTrueLit a = Some (boolEqResult op b True)
+  | isFalseLit a = Some (boolEqResult op b False)
+  | otherwise = None
+
+-- the value operand `v`, negated iff (`==` against `False`) or (`!=` against
+-- `True`): `keepPositive = (op == "==") == constIsTrue`.
+boolEqResult : String -> Expr -> Bool -> Expr
+boolEqResult op v constIsTrue = if op == "==" == constIsTrue then v else mkNot v
+
+ruleBoolSimplify : String -> Positions -> List Decl -> List Finding
+ruleBoolSimplify _ pos prog =
+  exprRuleFindings noExcl boolSimplifyOf boolSimplifyFinding pos prog
+
+boolSimplifyFinding : Option Loc -> Expr -> Finding
+boolSimplifyFinding loc rewritten = Finding {
+  rule = ruleNameBoolSimplify,
+  message = "redundant boolean expression — simplify to '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+boolSimplifyFix : Oracle -> Decl -> Option (List Decl)
+boolSimplifyFix _ d = exprRuleFix noExcl (detApply boolSimplifyOf) d
+
+-- ── rule: rem-parity ──────────────────────────────────────────────────────────
+-- `n % 2 == 0` → `isEven n`; `n % 2 != 0` → `isOdd n` (either operand order).
+-- ONLY the `== 0` / `!= 0` comparisons: Medaka's `%` follows the DIVIDEND's sign
+-- (`-3 % 2 = -1`), so `n % 2 == 1` is FALSE for negative odd `n` — excluded.
+-- Excludes the `isEven`/`isOdd` definitions themselves (their bodies ARE this
+-- idiom; rewriting them would produce `isEven n = isEven n`).
+remParityExcl : String -> Bool
+remParityExcl name = name == "isEven" || name == "isOdd"
+
+remParityOf : Expr -> Option Expr
+remParityOf (EBinOp op a b _)
+  | op == "==" || op == "!=" =
+    if isIntLit 0 b then
+      remParityFrom op (unwrapLoc a)
+    else if isIntLit 0 a then
+      remParityFrom op (unwrapLoc b)
+    else
+      None
+remParityOf _ = None
+
+remParityFrom : String -> Expr -> Option Expr
+remParityFrom op (EBinOp "%" n two _)
+  | isIntLit 2 two = Some (EApp (EVar (parityFn op)) n)
+remParityFrom _ _ = None
+
+parityFn : String -> String
+parityFn op = if op == "==" then "isEven" else "isOdd"
+
+ruleRemParity : String -> Positions -> List Decl -> List Finding
+ruleRemParity _ pos prog =
+  exprRuleFindings remParityExcl remParityOf remParityFinding pos prog
+
+remParityFinding : Option Loc -> Expr -> Finding
+remParityFinding loc rewritten = Finding {
+  rule = ruleNameRemParity,
+  message = "parity test — rewrite as '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+remParityFix : Oracle -> Decl -> Option (List Decl)
+remParityFix _ d = exprRuleFix remParityExcl (detApply remParityOf) d
+
+-- ── rule: double-reverse ──────────────────────────────────────────────────────
+-- `reverse (reverse x)` → `x` (`reverse` is an involution).
+doubleReverseOf : Expr -> Option Expr
+doubleReverseOf (EApp hd1 arg1)
+  | isEVarNamed "reverse" hd1 = match unwrapLoc arg1
+    EApp hd2 inner => if isEVarNamed "reverse" hd2 then Some inner else None
+    _ => None
+doubleReverseOf _ = None
+
+ruleDoubleReverse : String -> Positions -> List Decl -> List Finding
+ruleDoubleReverse _ pos prog =
+  exprRuleFindings noExcl doubleReverseOf doubleReverseFinding pos prog
+
+doubleReverseFinding : Option Loc -> Expr -> Finding
+doubleReverseFinding loc rewritten = Finding {
+  rule = ruleNameDoubleReverse,
+  message = "`reverse (reverse …)` is a no-op — rewrite as '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+doubleReverseFix : Oracle -> Decl -> Option (List Decl)
+doubleReverseFix _ d = exprRuleFix noExcl (detApply doubleReverseOf) d
+
+-- ── rule: when-unless ─────────────────────────────────────────────────────────
+-- `if b then m else pure ()` → `when b m`; `if b then pure () else m` → `unless b
+-- m`.  Fires ONLY when the OTHER branch is EXACTLY `pure ()` (`EApp (EVar "pure")
+-- (ELit LUnit)`).  Excludes the `when`/`unless` definitions themselves (their
+-- bodies ARE this idiom → rewriting them would yield `when b m = when b m`).
+whenUnlessExcl : String -> Bool
+whenUnlessExcl name = name == "when" || name == "unless"
+
+isPureUnit : Expr -> Bool
+isPureUnit e = match unwrapLoc e
+  EApp hd arg => isEVarNamed "pure" hd && isUnitLit (unwrapLoc arg)
+  _ => False
+
+isUnitLit : Expr -> Bool
+isUnitLit (ELit LUnit) = True
+isUnitLit _ = False
+
+whenUnlessOf : Expr -> Option Expr
+whenUnlessOf (EIf c t el)
+  | isPureUnit el = Some (EApp (EApp (EVar "when") c) t)
+  | isPureUnit t = Some (EApp (EApp (EVar "unless") c) el)
+  | otherwise = None
+whenUnlessOf _ = None
+
+ruleWhenUnless : String -> Positions -> List Decl -> List Finding
+ruleWhenUnless _ pos prog =
+  exprRuleFindings whenUnlessExcl whenUnlessOf whenUnlessFinding pos prog
+
+whenUnlessFinding : Option Loc -> Expr -> Finding
+whenUnlessFinding loc rewritten = Finding {
+  rule = ruleNameWhenUnless,
+  message = "conditional effect with a `pure ()` branch — rewrite as '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+whenUnlessFix : Oracle -> Decl -> Option (List Decl)
+whenUnlessFix _ d = exprRuleFix whenUnlessExcl (detApply whenUnlessOf) d
+
 -- ── cross-file runner ─────────────────────────────────────────────────────────
 -- Run the enabled cross-file rules over every target file, honoring the same
 -- --only/--disable name filters the per-file rules use.  ALL CrossFileRule-record
@@ -2285,7 +2763,7 @@ dupFinding : List String -> (String, Int, String, String) -> Finding
 dupFinding distinctFiles occ =
   let file = occFile occ
   let line = occLine occ
-  let others = filterList (s => not (s == file)) distinctFiles
+  let others = filterList (!= file) distinctFiles
   Finding {
     rule = ruleNameDuplicateBody,
     message = "function '" ++ occName occ ++ "' has a body structurally identical to a definition in " ++ joinWith ", " others ++ " — consider consolidating into a shared module",

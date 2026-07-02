@@ -1,0 +1,7 @@
+warning: [rule-missing-signature] top-level 'negPlain' has no type signature — add a `negPlain : …` declaration
+warning: [rule-missing-signature] top-level 'unless' has no type signature — add a `unless : …` declaration
+warning: [rule-missing-signature] top-level 'unlessShape' has no type signature — add a `unlessShape : …` declaration
+warning: [rule-missing-signature] top-level 'when' has no type signature — add a `when : …` declaration
+warning: [rule-missing-signature] top-level 'whenShape' has no type signature — add a `whenShape : …` declaration
+warning: [rule-when-unless] conditional effect with a `pure ()` branch — rewrite as 'unless b act'
+warning: [rule-when-unless] conditional effect with a `pure ()` branch — rewrite as 'when b act'

@@ -1,0 +1,15 @@
+warning: [rule-missing-signature] top-level 'bangEq' has no type signature — add a `bangEq : …` declaration
+warning: [rule-missing-signature] top-level 'bangNe' has no type signature — add a `bangNe : …` declaration
+warning: [rule-missing-signature] top-level 'negFlag' has no type signature — add a `negFlag : …` declaration
+warning: [rule-missing-signature] top-level 'negGt' has no type signature — add a `negGt : …` declaration
+warning: [rule-missing-signature] top-level 'negLe' has no type signature — add a `negLe : …` declaration
+warning: [rule-missing-signature] top-level 'negLt' has no type signature — add a `negLt : …` declaration
+warning: [rule-missing-signature] top-level 'negPlain' has no type signature — add a `negPlain : …` declaration
+warning: [rule-missing-signature] top-level 'nested' has no type signature — add a `nested : …` declaration
+warning: [rule-missing-signature] top-level 'notEq' has no type signature — add a `notEq : …` declaration
+warning: [rule-missing-signature] top-level 'notNe' has no type signature — add a `notNe : …` declaration
+warning: [rule-not-eq] negated equality — rewrite as 'a != b'
+warning: [rule-not-eq] negated equality — rewrite as 'a != b'
+warning: [rule-not-eq] negated equality — rewrite as 'a != b'
+warning: [rule-not-eq] negated equality — rewrite as 'a == b'
+warning: [rule-not-eq] negated equality — rewrite as 'a == b'

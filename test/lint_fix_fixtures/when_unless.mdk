@@ -1,0 +1,11 @@
+-- Fixture for rule-when-unless autofix.
+
+whenShape b act = if b then act else pure ()
+unlessShape b act = if b then pure () else act
+
+-- NEGATIVE: must stay untouched.
+negPlain b act other = if b then act else other
+
+-- NEGATIVE: the when/unless definitions must not self-rewrite.
+when b m = if b then m else pure ()
+unless b m = if b then pure () else m

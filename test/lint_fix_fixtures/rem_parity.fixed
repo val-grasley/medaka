@@ -1,0 +1,12 @@
+-- Fixture for rule-rem-parity autofix.
+
+evenTest n = isEven n
+oddTest n = isOdd n
+nested n = if isEven n then n else n + 1
+
+-- NEGATIVE: `% 2 == 1` is unsound for negatives — must stay untouched.
+negOne n = n % 2 == 1
+
+-- NEGATIVE: the isEven/isOdd definitions must not self-rewrite.
+isEven n = n % 2 == 0
+isOdd n = n % 2 != 0

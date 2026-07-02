@@ -1,0 +1,13 @@
+-- Fixture for rule-double-reverse: `reverse (reverse x)` → `x`.
+
+-- POSITIVE: the double reversal.
+dbl xs = reverse (reverse xs)
+
+-- POSITIVE: inner argument is an arbitrary expression.
+dblApp f xs = reverse (reverse (f xs))
+
+-- NEGATIVE: a single reverse is not a no-op.
+single xs = reverse xs
+
+-- NEGATIVE: not two reverses.
+mapped f xs = reverse (map f xs)

@@ -1,0 +1,14 @@
+-- Fixture for rule-when-unless: an `if` with an exact `pure ()` branch.
+
+-- POSITIVE: else branch is `pure ()` → `when`.
+whenShape b act = if b then act else pure ()
+
+-- POSITIVE: then branch is `pure ()` → `unless`.
+unlessShape b act = if b then pure () else act
+
+-- NEGATIVE: neither branch is `pure ()`.
+negPlain b act other = if b then act else other
+
+-- NEGATIVE: the `when`/`unless` definitions THEMSELVES must not self-rewrite.
+when b m = if b then m else pure ()
+unless b m = if b then pure () else m

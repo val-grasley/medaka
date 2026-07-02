@@ -1760,10 +1760,11 @@ tyArrowTail left = do
   t <- peekP
   indented <- tyArrowSkipLayout t
   right <- parseTy
-  if indented then do
-    skipNewlines
-    expectTok TDedent
-  else pure ()
+  when
+    indented
+    (do
+      skipNewlines
+      expectTok TDedent)
   pure (TyFun left right)
 
 -- Skip NEWLINE or INDENT that can follow a trailing `->` in a type signature.
