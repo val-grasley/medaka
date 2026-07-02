@@ -2960,17 +2960,27 @@ parseProgram = do
 -- decl's token span (the data-body's depth-0 `=`/`|` separators).
 public export data DeclPos =
   | DeclPos Int Int  -- (line, end_line), 1-based
-public export data Positions = Positions (List DeclPos) (List Int) Int
--- decl positions, variant start lines, last_content_line
+public export data Positions =
+  | Positions (List DeclPos) (List Int) Int (List (List Int))
+-- decl positions, variant start lines, last_content_line, per-decl chain
+-- operand lines.  The last field mirrors variant_lines: one entry per top-level
+-- decl (in decl order), giving the source line of each top-level continuation-
+-- op operand of that decl's RHS (empty when the decl's body is not a
+-- continuation chain).  `medaka fmt` uses it to anchor per-operand trailing
+-- comments (finding "L").  Computed out-of-band from the token/line arrays like
+-- the other channels — the AST carries no locations and `parse` never sees it.
 
 export positionsDecls : Positions -> List DeclPos
-positionsDecls (Positions ds _ _) = ds
+positionsDecls (Positions ds _ _ _) = ds
 
 export positionsVariantLines : Positions -> List Int
-positionsVariantLines (Positions _ vs _) = vs
+positionsVariantLines (Positions _ vs _ _) = vs
 
 export positionsLastContentLine : Positions -> Int
-positionsLastContentLine (Positions _ _ l) = l
+positionsLastContentLine (Positions _ _ l _) = l
+
+export positionsChainLines : Positions -> List (List Int)
+positionsChainLines (Positions _ _ _ cl) = cl
 
 export declPosLine : DeclPos -> Int
 declPosLine (DeclPos l _) = l
@@ -3102,17 +3112,117 @@ allVariantLines toks lines ((d, s, e)::rest)
     ++ allVariantLines toks lines rest
   | otherwise = allVariantLines toks lines rest
 
+-- ── Chain operand lines (for fmt comment interleaving, finding "L") ─────────
+-- For a decl whose RHS is a top-level continuation-op chain, derive the source
+-- line of each operand from the token span, IN THE SAME ORDER `printChain`/
+-- `collectChain` visit them (head first, then each right in source order).
+-- fmt zips these with the chain's per-operand trailing comments.
+--
+-- Splitting is by the chain's TOP operator token only (from the AST body): a
+-- higher-precedence sibling op (e.g. `&&` inside a `||` chain) is part of an
+-- operand, not a boundary — matching `collectChain`, which peels only the same
+-- op.  This also makes the mapping idempotent once fmt drops redundant parens
+-- (the un-parenthesised `&&` stays operand-internal on a re-format).
+
+-- The set of continuation operators (mirror of printer.isContinuationOp).
+isContinuationOpStr : String -> Bool
+isContinuationOpStr op = op == "|>"
+  || op == ">>"
+  || op == "<<"
+  || op == "&&"
+  || op == "||"
+  || op == "++"
+
+-- Does token `t` spell the continuation operator `op`?
+chainOpTokEq : String -> Token -> Bool
+chainOpTokEq "&&" TAnd = True
+chainOpTokEq "||" TOr = True
+chainOpTokEq "|>" TPipeRight = True
+chainOpTokEq ">>" TRCompose = True
+chainOpTokEq "<<" TLCompose = True
+chainOpTokEq "++" TPlusPlus = True
+chainOpTokEq _ _ = False
+
+-- The top-level continuation operator of a decl's body, if any (peels ELoc; the
+-- outermost EBinOp is the lowest-precedence / top operator the parser built).
+declChainTopOp : Decl -> Option String
+declChainTopOp (DAttrib _ inner) = declChainTopOp inner
+declChainTopOp (DFunDef _ _ _ body) = bodyChainTopOp body
+declChainTopOp _ = None
+
+bodyChainTopOp : Expr -> Option String
+bodyChainTopOp (ELoc _ e) = bodyChainTopOp e
+bodyChainTopOp (EBinOp op _ _ _) =
+  if isContinuationOpStr op then
+    Some op
+  else
+    None
+bodyChainTopOp _ = None
+
+-- First content (non-layout) token index at/after `i`, bounded by `e`.
+firstContentAt : Array Token -> Int -> Int -> Int
+firstContentAt toks i e
+  | i >= e = e
+  | isNoiseTok (arrayGetUnsafe i toks) = firstContentAt toks (i + 1) e
+  | otherwise = i
+
+-- Index just past the first depth-0 `=` (the definitional `=`) in [s, e); `e`
+-- if none (degenerate).  Delimiters guard against a `=` inside a record/etc.
+rhsStartIdx : Array Token -> Int -> Int -> Int -> Int
+rhsStartIdx toks i e depth
+  | i >= e = e
+  | isOpenDelim (arrayGetUnsafe i toks) = rhsStartIdx toks (i + 1) e (depth + 1)
+  | isCloseDelim (arrayGetUnsafe i toks) =
+    rhsStartIdx toks (i + 1) e (depth - 1)
+  | depth == 0 && arrayGetUnsafe i toks == TEqual = i + 1
+  | otherwise = rhsStartIdx toks (i + 1) e depth
+
+-- Operand lines of the top-`op` chain in the RHS [rs, e): the head's first
+-- content line, then each depth-0 `op`-token's following operand's first
+-- content line.  Recording the OPERAND line (not the operator line) places the
+-- trailing comment correctly for both leading- and trailing-operator styles.
+chainOperandLines : Array Token -> Array Int -> String -> Int -> Int -> List Int
+chainOperandLines toks lines op rs e =
+  let h = firstContentAt toks rs e
+  if h >= e then [] else lineAt lines h :: chainOpLinesGo toks lines op rs e 0
+
+chainOpLinesGo : Array Token -> Array Int -> String -> Int -> Int -> Int -> List Int
+chainOpLinesGo toks lines op i e depth
+  | i >= e = []
+  | otherwise = chainOpLinesAt toks lines op i e depth (arrayGetUnsafe i toks)
+
+chainOpLinesAt : Array Token -> Array Int -> String -> Int -> Int -> Int -> Token -> List Int
+chainOpLinesAt toks lines op i e depth t
+  | isOpenDelim t = chainOpLinesGo toks lines op (i + 1) e (depth + 1)
+  | isCloseDelim t = chainOpLinesGo toks lines op (i + 1) e (depth - 1)
+  | depth == 0 && chainOpTokEq op t = lineAt lines (firstContentAt toks (i + 1) e) :: chainOpLinesGo toks lines op (i + 1) e depth
+  | otherwise = chainOpLinesGo toks lines op (i + 1) e depth
+
+-- Per-decl chain operand lines (empty when the decl body is not a chain).
+declChainLines : Array Token -> Array Int -> Decl -> Int -> Int -> List Int
+declChainLines toks lines d s e = match declChainTopOp d
+  Some op => chainOperandLines toks lines op (rhsStartIdx toks s e 0) e
+  None => []
+
+-- Flat list (one entry per decl, in decl order) of every decl's chain operand
+-- lines, parallel to the decl list — fmt consumes it in lockstep.
+allChainLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List (List Int)
+allChainLines toks lines [] = []
+allChainLines toks lines ((d, s, e)::rest) =
+  declChainLines toks lines d s e :: allChainLines toks lines rest
+
 -- last_content_line: line of the last content token across the whole file.
 lastContentLineOf : Array Token -> Array Int -> List (Decl, Int, Int) -> Int
 lastContentLineOf toks lines spans = lastContentLineGo toks lines spans 0
 
 lastContentLineGo : Array Token -> Array Int -> List (Decl, Int, Int) -> Int -> Int
 lastContentLineGo toks lines [] acc = acc
-lastContentLineGo toks lines ((_, s, e)::rest) acc = lastContentLineGo
-  toks
-  lines
-  rest
-  (lineAt lines (lastContentIdx toks s (e - 1)))
+lastContentLineGo toks lines ((_, s, e)::rest) acc =
+  lastContentLineGo
+    toks
+    lines
+    rest
+    (lineAt lines (lastContentIdx toks s (e - 1)))
 
 resultSpans : Array Token -> PR (List (Decl, Int, Int)) -> List (Decl, Int, Int)
 resultSpans _ (PErr _ _) = panic "parse error"
@@ -3144,7 +3254,8 @@ parseWithPositionsOpt src = match tokenizeWithLines src
         let dps = map (declPosOf toks lines) spans
         let vls = allVariantLines toks lines spans
         let lcl = lastContentLineOf toks lines spans
-        Some (decls, Positions dps vls lcl)
+        let cls = allChainLines toks lines spans
+        Some (decls, Positions dps vls lcl cls)
       else None
 
 -- Check that the parse consumed all tokens (no trailing garbage), panic on error.

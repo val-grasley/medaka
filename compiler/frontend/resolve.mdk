@@ -1594,9 +1594,10 @@ reExpIfaceMethods known prog =
   flatMap (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
 reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
-reExpIfaceMethodsFrom path src = ifaceMethodPairs
-  src
-  (filterContains src.expInterfaces (reexportNamesOf path src))
+reExpIfaceMethodsFrom path src =
+  ifaceMethodPairs
+    src
+    (filterContains src.expInterfaces (reexportNamesOf path src))
 
 ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
 ifaceMethodPairs _ [] = []
@@ -1608,9 +1609,10 @@ reExpFieldOwners known prog =
   flatMap (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
 
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
-reExpFieldOwnersFrom path src = ownersForTypes
-  (filterContains src.expTypes (reexportNamesOf path src))
-  src.expFieldOwners
+reExpFieldOwnersFrom path src =
+  ownersForTypes
+    (filterContains src.expTypes (reexportNamesOf path src))
+    src.expFieldOwners
 
 ownersForTypes : List String -> List (String, String) -> List (String, String)
 ownersForTypes _ [] = []
@@ -1665,9 +1667,10 @@ resolveModulesErrorsG allowInternal trustedMods rt pre known ((mid, prog)::rest)
 -- one S-expression per diagnostic (the harness sorts); matches
 -- `diagdump --resolve-modules` over the same ordered module list.
 export resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToLines runtimeDecls preludeDecls mods = joinNl (map
-  resErrorSexp
-  (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+resolveModulesToLines runtimeDecls preludeDecls mods =
+  joinNl (map
+    resErrorSexp
+    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
 
 -- Guarded variant of resolveModulesToLines (S-expr output) for the `medaka check`
 -- exit-code predicate: `allowInternal` / `trustedMods` decide per-module trust.
@@ -1682,9 +1685,10 @@ resolveModulesToLinesG allowInternal trustedMods runtimeDecls preludeDecls mods 
 -- separate so `resolveModulesToLines`'s sexp output stays byte-stable for the
 -- harness golden.
 export resolveModulesToHumane : List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumane runtimeDecls preludeDecls mods = joinNl (map
-  ppResErrorLocated
-  (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+resolveModulesToHumane runtimeDecls preludeDecls mods =
+  joinNl (map
+    ppResErrorLocated
+    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
 
 -- Guarded variant of resolveModulesToHumane for the run/build/check CLI:
 -- `allowInternal` / `trustedMods` decide per-module internal-extern trust.

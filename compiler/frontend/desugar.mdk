@@ -352,14 +352,16 @@ deriveImpls f (d::ds) = match f d
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
 deriveForData name params variants "Eq" =
   Some (applyDeriveParams name params (deriveEqData name variants))
-deriveForData name params variants "Debug" = Some (applyDeriveParams
-  name
-  params
-  (deriveShowData "Debug" "debug" name variants))
-deriveForData name params variants "Display" = Some (applyDeriveParams
-  name
-  params
-  (deriveShowData "Display" "display" name variants))
+deriveForData name params variants "Debug" =
+  Some (applyDeriveParams
+    name
+    params
+    (deriveShowData "Debug" "debug" name variants))
+deriveForData name params variants "Display" =
+  Some (applyDeriveParams
+    name
+    params
+    (deriveShowData "Display" "display" name variants))
 deriveForData name params variants "Generic" =
   Some (applyDeriveParams name params (deriveGenericData name variants))
 deriveForData name params variants "Ord" =
@@ -374,14 +376,16 @@ deriveForRecord name params fields "Eq" =
   Some (applyDeriveParams name params (deriveEqRecord name fields))
 deriveForRecord name params fields "Ord" =
   Some (applyDeriveParams name params (deriveOrdRecord name fields))
-deriveForRecord name params fields "Debug" = Some (applyDeriveParams
-  name
-  params
-  (deriveShowRecord "Debug" "debug" name fields))
-deriveForRecord name params fields "Display" = Some (applyDeriveParams
-  name
-  params
-  (deriveShowRecord "Display" "display" name fields))
+deriveForRecord name params fields "Debug" =
+  Some (applyDeriveParams
+    name
+    params
+    (deriveShowRecord "Debug" "debug" name fields))
+deriveForRecord name params fields "Display" =
+  Some (applyDeriveParams
+    name
+    params
+    (deriveShowRecord "Display" "display" name fields))
 deriveForRecord name params fields "Generic" =
   Some (applyDeriveParams name params (deriveGenericRecord name fields))
 deriveForRecord _ _ _ _ = None
@@ -530,8 +534,9 @@ showArm callName (v@(Variant cname _)) =
 
 showBody : String -> String -> List String -> Expr
 showBody _ cname [] = ELit (LString cname)
-showBody callName cname (v::vs) = concatStrings
-  (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v::vs))
+showBody callName cname (v::vs) =
+  concatStrings
+    (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v::vs))
 
 showFieldParts : String -> Int -> List String -> List Expr
 showFieldParts _ _ [] = []

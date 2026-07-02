@@ -29,8 +29,9 @@ now () = wallTimeSec ()
 -- Format: [perf] <label>\t<elapsed>s\t<ops>
 export emitPhase : Bool -> String -> Float -> String -> <IO> Unit
 emitPhase False _ _ _ = ()
-emitPhase True label elapsed ops = ePutStrLn
-  ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t" ++ ops)
+emitPhase True label elapsed ops =
+  ePutStrLn
+    ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t" ++ ops)
 
 -- Emit the total pipeline time to stderr.  No-op when on = False.
 export emitTotal : Bool -> Float -> <IO> Unit
@@ -58,11 +59,13 @@ allocSnap () = allocBytes ()
 -- Format: [perf] <label>\t<elapsed>s\t<allocMB>MB\t<ops>
 export emitPhaseA : Bool -> String -> Float -> Float -> String -> <IO> Unit
 emitPhaseA False _ _ _ _ = ()
-emitPhaseA True label elapsed allocDelta ops = ePutStrLn
-  ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t" ++ floatToString (allocDelta / 1048576.0) ++ "MB\t" ++ ops)
+emitPhaseA True label elapsed allocDelta ops =
+  ePutStrLn
+    ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t" ++ floatToString (allocDelta / 1048576.0) ++ "MB\t" ++ ops)
 
 -- Extended total emit with allocation (four-field format to match emitPhaseA).
 export emitTotalA : Bool -> Float -> Float -> <IO> Unit
 emitTotalA False _ _ = ()
-emitTotalA True elapsed allocTotal = ePutStrLn
-  ("[perf] total\t" ++ floatToString elapsed ++ "s\t" ++ floatToString (allocTotal / 1048576.0) ++ "MB\t")
+emitTotalA True elapsed allocTotal =
+  ePutStrLn
+    ("[perf] total\t" ++ floatToString elapsed ++ "s\t" ++ floatToString (allocTotal / 1048576.0) ++ "MB\t")

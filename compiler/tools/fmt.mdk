@@ -30,6 +30,8 @@ import tools.printer.{
   printDecl,
   printDataDeclCommented,
   printNamedFieldData,
+  printDeclChainCommented,
+  declChainLen,
   Doc,
 }
 import frontend.lexer.{Comment, commentLine, commentText, collectComments}
@@ -40,10 +42,19 @@ import frontend.parser.{
   positionsDecls,
   positionsVariantLines,
   positionsLastContentLine,
+  positionsChainLines,
   declPosLine,
   declPosEndLine,
 }
-import support.util.{listLen, reverseL, isEmptyL, filterList, splitNl, joinNl}
+import support.util.{
+  listLen,
+  reverseL,
+  isEmptyL,
+  filterList,
+  splitNl,
+  joinNl,
+  allList,
+}
 
 -- ── State ─────────────────────────────────────────
 -- pieces : output fragments, REVERSED (cons-prepend, reverse+concat at end)
@@ -283,6 +294,42 @@ anyLineEq : Int -> List Comment -> Bool
 anyLineEq _ [] = False
 anyLineEq l (c::cs) = if commentLine c == l then True else anyLineEq l cs
 
+-- ── Comment-interleaved continuation chains (finding "L") ──────────────────
+-- A continuation-op chain RHS (`||`/`&&`/`++`/…) whose operands carry trailing
+-- comments is formatted with each comment anchored to ITS operand's Doc (via
+-- printer.LineComment), so reflow can't shift a comment to the wrong operand —
+-- superseding the verbatim safety-net for this (the finding-"L") shape.  The
+-- parser's per-decl chain operand-line side-channel (`positionsChainLines`)
+-- lines the operands up with the comments; we take this path only when every
+-- comment in the decl's span anchors cleanly (else fall back to verbatim).
+
+intInList : Int -> List Int -> Bool
+intInList _ [] = False
+intInList x (y::ys) = if x == y then True else intInList x ys
+
+-- The single-line comment sitting on source line `l`, if any.
+commentOnLine : List Comment -> Int -> Option String
+commentOnLine [] _ = None
+commentOnLine (c::cs) l =
+  if commentLine c == l && isSingleLine (commentText c) then
+    Some (commentText c)
+  else
+    commentOnLine cs l
+
+-- Comments belonging to this decl's source span [lo, hi] (flushBefore has
+-- already drained everything strictly before `lo`).
+spanComments : List Comment -> Int -> Int -> List Comment
+spanComments cs lo hi =
+  filterList (c => commentLine c >= lo && commentLine c <= hi) cs
+
+-- Can EVERY comment in the decl's span be anchored to a chain operand line?
+-- (each single-line AND on an operand line).  If not, keep the verbatim net so
+-- no comment is dropped or misplaced.
+chainCoversAll : List Comment -> Int -> Int -> List Int -> Bool
+chainCoversAll cs lo hi ols = allList
+  (c => isSingleLine (commentText c) && intInList (commentLine c) ols)
+  (spanComments cs lo hi)
+
 -- ── Verbatim safety-net (Option C) ────────────────────────────────────────
 -- When a declaration carries an INTERIOR trailing comment (a single-line
 -- comment strictly between its start and end line — see `isInterior`), the
@@ -313,20 +360,36 @@ spanLines (l::ls) idx startLine endLine
 -- ── Main walk ─────────────────────────────────────
 
 -- Process one (decl, declPos) pair.  Mirror of one OCaml `List.iter2` body.
-stepDecl : FmtState -> List String -> Decl -> DeclPos -> FmtState
-stepDecl st srcLines decl dp =
+stepDecl : FmtState -> List String -> List Int -> Decl -> DeclPos -> FmtState
+stepDecl st srcLines chainOls decl dp =
   let line = declPosLine dp
   let endLine = declPosEndLine dp
   let st1 = flushBefore st line
   match st1
     FmtState pieces1 cs1 vlines1 cursor1 started1 =>
       let pieces2 = blankLineIfNeeded pieces1 line cursor1 started1
+      let hasInterior = not (isEmptyL (filterList (isInterior line endLine) cs1))
+      -- Continuation-chain path (finding "L"): interleave each operand's
+      -- trailing comment via printer.LineComment, IF the decl is a chain whose
+      -- operand count matches the AST and every span comment anchors cleanly.
+      let useChain = hasInterior
+        && not (isEmptyL chainOls)
+        && declChainLen decl == listLen chainOls
+        && chainCoversAll cs1 line endLine chainOls
       -- Verbatim safety-net: a non-data decl with an interior trailing comment
       -- keeps its original source text (reflow would misplace the comment).
-      let hasInterior = not (isEmptyL (filterList (isInterior line endLine) cs1))
       let useVerbatim = hasInterior && not (isDataDeclF decl)
       let st2 = FmtState pieces2 cs1 vlines1 cursor1 started1
-      if useVerbatim then
+      if useChain then
+        -- One trailing comment per operand (in collectChain order); the parser's
+        -- operand lines are in the same order, so map by line.
+        let perOp = map (ol => commentOnLine cs1 ol) chainOls
+        let declStr = render (printDeclChainCommented decl perOp)
+        -- Every span comment was placed inline; drain the decl's prefix.
+        let csRest = filterList (c => commentLine c > endLine) cs1
+        let pieces3 = "\n" :: declStr :: pieces2
+        FmtState pieces3 csRest vlines1 endLine True
+      else if useVerbatim then
         -- The verbatim span [line .. endLine] already contains every comment on
         -- those lines, so consume the whole decl's pending comment prefix
         -- (flushBefore already drained everything strictly before `line`).
@@ -366,11 +429,14 @@ stepDeclNormal (FmtState pieces2 cs1 vlines1 cursor1 started1) decl line endLine
 -- back inline, (5) end-line inline trailing comment(s),
 -- (6) newline + advance cursor to end_line + started := true.
 
-walkDecls : FmtState -> List String -> List Decl -> List DeclPos -> FmtState
-walkDecls st _ [] _ = st
-walkDecls st _ _ [] = st
-walkDecls st srcLines (d::ds) (p::ps) =
-  walkDecls (stepDecl st srcLines d p) srcLines ds ps
+-- Threads the per-decl chain operand-line side-channel (`cls`) in lockstep with
+-- the decls; a decl with no entry (list exhausted) gets `[]` (non-chain).
+walkDecls : FmtState -> List String -> List Decl -> List DeclPos -> List (List Int) -> FmtState
+walkDecls st _ [] _ _ = st
+walkDecls st _ _ [] _ = st
+walkDecls st srcLines (d::ds) (p::ps) cls = match cls
+  [] => walkDecls (stepDecl st srcLines [] d p) srcLines ds ps []
+  c::rest => walkDecls (stepDecl st srcLines c d p) srcLines ds ps rest
 
 -- ── Public entry ──────────────────────────────────
 
@@ -378,12 +444,12 @@ walkDecls st srcLines (d::ds) (p::ps) =
 -- position list and the decl list differ in length, fall back to the plain
 -- comment-free `programToString`-equivalent (render each decl + "\n").  Mirror
 -- of lib/printer.ml's length guard.
-export formatProgram : List Decl -> List DeclPos -> List Int -> List Comment -> Int -> String -> String
-formatProgram decls declPositions variantLines comments _lastContentLine src =
+export formatProgram : List Decl -> List DeclPos -> List Int -> List (List Int) -> List Comment -> Int -> String -> String
+formatProgram decls declPositions variantLines chainLines comments _lastContentLine src =
   if listLen declPositions != listLen decls then stringConcat (map (d => render (printDecl d) ++ "\n") decls)
   else
     let st0 = FmtState [] comments variantLines 0 False
-    match drainAll (walkDecls st0 (splitNl src) decls declPositions)
+    match drainAll (walkDecls st0 (splitNl src) decls declPositions chainLines)
       FmtState finalPieces _ _ _ _ => stringConcat (reverseL finalPieces)
 -- After the walk, the final `flush_before max_int` drains EVERY remaining
 -- comment; `drainAll` does that unconditionally (no max_int literal needed).
@@ -398,4 +464,4 @@ drainAll (FmtState pieces (c::rest) vlines cursor started) =
 -- Convenience: parse + collect comments + format, from source text.
 export formatSource : String -> String
 formatSource src = match parseWithPositions src
-  (decls, pos) => formatProgram decls (positionsDecls pos) (positionsVariantLines pos) (collectComments src) (positionsLastContentLine pos) src
+  (decls, pos) => formatProgram decls (positionsDecls pos) (positionsVariantLines pos) (positionsChainLines pos) (collectComments src) (positionsLastContentLine pos) src

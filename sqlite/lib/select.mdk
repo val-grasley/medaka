@@ -450,10 +450,10 @@ validIdentGo chars i n =
 
 identChar : Int -> Bool
 identChar c =
-  (c >= 48 && c <= 57)        -- 0-9
-  || (c >= 65 && c <= 90)     -- A-Z
-  || (c >= 97 && c <= 122)    -- a-z
-  || c == 95                  -- _
+  c >= 48 && c <= 57  -- 0-9
+  || c >= 65 && c <= 90  -- A-Z
+  || c >= 97 && c <= 122  -- a-z
+  || c == 95  -- _
 
 -- | A valid (possibly qualified) identifier for the ON/render path: either a
 --   bare `validIdent`, or `table.column` with EXACTLY one `.` and each side a
@@ -1091,20 +1091,22 @@ renderShow (Err e) = "ERR \{e}"
 renderShow (Ok (sql, binds)) = "\{sql} ## \{showBinds binds}"
 
 andLimitSel : Select
-andLimitSel = withOffset
-  5
-  (withLimit
-    10
-    (withWhere
-      (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
-      (selectFrom "users")))
+andLimitSel =
+  withOffset
+    5
+    (withLimit
+      10
+      (withWhere
+        (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
+        (selectFrom "users")))
 
 orNullSel : Select
-orNullSel = withWhere
-  (eAnd
-    (eOr (eEq (eColText "a") (eLitT "hi")) (eLt (eColInt "b") (eLitI 3)))
-    (eIsNull (eColInt "c")))
-  (selectFrom "t")
+orNullSel =
+  withWhere
+    (eAnd
+      (eOr (eEq (eColText "a") (eLitT "hi")) (eLt (eColInt "b") (eLitI 3)))
+      (eIsNull (eColInt "c")))
+    (selectFrom "t")
 
 -- Render a bind list as `[LInt 18, LInt 10]` (Debug-independent).
 showBinds : List Literal -> String

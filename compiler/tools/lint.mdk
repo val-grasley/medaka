@@ -820,12 +820,13 @@ rewriteBindExpr orc (ERangeList lo hi i) =
   ERangeList (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
 rewriteBindExpr orc (ERangeArray lo hi i) =
   ERangeArray (rewriteBindExpr orc lo) (rewriteBindExpr orc hi) i
-rewriteBindExpr orc (ESlice e lo hi i r) = ESlice
-  (rewriteBindExpr orc e)
-  (rewriteBindExpr orc lo)
-  (rewriteBindExpr orc hi)
-  i
-  r
+rewriteBindExpr orc (ESlice e lo hi i r) =
+  ESlice
+    (rewriteBindExpr orc e)
+    (rewriteBindExpr orc lo)
+    (rewriteBindExpr orc hi)
+    i
+    r
 rewriteBindExpr orc (ELetGroup binds body) =
   ELetGroup (map (rewriteBindLet orc) binds) (rewriteBindExpr orc body)
 rewriteBindExpr orc (ESection s) = ESection (rewriteBindSection orc s)

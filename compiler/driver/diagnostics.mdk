@@ -152,11 +152,12 @@ analyzeLocated runtimeSrc coreSrc progSrc =
 -- `allowInternal` is set (the single-file `medaka check` error path).  Other
 -- callers (LSP, playground) keep `analyzeLocated`, which is unguarded.
 export analyzeLocatedG : Bool -> String -> String -> String -> <Mut> List Diag
-analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc = analyzeFrom
-  runtimeSrc
-  coreSrc
-  (parseLocated progSrc)
-  (internalGuardFor allowInternal)
+analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc =
+  analyzeFrom
+    runtimeSrc
+    coreSrc
+    (parseLocated progSrc)
+    (internalGuardFor allowInternal)
 
 -- Shared analysis body, parameterised over the already-parsed target program
 -- (so `analyze` can pass placeholder-loc `parse` decls and `analyzeLocated` can

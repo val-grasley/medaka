@@ -99,24 +99,21 @@ encodeGo bytes i n urlSafe acc
    > encode (toUtf8 "foobar")
    "Zm9vYmFy" -}
 export encode : Array Int -> String
-encode bytes = stringFromChars (arrayFromList (encodeGo
-  bytes
-  0
-  (arrayLength bytes)
-  False
-  []))
+encode bytes =
+  stringFromChars (arrayFromList (encodeGo
+    bytes
+    0
+    (arrayLength bytes)
+    False
+    []))
 
 {- | Bytes → URL-and-filename-safe base64 (`-`/`_`, still `=`-padded).
 
    > encodeUrlSafe (fromList [255, 239, 191])
    "_--_" -}
 export encodeUrlSafe : Array Int -> String
-encodeUrlSafe bytes = stringFromChars (arrayFromList (encodeGo
-  bytes
-  0
-  (arrayLength bytes)
-  True
-  []))
+encodeUrlSafe bytes =
+  stringFromChars (arrayFromList (encodeGo bytes 0 (arrayLength bytes) True []))
 
 -- ── Decode ──────────────────────────────────────────────────────────────────
 

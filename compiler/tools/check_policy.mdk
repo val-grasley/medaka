@@ -79,12 +79,13 @@ parsePolicyGo (f::rest) file allow fn = match file
 -- Split the --allow value on ',', dropping empties (mirror String.split_on_char
 -- ',' then filter (<> "")).
 splitComma : String -> List String
-splitComma s = filterNonEmpty (splitCommaGo
-  (stringToChars s)
-  (arrayLength (stringToChars s))
-  0
-  0
-  0)
+splitComma s =
+  filterNonEmpty (splitCommaGo
+    (stringToChars s)
+    (arrayLength (stringToChars s))
+    0
+    0
+    0)
 
 -- WS-4: brace-depth-aware label split.  Commas INSIDE `{…}` (a product Method
 -- set, e.g. `Method={GET,POST}`) do NOT separate policy labels.  `depth` tracks

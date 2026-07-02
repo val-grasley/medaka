@@ -65,22 +65,24 @@ encodeGo bytes i upper acc
    > encode (fromList [0])
    "00" -}
 export encode : Array Int -> String
-encode bytes = stringFromChars (arrayFromList (encodeGo
-  bytes
-  (arrayLength bytes - 1)
-  False
-  []))
+encode bytes =
+  stringFromChars (arrayFromList (encodeGo
+    bytes
+    (arrayLength bytes - 1)
+    False
+    []))
 
 {- | Bytes → uppercase hex string.
 
    > encodeUpper (fromList [255, 0, 16])
    "FF0010" -}
 export encodeUpper : Array Int -> String
-encodeUpper bytes = stringFromChars (arrayFromList (encodeGo
-  bytes
-  (arrayLength bytes - 1)
-  True
-  []))
+encodeUpper bytes =
+  stringFromChars (arrayFromList (encodeGo
+    bytes
+    (arrayLength bytes - 1)
+    True
+    []))
 
 {- | UTF-8 bytes of `s` → lowercase hex string.
 

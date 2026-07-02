@@ -277,15 +277,16 @@ columnNames db name =
   map (entry => colNamesOf (schemaSql entry)) (findTable db name)
 
 colNamesOf : String -> List String
-colNamesOf sql = cnGather
-  (stringToChars sql)
-  0
-  (arrayLength (stringToChars sql))
-  (-1)
-  0
-  False
-  True
-  []
+colNamesOf sql =
+  cnGather
+    (stringToChars sql)
+    0
+    (arrayLength (stringToChars sql))
+    (-1)
+    0
+    False
+    True
+    []
 
 cnGather : Array Char -> Int -> Int -> Int -> Int -> Bool -> Bool -> List String -> List String
 cnGather arr i n col depth started atColStart acc

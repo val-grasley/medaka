@@ -267,18 +267,20 @@ leafOrGuard guards i rest
   | otherwise = CTLeaf i
 
 buildConSwitch : List Bool -> List (List Pat, Int) -> CTree
-buildConSwitch guards rows = CTSwitch
-  (map (conBranch guards rows) (distinctConHeads rows))
-  (compileTree guards (defaultMatrix rows))
+buildConSwitch guards rows =
+  CTSwitch
+    (map (conBranch guards rows) (distinctConHeads rows))
+    (compileTree guards (defaultMatrix rows))
 
 conBranch : List Bool -> List (List Pat, Int) -> (String, Int) -> CTBranch
 conBranch guards rows (c, a) =
   CTBranch (decodeHead c a) (compileTree guards (specializeCon c a rows))
 
 buildLitSwitch : List Bool -> List (List Pat, Int) -> CTree
-buildLitSwitch guards rows = CTSwitch
-  (map (litBranch guards rows) (distinctLits rows))
-  (compileTree guards (defaultMatrix rows))
+buildLitSwitch guards rows =
+  CTSwitch
+    (map (litBranch guards rows) (distinctLits rows))
+    (compileTree guards (defaultMatrix rows))
 
 litBranch : List Bool -> List (List Pat, Int) -> Lit -> CTBranch
 litBranch guards rows l =
@@ -486,9 +488,10 @@ lowerProgram prog =
 -- the emitter's record cell layout / recFieldTable use, so the positional indices
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
 export lowerProgramEmit : List Decl -> <Mut> CProgram
-lowerProgramEmit prog = registerRecordCtors
-  prog
-  (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
+lowerProgramEmit prog =
+  registerRecordCtors
+    prog
+    (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
 
 -- EMIT-ONLY: register each single-constructor `record` decl's ctor in the Core IR
 -- ctor tables (ctorArs: name→field-count; ctorTypes: name→its own type name).  The
@@ -582,11 +585,12 @@ rewriteRecPatField _ (RecPatField l None) = RecPatField l None
 -- built from the original PRec arms, which canonPat wildcarded; the rewritten PCon
 -- arms compile to a proper constructor switch with no needs-guard fall-through).
 rewriteProgramRecPats : List (String, List String) -> CProgram -> CProgram
-rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) = CProgram
-  (map (rewriteBindRP fo) groups)
-  ctorArs
-  ctorTypes
-  (map (rewriteImplRP fo) implEntries)
+rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) =
+  CProgram
+    (map (rewriteBindRP fo) groups)
+    ctorArs
+    ctorTypes
+    (map (rewriteImplRP fo) implEntries)
 
 rewriteBindRP : List (String, List String) -> CBind -> CBind
 rewriteBindRP fo (CBind n clauses) = CBind n (map (rewriteClauseRP fo) clauses)
@@ -596,20 +600,22 @@ rewriteClauseRP fo (CClause pats body) =
   CClause (map (rewritePat fo) pats) (rewriteExprRP fo body)
 
 rewriteImplRP : List (String, List String) -> CImplEntry -> CImplEntry
-rewriteImplRP fo (CImplEntry n s (CImplTagged tag key iface ps pats body)) = CImplEntry
-  n
-  s
-  (CImplTagged
-    tag
-    key
-    iface
-    ps
-    (map (rewritePat fo) pats)
-    (rewriteExprRP fo body))
-rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) = CImplEntry
-  n
-  s
-  (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
+rewriteImplRP fo (CImplEntry n s (CImplTagged tag key iface ps pats body)) =
+  CImplEntry
+    n
+    s
+    (CImplTagged
+      tag
+      key
+      iface
+      ps
+      (map (rewritePat fo) pats)
+      (rewriteExprRP fo body))
+rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) =
+  CImplEntry
+    n
+    s
+    (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
 
 rewriteExprRP : List (String, List String) -> CExpr -> CExpr
 rewriteExprRP _ (CLit l) = CLit l
@@ -650,27 +656,30 @@ rewriteExprRP fo (CSlice a lo hi incl) =
   CSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
 rewriteExprRP fo (CStringIndex a i) =
   CStringIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
-rewriteExprRP fo (CStringSlice a lo hi incl) = CStringSlice
-  (rewriteExprRP fo a)
-  (rewriteExprRP fo lo)
-  (rewriteExprRP fo hi)
-  incl
+rewriteExprRP fo (CStringSlice a lo hi incl) =
+  CStringSlice
+    (rewriteExprRP fo a)
+    (rewriteExprRP fo lo)
+    (rewriteExprRP fo hi)
+    incl
 rewriteExprRP fo (CListIndex a i) =
   CListIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
-rewriteExprRP fo (CListSlice a lo hi incl) = CListSlice
-  (rewriteExprRP fo a)
-  (rewriteExprRP fo lo)
-  (rewriteExprRP fo hi)
-  incl
+rewriteExprRP fo (CListSlice a lo hi incl) =
+  CListSlice
+    (rewriteExprRP fo a)
+    (rewriteExprRP fo lo)
+    (rewriteExprRP fo hi)
+    incl
 rewriteExprRP fo (CBlock stmts) = CBlock (map (rewriteStmtRP fo) stmts)
 rewriteExprRP _ (CMethod name r ir mr) = CMethod name r ir mr
 rewriteExprRP _ (CDict name rs) = CDict name rs
 
 rewriteArmRP : List (String, List String) -> CArm -> CArm
-rewriteArmRP fo (CArm pat guards body) = CArm
-  (rewritePat fo pat)
-  (map (rewriteGuardRP fo) guards)
-  (rewriteExprRP fo body)
+rewriteArmRP fo (CArm pat guards body) =
+  CArm
+    (rewritePat fo pat)
+    (map (rewriteGuardRP fo) guards)
+    (rewriteExprRP fo body)
 
 rewriteGuardRP : List (String, List String) -> CGuard -> CGuard
 rewriteGuardRP fo (CGBool e) = CGBool (rewriteExprRP fo e)

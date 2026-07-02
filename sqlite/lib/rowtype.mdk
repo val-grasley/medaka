@@ -152,9 +152,10 @@ decode2 wa ra rb cells = do
 
 -- | Three columns (or column groups).
 export t3 : RowType a -> RowType b -> RowType c -> RowType (a, b, c)
-t3 ra rb rc = mkRowType
-  (rtWidth ra + rtWidth rb + rtWidth rc)
-  (decode3 (rtWidth ra) (rtWidth rb) ra rb rc)
+t3 ra rb rc =
+  mkRowType
+    (rtWidth ra + rtWidth rb + rtWidth rc)
+    (decode3 (rtWidth ra) (rtWidth rb) ra rb rc)
 
 decode3 : Int -> Int -> RowType a -> RowType b -> RowType c -> List Cell -> Result String (a, b, c)
 decode3 wa wb ra rb rc cells = do
@@ -165,9 +166,10 @@ decode3 wa wb ra rb rc cells = do
 
 -- | Four columns (or column groups).
 export t4 : RowType a -> RowType b -> RowType c -> RowType d -> RowType (a, b, c, d)
-t4 ra rb rc rd = mkRowType
-  (rtWidth ra + rtWidth rb + rtWidth rc + rtWidth rd)
-  (decode4 (rtWidth ra) (rtWidth rb) (rtWidth rc) ra rb rc rd)
+t4 ra rb rc rd =
+  mkRowType
+    (rtWidth ra + rtWidth rb + rtWidth rc + rtWidth rd)
+    (decode4 (rtWidth ra) (rtWidth rb) (rtWidth rc) ra rb rc rd)
 
 decode4 : Int -> Int -> Int -> RowType a -> RowType b -> RowType c -> RowType d -> List Cell -> Result String (a, b, c, d)
 decode4 wa wb wc ra rb rc rd cells = do

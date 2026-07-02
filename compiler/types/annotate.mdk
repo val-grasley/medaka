@@ -180,12 +180,13 @@ annotateLet : List (List String) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
 annotateLet fr m True (PVar f) e1 e2 =
   let inner = [f]::fr
   ELet m True (PVar f) (annotateExpr inner e1) (annotateExpr inner e2)
-annotateLet fr m isRec pat e1 e2 = ELet
-  m
-  isRec
-  pat
-  (annotateExpr fr e1)
-  (annotateExpr (patBindings pat :: fr) e2)
+annotateLet fr m isRec pat e1 e2 =
+  ELet
+    m
+    isRec
+    pat
+    (annotateExpr fr e1)
+    (annotateExpr (patBindings pat :: fr) e2)
 
 -- where-group: one frame holds all the group names, in scope for every clause
 -- body (under that clause's own per-param frames) and the result expression
@@ -288,10 +289,11 @@ annotateDecl d = d
 
 annotateIfaceMethod : IfaceMethod -> IfaceMethod
 annotateIfaceMethod (IfaceMethod nm ty None) = IfaceMethod nm ty None
-annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) = IfaceMethod
-  nm
-  ty
-  (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
+annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) =
+  IfaceMethod
+    nm
+    ty
+    (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
 
 annotateImplMethod : ImplMethod -> ImplMethod
 annotateImplMethod (ImplMethod nm pats body) =

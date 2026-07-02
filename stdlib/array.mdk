@@ -356,15 +356,16 @@ mergeSortBy cmp arr =
 
 -- Merge two sorted arrays into a fresh sorted array (stable: equal → left first).
 mergeArraysBy : (a -> a -> <e> Ordering) -> Array a -> Array a -> <e> Array a
-mergeArraysBy cmp left right = arrayFromList (mergeGo
-  cmp
-  left
-  right
-  0
-  0
-  (arrayLength left)
-  (arrayLength right)
-  [])
+mergeArraysBy cmp left right =
+  arrayFromList (mergeGo
+    cmp
+    left
+    right
+    0
+    0
+    (arrayLength left)
+    (arrayLength right)
+    [])
 
 -- Accumulates in reverse; flips at the base case via `revList`.
 mergeGo : (a -> a -> <e> Ordering) -> Array a -> Array a -> Int -> Int -> Int -> Int -> List a -> <e> List a

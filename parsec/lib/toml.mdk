@@ -244,9 +244,10 @@ parseArrayElement = do
   pure v
 
 parseArray : Parser TomlValue
-parseArray = map
-  TArray
-  (between (char '[') (char ']') (sepBy parseArrayElement (char ',')))
+parseArray =
+  map
+    TArray
+    (between (char '[') (char ']') (sepBy parseArrayElement (char ',')))
 
 -- ---------------------------------------------------------------------------
 -- Value parser
