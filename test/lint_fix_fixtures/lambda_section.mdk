@@ -1,0 +1,12 @@
+-- Fixture for rule-lambda-section autofix: lambdas → operator sections.
+rightEq = (x => x == 3)
+rightMul = (x => x * 2)
+rightCons = (x => x :: rest)
+leftMul = (x => 2 * x)
+leftSub = (x => 10 - x)
+bareAdd = (x y => x + y)
+nestedInApp = filterOut (n => n > 0) items
+negRightSub = (x => x - 5)
+negSelf = (x => x + x)
+negBacktick = (x => x `div` 2)
+negReorder = (x y => y + x)

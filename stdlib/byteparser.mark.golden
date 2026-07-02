@@ -20,7 +20,7 @@
 (DTypeSig true "anyByte" (TyApp (TyCon "ByteParser") (TyCon "Int")))
 (DFunDef false "anyByte" () (EApp (EVar "satisfy") (ELam (PWild) (EVar "True"))))
 (DTypeSig true "byte" (TyFun (TyCon "Int") (TyApp (TyCon "ByteParser") (TyCon "Int"))))
-(DFunDef false "byte" ((PVar "b")) (EApp (EVar "satisfy") (ELam ((PVar "x")) (EBinOp "==" (EVar "x") (EVar "b")))))
+(DFunDef false "byte" ((PVar "b")) (EApp (EVar "satisfy") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "b")))))
 (DTypeSig true "eof" (TyApp (TyCon "ByteParser") (TyCon "Unit")))
 (DFunDef false "eof" () (EApp (EVar "ByteParser") (EVar "eofStep")))
 (DTypeSig false "eofStep" (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyApp (TyCon "BResult") (TyCon "Unit")))))

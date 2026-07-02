@@ -334,7 +334,7 @@ isSubsetOf a b = foldrSet (x acc => acc && member x b) True a
 export default impl Foldable Set where
   fold f z s = foldlSet f z s
   foldRight f z s = foldrSet f z s
-  toList s = foldrSet (x acc => x::acc) [] s
+  toList s = foldrSet (::) [] s
   isEmpty Tip = True
   isEmpty _ = False
   length s = size s

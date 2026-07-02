@@ -88,7 +88,7 @@ fromList xs = arrayFromList xs
    > toList (range 0 4)
    [0, 1, 2, 3] -}
 export range : Int -> Int -> Array Int
-range lo hi = arrayMakeWith (if hi > lo then hi - lo else 0) (i => lo + i)
+range lo hi = arrayMakeWith (if hi > lo then hi - lo else 0) (lo + _)
 
 {- | Fresh copy with the same contents.  Useful before in-place mutation
    when you want to preserve the original. -}

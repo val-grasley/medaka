@@ -1,0 +1,46 @@
+-- Fixture for rule-lambda-section: lambdas rewritable to operator sections.
+
+-- POSITIVE: right sections (param is the LEFT operand; RHS free of the param).
+rightEq = (x => x == 3)
+rightMul = (x => x * 2)
+rightCons = (x => x :: rest)
+rightConcat = (x => x ++ suffix)
+
+-- POSITIVE: left sections (param is the RIGHT operand; LHS free of the param).
+leftMul = (x => 2 * x)
+leftSub = (x => 10 - x)
+leftCompose = (x => base >> x)
+
+-- POSITIVE: bare sections (two params, in order, each once).
+bareAdd = (x y => x + y)
+bareLt = (a b => a < b)
+
+-- POSITIVE: nested anywhere in a decl body.
+nestedInApp = filterOut (n => n > 0) items
+
+nestedInLet =
+  let g = (v => v && flag)
+  g True
+
+-- NEGATIVE: `-` right section would parse as unary negation — must NOT fire.
+negRightSub = (x => x - 5)
+
+-- NEGATIVE: param used twice / on both operands — must NOT fire.
+negSelf = (x => x + x)
+
+-- NEGATIVE: param buried in a sub-expression — must NOT fire.
+negSubexpr = (x => f x + 1)
+
+-- NEGATIVE: backtick infix does not round-trip as a section — must NOT fire.
+negBacktick = (x => x `div` 2)
+negBacktickBare = (x y => x `max` y)
+
+-- NEGATIVE: two params out of order — must NOT fire.
+negReorder = (x y => y + x)
+
+-- NEGATIVE: three params — not a section shape.
+negThree = (x y z => x + y)
+
+-- NEGATIVE: not a binary op at all.
+negUnary = (x => -x)
+negApp = (x => f x)

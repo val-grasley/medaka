@@ -140,7 +140,7 @@ subsequences (x::xs) = flatMap (sub => [sub, x::sub]) (subsequences xs)
 export permutations : List a -> List (List a)
 permutations [] = [[]]
 permutations xs =
-  flatMap ((h, rest) => map (p => h::p) (permutations rest)) (selections xs)
+  flatMap ((h, rest) => map (h :: _) (permutations rest)) (selections xs)
 
 -- Each element paired with the list of the others, original order preserved.
 selections : List a -> List (a, List a)
@@ -477,7 +477,7 @@ last (x::xs) = last xs
 export init : List a -> Option (List a)
 init [] = None
 init (x::[]) = Some []
-init (x::xs) = map (ys => x::ys) (init xs)
+init (x::xs) = map (x :: _) (init xs)
 
 export get : Int -> List a -> Option a
 get _ [] = None

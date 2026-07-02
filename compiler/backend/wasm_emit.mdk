@@ -1705,7 +1705,7 @@ emitScalarFnBind fnNames valNames (CBind name [CClause pats body]) =
   let instrs = emitScalarTail fnNames valNames env body
   let sig = "  (func $" ++ gname name ++ joinWith "" (map paramDeclI32 params) ++ " (result i64)"
   let localDecls = map localDeclI32 extraLocals
-  [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
+  [sig] ++ map ("  " ++ _) localDecls ++ indent instrs ++ ["  )"]
 emitScalarFnBind _ _ (CBind name _) =
   gap
     ("scalar-mode top-level function '" ++ name ++ "' is multi-clause or pattern-matching (decision-tree match needs ADT mode)")
@@ -2238,7 +2238,7 @@ emitRefInit prog groups =
   let scratch = scratchLocals maxDepth
   let locals = dedupKeep (valLocals ++ mainLocals) ++ scratch
   let localDecls = map (l => "  " ++ localDeclRef l) locals
-  let w7Decls = map (l => "  " ++ l) (w7LocalDecls maxDepth)
+  let w7Decls = map ("  " ++ _) (w7LocalDecls maxDepth)
   ["  (func $__init"]
     ++ localDecls
     ++ w7Decls
@@ -2515,7 +2515,7 @@ emitRefFnBind prog (CBind name clauses0) =
             ++ " (result (ref eq))"
           let localDecls = map localDeclRef (extraLocals ++ scratch)
           let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
-          let fnDef = [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
+          let fnDef = [sig] ++ map ("  " ++ _) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
           let wrapper = if needsClosWrapper prog name then emitFnClosWrapper prog name arity else []
           fnDef ++ wrapper
 
@@ -3384,7 +3384,7 @@ emitImplGroup prog (ImplG method tag arity clauses) =
         ++ " (result (ref eq))"
       let localDecls = map localDeclRef (extraLocals ++ scratch)
       let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
-      [sig] ++ map (l => "  " ++ l) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
+      [sig] ++ map ("  " ++ _) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
 clausePatVars : CClause -> List String
 clausePatVars (CClause pats _) = flatMap patVars pats
@@ -3665,7 +3665,7 @@ emitDefaultDefnGroup prog fname tag method arity clauses =
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   [sig]
-    ++ map (l => "  " ++ l) (localDecls ++ w7Decls)
+    ++ map ("  " ++ _) (localDecls ++ w7Decls)
     ++ indent bodyLines
     ++ ["  )"]
 
@@ -4052,7 +4052,7 @@ emitExternEtaDefine prog lamName name arity =
   let arrayScratch = if isArrayExternW name then arrayEtaScratchLocals else []
   let localLines = map (l => localDeclRef l) params ++ arrayScratch
   ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
-    ++ map (l => "  " ++ l) localLines
+    ++ map ("  " ++ _) localLines
     ++ indent (argPrologue ++ call ++ ["return"])
     ++ ["  )"]
 
@@ -4086,7 +4086,7 @@ emitCtorEtaDefine prog lamName ctor arity =
   [
       "  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"
     ]
-    ++ map (l => "  " ++ l) localLines
+    ++ map ("  " ++ _) localLines
     ++ indent (argPrologue ++ body ++ ["return"])
     ++ ["  )"]
 
@@ -5483,7 +5483,7 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
   let sig = "  (func $" ++ funcSym
     ++ joinWith "" (map paramDeclRef params)
     ++ " (result (ref eq))"
-  [sig] ++ map (l => "  " ++ l) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
+  [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
 
 -- the recursive self-call FIELD index of the body's cons/ctor-tail leaf (Axis A: always
 -- the last field).  Cons-tail → 1 (field 2 = tail).  General ctor → ctorArity-1.  We read
@@ -5894,7 +5894,7 @@ emitWDispMemberFn prog root emitName origName arity clauses =
   let tmcLocal = ["(local " ++ wTrmcTempL 0 ++ " (ref null eq))"]
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
-  [sig] ++ map (l => "  " ++ l) (tmcLocal ++ localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
+  [sig] ++ map ("  " ++ _) (tmcLocal ++ localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
 -- the spine-cons leaf rewrite (case 2): build the Cons cell with the cons HEAD + a
 -- placeholder tail, link it into $g_tmc_dest (or seed $g_tmc_head on the first cell),
@@ -6263,7 +6263,7 @@ emitLamDefine prog lamName pats captured body =
   let _ = setRef wTrmcCtxRef savedTrmc
   let _ = setRef wDispCtxRef savedDisp
   ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
-    ++ map (l => "  " ++ l) localLines
+    ++ map ("  " ++ _) localLines
     ++ indent (setup ++ capPrologue ++ argLoads ++ paramBinds ++ bodyLines)
     ++ ["  )"]
 
@@ -6375,7 +6375,7 @@ emitLgLifted prog gid names groupCaps binds (CBind name clauses) =
     ++ w7LocalDecls (clausesMaxDepth clauses)
   let setup = ["local.get $self", "ref.cast (ref $clos)", "local.set $__self_clos"]
   let def = ["  (func " ++ lamName ++ " (type $codety) (param $self (ref eq)) (param $args (ref $argarr)) (result (ref eq))"]
-    ++ map (l => "  " ++ l) localLines
+    ++ map ("  " ++ _) localLines
     ++ indent (setup ++ capPrologue ++ memberRebuilds ++ argPrologue ++ bodyLines)
     ++ ["  )"]
   addLifted def
@@ -7602,7 +7602,7 @@ flattenApp (CApp f a) acc = flattenApp f (a::acc)
 flattenApp hd acc = (hd, acc)
 
 indent : List String -> List String
-indent lines = map (l => "    " ++ l) lines
+indent lines = map ("    " ++ _) lines
 
 gname : String -> String
 -- A user identifier that is LITERALLY one of the codety ABI param names (`$self` /

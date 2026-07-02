@@ -12,7 +12,7 @@
 (DTypeSig true "fromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "fromList" ((PVar "xs")) (EApp (EVar "arrayFromList") (EVar "xs")))
 (DTypeSig true "range" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Array") (TyCon "Int")))))
-(DFunDef false "range" ((PVar "lo") (PVar "hi")) (EApp (EApp (EVar "arrayMakeWith") (EIf (EBinOp ">" (EVar "hi") (EVar "lo")) (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 0)))) (ELam ((PVar "i")) (EBinOp "+" (EVar "lo") (EVar "i")))))
+(DFunDef false "range" ((PVar "lo") (PVar "hi")) (EApp (EApp (EVar "arrayMakeWith") (EIf (EBinOp ">" (EVar "hi") (EVar "lo")) (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 0)))) (ELam ((PVar "_s")) (EBinOp "+" (EVar "lo") (EVar "_s")))))
 (DTypeSig true "copy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "copy" ((PVar "arr")) (EApp (EVar "arrayCopy") (EVar "arr")))
 (DTypeSig true "get" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Option") (TyVar "a")))))

@@ -389,7 +389,7 @@ colLits (_::rest) = colLits rest
 dedupLits : List Lit -> List Lit -> List Lit
 dedupLits [] _ = []
 dedupLits (l::rest) seen
-  | anyList (x => l == x) seen = dedupLits rest seen
+  | anyList (l == _) seen = dedupLits rest seen
   | otherwise = l :: dedupLits rest (l::seen)
 
 -- ── matrix specialization / default (over index-carrying rows) ─────────────

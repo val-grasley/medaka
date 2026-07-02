@@ -177,7 +177,7 @@ resolveCols : (String -> Option Int) -> List String -> Result String (List Int)
 resolveCols _ [] = Ok []
 resolveCols lookup (c::rest) = match lookup c
   None => Err "queryAgg: unknown GROUP BY column: \{c}"
-  Some i => map (is => i::is) (resolveCols lookup rest)
+  Some i => map (i :: _) (resolveCols lookup rest)
 
 -- ---------------------------------------------------------------------------
 -- Grouping
@@ -228,7 +228,7 @@ reduceGroups aggs lookup (g::rest) = do
 
 reduceGroup : List Agg -> (String -> Option Int) -> (List Cell, List (List Cell)) -> Result String (List Cell)
 reduceGroup aggs lookup g = match g
-  (key, rows) => map (aggCells => key ++ aggCells) (reduceAggs aggs lookup rows)
+  (key, rows) => map (key ++ _) (reduceAggs aggs lookup rows)
 
 reduceAggs : List Agg -> (String -> Option Int) -> List (List Cell) -> Result String (List Cell)
 reduceAggs [] _ _ = Ok []

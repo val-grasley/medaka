@@ -529,9 +529,9 @@ export decodeSetParam : String -> List String
 decodeSetParam s =
   let n = stringLength s
   if n >= 2 && stringSlice 0 1 s == "{" && stringSlice (n - 1) n s == "}" then
-    sortUniqS (filterList (x => x != "") (splitOnComma (stringSlice 1 (n - 1) s)))
+    sortUniqS (filterList (!= "") (splitOnComma (stringSlice 1 (n - 1) s)))
   else
-    sortUniqS (filterList (x => x != "") (splitOnComma s))
+    sortUniqS (filterList (!= "") (splitOnComma s))
 
 -- WS-4: a PRODUCT written param is carried in the `Option String` carrier as a
 -- structured SENTINEL string the parser's `effParamFor` product clause builds:
@@ -2664,7 +2664,7 @@ aliasDfsVisit graph visitedRef onStackRef cyclicOut name =
     else
       let _ = setRef onStackRef (name::onStackRef.value)
       let _ = aliasDfsVisitNeighbors graph visitedRef onStackRef cyclicOut (fromOption [] (lookupAssoc name graph))
-      let _ = setRef onStackRef (filterList (n => n != name) onStackRef.value)
+      let _ = setRef onStackRef (filterList (!= name) onStackRef.value)
       setRef visitedRef (name::visitedRef.value)
 
 aliasDfsVisitNeighbors : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
@@ -9059,7 +9059,7 @@ keepGroupNames : OrdMap Unit -> List String -> List String
 keepGroupNames nameSet refs = filterList (r => omHasKey r nameSet) refs
 
 filterNonSelf : String -> List String -> List String
-filterNonSelf name xs = filterList (x => x != name) xs
+filterNonSelf name xs = filterList (!= name) xs
 
 -- process each SCC as a letrec group in topological order
 processSCCs : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)

@@ -861,7 +861,7 @@ lookupQualified : List (String, String, Int) -> String -> String -> Option Int
 lookupQualified [] _ _ = None
 lookupQualified ((name, sql, off)::rest) tbl col =
   if name == tbl then
-    map (i => off + i) (columnIndex sql col)
+    map (off + _) (columnIndex sql col)
   else
     lookupQualified rest tbl col
 

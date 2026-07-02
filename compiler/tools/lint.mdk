@@ -117,6 +117,9 @@ ruleNameDuplicateBody = "rule-duplicate-body"
 ruleNameBindThenDestructure : String
 ruleNameBindThenDestructure = "rule-bind-then-destructure"
 
+ruleNameLambdaSection : String
+ruleNameLambdaSection = "rule-lambda-section"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -163,9 +166,24 @@ bindThenDestructureRule = Rule {
   fix = Some bindThenDestructureFix,
 }
 
+lambdaSectionRule : Rule
+lambdaSectionRule = Rule {
+  name = ruleNameLambdaSection,
+  descr = "lambda whose body is a single binary op on its parameter(s) — prefer an operator section (STYLE \"Dogfooding\")",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleLambdaSection,
+  fix = Some lambdaSectionFix,
+}
+
 export allRules : List Rule
-allRules =
-  [matchParamRule, derivableRule, stdlibReimplRule, bindThenDestructureRule]
+allRules = [
+  matchParamRule,
+  derivableRule,
+  stdlibReimplRule,
+  bindThenDestructureRule,
+  lambdaSectionRule,
+]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
 -- Each CrossFileRule is its own top-level binding (same field-scanner reason as
@@ -1142,6 +1160,268 @@ rewriteBindField orc (FieldAssign n e) = FieldAssign n (rewriteBindExpr orc e)
 
 rewriteBindKv : Oracle -> (Expr, Expr) -> (Expr, Expr)
 rewriteBindKv orc (k, v) = (rewriteBindExpr orc k, rewriteBindExpr orc v)
+
+-- ── rule: lambda-section (STYLE "Dogfooding" — operator sections) ─────────────
+-- A single-clause lambda whose body is ONE binary operation on its bound
+-- parameter(s), rewritable to the canonical operator SECTION idiom:
+--   (x => x OP e)   [e free of x]  → (OP e)    right section  ESection (SecRight OP e)
+--   (x => e OP x)   [e free of x]  → (e OP _)   left section   ESection (SecLeft e OP)
+--   (x y => x OP y)  [x ≠ y]       → (OP)       bare section   ESection (SecBare OP)
+--
+-- CONSERVATISM (a false positive here CORRUPTS code):
+--   * single-param: the param must be EXACTLY one operand of the OUTERMOST binary
+--     op (a bare `EVar x` leaf); the OTHER operand must NOT mention x anywhere.
+--     So `x => x OP x`, `x => f x OP e`, `x => (x + 1) OP e` all skip.
+--   * two-param: body is exactly `EVar x OP EVar y` (in order, distinct names).
+--   * only the SYMBOLIC operators the parser accepts as sections round-trip
+--     (`sectionOpStr` in parser.mdk): + * / == != < > <= >= && || :: ++ |> >> <<,
+--     plus `-` for LEFT/BARE only (a `-` RIGHT section `(- e)` parses as unary
+--     negation — EXCLUDED).  Backtick infix (`EInfix`) is NOT handled: the printer
+--     emits a word-operator section without backticks, so it would not round-trip.
+--   * `ELam` is inherently single-clause / guard-free, so no extra guard check is
+--     needed (contrast the §8 match-on-param rule).
+-- The check walks the WHOLE decl expression tree (a lambda can nest anywhere) —
+-- including impl-method bodies; the fix rebuilds the tree converting every
+-- eligible lambda to `ESection`.
+
+-- symbolic operators that round-trip as a section (parser.mdk `sectionOpStr`).
+sectionSymOps : List String
+sectionSymOps = [
+  "+",
+  "*",
+  "/",
+  "==",
+  "!=",
+  "<",
+  ">",
+  "<=",
+  ">=",
+  "&&",
+  "||",
+  "::",
+  "++",
+  "|>",
+  ">>",
+  "<<",
+]
+
+-- `-` is a valid LEFT/BARE section but NOT a right section (`(- e)` = negation).
+rightSectionOp : String -> Bool
+rightSectionOp op = contains op sectionSymOps
+
+leftSectionOp : String -> Bool
+leftSectionOp op = op == "-" || contains op sectionSymOps
+
+bareSectionOp : String -> Bool
+bareSectionOp op = op == "-" || contains op sectionSymOps
+
+-- an `EVar x` leaf (under any ELoc wrapper)
+isEVarNamed : String -> Expr -> Bool
+isEVarNamed x e = match unwrapLoc e
+  EVar w => w == x
+  _ => False
+
+-- does `x` occur (conservatively: anywhere) in `e`?  A nested binder re-binding
+-- `x` only makes this OVER-count → we bail (safe), never rewrite unsoundly.
+mentionsVar : String -> Expr -> Bool
+mentionsVar x e = match unwrapLoc e
+  EVar w => w == x
+  e2 => anyList (mentionsVar x) (childExprs e2)
+
+-- the section a lambda collapses to, or None if it is not an eligible shape.
+lamSection : List Pat -> Expr -> Option Section
+lamSection [PVar x] body = lamSection1 x (unwrapLoc body)
+lamSection [PVar x, PVar y] body
+  | not (x == y) = lamSection2 x y (unwrapLoc body)
+  | otherwise = None
+lamSection _ _ = None
+
+lamSection1 : String -> Expr -> Option Section
+lamSection1 x (EBinOp op a b _)
+  | isEVarNamed x a && rightSectionOp op && not (mentionsVar x b) =
+    Some (SecRight op b)
+  | isEVarNamed x b && leftSectionOp op && not (mentionsVar x a) =
+    Some (SecLeft a op)
+  | otherwise = None
+lamSection1 _ _ = None
+
+lamSection2 : String -> String -> Expr -> Option Section
+lamSection2 x y (EBinOp op a b _)
+  | isEVarNamed x a && isEVarNamed y b && bareSectionOp op = Some (SecBare op)
+  | otherwise = None
+lamSection2 _ _ _ = None
+
+-- ── check ─────────────────────────────────────────────────────────────────────
+ruleLambdaSection : String -> Positions -> List Decl -> List Finding
+ruleLambdaSection _ pos prog = flatMap lambdaSectionDeclL (declLocList pos prog)
+
+lambdaSectionDeclL : (Decl, Option Loc) -> List Finding
+lambdaSectionDeclL (d, loc) = map (lambdaSectionFinding loc) (declLamSections d)
+
+declLamSections : Decl -> List Section
+declLamSections (DFunDef _ _ _ body) = collectLamSections body
+declLamSections (DImpl { methods, ... }) = flatMap implMethodLamSections methods
+declLamSections (DAttrib _ d) = declLamSections d
+declLamSections _ = []
+
+implMethodLamSections : ImplMethod -> List Section
+implMethodLamSections (ImplMethod _ _ body) = collectLamSections body
+
+-- every eligible lambda anywhere in the expression tree (order irrelevant).
+collectLamSections : Expr -> List Section
+collectLamSections e = lamHitOf e ++ flatMap collectLamSections (childExprs e)
+
+lamHitOf : Expr -> List Section
+lamHitOf (ELam pats body) = optSectionToList (lamSection pats body)
+lamHitOf _ = []
+
+optSectionToList : Option Section -> List Section
+optSectionToList (Some s) = [s]
+optSectionToList None = []
+
+lambdaSectionFinding : Option Loc -> Section -> Finding
+lambdaSectionFinding loc s = Finding {
+  rule = ruleNameLambdaSection,
+  message = "lambda is a single binary operation on its parameter(s) — rewrite as the operator section '" ++ exprToString (ESection s) ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+-- ── autofix ───────────────────────────────────────────────────────────────────
+-- Rebuild the decl body converting every eligible lambda to `ESection`.  Detects
+-- "did anything change" by comparing the location-stripped sexp of old vs new.
+lambdaSectionFix : Oracle -> Decl -> Option (List Decl)
+lambdaSectionFix _ (DFunDef vis name pats body) =
+  let body2 = rewriteLamExpr body
+  if exprSexp body2 == exprSexp body then
+    None
+  else
+    Some [DFunDef vis name pats body2]
+lambdaSectionFix orc (DAttrib a d) = match lambdaSectionFix orc d
+  Some [d2] => Some [DAttrib a d2]
+  _ => None
+lambdaSectionFix _ (DImpl { pub, def, iface, tys, name, reqs, methods }) =
+  let methods2 = map fixImplMethod methods
+  if implMethodsBodyKey methods2 == implMethodsBodyKey methods then
+    None
+  else
+    Some [
+      DImpl {
+        pub = pub,
+        def = def,
+        iface = iface,
+        tys = tys,
+        name = name,
+        reqs = reqs,
+        methods = methods2,
+      }
+    ]
+lambdaSectionFix _ _ = None
+
+fixImplMethod : ImplMethod -> ImplMethod
+fixImplMethod (ImplMethod nm ps body) = ImplMethod nm ps (rewriteLamExpr body)
+
+implMethodsBodyKey : List ImplMethod -> String
+implMethodsBodyKey ms = joinNl (map implMethodBodySexp ms)
+
+implMethodBodySexp : ImplMethod -> String
+implMethodBodySexp (ImplMethod _ _ body) = exprSexp body
+
+-- if a rewritten lambda is an eligible section, collapse it; else keep it.
+tryLamSection : List Pat -> Expr -> Expr
+tryLamSection ps b = match lamSection ps b
+  Some s => ESection s
+  None => ELam ps b
+
+-- recursively rewrite children (bottom-up), then collapse THIS lambda if eligible.
+rewriteLamExpr : Expr -> Expr
+rewriteLamExpr (ELoc l e) = ELoc l (rewriteLamExpr e)
+rewriteLamExpr (EDoOrigin l e) = EDoOrigin l (rewriteLamExpr e)
+rewriteLamExpr (EApp f x) = EApp (rewriteLamExpr f) (rewriteLamExpr x)
+rewriteLamExpr (ELam ps b) = tryLamSection ps (rewriteLamExpr b)
+rewriteLamExpr (ELet m isf p e1 e2) =
+  ELet m isf p (rewriteLamExpr e1) (rewriteLamExpr e2)
+rewriteLamExpr (EMatch s arms) =
+  EMatch (rewriteLamExpr s) (map rewriteLamArm arms)
+rewriteLamExpr (EIf c t el) =
+  EIf (rewriteLamExpr c) (rewriteLamExpr t) (rewriteLamExpr el)
+rewriteLamExpr (EBinOp op a b r) =
+  EBinOp op (rewriteLamExpr a) (rewriteLamExpr b) r
+rewriteLamExpr (EUnOp op a) = EUnOp op (rewriteLamExpr a)
+rewriteLamExpr (EInfix op a b) = EInfix op (rewriteLamExpr a) (rewriteLamExpr b)
+rewriteLamExpr (EFieldAccess e f r) = EFieldAccess (rewriteLamExpr e) f r
+rewriteLamExpr (ETuple es) = ETuple (map rewriteLamExpr es)
+rewriteLamExpr (EListLit es) = EListLit (map rewriteLamExpr es)
+rewriteLamExpr (EArrayLit es) = EArrayLit (map rewriteLamExpr es)
+rewriteLamExpr (ERangeList lo hi i) =
+  ERangeList (rewriteLamExpr lo) (rewriteLamExpr hi) i
+rewriteLamExpr (ERangeArray lo hi i) =
+  ERangeArray (rewriteLamExpr lo) (rewriteLamExpr hi) i
+rewriteLamExpr (ESlice e lo hi i r) =
+  ESlice (rewriteLamExpr e) (rewriteLamExpr lo) (rewriteLamExpr hi) i r
+rewriteLamExpr (ELetGroup binds body) =
+  ELetGroup (map rewriteLamLet binds) (rewriteLamExpr body)
+rewriteLamExpr (ESection s) = ESection (rewriteLamSection s)
+rewriteLamExpr (EFunction arms) = EFunction (map rewriteLamArm arms)
+rewriteLamExpr (EIndex a i r) = EIndex (rewriteLamExpr a) (rewriteLamExpr i) r
+rewriteLamExpr (EAnnot e t) = EAnnot (rewriteLamExpr e) t
+rewriteLamExpr (EHeadAnnot e t) = EHeadAnnot (rewriteLamExpr e) t
+rewriteLamExpr (EBlock stmts) = EBlock (map rewriteLamStmt stmts)
+rewriteLamExpr (EDo stmts) = EDo (map rewriteLamStmt stmts)
+rewriteLamExpr (EStringInterp parts) =
+  EStringInterp (map rewriteLamInterp parts)
+rewriteLamExpr (EGuards arms) = EGuards (map rewriteLamGuardArm arms)
+rewriteLamExpr (ERecordCreate n fs) = ERecordCreate n (map rewriteLamField fs)
+rewriteLamExpr (ERecordUpdate e fs) =
+  ERecordUpdate (rewriteLamExpr e) (map rewriteLamField fs)
+rewriteLamExpr (EVariantUpdate c e fs) =
+  EVariantUpdate c (rewriteLamExpr e) (map rewriteLamField fs)
+rewriteLamExpr (EMapLit n kvs) = EMapLit n (map rewriteLamKv kvs)
+rewriteLamExpr (ESetLit n es) = ESetLit n (map rewriteLamExpr es)
+rewriteLamExpr (EAsPat x e) = EAsPat x (rewriteLamExpr e)
+rewriteLamExpr e = e
+
+rewriteLamStmt : DoStmt -> DoStmt
+rewriteLamStmt (DoExpr e) = DoExpr (rewriteLamExpr e)
+rewriteLamStmt (DoBind p e) = DoBind p (rewriteLamExpr e)
+rewriteLamStmt (DoLet m r p e) = DoLet m r p (rewriteLamExpr e)
+rewriteLamStmt (DoAssign x e) = DoAssign x (rewriteLamExpr e)
+rewriteLamStmt (DoFieldAssign x fs e) = DoFieldAssign x fs (rewriteLamExpr e)
+rewriteLamStmt (DoLetElse p e alt) =
+  DoLetElse p (rewriteLamExpr e) (rewriteLamExpr alt)
+
+rewriteLamArm : Arm -> Arm
+rewriteLamArm (Arm p gs body) =
+  Arm p (map rewriteLamGuard gs) (rewriteLamExpr body)
+
+rewriteLamGuard : Guard -> Guard
+rewriteLamGuard (GBool e) = GBool (rewriteLamExpr e)
+rewriteLamGuard (GBind p e) = GBind p (rewriteLamExpr e)
+
+rewriteLamLet : LetBind -> LetBind
+rewriteLamLet (LetBind n clauses) = LetBind n (map rewriteLamClause clauses)
+
+rewriteLamClause : FunClause -> FunClause
+rewriteLamClause (FunClause ps body) = FunClause ps (rewriteLamExpr body)
+
+rewriteLamSection : Section -> Section
+rewriteLamSection (SecBare op) = SecBare op
+rewriteLamSection (SecRight op e) = SecRight op (rewriteLamExpr e)
+rewriteLamSection (SecLeft e op) = SecLeft (rewriteLamExpr e) op
+
+rewriteLamInterp : InterpPart -> InterpPart
+rewriteLamInterp (InterpStr s) = InterpStr s
+rewriteLamInterp (InterpExpr e) = InterpExpr (rewriteLamExpr e)
+
+rewriteLamGuardArm : GuardArm -> GuardArm
+rewriteLamGuardArm (GuardArm gs body) =
+  GuardArm (map rewriteLamGuard gs) (rewriteLamExpr body)
+
+rewriteLamField : FieldAssign -> FieldAssign
+rewriteLamField (FieldAssign n e) = FieldAssign n (rewriteLamExpr e)
+
+rewriteLamKv : (Expr, Expr) -> (Expr, Expr)
+rewriteLamKv (k, v) = (rewriteLamExpr k, rewriteLamExpr v)
 
 -- ── cross-file runner ─────────────────────────────────────────────────────────
 -- Run the enabled cross-file rules over every target file, honoring the same

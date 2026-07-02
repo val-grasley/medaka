@@ -1,0 +1,6 @@
+-- Fixture: the fixer bails on a decl whose span contains an interior comment
+-- (the printer carries no comments, so splicing would delete it).  Left as a
+-- warning; source untouched.
+withComment =
+  -- keep this comment
+  (x => x == 3)

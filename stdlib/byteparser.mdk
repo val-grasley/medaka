@@ -132,7 +132,7 @@ anyByte = satisfy (_ => True)
 -- > runByteParser (byte 0x00) (arrayFromList [1])
 -- Err "unexpected byte at byte 0"
 export byte : Int -> ByteParser Int
-byte b = satisfy (x => x == b)
+byte b = satisfy (== b)
 
 -- | Match the end of input.  Yields Unit; consumes nothing.
 --
