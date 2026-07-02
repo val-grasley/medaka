@@ -48,7 +48,7 @@ import frontend.desugar.{mapProg}
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
 -- the typechecked program's data decls + the inferred scrutinee type).
-import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
+import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat}
 import support.char.{isUpper}
 import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import support.util.{
@@ -82,7 +82,6 @@ public export data Mono =
   | TApp Mono Mono
   | TFun Mono EffRow Mono
   -- arg -> <effect row> result
-  | TTuple (List Mono)
   | TEff EffRow
 -- An effect row occupying a type-CONSTRUCTOR ARGUMENT slot, for a data type
 -- with an effect-row parameter (`data Async e a = … <e> …`).  Produced ONLY
@@ -1275,7 +1274,6 @@ freeEffvars t = match normalize t
   TCon _ => []
   TApp a b => freeEffvars a ++ freeEffvars b
   TFun a r b => freeEffvars a ++ rowFreeEffvars r ++ freeEffvars b
-  TTuple ts => flatMap freeEffvars ts
   TEff r => rowFreeEffvars r
 
 rowFreeEffvars : EffRow -> List Int
@@ -2227,7 +2225,6 @@ occursAdjust id level t = match normalize t
     let _ = occursAdjust id level a
     let _ = lowerRowLevels level r
     occursAdjust id level b
-  TTuple ts => occursAdjustList id level ts
   TEff r => lowerRowLevels level r
 
 occursAdjustVar : Int -> Int -> Ref Tyvar -> <Mut> Unit
@@ -2244,12 +2241,6 @@ occursAdjustUnbound id level cell id2 lvl2
   | lvl2 > level = setRef cell (Unbound id2 level)
   | otherwise = ()
 
-occursAdjustList : Int -> Int -> List Mono -> <Mut> Unit
-occursAdjustList _ _ [] = ()
-occursAdjustList id level (t::ts) =
-  let _ = occursAdjust id level t
-  occursAdjustList id level ts
-
 unify : Mono -> Mono -> <Mut> Unit
 unify a b = unifyN (normalize a) (normalize b)
 
@@ -2258,6 +2249,14 @@ unifyN (TVar c1) (TVar c2) = unifyVars c1 c2
 unifyN (TVar c) t = bindVar c t
 unifyN t (TVar c) = bindVar c t
 unifyN (TCon a) (TCon b) = if a == b then () else typeMismatch (TCon a) (TCon b)
+-- A tuple TYPE is now a `__tupleN__`-headed `TApp` spine; when it clashes with a
+-- differing-arity tuple or with a concrete non-tuple head, report the FULL types
+-- (which render `(a, b)` via ppGo) instead of letting the generic `TApp~TApp`
+-- recursion bottom out on a partial sub-spine — preserving the pre-refactor
+-- tuple mismatch wording.  Guard is False when the other side is a TVar-headed
+-- spine (so `p a b` unifying with a tuple still flows through the generic arm).
+unifyN t1 t2
+  | tupleUnifyClash t1 t2 = typeMismatch t1 t2
 unifyN (TApp a1 b1) (TApp a2 b2) =
   let _ = unify a1 a2
   unify b1 b2
@@ -2265,9 +2264,6 @@ unifyN (TFun a1 r1 b1) (TFun a2 r2 b2) =
   let _ = unify a1 a2
   let _ = unifyRow r1 r2
   unify b1 b2
-unifyN (TTuple ts1) (TTuple ts2)
-  | listLen ts1 == listLen ts2 = unifyList ts1 ts2
-  | otherwise = typeMismatch (TTuple ts1) (TTuple ts2)
 unifyN (TEff r1) (TEff r2) = unifyRow r1 r2
 unifyN a b = typeMismatch a b
 
@@ -2407,16 +2403,9 @@ lowerToCurrent t = match normalize t
     let _ = lowerToCurrent a
     let _ = lowerRowLevels currentLevel.value r
     lowerToCurrent b
-  TTuple ts => lowerToCurrentList ts
   TEff r =>
     let _ = lowerRowLevels currentLevel.value r
     ()
-
-lowerToCurrentList : List Mono -> <Mut> Unit
-lowerToCurrentList [] = ()
-lowerToCurrentList (t::rest) =
-  let _ = lowerToCurrent t
-  lowerToCurrentList rest
 
 -- Generalize a value RHS; value-restrict (monomorphize, lowering free vars)
 -- otherwise.  monoScheme leaves the mono ungeneralized.  Oracle
@@ -2434,7 +2423,6 @@ freeGenVars lvl t = match normalize t
   TCon _ => []
   TApp a b => freeGenVars lvl a ++ freeGenVars lvl b
   TFun a _ b => freeGenVars lvl a ++ freeGenVars lvl b
-  TTuple ts => flatMap (freeGenVars lvl) ts
   TEff _ => []
 
 dedupI : List Int -> List Int
@@ -2465,7 +2453,6 @@ substMono subst esub t = match normalize t
   TApp a b => TApp (substMono subst esub a) (substMono subst esub b)
   TFun a eff b =>
     TFun (substMono subst esub a) (substRow esub eff) (substMono subst esub b)
-  TTuple ts => TTuple (map (substMono subst esub) ts)
   TEff r => TEff (substRow esub r)
 
 -- Phase 146 variance-aware re-open: when instantiating a generalized scheme,
@@ -2491,7 +2478,6 @@ substMonoP pos subst esub t = match normalize t
   TCon n => TCon n
   TApp a b => TApp (substMonoP pos subst esub a) (substMonoP pos subst esub b)
   TFun a eff b => TFun (substMonoP (not pos) subst esub a) (reopenRow pos (substRow esub eff)) (substMonoP pos subst esub b)
-  TTuple ts => TTuple (map (substMonoP pos subst esub) ts)
   TEff r => TEff (substRow esub r)
 
 -- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
@@ -2523,10 +2509,9 @@ assignName ctx cnt id =
 ppGo : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> <Mut> String
 ppGo ctx cnt prec t = match normalize t
   TVar cell => ppVar ctx cnt cell
-  TCon n => n
+  TCon n => ppConName n
   TApp a b => ppApp ctx cnt prec a b
   TFun a eff b => ppFun ctx cnt prec a eff b
-  TTuple ts => "(" ++ joinWith ", " (ppEach ctx cnt 0 ts) ++ ")"
   TEff r => ppEffArg ctx cnt r
 
 -- Render a row sitting in type-argument position (the `e` of `Async e a`).  Bare
@@ -2559,10 +2544,13 @@ ppVar ctx cnt cell = match cell.value
   Link _ => "_"
 
 ppApp : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> Mono -> <Mut> String
-ppApp ctx cnt prec a b =
-  let sa = ppGo ctx cnt 2 a
-  let sb = ppGo ctx cnt 3 b
-  wrapIf (prec > 2) (sa ++ " " ++ sb)
+ppApp ctx cnt prec a b = match tupleSpine (TApp a b)
+  -- a fully-saturated `__tupleN__` spine renders back to surface `(e1, …, eN)`
+  Some ts => "(" ++ joinWith ", " (ppEach ctx cnt 0 ts) ++ ")"
+  None =>
+    let sa = ppGo ctx cnt 2 a
+    let sb = ppGo ctx cnt 3 b
+    wrapIf (prec > 2) (sa ++ " " ++ sb)
 
 ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> EffRow -> Mono -> <Mut> String
 ppFun ctx cnt prec a eff b =
@@ -2825,7 +2813,7 @@ fromAstTypeE etbl tvs (TyFun a b) =
     (fromAstTypeE etbl tvs a)
     (astEffrowE etbl b)
     (fromAstTypeE etbl tvs (stripEff b))
-fromAstTypeE etbl tvs (TyTuple ts) = TTuple (map (fromAstTypeE etbl tvs) ts)
+fromAstTypeE etbl tvs (TyTuple ts) = tupleMono (map (fromAstTypeE etbl tvs) ts)
 fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
 fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 
@@ -3087,7 +3075,7 @@ foldrFun (a::rest) result = TFun a pureRow (foldrFun rest result)
 inferPatTuple : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatTuple env pats =
   let pr = inferPats env pats
-  (TTuple (fst pr), snd pr)
+  (tupleMono (fst pr), snd pr)
 
 inferPatCons : TcEnv -> Pat -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatCons env h t =
@@ -3141,7 +3129,7 @@ infer env (ELet isMut isFun pat e1 e2) = inferLet env isMut isFun pat e1 e2
 infer env (ELetGroup binds body) = inferLetGroup env binds body
 infer env (EIf c t e) = inferIf env c t e
 infer env (EMatch scrut arms) = inferMatch env (infer env scrut) arms
-infer env (ETuple es) = TTuple (inferEach env es)
+infer env (ETuple es) = tupleMono (inferEach env es)
 infer env (EListLit es) = inferListLit env es
 infer env (EAnnot e ty) = inferAnnot env e ty
 infer env (EBinOp op l r dref) = inferBinopE env op l r dref
@@ -4658,9 +4646,7 @@ nonGuardedRows ((Arm _ _ _)::rest) = nonGuardedRows rest
 matchCol0Type : Mono -> Option String
 matchCol0Type ty = match headTyconMono ty
   Some n => Some n
-  None => match normalize ty
-    TTuple ts => Some (tupleCtorName (listLen ts))
-    _ => None
+  None => None
 
 inferArms : TcEnv -> Mono -> Mono -> List Arm -> <Mut> Unit
 inferArms _ _ _ [] = ()
@@ -4975,7 +4961,6 @@ monoUnboundIds t = match normalize t
   TCon _ => []
   TApp a b => monoUnboundIds a ++ monoUnboundIds b
   TFun a _ b => monoUnboundIds a ++ monoUnboundIds b
-  TTuple ts => flatMap monoUnboundIds ts
   TEff _ => []
 
 anyIn : List Int -> List Int -> Bool
@@ -5121,7 +5106,6 @@ monoUnboundVarLevels t = match normalize t
   TCon _ => []
   TApp a b => monoUnboundVarLevels a ++ monoUnboundVarLevels b
   TFun a _ b => monoUnboundVarLevels a ++ monoUnboundVarLevels b
-  TTuple ts => flatMap monoUnboundVarLevels ts
   TEff _ => []
 
 -- ground each id to Int by unifying the live var carrying it (found among [obls]'
@@ -6272,9 +6256,6 @@ cohGoR _ (TCon a) (TCon b) = a == b
 cohGoR subst (TApp f1 a1) (TApp f2 a2) = cohGo subst f1 f2 && cohGo subst a1 a2
 cohGoR subst (TFun a1 _ b1) (TFun a2 _ b2) = cohGo subst a1 a2
   && cohGo subst b1 b2
-cohGoR subst (TTuple xs) (TTuple ys)
-  | listLen xs == listLen ys = cohOverlapGo subst (zipL xs ys)
-  | otherwise = False
 cohGoR _ (TEff _) (TEff _) = True
 cohGoR _ _ _ = False
 
@@ -6311,9 +6292,6 @@ cohSubR subst (TApp f1 a1) (TApp f2 a2) = cohSub subst f1 f2
   && cohSub subst a1 a2
 cohSubR subst (TFun a1 _ b1) (TFun a2 _ b2) = cohSub subst a1 a2
   && cohSub subst b1 b2
-cohSubR subst (TTuple xs) (TTuple ys)
-  | listLen xs == listLen ys = cohSubGo subst (zipL xs ys)
-  | otherwise = False
 cohSubR _ (TEff _) (TEff _) = True
 cohSubR _ _ _ = False
 
@@ -6326,9 +6304,6 @@ cohEqR (TVar c1) (TVar c2) = tyvarId c1 == tyvarId c2
 cohEqR (TCon a) (TCon b) = a == b
 cohEqR (TApp f1 a1) (TApp f2 a2) = cohEqMono f1 f2 && cohEqMono a1 a2
 cohEqR (TFun a1 _ b1) (TFun a2 _ b2) = cohEqMono a1 a2 && cohEqMono b1 b2
-cohEqR (TTuple xs) (TTuple ys)
-  | listLen xs == listLen ys = cohEqAll (zipL xs ys)
-  | otherwise = False
 cohEqR (TEff _) (TEff _) = True
 cohEqR _ _ = False
 
@@ -7033,8 +7008,8 @@ matchTyMono (TyApp a b) m = match normalize m
 -- recovering one element-var subst per position — so a tuple impl's per-element
 -- `requires` (Eq a, Eq b, …) recover their element-dict routes, exactly as the
 -- TyApp arm does for parametric ADTs.  Mismatched arity → None (distinct groups).
-matchTyMono (TyTuple ts) m = match normalize m
-  TTuple ms => if listLen ts == listLen ms then matchTyMonoList ts ms else None
+matchTyMono (TyTuple ts) m = match tupleSpine m
+  Some ms => if listLen ts == listLen ms then matchTyMonoList ts ms else None
   _ => None
 -- Function-type arm: recover typaram bindings from BOTH a method's argument and
 -- result positions (used by ifaceParamMonos to ground a multi-param interface's
@@ -7428,18 +7403,11 @@ findTvarN (TVar cell) id = if tyvarId cell == id then Some (TVar cell) else None
 findTvarN (TCon _) _ = None
 findTvarN (TApp a b) id = firstTvar a b id
 findTvarN (TFun a _ b) id = firstTvar a b id
-findTvarN (TTuple ts) id = findTvarList ts id
 
 firstTvar : Mono -> Mono -> Int -> Option Mono
 firstTvar a b id = match findTvarInMono a id
   Some m => Some m
   None => findTvarInMono b id
-
-findTvarList : List Mono -> Int -> Option Mono
-findTvarList [] _ = None
-findTvarList (t::rest) id = match findTvarInMono t id
-  Some m => Some m
-  None => findTvarList rest id
 
 -- ── dict_pass: prepend dict parameters to constrained function definitions ──
 -- For each top-level def of a name in [dictNames], prepend one `$dict_<fn>_<slot>`
@@ -7826,7 +7794,6 @@ headTyconMono : Mono -> Option String
 headTyconMono t = match normalize t
   TApp a _ => headTyconMono a
   TCon n => Some n
-  TTuple ts => Some (tupleHeadTagTc (listLen ts))
   _ => None
 
 -- Native Gap C: the arity-distinguished tuple dispatch tag (`__tuple2__`, …),
@@ -7834,6 +7801,68 @@ headTyconMono t = match normalize t
 -- tuple method site so each arity routes to its own impl group / lifted define.
 tupleHeadTagTc : Int -> String
 tupleHeadTagTc n = "__tuple" ++ intToString n ++ "__"
+
+-- An n-tuple TYPE is a saturated left-spine TApp over the synthetic nullary
+-- constructor `TCon (tupleHeadTagTc n)` — the constructor NAME string IS the
+-- existing `__tupleN__` dispatch tag, so tag/eval parity is automatic and no
+-- `Mono.TTuple` constructor is needed.  (Surface `Ty.TyTuple` is unchanged.)
+tupleMono : List Mono -> Mono
+tupleMono ts = tupleSpineOf (TCon (tupleHeadTagTc (listLen ts))) ts
+
+tupleSpineOf : Mono -> List Mono -> Mono
+tupleSpineOf acc [] = acc
+tupleSpineOf acc (t::rest) = tupleSpineOf (TApp acc t) rest
+
+-- collect a left-spine `TApp` into (head, args-in-application-order),
+-- normalizing at each level so a linked head resolves.
+spineParts : Mono -> (Mono, List Mono)
+spineParts t = match normalize t
+  TApp a b => match spineParts a
+    (h, args) => (h, args ++ [b])
+  other => (other, [])
+
+-- recognise a fully-saturated tuple spine (arity >= 2 — `()`/Unit stays
+-- `TCon "Unit"`, never a tuple); return its element monos in order.
+export tupleSpine : Mono -> Option (List Mono)
+tupleSpine t = match spineParts t
+  (TCon n, args) =>
+    if listLen args >= 2 && n == tupleHeadTagTc (listLen args) then
+      Some args
+    else
+      None
+  _ => None
+
+-- arity a `__tupleN__` tag string names (else None) — bounded probe so a bare
+-- or PARTIAL tuple ctor never leaks the raw `__tupleN__` tag into a message.
+tupleTagArity : String -> Option Int
+tupleTagArity n = tupleTagArityGo n 2
+
+tupleTagArityGo : String -> Int -> Option Int
+tupleTagArityGo n k
+  | k > 32 = None
+  | tupleHeadTagTc k == n = Some k
+  | otherwise = tupleTagArityGo n (k + 1)
+
+commaStr : Int -> String
+commaStr n = if n <= 0 then "" else "," ++ commaStr (n - 1)
+
+-- render a bare/partial tuple constructor as the surface-less `(,)`/`(,,)` head
+-- (only reached when a tuple spine is UNSATURATED, e.g. an arity-mismatch
+-- message); a saturated spine renders `(e1, …)` via ppApp before reaching here.
+ppConName : String -> String
+ppConName n = match tupleTagArity n
+  Some k => "(" ++ commaStr (k - 1) ++ ")"
+  None => n
+
+-- Two monos genuinely CANNOT unify because a tuple spine meets a differing
+-- concrete head/arity — used only to pick the readable full-type mismatch
+-- message.  A TVar-headed other side returns False (it can still bind).
+tupleUnifyClash : Mono -> Mono -> <Mut> Bool
+tupleUnifyClash a b = match (tupleSpine a, tupleSpine b)
+  (Some xs, Some ys) => not (listLen xs == listLen ys)
+  (Some _, None) => monoSpineHeadIsCon b
+  (None, Some _) => monoSpineHeadIsCon a
+  (None, None) => False
 
 -- DRIVER-COLLAPSE Phase 5: scheme extraction for repl/lsp `:type`/hover + the
 -- `=== TYPES ===` golden (checkToLines), the surviving replacement for the
@@ -8374,8 +8403,8 @@ walkDispatch typarams (TyFun a b) m = match normalize m
 walkDispatch typarams (TyApp a b) m = match normalize m
   TApp ma mb => walkDispatch typarams a ma ++ walkDispatch typarams b mb
   _ => []
-walkDispatch typarams (TyTuple ts) m = match normalize m
-  TTuple ms => flatMap (p => walkDispatch typarams (fst p) (snd p)) (zipL ts ms)
+walkDispatch typarams (TyTuple ts) m = match tupleSpine m
+  Some ms => flatMap (p => walkDispatch typarams (fst p) (snd p)) (zipL ts ms)
   _ => []
 walkDispatch _ _ _ = []
 
@@ -8661,7 +8690,6 @@ monoTyvarIds m = match normalize m
   TVar cell => [tyvarId cell]
   TApp a b => monoTyvarIds a ++ monoTyvarIds b
   TFun a _ b => monoTyvarIds a ++ monoTyvarIds b
-  TTuple ts => flatMap monoTyvarIds ts
   _ => []
 
 -- extern declarations become top-level schemes (like interface methods)
@@ -10107,7 +10135,6 @@ monoSpineHeadIsCon : Mono -> <Mut> Bool
 monoSpineHeadIsCon m = match normalize m
   TApp a _ => monoSpineHeadIsCon a
   TCon _ => True
-  TTuple _ => True
   _ => False
 
 -- ── IMPORT-SCOPED per-module seeding (mirrors lib/typecheck.ml:4513-4543) ────

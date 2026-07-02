@@ -49,6 +49,7 @@ import types.typecheck.{
   Param(..),
   checkProgramSchemesWithRuntime,
   normalize,
+  tupleSpine,
   effrowLabels,
   atomLabel,
   atomParam,
@@ -306,7 +307,13 @@ monoEffects m = match normalize m
   TFun _ row result =>
     let atoms = effrowLabels row
     sortUniqAtoms (atoms ++ monoEffects result)
-  TApp a b => sortUniqAtoms (monoEffects a ++ monoEffects b)
+  -- Fork C (Stage 1 preservation): a tuple TYPE is now a `__tupleN__`-headed
+  -- `TApp` spine rather than the old atomic `Mono.TTuple`.  The old code sent
+  -- `TTuple` to the catch-all `_ => []` (element effects ignored); reproduce
+  -- that exactly here instead of letting the generic `TApp` arm recurse in.
+  TApp a b => match tupleSpine (TApp a b)
+    Some _ => []
+    None => sortUniqAtoms (monoEffects a ++ monoEffects b)
   _ => []
 
 schemeEffects : Scheme -> List Atom
