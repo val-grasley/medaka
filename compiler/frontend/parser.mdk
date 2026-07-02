@@ -2962,13 +2962,14 @@ public export data DeclPos =
   | DeclPos Int Int  -- (line, end_line), 1-based
 public export data Positions =
   | Positions (List DeclPos) (List Int) Int (List (List Int))
--- decl positions, variant start lines, last_content_line, per-decl chain
--- operand lines.  The last field mirrors variant_lines: one entry per top-level
--- decl (in decl order), giving the source line of each top-level continuation-
--- op operand of that decl's RHS (empty when the decl's body is not a
--- continuation chain).  `medaka fmt` uses it to anchor per-operand trailing
--- comments (finding "L").  Computed out-of-band from the token/line arrays like
--- the other channels — the AST carries no locations and `parse` never sees it.
+-- decl positions, variant start lines, last_content_line, per-decl reflow-unit
+-- lines.  The last field mirrors variant_lines: one entry per top-level decl (in
+-- decl order), giving the source line of each top-level reflow unit of that
+-- decl's RHS — continuation-op operands for a chain body, or block statements
+-- for a bare/do-block body (empty otherwise).  `medaka fmt` uses it to anchor
+-- per-unit trailing comments (finding "L").  Computed out-of-band from the
+-- token/line arrays like the other channels — the AST carries no locations and
+-- `parse` never sees it.
 
 export positionsDecls : Positions -> List DeclPos
 positionsDecls (Positions ds _ _ _) = ds
@@ -3198,11 +3199,66 @@ chainOpLinesAt toks lines op i e depth t
   | depth == 0 && chainOpTokEq op t = lineAt lines (firstContentAt toks (i + 1) e) :: chainOpLinesGo toks lines op (i + 1) e depth
   | otherwise = chainOpLinesGo toks lines op (i + 1) e depth
 
--- Per-decl chain operand lines (empty when the decl body is not a chain).
+-- ── Block statement lines (Stage 5: block/do interior comments) ────────────
+-- For a decl whose body is a top-level bare block (EBlock) or do-block (EDo),
+-- the first-content line of each statement at the block's top indent level, so
+-- fmt can anchor each statement's trailing comment.  A continuation after a
+-- nested block or a multi-line statement is NOT counted as a new statement, so
+-- such blocks yield a line count that won't match the AST and fmt falls back to
+-- the verbatim safety-net (never dropping or misplacing a comment).
+
+declBlockRhs : Decl -> Bool
+declBlockRhs (DAttrib _ inner) = declBlockRhs inner
+declBlockRhs (DFunDef _ _ _ body) = bodyIsBlock body
+declBlockRhs _ = False
+
+bodyIsBlock : Expr -> Bool
+bodyIsBlock (ELoc _ e) = bodyIsBlock e
+bodyIsBlock (EBlock _) = True
+bodyIsBlock (EDo _) = True
+bodyIsBlock _ = False
+
+-- Index just past the first INDENT in [i, e) (the block opener); `e` if none.
+firstIndentIdx : Array Token -> Int -> Int -> Int
+firstIndentIdx toks i e
+  | i >= e = e
+  | arrayGetUnsafe i toks == TIndent = i + 1
+  | otherwise = firstIndentIdx toks (i + 1) e
+
+blockStmtLines : Array Token -> Array Int -> Int -> Int -> List Int
+blockStmtLines toks lines rs e =
+  let bi = firstIndentIdx toks rs e
+  if bi >= e then [] else blockStmtGo toks lines bi e 1 True
+
+-- `ind` = INDENT depth relative to the block (opens at 1); `atStart` = the next
+-- content token begins a new top-level statement (set past the opening INDENT
+-- and after each NEWLINE at depth 1, cleared after a nested DEDENT so an `else`/
+-- continuation is not miscounted).
+blockStmtGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
+blockStmtGo toks lines i e ind atStart
+  | i >= e = []
+  | ind <= 0 = []
+  | otherwise = blockStmtAt toks lines i e ind atStart (arrayGetUnsafe i toks)
+
+blockStmtAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
+blockStmtAt toks lines i e ind atStart t
+  | t == TIndent = blockStmtGo toks lines (i + 1) e (ind + 1) False
+  | t == TDedent = blockStmtGo toks lines (i + 1) e (ind - 1) False
+  | t == TNewline = blockStmtGo toks lines (i + 1) e ind (ind == 1)
+  | atStart && ind == 1 =
+    lineAt lines i :: blockStmtGo toks lines (i + 1) e ind False
+  | otherwise = blockStmtGo toks lines (i + 1) e ind False
+
+-- Per-decl reflow-unit lines: chain operand lines for a continuation-chain body,
+-- else block statement lines for a bare/do-block body, else empty.
 declChainLines : Array Token -> Array Int -> Decl -> Int -> Int -> List Int
 declChainLines toks lines d s e = match declChainTopOp d
   Some op => chainOperandLines toks lines op (rhsStartIdx toks s e 0) e
-  None => []
+  None =>
+    if declBlockRhs d then
+      blockStmtLines toks lines (rhsStartIdx toks s e 0) e
+    else
+      []
 
 -- Flat list (one entry per decl, in decl order) of every decl's chain operand
 -- lines, parallel to the decl list — fmt consumes it in lockstep.

@@ -32,6 +32,8 @@ import tools.printer.{
   printNamedFieldData,
   printDeclChainCommented,
   declChainLen,
+  printDeclBlockCommented,
+  declBlockLen,
   Doc,
 }
 import frontend.lexer.{Comment, commentLine, commentText, collectComments}
@@ -376,6 +378,15 @@ stepDecl st srcLines chainOls decl dp =
         && not (isEmptyL chainOls)
         && declChainLen decl == listLen chainOls
         && chainCoversAll cs1 line endLine chainOls
+      -- Block/do path (Stage 5): interleave each statement's trailing comment,
+      -- IF the decl is a bare/do-block whose statement count matches the AST and
+      -- every span comment anchors to a statement line.  (chainOls carries the
+      -- statement lines for a block-bodied decl.)
+      let useBlock = hasInterior
+        && not useChain
+        && not (isEmptyL chainOls)
+        && declBlockLen decl == listLen chainOls
+        && chainCoversAll cs1 line endLine chainOls
       -- Verbatim safety-net: a non-data decl with an interior trailing comment
       -- keeps its original source text (reflow would misplace the comment).
       let useVerbatim = hasInterior && not (isDataDeclF decl)
@@ -386,6 +397,13 @@ stepDecl st srcLines chainOls decl dp =
         let perOp = map (ol => commentOnLine cs1 ol) chainOls
         let declStr = render (printDeclChainCommented decl perOp)
         -- Every span comment was placed inline; drain the decl's prefix.
+        let csRest = filterList (c => commentLine c > endLine) cs1
+        let pieces3 = "\n" :: declStr :: pieces2
+        FmtState pieces3 csRest vlines1 endLine True
+      else if useBlock then
+        -- One trailing comment per statement (source order == parser line order).
+        let perStmt = map (ol => commentOnLine cs1 ol) chainOls
+        let declStr = render (printDeclBlockCommented decl perStmt)
         let csRest = filterList (c => commentLine c > endLine) cs1
         let pieces3 = "\n" :: declStr :: pieces2
         FmtState pieces3 csRest vlines1 endLine True

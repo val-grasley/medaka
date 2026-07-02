@@ -1,7 +1,15 @@
 # FMT comment-interleaving design — fixing finding "L"
 
-**Status:** design-only scoping pass (read-only). Decision-ready; needs a human
-call on the DESIGN FORKS below before implementation.
+**Status:** LANDED. Stages 1–2 (verbatim safety-net + parser side-channel),
+Stage 3+4 (operator-CHAIN interior-comment interleaving), and **Stage 5
+(statement-level block/`do`/let-group interiors)** are all shipped. A decl whose
+body is a bare block (`EBlock`) or do-block (`EDo`) now FORMATS with each
+statement's trailing comment anchored to its statement across reflow, provided
+(a) the parser side-channel's per-statement line count matches the AST statement
+count and (b) every interior comment anchors to a statement line; otherwise the
+decl stays on the verbatim safety-net (multi-line statements, standalone interior
+comments). Seed re-mint NOT required — the parser side-channel is emit-invisible
+(`selfcompile_fixpoint` C3a/C3b byte-for-byte).
 
 **Scope of the bug (finding "L"):** `medaka fmt` misplaces trailing line-comments
 when it reflows a multi-line expression body. Canonical repro —
@@ -272,6 +280,21 @@ Stage-1 verbatim path for binop chains with real interleaving. Recapture
 
 **Stage 4 — extend to block/`do`/let-group interiors** (fork 1b), same mechanism.
 Gates as Stage 3.
+
+**Stage 5 — SHIPPED (block/`do`/let-group statement interiors).** The parser
+side-channel's `declChainLines` now, for a block-bodied decl (`declBlockRhs`),
+returns each top-level statement's first-content source line
+(`blockStmtLines`/`blockStmtGo`, INDENT/DEDENT/NEWLINE-tracked at block depth 1);
+`fmt.mdk`'s `stepDecl` gates a `useBlock` path (statement count ==
+`declBlockLen` decl AND every span comment covers a statement line) that calls
+`printer.mdk`'s `printDeclBlockCommented`, which renders the block/do body with
+`Hardline`-separated statements and each statement's trailing comment anchored as
+a `LineComment`. Because commented blocks/chains are now structured with
+unconditional `Hardline`s, `fits (LineComment _) = True` (stops the line-measure
+at the comment rather than force-breaking via `fits`). Multi-line statements make
+the line count mismatch the AST → verbatim fallback (never drops/misplaces a
+comment). Gates: `diff_compiler_{fmt,printer,parse}`, whole-repo idempotency,
+6-file comment-multiset sweep (0 loss), `selfcompile_fixpoint` C3a/C3b YES.
 
 **Gates summary per stage:** `bash test/diff_compiler_fmt.sh` +
 `bash test/diff_compiler_printer.sh` (recapture with `CAPTURE=1` when output
