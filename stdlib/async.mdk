@@ -34,7 +34,7 @@ export impl Mappable (Async e) where
 
 export impl Applicative (Async e) where
   pure a = Done a
-  ap mf ma = andThen mf (f => andThen ma (a => pure (f a)))
+  ap mf ma = andThen mf (f => map f ma)
 
 export impl Thenable (Async e) where
   andThen (Done a) k = k a

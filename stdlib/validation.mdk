@@ -76,7 +76,7 @@ export impl Foldable (Validation e) where
 export impl Traversable (Validation e) where
   traverse f v = match v
     Failure e => pure (Failure e)
-    Success x => andThen (f x) (y => pure (Success y))
+    Success x => map Success (f x)
 
 export impl Eq (Validation e a) requires Eq e, Eq a where
   eq (Failure x) (Failure y) = eq x y

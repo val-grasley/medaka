@@ -101,8 +101,7 @@ export default impl Foldable NonEmpty where
   length (NECons _ xs) = 1 + length xs
 
 export default impl Traversable NonEmpty where
-  traverse f (NECons x xs) =
-    andThen (f x) (y => andThen (traverse f xs) (ys => pure (NECons y ys)))
+  traverse f (NECons x xs) = andThen (f x) (y => map (NECons y) (traverse f xs))
 
 {- | Append concatenates: the head of the left operand, then everything else.
 

@@ -1,0 +1,24 @@
+-- Fixture for rule-andthen-pure-map autofix (`andThen m (x => pure body)` → `map`).
+
+-- POSITIVE (eta): `f x` eta-reduces to `map f m`.
+etaCtor m = andThen m (x => pure (Some x))
+etaFn m f = andThen m (x => pure (f x))
+etaPartial m y = andThen m (x => pure (pair y x))
+
+-- POSITIVE (general): keeps the lambda — `map (x => body) m`.
+genNonFinal m = andThen m (x => pure (foo x bar))
+
+-- POSITIVE (nested): the bind can sit anywhere in a decl body.
+nested m = wrap (andThen m (x => pure (Some x)))
+
+-- NEGATIVE: continuation body is not `pure …` — must stay untouched.
+negNoPure m = andThen m (x => somethingElse x)
+
+-- NEGATIVE: lambda param used TWICE in the pure argument — must stay untouched.
+negTwice m = andThen m (x => pure (combine x x))
+
+-- NEGATIVE: over-applied `pure` — must stay untouched.
+negOverApplied m = andThen m (x => pure step x)
+
+-- NEGATIVE: multi-param continuation lambda — must stay untouched.
+negMultiParam m = andThen m (x y => pure (g x y))

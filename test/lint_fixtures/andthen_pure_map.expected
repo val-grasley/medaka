@@ -1,0 +1,5 @@
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map (pair y) m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map (x => foo x bar) m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map f m' (functor law: m >>= (pure . f) ≡ fmap f m)

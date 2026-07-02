@@ -1,0 +1,40 @@
+-- Fixture for rule-andthen-pure-map: a monadic bind whose continuation just
+-- re-wraps a PURE transformation of the result (`andThen m (x => pure body)`)
+-- — the functor law m >>= (pure . f) ≡ fmap f m, rewritable to `map`.
+
+-- POSITIVE (eta): body is exactly `f x` — eta-reduces to `map f m`.
+etaCtor m = andThen m (x => pure (Some x))
+etaFn m f = andThen m (x => pure (f x))
+
+-- POSITIVE (eta): `f` may itself be a partial application, as long as it does
+-- not mention the lambda param and the param is the sole final argument.
+etaPartial m y = andThen m (x => pure (pair y x))
+
+-- POSITIVE (general): body is `pure <expr>` but not the bare `f x` shape, so the
+-- lambda is kept: `map (x => <expr>) m`.  (param used once, non-final position)
+genNonFinal m = andThen m (x => pure (foo x bar))
+
+-- POSITIVE (nested): the bind can sit anywhere in a decl body.
+nested m = wrap (andThen m (x => pure (Some x)))
+
+-- NEGATIVE: continuation body is not `pure …` at all.
+negNoPure m = andThen m (x => somethingElse x)
+
+-- NEGATIVE: lambda param used TWICE in the pure argument — left alone.
+negTwice m = andThen m (x => pure (combine x x))
+
+-- NEGATIVE: multi-statement continuation body (a do-block, not a bare `pure …`).
+negDo m = andThen m (x => do
+  y <- step x
+  pure y)
+
+-- NEGATIVE: over-applied `pure` (`pure` takes exactly one argument).
+negOverApplied m = andThen m (x => pure step x)
+
+-- NEGATIVE: multi-param continuation lambda.
+negMultiParam m = andThen m (x y => pure (g x y))
+
+-- NEGATIVE: a guarded `function` continuation — not a single-param lambda.
+negGuardFn m = andThen m (function
+  n if n > 0 => pure (dec n)
+  _ => pure zero)

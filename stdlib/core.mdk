@@ -671,7 +671,7 @@ foldThen f z (x::xs) = andThen (f z x) (z2 => foldThen f z2 xs)
 export repeatThen : Thenable m => Int -> m a -> m (List a)
 repeatThen n action
   | n <= 0 = pure []
-  | otherwise = andThen action (x => andThen (repeatThen (n - 1) action) (xs => pure (x::xs)))
+  | otherwise = andThen action (x => map (x :: _) (repeatThen (n - 1) action))
 
 {- | Keep the elements for which an effectful predicate returns `True`, in
    order.  Haskell's `filterM`.
@@ -929,14 +929,13 @@ export interface Traversable t requires Mappable t, Foldable t where
 export impl Traversable List where
   traverse f xs = match xs
     [] => pure []
-    x::rest =>
-      andThen (f x) (y => andThen (traverse f rest) (ys => pure (y::ys)))
+    x::rest => andThen (f x) (y => map (y :: _) (traverse f rest))
 
 -- lint-disable-next-line rule-match-on-param
 export impl Traversable Option where
   traverse f opt = match opt
     None => pure None
-    Some x => andThen (f x) (y => pure (Some y))
+    Some x => map Some (f x)
 
 {- `default` mirrors the `Foldable`/`Mappable (Result e)` impls so a
    user-defined alternative can coexist without qualifying call sites. -}
@@ -944,7 +943,7 @@ export impl Traversable Option where
 export default impl Traversable (Result e) where
   traverse f res = match res
     Err e => pure (Err e)
-    Ok x => andThen (f x) (y => pure (Ok y))
+    Ok x => map Ok (f x)
 
 -- ─── 3. Standalone helpers ──────────────────────────────────────────────
 
