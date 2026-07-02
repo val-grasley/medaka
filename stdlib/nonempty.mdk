@@ -12,6 +12,7 @@ import core.{
   Eq,
   Ord,
   Debug,
+  Display,
   Mappable,
   Foldable,
   Traversable,
@@ -116,6 +117,13 @@ export default impl Eq (NonEmpty a) requires Eq a where
 
 export default impl Debug (NonEmpty a) requires Debug a where
   debug ne = "NonEmpty \{debug (toList ne)}"
+
+{- | Human-facing rendering (backs `println` and `\{}` interpolation).
+
+   > display (NECons 1 [2, 3])
+   "NonEmpty [1, 2, 3]" -}
+export default impl Display (NonEmpty a) requires Display a where
+  display ne = "NonEmpty \{toList ne}"
 
 -- ---------------------------------------------------------------------------
 -- Properties
