@@ -48,6 +48,7 @@ import types.typecheck.{
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
 import support.util.{joinNl, lookupAssoc}
+import json.{Json, JInt, JString, JArray, jObject, stringify}
 
 -- ── types ──────────────────────────────────────────────────────────────────
 
@@ -490,3 +491,92 @@ ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) = ppSeverity sev
   ++ intToString sc
   ++ ": "
   ++ msg
+
+-- ── check --json JSON shaping ────────────────────────────────────────────────
+-- Shared by medaka_cli.mdk (`medaka check --json`) and playground_main.mdk
+-- (wasm playground). Field/key ordering matches OCaml/Yojson alphabetical
+-- insertion so the JSON is byte-identical to `medaka check --json`:
+--   file entry:   file, diagnostics
+--   diagnostic:   message, range, severity, source
+--   range:        end, start
+--   position:     character, line
+
+-- Build a 0-based LSP Position JSON: { "character": ch, "line": line }
+-- (alphabetical: character < line)
+export cjPosition : Int -> Int -> Json
+cjPosition line ch = jObject [("character", JInt ch), ("line", JInt line)]
+
+-- Build an LSP Range JSON: { "end": ..., "start": ... }
+-- (alphabetical: end < start)
+export cjRange : Int -> Int -> Int -> Int -> Json
+cjRange sl sc el ec =
+  jObject [("end", cjPosition el ec), ("start", cjPosition sl sc)]
+
+-- Map an Option Loc to a range (mirror of rangeOfLoc in lsp.mdk).
+-- A `None` loc renders the oracle's dummy range {0,0}-{0,0} (lib/diagnostics.ml's
+-- `loc_or_dummy` → `dummy_loc` = line 1 col 0 → 0-based {0,0}), NOT a whole-doc
+-- span — so resolve / build-phase errors with no node span (Stage B) match the
+-- oracle byte-for-byte.
+export cjRangeOfLoc : String -> Option Loc -> Json
+cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
+cjRangeOfLoc src None = cjRange 0 0 0 0
+
+-- Severity code: Error=1, Warning=2.
+cjSevCode : Severity -> Int
+cjSevCode SevError = 1
+cjSevCode _ = 2
+
+-- Build one diagnostic JSON object with OCaml-compatible field order:
+-- { "message": ..., "range": ..., "severity": ..., "source": "medaka" }
+-- `path` is the file path (for the oracle's loc-in-message warning form).
+-- ERRORS render the bare message + the loc-derived range (Stage A/B).
+-- WARNINGS mirror the oracle exactly: the oracle's warnings are pre-formatted
+-- strings "file:L:C: Warning: <msg>" passed with a `None` loc, so --json bakes
+-- the loc into the MESSAGE and leaves the range at the {0,0} dummy.  We carry the
+-- span on the Diag (so ppDiag stays loc-free for diff_compiler_diagnostics) but
+-- reproduce the oracle's json by formatting "path:L:C: Warning: <msg>" here.
+export cjDiagnostic : String -> String -> Diag -> Json
+cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) = jObject
+  [
+    (
+      "message",
+      JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg),
+    ),
+    ("range", cjRange 0 0 0 0),
+    ("severity", JInt 2),
+    ("source", JString "medaka"),
+  ]
+cjDiagnostic _ src (Diag sev msg loc) = jObject
+  [
+    ("message", JString msg),
+    ("range", cjRangeOfLoc src loc),
+    ("severity", JInt (cjSevCode sev)),
+    ("source", JString "medaka"),
+  ]
+
+-- Build the per-file entry: { "file": path, "diagnostics": [...] }.
+-- `src` is the file's source text (for whole-doc range fallback).
+-- `diags` is the List Diag from analyzeProject.
+export cjFileEntry : String -> String -> List Diag -> Json
+cjFileEntry path src diags = jObject
+  [
+    ("file", JString path),
+    ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
+  ]
+
+cjTriple : (String, String, List Diag) -> Json
+cjTriple (path, src, diags) = cjFileEntry path src diags
+
+-- Serialize the analyzeProject result as the top-level JSON object:
+-- { "files": [ { "file": ..., "diagnostics": [...] }, ... ] }
+-- Needs sources for whole-doc range fallback.
+export cjAllToJson : List (String, String, List Diag) -> String
+cjAllToJson triples = stringify (jObject
+  [("files", JArray (arrayFromList (map cjTriple triples)))])
+
+-- Read each file's source for the range fallback.  On read error, use "" so
+-- diagnostics still serialize (the error itself is in the diag list).
+export readDiagSrc : (String, List Diag) -> <IO> (String, String, List Diag)
+readDiagSrc (path, diags) = match readFile path
+  Ok src => (path, src, diags)
+  Err _ => (path, "", diags)
