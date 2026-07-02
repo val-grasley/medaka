@@ -26,10 +26,17 @@
 # full-staging case). Partially-staged files are checked as they exist on disk.
 set -u
 
-# Lint rules that BLOCK a commit. Keep this to rules with zero false positives on
-# the current tree (they fire only on genuinely-wrong code). Style/advisory rules
-# stay out so the hook is not noisy.
-GATED_LINT_RULES="rule-hand-rolled-derivable,rule-stdlib-reimpl"
+# Lint rules that BLOCK a commit. The whole tree is at 0 lint findings, so every
+# rule is gated as a ratchet: any NEW warning fails the commit. Per-file rules are
+# checked per staged file; the cross-file rule (rule-duplicate-body) needs a
+# whole-project scan (it compares a body against OTHER files), so it's checked
+# separately over the source roots. Intentional exceptions use inline directives
+# (-- lint-disable-next-line / -file <rule>).
+GATED_LINT_RULES="rule-hand-rolled-derivable,rule-stdlib-reimpl,rule-match-on-param"
+# Cross-file rules, checked project-wide (not per staged file).
+GATED_CROSSFILE_RULES="rule-duplicate-body"
+# Source roots scanned for the cross-file check (dirs that exist are used).
+LINT_ROOTS="compiler stdlib sqlite"
 
 ROOT="$(git rev-parse --show-toplevel)"
 MEDAKA="${MEDAKA:-$ROOT/medaka}"
@@ -82,6 +89,33 @@ if [ -n "$badlint" ]; then
   echo "  If intentional, silence inline with a directive comment above the site:" >&2
   echo "                 -- lint-disable-next-line <rule>" >&2
   echo "  Bypass once:   git commit --no-verify" >&2
+  echo "" >&2
+  exit 1
+fi
+
+# ── 3. cross-file lint check (project-wide) ───────────────────────────────────
+# rule-duplicate-body compares a body against OTHER files, so a per-staged-file
+# check can't see the duplicate — scan the source roots as a whole. Runs only
+# because a .mdk is staged (we returned early otherwise). Respects inline
+# -- lint-disable-* directives (intentional dups are silenced in-source).
+# Scan each root separately: `medaka lint` mishandles the exit code when several
+# targets are passed at once (a per-root scan reports a duplicate correctly, a
+# multi-root scan does not), and each root is its own medaka.toml project anyway.
+badcross=""
+for r in $LINT_ROOTS; do
+  [ -d "$ROOT/$r" ] || continue
+  "$MEDAKA" lint --only="$GATED_CROSSFILE_RULES" --deny="$GATED_CROSSFILE_RULES" "$ROOT/$r" >/dev/null 2>&1 || badcross="$badcross $r"
+done
+
+if [ -n "$badcross" ]; then
+  echo "" >&2
+  echo "✗ pre-commit: cross-file lint rule(s) violated ($GATED_CROSSFILE_RULES) under:" >&2
+  for r in $badcross; do echo "      $r/" >&2; done
+  echo "" >&2
+  echo "  See findings:  medaka lint --only=$GATED_CROSSFILE_RULES$badcross" >&2
+  echo "  If intentional, silence with a directive in the offending file(s):" >&2
+  echo "                 -- lint-disable-file rule-duplicate-body" >&2
+  echo "  Bypass once:    git commit --no-verify" >&2
   echo "" >&2
   exit 1
 fi

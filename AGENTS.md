@@ -162,17 +162,20 @@ that often violate style rules on purpose):
   `medaka fmt`-clean. **Run `medaka fmt --write <changed.mdk>` and re-`git add` before committing
   any `.mdk` edit.** `medaka fmt` is safe (0 corruptions / 0 non-idempotent repo-wide) and
   idempotent, so `fmt --write` on a clean file is a no-op.
-- **Lint** — `medaka lint --only=<gated rules> --deny=<gated rules>` **rejects a staged `.mdk` that
-  trips a GATED lint rule.** Only rules with ZERO false positives on the tree are gated:
-  `rule-hand-rolled-derivable` + `rule-stdlib-reimpl` (they fire only on genuinely-wrong code).
-  Advisory/style rules (`rule-match-on-param`, `rule-duplicate-body`) still surface under a plain
-  `medaka lint` but do NOT block a commit. A genuine intentional exception to a gated rule is
-  silenced inline with an ESLint-style directive comment above the site:
-  `-- lint-disable-next-line <rule>` (also `-- lint-disable-line <rule>` for a trailing comment,
-  and `-- lint-disable-file <rule>` for the whole file; omit the rule name to disable all rules).
-  ⚠️ `medaka lint --fix` autofixes `rule-match-on-param`/`rule-bind-then-destructure` but **bails
-  on any decl containing an interior comment** (it would otherwise drop them) — safe, but it
-  leaves comment-bearing sites unfixed.
+- **Lint** — **the whole tree is at 0 `medaka lint` findings, and the hook is a RATCHET: any NEW
+  warning fails the commit.** All four rules are gated. Three per-file rules
+  (`rule-hand-rolled-derivable`, `rule-stdlib-reimpl`, `rule-match-on-param`) run
+  `medaka lint --only=<rules> --deny=<rules>` on each staged `.mdk`. The cross-file rule
+  `rule-duplicate-body` compares a body against OTHER files, so it can't be checked per-staged-file
+  — the hook runs a **whole-project scan per source root** (`compiler`/`stdlib`/`sqlite`) when any
+  `.mdk` is staged. (`medaka lint` mishandles the exit code when passed several roots at once → the
+  hook loops one root at a time.) **So: `medaka lint` must stay clean — run it on files you touch.**
+  A genuine intentional exception is silenced inline with an ESLint-style directive comment (these
+  work for per-file AND cross-file rules): `-- lint-disable-next-line <rule>` (also
+  `-- lint-disable-line <rule>` trailing, and `-- lint-disable-file <rule>` for the whole file;
+  omit the rule name to disable all rules). ⚠️ `medaka lint --fix` autofixes
+  `rule-match-on-param`/`rule-bind-then-destructure` but **bails on any decl containing an interior
+  comment** (it would otherwise drop them) — safe, but it leaves comment-bearing sites unfixed.
 
 Emergency bypass for either check: `git commit --no-verify`. If `medaka` isn't built the hook
 warns-and-allows. Re-install after a fresh clone by copying `.githooks/pre-commit` into the hooks
