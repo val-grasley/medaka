@@ -25,6 +25,35 @@ WASM_EMITTER="$ROOT/test/bin/wasm_emit_modules_main"
 RUNJS="$ROOT/test/wasm/run.js"
 CC="${CC:-clang}"
 
+# ── Per-probe worker (parallel fan-out target) ─────────────────────────────────
+# Re-invoked as `bash "$0" --one <mode> <probe>` (mode = mem | file) under an
+# xargs -P pool. Each probe builds BOTH the native oracle and the wasm target and
+# diffs their stdout. Shared state (MEDAKA/emitters/NODE-abs/RUNJS/dirs) via env;
+# per-probe .err + .sqlite temps (no shared scratch) so N run concurrently. Placed
+# above the bash-array corpus defs so the worker exits before they are reached.
+if [ "${1:-}" = "--one" ]; then
+  mode="$2"; f="$3"; name="$(basename "$f")"
+  obin="$WORKDIR/$name.native"; wasm="$WORKDIR/$name.wasm"
+  st=0; msg=""
+  if [ ! -f "$f" ]; then
+    msg="FAIL $f (missing probe)"; st=1
+  elif ! "$MEDAKA" build --allow-internal "$f" -o "$obin" >"$WORKDIR/$name.nbuild.err" 2>&1; then
+    msg="$(printf 'FAIL %s (native build)\n%s' "$name" "$(cat "$WORKDIR/$name.nbuild.err")")"; st=1
+  else
+    if [ "$mode" = file ]; then ref="$("$obin" "$WORKDIR/$name.native.sqlite" 2>/dev/null)"; else ref="$("$obin" 2>/dev/null)"; fi
+    if ! "$MEDAKA" build --allow-internal --target wasm "$f" -o "$wasm" >"$WORKDIR/$name.wbuild.err" 2>&1; then
+      msg="$(printf 'FAIL %s (wasm build)\n%s' "$name" "$(cat "$WORKDIR/$name.wbuild.err")")"; st=1
+    else
+      if [ "$mode" = file ]; then got="$(MDK_ARGS="$WORKDIR/$name.wasm.sqlite" "$NODE" "$RUNJS" "$wasm" 2>"$WORKDIR/$name.run.err")"; else got="$("$NODE" "$RUNJS" "$wasm" 2>"$WORKDIR/$name.run.err")"; fi
+      if [ "$ref" = "$got" ]; then msg="ok   $name ($mode: native == wasm)"
+      else msg="$(printf 'FAIL %s (%s)\n  --- native ---\n%s\n  --- wasm ---\n%s\n  (%s)' "$name" "$mode" "$ref" "$got" "$(cat "$WORKDIR/$name.run.err")")"; st=1; fi
+    fi
+  fi
+  echo "$st" > "$RESULTDIR/$name.status"
+  printf '%s\n' "$msg"
+  exit 0
+fi
+
 # The in-memory sqlite probe corpus (multi-module — imports lib.*).  Add a probe
 # here and it runs on BOTH backends automatically.
 CORPUS=(
@@ -72,64 +101,28 @@ fi
 export MEDAKA_WASM_EMITTER="$WASM_EMITTER"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+RESULTS="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$RESULTS"' EXIT
+
+# Fan both corpora (in-memory + file-backed) across an xargs -P pool of --one
+# workers (see top of file). Each work item is a tab-separated "<mode>\t<probe>";
+# NODE is resolved to its absolute path once (post nvm selection). Each probe does
+# two `medaka build`s (native + wasm target), so parallelism matters.
+JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
+NODE_ABS="$(command -v "$NODE" 2>/dev/null || echo "$NODE")"
+{
+  for f in "${CORPUS[@]}"; do printf 'mem\t%s\n' "$f"; done
+  for f in "${FILE_CORPUS[@]}"; do printf 'file\t%s\n' "$f"; done
+} > "$WORK/worklist.tsv"
+
+MEDAKA="$MEDAKA" MEDAKA_EMITTER="${MEDAKA_EMITTER:-$EMITTER}" MEDAKA_WASM_EMITTER="$WASM_EMITTER" \
+NODE="$NODE_ABS" RUNJS="$RUNJS" WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+  xargs -P "$JOBS" -n 2 bash "$0" --one < "$WORK/worklist.tsv"
 
 pass=0; fail=0
-for f in "${CORPUS[@]}"; do
-  [ -f "$f" ] || { fail=$((fail+1)); printf 'FAIL %s (missing probe)\n' "$f"; continue; }
-  name="$(basename "$f")"
-
-  # 1. native oracle: build + run.
-  obin="$WORK/$name.native"
-  if ! "$MEDAKA" build --allow-internal "$f" -o "$obin" >"$WORK/nbuild.err" 2>&1; then
-    fail=$((fail+1)); printf 'FAIL %s (native build)\n%s\n' "$name" "$(cat "$WORK/nbuild.err")"; continue
-  fi
-  ref="$("$obin" 2>/dev/null)"
-
-  # 2. wasm: build to a validated .wasm (WAT → wasm-tools parse/validate).
-  wasm="$WORK/$name.wasm"
-  if ! "$MEDAKA" build --allow-internal --target wasm "$f" -o "$wasm" >"$WORK/wbuild.err" 2>&1; then
-    fail=$((fail+1)); printf 'FAIL %s (wasm build)\n%s\n' "$name" "$(cat "$WORK/wbuild.err")"; continue
-  fi
-
-  # 3. run under Node, diff stdout.
-  got="$("$NODE" "$RUNJS" "$wasm" 2>"$WORK/run.err")"
-  if [ "$ref" = "$got" ]; then
-    pass=$((pass+1)); printf 'ok   %s (native == wasm)\n' "$name"
-  else
-    fail=$((fail+1))
-    printf 'FAIL %s\n  --- native ---\n%s\n  --- wasm ---\n%s\n  (%s)\n' \
-      "$name" "$ref" "$got" "$(cat "$WORK/run.err")"
-  fi
-done
-
-# ── FILE-backed arm (stage D: writeFileBytes / readFileBytes over Node fs) ─────
-for f in "${FILE_CORPUS[@]}"; do
-  [ -f "$f" ] || { fail=$((fail+1)); printf 'FAIL %s (missing probe)\n' "$f"; continue; }
-  name="$(basename "$f")"
-
-  # 1. native oracle: build + run against a native-only temp .sqlite (arg via argv).
-  obin="$WORK/$name.native"
-  if ! "$MEDAKA" build --allow-internal "$f" -o "$obin" >"$WORK/nbuild.err" 2>&1; then
-    fail=$((fail+1)); printf 'FAIL %s (native build)\n%s\n' "$name" "$(cat "$WORK/nbuild.err")"; continue
-  fi
-  ref="$("$obin" "$WORK/$name.native.sqlite" 2>/dev/null)"
-
-  # 2. wasm: build to a validated .wasm.
-  wasm="$WORK/$name.wasm"
-  if ! "$MEDAKA" build --allow-internal --target wasm "$f" -o "$wasm" >"$WORK/wbuild.err" 2>&1; then
-    fail=$((fail+1)); printf 'FAIL %s (wasm build)\n%s\n' "$name" "$(cat "$WORK/wbuild.err")"; continue
-  fi
-
-  # 3. run under Node with a DISTINCT wasm-only temp .sqlite (arg via MDK_ARGS), diff stdout.
-  got="$(MDK_ARGS="$WORK/$name.wasm.sqlite" "$NODE" "$RUNJS" "$wasm" 2>"$WORK/run.err")"
-  if [ "$ref" = "$got" ]; then
-    pass=$((pass+1)); printf 'ok   %s (file: native == wasm)\n' "$name"
-  else
-    fail=$((fail+1))
-    printf 'FAIL %s (file)\n  --- native ---\n%s\n  --- wasm ---\n%s\n  (%s)\n' \
-      "$name" "$ref" "$got" "$(cat "$WORK/run.err")"
-  fi
+for s in "$RESULTS"/*.status; do
+  [ -f "$s" ] || continue
+  if [ "$(cat "$s")" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
