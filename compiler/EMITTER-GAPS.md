@@ -773,4 +773,27 @@ The last Float-on-wasm gap: a POLYMORPHIC `Num a`/`Ord a`-constrained op applied
 
 **Fix (approach A — port native's runtime value-dispatch; wasm-only, NO re-mint — fixpoint C3a passes against the committed seed since the LLVM seed-minting entry doesn't exercise the wasm paths):** new `$mdk_value_add/sub/mul/div/mod` runtime helpers in `wasm_preamble.mdk` (`ref.test` operand for `$float` → f64 op else i31/`$boxint` int path; div/mod match native `mdk_num_*` exactly) + num-only `$mdk_value_eq_num`/`$mdk_value_cmp_num` (no `$str` dep, for string-free programs); `$float` arms added to `$mdk_value_cmp`/`$mdk_value_eq` (the poly-Ord sibling). `emitBinRef` (~3697) routes a POLYMORPHIC Num/Ord operand to the helper via `numPolyLocalsRef` (peer of native `isNumPolyParam`; seeded in `emitRefFnBind`/`emitLamDefine` for type-var-headed-sig or no-sig params used in arith/cmp). **A-surgical:** approach-C Float-tagged / structural-Float / declared-concrete cases are matched FIRST → only genuinely-polymorphic operands hit the helper → static Int/Float + TRMC int loops keep the fast path (verified: `sq:Int` → `i64.mul`, 0 helper calls; hot loop 5050). Gates: `diff_wasm` 154/0 (+11 polynum/polyord fixtures), `diff_wasm_modules` 26/0, `diff_sqlite` 3/0, `diff_compiler_llvm` 186/0, fixpoint C3a/C3b YES.
 
+---
+
+## PAP-in-container SIGSEGV — CLOSED (arity-carrying closures + runtime `mdk_apply`, 2026-07-02, `0f4f4c1`)
+
+Surfaced by the FP-stdlib `map2`/`map3` work (`ap (map f fa) fb`): a partially-applied multi-arg closure stored in a container and later saturated (`ap (map (a b => a+b) (Some 3)) (Some 4)`) SIGSEGV'd on `medaka build` while `medaka run` was correct. Root cause: a flattened arity-2 lambda (`@mdk_lamN(clos, a, b)`) passed to a polymorphic HOF is used at arity 1 (`map`'s `f : a -> b`), but at the OPAQUE indirect call site inside `map` the emitter could not see the closure's arity (the compile-time `closureArityRef` is keyed by SSA register and does not cross function boundaries) — so `f x` emitted a saturated 1-arg call to the arity-2 lambda, its 2nd param `undef`, returning garbage instead of a residual closure; `ap` then dereferenced the garbage as a closure → SIGSEGV.
+
+**Fix:** carry the callable arity in the closure cell header (field 0, previously a dead `$closure` sentinel) and make opaque applications arity-aware. `emitApplyAny` loads the runtime arity and, when it matches the supplied count, inlines the direct call (unchanged fast path); otherwise it routes args through a new runtime `@mdk_apply(cw, argc, ptr)` (`runtime/medaka_rt.c`) which handles under/over-application and PAP-flattening generically. Touches `compiler/backend/llvm_emit.mdk` + `compiler/backend/llvm_preamble.mdk` + `runtime/medaka_rt.c`. This unblocked `map2`/`map3` (whose body previously SIGSEGV'd on build) — see `FP-STDLIB-DESIGN.md` AS-BUILT section.
+
+---
+
+## Cross-module sibling-impl-emit gap — CLOSED / NON-REPRODUCING (verified 2026-07-02)
+
+**RESOLVED.** Flagged mid-workstream by the Stage-2 agent, but on current main it does **not** reproduce — verified across 6 repro shapes including the three exact eval fixtures below (all build correctly and match their eval goldens). Almost certainly closed by the Bug-1 arity-carrying-closure emitter fix (`0f4f4c1`, runtime `mdk_apply`), which reworked opaque dispatch/application emission and landed on the same branch base. Now **regression-guarded at build**: the three fixtures were promoted to multi-module `test/build_diff_fixtures/{bimappable_constrained_sibling,bimappable_tuple_sibling,traverse_parametric_sibling}/` and wired into `diff_compiler_build` (49/0). The original (now-historical) description follows.
+
+A typeclass impl defined in a **non-prelude sibling module** (not `core.mdk`, not the entry file) fails to emit its `define` at **build** time: the call site is emitted (`call @mdk_impl_..._<method>`), but the corresponding `define` is missing from the output IR → link/runtime failure. NOT tuple-specific — reproduces with plain `Result` and `Box` impls placed in a sibling module too. Prelude impls (`impl Bimappable Result`, `impl Bimappable (,)` in `core.mdk`) build and dispatch correctly; only a same-file-as-caller or prelude placement works today.
+
+Eval-only fixtures capture the shape (these pass under `eval_typed_modules_main`, i.e. the interpreter path, but are NOT yet gated on `build`):
+- `test/eval_typed_modules_fixtures/bimappable_tuple_sibling/` (`main.mdk` + `tsib.mdk`)
+- `test/eval_typed_modules_fixtures/bimappable_constrained_sibling/` (`main.mdk` + `sib.mdk`)
+- `test/eval_typed_modules_fixtures/impl_requires_nonfunctor_sibling/` (`main.mdk` + `vt.mdk`)
+
+**Pointer for a future session:** the discrepancy is between `implEntriesOf` (`compiler/backend/llvm_emit.mdk`, the impl-entry registry the emitter's define-generation walks) and how `compiler/entries/llvm_emit_modules_main.mdk` assembles impl entries across a multi-module build — a sibling module's impl entries appear to reach the call-emission path but not the define-generation walk. Not yet root-caused; tracked here so a future session doesn't have to rediscover the repro.
+
 **With this + approach C, Float on WasmGC is CLOSED** — monomorphic concrete-Float (C, both backends) AND polymorphic Num/Ord (A, wasm). Remaining Float items: C4 bare-Float-main auto-print (orthogonal, deferred); B/monomorphization (the separate instance-DCE roadmap item, not a Float bug).

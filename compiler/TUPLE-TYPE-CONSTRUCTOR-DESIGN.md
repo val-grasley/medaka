@@ -1,5 +1,31 @@
 # Tuple as a real type constructor — design doc
 
+**Status: SHIPPED (2026-07-02).** Stage 1 (`a642a43`, zero observable change —
+tuples internally became `__tupleN__`-headed `TApp` spines, type-layer-contained,
+NO seed re-mint needed for this stage alone) then Stage 2 (`c00ee2b`, Parts A+B —
+`(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax for arities 2–5 names the bare
+unsaturated tuple constructor in type position; `export impl Bimappable (,)`
+lands in `core.mdk`). Verified `check`/`run`/`build` single-file AND across a
+module boundary (constrained fn dispatching on a tuple from a sibling module).
+Representation matches the design below exactly (Fork A.1 taken — the
+kind-correct unsaturated `(,)` surface, not the saturated `impl Bimappable (a, b)`
+shape §6/§8 explicitly recommends against). Seed re-minted `9671acd` (the prior
+seed couldn't parse the new `(,)` syntax used by `core.mdk`'s own prelude).
+**Suspected residual — VERIFIED CLOSED (2026-07-02):** a cross-module
+sibling-impl-emit gap flagged mid-workstream (a typeclass impl in a non-prelude
+sibling module allegedly not emitting its `define` at build) does **not**
+reproduce on current main — checked across 6 repro shapes including the three
+exact fixtures below (all build correctly and match their eval goldens). Almost
+certainly closed by the Bug-1 arity-carrying-closure emitter fix (`0f4f4c1`,
+runtime `mdk_apply`), which reworked opaque dispatch/application emission and
+landed on the same branch base. Now **build-guarded**: the fixtures were promoted
+to `test/build_diff_fixtures/{bimappable_constrained_sibling,bimappable_tuple_sibling,traverse_parametric_sibling}/`
+and wired into `diff_compiler_build` (49/0).
+
+---
+
+**Original design pass below (historical — decisions taken are noted inline above).**
+
 **Status:** decision-ready design pass. No code changed.
 **Decision already made (not relitigated):** make the n-tuple a real type
 constructor so a higher-kinded type-class param (kind `*→*→*`) can bind to it.

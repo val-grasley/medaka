@@ -1,0 +1,9 @@
+import tsib.{bumpBoth, bumpLeft, bumpRight}
+
+mydbg : Debug a => a -> <IO> Unit
+mydbg x = putStrLn (debug x)
+
+main =
+  mydbg (bumpBoth ((3, 4) : (Int, Int)))
+  mydbg (bumpLeft ((3, 4) : (Int, Int)))
+  mydbg (bumpRight ((3, 4) : (Int, Int)))

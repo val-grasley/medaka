@@ -1,0 +1,10 @@
+import sib.{bumpBoth, bumpLeft, bumpRight}
+
+mydbg : Debug a => a -> <IO> Unit
+mydbg x = putStrLn (debug x)
+
+main =
+  mydbg (bumpBoth (Ok 5 : Result Int Int))
+  mydbg (bumpBoth (Err 5 : Result Int Int))
+  mydbg (bumpLeft (Err 5 : Result Int Int))
+  mydbg (bumpRight (Ok 5 : Result Int Int))

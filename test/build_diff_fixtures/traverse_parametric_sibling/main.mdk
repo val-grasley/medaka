@@ -1,0 +1,9 @@
+import box.{Box}
+
+fInt : Int -> Result String Int
+fInt x = Ok (x * 10)
+
+main : <IO> Unit
+main = match traverse fInt [1, 2, 3]
+  Err e => println "err: \{e}"
+  Ok xs => println xs

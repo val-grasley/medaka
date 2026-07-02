@@ -114,6 +114,49 @@ approachable than `sum xs`, so it doesn't earn a P1 bite.
   `-Then` family / `forEach`+`runEach` / `discard` / `replaceWith` (bite A), then
   `Bimappable` + impls (bite B).
 
+## AS-BUILT (2026-07-02)
+
+Everything in the delivery plan above SHIPPED, with all §0.5-locked names used
+as designed. See `STDLIB.md` Modules 1/2/20–23 for the verified per-function
+listing.
+
+- **Modules (no re-mint):** `stdlib/validation.mdk` (`Validation e a`, accumulating
+  `Applicative requires Semigroup e`, deliberately no `Thenable`), `stdlib/nonempty.mdk`
+  (`NonEmpty a`, total `head`/`maximum`/`minimum`), `stdlib/option.mdk` (`option`
+  eliminator), `stdlib/result.mdk` (`result` eliminator); `stdlib/list.mdk` gained
+  `somes`/`oks`/`errs`/`partitionResults`.
+- **Core (bite A + B, one re-mint):** `on`, `curry`, `uncurry`, `discard`, `map2`/`map3`,
+  `foldThen`/`repeatThen`/`filterThen`, `forEach`/`runEach`, `guard`; new
+  `Bimappable p` interface (`bimap`/`mapFirst`/`mapSecond`) with `impl Bimappable Result`
+  and `impl Bimappable (,)`.
+- **Two compiler changes enabled this, both landed as part of the same arc:**
+  1. **Emitter PAP-in-container fix** (`0f4f4c1`) — a partially-applied multi-arg
+     closure stored in a container and later saturated (exactly `map2`/`map3`'s
+     `ap (map f fa) fb` shape) SIGSEGV'd on `build`. Fixed via arity-carrying
+     closure cells + a runtime `mdk_apply` for arity-aware opaque application.
+     See `compiler/EMITTER-GAPS.md`.
+  2. **Tuples as a real type constructor** (Stage 1 `a642a43`, Stage 2 `c00ee2b`) —
+     `(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax names the bare (unsaturated)
+     tuple constructor in type position, which is what makes `impl Bimappable (,)`
+     possible at all (a saturated `(a, b)` head is kind-inconsistent with a
+     higher-kinded class param). See `compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`.
+     Seed re-minted (`9671acd`) — the prior seed couldn't parse `(,)`.
+
+**Deferred to P2** (per the tiering above — unchanged by this session):
+monoid newtypes (`Sum`/`Product`/`Any`/`All`/`Min`/`Max`/`First`/`Last`),
+`Reader`/`Writer`/`State`, `zipWithThen`/`Kleisli`/`asum`, `Enum`, lazy `Seq`.
+
+**Known residual (open, discovered during this arc, NOT tuple-specific):** a
+typeclass impl defined in a non-prelude sibling module fails to emit its
+`define` at **build** time (the call is emitted; the impl's LLVM define is
+missing) — reproduces with plain `Result`/`Box` impls too, not just tuples.
+Prelude impls (e.g. `impl Bimappable Result`, `impl Bimappable (,)` in
+`core.mdk`) build and dispatch correctly; only a sibling-module impl trips it.
+Eval-only fixtures capture the shape: `test/eval_typed_modules_fixtures/bimappable_tuple_sibling/`,
+`test/eval_typed_modules_fixtures/bimappable_constrained_sibling/`,
+`test/eval_typed_modules_fixtures/impl_requires_nonfunctor_sibling/`. See
+`compiler/EMITTER-GAPS.md` for the pointer into `llvm_emit.mdk`.
+
 ---
 
 ## 1. Current FP surface census (what already exists — do not re-propose)
