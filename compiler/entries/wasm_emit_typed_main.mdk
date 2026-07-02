@@ -60,11 +60,3 @@ runEmit runtimeDecls preludeDecls userDecls =
   let _ = installCtorFloatFields (ctorFieldTypeNames combined)
   emitProgram
     (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
-
-readAllDecls : List String -> <IO> Result String (List Decl)
-readAllDecls [] = Ok []
-readAllDecls (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllDecls rest
-    Err msg => Err msg
-    Ok more => Ok (desugar (parse src) ++ more)
