@@ -89,25 +89,26 @@ parseHeader = do
   magic <- takeBytes 16
   _ <- checkMagic magic
   rawPageSize <- beUint 2
-  _ <- anyByte                  -- write version (offset 18): skip 1 byte
-  readVer <- beUint 1           -- read version (offset 19)
-  reserved <- beUint 1          -- reserved per page (offset 20)
-  _ <- takeBytes 7              -- offsets 21..27: payload fractions, change ctr
-  pageCount <- beUint 4         -- offset 28
-  _ <- takeBytes 8              -- offsets 32..39: freelist trunk + count
-  schemaCookie <- beUint 4      -- offset 40
-  _ <- takeBytes 12             -- offsets 44..55
-  encoding <- beUint 4          -- offset 56
-  _ <- takeBytes 40             -- offsets 60..99: remainder of header
+  _ <- anyByte  -- write version (offset 18): skip 1 byte
+  readVer <- beUint 1  -- read version (offset 19)
+  reserved <- beUint 1  -- reserved per page (offset 20)
+  _ <- takeBytes 7  -- offsets 21..27: payload fractions, change ctr
+  pageCount <- beUint 4  -- offset 28
+  _ <- takeBytes 8  -- offsets 32..39: freelist trunk + count
+  schemaCookie <- beUint 4  -- offset 40
+  _ <- takeBytes 12  -- offsets 44..55
+  encoding <- beUint 4  -- offset 56
+  _ <- takeBytes 40  -- offsets 60..99: remainder of header
   let pageSize = if rawPageSize == 1 then 65536 else rawPageSize
-  pure (DbHeader
-    { pageSize = pageSize
-    , pageCount = pageCount
-    , encoding = encoding
-    , reserved = reserved
-    , schemaCookie = schemaCookie
-    , readVersion = readVer
-    })
+  pure
+    DbHeader {
+      pageSize = pageSize,
+      pageCount = pageCount,
+      encoding = encoding,
+      reserved = reserved,
+      schemaCookie = schemaCookie,
+      readVersion = readVer,
+    }
 
 -- | Render a parsed header (or error) as "pageSize|pageCount|encoding" for
 --   doctests.

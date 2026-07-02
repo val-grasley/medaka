@@ -2161,7 +2161,7 @@ resetState _ =
   let _ = setRef pendingArithSites []
   let _ = setRef methodIfaceParamsRef []
   let _ = setRef pendingImplObligations []
-  let _ = setRef numlitRefs []   -- PLAN.md #11
+  let _ = setRef numlitRefs []  -- PLAN.md #11
   let _ = setRef localBindRefs []
   let _ = setRef localSchemesOut []
   let _ = setRef seedSchemesOut []
@@ -3725,10 +3725,10 @@ blockRecLet env x e =
   let _ = unify placeholder t1
   let _ = exitLevel ()
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
-  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
-  let _ = registerAmbiguousConstraints addedObls [t1]   -- RETPOS soundness
-  let _ = recordLocalBind x t1   -- LSP hover (block rec-let bypasses inferPat)
-  seedAlphaLets (extendVar env x (generalize t1)) x e   -- WS-2: α scope-seed
+  let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
+  let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
+  let _ = recordLocalBind x t1  -- LSP hover (block rec-let bypasses inferPat)
+  seedAlphaLets (extendVar env x (generalize t1)) x e  -- WS-2: α scope-seed
 
 blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
 blockLet env isMut (PVar x) e =
@@ -4513,10 +4513,10 @@ inferRecLet env x e1 e2 =
   let _ = unify placeholder t1
   let _ = exitLevel ()
   let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
-  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
-  let _ = registerAmbiguousConstraints addedObls [t1]   -- RETPOS soundness
-  let _ = recordLocalBind x t1   -- LSP hover (recursive PVar let bypasses inferPat)
-  infer (seedAlphaLets (extendVar env x (generalize t1)) x e1) e2   -- WS-2: α scope-seed
+  let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
+  let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
+  let _ = recordLocalBind x t1  -- LSP hover (recursive PVar let bypasses inferPat)
+  infer (seedAlphaLets (extendVar env x (generalize t1)) x e1) e2  -- WS-2: α scope-seed
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLetSimple env pat e1 e2 =
@@ -4534,8 +4534,13 @@ inferLetSimple env pat e1 e2 =
 
 inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
 inferLetBody env (PVar x) t1 e1 e2 =
-  let _ = recordLocalBind x t1   -- LSP hover (PVar let bypasses inferPat)
-  infer (seedAlphaLets (extendVar env x (genRestricted (isNonexpansive e1) t1)) x e1) e2   -- WS-2: α scope-seed
+  let _ = recordLocalBind x t1  -- LSP hover (PVar let bypasses inferPat)
+  infer
+    (seedAlphaLets
+      (extendVar env x (genRestricted (isNonexpansive e1) t1))
+      x
+      e1)
+    e2  -- WS-2: α scope-seed
 inferLetBody env pat t1 _ e2 =
   let pr = inferPat env pat
   let _ = unify (fst pr) t1
@@ -10444,8 +10449,8 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = setRef crossModuleMethodConstraintsRef []
   let _ = setRef crossModuleMethodConstraintsQualRef []
   let allDecls = coreDecls ++ flatMap snd modules
-  let _ = setRef superDeclsRef allDecls   -- WS-1b: interfaces in scope for the discovery scratch typecheck
-  let _ = setRef userIfaceNamesRef (collectIfaceNames (flatMap snd modules))   -- WS-1b: gate super-expansion to user interfaces
+  let _ = setRef superDeclsRef allDecls  -- WS-1b: interfaces in scope for the discovery scratch typecheck
+  let _ = setRef userIfaceNamesRef (collectIfaceNames (flatMap snd modules))  -- WS-1b: gate super-expansion to user interfaces
   let rpNames = returnPosMethodNames allDecls
   let _ = setRef argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst argDispatchIdxRef.value
@@ -10836,9 +10841,9 @@ markModules coreDecls modules =
 -- is also still bound, so a tyvar receiver routes RDict.
 elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp mid seedVars accData implDecls prog =
-  let _ = setRef superDeclsRef implDecls   -- WS-1b: interfaces in scope for super expansion
+  let _ = setRef superDeclsRef implDecls  -- WS-1b: interfaces in scope for super expansion
   let schemes = checkModuleFullImpl mid seedVars accData implDecls prog
-  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
+  let _ = setNumlitFloats ()  -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value

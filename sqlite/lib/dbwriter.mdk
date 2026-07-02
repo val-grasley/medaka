@@ -292,33 +292,33 @@ buildInteriorPage entries rightmost = do
 buildFileHeader : Int -> <Mut> Array Int
 buildFileHeader pageCount =
   let buf = newBuilder ()
-  emitBytes magicBytes buf              -- 0..15  magic (16 bytes)
-  emitU16BE pageSize buf                -- 16     page size
-  emitU8 1 buf                          -- 18     write version
-  emitU8 1 buf                          -- 19     read version
-  emitU8 0 buf                          -- 20     reserved per page
-  emitU8 64 buf                         -- 21     max payload frac
-  emitU8 32 buf                         -- 22     min payload frac
-  emitU8 32 buf                         -- 23     leaf payload frac
-  emitU32BE 1 buf                       -- 24     change counter
-  emitU32BE pageCount buf               -- 28     page count
-  emitU32BE 0 buf                       -- 32     freelist trunk
-  emitU32BE 0 buf                       -- 36     freelist count
-  emitU32BE 1 buf                       -- 40     schema cookie
-  emitU32BE 4 buf                       -- 44     schema format
-  emitU32BE 0 buf                       -- 48     default cache size
-  emitU32BE 0 buf                       -- 52     largest-root (autovacuum)
-  emitU32BE 1 buf                       -- 56     text encoding (UTF-8)
-  emitU32BE 0 buf                       -- 60     user version
-  emitU32BE 0 buf                       -- 64     incremental vacuum
-  emitU32BE 0 buf                       -- 68     application id
-  emitU32BE 0 buf                       -- 72     reserved
-  emitU32BE 0 buf                       -- 76     reserved
-  emitU32BE 0 buf                       -- 80     reserved
-  emitU32BE 0 buf                       -- 84     reserved
-  emitU32BE 0 buf                       -- 88     reserved
-  emitU32BE 1 buf                       -- 92     version-valid-for
-  emitU32BE sqliteVersionNumber buf     -- 96     sqlite version number
+  emitBytes magicBytes buf  -- 0..15  magic (16 bytes)
+  emitU16BE pageSize buf  -- 16     page size
+  emitU8 1 buf  -- 18     write version
+  emitU8 1 buf  -- 19     read version
+  emitU8 0 buf  -- 20     reserved per page
+  emitU8 64 buf  -- 21     max payload frac
+  emitU8 32 buf  -- 22     min payload frac
+  emitU8 32 buf  -- 23     leaf payload frac
+  emitU32BE 1 buf  -- 24     change counter
+  emitU32BE pageCount buf  -- 28     page count
+  emitU32BE 0 buf  -- 32     freelist trunk
+  emitU32BE 0 buf  -- 36     freelist count
+  emitU32BE 1 buf  -- 40     schema cookie
+  emitU32BE 4 buf  -- 44     schema format
+  emitU32BE 0 buf  -- 48     default cache size
+  emitU32BE 0 buf  -- 52     largest-root (autovacuum)
+  emitU32BE 1 buf  -- 56     text encoding (UTF-8)
+  emitU32BE 0 buf  -- 60     user version
+  emitU32BE 0 buf  -- 64     incremental vacuum
+  emitU32BE 0 buf  -- 68     application id
+  emitU32BE 0 buf  -- 72     reserved
+  emitU32BE 0 buf  -- 76     reserved
+  emitU32BE 0 buf  -- 80     reserved
+  emitU32BE 0 buf  -- 84     reserved
+  emitU32BE 0 buf  -- 88     reserved
+  emitU32BE 1 buf  -- 92     version-valid-for
+  emitU32BE sqliteVersionNumber buf  -- 96     sqlite version number
   buildArray buf
 
 -- ---------------------------------------------------------------------------
