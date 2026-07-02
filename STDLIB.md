@@ -1035,6 +1035,27 @@ integer `gcdInt`/`lcmInt`/`powInt`. (Deliberately NOT re-adding `abs`/`signum`/
 `clamp` — `core.mdk` already provides them via `Num`/`Ord`.) 36 doctests + 6
 props.
 
+## Module 17 — `fs` ✅ implemented (P1, 2026-07-01) — build-path only
+
+`stdlib/fs.mdk` — a filesystem convenience layer over the host file externs.
+`import fs`. **Build-path (native/LLVM) only** — like ALL file externs, these are
+unimplemented in the tree-walking interpreter, so a file-touching program must be
+`medaka build`+run, not `medaka run` (a pre-existing interpreter limitation, not
+specific to `fs`).
+
+**New externs (in `runtime.mdk`):** `removeFile` (unlink), `rename`, `removeDir`
+(rmdir, empty only) — all `<FileWrite "_"> Result String Unit`; `statFile :
+String -> <FileRead "_"> Result String (Int, Bool, Bool, Float)` (size, isDir,
+isFile, mtime — a tuple like `runCommand`). Threaded through `eval.mdk`? No —
+file externs are emitter-only; `medaka_rt.c` C shims + `llvm_preamble.mdk`
+declares + `llvm_emit.mdk` `isFileExtern`/`emitFileExtern` arms.
+
+**Module API:** `FileStat { size, isDir, isFile, mtime }` record + `stat`;
+`copyFile` (read+write bytes), `mkdirAll` (`mkdir -p` via `path.dirname`
+recursion, EEXIST-tolerant), `walkDir` (recursive, full paths, depth-first),
+`isDir`/`isFile`/`fileSize`. Gated by 6 `test/llvm_fixtures/s13_*` build fixtures
+(effectful → no doctests).
+
 ---
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
