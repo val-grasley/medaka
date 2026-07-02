@@ -2415,14 +2415,13 @@ isArithOp op = op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
 -- statically float (arith preserves operand type).  A false negative only loses
 -- the optimization (falls to the boxing path); it can never miscompile.
 staticIsFloat : List (String, (String, LTy)) -> CExpr -> Bool
-staticIsFloat env ex = match ex
-  CLit (LFloat _) => True
-  CVar x _ => match lookupAssoc x env
-    Some (_, LTFloat) => True
-    Some (_, LTFloatU) => True
-    _ => False
-  CBinPrim op l _ _ => isArithOp op && staticIsFloat env l
+staticIsFloat env (CLit (LFloat _)) = True
+staticIsFloat env (CVar x _) = match lookupAssoc x env
+  Some (_, LTFloat) => True
+  Some (_, LTFloatU) => True
   _ => False
+staticIsFloat env (CBinPrim op l _ _) = isArithOp op && staticIsFloat env l
+staticIsFloat env _ = False
 
 -- CONSERVATIVE "does this expression evidently evaluate to a Float?" check, used to
 -- record a lambda's return type.  Unlike staticIsFloat (which checks only the LEFT
@@ -2431,18 +2430,17 @@ staticIsFloat env ex = match ex
 -- descends if/let/block tails.  Only a float LITERAL or a known-float var (capture)
 -- makes it True, so it never false-positives a non-float body.
 bodyFloatRet : List (String, (String, LTy)) -> CExpr -> Bool
-bodyFloatRet env ex = match ex
-  CLit (LFloat _) => True
-  CVar x _ => match lookupAssoc x env
-    Some (_, LTFloat) => True
-    Some (_, LTFloatU) => True
-    _ => False
-  CBinPrim op l r _ => isArithOp op
-    && (bodyFloatRet env l || bodyFloatRet env r)
-  CIf _ t f => bodyFloatRet env t || bodyFloatRet env f
-  CLet _ _ _ b => bodyFloatRet env b
-  CBlock stmts => blockFloatRet env stmts
+bodyFloatRet env (CLit (LFloat _)) = True
+bodyFloatRet env (CVar x _) = match lookupAssoc x env
+  Some (_, LTFloat) => True
+  Some (_, LTFloatU) => True
   _ => False
+bodyFloatRet env (CBinPrim op l r _) = isArithOp op
+  && (bodyFloatRet env l || bodyFloatRet env r)
+bodyFloatRet env (CIf _ t f) = bodyFloatRet env t || bodyFloatRet env f
+bodyFloatRet env (CLet _ _ _ b) = bodyFloatRet env b
+bodyFloatRet env (CBlock stmts) = blockFloatRet env stmts
+bodyFloatRet env _ = False
 
 -- a block evaluates to its LAST statement's value (a trailing CSLet yields Unit).
 blockFloatRet : List (String, (String, LTy)) -> List CStmt -> Bool
@@ -2465,16 +2463,16 @@ recordFloatRet e env w body =
 -- (matching emitArith's existing LTFloat branch, which already unboxes operands on
 -- the strength of the left's type).  Only called in statically-Float context.
 emitFloatD : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
-emitFloatD e env ex = match ex
-  CLit (LFloat f) => ensureFloatDot (floatToString f)
-  CBinPrim op l r _ => if isArithOp op then
+emitFloatD e env (CLit (LFloat f)) = ensureFloatDot (floatToString f)
+emitFloatD e env (ex@(CBinPrim op l r _)) =
+  if isArithOp op then
     let ld = emitFloatD e env l
     let rd = emitFloatD e env r
     let res = freshReg e
     let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
     res
   else emitFloatLeaf e env ex
-  _ => emitFloatLeaf e env ex
+emitFloatD e env ex = emitFloatLeaf e env ex
 
 emitFloatLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
 emitFloatLeaf e env ex = match floatFromIntArg ex
@@ -3409,27 +3407,30 @@ emitMethod e env name route implRoutes methRoutes argOps
   -- supplied args; its forwarder rebinds them and re-emits the saturated dispatch.
   | dictRoutedUnderApplied route name argOps =
       emitMethodPap e env name route implRoutes methRoutes argOps (methodArityOf name)
-emitMethod e env name route implRoutes methRoutes argOps = match route
-  RKey tag _ => match implFor e name tag
-    Some entry =>
-      let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
-      -- [tag] is the stamped route tag — the bare head when the head is unique, the
-      -- canonical key on a C7 collision.  For tagToLTy/returns-self use the matched
-      -- entry's REAL head tag; the lifted-fn symbol uses implFnSymOf (head when
-      -- unique, sanitized key on collision) so it matches emitGroup's name.
-      let headTag = implEntryTag entry
-      let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy headTag else LTInt
-      emitImplCallSat
-        e
-        (implFnName (implFnSymOf (implEntriesOf e) name entry) name)
-        (dictWords ++ argOps)
-        (methodArityOf name + lengthS dictWords)
-        resTy
-    None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
-  RDict d => emitMethodDispatch e env name d methRoutes argOps
-  RDictFwd d => emitMethodDispatch e env name d methRoutes argOps
-  RNone => emitMethodArgDispatch e name argOps
-  RLocal => emitKnownFnSat e ("mdk_" ++ name) argOps (fnArity e name) (fnRetTy e name)
+emitMethod e env name (RKey tag _) implRoutes methRoutes argOps = match implFor e name tag
+  Some entry =>
+    let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
+    -- [tag] is the stamped route tag — the bare head when the head is unique, the
+    -- canonical key on a C7 collision.  For tagToLTy/returns-self use the matched
+    -- entry's REAL head tag; the lifted-fn symbol uses implFnSymOf (head when
+    -- unique, sanitized key on collision) so it matches emitGroup's name.
+    let headTag = implEntryTag entry
+    let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy headTag else LTInt
+    emitImplCallSat
+      e
+      (implFnName (implFnSymOf (implEntriesOf e) name entry) name)
+      (dictWords ++ argOps)
+      (methodArityOf name + lengthS dictWords)
+      resTy
+  None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
+emitMethod e env name (RDict d) implRoutes methRoutes argOps =
+  emitMethodDispatch e env name d methRoutes argOps
+emitMethod e env name (RDictFwd d) implRoutes methRoutes argOps =
+  emitMethodDispatch e env name d methRoutes argOps
+emitMethod e env name RNone implRoutes methRoutes argOps =
+  emitMethodArgDispatch e name argOps
+emitMethod e env name RLocal implRoutes methRoutes argOps =
+  emitKnownFnSat e ("mdk_" ++ name) argOps (fnArity e name) (fnRetTy e name)
 -- native backend: a method whose RESULT mentions the interface/self
 -- type variable (map/ap/andThen) returns the CONTAINER; type its
 -- RKey-dispatched result as the impl's own type (tagToLTy tag) so a
@@ -4716,9 +4717,9 @@ listContains (x::rest) v
   | otherwise = listContains rest v
 
 emitGroupBody : Emit -> String -> String -> List Int -> Int -> List (List Pat, CExpr) -> <Mut> Unit
-emitGroupBody e fname _ _ 0 clauses = match clauses
-  [([], body)] => emitFnBody e [] fname body
-  _ => gapU "nullary impl group with more than one clause (slice 6)"
+emitGroupBody e fname _ _ 0 [([], body)] = emitFnBody e [] fname body
+emitGroupBody e fname _ _ 0 _ =
+  gapU "nullary impl group with more than one clause (slice 6)"
 -- Fast path: single-clause all-PVar impl (e.g. `append xs ys = xs ++ ys`).
 -- Build a typed env directly from param names × receiver type so that `++`/`::`
 -- operands inherit the correct LTy (LTStr/LTCon) from the impl head tag.
@@ -4732,13 +4733,14 @@ emitGroupBody e fname _ _ 0 clauses = match clauses
 -- emitter.  The IR produced is byte-identical to the guarded form; only the
 -- source shape changes.  (The other compiler stages contain NO guarded matches
 -- for the same reason.)
-emitGroupBody e fname tag positions arity clauses = match clauses
-  [(pats, body)] => if allPVar pats then
+emitGroupBody e fname tag positions arity (clauses@[(pats, body)]) =
+  if allPVar pats then
     let tyList = patPosTys tag positions (listLen pats) 0
     let env = paramEnvByPos pats tyList 0
     emitFnBody e env fname body
   else emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
-  _ => emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
+emitGroupBody e fname tag positions arity clauses =
+  emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
 
 -- build a LTy list of length n, typed as tagToLTy tag at positions ∈ positions,
 -- LTInt elsewhere.
@@ -6077,18 +6079,17 @@ nthOr (x::rest) i dflt
 -- alloc site stamps (`cellTag` of "Cons"/"Nil"/"$tuple"), so a constructor
 -- test reaches them with no special case beyond the name/arity (see conHeadInfo).
 emitSwitch : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
-emitSwitch e env root arms occs branches dft slot endL rty = match occs
-  [] => emitTree e env root arms [] slot endL rty dft
-  foc::rest => match branches
-    [] => emitTree e env root arms rest slot endL rty dft
-    (CTBranch (HLit _) _)::_ =>
-      emitLitChain e env root arms foc rest branches dft slot endL rty
-    (CTBranch HUnit sub)::_ => emitTree e env root arms rest slot endL rty sub
-    (CTBranch h _)::_ => match conHeadInfo h
-      Some _ =>
-        let tagReg = loadDiscriminant e foc
-        emitConChain e env root arms foc rest tagReg branches dft slot endL rty
-      None => gapSwitchHead e slot endL
+emitSwitch e env root arms [] branches dft slot endL rty =
+  emitTree e env root arms [] slot endL rty dft
+emitSwitch e env root arms (foc::rest) [] dft slot endL rty =
+  emitTree e env root arms rest slot endL rty dft
+emitSwitch e env root arms (foc::rest) (branches@((CTBranch (HLit _) _)::_)) dft slot endL rty = emitLitChain e env root arms foc rest branches dft slot endL rty
+emitSwitch e env root arms (foc::rest) ((CTBranch HUnit sub)::_) dft slot endL rty = emitTree e env root arms rest slot endL rty sub
+emitSwitch e env root arms (foc::rest) (branches@((CTBranch h _)::_)) dft slot endL rty = match conHeadInfo h
+  Some _ =>
+    let tagReg = loadDiscriminant e foc
+    emitConChain e env root arms foc rest tagReg branches dft slot endL rty
+  None => gapSwitchHead e slot endL
 -- HUnit is irrefutable (Unit has exactly one inhabitant): no discriminant test
 -- needed.  Drop the focus occurrence and descend into the single branch body.
 -- This closes gap #12 (the 6 Arbitrary impls in core.mdk and any user f()=…).
@@ -6910,13 +6911,12 @@ collectFloatClosureFns e ((CBind name ((CClause pats body)::[]))::rest) =
 collectFloatClosureFns e (_::rest) = collectFloatClosureFns e rest
 
 isFloatClosureBody : Emit -> String -> List Pat -> CExpr -> <Mut> Bool
-isFloatClosureBody e name pats body = match body
-  CLam _ lamBody =>
-    let ptys = match sigLookup e name
-      Some (FnSig ts _) => ts
-      None => allInt pats
-    bodyFloatRet (paramEnv pats ptys 0) lamBody
-  _ => False
+isFloatClosureBody e name pats (CLam _ lamBody) =
+  let ptys = match sigLookup e name
+    Some (FnSig ts _) => ts
+    None => allInt pats
+  bodyFloatRet (paramEnv pats ptys 0) lamBody
+isFloatClosureBody e name pats _ = False
 
 -- after a SATURATED known-fn call whose callee returns a float-returning closure,
 -- record the result word as a float-returning closure (closureRetTyRef) so a later
@@ -7627,18 +7627,16 @@ inferOneSig _ _ _ = FnSig [] LTInt
 -- unannotated fn (`dsig = None`) or a non-scalar declared type leaves the guess
 -- untouched, so literal-anchored Float fns and Int fns are unchanged.
 seedParamTy : Option (List String, String) -> Int -> LTy -> LTy
-seedParamTy dsig i guessed = match dsig
-  Some (ptyNames, _) => match declScalarAt ptyNames i
-    Some t => t
-    None => guessed
+seedParamTy (Some (ptyNames, _)) i guessed = match declScalarAt ptyNames i
+  Some t => t
   None => guessed
+seedParamTy None i guessed = guessed
 
 seedRetTy : Option (List String, String) -> LTy -> LTy
-seedRetTy dsig guessed = match dsig
-  Some (_, retName) => match fieldNameToLTy retName
-    Some t => t
-    None => guessed
+seedRetTy (Some (_, retName)) guessed = match fieldNameToLTy retName
+  Some t => t
   None => guessed
+seedRetTy None guessed = guessed
 
 -- the declared scalar LTy at param index `i` of a declared param-type-head list,
 -- or None when out of range / not a known scalar.
@@ -7801,13 +7799,11 @@ numPolySeed dsig i seeded usedArith
 -- seedParamTy result is still LTInt (i.e. no concrete scalar declared/inferred).
 -- This is the "polymorphic Num operand" signal.
 isNumPolyParam : Option (List String, String) -> Int -> LTy -> Bool
-isNumPolyParam dsig i seeded = match seeded
-  LTInt => match dsig
-    Some (ptyNames, _) => match nthName ptyNames i
-      Some n => isTypeVarName n
-      None => False
-    None => True
-  _ => False
+isNumPolyParam (Some (ptyNames, _)) i LTInt = match nthName ptyNames i
+  Some n => isTypeVarName n
+  None => False
+isNumPolyParam None i LTInt = True
+isNumPolyParam dsig i _ = False
 
 -- a type-variable head name is lowercase-initial (`a`, `elem`); a concrete type
 -- (`Int`, `Float`, a user type) is uppercase-initial.  Empty ⇒ not a var.
@@ -7987,24 +7983,22 @@ emitVariantUpdate e env con base updates =
       emitCtorAlloc e con words
 
 emitRefAlloc : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
-emitRefAlloc e env args = match args
-  [x] =>
-    let (xw, _) = emitExpr e env x
-    emitCtorAlloc e "$ref" [xw]
-  _ => gapE "Ref expects exactly 1 argument"
+emitRefAlloc e env [x] =
+  let (xw, _) = emitExpr e env x
+  emitCtorAlloc e "$ref" [xw]
+emitRefAlloc e env _ = gapE "Ref expects exactly 1 argument"
 
 emitSetRef : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
-emitSetRef e env args = match args
-  [r, x] =>
-    let (rw, _) = emitExpr e env r
-    let (xw, _) = emitExpr e env x
-    let p = freshReg e
-    let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ rw ++ " to ptr")
-    let fp = freshReg e
-    let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
-    let _ = emit e ("  store i64 " ++ xw ++ ", ptr " ++ fp)
-    ("1", LTInt)
-  _ => gapE "setRef expects exactly 2 arguments"
+emitSetRef e env [r, x] =
+  let (rw, _) = emitExpr e env r
+  let (xw, _) = emitExpr e env x
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ rw ++ " to ptr")
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
+  let _ = emit e ("  store i64 " ++ xw ++ ", ptr " ++ fp)
+  ("1", LTInt)
+emitSetRef e env _ = gapE "setRef expects exactly 2 arguments"
 
 emitFieldExprs : Emit -> List (String, (String, LTy)) -> List CField -> <Mut> List String
 emitFieldExprs _ _ [] = []
@@ -8435,49 +8429,48 @@ emitListSlice e env a lo hi incl =
 -- Shape mirrors emitRangeArray (alloca-counter loop) + emitIndirect (closure call).
 -- No C extern; the closure is called directly from the emitted loop body.
 emitArrayMakeWith : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
-emitArrayMakeWith e env args = match args
-  [nExpr, fExpr] =>
-    let (n_w, _) = emitExpr e env nExpr
-    let (fw, _) = emitExpr e env fExpr
-    let count = untagInt e n_w
-    let p = emitArrayDynAlloc e count
-    let n = intToString (freshId e)
-    let condL = "mw_cond" ++ n
-    let bodyL = "mw_body" ++ n
-    let doneL = "mw_done" ++ n
-    let ic = freshReg e
-    let _ = emit e ("  " ++ ic ++ " = alloca i64")
-    let _ = emit e ("  store i64 0, ptr " ++ ic)
-    let _ = emit e ("  br label %" ++ condL)
-    let _ = emit e (condL ++ ":")
-    let iv = freshReg e
-    let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
-    let cmp = freshReg e
-    let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
-    let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
-    let _ = emit e (bodyL ++ ":")
-    let ti = tagInt e iv
-    let cp = loadField e fw 0
-    let fp = freshReg e
-    let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
-    let elem = freshReg e
-    let _ = emit e ("  " ++ elem ++ " = call i64 " ++ fp ++ "(i64 " ++ fw ++ ", i64 " ++ ti ++ ")")
-    let off1 = freshReg e
-    let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
-    let off = freshReg e
-    let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
-    let ep = freshReg e
-    let _ = emit e ("  " ++ ep ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
-    let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ ep)
-    let iv2 = freshReg e
-    let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
-    let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
-    let _ = emit e ("  br label %" ++ condL)
-    let _ = emit e (doneL ++ ":")
-    let w = freshReg e
-    let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
-    (w, LTCon)
-  _ => gapE "arrayMakeWith takes two arguments"
+emitArrayMakeWith e env [nExpr, fExpr] =
+  let (n_w, _) = emitExpr e env nExpr
+  let (fw, _) = emitExpr e env fExpr
+  let count = untagInt e n_w
+  let p = emitArrayDynAlloc e count
+  let n = intToString (freshId e)
+  let condL = "mw_cond" ++ n
+  let bodyL = "mw_body" ++ n
+  let doneL = "mw_done" ++ n
+  let ic = freshReg e
+  let _ = emit e ("  " ++ ic ++ " = alloca i64")
+  let _ = emit e ("  store i64 0, ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (condL ++ ":")
+  let iv = freshReg e
+  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e (bodyL ++ ":")
+  let ti = tagInt e iv
+  let cp = loadField e fw 0
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let elem = freshReg e
+  let _ = emit e ("  " ++ elem ++ " = call i64 " ++ fp ++ "(i64 " ++ fw ++ ", i64 " ++ ti ++ ")")
+  let off1 = freshReg e
+  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let off = freshReg e
+  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let ep = freshReg e
+  let _ = emit e ("  " ++ ep ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+  let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ ep)
+  let iv2 = freshReg e
+  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (doneL ++ ":")
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (w, LTCon)
+emitArrayMakeWith e env _ = gapE "arrayMakeWith takes two arguments"
 
 -- ── lists (slice 9) ─────────────────────────────────────────────────────────
 -- VALUE REPRESENTATION: a list is a chain of boxed Cons cells (matching the
