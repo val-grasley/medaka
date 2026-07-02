@@ -1077,6 +1077,30 @@ effectful `now`/`nowDateTime`/`monotonic`/`elapsedSince`/`sleep`/`sleepSeconds`.
 UTC-only; **timezones = P2**. 15 doctests (cross-checked vs `date -u`) + a
 round-trip prop.
 
+## Module 19 — `net` ✅ implemented (P1, 2026-07-01) — native, build-path only
+
+`stdlib/net.mdk` — blocking TCP networking (client + server) + DNS. `import net`.
+Design: `NET-DESIGN.md`. **Native/build-path only, BY DESIGN** (like `fs`): net
+externs are unbound under `medaka run` (pure oracle), and `build --target wasm`
+of a net program is REJECTED (raw BSD sockets have no WasmGC equivalent — a clean
+`isNetExternW` guard, not a miscompile).
+
+**Externs (10, in `runtime.mdk`, all `<Net "_"> Result String _`, raw tagged-Int
+fds):** `netResolve` (getaddrinfo), `netTcpConnect`, `netTcpListen`,
+`netListenPort`, `netTcpAccept`, `netSend` (may write < len), `netRecv` (empty =
+EOF), `netShutdown`, `netClose`, `netSetTimeout`. `mdk_net_*` BSD-socket C shims
+(SIGPIPE-guarded); separate `isNetExtern`/`emitNetExtern` in `llvm_emit.mdk`.
+`Net` is host-refining (`("Net", PPrefix None)` already seeded → `connect "h" p`
+α-recovers `<Net "h">` for `manifest`/`check-policy`, zero compiler change).
+
+**Module API:** opaque `Connection`/`Listener`; `connect`/`resolve`;
+`listen`/`listenPort`/`accept`; `send`/`sendAll` (short-write loop)/`recv`/
+`recvAll`; `sendString`/`recvString`/`sendLine`/`recvLine`; `shutdown`/`close`/
+`closeListener`/`setTimeout`; **leak-safe brackets** `withConnection`/
+`withListener`/`serveLoop` (always close on Ok and Err paths). Gated by
+`test/diff_net.sh` (build-run loopback + API-roundtrip fixtures + a wasm-reject
+leg), since net can't be doctested (unbound under the interpreter).
+
 ---
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
