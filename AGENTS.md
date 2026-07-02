@@ -118,11 +118,33 @@ make medaka     # WARM (./medaka_emitter present): 2-stage rebuild from current 
 Correctness gates (all shell-based, golden-diff style):
 
 ```sh
+sh test/run_gates.sh                    # run the WHOLE diff_compiler_* suite in PARALLEL (~32s)
 bash test/diff_compiler_*.sh           # differential: native output vs captured goldens (~67 suites)
 bash test/selfcompile_fixpoint.sh      # emitter self-compile fixpoint (C3a/C3b)
 bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
-FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (always use FORCE=1 — stale-prone)
+FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (parallel; always FORCE=1 — stale-prone)
 ```
+
+**Parallelism (2026-07-02).** `build_oracles.sh`, `run_gates.sh`, the heavy compiler
+gates (`diff_compiler_{llvm,build,llvm_typed}`), and every wasm gate
+(`test/wasm/diff_{wasm,wasm_typed,wasm_modules,sqlite}.sh`) fan work across an
+`xargs -P` pool — cap with `JOBS=n` (build_oracles/individual gates) or
+`INNER_JOBS=n` (per-gate fan-out inside `run_gates.sh`). Oracle build **327s→34s**,
+full suite **125s→~32s**. Perf **env knobs** (all preserve byte-identical output —
+opt level/heap size never change emitted IR): `EMITTER_OPT` (emitter clang opt,
+default **-O2** — it's the reused workhorse), `ORACLE_OPT` (oracle clang, default
+**-O0** — throwaway binaries, gate runtime hidden by parallelism), `CLI_OPT`
+(`medaka` CLI clang, default -O0; `CLI_OPT=-O2 make medaka` → ~2× faster
+`run`/`test`/`check` interpreter, at +~4s on make medaka), `WASM_ORACLE_OPT`
+(default -O2 — **-O0 overflows the deep-TCO fixtures**), `GC_INITIAL_HEAP_SIZE`
+(large heap defers Boehm collections ~30% on SERIAL emits — set for make medaka +
+fixpoint; NOT the parallel oracle build, where 10× the RSS causes pressure). See
+`compiler/PERF-RESULTS.md`.
+
+⚠️ **When parallelizing a gate that shells to `medaka build`, watch for same-named
+inputs** (e.g. multiple `entry.mdk`): `build_cmd.mdk` keys its temp IR on the
+OUTPUT path (fixed 2026-07-02) so concurrent builds are race-safe, but ALWAYS run a
+newly-parallelized gate several times — a temp-collision flake only shows ~1 in N.
 
 **In a `.claude/worktrees/<name>` worktree:** `make medaka` works from the worktree
 root. Since the shell cwd resets between calls, use `make -C /absolute/path/to/worktree medaka`
@@ -359,7 +381,7 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `compiler/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the residual: the emitter's **refutable** `CGBind` (`Just x <- e`) lowering is a contained `gapU` (not produced by current source; the front-end resolve/typecheck side of refutable match-arm guards was fixed 2026-06-15, see the guard note above). The mixed-nullary/payload-ADT fuzzer crash was CLOSED 2026-06-13 — root cause was a cross-module **constructor-name collision** in the emitter's bare-name ctor tables (fixed by universal ctor mangling in `backend/private_mangle.mdk`), NOT match field mis-extraction as first filed. |
 | `compiler/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `compiler/ARGSTAMP-UNIFY-PLAN.md`. |
 | `compiler/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
-| `compiler/PERF-RESULTS.md` | **Bar-4 EXECUTED (2026-06-11), extended session 2 (2026-06-14).** Measured log of the perf wins: self-compile **12.04 s → ~1.72 s (~7×); ~73× vs the OCaml interpreter**. Session 1 (18 wins): `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Session 2 (3 wins, 2.57→1.72 s): two MISATTRIBUTED-symbol O(N²) sites session 1 missed — `scopeArities` (~23%) + `maybeInferConstraint` (~7.5%) membership→SMap — plus `GC_malloc_atomic` for pointer-free string cells (~3%). Reusable patterns (map the lam-id to source before trusting a filed hotspot; verify by wall-clock not sample count), every dead-end, and the supervised-only remaining levers (threaded float-augmented sig tree, GC allocation density). Harness: `test/bench.sh` |
+| `compiler/PERF-RESULTS.md` | Measured perf log. **⚠️ the 1.72s self-compile below is STALE — see the 2026-07-02 warning at the top of that file: emit is now ~3.7s (compiler grew), and that session parallelized the build/test harness (oracle build 327→34s, gate suite 125→32s) + built the emitter at -O2 + added env knobs (EMITTER_OPT/ORACLE_OPT/CLI_OPT/GC_INITIAL_HEAP_SIZE).** Historical: **Bar-4 EXECUTED (2026-06-11), extended session 2 (2026-06-14):** self-compile **12.04 s → ~1.72 s (~7×); ~73× vs the OCaml interpreter**. Session 1 (18 wins): `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Session 2 (3 wins, 2.57→1.72 s): two MISATTRIBUTED-symbol O(N²) sites session 1 missed — `scopeArities` (~23%) + `maybeInferConstraint` (~7.5%) membership→SMap — plus `GC_malloc_atomic` for pointer-free string cells (~3%). Reusable patterns (map the lam-id to source before trusting a filed hotspot; verify by wall-clock not sample count), every dead-end, and the supervised-only remaining levers (threaded float-augmented sig tree, GC allocation density). Harness: `test/bench.sh` |
 | `compiler/STAGE2-DESIGN.md` / `compiler/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
 | `compiler/README.md` | Self-host port slice log + roadmap |
 | `compiler/REROOT-PLAN.md` | The plan that took every differential gate OCaml-free (DONE 2026-06-13): gate categories (HOST/eval-probe-oracle/front-end/build), golden-capture infra, native-interp oracle, phasing. |

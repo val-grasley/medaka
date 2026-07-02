@@ -65,11 +65,17 @@ native emitter. (`make help` lists all targets.)
 ## Running tests
 
 ```sh
+sh test/run_gates.sh                # run the WHOLE diff_compiler_* suite in PARALLEL (~32s)
 bash test/diff_compiler_*.sh        # differential gates: native output vs goldens (~67 suites)
 bash test/selfcompile_fixpoint.sh   # emitter self-compile fixpoint
 bash test/bootstrap_*.sh            # each pipeline stage == interpreter
-FORCE=1 bash test/build_oracles.sh  # force-rebuild oracle goldens (always use FORCE=1)
+FORCE=1 bash test/build_oracles.sh  # force-rebuild oracle goldens (parallel; always use FORCE=1)
 ```
+
+The oracle build and gate suites parallelize across CPUs (cap with `JOBS=n`).
+Perf-tuning env knobs (`EMITTER_OPT` / `ORACLE_OPT` / `CLI_OPT` /
+`GC_INITIAL_HEAP_SIZE`) and the numbers are documented in `compiler/PERF-RESULTS.md`
+and `AGENTS.md` (Build & test).
 
 ## Using the compiler
 
@@ -374,10 +380,11 @@ stdlib/
 runtime/
   medaka_rt.c     C runtime + Boehm GC
 test/
+  run_gates.sh         Parallel runner for the whole diff_compiler_* suite
   diff_compiler_*.sh   Differential golden-diff test gates (~67 suites)
   bootstrap_*.sh       Per-stage native==interpreter gates
   selfcompile_*.sh     Emitter self-compile fixpoint gates
-  build_oracles.sh     Oracle golden capture / force-rebuild
+  build_oracles.sh     Oracle golden capture / force-rebuild (parallel)
   capture_goldens.sh   Golden capture helper
   bench.sh             Performance benchmark harness
   *_fixtures/          Input fixture files for each gate
