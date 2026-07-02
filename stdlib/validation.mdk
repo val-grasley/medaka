@@ -1,0 +1,120 @@
+{- validation.mdk — an accumulating-error applicative.
+
+   `Validation e a` is shaped exactly like `Result e a` (`Failure`/`Success`
+   instead of `Err`/`Ok`) but its `Applicative` has different semantics:
+   `Result`'s `ap` short-circuits on the first `Err`, while `Validation`'s
+   `ap` COMBINES both sides' errors via `Semigroup e` when both are
+   `Failure`. This is the standard shape used to validate several
+   independent fields of a record and report every problem at once, rather
+   than just the first one.
+
+   Deliberately NO `impl Thenable Validation`. A monadic `andThen` must
+   short-circuit — the second computation only runs (and so its error only
+   exists) once the first succeeds — which is exactly the opposite of the
+   accumulating `Applicative` above. Offering both on the same type would
+   be incoherent (two "correct" answers for combining two failures depend
+   on which interface a caller happens to reach for). Haskell's
+   `validation` package, PureScript, and Scala/cats' `Validated` all make
+   this same call: accumulate via `Applicative`, and if you need
+   short-circuiting sequencing, convert to `Result` (`validationToResult`) first. -}
+
+import core.{
+  Result,
+  Ok,
+  Err,
+  Mappable,
+  Applicative,
+  Semigroup,
+  Eq,
+  Debug,
+  Foldable,
+  Traversable,
+}
+
+{- | Validation's own `Failure`/`Success` — same shape as `Result`'s
+   `Err`/`Ok`, distinguished by name so its different `Applicative` reads
+   as intentional rather than a `Result` look-alike bug.
+
+   > validationToResult (Success 1)
+   Ok 1
+   > validationToResult (Failure "bad")
+   Err "bad" -}
+public export data Validation e a = Failure e | Success a
+
+export impl Mappable (Validation e) where
+  map f (Success a) = Success (f a)
+  map _ (Failure e) = Failure e
+
+{- | The accumulating `Applicative`. `pure` lifts into `Success`; `ap`
+   combines two `Failure`s with `Semigroup e`'s `++` instead of keeping only
+   the first, so validating several fields collects every error.
+
+   > validationToResult (ap (Failure ["bad name"] : Validation (List String) (Int -> Int)) (Failure ["bad age"] : Validation (List String) Int))
+   Err ["bad name", "bad age"]
+   > validationToResult (ap (Failure ["bad name"] : Validation (List String) (Int -> Int)) (Success 5 : Validation (List String) Int))
+   Err ["bad name"]
+   > validationToResult (ap (pure (n => n + 1) : Validation (List String) (Int -> Int)) (Success 5 : Validation (List String) Int))
+   Ok 6 -}
+export impl Applicative (Validation e) requires Semigroup e where
+  pure a = Success a
+  ap (Failure e1) (Failure e2) = Failure (e1 ++ e2)
+  ap (Failure e) _ = Failure e
+  ap (Success f) v = map f v
+
+export impl Foldable (Validation e) where
+  fold _ acc (Failure _) = acc
+  fold f acc (Success x) = f acc x
+  foldRight _ acc (Failure _) = acc
+  foldRight f acc (Success x) = f x acc
+  toList (Failure _) = []
+  toList (Success x) = [x]
+
+export impl Traversable (Validation e) where
+  traverse f v = match v
+    Failure e => pure (Failure e)
+    Success x => andThen (f x) (y => pure (Success y))
+
+export impl Eq (Validation e a) requires Eq e, Eq a where
+  eq (Failure x) (Failure y) = eq x y
+  eq (Success x) (Success y) = eq x y
+  eq _ _ = False
+
+export impl Debug (Validation e a) requires Debug e, Debug a where
+  debug (Failure e) = "Failure " ++ debug e
+  debug (Success a) = "Success " ++ debug a
+
+{- | Drop down to the short-circuiting `Result` (e.g. to `andThen`-sequence
+   once you no longer need to accumulate).
+
+   > validationToResult (Success 1)
+   Ok 1 -}
+export validationToResult : Validation e a -> Result e a
+validationToResult (Success a) = Ok a
+validationToResult (Failure e) = Err e
+
+{- | Lift a `Result` into `Validation` (e.g. to combine it with others via
+   the accumulating `Applicative`).
+
+   > resultToValidation (Ok 1 : Result String Int)
+   Success 1
+   > resultToValidation (Err "bad" : Result String Int)
+   Failure "bad" -}
+export resultToValidation : Result e a -> Validation e a
+resultToValidation (Ok a) = Success a
+resultToValidation (Err e) = Failure e
+
+-- ─── Property tests ─────────────────────────────────────────────────────
+
+prop "validationToResult/resultToValidation round-trip on Success" (n : Int) =
+  validationToResult (resultToValidation (Ok n : Result Int Int)) ==
+    (Ok n : Result Int Int)
+
+prop "validationToResult/resultToValidation round-trip on Failure" (n : Int) =
+  validationToResult (resultToValidation (Err n : Result Int Int)) ==
+    (Err n : Result Int Int)
+
+prop "map identity is identity on Success" (n : Int) =
+  map identity (Success n : Validation Int Int) == Success n
+
+prop "map identity is identity on Failure" (n : Int) =
+  map identity (Failure n : Validation Int Int) == Failure n
