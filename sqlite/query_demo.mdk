@@ -26,9 +26,8 @@ showUser u = match u
     "User { id=\{i}, name=\"\{n}\", age=\{showOpt a} }"
 
 showOpt : Option Int -> String
-showOpt o = match o
-  None => "None"
-  Some n => "Some \{n}"
+showOpt None = "None"
+showOpt (Some n) = "Some \{n}"
 
 -- age > 25 (None counts as not > 25)
 ageOver25 : User -> Bool
@@ -38,11 +37,10 @@ ageOver25 u = match u
     None => False
 
 printUsers : List User -> <IO> Unit
-printUsers us = match us
-  [] => ()
-  u::rest =>
-    let _ = println (showUser u)
-    printUsers rest
+printUsers [] = ()
+printUsers (u::rest) =
+  let _ = println (showUser u)
+  printUsers rest
 
 main : <IO> Unit
 main = match args ()

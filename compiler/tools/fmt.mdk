@@ -452,9 +452,10 @@ stepDeclNormal (FmtState pieces2 cs1 vlines1 cursor1 started1) decl line endLine
 walkDecls : FmtState -> List String -> List Decl -> List DeclPos -> List (List Int) -> FmtState
 walkDecls st _ [] _ _ = st
 walkDecls st _ _ [] _ = st
-walkDecls st srcLines (d::ds) (p::ps) cls = match cls
-  [] => walkDecls (stepDecl st srcLines [] d p) srcLines ds ps []
-  c::rest => walkDecls (stepDecl st srcLines c d p) srcLines ds ps rest
+walkDecls st srcLines (d::ds) (p::ps) [] =
+  walkDecls (stepDecl st srcLines [] d p) srcLines ds ps []
+walkDecls st srcLines (d::ds) (p::ps) (c::rest) =
+  walkDecls (stepDecl st srcLines c d p) srcLines ds ps rest
 
 -- ── Public entry ──────────────────────────────────
 

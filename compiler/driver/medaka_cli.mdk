@@ -460,13 +460,12 @@ fmtOne mode file = match readFile file
 
 -- ── new ───────────────────────────────────────────────────────────────────
 runNewCmd : List String -> <IO, Panic> Unit
-runNewCmd argv = match argv
-  [name] =>
-    let code = newProject name
-    if code == 0 then () else exit code
-  _ =>
-    let _ = ePutStrLn "Usage: medaka new <name>"
-    exit 2
+runNewCmd [name] =
+  let code = newProject name
+  if code == 0 then () else exit code
+runNewCmd _ =
+  let _ = ePutStrLn "Usage: medaka new <name>"
+  exit 2
 
 -- ── build ─────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `build` arm (Build_cmd.run) + build_main.mdk: parse
@@ -508,9 +507,8 @@ runBuildCmd argv = match parseBuildArgs argv
 -- Default output path per target: native drops the extension (a bare exe name);
 -- wasm appends `.wasm` to the entry's base.
 defaultOutPath : BuildTarget -> String -> String
-defaultOutPath target input = match target
-  TNative => chopExt (baseOf input)
-  TWasm => chopExt (baseOf input) ++ ".wasm"
+defaultOutPath TNative input = chopExt (baseOf input)
+defaultOutPath TWasm input = chopExt (baseOf input) ++ ".wasm"
 -- G1 (SOUNDNESS): typecheck the whole module graph BEFORE shelling out to
 -- the emitter.  runBuild emits/clangs whatever the emitter produces — for
 -- an ill-typed program that is garbage (the G1 bug), so we abort here on any

@@ -58,27 +58,23 @@ yield = Suspend (_ => Done ())
 -- `-O2`, so a single chain is unbounded; the `medaka run` interpreter caps deep
 -- chains at ~100–500k.  No stdlib rewrite needed when the runtime swap lands.)
 export runAsync : Async e a -> <e> a
-runAsync m = match m
-  Done a => a
-  Suspend t => runAsync (t ())
+runAsync (Done a) = a
+runAsync (Suspend t) = runAsync (t ())
 
 -- internal — advance one step (a `Suspend` round, or stay `Done`).
 stepAsync : Async e a -> <e> Async e a
-stepAsync m = match m
-  Done a => Done a
-  Suspend t => t ()
+stepAsync (Done a) = Done a
+stepAsync (Suspend t) = t ()
 
 -- internal — is this computation finished?
 isDone : Async e a -> Bool
-isDone m = match m
-  Done _ => True
-  Suspend _ => False
+isDone (Done _) = True
+isDone (Suspend _) = False
 
 -- internal — extract a finished value (only called once every task is `Done`).
 forceVal : Async e a -> a
-forceVal m = match m
-  Done a => a
-  Suspend _ => panic "async: forceVal on an unfinished computation"
+forceVal (Done a) = a
+forceVal (Suspend _) = panic "async: forceVal on an unfinished computation"
 
 -- | Run N computations concurrently, collecting results in input order once all
 -- complete (ASYNC-DESIGN §2.3, D8 structured concurrency).  v1 advances each

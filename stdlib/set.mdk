@@ -72,24 +72,22 @@ rotateR x l r = match l
   Tip => panic "Set.rotateR: empty left subtree"
 
 singleL : a -> Set a -> Set a -> Set a
-singleL x1 t1 r = match r
-  Bin _ x2 t2 t3 => bin x2 (bin x1 t1 t2) t3
-  Tip => panic "Set.singleL: empty right subtree"
+singleL x1 t1 (Bin _ x2 t2 t3) = bin x2 (bin x1 t1 t2) t3
+singleL x1 t1 Tip = panic "Set.singleL: empty right subtree"
 
 singleR : a -> Set a -> Set a -> Set a
-singleR x1 l t3 = match l
-  Bin _ x2 t1 t2 => bin x2 t1 (bin x1 t2 t3)
-  Tip => panic "Set.singleR: empty left subtree"
+singleR x1 (Bin _ x2 t1 t2) t3 = bin x2 t1 (bin x1 t2 t3)
+singleR x1 Tip t3 = panic "Set.singleR: empty left subtree"
 
 doubleL : a -> Set a -> Set a -> Set a
-doubleL x1 t1 r = match r
-  Bin _ x2 (Bin _ x3 t2 t3) t4 => bin x3 (bin x1 t1 t2) (bin x2 t3 t4)
-  _ => panic "Set.doubleL: malformed right subtree"
+doubleL x1 t1 (Bin _ x2 (Bin _ x3 t2 t3) t4) =
+  bin x3 (bin x1 t1 t2) (bin x2 t3 t4)
+doubleL x1 t1 _ = panic "Set.doubleL: malformed right subtree"
 
 doubleR : a -> Set a -> Set a -> Set a
-doubleR x1 l t4 = match l
-  Bin _ x2 t1 (Bin _ x3 t2 t3) => bin x3 (bin x2 t1 t2) (bin x1 t3 t4)
-  _ => panic "Set.doubleR: malformed left subtree"
+doubleR x1 (Bin _ x2 t1 (Bin _ x3 t2 t3)) t4 =
+  bin x3 (bin x2 t1 t2) (bin x1 t3 t4)
+doubleR x1 _ t4 = panic "Set.doubleR: malformed left subtree"
 
 -- ── Construction ────────────────────────────────────────────────────────
 
