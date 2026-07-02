@@ -4,26 +4,11 @@
 -- `main`.  Strict per-target IO loop (see eval_prelude_batch.mdk for why).
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
 import eval.eval.{evalMain}
+import entries.entry_support.{driveRuntimeBatch}
 
-main = match args ()
-  corePath::listPath::targets => withPreludes corePath listPath targets
-  _ => ePutStrLn "usage: medaka run compiler/entries/eval_list_batch.mdk <core.mdk> <list.mdk> <file.mdk>..."
+main = driveRuntimeBatch "===SELFHOST-FIX=== " render
 
-withPreludes corePath listPath targets = match readFile corePath
-  Err msg => ePutStrLn msg
-  Ok csrc => match readFile listPath
-    Err msg => ePutStrLn msg
-    Ok lsrc => emitAll (desugar (parse csrc) ++ desugar (parse lsrc)) targets
-
-emitAll : List Decl -> List String -> <IO, Mut> Unit
-emitAll preludeDecls [] = putStr ""
-emitAll preludeDecls (path::rest) = match readFile path
-  Err msg =>
-    let _ = ePutStrLn msg
-    emitAll preludeDecls rest
-  Ok src =>
-    let _ = putStr ("===SELFHOST-FIX=== " ++ path ++ "\n" ++ evalMain (preludeDecls ++ desugar (parse src)) ++ "\n")
-    emitAll preludeDecls rest
+render : List Decl -> List Decl -> List Decl -> <Mut> String
+render coreDecls listDecls targetDecls =
+  evalMain (coreDecls ++ listDecls ++ targetDecls)

@@ -13,6 +13,7 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.marker.{markerFor}
 import ir.sexp.{programToSexp}
+import entries.entry_support.{readAllSources}
 
 main = match args ()
   preludePath::targets => markFiles preludePath targets
@@ -24,14 +25,6 @@ markFiles preludePath targets = match readFile preludePath
   Ok preludeSrc => match readAllSources targets
     Err msg => ePutStrLn msg
     Ok srcs => putStr (renderAll (markerFor (desugar (parse preludeSrc))) srcs)
-
-readAllSources : List String -> <IO> Result String (List (String, String))
-readAllSources [] = Ok []
-readAllSources (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllSources rest
-    Err msg => Err msg
-    Ok more => Ok ((p, src)::more)
 
 renderAll : (List Decl -> List Decl) -> List (String, String) -> String
 renderAll mark [] = ""

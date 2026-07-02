@@ -14,50 +14,16 @@
 --
 -- Probe-only entry: NOT in the emitter graph (selfcompile_fixpoint must stay green).
 
-import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
-import types.typecheck.{elaborateOne, enableEmitArgStampPasses}
-import support.util.{splitLast}
-import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+import types.typecheck.{enableEmitArgStampPasses}
+import entries.entry_support.{driveRuntimeArgs, evalDictString}
 
 main = match args ()
-  mode::runtimePath::rest => withMode mode runtimePath rest
+  mode::rest => withMode mode rest
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
-withMode mode runtimePath rest =
+withMode mode rest =
   let _ = if mode == "ON" then enableEmitArgStampPasses () else ()
-  withRuntime runtimePath rest
+  driveRuntimeArgs rest emit
 
-withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) =>
-    withFiles runtimePath preludePaths targetPath
-  None => ePutStrLn "usage: (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
-
-withFiles runtimePath preludePaths targetPath = match readFile runtimePath
-  Ok rsrc => withPreludes rsrc preludePaths targetPath
-  Err msg => ePutStrLn msg
-
-withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
-  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
-  Err msg => ePutStrLn msg
-
-withTarget rsrc preludeDecls targetPath = match readFile targetPath
-  Ok tsrc => putStr (runDict (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
-  Err msg => ePutStrLn msg
-
-runDict : List Decl -> List Decl -> List Decl -> <Mut> String
-runDict runtimeDecls preludeDecls userDecls =
-  let userNames = funNamesOf userDecls
-  let livePrelude = dropShadowedExp userNames preludeDecls
-  evalOneOutput
-    []
-    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
-
-readAllDecls : List String -> <IO> Result String (List Decl)
-readAllDecls [] = Ok []
-readAllDecls (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllDecls rest
-    Err msg => Err msg
-    Ok more => Ok (desugar (parse src) ++ more)
+emit runtimeDecls preludeDecls userDecls =
+  putStr (evalDictString runtimeDecls preludeDecls userDecls)

@@ -5,36 +5,11 @@
 -- concatenation, but without re-parsing core each time.
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
 import types.typecheck.{checkToLinesWithRuntime}
+import entries.entry_support.{driveRuntimeBatch}
 
-main = match args ()
-  runtimePath::corePath::targets => withFiles runtimePath corePath targets
-  _ => ePutStrLn "usage: medaka run compiler/entries/typecheck_golden_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
+main = driveRuntimeBatch "===SELFHOST-FIX=== " render
 
-withFiles runtimePath corePath targets = match readFile runtimePath
-  Err msg => ePutStrLn msg
-  Ok rsrc => match readFile corePath
-    Err msg => ePutStrLn msg
-    Ok csrc => match readAllSources targets
-      Err msg => ePutStrLn msg
-      Ok srcs =>
-        putStr (renderAll (desugar (parse rsrc)) (desugar (parse csrc)) srcs)
-
-readAllSources : List String -> <IO> Result String (List (String, String))
-readAllSources [] = Ok []
-readAllSources (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllSources rest
-    Err msg => Err msg
-    Ok more => Ok ((p, src)::more)
-
-renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
-renderAll runtimeDecls coreDecls [] = ""
-renderAll runtimeDecls coreDecls ((path, src)::rest) = "===SELFHOST-FIX=== "
-  ++ path
-  ++ "\n"
-  ++ checkToLinesWithRuntime runtimeDecls (coreDecls ++ desugar (parse src))
-  ++ "\n"
-  ++ renderAll runtimeDecls coreDecls rest
+render : List Decl -> List Decl -> List Decl -> <Mut> String
+render runtimeDecls coreDecls targetDecls =
+  checkToLinesWithRuntime runtimeDecls (coreDecls ++ targetDecls)

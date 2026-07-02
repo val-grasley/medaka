@@ -25,9 +25,6 @@
 -- unconstrained fns can never share a dict-arity key (the former L1 hazard).
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
-import driver.loader.{loadProgram}
 import types.typecheck.{
   elaborateModules,
   constrainedSigNames,
@@ -59,29 +56,10 @@ import backend.llvm_emit.{
 }
 import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
-import support.path.{dirOf}
+import entries.entry_support.{driveModules}
 
 main : <IO, Mut> Unit
-main = match args ()
-  runtimeP::coreP::entry::roots =>
-    run runtimeP coreP entry (rootsOrDefault entry roots)
-  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
-
-rootsOrDefault : String -> List String -> List String
-rootsOrDefault entry [] = [dirOf entry]
-rootsOrDefault _ roots = roots
-
-desugarPair : (String, List Decl) -> (String, List Decl)
-desugarPair (mid, p) = (mid, desugar p)
-
-run : String -> String -> String -> List String -> <IO, Mut> Unit
-run runtimeP coreP entry roots = match readFile runtimeP
-  Err e => ePutStrLn e
-  Ok rsrc => match readFile coreP
-    Err e => ePutStrLn e
-    Ok csrc => match loadProgram entry roots
-      Err e => ePutStrLn e
-      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+main = driveModules runEmit
 
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =

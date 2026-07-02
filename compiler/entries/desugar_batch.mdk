@@ -12,6 +12,7 @@
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import ir.sexp.{programToSexp}
+import entries.entry_support.{readAllSources}
 
 main = match args ()
   [] => ePutStrLn "usage: medaka run compiler/entries/desugar_batch.mdk <file.mdk>..."
@@ -21,14 +22,6 @@ desugarFiles : List String -> <IO> Unit
 desugarFiles targets = match readAllSources targets
   Err msg => ePutStrLn msg
   Ok srcs => putStr (renderAll srcs)
-
-readAllSources : List String -> <IO> Result String (List (String, String))
-readAllSources [] = Ok []
-readAllSources (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllSources rest
-    Err msg => Err msg
-    Ok more => Ok ((p, src)::more)
 
 renderAll : List (String, String) -> String
 renderAll [] = ""
