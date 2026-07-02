@@ -204,6 +204,8 @@ fits _ ((Item _ _ (LineComment _))::_) = True
 
 -- `n` spaces.
 spaces : Int -> String
+-- Intentional cross-file duplicate of the same helper in diagnostics.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 spaces n
   | n <= 0 = ""
   | otherwise = " " ++ spaces (n - 1)
@@ -273,6 +275,8 @@ escSChars cs i
   | otherwise = escSOne (arrayGetUnsafe i cs) :: escSChars cs (i + 1)
 
 escSOne : Char -> String
+-- Intentional cross-file duplicate of the same helper in util.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 escSOne c
   | c == '\\' = "\\\\"
   | c == '"' = "\\\""
@@ -474,6 +478,8 @@ isRightAssoc "::" = True
 isRightAssoc _ = False
 
 isContinuationOp : String -> Bool
+-- Intentional cross-file duplicate of the same helper in parser.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isContinuationOp op = op == "|>"
   || op == ">>"
   || op == "<<"

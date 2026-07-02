@@ -124,6 +124,8 @@ escFrom cs i
   | otherwise = escOne (arrayGetUnsafe i cs) :: escFrom cs (i + 1)
 
 escOne : Char -> String
+-- Intentional cross-file duplicate of the same helper in printer.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 escOne c
   | c == '\\' = "\\\\"
   | c == '"' = "\\\""

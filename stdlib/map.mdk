@@ -26,6 +26,9 @@
    `Ord k` constraint; the few that only walk an existing tree (`size`, `map`,
    `keys`, the folds) do not, because the tree is already in order. -}
 
+-- map/set are identical weight-balanced-tree bodies over DISTINCT ADTs; consolidation needs a Set = Map _ Unit refactor (out of scope).
+-- lint-disable-file rule-duplicate-body
+
 import core.{
   Eq,
   Ord,

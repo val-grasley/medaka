@@ -1,0 +1,7 @@
+-- Twin of supp_next_line.mdk with NO directive: its cross-file finding must
+-- survive into the golden (naming supp_next_line.mdk as the duplicate site).
+sizeB : Int -> String
+sizeB n =
+  if n > 1000 then "huge"
+  else if n > 100 then "large"
+  else "tiny"

@@ -14,11 +14,15 @@ main = match args ()
   _ => ePutStrLn "usage: medaka run compiler/entries/diagnostics_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
 
 withFiles : String -> String -> String -> <IO, Mut> Unit
+-- Intentional cross-file duplicate of the same helper in check_main.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 withFiles runtimePath corePath targetPath = match readFile runtimePath
   Ok rsrc => withCore rsrc corePath targetPath
   Err msg => ePutStrLn msg
 
 withCore : String -> String -> String -> <IO, Mut> Unit
+-- Intentional cross-file duplicate of the same helper in check_main.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 withCore rsrc corePath targetPath = match readFile corePath
   Ok csrc => withTarget rsrc csrc targetPath
   Err msg => ePutStrLn msg

@@ -9,6 +9,8 @@ dirOf path = dirGo path (stringLength path)
 
 dirGo : String -> Int -> String
 dirGo _ 0 = "."
+-- Intentional cross-file duplicate of the same helper in lsp.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 dirGo path i =
   if stringSlice (i - 1) i path == "/" then
     stringSlice 0 (i - 1) path

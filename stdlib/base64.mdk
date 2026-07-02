@@ -16,6 +16,9 @@
    variant (`-`/`_` in place of `+`/`/`); padding is still emitted/required,
    for symmetry with the standard variant above. -}
 
+-- base64/hex codec wrappers over a module-local decode share identical wrapper bodies by design.
+-- lint-disable-file rule-duplicate-body
+
 import array.{get, fromList}
 import string.{toUtf8, fromUtf8, toChars}
 

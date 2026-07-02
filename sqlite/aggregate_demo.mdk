@@ -7,6 +7,9 @@
 --
 -- Usage: medaka build sqlite/aggregate_demo.mdk -o /tmp/adem && /tmp/adem <db>
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.sqlite.{Db, openDb}
 import lib.select.{eEq, eGt, eColText, eLitT, eLitI}
 import lib.aggregate.{

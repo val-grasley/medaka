@@ -24,6 +24,9 @@
    line, since its single-application body can't soft-break) and the recursion
    base-cases (`reinsertAll`, `collectBuckets`), where `| i >= n` reads best. -}
 
+-- hash_map/hash_set share identical resize/rehash bodies over DISTINCT ADTs; consolidation needs a shared-core refactor (out of scope).
+-- lint-disable-file rule-duplicate-body
+
 import core.{Eq, Debug, Option, Mappable, Hashable}
 
 {- `HashMap buckets count`: `buckets.value` is the bucket array (each slot a

@@ -8,6 +8,9 @@
 -- native LLVM backend and the WasmGC backend; `test/wasm/diff_sqlite.sh`
 -- builds it for both targets and diffs stdout.
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.dbwriter.{buildDatabase}
 import lib.sqlite.{Db, fromBytes}
 import lib.recordfmt.{Cell, CNull, CInt, CText}

@@ -1684,6 +1684,8 @@ rngStateRef = Ref 123456789
 -- `state * 1103515245` stays under the 63-bit OCaml int max (no overflow), and
 -- the result is always non-negative — compiler exposes no bitwise externs.
 rngNext : Unit -> <Mut> Int
+-- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 rngNext _ =
   let s = (rngStateRef.value * 1103515245 + 12345) % 2147483648
   let _ = setRef rngStateRef s
@@ -1707,6 +1709,8 @@ pRandomChar : Value -> <Mut> Value
 pRandomChar _ = VChar (charToStr (charFromCodeUnsafe (32 + rngNext () % 95)))
 
 charFromCodeUnsafe : Int -> Char
+-- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 charFromCodeUnsafe n = match charFromCode n
   Some c => c
   None => ' '

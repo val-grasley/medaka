@@ -8,6 +8,9 @@
 --
 -- Usage: medaka build sqlite/projection_demo.mdk -o /tmp/pdemo && /tmp/pdemo <db>
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.sqlite.{Db, openDb}
 import lib.select.{
   Select,

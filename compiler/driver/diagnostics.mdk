@@ -109,6 +109,8 @@ ppDiagCliSrc _ _ (Diag _ msg None) = "<unknown location>: " ++ msg
 
 -- `spaces n` = a string of n space characters (the oracle's `String.make col ' '`).
 spaces : Int -> String
+-- Intentional cross-file duplicate of the same helper in printer.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 spaces n
   | n <= 0 = ""
   | otherwise = " " ++ spaces (n - 1)

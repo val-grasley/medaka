@@ -4,6 +4,9 @@
 -- These exercise the PURE decoders against literal `List Cell` inputs (no IO),
 -- covering int/text/bool/option/product/custom and the error paths.
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.rowtype.{
   RowType,
   rtDecode,

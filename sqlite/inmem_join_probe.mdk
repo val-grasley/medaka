@@ -11,6 +11,9 @@
 -- Combined-row column order = `from` columns (users.id, users.name), then the
 -- join table's columns (orders.oid, orders.uid, orders.amount).
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.dbwriter.{buildDatabaseMulti}
 import lib.sqlite.{Db, fromBytes}
 import lib.recordfmt.{Cell, CInt, CText}

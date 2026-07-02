@@ -6,6 +6,9 @@
 -- Usage (build path — readFileBytes works only when compiled):
 --   medaka build sqlite/query_demo.mdk -o /tmp/qdemo && /tmp/qdemo <db-path>
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.sqlite.{Db, openDb}
 import lib.query.{scanTable, fetchAll}
 import lib.rowtype.{RowType, tInt, tText, tOption, t3, tCustom}

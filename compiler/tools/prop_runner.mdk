@@ -43,6 +43,8 @@ import support.util.{listLen, lookupAssoc, reverseL, isEmptyL, filterList, zipL}
 -- an eval env through every generator.
 
 rngNextLocal : Unit -> <Mut> Int
+-- Intentional cross-file duplicate of the same helper in eval.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 rngNextLocal _ =
   let s = (rngStateRef.value * 1103515245 + 12345) % 2147483648
   let _ = setRef rngStateRef s
@@ -141,6 +143,8 @@ genCharStr : Unit -> <Mut> String
 genCharStr _ = charToStr (charFromCodeU (32 + rngNextLocal () % 95))
 
 charFromCodeU : Int -> Char
+-- Intentional cross-file duplicate of the same helper in eval.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 charFromCodeU n = match charFromCode n
   Some c => c
   None => ' '

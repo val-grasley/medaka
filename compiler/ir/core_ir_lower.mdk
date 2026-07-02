@@ -1095,6 +1095,8 @@ groupNames ((n, _)::rest) seen
 
 clausesFor : String -> List (String, CClause) -> List CClause
 clausesFor _ [] = []
+-- Intentional cross-file duplicate of the same helper in typecheck.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 clausesFor name ((n, c)::rest)
   | n == name = c :: clausesFor name rest
   | otherwise = clausesFor name rest

@@ -78,6 +78,8 @@ reportFor "" runtimeP coreP raw desugared =
 reportFor resDiags _ _ _ _ = resDiags
 
 cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+-- Intentional cross-file duplicate of the same helper in check_batch.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 cleanReport runtimeP coreP raw desugared =
   let exWarns = exhaustToLines raw
   let _ = setCoherenceUserDecls desugared

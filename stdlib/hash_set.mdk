@@ -16,6 +16,9 @@
    `Foldable HashSet` makes `toList`/`elem`/`length`/`any`/… work (a set's
    elements *are* its `toList`, unlike a map's pairs). -}
 
+-- hash_set/hash_map share identical resize/rehash bodies over DISTINCT ADTs; consolidation needs a shared-core refactor (out of scope).
+-- lint-disable-file rule-duplicate-body
+
 import core.{Eq, Debug, Foldable, Hashable}
 
 {- `HashSet buckets count`: chains in `buckets.value`, live count in

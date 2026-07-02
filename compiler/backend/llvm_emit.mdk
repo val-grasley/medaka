@@ -1553,6 +1553,8 @@ emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 -- putStr/putStrLn write to stdout; ePutStr/ePutStrLn write to stderr.
 -- All return Unit (LTUnit); the operand "1" is an arbitrary immediate never read.
 isIoExtern : String -> Bool
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isIoExtern name =
   contains name ["putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
 
@@ -2009,6 +2011,8 @@ emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
 -- Result (LTCon) traffic'ing raw tagged-Int fds; blocking BSD-socket shims in
 -- runtime/medaka_rt.c.
 isNetExtern : String -> Bool
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isNetExtern name = contains
   name
   [
@@ -4672,6 +4676,8 @@ restampCrossGuard tbl method difs (CGBind p c) =
 
 -- the interface a method name belongs to, looked up in a pure table snapshot.
 ifaceOfIn : List (String, (String, Int)) -> String -> String
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 ifaceOfIn tbl m = match lookupAssoc m tbl
   Some (iface, _) => iface
   None => ""
@@ -7258,6 +7264,8 @@ valBinds (b::rest) = if isFnBind b then valBinds rest else b :: valBinds rest
 -- through nullary globals — none arise in practice) keeps its members in source
 -- order, the pre-existing behaviour (still caught by the forward-ref gap).
 orderedValBinds : List CBind -> List CBind
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 orderedValBinds binds =
   let names = map bindName binds
   let (_, ordered) = topoValGo binds names binds [] []
@@ -7269,6 +7277,8 @@ orderedValBinds binds =
 -- (done-names, ordered-binds) accumulators.
 topoValGo : List CBind -> List String -> List CBind -> List String -> List CBind -> (List String, List CBind)
 topoValGo _ _ [] done acc = (done, acc)
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 topoValGo all names (b::rest) done acc =
   let (done2, acc2) = topoValVisit all names b done acc []
   topoValGo all names rest done2 acc2

@@ -21,6 +21,9 @@
    and avoids the per-node `Unit` payload. The balancing mirrors map.mdk's,
    which the property tests below re-verify. -}
 
+-- set/map are identical weight-balanced-tree bodies over DISTINCT ADTs; consolidation needs a Set = Map _ Unit refactor (out of scope).
+-- lint-disable-file rule-duplicate-body
+
 import core.{
   Eq,
   Ord,

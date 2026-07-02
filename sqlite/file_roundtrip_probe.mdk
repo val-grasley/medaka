@@ -15,6 +15,9 @@
 --   native — ./probe /tmp/x.native.sqlite
 --   wasm   — MDK_ARGS=/tmp/x.wasm.sqlite node run.js probe.wasm
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.dbwriter.{writeDatabase}
 import lib.sqlite.{Db, openDb, scanTableRows}
 import lib.mutate.{delete, update, assign}

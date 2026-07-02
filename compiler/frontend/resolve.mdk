@@ -401,6 +401,8 @@ isHint : String -> Bool
 isHint n = startsWithAt (stringToChars n)
 
 startsWithAt : Array Char -> Bool
+-- Intentional cross-file duplicate of the same helper in annotate.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
 
 lookupValue : Env -> List String -> String -> Bool

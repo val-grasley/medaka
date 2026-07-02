@@ -90,6 +90,7 @@ import tools.lint.{
   allRules,
   lintProgram,
   applySuppressions,
+  applySuppressionsMulti,
   findingToDiag,
   Finding,
   applyFixes,
@@ -768,7 +769,11 @@ runCrossFileReport : List String -> List String -> List String -> List String ->
 runCrossFileReport disableNames onlyNames denyNames files =
   let triples = parseLintFiles files
   let raw = runCrossFileRules onlyNames disableNames triples
-  let findings = applyFindingDeny denyNames raw
+  -- Honor inline `-- lint-disable-*` directives on cross-file findings too:
+  -- each finding anchors to its own file, so filter against that file's own
+  -- directives (recovered from its source) before the CLI flag filters.
+  let suppressed = applySuppressionsMulti (readLintSrcs files) raw
+  let findings = applyFindingDeny denyNames suppressed
   match findings
     [] => False
     _ =>
@@ -786,6 +791,14 @@ renderCrossFinding f = ppDiagCliSrc "" (locFileOf f.loc) (findingToDiag f)
 locFileOf : Option Loc -> String
 locFileOf (Some (Loc file _ _ _ _)) = file
 locFileOf None = ""
+
+-- Read each readable target's source into `(path, src)` for inline-directive
+-- recovery in the cross-file report path.  Unreadable files are skipped.
+readLintSrcs : List String -> <IO, Mut, Panic> List (String, String)
+readLintSrcs [] = []
+readLintSrcs (f::rest) = match readFile f
+  Err _ => readLintSrcs rest
+  Ok src => (f, src) :: readLintSrcs rest
 
 -- Parse each readable target into (path, Positions, decls) for the cross-file
 -- tier.  Unreadable files are skipped (already reported by the per-file pass).

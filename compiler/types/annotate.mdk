@@ -81,6 +81,8 @@ recFieldBindings (RecPatField fname None) = [fname]
 recFieldBindings (RecPatField _ (Some p)) = patBindings p
 
 startsWithAt : Array Char -> Bool
+-- Intentional cross-file duplicate of the same helper in resolve.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
 
 isHint : String -> Bool

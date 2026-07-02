@@ -1,0 +1,11 @@
+-- Cross-file SUPPRESSION fixture (file-level scope).
+-- `gradeA`'s body is duplicated verbatim in dup_file_level.mdk, so the cross-file
+-- rule-duplicate-body rule WOULD fire here — but the file-level directive below
+-- silences it.  The twin (dup_file_level.mdk, no directive) still fires, which
+-- proves the body IS detected as a duplicate and the directive is what suppresses.
+-- lint-disable-file rule-duplicate-body
+gradeA : Int -> String
+gradeA n =
+  if n > 90 then "excellent"
+  else if n > 70 then "good"
+  else "poor"

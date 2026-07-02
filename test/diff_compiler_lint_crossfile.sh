@@ -41,7 +41,13 @@ if [ "$self" = "$golden" ]; then
   exit 0
 else
   printf 'FAIL lint cross-file (recursive walk + duplicate-body)\n'
-  diff <(printf '%s\n' "$golden") <(printf '%s\n' "$self") || true
+  # POSIX-clean diff (no process substitution → runs under strict /bin/sh, so the
+  # gate is not SKIP'd by run_gates.sh's `sh` invocation).
+  gtmp="$(mktemp)"; stmp="$(mktemp)"
+  printf '%s\n' "$golden" > "$gtmp"
+  printf '%s\n' "$self" > "$stmp"
+  diff "$gtmp" "$stmp" || true
+  rm -f "$gtmp" "$stmp"
   printf '\n0 ok, 1 failing\n'
   exit 1
 fi

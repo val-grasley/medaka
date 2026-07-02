@@ -373,6 +373,37 @@ applySuppressions src findings =
   let dirs = collectDirectives src
   filterList (f => not (isSuppressed dirs f)) findings
 
+-- Cross-file variant: findings anchor to DIFFERENT files, so a single `src`
+-- cannot cover them.  Given each file's source (`(path, src)`), silence every
+-- finding covered by an inline directive in ITS OWN file's comment side channel.
+-- Directives are parsed once per file (not per finding).  General over any
+-- cross-file rule; the cross-file report path calls this before flag filters.
+export applySuppressionsMulti : List (String, String) -> List Finding -> List Finding
+applySuppressionsMulti srcs findings =
+  let dirTable = map fileDirectivesOf srcs
+  filterList (f => not (findingSuppressedMulti dirTable f)) findings
+
+fileDirectivesOf : (String, String) -> (String, List Directive)
+fileDirectivesOf (path, src) = (path, collectDirectives src)
+
+findingSuppressedMulti : List (String, List Directive) -> Finding -> Bool
+findingSuppressedMulti dirTable f = match lookupDirs (findingFileOf f) dirTable
+  None => False
+  Some dirs => isSuppressed dirs f
+
+findingFileOf : Finding -> String
+findingFileOf f = match f.loc
+  Some (Loc file _ _ _ _) => file
+  None => ""
+
+lookupDirs : String -> List (String, List Directive) -> Option (List Directive)
+lookupDirs _ [] = None
+lookupDirs path ((p, ds)::rest) =
+  if p == path then
+    Some ds
+  else
+    lookupDirs path rest
+
 collectDirectives : String -> List Directive
 collectDirectives src =
   flatMap (c => dirToList (parseDirective c)) (collectComments src)

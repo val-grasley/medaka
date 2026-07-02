@@ -7,6 +7,9 @@
 --
 -- Usage: medaka build sqlite/select_demo.mdk -o /tmp/sdemo && /tmp/sdemo <db>
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.sqlite.{Db, openDb}
 import lib.select.{
   Select,

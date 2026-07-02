@@ -18,6 +18,9 @@
 -- replays the same filter/map-then-rebuild that `buildImage` does internally, via
 -- the exported `buildDatabase` — no lib change.)
 
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
 import lib.dbwriter.{buildDatabase}
 import lib.sqlite.{Db, fromBytes, scanTableRows}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}

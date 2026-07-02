@@ -924,6 +924,8 @@ isLeafExternW name = contains name [
 -- report a generic "unbound variable").  This single-set guard is wired into both
 -- application dispatch ladders (emitAppRef, emitTailAppRef).
 isNetExternW : String -> Bool
+-- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isNetExternW name = contains
   name
   [
@@ -2168,6 +2170,8 @@ emitReservedCtorStruct ty ctor =
 -- intervening closure — none arise in practice) keeps source order via the back-edge
 -- guard, the pre-existing behaviour.
 topoSortValBinds : List CBind -> <Mut> List CBind
+-- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 topoSortValBinds binds =
   let names = map bindName binds
   let (_, ordered) = topoValGo binds names binds [] []
@@ -2177,6 +2181,8 @@ topoSortValBinds binds =
 -- binding after them.  `visiting` guards cycles (a back-edge is skipped).
 topoValGo : List CBind -> List String -> List CBind -> List String -> List CBind -> <Mut> (List String, List CBind)
 topoValGo _ _ [] done acc = (done, acc)
+-- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 topoValGo all names (b::rest) done acc =
   let (done2, acc2) = topoValVisit all names b done acc []
   topoValGo all names rest done2 acc2
@@ -2410,6 +2416,8 @@ isStrReturningExtern name = contains name [
 -- auto-printed (the "Unit main no auto-print" contract — the native oracle prints
 -- nothing for a Unit main; the IO side effect IS the output).
 isUnitExtern : String -> Bool
+-- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isUnitExtern name =
   contains name ["putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
 
@@ -3738,6 +3746,8 @@ restampGuardW tbl iface tag (CGBind p e) =
 -- the interface a method name belongs to ("" = not an interface method); peer of
 -- llvm_emit's ifaceOfIn.
 ifaceOfInW : List (String, (String, Int)) -> String -> String
+-- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 ifaceOfInW tbl m = match lookupAssoc m tbl
   Some (iface, _) => iface
   None => ""
@@ -4274,6 +4284,8 @@ cexprIsFloat prog env (CFieldAccess _ label _) = match findRecByField recFieldsR
 cexprIsFloat prog env _ = False
 
 isArithOp : String -> Bool
+-- Intentional cross-file duplicate of the same helper in typecheck.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isArithOp op = contains op ["+", "-", "*", "/", "%"]
 
 -- W-SQLITE-4 stage 2: collect the PVar names that bind Float ctor-payload fields in

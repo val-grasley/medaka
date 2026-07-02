@@ -12,6 +12,9 @@
    treats `'a'..'f'`/`'A'..'F'` uniformly); `encode` always produces
    lowercase, `encodeUpper` uppercase. -}
 
+-- hex/base64 codec wrappers over a module-local decode share identical wrapper bodies by design.
+-- lint-disable-file rule-duplicate-body
+
 import array.{get, fromList}
 import string.{digitToInt, intToDigit, toUtf8, fromUtf8, toChars}
 

@@ -3127,6 +3127,8 @@ allVariantLines toks lines ((d, s, e)::rest)
 
 -- The set of continuation operators (mirror of printer.isContinuationOp).
 isContinuationOpStr : String -> Bool
+-- Intentional cross-file duplicate of the same helper in printer.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isContinuationOpStr op = op == "|>"
   || op == ">>"
   || op == "<<"

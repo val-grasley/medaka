@@ -36,6 +36,8 @@ import tools.lsp_harness.{
 }
 
 envOr : String -> String -> <IO> String
+-- Intentional cross-file duplicate of the same helper in build_cmd.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 envOr name dflt = match getEnv name
   Some v => if v == "" then dflt else v
   None => dflt

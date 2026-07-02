@@ -1,0 +1,7 @@
+-- Twin of supp_file_level.mdk with NO directive: its cross-file finding must
+-- survive into the golden (naming supp_file_level.mdk as the duplicate site).
+gradeA : Int -> String
+gradeA n =
+  if n > 90 then "excellent"
+  else if n > 70 then "good"
+  else "poor"

@@ -4043,6 +4043,8 @@ recordBinopSite op dref m = match binopMethod op
 -- nothing (their route is handled by recordBinopSite or left RNone).  The operand
 -- mono is [lt] (unified with [rt] by inferBinop).
 isArithBinop : String -> Bool
+-- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isArithBinop op = contains op ["+", "-", "*", "/", "%"]
 
 recordArithSite : String -> Ref Route -> Mono -> <Mut> Unit
@@ -4901,6 +4903,8 @@ groupNames ((n, _)::rest) seen = match omLookup n seen
 
 clausesFor : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
 clausesFor _ [] = []
+-- Intentional cross-file duplicate of the same helper in core_ir_lower.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 clausesFor name ((n, c)::rest)
   | n == name = c :: clausesFor name rest
   | otherwise = clausesFor name rest
@@ -9470,6 +9474,8 @@ ppTy (TyConstrained cs t) = ppConstraints cs ++ " => " ++ ppTy t
 -- effect atom renderer for ppTy (mirrors OCaml pp_atom inside pp_ty_prec / TEff)
 ppEffAtomTy : (String, Option String) -> String
 ppEffAtomTy (l, None) = l
+-- Intentional cross-file duplicate of the same helper in doc.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 ppEffAtomTy (l, Some s) = if s == "_" then l ++ " _" else l ++ " " ++ escStr s
 
 -- single constraint: no outer parens; multiple: wrap in parens (mirrors OCaml)

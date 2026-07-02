@@ -1,0 +1,10 @@
+-- Cross-file SUPPRESSION fixture (next-line scope).
+-- `sizeB`'s body is duplicated in dup_next_line.mdk; the `-- lint-disable-next-line`
+-- directive on the line above the definition silences THIS file's finding, while
+-- the twin (no directive) still fires.
+sizeB : Int -> String
+-- lint-disable-next-line rule-duplicate-body
+sizeB n =
+  if n > 1000 then "huge"
+  else if n > 100 then "large"
+  else "tiny"
