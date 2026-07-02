@@ -197,11 +197,18 @@ patsBindings ps = flatMap patBindings ps
 -- `None` at decl level), mirroring lib/resolve.ml's `!current_loc`.
 checkType : Option Loc -> Env -> Ty -> List ResError
 checkType cur env (TyCon n) =
-  if contains n env.types || contains n env.imported then
+  if contains n env.types || contains n env.imported || isTupleCtorTyName n then
     []
   else
     [UnknownType n cur]
 checkType _ _ (TyVar _) = []
+-- (helper below `checkType`) — accept the bare tuple type constructors
+-- `(,)`…`(,,,,)` (which the parser lowers to `TyCon "__tupleN__"`, arities 2–5)
+-- as known type names WITHOUT adding them to `env.types`/`primitiveTypes`: those
+-- feed the emitter's per-head default-method enumeration, and a spurious
+-- `__tupleN__` head there makes it try to emit a `Bimappable` default at a tuple
+-- with no `bimap` impl.  Kept in sync with the parser's `tupleCtorTyName` and
+-- typecheck's `tupleHeadTagTc`.
 checkType cur env (TyApp a b) = checkType cur env a ++ checkType cur env b
 checkType cur env (TyFun a b) = checkType cur env a ++ checkType cur env b
 checkType cur env (TyTuple ts) = flatMap (checkType cur env) ts
@@ -637,6 +644,10 @@ checkMethodMember iface known (ImplMethod mname _ _) =
     [MethodNotInInterface mname iface None]
 
 -- ── Primitives (hardcoded, mirror lib/resolve.ml) ────────────────────────
+isTupleCtorTyName : String -> Bool
+isTupleCtorTyName n =
+  contains n ["__tuple2__", "__tuple3__", "__tuple4__", "__tuple5__"]
+
 primitiveTypes : List String
 primitiveTypes =
   ["Int", "Float", "String", "Char", "Bool", "Unit", "List", "Ref", "Array"]

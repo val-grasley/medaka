@@ -1,0 +1,13 @@
+-- Regression: the bare-tuple `impl Bimappable (,)` (core.mdk) must build==run.
+-- `bimap` maps both fields; `mapFirst`/`mapSecond` come from the interface
+-- defaults.  A constrained wrapper (`bumpBoth`) exercises dict-routed dispatch
+-- of the tuple impl at build time (the surface parses `(,)` as the unsaturated
+-- 2-tuple type constructor).
+bumpBoth : Bimappable p => p Int Int -> p Int Int
+bumpBoth pv = bimap (x => x + 1) (y => y * 10) pv
+
+main =
+  println (debug (bimap (x => x + 1) (y => y * 2) (3, 4)))
+  println (debug (mapFirst (x => x + 1) (3, 4)))
+  println (debug (mapSecond (y => y * 2) (3, 4)))
+  println (debug (bumpBoth ((3, 4) : (Int, Int))))
