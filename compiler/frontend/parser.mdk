@@ -1799,10 +1799,52 @@ tyTupleOrSingle ts = TyTuple ts
 parseTyParen : Parser Ty
 parseTyParen = do
   expectTok TLParen
+  t <- peekP
+  parseTyParenBody t
+
+-- A leading comma right after `(` can only be the bare tuple type constructor
+-- `(,)`/`(,,)`/… (arities 2–5) — a normal parenthesized/tuple type always starts
+-- with a type atom.  Everything else is the existing `(a)` / `(a, b)` / `(a -> b)`
+-- path.
+parseTyParenBody : Token -> Parser Ty
+parseTyParenBody TComma = parseTupleCtorTail 0
+parseTyParenBody _ = do
   ts <- sepBy1 parseTy (expectTok TComma)
   optTrailingCommaTuple ts
   expectTok TRParen
   pure (tyTupleOrSingle ts)
+
+-- Count the commas of a bare tuple constructor `( , , … )`; arity = commas + 1.
+-- Lowers to `TyCon "__tupleN__"`, the same dispatch tag typecheck uses
+-- (`tupleHeadTagTc`), so the unsaturated head can bind a higher-kinded class
+-- param (`impl Bimappable (,)`).
+parseTupleCtorTail : Int -> Parser Ty
+parseTupleCtorTail commas = do
+  t <- peekP
+  tupleCtorTailFor commas t
+
+tupleCtorTailFor : Int -> Token -> Parser Ty
+tupleCtorTailFor commas TComma = do
+  advance
+  parseTupleCtorTail (commas + 1)
+tupleCtorTailFor commas TRParen = do
+  advance
+  tupleCtorTyOfArity (commas + 1)
+tupleCtorTailFor _ _ = failP "expected , or ) in tuple type constructor"
+
+tupleCtorTyOfArity : Int -> Parser Ty
+tupleCtorTyOfArity n =
+  if n >= 2 && n <= 5 then
+    pure (TyCon (tupleCtorTyName n))
+  else
+    failP "tuple type constructor arity must be 2..5"
+
+tupleCtorTyName : Int -> String
+tupleCtorTyName 2 = "__tuple2__"
+tupleCtorTyName 3 = "__tuple3__"
+tupleCtorTyName 4 = "__tuple4__"
+tupleCtorTyName 5 = "__tuple5__"
+tupleCtorTyName _ = "__tuple0__"
 
 -- ── Declarations + program ──────────────────────────────────────────────
 -- top-level dispatch.  `export`/`public export` are prefixes: `export` sets

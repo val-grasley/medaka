@@ -1,0 +1,11 @@
+interface Swap p where
+  swap : p a b -> p b a
+impl Swap (,) where
+  swap (x, y) = (y, x)
+fst2 : (,) a b -> a
+fst2 (x, _) = x
+mid3 : (,,) a b c -> b
+mid3 (_, y, _) = y
+main =
+  println (fst2 (swap (1, 2)))
+  println (mid3 (3, 4, 5))

@@ -316,8 +316,19 @@ isNegLit _ = False
 
 -- ── Types ─────────────────────────────────────────
 
+-- The bare tuple type constructors round-trip as `(,)`/`(,,)`/… — the parser
+-- lowers those to `TyCon "__tupleN__"`, so the printer must render that internal
+-- name back to the surface spelling (else `medaka fmt` would emit the raw
+-- `__tupleN__`, which re-parses as a type VARIABLE and corrupts the impl head).
+tyConSurface : String -> String
+tyConSurface "__tuple2__" = "(,)"
+tyConSurface "__tuple3__" = "(,,)"
+tyConSurface "__tuple4__" = "(,,,)"
+tyConSurface "__tuple5__" = "(,,,,)"
+tyConSurface n = n
+
 printType : Ty -> Doc
-printType (TyCon n) = text n
+printType (TyCon n) = text (tyConSurface n)
 printType (TyVar n) = text n
 printType (TyApp a b) =
   Cat (printTypeAppLhs a) (Cat (text " ") (printTypeAtom b))
@@ -350,7 +361,7 @@ printConstraint (Constraint iface args) =
   Cat (text iface) (concatD (map (a => Cat (text " ") (printTypeAtom a)) args))
 
 printTypeAtom : Ty -> Doc
-printTypeAtom (TyCon n) = text n
+printTypeAtom (TyCon n) = text (tyConSurface n)
 printTypeAtom (TyVar n) = text n
 printTypeAtom (TyTuple ts) = printType (TyTuple ts)
 printTypeAtom t = Cat (text "(") (Cat (printType t) (text ")"))
@@ -1763,7 +1774,7 @@ ppTy : Ty -> String
 ppTy t = ppTyPrec 0 t
 
 ppTyPrec : Int -> Ty -> String
-ppTyPrec _ (TyCon s) = s
+ppTyPrec _ (TyCon s) = tyConSurface s
 ppTyPrec _ (TyVar s) = s
 ppTyPrec _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyPrec 0) ts) ++ ")"
 ppTyPrec p (TyApp f x) =
