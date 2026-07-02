@@ -141,6 +141,8 @@ preambleLines = [
   "declare i64 @mdk_debug_string_lit(i64)",
   "declare i64 @mdk_debug_char_lit(i64)",
   "declare i64 @mdk_wall_time_sec(i64)",
+  "declare i64 @mdk_monotonic_sec(i64)",
+  "declare void @mdk_sleep_ms(i64)",
   "declare i64 @mdk_alloc_bytes(i64)",
   "",
 ]

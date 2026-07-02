@@ -47,6 +47,7 @@
 #include <stdnoreturn.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <gc.h>
@@ -1277,4 +1278,24 @@ long long mdk_wall_time_sec(long long u) { (void)u;
 
 long long mdk_alloc_bytes(long long u) { (void)u;
   return mdk_box_float((double)GC_get_total_bytes());
+}
+
+/* monotonicSec : Unit -> <Clock> Float — monotonic clock seconds (immune to
+ * wall-clock adjustment).  clock_gettime(CLOCK_MONOTONIC) is POSIX and available
+ * on macOS.  Boxed Float, same ABI as wallTimeSec. */
+long long mdk_monotonic_sec(long long u) { (void)u;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return mdk_box_float((double)ts.tv_sec + (double)ts.tv_nsec * 1e-9);
+}
+
+/* sleepMs : Int -> <Clock> Unit — sleep N milliseconds via nanosleep.  `ms_t` is
+ * the TAGGED Int (>>1 to untag), mirroring mdk_set_seed's ABI.  Returns nothing. */
+void mdk_sleep_ms(long long ms_t) {
+  long long ms = ms_t >> 1;
+  if (ms <= 0) return;
+  struct timespec req;
+  req.tv_sec = ms / 1000;
+  req.tv_nsec = (ms % 1000) * 1000000L;
+  nanosleep(&req, NULL);
 }

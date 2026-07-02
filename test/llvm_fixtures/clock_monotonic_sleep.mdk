@@ -1,0 +1,4 @@
+-- Clock externs: monotonicSec is non-decreasing across a sleepMs, so t1 >= t0.
+-- Value is nondeterministic but the ORDERING invariant is stable (1) on both the
+-- interpreter oracle (fixed clock) and the native backend (real clock_gettime).
+main = let t0 = monotonicSec () in let _ = sleepMs 5 in let t1 = monotonicSec () in if t1 >= t0 then 1 else 0

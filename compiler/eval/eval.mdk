@@ -1726,6 +1726,17 @@ pSetSeed _ = panic "setSeed: expected Int"
 pWallTimeSec : Value -> <Mut> Value
 pWallTimeSec _ = VFloat 1700000000.0
 
+-- monotonicSec / sleepMs: real-Clock externs (clock_gettime / nanosleep) in the
+-- native backend.  Under the interpreter oracle there is no FFI to the clock, so
+-- monotonicSec returns a fixed plausible value and sleepMs is a no-op — like
+-- wallTimeSec above.  Nondeterministic, so the output diff gates don't compare them.
+pMonotonicSec : Value -> <Mut> Value
+pMonotonicSec _ = VFloat 1000.0
+
+pSleepMs : Value -> <Mut> Value
+pSleepMs (VInt _) = VUnit
+pSleepMs _ = panic "sleepMs: expected Int"
+
 pAllocBytes : Value -> <Mut> Value
 pAllocBytes _ = VFloat 0.0
 
@@ -1737,6 +1748,8 @@ externBindings = [
   ("randomChar", prim1M pRandomChar),
   ("setSeed", prim1M pSetSeed),
   ("wallTimeSec", prim1M pWallTimeSec),
+  ("monotonicSec", prim1M pMonotonicSec),
+  ("sleepMs", prim1M pSleepMs),
   ("allocBytes", prim1M pAllocBytes),
   ("intToString", prim1 pIntToString),
   ("bitAnd", prim2 pBitAnd),
