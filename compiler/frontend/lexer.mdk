@@ -653,6 +653,10 @@ indentOfGo cs n i
   | otherwise = i
 
 minInt : Int -> Int -> Int
+-- Intentional: this IS the compiler's hot monomorphic Int min (AGENTS.md
+-- anti-pattern: don't delegate hot inner-loop helpers to the dict-passed
+-- prelude Ord method).
+-- lint-disable-next-line rule-if-max-min
 minInt a b = if a < b then a else b
 
 minIndentGo : List String -> Int -> Int

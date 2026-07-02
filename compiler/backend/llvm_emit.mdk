@@ -4465,6 +4465,10 @@ reqDictRoutes n i
   | otherwise = RDict ("$reqdict_" ++ intToString i) :: reqDictRoutes n (i + 1)
 
 maxInt : Int -> Int -> Int
+-- Intentional: this IS the compiler's hot monomorphic Int max (AGENTS.md
+-- anti-pattern: don't delegate hot inner-loop helpers to the dict-passed
+-- prelude Ord method).
+-- lint-disable-next-line rule-if-max-min
 maxInt a b = if a >= b then a else b
 
 -- eta-expand `pats`/`body` from `have` params to `arity` by appending fresh

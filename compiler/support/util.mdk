@@ -150,9 +150,15 @@ export zipL : List a -> List b -> List (a, b)
 zipL xs ys = zip xs ys
 
 export maxI : Int -> Int -> Int
+-- Intentional: this IS the compiler's hot monomorphic Int max (AGENTS.md
+-- anti-pattern: don't delegate hot inner-loop helpers to the dict-passed
+-- prelude Ord method).
+-- lint-disable-next-line rule-if-max-min
 maxI a b = if a >= b then a else b
 
 export minI : Int -> Int -> Int
+-- Intentional: see maxI above.
+-- lint-disable-next-line rule-if-max-min
 minI a b = if a <= b then a else b
 
 -- prefix/suffix tests: (prefix/suffix, string) argument order.

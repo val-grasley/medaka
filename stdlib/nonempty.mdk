@@ -67,14 +67,14 @@ head (NECons x _) = x
    > maximum (NECons 3 [1, 4, 1, 5])
    5 -}
 export maximum : Ord a => NonEmpty a -> a
-maximum (NECons x xs) = fold (acc y => if y > acc then y else acc) x xs
+maximum (NECons x xs) = fold (acc y => max y acc) x xs
 
 {- | The smallest element.  Total.
 
    > minimum (NECons 3 [1, 4, 1, 5])
    1 -}
 export minimum : Ord a => NonEmpty a -> a
-minimum (NECons x xs) = fold (acc y => if y < acc then y else acc) x xs
+minimum (NECons x xs) = fold (acc y => min y acc) x xs
 
 -- ---------------------------------------------------------------------------
 -- Instances

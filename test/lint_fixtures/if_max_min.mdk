@@ -1,0 +1,32 @@
+-- Fixture for rule-if-max-min: if-then-else selecting the larger/smaller of
+-- the same two operands, rewritable to `max`/`min`.
+
+-- POSITIVE: normal-orientation (then = left operand, else = right operand).
+gtNormal a b = if a > b then a else b
+geNormal a b = if a >= b then a else b
+ltNormal a b = if a < b then a else b
+leNormal a b = if a <= b then a else b
+
+-- POSITIVE: reversed-orientation (then = right operand, else = left operand).
+gtReversed a b = if a > b then b else a
+geReversed a b = if a >= b then b else a
+ltReversed a b = if a < b then b else a
+leReversed a b = if a <= b then b else a
+
+-- POSITIVE: nested anywhere in a decl body; operands can be arbitrary exprs.
+nested xs ys = (if len xs > len ys then len xs else len ys) + 1
+
+-- NEGATIVE: a branch is not an operand at all (0 is not `b` in `x > 0`... wait
+-- it's a literal, excluded regardless — see below); here `c` is neither `a` nor `b`.
+negOtherBranch a b c = if a > b then a else c
+
+-- NEGATIVE: clamp-to-literal idiom — a bare literal operand disqualifies the
+-- rewrite (reads as "clamp", not "select of two values" — see rule doc).
+negClampZero x = if x < 0 then 0 else x
+
+-- NEGATIVE: backtick comparison is `EInfix`, not `EBinOp` — not handled.
+gt a b = a > b
+negBacktick a b = if a `gt` b then a else b
+
+-- NEGATIVE: degenerate — both comparison operands are structurally identical.
+negSameOperand a = if a > a then a else a

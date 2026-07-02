@@ -160,8 +160,8 @@ reverse arr =
 export slice : Int -> Int -> Array a -> Array a
 slice lo hi arr =
   let n = arrayLength arr
-  let lo' = if lo < 0 then 0 else if lo > n then n else lo
-  let hi' = if hi < lo' then lo' else if hi > n then n else hi
+  let lo' = if lo < 0 then 0 else min lo n
+  let hi' = if hi < lo' then lo' else min hi n
   arrayMakeWith (hi' - lo') (i => arrayGetUnsafe (lo' + i) arr)
 
 {- | First `n` elements (fewer if the array is shorter).
@@ -209,7 +209,7 @@ concatLookup arrs target k outer =
 -- | Pair up two arrays element-wise, truncating to the shorter length.
 export zip : Array a -> Array b -> Array (a, b)
 zip a b =
-  let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
+  let n = min (arrayLength a) (arrayLength b)
   arrayMakeWith n (i => (arrayGetUnsafe i a, arrayGetUnsafe i b))
 
 {- | Combine two arrays element-wise with `f`, truncating to the shorter.
@@ -218,7 +218,7 @@ zip a b =
    [11, 22] -}
 export zipWith : (a -> b -> <e> c) -> Array a -> Array b -> <e> Array c
 zipWith f a b =
-  let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
+  let n = min (arrayLength a) (arrayLength b)
   arrayMakeWith n (i => f (arrayGetUnsafe i a) (arrayGetUnsafe i b))
 
 {- | Split an array of pairs into two parallel arrays — the inverse of `zip`.

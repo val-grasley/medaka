@@ -1,0 +1,22 @@
+-- Fixture for rule-if-max-min autofix.
+
+gtNormal a b = if a > b then a else b
+geNormal a b = if a >= b then a else b
+ltNormal a b = if a < b then a else b
+leNormal a b = if a <= b then a else b
+
+gtReversed a b = if a > b then b else a
+geReversed a b = if a >= b then b else a
+ltReversed a b = if a < b then b else a
+leReversed a b = if a <= b then b else a
+
+nested xs ys = (if len xs > len ys then len xs else len ys) + 1
+
+-- NEGATIVE: must stay untouched by the fixer.
+negOtherBranch a b c = if a > b then a else c
+negClampZero x = if x < 0 then 0 else x
+
+gt a b = a > b
+negBacktick a b = if a `gt` b then a else b
+
+negSameOperand a = if a > a then a else a
