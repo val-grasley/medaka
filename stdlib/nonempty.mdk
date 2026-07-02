@@ -1,0 +1,130 @@
+-- nonempty — a guaranteed-non-empty list.
+--
+-- `NonEmpty a` is a head element plus a (possibly empty) tail list, so it can
+-- never be empty by construction.  This lets `head`, `maximum`, and `minimum`
+-- be TOTAL — they return an `a`, not an `Option a` like the partial Foldable
+-- helpers on a plain `List`.
+--
+-- Import by bare name: `import nonempty` (this module is not auto-prelude), then
+-- call `nonempty.head`, `nonempty.maximum`, etc.
+
+import core.{
+  Eq,
+  Ord,
+  Debug,
+  Mappable,
+  Foldable,
+  Traversable,
+  Semigroup,
+  Applicative,
+  Thenable,
+  Option,
+  Some,
+  None,
+}
+
+-- A head element plus a (possibly empty) tail.  Never empty.
+public export data NonEmpty a = NECons a (List a)
+
+-- ---------------------------------------------------------------------------
+-- Construction & conversion
+-- ---------------------------------------------------------------------------
+
+{- | A `NonEmpty` holding exactly one element.
+
+   > toList (singleton 9)
+   [9]
+   > head (singleton 9)
+   9 -}
+export singleton : a -> NonEmpty a
+singleton x = NECons x []
+
+{- | Build a `NonEmpty` from a plain list, or `None` if the list is empty.
+   Inverse of `toList` for non-empty inputs.
+
+   > fromList [1, 2, 3] == Some (NECons 1 [2, 3])
+   True
+   > fromList ([] : List Int)
+   None -}
+export fromList : List a -> Option (NonEmpty a)
+fromList xs = match xs
+  [] => None
+  x::rest => Some (NECons x rest)
+
+-- ---------------------------------------------------------------------------
+-- Total accessors — the point of the module: these return `a`, never `Option`.
+-- ---------------------------------------------------------------------------
+
+{- | The first element.  Total (a `NonEmpty` always has one).
+
+   > head (NECons 7 [8, 9])
+   7 -}
+export head : NonEmpty a -> a
+head (NECons x _) = x
+
+{- | The largest element.  Total.
+
+   > maximum (NECons 3 [1, 4, 1, 5])
+   5 -}
+export maximum : Ord a => NonEmpty a -> a
+maximum (NECons x xs) = fold (acc y => if y > acc then y else acc) x xs
+
+{- | The smallest element.  Total.
+
+   > minimum (NECons 3 [1, 4, 1, 5])
+   1 -}
+export minimum : Ord a => NonEmpty a -> a
+minimum (NECons x xs) = fold (acc y => if y < acc then y else acc) x xs
+
+-- ---------------------------------------------------------------------------
+-- Instances
+-- ---------------------------------------------------------------------------
+
+{- | Map over every element, preserving non-emptiness.
+
+   > toList (map (n => n * 2) (NECons 1 [2, 3]))
+   [2, 4, 6] -}
+export default impl Mappable NonEmpty where
+  map f (NECons x xs) = NECons (f x) (map f xs)
+
+{- | Fold over every element (head first).  `toList` recovers the plain list.
+
+   > fold (acc y => acc + y) 0 (NECons 1 [2, 3])
+   6
+   > toList (NECons 1 [2, 3])
+   [1, 2, 3] -}
+export default impl Foldable NonEmpty where
+  fold f z (NECons x xs) = fold f (f z x) xs
+  foldRight f z (NECons x xs) = foldRight f (foldRight f z xs) [x]
+  toList (NECons x xs) = x::xs
+  isEmpty _ = False
+  length (NECons _ xs) = 1 + length xs
+
+export default impl Traversable NonEmpty where
+  traverse f (NECons x xs) =
+    andThen (f x) (y => andThen (traverse f xs) (ys => pure (NECons y ys)))
+
+{- | Append concatenates: the head of the left operand, then everything else.
+
+   > toList (append (NECons 1 [2]) (NECons 3 [4]))
+   [1, 2, 3, 4] -}
+export default impl Semigroup (NonEmpty a) where
+  append (NECons x xs) other = NECons x (xs ++ toList other)
+
+export default impl Eq (NonEmpty a) requires Eq a where
+  eq (NECons x xs) (NECons y ys) = eq x y && eq xs ys
+
+export default impl Debug (NonEmpty a) requires Debug a where
+  debug ne = "NonEmpty \{debug (toList ne)}"
+
+-- ---------------------------------------------------------------------------
+-- Properties
+-- ---------------------------------------------------------------------------
+
+prop "singleton has one element" (x : Int) = eq (toList (singleton x)) [x]
+
+prop "head is the first element" (x : Int) (xs : List Int) =
+  head (NECons x xs) == x
+
+prop "fromList . toList round-trips" (x : Int) (xs : List Int) =
+  eq (fromList (toList (NECons x xs))) (Some (NECons x xs))
