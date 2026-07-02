@@ -71,6 +71,19 @@ extern removeDir : String -> <FileWrite "_"> Result String Unit  -- rmdir(2): re
 -- stat(2): (sizeBytes, isDir, isFile, mtimeSeconds).  Err (strerror) if the path
 -- does not exist / cannot be stat'd.  Mirrors runCommand's tuple-return shape.
 extern statFile : String -> <FileRead "_"> Result String (Int, Bool, Bool, Float)
+-- Networking (native-only; unbound under `medaka run`, rejected by --target wasm).
+-- Raw tagged-Int fds at the extern boundary; abstract Socket/Listener/Connection
+-- newtypes are a stdlib concern (stdlib/net.mdk).  See NET-DESIGN.md.
+extern netResolve : String -> <Net "_"> Result String (List String)  -- getaddrinfo: hostname -> numeric IP strings
+extern netTcpConnect : String -> Int -> <Net "_"> Result String Int  -- host, port -> connected fd (does DNS internally)
+extern netTcpListen : String -> Int -> <Net "_"> Result String Int  -- bind addr, port (0=ephemeral) -> listening fd
+extern netListenPort : Int -> <Net "_"> Result String Int  -- listening fd -> actual bound port (for port 0)
+extern netTcpAccept : Int -> <Net "_"> Result String Int  -- listening fd -> accepted connection fd (blocks)
+extern netSend : Int -> Array Int -> <Net "_"> Result String Int  -- fd, bytes -> count actually written (may be < len)
+extern netRecv : Int -> Int -> <Net "_"> Result String (Array Int)  -- fd, maxBytes -> bytes read (empty Array = EOF)
+extern netShutdown : Int -> Int -> <Net "_"> Result String Unit  -- fd, how (0=read,1=write,2=both) -> shutdown(2)
+extern netClose : Int -> <Net "_"> Result String Unit  -- fd -> close(2); idempotent-safe in the C shim
+extern netSetTimeout : Int -> Int -> <Net "_"> Result String Unit  -- fd, milliseconds (0=blocking) -> SO_RCVTIMEO+SO_SNDTIMEO
 extern ePutStr : String -> <Stderr> Unit  -- raw stderr output
 extern ePutStrLn : String -> <Stderr> Unit
 extern readLineOpt : Unit -> <Stdin> Option String  -- one stdin line, None at EOF

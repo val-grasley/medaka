@@ -50,6 +50,12 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 #include <gc.h>
 
 /* Initialize Boehm once before main().  The emitted IR owns `main`, so we can't
@@ -1298,4 +1304,167 @@ void mdk_sleep_ms(long long ms_t) {
   req.tv_sec = ms / 1000;
   req.tv_nsec = (ms % 1000) * 1000000L;
   nanosleep(&req, NULL);
+}
+
+/* ── Networking (NET-DESIGN.md) ──────────────────────────────────────────────
+ * Thin blocking BSD-socket shims mirroring the file-extern ABI: String args at
+ * ptr+24, tagged Int args (>>1 to untag), Result via mdk_ok/mdk_err, errno mapped
+ * through strerror.  fds traffic as tagged Int ((fd<<1)|1) exactly like every Int.
+ * Native-only; the wasm backend rejects the whole net set. */
+
+#define MDK_NET_UNTAG(x) ((int)((long long)(x) >> 1))
+#define MDK_NET_TAG(v)   ((((long long)(v)) << 1) | 1)
+
+/* Belt-and-suspenders SIGPIPE guard (F7): ignore process-wide so a write to a
+ * closed peer surfaces as EPIPE (a Result Err) instead of killing the process.
+ * Per-socket SO_NOSIGPIPE / per-send MSG_NOSIGNAL below add the platform-specific
+ * belt.  Runs before main via the constructor attribute. */
+__attribute__((constructor)) static void mdk_net_sigpipe_init(void) {
+  signal(SIGPIPE, SIG_IGN);
+}
+
+/* netResolve : String -> Result String (List String) — getaddrinfo -> numeric IPs. */
+long long mdk_net_resolve(long long host_cell) {
+  const char *host = (const char *)host_cell + 24;
+  struct addrinfo hints = {0}, *res, *ai;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  int gai = getaddrinfo(host, NULL, &hints, &res);
+  if (gai != 0) return mdk_err(mdk_str_cstr(gai_strerror(gai)));
+  long long acc = mdk_nil();
+  char buf[INET6_ADDRSTRLEN];
+  for (ai = res; ai; ai = ai->ai_next) {
+    const char *s = NULL;
+    if (ai->ai_family == AF_INET)
+      s = inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, buf, sizeof buf);
+    else if (ai->ai_family == AF_INET6)
+      s = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, buf, sizeof buf);
+    if (s) acc = mdk_cons(mdk_str_cstr(s), acc);
+  }
+  freeaddrinfo(res);
+  return mdk_ok(acc);
+}
+
+/* netTcpConnect : host -> port -> Result String Int (connected fd). */
+long long mdk_net_tcp_connect(long long host_cell, long long port_tagged) {
+  const char *host = (const char *)host_cell + 24;
+  char port[16]; snprintf(port, sizeof port, "%d", MDK_NET_UNTAG(port_tagged));
+  struct addrinfo hints = {0}, *res, *ai;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  int gai = getaddrinfo(host, port, &hints, &res);
+  if (gai != 0) return mdk_err(mdk_str_cstr(gai_strerror(gai)));
+  int fd = -1, last = 0;
+  for (ai = res; ai; ai = ai->ai_next) {
+    fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd < 0) { last = errno; continue; }
+    if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+    last = errno; close(fd); fd = -1;
+  }
+  freeaddrinfo(res);
+  if (fd < 0) return mdk_err(mdk_str_cstr(strerror(last)));
+#ifdef SO_NOSIGPIPE
+  { int on = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on); }
+#endif
+  return mdk_ok(MDK_NET_TAG(fd));
+}
+
+/* netTcpListen : bindAddr -> port (0=ephemeral) -> Result String Int (listening fd). */
+long long mdk_net_tcp_listen(long long addr_cell, long long port_tagged) {
+  const char *addr = (const char *)addr_cell + 24;
+  char port[16]; snprintf(port, sizeof port, "%d", MDK_NET_UNTAG(port_tagged));
+  struct addrinfo hints = {0}, *res;
+  hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM; hints.ai_flags = AI_PASSIVE;
+  int gai = getaddrinfo(addr[0] ? addr : NULL, port, &hints, &res);
+  if (gai != 0) return mdk_err(mdk_str_cstr(gai_strerror(gai)));
+  int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if (fd < 0) { int e = errno; freeaddrinfo(res); return mdk_err(mdk_str_cstr(strerror(e))); }
+  { int on = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on); }
+  if (bind(fd, res->ai_addr, res->ai_addrlen) != 0 || listen(fd, 128) != 0) {
+    int e = errno; close(fd); freeaddrinfo(res); return mdk_err(mdk_str_cstr(strerror(e)));
+  }
+  freeaddrinfo(res);
+  return mdk_ok(MDK_NET_TAG(fd));
+}
+
+/* netListenPort : fd -> Result String Int (actual bound port; for port-0 ephemeral). */
+long long mdk_net_listen_port(long long fd_tagged) {
+  struct sockaddr_storage ss; socklen_t len = sizeof ss;
+  if (getsockname(MDK_NET_UNTAG(fd_tagged), (struct sockaddr *)&ss, &len) != 0)
+    return mdk_err(mdk_str_cstr(strerror(errno)));
+  int port = (ss.ss_family == AF_INET6)
+    ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+    : ntohs(((struct sockaddr_in  *)&ss)->sin_port);
+  return mdk_ok(MDK_NET_TAG(port));
+}
+
+/* netTcpAccept : listening fd -> Result String Int (accepted connection fd; blocks). */
+long long mdk_net_tcp_accept(long long lis_tagged) {
+  int c = accept(MDK_NET_UNTAG(lis_tagged), NULL, NULL);
+  if (c < 0) return mdk_err(mdk_str_cstr(strerror(errno)));
+#ifdef SO_NOSIGPIPE
+  { int on = 1; setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on); }
+#endif
+  return mdk_ok(MDK_NET_TAG(c));
+}
+
+/* netSend : fd -> Array Int -> Result String Int (count written).
+ * Array cell = [len (raw), tagged byte...]; untag each byte to 0..255. */
+long long mdk_net_send(long long fd_tagged, long long arr) {
+  const long long *a = (const long long *)arr;
+  long long n = a[0];
+  unsigned char *buf = (unsigned char *)mdk_alloc(n ? n : 1);
+  for (long long i = 0; i < n; i++) buf[i] = (unsigned char)((a[i + 1] >> 1) & 0xFF);
+  int flags = 0;
+#ifdef MSG_NOSIGNAL
+  flags = MSG_NOSIGNAL;
+#endif
+  ssize_t w = send(MDK_NET_UNTAG(fd_tagged), buf, (size_t)n, flags);
+  if (w < 0) return mdk_err(mdk_str_cstr(strerror(errno)));
+  return mdk_ok(MDK_NET_TAG((long long)w));
+}
+
+/* netRecv : fd -> maxBytes -> Result String (Array Int).  Empty Array = EOF/peer-closed.
+ * Array cell = [len (raw), tagged byte...] matching mdk_read_file_bytes. */
+long long mdk_net_recv(long long fd_tagged, long long max_tagged) {
+  long long max = max_tagged >> 1;
+  unsigned char *buf = (unsigned char *)mdk_alloc(max > 0 ? max : 1);
+  ssize_t r = recv(MDK_NET_UNTAG(fd_tagged), buf, (size_t)(max > 0 ? max : 0), 0);
+  if (r < 0) return mdk_err(mdk_str_cstr(strerror(errno)));
+  long long *cell = (long long *)mdk_alloc(8 * (r + 1));
+  cell[0] = (long long)r;
+  for (ssize_t i = 0; i < r; i++) cell[i + 1] = (((long long)buf[i]) << 1) | 1;
+  return mdk_ok((long long)cell);
+}
+
+/* netShutdown : fd -> how (0=read,1=write,2=both) -> Result String Unit. */
+long long mdk_net_shutdown(long long fd_tagged, long long how_tagged) {
+  int how = MDK_NET_UNTAG(how_tagged);
+  int sw = how == 0 ? SHUT_RD : (how == 1 ? SHUT_WR : SHUT_RDWR);
+  if (shutdown(MDK_NET_UNTAG(fd_tagged), sw) != 0 && errno != ENOTCONN)
+    return mdk_err(mdk_str_cstr(strerror(errno)));
+  return mdk_ok(1);  /* Ok () */
+}
+
+/* netClose : fd -> Result String Unit — close(2); idempotent-safe. */
+long long mdk_net_close(long long fd_tagged) {
+  int fd = MDK_NET_UNTAG(fd_tagged);
+  if (fd < 0) return mdk_ok(1);
+  if (close(fd) != 0 && errno != EBADF) return mdk_err(mdk_str_cstr(strerror(errno)));
+  return mdk_ok(1);  /* Ok () */
+}
+
+/* netSetTimeout : fd -> milliseconds (0=blocking) -> Result String Unit.
+ * Installs SO_RCVTIMEO + SO_SNDTIMEO so a hung peer surfaces as a Result Err. */
+long long mdk_net_set_timeout(long long fd_tagged, long long ms_tagged) {
+  long long ms = ms_tagged >> 1;
+  int fd = MDK_NET_UNTAG(fd_tagged);
+  struct timeval tv;
+  tv.tv_sec = ms / 1000;
+  tv.tv_usec = (ms % 1000) * 1000;
+  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0)
+    return mdk_err(mdk_str_cstr(strerror(errno)));
+  if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0)
+    return mdk_err(mdk_str_cstr(strerror(errno)));
+  return mdk_ok(1);  /* Ok () */
 }

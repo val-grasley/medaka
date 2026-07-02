@@ -925,6 +925,27 @@ isLeafExternW name = contains name [
   -- box/unbox seam; no $str/$arr/$float dependencies.
   "bitAnd", "shiftLeft", "shiftRight"]
 
+-- Net externs (NET-DESIGN.md §6): native-only.  Raw BSD sockets have no WasmGC
+-- equivalent, so `medaka build --target wasm` must REJECT a net-importing program
+-- with a clear message rather than fall through to emitIndirectApp (which would only
+-- report a generic "unbound variable").  This single-set guard is wired into both
+-- application dispatch ladders (emitAppRef, emitTailAppRef).
+isNetExternW : String -> Bool
+isNetExternW name = contains
+  name
+  [
+    "netResolve",
+    "netTcpConnect",
+    "netTcpListen",
+    "netListenPort",
+    "netTcpAccept",
+    "netSend",
+    "netRecv",
+    "netShutdown",
+    "netClose",
+    "netSetTimeout",
+  ]
+
 -- W9: arity of a str/leaf extern (the param count its emit* arm consumes).  Used to
 -- build an eta closure when the extern is referenced as a VALUE (point-free / passed
 -- as an argument), mirroring the LLVM emitter's emitExternEtaClosure.
@@ -1627,10 +1648,12 @@ printFor : WTy -> <Mut> List String
 printFor WInt = ["    call $mdk_print_int"]
 printFor WBool = ["    i32.wrap_i64", "    call $mdk_print_bool"]
 printFor WUnit = gapL "scalar-mode: Unit main has no scalar value to print"
-printFor WStr = gapL
-  "scalar-mode main produced a String — internal mode mismatch (strings force ref-mode)"
-printFor WChar = gapL
-  "scalar-mode main produced a Char — internal mode mismatch (Char main forces ref-mode)"
+printFor WStr =
+  gapL
+    "scalar-mode main produced a String — internal mode mismatch (strings force ref-mode)"
+printFor WChar =
+  gapL
+    "scalar-mode main produced a Char — internal mode mismatch (Char main forces ref-mode)"
 printFor WRef =
   gapL "scalar-mode main produced a (ref eq) — internal mode mismatch"
 
@@ -1644,8 +1667,9 @@ emitScalarFnBind fnNames valNames (CBind name [CClause pats body]) =
   let sig = "  (func $" ++ gname name ++ joinWith "" (map paramDeclI32 params) ++ " (result i64)"
   let localDecls = map localDeclI32 extraLocals
   [sig] ++ map (l => "  " ++ l) localDecls ++ indent instrs ++ ["  )"]
-emitScalarFnBind _ _ (CBind name _) = gap
-  ("scalar-mode top-level function '" ++ name ++ "' is multi-clause or pattern-matching (decision-tree match needs ADT mode)")
+emitScalarFnBind _ _ (CBind name _) =
+  gap
+    ("scalar-mode top-level function '" ++ name ++ "' is multi-clause or pattern-matching (decision-tree match needs ADT mode)")
 
 -- scalar (i32) TAIL-position emitter (§4.2 TCO for the monomorphic-Int fast path).
 -- Descends into if-branches; a saturated direct call to a known top-level fn at the
@@ -1715,8 +1739,9 @@ emitLitI32 : Lit -> <Mut> (List String, WTy)
 emitLitI32 (LInt n) = (["i64.const " ++ intToString n], WInt)
 emitLitI32 (LBool b) = ([if b then "i64.const 1" else "i64.const 0"], WBool)
 emitLitI32 LUnit = (["i64.const 0"], WUnit)
-emitLitI32 (LFloat _) = gapLTy
-  "Float literal (boxed (struct f64)) is deferred — no scalar Float fixture"
+emitLitI32 (LFloat _) =
+  gapLTy
+    "Float literal (boxed (struct f64)) is deferred — no scalar Float fixture"
 emitLitI32 (LString _) = gapLTy "String literal (the (array i8) rep) is W6"
 emitLitI32 (LChar _) = gapLTy "Char literal is W6 (string/unicode slice)"
 
@@ -2442,8 +2467,9 @@ refPrintFor WFloat = [
   "    call $mdk_print_strln",
 ]
 refPrintFor WUnit = gapL "ref-mode: Unit main has no value to print"
-refPrintFor WRef = gapL
-  "ref-mode main produced a non-scalar value — printing ADTs is W6b (Debug)"
+refPrintFor WRef =
+  gapL
+    "ref-mode main produced a non-scalar value — printing ADTs is W6b (Debug)"
 
 -- ── ref-mode top-level function defs ─────────────────────────────────────────
 -- Every param/local/result is `(ref eq)`.  Three shapes:
@@ -3606,39 +3632,44 @@ restampIfaceDictsW tbl iface tag (CVar m ad)
 restampIfaceDictsW tbl iface tag (CMethod m RNone irs mrs)
   | iface != "" && ifaceOfInW tbl m == iface = CMethod m (RKey tag []) irs mrs
   | otherwise = CMethod m RNone irs mrs
-restampIfaceDictsW tbl iface tag (CApp f a) = CApp
-  (restampIfaceDictsW tbl iface tag f)
-  (restampIfaceDictsW tbl iface tag a)
+restampIfaceDictsW tbl iface tag (CApp f a) =
+  CApp (restampIfaceDictsW tbl iface tag f) (restampIfaceDictsW tbl iface tag a)
 restampIfaceDictsW tbl iface tag (CLam ps b) =
   CLam ps (restampIfaceDictsW tbl iface tag b)
-restampIfaceDictsW tbl iface tag (CLet r p rhs b) = CLet
-  r
-  p
-  (restampIfaceDictsW tbl iface tag rhs)
-  (restampIfaceDictsW tbl iface tag b)
-restampIfaceDictsW tbl iface tag (CLetGroup bs b) = CLetGroup
-  (map (restampBindW tbl iface tag) bs)
-  (restampIfaceDictsW tbl iface tag b)
-restampIfaceDictsW tbl iface tag (CMatch s arms) = CMatch
-  (restampIfaceDictsW tbl iface tag s)
-  (map (restampArmW tbl iface tag) arms)
-restampIfaceDictsW tbl iface tag (CDecision s arms tr) = CDecision
-  (restampIfaceDictsW tbl iface tag s)
-  (map (restampArmW tbl iface tag) arms)
-  tr
-restampIfaceDictsW tbl iface tag (CIf c t el) = CIf
-  (restampIfaceDictsW tbl iface tag c)
-  (restampIfaceDictsW tbl iface tag t)
-  (restampIfaceDictsW tbl iface tag el)
+restampIfaceDictsW tbl iface tag (CLet r p rhs b) =
+  CLet
+    r
+    p
+    (restampIfaceDictsW tbl iface tag rhs)
+    (restampIfaceDictsW tbl iface tag b)
+restampIfaceDictsW tbl iface tag (CLetGroup bs b) =
+  CLetGroup
+    (map (restampBindW tbl iface tag) bs)
+    (restampIfaceDictsW tbl iface tag b)
+restampIfaceDictsW tbl iface tag (CMatch s arms) =
+  CMatch
+    (restampIfaceDictsW tbl iface tag s)
+    (map (restampArmW tbl iface tag) arms)
+restampIfaceDictsW tbl iface tag (CDecision s arms tr) =
+  CDecision
+    (restampIfaceDictsW tbl iface tag s)
+    (map (restampArmW tbl iface tag) arms)
+    tr
+restampIfaceDictsW tbl iface tag (CIf c t el) =
+  CIf
+    (restampIfaceDictsW tbl iface tag c)
+    (restampIfaceDictsW tbl iface tag t)
+    (restampIfaceDictsW tbl iface tag el)
 restampIfaceDictsW tbl iface tag (CTuple xs) =
   CTuple (map (restampIfaceDictsW tbl iface tag) xs)
 restampIfaceDictsW tbl iface tag (CList xs) =
   CList (map (restampIfaceDictsW tbl iface tag) xs)
 restampIfaceDictsW tbl iface tag (CFieldAccess a f n) =
   CFieldAccess (restampIfaceDictsW tbl iface tag a) f n
-restampIfaceDictsW tbl iface tag (CIndex a b) = CIndex
-  (restampIfaceDictsW tbl iface tag a)
-  (restampIfaceDictsW tbl iface tag b)
+restampIfaceDictsW tbl iface tag (CIndex a b) =
+  CIndex
+    (restampIfaceDictsW tbl iface tag a)
+    (restampIfaceDictsW tbl iface tag b)
 restampIfaceDictsW _ _ _ other = other
 
 restampBindW : List (String, (String, Int)) -> String -> String -> CBind -> CBind
@@ -3650,10 +3681,11 @@ restampClauseW tbl iface tag (CClause ps b) =
   CClause ps (restampIfaceDictsW tbl iface tag b)
 
 restampArmW : List (String, (String, Int)) -> String -> String -> CArm -> CArm
-restampArmW tbl iface tag (CArm p g b) = CArm
-  p
-  (map (restampGuardW tbl iface tag) g)
-  (restampIfaceDictsW tbl iface tag b)
+restampArmW tbl iface tag (CArm p g b) =
+  CArm
+    p
+    (map (restampGuardW tbl iface tag) g)
+    (restampIfaceDictsW tbl iface tag b)
 
 restampGuardW : List (String, (String, Int)) -> String -> String -> CGuard -> CGuard
 restampGuardW tbl iface tag (CGBool e) =
@@ -4364,6 +4396,7 @@ emitAppRef prog env d app =
       else if isCtor prog f then emitCtorConstruct prog env d f args
       else if f == "Ref" then emitRefBoxNew prog env d args
       else if f == "setRef" then emitRefBoxSet prog env d args
+      else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if isStrExternW f then emitStrExternRef prog env d f args
       else if isLeafExternW f then emitLeafExternRef prog env d f args
       else if isArrayExternW f then emitArrayExternRef prog env d f args
@@ -5864,6 +5897,7 @@ emitAppTail prog env arity app =
         let arr = emitArgsArray prog env 0 args
         hi ++ arr ++ ["return_call $mdk_apply"]
       else if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
+      else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if f == "Ref" || f == "setRef" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
@@ -6948,8 +6982,9 @@ collectBindLocals _ = []
 patName : Pat -> <Mut> String
 patName (PVar x) = x
 patName PWild = "_"
-patName _ = gapS
-  ("only PVar/PWild parameters (pattern params are inner-match material) [in " ++ curBindRef.value ++ "]")
+patName _ =
+  gapS
+    ("only PVar/PWild parameters (pattern params are inner-match material) [in " ++ curBindRef.value ++ "]")
 
 -- ── local collection ─────────────────────────────────────────────────────────
 -- Wasm requires every local declared in the function header.  Walk the body for
@@ -7041,8 +7076,9 @@ wasmBinOp "<" = "i32.lt_s"
 wasmBinOp ">" = "i32.gt_s"
 wasmBinOp "<=" = "i32.le_s"
 wasmBinOp ">=" = "i32.ge_s"
-wasmBinOp op = gapS
-  ("unsupported binary operator '" ++ op ++ "' (`::`/`++` are list/string ops — W6/W7)")
+wasmBinOp op =
+  gapS
+    ("unsupported binary operator '" ++ op ++ "' (`::`/`++` are list/string ops — W6/W7)")
 
 -- layer-17 §2.1: the i64 peer of wasmBinOp for ref-mode Int arithmetic over the
 -- box/unbox seam.  Division/modulo are i64 signed (i64.div_s/i64.rem_s) — matching
