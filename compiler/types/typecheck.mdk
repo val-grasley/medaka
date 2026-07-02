@@ -185,9 +185,10 @@ seedEffectDomains _ = setRef
 -- register a label's domain from its `effect` decl: Some "Prefix" ⇒ Prefix;
 -- None/internal ⇒ atomic.  Internal labels are never parameterized (forced PUnit).
 registerEffectDomain : String -> Option String -> Bool -> <Mut> Unit
-registerEffectDomain name domain isInternal = setRef
-  effectDomains
-  ((name, domainParam domain isInternal)::effectDomains.value)
+registerEffectDomain name domain isInternal =
+  setRef
+    effectDomains
+    ((name, domainParam domain isInternal)::effectDomains.value)
 
 -- the ⊤-param a declared label carries: internal/atomic ⇒ PUnit; Prefix ⇒ PPrefix None.
 domainParam : Option String -> Bool -> Param
@@ -1005,9 +1006,10 @@ checkOneAxis l "Host" (PPrefix (Some pat)) =
   else
     pushTypeError (effectParamMsg l ("Host pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
 checkOneAxis _ "Method" _ = ()
-checkOneAxis l name _ = pushTypeError (effectParamMsg
-  l
-  ("unknown product axis '" ++ name ++ "' (known axes: Host, Method)"))
+checkOneAxis l name _ =
+  pushTypeError (effectParamMsg
+    l
+    ("unknown product axis '" ++ name ++ "' (known axes: Host, Method)"))
 
 -- T2: oracle `MutLetRequiresBlock` message (lib/typecheck.ml:788-789) — must be
 -- byte-identical so the typecheck-error gate matches.
@@ -1351,9 +1353,10 @@ collectAbstractRecordTypes (_::rest) = collectAbstractRecordTypes rest
 -- seed abstractRecordTypesRef from every module's decls (the per-module progs plus
 -- the prelude/core decls), once, before checking begins.
 seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> <Mut> Unit
-seedAbstractRecordTypes coreDecls modules = setRef
-  abstractRecordTypesRef
-  (collectAbstractRecordTypes coreDecls ++ flatMap (m => collectAbstractRecordTypes (snd m)) modules)
+seedAbstractRecordTypes coreDecls modules =
+  setRef
+    abstractRecordTypesRef
+    (collectAbstractRecordTypes coreDecls ++ flatMap (m => collectAbstractRecordTypes (snd m)) modules)
 
 -- return-position method sites discovered during inference: (method name, the
 -- EMethodAt route ref to fill, the EMethodAt impl-dicts ref to fill, the method's
@@ -2819,10 +2822,11 @@ fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssoc n tvs)
 fromAstTypeE etbl tvs (TyApp a b) = match tyAppSpine (TyApp a b)
   (TyCon n, args) => fromAstTypeApp etbl tvs n args
   _ => TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b)
-fromAstTypeE etbl tvs (TyFun a b) = TFun
-  (fromAstTypeE etbl tvs a)
-  (astEffrowE etbl b)
-  (fromAstTypeE etbl tvs (stripEff b))
+fromAstTypeE etbl tvs (TyFun a b) =
+  TFun
+    (fromAstTypeE etbl tvs a)
+    (astEffrowE etbl b)
+    (fromAstTypeE etbl tvs (stripEff b))
 fromAstTypeE etbl tvs (TyTuple ts) = TTuple (map (fromAstTypeE etbl tvs) ts)
 fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
 fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
@@ -5610,10 +5614,11 @@ prePassFunClauseScoped rw (FunClause ps e) =
 
 prePassIfaceMethodScoped : ArgRw -> IfaceMethod -> IfaceMethod
 prePassIfaceMethodScoped _ (IfaceMethod n ty None) = IfaceMethod n ty None
-prePassIfaceMethodScoped rw (IfaceMethod n ty (Some (MethodDefault ps e))) = IfaceMethod
-  n
-  ty
-  (Some (MethodDefault ps (rewriteArgScoped rw (patVarsListTc ps) e)))
+prePassIfaceMethodScoped rw (IfaceMethod n ty (Some (MethodDefault ps e))) =
+  IfaceMethod
+    n
+    ty
+    (Some (MethodDefault ps (rewriteArgScoped rw (patVarsListTc ps) e)))
 
 prePassImplMethodScoped : ArgRw -> ImplMethod -> ImplMethod
 prePassImplMethodScoped rw (ImplMethod n ps e) =
@@ -5661,10 +5666,11 @@ rewriteArgScoped rw bound (EDoOrigin l e) =
   EDoOrigin l (rewriteArgScoped rw bound e)
 rewriteArgScoped rw bound (EApp f x) =
   EApp (rewriteArgScoped rw bound f) (rewriteArgScoped rw bound x)
-rewriteArgScoped rw bound (EIf c t e) = EIf
-  (rewriteArgScoped rw bound c)
-  (rewriteArgScoped rw bound t)
-  (rewriteArgScoped rw bound e)
+rewriteArgScoped rw bound (EIf c t e) =
+  EIf
+    (rewriteArgScoped rw bound c)
+    (rewriteArgScoped rw bound t)
+    (rewriteArgScoped rw bound e)
 rewriteArgScoped rw bound (EBinOp op l r dr) =
   EBinOp op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r) dr
 rewriteArgScoped rw bound (EUnOp op x) = EUnOp op (rewriteArgScoped rw bound x)
@@ -5682,12 +5688,13 @@ rewriteArgScoped rw bound (ERangeList lo hi i) =
   ERangeList (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
 rewriteArgScoped rw bound (ERangeArray lo hi i) =
   ERangeArray (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
-rewriteArgScoped rw bound (ESlice e0 lo hi i r) = ESlice
-  (rewriteArgScoped rw bound e0)
-  (rewriteArgScoped rw bound lo)
-  (rewriteArgScoped rw bound hi)
-  i
-  r
+rewriteArgScoped rw bound (ESlice e0 lo hi i r) =
+  ESlice
+    (rewriteArgScoped rw bound e0)
+    (rewriteArgScoped rw bound lo)
+    (rewriteArgScoped rw bound hi)
+    i
+    r
 rewriteArgScoped rw bound (EIndex e0 i r) =
   EIndex (rewriteArgScoped rw bound e0) (rewriteArgScoped rw bound i) r
 rewriteArgScoped rw bound (EAnnot e0 t) =
@@ -5696,13 +5703,15 @@ rewriteArgScoped rw bound (EHeadAnnot e0 t) =
   EHeadAnnot (rewriteArgScoped rw bound e0) t
 rewriteArgScoped rw bound (ERecordCreate n fs) =
   ERecordCreate n (map (rewriteArgField rw bound) fs)
-rewriteArgScoped rw bound (ERecordUpdate e0 fs) = ERecordUpdate
-  (rewriteArgScoped rw bound e0)
-  (map (rewriteArgField rw bound) fs)
-rewriteArgScoped rw bound (EVariantUpdate c e0 fs) = EVariantUpdate
-  c
-  (rewriteArgScoped rw bound e0)
-  (map (rewriteArgField rw bound) fs)
+rewriteArgScoped rw bound (ERecordUpdate e0 fs) =
+  ERecordUpdate
+    (rewriteArgScoped rw bound e0)
+    (map (rewriteArgField rw bound) fs)
+rewriteArgScoped rw bound (EVariantUpdate c e0 fs) =
+  EVariantUpdate
+    c
+    (rewriteArgScoped rw bound e0)
+    (map (rewriteArgField rw bound) fs)
 rewriteArgScoped rw bound (EStringInterp parts) =
   EStringInterp (map (rewriteArgInterp rw bound) parts)
 rewriteArgScoped rw bound (EGuards arms) =
@@ -7417,9 +7426,10 @@ findTvarList (t::rest) id = match findTvarInMono t id
 -- inference), matching the dicts EDictAt applies at call sites.  Multi-clause
 -- functions are several DFunDef decls; each clause gets the same leading params.
 dictPass : List String -> List Decl -> List Decl
-dictPass names prog = map
-  (dictPassDecl names (returnPosMethodNames prog))
-  (mapProg rewriteBinopExpr prog)
+dictPass names prog =
+  map
+    (dictPassDecl names (returnPosMethodNames prog))
+    (mapProg rewriteBinopExpr prog)
 
 -- Phase 151 / Gap G: rewrite each *stamped* comparison/equality EBinOp into its
 -- Eq/Ord method application via EMethodAt (the same dispatch node `eq`/`lt` calls
@@ -8517,11 +8527,12 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
 -- so it lines up with implDictPassMethods' prepended params and the call-site
 -- methodRoutes resolveMethodDicts fills.
 registerImplMethodDicts : String -> List String -> Ty -> List (String, Mono) -> <Mut> Unit
-registerImplMethodDicts mname ifaceParams mty tvMap = registerImplMethodDictsGo
-  mname
-  0
-  (methodLevelConstraintVarNames ifaceParams mty)
-  tvMap
+registerImplMethodDicts mname ifaceParams mty tvMap =
+  registerImplMethodDictsGo
+    mname
+    0
+    (methodLevelConstraintVarNames ifaceParams mty)
+    tvMap
 
 registerImplMethodDictsGo : String -> Int -> List String -> List (String, Mono) -> <Mut> Unit
 registerImplMethodDictsGo _ _ [] _ = ()
@@ -8811,13 +8822,14 @@ fieldAssignEVars (FieldAssign _ e) = allEVars e
 
 -- builtin constructors available without the prelude (mirrors initial_env)
 initialEnv : TcEnv
-initialEnv = TcEnv
-  omEmpty
-  (omInsert
-    "True"
-    (monoScheme (TCon "Bool"))
-    (omInsert "False" (monoScheme (TCon "Bool")) omEmpty))
-  []
+initialEnv =
+  TcEnv
+    omEmpty
+    (omInsert
+      "True"
+      (monoScheme (TCon "Bool"))
+      (omInsert "False" (monoScheme (TCon "Bool")) omEmpty))
+    []
 
 registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
 registerAllData env [] = env
@@ -8979,9 +8991,10 @@ processTopGroups env sigs defs names =
 -- (a conservative over-approximation via all free EVars is fine — only names
 -- that are themselves groups matter).  Consumed by depGraphMap → Tarjan.
 depsOf : String -> OrdMap Unit -> OrdMap (List (List Pat, Expr)) -> List String
-depsOf name nameSet cbn = filterNonSelf
-  name
-  (keepGroupNames nameSet (dedup (groupRefs (clausesOf name cbn))))
+depsOf name nameSet cbn =
+  filterNonSelf
+    name
+    (keepGroupNames nameSet (dedup (groupRefs (clausesOf name cbn))))
 
 groupRefs : List (List Pat, Expr) -> List String
 groupRefs clauses = flatMap clauseRefs clauses
@@ -9504,8 +9517,9 @@ schemeIds (Forall ids _ _) = ids
 -- the member's own quantified tyvar ids that a body method site / propagated
 -- constrained-call sits at (deduped, slot order = discovery order)
 inferredConstraintIds : String -> List Int -> List Int
-inferredConstraintIds m boundIds = dedupI
-  (constraintIdsFromSites m boundIds methodSiteFns.value ++ constraintIdsFromApps m boundIds dictAppFns.value)
+inferredConstraintIds m boundIds =
+  dedupI
+    (constraintIdsFromSites m boundIds methodSiteFns.value ++ constraintIdsFromApps m boundIds dictAppFns.value)
 
 constraintIdsFromSites : String -> List Int -> List (String, Mono) -> List Int
 constraintIdsFromSites _ _ [] = []
@@ -10373,7 +10387,11 @@ checkModulesEntryHasErrors runtimeDecls coreDecls modules =
 -- run the multi-module front-end and render the ENTRY module's own bindings as
 -- `name : scheme` per line (the harness sorts) — diffs vs dev/tc_module_probe.
 export checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
-checkModulesEntryLines runtimeDecls coreDecls modules = joinNl (schemeLines (entryOwnSchemes (checkModules runtimeDecls coreDecls modules)))
+checkModulesEntryLines runtimeDecls coreDecls modules =
+  joinNl (schemeLines (entryOwnSchemes (checkModules
+    runtimeDecls
+    coreDecls
+    modules)))
 
 -- Emit EVERY module's bindings in one pass, each section preceded by a
 -- `## MODULE <mid>` marker line.  A single full-closure run can then cover many

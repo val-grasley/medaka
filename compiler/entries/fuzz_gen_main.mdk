@@ -189,8 +189,9 @@ litOf GInt = ELit (LInt (randSmallInt ()))
 -- Float literal with a GUARANTEED non-zero fraction in {0.25, 0.5, 0.75}: the
 -- compiler printer's floatToString renders a whole float `N.0` as `N.` (trailing
 -- dot, no digit), which the parser rejects — so never emit a whole-valued float.
-litOf GFloat = ELit (LFloat
-  (intToFloat (randBelow 11) + intToFloat (randBelow 3 + 1) / intToFloat 4))
+litOf GFloat =
+  ELit (LFloat
+    (intToFloat (randBelow 11) + intToFloat (randBelow 3 + 1) / intToFloat 4))
 litOf GBool = ELit (LBool (chance 1 2))
 litOf GString = ELit (randStringLit ())
 litOf GChar = ELit (randCharLit ())

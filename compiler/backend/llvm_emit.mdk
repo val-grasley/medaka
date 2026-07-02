@@ -2771,8 +2771,9 @@ emitLet e env False (PTuple ps) e1 e2 =
 emitLet e env True (PVar f) (CLam pats body) e2 =
   let (w, ty) = emitRecLam e env f pats body
   emitExpr e ((f, (w, ty))::env) e2
-emitLet _ _ _ _ _ _ = gapE
-  "unsupported let (slice 5b: only non-recursive let var/_/tuple = e, or function-let)"
+emitLet _ _ _ _ _ _ =
+  gapE
+    "unsupported let (slice 5b: only non-recursive let var/_/tuple = e, or function-let)"
 
 -- a `let`/`where` group.  Bindings emit one at a time, left-to-right, threading
 -- the growing env, so a later binding sees the earlier ones (and the body sees
@@ -3891,8 +3892,9 @@ emitMethodArgDispatch e method argOps =
 -- whose inner same-interface calls reach a CONCRETE tag is emittable (the RKey
 -- path, emitDefaultRKey — `filter`@List).
 emitDefaultArgTag : Emit -> String -> List String -> <Mut> (String, LTy)
-emitDefaultArgTag e method argOps = gapE
-  ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
+emitDefaultArgTag e method argOps =
+  gapE
+    ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
 
 emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
 emitArgTagDispatch e method groups argOps
@@ -3931,8 +3933,9 @@ emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
 -- an i1 that is true when the loaded ctor tag equals ANY of a type's constructor
 -- tags (OR-chain of icmp eq against each hashName).
 emitTagMatch : Emit -> String -> List String -> <Mut> String
-emitTagMatch _ _ [] = gapStr
-  "arg-tag dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)"
+emitTagMatch _ _ [] =
+  gapStr
+    "arg-tag dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)"
 emitTagMatch e tagReg [c] =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
@@ -4354,35 +4357,42 @@ restampIfaceDicts tbl iface tag rr (CMethod m RNone irs mrs)
   | iface != "" && ifaceOfIn tbl m == iface =
     CMethod m (RKey tag []) (chooseReqRoutes rr irs) mrs
   | otherwise = CMethod m RNone irs mrs
-restampIfaceDicts tbl iface tag rr (CApp f a) = CApp
-  (restampIfaceDicts tbl iface tag rr f)
-  (restampIfaceDicts tbl iface tag rr a)
+restampIfaceDicts tbl iface tag rr (CApp f a) =
+  CApp
+    (restampIfaceDicts tbl iface tag rr f)
+    (restampIfaceDicts tbl iface tag rr a)
 restampIfaceDicts tbl iface tag rr (CLam ps b) =
   CLam ps (restampIfaceDicts tbl iface tag rr b)
-restampIfaceDicts tbl iface tag rr (CLet r p rhs b) = CLet
-  r
-  p
-  (restampIfaceDicts tbl iface tag rr rhs)
-  (restampIfaceDicts tbl iface tag rr b)
-restampIfaceDicts tbl iface tag rr (CLetGroup bs b) = CLetGroup
-  (map (restampBind tbl iface tag rr) bs)
-  (restampIfaceDicts tbl iface tag rr b)
-restampIfaceDicts tbl iface tag rr (CMatch s arms) = CMatch
-  (restampIfaceDicts tbl iface tag rr s)
-  (map (restampArm tbl iface tag rr) arms)
-restampIfaceDicts tbl iface tag rr (CDecision s arms tr) = CDecision
-  (restampIfaceDicts tbl iface tag rr s)
-  (map (restampArm tbl iface tag rr) arms)
-  tr
-restampIfaceDicts tbl iface tag rr (CIf c t el) = CIf
-  (restampIfaceDicts tbl iface tag rr c)
-  (restampIfaceDicts tbl iface tag rr t)
-  (restampIfaceDicts tbl iface tag rr el)
-restampIfaceDicts tbl iface tag rr (CBinPrim op a b stag) = CBinPrim
-  op
-  (restampIfaceDicts tbl iface tag rr a)
-  (restampIfaceDicts tbl iface tag rr b)
-  stag
+restampIfaceDicts tbl iface tag rr (CLet r p rhs b) =
+  CLet
+    r
+    p
+    (restampIfaceDicts tbl iface tag rr rhs)
+    (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CLetGroup bs b) =
+  CLetGroup
+    (map (restampBind tbl iface tag rr) bs)
+    (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CMatch s arms) =
+  CMatch
+    (restampIfaceDicts tbl iface tag rr s)
+    (map (restampArm tbl iface tag rr) arms)
+restampIfaceDicts tbl iface tag rr (CDecision s arms tr) =
+  CDecision
+    (restampIfaceDicts tbl iface tag rr s)
+    (map (restampArm tbl iface tag rr) arms)
+    tr
+restampIfaceDicts tbl iface tag rr (CIf c t el) =
+  CIf
+    (restampIfaceDicts tbl iface tag rr c)
+    (restampIfaceDicts tbl iface tag rr t)
+    (restampIfaceDicts tbl iface tag rr el)
+restampIfaceDicts tbl iface tag rr (CBinPrim op a b stag) =
+  CBinPrim
+    op
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
+    stag
 restampIfaceDicts tbl iface tag rr (CUnOp op a) =
   CUnOp op (restampIfaceDicts tbl iface tag rr a)
 restampIfaceDicts tbl iface tag rr (CTuple xs) =
@@ -4391,15 +4401,18 @@ restampIfaceDicts tbl iface tag rr (CList xs) =
   CList (map (restampIfaceDicts tbl iface tag rr) xs)
 restampIfaceDicts tbl iface tag rr (CFieldAccess a f n) =
   CFieldAccess (restampIfaceDicts tbl iface tag rr a) f n
-restampIfaceDicts tbl iface tag rr (CIndex a b) = CIndex
-  (restampIfaceDicts tbl iface tag rr a)
-  (restampIfaceDicts tbl iface tag rr b)
-restampIfaceDicts tbl iface tag rr (CStringIndex a b) = CStringIndex
-  (restampIfaceDicts tbl iface tag rr a)
-  (restampIfaceDicts tbl iface tag rr b)
-restampIfaceDicts tbl iface tag rr (CListIndex a b) = CListIndex
-  (restampIfaceDicts tbl iface tag rr a)
-  (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CIndex a b) =
+  CIndex
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CStringIndex a b) =
+  CStringIndex
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CListIndex a b) =
+  CListIndex
+    (restampIfaceDicts tbl iface tag rr a)
+    (restampIfaceDicts tbl iface tag rr b)
 restampIfaceDicts _ _ _ _ other = other
 
 -- prefer the threaded element dict routes [rr] when present; else keep whatever the
@@ -4423,35 +4436,42 @@ restampCrossIface tbl method difs (CVar m ad) = match crossDictSlot tbl difs m
 restampCrossIface tbl method difs (CMethod m RNone irs mrs) = match crossDictSlot tbl difs m
   Some k => CMethod m (RDict (dictParamNameE method k)) irs mrs
   None => CMethod m RNone irs mrs
-restampCrossIface tbl method difs (CApp f a) = CApp
-  (restampCrossIface tbl method difs f)
-  (restampCrossIface tbl method difs a)
+restampCrossIface tbl method difs (CApp f a) =
+  CApp
+    (restampCrossIface tbl method difs f)
+    (restampCrossIface tbl method difs a)
 restampCrossIface tbl method difs (CLam ps b) =
   CLam ps (restampCrossIface tbl method difs b)
-restampCrossIface tbl method difs (CLet r p rhs b) = CLet
-  r
-  p
-  (restampCrossIface tbl method difs rhs)
-  (restampCrossIface tbl method difs b)
-restampCrossIface tbl method difs (CLetGroup bs b) = CLetGroup
-  (map (restampCrossBind tbl method difs) bs)
-  (restampCrossIface tbl method difs b)
-restampCrossIface tbl method difs (CMatch s arms) = CMatch
-  (restampCrossIface tbl method difs s)
-  (map (restampCrossArm tbl method difs) arms)
-restampCrossIface tbl method difs (CDecision s arms tr) = CDecision
-  (restampCrossIface tbl method difs s)
-  (map (restampCrossArm tbl method difs) arms)
-  tr
-restampCrossIface tbl method difs (CIf c t el) = CIf
-  (restampCrossIface tbl method difs c)
-  (restampCrossIface tbl method difs t)
-  (restampCrossIface tbl method difs el)
-restampCrossIface tbl method difs (CBinPrim op a b stag) = CBinPrim
-  op
-  (restampCrossIface tbl method difs a)
-  (restampCrossIface tbl method difs b)
-  stag
+restampCrossIface tbl method difs (CLet r p rhs b) =
+  CLet
+    r
+    p
+    (restampCrossIface tbl method difs rhs)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CLetGroup bs b) =
+  CLetGroup
+    (map (restampCrossBind tbl method difs) bs)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CMatch s arms) =
+  CMatch
+    (restampCrossIface tbl method difs s)
+    (map (restampCrossArm tbl method difs) arms)
+restampCrossIface tbl method difs (CDecision s arms tr) =
+  CDecision
+    (restampCrossIface tbl method difs s)
+    (map (restampCrossArm tbl method difs) arms)
+    tr
+restampCrossIface tbl method difs (CIf c t el) =
+  CIf
+    (restampCrossIface tbl method difs c)
+    (restampCrossIface tbl method difs t)
+    (restampCrossIface tbl method difs el)
+restampCrossIface tbl method difs (CBinPrim op a b stag) =
+  CBinPrim
+    op
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
+    stag
 restampCrossIface tbl method difs (CUnOp op a) =
   CUnOp op (restampCrossIface tbl method difs a)
 restampCrossIface tbl method difs (CTuple xs) =
@@ -4460,15 +4480,18 @@ restampCrossIface tbl method difs (CList xs) =
   CList (map (restampCrossIface tbl method difs) xs)
 restampCrossIface tbl method difs (CFieldAccess a f n) =
   CFieldAccess (restampCrossIface tbl method difs a) f n
-restampCrossIface tbl method difs (CIndex a b) = CIndex
-  (restampCrossIface tbl method difs a)
-  (restampCrossIface tbl method difs b)
-restampCrossIface tbl method difs (CStringIndex a b) = CStringIndex
-  (restampCrossIface tbl method difs a)
-  (restampCrossIface tbl method difs b)
-restampCrossIface tbl method difs (CListIndex a b) = CListIndex
-  (restampCrossIface tbl method difs a)
-  (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CIndex a b) =
+  CIndex
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CStringIndex a b) =
+  CStringIndex
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CListIndex a b) =
+  CListIndex
+    (restampCrossIface tbl method difs a)
+    (restampCrossIface tbl method difs b)
 restampCrossIface _ _ _ other = other
 
 -- the dict-passing param name for [method]'s [slot]-th method-level constraint dict;
@@ -4492,10 +4515,11 @@ restampCrossClause tbl method difs (CClause ps b) =
   CClause ps (restampCrossIface tbl method difs b)
 
 restampCrossArm : List (String, (String, Int)) -> String -> List String -> CArm -> CArm
-restampCrossArm tbl method difs (CArm p gs b) = CArm
-  p
-  (map (restampCrossGuard tbl method difs) gs)
-  (restampCrossIface tbl method difs b)
+restampCrossArm tbl method difs (CArm p gs b) =
+  CArm
+    p
+    (map (restampCrossGuard tbl method difs) gs)
+    (restampCrossIface tbl method difs b)
 
 restampCrossGuard : List (String, (String, Int)) -> String -> List String -> CGuard -> CGuard
 restampCrossGuard tbl method difs (CGBool c) =
@@ -4518,10 +4542,11 @@ restampClause tbl iface tag rr (CClause ps b) =
   CClause ps (restampIfaceDicts tbl iface tag rr b)
 
 restampArm : List (String, (String, Int)) -> String -> String -> List Route -> CArm -> CArm
-restampArm tbl iface tag rr (CArm p gs b) = CArm
-  p
-  (map (restampGuard tbl iface tag rr) gs)
-  (restampIfaceDicts tbl iface tag rr b)
+restampArm tbl iface tag rr (CArm p gs b) =
+  CArm
+    p
+    (map (restampGuard tbl iface tag rr) gs)
+    (restampIfaceDicts tbl iface tag rr b)
 
 restampGuard : List (String, (String, Int)) -> String -> String -> List Route -> CGuard -> CGuard
 restampGuard tbl iface tag rr (CGBool c) =
@@ -5775,9 +5800,10 @@ bindPattern e env (PAs x p) v body =
 -- it); bind the head element (field 0) to `p` and the tail (field 1) to `PList ps`.
 bindPattern e env (PList (p::ps)) v body =
   bindFields e env [p, PList ps] v body 0
-bindPattern _ env p _ _ = gapEnv
-  ("unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p)
-  env
+bindPattern _ env p _ _ =
+  gapEnv
+    ("unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p)
+    env
 
 -- bind variable `x` to word `v`.  Its LTy is the DECLARED field type-head name
 -- `declName` when that is a known scalar (Gap E2), else the paramUseTy guess from
@@ -5893,9 +5919,10 @@ emitRefutMatch e env (PList (p::ps)) v body failL =
   let tagReg = loadDiscriminant e v
   let _ = emitWordEqTest e tagReg (intToString (cellTag e "Cons")) failL
   emitRefutFields e env [p, PList ps] v body failL 0
-emitRefutMatch e env p _ _ _ = gapEnv
-  ("refutable pattern in guard/range arm not lowered (variable / wildcard / as / tuple / literal / range / constructor / cons / list only): " ++ ptag p)
-  env
+emitRefutMatch e env p _ _ _ =
+  gapEnv
+    ("refutable pattern in guard/range arm not lowered (variable / wildcard / as / tuple / literal / range / constructor / cons / list only): " ++ ptag p)
+    env
 
 -- recurse a refutable test over a cell's leading fields (loadField per index).
 emitRefutFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> String -> Int -> <Mut> List (String, (String, LTy))
@@ -6884,8 +6911,9 @@ emitFnBodyDBlock e env self worker fp arity ((CSLet _ (PVar x) rhs)::rest) =
   else
     let (v, ty) = emitExpr e env rhs
     emitFnBodyDBlock e ((x, (v, ty))::env) self worker fp arity rest
-emitFnBodyDBlock e env _ _ _ _ _ = gapU
-  "float-worker block: unexpected statement shape (should be gated by floatWorkerBlockOk)"
+emitFnBodyDBlock e env _ _ _ _ _ =
+  gapU
+    "float-worker block: unexpected statement shape (should be gated by floatWorkerBlockOk)"
 
 emitTailLeafD : Emit -> List (String, (String, LTy)) -> String -> String -> List Int -> Int -> CExpr -> (CExpr, List CExpr) -> <Mut> Unit
 emitTailLeafD e env self worker fp arity _ (CVar f0 _, args)
@@ -8575,8 +8603,9 @@ emitTopGlobals e ((CBind name [CClause [] body])::rest) =
   let _ = emit e ("  store i64 " ++ v ++ ", ptr @mdk_g_" ++ name)
   let _ = markGlobalInit e name ty
   emitTopGlobals e rest
-emitTopGlobals _ ((CBind name _)::_) = panic
-  ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
+emitTopGlobals _ ((CBind name _)::_) =
+  panic
+    ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
 
 -- Hint from the driver: True when typecheck resolved main's inferred return type to
 -- Unit (e.g. via a polymorphic HOF whose result specialises to Unit with no explicit
@@ -8633,10 +8662,12 @@ emitPrint e v LTChar = emit e ("  call void @mdk_print_char(i64 " ++ v ++ ")")
 -- G3: a polymorphic Num result (LTNum) is an Int OR boxed-Float word; dispatch
 -- the print on its runtime tag via @mdk_print_num (mirrors the @mdk_num_* arith).
 emitPrint e v LTNum = emit e ("  call void @mdk_print_num(i64 " ++ v ++ ")")
-emitPrint _ _ LTCon = panic
-  "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
-emitPrint _ _ LTClosure = panic
-  "llvm spike: cannot print a closure value (slice 4: `main` must reduce to a scalar Int/Bool/Float)"
+emitPrint _ _ LTCon =
+  panic
+    "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
+emitPrint _ _ LTClosure =
+  panic
+    "llvm spike: cannot print a closure value (slice 4: `main` must reduce to a scalar Int/Bool/Float)"
 
 -- the body of the `main` binding (must be a nullary clause).
 mainBody : List CBind -> CExpr

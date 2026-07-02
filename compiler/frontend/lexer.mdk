@@ -740,9 +740,10 @@ isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
 
 uniEscStr : Array Char -> Int -> Int -> String
-uniEscStr src len p = charToStr (fromOption
-  ' '
-  (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
+uniEscStr src len p =
+  charToStr (fromOption
+    ' '
+    (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
 
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
