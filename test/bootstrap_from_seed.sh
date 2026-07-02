@@ -111,8 +111,11 @@ else
 fi
 
 # ---- STEP 4: clang emitter2 -> the bootstrapped native emitter binary -------
+# Build at -O2 (like the warm path in build_native_medaka.sh): this IS the reused
+# workhorse emitter, kept as medaka_emitter until the next source change, so a
+# cold-cloned repo gets the ~30%-faster emitter immediately. EMITTER_OPT overrides.
 echo "step 4: clang(emitter2) -> $OUT ..."
-if ! "$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$EMITTER2" "$RT" $GC_LIBS -o "$OUT" 2>"$WORK/cc2.err"; then
+if ! "$CC" -Wl,-stack_size,"$STACK_SIZE" "${EMITTER_OPT:--O2}" $GC_CFLAGS "$EMITTER2" "$RT" $GC_LIBS -o "$OUT" 2>"$WORK/cc2.err"; then
   echo "FAIL (clang medaka_emitter): $(cat "$WORK/cc2.err")"; exit 1
 fi
 
