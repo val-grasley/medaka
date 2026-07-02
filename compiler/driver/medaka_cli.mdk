@@ -82,6 +82,7 @@ import tools.doc.{runDoc}
 import tools.lint.{
   allRules,
   lintProgram,
+  applySuppressions,
   findingToDiag,
   Finding,
   applyFixes,
@@ -961,7 +962,9 @@ lintOneFileReport multiFile disableNames onlyNames denyNames target = match read
     True
   Ok src =>
     let (decls, pos) = parseWithPositions src
-    let allFindings = lintProgram allRules target pos decls
+    -- suppress findings silenced by inline `-- lint-disable-*` directives before
+    -- applying the CLI flag filters (--only/--disable/--deny).
+    let allFindings = applySuppressions src (lintProgram allRules target pos decls)
     let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
     let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
     let hasOutput = stringLength output > 0

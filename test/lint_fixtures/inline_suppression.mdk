@@ -1,0 +1,31 @@
+-- Regression fixture for ESLint-style inline lint suppression directives.
+-- A subset of the findings below are silenced by `-- lint-disable-*` comments;
+-- the golden proves the suppressed ones are gone and the rest remain.
+
+-- file-level, rule-specific: silences EVERY rule-hand-rolled-derivable finding
+-- lint-disable-file rule-hand-rolled-derivable
+
+data Color = Red | Green
+
+-- suppressed by the file-level directive above
+impl Eq Color where
+  eq Red Red = True
+  eq Green Green = True
+  eq _ _ = False
+
+-- next-line, rule-specific: silences the match-on-param finding on the next line
+-- lint-disable-next-line rule-match-on-param
+classify n = match n
+  0 => "zero"
+  _ => "other"
+
+-- NOT suppressed: this match-on-param finding must survive into the golden
+describe m = match m
+  0 => "z"
+  _ => "o"
+
+-- same-line, ALL rules (no rule names): trailing directive silences reverse
+reverse xs = xs -- lint-disable-line
+
+-- NOT suppressed: this stdlib-reimpl finding must survive into the golden
+take xs = xs

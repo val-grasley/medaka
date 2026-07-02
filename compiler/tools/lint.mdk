@@ -52,11 +52,13 @@ import support.util.{
   splitOnChar,
   joinWith,
   sortUniqS,
+  startsWith,
 }
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum}
 import ir.sexp.{exprSexp, patSexp}
 import frontend.exhaust.{Oracle, buildOracle, oGetCtors, oGetCtorType}
+import frontend.lexer.{Comment, collectComments, commentLine, commentText}
 
 -- ── public types ───────────────────────────────────────────────────────────
 
@@ -302,13 +304,146 @@ export findingToDiag : Finding -> Diag
 findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
 
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
--- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.
-export lintToLines : String -> Positions -> List Decl -> String
-lintToLines path pos prog =
-  joinNl (map findingLine (lintProgram allRules path pos prog))
+-- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.  `src` is the
+-- raw source text: findings are produced by `lintProgram`, then filtered through
+-- the inline-suppression directives (`-- lint-disable-*`) recovered from `src`'s
+-- comment side channel (see `applySuppressions`).
+export lintToLines : String -> String -> Positions -> List Decl -> String
+lintToLines src path pos prog =
+  joinNl (map
+    findingLine
+    (applySuppressions src (lintProgram allRules path pos prog)))
 
 findingLine : Finding -> String
 findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
+
+-- ── inline suppression directives (ESLint-style) ──────────────────────────────
+-- A finding can be silenced by a `--` line comment whose trimmed body starts
+-- with one of these directive keywords (chosen to MIRROR ESLint's
+-- `eslint-disable-*` family; keep them exactly unless there's a strong reason):
+--
+--   `-- lint-disable-next-line [rules]`  suppress findings on the NEXT source line
+--   `-- lint-disable-line      [rules]`  suppress findings on THIS comment's line
+--   `-- lint-disable-file      [rules]`  suppress the rules ANYWHERE in the file
+--
+-- With NO rule names the directive applies to ALL rules; otherwise it lists rule
+-- ids (comma- and/or space-separated, e.g. `rule-match-on-param, rule-stdlib-reimpl`)
+-- matched against a Finding's `rule` field.  Unknown rule names are harmless
+-- no-ops.  A finding at line L with rule R is suppressed iff SOME directive both
+-- covers R (its rule set is empty or contains R) and whose scope includes L.
+--
+-- SEAM.  Comments are stripped by the lexer before layout, so the parser never
+-- sees them and no rule can observe a directive.  Instead findings are produced
+-- FIRST by `lintProgram`, then FILTERED here using the lexer's out-of-band
+-- comment side channel (`collectComments src`).  The two lint entry points
+-- (`compiler/driver/medaka_cli.mdk` report arm + this module's `lintToLines`,
+-- used by `compiler/entries/lint_main.mdk`) call `applySuppressions src findings`
+-- right after `lintProgram`.  A finding's line comes from its `loc` (the decl's
+-- start line, stamped by `declLocList`); a finding without a `loc` can only be
+-- silenced by a whole-file directive.
+
+data DirScope = DScopeLine Int | DScopeFile
+
+-- one parsed directive: which source lines it covers + which rule ids it names
+-- (empty list = all rules).
+data Directive = Directive DirScope (List String)
+
+-- Filter out every finding covered by an inline-suppression directive found in
+-- the source's comment side channel.
+export applySuppressions : String -> List Finding -> List Finding
+applySuppressions src findings =
+  let dirs = collectDirectives src
+  filterList (f => not (isSuppressed dirs f)) findings
+
+collectDirectives : String -> List Directive
+collectDirectives src =
+  flatMap (c => dirToList (parseDirective c)) (collectComments src)
+
+dirToList : Option Directive -> List Directive
+dirToList None = []
+dirToList (Some d) = [d]
+
+-- A comment becomes a directive iff it is a `--` line comment whose trimmed body
+-- (after the `--`) starts with a directive keyword.  `commentText` includes the
+-- delimiters, so we strip a leading `--` then re-trim.
+parseDirective : Comment -> Option Directive
+parseDirective c =
+  let body = trimWs (commentText c)
+  if startsWith "--" body then
+    parseDirectiveBody (commentLine c) (trimWs (stringSlice 2 (stringLength body) body))
+  else
+    None
+
+parseDirectiveBody : Int -> String -> Option Directive
+parseDirectiveBody line s = match matchKeyword "lint-disable-next-line" s
+  Some names => Some (Directive (DScopeLine (line + 1)) (parseRuleNames names))
+  None => match matchKeyword "lint-disable-line" s
+    Some names => Some (Directive (DScopeLine line) (parseRuleNames names))
+    None => match matchKeyword "lint-disable-file" s
+      Some names => Some (Directive DScopeFile (parseRuleNames names))
+      None => None
+
+-- If `s` starts with keyword `kw` AND the keyword is followed by end-of-string
+-- or whitespace (so `lint-disable-lineXYZ` does NOT match), return the trimmed
+-- remainder (the rule-name list); else None.
+matchKeyword : String -> String -> Option String
+matchKeyword kw s
+  | startsWith kw s =
+    let rest = stringSlice (stringLength kw) (stringLength s) s
+    if rest == "" || startsWith " " rest || startsWith "\t" rest then
+      Some (trimWs rest)
+    else
+      None
+  | otherwise = None
+
+-- Split a rule-name list on commas and/or spaces, dropping empty fragments.
+parseRuleNames : String -> List String
+parseRuleNames s =
+  filterList nonEmptyStr (flatMap (splitOnChar ' ') (splitOnChar ',' s))
+
+nonEmptyStr : String -> Bool
+nonEmptyStr n = not (n == "")
+
+isSuppressed : List Directive -> Finding -> Bool
+isSuppressed dirs f = anyList (dirCoversFinding f) dirs
+
+dirCoversFinding : Finding -> Directive -> Bool
+dirCoversFinding f (Directive scope names) = (isEmptyL names || contains f.rule names)
+  && scopeMatches (findingLineNo f) scope
+
+scopeMatches : Option Int -> DirScope -> Bool
+scopeMatches _ DScopeFile = True
+scopeMatches (Some line) (DScopeLine l) = line == l
+scopeMatches None (DScopeLine _) = False
+
+findingLineNo : Finding -> Option Int
+findingLineNo f = match f.loc
+  Some (Loc _ l _ _ _) => Some l
+  None => None
+
+-- trim ASCII whitespace from both ends
+trimWs : String -> String
+trimWs s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  let a = trimWsStart cs n 0
+  let b = trimWsEnd cs a n
+  stringSlice a b s
+
+trimWsStart : Array Char -> Int -> Int -> Int
+trimWsStart cs n i
+  | i >= n = i
+  | isWsChar (arrayGetUnsafe i cs) = trimWsStart cs n (i + 1)
+  | otherwise = i
+
+trimWsEnd : Array Char -> Int -> Int -> Int
+trimWsEnd cs a n
+  | n <= a = a
+  | isWsChar (arrayGetUnsafe (n - 1) cs) = trimWsEnd cs a (n - 1)
+  | otherwise = n
+
+isWsChar : Char -> Bool
+isWsChar c = c == ' ' || c == '\t' || c == '\r' || c == '\n'
 
 -- ── small AST helpers ─────────────────────────────────────────────────────────
 
