@@ -262,10 +262,9 @@ genScalar ctx t depth = match t
   _ => genLeaf ctx t
 
 genByType : Ctx -> Gty -> Int -> <Rand, Mut> Expr
-genByType ctx t depth = match t
-  GTup ts => ETuple (genTupElems ctx ts depth)
-  GData name => genData ctx name depth
-  _ => genScalar ctx t depth
+genByType ctx (GTup ts) depth = ETuple (genTupElems ctx ts depth)
+genByType ctx (GData name) depth = genData ctx name depth
+genByType ctx t depth = genScalar ctx t depth
 
 genExpr : Ctx -> Gty -> Int -> <Rand, Mut> Expr
 genExpr ctx t depth =
@@ -277,10 +276,9 @@ genExpr ctx t depth =
       None => genByType ctx t depth
 
 genLeaf : Ctx -> Gty -> <Rand, Mut> Expr
-genLeaf ctx t = match t
-  GTup ts => ETuple (genLeafElems ctx ts)
-  GData name => genData ctx name 0
-  _ => litOf t
+genLeaf ctx (GTup ts) = ETuple (genLeafElems ctx ts)
+genLeaf ctx (GData name) = genData ctx name 0
+genLeaf ctx t = litOf t
 
 -- numeric expression (Int or Float): literals, arithmetic, if, let.
 genNum : Ctx -> Gty -> Int -> <Rand, Mut> Expr

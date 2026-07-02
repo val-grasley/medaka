@@ -1091,9 +1091,8 @@ ppResError (InternalExternAccess n _) = "'"
 -- Mirror lib/resolve.ml's mod_phrase: two modules → "both `a` and `b`";
 -- otherwise a comma-separated list of backtick-quoted module names.
 ambigModPhrase : List String -> String
-ambigModPhrase mods = match mods
-  a::b::[] => "both `" ++ a ++ "` and `" ++ b ++ "`"
-  _ => joinWith ", " (map (m => "`" ++ m ++ "`") mods)
+ambigModPhrase (a::b::[]) = "both `" ++ a ++ "` and `" ++ b ++ "`"
+ambigModPhrase mods = joinWith ", " (map (m => "`" ++ m ++ "`") mods)
 
 -- one human-readable error message per line (the harness sorts)
 export resolveToLines : List Decl -> List Decl -> List Decl -> String

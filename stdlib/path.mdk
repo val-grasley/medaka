@@ -188,9 +188,8 @@ stripLeadingSlash s =
    > joinAll []
    "" -}
 export joinAll : List String -> String
-joinAll segs = match segs
-  [] => ""
-  s::rest => joinAllGo s rest
+joinAll [] = ""
+joinAll (s::rest) = joinAllGo s rest
 
 joinAllGo : String -> List String -> String
 joinAllGo acc [] = acc
@@ -281,13 +280,16 @@ normalize path =
 normGo : Bool -> List String -> List String -> List String
 normGo _ [] acc = acc
 normGo abs ("."::rest) acc = normGo abs rest acc
-normGo abs (".."::rest) acc = match acc
-  [] => if abs then normGo abs rest [] else normGo abs rest [".."]
-  top::acc2 =>
-    if top == ".." then
-      normGo abs rest (".." :: ".."::acc2)
-    else
-      normGo abs rest acc2
+normGo abs (".."::rest) [] =
+  if abs then
+    normGo abs rest []
+  else
+    normGo abs rest [".."]
+normGo abs (".."::rest) (top::acc2) =
+  if top == ".." then
+    normGo abs rest (".." :: ".."::acc2)
+  else
+    normGo abs rest acc2
 normGo abs (s::rest) acc = normGo abs rest (s::acc)
 
 reverse : List a -> List a

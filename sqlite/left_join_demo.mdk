@@ -45,10 +45,9 @@ uoRow : RowType UO
 uoRow = tCustom mkUO (t2 (t2 tInt tText) (tOption (t3 tInt tInt tInt)))
 
 showUO : UO -> String
-showUO r = match r
-  UO { uid = i, uname = n, orow = None } => "\{i}|\{n}|NULL|NULL|NULL"
-  UO { uid = i, uname = n, orow = (Some (o, u, a)) } =>
-    "\{i}|\{n}|\{o}|\{u}|\{a}"
+showUO (UO { uid = i, uname = n, orow = None }) = "\{i}|\{n}|NULL|NULL|NULL"
+showUO (UO { uid = i, uname = n, orow = (Some (o, u, a)) }) =
+  "\{i}|\{n}|\{o}|\{u}|\{a}"
 
 printUO : List UO -> <IO> Unit
 printUO [] = ()
@@ -81,11 +80,9 @@ abcRow =
   tCustom mkABC (t3 (t2 tInt tInt) (t2 tInt tInt) (tOption (t2 tInt tInt)))
 
 showABC : ABC -> String
-showABC r = match r
-  ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = None } =>
-    "\{a1}|\{a2}|\{b1}|\{b2}|NULL|NULL"
-  ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = (Some (c1, c2)) } =>
-    "\{a1}|\{a2}|\{b1}|\{b2}|\{c1}|\{c2}"
+showABC (ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = None }) =
+  "\{a1}|\{a2}|\{b1}|\{b2}|NULL|NULL"
+showABC (ABC { aid = a1, av = a2, bid = b1, aref = b2, crow = (Some (c1, c2)) }) = "\{a1}|\{a2}|\{b1}|\{b2}|\{c1}|\{c2}"
 
 printABC : List ABC -> <IO> Unit
 printABC [] = ()

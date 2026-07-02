@@ -283,11 +283,10 @@ detailsGo envResult i (ex::rest) =
   (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
 
 oneResult : Result String (List (String, Value)) -> Int -> Example -> <Mut> ExResult
-oneResult envResult i ex = match envResult
-  Err msg => Errored msg
-  Ok env => match lookupBinding (synthName i) env
-    None => Errored ("could not evaluate: " ++ exampleInput ex)
-    Some v => compareValue ex (ppValue (force v))
+oneResult (Err msg) i ex = Errored msg
+oneResult (Ok env) i ex = match lookupBinding (synthName i) env
+  None => Errored ("could not evaluate: " ++ exampleInput ex)
+  Some v => compareValue ex (ppValue (force v))
 
 compareValue : Example -> String -> ExResult
 compareValue ex actual = match exampleExpected ex

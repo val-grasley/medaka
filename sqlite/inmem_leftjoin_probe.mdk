@@ -62,10 +62,9 @@ uoRow : RowType UO
 uoRow = tCustom mkUO (t2 (t2 tInt tText) (tOption (t3 tInt tInt tInt)))
 
 showUO : UO -> String
-showUO r = match r
-  UO { uid = i, uname = n, orow = None } => "\{i}|\{n}|NULL|NULL|NULL"
-  UO { uid = i, uname = n, orow = (Some (o, u, a)) } =>
-    "\{i}|\{n}|\{o}|\{u}|\{a}"
+showUO (UO { uid = i, uname = n, orow = None }) = "\{i}|\{n}|NULL|NULL|NULL"
+showUO (UO { uid = i, uname = n, orow = (Some (o, u, a)) }) =
+  "\{i}|\{n}|\{o}|\{u}|\{a}"
 
 printUO : List UO -> <IO> Unit
 printUO [] = ()

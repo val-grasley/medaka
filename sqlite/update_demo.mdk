@@ -16,12 +16,11 @@ import lib.select.{eColInt, eLitI, eLitT, eEq, eNe, eLt, eLe, eGt, eGe}
 import string.{toInt}
 
 makeAssign : String -> String -> String -> Option Assign
-makeAssign col setType val = match setType
-  "int" => match toInt val
-    None => None
-    Some n => Some (assign col (eLitI n))
-  "text" => Some (assign col (eLitT val))
-  _ => None
+makeAssign col "int" val = match toInt val
+  None => None
+  Some n => Some (assign col (eLitI n))
+makeAssign col "text" val = Some (assign col (eLitT val))
+makeAssign col _ val = None
 
 runUpdate : String -> String -> Assign -> String -> String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
 runUpdate path table asgn whereCol op whereVal =

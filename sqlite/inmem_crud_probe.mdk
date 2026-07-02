@@ -45,15 +45,13 @@ ipk = Some 0
 
 -- The id is the first cell of a row.
 rowId : List Cell -> Int
-rowId cells = match cells
-  (CInt n)::_ => n
-  _ => -1
+rowId ((CInt n)::_) = n
+rowId _ = -1
 
 -- Replace the age (3rd cell) of a row.
 setAge : List Cell -> Cell -> List Cell
-setAge cells age = match cells
-  i::n::_::[] => [i, n, age]
-  _ => cells
+setAge (i::n::_::[]) age = [i, n, age]
+setAge cells age = cells
 
 printRows : List Row -> <IO> Unit
 printRows [] = ()
