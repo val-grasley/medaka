@@ -41,7 +41,7 @@ if [ "${1:-}" = "--build-one" ]; then
   src="$ROOT/compiler/entries/$e.mdk"
   out="$BINDIR/$e"
   printf 'building    %s ...\n' "$e"
-  if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O2}" "$MEDAKA" build --allow-internal "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
+  if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O1}" "$MEDAKA" build --allow-internal "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
     echo "FAIL: could not native-compile $e:" >&2; tail -8 "$BINDIR/$e.buildlog" >&2; exit 1
   fi
   [ -x "$out" ] || { echo "FAIL: $e build produced no binary" >&2; tail -8 "$BINDIR/$e.buildlog" >&2; exit 1; }
