@@ -1,0 +1,10 @@
+-- Regression fixture for the multi-DIRECTORY-target resolveLintTargets bug:
+-- when `medaka lint` is invoked with MULTIPLE directory args, each one must be
+-- expanded (recursively collected) — not treated as a literal file path.
+-- `rankScore`'s body is duplicated verbatim in dirB/two.mdk; the cross-file
+-- rule-duplicate-body rule must fire across the two directory targets.
+rankScore : Int -> String
+rankScore n =
+  if n > 90 then "excellent"
+  else if n > 70 then "good"
+  else "poor"

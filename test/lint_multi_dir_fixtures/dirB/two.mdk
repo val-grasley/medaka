@@ -1,0 +1,8 @@
+-- Twin of dirA/one.mdk (see comment there): identical body, different directory
+-- target passed on the CLI. Proves the fix expands EVERY multi-arg target,
+-- not just the first, so the cross-file duplicate is actually detected.
+rankScore : Int -> String
+rankScore n =
+  if n > 90 then "excellent"
+  else if n > 70 then "good"
+  else "poor"

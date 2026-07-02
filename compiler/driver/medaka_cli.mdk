@@ -812,8 +812,10 @@ parseLintFiles (f::rest) = match readFile f
 
 -- Resolve file args to a concrete list of .mdk paths.
 -- Empty args → project root mode (find medaka.toml, list top-level .mdk files).
--- Single arg that listDir succeeds on → treat as directory; else file.
--- Multiple args → use as-is.
+-- Each non-empty arg is expanded individually: a path listDir succeeds on is
+-- treated as a directory (recursively collected); else it's kept as a literal
+-- file path. This applies uniformly whether one or many targets are given, so
+-- `medaka lint dirA dirB` expands BOTH dirs (not just the first).
 resolveLintTargets : List String -> <IO, Mut, Panic> List String
 resolveLintTargets [] =
   let cwd = canonicalizePath "."
@@ -823,10 +825,14 @@ resolveLintTargets [] =
     let _ = exit 1
     []
   else collectMdkFiles root
-resolveLintTargets [target] = match listDir target
+resolveLintTargets targets = flatMap expandLintTarget targets
+
+-- One target: a listable path is a directory (recursively collect its .mdk
+-- files); otherwise a literal file path, kept as-is.
+expandLintTarget : String -> <IO, Mut, Panic> List String
+expandLintTarget target = match listDir target
   Ok _ => collectMdkFiles target
   Err _ => [target]
-resolveLintTargets targets = targets
 
 -- Join a directory path with an entry name (handles trailing slash).
 lintPathJoin : String -> String -> String
