@@ -130,6 +130,9 @@ ruleNameAndThenPureMap = "rule-andthen-pure-map"
 ruleNameDestructureInParam : String
 ruleNameDestructureInParam = "rule-destructure-in-param"
 
+ruleNameMissingSignature : String
+ruleNameMissingSignature = "rule-missing-signature"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -216,6 +219,16 @@ destructureInParamRule = Rule {
   fix = Some destructureInParamFix,
 }
 
+missingSignatureRule : Rule
+missingSignatureRule = Rule {
+  name = ruleNameMissingSignature,
+  descr = "top-level value/function binding has no sibling type signature (name : Type) — add one (Haskell -Wmissing-signatures)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleMissingSignature,
+  fix = None,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -226,6 +239,7 @@ allRules = [
   ifMaxMinRule,
   andThenPureMapRule,
   destructureInParamRule,
+  missingSignatureRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -986,6 +1000,39 @@ stdlibFinding : (String, Option Loc) -> Finding
 stdlibFinding (name, loc) = Finding {
   rule = ruleNameStdlibReimpl,
   message = "top-level '" ++ name ++ "' shadows a stdlib function — prefer the stdlib version",
+  severity = SevWarning,
+  loc = loc,
+}
+
+-- ── rule: missing-signature ───────────────────────────────────────────────────
+-- Flag a top-level value/function binding (`DFunDef`, incl. through `DAttrib`)
+-- whose name has NO sibling top-level `name : Type` signature (`DTypeSig`) in the
+-- same file — Haskell's -Wmissing-signatures.  Purely syntactic: build the set of
+-- signed names, then report `DFunDef` names absent from it.  `impl`/`interface`
+-- method bodies are nested inside their own decl (not top-level `Decl`s), so a
+-- `List Decl` walk never sees them; `prop`/`test`/`extern` are their own decl
+-- kinds, not `DFunDef`, so they are excluded automatically.  `main` is exempt by
+-- name (entry-point boilerplate).  Multi-clause defs dedupe to one finding.
+ruleMissingSignature : String -> Positions -> List Decl -> List Finding
+ruleMissingSignature _ pos prog =
+  map
+    missingSigFinding
+    (filterList
+      (missingSigPair (flatMap topSigNameL prog))
+      (dedupeNamesLoc (flatMap topDefNameL (declLocList pos prog))))
+
+topSigNameL : Decl -> List String
+topSigNameL (DTypeSig _ name _) = [name]
+topSigNameL (DAttrib _ d) = topSigNameL d
+topSigNameL _ = []
+
+missingSigPair : List String -> (String, Option Loc) -> Bool
+missingSigPair sigNames (n, _) = not (n == "main" || contains n sigNames)
+
+missingSigFinding : (String, Option Loc) -> Finding
+missingSigFinding (name, loc) = Finding {
+  rule = ruleNameMissingSignature,
+  message = "top-level '" ++ name ++ "' has no type signature — add a `" ++ name ++ " : …` declaration",
   severity = SevWarning,
   loc = loc,
 }

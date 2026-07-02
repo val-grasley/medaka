@@ -1,2 +1,5 @@
 warning: [rule-match-on-param] function 'describe' matches on parameter 'm' — consider a multi-clause function definition
+warning: [rule-missing-signature] top-level 'classify' has no type signature — add a `classify : …` declaration
+warning: [rule-missing-signature] top-level 'describe' has no type signature — add a `describe : …` declaration
+warning: [rule-missing-signature] top-level 'take' has no type signature — add a `take : …` declaration
 warning: [rule-stdlib-reimpl] top-level 'take' shadows a stdlib function — prefer the stdlib version

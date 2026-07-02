@@ -2,3 +2,12 @@ warning: [rule-destructure-in-param] function 'fst2' destructures parameter 'p' 
 warning: [rule-destructure-in-param] function 'sumPt' destructures parameter 'pt' via a single-arm irrefutable `match` — destructure it directly in the parameter position
 warning: [rule-destructure-in-param] function 'unBox' destructures parameter 'b' via a single-arm irrefutable `match` — destructure it directly in the parameter position
 warning: [rule-match-on-param] function 'colorName' matches on parameter 'c' — consider a multi-clause function definition
+warning: [rule-missing-signature] top-level 'colorName' has no type signature — add a `colorName : …` declaration
+warning: [rule-missing-signature] top-level 'dup' has no type signature — add a `dup : …` declaration
+warning: [rule-missing-signature] top-level 'firstColor' has no type signature — add a `firstColor : …` declaration
+warning: [rule-missing-signature] top-level 'fst2' has no type signature — add a `fst2 : …` declaration
+warning: [rule-missing-signature] top-level 'guarded' has no type signature — add a `guarded : …` declaration
+warning: [rule-missing-signature] top-level 'headOf' has no type signature — add a `headOf : …` declaration
+warning: [rule-missing-signature] top-level 'idv' has no type signature — add a `idv : …` declaration
+warning: [rule-missing-signature] top-level 'sumPt' has no type signature — add a `sumPt : …` declaration
+warning: [rule-missing-signature] top-level 'unBox' has no type signature — add a `unBox : …` declaration

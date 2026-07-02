@@ -24,6 +24,7 @@ import entries.entry_support.{driveRuntime}
 
 main = driveRuntime emit
 
+emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (runTyped runtimeDecls preludeDecls userDecls)
 

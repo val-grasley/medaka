@@ -1,0 +1,35 @@
+-- Fixture for rule-missing-signature (Haskell -Wmissing-signatures).
+-- A top-level value/function binding with no sibling `name : Type` fires;
+-- a signed binding, `main`, impl methods, multi-clause-with-one-sig, and
+-- data/prop declarations stay silent.
+
+-- FIRES: no signature.
+unsigned x = x + 1
+
+-- SILENT: has a signature.
+signed : Int -> Int
+signed x = x + 1
+
+-- SILENT: `main` is exempt (entry-point boilerplate).
+main = println (signed (unsigned 0))
+
+-- SILENT: multi-clause function with ONE signature covers all clauses.
+classify : Int -> String
+classify 0 = "zero"
+classify _ = "other"
+
+-- SILENT: a value binding that is signed.
+answer : Int
+answer = 42
+
+-- SILENT: data/interface/impl/prop are not top-level value bindings.
+data Color = Red | Green | Blue
+
+interface Shrink a where
+  shrink : a -> a
+
+impl Shrink Int where
+  -- SILENT: impl method bodies are typed by the interface, never flagged.
+  shrink n = n - 1
+
+prop "reflexive" (x : Int) = x == x

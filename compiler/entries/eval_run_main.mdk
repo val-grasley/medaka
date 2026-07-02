@@ -8,8 +8,10 @@
 -- renders pp_value of `main`): the program actually runs its IO.
 
 import eval.eval.{evalOutputWith}
+import frontend.ast.{Decl}
 import entries.entry_support.{drivePrelude}
 
 main = drivePrelude emit
 
+emit : List Decl -> List Decl -> <IO, Mut> Unit
 emit preludeDecls userDecls = putStr (evalOutputWith preludeDecls userDecls)

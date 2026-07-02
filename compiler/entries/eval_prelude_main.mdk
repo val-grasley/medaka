@@ -9,8 +9,10 @@
 -- the self-host, so its paths are passed in (like the marker/resolve stages).
 
 import eval.eval.{evalMain}
+import frontend.ast.{Decl}
 import entries.entry_support.{drivePrelude}
 
 main = drivePrelude emit
 
+emit : List Decl -> List Decl -> <IO, Mut> Unit
 emit preludeDecls userDecls = putStrLn (evalMain (preludeDecls ++ userDecls))

@@ -9,3 +9,23 @@ warning: [rule-lambda-section] lambda is a single binary operation on its parame
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(== 3)'
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(> 0)'
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(base >> _)'
+warning: [rule-missing-signature] top-level 'bareAdd' has no type signature — add a `bareAdd : …` declaration
+warning: [rule-missing-signature] top-level 'bareLt' has no type signature — add a `bareLt : …` declaration
+warning: [rule-missing-signature] top-level 'leftCompose' has no type signature — add a `leftCompose : …` declaration
+warning: [rule-missing-signature] top-level 'leftMul' has no type signature — add a `leftMul : …` declaration
+warning: [rule-missing-signature] top-level 'leftSub' has no type signature — add a `leftSub : …` declaration
+warning: [rule-missing-signature] top-level 'negApp' has no type signature — add a `negApp : …` declaration
+warning: [rule-missing-signature] top-level 'negBacktick' has no type signature — add a `negBacktick : …` declaration
+warning: [rule-missing-signature] top-level 'negBacktickBare' has no type signature — add a `negBacktickBare : …` declaration
+warning: [rule-missing-signature] top-level 'negReorder' has no type signature — add a `negReorder : …` declaration
+warning: [rule-missing-signature] top-level 'negRightSub' has no type signature — add a `negRightSub : …` declaration
+warning: [rule-missing-signature] top-level 'negSelf' has no type signature — add a `negSelf : …` declaration
+warning: [rule-missing-signature] top-level 'negSubexpr' has no type signature — add a `negSubexpr : …` declaration
+warning: [rule-missing-signature] top-level 'negThree' has no type signature — add a `negThree : …` declaration
+warning: [rule-missing-signature] top-level 'negUnary' has no type signature — add a `negUnary : …` declaration
+warning: [rule-missing-signature] top-level 'nestedInApp' has no type signature — add a `nestedInApp : …` declaration
+warning: [rule-missing-signature] top-level 'nestedInLet' has no type signature — add a `nestedInLet : …` declaration
+warning: [rule-missing-signature] top-level 'rightConcat' has no type signature — add a `rightConcat : …` declaration
+warning: [rule-missing-signature] top-level 'rightCons' has no type signature — add a `rightCons : …` declaration
+warning: [rule-missing-signature] top-level 'rightEq' has no type signature — add a `rightEq : …` declaration
+warning: [rule-missing-signature] top-level 'rightMul' has no type signature — add a `rightMul : …` declaration

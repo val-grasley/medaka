@@ -22,6 +22,7 @@ main = match args ()
   [runtimePath, targetPath] => withRuntime runtimePath targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/typecheck_main.mdk [runtime.mdk] <file.mdk>"
 
+withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
   Ok src =>
     let raw = parse src
@@ -31,10 +32,12 @@ withTarget targetPath = match readFile targetPath
       e::_ => putStrLn e
   Err msg => ePutStrLn msg
 
+withRuntime : String -> String -> <IO, Mut> Unit
 withRuntime runtimePath targetPath = match readFile runtimePath
   Ok rsrc => withRuntimeTarget rsrc targetPath
   Err msg => ePutStrLn msg
 
+withRuntimeTarget : String -> String -> <IO, Mut> Unit
 withRuntimeTarget rsrc targetPath = match readFile targetPath
   Ok src =>
     let raw = parse src

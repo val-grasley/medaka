@@ -15,15 +15,18 @@
 -- Probe-only entry: NOT in the emitter graph (selfcompile_fixpoint must stay green).
 
 import types.typecheck.{enableEmitArgStampPasses}
+import frontend.ast.{Decl}
 import entries.entry_support.{driveRuntimeArgs, evalDictString}
 
 main = match args ()
   mode::rest => withMode mode rest
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
+withMode : String -> List String -> <IO, Mut> Unit
 withMode mode rest =
   let _ = if mode == "ON" then enableEmitArgStampPasses () else ()
   driveRuntimeArgs rest emit
 
+emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (evalDictString runtimeDecls preludeDecls userDecls)

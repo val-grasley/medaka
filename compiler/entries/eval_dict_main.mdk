@@ -10,9 +10,11 @@
 -- the user's constrained fns, typecheck stamps every route, then dict_pass
 -- prepends the matching leading dict params) → eval.
 
+import frontend.ast.{Decl}
 import entries.entry_support.{driveRuntime, evalDictString}
 
 main = driveRuntime emit
 
+emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (evalDictString runtimeDecls preludeDecls userDecls)

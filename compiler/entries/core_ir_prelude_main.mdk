@@ -15,10 +15,12 @@
 import types.annotate.{annotateProgram}
 import ir.core_ir_lower.{lowerProgram}
 import ir.core_ir_eval.{cevalMain}
+import frontend.ast.{Decl}
 import entries.entry_support.{drivePrelude}
 
 main = drivePrelude emit
 
+emit : List Decl -> List Decl -> <IO, Mut> Unit
 emit preludeDecls userDecls =
   putStrLn (cevalMain (lowerProgram (annotateProgram
     (preludeDecls ++ userDecls))))

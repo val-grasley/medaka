@@ -1,0 +1,1 @@
+warning: [rule-missing-signature] top-level 'unsigned' has no type signature — add a `unsigned : …` declaration

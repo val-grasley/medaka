@@ -8,9 +8,11 @@
 -- what makes `pure`/`empty`/… dispatch by the concrete return type (RKey) instead
 -- of the untyped arg-tag fallback — e.g. a user Applicative's `pure`.
 
+import frontend.ast.{Decl}
 import entries.entry_support.{driveRuntime, evalTypedString}
 
 main = driveRuntime emit
 
+emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (evalTypedString runtimeDecls preludeDecls userDecls)

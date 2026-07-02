@@ -5,10 +5,12 @@
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
+import frontend.ast.{Decl}
 import entries.entry_support.{driveParseSources}
 
 main = driveParseSources renderAll
 
+renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
 renderAll runtimeP coreP [] = ""
 renderAll runtimeP coreP ((path, src)::rest) = "===SELFHOST-FIX=== "
   ++ path

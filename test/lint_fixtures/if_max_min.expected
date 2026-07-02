@@ -7,3 +7,17 @@ warning: [rule-if-max-min] if-then-else selects the smaller of the same two oper
 warning: [rule-if-max-min] if-then-else selects the smaller of the same two operands — rewrite as 'min a b'
 warning: [rule-if-max-min] if-then-else selects the smaller of the same two operands — rewrite as 'min a b'
 warning: [rule-if-max-min] if-then-else selects the smaller of the same two operands — rewrite as 'min a b'
+warning: [rule-missing-signature] top-level 'geNormal' has no type signature — add a `geNormal : …` declaration
+warning: [rule-missing-signature] top-level 'geReversed' has no type signature — add a `geReversed : …` declaration
+warning: [rule-missing-signature] top-level 'gt' has no type signature — add a `gt : …` declaration
+warning: [rule-missing-signature] top-level 'gtNormal' has no type signature — add a `gtNormal : …` declaration
+warning: [rule-missing-signature] top-level 'gtReversed' has no type signature — add a `gtReversed : …` declaration
+warning: [rule-missing-signature] top-level 'leNormal' has no type signature — add a `leNormal : …` declaration
+warning: [rule-missing-signature] top-level 'leReversed' has no type signature — add a `leReversed : …` declaration
+warning: [rule-missing-signature] top-level 'ltNormal' has no type signature — add a `ltNormal : …` declaration
+warning: [rule-missing-signature] top-level 'ltReversed' has no type signature — add a `ltReversed : …` declaration
+warning: [rule-missing-signature] top-level 'negBacktick' has no type signature — add a `negBacktick : …` declaration
+warning: [rule-missing-signature] top-level 'negClampZero' has no type signature — add a `negClampZero : …` declaration
+warning: [rule-missing-signature] top-level 'negOtherBranch' has no type signature — add a `negOtherBranch : …` declaration
+warning: [rule-missing-signature] top-level 'negSameOperand' has no type signature — add a `negSameOperand : …` declaration
+warning: [rule-missing-signature] top-level 'nested' has no type signature — add a `nested : …` declaration

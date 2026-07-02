@@ -17,6 +17,7 @@ main = match args ()
   corePath::targets => withCore corePath targets
   _ => ePutStrLn "usage: medaka run compiler/entries/eval_prelude_batch.mdk <core.mdk> <file.mdk>..."
 
+withCore : String -> List String -> <IO, Mut> Unit
 withCore corePath targets = match readFile corePath
   Err msg => ePutStrLn msg
   Ok csrc => emitAll (desugar (parse csrc)) targets

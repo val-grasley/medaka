@@ -27,7 +27,7 @@
 -- in key order: left-child of cell[0], left-child of cell[1], ...,
 -- left-child of cell[n-1], rightmost-child.
 
-import byteparser.{BOk, BErr, runBP}
+import byteparser.{BOk, BErr, BResult, runBP}
 import lib.varint.{sqVarint}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord}
 import list.{reverse}
@@ -121,6 +121,7 @@ beU16 bytes off = do
 --   arms while keeping the label on each failure.  Plain `onOk`/`Mappable`
 --   can't carry the per-step label; hence this local helper.
 --   Module-private (no export).
+bStep : String -> BResult a -> (a -> Int -> Result String b) -> Result String b
 bStep label (BErr m ep) _ = Err "\{label}: \{m} at \{intToString ep}"
 bStep label (BOk a pos) k = k a pos
 
