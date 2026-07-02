@@ -48,9 +48,8 @@ singleton x = NECons x []
    > fromList ([] : List Int)
    None -}
 export fromList : List a -> Option (NonEmpty a)
-fromList xs = match xs
-  [] => None
-  x::rest => Some (NECons x rest)
+fromList [] = None
+fromList (x::rest) = Some (NECons x rest)
 
 -- ---------------------------------------------------------------------------
 -- Total accessors — the point of the module: these return `a`, never `Option`.

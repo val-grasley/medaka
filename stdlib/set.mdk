@@ -54,22 +54,20 @@ balance x l r
   | otherwise = bin x l r
 
 rotateL : a -> Set a -> Set a -> Set a
-rotateL x l r = match r
-  Bin _ _ rl rr =>
-    if size rl < 2 * size rr then
-      singleL x l r
-    else
-      doubleL x l r
-  Tip => panic "Set.rotateL: empty right subtree"
+rotateL x l (r@(Bin _ _ rl rr)) =
+  if size rl < 2 * size rr then
+    singleL x l r
+  else
+    doubleL x l r
+rotateL x l Tip = panic "Set.rotateL: empty right subtree"
 
 rotateR : a -> Set a -> Set a -> Set a
-rotateR x l r = match l
-  Bin _ _ ll lr =>
-    if size lr < 2 * size ll then
-      singleR x l r
-    else
-      doubleR x l r
-  Tip => panic "Set.rotateR: empty left subtree"
+rotateR x (l@(Bin _ _ ll lr)) r =
+  if size lr < 2 * size ll then
+    singleR x l r
+  else
+    doubleR x l r
+rotateR x Tip r = panic "Set.rotateR: empty left subtree"
 
 singleL : a -> Set a -> Set a -> Set a
 singleL x1 t1 (Bin _ x2 t2 t3) = bin x2 (bin x1 t1 t2) t3

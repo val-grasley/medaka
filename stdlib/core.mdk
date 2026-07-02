@@ -735,9 +735,8 @@ export impl Alternative List where
 
 export impl Alternative Option where
   noMatch = None
-  orElse a b = match a
-    Some _ => a
-    None => b
+  orElse (Some x) _ = Some x
+  orElse None b = b
 
 {- | `guard True` succeeds with `pure ()`; `guard False` is the failing
    `noMatch`.  Used to prune an `Alternative` computation on a condition.
@@ -893,12 +892,14 @@ export interface Traversable t requires Mappable t, Foldable t where
    per-constructor clauses: the multi-clause form of a generic `Thenable m =>`
    method whose body has a return-position `pure` loops in eval (dict-passing ×
    multi-clause desugar).  Do not split them back out. -}
+-- lint-disable-next-line rule-match-on-param
 export impl Traversable List where
   traverse f xs = match xs
     [] => pure []
     x::rest =>
       andThen (f x) (y => andThen (traverse f rest) (ys => pure (y::ys)))
 
+-- lint-disable-next-line rule-match-on-param
 export impl Traversable Option where
   traverse f opt = match opt
     None => pure None
@@ -906,6 +907,7 @@ export impl Traversable Option where
 
 {- `default` mirrors the `Foldable`/`Mappable (Result e)` impls so a
    user-defined alternative can coexist without qualifying call sites. -}
+-- lint-disable-next-line rule-match-on-param
 export default impl Traversable (Result e) where
   traverse f res = match res
     Err e => pure (Err e)
