@@ -1,0 +1,21 @@
+-- rule-hand-rolled-derivable now requires the impl's type to have a
+-- `data`/`record` declaration (with constructors) VISIBLE in the linted file —
+-- otherwise `deriving` isn't even available for it.
+
+-- NEGATIVE: `Int` is a primitive with no `data` decl → deriving is impossible →
+-- does NOT fire (this used to be a false positive).
+impl Eq Int where
+  eq a b = True
+
+-- NEGATIVE: `String` likewise a primitive → no data decl → does NOT fire.
+impl Ord String where
+  compare a b = Eq
+
+-- POSITIVE: `Suit` has a `data` decl right here, so `deriving (Eq)` is available
+-- → the hand-written impl DOES fire.
+data Suit = Hearts | Spades
+
+impl Eq Suit where
+  eq Hearts Hearts = True
+  eq Spades Spades = True
+  eq _ _ = False

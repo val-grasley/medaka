@@ -49,6 +49,7 @@ import support.util.{
   isEmptyL,
   reverseL,
   splitNl,
+  splitOnChar,
   joinWith,
   sortUniqS,
 }
@@ -67,8 +68,9 @@ public export record Finding
   severity : Severity
   loc : Option Loc
 
--- A registered rule.  `check` is the whole pass for that rule: Positions (for
--- per-decl source locations) + raw decls → hits.  `fix`, when `Some f`, is a
+-- A registered rule.  `check` is the whole pass for that rule: the target file
+-- PATH (so a rule may scope itself, e.g. skip stdlib-owned files) + Positions
+-- (for per-decl source locations) + raw decls → hits.  `fix`, when `Some f`, is a
 -- per-decl autofixer: given the syntactic constructor
 -- `Oracle` (built once from the whole target file's decls — used by the
 -- irrefutability logic to recognise single-constructor patterns) and a single
@@ -80,7 +82,7 @@ public export record Rule
   descr : String
   severity : Severity
   enabled : Bool
-  check : Positions -> List Decl -> List Finding
+  check : String -> Positions -> List Decl -> List Finding
   fix : Option (Oracle -> Decl -> Option (List Decl))
 
 -- A registered CROSS-FILE rule.  Unlike `Rule` (one file at a time), `check`
@@ -186,17 +188,28 @@ allCrossFileRules = [duplicateBodyRule]
 -- location.  Each rule's findings are re-stamped with the rule's (possibly
 -- CLI-overridden) severity so a `--deny` promotion propagates without the rule
 -- knowing about flags.
-export lintProgram : List Rule -> Positions -> List Decl -> List Finding
-lintProgram rules pos prog = flatMap (runRuleOn pos prog) rules
+export lintProgram : List Rule -> String -> Positions -> List Decl -> List Finding
+lintProgram rules path pos prog = flatMap (runRuleOn path pos prog) rules
 
-runRuleOn : Positions -> List Decl -> Rule -> List Finding
-runRuleOn pos prog r
-  | r.enabled = map (restampSeverity r.severity) (r.check pos prog)
+runRuleOn : String -> Positions -> List Decl -> Rule -> List Finding
+runRuleOn path pos prog r
+  | r.enabled = map (restampSeverity r.severity) (r.check path pos prog)
   | otherwise = []
 
 restampSeverity : Severity -> Finding -> Finding
 restampSeverity sev f =
   Finding { rule = f.rule, message = f.message, severity = sev, loc = f.loc }
+
+-- Is the target file part of the stdlib itself?  A `stdlib` path SEGMENT (so
+-- `stdlib/core.mdk`, `./stdlib/list.mdk`, `/abs/medaka/stdlib/map.mdk` all match,
+-- but `test/lint_fixtures/foo.mdk` does not).  Style rules that flag USER code
+-- reimplementing / hand-rolling what the stdlib canonically provides
+-- (`rule-stdlib-reimpl`, `rule-hand-rolled-derivable`) must skip stdlib-owned
+-- files: those definitions ARE the canonical stdlib, or are hand-written for a
+-- deliberate reason (bootstrap ordering, ctor/class name clash, or a non-
+-- structural instance whose `deriving` would be semantically WRONG).
+isStdlibPath : String -> Bool
+isStdlibPath path = contains "stdlib" (splitOnChar '/' path)
 
 -- ── autofix driver (Task A3) ───────────────────────────────────────────────────
 -- The CLI calls this for `--fix`.  It is the ONLY place that touches the new
@@ -290,8 +303,9 @@ findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
 
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
 -- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.
-export lintToLines : Positions -> List Decl -> String
-lintToLines pos prog = joinNl (map findingLine (lintProgram allRules pos prog))
+export lintToLines : String -> Positions -> List Decl -> String
+lintToLines path pos prog =
+  joinNl (map findingLine (lintProgram allRules path pos prog))
 
 findingLine : Finding -> String
 findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
@@ -324,8 +338,8 @@ declPosToLoc p = let l = declPosLine p in Loc "" l 1 l 1
 -- A `DFunDef _ name pats body` (or an impl method) whose body is a `match` with
 -- ≥2 arms over an `EVar p` where `p` is a bare `PVar p` parameter.  Single-arm
 -- matches are skipped (STYLE's "when not to convert").
-ruleMatchOnParam : Positions -> List Decl -> List Finding
-ruleMatchOnParam pos prog = flatMap matchParamDeclL (declLocList pos prog)
+ruleMatchOnParam : String -> Positions -> List Decl -> List Finding
+ruleMatchOnParam _ pos prog = flatMap matchParamDeclL (declLocList pos prog)
 
 matchParamDeclL : (Decl, Option Loc) -> List Finding
 matchParamDeclL (d, loc) = matchParamDecl loc d
@@ -494,30 +508,54 @@ boundaryAt cs j
 derivableIfaces : List String
 derivableIfaces = ["Eq", "Ord", "Debug"]
 
-ruleDerivable : Positions -> List Decl -> List Finding
-ruleDerivable pos prog = flatMap derivableDeclL (declLocList pos prog)
+-- Skip stdlib-owned files entirely: every hand-written `impl Eq/Ord/Debug` in
+-- the stdlib is legitimate (a primitive with no `data` decl to derive from, the
+-- `Ordering` Eq-ctor/Eq-class clash, a non-structural container instance whose
+-- `deriving` would be semantically WRONG, or a bootstrap-prelude type).  For
+-- USER code we additionally require the type to have a `data`/`record`
+-- declaration whose constructors are visible in the linted file (`oGetCtors`
+-- returns `Some`) — a primitive has none, so `impl Eq for Int` is never flagged.
+ruleDerivable : String -> Positions -> List Decl -> List Finding
+ruleDerivable path pos prog
+  | isStdlibPath path = []
+  | otherwise =
+    let orc = buildOracle prog
+    flatMap (derivableDeclL orc) (declLocList pos prog)
 
-derivableDeclL : (Decl, Option Loc) -> List Finding
-derivableDeclL (d, loc) = derivableDecl loc d
+derivableDeclL : Oracle -> (Decl, Option Loc) -> List Finding
+derivableDeclL orc (d, loc) = derivableDecl orc loc d
 
-derivableDecl : Option Loc -> Decl -> List Finding
-derivableDecl loc (DImpl { iface, tys, ... }) = derivableHit loc iface tys
-derivableDecl loc (DAttrib _ d) = derivableDecl loc d
-derivableDecl _ _ = []
+derivableDecl : Oracle -> Option Loc -> Decl -> List Finding
+derivableDecl orc loc (DImpl { iface, tys, ... }) =
+  derivableHit orc loc iface tys
+derivableDecl orc loc (DAttrib _ d) = derivableDecl orc loc d
+derivableDecl _ _ _ = []
 
-derivableHit : Option Loc -> String -> List Ty -> List Finding
-derivableHit loc iface tys
+derivableHit : Oracle -> Option Loc -> String -> List Ty -> List Finding
+derivableHit orc loc iface tys
   | contains iface derivableIfaces = match singleNamedType tys
-    Some tyName => [
-      Finding {
-        rule = ruleNameDerivable,
-        message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName ++ "' — consider `deriving (" ++ iface ++ ")` instead",
-        severity = SevWarning,
-        loc = loc,
-      }
-    ]
+    Some tyName =>
+      if hasUserDataDecl orc tyName then
+        [
+          Finding {
+            rule = ruleNameDerivable,
+            message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName ++ "' — consider `deriving (" ++ iface ++ ")` instead",
+            severity = SevWarning,
+            loc = loc,
+          }
+        ]
+      else
+        []
     None => []
   | otherwise = []
+
+-- the type has a `data`/`record` declaration (with constructors) visible in the
+-- linted file — so `deriving` is actually available for it.  Primitive types
+-- (Int/Float/Bool/String/Char/Unit/Array) have no such decl → `oGetCtors` = None.
+hasUserDataDecl : Oracle -> String -> Bool
+hasUserDataDecl orc tyName = match oGetCtors orc tyName
+  Some _ => True
+  None => False
 
 -- the head type name iff `tys` is exactly one TyCon-headed type
 singleNamedType : List Ty -> Option String
@@ -551,12 +589,17 @@ stdlibNames = [
   "zipWith",
 ]
 
-ruleStdlibReimpl : Positions -> List Decl -> List Finding
-ruleStdlibReimpl pos prog =
-  -- dedupe by name so a multi-clause function (consecutive DFunDefs) fires once,
-  -- keeping the FIRST clause's location.
-  map stdlibFinding
-    (dedupeNamesLoc (filterList inStdlibPair (flatMap topDefNameL (declLocList pos prog))))
+-- Skip stdlib-owned files: inside the stdlib these top-level names ARE the
+-- canonical definitions the rule points USER code at, so flagging them is a pure
+-- false positive.  Off the stdlib root the rule fires as before.
+ruleStdlibReimpl : String -> Positions -> List Decl -> List Finding
+ruleStdlibReimpl path pos prog
+  | isStdlibPath path = []
+  | otherwise =
+    -- dedupe by name so a multi-clause function (consecutive DFunDefs) fires once,
+    -- keeping the FIRST clause's location.
+    map stdlibFinding
+      (dedupeNamesLoc (filterList inStdlibPair (flatMap topDefNameL (declLocList pos prog))))
 
 topDefNameL : (Decl, Option Loc) -> List (String, Option Loc)
 topDefNameL (DFunDef _ name _ _, loc) = [(name, loc)]
@@ -663,8 +706,8 @@ splitTail2 stmts = match reverseL stmts
   _ => None
 
 -- ── check ────────────────────────────────────────────────────────────────────
-ruleBindThenDestructure : Positions -> List Decl -> List Finding
-ruleBindThenDestructure pos prog =
+ruleBindThenDestructure : String -> Positions -> List Decl -> List Finding
+ruleBindThenDestructure _ pos prog =
   let orc = buildOracle prog
   flatMap (bindDestructureDeclL orc) (declLocList pos prog)
 

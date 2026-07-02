@@ -18,5 +18,5 @@ withTarget : String -> <IO> Unit
 withTarget targetPath = match readFile targetPath
   Ok targetSrc =>
     let (decls, pos) = parseWithPositions targetSrc
-    putStr (lintToLines pos decls)
+    putStr (lintToLines targetPath pos decls)
   Err msg => ePutStrLn msg

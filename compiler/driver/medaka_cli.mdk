@@ -961,7 +961,7 @@ lintOneFileReport multiFile disableNames onlyNames denyNames target = match read
     True
   Ok src =>
     let (decls, pos) = parseWithPositions src
-    let allFindings = lintProgram allRules pos decls
+    let allFindings = lintProgram allRules target pos decls
     let findings = applyFindingFilters disableNames onlyNames denyNames allFindings
     let output = joinNl (map (f => ppDiagCliSrc src target (findingToDiag f)) findings)
     let hasOutput = stringLength output > 0
