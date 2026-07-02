@@ -51,6 +51,7 @@ import frontend.desugar.{mapProg}
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat}
 import support.char.{isUpper}
 import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
+import list.{replicate}
 import support.util.{
   listLen,
   lookupAssoc,
@@ -71,7 +72,6 @@ import support.util.{
   dedup,
   sortUniqS,
   startsWith,
-  replicate,
   escStr,
 }
 

@@ -239,7 +239,10 @@ ciStep arr needle i n col depth started atColStart c
   | atColStart && depth == 1 && identMatchAt arr i needle = Some col
   | otherwise = ciGo arr needle (i + 1) n col depth started False
 
+-- Same predicate as json.mdk's isWs; importing all of json into sqlite for one
+-- char check is disproportionate, so this stays a local copy.
 isSpaceChar : Char -> Bool
+-- lint-disable-next-line rule-duplicate-body
 isSpaceChar c = charCode c == 32
   || charCode c == 9
   || charCode c == 10

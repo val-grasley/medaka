@@ -33,6 +33,7 @@ import json.{
   asInt,
 }
 import support.util.{utf8Len, utf8CharWidth}
+import string.{isDigit}
 
 -- ── JSON-RPC message builders ───────────────────────────────────────────────
 
@@ -228,9 +229,6 @@ parseDigits arr len i acc seen
   | i >= len = if seen then Some (acc, i) else None
   | isDigit (arrayGetUnsafe i arr) = parseDigits arr len (i + 1) (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48)) True
   | otherwise = if seen then Some (acc, i) else None
-
-isDigit : Char -> Bool
-isDigit c = charCode c >= 48 && charCode c <= 57
 
 -- Consume `remaining` BYTES from codepoint `i`; Some end-index on an exact
 -- boundary, None if a codepoint straddles the boundary or the stream runs out.

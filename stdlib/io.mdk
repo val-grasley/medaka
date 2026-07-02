@@ -46,7 +46,7 @@ inspect x = putStrLn (debug x)
    a trailing newline produces, whereas readLines drops it — so this stays a
    local helper.  Splits on `\n`, dropping a trailing `\r` (so CRLF files work)
    and the final empty line a trailing newline would otherwise produce. -}
-stripCR : String -> String
+export stripCR : String -> String
 stripCR s =
   let n = stringLength s
   if n > 0 && stringSlice (n - 1) n s == "\r" then

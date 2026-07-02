@@ -164,7 +164,10 @@ stringify (JObject pairs) =
 
 -- JSON whitespace is *exactly* space, tab, LF, CR — stricter than
 -- `string.isSpace` (which accepts other Unicode space chars), so it stays local.
+-- Same predicate as sqlite/lib/sqlite.mdk's isSpaceChar; not consolidated since
+-- sqlite shouldn't need to import all of json for one char check.
 isWs : Char -> Bool
+-- lint-disable-next-line rule-duplicate-body
 isWs c = charCode c == 32
   || charCode c == 9
   || charCode c == 10

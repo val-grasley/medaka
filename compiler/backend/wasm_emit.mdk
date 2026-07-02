@@ -172,6 +172,7 @@ import ir.core_ir.{
   CImplBody(..),
   CField(..),
 }
+import list.{replicate}
 import support.util.{
   joinNl,
   joinWith,
@@ -181,7 +182,6 @@ import support.util.{
   lookupAssoc,
   listLen,
   maxI,
-  replicate,
 }
 import backend.trmc_analysis.{
   SelfRef(..),

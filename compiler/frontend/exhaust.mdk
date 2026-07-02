@@ -41,12 +41,12 @@ import frontend.ast.{
   Variant(..),
   Decl(..),
 }
+import list.{replicate}
 import support.util.{
   contains,
   allList,
   anyList,
   listLen,
-  replicate,
   lookupAssoc,
   joinNl,
   orElseOpt,

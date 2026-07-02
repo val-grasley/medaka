@@ -58,6 +58,7 @@ import eval.eval.{
   headTyconHead,
   implKeyOf,
 }
+import list.{replicate}
 import support.util.{
   contains,
   listLen,
@@ -66,7 +67,6 @@ import support.util.{
   lookupAssoc,
   noneHeadTag,
   isEmptyL,
-  replicate,
   startsWith,
 }
 

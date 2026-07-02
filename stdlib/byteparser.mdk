@@ -230,7 +230,11 @@ choice (q::rest) = orElse q (choice rest)
 
 -- | Left-associative chaining of `p` separated by operator parser `op`
 --   whose value is a binary function.
+-- Structurally identical to compiler/frontend/parser.mdk's chainl1, but over
+-- a different parser type (ByteParser vs token Parser) — not soundly
+-- shareable without a generic Monad/Alternative abstraction.
 export chainl1 : ByteParser a -> ByteParser (a -> a -> a) -> ByteParser a
+-- lint-disable-next-line rule-duplicate-body
 chainl1 p op = do
   x <- p
   chainl1Rest p op x

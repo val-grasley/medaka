@@ -60,6 +60,7 @@ import frontend.parser.{
 import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import support.char.{isIdentChar, isDigit}
 import support.util.{maxI, utf8Len, joinWith}
+import io.{stripCR}
 import frontend.desugar.{desugar}
 import types.typecheck.{
   checkProgramSchemes,
@@ -900,7 +901,7 @@ readHeaders : Int -> <IO> Option Int
 readHeaders lenAcc = match readLineOpt ()
   None => None
   Some raw =>
-    let line = chompCR raw
+    let line = stripCR raw
     if line == "" then Some lenAcc
     else
       let lenAcc2 = match parseContentLength line
@@ -910,15 +911,6 @@ readHeaders lenAcc = match readLineOpt ()
 -- EOF mid-stream
 
 -- blank line ends the header block
-
--- Drop a single trailing '\r' (CRLF → LF after readLineOpt strips the '\n').
-chompCR : String -> String
-chompCR s =
-  let n = stringLength s
-  if n > 0 && stringSlice (n - 1) n s == "\r" then
-    stringSlice 0 (n - 1) s
-  else
-    s
 
 -- Parse "Content-Length: <n>" (case-sensitive, as clients emit it).  Returns
 -- the integer N or None if this header line is something else.

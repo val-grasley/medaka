@@ -263,7 +263,11 @@ optTrailingCommaTuple : List a -> Parser Unit
 optTrailingCommaTuple [_] = pure ()
 optTrailingCommaTuple _ = optTrailingComma
 
+-- Structurally identical to stdlib/byteparser.mdk's chainl1, but over a
+-- different parser type (token Parser vs ByteParser) with no shared Monad
+-- typeclass to hang a single generic version off of — not soundly shareable.
 chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
+-- lint-disable-next-line rule-duplicate-body
 chainl1 p op = do
   x <- p
   chainl1Rest p op x
