@@ -115,6 +115,8 @@ lt : a -> a -> Bool
 lte : a -> a -> Bool
 main : Unit
 map : (a -> b) -> c a -> c b
+map2 : (a -> b -> c) -> d a -> d b -> d c
+map3 : (a -> b -> c -> d) -> e a -> e b -> e c -> e d
 mapErr : (a -> b) -> Result a c -> Result b c
 mapFirst : (a -> b) -> c a d -> c b d
 mapSecond : (a -> b) -> c d a -> c d b

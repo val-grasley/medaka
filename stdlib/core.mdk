@@ -612,6 +612,26 @@ export default impl Applicative (Result e) where
   ap (Err e) _ = Err e
   ap _ (Err e) = Err e
 
+{- | Lift a binary function over two applicative values — Haskell's `liftA2`.
+
+   > map2 (a b => a + b) (Some 3) (Some 4)
+   Some 7
+   > map2 (a b => a + b) (None : Option Int) (Some 4)
+   None
+   > map2 (a b => a + b) [1, 2] [10, 20]
+   [11, 21, 12, 22] -}
+export map2 : Applicative f => (a -> b -> c) -> f a -> f b -> f c
+map2 f fa fb = ap (map f fa) fb
+
+{- | Lift a ternary function over three applicative values — Haskell's `liftA3`.
+
+   > map3 (a b c => a + b + c) (Some 1) (Some 2) (Some 3)
+   Some 6
+   > map3 (a b c => a + b + c) [1] [10, 20] [100]
+   [111, 121] -}
+export map3 : Applicative f => (a -> b -> c -> d) -> f a -> f b -> f c -> f d
+map3 f fa fb fc = ap (ap (map f fa) fb) fc
+
 {- | Sequencing of computations, threading the result.  Equivalent to
    Haskell's `>>=` with arguments swapped to match the readable
    "value first, then action" reading order.  Drives `do`-notation. -}
@@ -1301,6 +1321,12 @@ prop "discard replaces the payload with Unit" (x : Int) =
 
 prop "on agrees with its hand expansion" (a : Int) (b : Int) =
   ((x y => x + y) `on` (n => n * 2)) a b == a * 2 + b * 2
+
+prop "map2 on Some matches direct application" (a : Int) (b : Int) =
+  eq (map2 (x y => x + y) (Some a) (Some b)) (Some (a + b))
+
+prop "map3 on Some matches direct application" (a : Int) (b : Int) (c : Int) =
+  eq (map3 (x y z => x + y + z) (Some a) (Some b) (Some c)) (Some (a + b + c))
 
 prop "mapFirst on Result generalizes mapErr" (n : Int) = eq
   (mapFirst (x => x + 1) (Err n : Result Int Int))
