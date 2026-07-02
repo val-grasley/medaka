@@ -128,7 +128,11 @@ else
   trim_unit "$EMIT_LL"
   [ -s "$EMIT_LL" ] || { echo "FAIL: empty IR for the emitter graph"; cat "$WORK/emitA.err"; exit 1; }
   EMIT_NEW="$WORK/medaka_emitter.new"
-  if ! "$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$EMIT_LL" "$RT" $GC_LIBS -o "$EMIT_NEW" 2>"$WORK/emitA-cc.err"; then
+  # Build the emitter — the compiler's WORKHORSE binary — at -O2. It is reused for
+  # every emit downstream (oracle build's 53 entries, every `medaka build`, make
+  # medaka's own stage B), so clang -O2 (~+3s once vs -O0) buys ~30% faster emit
+  # each time (self-compile 5.4s→3.7s; oracle build 55s→48s). EMITTER_OPT overrides.
+  if ! "$CC" -Wl,-stack_size,"$STACK_SIZE" "${EMITTER_OPT:--O2}" $GC_CFLAGS "$EMIT_LL" "$RT" $GC_LIBS -o "$EMIT_NEW" 2>"$WORK/emitA-cc.err"; then
     echo "FAIL (clang fresh emitter): $(cat "$WORK/emitA-cc.err")"; exit 1
   fi
   mv "$EMIT_NEW" "$EMITTER"
