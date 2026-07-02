@@ -13,8 +13,10 @@ import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import support.util.{splitLast}
+import support.path.{dirOf}
 import types.typecheck.{elaborateOne}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+import driver.loader.{loadProgram}
 
 -- ── file readers ───────────────────────────────────────────────────────────────
 
@@ -47,18 +49,17 @@ driveRuntime emit = driveRuntimeArgs (args ()) emit
 -- same as driveRuntime, but takes the argv explicitly so a probe can strip a leading
 -- flag (e.g. the argstamp parity probe's ON|OFF mode) before dispatching.
 export driveRuntimeArgs : List String -> (List Decl -> List Decl -> List Decl -> <IO, Mut> Unit) -> <IO, Mut> Unit
-driveRuntimeArgs argv emit = match argv
-  runtimePath::rest => match splitLast rest
-    Some (preludePaths, targetPath) => match readFile runtimePath
-      Ok rsrc => match readAllDecls preludePaths
-        Ok preludeDecls => match readFile targetPath
-          Ok tsrc =>
-            emit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc))
-          Err msg => ePutStrLn msg
+driveRuntimeArgs (runtimePath::rest) emit = match splitLast rest
+  Some (preludePaths, targetPath) => match readFile runtimePath
+    Ok rsrc => match readAllDecls preludePaths
+      Ok preludeDecls => match readFile targetPath
+        Ok tsrc =>
+          emit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc))
         Err msg => ePutStrLn msg
       Err msg => ePutStrLn msg
-    None => ePutStrLn usageRuntime
-  _ => ePutStrLn usageRuntime
+    Err msg => ePutStrLn msg
+  None => ePutStrLn usageRuntime
+driveRuntimeArgs _ emit = ePutStrLn usageRuntime
 
 -- CLI shape: <prelude.mdk>... <target.mdk> (no separate runtime).  Calls
 -- `emit preludeDecls userDecls` (which prints).
@@ -76,6 +77,37 @@ usageRuntime = "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 export usagePrelude : String
 usagePrelude = "usage: <prelude.mdk>... <file.mdk>"
+
+export usageModules : String
+usageModules = "usage: <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+-- CLI shape: <runtime.mdk> <core.mdk> <entry.mdk> [root ...].  Loads <entry.mdk>
+-- + its transitive imports via the loader (dependency-first), desugars runtime +
+-- core + every loaded module, then calls `runEmit runtimeDecls coreDecls modules`
+-- (which owns elaboration/lowering/emission and does its own IO).  Shared by the
+-- LLVM/WasmGC multi-module emit drivers (llvm_bootstrap_lex_main,
+-- llvm_emit_modules_main, wasm_emit_gaps_main, wasm_emit_modules_main).
+export driveModules : (List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit) -> <IO, Mut> Unit
+driveModules runEmit = match args ()
+  runtimeP::coreP::entry::roots =>
+    driveModulesGo runEmit runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn usageModules
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+driveModulesGo : (List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit) -> String -> String -> String -> List String -> <IO, Mut> Unit
+driveModulesGo runEmit runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
 
 -- ── shared terminal computations ─────────────────────────────────────────────
 -- Identical across the _main and _batch variants of the same stage, so they live

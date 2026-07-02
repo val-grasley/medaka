@@ -254,12 +254,11 @@ genLeafElems ctx (ti::rest) = genLeaf ctx ti :: genLeafElems ctx rest
 -- so the direct mixed match below lowers correctly.  The former projector-helper
 -- workaround (gtyTupElems/gtyDataName peel) has been removed.
 genScalar : Ctx -> Gty -> Int -> <Rand, Mut> Expr
-genScalar ctx t depth = match t
-  GInt => genNum ctx t depth
-  GFloat => genNum ctx t depth
-  GBool => genBool ctx depth
-  GString => genString ctx depth
-  _ => genLeaf ctx t
+genScalar ctx GInt depth = genNum ctx GInt depth
+genScalar ctx GFloat depth = genNum ctx GFloat depth
+genScalar ctx GBool depth = genBool ctx depth
+genScalar ctx GString depth = genString ctx depth
+genScalar ctx t depth = genLeaf ctx t
 
 genByType : Ctx -> Gty -> Int -> <Rand, Mut> Expr
 genByType ctx (GTup ts) depth = ETuple (genTupElems ctx ts depth)

@@ -72,9 +72,9 @@ parsePolicyGo : List String -> Option String -> String -> String -> PolicyArgs
 parsePolicyGo [] file allow fn = PolicyArgs file allow fn
 parsePolicyGo ("--allow"::v::rest) file _ fn = parsePolicyGo rest file v fn
 parsePolicyGo ("--fn"::v::rest) file allow _ = parsePolicyGo rest file allow v
-parsePolicyGo (f::rest) file allow fn = match file
-  None => parsePolicyGo rest (Some f) allow fn
-  Some _ => parsePolicyGo rest file allow fn
+parsePolicyGo (f::rest) None allow fn = parsePolicyGo rest (Some f) allow fn
+parsePolicyGo (f::rest) (file@(Some _)) allow fn =
+  parsePolicyGo rest file allow fn
 
 -- Split the --allow value on ',', dropping empties (mirror String.split_on_char
 -- ',' then filter (<> "")).
@@ -618,9 +618,8 @@ parseManifestArgs argv = parseManifestGo argv None "main"
 parseManifestGo : List String -> Option String -> String -> ManifestArgs
 parseManifestGo [] file fn = ManifestArgs file fn
 parseManifestGo ("--fn"::v::rest) file _ = parseManifestGo rest file v
-parseManifestGo (f::rest) file fn = match file
-  None => parseManifestGo rest (Some f) fn
-  Some _ => parseManifestGo rest file fn
+parseManifestGo (f::rest) None fn = parseManifestGo rest (Some f) fn
+parseManifestGo (f::rest) (file@(Some _)) fn = parseManifestGo rest file fn
 
 -- Run manifest extraction: typecheck the file, read the named fn's inferred
 -- effect row, filter to security labels, return TOML.
