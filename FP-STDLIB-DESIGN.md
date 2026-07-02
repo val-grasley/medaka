@@ -68,6 +68,54 @@ Cost legend (per item, mirroring `P1-STDLIB-DESIGN.md`):
 
 ---
 
+## 0.5 Locked naming decisions (2026-07-01) — anti-gatekeep pass
+
+Reviewed the P1 set against Medaka's approachability goal (the `Mappable`/
+`Thenable` renaming philosophy: *name a thing for what you do with it, not for
+category theory*). The doc below tiered by value but imported Haskell's
+**vocabulary** wholesale; these decisions replace the jargon names. **Names below
+are canonical — supersede any conflicting sketch later in this doc.**
+
+**House convention:** effect-sequencing helpers take a **`-Then` suffix** (echoes
+`Thenable`/`andThen`; a convention Medaka owns — no other language uses it).
+
+| Doc / Haskell name | Locked Medaka name | Rationale |
+|---|---|---|
+| `liftA2` / `liftA3` | **`map2` / `map3`** | Elm-style; "map over N containers"; ties to `Mappable` |
+| `foldM` | **`foldThen`** | `-Then` convention |
+| `replicateM` | **`repeatThen`** | `-Then` convention |
+| `filterM` | **`filterThen`** | `-Then` convention |
+| `zipWithM` (P2) | **`zipWithThen`** | `-Then` convention |
+| `for_` | **`forEach`** | run action per element, discard results |
+| `traverse_` | *(dropped)* | `forEach` is its flip |
+| `sequence_` | **`runEach`** | run a list of ready actions, discard results |
+| `void` | **`discard`** | says what it does |
+| `$>` / `<$` | **`replaceWith : f a -> b -> f b`** | no symbolic operators |
+| `<&>` | *(dropped)* | `xs \|> map f` already covers flipped map |
+| `Bifunctor` (class) | **`Bimappable`** (class) | methods `bimap` / `mapFirst` / `mapSecond` |
+| `maybe` (eliminator) | **`option`** | matches the `Option` type |
+| `either` (eliminator) | **`result`** | matches the `Result` type |
+| `lefts` / `rights` | **`oks` / `errs`** | matches `Ok` / `Err` |
+| `catOptions` | **`somes`** | collects the `Some`s |
+| `guard` | **`guard`** (kept) | common enough word |
+| `on` | **`on`** (kept) | load-bearing; documented |
+| `curry` / `uncurry` | **`curry` / `uncurry`** (kept) | earn place (tuples aren't auto-curried) |
+
+**Scope change:** monoid newtypes (`Sum`/`Product`/`Any`/`All`/`Min`/`Max`/
+`First`/`Last`) **demoted P1 → P2** — redundant with the existing plain Foldable
+helpers `sum`/`product`/`any`/`all`; the newtype-`foldMap` dance is *less*
+approachable than `sum xs`, so it doesn't earn a P1 bite.
+
+**Delivery plan (bites):**
+- **Modules (no re-mint, first parallel wave):** `validation.mdk`, `nonempty.mdk`,
+  eliminators (`option.mdk` + `result.mdk` + list-shaped `somes`/`oks`/`errs`/
+  `partitionResults` into `list.mdk`).
+- **Core (one batched re-mint at checkpoint):** the combinators / `map2`-`map3` /
+  `-Then` family / `forEach`+`runEach` / `discard` / `replaceWith` (bite A), then
+  `Bimappable` + impls (bite B).
+
+---
+
 ## 1. Current FP surface census (what already exists — do not re-propose)
 
 Read from `stdlib/core.mdk` (1174 lines) and `stdlib/list.mdk` (545 lines).
