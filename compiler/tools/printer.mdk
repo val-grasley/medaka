@@ -121,13 +121,14 @@ indentBlock d = Nest 2 (Cat Hardline d)
 -- comma-separated sequence inside open/close delimiters, no inner padding.
 delimited : String -> String -> List Doc -> Doc
 delimited open_ close_ [] = Cat (text open_) (text close_)
-delimited open_ close_ items = flatGroup (Cat
-  (text open_)
-  (Cat
-    (nest (Cat
-      Softline
-      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
-    (Cat Softline (text close_))))
+delimited open_ close_ items =
+  flatGroup (Cat
+    (text open_)
+    (Cat
+      (nest (Cat
+        Softline
+        (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+      (Cat Softline (text close_))))
 
 -- like `delimited`, but width-triggered off the CURRENT column (`Group`, not
 -- `FlatGroup`), so a wide group wraps even when its body alone would fit from
@@ -135,24 +136,26 @@ delimited open_ close_ items = flatGroup (Cat
 -- `import mod.{…}` line overflows.
 delimitedG : String -> String -> List Doc -> Doc
 delimitedG open_ close_ [] = Cat (text open_) (text close_)
-delimitedG open_ close_ items = group (Cat
-  (text open_)
-  (Cat
-    (nest (Cat
-      Softline
-      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
-    (Cat Softline (text close_))))
+delimitedG open_ close_ items =
+  group (Cat
+    (text open_)
+    (Cat
+      (nest (Cat
+        Softline
+        (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+      (Cat Softline (text close_))))
 
 -- brace-delimited sequence with inner padding (record literals).
 braced : List Doc -> Doc
 braced [] = text "{}"
-braced items = group (Cat
-  (text "{")
-  (Cat
-    (nest (Cat
-      Line
-      (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
-    (Cat Line (text "}"))))
+braced items =
+  group (Cat
+    (text "{")
+    (Cat
+      (nest (Cat
+        Line
+        (Cat (sepBy (Cat (text ",") Line) items) (trailingCommaFor items))))
+      (Cat Line (text "}"))))
 
 -- ── Layout engine ─────────────────────────────────
 -- mode = Flat | Break ; a render item = (indent, mode, doc).
@@ -576,15 +579,17 @@ printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
 printExprRaw (EApp f x) =
   Cat (printExpr precApp f) (Cat (text " ") (printExpr precPostfix x))
-printExprRaw (ELam pats body) = Cat
-  (sepBy (text " ") (map printPatAtom pats))
-  (Cat (text " => ") (printExpr precTop body))
+printExprRaw (ELam pats body) =
+  Cat
+    (sepBy (text " ") (map printPatAtom pats))
+    (Cat (text " => ") (printExpr precTop body))
 printExprRaw (ELet isMut isf pat rhs e2) = printELet isMut isf pat rhs e2
-printExprRaw (ELetGroup bindings body) = Cat
-  (printExpr precTop body)
-  (Nest
-    2
-    (Cat Hardline (Cat (text "where") (Nest 2 (letGroupClauses bindings)))))
+printExprRaw (ELetGroup bindings body) =
+  Cat
+    (printExpr precTop body)
+    (Nest
+      2
+      (Cat Hardline (Cat (text "where") (Nest 2 (letGroupClauses bindings)))))
 printExprRaw (EIf c t e) = printEIf c t e
 printExprRaw (EBinOp op l r _) =
   let prec = binopPrec op
@@ -600,47 +605,54 @@ printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =
   Cat (text n) (Cat (text " ") (braced (map fieldAssignDoc fs)))
-printExprRaw (ERecordUpdate e fs) = Cat
-  (text "{ ")
-  (Cat
-    (printExpr precTop e)
-    (Cat
-      (text " | ")
-      (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }"))))
-printExprRaw (EVariantUpdate c e fs) = Cat
-  (text c)
-  (Cat
-    (text " { ")
+printExprRaw (ERecordUpdate e fs) =
+  Cat
+    (text "{ ")
     (Cat
       (printExpr precTop e)
       (Cat
         (text " | ")
-        (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }")))))
+        (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }"))))
+printExprRaw (EVariantUpdate c e fs) =
+  Cat
+    (text c)
+    (Cat
+      (text " { ")
+      (Cat
+        (printExpr precTop e)
+        (Cat
+          (text " | ")
+          (Cat (sepBy (text ", ") (map fieldAssignDoc fs)) (text " }")))))
 printExprRaw (EArrayLit es) = delimited "[|" "|]" (map (printExpr precTop) es)
 printExprRaw (EListLit es) = delimited "[" "]" (map (printExpr precTop) es)
-printExprRaw (EMapLit n kvs) = Cat
-  (text n)
-  (Cat (text " { ") (Cat (sepBy (text ", ") (map mapKvDoc kvs)) (text " }")))
-printExprRaw (ESetLit n es) = Cat
-  (text n)
-  (Cat
-    (text " { ")
-    (Cat (sepBy (text ", ") (map (printExpr precTop) es)) (text " }")))
+printExprRaw (EMapLit n kvs) =
+  Cat
+    (text n)
+    (Cat (text " { ") (Cat (sepBy (text ", ") (map mapKvDoc kvs)) (text " }")))
+printExprRaw (ESetLit n es) =
+  Cat
+    (text n)
+    (Cat
+      (text " { ")
+      (Cat (sepBy (text ", ") (map (printExpr precTop) es)) (text " }")))
 printExprRaw (ETuple es) = delimited "(" ")" (map (printExpr precTop) es)
-printExprRaw (EIndex e i _) = Cat
-  (printExpr precPostfix e)
-  (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
+printExprRaw (EIndex e i _) =
+  Cat
+    (printExpr precPostfix e)
+    (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
 printExprRaw (EMatch sc arms) =
   Cat (text "match ") (Cat (printExpr precTop sc) (printMatchArms arms))
 printExprRaw (EFunction arms) = Cat (text "function") (printMatchArms arms)
 printExprRaw (EGuards arms) = printGuardArms arms
 printExprRaw (ESection (SecBare op)) = Cat (text "(") (Cat (text op) (text ")"))
-printExprRaw (ESection (SecRight op e)) = Cat
-  (text "(")
-  (Cat (text op) (Cat (text " ") (Cat (printExpr precTop e) (text ")"))))
-printExprRaw (ESection (SecLeft e op)) = Cat
-  (text "(")
-  (Cat (printExpr precTop e) (Cat (text " ") (Cat (text op) (text " _)"))))
+printExprRaw (ESection (SecRight op e)) =
+  Cat
+    (text "(")
+    (Cat (text op) (Cat (text " ") (Cat (printExpr precTop e) (text ")"))))
+printExprRaw (ESection (SecLeft e op)) =
+  Cat
+    (text "(")
+    (Cat (printExpr precTop e) (Cat (text " ") (Cat (text op) (text " _)"))))
 printExprRaw (EAsPat x e) = Cat (text x) (Cat (text "@") (printExpr precAtom e))
 printExprRaw (EBlock stmts) =
   indentBlock (sepBy Hardline (map printDoStmt stmts))
@@ -649,11 +661,12 @@ printExprRaw (EDo stmts) =
 printExprRaw (EAnnot e t) =
   Cat (printExpr precTop e) (Cat (text " : ") (printType t))
 printExprRaw (EHeadAnnot e _) = printExpr precTop e
-printExprRaw (EInfix op l r) = Cat
-  (printExpr (precInfix + 1) l)
-  (Cat
-    (text " `")
-    (Cat (text op) (Cat (text "` ") (printExpr (precInfix + 1) r))))
+printExprRaw (EInfix op l r) =
+  Cat
+    (printExpr (precInfix + 1) l)
+    (Cat
+      (text " `")
+      (Cat (text op) (Cat (text "` ") (printExpr (precInfix + 1) r))))
 printExprRaw (EStringInterp parts) =
   Cat (text "\"") (Cat (concatD (map interpPartDoc parts)) (text "\""))
 printExprRaw (ERangeList lo hi incl) = Cat
@@ -819,11 +832,14 @@ printIfRhs (EIf c t els) =
 printIfRhs _ = None
 
 ifRhsBody : Expr -> Expr -> Doc -> Doc
-ifRhsBody c t elsePart = Cat
-  (text "if ")
-  (Cat
-    (printExpr precTop c)
-    (Cat (text " then") (Cat (nest (Cat Line (printExpr precTop t))) elsePart)))
+ifRhsBody c t elsePart =
+  Cat
+    (text "if ")
+    (Cat
+      (printExpr precTop c)
+      (Cat
+        (text " then")
+        (Cat (nest (Cat Line (printExpr precTop t))) elsePart)))
 
 ifRhsElsePart : Bool -> Expr -> Doc
 ifRhsElsePart True _ = Nil
@@ -924,11 +940,14 @@ isSingleBreakableApp e = match collectApp [] e
 -- it overflows.
 breakableArg : Expr -> Doc
 breakableArg (ELoc _ e) = breakableArg e
-breakableArg (ELam pats body) = group (Cat
-  (text "(")
-  (Cat
-    (sepBy (text " ") (map printPatAtom pats))
-    (Cat (text " =>") (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
+breakableArg (ELam pats body) =
+  group (Cat
+    (text "(")
+    (Cat
+      (sepBy (text " ") (map printPatAtom pats))
+      (Cat
+        (text " =>")
+        (Cat (nest (Cat Line (printExprBody body))) (text ")")))))
 -- A nested application: parenthesize and let printAppSpine break its own spine
 -- so over-width nested calls wrap rather than overflowing a single arg line.
 breakableArg (EApp f x) =
@@ -1021,20 +1040,24 @@ printDoStmt (DoLet isMut _ pat e) = Cat
     (Cat (printPat pat) (Cat (text " = ") (doLetRhs e))))
 printDoStmt (DoAssign x e) =
   Cat (text x) (Cat (text " = ") (printExpr precTop e))
-printDoStmt (DoFieldAssign x fields e) = Cat
-  (text x)
-  (Cat
-    (text ".")
-    (Cat (text (joinWith "." fields)) (Cat (text " = ") (printExpr precTop e))))
-printDoStmt (DoLetElse pat e alt) = Cat
-  (text "let ")
-  (Cat
-    (printPat pat)
+printDoStmt (DoFieldAssign x fields e) =
+  Cat
+    (text x)
     (Cat
-      (text " = ")
+      (text ".")
       (Cat
-        (printExpr precTop e)
-        (Cat (text " else ") (printExpr precTop alt)))))
+        (text (joinWith "." fields))
+        (Cat (text " = ") (printExpr precTop e))))
+printDoStmt (DoLetElse pat e alt) =
+  Cat
+    (text "let ")
+    (Cat
+      (printPat pat)
+      (Cat
+        (text " = ")
+        (Cat
+          (printExpr precTop e)
+          (Cat (text " else ") (printExpr precTop alt)))))
 
 interpPartDoc : InterpPart -> Doc
 interpPartDoc (InterpStr s) = text (stringEscaped s)
@@ -1085,10 +1108,17 @@ printDefRhsGeneral body = match printIfRhs body
     EMatch sc arms => Cat (text " = ") (printExprBody (EMatch sc arms))
     EDo stmts => Cat (text " = ") (printExprBody (EDo stmts))
     EFunction arms => Cat (text " = ") (printExprBody (EFunction arms))
-    -- Application body: offer a break AT the `=` first (whole body drops one
-    -- indent-line below and stays flat there if it fits); only a body that
-    -- still overflows on its own line breaks its argument spine.
-    EApp f x => bodyBreakAtEq (printAppSpine (EApp f x))
+    -- Application body: hang one indent-line below `=` (head on its own line),
+    -- then let the spine break THERE if it still overflows — instead of keeping
+    -- the head on the `=` line with a mangled `head⏎  arg⏎  arg` spine.  EXCEPT a
+    -- spine that delegates to a self-indenting argument (lambda/block/do/match/
+    -- record/…): hanging that only adds a pointless indent line, so keep the
+    -- conditional inline arm (`bodyBreakAtEq`) for it.
+    EApp f x =>
+      if appHasSelfIndentingArg (EApp f x) then
+        bodyBreakAtEq (printAppSpine (EApp f x))
+      else
+        hangAlwaysAtSep " =" (printAppSpine (EApp f x))
     EBinOp op l r rf =>
       if isContinuationOp op then
         -- Continuation-op chain (`&&`/`||`/`|>`/…): head stays on the `=` line
@@ -1125,9 +1155,55 @@ bodyBreakAtEq bodyDoc = hangAtSep " =" bodyDoc
 -- hang arm, the inner `group` then picks inline-vs-hang by whether `sep body`
 -- fits from the current column.
 hangAtSep : String -> Doc -> Doc
-hangAtSep sep bodyDoc = FlatGroup (FlatAlt
-  (Cat (text sep) (Cat (text " ") bodyDoc))
-  (Cat (text sep) (group (nest (Cat Line bodyDoc)))))
+hangAtSep sep bodyDoc =
+  FlatGroup (FlatAlt
+    (Cat (text sep) (Cat (text " ") bodyDoc))
+    (Cat (text sep) (group (nest (Cat Line bodyDoc)))))
+
+-- Like `hangAtSep` but UNCONDITIONALLY hangs the body one indent-line below the
+-- separator (the hang arm above, without the outer FlatGroup/FlatAlt inline
+-- escape).  The inner `group` still keeps `sep body` inline when it fits from
+-- the current column; when it does not, the body drops below `sep` with its head
+-- on its own line and its spine breaks THERE.  Used for a bare application-spine
+-- body, whose inline interior-break would otherwise leave the head stranded on
+-- the `sep` line (`f = g (h⏎  a⏎  b)`).
+hangAlwaysAtSep : String -> Doc -> Doc
+hangAlwaysAtSep sep bodyDoc = Cat (text sep) (group (nest (Cat Line bodyDoc)))
+
+-- An argument that self-indents its own multi-line body when broken (lambda /
+-- point-free / block / do / if / match / record / non-empty collection literal).
+-- An application body that contains one (transitively down its spine) must NOT
+-- be hung below `=`: hanging only adds a pointless indent line above the arg's
+-- own self-indent (`wrapInParser g p = Parser (input pos => …)` stays inline).  A
+-- pure atom/app spine (`encode b = stringFromChars (arrayFromList (encodeGo …)))`)
+-- has none, so it hangs below `=` and breaks its spine THERE instead of stranding
+-- the head on the `=` line.
+isSelfIndentingArg : Expr -> Bool
+isSelfIndentingArg (ELoc _ e) = isSelfIndentingArg e
+isSelfIndentingArg (ELam _ _) = True
+isSelfIndentingArg (EFunction _) = True
+isSelfIndentingArg (EBlock _) = True
+isSelfIndentingArg (EDo _) = True
+isSelfIndentingArg (EMatch _ _) = True
+isSelfIndentingArg (EIf _ _ _) = True
+isSelfIndentingArg (ERecordCreate _ _) = True
+isSelfIndentingArg (ERecordUpdate _ _) = True
+isSelfIndentingArg (EVariantUpdate _ _ _) = True
+isSelfIndentingArg (EListLit (_::_)) = True
+isSelfIndentingArg (EArrayLit (_::_)) = True
+isSelfIndentingArg (ETuple (_::_)) = True
+isSelfIndentingArg (EMapLit _ (_::_)) = True
+isSelfIndentingArg (ESetLit _ (_::_)) = True
+isSelfIndentingArg (EApp f x) = appHasSelfIndentingArg (EApp f x)
+isSelfIndentingArg _ = False
+
+-- Does the transitive left-spine of this application contain a self-indenting
+-- argument?  Walks head-ward through `EApp` nodes, testing each argument.
+appHasSelfIndentingArg : Expr -> Bool
+appHasSelfIndentingArg (ELoc _ e) = appHasSelfIndentingArg e
+appHasSelfIndentingArg (EApp f x) = isSelfIndentingArg x
+  || appHasSelfIndentingArg f
+appHasSelfIndentingArg _ = False
 -- Width cascade for a too-wide `=` binding RHS (Option B):
 --   1. hang the RHS one line below `=` (the outer `group`/`Line`);
 --   2. if still over width, break the OUTERMOST binop with the operator
@@ -1163,9 +1239,10 @@ printOperand prec e = printExpr prec e
 
 printUsePath : UsePath -> Doc
 printUsePath (UseName names) = text (joinWith "." names)
-printUsePath (UseGroup names members) = Cat
-  (text (joinWith "." names))
-  (Cat (text ".") (delimitedG "{" "}" (map useMemberDoc members)))
+printUsePath (UseGroup names members) =
+  Cat
+    (text (joinWith "." names))
+    (Cat (text ".") (delimitedG "{" "}" (map useMemberDoc members)))
 printUsePath (UseWild names) = Cat (text (joinWith "." names)) (text ".*")
 printUsePath (UseAlias names alias) =
   Cat (text (joinWith "." names)) (Cat (text " as ") (text alias))
@@ -1281,18 +1358,22 @@ trailingCommentsDoc cs = concatD (map (c => Cat (text "  ") (text c)) cs)
 -- One variant line: its leading comments (own lines) + `| Variant` + any inline
 -- trailing comment.
 variantCommentedDoc : Variant -> (List String, List String) -> Doc
-variantCommentedDoc v (leading, trailing) = Cat
-  (commentLinesDoc leading)
-  (Cat
-    Hardline
-    (Cat (text "| ") (Cat (printVariant v) (trailingCommentsDoc trailing))))
+variantCommentedDoc v (leading, trailing) =
+  Cat
+    (commentLinesDoc leading)
+    (Cat
+      Hardline
+      (Cat (text "| ") (Cat (printVariant v) (trailingCommentsDoc trailing))))
 
 dataVariantDocsCommented : List Variant -> List (List String, List String) -> Doc
 dataVariantDocsCommented [] _ = Nil
 dataVariantDocsCommented _ [] = Nil
-dataVariantDocsCommented (v::vs) (vc::vcs) = Cat
-  (text " =")
-  (nest (Cat (variantCommentedDoc v vc) (concatD (map2VariantComment vs vcs))))
+dataVariantDocsCommented (v::vs) (vc::vcs) =
+  Cat
+    (text " =")
+    (nest (Cat
+      (variantCommentedDoc v vc)
+      (concatD (map2VariantComment vs vcs))))
 
 -- Mirror of List.map2 (fun v vc -> variantCommentedDoc v vc).
 map2VariantComment : List Variant -> List (List String, List String) -> List Doc
