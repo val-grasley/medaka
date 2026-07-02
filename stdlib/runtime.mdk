@@ -78,6 +78,8 @@ extern readAll : Unit -> <Stdin> String  -- all of stdin
 extern readExactly : Int -> <Stdin> Option String  -- read exactly N bytes; None at EOF or short read
 extern flushStdout : Unit -> <Stdout> Unit  -- flush buffered stdout (LSP stdio framing)
 extern wallTimeSec : Unit -> <Clock> Float  -- wall-clock time in seconds (gettimeofday)
+extern monotonicSec : Unit -> <Clock> Float  -- monotonic clock in seconds (clock_gettime CLOCK_MONOTONIC); for measuring intervals
+extern sleepMs : Int -> <Clock> Unit  -- sleep for N milliseconds (nanosleep)
 extern allocBytes : Unit -> <IO> Float  -- total GC-allocated bytes since process start (Gc.allocated_bytes proxy)
 -- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the
 -- same "no clause matched" signal as a failed pattern, so when a function

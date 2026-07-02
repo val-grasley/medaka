@@ -2050,7 +2050,8 @@ emitRngExtern _ _ name _ = gapE ("unsupported rng extern " ++ name)
 -- wallTimeSec / allocBytes: both take Unit and return a boxed Float (same ABI
 -- as randomFloat).  C: mdk_wall_time_sec / mdk_alloc_bytes in medaka_rt.c.
 isPerfExtern : String -> Bool
-isPerfExtern name = contains name ["wallTimeSec", "allocBytes"]
+isPerfExtern name =
+  contains name ["wallTimeSec", "monotonicSec", "sleepMs", "allocBytes"]
 
 emitPerfExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitPerfExtern e env "wallTimeSec" args = match emitArgs e env args
@@ -2059,6 +2060,17 @@ emitPerfExtern e env "wallTimeSec" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_wall_time_sec(i64 " ++ u ++ ")")
     (r, LTFloat)
   _ => panic "llvm spike: wallTimeSec takes one (Unit) argument"
+emitPerfExtern e env "monotonicSec" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_monotonic_sec(i64 " ++ u ++ ")")
+    (r, LTFloat)
+  _ => panic "llvm spike: monotonicSec takes one (Unit) argument"
+emitPerfExtern e env "sleepMs" args = match emitArgs e env args
+  [n] =>
+    let _ = emit e ("  call void @mdk_sleep_ms(i64 " ++ n ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: sleepMs takes one (Int) argument"
 emitPerfExtern e env "allocBytes" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
