@@ -2006,6 +2006,89 @@ emitFileExtern e env "runCommand" args = match emitArgs e env args
   _ => panic "llvm spike: runCommand takes two arguments (slice 13)"
 emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
 
+-- Net externs (NET-DESIGN.md).  A SEPARATE family from isFileExtern — deliberately,
+-- so the wasm backend can reject the whole net set in one guard.  All return a
+-- Result (LTCon) traffic'ing raw tagged-Int fds; blocking BSD-socket shims in
+-- runtime/medaka_rt.c.
+isNetExtern : String -> Bool
+isNetExtern name = contains
+  name
+  [
+    "netResolve",
+    "netTcpConnect",
+    "netTcpListen",
+    "netListenPort",
+    "netTcpAccept",
+    "netSend",
+    "netRecv",
+    "netShutdown",
+    "netClose",
+    "netSetTimeout",
+  ]
+
+emitNetExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitNetExtern e env "netResolve" args = match emitArgs e env args
+  [h] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_resolve(i64 " ++ h ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netResolve takes one argument"
+emitNetExtern e env "netTcpConnect" args = match emitArgs e env args
+  [h, p] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_connect(i64 " ++ h ++ ", i64 " ++ p ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netTcpConnect takes two arguments"
+emitNetExtern e env "netTcpListen" args = match emitArgs e env args
+  [a, p] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_listen(i64 " ++ a ++ ", i64 " ++ p ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netTcpListen takes two arguments"
+emitNetExtern e env "netListenPort" args = match emitArgs e env args
+  [fd] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_listen_port(i64 " ++ fd ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netListenPort takes one argument"
+emitNetExtern e env "netTcpAccept" args = match emitArgs e env args
+  [fd] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_accept(i64 " ++ fd ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netTcpAccept takes one argument"
+emitNetExtern e env "netSend" args = match emitArgs e env args
+  [fd, bs] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_send(i64 " ++ fd ++ ", i64 " ++ bs ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netSend takes two arguments"
+emitNetExtern e env "netRecv" args = match emitArgs e env args
+  [fd, n] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_recv(i64 " ++ fd ++ ", i64 " ++ n ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netRecv takes two arguments"
+emitNetExtern e env "netShutdown" args = match emitArgs e env args
+  [fd, how] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_shutdown(i64 " ++ fd ++ ", i64 " ++ how ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netShutdown takes two arguments"
+emitNetExtern e env "netClose" args = match emitArgs e env args
+  [fd] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_close(i64 " ++ fd ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netClose takes one argument"
+emitNetExtern e env "netSetTimeout" args = match emitArgs e env args
+  [fd, ms] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_set_timeout(i64 " ++ fd ++ ", i64 " ++ ms ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: netSetTimeout takes two arguments"
+emitNetExtern _ _ name _ = gapE ("unsupported net extern " ++ name)
+
 -- Tier D: RNG (deterministic SplitMix64).  The C runtime holds the state; the
 -- algorithm matches lib/eval.ml splitmix64_next, seeded identically, so output is
 -- byte-identical per seed.  randomInt/Bool/Char return RAW words tagged here;
@@ -2202,6 +2285,7 @@ isAnyExtern name = isStrExtern name
   || isAdtExtern name
   || isEnvExtern name
   || isFileExtern name
+  || isNetExtern name
   || isRngExtern name
   || isHashExtern name
   || isBitExtern name
@@ -2243,6 +2327,8 @@ emitExternApplied e env fname args =
     emitEnvExtern e env fname args
   else if isFileExtern fname then
     emitFileExtern e env fname args
+  else if isNetExtern fname then
+    emitNetExtern e env fname args
   else if isRngExtern fname then
     emitRngExtern e env fname args
   else if isHashExtern fname then

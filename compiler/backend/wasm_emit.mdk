@@ -925,6 +925,27 @@ isLeafExternW name = contains name [
   -- box/unbox seam; no $str/$arr/$float dependencies.
   "bitAnd", "shiftLeft", "shiftRight"]
 
+-- Net externs (NET-DESIGN.md §6): native-only.  Raw BSD sockets have no WasmGC
+-- equivalent, so `medaka build --target wasm` must REJECT a net-importing program
+-- with a clear message rather than fall through to emitIndirectApp (which would only
+-- report a generic "unbound variable").  This single-set guard is wired into both
+-- application dispatch ladders (emitAppRef, emitTailAppRef).
+isNetExternW : String -> Bool
+isNetExternW name = contains
+  name
+  [
+    "netResolve",
+    "netTcpConnect",
+    "netTcpListen",
+    "netListenPort",
+    "netTcpAccept",
+    "netSend",
+    "netRecv",
+    "netShutdown",
+    "netClose",
+    "netSetTimeout",
+  ]
+
 -- W9: arity of a str/leaf extern (the param count its emit* arm consumes).  Used to
 -- build an eta closure when the extern is referenced as a VALUE (point-free / passed
 -- as an argument), mirroring the LLVM emitter's emitExternEtaClosure.
@@ -4375,6 +4396,7 @@ emitAppRef prog env d app =
       else if isCtor prog f then emitCtorConstruct prog env d f args
       else if f == "Ref" then emitRefBoxNew prog env d args
       else if f == "setRef" then emitRefBoxSet prog env d args
+      else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if isStrExternW f then emitStrExternRef prog env d f args
       else if isLeafExternW f then emitLeafExternRef prog env d f args
       else if isArrayExternW f then emitArrayExternRef prog env d f args
@@ -5875,6 +5897,7 @@ emitAppTail prog env arity app =
         let arr = emitArgsArray prog env 0 args
         hi ++ arr ++ ["return_call $mdk_apply"]
       else if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
+      else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if f == "Ref" || f == "setRef" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
       else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
