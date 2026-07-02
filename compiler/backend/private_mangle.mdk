@@ -513,11 +513,23 @@ sanitizeGo s i len acc =
     let c2 = if safeChar c then c else "_"
     sanitizeGo s (i + 1) len (acc ++ c2)
 
-safeChar : String -> Bool
+export safeChar : String -> Bool
 safeChar c = c >= "a" && c <= "z"
   || c >= "A" && c <= "Z"
   || c >= "0" && c <= "9"
   || c == "_"
+
+-- hashName: a deterministic djb2 string hash (seed 5381), computed in the EMITTER
+-- (the emitted IR carries the decimal constant).  Shared by BOTH backends so the
+-- dict-witness tag / route-key dispatch agrees across LLVM and WasmGC — the hash
+-- MUST be byte-identical between them.
+export hashName : String -> Int
+hashName s = hashChars (stringToChars s) 0 5381
+
+hashChars : Array Char -> Int -> Int -> Int
+hashChars cs i acc
+  | i >= arrayLength cs = acc
+  | otherwise = hashChars cs (i + 1) (acc * 33 + charCode (arrayGetUnsafe i cs))
 
 -- ── decl rewrite (rename both the DEFINITION name and all references) ─────────
 renameDecl : OrdMap String -> Decl -> Decl

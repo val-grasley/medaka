@@ -223,6 +223,13 @@ import backend.trmc_analysis.{
   selfFree,
   mentionsSelfMethod,
 }
+import backend.private_mangle.{hashName, safeChar}
+import backend.emit_support.{
+  eagerVars,
+  methodIfaceTableRef,
+  methodIfaceOf,
+  methodArityOf,
+}
 
 -- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
 -- A MEASUREMENT scaffold for STAGE D4 (compiler/EMITTER-GAPS.md).  OFF by default:
@@ -416,23 +423,11 @@ lookupSelfFnParams iface method (((i, m), p)::rest)
 --     dispatch tag, so a partially-applied inner method lowers to a direct
 --     `@mdk_impl_<tag>_<method>` call instead of an un-dispatchable arg-tag site.
 -- Keyed by BARE method name (interface method names are distinct in the prelude).
-methodIfaceTableRef : Ref (List (String, (String, Int)))
-methodIfaceTableRef = Ref []
-
+-- The table Ref + the `methodIfaceOf`/`methodArityOf` readers live in
+-- `backend.emit_support` (shared with the WasmGC emitter); `installMethodIface`
+-- stays here as the LLVM-side install entry point the emit drivers import.
 export installMethodIface : List (String, (String, Int)) -> <Mut> Unit
 installMethodIface t = setRef methodIfaceTableRef t
-
--- the interface a method name belongs to (""=not an interface method).
-methodIfaceOf : String -> <Mut> String
-methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
-  Some (iface, _) => iface
-  None => ""
-
--- the declared full arity of an interface method (0 = not found).
-methodArityOf : String -> <Mut> Int
-methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
-  Some (_, arity) => arity
-  None => 0
 
 -- ── method → method-level constraint INTERFACE names (native backend, G7) ────
 -- Per interface method that carries a method-level `=>` constraint, the interface
@@ -1001,14 +996,8 @@ safeIdentGo s i len acc =
   if i >= len then acc
   else
     let c = stringSlice i (i + 1) s
-    let c2 = if safeIdentChar c then c else "_"
+    let c2 = if safeChar c then c else "_"
     safeIdentGo s (i + 1) len (acc ++ c2)
-
-safeIdentChar : String -> Bool
-safeIdentChar c = c >= "a" && c <= "z"
-  || c >= "A" && c <= "Z"
-  || c >= "0" && c <= "9"
-  || c == "_"
 
 -- the distinct method names of the program's tagged impls (slice 7).  A bare CVar
 -- naming one of these, applied to args, is an arg-position dispatch site (return-
@@ -5535,18 +5524,10 @@ dedupS (x::xs) = if contains x xs then dedupS xs else x :: dedupS xs
 -- the immediate-int low-bit-1 encoding, exactly as the Float box is).  Allocation
 -- reuses the slice-1 `@mdk_alloc` (malloc-and-leak; no GC this slice).
 
--- hashName: a deterministic djb2 string hash, computed in the EMITTER (the .ll
--- carries the decimal constant).  STILL used for the NON-ctor sentinel headers
--- ("$tuple"/"$ref"/"$closure") and the dict witness words (RKey impl-head keys) —
--- those are not constructor tags and never share an icmp with a ctor cell tag, so
--- a hash is fine there.  Constructor cell tags use `cellTag` (ordinals) instead.
-hashName : String -> Int
-hashName s = hashChars (stringToChars s) 0 5381
-
-hashChars : Array Char -> Int -> Int -> Int
-hashChars cs i acc
-  | i >= arrayLength cs = acc
-  | otherwise = hashChars cs (i + 1) (acc * 33 + charCode (arrayGetUnsafe i cs))
+-- `hashName` (djb2, seed 5381) lives in `backend.private_mangle`, shared with the
+-- WasmGC emitter so the dict-witness tag agrees across backends.  STILL used here
+-- for the NON-ctor sentinel headers ("$tuple"/"$ref"/"$closure") and dict witness
+-- words; constructor cell tags use `cellTag` (ordinals) instead.
 
 -- ── constructor tag = dense per-type ordinal (RUNTIME-DESIGN §8.4, ratified ──────
 --    2026-06-07; supersedes the spike's i64 string-hash for CONSTRUCTOR tags).
@@ -7321,82 +7302,6 @@ topoValVisitDeps all names (d::rest) done acc visiting = match findBind d all
 bindFreeVars : CBind -> List String
 bindFreeVars (CBind _ [CClause [] body]) = eagerVars [] body
 bindFreeVars _ = []
-
--- free CVar names evaluated EAGERLY in `body`: like freeVars, but a `CLam` body is
--- NOT descended (its references are deferred to call time).  Bound names (`b`)
--- accumulate so a let/match-bound local is not mistaken for a global.
-eagerVars : List String -> CExpr -> List String
-eagerVars _ (CLam _ _) = []
-eagerVars b (CVar x _) = if contains x b then [] else [x]
-eagerVars _ (CLit _) = []
-eagerVars b (CApp f a) = eagerVars b f ++ eagerVars b a
-eagerVars b (CLet recF pat e1 e2) =
-  let b2 = patVars pat ++ b
-  let fe1 = if recF then eagerVars b2 e1 else eagerVars b e1
-  fe1 ++ eagerVars b2 e2
-eagerVars b (CLetGroup binds body) =
-  let b2 = bindNames binds ++ b
-  eagerVarsBinds b2 binds ++ eagerVars b2 body
-eagerVars b (CBlock stmts) = eagerVarsStmts b stmts
-eagerVars b (CIf c t f) = eagerVars b c ++ eagerVars b t ++ eagerVars b f
-eagerVars b (CBinPrim _ l r _) = eagerVars b l ++ eagerVars b r
-eagerVars b (CUnOp _ x) = eagerVars b x
-eagerVars b (CMatch scrut arms) = eagerVars b scrut ++ eagerVarsArms b arms
-eagerVars b (CDecision scrut arms _) = eagerVars b scrut ++ eagerVarsArms b arms
-eagerVars b (CTuple es) = eagerVarsList b es
-eagerVars b (CList es) = eagerVarsList b es
-eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
-eagerVars b (CRecord _ fields) = eagerVarsFields b fields
-eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
-eagerVars b (CRecordUpdate base updates) = eagerVars b base
-  ++ eagerVarsFields b updates
-eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
-  ++ eagerVarsFields b updates
-eagerVars b (CArray es) = eagerVarsList b es
-eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
-eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
-eagerVars b (CStringIndex a i) = eagerVars b a ++ eagerVars b i
-eagerVars b (CStringSlice a lo hi _) = eagerVars b a
-eagerVars b (CListIndex a i) = eagerVars b a ++ eagerVars b i
-eagerVars b (CListSlice a lo hi _) = eagerVars b a
-  ++ eagerVars b lo
-  ++ eagerVars b hi
-eagerVars b (CSlice a lo hi _) = eagerVars b a
-  ++ eagerVars b lo
-  ++ eagerVars b hi
-eagerVars _ _ = []
-
-eagerVarsList : List String -> List CExpr -> List String
-eagerVarsList _ [] = []
-eagerVarsList b (e::rest) = eagerVars b e ++ eagerVarsList b rest
-
-eagerVarsArms : List String -> List CArm -> List String
-eagerVarsArms _ [] = []
-eagerVarsArms b ((CArm pat _ body)::rest) = eagerVars (patVars pat ++ b) body
-  ++ eagerVarsArms b rest
-
-eagerVarsFields : List String -> List CField -> List String
-eagerVarsFields _ [] = []
-eagerVarsFields b ((CField _ ex)::rest) = eagerVars b ex
-  ++ eagerVarsFields b rest
-
-eagerVarsStmts : List String -> List CStmt -> List String
-eagerVarsStmts _ [] = []
-eagerVarsStmts b ((CSExpr ex)::rest) = eagerVars b ex ++ eagerVarsStmts b rest
-eagerVarsStmts b ((CSLet _ pat ex)::rest) = eagerVars b ex
-  ++ eagerVarsStmts (patVars pat ++ b) rest
-eagerVarsStmts b ((CSAssign _ ex)::rest) = eagerVars b ex
-  ++ eagerVarsStmts b rest
-eagerVarsStmts b ((CSLetElse pat ex alt)::rest) = eagerVars b ex
-  ++ eagerVars b alt
-  ++ eagerVarsStmts (patVars pat ++ b) rest
-eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
-
-eagerVarsBinds : List String -> List CBind -> List String
-eagerVarsBinds _ [] = []
-eagerVarsBinds b ((CBind _ [CClause [] rhs])::rest) = eagerVars b rhs
-  ++ eagerVarsBinds b rest
-eagerVarsBinds b (_::rest) = eagerVarsBinds b rest
 
 findBind : String -> List CBind -> Option CBind
 findBind _ [] = None

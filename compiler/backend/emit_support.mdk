@@ -1,0 +1,117 @@
+-- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
+-- (`llvm_emit.mdk`) and WasmGC (`wasm_emit.mdk`) emitters.  Home for logic that is
+-- genuinely backend-agnostic so the two emitters do not carry byte-identical
+-- copies (previously flagged by `medaka lint`'s `rule-duplicate-body`).
+--
+-- What lives here is the CANONICAL definition; the semantics match the LLVM
+-- emitter's historical behaviour exactly (so the primary self-compile fixpoint is
+-- unperturbed), and the WasmGC emitter now shares it.
+
+import ir.core_ir.{
+  CExpr(..),
+  CField(..),
+  CBind(..),
+  CClause(..),
+  CStmt(..),
+  CArm(..),
+}
+import backend.trmc_analysis.{patVars, bindNames}
+import support.util.{contains, lookupAssoc}
+
+-- ── eager free-var / strictness analysis ─────────────────────────────────────
+-- free CVar names evaluated EAGERLY in `body`: like freeVars, but a `CLam` body is
+-- NOT descended (its references are deferred to call time).  Bound names (`b`)
+-- accumulate so a let/match-bound local is not mistaken for a global.  Used by the
+-- value-binding init-order topo sort in both emitters.
+export eagerVars : List String -> CExpr -> List String
+eagerVars _ (CLam _ _) = []
+eagerVars b (CVar x _) = if contains x b then [] else [x]
+eagerVars _ (CLit _) = []
+eagerVars b (CApp f a) = eagerVars b f ++ eagerVars b a
+eagerVars b (CLet recF pat e1 e2) =
+  let b2 = patVars pat ++ b
+  let fe1 = if recF then eagerVars b2 e1 else eagerVars b e1
+  fe1 ++ eagerVars b2 e2
+eagerVars b (CLetGroup binds body) =
+  let b2 = bindNames binds ++ b
+  eagerVarsBinds b2 binds ++ eagerVars b2 body
+eagerVars b (CBlock stmts) = eagerVarsStmts b stmts
+eagerVars b (CIf c t f) = eagerVars b c ++ eagerVars b t ++ eagerVars b f
+eagerVars b (CBinPrim _ l r _) = eagerVars b l ++ eagerVars b r
+eagerVars b (CUnOp _ x) = eagerVars b x
+eagerVars b (CMatch scrut arms) = eagerVars b scrut ++ eagerVarsArms b arms
+eagerVars b (CDecision scrut arms _) = eagerVars b scrut ++ eagerVarsArms b arms
+eagerVars b (CTuple es) = eagerVarsList b es
+eagerVars b (CList es) = eagerVarsList b es
+eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CRecord _ fields) = eagerVarsFields b fields
+eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
+eagerVars b (CRecordUpdate base updates) = eagerVars b base
+  ++ eagerVarsFields b updates
+eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
+  ++ eagerVarsFields b updates
+eagerVars b (CArray es) = eagerVarsList b es
+eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CStringIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CStringSlice a lo hi _) = eagerVars b a
+eagerVars b (CListIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CListSlice a lo hi _) = eagerVars b a
+  ++ eagerVars b lo
+  ++ eagerVars b hi
+eagerVars b (CSlice a lo hi _) = eagerVars b a
+  ++ eagerVars b lo
+  ++ eagerVars b hi
+eagerVars _ _ = []
+
+eagerVarsList : List String -> List CExpr -> List String
+eagerVarsList _ [] = []
+eagerVarsList b (e::rest) = eagerVars b e ++ eagerVarsList b rest
+
+eagerVarsArms : List String -> List CArm -> List String
+eagerVarsArms _ [] = []
+eagerVarsArms b ((CArm pat _ body)::rest) = eagerVars (patVars pat ++ b) body
+  ++ eagerVarsArms b rest
+
+eagerVarsFields : List String -> List CField -> List String
+eagerVarsFields _ [] = []
+eagerVarsFields b ((CField _ ex)::rest) = eagerVars b ex
+  ++ eagerVarsFields b rest
+
+eagerVarsStmts : List String -> List CStmt -> List String
+eagerVarsStmts _ [] = []
+eagerVarsStmts b ((CSExpr ex)::rest) = eagerVars b ex ++ eagerVarsStmts b rest
+eagerVarsStmts b ((CSLet _ pat ex)::rest) = eagerVars b ex
+  ++ eagerVarsStmts (patVars pat ++ b) rest
+eagerVarsStmts b ((CSAssign _ ex)::rest) = eagerVars b ex
+  ++ eagerVarsStmts b rest
+eagerVarsStmts b ((CSLetElse pat ex alt)::rest) = eagerVars b ex
+  ++ eagerVars b alt
+  ++ eagerVarsStmts (patVars pat ++ b) rest
+eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
+
+eagerVarsBinds : List String -> List CBind -> List String
+eagerVarsBinds _ [] = []
+eagerVarsBinds b ((CBind _ [CClause [] rhs])::rest) = eagerVars b rhs
+  ++ eagerVarsBinds b rest
+eagerVarsBinds b (_::rest) = eagerVarsBinds b rest
+
+-- ── interface-method dispatch metadata (installed once per compile) ──────────
+-- method → (interface, declared-full-arity), from the program's `DInterface`
+-- decls.  Populated by each backend's `installMethodIface` before emitProgram; an
+-- empty table (prelude-free probe entries) makes every lookup a no-op.  Shared so
+-- the two emitters read the same install point.
+export methodIfaceTableRef : Ref (List (String, (String, Int)))
+methodIfaceTableRef = Ref []
+
+-- the interface a method name belongs to ("" = not an interface method).
+export methodIfaceOf : String -> <Mut> String
+methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
+  Some (iface, _) => iface
+  None => ""
+
+-- the declared full arity of an interface method (0 = not found).
+export methodArityOf : String -> <Mut> Int
+methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
+  Some (_, arity) => arity
+  None => 0

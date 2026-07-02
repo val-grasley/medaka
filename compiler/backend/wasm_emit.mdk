@@ -193,6 +193,13 @@ import backend.trmc_analysis.{
   ctorTailLeadFields,
   ctorTailSelfIdx,
 }
+import backend.private_mangle.{hashName}
+import backend.emit_support.{
+  eagerVars,
+  methodIfaceTableRef,
+  methodArityOf,
+  methodIfaceOf,
+}
 import backend.wasm_preamble.{
   preambleHeadLines,
   closTypeLines,
@@ -287,25 +294,11 @@ progImpls (Prog _ _ _ _ _ _ _ _ impls) = impls
 -- (installMethodIface) before emitProgram; an empty table (the prelude-free W2/W5
 -- entries never install it) ⇒ methodArityOf returns 0 ⇒ eta-expansion is a no-op ⇒
 -- byte-identical to the pre-W9b behaviour.
-methodIfaceTableRef : Ref (List (String, (String, Int)))
-methodIfaceTableRef = Ref []
-
+-- The table Ref + the `methodArityOf`/`methodIfaceOf` readers live in
+-- `backend.emit_support` (shared with the LLVM emitter); `installMethodIface`
+-- stays here as the WasmGC-side install entry point the emit drivers import.
 export installMethodIface : List (String, (String, Int)) -> <Mut> Unit
 installMethodIface t = setRef methodIfaceTableRef t
-
--- the declared full arity of an interface method (0 = not found → eta no-op).
-methodArityOf : String -> <Mut> Int
-methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
-  Some (_, arity) => arity
-  None => 0
-
--- the interface a method name belongs to ("" = not an interface method); peer of
--- llvm_emit's methodIfaceOf.  Used by layer-15 default-method restamping to find
--- the inner SAME-interface calls in a default body.
-methodIfaceOf : String -> <Mut> String
-methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
-  Some (iface, _) => iface
-  None => ""
 
 -- C4 (SHARED-FLOAT-RESIDUAL-DESIGN §6): hint from the driver: True when typecheck
 -- resolved main's inferred return type to Float (e.g. via a polymorphic HOF like
@@ -2218,71 +2211,9 @@ bindEagerVars : CBind -> <Mut> List String
 bindEagerVars (CBind _ [CClause [] body]) = eagerVars [] body
 bindEagerVars _ = []
 
--- free CVar names evaluated EAGERLY in `body`: like freeVarsExpr but a CLam body is
--- NOT descended (its refs are deferred to call time).  Mirrors llvm_emit.eagerVars.
-eagerVars : List String -> CExpr -> <Mut> List String
-eagerVars _ (CLam _ _) = []
-eagerVars b (CVar x _) = if contains x b then [] else [x]
-eagerVars _ (CLit _) = []
-eagerVars b (CApp f a) = eagerVars b f ++ eagerVars b a
-eagerVars b (CLet recF pat e1 e2) =
-  let b2 = patVars pat ++ b
-  let fe1 = if recF then eagerVars b2 e1 else eagerVars b e1
-  fe1 ++ eagerVars b2 e2
-eagerVars b (CLetGroup binds body) =
-  let b2 = map lgBindName binds ++ b
-  flatMap (eagerVarsClause b2) binds ++ eagerVars b2 body
-eagerVars b (CBlock stmts) = eagerVarsStmts b stmts
-eagerVars b (CIf c t f) = eagerVars b c ++ eagerVars b t ++ eagerVars b f
-eagerVars b (CBinPrim _ l r _) = eagerVars b l ++ eagerVars b r
-eagerVars b (CUnOp _ x) = eagerVars b x
-eagerVars b (CMatch scrut arms) = eagerVars b scrut
-  ++ flatMap (eagerVarsArm b) arms
-eagerVars b (CDecision scrut arms _) = eagerVars b scrut
-  ++ flatMap (eagerVarsArm b) arms
-eagerVars b (CTuple es) = flatMap (eagerVars b) es
-eagerVars b (CList es) = flatMap (eagerVars b) es
-eagerVars b (CArray es) = flatMap (eagerVars b) es
-eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
-eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
-eagerVars b (CRecord _ fields) = flatMap (eagerVarsField b) fields
-eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
-eagerVars b (CRecordUpdate base updates) = eagerVars b base
-  ++ flatMap (eagerVarsField b) updates
-eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
-  ++ flatMap (eagerVarsField b) updates
-eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
-eagerVars b (CSlice a lo hi _) = eagerVars b a
-  ++ eagerVars b lo
-  ++ eagerVars b hi
-eagerVars _ _ = []
-
-eagerVarsClause : List String -> CBind -> <Mut> List String
-eagerVarsClause b (CBind _ clauses) =
-  flatMap (cl => eagerVarsClauseOne b cl) clauses
-
-eagerVarsClauseOne : List String -> CClause -> <Mut> List String
-eagerVarsClauseOne b (CClause pats body) =
-  eagerVars (flatMap patVars pats ++ b) body
-
-eagerVarsArm : List String -> CArm -> <Mut> List String
-eagerVarsArm b (CArm pat guards body) =
-  let b2 = patVars pat ++ b
-  flatMap (eagerVarsGuard b2) guards ++ eagerVars b2 body
-
-eagerVarsGuard : List String -> CGuard -> <Mut> List String
-eagerVarsGuard b (CGBool g) = eagerVars b g
-eagerVarsGuard b (CGBind _ e) = eagerVars b e
-
-eagerVarsField : List String -> CField -> <Mut> List String
-eagerVarsField b (CField _ e) = eagerVars b e
-
-eagerVarsStmts : List String -> List CStmt -> <Mut> List String
-eagerVarsStmts _ [] = []
-eagerVarsStmts b ((CSExpr e)::rest) = eagerVars b e ++ eagerVarsStmts b rest
-eagerVarsStmts b ((CSLet _ pat e)::rest) = eagerVars b e
-  ++ eagerVarsStmts (patVars pat ++ b) rest
-eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
+-- `eagerVars` (eager free-var / strictness analysis) lives in
+-- `backend.emit_support`, shared verbatim with the LLVM emitter.  `bindEagerVars`
+-- above threads it into this backend's value-init topo sort.
 
 emitRefInit : Prog -> List CBind -> <Mut> List String
 emitRefInit prog groups =
@@ -3811,17 +3742,9 @@ ifaceOfInW tbl m = match lookupAssoc m tbl
   Some (iface, _) => iface
   None => ""
 
--- ── hashName (djb2, seed 5381) — BYTE-IDENTICAL to llvm_emit.hashName so the
--- dict-witness tag matches across backends + the route-key dispatch agrees. ──
-hashName : String -> <Mut> Int
-hashName s = hashChars (stringToChars s) 0 5381
-
-hashChars : Array Char -> Int -> Int -> <Mut> Int
-hashChars cs i acc =
-  if i >= arrayLength cs then
-    acc
-  else
-    hashChars cs (i + 1) (acc * 33 + charCode (arrayGetUnsafe i cs))
+-- `hashName` (djb2, seed 5381) lives in `backend.private_mangle`, shared verbatim
+-- with the LLVM emitter so the dict-witness tag matches across backends + the
+-- route-key dispatch agrees.
 
 -- the i31-safe dict-witness tag: hashName masked into the low 30 bits (positive
 -- range of an i31).  The full djb2 hash is an i64 in the LLVM backend (an i64 dict
