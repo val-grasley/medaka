@@ -27,6 +27,7 @@ import lib.aggregate.{
 }
 import lib.select.{eGt, eLitI}
 import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3}
+import demo_support.{printRows}
 
 empSql : String
 empSql = "CREATE TABLE emp(id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER, bonus REAL)"
@@ -51,12 +52,6 @@ showOptI (Some n) = intToString n
 showOptF : Option Float -> String
 showOptF None = ""
 showOptF (Some f) = floatToString f
-
-printRows : (a -> String) -> List a -> <IO> Unit
-printRows _ [] = ()
-printRows shw (r::rest) =
-  let _ = println (shw r)
-  printRows shw rest
 
 runQ : Db -> String -> AggQuery -> RowType a -> (a -> String) -> <IO> Unit
 runQ db label q rt shw =

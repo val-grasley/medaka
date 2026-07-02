@@ -267,18 +267,21 @@ buildUpdateImage db table assigns whereExpr = match readSchema db
                     Ok img => Ok (img, cnt)
 
 -- Refuse if any Assign targets the IPK column.
+--
+-- NOTE: the third clause's `pkIdx` is always `Some _` here — the first clause
+-- already catches every `None` call regardless of `sql`/`assigns`, so a
+-- `None`-arm inside this clause's body would be dead code.  Written directly
+-- against the bound `idx` (== `pkIdx`'s payload) instead, dropping that arm.
 refuseIpkAssign : Option Int -> String -> List Assign -> Result String Unit
 refuseIpkAssign None _ _ = Ok ()
 refuseIpkAssign _ _ [] = Ok ()
-refuseIpkAssign pkIdx sql ((Assign col _)::rest) = match pkIdx
-  None => refuseIpkAssign pkIdx sql rest
-  Some idx => match columnIndex sql col
-    None => refuseIpkAssign pkIdx sql rest
-    Some colIdx =>
-      if colIdx == idx then
-        Err "cannot UPDATE the INTEGER PRIMARY KEY column"
-      else
-        refuseIpkAssign pkIdx sql rest
+refuseIpkAssign (Some idx) sql ((Assign col _)::rest) = match columnIndex sql col
+  None => refuseIpkAssign (Some idx) sql rest
+  Some colIdx =>
+    if colIdx == idx then
+      Err "cannot UPDATE the INTEGER PRIMARY KEY column"
+    else
+      refuseIpkAssign (Some idx) sql rest
 
 -- Resolve each Assign's column name to an index AND compile its RHS `SqlExpr`
 -- to a per-row `List Cell -> Cell` accessor (via the exported `compileValue`).

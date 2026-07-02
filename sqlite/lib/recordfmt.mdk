@@ -118,6 +118,11 @@ export showCells : Result String (List Cell) -> String
 showCells (Err e) = "Err: \{e}"
 showCells (Ok cells) = join "|" (map display cells)
 
+-- | The i-th cell in a decoded row (0-based); out-of-range = `CNull`.
+export nthCell : List Cell -> Int -> Cell
+nthCell [] _ = CNull
+nthCell (c::rest) i = if i <= 0 then c else nthCell rest (i - 1)
+
 -- The pure driver: we drop to BResult-level position threading so we can
 -- compute the header boundary precisely.
 parseRecordGo : Array Int -> Int -> BResult (List Cell)

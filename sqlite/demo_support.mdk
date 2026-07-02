@@ -1,0 +1,50 @@
+-- | sqlite.demo_support — shared, type-independent printer helpers for the
+--   sqlite/ demo and probe programs.
+--
+-- These are pure display/parsing utilities that don't depend on any
+-- file-local demo type (e.g. `User`/`UO`) — just generics, `Int`, or
+-- `(Int, Int)` pairs — so they were duplicated verbatim across several demo
+-- files.  Consolidated here so the demos `import demo_support` instead of
+-- each carrying its own copy.
+
+import string.{toInt}
+
+-- | Print one line per element via a caller-supplied show function.
+export printRows : (a -> String) -> List a -> <IO> Unit
+printRows _ [] = ()
+printRows shw (r::rest) =
+  let _ = println (shw r)
+  printRows shw rest
+
+-- | Same shape as `printRows`, kept as a separate name because call sites
+--   (projection-style demos) spell it `printLines`.
+export printLines : (a -> String) -> List a -> <IO> Unit
+printLines _ [] = ()
+printLines f (x::rest) =
+  let _ = println (f x)
+  printLines f rest
+
+-- | Print one `Int` per line.
+export printInts : List Int -> <IO> Unit
+printInts [] = ()
+printInts (n::rest) =
+  let _ = println (intToString n)
+  printInts rest
+
+-- | Render `(a, b)` as `"a|b"`.
+export showPair : (Int, Int) -> String
+showPair p = match p
+  (a, b) => "\{a}|\{b}"
+
+-- | Print one `(Int, Int)` pair per line, `"a|b"`-formatted.
+export printPairs : List (Int, Int) -> <IO> Unit
+printPairs [] = ()
+printPairs (p::rest) =
+  let _ = println (showPair p)
+  printPairs rest
+
+-- | Parse a CLI arg as an `Int`, defaulting to `0` on a bad parse.
+export parseN : String -> Int
+parseN s = match toInt s
+  Some n => n
+  None => 0

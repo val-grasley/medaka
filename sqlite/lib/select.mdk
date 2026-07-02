@@ -16,7 +16,7 @@
 -- Names are deliberately OFF the prelude (`eGt`/`eEq`/`eAnd`/...) so they never
 -- collide with `Ord`/`Eq`/`Bool` methods (`gt`/`eq`/`and`/...).
 
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, nthCell}
 import lib.sqlite.{
   Db,
   scanTableRowsIpk,
@@ -625,10 +625,6 @@ cellToIntPart _ = None
 -- ---------------------------------------------------------------------------
 -- Cell / comparison helpers (used by compilePred)
 -- ---------------------------------------------------------------------------
-
-nthCell : List Cell -> Int -> Cell
-nthCell [] _ = CNull
-nthCell (c::rest) i = if i <= 0 then c else nthCell rest (i - 1)
 
 cellIsNull : Cell -> Bool
 cellIsNull CNull = True

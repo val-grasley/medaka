@@ -24,22 +24,7 @@ import lib.select.{
   queryDistinct,
 }
 import lib.rowtype.{RowType, tInt, t2}
-
-showPair : (Int, Int) -> String
-showPair p = match p
-  (a, b) => "\{a}|\{b}"
-
-printInts : List Int -> <IO> Unit
-printInts [] = ()
-printInts (n::rest) =
-  let _ = println (intToString n)
-  printInts rest
-
-printPairs : List (Int, Int) -> <IO> Unit
-printPairs [] = ()
-printPairs (p::rest) =
-  let _ = println (showPair p)
-  printPairs rest
+import demo_support.{printInts, printPairs}
 
 main : <IO> Unit
 main = match args ()

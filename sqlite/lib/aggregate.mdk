@@ -30,7 +30,7 @@
 -- `"count(*)"`, `"sum(salary)"`); group-by columns are referenced with the usual
 -- `eCol*` constructors.  The HAVING lookup resolves both against the output row.
 
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, nthCell}
 import lib.sqlite.{
   Db,
   scanTableRowsIpk,
@@ -335,10 +335,6 @@ decodeAll rt (cells::rest) acc = do
 -- ---------------------------------------------------------------------------
 -- Cell helpers (kept local to avoid re-exporting lib.select internals)
 -- ---------------------------------------------------------------------------
-
-nthCell : List Cell -> Int -> Cell
-nthCell [] _ = CNull
-nthCell (c::rest) i = if i <= 0 then c else nthCell rest (i - 1)
 
 cellIsNull : Cell -> Bool
 cellIsNull CNull = True

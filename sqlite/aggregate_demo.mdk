@@ -26,6 +26,7 @@ import lib.aggregate.{
   queryAgg,
 }
 import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3}
+import demo_support.{printRows}
 
 -- Render helpers (NULL → empty, matching sqlite3's default -list output).
 showOptI : Option Int -> String
@@ -43,12 +44,6 @@ runQ db label q rt shw =
   match queryAgg db q rt
     Err e => println "query error: \{e}"
     Ok rows => printRows shw rows
-
-printRows : (a -> String) -> List a -> <IO> Unit
-printRows _ [] = ()
-printRows shw (r::rest) =
-  let _ = println (shw r)
-  printRows shw rest
 
 main : <IO> Unit
 main = match args ()

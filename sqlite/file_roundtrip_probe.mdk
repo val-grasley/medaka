@@ -21,6 +21,7 @@ import lib.mutate.{delete, update, assign}
 import lib.select.{eColInt, eLitI, eEq, eGt}
 import lib.recordfmt.{Cell, CNull, CInt, CText}
 import lib.btree.{Row}
+import demo_support.{printRows}
 
 usersSql : String
 usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
@@ -33,19 +34,13 @@ baseRows = [
   [CInt 7, CText "Dave", CInt 1000000],
 ]
 
-printRows : List Row -> <IO> Unit
-printRows [] = ()
-printRows (r::rest) =
-  let _ = println (display r)
-  printRows rest
-
 -- openDb the file, scan `users`, print the rows.
 readUsers : String -> <IO, FileRead> Unit
 readUsers path = match openDb path
   Err e => println "open error: \{e}"
   Ok db => match scanTableRows db "users"
     Err e => println "scan error: \{e}"
-    Ok found => printRows found
+    Ok found => printRows display found
 
 runProbe : String -> <IO, FileRead, FileWrite, Mut> Unit
 runProbe path =

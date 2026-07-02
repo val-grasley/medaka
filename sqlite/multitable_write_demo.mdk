@@ -16,8 +16,8 @@
 
 import lib.writer.{TableSchema, Column, ColType, TInteger, TText, writeTables}
 import lib.recordfmt.{Cell, CInt, CText}
-import string.{toInt}
 import list.{reverse}
+import demo_support.{parseN}
 
 usersSchema : TableSchema
 usersSchema = TableSchema {
@@ -63,10 +63,6 @@ bigRows i n acc =
   else
     bigRows (i + 1) n (bigRow i :: acc)
 
-parseN : String -> Int
-parseN s = match toInt s
-  Some n => n
-  None => 0
 
 main : <IO, Mut> Unit
 main = match args ()

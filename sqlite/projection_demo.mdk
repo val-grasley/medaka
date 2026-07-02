@@ -27,6 +27,7 @@ import lib.select.{
   unExpr,
 }
 import lib.rowtype.{RowType, tInt, tText, t2}
+import demo_support.{printLines}
 
 -- (Int, String) row, printed "i|s".
 rowIS : RowType (Int, String)
@@ -47,12 +48,6 @@ showSI t = match t
 -- single Int row, printed "i".
 showI : Int -> String
 showI i = "\{i}"
-
-printLines : (a -> String) -> List a -> <IO> Unit
-printLines _ [] = ()
-printLines f (x::rest) =
-  let _ = println (f x)
-  printLines f rest
 
 runIS : Db -> String -> Select -> <IO> Unit
 runIS db label sel =

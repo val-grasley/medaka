@@ -22,6 +22,7 @@ import lib.dbwriter.{buildDatabase}
 import lib.sqlite.{Db, fromBytes, scanTableRows}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
 import lib.btree.{Row}
+import demo_support.{printRows}
 
 usersSql : String
 usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
@@ -53,12 +54,6 @@ setAge : List Cell -> Cell -> List Cell
 setAge (i::n::_::[]) age = [i, n, age]
 setAge cells age = cells
 
-printRows : List Row -> <IO> Unit
-printRows [] = ()
-printRows (r::rest) =
-  let _ = println (display r)
-  printRows rest
-
 -- Build → parse → scan → print one table.
 readTable : String -> String -> Int -> List (List Cell) -> <IO, Mut> Unit
 readTable name createSql colCount rows = match buildDatabase name createSql colCount ipk rows
@@ -67,7 +62,7 @@ readTable name createSql colCount rows = match buildDatabase name createSql colC
     Err e => println "fromBytes error: \{e}"
     Ok db => match scanTableRows db name
       Err e => println "scan error: \{e}"
-      Ok found => printRows found
+      Ok found => printRows display found
 
 main : <IO, Mut> Unit
 main =

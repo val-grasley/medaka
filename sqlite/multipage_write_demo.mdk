@@ -7,8 +7,8 @@
 
 import lib.dbwriter.{writeDatabase}
 import lib.recordfmt.{Cell, CInt, CText}
-import string.{toInt}
 import list.{reverse}
+import demo_support.{parseN}
 
 tableName : String
 tableName = "t"
@@ -25,11 +25,6 @@ mkRows i n acc =
     reverse acc
   else
     mkRows (i + 1) n (mkRow i :: acc)
-
-parseN : String -> Int
-parseN s = match toInt s
-  Some n => n
-  None => 0
 
 main : <IO, Mut> Unit
 main = match args ()

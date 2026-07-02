@@ -473,26 +473,23 @@ buildDatabase name createSql colCount ipkColIdx rows =
 -- Returns the pages in file order; the table's rootpage is always `basePage`.
 
 buildTablePages : Int -> List (List (Int, Array Int)) -> <Mut> Result String (List (Array Int))
-buildTablePages basePage batches =
-  match batches
-    [single] => do
-      leaf <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map snd single))
-      Ok [leaf]
-    _        => do
-      let nLeaves   = length batches
-      -- Leaves occupy pages basePage+1 .. basePage+nLeaves; interior is basePage.
-      leafPages <- buildLeafPages batches (basePage + 1) []
-      let entries   = interiorEntries batches (basePage + 1) []
-      let rightmost = basePage + nLeaves
-      interior  <- mapErr (e => "interior page: \{e}") (buildInteriorPage entries rightmost)
-      Ok (interior :: leafPages)
+buildTablePages basePage [single] = do
+  leaf <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map snd single))
+  Ok [leaf]
+buildTablePages basePage batches = do
+  let nLeaves   = length batches
+  -- Leaves occupy pages basePage+1 .. basePage+nLeaves; interior is basePage.
+  leafPages <- buildLeafPages batches (basePage + 1) []
+  let entries   = interiorEntries batches (basePage + 1) []
+  let rightmost = basePage + nLeaves
+  interior  <- mapErr (e => "interior page: \{e}") (buildInteriorPage entries rightmost)
+  Ok (interior :: leafPages)
 
 -- | How many file pages a table with these leaf batches occupies:
 --   1 for a single leaf, else 1 (interior root) + one per leaf.
 pageCountOf : List (List (Int, Array Int)) -> Int
-pageCountOf batches = match batches
-  [_] => 1
-  _ => 1 + length batches
+pageCountOf [_] = 1
+pageCountOf batches = 1 + length batches
 
 -- ---------------------------------------------------------------------------
 -- Multi-table: N tables in one file

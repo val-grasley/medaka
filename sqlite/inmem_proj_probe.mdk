@@ -28,6 +28,7 @@ import lib.select.{
   unExpr,
 }
 import lib.rowtype.{RowType, tInt, tText, t2}
+import demo_support.{printLines}
 
 numsSql : String
 numsSql =
@@ -57,12 +58,6 @@ rowSI = t2 tText tInt
 showSI : (String, Int) -> String
 showSI t = match t
   (s, i) => "\{s}|\{i}"
-
-printLines : (a -> String) -> List a -> <IO> Unit
-printLines _ [] = ()
-printLines f (x::rest) =
-  let _ = println (f x)
-  printLines f rest
 
 runIS : Db -> String -> Select -> <IO> Unit
 runIS db label sel =
