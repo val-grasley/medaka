@@ -146,7 +146,12 @@ runBuildNative root medaka cc inputAbs outPath =
   let compilerDir = joinPath root "compiler"
   let stdlibDir = joinPath root "stdlib"
   let inputDir = findProjectRoot (dirOf inputAbs)
-  let llPath = "/tmp/medaka_build_" ++ baseOf (chopExt inputAbs) ++ ".ll"
+  -- Key the temp IR on the OUTPUT path (unique per build invocation), NOT the
+  -- input basename: two concurrent `medaka build` of same-named inputs (e.g. two
+  -- multi-module dirs each with entry.mdk) would otherwise collide on one
+  -- /tmp/medaka_build_entry.ll and corrupt each other. Output paths are distinct
+  -- per invocation, so this makes parallel builds race-safe.
+  let llPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".ll"
   let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, compilerDir, stdlibDir]
   let emitter2 = envOr "MEDAKA_EMITTER" ""
   let useNative = emitter2 != ""
@@ -192,7 +197,10 @@ runBuildWasm root medaka inputAbs outPath =
   let compilerDir = joinPath root "compiler"
   let stdlibDir = joinPath root "stdlib"
   let inputDir = findProjectRoot (dirOf inputAbs)
-  let watPath = "/tmp/medaka_build_" ++ baseOf (chopExt inputAbs) ++ ".wat"
+  -- Key on the OUTPUT path (unique per invocation) so concurrent wasm builds of
+  -- same-named inputs don't collide on one /tmp/medaka_build_<in>.wat (see the
+  -- native path above for the full rationale).
+  let watPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".wat"
   let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, compilerDir, stdlibDir]
   let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
   let useNativeBin = wasmEmitter != ""
