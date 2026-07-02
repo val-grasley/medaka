@@ -9,8 +9,6 @@
 --   medaka run compiler/entries/core_ir_dict_pp_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
 import types.typecheck.{
   elaborateDict,
   constrainedSigNames,
@@ -19,25 +17,14 @@ import types.typecheck.{
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{lowerProgram}
-import support.util.{splitLast}
 import ir.core_ir_eval.{cevalMain}
+import entries.entry_support.{driveRuntime}
 
-main = match args ()
-  runtimePath::rest => withRuntime runtimePath rest
-  _ => ePutStrLn "usage"
-withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) =>
-    withFiles runtimePath preludePaths targetPath
-  None => ePutStrLn "usage"
-withFiles runtimePath preludePaths targetPath = match readFile runtimePath
-  Ok rsrc => withPreludes rsrc preludePaths targetPath
-  Err msg => ePutStrLn msg
-withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
-  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
-  Err msg => ePutStrLn msg
-withTarget rsrc preludeDecls targetPath = match readFile targetPath
-  Ok tsrc => putStrLn (runDict (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
-  Err msg => ePutStrLn msg
+main = driveRuntime emit
+
+emit runtimeDecls preludeDecls userDecls =
+  putStrLn (runDict runtimeDecls preludeDecls userDecls)
+
 runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
@@ -49,10 +36,3 @@ runDict runtimeDecls preludeDecls userDecls =
     dictNames
     userNames
     combined))
-readAllDecls : List String -> <IO> Result String (List Decl)
-readAllDecls [] = Ok []
-readAllDecls (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllDecls rest
-    Err msg => Err msg
-    Ok more => Ok (desugar (parse src) ++ more)

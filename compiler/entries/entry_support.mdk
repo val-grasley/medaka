@@ -1,0 +1,147 @@
+-- Shared scaffolding for the per-stage probe entry points (compiler/entries/*.mdk).
+--
+-- Every `medaka run` probe repeats the same loader/setup boilerplate: read a
+-- runtime.mdk + prelude*.mdk + target.mdk off argv, parse+desugar each, then hand
+-- the three decl lists to a single terminal-stage call (eval / lower+eval / emit).
+-- The ONLY per-probe difference is that terminal call, so the scaffolding lives
+-- here once and each probe collapses to its unique terminal + a one-line `main`.
+--
+-- These are `medaka run` scripts — NOT compiled into the `medaka` binary and NOT
+-- in the emitter seed graph — so this module may freely import the whole compiler.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import support.util.{splitLast}
+import types.typecheck.{elaborateOne}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+
+-- ── file readers ───────────────────────────────────────────────────────────────
+
+-- parse + desugar each prelude file in order, concatenating their decls.
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)
+
+-- read each target file, keeping (path, source) pairs in order (for batch harnesses
+-- that need the path to prefix each section's sentinel).
+readAllSources : List String -> <IO> Result String (List (String, String))
+readAllSources [] = Ok []
+readAllSources (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllSources rest
+    Err msg => Err msg
+    Ok more => Ok ((p, src)::more)
+
+-- ── single-target drivers ────────────────────────────────────────────────────
+
+-- CLI shape: <runtime.mdk> <prelude.mdk>... <target.mdk>.  Reads + parses + desugars
+-- all three, then calls `emit runtimeDecls preludeDecls userDecls` (which prints).
+driveRuntime : (List Decl -> List Decl -> List Decl -> <IO, Mut> Unit) -> <IO, Mut> Unit
+driveRuntime emit = driveRuntimeArgs (args ()) emit
+
+-- same as driveRuntime, but takes the argv explicitly so a probe can strip a leading
+-- flag (e.g. the argstamp parity probe's ON|OFF mode) before dispatching.
+driveRuntimeArgs : List String -> (List Decl -> List Decl -> List Decl -> <IO, Mut> Unit) -> <IO, Mut> Unit
+driveRuntimeArgs argv emit = match argv
+  runtimePath::rest => match splitLast rest
+    Some (preludePaths, targetPath) => match readFile runtimePath
+      Ok rsrc => match readAllDecls preludePaths
+        Ok preludeDecls => match readFile targetPath
+          Ok tsrc => emit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc))
+          Err msg => ePutStrLn msg
+        Err msg => ePutStrLn msg
+      Err msg => ePutStrLn msg
+    None => ePutStrLn usageRuntime
+  _ => ePutStrLn usageRuntime
+
+-- CLI shape: <prelude.mdk>... <target.mdk> (no separate runtime).  Calls
+-- `emit preludeDecls userDecls` (which prints).
+drivePrelude : (List Decl -> List Decl -> <IO, Mut> Unit) -> <IO, Mut> Unit
+drivePrelude emit = match splitLast (args ())
+  Some (preludePaths, targetPath) => match readAllDecls preludePaths
+    Ok preludeDecls => match readFile targetPath
+      Ok tsrc => emit preludeDecls (desugar (parse tsrc))
+      Err msg => ePutStrLn msg
+    Err msg => ePutStrLn msg
+  None => ePutStrLn usagePrelude
+
+usageRuntime : String
+usageRuntime = "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+usagePrelude : String
+usagePrelude = "usage: <prelude.mdk>... <file.mdk>"
+
+-- ── shared terminal computations ─────────────────────────────────────────────
+-- Identical across the _main and _batch variants of the same stage, so they live
+-- here rather than being copy-pasted per probe.
+
+-- TYPED path: drop prelude fns the user shadows, elaborate (typecheck stamps the
+-- EMethodAt routes), eval for stdout.  Shared by eval_typed_main + eval_typed_batch.
+evalTypedString : List Decl -> List Decl -> List Decl -> <Mut> String
+evalTypedString runtimeDecls preludeDecls userDecls =
+  let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+
+-- DICT-PASSING path: routes through the 1-module case of the multi-module path
+-- (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the TYPED
+-- path here — the difference is elaboration-internal.  Shared by eval_dict_main +
+-- eval_dict_batch + argstamp_parity_probe.
+evalDictString : List Decl -> List Decl -> List Decl -> <Mut> String
+evalDictString runtimeDecls preludeDecls userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+
+-- ── batch drivers ────────────────────────────────────────────────────────────
+
+-- strict per-target IO loop: for each target path, print `sentinel <path>\n` then
+-- `render <decls>\n`, evaluating + printing each target STRICTLY before the next
+-- (the self-hosted evaluator reseeds a global ctor->type table per program, so a
+-- lazy string-builder could force one program's dispatch after the next clobbers
+-- that table).
+batchLoop : String -> (List Decl -> <Mut> String) -> List String -> <IO, Mut> Unit
+batchLoop sentinel render [] = putStr ""
+batchLoop sentinel render (path::rest) = match readFile path
+  Err msg =>
+    let _ = ePutStrLn msg
+    batchLoop sentinel render rest
+  Ok src =>
+    let _ = putStr (sentinel ++ path ++ "\n" ++ render (desugar (parse src)) ++ "\n")
+    batchLoop sentinel render rest
+
+-- batch CLI shape: <runtime.mdk> <core.mdk> <target.mdk>...  runtime + core parsed
+-- + desugared ONCE, then `render runtimeDecls coreDecls targetDecls` per target.
+driveRuntimeBatch : String -> (List Decl -> List Decl -> List Decl -> <Mut> String) -> <IO, Mut> Unit
+driveRuntimeBatch sentinel render = match args ()
+  runtimePath::corePath::targets => match readFile runtimePath
+    Err msg => ePutStrLn msg
+    Ok rsrc => match readFile corePath
+      Err msg => ePutStrLn msg
+      Ok csrc =>
+        let runtimeDecls = desugar (parse rsrc)
+        let coreDecls = desugar (parse csrc)
+        batchLoop sentinel (render runtimeDecls coreDecls) targets
+  _ => ePutStrLn usageRuntime
+
+-- lazy batch CLI shape: <runtime.mdk> <core.mdk> <target.mdk>...  runtime + core
+-- PARSED (raw, not desugared — resolve/check take the raw AST), all target sources
+-- read, then `render runtimeParsed coreParsed [(path,src)]` builds one output blob.
+driveParseSources : (List Decl -> List Decl -> List (String, String) -> <Mut> String) -> <IO, Mut> Unit
+driveParseSources render = match args ()
+  runtimePath::corePath::targets => match readFile runtimePath
+    Err msg => ePutStrLn msg
+    Ok rsrc => match readFile corePath
+      Err msg => ePutStrLn msg
+      Ok csrc => match readAllSources targets
+        Err msg => ePutStrLn msg
+        Ok srcs => putStr (render (parse rsrc) (parse csrc) srcs)
+  _ => ePutStrLn usageRuntime

@@ -12,8 +12,6 @@
 -- harness passes ONLY runtime.mdk: elaborateDict resolves every route without
 -- pulling core.mdk's machinery into the emitted module (the spike's scalar subset).
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
 import types.typecheck.{
   elaborateDict,
   constrainedSigNames,
@@ -33,7 +31,6 @@ import ir.core_ir_lower.{
   ctorFieldTypeNames,
   declSigTypeNames,
 }
-import support.util.{splitLast}
 import backend.llvm_emit.{
   emitProgram,
   installReturnsSelf,
@@ -45,27 +42,12 @@ import backend.llvm_emit.{
   installMainIsUnitHint,
   installMainIsFloatHint,
 }
+import entries.entry_support.{driveRuntime}
 
-main = match args ()
-  runtimePath::rest => withRuntime runtimePath rest
-  _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+main = driveRuntime emit
 
-withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) =>
-    withFiles runtimePath preludePaths targetPath
-  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
-
-withFiles runtimePath preludePaths targetPath = match readFile runtimePath
-  Ok rsrc => withPreludes rsrc preludePaths targetPath
-  Err msg => ePutStrLn msg
-
-withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
-  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
-  Err msg => ePutStrLn msg
-
-withTarget rsrc preludeDecls targetPath = match readFile targetPath
-  Ok tsrc => putStr (runEmit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
-  Err msg => ePutStrLn msg
+emit runtimeDecls preludeDecls userDecls =
+  putStr (runEmit runtimeDecls preludeDecls userDecls)
 
 runEmit : List Decl -> List Decl -> List Decl -> <Mut> String
 runEmit runtimeDecls preludeDecls userDecls =
@@ -87,11 +69,3 @@ runEmit runtimeDecls preludeDecls userDecls =
     dictNames
     userNames
     combined))
-
-readAllDecls : List String -> <IO> Result String (List Decl)
-readAllDecls [] = Ok []
-readAllDecls (p::rest) = match readFile p
-  Err msg => Err msg
-  Ok src => match readAllDecls rest
-    Err msg => Err msg
-    Ok more => Ok (desugar (parse src) ++ more)

@@ -25,8 +25,6 @@
 -- dispatch nodes the emitter can lower.
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
-import frontend.desugar.{desugar}
 import types.typecheck.{
   elaborateDict,
   constrainedSigNames,
@@ -36,33 +34,17 @@ import types.typecheck.{
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
-import support.util.{splitLast}
 import backend.wasm_emit.{
   emitProgram,
   installDeclRetTypes,
   installCtorFloatFields,
 }
+import entries.entry_support.{driveRuntime}
 
-main = match args ()
-  runtimePath::rest => withRuntime runtimePath rest
-  _ => ePutStrLn "usage: medaka run compiler/entries/wasm_emit_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+main = driveRuntime emit
 
-withRuntime runtimePath rest = match splitLast rest
-  Some (preludePaths, targetPath) =>
-    withFiles runtimePath preludePaths targetPath
-  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
-
-withFiles runtimePath preludePaths targetPath = match readFile runtimePath
-  Ok rsrc => withPreludes rsrc preludePaths targetPath
-  Err msg => ePutStrLn msg
-
-withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
-  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
-  Err msg => ePutStrLn msg
-
-withTarget rsrc preludeDecls targetPath = match readFile targetPath
-  Ok tsrc => putStr (runEmit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
-  Err msg => ePutStrLn msg
+emit runtimeDecls preludeDecls userDecls =
+  putStr (runEmit runtimeDecls preludeDecls userDecls)
 
 runEmit : List Decl -> List Decl -> List Decl -> <Mut> String
 runEmit runtimeDecls preludeDecls userDecls =
