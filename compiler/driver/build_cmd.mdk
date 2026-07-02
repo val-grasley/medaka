@@ -250,7 +250,13 @@ clangLink : String -> String -> String -> String -> String -> <IO> BuildResult
 clangLink cc rtC llPath outPath inputAbs = match detectGC cc
   None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config."
   Some (gcCflags, gcLibs) =>
-    let clangArgs = ["-Wl,-stack_size,0x20000000", "-O2"] ++ gcCflags ++ [llPath, rtC] ++ gcLibs ++ ["-o", outPath]
+    -- Optimization level is overridable via MEDAKA_CLANG_OPT (default -O2). The
+    -- oracle build (test/build_oracles.sh) sets a lower level: those are throwaway
+    -- test binaries where clang -O2 (~half the per-build wall time) buys little
+    -- runtime on the small gate fixtures they process.
+    let optFlagRaw = envOr "MEDAKA_CLANG_OPT" "-O2"
+    let optFlag = if optFlagRaw == "" then "-O2" else optFlagRaw
+    let clangArgs = ["-Wl,-stack_size,0x20000000", optFlag] ++ gcCflags ++ [llPath, rtC] ++ gcLibs ++ ["-o", outPath]
     match runCommand cc clangArgs
       Err e => BuildErr ("error: could not run clang (" ++ cc ++ "): " ++ e)
       Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)

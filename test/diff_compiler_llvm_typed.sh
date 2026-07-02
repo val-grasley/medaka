@@ -40,6 +40,30 @@ RUNTIME="$ROOT/stdlib/runtime.mdk"
 FIXDIR="$ROOT/test/llvm_fixtures_typed"
 CC="${CC:-clang}"
 
+# ── Per-fixture worker (parallel fan-out target); shared state via env ─────────
+if [ "${1:-}" = "--one" ]; then
+  f="$2"
+  name="$(basename "$f")"
+  golden="${f%.mdk}.eval.golden"
+  ll="$WORKDIR/$name.ll"; bin="$WORKDIR/$name.bin"
+  st=0; msg=""
+  if [ ! -f "$golden" ]; then
+    msg="no golden for $name (run sh test/capture_goldens.sh)"; st=1
+  elif ! "$EMITBIN" "$RUNTIME" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
+    msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
+  elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
+    msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
+  else
+    ref="$(cat "$golden")"; self="$("$bin" 2>/dev/null)"
+    if [ "$ref" = "$self" ]; then msg="ok   $name ($ref)"
+    else msg="$(printf 'FAIL %s\n  ref : %s\n  self: %s' "$name" "$ref" "$self")"; st=1; fi
+  fi
+  printf '%s\n' "$msg" > "$RESULTDIR/$name.out"
+  echo "$st" > "$RESULTDIR/$name.status"
+  printf '%s\n' "$msg"
+  exit 0
+fi
+
 [ -x "$EMITBIN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITBIN)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
@@ -54,31 +78,24 @@ else
 fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+RESULTS="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
-# The native emitter binary auto-prints main's Unit return as a trailing "()" line
-# after the IR; strip a sole trailing "()" before clang.
-strip_unit() { perl -0pe 's/\(\)\s*\z//'; }
+# Precompile the C runtime once (shared by all fixtures); fall back to source.
+RTOBJ="$WORK/medaka_rt.o"
+if ! "$CC" $GC_CFLAGS -c "$RT" -o "$RTOBJ" 2>/dev/null; then RTOBJ="$RT"; fi
+
+JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
+
+ls "$FIXDIR"/*.mdk 2>/dev/null \
+  | EMITBIN="$EMITBIN" RUNTIME="$RUNTIME" CC="$CC" GC_CFLAGS="$GC_CFLAGS" GC_LIBS="$GC_LIBS" \
+    RTOBJ="$RTOBJ" WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+    xargs -P "$JOBS" -n 1 -I{} sh "$0" --one {}
 
 pass=0; fail=0
-for f in "$FIXDIR"/*.mdk; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  golden="${f%.mdk}.eval.golden"
-  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh)"; fail=$((fail+1)); continue; }
-  ref="$(cat "$golden")"
-  ll="$WORK/$name.ll"
-  bin="$WORK/$name.bin"
-  if ! "$EMITBIN" "$RUNTIME" "$f" > "$WORK/raw.ll" 2>"$WORK/emit.err"; then
-    fail=$((fail+1)); printf 'FAIL %s (emit)\n%s\n' "$name" "$(cat "$WORK/emit.err")"; continue
-  fi
-  strip_unit < "$WORK/raw.ll" > "$ll"
-  if ! "$CC" $GC_CFLAGS "$ll" "$RT" $GC_LIBS -o "$bin" 2>"$WORK/cc.err"; then
-    fail=$((fail+1)); printf 'FAIL %s (clang)\n%s\n' "$name" "$(cat "$WORK/cc.err")"; continue
-  fi
-  self="$("$bin" 2>/dev/null)"
-  if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s (%s)\n' "$name" "$ref"
-  else fail=$((fail+1)); printf 'FAIL %s\n  ref : %s\n  self: %s\n' "$name" "$ref" "$self"; fi
+for s in "$RESULTS"/*.status; do
+  [ -f "$s" ] || continue
+  if [ "$(cat "$s")" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

@@ -30,6 +30,32 @@ EMITTER="${MEDAKA_EMITTER:-$ROOT/medaka_emitter}"
 FIX="$ROOT/test/build_diff_fixtures"
 CC="${CC:-clang}"
 
+# ── Per-fixture worker (parallel fan-out target) ───────────────────────────────
+# Re-invoked as `sh "$0" --one <label> <src>`. Shared state via env. These are
+# throwaway output-compared binaries, so build them at -O0 (MEDAKA_CLANG_OPT) —
+# clang -O2 is ~half the per-build wall time and buys nothing here. Writes
+# ok/FAIL to $RESULTDIR/<label>.{status,out}.
+if [ "${1:-}" = "--one" ]; then
+  label="$2"; src="$3"
+  bin="$WORKDIR/$label.bin"
+  golden="${src%.mdk}.build.golden"
+  st=0; msg=""
+  if [ ! -f "$golden" ]; then
+    msg="FAIL $label (no .build.golden — run sh test/capture_goldens.sh build_diff)"; st=1
+  elif ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${BUILD_OPT:--O0}" \
+         "$MEDAKA" build "$src" -o "$bin" >"$WORKDIR/$label.sb.out" 2>"$WORKDIR/$label.sb.err"; then
+    msg="$(printf 'FAIL %s (native build)\n%s' "$label" "$(sed 's/^/    /' "$WORKDIR/$label.sb.err" | head -6)")"; st=1
+  else
+    sb="$("$bin" 2>/dev/null)"; expected="$(cat "$golden")"
+    if [ "$sb" = "$expected" ]; then msg="ok   $label"
+    else msg="$(printf 'FAIL %s (diff)\n  native  : %s\n  expected: %s' "$label" "$(printf '%s' "$sb" | tr '\n' '|')" "$(printf '%s' "$expected" | tr '\n' '|')")"; st=1; fi
+  fi
+  printf '%s\n' "$msg" > "$RESULTDIR/$label.out"
+  echo "$st" > "$RESULTDIR/$label.status"
+  printf '%s\n' "$msg"
+  exit 0
+fi
+
 [ -x "$MEDAKA" ]  || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
 [ -x "$EMITTER" ] || { echo "build native first: make medaka (missing $EMITTER)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping"; exit 2; }
@@ -40,41 +66,32 @@ elif printf '#include <gc.h>\nint main(void){return 0;}\n' | "$CC" -x c - -lgc -
 else echo "libgc (bdw-gc) not found — skipping (install bdw-gc)"; exit 2; fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-pass=0; fail=0
-
-check() { # $1=label  $2=mdk-path
-  label="$1"; src="$2"
-  bin="$WORK/$label.bin"
-  golden="${src%.mdk}.build.golden"
-  if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .build.golden — run sh test/capture_goldens.sh build_diff)\n' "$label"; return
-  fi
-  if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" \
-       "$MEDAKA" build "$src" -o "$bin" >"$WORK/$label.sb.out" 2>"$WORK/$label.sb.err"; then
-    fail=$((fail+1)); printf 'FAIL %s (native build)\n' "$label"
-    sed 's/^/    /' "$WORK/$label.sb.err" | head -6
-    return
-  fi
-  sb="$("$bin" 2>/dev/null)"
-  expected="$(cat "$golden")"
-  if [ "$sb" = "$expected" ]; then
-    pass=$((pass+1)); printf 'ok   %s\n' "$label"
-  else
-    fail=$((fail+1)); printf 'FAIL %s (diff)\n' "$label"
-    printf '  native  : %s\n' "$(printf '%s' "$sb" | tr '\n' '|')"
-    printf '  expected: %s\n' "$(printf '%s' "$expected" | tr '\n' '|')"
-  fi
-}
+RESULTS="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
 PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list field_collision"
-for p in $PROGRAMS; do
-  check "$p" "$FIX/$p.mdk"
+
+# Build the (label, src) worklist: plain programs + the multi-module specials.
+{
+  for p in $PROGRAMS; do printf '%s\t%s\n' "$p" "$FIX/$p.mdk"; done
+  printf '%s\t%s\n' "multimodule"      "$FIX/mm/entry.mdk"
+  printf '%s\t%s\n' "l1_twomod"        "$FIX/l1/entry.mdk"
+  printf '%s\t%s\n' "nested_subfolder" "$FIX/nested/main.mdk"
+} > "$WORK/worklist.tsv"
+
+JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
+
+# Fan the worklist across an xargs -P pool of --one workers (tab-separated
+# label + src passed as two args; see top of file).
+ROOT="$ROOT" MEDAKA="$MEDAKA" EMITTER="$EMITTER" BUILD_OPT="${BUILD_OPT:-}" \
+WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+  xargs -P "$JOBS" -n 2 sh "$0" --one < "$WORK/worklist.tsv"
+
+pass=0; fail=0
+for s in "$RESULTS"/*.status; do
+  [ -f "$s" ] || continue
+  if [ "$(cat "$s")" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 done
-check "multimodule" "$FIX/mm/entry.mdk"
-check "l1_twomod" "$FIX/l1/entry.mdk"
-check "nested_subfolder" "$FIX/nested/main.mdk"
 
 printf '\n%d ok, %d failing (of %d)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ]
