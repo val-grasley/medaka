@@ -192,6 +192,12 @@ and prepended to every program by the compiler.
   - `filterMap : (a -> Option b) -> f a -> f b` — the primitive; apply a partial function, keep `Some` results
   - `filter : (a -> Bool) -> f a -> f a` (default via `filterMap`) — keep elements satisfying the predicate
 
+- ✅ `Bimappable p` (P1, 2026-07-02; Haskell `Bifunctor`, renamed to fit `Mappable`/`Thenable`) — a two-slot container mappable independently on each side
+  - `bimap : (a -> c) -> (b -> d) -> p a b -> p c d` — map both sides at once
+  - `mapFirst : (a -> c) -> p a b -> p c b` (default via `bimap identity`) — touch only the left/`Err` side
+  - `mapSecond : (b -> d) -> p a b -> p a d` (default via `bimap identity`) — touch only the right/`Ok` side
+  - ✅ Instances: `impl Bimappable (Result e)`, `impl Bimappable (,)` (the bare 2-tuple constructor — enabled by the tuple-as-type-constructor change, see `compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`)
+
 ### Data types
 
 - ✅ `Ordering` — `Lt | Eq | Gt` — three-way comparison result
@@ -229,6 +235,22 @@ and prepended to every program by the compiler.
 - ✅ `xor : Bool -> Bool -> Bool` — logical XOR
 - ✅ `otherwise : Bool` — alias for `True`, idiomatic in guard chains
 - ⏳ `panic : String -> a` — already an extern in `runtime.mdk`; no stdlib re-export needed
+
+**FP combinators (P1, 2026-07-02 — see `FP-STDLIB-DESIGN.md` §0.5 for the naming rationale):**
+
+- ✅ `on : (b -> b -> c) -> (a -> b) -> a -> a -> c` — `on cmp f x y == cmp (f x) (f y)`
+- ✅ `curry : ((a, b) -> c) -> a -> b -> c` — turn a tuple-taking function into a 2-arg function
+- ✅ `uncurry : (a -> b -> c) -> (a, b) -> c` — turn a 2-arg function into a tuple-taking function
+- ✅ `discard : Mappable f => f a -> f Unit` — run for structure/effect, discard the result (Haskell `void`)
+- ✅ `replaceWith : Mappable f => f a -> b -> f b` — replace every element with a constant (Haskell `$>`)
+- ✅ `map2 : Applicative f => (a -> b -> c) -> f a -> f b -> f c` — lift a 2-arg function over two containers (Elm-style; Haskell `liftA2`)
+- ✅ `map3 : Applicative f => (a -> b -> c -> d) -> f a -> f b -> f c -> f d` — lift a 3-arg function over three containers (Haskell `liftA3`)
+- ✅ `foldThen : Thenable m => (b -> a -> m b) -> b -> List a -> m b` — effectful left fold (Haskell `foldM`); `-Then` house convention
+- ✅ `repeatThen : Thenable m => Int -> m a -> m (List a)` — run an effectful action N times, collecting results (Haskell `replicateM`)
+- ✅ `filterThen : Thenable m => (a -> m Bool) -> List a -> m (List a)` — effectful filter (Haskell `filterM`)
+- ✅ `forEach : Thenable m => List a -> (a -> m Unit) -> m Unit` — run an action per element, discard results (Haskell `for_`)
+- ✅ `runEach : Thenable m => List (m a) -> m Unit` — run a list of ready actions, discard results (Haskell `sequence_`)
+- ✅ `guard : Alternative f => Bool -> f Unit` — fail the computation when the condition is false
 
 (`filter` is no longer a List-specific standalone here — it is a `Filterable`
 method; see the interface above and `impl Filterable List` below.)
@@ -330,6 +352,13 @@ implementations here — use the dispatch path instead:
 
 - ✅ `traverse : Thenable m => (a -> <e> m b) -> List a -> <e> m (List b)` — map an effectful function over a list, collecting results inside the effect; short-circuits on the first `Err`/`None` (`list.mdk`)
 - ✅ `sequence : Thenable m => List (m a) -> m (List a)` — flip a list of effects into an effect of a list (`sequence == traverse identity`) (`list.mdk`)
+
+### Option/Result-list combinators (P1, 2026-07-02)
+
+- ✅ `somes : List (Option a) -> List a` — keep only the `Some` payloads, dropping `None`s (Haskell `catOptions`)
+- ✅ `oks : List (Result e a) -> List a` — keep only the `Ok` payloads, dropping `Err`s (Haskell `rights`)
+- ✅ `errs : List (Result e a) -> List e` — keep only the `Err` payloads, dropping `Ok`s (Haskell `lefts`)
+- ✅ `partitionResults : List (Result e a) -> (List e, List a)` — split into `(errs, oks)` in one pass
 
 ### Sorting
 
@@ -1100,6 +1129,75 @@ EOF), `netShutdown`, `netClose`, `netSetTimeout`. `mdk_net_*` BSD-socket C shims
 `withListener`/`serveLoop` (always close on Ok and Err paths). Gated by
 `test/diff_net.sh` (build-run loopback + API-roundtrip fixtures + a wasm-reject
 leg), since net can't be doctested (unbound under the interpreter).
+
+---
+
+## FP stdlib (2026-07-02) — see [`FP-STDLIB-DESIGN.md`](./FP-STDLIB-DESIGN.md)
+
+The FP stdlib pass (anti-gatekeep naming — friendly names over Haskell jargon,
+see §0.5 of the design doc) added four new import-by-bare-name modules plus
+combinators folded into `core`/`list` (documented above, in Modules 1/2). Two
+compiler changes enabled it: an emitter fix for wrapped-then-saturated partial
+applications (arity-carrying closures + runtime `mdk_apply`, EMITTER-GAPS.md),
+and tuples becoming a real type constructor (`compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`),
+which is what makes `impl Bimappable (,)` possible.
+
+## Module 20 — `validation` ✅ implemented (P1, 2026-07-02)
+
+`stdlib/validation.mdk` — an accumulating-error applicative. `import validation`.
+
+- ✅ `Validation e a = Failure e | Success a` — shaped like `Result e a`
+  (`Failure`/`Success` instead of `Err`/`Ok`), but its `Applicative` COMBINES
+  both sides' errors via `Semigroup e` when both are `Failure`, instead of
+  short-circuiting on the first one — the standard shape for validating
+  several independent fields and reporting every problem at once.
+- ✅ `impl Mappable (Validation e)`, `impl Applicative (Validation e) requires Semigroup e`,
+  `impl Foldable (Validation e)`, `impl Traversable (Validation e)`,
+  `impl Eq (Validation e a) requires Eq e, Eq a`, `impl Debug (Validation e a) requires Debug e, Debug a`,
+  `impl Display (Validation e a) requires Display e, Display a`
+- **Deliberately NO `impl Thenable Validation`** — a monadic `andThen` must
+  short-circuit, which is incoherent with accumulating errors on the same type.
+  Convert to `Result` first if short-circuiting sequencing is needed.
+- ✅ `validationToResult : Validation e a -> Result e a` — drop to the
+  short-circuiting `Result`
+- ✅ `resultToValidation : Result e a -> Validation e a` — lift a `Result` into
+  the accumulating `Validation`
+
+## Module 21 — `nonempty` ✅ implemented (P1, 2026-07-02)
+
+`stdlib/nonempty.mdk` — a guaranteed-non-empty list. `import nonempty`.
+
+- ✅ `NonEmpty a = NECons a (List a)` — a head element plus a (possibly empty)
+  tail; never empty by construction
+- ✅ `singleton : a -> NonEmpty a` — a `NonEmpty` holding exactly one element
+- ✅ `fromList : List a -> Option (NonEmpty a)` — `None` on an empty list
+- ✅ `head : NonEmpty a -> a` — **total** (no `Option`, unlike `List.head`)
+- ✅ `maximum : Ord a => NonEmpty a -> a` — **total**
+- ✅ `minimum : Ord a => NonEmpty a -> a` — **total**
+- ✅ `impl Mappable NonEmpty`, `impl Foldable NonEmpty` (`toList` recovers the
+  plain list), `impl Traversable NonEmpty`, `impl Semigroup (NonEmpty a)`,
+  `impl Eq (NonEmpty a) requires Eq a`, `impl Debug (NonEmpty a) requires Debug a`,
+  `impl Display (NonEmpty a) requires Display a` (all `default impl`)
+
+## Module 22 — `option` ✅ implemented (P1, 2026-07-02)
+
+`stdlib/option.mdk` — the `Option` eliminator. `import option`.
+`Option`/`isSome`/`isNone`/`fromOption`/`toResult`/`fromResult` already live in
+`core` (auto-prelude); this module adds the one thing core doesn't:
+
+- ✅ `option : b -> (a -> <e> b) -> Option a -> <e> b` — fold both cases:
+  a default for `None`, a function for `Some` (Haskell calls this `maybe`;
+  Medaka names it for the type it eliminates)
+
+## Module 23 — `result` ✅ implemented (P1, 2026-07-02)
+
+`stdlib/result.mdk` — the `Result` eliminator. `import result`.
+`Result`/`isOk`/`isErr`/`fromResultOr`/`mapErr` already live in `core`
+(auto-prelude); this module adds the one thing core doesn't:
+
+- ✅ `result : (e -> <eff> c) -> (a -> <eff> c) -> Result e a -> <eff> c` — fold
+  both cases: a handler for `Err`, a handler for `Ok` (Haskell calls this
+  `either`; Medaka names it for the type it eliminates)
 
 ---
 

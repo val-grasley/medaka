@@ -1,5 +1,30 @@
 # Tuple as a real type constructor — design doc
 
+**Status: SHIPPED (2026-07-02).** Stage 1 (`a642a43`, zero observable change —
+tuples internally became `__tupleN__`-headed `TApp` spines, type-layer-contained,
+NO seed re-mint needed for this stage alone) then Stage 2 (`c00ee2b`, Parts A+B —
+`(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax for arities 2–5 names the bare
+unsaturated tuple constructor in type position; `export impl Bimappable (,)`
+lands in `core.mdk`). Verified `check`/`run`/`build` single-file AND across a
+module boundary (constrained fn dispatching on a tuple from a sibling module).
+Representation matches the design below exactly (Fork A.1 taken — the
+kind-correct unsaturated `(,)` surface, not the saturated `impl Bimappable (a, b)`
+shape §6/§8 explicitly recommends against). Seed re-minted `9671acd` (the prior
+seed couldn't parse the new `(,)` syntax used by `core.mdk`'s own prelude).
+**Residual (not tuple-specific):** a typeclass impl defined in a non-prelude
+SIBLING module fails to emit its `define` at build time (call emitted, impl
+define missing) — reproduces with plain `Result`/`Box` too; prelude impls (like
+the two `Bimappable` impls above) are unaffected. Eval-only fixtures capture the
+shape (`test/eval_typed_modules_fixtures/bimappable_tuple_sibling/`,
+`bimappable_constrained_sibling/`, `impl_requires_nonfunctor_sibling/`); see
+`compiler/EMITTER-GAPS.md` for the pointer (`llvm_emit.mdk` `implEntriesOf` vs
+`compiler/entries/llvm_emit_modules_main.mdk`). Tracked as future work, not part
+of this design's stated payoff.
+
+---
+
+**Original design pass below (historical — decisions taken are noted inline above).**
+
 **Status:** decision-ready design pass. No code changed.
 **Decision already made (not relitigated):** make the n-tuple a real type
 constructor so a higher-kinded type-class param (kind `*→*→*`) can bind to it.

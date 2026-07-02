@@ -183,6 +183,7 @@ dir (`cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commi
 
 ## Gotchas
 
+- **Tuples are internally `__tupleN__`-headed `TApp` spines, not a `TTuple` node** (shipped 2026-07-02, `compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`). `(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax (arities 2-5) in TYPE position names the bare *unsaturated* tuple constructor, which is what lets a higher-kinded typeclass bind to it (`impl Bimappable (,)` in `core.mdk`) — a saturated `(a, b)` head is kind-inconsistent with the rest of the language and deliberately not supported. Also part of this arc: the emitter's opaque application path now carries callable arity in the closure cell header and routes non-matching-arity calls through a runtime `mdk_apply` (fixed a wrapped-PAP-then-saturate SIGSEGV that blocked `map2`/`map3`). Known residual: a typeclass impl in a non-prelude SIBLING module doesn't emit its `define` at build time (prelude impls are fine) — see `compiler/EMITTER-GAPS.md` "Cross-module sibling-impl-emit gap".
 - **The compiler (`compiler/*.mdk`) MAY import `stdlib/` — deliberately, per module (policy changed 2026-06-29).** The old blanket "NEVER import stdlib" rule
   was retired after a measurement spike: `import` from compiler code resolves fine
   (the build already passes the stdlib root to the emitter — `build_native_medaka.sh`
