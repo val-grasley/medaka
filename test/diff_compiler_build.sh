@@ -77,6 +77,9 @@ PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumpr
   printf '%s\t%s\n' "multimodule"      "$FIX/mm/entry.mdk"
   printf '%s\t%s\n' "l1_twomod"        "$FIX/l1/entry.mdk"
   printf '%s\t%s\n' "nested_subfolder" "$FIX/nested/main.mdk"
+  printf '%s\t%s\n' "bimappable_constrained_sibling" "$FIX/bimappable_constrained_sibling/main.mdk"
+  printf '%s\t%s\n' "bimappable_tuple_sibling"       "$FIX/bimappable_tuple_sibling/main.mdk"
+  printf '%s\t%s\n' "traverse_parametric_sibling"    "$FIX/traverse_parametric_sibling/main.mdk"
 } > "$WORK/worklist.tsv"
 
 JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"

@@ -783,7 +783,9 @@ Surfaced by the FP-stdlib `map2`/`map3` work (`ap (map f fa) fb`): a partially-a
 
 ---
 
-## Cross-module sibling-impl-emit gap — OPEN (discovered 2026-07-02, FP-stdlib/tuple arc)
+## Cross-module sibling-impl-emit gap — CLOSED / NON-REPRODUCING (verified 2026-07-02)
+
+**RESOLVED.** Flagged mid-workstream by the Stage-2 agent, but on current main it does **not** reproduce — verified across 6 repro shapes including the three exact eval fixtures below (all build correctly and match their eval goldens). Almost certainly closed by the Bug-1 arity-carrying-closure emitter fix (`0f4f4c1`, runtime `mdk_apply`), which reworked opaque dispatch/application emission and landed on the same branch base. Now **regression-guarded at build**: the three fixtures were promoted to multi-module `test/build_diff_fixtures/{bimappable_constrained_sibling,bimappable_tuple_sibling,traverse_parametric_sibling}/` and wired into `diff_compiler_build` (49/0). The original (now-historical) description follows.
 
 A typeclass impl defined in a **non-prelude sibling module** (not `core.mdk`, not the entry file) fails to emit its `define` at **build** time: the call site is emitted (`call @mdk_impl_..._<method>`), but the corresponding `define` is missing from the output IR → link/runtime failure. NOT tuple-specific — reproduces with plain `Result` and `Box` impls placed in a sibling module too. Prelude impls (`impl Bimappable Result`, `impl Bimappable (,)` in `core.mdk`) build and dispatch correctly; only a same-file-as-caller or prelude placement works today.
 

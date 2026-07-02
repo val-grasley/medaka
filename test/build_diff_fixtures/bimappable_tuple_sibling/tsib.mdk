@@ -1,0 +1,12 @@
+-- A function constrained on core's `Bimappable` class, applied to a TUPLE
+-- through the loader from a sibling module — exercises return-position dispatch
+-- of the bare-tuple `impl Bimappable (,)` across a module boundary (the shape a
+-- single-file test masks).
+export bumpBoth : Bimappable p => p Int Int -> p Int Int
+bumpBoth pv = bimap (x => x + 1) (y => y * 10) pv
+
+export bumpLeft : Bimappable p => p Int Int -> p Int Int
+bumpLeft pv = mapFirst (x => x + 100) pv
+
+export bumpRight : Bimappable p => p Int Int -> p Int Int
+bumpRight pv = mapSecond (y => y * 1000) pv
