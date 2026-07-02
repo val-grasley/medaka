@@ -1,0 +1,22 @@
+-- Single-process TCP loopback through the ergonomic stdlib/net.mdk API:
+-- listen (ephemeral) -> connect -> accept -> sendString -> close(client)
+-- -> recvString (reads to EOF) -> print the received text.
+import net.{listen, listenPort, connect, accept, sendString, recvString, close, closeListener}
+
+main = match listen "127.0.0.1" 0
+  Err e => println ("listen failed: " ++ e)
+  Ok lis => match listenPort lis
+    Err e => println ("listenPort failed: " ++ e)
+    Ok port => match connect "127.0.0.1" port
+      Err e => println ("connect failed: " ++ e)
+      Ok conn => match accept lis
+        Err e => println ("accept failed: " ++ e)
+        Ok srv =>
+          let _ = sendString conn "hello net"
+          let _ = close conn
+          match recvString srv
+            Ok s =>
+              let _ = close srv
+              let _ = closeListener lis
+              println s
+            Err e => println ("recvString failed: " ++ e)

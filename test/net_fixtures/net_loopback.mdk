@@ -1,0 +1,19 @@
+-- Single-process TCP loopback: listen ephemeral 127.0.0.1 -> connect -> accept
+-- -> send 2 bytes -> recv -> return count received (2 on success).
+main = match netTcpListen "127.0.0.1" 0
+  Ok lfd => match netListenPort lfd
+    Ok port => match netTcpConnect "127.0.0.1" port
+      Ok cfd => match netTcpAccept lfd
+        Ok afd => match netSend cfd (arrayFromList [72, 73])
+          Ok _ => match netRecv afd 16
+            Ok bytes =>
+              let _ = netClose cfd
+              let _ = netClose afd
+              let _ = netClose lfd
+              arrayLength bytes
+            Err _ => 0 - 6
+          Err _ => 0 - 5
+        Err _ => 0 - 4
+      Err _ => 0 - 3
+    Err _ => 0 - 2
+  Err _ => 0 - 1
