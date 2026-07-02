@@ -1,0 +1,22 @@
+-- A type carrying TWO `requires`-bearing impls at the same head tycon for
+-- DIFFERENT interfaces whose requires differ in shape: Applicative's
+-- `requires Semigroup e` (over the non-functor param `e`) must not steal the
+-- element-dict routing of Debug's `requires Debug e, Debug a`.
+public export data VT e a = VF e | VS a
+
+export
+impl Mappable (VT e) where
+  map f (VS a) = VS (f a)
+  map _ (VF e) = VF e
+
+export
+impl Applicative (VT e) requires Semigroup e where
+  pure a = VS a
+  ap (VF e1) (VF e2) = VF (e1 ++ e2)
+  ap (VF e) _ = VF e
+  ap (VS f) v = map f v
+
+export
+impl Debug (VT e a) requires Debug e, Debug a where
+  debug (VF e) = "VF " ++ debug e
+  debug (VS a) = "VS " ++ debug a
