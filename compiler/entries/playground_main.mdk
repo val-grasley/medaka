@@ -49,6 +49,13 @@ import driver.diagnostics.{
   analyzeLocated,
   Diag(..),
   Severity(..),
+  cjPosition,
+  cjRange,
+  cjRangeOfLoc,
+  cjDiagnostic,
+  cjFileEntry,
+  cjAllToJson,
+  readDiagSrc,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import support.path.{dirOf}
@@ -179,67 +186,9 @@ emitLoadFail : String -> String -> <IO> Unit
 emitLoadFail entry msg =
   emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError msg None])])
 
-readDiagSrc : (String, List Diag) -> <IO> (String, String, List Diag)
-readDiagSrc (path, diags) = match readFile path
-  Ok src => (path, src, diags)
-  Err _ => (path, "", diags)
-
 cjHasErr : (String, List Diag) -> Bool
 cjHasErr (_, diags) = any isDiagError diags
 
 isDiagError : Diag -> Bool
 isDiagError (Diag SevError _ _) = True
 isDiagError _ = False
-
--- ── check --json JSON shaping (mirror of medaka_cli.mdk cj* renderers) ─────────
--- Field/key ordering matches OCaml/Yojson alphabetical insertion so the JSON is
--- byte-identical to `medaka check --json`:
---   file entry: file, diagnostics ; diagnostic: message, range, severity, source
---   range: end, start ; position: character, line
-cjPosition : Int -> Int -> Json
-cjPosition line ch = jObject [("character", JInt ch), ("line", JInt line)]
-
-cjRange : Int -> Int -> Int -> Int -> Json
-cjRange sl sc el ec =
-  jObject [("end", cjPosition el ec), ("start", cjPosition sl sc)]
-
-cjRangeOfLoc : String -> Option Loc -> Json
-cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
-cjRangeOfLoc src None = cjRange 0 0 0 0
-
-cjSevCode : Severity -> Int
-cjSevCode SevError = 1
-cjSevCode _ = 2
-
-cjDiagnostic : String -> String -> Diag -> Json
-cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) = jObject
-  [
-    (
-      "message",
-      JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg),
-    ),
-    ("range", cjRange 0 0 0 0),
-    ("severity", JInt 2),
-    ("source", JString "medaka"),
-  ]
-cjDiagnostic _ src (Diag sev msg loc) = jObject
-  [
-    ("message", JString msg),
-    ("range", cjRangeOfLoc src loc),
-    ("severity", JInt (cjSevCode sev)),
-    ("source", JString "medaka"),
-  ]
-
-cjFileEntry : String -> String -> List Diag -> Json
-cjFileEntry path src diags = jObject
-  [
-    ("file", JString path),
-    ("diagnostics", JArray (arrayFromList (map (cjDiagnostic path src) diags))),
-  ]
-
-cjTriple : (String, String, List Diag) -> Json
-cjTriple (path, src, diags) = cjFileEntry path src diags
-
-cjAllToJson : List (String, String, List Diag) -> String
-cjAllToJson triples = stringify (jObject
-  [("files", JArray (arrayFromList (map cjTriple triples)))])
