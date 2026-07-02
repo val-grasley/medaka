@@ -1,0 +1,18 @@
+import vt.{VT(..)}
+
+mydbg : Debug a => a -> <IO> Unit
+mydbg x = putStrLn (debug x)
+
+sv : VT (List String) Int
+sv = VS 7
+
+fv : VT (List String) Int
+fv = VF ["bad"]
+
+acc : VT (List String) Int
+acc = ap (VF ["e1"]) (VF ["e2"])
+
+main =
+  mydbg sv
+  mydbg fv
+  mydbg acc

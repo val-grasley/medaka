@@ -6185,13 +6185,13 @@ innerDefaultMethod m =
 
 implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
 implDefinesMethodAt [] _ _ = False
-implDefinesMethodAt ((ImplEntry tag2 methodNames _ _ _)::rest) method tag
+implDefinesMethodAt ((ImplEntry tag2 methodNames _ _ _ _)::rest) method tag
   | tag2 == tag && contains method methodNames = True
   | otherwise = implDefinesMethodAt rest method tag
 
 headHasRequires : List ImplEntry -> String -> Bool
 headHasRequires [] _ = False
-headHasRequires ((ImplEntry tag2 _ _ reqs _)::rest) tag
+headHasRequires ((ImplEntry tag2 _ _ reqs _ _)::rest) tag
   | tag2 == tag && not (isEmptyL reqs) = True
   | otherwise = headHasRequires rest tag
 
@@ -6712,8 +6712,15 @@ setCoherenceUserDecls ds = setRef coherenceUserDecls ds
 -- narrows by), the methods it defines (to disambiguate which impl a method site
 -- picked), the head type pattern (matched against the call's concrete result mono
 -- to recover the element type), and its requires constraints.
+-- Fields: head tycon tag, defined method names, head type pattern, requires,
+-- full impl type-args, and the INTERFACE this impl is for.  The iface field
+-- disambiguates same-head impls: one type can carry several `requires`-bearing
+-- impls at the same head tycon for DIFFERENT interfaces whose requires differ in
+-- shape (e.g. `Applicative (VT e) requires Semigroup e` alongside
+-- `Debug (VT e a) requires Debug e, Debug a`).  RKey element-dict routing must
+-- pick the entry for the interface being dispatched, not merely the first by tag.
 public export data ImplEntry =
-  | ImplEntry String (List String) Ty (List Require) (List Ty)
+  | ImplEntry String (List String) Ty (List Require) (List Ty) String
 
 -- build the table from the program's impls-with-requires (others need no dicts)
 buildImplTable : List Decl -> List ImplEntry
@@ -6721,16 +6728,17 @@ buildImplTable prog = flatMap implEntryOf prog
 
 implEntryOf : Decl -> List ImplEntry
 implEntryOf (DAttrib _ d) = implEntryOf d
-implEntryOf (DImpl { tys, reqs, methods, ... }) = match reqs
+implEntryOf (DImpl { iface, tys, reqs, methods, ... }) = match reqs
   [] => []
-  _ => implEntryFromTys tys reqs methods
+  _ => implEntryFromTys iface tys reqs methods
 implEntryOf _ = []
 
-implEntryFromTys : List Ty -> List Require -> List ImplMethod -> List ImplEntry
-implEntryFromTys [] _ _ = []
-implEntryFromTys (headTy::rest) reqs methods = match headTyconTy headTy
-  Some tag =>
-    [ImplEntry tag (map implMethodNameTc methods) headTy reqs (headTy::rest)]
+implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List ImplEntry
+implEntryFromTys _ [] _ _ = []
+implEntryFromTys iface (headTy::rest) reqs methods = match headTyconTy headTy
+  Some tag => [
+    ImplEntry tag (map implMethodNameTc methods) headTy reqs (headTy::rest) iface
+  ]
   None => []
 
 implMethodNameTc : ImplMethod -> String
@@ -6945,7 +6953,7 @@ implDictRoutesForFull implTable name tag resultMono paramMonos =
 
 implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> List Mono -> <Mut> List Route
 implDictRoutesIn _ [] _ _ _ _ = []
-implDictRoutesIn fullTable ((ImplEntry tag2 methodNames headTy reqs implTys)::rest) name tag resultMono paramMonos
+implDictRoutesIn fullTable ((ImplEntry tag2 methodNames headTy reqs implTys _)::rest) name tag resultMono paramMonos
   | tag2 == tag && contains name methodNames = match headSubstWithParams headTy implTys resultMono paramMonos
     Some subst => implReqRoutes fullTable subst reqs
     None => implDictRoutesIn fullTable rest name tag resultMono paramMonos
@@ -7060,30 +7068,30 @@ combineSubst _ _ = None
 -- and recursively compute that impl's own requires routes (Phase 83/84 #5).
 implReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
 implReqRoutes _ _ [] = []
-implReqRoutes implTable subst ((Require _ rargs)::rest) =
-  reqRoute implTable subst rargs :: implReqRoutes implTable subst rest
+implReqRoutes implTable subst ((Require rIface rargs)::rest) =
+  reqRoute implTable rIface subst rargs :: implReqRoutes implTable subst rest
 
 -- depth-limited variants used by implRequiresRoutesRec (WS-4b).
 implReqRoutesD : List ImplEntry -> List (String, Mono) -> List Require -> Int -> <Mut> List Route
 implReqRoutesD _ _ [] _ = []
-implReqRoutesD implTable subst ((Require _ rargs)::rest) depth =
-  reqRouteD implTable subst rargs depth ::
+implReqRoutesD implTable subst ((Require rIface rargs)::rest) depth =
+  reqRouteD implTable rIface subst rargs depth ::
     implReqRoutesD implTable subst rest depth
 
-reqRouteD : List ImplEntry -> List (String, Mono) -> List Ty -> Int -> <Mut> Route
-reqRouteD _ _ [] _ = RNone
-reqRouteD implTable subst (arg::_) depth =
+reqRouteD : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Int -> <Mut> Route
+reqRouteD _ _ _ [] _ = RNone
+reqRouteD implTable iface subst (arg::_) depth =
   let m = fromAstType subst arg
   match headTyconMono m
-    Some tag => RKey tag (implRequiresRoutesRecD implTable tag m depth)
+    Some tag => RKey tag (implRequiresRoutesRecD implTable iface tag m depth)
     None => RNone
 
-reqRoute : List ImplEntry -> List (String, Mono) -> List Ty -> <Mut> Route
-reqRoute _ _ [] = RNone
-reqRoute implTable subst (arg::_) =
+reqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> <Mut> Route
+reqRoute _ _ _ [] = RNone
+reqRoute implTable iface subst (arg::_) =
   let m = fromAstType subst arg
   match headTyconMono m
-    Some tag => RKey tag (implRequiresRoutesRec implTable tag m)
+    Some tag => RKey tag (implRequiresRoutesRec implTable iface tag m)
     None => RNone
 
 -- Phase 83/84 #5: given the concrete mono [m] whose head tycon is [tag], find the
@@ -7099,26 +7107,38 @@ reqRoute implTable subst (arg::_) =
 -- the nested element dict resolves to RNone → the emit path emits a null cell;
 -- this is safe because the impl itself is ill-formed and will never produce a
 -- valid concrete instantiation in a well-typed program.
-implRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
-implRequiresRoutesRec implTable tag m = implRequiresRoutesRecD implTable tag m 0
+implRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+implRequiresRoutesRec implTable iface tag m =
+  implRequiresRoutesRecD implTable iface tag m 0
 
 -- depth-limited core of implRequiresRoutesRec (WS-4b: max 32 levels).
-implRequiresRoutesRecD : List ImplEntry -> String -> Mono -> Int -> <Mut> List Route
-implRequiresRoutesRecD implTable tag m depth =
+implRequiresRoutesRecD : List ImplEntry -> String -> String -> Mono -> Int -> <Mut> List Route
+implRequiresRoutesRecD implTable iface tag m depth =
   if depth >= 32 then []
-  else match findImplEntry implTable tag m
-    Some (ImplEntry _ _ headTy reqs _) => match matchTyMono headTy m
+  else match findImplEntry implTable iface tag m
+    Some (ImplEntry _ _ headTy reqs _ _) => match matchTyMono headTy m
       Some subst => implReqRoutesD implTable subst reqs (depth + 1)
       None => []
     None => []
 
--- find the first ImplEntry in [implTable] whose head tycon is [tag] (there is at
--- most one parametric impl per head tycon in well-formed programs).
-findImplEntry : List ImplEntry -> String -> Mono -> Option ImplEntry
-findImplEntry [] _ _ = None
-findImplEntry ((ImplEntry tag2 ms hty reqs itys)::rest) tag m
-  | tag2 == tag = Some (ImplEntry tag2 ms hty reqs itys)
-  | otherwise = findImplEntry rest tag m
+-- find the ImplEntry in [implTable] for interface [iface] whose head tycon is
+-- [tag] and whose head pattern matches the concrete mono [m].  A type may carry
+-- SEVERAL `requires`-bearing impls at one head tycon for different interfaces
+-- whose requires differ in shape (arity/parameters); keying on the tag alone
+-- picked the first such impl and produced the WRONG element-dict routes (e.g.
+-- `Applicative (VT e) requires Semigroup e` stealing dispatch from
+-- `Debug (VT e a) requires Debug e, Debug a`).  So we filter by [iface] too.
+-- [iface] == "" means "no interface known" (the method-level path) → fall back to
+-- the historical first-by-tag behaviour.  The head-pattern match against [m] is
+-- also required so a same-iface but wrong-arity head (e.g. `VT e` vs `VT e a`) is
+-- skipped rather than matched-then-dropped.
+findImplEntry : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
+findImplEntry [] _ _ _ = None
+findImplEntry ((ImplEntry tag2 ms hty reqs itys ifn)::rest) iface tag m
+  | tag2 == tag && (iface == "" || ifn == iface) = match matchTyMono hty m
+    Some _ => Some (ImplEntry tag2 ms hty reqs itys ifn)
+    None => findImplEntry rest iface tag m
+  | otherwise = findImplEntry rest iface tag m
 
 -- fill each constrained-fn call site's routes: one route per constraint mono.  A
 -- mono pinned to a concrete head → RKey; still a constraint variable (a nested
@@ -7155,7 +7175,7 @@ routeOfMonoTop : List Decl -> List ImplEntry -> String -> Mono -> <Mut> Route
 routeOfMonoTop prog implTable iface m = match activeDictVarOf m
   Some dname => RDict dname
   None => match headTyconMono m
-    Some tag => RKey tag (argImplRequiresRoutesRec implTable tag m)
+    Some tag => RKey tag (argImplRequiresRoutesRec implTable iface tag m)
     None => routeUndeterminedTop prog implTable iface
 
 -- the undetermined-constraint resolution: count impls of [iface] in [prog].
@@ -7164,7 +7184,7 @@ routeUndeterminedTop prog implTable iface
   | iface == "" = RNone
   | otherwise = match implHeadTagsForIface prog iface
     [] => RNone
-    [tag] => RKey tag (argImplRequiresRoutesRec implTable tag (TCon tag))
+    [tag] => RKey tag (argImplRequiresRoutesRec implTable iface tag (TCon tag))
     _ => reportAmbiguousImpl iface
 
 reportAmbiguousImpl : String -> <Mut> Route
@@ -7252,7 +7272,7 @@ routeOfMono : List ImplEntry -> Mono -> <Mut> Route
 routeOfMono implTable m = match activeDictVarOf m
   Some dname => RDict dname
   None => match headTyconMono m
-    Some tag => RKey tag (argImplRequiresRoutesRec implTable tag m)
+    Some tag => RKey tag (argImplRequiresRoutesRec implTable "" tag m)
     None => RNone
 
 -- encl-aware analogue of routeOfMono: when the element mono is one of the enclosing
@@ -7260,11 +7280,12 @@ routeOfMono implTable m = match activeDictVarOf m
 -- (activeDictVarForEncl) rather than the global last-registered name.  Recurses
 -- encl-aware so nested element dicts (`List (k, v)` under a `requires Ord k, Ord v`)
 -- forward [encl]'s params at every level.  encl == "" ⇒ identical to routeOfMono.
-routeOfMonoEncl : List ImplEntry -> String -> Mono -> <Mut> Route
-routeOfMonoEncl implTable encl m = match activeDictVarForEncl m encl
+routeOfMonoEncl : List ImplEntry -> String -> String -> Mono -> <Mut> Route
+routeOfMonoEncl implTable iface encl m = match activeDictVarForEncl m encl
   Some dname => RDict dname
   None => match headTyconMono m
-    Some tag => RKey tag (argImplRequiresRoutesRecEncl implTable encl tag m)
+    Some tag =>
+      RKey tag (argImplRequiresRoutesRecEncl implTable iface encl tag m)
     None => RNone
 
 -- Native #54/#21 residual: the activeDictVar-AWARE analogue of
@@ -7281,13 +7302,13 @@ routeOfMonoEncl implTable encl m = match activeDictVarForEncl m encl
 -- null field was the SIGSEGV (the inner per-element debug/eq/compare dispatched
 -- through a 0 dict).  Kept SEPARATE from implRequiresRoutesRec so the golden
 -- return-position routing stays byte-identical.
-argImplRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
-argImplRequiresRoutesRec implTable tag m =
-  argImplRequiresRoutesRecEncl implTable "" tag m
+argImplRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+argImplRequiresRoutesRec implTable iface tag m =
+  argImplRequiresRoutesRecEncl implTable iface "" tag m
 
-argImplRequiresRoutesRecEncl : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
-argImplRequiresRoutesRecEncl implTable encl tag m = match findImplEntry implTable tag m
-  Some (ImplEntry _ _ headTy reqs _) => match matchTyMono headTy m
+argImplRequiresRoutesRecEncl : List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argImplRequiresRoutesRecEncl implTable iface encl tag m = match findImplEntry implTable iface tag m
+  Some (ImplEntry _ _ headTy reqs _ _) => match matchTyMono headTy m
     Some subst => argImplReqRoutes implTable encl subst reqs
     None => []
   None => []
@@ -7323,7 +7344,7 @@ argImplDictRoutesForEncl implTable encl name tag mono =
 -- whole table for the nested routeOfMono recursion; [scan] walks to find the head.
 argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
 argImplDictRoutesForGo _ [] _ _ _ _ = []
-argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _)::rest) encl name tag mono
+argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _ _)::rest) encl name tag mono
   | tag2 == tag && contains name methodNames = match matchTyMono headTy mono
     Some subst => argImplReqRoutes full encl subst reqs
     None => argImplDictRoutesForGo full rest encl name tag mono
@@ -7331,14 +7352,14 @@ argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _)::rest) e
 
 argImplReqRoutes : List ImplEntry -> String -> List (String, Mono) -> List Require -> <Mut> List Route
 argImplReqRoutes _ _ _ [] = []
-argImplReqRoutes implTable encl subst ((Require _ rargs)::rest) =
-  argReqRoute implTable encl subst rargs ::
+argImplReqRoutes implTable encl subst ((Require rIface rargs)::rest) =
+  argReqRoute implTable rIface encl subst rargs ::
     argImplReqRoutes implTable encl subst rest
 
-argReqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> <Mut> Route
-argReqRoute _ _ _ [] = RNone
-argReqRoute implTable encl subst (arg::_) =
-  routeOfMonoEncl implTable encl (fromAstType subst arg)
+argReqRoute : List ImplEntry -> String -> String -> List (String, Mono) -> List Ty -> <Mut> Route
+argReqRoute _ _ _ _ [] = RNone
+argReqRoute implTable iface encl subst (arg::_) =
+  routeOfMonoEncl implTable iface encl (fromAstType subst arg)
 
 -- Phase 69.x-e: fill each method occurrence's method-dicts ref — one route per
 -- method-level constraint, from the instantiated constraint mono.  A concrete head
