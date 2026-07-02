@@ -843,16 +843,23 @@ canonFnName e name =
     let mangled = "core__" ++ name
     if isKnownFn e mangled then mangled else name
 
+-- O(log n) lookup into the CONSTANT global sig table (the `sigMapRef` index built
+-- from `sigTable e` at emitProgram). Byte-identical to `lookupAssoc name (sigTable
+-- e)`: the map is built with `reverseL` so the FIRST list entry wins on a duplicate
+-- key, matching lookupAssoc's first-match. Falls back to the linear scan only when
+-- the map is uninstalled. Use ONLY for GLOBAL-sigs sites (`sigTable e`), never a
+-- threaded/augmented `sigs` parameter (those carry local Float-propagation types).
+sigLookup : Emit -> String -> <Mut> Option FnSig
+sigLookup e name = match sigMapRef.value
+  Some m => omLookup name m
+  None => lookupAssoc name (sigTable e)
+
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy e name = match sigMapRef.value
-  Some m => match omLookup name m
-    Some (FnSig _ rty) => rty
-    None => LTInt
-  None => match lookupAssoc name (sigTable e)
-    Some (FnSig _ rty) => rty
-    None => LTInt
+fnRetTy e name = match sigLookup e name
+  Some (FnSig _ rty) => rty
+  None => LTInt
 
 -- ── constructor table (slice 3) ─────────────────────────────────────────────
 -- the constructor arity table (set once in emitProgram); membership decides
@@ -6260,7 +6267,7 @@ trmcTryFn e name clauses forceSingle =
   let arity = clauseArity clauses
   let single = forceSingle && allClausesPVar clauses
   if arity > 0 && trmcNonDict clauses && trmcEligible (isCtor e) (ctorArity e) (SelfByVar name) arity clauses then
-    let ptys = match lookupAssoc name (sigTable e)
+    let ptys = match sigLookup e name
       Some (FnSig ts _) => ts
       None => []
     let (spats, sbody) = match clauses
@@ -6453,7 +6460,7 @@ applyEtaArgs body (_::rest) = applyEtaArgs body rest
 emitMultiClauseFn : Emit -> String -> List (List Pat, CExpr) -> <Mut> Unit
 emitMultiClauseFn e name clauses =
   let arity = clauseArity clauses
-  let ptys = match lookupAssoc name (sigTable e)
+  let ptys = match sigLookup e name
     Some (FnSig ts _) => ts
     None => []
   let env = implParamEnvTyped arity ptys 0
@@ -6835,7 +6842,7 @@ floatWorkerBlockOk _ _ _ = False
 
 floatWorkerEligible : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Bool
 floatWorkerEligible e name pats ptys body =
-  let rty = match lookupAssoc name (sigTable e)
+  let rty = match sigLookup e name
     Some (FnSig _ r) => r
     None => LTInt
   let isFloatRet = match rty
@@ -6853,7 +6860,7 @@ floatWorkerEligible e name pats ptys body =
 -- Single-clause, all-PVar, non-dict, float return, body shape `emitFnBodyD` handles.
 floatFwEligible : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Bool
 floatFwEligible e name pats ptys body =
-  let rty = match lookupAssoc name (sigTable e)
+  let rty = match sigLookup e name
     Some (FnSig _ r) => r
     None => LTInt
   let isFloatRet = match rty
@@ -6874,7 +6881,7 @@ floatFwSetRef = Ref []
 collectFloatFw : Emit -> List CBind -> <Mut> List (String, (Int, List Int))
 collectFloatFw _ [] = []
 collectFloatFw e ((CBind name ((CClause pats body)::[]))::rest) =
-  let ptys = match lookupAssoc name (sigTable e)
+  let ptys = match sigLookup e name
     Some (FnSig ts _) => ts
     None => allInt pats
   if floatFwEligible e name pats ptys body then
@@ -6905,7 +6912,7 @@ collectFloatClosureFns e (_::rest) = collectFloatClosureFns e rest
 isFloatClosureBody : Emit -> String -> List Pat -> CExpr -> <Mut> Bool
 isFloatClosureBody e name pats body = match body
   CLam _ lamBody =>
-    let ptys = match lookupAssoc name (sigTable e)
+    let ptys = match sigLookup e name
       Some (FnSig ts _) => ts
       None => allInt pats
     bodyFloatRet (paramEnv pats ptys 0) lamBody
@@ -7058,7 +7065,7 @@ emitFloatWorkerFn e name pats ptys body =
 
 emitFnClause : Emit -> String -> List Pat -> CExpr -> <Mut> Unit
 emitFnClause e name pats body =
-  let ptys = match lookupAssoc name (sigTable e)
+  let ptys = match sigLookup e name
     Some (FnSig ts _) => ts
     None => allInt pats
   if floatWorkerEligible e name pats ptys body then
