@@ -96,13 +96,17 @@ import frontend.ast.{
 import support.util.{
   contains,
   reverseL,
-  lookupAssoc,
   isEmptyL,
   filterList,
   initList,
   joinDot,
   dedup,
 }
+-- The per-unit rename map is applied to EVERY reference in the unit (one lookup
+-- per EVar / def-name / pattern ctor). Backing it with the String-keyed
+-- weight-balanced tree (support.ordmap) makes each lookup O(log n) instead of an
+-- O(map) linear `lookupAssoc` scan — the map is built once per unit in mangleUnitU.
+import support.ordmap.{OrdMap, omLookup, omFromPairs, omEmpty, omSize}
 
 -- ── entry point ───────────────────────────────────────────────────────────────
 -- Given the core unit and every (mid, decls) module, module-qualify EVERY
@@ -287,8 +291,11 @@ mangleUnitU : List (String, List String) -> List (String, List (String, List Str
 mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
   let rmFn = buildUnitRenameMap mid exportsPerUnit decls
   let rmCtor = buildUnitCtorRenameMap mid ctorExportsPerUnit decls
-  let rm = rmFn ++ rmCtor
-  if isEmptyL rm then decls else map (renameDecl rm) decls
+  let rmList = rmFn ++ rmCtor
+  -- omFromPairs over the REVERSED list so the FIRST list entry wins on a duplicate
+  -- key — byte-identical to the old first-match `lookupAssoc n rmList`.
+  let rm = omFromPairs (reverseL rmList) omEmpty
+  if isEmptyL rmList then decls else map (renameDecl rm) decls
 -- Function and constructor names occupy disjoint namespaces (ctors Capitalized,
 -- fns lowercase), so the two bare-name maps merge without key conflict.  A merged
 -- single map lets renameScoped's existing EVar arm rewrite a nullary/partial ctor
@@ -513,7 +520,7 @@ safeChar c = c >= "a" && c <= "z"
   || c == "_"
 
 -- ── decl rewrite (rename both the DEFINITION name and all references) ─────────
-renameDecl : List (String, String) -> Decl -> Decl
+renameDecl : OrdMap String -> Decl -> Decl
 renameDecl rm (DFunDef pub n ps e) =
   DFunDef
     pub
@@ -551,21 +558,21 @@ renameDecl rm (DAttrib attrs d) = DAttrib attrs (renameDecl rm d)
 renameDecl _ d = d
 
 -- rename a data variant's constructor name (payload types are unaffected).
-renameVariant : List (String, String) -> Variant -> Variant
+renameVariant : OrdMap String -> Variant -> Variant
 renameVariant rm (Variant n payload) = Variant (renameDefName rm n) payload
 
 -- top-level LetBind in a DLetGroup: rename the binder name (if in map) AND its
 -- clause bodies.  The group's own names are in scope across all clauses.
-renameLetBindDef : List (String, String) -> LetBind -> LetBind
+renameLetBindDef : OrdMap String -> LetBind -> LetBind
 renameLetBindDef rm (LetBind n clauses) =
   LetBind (renameDefName rm n) (map (renameFunClause rm []) clauses)
 
-renameDefName : List (String, String) -> String -> String
-renameDefName rm n = match lookupAssoc n rm
+renameDefName : OrdMap String -> String -> String
+renameDefName rm n = match omLookup n rm
   Some n2 => n2
   None => n
 
-renameIfaceMethod : List (String, String) -> IfaceMethod -> IfaceMethod
+renameIfaceMethod : OrdMap String -> IfaceMethod -> IfaceMethod
 renameIfaceMethod _ (IfaceMethod n ty None) = IfaceMethod n ty None
 renameIfaceMethod rm (IfaceMethod n ty (Some (MethodDefault ps e))) =
   IfaceMethod
@@ -575,7 +582,7 @@ renameIfaceMethod rm (IfaceMethod n ty (Some (MethodDefault ps e))) =
       (renamePatsPM rm ps)
       (renameScoped rm (patVarsListPM ps) e)))
 
-renameImplMethod : List (String, String) -> ImplMethod -> ImplMethod
+renameImplMethod : OrdMap String -> ImplMethod -> ImplMethod
 renameImplMethod rm (ImplMethod n ps e) =
   ImplMethod n (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)
 
@@ -589,9 +596,9 @@ propParamNamePM (PropParam n _) = n
 -- `bound` = names shadowed by a local binder at this node.  An EVar is renamed
 -- only when it is in the map AND NOT shadowed.  Binders extend `bound`.  Mirrors
 -- typecheck.mdk's rewriteArgScoped exactly.
-renameScoped : List (String, String) -> List String -> Expr -> Expr
+renameScoped : OrdMap String -> List String -> Expr -> Expr
 renameScoped rm bound (EVar n)
-  | not (contains n bound) = match lookupAssoc n rm
+  | not (contains n bound) = match omLookup n rm
     Some n2 => EVar n2
     None => EVar n
   | otherwise = EVar n
@@ -677,38 +684,38 @@ renameScoped rm bound (EAsPat x sub) = EAsPat x (renameScoped rm bound sub)
 -- leaves (ELit / EMethodRef / EDictApp / EVarAt / EMethodAt / EDictAt / SecBare)
 renameScoped _ _ e = e
 
-renameField : List (String, String) -> List String -> FieldAssign -> FieldAssign
+renameField : OrdMap String -> List String -> FieldAssign -> FieldAssign
 renameField rm bound (FieldAssign n e) = FieldAssign n (renameScoped rm bound e)
 
-renameKv : List (String, String) -> List String -> (Expr, Expr) -> (Expr, Expr)
+renameKv : OrdMap String -> List String -> (Expr, Expr) -> (Expr, Expr)
 renameKv rm bound (k, v) = (renameScoped rm bound k, renameScoped rm bound v)
 
-renameInterp : List (String, String) -> List String -> InterpPart -> InterpPart
+renameInterp : OrdMap String -> List String -> InterpPart -> InterpPart
 renameInterp _ _ (InterpStr s) = InterpStr s
 renameInterp rm bound (InterpExpr e) = InterpExpr (renameScoped rm bound e)
 
-renameLetBind : List (String, String) -> List String -> LetBind -> LetBind
+renameLetBind : OrdMap String -> List String -> LetBind -> LetBind
 renameLetBind rm bound (LetBind n clauses) =
   LetBind (renameDefName rm n) (map (renameFunClause rm bound) clauses)
 
-renameFunClause : List (String, String) -> List String -> FunClause -> FunClause
+renameFunClause : OrdMap String -> List String -> FunClause -> FunClause
 renameFunClause rm bound (FunClause ps body) =
   FunClause
     (renamePatsPM rm ps)
     (renameScoped rm (patVarsListPM ps ++ bound) body)
 
-renameArm : List (String, String) -> List String -> Arm -> Arm
+renameArm : OrdMap String -> List String -> Arm -> Arm
 renameArm rm bound (Arm p gs body) =
   let b0 = patVarsPM p ++ bound
   let (gs2, bnd) = renameGuards rm b0 gs
   Arm (renamePat rm p) gs2 (renameScoped rm bnd body)
 
-renameGuardArm : List (String, String) -> List String -> GuardArm -> GuardArm
+renameGuardArm : OrdMap String -> List String -> GuardArm -> GuardArm
 renameGuardArm rm bound (GuardArm gs body) =
   let (gs2, bnd) = renameGuards rm bound gs
   GuardArm gs2 (renameScoped rm bnd body)
 
-renameGuards : List (String, String) -> List String -> List Guard -> (List Guard, List String)
+renameGuards : OrdMap String -> List String -> List Guard -> (List Guard, List String)
 renameGuards _ bound [] = ([], bound)
 renameGuards rm bound ((GBool e)::rest) =
   let e2 = renameScoped rm bound e
@@ -719,7 +726,7 @@ renameGuards rm bound ((GBind p e)::rest) =
   let (rest2, bnd) = renameGuards rm (patVarsPM p ++ bound) rest
   (GBind (renamePat rm p) e2 :: rest2, bnd)
 
-renameStmts : List (String, String) -> List String -> List DoStmt -> List DoStmt
+renameStmts : OrdMap String -> List String -> List DoStmt -> List DoStmt
 renameStmts _ _ [] = []
 renameStmts rm bound ((DoExpr e)::rest) =
   DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
@@ -762,7 +769,7 @@ patVarsListPM ps = flatMap patVarsPM ps
 -- form (reserved ctors are not in `rm`, so renameDefName leaves them).  Pattern
 -- VARIABLE binders are untouched — they are lowercase value names, never in the
 -- ctor/fn map.  Recurses through all sub-patterns so nested ctors are rewritten.
-renamePat : List (String, String) -> Pat -> Pat
+renamePat : OrdMap String -> Pat -> Pat
 renamePat rm (PCon n args) = PCon (renameDefName rm n) (map (renamePat rm) args)
 renamePat rm (PCons h t) = PCons (renamePat rm h) (renamePat rm t)
 renamePat rm (PTuple ps) = PTuple (map (renamePat rm) ps)
@@ -772,12 +779,12 @@ renamePat rm (PRec n fields open) =
   PRec (renameDefName rm n) (map (renameRecPatField rm) fields) open
 renamePat _ p = p
 
-renameRecPatField : List (String, String) -> RecPatField -> RecPatField
+renameRecPatField : OrdMap String -> RecPatField -> RecPatField
 renameRecPatField _ (RecPatField label None) = RecPatField label None
 renameRecPatField rm (RecPatField label (Some p)) =
   RecPatField label (Some (renamePat rm p))
 
-renamePatsPM : List (String, String) -> List Pat -> List Pat
+renamePatsPM : OrdMap String -> List Pat -> List Pat
 renamePatsPM rm ps = map (renamePat rm) ps
 
 recPatFieldVarsPM : RecPatField -> List String
