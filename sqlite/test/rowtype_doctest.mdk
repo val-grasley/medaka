@@ -40,9 +40,8 @@ showUser u = match u
   User { id = i, name = n, age = a } => "User(\{i}, \{n}, \{showOpt a})"
 
 showOpt : Option Int -> String
-showOpt o = match o
-  None => "None"
-  Some n => "Some \{n}"
+showOpt None = "None"
+showOpt (Some n) = "Some \{n}"
 
 -- | Decode a User and render it (Ok/Err as a flat String for doctests).
 --
@@ -71,9 +70,8 @@ decodeUser cells = match rtDecode userRow cells
 -- > showI (rtDecode tInt [CInt 1, CInt 2])
 -- "Err: tInt: expected exactly 1 column"
 export showI : Result String Int -> String
-showI r = match r
-  Ok n => intToString n
-  Err e => "Err: \{e}"
+showI (Ok n) = intToString n
+showI (Err e) = "Err: \{e}"
 
 -- | tBool maps 0/1 to False/True; anything else errors.
 --
@@ -84,10 +82,9 @@ showI r = match r
 -- > showB (rtDecode tBool [CInt 5])
 -- "Err: tBool: expected 0 or 1, got 5"
 export showB : Result String Bool -> String
-showB r = match r
-  Ok True => "True"
-  Ok False => "False"
-  Err e => "Err: \{e}"
+showB (Ok True) = "True"
+showB (Ok False) = "False"
+showB (Err e) = "Err: \{e}"
 
 -- | tOption: a NULL across the inner width decodes to None; a value to Some.
 --
@@ -96,9 +93,8 @@ showB r = match r
 -- > showOptR (rtDecode (tOption tInt) [CInt 9])
 -- "Some 9"
 export showOptR : Result String (Option Int) -> String
-showOptR r = match r
-  Ok o => showOpt o
-  Err e => "Err: \{e}"
+showOptR (Ok o) = showOpt o
+showOptR (Err e) = "Err: \{e}"
 
 -- | t2 product splits the cell list by the children's widths.
 --
@@ -107,10 +103,9 @@ showOptR r = match r
 -- > showP2 (rtDecode (t2 tInt tText) [CText "no", CText "Bob"])
 -- "Err: tInt: expected integer column, got CText \"no\""
 export showP2 : Result String (Int, String) -> String
-showP2 r = match r
-  Ok p => match p
-    (a, b) => "(\{a}, \{b})"
-  Err e => "Err: \{e}"
+showP2 (Ok p) = match p
+  (a, b) => "(\{a}, \{b})"
+showP2 (Err e) = "Err: \{e}"
 
 -- | tFloat decodes a CFloat cell; COERCES a CInt cell to float (SQLite stores
 --   whole-number REALs as integer serial types); errors on non-numeric cells.
@@ -124,8 +119,7 @@ showP2 r = match r
 -- > showF (rtDecode tFloat [CText "x"])
 -- "Err: tFloat: expected numeric column, got CText \"x\""
 export showF : Result String Float -> String
-showF r = match r
-  Ok f => floatToString f
-  Err e => "Err: \{e}"
+showF (Ok f) = floatToString f
+showF (Err e) = "Err: \{e}"
 
 main = println "rowtype_doctest: run via `medaka test`"

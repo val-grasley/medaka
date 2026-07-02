@@ -259,9 +259,9 @@ cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat ro
 -- THE match), descending into the matched head's fields ++ the remaining
 -- columns; if none match, the default branch drops the head column.
 cevalSwitch : EvalEnv -> Value -> List CArm -> List Value -> List CTBranch -> CTree -> <Mut> Value
-cevalSwitch env root arms occs branches dft = match occs
-  [] => cevalTree env root arms [] dft
-  v::rest => cevalSwitchOn env root arms v rest branches dft
+cevalSwitch env root arms [] branches dft = cevalTree env root arms [] dft
+cevalSwitch env root arms (v::rest) branches dft =
+  cevalSwitchOn env root arms v rest branches dft
 
 cevalSwitchOn : EvalEnv -> Value -> List CArm -> Value -> List Value -> List CTBranch -> CTree -> <Mut> Value
 cevalSwitchOn env root arms _ rest [] dft = cevalTree env root arms rest dft

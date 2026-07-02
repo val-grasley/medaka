@@ -86,26 +86,22 @@ rotateR k v l r = match l
   Tip => panic "Map.rotateR: empty left subtree"
 
 singleL : k -> v -> Map k v -> Map k v -> Map k v
-singleL k1 v1 t1 r = match r
-  Bin _ k2 v2 t2 t3 => bin k2 v2 (bin k1 v1 t1 t2) t3
-  Tip => panic "Map.singleL: empty right subtree"
+singleL k1 v1 t1 (Bin _ k2 v2 t2 t3) = bin k2 v2 (bin k1 v1 t1 t2) t3
+singleL k1 v1 t1 Tip = panic "Map.singleL: empty right subtree"
 
 singleR : k -> v -> Map k v -> Map k v -> Map k v
-singleR k1 v1 l t3 = match l
-  Bin _ k2 v2 t1 t2 => bin k2 v2 t1 (bin k1 v1 t2 t3)
-  Tip => panic "Map.singleR: empty left subtree"
+singleR k1 v1 (Bin _ k2 v2 t1 t2) t3 = bin k2 v2 t1 (bin k1 v1 t2 t3)
+singleR k1 v1 Tip t3 = panic "Map.singleR: empty left subtree"
 
 doubleL : k -> v -> Map k v -> Map k v -> Map k v
-doubleL k1 v1 t1 r = match r
-  Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4 =>
-    bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
-  _ => panic "Map.doubleL: malformed right subtree"
+doubleL k1 v1 t1 (Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4) =
+  bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
+doubleL k1 v1 t1 _ = panic "Map.doubleL: malformed right subtree"
 
 doubleR : k -> v -> Map k v -> Map k v -> Map k v
-doubleR k1 v1 l t4 = match l
-  Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3) =>
-    bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
-  _ => panic "Map.doubleR: malformed left subtree"
+doubleR k1 v1 (Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3)) t4 =
+  bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
+doubleR k1 v1 _ t4 = panic "Map.doubleR: malformed left subtree"
 
 -- ── Construction ────────────────────────────────────────────────────────
 

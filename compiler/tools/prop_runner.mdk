@@ -96,31 +96,31 @@ tySpineGo _ _ = None
 -- ── value generation ─────────────────────────────────────────────────────────
 
 genForType : List (String, TyDef) -> List (String, Ty) -> Ty -> <Mut> Value
-genForType tydefs subst ty = match ty
-  TyVar v => match lookupAssoc v subst
-    Some t => genForType tydefs subst t
-    None => panic ("prop_runner: cannot generate values for unbound type variable '" ++ v ++ "'")
-  TyCon "Int" => VInt (randIntRange (-1000) 1000)
-  TyCon "Bool" => VBool (randBoolL ())
-  TyCon "Float" => genFloat ()
-  TyCon "Char" => VChar (genCharStr ())
-  TyCon "String" => VString (genString ())
-  TyCon "Unit" => VUnit
-  TyApp (TyCon "List") t => VList (genList tydefs subst t (randIntRange 0 7))
-  TyApp (TyCon "Array") t =>
-    VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
-  TyApp (TyCon "Option") t =>
-    if randBoolL () then
-      VCon "None" []
-    else
-      VCon "Some" [genForType tydefs subst t]
-  TyApp (TyApp (TyCon "Result") e) a =>
-    if randBoolL () then
-      VCon "Ok" [genForType tydefs subst a]
-    else
-      VCon "Err" [genForType tydefs subst e]
-  TyTuple ts => VTuple (genTuple tydefs subst ts)
-  _ => genUserOrFail tydefs subst ty
+genForType tydefs subst (TyVar v) = match lookupAssoc v subst
+  Some t => genForType tydefs subst t
+  None => panic ("prop_runner: cannot generate values for unbound type variable '" ++ v ++ "'")
+genForType tydefs subst (TyCon "Int") = VInt (randIntRange (-1000) 1000)
+genForType tydefs subst (TyCon "Bool") = VBool (randBoolL ())
+genForType tydefs subst (TyCon "Float") = genFloat ()
+genForType tydefs subst (TyCon "Char") = VChar (genCharStr ())
+genForType tydefs subst (TyCon "String") = VString (genString ())
+genForType tydefs subst (TyCon "Unit") = VUnit
+genForType tydefs subst (TyApp (TyCon "List") t) =
+  VList (genList tydefs subst t (randIntRange 0 7))
+genForType tydefs subst (TyApp (TyCon "Array") t) =
+  VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
+genForType tydefs subst (TyApp (TyCon "Option") t) =
+  if randBoolL () then
+    VCon "None" []
+  else
+    VCon "Some" [genForType tydefs subst t]
+genForType tydefs subst (TyApp (TyApp (TyCon "Result") e) a) =
+  if randBoolL () then
+    VCon "Ok" [genForType tydefs subst a]
+  else
+    VCon "Err" [genForType tydefs subst e]
+genForType tydefs subst (TyTuple ts) = VTuple (genTuple tydefs subst ts)
+genForType tydefs subst ty = genUserOrFail tydefs subst ty
 
 genTuple : List (String, TyDef) -> List (String, Ty) -> List Ty -> <Mut> List Value
 genTuple _ _ [] = []
@@ -240,19 +240,18 @@ public export data PropOutcome =
   | PropFailed Int (List (String, Value))
 
 runProp : List (String, TyDef) -> List (String, Value) -> Decl -> Int -> <IO, Mut> Bool
-runProp tydefs evalEnv propDecl maxTests = match propDecl
-  DProp _ name params body =>
-    let _ = putStr ("Testing " ++ escStrLocal name ++ " ... ")
-    match findFailure tydefs evalEnv params body maxTests 1
-      PropPassed =>
-        let _ = putStrLn ("OK (" ++ intToString maxTests ++ " tests)")
-        True
-      PropFailed run shrunk =>
-        let _ = putStrLn ("FAILED after " ++ intToString run ++ (if run == 1 then " test" else " tests"))
-        let _ = putStrLn "  Counterexample:"
-        let _ = printCounterexample shrunk
-        False
-  _ => True
+runProp tydefs evalEnv (DProp _ name params body) maxTests =
+  let _ = putStr ("Testing " ++ escStrLocal name ++ " ... ")
+  match findFailure tydefs evalEnv params body maxTests 1
+    PropPassed =>
+      let _ = putStrLn ("OK (" ++ intToString maxTests ++ " tests)")
+      True
+    PropFailed run shrunk =>
+      let _ = putStrLn ("FAILED after " ++ intToString run ++ (if run == 1 then " test" else " tests"))
+      let _ = putStrLn "  Counterexample:"
+      let _ = printCounterexample shrunk
+      False
+runProp tydefs evalEnv _ maxTests = True
 
 findFailure : List (String, TyDef) -> List (String, Value) -> List PropParam -> Expr -> Int -> Int -> <Mut> PropOutcome
 findFailure tydefs evalEnv params body maxTests run

@@ -188,15 +188,14 @@ resolveCols lookup (c::rest) = match lookup c
 -- distinct keys are collected in encounter order, each key's rows gathered, and
 -- the groups sorted by key ascending (SQLite value ordering).
 groupRows : List String -> List Int -> List (List Cell) -> List (List Cell, List (List Cell))
-groupRows gcols gIdxs cells = match gcols
-  [] => [([], cells)]
-  _ =>
-    let keys = distinctKeys gIdxs cells
-    let grouped = map (k => (k, filter (c => cellListEq (keyOf gIdxs c) k) cells)) keys
-    sortBy
-      (a b => match (a, b)
-        ((ka, _), (kb, _)) => cellListOrder ka kb)
-      grouped
+groupRows [] gIdxs cells = [([], cells)]
+groupRows _ gIdxs cells =
+  let keys = distinctKeys gIdxs cells
+  let grouped = map (k => (k, filter (c => cellListEq (keyOf gIdxs c) k) cells)) keys
+  sortBy
+    (a b => match (a, b)
+      ((ka, _), (kb, _)) => cellListOrder ka kb)
+    grouped
 
 -- Extract the key cells (in group-by order) from a row's cells.
 keyOf : List Int -> List Cell -> List Cell

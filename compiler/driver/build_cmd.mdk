@@ -132,9 +132,10 @@ detectGCBare cc =
 -- inputAbs = absolute path of the user .mdk entry
 -- outPath  = output binary path
 export runBuild : String -> String -> String -> BuildTarget -> String -> String -> <IO> BuildResult
-runBuild root medaka cc target inputAbs outPath = match target
-  TNative => runBuildNative root medaka cc inputAbs outPath
-  TWasm => runBuildWasm root medaka inputAbs outPath
+runBuild root medaka cc TNative inputAbs outPath =
+  runBuildNative root medaka cc inputAbs outPath
+runBuild root medaka cc TWasm inputAbs outPath =
+  runBuildWasm root medaka inputAbs outPath
 
 -- ---- native (LLVM/clang) target — the original path ----
 runBuildNative : String -> String -> String -> String -> String -> <IO> BuildResult

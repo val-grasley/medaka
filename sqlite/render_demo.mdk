@@ -17,9 +17,8 @@ import lib.select.{
 }
 
 renderShowLocal : Result String (String, List Literal) -> String
-renderShowLocal r = match r
-  Err e => "ERR \{e}"
-  Ok (sql, _) => sql
+renderShowLocal (Err e) = "ERR \{e}"
+renderShowLocal (Ok (sql, _)) = sql
 
 main : <IO> Unit
 main =

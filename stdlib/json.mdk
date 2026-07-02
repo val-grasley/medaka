@@ -239,9 +239,8 @@ parseUnicode arr i acc
   | otherwise = parseUnicodeAt arr i acc (hex4 arr i)
 
 parseUnicodeAt : Array Char -> Int -> List Char -> Option Int -> Result String (String, Int)
-parseUnicodeAt arr i acc code = match code
-  None => Err "invalid \\u escape"
-  Some k => parseStr arr (i + 4) (charOfCode k :: acc)
+parseUnicodeAt arr i acc None = Err "invalid \\u escape"
+parseUnicodeAt arr i acc (Some k) = parseStr arr (i + 4) (charOfCode k :: acc)
 
 -- Numbers: scan the token, classify int vs float, build the value.
 skipSign : Array Char -> Int -> Int

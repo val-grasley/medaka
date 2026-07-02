@@ -669,9 +669,8 @@ alphaCollectBinds ((LetBind n clauses)::rest) acc = match clauses
 
 -- LCP of all arm results if every arm is Known; else Unknown
 alphaArms : List (String, Expr) -> Option String -> List Arm -> KP
-alphaArms _ acc [] = match acc
-  Some s => Known s
-  None => Unknown
+alphaArms _ (Some s) [] = Known s
+alphaArms _ None [] = Unknown
 alphaArms lets acc ((Arm _ _ rhs)::rest) = match alpha lets rhs
   Unknown => Unknown
   Known s => match acc
@@ -908,9 +907,8 @@ unifyRowN (EffRow _ None) (EffRow _ None) = ()
 -- concrete value's latent effect) meeting a closed bound — its own labels must
 -- not exceed the bound, else they escape.  [escaping] = open labels \ bound.
 effectLeakCheck : List Atom -> List Atom -> <Mut> Unit
-effectLeakCheck escaping bound = match escaping
-  [] => ()
-  _ => pushTypeError (effectLeakMsg bound escaping)
+effectLeakCheck [] bound = ()
+effectLeakCheck escaping bound = pushTypeError (effectLeakMsg bound escaping)
 
 effectLeakMsg : List Atom -> List Atom -> String
 effectLeakMsg bound extras = "Effectful value used where <"
@@ -6856,22 +6854,20 @@ tySubsumeGo _ _ None = None
 tySubsumeGo (TyVar gn) s (Some sub) = match lookupAssoc gn sub
   Some prev => if tyStructEq prev s then Some sub else None
   None => Some ((gn, s)::sub)
-tySubsumeGo (TyCon a) s acc = match s
-  TyCon b => if a == b then acc else None
-  _ => None
-tySubsumeGo (TyApp f1 a1) s acc = match s
-  TyApp f2 a2 => tySubsumeGo a1 a2 (tySubsumeGo f1 f2 acc)
-  _ => None
-tySubsumeGo (TyFun a1 b1) s acc = match s
-  TyFun a2 b2 => tySubsumeGo b1 b2 (tySubsumeGo a1 a2 acc)
-  _ => None
-tySubsumeGo (TyTuple ts1) s acc = match s
-  TyTuple ts2 =>
-    if listLen ts1 == listLen ts2 then
-      tySubsumeGoList ts1 ts2 acc
-    else
-      None
-  _ => None
+tySubsumeGo (TyCon a) (TyCon b) acc = if a == b then acc else None
+tySubsumeGo (TyCon a) _ acc = None
+tySubsumeGo (TyApp f1 a1) (TyApp f2 a2) acc =
+  tySubsumeGo a1 a2 (tySubsumeGo f1 f2 acc)
+tySubsumeGo (TyApp f1 a1) _ acc = None
+tySubsumeGo (TyFun a1 b1) (TyFun a2 b2) acc =
+  tySubsumeGo b1 b2 (tySubsumeGo a1 a2 acc)
+tySubsumeGo (TyFun a1 b1) _ acc = None
+tySubsumeGo (TyTuple ts1) (TyTuple ts2) acc =
+  if listLen ts1 == listLen ts2 then
+    tySubsumeGoList ts1 ts2 acc
+  else
+    None
+tySubsumeGo (TyTuple ts1) _ acc = None
 tySubsumeGo (TyEffect _ _ t1) s acc = tySubsumeGo t1 (stripTyWrap s) acc
 tySubsumeGo (TyConstrained _ t1) s acc = tySubsumeGo t1 (stripTyWrap s) acc
 
@@ -6991,11 +6987,10 @@ implHeadSubst pats concretes
 
 implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
 implHeadSubstGo [] [] acc = acc
-implHeadSubstGo (p::ps) (c::cs) acc = match acc
+implHeadSubstGo (p::ps) (c::cs) None = None
+implHeadSubstGo (p::ps) (c::cs) (Some sofar) = match matchTyMono p c
   None => None
-  Some sofar => match matchTyMono p c
-    None => None
-    Some s => implHeadSubstGo ps cs (Some (mergeSubstPreferConcrete sofar s))
+  Some s => implHeadSubstGo ps cs (Some (mergeSubstPreferConcrete sofar s))
 implHeadSubstGo _ _ _ = None
 
 -- Merge two name→mono substs; on a key collision keep whichever value has a

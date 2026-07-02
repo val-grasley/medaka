@@ -954,10 +954,9 @@ fallthroughToNone VFallthrough = None
 fallthroughToNone v = Some v
 
 collectPartials : List Value -> List Value -> Value -> <Mut> Option Value
-collectPartials acc [] _ = match acc
-  [] => panic "no matching impl for dispatch"
-  [v] => Some v
-  many => Some (VMulti (reverseL many))
+collectPartials [] [] _ = panic "no matching impl for dispatch"
+collectPartials [v] [] _ = Some v
+collectPartials many [] _ = Some (VMulti (reverseL many))
 collectPartials acc (v::rest) arg = match applyOpt v arg
   None => collectPartials acc rest arg
   Some r => if isPartial r then collectPartials (r::acc) rest arg else Some r
