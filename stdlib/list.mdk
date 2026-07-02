@@ -1,7 +1,7 @@
 -- list.mdk — operations on List a
 -- See STDLIB.md for the full implementation plan.
 
-import core.{Eq, Ord, Debug, Foldable, Mappable, Ordering, Option}
+import core.{Eq, Ord, Debug, Foldable, Mappable, Ordering, Option, Result}
 
 -- Re-export the Filterable container ops so they're discoverable as
 -- `list.filter` / `list.filterMap`.
@@ -402,6 +402,48 @@ partition p (x::xs) =
   let (yes, no) = partition p xs
   if p x then (x::yes, no) else (yes, x::no)
 
+{- | Keep the `Some`s, drop the `None`s.
+
+   > somes [Some 1, None, Some 3]
+   [1, 3]
+   > somes ([] : List (Option Int))
+   [] -}
+export somes : List (Option a) -> List a
+somes [] = []
+somes ((Some x)::rest) = x :: somes rest
+somes (None::rest) = somes rest
+
+{- | Keep the `Ok` values, drop the `Err`s.
+
+   > oks [Ok 1, Err "boom", Ok 3]
+   [1, 3] -}
+export oks : List (Result e a) -> List a
+oks [] = []
+oks ((Ok x)::rest) = x :: oks rest
+oks ((Err _)::rest) = oks rest
+
+{- | Keep the `Err` values, drop the `Ok`s.
+
+   > errs [Ok 1, Err "boom", Ok 3]
+   ["boom"] -}
+export errs : List (Result e a) -> List e
+errs [] = []
+errs ((Err e)::rest) = e :: errs rest
+errs ((Ok _)::rest) = errs rest
+
+{- | Split into `(errs, oks)` in a single pass.
+
+   > partitionResults [Ok 1, Err "boom", Ok 3]
+   (["boom"], [1, 3]) -}
+export partitionResults : List (Result e a) -> (List e, List a)
+partitionResults [] = ([], [])
+partitionResults ((Ok x)::rest) =
+  let (es, xs) = partitionResults rest
+  (es, x::xs)
+partitionResults ((Err e)::rest) =
+  let (es, xs) = partitionResults rest
+  (e::es, xs)
+
 {- | Count occurrences of each distinct element (by `Eq`), in first-seen order.
 
    > tally [1, 2, 1, 3, 1, 2]
@@ -523,6 +565,20 @@ prop "sort is ascending and length-preserving" (xs : List Int) =
 prop "partition splits by the predicate" (xs : List Int) =
   let (yes, no) = partition (x => x > 0) xs
   all (x => x > 0) yes && all (x => x <= 0) no
+
+prop "somes length is at most the input length" (xs : List Int) =
+  let os = map (n => if n % 2 == 0 then Some n else None) xs
+  length (somes os) <= length os
+
+prop "partitionResults sizes sum to the input length" (xs : List Int) =
+  let rs = map (n => if n % 2 == 0 then Ok n else Err n : Result Int Int) xs
+  let (es, os) = partitionResults rs
+  length es + length os == length rs
+
+prop "oks/errs agree with partitionResults" (xs : List Int) =
+  let rs = map (n => if n % 2 == 0 then Ok n else Err n : Result Int Int) xs
+  let (es, os) = partitionResults rs
+  eq es (errs rs) && eq os (oks rs)
 
 prop "nub removes all duplicates" (xs : List Int) = eq (nub (nub xs)) (nub xs)
 
