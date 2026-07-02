@@ -1,0 +1,13 @@
+-- Block/do statement interiors (Stage 5): each statement's trailing comment is
+-- anchored to ITS statement's Doc, so it stays put across reflow.  A standalone
+-- comment or a multi-line statement makes the count/coverage check fail and the
+-- decl falls back to the verbatim safety-net (never dropping a comment).
+summarize xs =
+  let total = fold add 0 xs   -- accumulate
+  let n = length xs           -- count
+  total / n                   -- mean
+
+readBoth = do
+  a <- readLine               -- first line
+  b <- readLine               -- second line
+  pure (a, b)

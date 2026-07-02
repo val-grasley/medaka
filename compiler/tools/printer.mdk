@@ -73,11 +73,13 @@ public export data Doc =
   -- A break-only trailing comma is `FlatAlt (text ",") Nil`.
   | FlatAlt Doc Doc
   -- LineComment text: a trailing `--` line comment anchored to the operand/
-  -- statement it documents.  Renders inline as `"  " ++ text`, and (like a
-  -- `--` in source) FORCES its enclosing group to break — nothing may be packed
-  -- after a line comment, since it runs to end-of-line.  This is the Doc-IR
-  -- node that lets comment placement survive width-driven reflow: wherever the
-  -- engine lays the operand it rides on, the comment travels with it.
+  -- statement it documents.  Renders inline as `"  " ++ text`; it ENDS the
+  -- current output line (a `--` runs to EOL), so `fits` stops at it (returning
+  -- True) and a preceding group is measured only up to the comment.  This is the
+  -- Doc-IR node that lets comment placement survive width-driven reflow: it is
+  -- anchored to its operand's Doc, so wherever the engine lays that operand the
+  -- comment travels with it.  Commented chains/blocks put an unconditional
+  -- `Hardline` after each unit, so nothing is ever packed after the comment.
   | LineComment String
 
 -- `a ^^ b` = Cat a b
@@ -193,9 +195,12 @@ fits w ((Item i _ (Group d))::z) = fits w (Item i Flat d :: z)
 fits w ((Item i _ (FlatGroup d))::z) = fits w (Item i Flat d :: z)
 -- fits always measures a FLAT layout → take the flat alternative.
 fits w ((Item i m (FlatAlt _ b))::z) = fits w (Item i m b :: z)
--- A line comment can never fit flat: it forces the enclosing group to break
--- (a `--` comment runs to EOL, so nothing may follow it on the same line).
-fits _ ((Item _ _ (LineComment _))::_) = False
+-- A line comment ENDS the current line (a `--` runs to EOL): everything up to
+-- it fit, and nothing after it is on this line, so `fits` stops here with True.
+-- (Commented chains/blocks are structured with unconditional `Hardline` breaks,
+-- so a comment never needs to force an enclosing group broken via `fits`; this
+-- arm just keeps a trailing comment from polluting a preceding group's measure.)
+fits _ ((Item _ _ (LineComment _))::_) = True
 
 -- `n` spaces.
 spaces : Int -> String
@@ -927,11 +932,13 @@ opCommentDoc : Option String -> Doc
 opCommentDoc None = Nil
 opCommentDoc (Some t) = LineComment t
 
--- One continuation line of a commented chain: `<Line>op <operand>  -- cmt`.
+-- One continuation line of a commented chain: `<Hardline>op <operand>  -- cmt`.
+-- A commented chain always breaks (one operand per line), so the separators are
+-- unconditional `Hardline`s; each operand's own groups still reflow internally.
 chainItemCommented : Int -> (String, Expr) -> Option String -> Doc
 chainItemCommented prec (o, r) cmt =
   Cat
-    Line
+    Hardline
     (Cat
       (text o)
       (Cat (text " ") (Cat (printExpr (prec + 1) r) (opCommentDoc cmt))))
@@ -945,8 +952,8 @@ chainTailCommented prec (r::rs) [] =
   Cat (chainItemCommented prec r None) (chainTailCommented prec rs [])
 
 -- The RHS after `=` for a commented chain: break at `=` (head on its own line),
--- then each operand on its own line with its comment.  The whole thing sits in
--- one group that a `LineComment` forces to break.
+-- then each operand on its own line with its comment — unconditional `Hardline`s
+-- (a commented chain always breaks), so operands still reflow internally.
 printChainCommentedRhs : String -> Expr -> List (Option String) -> Doc
 printChainCommentedRhs op e comments =
   let prec = binopPrec op
@@ -959,7 +966,7 @@ printChainCommentedRhs op e comments =
         _::t => t
         [] => []
       let body = Cat (printExpr prec head) (Cat (opCommentDoc headCmt) (chainTailCommented prec rights restCmts))
-      Cat (text " =") (group (Nest 2 (Cat Line body)))
+      Cat (text " =") (Nest 2 (Cat Hardline body))
 
 -- Print a whole DFunDef (optionally @attr-wrapped) whose body is a continuation
 -- chain, interleaving `comments` (one per operand).  Falls back to the plain
@@ -977,6 +984,67 @@ printDefChainRhs (ELoc _ e) comments = printDefChainRhs e comments
 printDefChainRhs (EBinOp op l r rf) comments
   | isContinuationOp op = printChainCommentedRhs op (EBinOp op l r rf) comments
 printDefChainRhs body _ = printDefRhs body
+
+-- ── Comment-interleaved block/do bodies (finding "L", Stage 5) ──────────────
+-- A decl whose body is a top-level bare block (EBlock) or do-block (EDo) with a
+-- trailing comment per statement.  Statements are already Hardline-separated
+-- (one per line), so each comment is anchored to ITS statement's Doc as a
+-- `LineComment` — rendering after the whole statement (even if the statement
+-- reflows internally) and before the next Hardline.  `comments` is one entry per
+-- statement in source order; `None` = no trailing comment.
+
+-- Statement count of a decl's block/do body (0 if it is not one).
+export declBlockLen : Decl -> Int
+declBlockLen (DAttrib _ inner) = declBlockLen inner
+declBlockLen (DFunDef _ _ _ body) = blockLenBody body
+declBlockLen _ = 0
+
+blockLenBody : Expr -> Int
+blockLenBody (ELoc _ e) = blockLenBody e
+blockLenBody (EBlock stmts) = listLen stmts
+blockLenBody (EDo stmts) = listLen stmts
+blockLenBody _ = 0
+
+headOpt : List (Option String) -> Option String
+headOpt (x::_) = x
+headOpt [] = None
+
+tailOpt : List (Option String) -> List (Option String)
+tailOpt (_::t) = t
+tailOpt [] = []
+
+-- Hardline-separated statements (mirror of `sepBy Hardline (map printDoStmt …)`),
+-- each with its trailing comment anchored.
+stmtsCommented : List DoStmt -> List (Option String) -> Doc
+stmtsCommented [] _ = Nil
+stmtsCommented [st] cs = Cat (printDoStmt st) (opCommentDoc (headOpt cs))
+stmtsCommented (st::rest) cs =
+  Cat
+    (Cat (printDoStmt st) (opCommentDoc (headOpt cs)))
+    (Cat Hardline (stmtsCommented rest (tailOpt cs)))
+
+-- RHS after `=` for a commented block/do body (mirror of the plain EBlock/EDo
+-- render, with per-statement comments).
+printBlockCommentedRhs : Expr -> List (Option String) -> Doc
+printBlockCommentedRhs (ELoc _ e) comments = printBlockCommentedRhs e comments
+printBlockCommentedRhs (EBlock stmts) comments =
+  Cat (text " =") (indentBlock (stmtsCommented stmts comments))
+printBlockCommentedRhs (EDo stmts) comments =
+  Cat
+    (text " = ")
+    (Cat (text "do") (indentBlock (stmtsCommented stmts comments)))
+printBlockCommentedRhs body _ = printDefRhs body
+
+-- Print a whole DFunDef (optionally @attr-wrapped) whose body is a bare/do
+-- block, interleaving `comments` (one per statement).  Falls back to `printDecl`
+-- for anything else (fmt only calls this for a verified block decl).
+export printDeclBlockCommented : Decl -> List (Option String) -> Doc
+printDeclBlockCommented (DAttrib attrs inner) comments =
+  Cat (concatD (map attrDoc attrs)) (printDeclBlockCommented inner comments)
+printDeclBlockCommented (DFunDef pub n pats body) comments =
+  let header = Cat (if pub then text "export " else Nil) (Cat (text n) (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)))
+  Cat header (printBlockCommentedRhs body comments)
+printDeclBlockCommented d _ = printDecl d
 
 -- Flatten the left-assoc application spine into one group; each arg on its own
 -- indented line when broken.  Flat rendering matches the inline EApp arm.
