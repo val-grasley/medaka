@@ -1,0 +1,5 @@
+(DTypeSig true "result" (TyFun (TyFun (TyVar "e") (TyEffect () (Some "eff") (TyVar "c"))) (TyFun (TyFun (TyVar "a") (TyEffect () (Some "eff") (TyVar "c"))) (TyFun (TyApp (TyApp (TyCon "Result") (TyVar "e")) (TyVar "a")) (TyEffect () (Some "eff") (TyVar "c"))))))
+(DFunDef false "result" ((PVar "onErr") (PVar "onOk") (PCon "Ok" (PVar "x"))) (EApp (EVar "onOk") (EVar "x")))
+(DFunDef false "result" ((PVar "onErr") (PVar "onOk") (PCon "Err" (PVar "e"))) (EApp (EVar "onErr") (EVar "e")))
+(DProp false "result onErr onOk (Ok x) == onOk x" ((pp "x" (TyCon "Int"))) (EBinOp "==" (EApp (EApp (EApp (EVar "result") (ELam ((PVar "e")) (ELit (LInt 0)))) (ELam ((PVar "n")) (EBinOp "*" (EVar "n") (ELit (LInt 2))))) (EApp (EVar "Ok") (EVar "x"))) (EBinOp "*" (EVar "x") (ELit (LInt 2)))))
+(DProp false "result onErr onOk (Err e) == onErr e" ((pp "e" (TyCon "Int"))) (EBinOp "==" (EApp (EApp (EApp (EVar "result") (ELam ((PVar "n")) (EBinOp "*" (EVar "n") (ELit (LInt 2))))) (ELam ((PVar "n")) (ELit (LInt 0)))) (EAnnot (EApp (EVar "Err") (EVar "e")) (TyApp (TyApp (TyCon "Result") (TyCon "Int")) (TyCon "Int")))) (EBinOp "*" (EVar "e") (ELit (LInt 2)))))

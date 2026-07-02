@@ -575,6 +575,14 @@ export default impl Mappable (Result e) where
   map f (Ok a) = Ok (f a)
   map _ e = e
 
+{- | Replace every element of a wrapped value with a constant, keeping the
+   structure — Haskell's `$>`.  `replaceWith fa b == map (const b) fa`.
+
+   > replaceWith (Some 5) 9
+   Some 9 -}
+export replaceWith : Mappable f => f a -> b -> f b
+replaceWith fa b = map (_ => b) fa
+
 {- | `Mappable` plus the ability to lift a plain value and apply a wrapped
    function to a wrapped argument.  Laws (identity, homomorphism,
    interchange, composition) follow Haskell's `Applicative`. -}
@@ -625,6 +633,54 @@ when b m = if b then m else pure ()
 -- | Run an action only when the condition is false.  Dual of `when`.
 export unless : Thenable m => Bool -> m Unit -> m Unit
 unless b m = if b then pure () else m
+
+{- | Monadic left fold: thread an accumulator through an effectful step, in
+   order, over a list.  Haskell's `foldM`.
+
+   > foldThen (acc x => Some (acc + x)) 0 [1, 2, 3]
+   Some 6 -}
+export foldThen : Thenable m => (b -> a -> <e> m b) -> b -> List a -> <e> m b
+foldThen _ z [] = pure z
+foldThen f z (x::xs) = andThen (f z x) (z2 => foldThen f z2 xs)
+
+{- | Run an action `n` times and collect the results in order.  `n <= 0`
+   yields `pure []`.  Haskell's `replicateM`.
+
+   > repeatThen 3 (Some 7)
+   Some [7, 7, 7] -}
+export repeatThen : Thenable m => Int -> m a -> m (List a)
+repeatThen n action
+  | n <= 0 = pure []
+  | otherwise = andThen action (x => andThen (repeatThen (n - 1) action) (xs => pure (x::xs)))
+
+{- | Keep the elements for which an effectful predicate returns `True`, in
+   order.  Haskell's `filterM`.
+
+   > filterThen (x => Some (x > 1)) [1, 2, 3]
+   Some [2, 3] -}
+export filterThen : Thenable m => (a -> <e> m Bool) -> List a -> <e> m (List a)
+filterThen _ [] = pure []
+filterThen f (x::xs) = andThen
+  (f x)
+  (keep => andThen (filterThen f xs) (rest => pure (if keep then x::rest else rest)))
+
+{- | Run an effectful action for each element, in order, discarding the
+   per-element results.  Haskell's `traverse_`/`for_` specialised to `List`.
+
+   > forEach [1, 2, 3] (x => Some ())
+   Some () -}
+export forEach : Thenable m => List a -> (a -> <e> m Unit) -> <e> m Unit
+forEach [] _ = pure ()
+forEach (x::xs) f = andThen (f x) (_ => forEach xs f)
+
+{- | Run each action in a list, in order, discarding the results.  Haskell's
+   `sequence_` specialised to `List`.
+
+   > runEach [Some 1, Some 2]
+   Some () -}
+export runEach : Thenable m => List (m a) -> m Unit
+runEach [] = pure ()
+runEach (x::xs) = andThen x (_ => runEach xs)
 
 export impl Thenable List where
   andThen [] _ = []
@@ -682,6 +738,38 @@ export impl Alternative Option where
   orElse a b = match a
     Some _ => a
     None => b
+
+{- | `guard True` succeeds with `pure ()`; `guard False` is the failing
+   `noMatch`.  Used to prune an `Alternative` computation on a condition.
+
+   > (guard True : Option Unit)
+   Some ()
+   > (guard False : Option Unit)
+   None -}
+export guard : Alternative f => Bool -> f Unit
+guard True = pure ()
+guard False = noMatch
+
+{- | Map over BOTH type parameters of a two-parameter type constructor —
+   Haskell's `Bifunctor`, renamed to fit `Mappable`/`Thenable`.  `mapFirst`
+   touches the left/`Err` side, `mapSecond` the right/`Ok` side; both have
+   defaults in terms of `bimap`.
+
+   > bimap (n => n + 1) (n => n * 2) (Ok 5 : Result Int Int)
+   Ok 10
+   > bimap (n => n + 1) (n => n * 2) (Err 5 : Result Int Int)
+   Err 6 -}
+export interface Bimappable p where
+  bimap : (a -> <e> c) -> (b -> <e> d) -> p a b -> <e> p c d
+  mapFirst : (a -> <e> c) -> p a b -> <e> p c b
+  mapFirst f = bimap f identity
+  mapSecond : (b -> <e> d) -> p a b -> <e> p a d
+  mapSecond g = bimap identity g
+
+{- `mapFirst` on `Result` generalizes the standalone `mapErr`. -}
+export impl Bimappable Result where
+  bimap f _ (Err e) = Err (f e)
+  bimap _ g (Ok a) = Ok (g a)
 
 {- | Collapse a container down to a summary value.
 
@@ -1033,6 +1121,39 @@ const x _ = x
 export flip : (a -> b -> <e> c) -> b -> a -> <e> c
 flip f b a = f a b
 
+{- | Apply a binary function `f` to two arguments after running each through a
+   projection `g` — the classic `on`.  `sortBy (compare `on` fst)` compares
+   pairs by their first component.
+
+   > (compare `on` fst) (1, 9) (2, 8)
+   Lt -}
+export on : (b -> b -> <e> c) -> (a -> b) -> a -> a -> <e> c
+on f g x y = f (g x) (g y)
+
+{- | Turn a function on a pair into a function of two arguments.  The inverse
+   of `uncurry`.  (Medaka tuples aren't auto-curried, so this is not free.)
+
+   > curry fst 1 2
+   1 -}
+export curry : ((a, b) -> <e> c) -> a -> b -> <e> c
+curry f a b = f (a, b)
+
+{- | Turn a two-argument function into a function on a pair.  The inverse of
+   `curry`.
+
+   > uncurry (a b => a + b) (3, 4)
+   7 -}
+export uncurry : (a -> b -> <e> c) -> (a, b) -> <e> c
+uncurry f (a, b) = f a b
+
+{- | Run a wrapped computation for its structure/effect and discard the result,
+   replacing it with `Unit`.  Haskell calls this `void`.
+
+   > discard (Some 5)
+   Some () -}
+export discard : Mappable f => f a -> f Unit
+discard fa = map (_ => ()) fa
+
 {- | Right-to-left function composition: `(compose g f) x == g (f x)`.
    Spelled `<<` as an operator. -}
 export compose : (b -> <e> c) -> (a -> <e> b) -> a -> <e> c
@@ -1172,3 +1293,17 @@ prop "toResult/fromResult round-trip on Some" (x : Int) =
 prop "Ord (List a) is reflexive" (xs : List Int) = match compare xs xs
   Eq => True
   _ => False
+
+prop "discard replaces the payload with Unit" (x : Int) =
+  eq (discard (Some x)) (Some ())
+
+prop "on agrees with its hand expansion" (a : Int) (b : Int) =
+  ((x y => x + y) `on` (n => n * 2)) a b == a * 2 + b * 2
+
+prop "mapFirst on Result generalizes mapErr" (n : Int) = eq
+  (mapFirst (x => x + 1) (Err n : Result Int Int))
+  (mapErr (x => x + 1) (Err n))
+
+prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
+  (foldThen (acc x => Some (acc + x)) 0 xs)
+  (Some (fold (acc x => acc + x) 0 xs))

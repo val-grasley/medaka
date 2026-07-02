@@ -1,0 +1,5 @@
+(DTypeSig true "option" (TyFun (TyVar "b") (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b"))) (TyFun (TyApp (TyCon "Option") (TyVar "a")) (TyEffect () (Some "e") (TyVar "b"))))))
+(DFunDef false "option" ((PVar "dflt") (PVar "f") (PCon "Some" (PVar "x"))) (EApp (EVar "f") (EVar "x")))
+(DFunDef false "option" ((PVar "dflt") PWild (PCon "None")) (EVar "dflt"))
+(DProp false "option dflt f (Some x) == f x" ((pp "x" (TyCon "Int")) (pp "d" (TyCon "Int"))) (EBinOp "==" (EApp (EApp (EApp (EVar "option") (EVar "d")) (ELam ((PVar "n")) (EBinOp "*" (EVar "n") (ELit (LInt 2))))) (EApp (EVar "Some") (EVar "x"))) (EBinOp "*" (EVar "x") (ELit (LInt 2)))))
+(DProp false "option dflt f None == dflt" ((pp "d" (TyCon "Int"))) (EBinOp "==" (EApp (EApp (EApp (EVar "option") (EVar "d")) (ELam ((PVar "n")) (EBinOp "*" (EVar "n") (ELit (LInt 2))))) (EAnnot (EVar "None") (TyApp (TyCon "Option") (TyCon "Int")))) (EVar "d")))
