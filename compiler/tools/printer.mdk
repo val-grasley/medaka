@@ -72,6 +72,13 @@ public export data Doc =
   -- FlatAlt a b: render `a` when the enclosing group is BROKEN, `b` when FLAT.
   -- A break-only trailing comma is `FlatAlt (text ",") Nil`.
   | FlatAlt Doc Doc
+  -- LineComment text: a trailing `--` line comment anchored to the operand/
+  -- statement it documents.  Renders inline as `"  " ++ text`, and (like a
+  -- `--` in source) FORCES its enclosing group to break — nothing may be packed
+  -- after a line comment, since it runs to end-of-line.  This is the Doc-IR
+  -- node that lets comment placement survive width-driven reflow: wherever the
+  -- engine lays the operand it rides on, the comment travels with it.
+  | LineComment String
 
 -- `a ^^ b` = Cat a b
 cat : Doc -> Doc -> Doc
@@ -186,6 +193,9 @@ fits w ((Item i _ (Group d))::z) = fits w (Item i Flat d :: z)
 fits w ((Item i _ (FlatGroup d))::z) = fits w (Item i Flat d :: z)
 -- fits always measures a FLAT layout → take the flat alternative.
 fits w ((Item i m (FlatAlt _ b))::z) = fits w (Item i m b :: z)
+-- A line comment can never fit flat: it forces the enclosing group to break
+-- (a `--` comment runs to EOL, so nothing may follow it on the same line).
+fits _ ((Item _ _ (LineComment _))::_) = False
 
 -- `n` spaces.
 spaces : Int -> String
@@ -224,6 +234,11 @@ go col ((Item i _ (FlatGroup d))::z) =
 -- FlatAlt: in Flat mode render the flat alternative `b`; in Break mode render `a`.
 go col ((Item i Flat (FlatAlt _ b))::z) = go col (Item i Flat b :: z)
 go col ((Item i Break (FlatAlt a _))::z) = go col (Item i Break a :: z)
+-- A line comment renders inline (two-space gap + text); it forced the group
+-- broken via `fits`, so the following `Line`/`Hardline` will start the next
+-- output line.  Mode-independent.
+go col ((Item _ _ (LineComment s))::z) =
+  "  " ++ s :: go (col + 2 + stringLength s) z
 
 export render : Doc -> String
 render doc = stringConcat (go 0 [Item 0 Break doc])
@@ -881,6 +896,87 @@ collectChain op acc (EBinOp op2 l r rf)
   | op2 == op = collectChain op ((op2, r)::acc) l
   | otherwise = (EBinOp op2 l r rf, acc)
 collectChain _ acc head = (head, acc)
+
+-- ── Comment-interleaved continuation chains (finding "L") ──────────────────
+-- `medaka fmt` routes a continuation-op chain RHS that carries per-operand
+-- trailing comments here (via `printDeclChainCommented`).  Each operand's Doc is
+-- anchored to its `LineComment`, so the comment rides with the operand across
+-- any reflow.  A commented chain ALWAYS breaks (a `--` forces it), one operand
+-- per line, with the head on its own indented line below `=`.
+--
+-- `comments` is one entry per operand in `collectChain` order (head first, then
+-- each right in source order); `None` = that operand has no trailing comment.
+
+-- Number of operands in a decl's continuation-chain body (0 if it is not one).
+-- `medaka fmt` uses this to verify its per-operand comment list lines up with
+-- the AST before taking the commented path.
+export declChainLen : Decl -> Int
+declChainLen (DAttrib _ inner) = declChainLen inner
+declChainLen (DFunDef _ _ _ body) = chainLenBody body
+declChainLen _ = 0
+
+chainLenBody : Expr -> Int
+chainLenBody (ELoc _ e) = chainLenBody e
+chainLenBody (EBinOp op l r rf)
+  | isContinuationOp op = match collectChain op [] (EBinOp op l r rf)
+    (_, rights) => 1 + listLen rights
+chainLenBody _ = 0
+
+-- Render one operand's optional trailing comment as an anchored `LineComment`.
+opCommentDoc : Option String -> Doc
+opCommentDoc None = Nil
+opCommentDoc (Some t) = LineComment t
+
+-- One continuation line of a commented chain: `<Line>op <operand>  -- cmt`.
+chainItemCommented : Int -> (String, Expr) -> Option String -> Doc
+chainItemCommented prec (o, r) cmt =
+  Cat
+    Line
+    (Cat
+      (text o)
+      (Cat (text " ") (Cat (printExpr (prec + 1) r) (opCommentDoc cmt))))
+
+-- Zip the chain's `rights` with the tail of the per-operand comment list.
+chainTailCommented : Int -> List (String, Expr) -> List (Option String) -> Doc
+chainTailCommented _ [] _ = Nil
+chainTailCommented prec (r::rs) (c::cs) =
+  Cat (chainItemCommented prec r c) (chainTailCommented prec rs cs)
+chainTailCommented prec (r::rs) [] =
+  Cat (chainItemCommented prec r None) (chainTailCommented prec rs [])
+
+-- The RHS after `=` for a commented chain: break at `=` (head on its own line),
+-- then each operand on its own line with its comment.  The whole thing sits in
+-- one group that a `LineComment` forces to break.
+printChainCommentedRhs : String -> Expr -> List (Option String) -> Doc
+printChainCommentedRhs op e comments =
+  let prec = binopPrec op
+  match collectChain op [] e
+    (head, rights) =>
+      let headCmt = match comments
+        h::_ => h
+        [] => None
+      let restCmts = match comments
+        _::t => t
+        [] => []
+      let body = Cat (printExpr prec head) (Cat (opCommentDoc headCmt) (chainTailCommented prec rights restCmts))
+      Cat (text " =") (group (Nest 2 (Cat Line body)))
+
+-- Print a whole DFunDef (optionally @attr-wrapped) whose body is a continuation
+-- chain, interleaving `comments` (one per operand).  Falls back to the plain
+-- `printDecl` for anything else (fmt only calls this for a verified chain decl).
+export printDeclChainCommented : Decl -> List (Option String) -> Doc
+printDeclChainCommented (DAttrib attrs inner) comments =
+  Cat (concatD (map attrDoc attrs)) (printDeclChainCommented inner comments)
+printDeclChainCommented (DFunDef pub n pats body) comments =
+  let header = Cat (if pub then text "export " else Nil) (Cat (text n) (concatD (map (p => Cat (text " ") (printPatAtom p)) pats)))
+  Cat header (printDefChainRhs body comments)
+printDeclChainCommented d _ = printDecl d
+
+printDefChainRhs : Expr -> List (Option String) -> Doc
+printDefChainRhs (ELoc _ e) comments = printDefChainRhs e comments
+printDefChainRhs (EBinOp op l r rf) comments
+  | isContinuationOp op = printChainCommentedRhs op (EBinOp op l r rf) comments
+printDefChainRhs body _ = printDefRhs body
 
 -- Flatten the left-assoc application spine into one group; each arg on its own
 -- indented line when broken.  Flat rendering matches the inline EApp arm.
