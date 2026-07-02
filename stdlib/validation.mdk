@@ -70,6 +70,9 @@ export impl Foldable (Validation e) where
   toList (Failure _) = []
   toList (Success x) = [x]
 
+-- Multi-clause + return-position `pure` loops in eval for Thenable impls;
+-- see the note above core.mdk's Traversable impls — do not split.
+-- lint-disable-next-line rule-match-on-param
 export impl Traversable (Validation e) where
   traverse f v = match v
     Failure e => pure (Failure e)
