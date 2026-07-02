@@ -261,10 +261,12 @@ fallthroughLabelRef = Ref ""
 -- (emitClosureAllocA); read at an INDIRECT call site (emitIndirect) so a let-bound
 -- closure applied to MORE args than its arity (`(g 7) 9` where `g = (x => (y => …))`)
 -- saturates with the first `arity` args then applies the surplus to the returned
--- closure (emitApplyExtra) — mirroring emitOverApp for known fns.  Without this the
+-- closure (emitApplyAny) — mirroring emitOverApp for known fns.  Without this the
 -- indirect call passed ALL args to the arity-1 lifted code → arity mismatch →
 -- garbage.  A miss (closure word not a recorded `%tN` — e.g. a captured/param
--- closure) falls back to the raw all-args call (unchanged behaviour).
+-- closure) falls to emitApplyAny, which reads the closure's RUNTIME arity from the
+-- cell header (field 0) and dispatches exact / partial (PAP) / over application via
+-- the runtime @mdk_apply — so an opaque under-application no longer miscompiles.
 closureArityRef : Ref (List (String, Int))
 closureArityRef = Ref []
 
@@ -3043,7 +3045,7 @@ knotAlloc e env cellEnv ((CBind name clauses)::rest) =
   let arity = clauseArity (clauseList clauses)
   let captured = keepInEnv cellEnv (removeStr name (dedupS (clausesFreeVars name clauses)))
   let _ = emitGroupBindDefine e cellEnv lamName name arity clauses captured
-  let (cellPtr, cellWord) = emitClosureAllocPatch e lamName (lengthS captured)
+  let (cellPtr, cellWord) = emitClosureAllocPatch e lamName arity (lengthS captured)
   let (cells, env2) = knotAlloc e ((name, (cellWord, LTClosure))::env) cellEnv rest
   (KnotCell name cellPtr captured :: cells, env2)
 knotAlloc e env cellEnv (_::rest) = knotAlloc e env cellEnv rest
@@ -3062,14 +3064,14 @@ knotPatch e env ((KnotCell _ cellPtr captureNames)::rest) =
 -- the cell word (the closure value).  Mirrors emitClosureAlloc/emitCtorAlloc's
 -- layout exactly — field 0 = code_ptr — so the cell is callable immediately
 -- (`emitIndirect` loads field 0); only the capture fields await back-patch.
-emitClosureAllocPatch : Emit -> String -> Int -> <Mut> (String, String)
-emitClosureAllocPatch e lamName nCap =
+emitClosureAllocPatch : Emit -> String -> Int -> Int -> <Mut> (String, String)
+emitClosureAllocPatch e lamName callArity nCap =
   let codePtr = "ptrtoint (ptr @" ++ lamName ++ " to i64)"
   let fields = codePtr :: zeroWords nCap
-  let arity = lengthS fields
+  let nFields = lengthS fields
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString (cellTag e closureHeaderName) ++ ", ptr " ++ p)
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (nFields + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString callArity ++ ", ptr " ++ p)
   let _ = storeFields e p fields 0
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
@@ -3283,16 +3285,20 @@ emitIndirect e env hd args =
     Some n =>
       if n > 0 && lengthS argOps > n then
         -- OVER-APPLICATION of a let-bound closure (`(g 7) 9`): saturate with the
-        -- first `n` args, then apply the surplus to the returned closure value.
+        -- first `n` args, then apply the surplus to the returned (opaque) value.
         let r0 = emitIndirectCallWords e cw (takeS n argOps)
-        (emitApplyExtra e r0 (dropS n argOps), LTInt)
+        (emitApplyAny e r0 (dropS n argOps), LTInt)
       else if n > 0 && lengthS argOps < n then
         -- UNDER-APPLICATION (`let h = g 7` for arity-2 g): build a residual
         -- partial-application closure over the inner closure value + supplied args.
         emitPapClosureIndirect e cw argOps n
       else
         (emitIndirectCallWords e cw argOps, indirectRetTy cw hd)
-    None => (emitIndirectCallWords e cw argOps, indirectRetTy cw hd)
+    -- OPAQUE head (arity unknown at compile time — e.g. a closure PARAM `f` in
+    -- `map f`, or a closure pulled from a container).  The supplied count may not
+    -- match the closure's runtime arity, so dispatch arity-aware (emitApplyAny):
+    -- exact ⇒ inline call; partial ⇒ runtime PAP; over ⇒ saturate + reapply.
+    None => (emitApplyAny e cw argOps, indirectRetTy cw hd)
 
 -- the raw indirect call: load the closure's code_ptr (cell field 0) and `call` it
 -- with the closure word as the leading argument followed by `argOps`.
@@ -3688,19 +3694,73 @@ emitOverApp e sym argOps arity resTy =
   let satArgs = takeS arity argOps
   let extra = dropS arity argOps
   let (r0, _) = emitImplCall e sym satArgs resTy
-  (emitApplyExtra e r0 extra, LTInt)
+  (emitApplyAny e r0 extra, LTInt)
 
--- apply a residual closure VALUE to each remaining arg word, left to right, via an
--- indirect call (load code_ptr from cell field 0, `call codePtr(closure, arg)`).
-emitApplyExtra : Emit -> String -> List String -> <Mut> String
-emitApplyExtra _ cw [] = cw
-emitApplyExtra e cw (a::rest) =
-  let cp = loadField e cw 0
-  let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+-- ARITY-AWARE application of an OPAQUE closure word `cw` to `argOps` (count N): the
+-- compile-time arity is unknown (a closure param, a container element, an over-app
+-- residual), so the supplied count may not equal the closure's runtime arity.  Read
+-- the arity from the cell header (field 0); if it equals N, inline the direct call
+-- (the historical fast path); otherwise route through the runtime @mdk_apply, which
+-- builds a PAP for a partial application, flattens a PAP, and splits an
+-- over-application.  A PAP carries a -1 header so it never matches N (>=1) and always
+-- takes the runtime path.  Uses an alloca result slot (like emitIf) so no phi
+-- predecessor-label bookkeeping is needed.
+emitApplyAny : Emit -> String -> List String -> <Mut> String
+emitApplyAny e cw [] = cw
+emitApplyAny e cw argOps =
+  let n = lengthS argOps
+  let hdr = loadHeader e cw
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ hdr ++ ", " ++ intToString n)
+  let m = intToString (freshId e)
+  let fastL = "apfast" ++ m
+  let slowL = "apslow" ++ m
+  let endL = "apend" ++ m
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ fastL ++ ", label %" ++ slowL)
+  let _ = emit e (fastL ++ ":")
+  let rf = emitIndirectCallWords e cw argOps
+  let _ = emit e ("  store i64 " ++ rf ++ ", ptr " ++ slot)
+  let _ = emit e ("  br label %" ++ endL)
+  let _ = emit e (slowL ++ ":")
+  let rs = emitApplyRuntime e cw argOps
+  let _ = emit e ("  store i64 " ++ rs ++ ", ptr " ++ slot)
+  let _ = emit e ("  br label %" ++ endL)
+  let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(i64 " ++ cw ++ ", i64 " ++ a ++ ")")
-  emitApplyExtra e r rest
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  r
+
+-- the runtime-generic path: materialize `argOps` into an [N x i64] alloca and call
+-- @mdk_apply(cw, N, ptr).  Handles partial / over application + PAP flatten.
+emitApplyRuntime : Emit -> String -> List String -> <Mut> String
+emitApplyRuntime e cw argOps =
+  let n = lengthS argOps
+  let arr = freshReg e
+  let _ = emit e ("  " ++ arr ++ " = alloca i64, i64 " ++ intToString n)
+  let _ = storeArgv e arr argOps 0
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_apply(i64 " ++ cw ++ ", i64 " ++ intToString n ++ ", ptr " ++ arr ++ ")")
+  r
+
+-- store each arg word into the argv alloca at index `i` (getelementptr i64 stride).
+storeArgv : Emit -> String -> List String -> Int -> <Mut> Unit
+storeArgv _ _ [] _ = ()
+storeArgv e arr (a::rest) i =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = getelementptr i64, ptr " ++ arr ++ ", i64 " ++ intToString i)
+  let _ = emit e ("  store i64 " ++ a ++ ", ptr " ++ p)
+  storeArgv e arr rest (i + 1)
+
+-- load the header word (field 0, offset 0 — the closure arity) of a boxed cell.
+loadHeader : Emit -> String -> <Mut> String
+loadHeader e ptrWord =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let f = freshReg e
+  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ p)
+  f
 
 -- build a partial-application closure over `@fname` with `argOps` already-supplied
 -- arg words captured.  Emits a forwarder `@mdk_pap_..(%clos, %arg0..%arg(rem-1))`
@@ -3714,7 +3774,7 @@ emitPapClosure e fname argOps arity =
   let remaining = arity - supplied
   let papName = "mdk_pap_" ++ fname ++ "_" ++ intToString (freshId e)
   let _ = emitPapDefine e papName fname supplied remaining
-  emitClosureAlloc e papName argOps
+  emitClosureAlloc e papName remaining argOps
 
 -- emit the PAP forwarder define into the side buffer (same swap discipline as
 -- emitEtaDefine).  `supplied` captured words are loaded from %clos fields 1..k;
@@ -4976,14 +5036,31 @@ firstClausePats [] = []
 closureHeaderName : String
 closureHeaderName = "$closure"
 
--- allocate a closure cell {header, code_ptr, captured…}: reuse the slice-3 ctor
--- alloc with "fields" = [code_ptr, capture…].  `code_ptr` is a constant-expression
--- operand (`ptrtoint (ptr @mdk_lamN to i64)`); `emitCtorAlloc` stores it like any
--- field word.  Result is the cell pointer word, typed LTClosure.
-emitClosureAlloc : Emit -> String -> List String -> <Mut> (String, LTy)
-emitClosureAlloc e lamName captureWords =
+-- allocate a closure cell {arity, code_ptr, captured…}.  Field 0 is the closure's
+-- callable ARITY (the value-arg count of its lifted `@mdk_lamN` define, i.e. the
+-- args AFTER the leading `%clos` word) — the runtime reads it (mdk_apply) to decide
+-- exact / partial / over application.  `code_ptr` is a constant-expression operand
+-- (`ptrtoint (ptr @mdk_lamN to i64)`).  The arity MUST equal the emitted define's
+-- param count (the E22 hazard): an inline exact call trusts field 0, so a mismatch
+-- would divert a saturated call to the PAP path.  Result is the cell pointer word,
+-- typed LTClosure.
+emitClosureAlloc : Emit -> String -> Int -> List String -> <Mut> (String, LTy)
+emitClosureAlloc e lamName arity captureWords =
   let codePtr = "ptrtoint (ptr @" ++ lamName ++ " to i64)"
-  let (w, _) = emitCtorAlloc e closureHeaderName (codePtr::captureWords)
+  let (w, _) = emitClosureCell e arity (codePtr::captureWords)
+  (w, LTClosure)
+
+-- allocate a boxed cell whose header word is the raw integer `hdr` (the closure
+-- arity) rather than a hashed ctor tag; fields stored at offset 8*(i+1) as usual.
+emitClosureCell : Emit -> Int -> List String -> <Mut> (String, LTy)
+emitClosureCell e hdr fields =
+  let n = lengthS fields
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString hdr ++ ", ptr " ++ p)
+  let _ = storeFields e p fields 0
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
   (w, LTClosure)
 
 -- emitClosureAlloc + record the closure's compile-time arity in closureArityRef
@@ -4992,7 +5069,7 @@ emitClosureAlloc e lamName captureWords =
 -- closures whose arity is statically known.
 emitClosureAllocA : Emit -> String -> Int -> List String -> <Mut> (String, LTy)
 emitClosureAllocA e lamName arity captureWords =
-  let (w, lty) = emitClosureAlloc e lamName captureWords
+  let (w, lty) = emitClosureAlloc e lamName arity captureWords
   let _ = setRef closureArityRef ((w, arity)::closureArityRef.value)
   (w, lty)
 
@@ -5133,7 +5210,7 @@ emitEtaClosure e fname =
   let arity = fnArity e fname
   let lamName = "mdk_eta_" ++ fname ++ "_" ++ intToString (freshId e)
   let _ = emitEtaDefine e lamName fname arity
-  emitClosureAlloc e lamName []
+  emitClosureAlloc e lamName arity []
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
@@ -5167,7 +5244,7 @@ emitCtorEtaClosure e name =
   let arity = ctorArity e name
   let lamName = "mdk_etac_" ++ name ++ "_" ++ intToString (freshId e)
   let _ = emitCtorEtaDefine e lamName name arity
-  emitClosureAlloc e lamName []
+  emitClosureAlloc e lamName arity []
 
 -- emit the captureless ctor-eta forwarder `@mdk_etacN(i64 %clos, %arg…) { <alloc
 -- cell from %arg0..%argN-1>; ret }` into the side buffer (same swap discipline as
@@ -5234,7 +5311,7 @@ emitUnicodeEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitUnicodeEtaClosure e name =
   let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
   let _ = emitUnicodeEtaDefine e lamName name
-  emitClosureAlloc e lamName []
+  emitClosureAlloc e lamName 1 []
 
 -- the runtime symbol + whether the C result is an untagged 0/1 needing `tagInt`
 -- (predicates) — mirrors emitUnicodeExtern exactly.
@@ -5284,7 +5361,7 @@ emitExternEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitExternEtaClosure e name =
   let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
   let _ = emitExternEtaDefine e lamName name (externArity e name)
-  emitClosureAlloc e lamName []
+  emitClosureAlloc e lamName (externArity e name) []
 
 -- Gap #50 (value position) — an interface METHOD name reaching emitVar as a bare
 -- first-class value (passed to a HOF, e.g. `apply2 max 3 8`).  At a value site the
@@ -5299,7 +5376,7 @@ emitMethodEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitMethodEtaClosure e name =
   let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
   let _ = emitMethodEtaDefine e lamName name (methodArityOf name)
-  emitClosureAlloc e lamName []
+  emitClosureAlloc e lamName (methodArityOf name) []
 
 -- the captureless method-eta forwarder `@mdk_etaN(i64 %clos, %arg…) { <inline
 -- arg-tag dispatch over %arg0..%arg(N-1)>; ret }` (mirror of emitExternEtaDefine).

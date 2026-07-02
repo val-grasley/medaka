@@ -18,6 +18,7 @@ preambleLines = [
   "; Value rep is PROVISIONAL (uniform 64-bit tagged word); see RUNTIME-DESIGN.md.",
   "declare ptr @mdk_alloc(i64)",
   "declare ptr @mdk_alloc_atomic(i64)",
+  "declare i64 @mdk_apply(i64, i64, ptr)",
   "declare void @mdk_oob() noreturn",
   "declare void @mdk_print_int(i64)",
   "declare void @mdk_print_bool(i64)",

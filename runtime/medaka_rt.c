@@ -90,6 +90,90 @@ void *mdk_alloc(long long n) { return GC_malloc((size_t)n); }
  * written by mdk_str_lit; no field is a heap pointer. */
 void *mdk_alloc_atomic(long long n) { return GC_malloc_atomic((size_t)n); }
 
+/* ---- generic arity-aware closure application (partial application / PAPs) ----
+ *
+ * A CLOSURE cell is `[ i64 arity | i64 code_ptr | captures... ]`: field 0 is the
+ * closure's callable arity (the number of value args its lifted `@mdk_lamN` define
+ * takes AFTER the leading `%clos` word), field 1 the code pointer.  The emitter
+ * calls a closure INLINE (`code_ptr(cw, args...)`) only when it can prove the
+ * supplied count equals the runtime arity; otherwise it routes through mdk_apply.
+ *
+ * A PARTIAL APPLICATION (PAP) is `[ i64 -1 | i64 orig_cw | i64 n_supplied |
+ * supplied_args... ]`: the -1 header sentinel (never equals a real supplied count
+ * >= 1) forces every application of a PAP through mdk_apply, which FLATTENS it —
+ * re-dispatching the original closure against (already-supplied ++ new) args.  So a
+ * PAP is never called via the inline fast path and needs no per-arity trampoline. */
+#define MDK_MAX_ARITY 16
+
+typedef long long mdk_i64;
+
+mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv);
+
+/* call `code`(cw, argv[0..argc-1]) — argc statically-typed via a small switch. */
+static mdk_i64 mdk_call_exact(mdk_i64 code, mdk_i64 cw, mdk_i64 argc,
+                              const mdk_i64 *a) {
+  switch (argc) {
+    case 0:  return ((mdk_i64(*)(mdk_i64))code)(cw);
+    case 1:  return ((mdk_i64(*)(mdk_i64,mdk_i64))code)(cw,a[0]);
+    case 2:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1]);
+    case 3:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2]);
+    case 4:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2],a[3]);
+    case 5:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2],a[3],a[4]);
+    case 6:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2],a[3],a[4],a[5]);
+    case 7:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2],a[3],a[4],a[5],a[6]);
+    case 8:  return ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)(cw,a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7]);
+    default:
+      /* arity > 8: saturate 8 at a time, then apply the surplus. */
+      {
+        mdk_i64 r = ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)
+                      (cw,a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7]);
+        return mdk_apply(r, argc - 8, a + 8);
+      }
+  }
+}
+
+/* build a PAP capturing `cw` plus the `argc` args already supplied. */
+static mdk_i64 mdk_make_pap(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
+  mdk_i64 *cell = (mdk_i64 *)mdk_alloc((long long)(8 * (3 + argc)));
+  cell[0] = -1;         /* PAP sentinel header */
+  cell[1] = cw;         /* the original closure */
+  cell[2] = argc;       /* number of args captured so far */
+  for (mdk_i64 i = 0; i < argc; i++) cell[3 + i] = argv[i];
+  return (mdk_i64)cell;
+}
+
+/* apply the closure/PAP word `cw` to `argc` args (a pointer to `argc` i64 words).
+ * The single entry point for any application the emitter could not resolve to an
+ * exact-arity inline call. */
+mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
+  mdk_i64 *cell = (mdk_i64 *)cw;
+  if (cell[0] == -1) {
+    /* PAP: flatten — combine already-supplied args with the new ones and
+     * re-dispatch against the underlying closure. */
+    mdk_i64 orig = cell[1];
+    mdk_i64 nsup = cell[2];
+    mdk_i64 total = nsup + argc;
+    mdk_i64 stackbuf[2 * MDK_MAX_ARITY];
+    mdk_i64 *buf = stackbuf;
+    if (total > (mdk_i64)(2 * MDK_MAX_ARITY))
+      buf = (mdk_i64 *)mdk_alloc((long long)(8 * total));
+    for (mdk_i64 i = 0; i < nsup; i++) buf[i] = ((mdk_i64 *)cw)[3 + i];
+    for (mdk_i64 i = 0; i < argc; i++) buf[nsup + i] = argv[i];
+    return mdk_apply(orig, total, buf);
+  }
+  {
+    mdk_i64 arity = cell[0];
+    mdk_i64 code = cell[1];
+    if (argc == arity) return mdk_call_exact(code, cw, argc, argv);
+    if (argc < arity) return mdk_make_pap(cw, argc, argv);
+    /* over-application: saturate `arity`, then apply the surplus to the result. */
+    {
+      mdk_i64 r = mdk_call_exact(code, cw, arity, argv);
+      return mdk_apply(r, argc - arity, argv + arity);
+    }
+  }
+}
+
 noreturn void mdk_oob(void) {
   fprintf(stderr, "array index out of bounds\n");
   exit(1);

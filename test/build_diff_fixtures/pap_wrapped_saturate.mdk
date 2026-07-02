@@ -1,0 +1,19 @@
+-- Regression: a partially-applied MULTI-ARG closure stored in a container, then
+-- saturated via `ap`, must build==run.  `map (a b => a+b) (Some 3)` wraps a PAP
+-- (an arity-2 closure applied to one arg) inside the Option; `ap` then applies it
+-- to the remaining arg.  Before the arity-carrying-closure fix the native build
+-- called the arity-2 lifted lambda with one arg (undef 2nd param), returned
+-- garbage instead of a residual closure, and `ap`'s later application dereferenced
+-- the garbage as a closure → SIGSEGV.  Covers Option (single PAP) and List
+-- (cartesian ap), plus a 3-arg closure (map3 shape) and an over-application.
+add3 a b c = a + b + c
+
+main =
+  let optSum = ap (map (a b => a + b) (Some 3)) (Some 4)
+  let listSum = ap (map (a b => a + b) [10, 20]) [1, 2]
+  let opt3 = ap (ap (map (a b c => a + b + c) (Some 1)) (Some 2)) (Some 3)
+  let over = (add3 10) 5 100
+  println optSum
+  println listSum
+  println opt3
+  println over
