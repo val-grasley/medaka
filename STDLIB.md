@@ -1056,6 +1056,24 @@ recursion, EEXIST-tolerant), `walkDir` (recursive, full paths, depth-first),
 `isDir`/`isFile`/`fileSize`. Gated by 6 `test/llvm_fixtures/s13_*` build fixtures
 (effectful → no doctests).
 
+## Module 18 — `time` ✅ implemented (P1, 2026-07-01)
+
+`stdlib/time.mdk` — durations + a UTC civil calendar. `import time`. Unlike `fs`,
+these run on BOTH `medaka run` and `build` (`<Clock>` externs are interpreted).
+
+**New externs (in `runtime.mdk`):** `monotonicSec : Unit -> <Clock> Float`
+(`clock_gettime(CLOCK_MONOTONIC)`, interval timing) + `sleepMs : Int -> <Clock>
+Unit` (`nanosleep`). Mirror `wallTimeSec`'s `<Clock>` wiring (eval `prim1M` →
+`medaka_rt.c` → `emitPerfExtern`). `<Clock>` is atomic (no capability hole).
+
+**Module API:** `Duration` (ms-backed) with `millis`/`seconds`/`minutes`/`hours`/
+`days`, `toMillis`/`toSeconds`, `addDuration`/`subDuration`; `DateTime` record;
+`fromEpochSeconds`/`toEpochSeconds` (Hinnant days-from-civil — leap-year &
+pre-epoch correct, negatives via floorDiv) + `formatIso` (ISO 8601 `…Z`);
+effectful `now`/`nowDateTime`/`monotonic`/`elapsedSince`/`sleep`/`sleepSeconds`.
+UTC-only; **timezones = P2**. 15 doctests (cross-checked vs `date -u`) + a
+round-trip prop.
+
 ---
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
