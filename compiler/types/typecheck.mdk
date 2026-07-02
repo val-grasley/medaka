@@ -66,6 +66,7 @@ import support.util.{
   allList,
   initList,
   isEmptyL,
+  isNonEmptyL,
   minI,
   isSome,
   zipL,
@@ -5848,7 +5849,7 @@ constraintsHaveMethodLevel typarams (c::rest) = constraintIsMethodLevel typarams
 -- interface param (so the dict is supplied per-call, not by the impl's dispatch)
 constraintIsMethodLevel : List String -> Constraint -> Bool
 constraintIsMethodLevel typarams c =
-  not (isEmptyL (constraintNonParamVars typarams c))
+  isNonEmptyL (constraintNonParamVars typarams c)
 
 constraintNonParamVars : List String -> Constraint -> List String
 constraintNonParamVars typarams (Constraint _ args) =
@@ -6177,7 +6178,7 @@ implDefinesMethodAt ((ImplEntry tag2 methodNames _ _ _ _)::rest) method tag
 headHasRequires : List ImplEntry -> String -> Bool
 headHasRequires [] _ = False
 headHasRequires ((ImplEntry tag2 _ _ reqs _ _)::rest) tag
-  | tag2 == tag && not (isEmptyL reqs) = True
+  | tag2 == tag && isNonEmptyL reqs = True
   | otherwise = headHasRequires rest tag
 
 -- ── coherence check (TYPECHECK-AUDIT S3) ───────────────────────────────────

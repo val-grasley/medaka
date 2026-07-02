@@ -135,6 +135,9 @@ export isEmptyL : List a -> Bool
 isEmptyL [] = True
 isEmptyL _ = False
 
+export isNonEmptyL : List a -> Bool
+isNonEmptyL xs = not (isEmptyL xs)
+
 export filterList : (a -> Bool) -> List a -> List a
 filterList _ [] = []
 filterList p (x::xs)

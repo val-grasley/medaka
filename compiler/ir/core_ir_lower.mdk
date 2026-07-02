@@ -67,6 +67,7 @@ import support.util.{
   lookupAssoc,
   noneHeadTag,
   isEmptyL,
+  isNonEmptyL,
   startsWith,
 }
 
@@ -220,7 +221,7 @@ compileArms arms = compileTree (map armHasGuard arms) (initialRows arms 0)
 -- tree leaf must therefore be a CTGuard (fall-through on matchPat failure) rather
 -- than a CTLeaf (which assumes the pattern is guaranteed to match the scrutinee).
 armHasGuard : Arm -> Bool
-armHasGuard (Arm pat gs _) = not (isEmptyL gs) || patNeedsGuard pat
+armHasGuard (Arm pat gs _) = isNonEmptyL gs || patNeedsGuard pat
 
 patNeedsGuard : Pat -> Bool
 patNeedsGuard (PRng _ _ _) = True
@@ -701,7 +702,7 @@ compileArmsC : List CArm -> CTree
 compileArmsC arms = compileTree (map carmHasGuard arms) (cInitialRows arms 0)
 
 carmHasGuard : CArm -> Bool
-carmHasGuard (CArm pat gs _) = not (isEmptyL gs) || patNeedsGuard pat
+carmHasGuard (CArm pat gs _) = isNonEmptyL gs || patNeedsGuard pat
 
 cInitialRows : List CArm -> Int -> List (List Pat, Int)
 cInitialRows [] _ = []

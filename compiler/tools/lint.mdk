@@ -49,6 +49,7 @@ import support.util.{
   filterList,
   joinNl,
   isEmptyL,
+  isNonEmptyL,
   reverseL,
   splitNl,
   splitOnChar,
@@ -148,6 +149,9 @@ ruleNameDoubleReverse = "rule-double-reverse"
 
 ruleNameWhenUnless : String
 ruleNameWhenUnless = "rule-when-unless"
+
+ruleNameComplementPredicate : String
+ruleNameComplementPredicate = "rule-complement-predicate"
 
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
@@ -295,6 +299,16 @@ whenUnlessRule = Rule {
   fix = Some whenUnlessFix,
 }
 
+complementPredicateRule : Rule
+complementPredicateRule = Rule {
+  name = ruleNameComplementPredicate,
+  descr = "`not (p x)` where `p` has a defined complement predicate (`isEmptyL`/`isSome`/`isOk` & inverses) — call the complement directly",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleComplementPredicate,
+  fix = Some complementPredicateFix,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -311,6 +325,7 @@ allRules = [
   remParityRule,
   doubleReverseRule,
   whenUnlessRule,
+  complementPredicateRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -761,7 +776,7 @@ matchBodyOnBareParam pats body = match unwrapLoc body
 
 -- an arm with any guard qualifier (refutable bind or boolean) can't be a clause
 armHasGuard : Arm -> Bool
-armHasGuard (Arm _ guards _) = not (isEmptyL guards)
+armHasGuard (Arm _ guards _) = isNonEmptyL guards
 
 -- does the arm body still reference the scrutinee param (conservative, printed)
 armMentionsParam : String -> Arm -> Bool
@@ -2655,6 +2670,77 @@ whenUnlessFinding loc rewritten = Finding {
 
 whenUnlessFix : Oracle -> Decl -> Option (List Decl)
 whenUnlessFix _ d = exprRuleFix whenUnlessExcl (detApply whenUnlessOf) d
+
+-- ── rule: complement-predicate ────────────────────────────────────────────────
+-- `not (p args…)` where `p` is a registered predicate with a defined complement
+-- `q`, rewritten to `q args…` (the args carried verbatim).  Curated BIDIRECTIONAL
+-- pairs only — the complement must actually exist:
+--   isEmptyL ↔ isNonEmptyL   (compiler `support/util.mdk`)
+--   isEmptyList ↔ isNonEmptyList  (wasm_emit's private List helper + its complement)
+--   isSome ↔ isNone          (prelude `core.mdk`)
+--   isOk ↔ isErr             (prelude `core.mdk`)
+-- Also matches the unary-`!` form (`notArgOf` handles both).  Purely syntactic —
+-- only the exact registered names fire; anything else (`not (isEmptyL x && …)`,
+-- `not (someOtherPred x)`) is left alone.  Excludes the complement helpers' OWN
+-- definitions (`isNonEmptyL xs = not (isEmptyL xs)`) — their bodies ARE this idiom,
+-- so rewriting would produce `isNonEmptyL xs = isNonEmptyL xs`.
+complementExcl : String -> Bool
+complementExcl name = name == "isNonEmptyL" || name == "isNonEmptyList"
+
+complementOf : String -> Option String
+complementOf "isEmptyL" = Some "isNonEmptyL"
+complementOf "isNonEmptyL" = Some "isEmptyL"
+complementOf "isEmptyList" = Some "isNonEmptyList"
+complementOf "isNonEmptyList" = Some "isEmptyList"
+complementOf "isSome" = Some "isNone"
+complementOf "isNone" = Some "isSome"
+complementOf "isOk" = Some "isErr"
+complementOf "isErr" = Some "isOk"
+complementOf _ = None
+
+-- head var name of a (possibly curried multi-arg) application spine.
+appSpineHead : Expr -> Option String
+appSpineHead e = match unwrapLoc e
+  EVar n => Some n
+  EApp hd _ => appSpineHead (unwrapLoc hd)
+  _ => None
+
+-- rebuild the spine, renaming only the head var; every arg carried verbatim.
+renameSpineHead : String -> Expr -> Expr
+renameSpineHead newName e = match unwrapLoc e
+  EVar _ => EVar newName
+  EApp hd arg => EApp (renameSpineHead newName hd) arg
+  _ => e
+
+complementPredOf : Expr -> Option Expr
+complementPredOf e = match notArgOf e
+  Some inner => match appSpineHead (unwrapLoc inner)
+    Some name => match complementOf name
+      Some comp => Some (renameSpineHead comp (unwrapLoc inner))
+      None => None
+    None => None
+  None => None
+
+ruleComplementPredicate : String -> Positions -> List Decl -> List Finding
+ruleComplementPredicate _ pos prog =
+  exprRuleFindings
+    complementExcl
+    complementPredOf
+    complementPredicateFinding
+    pos
+    prog
+
+complementPredicateFinding : Option Loc -> Expr -> Finding
+complementPredicateFinding loc rewritten = Finding {
+  rule = ruleNameComplementPredicate,
+  message = "negated predicate — rewrite as '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+complementPredicateFix : Oracle -> Decl -> Option (List Decl)
+complementPredicateFix _ d =
+  exprRuleFix complementExcl (detApply complementPredOf) d
 
 -- ── cross-file runner ─────────────────────────────────────────────────────────
 -- Run the enabled cross-file rules over every target file, honoring the same

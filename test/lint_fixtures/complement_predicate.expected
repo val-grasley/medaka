@@ -1,0 +1,22 @@
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isEmptyL xs'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isErr (lookup a b)'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isErr x'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isNonEmptyL xs'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isNonEmptyL xs'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isNonEmptyL xs'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isNone x'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isOk x'
+warning: [rule-complement-predicate] negated predicate — rewrite as 'isSome x'
+warning: [rule-missing-signature] top-level 'negAnd' has no type signature — add a `negAnd : …` declaration
+warning: [rule-missing-signature] top-level 'negFlag' has no type signature — add a `negFlag : …` declaration
+warning: [rule-missing-signature] top-level 'negOther' has no type signature — add a `negOther : …` declaration
+warning: [rule-missing-signature] top-level 'negPlain' has no type signature — add a `negPlain : …` declaration
+warning: [rule-missing-signature] top-level 'nestedPos' has no type signature — add a `nestedPos : …` declaration
+warning: [rule-missing-signature] top-level 'posArg' has no type signature — add a `posArg : …` declaration
+warning: [rule-missing-signature] top-level 'posBang' has no type signature — add a `posBang : …` declaration
+warning: [rule-missing-signature] top-level 'posEmpty' has no type signature — add a `posEmpty : …` declaration
+warning: [rule-missing-signature] top-level 'posErr' has no type signature — add a `posErr : …` declaration
+warning: [rule-missing-signature] top-level 'posNonEmpty' has no type signature — add a `posNonEmpty : …` declaration
+warning: [rule-missing-signature] top-level 'posNone' has no type signature — add a `posNone : …` declaration
+warning: [rule-missing-signature] top-level 'posOk' has no type signature — add a `posOk : …` declaration
+warning: [rule-missing-signature] top-level 'posSome' has no type signature — add a `posSome : …` declaration

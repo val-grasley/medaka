@@ -742,8 +742,8 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   -- (ref eq) impl args + i31 dict witnesses, the W5 §8.6 uniform rep.  Strings
   -- (W6) also force ref-mode: a String is a boxed (ref eq) $str struct.  W8 RNG /
   -- hash externs produce/consume (ref eq) i31 values, so they force ref-mode too.
-  let useRef = useClos || programUsesAdt groups ctorArs || not (isEmptyList impls) || useStrRef.value
-    || useListRef.value || useArrayRef.value || useRefBoxRef.value || not (isEmptyList tupleAritiesRef.value)
+  let useRef = useClos || programUsesAdt groups ctorArs || isNonEmptyList impls || useStrRef.value
+    || useListRef.value || useArrayRef.value || useRefBoxRef.value || isNonEmptyList tupleAritiesRef.value
     || useRngRef.value || useHashRef.value || useFloatRef.value || useStrSearchRef.value
     || useCharClassRef.value || useIORef.value
   let typeNames = distinctTypeNames ctorTypes
@@ -834,6 +834,9 @@ emitValsGapsW prog (b::rest) =
 isEmptyList : List a -> Bool
 isEmptyList [] = True
 isEmptyList _ = False
+
+isNonEmptyList : List a -> Bool
+isNonEmptyList xs = not (isEmptyList xs)
 
 -- a top-level fn's arity = its (first clause's) param count.  Multi-clause fns share
 -- one arity (all clauses agree); use the first clause.
@@ -1901,7 +1904,7 @@ emitRefProgram prog groups =
   -- the dest-passing reset-wrapper + inner-loop emit.
   let dispGroups = detectDispatchGroups prog (userFnBinds groups)
   let _ = setRef wDispGroupsRef dispGroups
-  let _ = setRef wDispUsedRef (not (isEmptyList dispGroups))
+  let _ = setRef wDispUsedRef (isNonEmptyList dispGroups)
   -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
   let dispGlobals = if wDispUsedRef.value then wDispGlobalLines else []
@@ -7139,7 +7142,7 @@ w7LocalsAtDepth d =
     "(local $__aexi" ++ sfx ++ " i32)", "(local $__aexn" ++ sfx ++ " i32)", "(local $__aexarr" ++ sfx ++ " (ref null $arr))", "(local $__aexlst" ++ sfx ++ " (ref eq))", "(local $__aexf" ++ sfx ++ " (ref eq))", "(local $__aexv" ++ sfx ++ " (ref eq))",
     -- stage-B: i64 bit accumulator for floatToBytes64/bytesToFloat64 reinterpret.
     "(local $__aexbits" ++ sfx ++ " i64)"] else []
-  let ru = if not (isEmptyList recFieldsRef.value) then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
+  let ru = if isNonEmptyList recFieldsRef.value then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
   rl ++ ra ++ ru
 
 -- an arm contributes its pattern's bound vars + its body's locals + guard locals.

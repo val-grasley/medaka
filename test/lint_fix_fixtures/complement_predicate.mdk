@@ -1,0 +1,17 @@
+-- Fixture for rule-complement-predicate autofix.
+
+posEmpty xs = not (isEmptyL xs)
+posNonEmpty xs = not (isNonEmptyL xs)
+posSome x = not (isSome x)
+posNone x = not (isNone x)
+posOk x = not (isOk x)
+posErr x = not (isErr x)
+posBang xs = !(isEmptyL xs)
+posArg a b = not (isOk (lookup a b))
+nested xs c = if not (isEmptyL xs) then c else xs
+
+-- NEGATIVE: must stay untouched.
+negAnd xs = not (isEmptyL xs && True)
+negOther x = not (someOtherPred x)
+negFlag flag = not flag
+negPlain xs = isEmptyL xs

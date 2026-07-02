@@ -1,0 +1,38 @@
+-- Fixture for rule-complement-predicate: `not (p x)` where `p` is a registered
+-- predicate with a defined complement → call the complement directly.  Curated
+-- BIDIRECTIONAL pairs: isEmptyL↔isNonEmptyL, isSome↔isNone, isOk↔isErr (and the
+-- unary-`!` form).  Only the exact registered names fire.
+
+-- POSITIVE: List empty-check, both directions.
+posEmpty xs = not (isEmptyL xs)
+posNonEmpty xs = not (isNonEmptyL xs)
+
+-- POSITIVE: Option, both directions.
+posSome x = not (isSome x)
+posNone x = not (isNone x)
+
+-- POSITIVE: Result, both directions.
+posOk x = not (isOk x)
+posErr x = not (isErr x)
+
+-- POSITIVE: unary `!` form.
+posBang xs = !(isEmptyL xs)
+
+-- POSITIVE: the argument is carried verbatim (a nested application).
+posArg a b = not (isOk (lookup a b))
+
+-- POSITIVE: nested anywhere in a body.
+nestedPos xs c = if not (isEmptyL xs) then c else xs
+
+-- NEGATIVE: the negated operand is not a bare predicate application (`&&` inside)
+-- — a real negation, not this idiom.
+negAnd xs = not (isEmptyL xs && True)
+
+-- NEGATIVE: an unregistered predicate has no known complement.
+negOther x = not (someOtherPred x)
+
+-- NEGATIVE: `not` of a bare flag is a real negation.
+negFlag flag = not flag
+
+-- NEGATIVE: a bare predicate call is already canonical.
+negPlain xs = isEmptyL xs

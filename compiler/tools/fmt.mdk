@@ -52,6 +52,7 @@ import support.util.{
   listLen,
   reverseL,
   isEmptyL,
+  isNonEmptyL,
   filterList,
   splitNl,
   joinNl,
@@ -370,12 +371,12 @@ stepDecl st srcLines chainOls decl dp =
   match st1
     FmtState pieces1 cs1 vlines1 cursor1 started1 =>
       let pieces2 = blankLineIfNeeded pieces1 line cursor1 started1
-      let hasInterior = not (isEmptyL (filterList (isInterior line endLine) cs1))
+      let hasInterior = isNonEmptyL (filterList (isInterior line endLine) cs1)
       -- Continuation-chain path (finding "L"): interleave each operand's
       -- trailing comment via printer.LineComment, IF the decl is a chain whose
       -- operand count matches the AST and every span comment anchors cleanly.
       let useChain = hasInterior
-        && not (isEmptyL chainOls)
+        && isNonEmptyL chainOls
         && declChainLen decl == listLen chainOls
         && chainCoversAll cs1 line endLine chainOls
       -- Block/do path (Stage 5): interleave each statement's trailing comment,
@@ -384,7 +385,7 @@ stepDecl st srcLines chainOls decl dp =
       -- statement lines for a block-bodied decl.)
       let useBlock = hasInterior
         && not useChain
-        && not (isEmptyL chainOls)
+        && isNonEmptyL chainOls
         && declBlockLen decl == listLen chainOls
         && chainCoversAll cs1 line endLine chainOls
       -- Verbatim safety-net: a non-data decl with an interior trailing comment
@@ -426,7 +427,7 @@ stepDeclNormal (FmtState pieces2 cs1 vlines1 cursor1 started1) decl line endLine
   -- rendered one-field-per-line and routed through the generic interior
   -- splice (the per-variant vcommentsFor path cannot attach per-field
   -- comments).  Other data decls keep the vcommentsFor path.
-  let nfMulti = isSingleNamedFieldData decl && not (isEmptyL (filterList (isInterior line endLine) cs1))
+  let nfMulti = isSingleNamedFieldData decl && isNonEmptyL (filterList (isInterior line endLine) cs1)
   let st2 = FmtState pieces2 cs1 vlines1 cursor1 started1
   match (if nfMulti then renderNamedFieldMulti st2 decl else declDoc st2 decl)
     (declStr0, (FmtState pieces3 cs3 vlines3 _cursor3 _started3)) =>
