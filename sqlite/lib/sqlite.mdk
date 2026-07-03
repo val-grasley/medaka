@@ -34,12 +34,12 @@ export dbBytes : Db -> Array Int
 dbBytes (Db _ b) = b
 
 -- | A schema-table entry (one row of sqlite_master).
-public export data SchemaEntry = SchemaEntry
-  { etype : String  -- "table", "index", ...
-  , ename : String  -- object name
-  , tblName : String  -- the table it belongs to
-  , rootPage : Int  -- 1-indexed B-tree root page
-  , sql : String  -- the original CREATE statement
+public export data SchemaEntry = SchemaEntry {
+    etype : String,  -- "table", "index", ...
+    ename : String,  -- object name
+    tblName : String,  -- the table it belongs to
+    rootPage : Int,  -- 1-indexed B-tree root page
+    sql : String,  -- the original CREATE statement
   }
 
 export schemaName : SchemaEntry -> String

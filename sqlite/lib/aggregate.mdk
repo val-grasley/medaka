@@ -75,12 +75,12 @@ aggName (AggMax c) = "max(\{c})"
 -- | An aggregate query: source table, optional WHERE, GROUP BY columns (empty =
 --   whole-table single group), the aggregate select-list, optional HAVING.
 public export data AggQuery =
-  | AggQuery
-    { from : String
-    , where_ : Option SqlExpr
-    , groupBy : List String
-    , aggs : List Agg
-    , having : Option SqlExpr
+  | AggQuery {
+      from : String,
+      where_ : Option SqlExpr,
+      groupBy : List String,
+      aggs : List Agg,
+      having : Option SqlExpr,
     }
 
 -- | A bare aggregate query over a table with an aggregate select-list, no

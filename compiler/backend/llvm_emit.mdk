@@ -675,17 +675,17 @@ data LTy =
 -- globals initialised in cross-module dependency order) is a D4 concern — NOT built
 -- here; this is the single-program (`@main` + prologue) milestone.
 data Emit =
-  | Emit
-    { counter : Ref Int
-    , buf : Ref (List String)
-    , fnNames : Ref (List String)
-    , sigs : Ref (List (String, FnSig))
-    , ctors : Ref (List (String, Int))
-    , lams : Ref (List String)
-    , recFields : Ref (List (String, List String))
-    , implEntries : Ref (List CImplEntry)
-    , ctorTypes : Ref (List (String, String))
-    , globalsReg : Ref (List (String, (Bool, LTy)))
+  | Emit {
+      counter : Ref Int,
+      buf : Ref (List String),
+      fnNames : Ref (List String),
+      sigs : Ref (List (String, FnSig)),
+      ctors : Ref (List (String, Int)),
+      lams : Ref (List String),
+      recFields : Ref (List (String, List String)),
+      implEntries : Ref (List CImplEntry),
+      ctorTypes : Ref (List (String, String)),
+      globalsReg : Ref (List (String, (Bool, LTy))),
     }
 
 -- a function's inferred signature: its parameter types (in order) and its return

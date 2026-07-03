@@ -303,22 +303,22 @@ public export data Decl =
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr
-  | DInterface
-    { pub : Bool
-    , def : Bool
-    , name : String
-    , typarams : List String
-    , supers : List Super
-    , methods : List IfaceMethod
+  | DInterface {
+      pub : Bool,
+      def : Bool,
+      name : String,
+      typarams : List String,
+      supers : List Super,
+      methods : List IfaceMethod,
     }
-  | DImpl
-    { pub : Bool
-    , def : Bool
-    , iface : String
-    , tys : List Ty
-    , name : Option String
-    , reqs : List Require
-    , methods : List ImplMethod
+  | DImpl {
+      pub : Bool,
+      def : Bool,
+      iface : String,
+      tys : List Ty,
+      name : Option String,
+      reqs : List Require,
+      methods : List ImplMethod,
     }
   -- pub? name typarams rhs
   | DTypeAlias Bool String (List String) Ty

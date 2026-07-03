@@ -90,13 +90,13 @@ subDuration (Duration a) (Duration b) = Duration (a - b)
 -- ── UTC civil calendar ──────────────────────────────────────────────────
 -- | A civil UTC date-and-time.  `month` is 1-12, `day` is 1-31.
 public export data DateTime =
-  | DateTime
-    { year : Int
-    , month : Int
-    , day : Int
-    , hour : Int
-    , minute : Int
-    , second : Int
+  | DateTime {
+      year : Int,
+      month : Int,
+      day : Int,
+      hour : Int,
+      minute : Int,
+      second : Int,
     }
 
 -- Floor division (Medaka `/` truncates toward zero; the calendar needs floor

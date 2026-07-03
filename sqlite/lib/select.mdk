@@ -99,15 +99,15 @@ public export data Join = Join { table : String, kind : JoinKind, on : SqlExpr }
 --   v1 limitation: WHERE/ORDER BY run on the raw row, so ORDER BY cannot
 --   reference a computed column.
 public export data Select =
-  | Select
-    { from : String
-    , joins : List Join
-    , where_ : Option SqlExpr
-    , orderBy : List (String, Bool)
-    , limit : Option Int
-    , offset : Option Int
-    , distinct : Bool
-    , columns : List SqlExpr
+  | Select {
+      from : String,
+      joins : List Join,
+      where_ : Option SqlExpr,
+      orderBy : List (String, Bool),
+      limit : Option Int,
+      offset : Option Int,
+      distinct : Bool,
+      columns : List SqlExpr,
     }
 
 -- ---------------------------------------------------------------------------

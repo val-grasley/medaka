@@ -25,13 +25,13 @@ import byteparser.{
 
 -- | The parsed header fields the read path uses.
 public export data DbHeader =
-  | DbHeader
-    { pageSize : Int
-    , pageCount : Int
-    , encoding : Int
-    , reserved : Int
-    , schemaCookie : Int
-    , readVersion : Int
+  | DbHeader {
+      pageSize : Int,
+      pageCount : Int,
+      encoding : Int,
+      reserved : Int,
+      schemaCookie : Int,
+      readVersion : Int,
     }
 
 export headerPageSize : DbHeader -> Int
