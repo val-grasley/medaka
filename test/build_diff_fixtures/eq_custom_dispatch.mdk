@@ -1,0 +1,24 @@
+-- The `==`/`!=` OPERATOR must dispatch through a custom, NON-STRUCTURAL `Eq`
+-- impl (EQ-DISPATCH-DESIGN.md decisive test).  `Mod5`'s `eq` compares mod-5, so
+-- `Mod5 2 == Mod5 7` is TRUE even though the two values differ STRUCTURALLY
+-- (2 ≠ 7) — a shallow structural builtin would print False.  Covers the operator
+-- on a concrete custom-impl type, `!=` riding on `eq`, and the polymorphic
+-- `Eq a =>` path (`genEq`) instantiated at that type.  The `==` operator is
+-- rewritten to `EMethodAt "eq"` for the non-primitive operand in typecheck
+-- (resolveBinopSite/rewriteBinopExpr), so run/build/wasm all route to the impl;
+-- a ground Int operand STILL uses the primitive builtin (last line, unchanged).
+data Mod5 = Mod5 Int
+
+impl Eq Mod5 where
+  eq (Mod5 a) (Mod5 b) = (a % 5) == (b % 5)
+
+genEq : Eq a => a -> a -> Bool
+genEq x y = x == y
+
+main : <IO> Unit
+main =
+  let _ = putStrLn (debug (Mod5 2 == Mod5 7))
+  let _ = putStrLn (debug (Mod5 2 != Mod5 7))
+  let _ = putStrLn (debug (Mod5 2 == Mod5 3))
+  let _ = putStrLn (debug (genEq (Mod5 2) (Mod5 7)))
+  putStrLn (debug (3 == 3))
