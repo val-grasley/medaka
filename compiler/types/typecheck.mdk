@@ -4205,11 +4205,21 @@ lookupAssocS2 k ((k2, v)::rest)
 -- non-method name records nothing (the common case).  The marked path records the
 -- same via inferMethodAt; the bare typecheck_main path records here.
 recordImplObligation : String -> Mono -> <Mut> Mono
-recordImplObligation x mono = match lookupAssoc x methodIfaceParamsRef.value
-  None => mono
-  Some (iface, typarams, mty) =>
-    let _ = setRef pendingImplObligations ((iface, typarams, mty, mono, currentLoc.value)::pendingImplObligations.value)
-    mono
+recordImplObligation x mono
+  -- A definer shadow (a local top-level funDef that reuses an interface-method
+  -- name, e.g. parser.mdk's own `orElse : Parser a -> Parser a -> Parser a`)
+  -- resolves in-scope to the USER's definition, not the method — the scope-blind
+  -- marker still rewrites its occurrences to EMethodAt, but there is no method
+  -- dispatch and hence no impl obligation.  Recording one here surfaces a spurious
+  -- `No impl of <Iface> for <T>` under checkImplObligations (the build path skips
+  -- that check, so it never saw this).  Routes for these are already stamped RLocal
+  -- (resolveRLocalSite); skip the obligation to match.
+  | contains x definerShadowNamesRef.value = mono
+  | otherwise = match lookupAssoc x methodIfaceParamsRef.value
+    None => mono
+    Some (iface, typarams, mty) =>
+      let _ = setRef pendingImplObligations ((iface, typarams, mty, mono, currentLoc.value)::pendingImplObligations.value)
+      mono
 
 -- Expected-type propagation for an application whose argument is a lambda.
 -- Inferring `andThen e (stream => Ok [JArray stream])` naively infers the lambda
@@ -7762,6 +7772,13 @@ checkProgramSeeded seed prog =
   -- the user's `eq`).  See methodShadowNamesRef.  Empty on the multi-module path.
   let methodNames = map fst (ifaceMethodSchemes prog)
   let _ = setRef methodShadowNamesRef methodNames
+  -- DEFINER-shadow set (facet 2), flat path: a USER top-level funDef reusing an
+  -- interface-method name (a single-file program with its own `orElse`) resolves
+  -- in-scope to the user's def, so recordImplObligation must NOT raise a spurious
+  -- `No impl of <Iface> for <T>` at its occurrences.  The flat [prog] is core ++
+  -- user, and core's method impls live in DImpl blocks (not funDefs), so this picks
+  -- up only genuine user shadows.  Mirrors the multi-module checkModuleFullImpl path.
+  let _ = setRef definerShadowNamesRef (buildDefinerShadows prog prog)
   let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
   -- FLAT-PATH SHADOW FIX (cont.): when a USER top-level fn shares a name with an
   -- interface method (e.g. user `eq : List Int -> List Int -> Bool` vs core's
@@ -9604,7 +9621,14 @@ checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl 
 checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = resetState ()
   let importerShadows = buildStandaloneShadows implDecls prog
-  let definerShadows = buildDefinerShadows implDecls prog
+  -- Scan the FULL visible universe (accData carries core's interfaces + earlier
+  -- modules' PUBLIC ones, prog this module) for interface-method names, NOT just
+  -- [implDecls] — the check path passes implDecls=[] (checkModuleFull), so a bare
+  -- `allIfaceMethodNames implDecls` left this EMPTY there and a local funDef
+  -- shadowing a prelude method (parser.mdk's own `orElse`, a plain
+  -- `Parser a -> Parser a -> Parser a`) was NOT recognised as a definer shadow →
+  -- recordImplObligation fired a spurious `No impl of Alternative for Parser`.
+  let definerShadows = buildDefinerShadows (accData ++ implDecls ++ prog) prog
   let _ = setRef standaloneValuesRef (dedup (importerShadows ++ definerShadows))
   let _ = setRef definerShadowNamesRef definerShadows
   -- Bug C: stash each importer shadow's IMPORTED STANDALONE scheme (e.g. `toList` →
