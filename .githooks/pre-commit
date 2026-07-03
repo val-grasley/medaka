@@ -7,12 +7,12 @@
 #
 #   1. FORMAT: `medaka fmt --check` — aborts if any file differs from its formatted form.
 #   2. LINT:   `medaka lint --only=<gated rules> --deny=<gated rules>` — aborts if any
-#      file trips a GATED lint rule. Only rules that fire exclusively on genuinely
-#      wrong code are gated (see GATED_LINT_RULES below); advisory/style rules
-#      (rule-match-on-param, rule-duplicate-body, …) still warn under a plain
-#      `medaka lint` but do NOT block a commit. A genuine intentional exception to a
-#      gated rule can be silenced inline with an ESLint-style directive comment, e.g.
-#      `-- lint-disable-next-line rule-hand-rolled-derivable` (also -line / -file forms).
+#      file trips a GATED lint rule. MAX RATCHET: ALL rules are gated (the whole tree
+#      is at 0 findings, so any NEW finding of any rule — style or correctness — fails
+#      the commit). A genuine intentional exception can be silenced inline with an
+#      ESLint-style directive comment, e.g. `-- lint-disable-next-line rule-lambda-section`
+#      (also -line / -file forms). If a gated style rule proves too noisy in practice,
+#      remove it from GATED_LINT_RULES below (it then still warns under plain `medaka lint`).
 #
 # Install (from the repo root):
 #     cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"
@@ -32,7 +32,7 @@ set -u
 # whole-project scan (it compares a body against OTHER files), so it's checked in
 # one scan over all source roots at once (catches cross-root duplicates too).
 # Intentional exceptions use inline directives (-- lint-disable-next-line / -file <rule>).
-GATED_LINT_RULES="rule-hand-rolled-derivable,rule-stdlib-reimpl,rule-match-on-param"
+GATED_LINT_RULES="rule-match-on-param,rule-hand-rolled-derivable,rule-stdlib-reimpl,rule-bind-then-destructure,rule-lambda-section,rule-if-max-min,rule-andthen-pure-map,rule-destructure-in-param,rule-missing-signature,rule-not-eq,rule-bool-simplify,rule-rem-parity,rule-double-reverse,rule-when-unless,rule-complement-predicate,rule-match-to-map,rule-bind-chain-to-do,rule-dead-code,rule-concat-to-interp"
 # Cross-file rules, checked project-wide (not per staged file).
 GATED_CROSSFILE_RULES="rule-duplicate-body"
 # Source roots scanned for the cross-file check (dirs that exist are used).
