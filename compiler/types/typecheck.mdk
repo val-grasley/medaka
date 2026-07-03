@@ -48,7 +48,14 @@ import frontend.desugar.{mapProg}
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
 -- the typechecked program's data decls + the inferred scrutinee type).
-import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat}
+import frontend.exhaust.{
+  Oracle,
+  buildOracle,
+  useful,
+  usefulWitness,
+  renderWitness,
+  desugarPat,
+}
 import support.char.{isUpper}
 import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import list.{replicate}
@@ -4618,9 +4625,11 @@ inferMatch env scrutTy arms =
 -- Type-aware exhaustiveness (`check_match`): run AFTER the arms have unified
 -- the scrutinee type, so `scrutTy` is fully resolved when we read its head.
 
--- The non-exhaustive-`match` warning, byte-for-byte with lib/exhaust.ml's
--- `check_match` (note the em-dash).  The redundancy pass is not ported — only
--- the exhaustiveness warning, which is what the --check-match oracle dumps.
+-- The non-exhaustive-`match` warning (note the em-dash).  The redundancy pass
+-- is not ported — only the exhaustiveness warning.  When the Maranget witness
+-- algorithm can name the uncovered case (`nonExhaustiveMsg`) the message is
+-- specialised to name the scrutinee type + the missing constructor; this
+-- generic form is the fallback if no witness is recoverable.
 nonExhaustiveMatchWarning : String
 nonExhaustiveMatchWarning =
   "Warning: non-exhaustive match — some values may not be covered"
@@ -4632,9 +4641,28 @@ checkMatchExhaustive : Mono -> List Arm -> <Mut> Unit
 checkMatchExhaustive scrutTy arms =
   let rows = nonGuardedRows arms
   if useful matchOracle.value (matchCol0Type scrutTy) rows [PWild] then
-    let _ = setRef matchWarnings (nonExhaustiveMatchWarning::matchWarnings.value)
+    let _ = setRef matchWarnings (nonExhaustiveMsg scrutTy rows :: matchWarnings.value)
     setRef matchWarningLocs (currentLoc.value::matchWarningLocs.value)
   else ()
+
+-- Build the specialised warning: recover a concrete uncovered pattern (the
+-- Maranget witness) and name it, plus the scrutinee type when it has a real
+-- head name.  Falls back to the generic wording if no witness is recoverable
+-- (keeps the warning firing whenever `useful` says it should, never naming a
+-- wrong constructor).
+nonExhaustiveMsg : Mono -> List (List Pat) -> String
+nonExhaustiveMsg scrutTy rows = match usefulWitness matchOracle.value (matchCol0Type scrutTy) rows 1
+  Some (w::_) => "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)} — missing case: '\{renderWitness w}'"
+  _ => nonExhaustiveMatchWarning
+
+-- Name the scrutinee type (skip the synthetic tuple type names, which aren't
+-- user-facing — the witness pattern already reads as a tuple).
+tyOfMsg : Option String -> String
+tyOfMsg None = ""
+tyOfMsg (Some t) = if isTupleTyName t then "" else " of '\{t}'"
+
+isTupleTyName : String -> Bool
+isTupleTyName t = stringLength t >= 7 && stringSlice 0 7 t == "__tuple"
 
 -- one single-column matrix row per non-guarded arm (its desugared pattern)
 nonGuardedRows : List Arm -> List (List Pat)

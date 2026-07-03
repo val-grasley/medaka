@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 0
 ---
-Warning: non-exhaustive match — some values may not be covered
+Warning: non-exhaustive match of 'List' — missing case: '[]'

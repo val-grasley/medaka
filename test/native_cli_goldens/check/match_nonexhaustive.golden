@@ -1,4 +1,4 @@
-Warning: non-exhaustive match — some values may not be covered
+Warning: non-exhaustive match of 'Color' — missing case: 'Blue'
 abs : a -> a
 add : a -> a -> a
 all : (a -> Bool) -> b a -> Bool

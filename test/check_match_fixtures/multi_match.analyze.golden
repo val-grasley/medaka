@@ -1,2 +1,2 @@
-warning: non-exhaustive match — some values may not be covered
-warning: non-exhaustive match — some values may not be covered
+warning: non-exhaustive match of 'Color' — missing case: 'Green'
+warning: non-exhaustive match of 'Bool' — missing case: 'True'
