@@ -261,15 +261,12 @@ responseById idn ((Frame _ body _)::rest) = match parse body
 -- result.contents.value of hover response `idn` (the markdown ```medaka\n<name> :
 -- <ty>\n``` string), or None.
 export hoverValue : Int -> List Frame -> Option String
-hoverValue idn frames = match responseById idn frames
-  None => None
-  Some j => match lookup "result" j
-    None => None
-    Some res => match lookup "contents" res
-      None => None
-      Some c => match lookup "value" c
-        Some v => asString v
-        None => None
+hoverValue idn frames = do
+  j <- responseById idn frames
+  res <- lookup "result" j
+  c <- lookup "contents" res
+  v <- lookup "value" c
+  asString v
 
 -- Does completion response `idn` include a CompletionItem whose label == needle?
 export completionHasLabel : Int -> List Frame -> String -> Bool

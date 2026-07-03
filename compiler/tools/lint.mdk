@@ -156,6 +156,9 @@ ruleNameComplementPredicate = "rule-complement-predicate"
 ruleNameMatchToMap : String
 ruleNameMatchToMap = "rule-match-to-map"
 
+ruleNameBindChainToDo : String
+ruleNameBindChainToDo = "rule-bind-chain-to-do"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -322,6 +325,16 @@ matchToMapRule = Rule {
   fix = Some matchToMapFix,
 }
 
+bindChainToDoRule : Rule
+bindChainToDoRule = Rule {
+  name = ruleNameBindChainToDo,
+  descr = "deep (≥3) nested Result/Option passthrough-bind `match` pyramid — rewrite as a `do` block (suggest-only)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleBindChainToDo,
+  fix = None,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -340,6 +353,7 @@ allRules = [
   whenUnlessRule,
   complementPredicateRule,
   matchToMapRule,
+  bindChainToDoRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -2719,12 +2733,11 @@ renameSpineHead newName e = match unwrapLoc e
   _ => e
 
 complementPredOf : Expr -> Option Expr
-complementPredOf e = match notArgOf e
-  Some inner => match appSpineHead (unwrapLoc inner)
-    Some name =>
-      map (comp => renameSpineHead comp (unwrapLoc inner)) (complementOf name)
-    None => None
-  None => None
+complementPredOf e = do
+  inner <- notArgOf e
+  name <- appSpineHead (unwrapLoc inner)
+  comp <- complementOf name
+  Some (renameSpineHead comp (unwrapLoc inner))
 
 ruleComplementPredicate : String -> Positions -> List Decl -> List Finding
 ruleComplementPredicate _ pos prog =
@@ -2846,6 +2859,141 @@ matchToMapFinding loc rewritten = Finding {
 
 matchToMapFix : Oracle -> Decl -> Option (List Decl)
 matchToMapFix _ d = exprRuleFix noExcl (detApply matchToMapOf) d
+
+-- ── rule: bind-chain-to-do (SUGGEST-ONLY, no autofix) ─────────────────────────
+-- Flag a DEEP (≥3) manual monadic-bind pyramid over Result/Option written as
+-- nested `match`, where every level is a verbatim failure-passthrough bind:
+--   Result:  match <scrut> { Err v => Err v; Ok <pat> => <cont> }
+--   Option:  match <scrut> { None => None;  Some <pat> => <cont> }
+-- and `<cont>` continues the chain (another such match, possibly after one or
+-- more interspersed `let` bindings that parse as an `EBlock` of `DoLet`s), never
+-- a same-ctor re-wrap (`Ok x => Ok (f x)` is a `map` — `rule-match-to-map` owns
+-- it, and it is excluded here via the same `matchToMapTransform` linchpin).  The
+-- innermost continuation may be a functor `map f m` terminal (which IS the final
+-- bind — `do { x <- m; pure (f x) }`) so it counts toward the depth.  The chain
+-- must be monad-consistent (all Result OR all Option — a mixed level breaks it).
+-- This IS an `EMatch`-recursion recognizer, not the `EApp`-shaped rules; `fix =
+-- None` — the conversion to `do` is done by hand.
+
+-- number of passthrough binds in the chain rooted at `e` for the chosen monad
+-- (`isResult`), 0 if `e` is not a bind head.  A terminal `map f m` counts as one.
+bindChainDepth : Bool -> Expr -> Int
+bindChainDepth isResult e =
+  let (_, core) = bindChainSplit e
+  match bindChainHead isResult core
+    Some body => 1 + bindChainDepth isResult body
+    None => if bindChainIsTermMap core then 1 else 0
+
+-- strip an `EBlock`'s leading `let`/statements down to its final continuation
+-- expression; returns (interspersed-statement exprs, the core continuation).
+bindChainSplit : Expr -> (List Expr, Expr)
+bindChainSplit e = match unwrapLoc e
+  EBlock stmts => match reverseL stmts
+    (DoExpr lastE)::revInit => (flatMap stmtExprs (reverseL revInit), lastE)
+    _ => ([], EBlock stmts)
+  other => ([], other)
+
+-- a two-arm passthrough-bind `match`; returns the success-arm body (the
+-- continuation).  Tries both arm orders (the failure arm may come first or last).
+bindChainHead : Bool -> Expr -> Option Expr
+bindChainHead isResult e = match unwrapLoc e
+  EMatch _ arms => match arms
+    [a1, a2] => match bindChainTry isResult a1 a2
+      Some b => Some b
+      None => bindChainTry isResult a2 a1
+    _ => None
+  _ => None
+
+bindChainTry : Bool -> Arm -> Arm -> Option Expr
+bindChainTry isResult failArm (Arm okP okGs okBody)
+  | bindChainFailPassthru isResult failArm && isEmptyL okGs && bindChainOkPat isResult okP && not (bindChainRewrap isResult okP okBody) = Some okBody
+  | otherwise = None
+
+-- failure arm is a verbatim passthrough: `Err v => Err v` / `None => None`.
+bindChainFailPassthru : Bool -> Arm -> Bool
+bindChainFailPassthru isResult (Arm p gs body) = isEmptyL gs
+  && (if isResult then matchToMapErrPassthru p body else isNilPCon "None" p && isEVarNamed "None" body)
+
+bindChainOkPat : Bool -> Pat -> Bool
+bindChainOkPat isResult (PCon c [_]) = c == (if isResult then "Ok" else "Some")
+bindChainOkPat _ _ = False
+
+-- success arm re-wraps with the SAME ctor (`Ok x => Ok (f x)`) — that's a `map`,
+-- excluded here (owned by `rule-match-to-map`).  Reuses the same linchpin.
+bindChainRewrap : Bool -> Pat -> Expr -> Bool
+bindChainRewrap isResult p body = match matchToMapTransform (if isResult then "Ok" else "Some") p body
+  Some _ => True
+  None => False
+
+bindChainIsTermMap : Expr -> Bool
+bindChainIsTermMap e = match unwrapLoc e
+  EApp inner _ => match unwrapLoc inner
+    EApp hd _ => isEVarNamed "map" hd
+    _ => False
+  _ => False
+
+-- off-chain sub-exprs of a chain (scrutinees, let RHSs, terminal `map` parts, or
+-- a plain terminal) — everything EXCEPT the continuation matches, which are
+-- consumed by the recursion.  These are re-scanned for INDEPENDENT nested chains
+-- so the chain's own sub-levels are never re-reported as separate heads.
+bindChainOffChain : Bool -> Expr -> List Expr
+bindChainOffChain isResult e =
+  let (lets, core) = bindChainSplit e
+  match bindChainHead isResult core
+    Some body => lets
+      ++ (bindChainScrut core :: bindChainOffChain isResult body)
+    None =>
+      if bindChainIsTermMap core then
+        lets ++ bindChainTermMapParts core
+      else
+        lets ++ [core]
+
+bindChainScrut : Expr -> Expr
+bindChainScrut e = match unwrapLoc e
+  EMatch s _ => s
+  _ => e
+
+bindChainTermMapParts : Expr -> List Expr
+bindChainTermMapParts e = match unwrapLoc e
+  EApp inner scrut => match unwrapLoc inner
+    EApp _ f => [f, scrut]
+    _ => [e]
+  _ => [e]
+
+-- report a node as a chain HEAD iff its depth (in whichever monad) is ≥ 3; then
+-- consume the chain (recurse into off-chain parts only) so sub-levels of the same
+-- pyramid never fire.  Otherwise descend generically into children.
+bindChainHeads : Expr -> List Expr
+bindChainHeads e =
+  let rd = bindChainDepth True e
+  let od = bindChainDepth False e
+  if rd >= 3 || od >= 3 then
+    e :: flatMap bindChainHeads (bindChainOffChain (rd >= od) e)
+  else
+    flatMap bindChainHeads (childExprs e)
+
+bindChainDeclHeads : Decl -> List Expr
+bindChainDeclHeads (DFunDef _ _ _ body) = bindChainHeads body
+bindChainDeclHeads (DImpl { methods, ... }) = flatMap bindChainImplHeads methods
+bindChainDeclHeads (DAttrib _ d) = bindChainDeclHeads d
+bindChainDeclHeads _ = []
+
+bindChainImplHeads : ImplMethod -> List Expr
+bindChainImplHeads (ImplMethod _ _ body) = bindChainHeads body
+
+ruleBindChainToDo : String -> Positions -> List Decl -> List Finding
+ruleBindChainToDo _ pos prog = flatMap bindChainDeclL (declLocList pos prog)
+
+bindChainDeclL : (Decl, Option Loc) -> List Finding
+bindChainDeclL (d, loc) = map (bindChainFinding loc) (bindChainDeclHeads d)
+
+bindChainFinding : Option Loc -> Expr -> Finding
+bindChainFinding loc _ = Finding {
+  rule = ruleNameBindChainToDo,
+  message = "deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block",
+  severity = SevWarning,
+  loc = loc,
+}
 
 -- ── cross-file runner ─────────────────────────────────────────────────────────
 -- Run the enabled cross-file rules over every target file, honoring the same

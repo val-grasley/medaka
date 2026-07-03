@@ -1,0 +1,68 @@
+-- Fixture for rule-bind-chain-to-do (SUGGEST-ONLY): a DEEP (≥3) nested
+-- passthrough-bind `match` pyramid over Result/Option should become a `do` block.
+-- Only chains of DEPTH ≥ 3 fire; depth 1/2, a same-ctor re-wrap (a `map`, owned
+-- by rule-match-to-map), a mixed Result/Option chain, and a non-passthrough
+-- failure arm must NOT fire.
+
+-- POSITIVE: depth-3 Result chain (three nested Err-passthrough binds) → do-block.
+posResChain r = match step1 r
+  Err e => Err e
+  Ok a => match step2 a
+    Err e => Err e
+    Ok b => match step3 b
+      Err e => Err e
+      Ok c => combine a b c
+
+-- POSITIVE: depth-3 Option chain (three nested None-passthrough binds) → do-block.
+posOptChain o = match lookupA o
+  None => None
+  Some a => match lookupB a
+    None => None
+    Some b => match lookupC b
+      None => None
+      Some c => combine a b c
+
+-- POSITIVE: depth-3 Result chain ending in a functor `map` terminal (the map IS
+-- the final bind: `x <- m; pure (f x)`), so it counts toward the depth.
+posResMap r = match step1 r
+  Err e => Err e
+  Ok a => match step2 a
+    Err e => Err e
+    Ok b => map (c => combine a b c) (step3 b)
+
+-- NEGATIVE: depth-1 single bind — clearer as-is than a 1-statement do.
+negDepth1 r = match step1 r
+  Err e => Err e
+  Ok x => finish x
+
+-- NEGATIVE: depth-2 chain — below the depth-3 gate.
+negDepth2 r = match step1 r
+  Err e => Err e
+  Ok a => match step2 a
+    Err e => Err e
+    Ok b => combine a b
+
+-- NEGATIVE: same-ctor re-wrap (`Ok x => Ok (g x)`) — that is a `map`
+-- (rule-match-to-map owns it), not a bind chain.
+negRewrap r = match r
+  Err e => Err e
+  Ok x => Ok (g x)
+
+-- NEGATIVE: mixed Result/Option chain — not monad-consistent, so it breaks.
+negMixed r = match step1 r
+  Err e => Err e
+  Ok a => match lookupB a
+    None => None
+    Some b => match step3 b
+      Err e => Err e
+      Ok c => combine a b c
+
+-- NEGATIVE: failure arm REBUILDS (`Err (wrap e)`) rather than passing through
+-- verbatim — the top level is not a bind, so no depth-3 chain.
+negErrRebuild r = match step1 r
+  Err e => Err (wrap e)
+  Ok a => match step2 a
+    Err e => Err e
+    Ok b => match step3 b
+      Err e => Err e
+      Ok c => combine a b c

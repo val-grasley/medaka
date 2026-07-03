@@ -173,31 +173,26 @@ partitionGo pred ((rowid, cells)::rest) acc n =
 -- | Delete all rows of `table` in the SQLite file at `path` where `where_`
 --   evaluates to true.  Returns `Ok n` where `n` is the count of rows deleted.
 export delete : String -> String -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-delete path table where_ = match openDb path
-  Err e => Err e
-  Ok db => match buildImage db table (unExpr where_)
-    Err e => Err e
-    Ok (img, cnt) => map (_ => cnt) (writeFileBytes path img)
+delete path table where_ = do
+  db <- openDb path
+  (img, cnt) <- buildImage db table (unExpr where_)
+  _ <- writeFileBytes path img
+  Ok cnt
 
 -- Build the new database image after filtering the target table.
 -- Pure-ish: only `buildDatabaseMultiExplicit` carries `<Mut>`.
 buildImage : Db -> String -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildImage db table whereExpr = match readSchema db
-  Err e => Err e
-  Ok schema => match refuseIfUnsupported schema
-    Err e => Err e
-    Ok _ => match collectTableSpecs db schema []
-      Err e => Err e
-      Ok specs => match requireSome "delete: table not found: \{table}" (findSpecByName specs table)
-        Err e => Err e
-        Ok (_, sql, pkIdx, rows) =>
-          let lookup = columnIndex sql
-          match compilePred lookup whereExpr
-            Err e => Err e
-            Ok pred =>
-              let (survivors, cnt) = partitionRows pred rows
-              let newSpecs = replaceSpec specs table (table, sql, pkIdx, survivors)
-              map (img => (img, cnt)) (buildDatabaseMultiExplicit newSpecs)
+buildImage db table whereExpr = do
+  schema <- readSchema db
+  _ <- refuseIfUnsupported schema
+  specs <- collectTableSpecs db schema []
+  (_, sql, pkIdx, rows) <- requireSome "delete: table not found: \{table}" (findSpecByName specs table)
+  let lookup = columnIndex sql
+  pred <- compilePred lookup whereExpr
+  let (survivors, cnt) = partitionRows pred rows
+  let newSpecs = replaceSpec specs table (table, sql, pkIdx, survivors)
+  img <- buildDatabaseMultiExplicit newSpecs
+  Ok (img, cnt)
 
 -- ---------------------------------------------------------------------------
 -- Assign — a SET assignment for UPDATE
@@ -229,34 +224,27 @@ assign col e = Assign col (unExpr e)
 --     * Any `Assign` names an unknown column.
 --     * The target table is not found.
 export update : String -> String -> List Assign -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-update path table assigns where_ = match openDb path
-  Err e => Err e
-  Ok db => match buildUpdateImage db table assigns (unExpr where_)
-    Err e => Err e
-    Ok (img, cnt) => map (_ => cnt) (writeFileBytes path img)
+update path table assigns where_ = do
+  db <- openDb path
+  (img, cnt) <- buildUpdateImage db table assigns (unExpr where_)
+  _ <- writeFileBytes path img
+  Ok cnt
 
 -- Build the new database image after applying the SET assignments to matching rows.
 buildUpdateImage : Db -> String -> List Assign -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildUpdateImage db table assigns whereExpr = match readSchema db
-  Err e => Err e
-  Ok schema => match refuseIfUnsupported schema
-    Err e => Err e
-    Ok _ => match collectTableSpecs db schema []
-      Err e => Err e
-      Ok specs => match requireSome "update: table not found: \{table}" (findSpecByName specs table)
-        Err e => Err e
-        Ok (_, sql, pkIdx, rows) =>
-          let lookup = columnIndex sql
-          match refuseIpkAssign pkIdx sql assigns
-            Err e => Err e
-            Ok _ => match resolveAssigns lookup assigns []
-              Err e => Err e
-              Ok idxedAssign => match compilePred lookup whereExpr
-                Err e => Err e
-                Ok pred =>
-                  let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
-                  let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
-                  map (img => (img, cnt)) (buildDatabaseMultiExplicit newSpecs)
+buildUpdateImage db table assigns whereExpr = do
+  schema <- readSchema db
+  _ <- refuseIfUnsupported schema
+  specs <- collectTableSpecs db schema []
+  (_, sql, pkIdx, rows) <- requireSome "update: table not found: \{table}" (findSpecByName specs table)
+  let lookup = columnIndex sql
+  _ <- refuseIpkAssign pkIdx sql assigns
+  idxedAssign <- resolveAssigns lookup assigns []
+  pred <- compilePred lookup whereExpr
+  let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
+  let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
+  img <- buildDatabaseMultiExplicit newSpecs
+  Ok (img, cnt)
 
 -- Refuse if any Assign targets the IPK column.
 --

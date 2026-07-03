@@ -1,0 +1,13 @@
+warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
+warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
+warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
+warning: [rule-match-on-param] function 'negRewrap' matches on parameter 'r' — consider a multi-clause function definition
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map g r' (functor map)
+warning: [rule-missing-signature] top-level 'negDepth1' has no type signature — add a `negDepth1 : …` declaration
+warning: [rule-missing-signature] top-level 'negDepth2' has no type signature — add a `negDepth2 : …` declaration
+warning: [rule-missing-signature] top-level 'negErrRebuild' has no type signature — add a `negErrRebuild : …` declaration
+warning: [rule-missing-signature] top-level 'negMixed' has no type signature — add a `negMixed : …` declaration
+warning: [rule-missing-signature] top-level 'negRewrap' has no type signature — add a `negRewrap : …` declaration
+warning: [rule-missing-signature] top-level 'posOptChain' has no type signature — add a `posOptChain : …` declaration
+warning: [rule-missing-signature] top-level 'posResChain' has no type signature — add a `posResChain : …` declaration
+warning: [rule-missing-signature] top-level 'posResMap' has no type signature — add a `posResMap : …` declaration
