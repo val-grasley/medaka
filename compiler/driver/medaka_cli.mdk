@@ -235,10 +235,22 @@ checkRoute allowInternal trusted rsrc csrc tsrc _ mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
-  let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
-  match checkModulesHasErrors allowInternal trusted rtD coreD modsD
-    True => exit 1
-    False => ()
+  -- RESOLVE-phase errors (e.g. importing a name a module does not export —
+  -- PrivateNameAccess) go to STDERR + exit 1, mirroring the single-file arm's
+  -- channel discipline (errors→stderr).  Previously these were `putStr` to STDOUT
+  -- unprefixed, so they were invisible to any errors-on-stderr consumer (the
+  -- error-quality corpus captured them as empty).  The clean/type-error report
+  -- still goes to STDOUT (the check_cli_modules gate expects TYPE ERROR there).
+  let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
+  match resDiags
+    "" =>
+      let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
+      match checkModulesHasErrors allowInternal trusted rtD coreD modsD
+        True => exit 1
+        False => ()
+    _ =>
+      let _ = ePutStrLn resDiags
+      exit 1
 
 -- Drop check's non-positional flags (--release is silently ignored; --json is
 -- handled by the caller via hasFlag before dropFlags strips it).
