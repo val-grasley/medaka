@@ -1,5 +1,7 @@
 cmd: medaka build
 exit: 1
 ---
-error: emitter failed compiling test/error_quality_fixtures/build/type_error_at_build.mdk
-No such file or directory
+test/error_quality_fixtures/build/type_error_at_build.mdk:1:29: No impl of Num for String
+  |
+1 | main = println (debug ("x" + 1))
+  |                              ^

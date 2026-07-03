@@ -409,9 +409,6 @@ runBuildCmd argv = match parseBuildArgs argv
       TGErr msg =>
         let _ = ePutStrLn msg
         exit 1
-      TGFail =>
-        let _ = ePutStrLn ("error: type error in " ++ input ++ " — run `medaka check` for details")
-        exit 1
       TGOk => match runBuild root medaka cc target inputAbs outPath
         BuildOk msg => println msg
         BuildErr msg =>
@@ -428,15 +425,20 @@ defaultOutPath TWasm input = chopExt (baseOf input) ++ ".wasm"
 -- an ill-typed program that is garbage (the G1 bug), so we abort here on any
 -- type error.  Mirrors the OCaml driver's STEP-0 check gate.
 
--- G1 typecheck gate result: clean / type error in some module / a pre-typecheck
--- failure (bad read or load) whose message we surface verbatim.
-data TypecheckGate = TGOk | TGFail | TGErr String
+-- G1 typecheck gate result: clean / a diagnostic (resolve or type error, or a
+-- pre-typecheck read/load failure) whose message we surface verbatim.
+data TypecheckGate = TGOk | TGErr String
 
--- Load the entry + transitive imports, elaborate the whole graph (route-stamp +
--- per-module typecheck, which feeds the sticky error accumulator), and report
--- whether any type error fired.  Read/load failures become TGErr (surfaced as-is)
--- so the caller mirrors runBuild/loadProgram's own diagnostics.  Shared by build
--- (here) — run inlines the same shape since it already holds the loaded mods.
+-- Load the entry + transitive imports and run the SAME front-end `medaka check`
+-- runs, reporting whether any error fired AND rendering it exactly as `check`
+-- does.  This must be the CHECK path, not the EMIT path (elaborateModules):
+-- elaborateModules sets implInferEnabled and deliberately SKIPS checkImplObligations
+-- (a check-only diagnostic the emit driver doesn't want), so an ill-typed program
+-- like `"x" + 1` slips past hadTypeErrors and reaches the emitter, which fails
+-- with a confusing downstream `emitter failed …`.  We instead mirror checkRoute:
+-- surface the exact diagnostic `check` prints and abort BEFORE the emitter/clang.
+-- Read/load failures become TGErr (surfaced as-is) so the caller mirrors
+-- runBuild/loadProgram's own diagnostics.
 typecheckGate : Bool -> String -> String -> <IO, Mut, Panic> TypecheckGate
 typecheckGate allowInternal root input =
   let rtPath = root ++ "/stdlib/runtime.mdk"
@@ -447,28 +449,48 @@ typecheckGate allowInternal root input =
     Err msg => TGErr msg
     Ok rsrc => match readFile corePath
       Err msg => TGErr msg
-      Ok csrc => match loadProgram input roots
+      Ok csrc => match readFile input
         Err msg => TGErr msg
-        Ok mods =>
-          let rtD = desugar (parse rsrc)
-          let coreD = desugar (parse csrc)
-          let modsD = map desugarPair mods
-          let trusted = stdlibTrustedMods input roots stdlibDir mods
-          let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
-          match resDiags
-            "" =>
-              let _ = resetTypeErrorsSticky ()
-              let _ = elaborateModules rtD coreD modsD
-              match hadTypeErrors ()
-                True => TGFail
-                False => TGOk
-            _ => TGErr resDiags
--- G1 (SOUNDNESS): a RESOLVE-phase error (e.g. PrivateNameAccess — importing a
--- name a module does not export) is on a SEPARATE channel that hadTypeErrors
--- does NOT cover, so the gate must consult resolve diagnostics FIRST (mirroring
--- `check`'s runCheckModules short-circuit) and abort before elaborate/emit.
--- Surfaced as TGErr (the verbatim humane diagnostics), so build prints the same
--- message `check` does and exits 1.
+        Ok tsrc => match loadProgram input roots
+          Err msg => TGErr msg
+          Ok mods =>
+            let trusted = stdlibTrustedMods input roots stdlibDir mods
+            typecheckGateRoute allowInternal trusted rsrc csrc tsrc input mods
+
+-- Route by module count.  A single loaded module (no non-core imports) runs the
+-- ACCURATE located check `medaka check` uses for single files — analyzeLocatedG
+-- (which runs checkImplObligations, the very pass the emit path skips and the one
+-- that catches `"x" + 1`'s `No impl of Num for String`) — and renders BYTE-IDENTICAL
+-- carat diagnostics via ppDiagCliSrc.  This is the case the G1 bug fixture exercises.
+--
+-- The MULTI-MODULE case keeps the emit-path predicate (resolve diagnostics +
+-- elaborate + hadTypeErrors) it always used.  We deliberately do NOT gate a
+-- multi-module build on the multi-module obligation check (checkModulesHasErrors):
+-- it OVER-REJECTS valid code — e.g. it flags the compiler's own source with a
+-- spurious `No impl of Alternative for Parser`, which would break every oracle
+-- build of a compiler entry even though those programs typecheck-for-emit, build,
+-- and self-host cleanly.  So multi-module keeps its prior (looser but sound)
+-- behaviour; the located single-file path is what this fix tightens.
+typecheckGateRoute : Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> TypecheckGate
+typecheckGateRoute allowInternal _ rsrc csrc tsrc target [_] =
+  let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
+  let errs = filter isDiagError diags
+  match errs
+    [] => TGOk
+    _ => TGErr (joinNl (map (ppDiagCliSrc tsrc target) errs))
+typecheckGateRoute allowInternal trusted rsrc csrc tsrc target mods =
+  let rtD = desugar (parse rsrc)
+  let coreD = desugar (parse csrc)
+  let modsD = map desugarPair mods
+  let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
+  match resDiags
+    "" =>
+      let _ = resetTypeErrorsSticky ()
+      let _ = elaborateModules rtD coreD modsD
+      match hadTypeErrors ()
+        True => TGErr ("error: type error in " ++ target ++ " — run `medaka check` for details")
+        False => TGOk
+    _ => TGErr resDiags
 
 -- Parse `[-o <out>] [--target <native|wasm>]`; first remaining positional is the
 -- input.  Default target is TNative (the LLVM/clang path) — purely additive, the
