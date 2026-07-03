@@ -3361,10 +3361,22 @@ resultDecls toks (POk ds pos)
   | peekTok toks pos == TEof = ds
   | otherwise = panic "parse error"
 
+-- A lexer error (unterminated string / block comment, invalid escape, stray
+-- character) reaches the token stream as a terminal `TLexError msg` (see
+-- `firstLexError` below).  The panicking entry must surface THAT specific
+-- message rather than the generic "parse error" the grammar's own failure
+-- produces once it runs off the end of a truncated/garbled token stream —
+-- otherwise a parser-only caller (no `firstLexError` pre-scan of its own,
+-- e.g. `compiler/entries/parse_main.mdk`) degrades every lexer error to the
+-- same uninformative string, while `parseResult` (used by the CLI `check`
+-- path) already special-cases it.  Shares `firstLexError` with `parseResult`
+-- so both entries agree on wording.
 export parse : String -> List Decl
 parse src =
   let toks = arrayFromList (tokenize src)
-  resultDecls toks (runP parseProgram toks 0)
+  match firstLexError toks 0
+    Some (_, msg) => panic msg
+    None => resultDecls toks (runP parseProgram toks 0)
 
 -- Position-populating parse entry for B.10.2b (LSP).  Sets the loc-state refs
 -- (src + token offsets) so the ELoc wrappers carry REAL line/col, then parses.
