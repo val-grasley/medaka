@@ -4000,8 +4000,8 @@ inferBinop "*" lt rt = numArithOp lt rt
 inferBinop "/" lt rt = numArithOp lt rt
 inferBinop "%" lt rt = numArithOp lt rt
 inferBinop "++" lt rt = arithOp lt rt
-inferBinop "==" lt rt = compareOp lt rt
-inferBinop "!=" lt rt = compareOp lt rt
+inferBinop "==" lt rt = eqCompareOp lt rt
+inferBinop "!=" lt rt = eqCompareOp lt rt
 inferBinop "<" lt rt = compareOp lt rt
 inferBinop ">" lt rt = compareOp lt rt
 inferBinop "<=" lt rt = compareOp lt rt
@@ -4098,6 +4098,39 @@ compareOp : Mono -> Mono -> <Mut> Mono
 compareOp lt rt =
   let _ = unify lt rt
   TCon "Bool"
+
+-- Stage-1 Eq dispatch (EQ-DISPATCH-DESIGN.md §2.1): `==`/`!=` carry an `Eq`
+-- obligation on their (unified) operand type — a verbatim mirror of
+-- `recordNumObligation` for `+`.  We reuse the existing pendingImplObligations /
+-- checkImplObligations path: a synthetic Eq obligation with a bare iface-param
+-- declared type (`TyVar "a"`, typaram ["a"]) so dispatchMonosOf recovers exactly
+-- the operand mono.  When it grounds to a concrete non-Eq head (a function, an
+-- un-derived ADT) with no `impl Eq`, the post-inference check rejects; while still
+-- a polymorphic var (an `Eq a =>` site) allConcreteHeads defers it to the caller
+-- — exactly the Num behaviour.  `<`/`>`/`<=`/`>=` are OUT OF SCOPE and stay on
+-- plain `compareOp` (no Ord obligation).  `!=` shares this seam and lowers to
+-- `not (eq …)` at the dict layer (binopMethodApp), so it does not double-report.
+--
+-- Gated on the `Eq` interface being REGISTERED (prelude loaded), mirroring
+-- `numIfaceRegistered`: the bare-HM no-prelude oracle (tc_probe / typecheck_main)
+-- has no `Eq` class, so recording the obligation only when Eq exists keeps those
+-- drivers byte-identical while full check_main (prelude) rejects.
+eqCompareOp : Mono -> Mono -> <Mut> Mono
+eqCompareOp lt rt =
+  let _ = unify lt rt
+  let _ = recordEqObligation lt
+  TCon "Bool"
+
+recordEqObligation : Mono -> <Mut> Unit
+recordEqObligation lt
+  | eqIfaceRegistered () = setRef pendingImplObligations (("Eq", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | otherwise = ()
+
+eqIfaceRegistered : Unit -> <Mut> Bool
+eqIfaceRegistered _ = anyList eqEntry methodIfaceParamsRef.value
+
+eqEntry : (String, (String, List String, Ty)) -> Bool
+eqEntry (_, (iface, _, _)) = iface == "Eq"
 
 boolOp : Mono -> Mono -> <Mut> Mono
 boolOp lt rt =
@@ -8208,7 +8241,16 @@ checkOneImplObligation heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Eq" && anyList eqUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
+
+-- a mono no `Eq` impl can ever match: a function type (`==` on functions).  Unlike
+-- Num we do NOT reject an unbound spine head (`m a`) — for Eq that is a genuinely
+-- polymorphic operand that a downstream `Eq a =>` constraint resolves, so it must
+-- DEFER (allConcreteHeads), not reject.  Only functions are structurally un-Eq.
+eqUnimplementableHead : Mono -> Bool
+eqUnimplementableHead m = match normalize m
+  TFun _ _ _ => True
+  _ => False
 
 -- a mono no `Num` impl can ever match: a function type, or an application whose
 -- spine head is still an unbound tyvar (a literal forced into `m a` monad position)

@@ -1,0 +1,8 @@
+-- `==` on an ADT with no `deriving (Eq)`: the operand grounds to `Color`, which
+-- has no `Eq` impl, so this is rejected with `No impl of Eq for Color`.
+data Color = Red | Green | Blue
+
+sameColor : Color -> Color -> Bool
+sameColor a b = a == b
+
+main = println (debug (sameColor Red Green))

@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/eq_on_function.mdk:4:16: No impl of Eq for (Int -> Int)
+  |
+4 | eqFn f g = f == g
+  |                 ^

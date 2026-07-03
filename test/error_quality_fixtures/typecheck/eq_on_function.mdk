@@ -1,0 +1,6 @@
+-- `==` on function values: functions have no `Eq` impl, so this is rejected
+-- with `No impl of Eq for (Int -> Int)` (Stage-1 Eq-dispatch obligation).
+eqFn : (Int -> Int) -> (Int -> Int) -> Bool
+eqFn f g = f == g
+
+main = println (debug (eqFn (x => x) (y => y)))
