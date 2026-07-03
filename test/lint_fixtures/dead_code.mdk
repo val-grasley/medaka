@@ -1,0 +1,37 @@
+-- Fixture for rule-dead-code: a PRIVATE (unexported) top-level binding that is
+-- unreachable from the file's roots (exported bindings, `main`, and identifiers
+-- on doctest `>` lines) is dead.  Reachable / exported / doctest-exercised
+-- bindings stay silent.  Every binding is signed so only rule-dead-code fires.
+
+-- NEGATIVE: `main` is always a root (exempt by name).
+main : <IO> Unit
+main = println "dead-code fixture"
+
+-- NEGATIVE: an exported binding is a root; its body keeps `helperForExport` live,
+-- and its doctest `>` line keeps `usedInDoctest` live.
+--
+-- > usedInDoctest 4
+-- 5
+export exportedThing : Int -> Int
+exportedThing n = helperForExport n
+
+-- NEGATIVE: private, but reachable from the exported `exportedThing`.
+helperForExport : Int -> Int
+helperForExport n = n * 2
+
+-- NEGATIVE: private and referenced ONLY from the doctest `>` line above — LIVE
+-- under `medaka test`, so must NOT be flagged as dead.
+usedInDoctest : Int -> Int
+usedInDoctest n = n + 1
+
+-- POSITIVE: private and unreachable from any root — dead.
+deadOne : Int -> Int
+deadOne n = n - 1
+
+-- POSITIVE (transitive cluster): `deadA` is referenced only by the dead `deadB`,
+-- and `deadB` is referenced by nobody live — so BOTH are dead.
+deadA : Int -> Int
+deadA n = n + 100
+
+deadB : Int -> Int
+deadB n = deadA n + 1

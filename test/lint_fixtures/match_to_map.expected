@@ -1,3 +1,16 @@
+warning: [rule-dead-code] private top-level 'negBind' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negDefault' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negErrRebuild' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negGuard' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negThreeArms' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negUnwrap' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posOptEta' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posOptExpr' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posOrder' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posResEta' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posResExpr' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posTuple' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posWild' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-match-on-param] function 'negBind' matches on parameter 'r' — consider a multi-clause function definition
 warning: [rule-match-on-param] function 'negDefault' matches on parameter 'o' — consider a multi-clause function definition
 warning: [rule-match-on-param] function 'negErrRebuild' matches on parameter 'r' — consider a multi-clause function definition

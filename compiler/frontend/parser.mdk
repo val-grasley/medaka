@@ -869,10 +869,6 @@ interpRestFor e (TInterpEnd s) = do
   pure [InterpExpr e, InterpStr s]
 interpRestFor e _ = failP "expected interpolation mid/end"
 
-tupleOrSingle : List Expr -> Expr
-tupleOrSingle [e] = e
-tupleOrSingle es = ETuple es
-
 -- Bracket block-expressions (LAYOUT-BRACKETS-DESIGN.md, Gate B).  The locked
 -- herald set is match/do/function/record/bare-INDENT block.  All of those
 -- EXCEPT the bare-INDENT block already reach bracket element positions because
@@ -3328,12 +3324,6 @@ lastContentLineGo toks lines ((_, s, e)::rest) acc =
     lines
     rest
     (lineAt lines (lastContentIdx toks s (e - 1)))
-
-resultSpans : Array Token -> PR (List (Decl, Int, Int)) -> List (Decl, Int, Int)
-resultSpans _ (PErr _ _) = panic "parse error"
-resultSpans toks (POk ds pos)
-  | peekTok toks pos == TEof = ds
-  | otherwise = panic "parse error"
 
 -- Parse `src` and return the position side-channel alongside the decls.  The
 -- non-panicking `parseWithPositionsOpt` does the work; this wrapper preserves the

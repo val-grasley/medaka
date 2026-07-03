@@ -1,3 +1,11 @@
+warning: [rule-dead-code] private top-level 'evenFlipped' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'evenTest' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'isEven' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'isOdd' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOne' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negThree' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'oddTest' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-missing-signature] top-level 'evenFlipped' has no type signature — add a `evenFlipped : …` declaration
 warning: [rule-missing-signature] top-level 'evenTest' has no type signature — add a `evenTest : …` declaration
 warning: [rule-missing-signature] top-level 'isEven' has no type signature — add a `isEven : …` declaration

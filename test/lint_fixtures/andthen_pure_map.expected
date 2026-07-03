@@ -3,6 +3,17 @@ warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its
 warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
 warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
 warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map f m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-dead-code] private top-level 'etaCtor' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'etaFn' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'etaPartial' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'genNonFinal' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negDo' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negGuardFn' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negMultiParam' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negNoPure' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOverApplied' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negTwice' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-missing-signature] top-level 'etaCtor' has no type signature — add a `etaCtor : …` declaration
 warning: [rule-missing-signature] top-level 'etaFn' has no type signature — add a `etaFn : …` declaration
 warning: [rule-missing-signature] top-level 'etaPartial' has no type signature — add a `etaPartial : …` declaration

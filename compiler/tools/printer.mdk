@@ -82,10 +82,6 @@ public export data Doc =
   -- `Hardline` after each unit, so nothing is ever packed after the comment.
   | LineComment String
 
--- `a ^^ b` = Cat a b
-cat : Doc -> Doc -> Doc
-cat a b = Cat a b
-
 text : String -> Doc
 text s = Text s
 
@@ -1106,14 +1102,6 @@ isBreakableArg (ELam _ _) = True
 -- nested app actually has arguments (a bare head has nothing to break).
 isBreakableArg (EApp f x) = True
 isBreakableArg _ = False
-
--- An application whose spine is exactly one breakable argument — the shape that
--- keeps its head inline (on the `=` line / with the call head) and folds inside
--- the argument rather than dropping the head onto its own line.
-isSingleBreakableApp : Expr -> Bool
-isSingleBreakableApp e = match collectApp [] e
-  (_, [arg]) => isBreakableArg arg
-  _ => False
 
 -- Render a single inline argument so its interior can break.  A lambda renders
 -- parenthesized with its body folded through the body printer (app spines /

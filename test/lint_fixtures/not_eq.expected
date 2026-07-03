@@ -1,3 +1,13 @@
+warning: [rule-dead-code] private top-level 'bangEq' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'bangNe' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negFlag' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negGt' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negLe' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negLt' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negPlain' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'notEq' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'notNe' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-missing-signature] top-level 'bangEq' has no type signature — add a `bangEq : …` declaration
 warning: [rule-missing-signature] top-level 'bangNe' has no type signature — add a `bangNe : …` declaration
 warning: [rule-missing-signature] top-level 'negFlag' has no type signature — add a `negFlag : …` declaration

@@ -7,6 +7,10 @@
 -- fail too.  See test/select_oracle.sh / the doctests for the POSITIVE side.
 --
 -- Run:  medaka check sqlite/test/select_typeerror.mdk   => expect FAILURE.
+--
+-- lint-disable-file rule-dead-code
+-- (`bad1`/`bad2` ARE the test subject — they exist to be REJECTED by `check`,
+-- so their being unreferenced is the whole point.)
 
 import lib.select.{
   Expr,

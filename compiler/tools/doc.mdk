@@ -43,15 +43,6 @@ import support.path.{baseOf, chopExt}
 -- de_name / de_sig (never empty) / de_doc (stripped doc prose, may be "").
 data DocEntry = DocEntry String String String
 
-docName : DocEntry -> String
-docName (DocEntry n _ _) = n
-
-docSig : DocEntry -> String
-docSig (DocEntry _ s _) = s
-
-docDoc : DocEntry -> String
-docDoc (DocEntry _ _ d) = d
-
 -- ── small string helpers (builtins; mirror doctest's local wrappers) ────────
 dlen : String -> Int
 dlen s = stringLength s

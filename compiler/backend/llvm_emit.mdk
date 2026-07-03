@@ -504,22 +504,6 @@ installDeclSigTypes t = setRef declSigTypesRef t
 declSigOf : String -> <Mut> Option (List String, String)
 declSigOf name = lookupAssoc name declSigTypesRef.value
 
--- the declared LTy of param index `i` of function `name`, if annotated with a
--- known scalar there; else None (caller falls back to body-use inference).
-declParamLTy : String -> Int -> <Mut> Option LTy
-declParamLTy name i = match declSigOf name
-  Some (ptyNames, _) => match nthName ptyNames i
-    Some n => fieldNameToLTy n
-    None => None
-  None => None
-
--- the declared RETURN LTy of function `name`, if annotated with a known scalar;
--- else None.
-declRetLTy : String -> <Mut> Option LTy
-declRetLTy name = match declSigOf name
-  Some (_, retName) => fieldNameToLTy retName
-  None => None
-
 nthName : List String -> Int -> Option String
 nthName (x::_) 0 = Some x
 nthName (_::rest) i = nthName rest (i - 1)
@@ -1028,11 +1012,6 @@ implEntryTag : CImplEntry -> String
 implEntryTag (CImplEntry _ _ (CImplTagged tag _ _ _ _ _)) = tag
 implEntryTag (CImplEntry _ _ (CImplDefault _ _)) = ""
 
--- the canonical full-type key of a tagged impl entry.
-implEntryKey : CImplEntry -> String
-implEntryKey (CImplEntry _ _ (CImplTagged _ key _ _ _ _)) = key
-implEntryKey (CImplEntry _ _ (CImplDefault _ _)) = ""
-
 -- the ROUTE key the typechecker stamps for this impl — the bare head tag when the
 -- head is unique (byte-identical to the pre-C7 dict header), else the canonical
 -- key (C7).  Matches dictWordOfRoute's `hashName key`, so emitDispatchChain's
@@ -1044,9 +1023,6 @@ implEntryRouteKey entries (CImplEntry n _ (CImplTagged t k _ _ _ _)) =
   else
     k
 implEntryRouteKey _ _ = ""
-
-implEntryMethod : CImplEntry -> String
-implEntryMethod (CImplEntry n _ _) = n
 
 -- ── ctor→type map (slice 7) ─────────────────────────────────────────────────
 -- the program's constructor→type-name map (CProgram's 3rd field).  An arg-tag
@@ -1330,10 +1306,6 @@ emitLit _ (LChar c) =
   (intToString (cp * 2 + 1), LTChar)
 emitLit _ LUnit = ("1", LTUnit)
 emitLit _ _ = gapE "non-Int/Float/Bool/String/Char/Unit literal (slice 1)"
-
-lookupVar : List (String, (String, LTy)) -> String -> (String, LTy)
-lookupVar [] x = panic ("llvm spike: unbound variable " ++ x)
-lookupVar ((n, vt)::rest) x = if n == x then vt else lookupVar rest x
 
 -- ── string literals + string externs (native extern catalog slice 1) ─────────
 -- emit a module-scope line (a private string-literal global) into the side buffer
@@ -4257,10 +4229,6 @@ dictOperand env d = match lookupAssoc d env
   Some (op, _) => op
   None => gapStr ("unbound dict witness '" ++ d ++ "' in emit env (slice 6: dict not threaded to this site)")
 
-ensureNoReqs : List Route -> <Mut> Unit
-ensureNoReqs [] = ()
-ensureNoReqs _ = ()
-
 -- ── impl method definitions (slice 6 + slice 7) ─────────────────────────────
 -- Each typeclass impl method lowers to ONE top-level `@mdk_impl_<tag>_<method>`,
 -- emitted alongside the ordinary function defines (before @main).  Untagged
@@ -5028,13 +4996,6 @@ firstClausePats [] = []
 -- (the type-erased subset; every slice-4 fixture's lambda is Int-typed) — a
 -- documented scope limit, like the saturated-only call rule above.
 
--- the fixed closure-cell header tag.  A "$"-prefixed sentinel, so `cellTag` keeps
--- it on `hashName` rather than a ctor ordinal — closures never flow into a
--- constructor `match`, so the tag is never compared; it just fills the §8.5
--- header word.
-closureHeaderName : String
-closureHeaderName = "$closure"
-
 -- allocate a closure cell {arity, code_ptr, captured…}.  Field 0 is the closure's
 -- callable ARITY (the value-arg count of its lifted `@mdk_lamN` define, i.e. the
 -- args AFTER the leading `%clos` word) — the runtime reads it (mdk_apply) to decide
@@ -5295,50 +5256,6 @@ emitEtaDefine e lamName fname arity =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls (argNames arity 0) ++ ")")
   let _ = emit e ("  ret i64 " ++ r)
-  let _ = emit e "}"
-  let _ = emit e ""
-  let lamLines = (bufRef e).value
-  let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
-  setRef (bufRef e) saved
-
--- E17: a unicode extern (slice 14) referenced as a FIRST-CLASS value (passed
--- unapplied, e.g. `charPred charIsAlpha`).  emitApp handles these only when
--- saturated (via emitUnicodeExtern); as a bare name they reach emitVar, so
--- eta-wrap into a captureless static closure whose lifted body reproduces
--- emitUnicodeExtern's call+tag.  All nine are arity 1.
-emitUnicodeEtaClosure : Emit -> String -> <Mut> (String, LTy)
-emitUnicodeEtaClosure e name =
-  let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
-  let _ = emitUnicodeEtaDefine e lamName name
-  emitClosureAlloc e lamName 1 []
-
--- the runtime symbol + whether the C result is an untagged 0/1 needing `tagInt`
--- (predicates) — mirrors emitUnicodeExtern exactly.
-unicodeExternSym : String -> (String, Bool)
-unicodeExternSym "charIsAlpha" = ("@mdk_char_is_alpha", True)
-unicodeExternSym "charIsSpace" = ("@mdk_char_is_space", True)
-unicodeExternSym "charIsUpper" = ("@mdk_char_is_upper", True)
-unicodeExternSym "charIsLower" = ("@mdk_char_is_lower", True)
-unicodeExternSym "charIsPunct" = ("@mdk_char_is_punct", True)
-unicodeExternSym "charToUpper" = ("@mdk_char_to_upper", False)
-unicodeExternSym "charToLower" = ("@mdk_char_to_lower", False)
-unicodeExternSym "stringToUpper" = ("@mdk_string_to_upper", False)
-unicodeExternSym _ = ("@mdk_string_to_lower", False)
-
--- emit the arity-1 eta-forwarder `@mdk_etaN(i64 %clos, i64 %arg0) { r = call
--- @mdk_<sym>(%arg0); [tag]; ret }` into the side buffer (same swap discipline
--- as emitEtaDefine).
-emitUnicodeEtaDefine : Emit -> String -> String -> <Mut> Unit
-emitUnicodeEtaDefine e lamName name =
-  let (sym, needsTag) = unicodeExternSym name
-  let saved = (bufRef e).value
-  let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, i64 %arg0) {")
-  let _ = emit e "entry:"
-  let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 " ++ sym ++ "(i64 %arg0)")
-  let res = if needsTag then tagInt e r else r
-  let _ = emit e ("  ret i64 " ++ res)
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
@@ -5924,11 +5841,6 @@ allGuardsEmittable : List CGuard -> Bool
 allGuardsEmittable [] = True
 allGuardsEmittable ((CGBool _)::rest) = allGuardsEmittable rest
 allGuardsEmittable ((CGBind _ _)::rest) = allGuardsEmittable rest
-
-irrefutablePat : Pat -> Bool
-irrefutablePat (PVar _) = True
-irrefutablePat PWild = True
-irrefutablePat _ = False
 
 -- bind a pattern's variables against a value word, emitting field loads for the
 -- constructor sub-patterns.  Mirrors the binding half of eval.mdk's matchPat, but
@@ -7777,11 +7689,6 @@ inferParamTysSeedD sigs dsig ((PVar x)::rest) body i di
 inferParamTysSeedD sigs dsig (_::rest) body i di =
   seedParamTy dsig di LTInt ::
     inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
-
-strHasPrefix : String -> String -> Bool
-strHasPrefix pre s
-  | stringLength s < stringLength pre = False
-  | otherwise = stringSlice 0 (stringLength pre) s == pre
 
 -- G3: override a type-var param's LTInt seed with LTNum when it's used in
 -- arithmetic (a polymorphic Num operand); otherwise keep the seed unchanged.

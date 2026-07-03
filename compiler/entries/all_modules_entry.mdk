@@ -1,3 +1,7 @@
+-- lint-disable-file rule-dead-code
+-- (`batchEntryDummy` is an intentional unreferenced placeholder — this file
+-- exists only to force-import every compiler module into one closure.)
+--
 -- Synthetic entry for the batch typecheck harness
 -- (test/diff_compiler_check_modules_batch.sh).  It imports one name from every
 -- compiler module so that `loadProgram` pulls them ALL into a single union

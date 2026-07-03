@@ -1,3 +1,23 @@
+warning: [rule-dead-code] private top-level 'bareAdd' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'bareLt' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'leftCompose' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'leftMul' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'leftSub' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negApp' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negBacktick' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negBacktickBare' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negReorder' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negRightSub' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negSelf' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negSubexpr' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negThree' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negUnary' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'nestedInApp' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'nestedInLet' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'rightConcat' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'rightCons' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'rightEq' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'rightMul' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(&& flag)'
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(* 2)'
 warning: [rule-lambda-section] lambda is a single binary operation on its parameter(s) — rewrite as the operator section '(+)'

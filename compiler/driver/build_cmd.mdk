@@ -37,15 +37,6 @@ public export data BuildTarget = TNative | TWasm
 
 -- ---- small string helpers (externs only — keeps this module self-contained) ----
 
--- Trim a single trailing newline from command output (brew/pkg-config add one).
-trimNL : String -> String
-trimNL s =
-  let n = stringLength s
-  if n > 0 && stringSlice (n - 1) n s == "\n" then
-    stringSlice 0 (n - 1) s
-  else
-    s
-
 -- Strip leading/trailing ASCII whitespace: stringTrim (from support/util.mdk).
 
 isWS : String -> Bool

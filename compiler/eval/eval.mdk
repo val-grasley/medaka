@@ -1886,20 +1886,6 @@ getByte64 off arr i = match arrayGetUnsafe (off + i) arr
   VInt b => bitAnd b 255
   _ => panic "bytesToFloat64: array element not Int"
 
-assembleBits : Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int
-assembleBits b0 b1 b2 b3 b4 b5 b6 b7 =
-  bitOr
-    (shiftLeft b0 56)
-    (bitOr
-      (shiftLeft b1 48)
-      (bitOr
-        (shiftLeft b2 40)
-        (bitOr
-          (shiftLeft b3 32)
-          (bitOr
-            (shiftLeft b4 24)
-            (bitOr (shiftLeft b5 16) (bitOr (shiftLeft b6 8) b7))))))
-
 pBytesToFloat64 : Value -> Value -> Value
 pBytesToFloat64 (VArray arr) (VInt off) =
   -- Build a host Array Int of 8 bytes, then delegate to the C bytesToFloat64.

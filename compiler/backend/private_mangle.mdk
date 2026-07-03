@@ -451,43 +451,6 @@ declDefNames _ = []
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
--- names appearing in >= 2 units (RETAINED helper; kept for any future
--- collision-triggered path).  Universal mangling no longer needs the trigger —
--- EVERY function is module-qualified — but the merge-sort dedup is harmless and
--- self-contained, so it is left in place.
-collidingNames : List String -> List String
-collidingNames names = dedup (adjDupsPM (msortPM names))
-
-msortPM : List String -> List String
-msortPM [] = []
-msortPM [x] = [x]
-msortPM xs =
-  let (a, b) = splitAltPM xs
-  mergePM (msortPM a) (msortPM b)
-
-splitAltPM : List String -> (List String, List String)
-splitAltPM [] = ([], [])
-splitAltPM [x] = ([x], [])
-splitAltPM (x::y::rest) =
-  let (a, b) = splitAltPM rest
-  (x::a, y::b)
-
-mergePM : List String -> List String -> List String
-mergePM [] ys = ys
-mergePM xs [] = xs
-mergePM (x::xs) (y::ys) = match stringCompare x y
-  Gt => y :: mergePM (x::xs) ys
-  _ => x :: mergePM xs (y::ys)
-
-adjDupsPM : List String -> List String
-adjDupsPM [] = []
-adjDupsPM [_] = []
-adjDupsPM (x::y::rest) =
-  if x == y then
-    x :: adjDupsPM (y::rest)
-  else
-    adjDupsPM (y::rest)
-
 -- names exported via a `pub` DTypeSig/DExtern in this unit (so their DFunDef
 -- clauses, which parse private, still count as exported function symbols).
 pubSigNames : List Decl -> List String
@@ -802,8 +765,3 @@ renamePatsPM rm ps = map (renamePat rm) ps
 recPatFieldVarsPM : RecPatField -> List String
 recPatFieldVarsPM (RecPatField label None) = [label]
 recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
-
--- ── small list helpers (local; keep this module self-contained) ───────────────
-
-identityPM : a -> a
-identityPM x = x

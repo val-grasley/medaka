@@ -1,3 +1,6 @@
+warning: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'describe' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'take' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-match-on-param] function 'describe' matches on parameter 'm' — consider a multi-clause function definition
 warning: [rule-missing-signature] top-level 'classify' has no type signature — add a `classify : …` declaration
 warning: [rule-missing-signature] top-level 'describe' has no type signature — add a `describe : …` declaration

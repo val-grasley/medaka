@@ -1,3 +1,13 @@
+ROOT/test/lint_multi_dir_fixtures/dirA/one.mdk:
+ROOT/test/lint_multi_dir_fixtures/dirA/one.mdk:7:1: [rule-dead-code] private top-level 'rankScore' is unreachable from exports/main/doctests — dead code (remove it)
+  |
+7 | rankScore n =
+  |  ^
+ROOT/test/lint_multi_dir_fixtures/dirB/two.mdk:
+ROOT/test/lint_multi_dir_fixtures/dirB/two.mdk:5:1: [rule-dead-code] private top-level 'rankScore' is unreachable from exports/main/doctests — dead code (remove it)
+  |
+5 | rankScore n =
+  |  ^
 
 cross-file:
 ROOT/test/lint_multi_dir_fixtures/dirA/one.mdk:7:1: [rule-duplicate-body] function 'rankScore' has a body structurally identical to a definition in ROOT/test/lint_multi_dir_fixtures/dirB/two.mdk — consider consolidating into a shared module

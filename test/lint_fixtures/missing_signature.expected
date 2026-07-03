@@ -1,1 +1,3 @@
+warning: [rule-dead-code] private top-level 'answer' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-missing-signature] top-level 'unsigned' has no type signature — add a `unsigned : …` declaration

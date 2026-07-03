@@ -48,11 +48,6 @@ isSpaceChar '\t' = True
 isSpaceChar '\r' = True
 isSpaceChar _ = False
 
-isWordStop : Char -> Bool
-isWordStop '(' = True
-isWordStop ')' = True
-isWordStop c = isSpaceChar c
-
 tokFrom : Array Char -> Int -> List SToken
 tokFrom cs i
   | i >= arrayLength cs = []
@@ -189,12 +184,6 @@ toInt : SExp -> Int
 toInt (SAtom s) = parseIntStr s
 toInt other =
   panic ("core_ir_sexp_parse: expected int atom: " ++ sexprToStr other)
-
-toOptStr : SExp -> Option String
-toOptStr (SAtom "None") = None
-toOptStr (SList ((SAtom "Some")::[s])) = Some (toStr s)
-toOptStr other =
-  panic ("core_ir_sexp_parse: expected Option String: " ++ sexprToStr other)
 
 toLit : SExp -> Lit
 toLit (SList ((SAtom "LInt")::[n])) = LInt (toInt n)

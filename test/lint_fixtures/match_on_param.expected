@@ -1,1 +1,2 @@
+warning: [rule-dead-code] private top-level 'greet' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-match-on-param] function 'greet' matches on parameter 'x' — consider a multi-clause function definition

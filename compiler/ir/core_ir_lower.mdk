@@ -1088,20 +1088,6 @@ letGroupClausesOf ((LetBind n clauses)::rest) = map (lowerLetBind n) clauses
 lowerLetBind : String -> FunClause -> (String, CClause)
 lowerLetBind n (FunClause pats body) = (n, CClause pats (lower body))
 
-groupNames : List (String, CClause) -> List String -> List String
-groupNames [] _ = []
-groupNames ((n, _)::rest) seen
-  | contains n seen = groupNames rest seen
-  | otherwise = n :: groupNames rest (n::seen)
-
-clausesFor : String -> List (String, CClause) -> List CClause
-clausesFor _ [] = []
--- Intentional cross-file duplicate of the same helper in typecheck.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
--- lint-disable-next-line rule-duplicate-body
-clausesFor name ((n, c)::rest)
-  | n == name = c :: clausesFor name rest
-  | otherwise = clausesFor name rest
-
 ctorArities : List Decl -> List (String, Int)
 ctorArities [] = []
 ctorArities ((DData _ _ _ variants _)::rest) = map variantArity variants

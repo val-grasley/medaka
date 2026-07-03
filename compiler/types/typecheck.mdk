@@ -467,9 +467,6 @@ findAtom l (y::ys) = if l == atomLabel y then Some y else findAtom l ys
 atomOfLabel : String -> Atom
 atomOfLabel l = Atom l (dtopFor l)
 
-atomsOfLabels : List String -> List Atom
-atomsOfLabels ls = atomsNorm (map atomOfLabel ls)
-
 -- ── v2 Stage 3: the `IO` widening union alias (design §3.2) ─────────────────
 -- `IO` is the coarse security alias: in a BOUND/annotation row it stands for
 -- the join of every narrow security label at ⊤.  ioAliasLabels lists them
@@ -679,11 +676,6 @@ alphaArms lets acc ((Arm _ _ rhs)::rest) = match alpha lets rhs
       Known c => alphaArms lets (Some c) rest
       Unknown => Unknown
 
--- lift α's result to a param (§2.4): Known s ⇒ PPrefix (Some s); Unknown ⇒ ⊤
-paramOfKp : KP -> Param
-paramOfKp (Known s) = PPrefix (Some s)
-paramOfKp Unknown = PPrefix None
-
 -- the FIRST argument of an application spine: `f a b c` ⇒ Some a (locked dec 1)
 spineFirstArg : Expr -> Option Expr
 spineFirstArg (ELoc _ e) = spineFirstArg e
@@ -752,10 +744,6 @@ newEffvarId _ =
 -- the empty closed row — a pure arrow
 pureRow : EffRow
 pureRow = EffRow [] None
-
--- a closed row over the given concrete labels
-closedRow : List String -> EffRow
-closedRow labels = EffRow (atomsOfLabels labels) None
 
 freshEffvar : Unit -> <Mut> Ref Effvar
 freshEffvar _ = Ref (EUnbound (newEffvarId ()) currentLevel.value)
@@ -2277,13 +2265,6 @@ bindVar cell t =
   let _ = occursAdjust (tyvarId cell) (tyvarLevel cell) t
   if occursCheckFailed.value then () else setRef cell (Link t)
 
-unifyList : List Mono -> List Mono -> <Mut> Unit
-unifyList [] [] = ()
-unifyList (x::xs) (y::ys) =
-  let _ = unify x y
-  unifyList xs ys
-unifyList _ _ = panic "unify: tuple arity mismatch"
-
 typeMismatch : Mono -> Mono -> <Mut> Unit
 typeMismatch a b = match currentMethodMismatch.value
   Some mname => pushTypeError ("Method '" ++ mname ++ "': expected type " ++ ppMono a ++ " but got " ++ ppMono b)
@@ -2563,10 +2544,6 @@ effStr : List Atom -> String
 effStr [] = ""
 effStr labels = "<" ++ renderAtoms labels ++ "> "
 
-effLabelsOf : Ty -> List String
-effLabelsOf (TyEffect labels _ _) = map fst labels
-effLabelsOf _ = []
-
 stripEff : Ty -> Ty
 stripEff (TyEffect _ _ t) = t
 stripEff t = t
@@ -2706,15 +2683,6 @@ rejectCyclicAliases _ =
   setRef
     aliasTableRef
     (filterList (entry => not (contains (fst entry) cyclic)) table)
-
--- an annotation / signature mono with free tyvars realized as fresh vars
-astTypeFresh : Ty -> <Mut> Mono
-astTypeFresh ty =
-  let etbl = freshEffMap (dedup (effTailNames ty ++ rowArgNames ty))
-  fromAstTypeE
-    etbl
-    (freshTvMap (removeAllS (rowArgNames ty) (dedup (tyVarNames ty))))
-    ty
 
 -- like astTypeFresh but also returns the name→fresh-tyvar map (the same fresh
 -- vars used in the Mono), so a caller can check post-unify whether each
@@ -3367,10 +3335,6 @@ countInSubst (id::rest) subst =
       Some _ => 1
       None => 0) +
     countInSubst rest subst
-
-recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
-recordSite name tagRef implRef methodType =
-  recordSiteHinted name tagRef implRef methodType None
 
 -- @Impl: recordSite carrying an optional named-impl hint for this occurrence.  The
 -- hint (when present) is threaded into resolveSite, which stamps RKey of the NAMED
@@ -4895,14 +4859,6 @@ groupNames ((n, _)::rest) seen = match omLookup n seen
   Some _ => groupNames rest seen
   None => n :: groupNames rest (omInsert n () seen)
 
-clausesFor : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
-clausesFor _ [] = []
--- Intentional cross-file duplicate of the same helper in core_ir_lower.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
--- lint-disable-next-line rule-duplicate-body
-clausesFor name ((n, c)::rest)
-  | n == name = c :: clausesFor name rest
-  | otherwise = clausesFor name rest
-
 -- process a let-group (where clauses): bind names, infer, generalize
 processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
 processLetGroup env binds =
@@ -5421,19 +5377,6 @@ preludeReturnPosDictNames preludeDecls allDecls =
   filterList
     (n => anyMember (declBodyVars n preludeDecls) rpNames)
     (constrainedSigNames preludeDecls)
-
--- #55 EVAL-path residual: the MODULE analogue of preludeReturnPosDictNames — each
--- module-level `=>`-constrained fn whose body dispatches a return-position method
--- (so it routes RDictFwd `$dict_<fn>_<slot>` and genuinely needs the leading dict
--- param at eval, which arg-tag cannot supply).  [moduleDecls] is the constrained-sig
--- universe to filter; [allDecls] computes the full return-position method set.  An
--- arg-position-only constrained module fn stays OUT (arg-tag resolves it in eval).
-returnPosConstrainedSigNames : List Decl -> List Decl -> <Mut> List String
-returnPosConstrainedSigNames allDecls moduleDecls =
-  let rpNames = returnPosMethodNames allDecls
-  filterList
-    (n => anyMember (declBodyVars n moduleDecls) rpNames)
-    (constrainedSigNames moduleDecls)
 
 -- D3b-2: the PRELUDE's `=>`-constrained fns that dispatch a method in ARGUMENT
 -- position (the ~23 helpers: neq/elem/any/all/find/count/sum/product/maximum/
@@ -6166,12 +6109,6 @@ implDefinesMethodAt ((ImplEntry tag2 methodNames _ _ _ _)::rest) method tag
   | tag2 == tag && contains method methodNames = True
   | otherwise = implDefinesMethodAt rest method tag
 
-headHasRequires : List ImplEntry -> String -> Bool
-headHasRequires [] _ = False
-headHasRequires ((ImplEntry tag2 _ _ reqs _ _)::rest) tag
-  | tag2 == tag && isNonEmptyL reqs = True
-  | otherwise = headHasRequires rest tag
-
 -- ── coherence check (TYPECHECK-AUDIT S3) ───────────────────────────────────
 -- Mirror lib/typecheck.ml's check_coherence (Phase 68): reject incoherent USER
 -- impl sets at declaration time.  Two impls of the SAME interface whose head
@@ -6301,10 +6238,6 @@ cohEqR (TApp f1 a1) (TApp f2 a2) = cohEqMono f1 f2 && cohEqMono a1 a2
 cohEqR (TFun a1 _ b1) (TFun a2 _ b2) = cohEqMono a1 a2 && cohEqMono b1 b2
 cohEqR (TEff _) (TEff _) = True
 cohEqR _ _ = False
-
-cohEqAll : List (Mono, Mono) -> <Mut> Bool
-cohEqAll [] = True
-cohEqAll ((a, b)::rest) = cohEqMono a b && cohEqAll rest
 
 -- [a] strictly more specific than [b]: b subsumes a but not a subsumes b
 cohStrictlyMoreSpecific : List Mono -> List Mono -> <Mut> Bool
@@ -6649,13 +6582,6 @@ cohCollectModuleImpls [] = []
 cohCollectModuleImpls ((mid, prog)::rest) = flatMap (cohImplsOfMid mid) prog
   ++ cohCollectModuleImpls rest
 
--- Run global coherence over the USER modules only (prelude not in [modules]).
--- Pushes the first cross-module / overlap conflict (if any) into typeErrors.
-checkGlobalCoherence : List (String, List Decl) -> <Mut> Unit
-checkGlobalCoherence modules = match globalCoherenceConflict modules
-  Some msg => pushTypeError msg
-  None => ()
-
 -- the first cross-module coherence conflict (if any) as a bare message — drivers
 -- that thread errs as a VALUE (checkModulesEntryFullGo) prepend this themselves,
 -- rather than relying on the typeErrors ref (cleared per-module by resetState).
@@ -6893,16 +6819,6 @@ headTyconTy (TyCon n) = Some n
 headTyconTy (TyApp a _) = headTyconTy a
 headTyconTy (TyTuple ts) = Some (tupleHeadTagTc (listLen ts))
 headTyconTy _ = None
-
--- the impl-dict routes for a method site that resolved to head tag [tag]: find the
--- parametric impl defining [name] at that head, match its head pattern against the
--- concrete result mono to recover the element subst, then one recursive RKey route
--- per requires (the structured element dict eval threads into the impl body,
--- Phase 83/84 #5).  The full implTable is threaded through so recursive instances
--- (List (List Int)) can re-match the same "List" entry.
-implDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
-implDictRoutesFor implTable name tag resultMono =
-  implDictRoutesIn implTable implTable name tag resultMono [resultMono]
 
 -- Multi-param-interface variant: [paramMonos] is the FULL list of the interface's
 -- type-parameter monos at this occurrence (recovered by ifaceParamMonos), e.g. for
@@ -8606,15 +8522,6 @@ constraintFirstNonParam typarams c = match constraintNonParamVars typarams c
   [] => []
   n::_ => [n]
 
--- the method type's interface-param substitution: each interface typaram maps to
--- the corresponding impl head mono (so `def : a` becomes `def : List a_impl`); any
--- other tyvar in the method type gets a fresh var.
-expectedMethodType : List String -> List Mono -> Ty -> <Mut> Mono
-expectedMethodType ifaceParams headMonos mty =
-  let baseMap = zipL ifaceParams headMonos
-  let extras = removeAllS ifaceParams (dedup (tyVarNames mty))
-  fromAstType (baseMap ++ freshTvMap extras) mty
-
 removeAllS : List String -> List String -> List String
 removeAllS _ [] = []
 removeAllS drop (x::xs)
@@ -8947,8 +8854,6 @@ tjOut = Ref []
 
 tjLowOf : String -> Int
 tjLowOf x = fromOption 0 (omLookup x tjLow.value)
-tjIndexOf : String -> Int
-tjIndexOf x = fromOption 0 (omLookup x tjIndex.value)
 tjOnStack : String -> Bool
 tjOnStack x = fromOption False (omLookup x tjOn.value)
 
@@ -9135,14 +9040,6 @@ isLetrecGroup _ = True
 placeholderBinding : (String, Mono) -> (String, Scheme)
 placeholderBinding (m, v) = (m, monoScheme v)
 
--- Pass A: a signed member's placeholder is unified with an instantiation of its
--- signature, so mutual-recursive callers see the declared (possibly polymorphic)
--- type while the bodies are checked
-preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, List Mono)
-preunifySigs _ [] = []
-preunifySigs sigs ((m, v)::rest) = preunifySig sigs m v
-  ++ preunifySigs sigs rest
-
 -- Extended Pass A: same as preunifySigs but also returns the tyvar maps (for
 -- the signature-too-general check after body inference).  Returns a pair:
 -- (constraintRegs, sigTvMaps) where sigTvMaps is [(name, sig_ast, tvs)] for
@@ -9158,19 +9055,6 @@ preunifySigsEx sigs ((m, v)::rest) =
       let regs = [(m, constraintVarIfaceMonos (sigConstraints ty) (snd inst))]
       (regs ++ restRegs, (m, ty, snd inst)::restTvs)
     None => (restRegs, restTvs)
-
--- Unify a member's placeholder with a fresh instantiation of its signature, and
--- (for a `=>`-constrained sig) return its constraint variables' monos in slot
--- order.  The actual id registration is deferred to after body inference, because
--- unification picks which of two unified vars survives — registering a pre-unify
--- id would miss the survivor (the in-body method occurrence normalizes to it).
-preunifySig : List (String, Ty) -> String -> Mono -> <Mut> List (String, List Mono)
-preunifySig sigs m v = match lookupAssoc m sigs
-  Some ty =>
-    let inst = instantiateSigTracked ty
-    let _ = unify v (fst inst)
-    [(m, constraintVarMonos (sigConstraints ty) (snd inst))]
-  None => []
 
 -- like astTypeFresh but also returns the tyvar-name → fresh-var map
 instantiateSigTracked : Ty -> <Mut> (Mono, List (String, Mono))
@@ -9193,14 +9077,6 @@ tyVarArgNames : List Ty -> List String
 tyVarArgNames [] = []
 tyVarArgNames ((TyVar n)::rest) = n :: tyVarArgNames rest
 tyVarArgNames (_::rest) = tyVarArgNames rest
-
--- the constraint variables' monos in slot order (the fresh instantiation vars for
--- each constraint's tyvar)
-constraintVarMonos : List (String, String) -> List (String, Mono) -> List Mono
-constraintVarMonos [] _ = []
-constraintVarMonos ((_, name)::rest) tvMap = match lookupAssoc name tvMap
-  Some mono => mono :: constraintVarMonos rest tvMap
-  None => constraintVarMonos rest tvMap
 
 -- like constraintVarMonos but KEEPS the iface name paired with each constraint var's
 -- mono (slot order preserved), so registerMember can register call-obligation ifaces.
@@ -9547,11 +9423,6 @@ schemeObligationOne boundIds iface typarams mty occ = match dispatchMonosOf typa
         []
     _ => []
   _ => []
-
-hasSig : List (String, Ty) -> String -> Bool
-hasSig sigs m = match lookupAssoc m sigs
-  Some _ => True
-  None => False
 
 schemeIds : Scheme -> List Int
 schemeIds (Forall ids _ _) = ids
@@ -10078,16 +9949,6 @@ publicDataDecls (_::rest) = publicDataDecls rest
 -- superinterface existence query (checkSuperImpls/superImplExists) must see an
 -- imported module's `impl Semigroup T` even when it isn't `export`-marked — else
 -- `impl Monoid T` in an importer is falsely rejected for a "missing" super impl.
--- publicDataDecls drops non-public DImpl (and `accData` is also consumed by
--- buildOracle/registerAllData, which must NOT see extra impls), so this is a
--- SEPARATE accumulator threaded in parallel.  Keeps DAttrib-wrapped impls too;
--- superImplExists/implMatchesSuper already unwrap DAttrib.
-allImplDecls : List Decl -> List Decl
-allImplDecls [] = []
-allImplDecls ((d@(DImpl { ... }))::rest) = d :: allImplDecls rest
-allImplDecls ((d@(DAttrib _ (DImpl { ... })))::rest) = d :: allImplDecls rest
-allImplDecls (_::rest) = allImplDecls rest
-
 pickSchemes : List String -> List (String, Scheme) -> List (String, Scheme)
 pickSchemes [] _ = []
 pickSchemes (n::ns) table = match lookupAssoc n table
@@ -10818,14 +10679,6 @@ moduleDictNames coreDecls allDecls modules = preludeReturnPosDictNames coreDecls
 -- (prop-shrinker oscillation when neq/elem/any/… were swept into the eval dict
 -- set); guarded by the `medaka test stdlib/core.mdk` canary.
 
--- E6: register a constraint-arity entry (placeholder ids of the right length) for
--- every `=>`-constrained top-level signature, so dictArityOf returns the right
--- count at the final cross-module dictPass.  Prepends to funConstraintsRef.
-seedDictAritiesFromSigs : List Decl -> <Mut> Unit
-seedDictAritiesFromSigs decls =
-  let entries = flatMap constrainedSigArity decls
-  setRef funConstraintsRef (entries ++ funConstraintsRef.value)
-
 constrainedSigArity : Decl -> List (String, List Int)
 constrainedSigArity (DTypeSig _ n ty)
   | isConstrainedTy ty = [(n, zerosL (listLen (sigConstraints ty)))]
@@ -10839,10 +10692,6 @@ zerosL k
 
 prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
-
--- E5/E6: dict-pass one module's decls (the `(mid, prog)` pair shape modules2 holds).
-dictPassModulePair : List String -> (String, List Decl) -> (String, List Decl)
-dictPassModulePair dictNames (mid, prog) = (mid, dictPass dictNames prog)
 
 -- E4/E6: prePass a module rewriting ARG-position method occurrences to EMethodAt
 -- (argNames) AND `=>`-constrained-fn occurrences to EDictAt (dictNames); both

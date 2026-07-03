@@ -255,9 +255,6 @@ data WTy = WInt | WBool | WUnit | WStr | WRef | WChar | WFloat
 data Prog =
   | Prog (List (String, Int)) (List (String, String)) (List String) Bool (List String) (List String) (List (String, Int)) Bool (List CImplEntry)
 
-progUseRef : Prog -> Bool
-progUseRef (Prog _ _ _ u _ _ _ _ _) = u
-
 progFnNames : Prog -> List String
 progFnNames (Prog _ _ _ _ fns _ _ _ _) = fns
 
@@ -2611,10 +2608,6 @@ allPlainParams pats = not (anyList (p => not (isPlainParam p)) pats)
 -- params, and on full match TAIL-emits its body; a failed test `br $cl<i>` falls
 -- through to the next clause.  The last clause's failure is `unreachable` (a
 -- well-typed exhaustive fn won't reach it).
-emitClauseChainRef : Prog -> String -> List String -> Int -> List CClause -> <Mut> List String
-emitClauseChainRef prog name params arity clauses =
-  emitClauseChainGo prog [] name params arity clauses 0
-
 emitClauseChainRefEnv : Prog -> List String -> String -> List String -> Int -> List CClause -> <Mut> List String
 emitClauseChainRefEnv prog baseEnv name params arity clauses =
   emitClauseChainGo prog baseEnv name params arity clauses 0
@@ -2694,10 +2687,6 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 -- synthetic positional params.  A `br clLabel` on a failed test falls to the next
 -- clause.  PLit param → compare the i31 against the constant.  PCon param → test
 -- the discriminant + bind fields.  PVar → bind to a local.  PWild → nothing.
-clausePatCode : Prog -> List Pat -> List String -> String -> <Mut> (List String, List String, List String)
-clausePatCode prog pats params clLabel =
-  clausePatGo prog (zipPats pats params) clLabel [] [] []
-
 clausePatCodeEnv : Prog -> List String -> List Pat -> List String -> String -> <Mut> (List String, List String, List String)
 clausePatCodeEnv prog baseEnv pats params clLabel =
   clausePatGo prog (zipPats pats params) clLabel [] [] baseEnv
@@ -5486,14 +5475,6 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
     ++ " (result (ref eq))"
   [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
 
--- the recursive self-call FIELD index of the body's cons/ctor-tail leaf (Axis A: always
--- the last field).  Cons-tail → 1 (field 2 = tail).  General ctor → ctorArity-1.  We read
--- it from any cons/ctor-tail leaf (uniform by wTrmcUniformCtor) via ctorTailSelfIdx.
-wTrmcSelfIdxFor : Prog -> SelfRef -> Int -> CExpr -> <Mut> Int
-wTrmcSelfIdxFor prog self arity body = match wTrmcFirstCtorTail prog self arity body
-  Some ex => ctorTailSelfIdx ex
-  None => 1
-
 -- the recursive self-call field index, scanning EVERY clause's body for the first
 -- cons/ctor-tail leaf (the leaf may live in a clause after a base clause).  Defaults
 -- to 1 (Cons tail field) when no clause has a ctor-tail (a pure plain-tail fn).
@@ -7544,20 +7525,10 @@ foldMaxI (x::xs) = maxI x (foldMaxI xs)
 
 -- ── small generic helpers ────────────────────────────────────────────────────
 
--- W7 string helpers (no stdlib): prefix test + drop + trailing-integer parse, over
--- the char array.  Used only for the synthetic tuple ctor/type names ("Tup<n>" /
--- "$Tuple<n>") whose arity is recovered from the trailing decimal.
-startsWithGo : Array Char -> Array Char -> Int -> Bool
-startsWithGo sc pc i =
-  if i >= arrayLength pc then
-    True
-  else if i >= arrayLength sc then
-    False
-  else if charCode (arrayGetUnsafe i sc) == charCode (arrayGetUnsafe i pc) then
-    startsWithGo sc pc (i + 1)
-  else
-    False
-
+-- W7 string helpers (no stdlib): trailing-integer parse over the char array.
+-- Used only for the synthetic tuple ctor/type names ("Tup<n>" / "$Tuple<n>")
+-- whose arity is recovered from the trailing decimal.
+--
 -- the integer formed by the trailing decimal digits of `s` (e.g. "Tup3" → 3,
 -- "$Tuple12" → 12).  Walks from the first digit to the end.
 trailingIntOf : String -> Int

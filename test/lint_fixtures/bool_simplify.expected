@@ -7,6 +7,19 @@ warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
 warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
 warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
 warning: [rule-bool-simplify] redundant boolean expression — simplify to 'x'
+warning: [rule-dead-code] private top-level 'bangBang' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'eqF' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'eqT' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'ifFT' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'ifTF' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'neF' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'neT' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negBothLit' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOneLit' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOrShape' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negSingle' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'notNot' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'tEq' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-missing-signature] top-level 'bangBang' has no type signature — add a `bangBang : …` declaration
 warning: [rule-missing-signature] top-level 'eqF' has no type signature — add a `eqF : …` declaration
 warning: [rule-missing-signature] top-level 'eqT' has no type signature — add a `eqT : …` declaration

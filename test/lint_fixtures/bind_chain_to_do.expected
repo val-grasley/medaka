@@ -1,6 +1,14 @@
 warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
 warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
 warning: [rule-bind-chain-to-do] deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block
+warning: [rule-dead-code] private top-level 'negDepth1' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negDepth2' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negErrRebuild' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negMixed' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'negRewrap' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posOptChain' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posResChain' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'posResMap' is unreachable from exports/main/doctests — dead code (remove it)
 warning: [rule-match-on-param] function 'negRewrap' matches on parameter 'r' — consider a multi-clause function definition
 warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map g r' (functor map)
 warning: [rule-missing-signature] top-level 'negDepth1' has no type signature — add a `negDepth1 : …` declaration

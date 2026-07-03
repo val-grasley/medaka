@@ -56,9 +56,11 @@ import support.util.{
   joinWith,
   sortUniqS,
   startsWith,
+  stringTrim,
+  lookupAssoc,
 }
 import tools.printer.{declToString, exprToString}
-import support.char.{isAlnum}
+import support.char.{isAlnum, isLower, isUpper}
 import ir.sexp.{exprSexp, patSexp}
 import frontend.exhaust.{Oracle, buildOracle, oGetCtors, oGetCtorType}
 import frontend.lexer.{Comment, collectComments, commentLine, commentText}
@@ -87,7 +89,7 @@ public export record Rule
   descr : String
   severity : Severity
   enabled : Bool
-  check : String -> Positions -> List Decl -> List Finding
+  check : String -> String -> Positions -> List Decl -> List Finding
   fix : Option (Oracle -> Decl -> Option (List Decl))
 
 -- A registered CROSS-FILE rule.  Unlike `Rule` (one file at a time), `check`
@@ -158,6 +160,9 @@ ruleNameMatchToMap = "rule-match-to-map"
 
 ruleNameBindChainToDo : String
 ruleNameBindChainToDo = "rule-bind-chain-to-do"
+
+ruleNameDeadCode : String
+ruleNameDeadCode = "rule-dead-code"
 
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
@@ -335,6 +340,16 @@ bindChainToDoRule = Rule {
   fix = None,
 }
 
+deadCodeRule : Rule
+deadCodeRule = Rule {
+  name = ruleNameDeadCode,
+  descr = "private (unexported) top-level binding is unreachable from the file's exports/main/doctests — dead code (Haskell -Wunused-top-binds)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleDeadCode,
+  fix = None,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -354,6 +369,7 @@ allRules = [
   complementPredicateRule,
   matchToMapRule,
   bindChainToDoRule,
+  deadCodeRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -379,12 +395,13 @@ allCrossFileRules = [duplicateBodyRule]
 -- location.  Each rule's findings are re-stamped with the rule's (possibly
 -- CLI-overridden) severity so a `--deny` promotion propagates without the rule
 -- knowing about flags.
-export lintProgram : List Rule -> String -> Positions -> List Decl -> List Finding
-lintProgram rules path pos prog = flatMap (runRuleOn path pos prog) rules
+export lintProgram : List Rule -> String -> String -> Positions -> List Decl -> List Finding
+lintProgram rules path src pos prog =
+  flatMap (runRuleOn path src pos prog) rules
 
-runRuleOn : String -> Positions -> List Decl -> Rule -> List Finding
-runRuleOn path pos prog r
-  | r.enabled = map (restampSeverity r.severity) (r.check path pos prog)
+runRuleOn : String -> String -> Positions -> List Decl -> Rule -> List Finding
+runRuleOn path src pos prog r
+  | r.enabled = map (restampSeverity r.severity) (r.check path src pos prog)
   | otherwise = []
 
 restampSeverity : Severity -> Finding -> Finding
@@ -519,7 +536,7 @@ export lintToLines : String -> String -> Positions -> List Decl -> String
 lintToLines src path pos prog =
   joinNl (map
     findingLine
-    (applySuppressions src (lintProgram allRules path pos prog)))
+    (applySuppressions src (lintProgram allRules path src pos prog)))
 
 findingLine : Finding -> String
 findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
@@ -707,8 +724,8 @@ declPosToLoc p = let l = declPosLine p in Loc "" l 1 l 1
 -- A `DFunDef _ name pats body` (or an impl method) whose body is a `match` with
 -- ≥2 arms over an `EVar p` where `p` is a bare `PVar p` parameter.  Single-arm
 -- matches are skipped (STYLE's "when not to convert").
-ruleMatchOnParam : String -> Positions -> List Decl -> List Finding
-ruleMatchOnParam _ pos prog = flatMap matchParamDeclL (declLocList pos prog)
+ruleMatchOnParam : String -> String -> Positions -> List Decl -> List Finding
+ruleMatchOnParam _ _ pos prog = flatMap matchParamDeclL (declLocList pos prog)
 
 matchParamDeclL : (Decl, Option Loc) -> List Finding
 matchParamDeclL (d, loc) = matchParamDecl loc d
@@ -886,8 +903,8 @@ boundaryAt cs j
 -- not declared in this file) is treated as NOT provably irrefutable → SKIP.  This
 -- is deliberately conservative: false negatives are fine, false positives corrupt
 -- code (they could turn a total match into a partial function clause).
-ruleDestructureInParam : String -> Positions -> List Decl -> List Finding
-ruleDestructureInParam _ pos prog =
+ruleDestructureInParam : String -> String -> Positions -> List Decl -> List Finding
+ruleDestructureInParam _ _ pos prog =
   let orc = buildOracle prog
   flatMap (destructureDeclL orc) (declLocList pos prog)
 
@@ -997,8 +1014,8 @@ derivableIfaces = ["Eq", "Ord", "Debug"]
 -- USER code we additionally require the type to have a `data`/`record`
 -- declaration whose constructors are visible in the linted file (`oGetCtors`
 -- returns `Some`) — a primitive has none, so `impl Eq for Int` is never flagged.
-ruleDerivable : String -> Positions -> List Decl -> List Finding
-ruleDerivable path pos prog
+ruleDerivable : String -> String -> Positions -> List Decl -> List Finding
+ruleDerivable path _ pos prog
   | isStdlibPath path = []
   | otherwise =
     let orc = buildOracle prog
@@ -1074,8 +1091,8 @@ stdlibNames = [
 -- Skip stdlib-owned files: inside the stdlib these top-level names ARE the
 -- canonical definitions the rule points USER code at, so flagging them is a pure
 -- false positive.  Off the stdlib root the rule fires as before.
-ruleStdlibReimpl : String -> Positions -> List Decl -> List Finding
-ruleStdlibReimpl path pos prog
+ruleStdlibReimpl : String -> String -> Positions -> List Decl -> List Finding
+ruleStdlibReimpl path _ pos prog
   | isStdlibPath path = []
   | otherwise =
     -- dedupe by name so a multi-clause function (consecutive DFunDefs) fires once,
@@ -1121,8 +1138,8 @@ stdlibFinding (name, loc) = Finding {
 -- `List Decl` walk never sees them; `prop`/`test`/`extern` are their own decl
 -- kinds, not `DFunDef`, so they are excluded automatically.  `main` is exempt by
 -- name (entry-point boilerplate).  Multi-clause defs dedupe to one finding.
-ruleMissingSignature : String -> Positions -> List Decl -> List Finding
-ruleMissingSignature _ pos prog =
+ruleMissingSignature : String -> String -> Positions -> List Decl -> List Finding
+ruleMissingSignature _ _ pos prog =
   map
     missingSigFinding
     (filterList
@@ -1221,8 +1238,8 @@ splitTail2 stmts = match reverseL stmts
   _ => None
 
 -- ── check ────────────────────────────────────────────────────────────────────
-ruleBindThenDestructure : String -> Positions -> List Decl -> List Finding
-ruleBindThenDestructure _ pos prog =
+ruleBindThenDestructure : String -> String -> Positions -> List Decl -> List Finding
+ruleBindThenDestructure _ _ pos prog =
   let orc = buildOracle prog
   flatMap (bindDestructureDeclL orc) (declLocList pos prog)
 
@@ -1565,8 +1582,9 @@ lamSection2 x y (EBinOp op a b _)
 lamSection2 _ _ _ = None
 
 -- ── check ─────────────────────────────────────────────────────────────────────
-ruleLambdaSection : String -> Positions -> List Decl -> List Finding
-ruleLambdaSection _ pos prog = flatMap lambdaSectionDeclL (declLocList pos prog)
+ruleLambdaSection : String -> String -> Positions -> List Decl -> List Finding
+ruleLambdaSection _ _ pos prog =
+  flatMap lambdaSectionDeclL (declLocList pos prog)
 
 lambdaSectionDeclL : (Decl, Option Loc) -> List Finding
 lambdaSectionDeclL (d, loc) = map (lambdaSectionFinding loc) (declLamSections d)
@@ -1806,8 +1824,8 @@ ifMaxMinOf cond t el = match unwrapLoc cond
   _ => None
 
 -- ── check ─────────────────────────────────────────────────────────────────────
-ruleIfMaxMin : String -> Positions -> List Decl -> List Finding
-ruleIfMaxMin _ pos prog = flatMap ifMaxMinDeclL (declLocList pos prog)
+ruleIfMaxMin : String -> String -> Positions -> List Decl -> List Finding
+ruleIfMaxMin _ _ pos prog = flatMap ifMaxMinDeclL (declLocList pos prog)
 
 ifMaxMinDeclL : (Decl, Option Loc) -> List Finding
 ifMaxMinDeclL (d, loc) = map (ifMaxMinFinding loc) (declIfMaxMinHits d)
@@ -2066,8 +2084,8 @@ andThenPureMapBody m x (EApp pureHd arg)
 andThenPureMapBody _ _ _ = None
 
 -- ── check ─────────────────────────────────────────────────────────────────────
-ruleAndThenPureMap : String -> Positions -> List Decl -> List Finding
-ruleAndThenPureMap _ pos prog =
+ruleAndThenPureMap : String -> String -> Positions -> List Decl -> List Finding
+ruleAndThenPureMap _ _ pos prog =
   flatMap andThenPureMapDeclL (declLocList pos prog)
 
 andThenPureMapDeclL : (Decl, Option Loc) -> List Finding
@@ -2520,8 +2538,8 @@ notEqOf e = match notArgOf e
     _ => None
   None => None
 
-ruleNotEq : String -> Positions -> List Decl -> List Finding
-ruleNotEq _ pos prog = exprRuleFindings noExcl notEqOf notEqFinding pos prog
+ruleNotEq : String -> String -> Positions -> List Decl -> List Finding
+ruleNotEq _ _ pos prog = exprRuleFindings noExcl notEqOf notEqFinding pos prog
 
 notEqFinding : Option Loc -> Expr -> Finding
 notEqFinding loc rewritten = Finding {
@@ -2570,8 +2588,8 @@ boolSimplifyEq op a b
 boolEqResult : String -> Expr -> Bool -> Expr
 boolEqResult op v constIsTrue = if op == "==" == constIsTrue then v else mkNot v
 
-ruleBoolSimplify : String -> Positions -> List Decl -> List Finding
-ruleBoolSimplify _ pos prog =
+ruleBoolSimplify : String -> String -> Positions -> List Decl -> List Finding
+ruleBoolSimplify _ _ pos prog =
   exprRuleFindings noExcl boolSimplifyOf boolSimplifyFinding pos prog
 
 boolSimplifyFinding : Option Loc -> Expr -> Finding
@@ -2613,8 +2631,8 @@ remParityFrom _ _ = None
 parityFn : String -> String
 parityFn op = if op == "==" then "isEven" else "isOdd"
 
-ruleRemParity : String -> Positions -> List Decl -> List Finding
-ruleRemParity _ pos prog =
+ruleRemParity : String -> String -> Positions -> List Decl -> List Finding
+ruleRemParity _ _ pos prog =
   exprRuleFindings remParityExcl remParityOf remParityFinding pos prog
 
 remParityFinding : Option Loc -> Expr -> Finding
@@ -2637,8 +2655,8 @@ doubleReverseOf (EApp hd1 arg1)
     _ => None
 doubleReverseOf _ = None
 
-ruleDoubleReverse : String -> Positions -> List Decl -> List Finding
-ruleDoubleReverse _ pos prog =
+ruleDoubleReverse : String -> String -> Positions -> List Decl -> List Finding
+ruleDoubleReverse _ _ pos prog =
   exprRuleFindings noExcl doubleReverseOf doubleReverseFinding pos prog
 
 doubleReverseFinding : Option Loc -> Expr -> Finding
@@ -2676,8 +2694,8 @@ whenUnlessOf (EIf c t el)
   | otherwise = None
 whenUnlessOf _ = None
 
-ruleWhenUnless : String -> Positions -> List Decl -> List Finding
-ruleWhenUnless _ pos prog =
+ruleWhenUnless : String -> String -> Positions -> List Decl -> List Finding
+ruleWhenUnless _ _ pos prog =
   exprRuleFindings whenUnlessExcl whenUnlessOf whenUnlessFinding pos prog
 
 whenUnlessFinding : Option Loc -> Expr -> Finding
@@ -2739,8 +2757,8 @@ complementPredOf e = do
   comp <- complementOf name
   Some (renameSpineHead comp (unwrapLoc inner))
 
-ruleComplementPredicate : String -> Positions -> List Decl -> List Finding
-ruleComplementPredicate _ pos prog =
+ruleComplementPredicate : String -> String -> Positions -> List Decl -> List Finding
+ruleComplementPredicate _ _ pos prog =
   exprRuleFindings
     complementExcl
     complementPredOf
@@ -2845,8 +2863,8 @@ matchToMapOf (EMatch scrut arms) = match arms
   _ => None
 matchToMapOf _ = None
 
-ruleMatchToMap : String -> Positions -> List Decl -> List Finding
-ruleMatchToMap _ pos prog =
+ruleMatchToMap : String -> String -> Positions -> List Decl -> List Finding
+ruleMatchToMap _ _ pos prog =
   exprRuleFindings noExcl matchToMapOf matchToMapFinding pos prog
 
 matchToMapFinding : Option Loc -> Expr -> Finding
@@ -2981,8 +2999,8 @@ bindChainDeclHeads _ = []
 bindChainImplHeads : ImplMethod -> List Expr
 bindChainImplHeads (ImplMethod _ _ body) = bindChainHeads body
 
-ruleBindChainToDo : String -> Positions -> List Decl -> List Finding
-ruleBindChainToDo _ pos prog = flatMap bindChainDeclL (declLocList pos prog)
+ruleBindChainToDo : String -> String -> Positions -> List Decl -> List Finding
+ruleBindChainToDo _ _ pos prog = flatMap bindChainDeclL (declLocList pos prog)
 
 bindChainDeclL : (Decl, Option Loc) -> List Finding
 bindChainDeclL (d, loc) = map (bindChainFinding loc) (bindChainDeclHeads d)
@@ -2994,6 +3012,225 @@ bindChainFinding loc _ = Finding {
   severity = SevWarning,
   loc = loc,
 }
+
+-- ── rule: dead-code (per-file reachability) ───────────────────────────────────
+-- Flag a PRIVATE (unexported) top-level value/function binding that is NOT
+-- reachable from the file's roots — Haskell's -Wunused-top-binds.  A private
+-- binding has module-local visibility, so a whole-file reachability walk is
+-- COMPLETE (nothing outside the file can reference it).
+--
+-- Roots = every exported (`export`/`public export`) top-level binding, `main`,
+-- and every identifier referenced from a reachable decl's body.  Reachability
+-- iterates to a fixpoint (a private helper used only by a DEAD private helper is
+-- itself dead → both flagged).
+--
+-- Reference sites that keep a binding LIVE (miss one → false "dead" → we'd delete
+-- live code, so we OVER-approximate references — safe direction):
+--   * other top-level bindings' bodies (via the reachability graph),
+--   * `impl`/`interface`(default)/`prop`/`test`/`bench`/top-level-`let` bodies
+--     (seeded as roots — they always run),
+--   * identifiers in doctest `>` input lines inside comments.  Doctests live in
+--     comments (stripped from the AST), so a helper exercised ONLY by a doctest
+--     looks dead but is LIVE under `medaka test`.  We recover them from the
+--     lexer's string-aware comment channel (`collectComments`) — NOT a naive
+--     grep of the raw text (which would eat `>`/`--` tokens inside string
+--     literals).
+--
+-- References are collected by tokenising the printed decl (`declToString`) into
+-- identifier runs: this can only OVER-collect (a name mentioned in a string
+-- literal keeps its def alive — safe), never under-collect within a body.
+-- Operator-named bindings are NOT flagged (their call sites use operator syntax,
+-- not name tokens, so a token scan can't see the reference → risk of false
+-- "dead").  `fix = None` (suggest-only — deletion is by hand).
+ruleDeadCode : String -> String -> Positions -> List Decl -> List Finding
+ruleDeadCode _ src pos prog =
+  let reach = reachableNames src prog
+  map deadFinding (filterList (deadPair reach) (privateDefLocs pos prog))
+
+deadPair : List String -> (String, Option Loc) -> Bool
+deadPair reach (n, _) = not (contains n reach)
+
+deadFinding : (String, Option Loc) -> Finding
+deadFinding (name, loc) = Finding {
+  rule = ruleNameDeadCode,
+  message = "private top-level '" ++ name ++ "' is unreachable from exports/main/doctests — dead code (remove it)",
+  severity = SevWarning,
+  loc = loc,
+}
+
+-- private (unexported) top-level fn/value bindings, deduped by name (first loc),
+-- restricted to ordinary-identifier names (operator defs are skipped).
+-- A binding is a dead-code CANDIDATE iff it is an ordinary-identifier top-level
+-- `DFunDef` whose name is NOT exported.  IMPORTANT: the common idiom
+-- `export name : T` / `name = …` puts the `export` on the *signature*
+-- (`DTypeSig True`), NOT the `DFunDef` — so exportedness is decided by
+-- `exportedNames` (which unions DFunDef-pub and DTypeSig-pub), not the DFunDef
+-- flag alone.
+privateDefLocs : Positions -> List Decl -> List (String, Option Loc)
+privateDefLocs pos prog =
+  let exported = exportedNames prog
+  dedupeNamesLoc (filterList
+    (candidatePair exported)
+    (flatMap allDefNameL (declLocList pos prog)))
+
+allDefNameL : (Decl, Option Loc) -> List (String, Option Loc)
+allDefNameL (DFunDef _ name _ _, loc) = [(name, loc)]
+allDefNameL (DAttrib _ d, loc) = allDefNameL (d, loc)
+allDefNameL _ = []
+
+candidatePair : List String -> (String, Option Loc) -> Bool
+candidatePair exported (n, _) = isOrdinaryIdent n && not (contains n exported)
+
+isOrdinaryIdent : String -> Bool
+isOrdinaryIdent s
+  | stringLength s == 0 = False
+  | otherwise = isIdentStart (arrayGetUnsafe 0 (stringToChars s))
+
+-- the set of names reachable from the file's roots (fixpoint closure).
+reachableNames : String -> List Decl -> List String
+reachableNames src prog =
+  let refMap = mergeRefs (flatMap defRefPair prog)
+  let seed = exportedNames prog ++ ("main" :: flatMap nonDefRefL prog ++ doctestIdents src)
+  bfsReach refMap [] seed
+
+-- one (defName, bodyRefs) per top-level DFunDef clause; refs are the identifier
+-- tokens of the printed decl (deduped).
+defRefPair : Decl -> List (String, List String)
+defRefPair d = match defNameOf d
+  Some name => [(name, sortUniqS (identTokens (declToString (unAttrib d))))]
+  None => []
+
+defNameOf : Decl -> Option String
+defNameOf (DFunDef _ name _ _) = Some name
+defNameOf (DAttrib _ d) = defNameOf d
+defNameOf _ = None
+
+unAttrib : Decl -> Decl
+unAttrib (DAttrib _ d) = d
+unAttrib d = d
+
+exportedNames : List Decl -> List String
+exportedNames prog = flatMap exportedNameL prog
+
+exportedNameL : Decl -> List String
+exportedNameL (DFunDef True name _ _) = [name]
+exportedNameL (DTypeSig True name _) = [name]
+exportedNameL (DAttrib _ d) = exportedNameL d
+exportedNameL _ = []
+
+-- identifier roots from body-bearing NON-DFunDef decls (impl/interface-default/
+-- prop/test/bench/top-level-let).  Deliberately EXCLUDES DTypeSig/DExtern (they
+-- NAME a binding, they don't reference it — including a sig would make every
+-- signed private helper look reachable) and pure type/import decls.
+-- Kinds that NAME a binding or a type/import rather than referencing a value are
+-- matched positionally and skipped; everything else (DProp/DTest/DBench/
+-- DInterface/DImpl/DLetGroup) is a body-bearing root.
+nonDefRefL : Decl -> List String
+nonDefRefL (DAttrib _ dd) = nonDefRefL dd
+nonDefRefL (DFunDef _ _ _ _) = []
+nonDefRefL (DTypeSig _ _ _) = []
+nonDefRefL (DExtern _ _ _) = []
+nonDefRefL (DData _ _ _ _ _) = []
+nonDefRefL (DRecord _ _ _ _ _) = []
+nonDefRefL (DUse _ _) = []
+nonDefRefL (DEffect _ _ _ _) = []
+nonDefRefL (DTypeAlias _ _ _ _) = []
+nonDefRefL (DNewtype _ _ _ _ _ _) = []
+nonDefRefL d = bodyIdents d
+
+bodyIdents : Decl -> List String
+bodyIdents d = sortUniqS (identTokens (declToString d))
+
+-- ── reachability fixpoint ─────────────────────────────────────────────────────
+-- BFS over the ref graph: pop a name; if already visited skip; else mark visited
+-- and enqueue its body refs (only DFunDef keys have refs; every other name is a
+-- leaf).  Terminates because `visited` grows monotonically and each name is
+-- expanded once.
+bfsReach : List (String, List String) -> List String -> List String -> List String
+bfsReach _ visited [] = visited
+bfsReach refMap visited (x::rest)
+  | contains x visited = bfsReach refMap visited rest
+  | otherwise = bfsReach refMap (x::visited) (refsOf refMap x ++ rest)
+
+refsOf : List (String, List String) -> String -> List String
+refsOf refMap n = match lookupAssoc n refMap
+  Some rs => rs
+  None => []
+
+-- merge same-named clause ref-lists into one entry per name (union, deduped).
+mergeRefs : List (String, List String) -> List (String, List String)
+mergeRefs pairs = mergeRefsGo [] pairs
+
+mergeRefsGo : List (String, List String) -> List (String, List String) -> List (String, List String)
+mergeRefsGo acc [] = acc
+mergeRefsGo acc ((n, rs)::rest) = match lookupAssoc n acc
+  Some existing =>
+    mergeRefsGo (replaceAssoc n (sortUniqS (existing ++ rs)) acc) rest
+  None => mergeRefsGo (acc ++ [(n, rs)]) rest
+
+replaceAssoc : String -> List String -> List (String, List String) -> List (String, List String)
+replaceAssoc _ _ [] = []
+replaceAssoc n v ((k, old)::rest)
+  | k == n = (n, v)::rest
+  | otherwise = (k, old) :: replaceAssoc n v rest
+
+-- ── identifier tokeniser ──────────────────────────────────────────────────────
+-- Maximal runs of identifier characters that START with a letter or `_`.  Over-
+-- approximates references (keywords, field names, ctor names, string-literal
+-- words all included) — the safe direction for a dead-code scan.
+identTokens : String -> List String
+identTokens s =
+  let cs = stringToChars s
+  identTokGo s cs (arrayLength cs) 0
+
+identTokGo : String -> Array Char -> Int -> Int -> List String
+identTokGo s cs n i
+  | i >= n = []
+  | isIdentStart (arrayGetUnsafe i cs) =
+    let j = identEnd cs n (i + 1)
+    stringSlice i j s :: identTokGo s cs n j
+  | otherwise = identTokGo s cs n (i + 1)
+
+isIdentStart : Char -> Bool
+isIdentStart c = isLower c || isUpper c || c == '_'
+
+identEnd : Array Char -> Int -> Int -> Int
+identEnd cs n i
+  | i >= n = i
+  | isAlnum (arrayGetUnsafe i cs) = identEnd cs n (i + 1)
+  | otherwise = i
+
+-- ── doctest identifiers (string-aware comment channel) ────────────────────────
+-- Identifiers on `>` input lines of doctests (both `-- > expr` line-comment and
+-- `{- … > expr … -}` block-comment forms).  `collectComments` is the lexer's
+-- string-aware comment scanner, so `>`/`--` inside string literals never leak in.
+doctestIdents : String -> List String
+doctestIdents src = flatMap commentDocIdents (collectComments src)
+
+commentDocIdents : Comment -> List String
+commentDocIdents c =
+  let t = commentText c
+  if startsWith "{-" t then
+    flatMap blockDocLineIdents (splitNl (blockInner t))
+  else if startsWith "-- >" t then
+    identTokens (dropPrefixN 4 t)
+  else
+    []
+
+-- strip the outer `{-` `-}` from a block-comment lexeme.
+blockInner : String -> String
+blockInner t =
+  let n = stringLength t
+  if n >= 4 then stringSlice 2 (n - 2) t else ""
+
+-- an inner block line is a doctest input iff it trims to `> …`.
+blockDocLineIdents : String -> List String
+blockDocLineIdents line =
+  let tr = stringTrim line
+  if startsWith ">" tr then identTokens (dropPrefixN 1 tr) else []
+
+dropPrefixN : Int -> String -> String
+dropPrefixN k s = stringSlice k (stringLength s) s
 
 -- ── cross-file runner ─────────────────────────────────────────────────────────
 -- Run the enabled cross-file rules over every target file, honoring the same

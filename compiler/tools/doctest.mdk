@@ -51,9 +51,6 @@ public export data RunResult =
   | RunResult Int Int Int Int (List (Example, ExResult))
 -- total passed failed errors details
 
-runTotal : RunResult -> Int
-runTotal (RunResult t _ _ _ _) = t
-
 export runPassed : RunResult -> Int
 runPassed (RunResult _ p _ _ _) = p
 

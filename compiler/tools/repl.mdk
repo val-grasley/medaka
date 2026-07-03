@@ -174,11 +174,6 @@ needsMore source =
         first == " " || first == "\t" || endsWithKeyword last "where"
 
 -- ── Pipeline helpers ──────────────────────────────────────────────────────
-declValueNames : List Decl -> List String
-declValueNames [] = []
-declValueNames ((DFunDef _ n _ _)::rest) = n :: declValueNames rest
-declValueNames (_::rest) = declValueNames rest
-
 declTypeAnnotations : List Decl -> List (String, String)
 declTypeAnnotations [] = []
 declTypeAnnotations ((DData _ n _ _ _)::rest) =
@@ -417,9 +412,6 @@ dispatchInput src =
 
 -- ── String utilities ──────────────────────────────────────────────────────
 -- stringTrim moved to support/util.mdk (imported above).
-
-charToStr : Char -> String
-charToStr c = stringFromChars (arrayMakeWith 1 (_ => c))
 
 -- Split a string on "\n".
 stringSplitNewlines : String -> List String

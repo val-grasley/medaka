@@ -117,10 +117,6 @@ pageTableInteriorByte = 5  -- 0x05
 leafCapacity : Int
 leafCapacity = pageSize - leafHeaderSize  -- 4088
 
--- Usable bytes for cells + cell-pointer array on an interior page.
-interiorCapacity : Int
-interiorCapacity = pageSize - interiorHeaderSize  -- 4084
-
 -- A valid sqlite-version-number constant (integrity_check ignores it).
 sqliteVersionNumber : Int
 sqliteVersionNumber = 3046000
