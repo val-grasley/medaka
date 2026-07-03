@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-Unterminated string literal
+test/error_quality_fixtures/lex/unterminated_string.mdk:3:0: unterminated string literal

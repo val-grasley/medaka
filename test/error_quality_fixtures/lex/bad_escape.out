@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-lexing: empty token
+test/error_quality_fixtures/lex/bad_escape.mdk:2:20: invalid escape sequence '\q'

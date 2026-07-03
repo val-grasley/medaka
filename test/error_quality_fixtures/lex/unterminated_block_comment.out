@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-Unterminated block comment
+test/error_quality_fixtures/lex/unterminated_block_comment.mdk:2:0: unterminated block comment

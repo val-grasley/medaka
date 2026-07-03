@@ -134,6 +134,7 @@ public export data Token =
   | TIndent
   | TDedent
   | TEof
+  | TLexError String
 deriving (Eq)
 
 -- Mirrors `lib/lexer.mll` `token_to_string`.  String-bearing tokens use
@@ -232,6 +233,7 @@ tokenToString TNewline = "NEWLINE"
 tokenToString TIndent = "INDENT"
 tokenToString TDedent = "DEDENT"
 tokenToString TEof = "EOF"
+tokenToString (TLexError s) = "LEX_ERROR " ++ debugStringLit s
 
 -- ── Raw scanner output ──────────────────────────────────────────────────
 -- The scanner produces real tokens interleaved with `RNewline col` markers
@@ -350,7 +352,10 @@ scanAt src len pos depth id c
     RComment pos (substr src pos e) :: scan src len e depth id
   | c == '{' && pos + 1 < len && at src (pos + 1) == '-' =
     let e = skipBlockComment src len (pos + 2) 1
-    RComment pos (substr src pos e) :: scan src len e depth id
+    if e < 0 then
+      lexErrorTok pos "unterminated block comment"
+    else
+      RComment pos (substr src pos e) :: scan src len e depth id
   | isDigit c = scanNumber src len pos depth id
   | isQuote c && isTripleAt src len pos =
     scanTriple src len (pos + 3) depth id False ""
@@ -367,12 +372,24 @@ skipLineComment src len p
   | isNL (at src p) = p
   | otherwise = skipLineComment src len (p + 1)
 
+-- Emit a terminal lexer-error token instead of panicking.  The error carries the
+-- offending char offset `p` (as the RTok's start offset) so `parser.parseResult`
+-- can resolve it to a 1-based line / 0-based column via `offsetToLineCol` — the
+-- SAME located path a structured parse error flows through (rendered `file:L:C:`
+-- by the driver).  Terminates the raw stream: valid code never reaches here, so
+-- the token stream for well-formed input is byte-identical.
+lexErrorTok : Int -> String -> List RawTok
+lexErrorTok p msg = [RTok (TLexError msg) p p]
+
 -- nestable `{- … -}` block comments; `p` is just past the opening `{-`, `d` the
 -- open-comment nesting depth. Returns the position just past the matching `-}`.
 skipBlockComment : Array Char -> Int -> Int -> Int -> Int
+-- Returns the position just past the matching `-}`, or the sentinel `-1` when
+-- the comment is never closed (so the caller can emit a located lexer error
+-- rather than silently swallowing the rest of the file).
 skipBlockComment src len p d
   | d <= 0 = p
-  | p >= len = panic "Unterminated block comment"
+  | p >= len = 0 - 1
   | at src p == '{' && p + 1 < len && at src (p + 1) == '-' =
     skipBlockComment src len (p + 2) (d + 1)
   | at src p == '-' && p + 1 < len && at src (p + 1) == '}' =
@@ -488,12 +505,12 @@ floatTok src len pos e1 depth id =
 -- strings (escapes processed into the content; `\{` opens an interpolation)
 scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
 scanStr src len p depth id acc
-  | p >= len = panic "Unterminated string literal"
+  | p >= len = lexErrorTok p "unterminated string literal"
   | isQuote (at src p) =
     RTok (TString acc) p (p + 1) :: scan src len (p + 1) depth id
   | isBackslash (at src p) && p + 1 < len =
     scanStrEsc src len p depth id acc (at src (p + 1))
-  | isBackslash (at src p) = panic "Unterminated string literal"
+  | isBackslash (at src p) = lexErrorTok p "unterminated string literal"
   | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
 
 scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
@@ -507,7 +524,7 @@ scanStrEsc src len p depth id acc e
   | e == '0' = scanStr src len (p + 2) depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | isUnicodeEsc src len p e =
     scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
-  | otherwise = panic "lexing: empty token"
+  | otherwise = lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
@@ -808,7 +825,7 @@ singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
 singleOp src len pos depth id '@' =
   emit src len pos depth id (atToken src pos) 1 0
 singleOp src len pos depth id c =
-  panic ("Unexpected character: " ++ charToStr c)
+  lexErrorTok pos "unexpected character '\{charToStr c}'"
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
