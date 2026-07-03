@@ -115,6 +115,19 @@ make medaka     # WARM (./medaka_emitter present): 2-stage rebuild from current 
 ./medaka run yourfile.mdk
 ```
 
+**Debugging a `.mdk` program — reach for structured diagnostics.** `medaka check <file>` prints
+human `file:L:C:` diagnostics with a caret; **`medaka check --json <file>`** (note: `--json`, not
+`--format=json`) emits machine-parseable JSON — one object per diagnostic carrying a stable
+**`code`** (per-stage prefix: `T-*` type · `R-*` resolve · `P-*` parse · `L-*` lex · `W-*` warning),
+a **`kind`**, a real **`range`** (0-based LSP line/char; warnings included — no longer a `{0,0}`
+dummy), **`severity`** (1=error, 2=warning), the **`message`**, and — for suggestion-bearing errors
+— a **`help`** string plus a machine-applicable **`fix { range, replacement }`** you can apply
+verbatim (e.g. an unbound-name typo yields the nearest in-scope name as a `fix`). When
+programmatically reacting to compile errors, prefer `--json` and key off `code` (it's the stable
+handle — it doesn't move when wording changes). When WRITING a new diagnostic, follow
+`compiler/ERROR-QUALITY.md` (the rubric + copy standard — located, names the rule, actionable fix,
+carries a code) and add the code to the taxonomy in `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
+
 Correctness gates (all shell-based, golden-diff style):
 
 ```sh
@@ -397,6 +410,8 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
 | `STDLIB.md` | Stdlib module plan |
 | `stdlib/README.md` | Conventions for adding extern primitives |
+| `compiler/ERROR-QUALITY.md` | Error-message rubric + copy standard (dual human+LLM-agent audience; 7-dim grading). Read before writing/changing a diagnostic. Graded corpus + scores live in `test/error_quality_fixtures/{INVENTORY,GRADING}.md` |
+| `compiler/DIAGNOSTIC-CODES-DESIGN.md` | Stable diagnostic error-code taxonomy (per-stage `T-*`/`R-*`/`P-*`/`L-*`/`W-*`) + the `Diag` `code`/`kind`/`help`/`fix` JSON contract. Add new codes here |
 | `compiler/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
 | `compiler/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the residual: the emitter's **refutable** `CGBind` (`Just x <- e`) lowering is a contained `gapU` (not produced by current source; the front-end resolve/typecheck side of refutable match-arm guards was fixed 2026-06-15, see the guard note above). The mixed-nullary/payload-ADT fuzzer crash was CLOSED 2026-06-13 — root cause was a cross-module **constructor-name collision** in the emitter's bare-name ctor tables (fixed by universal ctor mangling in `backend/private_mangle.mdk`), NOT match field mis-extraction as first filed. |
 | `compiler/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `compiler/ARGSTAMP-UNIFY-PLAN.md`. |
