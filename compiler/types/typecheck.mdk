@@ -3958,7 +3958,7 @@ inferBinopE env op l r dref =
   inferBinop op lt rt
 -- Phase 151 / Gap G: record a binop site for the comparison/equality operators
 -- so resolveBinopSites can stamp [dref] once the operand type grounds.  The
--- operand mono is [lt] (unified with [rt] by compareOp below).
+-- operand mono is [lt] (unified with [rt] by eqCompareOp/ordCompareOp below).
 
 -- Map a comparison/equality operator to its Eq/Ord method and stash a pending
 -- binop site; non-comparison operators record nothing.  G4: snapshot
@@ -4002,10 +4002,10 @@ inferBinop "%" lt rt = numArithOp lt rt
 inferBinop "++" lt rt = arithOp lt rt
 inferBinop "==" lt rt = eqCompareOp lt rt
 inferBinop "!=" lt rt = eqCompareOp lt rt
-inferBinop "<" lt rt = compareOp lt rt
-inferBinop ">" lt rt = compareOp lt rt
-inferBinop "<=" lt rt = compareOp lt rt
-inferBinop ">=" lt rt = compareOp lt rt
+inferBinop "<" lt rt = ordCompareOp lt rt
+inferBinop ">" lt rt = ordCompareOp lt rt
+inferBinop "<=" lt rt = ordCompareOp lt rt
+inferBinop ">=" lt rt = ordCompareOp lt rt
 inferBinop "&&" lt rt = boolOp lt rt
 inferBinop "||" lt rt = boolOp lt rt
 inferBinop "::" lt rt = consOp lt rt
@@ -4094,11 +4094,6 @@ inferNumLitBare n fref =
   let _ = setRef numlitRefs ((a, fref, n, Ref RNone)::numlitRefs.value)
   a
 
-compareOp : Mono -> Mono -> <Mut> Mono
-compareOp lt rt =
-  let _ = unify lt rt
-  TCon "Bool"
-
 -- Stage-1 Eq dispatch (EQ-DISPATCH-DESIGN.md §2.1): `==`/`!=` carry an `Eq`
 -- obligation on their (unified) operand type — a verbatim mirror of
 -- `recordNumObligation` for `+`.  We reuse the existing pendingImplObligations /
@@ -4107,8 +4102,8 @@ compareOp lt rt =
 -- the operand mono.  When it grounds to a concrete non-Eq head (a function, an
 -- un-derived ADT) with no `impl Eq`, the post-inference check rejects; while still
 -- a polymorphic var (an `Eq a =>` site) allConcreteHeads defers it to the caller
--- — exactly the Num behaviour.  `<`/`>`/`<=`/`>=` are OUT OF SCOPE and stay on
--- plain `compareOp` (no Ord obligation).  `!=` shares this seam and lowers to
+-- — exactly the Num behaviour.  `<`/`>`/`<=`/`>=` carry the sibling `Ord`
+-- obligation via `ordCompareOp` below.  `!=` shares this seam and lowers to
 -- `not (eq …)` at the dict layer (binopMethodApp), so it does not double-report.
 --
 -- Gated on the `Eq` interface being REGISTERED (prelude loaded), mirroring
@@ -4131,6 +4126,38 @@ eqIfaceRegistered _ = anyList eqEntry methodIfaceParamsRef.value
 
 eqEntry : (String, (String, List String, Ty)) -> Bool
 eqEntry (_, (iface, _, _)) = iface == "Eq"
+
+-- Stage-1 Ord dispatch (EQ-DISPATCH-DESIGN.md §"sibling Ord follow-up"): the four
+-- ordering comparisons `<`/`>`/`<=`/`>=` carry an `Ord` obligation on their
+-- (unified) operand type — a verbatim mirror of `eqCompareOp` for `==`.  Reuses the
+-- same pendingImplObligations / checkImplObligations path.  `Ord` supersets `Eq`
+-- (`interface Ord a requires Eq a`), so a declared `Ord a =>` constraint already
+-- superclass-closes to satisfy BOTH the `<`→Ord and a sibling `==`→Eq obligation;
+-- an `Eq a =>` declaration does NOT close upward, so a bare `<` under `Eq a =>` is
+-- correctly rejected as needing `Ord a`.  When the operand grounds to a concrete
+-- non-Ord head (a function, an un-derived ADT) with no `impl Ord`, the
+-- post-inference check rejects; while still a polymorphic var it defers to the
+-- caller — exactly the Eq/Num behaviour.  NO change to eval/emit: `<` still lowers
+-- to `EMethodAt "lt"` at the dict layer, so runtime/emit dispatch is unchanged.
+--
+-- Gated on the `Ord` interface being REGISTERED (prelude loaded), mirroring
+-- `eqIfaceRegistered`.
+ordCompareOp : Mono -> Mono -> <Mut> Mono
+ordCompareOp lt rt =
+  let _ = unify lt rt
+  let _ = recordOrdObligation lt
+  TCon "Bool"
+
+recordOrdObligation : Mono -> <Mut> Unit
+recordOrdObligation lt
+  | ordIfaceRegistered () = setRef pendingImplObligations (("Ord", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | otherwise = ()
+
+ordIfaceRegistered : Unit -> <Mut> Bool
+ordIfaceRegistered _ = anyList ordEntry methodIfaceParamsRef.value
+
+ordEntry : (String, (String, List String, Ty)) -> Bool
+ordEntry (_, (iface, _, _)) = iface == "Ord"
 
 boolOp : Mono -> Mono -> <Mut> Mono
 boolOp lt rt =
@@ -8241,7 +8268,15 @@ checkOneImplObligation heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Eq" && anyList eqUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Eq" && anyList eqUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Ord" && anyList ordUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
+
+-- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
+-- Eq (and unlike Num) an unbound spine head DEFERS — a downstream `Ord a =>`
+-- constraint resolves it — so only functions are structurally un-Ord.
+ordUnimplementableHead : Mono -> Bool
+ordUnimplementableHead m = match normalize m
+  TFun _ _ _ => True
+  _ => False
 
 -- a mono no `Eq` impl can ever match: a function type (`==` on functions).  Unlike
 -- Num we do NOT reject an unbound spine head (`m a`) — for Eq that is a genuinely

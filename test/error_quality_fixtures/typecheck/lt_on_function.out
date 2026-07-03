@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/lt_on_function.mdk:4:15: No impl of Ord for (Int -> Int)
+  |
+4 | ltFn f g = f < g
+  |                ^

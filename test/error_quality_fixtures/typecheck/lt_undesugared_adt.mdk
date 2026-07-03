@@ -1,0 +1,8 @@
+-- `<` on an ADT with no `deriving (Ord)`: the operand grounds to `Color`, which
+-- has no `Ord` impl, so this is rejected with `No impl of Ord for Color`.
+data Color = Red | Green | Blue
+
+lessColor : Color -> Color -> Bool
+lessColor a b = a < b
+
+main = println (debug (lessColor Red Green))

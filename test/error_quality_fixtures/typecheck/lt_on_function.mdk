@@ -1,0 +1,6 @@
+-- `<` on function values: functions have no `Ord` impl, so this is rejected
+-- with `No impl of Ord for (Int -> Int)` (Stage-1 Ord-dispatch obligation).
+ltFn : (Int -> Int) -> (Int -> Int) -> Bool
+ltFn f g = f < g
+
+main = println (debug (ltFn (x => x) (y => y)))
