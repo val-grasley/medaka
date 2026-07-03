@@ -162,6 +162,50 @@ export minI : Int -> Int -> Int
 -- lint-disable-next-line rule-if-max-min
 minI a b = if a <= b then a else b
 
+-- Levenshtein edit distance between two strings (unit insert/delete/substitute
+-- cost).  Classic two-row dynamic-programming over the target chars — O(|a|·|b|)
+-- time, O(|b|) space.  Used by resolve.mdk to suggest a near "did you mean"
+-- name for an unbound reference.
+export editDistance : String -> String -> Int
+editDistance a b =
+  let bs = arrCharList (stringToChars b) 0
+  editLastInt (editLoop
+    (arrCharList (stringToChars a) 0)
+    bs
+    1
+    (editInitRow 0 bs))
+
+-- stringToChars yields an Array Char; the DP below walks lists, so materialize
+arrCharList : Array Char -> Int -> List Char
+arrCharList cs i
+  | i >= arrayLength cs = []
+  | otherwise = arrayGetUnsafe i cs :: arrCharList cs (i + 1)
+
+-- prev-row seed: [0, 1, 2, …, |bs|]
+editInitRow : Int -> List Char -> List Int
+editInitRow k [] = [k]
+editInitRow k (_::cs) = k :: editInitRow (k + 1) cs
+
+-- fold each source char over the previous row, producing the next row
+editLoop : List Char -> List Char -> Int -> List Int -> List Int
+editLoop [] _ _ prev = prev
+editLoop (ac::acs) bs i (p0::prest) =
+  editLoop acs bs (i + 1) (i :: editRow ac bs i p0 prest)
+editLoop (_::_) _ _ [] = []
+
+-- build one new row: `left` = newRow[j-1], `diag` = prev[j-1], `prevRest` = prev[j..]
+editRow : Char -> List Char -> Int -> Int -> List Int -> List Int
+editRow ac (bc::bcs) left diag (pj::pjs) =
+  let cost = if ac == bc then 0 else 1
+  let v = minI (minI (left + 1) (pj + 1)) (diag + cost)
+  v :: editRow ac bcs v pj pjs
+editRow _ _ _ _ _ = []
+
+editLastInt : List Int -> Int
+editLastInt [] = 0
+editLastInt [x] = x
+editLastInt (_::xs) = editLastInt xs
+
 -- prefix/suffix tests: (prefix/suffix, string) argument order.
 export startsWith : String -> String -> Bool
 startsWith pre s =

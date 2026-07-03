@@ -46,6 +46,9 @@ import frontend.ast.{
 }
 import support.util.{
   contains,
+  editDistance,
+  minI,
+  maxI,
   listLen,
   escStr,
   joinNl,
@@ -63,7 +66,9 @@ import support.util.{
 -- threaded through the walk; decl/build-phase errors with no node in scope carry
 -- `None` (rendered as the oracle's dummy {0,0} range / `<unknown location>`).
 public export data ResError =
-  | UnboundVariable String (Option Loc)
+  -- trailing `Option String` = nearest in-scope name suggestion (edit-distance
+  -- "did you mean"), None when no candidate is close enough (ERROR-QUALITY §4.1)
+  | UnboundVariable String (Option Loc) (Option String)
   | UnknownConstructor String (Option Loc)
   | UnknownType String (Option Loc)
   | UnknownEffect String (Option Loc)
@@ -100,7 +105,7 @@ public export data ResError =
 -- The source span carried by a ResError (Stage B): consumed by diagnostics.mdk
 -- to position the Diag (was uniformly `None` pre-Stage-B).
 export resErrorLoc : ResError -> Option Loc
-resErrorLoc (UnboundVariable _ l) = l
+resErrorLoc (UnboundVariable _ l _) = l
 resErrorLoc (UnknownConstructor _ l) = l
 resErrorLoc (UnknownType _ l) = l
 resErrorLoc (UnknownEffect _ l) = l
@@ -387,7 +392,8 @@ checkVar cur env scope n
   -- untrusted module ⇒ compile error (see internalExterns / Env.internalGuard).
   | not (contains n scope) && contains n env.internalGuard =
     [InternalExternAccess n cur]
-  | not (lookupValue env scope n) = [UnboundVariable n cur]
+  | not (lookupValue env scope n) =
+    [UnboundVariable n cur (suggestName env scope n)]
   -- use-time ambiguity: resolves, not shadowed by a local, exported by ≥2
   -- non-core modules (same-module top-levels already excluded from the set).
   | not (contains n scope) && isAmbiguous env n =
@@ -418,6 +424,40 @@ lookupValue env scope n = contains n scope
   || contains n env.ctors
   || contains n env.imported
 
+-- "did you mean" for an unbound name: the nearest in-scope value name by
+-- Levenshtein distance (ERROR-QUALITY §4.1).  Suggest only when the distance is
+-- small absolutely (≤ 2) AND small relative to the name length (≤ max(1, len/3)).
+-- Names shorter than 3 chars never suggest: a 1-2 char name sits within edit
+-- distance 1 of many unrelated short names (`x` → `e`), which is pure noise.
+-- Ties break lexicographically.  Local (`scope`) names are tried first so a
+-- mistyped local outranks an equidistant prelude name (a local typo most likely
+-- meant a local).
+suggestName : Env -> List String -> String -> Option String
+suggestName env scope n
+  | stringLength n < 3 = None
+  | otherwise =
+    let lim = minI 2 (maxI 1 (stringLength n / 3))
+    match bestOf n lim scope
+      Some best => Some best
+      None => bestOf n lim (env.values ++ env.ctors ++ env.imported)
+
+bestOf : String -> Int -> List String -> Option String
+bestOf n lim cands = map ((best, _) => best) (bestCandidate n lim cands None)
+
+bestCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
+bestCandidate _ _ [] acc = acc
+bestCandidate n lim (c::cs) acc
+  | c == n = bestCandidate n lim cs acc
+  | editDistance n c > lim = bestCandidate n lim cs acc
+  | otherwise = bestCandidate n lim cs (keepBetter c (editDistance n c) acc)
+
+keepBetter : String -> Int -> Option (String, Int) -> Option (String, Int)
+keepBetter c d None = Some (c, d)
+keepBetter c d (Some (bc, bd))
+  | d < bd = Some (c, d)
+  | d == bd && c < bc = Some (c, d)
+  | otherwise = Some (bc, bd)
+
 checkLet : Option Loc -> Env -> List String -> Bool -> Pat -> Expr -> Expr -> List ResError
 checkLet cur env scope True (PVar f) e1 e2 = checkExpr cur env (f::scope) e1
   ++ checkExpr cur env (f::scope) e2
@@ -431,11 +471,11 @@ checkLet cur env scope _ pat e1 e2 =
     ++ checkExpr cur env (bound ++ scope) e2
 
 rewriteNonRec : List String -> ResError -> ResError
-rewriteNonRec bound (UnboundVariable n l) =
+rewriteNonRec bound (UnboundVariable n l s) =
   if contains n bound then
     NonRecursiveValueLet n l
   else
-    UnboundVariable n l
+    UnboundVariable n l s
 rewriteNonRec _ e = e
 
 -- where-group: all group names are in scope for every clause body + the result
@@ -979,7 +1019,9 @@ findDups seen (n::rest)
 -- The loc field (Stage B) is dropped here — the sexp form mirrors the OCaml
 -- diagdump's location-stripped serialization.
 export resErrorSexp : ResError -> String
-resErrorSexp (UnboundVariable n _) = "(UnboundVariable " ++ escStr n ++ ")"
+-- NOTE: the suggestion field is deliberately NOT serialized — the sexp feeds the
+-- resolve_modules gate and must stay stable (the suggestion is cosmetic).
+resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnknownConstructor n _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
@@ -1028,7 +1070,9 @@ resolveProgramG2 internalGuard runtimeDecls preludeDecls prog =
 -- Human-readable message for a ResError (mirrors lib/resolve.ml's pp_error).
 -- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
 export ppResError : ResError -> String
-ppResError (UnboundVariable n _) = "Unbound variable: " ++ n
+ppResError (UnboundVariable n _ s) = match s
+  Some sug => "Unbound variable: \{n} — did you mean '\{sug}'?"
+  None => "Unbound variable: \{n}"
 ppResError (UnknownConstructor n _) = "Unknown constructor: " ++ n
 ppResError (UnknownType n _) = "Unknown type: " ++ n
 ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
