@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/annotation_mismatch.mdk:2:15: Type mismatch: Int vs String
+  |
+2 | x = "not an int"
+  |                ^

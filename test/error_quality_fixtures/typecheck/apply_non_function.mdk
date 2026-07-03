@@ -1,0 +1,3 @@
+main =
+  let n = 5
+  println (debug (n 3))

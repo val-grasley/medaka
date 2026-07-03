@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/type_mismatch_int_string.mdk:3:34: Type mismatch: Int vs String
+  |
+3 | main = println (debug (add1 "hello"))
+  |                                   ^

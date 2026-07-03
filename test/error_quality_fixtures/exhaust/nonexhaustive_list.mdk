@@ -1,0 +1,4 @@
+firstOf : List Int -> Int
+firstOf xs = match xs
+  x :: rest => x
+main = println (debug (firstOf []))

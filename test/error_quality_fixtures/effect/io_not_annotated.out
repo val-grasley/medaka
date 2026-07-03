@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/effect/io_not_annotated.mdk:2:20: Effectful value used where <> is allowed, but it performs <IO>
+  |
+2 | logIt msg = println msg
+  |                     ^
+test/error_quality_fixtures/effect/io_not_annotated.mdk:2:20: Function 'logIt' declared with <> but also performs <IO>
+  |
+2 | logIt msg = println msg
+  |                     ^

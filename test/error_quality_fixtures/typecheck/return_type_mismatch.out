@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/return_type_mismatch.mdk:2:15: Type mismatch: String vs Int
+  |
+2 | double x = x * 2
+  |                ^

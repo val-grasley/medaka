@@ -1,0 +1,6 @@
+data Shape = Circle Float | Square Float | Triangle Float
+area : Shape -> Float
+area s = match s
+  Circle r => r
+  Square w => w
+main = println (debug (area (Triangle 3.0)))

@@ -1,0 +1,2 @@
+{- this comment never closes
+main = println "hi"

@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/apply_non_function.mdk:3:20: Type mismatch: Int vs a -> b
+  |
+3 |   println (debug (n 3))
+  |                     ^
+test/error_quality_fixtures/typecheck/apply_non_function.mdk:3:11: ambiguous instance for 'Debug a': cannot determine which impl; annotate the type
+  |
+3 |   println (debug (n 3))
+  |            ^

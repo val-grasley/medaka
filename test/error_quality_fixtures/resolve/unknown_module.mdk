@@ -1,0 +1,3 @@
+import collections.HashMap
+
+main = println "hi"

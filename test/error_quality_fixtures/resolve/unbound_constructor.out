@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/resolve/unbound_constructor.mdk:2:22: Unbound variable: Yellow
+  |
+2 | main = println (debug Yellow)
+  |                       ^

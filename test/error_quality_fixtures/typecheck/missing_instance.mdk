@@ -1,0 +1,2 @@
+data Color = Red | Green | Blue
+main = println (debug (Red == Green))

@@ -1,0 +1,3 @@
+f : Strng -> Strng
+f x = x
+main = println (f "hi")

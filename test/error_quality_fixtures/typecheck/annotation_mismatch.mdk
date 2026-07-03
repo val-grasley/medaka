@@ -1,0 +1,3 @@
+x : Int
+x = "not an int"
+main = println (debug x)

@@ -1,0 +1,4 @@
+cmd: medaka build
+exit: 1
+---
+:1:0: 'arrayGetUnsafe' is an internal-only primitive and cannot be used outside the standard library (pass --allow-internal to override)

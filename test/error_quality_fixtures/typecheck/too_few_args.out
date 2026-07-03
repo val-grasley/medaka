@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/too_few_args.mdk:3:31: No impl of Num for (Int -> Int)
+  |
+3 | main = println (debug (add 1 + 10))
+  |                                ^

@@ -1,0 +1,2 @@
+inc = x x + 1
+main = println (debug (inc 4))

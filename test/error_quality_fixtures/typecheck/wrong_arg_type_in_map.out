@@ -1,0 +1,15 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/wrong_arg_type_in_map.mdk:1:46: Type mismatch: a b vs String
+  |
+1 | main = println (debug (map (x => x + 1) "hello"))
+  |                                               ^
+test/error_quality_fixtures/typecheck/wrong_arg_type_in_map.mdk:1:16: ambiguous instance for 'Debug a': cannot determine which impl; annotate the type
+  |
+1 | main = println (debug (map (x => x + 1) "hello"))
+  |                 ^
+test/error_quality_fixtures/typecheck/wrong_arg_type_in_map.mdk:1:23: ambiguous instance for 'Mappable a': cannot determine which impl; annotate the type
+  |
+1 | main = println (debug (map (x => x + 1) "hello"))
+  |                        ^

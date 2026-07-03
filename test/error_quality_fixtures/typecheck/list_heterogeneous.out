@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/list_heterogeneous.mdk:1:38: No impl of Num for String
+  |
+1 | main = println (debug [1, 2, "three", 4])
+  |                                       ^

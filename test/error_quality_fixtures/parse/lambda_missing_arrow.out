@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/lambda_missing_arrow.mdk:1:6: Unbound variable: x
+  |
+1 | inc = x x + 1
+  |       ^
+test/error_quality_fixtures/parse/lambda_missing_arrow.mdk:1:8: Unbound variable: x
+  |
+1 | inc = x x + 1
+  |         ^

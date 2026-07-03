@@ -1,0 +1,5 @@
+firstPositive : List Int -> Int
+firstPositive xs =
+  let (y :: _) = xs else panic "empty list"
+  y
+main = println (debug (firstPositive []))

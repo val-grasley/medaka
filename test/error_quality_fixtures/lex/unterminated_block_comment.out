@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+Unterminated block comment

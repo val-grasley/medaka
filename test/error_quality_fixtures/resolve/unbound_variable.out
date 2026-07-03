@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/resolve/unbound_variable.mdk:1:23: Unbound variable: total
+  |
+1 | main = println (debug (total + 1))
+  |                        ^

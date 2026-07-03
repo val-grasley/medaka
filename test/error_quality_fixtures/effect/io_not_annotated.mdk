@@ -1,0 +1,3 @@
+logIt : String -> Unit
+logIt msg = println msg
+main = logIt "hello"

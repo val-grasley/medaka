@@ -1,0 +1,3 @@
+main =
+  let d = 0
+  println (debug (17 % d))

@@ -1,0 +1,4 @@
+record Person
+  name : String
+  age  : Int
+main = println (debug (Person { name = "Alice" }))

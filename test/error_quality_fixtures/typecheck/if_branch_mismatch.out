@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/if_branch_mismatch.mdk:2:38: No impl of Num for String
+  |
+2 | classify n = if n > 0 then "pos" else 0
+  |                                       ^
