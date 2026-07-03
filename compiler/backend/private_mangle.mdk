@@ -463,7 +463,7 @@ pubSigNames (_::rest) = pubSigNames rest
 -- `<mid>__<name>` with the mid sanitized to a valid identifier (`/`, `.`, `-` →
 -- `_`).  The emitted symbol is `@mdk_<thisname>`, so only [A-Za-z0-9_] are safe.
 mangledName : String -> String -> String
-mangledName mid name = sanitizeId mid ++ "__" ++ name
+mangledName mid name = "\{sanitizeId mid}__\{name}"
 
 sanitizeId : String -> String
 sanitizeId s = sanitizeGo s 0 (stringLength s) ""

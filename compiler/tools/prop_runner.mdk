@@ -251,7 +251,7 @@ runProp tydefs evalEnv (DProp _ name params body) maxTests =
       let _ = putStrLn ("OK (" ++ intToString maxTests ++ " tests)")
       True
     PropFailed run shrunk =>
-      let _ = putStrLn ("FAILED after " ++ intToString run ++ (if run == 1 then " test" else " tests"))
+      let _ = putStrLn "FAILED after \{intToString run}\{if run == 1 then " test" else " tests"}"
       let _ = putStrLn "  Counterexample:"
       let _ = printCounterexample shrunk
       False
@@ -286,7 +286,7 @@ genInputs tydefs ((PropParam x ty)::rest) =
 printCounterexample : List (String, Value) -> <IO> Unit
 printCounterexample [] = ()
 printCounterexample ((x, v)::rest) =
-  let _ = putStrLn ("    " ++ x ++ " = " ++ ppValue v)
+  let _ = putStrLn "    \{x} = \{ppValue v}"
   printCounterexample rest
 
 escStrLocal : String -> String
@@ -359,7 +359,7 @@ runAllProps evalEnv program =
     let results = runEach tydefs evalEnv props
     let nPass = countTrue results
     let nFail = listLen results - nPass
-    let _ = putStrLn ("\n" ++ intToString nPass ++ " passed, " ++ intToString nFail ++ " failed")
+    let _ = putStrLn "\n\{intToString nPass} passed, \{intToString nFail} failed"
     nFail == 0
 
 runEach : List (String, TyDef) -> List (String, Value) -> List Decl -> <IO, Mut> List Bool

@@ -1721,7 +1721,7 @@ encodeProductParam : List (String, String) -> String
 encodeProductParam axes = "@P{" ++ joinSemi (map encodeAxis axes) ++ "}"
 
 encodeAxis : (String, String) -> String
-encodeAxis (name, v) = name ++ "=" ++ v
+encodeAxis (name, v) = "\{name}=\{v}"
 
 joinSemi : List String -> String
 joinSemi xs = joinWith ";" xs

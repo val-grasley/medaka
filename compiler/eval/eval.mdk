@@ -112,27 +112,20 @@ ppValue (VTuple vs) = "(" ++ joinComma (map ppValue vs) ++ ")"
 ppValue (VList vs) = "[" ++ joinComma (map ppValue vs) ++ "]"
 ppValue (VArray vs) = "[|" ++ joinComma (map ppValue (arrayToListG vs)) ++ "|]"
 ppValue (VCon name []) = name
-ppValue (VCon name vs) = name ++ " " ++ joinSp (map ppValueAtom vs)
-ppValue (VRecord name fields) = name
-  ++ " { "
-  ++ joinComma (map ppField fields)
-  ++ " }"
+ppValue (VCon name vs) = "\{name} \{joinSp (map ppValueAtom vs)}"
+ppValue (VRecord name fields) = "\{name} { \{joinComma (map ppField fields)} }"
 ppValue (VRef cell) = "Ref(" ++ ppValue cell.value ++ ")"
 ppValue (VClosure _ _ _) = "<closure>"
 ppValue (VClosureF _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (listLen vs) ++ ">"
-ppValue (VTypedImpl t _ _ _ inner) = "<impl@"
-  ++ t
-  ++ ":"
-  ++ ppValue inner
-  ++ ">"
+ppValue (VTypedImpl t _ _ _ inner) = "<impl@\{t}:\{ppValue inner}>"
 ppValue (VThunk _) = "<thunk>"
 ppValue (VDict key _) = "<dict:" ++ key ++ ">"
 ppValue VFallthrough = "<fallthrough>"
 
 ppField : (String, Value) -> String
-ppField (k, v) = k ++ " = " ++ ppValue v
+ppField (k, v) = "\{k} = \{ppValue v}"
 
 -- parenthesize compound atoms (VCon with args / tuples) when nested
 ppValueAtom : Value -> String
@@ -323,19 +316,16 @@ tyvarsInArgs ts = sumInts (map countTyvars ts)
 -- (Pair Int Bool vs Pair Bool Int) get DISTINCT keys, so narrowing can pick the
 -- one the typechecker chose instead of falling to first-impl-wins.
 export implKeyOf : String -> List Ty -> Option String -> String
-implKeyOf iface typeArgs nm = iface
-  ++ "|"
-  ++ joinWith " " (map ppTyAtomK typeArgs)
-  ++ "|"
-  ++ fromOption "" nm
+implKeyOf iface typeArgs nm =
+  "\{iface}|\{joinWith " " (map ppTyAtomK typeArgs)}|\{fromOption "" nm}"
 
 -- prec-2 Ty pretty-printer (mirrors lib/ast.ml pp_ty_prec 2 / typecheck's
 -- ppTyAtom): wraps applications and arrows, leaves atoms bare.
 ppTyK : Ty -> String
 ppTyK (TyCon n) = n
 ppTyK (TyVar n) = n
-ppTyK (TyApp a b) = ppTyK a ++ " " ++ ppTyAtomK b
-ppTyK (TyFun a b) = ppTyFunArgK a ++ " -> " ++ ppTyK b
+ppTyK (TyApp a b) = "\{ppTyK a} \{ppTyAtomK b}"
+ppTyK (TyFun a b) = "\{ppTyFunArgK a} -> \{ppTyK b}"
 ppTyK (TyTuple ts) = "(" ++ joinComma (map ppTyK ts) ++ ")"
 ppTyK (TyEffect _ _ t) = ppTyK t
 ppTyK (TyConstrained _ t) = ppTyK t
@@ -488,8 +478,7 @@ addrCell [] _ name = panic ("EVarAt: slot out of range for " ++ name)
 addrCell ((n, cell)::rest) slot name
   | slot > 0 = addrCell rest (slot - 1) name
   | n == name = cell
-  | otherwise =
-    panic ("EVarAt: slot/name mismatch — want " ++ name ++ ", found " ++ n)
+  | otherwise = panic "EVarAt: slot/name mismatch — want \{name}, found \{n}"
 
 export extendEnv : EvalEnv -> List (String, Value) -> EvalEnv
 extendEnv (EvalEnv frames) binds = EvalEnv (map cellOf binds :: frames)
@@ -1108,7 +1097,8 @@ evalSliceInt _ _ _ _ = panic "slice on non-array/list/string"
 
 sliceArray : Array Value -> Int -> Int -> Value
 sliceArray a lo hiX
-  | lo < 0 || hiX > arrayLength a || hiX - lo < 0 = panic ("slice [" ++ intToString lo ++ ".." ++ intToString (hiX - 1) ++ "] out of bounds")
+  | lo < 0 || hiX > arrayLength a || hiX - lo < 0 =
+    panic "slice [\{intToString lo}..\{intToString (hiX - 1)}] out of bounds"
   | otherwise =
     VArray (arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) a))
 
@@ -1153,7 +1143,7 @@ export evalVariantUpdate : String -> Value -> List (String, Value) -> Value
 evalVariantUpdate con (VCon con' vals) updates
   | con == con' =
     VCon con (applyVariantUpdates updates (ctorFieldOrderFor con) vals)
-  | otherwise = panic ("evalVariantUpdate: expected " ++ con ++ " got " ++ con')
+  | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
 evalVariantUpdate con _ _ =
   panic ("evalVariantUpdate: not a constructor: " ++ con)
 

@@ -156,11 +156,11 @@ runBuildNative root medaka cc inputAbs outPath =
     "run" :: emitter::emitArgsBase
   match runCommand emitProg emitArgs
     Err e =>
-      BuildErr ("error: could not run emitter (" ++ emitProg ++ "): " ++ e)
-    Ok (code, irRaw, emitErr) => if code != 0 then BuildErr ("error: emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
+      BuildErr "error: could not run emitter (\{emitProg}): \{e}"
+    Ok (code, irRaw, emitErr) => if code != 0 then BuildErr "error: emitter failed compiling \{inputAbs}\n\{emitErr}"
     else
       let ir = stripTrailingUnit irRaw
-      if stringLength ir == 0 then BuildErr ("error: emitter produced empty IR for " ++ inputAbs ++ "\n" ++ emitErr)
+      if stringLength ir == 0 then BuildErr "error: emitter produced empty IR for \{inputAbs}\n\{emitErr}"
       else match writeFile llPath ir
         Err e => BuildErr ("error: could not write IR: " ++ e)
         Ok _ => clangLink cc rtC llPath outPath inputAbs
@@ -206,11 +206,11 @@ runBuildWasm root medaka inputAbs outPath =
   match probeWasmTools ()
     None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm."
     Some _ => match runCommand emitProg emitArgs
-      Err e => BuildErr ("error: could not run wasm emitter (" ++ emitProg ++ "): " ++ e)
-      Ok (code, watRaw, emitErr) => if code != 0 then BuildErr ("error: wasm emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
+      Err e => BuildErr "error: could not run wasm emitter (\{emitProg}): \{e}"
+      Ok (code, watRaw, emitErr) => if code != 0 then BuildErr "error: wasm emitter failed compiling \{inputAbs}\n\{emitErr}"
       else
         let wat = stripTrailingUnit watRaw
-        if stringLength wat == 0 then BuildErr ("error: wasm emitter produced empty WAT for " ++ inputAbs ++ "\n" ++ emitErr)
+        if stringLength wat == 0 then BuildErr "error: wasm emitter produced empty WAT for \{inputAbs}\n\{emitErr}"
         else match writeFile watPath wat
           Err e => BuildErr ("error: could not write WAT: " ++ e)
           Ok _ => wasmAssemble watPath outPath inputAbs
@@ -230,9 +230,10 @@ wasmAssemble watPath outPath inputAbs = match runCommand "wasm-tools" ["parse", 
   Err e => BuildErr ("error: could not run wasm-tools parse: " ++ e)
   Ok (0, _, _) => match runCommand "wasm-tools" ["validate", "--features=all", outPath]
     Err e => BuildErr ("error: could not run wasm-tools validate: " ++ e)
-    Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)
-    Ok (_, _, valErr) => BuildErr ("error: wasm-tools validate rejected " ++ outPath ++ "\n" ++ valErr)
-  Ok (_, _, parseErr) => BuildErr ("error: wasm-tools parse failed assembling " ++ inputAbs ++ "\n" ++ parseErr)
+    Ok (0, _, _) => BuildOk "built \{inputAbs} -> \{outPath}"
+    Ok (_, _, valErr) =>
+      BuildErr "error: wasm-tools validate rejected \{outPath}\n\{valErr}"
+  Ok (_, _, parseErr) => BuildErr "error: wasm-tools parse failed assembling \{inputAbs}\n\{parseErr}"
 -- EMIT STEP.  Two paths, selected by the MEDAKA_EMITTER env var:
 --   * set   → invoke that NATIVE EMITTER BINARY directly (OCaml-free path — the
 --             clang(seed) binary from test/bootstrap_from_seed.sh).  Args are the
@@ -260,7 +261,7 @@ clangLink cc rtC llPath outPath inputAbs = match detectGC cc
     let optFlag = if optFlagRaw == "" then "-O2" else optFlagRaw
     let clangArgs = ["-Wl,-stack_size,0x20000000", optFlag] ++ gcCflags ++ [llPath, rtC] ++ gcLibs ++ ["-o", outPath]
     match runCommand cc clangArgs
-      Err e => BuildErr ("error: could not run clang (" ++ cc ++ "): " ++ e)
-      Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)
+      Err e => BuildErr "error: could not run clang (\{cc}): \{e}"
+      Ok (0, _, _) => BuildOk "built \{inputAbs} -> \{outPath}"
       Ok (_, _, ccErr) =>
-        BuildErr ("error: clang failed linking " ++ inputAbs ++ "\n" ++ ccErr)
+        BuildErr "error: clang failed linking \{inputAbs}\n\{ccErr}"

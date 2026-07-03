@@ -164,6 +164,9 @@ ruleNameBindChainToDo = "rule-bind-chain-to-do"
 ruleNameDeadCode : String
 ruleNameDeadCode = "rule-dead-code"
 
+ruleNameConcatToInterp : String
+ruleNameConcatToInterp = "rule-concat-to-interp"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -350,6 +353,16 @@ deadCodeRule = Rule {
   fix = None,
 }
 
+concatToInterpRule : Rule
+concatToInterpRule = Rule {
+  name = ruleNameConcatToInterp,
+  descr = "`++` chain mixing string literals and expressions — prefer string interpolation `\"…\\{e}…\"` (hlint 'use interpolation')",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleConcatToInterp,
+  fix = Some concatToInterpFix,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -370,6 +383,7 @@ allRules = [
   matchToMapRule,
   bindChainToDoRule,
   deadCodeRule,
+  concatToInterpRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -525,7 +539,7 @@ dropN n (_::xs) = dropN (n - 1) xs
 -- ── rendering ─────────────────────────────────────────────────────────────────
 
 export findingToDiag : Finding -> Diag
-findingToDiag f = Diag f.severity ("[" ++ f.rule ++ "] " ++ f.message) f.loc
+findingToDiag f = Diag f.severity "[\{f.rule}] \{f.message}" f.loc
 
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
 -- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.  `src` is the
@@ -539,7 +553,7 @@ lintToLines src path pos prog =
     (applySuppressions src (lintProgram allRules path src pos prog)))
 
 findingLine : Finding -> String
-findingLine f = ppSeverity f.severity ++ ": [" ++ f.rule ++ "] " ++ f.message
+findingLine f = "\{ppSeverity f.severity}: [\{f.rule}] \{f.message}"
 
 -- ── inline suppression directives (ESLint-style) ──────────────────────────────
 -- A finding can be silenced by a `--` line comment whose trimmed body starts
@@ -759,7 +773,7 @@ matchParamHit loc name pats p
   | anyList (isBareParam p) pats = [
     Finding {
       rule = ruleNameMatchParam,
-      message = "function '" ++ name ++ "' matches on parameter '" ++ p ++ "' — consider a multi-clause function definition",
+      message = "function '\{name}' matches on parameter '\{p}' — consider a multi-clause function definition",
       severity = SevWarning,
       loc = loc,
     }
@@ -924,7 +938,7 @@ destructureArmsFinding orc loc name p [arm] =
     [
       Finding {
         rule = ruleNameDestructureInParam,
-        message = "function '" ++ name ++ "' destructures parameter '" ++ p ++ "' via a single-arm irrefutable `match` — destructure it directly in the parameter position",
+        message = "function '\{name}' destructures parameter '\{p}' via a single-arm irrefutable `match` — destructure it directly in the parameter position",
         severity = SevWarning,
         loc = loc,
       }
@@ -1038,7 +1052,7 @@ derivableHit orc loc iface tys
         [
           Finding {
             rule = ruleNameDerivable,
-            message = "hand-written `impl " ++ iface ++ "` for '" ++ tyName ++ "' — consider `deriving (" ++ iface ++ ")` instead",
+            message = "hand-written `impl \{iface}` for '\{tyName}' — consider `deriving (\{iface})` instead",
             severity = SevWarning,
             loc = loc,
           }
@@ -1157,7 +1171,7 @@ missingSigPair sigNames (n, _) = not (n == "main" || contains n sigNames)
 missingSigFinding : (String, Option Loc) -> Finding
 missingSigFinding (name, loc) = Finding {
   rule = ruleNameMissingSignature,
-  message = "top-level '" ++ name ++ "' has no type signature — add a `" ++ name ++ " : …` declaration",
+  message = "top-level '\{name}' has no type signature — add a `\{name} : …` declaration",
   severity = SevWarning,
   loc = loc,
 }
@@ -1856,7 +1870,7 @@ optHitToList None = []
 ifMaxMinFinding : Option Loc -> (String, Expr, Expr) -> Finding
 ifMaxMinFinding loc (fn, a, b) = Finding {
   rule = ruleNameIfMaxMin,
-  message = "if-then-else selects the " ++ (if fn == "max" then "larger" else "smaller") ++ " of the same two operands — rewrite as '" ++ exprToString (EApp (EApp (EVar fn) a) b) ++ "'",
+  message = "if-then-else selects the \{if fn == "max" then "larger" else "smaller"} of the same two operands — rewrite as '\{exprToString (EApp (EApp (EVar fn) a) b)}'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2523,6 +2537,177 @@ isIntLit k e = match unwrapLoc e
   ELit (LInt n) => n == k
   ENumLit n _ _ => n == k
   _ => False
+
+-- ── rule: concat-to-interp ────────────────────────────────────────────────────
+-- An `++` spine that mixes string LITERALS and expressions is string concat that
+-- reads better as an interpolated string: `"  " ++ r ++ " = " ++ v` → `"  \{r} = \{v}"`.
+--
+-- SOUNDNESS.  `\{e}` auto-stringifies its hole; for a String-typed operand `\{s}`
+-- renders `s` VERBATIM (identity, no quotes).  In a `++` chain that contains a
+-- string LITERAL, `++` forces every operand to `String`, so mapping each
+-- non-literal operand `e` → `\{e}` verbatim (preserving any `debug`/`show`
+-- wrapper inside the hole) is exactly equivalent.  The printer escapes an
+-- `InterpStr` part with the SAME `escSOne` it uses for a plain string literal, so
+-- the literal text round-trips byte-for-byte.  Hence the self-compile fixpoint
+-- stays byte-identical (interp desugars to the same concat).
+--
+-- FIRING CONDITION: the `++` spine has ≥1 string-literal operand (confirms String
+-- concat, not list `++`) AND ≥2 non-literal operands (≥2 holes — the clear wins;
+-- single-hole `"prefix: " ++ x` chains are left alone).  A chain whose literal
+-- text already contains a `\{` sequence is SKIPPED (would collide with the
+-- interpolation syntax).
+--
+-- `++` is left-associative (`chainl1`), so a chain nests leftward and a sub-chain
+-- would fire again under the shared bottom-up driver; this rule therefore uses a
+-- bespoke TOP-DOWN rewrite that fires once at the maximal chain and descends only
+-- into hole operands (`rewriteConcatExpr`).
+
+-- flatten a `++` spine into its operands, left-to-right (each still ELoc-wrapped).
+concatOperands : Expr -> List Expr
+concatOperands e = match unwrapLoc e
+  EBinOp "++" l r _ => concatOperands l ++ [r]
+  _ => [e]
+
+-- an operand that is a string literal (possibly under ELoc); the decoded value.
+strLitValueOf : Expr -> Option String
+strLitValueOf e = match unwrapLoc e
+  ELit (LString s) => Some s
+  _ => None
+
+isStrLitOperand : Expr -> Bool
+isStrLitOperand e = match strLitValueOf e
+  Some _ => True
+  None => False
+
+-- decoded literal value contains the 2-char sequence `\{` (would open an interp
+-- hole) — such a literal is unsafe to inline into an interpolated string.
+hasBackslashBrace : String -> Bool
+hasBackslashBrace s =
+  let cs = stringToChars s
+  backslashBraceGo cs (arrayLength cs) 0
+
+backslashBraceGo : Array Char -> Int -> Int -> Bool
+backslashBraceGo cs n i
+  | i + 1 >= n = False
+  | arrayGetUnsafe i cs == '\\' && arrayGetUnsafe (i + 1) cs == '{' = True
+  | otherwise = backslashBraceGo cs n (i + 1)
+
+-- the chain qualifies: ≥1 literal, ≥2 non-literals, no literal already holds `\{`.
+concatChainQualifies : List Expr -> Bool
+concatChainQualifies ops =
+  let lits = filterExprs isStrLitOperand ops
+  let holes = filterExprs (e => not (isStrLitOperand e)) ops
+  isNonEmptyL lits
+    && listLen holes >= 2
+    && not (anyList litHasBackslashBrace lits)
+
+litHasBackslashBrace : Expr -> Bool
+litHasBackslashBrace e = match strLitValueOf e
+  Some s => hasBackslashBrace s
+  None => False
+
+filterExprs : (Expr -> Bool) -> List Expr -> List Expr
+filterExprs p es = filter p es
+
+-- build the interpolated-string parts, merging adjacent literal text.  A literal
+-- operand contributes its decoded text; a non-literal operand `e` becomes the hole
+-- `\{e}` with `e` recursively rewritten (so a nested chain inside a hole is fixed).
+buildInterpParts : List Expr -> List InterpPart
+buildInterpParts ops = mergeInterpStr (map operandToInterp ops)
+
+operandToInterp : Expr -> InterpPart
+operandToInterp e = match strLitValueOf e
+  Some s => InterpStr s
+  None => InterpExpr (rewriteConcatExpr e)
+
+-- coalesce consecutive `InterpStr` parts into one (cosmetic + matches how the
+-- lexer would re-tokenise the emitted string).
+mergeInterpStr : List InterpPart -> List InterpPart
+mergeInterpStr [] = []
+mergeInterpStr ((InterpStr a)::(InterpStr b)::rest) =
+  mergeInterpStr (InterpStr (a ++ b) :: rest)
+mergeInterpStr (p::rest) = p :: mergeInterpStr rest
+
+-- fire on the RAW node only when it is a qualifying `++` chain top; return the
+-- interpolated-string node.
+concatChainOf : Expr -> Option Expr
+concatChainOf (EBinOp "++" l r rf) =
+  let ops = concatOperands (EBinOp "++" l r rf)
+  if concatChainQualifies ops then
+    Some (EStringInterp (buildInterpParts ops))
+  else
+    None
+concatChainOf _ = None
+
+-- top-down rewrite: fire once at the maximal chain, else descend into children.
+rewriteConcatExpr : Expr -> Expr
+rewriteConcatExpr e = match concatChainOf e
+  Some e2 => e2
+  None => mapChildExprs rewriteConcatExpr e
+
+-- one rewritten node per maximal chain; when a chain fires, still look for nested
+-- chains inside its hole operands (NOT its consumed `++` spine).
+collectConcatHits : Expr -> List Expr
+collectConcatHits e = match concatChainOf e
+  Some e2 => e2 :: flatMap collectConcatHits (concatOperands e)
+  None => flatMap collectConcatHits (childExprs e)
+
+ruleConcatToInterp : String -> String -> Positions -> List Decl -> List Finding
+ruleConcatToInterp _ _ pos prog =
+  flatMap concatToInterpDeclL (declLocList pos prog)
+
+concatToInterpDeclL : (Decl, Option Loc) -> List Finding
+concatToInterpDeclL (d, loc) =
+  map (concatToInterpFinding loc) (declConcatHits d)
+
+declConcatHits : Decl -> List Expr
+declConcatHits (DFunDef _ _ _ body) = collectConcatHits body
+declConcatHits (DImpl { methods, ... }) = flatMap implMethodConcatHits methods
+declConcatHits (DAttrib _ d) = declConcatHits d
+declConcatHits _ = []
+
+implMethodConcatHits : ImplMethod -> List Expr
+implMethodConcatHits (ImplMethod _ _ body) = collectConcatHits body
+
+concatToInterpFinding : Option Loc -> Expr -> Finding
+concatToInterpFinding loc rewritten = Finding {
+  rule = ruleNameConcatToInterp,
+  message = "`++` chain of string literals and expressions — rewrite as an interpolated string '" ++ exprToString rewritten ++ "'",
+  severity = SevWarning,
+  loc = loc,
+}
+
+concatToInterpFix : Oracle -> Decl -> Option (List Decl)
+concatToInterpFix _ (DFunDef vis name pats body) =
+  let body2 = rewriteConcatExpr body
+  if exprSexp body2 == exprSexp body then
+    None
+  else
+    Some [DFunDef vis name pats body2]
+concatToInterpFix orc (DAttrib a d) = match concatToInterpFix orc d
+  Some [d2] => Some [DAttrib a d2]
+  _ => None
+concatToInterpFix _ (DImpl { pub, def, iface, tys, name, reqs, methods }) =
+  let methods2 = map fixImplMethodConcat methods
+  if implMethodsBodyKey methods2 == implMethodsBodyKey methods then
+    None
+  else
+    Some [
+      DImpl {
+        pub = pub,
+        def = def,
+        iface = iface,
+        tys = tys,
+        name = name,
+        reqs = reqs,
+        methods = methods2,
+      }
+    ]
+concatToInterpFix _ _ = None
+
+fixImplMethodConcat : ImplMethod -> ImplMethod
+fixImplMethodConcat (ImplMethod nm ps body) =
+  ImplMethod nm ps (rewriteConcatExpr body)
 
 -- ── rule: not-eq ──────────────────────────────────────────────────────────────
 -- `not (a == b)` → `a != b`; `not (a != b)` → `a == b` (also the unary-`!` forms).
@@ -3271,9 +3456,8 @@ dupComplexityThreshold = 10
 
 -- structural identity key: param-pattern shapes ++ ELoc-stripped body sexp.
 structuralKey : List Pat -> Expr -> String
-structuralKey pats body = joinWith "|" (map patSexp pats)
-  ++ " => "
-  ++ exprSexp body
+structuralKey pats body =
+  "\{joinWith "|" (map patSexp pats)} => \{exprSexp body}"
 
 -- complexity proxy: every `node`/`slist` in the sexp dump emits a '(', so counting
 -- '(' counts AST nodes without a second traversal.
@@ -3342,7 +3526,7 @@ dupFinding distinctFiles occ =
   let others = filterList (!= file) distinctFiles
   Finding {
     rule = ruleNameDuplicateBody,
-    message = "function '" ++ occName occ ++ "' has a body structurally identical to a definition in " ++ joinWith ", " others ++ " — consider consolidating into a shared module",
+    message = "function '\{occName occ}' has a body structurally identical to a definition in \{joinWith ", " others} — consider consolidating into a shared module",
     severity = SevWarning,
     loc = Some (Loc file line 1 line 1),
   }

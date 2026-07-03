@@ -1,0 +1,27 @@
+-- Autofix fixture for rule-concat-to-interp: qualifying `++` chains become
+-- interpolated strings; sub-gate / no-literal / list / all-literal / already-`\{`
+-- chains are left untouched (the fixer declines).
+
+twoHole : String -> String -> String
+twoHole r v = "  \{r} = ashr i64 \{v}, 1"
+
+leadHole : String -> String -> String
+leadHole x y = "\{x} and \{y} end"
+
+debugHole : Int -> Int -> String
+debugHole a b = "[\{debug a}, \{debug b}]"
+
+escHole : String -> String -> String
+escHole x y = "line\n\{x}\ttab \{y}"
+
+-- NEGATIVE: single hole — unchanged.
+singleHole : String -> String
+singleHole x = "prefix: " ++ x
+
+-- NEGATIVE: list concat — unchanged.
+listConcat : List Int -> List Int -> List Int
+listConcat xs ys = xs ++ ys ++ xs
+
+-- NEGATIVE: literal already holds `\{` — unchanged.
+alreadyBrace : String -> String -> String
+alreadyBrace x y = "a\\{" ++ x ++ "b" ++ y

@@ -350,7 +350,7 @@ effectInside es (Some v) =
 -- one row atom as a Doc: the label, or label + space + quoted param.
 effAtomDoc : (String, Option String) -> Doc
 effAtomDoc (l, None) = text l
-effAtomDoc (l, Some s) = text (l ++ " " ++ escStringLit s)
+effAtomDoc (l, Some s) = text "\{l} \{escStringLit s}"
 
 printConstraint : Constraint -> Doc
 printConstraint (Constraint iface args) =
@@ -1664,7 +1664,7 @@ printDecl (DAttrib attrs inner) =
 -- prop param: ` (name : ppTy ty)` — mirrors lib/ast.ml's pp_ty (a precedence
 -- type printer distinct from printType — see ppTy below).
 propParamDoc : PropParam -> Doc
-propParamDoc (PropParam x ty) = text (" (" ++ x ++ " : " ++ ppTy ty ++ ")")
+propParamDoc (PropParam x ty) = text " (\{x} : \{ppTy ty})"
 
 attrDoc : Attr -> Doc
 attrDoc (AttrDeprecated msg) =
@@ -1766,31 +1766,31 @@ ppTyPrec _ (TyCon s) = tyConSurface s
 ppTyPrec _ (TyVar s) = s
 ppTyPrec _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyPrec 0) ts) ++ ")"
 ppTyPrec p (TyApp f x) =
-  let s = ppTyPrec 1 f ++ " " ++ ppTyPrec 2 x
+  let s = "\{ppTyPrec 1 f} \{ppTyPrec 2 x}"
   if p >= 2 then "(" ++ s ++ ")" else s
 ppTyPrec p (TyFun a b) =
-  let s = ppTyPrec 1 a ++ " -> " ++ ppTyPrec 0 b
+  let s = "\{ppTyPrec 1 a} -> \{ppTyPrec 0 b}"
   if p >= 1 then "(" ++ s ++ ")" else s
 ppTyPrec p (TyEffect effs tail t) =
   let inside = ppEffInside effs tail
-  let s = "<" ++ inside ++ "> " ++ ppTyPrec 0 t
+  let s = "<\{inside}> \{ppTyPrec 0 t}"
   if p >= 1 then "(" ++ s ++ ")" else s
 ppTyPrec _ (TyConstrained cs t) =
   let csStr = match cs
     [c] => ppConstr c
     _ => "(" ++ joinWith ", " (map ppConstr cs) ++ ")"
-  csStr ++ " => " ++ ppTyPrec 0 t
+  "\{csStr} => \{ppTyPrec 0 t}"
 
 ppEffInside : List (String, Option String) -> Option String -> String
 ppEffInside effs None = joinWith ", " (map ppEffAtom effs)
 ppEffInside [] (Some v) = v
-ppEffInside effs (Some v) = joinWith ", " (map ppEffAtom effs) ++ " | " ++ v
+ppEffInside effs (Some v) = "\{joinWith ", " (map ppEffAtom effs)} | \{v}"
 
 -- a row atom renders as the label, or label + space + quoted param,
 -- byte-identical to lib/printer.ml TyEffect atom rendering.
 ppEffAtom : (String, Option String) -> String
 ppEffAtom (l, None) = l
-ppEffAtom (l, Some s) = l ++ " " ++ escStringLit s
+ppEffAtom (l, Some s) = "\{l} \{escStringLit s}"
 
 -- domain suffix for an effect declaration: space + name, or empty.
 effDomainDoc : Option String -> Doc
@@ -1808,7 +1808,7 @@ ppConstr (Constraint iface args) =
   if isEmptyL args then
     iface
   else
-    iface ++ " " ++ joinWith " " (map (ppTyPrec 2) args)
+    "\{iface} \{joinWith " " (map (ppTyPrec 2) args)}"
 
 -- ── Public entry points ───────────────────────────
 

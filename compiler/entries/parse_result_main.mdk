@@ -24,10 +24,7 @@ import frontend.parser.{
 }
 
 renderErr : ParseError -> String
-renderErr pe = "parse error "
-  ++ intToString (parseErrorLine pe)
-  ++ ":"
-  ++ intToString (parseErrorCol pe)
+renderErr pe = "parse error \{intToString (parseErrorLine pe)}:\{intToString (parseErrorCol pe)}"
 
 main = match args ()
   [path] => match readFile path

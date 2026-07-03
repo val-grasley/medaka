@@ -437,7 +437,7 @@ setGapBindW name = setRef curGapBindW name
 
 noteGapW : String -> <Mut> Unit
 noteGapW reason =
-  setRef gapLogW (curGapBindW.value ++ "\t" ++ reason :: gapLogW.value)
+  setRef gapLogW ("\{curGapBindW.value}\t\{reason}"::gapLogW.value)
 
 -- typed gap-tolerant variants, one per return shape the `gap` call sites need.
 -- Each records (census mode) or panics (default), returning a placeholder.
@@ -817,7 +817,7 @@ emitFnsGapsW prog ((CBind name cs)::rest) =
 emitImplsGapsW : Prog -> List ImplG -> <Mut> Unit
 emitImplsGapsW _ [] = ()
 emitImplsGapsW prog ((ImplG method tag arity clauses)::rest) =
-  let _ = setGapBindW ("impl " ++ method ++ "@" ++ tag)
+  let _ = setGapBindW "impl \{method}@\{tag}"
   let _ = emitImplGroup prog (ImplG method tag arity clauses)
   emitImplsGapsW prog rest
 
@@ -1703,7 +1703,7 @@ emitScalarFnBind fnNames valNames (CBind name [CClause pats body]) =
   let extraLocals = filterList (notIn params) (dedupKeep localsInBody)
   let env = params
   let instrs = emitScalarTail fnNames valNames env body
-  let sig = "  (func $" ++ gname name ++ joinWith "" (map paramDeclI32 params) ++ " (result i64)"
+  let sig = "  (func $\{gname name}\{joinWith "" (map paramDeclI32 params)} (result i64)"
   let localDecls = map localDeclI32 extraLocals
   [sig] ++ map ("  " ++ _) localDecls ++ indent instrs ++ ["  )"]
 emitScalarFnBind _ _ (CBind name _) =
@@ -1989,11 +1989,8 @@ emitDataSegs _ =
   map oneDataSeg segs
 
 oneDataSeg : (Int, List Int) -> String
-oneDataSeg (i, bytes) = "  (data $strseg_"
-  ++ intToString i
-  ++ " \""
-  ++ escWatBytes bytes
-  ++ "\")"
+oneDataSeg (i, bytes) =
+  "  (data $strseg_\{intToString i} \"\{escWatBytes bytes}\")"
 
 -- sort (idx, bytes) entries by ascending idx (insertion sort; segment counts are tiny).
 sortSegsByIdx : List (Int, List Int) -> List (Int, List Int)
@@ -2085,7 +2082,7 @@ tupleTypeDecl n =
   let cs = ctorStructName (tupleCtorName n)
   [
     "    (type $" ++ root ++ " (sub (struct (field i32))))",
-    "    (type $" ++ cs ++ " (sub $" ++ root ++ " (struct (field i32)" ++ fields ++ ")))",
+    "    (type $\{cs} (sub $\{root} (struct (field i32)\{fields})))",
   ]
 
 -- distinct user type names (declaration order) that actually own ctors, paired
@@ -2115,8 +2112,7 @@ emitCtorStruct prog ty ctor =
     -- output-neutral (`mut` only PERMITS mutation — nothing writes them yet), following
     -- the `$refbox`/`$arr` precedent.
     let fields = joinWith "" (replicate arity " (field (mut (ref eq)))")
-    ["    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty
-      ++ " (struct (field i32)" ++ fields ++ ")))"]
+    ["    (type $\{ctorStructName ctor} (sub $\{typeRootName ty} (struct (field i32)\{fields})))"]
 
 -- reserved Option/Result/Ordering: declare each type's root + payload structs.
 -- Emitted UNCONDITIONALLY in ref-mode (they are small; unused struct types are
@@ -2142,7 +2138,7 @@ emitReservedCtorStruct ty ctor =
   else
     let fields = joinWith "" (replicate (reservedCtorArity ctor) " (field (ref eq))")
     [
-      "    (type $" ++ ctorStructName ctor ++ " (sub $" ++ typeRootName ty ++ " (struct (field i32)" ++ fields ++ ")))"
+      "    (type $\{ctorStructName ctor} (sub $\{typeRootName ty} (struct (field i32)\{fields})))"
     ]
 
 -- ── ref-mode globals init + main ─────────────────────────────────────────────
@@ -2510,9 +2506,7 @@ emitRefFnBind prog (CBind name clauses0) =
           let allLocals = clauseLocals clauses
           let extraLocals = filterList (notIn params) (dedupKeep allLocals)
           let scratch = scratchLocals (clausesMaxDepth clauses)
-          let sig = "  (func $" ++ gname name
-            ++ joinWith "" (map paramDeclRef params)
-            ++ " (result (ref eq))"
+          let sig = "  (func $\{gname name}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
           let localDecls = map localDeclRef (extraLocals ++ scratch)
           let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
           let fnDef = [sig] ++ map ("  " ++ _) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
@@ -2615,7 +2609,7 @@ emitClauseChainRefEnv prog baseEnv name params arity clauses =
 emitClauseChainGo : Prog -> List String -> String -> List String -> Int -> List CClause -> Int -> <Mut> List String
 emitClauseChainGo _ _ _ _ _ [] _ = ["unreachable"]
 emitClauseChainGo prog baseEnv name params arity ((CClause pats body)::rest) i =
-  let clLabel = "$cl_" ++ name ++ "_" ++ intToString i
+  let clLabel = "$cl_\{name}_\{intToString i}"
   let (tests, binds, env) = clausePatCodeEnv prog baseEnv pats params clLabel
   -- A guard chain inside this clause's body desugars to `__fallthrough__` (the
   -- "no arm matched, try the next clause" sentinel).  We REWRITE each such occurrence
@@ -2824,7 +2818,7 @@ patTestBindTuple _ _ [] _ _ env _ = ([], [], env)
 patTestBindTuple prog tc (p::rest) occ clLabel env i =
   let fieldSnip = occ ++ [
     "ref.cast (ref $" ++ ctorStructName tc ++ ")",
-    "struct.get $" ++ ctorStructName tc ++ " " ++ intToString (i + 1),
+    "struct.get $\{ctorStructName tc} \{intToString (i + 1)}",
   ]
   let (ft, fb, env2) = patTestBind prog p fieldSnip clLabel env
   let (rt, rb, env3) = patTestBindTuple prog tc rest occ clLabel env2 (i + 1)
@@ -2838,7 +2832,7 @@ patTestBindCon _ _ [] _ _ env _ = ([], [], env)
 patTestBindCon prog c (p::rest) occ clLabel env i =
   let fieldSnip = occ ++ [
     "ref.cast (ref $" ++ ctorStructName c ++ ")",
-    "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1),
+    "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
   ]
   let (ft, fb, env2) = patTestBind prog p fieldSnip clLabel env
   let (rt, rb, env3) = patTestBindCon prog c rest occ clLabel env2 (i + 1)
@@ -2960,7 +2954,7 @@ emitMethodDispatchRef prog env d name dpar args =
   let argInstrs = flatMap (a => emitRefExpr prog env d a) args
   -- the dict tag is read repeatedly; stash it in the scratch local for this depth.
   let tagRead = readDictParam prog env dpar
-  let blk = "$disp_" ++ name ++ "_" ++ intToString d
+  let blk = "$disp_\{name}_\{intToString d}"
   let chain = emitDispatchChain prog name impls blk tagRead dpar argInstrs (listLen args)
   ["block " ++ blk ++ " (result (ref eq))"]
     ++ indent chain
@@ -3157,7 +3151,7 @@ applyArgsC hd (a::rest) = applyArgsC (CApp hd a) rest
 -- (method, head-tag) pair has a SOLE impl, so the bare head tag is the symbol tag
 -- (no C7 same-head-tycon collision; that canonical-key path is out of scope).
 implFnSym : String -> String -> String
-implFnSym tag method = "mdk_impl_" ++ gname tag ++ "_" ++ gname method
+implFnSym tag method = "mdk_impl_\{gname tag}_\{gname method}"
 
 -- ── §W5 impl-function emission ───────────────────────────────────────────────
 -- Coalesce the CImplEntry list (one entry per clause) by (method, symTag) into
@@ -3371,9 +3365,7 @@ emitImplGroup prog (ImplG method tag arity clauses) =
       let allLocals = clauseLocals clauses
       let extraLocals = filterList (notIn params) (dedupKeep allLocals)
       let scratch = scratchLocals (clausesMaxDepth clauses)
-      let sig = "  (func $" ++ fnName
-        ++ joinWith "" (map paramDeclRef params)
-        ++ " (result (ref eq))"
+      let sig = "  (func $\{fnName}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
       let localDecls = map localDeclRef (extraLocals ++ scratch)
       let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
       [sig] ++ map ("  " ++ _) (localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
@@ -3558,7 +3550,7 @@ findDefaultW method (_::rest) = findDefaultW method rest
 -- `$mdk_default_<method>_<tag>` (mirror of llvm_emit's defaultFnName, gname-mangled
 -- for wasm symbols).
 defaultFnNameW : String -> String -> String
-defaultFnNameW tag method = "mdk_default_" ++ gname method ++ "_" ++ gname tag
+defaultFnNameW tag method = "mdk_default_\{gname method}_\{gname tag}"
 
 -- the RKey-arm fallback: `defaultFor` finds a default ⇒ synthesize the per-(method,
 -- tag) define once and emit a direct call to it (forwarding the same dict words +
@@ -3570,7 +3562,7 @@ emitDefaultRKeyRef prog dictWords argInstrs name tag = match defaultForW prog na
     let fname = defaultFnNameW tag name
     let _ = ensureDefaultEmittedW prog fname tag name entry
     dictWords ++ argInstrs ++ ["call $" ++ fname]
-  None => gapL ("wasm layer-15: no impl of method '" ++ name ++ "' for type '" ++ tag ++ "'")
+  None => gapL "wasm layer-15: no impl of method '\{name}' for type '\{tag}'"
 
 -- a module-level set of already-synthesized default symbols (dedup like
 -- llvm_emit's emittedDefaultsRef) + the accumulated define line-blocks, drained
@@ -3653,7 +3645,7 @@ emitDefaultDefnGroup prog fname tag method arity clauses =
   let allLocals = clauseLocals clauses
   let extraLocals = filterList (notIn params) (dedupKeep allLocals)
   let scratch = scratchLocals (clausesMaxDepth clauses)
-  let sig = "  (func $" ++ fname ++ joinWith "" (map paramDeclRef params) ++ " (result (ref eq))"
+  let sig = "  (func $\{fname}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   [sig]
@@ -3811,7 +3803,7 @@ emitRefExpr prog env d (CVariantUpdate con base fields) =
   emitVariantUpdateRef prog env d con base fields
 emitRefExpr prog env d other =
   gapL
-    ("ref-mode: unsupported Core IR node " ++ ctag other ++ " [in " ++ curBindRef.value ++ "]")
+    "ref-mode: unsupported Core IR node \{ctag other} [in \{curBindRef.value}]"
 
 -- a scalar literal → an i31 immediate.  Int: ref.i31 of the value.  Bool: 1/0.
 -- Unit: i31 0 (a placeholder immediate; Unit is never inspected in this slice).
@@ -3892,7 +3884,7 @@ utf8BytesW cp =
 -- text stable vs a `wasm-tools print` round-trip).
 escWatBytes : List Int -> String
 escWatBytes [] = ""
-escWatBytes (b::rest) = "\\" ++ hex2W b ++ escWatBytes rest
+escWatBytes (b::rest) = "\\\{hex2W b}\{escWatBytes rest}"
 
 hex2W : Int -> String
 hex2W b = hexDigitW (b / 16) ++ hexDigitW (b % 16)
@@ -3993,7 +3985,7 @@ emitVarRefPlain prog env d x =
   -- build an eta closure wrapping a lifted `$mdk_ext_<name>` that calls the extern
   -- (peer of the LLVM emitExternEtaClosure).  env = [] (externs capture nothing).
   else if isWasmEtaExtern x then emitExternEtaClosure prog x
-  else gapL ("ref-mode: unbound variable '" ++ x ++ "' [in " ++ curBindRef.value ++ "]")
+  else gapL "ref-mode: unbound variable '\{x}' [in \{curBindRef.value}]"
 
 -- W9: lift `$mdk_ext_<name>` (a $codety) that unpacks its $args into synthetic CVar
 -- locals and emits the extern call, then build the closure struct at the use site.
@@ -5245,7 +5237,7 @@ emitWasmTrmcCtor prog env self arity pslots ctorName selfIdx loopLbl leadFields 
   let buildCell = tag ++ leadInstrs ++ placeholder ++ ["struct.new $" ++ cellStruct]
   -- stash new cell in temp 0; link into prev dest (or seed head); advance dest := new.
   let stashNew = buildCell ++ ["local.set " ++ wTrmcTempL 0]
-  let linkSet = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")", "local.get " ++ wTrmcTempL 0, "ref.as_non_null", "struct.set $" ++ cellStruct ++ " " ++ intToString (selfIdx + 1)]
+  let linkSet = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")", "local.get " ++ wTrmcTempL 0, "ref.as_non_null", "struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
   let linkSeed = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcHeadL, "i32.const 0", "local.set " ++ wTrmcFirstL]
   let linkInstrs = ["local.get " ++ wTrmcFirstL, "if"] ++ indent linkSeed ++ ["else"] ++ indent linkSet ++ ["end"]
   let advance = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcDestL]
@@ -5277,7 +5269,7 @@ emitWasmTrmcBase prog env exitLbl e =
   match wTrmcCtxRef.value
     WTrmcOn _ _ _ ctorName selfIdx _ _ =>
       let cellStruct = ctorStructName ctorName
-      let storeBranch = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")"] ++ valInstrs ++ ["struct.set $" ++ cellStruct ++ " " ++ intToString (selfIdx + 1)]
+      let storeBranch = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")"] ++ valInstrs ++ ["struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
       let seedBranch = valInstrs ++ ["local.set " ++ wTrmcHeadL]
       ["local.get " ++ wTrmcFirstL, "if"] ++ indent seedBranch ++ ["else"] ++ indent storeBranch ++ ["end", "br " ++ exitLbl]
     WTrmcOff => valInstrs ++ ["return"]
@@ -5470,9 +5462,7 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
   let scratch = scratchLocals (clausesMaxDepth clauses)
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
-  let sig = "  (func $" ++ funcSym
-    ++ joinWith "" (map paramDeclRef params)
-    ++ " (result (ref eq))"
+  let sig = "  (func $\{funcSym}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
 
 -- the recursive self-call field index, scanning EVERY clause's body for the first
@@ -5838,7 +5828,7 @@ emitWDispRoot prog name arity clauses =
 --   local.get $a0 … return_call $root__disploop)
 wDispResetWrapper : String -> String -> List String -> Int -> List String
 wDispResetWrapper name loopName params arity =
-  let sig = "  (func $" ++ gname name ++ joinWith "" (map paramDeclRef params) ++ " (result (ref eq))"
+  let sig = "  (func $\{gname name}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   let reset = [
     "i32.const 1",
     "global.set " ++ wDispFirstL,
@@ -5869,9 +5859,7 @@ emitWDispMemberFn prog root emitName origName arity clauses =
   let allLocals = clauseLocals clauses
   let extraLocals = filterList (notIn params) (dedupKeep allLocals)
   let scratch = scratchLocals (clausesMaxDepth clauses)
-  let sig = "  (func $" ++ gname emitName
-    ++ joinWith "" (map paramDeclRef params)
-    ++ " (result (ref eq))"
+  let sig = "  (func $\{gname emitName}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   -- the member needs the tmc temp local ($__tmc_t0 = the fresh cell stash).
   let tmcLocal = ["(local " ++ wTrmcTempL 0 ++ " (ref null eq))"]
   let localDecls = map localDeclRef (extraLocals ++ scratch)
@@ -6120,10 +6108,10 @@ emitConSwitchTail prog env arity d root foc rest arms branches dft =
 emitBrTableTowerTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> <Mut> List String
 emitBrTableTowerTail prog env arity d root svRead rest arms branches dft ty sd nOrd =
   let sfx = intToString sd
-  let labels = map (k => "$swt" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
+  let labels = map (k => "$swt\{sfx}_\{intToString k}") (rangeList 0 nOrd)
   let dftLabel = "$swdt" ++ sfx
-  let tableInstr = "br_table " ++ joinWith " " labels ++ " " ++ dftLabel
-  let opens = ["block " ++ dftLabel] ++ map (k => "block $swt" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
+  let tableInstr = "br_table \{joinWith " " labels} \{dftLabel}"
+  let opens = ["block " ++ dftLabel] ++ map (k => "block $swt\{sfx}_\{intToString k}") (rangeList 0 nOrd)
   let pick = discrimReadOf svRead ty ++ [tableInstr]
   opens
     ++ pick
@@ -6142,7 +6130,7 @@ emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = ma
     let (c, a) = conHeadInfoUnsafe h
     let fieldOccs = map (i => svRead ++ [
       "ref.cast (ref $" ++ ctorStructName c ++ ")",
-      "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1),
+      "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
     ]) (rangeList 0 a)
     emitTreeTail prog env arity d root (fieldOccs ++ rest) arms sub
   None => ["br $swdt" ++ intToString sd]
@@ -6331,7 +6319,7 @@ lgBindParams (CBind _ clauses) = synthParams (clauseArityOf clauses)
 emitLgLifted : Prog -> Int -> List String -> List String -> List CBind -> CBind -> <Mut> Unit
 emitLgLifted prog gid names groupCaps binds (CBind name clauses) =
   let _ = setRef curBindRef ("lg:" ++ name)
-  let lamName = "$mdk_lg" ++ intToString gid ++ "_" ++ gname name
+  let lamName = "$mdk_lg\{intToString gid}_\{gname name}"
   let _ = noteFuncRef lamName
   let arity = clauseArityOf clauses
   let params = synthParams arity
@@ -6367,7 +6355,7 @@ emitLgLifted prog gid names groupCaps binds (CBind name clauses) =
 -- member's prologue; groupCaps must be bound as locals in either context.
 rebuildLgClosure : Prog -> Int -> List String -> CBind -> List String
 rebuildLgClosure prog gid groupCaps (CBind name clauses) =
-  let lamName = "$mdk_lg" ++ intToString gid ++ "_" ++ gname name
+  let lamName = "$mdk_lg\{intToString gid}_\{gname name}"
   let arity = clauseArityOf clauses
   let capInstrs = flatMap (c => ["local.get $" ++ gname c]) groupCaps
   ["ref.func " ++ lamName, "i32.const " ++ intToString arity]
@@ -6642,7 +6630,7 @@ emitFieldAccessRef prog env d ex label =
     Some (ctor, labels) =>
       let idx = orZeroIdx (indexOfL label labels)
       emitRefExpr prog env d ex
-        ++ ["ref.cast (ref $" ++ ctorStructName ctor ++ ")", "struct.get $" ++ ctorStructName ctor ++ " " ++ intToString (idx + 1)]
+        ++ ["ref.cast (ref $" ++ ctorStructName ctor ++ ")", "struct.get $\{ctorStructName ctor} \{intToString (idx + 1)}"]
     -- `r.value` on a Ref: no record ctor owns the field `value`, so this is a
     -- $refbox read — cast to $refbox and read the mutable field at slot 0.
     None =>
@@ -6701,7 +6689,7 @@ oneUpdateField prog env d ctor bL fields (idx, label) = match findUpdateExpr lab
   None => [
     "local.get " ++ bL,
     "ref.cast (ref $" ++ ctorStructName ctor ++ ")",
-    "struct.get $" ++ ctorStructName ctor ++ " " ++ intToString (idx + 1),
+    "struct.get $\{ctorStructName ctor} \{intToString (idx + 1)}",
   ]
 
 findUpdateExpr : String -> List CField -> Option CExpr
@@ -6875,9 +6863,9 @@ discrimReadOf svRead ty =
 emitBrTableTower : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> <Mut> List String
 emitBrTableTower prog env d decLabel root svRead rest arms branches dft ty sd nOrd =
   let sfx = intToString sd
-  let labels = map (k => "$sw" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
-  let tableInstr = "br_table " ++ joinWith " " labels ++ " $swd" ++ sfx
-  let opens = ["block $swd" ++ sfx] ++ map (k => "block $sw" ++ sfx ++ "_" ++ intToString k) (rangeList 0 nOrd)
+  let labels = map (k => "$sw\{sfx}_\{intToString k}") (rangeList 0 nOrd)
+  let tableInstr = "br_table \{joinWith " " labels} $swd\{sfx}"
+  let opens = ["block $swd" ++ sfx] ++ map (k => "block $sw\{sfx}_\{intToString k}") (rangeList 0 nOrd)
   let pick = discrimReadOf svRead ty ++ [tableInstr]
   opens
     ++ pick
@@ -6901,7 +6889,7 @@ emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = mat
     let (c, a) = conHeadInfoUnsafe h
     let fieldOccs = map (i => svRead ++ [
       "ref.cast (ref $" ++ ctorStructName c ++ ")",
-      "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1),
+      "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
     ]) (rangeList 0 a)
     emitTreeRef prog env d decLabel root (fieldOccs ++ rest) arms sub
   None => ["br $swd" ++ intToString sd]
@@ -6999,7 +6987,7 @@ bindTupleFields _ env _ [] _ _ = ([], env)
 bindTupleFields prog env tc (p::rest) v i =
   let fieldSnippet = v ++ [
     "ref.cast (ref $" ++ ctorStructName tc ++ ")",
-    "struct.get $" ++ ctorStructName tc ++ " " ++ intToString (i + 1),
+    "struct.get $\{ctorStructName tc} \{intToString (i + 1)}",
   ]
   let (cur, env2) = bindPatRef prog env p fieldSnippet
   let (more, env3) = bindTupleFields prog env2 tc rest v (i + 1)
@@ -7015,7 +7003,7 @@ bindConFieldsGo _ env _ [] _ _ = ([], env)
 bindConFieldsGo prog env c (p::rest) v i =
   let fieldSnippet = v ++ [
     "ref.cast (ref $" ++ ctorStructName c ++ ")",
-    "struct.get $" ++ ctorStructName c ++ " " ++ intToString (i + 1),
+    "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
   ]
   let (cur, env2) = bindPatRef prog env p fieldSnippet
   let (more, env3) = bindConFieldsGo prog env2 c rest v (i + 1)

@@ -196,8 +196,8 @@ runCheckCmd argv =
               exit 1
             Ok tsrc => match parseResult tsrc
               Err e =>
-                let loc = target ++ ":" ++ intToString (parseErrorLine e + 1) ++ ":" ++ intToString (parseErrorCol e)
-                let _ = ePutStrLn (loc ++ ": " ++ parseErrorMessage e)
+                let loc = "\{target}:\{intToString (parseErrorLine e + 1)}:\{intToString (parseErrorCol e)}"
+                let _ = ePutStrLn "\{loc}: \{parseErrorMessage e}"
                 exit 1
               Ok _ => match loadProgram target roots
                 Err lmsg =>
@@ -355,7 +355,7 @@ parseFmtArgs (x::rest) mode acc =
 fmtOne : FmtMode -> String -> <IO, Mut, Panic> Unit
 fmtOne mode file = match readFile file
   Err msg =>
-    let _ = ePutStrLn (file ++ ": " ++ msg)
+    let _ = ePutStrLn "\{file}: \{msg}"
     exit 2
   Ok src =>
     let formatted = formatSource src
@@ -368,7 +368,7 @@ fmtOne mode file = match readFile file
       FmtWrite => if formatted == src then ()
       else match writeFile file formatted
         Err msg =>
-          let _ = ePutStrLn (file ++ ": " ++ msg)
+          let _ = ePutStrLn "\{file}: \{msg}"
           exit 2
         Ok _ => ()
 
@@ -826,7 +826,7 @@ lintPathJoin dir name =
   if endsWith "/" dir then
     dir ++ name
   else
-    dir ++ "/" ++ name
+    "\{dir}/\{name}"
 
 -- Recursively collect every `.mdk` file under `dir`, sorted (deterministic).
 -- Walks SUBDIRECTORIES; skips dot-entries (dotfiles AND dot-directories like
@@ -834,7 +834,7 @@ lintPathJoin dir name =
 collectMdkFiles : String -> <IO, Mut, Panic> List String
 collectMdkFiles dir = match listDir dir
   Err msg =>
-    let _ = ePutStrLn ("medaka lint: cannot list directory " ++ dir ++ ": " ++ msg)
+    let _ = ePutStrLn "medaka lint: cannot list directory \{dir}: \{msg}"
     []
   Ok _ => sortUniqS (collectMdkFilesRec dir)
 
@@ -916,11 +916,11 @@ lintOneFileFix onlyNames disableNames target = match readFile target
       False
     else match writeFile target newSrc
       Err msg =>
-        let _ = ePutStrLn (target ++ ": " ++ msg)
+        let _ = ePutStrLn "\{target}: \{msg}"
         let _ = exit 2
         True
       Ok _ =>
-        let _ = putStrLn ("fixed " ++ intToString n ++ " finding(s) in " ++ target)
+        let _ = putStrLn "fixed \{intToString n} finding(s) in \{target}"
         False
 
 -- All non-flag args in order (flags all start with --).

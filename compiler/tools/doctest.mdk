@@ -249,7 +249,7 @@ synthSrc i ex =
   let rhs = match exampleExpected ex
     Some _ => "debug (" ++ exampleInput ex ++ ")"
     None => exampleInput ex
-  synthName i ++ " = " ++ rhs
+  "\{synthName i} = \{rhs}"
 
 -- All synth decls, parsed + desugared, concatenated.  (compiler `parse` panics
 -- on a malformed snippet rather than per-example Error, but stdlib doctests

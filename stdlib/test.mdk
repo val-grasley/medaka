@@ -59,7 +59,7 @@ expectEqual expected actual =
   if eq expected actual then
     Pass
   else
-    Fail ("expected " ++ debug expected ++ " but got " ++ debug actual)
+    Fail "expected \{debug expected} but got \{debug actual}"
 
 {- | Passes when the two values are not equal.
 
@@ -85,7 +85,7 @@ expectLessThan expected actual =
   if lt actual expected then
     Pass
   else
-    Fail ("expected " ++ debug actual ++ " < " ++ debug expected)
+    Fail "expected \{debug actual} < \{debug expected}"
 
 {- | Passes when `actual > expected`.
 
@@ -98,7 +98,7 @@ expectGreaterThan expected actual =
   if gt actual expected then
     Pass
   else
-    Fail ("expected " ++ debug actual ++ " > " ++ debug expected)
+    Fail "expected \{debug actual} > \{debug expected}"
 
 -- Helper for expectAll: accumulate the first Fail, or stay Pass.
 expectAllStep : Expectation -> Expectation -> Expectation
@@ -119,15 +119,14 @@ expectAll es = fold expectAllStep Pass es
 
 goTests : List (String, Unit -> Expectation) -> Int -> Int -> <IO> Bool
 goTests [] passed failed =
-  println
-    ("\n" ++ intToString passed ++ " passed, " ++ intToString failed ++ " failed")
+  println "\n\{intToString passed} passed, \{intToString failed} failed"
   eq failed 0
 goTests ((name, thunk)::rest) passed failed = match runExpectation thunk
   Pass =>
     println ("  ok   " ++ name)
     goTests rest (passed + 1) failed
   Fail msg =>
-    println ("  FAIL " ++ name ++ ": " ++ msg)
+    println "  FAIL \{name}: \{msg}"
     goTests rest passed (failed + 1)
 
 {- | Run a list of `(name, thunk)` test pairs.  Prints each result and a

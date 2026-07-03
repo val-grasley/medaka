@@ -70,7 +70,7 @@ ppSeverity SevWarning = "warning"
 -- the location-stripped oracle — the loc is consumed by the LSP, not this text
 -- form, so the diff gate stays byte-identical).
 export ppDiag : Diag -> String
-ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
+ppDiag (Diag sev msg _) = "\{ppSeverity sev}: \{msg}"
 
 -- Plain-text CLI renderer (Stage-A positioned output, Stage-C carat block).
 -- line is 1-based (matches the oracle's plain-text convention); col is 0-based.
@@ -92,19 +92,11 @@ ppDiagCli file diag = ppDiagCliSrc "" file diag
 -- Stage-C: carat-aware renderer.  `src` carries the file's source text.
 export ppDiagCliSrc : String -> String -> Diag -> String
 ppDiagCliSrc src file (Diag _ msg (Some (Loc _ sl sc _ _))) =
-  let header = file ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": " ++ msg
+  let header = "\{file}:\{intToString sl}:\{intToString sc}: \{msg}"
   match nthLine src sl
     None => header
-    Some lineText => header
-      ++ "\n"
-      ++ "  |\n"
-      ++ intToString sl
-      ++ " | "
-      ++ lineText
-      ++ "\n"
-      ++ "  | "
-      ++ spaces sc
-      ++ "^"
+    Some lineText =>
+      "\{header}\n  |\n\{intToString sl} | \{lineText}\n  | \{spaces sc}^"
 ppDiagCliSrc _ _ (Diag _ msg None) = "<unknown location>: " ++ msg
 
 -- `spaces n` = a string of n space characters (the oracle's `String.make col ' '`).
@@ -485,14 +477,9 @@ projectLines ((file, ds)::rest) =
 --   "<severity>: <message>"                when the diag carries no loc (None →
 --   whole-document range in the LSP; positionless here).
 ppDiagLoc : Diag -> String
-ppDiagLoc (Diag sev msg None) = ppSeverity sev ++ ": " ++ msg
-ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) = ppSeverity sev
-  ++ "@"
-  ++ intToString (sl - 1)
-  ++ ":"
-  ++ intToString sc
-  ++ ": "
-  ++ msg
+ppDiagLoc (Diag sev msg None) = "\{ppSeverity sev}: \{msg}"
+ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) =
+  "\{ppSeverity sev}@\{intToString (sl - 1)}:\{intToString sc}: \{msg}"
 
 -- ── check --json JSON shaping ────────────────────────────────────────────────
 -- Shared by medaka_cli.mdk (`medaka check --json`) and playground_main.mdk
@@ -542,7 +529,7 @@ cjDiagnostic path src (Diag SevWarning msg (Some (Loc _ sl sc _ _))) = jObject
   [
     (
       "message",
-      JString (path ++ ":" ++ intToString sl ++ ":" ++ intToString sc ++ ": Warning: " ++ msg),
+      JString "\{path}:\{intToString sl}:\{intToString sc}: Warning: \{msg}",
     ),
     ("range", cjRange 0 0 0 0),
     ("severity", JInt 2),

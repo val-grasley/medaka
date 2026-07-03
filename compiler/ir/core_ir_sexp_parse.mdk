@@ -384,4 +384,4 @@ sexprToStr (SList xs) = "(" ++ joinSexps xs ++ ")"
 joinSexps : List SExp -> String
 joinSexps [] = ""
 joinSexps [x] = sexprToStr x
-joinSexps (x::rest) = sexprToStr x ++ " " ++ joinSexps rest
+joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"

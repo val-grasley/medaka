@@ -28,9 +28,4 @@ markFiles preludePath targets = match readFile preludePath
 
 renderAll : (List Decl -> List Decl) -> List (String, String) -> String
 renderAll mark [] = ""
-renderAll mark ((path, src)::rest) = "===SELFHOST-FIX=== "
-  ++ path
-  ++ "\n"
-  ++ programToSexp (mark (desugar (parse src)))
-  ++ "\n"
-  ++ renderAll mark rest
+renderAll mark ((path, src)::rest) = "===SELFHOST-FIX=== \{path}\n\{programToSexp (mark (desugar (parse src)))}\n\{renderAll mark rest}"

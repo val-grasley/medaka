@@ -284,7 +284,7 @@ attachOnLine : String -> Int -> Int -> List Comment -> List Comment -> (String, 
 attachOnLine ln _ _ [] consumed = (ln, consumed)
 attachOnLine ln startLine idx (c::cs) consumed =
   if commentLine c - startLine == idx then match attachOnLine ln startLine idx cs consumed
-    (ln1, consumed1) => (ln1 ++ "  " ++ commentText c, c::consumed1)
+    (ln1, consumed1) => ("\{ln1}  \{commentText c}", c::consumed1)
   else attachOnLine ln startLine idx cs consumed
 
 -- Drop the consumed comments from the pending stream (order-preserving), by

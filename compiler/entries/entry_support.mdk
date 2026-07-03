@@ -144,7 +144,7 @@ batchLoop sentinel render (path::rest) = match readFile path
     let _ = ePutStrLn msg
     batchLoop sentinel render rest
   Ok src =>
-    let _ = putStr (sentinel ++ path ++ "\n" ++ render (desugar (parse src)) ++ "\n")
+    let _ = putStr "\{sentinel}\{path}\n\{render (desugar (parse src))}\n"
     batchLoop sentinel render rest
 
 -- batch CLI shape: <runtime.mdk> <core.mdk> <target.mdk>...  runtime + core parsed

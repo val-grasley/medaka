@@ -191,18 +191,7 @@ pad4 n =
 -- > formatIso (DateTime { year = 2024, month = 3, day = 5, hour = 7, minute = 8, second = 9 })
 -- "2024-03-05T07:08:09Z"
 export formatIso : DateTime -> String
-formatIso dt = pad4 dt.year
-  ++ "-"
-  ++ pad2 dt.month
-  ++ "-"
-  ++ pad2 dt.day
-  ++ "T"
-  ++ pad2 dt.hour
-  ++ ":"
-  ++ pad2 dt.minute
-  ++ ":"
-  ++ pad2 dt.second
-  ++ "Z"
+formatIso dt = "\{pad4 dt.year}-\{pad2 dt.month}-\{pad2 dt.day}T\{pad2 dt.hour}:\{pad2 dt.minute}:\{pad2 dt.second}Z"
 
 -- ── Effectful helpers (over the `<Clock>` externs) ──────────────────────
 -- | Current wall-clock time in Unix epoch seconds (Float).

@@ -1,0 +1,17 @@
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"  \{r} = ashr i64 \{v}, 1"'
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"(\{a}, \{b}, \{c})"'
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"[\{debug a}, \{debug b}]"'
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"\{x} and \{y} end"'
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"line\n\{x}\ttab \{y}"'
+warning: [rule-concat-to-interp] `++` chain of string literals and expressions — rewrite as an interpolated string '"start \{x} mid \{y}"'
+warning: [rule-dead-code] private top-level 'allLiteral' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'alreadyBrace' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'debugHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'escHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'leadHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'listConcat' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'noLiteral' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'singleHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'threeHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'trailHole' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-dead-code] private top-level 'twoHole' is unreachable from exports/main/doctests — dead code (remove it)

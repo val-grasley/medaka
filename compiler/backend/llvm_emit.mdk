@@ -345,8 +345,7 @@ export setGapBind : String -> <Mut> Unit
 setGapBind name = setRef curGapBind name
 
 noteGap : String -> <Mut> Unit
-noteGap reason =
-  setRef gapLog (curGapBind.value ++ "\t" ++ reason :: gapLog.value)
+noteGap reason = setRef gapLog ("\{curGapBind.value}\t\{reason}"::gapLog.value)
 
 -- ── method-call RESULT-type inference (native backend) ──────────────────────
 -- The (interface, method) -> returns-self table, computed by core_ir_lower's
@@ -919,14 +918,14 @@ findDefault method (_::rest) = findDefault method rest
 -- (method, tag) — its inner same-interface calls are re-stamped to that tag, so
 -- distinct dispatch types need distinct defines.
 defaultFnName : String -> String -> String
-defaultFnName tag method = "mdk_default_" ++ method ++ "_" ++ tag
+defaultFnName tag method = "mdk_default_\{method}_\{tag}"
 
 -- the lifted LLVM name of a tagged impl method: `mdk_impl_<tag>_<method>`.  Type
 -- heads and method names are alphanumeric identifiers (an operator like `+` is a
 -- `CBinPrim`, never a method name here), so the concatenation is always a legal
 -- LLVM symbol — clang would reject it loudly otherwise, which the gate catches.
 implFnName : String -> String -> String
-implFnName tag method = "mdk_impl_" ++ tag ++ "_" ++ method
+implFnName tag method = "mdk_impl_\{tag}_\{method}"
 
 -- TYPECHECK-AUDIT C7 (native backend): the SYMBOL tag a same-head-tycon impl is
 -- emitted/dispatched under.  Two impls of one method that share a head tycon but
@@ -1086,16 +1085,16 @@ ctorsOfTypeIn ty ((c, t)::rest)
 untagInt : Emit -> String -> <Mut> String
 untagInt e v =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = ashr i64 " ++ v ++ ", 1")
+  let _ = emit e "  \{r} = ashr i64 \{v}, 1"
   r
 
 -- tag a raw i64 -> immediate int word ((x << 1) | 1).
 tagInt : Emit -> String -> <Mut> String
 tagInt e v =
   let s = freshReg e
-  let _ = emit e ("  " ++ s ++ " = shl i64 " ++ v ++ ", 1")
+  let _ = emit e "  \{s} = shl i64 \{v}, 1"
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = or i64 " ++ s ++ ", 1")
+  let _ = emit e "  \{r} = or i64 \{s}, 1"
   r
 
 -- Normalise a float lexeme so it always contains a decimal point in the mantissa,
@@ -1110,13 +1109,11 @@ ensureFloatDot s =
   else match stringIndexOf "." s
     Some _ => s
     None => match stringIndexOf "e" s
-      Some i => stringSlice 0 i s
-        ++ ".0e"
-        ++ stringSlice (i + 1) (stringLength s) s
+      Some i =>
+        "\{stringSlice 0 i s}.0e\{stringSlice (i + 1) (stringLength s) s}"
       None => match stringIndexOf "E" s
-        Some i => stringSlice 0 i s
-          ++ ".0E"
-          ++ stringSlice (i + 1) (stringLength s) s
+        Some i =>
+          "\{stringSlice 0 i s}.0E\{stringSlice (i + 1) (stringLength s) s}"
         None => s ++ ".0"
 
 -- box a double -> a heap cell {i64 header, double}; word = pointer-as-i64.
@@ -1129,21 +1126,21 @@ boxFloat e d =
   let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc_atomic(i64 16)")
   let _ = emit e ("  store i64 2, ptr " ++ p)
   let dp = freshReg e
-  let _ = emit e ("  " ++ dp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
-  let _ = emit e ("  store double " ++ d ++ ", ptr " ++ dp)
+  let _ = emit e "  \{dp} = getelementptr i8, ptr \{p}, i64 8"
+  let _ = emit e "  store double \{d}, ptr \{dp}"
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   w
 
 -- unbox a float word -> the stored double.
 unboxFloat : Emit -> String -> <Mut> String
 unboxFloat e v =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ v ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{v} to ptr"
   let dp = freshReg e
-  let _ = emit e ("  " ++ dp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
+  let _ = emit e "  \{dp} = getelementptr i8, ptr \{p}, i64 8"
   let d = freshReg e
-  let _ = emit e ("  " ++ d ++ " = load double, ptr " ++ dp)
+  let _ = emit e "  \{d} = load double, ptr \{dp}"
   d
 
 -- ── expressions ─────────────────────────────────────────────────────────────
@@ -1252,11 +1249,11 @@ lookupVarG e env x = match lookupAssoc x env
   None => match lookupAssoc x (globalsRegRef e).value
     Some (True, ty) =>
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = load i64, ptr @mdk_g_" ++ x)
+      let _ = emit e "  \{r} = load i64, ptr @mdk_g_\{x}"
       (r, ty)
     Some (False, _) =>
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = load i64, ptr @mdk_g_" ++ x)
+      let _ = emit e "  \{r} = load i64, ptr @mdk_g_\{x}"
       (r, LTInt)
     None =>
       gapE ("unbound variable '" ++ x ++ "' (not a local, ctor, or known fn)")
@@ -1299,7 +1296,7 @@ emitLit e (LString s) =
   let n = lengthS bytes
   let cpc = arrayLength (stringToChars s)
   let gid = ".strc." ++ intToString (freshId e)
-  let _ = emitGlobal e ("@" ++ gid ++ " = private unnamed_addr constant { i64, i64, i64, [" ++ intToString (n + 1) ++ " x i8] } { i64 1, i64 " ++ intToString n ++ ", i64 " ++ intToString cpc ++ ", [" ++ intToString (n + 1) ++ " x i8] c\"" ++ escBytes bytes ++ "\\00\" }")
+  let _ = emitGlobal e "@\{gid} = private unnamed_addr constant { i64, i64, i64, [\{intToString (n + 1)} x i8] } { i64 1, i64 \{intToString n}, i64 \{intToString cpc}, [\{intToString (n + 1)} x i8] c\"\{escBytes bytes}\\00\" }"
   ("ptrtoint (ptr @" ++ gid ++ " to i64)", LTStr)
 emitLit _ (LChar c) =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
@@ -1346,7 +1343,7 @@ utf8Bytes cp
 -- length is the byte count, and mdk_str_lit copies exactly that many bytes.
 escBytes : List Int -> String
 escBytes [] = ""
-escBytes (b::rest) = "\\" ++ hex2 b ++ escBytes rest
+escBytes (b::rest) = "\\\{hex2 b}\{escBytes rest}"
 
 hex2 : Int -> String
 hex2 b = hexDigit (b / 16) ++ hexDigit (b % 16)
@@ -1373,23 +1370,23 @@ emitStrExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> 
 emitStrExtern e env "intToString" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_int_to_string(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_int_to_string(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: intToString takes exactly one argument (slice 1)"
 emitStrExtern e env "stringConcat" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_concat(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_concat(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: stringConcat takes one argument (slice 5)"
 emitStrExtern e env "stringLength" args = match emitArgs e env args
   [a] =>
     let p = freshReg e
-    let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ a ++ " to ptr")
+    let _ = emit e "  \{p} = inttoptr i64 \{a} to ptr"
     let cpp = freshReg e
-    let _ = emit e ("  " ++ cpp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 16")
+    let _ = emit e "  \{cpp} = getelementptr i8, ptr \{p}, i64 16"
     let n = freshReg e
-    let _ = emit e ("  " ++ n ++ " = load i64, ptr " ++ cpp)
+    let _ = emit e "  \{n} = load i64, ptr \{cpp}"
     (tagInt e n, LTInt)
   _ => panic "llvm spike: stringLength takes one argument (slice 5)"
 -- INTRINSIC: load cp_count@16, tag it
@@ -1449,35 +1446,35 @@ emitNumExtern e env "intToFloat" args = match emitArgs e env args
   [a] =>
     let i = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = sitofp i64 " ++ i ++ " to double")
+    let _ = emit e "  \{r} = sitofp i64 \{i} to double"
     (boxFloat e r, LTFloat)
   _ => panic "llvm spike: intToFloat takes exactly one argument (slice 2)"
 emitNumExtern e env "floatToInt" args = match emitArgs e env args
   [a] =>
     let d = unboxFloat e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = fptosi double " ++ d ++ " to i64")
+    let _ = emit e "  \{r} = fptosi double \{d} to i64"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: floatToInt takes exactly one argument (slice 2)"
 emitNumExtern e env "floatToString" args = match emitArgs e env args
   [a] =>
     let d = unboxFloat e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_float_to_string(double " ++ d ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_float_to_string(double \{d})"
     (r, LTStr)
   _ => panic "llvm spike: floatToString takes exactly one argument (slice 2)"
 emitNumExtern e env "intBitsToFloat" args = match emitArgs e env args
   [a] =>
     let i = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_int_bits_to_float(i64 " ++ i ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_int_bits_to_float(i64 \{i})"
     (r, LTFloat)
   _ => panic "llvm spike: intBitsToFloat takes one argument"
 emitNumExtern e env "bytesToFloat64" args = match emitArgs e env args
   [arr, off] =>
     let oi = untagInt e off
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_bytes_to_float64(i64 " ++ arr ++ ", i64 " ++ oi ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_bytes_to_float64(i64 \{arr}, i64 \{oi})"
     (r, LTFloat)
   _ => panic "llvm spike: bytesToFloat64 takes two arguments"
 -- floatToBytes64 d — encode a Float as 8 big-endian IEEE 754 bytes → Array Int.
@@ -1487,7 +1484,7 @@ emitNumExtern e env "floatToBytes64" args = match emitArgs e env args
   [a] =>
     let d = unboxFloat e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_float_to_bytes64(double " ++ d ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_float_to_bytes64(double \{d})"
     (r, LTCon)
   _ => panic "llvm spike: floatToBytes64 takes one argument"
 -- floatRem a b = fmod(a, b); both operands unbox to double, result reboxes.
@@ -1497,7 +1494,7 @@ emitNumExtern e env "floatRem" args = match emitArgs e env args
     let da = unboxFloat e a
     let db = unboxFloat e b
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call double @mdk_float_rem(double " ++ da ++ ", double " ++ db ++ ")")
+    let _ = emit e "  \{r} = call double @mdk_float_rem(double \{da}, double \{db})"
     (boxFloat e r, LTFloat)
   _ => panic "llvm spike: floatRem takes two arguments"
 -- libm one-arg math externs: unbox one double, call mdk_<name>, rebox.
@@ -1506,7 +1503,7 @@ emitNumExtern e env name args
     [a] =>
       let d = unboxFloat e a
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ name ++ "(double " ++ d ++ ")")
+      let _ = emit e "  \{r} = call double @mdk_\{name}(double \{d})"
       (boxFloat e r, LTFloat)
     _ => panic "llvm spike: unary math extern takes one argument"
 -- libm two-arg math externs: unbox two doubles, call mdk_<name>, rebox.
@@ -1516,7 +1513,7 @@ emitNumExtern e env name args
       let da = unboxFloat e a
       let db = unboxFloat e b
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ name ++ "(double " ++ da ++ ", double " ++ db ++ ")")
+      let _ = emit e "  \{r} = call double @mdk_\{name}(double \{da}, double \{db})"
       (boxFloat e r, LTFloat)
     _ => panic "llvm spike: binary math extern takes two arguments"
 emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
@@ -1569,7 +1566,7 @@ emitAbortExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -
 emitAbortExtern e env name args = match emitArgs e env args
   [a] =>
     let cname = if name == "panic" then "panic" else "exit"
-    let _ = emit e ("  call void @mdk_" ++ cname ++ "(i64 " ++ a ++ ")")
+    let _ = emit e "  call void @mdk_\{cname}(i64 \{a})"
     ("1", LTUnit)
   _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes exactly one argument (slice 4)")
 
@@ -1613,29 +1610,29 @@ emitArrLeafExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr
 emitArrLeafExtern e env "arrayMake" args = match emitArgs e env args
   [n, x] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_make(i64 " ++ n ++ ", i64 " ++ x ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_array_make(i64 \{n}, i64 \{x})"
     (r, LTCon)
   _ => panic "llvm spike: arrayMake takes two arguments (slice 7)"
 emitArrLeafExtern e env "arrayCopy" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_copy(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_array_copy(i64 \{a})"
     (r, LTCon)
   _ => panic "llvm spike: arrayCopy takes one argument (slice 7)"
 emitArrLeafExtern e env "arrayFromList" args = match emitArgs e env args
   [l] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_from_list(i64 " ++ l ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_array_from_list(i64 \{l})"
     (r, LTCon)
   _ => panic "llvm spike: arrayFromList takes one argument (slice 7)"
 emitArrLeafExtern e env "arrayBlit" args = match emitArgs e env args
   [src, so, dst, dof, len] =>
-    let _ = emit e ("  call void @mdk_array_blit(i64 " ++ src ++ ", i64 " ++ so ++ ", i64 " ++ dst ++ ", i64 " ++ dof ++ ", i64 " ++ len ++ ")")
+    let _ = emit e "  call void @mdk_array_blit(i64 \{src}, i64 \{so}, i64 \{dst}, i64 \{dof}, i64 \{len})"
     ("1", LTUnit)
   _ => panic "llvm spike: arrayBlit takes five arguments (slice 7)"
 emitArrLeafExtern e env "arrayFill" args = match emitArgs e env args
   [x, arr] =>
-    let _ = emit e ("  call void @mdk_array_fill(i64 " ++ x ++ ", i64 " ++ arr ++ ")")
+    let _ = emit e "  call void @mdk_array_fill(i64 \{x}, i64 \{arr})"
     ("1", LTUnit)
   _ => panic "llvm spike: arrayFill takes two arguments (slice 7)"
 emitArrLeafExtern _ _ name _ = gapE ("unsupported array leaf extern " ++ name)
@@ -1654,7 +1651,7 @@ emitCharExtern e env "charCode" args = match emitArgs e env args
 emitCharExtern e env "charToStr" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_str(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_to_str(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: charToStr takes one argument (slice 8)"
 emitCharExtern _ _ name _ = gapE ("unsupported char extern " ++ name)
@@ -1675,32 +1672,32 @@ emitStrCharExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr
 emitStrCharExtern e env "stringToChars" args = match emitArgs e env args
   [s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_chars(i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_to_chars(i64 \{s})"
     (r, LTCon)
   _ => panic "llvm spike: stringToChars takes one argument (slice 9)"
 emitStrCharExtern e env "stringFromChars" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_from_chars(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_from_chars(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: stringFromChars takes one argument (slice 9)"
 emitStrCharExtern e env "stringSlice" args = match emitArgs e env args
   [lo, hi, s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo ++ ", i64 " ++ hi ++ ", i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_slice(i64 \{lo}, i64 \{hi}, i64 \{s})"
     (r, LTStr)
   _ => panic "llvm spike: stringSlice takes three arguments (slice 9)"
 -- UTF-8 codec: stringToUtf8Bytes -> Array Int ($arr-shaped, LTCon); stringFromUtf8Bytes -> String.
 emitStrCharExtern e env "stringToUtf8Bytes" args = match emitArgs e env args
   [s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_utf8_bytes(i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_to_utf8_bytes(i64 \{s})"
     (r, LTCon)
   _ => panic "llvm spike: stringToUtf8Bytes takes one argument"
 emitStrCharExtern e env "stringFromUtf8Bytes" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_from_utf8_bytes(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_from_utf8_bytes(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: stringFromUtf8Bytes takes one argument"
 emitStrCharExtern _ _ name _ = gapE ("unsupported str-char extern " ++ name)
@@ -1728,55 +1725,55 @@ emitUnicodeExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr
 emitUnicodeExtern e env "charIsAlpha" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_alpha(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_is_alpha(i64 \{a})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: charIsAlpha takes one argument (slice 14)"
 emitUnicodeExtern e env "charIsSpace" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_space(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_is_space(i64 \{a})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: charIsSpace takes one argument (slice 14)"
 emitUnicodeExtern e env "charIsUpper" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_upper(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_is_upper(i64 \{a})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: charIsUpper takes one argument (slice 14)"
 emitUnicodeExtern e env "charIsLower" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_lower(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_is_lower(i64 \{a})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: charIsLower takes one argument (slice 14)"
 emitUnicodeExtern e env "charIsPunct" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_punct(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_is_punct(i64 \{a})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: charIsPunct takes one argument (slice 14)"
 emitUnicodeExtern e env "charToUpper" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_upper(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_to_upper(i64 \{a})"
     (r, LTChar)
   _ => panic "llvm spike: charToUpper takes one argument (slice 14)"
 emitUnicodeExtern e env "charToLower" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_lower(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_to_lower(i64 \{a})"
     (r, LTChar)
   _ => panic "llvm spike: charToLower takes one argument (slice 14)"
 emitUnicodeExtern e env "stringToUpper" args = match emitArgs e env args
   [s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_upper(i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_to_upper(i64 \{s})"
     (r, LTStr)
   _ => panic "llvm spike: stringToUpper takes one argument (slice 14)"
 emitUnicodeExtern e env "stringToLower" args = match emitArgs e env args
   [s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_lower(i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_to_lower(i64 \{s})"
     (r, LTStr)
   _ => panic "llvm spike: stringToLower takes one argument (slice 14)"
 emitUnicodeExtern _ _ name _ = gapE ("unsupported unicode extern " ++ name)
@@ -1796,25 +1793,25 @@ emitAdtExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> 
 emitAdtExtern e env "charFromCode" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_from_code(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_char_from_code(i64 \{a})"
     (r, LTCon)
   _ => panic "llvm spike: charFromCode takes one argument (slice 10)"
 emitAdtExtern e env "stringToFloat" args = match emitArgs e env args
   [s] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_float(i64 " ++ s ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_to_float(i64 \{s})"
     (r, LTCon)
   _ => panic "llvm spike: stringToFloat takes one argument (slice 11)"
 emitAdtExtern e env "stringIndexOf" args = match emitArgs e env args
   [n, h] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_index_of(i64 " ++ n ++ ", i64 " ++ h ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_index_of(i64 \{n}, i64 \{h})"
     (r, LTCon)
   _ => panic "llvm spike: stringIndexOf takes two arguments (slice 11)"
 emitAdtExtern e env "stringCompare" args = match emitArgs e env args
   [a, b] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_compare(i64 " ++ a ++ ", i64 " ++ b ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_compare(i64 \{a}, i64 \{b})"
     (r, LTCon)
   _ => panic "llvm spike: stringCompare takes two arguments (slice 11)"
 emitAdtExtern _ _ name _ = gapE ("unsupported adt extern " ++ name)
@@ -1828,13 +1825,13 @@ emitEnvExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> 
 emitEnvExtern e env "args" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_args(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_args(i64 \{u})"
     (r, LTCon)
   _ => panic "llvm spike: args takes one (Unit) argument (slice 12)"
 emitEnvExtern e env "getEnv" args = match emitArgs e env args
   [n] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_get_env(i64 " ++ n ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_get_env(i64 \{n})"
     (r, LTCon)
   _ => panic "llvm spike: getEnv takes one argument (slice 12)"
 emitEnvExtern _ _ name _ = gapE ("unsupported env extern " ++ name)
@@ -1871,109 +1868,109 @@ emitFileExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr ->
 emitFileExtern e env "readFile" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_file(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_file(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: readFile takes one argument (slice 13)"
 emitFileExtern e env "readFileBytes" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_file_bytes(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_file_bytes(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: readFileBytes takes one argument"
 emitFileExtern e env "writeFile" args = match emitArgs e env args
   [p, c] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_write_file(i64 " ++ p ++ ", i64 " ++ c ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_write_file(i64 \{p}, i64 \{c})"
     (r, LTCon)
   _ => panic "llvm spike: writeFile takes two arguments (slice 13)"
 emitFileExtern e env "writeFileBytes" args = match emitArgs e env args
   [p, a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_write_file_bytes(i64 " ++ p ++ ", i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_write_file_bytes(i64 \{p}, i64 \{a})"
     (r, LTCon)
   _ => panic "llvm spike: writeFileBytes takes two arguments"
 emitFileExtern e env "appendFile" args = match emitArgs e env args
   [p, c] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_append_file(i64 " ++ p ++ ", i64 " ++ c ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_append_file(i64 \{p}, i64 \{c})"
     (r, LTCon)
   _ => panic "llvm spike: appendFile takes two arguments (slice 13)"
 emitFileExtern e env "fileExists" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_file_exists(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_file_exists(i64 \{p})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: fileExists takes one argument (slice 13)"
 emitFileExtern e env "canonicalizePath" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_canonicalize_path(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_canonicalize_path(i64 \{p})"
     (r, LTStr)
   _ => panic "llvm spike: canonicalizePath takes one argument"
 emitFileExtern e env "listDir" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_list_dir(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_list_dir(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: listDir takes one argument (slice 13)"
 emitFileExtern e env "readLine" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_line(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_line(i64 \{u})"
     (r, LTStr)
   _ => panic "llvm spike: readLine takes one (Unit) argument (slice 13)"
 emitFileExtern e env "readLineOpt" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_line_opt(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_line_opt(i64 \{u})"
     (r, LTCon)
   _ => panic "llvm spike: readLineOpt takes one (Unit) argument (slice 13)"
 emitFileExtern e env "readAll" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_all(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_all(i64 \{u})"
     (r, LTStr)
   _ => panic "llvm spike: readAll takes one (Unit) argument (slice 13)"
 emitFileExtern e env "readExactly" args = match emitArgs e env args
   [n] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_exactly(i64 " ++ n ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_read_exactly(i64 \{n})"
     (r, LTCon)
   _ => panic "llvm spike: readExactly takes one (Int) argument"
 emitFileExtern e env "makeDir" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_make_dir(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_make_dir(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: makeDir takes one argument (slice 13)"
 emitFileExtern e env "removeFile" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_remove_file(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_remove_file(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: removeFile takes one argument"
 emitFileExtern e env "rename" args = match emitArgs e env args
   [old, new] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_rename(i64 " ++ old ++ ", i64 " ++ new ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_rename(i64 \{old}, i64 \{new})"
     (r, LTCon)
   _ => panic "llvm spike: rename takes two arguments"
 emitFileExtern e env "removeDir" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_remove_dir(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_remove_dir(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: removeDir takes one argument"
 emitFileExtern e env "statFile" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_stat_file(i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_stat_file(i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: statFile takes one argument"
 emitFileExtern e env "runCommand" args = match emitArgs e env args
   [prog, argv] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_run_command(i64 " ++ prog ++ ", i64 " ++ argv ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_run_command(i64 \{prog}, i64 \{argv})"
     (r, LTCon)
   _ => panic "llvm spike: runCommand takes two arguments (slice 13)"
 emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
@@ -2004,61 +2001,61 @@ emitNetExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> 
 emitNetExtern e env "netResolve" args = match emitArgs e env args
   [h] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_resolve(i64 " ++ h ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_resolve(i64 \{h})"
     (r, LTCon)
   _ => panic "llvm spike: netResolve takes one argument"
 emitNetExtern e env "netTcpConnect" args = match emitArgs e env args
   [h, p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_connect(i64 " ++ h ++ ", i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_tcp_connect(i64 \{h}, i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: netTcpConnect takes two arguments"
 emitNetExtern e env "netTcpListen" args = match emitArgs e env args
   [a, p] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_listen(i64 " ++ a ++ ", i64 " ++ p ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_tcp_listen(i64 \{a}, i64 \{p})"
     (r, LTCon)
   _ => panic "llvm spike: netTcpListen takes two arguments"
 emitNetExtern e env "netListenPort" args = match emitArgs e env args
   [fd] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_listen_port(i64 " ++ fd ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_listen_port(i64 \{fd})"
     (r, LTCon)
   _ => panic "llvm spike: netListenPort takes one argument"
 emitNetExtern e env "netTcpAccept" args = match emitArgs e env args
   [fd] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_tcp_accept(i64 " ++ fd ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_tcp_accept(i64 \{fd})"
     (r, LTCon)
   _ => panic "llvm spike: netTcpAccept takes one argument"
 emitNetExtern e env "netSend" args = match emitArgs e env args
   [fd, bs] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_send(i64 " ++ fd ++ ", i64 " ++ bs ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_send(i64 \{fd}, i64 \{bs})"
     (r, LTCon)
   _ => panic "llvm spike: netSend takes two arguments"
 emitNetExtern e env "netRecv" args = match emitArgs e env args
   [fd, n] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_recv(i64 " ++ fd ++ ", i64 " ++ n ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_recv(i64 \{fd}, i64 \{n})"
     (r, LTCon)
   _ => panic "llvm spike: netRecv takes two arguments"
 emitNetExtern e env "netShutdown" args = match emitArgs e env args
   [fd, how] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_shutdown(i64 " ++ fd ++ ", i64 " ++ how ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_shutdown(i64 \{fd}, i64 \{how})"
     (r, LTCon)
   _ => panic "llvm spike: netShutdown takes two arguments"
 emitNetExtern e env "netClose" args = match emitArgs e env args
   [fd] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_close(i64 " ++ fd ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_close(i64 \{fd})"
     (r, LTCon)
   _ => panic "llvm spike: netClose takes one argument"
 emitNetExtern e env "netSetTimeout" args = match emitArgs e env args
   [fd, ms] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_net_set_timeout(i64 " ++ fd ++ ", i64 " ++ ms ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_net_set_timeout(i64 \{fd}, i64 \{ms})"
     (r, LTCon)
   _ => panic "llvm spike: netSetTimeout takes two arguments"
 emitNetExtern _ _ name _ = gapE ("unsupported net extern " ++ name)
@@ -2076,25 +2073,25 @@ emitRngExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> 
 emitRngExtern e env "randomInt" args = match emitArgs e env args
   [lo, hi] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_int(i64 " ++ lo ++ ", i64 " ++ hi ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_random_int(i64 \{lo}, i64 \{hi})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: randomInt takes two arguments (Tier D)"
 emitRngExtern e env "randomBool" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_bool(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_random_bool(i64 \{u})"
     (tagInt e r, LTBool)
   _ => panic "llvm spike: randomBool takes one (Unit) argument (Tier D)"
 emitRngExtern e env "randomFloat" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_float(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_random_float(i64 \{u})"
     (r, LTFloat)
   _ => panic "llvm spike: randomFloat takes one (Unit) argument (Tier D)"
 emitRngExtern e env "randomChar" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_char(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_random_char(i64 \{u})"
     (tagInt e r, LTChar)
   _ => panic "llvm spike: randomChar takes one (Unit) argument (Tier D)"
 emitRngExtern e env "setSeed" args = match emitArgs e env args
@@ -2114,13 +2111,13 @@ emitPerfExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr ->
 emitPerfExtern e env "wallTimeSec" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_wall_time_sec(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_wall_time_sec(i64 \{u})"
     (r, LTFloat)
   _ => panic "llvm spike: wallTimeSec takes one (Unit) argument"
 emitPerfExtern e env "monotonicSec" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_monotonic_sec(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_monotonic_sec(i64 \{u})"
     (r, LTFloat)
   _ => panic "llvm spike: monotonicSec takes one (Unit) argument"
 emitPerfExtern e env "sleepMs" args = match emitArgs e env args
@@ -2131,7 +2128,7 @@ emitPerfExtern e env "sleepMs" args = match emitArgs e env args
 emitPerfExtern e env "allocBytes" args = match emitArgs e env args
   [u] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_alloc_bytes(i64 " ++ u ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_alloc_bytes(i64 \{u})"
     (r, LTFloat)
   _ => panic "llvm spike: allocBytes takes one (Unit) argument"
 emitPerfExtern _ _ name _ = gapE ("unsupported perf extern " ++ name)
@@ -2156,7 +2153,7 @@ emitBitBin e env sym args = match emitArgs e env args
     let x = untagInt e a
     let y = untagInt e b
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @" ++ sym ++ "(i64 " ++ x ++ ", i64 " ++ y ++ ")")
+    let _ = emit e "  \{r} = call i64 @\{sym}(i64 \{x}, i64 \{y})"
     (tagInt e r, LTInt)
   _ => panic ("llvm spike: " ++ sym ++ " takes two arguments")
 
@@ -2170,7 +2167,7 @@ emitBitExtern e env "bitNot" args = match emitArgs e env args
   [a] =>
     let x = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_bit_not(i64 " ++ x ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_bit_not(i64 \{x})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: bitNot takes one argument"
 emitBitExtern _ _ name _ = gapE ("unsupported bit extern " ++ name)
@@ -2184,34 +2181,34 @@ emitHashExtern e env "hashInt" args = match emitArgs e env args
   [a] =>
     let i = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_int(i64 " ++ i ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_hash_int(i64 \{i})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: hashInt takes one argument"
 emitHashExtern e env "hashChar" args = match emitArgs e env args
   [a] =>
     let cp = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_char(i64 " ++ cp ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_hash_char(i64 \{cp})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: hashChar takes one argument"
 emitHashExtern e env "hashBool" args = match emitArgs e env args
   [a] =>
     let b = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_bool(i64 " ++ b ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_hash_bool(i64 \{b})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: hashBool takes one argument"
 emitHashExtern e env "hashFloat" args = match emitArgs e env args
   [a] =>
     let d = unboxFloat e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_float(double " ++ d ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_hash_float(double \{d})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: hashFloat takes one argument"
 emitHashExtern e env "hashString" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_string(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_hash_string(i64 \{a})"
     (tagInt e r, LTInt)
   _ => panic "llvm spike: hashString takes one argument"
 emitHashExtern _ _ name _ = gapE ("unsupported hash extern " ++ name)
@@ -2226,14 +2223,14 @@ emitDebugLitExtern : Emit -> List (String, (String, LTy)) -> String -> List CExp
 emitDebugLitExtern e env "debugStringLit" args = match emitArgs e env args
   [a] =>
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_debug_string_lit(i64 " ++ a ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_debug_string_lit(i64 \{a})"
     (r, LTStr)
   _ => panic "llvm spike: debugStringLit takes one argument"
 emitDebugLitExtern e env "debugCharLit" args = match emitArgs e env args
   [a] =>
     let cp = untagInt e a
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_debug_char_lit(i64 " ++ cp ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_debug_char_lit(i64 \{cp})"
     (r, LTStr)
   _ => panic "llvm spike: debugCharLit takes one argument"
 emitDebugLitExtern _ _ name _ = gapE ("unsupported debug-lit extern " ++ name)
@@ -2328,16 +2325,16 @@ emitBin e env op l r tag
     let r2 = freshReg e
     match lty
       LTStr =>
-        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_string_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        let _ = emit e "  \{r2} = call i64 @mdk_string_append(i64 \{lv}, i64 \{rv})"
         (r2, LTStr)
       LTCon =>
-        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_list_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        let _ = emit e "  \{r2} = call i64 @mdk_list_append(i64 \{lv}, i64 \{rv})"
         (r2, LTCon)
       LTUnknown =>
-        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        let _ = emit e "  \{r2} = call i64 @mdk_append(i64 \{lv}, i64 \{rv})"
         (r2, LTUnknown)
       _ =>
-        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        let _ = emit e "  \{r2} = call i64 @mdk_append(i64 \{lv}, i64 \{rv})"
         (r2, LTUnknown)
   | otherwise = gapE ("unsupported binary operator '" ++ op ++ "'")
 -- LTUnknown: the left operand is itself a runtime-dispatched-append result
@@ -2436,7 +2433,7 @@ emitFloatD e env (ex@(CBinPrim op l r _)) =
     let ld = emitFloatD e env l
     let rd = emitFloatD e env r
     let res = freshReg e
-    let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
     res
   else emitFloatLeaf e env ex
 emitFloatD e env ex = emitFloatLeaf e env ex
@@ -2447,7 +2444,7 @@ emitFloatLeaf e env ex = match floatFromIntArg ex
     let (aw, _) = emitExpr e env a
     let i = untagInt e aw
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = sitofp i64 " ++ i ++ " to double")
+    let _ = emit e "  \{r} = sitofp i64 \{i} to double"
     r
   None => emitFloatLeafN e env ex
 
@@ -2459,7 +2456,7 @@ emitFloatLeafN e env ex = match flattenApp ex []
     True =>
       let ops = emitWorkerArgs e env (floatFwFp f) 0 args
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ f ++ "__fw(" ++ ops ++ ")")
+      let _ = emit e "  \{r} = call double @mdk_\{f}__fw(\{ops})"
       r
     False => emitFloatLeafVar e env ex
   _ => emitFloatLeafVar e env ex
@@ -2569,7 +2566,7 @@ emitFloatArith e env op l r =
   let ld = emitFloatD e env l
   let rd = emitFloatD e env r
   let res = freshReg e
-  let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+  let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
   (boxFloat e res, LTFloat)
 
 -- the boxing fallback path (left operand not statically float): unchanged from the
@@ -2584,28 +2581,28 @@ emitArithW e env op l r =
       let ld = unboxFloat e lv
       let rd = unboxFloat e rv
       let res = freshReg e
-      let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+      let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
       (boxFloat e res, LTFloat)
     LTNum =>
       let res = freshReg e
-      let _ = emit e ("  " ++ res ++ " = call i64 @" ++ numOp op ++ "(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+      let _ = emit e "  \{res} = call i64 @\{numOp op}(i64 \{lv}, i64 \{rv})"
       (res, LTNum)
     _ => match rty
       LTFloat =>
         let ld = unboxFloat e lv
         let rd = unboxFloat e rv
         let res = freshReg e
-        let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+        let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
         (boxFloat e res, LTFloat)
       LTNum =>
         let res = freshReg e
-        let _ = emit e ("  " ++ res ++ " = call i64 @" ++ numOp op ++ "(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        let _ = emit e "  \{res} = call i64 @\{numOp op}(i64 \{lv}, i64 \{rv})"
         (res, LTNum)
       _ =>
         let li = untagInt e lv
         let ri = untagInt e rv
         let res = freshReg e
-        let _ = emit e ("  " ++ res ++ " = " ++ intOp op ++ " i64 " ++ li ++ ", " ++ ri)
+        let _ = emit e "  \{res} = \{intOp op} i64 \{li}, \{ri}"
         (tagInt e res, LTInt)
 -- G3: a POLYMORPHIC Num operand (declared type-var param) — could be Int OR
 -- Float at runtime.  Route through the runtime tag-dispatched @mdk_num_* helper
@@ -2627,7 +2624,7 @@ emitFloatCmp e env op l r =
   let ld = emitFloatD e env l
   let rd = emitFloatD e env r
   let c = freshReg e
-  let _ = emit e ("  " ++ c ++ " = fcmp " ++ floatPred op ++ " double " ++ ld ++ ", " ++ rd)
+  let _ = emit e "  \{c} = fcmp \{floatPred op} double \{ld}, \{rd}"
   boolFromI1 e c
 
 emitCmpW : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -2642,7 +2639,7 @@ emitCmpW e env op l r =
         let ld = unboxFloat e lv
         let rd = unboxFloat e rv
         let c = freshReg e
-        let _ = emit e ("  " ++ c ++ " = fcmp " ++ floatPred op ++ " double " ++ ld ++ ", " ++ rd)
+        let _ = emit e "  \{c} = fcmp \{floatPred op} double \{ld}, \{rd}"
         boolFromI1 e c
       LTInt =>
         if isEqOp op then
@@ -2683,9 +2680,9 @@ emitCmpW e env op l r =
 emitValueCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
 emitValueCmp e op lv rv =
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = call i64 @mdk_value_cmp_raw(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+  let _ = emit e "  \{cmp} = call i64 @mdk_value_cmp_raw(i64 \{lv}, i64 \{rv})"
   let c = freshReg e
-  let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ cmp ++ ", 0")
+  let _ = emit e "  \{c} = icmp \{intPred op} i64 \{cmp}, 0"
   boolFromI1 e c
 
 -- equality of two operands of statically-unknown kind via the runtime
@@ -2695,13 +2692,13 @@ emitValueEq : Emit -> String -> String -> String -> <Mut> (String, LTy)
 emitValueEq e op lv rv
   | op == "==" =
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_value_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_value_eq(i64 \{lv}, i64 \{rv})"
     (r, LTBool)
   | otherwise =
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_value_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_value_eq(i64 \{lv}, i64 \{rv})"
     let n = freshReg e
-    let _ = emit e ("  " ++ n ++ " = xor i64 " ++ r ++ ", 2")
+    let _ = emit e "  \{n} = xor i64 \{r}, 2"
     (n, LTBool)
 
 isEqOp : String -> Bool
@@ -2731,26 +2728,26 @@ emitStrCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
 emitStrCmp e op lv rv
   | op == "==" =
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{lv}, i64 \{rv})"
     (r, LTBool)
   | op == "!=" =
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+    let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{lv}, i64 \{rv})"
     let n = freshReg e
-    let _ = emit e ("  " ++ n ++ " = xor i64 " ++ r ++ ", 2")
+    let _ = emit e "  \{n} = xor i64 \{r}, 2"
     (n, LTBool)
   | otherwise =
     let cmp = freshReg e
-    let _ = emit e ("  " ++ cmp ++ " = call i64 @mdk_string_compare_raw(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+    let _ = emit e "  \{cmp} = call i64 @mdk_string_compare_raw(i64 \{lv}, i64 \{rv})"
     let c = freshReg e
-    let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ cmp ++ ", 0")
+    let _ = emit e "  \{c} = icmp \{intPred op} i64 \{cmp}, 0"
     boolFromI1 e c
 
 -- an i1 (from icmp/fcmp) -> a Bool word (zext to i64, then tag as immediate int).
 boolFromI1 : Emit -> String -> <Mut> (String, LTy)
 boolFromI1 e c =
   let z = freshReg e
-  let _ = emit e ("  " ++ z ++ " = zext i1 " ++ c ++ " to i64")
+  let _ = emit e "  \{z} = zext i1 \{c} to i64"
   (tagInt e z, LTBool)
 
 emitUn : Emit -> List (String, (String, LTy)) -> String -> CExpr -> <Mut> (String, LTy)
@@ -2760,18 +2757,18 @@ emitUn e env "-" x =
     LTFloat =>
       let d = unboxFloat e v
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = fneg double " ++ d)
+      let _ = emit e "  \{r} = fneg double \{d}"
       (boxFloat e r, LTFloat)
     _ =>
       let i = untagInt e v
       let r = freshReg e
-      let _ = emit e ("  " ++ r ++ " = sub i64 0, " ++ i)
+      let _ = emit e "  \{r} = sub i64 0, \{i}"
       (tagInt e r, LTInt)
 emitUn e env "!" x =
   let (v, _) = emitExpr e env x
   let i = untagInt e v
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = xor i64 " ++ i ++ ", 1")
+  let _ = emit e "  \{r} = xor i64 \{i}, 1"
   (tagInt e r, LTBool)
 emitUn _ _ op _ = gapE ("unsupported unary op " ++ op)
 
@@ -2784,25 +2781,25 @@ emitIf e env c t f =
   let (cv, _) = emitExpr e env c
   let ci = untagInt e cv
   let cb = freshReg e
-  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
   let n = intToString (freshId e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
   let endL = "end" ++ n
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
   let _ = emit e (thenL ++ ":")
   let (tv, tty) = emitExpr e env t
-  let _ = emit e ("  store i64 " ++ tv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{tv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (elseL ++ ":")
   let (fv, _) = emitExpr e env f
-  let _ = emit e ("  store i64 " ++ fv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{fv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   (r, tty)
 
 emitLet : Emit -> List (String, (String, LTy)) -> Bool -> Pat -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -2945,7 +2942,7 @@ emitGroupBindDefine e env lamName name arity clauses captured =
   let _ = setRef (bufRef e) []
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
-  let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(i64 %clos, \{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
   let _ = emitClauseTree e (((name, ("%clos", LTClosure))::cenv) ++ implParamEnv arity 0) arity (clauseList clauses)
@@ -3035,11 +3032,11 @@ emitClosureAllocPatch e lamName callArity nCap =
   let fields = codePtr :: zeroWords nCap
   let nFields = lengthS fields
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (nFields + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString callArity ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{intToString (8 * (nFields + 1))})"
+  let _ = emit e "  store i64 \{intToString callArity}, ptr \{p}"
   let _ = storeFields e p fields 0
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (p, w)
 
 zeroWords : Int -> List String
@@ -3126,26 +3123,26 @@ emitLetElse e env pat ex alt rest = match letElseHead pat
     let rty = Ref LTInt
     let tag = loadDiscriminant e sv
     let cmp = freshReg e
-    let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tag ++ ", " ++ intToString (cellTag e c))
+    let _ = emit e "  \{cmp} = icmp eq i64 \{tag}, \{intToString (cellTag e c)}"
     let n = intToString (freshId e)
     let yes = "letelseok" ++ n
     let no = "letelsealt" ++ n
     let endL = "letelseend" ++ n
-    let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ no)
+    let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{no}"
     let _ = emit e (yes ++ ":")
     let fields = loadFields e sv a 0
     let env2 = bindFieldList e env fieldPats fields
     let (bv, bty) = emitBlock e env2 rest
     let _ = setRef rty bty
-    let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+    let _ = emit e "  store i64 \{bv}, ptr \{slot}"
     let _ = emit e ("  br label %" ++ endL)
     let _ = emit e (no ++ ":")
     let (av, _) = emitExpr e env alt
-    let _ = emit e ("  store i64 " ++ av ++ ", ptr " ++ slot)
+    let _ = emit e "  store i64 \{av}, ptr \{slot}"
     let _ = emit e ("  br label %" ++ endL)
     let _ = emit e (endL ++ ":")
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+    let _ = emit e "  \{r} = load i64, ptr \{slot}"
     (r, rty.value)
   None =>
     let _ = gapU "let-else with a non-constructor refutable pattern (B2: constructor patterns only)"
@@ -3271,9 +3268,9 @@ emitIndirectCallWords : Emit -> String -> List String -> <Mut> String
 emitIndirectCallWords e cw argOps =
   let cp = loadField e cw 0
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let _ = emit e "  \{fp} = inttoptr i64 \{cp} to ptr"
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (cw::argOps) ++ ")")
+  let _ = emit e "  \{r} = call i64 \{fp}(\{argDecls (cw::argOps)})"
   r
 
 -- the static result type of an indirect call: container when the head is a
@@ -3309,7 +3306,7 @@ emitArgs e env (a::rest) =
 argDecls : List String -> String
 argDecls [] = ""
 argDecls [x] = "i64 " ++ x
-argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
+argDecls (x::rest) = "i64 \{x}, \{argDecls rest}"
 
 -- ── typeclass dispatch (slice 6) ────────────────────────────────────────────
 -- Core IR carries the typechecker's resolved dispatch in two structural nodes
@@ -3434,7 +3431,7 @@ emitMethodValue e env name route implRoutes methRoutes =
   else
     let capNames = methValDictNames route
     let capWords = capDictWords env capNames
-    let lamName = "mdk_methval_" ++ name ++ "_" ++ intToString (freshId e)
+    let lamName = "mdk_methval_\{name}_\{intToString (freshId e)}"
     let _ = emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames
     emitClosureAllocA e lamName arity capWords
 
@@ -3459,7 +3456,7 @@ emitMethodValDefine : Emit -> List (String, (String, LTy)) -> String -> String -
 emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env capNames 0
   let synArgs = etaArgOps arity 0
@@ -3492,7 +3489,7 @@ emitDictValue e env name routes =
     if valArity <= 0 then emitDictApp e env name routes []
     else
       let dictWords = dictWordsOf e env routes
-      let lamName = "mdk_dictval_" ++ name ++ "_" ++ intToString (freshId e)
+      let lamName = "mdk_dictval_\{name}_\{intToString (freshId e)}"
       let _ = emitDictValDefine e lamName name (lengthS dictWords) valArity
       emitClosureAllocA e lamName valArity dictWords
   else gapE ("CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
@@ -3506,12 +3503,12 @@ emitDictValDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
 emitDictValDefine e lamName name nDicts valArity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls valArity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls valArity}) {"
   let _ = emit e "entry:"
   let dictOps = loadPapCaptures e nDicts 0
   let synArgs = dictOps ++ etaArgOps valArity 0
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls synArgs ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_\{name}(\{argDecls synArgs})"
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
   let _ = emit e ""
@@ -3542,7 +3539,7 @@ emitMethodPap e env name route implRoutes methRoutes argOps arity =
   let capNames = dedupS (routeDictNames [] (route :: implRoutes ++ methRoutes))
   let dictWords = capDictWords env capNames
   let remaining = arity - lengthS argOps
-  let lamName = "mdk_methpap_" ++ name ++ "_" ++ intToString (freshId e)
+  let lamName = "mdk_methpap_\{name}_\{intToString (freshId e)}"
   let _ = emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capNames (lengthS argOps)
   emitClosureAllocA e lamName remaining (dictWords ++ argOps)
 
@@ -3557,7 +3554,7 @@ emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capName
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
   let remaining = arity - supplied
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env capNames 0
   let capCount = listLen capNames
@@ -3597,7 +3594,7 @@ emitDefaultRKey e env name tag methRoutes implRoutes argOps = match defaultFor e
     else
       LTInt
     emitImplCall e fname (dictWords ++ argOps) resTy
-  None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
+  None => gapE "no impl of method '\{name}' for type '\{tag}' (slice 6)"
 -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a
 -- relational OPERATOR (`<`→`lt`/…) on a parametric Ord head (tuple/`List a`/
 -- `Box a`) carries the impl's element `requires` dicts on implRoutes (stamped by
@@ -3615,7 +3612,7 @@ emitDefaultRKey e env name tag methRoutes implRoutes argOps = match defaultFor e
 emitImplCall : Emit -> String -> List String -> LTy -> <Mut> (String, LTy)
 emitImplCall e fname argOps resTy =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+  let _ = emit e "  \{r} = call i64 @\{fname}(\{argDecls argOps})"
   (r, resTy)
 
 -- a call to a statically-resolved impl fn (RKey / single arg-tag group) that
@@ -3676,25 +3673,25 @@ emitApplyAny e cw argOps =
   let n = lengthS argOps
   let hdr = loadHeader e cw
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ hdr ++ ", " ++ intToString n)
+  let _ = emit e "  \{cmp} = icmp eq i64 \{hdr}, \{intToString n}"
   let m = intToString (freshId e)
   let fastL = "apfast" ++ m
   let slowL = "apslow" ++ m
   let endL = "apend" ++ m
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ fastL ++ ", label %" ++ slowL)
+  let _ = emit e "  br i1 \{cmp}, label %\{fastL}, label %\{slowL}"
   let _ = emit e (fastL ++ ":")
   let rf = emitIndirectCallWords e cw argOps
-  let _ = emit e ("  store i64 " ++ rf ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{rf}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (slowL ++ ":")
   let rs = emitApplyRuntime e cw argOps
-  let _ = emit e ("  store i64 " ++ rs ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{rs}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   r
 
 -- the runtime-generic path: materialize `argOps` into an [N x i64] alloca and call
@@ -3703,10 +3700,10 @@ emitApplyRuntime : Emit -> String -> List String -> <Mut> String
 emitApplyRuntime e cw argOps =
   let n = lengthS argOps
   let arr = freshReg e
-  let _ = emit e ("  " ++ arr ++ " = alloca i64, i64 " ++ intToString n)
+  let _ = emit e "  \{arr} = alloca i64, i64 \{intToString n}"
   let _ = storeArgv e arr argOps 0
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_apply(i64 " ++ cw ++ ", i64 " ++ intToString n ++ ", ptr " ++ arr ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_apply(i64 \{cw}, i64 \{intToString n}, ptr \{arr})"
   r
 
 -- store each arg word into the argv alloca at index `i` (getelementptr i64 stride).
@@ -3714,17 +3711,17 @@ storeArgv : Emit -> String -> List String -> Int -> <Mut> Unit
 storeArgv _ _ [] _ = ()
 storeArgv e arr (a::rest) i =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = getelementptr i64, ptr " ++ arr ++ ", i64 " ++ intToString i)
-  let _ = emit e ("  store i64 " ++ a ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = getelementptr i64, ptr \{arr}, i64 \{intToString i}"
+  let _ = emit e "  store i64 \{a}, ptr \{p}"
   storeArgv e arr rest (i + 1)
 
 -- load the header word (field 0, offset 0 — the closure arity) of a boxed cell.
 loadHeader : Emit -> String -> <Mut> String
 loadHeader e ptrWord =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{ptrWord} to ptr"
   let f = freshReg e
-  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ p)
+  let _ = emit e "  \{f} = load i64, ptr \{p}"
   f
 
 -- build a partial-application closure over `@fname` with `argOps` already-supplied
@@ -3737,7 +3734,7 @@ emitPapClosure : Emit -> String -> List String -> Int -> <Mut> (String, LTy)
 emitPapClosure e fname argOps arity =
   let supplied = lengthS argOps
   let remaining = arity - supplied
-  let papName = "mdk_pap_" ++ fname ++ "_" ++ intToString (freshId e)
+  let papName = "mdk_pap_\{fname}_\{intToString (freshId e)}"
   let _ = emitPapDefine e papName fname supplied remaining
   emitClosureAlloc e papName remaining argOps
 
@@ -3749,12 +3746,12 @@ emitPapDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
 emitPapDefine e papName fname supplied remaining =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ papName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "define i64 @\{papName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
   let capOps = loadPapCaptures e supplied 0
   let allArgs = capOps ++ argNames remaining 0
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls allArgs ++ ")")
+  let _ = emit e "  \{r} = call i64 @\{fname}(\{argDecls allArgs})"
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
   let _ = emit e ""
@@ -3791,16 +3788,16 @@ emitPapDefineIndirect : Emit -> String -> Int -> Int -> <Mut> Unit
 emitPapDefineIndirect e papName supplied remaining =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ papName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "define i64 @\{papName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
   let innerCw = loadField e "%clos" 1
   let capOps = loadPapCaptures e (supplied + 1) 1
   let allArgs = capOps ++ argNames remaining 0
   let cp = loadField e innerCw 0
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let _ = emit e "  \{fp} = inttoptr i64 \{cp} to ptr"
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (innerCw::allArgs) ++ ")")
+  let _ = emit e "  \{r} = call i64 \{fp}(\{argDecls (innerCw::allArgs)})"
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
   let _ = emit e ""
@@ -3871,7 +3868,7 @@ emitMethodDispatchChain e env name d methRoutes argOps =
     _ => emitDispatchChain e dictPtr headTag impls name methWords argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   (r, LTInt)
 -- GAP 2 phase-b: a method with NO tagged impl but a CImplDefault (a pure
 -- interface default like `max`/`min` over `Ord`) reaches an RDict site
@@ -3906,18 +3903,18 @@ emitDefaultDispatchChain : Emit -> String -> String -> List String -> String -> 
 emitDefaultDispatchChain e _ _ [] _ _ _ _ _ = emit e "  unreachable"
 emitDefaultDispatchChain e dictPtr headTag (tag::rest) name entry argOps slot endL =
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName tag))
+  let _ = emit e "  \{cmp} = icmp eq i64 \{headTag}, \{intToString (hashName tag)}"
   let n = intToString (freshId e)
   let yes = "ddispyes" ++ n
   let next = "ddispnext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   let fname = defaultFnName tag name
   let _ = ensureDefaultEmitted e fname tag name entry
   let reqCount = innerDefaultReqCount e name tag
   let reqDicts = loadReqDicts e dictPtr reqCount 0
   let (rv, _) = emitImplCall e fname (reqDicts ++ argOps) LTInt
-  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{rv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
   emitDefaultDispatchChain e dictPtr headTag rest name entry argOps slot endL
@@ -3949,11 +3946,11 @@ emitDispatchChain e dictPtr headTag (ent::rest) name methWords argOps slot endL 
   let routeKey = implEntryRouteKey (implEntriesOf e) ent
   let symTag = implFnSymOf (implEntriesOf e) name ent
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName routeKey))
+  let _ = emit e "  \{cmp} = icmp eq i64 \{headTag}, \{intToString (hashName routeKey)}"
   let n = intToString (freshId e)
   let yes = "dispyes" ++ n
   let next = "dispnext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   -- The matched impl's lifted fn expects `implReqCount` leading dict params, ordered
   -- methRoutes ++ implRoutes.  The first `lengthS methWords` are METHOD-LEVEL
@@ -3966,7 +3963,7 @@ emitDispatchChain e dictPtr headTag (ent::rest) name methWords argOps slot endL 
   let cellCount = implReqCount e name ent - lengthS methWords
   let cellDicts = loadReqDicts e dictPtr cellCount 0
   let (rv, _) = emitImplCall e (implFnName symTag name) (methWords ++ cellDicts ++ argOps) LTInt
-  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{rv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
   emitDispatchChain e dictPtr headTag rest name methWords argOps slot endL
@@ -4030,7 +4027,7 @@ emitArgTagDispatchGo e method groups argOps discrimPos =
   let _ = emitArgDispatchChain e method tagReg groups argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   (r, LTInt)
 
 emitArgDispatchChain : Emit -> String -> String -> List ImplGroup -> List String -> String -> String -> <Mut> Unit
@@ -4041,10 +4038,10 @@ emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
   let n = intToString (freshId e)
   let yes = "argyes" ++ n
   let next = "argnext" ++ n
-  let _ = emit e ("  br i1 " ++ cond ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cond}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   let (rv, _) = emitImplCall e (implFnName (groupSymTag g) method) argOps LTInt
-  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{rv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
   emitArgDispatchChain e method tagReg rest argOps slot endL
@@ -4057,14 +4054,14 @@ emitTagMatch _ _ [] =
     "arg-tag dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)"
 emitTagMatch e tagReg [c] =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
+  let _ = emit e "  \{r} = icmp eq i64 \{tagReg}, \{intToString (cellTag e c)}"
   r
 emitTagMatch e tagReg (c::rest) =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
+  let _ = emit e "  \{r} = icmp eq i64 \{tagReg}, \{intToString (cellTag e c)}"
   let rrest = emitTagMatch e tagReg rest
   let o = freshReg e
-  let _ = emit e ("  " ++ o ++ " = or i1 " ++ r ++ ", " ++ rrest)
+  let _ = emit e "  \{o} = or i1 \{r}, \{rrest}"
   o
 
 -- the impl groups of one method, in program order.
@@ -4137,7 +4134,7 @@ emitDictApp e env name routes argOps =
 emitDictAppDirect : Emit -> String -> List String -> <Mut> (String, LTy)
 emitDictAppDirect e name allWords =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls allWords ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_\{name}(\{argDecls allWords})"
   (r, fnRetTy e name)
 
 -- the dict witness words for a constrained-function call's routes (note (j)).
@@ -4179,11 +4176,11 @@ emitDictCell : Emit -> Int -> List String -> <Mut> String
 emitDictCell e headTag reqWords =
   let n = lengthS reqWords
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString headTag ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{intToString (8 * (n + 1))})"
+  let _ = emit e "  store i64 \{intToString headTag}, ptr \{p}"
   let _ = storeFields e p reqWords 0
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   w
 
 -- ── constant dict-witness hoisting (perf/dict-const) ────────────────────────
@@ -4206,7 +4203,7 @@ allConstWords (w::rest) = not (startsWith "%" w) && allConstWords rest
 
 constDictReqInits : List String -> String
 constDictReqInits [] = ""
-constDictReqInits (w::rest) = ", i64 " ++ w ++ constDictReqInits rest
+constDictReqInits (w::rest) = ", i64 \{w}\{constDictReqInits rest}"
 
 -- emit (or reuse) a module-global constant dict cell; return its pointer-as-i64
 -- constant-expr. Layout byte-identical to emitDictCell's heap cell, so every
@@ -4214,12 +4211,12 @@ constDictReqInits (w::rest) = ", i64 " ++ w ++ constDictReqInits rest
 emitConstDictCell : Emit -> Int -> List String -> <Mut> String
 emitConstDictCell e headTag reqWords =
   let n = lengthS reqWords
-  let initBody = "[" ++ intToString (n + 1) ++ " x i64] [i64 " ++ intToString headTag ++ constDictReqInits reqWords ++ "]"
+  let initBody = "[\{intToString (n + 1)} x i64] [i64 \{intToString headTag}\{constDictReqInits reqWords}]"
   match lookupAssoc initBody dictConstCacheRef.value
     Some gname => "ptrtoint (ptr @" ++ gname ++ " to i64)"
     None =>
       let gname = "mdk_dc_" ++ intToString (freshId e)
-      let _ = emitGlobal e ("@" ++ gname ++ " = internal constant " ++ initBody)
+      let _ = emitGlobal e "@\{gname} = internal constant \{initBody}"
       let _ = setRef dictConstCacheRef ((initBody, gname)::dictConstCacheRef.value)
       "ptrtoint (ptr @" ++ gname ++ " to i64)"
 
@@ -4277,7 +4274,7 @@ emitGroup e (ImplGroup method tag symTag positions arity clauses) =
     let _ = clearCurImplSelfFns ()
     ()
   else
-    let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
+    let _ = emit e "define i64 @\{fname}(\{implParamDecls arity 0}) {"
     let _ = emit e "entry:"
     let _ = emitGroupBody e fname tag positions arity clauses
     let _ = clearCurImplSelfFns ()
@@ -4366,7 +4363,7 @@ emitDefaultDefine e fname tag method entry =
   let _ = setRef (bufRef e) []
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
-  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "define i64 @\{fname}(\{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let _ = emitGroupBody e fname tag [] arity [(pats, body)]
   let _ = emit e "}"
@@ -4616,7 +4613,7 @@ restampCrossIface _ _ _ other = other
 -- the dict-passing param name for [method]'s [slot]-th method-level constraint dict;
 -- matches typecheck.mdk's dictParamName ("$dict_" ++ fn ++ "_" ++ slot).
 dictParamNameE : String -> Int -> String
-dictParamNameE method slot = "$dict_" ++ method ++ "_" ++ intToString slot
+dictParamNameE method slot = "$dict_\{method}_\{intToString slot}"
 
 -- the dict slot (index in dictIfaces) for method [m], if its interface is one of
 -- the method's method-level constraint interfaces; None otherwise.
@@ -4706,7 +4703,7 @@ implParamDecls : Int -> Int -> String
 implParamDecls n i
   | i >= n = ""
   | i == n - 1 = "i64 %arg" ++ intToString i
-  | otherwise = "i64 %arg" ++ intToString i ++ ", " ++ implParamDecls n (i + 1)
+  | otherwise = "i64 %arg\{intToString i}, \{implParamDecls n (i + 1)}"
 
 -- bind each positional param to its `%argK` operand under a synthetic name aK
 -- (the names the synthetic scrutinee CVars reference).
@@ -4809,7 +4806,7 @@ emitClauseTree e env arity clauses =
   let _ = setRef fallthroughLabelRef saved
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   emit e ("  ret i64 " ++ r)
 -- Emit the clauses as a CHAIN of single-clause decision trees sharing one result
 -- slot + end label.  Each clause sets fallthroughLabelRef to the NEXT clause's
@@ -5016,11 +5013,11 @@ emitClosureCell : Emit -> Int -> List String -> <Mut> (String, LTy)
 emitClosureCell e hdr fields =
   let n = lengthS fields
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString hdr ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{intToString (8 * (n + 1))})"
+  let _ = emit e "  store i64 \{intToString hdr}, ptr \{p}"
   let _ = storeFields e p fields 0
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTClosure)
 
 -- emitClosureAlloc + record the closure's compile-time arity in closureArityRef
@@ -5117,7 +5114,7 @@ emitRecLamDefine : Emit -> List (String, (String, LTy)) -> String -> String -> L
 emitRecLamDefine e env lamName f pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
   let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
@@ -5145,7 +5142,7 @@ emitPatLamDefine e env lamName extra pats captured body =
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
   let arity = listLen pats
-  let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(i64 %clos, \{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
   let _ = emitClauseTree e (extra ++ cenv ++ implParamEnv arity 0) arity [(pats, body)]
@@ -5168,7 +5165,7 @@ removeStr x (y::ys) = if x == y then removeStr x ys else y :: removeStr x ys
 emitEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitEtaClosure e fname =
   let arity = fnArity e fname
-  let lamName = "mdk_eta_" ++ fname ++ "_" ++ intToString (freshId e)
+  let lamName = "mdk_eta_\{fname}_\{intToString (freshId e)}"
   let _ = emitEtaDefine e lamName fname arity
   emitClosureAlloc e lamName arity []
 
@@ -5202,7 +5199,7 @@ ctorArity e name = match ctorMapRef.value
 emitCtorEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitCtorEtaClosure e name =
   let arity = ctorArity e name
-  let lamName = "mdk_etac_" ++ name ++ "_" ++ intToString (freshId e)
+  let lamName = "mdk_etac_\{name}_\{intToString (freshId e)}"
   let _ = emitCtorEtaDefine e lamName name arity
   emitClosureAlloc e lamName arity []
 
@@ -5213,7 +5210,7 @@ emitCtorEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitCtorEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let (w, _) = emitCtorAlloc e name (argNames arity 0)
   let _ = emit e ("  ret i64 " ++ w)
@@ -5234,7 +5231,7 @@ emitLamDefine : Emit -> List (String, (String, LTy)) -> String -> List Pat -> Li
 emitLamDefine e env lamName pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
   let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
@@ -5251,10 +5248,10 @@ emitEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitEtaDefine e lamName fname arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls (argNames arity 0) ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_\{fname}(\{argDecls (argNames arity 0)})"
   let _ = emit e ("  ret i64 " ++ r)
   let _ = emit e "}"
   let _ = emit e ""
@@ -5275,7 +5272,7 @@ emitEtaDefine e lamName fname arity =
 -- arrow count), so no per-family arity is hardcoded.
 emitExternEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitExternEtaClosure e name =
-  let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
+  let lamName = "mdk_eta_\{name}_\{intToString (freshId e)}"
   let _ = emitExternEtaDefine e lamName name (externArity e name)
   emitClosureAlloc e lamName (externArity e name) []
 
@@ -5290,7 +5287,7 @@ emitExternEtaClosure e name =
 -- param and is eta-saturated at the define by etaSaturateMethodBody.)
 emitMethodEtaClosure : Emit -> String -> <Mut> (String, LTy)
 emitMethodEtaClosure e name =
-  let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
+  let lamName = "mdk_eta_\{name}_\{intToString (freshId e)}"
   let _ = emitMethodEtaDefine e lamName name (methodArityOf name)
   emitClosureAlloc e lamName (methodArityOf name) []
 
@@ -5300,7 +5297,7 @@ emitMethodEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitMethodEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let synArgs = etaArgOps arity 0
   let (r, _) = emitMethodArgDispatch e name synArgs
@@ -5330,7 +5327,7 @@ emitExternEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitExternEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
-  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let argEnv = etaArgEnv arity 0
   let synArgs = etaArgVars arity 0
@@ -5382,7 +5379,7 @@ etaArgDecls n i =
   if i >= n then
     ""
   else
-    ", i64 %arg" ++ intToString i ++ etaArgDecls n (i + 1)
+    ", i64 %arg\{intToString i}\{etaArgDecls n (i + 1)}"
 
 -- the `%argK` operand names 0..n-1 (the eta-forwarder's call arguments).
 argNames : Int -> Int -> List String
@@ -5616,11 +5613,11 @@ emitCtorAlloc e name [] = (intToString (cellTag e name * 2 + 1), LTCon)
 emitCtorAlloc e name fields =
   let arity = lengthS fields
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString (cellTag e name) ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{intToString (8 * (arity + 1))})"
+  let _ = emit e "  store i64 \{intToString (cellTag e name)}, ptr \{p}"
   let _ = storeFields e p fields 0
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 
 -- store each field at offset 8*(i+1) (field 0 follows the one-word header).
@@ -5628,17 +5625,17 @@ storeFields : Emit -> String -> List String -> Int -> <Mut> Unit
 storeFields _ _ [] _ = ()
 storeFields e p (f::rest) i =
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ intToString (8 * (i + 1)))
-  let _ = emit e ("  store i64 " ++ f ++ ", ptr " ++ fp)
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 \{intToString (8 * (i + 1))}"
+  let _ = emit e "  store i64 \{f}, ptr \{fp}"
   storeFields e p rest (i + 1)
 
 -- load a cell's tag (header word at offset 0) given the cell's pointer word.
 loadTag : Emit -> String -> <Mut> String
 loadTag e ptrWord =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{ptrWord} to ptr"
   let t = freshReg e
-  let _ = emit e ("  " ++ t ++ " = load i64, ptr " ++ p)
+  let _ = emit e "  \{t} = load i64, ptr \{p}"
   t
 
 -- the DISCRIMINANT word a constructor `match` head (and arg-tag dispatch) tests.
@@ -5660,31 +5657,31 @@ loadDiscriminant e word =
   let box = "discbox" ++ n
   let cont = "disccont" ++ n
   let lb = freshReg e
-  let _ = emit e ("  " ++ lb ++ " = and i64 " ++ word ++ ", 1")
+  let _ = emit e "  \{lb} = and i64 \{word}, 1"
   let isImm = freshReg e
-  let _ = emit e ("  " ++ isImm ++ " = icmp eq i64 " ++ lb ++ ", 1")
-  let _ = emit e ("  br i1 " ++ isImm ++ ", label %" ++ imm ++ ", label %" ++ box)
+  let _ = emit e "  \{isImm} = icmp eq i64 \{lb}, 1"
+  let _ = emit e "  br i1 \{isImm}, label %\{imm}, label %\{box}"
   let _ = emit e (imm ++ ":")
   let iv = freshReg e
-  let _ = emit e ("  " ++ iv ++ " = ashr i64 " ++ word ++ ", 1")
+  let _ = emit e "  \{iv} = ashr i64 \{word}, 1"
   let _ = emit e ("  br label %" ++ cont)
   let _ = emit e (box ++ ":")
   let bv = loadTag e word
   let _ = emit e ("  br label %" ++ cont)
   let _ = emit e (cont ++ ":")
   let d = freshReg e
-  let _ = emit e ("  " ++ d ++ " = phi i64 [ " ++ iv ++ ", %" ++ imm ++ " ], [ " ++ bv ++ ", %" ++ box ++ " ]")
+  let _ = emit e "  \{d} = phi i64 [ \{iv}, %\{imm} ], [ \{bv}, %\{box} ]"
   d
 
 -- load field `idx` (offset 8*(idx+1)) of a cell given its pointer word.
 loadField : Emit -> String -> Int -> <Mut> String
 loadField e ptrWord idx =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{ptrWord} to ptr"
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ intToString (8 * (idx + 1)))
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 \{intToString (8 * (idx + 1))}"
   let f = freshReg e
-  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ fp)
+  let _ = emit e "  \{f} = load i64, ptr \{fp}"
   f
 
 -- load the first `a` fields of a cell as a list of operand words.
@@ -5718,7 +5715,7 @@ emitDecision e env scrut arms tree =
   let _ = setRef trmcCtxRef savedTrmc
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   (r, rty.value)
 -- A `match` in expression position is self-contained: its own non-exhaustive
 -- CTFail is a genuine abort, NOT the enclosing clause-chain's fallthrough.  Save
@@ -5783,7 +5780,7 @@ emitLeaf e env root arms i slot endL rty = match nthArm arms i
       TrmcOff =>
         let (bv, bty) = emitExpr e env2 body
         let _ = setRef rty bty
-        let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+        let _ = emit e "  store i64 \{bv}, ptr \{slot}"
         emit e ("  br label %" ++ endL)
   None => gapU "decision arm index out of range"
 -- TRMC (TRMC-DESIGN.md): when a destination-passing loop is active (multi-clause
@@ -5807,7 +5804,7 @@ emitGuardedArm e env root arms occs pat guards body fail slot endL rty =
   let env3 = emitGuardChain e env2 guards body failL
   let (bv, bty) = emitExpr e env3 body
   let _ = setRef rty bty
-  let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{bv}, ptr \{slot}"
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (failL ++ ":")
   emitTree e env root arms occs slot endL rty fail
@@ -5824,9 +5821,9 @@ emitGuardChain _ env [] _ _ = env
 emitGuardChain e env ((CGBool g)::rest) body failL =
   let (bw, _) = emitExpr e env g
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ bw ++ ", 3")
+  let _ = emit e "  \{cmp} = icmp eq i64 \{bw}, 3"
   let pass = "guardok" ++ intToString (freshId e)
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ pass ++ ", label %" ++ failL)
+  let _ = emit e "  br i1 \{cmp}, label %\{pass}, label %\{failL}"
   let _ = emit e (pass ++ ":")
   emitGuardChain e env rest body failL
 emitGuardChain e env ((CGBind p ex)::rest) body failL =
@@ -5961,7 +5958,7 @@ emitRefutMatch e env (PLit (LBool b)) v _ failL =
 emitRefutMatch e env (PLit (LString s)) v _ failL =
   let (lit, _) = emitLit e (LString s)
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ v ++ ", i64 " ++ lit ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{v}, i64 \{lit})"
   let _ = emitWordEqTest e r "3" failL
   env
 -- range pattern (G6): `lo <= v && v <= hi` (`..=`) or `lo <= v && v < hi` (`..`),
@@ -6011,9 +6008,9 @@ emitRefutFields e env (p::rest) v body failL i =
 emitWordEqTest : Emit -> String -> String -> String -> <Mut> Unit
 emitWordEqTest e word k failL =
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ word ++ ", " ++ k)
+  let _ = emit e "  \{cmp} = icmp eq i64 \{word}, \{k}"
   let ok = "refok" ++ intToString (freshId e)
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ ok ++ ", label %" ++ failL)
+  let _ = emit e "  br i1 \{cmp}, label %\{ok}, label %\{failL}"
   emit e (ok ++ ":")
 
 -- emit a range membership test on the tagged word `v`: `v >= loWord` AND
@@ -6024,15 +6021,15 @@ emitRangeTest e v lo hi incl failL =
   let hiW = intToString (hi * 2 + 1)
   let n = intToString (freshId e)
   let cLo = freshReg e
-  let _ = emit e ("  " ++ cLo ++ " = icmp sge i64 " ++ v ++ ", " ++ loW)
+  let _ = emit e "  \{cLo} = icmp sge i64 \{v}, \{loW}"
   let mid = "rngmid" ++ n
-  let _ = emit e ("  br i1 " ++ cLo ++ ", label %" ++ mid ++ ", label %" ++ failL)
+  let _ = emit e "  br i1 \{cLo}, label %\{mid}, label %\{failL}"
   let _ = emit e (mid ++ ":")
   let cHi = freshReg e
   let op = if incl then "sle" else "slt"
-  let _ = emit e ("  " ++ cHi ++ " = icmp " ++ op ++ " i64 " ++ v ++ ", " ++ hiW)
+  let _ = emit e "  \{cHi} = icmp \{op} i64 \{v}, \{hiW}"
   let ok = "rngok" ++ n
-  let _ = emit e ("  br i1 " ++ cHi ++ ", label %" ++ ok ++ ", label %" ++ failL)
+  let _ = emit e "  br i1 \{cHi}, label %\{ok}, label %\{failL}"
   emit e (ok ++ ":")
 
 -- the Int codepoint of a range bound literal (Int directly, Char as its
@@ -6111,11 +6108,11 @@ emitConChain e env root arms _ rest _ [] dft slot endL rty =
 emitConChain e env root arms foc rest tagReg ((CTBranch h sub)::more) dft slot endL rty = match conHeadInfo h
   Some (c, a) =>
     let cmp = freshReg e
-    let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
+    let _ = emit e "  \{cmp} = icmp eq i64 \{tagReg}, \{intToString (cellTag e c)}"
     let n = intToString (freshId e)
     let yes = "conyes" ++ n
     let next = "connext" ++ n
-    let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+    let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
     let _ = emit e (yes ++ ":")
     let fields = loadFields e foc a 0
     let _ = emitTree e env root arms (fields ++ rest) slot endL rty sub
@@ -6134,11 +6131,11 @@ emitLitChain e env root arms _ rest [] dft slot endL rty =
   emitTree e env root arms rest slot endL rty dft
 emitLitChain e env root arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL rty =
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ foc ++ ", " ++ intToString (k * 2 + 1))
+  let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (k * 2 + 1)}"
   let n = intToString (freshId e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   let _ = emitTree e env root arms rest slot endL rty sub
   let _ = emit e (next ++ ":")
@@ -6147,11 +6144,11 @@ emitLitChain e env root arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft
 emitLitChain e env root arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) dft slot endL rty =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ foc ++ ", " ++ intToString (cp * 2 + 1))
+  let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (cp * 2 + 1)}"
   let n = intToString (freshId e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   let _ = emitTree e env root arms rest slot endL rty sub
   let _ = emit e (next ++ ":")
@@ -6162,13 +6159,13 @@ emitLitChain e env root arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) df
 emitLitChain e env root arms foc rest ((CTBranch (HLit (LString s)) sub)::more) dft slot endL rty =
   let (lit, _) = emitLit e (LString s)
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ foc ++ ", i64 " ++ lit ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{foc}, i64 \{lit})"
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ r ++ ", 3")
+  let _ = emit e "  \{cmp} = icmp eq i64 \{r}, 3"
   let n = intToString (freshId e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
   let _ = emitTree e env root arms rest slot endL rty sub
   let _ = emit e (next ++ ":")
@@ -6445,7 +6442,7 @@ emitMultiClauseFn e name clauses =
     Some (FnSig ts _) => ts
     None => []
   let env = implParamEnvTyped arity ptys 0
-  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "define i64 @mdk_\{name}(\{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let _ = emitClauseTree e env arity clauses
   let _ = emit e "}"
@@ -6482,7 +6479,7 @@ emitTrmcFn e name arity ptys clauses single singlePats singleBody =
 -- emitGroup already brackets the define).
 emitTrmcHeader : Emit -> String -> Int -> <Mut> Unit
 emitTrmcHeader e defineName arity =
-  let _ = emit e ("define i64 @" ++ defineName ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "define i64 @\{defineName}(\{implParamDecls arity 0}) {"
   emit e "entry:"
 
 -- the REUSABLE TRMC loop body (assumes `define`+`entry:` already emitted; does NOT
@@ -6501,7 +6498,7 @@ emitTrmcLoopBody e self arity slotTys clauses single singlePats singleBody =
   let _ = emit e ("  " ++ hole ++ " = alloca i64")
   let destSlot = freshReg e
   let _ = emit e ("  " ++ destSlot ++ " = alloca ptr")
-  let _ = emit e ("  store ptr " ++ hole ++ ", ptr " ++ destSlot)
+  let _ = emit e "  store ptr \{hole}, ptr \{destSlot}"
   let pslots = trmcEmitParamSlots e arity 0
   let loopL = "trmcloop" ++ intToString (freshId e)
   let exitL = "trmcexit" ++ intToString (freshId e)
@@ -6514,7 +6511,7 @@ emitTrmcLoopBody e self arity slotTys clauses single singlePats singleBody =
   let _ = setRef trmcCtxRef saved
   let _ = emit e (exitL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ hole)
+  let _ = emit e "  \{r} = load i64, ptr \{hole}"
   emit e ("  ret i64 " ++ r)
 -- mutable param slots, seeded from the incoming %argK words.
 
@@ -6529,7 +6526,7 @@ trmcEmitParamSlots e arity i
   | otherwise =
     let slot = freshReg e
     let _ = emit e ("  " ++ slot ++ " = alloca i64")
-    let _ = emit e ("  store i64 %arg" ++ intToString i ++ ", ptr " ++ slot)
+    let _ = emit e "  store i64 %arg\{intToString i}, ptr \{slot}"
     slot :: trmcEmitParamSlots e arity (i + 1)
 
 -- reload each param slot into a fresh reg at the loop head, binding the synthetic
@@ -6539,7 +6536,7 @@ trmcReloadParams : Emit -> List String -> List LTy -> Int -> <Mut> List (String,
 trmcReloadParams _ [] _ _ = []
 trmcReloadParams e (slot::rest) tys i =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   let ty = match tys
     t::_ => t
     [] => LTInt
@@ -6578,11 +6575,11 @@ emitTrmcBody e env (CIf c t f) =
   let (cv, _) = emitExpr e env c
   let ci = untagInt e cv
   let cb = freshReg e
-  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
   let n = intToString (freshId e)
   let thenL = "trmcthen" ++ n
   let elseL = "trmcelse" ++ n
-  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
   let _ = emit e (thenL ++ ":")
   let _ = emitTrmcBody e env t
   let _ = emit e (elseL ++ ":")
@@ -6619,7 +6616,7 @@ emitTrmcBody e env (CDecision scrut arms tree) =
   let _ = setRef fallthroughLabelRef savedFT
   let _ = emit e (endL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
   emit e "  unreachable"
 -- trmcCtxRef is INTENTIONALLY left LIVE across the tree (the tail arms cons/loop
 -- into the active destination); a nested EXPRESSION-position match within an arm
@@ -6694,17 +6691,17 @@ emitTrmcCtor e env ctor leadFields args selfIdx destSlot loopL pslots =
   let arity = lengthS leadFields + 1
   let leadVals = emitArgs e env leadFields
   let cell = freshReg e
-  let _ = emit e ("  " ++ cell ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString (cellTag e ctor) ++ ", ptr " ++ cell)
+  let _ = emit e "  \{cell} = call ptr @mdk_alloc(i64 \{intToString (8 * (arity + 1))})"
+  let _ = emit e "  store i64 \{intToString (cellTag e ctor)}, ptr \{cell}"
   let _ = storeFields e cell leadVals 0
   let cellw = freshReg e
-  let _ = emit e ("  " ++ cellw ++ " = ptrtoint ptr " ++ cell ++ " to i64")
+  let _ = emit e "  \{cellw} = ptrtoint ptr \{cell} to i64"
   let d = freshReg e
-  let _ = emit e ("  " ++ d ++ " = load ptr, ptr " ++ destSlot)
-  let _ = emit e ("  store i64 " ++ cellw ++ ", ptr " ++ d)
+  let _ = emit e "  \{d} = load ptr, ptr \{destSlot}"
+  let _ = emit e "  store i64 \{cellw}, ptr \{d}"
   let newdest = freshReg e
-  let _ = emit e ("  " ++ newdest ++ " = getelementptr i8, ptr " ++ cell ++ ", i64 " ++ intToString (8 * (selfIdx + 1)))
-  let _ = emit e ("  store ptr " ++ newdest ++ ", ptr " ++ destSlot)
+  let _ = emit e "  \{newdest} = getelementptr i8, ptr \{cell}, i64 \{intToString (8 * (selfIdx + 1))}"
+  let _ = emit e "  store ptr \{newdest}, ptr \{destSlot}"
   let argOps = emitArgs e env args
   let _ = trmcStoreParamSlots e pslots argOps
   emit e ("  br label %" ++ loopL)
@@ -6725,7 +6722,7 @@ trmcStoreParamSlots : Emit -> List String -> List String -> <Mut> Unit
 trmcStoreParamSlots _ [] _ = ()
 trmcStoreParamSlots _ _ [] = ()
 trmcStoreParamSlots e (slot::slots) (op::ops) =
-  let _ = emit e ("  store i64 " ++ op ++ ", ptr " ++ slot)
+  let _ = emit e "  store i64 \{op}, ptr \{slot}"
   trmcStoreParamSlots e slots ops
 
 -- base/other leaf: store the value into the current destination, branch to exit.
@@ -6733,8 +6730,8 @@ emitTrmcBase : Emit -> List (String, (String, LTy)) -> CExpr -> String -> String
 emitTrmcBase e env ex destSlot exitL =
   let (v, _) = emitExpr e env ex
   let d = freshReg e
-  let _ = emit e ("  " ++ d ++ " = load ptr, ptr " ++ destSlot)
-  let _ = emit e ("  store i64 " ++ v ++ ", ptr " ++ d)
+  let _ = emit e "  \{d} = load ptr, ptr \{destSlot}"
+  let _ = emit e "  store i64 \{v}, ptr \{d}"
   emit e ("  br label %" ++ exitL)
 
 -- like implParamEnv, but types each synthetic `aK` scrutinee param from the fn's
@@ -6916,7 +6913,7 @@ paramDeclsD ((PVar _)::rest) fp i =
   let sep = match rest
     [] => ""
     _ => ", "
-  ty ++ " %arg" ++ intToString i ++ sep ++ paramDeclsD rest fp (i + 1)
+  "\{ty} %arg\{intToString i}\{sep}\{paramDeclsD rest fp (i + 1)}"
 paramDeclsD _ _ _ = panic "llvm: float-worker params must be plain variables"
 
 -- env for the worker: float params are unboxed doubles (LTFloatU → %argN holds a
@@ -6952,11 +6949,11 @@ emitFnBodyD e env self worker fp arity (CIf c t f) =
   let (cv, _) = emitExpr e env c
   let ci = untagInt e cv
   let cb = freshReg e
-  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
   let n = intToString (freshId e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
-  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
   let _ = emit e (thenL ++ ":")
   let _ = emitFnBodyD e env self worker fp arity t
   let _ = emit e (elseL ++ ":")
@@ -6993,7 +6990,7 @@ emitTailLeafD e env self worker fp arity _ (CVar f0 _, args)
   | f0 == self && lengthS args == arity =
     let ops = emitWorkerArgs e env fp 0 args
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = musttail call double @mdk_" ++ worker ++ "(" ++ ops ++ ")")
+    let _ = emit e "  \{r} = musttail call double @mdk_\{worker}(\{ops})"
     emit e ("  ret double " ++ r)
 emitTailLeafD e env _ _ _ _ other _ =
   let d = emitFloatD e env other
@@ -7020,7 +7017,7 @@ emitFloatFwOnly e name pats ptys body =
   let arity = lengthS pats
   let worker = name ++ "__fw"
   let wenv = paramEnvD pats ptys fp 0
-  let _ = emit e ("define double @mdk_" ++ worker ++ "(" ++ paramDeclsD pats fp 0 ++ ") {")
+  let _ = emit e "define double @mdk_\{worker}(\{paramDeclsD pats fp 0}) {"
   let _ = emit e "entry:"
   let _ = emitFnBodyD e wenv name worker fp arity body
   let _ = emit e "}"
@@ -7033,11 +7030,11 @@ emitFloatWorkerFn e name pats ptys body =
   -- worker ($fw): float params as doubles, body emitted double-returning
   let _ = emitFloatFwOnly e name pats ptys body
   -- wrapper: original i64 ABI; unbox float params, call worker, box the result
-  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ paramDecls pats 0 ++ ") {")
+  let _ = emit e "define i64 @mdk_\{name}(\{paramDecls pats 0}) {"
   let _ = emit e "entry:"
   let callArgs = wrapperCallArgs e fp 0 pats
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ worker ++ "(" ++ callArgs ++ ")")
+  let _ = emit e "  \{r} = call double @mdk_\{worker}(\{callArgs})"
   let b = boxFloat e r
   let _ = emit e ("  ret i64 " ++ b)
   let _ = emit e "}"
@@ -7067,7 +7064,7 @@ emitFnClauseStd e name pats ptys body =
 emitFnClauseW : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
 emitFnClauseW e name pats ptys body =
   let env = paramEnv pats ptys 0
-  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ paramDecls pats 0 ++ ") {")
+  let _ = emit e "define i64 @mdk_\{name}(\{paramDecls pats 0}) {"
   let _ = emit e "entry:"
   let _ = emitFnBody e env name body
   let _ = emit e "}"
@@ -7090,10 +7087,8 @@ allInt (_::rest) = LTInt :: allInt rest
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i
-paramDecls ((PVar _)::rest) i = "i64 %arg"
-  ++ intToString i
-  ++ ", "
-  ++ paramDecls rest (i + 1)
+paramDecls ((PVar _)::rest) i =
+  "i64 %arg\{intToString i}, \{paramDecls rest (i + 1)}"
 paramDecls _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
 
@@ -7117,11 +7112,11 @@ emitFnBody e env self (CIf c t f) =
   let (cv, _) = emitExpr e env c
   let ci = untagInt e cv
   let cb = freshReg e
-  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
   let n = intToString (freshId e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
-  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
   let _ = emit e (thenL ++ ":")
   let _ = emitFnBody e env self t
   let _ = emit e (elseL ++ ":")
@@ -7135,7 +7130,7 @@ emitFnBody e env self other =
         let argOps = emitArgs e env args
         let r = freshReg e
         let kw = if fname == self then "musttail call" else "call"
-        let _ = emit e ("  " ++ r ++ " = " ++ kw ++ " i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+        let _ = emit e "  \{r} = \{kw} i64 @mdk_\{fname}(\{argDecls argOps})"
         emit e ("  ret i64 " ++ r)
       else emitValueRet e env other
     _ => emitValueRet e env other
@@ -7896,10 +7891,10 @@ emitSetRef e env [r, x] =
   let (rw, _) = emitExpr e env r
   let (xw, _) = emitExpr e env x
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ rw ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{rw} to ptr"
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
-  let _ = emit e ("  store i64 " ++ xw ++ ", ptr " ++ fp)
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 8"
+  let _ = emit e "  store i64 \{xw}, ptr \{fp}"
   ("1", LTInt)
 emitSetRef e env _ = gapE "setRef expects exactly 2 arguments"
 
@@ -8062,11 +8057,11 @@ scanStmtsRecords (_::rest) = scanStmtsRecords rest
 emitArrayAlloc : Emit -> Int -> List String -> <Mut> (String, LTy)
 emitArrayAlloc e n fields =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString n ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{intToString (8 * (n + 1))})"
+  let _ = emit e "  store i64 \{intToString n}, ptr \{p}"
   let _ = storeFields e p fields 0
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 
 -- allocate an array cell with a DYNAMIC element count (for ranges and slices);
@@ -8074,12 +8069,12 @@ emitArrayAlloc e n fields =
 emitArrayDynAlloc : Emit -> String -> <Mut> String
 emitArrayDynAlloc e len_raw =
   let sz = freshReg e
-  let _ = emit e ("  " ++ sz ++ " = add i64 " ++ len_raw ++ ", 1")
+  let _ = emit e "  \{sz} = add i64 \{len_raw}, 1"
   let bytes = freshReg e
-  let _ = emit e ("  " ++ bytes ++ " = mul i64 " ++ sz ++ ", 8")
+  let _ = emit e "  \{bytes} = mul i64 \{sz}, 8"
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ bytes ++ ")")
-  let _ = emit e ("  store i64 " ++ len_raw ++ ", ptr " ++ p)
+  let _ = emit e "  \{p} = call ptr @mdk_alloc(i64 \{bytes})"
+  let _ = emit e "  store i64 \{len_raw}, ptr \{p}"
   p
 
 -- CArray [e0, e1, …]: allocate a static-size array cell, emit each element,
@@ -8094,15 +8089,15 @@ emitArrayCreate e env es =
 loadFieldDyn : Emit -> String -> String -> <Mut> String
 loadFieldDyn e ptrWord idxRaw =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{ptrWord} to ptr"
   let off1 = freshReg e
-  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ idxRaw ++ ", 1")
+  let _ = emit e "  \{off1} = add i64 \{idxRaw}, 1"
   let off = freshReg e
-  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let _ = emit e "  \{off} = mul i64 \{off1}, 8"
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 \{off}"
   let f = freshReg e
-  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ fp)
+  let _ = emit e "  \{f} = load i64, ptr \{fp}"
   f
 
 -- store `val` (an i64 word) to element at dynamic index `idxRaw` of a boxed array.
@@ -8110,14 +8105,14 @@ loadFieldDyn e ptrWord idxRaw =
 storeFieldDyn : Emit -> String -> String -> String -> <Mut> Unit
 storeFieldDyn e ptrWord idxRaw val =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let _ = emit e "  \{p} = inttoptr i64 \{ptrWord} to ptr"
   let off1 = freshReg e
-  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ idxRaw ++ ", 1")
+  let _ = emit e "  \{off1} = add i64 \{idxRaw}, 1"
   let off = freshReg e
-  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let _ = emit e "  \{off} = mul i64 \{off1}, 8"
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
-  let _ = emit e ("  store i64 " ++ val ++ ", ptr " ++ fp)
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 \{off}"
+  let _ = emit e "  store i64 \{val}, ptr \{fp}"
   ()
 
 -- CIndex arr i: bounds-check, then load element at dynamic offset.
@@ -8128,15 +8123,15 @@ emitArrayIndex e env a i =
   let idx_raw = untagInt e idx_w
   let arr_len = loadTag e arr_w
   let c1 = freshReg e
-  let _ = emit e ("  " ++ c1 ++ " = icmp slt i64 " ++ idx_raw ++ ", 0")
+  let _ = emit e "  \{c1} = icmp slt i64 \{idx_raw}, 0"
   let c2 = freshReg e
-  let _ = emit e ("  " ++ c2 ++ " = icmp sge i64 " ++ idx_raw ++ ", " ++ arr_len)
+  let _ = emit e "  \{c2} = icmp sge i64 \{idx_raw}, \{arr_len}"
   let oob = freshReg e
-  let _ = emit e ("  " ++ oob ++ " = or i1 " ++ c1 ++ ", " ++ c2)
+  let _ = emit e "  \{oob} = or i1 \{c1}, \{c2}"
   let n = intToString (freshId e)
   let oobL = "oob" ++ n
   let okL = "idx_ok" ++ n
-  let _ = emit e ("  br i1 " ++ oob ++ ", label %" ++ oobL ++ ", label %" ++ okL)
+  let _ = emit e "  br i1 \{oob}, label %\{oobL}, label %\{okL}"
   let _ = emit e (oobL ++ ":")
   let _ = emit e "  call void @mdk_oob()"
   let _ = emit e "  unreachable"
@@ -8153,11 +8148,11 @@ emitRangeArray e env lo hi incl =
   let hi_raw = untagInt e hi_w
   let hi_adj = if incl then
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+    let _ = emit e "  \{r} = add i64 \{hi_raw}, 1"
     r
   else hi_raw
   let count = freshReg e
-  let _ = emit e ("  " ++ count ++ " = sub i64 " ++ hi_adj ++ ", " ++ lo_raw)
+  let _ = emit e "  \{count} = sub i64 \{hi_adj}, \{lo_raw}"
   let p = emitArrayDynAlloc e count
   let n = intToString (freshId e)
   let condL = "rng_cond" ++ n
@@ -8169,28 +8164,28 @@ emitRangeArray e env lo hi incl =
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (condL ++ ":")
   let iv = freshReg e
-  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let _ = emit e "  \{iv} = load i64, ptr \{ic}"
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e "  \{cmp} = icmp sge i64 \{iv}, \{count}"
+  let _ = emit e "  br i1 \{cmp}, label %\{doneL}, label %\{bodyL}"
   let _ = emit e (bodyL ++ ":")
   let elem_sum = freshReg e
-  let _ = emit e ("  " ++ elem_sum ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let _ = emit e "  \{elem_sum} = add i64 \{lo_raw}, \{iv}"
   let elem_w = tagInt e elem_sum
   let off1 = freshReg e
-  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e "  \{off1} = add i64 \{iv}, 1"
   let off = freshReg e
-  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let _ = emit e "  \{off} = mul i64 \{off1}, 8"
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
-  let _ = emit e ("  store i64 " ++ elem_w ++ ", ptr " ++ fp)
+  let _ = emit e "  \{fp} = getelementptr i8, ptr \{p}, i64 \{off}"
+  let _ = emit e "  store i64 \{elem_w}, ptr \{fp}"
   let iv2 = freshReg e
-  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
-  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e "  \{iv2} = add i64 \{iv}, 1"
+  let _ = emit e "  store i64 \{iv2}, ptr \{ic}"
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (doneL ++ ":")
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 
 -- CSlice arr lo hi incl: compute new_len, alloc, copy elements with loop.
@@ -8203,11 +8198,11 @@ emitArraySlice e env a lo hi incl =
   let hi_raw = untagInt e hi_w
   let end_raw = if incl then
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+    let _ = emit e "  \{r} = add i64 \{hi_raw}, 1"
     r
   else hi_raw
   let new_len = freshReg e
-  let _ = emit e ("  " ++ new_len ++ " = sub i64 " ++ end_raw ++ ", " ++ lo_raw)
+  let _ = emit e "  \{new_len} = sub i64 \{end_raw}, \{lo_raw}"
   let p = emitArrayDynAlloc e new_len
   let n = intToString (freshId e)
   let condL = "sl_cond" ++ n
@@ -8219,28 +8214,28 @@ emitArraySlice e env a lo hi incl =
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (condL ++ ":")
   let iv = freshReg e
-  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let _ = emit e "  \{iv} = load i64, ptr \{ic}"
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ new_len)
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e "  \{cmp} = icmp sge i64 \{iv}, \{new_len}"
+  let _ = emit e "  br i1 \{cmp}, label %\{doneL}, label %\{bodyL}"
   let _ = emit e (bodyL ++ ":")
   let src_idx = freshReg e
-  let _ = emit e ("  " ++ src_idx ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let _ = emit e "  \{src_idx} = add i64 \{lo_raw}, \{iv}"
   let elem = loadFieldDyn e arr_w src_idx
   let dst_off1 = freshReg e
-  let _ = emit e ("  " ++ dst_off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e "  \{dst_off1} = add i64 \{iv}, 1"
   let dst_off = freshReg e
-  let _ = emit e ("  " ++ dst_off ++ " = mul i64 " ++ dst_off1 ++ ", 8")
+  let _ = emit e "  \{dst_off} = mul i64 \{dst_off1}, 8"
   let dst_fp = freshReg e
-  let _ = emit e ("  " ++ dst_fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ dst_off)
-  let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ dst_fp)
+  let _ = emit e "  \{dst_fp} = getelementptr i8, ptr \{p}, i64 \{dst_off}"
+  let _ = emit e "  store i64 \{elem}, ptr \{dst_fp}"
   let iv2 = freshReg e
-  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
-  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e "  \{iv2} = add i64 \{iv}, 1"
+  let _ = emit e "  store i64 \{iv2}, ptr \{ic}"
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (doneL ++ ":")
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 
 -- CStringIndex s i: codepoint-indexed Char.  The String runtime rep is a packed
@@ -8254,19 +8249,19 @@ emitStringIndex e env a i =
   let (str_w, _) = emitExpr e env a
   let (idx_w, _) = emitExpr e env i
   let chars = freshReg e
-  let _ = emit e ("  " ++ chars ++ " = call i64 @mdk_string_to_chars(i64 " ++ str_w ++ ")")
+  let _ = emit e "  \{chars} = call i64 @mdk_string_to_chars(i64 \{str_w})"
   let idx_raw = untagInt e idx_w
   let arr_len = loadTag e chars
   let c1 = freshReg e
-  let _ = emit e ("  " ++ c1 ++ " = icmp slt i64 " ++ idx_raw ++ ", 0")
+  let _ = emit e "  \{c1} = icmp slt i64 \{idx_raw}, 0"
   let c2 = freshReg e
-  let _ = emit e ("  " ++ c2 ++ " = icmp sge i64 " ++ idx_raw ++ ", " ++ arr_len)
+  let _ = emit e "  \{c2} = icmp sge i64 \{idx_raw}, \{arr_len}"
   let oob = freshReg e
-  let _ = emit e ("  " ++ oob ++ " = or i1 " ++ c1 ++ ", " ++ c2)
+  let _ = emit e "  \{oob} = or i1 \{c1}, \{c2}"
   let n = intToString (freshId e)
   let oobL = "soob" ++ n
   let okL = "sidx_ok" ++ n
-  let _ = emit e ("  br i1 " ++ oob ++ ", label %" ++ oobL ++ ", label %" ++ okL)
+  let _ = emit e "  br i1 \{oob}, label %\{oobL}, label %\{okL}"
   let _ = emit e (oobL ++ ":")
   let _ = emit e "  call void @mdk_oob()"
   let _ = emit e "  unreachable"
@@ -8286,11 +8281,11 @@ emitStringSlice e env a lo hi incl =
   let (hi_w, _) = emitExpr e env hi
   let hi_adj = if incl then
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_w ++ ", 2")
+    let _ = emit e "  \{r} = add i64 \{hi_w}, 2"
     r
   else hi_w
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo_w ++ ", i64 " ++ hi_adj ++ ", i64 " ++ str_w ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_string_slice(i64 \{lo_w}, i64 \{hi_adj}, i64 \{str_w})"
   (r, LTStr)
 
 -- CListIndex xs i: walk the Cons chain to the i-th element.  A List is a chain of
@@ -8304,7 +8299,7 @@ emitListIndex e env a i =
   let (lst_w, _) = emitExpr e env a
   let (idx_w, _) = emitExpr e env i
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_list_index(i64 " ++ lst_w ++ ", i64 " ++ idx_w ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_list_index(i64 \{lst_w}, i64 \{idx_w})"
   (r, LTInt)
 
 -- CListSlice xs lo hi incl: collect elements at indices [lo, hi) into a NEW list.
@@ -8320,11 +8315,11 @@ emitListSlice e env a lo hi incl =
   let (hi_w, _) = emitExpr e env hi
   let hi_adj = if incl then
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_w ++ ", 2")
+    let _ = emit e "  \{r} = add i64 \{hi_w}, 2"
     r
   else hi_w
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_list_slice(i64 " ++ lst_w ++ ", i64 " ++ lo_w ++ ", i64 " ++ hi_adj ++ ")")
+  let _ = emit e "  \{r} = call i64 @mdk_list_slice(i64 \{lst_w}, i64 \{lo_w}, i64 \{hi_adj})"
   (r, LTCon)
 
 -- arrayMakeWith n f: INLINE INTRINSIC.  Allocates a dynamic array of `n` elements;
@@ -8347,31 +8342,31 @@ emitArrayMakeWith e env [nExpr, fExpr] =
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (condL ++ ":")
   let iv = freshReg e
-  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let _ = emit e "  \{iv} = load i64, ptr \{ic}"
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e "  \{cmp} = icmp sge i64 \{iv}, \{count}"
+  let _ = emit e "  br i1 \{cmp}, label %\{doneL}, label %\{bodyL}"
   let _ = emit e (bodyL ++ ":")
   let ti = tagInt e iv
   let cp = loadField e fw 0
   let fp = freshReg e
-  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let _ = emit e "  \{fp} = inttoptr i64 \{cp} to ptr"
   let elem = freshReg e
-  let _ = emit e ("  " ++ elem ++ " = call i64 " ++ fp ++ "(i64 " ++ fw ++ ", i64 " ++ ti ++ ")")
+  let _ = emit e "  \{elem} = call i64 \{fp}(i64 \{fw}, i64 \{ti})"
   let off1 = freshReg e
-  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e "  \{off1} = add i64 \{iv}, 1"
   let off = freshReg e
-  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let _ = emit e "  \{off} = mul i64 \{off1}, 8"
   let ep = freshReg e
-  let _ = emit e ("  " ++ ep ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
-  let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ ep)
+  let _ = emit e "  \{ep} = getelementptr i8, ptr \{p}, i64 \{off}"
+  let _ = emit e "  store i64 \{elem}, ptr \{ep}"
   let iv2 = freshReg e
-  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
-  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e "  \{iv2} = add i64 \{iv}, 1"
+  let _ = emit e "  store i64 \{iv2}, ptr \{ic}"
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (doneL ++ ":")
   let w = freshReg e
-  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 emitArrayMakeWith e env _ = gapE "arrayMakeWith takes two arguments"
 
@@ -8454,20 +8449,20 @@ emitRangeList e env lo hi incl =
   let hi_raw = untagInt e hi_w
   let hi_adj = if incl then
     let r = freshReg e
-    let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+    let _ = emit e "  \{r} = add i64 \{hi_raw}, 1"
     r
   else hi_raw
   let count = freshReg e
-  let _ = emit e ("  " ++ count ++ " = sub i64 " ++ hi_adj ++ ", " ++ lo_raw)
+  let _ = emit e "  \{count} = sub i64 \{hi_adj}, \{lo_raw}"
   let (nil_w, _) = emitCtorAlloc e "Nil" []
   let acc = freshReg e
   let _ = emit e ("  " ++ acc ++ " = alloca i64")
-  let _ = emit e ("  store i64 " ++ nil_w ++ ", ptr " ++ acc)
+  let _ = emit e "  store i64 \{nil_w}, ptr \{acc}"
   let ic = freshReg e
   let _ = emit e ("  " ++ ic ++ " = alloca i64")
   let im1 = freshReg e
-  let _ = emit e ("  " ++ im1 ++ " = sub i64 " ++ count ++ ", 1")
-  let _ = emit e ("  store i64 " ++ im1 ++ ", ptr " ++ ic)
+  let _ = emit e "  \{im1} = sub i64 \{count}, 1"
+  let _ = emit e "  store i64 \{im1}, ptr \{ic}"
   let n = intToString (freshId e)
   let condL = "rl_cond" ++ n
   let bodyL = "rl_body" ++ n
@@ -8475,25 +8470,25 @@ emitRangeList e env lo hi incl =
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (condL ++ ":")
   let iv = freshReg e
-  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let _ = emit e "  \{iv} = load i64, ptr \{ic}"
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp slt i64 " ++ iv ++ ", 0")
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e "  \{cmp} = icmp slt i64 \{iv}, 0"
+  let _ = emit e "  br i1 \{cmp}, label %\{doneL}, label %\{bodyL}"
   let _ = emit e (bodyL ++ ":")
   let elem_raw = freshReg e
-  let _ = emit e ("  " ++ elem_raw ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let _ = emit e "  \{elem_raw} = add i64 \{lo_raw}, \{iv}"
   let elem_w = tagInt e elem_raw
   let tail_w = freshReg e
-  let _ = emit e ("  " ++ tail_w ++ " = load i64, ptr " ++ acc)
+  let _ = emit e "  \{tail_w} = load i64, ptr \{acc}"
   let (cons_w, _) = emitCtorAlloc e "Cons" [elem_w, tail_w]
-  let _ = emit e ("  store i64 " ++ cons_w ++ ", ptr " ++ acc)
+  let _ = emit e "  store i64 \{cons_w}, ptr \{acc}"
   let iv2 = freshReg e
-  let _ = emit e ("  " ++ iv2 ++ " = sub i64 " ++ iv ++ ", 1")
-  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e "  \{iv2} = sub i64 \{iv}, 1"
+  let _ = emit e "  store i64 \{iv2}, ptr \{ic}"
   let _ = emit e ("  br label %" ++ condL)
   let _ = emit e (doneL ++ ":")
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ acc)
+  let _ = emit e "  \{r} = load i64, ptr \{acc}"
   (r, LTCon)
 -- Seed the accumulator with Nil.
 
@@ -8589,7 +8584,7 @@ emitTopGlobals : Emit -> List CBind -> <Mut> Unit
 emitTopGlobals _ [] = ()
 emitTopGlobals e ((CBind name [CClause [] body])::rest) =
   let (v, ty) = emitExpr e [] body
-  let _ = emit e ("  store i64 " ++ v ++ ", ptr @mdk_g_" ++ name)
+  let _ = emit e "  store i64 \{v}, ptr @mdk_g_\{name}"
   let _ = markGlobalInit e name ty
   emitTopGlobals e rest
 emitTopGlobals _ ((CBind name _)::_) =
@@ -8741,7 +8736,7 @@ emitImplsGaps e entries = emitGroupsGaps e (groupImpls entries)
 emitGroupsGaps : Emit -> List ImplGroup -> <Mut> Unit
 emitGroupsGaps _ [] = ()
 emitGroupsGaps e (g::rest) =
-  let _ = setGapBind ("impl " ++ groupMethodOf g ++ "@" ++ groupTag g)
+  let _ = setGapBind "impl \{groupMethodOf g}@\{groupTag g}"
   let _ = emitGroup e g
   emitGroupsGaps e rest
 

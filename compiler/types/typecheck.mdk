@@ -406,7 +406,7 @@ renderProductLit : List (String, Param) -> String
 renderProductLit ax = joinWith " " (map renderAxis ax)
 
 renderAxis : (String, Param) -> String
-renderAxis (name, p) = name ++ "=" ++ renderAxisVal p
+renderAxis (name, p) = "\{name}=\{renderAxisVal p}"
 
 -- an axis value WITHOUT the leading-space that `drenderN` prefixes (we reuse the
 -- sub-domain rendering but strip the space, so Host="a/*" / Method={"GET"}).
@@ -899,19 +899,12 @@ effectLeakCheck [] bound = ()
 effectLeakCheck escaping bound = pushTypeError (effectLeakMsg bound escaping)
 
 effectLeakMsg : List Atom -> List Atom -> String
-effectLeakMsg bound extras = "Effectful value used where <"
-  ++ renderAtoms bound
-  ++ "> is allowed, but it performs <"
-  ++ renderAtoms extras
-  ++ ">"
+effectLeakMsg bound extras = "Effectful value used where <\{renderAtoms bound}> is allowed, but it performs <\{renderAtoms extras}>"
 
 -- v2 Stage 2a: diagnostic for a rejected written effect param (mirror of
 -- lib/typecheck.ml's EffectParam message).
 effectParamMsg : String -> String -> String
-effectParamMsg label why = "Invalid effect parameter on <"
-  ++ label
-  ++ ">: "
-  ++ why
+effectParamMsg label why = "Invalid effect parameter on <\{label}>: \{why}"
 
 -- validate every written effect param in a program's type annotations against
 -- the registry: a Prefix label's pattern must pass prefixPatternOk; an atomic
@@ -970,7 +963,7 @@ checkOneEffectParam l pat = match dtopFor l
   PProduct _ =>
     checkProductAxes l (decodeProductParam pat)
   _ => pushTypeError (effectParamMsg l
-    ("label '" ++ l ++ "' is atomic and takes no parameter (declare it `effect " ++ l ++ " Prefix` to parameterize)"))
+    "label '\{l}' is atomic and takes no parameter (declare it `effect \{l} Prefix` to parameterize)")
 
 -- WS-4: validate a decoded product's axes: a Host (Prefix) axis must pass
 -- prefixPatternOk; a Method (Set) axis is always well-formed; any other axis name
@@ -2267,10 +2260,10 @@ bindVar cell t =
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
 typeMismatch a b = match currentMethodMismatch.value
-  Some mname => pushTypeError ("Method '" ++ mname ++ "': expected type " ++ ppMono a ++ " but got " ++ ppMono b)
+  Some mname => pushTypeError "Method '\{mname}': expected type \{ppMono a} but got \{ppMono b}"
   None => match currentDoOrigin.value
     Some doLoc => typeMismatchInDo a b doLoc
-    None => pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+    None => pushTypeError "Type mismatch: \{ppMono a} vs \{ppMono b}"
 
 -- a mismatch inside a do-lowered chain: if it is the monad-shape (`m b`) vs
 -- non-monad obligation, retarget to the tailored "do requires a monad" error;
@@ -2279,8 +2272,7 @@ typeMismatchInDo : Mono -> Mono -> Loc -> <Mut> Unit
 typeMismatchInDo a b doLoc
   | monoIsApp (normalize a) != monoIsApp (normalize b) =
     recordDoMonadError doLoc
-  | otherwise =
-    pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+  | otherwise = pushTypeError "Type mismatch: \{ppMono a} vs \{ppMono b}"
 
 recordDoMonadError : Loc -> <Mut> Unit
 recordDoMonadError doLoc =
@@ -2518,7 +2510,7 @@ ppEffArgFmt l t
   | l == "" && t == "" = "<>"
   | l == "" = t
   | t == "" = "<" ++ l ++ ">"
-  | otherwise = "<" ++ l ++ " | " ++ t ++ ">"
+  | otherwise = "<\{l} | \{t}>"
 
 ppVar : Ref (List (Int, String)) -> Ref Int -> Ref Tyvar -> <Mut> String
 ppVar ctx cnt cell = match cell.value
@@ -2532,13 +2524,13 @@ ppApp ctx cnt prec a b = match tupleSpine (TApp a b)
   None =>
     let sa = ppGo ctx cnt 2 a
     let sb = ppGo ctx cnt 3 b
-    wrapIf (prec > 2) (sa ++ " " ++ sb)
+    wrapIf (prec > 2) "\{sa} \{sb}"
 
 ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> EffRow -> Mono -> <Mut> String
 ppFun ctx cnt prec a eff b =
   let sa = ppGo ctx cnt 2 a
   let sb = ppGo ctx cnt 1 b
-  wrapIf (prec > 1) (sa ++ " -> " ++ effStr (effrowLabels eff) ++ sb)
+  wrapIf (prec > 1) "\{sa} -> \{effStr (effrowLabels eff)}\{sb}"
 
 effStr : List Atom -> String
 effStr [] = ""
@@ -2791,12 +2783,7 @@ fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 -- fork 2).  Deduped (pushTypeErrorOnce) since a signature's `Ty` is converted to
 -- `Mono` repeatedly during inference.
 aliasArityMsg : String -> Int -> Int -> String
-aliasArityMsg n expected got = "Type alias `"
-  ++ n
-  ++ "` expects "
-  ++ intToString expected
-  ++ " argument(s), got "
-  ++ intToString got
+aliasArityMsg n expected got = "Type alias `\{n}` expects \{intToString expected} argument(s), got \{intToString got}"
 
 -- the opaque fall-through for a TyCon-headed spine: keep the head as a bare
 -- `TCon n` and apply the (alias-expanded) argument Monos left-nested.  This is
@@ -2955,7 +2942,7 @@ inferPatRng : Lit -> Lit -> <Mut> (Mono, List (String, Scheme))
 inferPatRng (LInt _) (LInt _) = (TCon "Int", [])
 inferPatRng (LChar _) (LChar _) = (TCon "Char", [])
 inferPatRng lo hi =
-  let _ = pushTypeError ("Type mismatch: " ++ ppMono (litType lo) ++ " vs " ++ ppMono (litType hi))
+  let _ = pushTypeError "Type mismatch: \{ppMono (litType lo)} vs \{ppMono (litType hi)}"
   (TCon "Int", [])
 
 inferPatRec : TcEnv -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
@@ -3875,38 +3862,22 @@ unknownFieldFresh fname rname =
 
 -- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField / MissingField messages.
 unknownFieldMsg : String -> String -> String
-unknownFieldMsg fname rname = "Field "
-  ++ fname
-  ++ " does not belong to record "
-  ++ rname
+unknownFieldMsg fname rname =
+  "Field \{fname} does not belong to record \{rname}"
 
 -- Dot-access on a type exported abstractly: byte-identical to resolve.mdk's
 -- AbstractFieldAccess ppResError, so a destructure (`Point { x }`, caught in
 -- resolve) and a dot-access (`p.x`, caught here in typecheck) read the same.
 abstractFieldMsg : String -> String -> String
-abstractFieldMsg tname fname = "'"
-  ++ tname
-  ++ "' is exported abstractly; its field '"
-  ++ fname
-  ++ "' is not accessible (declare it `public export` to expose its fields)."
+abstractFieldMsg tname fname = "'\{tname}' is exported abstractly; its field '\{fname}' is not accessible (declare it `public export` to expose its fields)."
 
 -- TYPECHECK-AUDIT OBS4: mirrors lib/typecheck.ml MissingField message byte-for-byte.
 missingFieldMsg : String -> String -> String
-missingFieldMsg fname rname = "Missing field "
-  ++ fname
-  ++ " in construction of record "
-  ++ rname
+missingFieldMsg fname rname =
+  "Missing field \{fname} in construction of record \{rname}"
 
 ambiguousFieldMsg : String -> List String -> String
-ambiguousFieldMsg fname owners = "Ambiguous field access: '."
-  ++ fname
-  ++ "' is declared by "
-  ++ joinWith ", " owners
-  ++ ". I can't tell which record this value is — add a type annotation on it (e.g. '(r : "
-  ++ headL owners
-  ++ ")."
-  ++ fname
-  ++ "')."
+ambiguousFieldMsg fname owners = "Ambiguous field access: '.\{fname}' is declared by \{joinWith ", " owners}. I can't tell which record this value is — add a type annotation on it (e.g. '(r : \{headL owners}).\{fname}')."
 
 -- TYPECHECK-AUDIT D1: convert resolve-not-pre-screened error shapes (unknown
 -- record / constructor, unbound variable) from uncatchable interpreter panics
@@ -6262,21 +6233,11 @@ cohPpEach ctx cnt (m::ms) = ppGo ctx cnt 0 m :: cohPpEach ctx cnt ms
 -- pp_error text for OverlappingImpls / MultipleDefaultImpls).
 cohOverlapMsg : String -> List Mono -> List Mono -> <Mut> String
 cohOverlapMsg iface xs ys = match cohPpPair xs ys
-  (s1, s2) => "Overlapping impls of "
-    ++ iface
-    ++ ": "
-    ++ s1
-    ++ " and "
-    ++ s2
-    ++ " can match the same type — mark the more general one `default impl`, or make them disjoint"
+  (s1, s2) => "Overlapping impls of \{iface}: \{s1} and \{s2} can match the same type — mark the more general one `default impl`, or make them disjoint"
 
 cohDefaultMsg : String -> List Mono -> <Mut> String
 cohDefaultMsg iface xs = match cohPpPair xs xs
-  (s1, _) => "Multiple default impls of "
-    ++ iface
-    ++ " for "
-    ++ s1
-    ++ " — at most one default allowed"
+  (s1, _) => "Multiple default impls of \{iface} for \{s1} — at most one default allowed"
 
 -- scan all ordered pairs; return the FIRST conflict message (mirrors the oracle
 -- raising on the first incoherent pair).  None ⇒ coherent.
@@ -6312,12 +6273,8 @@ cohAnonConflict e1 xs ys named mid1 mid2 rest
 
 -- cross-module conflict wording: names the interface and BOTH owning modules.
 cohCrossModuleMsg : String -> String -> String -> <Mut> String
-cohCrossModuleMsg iface mid1 mid2 = "conflicting `impl "
-  ++ iface
-  ++ "`: defined in "
-  ++ mid2
-  ++ " and "
-  ++ mid1
+cohCrossModuleMsg iface mid1 mid2 =
+  "conflicting `impl \{iface}`: defined in \{mid2} and \{mid1}"
 
 cohImplIface : CohImpl -> String
 cohImplIface (CohImpl i _ _ _ _) = i
@@ -6390,13 +6347,13 @@ phantomMethodMsg ifaceName typarams (IfaceMethod mname mty _) =
     []
   else
     [
-      "Method '" ++ mname ++ "' in interface '" ++ ifaceName ++ "' does not mention interface parameter(s) " ++ intercalateComma typarams ++ "; cannot dispatch"
+      "Method '\{mname}' in interface '\{ifaceName}' does not mention interface parameter(s) \{intercalateComma typarams}; cannot dispatch"
     ]
 
 intercalateComma : List String -> String
 intercalateComma [] = ""
 intercalateComma [x] = "'" ++ x ++ "'"
-intercalateComma (x::rest) = "'" ++ x ++ "', " ++ intercalateComma rest
+intercalateComma (x::rest) = "'\{x}', \{intercalateComma rest}"
 
 -- ── WS-4a: cyclic superinterface detection ────────────────────────────────
 -- A cyclic `interface A requires B; interface B requires A` is ill-formed: no
@@ -6496,15 +6453,7 @@ substParams (p::rest) subst = match lookupAssoc p subst
 -- byte-identical to lib/typecheck.ml's MissingSuperImpl rendering: both the impl
 -- head and the super are printed with the same space-joined atom-position args.
 missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
-missingSuperImplMsg iface implTys superName superTys = "impl "
-  ++ iface
-  ++ " "
-  ++ joinWith " " (map ppTyAtom implTys)
-  ++ " requires a superinterface impl 'impl "
-  ++ superName
-  ++ " "
-  ++ joinWith " " (map ppTyAtom superTys)
-  ++ "', which is missing"
+missingSuperImplMsg iface implTys superName superTys = "impl \{iface} \{joinWith " " (map ppTyAtom implTys)} requires a superinterface impl 'impl \{superName} \{joinWith " " (map ppTyAtom superTys)}', which is missing"
 
 -- the (typarams, supers) of interface [target], scanning DInterface decls; None if
 -- no such interface is in scope.
@@ -6669,11 +6618,8 @@ keyEntryOf _ = []
 -- the canonical impl key, byte-identical to eval.mdk's implKeyOf and to
 -- lib/ast.ml's impl_key: `iface ++ "|" ++ <prec-2 args> ++ "|" ++ name`.
 implKeyTc : String -> List Ty -> Option String -> String
-implKeyTc iface tys nm = iface
-  ++ "|"
-  ++ joinWith " " (map ppTyAtom tys)
-  ++ "|"
-  ++ fromOption "" nm
+implKeyTc iface tys nm =
+  "\{iface}|\{joinWith " " (map ppTyAtom tys)}|\{fromOption "" nm}"
 
 -- the canonical key to stamp for the impl of [name] matching the ground result
 -- mono — but ONLY when another impl of the same method shares its head tycon (so
@@ -7109,12 +7055,8 @@ ambiguousImplMsg iface = "ambiguous instance for '"
 -- Mirrors lib/typecheck.ml:1250-1252 `UnknownImplName` text byte-for-byte:
 -- `No impl named '<name>' found for <iface> <args>`.
 unknownImplNameMsg : String -> String -> List Mono -> <Mut> String
-unknownImplNameMsg iface name args = "No impl named '"
-  ++ name
-  ++ "' found for "
-  ++ iface
-  ++ " "
-  ++ ppMonosShared args
+unknownImplNameMsg iface name args =
+  "No impl named '\{name}' found for \{iface} \{ppMonosShared args}"
 
 -- @Impl: validate each pending hinted method occurrence — the named impl must
 -- exist for the interface (any head, since the hint may name a same-head sibling).
@@ -7696,7 +7638,7 @@ dictParamsFrom n start count
     PVar (dictParamName n start) :: dictParamsFrom n (start + 1) (count - 1)
 
 dictParamName : String -> Int -> String
-dictParamName fn slot = "$dict_" ++ fn ++ "_" ++ intToString slot
+dictParamName fn slot = "$dict_\{fn}_\{intToString slot}"
 
 -- head type constructor, normalizing at each level (the head may be a TVar
 -- linked to a concrete type after unification — normalize follows only the top
@@ -8067,7 +8009,7 @@ checkCallObligations prog obligations =
 checkCallObligationsGo : List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligationsGo _ _ [] = ()
 checkCallObligationsGo heads seen ((iface, occ, loc)::rest) =
-  let key = iface ++ "|" ++ fromOption "" (headTyconMono occ)
+  let key = "\{iface}|\{fromOption "" (headTyconMono occ)}"
   if contains key seen then checkCallObligationsGo heads seen rest
   else
     let _ = checkOneCallObligation heads iface occ loc
@@ -8267,10 +8209,7 @@ spineHeadMono t = match normalize t
   other => other
 
 noImplFoundMsg : String -> List Mono -> <Mut> String
-noImplFoundMsg iface args = "No impl of "
-  ++ iface
-  ++ " for "
-  ++ ppMonosShared args
+noImplFoundMsg iface args = "No impl of \{iface} for \{ppMonosShared args}"
 
 -- the (iface, head-arg types) of every USER/prelude impl declared in [prog].
 implHeadsOf : List Decl -> List (String, List Ty)
@@ -9230,13 +9169,7 @@ checkEffectEscape sigs m effs = match lookupAssoc m sigs
     extras => pushTypeError (effectEscapeMsg m (declaredEffects ty) extras)
 
 effectEscapeMsg : String -> List Atom -> List Atom -> String
-effectEscapeMsg name declared extras = "Function '"
-  ++ name
-  ++ "' declared with <"
-  ++ renderAtoms declared
-  ++ "> but also performs <"
-  ++ renderAtoms extras
-  ++ ">"
+effectEscapeMsg name declared extras = "Function '\{name}' declared with <\{renderAtoms declared}> but also performs <\{renderAtoms extras}>"
 
 -- generalize each member's (sig-and-body-unified) placeholder.  A signature was
 -- already unified into the placeholder by preunifySigs, so generalizing the
@@ -9305,11 +9238,7 @@ hasDupI [] = False
 hasDupI (x::xs) = containsI x xs || hasDupI xs
 
 sigTooGeneralMsg : String -> Ty -> String
-sigTooGeneralMsg name ty = "Declared signature of '"
-  ++ name
-  ++ "' is more general than its body — '"
-  ++ ppTy ty
-  ++ "' claims type variables that are the same type after inference"
+sigTooGeneralMsg name ty = "Declared signature of '\{name}' is more general than its body — '\{ppTy ty}' claims type variables that are the same type after inference"
 
 -- C3: mirrors lib/typecheck.ml's AnnotationTooGeneral message byte-for-byte.
 annotTooGeneralMsg : Ty -> String
@@ -9321,8 +9250,8 @@ annotTooGeneralMsg ty = "Type annotation '"
 ppTy : Ty -> String
 ppTy (TyCon n) = n
 ppTy (TyVar n) = n
-ppTy (TyApp a b) = ppTy a ++ " " ++ ppTyAtom b
-ppTy (TyFun a b) = ppTyFunArg a ++ " -> " ++ ppTy b
+ppTy (TyApp a b) = "\{ppTy a} \{ppTyAtom b}"
+ppTy (TyFun a b) = "\{ppTyFunArg a} -> \{ppTy b}"
 ppTy (TyTuple ts) = "(" ++ joinWith ", " (map ppTy ts) ++ ")"
 ppTy (TyEffect effs tail t) =
   let labs = map ppEffAtomTy effs
@@ -9330,16 +9259,16 @@ ppTy (TyEffect effs tail t) =
     None => joinWith ", " labs
     Some v => match effs
       [] => v
-      _ => joinWith ", " labs ++ " | " ++ v
-  "<" ++ inside ++ "> " ++ ppTy t
-ppTy (TyConstrained cs t) = ppConstraints cs ++ " => " ++ ppTy t
+      _ => "\{joinWith ", " labs} | \{v}"
+  "<\{inside}> \{ppTy t}"
+ppTy (TyConstrained cs t) = "\{ppConstraints cs} => \{ppTy t}"
 
 -- effect atom renderer for ppTy (mirrors OCaml pp_atom inside pp_ty_prec / TEff)
 ppEffAtomTy : (String, Option String) -> String
 ppEffAtomTy (l, None) = l
 -- Intentional cross-file duplicate of the same helper in doc.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-ppEffAtomTy (l, Some s) = if s == "_" then l ++ " _" else l ++ " " ++ escStr s
+ppEffAtomTy (l, Some s) = if s == "_" then l ++ " _" else "\{l} \{escStr s}"
 
 -- single constraint: no outer parens; multiple: wrap in parens (mirrors OCaml)
 ppConstraints : List Constraint -> String
@@ -9359,9 +9288,8 @@ ppTyAtom t = ppTy t
 
 ppConstraint : Constraint -> String
 ppConstraint (Constraint iface []) = iface
-ppConstraint (Constraint iface tys) = iface
-  ++ " "
-  ++ joinWith " " (map ppTyAtom tys)
+ppConstraint (Constraint iface tys) =
+  "\{iface} \{joinWith " " (map ppTyAtom tys)}"
 
 -- ── inferred-constraint promotion (unsignatured `=>` — the two-pass layer) ──
 -- After a group is generalized, an UNSIGNATURED eligible member that uses a
@@ -10807,4 +10735,4 @@ elabModulesGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
 
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []
-schemeLines ((n, s)::rest) = n ++ " : " ++ ppScheme s :: schemeLines rest
+schemeLines ((n, s)::rest) = "\{n} : \{ppScheme s}" :: schemeLines rest

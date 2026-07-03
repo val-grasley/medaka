@@ -29,5 +29,5 @@ emitAll preludeDecls (path::rest) = match readFile path
     let _ = ePutStrLn msg
     emitAll preludeDecls rest
   Ok src =>
-    let _ = putStr ("===SELFHOST-FIX=== " ++ path ++ "\n" ++ evalMain (preludeDecls ++ desugar (parse src)) ++ "\n")
+    let _ = putStr "===SELFHOST-FIX=== \{path}\n\{evalMain (preludeDecls ++ desugar (parse src))}\n"
     emitAll preludeDecls rest

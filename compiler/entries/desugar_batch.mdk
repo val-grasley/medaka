@@ -25,9 +25,4 @@ desugarFiles targets = match readAllSources targets
 
 renderAll : List (String, String) -> String
 renderAll [] = ""
-renderAll ((path, src)::rest) = "===SELFHOST-DESUGAR=== "
-  ++ path
-  ++ "\n"
-  ++ programToSexp (desugar (parse src))
-  ++ "\n"
-  ++ renderAll rest
+renderAll ((path, src)::rest) = "===SELFHOST-DESUGAR=== \{path}\n\{programToSexp (desugar (parse src))}\n\{renderAll rest}"

@@ -24,7 +24,7 @@ import frontend.lexer.{Token, tokenize, tokenToString}
 renderToks : List Token -> String
 renderToks [] = ""
 renderToks [t] = tokenToString t
-renderToks (t::rest) = tokenToString t ++ "\n" ++ renderToks rest
+renderToks (t::rest) = "\{tokenToString t}\n\{renderToks rest}"
 
 -- A representative Medaka snippet covering the common lexical constructs:
 -- data decls, signatures, lambdas, lists, operators, char/string/int literals,

@@ -35,10 +35,8 @@ import frontend.parser.{
 -- `%d:%d\n` / `%d\n`), so an empty section is just its header line followed
 -- immediately by the next header — byte-identical to the reference.
 renderDeclPos : DeclPos -> String
-renderDeclPos d = intToString (declPosLine d)
-  ++ ":"
-  ++ intToString (declPosEndLine d)
-  ++ "\n"
+renderDeclPos d =
+  "\{intToString (declPosLine d)}:\{intToString (declPosEndLine d)}\n"
 
 renderVariant : Int -> String
 renderVariant n = intToString n ++ "\n"
@@ -47,13 +45,7 @@ renderPositions : Positions -> String
 renderPositions p =
   let decls = stringConcat (map renderDeclPos (positionsDecls p))
   let vars = stringConcat (map renderVariant (positionsVariantLines p))
-  "=== DECLS ===\n"
-    ++ decls
-    ++ "=== VARIANTS ===\n"
-    ++ vars
-    ++ "=== LASTLINE ===\n"
-    ++ intToString (positionsLastContentLine p)
-    ++ "\n"
+  "=== DECLS ===\n\{decls}=== VARIANTS ===\n\{vars}=== LASTLINE ===\n\{intToString (positionsLastContentLine p)}\n"
 
 emit : String -> <IO> Unit
 emit path = match readFile path

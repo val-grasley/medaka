@@ -189,18 +189,14 @@ reportDoctests : String -> RunResult -> <IO> Bool
 reportDoctests target result =
   let _ = printDetails target (runDetails result)
   let total = runPassed result + runFailed result + runErrors result
-  let _ = putStr ("\n" ++ target ++ ": " ++ intToString (runPassed result) ++ "/" ++ intToString total ++ " passed")
+  let _ = putStr "\n\{target}: \{intToString (runPassed result)}/\{intToString total} passed"
   let _ = putStr (failSuffix result)
   let _ = putStr "\n"
   runFailed result == 0 && runErrors result == 0
 
 failSuffix : RunResult -> String
 failSuffix result
-  | runFailed result > 0 || runErrors result > 0 = " ("
-    ++ intToString (runFailed result)
-    ++ " failed, "
-    ++ intToString (runErrors result)
-    ++ " errors)"
+  | runFailed result > 0 || runErrors result > 0 = " (\{intToString (runFailed result)} failed, \{intToString (runErrors result)} errors)"
   | otherwise = ""
 
 printDetails : String -> List (Example, ExResult) -> <IO> Unit
@@ -211,15 +207,15 @@ printDetails target ((ex, res)::rest) =
 
 printOne : String -> Example -> ExResult -> <IO> Unit
 printOne target ex res =
-  let loc = target ++ ":" ++ intToString (exampleLine ex)
+  let loc = "\{target}:\{intToString (exampleLine ex)}"
   match res
-    Pass => putStrLn ("  ok   " ++ loc ++ ": " ++ exampleInput ex)
+    Pass => putStrLn "  ok   \{loc}: \{exampleInput ex}"
     Fail expected actual =>
-      let _ = putStrLn ("  FAIL " ++ loc ++ ": " ++ exampleInput ex)
+      let _ = putStrLn "  FAIL \{loc}: \{exampleInput ex}"
       let _ = putStrLn ("       expected: " ++ expected)
       putStrLn ("         actual: " ++ actual)
     Errored msg =>
-      let _ = putStrLn ("  ERROR " ++ loc ++ ": " ++ exampleInput ex)
+      let _ = putStrLn "  ERROR \{loc}: \{exampleInput ex}"
       putStrLn ("        " ++ msg)
 
 -- ── prop phase ───────────────────────────────────────────────────────────────

@@ -453,12 +453,7 @@ runPlugin fnName rtD coreD userD =
       let sample = "X-Forwarded-For: 192.168.1.1"
       let result = apply fnVal (VString sample)
       let logged = outputRef.value
-      logged
-        ++ "   transform "
-        ++ escStr sample
-        ++ " = "
-        ++ ppValue result
-        ++ "\n"
+      "\{logged}   transform \{escStr sample} = \{ppValue result}\n"
 
 lookupValue : String -> List (String, Value) -> Option Value
 lookupValue _ [] = None
@@ -498,11 +493,11 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
         "pure"
       else
         "<" ++ joinWith ", " (atomLabels fnEffects) ++ ">"
-      let header = "✅ accepted — " ++ fnName ++ " requires only " ++ effStr ++ "\n"
+      let header = "✅ accepted — \{fnName} requires only \{effStr}\n"
       PolicyAccept header fnName coreD rtD userD
     _ =>
       let chain = findChain callGraph effTable fnName (firstOf forbidden)
-      let header = "❌ rejected — " ++ fnName ++ " requires <" ++ joinWith ", " (atomLabels fnEffects) ++ "> — not permitted by policy {" ++ joinWith ", " (policyLabels policy) ++ "}\n"
+      let header = "❌ rejected — \{fnName} requires <\{joinWith ", " (atomLabels fnEffects)}> — not permitted by policy {\{joinWith ", " (policyLabels policy)}}\n"
       let via = "   reached via: " ++ joinWith " → " chain ++ "\n"
       PolicyReject (header ++ via)
 
@@ -556,9 +551,9 @@ atomToToml : Atom -> String
 atomToToml a =
   let label = atomLabel a
   match atomParam a
-    PPrefix (Some s) => label ++ " = \"" ++ s ++ "\""
-    PSet (Some xs) => label ++ " = [" ++ joinWith ", " (map quoteTok xs) ++ "]"
-    PProduct ax => label ++ " = { " ++ productTomlInline ax ++ " }"   -- WS-4 inline table
+    PPrefix (Some s) => "\{label} = \"\{s}\""
+    PSet (Some xs) => "\{label} = [\{joinWith ", " (map quoteTok xs)}]"
+    PProduct ax => "\{label} = { \{productTomlInline ax} }"   -- WS-4 inline table
     _ => label ++ " = true"
 
 -- WS-4: render a product's axes as a TOML inline-table body: a Prefix axis →
@@ -568,11 +563,9 @@ productTomlInline : List (String, Param) -> String
 productTomlInline ax = joinWith ", " (map axisToToml ax)
 
 axisToToml : (String, Param) -> String
-axisToToml (name, PPrefix (Some s)) = lowerFirst name ++ " = \"" ++ s ++ "\""
-axisToToml (name, PSet (Some xs)) = lowerFirst name
-  ++ " = ["
-  ++ joinWith ", " (map quoteTok xs)
-  ++ "]"
+axisToToml (name, PPrefix (Some s)) = "\{lowerFirst name} = \"\{s}\""
+axisToToml (name, PSet (Some xs)) =
+  "\{lowerFirst name} = [\{joinWith ", " (map quoteTok xs)}]"
 axisToToml (name, _) = lowerFirst name ++ " = true"
 
 quoteTok : String -> String
@@ -604,7 +597,7 @@ manifestToml atoms =
 
 joinTomlLines : List String -> String
 joinTomlLines [] = ""
-joinTomlLines (x::xs) = x ++ "\n" ++ joinTomlLines xs
+joinTomlLines (x::xs) = "\{x}\n\{joinTomlLines xs}"
 
 filterSecurity : List Atom -> List Atom
 filterSecurity [] = []
@@ -658,9 +651,9 @@ atomToAllowTok : Atom -> String
 atomToAllowTok a =
   let label = atomLabel a
   match atomParam a
-    PPrefix (Some s) => label ++ "=" ++ s
-    PSet (Some xs) => label ++ "={" ++ joinWith "," xs ++ "}"
-    PProduct ax => label ++ "=" ++ productAllowRhs ax   -- WS-4 round-trip form
+    PPrefix (Some s) => "\{label}=\{s}"
+    PSet (Some xs) => "\{label}={\{joinWith "," xs}}"
+    PProduct ax => "\{label}=\{productAllowRhs ax}"   -- WS-4 round-trip form
     _ => label
 
 -- WS-4: render product axes as a policy `--allow` rhs `Host="…";Method={…}` —
@@ -670,8 +663,8 @@ productAllowRhs : List (String, Param) -> String
 productAllowRhs ax = joinSemiTok (map axisToAllow ax)
 
 axisToAllow : (String, Param) -> String
-axisToAllow (name, PPrefix (Some s)) = name ++ "=\"" ++ s ++ "\""
-axisToAllow (name, PSet (Some xs)) = name ++ "={" ++ joinWith "," xs ++ "}"
+axisToAllow (name, PPrefix (Some s)) = "\{name}=\"\{s}\""
+axisToAllow (name, PSet (Some xs)) = "\{name}={\{joinWith "," xs}}"
 axisToAllow (name, _) = name ++ "=true"
 
 joinSemiTok : List String -> String

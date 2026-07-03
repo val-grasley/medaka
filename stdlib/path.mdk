@@ -164,7 +164,7 @@ joinPath a b =
   else if b == "" then
     a
   else
-    stripTrailingSlash a ++ "/" ++ stripLeadingSlash b
+    "\{stripTrailingSlash a}/\{stripLeadingSlash b}"
 
 stripTrailingSlash : String -> String
 stripTrailingSlash s =

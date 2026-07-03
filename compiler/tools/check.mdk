@@ -91,7 +91,7 @@ cleanReport runtimeP coreP raw desugared =
 joinNonEmpty : String -> String -> String
 joinNonEmpty "" b = b
 joinNonEmpty a "" = a
-joinNonEmpty a b = a ++ "\n" ++ b
+joinNonEmpty a b = "\{a}\n\{b}"
 
 -- G1 (SOUNDNESS): does the same front-end pipeline runCheck drives report ANY
 -- error?  This is the exit-code predicate for the native CLI: runCheck returns a

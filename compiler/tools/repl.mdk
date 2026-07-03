@@ -267,10 +267,10 @@ processDeclInput src =
       setRef userBindingsRef (userBindingsRef.value ++ newUserBindings)
 
 printNewScheme : (String, Scheme) -> <IO, Mut> Unit
-printNewScheme (n, s) = putStrLn ("val " ++ n ++ " : " ++ ppScheme s)
+printNewScheme (n, s) = putStrLn "val \{n} : \{ppScheme s}"
 
 printTypeAnn : (String, String) -> <IO> Unit
-printTypeAnn (kind, name) = putStrLn (kind ++ " " ++ name)
+printTypeAnn (kind, name) = putStrLn "\{kind} \{name}"
 
 schemeToBinding : (String, Scheme) -> <Mut> (String, String)
 schemeToBinding (n, s) = (n, ppScheme s)
@@ -291,7 +291,7 @@ processExprInput src =
         (Some v, Some scheme) =>
           let vStr = ppValue (force v)
           let tStr = ppScheme scheme
-          putStrLn (vStr ++ " : " ++ tStr)
+          putStrLn "\{vStr} : \{tStr}"
         _ => ()
 
 -- ── Process :type command ─────────────────────────────────────────────────
@@ -320,7 +320,7 @@ processBrowse _ =
     mapIO_ printBrowseLine sorted
 
 printBrowseLine : (String, String) -> <IO> Unit
-printBrowseLine (n, t) = putStrLn ("val " ++ n ++ " : " ++ t)
+printBrowseLine (n, t) = putStrLn "val \{n} : \{t}"
 
 listNull : List a -> Bool
 listNull [] = True
@@ -383,7 +383,7 @@ replLoopGo buf cont =
   match readLineOpt ()
     None => ()
     Some line =>
-      let newBuf = buf ++ line ++ "\n"
+      let newBuf = "\{buf}\{line}\n"
       if not cont then
         let trimmed = stringTrim line
         if stringLength trimmed > 0 && stringSlice 0 1 trimmed == ":" then

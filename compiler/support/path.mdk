@@ -50,7 +50,7 @@ chopGo path i =
 -- no extension in the basename
 
 export joinPath : String -> String -> String
-joinPath a b = a ++ "/" ++ b
+joinPath a b = "\{a}/\{b}"
 
 -- Drop a trailing ".mdk".
 export stripMdk : String -> String

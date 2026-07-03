@@ -441,7 +441,7 @@ showRecordField : String -> Int -> Field -> List Expr
 showRecordField callName i f =
   let n = fieldName f
   [
-    ELit (LString (recordFieldPrefix i ++ n ++ " = ")),
+    ELit (LString "\{recordFieldPrefix i}\{n} = "),
     EApp (EVar callName) (fieldOf "__r" n),
   ]
 

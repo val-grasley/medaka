@@ -12,9 +12,4 @@ main = driveParseSources renderAll
 
 renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
 renderAll runtimeP coreP [] = ""
-renderAll runtimeP coreP ((path, src)::rest) = "===SELFHOST-FIX=== "
-  ++ path
-  ++ "\n"
-  ++ resolveToLines runtimeP coreP (desugar (parse src))
-  ++ "\n"
-  ++ renderAll runtimeP coreP rest
+renderAll runtimeP coreP ((path, src)::rest) = "===SELFHOST-FIX=== \{path}\n\{resolveToLines runtimeP coreP (desugar (parse src))}\n\{renderAll runtimeP coreP rest}"

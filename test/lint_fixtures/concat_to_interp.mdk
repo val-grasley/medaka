@@ -1,0 +1,48 @@
+-- Fixture for rule-concat-to-interp: a `++` chain mixing string literals and
+-- expressions rewrites to an interpolated string.  Firing needs ≥1 string
+-- literal AND ≥2 non-literal operands (holes).
+
+-- POSITIVE: 2 holes between/around literals.
+twoHole : String -> String -> String
+twoHole r v = "  " ++ r ++ " = ashr i64 " ++ v ++ ", 1"
+
+-- POSITIVE: 3 holes.
+threeHole : String -> String -> String -> String
+threeHole a b c = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")"
+
+-- POSITIVE: leading hole (chain starts with an expression).
+leadHole : String -> String -> String
+leadHole x y = x ++ " and " ++ y ++ " end"
+
+-- POSITIVE: trailing hole (chain ends with an expression).
+trailHole : String -> String -> String
+trailHole x y = "start " ++ x ++ " mid " ++ y
+
+-- POSITIVE: holes wrap a `debug` call — the wrapper is preserved inside `\{…}`.
+debugHole : Int -> Int -> String
+debugHole a b = "[" ++ debug a ++ ", " ++ debug b ++ "]"
+
+-- POSITIVE: existing escapes (\n, \t) in the literals are preserved verbatim.
+escHole : String -> String -> String
+escHole x y = "line\n" ++ x ++ "\ttab " ++ y
+
+-- NEGATIVE: only ONE hole (below the ≥2 gate) — left alone.
+singleHole : String -> String
+singleHole x = "prefix: " ++ x
+
+-- NEGATIVE: no string literal anchor (could be list `++`, cannot confirm String).
+noLiteral : String -> String -> String
+noLiteral a b = a ++ b ++ a
+
+-- NEGATIVE: list concatenation (no string literal) — must not fire.
+listConcat : List Int -> List Int -> List Int
+listConcat xs ys = xs ++ ys ++ xs
+
+-- NEGATIVE: all operands are literals (nothing to interpolate).
+allLiteral : String
+allLiteral = "a" ++ "b" ++ "c"
+
+-- NEGATIVE: a literal already contains a `\{` sequence (would collide with
+-- interpolation syntax) — skipped even though it otherwise qualifies.
+alreadyBrace : String -> String -> String
+alreadyBrace x y = "a\\{" ++ x ++ "b" ++ y

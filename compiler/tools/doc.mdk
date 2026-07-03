@@ -61,10 +61,10 @@ ppTyP _ (TyCon s) = s
 ppTyP _ (TyVar s) = s
 ppTyP _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyP 0) ts) ++ ")"
 ppTyP p (TyApp f x) =
-  let s = ppTyP 1 f ++ " " ++ ppTyP 2 x
+  let s = "\{ppTyP 1 f} \{ppTyP 2 x}"
   if p >= 2 then "(" ++ s ++ ")" else s
 ppTyP p (TyFun a b) =
-  let s = ppTyP 1 a ++ " -> " ++ ppTyP 0 b
+  let s = "\{ppTyP 1 a} -> \{ppTyP 0 b}"
   if p >= 1 then "(" ++ s ++ ")" else s
 ppTyP p (TyEffect effs tail t) =
   let labs = map ppEffAtomDoc effs
@@ -72,14 +72,14 @@ ppTyP p (TyEffect effs tail t) =
     None => joinWith ", " labs
     Some v => match effs
       [] => v
-      _ => joinWith ", " labs ++ " | " ++ v
-  let s = "<" ++ inside ++ "> " ++ ppTyP 0 t
+      _ => "\{joinWith ", " labs} | \{v}"
+  let s = "<\{inside}> \{ppTyP 0 t}"
   if p >= 1 then "(" ++ s ++ ")" else s
 ppTyP _ (TyConstrained cs t) =
   let csStr = match cs
     [c] => ppConstrDoc c
     _ => "(" ++ joinWith ", " (map ppConstrDoc cs) ++ ")"
-  csStr ++ " => " ++ ppTyP 0 t
+  "\{csStr} => \{ppTyP 0 t}"
 
 -- effect atom: `l` | `l _` (inferred hole) | `l "dom"` (domain-carrying).
 -- Mirror pp_atom in pp_ty_prec: None=>l, Some "_" => l ++ " _", Some s => l ++ " " ++ %S
@@ -87,13 +87,13 @@ ppEffAtomDoc : (String, Option String) -> String
 ppEffAtomDoc (l, None) = l
 -- Intentional cross-file duplicate of the same helper in typecheck.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-ppEffAtomDoc (l, Some s) = if s == "_" then l ++ " _" else l ++ " " ++ escStr s
+ppEffAtomDoc (l, Some s) = if s == "_" then l ++ " _" else "\{l} \{escStr s}"
 
 -- a constraint `Iface arg…` (mirror pp_c inside TyConstrained / pp_requires).
 ppConstrDoc : Constraint -> String
 ppConstrDoc (Constraint iface args) = match args
   [] => iface
-  _ => iface ++ " " ++ joinWith " " (map (ppTyP 2) args)
+  _ => "\{iface} \{joinWith " " (map (ppTyP 2) args)}"
 
 ppTyDoc : Ty -> String
 ppTyDoc t = ppTyP 0 t
@@ -198,16 +198,13 @@ collectDocLines tbl line acc = match lookupLineLast tbl line
 
 ppDataVariant : Variant -> String
 ppDataVariant (Variant name (ConPos [])) = name
-ppDataVariant (Variant name (ConPos tys)) = name
-  ++ " "
-  ++ joinWith " " (map (ppTyP 2) tys)
-ppDataVariant (Variant name (ConNamed fs)) = name
-  ++ " { "
-  ++ joinWith ", " (map ppFieldDoc fs)
-  ++ " }"
+ppDataVariant (Variant name (ConPos tys)) =
+  "\{name} \{joinWith " " (map (ppTyP 2) tys)}"
+ppDataVariant (Variant name (ConNamed fs)) =
+  "\{name} { \{joinWith ", " (map ppFieldDoc fs)} }"
 
 ppFieldDoc : Field -> String
-ppFieldDoc (Field fn ft) = fn ++ " : " ++ ppTyDoc ft
+ppFieldDoc (Field fn ft) = "\{fn} : \{ppTyDoc ft}"
 
 ppRecordFields : List Field -> String
 ppRecordFields fields = "{ " ++ joinWith ", " (map ppFieldDoc fields) ++ " }"
@@ -219,15 +216,15 @@ ppRequiresDoc rs = " requires " ++ joinWith ", " (map ppRequireOne rs)
 ppRequireOne : Require -> String
 ppRequireOne (Require iface tys) = match tys
   [] => iface
-  _ => iface ++ " " ++ joinWith " " (map (ppTyP 2) tys)
+  _ => "\{iface} \{joinWith " " (map (ppTyP 2) tys)}"
 
 -- Look up the inferred scheme for [name]; fall back to the AST annotation when
 -- typecheck produced no scheme (partial results).  Mirror value_sig.
 valueSig : String -> List (String, Scheme) -> Option Ty -> <Mut> String
 valueSig name schemes fallbackTy = match lookupScheme name schemes
-  Some s => name ++ " : " ++ ppScheme s
+  Some s => "\{name} : \{ppScheme s}"
   None => match fallbackTy
-    Some ty => name ++ " : " ++ ppTyDoc ty
+    Some ty => "\{name} : \{ppTyDoc ty}"
     None => name
 
 -- Last match wins: checkProgramSeeded returns globalS ++ topSchemes, so the
@@ -248,7 +245,7 @@ lookupSchemeGo name ((n, s)::rest) acc =
 
 -- A rendered interface method line: `  name : ty`.
 ppIfaceMethod : IfaceMethod -> String
-ppIfaceMethod (IfaceMethod mname mty _) = "  " ++ mname ++ " : " ++ ppTyDoc mty
+ppIfaceMethod (IfaceMethod mname mty _) = "  \{mname} : \{ppTyDoc mty}"
 
 -- Compute (name, sig) for a public decl, or None to skip it.  Mirror render_sig.
 renderSig : Decl -> List (String, Scheme) -> <Mut> Option (String, String)
@@ -267,29 +264,29 @@ renderSig (DData vis name params variants _) _
     let body = match variants
       [] => ""
       _ => "\n  = " ++ joinWith "\n  | " (map ppDataVariant variants)
-    Some (name, "data " ++ head ++ body)
+    Some (name, "data \{head}\{body}")
 renderSig (DRecord vis name params fields _) _
   | not (dataVisPrivate vis) =
     let head = joinWith " " (name::params)
-    Some (name, "record " ++ head ++ " " ++ ppRecordFields fields)
+    Some (name, "record \{head} \{ppRecordFields fields}")
 renderSig (DInterface { pub = True, name, typarams, methods }) _ =
   let head = joinWith " " (name::typarams)
   let ms = map ppIfaceMethod methods
   let body = match ms
     [] => ""
     _ => "\n" ++ joinWith "\n" ms
-  Some (name, "interface " ++ head ++ body)
+  Some (name, "interface \{head}\{body}")
 renderSig (DTypeAlias True name params ty) _ =
   let head = joinWith " " (name::params)
-  Some (name, "type " ++ head ++ " = " ++ ppTyDoc ty)
+  Some (name, "type \{head} = \{ppTyDoc ty}")
 renderSig (DNewtype True name params ctor ty _) _ =
   let head = joinWith " " (name::params)
-  Some (name, "newtype " ++ head ++ " = " ++ ctor ++ " " ++ ppTyP 2 ty)
+  Some (name, "newtype \{head} = \{ctor} \{ppTyP 2 ty}")
 renderSig (DImpl { pub = True, iface, tys, reqs }) _ =
   let args = match tys
     [] => ""
     _ => " " ++ joinWith " " (map (ppTyP 2) tys)
-  Some (iface ++ args, "impl " ++ iface ++ args ++ ppRequiresDoc reqs)
+  Some (iface ++ args, "impl \{iface}\{args}\{ppRequiresDoc reqs}")
 renderSig _ _ = None
 
 dataVisPrivate : DataVis -> Bool
@@ -378,7 +375,7 @@ renderEntry (DocEntry name sig doc) =
   let header = "## `" ++ name ++ "`\n\n"
   let sigBlock = "```\n" ++ sig ++ "\n```\n"
   let docBlock = if doc == "" then "" else "\n" ++ doc ++ "\n"
-  header ++ sigBlock ++ docBlock ++ "\n"
+  "\{header}\{sigBlock}\{docBlock}\n"
 
 -- ── top-level driver ────────────────────────────────────────────────────────
 -- Mirror bin/main.ml's `doc` arm: parse (capturing positions + comments),
