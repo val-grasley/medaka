@@ -1616,6 +1616,16 @@ pPutStrLn _ = panic "putStrLn: not a String"
 pDiscard : Value -> <Mut> Value
 pDiscard _ = VUnit
 
+-- The `panic` extern (stdlib/runtime.mdk: `panic : String -> a`) was missing
+-- from externBindings, so a user program's own call to `panic "msg"` hit
+-- "unbound identifier: panic" instead of aborting — even though the
+-- interpreter's OWN internal errors (division by zero, etc.) already route
+-- through the real host `panic` (a genuine, unrecoverable abort — no
+-- catchable panics, see AGENTS.md).  Wiring the extern to the same host
+-- `panic` fixes both `explicit_panic`/`let_else_fail` fixtures.
+pPanic : Value -> a
+pPanic v = panic (unString v)
+
 pRef : Value -> Value
 pRef v = VRef (Ref v)
 
@@ -1795,6 +1805,7 @@ externBindings = [
   ("putStrLn", prim1M pPutStrLn),
   ("ePutStr", prim1M pDiscard),
   ("ePutStrLn", prim1M pDiscard),
+  ("panic", prim1 pPanic),
   ("debugStringLit", prim1 pDebugStringLit),
   ("debugCharLit", prim1 pDebugCharLit),
   ("stringToFloat", prim1 pStringToFloat),
