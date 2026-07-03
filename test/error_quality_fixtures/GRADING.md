@@ -346,3 +346,145 @@ leaked-tyvar / no-location themes.)
 `code`/`kind`/`fix`, and warnings/eval/lex/build still emit no JSON diagnostic.
 A will not reach 2 anywhere until the Tier-4 error-codes + JSON `help`/`fix`
 machinery lands in `compiler/driver/diagnostics.mdk`.
+
+---
+
+## Re-grade (post-Tier-4, base 761516e6)
+
+Re-scored against the same §3 rubric, same 0/1/2 anchors, same scoring
+conventions. This session grades **dimension A against the new
+`./medaka check --json`** output (verified on a freshly built binary for every
+one of the 60 fixtures) and re-scores **L for the lexer fixtures** (#19 gave
+lexer errors real `file:L:C:` locations; `bad_escape`'s message was rewritten).
+All other dimensions keep their post-Tier-1-2 values. Corpus size is unchanged
+at **60 fixtures**.
+
+**What Tier 4 changed in the JSON**, confirmed on the binary:
+- Every located `check` diagnostic now carries a stable **`code`** (`L-*`/`P-*`/
+  `R-*`/`T-*`/`W-*`), a **`kind`**, and a **real `range`**.
+- Warnings (exhaustiveness) now carry a **real range + `W-NONEXHAUSTIVE` code**
+  instead of the old dummy `{0,0}` — so warnings clear the A=2 bar.
+- Did-you-mean diagnostics additionally carry `help` + a machine-applicable
+  **`fix` {range, replacement}`** (verified on `typo_println`/`typo_local_var`).
+
+**A anchor applied (§3):** `A=2` = JSON with stable `code` + `kind` + a **real**
+(non-`{0,0}`) span, plus a machine `fix` for the mechanical (did-you-mean) cases.
+`A=1` = JSON carries `code`/`kind` but the span is still the dummy `{0,0}`.
+`A=0` = no JSON diagnostic at all (silent accept, or a `run`-path runtime error
+that emits no structured diagnostic, or a `build`-only failure `check` can't see).
+
+### Headline
+
+- **Overall average: 615 / 60 = 10.25 / 14 — up from 9.02 (+1.23).**
+- **A (Agent-parseable): 0.65 → 1.68** (sum 39 → 101, **+1.03**) — the headline
+  Tier-4 movement, and now the *largest single-session lift* of any dimension in
+  the corpus's history. **49 of 60 fixtures now reach A=2** (was **zero**).
+- **Lex stage: 6.50 → 11.25 (+4.75)** — the biggest per-stage jump, from #19's
+  locations plus the `bad_escape` message rewrite. Lex is no longer the weakest
+  stage; **eval (8.33) now is.**
+- **No regressions.** Every fixture's total is ≥ its post-Tier-1-2 value.
+
+### A dimension — where the 60 fixtures land now
+
+| A | count | fixtures |
+|---|---|---|
+| **2** | **49** | all lex (4), all parse (7), 5/8 resolve, 23/24 typecheck, 4/5 exhaust, all effect (3), `runtime_nonexhaustive`, `internal_extern_use`, `type_error_at_build` |
+| **1** | **3** | `unbound_type_in_sig`, `unknown_module`, `import_unknown_name` — carry `code`+`kind` but the diagnostic's range is still `{0,0}` |
+| **0** | **8** | `ambiguous_return`, `redundant_arm` (silent, no diagnostic); `division_by_zero`, `modulo_by_zero`, `list_index_oob`, `explicit_panic`, `let_else_fail` (`run`-path runtime errors — `check --json` emits nothing); `main_takes_unit` (`build`-only emitter failure `check` can't see) |
+
+### Per-dimension averages (60 fixtures)
+
+| dim | post-T1-2 sum | post-T1-2 avg | new sum | new avg /2 | Δ |
+|---|---|---|---|---|---|
+| **A** Agent-parseable | 39 | 0.65 | **101** | **1.68** | **+1.03** |
+| L Located | 74 | 1.23 | 80 | 1.33 | +0.10 |
+| C Correct | 96 | 1.60 | 98 | 1.63 | +0.03 |
+| R Root-cause | 93 | 1.55 | 95 | 1.58 | +0.03 |
+| J Jargon-free | 112 | 1.87 | 114 | 1.90 | +0.03 |
+| X Cascade-free | 107 | 1.78 | 107 | 1.78 | +0.00 |
+| **F** Actionable-fix | 20 | 0.33 | 20 | **0.33** | +0.00 |
+
+A is now the story: it leapt from 2nd-weakest to mid-pack. The L/C/R/J nudges
+are all from the four lexer fixtures (locations + the `bad_escape` rewrite).
+**F (0.33) is now the single weakest axis** — Tier 4 added machine `fix` only to
+the did-you-mean class; the rest of the corpus still surfaces no textual fix.
+
+### Per-stage averages
+
+| stage | fixtures | post-T1-2 avg | new avg | Δ |
+|---|---|---|---|---|
+| effect | 3 | 11.00 | **12.00** | +1.00 |
+| resolve | 8 | 10.13 | **11.12** | +0.99 |
+| lex | 4 | 6.50 | **11.25** | **+4.75** |
+| typecheck | 24 | 9.63 | **10.58** | +0.95 |
+| exhaust | 5 | 8.00 | **9.60** | +1.60 |
+| build | 3 | 8.00 | **9.33** | +1.33 |
+| parse | 7 | 8.29 | **9.29** | +1.00 |
+| eval | 6 | 8.00 | **8.33** | +0.33 |
+
+### Lexer fixtures — full re-score (L + A both moved)
+
+| fixture | old→new | dims that moved | why |
+|---|---|---|---|
+| bad_escape | 2 → **12** | L 0→2, C 0→2, R 0→2, J 0→2, A 0→2 | message rewritten from the internal-leak `lexing: empty token` to a located `:2:20: invalid escape sequence '\q'` (`code L-BAD-ESCAPE`) |
+| unterminated_string | 8 → **12** | L 0→2, A 0→2 | now `:3:0: unterminated string literal` (`L-UNTERMINATED-STRING`) |
+| unterminated_block_comment | 8 → **12** | L 0→2, A 0→2 | now `:2:0: unterminated block comment` (`L-UNTERMINATED-COMMENT`) |
+| unterminated_char | 8 → **9** | A 1→2 | still the generic `:2:15: Parse error` (a *parse*, not lex, error — outside #19's scope, so L stays 1), but the JSON now carries `P-PARSE`+kind+span → A=2 |
+
+### A-only movements (dimension A re-scored corpus-wide)
+
+Every non-lex fixture below moved **only** on A (all other dims held at their
+post-Tier-1-2 values):
+
+- **A 1 → 2 (44 fixtures):** all 7 parse; resolve `unbound_variable`,
+  `typo_println`, `typo_local_var`, `unbound_constructor`, `forgot_import`;
+  every typecheck error fixture except `ambiguous_return` (23 of 24); all 3
+  effect. Each now emits `code`+`kind`+real-span. `typo_println`/`typo_local_var`
+  additionally carry the machine `fix` (they reach the mechanical-case bar).
+  Note: `else_let_block` and `missing_constraint` were already 13 → now **14**
+  (perfect), and `typo_println`/`typo_local_var` reach **14** as well.
+- **A 0 → 2 (7 fixtures):** the 4 `nonexhaustive_*` warnings (real range +
+  `W-NONEXHAUSTIVE`), `runtime_nonexhaustive` (`check --json` surfaces the same
+  `W-NONEXHAUSTIVE` warning), `internal_extern_use` (`R-INTERNAL-EXTERN`, real
+  span), `type_error_at_build` (`check --json` yields the real `T-NO-IMPL`).
+- **A 0 → 1 (3 fixtures):** `unbound_type_in_sig`, `unknown_module`,
+  `import_unknown_name` — Tier 4 gave them `code`+`kind`, but the underlying
+  resolver diagnostic still has a `{0,0}` range (the located pieces on
+  `import_unknown_name` are a downstream `T-UNBOUND`/`Debug`-ambiguity cascade,
+  not the primary `R-PRIVATE-NAME` message).
+
+### Remaining worst-offenders (lowest-scoring now)
+
+| fixture | total | stage | why it's still low / what caps A |
+|---|---|---|---|
+| main_takes_unit | 3 | build | Still `emitter failed / No such file`; `check --json` sees nothing (**A=0**). Needs the build typecheck-guard (or polymorphic-Unit-main gate) extended to this shape |
+| ambiguous_return | 4 | typecheck | By-design Num-defaulting silent accept — no diagnostic, so **A=0**. Not an error-quality defect (soundness backlog) |
+| redundant_arm | 4 | exhaust | Redundant-arm detection still unimplemented — exit 0, no diagnostic → **A=0** |
+| wrong_arg_type_in_map | 6 | typecheck | Tier-3 leaked raw tyvars (`a b vs String`) + a 3-diagnostic ambiguity storm (X=0). A=2, but C/R/J/X untouched |
+| lambda_missing_arrow | 7 | parse | Parse mis-blames unbound `x` instead of the missing `=>` (R=0, X=1). A=2 |
+
+The honest **A-ceiling gaps** (why A didn't reach 2 everywhere):
+
+1. **`run`-path runtime errors emit no structured diagnostic** — `division_by_zero`,
+   `modulo_by_zero`, `list_index_oob`, `explicit_panic`, `let_else_fail` (5
+   eval fixtures, all stuck at total **8**). They surface only as `run`-time
+   stderr with no location and no JSON; `check --json` returns `[]`. This is the
+   single largest cluster still at A=0 and is the eval stage's whole story
+   (`runtime_nonexhaustive` escapes only because its non-exhaustiveness is
+   *also* a compile-time warning). Closing it needs a structured runtime-error
+   channel, which does not exist.
+2. **Silent accepts** (`ambiguous_return`, `redundant_arm`) — no diagnostic at
+   all, so nothing for an agent to parse.
+3. **`build`-only failure** (`main_takes_unit`) — the error never reaches the
+   typecheck/JSON path.
+4. **`{0,0}`-range resolver diagnostics** (`unbound_type_in_sig`,
+   `unknown_module`, `import_unknown_name`) — have `code`+`kind` but no real
+   span, capping them at A=1. A precise `Loc` on these module/type-resolution
+   errors would lift all three to A=2 (+3 more A points).
+
+**Axis summary:** A is essentially *done* for the located compile-time corpus
+(49/60 at A=2). The residual A gap is structural — it now coincides exactly with
+the fixtures that produce **no compile-time diagnostic** (runtime/silent/build),
+not with any missing `code`/`kind`/`fix` machinery. **F (0.33) is now the
+weakest axis**, and the Tier-3 typecheck-framing themes (Num-mis-framing, leaked
+tyvars, ambiguity cascades) remain the next-largest quality reservoir.
