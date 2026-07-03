@@ -1,1 +1,1 @@
-warning: non-exhaustive match — some values may not be covered
+warning: non-exhaustive match of 'Int' — missing case: '_'

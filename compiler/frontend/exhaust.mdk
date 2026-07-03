@@ -41,7 +41,7 @@ import frontend.ast.{
   Variant(..),
   Decl(..),
 }
-import list.{replicate}
+import list.{replicate, take, drop}
 import support.util.{
   contains,
   allList,
@@ -49,6 +49,7 @@ import support.util.{
   listLen,
   lookupAssoc,
   joinNl,
+  joinWith,
   orElseOpt,
 }
 
@@ -325,6 +326,109 @@ usefulBranch : Oracle -> List (List Pat) -> List Pat -> String -> Bool
 usefulBranch oracle pmat restQ c =
   let a = oGetArity oracle c
   useful oracle None (specializeCon c a pmat) (replicate a PWild ++ restQ)
+
+-- ── witness extraction (the Maranget `I` algorithm) ───────────────────────
+-- A witness-producing companion to `useful`: when the ALL-WILDCARD query of
+-- `ncols` columns is useful against `pmat` (i.e. the match is non-exhaustive),
+-- return a concrete uncovered pattern vector; `None` when the match is
+-- exhaustive.  `checkMatchExhaustive` drives it with `ncols = 1` (a single
+-- scrutinee column) and reads the head witness pattern for the diagnostic.
+-- This mirrors `useful`'s wildcard-query path exactly — constructor-complete
+-- columns recurse into each branch; an incomplete column NAMES a missing
+-- constructor and recurses on the default matrix — so the two never disagree
+-- on whether the warning fires.
+export usefulWitness : Oracle -> Option String -> List (List Pat) -> Int -> Option (List Pat)
+usefulWitness _ _ [] ncols = Some (replicate ncols PWild)
+usefulWitness _ _ (_::_) 0 = None
+usefulWitness oracle col0 pmat ncols =
+  let col0t = orElseOpt col0 (inferCol0Type oracle pmat)
+  witnessWild oracle (bindCtors oracle col0t) pmat ncols
+
+-- An unknown/open column (no signature — e.g. an Int scrutinee matched by
+-- literals): recurse on the default matrix and prepend a bare wildcard head.
+witnessWild : Oracle -> Option (List String) -> List (List Pat) -> Int -> Option (List Pat)
+witnessWild oracle None pmat ncols =
+  witnessPrepend
+    PWild
+    (usefulWitness oracle None (defaultMatrix pmat) (ncols - 1))
+witnessWild oracle (Some ctors) pmat ncols = witnessSig oracle ctors pmat ncols
+
+witnessSig : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
+witnessSig oracle ctors pmat ncols
+  | allCovered ctors (headCtors pmat) =
+    firstWitnessBranch oracle ctors pmat ncols
+  | otherwise = map (missingCtorPat oracle ctors (headCtors pmat) :: _) (usefulWitness oracle None (defaultMatrix pmat) (ncols - 1))
+
+-- Complete signature at this column: the first constructor branch that is still
+-- useful yields the (possibly nested) witness.
+firstWitnessBranch : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
+firstWitnessBranch _ [] _ _ = None
+firstWitnessBranch oracle (c::cs) pmat ncols = match witnessBranch oracle c pmat ncols
+  Some w => Some w
+  None => firstWitnessBranch oracle cs pmat ncols
+
+witnessBranch : Oracle -> String -> List (List Pat) -> Int -> Option (List Pat)
+witnessBranch oracle c pmat ncols =
+  let a = oGetArity oracle c
+  map
+    (ws => PCon c (take a ws) :: drop a ws)
+    (usefulWitness oracle None (specializeCon c a pmat) (a + ncols - 1))
+
+witnessPrepend : Pat -> Option (List Pat) -> Option (List Pat)
+witnessPrepend _ None = None
+witnessPrepend p (Some ws) = Some (p::ws)
+
+-- The first constructor of the signature not present at the column head, wrapped
+-- with wildcard arguments (its arity).  Falls back to a bare wildcard if every
+-- listed constructor is present (shouldn't happen on the incomplete branch).
+missingCtorPat : Oracle -> List String -> List String -> Pat
+missingCtorPat oracle ctors present = match firstMissing ctors present
+  None => PWild
+  Some c => PCon c (replicate (oGetArity oracle c) PWild)
+
+firstMissing : List String -> List String -> Option String
+firstMissing [] _ = None
+firstMissing (c::cs) present =
+  if contains c present then
+    firstMissing cs present
+  else
+    Some c
+
+-- ── witness → compact surface syntax ──────────────────────────────────────
+-- Render a witness pattern for the diagnostic message.  Witnesses only ever
+-- carry `PCon`/`PWild`, so the general pattern printer is overkill; this maps
+-- the canonical matrix constructors back to their surface form (`[]`/`::`/
+-- tuples/`()`) and names user constructors with wildcard arguments.
+export renderWitness : Pat -> String
+renderWitness p = renderWit False p
+
+renderWit : Bool -> Pat -> String
+renderWit paren (PCon c args) = renderConWit paren c args
+renderWit _ _ = "_"
+
+renderConWit : Bool -> String -> List Pat -> String
+renderConWit paren c args
+  | c == "Nil" = "[]"
+  | c == "Cons" = renderCons paren args
+  | c == "Unit" = "()"
+  | (Some _) <- tupleArityOfName c =
+    "(\{joinWith ", " (map (renderWit False) args)})"
+  | isEmptyArgs args = c
+  | otherwise =
+    parenWrapWit paren "\{c} \{joinWith " " (map (renderWit True) args)}"
+
+renderCons : Bool -> List Pat -> String
+renderCons paren (h::t::_) =
+  parenWrapWit paren "\{renderWit True h} :: \{renderWit False t}"
+renderCons _ _ = "_ :: _"
+
+isEmptyArgs : List Pat -> Bool
+isEmptyArgs [] = True
+isEmptyArgs (_::_) = False
+
+parenWrapWit : Bool -> String -> String
+parenWrapWit True s = "(\{s})"
+parenWrapWit False s = s
 
 -- ── guard totality ────────────────────────────────────────────────────────
 isIrrefutablePat : Pat -> Bool
