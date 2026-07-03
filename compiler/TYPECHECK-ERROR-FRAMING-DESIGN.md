@@ -99,9 +99,17 @@ marked in `typeMismatch` (~L2278), consulted by `checkUndeterminedObligation`
 `wrong_arg_type_in_map` on **X**. Native-authoritative golden churn only; error-
 path only → no IR change → no seed re-mint.
 
-**B — concrete-result snapshot-restore (Sonnet/Opus).** Generalize the
-L8092/8104 pattern around `inferAppExpr`'s arg leg. Moves `record_missing_field`
-on **X**. Must fire only when the arg leg pushed an error. Error-path only.
+**B — DROPPED (premise verified false).** The design pass classified
+`record_missing_field`'s secondary `No impl of Debug for Person` as a cascade to
+suppress. Reproduced on the post-A binary: a **well-formed** `Person` (all fields
+present) STILL errors `No impl of Debug for Person` — records don't auto-derive
+`Debug`. So the secondary is a **genuine, independent error** (the user must both
+add `age` AND give `Person` a `Debug` impl), NOT a type-poisoning cascade.
+Suppressing it would HIDE a real missing-impl. GRADING.md over-scored this as a
+cascade (X=1); it is correctly two independent errors → its X is fine as-is.
+No snapshot-restore chunk is warranted. (Contrast the four A-handled cascades,
+whose secondaries were `ambiguous <C> a` on a *free* var left by the primary —
+genuinely spurious.)
 
 **C — `T-NOT-A-FUNCTION` reframe (Opus).** Non-function guard in `inferApp`
 (~L4473). Moves `apply_non_function`, `too_many_args` on **C/R**. Error-path only.
