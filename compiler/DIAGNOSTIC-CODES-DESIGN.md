@@ -109,6 +109,7 @@ kinds (enumerated from the message families):
 | Kind | Representative message | Code (§2) |
 |---|---|---|
 | type mismatch | `Type mismatch: <a> vs <b>` (`:2273`,`:2282`,`:2952`) | `T-TYPE-MISMATCH` |
+| not a function | `This expression has type <T>, which is not a function …` / `'<f>' takes N argument(s) but is applied to M.` (`inferApp` guard) | `T-NOT-A-FUNCTION` |
 | method type mismatch | `Method 'm': expected type <a> but got <b>` (`:2270`) | `T-METHOD-MISMATCH` |
 | no impl (class) | `No impl of Num for String` (`:8338`) | `T-NO-IMPL` |
 | no named impl | `No impl named 'x' found for …` (`:7157`) | `T-NO-IMPL-NAMED` |

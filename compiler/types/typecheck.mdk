@@ -4495,17 +4495,74 @@ unifyParamsExpected (p::ps) (e::es) =
   unifyParamsExpected ps es
 unifyParamsExpected _ _ = ()
 
+-- Chunk C: recover the ultimate callee name of an application spine (the
+-- leftmost head), stripping transparent wrappers.  `None` when the head is not
+-- a plain variable (so no name to blame in an over-application message).
+appSpineName : Expr -> Option String
+appSpineName (ELoc _ e) = appSpineName e
+appSpineName (EDoOrigin _ e) = appSpineName e
+appSpineName (EAnnot e _) = appSpineName e
+appSpineName (EApp f _) = appSpineName f
+appSpineName (EVar n) = Some n
+appSpineName (EVarAt n _) = Some n
+appSpineName _ = None
+
+-- Chunk C: number of arguments applied in this spine (`f a b c` ⇒ 3).
+appSpineArgCount : Expr -> Int
+appSpineArgCount (ELoc _ e) = appSpineArgCount e
+appSpineArgCount (EDoOrigin _ e) = appSpineArgCount e
+appSpineArgCount (EAnnot e _) = appSpineArgCount e
+appSpineArgCount (EApp f _) = 1 + appSpineArgCount f
+appSpineArgCount _ = 0
+
+-- Chunk C messages (T-NOT-A-FUNCTION): a value of a ground non-function type is
+-- being applied.  Base wording names the offending type; the context-aware
+-- form names the over-applied callee and its arity.
+notAFunctionMsg : String -> String
+notAFunctionMsg tyName = "This expression has type \{tyName}, which is not a function, so it cannot be applied to an argument."
+
+overAppliedMsg : String -> Int -> Int -> String
+overAppliedMsg name takes applied = "'\{name}' takes \{intToString takes} argument(s) but is applied to \{intToString applied}."
+
 inferApp : List (String, Expr) -> Expr -> Mono -> Mono -> <Mut> Mono
 inferApp lets appExpr ft xt =
   let r = freshVar ()
-  let eff = openRow ()
-  let _ = unify ft (TFun xt eff r)
-  -- v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
-  -- Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
-  -- argument before the row propagates / is checked against any bound.  `lets`
-  -- seeds α with the enclosing body's let scope (EFFECTS WS-2).
-  let eff2 = fillHolesInRow lets eff (spineFirstArg appExpr)
-  let _ = performEffect curEffect eff2
+  -- Chunk C: if the callee normalizes to a concrete NON-arrow head (a known type
+  -- constructor like `Int`/`List Int`, never a tyvar or an arrow), applying it
+  -- is genuinely impossible.  Emit a context-aware `T-NOT-A-FUNCTION` instead of
+  -- letting `unify ft (TFun …)` render a leaked `Int vs a -> b` mismatch, and
+  -- poison the fresh result var so no secondary obligation cascade fires (reuses
+  -- Chunk A's poisoned-var set).  Fires ONLY on a ground non-arrow head: a real
+  -- function (`TFun`) or an as-yet-unresolved var (`TVar`) is unaffected.
+  match monoHeadCon ft
+    Some _ => inferAppNotFunction appExpr ft r
+    None =>
+      let eff = openRow ()
+      let _ = unify ft (TFun xt eff r)
+      -- v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
+      -- Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
+      -- argument before the row propagates / is checked against any bound.  `lets`
+      -- seeds α with the enclosing body's let scope (EFFECTS WS-2).
+      let eff2 = fillHolesInRow lets eff (spineFirstArg appExpr)
+      let _ = performEffect curEffect eff2
+      r
+
+-- Chunk C: the applied head is a ground non-function.  If the spine over-applies
+-- a named function (callee name known AND at least one arg was consumed before
+-- the type went non-arrow) use the arity-aware wording; otherwise fall back to
+-- naming the non-function type.  Poison `r` to suppress downstream cascade.
+inferAppNotFunction : Expr -> Mono -> Mono -> <Mut> Mono
+inferAppNotFunction appExpr ft r =
+  let applied = appSpineArgCount appExpr
+  let takes = applied - 1
+  let _ = match appSpineName appExpr
+    Some name =>
+      if takes >= 1 then
+        pushTypeError "T-NOT-A-FUNCTION" (overAppliedMsg name takes applied)
+      else
+        pushTypeError "T-NOT-A-FUNCTION" (notAFunctionMsg (ppMono (normalize ft)))
+    None => pushTypeError "T-NOT-A-FUNCTION" (notAFunctionMsg (ppMono (normalize ft)))
+  let _ = poisonMismatchVars r r
   r
 
 inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
