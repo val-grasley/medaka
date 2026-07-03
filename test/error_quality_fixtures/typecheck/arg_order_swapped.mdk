@@ -1,0 +1,3 @@
+greet : String -> Int -> String
+greet name times = name
+main = println (greet 3 "Alice")

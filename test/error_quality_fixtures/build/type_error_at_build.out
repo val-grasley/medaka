@@ -1,0 +1,5 @@
+cmd: medaka build
+exit: 1
+---
+error: emitter failed compiling test/error_quality_fixtures/build/type_error_at_build.mdk
+No such file or directory

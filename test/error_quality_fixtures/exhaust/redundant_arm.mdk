@@ -1,0 +1,5 @@
+classify : Int -> String
+classify n = match n
+  _ => "any"
+  0 => "zero"
+main = println (classify 0)

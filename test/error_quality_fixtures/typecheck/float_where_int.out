@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/float_where_int.mdk:3:33: Type mismatch: Int vs Float
+  |
+3 | main = println (debug (factorial 3.5))
+  |                                  ^

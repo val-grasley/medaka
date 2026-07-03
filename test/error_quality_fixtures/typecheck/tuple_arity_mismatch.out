@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/tuple_arity_mismatch.mdk:3:32: Type mismatch: (Int, Int, Int) vs (a, b)
+  |
+3 | main = println (debug (fst3 (1, 2)))
+  |                                 ^

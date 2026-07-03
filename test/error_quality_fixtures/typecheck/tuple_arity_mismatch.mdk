@@ -1,0 +1,3 @@
+fst3 : (Int, Int, Int) -> Int
+fst3 (a, b, c) = a
+main = println (debug (fst3 (1, 2)))

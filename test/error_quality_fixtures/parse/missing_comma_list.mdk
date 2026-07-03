@@ -1,0 +1,1 @@
+main = println (debug [1 2 3])

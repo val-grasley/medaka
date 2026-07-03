@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/record_wrong_field.mdk:6:17: Field aeg does not belong to record Person
+  |
+6 |   println (debug p.aeg)
+  |                  ^
+test/error_quality_fixtures/typecheck/record_wrong_field.mdk:6:11: ambiguous instance for 'Debug a': cannot determine which impl; annotate the type
+  |
+6 |   println (debug p.aeg)
+  |            ^

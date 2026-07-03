@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/else_let_block.mdk:4:7: inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block

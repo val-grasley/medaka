@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/effect/effect_missing_in_row.mdk:2:21: Effectful value used where <Stdout> is allowed, but it performs <IO>
+  |
+2 | greet name = println name
+  |                      ^
+test/error_quality_fixtures/effect/effect_missing_in_row.mdk:2:21: Function 'greet' declared with <Stdout> but also performs <IO>
+  |
+2 | greet name = println name
+  |                      ^

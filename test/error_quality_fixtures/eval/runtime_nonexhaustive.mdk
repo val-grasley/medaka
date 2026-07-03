@@ -1,0 +1,3 @@
+main = println (debug (match 7
+  0 => "zero"
+  1 => "one"))

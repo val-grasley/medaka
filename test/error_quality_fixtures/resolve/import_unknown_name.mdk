@@ -1,0 +1,3 @@
+import list.flatten
+
+main = println (debug (flatten [[1], [2]]))

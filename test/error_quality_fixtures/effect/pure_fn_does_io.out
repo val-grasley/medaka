@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/effect/pure_fn_does_io.mdk:4:6: Effectful value used where <> is allowed, but it performs <IO>
+  |
+4 |   x * 2
+  |       ^
+test/error_quality_fixtures/effect/pure_fn_does_io.mdk:4:6: Function 'compute' declared with <> but also performs <IO>
+  |
+4 |   x * 2
+  |       ^

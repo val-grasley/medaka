@@ -1,0 +1,3 @@
+greet : String -> <Stdout> Unit
+greet name = println name
+main = greet "hi"

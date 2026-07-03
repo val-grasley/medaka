@@ -1,0 +1,5 @@
+compute : Int -> Int
+compute x =
+  println "computing"
+  x * 2
+main = println (debug (compute 4))

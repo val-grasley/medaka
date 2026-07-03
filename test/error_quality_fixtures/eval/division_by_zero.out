@@ -1,0 +1,4 @@
+cmd: medaka run
+exit: 1
+---
+division by zero

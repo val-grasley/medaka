@@ -1,0 +1,3 @@
+lookupUser : Int -> String
+lookupUser id = panic "user not found"
+main = println (lookupUser 42)

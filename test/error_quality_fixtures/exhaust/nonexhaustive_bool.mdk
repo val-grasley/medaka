@@ -1,0 +1,4 @@
+describe : Bool -> String
+describe b = match b
+  True => "yes"
+main = println (describe False)

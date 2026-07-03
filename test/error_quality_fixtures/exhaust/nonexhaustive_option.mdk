@@ -1,0 +1,4 @@
+unwrap : Option Int -> Int
+unwrap o = match o
+  Some x => x
+main = println (debug (unwrap None))

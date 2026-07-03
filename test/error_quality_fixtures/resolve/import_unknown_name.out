@@ -1,0 +1,3 @@
+cmd: medaka check
+exit: 1
+---

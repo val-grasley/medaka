@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/missing_comma_list.mdk:1:23: No impl of Num for (Int -> Int -> Int)
+  |
+1 | main = println (debug [1 2 3])
+  |                        ^

@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/unclosed_paren.mdk:2:15: Parse error

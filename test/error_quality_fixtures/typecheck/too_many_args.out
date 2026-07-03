@@ -1,0 +1,11 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/too_many_args.mdk:3:29: Type mismatch: Int vs a -> b
+  |
+3 | main = println (debug (inc 1 2))
+  |                              ^
+test/error_quality_fixtures/typecheck/too_many_args.mdk:3:16: ambiguous instance for 'Debug a': cannot determine which impl; annotate the type
+  |
+3 | main = println (debug (inc 1 2))
+  |                 ^

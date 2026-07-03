@@ -1,0 +1,3 @@
+allEq : a -> a -> Bool
+allEq x y = x == y
+main = println (debug (allEq 1 2))

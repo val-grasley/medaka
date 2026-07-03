@@ -1,0 +1,2 @@
+match = 5
+main = println (debug match)

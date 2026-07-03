@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/bool_where_int.mdk:1:27: No impl of Num for Bool
+  |
+1 | main = println (debug (5 + True))
+  |                            ^

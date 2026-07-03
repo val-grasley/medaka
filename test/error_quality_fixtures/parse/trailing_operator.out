@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/trailing_operator.mdk:2:0: Parse error

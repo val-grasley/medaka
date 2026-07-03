@@ -1,0 +1,3 @@
+double : Int -> String
+double x = x * 2
+main = println (double 4)
