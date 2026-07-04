@@ -1,0 +1,4 @@
+f x = match x
+  Just v => v
+  Nothing => 0
+main = println (f (Some 1))

@@ -1,0 +1,3 @@
+f : Monad -> Int
+f x = 0
+main = println 0
