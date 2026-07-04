@@ -2601,9 +2601,37 @@ emitArithW e env op l r =
       _ =>
         let li = untagInt e lv
         let ri = untagInt e rv
-        let res = freshReg e
-        let _ = emit e "  \{res} = \{intOp op} i64 \{li}, \{ri}"
-        (tagInt e res, LTInt)
+        if op == "/" || op == "%" then emitIntDivZeroChecked e op li ri
+        else
+          let res = freshReg e
+          let _ = emit e "  \{res} = \{intOp op} i64 \{li}, \{ri}"
+          (tagInt e res, LTInt)
+
+-- Integer `/` or `%`: guard the divisor against zero before the hardware
+-- sdiv/srem.  A zero divisor is UB in LLVM (the div is elided / yields garbage
+-- and the program silently exits 0), so branch to a runtime abort
+-- (@mdk_div_zero / @mdk_mod_zero: prints `runtime error [E-DIV-ZERO]` /
+-- `[E-MOD-ZERO]` to stderr, exits nonzero), matching the interpreter's evalArith
+-- guard.  No source location is baked in — Core IR carries none, so the native
+-- trap is the interpreter's message MINUS `file:L:C:` (a located trap is a
+-- follow-on).  On a nonzero divisor the ok-branch runs the original sdiv/srem
+-- unchanged, so valid-division output is byte-identical.
+emitIntDivZeroChecked : Emit -> String -> String -> String -> <Mut> (String, LTy)
+emitIntDivZeroChecked e op li ri =
+  let z = freshReg e
+  let _ = emit e "  \{z} = icmp eq i64 \{ri}, 0"
+  let n = intToString (freshId e)
+  let zeroL = "divzero" ++ n
+  let okL = "divok" ++ n
+  let _ = emit e "  br i1 \{z}, label %\{zeroL}, label %\{okL}"
+  let _ = emit e (zeroL ++ ":")
+  let abortFn = if op == "%" then "mdk_mod_zero" else "mdk_div_zero"
+  let _ = emit e "  call void @\{abortFn}()"
+  let _ = emit e "  unreachable"
+  let _ = emit e (okL ++ ":")
+  let res = freshReg e
+  let _ = emit e "  \{res} = \{intOp op} i64 \{li}, \{ri}"
+  (tagInt e res, LTInt)
 -- G3: a POLYMORPHIC Num operand (declared type-var param) — could be Int OR
 -- Float at runtime.  Route through the runtime tag-dispatched @mdk_num_* helper
 -- (low-bit discriminator), keeping the result LTNum so a chained `Num` op and
