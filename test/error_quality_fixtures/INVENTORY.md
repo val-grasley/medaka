@@ -85,13 +85,20 @@ real `file:L:C:` prefix + source-line caret, same shape as an error (e.g.
 match of 'Option' — …` with a `  |` / caret block underneath) — the CLI text
 is no longer bare `Warning: …`. All 4 fixtures are now perfect 14/14 grades.
 
+**Updated (2026-07-04, later still):** `redundant_arm` now also produces a
+diagnostic — a located, coded `W-UNREACHABLE-ARM` warning naming the
+redundancy (`…:4:12: unreachable match arm — this pattern is already covered
+by an earlier arm`, with `--json` carrying `code`/`kind`/a real span). Scored
+**13/14** in `GRADING.md` (was 4 — a silent accept); the whole `exhaust/`
+stage is now at 13.80/14, the strongest in the corpus.
+
 | Fixture | Intended mistake | Message (excerpt) | Observation |
 |---|---|---|---|
 | `nonexhaustive_option` | match only `Some` | `…:3:12: non-exhaustive match of 'Option' — missing case: 'None' — add a 'None => …' arm, or a '_' wildcard arm to catch the rest.` | Located (`file:L:C:` + caret) and names the missing case + embeds the literal arm to add; exit 0 on stdout |
 | `nonexhaustive_bool` | match only `True` | *(same shape, `:3:14:`, `'False => …'`)* | Same — located, names `False`, embeds the arm |
 | `nonexhaustive_list` | match only `x::rest` | *(same shape, `:3:15:`, `'[] => …'`)* | Same — located, names `[]`, embeds the arm |
 | `nonexhaustive_custom` | miss `Triangle` | *(same shape, `:5:14:`, `'Triangle _ => …'`)* | Same — located, names `Triangle _`, embeds the arm |
-| `redundant_arm` | wildcard before literal | *(no output)* | ⚠️ **No redundancy/unreachable-arm warning at all** (exit 0) |
+| `redundant_arm` | wildcard before literal | `…:4:12: unreachable match arm — this pattern is already covered by an earlier arm` | Located (`file:L:C:` + caret), correctly identifies the unreachable `0` arm and names the mechanism; `--json` has `code`/`kind`/real span but no `fix`/removal hint — doesn't spell out "delete this arm" |
 
 ## effect/ (`medaka check`)
 
@@ -147,7 +154,9 @@ previously is long fixed (the user's own panic message now surfaces as
 5. **`exhaust/*`** — non-exhaustive match is a **stdout warning with exit 0**;
    as of 2026-07-04 it names the missing pattern, embeds a ready-to-paste arm,
    and carries a real `file:L:C:` + caret, so a real user is far less likely
-   to miss it. `redundant_arm` still produces **no diagnostic at all**.
+   to miss it. `redundant_arm` now also produces a located, coded warning
+   (`W-UNREACHABLE-ARM`) naming the redundant arm and why it's unreachable —
+   it just stops short of suggesting the specific edit (remove/reorder).
 6. **`typecheck` Num-framing** — ~~several structural mistakes (heterogeneous
    list, cons mismatch, if-branch mismatch, forgotten argument) surface as
    `No impl of Num for …` rather than describing the actual shape problem~~ —
