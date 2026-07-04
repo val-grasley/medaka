@@ -862,3 +862,165 @@ cluster of 8 `run`-path/build-only fixtures is unchanged** (unaffected by
 parse/lex work): `division_by_zero`, `modulo_by_zero`, `list_index_oob`,
 `explicit_panic`, `let_else_fail`, `ambiguous_return`, `redundant_arm`,
 `main_takes_unit`.
+
+---
+
+## Re-grade (post-eval-runtime-JSON, base `37e7ab0d1`)
+
+Base confirmed: `git merge-base --is-ancestor 37e7ab0d1 HEAD` → `BASE_OK`.
+Read-only re-grade — no compiler source touched, only this file +
+`INVENTORY.md`. The prior corpus state (`747 / 67 = 11.15`, the "post-F5 +
+line-fix" section above) is the starting point.
+
+**What changed:** `medaka run` runtime errors are no longer naked strings.
+Text now reads `file:L:C: runtime error [E-*]: <message>`; `medaka run --json`
+emits the SAME envelope shape as `check --json` — one diagnostic object per
+file with `code`, `kind`, a real (non-`{0,0}`) `range`, `message`,
+`severity: 1`, `source: "medaka"`. No `fix` field — there is no mechanical
+edit for "division by zero" or a user's own `panic` string. Verified against
+the committed `.out`/`.json.out` goldens for all 6 `eval/` fixtures (shown
+above in the task brief and re-read from the checked-in goldens; not
+re-executed here since the goldens are the authoritative source of truth per
+the task brief, and this is a docs-only re-grade).
+
+### Reading of the rubric: what does A=2 require?
+
+§3's row for **A** is explicit: **0** = no JSON or JSON missing location;
+**1** = JSON with span but no code/kind/fix; **2** = JSON with stable `code`,
+`kind`, span, **and machine `fix`**. Taken strictly, a diagnostic that has
+`code`+`kind`+real `range` but **no `fix`** does not meet the literal text of
+either row — it exceeds row 1 (it does carry `code`/`kind`) but falls short of
+row 2 (no `fix`). Since the dimension is 0/1/2 with no half-points, the
+correct honest score for "code+kind+span, no fix" is **A=1**, not A=2: the
+`fix` clause in row 2 is not decorative, it's the field that makes the
+diagnostic *machine-applicable* rather than merely *machine-readable*, and
+runtime errors here (a divide-by-zero, an OOB index, a user's own `panic`
+string) have no mechanical edit to offer — there is nothing to fill a `fix`
+field with, so A is genuinely capped at 1 for this whole cluster.
+
+**Flagging a pre-existing corpus inconsistency, not resolving it:** earlier
+sessions in this same file (the Haskell-syntax-hints pass, and the original
+Tier-4 pass for warnings/`unbound_type_in_sig`-style diagnostics) explicitly
+adopted a *looser* criterion — "A=2 = `code`+`kind`+real range, `fix` is a
+further enhancement" — and scored several no-`fix` fixtures at A=2 under it
+(e.g. `hs_lambda`/`hs_dollar`/`hs_case_of`/`hs_sig_coloncolon`, and
+`runtime_nonexhaustive`'s A=2 via the `check`-path `W-NONEXHAUSTIVE` warning,
+which also carries no `fix`). This session does **not** retroactively
+re-score those — that's out of scope for a targeted eval-cluster re-grade —
+but applies the **strict** reading (fix required for A=2) to the 5 fixtures
+being newly graded here, per the task's explicit instruction to score
+honestly rather than inflate. The corpus therefore has a real, currently
+unreconciled scoring-criterion split on dimension A; see "remaining floor"
+below.
+
+### Per-fixture re-score (6 `eval/` fixtures)
+
+| fixture | dim | old | new | why |
+|---|---|---|---|---|
+| `division_by_zero` | L | 0 | **2** | `:3:23:` — caret lands on `n`, the zero divisor (verified against fixture source: `println (debug (10 / n))`, col 23 = `n`) |
+| | A | 0 | **1** | `run --json` now emits `code:"E-DIV-ZERO"`, `kind:"error"`, real `range`; no `fix` (nothing mechanical to suggest) |
+| `modulo_by_zero` | L | 0 | **2** | `:3:23:` — caret on `d`, the zero modulus |
+| | A | 0 | **1** | same shape: `E-MOD-ZERO`, code+kind+range, no `fix` |
+| `list_index_oob` | L | 0 | **2** | `:3:22:` — caret on the `10` index literal itself |
+| | A | 0 | **1** | `E-INDEX-OOB`, code+kind+range, no `fix`; message still doesn't name the list's actual length (F stays 0) |
+| `explicit_panic` | L | 0 | **2** | `:2:37:` — caret on the panic-message string literal (the exact `panic "user not found"` call site, not a downstream victim like the `main` call site) |
+| | A | 0 | **1** | `E-PANIC`, code+kind+range, no `fix` (a user's own panic string has no mechanical edit) |
+| `let_else_fail` | L | 0 | **2** | `:3:42:` — caret on the panic-message string literal in the `else panic "empty list"` clause |
+| | A | 0 | **1** | same: `E-PANIC`, code+kind+range, no `fix` |
+| `runtime_nonexhaustive` | L | 0 | **2** | `:1:29:` — caret on `7`, the match scrutinee |
+| | A | 2 | 2 (unchanged) | already reached A=2 pre-existing via the `check --json` `W-NONEXHAUSTIVE` compile-time path (a *different*, looser-criterion score this session doesn't re-litigate — see above); the new `run --json` path emits the same no-`fix` shape as the other 5, consistent with, not a regression from, its existing grade |
+
+**C, R, J, X unchanged for all 6** — the diagnosis, root-cause framing,
+vocabulary, and single-diagnostic-per-cause property were already correct
+(C/R were fixed to 2 in the earlier `panic`-unbound-at-run fix for
+`explicit_panic`/`let_else_fail`; the other 4 were already C=2/R=2). **F
+unchanged at 0 for all 6** — the message *text* is byte-identical to before
+apart from the new `file:L:C: runtime error [E-CODE]:` prefix; no fixture
+gained a suggested edit.
+
+### New per-fixture totals
+
+| fixture | L | C | R | F | J | X | A | old total | new total |
+|---|---|---|---|---|---|---|---|---|---|
+| `division_by_zero` | 2 | 2 | 2 | 0 | 2 | 2 | 1 | 8 | **11** |
+| `modulo_by_zero` | 2 | 2 | 2 | 0 | 2 | 2 | 1 | 8 | **11** |
+| `list_index_oob` | 2 | 2 | 2 | 0 | 2 | 2 | 1 | 8 | **11** |
+| `explicit_panic` | 2 | 2 | 2 | 0 | 2 | 2 | 1 | 8 | **11** |
+| `let_else_fail` | 2 | 2 | 2 | 0 | 2 | 2 | 1 | 8 | **11** |
+| `runtime_nonexhaustive` | 2 | 2 | 2 | 0 | 2 | 2 | 2 | 10 | **12** |
+
+Each of the first 5 gains **+3** (L 0→2, A 0→1); `runtime_nonexhaustive` gains
+**+2** (L only, its A was already 2).
+
+### Eval-stage arithmetic
+
+```
+old eval sum = 8*5 + 10 = 50   (6 fixtures, avg 8.33)
+new eval sum = 11*5 + 12 = 67  (6 fixtures)
+67 / 6 = 11.1666... ≈ 11.17
+```
+
+**eval: 8.33 → 11.17 (+2.83)** — the largest single-session per-stage gain in
+this file's history (previously the lex-stage +4.75 jump was the largest, but
+off a smaller stage-avg base). `eval` moves from the corpus's **weakest**
+stage to solidly mid-pack, still below `resolve` (12.91), `effect` (12.00),
+`typecheck` (11.54), `parse` (11.00), but now above `exhaust` (9.60) and
+`build` (9.33).
+
+### Corpus arithmetic
+
+```
+747   (prior corpus sum, 67 fixtures — "post-F5 + line-fix" baseline)
+- 50  (old sum of the 6 eval fixtures, already inside 747)
++ 67  (their new sum)
+= 764
+67 fixtures (unchanged — no fixtures added or removed)
+
+764 / 67 = 11.402... ≈ 11.40
+```
+
+**Overall average: 764 / 67 = 11.40 / 14 — up from 11.15 (+0.25).**
+
+### Per-dimension movement (67 fixtures)
+
+Only **L** and **A** move this session (C/R/F/J/X untouched — no fixture
+outside the 6 changed on any other axis). Baseline sums for L/A read off the
+67-fixture "post-F5 + line-fix" corpus (established by the Haskell-hints
+session): L sum 92 (avg 1.37), A sum 110 (avg 1.64).
+
+- **L delta = +12**: all 6 eval fixtures move 0→2 (+2 each × 6 = +12).
+  New L sum: 92 + 12 = **104**, new avg 104/67 = **1.55** (+0.18).
+- **A delta = +5**: only the first 5 fixtures move 0→1 (+1 each × 5 = +5);
+  `runtime_nonexhaustive`'s A was already 2 (via the `check`-path warning) and
+  doesn't move. New A sum: 110 + 5 = **115**, new avg 115/67 = **1.72**
+  (+0.07).
+
+| dim | old sum | old avg | new sum | new avg | Δ |
+|---|---|---|---|---|---|
+| L Located | 92 | 1.37 | **104** | **1.55** | +0.18 |
+| A Agent-parseable | 110 | 1.64 | **115** | **1.72** | +0.07 |
+| C/R/F/J/X | — | — | — | — | +0.00 (unchanged) |
+
+### Remaining floor
+
+- **F (Actionable-fix) is still the corpus's single weakest axis by a wide
+  margin** and this session does not move it at all — none of the 6 eval
+  fixtures gained a suggested edit; there simply isn't a mechanical one for
+  "division by zero" or "index N out of bounds" (a possible future win: name
+  the list's actual length in `E-INDEX-OOB`'s message, which would be a real,
+  cheap **F 0→1** improvement, though still not a machine `fix`).
+- **A is now honestly capped at 1, not 2, for 5 of the 6 eval fixtures** —
+  and will stay there until either (a) a `fix` is invented for a class of
+  runtime error that doesn't obviously have one, or (b) the corpus's A=2
+  criterion is formally revisited corpus-wide to match the strict rubric text
+  (which would also pull down the Haskell-hints fixtures and
+  `runtime_nonexhaustive`'s check-path score, a larger and out-of-scope
+  change this session declines to make unilaterally).
+- **The `typecheck/`-framing F=0 reservoir is untouched**
+  (`apply_non_function`, `if_branch_mismatch`, `list_heterogeneous`,
+  `cons_type_mismatch`, `arg_order_swapped`, `wrong_arg_type_in_map`) — not
+  in scope for this session.
+- **`main_takes_unit` (build-only, total 3) and the 2 silent accepts**
+  (`ambiguous_return`, `redundant_arm`, total 4 each) remain the corpus's
+  absolute floor, untouched — none are `eval`/`run`-path runtime errors, so
+  this workstream's fix doesn't reach them.

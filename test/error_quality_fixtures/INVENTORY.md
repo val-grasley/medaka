@@ -86,14 +86,22 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
 
 ## eval/ (`medaka run`)
 
+**Updated (2026-07-04, base `37e7ab0d1`):** `medaka run` runtime errors are now
+**located + coded**: `file:L:C: runtime error [E-*]: <message>`, and
+`medaka run --json` emits the same envelope as `check --json`
+(`code`/`kind`/`range`/`message`/`severity`/`source`, no `fix`). All 6 rows
+below reflect the new output; the `panic`-unbound-at-`run` bug noted
+previously is long fixed (the user's own panic message now surfaces as
+`[E-PANIC]`).
+
 | Fixture | Intended mistake | Message (excerpt) | Observation |
 |---|---|---|---|
-| `division_by_zero` | `10 / 0` | `division by zero` | Clear; **no location** in source |
-| `modulo_by_zero` | `17 % 0` | `modulo by zero` | Clear; no location |
-| `list_index_oob` | `xs.[10]` | `index 10 out of bounds` | Clear; no location, no list length |
-| `runtime_nonexhaustive` | match with no arm | `non-exhaustive match` | Clear-ish; no value/location |
-| `explicit_panic` | `panic "user not found"` | `unbound identifier: panic` | ⚠️ **`panic` type-checks but is unbound at `run`** — user's own message is lost |
-| `let_else_fail` | let-else with `panic` else | `unbound identifier: panic` | ⚠️ same `panic`-unbound-at-run issue via idiomatic let-else |
+| `division_by_zero` | `10 / 0` | `:3:23: runtime error [E-DIV-ZERO]: division by zero` | Located (caret on the zero divisor); JSON has `code`/`kind`/`range`, no `fix` |
+| `modulo_by_zero` | `17 % 0` | `:3:23: runtime error [E-MOD-ZERO]: modulo by zero` | Located (caret on the zero modulus); JSON same shape, no `fix` |
+| `list_index_oob` | `xs.[10]` | `:3:22: runtime error [E-INDEX-OOB]: index 10 out of bounds` | Located (caret on the `10` index literal); no list length in message; JSON no `fix` |
+| `runtime_nonexhaustive` | match with no arm | `:1:29: runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match` | Located (caret on the scrutinee); no missing-arm value named; JSON no `fix` |
+| `explicit_panic` | `panic "user not found"` | `:2:37: runtime error [E-PANIC]: user not found` | Located (caret on the panic message literal); user's message correctly surfaces; JSON no `fix` |
+| `let_else_fail` | let-else with `panic` else | `:3:42: runtime error [E-PANIC]: empty list` | Located (caret on the panic message literal) via idiomatic let-else; JSON no `fix` |
 
 ## build/ (`medaka build`)
 
@@ -111,10 +119,9 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
    `medaka build` prints `emitter failed compiling … / No such file or
    directory` instead of the clean `No impl of Num for String` that `check`
    produces. `build` appears to skip the type-error guard and fail downstream.
-2. **`eval/explicit_panic` + `eval/let_else_fail`** — `panic` passes `check`
-   (it's an extern in `stdlib/runtime.mdk`) but reports `unbound identifier:
-   panic` at `run`. The idiomatic let-else-with-`panic` form is affected, and
-   the user's panic message is discarded.
+2. ~~**`eval/explicit_panic` + `eval/let_else_fail`** — `panic` unbound at
+   `run`~~ — **fixed**: both now report `[E-PANIC]: <the user's own message>`,
+   located at the panic-message literal.
 3. **`resolve/import_unknown_name`** — `import list.flatten` (name doesn't
    exist) exits 1 with **completely empty output** — a silent failure.
 4. **`parse/missing_comma_list`** — `[1 2 3]` is parsed as function application
@@ -128,10 +135,11 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
    `No impl of Num for …` rather than describing the actual shape problem.
 7. **`lex/bad_escape`** — an invalid string escape yields `lexing: empty token`,
    leaking an internal lexer state name with no location.
-8. **Missing "did-you-mean" + missing locations** — resolve typos
-   (`printline`, `cont`) get no suggestion despite near matches in scope;
-   several diagnostics (`unbound_type_in_sig`, lexer errors, runtime errors)
-   carry **no source location**.
+8. **Missing "did-you-mean"** — resolve typos (`printline`, `cont`) get no
+   suggestion despite near matches in scope; several diagnostics
+   (`unbound_type_in_sig`, lexer errors) still carry **no source location**
+   (runtime/`eval` errors were fixed 2026-07-04 — see the `eval/` section
+   above).
 
 ## ⚠️ Crashes on plausible input
 
