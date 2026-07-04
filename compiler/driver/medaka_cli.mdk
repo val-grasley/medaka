@@ -88,7 +88,10 @@ import driver.diagnostics.{
   cjAllToJson,
   readDiagSrc,
   parseErrCode,
+  parseErrHelpFix,
   codeKind,
+  optField,
+  cjFixJson,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{
@@ -337,7 +340,14 @@ runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir =
       let col = parseErrorCol e
       let r = cjRange ln col ln (col + 1)
       let pcode = parseErrCode (parseErrorMessage e)
-      let diagJson = jObject [("code", JString pcode), ("kind", JString (codeKind pcode)), ("message", JString (parseErrorMessage e)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")]
+      -- Stage 2 fix (agent-quality nicety): the two clean single-token parse
+      -- hints (`::`→`:`, `/=`→`!=`) get a machine-applicable `fix` + `help`
+      -- here too (this JSON diag is built inline, not via `cjDiagnostic`).
+      -- `parseErrHelpFix` needs a `Loc` with the SAME 1-based line + 0-based
+      -- col convention as `parseErrLoc` (`parseErrorLine e`, not `ln`).
+      let ploc = Loc target (parseErrorLine e) col (parseErrorLine e) (col + 1)
+      let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
+      let diagJson = jObject ([("code", JString pcode)] ++ optField "fix" (map cjFixJson pfix) ++ optField "help" (map JString phelp) ++ [("kind", JString (codeKind pcode)), ("message", JString (parseErrorMessage e)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")])
       let filesJson = jObject [("file", JString target), ("diagnostics", JArray (arrayFromList [diagJson]))]
       let _ = println (stringify (jObject [("files", JArray (arrayFromList [filesJson]))]))
       exit 1

@@ -158,6 +158,27 @@ parseErrCode msg
   | startsWith "In Medaka '::' is cons" msg = "P-HS-SIG"
   | otherwise = "P-PARSE"
 
+-- Build the (help, fix) pair for the two parse-error hints with a clean,
+-- mechanical single-token fix (the Haskell `::`-signature carveout and the
+-- `/=`-inequality hint).  Both hints' pre-scan already reports a `Loc` whose
+-- start col points at the offending token's first character (verified against
+-- `medaka check --json`: `::` and `/=` both start exactly at `sc`), so the fix
+-- span is `[sc, sc+2)` — the two-character token — regardless of the diag's
+-- own (single-char, display-only) range.  Every other parse hint (`\x->`, `$`,
+-- `case…of`) needs a multi-edit rewrite, so it stays help/message-only (no
+-- `fix`) — this is deliberately narrow, not a general parse-error-fix engine.
+export parseErrHelpFix : String -> Loc -> (Option String, Option Fix)
+parseErrHelpFix msg (Loc f sl sc el ec)
+  | startsWith "In Medaka '::' is cons" msg = (
+    Some "replace '::' with ':' for a type signature",
+    Some (Fix (Loc f sl sc sl (sc + 2)) ":"),
+  )
+  | startsWith "unexpected '/='" msg = (
+    Some "replace '/=' with '!=' for not-equal",
+    Some (Fix (Loc f sl sc sl (sc + 2)) "!="),
+  )
+  | otherwise = (None, None)
+
 -- ── rendering ──────────────────────────────────────────────────────────────
 
 export ppSeverity : Severity -> String
@@ -390,7 +411,9 @@ wrappedRead cacheRef staleRef read path = match read path
       let _ = setRef cacheRef (cachePut path src cacheRef.value)
       Some src
     Err e =>
-      let diag = mkDiag SevError (parseErrCode (parseErrorMessage e)) (parseErrorMessage e) (Some (parseErrLoc path e))
+      let ploc = parseErrLoc path e
+      let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
+      let diag = Diag SevError (parseErrCode (parseErrorMessage e)) (parseErrorMessage e) (Some ploc) phelp pfix
       let _ = setRef staleRef ((path, diag)::staleRef.value)
       match lookupAssoc path cacheRef.value
         Some good => Some good
@@ -624,13 +647,13 @@ cjSevCode _ = 2
 -- uniform call shape).
 -- Stage 2: a single optional JSON field — `[]` when absent so the key is omitted
 -- entirely (keeps every non-suggestion diagnostic's JSON byte-identical to Stage 1).
-optField : String -> Option Json -> List (String, Json)
+export optField : String -> Option Json -> List (String, Json)
 optField k (Some v) = [(k, v)]
 optField _ None = []
 
 -- Render a machine-applicable Fix as { "range": {...}, "replacement": "..." },
 -- the range covering exactly the span to overwrite (mirrors the LSP text edit).
-cjFixJson : Fix -> Json
+export cjFixJson : Fix -> Json
 cjFixJson (Fix (Loc _ sl sc el ec) repl) = jObject
   [("range", cjRange (sl - 1) sc (el - 1) ec), ("replacement", JString repl)]
 
