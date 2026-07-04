@@ -135,11 +135,12 @@ kinds (enumerated from the message families):
 | empty record update | `empty record update` | `T-EMPTY-RECORD-UPDATE` |
 | unsupported (internal) | `typecheck: unsupported expression/pattern/operator …` | `T-UNSUPPORTED` |
 | **non-exhaustive match** (warning) | `non-exhaustive match — some values may not be covered` (`:4644`) | `W-NONEXHAUSTIVE` |
+| **unreachable match arm** (warning) | `unreachable match arm — this pattern is already covered by an earlier arm` | `W-UNREACHABLE-ARM` |
 
-**Distinct-kind totals:** lex 4 · parse 3 · resolve 19 · typecheck 25 · warnings 2
-(`W-NONEXHAUSTIVE` from typecheck + `W-GUARD-INEXHAUSTIVE` from exhaust). **≈ 53
-codes** (the "~47" TL;DR figure rounds the near-duplicate field kinds together;
-plan for a ~50-code table).
+**Distinct-kind totals:** lex 4 · parse 3 · resolve 19 · typecheck 25 · warnings 3
+(`W-NONEXHAUSTIVE` + `W-UNREACHABLE-ARM` from typecheck + `W-GUARD-INEXHAUSTIVE`
+from exhaust). **≈ 54 codes** (the "~47" TL;DR figure rounds the near-duplicate
+field kinds together; plan for a ~50-code table).
 
 ---
 
@@ -200,6 +201,7 @@ kebab-case; never renumber (append only).
 | Code | Source |
 |---|---|
 | `W-NONEXHAUSTIVE` | non-exhaustive `match` (typecheck `matchWarnings`) |
+| `W-UNREACHABLE-ARM` | unreachable/redundant `match` arm — pattern already covered by an earlier unguarded arm (typecheck `matchWarnings`; `checkMatchRedundant`) |
 | `W-GUARD-INEXHAUSTIVE` | guards may not be exhaustive (exhaust) |
 
 ### Eval / runtime — `E-*` (`compiler/eval/eval.mdk`, `medaka run`)

@@ -1557,3 +1557,131 @@ new L sum   = 112 + 8 = 120
   `runtime_nonexhaustive` (F=0 — the runtime error doesn't name the missing
   arm the way the compile-time warning now does) and on **detection** for
   `redundant_arm` (no diagnostic at all).
+
+## Re-grade: `redundant_arm` gains a diagnostic (`W-UNREACHABLE-ARM`, 2026-07-04)
+
+`compiler/frontend/exhaust.mdk` + `compiler/types/typecheck.mdk` now detect an
+unreachable match arm and emit a located, coded warning. Verified against the
+committed golden `test/error_quality_fixtures/exhaust/redundant_arm.out` and a
+fresh `medaka check --json` run on this branch:
+
+```
+test/error_quality_fixtures/exhaust/redundant_arm.mdk:4:12: unreachable match arm — this pattern is already covered by an earlier arm
+  |
+4 |   0 => "zero"
+  |             ^
+```
+```json
+{"code":"W-UNREACHABLE-ARM","kind":"warning","message":"unreachable match arm — this pattern is already covered by an earlier arm","range":{"end":{"character":13,"line":3},"start":{"character":12,"line":3}},"severity":2,"source":"medaka"}
+```
+
+(was: exit 0, completely silent — no diagnostic at all, scored **4** as a
+silent accept.)
+
+### Per-dimension re-score
+
+| dim | old | new | why |
+|---|---|---|---|
+| **L** Located | 0 | **2** | real `file:L:C:` prefix (`:4:12:`) + source-line caret on the redundant `0` pattern |
+| **C** Correct | 0 | **2** | correctly identifies the exact redundant arm and its exact location — no false positive, no missed cascade |
+| **R** Root-cause | 0 | **2** | names the actual mechanism ("this pattern is already covered by an earlier arm"), not just "there's a problem here" |
+| **F** Actionable-fix | 0 | **1** | states the redundancy relationship, which points clearly at *what's wrong* (this arm can never fire), but stops short of a concrete suggested edit — no "remove this arm" / "move it above the wildcard" text and no machine `fix` in JSON. Same tier as the corpus's other implied-but-not-spelled-out fixes; short of the `nonexhaustive_*` fixtures' F=2, which embed a literal ready-to-paste arm |
+| **J** Jargon-free | 2 | 2 | unchanged — plain English, no internal terms, no raw tyvar |
+| **X** Cascade-free | 2 | 2 | unchanged — exactly one diagnostic, no follow-on storm |
+| **A** Agent-parseable | 0 | **2** | JSON carries a stable `code` (`W-UNREACHABLE-ARM`), `kind` (`warning`), and a real span (`{3,12}-{3,13}`, not the old dummy `{0,0}`) — meets the rubric's A=2 bar (§3: "JSON with stable `code`, `kind`, and span") |
+
+**New total: 4 → 13 / 14** (+9). `redundant_arm` moves from the corpus's
+weakest exhaust fixture (tied-worst silent accept) to just one point off a
+perfect score — matching the shape of the `nonexhaustive_*` fixtures' prior
+jump, minus the one point F stops short of.
+
+### Stage arithmetic (exhaust)
+
+```
+prior exhaust sum = 60 (4×14 nonexhaustive + 1×4 redundant_arm), avg 12.00
+new exhaust sum    = 60 - 4 + 13 = 69 (4×14 + 1×13)
+69 / 5 = 13.80                                                  (+1.80)
+```
+
+| stage | fixtures | prior avg | new avg | Δ |
+|---|---|---|---|---|
+| **exhaust** | 5 | 12.00 | **13.80** | **+1.80** |
+
+`exhaust` is now the strongest stage in the corpus (previously `effect` at
+12.00) and sits **near ceiling**: 4 of 5 fixtures are a perfect 14/14, and the
+5th (`redundant_arm`) is 13/14 — the whole stage is now one missing
+actionable-fix hint away from a perfect 14.00 average. Detection is no longer
+the exhaust stage's gap; the sole residual is F-axis polish on one fixture.
+
+### Corpus arithmetic
+
+```
+806   (new corpus sum)
+=  797 (prior corpus sum, 67 fixtures)
+  -  4 (redundant_arm's old score, removed)
+  + 13 (redundant_arm's new score, added)
+= 806
+67 fixtures (unchanged — no fixtures added or removed this session)
+
+806 / 67 = 12.0299... ≈ 12.03
+```
+
+**Overall average: 806 / 67 = 12.03 / 14 — up from 11.90 (+0.13).**
+
+### Per-dimension movement (67 fixtures)
+
+L, C, R, F, A all move (the 5 dims `redundant_arm` gained points on); J and X
+are unchanged (already at ceiling for this fixture).
+
+```
+L: 120 + 2 = 122   → 122/67 = 1.8209 ≈ 1.82   (+0.03)
+C: 119 + 2 = 121   → 121/67 = 1.8060 ≈ 1.81   (+0.03)
+R: 117 + 2 = 119   → 119/67 = 1.7761 ≈ 1.78   (+0.03)
+F:  54 + 1 =  55   →  55/67 = 0.8209 ≈ 0.82   (+0.01)
+A: 128 + 2 = 130   → 130/67 = 1.9403 ≈ 1.94   (+0.03)
+```
+
+| dim | prior sum | prior avg | new sum | new avg | Δ |
+|---|---|---|---|---|---|
+| L Located | 120 | 1.79 | **122** | **1.82** | **+0.03** |
+| C Correct | 119 | 1.78 | **121** | **1.81** | **+0.03** |
+| R Root-cause | 117 | 1.75 | **119** | **1.78** | **+0.03** |
+| **F** Actionable-fix | 54 | 0.81 | **55** | **0.82** | **+0.01** |
+| J Jargon-free | 132 | 1.97 | 132 | 1.97 | +0.00 |
+| X Cascade-free | 127 | 1.90 | 127 | 1.90 | +0.00 |
+| **A** Agent-parseable | 128 | 1.91 | **130** | **1.94** | **+0.03** |
+
+(Sum check: 122+121+119+55+132+127+130 = 806, matching the corpus sum above.)
+
+### Honest remaining floor
+
+- **F (0.82/2) remains the single weakest axis in the corpus by a wide
+  margin.** This session moves it only marginally (+0.01, one fixture by one
+  point) — `redundant_arm` lands at the same "names the problem, doesn't
+  spell out the edit" tier as most of the corpus's other F=1 fixtures
+  (`missing_instance`, `eq_undesugared_adt`, `lt_undesugared_adt`,
+  `unknown_module`, the Tier-3-framing typecheck fixtures), not at the F=2
+  ceiling the `nonexhaustive_*` fixtures reach by embedding a literal
+  ready-to-paste arm. A future session could close this by having the
+  warning suggest "remove this arm" (or a machine `fix` deleting the line) —
+  the same treatment the `nonexhaustive_*` fixtures got for the *missing*-arm
+  case, applied to the *extra*-arm case.
+- **The absolute floor moves**: `redundant_arm` is **no longer** one of the
+  corpus's silent accepts — it now scores 13/14, well above the historical
+  4/14 floor. The absolute floor is now just **`main_takes_unit`**
+  (build-only emitter failure, total 3) and **`ambiguous_return`** (typecheck,
+  silent accept, total 4) — one fixture fewer than before this session.
+- **`exhaust` is now at/near ceiling** (13.80/14, strongest stage in the
+  corpus): 4/5 fixtures are a perfect 14/14, and the 5th is 13/14. The only
+  lever left for this stage is the F-axis polish on `redundant_arm` noted
+  above — there is no more missing-location, missing-code, or
+  missing-detection gap anywhere in `exhaust/`.
+- **`ambiguous_return` is now the corpus's lone typecheck-stage silent
+  accept** at the historical floor (was tied with `redundant_arm`); it remains
+  arguably by-design (Num-defaulting resolves `length []` without genuine
+  ambiguity) and stays outside the fix hit-list per the scoring conventions
+  at the top of this file.
+- Every other observation from the prior session (Tier-3-framing F=1
+  residual, `bad_escape`/generic-`Parse error` F=0 fixtures untouched, the
+  `main_takes_unit`/build-only floor) is unaffected by this fixture-scoped
+  change.
