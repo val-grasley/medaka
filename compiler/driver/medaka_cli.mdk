@@ -44,7 +44,7 @@ import support.util.{
   sortUniqS,
 }
 import support.path.{baseOf, chopExt}
-import frontend.ast.{Decl, Loc(..)}
+import frontend.ast.{Decl(..), Expr(..), Loc(..), Pat}
 import frontend.parser.{
   parse,
   parseLocated,
@@ -93,6 +93,7 @@ import driver.diagnostics.{
   codeKind,
   optField,
   cjFixJson,
+  mkDiag,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{
@@ -100,6 +101,7 @@ import types.typecheck.{
   resetTypeErrorsSticky,
   hadTypeErrors,
   mainTypeIsAsync,
+  mainTypeIsUnit,
 }
 import eval.eval.{
   evalModulesOutput,
@@ -267,7 +269,7 @@ moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
 -- import-resolving report.  `mods` is dependency-first, entry last.
 -- `target` is passed for positioned error output (Stage-A: file:line:col: message).
 checkRoute : Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute allowInternal _ rsrc csrc tsrc target [_] =
+checkRoute allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
   let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
@@ -280,7 +282,11 @@ checkRoute allowInternal _ rsrc csrc tsrc target [_] =
       -- --json path already reports).  See ERROR-QUALITY.md (Located dimension).
       let warns = filter isDiagWarn diags
       let _ = putStr (stripWarningLines (runCheck rsrc csrc tsrc))
-      let _ = emitLocatedWarnings tsrc target warns
+      -- 0.1.0 beginner-footgun warning (main-shape, see below): reuse the same
+      -- elaborateModules the multi-module route calls just for mainSchemeRef —
+      -- runCheck's own single-file path never populates it.
+      let mainWarns = mainShapeWarnings (desugar (parse rsrc)) (desugar (parse csrc)) [(mid, desugar decls)] decls
+      let _ = emitLocatedWarnings tsrc target (warns ++ mainWarns)
       ()
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
@@ -301,10 +307,99 @@ checkRoute allowInternal trusted rsrc csrc tsrc target mods =
       let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
       match checkModulesHasErrors allowInternal trusted rtD coreD modsD
         True => exit 1
-        False => ()
+        False =>
+          -- 0.1.0 main-shape warning (see below): runCheckModules/
+          -- checkModulesHasErrors never call elaborateModules, so mainSchemeRef
+          -- is never populated on this route either — mainShapeWarnings runs
+          -- it itself (only when the cheap syntactic arity check finds nothing).
+          let mainWarns = match lastModPair mods
+            Some (emid, edecls) => mainShapeWarnings rtD coreD modsD edecls
+            None => []
+          emitLocatedWarnings tsrc target mainWarns
     _ =>
       let _ = ePutStrLn resDiags
       exit 1
+
+-- ── main-shape beginner-footgun warning (0.1.0 audit #3) ────────────────────
+-- `medaka run` evaluates top-level bindings and checks `main` EXISTS but never
+-- APPLIES it: a `main` that isn't a zero-arg Unit-typed value silently no-ops
+-- (exit 0, no output, no diagnostic).  Two distinct beginner shapes surface the
+-- same way:
+--   (1) `main` is a FUNCTION (`main () = …` / `main x = …`) — visible on the
+--       raw (pre-desugar) Decl as a non-empty param list; no type info needed.
+--   (2) `main` is a zero-arg value whose inferred type is neither Unit nor
+--       `Async _` (e.g. `main = 5`) — reuses mainTypeIsUnit/mainTypeIsAsync,
+--       the same hooks `runProgramOutput`/the emitter already use to decide how
+--       to force `main`; only meaningful once elaborateModules has stamped
+--       typecheck.mdk's mainSchemeRef.
+-- Both render as a LOCATED warning (file:L:C: + caret) via the same
+-- ppDiagCliSrc/emitLocatedWarnings surface non-exhaustive-match warnings use.
+
+-- Find a top-level `main` DFunDef among a module's raw decls (skipping @attr
+-- wrappers).  Returns its param list + body so callers can inspect arity and
+-- locate the body's first ELoc span.
+findMainFunDef : List Decl -> Option (List Pat, Expr)
+findMainFunDef [] = None
+findMainFunDef ((DAttrib _ d)::rest) = findMainFunDef (d::rest)
+findMainFunDef ((DFunDef _ "main" ps body)::_) = Some (ps, body)
+findMainFunDef (_::rest) = findMainFunDef rest
+
+-- Best-effort location: the first ELoc span walking the outermost EApp spine
+-- (mirrors frontend/desugar.mdk's private `exprLoc`, duplicated here so this
+-- stays self-contained in medaka_cli.mdk per the F5 ownership split).
+mainBodyLoc : Expr -> Option Loc
+mainBodyLoc (ELoc l _) = Some l
+mainBodyLoc (EApp f _) = mainBodyLoc f
+mainBodyLoc _ = None
+
+mainArityMsg : String
+mainArityMsg = "'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
+
+mainNonUnitMsg : String
+mainNonUnitMsg = "'main' must be a value of type Unit (e.g. an IO action) — 'medaka run' only forces main for its side effects and prints nothing for a plain value; wrap the intended effect, e.g. 'main = println \"hi\"'"
+
+-- The ARITY shape (`main () = …` / `main x = …`) needs no type info, so it's
+-- safe to call before (or without) elaborateModules — and takes precedence
+-- over the non-Unit-value check below (no double warning).
+mainArityWarning : List Decl -> Option Diag
+mainArityWarning decls = match findMainFunDef decls
+  Some (_::_, body) =>
+    Some (mkDiag SevWarning "W-MAIN-SHAPE" mainArityMsg (mainBodyLoc body))
+  _ => None
+
+-- The non-Unit/non-Async VALUE shape (`main = 5`).  Only meaningful once
+-- elaborateModules has run (mainSchemeRef populated) — callers must ensure
+-- that happened first.
+mainNonUnitWarning : List Decl -> <Mut> Option Diag
+mainNonUnitWarning decls = match findMainFunDef decls
+  Some ([], body) =>
+    if mainTypeIsUnit () || mainTypeIsAsync () then
+      None
+    else
+      Some (mkDiag SevWarning "W-MAIN-SHAPE" mainNonUnitMsg (mainBodyLoc body))
+  _ => None
+
+-- Shared driver: the arity check is free (no typecheck needed); only when it
+-- finds nothing do we pay for an extra elaborateModules call (routes that
+-- don't already run it for their own purposes — both `check` arms) so
+-- mainSchemeRef is populated for the non-Unit-value check.  `modsDFull` is the
+-- FULL desugared module list (elaborateModules needs the whole graph, not just
+-- the entry) — the caller already has it computed for its own typecheck pass.
+mainShapeWarnings : List Decl -> List Decl -> List (String, List Decl) -> List Decl -> <Mut> List Diag
+mainShapeWarnings rtD coreD modsDFull entryDecls = match mainArityWarning entryDecls
+  Some d => [d]
+  None =>
+    let _ = elaborateModules rtD coreD modsDFull
+    match mainNonUnitWarning entryDecls
+      Some d => [d]
+      None => []
+
+-- Last (String, List Decl) pair — the entry module (loader's `mods` is
+-- dependency-first, entry last).
+lastModPair : List (String, List Decl) -> Option (String, List Decl)
+lastModPair [] = None
+lastModPair [p] = Some p
+lastModPair (_::rest) = lastModPair rest
 
 -- Drop check's non-positional flags (--release is silently ignored; --json is
 -- handled by the caller via hasFlag before dropFlags strips it).
@@ -694,6 +789,18 @@ runRunCmd argv =
                       let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
                       exit 1
                     False =>
+                      -- 0.1.0 main-shape warning (see mainShapeWarnings' doc
+                      -- comment below): elaborateModules just ran over the
+                      -- WHOLE graph via `elaborated`, so mainSchemeRef is
+                      -- already populated — no extra typecheck pass needed here.
+                      let mainWarns = match lastModPair mods
+                        Some (_, edecls) => match mainArityWarning edecls
+                          Some d => [d]
+                          None => match mainNonUnitWarning edecls
+                            Some d => [d]
+                            None => []
+                        None => []
+                      let _ = emitLocatedWarnings (readFileSafe target) target mainWarns
                       let _ = setRef currentEvalFile target
                       let _ = setRef runJsonMode jsonMode
                       putStr (runProgramOutput (fst elaborated) (snd elaborated))
