@@ -1,1 +1,1 @@
-TYPE ERROR: No impl of Printable for Foo
+TYPE ERROR: No impl of Printable for Foo — add 'deriving Printable' to the 'Foo' type, or write an 'impl Printable Foo'.

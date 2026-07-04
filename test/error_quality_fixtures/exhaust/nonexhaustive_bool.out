@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 0
 ---
-Warning: non-exhaustive match of 'Bool' — missing case: 'False'
+Warning: non-exhaustive match of 'Bool' — missing case: 'False' — add a 'False => …' arm, or a '_' wildcard arm to catch the rest.

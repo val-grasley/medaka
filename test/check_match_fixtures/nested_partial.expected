@@ -1,1 +1,1 @@
-Warning: non-exhaustive match of 'Box' — missing case: 'Box None_'
+Warning: non-exhaustive match of 'Box' — missing case: 'Box None_' — add a 'Box None_ => …' arm, or a '_' wildcard arm to catch the rest.

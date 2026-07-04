@@ -2207,6 +2207,25 @@ matchWarningLocs = Ref []
 matchOracle : Ref Oracle
 matchOracle = Ref (buildOracle [])
 
+-- Structured-help side channel for the non-exhaustive-match warning (mirrors
+-- `typeErrorHelpFix` above, same rationale: widening `matchWarnings`'s element
+-- type would touch every reader of the plain `List String`).  Keyed by the
+-- exact warning message text (post-hint-append, since that's the dedup key a
+-- lookup by message needs to match); `driver/diagnostics.mdk` looks this up
+-- when building the `Diag` for `--json`'s `help` field.
+matchWarningHelp : Ref (List (String, String))
+matchWarningHelp = Ref []
+
+export lookupMatchWarningHelp : String -> Option String
+lookupMatchWarningHelp msg =
+  findMatchWarningHelpEntry msg matchWarningHelp.value
+
+findMatchWarningHelpEntry : String -> List (String, String) -> Option String
+findMatchWarningHelpEntry _ [] = None
+findMatchWarningHelpEntry msg ((m, help)::rest)
+  | m == msg = Some help
+  | otherwise = findMatchWarningHelpEntry msg rest
+
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = setRef tyvarCounter 0
@@ -2255,6 +2274,7 @@ resetState _ =
   let _ = setRef methodShadowNamesRef []
   let _ = setRef typeErrors []
   let _ = setRef typeErrorHelpFix []
+  let _ = setRef matchWarningHelp []
   let _ = setRef occursCheckFailed False
   setRef currentLevel 0
 
@@ -5199,11 +5219,20 @@ checkMatchExhaustive scrutTy arms =
 -- Build the specialised warning: recover a concrete uncovered pattern (the
 -- Maranget witness) and name it, plus the scrutinee type when it has a real
 -- head name.  Falls back to the generic wording if no witness is recoverable
--- (keeps the warning firing whenever `useful` says it should, never naming a
--- wrong constructor).
-nonExhaustiveMsg : Mono -> List (List Pat) -> String
+-- (keeps the warning firing whenever `useful` should, never naming a wrong
+-- constructor).  Actionable-fix hint (F dimension): when a witness IS
+-- recoverable, append a concrete-edit suggestion using the witness string
+-- VERBATIM (so `Triangle _` reads as `Triangle _`, not `Triangle`) and record
+-- it in `matchWarningHelp` (keyed by the full message, mirroring
+-- `typeErrorHelpFix`) so `--json`'s `help` field carries it too.
+nonExhaustiveMsg : Mono -> List (List Pat) -> <Mut> String
 nonExhaustiveMsg scrutTy rows = match usefulWitness matchOracle.value (matchCol0Type scrutTy) rows 1
-  Some (w::_) => "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)} — missing case: '\{renderWitness w}'"
+  Some (w::_) =>
+    let witnessStr = renderWitness w
+    let hint = "add a '\{witnessStr} => …' arm, or a '_' wildcard arm to catch the rest."
+    let msg = "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)} — missing case: '\{witnessStr}' — \{hint}"
+    let _ = setRef matchWarningHelp ((msg, hint)::matchWarningHelp.value)
+    msg
   _ => nonExhaustiveMatchWarning
 
 -- Name the scrutinee type (skip the synthetic tuple type names, which aren't
@@ -8683,13 +8712,13 @@ checkOneCallObligation : List (String, List Ty) -> String -> Mono -> Option Loc 
 checkOneCallObligation heads iface occ loc =
   let args = [normalize occ]
   if iface == "Num" && anyList numUnimplementableHead args then
-    pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args)
+    pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
     checkUndeterminedObligation heads iface occ loc
   else if implMatches heads iface args then
     ()
   else
-    pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args)
+    pushNoImplError iface loc args
 
 -- WS-1c: a constrained call whose constraint var stays UNDETERMINED (pinned by
 -- neither arg nor result, `roundtrip 14` where `roundtrip : Sub a => Int -> Int`).
@@ -8852,7 +8881,7 @@ checkOneImplObligation heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args) else if iface == "Eq" && anyList eqUnimplementableHead args then pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args) else if iface == "Ord" && anyList ordUnimplementableHead args then pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyList numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyList eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyList ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else reportNumOrNoImpl iface args loc
 
 -- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
 -- Eq (and unlike Num) an unbound spine head DEFERS — a downstream `Ord a =>`
@@ -8893,6 +8922,37 @@ spineHeadMono t = match normalize t
 noImplFoundMsg : String -> List Mono -> <Mut> String
 noImplFoundMsg iface args = "No impl of \{iface} for \{ppMonosShared args}"
 
+-- Actionable-fix hint (F dimension) for a `No impl of <iface> for <ty>` reject:
+-- only when [args] is a single user-declared data type (a `dataParamKindsRef`
+-- hit) does "add deriving" / "write an impl" read as concrete, applicable
+-- advice — a builtin (String/Int/Bool/…) can't take `deriving`, and a function
+-- type is structurally un-implementable, so both stay hint-free (unchanged
+-- message) rather than print misleading advice.
+noImplHint : String -> List Mono -> <Mut> Option String
+noImplHint iface [arg] = match headTyconMono arg
+  Some n => map (_ => "add 'deriving \{iface}' to the '\{n}' type, or write an 'impl \{iface} \{n}'.") (lookupAssoc n dataParamKindsRef.value)
+  None => None
+noImplHint _ _ = None
+
+-- Append the hint (when applicable) to the plain `noImplFoundMsg`, mirroring
+-- the did-you-mean append convention (base message ++ " — " ++ hint).
+noImplFoundMsgHinted : String -> List Mono -> <Mut> (String, Option String)
+noImplFoundMsgHinted iface args =
+  let base = noImplFoundMsg iface args
+  match noImplHint iface args
+    Some hint => ("\{base} — \{hint}", Some hint)
+    None => (base, None)
+
+-- Push a `No impl of …` type error, appending + recording the actionable-fix
+-- hint (via `pushTypeErrorHelpFixAt`) when one applies; otherwise behaves
+-- exactly like the previous plain `pushTypeErrorOnceAt "T-NO-IMPL" …` call.
+pushNoImplError : String -> Option Loc -> List Mono -> <Mut> Unit
+pushNoImplError iface loc args =
+  let (msg, mhint) = noImplFoundMsgHinted iface args
+  match mhint
+    Some hint => pushTypeErrorHelpFixAt "T-NO-IMPL" loc msg hint None
+    None => pushTypeErrorOnceAt "T-NO-IMPL" loc msg
+
 -- Chunk D (Num mis-framing reframe): at the final no-impl branch, a `Num`
 -- obligation forced to a fully-ground concrete non-Num head (`args` already passed
 -- allConcreteHeads + failed implMatches) is reframed to a structural type mismatch
@@ -8909,7 +8969,7 @@ reportNumOrNoImpl iface args loc
       (numlitMismatchMsg loc args ++ hint)
       hint
       None
-  | otherwise = pushTypeErrorOnceAt "T-NO-IMPL" loc (noImplFoundMsg iface args)
+  | otherwise = pushNoImplError iface loc args
 
 -- True iff [loc] is a literal-sourced Num obligation eligible for reframe: some
 -- literal was recorded at [loc] and that loc was NOT operator-tainted.

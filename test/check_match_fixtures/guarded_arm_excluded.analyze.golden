@@ -1,1 +1,1 @@
-warning: non-exhaustive match of 'Color' — missing case: 'Blue'
+warning: non-exhaustive match of 'Color' — missing case: 'Blue' — add a 'Blue => …' arm, or a '_' wildcard arm to catch the rest.
