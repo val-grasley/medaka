@@ -299,3 +299,56 @@ IR, so `compiler/seed/emitter.ll.gz` and the fixpoint are unaffected.
 - **Watch:** multi-module filename precision is approximate in Stage 1 (root
   target name; line/col correct). Acceptable for the fixtured single-file cases;
   flagged for a future load-time `Loc.file` stamp if it matters.
+
+---
+
+## 7. AS-BUILT (Stages 1–3 + 5, located TEXT surface — 2026-07-04)
+
+Shipped the located, coded runtime-error text for `medaka run`. JSON (Stage 4)
+remains for a later agent.
+
+**Message format (final):** `file:L:C: runtime error [E-*]: <message>` — the
+`file:L:C:` prefix mirrors `resolve.mdk`'s `ppResErrorLocatedF` (0-based column),
+plus a bracketed `E-*` code and the original bare message. Example:
+`test/error_quality_fixtures/eval/division_by_zero.mdk:3:23: runtime error [E-DIV-ZERO]: division by zero`
+(3:23 points at the divisor `n` in `10 / n`).
+
+**Mechanism, as built:**
+- `currentEvalLoc : Ref Loc` + `currentEvalFile : Ref String` in `eval.mdk`.
+- `runtimePanic code msg` chokepoint reads the refs, formats the located text,
+  hands it to the bare `panic`. Sites rerouted: `E-DIV-ZERO`, `E-MOD-ZERO`,
+  `E-INDEX-OOB` (list `listNthAt` + array/string `evalIndexInt`/`stringIndexCp`),
+  `E-SLICE-OOB` (`sliceArray`), `E-PANIC` (`pPanic` — covers `explicit_panic` AND
+  `let_else_fail`), `E-NONEXHAUSTIVE-MATCH` (`evalMatch`), `E-LET-REFUTE` (all
+  three `blockLet*`/`evalLet` sites), `E-NOT-A-FUNCTION` (`applyOpt`). Internal
+  invariants (§2b) + the dead `apply`-`None` arm left bare.
+
+**Two corrections found while building (the design under-specified these):**
+1. **Loc threading needed the ELoc arm to FILTER a placeholder.** The `ELoc`
+   arm updates the ref, but the run driver's prelude (runtime.mdk/core.mdk) is
+   parsed with the non-located `parse`, which collapses *every* span to the
+   zero-width `Loc "" 1 0 1 0`. Because a runtime error is often reached *through*
+   a prelude helper (a literal pattern's `Eq`, list-index dispatch), that
+   placeholder would clobber the real user span (symptom: `index`/`match` reported
+   `1:0`). Fix: `updateEvalLoc` ignores the zero-width-at-origin sentinel (a real
+   located atom always has positive width), so the last *real* user span survives.
+2. **The run driver had to parse the user module LOCATED.** Plain `medaka run`
+   used placeholder-loc `parse` for the target too → every span `1:0`. Routed the
+   run path through the existing `loadProgramFilesLocated` (the LSP's located
+   loader) so the root module carries real ELoc spans. Eval output is
+   byte-identical (ELoc is transparent), so `diff_compiler_eval_{run,modules}`
+   stay green.
+
+**E-MISSING-FIELD has no live emit site on the current tree.** §2a named
+`evalRecordUpdate` (`:1127`), but `mergeField` *silently ignores* an unknown
+update field (no panic). The only field panics are `fieldOr`'s "unknown field"
+and `evalValueField` — both classified **internal** in §2b. So `E-MISSING-FIELD`
+is reserved in the taxonomy but wired to nothing (forcing it onto the
+internal-classified field-access site would violate §2b). No fixture covers it.
+
+**Gates:** `diff_compiler_eval_run` (50 ok), `diff_compiler_eval_modules` (4 ok),
+`selfcompile_fixpoint` (C3a YES / C3b YES — no re-mint), full `run_gates` (72
+passed / 0 failed / 1 skip). `diff_compiler_eval_errors` goldens were updated
+(its `eval_main` probe sets no filename, so it honestly prints `:0:0:` — the
+located CLI path is validated by the 6 `error_quality_fixtures/eval` goldens
+instead).

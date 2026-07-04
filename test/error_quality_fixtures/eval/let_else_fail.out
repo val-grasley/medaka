@@ -1,4 +1,4 @@
 cmd: medaka run
 exit: 1
 ---
-empty list
+test/error_quality_fixtures/eval/let_else_fail.mdk:3:42: runtime error [E-PANIC]: empty list

@@ -1,4 +1,4 @@
 cmd: medaka run
 exit: 1
 ---
-division by zero
+test/error_quality_fixtures/eval/division_by_zero.mdk:3:23: runtime error [E-DIV-ZERO]: division by zero

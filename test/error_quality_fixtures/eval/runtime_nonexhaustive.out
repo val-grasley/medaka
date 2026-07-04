@@ -1,4 +1,4 @@
 cmd: medaka run
 exit: 1
 ---
-non-exhaustive match
+test/error_quality_fixtures/eval/runtime_nonexhaustive.mdk:1:29: runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match

@@ -1,4 +1,4 @@
 cmd: medaka run
 exit: 1
 ---
-modulo by zero
+test/error_quality_fixtures/eval/modulo_by_zero.mdk:3:23: runtime error [E-MOD-ZERO]: modulo by zero

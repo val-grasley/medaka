@@ -63,6 +63,7 @@ import frontend.resolve.{
 }
 import driver.loader.{
   loadProgram,
+  loadProgramFilesLocated,
   findProjectRoot,
   stdlibTrustedMods,
   unknownModuleIdOf,
@@ -94,7 +95,7 @@ import types.typecheck.{
   hadTypeErrors,
   mainTypeIsAsync,
 }
-import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
+import eval.eval.{evalModulesOutput, evalModulesOutputAsync, currentEvalFile}
 import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
@@ -604,7 +605,11 @@ runRunCmd argv = match dropFlags argv
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok csrc => match loadProgram target roots
+        -- Parse the user modules with parseLocated (real ELoc spans) so a
+        -- runtime error (E-*) can report a correct file:L:C.  Plain loadProgram
+        -- uses placeholder-loc `parse`, which collapses every span to 1:0.
+        -- Structurally identical decls → eval output byte-identical.
+        Ok csrc => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
@@ -622,7 +627,9 @@ runRunCmd argv = match dropFlags argv
                   True =>
                     let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
                     exit 1
-                  False => putStr (runProgramOutput (fst elaborated) (snd elaborated))
+                  False =>
+                    let _ = setRef currentEvalFile target
+                    putStr (runProgramOutput (fst elaborated) (snd elaborated))
               _ =>
                 let _ = ePutStrLn resDiags
                 exit 1
@@ -639,6 +646,11 @@ runRunCmd argv = match dropFlags argv
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
+
+-- Drop the file-path component of a located-loader triple back to the
+-- (modId, decls) pair shape loadProgram returns.
+dropModPath : (String, String, List Decl) -> (String, List Decl)
+dropModPath (mid, _, prog) = (mid, prog)
 
 -- ASYNC-DESIGN Stage 2 (D5): route a `main : Async _` through the program's
 -- `runAsync` (perform its stored row) instead of forcing it to an inert Async

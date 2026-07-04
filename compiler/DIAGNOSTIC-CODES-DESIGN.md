@@ -202,6 +202,28 @@ kebab-case; never renumber (append only).
 | `W-NONEXHAUSTIVE` | non-exhaustive `match` (typecheck `matchWarnings`) |
 | `W-GUARD-INEXHAUSTIVE` | guards may not be exhaustive (exhaust) |
 
+### Eval / runtime — `E-*` (`compiler/eval/eval.mdk`, `medaka run`)
+
+Runtime errors surfaced by the tree-walking interpreter. Unlike the compile-time
+stages these are reachable on a **well-typed** program (value-dependent). They are
+formatted at the `runtimePanic` chokepoint (`eval.mdk`) into the located text
+`file:L:C: runtime error [E-*]: <message>` and handed to the `noreturn` `panic`
+extern (`kind` = `"error"`, `severity` = 1). See
+`RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN.md`. Internal-invariant panics (compiler-bug
+asserts) stay **bare** and carry no code.
+
+| Code | Meaning |
+|---|---|
+| `E-DIV-ZERO` | integer division by zero |
+| `E-MOD-ZERO` | integer modulo by zero |
+| `E-INDEX-OOB` | list/array/string index out of bounds |
+| `E-SLICE-OOB` | slice bounds out of range |
+| `E-PANIC` | explicit user `panic` |
+| `E-NONEXHAUSTIVE-MATCH` | `match` had no arm for the runtime value |
+| `E-LET-REFUTE` | refutable `let` pattern failed |
+| `E-NOT-A-FUNCTION` | applied a non-function value (borderline) |
+| `E-MISSING-FIELD` | reserved — record-field miss (borderline; no live emit site on current tree, see design §5) |
+
 ---
 
 ## 3. Diag ADT + threading mechanism

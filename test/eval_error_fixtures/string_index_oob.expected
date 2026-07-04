@@ -1,1 +1,1 @@
-index 10 out of bounds
+:0:0: runtime error [E-INDEX-OOB]: index 10 out of bounds

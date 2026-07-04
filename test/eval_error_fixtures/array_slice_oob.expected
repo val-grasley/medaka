@@ -1,1 +1,1 @@
-slice [0..9] out of bounds
+:0:0: runtime error [E-SLICE-OOB]: slice [0..9] out of bounds

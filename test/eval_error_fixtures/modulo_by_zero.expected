@@ -1,1 +1,1 @@
-modulo by zero
+:0:0: runtime error [E-MOD-ZERO]: modulo by zero

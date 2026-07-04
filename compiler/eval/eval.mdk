@@ -12,6 +12,7 @@
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
 import frontend.ast.{
+  Loc(..),
   Lit(..),
   Ty(..),
   Addr(..),
@@ -154,7 +155,8 @@ intSeq lo end
   | otherwise = lo :: intSeq (lo + 1) end
 
 listNthAt : List Value -> Int -> Int -> Value
-listNthAt [] orig _ = panic ("index " ++ intToString orig ++ " out of bounds")
+listNthAt [] orig _ =
+  runtimePanic "E-INDEX-OOB" ("index " ++ intToString orig ++ " out of bounds")
 listNthAt (x::xs) orig i
   | i <= 0 = x
   | otherwise = listNthAt xs orig (i - 1)
@@ -692,7 +694,8 @@ applyOpt (VPrim f) arg = Some (f arg)
 applyOpt (VTypedImpl t key pos seen inner) arg =
   applyTyped t key pos seen inner arg
 applyOpt (VMulti vs) arg = collectPartials [] (filterByTag vs arg) arg
-applyOpt other _ = panic ("applied non-function: " ++ ppValue other)
+applyOpt other _ =
+  runtimePanic "E-NOT-A-FUNCTION" ("applied non-function: " ++ ppValue other)
 
 -- pass the arg to the impl's inner value, preserving the dispatch tag across
 -- partial applications (so later args still route to the same impl)
@@ -1024,10 +1027,14 @@ eval env (ERangeList lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeListMk
 eval env (ERangeArray lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeArrayMk
--- ELoc is transparent at eval (mirror of lib/eval.ml's ELoc arm — it sets
--- current_loc there; the self-hosted eval surfaces errors via panic, so we just
--- recurse into the wrapped expr).
-eval env (ELoc _ e) = eval env e
+-- ELoc records the current source location before recursing (mirror of
+-- lib/eval.ml's ELoc arm, which sets current_loc).  runtimePanic reads
+-- currentEvalLoc so a runtime error carries file:L:C.  Purely a side channel
+-- for diagnostics: on a successful eval nothing reads it, so valid-program
+-- output is byte-identical.
+eval env (ELoc l e) =
+  let _ = updateEvalLoc l
+  eval env e
 eval env (EDoOrigin _ e) = eval env e
 eval _ _ = panic "eval: unsupported node (slice 2)"
 
@@ -1069,7 +1076,7 @@ evalIndex _ _ = panic "index is not an Int"
 evalIndexInt : Value -> Int -> Value
 evalIndexInt (VArray a) i
   | i < 0 || i >= arrayLength a =
-    panic ("index " ++ intToString i ++ " out of bounds")
+    runtimePanic "E-INDEX-OOB" ("index " ++ intToString i ++ " out of bounds")
   | otherwise = arrayGetUnsafe i a
 evalIndexInt (VList vs) i = listNthAt vs i i
 evalIndexInt (VString s) i = stringIndexCp s i
@@ -1079,7 +1086,7 @@ evalIndexInt _ _ = panic "index on non-array/list/string"
 stringIndexCp : String -> Int -> Value
 stringIndexCp s i
   | i < 0 || i >= stringLength s =
-    panic ("index " ++ intToString i ++ " out of bounds")
+    runtimePanic "E-INDEX-OOB" ("index " ++ intToString i ++ " out of bounds")
   | otherwise = VChar (charToStr (arrayGetUnsafe i (stringToChars s)))
 
 export evalSlice : Value -> Value -> Value -> Bool -> Value
@@ -1097,8 +1104,7 @@ evalSliceInt _ _ _ _ = panic "slice on non-array/list/string"
 
 sliceArray : Array Value -> Int -> Int -> Value
 sliceArray a lo hiX
-  | lo < 0 || hiX > arrayLength a || hiX - lo < 0 =
-    panic "slice [\{intToString lo}..\{intToString (hiX - 1)}] out of bounds"
+  | lo < 0 || hiX > arrayLength a || hiX - lo < 0 = runtimePanic "E-SLICE-OOB" "slice [\{intToString lo}..\{intToString (hiX - 1)}] out of bounds"
   | otherwise =
     VArray (arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) a))
 
@@ -1199,7 +1205,7 @@ evalBlock _ (_::_) = panic "eval: unsupported block statement"
 
 blockLetLast : EvalEnv -> Pat -> Expr -> <Mut> Value
 blockLetLast env pat e = match matchPat pat (eval env e)
-  None => panic "let pattern match failure in block"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failure in block"
   Some _ => VUnit
 
 blockRecLet : EvalEnv -> String -> Expr -> List DoStmt -> <Mut> Value
@@ -1212,7 +1218,7 @@ blockRecLet env f e rest =
 
 blockLet : EvalEnv -> Pat -> Expr -> List DoStmt -> <Mut> Value
 blockLet env pat e rest = match matchPat pat (eval env e)
-  None => panic "let pattern match failure in block"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failure in block"
   Some binds => evalBlock (extendEnv env binds) rest
 
 blockLetElse : EvalEnv -> Pat -> Expr -> Expr -> List DoStmt -> <Mut> Value
@@ -1230,7 +1236,7 @@ evalRecLet env f e1 e2 =
 
 evalLet : EvalEnv -> Pat -> Expr -> Expr -> <Mut> Value
 evalLet env pat e1 e2 = match matchPat pat (eval env e1)
-  None => panic "let pattern match failure"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failure"
   Some binds => eval (extendEnv env binds) e2
 
 evalLetGroup : EvalEnv -> List LetBind -> Expr -> <Mut> Value
@@ -1274,7 +1280,7 @@ isNullary [] = True
 isNullary _ = False
 
 evalMatch : EvalEnv -> Value -> List Arm -> <Mut> Value
-evalMatch _ _ [] = panic "non-exhaustive match"
+evalMatch _ _ [] = runtimePanic "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 evalMatch env sv ((Arm pat guards body)::rest) = match matchPat pat sv
   None => evalMatch env sv rest
   Some binds => match runGuards (extendEnv env binds) guards
@@ -1353,10 +1359,10 @@ evalArith "+" (VInt a) (VInt b) = VInt (a + b)
 evalArith "-" (VInt a) (VInt b) = VInt (a - b)
 evalArith "*" (VInt a) (VInt b) = VInt (a * b)
 evalArith "/" (VInt a) (VInt b)
-  | b == 0 = panic "division by zero"
+  | b == 0 = runtimePanic "E-DIV-ZERO" "division by zero"
   | otherwise = VInt (a / b)
 evalArith "%" (VInt a) (VInt b)
-  | b == 0 = panic "modulo by zero"
+  | b == 0 = runtimePanic "E-MOD-ZERO" "modulo by zero"
   | otherwise = VInt (a % b)
 evalArith "+" (VFloat a) (VFloat b) = VFloat (a + b)
 evalArith "-" (VFloat a) (VFloat b) = VFloat (a - b)
@@ -1600,6 +1606,39 @@ prim1M f = VPrim f
 export outputRef : Ref String
 outputRef = Ref ""
 
+-- Runtime-diagnostic side channels (RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN.md).
+-- currentEvalLoc is updated at every ELoc node; currentEvalFile is set once by
+-- the run driver to the target path (the parser leaves Loc.file "").  Neither is
+-- read on a successful eval, so valid-program output is untouched.
+export currentEvalLoc : Ref Loc
+currentEvalLoc = Ref (Loc "" 0 0 0 0)
+
+export currentEvalFile : Ref String
+currentEvalFile = Ref ""
+
+-- Update currentEvalLoc from an ELoc span, but IGNORE the placeholder span the
+-- non-located `parse` produces (every token collapses to the zero-width
+-- `Loc "" 1 0 1 0`).  The prelude (runtime.mdk/core.mdk) is parsed that way, so
+-- when a runtime error is reached through a prelude helper (e.g. a literal
+-- pattern's Eq comparison, list index dispatch) the prelude's placeholder would
+-- otherwise clobber the real user-code span.  A real located atom always has a
+-- positive-width span, so this sentinel is unambiguous.
+updateEvalLoc : Loc -> <Mut> Unit
+updateEvalLoc (Loc f sl sc el ec)
+  | sl == 1 && sc == 0 && el == 1 && ec == 0 = ()
+  | otherwise = setRef currentEvalLoc (Loc f sl sc el ec)
+
+-- Chokepoint for user-facing runtime errors.  `panic` is a noreturn C-abort
+-- that never returns to Medaka, so the located, coded diagnostic must be
+-- formatted INTO the panic string here (Fork B option iii).  The text prefix
+-- mirrors resolve.mdk's ppResErrorLocatedF: `file:L:C:` with a 0-based column.
+export runtimePanic : String -> String -> a
+runtimePanic code msg = match currentEvalLoc.value
+  Loc f sl sc _ _ =>
+    let ff = if f == "" then currentEvalFile.value else f
+    panic
+      "\{ff}:\{intToString sl}:\{intToString sc}: runtime error [\{code}]: \{msg}"
+
 appendOutput : String -> <Mut> Value
 appendOutput s =
   let _ = setRef outputRef (outputRef.value ++ s)
@@ -1624,7 +1663,7 @@ pDiscard _ = VUnit
 -- catchable panics, see AGENTS.md).  Wiring the extern to the same host
 -- `panic` fixes both `explicit_panic`/`let_else_fail` fixtures.
 pPanic : Value -> a
-pPanic v = panic (unString v)
+pPanic v = runtimePanic "E-PANIC" (unString v)
 
 pRef : Value -> Value
 pRef v = VRef (Ref v)
