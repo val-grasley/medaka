@@ -488,3 +488,134 @@ the fixtures that produce **no compile-time diagnostic** (runtime/silent/build),
 not with any missing `code`/`kind`/`fix` machinery. **F (0.33) is now the
 weakest axis**, and the Tier-3 typecheck-framing themes (Num-mis-framing, leaked
 tyvars, ambiguity cascades) remain the next-largest quality reservoir.
+
+---
+
+## Re-grade (post-Tier-3-framing, base 00ca0bfa)
+
+Re-scored the 8 `typecheck/` fixtures the Tier-3 reservoir touched, against the
+same §3 rubric/anchors as every prior pass. All other 52 fixtures are untouched
+and keep their post-Tier-4 score (615/60 baseline). Every fixture below was
+reproduced on a freshly built binary (`./medaka check` text + `./medaka check
+--json`) and matches its captured `.out` golden exactly, so the golden text is
+the verified source of truth.
+
+Tier-3 landed as 4 chunks, confirmed on the binary:
+1. **Cascade suppression** — the secondary `ambiguous 'Debug a'`/`'Mappable a'`
+   error is gone from `too_many_args`, `apply_non_function`,
+   `record_wrong_field`, `wrong_arg_type_in_map` (each now emits exactly **one**
+   JSON diagnostic, confirmed via `--json`).
+2. **"Not a function" reframe** — `apply_non_function` now reads *"This
+   expression has type Int, which is not a function, so it cannot be applied to
+   an argument."* (`T-NOT-A-FUNCTION`); `too_many_args` now reads *"'inc' takes
+   1 argument(s) but is applied to 2."* (also `T-NOT-A-FUNCTION`). Both drop the
+   old raw-tyvar `Int vs a -> b` symptom framing.
+3. **Num-mis-framing → context-aware mismatch** — `if_branch_mismatch` ("if
+   branches have different types: Int vs String"), `list_heterogeneous` ("list
+   elements have different types: Int vs String"), `cons_type_mismatch` ("cons
+   (::) type mismatch: head is Int but the list holds String"),
+   `arg_order_swapped` (arg1 now "Type mismatch: Int literal vs String" —
+   **both** diagnostics kept, confirmed 2 real JSON diagnostics, not one
+   primary + one cascade).
+4. `wrong_arg_type_in_map`'s primary message (`Type mismatch: a b vs String`)
+   is **unchanged** — only its ambiguity-cascade storm was suppressed (Chunk 1);
+   the raw-tyvar leak (`a b`) is untouched, so J stays low there.
+
+**Chunk B intentionally NOT done:** `record_missing_field`'s secondary `No impl
+of Debug for Person` is a genuine independent error (constructing the record
+with a missing field also makes it un-`debug`-able — a real second fact, not an
+artifact of the first), not a cascade suppression candidate. Verified
+unchanged on the binary (`--json` still shows both `T-MISSING-FIELD` and
+`T-NO-IMPL`); its score stays **11**, untouched.
+
+### Per-fixture delta table
+
+| fixture | old→new | dims that moved | why |
+|---|---|---|---|
+| too_many_args | 8 → **13** | C 1→2, R 1→2, F 0→1, J 1→2, X 1→2 | reframed to a precise arity message naming both counts (1 vs 2); names *what's* wrong (like `record_missing_field`'s field-naming) so F=1, not the literal fix text, so not F=2; no raw tyvar; cascade gone (single JSON diagnostic) |
+| apply_non_function | 8 → **12** | C 1→2, R 1→2, J 1→2, X 1→2 | reframed to "has type Int, which is not a function…"; correct + root-cause + jargon-free; cascade gone. F stays 0 — the message states the *nature* of the error but names no concrete quantity/identifier to act on (unlike too_many_args' counts or record_missing_field's field name) |
+| record_wrong_field | 10 → **12** | J 1→2, X 1→2 | message itself (`Field aeg does not belong to record Person`) was already correct/located pre-Tier-3; only the trailing `Debug a`-ambiguity cascade (the source of the J=1 jargon leak) is now suppressed. C/R/F unchanged (still no "did you mean 'age'?") |
+| wrong_arg_type_in_map | 6 → **8** | X 0→2 | cascade-only fix: was a 3-diagnostic ambiguity storm, now exactly one diagnostic. Primary message (`a b vs String`) is untouched — C/R/J unchanged (still cryptic, still leaks the raw tyvar `a b`) |
+| if_branch_mismatch | 10 → **12** | C 1→2, R 1→2 | reframed from `No impl of Num for String` to "if branches have different types: Int vs String" — names the actual structural shape. J/X were already 2 (no jargon, no cascade pre-existing here) |
+| list_heterogeneous | 10 → **12** | C 1→2, R 1→2 | reframed to "list elements have different types: Int vs String" — same structural-shape win as if_branch_mismatch |
+| cons_type_mismatch | 10 → **12** | C 1→2, R 1→2 | reframed to "cons (::) type mismatch: head is Int but the list holds String" — names both the operator and which side (head vs list) is wrong |
+| arg_order_swapped | 9 → **11** | C 1→2, R 1→2 | arg1's message reframed from a `No impl of Num` cascade-symptom to a real second "Type mismatch: Int literal vs String" diagnostic; both diagnostics are now independently correct and each points exactly at its own swapped argument. X stays 1 (still 2 diagnostics — the pair is legitimate, not a cascade, but the rubric's X dimension scores diagnostic-count/focus, and this fixture still surfaces two separate call-site messages rather than one unified "arguments 1 and 2 are swapped" root-cause statement). F stays 0 — neither message says "swapped" |
+
+Sum for these 8 fixtures: **71 → 92 (+21)**.
+
+### New corpus average
+
+```
+615 (post-Tier-4 total) + 21 (Tier-3 delta) = 636
+636 / 60 = 10.60
+```
+
+**Overall average: 636 / 60 = 10.60 / 14 — up from 10.25 (+0.35).**
+
+### Per-dimension movement (60 fixtures)
+
+Only C, R, F, J, X moved (A and L are untouched by this chunk — every one of
+the 8 fixtures already had a real, located, `code`+`kind`+real-span JSON
+diagnostic before this session).
+
+| dim | post-Tier-4 sum | post-Tier-4 avg | new sum | new avg /2 | Δ |
+|---|---|---|---|---|---|
+| C Correct | 98 | 1.63 | **104** | **1.73** | +0.10 |
+| R Root-cause | 95 | 1.58 | **101** | **1.68** | +0.10 |
+| X Cascade-free | 107 | 1.78 | **112** | **1.87** | +0.09 |
+| J Jargon-free | 114 | 1.90 | **117** | **1.95** | +0.05 |
+| F Actionable-fix | 20 | 0.33 | **21** | **0.35** | +0.02 |
+| A Agent-parseable | 101 | 1.68 | 101 | 1.68 | +0.00 |
+| L Located | 80 | 1.33 | 80 | 1.33 | +0.00 |
+
+C and R move the most (exactly as Tier 3 targeted: structural mis-framing was
+the biggest remaining C/R drag in the corpus). X gets a modest lift from the
+4 cascade-suppression fixtures. F barely moves (+1, from `too_many_args`
+alone) — Tier 3 was never aimed at F, and the axis stays the corpus's floor.
+
+### Per-stage average — typecheck
+
+| stage | fixtures | post-Tier-4 avg | new avg | Δ |
+|---|---|---|---|---|
+| typecheck | 24 | 10.58 (sum 254) | **11.46** (sum 275) | **+0.88** |
+
+`typecheck` overtakes `resolve` (11.12) as the corpus's 2nd-strongest stage,
+behind only `effect` (12.00). All other 7 stages are unchanged (this chunk
+touched only `typecheck/` fixtures).
+
+### What's still weakest now
+
+**F (Actionable-fix, 0.35/2) is still the single weakest axis in the corpus,
+by a wide margin** — Tier 3 was a framing fix (say the *right* thing), not a
+suggestion-machinery fix (say *what to do about it*), so it moved F by only
++1 (on `too_many_args`, whose precise arg-count naming crossed the F=1 bar).
+The remaining Tier-3 fixtures (`apply_non_function`, `if_branch_mismatch`,
+`list_heterogeneous`, `cons_type_mismatch`, `arg_order_swapped`,
+`wrong_arg_type_in_map`) all still score F=0: none of them names a concrete
+edit (a field name, an argument count, a suggested identifier) the way
+`record_missing_field`/`nonexhaustive_*`/`typo_*` do. Closing this needs
+per-shape actionable copy (e.g. "swap arguments 1 and 2" for
+`arg_order_swapped`, "remove the extra argument" for `too_many_args`), which
+is a distinct, not-yet-scoped follow-on.
+
+The **A=0 cluster is unchanged** (8 fixtures, same as post-Tier-4): the 5
+`run`-path runtime errors with no structured diagnostic
+(`division_by_zero`, `modulo_by_zero`, `list_index_oob`, `explicit_panic`,
+`let_else_fail`), the 2 by-design/unimplemented silent accepts
+(`ambiguous_return`, `redundant_arm`), and the 1 build-only failure
+(`main_takes_unit`) that `check --json` can't see. None of these are
+`typecheck/`-reservoir fixtures, so Tier 3 could not and did not touch them.
+
+### Note on Chunk B
+
+Chunk B (making `record_missing_field`'s secondary error a cascade
+suppression) was **intentionally not implemented**. Verified on the binary:
+constructing `Person { name = "Alice" }` with `age` missing produces both
+`T-MISSING-FIELD` (primary) and a genuine, independent `T-NO-IMPL: No impl of
+Debug for Person` — the partially-constructed value really doesn't have a
+`Debug` instance derivable, which is a real second fact about the program, not
+an artifact cascading from the first error. `record_missing_field`'s score is
+**unchanged at 12** (its post-Tier-4 value: L2 C2 R2 F1 J2 X1 A2 — it *was*
+among the 23-of-24 typecheck fixtures whose A moved 1→2 in the Tier-4 pass,
+same as the 8 fixtures graded above; this session leaves it untouched since
+Chunk B was not implemented).
