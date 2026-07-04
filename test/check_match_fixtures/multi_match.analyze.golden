@@ -1,2 +1,2 @@
-warning: non-exhaustive match of 'Color' — missing case: 'Green'
-warning: non-exhaustive match of 'Bool' — missing case: 'True'
+warning: non-exhaustive match of 'Bool' — missing case: 'True' — add a 'True => …' arm, or a '_' wildcard arm to catch the rest.
+warning: non-exhaustive match of 'Color' — missing case: 'Green' — add a 'Green => …' arm, or a '_' wildcard arm to catch the rest.

@@ -1,1 +1,1 @@
-Warning: non-exhaustive match — missing case: '(False, _)'
+Warning: non-exhaustive match — missing case: '(False, _)' — add a '(False, _) => …' arm, or a '_' wildcard arm to catch the rest.

@@ -49,6 +49,7 @@ import types.typecheck.{
   Scheme(..),
   setCoherenceUserDecls,
   lookupTypeErrorHelpFix,
+  lookupMatchWarningHelp,
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
 import support.util.{joinNl, lookupAssoc, startsWith}
@@ -114,6 +115,18 @@ diagOfTypeError (code, msg, loc) = match lookupTypeErrorHelpFix msg
 
 fixOfLocRepl : (Loc, String) -> Fix
 fixOfLocRepl (l, r) = Fix l r
+
+-- Convert a non-exhaustive-match warning (full "Warning: …" string, paired with
+-- its captured loc) to a Diag, attaching the actionable-fix hint
+-- `nonExhaustiveMsg` recorded in `matchWarningHelp` (typecheck.mdk's
+-- message-keyed side channel, mirroring `typeErrorHelpFix`) for this exact
+-- (pre-strip) message, if any.  No machine `fix` — the hint has no single
+-- mechanical edit.
+diagOfMatchWarning : (String, Option Loc) -> Diag
+diagOfMatchWarning (w, loc) = match lookupMatchWarningHelp w
+  None => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc
+  Some help =>
+    Diag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc (Some help) None
 
 -- Derive the JSON `kind` from a code's per-stage prefix (DIAGNOSTIC-CODES-DESIGN
 -- §2): L→lex, P→parse, R→resolve, T→type, W→warning.  An unrecognized prefix
@@ -255,8 +268,7 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
   let tcDiags = match resErrs
     [] =>
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
-      map diagOfTypeError tcErrs
-        ++ map ((w, loc) => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc) tcWarns
+      map diagOfTypeError tcErrs ++ map diagOfMatchWarning tcWarns
     _ => []
   let guardDiags = map (w => mkDiag SevWarning "W-GUARD-INEXHAUSTIVE" (stripWarnPrefix w) None) guardWarns
   guardDiags ++ resDiags ++ tcDiags
@@ -522,7 +534,7 @@ foldModuleTc [] _ buckets = buckets
 foldModuleTc ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
   let errDiags = map diagOfTypeError tcErrs
-  let warnDiags = map ((w, loc) => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc) tcWarns
+  let warnDiags = map diagOfMatchWarning tcWarns
   let guardWarns = checkGuardExhaustiveness prog
   let guardDiags = map (w => mkDiag SevWarning "W-GUARD-INEXHAUSTIVE" (stripWarnPrefix w) None) guardWarns
   let buckets2 = pushDiags path (guardDiags ++ errDiags ++ warnDiags) buckets

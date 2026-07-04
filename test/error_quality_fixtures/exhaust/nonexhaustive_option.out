@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 0
 ---
-Warning: non-exhaustive match of 'Option' — missing case: 'None'
+Warning: non-exhaustive match of 'Option' — missing case: 'None' — add a 'None => …' arm, or a '_' wildcard arm to catch the rest.

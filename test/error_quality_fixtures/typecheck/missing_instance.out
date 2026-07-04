@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/missing_instance.mdk:2:30: No impl of Eq for Color
+test/error_quality_fixtures/typecheck/missing_instance.mdk:2:30: No impl of Eq for Color — add 'deriving Eq' to the 'Color' type, or write an 'impl Eq Color'.
   |
 2 | main = println (debug (Red == Green))
   |                               ^

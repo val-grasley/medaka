@@ -1,4 +1,4 @@
-Warning: non-exhaustive match of 'Color' — missing case: 'Blue'
+Warning: non-exhaustive match of 'Color' — missing case: 'Blue' — add a 'Blue => …' arm, or a '_' wildcard arm to catch the rest.
 abs : a -> a
 add : a -> a -> a
 all : (a -> Bool) -> b a -> Bool
