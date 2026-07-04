@@ -81,6 +81,7 @@ import support.util.{
   sortUniqS,
   startsWith,
   escStr,
+  editDistance,
 }
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
@@ -2072,6 +2073,42 @@ pushTypeErrorOnceAt code loc msg =
       typeErrors
       ((code, msg, orElseLoc loc currentLoc.value)::typeErrors.value)
 
+-- ── structured help/fix side channel (ERROR-QUALITY dim F) ─────────────────
+-- `typeErrors` is a plain (code, msg, loc) triple, and that shape is threaded
+-- through a dozen signatures across this file + driver/diagnostics.mdk
+-- (checkProgramDiags, checkModuleFullDiags, checkModulesDiags, …).  Widening
+-- it to carry `help`/`fix` too would touch all of those.  Instead, record any
+-- help/fix keyed by the error's (already-the-dedup-key) message text in this
+-- side ref; driver/diagnostics.mdk's Diag-construction sites look it up by
+-- message when building the final `Diag` for CLI/--json.  `Fix`/`Diag` live in
+-- driver/diagnostics.mdk, which already imports this module — importing them
+-- back here would cycle — so the fix is carried as a plain (Loc, String)
+-- span+replacement pair, converted to a real `Fix` on the diagnostics.mdk side.
+typeErrorHelpFix : Ref (List (String, String, Option (Loc, String)))
+typeErrorHelpFix = Ref []
+
+-- Look up the help text + optional (loc, replacement) fix recorded for a
+-- pushed type-error message, if any.  `None` for the overwhelming majority of
+-- type errors, which carry no structured help/fix yet.
+export lookupTypeErrorHelpFix : String -> Option (String, Option (Loc, String))
+lookupTypeErrorHelpFix msg = findHelpFixEntry msg typeErrorHelpFix.value
+
+findHelpFixEntry : String -> List (String, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
+findHelpFixEntry _ [] = None
+findHelpFixEntry msg ((m, help, fix)::rest)
+  | m == msg = Some (help, fix)
+  | otherwise = findHelpFixEntry msg rest
+
+-- Push a deduped type error (same dedup rule as pushTypeErrorOnceAt) that also
+-- carries a human `help` string and an optional machine-applicable `fix`.
+pushTypeErrorHelpFixAt : String -> Option Loc -> String -> String -> Option (Loc, String) -> <Mut> Unit
+pushTypeErrorHelpFixAt code loc msg help fix =
+  if anyList (e => teErrMsg e == msg) typeErrors.value then ()
+  else
+    let _ = setRef typeErrorsSticky True
+    let _ = setRef typeErrors ((code, msg, orElseLoc loc currentLoc.value)::typeErrors.value)
+    setRef typeErrorHelpFix ((msg, help, fix)::typeErrorHelpFix.value)
+
 -- the first `Some` loc, else the second (so a captured record-site span wins,
 -- and a `None` capture still degrades to the live currentLoc).
 orElseLoc : Option Loc -> Option Loc -> Option Loc
@@ -2217,6 +2254,7 @@ resetState _ =
   let _ = setRef promotedRef []
   let _ = setRef methodShadowNamesRef []
   let _ = setRef typeErrors []
+  let _ = setRef typeErrorHelpFix []
   let _ = setRef occursCheckFailed False
   setRef currentLevel 0
 
@@ -3842,7 +3880,7 @@ inferFieldOfRecord te rname ri fname =
   let _ = unify te (fst ir)
   match lookupAssoc fname (snd ir)
     Some ft => ft
-    None => unknownFieldFresh fname rname
+    None => unknownFieldFresh fname rname (map fst (snd ir))
 
 -- field_owners (Phase 72): every registry KEY whose RecordInfo declares `fname`,
 -- sorted + deduped (mirrors lib/typecheck.ml's `field_candidates` +
@@ -3927,15 +3965,73 @@ pushUnknownField : String -> String -> <Mut> Unit
 pushUnknownField fname rname =
   pushTypeError "T-UNKNOWN-FIELD" (unknownFieldMsg fname rname)
 
-unknownFieldFresh : String -> String -> <Mut> Mono
-unknownFieldFresh fname rname =
-  let _ = pushUnknownField fname rname
+-- `declared`: the record's own field names, so a genuine typo (`aeg` for
+-- `age`) can be suggested (ERROR-QUALITY dim F).  When a close-enough
+-- candidate exists the error gets a structured `help` + a machine `fix` that
+-- replaces the bad field name's span with the suggestion; otherwise unchanged.
+unknownFieldFresh : String -> String -> List String -> <Mut> Mono
+unknownFieldFresh fname rname declared =
+  let _ = pushUnknownFieldMaybeSuggest fname rname declared
   let v = freshVar ()
   -- Chunk A: the field error already explained this access; poison its result
   -- var so a downstream `debug`/method use doesn't pile on a secondary
   -- `ambiguous instance` cascade (record_wrong_field).
   let _ = poisonMismatchVars v v
   v
+
+pushUnknownFieldMaybeSuggest : String -> String -> List String -> <Mut> Unit
+pushUnknownFieldMaybeSuggest fname rname declared = match suggestField fname declared
+  None => pushTypeError "T-UNKNOWN-FIELD" (unknownFieldMsg fname rname)
+  Some sug => pushTypeErrorHelpFixAt "T-UNKNOWN-FIELD" currentLoc.value (unknownFieldMsg fname rname) "did you mean '\{sug}'?" (fieldFixFrom currentLoc.value sug)
+
+-- "did you mean" for a record field: nearest declared field name by
+-- Levenshtein distance, within a fixed distance of 2.  Skip names < 3 chars
+-- (too noisy at that length, same floor as resolve.mdk's `suggestName`).
+-- Unlike `suggestName` — which searches EVERY in-scope name and so scales its
+-- threshold down with length to avoid noise in a large candidate pool — the
+-- candidate pool here is one record's OWN declared fields (typically a
+-- handful), so a flat distance-2 budget is safe: it's what's needed to catch
+-- a two-letter transposition (`aeg` vs `age`, distance 2) without the
+-- length-scaled cap resolve.mdk uses (which would reject that exact case:
+-- min(2, max(1, 3/3)) = 1).  Ties favor the lexicographically-first candidate.
+-- A small local copy rather than importing resolve.mdk's `suggestName`, which
+-- would cycle (nothing here imports resolve.mdk today, and this file is a
+-- dependency of the pipeline stage that runs after it).
+suggestField : String -> List String -> Option String
+suggestField fname declared
+  | stringLength fname < 3 = None
+  | otherwise = map fst (bestFieldCandidate fname 2 declared None)
+
+bestFieldCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
+bestFieldCandidate _ _ [] acc = acc
+bestFieldCandidate fname lim (c::cs) acc
+  | c == fname = bestFieldCandidate fname lim cs acc
+  | editDistance fname c > lim = bestFieldCandidate fname lim cs acc
+  | otherwise = bestFieldCandidate fname lim cs (keepBetterField c (editDistance fname c) acc)
+
+keepBetterField : String -> Int -> Option (String, Int) -> Option (String, Int)
+keepBetterField c d None = Some (c, d)
+keepBetterField c d (Some (bc, bd)) =
+  if d < bd || d == bd && c < bc then
+    Some (c, d)
+  else
+    Some (bc, bd)
+
+-- The field name itself carries no Loc in the AST (`EFieldAccess Expr String
+-- (Ref String)` — no per-field span).  `currentLoc` at the unknown-field site
+-- is instead the RECEIVER's own span (infer walks into the receiver first,
+-- and nothing re-enters an ELoc between there and here) — verified empirically:
+-- `p.aeg` reports receiver span (sc, sc+1) for `p`, `somebody.aeg` reports
+-- (sc, sc+8) for `somebody`.  The field name immediately follows the
+-- receiver's end column + the `.`, so its span is computable from the
+-- receiver's end column.  Valid for the common single-level `recv.field`
+-- access; a chained `a.b.cty` receiver is itself a field access with no own
+-- ELoc, so this would misplace the fix there — accepted for now (the
+-- common-case gain is worth the narrow miss).
+fieldFixFrom : Option Loc -> String -> Option (Loc, String)
+fieldFixFrom (Some (Loc f _ _ el ec)) sug =
+  Some (Loc f el (ec + 1) el (ec + 1 + stringLength sug), sug)
+fieldFixFrom None _ = None
 
 -- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField / MissingField messages.
 unknownFieldMsg : String -> String -> String

@@ -48,6 +48,7 @@ import types.typecheck.{
   entryOwnSchemes,
   Scheme(..),
   setCoherenceUserDecls,
+  lookupTypeErrorHelpFix,
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
 import support.util.{joinNl, lookupAssoc, startsWith}
@@ -99,6 +100,20 @@ export diagOfResError : ResError -> Diag
 diagOfResError e =
   let (help, fix) = resErrorHelpFix e
   Diag SevError (resErrorCode e) (ppResError e) (resErrorLoc e) help fix
+
+-- Convert a typecheck (code, msg, loc) accumulator triple to a Diag, attaching
+-- any structured help/fix that `pushTypeErrorHelpFixAt` recorded for this exact
+-- message (e.g. the record-field did-you-mean) via typecheck.mdk's message-keyed
+-- side channel — see `lookupTypeErrorHelpFix`'s doc comment for why it's a side
+-- channel rather than a widened `typeErrors` tuple.
+export diagOfTypeError : (String, String, Option Loc) -> Diag
+diagOfTypeError (code, msg, loc) = match lookupTypeErrorHelpFix msg
+  None => mkDiag SevError code msg loc
+  Some (help, mfix) =>
+    Diag SevError code msg loc (Some help) (map fixOfLocRepl mfix)
+
+fixOfLocRepl : (Loc, String) -> Fix
+fixOfLocRepl (l, r) = Fix l r
 
 -- Derive the JSON `kind` from a code's per-stage prefix (DIAGNOSTIC-CODES-DESIGN
 -- §2): L→lex, P→parse, R→resolve, T→type, W→warning.  An unrecognized prefix
@@ -236,7 +251,7 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
   let tcDiags = match resErrs
     [] =>
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
-      map ((code, msg, loc) => mkDiag SevError code msg loc) tcErrs
+      map diagOfTypeError tcErrs
         ++ map ((w, loc) => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc) tcWarns
     _ => []
   let guardDiags = map (w => mkDiag SevWarning "W-GUARD-INEXHAUSTIVE" (stripWarnPrefix w) None) guardWarns
@@ -502,7 +517,7 @@ foldModuleTc : List (String, String, List Decl) -> List (String, (List (String, 
 foldModuleTc [] _ buckets = buckets
 foldModuleTc ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
-  let errDiags = map ((code, msg, loc) => mkDiag SevError code msg loc) tcErrs
+  let errDiags = map diagOfTypeError tcErrs
   let warnDiags = map ((w, loc) => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc) tcWarns
   let guardWarns = checkGuardExhaustiveness prog
   let guardDiags = map (w => mkDiag SevWarning "W-GUARD-INEXHAUSTIVE" (stripWarnPrefix w) None) guardWarns
