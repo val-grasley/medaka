@@ -8,7 +8,16 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
-## Current status (2026-07-03) — error-message quality workstream: Tiers 1–4 + `==`→Eq/`<`→Ord + Tier-3 typecheck framing, corpus 8.00→10.60/14 (`69e50a4d`)
+## Current status (2026-07-03) — error-message quality workstream: Tiers 1–4 + `==`→Eq/`<`→Ord + Tier-3 framing + F-axis did-you-mean + Haskell-alias hints (`931cc3d4`)
+
+**F-axis (actionable-fix) did-you-mean batch — DONE (`931cc3d4`; all error-path, fixpoint YES, no re-mint).** The weakest rubric dimension (F=0.33) — extended the suggestion machinery to more error classes:
+- **Record-field did-you-mean** (`f7fbe6f4`+`d2bf6221`): `Field aeg does not belong to record Person — did you mean 'age'?` (CLI text + JSON `help`/`fix` with a machine-applicable replacement). Established a reusable typecheck help/fix side-channel (`typeErrorHelpFix`/`pushTypeErrorHelpFixAt` + `diagOfTypeError`) since the typecheck accumulator was a flat `(code,msg,loc)` triple.
+- **Unknown-type did-you-mean + dedup** (`b2576242`): `Unknown type: Strng — did you mean 'String'?`; also deduped identical resolve errors (fixed a double-emit).
+- **Haskell-alias hint table** (`f6302732`): a curated foreign-name table consulted BEFORE edit-distance (exact-match, higher confidence) across type/value/constructor positions — `fmap`→`map`, `Monad`→`Thenable`, `Maybe`→`Option`, `Just`→`Some`, `show`→`debug`, `Left`/`Right`→`Err`/`Ok`, etc. (16 mappings, each verified vs `stdlib/core.mdk`; `putStrLn`/`putStr` dropped — real externs). Message reads `Unbound variable: fmap — did you mean 'map'? ('fmap' is Haskell; Medaka uses 'map')`; JSON `fix.replacement` stays clean (`"map"`). High-value for the LLM-agent audience (models reflexively write Haskell). Fixtures `test/error_quality_fixtures/resolve/haskell_{fmap,monad,just}.mdk`. Sexp stability (resolve_modules gate) preserved (suggestion not serialized).
+- **Also this session:** rebaselined 3 stale OCaml-reference gate goldens to native (`84db1a3a`; `lex_files`/`lsp_b4`/`test`) — pre-existing debt from the 2026-06-26 OCaml removal, unrelated to the diagnostics work.
+- **Open (F-axis follow-ons):** F5 Haskell SYNTAX carveouts (`::`/`:` cons-vs-sig, `\x ->`, `case…of` — parse-error tier, harder); F3 real `Loc` on the 3 `{0,0}` resolver diags (`R-UNKNOWN-TYPE`/`R-MODULE-LOAD`/`R-PRIVATE-NAME` — needs AST/parser positions on type-refs + `DUse`, neither exists yet; would upgrade the resolve help-only hints to carry a machine `fix`); unknown-module did-you-mean (deferred — the error is a raw string in `loader.mdk`); missing-constraint/missing-case `help` lift (channel now exists). Corpus re-grade owed after the F-arc.
+
+### Tier-3 typecheck mis-framing (`00ca0bfa`)
 
 **Tier-3 typecheck mis-framing reservoir — DONE (`00ca0bfa`; corpus re-grade 10.25→10.60/14, the 8 moved fixtures +21, C/R +6 each + X +5).** The corpus's
 largest remaining quality reservoir: type errors that surfaced with a misleading
