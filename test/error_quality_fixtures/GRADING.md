@@ -1421,3 +1421,139 @@ new F sum = 46 + 8 = 54
   `file:L:C:` prefix in the human-readable `.out`, even though the JSON
   `range` is real (scored under A, not L, per this file's location-vs-JSON
   split) — a genuine next lever for the exhaust stage specifically.
+
+## Session: non-exhaustive-match warnings gain `file:L:C:` + caret (2026-07-04)
+
+`compiler/driver/medaka_cli.mdk` now prints the non-exhaustive-match warning
+with a real `file:L:C:` prefix and a source-line caret, same shape as an
+error, e.g.:
+
+```
+test/error_quality_fixtures/exhaust/nonexhaustive_option.mdk:3:12: non-exhaustive match of 'Option' — missing case: 'None' — add a 'None => …' arm, or a '_' wildcard arm to catch the rest.
+  |
+3 |   Some x => x
+  |             ^
+```
+
+(was the loc-free `Warning: non-exhaustive match of 'Option' — …`). Verified
+against all 4 committed `.out` goldens
+(`test/error_quality_fixtures/exhaust/nonexhaustive_{option,bool,list,custom}.out`)
+— each now carries the located, captioned prefix. Nothing else in the message
+changed: same missing-case name, same embedded-arm hint, same exit code (0).
+
+### Per-fixture re-score
+
+| fixture | dim | old | new | why |
+|---|---|---|---|---|
+| `nonexhaustive_option` | L | 0 | **2** | real `file:L:C:` prefix + caret on the scrutinee's last arm, `:3:12:` |
+| `nonexhaustive_bool` | L | 0 | **2** | `:3:14:` |
+| `nonexhaustive_list` | L | 0 | **2** | `:3:15:` |
+| `nonexhaustive_custom` | L | 0 | **2** | `:5:14:` |
+
+No other dimension moves for any of the 4: C/R/F/J/X/A were already at
+ceiling (2 each) from the prior actionable-fix session — only the human text
+grew a location prefix + caret, which is exactly what L measures. Confirmed
+by reading all 4 `.out` files directly; `redundant_arm` (still no diagnostic
+at all, exit 0) and `runtime_nonexhaustive` (eval path, unaffected — its
+`.out` is byte-identical, still `file:L:C: runtime error [E-NONEXHAUSTIVE-MATCH]:
+non-exhaustive match`, already located from an earlier session) do not move.
+
+### New per-fixture totals
+
+| fixture | L | C | R | F | J | X | A | old total | new total |
+|---|---|---|---|---|---|---|---|---|---|
+| `nonexhaustive_option` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 12 | **14** |
+| `nonexhaustive_bool` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 12 | **14** |
+| `nonexhaustive_list` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 12 | **14** |
+| `nonexhaustive_custom` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 12 | **14** |
+
+All 4 are now **perfect 14/14** fixtures. `redundant_arm` stays **4**;
+`runtime_nonexhaustive` stays **12** (both unaffected).
+
+### Arithmetic
+
+```
+old sum (4 fixtures) = 12+12+12+12 = 48
+new sum (4 fixtures) = 14+14+14+14 = 56
+delta = +8   (4 fixtures × +2, L-dimension only)
+```
+
+### Stage arithmetic (exhaust)
+
+```
+prior exhaust sum = 52 (5 fixtures: 4×12 nonexhaustive + 1×4 redundant_arm), avg 10.40
+new exhaust sum    = 52 + 8 = 60 (4×14 + 1×4)
+60 / 5 = 12.00                                                  (+1.60)
+```
+
+| stage | fixtures | prior avg | new avg | Δ |
+|---|---|---|---|---|
+| **exhaust** | 5 | 10.40 | **12.00** | **+1.60** |
+
+`exhaust` moves from the corpus's weakest stage to tied with `effect`
+(12.00) — the largest single-session per-stage jump recorded in this file to
+date, entirely from closing the last open dimension (L) on 4 already-strong
+fixtures.
+
+### Corpus arithmetic
+
+```
+789   (prior corpus sum, 67 fixtures)
++  8  (4 nonexhaustive fixtures, +2 each — L only)
+= 797
+67 fixtures (unchanged — no fixtures added or removed this session)
+
+797 / 67 = 11.9004... ≈ 11.90
+```
+
+**Overall average: 797 / 67 = 11.90 / 14 — up from 11.78 (+0.12).**
+
+### Per-dimension movement (67 fixtures)
+
+Only **L** moves this session.
+
+```
+prior L sum = 112, avg 1.67
+new L sum   = 112 + 8 = 120
+120 / 67 = 1.791 ≈ 1.79                                          (+0.12)
+```
+
+| dim | prior sum | prior avg | new sum | new avg | Δ |
+|---|---|---|---|---|---|
+| **L** Located | 112 | 1.67 | **120** | **1.79** | **+0.12** |
+| C Correct | 119 | 1.78 | 119 | 1.78 | +0.00 |
+| R Root-cause | 117 | 1.75 | 117 | 1.75 | +0.00 |
+| F Actionable-fix | 54 | 0.81 | 54 | 0.81 | +0.00 |
+| J Jargon-free | 132 | 1.97 | 132 | 1.97 | +0.00 |
+| X Cascade-free | 127 | 1.90 | 127 | 1.90 | +0.00 |
+| A Agent-parseable | 128 | 1.91 | 128 | 1.91 | +0.00 |
+
+### Honest remaining floor
+
+- **F (0.81/2) remains the single weakest axis in the corpus by a wide
+  margin**, untouched by this session — this was a pure-location fix, not an
+  actionable-fix change. The Tier-3-framing F=1 residual and the
+  two-alternative-hint F=1 fixtures (`missing_instance`,
+  `eq_undesugared_adt`, `lt_undesugared_adt`, `unknown_module`,
+  `apply_non_function`, `if_branch_mismatch`, `list_heterogeneous`,
+  `cons_type_mismatch`, `wrong_arg_type_in_map`) are all unchanged.
+- **The absolute floor is unchanged**: `main_takes_unit` (build-only, total
+  3) and the 2 silent accepts (`ambiguous_return`, total 4; `redundant_arm`,
+  total 4, exhaust stage) remain the corpus's lowest-scoring fixtures — none
+  of the three emit any diagnostic for this session's located-warning fix to
+  touch.
+- **`redundant_arm` is now `exhaust`'s own floor** (was tied with the other 4
+  at 8 pre-Batch-B; now the other 4 are 14/14 and `redundant_arm` alone drags
+  the stage average down from a hypothetical 14.00 to 12.00) — unreachable-arm
+  detection is still wholly unimplemented (exit 0, no diagnostic).
+- **No non-exhaustive-match diagnostic is unlocated anymore.** Before this
+  session, `runtime_nonexhaustive` (the `medaka run` / eval-path error) was
+  already located (`L=2`, fixed in an earlier session) while the 4
+  `check`-path warnings were not; this session closes that last gap, so
+  every non-exhaustive-match diagnostic in the corpus — compile-time warning
+  or runtime error — now carries a real `file:L:C:` prefix and caret. There
+  is no "lone unlocated non-exhaustive case" left; the honest remaining gap
+  for non-exhaustive-match is purely on the **F** axis for
+  `runtime_nonexhaustive` (F=0 — the runtime error doesn't name the missing
+  arm the way the compile-time warning now does) and on **detection** for
+  `redundant_arm` (no diagnostic at all).
