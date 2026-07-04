@@ -10,6 +10,10 @@ living record of the self-host port is [`compiler/README.md`](./compiler/README.
 
 ## Current status (2026-07-04) — NEW NORTH STAR: 0.1.0 public preview release
 
+> **Picking up the distribution workstream? Read [`HANDOFF.md`](./HANDOFF.md) first**
+> — it has the ranked next actions (start: D2 Track 1 big-stack pthread), the D0
+> spike results, and where each task lands.
+
 **The current-phase north star is a public 0.1.0 preview** — the point where Medaka
 goes in front of strangers. The compiler is mature; the distance is almost entirely
 **outward-facing surface** (distribution, a front door, human docs, release hygiene).
@@ -575,7 +579,7 @@ enumerated in the [Open issues index](#open-issues-index) below.**
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **⭐ 0.1.0 public preview (CURRENT NORTH STAR)** | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) | 🔴 **NEW — kicking off** | Funnel: playground front door (built, needs polish) → native download (ceiling). **Floor:** playground polish · Val-authored quickstart · stdlib docs · public repo · LICENSE · KNOWN-GAPS · `--version`. **Ceiling:** native `medaka build` binaries mac/linux + release CI + `.vsix`. **First task:** Linux build spike (`DISTRIBUTION-DESIGN.md` §D0 — the one unknown). Side quest: fs/net in interpreter. |
-| **Native binary distribution (0.1.0 §W1)** | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) | 🔴 **design done, not started** | Dependency audit done (codegen/runtime already portable; work is packaging seam). Blockers: exe-relative stdlib discovery (no exe-path extern), Mach-O-only stack-size link flag, two-binary `MEDAKA_EMITTER` ritual, libgc system dep. Decision: lean on package manager (Homebrew `depends_on bdw-gc`), not a static binary. **D0 Linux stack spike gates whether native is in 0.1.0.** |
+| **Native binary distribution (0.1.0 §W1)** | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) | 🟢 **D0 Linux spike GREEN (2026-07-04); viable** | Dependency audit done (codegen/runtime already portable; work is packaging seam). **D0 spike:** full pipeline builds+runs on Docker ubuntu:24.04 aarch64 (seed→CLI→`medaka build`→ELF prints 3). **Stack:** measured need ~32MB@-O2 / ~128MB@-O0; gdb backtrace shows the overflow is **100% the lexer `b′` token-spine** (TMC-able). D2 = 2 tracks: (1) big-stack pthread 256MB both-platforms (0.1.0 baseline, mandatory for tree-depth); (2) port WasmGC `b′` TMC to native (fast-follow parity/robustness — [Native TMC parity](#open-issues-index)). +`-lm`, +Darwin-conditional stack flag (trivial). Remaining mechanical: exe-relative discovery (D1), Homebrew+tarball (D3), release CI (D4). |
 | **Self-hosting (Stage 1)** | [`compiler/README.md`](./compiler/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md) + [`compiler/BOOTSTRAP.md`](./compiler/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
 | **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🏁 **COMPLETE** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE. **OCaml compiler (`lib/`+`bin/`) REMOVED 2026-06-26** (tag `oracle-frozen`). |
@@ -723,6 +727,8 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | **0.1.0 — release hygiene (`--version`, release CI matrix, crash→report)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W8 |
 | **0.1.0 — editor extension published (`.vsix`)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W9 |
 | **0.1.0 — fs/net in the tree-walk interpreter (side quest, non-blocking)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §4 |
+| **Native TMC parity — port WasmGC `b′` dispatch-into-single-target TMC to the native LLVM emitter** | Native backend / distribution | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) §3a/D2 Track 2; template [`compiler/WASMGC-TRMC-DESIGN.md`](./compiler/WASMGC-TRMC-DESIGN.md) §1. Fixes the lexer token-spine overflow at root; native↔wasm parity; robustness vs long lists. Fast-follow (not a 0.1.0 blocker — big-stack pthread covers it). |
+| **Recursion-depth guard — clean `nesting too deep` diagnostic instead of segfault on adversarial deep input** | Compiler / error-quality | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) §D2 Track 3. Makes "never crash on any input" true (with big-stack); aligns with error-quality workstream. |
 | Confidence-gated `lib/` (OCaml) removal — the soak tail | ✅ DONE 2026-06-26 | see top status entry |
 | Manifest emission (`[package.capabilities]` from a verified entry's effect row) | Capability-effects | this file → [wedge sequence](#capability-effects-wedge--near-term-sequence); [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §5a |
 | WS-3b builtin-extern label flip (`getEnv`/`runCommand`, plus FileRead/FileWrite path refinement) | Capability-effects | ✅ DONE 2026-07-01 (`2d010b2`) — see [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |

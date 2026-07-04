@@ -87,11 +87,20 @@ first):**
 Each has a status and an owning location. Statuses roll up into PLAN.md's
 Workstreams table.
 
-### W1 — Native binary distribution (macOS + Linux) — 🔴 CEILING, headline
+### W1 — Native binary distribution (macOS + Linux) — 🟢 CEILING, headline; D0 spike GREEN
 
 Ship a relocatable `medaka` (+ `medaka_emitter`) that a stranger can install and
 use `medaka build` with. Full technical design, the repo-dependency blocker map,
 and the phased plan are in **[`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md)**.
+
+**✅ D0 Linux spike DONE (2026-07-04) — native build CONFIRMED VIABLE on Linux.**
+The one genuine unknown (does the deeply-recursive compiler survive Linux's small
+stack?) is resolved: in a Docker `ubuntu:24.04` aarch64 container, the full
+pipeline works end-to-end (seed bootstrap → CLI → `medaka run` → `medaka build` →
+native ELF prints `3`). The deep-recursion stack is **required but bounded** (8MB
+segfaults, 512MB works → provide at runtime via pthread/setrlimit). Two other
+Linux deltas, both trivial: add `-lm`, make `-Wl,-stack_size` Darwin-conditional.
+No structural surprise — the rest is the mechanical D1–D4 packaging.
 
 Summary of what's known today (dependency audit done):
 - The compiler is already **cross-platform in the parts that matter** — emitted

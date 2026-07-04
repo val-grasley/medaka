@@ -73,27 +73,74 @@ machine." File:line references are from the audited tree.
 
 7. **`brew --prefix bdw-gc` is macOS-only** (`build_cmd.mdk:99`) — harmless middle
    tier; on Linux success rides on pkg-config or a system `-lgc`.
+8. **`-lm` not linked** (surfaced by the D0 spike) — `medaka_rt.c`'s math externs
+   (`fmod`/`sqrt`/`sin`/`pow`/…) need explicit `-lm` on Linux; macOS auto-links it
+   via libSystem. Trivial; add to every clang link line. No-op on macOS.
 
-## 3. The one genuine unknown — Linux deep-recursion stack (SPIKE FIRST)
+## 3. The one genuine unknown — Linux deep-recursion stack — ✅ RESOLVED (D0 spike, 2026-07-04)
 
 The compiler is deeply recursive. macOS gives it a **512MB stack** via
 `-Wl,-stack_size,0x20000000` — the exact flag **GNU ld rejects**. Linux's
-main-thread stack defaults to ~8MB. So the real question is not "swap the flag"
-but **"does the self-hosted emitter even run on Linux without blowing the
-stack?"** If it doesn't, the fix may be structural: run the compiler on a spawned
-`pthread` with a large stack, or `setrlimit(RLIMIT_STACK)`, or a big-stack worker.
+main-thread stack defaults to ~8MB. The question was **"does the self-hosted
+emitter even run on Linux without blowing the stack?"**
 
-This is the **only high-uncertainty item** in the whole workstream. Everything
-else is bounded/mechanical. So it is the **first task**:
+**D0 spike result: YES, with a large stack — and the stack IS required.** Driven
+in a Docker `ubuntu:24.04` aarch64 container (clang 18.1.3, GNU ld 2.42, libgc
+8.2.6), the **full pipeline works end-to-end**: cold-bootstrap from the gzipped
+seed → `medaka_emitter` (ELF, 17s) → build the `medaka` CLI (7s) → `medaka run
+hello.mdk` prints `3` → `medaka build hello.mdk` produces a native aarch64 ELF
+that runs and prints `3`. The recursive emit (seed_emitter re-emitting the whole
+compiler graph — the deepest recursion) completed fine.
 
-> **Task D0 — Linux build spike.** Stand up a GitHub Actions Ubuntu job (or a
-> local Docker container) that: clones, runs the cold bootstrap from
-> `compiler/seed/emitter.ll.gz`, builds `medaka` + `medaka_emitter`, and runs a
-> trivial `medaka build hello.mdk` end-to-end. Outcome is binary: **green** ⇒ the
-> rest is downhill, sequence the mechanical packaging; **fails** ⇒ we've found the
-> exact Linux stack/link failure, which is the most valuable thing to learn now.
+**The large stack is genuinely required, quantified:** with Linux's default
+**8MB** stack (`--ulimit stack=8388608`) the recursive emit **segfaults**
+immediately; with **512MB** (`--ulimit stack=536870912`, the honest equivalent of
+the macOS link flag) it succeeds. So the fix is not optional — but it is bounded.
+On macOS the 512MB is baked into the binary by the link flag; the **Linux
+equivalent must provide the stack at runtime**. Options (a D2 decision):
+`setrlimit(RLIMIT_STACK)` + self-re-exec; a big-stack `pthread` for the compiler
+work (`pthread_attr_setstacksize`, most robust — no re-exec, no wrapper); or a
+launcher wrapper that sets `ulimit -s`. Prefer baking it into the binary (pthread
+or setrlimit+reexec) so no wrapper/env is needed.
 
-(This box is macOS, so the realistic probe is CI or Docker, not local.)
+**Two additional Linux link deltas the spike surfaced (both trivial, both
+no-ops on macOS):**
+- **`-lm` required** — `medaka_rt.c` uses `fmod`/`sqrt`/`sin`/`pow`/… ; macOS
+  bundles libm in libSystem (auto-linked), Linux needs explicit `-lm`. Add it to
+  every clang link line (`bootstrap_from_seed.sh`, `build_native_medaka.sh`,
+  `build_cmd.mdk`'s `clangArgs`).
+- **Drop `-Wl,-stack_size` on Linux** (blocker #2) — confirmed: GNU ld rejects it;
+  patched out for the spike. Make it Darwin-conditional.
+
+**Bottom line: native build for Linux is CONFIRMED VIABLE for 0.1.0.** No
+structural surprise; the remaining work (§5 D1–D4) is mechanical + the bounded
+runtime-stack provisioning. Reusable harness committed at
+[`dist/linux-spike/`](./dist/linux-spike/) (`sh dist/linux-spike/run.sh spike`).
+
+### 3a. Backtrace — the overflow is 100% the lexer (a TMC-able shape)
+
+A gdb backtrace at the 8MB segfault (build `-O0 -g`, `dist/linux-spike/bt.sh`)
+is unambiguous: **the entire deep recursion is the lexer**, 37,000+ frames of the
+cycle
+
+```
+scan → scanAt → {scanOp | scanUpper | singleOp | handleNewline | afterNl} :: scan
+```
+
+crashing in `mdk_alloc` (allocating a cons cell for the token spine). **Zero
+parser / typecheck / emit frames** in the deep stack — it is purely the token-list
+build, one frame per token, spine live to EOF. This is *exactly* the
+"dispatch-into-single-target (`b′`)" TMC shape `WASMGC-TRMC-DESIGN.md` §1
+identified (single fixed self-call target `scan`; the cons is built in the
+per-kind dispatch leaves) — **the shape the native TMC does not handle and the
+WasmGC backend already fixed** (native never needed it because the deep C stack
+masked it).
+
+Implication: porting `b′` to the native LLVM emitter would eliminate *this*
+overflow entirely (very possibly letting native self-compile fit Linux's default
+8MB with no large stack). The genuine tree-depth floor (parser/typecheck on
+adversarially nested input) is NOT exercised here — it is the insurance case, not
+the observed case. This is what splits the fix cleanly into two tracks (D2).
 
 ## 4. Design decisions
 
@@ -119,12 +166,34 @@ else is bounded/mechanical. So it is the **first task**:
 
 ## 5. Phased plan
 
-- **D0 — Linux build spike** (§3). *Gates whether native build is in 0.1.0.*
+- **D0 — Linux build spike** (§3). ✅ **DONE 2026-07-04 — GREEN.** Native build
+  confirmed viable on Linux; the deep-recursion stack is required but bounded.
 - **D1 — exe-relative stdlib discovery.** exe-path primitive + `MEDAKA_ROOT`
   default; collapses the two-binary env ritual. Verify a `medaka` moved outside
   the repo still `run`/`check`/`build`s.
-- **D2 — platform-conditional link/stack handling.** Make `medaka build` (and the
-  compiler's own build) work on Linux; keep macOS byte-identical.
+- **D2 — platform link/stack handling (TWO TRACKS, decoupled).** Make `medaka
+  build` (and the compiler's own build) work on Linux; keep macOS byte-identical.
+  Measured need: ~32MB @ -O2 / ~128MB @ -O0 (8MB default segfaults; -O2 frame
+  shrink helps ~4× but does NOT clear 8MB). Decided approach (both, on separate
+  timelines — the TMC track does NOT retire the stack track, so the release is not
+  serialized behind it):
+  - **Track 1 (0.1.0 baseline, hours): big-stack `pthread`.** Run the compiler on
+    a spawned thread with a chosen stack (256MB, comfortable over the measured
+    32MB) on BOTH platforms → drop the Mach-O `-Wl,-stack_size` flag entirely,
+    unify the backends, correctness-complete for ALL recursion shapes incl.
+    tree-depth. Plus: add `-lm` to all link lines. Mandatory regardless of TMC
+    (the tree-depth floor can only be handled by a stack, not TMC).
+  - **Track 2 (fast-follow, own workstream): port WasmGC `b′` dispatch-TMC to
+    native.** The backtrace (§3a) proves the observed overflow is 100% the
+    `b′`-shaped lexer token-spine — one shape, one file (`lexer.mdk`), already
+    designed (`WASMGC-TRMC-DESIGN.md`). Fixes the observed overflow at the root,
+    closes a native↔wasm parity gap, hardens against pathologically long *lists*
+    (which blow even a 256MB stack), reduces GC/stack pressure. Optimization +
+    robustness, not the stack fix.
+  - **Track 3 (capstone, aligns with error-quality): recursion-depth guard.** A
+    clean `expression nesting too deep` diagnostic instead of a segfault on
+    adversarial deep nesting — the piece that actually makes "never crash on any
+    input" true (Track 1 + Track 3 together; Track 2 removes the list dimension).
 - **D3 — install layout + package manager.** Homebrew formula (`depends_on
   bdw-gc`); Linux tarball + README deps; clang-missing UX (actionable error).
 - **D4 — release CI matrix.** Tagged CI builds mac (arm64; x86_64 if cheap) +
