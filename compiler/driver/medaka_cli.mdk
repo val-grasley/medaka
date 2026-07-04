@@ -36,6 +36,7 @@ import driver.build_cmd.{
 import support.util.{
   reverseL,
   joinNl,
+  splitNl,
   startsWith,
   endsWith,
   anyList,
@@ -271,7 +272,15 @@ checkRoute allowInternal _ rsrc csrc tsrc target [_] =
   let errs = filter isDiagError diags
   match errs
     [] =>
-      let _ = putStr (runCheck rsrc csrc tsrc)
+      -- Clean (no errors): the scheme dump goes to STDOUT loc-free, but any
+      -- non-exhaustive-match WARNING is re-rendered LOCATED (file:L:C: + caret)
+      -- to STDERR, byte-consistent with how errors render (line ~277).  runCheck
+      -- bundles the warning loc-free into stdout, so we strip its "Warning: …"
+      -- lines and re-emit them from `diags` (which carries the real Loc the
+      -- --json path already reports).  See ERROR-QUALITY.md (Located dimension).
+      let warns = filter isDiagWarn diags
+      let _ = putStr (stripWarningLines (runCheck rsrc csrc tsrc))
+      let _ = emitLocatedWarnings tsrc target warns
       ()
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
@@ -403,6 +412,24 @@ cjHasErr (_, diags) = any isDiagError diags
 isDiagError : Diag -> Bool
 isDiagError (Diag SevError _ _ _ _ _) = True
 isDiagError _ = False
+
+isDiagWarn : Diag -> Bool
+isDiagWarn d = not (isDiagError d)
+
+-- Drop the loc-free "Warning: …" lines runCheck bundles into its scheme dump, so
+-- the located re-render (emitLocatedWarnings) is the single warning surface —
+-- otherwise the CLI would print each warning twice (loc-free + located).  Scheme
+-- lines are "name : type", never "Warning: …", so this only removes warnings.
+stripWarningLines : String -> String
+stripWarningLines s =
+  joinNl (filter (l => not (startsWith "Warning: " l)) (splitNl s))
+
+-- Re-render warning Diags LOCATED (file:L:C: + caret) to STDERR, exactly like
+-- errors (ppDiagCliSrc).  Warnings do not change the exit code (stays 0).
+emitLocatedWarnings : String -> String -> List Diag -> <IO> Unit
+emitLocatedWarnings _ _ [] = ()
+emitLocatedWarnings src file ws =
+  ePutStrLn (joinNl (map (ppDiagCliSrc src file) ws))
 
 -- Mirrors lib/fmt.ml's single-file dispatch: default --write (in place),
 -- --stdout prints, --check reports.  MVP handles exactly one file.

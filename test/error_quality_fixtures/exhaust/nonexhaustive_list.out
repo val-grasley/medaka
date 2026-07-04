@@ -1,4 +1,7 @@
 cmd: medaka check
 exit: 0
 ---
-Warning: non-exhaustive match of 'List' — missing case: '[]' — add a '[] => …' arm, or a '_' wildcard arm to catch the rest.
+test/error_quality_fixtures/exhaust/nonexhaustive_list.mdk:3:15: non-exhaustive match of 'List' — missing case: '[]' — add a '[] => …' arm, or a '_' wildcard arm to catch the rest.
+  |
+3 |   x :: rest => x
+  |                ^
