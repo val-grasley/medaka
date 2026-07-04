@@ -44,18 +44,25 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
 
 ## typecheck/ (`medaka check`)
 
+**Updated (2026-07-04, base `295f263b`):** 6 fixtures below were reframed by
+the Batch-B actionable-fix work — see `GRADING.md`'s "post-Batch-B" section
+for the full re-score. Rows updated: `apply_non_function`,
+`if_branch_mismatch`, `list_heterogeneous`, `cons_type_mismatch`,
+`wrong_arg_type_in_map` (help-only hint appended / reframed), and
+`arg_order_swapped` (collapsed to one diagnostic + a real machine `fix`).
+
 | Fixture | Intended mistake | Message (excerpt) | Observation |
 |---|---|---|---|
 | `type_mismatch_int_string` | pass String to Int fn | `…:3:34: Type mismatch: Int vs String` | Clear, located, caret |
-| `arg_order_swapped` | swapped args | `…:3:30: Type mismatch: Int vs String` | Located; but no hint the *arguments* are swapped |
+| `arg_order_swapped` | swapped args | `…:3:22: arguments to 'greet' look swapped — try 'greet "Alice" 3'.` | **Fixed**: one diagnostic (was two), names the swap, and `--json` carries a real machine `fix` performing the transposition |
 | `too_few_args` | `add 1 + 10` (forgot arg) | `…:3:31: No impl of Num for (Int -> Int)` | **Cryptic**: the "forgot an arg" is reported as a Num-instance failure on a function type |
-| `too_many_args` | `inc 1 2` | `…:3:29: Type mismatch: Int vs a -> b` | Located but `a -> b` is abstract; no "too many arguments" wording |
+| `too_many_args` | `inc 1 2` | `…:3:29: 'inc' takes 1 argument(s) but is applied to 2.` | Reframed (Tier-3): names the actual counts, no raw tyvar |
 | `float_where_int` | `factorial 3.5` | `…:3:33: Type mismatch: Int vs Float` | Clear |
-| `if_branch_mismatch` | `then "pos" else 0` | `…:2:38: No impl of Num for String` | **Odd framing**: branch mismatch surfaces as Num-for-String, not "branches differ" |
-| `list_heterogeneous` | `[1,2,"three",4]` | `…:1:38: No impl of Num for String` | Located at the String; framed as Num failure, not "list elements differ" |
+| `if_branch_mismatch` | `then "pos" else 0` | `…:2:38: if branches have different types: Int vs String — both branches must have the same type; change the else branch to Int, or the then branch to String.` | Reframed (Tier-3) + help hint appended this session: names the actual structural shape and offers two concrete directions |
+| `list_heterogeneous` | `[1,2,"three",4]` | `…:1:38: list elements have different types: Int vs String — all elements must have the same type; convert the String element, or make the list hold String.` | Reframed + help hint: names the structural shape, offers two concrete directions |
 | `annotation_mismatch` | `x : Int = "…"` | `…:2:15: Type mismatch: Int vs String` | Clear |
-| `apply_non_function` | call an Int | `…:3:20: Type mismatch: Int vs a -> b` | Located; `a -> b` abstract; no "not a function" wording |
-| `cons_type_mismatch` | `1 :: ["a","b"]` | `…:1:23: No impl of Num for String` | Framed as Num-for-String rather than element/list mismatch |
+| `apply_non_function` | call an Int | `…:3:20: This expression has type Int, which is not a function, so it cannot be applied to an argument. — 'n' is a value, not a function; remove the argument, or call a function here.` | Reframed (Tier-3) + help hint appended this session: no more raw `a -> b`, names the "not a function" fact and a concrete direction |
+| `cons_type_mismatch` | `1 :: ["a","b"]` | `…:1:23: cons (::) type mismatch: head is Int but the list holds String — the head's type must match the list's elements; change the head to String, or use a list of Int.` | Reframed + help hint: names the operator and which side (head vs list) is wrong |
 | `return_type_mismatch` | body String, sig Int | `…:2:15: Type mismatch: String vs Int` | Clear |
 | `record_missing_field` | omit `age` | `…:4:23: Missing field age in construction of record Person` | **Excellent**: names field + record |
 | `record_wrong_field` | `p.aeg` typo | `…:6:17: Field aeg does not belong to record Person` | **Excellent**: names field + record; no suggestion |
@@ -63,7 +70,7 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
 | `missing_constraint` | body uses `==`, sig lacks `Eq a =>` | *(no output)* | ⚠️ **Accepts it** (exit 0): signature missing the constraint is not rejected |
 | `ambiguous_return` | `length []` | *(no output)* | Accepts (exit 0): defaulting resolves it; not actually ambiguous here |
 | `tuple_arity_mismatch` | pass 2-tuple to 3-tuple fn | `…:3:32: Type mismatch: (Int, Int, Int) vs (a, b)` | Clear-ish; shows the shapes |
-| `wrong_arg_type_in_map` | `map f "hello"` | `…:1:46: Type mismatch: a b vs String` | **Cryptic** `a b` (type application) printed to the user |
+| `wrong_arg_type_in_map` | `map f "hello"` | `…:1:46: 'map' expects a container (like List or Array) here, but got String — pass a List or Array; to work over a string's characters, convert it with \`string.toChars\` first.` | **Fixed**: no more raw `a b` tyvar leak; names `map`'s actual expectation and offers two concrete directions |
 | `bool_where_int` | `5 + True` | `…:1:27: No impl of Num for Bool` | Reasonable; Num-instance framing |
 
 ## exhaust/ (`medaka check`)
@@ -130,9 +137,13 @@ previously is long fixed (the user's own panic message now surfaces as
 5. **`exhaust/*`** — non-exhaustive match is a **stdout warning with exit 0**
    that never **names the missing pattern** or a source location; a real user
    easily misses it. `redundant_arm` produces **no diagnostic at all**.
-6. **`typecheck` Num-framing** — several structural mistakes (heterogeneous
+6. **`typecheck` Num-framing** — ~~several structural mistakes (heterogeneous
    list, cons mismatch, if-branch mismatch, forgotten argument) surface as
-   `No impl of Num for …` rather than describing the actual shape problem.
+   `No impl of Num for …` rather than describing the actual shape problem~~ —
+   **fixed for `if_branch_mismatch`/`list_heterogeneous`/`cons_type_mismatch`/
+   `too_many_args`/`apply_non_function`** (Tier-3 reframe, plus a help-only
+   fix hint appended 2026-07-04 to the first four); `too_few_args` still
+   surfaces as `No impl of Num for (Int -> Int)` — not yet reframed.
 7. **`lex/bad_escape`** — an invalid string escape yields `lexing: empty token`,
    leaking an internal lexer state name with no location.
 8. **Missing "did-you-mean"** — resolve typos (`printline`, `cont`) get no

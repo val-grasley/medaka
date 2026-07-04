@@ -1018,3 +1018,194 @@ session): L sum 92 (avg 1.37), A sum 110 (avg 1.64).
   (`ambiguous_return`, `redundant_arm`, total 4 each) remain the corpus's
   absolute floor, untouched — none are `eval`/`run`-path runtime errors, so
   this workstream's fix doesn't reach them.
+
+---
+
+## Re-grade (post-Batch-B actionable-fixes, base `295f263b`)
+
+Base confirmed: `git merge-base --is-ancestor 295f263b HEAD` → `BASE_OK`.
+Docs-only re-grade — no compiler source touched. Starting point is the prior
+corpus state (`769 / 67 = 11.48`, the "post-eval-runtime-JSON" section above).
+This session re-scores exactly the **6 `typecheck/` fixtures** that make up
+the "Tier-3 typecheck-framing F=0 reservoir" flagged as untouched in every
+prior session: `apply_non_function`, `if_branch_mismatch`,
+`list_heterogeneous`, `cons_type_mismatch`, `wrong_arg_type_in_map`,
+`arg_order_swapped`. All other 61 fixtures are unchanged and keep their
+prior scores.
+
+**What changed**, verified against the committed `.out` goldens and spot-checked
+on a freshly built binary (`./medaka check` + `./medaka check --json`), byte-
+identical to the goldens in both text and JSON shape:
+
+- **Batch A — 4 fixtures gained a help-only hint appended to the primary
+  message** (`apply_non_function`, `if_branch_mismatch`, `list_heterogeneous`,
+  `cons_type_mismatch`). Each `.out` now ends with ` — <concrete direction>`
+  (e.g. `cons_type_mismatch`: `… — the head's type must match the list's
+  elements; change the head to String, or use a list of Int.`). Confirmed via
+  `--json`: the `help` field is populated, but there is **no `fix`** field —
+  the hint names two alternative edits (either side could change), not one
+  mechanical location+replacement. This is a concrete-direction hint, not an
+  applicable edit: **F 0→1** for all four, no other dim moves (C/R/J/X/A/L
+  were already at their post-Tier-3 ceiling for these four).
+- **`wrong_arg_type_in_map`** — primary message rewritten from the raw-tyvar
+  leak `Type mismatch: a b vs String` to `'map' expects a container (like
+  List or Array) here, but got String — pass a List or Array; to work over a
+  string's characters, convert it with \`string.toChars\` first.` Verified via
+  `--json`: `help` populated, no `fix` field (same "concrete direction, not a
+  single mechanical edit" shape as Batch A — two options are offered: pass a
+  container, or convert the string first). This is a genuine reframe, not just
+  an appended hint, and it lifts four dims: **C 1→2** (states the real
+  container-vs-scalar fact instead of an opaque type-application),
+  **R 0→2** (points exactly at what's wrong — `map`'s first-arg expectation —
+  instead of naming an internal type variable), **J 1→2** (the `a b` leak is
+  gone; the message is now built entirely from surface vocabulary), **F 0→1**
+  (concrete direction, no machine fix). X and A were already 2 (cascade
+  suppressed in the earlier Tier-3 pass; JSON already carried code+kind+span).
+- **`arg_order_swapped`** — the prior TWO diagnostics (`Type mismatch: Int vs
+  String` at the call site + a second `Type mismatch: Int literal vs String`
+  for the transposed argument) collapse to **ONE**: `arguments to 'greet'
+  look swapped — try 'greet "Alice" 3'.` Verified via `--json`: exactly one
+  diagnostic object, and it now carries a real machine **`fix`**
+  (`{"range":{"start":{"line":2,"character":22},"end":{"line":2,"character":31}},"replacement":"\"Alice\" 3"}`)
+  that performs the actual swap. This lifts two dims: **X 1→2** (two
+  call-site diagnostics collapse to one — the pair was never a cascade
+  artifact per the prior grading note, but it *was* two separate messages for
+  one root fact, and now it's one), **F 0→2** (a real applicable edit — the
+  rubric's F=2 anchor, "an edit an agent could apply verbatim" — not just a
+  named direction). C/R were already 2 (both diagnostics were independently
+  correct pre-session); A stays 2 — **per the clarified A/F split, the
+  machine `fix` is scored under F, not A**, so A does not move a second time
+  for the same evidence.
+
+### Per-fixture re-score
+
+| fixture | dim | old | new | why |
+|---|---|---|---|---|
+| `apply_non_function` | F | 0 | **1** | help hint appended: "'n' is a value, not a function; remove the argument, or call a function here." Concrete direction, no machine `fix` |
+| `if_branch_mismatch` | F | 0 | **1** | help hint: "change the else branch to Int, or the then branch to String." |
+| `list_heterogeneous` | F | 0 | **1** | help hint: "convert the String element, or make the list hold String." |
+| `cons_type_mismatch` | F | 0 | **1** | help hint: "change the head to String, or use a list of Int." |
+| `wrong_arg_type_in_map` | C | 1 | **2** | reframed from raw-tyvar symptom to the real container-vs-scalar fact |
+| `wrong_arg_type_in_map` | R | 0 | **2** | now names exactly what's wrong (`map` expects a container) instead of an internal type variable |
+| `wrong_arg_type_in_map` | J | 1 | **2** | `a b` tyvar leak is gone; all surface vocabulary |
+| `wrong_arg_type_in_map` | F | 0 | **1** | help hint: two concrete directions (pass a container, or `string.toChars` first), no mechanical fix |
+| `arg_order_swapped` | X | 1 | **2** | two call-site diagnostics collapse to one unified "arguments look swapped" message |
+| `arg_order_swapped` | F | 0 | **2** | real machine `fix` performing the swap — an applicable edit, not just a direction |
+
+### New per-fixture totals
+
+| fixture | L | C | R | F | J | X | A | old total | new total |
+|---|---|---|---|---|---|---|---|---|---|
+| `apply_non_function` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `if_branch_mismatch` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `list_heterogeneous` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `cons_type_mismatch` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `wrong_arg_type_in_map` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 8 | **13** |
+| `arg_order_swapped` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 11 | **14** |
+
+`arg_order_swapped` is now the corpus's newest **perfect 14/14** fixture (a
+real machine fix plus a single, correct, jargon-free, located diagnostic).
+The other five all reach 13, held off perfect only by **F=1** (a help-only
+hint, not a mechanical edit — genuinely correct: none of the four Batch-A
+messages, nor `wrong_arg_type_in_map`'s, name a *single* unambiguous edit;
+each offers two valid alternative fixes, which is why F stops at 1 and not 2
+per the rubric's own anchor text).
+
+### Arithmetic
+
+```
+old sum (6 fixtures) = 12+12+12+12+8+11 = 67
+new sum (6 fixtures) = 13+13+13+13+13+14 = 79
+delta = +12
+```
+
+Per-dimension delta, cross-checked against the per-fixture table above:
+- F: +1 (apply_non_function) +1 (if_branch_mismatch) +1 (list_heterogeneous)
+  +1 (cons_type_mismatch) +1 (wrong_arg_type_in_map) +2 (arg_order_swapped)
+  = **+7**
+- C: +1 (wrong_arg_type_in_map only) = **+1**
+- R: +2 (wrong_arg_type_in_map only) = **+2**
+- J: +1 (wrong_arg_type_in_map only) = **+1**
+- X: +1 (arg_order_swapped only) = **+1**
+- L, A: unchanged (+0 each)
+
+Sum of dimension deltas: 7+1+2+1+1 = **12** — matches the fixture-sum delta
+exactly (sanity check passes).
+
+### Typecheck-stage average
+
+```
+prior typecheck sum = 277 (24 fixtures, avg 11.54 — "post-F-axis" baseline,
+                            unmoved by the intervening parse/lex/eval sessions)
+new typecheck sum = 277 + 12 = 289
+289 / 24 = 12.0417 ≈ 12.04
+```
+
+**typecheck: 11.54 → 12.04 (+0.50)** — typecheck moves up but stays
+**2nd-strongest**, behind `resolve` (12.91), and now edges just past
+`effect`/`eval` (both 12.00). All other 7 stages are unchanged (this session
+touched only these 6 `typecheck/` fixtures).
+
+### Corpus arithmetic
+
+```
+769  (prior corpus sum, 67 fixtures — "post-eval-runtime-JSON" baseline)
+- 67 (old sum of the 6 typecheck fixtures, already inside 769)
++ 79 (their new sum)
+= 781
+67 fixtures (unchanged — no fixtures added or removed)
+
+781 / 67 = 11.6567... ≈ 11.66
+```
+
+**Overall average: 781 / 67 = 11.66 / 14 — up from 11.48 (+0.18).**
+
+### Per-dimension movement (67 fixtures)
+
+Prior full-corpus sums (reconstructed from the "post-eval-runtime-JSON"
+session's stated deltas over the "post-F-axis" 63-fixture sums, plus the +4
+Haskell fixtures at 14/14 each): L=112, C=118, R=115, F=39, J=131, X=126,
+A=128 (sum check: 112+118+115+39+131+126+128 = 769, matches).
+
+| dim | old sum | old avg | new sum | new avg | Δ |
+|---|---|---|---|---|---|
+| F Actionable-fix | 39 | 0.58 | **46** | **0.69** | **+0.10** |
+| R Root-cause | 115 | 1.72 | **117** | **1.75** | +0.03 |
+| C Correct | 118 | 1.76 | **119** | **1.78** | +0.01 |
+| J Jargon-free | 131 | 1.96 | **132** | **1.97** | +0.01 |
+| X Cascade-free | 126 | 1.88 | **127** | **1.90** | +0.01 |
+| L Located | 112 | 1.67 | 112 | 1.67 | +0.00 |
+| A Agent-parseable | 128 | 1.91 | 128 | 1.91 | +0.00 |
+
+**F moves the most** — still the corpus's weakest axis by a wide margin
+(0.69/2), but this session's the second-largest single-session F lift in the
+file's history (after the post-F-axis session's +0.14), and the first time a
+whole `typecheck/`-framing reservoir session has moved F at all (Tier-3
+explicitly did not — see its "What's still weakest" note above).
+
+### Remaining floor (honest)
+
+- **F (0.69/2) is still the single weakest axis in the corpus**, even after
+  this session's targeted push. The 5 non-`arg_order_swapped` fixtures here
+  land at F=1 (a genuine ceiling, not an oversight): each offers **two**
+  structurally valid alternative edits ("change the head to String, *or* use
+  a list of Int") rather than one unambiguous mechanical fix, so none crosses
+  the F=2 bar honestly. Closing that gap further would need the diagnostic to
+  pick one canonical direction (e.g. always suggest coercing the *later*/
+  *minority* element) and emit it as a machine `fix` — a real design
+  decision, not a docs change, and out of scope here.
+- **The absolute floor is untouched by this session**: `main_takes_unit`
+  (build-only, total 3) and the 2 silent accepts (`ambiguous_return`,
+  `redundant_arm`, total 4 each) remain the corpus's lowest-scoring fixtures.
+  None of the three are `typecheck/`-framing fixtures — `main_takes_unit` is a
+  `build`-only emitter failure, `ambiguous_return`/`redundant_arm` emit no
+  diagnostic at all — so this session's fixes, scoped entirely to existing
+  `check`-path type-mismatch messages, structurally cannot reach them.
+- **`wrong_arg_type_in_map` and `arg_order_swapped`** were, before this
+  session, respectively the corpus's and the `typecheck` stage's own local
+  minima among non-silent/non-build fixtures (8 and 11). Both are now firmly
+  mid/high-pack (13, 14) — this was the targeted fix, and it landed cleanly.
+- **A remains capped at 2, never higher** — reconfirms the clarified rubric
+  reading is being applied consistently: `arg_order_swapped`'s new machine
+  `fix` is real evidence of quality, but it is credited entirely to F, so A
+  does not inflate a second time off the same JSON field.
