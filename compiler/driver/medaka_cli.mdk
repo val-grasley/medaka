@@ -68,6 +68,8 @@ import driver.loader.{
   stdlibTrustedMods,
   unknownModuleIdOf,
   findImportLoc,
+  availableModulesHint,
+  availableModulesText,
 }
 import driver.diagnostics.{
   analyzeProject,
@@ -208,7 +210,7 @@ runCheckCmd argv =
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          Ok csrc => if jsonMode then runCheckJsonCmd allowInternal rsrc csrc target roots
+          Ok csrc => if jsonMode then runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir
           else match readFile target
             Err msg =>
               let _ = ePutStrLn msg
@@ -220,7 +222,7 @@ runCheckCmd argv =
                 exit 1
               Ok _ => match loadProgram target roots
                 Err lmsg =>
-                  let _ = ePutStrLn (moduleLoadErrText tsrc target lmsg)
+                  let _ = ePutStrLn (moduleLoadErrText tsrc target stdlibDir lmsg)
                   exit 1
                 Ok mods =>
                   let trusted = stdlibTrustedMods target roots stdlibDir mods
@@ -241,12 +243,20 @@ runCheckCmd argv =
 -- `parseLocated` (real ELoc/DUse spans) and look up the failing modId's own
 -- `import` statement; render through the shared carat formatter when found,
 -- else fall back to the bare message (unchanged behaviour).
-moduleLoadErrText : String -> String -> String -> <Mut> String
-moduleLoadErrText tsrc target lmsg = match unknownModuleIdOf lmsg
+-- F: an `unknown module` message additionally carries an "available modules:
+-- ..." suffix (enumerated from `roots` via loader's `availableModulesHint`) so
+-- the CLI-text path — which does not render structured `help` — still surfaces
+-- an actionable fix.  Other loader errors (cycle / unreadable file) are
+-- unaffected: `unknownModuleIdOf` gates the hint to the one message shape it
+-- applies to.
+moduleLoadErrText : String -> String -> String -> String -> <IO, Mut> String
+moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
   None => lmsg
-  Some mid => match findImportLoc mid (parseLocated tsrc)
-    None => lmsg
-    Some loc => ppDiagCliSrc tsrc target (Diag SevError "R-MODULE-LOAD" lmsg (Some loc) None None)
+  Some mid =>
+    let msg = lmsg ++ availableModulesHint stdlibDir
+    match findImportLoc mid (parseLocated tsrc)
+      None => msg
+      Some loc => ppDiagCliSrc tsrc target (Diag SevError "R-MODULE-LOAD" msg (Some loc) None None)
 
 -- Route by module count: a single loaded module (no non-core imports) ⇒ the
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
@@ -317,8 +327,8 @@ hasFlag flag (x::rest)
 -- Parse errors are detected FIRST (before loadProgram panics) via parseResult.
 -- Output: {"files":[{"file":<path>,"diagnostics":[...]}]}
 -- Exits 1 if any error diagnostic; 0 otherwise.
-runCheckJsonCmd : Bool -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
-runCheckJsonCmd allowInternal rsrc csrc target roots =
+runCheckJsonCmd : Bool -> String -> String -> String -> List String -> String -> <IO, Mut, Panic> Unit
+runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir =
   let src = readFileSafe target
   match parseResult src
     Err e =>
@@ -337,10 +347,22 @@ runCheckJsonCmd allowInternal rsrc csrc target roots =
           -- Load error (missing import etc.): report as single diagnostic.
           -- F3 Chunk B: entry-scan the (already-known-to-parse) source for the
           -- failing DUse's own span — see moduleLoadErrText's doc comment.
+          -- F: an `unknown module` error additionally gets an "available
+          -- modules: ..." suffix on the message AND a structured `help` (JSON
+          -- consumers get both; `unknownModuleIdOf` gates this to the one
+          -- message shape it applies to — other loader errors are untouched).
           let mloc = match unknownModuleIdOf lmsg
             None => None
             Some mid => findImportLoc mid (parseLocated src)
-          let triples = [(target, src, [Diag SevError "R-MODULE-LOAD" lmsg mloc None None])]
+          let mhelp = match unknownModuleIdOf lmsg
+            None => None
+            Some _ => match availableModulesText stdlibDir
+              "" => None
+              txt => Some txt
+          let jmsg = lmsg ++ (match unknownModuleIdOf lmsg
+            None => ""
+            Some _ => availableModulesHint stdlibDir)
+          let triples = [(target, src, [Diag SevError "R-MODULE-LOAD" jmsg mloc mhelp None])]
           let _ = println (cjAllToJson triples)
           exit 1
         Ok mods => match mods

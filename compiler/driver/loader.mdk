@@ -33,6 +33,7 @@ import support.util.{
   lookupAssoc,
   splitNl,
   stringTrim,
+  sortUniqS,
 }
 
 -- ── small list helpers (no stdlib import — compiler is single-root) ──
@@ -307,6 +308,54 @@ findImportLoc mid ((DUse _ path loc)::rest) =
     findImportLoc mid rest
 findImportLoc mid ((DAttrib _ d)::rest) = findImportLoc mid (d::rest)
 findImportLoc mid (_::rest) = findImportLoc mid rest
+
+-- ── F: available-module hint enumeration ────────────────────────────────────
+-- List the importable stdlib module ids — used to build the "available
+-- modules: ..." hint on an `unknown module` error (see moduleLoadErrText /
+-- runCheckJsonCmd in medaka_cli.mdk).  Enumerates the STDLIB DIRECTORY ONLY
+-- (not the project/CWD root): the stdlib set is the stable, canonical "which
+-- module did you mean" list, whereas the project root can hold loose `.mdk`
+-- files (e.g. sibling test fixtures) that would pollute the suggestion and
+-- churn the golden.  Only top-level entries are considered (the stdlib layout
+-- is flat).  `core`/`runtime` are excluded: they are the implicit prelude,
+-- never spelled in an `import`.  Deduped + sorted (`sortUniqS`) so the result
+-- is deterministic regardless of `listDir`'s on-disk ordering — required for a
+-- stable golden.
+export availableModuleIds : String -> <IO> List String
+availableModuleIds stdlibDir = match listDir stdlibDir
+  Err _ => []
+  Ok entries => sortUniqS (filterMap mdkBaseName entries)
+
+-- `foo.mdk` -> `Some "foo"`; dotfiles, non-`.mdk` entries, and the two implicit
+-- prelude modules are dropped.
+mdkBaseName : String -> Option String
+mdkBaseName name =
+  if endsWith ".mdk" name && not (startsWith "." name) then
+    let base = stringSlice 0 (stringLength name - 4) name
+    if base == "core" || base == "runtime" then None else Some base
+  else None
+
+-- Plain "available modules: array, list, map, string" text (no leading
+-- separator) — this is what feeds the structured JSON `help` field.  `[]` (no
+-- stdlib dir readable) yields "".
+export availableModulesText : String -> <IO> String
+availableModulesText stdlibDir = match availableModuleIds stdlibDir
+  [] => ""
+  ids => stringConcat ["available modules: ", joinComma ids]
+
+-- Render the hint SUFFIX appended to an `unknown module: <id>` CLI-text
+-- message, e.g. " — available modules: array, list, map, string".  `[]` (no
+-- stdlib dir readable) yields "" so callers can unconditionally append without
+-- a conditional.
+export availableModulesHint : String -> <IO> String
+availableModulesHint stdlibDir = match availableModulesText stdlibDir
+  "" => ""
+  txt => " — " ++ txt
+
+joinComma : List String -> String
+joinComma [] = ""
+joinComma [x] = x
+joinComma (x::xs) = stringConcat [x, ", ", joinComma xs]
 
 -- ── file resolution + parsing ──
 
