@@ -226,7 +226,12 @@ runCheckCmd argv =
                 let loc = "\{target}:\{intToString (parseErrorLine e)}:\{intToString (parseErrorCol e)}"
                 let _ = ePutStrLn "\{loc}: \{parseErrorMessage e}"
                 exit 1
-              Ok _ => match loadProgram target roots
+              -- Load with parseLocated (real ELoc spans), mirroring `run`
+              -- (line ~678): plain loadProgram uses placeholder-loc `parse`,
+              -- which collapses every span to 1:0, so an import-bearing
+              -- file's Unbound-variable diagnostic pointed at the import
+              -- line instead of the actual use site.
+              Ok _ => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
                 Err lmsg =>
                   let _ = ePutStrLn (moduleLoadErrText tsrc target stdlibDir lmsg)
                   exit 1
