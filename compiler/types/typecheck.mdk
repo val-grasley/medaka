@@ -52,6 +52,8 @@ import frontend.exhaust.{
   Oracle,
   buildOracle,
   useful,
+  patUnreachable,
+  patHasRange,
   usefulWitness,
   renderWitness,
   desugarPat,
@@ -5192,6 +5194,7 @@ inferMatch env scrutTy arms =
   let result = freshVar ()
   let _ = inferArms env scrutTy result arms
   let _ = checkMatchExhaustive scrutTy arms
+  let _ = checkMatchRedundant scrutTy arms
   result
 -- Type-aware exhaustiveness (`check_match`): run AFTER the arms have unified
 -- the scrutinee type, so `scrutTy` is fully resolved when we read its head.
@@ -5215,6 +5218,42 @@ checkMatchExhaustive scrutTy arms =
     let _ = setRef matchWarnings (nonExhaustiveMsg scrutTy rows :: matchWarnings.value)
     setRef matchWarningLocs (currentLoc.value::matchWarningLocs.value)
   else ()
+
+-- ── unreachable / redundant match-arm warning (W-UNREACHABLE-ARM) ──────────
+-- An arm is unreachable when its pattern is already fully covered by an EARLIER
+-- *unguarded* arm: those arms fire unconditionally, so no value ever reaches
+-- this one.  We fold arms left-to-right, accumulating a matrix of the preceding
+-- UNGUARDED arm patterns, and flag any arm whose pattern is not `useful` against
+-- it (`patUnreachable`).  Guarded predecessors are excluded (their guard may fail
+-- at runtime, leaving a later same-shape arm reachable), which keeps the check
+-- conservative — we flag only arms provably dead via unconditional predecessors.
+-- The warning carries the ARM's own loc (its body span) so the caret points at
+-- the dead arm, not the match head.
+unreachableArmWarning : String
+unreachableArmWarning = "Warning: unreachable match arm — this pattern is already covered by an earlier arm"
+
+checkMatchRedundant : Mono -> List Arm -> <Mut> Unit
+checkMatchRedundant scrutTy arms =
+  checkRedundantGo (matchCol0Type scrutTy) [] arms
+
+checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
+checkRedundantGo _ _ [] = ()
+checkRedundantGo col0 prec ((Arm pat gs body)::rest) =
+  let dp = desugarPat matchOracle.value pat
+  let _ = if patUnreachable matchOracle.value col0 prec dp then
+    let _ = setRef matchWarnings (unreachableArmWarning :: matchWarnings.value)
+    setRef matchWarningLocs (orElseLoc (exprLoc body) currentLoc.value :: matchWarningLocs.value)
+  else ()
+  -- Only UNGUARDED, range-free arms contribute to the covered set: a guarded arm
+  -- may not fire, and a range collapses to a wildcard that over-states coverage
+  -- (patHasRange) — either would produce a false "redundant" on a later arm.
+  let prec2 = if armIsUnguarded gs && not (patHasRange pat) then prec ++ [[dp]] else prec
+  checkRedundantGo col0 prec2 rest
+
+-- Only UNGUARDED arms contribute to the covered set (a guarded arm may not fire).
+armIsUnguarded : List Guard -> Bool
+armIsUnguarded [] = True
+armIsUnguarded (_::_) = False
 
 -- Build the specialised warning: recover a concrete uncovered pattern (the
 -- Maranget witness) and name it, plus the scrutinee type when it has a real

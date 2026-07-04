@@ -1,0 +1,6 @@
+-- Unreachable arm: a catch-all `_` covers every value, so the later `0` arm can
+-- never fire → one W-UNREACHABLE-ARM warning.
+classify : Int -> String
+classify n = match n
+  _ => "any"
+  0 => "zero"
