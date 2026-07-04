@@ -69,7 +69,11 @@ public export data ResError =
   -- trailing `Option String` = nearest in-scope name suggestion (edit-distance
   -- "did you mean"), None when no candidate is close enough (ERROR-QUALITY §4.1)
   | UnboundVariable String (Option Loc) (Option String)
-  | UnknownConstructor String (Option Loc)
+  -- trailing `Option String` = suggested constructor name: today ONLY a
+  -- curated Haskell-alias exact match (`Just`→`Some`, …; see
+  -- `haskellCtorAliases`), None otherwise — there is no general edit-distance
+  -- fallback for constructor patterns.
+  | UnknownConstructor String (Option Loc) (Option String)
   -- trailing `Option String` = nearest in-scope TYPE name suggestion (same
   -- did-you-mean policy as UnboundVariable, candidates drawn from env.types)
   | UnknownType String (Option Loc) (Option String)
@@ -110,6 +114,7 @@ public export data ResError =
 -- JSON fields — the fix span is the misspelled name's own loc-start + its length.
 export resErrorDidYouMean : ResError -> Option (String, String)
 resErrorDidYouMean (UnboundVariable n _ (Some sug)) = Some (n, sug)
+resErrorDidYouMean (UnknownConstructor n _ (Some sug)) = Some (n, sug)
 resErrorDidYouMean (UnknownType n _ (Some sug)) = Some (n, sug)
 resErrorDidYouMean _ = None
 
@@ -117,7 +122,7 @@ resErrorDidYouMean _ = None
 -- to position the Diag (was uniformly `None` pre-Stage-B).
 export resErrorLoc : ResError -> Option Loc
 resErrorLoc (UnboundVariable _ l _) = l
-resErrorLoc (UnknownConstructor _ l) = l
+resErrorLoc (UnknownConstructor _ l _) = l
 resErrorLoc (UnknownType _ l _) = l
 resErrorLoc (UnknownEffect _ l) = l
 resErrorLoc (UnknownField _ l) = l
@@ -263,7 +268,7 @@ checkConstraint cur env (Constraint iface args) = (if contains iface env.interfa
 
 -- ── check_pat ─────────────────────────────────────────────────────────────
 checkPat : Option Loc -> Env -> Pat -> List ResError
-checkPat cur env (PCon c ps) = (if contains c env.ctors || contains c env.imported then [] else [UnknownConstructor c cur])
+checkPat cur env (PCon c ps) = (if contains c env.ctors || contains c env.imported then [] else [UnknownConstructor c cur (suggestCtor c)])
   ++ flatMap (checkPat cur env) ps
 checkPat cur env (PCons a b) = checkPat cur env a ++ checkPat cur env b
 checkPat cur env (PTuple ps) = flatMap (checkPat cur env) ps
@@ -443,8 +448,79 @@ lookupValue env scope n = contains n scope
 -- Ties break lexicographically.  Local (`scope`) names are tried first so a
 -- mistyped local outranks an equidistant prelude name (a local typo most likely
 -- meant a local).
+-- ── Curated Haskell→Medaka alias tables (ERROR-QUALITY F-dimension) ───────
+-- LLMs are trained heavily on Haskell and reflexively reach for Haskell names
+-- that Medaka deliberately renamed.  When an unbound/unknown name EXACTLY
+-- matches one of these, the `suggest*` functions below surface the Medaka
+-- equivalent with priority over the generic edit-distance did-you-mean: an
+-- exact foreign-name match is higher-confidence than a fuzzy same-language
+-- one (and often wins where edit distance wouldn't even fire — `fmap`→`map`
+-- is edit-distance 2 on a 4-char word).  One table per namespace, kept
+-- together here rather than scattered by call site.
+haskellTypeAliases : List (String, String)
+haskellTypeAliases = [
+  ("Functor", "Mappable"),
+  ("Monad", "Thenable"),
+  ("Maybe", "Option"),
+  ("Either", "Result"),
+]
+
+haskellValueAliases : List (String, String)
+haskellValueAliases = [
+  ("fmap", "map"),
+  ("return", "pure"),
+  ("show", "debug"),
+  ("mappend", "append"),
+  ("mempty", "empty"),
+  ("foldr", "foldRight"),
+  ("foldl", "fold"),
+  ("error", "panic"),
+  ("undefined", "panic"),
+]
+
+haskellCtorAliases : List (String, String)
+haskellCtorAliases =
+  [("Just", "Some"), ("Nothing", "None"), ("Left", "Err"), ("Right", "Ok")]
+
+-- Was `sug` produced by looking `bad` up in one of the three alias tables
+-- above (as opposed to falling out of generic edit-distance search)?  Used by
+-- `ppResError` to decide whether to append the "(… is Haskell …)" note.
+isHaskellAliasPair : String -> String -> Bool
+isHaskellAliasPair bad sug = optStrEq (lookupAssoc bad haskellTypeAliases) sug
+  || optStrEq (lookupAssoc bad haskellValueAliases) sug
+  || optStrEq (lookupAssoc bad haskellCtorAliases) sug
+
+optStrEq : Option String -> String -> Bool
+optStrEq (Some x) sug = x == sug
+optStrEq None _ = False
+
+-- The CLI-text parenthetical appended after a did-you-mean hint when it came
+-- from a curated Haskell alias, e.g. "('fmap' is Haskell; Medaka uses
+-- 'map')".  Empty string (no-op append) when the hint is a plain
+-- edit-distance suggestion.
+haskellNote : String -> String -> String
+haskellNote bad sug =
+  if isHaskellAliasPair bad sug then
+    " ('\{bad}' is Haskell; Medaka uses '\{sug}')"
+  else
+    ""
+
+-- "did you mean" for an unbound name: an exact curated Haskell-alias match
+-- takes priority; otherwise the nearest in-scope value name by Levenshtein
+-- distance (ERROR-QUALITY §4.1).  Suggest only when the distance is small
+-- absolutely (≤ 2) AND small relative to the name length (≤ max(1, len/3)).
+-- Names shorter than 3 chars never suggest: a 1-2 char name sits within edit
+-- distance 1 of many unrelated short names (`x` → `e`), which is pure noise.
+-- Ties break lexicographically.  Local (`scope`) names are tried first so a
+-- mistyped local outranks an equidistant prelude name (a local typo most likely
+-- meant a local).
 suggestName : Env -> List String -> String -> Option String
-suggestName env scope n
+suggestName env scope n = match lookupAssoc n (haskellValueAliases ++ haskellCtorAliases)
+  Some sug => Some sug
+  None => suggestNameFuzzy env scope n
+
+suggestNameFuzzy : Env -> List String -> String -> Option String
+suggestNameFuzzy env scope n
   | stringLength n < 3 = None
   | otherwise =
     let lim = minI 2 (maxI 1 (stringLength n / 3))
@@ -452,16 +528,28 @@ suggestName env scope n
       Some best => Some best
       None => bestOf n lim (env.values ++ env.ctors ++ env.imported)
 
--- "did you mean" for an unknown TYPE name: same policy as `suggestName`
--- (nearest by edit distance, ≤ min(2, len/3), names shorter than 3 chars never
--- suggest), candidates drawn from the in-scope type names (builtins + user
+-- "did you mean" for an unknown TYPE name: an exact curated Haskell-alias
+-- match takes priority; otherwise same policy as `suggestName` (nearest by
+-- edit distance, ≤ min(2, len/3), names shorter than 3 chars never suggest),
+-- candidates drawn from the in-scope type names (builtins + user
 -- `data`/`type`/`record` + imported) rather than value names.
 suggestType : Env -> String -> Option String
-suggestType env n
+suggestType env n = match lookupAssoc n haskellTypeAliases
+  Some sug => Some sug
+  None => suggestTypeFuzzy env n
+
+suggestTypeFuzzy : Env -> String -> Option String
+suggestTypeFuzzy env n
   | stringLength n < 3 = None
   | otherwise =
     let lim = minI 2 (maxI 1 (stringLength n / 3))
     bestOf n lim (env.types ++ env.imported)
+
+-- "did you mean" for an unknown CONSTRUCTOR (pattern position): today ONLY an
+-- exact curated Haskell-alias match (e.g. `Just`→`Some`) — there is no
+-- general edit-distance fallback for constructors yet.
+suggestCtor : String -> Option String
+suggestCtor n = lookupAssoc n haskellCtorAliases
 
 bestOf : String -> Int -> List String -> Option String
 bestOf n lim cands = map ((best, _) => best) (bestCandidate n lim cands None)
@@ -1044,7 +1132,7 @@ export resErrorSexp : ResError -> String
 -- NOTE: the suggestion field is deliberately NOT serialized — the sexp feeds the
 -- resolve_modules gate and must stay stable (the suggestion is cosmetic).
 resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
-resErrorSexp (UnknownConstructor n _) = "(UnknownConstructor "
+resErrorSexp (UnknownConstructor n _ _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
 -- NOTE: the suggestion field is deliberately NOT serialized here either (mirrors
@@ -1131,10 +1219,14 @@ resolveProgramG2 internalGuard runtimeDecls preludeDecls prog =
 export ppResError : ResError -> String
 ppResError (UnboundVariable n _ s) = match s
   Some sug => "Unbound variable: \{n} — did you mean '\{sug}'?"
+    ++ haskellNote n sug
   None => "Unbound variable: \{n}"
-ppResError (UnknownConstructor n _) = "Unknown constructor: " ++ n
+ppResError (UnknownConstructor n _ s) = match s
+  Some sug => "Unknown constructor: \{n} — did you mean '\{sug}'?"
+    ++ haskellNote n sug
+  None => "Unknown constructor: " ++ n
 ppResError (UnknownType n _ s) = match s
-  Some sug => "Unknown type: \{n} — did you mean '\{sug}'?"
+  Some sug => "Unknown type: \{n} — did you mean '\{sug}'?" ++ haskellNote n sug
   None => "Unknown type: " ++ n
 ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
 ppResError (UnknownField n _) = "Unknown field: " ++ n
@@ -1166,7 +1258,7 @@ ppResError (InternalExternAccess n _) = "'"
 -- append-only; never renumber.
 export resErrorCode : ResError -> String
 resErrorCode (UnboundVariable _ _ _) = "R-UNBOUND"
-resErrorCode (UnknownConstructor _ _) = "R-UNKNOWN-CTOR"
+resErrorCode (UnknownConstructor _ _ _) = "R-UNKNOWN-CTOR"
 resErrorCode (UnknownType _ _ _) = "R-UNKNOWN-TYPE"
 resErrorCode (UnknownEffect _ _) = "R-UNKNOWN-EFFECT"
 resErrorCode (UnknownField _ _) = "R-UNKNOWN-FIELD"

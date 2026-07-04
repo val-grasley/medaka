@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+<unknown location>: Unknown type: Monad — did you mean 'Thenable'? ('Monad' is Haskell; Medaka uses 'Thenable')
