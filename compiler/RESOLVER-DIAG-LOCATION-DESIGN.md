@@ -66,6 +66,32 @@ The parser HAS the positions in hand (`getPos`/`locOfSpan`/`located`,
    thread the con's own loc into `UnknownType` at `resolve.mdk:220-224` (from the
    TyCon, not `cur`). ~127 sites. sexp-invisible.
 
+## AS-BUILT — both chunks DONE (fixpoint C3a/C3b YES, ZERO re-mint, sexp-invisible)
+- **Chunk B — `2d9138fb`.** `DUse Bool UsePath Loc`; captured in `parseImport`;
+  sexp-invisible; ~25 mechanical sites. `R-PRIVATE-NAME` located via
+  `usePathLocsOf`/`withResErrorLoc` threading the DUse loc through
+  `collectImports`/`importedNamesMM`/`pubErr`; `R-MODULE-LOAD` via the Fork-3
+  entry-scan (`unknownModuleIdOf` + `findImportLoc` matching `importModId`, wired
+  into `runCheckCmd`/`runCheckJsonCmd`). **Unplanned discovery:** the multi-module
+  `Loc.file` is always `""` (loadProgram carries no per-module path) — fixed with
+  a fallback-file variant (`ppResErrorLocatedF`) using the CLI entry path (correct
+  when the bad import is in the entry module; a transitive dep degrades to the
+  entry file rather than the old `<unknown location>`). Both fixtures now
+  `file:1:0:`. desugar/mark/resolve_modules byte-identical.
+- **Chunk A — `9d6398ad`.** `TyCon String (Option Loc)` (field, decision A2);
+  captured in `parseTyAtom`; `tySexp` ignores it (byte-identical). ~40 sites
+  (fewer than the 127-estimate — many grep hits were comments/dup patterns) across
+  typecheck/prop_runner/core_ir_lower/eval/parser/printer/desugar/fuzz_gen/lint/
+  doc. `checkType` threads the TyCon's own loc (`orElseLocL loc cur`) into
+  `UnknownType` → `diagnostics.mdk` auto-builds the precise `fix` span.
+  **Payoff:** `R-UNKNOWN-TYPE` now located + machine `fix` (`Strng`→`String`), AND
+  every type-position hint including the Haskell type-aliases (`Maybe`→`Option`,
+  `Monad`→`Thenable`, …) now carries an agent-applicable `fix`. desugar/mark 114/0,
+  `diff_compiler_test` (prop_runner positional matches) green, positions 6/0.
+- **Fork 2 resolved: Chunk A WAS done** (the machine-fix payoff across all
+  type-position hints justified the ~40-site cost; it came in far cheaper than the
+  127-estimate and fully sexp-invisible).
+
 ## Verify (each chunk): fixpoint C3a/C3b (error-path/loc-only → NO re-mint),
 `diff_compiler_{check,check_json,resolve,resolve_modules,desugar,mark,typecheck_golden,positions,parse,build}`
 byte-identical (sexp-invisibility is the whole point), + reproduce the fixture's
