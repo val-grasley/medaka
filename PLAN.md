@@ -8,9 +8,9 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
-## Current status (2026-07-03) — error-message quality workstream: Tiers 1–4 + `==`→Eq/`<`→Ord + Tier-3 typecheck framing (`00ca0bfa`)
+## Current status (2026-07-03) — error-message quality workstream: Tiers 1–4 + `==`→Eq/`<`→Ord + Tier-3 typecheck framing, corpus 8.00→10.60/14 (`69e50a4d`)
 
-**Tier-3 typecheck mis-framing reservoir — DONE (`00ca0bfa`).** The corpus's
+**Tier-3 typecheck mis-framing reservoir — DONE (`00ca0bfa`; corpus re-grade 10.25→10.60/14, the 8 moved fixtures +21, C/R +6 each + X +5).** The corpus's
 largest remaining quality reservoir: type errors that surfaced with a misleading
 frame. Design doc `compiler/TYPECHECK-ERROR-FRAMING-DESIGN.md` (with AS-BUILT).
 Four staged chunks, each independently gated (fixpoint C3a/C3b YES, ZERO seed
