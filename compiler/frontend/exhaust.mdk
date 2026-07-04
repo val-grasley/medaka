@@ -327,6 +327,42 @@ usefulBranch oracle pmat restQ c =
   let a = oGetArity oracle c
   useful oracle None (specializeCon c a pmat) (replicate a PWild ++ restQ)
 
+-- ── redundant / unreachable-arm detection ─────────────────────────────────
+-- The dual of exhaustiveness: an arm is UNREACHABLE when its pattern matches no
+-- value the EARLIER arms don't already catch — i.e. its query pattern is not
+-- `useful` against the matrix of the preceding arm patterns.  `checkMatchRedundant`
+-- (typecheck) folds arms left-to-right and feeds only UNGUARDED predecessors into
+-- `precMatrix` (a guarded arm may fail its guard at runtime, so it can't render a
+-- later same-shape arm dead) — which is exactly what keeps this conservative: we
+-- flag an arm only when it is provably dead via unconditional predecessors.
+export patUnreachable : Oracle -> Option String -> List (List Pat) -> Pat -> Bool
+patUnreachable oracle col0 precMatrix qpat =
+  not (useful oracle col0 precMatrix [qpat])
+
+-- Does the (RAW, pre-desugar) pattern contain a range anywhere?  `desugarPat`
+-- collapses a `PRng` to `PWild` (the matrix machinery can't reason about the
+-- values a range covers), which OVER-approximates its coverage.  That's harmless
+-- for the exhaustiveness direction (it only ever makes the check miss a
+-- non-exhaustive match — never a false warning), but for redundancy it would let
+-- a preceding range arm masquerade as a catch-all and falsely flag every later
+-- arm.  So `checkMatchRedundant` uses this to keep range-bearing arms OUT of the
+-- accumulated covered-matrix: we never claim a range covers anything, staying
+-- conservative (we may miss a genuinely-dead arm covered only by a range, but we
+-- never flag a reachable one).
+export patHasRange : Pat -> Bool
+patHasRange (PRng _ _ _) = True
+patHasRange (PCon _ args) = anyList patHasRange args
+patHasRange (PCons h t) = patHasRange h || patHasRange t
+patHasRange (PTuple ps) = anyList patHasRange ps
+patHasRange (PList ps) = anyList patHasRange ps
+patHasRange (PAs _ p) = patHasRange p
+patHasRange (PRec _ fields _) = anyList recFieldHasRange fields
+patHasRange _ = False
+
+recFieldHasRange : RecPatField -> Bool
+recFieldHasRange (RecPatField _ None) = False
+recFieldHasRange (RecPatField _ (Some p)) = patHasRange p
+
 -- ── witness extraction (the Maranget `I` algorithm) ───────────────────────
 -- A witness-producing companion to `useful`: when the ALL-WILDCARD query of
 -- `ncols` columns is useful against `pmat` (i.e. the match is non-exhaustive),

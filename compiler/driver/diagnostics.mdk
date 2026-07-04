@@ -124,9 +124,17 @@ fixOfLocRepl (l, r) = Fix l r
 -- mechanical edit.
 diagOfMatchWarning : (String, Option Loc) -> Diag
 diagOfMatchWarning (w, loc) = match lookupMatchWarningHelp w
-  None => mkDiag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc
+  None => mkDiag SevWarning (matchWarnCode w) (stripWarnPrefix w) loc
   Some help =>
-    Diag SevWarning "W-NONEXHAUSTIVE" (stripWarnPrefix w) loc (Some help) None
+    Diag SevWarning (matchWarnCode w) (stripWarnPrefix w) loc (Some help) None
+
+-- The two typecheck match warnings share the `matchWarnings` channel but carry
+-- distinct codes; disambiguate by the message shape (the unreachable-arm warning
+-- names an "unreachable match arm", the exhaustiveness one does not).
+matchWarnCode : String -> String
+matchWarnCode w
+  | startsWith "Warning: unreachable match arm" w = "W-UNREACHABLE-ARM"
+  | otherwise = "W-NONEXHAUSTIVE"
 
 -- Derive the JSON `kind` from a code's per-stage prefix (DIAGNOSTIC-CODES-DESIGN
 -- §2): L→lex, P→parse, R→resolve, T→type, W→warning.  An unrecognized prefix
