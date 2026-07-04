@@ -762,3 +762,103 @@ slightly from `record_wrong_field`'s move: 275 + 2 = 277 / 24 = **11.54** (was
   build-only failure (`main_takes_unit`, `check` never sees it). None of these
   are resolve/F3-reservoir fixtures, so this session could not and did not
   touch them — they remain the corpus's honest floor for both A and F.
+
+## Re-grade (post-F5 + line-fix, base 677ba415)
+
+Base confirmed: `git merge-base --is-ancestor 677ba415 HEAD` → `BASE_OK`. Binary
+rebuilt fresh (`make medaka`, cold-start from seed, C3a tolerant-lagging-seed
+warning only — not a regression). All four new fixtures reproduced on the
+freshly built binary (`./medaka check` text + `./medaka check --json`),
+confirmed byte-identical to their captured `.out` goldens, and their reported
+`file:L:C:` cross-checked character-by-character against the actual fixture
+text (see arithmetic below) — this is the direct verification that the
+off-by-one line fix landed correctly on these fixtures.
+
+`hs_syntax_guard_valid` excluded per brief: it is a valid-code FP-guard (proves
+the four Haskell hints don't false-positive on legitimate Medaka that merely
+resembles Haskell shapes — `f : Int -> List Int` / `1 :: [2, 3]` cons,
+`| y :: ys <- x` guard, `debug`/interpolation); `check` exits **0** with no
+diagnostic, confirmed on the binary. Not a mistake fixture — not scored, not
+counted in any denominator.
+
+### New fixtures — scored fresh (all 4 verified single-diagnostic, real span)
+
+| fixture | code/kind | reported loc | actual token col (0-idx, verified) | L | C | R | F | J | X | A | total | rationale |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `hs_lambda` | `L-HS-LAMBDA` / lex | `:1:21` | `\` is at index 21 (0-idx) of `main = println (map (\x -> x + 1) [1, 2, 3])` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | **14** | caret sits exactly on the offending `\`; "Medaka lambdas are written 'x => e' (not '\x -> e')" is a concrete rewrite, true, single diagnostic, no internal jargon |
+| `hs_dollar` | `L-HS-DOLLAR` / lex | `:1:15` | `$` is at index 15 of `main = println $ 1 + 2` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | **14** | caret on `$` exactly; "apply directly 'f x', parenthesize '(f x)', or pipe with '\|>'" gives three concrete alternatives |
+| `hs_case_of` | `P-HS-CASE` / parse | `:1:6` | `c` of `case` is at index 6 of `f x = case x of` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | **14** | caret on the start of `case`; "use 'match e' with indented 'pattern => body' arms" names the replacement construct concretely |
+| `hs_sig_coloncolon` | `P-HS-SIG` / parse | `:1:2` | first `:` of `::` is at index 2 of `f :: Int -> Int` | 2 | 2 | 2 | 2 | 2 | 2 | 2 | **14** | caret on `::`; explains *why* (it's cons, not signature colon) and gives the exact replacement `'f : T'` |
+
+All four: `check --json` diagnostic count verified **= 1** per file (no
+cascade → R=2, X=2). Per the task brief's stated criterion for this pass, A=2
+= stable `code` + `kind` + real non-`{0,0}` range — all four carry a
+per-message stable code (not the generic `P-PARSE`), a `kind`, and a real
+`range` matching the verified token column, so A=2 for all four (no `help`/
+`fix` JSON field yet — that's a *further* enhancement, not required for A=2
+under this pass's criterion). F=2 for all four: each message embeds a
+concrete rewritten form or short list of concrete alternatives in prose (the
+same bar `else_let_block`, the corpus's prior F=2 exemplar, was held to — a
+literal rewrite example, not "check your syntax").
+
+Sum for the 4 new fixtures: **14 × 4 = 56**.
+
+### Corpus arithmetic
+
+```
+691   (prior corpus sum, 63 fixtures — base 9d6398ad re-grade)
++  56  (4 new Haskell-syntax fixtures, all 14/14)
+= 747
+63 + 4 = 67 fixtures
+
+747 / 67 = 11.1492... ≈ 11.15
+```
+
+**Overall average: 747 / 67 = 11.15 / 14 — up from 10.97 (+0.18).**
+(`hs_syntax_guard_valid` is not in either the numerator or the denominator —
+it is a valid-code guard fixture, exit 0, nothing to grade.)
+
+### Off-by-one line fix — effect on the pre-existing corpus
+
+The line-number fix (parse/lex located errors previously reported `line+1`)
+changes the committed `.out` goldens for the pre-existing `lex/` and `parse/`
+fixtures (their reported line shifts down by one to the true line), but does
+**not** change any of their scores in this file: they were already graded as
+"located" (L=1 or L=2, per fixture) under the old — technically off-by-one —
+line number, and the fix makes that same L grade **honest** rather than
+lucky. Spot-checked on the rebuilt binary: all 4 `lex/` fixtures
+(`bad_escape`, `unterminated_block_comment`, `unterminated_char`,
+`unterminated_string`) reproduce byte-identical to their current `.out`
+goldens, confirming the corrected line numbers are now committed and correct.
+
+### Parse-stage average
+
+```
+65   (prior parse-stage sum, 7 fixtures, avg 9.29)
++ 56  (4 new fixtures, all 14/14)
+= 121
+7 + 4 = 11 fixtures
+121 / 11 = 11.00
+```
+
+**parse: 9.29 → 11.00 (+1.71)** — parse overtakes `typecheck` (11.54) is
+close but stays just under it; parse is now the corpus's **2nd-strongest
+stage** (behind `resolve` 12.91), a sharp jump from being tied for weakest
+alongside `eval`/`build` last session. **F** moves the most within parse: sum
+2 → 10 (avg 0.29 → 0.91, driven entirely by the 4 new fixtures — none of the
+7 pre-existing generic parse fixtures gained a fix this session). **A** holds
+at its ceiling (avg 2.00 → 2.00, unchanged: the pre-existing 7 were already
+at A=2 from the earlier code+kind session, and all 4 new fixtures land at
+A=2 too).
+
+### Remaining weakest
+
+The corpus-wide **F axis remains the floor** even after this session's parse
+jump (this session only added 4 fixtures with F=2; it did not touch the
+larger `typecheck/`-framing F=0 reservoir — `apply_non_function`,
+`if_branch_mismatch`, `list_heterogeneous`, `cons_type_mismatch`,
+`arg_order_swapped`, `wrong_arg_type_in_map` — all still F=0). The **A=0
+cluster of 8 `run`-path/build-only fixtures is unchanged** (unaffected by
+parse/lex work): `division_by_zero`, `modulo_by_zero`, `list_index_oob`,
+`explicit_panic`, `let_else_fail`, `ambiguous_return`, `redundant_arm`,
+`main_takes_unit`.
