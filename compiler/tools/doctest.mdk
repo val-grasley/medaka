@@ -316,5 +316,5 @@ anyUse [] = False
 anyUse (d::rest) = isUse d || anyUse rest
 
 isUse : Decl -> Bool
-isUse (DUse _ _) = True
+isUse (DUse _ _ _) = True
 isUse _ = False

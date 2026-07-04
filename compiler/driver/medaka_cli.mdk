@@ -46,6 +46,7 @@ import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{
   parse,
+  parseLocated,
   parseWithPositions,
   parseResult,
   ParseError,
@@ -55,8 +56,18 @@ import frontend.parser.{
   Positions,
 }
 import frontend.desugar.{desugar}
-import frontend.resolve.{resolveModulesToHumane, resolveModulesToHumaneG}
-import driver.loader.{loadProgram, findProjectRoot, stdlibTrustedMods}
+import frontend.resolve.{
+  resolveModulesToHumane,
+  resolveModulesToHumaneG,
+  resolveModulesToHumaneGF,
+}
+import driver.loader.{
+  loadProgram,
+  findProjectRoot,
+  stdlibTrustedMods,
+  unknownModuleIdOf,
+  findImportLoc,
+}
 import driver.diagnostics.{
   analyzeProject,
   analyzeLocated,
@@ -203,7 +214,7 @@ runCheckCmd argv =
                 exit 1
               Ok _ => match loadProgram target roots
                 Err lmsg =>
-                  let _ = ePutStrLn lmsg
+                  let _ = ePutStrLn (moduleLoadErrText tsrc target lmsg)
                   exit 1
                 Ok mods =>
                   let trusted = stdlibTrustedMods target roots stdlibDir mods
@@ -217,6 +228,19 @@ runCheckCmd argv =
 
 -- A load error (missing/cyclic import) is reported verbatim, like
 -- build/run; exit 1.  No-fixture single-file files never error here.
+
+-- F3 Chunk B (R-MODULE-LOAD): the loader's `Err "unknown module: X"` carries no
+-- location (see loader.mdk's entry-scan doc comment).  `tsrc` is already known
+-- to parse (the caller's `parseResult` succeeded), so re-parse it with
+-- `parseLocated` (real ELoc/DUse spans) and look up the failing modId's own
+-- `import` statement; render through the shared carat formatter when found,
+-- else fall back to the bare message (unchanged behaviour).
+moduleLoadErrText : String -> String -> String -> <Mut> String
+moduleLoadErrText tsrc target lmsg = match unknownModuleIdOf lmsg
+  None => lmsg
+  Some mid => match findImportLoc mid (parseLocated tsrc)
+    None => lmsg
+    Some loc => ppDiagCliSrc tsrc target (Diag SevError "R-MODULE-LOAD" lmsg (Some loc) None None)
 
 -- Route by module count: a single loaded module (no non-core imports) ⇒ the
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
@@ -233,7 +257,7 @@ checkRoute allowInternal _ rsrc csrc tsrc target [_] =
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
-checkRoute allowInternal trusted rsrc csrc tsrc _ mods =
+checkRoute allowInternal trusted rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -243,7 +267,7 @@ checkRoute allowInternal trusted rsrc csrc tsrc _ mods =
   -- unprefixed, so they were invisible to any errors-on-stderr consumer (the
   -- error-quality corpus captured them as empty).  The clean/type-error report
   -- still goes to STDOUT (the check_cli_modules gate expects TYPE ERROR there).
-  let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
+  let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
   match resDiags
     "" =>
       let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
@@ -305,7 +329,12 @@ runCheckJsonCmd allowInternal rsrc csrc target roots =
       match loadProgram target roots
         Err lmsg =>
           -- Load error (missing import etc.): report as single diagnostic.
-          let triples = [(target, src, [Diag SevError "R-MODULE-LOAD" lmsg None None None])]
+          -- F3 Chunk B: entry-scan the (already-known-to-parse) source for the
+          -- failing DUse's own span — see moduleLoadErrText's doc comment.
+          let mloc = match unknownModuleIdOf lmsg
+            None => None
+            Some mid => findImportLoc mid (parseLocated src)
+          let triples = [(target, src, [Diag SevError "R-MODULE-LOAD" lmsg mloc None None])]
           let _ = println (cjAllToJson triples)
           exit 1
         Ok mods => match mods
@@ -496,7 +525,7 @@ typecheckGateRoute allowInternal trusted rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
-  let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
+  let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
   match resDiags
     "" =>
       let _ = resetTypeErrorsSticky ()
@@ -584,7 +613,7 @@ runRunCmd argv = match dropFlags argv
             let coreD = desugar (parse csrc)
             let modsD = map desugarPair mods
             let trusted = stdlibTrustedMods target roots stdlibDir mods
-            let resDiags = resolveModulesToHumaneG allowInternal trusted rtD coreD modsD
+            let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
             match resDiags
               "" =>
                 let _ = resetTypeErrorsSticky ()

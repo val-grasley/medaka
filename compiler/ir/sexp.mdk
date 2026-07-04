@@ -239,7 +239,7 @@ declSexp (DRecord vis n ps fs ds) = node
     slist (map fieldSexp fs),
     slist (map escStr ds),
   ]
-declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
+declSexp (DUse pub path _) = node "DUse" [boolStr pub, usePathSexp path]
 declSexp (DEffect pub n dom isInternal) =
   node "DEffect" [boolStr pub, escStr n, optStrSexp dom, boolStr isInternal]
 declSexp (DProp pub name params body) = node

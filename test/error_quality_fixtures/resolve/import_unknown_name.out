@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-<unknown location>: module 'list' has no exported name 'flatten'
+test/error_quality_fixtures/resolve/import_unknown_name.mdk:1:0: module 'list' has no exported name 'flatten'

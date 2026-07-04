@@ -10,7 +10,17 @@
 --   * No LSP buffer-override `read`, no multi-root AmbiguousModule check.
 --   * Cycles ARE detected (an in-progress stack) and reported as an Err.
 
-import frontend.ast.{Decl, DUse, UsePath, UseName, UseGroup, UseWild, UseAlias}
+import frontend.ast.{
+  Decl,
+  DUse,
+  DAttrib,
+  UsePath,
+  UseName,
+  UseGroup,
+  UseWild,
+  UseAlias,
+  Loc,
+}
 import frontend.parser.{parse, parseLocated}
 import support.util.{
   contains,
@@ -246,7 +256,7 @@ resolveDepFile deps modId = match splitOnChar "." modId
 
 -- "core" is the implicit prelude — its names are already in scope, so an
 -- `import core.{…}` is a no-op the loader must skip (else it duplicates).
-importModId : UsePath -> String
+export importModId : UsePath -> String
 importModId (UseName ns) =
   if listLen ns > 1 then
     joinDot (initList ns)
@@ -258,10 +268,45 @@ importModId (UseAlias ns _) = joinDot ns
 
 directImports : List Decl -> List String
 directImports [] = []
-directImports ((DUse _ path)::rest) =
+directImports ((DUse _ path _)::rest) =
   let m = importModId path
   if m == "core" then directImports rest else m :: directImports rest
 directImports (_::rest) = directImports rest
+
+-- ── F3 Chunk B: entry-scan for the R-MODULE-LOAD `{0,0}` diagnostic ────────
+-- `readModuleProg`/`readModuleProgF` return a raw `Err "unknown module: X"`
+-- string with no location (the loader's graph walk has no per-diagnostic Loc
+-- channel — see the module doc-comment).  Rather than thread `Option Loc`
+-- through every loader signature, the CLI/diagnostics call site re-scans the
+-- ENTRY file's own (already-parsed, already-located) decls for the `DUse`
+-- whose `importModId` is the failed module id and borrows its span.  Correct
+-- for the common case (the entry directly imports the bad module); a bad
+-- import nested in a transitive dependency degrades to no location, same as
+-- before this change.
+
+-- Extract the failed module id from a loader `Err` message of the exact shape
+-- `readModuleProg`/`readModuleProgF` produce ("unknown module: <id>"); `None`
+-- for any other loader error text (cycle / unreadable file) so callers only
+-- special-case the one message shape they can actually re-locate.
+export unknownModuleIdOf : String -> Option String
+unknownModuleIdOf msg =
+  let prefix = "unknown module: "
+  if startsWith prefix msg then
+    Some (stringSlice (stringLength prefix) (stringLength msg) msg)
+  else
+    None
+
+-- The Loc of the first `DUse` (top-level or under `DAttrib`) importing module
+-- id `mid`, or `None` if no such import appears in `decls`.
+export findImportLoc : String -> List Decl -> Option Loc
+findImportLoc _ [] = None
+findImportLoc mid ((DUse _ path loc)::rest) =
+  if importModId path == mid then
+    Some loc
+  else
+    findImportLoc mid rest
+findImportLoc mid ((DAttrib _ d)::rest) = findImportLoc mid (d::rest)
+findImportLoc mid (_::rest) = findImportLoc mid rest
 
 -- ── file resolution + parsing ──
 
@@ -385,12 +430,15 @@ rewriteUsePath c (UseAlias _ a) = UseAlias (splitDot c) a
 -- rewrite one decl: a `DUse` whose import resolves under a dep root is rebased to
 -- its canonical modId (core + already-canonical imports stay byte-identical).
 rewriteDecl : List (String, String) -> List String -> Decl -> <IO> Decl
-rewriteDecl deps roots (DUse exported path) =
+rewriteDecl deps roots (DUse exported path loc) =
   let m = importModId path
-  if m == "core" then DUse exported path
+  if m == "core" then DUse exported path loc
   else
     let c = canonicalModId deps roots m
-    if c == m then DUse exported path else DUse exported (rewriteUsePath c path)
+    if c == m then
+      DUse exported path loc
+    else
+      DUse exported (rewriteUsePath c path) loc
 rewriteDecl _ _ d = d
 
 -- rewrite every `DUse` in a module's decls to its canonical modId.

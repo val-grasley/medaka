@@ -394,7 +394,7 @@ symbolOfDecl d dp =
       Some (jSymbol label 5 range kids)
     DTypeAlias _ name _ _ => Some (jSymbol name 26 range [])
     DNewtype _ name _ _ _ _ => Some (jSymbol name 23 range [])
-    DUse _ _ => None
+    DUse _ _ _ => None
     DProp _ name _ _ => Some (jSymbol name 12 range [])
     DTest _ name _ => Some (jSymbol name 12 range [])
     DBench _ name _ => Some (jSymbol name 12 range [])
@@ -453,7 +453,7 @@ declDefines d name = match innerDecl d
   DImpl { methods = ms, ... } => anyName (map implMethodName ms) name
   DTypeAlias _ n _ _ => n == name
   DNewtype _ n _ c _ _ => n == name || c == name
-  DUse _ _ => False
+  DUse _ _ _ => False
   DProp _ n _ _ => n == name
   DTest _ n _ => n == name
   DBench _ n _ => n == name
@@ -1262,7 +1262,7 @@ bufferHasImports src = match parseResult src
 
 anyImport : List Decl -> Bool
 anyImport [] = False
-anyImport ((DUse _ path)::rest) = not (isCoreImport path) || anyImport rest
+anyImport ((DUse _ path _)::rest) = not (isCoreImport path) || anyImport rest
 anyImport (_::rest) = anyImport rest
 
 -- core is the implicit prelude — an `import core.{…}` is not a sibling dep.

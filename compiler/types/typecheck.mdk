@@ -10625,7 +10625,7 @@ importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, 
 importSeed [] _ = []
 importSeed ((DAttrib _ d)::rest) depEnv = importSeed [d] depEnv
   ++ importSeed rest depEnv
-importSeed ((DUse _ path)::rest) depEnv =
+importSeed ((DUse _ path _)::rest) depEnv =
   let depId = usePathModuleId path
   match lookupAssoc depId depEnv
     None => importSeed rest depEnv
@@ -10645,7 +10645,7 @@ importDefinersOf : List Decl -> List (String, String)
 importDefinersOf [] = []
 importDefinersOf ((DAttrib _ d)::rest) = importDefinersOf [d]
   ++ importDefinersOf rest
-importDefinersOf ((DUse _ path)::rest) =
+importDefinersOf ((DUse _ path _)::rest) =
   let depId = usePathModuleId path
   if depId == "core" then importDefinersOf rest
   else match importedMembers path
@@ -10670,7 +10670,7 @@ reexportSeed : List Decl -> List (String, List (String, Scheme)) -> List (String
 reexportSeed [] _ = []
 reexportSeed ((DAttrib _ d)::rest) depEnv = reexportSeed [d] depEnv
   ++ reexportSeed rest depEnv
-reexportSeed ((DUse True path)::rest) depEnv =
+reexportSeed ((DUse True path _)::rest) depEnv =
   let depId = usePathModuleId path
   match lookupAssoc depId depEnv
     None => reexportSeed rest depEnv
@@ -11203,7 +11203,7 @@ directImports mid modules = match lookupAssoc mid modules
   None => []
 
 useModuleId : Decl -> List String
-useModuleId (DUse _ path) = [usePathModuleId path]
+useModuleId (DUse _ path _) = [usePathModuleId path]
 useModuleId _ = []
 
 usePathModuleId : UsePath -> String

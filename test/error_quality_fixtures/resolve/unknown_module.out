@@ -1,4 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-unknown module: collections
+test/error_quality_fixtures/resolve/unknown_module.mdk:1:0: unknown module: collections
+  |
+1 | import collections.HashMap
+  | ^

@@ -223,7 +223,7 @@ coreCtorEntry : (String, List String) -> List (String, String)
 coreCtorEntry (_, ctors) = flatMap (n => [(n, mangledName "core" n)]) ctors
 
 declCtorImportEntries : List (String, List (String, List String)) -> Decl -> List (String, String)
-declCtorImportEntries ctorExportsPerUnit (DUse _ path) =
+declCtorImportEntries ctorExportsPerUnit (DUse _ path _) =
   useCtorPathEntries ctorExportsPerUnit path
 declCtorImportEntries ctorExportsPerUnit (DAttrib _ d) =
   declCtorImportEntries ctorExportsPerUnit d
@@ -346,7 +346,7 @@ coreEntry n
 
 -- a single `DUse path` → the (bareName, originMangled) entries it introduces.
 declImportEntries : List (String, List String) -> Decl -> List (String, String)
-declImportEntries exportsPerUnit (DUse _ path) =
+declImportEntries exportsPerUnit (DUse _ path _) =
   usePathEntries exportsPerUnit path
 declImportEntries exportsPerUnit (DAttrib _ d) =
   declImportEntries exportsPerUnit d

@@ -1646,7 +1646,7 @@ printDecl (DImpl { pub, def, iface, tys, name, reqs, methods }) = Cat
           (Cat
             (text " where")
             (indentBlock (sepBy Hardline (map implMethodDoc methods))))))))
-printDecl (DUse pub path) = Cat
+printDecl (DUse pub path _) = Cat
   (if pub then text "export " else Nil)
   (Cat (text "import ") (printUsePath path))
 printDecl (DEffect pub name domain isInternal) =

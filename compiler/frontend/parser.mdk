@@ -2058,11 +2058,13 @@ externNameFor _ = failP "expected extern name"
 
 parseImport : Bool -> Parser Decl
 parseImport pub = do
+  s <- getPos
   expectTok TImport
   quals <- importQuals
   path <- importPathFor quals
+  e <- getPos
   skipNewlines
-  pure (DUse pub path)
+  pure (DUse pub path (locOfSpan s e))
 
 importQuals : Parser (List String)
 importQuals = do

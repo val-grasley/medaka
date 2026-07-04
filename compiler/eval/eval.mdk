@@ -2306,7 +2306,7 @@ export importFrameOf : List (String, List (String, Ref Value)) -> List Decl -> L
 importFrameOf exportsMap decls = flatMap (useImports exportsMap) decls
 
 useImports : List (String, List (String, Ref Value)) -> Decl -> List (String, Ref Value)
-useImports exportsMap (DUse _ path) = match lookupAssoc (useModuleId path) exportsMap
+useImports exportsMap (DUse _ path _) = match lookupAssoc (useModuleId path) exportsMap
   None => []
   Some exports => resolveMembers path exports
 useImports _ _ = []
@@ -2316,7 +2316,7 @@ export pubReexports : List (String, List (String, Ref Value)) -> List Decl -> Li
 pubReexports exportsMap decls = flatMap (reexport exportsMap) decls
 
 reexport : List (String, List (String, Ref Value)) -> Decl -> List (String, Ref Value)
-reexport exportsMap (DUse True path) = match lookupAssoc (useModuleId path) exportsMap
+reexport exportsMap (DUse True path _) = match lookupAssoc (useModuleId path) exportsMap
   None => []
   Some exports => resolveMembers path exports
 reexport _ _ = []

@@ -893,7 +893,8 @@ variantFieldOwners (Variant _ (ConPos _)) = []
 -- single-file import stub: names brought into scope (core import = no-op)
 importedNames : List Decl -> List String
 importedNames [] = []
-importedNames ((DUse _ path)::rest) = useImportNames path ++ importedNames rest
+importedNames ((DUse _ path _)::rest) = useImportNames path
+  ++ importedNames rest
 importedNames (_::rest) = importedNames rest
 
 useImportNames : UsePath -> List String
@@ -1297,7 +1298,7 @@ resolveToLines runtimeDecls preludeDecls prog =
 -- a spurious typecheck "Unbound variable".
 export singleFileImportErrors : List Decl -> List ResError
 singleFileImportErrors [] = []
-singleFileImportErrors ((DUse _ path)::rest) =
+singleFileImportErrors ((DUse _ path _)::rest) =
   let mid = useModId path
   if mid == "core" || mid == "" then
     singleFileImportErrors rest
@@ -1364,12 +1365,21 @@ typeCtorsOf name exp = lookupAssoc name exp.expTypeCtors
 -- ── usePaths / pubUsePaths ─────────────────────────────────────────────────
 usePathsOf : List Decl -> List UsePath
 usePathsOf [] = []
-usePathsOf ((DUse _ path)::rest) = path :: usePathsOf rest
+usePathsOf ((DUse _ path _)::rest) = path :: usePathsOf rest
 usePathsOf (_::rest) = usePathsOf rest
+
+-- Like usePathsOf but keeps each import's own source Loc alongside its path —
+-- used only by the collectImports chain, which attaches the loc to any
+-- privacy/abstract-ctor error it raises (F3 Chunk B: real range instead of the
+-- dummy {0,0}/`<unknown location>`).
+usePathLocsOf : List Decl -> List (UsePath, Loc)
+usePathLocsOf [] = []
+usePathLocsOf ((DUse _ path loc)::rest) = (path, loc) :: usePathLocsOf rest
+usePathLocsOf (_::rest) = usePathLocsOf rest
 
 pubUsePaths : List Decl -> List UsePath
 pubUsePaths [] = []
-pubUsePaths ((DUse True path)::rest) = path :: pubUsePaths rest
+pubUsePaths ((DUse True path _)::rest) = path :: pubUsePaths rest
 pubUsePaths (_::rest) = pubUsePaths rest
 
 -- ── imported_names + expand_member ─────────────────────────────────────────
@@ -1446,7 +1456,7 @@ mergeAdds a b = ImportAdds {
 }
 
 collectImports : List ModuleExports -> List Decl -> ImportAdds
-collectImports known prog = foldImports known (usePathsOf prog)
+collectImports known prog = foldImports known (usePathLocsOf prog)
 
 -- ── use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md) ───────────────────────
 -- The VALUE names a single non-core import contributes, attributed to its
@@ -1507,23 +1517,23 @@ keepAmbiguous sameMod ((n, mids)::rest)
     (n, mids) :: keepAmbiguous sameMod rest
   | otherwise = keepAmbiguous sameMod rest
 
-foldImports : List ModuleExports -> List UsePath -> ImportAdds
+foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldImports _ [] = emptyAdds
-foldImports known (p::rest) =
-  mergeAdds (oneImport known p) (foldImports known rest)
+foldImports known ((p, loc)::rest) =
+  mergeAdds (oneImport known p loc) (foldImports known rest)
 
-oneImport : List ModuleExports -> UsePath -> ImportAdds
-oneImport known path =
+oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
+oneImport known path loc =
   let mid = useModId path
   if mid == "core" then emptyAdds
   else match findExports mid known
-    None => stubOrUnknown known path mid
-    Some exp => realImport exp path
+    None => stubOrUnknown known path mid loc
+    Some exp => realImport exp path loc
 
 -- module not in `known`: in multi-module mode (known non-empty) this is an
 -- UnknownModule; the first module (known empty) keeps the single-file stub.
-stubOrUnknown : List ModuleExports -> UsePath -> String -> ImportAdds
-stubOrUnknown known path mid =
+stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
+stubOrUnknown known path mid loc =
   if isNonEmpty known then ImportAdds {
     iaImported = [],
     iaValues = [],
@@ -1531,7 +1541,7 @@ stubOrUnknown known path mid =
     iaCtors = [],
     iaIfaces = [],
     iaFieldOwners = [],
-    iaErrors = [UnknownModule mid None],
+    iaErrors = [UnknownModule mid (Some loc)],
   }
   else
     let names = useStubNames path
@@ -1545,8 +1555,8 @@ stubOrUnknown known path mid =
       iaErrors = [],
     }
 
-realImport : ModuleExports -> UsePath -> ImportAdds
-realImport exp path =
+realImport : ModuleExports -> UsePath -> Loc -> ImportAdds
+realImport exp path loc =
   let (names, errs) = importedNamesMM path exp
   ImportAdds {
     iaImported = names,
@@ -1555,8 +1565,19 @@ realImport exp path =
     iaCtors = filterContains exp.expCtors names,
     iaIfaces = filterContains exp.expInterfaces names,
     iaFieldOwners = ownedFieldOwners exp exp.expFieldOwners,
-    iaErrors = errs,
+    iaErrors = map (withResErrorLoc loc) errs,
   }
+
+-- Attach a real Loc to a ResError that was constructed with `None` (the
+-- privacy/abstract-ctor errors importedNamesMM/expandMemberErrs raise carry no
+-- loc of their own — they only see the ModuleExports, not the importing DUse's
+-- span).  Only the two variants that chain can actually produce are handled;
+-- any other error passes through unchanged.
+withResErrorLoc : Loc -> ResError -> ResError
+withResErrorLoc loc (PrivateNameAccess n m _) = PrivateNameAccess n m (Some loc)
+withResErrorLoc loc (NoExportedConstructors n m _) =
+  NoExportedConstructors n m (Some loc)
+withResErrorLoc _ e = e
 
 -- field-ownership pairs whose owner is an exported type/ctor (copied into scope
 -- so field access / record patterns over imported records resolve)
@@ -1883,9 +1904,28 @@ resolveModulesToHumane runtimeDecls preludeDecls mods =
 export resolveModulesToHumaneG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map ppResErrorLocated (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
 
+-- Like resolveModulesToHumaneG but with an explicit fallback FILE for a loc
+-- whose own `file` is empty (F3 Chunk B: `DUse`'s captured Loc is always ""
+-- — the multi-module loader (`loadProgram`) never carries per-module file
+-- paths, unlike its `*Files*` siblings — so an import-validation error, e.g.
+-- `PrivateNameAccess`/`NoExportedConstructors`/`UnknownModule`, can only be
+-- attributed to the CLI's own entry file, not necessarily the module that
+-- actually declared the offending `import`).  Correct when the failing import
+-- is in the entry module (the common case); a transitive dependency's own bad
+-- import still degrades gracefully to the entry file rather than the old
+-- `<unknown location>`.
+export resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+
 -- A single located humane line for a resolve error.
 export ppResErrorLocated : ResError -> String
-ppResErrorLocated e = match resErrorLoc e
+ppResErrorLocated e = ppResErrorLocatedF "" e
+
+-- Like ppResErrorLocated but substitutes `fallbackFile` for a located error
+-- whose own Loc carries an empty file (see resolveModulesToHumaneGF).
+export ppResErrorLocatedF : String -> ResError -> String
+ppResErrorLocatedF fallbackFile e = match resErrorLoc e
   None => "<unknown location>: " ++ ppResError e
   Some (Loc f sl sc _ _) =>
-    "\{f}:\{intToString sl}:\{intToString sc}: \{ppResError e}"
+    let ff = if f == "" then fallbackFile else f
+    "\{ff}:\{intToString sl}:\{intToString sc}: \{ppResError e}"

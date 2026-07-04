@@ -295,7 +295,7 @@ public export data Decl =
   | DFunDef Bool String (List Pat) Expr
   | DData DataVis String (List String) (List Variant) (List String)
   | DRecord DataVis String (List String) (List Field) (List String)
-  | DUse Bool UsePath
+  | DUse Bool UsePath Loc
   -- pub? name domain? internal?  `effect Foo` (atomic security capability),
   -- `effect Net Prefix` (domain-carrying), `internal effect Mut` (purity-only,
   -- never granted/parameterized).  v2 Stage 2a: domain = Some "Prefix" or None.
