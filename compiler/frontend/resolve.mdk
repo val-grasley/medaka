@@ -70,7 +70,9 @@ public export data ResError =
   -- "did you mean"), None when no candidate is close enough (ERROR-QUALITY §4.1)
   | UnboundVariable String (Option Loc) (Option String)
   | UnknownConstructor String (Option Loc)
-  | UnknownType String (Option Loc)
+  -- trailing `Option String` = nearest in-scope TYPE name suggestion (same
+  -- did-you-mean policy as UnboundVariable, candidates drawn from env.types)
+  | UnknownType String (Option Loc) (Option String)
   | UnknownEffect String (Option Loc)
   | UnknownField String (Option Loc)
   | FieldNotInRecord String String (Option Loc)
@@ -108,6 +110,7 @@ public export data ResError =
 -- JSON fields — the fix span is the misspelled name's own loc-start + its length.
 export resErrorDidYouMean : ResError -> Option (String, String)
 resErrorDidYouMean (UnboundVariable n _ (Some sug)) = Some (n, sug)
+resErrorDidYouMean (UnknownType n _ (Some sug)) = Some (n, sug)
 resErrorDidYouMean _ = None
 
 -- The source span carried by a ResError (Stage B): consumed by diagnostics.mdk
@@ -115,7 +118,7 @@ resErrorDidYouMean _ = None
 export resErrorLoc : ResError -> Option Loc
 resErrorLoc (UnboundVariable _ l _) = l
 resErrorLoc (UnknownConstructor _ l) = l
-resErrorLoc (UnknownType _ l) = l
+resErrorLoc (UnknownType _ l _) = l
 resErrorLoc (UnknownEffect _ l) = l
 resErrorLoc (UnknownField _ l) = l
 resErrorLoc (FieldNotInRecord _ _ l) = l
@@ -213,7 +216,7 @@ checkType cur env (TyCon n) =
   if contains n env.types || contains n env.imported || isTupleCtorTyName n then
     []
   else
-    [UnknownType n cur]
+    [UnknownType n cur (suggestType env n)]
 checkType _ _ (TyVar _) = []
 -- (helper below `checkType`) — accept the bare tuple type constructors
 -- `(,)`…`(,,,,)` (which the parser lowers to `TyCon "__tupleN__"`, arities 2–5)
@@ -278,7 +281,7 @@ recPatHead cur env name =
   if contains name env.types || contains name env.ctors then
     []
   else
-    [UnknownType name cur]
+    [UnknownType name cur (suggestType env name)]
 
 checkRecField : Option Loc -> Env -> String -> RecPatField -> List ResError
 checkRecField cur env owner (RecPatField fname popt) = fieldCheck cur env owner fname
@@ -449,6 +452,17 @@ suggestName env scope n
       Some best => Some best
       None => bestOf n lim (env.values ++ env.ctors ++ env.imported)
 
+-- "did you mean" for an unknown TYPE name: same policy as `suggestName`
+-- (nearest by edit distance, ≤ min(2, len/3), names shorter than 3 chars never
+-- suggest), candidates drawn from the in-scope type names (builtins + user
+-- `data`/`type`/`record` + imported) rather than value names.
+suggestType : Env -> String -> Option String
+suggestType env n
+  | stringLength n < 3 = None
+  | otherwise =
+    let lim = minI 2 (maxI 1 (stringLength n / 3))
+    bestOf n lim (env.types ++ env.imported)
+
 bestOf : String -> Int -> List String -> Option String
 bestOf n lim cands = map ((best, _) => best) (bestCandidate n lim cands None)
 
@@ -571,7 +585,7 @@ checkRecordCreate cur env scope name fs = recCreateHead cur env name fs
 recCreateHead : Option Loc -> Env -> String -> List FieldAssign -> List ResError
 recCreateHead cur env name fs
   | contains name env.types || contains name env.imported || contains name env.ctors = flatMap (recCreateField cur env name) fs
-  | otherwise = [UnknownType name cur]
+  | otherwise = [UnknownType name cur (suggestType env name)]
 
 recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
 recCreateField cur env owner (FieldAssign fname _) =
@@ -1033,7 +1047,9 @@ resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnknownConstructor n _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
-resErrorSexp (UnknownType n _) = "(UnknownType " ++ escStr n ++ ")"
+-- NOTE: the suggestion field is deliberately NOT serialized here either (mirrors
+-- UnboundVariable above) — keeps the resolve_modules gate's sexp stable.
+resErrorSexp (UnknownType n _ _) = "(UnknownType " ++ escStr n ++ ")"
 resErrorSexp (UnknownEffect n _) = "(UnknownEffect " ++ escStr n ++ ")"
 resErrorSexp (UnknownField n _) = "(UnknownField " ++ escStr n ++ ")"
 resErrorSexp (FieldNotInRecord f r _) =
@@ -1060,12 +1076,47 @@ resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
   ++ joinWith " " (escStr n :: map escStr mods)
   ++ ")"
 
+-- String key for an `Option Loc`, used only to distinguish dedup candidates
+-- (NOT a serialization contract like resErrorSexp): `None` collapses to a
+-- fixed marker (matching UnknownType's un-threaded decl-level errors, which all
+-- carry `None`), a real `Loc` renders its span so two errors at DIFFERENT real
+-- locations are never conflated.
+locKey : Option Loc -> String
+locKey None = "-"
+locKey (Some (Loc f sl sc el ec)) = "\{f}:\{intToString sl}:\{intToString sc}:\{intToString el}:\{intToString ec}"
+
+-- Collapse consecutive-or-not errors that render identically (same
+-- resErrorCode + ppResError message + location).  This mainly hits a typo'd
+-- type name reused in more than one position of the same signature (`f :
+-- Strng -> Strng`): each occurrence is a genuine separate AST node, but with
+-- no real location threaded here (decl-level checks pass `cur = None`,
+-- loc-threading is a separate task) the reports are otherwise
+-- indistinguishable noise — whereas two errors with the SAME message but
+-- DIFFERENT real locations (e.g. the same unbound name used twice in one
+-- line) are kept, since the location makes them distinguishable and each is
+-- independently actionable. Order-preserving, first occurrence wins.
+-- NOTE: keyed on `ppResError`/`resErrorCode` (exhaustive over every ResError
+-- constructor), NOT `resErrorSexp` — that function has no arm for
+-- `InternalExternAccess` (it only ever fed the sexp-dump gates before this),
+-- so using it as a general dedup key here would trap on that constructor.
+dedupResErrors : List ResError -> List ResError
+dedupResErrors es = dedupResErrorsGo es []
+
+dedupResErrorsGo : List ResError -> List String -> List ResError
+dedupResErrorsGo [] _ = []
+dedupResErrorsGo (e::es) seen =
+  let key = "\{resErrorCode e}|\{ppResError e}|\{locKey (resErrorLoc e)}"
+  if contains key seen then
+    dedupResErrorsGo es seen
+  else
+    e :: dedupResErrorsGo es (key::seen)
+
 -- ── resolve_program ───────────────────────────────────────────────────────
 -- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.
 export resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
 resolveProgram runtimeDecls preludeDecls prog =
   let env = buildEnv runtimeDecls preludeDecls prog []
-  buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog
+  dedupResErrors (buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog)
 
 -- Like resolveProgram but flags references to internal-only externs listed in
 -- `internalGuard` (empty ⇒ unrestricted).  The single-file `medaka check` error
@@ -1073,7 +1124,7 @@ resolveProgram runtimeDecls preludeDecls prog =
 export resolveProgramG2 : List String -> List Decl -> List Decl -> List Decl -> List ResError
 resolveProgramG2 internalGuard runtimeDecls preludeDecls prog =
   let env = buildEnv runtimeDecls preludeDecls prog internalGuard
-  buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog
+  dedupResErrors (buildErrors preludeDecls prog ++ flatMap (checkDecl env) prog)
 
 -- Human-readable message for a ResError (mirrors lib/resolve.ml's pp_error).
 -- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
@@ -1082,7 +1133,9 @@ ppResError (UnboundVariable n _ s) = match s
   Some sug => "Unbound variable: \{n} — did you mean '\{sug}'?"
   None => "Unbound variable: \{n}"
 ppResError (UnknownConstructor n _) = "Unknown constructor: " ++ n
-ppResError (UnknownType n _) = "Unknown type: " ++ n
+ppResError (UnknownType n _ s) = match s
+  Some sug => "Unknown type: \{n} — did you mean '\{sug}'?"
+  None => "Unknown type: " ++ n
 ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
 ppResError (UnknownField n _) = "Unknown field: " ++ n
 ppResError (FieldNotInRecord f r _) =
@@ -1114,7 +1167,7 @@ ppResError (InternalExternAccess n _) = "'"
 export resErrorCode : ResError -> String
 resErrorCode (UnboundVariable _ _ _) = "R-UNBOUND"
 resErrorCode (UnknownConstructor _ _) = "R-UNKNOWN-CTOR"
-resErrorCode (UnknownType _ _) = "R-UNKNOWN-TYPE"
+resErrorCode (UnknownType _ _ _) = "R-UNKNOWN-TYPE"
 resErrorCode (UnknownEffect _ _) = "R-UNKNOWN-EFFECT"
 resErrorCode (UnknownField _ _) = "R-UNKNOWN-FIELD"
 resErrorCode (FieldNotInRecord _ _ _) = "R-FIELD-NOT-IN-RECORD"
@@ -1682,7 +1735,7 @@ resolveModule runtimeDecls preludeDecls known modId prog =
 export resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
   let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog internalGuard
-  let errs = buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog
+  let errs = dedupResErrors (buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog)
   let exp = buildExports known modId prog env
   (exp, errs)
 

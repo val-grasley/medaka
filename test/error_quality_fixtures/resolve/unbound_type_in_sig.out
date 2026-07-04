@@ -1,5 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-<unknown location>: Unknown type: Strng
-<unknown location>: Unknown type: Strng
+<unknown location>: Unknown type: Strng — did you mean 'String'?
