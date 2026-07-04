@@ -77,7 +77,7 @@ recPatFieldSexp (RecPatField f (Some p)) = node "rf" [escStr f, patSexp p]
 recPatFieldSexp (RecPatField f None) = node "rf" [escStr f, "None"]
 
 tySexp : Ty -> String
-tySexp (TyCon c) = node "TyCon" [escStr c]
+tySexp (TyCon c _) = node "TyCon" [escStr c]
 tySexp (TyVar v) = node "TyVar" [escStr v]
 tySexp (TyApp a b) = node "TyApp" [tySexp a, tySexp b]
 tySexp (TyFun a b) = node "TyFun" [tySexp a, tySexp b]

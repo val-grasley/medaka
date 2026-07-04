@@ -2664,7 +2664,7 @@ wrapIf False s = s
 -- is a variable, not a TCon)
 tyVarNames : Ty -> List String
 tyVarNames (TyVar n) = [n]
-tyVarNames (TyCon _) = []
+tyVarNames (TyCon _ _) = []
 tyVarNames (TyApp a b) = tyVarNames a ++ tyVarNames b
 tyVarNames (TyFun a b) = tyVarNames a ++ tyVarNames b
 tyVarNames (TyTuple ts) = flatMap tyVarNames ts
@@ -2699,7 +2699,7 @@ tyVarNamesWithConstraints ty = dedup (tyVarNames ty ++ constraintVarNamesTy ty)
 -- Ty.  Mirrors tyVarNames but for constructor slots.  TyVar names are alias
 -- params and never alias dependencies, so they are excluded.
 tyConNamesInTy : Ty -> List String
-tyConNamesInTy (TyCon n) = [n]
+tyConNamesInTy (TyCon n _) = [n]
 tyConNamesInTy (TyVar _) = []
 tyConNamesInTy (TyApp a b) = tyConNamesInTy a ++ tyConNamesInTy b
 tyConNamesInTy (TyFun a b) = tyConNamesInTy a ++ tyConNamesInTy b
@@ -2821,7 +2821,7 @@ sigToSchemeTvs ty =
 -- callback effect to its result effect
 effTailNames : Ty -> List String
 effTailNames (TyVar _) = []
-effTailNames (TyCon _) = []
+effTailNames (TyCon _ _) = []
 effTailNames (TyApp a b) = effTailNames a ++ effTailNames b
 effTailNames (TyFun a b) = effTailNames a ++ effTailNames b
 effTailNames (TyTuple ts) = flatMap effTailNames ts
@@ -2861,7 +2861,7 @@ tyAppSpine (TyApp a b) = match tyAppSpine a
 tyAppSpine t = (t, [])
 
 fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> <Mut> Mono
-fromAstTypeE etbl tvs (TyCon n) = match lookupAssoc n aliasTableRef.value
+fromAstTypeE etbl tvs (TyCon n _) = match lookupAssoc n aliasTableRef.value
   -- Transparent non-parameterized alias (`type Foo = Int`): expand to its RHS,
   -- recursively so alias-of-alias (`type A = Int; type B = A`) flattens.  Cycle
   -- rejection is deferred (stage 4); the non-cyclic corpus terminates.
@@ -2875,7 +2875,7 @@ fromAstTypeE etbl tvs (TyCon n) = match lookupAssoc n aliasTableRef.value
   _ => TCon n
 fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssoc n tvs)
 fromAstTypeE etbl tvs (TyApp a b) = match tyAppSpine (TyApp a b)
-  (TyCon n, args) => fromAstTypeApp etbl tvs n args
+  (TyCon n _, args) => fromAstTypeApp etbl tvs n args
   _ => TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b)
 fromAstTypeE etbl tvs (TyFun a b) =
   TFun
@@ -2958,7 +2958,7 @@ rowArgOf _ _ = pureRow
 -- into an etbl with shared effvars before elaborating).  Walks the whole type.
 rowArgNames : Ty -> List String
 rowArgNames (TyApp a b) = match tyAppSpine (TyApp a b)
-  (TyCon n, args) => rowArgNamesApp n args (rowArgNames a ++ rowArgNames b)
+  (TyCon n _, args) => rowArgNamesApp n args (rowArgNames a ++ rowArgNames b)
   _ => rowArgNames a ++ rowArgNames b
 rowArgNames (TyFun a b) = rowArgNames a ++ rowArgNames b
 rowArgNames (TyTuple ts) = flatMap rowArgNames ts
@@ -4902,7 +4902,7 @@ inferHeadAnnot env e ty =
 -- to the literal annotation type.
 headAnnotTy : Ty -> <Mut> Mono
 headAnnotTy ty = match tyAppSpine ty
-  (TyCon n, _) => match lookupAssoc n dataParamKindsRef.value
+  (TyCon n _, _) => match lookupAssoc n dataParamKindsRef.value
     Some kinds => applyParams (TCon n) (freshVars (listLen kinds))
     None => fst (astTypeFreshTbl ty)
   _ => fst (astTypeFreshTbl ty)
@@ -6894,7 +6894,7 @@ implMatchesSuper _ _ _ = False
 -- which treats effect rows as transparent — TyEffect ignores its row).
 tyIsConcrete : Ty -> Bool
 tyIsConcrete (TyVar _) = False
-tyIsConcrete (TyCon _) = True
+tyIsConcrete (TyCon _ _) = True
 tyIsConcrete (TyApp a b) = tyIsConcrete a && tyIsConcrete b
 tyIsConcrete (TyFun a b) = tyIsConcrete a && tyIsConcrete b
 tyIsConcrete (TyTuple ts) = allList tyIsConcrete ts
@@ -6905,7 +6905,7 @@ tyIsConcrete (TyConstrained _ t) = tyIsConcrete t
 -- concrete is fully ground).  Mirror of lib/typecheck.ml's mono_matches.
 tyMatchesAst : Ty -> Ty -> Bool
 tyMatchesAst (TyVar _) _ = True
-tyMatchesAst (TyCon a) (TyCon b) = a == b
+tyMatchesAst (TyCon a _) (TyCon b _) = a == b
 tyMatchesAst (TyApp f1 a1) (TyApp f2 a2) = tyMatchesAst f1 f2
   && tyMatchesAst a1 a2
 tyMatchesAst (TyFun a1 b1) (TyFun a2 b2) = tyMatchesAst a1 a2
@@ -7112,8 +7112,8 @@ tySubsumeGo _ _ None = None
 tySubsumeGo (TyVar gn) s (Some sub) = match lookupAssoc gn sub
   Some prev => if tyStructEq prev s then Some sub else None
   None => Some ((gn, s)::sub)
-tySubsumeGo (TyCon a) (TyCon b) acc = if a == b then acc else None
-tySubsumeGo (TyCon a) _ acc = None
+tySubsumeGo (TyCon a _) (TyCon b _) acc = if a == b then acc else None
+tySubsumeGo (TyCon a _) _ acc = None
 tySubsumeGo (TyApp f1 a1) (TyApp f2 a2) acc =
   tySubsumeGo a1 a2 (tySubsumeGo f1 f2 acc)
 tySubsumeGo (TyApp f1 a1) _ acc = None
@@ -7142,7 +7142,7 @@ stripTyWrap t = t
 
 -- structural equality of two AST type patterns (rigid; TyVar names must match).
 tyStructEq : Ty -> Ty -> Bool
-tyStructEq (TyCon a) (TyCon b) = a == b
+tyStructEq (TyCon a _) (TyCon b _) = a == b
 tyStructEq (TyVar a) (TyVar b) = a == b
 tyStructEq (TyApp f1 a1) (TyApp f2 a2) = tyStructEq f1 f2 && tyStructEq a1 a2
 tyStructEq (TyFun a1 b1) (TyFun a2 b2) = tyStructEq a1 a2 && tyStructEq b1 b2
@@ -7169,7 +7169,7 @@ countHead ((KeyEntry methodNames tag2 _ _)::rest) name tag
 
 -- the head type constructor of an (unelaborated) AST type
 headTyconTy : Ty -> Option String
-headTyconTy (TyCon n) = Some n
+headTyconTy (TyCon n _) = Some n
 headTyconTy (TyApp a _) = headTyconTy a
 headTyconTy (TyTuple ts) = Some (tupleHeadTagTc (listLen ts))
 headTyconTy _ = None
@@ -7263,7 +7263,7 @@ preferConcrete a b = match headTyconMono a
 -- type-variable names to monos (single-level: the pattern's args are bare vars).
 matchTyMono : Ty -> Mono -> Option (List (String, Mono))
 matchTyMono (TyVar n) m = Some [(n, m)]
-matchTyMono (TyCon n) m = match normalize m
+matchTyMono (TyCon n _) m = match normalize m
   TCon n2 => if n == n2 then Some [] else None
   _ => None
 matchTyMono (TyApp a b) m = match normalize m
@@ -7705,7 +7705,7 @@ rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
   -- the native emitter picks the Float primitive (bypassing the type-lost
   -- staticIsFloat).  This is the dispatch route READ-OUT the design names, relocated
   -- from the (lost) ref cell to a (surviving) node.
-  RScalar tag => EAnnot (EBinOp op l r routeRef) (TyCon tag)
+  RScalar tag => EAnnot (EBinOp op l r routeRef) (TyCon tag None)
   _ => binopMethodApp op l r routeRef
 -- PLAN.md #11: re-tag a source integer literal to its inferred runtime rep, a 3-way
 -- decision mirroring lib/dict_pass.ml's e7031e6 ENumLit arm.  setNumlitFloats already
@@ -8574,7 +8574,7 @@ implTysIfMatch _ _ _ = []
 -- substitute interface-typaram NAMES → impl type PATTERNS inside a declared Ty.
 substTyVars : List (String, Ty) -> Ty -> Ty
 substTyVars sub (TyVar n) = fromOption (TyVar n) (lookupAssoc n sub)
-substTyVars _ (TyCon n) = TyCon n
+substTyVars _ (TyCon n _) = TyCon n None
 substTyVars sub (TyApp a b) = TyApp (substTyVars sub a) (substTyVars sub b)
 substTyVars sub (TyFun a b) = TyFun (substTyVars sub a) (substTyVars sub b)
 substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
@@ -9770,7 +9770,7 @@ annotTooGeneralMsg ty = "Type annotation '"
 
 -- pretty-print an AST type (mirrors lib/ast.ml's pp_ty byte-for-byte)
 ppTy : Ty -> String
-ppTy (TyCon n) = n
+ppTy (TyCon n _) = n
 ppTy (TyVar n) = n
 ppTy (TyApp a b) = "\{ppTy a} \{ppTyAtom b}"
 ppTy (TyFun a b) = "\{ppTyFunArg a} -> \{ppTy b}"

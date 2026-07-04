@@ -182,7 +182,7 @@ derivedImpl iface tyName methods = DImpl {
   pub = True,
   def = False,
   iface = iface,
-  tys = [TyCon tyName],
+  tys = [TyCon tyName None],
   name = None,
   reqs = [],
   methods = methods,
@@ -489,7 +489,7 @@ applyDeriveParams name params (d@(DImpl { iface, ... })) = DImpl { d | tys = [ap
 applyDeriveParams _ _ d = d
 
 appliedHead : String -> List String -> Ty
-appliedHead name params = appliedHeadGo (TyCon name) params
+appliedHead name params = appliedHeadGo (TyCon name None) params
 
 appliedHeadGo : Ty -> List String -> Ty
 appliedHeadGo acc [] = acc
@@ -851,7 +851,7 @@ kvToTuple : (Expr, Expr) -> Expr
 kvToTuple (k, v) = ETuple [k, v]
 
 pinType : String -> List Ty -> Ty
-pinType name args = pinTypeGo (TyCon name) args
+pinType name args = pinTypeGo (TyCon name None) args
 
 pinTypeGo : Ty -> List Ty -> Ty
 pinTypeGo acc [] = acc

@@ -217,11 +217,11 @@ patsBindings ps = flatMap patBindings ps
 -- `cur` (Stage B) is the enclosing `ELoc` span threaded from the expr walk (or
 -- `None` at decl level), mirroring lib/resolve.ml's `!current_loc`.
 checkType : Option Loc -> Env -> Ty -> List ResError
-checkType cur env (TyCon n) =
+checkType cur env (TyCon n loc) =
   if contains n env.types || contains n env.imported || isTupleCtorTyName n then
     []
   else
-    [UnknownType n cur (suggestType env n)]
+    [UnknownType n (orElseLocL loc cur) (suggestType env n)]
 checkType _ _ (TyVar _) = []
 -- (helper below `checkType`) — accept the bare tuple type constructors
 -- `(,)`…`(,,,,)` (which the parser lowers to `TyCon "__tupleN__"`, arities 2–5)

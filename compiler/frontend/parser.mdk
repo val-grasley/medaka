@@ -1568,8 +1568,8 @@ constraintTail lhs = do
   pure (TyConstrained (extractConstraints lhs) rhs)
 
 extractConstraints : Ty -> List Constraint
-extractConstraints (TyApp (TyCon iface) arg) = [Constraint iface [arg]]
-extractConstraints (TyCon iface) = [Constraint iface []]
+extractConstraints (TyApp (TyCon iface _) arg) = [Constraint iface [arg]]
+extractConstraints (TyCon iface _) = [Constraint iface []]
 extractConstraints (TyTuple cs) = concatMapC cs
 extractConstraints _ = []
 
@@ -1788,7 +1788,11 @@ parseTyAtom : Parser Ty
 parseTyAtom = do
   t <- peekP
   match t
-    TUpper c => emit (TyCon c)
+    TUpper c => do
+      s <- getPos
+      advance
+      q <- getPos
+      pure (TyCon c (Some (locOfSpan s q)))
     TIdent v => emit (TyVar v)
     TLParen => parseTyParen
     _ => failP "expected type atom"
@@ -1836,7 +1840,7 @@ tupleCtorTailFor _ _ = failP "expected , or ) in tuple type constructor"
 tupleCtorTyOfArity : Int -> Parser Ty
 tupleCtorTyOfArity n =
   if n >= 2 && n <= 5 then
-    pure (TyCon (tupleCtorTyName n))
+    pure (TyCon (tupleCtorTyName n) None)
   else
     failP "tuple type constructor arity must be 2..5"
 

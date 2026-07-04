@@ -324,7 +324,7 @@ tyConSurface "__tuple5__" = "(,,,,)"
 tyConSurface n = n
 
 printType : Ty -> Doc
-printType (TyCon n) = text (tyConSurface n)
+printType (TyCon n _) = text (tyConSurface n)
 printType (TyVar n) = text n
 printType (TyApp a b) =
   Cat (printTypeAppLhs a) (Cat (text " ") (printTypeAtom b))
@@ -357,7 +357,7 @@ printConstraint (Constraint iface args) =
   Cat (text iface) (concatD (map (a => Cat (text " ") (printTypeAtom a)) args))
 
 printTypeAtom : Ty -> Doc
-printTypeAtom (TyCon n) = text (tyConSurface n)
+printTypeAtom (TyCon n _) = text (tyConSurface n)
 printTypeAtom (TyVar n) = text n
 printTypeAtom (TyTuple ts) = printType (TyTuple ts)
 printTypeAtom t = Cat (text "(") (Cat (printType t) (text ")"))
@@ -1772,7 +1772,7 @@ ppTy : Ty -> String
 ppTy t = ppTyPrec 0 t
 
 ppTyPrec : Int -> Ty -> String
-ppTyPrec _ (TyCon s) = tyConSurface s
+ppTyPrec _ (TyCon s _) = tyConSurface s
 ppTyPrec _ (TyVar s) = s
 ppTyPrec _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyPrec 0) ts) ++ ")"
 ppTyPrec p (TyApp f x) =

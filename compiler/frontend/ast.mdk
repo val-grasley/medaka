@@ -26,7 +26,7 @@ deriving (Eq)
 public export data Loc = Loc String Int Int Int Int
 
 public export data Ty =
-  | TyCon String
+  | TyCon String (Option Loc)
   | TyVar String
   | TyApp Ty Ty
   | TyFun Ty Ty

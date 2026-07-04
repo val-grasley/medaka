@@ -432,13 +432,13 @@ genAdtDecl ctx =
 -- deriving Ord requires Ord-able field types (Bool has Eq but no Ord).
 
 gtyToTy : Gty -> Ty
-gtyToTy GInt = TyCon "Int"
-gtyToTy GFloat = TyCon "Float"
-gtyToTy GBool = TyCon "Bool"
-gtyToTy GString = TyCon "String"
-gtyToTy GChar = TyCon "Char"
+gtyToTy GInt = TyCon "Int" None
+gtyToTy GFloat = TyCon "Float" None
+gtyToTy GBool = TyCon "Bool" None
+gtyToTy GString = TyCon "String" None
+gtyToTy GChar = TyCon "Char" None
 gtyToTy (GTup ts) = TyTuple (map gtyToTy ts)
-gtyToTy (GData n) = TyCon n
+gtyToTy (GData n) = TyCon n None
 
 variantToAst : (String, List Gty) -> Variant
 variantToAst (con, ftys) = Variant con (ConPos (map gtyToTy ftys))

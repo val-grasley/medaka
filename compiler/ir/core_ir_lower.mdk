@@ -134,7 +134,7 @@ lower (EBlock stmts) = CBlock (map lowerStmt stmts)
 -- `EAnnot (EBinOp …) (TyCon tag)` (the ref-cell route does not survive to here, a
 -- node does).  Read the tag into CBinPrim's scalar field so the emitter picks the
 -- Float primitive.  Must precede the transparent `EAnnot e _` strip below.
-lower (EAnnot (EBinOp op l r _) (TyCon tag)) = lowerBinop op l r tag
+lower (EAnnot (EBinOp op l r _) (TyCon tag _)) = lowerBinop op l r tag
 lower (EAnnot e _) = lower e
 lower (EHeadAnnot e _) = lower e
 -- dispatch: read the typechecker-filled route out of the mutable cell, making it
@@ -863,7 +863,7 @@ methodResultTy t = t
 -- result-side twin of eval.mdk's non-exported `tyMentions`).
 tyMentionsParams : Ty -> List String -> Bool
 tyMentionsParams (TyVar n) params = contains n params
-tyMentionsParams (TyCon _) _ = False
+tyMentionsParams (TyCon _ _) _ = False
 tyMentionsParams (TyApp a b) params = tyMentionsParams a params
   || tyMentionsParams b params
 tyMentionsParams (TyFun a b) params = tyMentionsParams a params
@@ -969,7 +969,7 @@ constraintArgsMentionNonParam typarams args =
 
 tyMentionsNonParam : Ty -> List String -> Bool
 tyMentionsNonParam (TyVar n) params = not (contains n params)
-tyMentionsNonParam (TyCon _) _ = False
+tyMentionsNonParam (TyCon _ _) _ = False
 tyMentionsNonParam (TyApp a b) params = tyMentionsNonParam a params
   || tyMentionsNonParam b params
 tyMentionsNonParam (TyFun a b) params = tyMentionsNonParam a params
@@ -1012,7 +1012,7 @@ fieldTyHeadName (Field _ ty) = tyHeadName ty
 -- the head type-CONSTRUCTOR name of a field type, or "" if it has no simple head
 -- (TyVar / TyFun / TyTuple / applied types) — the emitter treats "" as "unknown".
 tyHeadName : Ty -> String
-tyHeadName (TyCon n) = n
+tyHeadName (TyCon n _) = n
 -- G3: a type VARIABLE head (`a` in `Num a => a -> a`) yields its var name, so the
 -- emitter's declSig table can recognise a polymorphic Num param (isTypeVarName) and
 -- route its arithmetic through the runtime tag-dispatched @mdk_num_* helpers.

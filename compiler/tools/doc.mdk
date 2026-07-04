@@ -57,7 +57,7 @@ dsub a b s = stringSlice a b s
 -- here directly, precedence-passing.
 
 ppTyP : Int -> Ty -> String
-ppTyP _ (TyCon s) = s
+ppTyP _ (TyCon s _) = s
 ppTyP _ (TyVar s) = s
 ppTyP _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyP 0) ts) ++ ")"
 ppTyP p (TyApp f x) =

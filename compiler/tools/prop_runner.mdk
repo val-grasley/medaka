@@ -92,7 +92,7 @@ tySpine t = tySpineGo [] t
 
 tySpineGo : List Ty -> Ty -> Option (String, List Ty)
 tySpineGo acc (TyApp f a) = tySpineGo (a::acc) f
-tySpineGo acc (TyCon n) = Some (n, acc)
+tySpineGo acc (TyCon n _) = Some (n, acc)
 tySpineGo _ _ = None
 
 -- ── value generation ─────────────────────────────────────────────────────────
@@ -101,22 +101,22 @@ genForType : List (String, TyDef) -> List (String, Ty) -> Ty -> <Mut> Value
 genForType tydefs subst (TyVar v) = match lookupAssoc v subst
   Some t => genForType tydefs subst t
   None => panic ("prop_runner: cannot generate values for unbound type variable '" ++ v ++ "'")
-genForType tydefs subst (TyCon "Int") = VInt (randIntRange (-1000) 1000)
-genForType tydefs subst (TyCon "Bool") = VBool (randBoolL ())
-genForType tydefs subst (TyCon "Float") = genFloat ()
-genForType tydefs subst (TyCon "Char") = VChar (genCharStr ())
-genForType tydefs subst (TyCon "String") = VString (genString ())
-genForType tydefs subst (TyCon "Unit") = VUnit
-genForType tydefs subst (TyApp (TyCon "List") t) =
+genForType tydefs subst (TyCon "Int" _) = VInt (randIntRange (-1000) 1000)
+genForType tydefs subst (TyCon "Bool" _) = VBool (randBoolL ())
+genForType tydefs subst (TyCon "Float" _) = genFloat ()
+genForType tydefs subst (TyCon "Char" _) = VChar (genCharStr ())
+genForType tydefs subst (TyCon "String" _) = VString (genString ())
+genForType tydefs subst (TyCon "Unit" _) = VUnit
+genForType tydefs subst (TyApp (TyCon "List" _) t) =
   VList (genList tydefs subst t (randIntRange 0 7))
-genForType tydefs subst (TyApp (TyCon "Array") t) =
+genForType tydefs subst (TyApp (TyCon "Array" _) t) =
   VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
-genForType tydefs subst (TyApp (TyCon "Option") t) =
+genForType tydefs subst (TyApp (TyCon "Option" _) t) =
   if randBoolL () then
     VCon "None" []
   else
     VCon "Some" [genForType tydefs subst t]
-genForType tydefs subst (TyApp (TyApp (TyCon "Result") e) a) =
+genForType tydefs subst (TyApp (TyApp (TyCon "Result" _) e) a) =
   if randBoolL () then
     VCon "Ok" [genForType tydefs subst a]
   else
@@ -202,23 +202,23 @@ nthList [] _ = panic "nthList: index out of range"
 
 shrinkValue : Ty -> Value -> List Value
 shrinkValue ty v = match (ty, v)
-  (TyCon "Int", VInt n) => shrinkInt n
-  (TyCon "Bool", VBool True) => [VBool False]
-  (TyCon "Bool", VBool False) => []
-  (TyCon "Float", VFloat x) =>
+  (TyCon "Int" _, VInt n) => shrinkInt n
+  (TyCon "Bool" _, VBool True) => [VBool False]
+  (TyCon "Bool" _, VBool False) => []
+  (TyCon "Float" _, VFloat x) =>
     if x == 0.0 then
       []
     else
       [VFloat 0.0, VFloat (x / 2.0)]
-  (TyCon "String", VString s) =>
+  (TyCon "String" _, VString s) =>
     if s == "" then
       []
     else
       [VString (stringSlice 0 (stringLength s / 2) s)]
-  (TyApp (TyCon "List") _, VList []) => []
-  (TyApp (TyCon "List") _, VList (_::rest)) => [VList rest]
-  (TyApp (TyCon "Option") _, VCon "None" []) => []
-  (TyApp (TyCon "Option") _, VCon "Some" _) => [VCon "None" []]
+  (TyApp (TyCon "List" _) _, VList []) => []
+  (TyApp (TyCon "List" _) _, VList (_::rest)) => [VList rest]
+  (TyApp (TyCon "Option" _) _, VCon "None" []) => []
+  (TyApp (TyCon "Option" _) _, VCon "Some" _) => [VCon "None" []]
   _ => []
 
 shrinkInt : Int -> List Value
