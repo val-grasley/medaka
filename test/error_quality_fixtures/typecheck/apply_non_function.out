@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/apply_non_function.mdk:3:20: This expression has type Int, which is not a function, so it cannot be applied to an argument.
+test/error_quality_fixtures/typecheck/apply_non_function.mdk:3:20: This expression has type Int, which is not a function, so it cannot be applied to an argument. — 'n' is a value, not a function; remove the argument, or call a function here.
   |
 3 |   println (debug (n 3))
   |                     ^
