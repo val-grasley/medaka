@@ -69,6 +69,13 @@ public export data ResError =
   -- trailing `Option String` = nearest in-scope name suggestion (edit-distance
   -- "did you mean"), None when no candidate is close enough (ERROR-QUALITY §4.1)
   | UnboundVariable String (Option Loc) (Option String)
+  -- an unbound name that IS exported by a module the file already `import`s
+  -- (bare or selective-but-missing-this-name): name, exporting module id.
+  -- Takes priority over the generic edit-distance UnboundVariable suggestion
+  -- (audit finding #5) — the fix is "select this name from the import", not a
+  -- typo correction, and a fuzzy edit-distance match against an unrelated name
+  -- is actively misleading here.
+  | UnboundVariableExported String String (Option Loc)
   -- trailing `Option String` = suggested constructor name: today ONLY a
   -- curated Haskell-alias exact match (`Just`→`Some`, …; see
   -- `haskellCtorAliases`), None otherwise — there is no general edit-distance
@@ -122,6 +129,7 @@ resErrorDidYouMean _ = None
 -- to position the Diag (was uniformly `None` pre-Stage-B).
 export resErrorLoc : ResError -> Option Loc
 resErrorLoc (UnboundVariable _ l _) = l
+resErrorLoc (UnboundVariableExported _ _ l) = l
 resErrorLoc (UnknownConstructor _ l _) = l
 resErrorLoc (UnknownType _ l _) = l
 resErrorLoc (UnknownEffect _ l) = l
@@ -155,6 +163,11 @@ public export record Env
   ifaceMethods : List (String, List String)
   effects : List String
   imported : List String
+  -- (modId, expValues) pairs for every non-`core` module this file `import`s
+  -- (multi-module path only; single-file `buildEnv` leaves this `[]`) — lets
+  -- `checkVar` recognize an unbound name that's an export of an ALREADY
+  -- imported module (needs a selective import, not a typo fix; audit #5).
+  importedModuleValues : List (String, List String)
   -- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
   -- non-`core` module ids that export it unqualified
   ambiguous : List (String, List String)
@@ -408,13 +421,31 @@ checkVar cur env scope n
   -- untrusted module ⇒ compile error (see internalExterns / Env.internalGuard).
   | not (contains n scope) && contains n env.internalGuard =
     [InternalExternAccess n cur]
-  | not (lookupValue env scope n) =
-    [UnboundVariable n cur (suggestName env scope n)]
+  | not (lookupValue env scope n) = unboundVarErrors cur env scope n
   -- use-time ambiguity: resolves, not shadowed by a local, exported by ≥2
   -- non-core modules (same-module top-levels already excluded from the set).
   | not (contains n scope) && isAmbiguous env n =
     [AmbiguousOccurrence n (ambigMods env n) cur]
   | otherwise = []
+
+-- The errors for a name that failed `lookupValue`: if it's exported by an
+-- already-imported module (audit #5 — the user needs a selective import, not
+-- a typo fix), report that specifically; otherwise fall back to the generic
+-- edit-distance/Haskell-alias UnboundVariable suggestion.
+unboundVarErrors : Option Loc -> Env -> List String -> String -> List ResError
+unboundVarErrors cur env scope n = match modulesExportingName env n
+  m::_ => [UnboundVariableExported n m cur]
+  [] => [UnboundVariable n cur (suggestName env scope n)]
+
+-- module ids (of modules this file already imports) that export `n` as a
+-- value — deliberately NOT scope/local-shadow aware, since `unboundVarErrors`
+-- only reaches this after `lookupValue` already failed (so `n` cannot be a
+-- shadowed local).
+modulesExportingName : Env -> String -> List String
+modulesExportingName env n = flatMap (matchesExport n) env.importedModuleValues
+
+matchesExport : String -> (String, List String) -> List String
+matchesExport n (mid, vals) = if contains n vals then [mid] else []
 
 isAmbiguous : Env -> String -> Bool
 isAmbiguous env n = match lookupAssoc n env.ambiguous
@@ -962,6 +993,7 @@ buildEnv runtimeDecls preludeDecls prog internalGuard =
     ifaceMethods = pIfaces ++ uIfaces,
     effects = effectNames prog,
     imported = imported,
+    importedModuleValues = [],
     ambiguous = [],
     internalGuard = internalGuard,
   }
@@ -1133,6 +1165,8 @@ export resErrorSexp : ResError -> String
 -- NOTE: the suggestion field is deliberately NOT serialized — the sexp feeds the
 -- resolve_modules gate and must stay stable (the suggestion is cosmetic).
 resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
+resErrorSexp (UnboundVariableExported n m _) =
+  "(UnboundVariableExported \{escStr n} \{escStr m})"
 resErrorSexp (UnknownConstructor n _ _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
@@ -1222,6 +1256,7 @@ ppResError (UnboundVariable n _ s) = match s
   Some sug => "Unbound variable: \{n} — did you mean '\{sug}'?"
     ++ haskellNote n sug
   None => "Unbound variable: \{n}"
+ppResError (UnboundVariableExported n m _) = "Unbound variable: \{n} — '\{n}' is exported by '\{m}'; import it with 'import \{m}.{\{n}}'"
 ppResError (UnknownConstructor n _ s) = match s
   Some sug => "Unknown constructor: \{n} — did you mean '\{sug}'?"
     ++ haskellNote n sug
@@ -1259,6 +1294,7 @@ ppResError (InternalExternAccess n _) = "'"
 -- append-only; never renumber.
 export resErrorCode : ResError -> String
 resErrorCode (UnboundVariable _ _ _) = "R-UNBOUND"
+resErrorCode (UnboundVariableExported _ _ _) = "R-UNBOUND"
 resErrorCode (UnknownConstructor _ _ _) = "R-UNKNOWN-CTOR"
 resErrorCode (UnknownType _ _ _) = "R-UNKNOWN-TYPE"
 resErrorCode (UnknownEffect _ _) = "R-UNKNOWN-EFFECT"
@@ -1636,6 +1672,7 @@ buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
   let baseIfaces = map fst pIfaces ++ map fst uIfaces ++ adds.iaIfaces
   let impIfaceMethods = importedIfaceMethods known prog baseIfaces
   let impEffects = importedEffects known prog
+  let impModValues = importedModuleValueSets known prog
   let env = Env {
     values = externNames runtimeDecls ++ pValues ++ userValueNames prog ++ adds.iaValues,
     types = primitiveTypes ++ pTypes ++ dataRecordNames prog ++ adds.iaTypes,
@@ -1646,10 +1683,27 @@ buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
     ifaceMethods = pIfaces ++ uIfaces ++ impIfaceMethods,
     effects = effectNames prog ++ impEffects,
     imported = adds.iaImported,
+    importedModuleValues = impModValues,
     ambiguous = ambiguousSet known prog,
     internalGuard = internalGuard,
   }
   (env, adds.iaErrors)
+
+-- (modId, expValues) pairs for every non-`core` import in the program,
+-- regardless of import form (bare `UseName`, selective `UseGroup`, wildcard) —
+-- used only to answer "is this unbound name exported by a module I already
+-- import?" (audit #5), not to bind any names into scope.
+importedModuleValueSets : List ModuleExports -> List Decl -> List (String, List String)
+importedModuleValueSets known prog =
+  flatMap (oneImportedModuleValues known) (usePathsOf prog)
+
+oneImportedModuleValues : List ModuleExports -> UsePath -> List (String, List String)
+oneImportedModuleValues known path =
+  let mid = useModId path
+  if mid == "core" then []
+  else match findExports mid known
+    None => []
+    Some exp => [(mid, exp.expValues)]
 
 -- ── build_exports ──────────────────────────────────────────────────────────
 buildExports : List ModuleExports -> String -> List Decl -> Env -> ModuleExports
