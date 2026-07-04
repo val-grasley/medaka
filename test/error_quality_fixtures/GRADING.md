@@ -1209,3 +1209,215 @@ explicitly did not — see its "What's still weakest" note above).
   reading is being applied consistently: `arg_order_swapped`'s new machine
   `fix` is real evidence of quality, but it is credited entirely to F, so A
   does not inflate a second time off the same JSON field.
+
+---
+
+## Re-grade (post-actionable-fix-hints-sweep, base `7900bfc`)
+
+Base confirmed: `git merge-base --is-ancestor 7900bfc HEAD` → `BASE_OK`.
+Docs-only re-grade — no compiler source touched. Starting point is the prior
+corpus state (`781 / 67 = 11.66`, the "post-Batch-B actionable-fixes" section
+above). Corpus fixture count re-verified directly (not assumed): `find
+test/error_quality_fixtures -maxdepth 2 -name '*.mdk' | wc -l` = 68, minus
+`parse/hs_syntax_guard_valid` (a valid-code guard fixture, exit 0, not
+scored/counted — same exclusion as every prior session) = **67**, unchanged
+from the prior session's denominator.
+
+This session re-scores **9 fixtures** that gained a new `— <hint>` suffix on
+their primary message: the 4 `exhaust/nonexhaustive_*`, `eval/eval/
+runtime_nonexhaustive` (checked, unaffected — see below), `typecheck/
+missing_instance`, `typecheck/eq_undesugared_adt`, `typecheck/
+lt_undesugared_adt`, and `resolve/unknown_module`. All other 58 fixtures are
+unchanged and keep their prior scores. `typecheck/eq_on_function` and
+`typecheck/lt_on_function` were checked and confirmed **unaffected** — their
+`.out` goldens are byte-identical to before (function types can't `deriving`,
+so the hint machinery doesn't fire there), matching the task brief.
+
+**What changed**, verified against the committed `.out`/`.json.out` goldens
+and spot-checked on a freshly built binary (`./medaka check` + `./medaka
+check --json`), byte-identical to the goldens in both text and JSON shape:
+
+1. **Non-exhaustive-match witness edit** (`exhaust/nonexhaustive_{option,
+   bool,list,custom}`) — the warning now appends the exact uncovered arm as a
+   literal, ready-to-paste edit: `… missing case: 'None' — add a 'None => …'
+   arm, or a '_' wildcard arm to catch the rest.` Confirmed via `--json`
+   (`warning_nonexhaustive.check_json.golden`): a new `help` field carries the
+   same suffix; still **no** `fix` field (there's no single source *span* to
+   replace — the edit is "insert a new arm", not "replace this text"). Per
+   the task brief's explicit anchor ("witness-based edit... justifies F=2")
+   this crosses the F=2 bar: it names the *exact* arm to add, not just a
+   direction, matching the precedent set by `else_let_block`/`hs_lambda` (F=2
+   granted on a literal rewrite embedded in prose, no JSON `fix` required).
+   `eval/runtime_nonexhaustive` was explicitly checked (its `.out` is
+   `runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match`, byte-
+   identical to its prior golden) — it did **not** gain the witness hint (the
+   runtime path doesn't have the compile-time exhaustiveness checker's arm
+   inventory available at the panic site), so it is graded as-is: **no
+   change**, stays at its current **12**.
+2. **Missing-impl hint** (`typecheck/missing_instance`,
+   `typecheck/eq_undesugared_adt`, `typecheck/lt_undesugared_adt`) — each
+   `No impl of <Class> for <Type>` now appends ` — add 'deriving <Class>' to
+   the '<Type>' type, or write an 'impl <Class> <Type>'.` Confirmed via
+   `--json` (`no_impl.check_json.golden`): a new `help` field, no `fix` (two
+   valid alternative edits — derive or hand-write an impl — not one
+   mechanical replacement). This is a **concrete direction**, not a single
+   applicable edit (mirrors the `arg_order_swapped`-adjacent Batch-A anchor:
+   two valid alternatives caps F at 1, not 2): **F 0→1** for all three.
+   `typecheck/eq_on_function`/`lt_on_function` (the function-type variant of
+   this same no-impl path) were spot-checked and are **unchanged** — deriving
+   doesn't apply to a function type, so no hint fires there, consistent with
+   the task brief's carve-out.
+3. **Unknown-module direction** (`resolve/unknown_module`) — now appends
+   ` — available modules: array, async, …, validation` (the full sorted list
+   of importable module names). This is a concrete direction (an agent or
+   user can grep the list for the intended name) but **not** a single
+   applicable edit or near-typo suggestion (`collections` has no near-match
+   in the list — unlike the did-you-mean cases that reach F=2): **F 0→1**.
+
+### Per-fixture re-score
+
+| fixture | dim | old | new | why |
+|---|---|---|---|---|
+| `nonexhaustive_option` | F | 1 | **2** | now embeds the literal missing arm `'None => …'` — a ready-to-paste edit, not just a named case |
+| `nonexhaustive_bool` | F | 1 | **2** | embeds `'False => …'` |
+| `nonexhaustive_list` | F | 1 | **2** | embeds `'[] => …'` |
+| `nonexhaustive_custom` | F | 1 | **2** | embeds `'Triangle _ => …'` |
+| `missing_instance` | F | 0 | **1** | concrete direction ("add 'deriving Eq'... or write an 'impl Eq Color'") — two valid alternatives, not one mechanical edit, so F stops at 1 |
+| `eq_undesugared_adt` | F | 0 | **1** | same shape, `deriving Eq`/`impl Eq Color` |
+| `lt_undesugared_adt` | F | 0 | **1** | same shape, `deriving Ord`/`impl Ord Color` |
+| `unknown_module` | F | 0 | **1** | concrete direction (module list to search), no near-typo match to name a single replacement |
+
+No other dimension moved for any of these 8 — L/C/R/J/X/A were already at
+their post-Batch-B ceiling (all 8 already had a real, located, single,
+correct, jargon-free, `code`+`kind`+span JSON diagnostic; only the message
+text grew a suffix and a `help` field, which is exactly what dimension F
+measures).
+
+### New per-fixture totals
+
+| fixture | L | C | R | F | J | X | A | old total | new total |
+|---|---|---|---|---|---|---|---|---|---|
+| `nonexhaustive_option` | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 11 | **12** |
+| `nonexhaustive_bool` | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 11 | **12** |
+| `nonexhaustive_list` | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 11 | **12** |
+| `nonexhaustive_custom` | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 11 | **12** |
+| `missing_instance` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `eq_undesugared_adt` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `lt_undesugared_adt` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+| `unknown_module` | 2 | 2 | 2 | 1 | 2 | 2 | 2 | 12 | **13** |
+
+`runtime_nonexhaustive` (eval, unaffected): stays **12** (unchanged).
+
+### Arithmetic
+
+```
+old sum (8 fixtures) = 11+11+11+11+12+12+12+12 = 92
+new sum (8 fixtures) = 12+12+12+12+13+13+13+13 = 100
+delta = +8
+```
+
+Per-dimension delta: **F: +8** (4×+1 nonexhaustive, 4×+1 missing-impl/module)
+— every other dimension: +0. Sanity check: sum of deltas (8) matches the
+fixture-sum delta (8) exactly.
+
+### Corpus arithmetic
+
+```
+781   (prior corpus sum, 67 fixtures — "post-Batch-B" baseline)
+- 92  (old sum of the 8 changed fixtures, already inside 781)
++ 100 (their new sum)
+= 789
+67 fixtures (unchanged — no fixtures added or removed this session)
+
+789 / 67 = 11.7761... ≈ 11.78
+```
+
+**Overall average: 789 / 67 = 11.78 / 14 — up from 11.66 (+0.12).**
+
+### Per-stage averages
+
+```
+exhaust: prior sum 48 (5 fixtures, avg 9.60) + 4 (the 4 nonexhaustive, +1 each)
+         = 52 / 5 = 10.40                                    (+0.80)
+typecheck: prior sum 289 (24 fixtures, avg 12.04) + 3 (missing_instance,
+         eq_undesugared_adt, lt_undesugared_adt, +1 each)
+         = 292 / 24 = 12.1667 ≈ 12.17                          (+0.13)
+resolve: prior sum 142 (11 fixtures, avg 12.91 — unchanged since the
+         "F-axis" session; no later session touched resolve/) + 1
+         (unknown_module 12→13) = 143 / 11 = 13.00              (+0.09)
+eval: unchanged, sum 72 / 6 = 12.00                              (+0.00)
+```
+
+| stage | fixtures | prior avg | new avg | Δ |
+|---|---|---|---|---|
+| effect | 3 | 12.00 | 12.00 | — |
+| **resolve** | 11 | 12.91 | **13.00** | +0.09 |
+| lex | 4 | 11.25 | 11.25 | — |
+| **typecheck** | 24 | 12.04 | **12.17** | +0.13 |
+| **exhaust** | 5 | 9.60 | **10.40** | +0.80 |
+| build | 3 | 9.33 | 9.33 | — |
+| parse | 11 | 11.00 | 11.00 | — |
+| eval | 6 | 12.00 | 12.00 | — |
+
+`resolve` remains the corpus's strongest stage; `exhaust` gets this session's
+largest per-stage jump (+0.80) but, at 10.40, is still below the 11-ish
+mid-pack band — its F-axis gain (witness-edit F=2) is real but exhaust's `L`
+dimension is still stuck at 0 for all 4 nonexhaustive fixtures (the warning
+still carries no *displayed* source location in the CLI text, even though its
+JSON `range` is real — the L dimension per this file's convention grades the
+human-readable message, which still lacks a `file:L:C:` prefix).
+
+### Per-dimension movement (67 fixtures)
+
+Only **F** moves this session — every other dimension is untouched (no
+fixture's location, correctness, root-cause framing, jargon, cascade count,
+or JSON code/kind/span changed; only the message text grew a hint suffix,
+which is exactly what F measures).
+
+```
+prior F sum (67 fixtures, post-Batch-B) = 46, avg 0.69
+new F sum = 46 + 8 = 54
+54 / 67 = 0.806 ≈ 0.81
+```
+
+| dim | prior sum | prior avg | new sum | new avg /2 | Δ |
+|---|---|---|---|---|---|
+| **F** Actionable-fix | 46 | 0.69 | **54** | **0.81** | **+0.12** |
+| L Located | 112 | 1.67 | 112 | 1.67 | +0.00 |
+| C Correct | 119 | 1.78 | 119 | 1.78 | +0.00 |
+| R Root-cause | 117 | 1.75 | 117 | 1.75 | +0.00 |
+| J Jargon-free | 132 | 1.97 | 132 | 1.97 | +0.00 |
+| X Cascade-free | 127 | 1.90 | 127 | 1.90 | +0.00 |
+| A Agent-parseable | 128 | 1.91 | 128 | 1.91 | +0.00 |
+
+### Honest remaining floor
+
+- **F (0.81/2) is still the single weakest axis in the corpus by a wide
+  margin.** This session moved it the most of any dimension (as it has every
+  session since Tier-4), but 4 of the 8 moved fixtures land only at **F=1**
+  (a genuine ceiling: `missing_instance`/`eq_undesugared_adt`/
+  `lt_undesugared_adt`/`unknown_module` each offer **two** valid alternatives
+  — derive-or-hand-write-an-impl, or "pick a name from this list" — not one
+  unambiguous mechanical edit, so none crosses F=2 honestly). Only the 4
+  nonexhaustive fixtures reach F=2, because a missing-arm witness names one
+  exact, unambiguous insertion.
+- **The Tier-3-framing F=1 residual is untouched by this session**
+  (`apply_non_function`, `if_branch_mismatch`, `list_heterogeneous`,
+  `cons_type_mismatch`, `wrong_arg_type_in_map`, all still F=1 from
+  Batch-B — two-alternative help hints, same ceiling as this session's
+  missing-impl/unknown-module fixtures).
+- **The absolute floor is unchanged**: `main_takes_unit` (build-only,
+  total 3) and the 2 silent accepts (`ambiguous_return`, `redundant_arm`,
+  total 4 each) remain the corpus's lowest-scoring fixtures — none of the
+  three are affected by this sweep (missing-impl/no-impl hints only fire on a
+  real diagnostic, and these three emit none).
+- **`bad_escape` (12) and the generic-`Parse error` fixtures (8 each,
+  `if_missing_then`/`unclosed_paren`/`trailing_operator`/
+  `reserved_word_binding`) remain F=0**, untouched by every hint-adding
+  session so far — they're outside this sweep's scope (lex/generic-parse, not
+  exhaust/typecheck-no-impl/resolve-module).
+- **Exhaust's `L` dimension (0/2, all 4 nonexhaustive fixtures)** is the
+  stage's own remaining floor: the warning text still carries no
+  `file:L:C:` prefix in the human-readable `.out`, even though the JSON
+  `range` is real (scored under A, not L, per this file's location-vs-JSON
+  split) — a genuine next lever for the exhaust stage specifically.

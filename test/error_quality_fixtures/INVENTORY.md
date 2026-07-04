@@ -38,7 +38,7 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
 | `typo_local_var` | `cont` for `count` | `…:3:18: Unbound variable: cont` | Same — no suggestion despite an in-scope near-match |
 | `unbound_constructor` | `Yellow` not a variant | `…:2:22: Unbound variable: Yellow` | Says "variable" for a **constructor**; no "unknown constructor" wording |
 | `unbound_type_in_sig` | `Strng` in a signature | `<unknown location>: Unknown type: Strng` | **No location** ("<unknown location>"); message otherwise clear |
-| `unknown_module` | `import collections.HashMap` | `unknown module: collections` | Reasonable; **no location** |
+| `unknown_module` | `import collections.HashMap` | `…:1:0: unknown module: collections — available modules: array, async, …, validation` | **Updated (2026-07-04):** now located + names every importable module as a concrete direction (no near-typo match to single out, so still no "did you mean") |
 | `import_unknown_name` | `import list.flatten` (no such name) | *(no output)* | ⚠️ **Silent failure**: exit 1 with **empty stderr and stdout** |
 | `forgot_import` | used `fromList` w/o import | `…:1:23: Unbound variable: fromList` | Clear, but no "did you forget to import?" hint |
 
@@ -66,7 +66,7 @@ for the full re-score. Rows updated: `apply_non_function`,
 | `return_type_mismatch` | body String, sig Int | `…:2:15: Type mismatch: String vs Int` | Clear |
 | `record_missing_field` | omit `age` | `…:4:23: Missing field age in construction of record Person` | **Excellent**: names field + record |
 | `record_wrong_field` | `p.aeg` typo | `…:6:17: Field aeg does not belong to record Person` | **Excellent**: names field + record; no suggestion |
-| `missing_instance` | `Red == Green`, no `deriving Eq` | *(no output)* | ⚠️ **Accepts it** (exit 0): `==` works with no declared instance (structural fallback) |
+| `missing_instance` | `Red == Green`, no `deriving Eq` | `…:2:30: No impl of Eq for Color — add 'deriving Eq' to the 'Color' type, or write an 'impl Eq Color'.` | **Updated (2026-07-04):** now a located diagnostic (fixed in an earlier session) that also names the concrete fix — derive it, or write an impl |
 | `missing_constraint` | body uses `==`, sig lacks `Eq a =>` | *(no output)* | ⚠️ **Accepts it** (exit 0): signature missing the constraint is not rejected |
 | `ambiguous_return` | `length []` | *(no output)* | Accepts (exit 0): defaulting resolves it; not actually ambiguous here |
 | `tuple_arity_mismatch` | pass 2-tuple to 3-tuple fn | `…:3:32: Type mismatch: (Int, Int, Int) vs (a, b)` | Clear-ish; shows the shapes |
@@ -75,12 +75,18 @@ for the full re-score. Rows updated: `apply_non_function`,
 
 ## exhaust/ (`medaka check`)
 
+**Updated (2026-07-04):** all 4 `nonexhaustive_*` rows below now name the
+exact uncovered pattern **and** embed a ready-to-paste arm as the fix hint
+(`— add 'None => …' arm, or a '_' wildcard arm to catch the rest.`). Still no
+`file:L:C:` prefix in the human-readable warning text (JSON `range` is real,
+but the CLI text itself carries no location).
+
 | Fixture | Intended mistake | Message (excerpt) | Observation |
 |---|---|---|---|
-| `nonexhaustive_option` | match only `Some` | `Warning: non-exhaustive match — some values may not be covered` | ⚠️ **Warning only, exit 0, on stdout**; **doesn't name the missing pattern** (`None`) or a location |
-| `nonexhaustive_bool` | match only `True` | *(same warning)* | Same — no missing case named |
-| `nonexhaustive_list` | match only `x::rest` | *(same warning)* | Same — doesn't say `[]` uncovered |
-| `nonexhaustive_custom` | miss `Triangle` | *(same warning)* | Same — doesn't name the missing constructor |
+| `nonexhaustive_option` | match only `Some` | `Warning: non-exhaustive match of 'Option' — missing case: 'None' — add a 'None => …' arm, or a '_' wildcard arm to catch the rest.` | Names the missing case + embeds the literal arm to add; **still no location in the CLI text**, exit 0 on stdout |
+| `nonexhaustive_bool` | match only `True` | *(same shape, `'False => …'`)* | Same — names `False`, embeds the arm |
+| `nonexhaustive_list` | match only `x::rest` | *(same shape, `'[] => …'`)* | Same — names `[]`, embeds the arm |
+| `nonexhaustive_custom` | miss `Triangle` | *(same shape, `'Triangle _ => …'`)* | Same — names `Triangle _`, embeds the arm |
 | `redundant_arm` | wildcard before literal | *(no output)* | ⚠️ **No redundancy/unreachable-arm warning at all** (exit 0) |
 
 ## effect/ (`medaka check`)
