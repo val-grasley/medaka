@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/hs_dollar.mdk:2:15: Medaka has no '$' — apply directly 'f x', parenthesize '(f x)', or pipe with '|>'

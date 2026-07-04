@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/parse/hs_sig_coloncolon.mdk:2:2: In Medaka '::' is cons (list prepend); a type signature uses a single colon: 'f : T'

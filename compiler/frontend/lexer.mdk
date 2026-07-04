@@ -824,6 +824,21 @@ singleOp src len pos depth id '!' = emit src len pos depth id TBang 1 0
 singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
 singleOp src len pos depth id '@' =
   emit src len pos depth id (atToken src pos) 1 0
+-- `\` is never a valid Medaka token (no backslash-prefixed syntax outside
+-- string/char literal escapes, which are consumed by the string/char lexer
+-- before `singleOp` ever sees a bare `\`) — a stray top-level `\` is always a
+-- Haskell lambda (`\x -> e`) written by reflex. Zero false-positive risk.
+singleOp src len pos depth id '\\' =
+  lexErrorTok
+    pos
+    "unexpected '\\' — Medaka lambdas are written 'x => e' (not '\\x -> e')"
+-- `$` is likewise never a valid Medaka character — Haskell's low-precedence
+-- application operator has no Medaka equivalent; direct application, parens,
+-- or `|>` all cover it. Zero false-positive risk.
+singleOp src len pos depth id '$' =
+  lexErrorTok
+    pos
+    "Medaka has no '$' — apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
 singleOp src len pos depth id c =
   lexErrorTok pos "unexpected character '\{charToStr c}'"
 

@@ -157,6 +157,8 @@ kebab-case; never renumber (append only).
 | `L-UNTERMINATED-COMMENT` | unterminated block comment |
 | `L-BAD-ESCAPE` | invalid escape sequence |
 | `L-BAD-CHAR` | unexpected character |
+| `L-HS-LAMBDA` | stray `\` (Haskell lambda `\x -> e`; suggest `x => e`) |
+| `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
 
 ### Parse
 | Code | Kind |
@@ -164,6 +166,8 @@ kebab-case; never renumber (append only).
 | `P-PARSE` | general "expected …" parse failure (umbrella) |
 | `P-UNEXPECTED-EOF` | unexpected end of input |
 | `P-BAD-NEQ` | `/=` used for not-equal (suggest `!=`) |
+| `P-HS-CASE` | Haskell `case … of` (suggest `match e` with `pattern => body` arms) |
+| `P-HS-SIG` | Haskell `f :: T` type-signature syntax (`::` is cons; suggest `f : T`) |
 
 ### Resolve (one per `ResError` constructor)
 | Code | Constructor |

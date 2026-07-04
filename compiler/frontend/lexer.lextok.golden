@@ -6895,6 +6895,36 @@ IDENT "len"
 IDENT "pos"
 IDENT "depth"
 IDENT "id"
+CHAR "\\"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "unexpected '\\' — Medaka lambdas are written 'x => e' (not '\\x -> e')"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "singleOp"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "depth"
+IDENT "id"
+CHAR "$"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "Medaka has no '$' — apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "singleOp"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "depth"
+IDENT "id"
 IDENT "c"
 EQUAL
 INDENT

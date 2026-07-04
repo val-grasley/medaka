@@ -1,0 +1,18 @@
+-- Guard fixture: proves the four Haskell-syntax hints do NOT false-positive
+-- on legitimate Medaka code that merely resembles the Haskell shapes.
+f : Int -> List Int
+f x = 1 :: [2, 3]
+
+g x
+  | y :: ys <- x = y
+  | otherwise = 0
+
+data Box = Box Int
+
+impl Debug Box where
+  debug (Box n) = "Box(\{n})"
+
+main =
+  println (f 1)
+  println (g (1 :: [2]))
+  println (debug (Box 5))

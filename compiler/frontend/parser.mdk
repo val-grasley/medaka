@@ -3508,6 +3508,71 @@ firstInlineLetMissingIn toks i
 inlineLetMissingInMsg : String
 inlineLetMissingInMsg = "inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block"
 
+-- `case … of` is a Haskell-ism: Medaka spells pattern matching `match e` with
+-- indented `pattern => body` arms and has no `of` keyword after a bare `case`
+-- ident (`case` itself is not reserved — it lexes as a plain `TIdent`).
+-- Discriminator: a `TIdent "case"` followed by a `TOf` before the enclosing
+-- block exits, with NO intervening `TImpl` — `of` is otherwise only valid
+-- right after `impl X Y of …`, so if an `impl`/`TImpl` appears first, the
+-- `TOf` we'd find belongs to THAT construct, not this `case`, and we must not
+-- match. Depth-tracked the same way `scanForLetIn` bounds its search.
+caseHasOfBeforeBoundary : Array Token -> Int -> Int -> Bool
+caseHasOfBeforeBoundary toks i depth
+  | i >= arrayLength toks = False
+  | peekTok toks i == TOf = True
+  | peekTok toks i == TImpl = False
+  | peekTok toks i == TIndent = caseHasOfBeforeBoundary toks (i + 1) (depth + 1)
+  | peekTok toks i == TDedent && depth == 0 = False
+  | peekTok toks i == TDedent = caseHasOfBeforeBoundary toks (i + 1) (depth - 1)
+  | peekTok toks i == TEof = False
+  | otherwise = caseHasOfBeforeBoundary toks (i + 1) depth
+
+-- Index of the first `case` ident that resolves to a Haskell `case … of`
+-- (per the discriminator above), or -1 if none.
+firstHsCaseOfIdx : Array Token -> Int -> Int
+firstHsCaseOfIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TIdent "case" =
+    if caseHasOfBeforeBoundary toks (i + 1) 0 then
+      i
+    else
+      firstHsCaseOfIdx toks (i + 1)
+  | otherwise = firstHsCaseOfIdx toks (i + 1)
+
+hsCaseOfMsg : String
+hsCaseOfMsg = "Medaka has no 'case … of' — use 'match e' with indented 'pattern => body' arms"
+
+-- Haskell type signature (`f :: T`) vs Medaka's single-colon `f : T`: `::` is
+-- Medaka's CONS operator (`x :: xs`), a legitimate infix op that appears all
+-- over real bodies/guards (`f = 1 :: [2,3]`, `f x | y :: z = …`) AND in match-
+-- arm cons patterns (`x :: rest => …`), which sit right after the INDENT that
+-- opens the match body — so "immediately after any INDENT" is NOT a safe
+-- boundary (that regressed on exactly this shape). The only position that is
+-- NEVER legal Medaka is a TOP-LEVEL decl-head ident (depth 0 — outside every
+-- block) IMMEDIATELY followed by `::`: no valid grammar production puts `::`
+-- right after a fresh top-level decl head. Discriminator: `depth == 0` AND
+-- `boundary` (true at the very start of the stream, right after a NEWLINE
+-- seen at depth 0, or right after a DEDENT that returns to depth 0 — i.e. the
+-- position a new top-level decl can start) AND `TIdent` immediately followed
+-- by `TCons`. `depth` is the same INDENT/DEDENT counter `scanForLetIn` uses.
+isPlainIdentTok : Token -> Bool
+isPlainIdentTok (TIdent _) = True
+isPlainIdentTok _ = False
+
+-- Returns the index of the offending `::` (for location purposes), or -1.
+firstHsSigIdx : Array Token -> Int -> Int -> Bool -> Int
+firstHsSigIdx toks i depth boundary
+  | i >= arrayLength toks = 0 - 1
+  | boundary && depth == 0 && isPlainIdentTok (peekTok toks i) && peekTok toks (i + 1) == TCons = i + 1
+  | peekTok toks i == TIndent = firstHsSigIdx toks (i + 1) (depth + 1) False
+  | peekTok toks i == TDedent =
+    firstHsSigIdx toks (i + 1) (depth - 1) (depth - 1 == 0)
+  | peekTok toks i == TNewline = firstHsSigIdx toks (i + 1) depth (depth == 0)
+  | otherwise = firstHsSigIdx toks (i + 1) depth False
+
+hsSigMsg : String
+hsSigMsg = "In Medaka '::' is cons (list prepend); a type signature uses a single colon: 'f : T'"
+
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
@@ -3519,6 +3584,8 @@ parseResult src = match tokenizeWithOffsets src
     let srcLen = stringLength src
     let seIdx = firstSlashEqIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
+    let coIdx = firstHsCaseOfIdx toks 0
+    let sigIdx = firstHsSigIdx toks 0 0 True
     match firstLexError toks 0
       Some (leIdx, leMsg) => Err (mkLocated src toks offs srcLen leMsg leIdx)
       None =>
@@ -3526,5 +3593,9 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
         else if ilIdx >= 0 then
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
+        else if coIdx >= 0 then
+          Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
+        else if sigIdx >= 0 then
+          Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
         else
           resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

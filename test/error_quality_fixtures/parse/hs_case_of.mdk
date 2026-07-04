@@ -1,0 +1,5 @@
+f x = case x of
+  0 => "zero"
+  _ => "other"
+
+main = println (f 1)

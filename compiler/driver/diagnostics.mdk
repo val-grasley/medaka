@@ -136,9 +136,13 @@ parseErrCode msg
   | startsWith "unterminated string" msg = "L-UNTERMINATED-STRING"
   | startsWith "unterminated block" msg = "L-UNTERMINATED-COMMENT"
   | startsWith "invalid escape" msg = "L-BAD-ESCAPE"
+  | startsWith "unexpected '\\'" msg = "L-HS-LAMBDA"
+  | startsWith "Medaka has no '$'" msg = "L-HS-DOLLAR"
   | startsWith "unexpected character" msg = "L-BAD-CHAR"
   | startsWith "unexpected end of input" msg = "P-UNEXPECTED-EOF"
   | startsWith "unexpected '/='" msg = "P-BAD-NEQ"
+  | startsWith "Medaka has no 'case" msg = "P-HS-CASE"
+  | startsWith "In Medaka '::' is cons" msg = "P-HS-SIG"
   | otherwise = "P-PARSE"
 
 -- ── rendering ──────────────────────────────────────────────────────────────
