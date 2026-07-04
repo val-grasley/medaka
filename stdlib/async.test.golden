@@ -1,10 +1,10 @@
 running doctests in stdlib/async.mdk
-  ok   stdlib/async.mdk:107: runAsync (Done 5)
-  ok   stdlib/async.mdk:110: runAsync (map (x => x + 1) (Done 4))
-  ok   stdlib/async.mdk:113: runAsync (ap (Done (x => x * 2)) (Done 21))
-  ok   stdlib/async.mdk:116: runAsync (andThen (Done 10) (x => Done (x + 5)))
-  ok   stdlib/async.mdk:119: runAsync (andThen yield (_ => Done 99))
-  ok   stdlib/async.mdk:122: runAsync (liftIO (u => 21 + 21))
-  ok   stdlib/async.mdk:125: runAsync (concurrent [Done 1, Done 2, Done 3])
+  ok   stdlib/async.mdk:92: runAsync (Done 5)
+  ok   stdlib/async.mdk:95: runAsync (map (x => x + 1) (Done 4))
+  ok   stdlib/async.mdk:98: runAsync (ap (Done (x => x * 2)) (Done 21))
+  ok   stdlib/async.mdk:101: runAsync (andThen (Done 10) (x => Done (x + 5)))
+  ok   stdlib/async.mdk:104: runAsync (andThen yield (_ => Done 99))
+  ok   stdlib/async.mdk:107: runAsync (liftIO (u => 21 + 21))
+  ok   stdlib/async.mdk:110: runAsync (concurrent [Done 1, Done 2, Done 3])
 
 stdlib/async.mdk: 7/7 passed
