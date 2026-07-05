@@ -1862,6 +1862,7 @@ isFileExtern name = contains
     "removeDir",
     "statFile",
     "runCommand",
+    "executablePath",
   ]
 
 emitFileExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
@@ -1973,6 +1974,12 @@ emitFileExtern e env "runCommand" args = match emitArgs e env args
     let _ = emit e "  \{r} = call i64 @mdk_run_command(i64 \{prog}, i64 \{argv})"
     (r, LTCon)
   _ => panic "llvm spike: runCommand takes two arguments (slice 13)"
+emitFileExtern e env "executablePath" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e "  \{r} = call i64 @mdk_executable_path(i64 \{u})"
+    (r, LTStr)
+  _ => panic "llvm spike: executablePath takes one (Unit) argument"
 emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
 
 -- Net externs (NET-DESIGN.md).  A SEPARATE family from isFileExtern — deliberately,

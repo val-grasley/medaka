@@ -56,6 +56,10 @@
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <stdint.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <gc.h>
 
 /* Initialize Boehm once before main().  The emitted IR owns `main`, so we can't
@@ -1146,6 +1150,28 @@ long long mdk_run_command(long long prog_w, long long args_w) {
   tup[2] = stdout_s;
   tup[3] = stderr_s;
   return mdk_ok((long long)tup);
+}
+
+/* executablePath : Unit -> String — absolute path of the running executable,
+ * used to derive an exe-relative default MEDAKA_ROOT for a relocated binary
+ * (DISTRIBUTION-DESIGN.md D1).  Linux: readlink /proc/self/exe.  macOS:
+ * _NSGetExecutablePath (may itself be a relative path or contain symlinks) —
+ * realpath(3) resolves both platforms' raw path to a canonical absolute form,
+ * mirroring mdk_canonicalize_path's fallback-to-raw-on-failure shape. */
+long long mdk_executable_path(long long unit_ignored) {
+  (void)unit_ignored;
+  char buf[PATH_MAX];
+#ifdef __APPLE__
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) != 0) return mdk_str_cstr("");
+#else
+  ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n < 0) return mdk_str_cstr("");
+  buf[n] = '\0';
+#endif
+  char resolved[PATH_MAX];
+  if (realpath(buf, resolved) != 0) return mdk_str_cstr(resolved);
+  return mdk_str_cstr(buf);
 }
 
 /* statFile : String -> Result String (Int, Bool, Bool, Float).

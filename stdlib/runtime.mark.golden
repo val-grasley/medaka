@@ -25,6 +25,7 @@
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
+(DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
 (DExtern false "fileExists" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "Bool"))))
 (DExtern false "canonicalizePath" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "String"))))
 (DExtern false "appendFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))

@@ -60,6 +60,10 @@ extern panic : String -> a
 -- stdlib/io.mdk; these are the irreducible host primitives.
 extern args : Unit -> <Env> List String  -- program args after the script name
 extern getEnv : String -> <Env "_"> Option String  -- environment variable, or None
+-- Absolute path of the running executable (realpath-resolved).  Lets a
+-- relocated `medaka` binary derive an exe-relative default MEDAKA_ROOT instead
+-- of assuming it runs inside the repo (DISTRIBUTION-DESIGN.md D1).
+extern executablePath : Unit -> <Env> String
 extern fileExists : String -> <FileRead "_"> Bool
 extern canonicalizePath : String -> <FileRead "_"> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
 extern appendFile : String -> String -> <FileWrite "_"> Result String Unit

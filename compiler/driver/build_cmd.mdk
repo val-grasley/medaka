@@ -67,6 +67,24 @@ envOr name dflt = match getEnv name
   Some v => if v == "" then dflt else v
   None => dflt
 
+-- ---- exe-relative install-layout defaults (D1, DISTRIBUTION-DESIGN.md §4) ----
+-- A relocated `medaka` binary can't assume it's running inside this repo, so
+-- when MEDAKA_ROOT/MEDAKA_EMITTER are unset we derive them from the running
+-- executable's OWN location rather than defaulting to "." (cwd) / "" (broken
+-- `medaka run <emitter>` fallback).  The layout `make medaka` already produces —
+-- `./medaka`, `./medaka_emitter`, and `stdlib/` all siblings at the repo root —
+-- IS this default layout, so the in-repo dev build keeps working with no env
+-- vars set: exeDir is the repo root, exactly what MEDAKA_ROOT needs to be.  An
+-- explicit env var always wins (envOr only falls back to these when unset).
+export exeDir : <IO> String
+exeDir = dirOf (executablePath ())
+
+export defaultMedakaRoot : <IO> String
+defaultMedakaRoot = exeDir
+
+export defaultMedakaEmitter : <IO> String
+defaultMedakaEmitter = joinPath exeDir "medaka_emitter"
+
 -- ---- the trailing-Unit auto-print trim ----
 -- The interpreter auto-prints main's Unit as a trailing "()\n"; the emitter's
 -- IR is captured via subprocess stdout, so strip a trailing "()\n" if present
@@ -147,7 +165,7 @@ runBuildNative root medaka cc inputAbs outPath =
   -- per invocation, so this makes parallel builds race-safe.
   let llPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".ll"
   let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, compilerDir, stdlibDir]
-  let emitter2 = envOr "MEDAKA_EMITTER" ""
+  let emitter2 = envOr "MEDAKA_EMITTER" defaultMedakaEmitter
   let useNative = emitter2 != ""
   let emitProg = if useNative then emitter2 else medaka
   let emitArgs = if useNative then

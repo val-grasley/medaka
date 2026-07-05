@@ -123,6 +123,7 @@ preambleLines = [
   "declare i64 @mdk_remove_dir(i64)",
   "declare i64 @mdk_stat_file(i64)",
   "declare i64 @mdk_run_command(i64, i64)",
+  "declare i64 @mdk_executable_path(i64)",
   "declare i64 @mdk_net_resolve(i64)",
   "declare i64 @mdk_net_tcp_connect(i64, i64)",
   "declare i64 @mdk_net_tcp_listen(i64, i64)",

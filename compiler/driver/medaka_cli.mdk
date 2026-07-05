@@ -32,6 +32,7 @@ import driver.build_cmd.{
   TWasm,
   runBuild,
   envOr,
+  defaultMedakaRoot,
 }
 import support.util.{
   reverseL,
@@ -225,7 +226,7 @@ runCheckCmd argv =
   let argv2 = dropFlags argv
   match argv2
     [target] =>
-      let root = envOr "MEDAKA_ROOT" "."
+      let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
       let rtPath = root ++ "/stdlib/runtime.mdk"
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
@@ -672,7 +673,7 @@ runBuildCmd argv = match parseBuildArgs argv
     let _ = ePutStrLn ("error: no such file: " ++ input)
     exit 1
   else
-    let root = envOr "MEDAKA_ROOT" "."
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let medaka = envOr "MEDAKA" "medaka"
     let cc = envOr "CC" "clang"
     let inputAbs = input
@@ -828,7 +829,7 @@ runRunCmd argv =
       let _ = ePutStrLn "usage: medaka run [--release] [--json] <file.mdk>"
       exit 1
     target::_ =>
-      let root = envOr "MEDAKA_ROOT" "."
+      let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
       let rtPath = root ++ "/stdlib/runtime.mdk"
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
@@ -931,7 +932,7 @@ runTestCmd argv = match dropFlags argv
     let _ = ePutStrLn "usage: medaka test [file.mdk]"
     exit 1
   target::_ =>
-    let root = envOr "MEDAKA_ROOT" "."
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     let stdlibDir = root ++ "/stdlib"
@@ -951,7 +952,7 @@ runDocCmd argv = match dropFlags argv
     let _ = ePutStrLn "usage: medaka doc [file.mdk]"
     exit 1
   target::_ =>
-    let root = envOr "MEDAKA_ROOT" "."
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     match readFile rtPath
@@ -982,7 +983,7 @@ runCheckPolicyCmd argv = match parsePolicyArgs argv
     let _ = ePutStrLn "usage: medaka check-policy <file.mdk> [--allow L1,L2,...] [--fn name]"
     exit 1
   PolicyArgs (Some target) allow fn =>
-    let root = envOr "MEDAKA_ROOT" "."
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     match readFile rtPath
@@ -1031,7 +1032,7 @@ runManifestCmd argv = match parseManifestArgs argv
     let _ = ePutStrLn "usage: medaka manifest <file.mdk> [--fn name]"
     exit 1
   ManifestArgs (Some target) fn =>
-    let root = envOr "MEDAKA_ROOT" "."
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     match readFile rtPath
@@ -1354,7 +1355,7 @@ dirGo2 path i =
 -- the OCaml driver, which also ignores extra args after "repl").
 runReplCmd : List String -> <IO, Mut, Panic> Unit
 runReplCmd _ =
-  let root = envOr "MEDAKA_ROOT" "."
+  let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
   match readFile rtPath
@@ -1377,7 +1378,7 @@ runReplCmd _ =
 -- loop (initialize handshake + publishDiagnostics on didOpen/didChange).
 runLspCmd : List String -> <IO, Mut, Panic> Unit
 runLspCmd _ =
-  let root = envOr "MEDAKA_ROOT" "."
+  let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
   match readFile rtPath
