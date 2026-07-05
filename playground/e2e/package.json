@@ -1,0 +1,13 @@
+{
+  "name": "medaka-playground-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Playwright end-to-end harness for the Medaka CodeMirror playground (drives the real browser against the built dist/ assets).",
+  "type": "module",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.48.2"
+  }
+}

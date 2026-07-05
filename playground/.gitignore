@@ -4,3 +4,6 @@
 
 # Any stray npm installs under playground/.
 node_modules/
+
+# e2e harness output (see playground/e2e/README.md).
+e2e/screenshots/

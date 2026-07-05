@@ -197,6 +197,18 @@ Emergency bypass for either check: `git commit --no-verify`. If `medaka` isn't b
 warns-and-allows. Re-install after a fresh clone by copying `.githooks/pre-commit` into the hooks
 dir (`cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"`).
 
+**Playground e2e (real-browser harness).** `playground/e2e/` is a Playwright harness that drives a
+real browser against the built CM6 playground — verifies CM6 mounts, syntax highlighting, running
+a program (`#run-btn` → `#stdout`), and inline type-error squiggles/gutter markers/`#problems`
+pane, as opposed to the headless-logic tests (`playground/tokenizer_test.mjs`,
+`playground/squiggle_test.mjs`). Run: `cd playground/e2e && ./run.sh` (screenshots land in
+`playground/e2e/screenshots/`, gitignored). Requirements/gotchas: needs **node v24+** (system v20
+can't run finalized WasmGC) and `playground/dist/playground.wasm` already built (`bash
+playground/build_playground_wasm.sh` — the harness never builds it); launches
+`chromium.launch({channel:'chrome'})` — the **system** Google Chrome, not a Playwright-downloaded
+browser, because `npx playwright install` TLS-fails on this machine (do not try to bypass TLS
+verification to fix that). See `playground/e2e/README.md` for the full list.
+
 ## Gotchas
 
 - **Tuples are internally `__tupleN__`-headed `TApp` spines, not a `TTuple` node** (shipped 2026-07-02, `compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`). `(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax (arities 2-5) in TYPE position names the bare *unsaturated* tuple constructor, which is what lets a higher-kinded typeclass bind to it (`impl Bimappable (,)` in `core.mdk`) — a saturated `(a, b)` head is kind-inconsistent with the rest of the language and deliberately not supported. Also part of this arc: the emitter's opaque application path now carries callable arity in the closure cell header and routes non-matching-arity calls through a runtime `mdk_apply` (fixed a wrapped-PAP-then-saturate SIGSEGV that blocked `map2`/`map3`). (A cross-module sibling-impl-emit gap suspected during this arc was verified CLOSED 2026-07-02 — non-reproducing on current main, now build-guarded; see `compiler/EMITTER-GAPS.md`.)
