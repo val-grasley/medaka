@@ -185,6 +185,27 @@ notYet sub =
   exit 1
 
 -- ── check ─────────────────────────────────────────────────────────────────
+-- PARSE-ERROR-LOCATION Stage 1: render a located `ParseError` through the SAME
+-- caret-aware `ppDiagCliSrc` + `Diag` machinery the typecheck/resolve text paths
+-- use, so EVERY CLI-text parse error gets `file:L:C:` + a source snippet + caret
+-- + the stable `P-*`/`L-*` code (and, for the clean single-token hints, a `help`).
+-- `parseErrorLine` is 1-based, `parseErrorCol` 0-based — the exact convention
+-- `ppDiagCliSrc`/`parseErrHelpFix` expect (matching the `--json` inline build).
+ppParseError : String -> String -> ParseError -> String
+ppParseError src file e =
+  let ploc = Loc file (parseErrorLine e) (parseErrorCol e) (parseErrorLine e) (parseErrorCol e + 1)
+  let (h, fx) = parseErrHelpFix (parseErrorMessage e) ploc
+  ppDiagCliSrc
+    src
+    file
+    (Diag
+      SevError
+      (parseErrCode (parseErrorMessage e))
+      (parseErrorMessage e)
+      (Some ploc)
+      h
+      fx)
+
 -- Reads <MEDAKA_ROOT>/stdlib/{runtime,core}.mdk + the target, runs
 -- check.runCheck, prints schemes/diagnostics.  Mirrors check_main.mdk; exit 0
 -- (runCheck reports diagnostics in-band, like the interpreted driver).
@@ -223,8 +244,7 @@ runCheckCmd argv =
               exit 1
             Ok tsrc => match parseResult tsrc
               Err e =>
-                let loc = "\{target}:\{intToString (parseErrorLine e)}:\{intToString (parseErrorCol e)}"
-                let _ = ePutStrLn "\{loc}: \{parseErrorMessage e}"
+                let _ = ePutStrLn (ppParseError tsrc target e)
                 exit 1
               -- Load with parseLocated (real ELoc spans), mirroring `run`
               -- (line ~678): plain loadProgram uses placeholder-loc `parse`,
@@ -565,20 +585,26 @@ fmtOne mode file = match readFile file
   Err msg =>
     let _ = ePutStrLn "\{file}: \{msg}"
     exit 2
-  Ok src =>
-    let formatted = formatSource src
-    match mode
-      FmtStdout => putStr formatted
-      FmtCheck => if formatted == src then ()
-      else
-        let _ = ePutStrLn (file ++ ": not formatted")
-        exit 1
-      FmtWrite => if formatted == src then ()
-      else match writeFile file formatted
-        Err msg =>
-          let _ = ePutStrLn "\{file}: \{msg}"
-          exit 2
-        Ok _ => ()
+  -- PARSE-ERROR-LOCATION Stage 1: surface a located parse error before
+  -- formatSource's panicking `parse` fires a bare `parse error`.
+  Ok src => match parseResult src
+    Err e =>
+      let _ = ePutStrLn (ppParseError src file e)
+      exit 1
+    Ok _ =>
+      let formatted = formatSource src
+      match mode
+        FmtStdout => putStr formatted
+        FmtCheck => if formatted == src then ()
+        else
+          let _ = ePutStrLn (file ++ ": not formatted")
+          exit 1
+        FmtWrite => if formatted == src then ()
+        else match writeFile file formatted
+          Err msg =>
+            let _ = ePutStrLn "\{file}: \{msg}"
+            exit 2
+          Ok _ => ()
 
 -- ── new ───────────────────────────────────────────────────────────────────
 runNewCmd : List String -> <IO, Panic> Unit
@@ -659,11 +685,15 @@ typecheckGate allowInternal root input =
       Err msg => TGErr msg
       Ok csrc => match readFile input
         Err msg => TGErr msg
-        Ok tsrc => match loadProgram input roots
-          Err msg => TGErr msg
-          Ok mods =>
-            let trusted = stdlibTrustedMods input roots stdlibDir mods
-            typecheckGateRoute allowInternal trusted rsrc csrc tsrc input mods
+        -- PARSE-ERROR-LOCATION Stage 1: a located parse diagnostic before
+        -- loadProgram's panicking `parse` fires a bare `parse error`.
+        Ok tsrc => match parseResult tsrc
+          Err e => TGErr (ppParseError tsrc input e)
+          Ok _ => match loadProgram input roots
+            Err msg => TGErr msg
+            Ok mods =>
+              let trusted = stdlibTrustedMods input roots stdlibDir mods
+              typecheckGateRoute allowInternal trusted rsrc csrc tsrc input mods
 
 -- Route by module count.  A single loaded module (no non-core imports) runs the
 -- ACCURATE located check `medaka check` uses for single files — analyzeLocatedG
@@ -775,43 +805,50 @@ runRunCmd argv =
           -- runtime error (E-*) can report a correct file:L:C.  Plain loadProgram
           -- uses placeholder-loc `parse`, which collapses every span to 1:0.
           -- Structurally identical decls → eval output byte-identical.
-          Ok csrc => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
-            Err msg =>
-              let _ = ePutStrLn msg
+          -- PARSE-ERROR-LOCATION Stage 1: surface a located parse error on the
+          -- entry file BEFORE loadProgramFilesLocated's panicking `parse` fires a
+          -- bare `parse error`.  Error-path only; valid input is unaffected.
+          Ok csrc => match parseResult (readFileSafe target)
+            Err e =>
+              let _ = ePutStrLn (ppParseError (readFileSafe target) target e)
               exit 1
-            Ok mods =>
-              let rtD = desugar (parse rsrc)
-              let coreD = desugar (parse csrc)
-              let modsD = map desugarPair mods
-              let trusted = stdlibTrustedMods target roots stdlibDir mods
-              let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
-              match resDiags
-                "" =>
-                  let _ = resetTypeErrorsSticky ()
-                  let elaborated = elaborateModules rtD coreD modsD
-                  match hadTypeErrors ()
-                    True =>
-                      let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
-                      exit 1
-                    False =>
-                      -- 0.1.0 main-shape warning (see mainShapeWarnings' doc
-                      -- comment below): elaborateModules just ran over the
-                      -- WHOLE graph via `elaborated`, so mainSchemeRef is
-                      -- already populated — no extra typecheck pass needed here.
-                      let mainWarns = match lastModPair mods
-                        Some (_, edecls) => match mainArityWarning edecls
-                          Some d => [d]
-                          None => match mainNonUnitWarning edecls
+            Ok _ => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
+              Err msg =>
+                let _ = ePutStrLn msg
+                exit 1
+              Ok mods =>
+                let rtD = desugar (parse rsrc)
+                let coreD = desugar (parse csrc)
+                let modsD = map desugarPair mods
+                let trusted = stdlibTrustedMods target roots stdlibDir mods
+                let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
+                match resDiags
+                  "" =>
+                    let _ = resetTypeErrorsSticky ()
+                    let elaborated = elaborateModules rtD coreD modsD
+                    match hadTypeErrors ()
+                      True =>
+                        let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
+                        exit 1
+                      False =>
+                        -- 0.1.0 main-shape warning (see mainShapeWarnings' doc
+                        -- comment below): elaborateModules just ran over the
+                        -- WHOLE graph via `elaborated`, so mainSchemeRef is
+                        -- already populated — no extra typecheck pass needed here.
+                        let mainWarns = match lastModPair mods
+                          Some (_, edecls) => match mainArityWarning edecls
                             Some d => [d]
-                            None => []
-                        None => []
-                      let _ = emitLocatedWarnings (readFileSafe target) target mainWarns
-                      let _ = setRef currentEvalFile target
-                      let _ = setRef runJsonMode jsonMode
-                      putStr (runProgramOutput (fst elaborated) (snd elaborated))
-                _ =>
-                  let _ = ePutStrLn resDiags
-                  exit 1
+                            None => match mainNonUnitWarning edecls
+                              Some d => [d]
+                              None => []
+                          None => []
+                        let _ = emitLocatedWarnings (readFileSafe target) target mainWarns
+                        let _ = setRef currentEvalFile target
+                        let _ = setRef runJsonMode jsonMode
+                        putStr (runProgramOutput (fst elaborated) (snd elaborated))
+                  _ =>
+                    let _ = ePutStrLn resDiags
+                    exit 1
 -- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
 -- eval on ANY type error.  elaborateModules route-stamps via the
 -- per-module typecheck (checkModuleFullImpl), which pushes into the

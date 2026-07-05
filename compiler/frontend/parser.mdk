@@ -3573,6 +3573,126 @@ firstHsSigIdx toks i depth boundary
 hsSigMsg : String
 hsSigMsg = "In Medaka '::' is cons (list prepend); a type signature uses a single colon: 'f : T'"
 
+-- ── Stage-2 foreign-syntax pre-scans (PARSE-ERROR-LOCATION-DESIGN §3) ─────────
+-- Each mirrors the existing `/=`/`case…of`/`::` hints: a pure token scan that
+-- fires ONLY on shapes that are never valid Medaka, returning the offending token
+-- index so the located `ParseError` dodges the `1:0` collapse.  Every scanner
+-- carries a valid-input safety proof in its comment; the risk is a false positive
+-- on VALID code (esp. records vs braces — see `firstBraceBlockIdx`).
+
+-- A bracket opener / closer (paren, bracket, brace) — used to track nesting so a
+-- scan only reasons about tokens at its own bracket level.
+isBracketOpenTok : Token -> Bool
+isBracketOpenTok TLParen = True
+isBracketOpenTok TLBracket = True
+isBracketOpenTok TLBrace = True
+isBracketOpenTok _ = False
+
+isBracketCloseTok : Token -> Bool
+isBracketCloseTok TRParen = True
+isBracketCloseTok TRBracket = True
+isBracketCloseTok TRBrace = True
+isBracketCloseTok _ = False
+
+-- `/* … */`: Medaka's block comments are `{- … -}` and its line comments `--`.
+-- The lexer tags `/` `*` as two ordinary operator tokens (`TSlash`, `TStar`);
+-- an adjacent `TSlash TStar` (`/*`) is NEVER valid Medaka — `/` is binary divide
+-- and `*` has no prefix form, so `1 / *x` cannot parse.  Located at the `/`.
+firstBlockCommentIdx : Array Token -> Int -> Int
+firstBlockCommentIdx toks i
+  | i + 1 >= arrayLength toks = 0 - 1
+  | peekTok toks i == TSlash && peekTok toks (i + 1) == TStar = i
+  | otherwise = firstBlockCommentIdx toks (i + 1)
+
+blockCommentMsg : String
+blockCommentMsg = "Medaka has no '/* … */' block comments — use '{- … -}' (block) or '--' (line)"
+
+-- Brace-block `if` (`if cond { … } else { … }`): C-style braces used as an if
+-- body.  SAFETY (the sharp hazard — braces vs record literals `{ f = v }` /
+-- `{ r | f = v }`): a VALID `if` ALWAYS has `then` at if-level before any body,
+-- so we scan the if-header at if-bracket-level and ABORT the moment we see a
+-- `then` at that level.  A record literal in the CONDITION (`if {x}.b then …`)
+-- is thus always excused — its `then` follows.  We only fire when a `{` appears
+-- at if-level AND the header ends (an `else`/newline/eof at if-level) with NO
+-- `then` — which no valid `if` ever does.  So valid records (which never sit in
+-- an `if` header without a following `then`) cannot trip this.  Located at `{`.
+braceBlockFrom : Array Token -> Int -> Int -> Int -> Int
+braceBlockFrom toks i depth cand
+  | i >= arrayLength toks = if depth == 0 then cand else 0 - 1
+  | peekTok toks i == TThen && depth == 0 = 0 - 1
+  | peekTok toks i == TElse && depth == 0 = cand
+  | (peekTok toks i == TNewline || peekTok toks i == TEof) && depth == 0 = cand
+  | peekTok toks i == TLBrace && depth == 0 && cand < 0 =
+    braceBlockFrom toks (i + 1) (depth + 1) i
+  | isBracketOpenTok (peekTok toks i) =
+    braceBlockFrom toks (i + 1) (depth + 1) cand
+  | isBracketCloseTok (peekTok toks i) =
+    braceBlockFrom toks (i + 1) (depth - 1) cand
+  | otherwise = braceBlockFrom toks (i + 1) depth cand
+
+firstBraceBlockIdx : Array Token -> Int -> Int
+firstBraceBlockIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TIf =
+    if braceBlockFrom toks (i + 1) 0 (0 - 1) >= 0 then
+      braceBlockFrom toks (i + 1) 0 (0 - 1)
+    else
+      firstBraceBlockIdx toks (i + 1)
+  | otherwise = firstBraceBlockIdx toks (i + 1)
+
+braceBlockMsg : String
+braceBlockMsg = "unexpected '{' — Medaka has no brace blocks; use 'then'/'else' with indentation, not '{ … }'"
+
+-- `for`/`while` loops and `def`/`function`-style headers: these lex as plain
+-- `TIdent`s (`for`, `while`, `def` are NOT reserved).  A foreign loop/def is
+-- recognised by a line that STARTS with one of these words and ENDS in a trailing
+-- `:` (C/Python statement colon) with NO `=` on that line.  SAFETY: a valid decl
+-- named `for`/`while`/`def` is a binding or function head — it ALWAYS has `=`
+-- (`for = e`, `for x = e`), so `sawEq` excludes it; a valid TYPE SIGNATURE
+-- (`for : Int`) has its type AFTER the colon, so the colon is not trailing
+-- (`lastColon` is False at the line break).  A trailing `:` with no `=` is never
+-- valid Medaka.  Located at the keyword.
+isForeignKwTok : Token -> Bool
+isForeignKwTok (TIdent "for") = True
+isForeignKwTok (TIdent "while") = True
+isForeignKwTok (TIdent "def") = True
+isForeignKwTok _ = False
+
+lineTrailingColonNoEq : Array Token -> Int -> Int -> Bool -> Bool -> Bool
+lineTrailingColonNoEq toks i depth lastColon sawEq
+  | i >= arrayLength toks = lastColon && not sawEq
+  | depth == 0 && (peekTok toks i == TNewline || peekTok toks i == TEof || peekTok toks i == TIndent || peekTok toks i == TDedent) = lastColon && not sawEq
+  | peekTok toks i == TEqual && depth == 0 =
+    lineTrailingColonNoEq toks (i + 1) depth False True
+  | peekTok toks i == TColon && depth == 0 =
+    lineTrailingColonNoEq toks (i + 1) depth True sawEq
+  | isBracketOpenTok (peekTok toks i) =
+    lineTrailingColonNoEq toks (i + 1) (depth + 1) False sawEq
+  | isBracketCloseTok (peekTok toks i) =
+    lineTrailingColonNoEq toks (i + 1) (depth - 1) False sawEq
+  | otherwise = lineTrailingColonNoEq toks (i + 1) depth False sawEq
+
+firstForeignKwIdx : Array Token -> Int -> Bool -> Int
+firstForeignKwIdx toks i lineStart
+  | i >= arrayLength toks = 0 - 1
+  | lineStart && isForeignKwTok (peekTok toks i) && lineTrailingColonNoEq toks i 0 False False = i
+  | peekTok toks i == TNewline || peekTok toks i == TIndent || peekTok toks i == TDedent = firstForeignKwIdx toks (i + 1) True
+  | otherwise = firstForeignKwIdx toks (i + 1) False
+
+foreignKwMsg : Token -> String
+foreignKwMsg (TIdent "def") =
+  "Medaka has no 'def' — define a function as 'f x = …'"
+foreignKwMsg (TIdent "while") =
+  "Medaka has no 'while' loops — use recursion or list functions"
+foreignKwMsg _ = "Medaka has no 'for' loops — use recursion or list functions like 'map'/'forEach'/'fold'"
+
+-- `;` statement terminator: the lexer surfaces a stray `;` as a `TLexError
+-- "unexpected character ';'"`.  We recognise that message and replace it with a
+-- beginner hint (Medaka is newline/indentation-separated).  Located at the `;`.
+semicolonMsg : String
+semicolonMsg =
+  "Medaka has no statement terminator ';' — separate statements with newlines"
+
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
@@ -3586,8 +3706,16 @@ parseResult src = match tokenizeWithOffsets src
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
+    let bcIdx = firstBlockCommentIdx toks 0
+    let bbIdx = firstBraceBlockIdx toks 0
+    let fkwIdx = firstForeignKwIdx toks 0 True
     match firstLexError toks 0
-      Some (leIdx, leMsg) => Err (mkLocated src toks offs srcLen leMsg leIdx)
+      Some (leIdx, leMsg) =>
+        let leMsg2 = if leMsg == "unexpected character ';'" then
+          semicolonMsg
+        else
+          leMsg
+        Err (mkLocated src toks offs srcLen leMsg2 leIdx)
       None =>
         if seIdx >= 0 then
           Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
@@ -3597,5 +3725,11 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
         else if sigIdx >= 0 then
           Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
+        else if bcIdx >= 0 then
+          Err (mkLocated src toks offs srcLen blockCommentMsg bcIdx)
+        else if bbIdx >= 0 then
+          Err (mkLocated src toks offs srcLen braceBlockMsg bbIdx)
+        else if fkwIdx >= 0 then
+          Err (mkLocated src toks offs srcLen (foreignKwMsg (peekTok toks fkwIdx)) fkwIdx)
         else
           resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
