@@ -1,0 +1,7 @@
+cmd: medaka run
+exit: 0
+---
+test/error_quality_fixtures/eval/main_not_value.mdk:1:10: 'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)
+  |
+1 | main () = println "hi"
+  |           ^

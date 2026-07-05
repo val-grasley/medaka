@@ -41,6 +41,7 @@ from this branch (base `359c870a`). Exit code in parentheses after the stage.
 | `unknown_module` | `import collections.HashMap` | `…:1:0: unknown module: collections — available modules: array, async, …, validation` | **Updated (2026-07-04):** now located + names every importable module as a concrete direction (no near-typo match to single out, so still no "did you mean") |
 | `import_unknown_name` | `import list.flatten` (no such name) | *(no output)* | ⚠️ **Silent failure**: exit 1 with **empty stderr and stdout** |
 | `forgot_import` | used `fromList` w/o import | `…:1:23: Unbound variable: fromList` | Clear, but no "did you forget to import?" hint |
+| `unbound_but_exported_by_import` (added 2026-07-04) | `import list` then bare `reverse` (needs `import list.{reverse}`) | `…:3:16: Unbound variable: reverse — 'reverse' is exported by 'list'; import it with 'import list.{reverse}'` | **Excellent**: names the exporting module and the exact fixed import line; `--json` carries `R-UNBOUND` + a real span, but a second `T-UNBOUND` diagnostic echoes the same fact at the same span (cascade) |
 
 ## typecheck/ (`medaka check`)
 
@@ -126,6 +127,7 @@ previously is long fixed (the user's own panic message now surfaces as
 | `runtime_nonexhaustive` | match with no arm | `:1:29: runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match` | Located (caret on the scrutinee); no missing-arm value named; JSON no `fix` |
 | `explicit_panic` | `panic "user not found"` | `:2:37: runtime error [E-PANIC]: user not found` | Located (caret on the panic message literal); user's message correctly surfaces; JSON no `fix` |
 | `let_else_fail` | let-else with `panic` else | `:3:42: runtime error [E-PANIC]: empty list` | Located (caret on the panic message literal) via idiomatic let-else; JSON no `fix` |
+| `main_not_value` (added 2026-07-04) | `main () = println "hi"` (should be `main = …`) | `:1:10: 'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' (…)` | **New this session**: `medaka run` (and `check`) now emit a located, actionable warning naming the exact fix, where before it was a silent no-op (exit 0, no output). Not yet a structured `--json` diagnostic (`check --json` shows an empty `diagnostics` array for this file) — text-only |
 
 ## build/ (`medaka build`)
 
@@ -171,6 +173,26 @@ previously is long fixed (the user's own panic message now surfaces as
    (`unbound_type_in_sig`, lexer errors) still carry **no source location**
    (runtime/`eval` errors were fixed 2026-07-04 — see the `eval/` section
    above).
+9. **New this session (2026-07-04): `resolve/unbound_but_exported_by_import`**
+   — using a name that a bare `import list` doesn't bring into scope now
+   names the exporting module and the exact `import list.{reverse}` fix,
+   instead of a plain unbound-variable error.
+10. **New this session: `eval/main_not_value`** — `main () = …`/`main x = …`
+    under `medaka run` (and `check`) now emits a located, actionable warning
+    (`'main' must be a value of type Unit — write 'main = …', …`) instead of
+    silently running nothing. The **`build/main_takes_unit`** fixture below is
+    a *different, still-open* gap: `medaka build` on the identical shape still
+    prints the confusing `emitter failed compiling … / No such file or
+    directory` — the fix landed for the `run`/`check` path only.
+11. **Out-of-corpus beginner-facing wins this session** (not fully captured by
+    a graded fixture — see `GRADING.md`'s "0.1.0 beginner-facing pass" section
+    for the full writeup): native compiled div-by-zero/modulo-by-zero/
+    nonexhaustive-match traps now abort with a coded message + nonzero exit
+    instead of garbage/silent-SIGTRAP; parse errors are located (`file:L:C:` +
+    caret) everywhere and carry beginner foreign-syntax hints (braces, `for`,
+    `while`, `def`, `/* */`, `;`); bare `medaka check` no longer dumps ~120
+    prelude schemes; resolve gained an import-module suggestion and a real
+    location for a previously `1:0`-only unbound-var case.
 
 ## ⚠️ Crashes on plausible input
 

@@ -1685,3 +1685,231 @@ A: 128 + 2 = 130   → 130/67 = 1.9403 ≈ 1.94   (+0.03)
   residual, `bad_escape`/generic-`Parse error` F=0 fixtures untouched, the
   `main_takes_unit`/build-only floor) is unaffected by this fixture-scoped
   change.
+
+## 0.1.0 beginner-facing pass (2026-07-04) — 2 new fixtures + out-of-corpus wins
+
+A 0.1.0-readiness audit (`RELEASE-0.1.0-PLAN.md`) found and fixed a batch of
+beginner-facing error-quality gaps. Most of the fixes land **outside** the
+graded 67-fixture corpus (native-runtime traps, parse-error location, a
+`check`-output-volume fix) — documented below so these docs reflect reality
+even though they don't move a per-fixture score. Two new fixtures were added
+for gaps that ARE corpus-shaped.
+
+### New fixture 1: `resolve/unbound_but_exported_by_import`
+
+`import list` followed by a bare (unimported) use of an exported name
+(`reverse`) now names the exporting module and gives the exact fixed import
+line, instead of a plain unbound-variable error:
+
+```
+test/error_quality_fixtures/resolve/unbound_but_exported_by_import.mdk:3:16: Unbound variable: reverse — 'reverse' is exported by 'list'; import it with 'import list.{reverse}'
+```
+
+`--json` (`medaka check --json`) carries a real diagnostic for this — but
+*two* of them at the identical span: `R-UNBOUND` (the new, actionable one)
+and a second `T-UNBOUND` echo from the typecheck fallback path, which caps X.
+
+| dim | score | rationale |
+|---|---|---|
+| L Located | 2 | real `file:L:C:` (`:3:16:`), caret in the `.out` text form |
+| C Correct | 2 | accurately diagnoses the missing import, not a generic unbound-name |
+| R Root-cause | 2 | names the actual mechanism (exported-but-not-imported), not just the symptom |
+| F Actionable-fix | 2 | literal ready-to-paste replacement: `import list.{reverse}` |
+| J Jargon-free | 2 | plain English, no internal compiler terms |
+| X Cascade-free | 1 | a second `T-UNBOUND` diagnostic echoes the same fact at the same span (same shape as `unbound_type_in_sig`'s double-emit, scored X=1 there) |
+| A Agent-parseable | 2 | `--json` gives `code: "R-UNBOUND"`, `kind: "resolve"`, and a real (non-dummy) `range` — meets the rubric's A=2 bar |
+
+**Total: 13 / 14.**
+
+### New fixture 2: `eval/main_not_value`
+
+`main () = println "hi"` (a common Haskell/ML-habit mistake — `main` must be
+a *value* of type `Unit`, `medaka run` never applies it) now produces a
+located, actionable warning under both `medaka run` and `medaka check`,
+where before this was a **silent no-op**: exit 0, no output, "this never
+runs" quietly never ran.
+
+```
+test/error_quality_fixtures/eval/main_not_value.mdk:1:10: 'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)
+  |
+1 | main () = println "hi"
+  |           ^
+```
+
+| dim | score | rationale |
+|---|---|---|
+| L Located | 2 | real `file:L:C:` (`:1:10:`) + source-line caret |
+| C Correct | 2 | accurately names the actual mistake (`main` takes an arg instead of being a value) |
+| R Root-cause | 2 | names the actual rule and *why* (`'medaka run' never applies main`), not just a symptom |
+| F Actionable-fix | 2 | literal replacement text for both wrong shapes: `write 'main = …', not 'main () = …' or 'main x = …'` |
+| J Jargon-free | 2 | plain English |
+| X Cascade-free | 2 | exactly one diagnostic printed, exit 0, no follow-on noise |
+| A Agent-parseable | 0 | `medaka check --json` on this file returns an **empty** `diagnostics` array — this warning is text-only, not yet exposed as a structured JSON diagnostic (same gap as the eval/runtime-error class before their JSON envelope landed) |
+
+**Total: 12 / 14.**
+
+Note: the *existing* corpus fixture `build/main_takes_unit` (the identical
+`main () = …` shape, but exercised through `medaka build` rather than
+`run`/`check`) is **unchanged and stays at its prior grade (3/14)** — this
+pass fixed the `run`/`check` diagnostic path only; `medaka build` on that
+file still fails with the misleading `emitter failed compiling … / No such
+file or directory`. This is a real, still-open, lower-priority gap, not an
+oversight in this grading pass.
+
+### Corpus arithmetic
+
+```
+806   (prior corpus sum, 67 fixtures — "redundant_arm re-grade" baseline)
++  13 (resolve/unbound_but_exported_by_import)
++  12 (eval/main_not_value)
+= 831
+67 + 2 = 69 fixtures
+
+831 / 69 = 12.0434... ≈ 12.04
+```
+
+**Overall average: 831 / 69 = 12.04 / 14 — up from 12.03 (+0.01).**
+
+### Stage arithmetic (resolve, eval)
+
+```
+resolve: prior sum 143 (11 fixtures, avg 13.00)
+         new sum 143 + 13 = 156
+         156 / 12 = 13.00                                        (+0.00)
+
+eval:    prior sum 72 (6 fixtures, avg 12.00)
+         new sum 72 + 12 = 84
+         84 / 7 = 12.00                                          (+0.00)
+```
+
+| stage | fixtures | prior avg | new avg | Δ |
+|---|---|---|---|---|
+| **resolve** | 12 | 13.00 | **13.00** | +0.00 |
+| **eval** | 7 | 12.00 | **12.00** | +0.00 |
+
+Both new fixtures happen to land almost exactly at their stage's existing
+average, so neither stage average moves in any visible way — the corpus-wide
+average ticks up only slightly (+0.01) because both new fixtures score above
+the *overall* corpus average (12.03), just not above their own stage's.
+
+### Per-dimension movement (69 fixtures)
+
+```
+L: 122 + 2 + 2 = 126   → 126/69 = 1.826   (+0.01)
+C: 121 + 2 + 2 = 125   → 125/69 = 1.812   (+0.01)
+R: 119 + 2 + 2 = 123   → 123/69 = 1.783   (+0.01)
+F:  55 + 2 + 2 =  59   →  59/69 = 0.855   (+0.03)
+J: 132 + 2 + 2 = 136   → 136/69 = 1.971   (+0.00)
+X: 127 + 1 + 2 = 130   → 130/69 = 1.884   (-0.01)
+A: 130 + 2 + 0 = 132   → 132/69 = 1.913   (-0.02)
+```
+
+(Sum check: 126+125+123+59+136+130+132 = 831, matching the corpus sum above.)
+
+| dim | prior sum | prior avg (67) | new sum | new avg (69) | Δ |
+|---|---|---|---|---|---|
+| L Located | 122 | 1.82 | **126** | **1.83** | +0.01 |
+| C Correct | 121 | 1.81 | **125** | **1.81** | +0.01 |
+| R Root-cause | 119 | 1.78 | **123** | **1.78** | +0.01 |
+| F Actionable-fix | 55 | 0.82 | **59** | **0.86** | +0.03 |
+| J Jargon-free | 132 | 1.97 | **136** | **1.97** | +0.00 |
+| X Cascade-free | 127 | 1.90 | **130** | **1.88** | -0.01 |
+| A Agent-parseable | 130 | 1.94 | **132** | **1.91** | -0.02 |
+
+Both A and X tick *down* on average — not because anything regressed, but
+because the two new fixtures are diluters on those specific axes (the
+`unbound_but_exported_by_import` cascade caps X=1; `main_not_value`'s
+text-only warning caps A=0), while every pre-existing fixture is unchanged.
+This is expected corpus-growth noise, not a regression signal.
+
+### Out-of-corpus wins (not graded — documented for completeness)
+
+The bulk of this session's beginner-facing pass fixed problems that either
+don't have a graded fixture yet, or only partially overlap one. Recorded here
+so `GRADING.md`/`INVENTORY.md` reflect the real state of the compiler:
+
+- **Native runtime traps.** Compiled (`medaka build`) division-by-zero,
+  modulo-by-zero, and non-exhaustive-match failures previously either
+  produced garbage output with a **zero exit code** (div/mod-by-zero) or
+  **silently SIGTRAPed** (non-exhaustive match) with no message at all. All
+  three now abort with a coded message (`E-DIV-ZERO` / `E-MOD-ZERO` /
+  `E-NONEXHAUSTIVE-MATCH`) and a nonzero exit code. This is **message-only** —
+  the abort message has no source location (Core IR carries no `Loc` field
+  today, so a located native trap is a separate, deferred, larger change) —
+  but going from "wrong answer, exit 0" / "silent crash" to "named error,
+  nonzero exit" is the highest-value floor-raise a beginner will hit, since
+  it's the *compiled* path (`medaka build && ./a.out`), not `check`/`run`.
+  No fixture in this corpus exercises the *compiled* runtime-trap path today
+  (the `eval/` fixtures all go through `medaka run`, the tree-walking
+  interpreter, which already had located+coded traps) — a future session
+  could add a `build/` runtime-trap fixture once traps are located.
+- **Parse errors now render located `file:L:C:` + caret everywhere** (Stage 1
+  of the parse-error work; see `compiler/PARSE-ERROR-LOCATION-DESIGN.md`),
+  plus beginner foreign-syntax hints for common non-Medaka habits — brace
+  blocks (`{ }`), `for`/`while` loops, `def`, `/* */` block comments, and
+  stray `;` statement terminators (Stage 2). This directly targets the
+  corpus's weakest stage historically (`parse` fixtures like
+  `if_missing_then`/`unclosed_paren`/`trailing_operator` were all generic
+  `Parse error` with no shape-specific hint) but the existing graded `parse/`
+  fixtures don't happen to hit these particular foreign-syntax shapes, so
+  their scores are unchanged — a future corpus addition could add a
+  `parse/foreign_syntax_*` fixture family. General "unexpected token X,
+  expected Y" naming (Stage 3, the broader generic-`Parse error` fix) is
+  still deferred.
+- **`medaka check`:** bare `check` (no `--types`) no longer dumps ~120
+  inferred prelude schemes to stdout before/around the real diagnostic —
+  only the file's own bindings are shown. `check --types` restores the full
+  dump for anyone who wants it. This doesn't change any graded fixture's
+  *diagnostic* text, but it's a real signal-to-noise win for a beginner
+  scrolling past ~120 irrelevant lines to find their one real error.
+- **Resolve:** an import-module-name suggestion (item #5 in the tracking
+  list) and a real location for a previously `1:0`-placeholder unbound-var
+  case on the `check` path (item #8) both landed; the `unbound_variable`
+  family of fixtures already scored well before this (L=2), so this is
+  incremental hardening on adjacent, ungraded shapes rather than a corpus
+  score move.
+
+### Deferred (explicitly tracked, not fixed this session)
+
+- **#7 — duplicate-constructor-name location.** Needs a `Variant` AST node to
+  grow a `Loc` field (~86 call sites across the front end) to report *where*
+  a duplicate constructor is declared, not just that it's a duplicate.
+- **Located native runtime traps.** Needs Core IR to carry source locations
+  (currently loc-free) — a materially larger change than the message-only
+  trap fix above.
+- **#4b — interpreter stack-overflow behavior.** Tracked under the
+  distribution/stack-size track (`DISTRIBUTION-DESIGN.md`), not an
+  error-message-copy fix.
+- **Parse Stage 3** — general "unexpected token, expected one of {…}"
+  naming for the residual generic-`Parse error` cases not covered by the
+  Stage-2 foreign-syntax hints.
+
+### Honest remaining floor
+
+- **F (0.86/2 at 69 fixtures) remains the single weakest axis in the corpus
+  by a wide margin** — this session's two new fixtures both happen to score
+  F=2, nudging the average up slightly, but the long tail of F=1/F=0
+  fixtures from prior sessions (Tier-3-framing residuals, `bad_escape`,
+  generic `Parse error` fixtures) is untouched.
+- **The absolute floor is unchanged: `main_takes_unit`** (build-only, total
+  3) **and `ambiguous_return`** (typecheck, silent accept, total 4) remain
+  the corpus's lowest-scoring fixtures. `main_takes_unit` specifically is
+  now a sharper contrast than before: the *identical* mistake now gets an
+  excellent (12/14) diagnostic on the `run`/`check` path
+  (`eval/main_not_value`) but still gets a near-worst (3/14) diagnostic on
+  the `build` path — the clearest concrete argument in this file for why the
+  `build`-path fix is worth doing next.
+- **A (1.91/2) ticks down slightly** purely from corpus growth — the new
+  `main_not_value` fixture is a genuinely excellent diagnostic (12/14
+  overall) that simply hasn't been wired into the structured `--json`
+  envelope yet, unlike the `check`-path errors and `run`-path runtime traps
+  that already have it. Wiring warnings like this one into `--json` is a
+  small, well-scoped follow-up.
+- **The native-runtime-trap and parse-location wins are real but
+  under-represented in the graded corpus** — the corpus's `eval/` fixtures
+  all exercise the interpreter (`medaka run`), not the compiled path, and no
+  fixture yet exercises the new foreign-syntax parse hints. The corpus total
+  (12.04/14) is therefore a slight *undercount* of this session's actual
+  beginner-facing impact — most of the value shipped this session is
+  invisible to the per-fixture score by construction, not because it didn't
+  happen.
