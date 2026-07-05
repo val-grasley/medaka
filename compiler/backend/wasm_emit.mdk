@@ -2591,6 +2591,11 @@ exprHasFallthrough _ = False
 stmtHasFallthrough : CStmt -> Bool
 stmtHasFallthrough (CSExpr e) = exprHasFallthrough e
 stmtHasFallthrough (CSLet _ _ e) = exprHasFallthrough e
+-- a refutable `let pat = e else els`: a `__fallthrough__` can hide in either the
+-- scrutinee or the else alternative (both are ordinary exprs), so descend both.
+stmtHasFallthrough (CSLetElse _ e els) = exprHasFallthrough e
+  || exprHasFallthrough els
+stmtHasFallthrough (CSAssign _ e) = exprHasFallthrough e
 
 -- when the single clause's params are plain PVars, alias each to the synthetic
 -- positional wasm param ($a<i>): `local.get $a<i>; local.set $<srcname>`.  (The
