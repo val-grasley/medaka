@@ -32,6 +32,15 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-05) — browser stack overflow FIXED: general dispatch-GRAPH TMC (b′ Stage 3) linearizes the lexer LAYOUT family; playground Run works in-browser again (`921b9126`)
+
+**The in-browser playground `Run`/squiggles stack overflow is CLOSED.** A freshly-built `playground.wasm` (current compiler) had been trapping `Maximum call stack size exceeded` in the ~0.5 MB browser worker. Diagnosed → spiked → fixed, all this arc; owning doc `BROWSER-STACK-DIAGNOSIS.md` (§1–7 diagnosis + feasibility spike), `WASMGC-TRMC-DESIGN.md` (AS-BUILT); memory `project_playground_workstream`.
+- **Root cause (not what the docs said):** NOT the lexer `scan` spine (`b′` already linearized that) — a SECOND uncovered recursive family, the **offside-rule LAYOUT pass** (`layout ↔ flushCloseGo ↔ applyNlTop ↔ popDedents ↔ wouldIndent` + the `layoutPairs` mirror), O(#lines) deep on the PRELUDE (`core.mdk`), ~2400 frames. An empty user program overflowed identically → it's the compiler processing the prelude, not user input.
+- **Fix = Option B, general dispatch-GRAPH TMC (`b364bc28`, Opus, run by Val in a dedicated session):** extended the WasmGC `b′` analysis (`compiler/backend/wasm_emit.mdk`) from single-function to **strongly-connected dispatch graphs** with pattern-matched roots + cons-on-intermediate-members + multi-cell cons. Linearizes the layout family AND the `string.intersperse` emit-path domino — the whole spine-cons class. **Emitter-only → NO LLVM seed re-mint** (fixpoint C3a/C3b YES). Chosen over the source-rewrite (Option A) to kill the class in one mechanism.
+- **One regression caught + fixed (`921b9126`, Opus):** the +517/−259 refactor left `stmtHasFallthrough` non-exhaustive (missing `CSLetElse`/`CSAssign`) → `let-else` wasm emit trapped `E-NONEXHAUSTIVE-MATCH`. Restored the arms (+5 lines).
+- **Verified (orchestrator-rerun, force-rebuilt oracles):** browser Run **6/6** (was 0/6), `diff_wasm` **154/0** (b364 alone was 152/2), `diff_wasm_typed` 8/0, `diff_wasm_modules` 28/0, fixpoint C3a/C3b YES.
+- **⚠️ Separate PRE-EXISTING issue surfaced (NOT this fix, NOT b364):** `diff_sqlite` is **6 ok / 3 failing** on main — the `inmem_{orderby,leftjoin,aggregate}` probes emit malformed WAT (fail wasm-tools assembly). ISOLATED: reverting `wasm_emit.mdk` to pre-b364 leaves it 6/3 → it predates b364. Needs a "when did it break" investigation (candidate: the S3/S4 `canonicalizePath` wasm binding, or older). Filed as an open follow-up; does not block the browser fix.
+
 ## Current status (2026-07-04) — playground W2: CodeMirror 6 editor (S1 highlighting + S2 squiggles) + Playwright e2e harness DONE (`d4dca8da`)
 
 **The playground front door got a real editor.** Per `PLAYGROUND-EDITOR-DESIGN.md` (CM6 + stateless-wasm-entries decided with Val; S1+S2 v1 scope), each designed→delegated→browser-verified→merged:
