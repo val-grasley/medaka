@@ -488,3 +488,61 @@ now runs to completion on WasmGC under Node.
 `frontend_lexer__floatTok` (`isDeferredFloatExternW`) on a `core.mdk` float literal — the
 pre-existing W8b `stringToFloat` deferred-extern holdout. Port a pure-WAT/host-import
 `stringToFloat`, then re-measure (Stage-3 (a)-spines or the §4.2 Class-B tree-walk may surface).
+
+## 12. AS BUILT (2026-07-05) — Stage 3: GENERAL dispatch-GRAPH TMC (the layout family + class)
+
+Emitter-only (`wasm_emit.mdk`; `trmc_analysis.mdk` untouched; NO LLVM seed re-mint —
+`selfcompile_fixpoint` C3a/C3b YES unchanged). Generalizes Stage-2's
+single-cons-target (b′) analysis to the full dispatch-graph shape BROWSER-STACK-DIAGNOSIS
+§7 scoped, closing the browser Web Worker overflow (lexer offside-rule `layout` family,
+~2400 frames on the prelude) AND the whole spine-cons class (`string.intersperse`, the
+emit-path domino, + 11 more families picked up compiler-wide).
+
+- **(a) Pattern-matched roots.** The `wTrmcAllPVarParams` root gate is REMOVED (it was a
+  Stage-1 br-loop constraint; the b′ member emit already routes through the ordinary
+  clause-chain dispatcher, which handles ctor patterns). `layout ((RNewline …)::rest)`
+  roots fine.
+- **(b) Member-targeted, multi-cell spine conses.** One shared classifier
+  (`wDispSpineParts`: peel `h1 :: … :: f <sat>`, `f` any group member) is used by
+  detection, validation, AND the leaf emit, so all three agree per leaf.
+  `emitWDispSpineCons` links N cells in source order (the per-cell first/dest protocol
+  chains naturally), then `return_call`s the bottom callee — `$root__disploop` for the
+  root (never the reset wrapper), the member fn itself otherwise.
+- **(c) Root selection in a strongly-connected family = EXTERNAL ENTRY, proven not
+  guessed.** A candidate root R (pre-gate: R is some peeled cons's bottom target) grows
+  its tail-closure; the group is accepted ONLY if (v4) NO bind or impl body outside the
+  group references any member other than R — so R's reset wrapper is provably the sole
+  entry. For layout, `flushCloseGo` etc. all fail v4 (they'd have `layout` as an
+  externally-referenced non-root member); `layout` (entered by `layoutWithOffsets`)
+  uniquely passes. Greedy in bind order + disjointness (v7) ⇒ deterministic.
+- **Per-group dest globals.** Each root gets its own `$g_tmc_{head,dest,first}_<root>`
+  triple, so a member's helper calling ANOTHER group's root mid-spine (e.g. a lexer
+  helper reaching `join`→`intersperse`) builds that group's spine in that group's
+  globals and returns it closed — no cross-group clobber, no cross-group veto needed.
+  (Stage-2's single shared triple would have forced rejecting `scan` vs `intersperse`.)
+- **Soundness validation (v2–v7), incl. the new v3:** every group-fn reference in a
+  member body must sit on a sanctioned tail edge; all OTHER referenced heads (if-conds,
+  let-RHSs, block prefixes, guards, scrutinees, cons heads, tail-call args, bases) are
+  collected and expanded transitively through the top-level call graph (cap 256; past
+  the cap ⇒ reject) and must not reach the group — this is what makes same-group
+  mid-spine re-entry impossible rather than merely unobserved. `allCallHeads` gained
+  the previously-missing CExpr arms (record/variant update, ranges, slices, let-group
+  bind bodies, match/decision GUARDS) so references cannot hide. v5 keeps
+  Stage-1-claimable singletons on Stage-1 (local dest, no globals); group membership
+  now takes precedence over Stage-1 at emit (a Stage-1-emitted member inside a group
+  would return its own spine instead of closing the group dest).
+- **Residuals (documented, safe-by-rejection):** (1) a family whose external entry is
+  never itself a cons-bottom target is not rooted (none known; layout/scan/intersperse
+  entries all are); (2) dynamic dispatch (`CMethod`/`CDict`) out of member bodies is
+  not traced by the closure scan (same level as Stage-2; none of the detected families
+  dispatch into themselves); (3) helper closures past 256 fns reject the group.
+- **Verified:** wasm gates byte-identical to the fd7612b0 baseline (diff_wasm 152 ok /
+  2 pre-existing let-else FAILs also present pristine; typed 8/0; modules 28/0; sqlite
+  6 ok / 3 pre-existing duplicate-`$mdk_wctor_Some` FAILs also present pristine);
+  run_gates 72/1/1 (the 1 = pre-existing missing `main_not_value.json.out` golden).
+  Playground WAT census: `layout`/`layoutPairs`/`scan`/`intersperse` + 11 more families
+  all `__disploop`'d; every recursive edge `return_call` (remaining plain calls are O(1)
+  leaf predicates). Node single-attempt (Liftoff, no retry): hello.mdk compiles CLEAN
+  down to `--stack-size=200` (main trapped at ~1000 KB with 2369 frames; browser worker
+  budget ~512 KB). Playwright system-Chrome e2e: 7/7 consecutive full passes (run →
+  stdout, squiggles, hover, autocomplete).

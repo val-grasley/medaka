@@ -1902,15 +1902,16 @@ emitRefProgram prog groups =
     -- stage-D: writeFileBytes's write host imports (reset/push/commit).
     ++ (if useFileBytesRef.value then fileBytesHostImportLines else [])
   let valNames = progValNames prog
-  -- Stage-2 (b′) WASMGC-TRMC: detect dispatch-into-single-target TMC groups (the lexer's
-  -- `scan` token spine) BEFORE emitting fns, so emitRefFnBind can route a group member to
-  -- the dest-passing reset-wrapper + inner-loop emit.
-  let dispGroups = detectDispatchGroups prog (userFnBinds groups)
+  -- Stage-2/3 (b′) WASMGC-TRMC: detect dispatch-graph TMC groups (the lexer's `scan`
+  -- token spine, the offside-rule `layout` family, `intersperse`) BEFORE emitting fns,
+  -- so emitRefFnBind can route a group member to the dest-passing reset-wrapper +
+  -- inner-loop emit.  ALL binds are passed (not just fn binds): the external-entry
+  -- root-selection check must see references from value-bind bodies too.
+  let dispGroups = detectDispatchGroups prog groups
   let _ = setRef wDispGroupsRef dispGroups
-  let _ = setRef wDispUsedRef (isNonEmptyList dispGroups)
   -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
-  let dispGlobals = if wDispUsedRef.value then wDispGlobalLines else []
+  let dispGlobals = flatMap wDispGlobalLines dispGroups
   let globals = rngGlobal ++ dispGlobals ++ map oneGlobalRef valNames
   -- emit user fns FIRST (this is what accumulates lifted lambdas into liftedFnsRef).
   let fns = flatMap (emitRefFnBind prog) (userFnBinds groups)
@@ -2492,21 +2493,27 @@ emitRefFnBind prog (CBind name clauses0) =
   let _ = setRef numPolyLocalsRef (numPolyParamNames name clauses)
   let arity = clauseArityOf clauses
   let params = synthParams arity
-  -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level NON-DICT self-recursive define whose
-  -- clauses are `trmcEligible` for the self-only cons/ctor-tail shape (a) is emitted as
-  -- a destination-passing LOOP (emitWasmTrmcBind) instead of the stack-growing recursive
-  -- call (emitRefTail's generic ctor arm evaluates the self-call as a struct.new ARG, so
-  -- the frame stays live → deep lists overflow).  Ineligible fns fall to the normal path.
-  match wasmTrmcTry prog name arity clauses
-    Some tmcDef => tmcDef ++ (if needsClosWrapper prog name then emitFnClosWrapper prog name arity else [])
+  -- Stage-2/3 (b′): a member of a detected dispatch-TMC group emits via the dest-passing
+  -- reset-wrapper (root) / inner-loop or redirected-leaf member path.  The group takes
+  -- PRECEDENCE over Stage-1: a group root like the lexer's `layout` is Stage-1-eligible
+  -- for its SELF-cons arm, but only the group transform linearizes the cross-member
+  -- edges (`layout ↔ flushCloseGo ↔ …`) — and a Stage-1-emitted member inside a group
+  -- would return its own locally-built spine instead of closing the group's shared dest
+  -- globals (a miscompile).  Detection keeps a Stage-1-claimable SINGLETON out of any
+  -- group (wDispValidate v5), so plain self-TMC fns still take the Stage-1 loop below.
+  match wDispGroupOf wDispGroupsRef.value name
+    Some grp =>
+      let gd = if wDispIsRoot grp name then emitWDispRoot prog grp arity clauses
+        else emitWDispMemberFn prog grp name name arity clauses
+      gd ++ (if needsClosWrapper prog name then emitFnClosWrapper prog name arity else [])
     None =>
-      -- Stage-2 (b′): a member of a detected dispatch-TMC group emits via the dest-passing
-      -- reset-wrapper (root) / inner-loop or redirected-leaf member path.
-      match wDispGroupOf wDispGroupsRef.value name
-        Some grp =>
-          let gd = if wDispIsRoot grp name then emitWDispRoot prog name arity clauses
-            else emitWDispMemberFn prog (wDispRootOf grp) name name arity clauses
-          gd ++ (if needsClosWrapper prog name then emitFnClosWrapper prog name arity else [])
+      -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level NON-DICT self-recursive define whose
+      -- clauses are `trmcEligible` for the self-only cons/ctor-tail shape (a) is emitted as
+      -- a destination-passing LOOP (emitWasmTrmcBind) instead of the stack-growing recursive
+      -- call (emitRefTail's generic ctor arm evaluates the self-call as a struct.new ARG, so
+      -- the frame stays live → deep lists overflow).  Ineligible fns fall to the normal path.
+      match wasmTrmcTry prog name arity clauses
+        Some tmcDef => tmcDef ++ (if needsClosWrapper prog name then emitFnClosWrapper prog name arity else [])
         None =>
           let bodyLines = emitClausesRef prog name params arity clauses
           let allLocals = clauseLocals clauses
@@ -5136,29 +5143,31 @@ emitRefTail prog env arity e = match wTrmcCtxRef.value
     if isWTrmcWrapper e then emitRefTailWrap prog env arity e
     else emitWasmTrmcLeaf prog env self sarity pslots cellStruct selfIdx loopLbl exitLbl e
   WTrmcOff => match wDispCtxRef.value
-    WDispOn root loopLbl rootArity =>
-      -- Stage-2 (b′) active: descend the structural tail wrappers with the dispatch
-      -- context LIVE; redirect SPINE cons leaves + the root's base to the dest globals.
+    WDispOn root loopLbl rootArity members =>
+      -- Stage-2/3 (b′) active: descend the structural tail wrappers with the dispatch
+      -- context LIVE; redirect SPINE cons leaves + base leaves to the dest globals.
       if isWTrmcWrapper e then emitRefTailWrap prog env arity e
-      else emitWDispLeaf prog env root loopLbl rootArity e
+      else emitWDispLeaf prog env root loopLbl rootArity members e
     WDispOff => emitRefTailWrap prog env arity e
 
--- a (b′) tail leaf: a spine cons `<head> :: root <sat>` → dest-link + return_call loop;
--- a saturated tail-call to `root` or a group dispatcher → ordinary return_call (the dest
--- threads through untouched); any other leaf (base, e.g. `[]`) → close the dest + return
--- $g_tmc_head.
-emitWDispLeaf : Prog -> List String -> String -> String -> Int -> CExpr -> <Mut> List String
-emitWDispLeaf prog env root loopLbl rootArity e@(CBinPrim "::" head tail _) =
-  if wDispIsSatRootCall prog root rootArity tail && not (wDispCallsRoot prog root head) then
-    emitWDispSpineCons prog env loopLbl head tail
-  else
-    -- a cons whose tail is NOT a saturated root-call (the spine terminator could be a
-    -- cons onto a non-spine value): it is root-free (group detection guaranteed it), so
-    -- treat it as a BASE value — close the dest + return $g_tmc_head.
-    emitWDispBase prog env e
-emitWDispLeaf prog env root loopLbl rootArity other =
+-- a (b′) tail leaf: a peeled spine cons `<h1> :: … :: <member> <sat>` → dest-link each
+-- cell + return_call the target (the root's inner loop for the root, the member fn
+-- itself otherwise — only the root carries a reset wrapper); a saturated tail-call to
+-- a group member → ordinary return_call (the dest threads through untouched); any
+-- other leaf (base, e.g. `[]`) → close the dest + return $g_tmc_head.
+emitWDispLeaf : Prog -> List String -> String -> String -> Int -> List String -> CExpr -> <Mut> List String
+emitWDispLeaf prog env root loopLbl rootArity members (e@(CBinPrim "::" _ _ _)) =
+  match wDispSpineParts prog (f => contains f members) e
+    Some (heads, f, args) =>
+      emitWDispSpineCons prog env root (if f == root then loopLbl else f) heads args
+    None =>
+      -- a cons that does not bottom in a saturated group call (the spine terminator
+      -- can be a cons onto a non-spine value): group validation guaranteed it is
+      -- member-free, so it is a BASE value — close the dest + return the head global.
+      emitWDispBase prog env root e
+emitWDispLeaf prog env root loopLbl rootArity members other =
   if wDispIsSatRootCall prog root rootArity other then
-    -- a bare dispatcher tail-call to root: emit the args + return_call the inner loop
+    -- a bare saturated tail-call to root: emit the args + return_call the inner loop
     -- (skip the reset wrapper, which would re-zero the in-flight dest).
     match flattenApp other []
       (_, args) => flatMap (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname loopLbl]
@@ -5167,19 +5176,20 @@ emitWDispLeaf prog env root loopLbl rootArity other =
       ((CVar f0 _), args) =>
         let f = canonFn prog f0
         if isFtSentinel f0 then ftSentinelInstrs f0
-        else emitWDispTailOrBase prog env root f other
-      _ => emitWDispBase prog env other
+        else emitWDispTailOrBase prog env root members f other
+      _ => emitWDispBase prog env root other
 
--- a non-cons, non-root-bare leaf: a saturated tail-call to a GROUP dispatcher → ordinary
--- return_call (dest untouched); a base value (no call to root) → dest-close.
-emitWDispTailOrBase : Prog -> List String -> String -> String -> CExpr -> <Mut> List String
-emitWDispTailOrBase prog env root f e =
-  if contains f (progFnNames prog) then
-    -- a tail-call into another user fn (a group dispatcher / self-accumulator): emit it as
-    -- the ordinary tail (return_call), leaving the dest globals threaded.
-    emitAppTail prog env 0 e
-  else
-    emitWDispBase prog env e
+-- a non-cons, non-root-bare leaf: a SATURATED tail-call to another group member →
+-- ordinary return_call (dest untouched; the member's own redirected leaves will close
+-- it); anything else → a base value — dest-close.  (An unsaturated or non-member call
+-- here cannot thread the dest, so it must terminate the spine as a value.)
+emitWDispTailOrBase : Prog -> List String -> String -> List String -> String -> CExpr -> <Mut> List String
+emitWDispTailOrBase prog env root members f e = match flattenApp e []
+  (_, args) =>
+    if contains f members && listLen args == progFnArity prog f then
+      emitAppTail prog env 0 e
+    else
+      emitWDispBase prog env root e
 
 -- the ordinary tail descent (TMC-inactive, or the wrapper arms while TMC is active).
 emitRefTailWrap : Prog -> List String -> Int -> CExpr -> <Mut> List String
@@ -5372,16 +5382,6 @@ clauseHasLeadingDict _ = False
 wIsDictParamName : String -> Bool
 wIsDictParamName x = startsWithStr x "$dict"
 
--- every clause's params are all plain PVar/PWild (the synthetic-param ABI requires the
--- loop to recompute args into $a<i> slots; a non-trivial pattern param would need the
--- coalesced clause-chain dispatch, out of scope for Stage 1 — fall back).
-wTrmcAllPVarParams : List CClause -> Bool
-wTrmcAllPVarParams clauses =
-  not (anyList (c => not (allPlainParams (clausePats c))) clauses)
-
-clausePats : CClause -> List Pat
-clausePats (CClause pats _) = pats
-
 -- the single ctor name every cons/ctor-tail leaf in the body builds, if uniform; None if
 -- the bodies build no ctor-tail or DISAGREE (mixed ctors would need a per-leaf-typed dest;
 -- out of scope — fall back).  Cons-tail leaves report ctor "Cons" (struct $C_Cons).
@@ -5509,7 +5509,9 @@ wTrmcFirstCtorTailArms prog self arity (a::rest) = match wTrmcFirstCtorTail prog
   None => wTrmcFirstCtorTailArms prog self arity rest
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Stage-2 WasmGC DISPATCH-into-single-target TMC (shape (b′)) — WASMGC-TRMC-DESIGN §7
+-- Stage-2/3 WasmGC DISPATCH-GRAPH TMC (shape (b′)) — WASMGC-TRMC-DESIGN §7/§11,
+-- BROWSER-STACK-DIAGNOSIS §7 (Stage-3 generalization: pattern-matched roots,
+-- member-targeted multi-cell spine conses, external-entry root selection)
 -- ════════════════════════════════════════════════════════════════════════════
 -- The lexer overflows because each per-token LEAF (`scanLower`/`emit`/…) does
 -- `tok :: scan …`: the cons-target is the single dispatcher `scan`, NOT the leaf
@@ -5518,19 +5520,21 @@ wTrmcFirstCtorTailArms prog self arity (a::rest) = match wTrmcFirstCtorTail prog
 -- ARG → the leaf frame stays live to EOF → V8 stack overflow.
 --
 -- Fix (emitter-only, reuses Stage-1's cons-cell + dest mechanism): identify a "TMC
--- group" = a set of functions tail-connected and rooted at ONE cons-target `R`
--- (`scan`), where every tail leaf is either
+-- group" = a set of functions tail-connected under an EXTERNAL-ENTRY root `R`
+-- (`scan`, the layout family's `layout`), where every tail leaf is either
 --   (1) a base case (no call to a group member), or
---   (2) a SPINE cons `<R-free head> :: R <saturated R-call>` (the overflow site), or
---   (3) a saturated tail-call to ANOTHER group member (a cons-free dispatcher OR a
+--   (2) a SPINE cons — a peeled chain of 1..N member-free heads bottoming in a
+--       saturated call to ANY group member (the overflow site), or
+--   (3) a saturated tail-call to another group member (a dispatcher OR a
 --       non-spine self-accumulator like the string-interp `acc++` loops).
 -- We then emit `R` as a RESET wrapper that zeroes three module-level dest globals
 -- ($g_tmc_head / $g_tmc_dest / $g_tmc_first) and `return_call`s an inner `R__loop`,
--- and we emit every group member with its SPINE cons leaves rewritten to: build the
+-- and we emit every group member with its SPINE cons leaves rewritten to: build each
 -- `Cons` cell with a placeholder tail, link it into $g_tmc_dest (or seed $g_tmc_head
--- on the first cell), advance the dest, then `return_call $R__loop <recomputed args>`
--- (a REAL tail call — the leaf frame dies; no struct.new holds the recursion).  R's
--- base `[]` closes the dest with the real Nil and returns $g_tmc_head.  Dispatcher /
+-- on the first cell), advance the dest, then `return_call` the bottom callee (`$R__loop`
+-- when it is the root — never the reset wrapper — else the member fn itself; a REAL
+-- tail call — the leaf frame dies; no struct.new holds the recursion).  A member's
+-- base leaf closes the dest with its real value and returns $g_tmc_head.  Dispatcher /
 -- self-accumulator tails (case 3) are emitted UNCHANGED (they already `return_call`,
 -- and they never touch the dest globals, which thread through transparently).
 --
@@ -5540,10 +5544,11 @@ wTrmcFirstCtorTailArms prog self arity (a::rest) = match wTrmcFirstCtorTail prog
 -- spine; the reset wrapper re-zeroes them per outer call.
 
 -- the active dispatch-group context during a group member's body emit.  `WDispOn root
--- loopLbl rootArity` ⇒ redirect SPINE cons leaves (cons whose tail is a saturated call
--- to `root`) to the dest-passing emit + `return_call $<loopLbl>`, and `root`'s base
--- `[]` to the dest-close.  WDispOff ⇒ ordinary emit.
-data WDispCtx = WDispOff | WDispOn String String Int
+-- loopLbl rootArity members` ⇒ redirect SPINE cons leaves (a peeled cons chain
+-- bottoming in a saturated call to a group member) to the dest-passing emit +
+-- `return_call` (the root's inner loop for the root, the member fn itself otherwise),
+-- and base leaves to the dest-close.  WDispOff ⇒ ordinary emit.
+data WDispCtx = WDispOff | WDispOn String String Int (List String)
 
 wDispCtxRef : Ref WDispCtx
 wDispCtxRef = Ref WDispOff
@@ -5555,89 +5560,187 @@ data WDispGroup = WDispGroup String (List String)
 wDispGroupsRef : Ref (List WDispGroup)
 wDispGroupsRef = Ref []
 
--- set true when at least one (b′) group is emitted (gates the dest globals + the
--- `R__loop` inner-fn split in the preamble assembly).
-wDispUsedRef : Ref Bool
-wDispUsedRef = Ref False
-
-wDispHeadL : String
-wDispHeadL = "$g_tmc_head"
-wDispDestL : String
-wDispDestL = "$g_tmc_dest"
-wDispFirstL : String
-wDispFirstL = "$g_tmc_first"
+-- PER-GROUP dest globals (Stage-3): each group root gets its own head/dest/first
+-- triple, so one group's spine build cannot clobber another's — a member's helper
+-- (mid-spine, non-tail) may freely call ANOTHER group's root (e.g. a lexer helper
+-- reaching `join` → `intersperse`): that root resets and threads ITS OWN globals
+-- and returns a closed spine, leaving the in-flight group's dest untouched.  Only
+-- SAME-group re-entry is unsafe, and wDispValidate v3 rejects exactly that.
+wDispHeadL : String -> String
+wDispHeadL root = "$g_tmc_head_" ++ gname root
+wDispDestL : String -> String
+wDispDestL root = "$g_tmc_dest_" ++ gname root
+wDispFirstL : String -> String
+wDispFirstL root = "$g_tmc_first_" ++ gname root
 
 -- the inner-loop fn name for a group root `R`: `<R>__disploop`.
 wDispLoopName : String -> String
 wDispLoopName root = root ++ "__disploop"
 
--- the three dest globals (mutable; reset per outer entry by the wrapper).
-wDispGlobalLines : List String
-wDispGlobalLines = [
-  "  (global " ++ wDispHeadL ++ " (mut (ref null eq)) (ref.null eq))",
-  "  (global " ++ wDispDestL ++ " (mut (ref null eq)) (ref.null eq))",
-  "  (global " ++ wDispFirstL ++ " (mut i32) (i32.const 1))",
-]
+-- one group's three dest globals (mutable; reset per outer entry by the wrapper).
+wDispGlobalLines : WDispGroup -> List String
+wDispGlobalLines grp =
+  let root = wDispRootOf grp
+  [
+    "  (global " ++ wDispHeadL root ++ " (mut (ref null eq)) (ref.null eq))",
+    "  (global " ++ wDispDestL root ++ " (mut (ref null eq)) (ref.null eq))",
+    "  (global " ++ wDispFirstL root ++ " (mut i32) (i32.const 1))",
+  ]
 
 -- ── group detection ──────────────────────────────────────────────────────────
--- Try to grow a (b′) group rooted at each candidate root `R`.  `R` qualifies as a root
--- iff: arity>0, all-PVar params, non-dict, R is itself reachable as a cons-target (some
--- function — possibly R — has a SPINE cons `_ :: R …`).  The group is the transitive
--- closure of functions tail-reachable from R whose EVERY tail leaf is case (1)/(2)/(3)
--- above.  If any member has a tail leaf that is NONE of those (e.g. conses onto a DIFFERENT
--- ctor in the spine slot, or tail-calls OUT of the group as a value), the group is
--- rejected (return None) — no transform, no regression.
-detectDispatchGroups : Prog -> List CBind -> List WDispGroup
-detectDispatchGroups prog binds =
+-- Try to grow a (b′) group rooted at each candidate root `R`.  Stage-3 generalizes
+-- the Stage-2 single-target analysis to a DISPATCH GRAPH (the lexer's offside-rule
+-- `layout` family + `string.intersperse` — BROWSER-STACK-DIAGNOSIS §7):
+--   • the root MAY pattern-match its params (`layout ((RNewline …)::rest) …`) — the
+--     all-PVar gate was a Stage-1 br-loop constraint; the (b′) member emit routes
+--     through the ordinary clause-chain dispatcher, which handles ctor patterns;
+--   • a spine cons may target ANY group member, not just the root (`applyNlTop`'s
+--     `(TNewline,_) :: popDedents …`), and may build SEVERAL cells before the
+--     recursive call (`popDedents`'s `(TDedent,_)::(TNewline,_):: popDedents …`);
+--   • the family may be STRONGLY CONNECTED, so root selection is by EXTERNAL
+--     ENTRY: a fn may root a group only if NO other member is referenced from
+--     anywhere outside the group — then the root's reset wrapper is provably the
+--     sole way in.  (Any other root choice would let control enter a member with
+--     stale dest globals: a silent miscompile, not a detectable gate failure.)
+-- The group is the transitive closure of fns tail-reachable from R whose EVERY
+-- tail leaf is (1) a base, (2) a spine cons bottoming in a saturated call to a
+-- group fn, or (3) a saturated tail-call to a group fn.  A grown group must then
+-- pass wDispValidate (v2–v7 below) before it is accepted; any failure ⇒ no
+-- transform, no regression.  Greedy in bind order; every check is deterministic.
+detectDispatchGroups : Prog -> List CBind -> <Mut> List WDispGroup
+detectDispatchGroups prog allBinds =
+  let binds = userFnBinds allBinds
   let fnNames = map bindName binds
-  flatMap (b => wDispTryRoot prog binds fnNames b) binds
+  -- pass 0: global tables.  `consTargets` = the bottom callee of every peeled
+  -- tail spine cons (root-candidacy pre-gate: only a fn somebody conses onto can
+  -- anchor a spine; a family whose external entry is never itself a cons target
+  -- is out of scope — documented residual).  `headsMap` = per-bind referenced
+  -- heads over ALL binds (fn + value); `implHeads` = the same over impl bodies.
+  let consTargets = dedupKeep (flatMap (b => wDispBindConsTargets prog fnNames b) binds)
+  let headsMap = map (b => (bindName b, dedupKeep (wDispBindHeads prog b))) allBinds
+  let implHeads = dedupKeep (flatMap (e => wDispImplEntryHeads prog e) (progImpls prog))
+  wDispDetectGo prog binds fnNames headsMap implHeads consTargets binds []
 
--- the bind's name if it is a viable group root, else [].
-wDispTryRoot : Prog -> List CBind -> List String -> CBind -> List WDispGroup
-wDispTryRoot prog binds fnNames (CBind root clauses) =
+-- greedy accept in bind order (deterministic; groups are disjoint by v7).
+wDispDetectGo : Prog -> List CBind -> List String -> List (String, List String) -> List String -> List String -> List CBind -> List WDispGroup -> <Mut> List WDispGroup
+wDispDetectGo _ _ _ _ _ _ [] accepted = reverseL accepted
+wDispDetectGo prog binds fnNames headsMap implHeads consTargets (b::rest) accepted = match wDispTryRoot prog binds fnNames headsMap implHeads consTargets accepted b
+  Some grp => wDispDetectGo prog binds fnNames headsMap implHeads consTargets rest (grp::accepted)
+  None => wDispDetectGo prog binds fnNames headsMap implHeads consTargets rest accepted
+
+-- the bind's group if it roots a valid one, else None.
+wDispTryRoot : Prog -> List CBind -> List String -> List (String, List String) -> List String -> List String -> List WDispGroup -> CBind -> <Mut> Option WDispGroup
+wDispTryRoot prog binds fnNames headsMap implHeads consTargets accepted (CBind root clauses) =
   let arity = clauseArityOf clauses
-  if arity > 0
-     && wTrmcNonDict clauses
-     && wTrmcAllPVarParams clauses
-     && wDispSomeSpineConsTo prog binds root arity then
-    match wDispGrow prog binds fnNames root arity [root] [root]
-      Some members =>
-        -- require ≥1 spine cons across the whole group + a uniform Cons spine.
-        if wDispGroupHasSpineCons prog binds root arity members then
-          [WDispGroup root members]
-        else []
+  let claimed = flatMap wDispMembersOf accepted
+  if arity > 0 && wTrmcNonDict clauses && contains root consTargets && not (contains root claimed) then match wDispGrow prog binds fnNames root [root] [root]
+    Some members => wDispValidate prog binds headsMap implHeads claimed root arity clauses members
+    None => None
+  else None
+
+-- the post-growth soundness checks.  Some ⇒ accept; None ⇒ no transform.
+--   v2 the group builds a Cons spine somewhere;
+--   v3 member bodies reference group fns ONLY on the sanctioned tail edges (the
+--      bare tail callee / the spine-cons bottom callee) — every OTHER referenced
+--      head, expanded TRANSITIVELY through top-level helpers, must stay outside
+--      the group (a mid-spine re-entry corrupts the shared dest globals);
+--   v4 external entry: no bind or impl body outside the group references a
+--      member other than the root;
+--   v5 a Stage-1-claimable singleton stays with Stage-1 (its local-dest loop
+--      needs no reset wrapper or globals at all);
+--   v7 groups are disjoint (a claimed member is never re-grouped).
+-- (No cross-group check is needed: each group threads its OWN global triple, so
+-- a helper reaching ANOTHER group's root mid-spine builds that group's spine in
+-- that group's globals and returns it closed — this group's dest is untouched.)
+wDispValidate : Prog -> List CBind -> List (String, List String) -> List String -> List String -> String -> Int -> List CClause -> List String -> <Mut> Option WDispGroup
+wDispValidate prog binds headsMap implHeads claimed root arity clauses members =
+  if anyList (m => contains m claimed) members then None
+  else if not (wDispGroupHasSpineCons prog binds members) then None
+  else if members == [root] && wDispStage1Claims prog root arity clauses then None
+  else
+    let allNames = map fst headsMap
+    let nt = filterList (h => contains h allNames) (dedupKeep (flatMap (m => wDispMemberNonTailHeads prog binds members m) members))
+    let closure = wDispBfs headsMap nt []
+    -- an oversize helper closure ⇒ same-group isolation not cheaply provable ⇒ reject.
+    if listLen closure > 256 then None
+    else if anyList (h => contains h members) closure then None
+    else
+      let inner = filterList (!= root) members
+      if anyList (p => wDispEntryRefs members inner p) headsMap then None
+      else if anyList (h => contains h inner) implHeads then None
+      else Some (WDispGroup root members)
+
+-- does a bind OUTSIDE the group reference a non-root member?
+wDispEntryRefs : List String -> List String -> (String, List String) -> Bool
+wDispEntryRefs members inner (name, heads) =
+  if contains name members then
+    False
+  else
+    anyList (h => contains h inner) heads
+
+-- transitive closure of `work` over the top-level referenced-heads graph, capped
+-- (the caller treats a past-cap closure as un-provable and rejects the group).
+wDispBfs : List (String, List String) -> List String -> List String -> List String
+wDispBfs _ [] visited = visited
+wDispBfs headsMap (h::rest) visited =
+  if contains h visited || listLen visited > 256 then wDispBfs headsMap rest visited
+  else
+    let nexts = match lookupAssoc h headsMap
+      Some hs => hs
       None => []
-  else []
+    wDispBfs headsMap (nexts ++ rest) (h::visited)
 
--- does ANY function in `binds` have a SPINE cons `_ :: root <saturated to root arity>`?
-wDispSomeSpineConsTo : Prog -> List CBind -> String -> Int -> Bool
-wDispSomeSpineConsTo prog binds root arity =
-  anyList (b => wDispBindHasSpineCons prog root arity b) binds
+-- would Stage-1 (wasmTrmcTry) already claim this fn as a self-TMC loop?
+wDispStage1Claims : Prog -> String -> Int -> List CClause -> <Mut> Bool
+wDispStage1Claims prog name arity clauses =
+  let self = SelfByVar name
+  let pairs = map clauseToPair clauses
+  arity > 0
+    && wTrmcNonDict clauses
+    && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs
+    && isSome (wTrmcUniformCtor prog self arity pairs)
 
-wDispBindHasSpineCons : Prog -> String -> Int -> CBind -> Bool
-wDispBindHasSpineCons prog root arity (CBind _ clauses) =
-  anyList (c => wDispExprHasSpineCons prog root arity (clauseBodyOf c)) clauses
+-- peel a chain of conses `h1 :: h2 :: … :: bottom` → (heads, bottom).
+wDispPeelCons : CExpr -> (List CExpr, CExpr)
+wDispPeelCons (CBinPrim "::" h t _) =
+  let (hs, b) = wDispPeelCons t
+  (h::hs, b)
+wDispPeelCons e = ([], e)
 
--- a SPINE cons leaf reachable through the tail wrappers: `<head> :: root <sat>`.
-wDispExprHasSpineCons : Prog -> String -> Int -> CExpr -> Bool
-wDispExprHasSpineCons prog root arity (CIf _ t f) = wDispExprHasSpineCons prog root arity t
-  || wDispExprHasSpineCons prog root arity f
-wDispExprHasSpineCons prog root arity (CLet _ _ _ b) =
-  wDispExprHasSpineCons prog root arity b
-wDispExprHasSpineCons prog root arity (CBlock stmts) = match lastStmtExpr stmts
-  Some ex => wDispExprHasSpineCons prog root arity ex
-  None => False
-wDispExprHasSpineCons prog root arity (CDecision _ arms _) =
-  anyList (a => wDispExprHasSpineCons prog root arity (armBody a)) arms
-wDispExprHasSpineCons prog root arity other =
-  wDispIsSpineCons prog root arity other
+-- a spine-cons leaf `<h1> :: … :: f <saturated>` where `ok f` holds: Some (peeled
+-- heads, bottom callee, its args); None if the leaf is not that shape.  This ONE
+-- classifier is shared by detection, validation, and the leaf emit, so the three
+-- agree exactly on what is (and is not) a spine cons.
+wDispSpineParts : Prog -> (String -> Bool) -> CExpr -> Option (List CExpr, String, List CExpr)
+wDispSpineParts prog ok e = match wDispPeelCons e
+  ([], _) => None
+  (heads, bottom) => match flattenApp bottom []
+    (CVar f0 _, args) =>
+      let f = canonFn prog f0
+      if ok f && contains f (progFnNames prog) && listLen args == progFnArity prog f then
+        Some (heads, f, args)
+      else
+        None
+    _ => None
 
--- `e` is a spine cons `<head> :: root <saturated>` (head is root-call-free; the tail is
--- a saturated direct call to `root`).
-wDispIsSpineCons : Prog -> String -> Int -> CExpr -> Bool
-wDispIsSpineCons prog root arity (CBinPrim "::" head tail _) = not (wDispCallsRoot prog root head)
-  && wDispIsSatRootCall prog root arity tail
-wDispIsSpineCons _ _ _ _ = False
+-- pass 0: the bottom-target names of every peeled tail-position spine cons.
+wDispBindConsTargets : Prog -> List String -> CBind -> List String
+wDispBindConsTargets prog fnNames (CBind _ clauses) =
+  flatMap (c => wDispExprConsTargets prog fnNames (clauseBodyOf c)) clauses
+
+wDispExprConsTargets : Prog -> List String -> CExpr -> List String
+wDispExprConsTargets prog fnNames (CIf _ t f) = wDispExprConsTargets prog fnNames t
+  ++ wDispExprConsTargets prog fnNames f
+wDispExprConsTargets prog fnNames (CLet _ _ _ b) =
+  wDispExprConsTargets prog fnNames b
+wDispExprConsTargets prog fnNames (CBlock stmts) = match lastStmtExpr stmts
+  Some ex => wDispExprConsTargets prog fnNames ex
+  None => []
+wDispExprConsTargets prog fnNames (CDecision _ arms _) =
+  flatMap (a => wDispExprConsTargets prog fnNames (armBody a)) arms
+wDispExprConsTargets prog fnNames other = match wDispSpineParts prog (f => contains f fnNames) other
+  Some (_, f, _) => [f]
+  None => []
 
 -- a saturated direct call to `root` (canonicalized): flattenApp head is `CVar f`, canonFn
 -- f == root, arg count == arity.
@@ -5657,7 +5760,8 @@ allCallHeads prog (CApp f a) = allCallHeads prog f ++ allCallHeads prog a
 allCallHeads prog (CLam _ b) = allCallHeads prog b
 allCallHeads prog (CLet _ _ e1 e2) = allCallHeads prog e1
   ++ allCallHeads prog e2
-allCallHeads prog (CLetGroup _ b) = allCallHeads prog b
+allCallHeads prog (CLetGroup binds b) = flatMap (bd => wDispBindHeads prog bd) binds
+  ++ allCallHeads prog b
 allCallHeads prog (CBlock stmts) = flatMap (allCallHeadsStmt prog) stmts
 allCallHeads prog (CIf c t f) = allCallHeads prog c
   ++ allCallHeads prog t
@@ -5666,17 +5770,61 @@ allCallHeads prog (CBinPrim _ l r _) = allCallHeads prog l
   ++ allCallHeads prog r
 allCallHeads prog (CUnOp _ x) = allCallHeads prog x
 allCallHeads prog (CMatch s arms) = allCallHeads prog s
-  ++ flatMap (a => allCallHeads prog (armBody a)) arms
+  ++ flatMap (allArmHeads prog) arms
 allCallHeads prog (CDecision s arms _) = allCallHeads prog s
-  ++ flatMap (a => allCallHeads prog (armBody a)) arms
+  ++ flatMap (allArmHeads prog) arms
 allCallHeads prog (CTuple es) = flatMap (allCallHeads prog) es
 allCallHeads prog (CList es) = flatMap (allCallHeads prog) es
 allCallHeads prog (CArray es) = flatMap (allCallHeads prog) es
 allCallHeads prog (CRecord _ fs) =
   flatMap (f => allCallHeads prog (cfieldExpr f)) fs
 allCallHeads prog (CFieldAccess x _ _) = allCallHeads prog x
+allCallHeads prog (CRecordUpdate base fs) = allCallHeads prog base
+  ++ flatMap (f => allCallHeads prog (cfieldExpr f)) fs
+allCallHeads prog (CVariantUpdate _ base fs) = allCallHeads prog base
+  ++ flatMap (f => allCallHeads prog (cfieldExpr f)) fs
+allCallHeads prog (CRangeList lo hi _) = allCallHeads prog lo
+  ++ allCallHeads prog hi
+allCallHeads prog (CRangeArray lo hi _) = allCallHeads prog lo
+  ++ allCallHeads prog hi
 allCallHeads prog (CIndex a i) = allCallHeads prog a ++ allCallHeads prog i
+allCallHeads prog (CSlice a lo hi _) = allCallHeads prog a
+  ++ allCallHeads prog lo
+  ++ allCallHeads prog hi
+allCallHeads prog (CStringIndex a i) = allCallHeads prog a
+  ++ allCallHeads prog i
+allCallHeads prog (CStringSlice a lo hi _) = allCallHeads prog a
+  ++ allCallHeads prog lo
+  ++ allCallHeads prog hi
+allCallHeads prog (CListIndex a i) = allCallHeads prog a ++ allCallHeads prog i
+allCallHeads prog (CListSlice a lo hi _) = allCallHeads prog a
+  ++ allCallHeads prog lo
+  ++ allCallHeads prog hi
 allCallHeads prog _ = []
+
+-- an arm's heads, INCLUDING its guard expressions (a guard runs before the arm
+-- body is selected — a group-fn reference there is just as live as one in the body).
+allArmHeads : Prog -> CArm -> List String
+allArmHeads prog (CArm _ guards body) = flatMap (wDispGuardHeads prog) guards
+  ++ allCallHeads prog body
+
+wDispGuardHeads : Prog -> CGuard -> List String
+wDispGuardHeads prog (CGBool c) = allCallHeads prog c
+wDispGuardHeads prog (CGBind _ e) = allCallHeads prog e
+
+-- every head referenced anywhere in a bind's clause bodies (pass-0 table for the
+-- external-entry + helper-closure checks).
+wDispBindHeads : Prog -> CBind -> List String
+wDispBindHeads prog (CBind _ clauses) =
+  flatMap (c => allCallHeads prog (clauseBodyOf c)) clauses
+
+-- every head referenced from a lowered impl/default body (impl bodies are outside
+-- the CBind list but can still call into a group).
+wDispImplEntryHeads : Prog -> CImplEntry -> List String
+wDispImplEntryHeads prog (CImplEntry _ _ (CImplTagged _ _ _ _ _ body)) =
+  allCallHeads prog body
+wDispImplEntryHeads prog (CImplEntry _ _ (CImplDefault _ body)) =
+  allCallHeads prog body
 
 allCallHeadsStmt : Prog -> CStmt -> List String
 allCallHeadsStmt prog (CSExpr e) = allCallHeads prog e
@@ -5690,26 +5838,27 @@ cfieldExpr : CField -> CExpr
 cfieldExpr (CField _ e) = e
 
 -- grow the group: `worklist` = members yet to scan, `acc` = accepted members.  For each
--- member, every tail leaf must be (1) base, (2) a spine cons to root, or (3) a saturated
--- tail-call to a group fn (NEW group members are added to the worklist).  Any other tail
--- leaf shape ⇒ reject (None).  `fuel` via the worklist (finite # fns).
-wDispGrow : Prog -> List CBind -> List String -> String -> Int -> List String -> List String -> Option (List String)
-wDispGrow _ _ _ _ _ [] acc = Some acc
-wDispGrow prog binds fnNames root arity (m::rest) acc =
+-- member, every tail leaf must be (1) base, (2) a peeled spine cons bottoming in a
+-- saturated group-fn call, or (3) a saturated tail-call to a group fn (NEW group members
+-- are added to the worklist).  Any other tail leaf shape ⇒ reject (None).  `fuel` via
+-- the worklist (finite # fns).
+wDispGrow : Prog -> List CBind -> List String -> String -> List String -> List String -> Option (List String)
+wDispGrow _ _ _ _ [] acc = Some acc
+wDispGrow prog binds fnNames root (m::rest) acc =
   match findBind binds m
     None => None
     Some (CBind _ clauses) =>
       -- a non-root member must be non-dict (we emit it via the normal clause machinery
       -- with redirected leaves).  Unlike Stage-1's br-loop, the (b′) emit uses return_call
-      -- (the engine threads args), so a member MAY have literal-pattern clauses
-      -- (singleOp/scanStrEsc dispatch on a Char) — the clause-chain emit handles them and
-      -- the context redirect still reaches each arm body's leaves.
+      -- (the engine threads args), so a member MAY have literal- or ctor-pattern clauses
+      -- (singleOp dispatch on a Char, `layout` dispatch on the RawTok head) — the
+      -- clause-chain emit handles them and the context redirect reaches each arm's leaves.
       if not (wTrmcNonDict clauses) then None
-      else match wDispMemberTailsOk prog fnNames root arity acc clauses
+      else match wDispMemberTailsOk prog fnNames root acc clauses
         None => None
         Some newMembers =>
-          let toAdd = filterList (n => not (contains n acc)) newMembers
-          wDispGrow prog binds fnNames root arity (rest ++ toAdd) (acc ++ toAdd)
+          let toAdd = dedupKeep (filterList (n => not (contains n acc)) newMembers)
+          wDispGrow prog binds fnNames root (rest ++ toAdd) (acc ++ toAdd)
 
 findBind : List CBind -> String -> Option CBind
 findBind [] _ = None
@@ -5719,92 +5868,131 @@ findBind ((CBind n cs)::rest) m =
   else
     findBind rest m
 
--- check every clause's every tail leaf; collect the NEW group fns referenced by case-(3)
--- tail-calls.  Returns None if any leaf is an unsupported shape.
-wDispMemberTailsOk : Prog -> List String -> String -> Int -> List String -> List CClause -> Option (List String)
-wDispMemberTailsOk prog fnNames root arity acc clauses =
-  wDispClausesGo prog fnNames root arity acc clauses []
+-- check every clause's every tail leaf; collect the NEW group fns referenced by case-(2)
+-- cons bottoms and case-(3) tail-calls.  Returns None if any leaf is an unsupported shape.
+wDispMemberTailsOk : Prog -> List String -> String -> List String -> List CClause -> Option (List String)
+wDispMemberTailsOk prog fnNames root acc clauses =
+  wDispClausesGo prog fnNames root acc clauses []
 
-wDispClausesGo : Prog -> List String -> String -> Int -> List String -> List CClause -> List String -> Option (List String)
-wDispClausesGo _ _ _ _ _ [] found = Some found
-wDispClausesGo prog fnNames root arity acc ((CClause _ body)::rest) found = match wDispLeavesOk prog fnNames root arity acc body found
+wDispClausesGo : Prog -> List String -> String -> List String -> List CClause -> List String -> Option (List String)
+wDispClausesGo _ _ _ _ [] found = Some found
+wDispClausesGo prog fnNames root acc ((CClause _ body)::rest) found = match wDispLeavesOk prog fnNames root acc body found
   None => None
-  Some found2 => wDispClausesGo prog fnNames root arity acc rest found2
+  Some found2 => wDispClausesGo prog fnNames root acc rest found2
 
 -- descend the tail wrappers; check each leaf; accumulate referenced new group fns.
-wDispLeavesOk : Prog -> List String -> String -> Int -> List String -> CExpr -> List String -> Option (List String)
-wDispLeavesOk prog fnNames root arity acc (CIf _ t f) found = match wDispLeavesOk prog fnNames root arity acc t found
+-- (Block-prefix statements, let-RHSs, guards, and scrutinees are validated by
+-- wDispValidate's v3 non-tail-heads walk against the FINAL member set.)
+wDispLeavesOk : Prog -> List String -> String -> List String -> CExpr -> List String -> Option (List String)
+wDispLeavesOk prog fnNames root acc (CIf _ t f) found = match wDispLeavesOk prog fnNames root acc t found
   None => None
-  Some f2 => wDispLeavesOk prog fnNames root arity acc f f2
-wDispLeavesOk prog fnNames root arity acc (CLet False (PVar _) _ b) found =
-  wDispLeavesOk prog fnNames root arity acc b found
-wDispLeavesOk prog fnNames root arity acc (CLet False PWild _ b) found =
-  wDispLeavesOk prog fnNames root arity acc b found
-wDispLeavesOk prog fnNames root arity acc (CBlock stmts) found = match lastStmtExpr stmts
-  Some ex =>
-    if wDispStmtsOkPrefix stmts then
-      wDispLeavesOk prog fnNames root arity acc ex found
-    else
-      None
+  Some f2 => wDispLeavesOk prog fnNames root acc f f2
+wDispLeavesOk prog fnNames root acc (CLet False (PVar _) _ b) found =
+  wDispLeavesOk prog fnNames root acc b found
+wDispLeavesOk prog fnNames root acc (CLet False PWild _ b) found =
+  wDispLeavesOk prog fnNames root acc b found
+wDispLeavesOk prog fnNames root acc (CBlock stmts) found = match lastStmtExpr stmts
+  Some ex => wDispLeavesOk prog fnNames root acc ex found
   None => None
-wDispLeavesOk prog fnNames root arity acc (CDecision _ arms _) found =
-  wDispArmsOk prog fnNames root arity acc arms found
-wDispLeavesOk prog fnNames root arity acc other found =
-  wDispLeafOk prog fnNames root arity acc other found
+wDispLeavesOk prog fnNames root acc (CDecision _ arms _) found =
+  wDispArmsOk prog fnNames root acc arms found
+wDispLeavesOk prog fnNames root acc other found =
+  wDispLeafOk prog fnNames root acc other found
 
-wDispArmsOk : Prog -> List String -> String -> Int -> List String -> List CArm -> List String -> Option (List String)
-wDispArmsOk _ _ _ _ _ [] found = Some found
-wDispArmsOk prog fnNames root arity acc ((CArm _ guards body)::rest) found =
+wDispArmsOk : Prog -> List String -> String -> List String -> List CArm -> List String -> Option (List String)
+wDispArmsOk _ _ _ _ [] found = Some found
+wDispArmsOk prog fnNames root acc ((CArm _ guards body)::rest) found =
   -- only ordinary bool guards (the same restriction the tail emit honors); a refutable
   -- guard binder would complicate the leaf rewrite — reject the group.
   if not (allBoolGuards guards) then None
-  else match wDispLeavesOk prog fnNames root arity acc body found
+  else match wDispLeavesOk prog fnNames root acc body found
     None => None
-    Some f2 => wDispArmsOk prog fnNames root arity acc rest f2
+    Some f2 => wDispArmsOk prog fnNames root acc rest f2
 
--- the non-tail statements of a block must not themselves cons onto / call into the spine
--- in a way the dest globals would corrupt.  Conservative: a block prefix stmt may not
--- contain a call to `root` at all (it would run a NESTED spine build mid-leaf).
-wDispStmtsOkPrefix : List CStmt -> Bool
-wDispStmtsOkPrefix stmts = True
-
--- classify a single LEAF.  base ⇒ ok (no new fns).  spine cons ⇒ ok.  saturated tail-call
--- to a known group-or-fn ⇒ ok + add that fn as a new member.  Anything else ⇒ None.
-wDispLeafOk : Prog -> List String -> String -> Int -> List String -> CExpr -> List String -> Option (List String)
-wDispLeafOk prog fnNames root arity acc e found =
-  if wDispIsSpineCons prog root arity e then
-    -- spine cons: the head must be root-free (it becomes the cell's lead field); ok.
-    Some found
-  else
-    match flattenApp e []
+-- classify a single LEAF.  peeled spine cons bottoming in a saturated user-fn call
+-- ⇒ ok + the bottom fn joins the group.  bare saturated tail-call to a user fn ⇒ ok
+-- + it joins.  base (no reference to root) ⇒ ok.  Anything else ⇒ None.
+wDispLeafOk : Prog -> List String -> String -> List String -> CExpr -> List String -> Option (List String)
+wDispLeafOk prog fnNames root acc e found =
+  match wDispSpineParts prog (f => contains f fnNames) e
+    Some (heads, f, _) =>
+      -- the heads become the cells' lead fields; one that re-enters the root would
+      -- run a nested spine build mid-leaf — poison the group.  (Non-root member
+      -- references in heads are caught by wDispValidate v3.)
+      if anyList (h => wDispCallsRoot prog root h) heads then None
+      else Some (f :: found)
+    None => match flattenApp e []
       ((CVar f0 _), args) =>
         let f = canonFn prog f0
-        if f == root then
-          -- a bare saturated call to root (not consed) — a dispatcher tail edge; ok.
-          if listLen args == arity then Some found else None
-        else if contains f fnNames && contains f (progFnNames prog) && listLen args == progFnArity prog f then
-          -- saturated tail-call to another user fn: pull it into the group (case 3).  Its
-          -- own tails will be validated when the worklist reaches it.
+        if contains f fnNames && contains f (progFnNames prog) && listLen args == progFnArity prog f then
+          -- saturated tail-call to a user fn (the root included): pull it into the
+          -- group (case 3).  Its own tails are validated when the worklist reaches it.
           Some (f :: found)
         else if wDispLeafIsBase prog root e then Some found
         else None
       _ => if wDispLeafIsBase prog root e then Some found else None
 
 -- a BASE leaf: a value with NO call to `root` and no tail-call into a group fn — e.g. `[]`,
--- a literal, a non-recursive value.  (We only need it root-free; the dest-close handles it.)
+-- a literal, a non-recursive value.  (Root-free here; wDispValidate v3 re-checks every
+-- base against the FULL member set.)
 wDispLeafIsBase : Prog -> String -> CExpr -> Bool
 wDispLeafIsBase prog root e = not (wDispCallsRoot prog root e)
 
--- the group built a Cons spine somewhere (sanity: the dest local is typed $C_Cons).
-wDispGroupHasSpineCons : Prog -> List CBind -> String -> Int -> List String -> Bool
-wDispGroupHasSpineCons prog binds root arity members =
-  anyList (m => wDispMemberHasSpineCons prog binds root arity m) members
+-- the group built a Cons spine somewhere (sanity: the dest globals carry $C_Cons cells).
+wDispGroupHasSpineCons : Prog -> List CBind -> List String -> Bool
+wDispGroupHasSpineCons prog binds members =
+  anyList (m => wDispMemberHasSpineCons prog binds members m) members
 
-wDispMemberHasSpineCons : Prog -> List CBind -> String -> Int -> String -> Bool
-wDispMemberHasSpineCons prog binds root arity m = match findBind binds m
-  Some (CBind _ cs) =>
-    anyList (c => wDispExprHasSpineCons prog root arity (clauseBodyOf c)) cs
+wDispMemberHasSpineCons : Prog -> List CBind -> List String -> String -> Bool
+wDispMemberHasSpineCons prog binds members m = match findBind binds m
+  Some (CBind _ cs) => anyList (c => isNonEmptyList (wDispExprConsTargets prog members (clauseBodyOf c))) cs
   None => False
+
+-- v3 walk: every fn-name head in a member body that is NOT on a sanctioned tail edge
+-- (the bare tail callee / the spine-cons bottom callee).  Mirrors wDispLeavesOk's
+-- structural descent EXACTLY, so detection, validation, and emit classify each leaf
+-- identically.  Collected: if-conds, let-RHSs, block prefixes, scrutinees, guards,
+-- cons heads, sanctioned-call args, and whole base exprs.
+wDispMemberNonTailHeads : Prog -> List CBind -> List String -> String -> List String
+wDispMemberNonTailHeads prog binds members m = match findBind binds m
+  Some (CBind _ clauses) =>
+    flatMap (c => wDispNonTailHeads prog members (clauseBodyOf c)) clauses
+  None => []
+
+wDispNonTailHeads : Prog -> List String -> CExpr -> List String
+wDispNonTailHeads prog members (CIf c t f) = allCallHeads prog c
+  ++ wDispNonTailHeads prog members t
+  ++ wDispNonTailHeads prog members f
+wDispNonTailHeads prog members (CLet False (PVar _) rhs b) = allCallHeads prog rhs
+  ++ wDispNonTailHeads prog members b
+wDispNonTailHeads prog members (CLet False PWild rhs b) = allCallHeads prog rhs
+  ++ wDispNonTailHeads prog members b
+wDispNonTailHeads prog members (CBlock stmts) =
+  wDispStmtNonTailHeads prog members stmts
+wDispNonTailHeads prog members (CDecision scrut arms _) = allCallHeads prog scrut
+  ++ flatMap (a => wDispArmNonTailHeads prog members a) arms
+wDispNonTailHeads prog members leaf = match wDispSpineParts prog (f => contains f members) leaf
+  Some (heads, _, args) => flatMap (allCallHeads prog) heads
+    ++ flatMap (allCallHeads prog) args
+  None => match flattenApp leaf []
+    (CVar f0 _, args) =>
+      let f = canonFn prog f0
+      if contains f members && listLen args == progFnArity prog f then
+        flatMap (allCallHeads prog) args
+      else
+        allCallHeads prog leaf
+    _ => allCallHeads prog leaf
+
+wDispArmNonTailHeads : Prog -> List String -> CArm -> List String
+wDispArmNonTailHeads prog members (CArm _ guards body) = flatMap (wDispGuardHeads prog) guards
+  ++ wDispNonTailHeads prog members body
+
+wDispStmtNonTailHeads : Prog -> List String -> List CStmt -> List String
+wDispStmtNonTailHeads prog members [CSExpr ex] =
+  wDispNonTailHeads prog members ex
+wDispStmtNonTailHeads prog members (s::rest) = allCallHeadsStmt prog s
+  ++ wDispStmtNonTailHeads prog members rest
+wDispStmtNonTailHeads _ _ [] = []
 
 -- ── group-member emit ────────────────────────────────────────────────────────
 -- look up which group (if any) a fn name belongs to, and whether it is the ROOT.
@@ -5822,14 +6010,18 @@ wDispIsRoot (WDispGroup root _) name = root == name
 wDispRootOf : WDispGroup -> String
 wDispRootOf (WDispGroup root _) = root
 
+wDispMembersOf : WDispGroup -> List String
+wDispMembersOf (WDispGroup _ members) = members
+
 -- emit a group ROOT: the reset wrapper `$root` (zero the dest globals, return_call the
 -- inner loop) + the inner `$root__disploop` (the real body, leaves redirected).
-emitWDispRoot : Prog -> String -> Int -> List CClause -> <Mut> List String
-emitWDispRoot prog name arity clauses =
+emitWDispRoot : Prog -> WDispGroup -> Int -> List CClause -> <Mut> List String
+emitWDispRoot prog grp arity clauses =
+  let name = wDispRootOf grp
   let params = synthParams arity
   let loopName = wDispLoopName name
   let resetWrapper = wDispResetWrapper name loopName params arity
-  let inner = emitWDispMemberFn prog name loopName name arity clauses
+  let inner = emitWDispMemberFn prog grp loopName name arity clauses
   resetWrapper ++ inner
 
 -- the reset wrapper: (func $root (param …) (result (ref eq))
@@ -5842,11 +6034,11 @@ wDispResetWrapper name loopName params arity =
   let sig = "  (func $\{gname name}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   let reset = [
     "i32.const 1",
-    "global.set " ++ wDispFirstL,
+    "global.set " ++ wDispFirstL name,
     "ref.null eq",
-    "global.set " ++ wDispHeadL,
+    "global.set " ++ wDispHeadL name,
     "ref.null eq",
-    "global.set " ++ wDispDestL,
+    "global.set " ++ wDispDestL name,
   ]
   let forward = flatMap (p => ["local.get $" ++ gname p]) params ++ ["return_call $" ++ gname loopName]
   [sig] ++ indent (reset ++ forward) ++ ["  )"]
@@ -5855,16 +6047,18 @@ wDispResetWrapper name loopName params arity =
 -- but with the dispatch context LIVE so spine cons leaves + the root's base redirect.
 -- `emitName` is the wasm fn name to emit under (the inner loop for the root; the fn's own
 -- name for a non-root member).
-emitWDispMemberFn : Prog -> String -> String -> String -> Int -> List CClause -> <Mut> List String
-emitWDispMemberFn prog root emitName origName arity clauses =
+emitWDispMemberFn : Prog -> WDispGroup -> String -> String -> Int -> List CClause -> <Mut> List String
+emitWDispMemberFn prog grp emitName origName arity clauses =
+  let root = wDispRootOf grp
   let params = synthParams arity
   let loopName = wDispLoopName root
-  -- the dispatch context carries the ROOT's arity (for the spine-cons / bare-root-call
-  -- redirect check), NOT this member's arity — a member like scanAt is arity-6 but the
-  -- spine cons / bare call it makes to `scan` is arity-5.
+  -- the dispatch context carries the ROOT's arity (for the bare-root-call redirect
+  -- check), NOT this member's arity — a member like scanAt is arity-6 but the bare
+  -- call it makes to `scan` is arity-5.  It also carries the MEMBER SET so spine
+  -- cons leaves targeting a non-root member return_call that member directly.
   let rootArity = progFnArity prog root
   let saved = wDispCtxRef.value
-  let _ = setRef wDispCtxRef (WDispOn root loopName rootArity)
+  let _ = setRef wDispCtxRef (WDispOn root loopName rootArity (wDispMembersOf grp))
   let bodyLines = emitClausesRef prog origName params arity clauses
   let _ = setRef wDispCtxRef saved
   let allLocals = clauseLocals clauses
@@ -5877,12 +6071,21 @@ emitWDispMemberFn prog root emitName origName arity clauses =
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   [sig] ++ map ("  " ++ _) (tmcLocal ++ localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
--- the spine-cons leaf rewrite (case 2): build the Cons cell with the cons HEAD + a
--- placeholder tail, link it into $g_tmc_dest (or seed $g_tmc_head on the first cell),
--- advance the dest, then emit the spine call's ARGS + `return_call $root__disploop`.  NO
--- struct.new holds the recursion → the leaf frame dies.
-emitWDispSpineCons : Prog -> List String -> String -> CExpr -> CExpr -> <Mut> List String
-emitWDispSpineCons prog env loopName head tail =
+-- the spine-cons leaf rewrite (case 2), generalized to N cells + any group-member
+-- target: build each peeled cell in source order (lead field + placeholder tail),
+-- link it into $g_tmc_dest (or seed $g_tmc_head on the very first cell), advance the
+-- dest — the second-and-later cells naturally chain through the just-advanced dest —
+-- then emit the bottom call's ARGS + `return_call` the target (`$root__disploop` for
+-- the root, the member fn itself otherwise).  NO struct.new holds the recursion →
+-- the leaf frame dies.
+emitWDispSpineCons : Prog -> List String -> String -> String -> List CExpr -> List CExpr -> <Mut> List String
+emitWDispSpineCons prog env root target heads args = flatMap (h => emitWDispCell prog env root h) heads
+  ++ flatMap (a => emitRefExpr prog env 0 a) args
+  ++ ["return_call $" ++ gname target]
+
+-- one Cons cell of a spine-cons leaf: build, link, advance.
+emitWDispCell : Prog -> List String -> String -> CExpr -> <Mut> List String
+emitWDispCell prog env root head =
   let cellStruct = "C_Cons"
   let tag = ["i32.const " ++ intToString (ctorOrdinal prog "Cons")]
   let headInstrs = emitRefExpr prog env 0 head
@@ -5890,33 +6093,30 @@ emitWDispSpineCons prog env loopName head tail =
   let buildCell = tag ++ headInstrs ++ placeholder ++ ["struct.new $" ++ cellStruct]
   let stashNew = buildCell ++ ["local.set " ++ wTrmcTempL 0]
   -- link: first cell → head:=cell, first:=0 ; else struct.set dest.tail := cell.
-  let linkSeed = ["local.get " ++ wTrmcTempL 0, "global.set " ++ wDispHeadL,
-                  "i32.const 0", "global.set " ++ wDispFirstL]
-  let linkSet = ["global.get " ++ wDispDestL, "ref.cast (ref $" ++ cellStruct ++ ")",
+  let linkSeed = ["local.get " ++ wTrmcTempL 0, "global.set " ++ wDispHeadL root,
+                  "i32.const 0", "global.set " ++ wDispFirstL root]
+  let linkSet = ["global.get " ++ wDispDestL root, "ref.cast (ref $" ++ cellStruct ++ ")",
                  "local.get " ++ wTrmcTempL 0, "ref.as_non_null",
                  "struct.set $" ++ cellStruct ++ " 2"]
-  let linkInstrs = ["global.get " ++ wDispFirstL, "if"] ++ indent linkSeed ++ ["else"] ++ indent linkSet ++ ["end"]
-  let advance = ["local.get " ++ wTrmcTempL 0, "global.set " ++ wDispDestL]
-  -- the spine call `root <args>` → emit args + return_call the inner loop.
-  let (_, args) = flattenApp tail []
-  let argInstrs = flatMap (a => emitRefExpr prog env 0 a) args
-  stashNew ++ linkInstrs ++ advance ++ argInstrs ++ ["return_call $" ++ gname loopName]
+  let linkInstrs = ["global.get " ++ wDispFirstL root, "if"] ++ indent linkSeed ++ ["else"] ++ indent linkSet ++ ["end"]
+  let advance = ["local.get " ++ wTrmcTempL 0, "global.set " ++ wDispDestL root]
+  stashNew ++ linkInstrs ++ advance
 
 -- the root's BASE leaf (case 1): close the dest with the real value of the base (the
 -- spine's terminator, e.g. `[]` = Nil), then return $g_tmc_head.  If no cell was ever
 -- built ($g_tmc_first still 1) the whole result IS the base value.
-emitWDispBase : Prog -> List String -> CExpr -> <Mut> List String
-emitWDispBase prog env e =
+emitWDispBase : Prog -> List String -> String -> CExpr -> <Mut> List String
+emitWDispBase prog env root e =
   let valInstrs = emitRefExpr prog env 0 e
   let cellStruct = "C_Cons"
-  let storeBranch = ["global.get " ++ wDispDestL, "ref.cast (ref $" ++ cellStruct ++ ")"] ++ valInstrs ++ ["struct.set $" ++ cellStruct ++ " 2"]
-  let seedBranch = valInstrs ++ ["global.set " ++ wDispHeadL]
-  ["global.get " ++ wDispFirstL, "if"]
+  let storeBranch = ["global.get " ++ wDispDestL root, "ref.cast (ref $" ++ cellStruct ++ ")"] ++ valInstrs ++ ["struct.set $" ++ cellStruct ++ " 2"]
+  let seedBranch = valInstrs ++ ["global.set " ++ wDispHeadL root]
+  ["global.get " ++ wDispFirstL root, "if"]
     ++ indent seedBranch
     ++ ["else"]
     ++ indent storeBranch
     ++ ["end"]
-    ++ ["global.get " ++ wDispHeadL, "ref.as_non_null", "return"]
+    ++ ["global.get " ++ wDispHeadL root, "ref.as_non_null", "return"]
 
 -- layer-18: the plain-tail impl-method return_call rewrite (helper for emitAppTail's
 -- CMethod arm).  Some instrs ⇒ this tail CMethod application is a saturated self-call to
