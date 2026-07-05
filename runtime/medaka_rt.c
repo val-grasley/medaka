@@ -322,6 +322,19 @@ void mdk_flushstdout(long long w) { (void)w; fflush(stdout); }
 void mdk_print_unit(void)       { printf("()\n"); }
 
 noreturn void mdk_panic(long long w) { mdk_fwrite_str(w, stderr, 1); exit(1); }
+
+/* Integer divide/modulo by zero traps (LLVM emitter guards the divisor before
+   the hardware sdiv/srem, whose zero-divisor behaviour is UB → silent garbage +
+   exit 0).  Message matches the interpreter's runtimePanic MINUS the source
+   location (Core IR carries no loc); nonzero exit. */
+noreturn void mdk_div_zero(void) {
+  fputs("runtime error [E-DIV-ZERO]: division by zero\n", stderr);
+  exit(1);
+}
+noreturn void mdk_mod_zero(void) {
+  fputs("runtime error [E-MOD-ZERO]: modulo by zero\n", stderr);
+  exit(1);
+}
 noreturn void mdk_exit(long long tagged) { exit((int)(tagged >> 1)); }
 
 /* Concatenate a built-in List String (native extern catalog slice 5).
@@ -738,11 +751,17 @@ long long mdk_num_mul(long long l, long long r) {
   return mdk_box_float(((double *)l)[1] * ((double *)r)[1]);
 }
 long long mdk_num_div(long long l, long long r) {
-  if (mdk_is_int(l)) return (((l >> 1) / (r >> 1)) << 1) | 1;
+  if (mdk_is_int(l)) {
+    if ((r >> 1) == 0) mdk_div_zero();
+    return (((l >> 1) / (r >> 1)) << 1) | 1;
+  }
   return mdk_box_float(((double *)l)[1] / ((double *)r)[1]);
 }
 long long mdk_num_mod(long long l, long long r) {
-  if (mdk_is_int(l)) return (((l >> 1) % (r >> 1)) << 1) | 1;
+  if (mdk_is_int(l)) {
+    if ((r >> 1) == 0) mdk_mod_zero();
+    return (((l >> 1) % (r >> 1)) << 1) | 1;
+  }
   double a = ((double *)l)[1], b = ((double *)r)[1];
   return mdk_box_float(a - b * (double)((long long)(a / b)));
 }
