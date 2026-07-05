@@ -1,0 +1,4 @@
+f x =
+  match x
+    1 => "one"
+main = println (f 2)

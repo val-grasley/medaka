@@ -5764,11 +5764,17 @@ emitDecision e env scrut arms tree =
 emitTree : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> String -> String -> Ref LTy -> CTree -> <Mut> Unit
 -- CTFail: the matrix path matched no row.  In a CHAINED single-clause tree
 -- (emitClauseChain) this is "this clause's pattern didn't match" → resume the next
--- clause via the fallthrough label; with no next clause (`""`) it is the historical
--- non-exhaustive `unreachable`/oob.  emitFallthrough emits the branch; a redundant
--- `unreachable` keeps the block well-formed when it abort()s.
+-- clause via the fallthrough label; with no next clause (`""`) it is a genuine
+-- non-exhaustive-match abort.  A bare `unreachable` here was UB (LLVM `ud2` → a
+-- silent SIGTRAP, no output); call the noreturn @mdk_nonexhaustive_match (prints
+-- `runtime error [E-NONEXHAUSTIVE-MATCH]` to stderr, exits nonzero — the
+-- interpreter's message MINUS `file:L:C:`, Core IR carrying no loc) before the
+-- `unreachable`, mirroring the div-by-zero trap.  emitFallthrough emits the branch
+-- for the chained case; the redundant `unreachable` keeps the block well-formed.
 emitTree e _ _ _ _ _ _ _ CTFail = match fallthroughLabelRef.value
-  "" => emit e "  unreachable"
+  "" =>
+    let _ = emit e "  call void @mdk_nonexhaustive_match()"
+    emit e "  unreachable"
   lbl => emit e ("  br label %" ++ lbl)
 emitTree e env root arms _ slot endL rty (CTLeaf i) =
   emitLeaf e env root arms i slot endL rty

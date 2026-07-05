@@ -335,6 +335,17 @@ noreturn void mdk_mod_zero(void) {
   fputs("runtime error [E-MOD-ZERO]: modulo by zero\n", stderr);
   exit(1);
 }
+
+/* Non-exhaustive match trap.  A compiled match whose decision tree matches no
+   arm previously terminated the block with a bare `unreachable` (LLVM `ud2` →
+   SIGTRAP, a silent signal death with no output).  The emitter now calls this
+   before the `unreachable`, matching the interpreter's runtimePanic MINUS the
+   source location (Core IR carries no loc — a located native trap is a
+   follow-on); nonzero exit. */
+noreturn void mdk_nonexhaustive_match(void) {
+  fputs("runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match\n", stderr);
+  exit(1);
+}
 noreturn void mdk_exit(long long tagged) { exit((int)(tagged >> 1)); }
 
 /* Concatenate a built-in List String (native extern catalog slice 5).
