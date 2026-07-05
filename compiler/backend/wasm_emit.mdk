@@ -379,6 +379,16 @@ lamIdRef = Ref 0
 liftedFnsRef : Ref (List (List String))
 liftedFnsRef = Ref []
 
+-- Names of lifted defines whose body is fully determined by the name (the eta-wrap
+-- ctor `$mdk_wctor_<C>` and extern `$mdk_ext_<name>` closures) — used to dedup so a
+-- ctor/extern referenced point-free at MORE THAN ONE site emits its lifted (func …)
+-- ONCE.  `noteFuncRef` already deduped the matching `(elem declare)`, but `addLifted`
+-- did not dedup the define, so a second use-site duplicated the func → "duplicate func
+-- identifier" at wasm-tools assembly (`$mdk_lamN` names are unique, so they still route
+-- through the plain `addLifted`).  Reset per program alongside `liftedFnsRef`.
+liftedNamesRef : Ref (List String)
+liftedNamesRef = Ref []
+
 funcRefsRef : Ref (List String)
 funcRefsRef = Ref []
 
@@ -681,6 +691,16 @@ freshLamId _ =
 addLifted : List String -> <Mut> Unit
 addLifted def = setRef liftedFnsRef (def::liftedFnsRef.value)
 
+-- addLifted, but keyed by a unique define name (see `liftedNamesRef`): a second call
+-- with an already-seen name is a no-op, so a point-free ctor/extern used at N sites
+-- lifts its (func …) exactly once.
+addLiftedNamed : String -> List String -> <Mut> Unit
+addLiftedNamed name def =
+  if contains name liftedNamesRef.value then ()
+  else
+    let _ = setRef liftedNamesRef (name::liftedNamesRef.value)
+    addLifted def
+
 noteFuncRef : String -> <Mut> Unit
 noteFuncRef nm =
   if contains nm funcRefsRef.value then
@@ -692,6 +712,7 @@ export emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef lamIdRef 0
   let _ = setRef liftedFnsRef []
+  let _ = setRef liftedNamesRef []
   let _ = setRef emittedDefaultsWRef []
   let _ = setRef defaultDefsWRef []
   let _ = setRef funcRefsRef []
@@ -760,6 +781,7 @@ export emitProgramGaps : CProgram -> <Mut> List String
 emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef lamIdRef 0
   let _ = setRef liftedFnsRef []
+  let _ = setRef liftedNamesRef []
   let _ = setRef emittedDefaultsWRef []
   let _ = setRef defaultDefsWRef []
   let _ = setRef funcRefsRef []
@@ -4012,7 +4034,7 @@ emitExternEtaClosure prog name =
   let arity = externArityW name
   let lamName = "$mdk_ext_" ++ name
   let _ = noteFuncRef lamName
-  let _ = addLifted (emitExternEtaDefine prog lamName name arity)
+  let _ = addLiftedNamed lamName (emitExternEtaDefine prog lamName name arity)
   [
     "ref.func " ++ lamName,
     "i32.const " ++ intToString arity,
@@ -4070,7 +4092,7 @@ emitCtorEtaClosure prog ctor =
   let arity = ctorArity prog ctor
   let lamName = "$mdk_wctor_" ++ gname ctor
   let _ = noteFuncRef lamName
-  let _ = addLifted (emitCtorEtaDefine prog lamName ctor arity)
+  let _ = addLiftedNamed lamName (emitCtorEtaDefine prog lamName ctor arity)
   [
     "ref.func " ++ lamName,
     "i32.const " ++ intToString arity,
