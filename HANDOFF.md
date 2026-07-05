@@ -27,6 +27,18 @@ viable (see below).
 
 ## What's DONE
 
+- ✅ **D1 — exe-relative stdlib discovery (`1ce178b6`).** `executablePath` extern
+  (mac `_NSGetExecutablePath` / Linux `readlink /proc/self/exe`, realpath-resolved)
+  + exe-relative `MEDAKA_ROOT`/`MEDAKA_EMITTER` defaults. A relocated `medaka`
+  finds its own stdlib; in-repo build unchanged. (File/env externs are native-only
+  — no interpreter arm; `medaka_cli.mdk` always compiles native.)
+- ✅ **D2 Track 1 — big-stack pthread (`595b303e`, merge `40de5955`, seed re-mint
+  `f5243120`).** Emitted `@main`→`@mdk_program_main`; `medaka_rt.c` owns `int main`
+  spawning a **256MB GC-aware worker thread** (`GC_pthread_create` + `GC_THREADS`
+  — a raw pthread would break Boehm's stack scanning). Dropped `-Wl,-stack_size`
+  everywhere, added `-pthread`/`-lm`. **Linux spike PASSES at the default 8MB
+  stack**; macOS byte-identical; fixpoint C3a/C3b YES; cold bootstrap C3a PASS.
+  Correctness-complete for ALL recursion shapes (incl. tree-depth) on both platforms.
 - ✅ **D0 Linux native-build spike — GREEN.** Full pipeline builds + runs on a
   Docker `ubuntu:24.04` aarch64 container: cold-bootstrap from the seed →
   `medaka` CLI → `medaka run` and `medaka build` a hello program → native ELF that
@@ -51,25 +63,14 @@ i.e. the token-spine cons build. This is exactly the WasmGC `b′`
 Everything below is bounded/mechanical except the TMC port (a real but
 well-scoped codegen change). None of it gates on the others except as noted.
 
-1. **D2 Track 1 — big-stack `pthread` (0.1.0 baseline, ~hours). START HERE.**
-   Run the compiler on a spawned thread with a 256MB stack on BOTH platforms;
-   drop the Mach-O `-Wl,-stack_size` flag; add `-lm` to all clang link lines;
-   make GC/clang detection Linux-clean. Lands in: `runtime/medaka_rt.c` (thread
-   entry / stack provisioning) + `test/build_native_medaka.sh` +
-   `test/bootstrap_from_seed.sh` + `compiler/driver/build_cmd.mdk` (link flags).
-   ⚠️ Touching `medaka_rt.c` / the emitter link path can perturb emitted IR →
-   expect a **seed re-mint + fixpoint re-validation** (`test/refresh_seed.sh`);
-   batch it. Verify on the Linux harness: `sh dist/linux-spike/run.sh spike`
-   should pass at the DEFAULT 8MB once the compiler self-provisions its stack.
+1. ✅ **D2 Track 1 (big-stack pthread) — DONE 2026-07-04.** See What's DONE above.
+2. ✅ **D1 (exe-relative discovery) — DONE 2026-07-04.** See What's DONE above.
 
-2. **D1 — exe-relative stdlib discovery (mechanical).** Add an executable-path
-   primitive (`_NSGetExecutablePath` mac / `readlink /proc/self/exe` linux) and
-   default `MEDAKA_ROOT` to a path relative to the binary, so a relocated `medaka`
-   finds its own stdlib. Collapses the two-binary `MEDAKA_EMITTER` ritual too.
-   Lands in: `stdlib/runtime.mdk` (extern decl) + `compiler/eval/eval.mdk` (interp
-   impl) + native path + `compiler/driver/medaka_cli.mdk` (the `MEDAKA_ROOT`
-   defaulting). Use the `add-primitive` skill. Also a seed re-mint. This is the
-   keystone relocatability fix — needed by ANY distribution (interpreter too).
+   **→ START HERE NEXT:** with D1 + D2 Track 1 landed, native build is
+   correctness-complete on mac+Linux. The remaining ceiling is **packaging** (D3/D4
+   below) — that's the path to an actual downloadable binary. Track 2 (TMC) and
+   Track 3 (recursion guard) are independent robustness follow-ups, not launch
+   blockers. The floor doc items (W2–W9) are parallel and don't need the build work.
 
 3. **D3/D4 — install layout + Homebrew + Linux tarball + release CI matrix.**
    Package manager handles clang/libgc; tagged CI produces mac+linux artifacts.

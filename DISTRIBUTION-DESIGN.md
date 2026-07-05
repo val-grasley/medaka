@@ -168,21 +168,31 @@ the observed case. This is what splits the fix cleanly into two tracks (D2).
 
 - **D0 — Linux build spike** (§3). ✅ **DONE 2026-07-04 — GREEN.** Native build
   confirmed viable on Linux; the deep-recursion stack is required but bounded.
-- **D1 — exe-relative stdlib discovery.** exe-path primitive + `MEDAKA_ROOT`
-  default; collapses the two-binary env ritual. Verify a `medaka` moved outside
-  the repo still `run`/`check`/`build`s.
+- **D1 — exe-relative stdlib discovery. ✅ DONE 2026-07-04 (`1ce178b6`).** Added
+  the `executablePath : Unit -> <Env> String` extern (mac `_NSGetExecutablePath`,
+  Linux `readlink /proc/self/exe`, both realpath-resolved) + defaulted
+  `MEDAKA_ROOT`/`MEDAKA_EMITTER` exe-relative in `medaka_cli.mdk`/`build_cmd.mdk`
+  (explicit env still wins). A `medaka` copied outside the repo `run`/`check`/`build`s
+  with no env vars; in-repo dev build unchanged. NOTE: the file/env/exec extern
+  family is native-only (unbound under `medaka run`'s pure interpreter) — no
+  `eval.mdk` arm needed since `medaka_cli.mdk` is always compiled natively.
 - **D2 — platform link/stack handling (TWO TRACKS, decoupled).** Make `medaka
   build` (and the compiler's own build) work on Linux; keep macOS byte-identical.
   Measured need: ~32MB @ -O2 / ~128MB @ -O0 (8MB default segfaults; -O2 frame
   shrink helps ~4× but does NOT clear 8MB). Decided approach (both, on separate
   timelines — the TMC track does NOT retire the stack track, so the release is not
   serialized behind it):
-  - **Track 1 (0.1.0 baseline, hours): big-stack `pthread`.** Run the compiler on
-    a spawned thread with a chosen stack (256MB, comfortable over the measured
-    32MB) on BOTH platforms → drop the Mach-O `-Wl,-stack_size` flag entirely,
-    unify the backends, correctness-complete for ALL recursion shapes incl.
-    tree-depth. Plus: add `-lm` to all link lines. Mandatory regardless of TMC
-    (the tree-depth floor can only be handled by a stack, not TMC).
+  - **Track 1 (0.1.0 baseline): big-stack `pthread`. ✅ DONE 2026-07-04
+    (`595b303e` + merge `40de5955`; seed re-mint `f5243120`).** The emitted entry
+    `@main` → `@mdk_program_main`; `runtime/medaka_rt.c` now owns `int main`, which
+    spawns a **256MB-stack worker thread via `GC_pthread_create`** (`GC_THREADS` +
+    thread-aware Boehm so the worker's stack is a scanned GC root — a raw
+    `pthread_create` would silently corrupt the heap) running `mdk_program_main`.
+    Dropped `-Wl,-stack_size` from all six link sites (build_cmd + 5 build scripts);
+    added `-pthread` + `-lm`. **Verified: Linux spike PASSES at the default 8MB
+    stack** (the compiler self-provisions), macOS byte-identical (`diff_compiler_llvm`
+    194/0, `_build` 53/0), fixpoint C3a/C3b YES, cold `bootstrap_from_seed` C3a PASS.
+    Correctness-complete for ALL recursion shapes incl. tree-depth.
   - **Track 2 (fast-follow, own workstream): port WasmGC `b′` dispatch-TMC to
     native.** The backtrace (§3a) proves the observed overflow is 100% the
     `b′`-shaped lexer token-spine — one shape, one file (`lexer.mdk`), already
