@@ -75,6 +75,7 @@ through `failP`/`PErr`. For coding purposes they collapse to:
 | general parse error | every `failP "expected …"` (~34 messages) | parse |
 | unexpected EOF | `advanceR TEof` → `"unexpected end of input"` (`:178`) | unexpected-eof |
 | `/=` typo | `"unexpected '/=' (did you mean '!=' …)"` (`:3508`) | bad-neq-operator |
+| foreign-syntax pre-scans | `parseResult` chain: `/* */` block comment, `if … { }` brace block, `for`/`while` loop, `def`/`function` header, trailing `;` (each a pure token scan that fires only on never-valid Medaka shapes, located at the offending token) | brace-block / for-while / def-keyword / block-comment / semicolon |
 
 (The ~34 `expected …` messages stay distinct *prose* under one code — they are
 context, not separate categories. If finer codes are later wanted they can split
@@ -160,6 +161,8 @@ kebab-case; never renumber (append only).
 | `L-BAD-CHAR` | unexpected character |
 | `L-HS-LAMBDA` | stray `\` (Haskell lambda `\x -> e`; suggest `x => e`) |
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
+| `L-BLOCKCOMMENT` | `/* … */` C-style block comment (suggest `{- … -}` block / `--` line) |
+| `L-SEMICOLON` | trailing `;` statement terminator (suggest newline/indentation separation) |
 
 ### Parse
 | Code | Kind |
@@ -169,6 +172,9 @@ kebab-case; never renumber (append only).
 | `P-BAD-NEQ` | `/=` used for not-equal (suggest `!=`) |
 | `P-HS-CASE` | Haskell `case … of` (suggest `match e` with `pattern => body` arms) |
 | `P-HS-SIG` | Haskell `f :: T` type-signature syntax (`::` is cons; suggest `f : T`) |
+| `P-BRACE-BLOCK` | C-style `{ … }` brace block on `if` (suggest `then`/`else` + indentation) |
+| `P-FOR-WHILE` | foreign `for`/`while` loop (suggest recursion or list functions) |
+| `P-DEF-KEYWORD` | foreign `def`/`function` header (suggest `f x = …`) |
 
 ### Resolve (one per `ResError` constructor)
 | Code | Constructor |

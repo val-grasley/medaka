@@ -69,5 +69,48 @@ case "$out" in
   *) echo "FAIL mut_array_push: expected 'ok', got [$out]"; fail=1 ;;
 esac
 
+# PARSE-ERROR-LOCATION Stage 1 (caret) + Stage 2 (foreign-syntax hints).
+# Each foreign-syntax mistake is located (dodging the old `1:0` collapse) with a
+# beginner-grade hint, rendered through the shared caret block (a `^` line).
+
+# Stage 2: C-style brace block on `if` — located at the `{` (col 15) with the hint,
+# AND the Stage-1 caret block (the `^` line proves the snippet renderer fired).
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/brace_block_if.mdk" 2>&1)"
+case "$out" in
+  *":1:15: unexpected '{' — Medaka has no brace blocks"*"^"*)
+    echo "ok   brace_block_if (located brace hint + caret)" ;;
+  *) echo "FAIL brace_block_if: got [$out]"; fail=1 ;;
+esac
+
+# Stage 2: `for` loop — located at the `for` keyword with the recursion hint.
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/for_loop.mdk" 2>&1)"
+case "$out" in
+  *"Medaka has no 'for' loops"*) echo "ok   for_loop (located for hint)" ;;
+  *) echo "FAIL for_loop: got [$out]"; fail=1 ;;
+esac
+
+# Stage 2: `def` function header — located at the `def` keyword with the hint.
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/def_keyword.mdk" 2>&1)"
+case "$out" in
+  *":1:0: Medaka has no 'def'"*) echo "ok   def_keyword (located def hint)" ;;
+  *) echo "FAIL def_keyword: got [$out]"; fail=1 ;;
+esac
+
+# Stage 2: `/* … */` block comment — located at the `/` with the `{- -}`/`--` hint.
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/block_comment.mdk" 2>&1)"
+case "$out" in
+  *"Medaka has no '/* … */' block comments"*)
+    echo "ok   block_comment (located block-comment hint)" ;;
+  *) echo "FAIL block_comment: got [$out]"; fail=1 ;;
+esac
+
+# Stage 2: trailing `;` statement terminator — located at the `;` with the hint.
+out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/semicolon_stmt.mdk" 2>&1)"
+case "$out" in
+  *"Medaka has no statement terminator ';'"*)
+    echo "ok   semicolon_stmt (located semicolon hint)" ;;
+  *) echo "FAIL semicolon_stmt: got [$out]"; fail=1 ;;
+esac
+
 [ $fail -eq 0 ] && echo "all native_fixtures pass" || echo "native_fixtures FAILED"
 exit $fail
