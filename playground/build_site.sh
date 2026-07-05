@@ -4,12 +4,15 @@
 # Produces playground/site/ containing exactly what a static CDN needs:
 #   index.html
 #   main.js
+#   editor.js  medaka_lang.js  medaka_tokenizer.js  diagnostics_map.js
+#   language-worker.js
 #   compile.mjs
 #   compiler-worker.js
 #   worker.js
 #   vendor/wat2wasm/wat2wasm.js
 #   vendor/wat2wasm/wat2wasm_bg.wasm
 #   vendor/wat2wasm/wat2wasm.d.ts   (if present)
+#   vendor/codemirror/codemirror.js
 #   dist/playground.wasm
 #   dist/runtime.mdk
 #   dist/core.mdk
@@ -39,20 +42,28 @@ fi
 # ── Assemble site/ ───────────────────────────────────────────────────────────
 echo "[build_site] assembling $SITE ..."
 rm -rf "$SITE"
-mkdir -p "$SITE/vendor/wat2wasm" "$SITE/dist"
+mkdir -p "$SITE/vendor/wat2wasm" "$SITE/vendor/codemirror" "$SITE/dist"
 
-# Static page + JS glue
-cp "$SCRIPT_DIR/index.html"         "$SITE/"
-cp "$SCRIPT_DIR/main.js"            "$SITE/"
-cp "$SCRIPT_DIR/compile.mjs"        "$SITE/"
-cp "$SCRIPT_DIR/compiler-worker.js" "$SITE/"
-cp "$SCRIPT_DIR/worker.js"          "$SITE/"
+# Static page + JS glue (editor modules included)
+cp "$SCRIPT_DIR/index.html"          "$SITE/"
+cp "$SCRIPT_DIR/main.js"             "$SITE/"
+cp "$SCRIPT_DIR/editor.js"           "$SITE/"
+cp "$SCRIPT_DIR/medaka_lang.js"      "$SITE/"
+cp "$SCRIPT_DIR/medaka_tokenizer.js" "$SITE/"
+cp "$SCRIPT_DIR/diagnostics_map.js"  "$SITE/"
+cp "$SCRIPT_DIR/language-worker.js"  "$SITE/"
+cp "$SCRIPT_DIR/compile.mjs"         "$SITE/"
+cp "$SCRIPT_DIR/compiler-worker.js"  "$SITE/"
+cp "$SCRIPT_DIR/worker.js"           "$SITE/"
 
 # Committed wat2wasm assembler blob
 cp "$SCRIPT_DIR/vendor/wat2wasm/wat2wasm.js"      "$SITE/vendor/wat2wasm/"
 cp "$SCRIPT_DIR/vendor/wat2wasm/wat2wasm_bg.wasm" "$SITE/vendor/wat2wasm/"
 [ -f "$SCRIPT_DIR/vendor/wat2wasm/wat2wasm.d.ts" ] && \
   cp "$SCRIPT_DIR/vendor/wat2wasm/wat2wasm.d.ts" "$SITE/vendor/wat2wasm/"
+
+# Committed CodeMirror 6 single-ESM bundle (see build_editor.sh)
+cp "$SCRIPT_DIR/vendor/codemirror/codemirror.js" "$SITE/vendor/codemirror/"
 
 # Compiler wasm + stdlib sources
 cp "$DIST/playground.wasm" "$SITE/dist/"

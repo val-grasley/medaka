@@ -1,0 +1,6 @@
+# Regenerable CodeMirror vendoring scratch (build_editor.sh recreates it).
+# The bundle it produces IS committed at vendor/codemirror/codemirror.js.
+/editor-build/
+
+# Any stray npm installs under playground/.
+node_modules/

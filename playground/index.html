@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Medaka Playground</title>
+  <!-- Resolve the `codemirror` bare specifier to the vendored single-ESM bundle
+       (no serve-time bundler; mirrors how wat2wasm is vendored). Must precede
+       any module script. -->
+  <script type="importmap">
+  { "imports": { "codemirror": "./vendor/codemirror/codemirror.js" } }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -103,23 +109,21 @@
     #run-btn:hover:not(:disabled) { background: #f0cd8e; }
     #run-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
 
+    /* CodeMirror 6 host — the .cm-editor fills this bordered box. */
     #editor {
       flex: 1;
       width: 100%;
+      min-height: 0;
       background: #0d1117;
-      color: #c9d1d9;
       border: 1px solid #30363d;
       border-radius: 4px;
-      padding: 10px;
-      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-      font-size: 0.88rem;
-      line-height: 1.55;
-      resize: none;
-      outline: none;
-      tab-size: 2;
+      overflow: hidden;
     }
 
-    #editor:focus { border-color: #58a6ff; }
+    #editor:focus-within { border-color: #58a6ff; }
+
+    #editor .cm-editor { height: 100%; }
+    #editor .cm-editor.cm-focused { outline: none; }
 
     .output-row {
       display: flex;
@@ -183,13 +187,7 @@
         <button id="run-btn">Run</button>
         <span id="status" class="status"></span>
       </div>
-      <textarea id="editor" spellcheck="false" autocorrect="off" autocapitalize="off">-- Medaka playground — edit me and hit Run!
-
-main =
-  println (sum [1, 2, 3, 4, 5])
-  println (map (x => x * 2) [1, 2, 3, 4, 5])
-  println "hello from Medaka!"
-</textarea>
+      <div id="editor"></div>
     </div>
 
     <div class="output-row">
@@ -208,6 +206,6 @@ main =
     </div>
   </div>
 
-  <script src="main.js"></script>
+  <script type="module" src="main.js"></script>
 </body>
 </html>
