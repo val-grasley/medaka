@@ -64,7 +64,10 @@ for f in "$ROOT"/test/diff_fixtures/*.mdk; do
   golden="$GOLD/check/$n.golden"
   [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL check/%s (no golden)\n' "$name"; continue; }
   want="$(cat "$golden")"
-  got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
+  # --types: preserve the full prelude+user scheme dump these goldens capture
+  # (bare `check`, since audit #6, filters the dump down to the file's own
+  # bindings — see checkRoute in medaka_cli.mdk).
+  got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check --types "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
   if [ "$got" = "$want" ]; then pass=$((pass+1)); printf 'ok   check/%s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL check/%s\n' "$name"
     printf '  want: %s\n  got:  %s\n' "$want" "$got"; fi

@@ -44,7 +44,7 @@ import support.util.{
   sortUniqS,
 }
 import support.path.{baseOf, chopExt}
-import frontend.ast.{Decl(..), Expr(..), Loc(..), Pat}
+import frontend.ast.{Decl(..), Expr(..), Loc(..), Pat, LetBind(..)}
 import frontend.parser.{
   parse,
   parseLocated,
@@ -221,6 +221,7 @@ runCheckCmd : List String -> <IO, Mut, Panic> Unit
 runCheckCmd argv =
   let jsonMode = hasFlag "--json" argv
   let allowInternal = hasFlag "--allow-internal" argv
+  let typesMode = hasFlag "--types" argv
   let argv2 = dropFlags argv
   match argv2
     [target] =>
@@ -257,9 +258,9 @@ runCheckCmd argv =
                   exit 1
                 Ok mods =>
                   let trusted = stdlibTrustedMods target roots stdlibDir mods
-                  checkRoute allowInternal trusted rsrc csrc tsrc target mods
+                  checkRoute typesMode allowInternal trusted rsrc csrc tsrc target mods
     _ =>
-      let _ = ePutStrLn "usage: medaka check [--json] [--allow-internal] <file.mdk>"
+      let _ = ePutStrLn "usage: medaka check [--json] [--types] [--allow-internal] <file.mdk>"
       exit 1
 -- G1: print the report (byte-identical stdout for no-import files:
 -- diff_native_cli gate), then gate the EXIT CODE on the error predicate
@@ -293,8 +294,18 @@ moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
 -- import-resolving report.  `mods` is dependency-first, entry last.
 -- `target` is passed for positioned error output (Stage-A: file:line:col: message).
-checkRoute : Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
+--
+-- 0.1.0 preview UX (audit #6): bare `medaka check` on a clean single-file
+-- program used to dump the ~120-line prelude `=== TYPES ===` scheme corpus
+-- ahead of the user's own bindings — noisy and beginner-unfriendly. `typesMode`
+-- (the `--types` flag) opts back into that full dump, byte-identical to the
+-- historical behaviour (preserves the diff_native_cli goldens, which now pass
+-- `--types`). Bare `check` instead keeps only the lines naming one of the
+-- user's OWN top-level bindings (`userSchemeLines`) — filtering happens HERE,
+-- CLI-only, so the probe-driven goldens (check_main.mdk et al., which call
+-- `runCheck`/`runCheckModules` directly) keep dumping unconditionally.
+checkRoute : Bool -> Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+checkRoute typesMode allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
   let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
@@ -306,7 +317,9 @@ checkRoute allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
       -- lines and re-emit them from `diags` (which carries the real Loc the
       -- --json path already reports).  See ERROR-QUALITY.md (Located dimension).
       let warns = filter isDiagWarn diags
-      let _ = putStr (stripWarningLines (runCheck rsrc csrc tsrc))
+      let dump = stripWarningLines (runCheck rsrc csrc tsrc)
+      let report = if typesMode then dump else userSchemeLines decls dump
+      let _ = putStr report
       -- 0.1.0 beginner-footgun warning (main-shape, see below): reuse the same
       -- elaborateModules the multi-module route calls just for mainSchemeRef —
       -- runCheck's own single-file path never populates it.
@@ -316,7 +329,7 @@ checkRoute allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
-checkRoute allowInternal trusted rsrc csrc tsrc target mods =
+checkRoute typesMode allowInternal trusted rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -433,6 +446,7 @@ dropFlags [] = []
 dropFlags ("--json"::rest) = dropFlags rest
 dropFlags ("--release"::rest) = dropFlags rest
 dropFlags ("--allow-internal"::rest) = dropFlags rest
+dropFlags ("--types"::rest) = dropFlags rest
 dropFlags (x::rest) = x :: dropFlags rest
 
 -- True if the flag appears anywhere in argv.
@@ -543,6 +557,33 @@ isDiagWarn d = not (isDiagError d)
 stripWarningLines : String -> String
 stripWarningLines s =
   joinNl (filter (l => not (startsWith "Warning: " l)) (splitNl s))
+
+-- 0.1.0 preview UX (audit #6): filter `runCheck`'s "name : scheme" dump down to
+-- just the lines naming one of THIS file's own top-level bindings, dropping the
+-- prelude's ~120 always-present schemes (eq/append/map/println/…). Each kept
+-- line's name is matched by exact "\{name} : " prefix (scheme lines are never
+-- "Warning: …" — those are already stripped by `stripWarningLines` upstream).
+userSchemeLines : List Decl -> String -> String
+userSchemeLines decls report =
+  let names = topLevelNames decls
+  joinNl (filter
+    (l => anyList (n => startsWith (n ++ " : ") l) names)
+    (splitNl report))
+
+-- Every name a top-level Decl of this file introduces into value scope,
+-- regardless of `pub` (single-file `check` has no module boundary to gate on).
+topLevelNames : List Decl -> List String
+topLevelNames [] = []
+topLevelNames ((DAttrib _ d)::rest) = topLevelNames [d] ++ topLevelNames rest
+topLevelNames ((DFunDef _ n _ _)::rest) = n :: topLevelNames rest
+topLevelNames ((DTypeSig _ n _)::rest) = n :: topLevelNames rest
+topLevelNames ((DExtern _ n _)::rest) = n :: topLevelNames rest
+topLevelNames ((DLetGroup _ binds)::rest) = map letBindName binds
+  ++ topLevelNames rest
+topLevelNames (_::rest) = topLevelNames rest
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
 
 -- Re-render warning Diags LOCATED (file:L:C: + caret) to STDERR, exactly like
 -- errors (ppDiagCliSrc).  Warnings do not change the exit code (stays 0).
