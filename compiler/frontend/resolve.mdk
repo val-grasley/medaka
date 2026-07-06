@@ -938,7 +938,7 @@ useStubNames (UseWild _) = []
 useStubNames (UseAlias _ a) = [a]
 
 memberName : UseMember -> String
-memberName (UseMember n _) = n
+memberName (UseMember n _ _) = n
 
 useModId : UsePath -> String
 useModId (UseName ns) =
@@ -1427,9 +1427,10 @@ importedNamesMM (UseName ns) exp =
     ([nm], pubErr exp nm)
   else ([], [])
 importedNamesMM (UseGroup _ members) exp =
-  let names = flatMap (expandMemberNames exp) members
+  let namedLocs = flatMap (expandMemberNames exp) members
+  let names = map fst namedLocs
   let expandErrs = flatMap (expandMemberErrs exp) members
-  (names, expandErrs ++ flatMap (pubErr exp) names)
+  (names, expandErrs ++ flatMap (pubErrLoc exp) namedLocs)
 importedNamesMM (UseWild _) exp =
   (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
 importedNamesMM (UseAlias _ a) exp = ([a], [])
@@ -1441,21 +1442,33 @@ pubErr exp n =
   else
     [PrivateNameAccess n exp.modId None]
 
+-- Like pubErr but carries the offending member's own source Loc (from a
+-- UseGroup member) so the diagnostic squiggles just that name, not the whole
+-- import statement (RESOLVER-DIAG-LOCATION-DESIGN.md F3 follow-up).
+pubErrLoc : ModuleExports -> (String, Loc) -> List ResError
+pubErrLoc exp (n, loc) =
+  if isPubExp exp n then
+    []
+  else
+    [PrivateNameAccess n exp.modId (Some loc)]
+
 -- expand_member: `T(..)` → the type plus its exported ctors; a plain member is
 -- itself.  `T(..)` on an abstractly-exported type is a NoExportedConstructors.
-expandMemberNames : ModuleExports -> UseMember -> List String
-expandMemberNames _ (UseMember name False) = [name]
-expandMemberNames exp (UseMember name True) = match typeCtorsOf name exp
-  Some ctors => name::ctors
-  None => [name]
+-- Each expanded name carries the source member's own Loc (ctors expanded from
+-- `T(..)` inherit T's member loc).
+expandMemberNames : ModuleExports -> UseMember -> List (String, Loc)
+expandMemberNames _ (UseMember name False loc) = [(name, loc)]
+expandMemberNames exp (UseMember name True loc) = match typeCtorsOf name exp
+  Some ctors => (name, loc) :: map (c => (c, loc)) ctors
+  None => [(name, loc)]
 
 expandMemberErrs : ModuleExports -> UseMember -> List ResError
-expandMemberErrs _ (UseMember _ False) = []
-expandMemberErrs exp (UseMember name True) = match typeCtorsOf name exp
+expandMemberErrs _ (UseMember _ False _) = []
+expandMemberErrs exp (UseMember name True loc) = match typeCtorsOf name exp
   Some _ => []
   None =>
     if contains name exp.expTypes then
-      [NoExportedConstructors name exp.modId None]
+      [NoExportedConstructors name exp.modId (Some loc)]
     else
       []
 
@@ -1604,15 +1617,22 @@ realImport exp path loc =
     iaErrors = map (withResErrorLoc loc) errs,
   }
 
--- Attach a real Loc to a ResError that was constructed with `None` (the
--- privacy/abstract-ctor errors importedNamesMM/expandMemberErrs raise carry no
--- loc of their own — they only see the ModuleExports, not the importing DUse's
--- span).  Only the two variants that chain can actually produce are handled;
--- any other error passes through unchanged.
+-- Attach a real Loc to a ResError that was constructed with `None` (some
+-- privacy/abstract-ctor errors — e.g. from the bare `UseName` case in
+-- importedNamesMM — carry no loc of their own, only the ModuleExports, not
+-- the importing DUse's span). Errors from a UseGroup member (pubErrLoc /
+-- expandMemberErrs) already carry that member's own `Some` loc — PRESERVE it
+-- rather than clobbering with the whole-statement loc, so the diagnostic
+-- squiggles just the offending name.
 withResErrorLoc : Loc -> ResError -> ResError
-withResErrorLoc loc (PrivateNameAccess n m _) = PrivateNameAccess n m (Some loc)
-withResErrorLoc loc (NoExportedConstructors n m _) =
+withResErrorLoc loc (PrivateNameAccess n m None) =
+  PrivateNameAccess n m (Some loc)
+withResErrorLoc _ (PrivateNameAccess n m (Some l)) =
+  PrivateNameAccess n m (Some l)
+withResErrorLoc loc (NoExportedConstructors n m None) =
   NoExportedConstructors n m (Some loc)
+withResErrorLoc _ (NoExportedConstructors n m (Some l)) =
+  NoExportedConstructors n m (Some l)
 withResErrorLoc _ e = e
 
 -- field-ownership pairs whose owner is an exported type/ctor (copied into scope
@@ -1807,7 +1827,7 @@ reExpEffectsFrom _ _ = []
 reexportNamesOf : UsePath -> ModuleExports -> List String
 reexportNamesOf (UseName ns) _ = if listLen ns > 1 then [lastOf ns] else []
 reexportNamesOf (UseGroup _ members) src =
-  flatMap (expandMemberNames src) members
+  map fst (flatMap (expandMemberNames src) members)
 reexportNamesOf (UseWild _) src = src.expValues
   ++ src.expTypes
   ++ src.expCtors

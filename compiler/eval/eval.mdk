@@ -2398,7 +2398,7 @@ bindNames (n::rest) exports = match lookupAssoc n exports
   None => bindNames rest exports
 
 memberNm : UseMember -> String
-memberNm (UseMember n _) = n
+memberNm (UseMember n _ _) = n
 
 useModuleId : UsePath -> String
 useModuleId (UseName ns) =

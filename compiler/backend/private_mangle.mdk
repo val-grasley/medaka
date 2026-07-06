@@ -250,7 +250,7 @@ useCtorPathEntries ctorExportsPerUnit path =
 -- all of type `name`'s ctors; `UseMember name False` enters `name` itself iff it is
 -- one of M's exported ctors.
 ctorMemberEntry : String -> List (String, List String) -> UseMember -> List (String, String)
-ctorMemberEntry mid typeEntries (UseMember name wild) =
+ctorMemberEntry mid typeEntries (UseMember name wild _) =
   if wild then match lookupCtorTypeEntry name typeEntries
     Some ctors => flatMap (originCtorEntry mid) ctors
     None => []
@@ -373,7 +373,7 @@ usePathEntries exportsPerUnit path =
 
 -- a UseGroup member → entry if it names an exported fn of the origin module.
 memberEntry : String -> List String -> UseMember -> List (String, String)
-memberEntry mid exports (UseMember n _) = originEntry mid exports n
+memberEntry mid exports (UseMember n _ _) = originEntry mid exports n
 
 -- bare name `n` → `<mid>__<n>` iff `n` is an exported fn of module `mid`.
 originEntry : String -> List String -> String -> List (String, String)
