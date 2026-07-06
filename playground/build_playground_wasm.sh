@@ -65,9 +65,19 @@ rm -f "$WAT"   # keep dist lean; WAT is huge and regenerable
 cp "$RUNTIME" "$DIST/runtime.mdk"
 cp "$CORE"    "$DIST/core.mdk"
 
+# Pure / wasm-safe stdlib modules the browser bundles so `import <mod>` works.
+# EXCLUDED on purpose (native-only externs that trap/LinkError on wasm):
+#   math (libm), fs (file IO), net (sockets), time (<Clock>), io (file/stdin),
+#   test (runExpectation).  Keep this list in sync with EXTRA_MODULES in main.js.
+EXTRA_MODULES="array async base64 bytebuilder byteparser hash_map hash_set hex \
+json list map mut_array nonempty option path result set string toml validation"
+for m in $EXTRA_MODULES; do
+  cp "$ROOT/stdlib/$m.mdk" "$DIST/$m.mdk"
+done
+
 echo
 echo "artifacts in $DIST:"
-for f in playground.wasm runtime.mdk core.mdk; do
+for f in playground.wasm runtime.mdk core.mdk $(for m in $EXTRA_MODULES; do echo "$m.mdk"; done); do
   [ -f "$DIST/$f" ] && printf '  %-16s %10d bytes\n' "$f" "$(wc -c < "$DIST/$f")"
 done
 echo "DONE"

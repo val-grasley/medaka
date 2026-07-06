@@ -138,7 +138,7 @@ let mainThreadWasm = null;
 async function langAssets() {
   const a = await loadAssets();
   if (!mainThreadWasm) mainThreadWasm = new Uint8Array(a.wasm);
-  return { wasm: mainThreadWasm, stdlib: { runtime: a.runtime, core: a.core } };
+  return { wasm: mainThreadWasm, stdlib: { runtime: a.runtime, core: a.core, extra: a.extra } };
 }
 
 // Warm the main-thread compiler module once (a throwaway hover) so V8 tiers it up
@@ -253,23 +253,37 @@ function applyDiagnostics(files) {
   setSquiggles(view, files || []);
 }
 
+// Pure / wasm-safe stdlib modules bundled into the vfs so `import <mod>` works
+// in the browser.  EXCLUDED (native-only externs that trap/LinkError on wasm):
+// math, fs, net, time, io, test.  Keep in sync with EXTRA_MODULES in
+// build_playground_wasm.sh (these are fetched from dist/<id>.mdk).
+const EXTRA_MODULES = [
+  'array', 'async', 'base64', 'bytebuilder', 'byteparser', 'hash_map',
+  'hash_set', 'hex', 'json', 'list', 'map', 'mut_array', 'nonempty',
+  'option', 'path', 'result', 'set', 'string', 'toml', 'validation',
+];
+
 // ── Asset loader ──────────────────────────────────────────────────────────────
 async function loadAssets() {
   if (cachedAssets) return cachedAssets;
   if (assetsLoading) return assetsLoading;
 
   assetsLoading = (async () => {
-    const [wasmResp, runtimeResp, coreResp, wat2wasmResp] = await Promise.all([
+    const coreResps = await Promise.all([
       fetch('dist/playground.wasm'),
       fetch('dist/runtime.mdk'),
       fetch('dist/core.mdk'),
       fetch('vendor/wat2wasm/wat2wasm_bg.wasm'),
     ]);
+    const [wasmResp, runtimeResp, coreResp, wat2wasmResp] = coreResps;
+    const extraResps = await Promise.all(
+      EXTRA_MODULES.map((m) => fetch('dist/' + m + '.mdk')));
     for (const [name, r] of [
       ['dist/playground.wasm', wasmResp],
       ['dist/runtime.mdk',     runtimeResp],
       ['dist/core.mdk',        coreResp],
       ['vendor/wat2wasm/wat2wasm_bg.wasm', wat2wasmResp],
+      ...EXTRA_MODULES.map((m, i) => ['dist/' + m + '.mdk', extraResps[i]]),
     ]) {
       if (!r.ok) throw new Error('failed to fetch ' + name + ' (' + r.status + ')');
     }
@@ -279,7 +293,10 @@ async function loadAssets() {
       coreResp.text(),
       wat2wasmResp.arrayBuffer(),
     ]);
-    cachedAssets = { wasm, runtime, core, wat2wasmBytes };
+    const extraTexts = await Promise.all(extraResps.map((r) => r.text()));
+    const extra = {};
+    EXTRA_MODULES.forEach((m, i) => { extra[m] = extraTexts[i]; });
+    cachedAssets = { wasm, runtime, core, wat2wasmBytes, extra };
     assetsLoading = null;
     return cachedAssets;
   })();
@@ -316,7 +333,7 @@ async function initLanguageService() {
   const w = getLanguageWorker();
   w.postMessage({
     type: 'init',
-    assets: { wasm: assets.wasm, runtime: assets.runtime, core: assets.core },
+    assets: { wasm: assets.wasm, runtime: assets.runtime, core: assets.core, extra: assets.extra },
   });
   // Kick an initial analyze once the worker signals ready.
   scheduleAnalyze();

@@ -24,7 +24,7 @@ let wat2wasmReady = false;
 
 self.onmessage = async function(e) {
   const { source, assets } = e.data;
-  const { wasm: wasmBuffer, runtime, core, wat2wasmBytes } = assets;
+  const { wasm: wasmBuffer, runtime, core, wat2wasmBytes, extra } = assets;
 
   // Initialize the WAT assembler on first use (pass bytes directly to avoid a
   // fetch; uses the single-object form to suppress the deprecation warning).
@@ -43,7 +43,7 @@ self.onmessage = async function(e) {
   try {
     compileResult = await compile(source, {
       wasm: new Uint8Array(wasmBuffer),
-      stdlib: { runtime, core },
+      stdlib: { runtime, core, extra },
     });
   } catch (err) {
     self.postMessage({ ok: false, diagnostics: synthErr('compile error: ' + (err && err.message || String(err))) });

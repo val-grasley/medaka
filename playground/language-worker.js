@@ -34,7 +34,7 @@ self.onmessage = async function (e) {
 
   if (msg.type === 'init') {
     wasmBytes = new Uint8Array(msg.assets.wasm);
-    stdlib = { runtime: msg.assets.runtime, core: msg.assets.core };
+    stdlib = { runtime: msg.assets.runtime, core: msg.assets.core, extra: msg.assets.extra };
     self.postMessage({ type: 'ready' });
     return;
   }

@@ -43,13 +43,14 @@ import frontend.ast.{Decl, Loc(..)}
 import frontend.parser.{
   parse,
   parseResult,
+  parseLocated,
   ParseError,
   parseErrorLine,
   parseErrorCol,
   parseErrorMessage,
 }
 import frontend.desugar.{desugar}
-import driver.loader.{loadProgram}
+import driver.loader.{loadProgram, unknownModuleIdOf, findImportLoc}
 import driver.diagnostics.{
   analyzeProject,
   analyzeLocated,
@@ -142,7 +143,15 @@ run runtimeP coreP entry roots = match readFile runtimeP
       Ok tsrc => match parseResult tsrc
         Err pe => emitParseError entry pe
         Ok _ => match loadProgram entry roots
-          Err lmsg => emitDiagnostics (cjAllToJson [(entry, tsrc, [Diag SevError "R-MODULE-LOAD" lmsg None None None])])
+          Err lmsg =>
+            -- Recover the failing import's own span so the squiggle lands on the
+            -- bad `import` line, not line 1 (mirrors medaka_cli's F3 Chunk B
+            -- entry-scan). Available-modules help is CLI-only (needs a stdlib dir
+            -- listing, unavailable over the browser vfs).
+            let mloc = match unknownModuleIdOf lmsg
+              None => None
+              Some mid => findImportLoc mid (parseLocated tsrc)
+            emitDiagnostics (cjAllToJson [(entry, tsrc, [Diag SevError "R-MODULE-LOAD" lmsg mloc None None])])
           Ok mods => match mods
             [_] => analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots
             _ => analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots mods
