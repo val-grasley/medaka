@@ -8,7 +8,10 @@
 //   Receives: { source: string, assets: { wasm: ArrayBuffer, runtime: string, core: string,
 //                                          wat2wasmBytes: ArrayBuffer } }
 //   Posts:    { ok: false, diagnostics }          — type/parse error; diagnostics = check --json shape
-//           | { ok: true,  wasm: ArrayBuffer }    — assembled user wasm (transferable)
+//           | { ok: true,  wasm: ArrayBuffer, diagnostics? } — assembled user wasm (transferable);
+//             diagnostics present only when the clean compile still had WARNINGS
+//             (e.g. W-NONEXHAUSTIVE) — the program still runs, but main.js should
+//             also surface the warnings in the console.
 //           | { ok: false, diagnostics: <synthErr> } — on unexpected compile/assemble error
 //
 // Keeps all heavy work (playground.wasm instantiation + WAT assembly) off the
@@ -67,9 +70,10 @@ self.onmessage = async function(e) {
     return;
   }
 
-  // Transfer the ArrayBuffer (zero-copy) to the main thread.
+  // Transfer the ArrayBuffer (zero-copy) to the main thread.  Forward warnings
+  // (if any) so the run path can also surface them, even though the program runs.
   const buf = userWasmBytes.buffer;
-  self.postMessage({ ok: true, wasm: buf }, [buf]);
+  self.postMessage({ ok: true, wasm: buf, diagnostics: compileResult.diagnostics }, [buf]);
 };
 
 function synthErr(message) {

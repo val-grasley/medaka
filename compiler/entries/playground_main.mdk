@@ -27,10 +27,15 @@
 --   (roots default to [dirOf entry] when omitted)
 --
 -- OUTPUT-MARKER PROTOCOL (first line of stdout is the marker, rest is payload):
---   __MEDAKA_DIAGNOSTICS__\n<one-line JSON {"files":[...]}>\n   ← had check errors
---   __MEDAKA_WAT__\n<the WAT text>                            ← clean, emitted WAT
--- The caller (playground/compile.mjs) splits on the first newline: marker selects
--- the branch, the remainder is the payload.  Diagnostics JSON is byte-identical to
+--   __MEDAKA_DIAGNOSTICS__\n<one-line JSON {"files":[...]}>\n        ← had check errors
+--   __MEDAKA_WAT__\n<the WAT text>                                  ← clean, no warnings
+--   __MEDAKA_WAT_DIAGS__\n<one-line JSON {"files":[...]}>\n<WAT>     ← clean but WARNINGS
+-- present (e.g. W-NONEXHAUSTIVE): warnings never block emit (they don't in native
+-- `medaka check` either), so the WAT still follows the warnings JSON line — the
+-- caller shows the warnings AND runs the program.
+-- The caller (playground/compile.mjs) splits on newlines: the marker line selects
+-- the branch; for __MEDAKA_WAT_DIAGS__ the SECOND line is the warnings JSON and
+-- everything after that is the WAT. Diagnostics JSON is byte-identical to
 -- `medaka check --json` (the cj* renderers below mirror medaka_cli.mdk).
 --
 -- This entry is OUTSIDE the self-host compiler graph (an entry, not imported), so
@@ -162,7 +167,7 @@ analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
   let diags = analyzeLocated rsrc csrc tsrc
   match any isDiagError diags
     True => emitDiagnostics (cjAllToJson [(entry, tsrc, diags)])
-    False => guardedEmit rsrc csrc tsrc entry roots
+    False => guardedEmit rsrc csrc tsrc entry roots [(entry, tsrc, filterWarnings diags)]
 
 -- Multi-module: analyzeProject (loader path).  Clean ⇒ emit.
 analyzeMulti : String -> String -> String -> String -> String -> String -> List String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
@@ -173,7 +178,17 @@ analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
   let triples = map readDiagSrc results
   match any cjHasErr results
     True => emitDiagnostics (cjAllToJson triples)
-    False => guardedEmit rsrc csrc tsrc entry roots
+    False => guardedEmit rsrc csrc tsrc entry roots (map warnTriple triples)
+
+-- Keep only non-error (i.e. warning) diagnostics for a single file's list.
+filterWarnings : List Diag -> List Diag
+filterWarnings [] = []
+filterWarnings (d::rest)
+  | isDiagError d = filterWarnings rest
+  | otherwise = d :: filterWarnings rest
+
+warnTriple : (String, String, List Diag) -> (String, String, List Diag)
+warnTriple (p, s, ds) = (p, s, filterWarnings ds)
 
 -- ── main-shape guard (beginner-facing, pre-emit) ────────────────────────────
 -- A clean analyze (no ERROR diagnostic) is not sufficient to guarantee emit
@@ -185,12 +200,16 @@ analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
 -- either shape with a located ERROR before ever reaching the emitter. (Mirrors
 -- medaka_cli.mdk's findMainFunDef/mainBodyLoc/mainArityMsg; duplicated per this
 -- entry's F5 self-contained convention rather than importing the CLI entry.)
-guardedEmit : String -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
-guardedEmit rsrc csrc tsrc entry roots = match parseResult tsrc
+-- `warnTriples` carries the (already error-filtered) warning diags per source
+-- file, so a clean-but-warning program can still surface them once we reach
+-- `doEmit` below.  The main-shape guard runs FIRST and unconditionally blocks
+-- on an ERROR — it never consults warnTriples.
+guardedEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
+guardedEmit rsrc csrc tsrc entry roots warnTriples = match parseResult tsrc
   Err pe => emitParseError entry pe
   Ok decls => match mainShapeError decls
     Some d => emitDiagnostics (cjAllToJson [(entry, tsrc, [d])])
-    None => doEmit rsrc csrc entry roots
+    None => doEmit rsrc csrc entry roots warnTriples
 
 -- Find a top-level `main` DFunDef among a module's raw decls (skipping @attr
 -- wrappers).  Returns its param list + body so callers can inspect arity and
@@ -234,12 +253,29 @@ mainShapeError decls = match findMainFunDef decls
 -- Identical to wasm_emit_modules_main.runEmit, prefixed by the WAT marker.  Re-
 -- loads modules (the analyze phase did not retain the elaborated tree); a clean
 -- analyze guarantees this load + emit cannot hit the diagnostic/panic path.
-doEmit : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
-doEmit rsrc csrc entry roots = match loadProgram entry roots
+doEmit : String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
+doEmit rsrc csrc entry roots warnTriples = match loadProgram entry roots
   Err e => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError "R-MODULE-LOAD" e None None None])])
   Ok mods =>
-    let _ = putStr "__MEDAKA_WAT__\n"
+    let _ = emitWatMarker warnTriples
     runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+-- Print the plain WAT marker when there are no warnings, else the combined
+-- marker (warnings JSON line, THEN the WAT) — the browser shows the warnings
+-- AND still runs the program.
+emitWatMarker : List (String, String, List Diag) -> <IO> Unit
+emitWatMarker warnTriples = match any tripleHasDiag warnTriples
+  True =>
+    let _ = putStr "__MEDAKA_WAT_DIAGS__\n"
+    putStr (cjAllToJson warnTriples ++ "\n")
+  False => putStr "__MEDAKA_WAT__\n"
+
+tripleHasDiag : (String, String, List Diag) -> Bool
+tripleHasDiag (_, _, ds) = nonEmptyDiags ds
+
+nonEmptyDiags : List Diag -> Bool
+nonEmptyDiags [] = False
+nonEmptyDiags _ = True
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)

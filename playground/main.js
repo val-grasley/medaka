@@ -10,7 +10,10 @@
 //   edit      : debounced analyze in language-worker.js → __MEDAKA_DIAGNOSTICS__
 //               → inline CM6 squiggles (setDiagnostics) + console problem lines.
 //   Run click : compiler-worker.js compiles source → { ok:false, diagnostics }
-//               | { ok:true, wasm } → worker.js runner posts stdout/stderr/done.
+//               | { ok:true, wasm, diagnostics? } — diagnostics present only when
+//                 the clean compile still had WARNINGS (e.g. W-NONEXHAUSTIVE); shown
+//                 as squiggles + console problem lines, then the program still runs
+//                 via worker.js (stdout/stderr/done).
 //
 // Layout (2026-07 redesign): a single centered "quiet column" — slim header,
 // dismissible funnel strip, toolbar (examples / share / run), editor, and one
@@ -439,8 +442,12 @@ async function runProgram() {
     return;
   }
 
-  // Clean compile → clear any stale squiggles/problems.
-  applyDiagnostics([]);
+  // Clean compile — but there may still be WARNINGS (e.g. W-NONEXHAUSTIVE): they
+  // don't block emit (matching native `medaka check`), so show them as squiggles
+  // + console problem lines, then still run the program.
+  const warnFiles = (result.diagnostics && result.diagnostics.files) || [];
+  applyDiagnostics(warnFiles);
+  renderProblems();
   setStatus('running…');
 
   const runner = new Worker('worker.js');
