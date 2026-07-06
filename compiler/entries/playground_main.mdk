@@ -259,7 +259,9 @@ emitDiagnostics json =
 -- Parse error: single located diagnostic (mirrors medaka_cli runCheckJsonCmd).
 emitParseError : String -> ParseError -> <IO> Unit
 emitParseError entry pe =
-  let ln = parseErrorLine pe
+  -- parseErrorLine is 1-based, parseErrorCol 0-based (see medaka_cli.mdk); cjRange
+  -- wants 0-based LSP positions, so drop the line by one (col is already 0-based).
+  let ln = parseErrorLine pe - 1
   let col = parseErrorCol pe
   let r = cjRange ln col ln (col + 1)
   let pcode = parseErrCode (parseErrorMessage pe)
