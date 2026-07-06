@@ -127,13 +127,17 @@ backlog (detail → `PLAYGROUND-DESIGN.md` / `PLAYGROUND-EDITOR-DESIGN.md`):
 - ✅ **Real editor — CodeMirror 6 (S1 highlighting + S2 inline squiggles) DONE 2026-07-04**
   (`d5306c81`); Playwright e2e harness `playground/e2e/` (`d4dca8da`). *(Deferred: S3 hover /
   S4 autocomplete — the two stateless wasm entries.)*
-- **Visual / layout polish (Val flagged 2026-07-04, NOT urgent)** — the editor works but the
-  overall look & layout needs a design pass to feel like a product front door, not a dev demo.
-  **Taste-driven → do it mockup-first** (build a static HTML mockup as an Artifact for Val to
-  approve, THEN an agent applies it; verify with the `playground/e2e/` Playwright harness +
-  screenshots). Current palette: bg `#0d1117`, accents `#e2b96f`/`#58a6ff`.
-- Shareable permalinks (encode program in URL) — table stakes for a "try this" link.
-- An examples/presets dropdown (reuse the §W-showcase programs).
+- ✅ **Visual / layout polish — DONE 2026-07-06 (`13e29e90`).** Mockup-first as planned:
+  three static directions as an Artifact, Val picked "quiet column + funnel strip"
+  (centered ~1040px column, fish wordmark header + placeholder Quickstart/Stdlib/GitHub
+  links, dismissible "get the native compiler →" funnel strip, unified console replacing the
+  stdout/stderr/problems trio). Verified via the updated `playground/e2e/` harness (21 checks)
+  + screenshot review. Palette kept: bg `#0b0e14`/`#0d1117`, accent `#e2b96f`.
+- ✅ Shareable permalinks — DONE 2026-07-06 (`13e29e90`): Share button encodes the program as
+  base64url in `#code=`, loads from hash on init, copies the URL to clipboard.
+- ✅ Examples/presets dropdown — DONE-minimal 2026-07-06 (`13e29e90`): 3 embedded examples
+  (hello / shapes / pipeline), each e2e-verified to run. Grow it from §W-showcase programs
+  when those exist.
 - ✅ First-class error rendering — DONE as CM6 inline squiggles + gutter markers (S2); the
   problems pane is kept as a list alongside.
 - Mandatory browser-support feature-detect + banner (**needs current Chrome/Firefox** —
