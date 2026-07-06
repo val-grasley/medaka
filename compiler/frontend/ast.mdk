@@ -263,7 +263,7 @@ public export data Expr =
   | ENumLit Int (Ref (Option Float)) (Ref Route)
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
-public export data UseMember = UseMember String Bool
+public export data UseMember = UseMember String Bool Loc
 public export data UsePath =
   | UseName (List String)
   | UseGroup (List String) (List UseMember)

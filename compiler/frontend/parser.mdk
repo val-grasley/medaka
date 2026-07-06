@@ -2129,28 +2129,35 @@ importPathForT quals _ = pure (UseName quals)
 
 importMember : Parser UseMember
 importMember = do
+  s <- getPos
   t <- peekP
-  importMemberFor t
+  importMemberFor s t
 
-importMemberFor : Token -> Parser UseMember
-importMemberFor (TIdent x) = emit (UseMember x False)
-importMemberFor (TUpper x) = do
+importMemberFor : Int -> Token -> Parser UseMember
+importMemberFor s (TIdent x) = do
   advance
-  withAllOrNot x
-importMemberFor _ = failP "expected import member"
+  q <- getPos
+  pure (UseMember x False (locOfSpan s q))
+importMemberFor s (TUpper x) = do
+  advance
+  withAllOrNot s x
+importMemberFor _ _ = failP "expected import member"
 
-withAllOrNot : String -> Parser UseMember
-withAllOrNot x = do
+withAllOrNot : Int -> String -> Parser UseMember
+withAllOrNot s x = do
   t <- peekP
-  withAllFor x t
+  withAllFor s x t
 
-withAllFor : String -> Token -> Parser UseMember
-withAllFor x TLParen = do
+withAllFor : Int -> String -> Token -> Parser UseMember
+withAllFor s x TLParen = do
   advance
   expectTok TDotDot
   expectTok TRParen
-  pure (UseMember x True)
-withAllFor x _ = pure (UseMember x False)
+  q <- getPos
+  pure (UseMember x True (locOfSpan s q))
+withAllFor s x _ = do
+  q <- getPos
+  pure (UseMember x False (locOfSpan s q))
 
 aliasName : Parser String
 aliasName = do

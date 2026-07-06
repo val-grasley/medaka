@@ -1417,7 +1417,7 @@ printUsePath (UseAlias names alias) =
   Cat (text (joinWith "." names)) (Cat (text " as ") (text alias))
 
 useMemberDoc : UseMember -> Doc
-useMemberDoc (UseMember n allCtors) =
+useMemberDoc (UseMember n allCtors _) =
   if allCtors then
     Cat (text n) (text "(..)")
   else

@@ -317,8 +317,10 @@ implMethodSexp : ImplMethod -> String
 implMethodSexp (ImplMethod name pats body) =
   node "im" [escStr name, slist (map patSexp pats), exprSexp body]
 
+-- loc-free by design (mirrors tySexp/declSexp) — keeps .mark/.desugar goldens
+-- byte-identical since imports erase before codegen.
 useMemberSexp : UseMember -> String
-useMemberSexp (UseMember n withAll) = node "mem" [escStr n, boolStr withAll]
+useMemberSexp (UseMember n withAll _) = node "mem" [escStr n, boolStr withAll]
 
 usePathSexp : UsePath -> String
 usePathSexp (UseName ids) = node "UseName" [slist (map escStr ids)]

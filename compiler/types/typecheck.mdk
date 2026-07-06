@@ -10939,7 +10939,7 @@ monoSpineHeadIsCon m = match normalize m
 --   UseAlias _       → [] (alias only — no auto-imported value names)
 -- `None` ⇒ wildcard (every scheme); `Some names` ⇒ exactly those member names.
 useMemberName : UseMember -> String
-useMemberName (UseMember n _) = n
+useMemberName (UseMember n _ _) = n
 
 importedMembers : UsePath -> Option (List String)
 importedMembers (UseGroup _ ms) = Some (map useMemberName ms)
