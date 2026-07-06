@@ -39,7 +39,7 @@
 -- the thin cj* JSON shaping is reproduced (those live in medaka_cli.mdk, which is
 -- itself an entry and cannot be imported).
 
-import frontend.ast.{Decl, Loc(..)}
+import frontend.ast.{Decl(..), Loc(..), Pat, Expr(..)}
 import frontend.parser.{
   parse,
   parseResult,
@@ -162,7 +162,7 @@ analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
   let diags = analyzeLocated rsrc csrc tsrc
   match any isDiagError diags
     True => emitDiagnostics (cjAllToJson [(entry, tsrc, diags)])
-    False => doEmit rsrc csrc entry roots
+    False => guardedEmit rsrc csrc tsrc entry roots
 
 -- Multi-module: analyzeProject (loader path).  Clean ⇒ emit.
 analyzeMulti : String -> String -> String -> String -> String -> String -> List String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
@@ -173,7 +173,54 @@ analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
   let triples = map readDiagSrc results
   match any cjHasErr results
     True => emitDiagnostics (cjAllToJson triples)
-    False => doEmit rsrc csrc entry roots
+    False => guardedEmit rsrc csrc tsrc entry roots
+
+-- ── main-shape guard (beginner-facing, pre-emit) ────────────────────────────
+-- A clean analyze (no ERROR diagnostic) is not sufficient to guarantee emit
+-- succeeds: `main` shape is only ever a WARNING out of analyze (`main () = …`,
+-- W-MAIN-SHAPE) or entirely unchecked (no `main` at all) — so both a function-
+-- shaped `main` and a program with no `main` fall through to `doEmit`, which
+-- has no valid nullary main to force and hits a bare wasm `unreachable` trap
+-- with zero diagnostic. Re-parse the user's RAW entry decls here and block on
+-- either shape with a located ERROR before ever reaching the emitter. (Mirrors
+-- medaka_cli.mdk's findMainFunDef/mainBodyLoc/mainArityMsg; duplicated per this
+-- entry's F5 self-contained convention rather than importing the CLI entry.)
+guardedEmit : String -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+guardedEmit rsrc csrc tsrc entry roots = match parseResult tsrc
+  Err pe => emitParseError entry pe
+  Ok decls => match mainShapeError decls
+    Some d => emitDiagnostics (cjAllToJson [(entry, tsrc, [d])])
+    None => doEmit rsrc csrc entry roots
+
+-- Find a top-level `main` DFunDef among a module's raw decls (skipping @attr
+-- wrappers).  Returns its param list + body so callers can inspect arity and
+-- locate the body's first ELoc span.
+findMainFunDef : List Decl -> Option (List Pat, Expr)
+findMainFunDef [] = None
+findMainFunDef ((DAttrib _ d)::rest) = findMainFunDef (d::rest)
+findMainFunDef ((DFunDef _ "main" ps body)::_) = Some (ps, body)
+findMainFunDef (_::rest) = findMainFunDef rest
+
+-- Best-effort location: the first ELoc span walking the outermost EApp spine.
+mainBodyLoc : Expr -> Option Loc
+mainBodyLoc (ELoc l _) = Some l
+mainBodyLoc (EApp f _) = mainBodyLoc f
+mainBodyLoc _ = None
+
+mainArityMsg : String
+mainArityMsg = "'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
+
+mainMissingMsg : String
+mainMissingMsg =
+  "no 'main' found — add a top-level 'main = …' (e.g. 'main = println \"hi\"')"
+
+-- Some d ⇒ block emit with a located ERROR; None ⇒ a valid nullary main (or
+-- any other shape typecheck already accepts), safe to fall through to emit.
+mainShapeError : List Decl -> Option Diag
+mainShapeError decls = match findMainFunDef decls
+  Some (_::_, body) => Some (Diag SevError "W-MAIN-SHAPE" mainArityMsg (mainBodyLoc body) None None)
+  Some ([], _) => None
+  None => Some (Diag SevError "W-MAIN-MISSING" mainMissingMsg None None None)
 
 -- ── emit (clean path) ───────────────────────────────────────────────────────
 -- Identical to wasm_emit_modules_main.runEmit, prefixed by the WAT marker.  Re-
