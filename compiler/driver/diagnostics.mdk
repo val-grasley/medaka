@@ -52,7 +52,7 @@ import types.typecheck.{
   lookupMatchWarningHelp,
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
-import support.util.{joinNl, lookupAssoc, startsWith}
+import support.util.{joinNl, lookupAssoc, startsWith, anyList, filterList}
 import json.{Json, JInt, JString, JArray, jObject, stringify}
 
 -- ── types ──────────────────────────────────────────────────────────────────
@@ -563,6 +563,39 @@ typecheckPass runtimeP coreP _ mods buckets =
 midToDesugaredPair : (String, String, List Decl) -> (String, List Decl)
 midToDesugaredPair (mid, _, prog) = (mid, desugar prog)
 
+-- Whenever `import` is present the multi-module path runs BOTH resolve and
+-- typecheck over the same file, and an unbound name is a resolve-phase fact —
+-- resolve already reported it (with the did-you-mean / import hint) before
+-- typecheck ever ran. Typecheck's own `T-UNBOUND` for that identical
+-- occurrence is therefore pure duplication; only the resolve diagnostic
+-- carries the actionable hint, so it's the one that should survive. Matched by
+-- (code pair, identical Loc) — never by message text, and never by code alone
+-- (two DIFFERENT unbound names must each keep their own diagnostic).
+diagLoc : Diag -> Option Loc
+diagLoc (Diag _ _ _ loc _ _) = loc
+
+diagCode : Diag -> String
+diagCode (Diag _ code _ _ _ _) = code
+
+locEq : Loc -> Loc -> Bool
+locEq (Loc f1 sl1 sc1 el1 ec1) (Loc f2 sl2 sc2 el2 ec2) = f1 == f2
+  && sl1 == sl2
+  && sc1 == sc2
+  && el1 == el2
+  && ec1 == ec2
+
+-- True when `d` is a T-UNBOUND diagnostic whose Loc exactly matches an
+-- R-UNBOUND diagnostic already sitting in this file's bucket (i.e. resolve
+-- already reported this exact occurrence).
+isRedundantUnbound : List Diag -> Diag -> Bool
+isRedundantUnbound existing d
+  | diagCode d != "T-UNBOUND" = False
+  | otherwise = match diagLoc d
+    None => False
+    Some dl => anyList (e => diagCode e == "R-UNBOUND" && (match diagLoc e
+      Some el => locEq dl el
+      None => False)) existing
+
 -- For each (mid, path, rawProg): look up its harvested (errs, warns) by mid, wrap
 -- them as Diags (preserving each type error's Option Loc), fold in this module's
 -- guard-exhaustiveness warnings from the raw decls, and bucket by path.
@@ -570,7 +603,10 @@ foldModuleTc : List (String, String, List Decl) -> List (String, (List (String, 
 foldModuleTc [] _ buckets = buckets
 foldModuleTc ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
-  let errDiags = map diagOfTypeError tcErrs
+  let existing = match lookupBucket path buckets
+    Some ds => ds
+    None => []
+  let errDiags = filterList (d => not (isRedundantUnbound existing d)) (map diagOfTypeError tcErrs)
   let warnDiags = map diagOfMatchWarning tcWarns
   let guardWarns = checkGuardExhaustiveness prog
   let guardDiags = map (w => mkDiag SevWarning "W-GUARD-INEXHAUSTIVE" (stripWarnPrefix w) None) guardWarns
