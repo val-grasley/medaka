@@ -235,11 +235,11 @@ mainHeadLoc body =
   map ((Loc f sl sc _ _) => Loc f sl 0 sl sc) (mainBodyLoc body)
 
 mainArityMsg : String
-mainArityMsg = "'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
+mainArityMsg = "'main' must be a value of type Unit. Write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
 
 mainMissingMsg : String
 mainMissingMsg =
-  "no 'main' found — add a top-level 'main = …' (e.g. 'main = println \"hi\"')"
+  "no 'main' found. Add a top-level 'main = …' (e.g. 'main = println \"hi\"')"
 
 -- Some d ⇒ block emit with a located ERROR; None ⇒ a valid nullary main (or
 -- any other shape typecheck already accepts), safe to fall through to emit.
