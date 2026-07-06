@@ -7,8 +7,9 @@
 // over an IN-MEMORY vfs (stdlib runtime.mdk/core.mdk + the user source), runs the
 // guest once, and demuxes the guest's stdout by its first-line marker:
 //
-//   __MEDAKA_WAT__\n<wat>            -> { ok: true,  wat }
-//   __MEDAKA_DIAGNOSTICS__\n<json>   -> { ok: false, diagnostics }   (check --json shape)
+//   __MEDAKA_WAT__\n<wat>                          -> { ok: true,  wat }
+//   __MEDAKA_WAT_DIAGS__\n<json>\n<wat>            -> { ok: true,  wat, diagnostics }  (clean, but WARNINGS)
+//   __MEDAKA_DIAGNOSTICS__\n<json>                 -> { ok: false, diagnostics }   (check --json shape)
 //
 // `diagnostics` is the parsed {"files":[{file,diagnostics:[...]}]} object, drop-in
 // for playground/main.js's renderDiagnostics (it reads `.files`/`.errors`).
@@ -17,7 +18,9 @@
 //   const wasm = await loadCompiler(wasmBytesOrPath);   // Node: path or bytes; browser: bytes
 //   const r = await compile(source, { wasm, stdlib });
 //     stdlib = { runtime: <runtime.mdk text>, core: <core.mdk text> }
-//     r = { ok:true, wat:string } | { ok:false, diagnostics:{files:[...]} }
+//     r = { ok:true, wat:string, diagnostics?:{files:[...]} } | { ok:false, diagnostics:{files:[...]} }
+//     (diagnostics is present on an ok:true result only when there were WARNINGS —
+//     e.g. W-NONEXHAUSTIVE. Warnings never block emit, matching native `medaka check`.)
 //
 // The vfs/host-ABI is deliberately self-contained so the browser worker can import
 // this module unchanged (pass wasm bytes + stdlib text; no node:fs needed there).
@@ -223,6 +226,21 @@ export async function compile(source, opts = {}) {
 
   if (marker === '__MEDAKA_WAT__') {
     return { ok: true, wat: payload };
+  }
+  if (marker === '__MEDAKA_WAT_DIAGS__') {
+    // payload = <warnings JSON line>\n<WAT text>. WAT never starts with a bare
+    // JSON '{', so splitting on the FIRST newline of the payload is safe (and the
+    // WAT body itself starts with ";; Medaka WasmGC…", never "__MEDAKA_").
+    const pnl = payload.indexOf('\n');
+    const diagLine = pnl >= 0 ? payload.slice(0, pnl) : payload;
+    const wat = pnl >= 0 ? payload.slice(pnl + 1) : '';
+    try {
+      return { ok: true, wat, diagnostics: JSON.parse(diagLine.trim()) };
+    } catch (e) {
+      // Malformed warnings JSON shouldn't lose the (otherwise-valid) WAT — still
+      // run the program, just without warnings surfaced.
+      return { ok: true, wat };
+    }
   }
   if (marker === '__MEDAKA_DIAGNOSTICS__') {
     try {

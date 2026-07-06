@@ -48,8 +48,10 @@ self.onmessage = async function (e) {
     try {
       const r = await compile(source, { wasm: wasmBytes, stdlib });
       if (r.ok) {
-        // Compiled cleanly → no diagnostics.
-        self.postMessage({ type: 'diagnostics', id, files: [] });
+        // Compiled cleanly — but there may still be WARNINGS (e.g.
+        // W-NONEXHAUSTIVE) that don't block emit; surface them as squiggles too.
+        const files = (r.diagnostics && r.diagnostics.files) || [];
+        self.postMessage({ type: 'diagnostics', id, files });
       } else {
         const files = (r.diagnostics && r.diagnostics.files) || [];
         self.postMessage({ type: 'diagnostics', id, files });
