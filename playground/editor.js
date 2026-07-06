@@ -192,6 +192,10 @@ export function getValue(view) {
   return view.state.doc.toString();
 }
 
+export function setValue(view, doc) {
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: doc } });
+}
+
 export function setDiagnostics(view, files) {
   const src = view.state.doc.toString();
   const diags = diagnosticsFromFiles(src, files);

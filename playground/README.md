@@ -5,26 +5,41 @@ see output. The Medaka compiler runs **entirely in the browser** as a WasmGC mod
 no server is involved in compilation. User programs compile to WasmGC and run in a
 sandboxed Web Worker.
 
+## Layout (2026-07 redesign)
+
+The page is a single centered "quiet column" (`min(1040px, 100%)`): a slim
+header (wordmark + tagline + `Quickstart`/`Stdlib`/`GitHub` links), a
+dismissible funnel strip ("The full Medaka compiler, running in your
+browser…", dismissal persists via `localStorage`), a toolbar (an **Examples**
+picker with 3 embedded samples — `hello`/`shapes`/`pipeline` — a **Share**
+button that encodes the current program into a `#code=` URL hash permalink and
+copies it to the clipboard, a status line, and the gold **Run** button with a
+`⌘↵`/`Ctrl+Enter` hint), the CM6 editor, and one **unified console** pane
+(`#console`) below it — stdout renders plain, stderr/compile-problem lines
+render inline in the same pane in a warning/error color, and a dim meta line
+reports the measured compile+run time. Inline squiggles/gutter markers stay in
+the editor exactly as before (`editor.js`/`language-worker.js` unchanged).
+
 ## Architecture
 
 ```
 Browser
 ┌──────────────────────────────────────────────────────────────────┐
-│  editor (textarea)                                                │
+│  CM6 editor (#editor)                                             │
 │                                                                   │
 │  Run ──► compiler-worker.js (module Worker)                       │
 │            │  compile.mjs: compile(source, {wasm, stdlib})        │
 │            │    playground.wasm  (Medaka compiler, WasmGC)        │
 │            │    + runtime.mdk + core.mdk (fed via in-memory vfs)  │
 │            │                                                       │
-│            ├─► ok=false  → diagnostics pane (line/col JSON)       │
+│            ├─► ok=false  → console problem lines (line/col JSON) │
 │            │                                                       │
 │            └─► ok=true, wat  → vendor/wat2wasm (Rust blob)        │
 │                  wat2wasm_bg.wasm assembles WAT → binary bytes     │
 │                      │                                             │
 │                      └─► worker.js (runner Worker)                 │
 │                            WebAssembly.instantiate(bytes, glue)   │
-│                            mdk_write_byte → stdout pane           │
+│                            mdk_write_byte → console (#console)    │
 │                            10 s wall-clock kill-timer             │
 └──────────────────────────────────────────────────────────────────┘
 ```

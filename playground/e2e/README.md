@@ -10,18 +10,28 @@ instead of relying only on headless-logic tests
 
 1. The page loads and CodeMirror 6 mounts (`.cm-editor .cm-content` present,
    no legacy `<textarea>`).
-2. Syntax highlighting is active (>5 highlighted `<span>`s, >=3 distinct
+2. The funnel strip (`#funnel-strip`) renders on first load, dismisses on
+   `#funnel-dismiss` click, and stays dismissed across a reload
+   (`localStorage`-backed).
+3. Syntax highlighting is active (>5 highlighted `<span>`s, >=3 distinct
    token colors).
-3. The default sample program runs (`#run-btn` click) and `#stdout` shows the
-   expected output.
-4. Injecting a type-error buffer (`main = println (1 + "hello")`) produces an
+4. The default sample program runs (`#run-btn` click) and the unified
+   `#console` pane shows the expected stdout plus a "compiled & ran in NN ms"
+   meta line.
+5. Injecting a type-error buffer (`main = println (1 + "hello")`) produces an
    inline squiggle (`.cm-lintRange-error`), a gutter marker
-   (`.cm-lint-marker-error`), and the right message in the `#problems` pane
-   ("No impl of Num for String").
+   (`.cm-lint-marker-error`), and the right message rendered as a problem line
+   inside `#console` ("No impl of Num for String").
+6. Hover-type and autocomplete (unchanged data path via `window.__mdkLang`).
+7. The Examples picker (`#example-select`) swaps in the `hello` sample, which
+   then runs and prints its greeting.
+8. Share round-trip: `#share-btn` encodes the current buffer into a `#code=`
+   URL hash; reloading at that URL restores the exact program in the editor.
 
 A screenshot is captured after each test into `screenshots/` (gitignored) for
 human eyeballing: `01_loaded.png`, `02_highlighting.png`, `03_run_output.png`,
-`04_squiggle.png` (plus `ERROR.png` if the harness itself throws).
+`04_squiggle.png`, `05_hover.png`, `06_completion.png`, `07_examples.png`,
+`08_share_roundtrip.png` (plus `ERROR.png` if the harness itself throws).
 
 ## How to run
 

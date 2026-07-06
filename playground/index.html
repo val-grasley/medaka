@@ -11,38 +11,35 @@
   { "imports": { "codemirror": "./vendor/codemirror/codemirror.js" } }
   </script>
   <style>
+    :root {
+      --bg: #0b0e14;
+      --panel: #11151d;
+      --panel-2: #161b24;
+      --line: #232a36;
+      --ink: #d6dbe3;
+      --muted: #8b93a1;
+      --faint: #5c6470;
+      --gold: #e2b96f;
+      --gold-bright: #f0cd8e;
+      --ok: #6fcf97;
+      --err: #f47067;
+      --code-bg: #0d1117;
+      --mono: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html { background: #07090d; }
+
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #1a1a2e;
-      color: #e0e0e0;
+      font-family: var(--ui);
+      background: var(--bg);
+      color: var(--ink);
       height: 100vh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-    }
-
-    header {
-      padding: 10px 16px;
-      background: #16213e;
-      border-bottom: 1px solid #0f3460;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-shrink: 0;
-    }
-
-    header h1 {
-      font-size: 1.1rem;
-      font-weight: 600;
-      color: #e2b96f;
-      letter-spacing: 0.04em;
-    }
-
-    header .tagline {
-      font-size: 0.8rem;
-      color: #888;
     }
 
     #gc-banner {
@@ -55,154 +52,247 @@
       flex-shrink: 0;
     }
 
-    .main-layout {
+    /* ---------- quiet-column wrapper ---------- */
+    .b-wrap {
       flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      padding: 12px;
-      gap: 10px;
-    }
-
-    .editor-row {
-      display: flex;
-      flex-direction: column;
-      flex: 2;
       min-height: 0;
-      gap: 6px;
+      display: flex;
+      flex-direction: column;
+      width: min(1040px, 100%);
+      margin: 0 auto;
+      padding: 0 20px 14px;
+      gap: 10px;
+      overflow: hidden;
     }
 
-    .toolbar {
+    /* ---------- header ---------- */
+    .b-head {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      padding: 16px 0 6px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .wordmark { display: flex; align-items: center; gap: 8px; }
+    .wordmark svg { display: block; }
+    .wordmark .name {
+      font: 600 1.02rem var(--mono);
+      color: var(--ink);
+      letter-spacing: 0.02em;
+    }
+    .b-head .tag { font-size: 0.8rem; color: var(--muted); }
+    .b-head .links { margin-left: auto; display: flex; gap: 16px; font-size: 0.78rem; }
+    .b-head .links a { color: var(--muted); text-decoration: none; }
+    .b-head .links a:hover { color: var(--gold); }
+    @media (max-width: 700px) {
+      .b-head .tag, .b-head .links { display: none; }
+    }
+
+    /* ---------- funnel strip ---------- */
+    #funnel-strip {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 9px 16px;
+      flex-shrink: 0;
+      background: linear-gradient(90deg, rgba(226,185,111,0.09), rgba(88,166,255,0.05) 70%, transparent);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    #funnel-strip b { color: var(--ink); font-weight: 600; }
+    #funnel-strip a {
+      color: var(--gold);
+      text-decoration: none;
+      margin-left: auto;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+    #funnel-strip a:hover { color: var(--gold-bright); }
+    #funnel-dismiss {
+      color: var(--faint);
+      cursor: pointer;
+      padding: 0 2px;
+      background: none;
+      border: none;
+      font: inherit;
+      font-size: 0.9rem;
+    }
+    #funnel-dismiss:hover { color: var(--ink); }
+    #funnel-strip.hidden { display: none; }
+    @media (max-width: 700px) {
+      #funnel-strip a { display: none; }
+    }
+
+    /* ---------- toolbar ---------- */
+    .b-toolbar {
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-shrink: 0;
     }
-
-    .label {
-      font-size: 0.75rem;
-      color: #aaa;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 5px 11px;
+      font: 500 0.8rem var(--ui);
+      cursor: pointer;
+      white-space: nowrap;
     }
+    .chip:hover { border-color: #37404e; }
+    #example-select {
+      background: transparent;
+      color: var(--ink);
+      border: none;
+      font: 500 0.8rem var(--ui);
+      cursor: pointer;
+      outline: none;
+    }
+    #example-select option { background: var(--panel-2); color: var(--ink); }
 
-    .status {
-      font-size: 0.78rem;
-      color: #888;
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 13px;
+      font: 500 0.82rem var(--ui);
+      cursor: pointer;
+    }
+    .btn-ghost:hover { color: var(--ink); border-color: #37404e; }
+
+    .b-status {
       margin-left: auto;
+      font-size: 0.76rem;
+      color: var(--muted);
+      white-space: nowrap;
     }
-
-    .status.ok    { color: #6fcf97; }
-    .status.error { color: #eb5757; }
+    .b-status.ok    { color: var(--ok); }
+    .b-status.error { color: var(--err); }
 
     #run-btn {
-      background: #e2b96f;
-      color: #1a1a2e;
+      background: var(--gold);
+      color: #14110a;
       border: none;
-      border-radius: 4px;
-      padding: 5px 16px;
-      font-size: 0.85rem;
-      font-weight: 600;
+      border-radius: 6px;
+      padding: 6px 18px;
+      font: 600 0.84rem var(--ui);
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
       transition: background 0.15s;
     }
-
-    #run-btn:hover:not(:disabled) { background: #f0cd8e; }
+    #run-btn:hover:not(:disabled) { background: var(--gold-bright); }
     #run-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
-
-    /* CodeMirror 6 host — the .cm-editor fills this bordered box. */
-    #editor {
-      flex: 1;
-      width: 100%;
-      min-height: 0;
-      background: #0d1117;
-      border: 1px solid #30363d;
+    .kbd {
+      font: 500 0.68rem var(--mono);
+      color: #14110a;
+      border: 1px solid #00000033;
       border-radius: 4px;
-      overflow: hidden;
+      padding: 1px 5px;
+      background: transparent;
     }
 
+    /* ---------- editor ---------- */
+    #editor {
+      flex: 2.2;
+      width: 100%;
+      min-height: 0;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
     #editor:focus-within { border-color: #58a6ff; }
-
     #editor .cm-editor { height: 100%; }
     #editor .cm-editor.cm-focused { outline: none; }
 
-    .output-row {
-      display: flex;
-      flex: 1;
-      min-height: 0;
-      gap: 10px;
-    }
-
-    .pane {
+    /* ---------- unified console ---------- */
+    #console-pane {
       flex: 1;
       display: flex;
       flex-direction: column;
-      min-width: 0;
-    }
-
-    .pane-label {
-      font-size: 0.72rem;
-      color: #888;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      padding: 0 0 4px 2px;
-    }
-
-    .pane pre {
-      flex: 1;
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 4px;
-      padding: 8px 10px;
-      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-      font-size: 0.82rem;
-      line-height: 1.5;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
       min-height: 60px;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 14px;
+      overflow: hidden;
     }
-
-    #stdout { color: #c9d1d9; }
-    #stderr { color: #f8a5a5; }
-
-    #problems-pane .pane pre {
-      color: #ffb347;
+    .con-label {
+      font: 600 0.66rem var(--ui);
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--faint);
+      padding-bottom: 6px;
+      flex-shrink: 0;
     }
+    #console {
+      flex: 1;
+      overflow-y: auto;
+      font: 0.83rem/1.6 var(--mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--ink);
+    }
+    #console .con-stdout { color: #c9d1d9; }
+    #console .con-stderr { color: #f8a5a5; }
+    #console .con-problem { color: #ffb347; display: block; }
+    #console .con-meta { color: var(--faint); display: block; margin-top: 6px; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Medaka Playground</h1>
-    <span class="tagline">edit, run, iterate — no install</span>
-  </header>
-
   <div id="gc-banner">
     WasmGC is not supported in this browser. Use a current Chrome or Firefox (2024+).
   </div>
 
-  <div class="main-layout">
-    <div class="editor-row">
-      <div class="toolbar">
-        <span class="label">Source</span>
-        <button id="run-btn">Run</button>
-        <span id="status" class="status"></span>
+  <div class="b-wrap">
+    <div class="b-head">
+      <div class="wordmark">
+        <svg width="26" height="16" viewBox="0 0 32 20" aria-hidden="true">
+          <path d="M27 10 C21 3.5, 11 3.5, 6.5 10 C11 16.5, 21 16.5, 27 10 Z" fill="#e2b96f"/>
+          <path d="M7 10 L1.5 5 L3.5 10 L1.5 15 Z" fill="#e2b96f" opacity="0.75"/>
+          <circle cx="23.4" cy="8.6" r="1.4" fill="#0b0e14"/>
+        </svg>
+        <span class="name">medaka</span>
       </div>
-      <div id="editor"></div>
+      <span class="tag">a pragmatic functional language — try it, no install</span>
+      <div class="links"><a href="#">Quickstart</a><a href="#">Stdlib</a><a href="#">GitHub</a></div>
     </div>
 
-    <div class="output-row">
-      <div class="pane">
-        <div class="pane-label">stdout</div>
-        <pre id="stdout"></pre>
+    <div id="funnel-strip">
+      <span><b>The full Medaka compiler, running in your browser.</b> Type-checked, compiled to WasmGC, executed — nothing leaves this page.</span>
+      <a href="#">Get the native compiler &rarr;</a>
+      <button id="funnel-dismiss" aria-label="dismiss">&#10005;</button>
+    </div>
+
+    <div class="b-toolbar">
+      <div class="chip">
+        <span>Examples</span>
+        <select id="example-select">
+          <option value="hello">hello</option>
+          <option value="shapes" selected>shapes</option>
+          <option value="pipeline">pipeline</option>
+        </select>
       </div>
-      <div class="pane">
-        <div class="pane-label">stderr</div>
-        <pre id="stderr"></pre>
-      </div>
-      <div class="pane" id="problems-pane">
-        <div class="pane-label">problems</div>
-        <pre id="problems"></pre>
-      </div>
+      <button id="share-btn" class="btn-ghost">Share</button>
+      <span id="status" class="b-status"></span>
+      <button id="run-btn">&#9654; Run <span class="kbd">&#8984;&#9166;</span></button>
+    </div>
+
+    <div id="editor"></div>
+
+    <div id="console-pane">
+      <div class="con-label">Console</div>
+      <div id="console"></div>
     </div>
   </div>
 

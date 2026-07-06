@@ -9,6 +9,13 @@
 //   - a running static server (see lib/server.mjs), started by run.sh
 //
 // Usage: node tests/playground.spec.mjs <base-url> <screenshots-dir>
+//
+// 2026-07 layout redesign: the page is now a single centered "quiet column" —
+// slim header, dismissible funnel strip (#funnel-strip / #funnel-dismiss),
+// toolbar (examples picker #example-select, #share-btn, #run-btn), the CM6
+// editor (#editor, unchanged), and ONE unified console (#console) that
+// replaces the old three-pane stdout/stderr/problems layout — stdout renders
+// plain, stderr/problems render inline in that same pane (see main.js).
 import { chromium } from 'playwright';
 
 const [, , BASE_URL, SCREENSHOT_DIR] = process.argv;
@@ -31,6 +38,13 @@ function check(name, cond, detail) {
   }
 }
 
+function setSource(page, src) {
+  return page.evaluate((s) => {
+    const v = window.__mdkView;
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: s } });
+  }, src);
+}
+
 async function main() {
   const browser = await chromium.launch({ channel: 'chrome' });
   const page = await (await browser.newContext()).newPage();
@@ -49,6 +63,18 @@ async function main() {
     check('CM6 .cm-editor present, legacy textarea gone', noTextarea && hasCmEditor);
     await page.screenshot({ path: `${SCREENSHOT_DIR}/01_loaded.png` });
 
+    // ── Test 1b: funnel strip renders + dismisses (persists via localStorage)
+    console.log('Test: funnel strip renders + dismisses');
+    const funnelVisible = await page.$eval('#funnel-strip', (el) => getComputedStyle(el).display !== 'none');
+    check('funnel strip visible on first load', funnelVisible);
+    await page.click('#funnel-dismiss');
+    const funnelHiddenAfterClick = await page.$eval('#funnel-strip', (el) => getComputedStyle(el).display === 'none');
+    check('funnel strip hidden after dismiss click', funnelHiddenAfterClick);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.cm-editor .cm-content', { timeout: 15000 });
+    const funnelStillHidden = await page.$eval('#funnel-strip', (el) => getComputedStyle(el).display === 'none');
+    check('funnel strip stays hidden across reload (localStorage)', funnelStillHidden);
+
     // ── Test 2: syntax highlighting active ─────────────────────────────────
     console.log('Test: syntax highlighting');
     const spanCount = await page.$$eval('.cm-content span', (ss) => ss.length);
@@ -60,12 +86,9 @@ async function main() {
     check(`>=3 distinct token colors (got ${distinctColors})`, distinctColors >= 3);
     await page.screenshot({ path: `${SCREENSHOT_DIR}/02_highlighting.png` });
 
-    // ── Test 3: default sample runs, stdout shows expected output ─────────
+    // ── Test 3: default sample runs, console shows expected output ─────────
     console.log('Test: default sample runs');
-    await page.evaluate((src) => {
-      const v = window.__mdkView;
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: src } });
-    }, DEFAULT_SAMPLE);
+    await setSource(page, DEFAULT_SAMPLE);
     await page.waitForSelector('#run-btn:not([disabled])', { timeout: 15000 });
     await page.click('#run-btn');
     // Tolerate a timeout here so a flaky Run does not abort the independent
@@ -74,34 +97,42 @@ async function main() {
     // module-cache note in compile.mjs).
     try {
       await page.waitForFunction(
-        () => document.getElementById('stdout')?.textContent?.includes('hello'),
+        () => document.getElementById('console')?.textContent?.includes('hello'),
         null,
         { timeout: 30000 },
       );
     } catch { /* the checks below will record the failure */ }
-    const stdout = (await page.$eval('#stdout', (el) => el.textContent)).trim();
-    check('stdout contains "hello from Medaka!"', stdout.includes('hello from Medaka!'), stdout);
-    check('stdout contains sum result "15"', stdout.includes('15'), stdout);
+    const consoleText = (await page.$eval('#console', (el) => el.textContent)).trim();
+    check('console contains "hello from Medaka!"', consoleText.includes('hello from Medaka!'), consoleText);
+    check('console contains sum result "15"', consoleText.includes('15'), consoleText);
+    check('console shows a compiled&ran meta line', consoleText.includes('compiled & ran in'), consoleText);
     await page.screenshot({ path: `${SCREENSHOT_DIR}/03_run_output.png` });
 
-    // ── Test 4: type error -> inline squiggle + gutter marker + problems pane
+    // ── Test 4: type error -> inline squiggle + gutter marker + console problem
     console.log('Test: type-error squiggle');
-    await page.evaluate((src) => {
-      const v = window.__mdkView;
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: src } });
-    }, TYPE_ERROR_SAMPLE);
+    await setSource(page, TYPE_ERROR_SAMPLE);
     // Tolerate a timeout (analyze also runs in the worker — same pre-existing
     // deep-recursion limitation) so the hover/completion tests still run.
     try { await page.waitForSelector('.cm-lintRange-error, .cm-lint-marker-error', { timeout: 8000 }); } catch { /* checks below record it */ }
     const hasSquiggle = !!(await page.$('.cm-lintRange-error'));
     const hasGutterMarker = !!(await page.$('.cm-lint-marker-error'));
-    const problemsText = (await page.$eval('#problems', (el) => el.textContent).catch(() => ''));
+    // Re-run so the console (which only gets problems populated on Run, same as
+    // the old #problems pane) reflects the current buffer's diagnostics.
+    await page.click('#run-btn');
+    try {
+      await page.waitForFunction(
+        () => document.getElementById('console')?.textContent?.includes('No impl of Num for String'),
+        null,
+        { timeout: 15000 },
+      );
+    } catch { /* checks below record it */ }
+    const consoleProblemsText = (await page.$eval('#console', (el) => el.textContent).catch(() => ''));
     check('inline squiggle (.cm-lintRange-error) present', hasSquiggle);
     check('gutter marker (.cm-lint-marker-error) present', hasGutterMarker);
     check(
-      'problems pane reports "No impl of Num for String"',
-      problemsText.includes('No impl of Num for String'),
-      problemsText.slice(0, 200),
+      'console reports "No impl of Num for String"',
+      consoleProblemsText.includes('No impl of Num for String'),
+      consoleProblemsText.slice(0, 200),
     );
     await page.screenshot({ path: `${SCREENSHOT_DIR}/04_squiggle.png` });
 
@@ -113,10 +144,7 @@ async function main() {
     // for the screenshot — CM6's synthetic-mouse hover timing is too flaky to gate.
     console.log('Test: hover-type');
     const HOVER_SAMPLE = 'double : Int -> Int\ndouble x = x + x\n\nmain = println (double 21)\n';
-    await page.evaluate((src) => {
-      const v = window.__mdkView;
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: src } });
-    }, HOVER_SAMPLE);
+    await setSource(page, HOVER_SAMPLE);
     await page.waitForTimeout(2000); // let the main-thread module warm up (tier-up)
     // Deterministic: call the language service the CM6 provider uses (line 1 = the
     // `double` definition, col 0).
@@ -171,6 +199,43 @@ async function main() {
     }
     console.log('  (autocomplete popup rendered in UI: ' + sawPopup + ')');
     await page.screenshot({ path: `${SCREENSHOT_DIR}/06_completion.png` });
+
+    // ── Test 7: examples picker loads an example that runs ───────────────────
+    console.log('Test: examples picker');
+    await page.selectOption('#example-select', 'hello');
+    const helloSrc = await page.evaluate(() => window.__mdkView.state.doc.toString());
+    check('picking "hello" example loads its source', helloSrc.includes('hello from Medaka!'), helloSrc.slice(0, 60));
+    await page.waitForSelector('#run-btn:not([disabled])', { timeout: 15000 });
+    await page.click('#run-btn');
+    try {
+      await page.waitForFunction(
+        () => document.getElementById('console')?.textContent?.includes('hello from Medaka!'),
+        null,
+        { timeout: 30000 },
+      );
+    } catch { /* recorded below */ }
+    const helloConsole = (await page.$eval('#console', (el) => el.textContent)).trim();
+    check('"hello" example runs and prints greeting', helloConsole.includes('hello from Medaka!'), helloConsole);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/07_examples.png` });
+
+    // ── Test 8: Share round-trip (set hash -> reload -> editor has program) ──
+    console.log('Test: share permalink round-trip');
+    await page.selectOption('#example-select', 'pipeline');
+    await page.waitForTimeout(300);
+    try {
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    } catch { /* some Chrome builds don't support this permission name; continue */ }
+    await page.click('#share-btn');
+    await page.waitForTimeout(300);
+    const hashAfterShare = await page.evaluate(() => window.location.hash);
+    check('Share sets a #code= hash', hashAfterShare.startsWith('#code='), hashAfterShare.slice(0, 40));
+    const pipelineSrcBeforeReload = await page.evaluate(() => window.__mdkView.state.doc.toString());
+    const urlWithHash = BASE_URL.replace(/#.*$/, '') + hashAfterShare;
+    await page.goto(urlWithHash, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.cm-editor .cm-content', { timeout: 15000 });
+    const srcAfterReload = await page.evaluate(() => window.__mdkView.state.doc.toString());
+    check('editor content survives hash round-trip', srcAfterReload === pipelineSrcBeforeReload, srcAfterReload.slice(0, 60));
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/08_share_roundtrip.png` });
 
     if (pageErrors.length) {
       console.log('Uncaught page errors observed during run:', pageErrors);

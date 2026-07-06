@@ -8,23 +8,60 @@
 //               dist/runtime.mdk, dist/core.mdk, vendor/wat2wasm/wat2wasm_bg.wasm;
 //               init the language worker and run an initial analyze.
 //   edit      : debounced analyze in language-worker.js → __MEDAKA_DIAGNOSTICS__
-//               → inline CM6 squiggles (setDiagnostics) + problems-pane list.
+//               → inline CM6 squiggles (setDiagnostics) + console problem lines.
 //   Run click : compiler-worker.js compiles source → { ok:false, diagnostics }
 //               | { ok:true, wasm } → worker.js runner posts stdout/stderr/done.
+//
+// Layout (2026-07 redesign): a single centered "quiet column" — slim header,
+// dismissible funnel strip, toolbar (examples / share / run), editor, and one
+// unified console pane (stdout + stderr + problems all render there; inline
+// squiggles/gutter markers stay in the editor via editor.js).
 
-import { createEditor, getValue, setDiagnostics as setSquiggles } from './editor.js';
+import { createEditor, getValue, setValue, setDiagnostics as setSquiggles } from './editor.js';
 import { hover as compileHover, complete as compileComplete } from './compile.mjs';
 
 const RUN_TIMEOUT_MS = 10000; // 10 s wall-clock budget per run
 const ANALYZE_DEBOUNCE_MS = 300;
+const FUNNEL_DISMISS_KEY = 'medaka-playground-funnel-dismissed';
 
-const DEFAULT_PROGRAM = `-- Medaka playground — edit me and hit Run!
+// ── Embedded examples ─────────────────────────────────────────────────────────
+const EXAMPLES = {
+  hello: `-- Medaka playground — edit me and hit Run!
 
 main =
   println (sum [1, 2, 3, 4, 5])
   println (map (x => x * 2) [1, 2, 3, 4, 5])
   println "hello from Medaka!"
-`;
+`,
+  shapes: `-- A tiny shape calculator
+data Shape
+  = Circle Float
+  | Rect Float Float
+
+area = function
+  Circle r => 3.14159 * r * r
+  Rect w h => w * h
+
+main =
+  let shapes = [Circle 1.0, Rect 3.0 4.0]
+  println "areas: \\{map area shapes}"
+`,
+  pipeline: `-- Recursion + a map/filter/fold pipeline
+fib n =
+  if n < 2 then n
+  else fib (n - 1) + fib (n - 2)
+
+main =
+  let fibs = map fib [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  let evens = filter (x => x % 2 == 0) fibs
+  let total = fold (acc x => acc + x) 0 fibs
+  println "fibs: \\{fibs}"
+  println "even fibs: \\{evens}"
+  println "sum: \\{total}"
+`,
+};
+
+const DEFAULT_PROGRAM = EXAMPLES.shapes;
 
 // ── WasmGC feature detection ──────────────────────────────────────────────────
 const GC_PROBE = new Uint8Array([
@@ -39,13 +76,53 @@ function hasWasmGC() {
 }
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const editorEl    = document.getElementById('editor');
-const runBtn       = document.getElementById('run-btn');
-const stdoutPane   = document.getElementById('stdout');
-const stderrPane   = document.getElementById('stderr');
-const problemPane  = document.getElementById('problems');
-const gcBanner     = document.getElementById('gc-banner');
-const statusLine   = document.getElementById('status');
+const editorEl      = document.getElementById('editor');
+const runBtn        = document.getElementById('run-btn');
+const shareBtn       = document.getElementById('share-btn');
+const exampleSelect  = document.getElementById('example-select');
+const consolePane    = document.getElementById('console');
+const gcBanner       = document.getElementById('gc-banner');
+const statusLine     = document.getElementById('status');
+const funnelStrip    = document.getElementById('funnel-strip');
+const funnelDismiss  = document.getElementById('funnel-dismiss');
+
+// ── Funnel strip dismissal (persists via localStorage) ────────────────────────
+try {
+  if (localStorage.getItem(FUNNEL_DISMISS_KEY) === '1') {
+    funnelStrip.classList.add('hidden');
+  }
+} catch { /* localStorage unavailable — leave the strip showing */ }
+
+funnelDismiss.addEventListener('click', () => {
+  funnelStrip.classList.add('hidden');
+  try { localStorage.setItem(FUNNEL_DISMISS_KEY, '1'); } catch { /* best-effort */ }
+});
+
+// ── Permalink (Share) — encode the program into the URL hash ─────────────────
+function encodeProgram(src) {
+  const bytes = new TextEncoder().encode(src);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeProgram(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+function programFromHash() {
+  const h = window.location.hash;
+  const m = h.match(/^#code=(.+)$/);
+  if (!m) return null;
+  try { return decodeProgram(m[1]); } catch { return null; }
+}
+
+const initialProgram = programFromHash() || DEFAULT_PROGRAM;
 
 // ── Language-service (hover + completion) — runs on the MAIN THREAD ───────────
 // Unlike analyze (in the language worker), hover/completion run here: a full
@@ -89,7 +166,7 @@ const langService = {
 };
 
 // ── Editor ────────────────────────────────────────────────────────────────────
-const view = createEditor(editorEl, DEFAULT_PROGRAM, onEditorChange, langService);
+const view = createEditor(editorEl, initialProgram, onEditorChange, langService);
 // Expose the view + language service for browser debugging / automated e2e tests
 // (harmless).  __mdkLang lets the e2e assert hover/completion data deterministically,
 // independent of CM6's timing-finicky synthetic-mouse hover trigger.
@@ -118,47 +195,60 @@ let analyzeInFlight = false;
 let pendingSource   = null; // latest un-analyzed source when a request is in flight
 let debounceTimer   = null;
 
-function clearOutput() {
-  stdoutPane.textContent = '';
-  stderrPane.textContent = '';
-  statusLine.textContent = '';
+// Latest diagnostics (kept so the console can re-render problems alongside
+// fresh run output without losing them).
+let lastDiagnosticFiles = [];
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function appendTo(pane, text) {
-  pane.textContent += text;
-  pane.scrollTop = pane.scrollHeight;
+function clearConsole() {
+  consolePane.innerHTML = '';
+}
+
+function appendConsole(cls, text) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text;
+  consolePane.appendChild(span);
+  consolePane.scrollTop = consolePane.scrollHeight;
 }
 
 function setStatus(msg, cls) {
   statusLine.textContent = msg;
-  statusLine.className = 'status ' + (cls || '');
+  statusLine.className = 'b-status ' + (cls || '');
 }
 
 function killRunner(reason) {
   if (activeRunner) { activeRunner.terminate(); activeRunner = null; }
   if (killTimer)    { clearTimeout(killTimer); killTimer = null; }
-  if (reason) appendTo(stderrPane, '\n[' + reason + ']\n');
+  if (reason) appendConsole('con-stderr', '\n[' + reason + ']\n');
   runBtn.disabled = false;
   setStatus('killed', 'error');
 }
 
-// ── Diagnostics renderer (problems pane list) ─────────────────────────────────
-function renderDiagnostics(files) {
-  const lines = [];
+// ── Diagnostics renderer (console problem lines) ──────────────────────────────
+function renderProblems() {
+  const files = lastDiagnosticFiles || [];
+  let count = 0;
   for (const f of files) {
     for (const d of f.diagnostics) {
+      count++;
       const s = d.range && d.range.start;
       const loc = s ? (s.line + 1) + ':' + (s.character + 1) : '?';
       const sev = d.severity === 2 ? 'warning' : 'error';
-      lines.push('[' + sev + '] ' + loc + '  ' + d.message);
+      appendConsole('con-problem', '[' + sev + '] ' + loc + '  ' + d.message);
     }
   }
-  problemPane.textContent = lines.join('\n') || '(no diagnostics)';
+  return count;
 }
 
-// Apply a diagnostics object to BOTH the problems pane and inline squiggles.
+// Apply a diagnostics object to BOTH the console problems list and inline
+// editor squiggles.  Does NOT touch stdout/stderr already in the console —
+// callers clear the console first if they want a clean slate.
 function applyDiagnostics(files) {
-  renderDiagnostics(files || []);
+  lastDiagnosticFiles = files || [];
   setSquiggles(view, files || []);
 }
 
@@ -286,12 +376,15 @@ function requestCompile(source, assets) {
 }
 
 // ── Run ───────────────────────────────────────────────────────────────────────
-runBtn.addEventListener('click', async () => {
+async function runProgram() {
+  if (runBtn.disabled) return;
   if (activeRunner) killRunner('superseded');
 
-  clearOutput();
+  clearConsole();
   runBtn.disabled = true;
   setStatus('loading compiler…');
+
+  const startedAt = performance.now();
 
   let assets;
   try {
@@ -318,8 +411,10 @@ runBtn.addEventListener('click', async () => {
   if (!result.ok) {
     if (result.diagnostics && result.diagnostics.files) {
       applyDiagnostics(result.diagnostics.files);
+      const n = renderProblems();
+      if (n === 0) appendConsole('con-problem', 'compile failed (no diagnostics)');
     } else {
-      problemPane.textContent = 'compile failed (no diagnostics)';
+      appendConsole('con-problem', 'compile failed (no diagnostics)');
     }
     setStatus('compile error', 'error');
     runBtn.disabled = false;
@@ -337,10 +432,10 @@ runBtn.addEventListener('click', async () => {
 
   runner.onmessage = (e) => {
     const { type, text, message } = e.data;
-    if (type === 'stdout') appendTo(stdoutPane, text);
-    else if (type === 'stderr') appendTo(stderrPane, text);
+    if (type === 'stdout') appendConsole('con-stdout', text);
+    else if (type === 'stderr') appendConsole('con-stderr', text);
     else if (type === 'error') {
-      appendTo(stderrPane, '\n[' + message + ']\n');
+      appendConsole('con-stderr', '\n[' + message + ']\n');
       clearTimeout(killTimer); killTimer = null;
       activeRunner = null;
       runBtn.disabled = false;
@@ -349,12 +444,14 @@ runBtn.addEventListener('click', async () => {
       clearTimeout(killTimer); killTimer = null;
       activeRunner = null;
       runBtn.disabled = false;
-      setStatus('done', 'ok');
+      const ms = Math.round(performance.now() - startedAt);
+      setStatus('✓ no problems · ran in ' + ms + ' ms', 'ok');
+      appendConsole('con-meta', '✓ compiled & ran in ' + ms + ' ms · WasmGC, fully in your browser');
     }
   };
 
   runner.onerror = (e) => {
-    appendTo(stderrPane, '\n[runner error: ' + e.message + ']\n');
+    appendConsole('con-stderr', '\n[runner error: ' + e.message + ']\n');
     clearTimeout(killTimer); killTimer = null;
     activeRunner = null;
     runBtn.disabled = false;
@@ -362,6 +459,48 @@ runBtn.addEventListener('click', async () => {
   };
 
   runner.postMessage({ wasm: result.wasm }, [result.wasm]);
+}
+
+runBtn.addEventListener('click', runProgram);
+
+// Cmd/Ctrl+Enter runs the program from anywhere on the page (including while
+// focused in the CM6 editor — editor.js's keymap does not intercept it, so it
+// bubbles here).
+window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runProgram();
+  }
+});
+
+// ── Examples picker ───────────────────────────────────────────────────────────
+exampleSelect.addEventListener('change', () => {
+  const src = EXAMPLES[exampleSelect.value];
+  if (!src) return;
+  setValue(view, src);
+  clearConsole();
+  setStatus('');
+  scheduleAnalyze();
+});
+
+// ── Share (permalink) ─────────────────────────────────────────────────────────
+shareBtn.addEventListener('click', async () => {
+  const src = getValue(view);
+  const hash = '#code=' + encodeProgram(src);
+  const url = window.location.origin + window.location.pathname + hash;
+  window.history.replaceState(null, '', hash);
+  try {
+    await navigator.clipboard.writeText(url);
+    const prevText = shareBtn.textContent;
+    shareBtn.textContent = 'copied!';
+    setTimeout(() => { shareBtn.textContent = prevText; }, 1500);
+  } catch {
+    // Clipboard API unavailable (e.g. insecure context) — the URL is still in
+    // the address bar via replaceState above.
+    const prevText = shareBtn.textContent;
+    shareBtn.textContent = 'copy failed';
+    setTimeout(() => { shareBtn.textContent = prevText; }, 1500);
+  }
 });
 
 // ── Boot the live language service (only if the engine can run) ───────────────
