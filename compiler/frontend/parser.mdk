@@ -3457,12 +3457,52 @@ resultDeclsResult src toks offs srcLen (PErr msg pos) =
   Err (mkLocated src toks offs srcLen msg pos)
 resultDeclsResult src toks offs srcLen (POk ds pos)
   | peekTok toks pos == TEof = Ok ds
-  | otherwise = Err (mkLocated src toks offs srcLen ("unexpected " ++ describeToken (peekTok toks pos)) pos)
+  | otherwise = Err (mkLocated src toks offs srcLen (unexpectedLeftoverMsg src toks offs srcLen pos) pos)
 
 -- offset(idx) → (line,col) → ParseError, single place so both arms agree.
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
 mkLocated src toks offs srcLen msg pos = match offsetToLineCol src (locateOffset toks offs srcLen pos)
   (line, col) => ParseError line col msg
+
+-- Is the char at `offset` the first non-whitespace character on its line?  If
+-- so, return `Some col` where `col` is its (0-based, tab-not-expanded — same
+-- convention as `offsetToLineCol`) column; otherwise `None`.  Used to detect a
+-- leftover-token parse error caused by a misindented line (dedented to a
+-- column that doesn't match any enclosing block) so the message can hint at
+-- the fix instead of just naming the unexpected token.
+leadingIndentAt : String -> Int -> Option Int
+leadingIndentAt src offset =
+  let chars = stringToChars src
+  let lineStart = leadingIndentLineStart chars (offset - 1)
+  if leadingIndentAllBlank chars lineStart offset then
+    Some (offset - lineStart)
+  else
+    None
+
+leadingIndentLineStart : Array Char -> Int -> Int
+leadingIndentLineStart chars i
+  | i < 0 = 0
+  | arrayGetUnsafe i chars == '\n' = i + 1
+  | otherwise = leadingIndentLineStart chars (i - 1)
+
+leadingIndentAllBlank : Array Char -> Int -> Int -> Bool
+leadingIndentAllBlank chars i limit
+  | i >= limit = True
+  | otherwise = match arrayGetUnsafe i chars
+    ' ' => leadingIndentAllBlank chars (i + 1) limit
+    '\t' => leadingIndentAllBlank chars (i + 1) limit
+    _ => False
+
+-- Build the leftover-token "unexpected `X`" message, appending an
+-- indentation-aware hint when the token is the sole content that dedented
+-- this line to a column that doesn't line up with the surrounding block.
+unexpectedLeftoverMsg : String -> Array Token -> Array Int -> Int -> Int -> String
+unexpectedLeftoverMsg src toks offs srcLen pos =
+  let base = "unexpected " ++ describeToken (peekTok toks pos)
+  let offset = locateOffset toks offs srcLen pos
+  match leadingIndentAt src offset
+    Some col if col > 0 => "\{base} — this line's indentation doesn't line up with the block above (indented to column \{intToString col}); check that it's indented to match the surrounding statements"
+    _ => base
 
 -- A lexer error (unterminated string / block comment, invalid escape, stray
 -- character) is surfaced as a terminal `TLexError msg` token carrying the
