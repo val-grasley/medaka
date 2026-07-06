@@ -38,18 +38,19 @@ data Shape
   = Circle Float
   | Rect Float Float
 
-area = function
-  Circle r => 3.14159 * r * r
-  Rect w h => w * h
+area : Shape -> Float
+area (Circle r) = 3.14159 * r * r
+area (Rect w h) = w * h
 
 main =
   let shapes = [Circle 1.0, Rect 3.0 4.0]
   println "areas: \\{map area shapes}"
 `,
   pipeline: `-- Recursion + a map/filter/fold pipeline
-fib n =
-  if n < 2 then n
-  else fib (n - 1) + fib (n - 2)
+fib : Int -> Int
+fib 0 = 0
+fib 1 = 1
+fib n = fib (n - 1) + fib (n - 2)
 
 main =
   let fibs = map fib [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -477,6 +478,8 @@ window.addEventListener('keydown', (e) => {
 exampleSelect.addEventListener('change', () => {
   const src = EXAMPLES[exampleSelect.value];
   if (!src) return;
+  const label = document.getElementById('example-label');
+  if (label) label.textContent = exampleSelect.value;
   setValue(view, src);
   clearConsole();
   setStatus('');
