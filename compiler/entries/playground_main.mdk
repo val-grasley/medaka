@@ -207,6 +207,14 @@ mainBodyLoc (ELoc l _) = Some l
 mainBodyLoc (EApp f _) = mainBodyLoc f
 mainBodyLoc _ = None
 
+-- The `main`'s own head span (`main () = `): DFunDef/Pat carry no loc, so derive
+-- it from the body — the LHS runs from column 0 to the body's start column on the
+-- body's line (correct for the common single-line `main () = <body>`), which
+-- reads better than squiggling the body expression itself.
+mainHeadLoc : Expr -> Option Loc
+mainHeadLoc body =
+  map ((Loc f sl sc _ _) => Loc f sl 0 sl sc) (mainBodyLoc body)
+
 mainArityMsg : String
 mainArityMsg = "'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
 
@@ -218,7 +226,7 @@ mainMissingMsg =
 -- any other shape typecheck already accepts), safe to fall through to emit.
 mainShapeError : List Decl -> Option Diag
 mainShapeError decls = match findMainFunDef decls
-  Some (_::_, body) => Some (Diag SevError "W-MAIN-SHAPE" mainArityMsg (mainBodyLoc body) None None)
+  Some (_::_, body) => Some (Diag SevError "W-MAIN-SHAPE" mainArityMsg (mainHeadLoc body) None None)
   Some ([], _) => None
   None => Some (Diag SevError "W-MAIN-MISSING" mainMissingMsg None None None)
 
