@@ -1,12 +1,12 @@
-warning: [rule-dead-code] private top-level 'negPlain' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'unless' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'unlessShape' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'when' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'whenShape' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-missing-signature] top-level 'negPlain' has no type signature — add a `negPlain : …` declaration
-warning: [rule-missing-signature] top-level 'unless' has no type signature — add a `unless : …` declaration
-warning: [rule-missing-signature] top-level 'unlessShape' has no type signature — add a `unlessShape : …` declaration
-warning: [rule-missing-signature] top-level 'when' has no type signature — add a `when : …` declaration
-warning: [rule-missing-signature] top-level 'whenShape' has no type signature — add a `whenShape : …` declaration
-warning: [rule-when-unless] conditional effect with a `pure ()` branch — rewrite as 'unless b act'
-warning: [rule-when-unless] conditional effect with a `pure ()` branch — rewrite as 'when b act'
+warning: [rule-dead-code] private top-level 'negPlain' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'unless' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'unlessShape' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'when' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'whenShape' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-missing-signature] top-level 'negPlain' has no type signature. Add a `negPlain : …` declaration
+warning: [rule-missing-signature] top-level 'unless' has no type signature. Add a `unless : …` declaration
+warning: [rule-missing-signature] top-level 'unlessShape' has no type signature. Add a `unlessShape : …` declaration
+warning: [rule-missing-signature] top-level 'when' has no type signature. Add a `when : …` declaration
+warning: [rule-missing-signature] top-level 'whenShape' has no type signature. Add a `whenShape : …` declaration
+warning: [rule-when-unless] conditional effect with a `pure ()` branch. Rewrite as 'unless b act'
+warning: [rule-when-unless] conditional effect with a `pure ()` branch. Rewrite as 'when b act'

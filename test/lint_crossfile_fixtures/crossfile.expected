@@ -1,56 +1,56 @@
 ROOT/test/lint_crossfile_fixtures/dup_file_level.mdk:
-ROOT/test/lint_crossfile_fixtures/dup_file_level.mdk:4:1: [rule-dead-code] private top-level 'gradeA' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/dup_file_level.mdk:4:1: [rule-dead-code] private top-level 'gradeA' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 4 | gradeA n =
   |  ^
 ROOT/test/lint_crossfile_fixtures/dup_next_line.mdk:
-ROOT/test/lint_crossfile_fixtures/dup_next_line.mdk:4:1: [rule-dead-code] private top-level 'sizeB' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/dup_next_line.mdk:4:1: [rule-dead-code] private top-level 'sizeB' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 4 | sizeB n =
   |  ^
 ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:8:1: [rule-match-on-param] function 'describe' matches on parameter 's' — consider a multi-clause function definition
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:8:1: [rule-match-on-param] function 'describe' matches on parameter 's'. Consider a multi-clause function definition
   |
 8 | describe s = match s
   |  ^
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:8:1: [rule-dead-code] private top-level 'describe' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:8:1: [rule-dead-code] private top-level 'describe' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 8 | describe s = match s
   |  ^
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:14:1: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:14:1: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 14 | classify n =
   |  ^
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:20:1: [rule-dead-code] private top-level 'helper' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:20:1: [rule-dead-code] private top-level 'helper' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 20 | helper x = x
   |  ^
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:23:1: [rule-dead-code] private top-level 'uniqueOne' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:23:1: [rule-dead-code] private top-level 'uniqueOne' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 23 | uniqueOne n =
   |  ^
 ROOT/test/lint_crossfile_fixtures/supp_file_level.mdk:
-ROOT/test/lint_crossfile_fixtures/supp_file_level.mdk:8:1: [rule-dead-code] private top-level 'gradeA' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/supp_file_level.mdk:8:1: [rule-dead-code] private top-level 'gradeA' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 8 | gradeA n =
   |  ^
 ROOT/test/lint_crossfile_fixtures/supp_next_line.mdk:
-ROOT/test/lint_crossfile_fixtures/supp_next_line.mdk:7:1: [rule-dead-code] private top-level 'sizeB' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/supp_next_line.mdk:7:1: [rule-dead-code] private top-level 'sizeB' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 7 | sizeB n =
   |  ^
 ROOT/test/lint_crossfile_fixtures/top.mdk:
-ROOT/test/lint_crossfile_fixtures/top.mdk:5:1: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/top.mdk:5:1: [rule-dead-code] private top-level 'classify' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 5 | classify n =
   |  ^
-ROOT/test/lint_crossfile_fixtures/top.mdk:11:1: [rule-dead-code] private top-level 'helper' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_crossfile_fixtures/top.mdk:11:1: [rule-dead-code] private top-level 'helper' is unreachable from exports/main/doctests. Dead code (remove it)
   |
 11 | helper x = x
   |  ^
 
 cross-file:
-ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:14:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/top.mdk — consider consolidating into a shared module
-ROOT/test/lint_crossfile_fixtures/top.mdk:5:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/nested/deep.mdk — consider consolidating into a shared module
-ROOT/test/lint_crossfile_fixtures/dup_next_line.mdk:4:1: [rule-duplicate-body] function 'sizeB' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/supp_next_line.mdk — consider consolidating into a shared module
-ROOT/test/lint_crossfile_fixtures/dup_file_level.mdk:4:1: [rule-duplicate-body] function 'gradeA' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/supp_file_level.mdk — consider consolidating into a shared module
+ROOT/test/lint_crossfile_fixtures/nested/deep.mdk:14:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/top.mdk. Consider consolidating into a shared module
+ROOT/test/lint_crossfile_fixtures/top.mdk:5:1: [rule-duplicate-body] function 'classify' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/nested/deep.mdk. Consider consolidating into a shared module
+ROOT/test/lint_crossfile_fixtures/dup_next_line.mdk:4:1: [rule-duplicate-body] function 'sizeB' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/supp_next_line.mdk. Consider consolidating into a shared module
+ROOT/test/lint_crossfile_fixtures/dup_file_level.mdk:4:1: [rule-duplicate-body] function 'gradeA' has a body structurally identical to a definition in ROOT/test/lint_crossfile_fixtures/supp_file_level.mdk. Consider consolidating into a shared module

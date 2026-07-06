@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/typo_local_var.mdk:3:18: Unbound variable: cont — did you mean 'count'?
+test/error_quality_fixtures/resolve/typo_local_var.mdk:3:18: Unbound variable: cont. Did you mean 'count'?
   |
 3 |   println (debug (cont + 1))
   |                   ^

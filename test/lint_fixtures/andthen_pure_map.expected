@@ -1,27 +1,27 @@
-warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map (pair y) m' (functor law: m >>= (pure . f) ≡ fmap f m)
-warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map (x => foo x bar) m' (functor law: m >>= (pure . f) ≡ fmap f m)
-warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
-warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
-warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result — rewrite as 'map f m' (functor law: m >>= (pure . f) ≡ fmap f m)
-warning: [rule-dead-code] private top-level 'etaCtor' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'etaFn' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'etaPartial' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'genNonFinal' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negDo' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negGuardFn' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negMultiParam' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negNoPure' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negOverApplied' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negTwice' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-missing-signature] top-level 'etaCtor' has no type signature — add a `etaCtor : …` declaration
-warning: [rule-missing-signature] top-level 'etaFn' has no type signature — add a `etaFn : …` declaration
-warning: [rule-missing-signature] top-level 'etaPartial' has no type signature — add a `etaPartial : …` declaration
-warning: [rule-missing-signature] top-level 'genNonFinal' has no type signature — add a `genNonFinal : …` declaration
-warning: [rule-missing-signature] top-level 'negDo' has no type signature — add a `negDo : …` declaration
-warning: [rule-missing-signature] top-level 'negGuardFn' has no type signature — add a `negGuardFn : …` declaration
-warning: [rule-missing-signature] top-level 'negMultiParam' has no type signature — add a `negMultiParam : …` declaration
-warning: [rule-missing-signature] top-level 'negNoPure' has no type signature — add a `negNoPure : …` declaration
-warning: [rule-missing-signature] top-level 'negOverApplied' has no type signature — add a `negOverApplied : …` declaration
-warning: [rule-missing-signature] top-level 'negTwice' has no type signature — add a `negTwice : …` declaration
-warning: [rule-missing-signature] top-level 'nested' has no type signature — add a `nested : …` declaration
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result. Rewrite as 'map (pair y) m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result. Rewrite as 'map (x => foo x bar) m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result. Rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result. Rewrite as 'map Some m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-andthen-pure-map] monadic bind wraps a pure transformation of its result. Rewrite as 'map f m' (functor law: m >>= (pure . f) ≡ fmap f m)
+warning: [rule-dead-code] private top-level 'etaCtor' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'etaFn' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'etaPartial' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'genNonFinal' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negDo' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negGuardFn' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negMultiParam' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negNoPure' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOverApplied' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negTwice' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-missing-signature] top-level 'etaCtor' has no type signature. Add a `etaCtor : …` declaration
+warning: [rule-missing-signature] top-level 'etaFn' has no type signature. Add a `etaFn : …` declaration
+warning: [rule-missing-signature] top-level 'etaPartial' has no type signature. Add a `etaPartial : …` declaration
+warning: [rule-missing-signature] top-level 'genNonFinal' has no type signature. Add a `genNonFinal : …` declaration
+warning: [rule-missing-signature] top-level 'negDo' has no type signature. Add a `negDo : …` declaration
+warning: [rule-missing-signature] top-level 'negGuardFn' has no type signature. Add a `negGuardFn : …` declaration
+warning: [rule-missing-signature] top-level 'negMultiParam' has no type signature. Add a `negMultiParam : …` declaration
+warning: [rule-missing-signature] top-level 'negNoPure' has no type signature. Add a `negNoPure : …` declaration
+warning: [rule-missing-signature] top-level 'negOverApplied' has no type signature. Add a `negOverApplied : …` declaration
+warning: [rule-missing-signature] top-level 'negTwice' has no type signature. Add a `negTwice : …` declaration
+warning: [rule-missing-signature] top-level 'nested' has no type signature. Add a `nested : …` declaration

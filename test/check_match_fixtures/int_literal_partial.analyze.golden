@@ -1,1 +1,1 @@
-warning: non-exhaustive match of 'Int' — missing case: '_' — add a '_ => …' arm, or a '_' wildcard arm to catch the rest.
+warning: non-exhaustive match of 'Int'. Missing case: '_'; add a '_ => …' arm, or a '_' wildcard arm to catch the rest.

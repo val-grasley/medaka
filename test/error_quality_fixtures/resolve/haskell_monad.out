@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/haskell_monad.mdk:1:4: Unknown type: Monad — did you mean 'Thenable'? ('Monad' is Haskell; Medaka uses 'Thenable')
+test/error_quality_fixtures/resolve/haskell_monad.mdk:1:4: Unknown type: Monad. Did you mean 'Thenable'? ('Monad' is Haskell; Medaka uses 'Thenable')
   |
 1 | f : Monad -> Int
   |     ^

@@ -206,7 +206,7 @@ stdlibReimplRule = Rule {
 bindThenDestructureRule : Rule
 bindThenDestructureRule = Rule {
   name = ruleNameBindThenDestructure,
-  descr = "do-bind then immediately destructures the bound var with an irrefutable single-arm `match` — inline the pattern into the bind",
+  descr = "do-bind then immediately destructures the bound var with an irrefutable single-arm `match`. Inline the pattern into the bind",
   severity = SevWarning,
   enabled = True,
   check = ruleBindThenDestructure,
@@ -216,7 +216,7 @@ bindThenDestructureRule = Rule {
 lambdaSectionRule : Rule
 lambdaSectionRule = Rule {
   name = ruleNameLambdaSection,
-  descr = "lambda whose body is a single binary op on its parameter(s) — prefer an operator section (STYLE \"Dogfooding\")",
+  descr = "lambda whose body is a single binary op on its parameter(s). Prefer an operator section (STYLE \"Dogfooding\")",
   severity = SevWarning,
   enabled = True,
   check = ruleLambdaSection,
@@ -226,7 +226,7 @@ lambdaSectionRule = Rule {
 ifMaxMinRule : Rule
 ifMaxMinRule = Rule {
   name = ruleNameIfMaxMin,
-  descr = "if-then-else selects the larger/smaller of the same two operands — prefer `max`/`min`",
+  descr = "if-then-else selects the larger/smaller of the same two operands. Prefer `max`/`min`",
   severity = SevWarning,
   enabled = True,
   check = ruleIfMaxMin,
@@ -236,7 +236,7 @@ ifMaxMinRule = Rule {
 andThenPureMapRule : Rule
 andThenPureMapRule = Rule {
   name = ruleNameAndThenPureMap,
-  descr = "monadic bind whose continuation just wraps a pure transformation (`andThen m (x => pure body)`) — prefer `map` (functor law: m >>= (pure . f) ≡ fmap f m)",
+  descr = "monadic bind whose continuation just wraps a pure transformation (`andThen m (x => pure body)`). Prefer `map` (functor law: m >>= (pure . f) ≡ fmap f m)",
   severity = SevWarning,
   enabled = True,
   check = ruleAndThenPureMap,
@@ -246,7 +246,7 @@ andThenPureMapRule = Rule {
 destructureInParamRule : Rule
 destructureInParamRule = Rule {
   name = ruleNameDestructureInParam,
-  descr = "function body is a single-arm `match` on a bare parameter with an irrefutable pattern (tuple/record/single-ctor) — destructure directly in the parameter position",
+  descr = "function body is a single-arm `match` on a bare parameter with an irrefutable pattern (tuple/record/single-ctor). Destructure directly in the parameter position",
   severity = SevWarning,
   enabled = True,
   check = ruleDestructureInParam,
@@ -256,7 +256,7 @@ destructureInParamRule = Rule {
 missingSignatureRule : Rule
 missingSignatureRule = Rule {
   name = ruleNameMissingSignature,
-  descr = "top-level value/function binding has no sibling type signature (name : Type) — add one (Haskell -Wmissing-signatures)",
+  descr = "top-level value/function binding has no sibling type signature (name : Type). Add one (Haskell -Wmissing-signatures)",
   severity = SevWarning,
   enabled = True,
   check = ruleMissingSignature,
@@ -266,7 +266,7 @@ missingSignatureRule = Rule {
 notEqRule : Rule
 notEqRule = Rule {
   name = ruleNameNotEq,
-  descr = "negated equality `not (a == b)` / `not (a != b)` — prefer `a != b` / `a == b`",
+  descr = "negated equality `not (a == b)` / `not (a != b)`. Prefer `a != b` / `a == b`",
   severity = SevWarning,
   enabled = True,
   check = ruleNotEq,
@@ -276,7 +276,7 @@ notEqRule = Rule {
 boolSimplifyRule : Rule
 boolSimplifyRule = Rule {
   name = ruleNameBoolSimplify,
-  descr = "redundant boolean shape (`if c then True else False`, `x == True`, `not (not x)`, …) — simplify",
+  descr = "redundant boolean shape (`if c then True else False`, `x == True`, `not (not x)`, …). Simplify",
   severity = SevWarning,
   enabled = True,
   check = ruleBoolSimplify,
@@ -286,7 +286,7 @@ boolSimplifyRule = Rule {
 remParityRule : Rule
 remParityRule = Rule {
   name = ruleNameRemParity,
-  descr = "`n % 2 == 0` / `n % 2 != 0` parity test — prefer `isEven n` / `isOdd n`",
+  descr = "`n % 2 == 0` / `n % 2 != 0` parity test. Prefer `isEven n` / `isOdd n`",
   severity = SevWarning,
   enabled = True,
   check = ruleRemParity,
@@ -296,7 +296,7 @@ remParityRule = Rule {
 doubleReverseRule : Rule
 doubleReverseRule = Rule {
   name = ruleNameDoubleReverse,
-  descr = "`reverse (reverse x)` is `x` — drop the double reversal",
+  descr = "`reverse (reverse x)` is `x`. Drop the double reversal",
   severity = SevWarning,
   enabled = True,
   check = ruleDoubleReverse,
@@ -306,7 +306,7 @@ doubleReverseRule = Rule {
 whenUnlessRule : Rule
 whenUnlessRule = Rule {
   name = ruleNameWhenUnless,
-  descr = "`if b then m else pure ()` / `if b then pure () else m` — prefer `when b m` / `unless b m`",
+  descr = "`if b then m else pure ()` / `if b then pure () else m`. Prefer `when b m` / `unless b m`",
   severity = SevWarning,
   enabled = True,
   check = ruleWhenUnless,
@@ -316,7 +316,7 @@ whenUnlessRule = Rule {
 complementPredicateRule : Rule
 complementPredicateRule = Rule {
   name = ruleNameComplementPredicate,
-  descr = "`not (p x)` where `p` has a defined complement predicate (`isEmptyL`/`isSome`/`isOk` & inverses) — call the complement directly",
+  descr = "`not (p x)` where `p` has a defined complement predicate (`isEmptyL`/`isSome`/`isOk` & inverses). Call the complement directly",
   severity = SevWarning,
   enabled = True,
   check = ruleComplementPredicate,
@@ -326,7 +326,7 @@ complementPredicateRule = Rule {
 matchToMapRule : Rule
 matchToMapRule = Rule {
   name = ruleNameMatchToMap,
-  descr = "2-arm `match` on Option/Result that reconstructs the failure ctor and re-wraps the success ctor — that IS a functor `map` (hlint 'use fmap')",
+  descr = "2-arm `match` on Option/Result that reconstructs the failure ctor and re-wraps the success ctor. That IS a functor `map` (hlint 'use fmap')",
   severity = SevWarning,
   enabled = True,
   check = ruleMatchToMap,
@@ -336,7 +336,7 @@ matchToMapRule = Rule {
 bindChainToDoRule : Rule
 bindChainToDoRule = Rule {
   name = ruleNameBindChainToDo,
-  descr = "deep (≥3) nested Result/Option passthrough-bind `match` pyramid — rewrite as a `do` block (suggest-only)",
+  descr = "deep (≥3) nested Result/Option passthrough-bind `match` pyramid. Rewrite as a `do` block (suggest-only)",
   severity = SevWarning,
   enabled = True,
   check = ruleBindChainToDo,
@@ -346,7 +346,7 @@ bindChainToDoRule = Rule {
 deadCodeRule : Rule
 deadCodeRule = Rule {
   name = ruleNameDeadCode,
-  descr = "private (unexported) top-level binding is unreachable from the file's exports/main/doctests — dead code (Haskell -Wunused-top-binds)",
+  descr = "private (unexported) top-level binding is unreachable from the file's exports/main/doctests. Dead code (Haskell -Wunused-top-binds)",
   severity = SevWarning,
   enabled = True,
   check = ruleDeadCode,
@@ -356,7 +356,7 @@ deadCodeRule = Rule {
 concatToInterpRule : Rule
 concatToInterpRule = Rule {
   name = ruleNameConcatToInterp,
-  descr = "`++` chain mixing string literals and expressions — prefer string interpolation `\"…\\{e}…\"` (hlint 'use interpolation')",
+  descr = "`++` chain mixing string literals and expressions. Prefer string interpolation `\"…\\{e}…\"` (hlint 'use interpolation')",
   severity = SevWarning,
   enabled = True,
   check = ruleConcatToInterp,
@@ -774,7 +774,7 @@ matchParamHit loc name pats p
   | anyList (isBareParam p) pats = [
     Finding {
       rule = ruleNameMatchParam,
-      message = "function '\{name}' matches on parameter '\{p}' — consider a multi-clause function definition",
+      message = "function '\{name}' matches on parameter '\{p}'. Consider a multi-clause function definition",
       severity = SevWarning,
       loc = loc,
     }
@@ -939,7 +939,7 @@ destructureArmsFinding orc loc name p [arm] =
     [
       Finding {
         rule = ruleNameDestructureInParam,
-        message = "function '\{name}' destructures parameter '\{p}' via a single-arm irrefutable `match` — destructure it directly in the parameter position",
+        message = "function '\{name}' destructures parameter '\{p}' via a single-arm irrefutable `match`. Destructure it directly in the parameter position",
         severity = SevWarning,
         loc = loc,
       }
@@ -1053,7 +1053,7 @@ derivableHit orc loc iface tys
         [
           Finding {
             rule = ruleNameDerivable,
-            message = "hand-written `impl \{iface}` for '\{tyName}' — consider `deriving (\{iface})` instead",
+            message = "hand-written `impl \{iface}` for '\{tyName}'. Consider `deriving (\{iface})` instead",
             severity = SevWarning,
             loc = loc,
           }
@@ -1139,7 +1139,7 @@ inStdlib n = contains n stdlibNames
 stdlibFinding : (String, Option Loc) -> Finding
 stdlibFinding (name, loc) = Finding {
   rule = ruleNameStdlibReimpl,
-  message = "top-level '" ++ name ++ "' shadows a stdlib function — prefer the stdlib version",
+  message = "top-level '" ++ name ++ "' shadows a stdlib function. Prefer the stdlib version",
   severity = SevWarning,
   loc = loc,
 }
@@ -1172,7 +1172,7 @@ missingSigPair sigNames (n, _) = not (n == "main" || contains n sigNames)
 missingSigFinding : (String, Option Loc) -> Finding
 missingSigFinding (name, loc) = Finding {
   rule = ruleNameMissingSignature,
-  message = "top-level '\{name}' has no type signature — add a `\{name} : …` declaration",
+  message = "top-level '\{name}' has no type signature. Add a `\{name} : …` declaration",
   severity = SevWarning,
   loc = loc,
 }
@@ -1270,7 +1270,7 @@ declBindHits _ _ = []
 bindDestructureFinding : Option Loc -> String -> Finding
 bindDestructureFinding loc v = Finding {
   rule = ruleNameBindThenDestructure,
-  message = "binds '" ++ v ++ "' then immediately destructures it in a final `match` — inline the pattern into the bind",
+  message = "binds '" ++ v ++ "' then immediately destructures it in a final `match`. Inline the pattern into the bind",
   severity = SevWarning,
   loc = loc,
 }
@@ -1628,7 +1628,7 @@ optSectionToList None = []
 lambdaSectionFinding : Option Loc -> Section -> Finding
 lambdaSectionFinding loc s = Finding {
   rule = ruleNameLambdaSection,
-  message = "lambda is a single binary operation on its parameter(s) — rewrite as the operator section '" ++ exprToString (ESection s) ++ "'",
+  message = "lambda is a single binary operation on its parameter(s). Rewrite as the operator section '" ++ exprToString (ESection s) ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -1871,7 +1871,7 @@ optHitToList None = []
 ifMaxMinFinding : Option Loc -> (String, Expr, Expr) -> Finding
 ifMaxMinFinding loc (fn, a, b) = Finding {
   rule = ruleNameIfMaxMin,
-  message = "if-then-else selects the \{if fn == "max" then "larger" else "smaller"} of the same two operands — rewrite as '\{exprToString (EApp (EApp (EVar fn) a) b)}'",
+  message = "if-then-else selects the \{if fn == "max" then "larger" else "smaller"} of the same two operands. Rewrite as '\{exprToString (EApp (EApp (EVar fn) a) b)}'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2138,7 +2138,7 @@ optExprToList None = []
 andThenPureMapFinding : Option Loc -> Expr -> Finding
 andThenPureMapFinding loc rewritten = Finding {
   rule = ruleNameAndThenPureMap,
-  message = "monadic bind wraps a pure transformation of its result — rewrite as '" ++ exprToString rewritten ++ "' (functor law: m >>= (pure . f) ≡ fmap f m)",
+  message = "monadic bind wraps a pure transformation of its result. Rewrite as '" ++ exprToString rewritten ++ "' (functor law: m >>= (pure . f) ≡ fmap f m)",
   severity = SevWarning,
   loc = loc,
 }
@@ -2673,7 +2673,7 @@ implMethodConcatHits (ImplMethod _ _ body) = collectConcatHits body
 concatToInterpFinding : Option Loc -> Expr -> Finding
 concatToInterpFinding loc rewritten = Finding {
   rule = ruleNameConcatToInterp,
-  message = "`++` chain of string literals and expressions — rewrite as an interpolated string '" ++ exprToString rewritten ++ "'",
+  message = "`++` chain of string literals and expressions. Rewrite as an interpolated string '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2730,7 +2730,7 @@ ruleNotEq _ _ pos prog = exprRuleFindings noExcl notEqOf notEqFinding pos prog
 notEqFinding : Option Loc -> Expr -> Finding
 notEqFinding loc rewritten = Finding {
   rule = ruleNameNotEq,
-  message = "negated equality — rewrite as '" ++ exprToString rewritten ++ "'",
+  message = "negated equality. Rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2781,7 +2781,7 @@ ruleBoolSimplify _ _ pos prog =
 boolSimplifyFinding : Option Loc -> Expr -> Finding
 boolSimplifyFinding loc rewritten = Finding {
   rule = ruleNameBoolSimplify,
-  message = "redundant boolean expression — simplify to '" ++ exprToString rewritten ++ "'",
+  message = "redundant boolean expression. Simplify to '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2824,7 +2824,7 @@ ruleRemParity _ _ pos prog =
 remParityFinding : Option Loc -> Expr -> Finding
 remParityFinding loc rewritten = Finding {
   rule = ruleNameRemParity,
-  message = "parity test — rewrite as '" ++ exprToString rewritten ++ "'",
+  message = "parity test. Rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2848,7 +2848,7 @@ ruleDoubleReverse _ _ pos prog =
 doubleReverseFinding : Option Loc -> Expr -> Finding
 doubleReverseFinding loc rewritten = Finding {
   rule = ruleNameDoubleReverse,
-  message = "`reverse (reverse …)` is a no-op — rewrite as '" ++ exprToString rewritten ++ "'",
+  message = "`reverse (reverse …)` is a no-op. Rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2887,7 +2887,7 @@ ruleWhenUnless _ _ pos prog =
 whenUnlessFinding : Option Loc -> Expr -> Finding
 whenUnlessFinding loc rewritten = Finding {
   rule = ruleNameWhenUnless,
-  message = "conditional effect with a `pure ()` branch — rewrite as '" ++ exprToString rewritten ++ "'",
+  message = "conditional effect with a `pure ()` branch. Rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2955,7 +2955,7 @@ ruleComplementPredicate _ _ pos prog =
 complementPredicateFinding : Option Loc -> Expr -> Finding
 complementPredicateFinding loc rewritten = Finding {
   rule = ruleNameComplementPredicate,
-  message = "negated predicate — rewrite as '" ++ exprToString rewritten ++ "'",
+  message = "negated predicate. Rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -3056,7 +3056,7 @@ ruleMatchToMap _ _ pos prog =
 matchToMapFinding : Option Loc -> Expr -> Finding
 matchToMapFinding loc rewritten = Finding {
   rule = ruleNameMatchToMap,
-  message = "2-arm match maps over an Option/Result — rewrite as '" ++ exprToString rewritten ++ "' (functor map)",
+  message = "2-arm match maps over an Option/Result. Rewrite as '" ++ exprToString rewritten ++ "' (functor map)",
   severity = SevWarning,
   loc = loc,
 }
@@ -3194,7 +3194,7 @@ bindChainDeclL (d, loc) = map (bindChainFinding loc) (bindChainDeclHeads d)
 bindChainFinding : Option Loc -> Expr -> Finding
 bindChainFinding loc _ = Finding {
   rule = ruleNameBindChainToDo,
-  message = "deep nested Result/Option passthrough-bind `match` chain (≥3 binds) — rewrite as a `do` block",
+  message = "deep nested Result/Option passthrough-bind `match` chain (≥3 binds). Rewrite as a `do` block",
   severity = SevWarning,
   loc = loc,
 }
@@ -3239,7 +3239,7 @@ deadPair reach (n, _) = not (contains n reach)
 deadFinding : (String, Option Loc) -> Finding
 deadFinding (name, loc) = Finding {
   rule = ruleNameDeadCode,
-  message = "private top-level '" ++ name ++ "' is unreachable from exports/main/doctests — dead code (remove it)",
+  message = "private top-level '" ++ name ++ "' is unreachable from exports/main/doctests. Dead code (remove it)",
   severity = SevWarning,
   loc = loc,
 }
@@ -3527,7 +3527,7 @@ dupFinding distinctFiles occ =
   let others = filterList (!= file) distinctFiles
   Finding {
     rule = ruleNameDuplicateBody,
-    message = "function '\{occName occ}' has a body structurally identical to a definition in \{joinWith ", " others} — consider consolidating into a shared module",
+    message = "function '\{occName occ}' has a body structurally identical to a definition in \{joinWith ", " others}. Consider consolidating into a shared module",
     severity = SevWarning,
     loc = Some (Loc file line 1 line 1),
   }

@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/lt_undesugared_adt.mdk:6:20: No impl of Ord for Color — add 'deriving Ord' to the 'Color' type, or write an 'impl Ord Color'.
+test/error_quality_fixtures/typecheck/lt_undesugared_adt.mdk:6:20: No impl of Ord for Color; add 'deriving Ord' to the 'Color' type, or write an 'impl Ord Color'.
   |
 6 | lessColor a b = a < b
   |                     ^

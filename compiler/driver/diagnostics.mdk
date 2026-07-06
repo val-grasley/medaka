@@ -165,7 +165,7 @@ parseErrCode msg
   | startsWith "Medaka has no 'case" msg = "P-HS-CASE"
   | startsWith "In Medaka '::' is cons" msg = "P-HS-SIG"
   | startsWith "Medaka has no '/* " msg = "L-BLOCKCOMMENT"
-  | startsWith "unexpected '{' — Medaka has no brace" msg = "P-BRACE-BLOCK"
+  | startsWith "unexpected '{'. Medaka has no brace" msg = "P-BRACE-BLOCK"
   | startsWith "Medaka has no 'for'" msg = "P-FOR-WHILE"
   | startsWith "Medaka has no 'while'" msg = "P-FOR-WHILE"
   | startsWith "Medaka has no 'def'" msg = "P-DEF-KEYWORD"

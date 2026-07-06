@@ -933,14 +933,14 @@ singleOp src len pos depth id '@' =
 singleOp src len pos depth id '\\' =
   lexErrorTok
     pos
-    "unexpected '\\' — Medaka lambdas are written 'x => e' (not '\\x -> e')"
+    "unexpected '\\'. Medaka lambdas are written 'x => e' (not '\\x -> e')"
 -- `$` is likewise never a valid Medaka character — Haskell's low-precedence
 -- application operator has no Medaka equivalent; direct application, parens,
 -- or `|>` all cover it. Zero false-positive risk.
 singleOp src len pos depth id '$' =
   lexErrorTok
     pos
-    "Medaka has no '$' — apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
+    "Medaka has no '$'. Apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
 singleOp src len pos depth id c =
   lexErrorTok pos "unexpected character '\{charToStr c}'"
 

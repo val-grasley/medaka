@@ -1,22 +1,22 @@
-warning: [rule-dead-code] private top-level 'colorName' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'dup' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'firstColor' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'fst2' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'guarded' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'headOf' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'idv' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'sumPt' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'unBox' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-destructure-in-param] function 'fst2' destructures parameter 'p' via a single-arm irrefutable `match` — destructure it directly in the parameter position
-warning: [rule-destructure-in-param] function 'sumPt' destructures parameter 'pt' via a single-arm irrefutable `match` — destructure it directly in the parameter position
-warning: [rule-destructure-in-param] function 'unBox' destructures parameter 'b' via a single-arm irrefutable `match` — destructure it directly in the parameter position
-warning: [rule-match-on-param] function 'colorName' matches on parameter 'c' — consider a multi-clause function definition
-warning: [rule-missing-signature] top-level 'colorName' has no type signature — add a `colorName : …` declaration
-warning: [rule-missing-signature] top-level 'dup' has no type signature — add a `dup : …` declaration
-warning: [rule-missing-signature] top-level 'firstColor' has no type signature — add a `firstColor : …` declaration
-warning: [rule-missing-signature] top-level 'fst2' has no type signature — add a `fst2 : …` declaration
-warning: [rule-missing-signature] top-level 'guarded' has no type signature — add a `guarded : …` declaration
-warning: [rule-missing-signature] top-level 'headOf' has no type signature — add a `headOf : …` declaration
-warning: [rule-missing-signature] top-level 'idv' has no type signature — add a `idv : …` declaration
-warning: [rule-missing-signature] top-level 'sumPt' has no type signature — add a `sumPt : …` declaration
-warning: [rule-missing-signature] top-level 'unBox' has no type signature — add a `unBox : …` declaration
+warning: [rule-dead-code] private top-level 'colorName' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'dup' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'firstColor' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'fst2' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'guarded' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'headOf' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'idv' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'sumPt' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'unBox' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-destructure-in-param] function 'fst2' destructures parameter 'p' via a single-arm irrefutable `match`. Destructure it directly in the parameter position
+warning: [rule-destructure-in-param] function 'sumPt' destructures parameter 'pt' via a single-arm irrefutable `match`. Destructure it directly in the parameter position
+warning: [rule-destructure-in-param] function 'unBox' destructures parameter 'b' via a single-arm irrefutable `match`. Destructure it directly in the parameter position
+warning: [rule-match-on-param] function 'colorName' matches on parameter 'c'. Consider a multi-clause function definition
+warning: [rule-missing-signature] top-level 'colorName' has no type signature. Add a `colorName : …` declaration
+warning: [rule-missing-signature] top-level 'dup' has no type signature. Add a `dup : …` declaration
+warning: [rule-missing-signature] top-level 'firstColor' has no type signature. Add a `firstColor : …` declaration
+warning: [rule-missing-signature] top-level 'fst2' has no type signature. Add a `fst2 : …` declaration
+warning: [rule-missing-signature] top-level 'guarded' has no type signature. Add a `guarded : …` declaration
+warning: [rule-missing-signature] top-level 'headOf' has no type signature. Add a `headOf : …` declaration
+warning: [rule-missing-signature] top-level 'idv' has no type signature. Add a `idv : …` declaration
+warning: [rule-missing-signature] top-level 'sumPt' has no type signature. Add a `sumPt : …` declaration
+warning: [rule-missing-signature] top-level 'unBox' has no type signature. Add a `unBox : …` declaration

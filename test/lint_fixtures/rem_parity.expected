@@ -1,20 +1,20 @@
-warning: [rule-dead-code] private top-level 'evenFlipped' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'evenTest' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'isEven' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'isOdd' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negOne' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'negThree' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'oddTest' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-missing-signature] top-level 'evenFlipped' has no type signature — add a `evenFlipped : …` declaration
-warning: [rule-missing-signature] top-level 'evenTest' has no type signature — add a `evenTest : …` declaration
-warning: [rule-missing-signature] top-level 'isEven' has no type signature — add a `isEven : …` declaration
-warning: [rule-missing-signature] top-level 'isOdd' has no type signature — add a `isOdd : …` declaration
-warning: [rule-missing-signature] top-level 'negOne' has no type signature — add a `negOne : …` declaration
-warning: [rule-missing-signature] top-level 'negThree' has no type signature — add a `negThree : …` declaration
-warning: [rule-missing-signature] top-level 'nested' has no type signature — add a `nested : …` declaration
-warning: [rule-missing-signature] top-level 'oddTest' has no type signature — add a `oddTest : …` declaration
-warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
-warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
-warning: [rule-rem-parity] parity test — rewrite as 'isEven n'
-warning: [rule-rem-parity] parity test — rewrite as 'isOdd n'
+warning: [rule-dead-code] private top-level 'evenFlipped' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'evenTest' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'isEven' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'isOdd' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negOne' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negThree' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'nested' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'oddTest' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-missing-signature] top-level 'evenFlipped' has no type signature. Add a `evenFlipped : …` declaration
+warning: [rule-missing-signature] top-level 'evenTest' has no type signature. Add a `evenTest : …` declaration
+warning: [rule-missing-signature] top-level 'isEven' has no type signature. Add a `isEven : …` declaration
+warning: [rule-missing-signature] top-level 'isOdd' has no type signature. Add a `isOdd : …` declaration
+warning: [rule-missing-signature] top-level 'negOne' has no type signature. Add a `negOne : …` declaration
+warning: [rule-missing-signature] top-level 'negThree' has no type signature. Add a `negThree : …` declaration
+warning: [rule-missing-signature] top-level 'nested' has no type signature. Add a `nested : …` declaration
+warning: [rule-missing-signature] top-level 'oddTest' has no type signature. Add a `oddTest : …` declaration
+warning: [rule-rem-parity] parity test. Rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test. Rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test. Rewrite as 'isEven n'
+warning: [rule-rem-parity] parity test. Rewrite as 'isOdd n'

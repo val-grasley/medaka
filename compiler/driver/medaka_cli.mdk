@@ -161,7 +161,7 @@ main = match args ()
 usage : Unit -> <IO> Unit
 usage _ = putStrLn (stringConcat
   [
-    "medaka — language for thinking out loud\n",
+    "medaka: language for thinking out loud\n",
     "\n",
     "Usage:\n",
     "  medaka                    Start the REPL.\n",
@@ -392,10 +392,10 @@ mainBodyLoc (EApp f _) = mainBodyLoc f
 mainBodyLoc _ = None
 
 mainArityMsg : String
-mainArityMsg = "'main' must be a value of type Unit — write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
+mainArityMsg = "'main' must be a value of type Unit. Write 'main = …', not 'main () = …' or 'main x = …' ('medaka run' never applies main; it forces a zero-arg main for its effects)"
 
 mainNonUnitMsg : String
-mainNonUnitMsg = "'main' must be a value of type Unit (e.g. an IO action) — 'medaka run' only forces main for its side effects and prints nothing for a plain value; wrap the intended effect, e.g. 'main = println \"hi\"'"
+mainNonUnitMsg = "'main' must be a value of type Unit (e.g. an IO action). 'medaka run' only forces main for its side effects and prints nothing for a plain value; wrap the intended effect, e.g. 'main = println \"hi\"'"
 
 -- The ARITY shape (`main () = …` / `main x = …`) needs no type info, so it's
 -- safe to call before (or without) elaborateModules — and takes precedence
@@ -768,7 +768,7 @@ typecheckGateRoute allowInternal trusted rsrc csrc tsrc target mods =
       let _ = resetTypeErrorsSticky ()
       let _ = elaborateModules rtD coreD modsD
       match hadTypeErrors ()
-        True => TGErr ("error: type error in " ++ target ++ " — run `medaka check` for details")
+        True => TGErr ("error: type error in " ++ target ++ ". Run `medaka check` for details")
         False => TGOk
     _ => TGErr resDiags
 
@@ -870,7 +870,7 @@ runRunCmd argv =
                     let elaborated = elaborateModules rtD coreD modsD
                     match hadTypeErrors ()
                       True =>
-                        let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
+                        let _ = ePutStrLn ("error: type error in " ++ target ++ ". Run `medaka check` for details")
                         exit 1
                       False =>
                         -- 0.1.0 main-shape warning (see mainShapeWarnings' doc

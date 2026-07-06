@@ -485,7 +485,7 @@ addrCell [] _ name = panic ("EVarAt: slot out of range for " ++ name)
 addrCell ((n, cell)::rest) slot name
   | slot > 0 = addrCell rest (slot - 1) name
   | n == name = cell
-  | otherwise = panic "EVarAt: slot/name mismatch — want \{name}, found \{n}"
+  | otherwise = panic "EVarAt: slot/name mismatch; want \{name}, found \{n}"
 
 export extendEnv : EvalEnv -> List (String, Value) -> EvalEnv
 extendEnv (EvalEnv frames) binds = EvalEnv (map cellOf binds :: frames)
@@ -2449,7 +2449,7 @@ driveAsyncMain binds = match lookupBinding "main" binds
   Some mv => match lookupBinding "runAsync" binds
     Some rf => apply rf (force mv)
     None =>
-      panic "main : Async _ requires `runAsync` in scope — add `import async`"
+      panic "main : Async _ requires `runAsync` in scope. Add `import async`"
 
 -- ── Phase 0 (DRIVER-COLLAPSE): 1-module eval wrappers over evalModules ──────
 -- evalOne / evalOneOutput / evalOneRootEnv run a SINGLE program as the degenerate

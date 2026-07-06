@@ -1,1 +1,1 @@
-TYPE ERROR: Recursive type alias `R` — type aliases cannot be recursive or cyclic
+TYPE ERROR: Recursive type alias `R`. Type aliases cannot be recursive or cyclic

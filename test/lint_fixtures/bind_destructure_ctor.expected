@@ -1,3 +1,3 @@
-warning: [rule-bind-then-destructure] binds 'b' then immediately destructures it in a final `match` — inline the pattern into the bind
-warning: [rule-dead-code] private top-level 'pick' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'unwrap' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-bind-then-destructure] binds 'b' then immediately destructures it in a final `match`. Inline the pattern into the bind
+warning: [rule-dead-code] private top-level 'pick' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'unwrap' is unreachable from exports/main/doctests. Dead code (remove it)

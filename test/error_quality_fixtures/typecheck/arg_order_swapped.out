@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/arg_order_swapped.mdk:3:22: arguments to 'greet' look swapped — try 'greet "Alice" 3'.
+test/error_quality_fixtures/typecheck/arg_order_swapped.mdk:3:22: arguments to 'greet' look swapped; try 'greet "Alice" 3'.
   |
 3 | main = println (greet 3 "Alice")
   |                       ^

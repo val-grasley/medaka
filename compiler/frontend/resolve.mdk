@@ -1253,16 +1253,16 @@ resolveProgramG2 internalGuard runtimeDecls preludeDecls prog =
 -- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
 export ppResError : ResError -> String
 ppResError (UnboundVariable n _ s) = match s
-  Some sug => "Unbound variable: \{n} — did you mean '\{sug}'?"
+  Some sug => "Unbound variable: \{n}. Did you mean '\{sug}'?"
     ++ haskellNote n sug
   None => "Unbound variable: \{n}"
-ppResError (UnboundVariableExported n m _) = "Unbound variable: \{n} — '\{n}' is exported by '\{m}'; import it with 'import \{m}.{\{n}}'"
+ppResError (UnboundVariableExported n m _) = "Unbound variable: \{n}. '\{n}' is exported by '\{m}'; import it with 'import \{m}.{\{n}}'"
 ppResError (UnknownConstructor n _ s) = match s
-  Some sug => "Unknown constructor: \{n} — did you mean '\{sug}'?"
+  Some sug => "Unknown constructor: \{n}. Did you mean '\{sug}'?"
     ++ haskellNote n sug
   None => "Unknown constructor: " ++ n
 ppResError (UnknownType n _ s) = match s
-  Some sug => "Unknown type: \{n} — did you mean '\{sug}'?" ++ haskellNote n sug
+  Some sug => "Unknown type: \{n}. Did you mean '\{sug}'?" ++ haskellNote n sug
   None => "Unknown type: " ++ n
 ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
 ppResError (UnknownField n _) = "Unknown field: " ++ n
@@ -1281,9 +1281,9 @@ ppResError (NoExportedConstructors n m _) = "'\{n}' exports no constructors from
 ppResError (AbstractFieldAccess t f _) = "'\{t}' is exported abstractly; its field '\{f}' is not accessible (declare it `public export` to expose its fields)."
 ppResError (UnknownModule n _) = "Unknown module: " ++ n
 ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
-ppResError (NonRecursiveValueLet n _) = "'\{n}' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec \{n} = ...` to opt in to recursion (the RHS must be a lambda)."
+ppResError (NonRecursiveValueLet n _) = "'\{n}' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive. Write `let rec \{n} = ...` to opt in to recursion (the RHS must be a lambda)."
 ppResError (DuplicateBinding n _) = "the clauses of '\{n}' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of '\{n}' (and its type signature) together, or rename one."
-ppResError (AmbiguousOccurrence n mods _) = "ambiguous occurrence: `\{n}` is exported by \{ambigModPhrase mods} — qualify or select per-name with `import <mod>.{\{n}}` / import only one."
+ppResError (AmbiguousOccurrence n mods _) = "ambiguous occurrence: `\{n}` is exported by \{ambigModPhrase mods}. Qualify or select per-name with `import <mod>.{\{n}}` / import only one."
 ppResError (InternalExternAccess n _) = "'"
   ++ n
   ++ "' is an internal-only primitive and cannot be used outside the standard library (pass --allow-internal to override)"

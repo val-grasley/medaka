@@ -3501,7 +3501,7 @@ unexpectedLeftoverMsg src toks offs srcLen pos =
   let base = "unexpected " ++ describeToken (peekTok toks pos)
   let offset = locateOffset toks offs srcLen pos
   match leadingIndentAt src offset
-    Some col if col > 0 => "\{base} — this line's indentation doesn't line up with the block above (indented to column \{intToString col}); check that it's indented to match the surrounding statements"
+    Some col if col > 0 => "\{base}. This line's indentation doesn't line up with the block above (indented to column \{intToString col}); check that it's indented to match the surrounding statements"
     _ => base
 
 -- A lexer error (unterminated string / block comment, invalid escape, stray
@@ -3588,7 +3588,7 @@ firstHsCaseOfIdx toks i
   | otherwise = firstHsCaseOfIdx toks (i + 1)
 
 hsCaseOfMsg : String
-hsCaseOfMsg = "Medaka has no 'case … of' — use 'match e' with indented 'pattern => body' arms"
+hsCaseOfMsg = "Medaka has no 'case … of'. Use 'match e' with indented 'pattern => body' arms"
 
 -- Haskell type signature (`f :: T`) vs Medaka's single-colon `f : T`: `::` is
 -- Medaka's CONS operator (`x :: xs`), a legitimate infix op that appears all
@@ -3653,7 +3653,7 @@ firstBlockCommentIdx toks i
   | otherwise = firstBlockCommentIdx toks (i + 1)
 
 blockCommentMsg : String
-blockCommentMsg = "Medaka has no '/* … */' block comments — use '{- … -}' (block) or '--' (line)"
+blockCommentMsg = "Medaka has no '/* … */' block comments. Use '{- … -}' (block) or '--' (line)"
 
 -- Brace-block `if` (`if cond { … } else { … }`): C-style braces used as an if
 -- body.  SAFETY (the sharp hazard — braces vs record literals `{ f = v }` /
@@ -3689,7 +3689,7 @@ firstBraceBlockIdx toks i
   | otherwise = firstBraceBlockIdx toks (i + 1)
 
 braceBlockMsg : String
-braceBlockMsg = "unexpected '{' — Medaka has no brace blocks; use 'then'/'else' with indentation, not '{ … }'"
+braceBlockMsg = "unexpected '{'. Medaka has no brace blocks; use 'then'/'else' with indentation, not '{ … }'"
 
 -- `for`/`while` loops and `def`/`function`-style headers: these lex as plain
 -- `TIdent`s (`for`, `while`, `def` are NOT reserved).  A foreign loop/def is
@@ -3729,17 +3729,17 @@ firstForeignKwIdx toks i lineStart
 
 foreignKwMsg : Token -> String
 foreignKwMsg (TIdent "def") =
-  "Medaka has no 'def' — define a function as 'f x = …'"
+  "Medaka has no 'def'. Define a function as 'f x = …'"
 foreignKwMsg (TIdent "while") =
-  "Medaka has no 'while' loops — use recursion or list functions"
-foreignKwMsg _ = "Medaka has no 'for' loops — use recursion or list functions like 'map'/'forEach'/'fold'"
+  "Medaka has no 'while' loops. Use recursion or list functions"
+foreignKwMsg _ = "Medaka has no 'for' loops. Use recursion or list functions like 'map'/'forEach'/'fold'"
 
 -- `;` statement terminator: the lexer surfaces a stray `;` as a `TLexError
 -- "unexpected character ';'"`.  We recognise that message and replace it with a
 -- beginner hint (Medaka is newline/indentation-separated).  Located at the `;`.
 semicolonMsg : String
 semicolonMsg =
-  "Medaka has no statement terminator ';' — separate statements with newlines"
+  "Medaka has no statement terminator ';'. Separate statements with newlines"
 
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path

@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 0
 ---
-test/error_quality_fixtures/exhaust/redundant_arm.mdk:4:12: unreachable match arm — this pattern is already covered by an earlier arm
+test/error_quality_fixtures/exhaust/redundant_arm.mdk:4:12: unreachable match arm. This pattern is already covered by an earlier arm
   |
 4 |   0 => "zero"
   |             ^

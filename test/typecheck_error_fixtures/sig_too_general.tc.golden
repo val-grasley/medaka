@@ -1,1 +1,1 @@
-TYPE ERROR: Declared signature of 'myId' is more general than its body — 'a -> b' claims type variables that are the same type after inference
+TYPE ERROR: Declared signature of 'myId' is more general than its body. 'a -> b' claims type variables that are the same type after inference

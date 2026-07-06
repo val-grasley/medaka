@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/typo_println.mdk:1:7: Unbound variable: printline — did you mean 'println'?
+test/error_quality_fixtures/resolve/typo_println.mdk:1:7: Unbound variable: printline. Did you mean 'println'?
   |
 1 | main = printline "hello"
   |        ^

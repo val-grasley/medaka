@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/wrong_arg_type_in_map.mdk:1:46: 'map' expects a container (like List or Array) here, but got String — pass a List or Array; to work over a string's characters, convert it with `string.toChars` first.
+test/error_quality_fixtures/typecheck/wrong_arg_type_in_map.mdk:1:46: 'map' expects a container (like List or Array) here, but got String. Pass a List or Array; to work over a string's characters, convert it with `string.toChars` first.
   |
 1 | main = println (debug (map (x => x + 1) "hello"))
   |                                               ^

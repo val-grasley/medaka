@@ -1,1 +1,1 @@
-TYPE ERROR: Overlapping impls of Foo: Int and Int can match the same type — mark the more general one `default impl`, or make them disjoint
+TYPE ERROR: Overlapping impls of Foo: Int and Int can match the same type. Mark the more general one `default impl`, or make them disjoint

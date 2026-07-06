@@ -1,1 +1,1 @@
-warning: unreachable match arm — this pattern is already covered by an earlier arm
+warning: unreachable match arm. This pattern is already covered by an earlier arm

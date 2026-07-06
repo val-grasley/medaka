@@ -1,2 +1,2 @@
-❌ rejected — transform requires <Cache, Log> — not permitted by policy {Cache}
+❌ rejected: transform requires <Cache, Log>; not permitted by policy {Cache}
    reached via: transform → logEvent

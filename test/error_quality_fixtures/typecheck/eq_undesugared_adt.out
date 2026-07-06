@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/eq_undesugared_adt.mdk:6:21: No impl of Eq for Color — add 'deriving Eq' to the 'Color' type, or write an 'impl Eq Color'.
+test/error_quality_fixtures/typecheck/eq_undesugared_adt.mdk:6:21: No impl of Eq for Color; add 'deriving Eq' to the 'Color' type, or write an 'impl Eq Color'.
   |
 6 | sameColor a b = a == b
   |                      ^

@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/if_branch_mismatch.mdk:2:38: if branches have different types: Int vs String — both branches must have the same type; change the else branch to Int, or the then branch to String.
+test/error_quality_fixtures/typecheck/if_branch_mismatch.mdk:2:38: if branches have different types: Int vs String. Both branches must have the same type; change the else branch to Int, or the then branch to String.
   |
 2 | classify n = if n > 0 then "pos" else 0
   |                                       ^

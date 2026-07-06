@@ -1,4 +1,4 @@
-warning: [rule-bind-then-destructure] binds 'p' then immediately destructures it in a final `match` — inline the pattern into the bind
-warning: [rule-dead-code] private top-level 'ctorCase' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'keepWhole' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'splitUp' is unreachable from exports/main/doctests — dead code (remove it)
+warning: [rule-bind-then-destructure] binds 'p' then immediately destructures it in a final `match`. Inline the pattern into the bind
+warning: [rule-dead-code] private top-level 'ctorCase' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'keepWhole' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'splitUp' is unreachable from exports/main/doctests. Dead code (remove it)

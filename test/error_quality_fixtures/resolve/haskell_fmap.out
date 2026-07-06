@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/haskell_fmap.mdk:1:16: Unbound variable: fmap — did you mean 'map'? ('fmap' is Haskell; Medaka uses 'map')
+test/error_quality_fixtures/resolve/haskell_fmap.mdk:1:16: Unbound variable: fmap. Did you mean 'map'? ('fmap' is Haskell; Medaka uses 'map')
   |
 1 | main = println (fmap (x => x + 1) [1, 2, 3])
   |                 ^

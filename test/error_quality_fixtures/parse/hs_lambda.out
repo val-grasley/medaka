@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/parse/hs_lambda.mdk:1:21: unexpected '\' — Medaka lambdas are written 'x => e' (not '\x -> e')
+test/error_quality_fixtures/parse/hs_lambda.mdk:1:21: unexpected '\'. Medaka lambdas are written 'x => e' (not '\x -> e')

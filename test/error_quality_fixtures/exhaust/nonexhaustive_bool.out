@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 0
 ---
-test/error_quality_fixtures/exhaust/nonexhaustive_bool.mdk:3:14: non-exhaustive match of 'Bool' — missing case: 'False' — add a 'False => …' arm, or a '_' wildcard arm to catch the rest.
+test/error_quality_fixtures/exhaust/nonexhaustive_bool.mdk:3:14: non-exhaustive match of 'Bool'. Missing case: 'False'; add a 'False => …' arm, or a '_' wildcard arm to catch the rest.
   |
 3 |   True => "yes"
   |               ^

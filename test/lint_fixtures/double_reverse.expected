@@ -1,10 +1,10 @@
-warning: [rule-dead-code] private top-level 'dbl' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'dblApp' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'mapped' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-dead-code] private top-level 'single' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-double-reverse] `reverse (reverse …)` is a no-op — rewrite as 'f xs'
-warning: [rule-double-reverse] `reverse (reverse …)` is a no-op — rewrite as 'xs'
-warning: [rule-missing-signature] top-level 'dbl' has no type signature — add a `dbl : …` declaration
-warning: [rule-missing-signature] top-level 'dblApp' has no type signature — add a `dblApp : …` declaration
-warning: [rule-missing-signature] top-level 'mapped' has no type signature — add a `mapped : …` declaration
-warning: [rule-missing-signature] top-level 'single' has no type signature — add a `single : …` declaration
+warning: [rule-dead-code] private top-level 'dbl' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'dblApp' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'mapped' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'single' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-double-reverse] `reverse (reverse …)` is a no-op. Rewrite as 'f xs'
+warning: [rule-double-reverse] `reverse (reverse …)` is a no-op. Rewrite as 'xs'
+warning: [rule-missing-signature] top-level 'dbl' has no type signature. Add a `dbl : …` declaration
+warning: [rule-missing-signature] top-level 'dblApp' has no type signature. Add a `dblApp : …` declaration
+warning: [rule-missing-signature] top-level 'mapped' has no type signature. Add a `mapped : …` declaration
+warning: [rule-missing-signature] top-level 'single' has no type signature. Add a `single : …` declaration

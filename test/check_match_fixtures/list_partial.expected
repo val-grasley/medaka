@@ -1,1 +1,1 @@
-Warning: non-exhaustive match of 'List' — missing case: '_ :: _' — add a '_ :: _ => …' arm, or a '_' wildcard arm to catch the rest.
+Warning: non-exhaustive match of 'List'. Missing case: '_ :: _'; add a '_ :: _ => …' arm, or a '_' wildcard arm to catch the rest.

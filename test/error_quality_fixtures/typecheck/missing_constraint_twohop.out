@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/missing_constraint_twohop.mdk:6:16: Could not deduce 'Greet a' from the signature of 'sayHi' — its body requires it; add 'Greet a =>' to the declared type
+test/error_quality_fixtures/typecheck/missing_constraint_twohop.mdk:6:16: Could not deduce 'Greet a' from the signature of 'sayHi'. Its body requires it; add 'Greet a =>' to the declared type
   |
 6 | sayHi x = greet x
   |                 ^

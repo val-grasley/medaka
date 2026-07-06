@@ -1,2 +1,2 @@
-warning: [rule-dead-code] private top-level 'reverse' is unreachable from exports/main/doctests — dead code (remove it)
-warning: [rule-stdlib-reimpl] top-level 'reverse' shadows a stdlib function — prefer the stdlib version
+warning: [rule-dead-code] private top-level 'reverse' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-stdlib-reimpl] top-level 'reverse' shadows a stdlib function. Prefer the stdlib version

@@ -2782,7 +2782,7 @@ aliasDfsVisitAll graph visitedRef onStackRef cyclicOut (k::ks) =
 emitCyclicAliasErrors : List String -> <Mut> Unit
 emitCyclicAliasErrors [] = ()
 emitCyclicAliasErrors (name::rest) =
-  let _ = pushTypeErrorOnce "T-RECURSIVE-ALIAS" ("Recursive type alias `" ++ name ++ "` — type aliases cannot be recursive or cyclic")
+  let _ = pushTypeErrorOnce "T-RECURSIVE-ALIAS" ("Recursive type alias `" ++ name ++ "`. Type aliases cannot be recursive or cyclic")
   emitCyclicAliasErrors rest
 
 -- Cycle-detection pre-pass over aliasTableRef.  MUST run immediately after
@@ -4004,7 +4004,7 @@ unknownFieldFresh fname rname declared =
 pushUnknownFieldMaybeSuggest : String -> String -> List String -> <Mut> Unit
 pushUnknownFieldMaybeSuggest fname rname declared = match suggestField fname declared
   None => pushTypeError "T-UNKNOWN-FIELD" (unknownFieldMsg fname rname)
-  Some sug => pushTypeErrorHelpFixAt "T-UNKNOWN-FIELD" currentLoc.value (unknownFieldMsg fname rname ++ " — did you mean '\{sug}'?") "did you mean '\{sug}'?" (fieldFixFrom currentLoc.value sug)
+  Some sug => pushTypeErrorHelpFixAt "T-UNKNOWN-FIELD" currentLoc.value (unknownFieldMsg fname rname ++ ". Did you mean '\{sug}'?") "did you mean '\{sug}'?" (fieldFixFrom currentLoc.value sug)
 
 -- "did you mean" for a record field: nearest declared field name by
 -- Levenshtein distance, within a fixed distance of 2.  Skip names < 3 chars
@@ -4072,7 +4072,7 @@ missingFieldMsg fname rname =
   "Missing field \{fname} in construction of record \{rname}"
 
 ambiguousFieldMsg : String -> List String -> String
-ambiguousFieldMsg fname owners = "Ambiguous field access: '.\{fname}' is declared by \{joinWith ", " owners}. I can't tell which record this value is — add a type annotation on it (e.g. '(r : \{headL owners}).\{fname}')."
+ambiguousFieldMsg fname owners = "Ambiguous field access: '.\{fname}' is declared by \{joinWith ", " owners}. I can't tell which record this value is. Add a type annotation on it (e.g. '(r : \{headL owners}).\{fname}')."
 
 -- TYPECHECK-AUDIT D1: convert resolve-not-pre-screened error shapes (unknown
 -- record / constructor, unbound variable) from uncatchable interpreter panics
@@ -4724,7 +4724,7 @@ emitSwapDiag : String -> Expr -> Expr -> <Mut> Option Mono
 emitSwapDiag name a1 a2 = match (renderLitArg a1, renderLitArg a2)
   (Some s1, Some s2) =>
     let swappedCall = "\{name} \{s2} \{s1}"
-    let msg = "arguments to '\{name}' look swapped — try '\{swappedCall}'."
+    let msg = "arguments to '\{name}' look swapped; try '\{swappedCall}'."
     let help = "swap the arguments: \{swappedCall}"
     let fix = swapArgFix a1 a2 "\{s2} \{s1}"
     let _ = pushTypeErrorHelpFixAt "T-TYPE-MISMATCH" (orElseLoc (exprLoc a1) currentLoc.value) msg help fix
@@ -4917,8 +4917,8 @@ notAFunctionMsg tyName = "This expression has type \{tyName}, which is not a fun
 -- falls back to a name-free phrasing.  No mechanical `fix` — the caller
 -- decides whether to drop the argument or call a different function.
 notAFunctionHint : Option String -> String
-notAFunctionHint (Some name) = " — '\{name}' is a value, not a function; remove the argument, or call a function here."
-notAFunctionHint None = " — this is a value, not a function; remove the argument, or call a function here."
+notAFunctionHint (Some name) = " '\{name}' is a value, not a function; remove the argument, or call a function here."
+notAFunctionHint None = " This is a value, not a function; remove the argument, or call a function here."
 
 overAppliedMsg : String -> Int -> Int -> String
 overAppliedMsg name takes applied = "'\{name}' takes \{intToString takes} argument(s) but is applied to \{intToString applied}."
@@ -4957,9 +4957,9 @@ containerArgMsg fn argTy =
 -- (the most common scalar handed to `map`): a String's characters are reachable
 -- via `string.toChars`, so name that conversion rather than a generic one.
 containerArgHint : String -> String
-containerArgHint "String" = " — pass a List or Array; to work over a string's characters, convert it with `string.toChars` first."
+containerArgHint "String" = ". Pass a List or Array; to work over a string's characters, convert it with `string.toChars` first."
 containerArgHint argTy =
-  " — pass a List or Array, or convert the \{argTy} to one first."
+  ". Pass a List or Array, or convert the \{argTy} to one first."
 
 inferApp : List (String, Expr) -> Expr -> Mono -> Mono -> <Mut> Mono
 inferApp lets appExpr ft xt =
@@ -5206,7 +5206,7 @@ inferMatch env scrutTy arms =
 -- generic form is the fallback if no witness is recoverable.
 nonExhaustiveMatchWarning : String
 nonExhaustiveMatchWarning =
-  "Warning: non-exhaustive match — some values may not be covered"
+  "Warning: non-exhaustive match. Some values may not be covered"
 
 -- Warn if an all-wildcard query is still useful against the matrix of the
 -- non-guarded arms — i.e. some scrutinee value escapes every arm.  Guarded arms
@@ -5230,7 +5230,7 @@ checkMatchExhaustive scrutTy arms =
 -- The warning carries the ARM's own loc (its body span) so the caret points at
 -- the dead arm, not the match head.
 unreachableArmWarning : String
-unreachableArmWarning = "Warning: unreachable match arm — this pattern is already covered by an earlier arm"
+unreachableArmWarning = "Warning: unreachable match arm. This pattern is already covered by an earlier arm"
 
 checkMatchRedundant : Mono -> List Arm -> <Mut> Unit
 checkMatchRedundant scrutTy arms =
@@ -5269,7 +5269,7 @@ nonExhaustiveMsg scrutTy rows = match usefulWitness matchOracle.value (matchCol0
   Some (w::_) =>
     let witnessStr = renderWitness w
     let hint = "add a '\{witnessStr} => …' arm, or a '_' wildcard arm to catch the rest."
-    let msg = "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)} — missing case: '\{witnessStr}' — \{hint}"
+    let msg = "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)}. Missing case: '\{witnessStr}'; \{hint}"
     let _ = setRef matchWarningHelp ((msg, hint)::matchWarningHelp.value)
     msg
   _ => nonExhaustiveMatchWarning
@@ -6950,11 +6950,11 @@ cohPpEach ctx cnt (m::ms) = ppGo ctx cnt 0 m :: cohPpEach ctx cnt ms
 -- pp_error text for OverlappingImpls / MultipleDefaultImpls).
 cohOverlapMsg : String -> List Mono -> List Mono -> <Mut> String
 cohOverlapMsg iface xs ys = match cohPpPair xs ys
-  (s1, s2) => "Overlapping impls of \{iface}: \{s1} and \{s2} can match the same type — mark the more general one `default impl`, or make them disjoint"
+  (s1, s2) => "Overlapping impls of \{iface}: \{s1} and \{s2} can match the same type. Mark the more general one `default impl`, or make them disjoint"
 
 cohDefaultMsg : String -> List Mono -> <Mut> String
 cohDefaultMsg iface xs = match cohPpPair xs xs
-  (s1, _) => "Multiple default impls of \{iface} for \{s1} — at most one default allowed"
+  (s1, _) => "Multiple default impls of \{iface} for \{s1}. At most one default allowed"
 
 -- scan all ordered pairs; return the FIRST conflict message (mirrors the oracle
 -- raising on the first incoherent pair).  None ⇒ coherent.
@@ -8979,7 +8979,7 @@ noImplFoundMsgHinted : String -> List Mono -> <Mut> (String, Option String)
 noImplFoundMsgHinted iface args =
   let base = noImplFoundMsg iface args
   match noImplHint iface args
-    Some hint => ("\{base} — \{hint}", Some hint)
+    Some hint => ("\{base}; \{hint}", Some hint)
     None => (base, None)
 
 -- Push a `No impl of …` type error, appending + recording the actionable-fix
@@ -9033,9 +9033,9 @@ numlitMismatchMsg loc args = match numlitCtxKind loc
 -- context-less fallback (`_`) — there's no branch/element/head to name.
 numlitMismatchHint : Option Loc -> List Mono -> <Mut> String
 numlitMismatchHint loc args = match numlitCtxKind loc
-  Some "if" => " — both branches must have the same type; change the else branch to Int, or the then branch to \{ppMonosShared args}."
-  Some "list" => " — all elements must have the same type; convert the \{ppMonosShared args} element, or make the list hold \{ppMonosShared args}."
-  Some "cons" => " — the head's type must match the list's elements; change the head to \{ppMonosShared args}, or use a list of Int."
+  Some "if" => ". Both branches must have the same type; change the else branch to Int, or the then branch to \{ppMonosShared args}."
+  Some "list" => ". All elements must have the same type; convert the \{ppMonosShared args} element, or make the list hold \{ppMonosShared args}."
+  Some "cons" => ". The head's type must match the list's elements; change the head to \{ppMonosShared args}, or use a list of Int."
   _ => ""
 
 numlitCtxKind : Option Loc -> <Mut> Option String
@@ -10121,13 +10121,13 @@ hasDupI [] = False
 hasDupI (x::xs) = containsI x xs || hasDupI xs
 
 sigTooGeneralMsg : String -> Ty -> String
-sigTooGeneralMsg name ty = "Declared signature of '\{name}' is more general than its body — '\{ppTy ty}' claims type variables that are the same type after inference"
+sigTooGeneralMsg name ty = "Declared signature of '\{name}' is more general than its body. '\{ppTy ty}' claims type variables that are the same type after inference"
 
 -- C3: mirrors lib/typecheck.ml's AnnotationTooGeneral message byte-for-byte.
 annotTooGeneralMsg : Ty -> String
 annotTooGeneralMsg ty = "Type annotation '"
   ++ ppTy ty
-  ++ "' is more polymorphic than the expression — a type variable in the annotation is actually a specific type (or two annotation variables are the same type)"
+  ++ "' is more polymorphic than the expression. A type variable in the annotation is actually a specific type (or two annotation variables are the same type)"
 
 -- pretty-print an AST type (mirrors lib/ast.ml's pp_ty byte-for-byte)
 ppTy : Ty -> String
@@ -10348,7 +10348,7 @@ findTvName id ((n, mono)::rest) = match normalize mono
   _ => findTvName id rest
 
 missingConstraintMsg : String -> String -> String -> String
-missingConstraintMsg name iface varName = "Could not deduce '\{iface} \{varName}' from the signature of '\{name}' — its body requires it; add '\{iface} \{varName} =>' to the declared type"
+missingConstraintMsg name iface varName = "Could not deduce '\{iface} \{varName}' from the signature of '\{name}'. Its body requires it; add '\{iface} \{varName} =>' to the declared type"
 
 -- the member's own quantified tyvar ids that a body method site / propagated
 -- constrained-call sits at (deduped, slot order = discovery order)

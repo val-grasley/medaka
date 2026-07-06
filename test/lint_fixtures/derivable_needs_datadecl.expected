@@ -1,1 +1,1 @@
-warning: [rule-hand-rolled-derivable] hand-written `impl Eq` for 'Suit' — consider `deriving (Eq)` instead
+warning: [rule-hand-rolled-derivable] hand-written `impl Eq` for 'Suit'. Consider `deriving (Eq)` instead

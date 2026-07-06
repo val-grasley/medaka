@@ -7428,7 +7428,7 @@ EQUAL
 INDENT
 IDENT "lexErrorTok"
 IDENT "pos"
-STRING "unexpected '\\' — Medaka lambdas are written 'x => e' (not '\\x -> e')"
+STRING "unexpected '\\'. Medaka lambdas are written 'x => e' (not '\\x -> e')"
 NEWLINE
 DEDENT
 NEWLINE
@@ -7443,7 +7443,7 @@ EQUAL
 INDENT
 IDENT "lexErrorTok"
 IDENT "pos"
-STRING "Medaka has no '$' — apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
+STRING "Medaka has no '$'. Apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
 NEWLINE
 DEDENT
 NEWLINE
