@@ -8,10 +8,10 @@ consx : a -> List a -> List a
 eqp : a -> a -> Bool
 fwd : (a -> b) -> (b -> c) -> a -> c
 ltp : a -> a -> Bool
-negI : a -> a
+negI : Num a => a -> a
 negP : a -> a
 notb : Bool -> Bool
 orb : Bool -> Bool -> Bool
 pipeIt : a -> (a -> b) -> b
-poly : a -> a -> a -> a
-total : L a -> a
+poly : Num a => a -> a -> a -> a
+total : Num a => L a -> a

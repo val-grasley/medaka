@@ -2589,6 +2589,41 @@ substMonoP pos subst esub t = match normalize t
 export ppScheme : Scheme -> <Mut> String
 ppScheme (Forall _ _ t) = ppMono t
 
+-- Render a scheme WITH its constraint context (`Num a => a -> a -> a`).  The
+-- constraint tyvar ids are threaded through the SAME ctx/cnt that renders the
+-- body, so a constraint's letter matches the body's (id → letter shared).  The
+-- body is rendered FIRST so ctx already carries the body's letter assignments
+-- when the constraints reuse it via nameOf.  Constraints are rendered+sorted+
+-- deduped for a stable display order.  Empty list ⇒ plain ppScheme (no `=>`).
+-- Single-vs-multiple form mirrors ppConstrDoc in tools/doc.mdk (`Num a =>` /
+-- `(Num a, Ord b) =>`).
+export ppSchemeCon : List (String, Int) -> Scheme -> <Mut> String
+ppSchemeCon [] s = ppScheme s
+ppSchemeCon cons (Forall _ _ t) =
+  let ctx = Ref []
+  let cnt = Ref 0
+  let body = ppGo ctx cnt 0 t
+  let rendered = sortUniqS (renderConstraintCtx ctx cnt cons)
+  let ctxStr = match rendered
+    [c] => c
+    _ => "(" ++ joinWith ", " rendered ++ ")"
+  "\{ctxStr} => \{body}"
+
+renderConstraintCtx : Ref (List (Int, String)) -> Ref Int -> List (String, Int) -> <Mut> List String
+renderConstraintCtx _ _ [] = []
+renderConstraintCtx ctx cnt ((iface, id)::rest) =
+  let s = "\{iface} \{nameOf ctx cnt id}"
+  s :: renderConstraintCtx ctx cnt rest
+
+-- Render a binding's scheme WITH its inferred/declared constraint context, looked
+-- up by NAME from schemeObligationsRef (the always-on obligation side-channel the
+-- most-recent typecheck left populated).  A name with no recorded obligations
+-- renders as plain ppScheme.  Used by schemeLines (`check --types`) and the LSP
+-- hover/completion/inlay renderers so all display surfaces show `Num a => …`.
+export ppSchemeNamed : String -> Scheme -> <Mut> String
+ppSchemeNamed n s =
+  ppSchemeCon (fromOption [] (lookupAssocS2 n schemeObligationsRef.value)) s
+
 ppMono : Mono -> <Mut> String
 ppMono t =
   let ctx = Ref []
@@ -11743,4 +11778,4 @@ elabModulesGo baseSeed depEnv accData accAll ((mid, prog)::rest) =
 
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []
-schemeLines ((n, s)::rest) = "\{n} : \{ppScheme s}" :: schemeLines rest
+schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
