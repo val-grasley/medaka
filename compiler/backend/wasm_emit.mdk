@@ -538,6 +538,21 @@ useHashRef = Ref False
 useEPutRef : Ref Bool
 useEPutRef = Ref False
 
+-- B5 (RUNTIME-TRAP-UNIFY §3 (5)): a coded runtime-trap helper streamed bytes to
+-- stderr via the mdk_write_err_byte host import → force that import.  SET DURING
+-- EMIT by wasmTrapInstrs (not the pre-scan): a trap can appear at a decision-tree
+-- CTFail / clause-chain fallthrough whose reachability the pre-scan can't cheaply
+-- decide, so emit{Ref,Scalar}Program reads this AFTER the body-emit bindings (Medaka
+-- `let` is strict, so the import binding, computed after `fns`/`initLines`, sees it).
+useTrapImport : Ref Bool
+useTrapImport = Ref False
+
+-- B5: the program contains a concrete-Int `/`/`%` → declare the i64 divisor-guard
+-- scratch local ($__divr<depth> in ref mode, $__sdivr in scalar mode).  Set by the
+-- pre-scan (noteW8Binop) so the local decl is present before the div-site emit.
+useDivGuardRef : Ref Bool
+useDivGuardRef = Ref False
+
 -- W8b: the program uses Float (a Float literal, a Float extern, or a Float arith op).
 -- Forces ref-mode (a Float is a boxed (ref eq) $float struct) + gates the Float runtime
 -- (floatRuntimeLines + the floatToString host import).  useFloatHashRef / useFloatRngRef
@@ -728,6 +743,8 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useRngRef False
   let _ = setRef useHashRef False
   let _ = setRef useEPutRef False
+  let _ = setRef useTrapImport False
+  let _ = setRef useDivGuardRef False
   let _ = setRef useFloatRef False
   let _ = setRef useFloatHashRef False
   let _ = setRef useFloatRngRef False
@@ -795,6 +812,8 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useRngRef False
   let _ = setRef useHashRef False
   let _ = setRef useEPutRef False
+  let _ = setRef useTrapImport False
+  let _ = setRef useDivGuardRef False
   let _ = setRef useFloatRef False
   let _ = setRef useFloatHashRef False
   let _ = setRef useFloatRngRef False
@@ -1249,8 +1268,10 @@ noteW8Extern name =
   let _ = if contains name ["charIsAlpha", "charIsSpace", "charIsUpper", "charIsLower",
                              "charIsPunct", "charToUpper", "charToLower"]
           then setRef useCharClassRef True else ()
-  -- W10: panic's message arg is a $str (emitted then dropped) → force the $str rep.
-  let _ = if name == "panic" then setRef useStrRef True else ()
+  -- W10: panic's message arg is a $str → force the $str rep.  B5: the coded-trap
+  -- lowering streams that message through $mdk_eprint_str (gated on useEPutRef) after a
+  -- fixed "runtime error [E-PANIC]: " prefix, so force useEPutRef too.
+  let _ = if name == "panic" then let _ = setRef useStrRef True in setRef useEPutRef True else ()
   -- W10: the array intrinsic externs all build/read the $arr rep (and arrayFromList
   -- consumes a cons list).  Force useArrayRef; arrayFromList also forces useListRef.
   let _ = if contains name ["arrayLength", "arrayGetUnsafe", "arrayMake", "arrayMakeWith",
@@ -1289,6 +1310,10 @@ noteW8Binop "++" =
   let _ = setRef useStrRef True
   setRef useListRef True
 noteW8Binop "::" = setRef useListRef True
+-- B5: a concrete-Int `/`/`%` needs the divisor-guard scratch local (declared per fn
+-- via w7LocalsAtDepth / the scalar fn+init decls).  Float `/` never traps on zero.
+noteW8Binop "/" = setRef useDivGuardRef True
+noteW8Binop "%" = setRef useDivGuardRef True
 noteW8Binop _ = ()
 
 scanArmW7 : CArm -> <Mut> Unit
@@ -1674,7 +1699,12 @@ emitScalarProgram fnNames valNames groups =
   let globals = map oneGlobalI32 valNames
   let fns = flatMap (emitScalarFnBind fnNames valNames) (userFnBinds groups)
   let initLines = emitScalarInit fnNames valNames groups
-  joinNl (header ++ globals ++ fns ++ ioRuntimeLines ++ initLines ++ [")"])
+  -- B5: the stderr byte-write import for a coded div/mod trap.  Computed AFTER the
+  -- body-emit bindings above (Medaka `let` is strict) so useTrapImport — set during
+  -- emit by wasmTrapBytes — is visible.  wasm-tools text assembles fields into
+  -- sections regardless of order, so a late `(import …)` field is fine.
+  let trapImport = if useTrapImport.value then stderrByteImportLines else []
+  joinNl (header ++ trapImport ++ globals ++ fns ++ ioRuntimeLines ++ initLines ++ [")"])
 
 oneGlobalI32 : String -> String
 oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i64) (i64.const 0))"
@@ -1690,7 +1720,10 @@ emitScalarInit fnNames valNames groups =
     None => []
   let locals = dedupKeep (valLocals ++ mainLocals)
   let localDecls = map (l => "  " ++ localDeclI32 l) locals
+  -- B5: scalar divisor-guard scratch (a `/`/`%` in a value-binding or `main` body).
+  let dv = if useDivGuardRef.value then ["    (local $__sdivr i64)"] else []
   ["  (func $__init"]
+    ++ dv
     ++ localDecls
     ++ valInit
     ++ mainLines
@@ -1733,7 +1766,9 @@ emitScalarFnBind fnNames valNames (CBind name [CClause pats body]) =
   let instrs = emitScalarTail fnNames valNames env body
   let sig = "  (func $\{gname name}\{joinWith "" (map paramDeclI32 params)} (result i64)"
   let localDecls = map localDeclI32 extraLocals
-  [sig] ++ map ("  " ++ _) localDecls ++ indent instrs ++ ["  )"]
+  -- B5: scalar divisor-guard scratch for a concrete-Int `/`/`%` in this fn body.
+  let dv = if useDivGuardRef.value then ["(local $__sdivr i64)"] else []
+  [sig] ++ map ("  " ++ _) (dv ++ localDecls) ++ indent instrs ++ ["  )"]
 emitScalarFnBind _ _ (CBind name _) =
   gap
     ("scalar-mode top-level function '" ++ name ++ "' is multi-clause or pattern-matching (decision-tree match needs ADT mode)")
@@ -1837,6 +1872,11 @@ emitBinI32 fnNames valNames env op l r =
   -- layer-17 §2.1: i64 arithmetic.  A comparison yields wasm i32 0/1, so extend it
   -- back to the uniform i64 value rep.
   if isCmpOp op then (li ++ ri ++ [wasmBinOp64 op, "i64.extend_i32_u"], binOpTy op)
+  -- B5: scalar-mode concrete-Int `/`/`%` get the same coded divisor-zero guard as
+  -- ref mode (single function-scope $__sdivr i64 scratch; reuse across nested divs is
+  -- safe — each store-then-immediately-use completes before the next).
+  else if (op == "/" || op == "%") then
+    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op], binOpTy op)
   else (li ++ ri ++ [wasmBinOp64 op], binOpTy op)
 
 emitUnI32 : List String -> List String -> List String -> String -> CExpr -> <Mut> (List String, WTy)
@@ -1913,8 +1953,10 @@ emitRefProgram : Prog -> List CBind -> <Mut> String
 emitRefProgram prog groups =
   let header = preambleHeadLines
   let typeSection = emitTypeSection prog
-  -- W8: ePutStr/ePutStrLn need a second host import (stderr byte-write).
-  let imports = ioByteImportLines ++ (if useEPutRef.value then stderrByteImportLines else [])
+  -- W8: ePutStr/ePutStrLn (useEPutRef) and B5 coded traps (useTrapImport) both need the
+  -- stderr byte-write import; it is emitted ONCE, LATE (see `trapImport` below), because
+  -- useTrapImport is set during body emit.
+  let imports = ioByteImportLines
     -- W8b: floatToString is a host import (the %.12g formatter lives JS-side).
     ++ (if useFloatRef.value then floatFmtImportLines else [])
     -- layer-6: stringToFloat is a host import (mdk_str_to_float uses JS Number()).
@@ -2002,7 +2044,12 @@ emitRefProgram prog groups =
   -- ioHostRt in scope ($mdk_push_path / $mdk_io_result_to_str) + the $arr rep.
   let fileBytesRt = if useFileBytesRef.value then fileBytesRuntimeLines else []
   let dataSegs = emitDataSegs ()
-  joinNl (header ++ typeSection ++ imports ++ elemDecl ++ globals
+  -- B5: the stderr byte-write import — for ePutStr (useEPutRef) OR a coded runtime trap
+  -- (useTrapImport, set during the body emit above).  Emitted ONCE.  This binding is
+  -- forced after all body-emit bindings (strict `let`), so useTrapImport is visible;
+  -- `dataSegs` above already relies on that same after-body ordering (strSegsRef).
+  let trapImport = if useEPutRef.value || useTrapImport.value then stderrByteImportLines else []
+  joinNl (header ++ typeSection ++ imports ++ trapImport ++ elemDecl ++ globals
             ++ fns ++ implFns ++ defaultDefs ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt ++ valueCmpRt ++ valueArithRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
@@ -2647,7 +2694,8 @@ emitClauseChainRefEnv prog baseEnv name params arity clauses =
   emitClauseChainGo prog baseEnv name params arity clauses 0
 
 emitClauseChainGo : Prog -> List String -> String -> List String -> Int -> List CClause -> Int -> <Mut> List String
-emitClauseChainGo _ _ _ _ _ [] _ = ["unreachable"]
+-- B5: the last clause fell through (non-exhaustive function) → coded trap.
+emitClauseChainGo _ _ _ _ _ [] _ = wasmTrap "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 emitClauseChainGo prog baseEnv name params arity ((CClause pats body)::rest) i =
   let clLabel = "$cl_\{name}_\{intToString i}"
   let (tests, binds, env) = clausePatCodeEnv prog baseEnv pats params clLabel
@@ -4175,7 +4223,11 @@ emitBinRef prog env d op l r tag =
     -- truncate.  Arithmetic re-boxes the i64 result; comparisons yield an i31 Bool.
     let li = emitRefExpr prog env d l ++ ["call $mdk_unbox_int"]
     let ri = emitRefExpr prog env d r ++ ["call $mdk_unbox_int"]
-    if isCmpOp op then li ++ ri ++ [wasmBinOp64 op, "ref.i31"]
+    -- B5: concrete-Int `/`/`%` get a divisor-zero guard emitting the coded trap line
+    -- (peer of the native emitIntDivZeroChecked) before the raw i64.div_s/rem_s.
+    if (op == "/" || op == "%") then
+      li ++ ri ++ emitDivZeroGuard op ("$__divr" ++ intToString d) ++ [wasmBinOp64 op, "call $mdk_box_int"]
+    else if isCmpOp op then li ++ ri ++ [wasmBinOp64 op, "ref.i31"]
     else li ++ ri ++ [wasmBinOp64 op, "call $mdk_box_int"]
 
 -- A1: a binop with a POLYMORPHIC `Num`/`Ord` operand — a bare CVar bound to a param
@@ -4196,6 +4248,41 @@ valueArithName "*" = "mul"
 valueArithName "/" = "div"
 valueArithName "%" = "mod"
 valueArithName op = panic ("wasm A0: not a value-arith op '" ++ op ++ "'")
+
+-- ── B5: coded runtime-trap helpers (RUNTIME-TRAP-UNIFY-DESIGN §3 (5), §7 forks 1-2) ──
+-- The WasmGC peer of the native traps: emit the same coded stderr line the interpreter
+-- and medaka_rt.c produce — `runtime error [E-CODE]: <message>\n` — then `unreachable`.
+-- The bytes are streamed to stderr via the mdk_write_err_byte host import, FULLY
+-- UNROLLED (one i32.const/call pair per byte): no $str value, no data segment, no
+-- ref-mode dependency, so the SAME helper works in scalar AND ref mode and only the
+-- import (not the $str runtime) is forced.  `unreachable` is stack-polymorphic, so the
+-- sequence validates as any result type (mirroring the bare `unreachable` it replaces).
+-- Sets useTrapImport so emit{Ref,Scalar}Program declares the host import.
+trapByteInstr : Int -> List String
+trapByteInstr b = ["i32.const " ++ intToString b, "call $mdk_write_err_byte"]
+
+wasmTrapBytes : String -> <Mut> List String
+wasmTrapBytes text =
+  let _ = setRef useTrapImport True
+  flatMap trapByteInstr (strBytesW text)
+
+-- a full coded trap with a compile-time-fixed message (div/mod/OOB/non-exhaustive).
+wasmTrap : String -> String -> <Mut> List String
+wasmTrap code msg = wasmTrapBytes ("runtime error [" ++ code ++ "]: " ++ msg ++ "\n")
+  ++ ["unreachable"]
+
+-- B5: guard a concrete-Int div/mod divisor.  Stack in `[dividend:i64, divisor:i64]`;
+-- stashes the divisor in `dloc`, traps with the coded [E-DIV-ZERO]/[E-MOD-ZERO] line if
+-- it is zero, then restores `[dividend, divisor]` for the following i64.div_s/rem_s.
+-- (The `if` has empty block type; the dividend rests untouched beneath it, and the
+-- then-branch ends in `unreachable` so the branch is stack-polymorphic.)
+emitDivZeroGuard : String -> String -> <Mut> List String
+emitDivZeroGuard op dloc =
+  let code = if op == "/" then "E-DIV-ZERO" else "E-MOD-ZERO"
+  let msg = if op == "/" then "division by zero" else "modulo by zero"
+  ["local.set " ++ dloc, "local.get " ++ dloc, "i64.eqz", "if"]
+    ++ indent (wasmTrap code msg)
+    ++ ["end", "local.get " ++ dloc]
 
 -- layer-9: emit a runtime-shape-dispatched comparison.  `==`/`!=` go through
 -- $mdk_value_eq (-> i31 Bool); ordering ops call $mdk_value_cmp (-> plain i32 -1/0/1)
@@ -4808,11 +4895,18 @@ emitLeafExternRef prog env d "writeFileBytes" [p, arr] = emitRefExpr prog env d 
   ++ ["ref.cast (ref $arr)", "call $mdk_write_file_bytes_io"]
 emitLeafExternRef prog env d "writeFileBytes" _ =
   gapL "wasm stage-D: writeFileBytes takes exactly two arguments"
--- W10: `panic msg` → emit the message (a $str (ref eq)), drop it, then `unreachable`.
--- `unreachable` is a trap and is stack-polymorphic, so it validates as any result
--- type (mirroring native @mdk_panic, which aborts with empty stdout).
-emitLeafExternRef prog env d "panic" [msg] = emitRefExpr prog env d msg
-  ++ ["drop", "unreachable"]
+-- W10/B5: `panic msg` → stream the coded line `runtime error [E-PANIC]: <msg>\n` to
+-- stderr, then `unreachable` (peer of native @mdk_panic / the interp's runtimePanic).
+-- The fixed prefix is unrolled to byte-writes; the user message (a $str (ref eq), any
+-- expression) is streamed through $mdk_eprint_str (forced via useEPutRef in noteW8Extern
+-- for `panic`), then a trailing newline byte.  `unreachable` is stack-polymorphic, so it
+-- validates as any result type.
+emitLeafExternRef prog env d "panic" [msg] =
+  wasmTrapBytes "runtime error [E-PANIC]: "
+    ++ emitRefExpr prog env d msg
+    ++ ["ref.cast (ref $str)", "call $mdk_eprint_str"]
+    ++ trapByteInstr 10
+    ++ ["unreachable"]
 emitLeafExternRef prog env d "panic" _ =
   gapL "wasm W10: panic takes exactly one argument"
 -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Args are (ref eq) boxed Ints;
@@ -6276,7 +6370,7 @@ emitDecisionTail prog env arity scrut arms tree =
 -- NOT need a result block (each path returns).  Reuses the same br_table tower shape
 -- with the slot bodies tail-emitting their arms.
 emitTreeTail : Prog -> List String -> Int -> Int -> List String -> List (List String) -> List CArm -> CTree -> <Mut> List String
-emitTreeTail prog env arity d root occs arms CTFail = ["unreachable"]
+emitTreeTail prog env arity d root occs arms CTFail = wasmTrap "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 emitTreeTail prog env arity d root occs arms (CTLeaf i) =
   emitLeafTail prog env arity root arms i
 emitTreeTail prog env arity d root occs arms (CTGuard i fail) =
@@ -6824,10 +6918,11 @@ emitIndexRef prog env d a i =
   let arrI = emitRefExpr prog env d a ++ ["ref.cast (ref $arr)", "local.set " ++ arrL]
   let idxI = emitRefExpr prog env d i ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ idxL]
   arrI ++ idxI
-    -- bounds: idx < 0 || idx >= len → unreachable
+    -- bounds: idx < 0 || idx >= len → B5 coded [E-INDEX-OOB] trap (peer of native
+    -- @mdk_oob; message matches medaka_rt.c, sans the index value native also omits).
     ++ ["local.get " ++ idxL, "i32.const 0", "i32.lt_s"]
     ++ ["local.get " ++ idxL, "local.get " ++ arrL, "ref.as_non_null", "array.len", "i32.ge_s"]
-    ++ ["i32.or", "if", "unreachable", "end"]
+    ++ ["i32.or", "if"] ++ indent (wasmTrap "E-INDEX-OOB" "index out of bounds") ++ ["end"]
     ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ idxL, "array.get $arr", "ref.as_non_null"]
 
 -- CSlice arr lo hi incl: new array of (end-lo) slots, copy via array.copy.  end =
@@ -6986,7 +7081,7 @@ emitDecisionRef prog env d scrut arms tree =
 -- exactly one (ref eq) for `decLabel`'s block to yield (via `br decLabel`), except
 -- the default tail of a switch tower which falls through with the value on the stack.
 emitTreeRef : Prog -> List String -> Int -> String -> List String -> List (List String) -> List CArm -> CTree -> <Mut> List String
-emitTreeRef prog env d decLabel root occs arms CTFail = ["unreachable"]
+emitTreeRef prog env d decLabel root occs arms CTFail = wasmTrap "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 emitTreeRef prog env d decLabel root occs arms (CTLeaf i) =
   emitLeafRef prog env d decLabel root arms i
 emitTreeRef prog env d decLabel root occs arms (CTGuard i fail) =
@@ -7348,7 +7443,9 @@ w7LocalsAtDepth d =
     -- stage-B: i64 bit accumulator for floatToBytes64/bytesToFloat64 reinterpret.
     "(local $__aexbits" ++ sfx ++ " i64)"] else []
   let ru = if isNonEmptyList recFieldsRef.value then ["(local $__rub" ++ sfx ++ " (ref eq))"] else []
-  rl ++ ra ++ ru
+  -- B5: the i64 divisor-guard scratch for a concrete-Int `/`/`%` at this depth.
+  let dv = if useDivGuardRef.value then ["(local $__divr" ++ sfx ++ " i64)"] else []
+  rl ++ ra ++ ru ++ dv
 
 -- an arm contributes its pattern's bound vars + its body's locals + guard locals.
 collectArmLocals : CArm -> List String

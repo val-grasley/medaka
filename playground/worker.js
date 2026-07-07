@@ -42,6 +42,10 @@ let floatFmtBuf = [];
 
 const stdoutBuf = [];
 const stderrBuf = [];
+// B5: a persistent copy of ALL stderr bytes (stderrBuf is drained on each flush). On a
+// runtime trap the guest streams a coded `runtime error [E-CODE]: …` line here before
+// the `unreachable`; the catch handler surfaces THAT instead of a generic message.
+let stderrAll = [];
 
 function flushStdout() {
   if (stdoutBuf.length === 0) return;
@@ -62,6 +66,7 @@ self.onmessage = function(e) {
 
   stdoutBuf.length = 0;
   stderrBuf.length = 0;
+  stderrAll = [];
   floatFmtBuf = [];
 
   const imports = { env: {
@@ -72,6 +77,7 @@ self.onmessage = function(e) {
     },
     mdk_write_err_byte: (b) => {
       stderrBuf.push(b & 0xff);
+      stderrAll.push(b & 0xff);
       if ((b & 0xff) === 10) flushStderr();
     },
     mdk_float_fmt: (d) => {
@@ -94,12 +100,18 @@ self.onmessage = function(e) {
     .catch((err) => {
       flushStdout();
       flushStderr();
-      // Medaka panic/exit lowers to unreachable → trap; surface cleanly.
-      const msg = err.message || String(err);
-      const isPanic = /unreachable|trap|RuntimeError/i.test(msg);
+      // B5: a Medaka runtime trap (div-zero / non-exhaustive / OOB / panic) streams a
+      // coded `runtime error [E-CODE]: <message>` line to stderr BEFORE the `unreachable`.
+      // Surface that captured text — not a generic "program panicked" — so the user sees
+      // WHICH error and its code. Fall back to the generic message only for a genuine
+      // instantiate failure (no coded stderr was produced).
+      const coded = new TextDecoder('utf-8', { fatal: false })
+        .decode(new Uint8Array(stderrAll)).trim();
+      const engineMsg = err.message || String(err);
+      const isPanic = /unreachable|trap|RuntimeError/i.test(engineMsg);
       self.postMessage({
         type: 'error',
-        message: isPanic ? 'program panicked' : 'instantiate failed: ' + msg,
+        message: coded ? coded : (isPanic ? 'program panicked' : 'instantiate failed: ' + engineMsg),
       });
     });
 };

@@ -119,4 +119,13 @@ WebAssembly.instantiate(bytes, imports)
     process.stdout.write(Buffer.from(acc).toString('utf8'));
     if (eacc.length) process.stderr.write(Buffer.from(eacc).toString('utf8'));
   })
-  .catch((e) => { console.error('instantiate failed:', e.message); process.exit(1); });
+  .catch((e) => {
+    // A Medaka runtime trap: the guest streamed a coded `runtime error [E-CODE]: …`
+    // line to stderr (via mdk_write_err_byte) and any pre-trap stdout to stdout BEFORE
+    // the `unreachable`. Flush BOTH (native + playground preserve partial stdout too),
+    // then surface the captured coded stderr instead of the engine's generic message.
+    if (acc.length) process.stdout.write(Buffer.from(acc).toString('utf8'));
+    if (eacc.length) process.stderr.write(Buffer.from(eacc).toString('utf8'));
+    else process.stderr.write('instantiate failed: ' + (e && e.message ? e.message : String(e)) + '\n');
+    process.exit(1);
+  });
