@@ -1,0 +1,105 @@
+-- compiler/driver/main_autoprint.mdk — shared composite-`main` auto-print wrap.
+--
+-- A bare non-Unit VALUE `main` (`main = ("abc", 1.23)`, `main = [1,2,3]`, a
+-- `deriving Display` ADT, …) used to CRASH the emitter (`emitPrint` panics on a
+-- non-scalar `main`).  This module implements the uniform fix from
+-- compiler/COMPOSITE-MAIN-AUTOPRINT-DESIGN.md §10: rewrite the entry decl
+--   main = <e>   ⟶   main = println <e>
+-- (`println` renders via `display` → raw strings, `(a, b)` tuples, `[1, 2, 3]`
+-- lists, derived ctors) so the value flows through the ordinary polymorphic print
+-- path every backend already compiles.  The wrapped `main : <IO> Unit` suppresses
+-- the emitter's own scalar auto-print (installMainIsUnitHint True), so a value is
+-- printed exactly ONCE.
+--
+-- SCOPE / re-mint safety: the wrap fires ONLY on a bare zero-arg non-Unit/non-Async
+-- value main.  Every compiler-graph `main` is Unit/`<IO>`-typed, so
+-- `shouldAutoPrintMain` is always False on the compiler's own source → the emitter
+-- output on the compiler graph is byte-identical → the self-compile fixpoint is
+-- stable and NO seed re-mint is owed (design §6).
+--
+-- UNDERIVED detection: a bare ADT main with no `Display` instance (`data H = H;
+-- main = H`) must surface the clean `No impl of Display for H; add 'deriving
+-- Display'` error, NOT a miscompile.  `underivedMainDiags` re-runs the CHECK gate
+-- (`checkProgramDiags`, implInferEnabled OFF → checkImplObligations ON) on the
+-- WRAPPED, UN-MANGLED program — exactly what source-level `medaka build` of an
+-- explicit `main = println H` already does.  (The design's critical caveat: NEVER
+-- call checkImplObligations on the MANGLED emit-elaborated program — it can't match
+-- mangled `display`/`println` obligations to impl heads and mis-fires on every
+-- program.  Routing through checkProgramDiags on un-mangled decls avoids that.)
+
+import frontend.ast.{Decl(..), Expr(..), Pat, Loc}
+import types.typecheck.{
+  mainTypeIsUnit,
+  mainTypeIsAsync,
+  checkProgramDiags,
+  setCoherenceUserDecls,
+}
+
+-- The loader hands modules dependency-first, so the ENTRY module is last.
+entryPair : List (String, List Decl) -> Option (String, List Decl)
+entryPair [] = None
+entryPair [p] = Some p
+entryPair (_::rest) = entryPair rest
+
+-- Find the top-level `main`'s param list among a module's decls (skipping @attr
+-- wrappers), so the caller can require an EMPTY param list (a value main — a
+-- function-shaped `main () =`/`main x =` keeps its own W-MAIN-SHAPE handling and
+-- is NEVER auto-printed).
+findMainParams : List Decl -> Option (List Pat)
+findMainParams [] = None
+findMainParams ((DAttrib _ d)::rest) = findMainParams (d::rest)
+findMainParams ((DFunDef _ "main" ps _)::_) = Some ps
+findMainParams (_::rest) = findMainParams rest
+
+-- True iff a top-level `println` binding is in scope (defined by the prelude).
+-- The wrap rewrites `main = <e>` → `main = println <e>`, so it MUST NOT fire when
+-- `println` is undefined — e.g. the emit gates that pass an EMPTY core prelude
+-- (test/diff_compiler_llvm_modules.sh) to exercise the emitter's own scalar
+-- auto-print.  A real `medaka build` always passes core.mdk (which defines
+-- `println x = putStrLn (display x)`), so the wrap fires there.
+definesPrintln : List Decl -> Bool
+definesPrintln [] = False
+definesPrintln ((DAttrib _ d)::rest) = definesPrintln (d::rest)
+definesPrintln ((DFunDef _ "println" _ _)::_) = True
+definesPrintln (_::rest) = definesPrintln rest
+
+-- Auto-print fires iff main's inferred type is neither Unit nor `Async _`, the
+-- entry `main` is a zero-arg VALUE (empty param list), AND `println` is in scope.
+-- Requires the caller to have run an elaborate first (populates mainSchemeRef).
+export shouldAutoPrintMain : List Decl -> List (String, List Decl) -> <Mut> Bool
+shouldAutoPrintMain coreDecls modules =
+  if mainTypeIsUnit () || mainTypeIsAsync () then False
+  else
+    if not (definesPrintln (coreDecls ++ flatMap snd modules)) then False
+    else match entryPair modules
+      None => False
+      Some (_, decls) => match findMainParams decls
+        Some [] => True
+        _ => False
+
+-- Rewrite the entry module's `main = <e>` decl to `main = println <e>`.
+export autoPrintWrapModules : List (String, List Decl) -> List (String, List Decl)
+autoPrintWrapModules [] = []
+autoPrintWrapModules [(mid, decls)] = [(mid, map wrapMainDecl decls)]
+autoPrintWrapModules (p::rest) = p :: autoPrintWrapModules rest
+
+wrapMainDecl : Decl -> Decl
+wrapMainDecl (DFunDef vis "main" [] body) =
+  DFunDef vis "main" [] (EApp (EVar "println") body)
+wrapMainDecl (DAttrib a d) = DAttrib a (wrapMainDecl d)
+wrapMainDecl d = d
+
+-- Re-run the CHECK gate on the wrapped program to surface an underived-ADT main
+-- as the clean `No impl of Display …` type error.  Gated to a SINGLE loaded
+-- module (the common composite-main shape: playground + `medaka build file.mdk`):
+-- the flat core++entry check IS the single-file `analyzeLocated` engine.  A
+-- multi-module program flattened this way risks the over-rejection the CLI's
+-- multi-module gate deliberately avoids, so it is skipped there (best-effort —
+-- the compiler graph never wraps, so this never affects the fixpoint).  Returns
+-- the raw `(code, msg, Option Loc)` type-error tuples for the caller to render.
+export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, String, Option Loc)
+underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
+  let _ = setCoherenceUserDecls entryDecls
+  let (tcErrs, _) = checkProgramDiags runtimeDecls (coreDecls ++ entryDecls)
+  tcErrs
+underivedMainDiags _ _ _ = []

@@ -70,6 +70,12 @@ import driver.diagnostics.{
   readDiagSrc,
   parseErrCode,
   codeKind,
+  diagOfTypeError,
+}
+import driver.main_autoprint.{
+  shouldAutoPrintMain,
+  autoPrintWrapModules,
+  underivedMainDiags,
 }
 import json.{
   Json,
@@ -91,6 +97,7 @@ import types.typecheck.{
   preludeArgPosDictNames,
   enableEmitArgStampPasses,
   mainTypeIsFloat,
+  mainTypeIsUnit,
   Scheme,
   ppSchemeNamed,
   checkProgramSchemesWithRuntime,
@@ -209,7 +216,7 @@ guardedEmit rsrc csrc tsrc entry roots warnTriples = match parseResult tsrc
   Err pe => emitParseError entry pe
   Ok decls => match mainShapeError decls
     Some d => emitDiagnostics (cjAllToJson [(entry, tsrc, [d])])
-    None => doEmit rsrc csrc entry roots warnTriples
+    None => doEmit rsrc csrc tsrc entry roots warnTriples
 
 -- Find a top-level `main` DFunDef among a module's raw decls (skipping @attr
 -- wrappers).  Returns its param list + body so callers can inspect arity and
@@ -253,12 +260,32 @@ mainShapeError decls = match findMainFunDef decls
 -- Identical to wasm_emit_modules_main.runEmit, prefixed by the WAT marker.  Re-
 -- loads modules (the analyze phase did not retain the elaborated tree); a clean
 -- analyze guarantees this load + emit cannot hit the diagnostic/panic path.
-doEmit : String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
-doEmit rsrc csrc entry roots warnTriples = match loadProgram entry roots
+-- COMPOSITE-MAIN AUTO-PRINT (design §10, single-process in-browser path): after a
+-- clean analyze, elaborate once to learn main's type.  A bare non-Unit VALUE main
+-- is rewritten `main = <e>` → `main = println <e>` (so composite mains no longer
+-- crash the emitter); a bare underived-ADT main surfaces the clean `No impl of
+-- Display …` diagnostic (via the __MEDAKA_DIAGNOSTICS__ marker, NOT the WAT
+-- marker).  A Unit/Async main is unchanged.
+doEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
+doEmit rsrc csrc tsrc entry roots warnTriples = match loadProgram entry roots
   Err e => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError "R-MODULE-LOAD" e None None None])])
   Ok mods =>
-    let _ = emitWatMarker warnTriples
-    runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+    let rt = desugar (parse rsrc)
+    let core = desugar (parse csrc)
+    let modules = map desugarPair mods
+    let _ = enableEmitArgStampPasses ()
+    let (coreMangled, modulesMangled) = mangleUnits core modules
+    let _ = elaborateModules rt coreMangled modulesMangled
+    if shouldAutoPrintMain core modules then
+      let modulesW = autoPrintWrapModules modules
+      match underivedMainDiags rt core modulesW
+        [] =>
+          let _ = emitWatMarker warnTriples
+          runEmit rt core modulesW
+        errs => emitDiagnostics (cjAllToJson [(entry, tsrc, map diagOfTypeError errs)])
+    else
+      let _ = emitWatMarker warnTriples
+      runEmit rt core modules
 
 -- Print the plain WAT marker when there are no warnings, else the combined
 -- marker (warnings JSON line, THEN the WAT) — the browser shows the warnings
