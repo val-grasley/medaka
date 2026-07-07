@@ -155,7 +155,7 @@ EOF
 nosup_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/mono_bad.mdk" 2>/dev/null)"
 nosup_code=$?
 case "$nosup_out" in
-  *"requires a superinterface impl 'impl Semigroup Color', which is missing"*)
+  *"requires a superinterface 'impl Semigroup Color', which is missing"*)
     if [ "$nosup_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   super-xmod/reject (no super anywhere still rejected)\n'
     else fail=$((fail+1)); printf 'FAIL super-xmod/reject (rejected but exit %d)\n' "$nosup_code"; fi ;;
   *) fail=$((fail+1)); printf 'FAIL super-xmod/reject (under-rejection regressed: [%s])\n' "$nosup_out" ;;
@@ -218,7 +218,7 @@ EOF
 coh_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/cohtop.mdk" 2>/dev/null)"
 coh_code=$?
 case "$coh_out" in
-  *conflicting*)
+  *Conflicting*)
     case "$coh_out" in *cohm1*) m1seen=yes ;; *) m1seen=no ;; esac
     case "$coh_out" in *cohm2*) m2seen=yes ;; *) m2seen=no ;; esac
     if [ "$coh_code" -eq 1 ] && [ "$m1seen" = yes ] && [ "$m2seen" = yes ]; then
@@ -259,7 +259,7 @@ EOF
 dia_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/dtop.mdk" 2>/dev/null)"
 dia_code=$?
 case "$dia_out" in
-  *conflicting*) fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (benign shared impl falsely rejected: [%s])\n' "$dia_out" ;;
+  *Conflicting*) fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (benign shared impl falsely rejected: [%s])\n' "$dia_out" ;;
   *) if [ "$dia_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   coh-xmod/diamond (single shared impl accepted)\n'
      else fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (exit %d: [%s])\n' "$dia_code" "$dia_out"; fi ;;
 esac

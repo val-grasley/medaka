@@ -1,1 +1,1 @@
-error: the clauses of 'foo' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of 'foo' (and its type signature) together, or rename one.
+error: Clauses of 'foo' must be contiguous. An earlier same-named binding is separated by another declaration; group all clauses (and the signature) together

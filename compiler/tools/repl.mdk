@@ -342,7 +342,7 @@ processReset _ =
   let _ = setRef accumulatedRef []
   let _ = setRef userBindingsRef []
   let _ = setRef knownNamesRef preludeNamesRef.value
-  putStrLn "Session reset."
+  putStrLn "Session reset"
 
 -- ── Meta-command dispatch ─────────────────────────────────────────────────
 -- Returns False → exit the REPL loop.
@@ -368,13 +368,13 @@ processCommand cmd =
             let _ = processTypeCmd rest
             True
           else
-            let _ = ePutStrLn ("Unknown command: " ++ cmd ++ "  (try :browse, :type, :reset, :quit)")
+            let _ = ePutStrLn ("Unknown command: " ++ cmd ++ " (try :browse, :type, :reset, :quit)")
             True
 
 -- ── Main REPL loop ────────────────────────────────────────────────────────
 export replLoop : Unit -> <IO, Mut> Unit
 replLoop _ =
-  let _ = putStrLn "medaka repl  (:quit to exit, :reset to clear session)"
+  let _ = putStrLn "medaka repl (:quit to exit, :reset to clear session)"
   replLoopGo "" False
 
 replLoopGo : String -> Bool -> <IO, Mut> Unit

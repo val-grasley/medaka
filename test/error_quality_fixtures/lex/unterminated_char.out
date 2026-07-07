@@ -1,4 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/lex/unterminated_char.mdk:1:15: Parse error
+test/error_quality_fixtures/lex/unterminated_char.mdk:1:15: unexpected `(`
+  |
+1 | main = println (debug 'a)
+  |                ^

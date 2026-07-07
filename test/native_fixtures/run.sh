@@ -17,7 +17,7 @@ fail=0
 # #2: located error at the `/=` column with the hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/slasheq_error.mdk" 2>&1)"
 case "$out" in
-  *":7: unexpected '/=' (did you mean '!=' for not-equal?)"*)
+  *":7: unexpected '/='. (Did you mean '!='?)"*)
     echo "ok   slasheq_error (located /= diagnostic)" ;;
   *) echo "FAIL slasheq_error: got [$out]"; fail=1 ;;
 esac

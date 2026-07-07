@@ -2,3 +2,6 @@ cmd: medaka check
 exit: 1
 ---
 test/error_quality_fixtures/lex/unterminated_block_comment.mdk:1:0: unterminated block comment
+  |
+1 | {- this comment never closes
+  | ^

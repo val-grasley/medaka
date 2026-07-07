@@ -2,3 +2,6 @@ cmd: medaka check
 exit: 1
 ---
 test/error_quality_fixtures/lex/unterminated_string.mdk:2:0: unterminated string literal
+  |
+2 | 
+  | ^

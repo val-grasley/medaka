@@ -163,7 +163,7 @@ parseErrCode msg
   | startsWith "unexpected end of input" msg = "P-UNEXPECTED-EOF"
   | startsWith "unexpected '/='" msg = "P-BAD-NEQ"
   | startsWith "Medaka has no 'case" msg = "P-HS-CASE"
-  | startsWith "In Medaka '::' is cons" msg = "P-HS-SIG"
+  | startsWith "Use '::' for List cons" msg = "P-HS-SIG"
   | startsWith "Medaka has no '/* " msg = "L-BLOCKCOMMENT"
   | startsWith "unexpected '{'. Medaka has no brace" msg = "P-BRACE-BLOCK"
   | startsWith "Medaka has no 'for'" msg = "P-FOR-WHILE"
@@ -183,7 +183,7 @@ parseErrCode msg
 -- `fix`) — this is deliberately narrow, not a general parse-error-fix engine.
 export parseErrHelpFix : String -> Loc -> (Option String, Option Fix)
 parseErrHelpFix msg (Loc f sl sc el ec)
-  | startsWith "In Medaka '::' is cons" msg = (
+  | startsWith "Use '::' for List cons" msg = (
     Some "replace '::' with ':' for a type signature",
     Some (Fix (Loc f sl sc sl (sc + 2)) ":"),
   )

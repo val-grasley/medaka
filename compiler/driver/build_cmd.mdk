@@ -222,7 +222,7 @@ runBuildWasm root medaka inputAbs outPath =
   else
     "run" :: emitter::emitArgsBase
   match probeWasmTools ()
-    None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm."
+    None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm"
     Some _ => match runCommand emitProg emitArgs
       Err e => BuildErr "error: could not run wasm emitter (\{emitProg}): \{e}"
       Ok (code, watRaw, emitErr) => if code != 0 then BuildErr "error: wasm emitter failed compiling \{inputAbs}\n\{emitErr}"
@@ -269,7 +269,7 @@ wasmAssemble watPath outPath inputAbs = match runCommand "wasm-tools" ["parse", 
 -- STEP 2: clang the IR + C runtime + Boehm GC into a native binary.
 clangLink : String -> String -> String -> String -> String -> <IO> BuildResult
 clangLink cc rtC llPath outPath inputAbs = match detectGC cc
-  None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config."
+  None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config"
   Some (gcCflags, gcLibs) =>
     -- Optimization level is overridable via MEDAKA_CLANG_OPT (default -O2). The
     -- oracle build (test/build_oracles.sh) sets a lower level: those are throwaway

@@ -1,11 +1,11 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/unbound_type_in_sig.mdk:1:4: Unknown type: Strng. Did you mean 'String'?
+test/error_quality_fixtures/resolve/unbound_type_in_sig.mdk:1:4: Unknown type: Strng. Did you mean 'String'
   |
 1 | f : Strng -> Strng
   |     ^
-test/error_quality_fixtures/resolve/unbound_type_in_sig.mdk:1:13: Unknown type: Strng. Did you mean 'String'?
+test/error_quality_fixtures/resolve/unbound_type_in_sig.mdk:1:13: Unknown type: Strng. Did you mean 'String'
   |
 1 | f : Strng -> Strng
   |              ^

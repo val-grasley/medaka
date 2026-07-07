@@ -7,19 +7,19 @@ warning: [rule-complement-predicate] negated predicate. Rewrite as 'isNonEmptyL 
 warning: [rule-complement-predicate] negated predicate. Rewrite as 'isNone x'
 warning: [rule-complement-predicate] negated predicate. Rewrite as 'isOk x'
 warning: [rule-complement-predicate] negated predicate. Rewrite as 'isSome x'
-warning: [rule-dead-code] private top-level 'negAnd' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negFlag' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negOther' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negPlain' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'nestedPos' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posArg' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posBang' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posEmpty' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posErr' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posNonEmpty' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posNone' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posOk' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posSome' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'negAnd' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negFlag' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negOther' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negPlain' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'nestedPos' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posArg' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posBang' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posEmpty' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posErr' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posNonEmpty' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posNone' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posOk' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posSome' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-missing-signature] top-level 'negAnd' has no type signature. Add a `negAnd : …` declaration
 warning: [rule-missing-signature] top-level 'negFlag' has no type signature. Add a `negFlag : …` declaration
 warning: [rule-missing-signature] top-level 'negOther' has no type signature. Add a `negOther : …` declaration

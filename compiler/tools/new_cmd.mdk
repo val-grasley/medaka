@@ -27,7 +27,7 @@ tomlTemplate name = stringConcat
   ]
 
 mainTemplate : String
-mainTemplate = "main : <IO> Unit\nmain = println \"Hello, Medaka!\"\n"
+mainTemplate = "main : <IO> Unit\nmain = println \"Hello, Medaka\"\n"
 
 gitignoreTemplate : String
 gitignoreTemplate = "_build/\n"

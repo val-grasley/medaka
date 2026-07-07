@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/record_missing_field.mdk:4:23: Missing field age in construction of record Person
+test/error_quality_fixtures/typecheck/record_missing_field.mdk:4:23: Missing field 'age' in construction of record 'Person'
   |
 4 | main = println (debug (Person { name = "Alice" }))
   |                        ^

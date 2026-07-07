@@ -1,1 +1,1 @@
-{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-EXTERN-WITH-BODY","kind":"resolve","message":"extern 'foo' must not have a definition body","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-EXTERN-WITH-BODY","kind":"resolve","message":"Extern 'foo' must not have a definition body","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"medaka"}]}]}

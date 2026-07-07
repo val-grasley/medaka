@@ -1,2 +1,2 @@
-❌ rejected: tagVisit requires <Fetch>; not permitted by policy {Cache, Log}
+rejected. tagVisit requires <Fetch>. Not permitted by policy {Cache, Log}
    reached via: tagVisit → recordMetric → sendBeacon → fetch

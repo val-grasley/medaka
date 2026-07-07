@@ -1,1 +1,1 @@
-TYPE ERROR: 'let mut y' is not allowed inside a `do` block; do blocks are for monadic composition. Use a bare sequential block instead.
+TYPE ERROR: 'let mut y' is not allowed inside a `do` block. Use a bare sequential block

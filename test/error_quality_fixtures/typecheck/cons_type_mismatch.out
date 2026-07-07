@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/cons_type_mismatch.mdk:1:23: cons (::) type mismatch: head is Int but the list holds String. The head's type must match the list's elements; change the head to String, or use a list of Int.
+test/error_quality_fixtures/typecheck/cons_type_mismatch.mdk:1:23: Cons (::) type mismatch: head is Int but the list holds String. The head's type must match the list's elements; change the head to String, or use a list of Int.
   |
 1 | main = println (debug (1 :: ["a", "b"]))
   |                        ^

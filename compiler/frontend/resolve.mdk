@@ -1253,40 +1253,41 @@ resolveProgramG2 internalGuard runtimeDecls preludeDecls prog =
 -- Used by diagnostics.mdk to produce "error: <msg>" lines.  Loc-independent.
 export ppResError : ResError -> String
 ppResError (UnboundVariable n _ s) = match s
-  Some sug => "Unbound variable: \{n}. Did you mean '\{sug}'?"
+  Some sug => "Unbound variable: \{n}. Did you mean '\{sug}'"
     ++ haskellNote n sug
   None => "Unbound variable: \{n}"
-ppResError (UnboundVariableExported n m _) = "Unbound variable: \{n}. '\{n}' is exported by '\{m}'; import it with 'import \{m}.{\{n}}'"
+ppResError (UnboundVariableExported n m _) =
+  "Unbound variable: \{n}. (Did you forget to 'import \{m}.{\{n}}'?)"
 ppResError (UnknownConstructor n _ s) = match s
-  Some sug => "Unknown constructor: \{n}. Did you mean '\{sug}'?"
+  Some sug => "Unknown constructor: \{n}. Did you mean '\{sug}'"
     ++ haskellNote n sug
   None => "Unknown constructor: " ++ n
 ppResError (UnknownType n _ s) = match s
-  Some sug => "Unknown type: \{n}. Did you mean '\{sug}'?" ++ haskellNote n sug
+  Some sug => "Unknown type: \{n}. Did you mean '\{sug}'" ++ haskellNote n sug
   None => "Unknown type: " ++ n
 ppResError (UnknownEffect n _) = "Unknown effect: " ++ n
 ppResError (UnknownField n _) = "Unknown field: " ++ n
 ppResError (FieldNotInRecord f r _) =
-  "Field \{f} does not belong to record \{r}"
+  "Unknown field: \{f}. Record '\{r}' has no field '\{f}'"
 ppResError (DuplicateDefinition k n _) = "Duplicate \{k}: \{n}"
 ppResError (UnknownInterface n _) = "Unknown interface: " ++ n
 ppResError (MethodNotInInterface m i _) =
-  "Method '\{m}' is not part of interface \{i}"
-ppResError (ExternWithBody n _) = "extern '"
+  "Method '\{m}' is not part of interface '\{i}'"
+ppResError (ExternWithBody n _) = "Extern '"
   ++ n
   ++ "' must not have a definition body"
 ppResError (PrivateNameAccess n m _) =
-  "module '\{m}' has no exported name '\{n}'"
-ppResError (NoExportedConstructors n m _) = "'\{n}' exports no constructors from module \{m} (it is exported abstractly); remove the `(..)` or export it with `public export`."
-ppResError (AbstractFieldAccess t f _) = "'\{t}' is exported abstractly; its field '\{f}' is not accessible (declare it `public export` to expose its fields)."
+  "Module '\{m}' has no exported name '\{n}'"
+ppResError (NoExportedConstructors n m _) = "'\{n}' exports no constructors from module '\{m}' (exported abstractly). Remove `(..)` or export with `public export`"
+ppResError (AbstractFieldAccess t f _) = "'\{t}' is exported abstractly. Field '\{f}' is not accessible; declare it `public export` to expose its fields"
 ppResError (UnknownModule n _) = "Unknown module: " ++ n
-ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
-ppResError (NonRecursiveValueLet n _) = "'\{n}' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive. Write `let rec \{n} = ...` to opt in to recursion (the RHS must be a lambda)."
-ppResError (DuplicateBinding n _) = "the clauses of '\{n}' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of '\{n}' (and its type signature) together, or rename one."
-ppResError (AmbiguousOccurrence n mods _) = "ambiguous occurrence: `\{n}` is exported by \{ambigModPhrase mods}. Qualify or select per-name with `import <mod>.{\{n}}` / import only one."
+ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)"
+ppResError (NonRecursiveValueLet n _) = "'\{n}' is not in scope in its own binding. Non-function `let` is not recursive; write `let rec \{n} = ...` (RHS must be a lambda)"
+ppResError (DuplicateBinding n _) = "Clauses of '\{n}' must be contiguous. An earlier same-named binding is separated by another declaration; group all clauses (and the signature) together"
+ppResError (AmbiguousOccurrence n mods _) = "Ambiguous occurrence: '\{n}' is exported by \{ambigModPhrase mods}. Qualify, or select with `import <mod>.{\{n}}`"
 ppResError (InternalExternAccess n _) = "'"
   ++ n
-  ++ "' is an internal-only primitive and cannot be used outside the standard library (pass --allow-internal to override)"
+  ++ "' is an internal-only primitive. Cannot be used outside the standard library (pass --allow-internal to override)"
 
 -- Stable diagnostic code (DIAGNOSTIC-CODES-DESIGN §2) for a resolve error — one
 -- `R-*` code per ResError constructor.  Authored here (a single chokepoint), so

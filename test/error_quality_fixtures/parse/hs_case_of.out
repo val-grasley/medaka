@@ -2,3 +2,6 @@ cmd: medaka check
 exit: 1
 ---
 test/error_quality_fixtures/parse/hs_case_of.mdk:1:6: Medaka has no 'case … of'. Use 'match e' with indented 'pattern => body' arms
+  |
+1 | f x = case x of
+  |       ^

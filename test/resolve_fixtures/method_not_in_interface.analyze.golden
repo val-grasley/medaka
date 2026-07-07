@@ -1,1 +1,1 @@
-error: Method 'baz' is not part of interface Foo
+error: Method 'baz' is not part of interface 'Foo'

@@ -1210,7 +1210,7 @@ evalBlock _ (_::_) = panic "eval: unsupported block statement"
 
 blockLetLast : EvalEnv -> Pat -> Expr -> <Mut> Value
 blockLetLast env pat e = match matchPat pat (eval env e)
-  None => runtimePanic "E-LET-REFUTE" "let pattern match failure in block"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some _ => VUnit
 
 blockRecLet : EvalEnv -> String -> Expr -> List DoStmt -> <Mut> Value
@@ -1223,7 +1223,7 @@ blockRecLet env f e rest =
 
 blockLet : EvalEnv -> Pat -> Expr -> List DoStmt -> <Mut> Value
 blockLet env pat e rest = match matchPat pat (eval env e)
-  None => runtimePanic "E-LET-REFUTE" "let pattern match failure in block"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some binds => evalBlock (extendEnv env binds) rest
 
 blockLetElse : EvalEnv -> Pat -> Expr -> Expr -> List DoStmt -> <Mut> Value
@@ -1241,7 +1241,7 @@ evalRecLet env f e1 e2 =
 
 evalLet : EvalEnv -> Pat -> Expr -> Expr -> <Mut> Value
 evalLet env pat e1 e2 = match matchPat pat (eval env e1)
-  None => runtimePanic "E-LET-REFUTE" "let pattern match failure"
+  None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some binds => eval (extendEnv env binds) e2
 
 evalLetGroup : EvalEnv -> List LetBind -> Expr -> <Mut> Value

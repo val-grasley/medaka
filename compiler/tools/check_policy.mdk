@@ -493,11 +493,11 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
         "pure"
       else
         "<" ++ joinWith ", " (atomLabels fnEffects) ++ ">"
-      let header = "✅ accepted: \{fnName} requires only \{effStr}\n"
+      let header = "accepted. \{fnName} requires only \{effStr}\n"
       PolicyAccept header fnName coreD rtD userD
     _ =>
       let chain = findChain callGraph effTable fnName (firstOf forbidden)
-      let header = "❌ rejected: \{fnName} requires <\{joinWith ", " (atomLabels fnEffects)}>; not permitted by policy {\{joinWith ", " (policyLabels policy)}}\n"
+      let header = "rejected. \{fnName} requires <\{joinWith ", " (atomLabels fnEffects)}>. Not permitted by policy {\{joinWith ", " (policyLabels policy)}}\n"
       let via = "   reached via: " ++ joinWith " → " chain ++ "\n"
       PolicyReject (header ++ via)
 

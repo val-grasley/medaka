@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/typecheck/record_wrong_field.mdk:6:17: Field aeg does not belong to record Person. Did you mean 'age'?
+test/error_quality_fixtures/typecheck/record_wrong_field.mdk:6:17: Field 'aeg' does not belong to record 'Person'. Did you mean 'age'?
   |
 6 |   println (debug p.aeg)
   |                  ^

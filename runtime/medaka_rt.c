@@ -190,7 +190,7 @@ mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
 }
 
 noreturn void mdk_oob(void) {
-  fprintf(stderr, "array index out of bounds\n");
+  fprintf(stderr, "runtime error [E-INDEX-OOB]: index out of bounds\n");
   exit(1);
 }
 

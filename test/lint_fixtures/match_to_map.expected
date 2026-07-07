@@ -1,36 +1,36 @@
-warning: [rule-dead-code] private top-level 'negBind' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negDefault' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negErrRebuild' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negGuard' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negThreeArms' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'negUnwrap' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posOptEta' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posOptExpr' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posOrder' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posResEta' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posResExpr' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posTuple' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'posWild' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-match-on-param] function 'negBind' matches on parameter 'r'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'negDefault' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'negErrRebuild' matches on parameter 'r'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'negGuard' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'negThreeArms' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'negUnwrap' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posOptEta' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posOptExpr' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posOrder' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posResEta' matches on parameter 'r'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posResExpr' matches on parameter 'r'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posTuple' matches on parameter 'r'. Consider a multi-clause function definition
-warning: [rule-match-on-param] function 'posWild' matches on parameter 'o'. Consider a multi-clause function definition
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map ((a, b) => a + b) r' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map (_ => 42) o' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map (x => x + 1) o' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map (x => x + delta) r' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map g o' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map g o' (functor map)
-warning: [rule-match-to-map] 2-arm match maps over an Option/Result. Rewrite as 'map g r' (functor map)
+warning: [rule-dead-code] private top-level 'negBind' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negDefault' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negErrRebuild' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negGuard' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negThreeArms' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'negUnwrap' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posOptEta' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posOptExpr' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posOrder' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posResEta' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posResExpr' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posTuple' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'posWild' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-match-on-param] function 'negBind' matches on parameter 'r' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'negDefault' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'negErrRebuild' matches on parameter 'r' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'negGuard' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'negThreeArms' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'negUnwrap' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posOptEta' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posOptExpr' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posOrder' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posResEta' matches on parameter 'r' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posResExpr' matches on parameter 'r' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posTuple' matches on parameter 'r' — use a multi-clause function definition
+warning: [rule-match-on-param] function 'posWild' matches on parameter 'o' — use a multi-clause function definition
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map ((a, b) => a + b) r'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map (_ => 42) o'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map (x => x + 1) o'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map (x => x + delta) r'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map g o'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map g o'
+warning: [rule-match-to-map] 2-arm match maps over an Option/Result — rewrite as 'map g r'
 warning: [rule-missing-signature] top-level 'negBind' has no type signature. Add a `negBind : …` declaration
 warning: [rule-missing-signature] top-level 'negDefault' has no type signature. Add a `negDefault : …` declaration
 warning: [rule-missing-signature] top-level 'negErrRebuild' has no type signature. Add a `negErrRebuild : …` declaration

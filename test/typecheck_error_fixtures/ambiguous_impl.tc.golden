@@ -1,2 +1,2 @@
-TYPE ERROR: ambiguous instance for 'Sub a': cannot determine which impl; annotate the type
-TYPE ERROR: ambiguous instance for 'Sup a': cannot determine which impl; annotate the type
+TYPE ERROR: Ambiguous instance for `Sub`. Cannot determine which impl; add a type annotation
+TYPE ERROR: Ambiguous instance for `Sup`. Cannot determine which impl; add a type annotation

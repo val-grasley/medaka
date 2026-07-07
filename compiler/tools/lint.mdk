@@ -774,7 +774,7 @@ matchParamHit loc name pats p
   | anyList (isBareParam p) pats = [
     Finding {
       rule = ruleNameMatchParam,
-      message = "function '\{name}' matches on parameter '\{p}'. Consider a multi-clause function definition",
+      message = "function '\{name}' matches on parameter '\{p}' — use a multi-clause function definition",
       severity = SevWarning,
       loc = loc,
     }
@@ -1053,7 +1053,7 @@ derivableHit orc loc iface tys
         [
           Finding {
             rule = ruleNameDerivable,
-            message = "hand-written `impl \{iface}` for '\{tyName}'. Consider `deriving (\{iface})` instead",
+            message = "hand-written `impl \{iface}` for '\{tyName}' — use `deriving (\{iface})`",
             severity = SevWarning,
             loc = loc,
           }
@@ -1139,7 +1139,7 @@ inStdlib n = contains n stdlibNames
 stdlibFinding : (String, Option Loc) -> Finding
 stdlibFinding (name, loc) = Finding {
   rule = ruleNameStdlibReimpl,
-  message = "top-level '" ++ name ++ "' shadows a stdlib function. Prefer the stdlib version",
+  message = "top-level '" ++ name ++ "' shadows a stdlib function — use the stdlib version",
   severity = SevWarning,
   loc = loc,
 }
@@ -2138,7 +2138,7 @@ optExprToList None = []
 andThenPureMapFinding : Option Loc -> Expr -> Finding
 andThenPureMapFinding loc rewritten = Finding {
   rule = ruleNameAndThenPureMap,
-  message = "monadic bind wraps a pure transformation of its result. Rewrite as '" ++ exprToString rewritten ++ "' (functor law: m >>= (pure . f) ≡ fmap f m)",
+  message = "monadic bind wraps a pure transformation of its result — rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -2781,7 +2781,7 @@ ruleBoolSimplify _ _ pos prog =
 boolSimplifyFinding : Option Loc -> Expr -> Finding
 boolSimplifyFinding loc rewritten = Finding {
   rule = ruleNameBoolSimplify,
-  message = "redundant boolean expression. Simplify to '" ++ exprToString rewritten ++ "'",
+  message = "redundant boolean expression — rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -3056,7 +3056,7 @@ ruleMatchToMap _ _ pos prog =
 matchToMapFinding : Option Loc -> Expr -> Finding
 matchToMapFinding loc rewritten = Finding {
   rule = ruleNameMatchToMap,
-  message = "2-arm match maps over an Option/Result. Rewrite as '" ++ exprToString rewritten ++ "' (functor map)",
+  message = "2-arm match maps over an Option/Result — rewrite as '" ++ exprToString rewritten ++ "'",
   severity = SevWarning,
   loc = loc,
 }
@@ -3239,7 +3239,7 @@ deadPair reach (n, _) = not (contains n reach)
 deadFinding : (String, Option Loc) -> Finding
 deadFinding (name, loc) = Finding {
   rule = ruleNameDeadCode,
-  message = "private top-level '" ++ name ++ "' is unreachable from exports/main/doctests. Dead code (remove it)",
+  message = "private top-level '" ++ name ++ "' is unreachable from exports/main/doctests — remove it (dead code)",
   severity = SevWarning,
   loc = loc,
 }
@@ -3527,7 +3527,7 @@ dupFinding distinctFiles occ =
   let others = filterList (!= file) distinctFiles
   Finding {
     rule = ruleNameDuplicateBody,
-    message = "function '\{occName occ}' has a body structurally identical to a definition in \{joinWith ", " others}. Consider consolidating into a shared module",
+    message = "function '\{occName occ}' has a body structurally identical to a definition in \{joinWith ", " others} — consolidate into a shared module",
     severity = SevWarning,
     loc = Some (Loc file line 1 line 1),
   }

@@ -1,1 +1,1 @@
-`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern).
+`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)

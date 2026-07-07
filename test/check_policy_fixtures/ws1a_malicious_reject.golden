@@ -1,2 +1,2 @@
-❌ rejected: transform requires <Cache, Fetch>; not permitted by policy {Cache, Log}
+rejected. transform requires <Cache, Fetch>. Not permitted by policy {Cache, Log}
    reached via: transform → tagVisit → recordMetric → sendBeacon → fetch

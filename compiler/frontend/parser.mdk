@@ -191,7 +191,11 @@ expectTok t = do
   expectGo t x
 
 expectGo : Token -> Token -> Parser Unit
-expectGo t x = if x == t then emit () else failP "unexpected token"
+expectGo t x =
+  if x == t then
+    emit ()
+  else
+    failP "unexpected \{describeToken x}; expected \{describeToken t}"
 
 identNameP : Parser String
 identNameP = do
@@ -1956,7 +1960,7 @@ parseFunOrSig pub = do
       arm <- parseGuardArm
       skipNewlines
       pure (DFunDef pub name params (EGuards [arm]))
-    _ => failP "expected : or ="
+    _ => failP "expected : or = in definition"
 
 -- ── extern + import declarations ─────────────────────────────────────────
 parseExtern : Bool -> Parser Decl
@@ -3501,7 +3505,7 @@ unexpectedLeftoverMsg src toks offs srcLen pos =
   let base = "unexpected " ++ describeToken (peekTok toks pos)
   let offset = locateOffset toks offs srcLen pos
   match leadingIndentAt src offset
-    Some col if col > 0 => "\{base}. This line's indentation doesn't line up with the block above (indented to column \{intToString col}); check that it's indented to match the surrounding statements"
+    Some col if col > 0 => "\{base}. Indentation (column \{intToString col}) doesn't match the enclosing block"
     _ => base
 
 -- A lexer error (unterminated string / block comment, invalid escape, stray
@@ -3554,7 +3558,7 @@ firstInlineLetMissingIn toks i
   | otherwise = firstInlineLetMissingIn toks (i + 1)
 
 inlineLetMissingInMsg : String
-inlineLetMissingInMsg = "inline 'let' requires 'in' (e.g. 'else let x = e in body'); for a multi-statement body, put 'else' on its own line and indent the block"
+inlineLetMissingInMsg = "inline 'let' requires 'in': 'else let x = e in body'. For a multi-statement body, put 'else' on its own line and indent"
 
 -- `case … of` is a Haskell-ism: Medaka spells pattern matching `match e` with
 -- indented `pattern => body` arms and has no `of` keyword after a bare `case`
@@ -3619,7 +3623,8 @@ firstHsSigIdx toks i depth boundary
   | otherwise = firstHsSigIdx toks (i + 1) depth False
 
 hsSigMsg : String
-hsSigMsg = "In Medaka '::' is cons (list prepend); a type signature uses a single colon: 'f : T'"
+hsSigMsg =
+  "Use '::' for List cons. A type signature uses a single colon: 'f : T'"
 
 -- ── Stage-2 foreign-syntax pre-scans (PARSE-ERROR-LOCATION-DESIGN §3) ─────────
 -- Each mirrors the existing `/=`/`case…of`/`::` hints: a pure token scan that
@@ -3766,7 +3771,7 @@ parseResult src = match tokenizeWithOffsets src
         Err (mkLocated src toks offs srcLen leMsg2 leIdx)
       None =>
         if seIdx >= 0 then
-          Err (mkLocated src toks offs srcLen "unexpected '/=' (did you mean '!=' for not-equal?)" seIdx)
+          Err (mkLocated src toks offs srcLen "unexpected '/='. (Did you mean '!='?)" seIdx)
         else if ilIdx >= 0 then
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
         else if coIdx >= 0 then

@@ -1015,7 +1015,7 @@ mutLetRequiresBlockMsg x = "'let mut "
 mutLetInDoMsg : String -> String
 mutLetInDoMsg x = "'let mut "
   ++ x
-  ++ "' is not allowed inside a `do` block; do blocks are for monadic composition. Use a bare sequential block instead."
+  ++ "' is not allowed inside a `do` block. Use a bare sequential block"
 
 -- ── OBS1: pre-desugar do-block well-formedness check ─────────────────────────
 -- Mirror of lib/desugar.ml's `check_do_wellformed` (the `DoLet isMut=true` arm
@@ -2416,7 +2416,7 @@ monoIsApp (TApp _ _) = True
 monoIsApp _ = False
 
 doRequiresMonadMsg : String
-doRequiresMonadMsg = "`do` requires a monad (e.g. `Option` or `Result`). For imperative IO sequencing, use a bare indented block instead of `do` (IO is not a monad in Medaka)."
+doRequiresMonadMsg = "`do` requires a Thenable impl (e.g. `Option`/`Result`). For IO sequencing use a bare indented block, not `do`"
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
@@ -4058,21 +4058,21 @@ fieldFixFrom None _ = None
 -- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField / MissingField messages.
 unknownFieldMsg : String -> String -> String
 unknownFieldMsg fname rname =
-  "Field \{fname} does not belong to record \{rname}"
+  "Field '\{fname}' does not belong to record '\{rname}'"
 
 -- Dot-access on a type exported abstractly: byte-identical to resolve.mdk's
 -- AbstractFieldAccess ppResError, so a destructure (`Point { x }`, caught in
 -- resolve) and a dot-access (`p.x`, caught here in typecheck) read the same.
 abstractFieldMsg : String -> String -> String
-abstractFieldMsg tname fname = "'\{tname}' is exported abstractly; its field '\{fname}' is not accessible (declare it `public export` to expose its fields)."
+abstractFieldMsg tname fname = "'\{tname}' is exported abstractly. Field '\{fname}' is not accessible; declare it `public export` to expose its fields"
 
 -- TYPECHECK-AUDIT OBS4: mirrors lib/typecheck.ml MissingField message byte-for-byte.
 missingFieldMsg : String -> String -> String
 missingFieldMsg fname rname =
-  "Missing field \{fname} in construction of record \{rname}"
+  "Missing field '\{fname}' in construction of record '\{rname}'"
 
 ambiguousFieldMsg : String -> List String -> String
-ambiguousFieldMsg fname owners = "Ambiguous field access: '.\{fname}' is declared by \{joinWith ", " owners}. I can't tell which record this value is. Add a type annotation on it (e.g. '(r : \{headL owners}).\{fname}')."
+ambiguousFieldMsg fname owners = "Ambiguous field access: '.\{fname}' is declared by \{joinWith ", " owners}; the record type is undetermined. Add a type annotation (e.g. '(r : \{headL owners}).\{fname}')"
 
 -- TYPECHECK-AUDIT D1: convert resolve-not-pre-screened error shapes (unknown
 -- record / constructor, unbound variable) from uncatchable interpreter panics
@@ -4724,7 +4724,7 @@ emitSwapDiag : String -> Expr -> Expr -> <Mut> Option Mono
 emitSwapDiag name a1 a2 = match (renderLitArg a1, renderLitArg a2)
   (Some s1, Some s2) =>
     let swappedCall = "\{name} \{s2} \{s1}"
-    let msg = "arguments to '\{name}' look swapped; try '\{swappedCall}'."
+    let msg = "Arguments to '\{name}' are in the wrong order. Try '\{swappedCall}'"
     let help = "swap the arguments: \{swappedCall}"
     let fix = swapArgFix a1 a2 "\{s2} \{s1}"
     let _ = pushTypeErrorHelpFixAt "T-TYPE-MISMATCH" (orElseLoc (exprLoc a1) currentLoc.value) msg help fix
@@ -5206,7 +5206,7 @@ inferMatch env scrutTy arms =
 -- generic form is the fallback if no witness is recoverable.
 nonExhaustiveMatchWarning : String
 nonExhaustiveMatchWarning =
-  "Warning: non-exhaustive match. Some values may not be covered"
+  "Warning: non-exhaustive match. Not all cases are covered"
 
 -- Warn if an all-wildcard query is still useful against the matrix of the
 -- non-guarded arms — i.e. some scrutinee value escapes every arm.  Guarded arms
@@ -5539,7 +5539,7 @@ clauseIsNonFunction (FunClause _ _) = False
 letRecNonFunctionMsg : String -> String
 letRecNonFunctionMsg name = "'"
   ++ name
-  ++ "' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
+  ++ "' is bound by 'let rec' but its right-hand side is not a function"
 
 groupNames : List (String, (List Pat, Expr)) -> OrdMap Unit -> List String
 groupNames [] _ = []
@@ -6991,7 +6991,7 @@ cohAnonConflict e1 xs ys named mid1 mid2 rest
 -- cross-module conflict wording: names the interface and BOTH owning modules.
 cohCrossModuleMsg : String -> String -> String -> <Mut> String
 cohCrossModuleMsg iface mid1 mid2 =
-  "conflicting `impl \{iface}`: defined in \{mid2} and \{mid1}"
+  "Conflicting `impl \{iface}`. Defined in \{mid2} and \{mid1}"
 
 cohImplIface : CohImpl -> String
 cohImplIface (CohImpl i _ _ _ _) = i
@@ -7135,7 +7135,7 @@ ifaceDfsCycleOneSuper allDecls done path superName =
 
 -- e.g. ["A", "B", "A"] → "cyclic superinterface: A requires B requires A"
 cyclicSuperIfaceMsg : List String -> String
-cyclicSuperIfaceMsg path = "cyclic superinterface: "
+cyclicSuperIfaceMsg path = "Cyclic superinterface: "
   ++ joinWith " requires " path
 
 -- the missing-superinterface error messages for one user decl (a DImpl, possibly
@@ -7174,7 +7174,7 @@ substParams (p::rest) subst = match lookupAssoc p subst
 -- byte-identical to lib/typecheck.ml's MissingSuperImpl rendering: both the impl
 -- head and the super are printed with the same space-joined atom-position args.
 missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
-missingSuperImplMsg iface implTys superName superTys = "impl \{iface} \{joinWith " " (map ppTyAtom implTys)} requires a superinterface impl 'impl \{superName} \{joinWith " " (map ppTyAtom superTys)}', which is missing"
+missingSuperImplMsg iface implTys superName superTys = "'impl \{iface} \{joinWith " " (map ppTyAtom implTys)}' requires a superinterface 'impl \{superName} \{joinWith " " (map ppTyAtom superTys)}', which is missing"
 
 -- the (typarams, supers) of interface [target], scanning DInterface decls; None if
 -- no such interface is in scope.
@@ -7768,9 +7768,9 @@ dedupStrGo seen (x::rest)
   | otherwise = x :: dedupStrGo (x::seen) rest
 
 ambiguousImplMsg : String -> String
-ambiguousImplMsg iface = "ambiguous instance for '"
+ambiguousImplMsg iface = "Ambiguous instance for `"
   ++ iface
-  ++ " a': cannot determine which impl; annotate the type"
+  ++ "`. Cannot determine which impl; add a type annotation"
 
 -- @Impl: a hint `@Name` that matches no impl of [iface] for the dispatch args.
 -- Mirrors lib/typecheck.ml:1250-1252 `UnknownImplName` text byte-for-byte:
@@ -9021,10 +9021,11 @@ numlitReframeLoc None = False
 -- a bare literal-vs-type mismatch.  `Int` is the numeric default the literal takes.
 numlitMismatchMsg : Option Loc -> List Mono -> <Mut> String
 numlitMismatchMsg loc args = match numlitCtxKind loc
-  Some "if" => "if branches have different types: Int vs \{ppMonosShared args}"
+  Some "if" =>
+    "'if' branches have different types: Int vs \{ppMonosShared args}"
   Some "list" =>
-    "list elements have different types: Int vs \{ppMonosShared args}"
-  Some "cons" => "cons (::) type mismatch: head is Int but the list holds \{ppMonosShared args}"
+    "List elements have different types: Int vs \{ppMonosShared args}"
+  Some "cons" => "Cons (::) type mismatch: head is Int but the list holds \{ppMonosShared args}"
   _ => "Type mismatch: Int literal vs \{ppMonosShared args}"
 
 -- F-dimension actionable-fix hint appended to `numlitMismatchMsg` (2026-07-04):

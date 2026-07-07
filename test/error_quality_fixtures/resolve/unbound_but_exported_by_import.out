@@ -1,4 +1,4 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/resolve/unbound_but_exported_by_import.mdk:3:16: Unbound variable: reverse. 'reverse' is exported by 'list'; import it with 'import list.{reverse}'
+test/error_quality_fixtures/resolve/unbound_but_exported_by_import.mdk:3:16: Unbound variable: reverse. (Did you forget to 'import list.{reverse}'?)

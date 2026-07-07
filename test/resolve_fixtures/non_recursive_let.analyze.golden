@@ -1,1 +1,1 @@
-error: 'x' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive. Write `let rec x = ...` to opt in to recursion (the RHS must be a lambda).
+error: 'x' is not in scope in its own binding. Non-function `let` is not recursive; write `let rec x = ...` (RHS must be a lambda)

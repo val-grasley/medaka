@@ -1,7 +1,7 @@
 cmd: medaka build
 exit: 1
 ---
-test/error_quality_fixtures/build/internal_extern_use.mdk:3:18: 'arrayGetUnsafe' is an internal-only primitive and cannot be used outside the standard library (pass --allow-internal to override)
+test/error_quality_fixtures/build/internal_extern_use.mdk:3:18: 'arrayGetUnsafe' is an internal-only primitive. Cannot be used outside the standard library (pass --allow-internal to override)
   |
 3 |   println (debug (arrayGetUnsafe a 0))
   |                   ^

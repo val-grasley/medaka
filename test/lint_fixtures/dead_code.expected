@@ -1,3 +1,3 @@
-warning: [rule-dead-code] private top-level 'deadA' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'deadB' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'deadOne' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'deadA' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'deadB' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'deadOne' is unreachable from exports/main/doctests — remove it (dead code)

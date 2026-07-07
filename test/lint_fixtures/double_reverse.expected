@@ -1,7 +1,7 @@
-warning: [rule-dead-code] private top-level 'dbl' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'dblApp' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'mapped' is unreachable from exports/main/doctests. Dead code (remove it)
-warning: [rule-dead-code] private top-level 'single' is unreachable from exports/main/doctests. Dead code (remove it)
+warning: [rule-dead-code] private top-level 'dbl' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'dblApp' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'mapped' is unreachable from exports/main/doctests — remove it (dead code)
+warning: [rule-dead-code] private top-level 'single' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-double-reverse] `reverse (reverse …)` is a no-op. Rewrite as 'f xs'
 warning: [rule-double-reverse] `reverse (reverse …)` is a no-op. Rewrite as 'xs'
 warning: [rule-missing-signature] top-level 'dbl' has no type signature. Add a `dbl : …` declaration

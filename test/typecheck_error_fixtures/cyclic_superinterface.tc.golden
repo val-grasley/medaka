@@ -1,1 +1,1 @@
-TYPE ERROR: cyclic superinterface: A requires B requires A
+TYPE ERROR: Cyclic superinterface: A requires B requires A

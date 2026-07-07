@@ -2,3 +2,6 @@ cmd: medaka check
 exit: 1
 ---
 test/error_quality_fixtures/parse/hs_dollar.mdk:1:15: Medaka has no '$'. Apply directly 'f x', parenthesize '(f x)', or pipe with '|>'
+  |
+1 | main = println $ 1 + 2
+  |                ^

@@ -161,22 +161,22 @@ main = match args ()
 usage : Unit -> <IO> Unit
 usage _ = putStrLn (stringConcat
   [
-    "medaka: language for thinking out loud\n",
+    "medaka. A functional language compiler\n",
     "\n",
     "Usage:\n",
-    "  medaka                    Start the REPL.\n",
-    "  medaka repl               Start the REPL.\n",
-    "  medaka run [--release] <file.mdk>   Type-check and run a program.\n",
-    "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang).\n",
-    "  medaka check [--json] <file.mdk>    Type-check without running.\n",
-    "  medaka test [file.mdk]    Run doctests + prop tests.\n",
-    "  medaka bench [file.mdk]   Run bench declarations.\n",
-    "  medaka doc [file.mdk]     Generate Markdown documentation.\n",
-    "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>).\n",
-    "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n",
-    "  medaka new <name>         Scaffold a new project directory.\n",
-    "  medaka lsp                Run the language server over stdio.\n",
-    "  medaka help               Show this message.\n",
+    "  medaka                    Start the REPL\n",
+    "  medaka repl               Start the REPL\n",
+    "  medaka run [--release] <file.mdk>   Type-check and run a program\n",
+    "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n",
+    "  medaka check [--json] <file.mdk>    Type-check without running\n",
+    "  medaka test [file.mdk]    Run doctests + prop tests\n",
+    "  medaka bench [file.mdk]   Run bench declarations\n",
+    "  medaka doc [file.mdk]     Generate Markdown documentation\n",
+    "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n",
+    "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
+    "  medaka new <name>         Scaffold a new project directory\n",
+    "  medaka lsp                Run the language server over stdio\n",
+    "  medaka help               Show this message\n",
   ])
 
 -- ── deferred subcommands ──────────────────────────────────────────────────

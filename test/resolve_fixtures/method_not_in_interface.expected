@@ -1,1 +1,1 @@
-Method 'baz' is not part of interface Foo
+Method 'baz' is not part of interface 'Foo'

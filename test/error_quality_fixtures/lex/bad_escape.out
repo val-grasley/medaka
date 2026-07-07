@@ -2,3 +2,6 @@ cmd: medaka check
 exit: 1
 ---
 test/error_quality_fixtures/lex/bad_escape.mdk:1:20: invalid escape sequence '\q'
+  |
+1 | main = println "bad \q escape"
+  |                     ^
