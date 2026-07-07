@@ -1,0 +1,9 @@
+-- A `||`-chain with a trailing comment per operand.  Each comment is anchored
+-- to ITS operand's Doc (printer.LineComment) via the parser's chain operand-line
+-- side-channel, so it rides with the operand across the width-driven reflow that
+-- de-aligns the comments and drops the redundant parens (finding "L").
+identChar c =
+  c >= 48 && c <= 57  -- 0-9
+  || c >= 65 && c <= 90  -- A-Z
+  || c >= 97 && c <= 122  -- a-z
+  || c == 95  -- _

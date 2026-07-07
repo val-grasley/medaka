@@ -1,0 +1,13 @@
+-- A continuation chain where only SOME operands carry a trailing comment, plus
+-- a `|>` pipe chain — each comment stays anchored to its own operand across the
+-- reflow; uncommented operands render bare.
+classify n =
+  isDigit n
+  || isAlpha n  -- letters
+  || n == 95
+
+pipeline xs =
+  xs
+  |> filter keep  -- drop rejects
+  |> map transform
+  |> sortBy rank  -- final order

@@ -1,0 +1,5 @@
+-- Control: a leading comment (standalone) plus a decl-trailing comment (on the
+-- decl's last line) carry NO interior comment, so the decl still reformats
+-- normally — the over-wide arg list wraps and the trailing comment stays inline.
+wideCall aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd =
+  someFunction aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd  -- trailing

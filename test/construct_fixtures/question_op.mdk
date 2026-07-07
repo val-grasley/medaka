@@ -1,9 +1,0 @@
-getFirst : List Int -> Result String Int
-getFirst [] = Err "empty"
-getFirst (x::_) = Ok x
-compute : Result String Int
-compute =
-  let x = getFirst [1, 2, 3]?
-  Ok (x * 2)
-main : <IO> Unit
-main = println (debug compute)

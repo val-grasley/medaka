@@ -1,0 +1,8 @@
+-- An if/else-if ladder with a trailing comment per arm.  Reflowing each arm
+-- shifts the comments onto the condition lines, so the verbatim safety-net
+-- emits this decl's source unchanged.
+b64Val n =
+  if n >= 65 && n <= 90 then Some (n - 65)          -- 'A'..'Z'
+  else if n >= 97 && n <= 122 then Some (n - 97 + 26) -- 'a'..'z'
+  else if n >= 48 && n <= 57 then Some (n - 48 + 52)  -- '0'..'9'
+  else None

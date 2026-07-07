@@ -1,0 +1,29 @@
+-- A def/arm body whose `= body` / `=> body` line exceeds width 80 must break AT
+-- the `=`/`=>` first (whole body drops one indent-line below and stays flat
+-- there if it fits) before exploding the body's own interior.  A continuation-op
+-- chain body is the CONTROL: it keeps its head on the `=` line and breaks at its
+-- leading operators (never routed through break-at-`=`).
+
+-- Application body: break at `=`, whole app stays flat on the next line.
+someFunctionWithALongish aaaa bbbb cccc =
+  wellFormed (fromList (combine aaaa bbbb cccc))
+
+-- Record-construction body: break at `=`, the whole record fits on one line below.
+restampSeverity sev f =
+  Finding { rule = f.rule, message = f.message, severity = sev, loc = f.loc }
+
+-- CONTROL: a `&&`/`||` continuation-op chain keeps its head on the `=` line and
+-- breaks at the leading operators — it must NOT drop below `=`.
+ruleActiveFixable only disable r = r.enabled
+  && (isEmptyL only || contains r.name only)
+  && not (contains r.name disable)
+  && ruleHasFixer r
+
+-- Match-arm body: break at `=>`, the arm body drops below on its own line.
+classifyArm x = match x
+  Some payloadValue =>
+    wrapResult (buildEnvelope payloadValue (deriveTag payloadValue))
+  None => emptyEnvelopeDefault
+
+-- A body that already fits on the `=` line stays inline (not force-broken).
+shortDef a b = a + b

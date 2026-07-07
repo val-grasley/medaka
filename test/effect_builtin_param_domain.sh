@@ -88,7 +88,7 @@ fi
 # round-trip accept: the manifest-derived --allow token (Env={HOME,PATH})
 # fed back through check-policy must ACCEPT (self ⊑ self).
 rt="$(policy_out "$FIX/env_hole_accept.mdk" --allow 'Env={HOME,PATH}' --fn readHome)"
-if echo "$rt" | grep -q '✅ accepted'; then
+if echo "$rt" | grep -q '^accepted'; then
   echo "ok   ENV round-trip accept (manifest --allow token accepted by check-policy)"; pass=$((pass+1))
 else
   echo "FAIL ENV round-trip accept: $rt"; fail=$((fail+1))
@@ -98,7 +98,7 @@ fi
 # the policy compare treats the rhs as a Set (subsetStr), not a wrongly-rejecting
 # PPrefix (which would hit dsubN's domain-mismatch catch-all regardless of value).
 tr="$(policy_out "$FIX/env_hole_accept.mdk" --allow 'Env={PATH}' --fn readHome)"
-if echo "$tr" | grep -q '❌ rejected' && echo "$tr" | grep -q 'Env {"HOME", "PATH"}'; then
+if echo "$tr" | grep -q '^rejected' && echo "$tr" | grep -q 'Env {"HOME", "PATH"}'; then
   echo "ok   ENV tightened reject (Env={PATH} rejects getEnv \"HOME\")"; pass=$((pass+1))
 else
   echo "FAIL ENV tightened reject: $tr"; fail=$((fail+1))

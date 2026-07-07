@@ -63,14 +63,14 @@ expect_ok     "$FIX/prod_compat_prefix.mdk" "PROD backward-compat (Prefix Net un
 PLUG="$FIX/prod_policy_plugin.mdk"
 cp_accept_out="$(perl -e 'alarm 90; exec @ARGV' -- "$M" check-policy "$PLUG" \
   --allow 'Net=Host="idp.example.com/*";Method={GET,POST}' --fn transform 2>&1)"
-if echo "$cp_accept_out" | grep -q '✅ accepted'; then
+if echo "$cp_accept_out" | grep -q '^accepted'; then
   echo "ok   PROD check-policy accept (policy product admits)"; pass=$((pass+1))
 else
   echo "FAIL PROD check-policy accept:"; echo "$cp_accept_out" | head -2; fail=$((fail+1)); fi
 
 cp_reject_out="$(perl -e 'alarm 90; exec @ARGV' -- "$M" check-policy "$PLUG" \
   --allow 'Net=Host="idp.example.com/*";Method={GET}' --fn transform 2>&1)"
-if echo "$cp_reject_out" | grep -q '❌ rejected'; then
+if echo "$cp_reject_out" | grep -q '^rejected'; then
   echo "ok   PROD check-policy reject (policy Method too narrow)"; pass=$((pass+1))
 else
   echo "FAIL PROD check-policy reject:"; echo "$cp_reject_out" | head -2; fail=$((fail+1)); fi

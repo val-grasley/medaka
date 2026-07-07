@@ -42,6 +42,7 @@ RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 ENTRY="$ROOT/compiler/entries/check_main.mdk"
 SELFHOST="$ROOT/compiler"
+STDLIB="$ROOT/stdlib"
 
 command -v wasm-tools >/dev/null 2>&1 || { echo "wasm-tools not on PATH — skipping linkage gate"; exit 2; }
 [ -x "$EMITBIN" ] || { echo "build the wasm modules emitter: sh test/wasm/build_wasm_oracle.sh (missing $EMITBIN)"; exit 2; }
@@ -51,7 +52,7 @@ WASM="$(mktemp /tmp/assemble_check_main.XXXXXX.wasm)"
 trap 'rm -f "$WAT" "$WASM"' EXIT
 
 echo "emitting check_main front-end -> WAT ..."
-"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$SELFHOST" > "$WAT" 2>/dev/null
+"$EMITBIN" "$RUNTIME" "$CORE" "$ENTRY" "$SELFHOST" "$STDLIB" > "$WAT" 2>/dev/null
 [ -s "$WAT" ] || { echo "FAIL: emitter produced empty WAT"; exit 1; }
 echo "  WAT: $(wc -l < "$WAT") lines"
 

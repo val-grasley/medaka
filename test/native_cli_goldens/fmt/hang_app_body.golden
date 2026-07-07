@@ -1,0 +1,34 @@
+-- A definition whose body is a plain application spine (no self-indenting
+-- argument) that does not fit on the `=` line: the head must hang one indent
+-- below `=` and — since the hung body now fits one line — stay flat there, NOT
+-- stay on the `=` line with a mangled argument spine.
+encode bytes =
+  stringFromChars (arrayFromList (encodeGo bytes 0 (arrayLen bytes)))
+
+-- Same shape but the hung body then still overflows 80 cols → its spine breaks
+-- at the hang indent (head still off the `=` line).
+encodeWide bytes =
+  stringFromChars (arrayFromList (encodeGoLonger
+    bytes
+    0
+    (arrayLength bytes)
+    False
+    []))
+
+-- CONTROL: an application whose argument is a self-indenting lambda must NOT
+-- gain a hang line — the head stays on the `=` line and the lambda body folds.
+wrapInParser g p = Parser (input pos =>
+  transformResult
+    (runInner p input pos)
+    (a pos2 => Done (g a) pos2)
+    (m ep => Failed m ep))
+
+-- CONTROL: an over-wide list-literal body must NOT gain a pointless hang line;
+-- it breaks its own bracket interior on the `=` line.
+palette = [
+  redColorValue,
+  greenColorValue,
+  blueColorValue,
+  cyanColorValue,
+  magentaColorValue,
+]
