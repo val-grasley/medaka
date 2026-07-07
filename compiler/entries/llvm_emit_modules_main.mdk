@@ -26,11 +26,9 @@
 
 import frontend.ast.{Decl}
 import types.typecheck.{
-  elaborateModules,
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableEmitArgStampPasses,
   mainTypeIsUnit,
   mainTypeIsFloat,
 }
@@ -54,42 +52,19 @@ import backend.llvm_emit.{
   installMainIsUnitHint,
   installMainIsFloatHint,
 }
-import backend.private_mangle.{mangleUnits}
 import ir.dce.{dceFilter}
-import entries.entry_support.{driveModules}
-import driver.main_autoprint.{
-  shouldAutoPrintMain,
-  autoPrintWrapModules,
-  underivedMainDiags,
-}
+import entries.entry_support.{driveModules, runEmitWith}
 
 main : <IO, Mut> Unit
-main = driveModules runEmit
+main = driveModules (runEmitWith emitTail)
 
--- COMPOSITE-MAIN AUTO-PRINT (design §10): after the elaborate that learns main's
--- type, a bare non-Unit VALUE main is rewritten `main = <e>` → `main = println
--- <e>` and re-emitted; a bare underived-ADT main surfaces the clean `No impl of
--- Display …` error (empty stdout + stderr diagnostic → build_cmd's BuildErr).  A
--- Unit/Async main (incl. every compiler-graph main) takes the unchanged path, so
--- emitter output on the compiler graph is byte-identical (fixpoint stable).
-runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
-runEmit runtimeDecls coreDecls modules =
-  let _ = enableEmitArgStampPasses ()
-  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
-  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
-  if shouldAutoPrintMain coreDecls modules then
-    let modulesW = autoPrintWrapModules modules
-    match underivedMainDiags runtimeDecls coreDecls modulesW
-      (_, msg, _)::_ => ePutStrLn msg
-      [] => emitModules runtimeDecls coreDecls modulesW
-  else emitTail runtimeDecls coreD modules2
-
--- Mangle + elaborate + emit a (possibly wrapped) module list from scratch.
-emitModules : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
-emitModules runtimeDecls coreDecls modules =
-  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
-  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
-  emitTail runtimeDecls coreD modules2
+-- COMPOSITE-MAIN AUTO-PRINT: the shared mangle+elaborate+auto-print-wrap glue
+-- (design §10) lives once in entry_support.runEmitWith, parameterized by this
+-- backend's emitTail; `main` above wires it as `runEmitWith emitTail`.  A bare
+-- non-Unit VALUE main is rewritten `main = <e>` → `main = println <e>`; a bare
+-- underived-ADT main surfaces the clean `No impl of Display …` error; a Unit/Async
+-- main (incl. every compiler-graph main) takes the unchanged path, so emitter
+-- output on the compiler graph is byte-identical (fixpoint stable).
 
 -- Install the emitter side-tables + emit, from an already-elaborated program.
 emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
