@@ -498,41 +498,6 @@ eqGo a b i n =
   else
     False
 
--- Comma-joined element rendering for `Debug (Array a)`, mirroring core's
--- `showListItems`; recurses by index so it allocates no intermediate list.
-showArrayItems : Debug a => Array a -> Int -> Int -> String
-showArrayItems arr i n
-  | i >= n = ""
-  | i == n - 1 = debug (arrayGetUnsafe i arr)
-  | otherwise =
-    "\{debug (arrayGetUnsafe i arr)}, \{showArrayItems arr (i + 1) n}"
-
-{- | Bracketed, comma-separated rendering matching the interpreter's printer
-   (`[|1, 2, 3|]`), so `debug` agrees with `println` on arrays.  (Doctest uses
-   `==` rather than showing the result directly: `Debug String` lives in
-   `string.mdk`, out of scope in this module's isolated test context.)
-
-   > debug (fromList [1, 2, 3]) == "[|1, 2, 3|]"
-   True -}
-export default impl Debug (Array a) requires Debug a where
-  debug arr = "[|\{showArrayItems arr 0 (arrayLength arr)}|]"
-
--- Display counterpart of `showArrayItems`: recurses via `display` (unquoted).
-displayArrayItems : Display a => Array a -> Int -> Int -> String
-displayArrayItems arr i n
-  | i >= n = ""
-  | i == n - 1 = display (arrayGetUnsafe i arr)
-  | otherwise =
-    "\{display (arrayGetUnsafe i arr)}, \{displayArrayItems arr (i + 1) n}"
-
-{- | Renders `[|1, 2, 3|]`, matching `debug` but with unquoted elements (the
-   Display convention).
-
-   > display (fromList [1, 2, 3]) == "[|1, 2, 3|]"
-   True -}
-export default impl Display (Array a) requires Display a where
-  display arr = "[|\{displayArrayItems arr 0 (arrayLength arr)}|]"
-
 -- ── Properties (executed by `medaka test`) ──────────────────────────────
 
 -- Ascending-order check for props below.

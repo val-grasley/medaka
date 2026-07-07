@@ -325,6 +325,26 @@ debugListItems (y::rest) = "\{debug y}, \{debugListItems rest}"
 export impl Debug (List a) requires Debug a where
   debug xs = "[\{debugListItems xs}]"
 
+-- Comma-joined element rendering for `Debug (Array a)`, mirroring
+-- `debugListItems` but recursing by index (arrays aren't cons-lists) so it
+-- allocates no intermediate list.
+debugArrayItems : Debug a => Array a -> Int -> Int -> String
+debugArrayItems arr i n
+  | i >= n = ""
+  | i == n - 1 = debug (arrayGetUnsafe i arr)
+  | otherwise =
+    "\{debug (arrayGetUnsafe i arr)}, \{debugArrayItems arr (i + 1) n}"
+
+{- | Bracketed, comma-separated rendering matching the interpreter's printer
+   (`[|1, 2, 3|]`), so `debug` agrees with `println` on arrays.  Lives in
+   `core.mdk` (not `array.mdk`) so array literals render without an explicit
+   `import array`.
+
+   > debug [|1, 2, 3|] == "[|1, 2, 3|]"
+   True -}
+export impl Debug (Array a) requires Debug a where
+  debug arr = "[|\{debugArrayItems arr 0 (arrayLength arr)}|]"
+
 export impl Debug (Option a) requires Debug a where
   debug None = "None"
   debug (Some x) = "Some " ++ debug x
@@ -394,6 +414,23 @@ displayListItems (y::rest) = "\{y}, \{displayListItems rest}"
 
 export impl Display (List a) requires Display a where
   display xs = "[\{displayListItems xs}]"
+
+-- Display counterpart of `debugArrayItems`: recurses via `display` (unquoted).
+displayArrayItems : Display a => Array a -> Int -> Int -> String
+displayArrayItems arr i n
+  | i >= n = ""
+  | i == n - 1 = display (arrayGetUnsafe i arr)
+  | otherwise =
+    "\{display (arrayGetUnsafe i arr)}, \{displayArrayItems arr (i + 1) n}"
+
+{- | Renders `[|1, 2, 3|]`, matching `debug` but with unquoted elements (the
+   Display convention).  In `core.mdk` alongside `Debug (Array a)` so array
+   literals interpolate without an explicit `import array`.
+
+   > display [|1, 2, 3|] == "[|1, 2, 3|]"
+   True -}
+export impl Display (Array a) requires Display a where
+  display arr = "[|\{displayArrayItems arr 0 (arrayLength arr)}|]"
 
 export impl Display (Option a) requires Display a where
   display None = "None"

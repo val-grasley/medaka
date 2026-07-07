@@ -93,9 +93,11 @@ const : a -> b -> a
 count : Foldable b => (a -> Bool) -> b a -> Int
 curry : ((a, b) -> c) -> a -> b -> c
 debug : a -> String
+debugArrayItems : Debug a => Array a -> Int -> Int -> String
 debugListItems : Debug a => List a -> String
 discard : Mappable a => a b -> a Unit
 display : a -> String
+displayArrayItems : Display a => Array a -> Int -> Int -> String
 displayListItems : Display a => List a -> String
 div : a -> a -> a
 elem : (Eq a, Foldable b) => a -> b a -> Bool
