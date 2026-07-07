@@ -348,6 +348,17 @@ checkExpr _ _ _ (ELit _) = []
 checkExpr _ _ _ (ENumLit _ _ _) = []  -- PLAN.md #11: a literal, nothing to bind
 checkExpr _ _ _ (EMethodRef _) = []
 checkExpr _ _ _ (EDictApp _) = []
+-- EVarAt/EMethodAt/EDictAt are elaborated nodes introduced by annotateProgram /
+-- typecheck AFTER resolve; checkExpr's input is the desugared pre-resolve AST, so
+-- these arms are unreachable.
+checkExpr _ _ _ (EVarAt _ _) =
+  panic "unreachable: EVarAt is introduced by annotateProgram after resolve"
+checkExpr _ _ _ (EMethodAt _ _ _ _) =
+  panic
+    "unreachable: EMethodAt is introduced by typecheck elaboration after resolve"
+checkExpr _ _ _ (EDictAt _ _) =
+  panic
+    "unreachable: EDictAt is introduced by typecheck elaboration after resolve"
 checkExpr cur env scope (EVar n) = checkVar cur env scope n
 checkExpr cur env scope (EApp f x) = checkExpr cur env scope f
   ++ checkExpr cur env scope x
@@ -369,6 +380,14 @@ checkExpr cur env scope (EInfix op a b) = checkVar cur env scope op
   ++ checkExpr cur env scope a
   ++ checkExpr cur env scope b
 checkExpr cur env scope (EFieldAccess e0 _ _) = checkExpr cur env scope e0
+-- EMapLit/ESetLit are lowered to `fromEntries …` by desugar's
+-- lowerContainerLiterals BEFORE resolve runs, so these arms are unreachable.
+checkExpr _ _ _ (EMapLit _ _) =
+  panic
+    "unreachable: EMapLit is lowered to fromEntries by desugar before resolve"
+checkExpr _ _ _ (ESetLit _ _) =
+  panic
+    "unreachable: ESetLit is lowered to fromEntries by desugar before resolve"
 checkExpr cur env scope (ETuple es) = flatMap (checkExpr cur env scope) es
 checkExpr cur env scope (EListLit es) = flatMap (checkExpr cur env scope) es
 checkExpr cur env scope (EArrayLit es) = flatMap (checkExpr cur env scope) es
@@ -1179,6 +1198,9 @@ resErrorSexp (FieldNotInRecord f r _) =
   "(FieldNotInRecord \{escStr f} \{escStr r})"
 resErrorSexp (DuplicateDefinition k n _) =
   "(DuplicateDefinition \{escStr k} \{escStr n})"
+resErrorSexp (InternalExternAccess n _) = "(InternalExternAccess "
+  ++ escStr n
+  ++ ")"
 resErrorSexp (UnknownInterface n _) = "(UnknownInterface " ++ escStr n ++ ")"
 resErrorSexp (MethodNotInInterface m i _) =
   "(MethodNotInInterface \{escStr m} \{escStr i})"
@@ -1219,9 +1241,9 @@ locKey (Some (Loc f sl sc el ec)) = "\{f}:\{intToString sl}:\{intToString sc}:\{
 -- line) are kept, since the location makes them distinguishable and each is
 -- independently actionable. Order-preserving, first occurrence wins.
 -- NOTE: keyed on `ppResError`/`resErrorCode` (exhaustive over every ResError
--- constructor), NOT `resErrorSexp` — that function has no arm for
--- `InternalExternAccess` (it only ever fed the sexp-dump gates before this),
--- so using it as a general dedup key here would trap on that constructor.
+-- constructor), NOT `resErrorSexp`. (`resErrorSexp` is now itself total —
+-- including an `InternalExternAccess` arm — but the human `ppResError` key is
+-- kept here since it carries the actionable message text.)
 dedupResErrors : List ResError -> List ResError
 dedupResErrors es = dedupResErrorsGo es []
 

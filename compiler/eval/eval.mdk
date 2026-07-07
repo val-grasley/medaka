@@ -842,6 +842,10 @@ routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
 routeTag _ RLocal = ""
+-- RScalar tags an arithmetic EBinOp for the backend's Float path; it is never a
+-- typeclass dispatch route, so eval never routes a method through it.
+routeTag _ (RScalar _) =
+  panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
 
 -- a constrained-function occurrence: apply one runtime dictionary per resolved
 -- route as a leading argument (matching the dict params dict_pass prepended).
@@ -868,6 +872,9 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
 dictOfRoute _ RLocal = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
+-- RScalar is an arithmetic binop tag (backend Float path), never a dict route.
+dictOfRoute _ (RScalar _) =
+  panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
 
 -- narrow a method VMulti by a route, returning the narrowed value and any
 -- forwarded requires (non-empty only for RDictFwd return-position sites where the
@@ -893,6 +900,9 @@ methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
 -- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
 -- exists only to keep the match exhaustive; it returns the value unnarrowed.
 methodAtNarrow _ v RLocal = (v, [])
+-- RScalar is an arithmetic binop tag (backend Float path), never a dispatch route.
+methodAtNarrow _ _ (RScalar _) =
+  panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
 
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v

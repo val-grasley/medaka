@@ -1,0 +1,1 @@
+warning: non-exhaustive clauses of 'f'. Missing case: 'Blue'; add a 'Blue' clause, or a '_' catch-all clause.

@@ -209,6 +209,7 @@ kebab-case; never renumber (append only).
 | `W-NONEXHAUSTIVE` | non-exhaustive `match` (typecheck `matchWarnings`) |
 | `W-UNREACHABLE-ARM` | unreachable/redundant `match` arm — pattern already covered by an earlier unguarded arm (typecheck `matchWarnings`; `checkMatchRedundant`) |
 | `W-GUARD-INEXHAUSTIVE` | guards may not be exhaustive (exhaust) |
+| `W-NONEXHAUSTIVE-CLAUSES` | non-exhaustive clauses of a multi-clause function — a constructor is not covered by any clause (exhaust; the function-clause analog of `W-NONEXHAUSTIVE`) |
 
 ### Eval / runtime — `E-*` (`compiler/eval/eval.mdk`, `medaka run`)
 

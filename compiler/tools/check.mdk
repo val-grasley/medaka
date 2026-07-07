@@ -35,7 +35,7 @@ import frontend.resolve.{
   singleFileImportErrors,
   ppResError,
 }
-import frontend.exhaust.{exhaustToLines}
+import frontend.exhaust.{exhaustToLinesWith}
 import types.typecheck.{
   checkToLinesWithRuntime,
   setCoherenceUserDecls,
@@ -81,7 +81,7 @@ cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 -- Intentional cross-file duplicate of the same helper in check_batch.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 cleanReport runtimeP coreP raw desugared =
-  let exWarns = exhaustToLines raw
+  let exWarns = exhaustToLinesWith (raw ++ runtimeP ++ coreP) raw
   let _ = setCoherenceUserDecls desugared
   let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
   joinNonEmpty exWarns schemes
@@ -141,7 +141,7 @@ runCheckModules allowInternal trustedMods rtD coreD mods =
   let resDiags = resolveModulesToHumaneG allowInternal trustedMods rtD coreD mods
   match resDiags
     "" =>
-      let exWarns = entryExhaust mods
+      let exWarns = entryExhaust rtD coreD mods
       let report = checkModulesEntryReport rtD coreD mods
       joinNonEmpty exWarns report
     _ => resDiags
@@ -159,7 +159,19 @@ checkModulesHasErrors allowInternal trustedMods rtD coreD mods =
 -- analog of runCheck's `exhaustToLines raw`.  exhaustToLines runs on the desugared
 -- decls here (the loaded mods are already desugared); guard-coverage lowering does
 -- not erase the `match` shape exhaust inspects, so this surfaces the same warnings.
-entryExhaust : List (String, List Decl) -> String
-entryExhaust [] = ""
-entryExhaust [(_, prog)] = exhaustToLines prog
-entryExhaust (_::rest) = entryExhaust rest
+-- Oracle superset = runtime + core + EVERY loaded module's decls (so a
+-- multi-clause function in the entry module over an IMPORTED ADT is not
+-- false-flagged); only the entry module (last) is CHECKED.  `rtD`/`coreD`/`mods`
+-- are the DESUGARED decls, which still carry the DData/DRecord the oracle reads.
+entryExhaust : List Decl -> List Decl -> List (String, List Decl) -> String
+entryExhaust rtD coreD mods =
+  let oracleDecls = rtD ++ coreD ++ flatMap declsOfMod mods
+  entryExhaustGo oracleDecls mods
+
+declsOfMod : (String, List Decl) -> List Decl
+declsOfMod (_, prog) = prog
+
+entryExhaustGo : List Decl -> List (String, List Decl) -> String
+entryExhaustGo _ [] = ""
+entryExhaustGo oracleDecls [(_, prog)] = exhaustToLinesWith oracleDecls prog
+entryExhaustGo oracleDecls (_::rest) = entryExhaustGo oracleDecls rest

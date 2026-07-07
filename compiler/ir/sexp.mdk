@@ -121,6 +121,18 @@ exprSexp (ELit l) = node "ELit" [litSexp l]
 -- same) and the parse-fixture / OCaml↔compiler sexp diff gates keep passing.
 exprSexp (ENumLit n _ _) = node "ELit" [node "LInt" [intToString n]]
 exprSexp (EVar x) = node "EVar" [escStr x]
+-- EVarAt/EMethodAt are elaborated nodes introduced by annotate/typecheck
+-- (post-resolve); programToSexp only ever serializes pre-annotate (desugared)
+-- ASTs, so these arms are unreachable.
+exprSexp (EVarAt _ _) =
+  panic
+    "unreachable: programToSexp serializes pre-annotate ASTs; EVarAt is introduced by annotateProgram"
+exprSexp (EMethodAt _ _ _ _) =
+  panic
+    "unreachable: programToSexp serializes pre-annotate ASTs; EMethodAt is introduced by typecheck elaboration"
+exprSexp (EDictAt _ _) =
+  panic
+    "unreachable: programToSexp serializes pre-annotate ASTs; EDictAt is introduced by typecheck elaboration"
 exprSexp (EApp f x) = node "EApp" [exprSexp f, exprSexp x]
 exprSexp (ELam ps b) = node "ELam" [slist (map patSexp ps), exprSexp b]
 exprSexp (ELet m _isf p e1 e2) =

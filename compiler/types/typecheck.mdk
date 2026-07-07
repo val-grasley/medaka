@@ -8012,6 +8012,10 @@ findTvarN (TVar cell) id = if tyvarId cell == id then Some (TVar cell) else None
 findTvarN (TCon _) _ = None
 findTvarN (TApp a b) id = firstTvar a b id
 findTvarN (TFun a _ b) id = firstTvar a b id
+-- An effect row is reachable here as a KRow type-application argument
+-- (`TApp con (TEff row)`); a value-level tyvar id is never inside an effect row
+-- (its tail is an effvar, a separate namespace), so the answer is None.
+findTvarN (TEff _) _ = None
 
 firstTvar : Mono -> Mono -> Int -> Option Mono
 firstTvar a b id = match findTvarInMono a id

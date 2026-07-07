@@ -1,0 +1,17 @@
+-- Multi-clause function exhaustiveness (constructor coverage, not guards).
+-- `f` omits the `Blue` clause → non-exhaustive: names the missing case like the
+-- `match` path.  `g` covers every constructor → must stay silent.  A negative
+-- control for imported/prelude ADTs (Result) lives in the check-path tests; the
+-- entry-only exhaust_main oracle here knows `Color` from this file's own decl.
+data Color = Red | Green | Blue
+
+f : Color -> Int
+f Red = 1
+f Green = 2
+
+g : Color -> Int
+g Red = 1
+g Green = 2
+g Blue = 3
+
+main = println (f Red)

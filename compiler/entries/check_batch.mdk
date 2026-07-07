@@ -15,7 +15,7 @@ import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
-import frontend.exhaust.{exhaustToLines}
+import frontend.exhaust.{exhaustToLinesWith}
 import types.typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
 import entries.entry_support.{driveParseSources}
 
@@ -46,7 +46,7 @@ cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 -- Intentional cross-file duplicate of the same helper in check.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 cleanReport runtimeP coreP raw desugared =
-  let exWarns = exhaustToLines raw
+  let exWarns = exhaustToLinesWith (raw ++ runtimeP ++ coreP) raw
   let _ = setCoherenceUserDecls desugared
   let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
   joinNonEmpty exWarns schemes

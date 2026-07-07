@@ -13,6 +13,7 @@
 
 import frontend.ast.{
   Lit(..),
+  Loc,
   Ty(..),
   Constraint(..),
   Pat(..),
@@ -518,20 +519,71 @@ clausePats (pats, _) = pats
 guardWarning : String
 guardWarning = "Warning: guards may not be exhaustive"
 
-checkGroup : Oracle -> List (List Pat, Expr) -> List String
-checkGroup oracle clauses
+-- Each warning carries an optional per-group source location (recovered from the
+-- first clause body's `ELoc` wrapper), so the CLI can render `file:L:C:` like the
+-- `match`-path non-exhaustiveness warnings do.
+checkGroup : Oracle -> String -> List (List Pat, Expr) -> List (String, Option Loc)
+checkGroup oracle name clauses
+  -- A group with a *guarded partial* clause → the guard may fall through; keep
+  -- the flat "guards may not be exhaustive" wording (guard gaps aren't named by a
+  -- constructor witness).
   | anyList clauseIsGuardedPartial clauses = checkGroupCovered oracle clauses
-  | otherwise = []
+  -- Otherwise a plain constructor-matching group: warn when its patterns don't
+  -- cover every constructor, naming the missing case like the `match` path.
+  | otherwise = checkGroupClauses oracle name clauses
 
-checkGroupCovered : Oracle -> List (List Pat, Expr) -> List String
+checkGroupCovered : Oracle -> List (List Pat, Expr) -> List (String, Option Loc)
 checkGroupCovered oracle clauses =
   let arity = groupArity clauses
   let rows = totalClauseRows oracle clauses
   let query = [desugarPat oracle (PTuple (replicate arity PWild))]
   if useful oracle (Some (tupleCtorName arity)) rows query then
-    [guardWarning]
+    [(guardWarning, groupLoc clauses)]
   else
     []
+
+-- Constructor-coverage check for a non-guarded multi-clause group.  Builds the
+-- all-wildcard query and, when it is still useful (some value escapes every
+-- clause), names the missing case via `usefulWitness`/`renderWitness` — the same
+-- witness machinery the `match` path uses (typecheck.mdk's `nonExhaustiveMsg`).
+checkGroupClauses : Oracle -> String -> List (List Pat, Expr) -> List (String, Option Loc)
+checkGroupClauses oracle name clauses =
+  let arity = groupArity clauses
+  let rows = totalClauseRows oracle clauses
+  let query = [desugarPat oracle (PTuple (replicate arity PWild))]
+  if useful oracle (Some (tupleCtorName arity)) rows query then
+    [(nonExhaustiveClausesMsg oracle name arity rows, groupLoc clauses)]
+  else
+    []
+
+-- Build the specialised message.  The clause params are packed into one tuple
+-- column, so the witness is a single tuple pattern; for a one-param function we
+-- unwrap it so the case reads `Blue`, not `(Blue)` (parity with `match`).  Falls
+-- back to a generic wording when no witness is recoverable.
+nonExhaustiveClausesMsg : Oracle -> String -> Int -> List (List Pat) -> String
+nonExhaustiveClausesMsg oracle name arity rows = match usefulWitness oracle (Some (tupleCtorName arity)) rows 1
+  Some (w::_) =>
+    let witnessStr = renderClauseWitness arity w
+    let hint = "add a '\{witnessStr}' clause, or a '_' catch-all clause."
+    "Warning: non-exhaustive clauses of '\{name}'. Missing case: '\{witnessStr}'; \{hint}"
+  _ => "Warning: non-exhaustive clauses of '\{name}'. Not all cases are covered"
+
+-- Arity-1 witnesses are a 1-tuple wrapper around the single missing pattern;
+-- unwrap so the rendered case is the bare pattern.  Higher arities render as the
+-- tuple across all columns.
+renderClauseWitness : Int -> Pat -> String
+renderClauseWitness 1 (PCon _ (inner::_)) = renderWitness inner
+renderClauseWitness _ w = renderWitness w
+
+-- Per-group loc: the first clause body carries the parser's `ELoc` wrapper.
+groupLoc : List (List Pat, Expr) -> Option Loc
+groupLoc [] = None
+groupLoc ((_, body)::_) = clauseBodyLoc body
+
+clauseBodyLoc : Expr -> Option Loc
+clauseBodyLoc (ELoc l _) = Some l
+clauseBodyLoc (EDoOrigin l _) = Some l
+clauseBodyLoc _ = None
 
 groupArity : List (List Pat, Expr) -> Int
 groupArity [] = 0
@@ -546,8 +598,10 @@ totalClauseRows oracle (c::rest)
   | otherwise = totalClauseRows oracle rest
 
 -- ── group same-name (name, clause) pairs, first-seen order ────────────────
-groupByName : List (String, (List Pat, Expr)) -> List (List (List Pat, Expr))
-groupByName items = map (clausesForName items) (firstSeenNames items [])
+-- Keeps the group NAME (the constructor-coverage message names the function).
+groupByName : List (String, (List Pat, Expr)) -> List (String, List (List Pat, Expr))
+groupByName items =
+  map (n => (n, clausesForName items n)) (firstSeenNames items [])
 
 firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
 firstSeenNames [] seen = []
@@ -562,13 +616,13 @@ clausesForName ((n, c)::rest) name
   | otherwise = clausesForName rest name
 
 -- ── collect where-group (ELetGroup) clause groups from an expr tree ────────
-letGroupWarnings : Oracle -> Expr -> List String
+letGroupWarnings : Oracle -> Expr -> List (String, Option Loc)
 letGroupWarnings oracle body =
   flatMap (checkLetBind oracle) (collectLetBinds body)
 
-checkLetBind : Oracle -> LetBind -> List String
-checkLetBind oracle (LetBind _ funclauses) =
-  checkGroup oracle (map funClauseToClause funclauses)
+checkLetBind : Oracle -> LetBind -> List (String, Option Loc)
+checkLetBind oracle (LetBind name funclauses) =
+  checkGroup oracle name (map funClauseToClause funclauses)
 
 funClauseToClause : FunClause -> (List Pat, Expr)
 funClauseToClause (FunClause pats body) = (pats, body)
@@ -649,11 +703,26 @@ interpBinds (InterpStr _) = []
 interpBinds (InterpExpr e) = collectLetBinds e
 
 -- ── top-level entry ───────────────────────────────────────────────────────
+-- `checkGuardExhaustivenessWith oracleDecls checkDecls` builds the constructor
+-- oracle from `oracleDecls` (a safe SUPERSET — runtime + core + every loaded
+-- module) while only CHECKING the function groups in `checkDecls` (the target
+-- module).  Feeding a superset to `buildOracle` only ever adds ctor knowledge, so
+-- it never causes a missed warning; it is what lets the multi-clause path see
+-- IMPORTED ADTs (`Expr`/`Decl`/`Result`/…) and stop false-flagging exhaustive
+-- functions over them.  Each warning carries an optional per-group loc.
+export checkGuardExhaustivenessWith : List Decl -> List Decl -> List (String, Option Loc)
+checkGuardExhaustivenessWith oracleDecls checkDecls =
+  let oracle = buildOracle oracleDecls
+  flatMap (checkNamedGroup oracle) (groupByName (topFunDefClauses checkDecls))
+    ++ flatMap (declBodyWarnings oracle) checkDecls
+
+checkNamedGroup : Oracle -> (String, List (List Pat, Expr)) -> List (String, Option Loc)
+checkNamedGroup oracle (name, clauses) = checkGroup oracle name clauses
+
+-- Back-compat: build the oracle from the checked decls only (the historical
+-- entry-only oracle) and drop the loc channel to a plain message list.
 export checkGuardExhaustiveness : List Decl -> List String
-checkGuardExhaustiveness prog =
-  let oracle = buildOracle prog
-  flatMap (checkGroup oracle) (groupByName (topFunDefClauses prog))
-    ++ flatMap (declBodyWarnings oracle) prog
+checkGuardExhaustiveness prog = map fst (checkGuardExhaustivenessWith prog prog)
 
 topFunDefClauses : List Decl -> List (String, (List Pat, Expr))
 topFunDefClauses [] = []
@@ -661,9 +730,9 @@ topFunDefClauses ((DFunDef _ n pats body)::rest) =
   (n, (pats, body)) :: topFunDefClauses rest
 topFunDefClauses (_::rest) = topFunDefClauses rest
 
-declBodyWarnings : Oracle -> Decl -> List String
+declBodyWarnings : Oracle -> Decl -> List (String, Option Loc)
 declBodyWarnings oracle (DFunDef _ _ _ body) = letGroupWarnings oracle body
-declBodyWarnings oracle (DImpl { methods, ... }) = flatMap (checkGroup oracle) (groupByName (implClauses methods))
+declBodyWarnings oracle (DImpl { methods, ... }) = flatMap (checkNamedGroup oracle) (groupByName (implClauses methods))
   ++ flatMap (implMethodBodyWarnings oracle) methods
 declBodyWarnings oracle (DInterface { methods, ... }) =
   flatMap (ifaceMethodWarnings oracle) methods
@@ -677,15 +746,20 @@ implClauses [] = []
 implClauses ((ImplMethod n pats body)::rest) =
   (n, (pats, body)) :: implClauses rest
 
-implMethodBodyWarnings : Oracle -> ImplMethod -> List String
+implMethodBodyWarnings : Oracle -> ImplMethod -> List (String, Option Loc)
 implMethodBodyWarnings oracle (ImplMethod _ _ body) =
   letGroupWarnings oracle body
 
-ifaceMethodWarnings : Oracle -> IfaceMethod -> List String
+ifaceMethodWarnings : Oracle -> IfaceMethod -> List (String, Option Loc)
 ifaceMethodWarnings _ (IfaceMethod _ _ None) = []
 ifaceMethodWarnings oracle (IfaceMethod _ _ (Some (MethodDefault _ body))) =
   letGroupWarnings oracle body
 
--- one warning per line (the harness sorts)
+-- one warning per line (the harness sorts); oracle built from a superset of decls
+export exhaustToLinesWith : List Decl -> List Decl -> String
+exhaustToLinesWith oracleDecls checkDecls =
+  joinNl (map fst (checkGuardExhaustivenessWith oracleDecls checkDecls))
+
+-- entry-only oracle (self-contained single file: no imports available)
 export exhaustToLines : List Decl -> String
-exhaustToLines prog = joinNl (checkGuardExhaustiveness prog)
+exhaustToLines prog = exhaustToLinesWith prog prog
