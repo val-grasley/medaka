@@ -5,6 +5,28 @@ types on both `run` and `build`, killing the run/build divergence). Owning task:
 playground-filed deferred item "Bare non-Unit `main` — run/build divergence +
 composite-main emitter crash" (PLAN.md 2026-07-06).
 
+> ⚠️ **UPDATE 2026-07-07 — §2's in-process re-elaborate mechanism is UNSOUND; superseded.**
+> An implementation attempt proved that `elaborateModules` is **not cleanly
+> re-runnable in one process**: the first elaboration pollutes global
+> dict/instance-dispatch state, so the "elaborate → inspect → wrap → re-elaborate"
+> flow mis-resolves dispatch on the second pass. Concretely, an **underived-ADT
+> main** (`main = G`, type has no `Display`) wrapped to `println G` then
+> re-elaborated **silently defaults dispatch to `Int` and builds a binary that
+> prints garbage `17179869185`, exit 0** — a miscompile regression, WORSE than
+> today's clean `cannot print an ADT value` error. (Explicit `main = println G`
+> with a *single* elaborate correctly errors `No impl of Display for C` — the
+> double-elaborate is the corruptor.) The GOOD cases all work byte-identical
+> run==build (tuples/lists/scalars/deriving-enums, Unit-main-not-doubled).
+> **Confirmed renderer: `println` renders via `display`** (raw strings, `(a, b)`
+> tuples, `True`) — so the wrap is `main = println <body>`.
+> The sound path is either (a) a two-process wrap (CLI detects main type via its
+> clean gate, emitter does the single clean elaborate — but does NOT cover the
+> **single-process in-browser playground**), or (b) making in-process
+> re-elaborate sound via a `resetElaborationState()`. **Mechanism resolution is
+> under investigation** (which global state pollutes; is a reset feasible; what
+> covers build + wasm-CLI + in-browser-playground with least scope). `run`
+> (single-process interpreter) is a separate bite; for now it keeps warning.
+
 ## 1. Reproduction (confirmed on `54344aba`)
 
 | Program | `medaka run` | `medaka build` + exec |
