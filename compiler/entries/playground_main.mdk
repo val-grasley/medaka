@@ -92,7 +92,7 @@ import types.typecheck.{
   enableEmitArgStampPasses,
   mainTypeIsFloat,
   Scheme,
-  ppScheme,
+  ppSchemeNamed,
   checkProgramSchemesWithRuntime,
 }
 import ir.core_ir_lower.{lowerProgramEmit, methodIfaceTable, declSigTypeNames}
@@ -378,7 +378,7 @@ hoverResult src line col env = match identifierAt src line col
   None => JNull
   Some name => match lookupSchemeL name env
     None => JNull
-    Some sch => jHover name (ppScheme sch)
+    Some sch => jHover name (ppSchemeNamed name sch)
 
 -- core.mdk / runtime.mdk always parse; unwrap defensively (None → []).
 unwrapDecls : Result ParseError (List Decl) -> List Decl
@@ -488,8 +488,7 @@ anyName (x::xs) name = x == name || anyName xs name
 filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
 filterCompletions _ _ [] = []
 filterCompletions prefix seen ((n, s)::rest)
-  | startsWith prefix n && not (anyName seen n) =
-    jCompletionItem n (ppScheme s) :: filterCompletions prefix (n::seen) rest
+  | startsWith prefix n && not (anyName seen n) = jCompletionItem n (ppSchemeNamed n s) :: filterCompletions prefix (n::seen) rest
   | otherwise = filterCompletions prefix seen rest
 
 jCompletionItem : String -> String -> Json

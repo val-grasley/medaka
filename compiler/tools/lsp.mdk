@@ -72,7 +72,7 @@ import frontend.desugar.{desugar}
 import types.typecheck.{
   checkProgramSchemes,
   checkProgramSchemesWithRuntime,
-  ppScheme,
+  ppSchemeNamed,
   Scheme(..),
   currentLocalSchemes,
   currentSeedSchemes,
@@ -540,7 +540,7 @@ hoverFor runtimeSrc coreSrc uri src params docs = match (positionLine params, po
         None => JNull
         Some sch =>
           let pfx = sigLeadingEff name (unwrapDecls (parseResult src))
-          jHover name (stringConcat [pfx, ppScheme sch])
+          jHover name (stringConcat [pfx, ppSchemeNamed name sch])
   _ => JNull
 
 -- The hover lookup env for the buffer.  A buffer with a non-core sibling import
@@ -696,8 +696,7 @@ startsWith p n =
 filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
 filterCompletions _ _ [] = []
 filterCompletions prefix seen ((n, s)::rest)
-  | startsWith prefix n && not (anyName seen n) =
-    jCompletionItem n (ppScheme s) :: filterCompletions prefix (n::seen) rest
+  | startsWith prefix n && not (anyName seen n) = jCompletionItem n (ppSchemeNamed n s) :: filterCompletions prefix (n::seen) rest
   | otherwise = filterCompletions prefix seen rest
 
 -- One CompletionItem { label, kind, detail }.  kind 3 = Function (LSP spec).
@@ -799,7 +798,7 @@ inlayZip src allDecls (d::ds) (p::ps) env = match declBindingName d
     None => inlayZip src allDecls ds ps env
     Some sch => match columnAfterName src (declPosLine p - 1)
       None => inlayZip src allDecls ds ps env
-      Some col => jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppScheme sch]) :: inlayZip src allDecls ds ps env
+      Some col => jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppSchemeNamed name sch]) :: inlayZip src allDecls ds ps env
 inlayZip _ _ _ _ _ = []
 
 -- One InlayHint { position, label, paddingLeft } (mirror the OCaml create).

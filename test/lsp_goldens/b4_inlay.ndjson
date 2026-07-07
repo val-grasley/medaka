@@ -1,3 +1,3 @@
 {"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"completionProvider": {}, "definitionProvider": true, "documentFormattingProvider": true, "documentHighlightProvider": true, "documentSymbolProvider": true, "hoverProvider": true, "inlayHintProvider": true, "textDocumentSync": 1}, "serverInfo": {"name": "medaka-lsp", "version": "0.1.0"}}}
 {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file:///b4.mdk"}}
-{"id": 4, "jsonrpc": "2.0", "result": [{"label": ": a -> a", "paddingLeft": true, "position": {"character": 6, "line": 0}}, {"label": ": Int", "paddingLeft": true, "position": {"character": 6, "line": 3}}]}
+{"id": 4, "jsonrpc": "2.0", "result": [{"label": ": Num a => a -> a", "paddingLeft": true, "position": {"character": 6, "line": 0}}, {"label": ": Int", "paddingLeft": true, "position": {"character": 6, "line": 3}}]}
