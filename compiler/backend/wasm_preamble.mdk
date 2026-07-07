@@ -203,7 +203,10 @@ strTypeLines = [
 --   $mdk_print_int  — render an i64 in decimal (sign + digits) and byte-write it + '\n'
 --                     (matches medaka_rt.c mdk_int_to_string's "%lld" + mdk_print_int's
 --                     trailing newline).
---   $mdk_print_bool — write "true"/"false" + '\n' (matches mdk_print_bool).
+--   $mdk_print_bool — write "True"/"False" + '\n' (value-main Bool auto-print;
+--                     matches native's `println`/`display` Debug rendering — the
+--                     composite-main autoprint wrap renders Bool as `True`/`False`,
+--                     so the WasmGC direct value-main auto-print must agree).
 --   $mdk_int_to_str — render an i64 in decimal into a fresh $str (intToString; the
 --                     LEAF extern).  cp_count == byte_len (all ASCII digits/sign).
 export ioRuntimeLines : List String
@@ -243,10 +246,10 @@ ioRuntimeLines = [
   "  (func $mdk_print_bool (param $b i32)",
   "    (if (local.get $b)",
   "      (then",
-  "        (call $mdk_write_byte (i32.const 116)) (call $mdk_write_byte (i32.const 114))",
+  "        (call $mdk_write_byte (i32.const 84)) (call $mdk_write_byte (i32.const 114))",
   "        (call $mdk_write_byte (i32.const 117)) (call $mdk_write_byte (i32.const 101)))",
   "      (else",
-  "        (call $mdk_write_byte (i32.const 102)) (call $mdk_write_byte (i32.const 97))",
+  "        (call $mdk_write_byte (i32.const 70)) (call $mdk_write_byte (i32.const 97))",
   "        (call $mdk_write_byte (i32.const 108)) (call $mdk_write_byte (i32.const 115))",
   "        (call $mdk_write_byte (i32.const 101))))",
   "    (call $mdk_write_byte (i32.const 10)))",
