@@ -14,9 +14,19 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import support.util.{splitLast}
 import support.path.{dirOf}
-import types.typecheck.{elaborateOne}
+import types.typecheck.{
+  elaborateOne,
+  elaborateModules,
+  enableEmitArgStampPasses,
+}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 import driver.loader.{loadProgram}
+import backend.private_mangle.{mangleUnits}
+import driver.main_autoprint.{
+  shouldAutoPrintMain,
+  autoPrintWrapModules,
+  underivedMainDiags,
+}
 
 -- ── file readers ───────────────────────────────────────────────────────────────
 
@@ -104,6 +114,37 @@ driveModulesGo runEmit runtimeP coreP entry roots = match readFile runtimeP
     Ok csrc => match loadProgram entry roots
       Err e => ePutStrLn e
       Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+-- ── shared composite-main emit glue (parameterized by the backend's emitTail) ──
+-- The LLVM and WasmGC multi-module emit drivers had byte-identical runEmit +
+-- emitModules bodies (composite-main auto-print wrap glue); their ONLY difference
+-- is the backend-specific `emitTail`.  These two helpers host that shared glue
+-- once, taking `emitTail` as a function parameter, so each driver keeps only its
+-- backend `emitTail` and calls `driveModules (runEmitWith emitTail)`.
+--
+-- COMPOSITE-MAIN AUTO-PRINT (design §10): after the elaborate that learns main's
+-- type, a bare non-Unit VALUE main is rewritten `main = <e>` → `main = println
+-- <e>` and re-emitted; a bare underived-ADT main surfaces the clean `No impl of
+-- Display …` error.  A Unit/Async main (incl. every compiler-graph main) takes
+-- the unchanged path, so emitter output on the compiler graph is byte-identical.
+export runEmitWith : (List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit) -> List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmitWith emitTail runtimeDecls coreDecls modules =
+  let _ = enableEmitArgStampPasses ()
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  if shouldAutoPrintMain coreDecls modules then
+    let modulesW = autoPrintWrapModules modules
+    match underivedMainDiags runtimeDecls coreDecls modulesW
+      (_, msg, _)::_ => ePutStrLn msg
+      [] => emitModulesWith emitTail runtimeDecls coreDecls modulesW
+  else emitTail runtimeDecls coreD modules2
+
+-- Mangle + elaborate + emit a (possibly wrapped) module list from scratch.
+export emitModulesWith : (List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit) -> List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitModulesWith emitTail runtimeDecls coreDecls modules =
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  emitTail runtimeDecls coreD modules2
 
 -- ── shared terminal computations ─────────────────────────────────────────────
 -- Identical across the _main and _batch variants of the same stage, so they live
