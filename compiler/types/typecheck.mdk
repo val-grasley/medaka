@@ -917,6 +917,12 @@ effectLeakMsg bound extras = "Effectful value used where <\{renderAtoms bound}> 
 effectParamMsg : String -> String -> String
 effectParamMsg label why = "Invalid effect parameter on <\{label}>: \{why}"
 
+-- Runtime B1 dedup: the shared "must end in '*' or contain a '/'…" rationale for
+-- a bare prefix param, parameterized by the noun (`pattern` for a top-level
+-- Prefix param, `Host pattern` for a product's Host axis).
+prefixPatternErrMsg : String -> String -> String
+prefixPatternErrMsg noun pat = "\{noun} \"\{pat}\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"
+
 -- validate every written effect param in a program's type annotations against
 -- the registry: a Prefix label's pattern must pass prefixPatternOk; an atomic
 -- label rejects a param outright.  Runs as a <Mut> pass (errors via
@@ -966,8 +972,7 @@ checkOneEffectParam l pat = match dtopFor l
     -- v2 Stage 2b: the inferred hole "_" carries no written pattern to validate.
     if isHoleStr pat then ()
     else if prefixPatternOk pat then ()
-    else pushTypeError "T-EFFECT-PARAM" (effectParamMsg l
-      ("pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
+    else pushTypeError "T-EFFECT-PARAM" (effectParamMsg l (prefixPatternErrMsg "pattern" pat))
   PSet None =>
     -- Set-domain param is a brace-set literal `{a,b}` (parser-encoded); always well-formed.
     ()
@@ -994,7 +999,7 @@ checkOneAxis l "Host" (PPrefix (Some pat)) =
   if prefixPatternOk pat then
     ()
   else
-    pushTypeError "T-EFFECT-PARAM" (effectParamMsg l ("Host pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
+    pushTypeError "T-EFFECT-PARAM" (effectParamMsg l (prefixPatternErrMsg "Host pattern" pat))
 checkOneAxis _ "Method" _ = ()
 checkOneAxis l name _ =
   pushTypeError
@@ -4183,9 +4188,28 @@ inferBinopE : TcEnv -> String -> Expr -> Expr -> Ref Route -> <Mut> Mono
 inferBinopE env op l r dref =
   let lt = infer env l
   let rt = infer env r
+  -- Type-error span (Bite 2, fork 1 = WHOLE BINOP): after inferring both
+  -- operands, the live `currentLoc` is the LAST operand atom (ELoc wraps
+  -- leaves, not the binop level).  Point mismatches at the whole `l <op> r`
+  -- span (l's start .. r's end) so both the Num-obligation errors and the
+  -- comparison/Eq/Ord `typeMismatch` binop errors squiggle the operator
+  -- expression rather than a lone operand.
+  let _ = match binopSpanLoc l r
+    Some sp => setRef currentLoc (Some sp)
+    None => ()
   let _ = recordBinopSite op dref lt
   let _ = recordArithSite op dref lt
   inferBinop op lt rt
+
+-- Synthesize the whole-binop span from its operand Exprs: file + start of the
+-- left operand, end of the right operand.  Falls back to whichever single
+-- operand loc is available (None only when neither operand is ELoc-wrapped).
+binopSpanLoc : Expr -> Expr -> Option Loc
+binopSpanLoc l r = match (exprLoc l, exprLoc r)
+  (Some (Loc f sl sc _ _), Some (Loc _ _ _ el ec)) => Some (Loc f sl sc el ec)
+  (Some ll, None) => Some ll
+  (None, Some rr) => Some rr
+  (None, None) => None
 -- Phase 151 / Gap G: record a binop site for the comparison/equality operators
 -- so resolveBinopSites can stamp [dref] once the operand type grounds.  The
 -- operand mono is [lt] (unified with [rt] by eqCompareOp/ordCompareOp below).
@@ -4632,6 +4656,14 @@ exprLoc (ELoc l _) = Some l
 exprLoc (EDoOrigin l _) = Some l
 exprLoc _ = None
 
+-- The span of an application's outermost argument (Bite 3): peel any ELoc
+-- wrapper on the `EApp` head, then read the argument Expr's loc.  Non-EApp
+-- shapes (never passed as `appExpr`) return None.
+appArgLoc : Expr -> Option Loc
+appArgLoc (ELoc _ e) = appArgLoc e
+appArgLoc (EApp _ x) = exprLoc x
+appArgLoc _ = None
+
 -- True iff [m] has NO unbound tyvar anywhere (a fully concrete type).
 monoConcrete : Mono -> <Mut> Bool
 monoConcrete m = match normalize m
@@ -5024,6 +5056,13 @@ inferApp lets appExpr ft xt =
         r
       None =>
         let eff = openRow ()
+        -- Type-error span (Bite 3, fork 3 = ARGUMENT): point a wrong-arg-type
+        -- mismatch at the argument expression rather than the callee.  The live
+        -- `currentLoc` after inferring the arg is its last atom; refine it to the
+        -- whole argument span so `len 5` (len : String -> Int) squiggles the `5`.
+        let _ = match appArgLoc appExpr
+          Some al => setRef currentLoc (Some al)
+          None => ()
         let _ = unify ft (TFun xt eff r)
         -- v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
         -- Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
