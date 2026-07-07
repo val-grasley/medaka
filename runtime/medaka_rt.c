@@ -336,7 +336,29 @@ void mdk_eputstrln(long long w) { mdk_fwrite_str(w, stderr, 1); }
 void mdk_flushstdout(long long w) { (void)w; fflush(stdout); }
 void mdk_print_unit(void)       { printf("()\n"); }
 
-noreturn void mdk_panic(long long w) { mdk_fwrite_str(w, stderr, 1); exit(1); }
+/* `panic` is BOTH the abort primitive the interpreter's `runtimePanic` uses to
+   print an already-formatted, coded+located runtime diagnostic AND the lowering
+   of a user's `panic "msg"` in a natively-compiled program.  The two want
+   different framing: runtimePanic's string is complete (`f:L:C: runtime error
+   [E-CODE]: msg`, or the `--json` envelope) and must print verbatim, whereas a
+   raw user message needs the `runtime error [E-PANIC]:` banner so native matches
+   the interpreter (loc still blocked on Core-IR-loc).  The interpreter marks its
+   pre-formatted strings with a leading 0x01 sentinel byte (eval.mdk's
+   runtimePanic); mdk_panic strips that and prints verbatim, else it adds the
+   E-PANIC banner.  A user panic message never begins with 0x01. */
+noreturn void mdk_panic(long long w) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  const char *bytes = cell + 24;
+  if (byte_len > 0 && bytes[0] == '\x01') {
+    fwrite(bytes + 1, 1, (size_t)(byte_len - 1), stderr);
+  } else {
+    fputs("runtime error [E-PANIC]: ", stderr);
+    fwrite(bytes, 1, (size_t)byte_len, stderr);
+  }
+  fputc('\n', stderr);
+  exit(1);
+}
 
 /* Integer divide/modulo by zero traps (LLVM emitter guards the divisor before
    the hardware sdiv/srem, whose zero-divisor behaviour is UB → silent garbage +

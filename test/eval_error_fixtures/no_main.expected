@@ -1,1 +1,1 @@
-program has no 'main' binding
+:0:0: runtime error [E-NO-MAIN]: program has no 'main' binding

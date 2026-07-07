@@ -690,7 +690,7 @@ applyValue f x = apply f x
 export apply : Value -> Value -> <Mut> Value
 apply f x = match applyOpt f x
   Some v => v
-  None => panic "non-exhaustive match"
+  None => runtimePanic "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 
 applyOpt : Value -> Value -> <Mut> Option Value
 applyOpt (VClosure env pats body) arg = applyClosure env pats body arg
@@ -1665,10 +1665,18 @@ export runtimePanic : String -> String -> a
 runtimePanic code msg = match currentEvalLoc.value
   Loc f sl sc el ec =>
     let ff = if f == "" then currentEvalFile.value else f
+    -- The string is a COMPLETE, coded runtime diagnostic; mark it with a leading
+    -- 0x01 sentinel so the `panic` abort primitive (mdk_panic) prints it verbatim
+    -- rather than re-wrapping it in its native-user-panic `[E-PANIC]` banner.
     if runJsonMode.value then
       let diag = Diag SevError code msg (Some (Loc ff sl sc el ec)) None None
-      panic (cjAllToJson [(ff, "", [diag])])
-    else panic "\{ff}:\{intToString sl}:\{intToString sc}: runtime error [\{code}]: \{msg}"
+      panic "\{fmtSentinel}\{cjAllToJson [(ff, "", [diag])]}"
+    else panic "\{fmtSentinel}\{ff}:\{intToString sl}:\{intToString sc}: runtime error [\{code}]: \{msg}"
+
+-- 0x01 marker (see runtimePanic / mdk_panic): a preformatted runtime diagnostic
+-- the abort primitive must print verbatim, never re-banner.
+fmtSentinel : String
+fmtSentinel = ""
 
 appendOutput : String -> <Mut> Value
 appendOutput s =
@@ -2208,10 +2216,20 @@ lookupBinding name ((n, v)::rest)
   | n == name = Some v
   | otherwise = lookupBinding name rest
 
+-- Shared message + code for the "no `main`" abort — dedups the three former
+-- bare `panic "program has no 'main' binding"` sites.  Each site routes through
+-- runtimePanic (E-NO-MAIN), matching the compiled/driver path.  NB: kept a plain
+-- String constant, NOT a nullary `= runtimePanic …` binding — a top-level value
+-- binding is evaluated EAGERLY at native startup, so an aborting nullary would
+-- fire on every `medaka` invocation.  The runtimePanic call therefore stays
+-- inline at each (lazy) match arm.
+export noMainMsg : String
+noMainMsg = "program has no 'main' binding"
+
 export evalMain : List Decl -> <Mut> String
 evalMain prog = match lookupBinding "main" (evalOne [] ("__main__", prog))
   Some v => ppValue (force v)
-  None => panic "program has no 'main' binding"
+  None => runtimePanic "E-NO-MAIN" noMainMsg
 
 -- Run the program for its OUTPUT (forcing `main`, whose IO side-effects append
 -- to outputRef) and return the captured stdout — diffs against === EVAL ===.
@@ -2245,7 +2263,7 @@ shadowedFun _ _ = False
 runMainForEffect : List (String, Value) -> <Mut> Value
 runMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
-  None => panic "program has no 'main' binding"
+  None => runtimePanic "E-NO-MAIN" noMainMsg
 
 -- ── multi-module evaluation (per-module frames over a shared global) ───────
 -- Port of lib/eval.ml's eval_modules.  The prelude (core) installs GLOBALLY
@@ -2455,11 +2473,10 @@ evalModulesOutputAsync preludeDecls modules =
 
 driveAsyncMain : List (String, Value) -> <Mut> Value
 driveAsyncMain binds = match lookupBinding "main" binds
-  None => panic "program has no 'main' binding"
+  None => runtimePanic "E-NO-MAIN" noMainMsg
   Some mv => match lookupBinding "runAsync" binds
     Some rf => apply rf (force mv)
-    None =>
-      panic "main : Async _ requires `runAsync` in scope. Add `import async`"
+    None => runtimePanic "E-NO-RUNASYNC" "main : Async _ requires `runAsync` in scope. Add `import async`"
 
 -- ── Phase 0 (DRIVER-COLLAPSE): 1-module eval wrappers over evalModules ──────
 -- evalOne / evalOneOutput / evalOneRootEnv run a SINGLE program as the degenerate

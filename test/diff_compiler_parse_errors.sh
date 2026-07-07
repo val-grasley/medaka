@@ -26,9 +26,13 @@ FIXDIR="$ROOT/test/parse_error_fixtures"
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
 # Extract the error message from the native binary's stderr (first message-bearing
-# line), stripping any "…: panic: " prefix a runtime might add.
+# line), stripping any "…: panic: " prefix a runtime might add — including the
+# coded "runtime error [E-PANIC]: " banner mdk_panic now prepends to a raw panic
+# (RUNTIME-TRAP-UNIFY): the probe verifies the parser/lexer MESSAGE, not the
+# runtime's framing (the user-facing CLI path renders located parse errors via
+# ppParseError, unaffected).
 norm_self() {
-  grep -E "panic:|." | head -1 | sed 's/.*panic: //'
+  grep -E "panic:|." | head -1 | sed 's/.*panic: //; s/^runtime error \[E-PANIC\]: //'
 }
 
 pass=0; fail=0

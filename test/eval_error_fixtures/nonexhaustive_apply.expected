@@ -1,1 +1,1 @@
-non-exhaustive match
+:0:0: runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match
