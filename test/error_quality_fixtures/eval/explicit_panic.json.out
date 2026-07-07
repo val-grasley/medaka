@@ -1,1 +1,1 @@
-{"files":[{"file":"test/error_quality_fixtures/eval/explicit_panic.mdk","diagnostics":[{"code":"E-PANIC","kind":"error","message":"user not found","range":{"end":{"character":38,"line":1},"start":{"character":37,"line":1}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"test/error_quality_fixtures/eval/explicit_panic.mdk","diagnostics":[{"code":"E-PANIC","kind":"error","message":"user not found","range":{"end":{"character":38,"line":1},"start":{"character":22,"line":1}},"severity":1,"source":"medaka"}]}]}

@@ -2182,6 +2182,7 @@ IDENT "pos"
 PLUS
 INT 3
 RPAREN
+IDENT "pos"
 IDENT "depth"
 IDENT "id"
 UPPER "False"
@@ -2201,6 +2202,7 @@ IDENT "pos"
 PLUS
 INT 1
 RPAREN
+IDENT "pos"
 IDENT "depth"
 IDENT "id"
 STRING ""
@@ -3484,6 +3486,8 @@ UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
+UPPER "Int"
+ARROW
 UPPER "String"
 ARROW
 UPPER "List"
@@ -3493,6 +3497,7 @@ IDENT "scanStr"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "acc"
@@ -3520,7 +3525,7 @@ LPAREN
 UPPER "TString"
 IDENT "acc"
 RPAREN
-IDENT "p"
+IDENT "startQ"
 LPAREN
 IDENT "p"
 PLUS
@@ -3559,6 +3564,7 @@ IDENT "scanStrEsc"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "acc"
@@ -3589,6 +3595,7 @@ NEWLINE
 PIPE
 IDENT "otherwise"
 EQUAL
+INDENT
 IDENT "scanStr"
 IDENT "src"
 IDENT "len"
@@ -3597,6 +3604,7 @@ IDENT "p"
 PLUS
 INT 1
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3612,10 +3620,14 @@ RPAREN
 NEWLINE
 DEDENT
 NEWLINE
+DEDENT
+NEWLINE
 IDENT "scanStrEsc"
 COLON
 UPPER "Array"
 UPPER "Char"
+ARROW
+UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
@@ -3636,6 +3648,7 @@ IDENT "scanStrEsc"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "acc"
@@ -3682,6 +3695,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3703,6 +3717,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3723,6 +3738,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3743,6 +3759,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3764,6 +3781,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3785,6 +3803,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3808,7 +3827,6 @@ IDENT "len"
 IDENT "p"
 IDENT "e"
 EQUAL
-INDENT
 IDENT "scanStr"
 IDENT "src"
 IDENT "len"
@@ -3818,6 +3836,7 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -3828,8 +3847,6 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 RPAREN
-NEWLINE
-DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -4333,6 +4350,8 @@ UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
+UPPER "Int"
+ARROW
 UPPER "Bool"
 ARROW
 UPPER "String"
@@ -4344,6 +4363,7 @@ IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4354,7 +4374,6 @@ IDENT "p"
 GEQ
 IDENT "len"
 EQUAL
-INDENT
 UPPER "RTok"
 LPAREN
 UPPER "TString"
@@ -4364,7 +4383,7 @@ IDENT "leadingNl"
 IDENT "acc"
 RPAREN
 RPAREN
-IDENT "p"
+IDENT "startQ"
 IDENT "p"
 CONS
 IDENT "scan"
@@ -4373,8 +4392,6 @@ IDENT "len"
 IDENT "p"
 IDENT "depth"
 IDENT "id"
-NEWLINE
-DEDENT
 NEWLINE
 PIPE
 IDENT "isTripleAt"
@@ -4391,7 +4408,7 @@ IDENT "leadingNl"
 IDENT "acc"
 RPAREN
 RPAREN
-IDENT "p"
+IDENT "startQ"
 LPAREN
 IDENT "p"
 PLUS
@@ -4482,6 +4499,7 @@ IDENT "scanTripleEsc"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4506,7 +4524,6 @@ IDENT "src"
 IDENT "p"
 RPAREN
 EQUAL
-INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4515,6 +4532,7 @@ IDENT "p"
 PLUS
 INT 1
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 LPAREN
@@ -4527,8 +4545,6 @@ IDENT "acc"
 PLUSPLUS
 STRING "\n"
 RPAREN
-NEWLINE
-DEDENT
 NEWLINE
 PIPE
 IDENT "isQuote"
@@ -4564,6 +4580,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4592,6 +4609,7 @@ IDENT "p"
 PLUS
 INT 1
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4606,7 +4624,6 @@ NEWLINE
 PIPE
 IDENT "otherwise"
 EQUAL
-INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4615,6 +4632,7 @@ IDENT "p"
 PLUS
 INT 1
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4631,12 +4649,12 @@ RPAREN
 NEWLINE
 DEDENT
 NEWLINE
-DEDENT
-NEWLINE
 IDENT "scanTripleEsc"
 COLON
 UPPER "Array"
 UPPER "Char"
+ARROW
+UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
@@ -4659,6 +4677,7 @@ IDENT "scanTripleEsc"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4670,6 +4689,7 @@ IDENT "e"
 EQ_EQ
 CHAR "n"
 EQUAL
+INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4678,6 +4698,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4687,11 +4708,14 @@ PLUSPLUS
 STRING "\n"
 RPAREN
 NEWLINE
+DEDENT
+NEWLINE
 PIPE
 IDENT "e"
 EQ_EQ
 CHAR "t"
 EQUAL
+INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4700,6 +4724,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4709,10 +4734,13 @@ PLUSPLUS
 STRING "\t"
 RPAREN
 NEWLINE
+DEDENT
+NEWLINE
 PIPE
 IDENT "isQuote"
 IDENT "e"
 EQUAL
+INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4721,6 +4749,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4730,10 +4759,13 @@ PLUSPLUS
 STRING "\""
 RPAREN
 NEWLINE
+DEDENT
+NEWLINE
 PIPE
 IDENT "isBackslash"
 IDENT "e"
 EQUAL
+INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4742,6 +4774,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4751,11 +4784,14 @@ PLUSPLUS
 STRING "\\"
 RPAREN
 NEWLINE
+DEDENT
+NEWLINE
 PIPE
 IDENT "e"
 EQ_EQ
 CHAR "r"
 EQUAL
+INDENT
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -4764,6 +4800,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4772,6 +4809,8 @@ IDENT "acc"
 PLUSPLUS
 STRING "\r"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "e"
@@ -4786,6 +4825,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4819,6 +4859,7 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"
@@ -4843,6 +4884,7 @@ IDENT "p"
 PLUS
 INT 2
 RPAREN
+IDENT "startQ"
 IDENT "depth"
 IDENT "id"
 IDENT "leadingNl"

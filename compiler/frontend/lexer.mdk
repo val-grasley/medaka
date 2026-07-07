@@ -460,8 +460,8 @@ scanAt src len pos depth id c
       RComment pos (substr src pos e) :: scan src len e depth id
   | isDigit c = scanNumber src len pos depth id
   | isQuote c && isTripleAt src len pos =
-    scanTriple src len (pos + 3) depth id False ""
-  | isQuote c = scanStr src len (pos + 1) depth id ""
+    scanTriple src len (pos + 3) pos depth id False ""
+  | isQuote c = scanStr src len (pos + 1) pos depth id ""
   | isApos c = scanChar src len pos depth id
   | isLower c || c == '_' = scanLower src len pos depth id
   | isUpper c = scanUpper src len pos depth id
@@ -604,28 +604,33 @@ floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
   RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) pos e2 :: scan src len e2 depth id
 
--- strings (escapes processed into the content; `\{` opens an interpolation)
-scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
-scanStr src len p depth id acc
+-- strings (escapes processed into the content; `\{` opens an interpolation).
+-- `startQ` is the offset of the OPENING quote (captured at the call site in
+-- `scanAt`), threaded through so the emitted `TString` token's start offset is
+-- the full literal span, not just the closing quote (Defect B,
+-- TYPE-ERROR-SPAN-DESIGN.md Bite 1) — it changes only the token's start
+-- offset field, never the token stream itself.
+scanStr : Array Char -> Int -> Int -> Int -> Int -> Int -> String -> List RawTok
+scanStr src len p startQ depth id acc
   | p >= len = lexErrorTok p "unterminated string literal"
   | isQuote (at src p) =
-    RTok (TString acc) p (p + 1) :: scan src len (p + 1) depth id
+    RTok (TString acc) startQ (p + 1) :: scan src len (p + 1) depth id
   | isBackslash (at src p) && p + 1 < len =
-    scanStrEsc src len p depth id acc (at src (p + 1))
+    scanStrEsc src len p startQ depth id acc (at src (p + 1))
   | isBackslash (at src p) = lexErrorTok p "unterminated string literal"
-  | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
+  | otherwise =
+    scanStr src len (p + 1) startQ depth id (acc ++ charToStr (at src p))
 
-scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
-scanStrEsc src len p depth id acc e
+scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
+scanStrEsc src len p startQ depth id acc e
   | e == '{' = RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth 1
-  | e == 'n' = scanStr src len (p + 2) depth id (acc ++ "\n")
-  | e == 't' = scanStr src len (p + 2) depth id (acc ++ "\t")
-  | isQuote e = scanStr src len (p + 2) depth id (acc ++ "\"")
-  | isBackslash e = scanStr src len (p + 2) depth id (acc ++ "\\")
-  | e == 'r' = scanStr src len (p + 2) depth id (acc ++ "\r")
-  | e == '0' = scanStr src len (p + 2) depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e =
-    scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
+  | e == 'n' = scanStr src len (p + 2) startQ depth id (acc ++ "\n")
+  | e == 't' = scanStr src len (p + 2) startQ depth id (acc ++ "\t")
+  | isQuote e = scanStr src len (p + 2) startQ depth id (acc ++ "\"")
+  | isBackslash e = scanStr src len (p + 2) startQ depth id (acc ++ "\\")
+  | e == 'r' = scanStr src len (p + 2) startQ depth id (acc ++ "\r")
+  | e == '0' = scanStr src len (p + 2) startQ depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanStr src len (uniEscEnd src len p) startQ depth id (acc ++ uniEscStr src len p)
   | otherwise = lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
@@ -673,35 +678,41 @@ maybeStrip : Bool -> String -> String
 maybeStrip True acc = stripIndent acc
 maybeStrip False acc = acc
 
-scanTriple : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
-scanTriple src len p depth id leadingNl acc
-  | p >= len =
-    RTok (TString (maybeStrip leadingNl acc)) p p :: scan src len p depth id
-  | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) p (p + 3) :: scan src len (p + 3) depth id
+-- `startQ` is the offset of the opening `"""` (captured in `scanAt`),
+-- threaded through so the final `TString` start offset covers the whole
+-- literal, not just the closing delimiter (Defect B; same rationale as
+-- `scanStr` above).
+scanTriple : Array Char -> Int -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
+scanTriple src len p startQ depth id leadingNl acc
+  | p >= len = RTok (TString (maybeStrip leadingNl acc)) startQ p :: scan src len p depth id
+  | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) startQ (p + 3) :: scan src len (p + 3) depth id
   | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
     RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
   | isBackslash (at src p) && p + 1 < len =
-    scanTripleEsc src len p depth id leadingNl acc (at src (p + 1))
-  | isNL (at src p) =
-    scanTriple src len (p + 1) depth id (firstNl leadingNl acc) (acc ++ "\n")
+    scanTripleEsc src len p startQ depth id leadingNl acc (at src (p + 1))
+  | isNL (at src p) = scanTriple src len (p + 1) startQ depth id (firstNl leadingNl acc) (acc ++ "\n")
   | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) =
-    scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"\"")
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\"\"")
   | isQuote (at src p) =
-    scanTriple src len (p + 1) depth id leadingNl (acc ++ "\"")
-  | otherwise =
-    scanTriple src len (p + 1) depth id leadingNl (acc ++ charToStr (at src p))
+    scanTriple src len (p + 1) startQ depth id leadingNl (acc ++ "\"")
+  | otherwise = scanTriple src len (p + 1) startQ depth id leadingNl (acc ++ charToStr (at src p))
 
-scanTripleEsc : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> Char -> List RawTok
-scanTripleEsc src len p depth id leadingNl acc e
-  | e == 'n' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\n")
-  | e == 't' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\t")
-  | isQuote e = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"")
-  | isBackslash e = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\\")
-  | e == 'r' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\r")
-  | e == '0' = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanTriple src len (uniEscEnd src len p) depth id leadingNl (acc ++ uniEscStr src len p)
+scanTripleEsc : Array Char -> Int -> Int -> Int -> Int -> Int -> Bool -> String -> Char -> List RawTok
+scanTripleEsc src len p startQ depth id leadingNl acc e
+  | e == 'n' =
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\n")
+  | e == 't' =
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\t")
+  | isQuote e =
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\"")
+  | isBackslash e =
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\\")
+  | e == 'r' =
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\r")
+  | e == '0' = scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanTriple src len (uniEscEnd src len p) startQ depth id leadingNl (acc ++ uniEscStr src len p)
   | otherwise =
-    scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr e)
+    scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ charToStr e)
 
 -- string part after an interpolation opened from a triple string closes
 -- (`"""`→INTERP_END with stripIndent, `\{`→INTERP_MID re-marking id = -1)
