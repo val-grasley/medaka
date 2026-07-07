@@ -33,7 +33,7 @@ trap 'rm -f "$BIN"' EXIT
 
 # Build the harness from current source (picks up fixture/library edits).
 if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" "$MEDAKA" \
-       build compiler/entries/lsp_harness_main.mdk -o "$BIN" >/dev/null 2>&1; then
+       build --allow-internal compiler/entries/lsp_harness_main.mdk -o "$BIN" >/dev/null 2>&1; then
   echo "FAIL: could not build the LSP harness." >&2
   exit 1
 fi

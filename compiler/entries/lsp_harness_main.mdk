@@ -8,6 +8,7 @@
 -- (The gate test/lsp_harness.sh wires this up.)
 
 import tools.lsp_harness.{
+  Frame,
   initializeMsg,
   initializedMsg,
   didOpenMsg,
