@@ -1,0 +1,7 @@
+-- DuplicateValueBinding in a where-group: `y = 1` / `y = 2` coalesce into one
+-- nullary multi-clause binding (the same shape as the top-level dup), which
+-- silently last-wins at eval.  Resolve flags the redefinition.
+main = println y
+ where
+  y = 1
+  y = 2

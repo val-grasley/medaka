@@ -1,0 +1,5 @@
+-- DuplicateBinder (R-DUP-BINDER): a repeated parameter name.  `f x x` binds 'x'
+-- twice in one parameter list; the last silently wins.  Multi-clause functions
+-- (distinct patterns per clause) are unaffected.
+f x x = x
+main = println (f 1 2)

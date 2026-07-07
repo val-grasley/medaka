@@ -1,0 +1,5 @@
+-- DuplicateBinder (R-DUP-BINDER): a non-linear pattern binds 'x' twice in one
+-- pattern.  Each binder must be distinct; resolve flags it instead of silently
+-- binding only the first component (`(x, x)` on `(1, 2)` would bind x=1).
+main = match (1, 2)
+  (x, x) => println x

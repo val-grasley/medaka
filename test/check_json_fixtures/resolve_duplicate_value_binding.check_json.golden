@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-DUP-BINDING","kind":"resolve","message":"Duplicate binding 'int': it is already defined in this scope. A value binding has exactly one definition — rename this one or remove it","range":{"end":{"character":7,"line":1},"start":{"character":6,"line":1}},"severity":1,"source":"medaka"}]}]}
