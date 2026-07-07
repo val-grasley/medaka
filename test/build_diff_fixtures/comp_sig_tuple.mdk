@@ -1,0 +1,2 @@
+main : (String, Float)
+main = ("abc", 1.23)

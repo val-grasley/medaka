@@ -77,10 +77,23 @@ shouldAutoPrintMain coreDecls modules =
         Some [] => True
         _ => False
 
--- Rewrite the entry module's `main = <e>` decl to `main = println <e>`.
+-- True iff the decl is `main`'s explicit type signature (`main : T`), possibly
+-- @attr-wrapped.  When the wrap fires the body becomes `main = println <e>`
+-- (: `<IO> Unit`), so a stale explicit `main : <non-Unit>` sig would make the
+-- re-check report a `<non-Unit> vs Unit` mismatch → empty IR → build failure.
+-- The wrap drops it (the signature was only ever consulted to detect the
+-- non-Unit-ness that fires the wrap in the first place).
+isMainTypeSig : Decl -> Bool
+isMainTypeSig (DAttrib _ d) = isMainTypeSig d
+isMainTypeSig (DTypeSig _ "main" _) = True
+isMainTypeSig _ = False
+
+-- Rewrite the entry module's `main = <e>` decl to `main = println <e>`, and drop
+-- any explicit `main : T` signature (now stale — see isMainTypeSig).
 export autoPrintWrapModules : List (String, List Decl) -> List (String, List Decl)
 autoPrintWrapModules [] = []
-autoPrintWrapModules [(mid, decls)] = [(mid, map wrapMainDecl decls)]
+autoPrintWrapModules [(mid, decls)] =
+  [(mid, map wrapMainDecl (filter (d => not (isMainTypeSig d)) decls))]
 autoPrintWrapModules (p::rest) = p :: autoPrintWrapModules rest
 
 wrapMainDecl : Decl -> Decl
