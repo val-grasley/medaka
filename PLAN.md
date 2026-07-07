@@ -32,6 +32,40 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-06) — playground QA soak + error-message copy pass DONE (`a337ba17`)
+
+A long human-in-the-loop session: the user drove the in-browser playground and reported issues live; each was reproduced, fixed (design→delegate→verify→merge), and re-verified in a rebuilt `playground.wasm`. Then a full **user-facing message copy** review. All error-path → fixpoint C3a/C3b YES throughout, **NO seed re-mints** the entire session (string/message/entry changes only; the committed seed still cold-bootstraps — verified via the fixpoint's step-0 seed bootstrap). Owning memory: `project_playground_qa_and_message_copy`.
+
+**Playground polish + capability (all merged):**
+- Header redesign: VSCode brand-mark icon (gold, 20px, centered), tagline trimmed, funnel banner reworked, Examples chip made a full click target (transparent `<select>` overlay), examples rewritten to idiomatic multi-clause + type sigs.
+- **Stdlib imports bundled** — 20 pure/wasm-safe modules (`list`/`string`/`map`/`set`/`json`/`array`/`option`/`result`/… ) copied into `dist/` + threaded through `main.js`/`compile.mjs`/the two workers as `stdlib.extra`; `math`/`fs`/`net`/`time`/`io`/`test` excluded (native-only externs trap on wasm). `import list.{reverse}` etc. now work in-browser.
+- **Warning surfacing** — the playground silently dropped compile WARNINGS (non-exhaustive `match` compiled + ran, then panicked). New `__MEDAKA_WAT_DIAGS__` marker carries warnings alongside the WAT so they show as squiggles + console notes AND the program still runs.
+
+**Container API rename (`stdlib/{map,hash_map,set,hash_set}.mdk` + `support/ordmap.mdk` + `ir/dce.mdk`):** maps → `get`/`has`/`set`; sets → `has`/`insert`; `has` for membership everywhere; ordered `map`/`set` `lookupMin`/`lookupMax` → `getMin`/`getMax`. NOTE: `insert`→`add` for sets was **reverted** — `add` collides with `Num.add` (arg-tag dispatch picks the Num instance), unfixable by annotation; sets keep `insert`.
+
+**Diagnostic-location + quality fixes (compiler; improve `check`/LSP too, not just the playground):**
+- Unknown-import diagnostic now located on the import line (was line 1) — `playground_main.mdk` reused the loader's `unknownModuleIdOf`/`findImportLoc` entry-scan.
+- Import-name diagnostic (`import m.{a, bad}`) narrowed to the offending name — added a `Loc` to `UseMember` (F3-style threading through parser/resolve/…), `withResErrorLoc` preserves the per-member loc.
+- Parse-error line off-by-one fixed (`emitParseError` fed 1-based `parseErrorLine` into 0-based `cjRange`).
+- `main () =` / no-`main` now emit friendly located errors (`W-MAIN-SHAPE`/`W-MAIN-MISSING`) instead of a wasm `unreachable` trap; the squiggle points at the `main ()` head.
+- Duplicate unbound-variable diagnostic deduped (`R-UNBOUND` + redundant `T-UNBOUND` at the same loc → keep the hinted one; `diagnostics.mdk` `foldModuleTc`).
+- Generic `Parse error` (leftover-token case) now **names the token** (`unexpected \`println\``) + a **layout-aware hint** when the leftover is a line-start token at column > 0 (indentation mismatch). New `describeToken` (lexer) + `leadingIndentAt` (parser).
+
+**Error-message copy review:** `compiler/MESSAGE-AUDIT.md` (census of ~226 user-facing strings, ~65 flagged; tone rare, mostly consistency drift; centralization assessed + REJECTED — dynamic templates, no dedup benefit; standardize in place). Then: an **em-dash → period/colon pass** (82 messages, punctuation-only, 91 goldens proven punctuation-only) and the user's **57 authored copy edits** (rewordings, quoting, capitalization, `ambiguousField` de-persona'd, lint findings restored to `— <verb>` form, `check-policy` emoji dropped). Both merged; `run_gates` 73/0.
+
+### Deferred items from this session (pick these up next)
+- **Runtime-trap-format unification** (the biggest; from the message audit's "four-way trap divergence" + the user's deferred copy edits): the four backends trap differently — (1) `eval.mdk`: route the bare `panic "non-exhaustive match"` (~:693) through `runtimePanic`; route the "no 'main' binding" messages (~:2204/2238/2448) through the diagnostic channel; give `main : Async` (~:2452) a code + located form; (2) `stdlib/array.mdk`/`mut_array.mdk` OOB messages → route through the coded OOB path; (3) `runtime/medaka_rt.c` `E-DIV-ZERO`/`E-MOD-ZERO`/`E-NONEXHAUSTIVE` — add a source **loc** (blocked on Core IR carrying source locations — the deeper gap); (4) `typecheck.mdk` `T-EFFECT-PARAM` host-pattern message dedup (`:997`/`:969` share one builder). Needs a bit of design (the wasm backend drops `panic` messages entirely). `mdk_oob` → `[E-INDEX-OOB]` was the one literal piece already done.
+- **Type-error span precision** — `No impl of Num for String` (and type errors generally) point at a 1-char `currentLoc` snapshot, not the offending operand's full span. A dedicated typecheck-span pass; it threads through constraint solving (`pendingBinopSites`), affects many type-error locs — do them together, not one-off.
+- **Multi-clause FUNCTION exhaustiveness** (investigated, filed): non-exhaustive multi-clause functions (`f Red = …; f Green = …`, missing `Blue`) get NO warning even in native `check` (explicit `match` does). Root cause: they desugar to a `VMulti` dispatch list, not an `EMatch`; the parallel engine (`exhaust.mdk` `checkGroupCovered`) is **gated to guarded clauses only** (`checkGroup`'s `otherwise = []`, ~line 521-524). Fix is one line to remove the gate BUT measured **~524 new warnings tree-wide** (34 stdlib + 490 compiler), overwhelmingly intentional partial functions. A responsible fix = gate removal + per-clause locs + a specific message + a tree-wide cleanup of the intentional partials. Scoped mini-project.
+- **Remaining em-dash hint-joins** (rare-path, low value): `loader.mdk` available-modules suffix, `build_cmd.mdk` wasm-tools/libgc-missing errors, and backend-internal `gap`/WAT-comment strings (not really user copy).
+- **Placeholder links**: the playground header links (Quickstart/Stdlib/GitHub) + the funnel "Get the native compiler →" are still `href="#"` — need real targets before the public preview.
+
+### Pre-existing issues surfaced this session (not caused by it)
+- `hash_map`/`hash_set` doctests fail with `unbound identifier: hashInt` on unmodified `main` — a real pre-existing bug.
+- `bootstrap_typecheck.sh`: `type_alias_param` / `value_restriction_ctor` fixtures (added `d4f4f411`) have never-committed `.boot_typecheck.golden` files.
+- `test/native_fixtures/run.sh` `brace_block_if` expects an em-dash brace message the current binary emits with a period (pre-existing wording drift).
+- `error_quality_fixtures/*.out` had caret/located-parse drift vs the current binary (partly recaptured this session during the copy pass); a clean full recapture of that grading corpus is owed.
+
 ## Current status (2026-07-05) — browser stack overflow FIXED: general dispatch-GRAPH TMC (b′ Stage 3) linearizes the lexer LAYOUT family; playground Run works in-browser again (`921b9126`)
 
 **The in-browser playground `Run`/squiggles stack overflow is CLOSED.** A freshly-built `playground.wasm` (current compiler) had been trapping `Maximum call stack size exceeded` in the ~0.5 MB browser worker. Diagnosed → spiked → fixed, all this arc; owning doc `BROWSER-STACK-DIAGNOSIS.md` (§1–7 diagnosis + feasibility spike), `WASMGC-TRMC-DESIGN.md` (AS-BUILT); memory `project_playground_workstream`.
