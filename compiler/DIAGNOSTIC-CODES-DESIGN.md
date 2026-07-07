@@ -196,6 +196,8 @@ kebab-case; never renumber (append only).
 | `R-AS-PATTERN-MISPLACED` | `AsPatternMisplaced` |
 | `R-NONREC-VALUE-LET` | `NonRecursiveValueLet` |
 | `R-DUPLICATE-BINDING` | `DuplicateBinding` |
+| `R-DUP-BINDING` | `DuplicateValueBinding` |
+| `R-DUP-BINDER` | `DuplicateBinder` (non-linear pattern / repeated parameter) |
 | `R-AMBIGUOUS-OCCURRENCE` | `AmbiguousOccurrence` |
 | `R-INTERNAL-EXTERN` | `InternalExternAccess` |
 

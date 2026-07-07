@@ -1,0 +1,8 @@
+-- DuplicateValueBinding (R-DUP-BINDING): a nullary top-level VALUE binding
+-- defined twice.  A value binding admits exactly one clause (no argument to
+-- discriminate on), so the second definition silently last-wins at eval and
+-- miscompiles to runtime garbage; resolve flags it instead.  Multi-clause
+-- FUNCTIONS (whose clauses each carry a discriminating pattern) are unaffected.
+int = 4
+int = 5
+main = println int

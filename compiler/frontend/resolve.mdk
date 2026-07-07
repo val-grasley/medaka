@@ -106,6 +106,16 @@ public export data ResError =
   -- `let x = … x …` (no `rec`) referencing itself
   | DuplicateBinding String (Option Loc)
   -- Phase 148: non-contiguous clauses of a top-level binding
+  -- a nullary top-level VALUE binding (`x = e`, no params) defined >=2× — a
+  -- genuine duplicate (a value binding admits exactly one clause), unlike a
+  -- multi-clause function whose clauses each carry >=1 discriminating pattern
+  | DuplicateValueBinding String (Option Loc)
+  -- a variable bound more than once among binders introduced TOGETHER: a
+  -- non-linear pattern (`(x, x)`, `Pair x x`) or a repeated parameter (`f x x`,
+  -- `x x => …`).  The binder is non-linear → all but one occurrence is silently
+  -- dropped (miscompiles).  First String = the noun phrase for the group
+  -- ("pattern" / "parameter list"); second = the offending name.
+  | DuplicateBinder String String (Option Loc)
   | AsPatternMisplaced (Option Loc)  -- `x@..` outside a binding LHS
   -- name USED unqualified, exported by ≥2 non-`core` modules (use-time
   -- ambiguity; MAP-SET-AMBIGUITY-DESIGN.md)
@@ -145,6 +155,8 @@ resErrorLoc (AbstractFieldAccess _ _ l) = l
 resErrorLoc (UnknownModule _ l) = l
 resErrorLoc (NonRecursiveValueLet _ l) = l
 resErrorLoc (DuplicateBinding _ l) = l
+resErrorLoc (DuplicateValueBinding _ l) = l
+resErrorLoc (DuplicateBinder _ _ l) = l
 resErrorLoc (AsPatternMisplaced l) = l
 resErrorLoc (AmbiguousOccurrence _ _ l) = l
 resErrorLoc (InternalExternAccess _ l) = l
@@ -225,6 +237,18 @@ recFieldBindings (RecPatField _ (Some p)) = patBindings p
 
 patsBindings : List Pat -> List String
 patsBindings ps = flatMap patBindings ps
+
+-- Non-linearity check for a group of binders introduced TOGETHER — a single
+-- match/let/do pattern (`(x, x)`, `Pair x x`) or a parameter list (`f x x`,
+-- `x x => …`).  The language binds each variable exactly once; a repeat is not
+-- shadowing (these binders share one scope) but a silent drop — `(x, x)` binds
+-- only the FIRST component → runtime garbage.  `findDups` yields each repeated
+-- name once (keyed on the 2nd occurrence).  Patterns carry no own Loc, so the
+-- error is positioned at the enclosing clause/expr span `loc`.  `kind` is the
+-- group's noun phrase ("pattern" / "parameter list").
+patGroupDupErrors : Option Loc -> String -> List Pat -> List ResError
+patGroupDupErrors loc kind ps =
+  map (n => DuplicateBinder kind n loc) (findDups [] (patsBindings ps))
 
 -- ── check_type ────────────────────────────────────────────────────────────
 -- `cur` (Stage B) is the enclosing `ELoc` span threaded from the expr walk (or
@@ -363,6 +387,7 @@ checkExpr cur env scope (EVar n) = checkVar cur env scope n
 checkExpr cur env scope (EApp f x) = checkExpr cur env scope f
   ++ checkExpr cur env scope x
 checkExpr cur env scope (ELam pats body) = flatMap (checkPat cur env) pats
+  ++ patGroupDupErrors cur "parameter list" pats
   ++ checkExpr cur env (patsBindings pats ++ scope) body
 checkExpr cur env scope (ELet _ isRec pat e1 e2) =
   checkLet cur env scope isRec pat e1 e2
@@ -627,6 +652,7 @@ checkLet cur env scope True (PVar f) e1 e2 = checkExpr cur env (f::scope) e1
 checkLet cur env scope _ pat e1 e2 =
   let bound = patBindings pat
   checkPat cur env pat
+    ++ patGroupDupErrors cur "pattern" [pat]
     ++ map (rewriteNonRec bound) (checkExpr cur env scope e1)
     ++ checkExpr cur env (bound ++ scope) e2
 
@@ -648,18 +674,45 @@ letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
 checkLetBind : Option Loc -> Env -> List String -> LetBind -> List ResError
-checkLetBind cur env scope (LetBind _ clauses) =
-  flatMap (checkFunClause cur env scope) clauses
+checkLetBind cur env scope (LetBind n clauses) = letBindDupErrors cur n clauses
+  ++ flatMap (checkFunClause cur env scope) clauses
+
+-- A let/where binding whose clause run includes a NULLARY clause (`y = e`, no
+-- params) yet has >1 clause is a duplicate value binding — the exact analog of
+-- the top-level `int = 4` / `int = 5` case (coalesceClauses merged `y = 1` /
+-- `y = 2` into one multi-clause LetBind).  A value binding admits exactly one
+-- clause; the extras silently last-win → runtime garbage.  Multi-clause
+-- FUNCTIONS (every clause carries >=1 pattern → no nullary clause) are exempt.
+-- Flags every clause after the first; loc = that clause's body span.
+letBindDupErrors : Option Loc -> String -> List FunClause -> List ResError
+letBindDupErrors cur n clauses =
+  if hasNullaryClause clauses then
+    dupClauseTail cur n False clauses
+  else
+    []
+
+hasNullaryClause : List FunClause -> Bool
+hasNullaryClause [] = False
+hasNullaryClause ((FunClause ps _)::rest) = isEmptyL ps || hasNullaryClause rest
+
+dupClauseTail : Option Loc -> String -> Bool -> List FunClause -> List ResError
+dupClauseTail _ _ _ [] = []
+dupClauseTail cur n seen ((FunClause _ body)::rest) = whenL seen [DuplicateValueBinding n (orElseLocL (firstExprLoc body) cur)]
+  ++ dupClauseTail cur n True rest
 
 checkFunClause : Option Loc -> Env -> List String -> FunClause -> List ResError
 checkFunClause cur env scope (FunClause pats body) = flatMap (checkPat cur env) pats
+  ++ patGroupDupErrors cur "parameter list" pats
   ++ checkExpr cur env (patsBindings pats ++ scope) body
 
 checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
 checkArm cur env scope (Arm pat gs body) =
   let scope0 = patBindings pat ++ scope
   let (gErrs, scope2) = checkArmGuards cur env scope0 gs
-  checkPat cur env pat ++ gErrs ++ checkExpr cur env scope2 body
+  checkPat cur env pat
+    ++ patGroupDupErrors cur "pattern" [pat]
+    ++ gErrs
+    ++ checkExpr cur env scope2 body
 
 -- Resolve an arm's guard qualifiers left-to-right, threading each pattern-bind's
 -- binders into the LATER qualifiers AND the arm body (mirror of lib/resolve.ml's
@@ -671,7 +724,7 @@ checkArmGuards cur env scope ((GBool e)::rest) =
   let (rErrs, scope2) = checkArmGuards cur env scope rest
   (checkExpr cur env scope e ++ rErrs, scope2)
 checkArmGuards cur env scope ((GBind p e)::rest) =
-  let here = checkExpr cur env scope e ++ checkPat cur env p
+  let here = checkExpr cur env scope e ++ checkPat cur env p ++ patGroupDupErrors cur "pattern" [p]
   let (rErrs, scope2) = checkArmGuards cur env (patBindings p ++ scope) rest
   (here ++ rErrs, scope2)
 
@@ -691,19 +744,23 @@ checkStmts cur env scope (s::rest) =
 
 checkStmt : Option Loc -> Env -> List String -> DoStmt -> (List ResError, List String)
 checkStmt cur env scope (DoExpr e) = (checkExpr cur env scope e, scope)
-checkStmt cur env scope (DoBind p e) =
-  (checkPat cur env p ++ checkExpr cur env scope e, patBindings p ++ scope)
-checkStmt cur env scope (DoLet _ False p e) =
-  (checkPat cur env p ++ checkExpr cur env scope e, patBindings p ++ scope)
+checkStmt cur env scope (DoBind p e) = (
+  checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env scope e,
+  patBindings p ++ scope,
+)
+checkStmt cur env scope (DoLet _ False p e) = (
+  checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env scope e,
+  patBindings p ++ scope,
+)
 checkStmt cur env scope (DoLet _ True p e) = (
-  checkPat cur env p ++ checkExpr cur env (patBindings p ++ scope) e,
+  checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env (patBindings p ++ scope) e,
   patBindings p ++ scope,
 )
 checkStmt cur env scope (DoAssign _ e) = (checkExpr cur env scope e, scope)
 checkStmt cur env scope (DoFieldAssign _ _ e) =
   (checkExpr cur env scope e, scope)
 checkStmt cur env scope (DoLetElse p e alt) = (
-  checkPat cur env p ++ checkExpr cur env scope e ++ checkExpr cur env scope alt,
+  checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env scope e ++ checkExpr cur env scope alt,
   patBindings p ++ scope,
 )
 
@@ -758,6 +815,7 @@ checkSection cur env scope (SecLeft e _) = checkExpr cur env scope e
 -- wrappers re-set it as the expr walk descends.
 checkDecl : Env -> Decl -> List ResError
 checkDecl env (DFunDef _ _ pats body) = flatMap (checkPat None env) pats
+  ++ patGroupDupErrors (firstExprLoc body) "parameter list" pats
   ++ checkExpr None env (patsBindings pats) body
 checkDecl env (DLetGroup _ binds) =
   -- top-level where-group: all group names are in scope for every clause body
@@ -1026,6 +1084,45 @@ buildErrors : List Decl -> List Decl -> List ResError
 buildErrors preludeDecls prog = externWithBodyErrors (externNames prog) prog
   ++ duplicateErrors preludeDecls prog
   ++ contiguityErrors prog
+  ++ dupValueBindingErrors prog
+
+-- A nullary top-level VALUE binding (`x = e`, zero params) admits EXACTLY ONE
+-- clause: there is no argument to discriminate on, so a second same-named
+-- definition silently last-wins at eval → runtime garbage (`intToString: not an
+-- Int`).  Flag the 2nd (and later) occurrence.  A multi-clause FUNCTION
+-- (`f Red = 1` / `f Green = 2`) is NOT flagged: every clause carries >=1
+-- pattern, so `isNullary` is False and the run stays clean.  Runs on the same
+-- post-desugar decl list as contiguityErrors; DTypeSig is transparent (a
+-- signature between `int : Int` and `int = 4` does not break the run), any other
+-- decl (or a differently-named DFunDef) starts a fresh run.
+dupValueBindingErrors : List Decl -> List ResError
+dupValueBindingErrors prog = dupValGo None False prog
+
+-- run = Some name of the current contiguous same-name DFunDef run; sawNullary =
+-- a nullary clause has already appeared in that run.
+dupValGo : Option String -> Bool -> List Decl -> List ResError
+dupValGo _ _ [] = []
+dupValGo run sawNullary (d::rest)
+  | isTransparentDecl d = dupValGo run sawNullary rest
+  | otherwise = match dupValClause d
+    Some (n, isNull, loc) =>
+      let continuing = run == Some n
+      let dup = continuing && (sawNullary || isNull)
+      let errs = whenL dup [DuplicateValueBinding n loc]
+      let sawNullary2 = continuing && sawNullary || isNull
+      errs ++ dupValGo (Some n) sawNullary2 rest
+    None => dupValGo None False rest
+
+-- (name, isNullary, loc) for a single-clause top-level value/function def;
+-- None for any decl that is not a DFunDef (starts a fresh run).
+dupValClause : Decl -> Option (String, Bool, Option Loc)
+dupValClause (DAttrib _ d) = dupValClause d
+dupValClause (DFunDef _ n ps body) = Some (n, isEmptyL ps, firstExprLoc body)
+dupValClause _ = None
+
+isEmptyL : List a -> Bool
+isEmptyL [] = True
+isEmptyL _ = False
 
 -- Phase 148: the clauses of a top-level value binding must be contiguous.  Two
 -- same-named DFunDef/DLetGroup clause-runs separated by an intervening clause-body
@@ -1216,6 +1313,11 @@ resErrorSexp (NonRecursiveValueLet n _) = "(NonRecursiveValueLet "
   ++ escStr n
   ++ ")"
 resErrorSexp (DuplicateBinding n _) = "(DuplicateBinding " ++ escStr n ++ ")"
+resErrorSexp (DuplicateValueBinding n _) = "(DuplicateValueBinding "
+  ++ escStr n
+  ++ ")"
+resErrorSexp (DuplicateBinder k n _) =
+  "(DuplicateBinder \{escStr k} \{escStr n})"
 resErrorSexp (AsPatternMisplaced _) = "AsPatternMisplaced"
 resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
   ++ joinWith " " (escStr n :: map escStr mods)
@@ -1306,6 +1408,8 @@ ppResError (UnknownModule n _) = "Unknown module: " ++ n
 ppResError (AsPatternMisplaced _) = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)"
 ppResError (NonRecursiveValueLet n _) = "'\{n}' is not in scope in its own binding. Non-function `let` is not recursive; write `let rec \{n} = ...` (RHS must be a lambda)"
 ppResError (DuplicateBinding n _) = "Clauses of '\{n}' must be contiguous. An earlier same-named binding is separated by another declaration; group all clauses (and the signature) together"
+ppResError (DuplicateValueBinding n _) = "Duplicate binding '\{n}': it is already defined in this scope. A value binding has exactly one definition — rename this one or remove it"
+ppResError (DuplicateBinder k n _) = "Duplicate binder: '\{n}' is bound more than once in this \{k}. Each binder must be distinct — rename one occurrence"
 ppResError (AmbiguousOccurrence n mods _) = "Ambiguous occurrence: '\{n}' is exported by \{ambigModPhrase mods}. Qualify, or select with `import <mod>.{\{n}}`"
 ppResError (InternalExternAccess n _) = "'"
   ++ n
@@ -1333,6 +1437,8 @@ resErrorCode (AbstractFieldAccess _ _ _) = "R-ABSTRACT-FIELD"
 resErrorCode (UnknownModule _ _) = "R-UNKNOWN-MODULE"
 resErrorCode (NonRecursiveValueLet _ _) = "R-NONREC-VALUE-LET"
 resErrorCode (DuplicateBinding _ _) = "R-DUPLICATE-BINDING"
+resErrorCode (DuplicateValueBinding _ _) = "R-DUP-BINDING"
+resErrorCode (DuplicateBinder _ _ _) = "R-DUP-BINDER"
 resErrorCode (AsPatternMisplaced _) = "R-AS-PATTERN-MISPLACED"
 resErrorCode (AmbiguousOccurrence _ _ _) = "R-AMBIGUOUS-OCCURRENCE"
 resErrorCode (InternalExternAccess _ _) = "R-INTERNAL-EXTERN"
