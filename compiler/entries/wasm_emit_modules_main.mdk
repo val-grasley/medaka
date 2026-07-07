@@ -51,15 +51,43 @@ import backend.wasm_emit.{
   installMainIsFloatHint,
 }
 import entries.entry_support.{driveModules}
+import driver.main_autoprint.{
+  shouldAutoPrintMain,
+  autoPrintWrapModules,
+  underivedMainDiags,
+}
 
 main : <IO, Mut> Unit
 main = driveModules runEmit
 
+-- COMPOSITE-MAIN AUTO-PRINT (design §10, WasmGC peer of llvm_emit_modules_main):
+-- a bare non-Unit VALUE main is rewritten `main = <e>` → `main = println <e>` and
+-- re-emitted; a bare underived-ADT main surfaces the clean `No impl of Display …`
+-- error (empty stdout + stderr diagnostic → build_cmd's BuildErr).  Unit/Async
+-- main (incl. every compiler-graph main) is unchanged → emitter output on the
+-- compiler graph byte-identical.
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  if shouldAutoPrintMain coreDecls modules then
+    let modulesW = autoPrintWrapModules modules
+    match underivedMainDiags runtimeDecls coreDecls modulesW
+      (_, msg, _)::_ => ePutStrLn msg
+      [] => emitModules runtimeDecls coreDecls modulesW
+  else emitTail runtimeDecls coreD modules2
+
+-- Mangle + elaborate + emit a (possibly wrapped) module list from scratch.
+emitModules : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitModules runtimeDecls coreDecls modules =
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
+  emitTail runtimeDecls coreD modules2
+
+-- Install the WasmGC side-tables + emit, from an already-elaborated program.
+emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitTail runtimeDecls coreD modules2 =
   let allDecls0 = coreD ++ flatMap snd modules2
   let allDecls = dceFilter allDecls0
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls

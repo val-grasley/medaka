@@ -1,0 +1,3 @@
+data Color = Red | Green | Blue deriving (Display)
+
+main = Green
