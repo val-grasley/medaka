@@ -1,0 +1,7 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/typecheck/tuple_call_syntax.mdk:2:7: No impl of Display for ((Int, Int) -> (Int, Int)) — Medaka calls functions with spaces, not parentheses: `add(1, 2)` applies `add` to one tuple `(1, 2)`. Did you mean `add 1 2`?
+  |
+2 | main = println (add(1, 2))
+  |        ^
