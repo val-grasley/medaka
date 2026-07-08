@@ -4,12 +4,15 @@ A terse, example-driven catalog of **what the current binary accepts**, so an
 agent knows what syntax exists without reading the 1100-line grammar. One
 minimal example per construct.
 
-**Ground truth, in order:** `lib/parser.mly` (what parses) and the
-`test/test_parser.ml` / `test/test_eval.ml` corpora (verified-passing
-snippets). `language-design.md` describes *intent* and includes aspirational
-features — when it disagrees with this file or the binary, the binary wins.
-This file is hand-maintained; the language gains constructs every Phase, so if
-a construct here fails to parse, re-derive from the grammar and fix this file.
+**Ground truth, in order:** the current `medaka` binary (native, self-hosted —
+the OCaml reference compiler `lib/`+`bin/` was removed 2026-06-26; the
+`oracle-frozen` tag preserves the last commit that had it) and the
+`test/*_fixtures/` / `test/*_goldens/` corpora (verified-passing snippets).
+`language-design.md` describes *intent* and includes aspirational features —
+when it disagrees with this file or the binary, the binary wins. This file is
+hand-maintained; the language gains constructs every Phase, so if a construct
+here fails to parse, re-derive from `compiler/frontend/parser.mdk` and fix this
+file.
 
 Every example below was confirmed to `medaka check` clean on the current
 binary (see "Verification" at the bottom). Comments mark the few that are
@@ -33,6 +36,14 @@ True   False        -- Bool
 [|1, 2, 3|]  [||]   -- Array / empty Array
 (1, "hi")           -- Tuple
 ```
+
+`Int` is a 63-bit tagged signed integer (`intMinBound`/`intMaxBound` = `-2^62`
+/ `2^62 - 1`, i.e. `-4611686018427387904` / `4611686018427387903`), not a full
+64-bit machine word. Literals and arithmetic silently wrap on overflow with no
+diagnostic. `println 9223372036854775807` (a legal-looking 64-bit-max literal)
+prints `-1`; `4611686018427387903 + 1` wraps to a negative number. (There is
+no `minInt`/`maxInt` — use `intMinBound`/`intMaxBound`, or the polymorphic
+`minBound`/`maxBound : Bounded a => a` with a type annotation.)
 
 String escapes: `\n \t \\ \" \{` and unicode `\u{48}`.
 
@@ -375,37 +386,58 @@ extern putStrLn : String -> <IO> Unit
 extern pi : Float
 ```
 
-## Tests & benchmarks (declaration forms)
+## Tests (declaration forms)
 
 ```
 prop "commutative" (x : Int) = x + 0 == x
-bench "identity" = 42
 ```
+
+`bench "name" = expr` parses, but the `bench` subcommand is not yet
+implemented in the native CLI (`medaka bench` → `subcommand 'bench' not yet
+in native CLI`, even though `--help` still lists it) — don't rely on it.
 
 ## Attributes
 
+An attribute needs a **type signature between it and the definition** — an
+attribute directly above a signature-less def silently unbinds the def
+(`@inline` ⏎ `foo x = x` ⏎ `main = println (foo 3)` → `Unbound variable: foo`).
+The working shape:
+
 ```
 @deprecated "use bar"
+foo : Int -> Int
 foo x = x
 
 @inline
-foo x = x
+bar : Int -> Int
+bar x = x
 
 @must_use
-f x = x
+baz : Int -> Int
+baz x = x
 ```
 
 ## Refs
 
 ```
-let mut count = Ref 0 in set_ref count 42     -- Ref cell
+main =
+  let mut count = Ref 0
+  setRef count 42        -- mutate a Ref cell
+  println count.value    -- .value reads it
 ```
 
 ## Map / Set literals
 
+Requires an explicit named import of the module *and* the type — a bare
+`import map` / `import set` does not bring any names into scope:
+
 ```
-Map { "a" => 1, "b" => 2 }
-Set { 1, 2, 3 }
+import map.{Map, get}
+import set.{Set, has}
+
+main =
+  println (get "a" (Map { "a" => 1, "b" => 2 }))
+  println (has 2 (Set { 1, 2, 3 }))
 ```
 
 ## Comments
