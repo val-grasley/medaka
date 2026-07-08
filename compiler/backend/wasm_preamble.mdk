@@ -79,13 +79,13 @@ closTypeLines = [
   "    (type $clos (sub (struct (field $code (ref $codety)) (field $arity i32) (field $env (ref $argarr)))))",
 ]
 
--- the universal apply runtime (emitted once, after the function defs).  `$mdk_apply`
+-- the universal apply runtime (emitted once, after the function defs).  `$__mdk_apply`
 -- takes a closure value + an args array and dispatches on the closure's arity:
 --   exact  (argc == arity) → return_call_ref the code (guaranteed-tail);
 --   under  (argc <  arity) → build a PAP closure (env = [orig, partialArgs…],
 --                            code = $mdk_pap) with the REMAINING arity;
 --   over   (argc >  arity) → saturate the first `arity` args (call_ref), then
---                            return_call $mdk_apply on the result with the surplus.
+--                            return_call $__mdk_apply on the result with the surplus.
 -- `$mdk_pap` is the PAP code: env[0] is the original closure, env[1..] the saved
 -- partial args; it concatenates saved + incoming and re-applies the original.
 export closApplyLines : List String
@@ -112,8 +112,8 @@ closApplyLines = [
   "      (array.set $argarr (local.get $total) (i32.add (local.get $ne) (local.get $i))",
   "        (array.get $argarr (local.get $args) (local.get $i)))",
   "      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $pl2)))",
-  "    (return_call $mdk_apply (local.get $orig) (local.get $total)))",
-  "  (func $mdk_apply (param $f (ref eq)) (param $args (ref $argarr)) (result (ref eq))",
+  "    (return_call $__mdk_apply (local.get $orig) (local.get $total)))",
+  "  (func $__mdk_apply (param $f (ref eq)) (param $args (ref $argarr)) (result (ref eq))",
   "    (local $c (ref $clos)) (local $ar i32) (local $na i32)",
   "    (local $sat (ref $argarr)) (local $surplus (ref $argarr)) (local $i i32) (local $r (ref eq))",
   "    (local $penv (ref $argarr))",
@@ -150,7 +150,7 @@ closApplyLines = [
   "              (array.set $argarr (local.get $surplus) (local.get $i)",
   "                (array.get $argarr (local.get $args) (i32.add (local.get $i) (local.get $ar))))",
   "              (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $ol)))",
-  "            (return_call $mdk_apply (local.get $r) (local.get $surplus)))))))",
+  "            (return_call $__mdk_apply (local.get $r) (local.get $surplus)))))))",
 ]
 
 -- the SCALAR-only preamble (no ADTs in the program): the W2 shape verbatim — an

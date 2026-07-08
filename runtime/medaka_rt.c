@@ -111,18 +111,18 @@ void *mdk_alloc_atomic(long long n) { return GC_malloc_atomic((size_t)n); }
  * closure's callable arity (the number of value args its lifted `@mdk_lamN` define
  * takes AFTER the leading `%clos` word), field 1 the code pointer.  The emitter
  * calls a closure INLINE (`code_ptr(cw, args...)`) only when it can prove the
- * supplied count equals the runtime arity; otherwise it routes through mdk_apply.
+ * supplied count equals the runtime arity; otherwise it routes through __mdk_apply.
  *
  * A PARTIAL APPLICATION (PAP) is `[ i64 -1 | i64 orig_cw | i64 n_supplied |
  * supplied_args... ]`: the -1 header sentinel (never equals a real supplied count
- * >= 1) forces every application of a PAP through mdk_apply, which FLATTENS it —
+ * >= 1) forces every application of a PAP through __mdk_apply, which FLATTENS it —
  * re-dispatching the original closure against (already-supplied ++ new) args.  So a
  * PAP is never called via the inline fast path and needs no per-arity trampoline. */
 #define MDK_MAX_ARITY 16
 
 typedef long long mdk_i64;
 
-mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv);
+mdk_i64 __mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv);
 
 /* call `code`(cw, argv[0..argc-1]) — argc statically-typed via a small switch. */
 static mdk_i64 mdk_call_exact(mdk_i64 code, mdk_i64 cw, mdk_i64 argc,
@@ -142,7 +142,7 @@ static mdk_i64 mdk_call_exact(mdk_i64 code, mdk_i64 cw, mdk_i64 argc,
       {
         mdk_i64 r = ((mdk_i64(*)(mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64,mdk_i64))code)
                       (cw,a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7]);
-        return mdk_apply(r, argc - 8, a + 8);
+        return __mdk_apply(r, argc - 8, a + 8);
       }
   }
 }
@@ -160,7 +160,7 @@ static mdk_i64 mdk_make_pap(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
 /* apply the closure/PAP word `cw` to `argc` args (a pointer to `argc` i64 words).
  * The single entry point for any application the emitter could not resolve to an
  * exact-arity inline call. */
-mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
+mdk_i64 __mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
   mdk_i64 *cell = (mdk_i64 *)cw;
   if (cell[0] == -1) {
     /* PAP: flatten — combine already-supplied args with the new ones and
@@ -174,7 +174,7 @@ mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
       buf = (mdk_i64 *)mdk_alloc((long long)(8 * total));
     for (mdk_i64 i = 0; i < nsup; i++) buf[i] = ((mdk_i64 *)cw)[3 + i];
     for (mdk_i64 i = 0; i < argc; i++) buf[nsup + i] = argv[i];
-    return mdk_apply(orig, total, buf);
+    return __mdk_apply(orig, total, buf);
   }
   {
     mdk_i64 arity = cell[0];
@@ -184,9 +184,24 @@ mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
     /* over-application: saturate `arity`, then apply the surplus to the result. */
     {
       mdk_i64 r = mdk_call_exact(code, cw, arity, argv);
-      return mdk_apply(r, argc - arity, argv + arity);
+      return __mdk_apply(r, argc - arity, argv + arity);
     }
   }
+}
+
+/* TRANSITION BRIDGE (remove after the next emitter-seed re-mint).
+ * The runtime PAP helper was renamed `mdk_apply` -> `__mdk_apply` so a user
+ * stdlib fn named `apply` (which mangles to `@mdk_apply`) no longer collides
+ * with the runtime symbol.  The CURRENT emitter source emits `@__mdk_apply`,
+ * but the checked-in emitter SEED (compiler/seed/emitter.ll.gz) still emits and
+ * internally calls the old `@mdk_apply`.  Until the seed is re-minted from the
+ * renamed source, provide a WEAK forwarder under the old name so the stale
+ * seed-bootstrapped emitter (cold build + selfcompile fixpoint) still links.
+ * It is WEAK so that a program supplying a strong `@mdk_apply` (the user fn)
+ * overrides it — no duplicate-symbol error, no collision. */
+__attribute__((weak))
+mdk_i64 mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
+  return __mdk_apply(cw, argc, argv);
 }
 
 noreturn void mdk_oob(void) {
