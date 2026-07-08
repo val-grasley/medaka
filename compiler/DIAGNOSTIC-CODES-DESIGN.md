@@ -134,6 +134,7 @@ kinds (enumerated from the message families):
 | `<-` bind outside do | `bindOutsideDoMsg` — `<-` in a bare (non-`do`) block | `T-BIND-OUTSIDE-DO` |
 | cyclic superinterface | `cyclic superinterface: …` | `T-CYCLIC-SUPERINTERFACE` |
 | conflicting impl | `conflicting \`impl X\`: defined in … and …` | `T-CONFLICTING-IMPL` |
+| incomplete impl | `'impl Iface Ty' is missing method 'm'. …` — an impl omits an interface method that has no default body (P0-17) | `T-INCOMPLETE-IMPL` |
 | empty record update | `empty record update` | `T-EMPTY-RECORD-UPDATE` |
 | unsupported (internal) | `typecheck: unsupported expression/pattern/operator …` | `T-UNSUPPORTED` |
 | **non-exhaustive match** (warning) | `non-exhaustive match — some values may not be covered` (`:4644`) | `W-NONEXHAUSTIVE` |

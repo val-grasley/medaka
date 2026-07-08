@@ -7271,6 +7271,85 @@ foreachUnit f (x::xs) =
   let _ = f x
   foreachUnit f xs
 
+-- ── P0-17: impl-completeness check ─────────────────────────────────────────
+-- Beta finding P0-17 (qa-beta-2026-07-07): an `impl Iface Ty…` that defines only
+-- SOME of the interface's methods used to `check` clean, then PANIC at runtime
+-- (`E-PANIC: unbound identifier: <method>`) when a missing method is dispatched —
+-- a run≠check hole.  For each impl, verify every REQUIRED interface method (one
+-- declared WITHOUT a default body) is defined by the impl body; each missing one
+-- is a located `T-INCOMPLETE-IMPL` error, so check/run/build all reject instead of
+-- deferring to a runtime panic.
+--
+-- Runs POST-desugar (from the typecheck cores), which is the ONLY stage where both
+-- sets are cleanly visible with defaults distinguishable:
+--   • desugar's mergeIfaceDefaults has coalesced each interface method's split
+--     signature-entry (`lt : …`, default None) and body-entry (`lt x y = …`,
+--     default Some) into ONE `IfaceMethod` carrying the merged Option MethodDefault.
+--     PRE-merge the sig-only `None` entry would make every defaulted method (Ord's
+--     lt/gt/…) look REQUIRED → hundreds of false positives across core/stdlib.
+--   • desugar's fillImplDefaults has synthesized same-module default clauses INTO
+--     the impl — which only ADDS to the defined set, never removes a required one,
+--     so it cannot mask a genuinely-missing required method.
+-- [lookupDecls] (prelude + accumulated modules + this module) resolves the
+-- interface decl even when it is imported; [iterDecls] (this module's own decls)
+-- are the impls to check.  Unknown interface (not in scope) → skip (a distinct
+-- error is reported elsewhere), mirroring superImplMsgsOf.
+checkImplCompleteness : List Decl -> List Decl -> <Mut> Unit
+checkImplCompleteness lookupDecls iterDecls =
+  foreachUnit
+    pushIncompleteImpl
+    (flatMap (implCompletenessMsgsOf lookupDecls) iterDecls)
+
+pushIncompleteImpl : (Option Loc, String) -> <Mut> Unit
+pushIncompleteImpl (loc, msg) = pushTypeErrorOnceAt "T-INCOMPLETE-IMPL" loc msg
+
+-- the missing-required-method errors for one decl (a DImpl, possibly DAttrib-
+-- wrapped); [] for a non-impl decl, an unknown interface, or a complete impl.
+implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
+implCompletenessMsgsOf lookupDecls (DAttrib _ d) =
+  implCompletenessMsgsOf lookupDecls d
+implCompletenessMsgsOf lookupDecls DImpl { iface, tys, methods, ... } =
+  match ifaceRequiredMethods lookupDecls iface
+    None => []   -- unknown interface (reported elsewhere) → skip
+    Some required =>
+      let defined = map implMethodName methods
+      let loc = firstImplMethodLoc methods
+      map
+        (m => (loc, missingImplMethodMsg iface tys m))
+        (filter (m => not (contains m defined)) required)
+implCompletenessMsgsOf _ _ = []
+
+implMethodName : ImplMethod -> String
+implMethodName (ImplMethod n _ _) = n
+
+-- a loc to attribute the error to: the first present impl-method body's span (the
+-- impl head carries no Loc of its own).  None for a wholly-empty impl body.
+firstImplMethodLoc : List ImplMethod -> Option Loc
+firstImplMethodLoc [] = None
+firstImplMethodLoc ((ImplMethod _ _ body)::_) = exprLoc body
+
+-- the names of interface [target]'s REQUIRED methods (those whose merged
+-- IfaceMethod carries NO default body); None if no such interface is in scope.
+ifaceRequiredMethods : List Decl -> String -> Option (List String)
+ifaceRequiredMethods [] _ = None
+ifaceRequiredMethods ((DAttrib _ d)::rest) target = match ifaceRequiredMethods [d] target
+  Some r => Some r
+  None => ifaceRequiredMethods rest target
+ifaceRequiredMethods ((DInterface { name, methods, ... })::rest) target
+  | name == target = Some (requiredMethodNames methods)
+  | otherwise = ifaceRequiredMethods rest target
+ifaceRequiredMethods (_::rest) target = ifaceRequiredMethods rest target
+
+requiredMethodNames : List IfaceMethod -> List String
+requiredMethodNames [] = []
+requiredMethodNames ((IfaceMethod n _ None)::rest) =
+  n :: requiredMethodNames rest
+requiredMethodNames ((IfaceMethod _ _ (Some _))::rest) =
+  requiredMethodNames rest
+
+missingImplMethodMsg : String -> List Ty -> String -> String
+missingImplMethodMsg iface tys method = "'impl \{iface} \{joinWith " " (map ppTyAtom tys)}' is missing method '\{method}'. Every interface method without a default body must be implemented — define '\{method}' in the impl (or check for a typo in a method name)"
+
 -- ── WS-5: phantom interface method detection ──────────────────────────────
 -- A method whose declared type mentions NONE of the interface's type parameters
 -- (neither in argument position nor in the result) cannot be dispatched: there
@@ -8756,6 +8835,7 @@ checkProgramSeeded seed prog =
   let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog
   let _ = inferPropBodies preludeBodyEnv prog
   let _ = groundMultiParamObligations prog pendingImplObligations.value
+  let _ = checkImplCompleteness prog prog   -- P0-17: impl missing a required method
   let _ = checkImplObligations prog pendingImplObligations.value
   let _ = checkCallObligations prog pendingCallObligations.value
   let _ = resolveImplHints prog pendingHints.value
@@ -11022,6 +11102,13 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = setRef crossModuleMethodConstraintsQualRef
             (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossModuleMethodConstraintsQualRef.value)
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
+  -- P0-17: reject an impl missing a required (non-defaulted) method.  UNGATED (runs
+  -- on BOTH the check path AND the emit/eval path, unlike checkImplObligations
+  -- below): a purely structural interface-method-set vs impl-method-set comparison,
+  -- so run/build reject the impl cleanly here instead of deferring to a runtime
+  -- `unbound identifier` panic.  Iterate THIS module's own decls; resolve the
+  -- interface (possibly imported) in the full accumulated universe.
+  let _ = checkImplCompleteness (accData ++ implDecls ++ prog) prog
   -- #11 soundness: on the TYPECHECK path (implInferEnabled OFF — `medaka check`,
   -- the diagnostics/golden drivers) validate each call site's instantiated impl
   -- obligations (incl. a numeric literal's `Num` obligation forced to a non-Num

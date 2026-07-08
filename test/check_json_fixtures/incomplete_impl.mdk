@@ -1,0 +1,13 @@
+-- P0-17: impl provides only one of the interface's two required methods.
+-- `check` must reject with T-INCOMPLETE-IMPL instead of deferring to a runtime
+-- `unbound identifier` panic. `shout` (no default body) is missing.
+interface Greet a where
+  greet : a -> String
+  shout : a -> String
+
+data Foo = Foo
+
+impl Greet Foo where
+  greet f = "hi"
+
+main = println (shout Foo)
