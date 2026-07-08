@@ -34,13 +34,13 @@
 --     (`$mdk_w_<name>`, env = []).
 --   * Application (§4.1): a saturated direct call to a known top-level fn → `call`
 --     (the fast path, unchanged).  Anything else (partial / over application; an
---     indirect call to a closure value) → pack args into a $argarr + `call $mdk_apply`
+--     indirect call to a closure value) → pack args into a $argarr + `call $__mdk_apply`
 --     (the universal apply, in wasm_preamble): EXACT → call_ref; UNDER → build a PAP
 --     closure (code = $mdk_pap, remaining arity); OVER → saturate `arity` args, then
 --     re-apply the surplus to the result.
 --   * TCO (§4.2): at TAIL positions (descending if/let/block/decision-arm tails) a
 --     saturated direct call → `return_call`; an indirect / non-saturated call →
---     `return_call $mdk_apply` (which itself `return_call_ref`s the exact case).
+--     `return_call $__mdk_apply` (which itself `return_call_ref`s the exact case).
 --     Guaranteed constant-stack (Wasm 3.0 / Node 24).  TCO is emitted in BOTH the
 --     scalar-i32 path (emitScalarTail) and the ref path (emitRefTail).
 --   * Multi-clause / pattern-param top-level fns: coalesced into one wasm func that
@@ -4579,7 +4579,7 @@ emitBlockRef _ _ _ _ = gapL "ref-mode: unsupported block statement"
 -- → `call`.  A ctor application → struct.new.  Anything else (a partial / over
 -- application of a known fn; an indirect call whose head is a closure value: a local
 -- param, a let-bound closure, a returned closure, an immediately-applied lambda) →
--- build an args array + `call $mdk_apply` (the universal arity-dispatched apply).
+-- build an args array + `call $__mdk_apply` (the universal arity-dispatched apply).
 emitAppRef : Prog -> List String -> Int -> CExpr -> <Mut> List String
 emitAppRef prog env d app =
   let (hd, args) = flattenApp app []
@@ -5041,7 +5041,7 @@ emitArrayExternRef prog env d "arraySetUnsafe" [i, v, a] = emitRefExpr prog env 
 emitArrayExternRef prog env d "arraySetUnsafe" _ =
   gapL "wasm W10: arraySetUnsafe takes exactly three arguments"
 -- size FIRST, f SECOND.  Alloc size slots (init 0), then loop i=0..n-1:
--- array.set arr i (apply f [i]).  f is applied via the universal $mdk_apply.
+-- array.set arr i (apply f [i]).  f is applied via the universal $__mdk_apply.
 emitArrayExternRef prog env d "arrayMakeWith" [n, f] =
     let sfx = intToString d
     let arrL = "$__aexarr" ++ sfx
@@ -5055,8 +5055,8 @@ emitArrayExternRef prog env d "arrayMakeWith" [n, f] =
       ++ ["block $aexd" ++ sfx, "loop $aexl" ++ sfx]
       ++ ["local.get " ++ iL, "local.get " ++ nL, "i32.ge_s", "br_if $aexd" ++ sfx]
       ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ iL]
-      -- value = f applied to (i31 i): build a 1-element $argarr, call $mdk_apply
-      ++ ["local.get " ++ fL, "local.get " ++ iL, "ref.i31", "array.new_fixed $argarr 1", "call $mdk_apply"]
+      -- value = f applied to (i31 i): build a 1-element $argarr, call $__mdk_apply
+      ++ ["local.get " ++ fL, "local.get " ++ iL, "ref.i31", "array.new_fixed $argarr 1", "call $__mdk_apply"]
       ++ ["array.set $arr"]
       ++ ["local.get " ++ iL, "i32.const 1", "i32.add", "local.set " ++ iL]
       ++ ["br $aexl" ++ sfx, "end", "end"]
@@ -5210,14 +5210,14 @@ b2fByteRead arrL offL bitsL i = [
 ]
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
--- into an $argarr, and `call $mdk_apply` — which dispatches on the closure's arity
+-- into an $argarr, and `call $__mdk_apply` — which dispatches on the closure's arity
 -- (exact / under→PAP / over→saturate+reapply).  This makes over/under/exact uniform
 -- and reads arity from the value (never a name-keyed table), per WASMGC-DESIGN §11.
 emitIndirectApp : Prog -> List String -> Int -> CExpr -> List CExpr -> <Mut> List String
 emitIndirectApp prog env d hd args =
   let hi = emitRefExpr prog env d hd
   let arr = emitArgsArray prog env d args
-  hi ++ arr ++ ["call $mdk_apply"]
+  hi ++ arr ++ ["call $__mdk_apply"]
 
 -- build an $argarr holding the emitted args, in order.  `array.new_fixed` takes the
 -- element values from the stack — so emit all args (each leaves a (ref eq)) then one
@@ -5284,7 +5284,7 @@ wTrmcTempL k = "$__tmc_t" ++ intToString k
 -- Emit `body` in TAIL position of the enclosing function.  Descends into the tails
 -- of if/let/block/decision so the syntactic tail call is found wherever it sits.
 -- A tail call emits `return_call` (saturated direct call to a known top-level fn) or
--- `return_call $mdk_apply` (indirect / non-saturated — the universal apply itself
+-- `return_call $__mdk_apply` (indirect / non-saturated — the universal apply itself
 -- tail-dispatches via return_call_ref).  These are guaranteed constant-stack by the
 -- engine (Wasm 3.0 / Node 24).  A NON-call tail leaf emits its value then `return`.
 -- Calls to host imports are NOT reachable as tail calls here (IO is W6), so the
@@ -6298,7 +6298,7 @@ implSelfReturnCall prog env name route methRoutes implRoutes app args = match im
   else None
 
 -- a tail application: saturated direct known-fn → return_call; ctor → value+return;
--- everything else → indirect via return_call $mdk_apply.
+-- everything else → indirect via return_call $__mdk_apply.
 emitAppTail : Prog -> List String -> Int -> CExpr -> <Mut> List String
 emitAppTail prog env arity app =
   let (hd, args) = flattenApp app []
@@ -6309,14 +6309,14 @@ emitAppTail prog env arity app =
       -- (a `br`, NOT a `return` — control leaves the clause, not the function).
       if isFtSentinel f0 then ftSentinelInstrs f0
       -- E24 (wasm peer): a LOCALLY-BOUND name shadows any same-named ctor / known top-level
-      -- fn / extern — applying it is an INDIRECT tail call (`return_call $mdk_apply`), never a
+      -- fn / extern — applying it is an INDIRECT tail call (`return_call $__mdk_apply`), never a
       -- direct `return_call $<toplevel>`.  Same guard as emitAppRef's CVar arm; without it a
       -- method-named HOF param colliding with a top-level fn (`pickEq eq x y = eq x y`) tail-
       -- called the WRONG callee.  Mirrors emitVarRefPlain's `contains x env`-first priority.
       else if contains f0 env then
         let hi = emitRefExpr prog env 0 hd
         let arr = emitArgsArray prog env 0 args
-        hi ++ arr ++ ["return_call $mdk_apply"]
+        hi ++ arr ++ ["return_call $__mdk_apply"]
       else if isCtor prog f then emitRefExpr prog env 0 app ++ ["return"]
       else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if f == "Ref" || f == "setRef" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
@@ -6326,7 +6326,7 @@ emitAppTail prog env arity app =
       else
         let hi = emitRefExpr prog env 0 hd
         let arr = emitArgsArray prog env 0 args
-        hi ++ arr ++ ["return_call $mdk_apply"]
+        hi ++ arr ++ ["return_call $__mdk_apply"]
     -- W5: a dispatched method/constrained-fn in tail position.  Compute the
     -- dispatch result via the value emitter (an RKey direct call, an RDict
     -- if-chain, or a CDict dict-prepended call) and `return` it.  (return_call
@@ -6351,7 +6351,7 @@ emitAppTail prog env arity app =
     _ =>
       let hi = emitRefExpr prog env 0 hd
       let arr = emitArgsArray prog env 0 args
-      hi ++ arr ++ ["return_call $mdk_apply"]
+      hi ++ arr ++ ["return_call $__mdk_apply"]
 
 -- a block in tail position: the last CSExpr is the tail; everything before is a
 -- statement (effect/let).  (W4 blocks in tail position only appear via desugared

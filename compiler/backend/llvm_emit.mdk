@@ -3738,7 +3738,7 @@ emitApplyRuntime e cw argOps =
   let _ = emit e "  \{arr} = alloca i64, i64 \{intToString n}"
   let _ = storeArgv e arr argOps 0
   let r = freshReg e
-  let _ = emit e "  \{r} = call i64 @mdk_apply(i64 \{cw}, i64 \{intToString n}, ptr \{arr})"
+  let _ = emit e "  \{r} = call i64 @__mdk_apply(i64 \{cw}, i64 \{intToString n}, ptr \{arr})"
   r
 
 -- store each arg word into the argv alloca at index `i` (getelementptr i64 stride).
