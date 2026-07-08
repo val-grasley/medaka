@@ -2253,6 +2253,7 @@ resetState _ =
   let _ = setRef pendingImplObligations []
   let _ = setRef numlitRefs []  -- PLAN.md #11
   let _ = setRef poisonedVars []  -- Chunk A: reset error-path cascade suppression
+  let _ = setRef tupleCallCandidates []  -- P0-16: reset beginner tuple-call hints
   let _ = setRef numlitVarLocs []  -- Chunk D: reset Num-mis-framing provenance
   let _ = setRef numlitOpLocs []  -- Chunk D
   let _ = setRef numlitCtxTags []  -- Chunk D
@@ -2396,7 +2397,12 @@ typeMismatchReport a b = match currentMethodMismatch.value
   Some mname => pushTypeError "T-METHOD-MISMATCH" "Method '\{mname}': expected type \{ppMono a} but got \{ppMono b}"
   None => match currentDoOrigin.value
     Some doLoc => typeMismatchInDo a b doLoc
-    None => pushTypeError "T-TYPE-MISMATCH" "Type mismatch: \{ppMono a} vs \{ppMono b}"
+    None => match firstTupleCallHint [a, b]
+      -- P0-16: one side is a tuple-call residual (e.g. `z : Int; z = add(1, 2)`
+      -- → `Type mismatch: Int vs (a, b) -> (a, b)`) — append the call-syntax hint.
+      Some (help, fix) =>
+        pushTypeErrorHelpFixAt "T-TYPE-MISMATCH" currentLoc.value "Type mismatch: \{ppMono a} vs \{ppMono b} — \{help}" help fix
+      None => pushTypeError "T-TYPE-MISMATCH" "Type mismatch: \{ppMono a} vs \{ppMono b}"
 
 -- a mismatch inside a do-lowered chain: if it is the monad-shape (`m b`) vs
 -- non-monad obligation, retarget to the tailored "do requires a monad" error;
@@ -4843,7 +4849,18 @@ inferAppExpr env f x = match hintArgName x
       Some (mname, tagRefs) => inferShadowApp env mname tagRefs f x
       None => match detectSwappedArgs2 env f x
         Some swapResult => swapResult
-        None => inferApp (envAlphaLets env) (EApp f x) (infer env f) (infer env x)
+        None =>
+          let ft = infer env f
+          let xt = infer env x
+          -- P0-16: detect `f(1, 2)` on the PRISTINE ft (before inferApp unifies
+          -- its domain with the tuple), then record the residual result so a
+          -- downstream no-impl / mismatch can surface the tailored hint.
+          let pend = tupleCallShapeHint f x ft
+          let res = inferApp (envAlphaLets env) (EApp f x) ft xt
+          let _ = match pend
+            Some (help, fix) => setRef tupleCallCandidates ((res, help, fix)::tupleCallCandidates.value)
+            None => ()
+          res
 
 -- @Impl: if [x] is an `@Name` disambiguation hint (a bare `EVar "@Name"`, possibly
 -- under an ELoc wrapper), return the name with the leading `@` stripped.  Mirrors
@@ -5046,6 +5063,131 @@ containerArgHint : String -> String
 containerArgHint "String" = ". Pass a List or Array; to work over a string's characters, convert it with `string.toChars` first."
 containerArgHint argTy =
   ". Pass a List or Array, or convert the \{argTy} to one first."
+-- P0-16 beginner call-syntax hint.  A newcomer writes `add(1, 2)` (C/Python/JS
+-- call syntax) meaning `add 1 2`; in Medaka `(1, 2)` is a TUPLE, so `add(1, 2)`
+-- applies `add` to ONE tuple argument → a partial application / no-impl error
+-- whose message ("No impl of Display for ((Int, Int) -> (Int, Int))") is
+-- inscrutable.  We DETECT the shape at the application site — a curried arity-N
+-- function applied to a single arity-N tuple literal whose first param is NOT
+-- itself an N-tuple — and record the residual result type as a candidate; the
+-- no-impl + type-mismatch surface sites then append the tailored hint when the
+-- offending type IS that residual.  Recording is generous (a legitimate partial
+-- application like `map (const (1, 2)) xs` also records) but the hint is only
+-- ever ATTACHED to a genuine downstream error, so a legit partial application —
+-- whose residual is consumed WITHOUT error — never shows it.  (residualMono,
+-- help, optional (span, replacement) fix); reset by resetState.
+tupleCallCandidates : Ref (List (Mono, String, Option (Loc, String)))
+tupleCallCandidates = Ref []
+
+-- number of leading `->` arrows in a (normalized) type — its curried arity.
+funArity : Mono -> <Mut> Int
+funArity m = match normalize m
+  TFun _ _ r => 1 + funArity r
+  _ => 0
+
+-- the elements of a tuple-literal argument (through the transparent ELoc wrapper).
+tupleArgElems : Expr -> Option (List Expr)
+tupleArgElems (ELoc _ e) = tupleArgElems e
+tupleArgElems (ETuple es) = Some es
+tupleArgElems _ = None
+
+-- True iff [ft]'s first parameter is itself an arity-[n] tuple type — the genuine
+-- "the tuple IS the intended single argument" shape (e.g. `f (a, b) c = …`), which
+-- must NOT be flagged.  Read on the PRISTINE ft (before inferApp unifies its domain
+-- with the tuple arg), so the domain here is the declared param type.
+domainIsTupleOfArity : Mono -> Int -> <Mut> Bool
+domainIsTupleOfArity ft n = match normalize ft
+  TFun dom _ _ => match monoHeadCon dom
+    Some c => c == "__tuple\{intToString n}__"
+    None => False
+  _ => False
+
+-- render a tuple element to source-ish text for the `add 1 2` fix, for the simple
+-- literal/var/negation cases; None for anything a full printer would be needed for.
+renderCallArg : Expr -> Option String
+renderCallArg (ELoc _ e) = renderCallArg e
+renderCallArg (EAnnot e _) = renderCallArg e
+renderCallArg (ENumLit n _ _) = Some (intToString n)
+renderCallArg (ELit (LInt n)) = Some (intToString n)
+renderCallArg (ELit (LBool True)) = Some "True"
+renderCallArg (ELit (LBool False)) = Some "False"
+renderCallArg (ELit (LString s)) = Some ("\"" ++ s ++ "\"")
+renderCallArg (ELit (LChar c)) = Some ("'" ++ c ++ "'")
+renderCallArg (EVar n) = Some n
+renderCallArg (EUnOp "-" e) = map ("-" ++ _) (renderCallArg e)
+renderCallArg _ = None
+
+-- all-or-nothing render of every tuple element.
+renderCallArgs : List Expr -> Option (List String)
+renderCallArgs [] = Some []
+renderCallArgs (e::rest) = match renderCallArg e
+  None => None
+  Some s => map (s :: _) (renderCallArgs rest)
+
+-- source span covering the whole `name(args)` call: callee start → tuple end.
+tupleCallSpanLoc : Expr -> Expr -> Option Loc
+tupleCallSpanLoc f x = match (exprLoc f, exprLoc x)
+  (Some (Loc file sl sc _ _), Some (Loc _ _ _ el ec)) =>
+    Some (Loc file sl sc el ec)
+  _ => None
+
+-- build the (help, optional fix) for a detected tuple-call.  The help names the
+-- rule (Medaka calls with spaces, `(…)` is a tuple) and gives the exact rewrite;
+-- when every element renders, a machine-applicable `fix` rewrites `add(1, 2)` →
+-- `add 1 2` verbatim.  ERROR-QUALITY: located (caller sets loc), names the issue,
+-- actionable fix, carries a code (T-NO-IMPL / T-TYPE-MISMATCH at the surface site).
+buildTupleCallHint : String -> List Expr -> Expr -> Expr -> <Mut> (String, Option (Loc, String))
+buildTupleCallHint name es f x = match renderCallArgs es
+  Some parts =>
+    let argsCsv = joinWith ", " parts
+    let argsSpaced = joinWith " " parts
+    let spread = "\{name} \{argsSpaced}"
+    let help = "Medaka calls functions with spaces, not parentheses: `\{name}(\{argsCsv})` applies `\{name}` to one tuple `(\{argsCsv})`. Did you mean `\{spread}`?"
+    let fix = map (span => (span, spread)) (tupleCallSpanLoc f x)
+    (help, fix)
+  None =>
+    let n = listLen es
+    let help = "Medaka calls functions with spaces, not parentheses: `\{name}(…)` passes a single \{intToString n}-tuple, not \{intToString n} arguments. Separate them with spaces, e.g. `\{name} x y`."
+    (help, None)
+
+-- detect the tuple-call shape on the PRISTINE ft (before inferApp) and return the
+-- (help, fix) to record against the residual result type, else None.  Fires only
+-- when the argument is a tuple literal of arity N ≥ 2, the callee has curried arity
+-- EXACTLY N (spreading the tuple would saturate it), and its first param is not
+-- itself an N-tuple (the genuine tuple-arg case), and the callee is a named spine.
+tupleCallShapeHint : Expr -> Expr -> Mono -> <Mut> Option (String, Option (Loc, String))
+tupleCallShapeHint f x ft = match tupleArgElems x
+  None => None
+  Some es =>
+    let n = listLen es
+    if n < 2 then
+      None
+    else if funArity ft != n then
+      None
+    else if domainIsTupleOfArity ft n then
+      None
+    else
+      map (name => buildTupleCallHint name es f x) (appSpineName f)
+
+-- surface-site lookup: does [m] (a type appearing in a no-impl / mismatch error)
+-- equal a recorded tuple-call residual?  Compared by normalized rendering — the
+-- residual IS the very type that flows into the error, so they render identically.
+tupleCallHintFor : Mono -> <Mut> Option (String, Option (Loc, String))
+tupleCallHintFor m =
+  findTupleCand (ppMono (normalize m)) tupleCallCandidates.value
+
+findTupleCand : String -> List (Mono, String, Option (Loc, String)) -> <Mut> Option (String, Option (Loc, String))
+findTupleCand _ [] = None
+findTupleCand key ((res, help, fix)::rest)
+  | ppMono (normalize res) == key = Some (help, fix)
+  | otherwise = findTupleCand key rest
+
+-- first tuple-call hint matching any of the offending types in an error.
+firstTupleCallHint : List Mono -> <Mut> Option (String, Option (Loc, String))
+firstTupleCallHint [] = None
+firstTupleCallHint (m::rest) = match tupleCallHintFor m
+  Some hf => Some hf
+  None => firstTupleCallHint rest
 
 inferApp : List (String, Expr) -> Expr -> Mono -> Mono -> <Mut> Mono
 inferApp lets appExpr ft xt =
@@ -9181,11 +9323,17 @@ noImplFoundMsgHinted iface args =
 -- hint (via `pushTypeErrorHelpFixAt`) when one applies; otherwise behaves
 -- exactly like the previous plain `pushTypeErrorOnceAt "T-NO-IMPL" …` call.
 pushNoImplError : String -> Option Loc -> List Mono -> <Mut> Unit
-pushNoImplError iface loc args =
-  let (msg, mhint) = noImplFoundMsgHinted iface args
-  match mhint
-    Some hint => pushTypeErrorHelpFixAt "T-NO-IMPL" loc msg hint None
-    None => pushTypeErrorOnceAt "T-NO-IMPL" loc msg
+pushNoImplError iface loc args = match firstTupleCallHint args
+  -- P0-16: the un-implementable type IS a tuple-call residual (e.g. `println
+  -- (add(1, 2))` → `No impl of Display for ((Int, Int) -> (Int, Int))`) — append
+  -- the "call with spaces, not parentheses" hint + machine fix.
+  Some (help, fix) =>
+    pushTypeErrorHelpFixAt "T-NO-IMPL" loc "\{noImplFoundMsg iface args} — \{help}" help fix
+  None =>
+    let (msg, mhint) = noImplFoundMsgHinted iface args
+    match mhint
+      Some hint => pushTypeErrorHelpFixAt "T-NO-IMPL" loc msg hint None
+      None => pushTypeErrorOnceAt "T-NO-IMPL" loc msg
 
 -- Chunk D (Num mis-framing reframe): at the final no-impl branch, a `Num`
 -- obligation forced to a fully-ground concrete non-Num head (`args` already passed
