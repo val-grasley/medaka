@@ -822,6 +822,29 @@ finishBuildArgs _ _ _ = Err "error: medaka build takes exactly one input file"
 -- programs that read `args ()`; the common `main = …` case is unaffected.  The
 -- first positional after dropFlags is the entry; any further positionals are
 -- the program's intended args (passthrough; observed via the native extern).
+--
+-- Shared eval tail: once the gate has ruled the program CLEAN and the whole
+-- module graph has been elaborated (route-stamping via the per-module
+-- typecheck, mainSchemeRef populated), force `main`.  Only reached AFTER the
+-- check-strength gate below (single-file: analyzeLocatedG; multi-module:
+-- resolve + hadTypeErrors), so a genuinely ill-typed program never reaches
+-- evalModulesOutput (G1 soundness invariant).
+finishRunEval : String -> Bool -> (List Decl, List (String, List Decl)) -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+finishRunEval target jsonMode elaborated mods =
+  -- 0.1.0 main-shape warning: elaborateModules already ran over the WHOLE graph,
+  -- so mainSchemeRef is already populated — no extra typecheck pass needed.
+  let mainWarns = match lastModPair mods
+    Some (_, edecls) => match mainArityWarning edecls
+      Some d => [d]
+      None => match mainNonUnitWarning edecls
+        Some d => [d]
+        None => []
+    None => []
+  let _ = emitLocatedWarnings (readFileSafe target) target mainWarns
+  let _ = setRef currentEvalFile target
+  let _ = setRef runJsonMode jsonMode
+  putStr (runProgramOutput (fst elaborated) (snd elaborated))
+
 runRunCmd : List String -> <IO, Mut, Panic> Unit
 runRunCmd argv =
   let jsonMode = hasFlag "--json" argv
@@ -864,34 +887,51 @@ runRunCmd argv =
                 let coreD = desugar (parse csrc)
                 let modsD = map desugarPair mods
                 let trusted = stdlibTrustedMods target roots stdlibDir mods
-                let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
-                match resDiags
-                  "" =>
-                    let _ = resetTypeErrorsSticky ()
-                    let elaborated = elaborateModules rtD coreD modsD
-                    match hadTypeErrors ()
-                      True =>
-                        let _ = ePutStrLn ("error: type error in " ++ target ++ ". Run `medaka check` for details")
+                -- Route by module count, mirroring `checkRoute` EXACTLY, so that
+                -- `run` accepts/rejects the SAME set of programs `medaka check`
+                -- does (beta P0-1 / P1-8).  The old gate was resolve-errors +
+                -- elaborate + hadTypeErrors for ALL programs — a WEAKER predicate
+                -- than check's: it missed constraint/no-impl/coherence errors
+                -- (so run silently executed ill-typed programs) AND spuriously
+                -- fired on some check-clean programs (standalone-fn-shadows-iface).
+                match modsD
+                  [_] =>
+                    -- Single-file: gate on the SAME located analysis `check`
+                    -- uses (analyzeLocatedG → checkImplObligations et al.) and
+                    -- render byte-identical caret diagnostics via ppDiagCliSrc,
+                    -- instead of the opaque "type error in <file>" message (P1-8).
+                    let tsrc = readFileSafe target
+                    let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
+                    let errs = filter isDiagError diags
+                    match errs
+                      [] =>
+                        let _ = resetTypeErrorsSticky ()
+                        let elaborated = elaborateModules rtD coreD modsD
+                        finishRunEval target jsonMode elaborated mods
+                      _ =>
+                        let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
                         exit 1
-                      False =>
-                        -- 0.1.0 main-shape warning (see mainShapeWarnings' doc
-                        -- comment below): elaborateModules just ran over the
-                        -- WHOLE graph via `elaborated`, so mainSchemeRef is
-                        -- already populated — no extra typecheck pass needed here.
-                        let mainWarns = match lastModPair mods
-                          Some (_, edecls) => match mainArityWarning edecls
-                            Some d => [d]
-                            None => match mainNonUnitWarning edecls
-                              Some d => [d]
-                              None => []
-                          None => []
-                        let _ = emitLocatedWarnings (readFileSafe target) target mainWarns
-                        let _ = setRef currentEvalFile target
-                        let _ = setRef runJsonMode jsonMode
-                        putStr (runProgramOutput (fst elaborated) (snd elaborated))
                   _ =>
-                    let _ = ePutStrLn resDiags
-                    exit 1
+                    -- Multi-module: keep the resolve + elaborate + hadTypeErrors
+                    -- predicate (matches `build`'s multi-module gate).  This is
+                    -- looser than check's checkModulesHasErrors but SOUND, and
+                    -- deliberately so: checkModulesHasErrors OVER-REJECTS valid
+                    -- multi-module code (e.g. the compiler's own source with a
+                    -- spurious `No impl of Alternative for Parser`), which run is
+                    -- routinely used on.  See typecheckGateRoute's note.
+                    let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
+                    match resDiags
+                      "" =>
+                        let _ = resetTypeErrorsSticky ()
+                        let elaborated = elaborateModules rtD coreD modsD
+                        match hadTypeErrors ()
+                          True =>
+                            let _ = ePutStrLn ("error: type error in " ++ target ++ ". Run `medaka check` for details")
+                            exit 1
+                          False => finishRunEval target jsonMode elaborated mods
+                      _ =>
+                        let _ = ePutStrLn resDiags
+                        exit 1
 -- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
 -- eval on ANY type error.  elaborateModules route-stamps via the
 -- per-module typecheck (checkModuleFullImpl), which pushes into the
