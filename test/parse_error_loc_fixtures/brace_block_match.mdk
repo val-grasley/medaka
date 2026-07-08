@@ -1,0 +1,4 @@
+main =
+  match x {
+    1 => "a"
+  }

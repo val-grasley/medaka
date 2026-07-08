@@ -210,10 +210,24 @@ identNameFor _ = failP "expected identifier"
 orElse : Parser a -> Parser a -> Parser a
 orElse pa pb = Parser (toks pos => orElseR pa pb toks pos)
 
+-- On a double failure, keep the FURTHEST-reached error (larger token index)
+-- rather than always the second alternative's.  This is the classic
+-- recursive-descent furthest-failure heuristic: the alternative that consumed
+-- more input before failing is almost always the intended parse, so its error
+-- (the offending token deep in the body) is the useful one to surface — instead
+-- of the shallow re-report at the construct's head.  Ties prefer `pb` (the prior
+-- behaviour).  Success of either branch is returned unchanged, so parse results
+-- are byte-identical; only which message a doomed parse carries changes.
 orElseR : Parser a -> Parser a -> Array Token -> Int -> PR a
 orElseR pa pb toks pos = match runP pa toks pos
   POk x q => POk x q
-  PErr _ _ => runP pb toks pos
+  PErr ea qa => orElseRb ea qa (runP pb toks pos)
+
+orElseRb : String -> Int -> PR a -> PR a
+orElseRb _ _ (POk y q) = POk y q
+orElseRb ea qa (PErr eb qb)
+  | qa > qb = PErr ea qa
+  | otherwise = PErr eb qb
 
 choice : List (Parser a) -> Parser a
 choice [] = failP "no alternative"
@@ -3512,7 +3526,21 @@ resultDeclsResult src toks offs srcLen (PErr msg pos) =
   Err (mkLocated src toks offs srcLen msg pos)
 resultDeclsResult src toks offs srcLen (POk ds pos)
   | peekTok toks pos == TEof = Ok ds
-  | otherwise = Err (mkLocated src toks offs srcLen (unexpectedLeftoverMsg src toks offs srcLen pos) pos)
+  | otherwise = Err (deepenLeftover src toks offs srcLen pos)
+
+-- A leftover-token `POk` means `many declThenNoise` stopped: the next decl failed
+-- to parse and its real error was swallowed (both `many` and the `orElse`s inside
+-- the decl discard failed alternatives).  The cursor sits at the START of that
+-- un-parseable decl, so a bare report there just names the decl head
+-- (`unexpected \`main\``).  Re-run `parseDecl` from that cursor to recover the
+-- FURTHEST failure inside the body — `orElseR` now propagates the deeper of two
+-- failed alternatives — and locate the error AT that offending token.  Fall back
+-- to the plain leftover message when the re-run reaches no deeper than the cursor
+-- (so already-well-located parse errors keep their exact spot).
+deepenLeftover : String -> Array Token -> Array Int -> Int -> Int -> ParseError
+deepenLeftover src toks offs srcLen pos = match runP parseDecl toks pos
+  PErr msg2 pos2 if pos2 > pos => mkLocated src toks offs srcLen msg2 pos2
+  _ => mkLocated src toks offs srcLen (unexpectedLeftoverMsg src toks offs srcLen pos) pos
 
 -- offset(idx) → (line,col) → ParseError, single place so both arms agree.
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError

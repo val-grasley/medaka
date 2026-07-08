@@ -1,0 +1,5 @@
+main =
+  if x
+  elif y
+    1
+  else 2

@@ -1,1 +1,1 @@
-{"files":[{"file":"<fixture>","diagnostics":[{"code":"P-PARSE","kind":"parse","message":"unexpected `main`","range":{"end":{"character":1,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"P-PARSE","kind":"parse","message":"expected atom","range":{"end":{"character":15,"line":0},"start":{"character":14,"line":0}},"severity":1,"source":"medaka"}]}]}
