@@ -7,7 +7,28 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — ⭐ NEXT UP: beta-hardening fix queue from the 2026-07-07 QA sweep. Start at `qa-beta-2026-07-07/FINDINGS.md`
+## RESUME — ✅ Beta-hardening batch 1: 8 P0-class items landed; run≠check theme largely CLOSED (2026-07-08). `main` = `76bda5a1`
+
+Worked the beta-hardening fix queue (`qa-beta-2026-07-07/FINDINGS.md`). Design→delegate→isolated-worktree→verify→merge; **all 8 fixpoint-clean, NO seed re-mint owed** (verify against committed seed before assuming otherwise). Owning memory `project_beta_qa_sweep_2026_07_07`.
+
+**⭐ NEXT UP (user-directed): the ONE deferred item — do it FIRST.** `p0_18_standalone_fn_shadows_iface_method` (a name that's both a standalone fn AND an interface method miscompiles: `size (Box 3)` runs the standalone `n+1` on a Box → run panic / build garbage). Fully diagnosed + planned in **`qa-beta-2026-07-07/P0-18-STANDALONE-DISPATCH-DESIGN.md`** — the user chose **Option A (principled per-receiver fix)**. It's the LAST failing fixture in the run≡check agreement gate (`test/diff_compiler_run_check_agreement.sh` → 12/1; this is the 1). Root cause = typecheck leaks the standalone's param type onto the method occurrence's receiver tyvar → routes `RLocal`. Non-local, careful (blast radius = 5 stdlib definer-shadows + normal dispatch); re-verify eval/llvm/build gates + fixpoint. **The current 1-red in `run_gates` is THIS known-deferred fixture, not a regression.**
+
+**Landed this session (all merged, gated, fixpoint C3a/C3b YES):**
+- **P0-6** `medaka test` exits nonzero on any doctest/prop failure (`0c669f2a`).
+- **P0-11** parse errors report at the offending token, not the `1:0` decl head — highest-leverage UX, collapses ~a dozen findings; `check` + `--json` (`98d2a89`). New gate `diff_compiler_parse_error_loc`.
+- **P0-13** sibling imports resolve from the entry file's own dir (`entrySearchRoots`) across run/check/build/test from any cwd (`81a32a3d`). New gate `diff_compiler_run_entry_subdir`.
+- **P0-16** `add(1, 2)` tuple-call beginner hint (human + JSON help/fix), zero false positives (`995a451b`).
+- **P0-1 (run≠check core)** `run`/`build` now gate on `check`'s FULL diagnostic predicate (routes by module count like `checkRoute`) and PRINT real diagnostics instead of "run medaka check" — the 4 P0-1 under-accept cases now reject (`96894932`).
+- **P0-17** `check` rejects an impl missing a required (non-defaulted) interface method → located `T-INCOMPLETE-IMPL` (`78907363`). Crux: ran post-desugar from the ungated `checkModuleFullImpl` core so defaults are distinguishable; whole tree green (no false positives).
+- **P0-18 (map-key)** function-keyed `Map` now rejected `No impl of Ord for (Int -> Int)` — a `checkReqOne` guard-reorder, contained, no re-mint (`76bda5a1`).
+- **Docs** SYNTAX.md drift (setRef, Map/Set import, 63-bit Int, @inline example, stale OCaml pointer, dead `bench`) (`aaeea054`).
+- **run≡check agreement gate** `test/diff_compiler_run_check_agreement.sh` — the FIXTURES.md §3 differential harness (run/build verdict must == check's). Now **12/13** (only the deferred standalone fixture red).
+
+**⚠️ PROCESS LESSON (new memory `feedback_serialize_heavy_builds`): concurrent isolated-agent builds THRASH the box** (observed load **62 on 10 cores** with 2-3 agents + orchestrator verifies building at once) → starved processes → dropped API connections + the "agent backgrounds gates then drops with nothing committed" failure mode (cost real rework: P0-13 took 3 attempts, a verify raced an agent in the same worktree). **User-approved rule (2026-07-08): STRICT SEQUENTIAL heavy builds + `JOBS=4 INNER_JOBS=2`** — one build-heavy op at a time GLOBALLY (agents spawned one-at-a-time, verify+merge, then next; orchestrator verifies NEVER overlap an agent build); read-only/doc agents still parallelize. Bake the JOBS cap into every agent prompt. Also: I initially forgot `isolation: worktree` and 3 agents collided in the shared worktree (recovered) — ALWAYS pass `isolation: worktree`.
+
+**Remaining P0 queue (13 items, none started; batch under the sequential discipline):** the deferred standalone fix (above, DO FIRST); crash class P0-2 (silent SIGSEGV/SIGBUS — some hard, deep-recursion stack-overflow detection), P0-4 (positional record pattern, likely eval-driver), P0-3 (deriving on records — **design fork**), P0-5 (mutability enforcement — **design fork**); playground trio P0-7/8/9 (front door); quick wins P0-10 (hash_map under run), P0-12 (REPL), P0-14 (`export import` build panic), P0-15 (attributes unbind defs). P0-3 and P0-5 need a Val design decision before spawning.
+
+## RESUME — ⭐ (superseded above) beta-hardening fix queue from the 2026-07-07 QA sweep. Start at `qa-beta-2026-07-07/FINDINGS.md`
 
 An 8-agent adversarial QA sweep (identification-only, no diagnosis) filed the pre-beta triage
 queue in-repo: **`qa-beta-2026-07-07/FINDINGS.md`** (18 P0 launch blockers + P1–P3, each with
