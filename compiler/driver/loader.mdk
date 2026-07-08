@@ -116,6 +116,28 @@ moduleIdOfPath roots path =
 export findProjectRoot : String -> <IO> String
 findProjectRoot startDir = findRootGo startDir startDir
 
+-- The module-resolution roots for a single entry file: the entry's OWN
+-- directory first, then the project root found by walking up from there
+-- (`findProjectRoot`).  Two roots, not one, because they answer different
+-- questions and neither subsumes the other:
+--   * the entry's dir resolves a BARE sibling import (`import helper`) next to
+--     the entry file, regardless of where (or whether) a `medaka.toml` lives;
+--   * the project root resolves a DOTTED cross-package import rooted at the
+--     project dir (`import frontend.ast` from `compiler/frontend/parser.mdk`,
+--     where the root is `compiler/`, not `compiler/frontend/`).
+-- Before this exported publicly, callers used just `findProjectRoot entryDir`
+-- as the sole non-stdlib root — correct for the dotted case, but it silently
+-- swallows a sibling import once a `medaka.toml` sits above the entry's own
+-- dir (P0-13: `medaka run src/main.mdk` from a project root with
+-- `src/helper.mdk` failed with `unknown module: helper`, because `helper`
+-- resolved against the project root, not `src/`).  De-duplicated to a single
+-- root when the entry already sits AT the project root (or no `medaka.toml`
+-- was found, in which case `findProjectRoot` falls back to `entryDir` itself).
+export entrySearchRoots : String -> <IO> List String
+entrySearchRoots entryDir =
+  let projRoot = findProjectRoot entryDir
+  if projRoot == entryDir then [projRoot] else [entryDir, projRoot]
+
 findRootGo : String -> String -> <IO> String
 findRootGo cur fallback =
   if fileExists (stringConcat [cur, "/medaka.toml"]) then cur

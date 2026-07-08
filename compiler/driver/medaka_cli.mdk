@@ -67,6 +67,7 @@ import driver.loader.{
   loadProgram,
   loadProgramFilesLocated,
   findProjectRoot,
+  entrySearchRoots,
   stdlibTrustedMods,
   unknownModuleIdOf,
   findImportLoc,
@@ -230,7 +231,7 @@ runCheckCmd argv =
       let rtPath = root ++ "/stdlib/runtime.mdk"
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
-      let roots = [findProjectRoot (dirOf2 target), stdlibDir]
+      let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
       match readFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
@@ -720,7 +721,7 @@ typecheckGate allowInternal root input =
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
   let stdlibDir = root ++ "/stdlib"
-  let roots = [findProjectRoot (dirOf2 input), stdlibDir]
+  let roots = entrySearchRoots (dirOf2 input) ++ [stdlibDir]
   match readFile rtPath
     Err msg => TGErr msg
     Ok rsrc => match readFile corePath
@@ -833,7 +834,7 @@ runRunCmd argv =
       let rtPath = root ++ "/stdlib/runtime.mdk"
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
-      let roots = [findProjectRoot (dirOf2 target), stdlibDir]
+      let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
       let allowInternal = hasFlag "--allow-internal" argv
       match readFile rtPath
         Err msg =>
@@ -939,7 +940,7 @@ runTestCmd argv = match dropFlags argv
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     let stdlibDir = root ++ "/stdlib"
-    let roots = [findProjectRoot (dirOf2 target), stdlibDir]
+    let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
     let ok = runTest rtPath corePath target roots
     if ok then () else exit 1
 

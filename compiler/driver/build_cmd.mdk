@@ -25,7 +25,7 @@
 -- the emitter's own diagnostic surfaced.
 
 import support.util.{reverseL, stringTrim}
-import driver.loader.{findProjectRoot}
+import driver.loader.{entrySearchRoots}
 import support.path.{dirOf, baseOf, chopExt, joinPath}
 
 -- A build either succeeds (writing the binary) or fails with a message.
@@ -157,14 +157,21 @@ runBuildNative root medaka cc inputAbs outPath =
   let rtC = joinPath root "runtime/medaka_rt.c"
   let compilerDir = joinPath root "compiler"
   let stdlibDir = joinPath root "stdlib"
-  let inputDir = findProjectRoot (dirOf inputAbs)
+  -- P0-13: entrySearchRoots gives BOTH the entry's own dir (resolves a bare
+  -- sibling import next to the entry, e.g. `src/main.mdk` importing
+  -- `src/helper.mdk`'s `helper`) and the project root found by walking up from
+  -- there (resolves a dotted cross-package import rooted at the project dir) —
+  -- see the loader.mdk doc comment. A single `findProjectRoot` root here used to
+  -- swallow the sibling-import case whenever a `medaka.toml` sat above the
+  -- entry's own directory.
+  let inputRoots = entrySearchRoots (dirOf inputAbs)
   -- Key the temp IR on the OUTPUT path (unique per build invocation), NOT the
   -- input basename: two concurrent `medaka build` of same-named inputs (e.g. two
   -- multi-module dirs each with entry.mdk) would otherwise collide on one
   -- /tmp/medaka_build_entry.ll and corrupt each other. Output paths are distinct
   -- per invocation, so this makes parallel builds race-safe.
   let llPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".ll"
-  let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, compilerDir, stdlibDir]
+  let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let emitter2 = envOr "MEDAKA_EMITTER" defaultMedakaEmitter
   let useNative = emitter2 != ""
   let emitProg = if useNative then emitter2 else medaka
@@ -208,12 +215,13 @@ runBuildWasm root medaka inputAbs outPath =
   let preludeP = joinPath root "stdlib/core.mdk"
   let compilerDir = joinPath root "compiler"
   let stdlibDir = joinPath root "stdlib"
-  let inputDir = findProjectRoot (dirOf inputAbs)
+  -- P0-13: see the comment on runBuildNative's inputRoots — same fix.
+  let inputRoots = entrySearchRoots (dirOf inputAbs)
   -- Key on the OUTPUT path (unique per invocation) so concurrent wasm builds of
   -- same-named inputs don't collide on one /tmp/medaka_build_<in>.wat (see the
   -- native path above for the full rationale).
   let watPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".wat"
-  let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, compilerDir, stdlibDir]
+  let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
   let useNativeBin = wasmEmitter != ""
   let emitProg = if useNativeBin then wasmEmitter else medaka
