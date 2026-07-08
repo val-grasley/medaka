@@ -32,6 +32,50 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-07) — ⭐ BETA-HARDENING QA SWEEP: findings + fixture plan filed in `qa-beta-2026-07-07/` — THE pre-beta triage queue
+
+An 8-agent adversarial QA sweep (beginner-syntax, bindings/mutability, type-system,
+numerics/strings, patterns/control-flow, tooling/CLI, test-gap analysis, playground-wasm;
+~350 probe programs) hunting the bugs/gaps/poor-UX states a HUMAN newcomer would hit —
+especially in the wasm playground. ~125 raw findings deduped into a prioritized queue.
+**This is deliberately identification-only: root causes were NOT investigated** (one-line
+hypotheses at most). Owning memory: `project_beta_qa_sweep_2026_07_07`.
+
+**Where everything lives (all in-repo):**
+- **`qa-beta-2026-07-07/FINDINGS.md`** — the master list: **18 P0 launch blockers**, 16 P1s,
+  P2/P3 tails, each with severity, class, minimal repro, expected behavior, and a pointer
+  (`report#Fn`) into the raw reports. Read its "Cross-cutting themes" section first.
+- **`qa-beta-2026-07-07/FIXTURES.md`** — the regression-fixture plan, organized by harness
+  (wasm gates, a NEW run-vs-check agreement gate, a NEW build-diagnostics gate, parse-error
+  corpus, doctest gate, playground seam smoke), split [bug]-locking vs [pin]-working.
+- **`qa-beta-2026-07-07/reports/*.md`** — the 8 raw per-area reports with every repro,
+  variation, and the positive-surprise lists.
+
+**How to start fixing (recommended attack order):**
+1. **Theme 1 — `medaka run` ≠ `medaka check` (FINDINGS P0-1, plus P0-18/P0-17):** run
+   executes ill-typed programs (missing-impl/constraint class) to wrong answers or
+   unlocated panics. Decide the enforcement point (likely the run driver's error-kind
+   gate in `compiler/driver/medaka_cli.mdk` / typecheck error classification), then add
+   FIXTURES.md §3's run-vs-check agreement gate FIRST so the whole class is pinned.
+   Skill: debug-pipeline → likely harden-typechecker/add-language-feature per site.
+2. **Theme 2 — parse-error mislocation (P0-11):** every body-level parse error reports at
+   the decl head `1:0: unexpected \`main\``. One parser-recovery fix (parser rewinds to
+   decl start and discards the inner failure position) collapses ~a dozen findings and
+   fixes the playground's wrong-line squiggle. This is parse Stage-3-adjacent work
+   (see the 2026-07-04 error-quality entry's deferred list).
+3. **Crash class (P0-2, P0-3, P0-4, P0-5):** silent SIGBUS/SIGSEGV (deep recursion,
+   `xs = 1 :: xs`, refutable-let on native), deriving-on-records broken both directions,
+   positional record patterns, mut-write-in-branch emitter panic. Each is an independent
+   worktree-able bite; verify with the FIXTURES.md §3 matrix.
+4. **Playground trio (P0-7 wasm TCO on un-annotated tail calls, P0-8 worker.js missing
+   host imports, P0-9 map+set false warnings/ctor collision)** — the beta's front door.
+5. Quick wins meanwhile: P0-6 (`medaka test` exit code), P0-15 (attributes unbind defs),
+   P0-16 (tuple-call hint), and the FIXTURES.md "Doc fixes" list (SYNTAX.md corrections).
+
+Overlap notes: P0-3/P1-x items partially overlap already-filed entries below (record
+`deriving Display` run/build divergence; hash_map `hashInt`; multi-clause exhaustiveness;
+run-path auto-print) — FINDINGS.md is now the superset; reconcile there when fixing.
+
 ## Current status (2026-07-06) — playground QA soak + error-message copy pass DONE (`a337ba17`)
 
 A long human-in-the-loop session: the user drove the in-browser playground and reported issues live; each was reproduced, fixed (design→delegate→verify→merge), and re-verified in a rebuilt `playground.wasm`. Then a full **user-facing message copy** review. All error-path → fixpoint C3a/C3b YES throughout, **NO seed re-mints** the entire session (string/message/entry changes only; the committed seed still cold-bootstraps — verified via the fixpoint's step-0 seed bootstrap). Owning memory: `project_playground_qa_and_message_copy`.

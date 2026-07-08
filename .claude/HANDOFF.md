@@ -7,6 +7,36 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ⭐ NEXT UP: beta-hardening fix queue from the 2026-07-07 QA sweep. Start at `qa-beta-2026-07-07/FINDINGS.md`
+
+An 8-agent adversarial QA sweep (identification-only, no diagnosis) filed the pre-beta triage
+queue in-repo: **`qa-beta-2026-07-07/FINDINGS.md`** (18 P0 launch blockers + P1–P3, each with
+a minimal repro + expected behavior), **`qa-beta-2026-07-07/FIXTURES.md`** (regression-fixture
+plan by harness), **`qa-beta-2026-07-07/reports/`** (8 raw per-area reports with full repro
+detail). Owning memory `project_beta_qa_sweep_2026_07_07`; PLAN.md's top status entry has the
+recommended attack order. Orchestration guidance for the next session:
+- **Read FINDINGS.md "Cross-cutting themes" first.** Theme 1 (`medaka run` executes ill-typed
+  programs that check/build reject — P0-1) and Theme 2 (all body-level parse errors report at
+  the decl head 1:0 — P0-11) are the two highest-leverage fixes; each collapses many findings.
+- **Land FIXTURES.md §3's run-vs-check agreement gate EARLY** — it pins the biggest class and
+  turns the remaining P0s into red-fixture-then-fix bites.
+- The P0s are mostly independent, worktree-able bites: silent SIGBUS/SIGSEGV crashes (P0-2),
+  deriving-on-records broken in BOTH pipelines opposite directions (P0-3), positional record
+  patterns run-only failure (P0-4), mutability not enforced + branch-write emitter panic
+  (P0-5), `medaka test` exits 0 on failure (P0-6), playground trio (P0-7 wasm TCO loss on
+  un-annotated tail calls / P0-8 worker.js missing host imports / P0-9 map+set false warnings
+  + interpreter ctor collision), hash_map unusable under run (P0-10), REPL dies on any parse
+  error (P0-12), cwd-relative module resolution (P0-13), `export import` build panic (P0-14),
+  attributes unbind signature-less defs (P0-15), tuple-call hint (P0-16), impl-completeness
+  unchecked (P0-17), check-silent/run-error dead ends (P0-18).
+- Findings are repros, not diagnoses — expect some filed hypotheses to be wrong (per the
+  debug-pipeline skill's history); verify empirically before fixing. Some overlap
+  already-filed PLAN.md items (record deriving Display divergence, hashInt, run-path
+  auto-print); FINDINGS.md is the superset — reconcile there as items close.
+- Cheap parallel wins: the FIXTURES.md "Doc fixes" list (SYNTAX.md corrections: broken
+  attribute example, `set_ref`→`setRef`, Map/Set import requirement, 63-bit Int, stale
+  OCaml ground-truth pointer, dead `bench`).
+
 ## RESUME — ✅ Playground deferred items + thorough gate sweep + dogfood fixes DONE (2026-07-07). `main` = `f1c76e09`
 Long multi-batch session clearing the playground-filed deferred items, then a full gate audit, then live guide-author dogfood findings. Design→delegate→isolated-worktree→verify→merge throughout; **three batched seed re-mints** (each cold `bootstrap_from_seed` C3a PASS). Owning memory `project_playground_deferred_items_batch` (full detail); PLAN.md "2026-07-07 batch" entries. **~20 fixes landed, ZERO session regressions** (a thorough gate sweep verified every failure was stale-golden or pre-existing-at-`54344aba`).
 - **Batch 1–2:** ppScheme constraint display; multi-clause exhaustiveness (root cause = entry-only oracle, not 524-partial cleanup; found+fixed a latent `findTvarN` bug); composite-main auto-print (in-process wrap+re-check, covers the single-process playground); signed-main sig-strip; type-error spans (lexer string-span + whole-binop + arg); runtime-trap coding (native + **wasm coded traps + Bool parity** → playground no longer shows generic "program panicked"); emit-entry dedup (correct consolidation, not a suppress).
