@@ -1,0 +1,3 @@
+data Color = Red
+
+main = (Red, 5)

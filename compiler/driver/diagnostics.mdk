@@ -52,6 +52,11 @@ import types.typecheck.{
   lookupMatchWarningHelp,
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
+import driver.main_autoprint.{
+  shouldAutoPrintMain,
+  autoPrintWrapModules,
+  underivedMainDiags,
+}
 import support.util.{joinNl, lookupAssoc, startsWith, anyList, filterList}
 import json.{Json, JInt, JString, JArray, jObject, stringify}
 
@@ -307,8 +312,41 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
       map diagOfTypeError tcErrs ++ map diagOfMatchWarning tcWarns
     _ => []
+  -- AUTO-PRINT visibility (composite-main design §10): a bare non-Unit VALUE main
+  -- (`main = (Red, 5)`) is auto-printed via `Display` at emit, so its Display
+  -- obligation must surface in `check`/LSP/playground too — not only at `build`.
+  -- Mirror the emit driver's wrap+recheck: wrap `main = <e>` → `main = println <e>`
+  -- and re-run the check gate on the wrapped single module (underivedMainDiags).
+  -- Gated on shouldAutoPrintMain (needs the elaborate above to have set main's
+  -- type), so a Unit/Async/function main and a satisfied value main add nothing.
+  let autoDiags = match resErrs
+    [] => filterNewDiags tcDiags (autoPrintObligationDiags runtimeP coreP desugared)
+    _ => []
   let guardDiags = map guardWarnToDiag guardWarns
-  guardDiags ++ resDiags ++ tcDiags
+  guardDiags ++ resDiags ++ tcDiags ++ autoDiags
+
+-- The auto-print Display obligation for a bare non-Unit value main, as located
+-- Diags (empty when the wrap doesn't fire or the obligation is satisfied).
+-- underivedMainDiags re-runs the WHOLE check on the wrapped program, so it also
+-- re-reports every non-auto-print error already in `tcDiags`; `filterNewDiags`
+-- (at the call site) drops those, keeping only the wrap-introduced obligation.
+autoPrintObligationDiags : List Decl -> List Decl -> List Decl -> <Mut> List Diag
+autoPrintObligationDiags runtimeP coreP desugared =
+  let modules = [("__main__", desugared)]
+  if shouldAutoPrintMain coreP modules then
+    map diagOfTypeError (underivedMainDiags runtimeP coreP (autoPrintWrapModules modules))
+  else
+    []
+
+diagMsg : Diag -> String
+diagMsg (Diag _ _ m _ _ _) = m
+
+-- Keep only [news] Diags whose message isn't already present in [existing] — so
+-- the auto-print re-check contributes ONLY its wrap-introduced obligation, never a
+-- duplicate of an error the primary check already reported.
+filterNewDiags : List Diag -> List Diag -> List Diag
+filterNewDiags existing news =
+  filterList (d => not (anyList (e => diagMsg e == diagMsg d) existing)) news
 -- resolve over runtime + core (prelude) + target
 
 -- resolve has no per-error loc in the compiler pipeline → None.

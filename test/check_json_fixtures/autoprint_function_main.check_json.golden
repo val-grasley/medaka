@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-NO-IMPL","kind":"type","message":"No impl of Display for (Int -> Int)","range":{"end":{"character":8,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"medaka"}]}]}

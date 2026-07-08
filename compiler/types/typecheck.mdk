@@ -5409,6 +5409,12 @@ registerData env (DData _ name params variants _) =
   registerVariants env name params variants
 registerData env (DRecord _ name params fields _) =
   let _ = registerRecordInfo name params fields
+  -- Register the record's declared arity (all KType params — records have no
+  -- effect-row-tail syntax) into dataParamKindsRef, exactly like a `data` decl.
+  -- This makes a record a recognized user-declared derivable type, so a missing
+  -- `Display`/`Eq`/… impl gets the same `add 'deriving …'` hint (noImplHint) a
+  -- `data` type gets, and its type-app arity is known to the kind-directed passes.
+  let _ = setRef dataParamKindsRef ((name, map (_ => KType) params)::dataParamKindsRef.value)
   env
 registerData env (DTypeAlias _ name params rhs) =
   let _ = setRef aliasTableRef ((name, (params, rhs))::aliasTableRef.value)
@@ -8799,7 +8805,7 @@ inferDefaultMethodBody mname env expectedTy pats body =
 -- NO impl is rejected — both matching the oracle.
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligations prog obligations =
-  checkImplObligationsGo (implHeadsOf prog) obligations
+  checkImplObligationsGo prog (implHeadsOf prog) obligations
 
 -- #11 soundness (native obligation hole): check each constrained-fn CALL site's
 -- instantiated obligation.  When `f : C a => …` is applied (`g = f "hello"`),
@@ -8811,29 +8817,37 @@ checkImplObligations prog obligations =
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligations prog obligations =
-  checkCallObligationsGo (implHeadsOf prog) [] obligations
+  checkCallObligationsGo prog (implHeadsOf prog) [] obligations
 
 -- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
 -- be recorded by more than one path (a use marked both EVar and, on the emit path,
 -- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
-checkCallObligationsGo : List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
-checkCallObligationsGo _ _ [] = ()
-checkCallObligationsGo heads seen ((iface, occ, loc)::rest) =
+checkCallObligationsGo : List Decl -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
+checkCallObligationsGo _ _ _ [] = ()
+checkCallObligationsGo prog heads seen ((iface, occ, loc)::rest) =
   let key = "\{iface}|\{fromOption "" (headTyconMono occ)}"
-  if contains key seen then checkCallObligationsGo heads seen rest
+  if contains key seen then checkCallObligationsGo prog heads seen rest
   else
-    let _ = checkOneCallObligation heads iface occ loc
-    checkCallObligationsGo heads (key::seen) rest
+    let _ = checkOneCallObligation prog heads iface occ loc
+    checkCallObligationsGo prog heads (key::seen) rest
 
-checkOneCallObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
-checkOneCallObligation heads iface occ loc =
+checkOneCallObligation : List Decl -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+checkOneCallObligation prog heads iface occ loc =
   let args = [normalize occ]
   if iface == "Num" && anyList numUnimplementableHead args then
+    pushNoImplError iface loc args
+  -- A function-typed constraint obligation is fully ground yet has no impl — report
+  -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
+  else if anyList monoIsFunction args && not (implMatches heads iface args) then
     pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
     checkUndeterminedObligation heads iface occ loc
   else if implMatches heads iface args then
-    ()
+    -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
+    -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
+    -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
+    -- match silently accepting (→ null element dict → SIGSEGV at runtime).
+    checkNestedReqs prog heads iface args loc
   else
     pushNoImplError iface loc args
 
@@ -8972,14 +8986,14 @@ substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
 substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
 substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
 
-checkImplObligationsGo : List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
-checkImplObligationsGo _ [] = ()
-checkImplObligationsGo heads ((iface, typarams, mty, occ, loc)::rest) =
-  let _ = checkOneImplObligation heads iface typarams mty occ loc
-  checkImplObligationsGo heads rest
+checkImplObligationsGo : List Decl -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+checkImplObligationsGo _ _ [] = ()
+checkImplObligationsGo prog heads ((iface, typarams, mty, occ, loc)::rest) =
+  let _ = checkOneImplObligation prog heads iface typarams mty occ loc
+  checkImplObligationsGo prog heads rest
 
-checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
-checkOneImplObligation heads iface typarams mty occ loc =
+checkOneImplObligation : List Decl -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
+checkOneImplObligation prog heads iface typarams mty occ loc =
   let args = dispatchMonosOf typarams mty occ
   -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
   -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
@@ -8998,7 +9012,91 @@ checkOneImplObligation heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyList eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyList ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyList numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyList eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyList ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if anyList monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs prog heads iface args loc else reportNumOrNoImpl iface args loc
+
+-- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
+-- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
+-- So a function-typed obligation with no matching impl is a genuine `No impl of
+-- <iface> for <a -> b>` (bug: `main = f` where `f : Int -> Int` used to fall
+-- through to the emit path's route resolution and mis-report "Ambiguous instance"
+-- — but a monomorphic function type is not ambiguous, it simply has no impl).
+-- Reserved for the un-matched case so a real `impl Display (a -> b)` would satisfy.
+monoIsFunction : Mono -> Bool
+monoIsFunction m = match normalize m
+  TFun _ _ _ => True
+  _ => False
+
+-- After the impl head for (iface, args) matched, a CONDITIONAL instance's
+-- `requires` constraints must ALSO be satisfied (`impl Display (a, b) requires
+-- Display a, Display b`).  Recover the impl's typaram bindings from the head match
+-- and check each substituted requirement recursively — so `main = (Red, 5)` (Red
+-- has no Display) surfaces `No impl of Display for Color` at the deepest failing
+-- leaf, exactly like the bare `main = Red`, instead of the head-only match silently
+-- accepting the unsatisfiable element constraint (→ null element dict → SIGSEGV).
+-- A satisfied requirement (`Display Int`, `Display String`) recurses into ITS own
+-- (empty) requires and accepts, so `(5, "hi")` / `[1,2,3]` still build.
+checkNestedReqs : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkNestedReqs prog heads iface args loc =
+  checkReqObligations prog heads loc (reqObligationsFor prog iface args)
+
+-- Impl decls paired with their `requires` (implHeadsOf drops reqs; this keeps them).
+implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
+implDeclsWithReqs prog = flatMap implDeclWithReqs prog
+
+implDeclWithReqs : Decl -> List (String, List Ty, List Require)
+implDeclWithReqs (DAttrib _ d) = implDeclWithReqs d
+implDeclWithReqs (DImpl { iface, tys, reqs, ... }) = [(iface, tys, reqs)]
+implDeclWithReqs _ = []
+
+-- The substituted requirement obligations of the impl of [iface] whose head
+-- matches [args]: bind the impl's typaram vars from the head match, then apply that
+-- binding to each `Require`'s type args.  No matching impl / no reqs → [].
+reqObligationsFor : List Decl -> String -> List Mono -> <Mut> List (String, List Mono)
+reqObligationsFor prog iface args = match findMatchingImplReqs (implDeclsWithReqs prog) iface args
+  None => []
+  Some (subst, reqs) => map (reqToObligation subst) reqs
+
+reqToObligation : List (String, Mono) -> Require -> <Mut> (String, List Mono)
+reqToObligation subst (Require ifaceR tysR) =
+  (ifaceR, map (reqTyToMono subst) tysR)
+
+findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> <Mut> Option (List (String, Mono), List Require)
+findMatchingImplReqs [] _ _ = None
+findMatchingImplReqs ((iface2, tys, reqs)::rest) iface args
+  | iface2 == iface = match implHeadSubst tys args
+    Some sub => Some (sub, reqs)
+    None => findMatchingImplReqs rest iface args
+  | otherwise = findMatchingImplReqs rest iface args
+
+-- Convert a `Require`'s declared type arg to a mono under the head-match subst.
+-- Impl-typaram vars (the common case, `Display a`) resolve to their bound mono; an
+-- unbound name gets a fresh var (defers, never a spurious concrete head).
+reqTyToMono : List (String, Mono) -> Ty -> <Mut> Mono
+reqTyToMono sub (TyVar n) = fromOption (freshVar ()) (lookupAssoc n sub)
+reqTyToMono _ (TyCon n _) = TCon n
+reqTyToMono sub (TyApp a b) = TApp (reqTyToMono sub a) (reqTyToMono sub b)
+reqTyToMono sub (TyFun a b) =
+  TFun (reqTyToMono sub a) (openRow ()) (reqTyToMono sub b)
+reqTyToMono sub (TyTuple ts) =
+  tupleSpineOf (TCon (tupleHeadTagTc (listLen ts))) (map (reqTyToMono sub) ts)
+reqTyToMono sub (TyEffect _ _ t) = reqTyToMono sub t
+reqTyToMono sub (TyConstrained _ t) = reqTyToMono sub t
+
+-- Check each substituted requirement with the SAME accept/reject logic as a
+-- top-level obligation, recursing into a satisfied conditional impl's own reqs.
+checkReqObligations : List Decl -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
+checkReqObligations _ _ _ [] = ()
+checkReqObligations prog heads loc ((ifaceR, monoArgs)::rest) =
+  let _ = checkReqOne prog heads ifaceR monoArgs loc
+  checkReqObligations prog heads loc rest
+
+checkReqOne : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkReqOne prog heads iface args loc
+  | not (allConcreteHeads args) = ()
+  | anyList monoIsFunction args && not (implMatches heads iface args) =
+    pushNoImplError iface loc args
+  | implMatches heads iface args = checkNestedReqs prog heads iface args loc
+  | otherwise = pushNoImplError iface loc args
 
 -- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
 -- Eq (and unlike Num) an unbound spine head DEFERS — a downstream `Ord a =>`

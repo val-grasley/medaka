@@ -98,9 +98,18 @@ autoPrintWrapModules (p::rest) = p :: autoPrintWrapModules rest
 
 wrapMainDecl : Decl -> Decl
 wrapMainDecl (DFunDef vis "main" [] body) =
-  DFunDef vis "main" [] (EApp (EVar "println") body)
+  DFunDef vis "main" [] (wrapPrintln body)
 wrapMainDecl (DAttrib a d) = DAttrib a (wrapMainDecl d)
 wrapMainDecl d = d
+
+-- `main = <e>` → `main = println <e>`, re-attaching the body's own source span
+-- (its outer `ELoc`, from `parseLocated`) around the synthetic application so the
+-- auto-print Display obligation reports AT the main body — not at `{0,0}` — on the
+-- check/LSP path (underivedMainDiags).  `ELoc` is transparent to every backend, so
+-- the emitted IR is unchanged.  An un-located body (plain `parse`) wraps bare.
+wrapPrintln : Expr -> Expr
+wrapPrintln (ELoc l inner) = ELoc l (EApp (EVar "println") (ELoc l inner))
+wrapPrintln body = EApp (EVar "println") body
 
 -- Re-run the CHECK gate on the wrapped program to surface an underived-ADT main
 -- as the clean `No impl of Display …` type error.  Gated to a SINGLE loaded

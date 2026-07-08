@@ -1,0 +1,4 @@
+f : Int -> Int
+f x = x
+
+main = f
