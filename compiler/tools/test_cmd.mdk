@@ -68,21 +68,31 @@ export rootsOrDefault : String -> List String -> List String
 rootsOrDefault target [] = [dirOf target]
 rootsOrDefault _ roots = roots
 
-export runTest : String -> String -> String -> List String -> <IO, Mut> Unit
+-- Returns True iff every doctest AND every prop passed (a read error, or a
+-- file with zero tests, also returns True — vacuous/IO-error pass mirrors the
+-- pre-existing printed behaviour; callers gate `exit 1` on this Bool rather
+-- than on the printed report, since the report is prose, not a signal).
+export runTest : String -> String -> String -> List String -> <IO, Mut> Bool
 runTest runtimeP coreP target roots = match readFile runtimeP
-  Err e => ePutStrLn e
+  Err e =>
+    let _ = ePutStrLn e
+    True
   Ok rsrc => match readFile coreP
-    Err e => ePutStrLn e
+    Err e =>
+      let _ = ePutStrLn e
+      True
     Ok csrc => match readFile target
-      Err e => ePutStrLn e
+      Err e =>
+        let _ = ePutStrLn e
+        True
       Ok tsrc => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
 
-driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO, Mut> Unit
+driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO, Mut> Bool
 driveAll runtimeDecls coreDecls target tsrc roots =
   let userDecls = desugar (parse tsrc)
-  let _ = runDoctests runtimeDecls coreDecls target tsrc userDecls roots
-  let _ = runProps runtimeDecls coreDecls target userDecls roots
-  ()
+  let doctestsOk = runDoctests runtimeDecls coreDecls target tsrc userDecls roots
+  let propsOk = runProps runtimeDecls coreDecls target userDecls roots
+  doctestsOk && propsOk
 
 -- ── doctest phase ────────────────────────────────────────────────────────────
 

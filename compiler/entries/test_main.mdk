@@ -11,5 +11,6 @@ import tools.test_cmd.{runTest, rootsOrDefault}
 
 main = match args ()
   runtimeP::coreP::target::roots =>
-    runTest runtimeP coreP target (rootsOrDefault target roots)
+    let ok = runTest runtimeP coreP target (rootsOrDefault target roots)
+    if ok then () else exit 1
   _ => ePutStrLn "usage: medaka run compiler/entries/test_main.mdk <runtime.mdk> <core.mdk> <file.mdk> [root ...]"

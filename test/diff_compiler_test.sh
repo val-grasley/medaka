@@ -96,5 +96,25 @@ for f in $files; do
   fi
 done
 
+# P0-6 regression: `medaka test` must exit nonzero iff any doctest/prop FAILED
+# or ERRORED (a printed "N passed, M failed" report used to always exit 0 —
+# a CI trap). test/bin/test_main is the native-built oracle for
+# compiler/entries/test_main.mdk, so it carries the same exit-code fix.
+"$RUN" "$RUNTIME" "$CORE" "$ROOT/test/compiler_test_fixtures/mixed.mdk" "$ROOT/test/compiler_test_fixtures" >/dev/null 2>&1
+mixed_code=$?
+if [ "$mixed_code" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'ok   mixed.mdk exit code (%d != 0, has a FAILing doctest)\n' "$mixed_code"
+else
+  fail=$((fail + 1)); printf 'FAIL mixed.mdk exit code: expected nonzero (has a failing doctest), got 0\n'
+fi
+
+"$RUN" "$RUNTIME" "$CORE" "$ROOT/stdlib/list.mdk" "$ROOT/stdlib" >/dev/null 2>&1
+list_code=$?
+if [ "$list_code" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'ok   list.mdk exit code (0, all-passing suite)\n'
+else
+  fail=$((fail + 1)); printf 'FAIL list.mdk exit code: expected 0 (all-passing), got %d\n' "$list_code"
+fi
+
 printf '\n%d matched, %d differing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
