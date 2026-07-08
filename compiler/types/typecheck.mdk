@@ -2423,6 +2423,12 @@ monoIsApp _ = False
 doRequiresMonadMsg : String
 doRequiresMonadMsg = "`do` requires a Thenable impl (e.g. `Option`/`Result`). For IO sequencing use a bare indented block, not `do`"
 
+-- SYMMETRIC complement of doRequiresMonadMsg: a `<-` bind reached a bare
+-- (non-`do`) block.  `<-` is monadic-`do`-only; a bare indented block is IO
+-- sequencing and does not allow it (language-design.md; "IO is not a monad").
+bindOutsideDoMsg : String
+bindOutsideDoMsg = "`<-` bind is only valid inside a `do` block. For IO sequencing use a bare indented block without `<-`"
+
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
 generalize t =
@@ -3819,6 +3825,19 @@ inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
 inferStmt env (DoLet isMut _ pat e) = blockLet env isMut pat e
 inferStmt env (DoLetElse pat e _) = blockLet env False pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
+-- A `<-` bind (DoBind) reaching a bare block is a user error: `<-` is
+-- monadic-`do`-only, and a monadic `do` lowers to EDo (desugared before
+-- typecheck), so only a bare-block `<-` arrives here.  Emit a clean LOCATED
+-- error (symmetric with doRequiresMonadMsg) instead of panicking; infer the RHS
+-- for effect (surfacing its own errors + snapshotting its ELoc span for the
+-- caret) and bind the pattern's vars into env so downstream statements don't
+-- cascade spurious `Unbound variable` errors (mirrors inferRecPatField).
+inferStmt env (DoBind pat e) =
+  let t = infer env e
+  let _ = pushTypeError "T-BIND-OUTSIDE-DO" bindOutsideDoMsg
+  let pr = inferPat env pat
+  let _ = unify (fst pr) t
+  extendVars env (snd pr)
 inferStmt _ _ = panic "typecheck: unsupported block statement"
 
 blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv

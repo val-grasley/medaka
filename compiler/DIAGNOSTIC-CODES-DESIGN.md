@@ -131,6 +131,7 @@ kinds (enumerated from the message families):
 | non-recursive value let | `'x' is not in scope on the RHS of its own binding …` (`:4923`) | `T-NONREC-VALUE-LET` |
 | mut-let needs block | `mutLetRequiresBlockMsg` (`:4484`) | `T-MUT-LET-BLOCK` |
 | do not a monad | `do requires a monad` | `T-DO-NOT-MONAD` |
+| `<-` bind outside do | `bindOutsideDoMsg` — `<-` in a bare (non-`do`) block | `T-BIND-OUTSIDE-DO` |
 | cyclic superinterface | `cyclic superinterface: …` | `T-CYCLIC-SUPERINTERFACE` |
 | conflicting impl | `conflicting \`impl X\`: defined in … and …` | `T-CONFLICTING-IMPL` |
 | empty record update | `empty record update` | `T-EMPTY-RECORD-UPDATE` |
