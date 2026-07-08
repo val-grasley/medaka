@@ -32,6 +32,22 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-08) — beta-hardening batch 1: 8 P0s landed; run≠check theme largely CLOSED. `main` = `14f8d42d`
+
+Worked the `qa-beta-2026-07-07/FINDINGS.md` queue. Merged (all fixpoint-clean, NO seed re-mint):
+**P0-6** (test exit code), **P0-11** (parse-error location — theme 2), **P0-13** (cwd-relative
+module resolution), **P0-16** (tuple-call hint), **P0-1** run≠check core (`run`/`build` gate on
+`check`'s full diagnostic predicate + print real diagnostics), **P0-17** (impl-completeness
+`T-INCOMPLETE-IMPL`), **P0-18 map-function-key** reject, + SYNTAX.md doc fixes. Landed the
+FIXTURES.md §3 **run≡check agreement gate** (`test/diff_compiler_run_check_agreement.sh`) — now
+**12/13**. **⭐ ONE deferred, DO FIRST next session:** `p0_18_standalone_fn_shadows_iface_method`
+dispatch miscompile — user chose the principled per-receiver fix (Option A); full diagnosis +
+plan in `qa-beta-2026-07-07/P0-18-STANDALONE-DISPATCH-DESIGN.md`. The current 1-red in `run_gates`
+is that known-deferred fixture, not a regression. Full detail: HANDOFF.md top RESUME; memory
+`project_beta_qa_sweep_2026_07_07`. Process lesson: strict-sequential heavy builds + `JOBS` cap
+(`feedback_serialize_heavy_builds`). Remaining P0 queue (13) tracked; P0-3 (deriving) & P0-5
+(mutability) need a design decision before spawning.
+
 ## Current status (2026-07-07) — ⭐ BETA-HARDENING QA SWEEP: findings + fixture plan filed in `qa-beta-2026-07-07/` — THE pre-beta triage queue
 
 An 8-agent adversarial QA sweep (beginner-syntax, bindings/mutability, type-system,
