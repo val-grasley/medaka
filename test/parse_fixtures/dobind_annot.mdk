@@ -1,0 +1,7 @@
+-- do-bind with a type annotation on the bound var: binds the var AND
+-- (via the shadowing annotated let) enforces its declared type
+compute =
+  do
+    x: Int <- fetch
+    y <- other
+    wrap (x + y)

@@ -1,0 +1,3 @@
+blockLetAnnotMismatch x =
+  let p: Int = "hi"
+  p

@@ -1,0 +1,4 @@
+doBindAnnotMismatch =
+  do
+    x: Int <- Some "hi"
+    Some x

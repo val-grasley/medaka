@@ -1,0 +1,3 @@
+whereAnnotMismatch n = n + go
+  where
+    go: Int = "hi"

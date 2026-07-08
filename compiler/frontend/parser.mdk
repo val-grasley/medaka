@@ -2785,6 +2785,13 @@ parseWhereBinding = do
   whereBindRest name pats t
 
 whereBindRest : String -> List Pat -> Token -> Parser (String, List Pat, Expr)
+-- annotated binding `go : ty = body` (no params only, mirrors let-in / block-let)
+whereBindRest name [] TColon = do
+  advance
+  ty <- parseTy
+  expectTok TEqual
+  body <- parseExpr
+  pure (name, [], EAnnot body ty)
 whereBindRest name pats TEqual = do
   advance
   body <- parseExpr
@@ -2855,18 +2862,22 @@ stmtsLoop = orElse stmtsCons (pure [])
 
 stmtsCons : Parser (List DoStmt)
 stmtsCons = do
-  s <- parseStmt
+  ss <- parseStmt
   skipNewlines
   rest <- stmtsLoop
-  pure (s::rest)
+  pure (ss ++ rest)
 
-parseStmt : Parser DoStmt
+-- one surface statement → one OR MORE DoStmts (an annotated do-bind
+-- `x : ty <- e` expands to two: the bind + a shadowing annotated let)
+parseStmt : Parser (List DoStmt)
 parseStmt = do
   t <- peekP
   stmtFor t
 
-stmtFor : Token -> Parser DoStmt
-stmtFor TLet = parseLetStmt
+stmtFor : Token -> Parser (List DoStmt)
+stmtFor TLet = do
+  s <- parseLetStmt
+  pure [s]
 stmtFor _ = parseExprStmt
 
 -- a `let` statement: `let mut p = e`, function-let `let f a… = e`, plain
@@ -2881,17 +2892,42 @@ letKind : Token -> Parser DoStmt
 letKind TMut = do
   advance
   pat <- parsePat
-  expectTok TEqual
-  e1 <- parseRhsExpr
-  pure (DoLet True False pat e1)
+  t <- peekP
+  letMutBody pat t
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
 
--- IDENT-led: function-let `let f a… = e` (params present) or `let x = e [in/else]`
+-- `let mut p = e` or annotated `let mut p : ty = e`
+letMutBody : Pat -> Token -> Parser DoStmt
+letMutBody pat TColon = do
+  advance
+  ty <- parseTy
+  expectTok TEqual
+  e1 <- parseRhsExpr
+  pure (DoLet True False pat (EAnnot e1 ty))
+letMutBody pat _ = do
+  expectTok TEqual
+  e1 <- parseRhsExpr
+  pure (DoLet True False pat e1)
+
+-- IDENT-led: function-let `let f a… = e` (params present), annotated
+-- `let x : ty = e`, or plain `let x = e [in/else]`
 letIdent : String -> Parser DoStmt
 letIdent name = do
   advance
   pats <- many parseParamPat
+  t <- peekP
+  letIdentBody name pats t
+
+-- annotation (`: ty`) only on the no-params case, mirroring the let-in path
+letIdentBody : String -> List Pat -> Token -> Parser DoStmt
+letIdentBody name [] TColon = do
+  advance
+  ty <- parseTy
+  expectTok TEqual
+  e1 <- parseRhsExpr
+  letIdentRest name [] (EAnnot e1 ty)
+letIdentBody name pats _ = do
   expectTok TEqual
   e1 <- parseRhsExpr
   letIdentRest name pats e1
@@ -2940,22 +2976,37 @@ curryLam (p::ps) body = ELam [p] (curryLam ps body)
 
 -- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); `lhs = e` is
 -- an assignment (DoAssign / DoFieldAssign); else a bare DoExpr
-parseExprStmt : Parser DoStmt
+parseExprStmt : Parser (List DoStmt)
 parseExprStmt = do
   e <- parseExpr
   t <- peekP
   exprStmtFor e t
 
-exprStmtFor : Expr -> Token -> Parser DoStmt
+exprStmtFor : Expr -> Token -> Parser (List DoStmt)
 exprStmtFor e TLArrow = do
   advance
   rhs <- parseExpr
-  pure (DoBind (exprToPat e) rhs)
+  pure (bindStmts e rhs)
 exprStmtFor e TEqual = do
   advance
   rhs <- parseExpr
-  assignFromLhs e rhs
-exprStmtFor e _ = pure (DoExpr e)
+  s <- assignFromLhs e rhs
+  pure [s]
+exprStmtFor e _ = pure [DoExpr e]
+
+-- `pat <- e` → one DoBind; an annotated var LHS `x : ty <- e` → the bind PLUS a
+-- shadowing `let x = (x : ty)` so x is bound AND its declared type is enforced
+-- (there is no annotated-pattern node to carry the type on the binder directly)
+bindStmts : Expr -> Expr -> List DoStmt
+bindStmts lhs rhs = match stripLoc lhs
+  EAnnot inner ty => bindAnnot inner ty rhs
+  _ => [DoBind (exprToPat lhs) rhs]
+
+bindAnnot : Expr -> Ty -> Expr -> List DoStmt
+bindAnnot inner ty rhs = match stripLoc inner
+  EVar x =>
+    [DoBind (PVar x) rhs, DoLet False False (PVar x) (EAnnot (EVar x) ty)]
+  other => [DoBind (exprToPat other) rhs]
 
 -- a `lhs = rhs` statement: bare var → DoAssign, field path → DoFieldAssign
 assignFromLhs : Expr -> Expr -> Parser DoStmt

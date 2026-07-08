@@ -1,0 +1,5 @@
+compute = do
+  x <- fetch
+  let x = x : Int
+  y <- other
+  wrap (x + y)

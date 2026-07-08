@@ -1,0 +1,11 @@
+annotated =
+  let p = 5 : Int
+  let q = addOne : Int -> Int
+  q p
+mutAnnot =
+  let mut r = 5 : Int
+  r = r + 1
+  r
+plain =
+  let s = 5
+  s

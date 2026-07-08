@@ -1,0 +1,1 @@
+(DFunDef false "compute" () (EApp (EApp (EMethodRef "andThen") (EVar "fetch")) (ELam ((PVar "x")) (ELet false (PVar "x") (EAnnot (EVar "x") (TyCon "Int")) (EApp (EApp (EMethodRef "andThen") (EVar "other")) (ELam ((PVar "y")) (EApp (EVar "wrap") (EBinOp "+" (EVar "x") (EVar "y")))))))))

@@ -1,0 +1,10 @@
+-- where binding with a type annotation (`go : ty = body`)
+f n = n + go
+  where
+    go: Int = 5
+
+-- un-annotated + multi-clause where still coalesce (no regression)
+g x = h x
+  where
+    h 0 = 1
+    h k = k * 2

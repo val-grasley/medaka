@@ -1,0 +1,7 @@
+f n = n + go
+  where
+    go = 5 : Int
+g x = h x
+  where
+    h 0 = 1
+    h k = k * 2

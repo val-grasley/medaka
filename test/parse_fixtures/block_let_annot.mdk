@@ -1,0 +1,16 @@
+-- block-form `let` with a type annotation (plain and function-typed)
+annotated =
+  let p: Int = 5
+  let q: Int -> Int = addOne
+  q p
+
+-- mut block-let with annotation
+mutAnnot =
+  let mut r: Int = 5
+  r = r + 1
+  r
+
+-- un-annotated block-let still parses (no regression)
+plain =
+  let s = 5
+  s
