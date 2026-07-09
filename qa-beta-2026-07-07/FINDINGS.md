@@ -82,7 +82,8 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 - Expected: records + deriving is early-tutorial material; all forms work in both
   pipelines; deriving Eq on non-Eq fields rejected at check.
 
-## P0-4: Positional pattern on a record constructor: native matches, interpreter fails at runtime — and it's the exhaustiveness checker's own suggested fix
+## P0-4: Positional pattern on a record constructor: native matches, interpreter fails at runtime — and it's the exhaustiveness checker's own suggested fix — ✅ ALREADY FIXED (verified on main 2026-07-08 at `69616bb2`)
+- **No longer reproduces:** `data Person = Person { name: String, age: Int }` with `match p` / `Person _ _ => 42` now runs==checks==builds (all print 42). Closed incidentally by prior pattern/exhaustiveness work; the filed run-only E-NONEXHAUSTIVE-MATCH is stale. No fix owed.
 - Class: run-build-divergence / soundness. Source: patterns#F4.
 - Repro: `data Person = Person { name: String, age: Int }`; `f p = match p` /
   `  Person _ _ => 42`. check clean; build prints 42; **run: E-NONEXHAUSTIVE-MATCH**.
