@@ -1,6 +1,25 @@
-# P0-18 standalone-fn-shadows-interface-method — dispatch miscompile (DEFERRED, DO FIRST next session)
+# P0-18 standalone-fn-shadows-interface-method — dispatch miscompile
 
-**Status (2026-07-08):** diagnosed, NOT fixed. The user chose **Option A (the principled
+**Status (2026-07-09): RUN/CHECK path FIXED** (`953d9ea1`, on local main) — `size (Box 3)`
+runs to **3**, `size 3` to **4**; agreement gate **14/0**, run_gates 76/0, construct-coverage
+139/0, fixpoint C3a/C3b YES, no golden churn. **⚠️ RESIDUAL — the `build` (native emit) path
+still emits a WRONG VALUE** for `size (Box 3)` (garbage, but exits 0 so the exit-code agreement
+gate is unaffected). This is a **separate, pre-existing** miscompile (build was garbage before
+this fix too), rooted in a mangling-pass ordering issue, NOT the same upstream cause the original
+diagnosis claimed. See "RESIDUAL: build path" at the bottom. It needs a design decision before
+fixing — DEFERRED pending Val's call.
+
+**Diagnosis correction (the fix agent, DIAGNOSE-FIRST):** the original chain below was PARTLY
+WRONG. Instrumentation showed the marked `size` occurrence is typed against the **standalone**
+scheme (`inst = Int -> Int`), so its recorded receiver mono was the standalone's declared domain
+`Int` — there is NO unification "leak" of `Box` onto the receiver tyvar. `resolveRLocalSite` then
+found no `Sizeable Int` impl → stamped RLocal. The actual fix: `inferDefinerShadowApp` records the
+**actual argument mono** as the site's receiver (suppressing the two default pushes that carried
+the standalone domain), and `resolveRLocalSite` routes **per-receiver** via `implExistsForHead`
+(dropping the unconditional Facet-2 RLocal). Receiver with an impl → method; without → standalone.
+
+---
+**Original diagnosis + plan (2026-07-08), preserved for reference (see correction above):** diagnosed, NOT fixed. The user chose **Option A (the principled
 per-receiver fix)** and asked that it be **the first thing tackled next session**. This doc is
 the complete diagnosis + plan so the next agent starts from the map, not a treasure hunt.
 
@@ -78,3 +97,26 @@ closes the soundness hole, but flips `.expected` to REJECT and drops the per-rec
 Key file:lines: `typecheck.mdk` {3369 inferMethodAt, 3405 recordRLocalSite, 4620-4628 definer-shadow
 typing, 6839 resolveRLocalSite, 6846 Facet-2 RLocal, 6854 stampRLocalOrFallback}, `eval.mdk:1064`
 evalMethodAt, `llvm_emit.mdk:3435` emitMethod.
+
+---
+## RESIDUAL: build path still miscompiles `size (Box 3)` (2026-07-09, DEFERRED — needs a design decision)
+The run/check fix above does NOT fix `medaka build`: `size (Box 3)` still emits a wrong value
+(garbage; exits 0, so the exit-code agreement gate stays 14/0). **Pre-existing, not a regression** —
+build was garbage before the fix; the original doc's "same upstream cause, both run and build wrong"
+claim is FALSIFIED for the build path.
+
+**Root cause (Explore-confirmed):** `mangleUnits` (`compiler/backend/private_mangle.mdk:372-388`)
+runs **before** `elaborateModules` (`compiler/entries/entry_support.mdk:133-134`) and renames the
+definer-shadow occurrence `size` → `<mid>__size` into a **direct standalone reference before
+marking** — so on the emit path `size (Box 3)` never becomes a dispatch site (the run-path fix's
+`inferMethodAt`/`inferVar` sites never fire for it under emit).
+
+**Both naive fixes are unsafe (why it's a design decision, not a quick follow-up):**
+- *Exclude definer-shadows from mangling* → breaks the compiler link: `map.mdk` AND `hash_map.mdk`
+  both define standalone `toList`/`isEmpty`; un-mangling them collides to duplicate `mdk_toList`
+  symbols.
+- *Mangle after marking* → a risky pipeline reorder affecting ALL emit output + the fixpoint.
+
+Options to weigh: (a) reorder mangle-after-mark but scope it narrowly; (b) teach mangling to skip
+ONLY occurrences that are dispatch sites (keep standalone-def mangling intact); (c) accept the build
+divergence and make `build` REJECT a definer-shadow-with-live-impl-receiver rather than miscompile.

@@ -32,6 +32,25 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-09) — P0-18 standalone-shadow run/check dispatch FIXED; agreement gate 13→14/0. `main` = `953d9ea1`
+
+The user-directed "do first" item landed (`953d9ea1`, Opus, Docker-gated). `size (Box 3)` now
+dispatches per-receiver to the `Sizeable Box` method → **3** on `run`; `size 3` → standalone **4**.
+**run≡check agreement gate now 14/0** (Theme 1 fully closed on the exit-code predicate); run_gates
+76/0, construct-coverage 139/0, **fixpoint C3a/C3b YES**, no golden churn, no seed re-mint owed.
+Fix in `typecheck.mdk` (`inferDefinerShadowApp` records the actual arg mono; `resolveRLocalSite`
+routes via `implExistsForHead`, dropping the Facet-2 unconditional RLocal). The DIAGNOSE-FIRST
+guardrail corrected the filed root cause (no unification "leak"; the occurrence was typed against
+the standalone scheme).
+
+**⚠️ DEFERRED residual (needs a Val design decision):** `medaka build` still emits a WRONG VALUE
+for `size (Box 3)` (garbage; exits 0, so the gate is unaffected). **Pre-existing, not a regression**
+(build was garbage before too). Root: `mangleUnits` (`private_mangle.mdk:372-388`) renames the
+definer-shadow occurrence before `elaborateModules` marks it, so emit never sees a dispatch site.
+Both naive fixes are unsafe (un-mangling collides `map`/`hash_map` `toList`/`isEmpty` symbols;
+reordering mangle-after-mark is a risky whole-emit change). Options in
+`qa-beta-2026-07-07/P0-18-STANDALONE-DISPATCH-DESIGN.md` (bottom).
+
 ## Current status (2026-07-08) — beta-hardening batch 1: 8 P0s landed; run≠check theme largely CLOSED. `main` = `14f8d42d`
 
 Worked the `qa-beta-2026-07-07/FINDINGS.md` queue. Merged (all fixpoint-clean, NO seed re-mint):

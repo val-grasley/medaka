@@ -216,7 +216,16 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
   with zero diagnostics; calling `shout` → `E-PANIC: unbound identifier: shout`.
 - Expected: check error "impl Greet Foo is missing method 'shout'".
 
-## P0-18: Dead-end divergences: `run` says "run `medaka check` for details" and check reports nothing
+## P0-18: Dead-end divergences: `run` says "run `medaka check` for details" and check reports nothing — ✅ RUN/CHECK FIXED 2026-07-09 (`953d9ea1`); ⚠️ build-value residual DEFERRED
+- **Standalone-fn-shadows-iface-method** (Option A): `size (Box 3)` now runs to **3**, `size 3` to **4**;
+  agreement gate **14/0**, fixpoint C3a/C3b YES. Per-receiver dispatch in `typecheck.mdk`
+  (`inferDefinerShadowApp` records the actual arg mono; `resolveRLocalSite` routes via
+  `implExistsForHead`). ⚠️ **RESIDUAL:** `medaka build` still emits a wrong VALUE for
+  `size (Box 3)` (garbage, exits 0 → gate unaffected) — a **separate, pre-existing** mangling-pass
+  ordering issue (`private_mangle.mdk` mangles the shadow occurrence before marking, so emit never
+  sees a dispatch site). Needs a design decision; DEFERRED. Full analysis in
+  `qa-beta-2026-07-07/P0-18-STANDALONE-DISPATCH-DESIGN.md` (bottom).
+- **`Map` function-key** leg fixed earlier (`76bda5a1`, batch 1).
 - Class: error-ux / divergence. Source: type-system#F3, numerics#F3.
 - Repros:
   - Standalone fn + same-named interface method (documented-supported): check passes,
