@@ -177,11 +177,19 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 - Repro: base.mdk exports `double`; mid.mdk `export import base.{double}`; main imports
   mid → run prints 42; build: `E-PANIC: unbound variable 'double'`.
 
-## P0-15: Attributes on a signature-less definition silently unbind it
+## P0-15: Attributes on a signature-less definition silently unbind it — ✅ FIXED 2026-07-08 (`71c737a3`)
 - Class: silent-wrong / doc-mismatch. Source: gap#F1.
 - Repro: `@inline`⏎`f x = x + 1`⏎`main = println (f 3)` → `Unbound variable: f`.
   SYNTAX.md's own attribute example is this exact failing shape (works only with a
   signature between attribute and definition).
+- Root cause: desugar keeps the `DAttrib` wrapper on the inner def, but several
+  top-level collectors matched `DFunDef` directly with no transparent `DAttrib`
+  arm, dropping the wrapped def through their catch-all: resolve
+  `userValueNames`/`preludeValueNames` (the `Unbound`), typecheck `funDefs` +
+  `dictPassDecl`, eval `funDefs`, core_ir_lower `funClausesOf` (build). Fix adds a
+  transparent `((DAttrib _ d)::rest) = f (d::rest)` arm to each. run==check==build
+  now agree (single- and multi-clause). Fixpoint C3a/C3b YES, no re-mint. Regression
+  fixture `test/run_check_agreement_fixtures/p0_15_attr_no_sig.mdk` (`f9bb5f68`).
 
 ## P0-16: `add(1, 2)` — the #1 newcomer call syntax — yields an undecipherable error
 - Class: error-ux. Source: beginner#F3.
