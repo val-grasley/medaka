@@ -1,0 +1,4 @@
+main =
+  println "before"
+  class Foo:
+    x = 1

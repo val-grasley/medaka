@@ -3788,6 +3788,11 @@ isForeignKwTok : Token -> Bool
 isForeignKwTok (TIdent "for") = True
 isForeignKwTok (TIdent "while") = True
 isForeignKwTok (TIdent "def") = True
+isForeignKwTok (TIdent "elif") = True
+isForeignKwTok (TIdent "class") = True
+isForeignKwTok (TIdent "try") = True
+isForeignKwTok (TIdent "except") = True
+isForeignKwTok (TIdent "finally") = True
 isForeignKwTok _ = False
 
 lineTrailingColonNoEq : Array Token -> Int -> Int -> Bool -> Bool -> Bool
@@ -3816,6 +3821,11 @@ foreignKwMsg (TIdent "def") =
   "Medaka has no 'def'. Define a function as 'f x = …'"
 foreignKwMsg (TIdent "while") =
   "Medaka has no 'while' loops. Use recursion or list functions"
+foreignKwMsg (TIdent "elif") = "Medaka has no 'elif'. Chain conditions with 'else if', or use function guards"
+foreignKwMsg (TIdent "class") = "Medaka has no 'class'. Define a type with 'data'/'record', or an interface with 'interface'"
+foreignKwMsg (TIdent "try") = "Medaka has no 'try'/exceptions. Return errors as values with 'Result'/'Option'"
+foreignKwMsg (TIdent "except") = "Medaka has no 'except'/exceptions. Handle errors as values with 'Result'/'Option'"
+foreignKwMsg (TIdent "finally") = "Medaka has no 'finally'/exceptions. Errors are values ('Result'/'Option'), not caught"
 foreignKwMsg _ = "Medaka has no 'for' loops. Use recursion or list functions like 'map'/'forEach'/'fold'"
 
 -- `;` statement terminator: the lexer surfaces a stray `;` as a `TLexError

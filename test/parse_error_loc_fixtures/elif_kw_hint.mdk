@@ -1,0 +1,5 @@
+main =
+  if x > 0:
+    println "pos"
+  elif x < 0:
+    println "neg"
