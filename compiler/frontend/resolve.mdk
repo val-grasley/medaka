@@ -968,6 +968,7 @@ preludeValueNames ((DImpl { methods, ... })::rest) = map implMethodNm methods
   ++ preludeValueNames rest
 preludeValueNames ((DInterface { methods, ... })::rest) = map ifaceMethodNm methods
   ++ preludeValueNames rest
+preludeValueNames ((DAttrib _ d)::rest) = preludeValueNames (d::rest)
 preludeValueNames (_::rest) = preludeValueNames rest
 
 -- user value names (DFunDef/DTypeSig/DExtern + DInterface methods; NOT DImpl)
@@ -980,6 +981,7 @@ userValueNames ((DLetGroup _ bs)::rest) = map letBindName bs
   ++ userValueNames rest
 userValueNames ((DInterface { methods, ... })::rest) = map ifaceMethodNm methods
   ++ userValueNames rest
+userValueNames ((DAttrib _ d)::rest) = userValueNames (d::rest)
 userValueNames (_::rest) = userValueNames rest
 
 fieldOwnersOf : List Decl -> List (String, String)

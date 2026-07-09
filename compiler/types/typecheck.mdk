@@ -5733,6 +5733,7 @@ funDefs ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: funDefs rest
 -- builder groups the mutually-recursive members and assigns them schemes.  Mirrors
 -- lib/typecheck.ml, which feeds DLetGroup bindings into the same letrec-group path.
 funDefs ((DLetGroup _ binds)::rest) = letGroupDefs binds ++ funDefs rest
+funDefs ((DAttrib _ d)::rest) = funDefs (d::rest)
 funDefs (_::rest) = funDefs rest
 
 letGroupDefs : List LetBind -> List (String, (List Pat, Expr))
@@ -8406,6 +8407,8 @@ dictPassDecl _ _ (d@(DImpl { reqs, methods, ... })) =
 -- inferDefaultMethod).  Mirror of lib/dict_pass.ml's DInterface arm.
 dictPassDecl _ _ (d@(DInterface { methods, ... })) =
   DInterface { d | methods = map ifaceDictPassMethod methods }
+dictPassDecl names ret (DAttrib attrs d) =
+  DAttrib attrs (dictPassDecl names ret d)
 dictPassDecl _ _ d = d
 
 -- DLetGroup binding dict-pass: prepend the member's dict params to every clause.

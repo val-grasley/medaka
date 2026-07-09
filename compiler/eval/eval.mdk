@@ -1415,6 +1415,7 @@ funDefs ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: funDefs rest
 -- coalesces its clauses into a VMulti and the names enter the eval frame.  Mirrors
 -- lib/eval.ml's DLetGroup install arm.
 funDefs ((DLetGroup _ binds)::rest) = letGroupDefs binds ++ funDefs rest
+funDefs ((DAttrib _ d)::rest) = funDefs (d::rest)
 funDefs (_::rest) = funDefs rest
 
 letGroupDefs : List LetBind -> List (String, (List Pat, Expr))

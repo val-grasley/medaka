@@ -1078,6 +1078,7 @@ funClausesOf ((DFunDef _ n pats body)::rest) =
 -- into (name, CClause) entries, mirroring eval.mdk's funDefs/letGroupDefs.
 funClausesOf ((DLetGroup _ binds)::rest) = letGroupClausesOf binds
   ++ funClausesOf rest
+funClausesOf ((DAttrib _ d)::rest) = funClausesOf (d::rest)
 funClausesOf (_::rest) = funClausesOf rest
 
 letGroupClausesOf : List LetBind -> List (String, CClause)
