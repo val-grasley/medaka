@@ -7,6 +7,24 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ Beta-hardening batch 2 (usage-constrained, Sonnet-only small wins): P0-15 + P0-14 fixed, P0-4 retired, P1-9 keyword subset (2026-07-09). `main` = `d0fdf122`
+
+A short, usage-constrained session — small Sonnet-sized bites only, each design→delegate→isolated-worktree→salvage→verify→merge. **All fixpoint C3a/C3b YES, ZERO seed re-mints** (verify against the committed seed before assuming otherwise). Owning memory `project_beta_qa_sweep_2026_07_07` (batch-2 entry has full detail).
+
+**Landed (all merged, gated, fixpoint YES):**
+- **P0-15** (`71c737a3`) — an attribute (`@inline`/…) on a **signature-less** def silently unbound it. Desugar keeps the `DAttrib` wrapper on the inner def, but 5 top-level collectors matched `DFunDef` directly with no transparent `DAttrib` arm (resolve `userValueNames`/`preludeValueNames`, typecheck `funDefs`/`dictPassDecl`, eval `funDefs`, core_ir_lower `funClausesOf`) → added the arm to each. Fixture `p0_15_attr_no_sig` in the run≡check gate.
+- **P0-14** (`36407355`) — `export import` re-export built to `unbound variable 'double'` (run worked). `private_mangle.mdk`'s export map was locally-defined-names-only; now carries `(name, definer)` pairs built as a dependency-ordered fold that chases the `DUse True` chain to the ORIGINAL owner (mirrors eval's `pubReexports`). Fixture `test/llvm_fixtures_modules/reexport/`.
+- **P0-4** (`00edd460`) — verified ALREADY-FIXED on main (positional record patterns run==check==build); filed run-only E-NONEXHAUSTIVE was stale. Closed in FINDINGS, no code.
+- **P1-9 subset** (`547df921`) — beginner hints for Python `elif`/`class`/`try`/`except`/`finally` (extended `isForeignKwTok`+`foreignKwMsg`; fire on the `keyword …:` shape). Parser-only. FINDINGS marks the REST of P1-9 explicitly deferred (each needs different/new machinery — value-aliases need the "is Haskell" note generalized; `xs[0]`/`#` are parse-hint shapes; `reverse` needs an import-hint).
+
+**run≡check agreement gate now 13/1** (the 1 is still the deferred `p0_18_standalone_fn_shadows_iface_method` — NOT a regression; see batch-1 RESUME below for its Option-A plan, the top user-directed NEXT item when there's Opus headroom).
+
+**⚠️ TWO process facts for next session:**
+1. **Every fix agent this session hit the empty-report + uncapped-oracle-OOM failure mode** (ended "gates running in background", committed nothing, left a respawning `build_oracles`/`xargs` pool). All salvaged cleanly (WIP live+correct in the worktree → `fmt`+`lint`+commit on branch → gate serially at JOBS=4 myself). To reap the pool: kill the parent `bash build_oracles.sh` + `xargs -P` PIDs FIRST (else children respawn), then the `medaka build` children. The root cause: agents capped `make medaka` but ran plain `FORCE=1 bash build_oracles.sh` (defaults JOBS=10). **Bake `FORCE=1 JOBS=4 bash test/build_oracles.sh` into prompts — the cap must be on EACH heavy command, and it's a MEMORY ceiling.**
+2. **The user flagged an IT-managed DLP scanner (`Cyberhaven`) that hooks file-I/O during builds and compounds the OOM.** We can't/shouldn't touch it; the JOBS cap is the only lever we control. The one external fix (user's to raise with IT): allowlist the build-output/scratch dirs. Recorded in [[feedback_serialize_heavy_builds]].
+
+**Housekeeping:** the main-checkout `./medaka` (`/Users/val/medaka`) is STALE (pre-batch-2 source) — rebuild with `make medaka` before trusting a gate run FROM the primary checkout. Three agent worktrees from this session (`agent-a2d7d82a…`, `agent-ad927af7…`, `agent-a99af1ab…`) remain harness-locked; leave them for the harness to reclaim.
+
 ## RESUME — ✅ Beta-hardening batch 1: 8 P0-class items landed; run≠check theme largely CLOSED (2026-07-08). `main` = `76bda5a1`
 
 Worked the beta-hardening fix queue (`qa-beta-2026-07-07/FINDINGS.md`). Design→delegate→isolated-worktree→verify→merge; **all 8 fixpoint-clean, NO seed re-mint owed** (verify against committed seed before assuming otherwise). Owning memory `project_beta_qa_sweep_2026_07_07`.
