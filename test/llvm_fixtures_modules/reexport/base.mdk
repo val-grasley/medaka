@@ -1,0 +1,5 @@
+-- base.mdk DEFINES the exported top-level function `double`.  It is the ORIGINAL
+-- definer; under universal mangling its symbol is `<base>__double`.
+export
+double : Int -> Int
+double x = x * 2

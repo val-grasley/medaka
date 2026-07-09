@@ -117,7 +117,7 @@ import support.ordmap.{OrdMap, omLookup, omFromPairs, omEmpty, omSize}
 export mangleUnits : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 mangleUnits coreDecls modules =
   let allUnits = ("core", coreDecls)::modules
-  let exportsPerUnit = map unitExportEntry allUnits
+  let exportsPerUnit = buildExportsPerUnit [] allUnits
   let ctorExportsPerUnit = map unitCtorExportEntry allUnits
   let coreOut = mangleUnitU exportsPerUnit ctorExportsPerUnit ("core", coreDecls)
   let modsOut = map (mangleModule exportsPerUnit ctorExportsPerUnit) modules
@@ -126,10 +126,76 @@ mangleUnits coreDecls modules =
 -- exportsPerUnit but for data/record/newtype ctors, so an importing unit can map
 -- `import M.{T(..)}` / `import M.{Ctor}` to `<M>__<Ctor>` (see ctorImportEntries).
 
--- exported (pub) top-level function names of a unit: the cross-module-importable
--- definitions another unit's reference can resolve to.
-unitExportEntry : (String, List Decl) -> (String, List String)
-unitExportEntry (mid, decls) = (mid, dedup (pubFnNames decls))
+-- exported (pub) top-level function names of a unit, each paired with the module
+-- that ACTUALLY defines it.  For a locally-defined pub fn the definer is the unit
+-- itself; for a name brought in by `export import` (a `DUse True` re-export) the
+-- definer is chased through the re-export chain to the ORIGINAL owning module
+-- (mirroring eval.mdk's `pubReexports`), so an importer of a re-exported name
+-- mangles its reference to `<originalDefiner>__<name>`, NOT `<reExporter>__<name>`
+-- (the re-exporter has no backing DFunDef → the reference would be orphaned/unbound
+-- at emit).  Built as a dependency-ordered fold so a re-export can consult the
+-- source module's already-computed exports (loader order is dependency-first — the
+-- same invariant eval.mdk's buildModInfos relies on).
+buildExportsPerUnit : List (String, List (String, String)) -> List (String, List Decl) -> List (String, List (String, String))
+buildExportsPerUnit _ [] = []
+buildExportsPerUnit acc ((mid, decls)::rest) =
+  let entry = unitExportEntry acc (mid, decls)
+  entry :: buildExportsPerUnit (entry::acc) rest
+
+unitExportEntry : List (String, List (String, String)) -> (String, List Decl) -> (String, List (String, String))
+unitExportEntry acc (mid, decls) =
+  let locals = map (n => (n, mid)) (dedup (pubFnNames decls))
+  let reexs = flatMap (reexportFnEntries acc) decls
+  (mid, dedupPairsByName (locals ++ reexs))
+
+-- names a `DUse True` (re-export) decl brings in, each paired with its ORIGINAL
+-- definer (looked up transitively in `acc` — the source module's already-computed
+-- export pairs, so a >1-hop re-export chain still resolves to the true owner).
+-- Mirrors eval.mdk's `reexport`/`resolveMembers`.
+reexportFnEntries : List (String, List (String, String)) -> Decl -> List (String, String)
+reexportFnEntries acc (DUse True path _) =
+  let srcMid = useModIdU path
+  match lookupExports srcMid acc
+    None => []
+    Some srcExports => reexportMembers path srcExports
+reexportFnEntries acc (DAttrib _ d) = reexportFnEntries acc d
+reexportFnEntries _ _ = []
+
+reexportMembers : UsePath -> List (String, String) -> List (String, String)
+reexportMembers (UseGroup _ members) srcExports =
+  flatMap (reexportMember srcExports) members
+reexportMembers (UseWild _) srcExports = srcExports
+reexportMembers (UseName ns) srcExports =
+  if lenGt1 ns then
+    reexportOne srcExports (lastOfPM ns)
+  else
+    []
+reexportMembers (UseAlias _ _) _ = []
+
+reexportMember : List (String, String) -> UseMember -> List (String, String)
+reexportMember srcExports (UseMember n _ _) = reexportOne srcExports n
+
+reexportOne : List (String, String) -> String -> List (String, String)
+reexportOne srcExports n = match lookupDefiner n srcExports
+  Some definer => [(n, definer)]
+  None => []
+
+-- keep the FIRST occurrence of each name — locals are prepended, so a locally
+-- defined pub fn wins over a re-export of the same name.
+dedupPairsByName : List (String, String) -> List (String, String)
+dedupPairsByName pairs = dedupPairsGo pairs []
+
+dedupPairsGo : List (String, String) -> List String -> List (String, String)
+dedupPairsGo [] _ = []
+dedupPairsGo ((n, d)::rest) seen =
+  if contains n seen then
+    dedupPairsGo rest seen
+  else
+    (n, d) :: dedupPairsGo rest (n::seen)
+
+lookupDefiner : String -> List (String, String) -> Option String
+lookupDefiner _ [] = None
+lookupDefiner k ((n, d)::rest) = if k == n then Some d else lookupDefiner k rest
 
 -- ── per-unit CONSTRUCTOR exports ──────────────────────────────────────────────
 -- (mid, [(typeName, [ctorName])]) for every data/record/newtype the unit declares.
@@ -279,7 +345,7 @@ lookupCtorExports k ((m, es)::rest) =
     lookupCtorExports k rest
 
 -- a module keeps its mid in the output pair.
-mangleModule : List (String, List String) -> List (String, List (String, List String)) -> (String, List Decl) -> (String, List Decl)
+mangleModule : List (String, List (String, String)) -> List (String, List (String, List String)) -> (String, List Decl) -> (String, List Decl)
 mangleModule exportsPerUnit ctorExportsPerUnit (mid, decls) =
   (mid, mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls))
 
@@ -287,7 +353,7 @@ mangleModule exportsPerUnit ctorExportsPerUnit (mid, decls) =
 -- For one unit: build the combined rename map (own top-level fns → `<mid>__<name>`,
 -- PLUS each imported bare name → its origin module's mangled symbol), then rewrite
 -- the unit's decls (definition names + all in-scope references).
-mangleUnitU : List (String, List String) -> List (String, List (String, List String)) -> (String, List Decl) -> List Decl
+mangleUnitU : List (String, List (String, String)) -> List (String, List (String, List String)) -> (String, List Decl) -> List Decl
 mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
   let rmFn = buildUnitRenameMap mid exportsPerUnit decls
   let rmCtor = buildUnitCtorRenameMap mid ctorExportsPerUnit decls
@@ -303,7 +369,7 @@ mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
 
 -- The unit's rename map.  Order matters: LOCAL definitions are prepended LAST so a
 -- local def shadows an imported same-named binding (lookupAssoc is first-match).
-buildUnitRenameMap : String -> List (String, List String) -> List Decl -> List (String, String)
+buildUnitRenameMap : String -> List (String, List (String, String)) -> List Decl -> List (String, String)
 buildUnitRenameMap mid exportsPerUnit decls =
   let localFns = dedup (unitDefNames (mid, decls))
   let localEntries = flatMap (localRenameEntry mid) localFns
@@ -328,24 +394,24 @@ isExcludedName n = n == "main"
 -- ordering; an explicit import of the same name from a sibling shadows core via
 -- import-entry ordering below).
 -- explicit sibling imports first (they shadow the implicit prelude), prelude last.
-importRenameEntries : String -> List (String, List String) -> List Decl -> List (String, String)
+importRenameEntries : String -> List (String, List (String, String)) -> List Decl -> List (String, String)
 importRenameEntries _ exportsPerUnit decls = flatMap (declImportEntries exportsPerUnit) decls
   ++ coreImportEntries exportsPerUnit
 
 -- core's exports as implicit-prelude entries (`name → core__name`), excluding
 -- `main` (core has none, but be safe).
-coreImportEntries : List (String, List String) -> List (String, String)
+coreImportEntries : List (String, List (String, String)) -> List (String, String)
 coreImportEntries exportsPerUnit = match lookupExports "core" exportsPerUnit
   Some names => flatMap coreEntry names
   None => []
 
-coreEntry : String -> List (String, String)
-coreEntry n
+coreEntry : (String, String) -> List (String, String)
+coreEntry (n, definer)
   | isExcludedName n = []
-  | otherwise = [(n, mangledName "core" n)]
+  | otherwise = [(n, mangledName definer n)]
 
 -- a single `DUse path` → the (bareName, originMangled) entries it introduces.
-declImportEntries : List (String, List String) -> Decl -> List (String, String)
+declImportEntries : List (String, List (String, String)) -> Decl -> List (String, String)
 declImportEntries exportsPerUnit (DUse _ path _) =
   usePathEntries exportsPerUnit path
 declImportEntries exportsPerUnit (DAttrib _ d) =
@@ -359,28 +425,38 @@ declImportEntries _ _ = []
 --   UseWild  `import M.*`       → every exported fn of M
 --   UseName  `import M[.sub]`   → the single stub name (last component), if an export
 --   UseAlias `import M as A`    → A is a module handle, not a fn ⇒ no entry
-usePathEntries : List (String, List String) -> UsePath -> List (String, String)
+usePathEntries : List (String, List (String, String)) -> UsePath -> List (String, String)
 usePathEntries exportsPerUnit path =
   let mid = useModIdU path
   if mid == "core" then []
   else match lookupExports mid exportsPerUnit
     None => []
     Some exports => match path
-      UseGroup _ members => flatMap (memberEntry mid exports) members
-      UseWild _ => flatMap (originEntry mid exports) exports
-      UseName ns => originEntry mid exports (lastOfPM ns)
+      UseGroup _ members => flatMap (memberEntry exports) members
+      UseWild _ => flatMap originEntryPair exports
+      UseName ns => originEntry exports (lastOfPM ns)
       UseAlias _ _ => []
 
 -- a UseGroup member → entry if it names an exported fn of the origin module.
-memberEntry : String -> List String -> UseMember -> List (String, String)
-memberEntry mid exports (UseMember n _ _) = originEntry mid exports n
+memberEntry : List (String, String) -> UseMember -> List (String, String)
+memberEntry exports (UseMember n _ _) = originEntry exports n
 
--- bare name `n` → `<mid>__<n>` iff `n` is an exported fn of module `mid`.
-originEntry : String -> List String -> String -> List (String, String)
-originEntry mid exports n
+-- bare name `n` → `<definer>__<n>` iff `n` is an exported fn of the imported module
+-- (`exports` is that module's (name, definer) pairs).  For a RE-EXPORTED name the
+-- definer is the ORIGINAL owning module, so the reference points at the real symbol
+-- rather than the re-exporter's non-existent one.
+originEntry : List (String, String) -> String -> List (String, String)
+originEntry exports n
   | isExcludedName n = []
-  | contains n exports = [(n, mangledName mid n)]
-  | otherwise = []
+  | otherwise = match lookupDefiner n exports
+    Some definer => [(n, mangledName definer n)]
+    None => []
+
+-- a wildcard import iterates the (name, definer) pairs directly.
+originEntryPair : (String, String) -> List (String, String)
+originEntryPair (n, definer)
+  | isExcludedName n = []
+  | otherwise = [(n, mangledName definer n)]
 
 useModIdU : UsePath -> String
 useModIdU (UseName ns) =
@@ -405,7 +481,7 @@ lastOfPM [] = ""
 lastOfPM [x] = x
 lastOfPM (_::rest) = lastOfPM rest
 
-lookupExports : String -> List (String, List String) -> Option (List String)
+lookupExports : String -> List (String, List (String, String)) -> Option (List (String, String))
 lookupExports _ [] = None
 lookupExports k ((m, ns)::rest) =
   if k == m then

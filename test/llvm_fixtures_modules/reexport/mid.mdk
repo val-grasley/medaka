@@ -1,0 +1,9 @@
+-- mid.mdk RE-EXPORTS base's `double` via `export import` (a `DUse True`).  It has
+-- NO `DFunDef` for `double` of its own — it only forwards base's.  Pre-fix, the
+-- mangle pass computed mid's export set from LOCALLY-defined names only, so
+-- `double` never entered mid's exports; entry's reference to it got NO rename entry
+-- and stayed a bare, orphaned `double` with no backing define → emit-time
+-- "unbound variable 'double'".  The fix follows the `DUse True` chain so mid's
+-- export of `double` carries base as the definer, and entry's reference mangles to
+-- `<base>__double`.
+export import base.{double}
