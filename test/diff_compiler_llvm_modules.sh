@@ -83,7 +83,7 @@ for dir in "$FIXDIR"/*/; do
     fail=$((fail+1)); printf 'FAIL %s (emit)\n%s\n' "$name" "$(cat "$WORK/emit.err")"; continue
   fi
   strip_unit < "$WORK/raw.ll" > "$ll"
-  if ! "$CC" $GC_CFLAGS "$ll" "$RT" $GC_LIBS -o "$bin" 2>"$WORK/cc.err"; then
+  if ! "$CC" $GC_CFLAGS "$ll" "$RT" $GC_LIBS -lm -o "$bin" 2>"$WORK/cc.err"; then
     fail=$((fail+1)); printf 'FAIL %s (clang)\n%s\n' "$name" "$(cat "$WORK/cc.err")"; continue
   fi
   self="$("$bin" 2>/dev/null | strip_unit)"

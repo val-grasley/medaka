@@ -44,7 +44,7 @@ if [ "${1:-}" = "--one" ]; then
     out="no golden for $name (run sh test/capture_goldens.sh)"; st=1
   elif ! "$EMITBIN" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
     out="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
-  elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
+  elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
     out="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
   else
     ref="$(cat "$golden")"; self="$("$bin" 2>/dev/null)"
