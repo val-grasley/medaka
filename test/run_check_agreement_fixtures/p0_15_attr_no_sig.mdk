@@ -1,0 +1,8 @@
+-- P0-15 (both directions, regression): an attribute on a signature-less def
+-- must NOT unbind it. Before the fix, resolve/typecheck/eval/ir top-level
+-- collectors dropped the DAttrib-wrapped DFunDef → `Unbound variable: f` under
+-- run/check and a build panic. All three engines must now ACCEPT and agree.
+@inline
+f x = x + 1
+
+main = println (f 3)
