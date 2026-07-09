@@ -276,13 +276,20 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 - Source: type-system#F16, bindings#F4, playground#F19. run already ran the typechecker;
   print the diagnostics. (The playground does better than the CLI here.)
 
-## P1-9: Beginner-error hint-family gaps (the machinery exists — `def`/`for`/`return`/`\x ->`/`::`/`show`/`true`/`case of` all have model hints)
+## P1-9: Beginner-error hint-family gaps (the machinery exists — `def`/`for`/`return`/`\x ->`/`::`/`show`/`true`/`case of` all have model hints) — ⏳ PARTIAL: Python block-keyword subset DONE 2026-07-09 (`547df921`)
 - Source: beginner#F5/F6/F13/F14, patterns#F3, playground#F16/F17, tooling#F14.
-  Missing tailored hints for: `#` and `//` comments; `elif`; Python `lambda`; `and`/`or`;
-  `xs[0]` indexing (→ `xs.[0]`); `x === y`; `len`/`null`/`console.log`; anonymous record
-  literal `{ name = "v" }`; or-patterns; `String.toUpper`-style module-dot access
-  (suggests internal `RString`!); `reverse` unbound suggests `traverse` instead of
-  `import list.{reverse}`.
+- **DONE:** foreign-keyword hints for `elif`/`class`/`try`/`except`/`finally` (extended
+  `isForeignKwTok`+`foreignKwMsg` in `parser.mdk`; fire on the Python `keyword …:` shape,
+  located at the keyword; parser-only, fixpoint-clean, no re-mint). Fixtures in
+  `test/parse_error_loc_fixtures/`.
+- **STILL OPEN (deferred, each needs different/new machinery — NOT drop-in):**
+  `#`/`//` comments and `xs[0]` indexing / `x === y` / anonymous record `{name="v"}`
+  (parse-error-hint shapes, no trailing-colon trigger); `len`/`null`/`console.log`
+  (the value-alias table `haskellValueAliases` appends an "is Haskell" note → adding
+  JS/Python names needs the note generalized to name the source language first);
+  Python `lambda`/`and`/`or` (don't fit the colon shape); `String.toUpper` module-dot
+  (mis-suggests internal `RString`); `reverse`-unbound suggesting `traverse` instead of
+  `import list.{reverse}` (needs an import-hint, not an alias).
 
 ## P1-10: `<unknown location>` / 1:0 diagnostics family
 - Source: type-system#F12/F19, beginner#F7, gap#F3/F8, tooling#F18, playground#F15.
