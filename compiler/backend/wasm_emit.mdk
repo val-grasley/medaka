@@ -3068,6 +3068,15 @@ emitMethodRef prog env d name (RDictFwd dpar) implRoutes methRoutes args =
   emitMethodDispatchRef prog env d name dpar args
 emitMethodRef prog env d name RNone implRoutes methRoutes args =
   gapL ("wasm W5: RNone arg-tag dispatch for '" ++ name ++ "' is out of slice")
+-- P0-18 (wasm peer of llvm_emit's emitMethod RLocal arm): NOT a method dispatch —
+-- the receiver has no impl of this interface but a local/imported standalone shadows
+-- the method name.  Emit a DIRECT call to that standalone top-level fn, exactly as a
+-- known-fn CApp would.  `target` is the carried MANGLED symbol `<mid>__name` when
+-- non-empty (the marked EMethodAt carries the bare dispatch name), else the bare name.
+emitMethodRef prog env d name (RLocal sym) implRoutes methRoutes args =
+  let target = if sym == "" then name else sym
+  let argInstrs = flatMap (a => emitRefExpr prog env d a) args
+  argInstrs ++ ["call $" ++ gname target]
 
 -- RDict/RDictFwd: the dict param `$dpar` is an i31 carrying hashName(tag).  Unbox
 -- it, then if-chain over the method's candidate impls comparing the loaded tag

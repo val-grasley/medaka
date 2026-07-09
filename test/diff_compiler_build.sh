@@ -69,7 +69,7 @@ WORK="$(mktemp -d)"
 RESULTS="$(mktemp -d)"
 trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op eq_custom_dispatch method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list field_collision pap_wrapped_saturate bimappable_tuple div_by_zero mod_by_zero nonexhaustive comp_tuple comp_list comp_adt_display comp_bool comp_sig_tuple"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op eq_custom_dispatch method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list field_collision pap_wrapped_saturate bimappable_tuple div_by_zero mod_by_zero nonexhaustive comp_tuple comp_list comp_adt_display comp_bool comp_sig_tuple definer_shadow_dispatch"
 
 # Build the (label, src) worklist: plain programs + the multi-module specials.
 {

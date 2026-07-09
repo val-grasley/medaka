@@ -50,7 +50,14 @@ public export data Constraint = Constraint String (List Ty)
 --   site the interface has no impl for the concrete receiver, but an explicitly-
 --   imported/local standalone function shadows the method name, so eval ignores
 --   VMulti dispatch and evaluates the bound name as the plain standalone (no
---   narrowing, no dicts).  Mirrors lib/ast.ml's RLocal.
+--   narrowing, no dicts).  Mirrors lib/ast.ml's RLocal.  The carried String is the
+--   MANGLED standalone symbol to call ("" = call the EMethodAt's own (bare) name).
+--   On the EMIT path (P0-18) a definer-shadow occurrence is marked `EMethodAt` with
+--   the BARE dispatch name (so `implFor` finds the impl when the receiver DOES have
+--   one), but its RLocal fallback must reach the module-qualified standalone symbol
+--   `<mid>__name` that `mangleUnits` renamed the def to — that symbol rides here.
+--   On the un-mangled run/check path the symbol is "" and eval/emit uses the bare
+--   name, byte-identical to the old nullary `RLocal`.
 -- RScalar = NOT a typeclass dispatch route.  Stamped by typecheck's
 -- resolveBinopSites onto an ARITHMETIC EBinOp whose operand grounds to a concrete
 -- primitive ("Float"/"Int"), so lowering can carry the scalar type into CBinPrim's
@@ -62,7 +69,7 @@ public export data Route =
   | RKey String (List Route)
   | RDict String
   | RDictFwd String
-  | RLocal
+  | RLocal String
   | RScalar String
 
 -- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the

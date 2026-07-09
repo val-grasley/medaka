@@ -29,6 +29,7 @@ import frontend.ast.{
   Section(..),
   FunClause(..),
   LetBind(..),
+  Route(..),
   Expr(..),
   UseMember(..),
   UsePath(..),
@@ -292,7 +293,12 @@ collectVars (ESection (SecLeft e0 _)) = collectVars e0
 -- fns EDictAt, and resolved vars EVarAt).  Missing one here would silently drop a
 -- still-reachable binding.
 collectVars (EVarAt x _) = [x]
-collectVars (EMethodAt x _ _ _) = [x]
+-- P0-18: a definer-shadow EMethodAt carries the BARE dispatch name `x` AND, in its
+-- resolved route, the MANGLED standalone symbol `<mid>__x` (RLocal fallback).  Emit
+-- BOTH as references so DCE keeps the standalone define alive — else the `RLocal`
+-- emit calls an eliminated `@mdk_<mid>__x` (undefined-symbol link error).  Reading
+-- the route ref is pure (same as `lower`).  "" (un-mangled path) contributes nothing.
+collectVars (EMethodAt x routeRef _ _) = x :: routeExtraRefs routeRef.value
 collectVars (EDictAt x _) = [x]
 -- Remaining reference-bearing forms (for soundness as a DCE reference walk; some
 -- are desugared away before the prelude reaches DCE, but the user program may
@@ -304,6 +310,13 @@ collectVars (ESetLit _ es) = flatMap collectVars es
 collectVars (ELoc _ e) = collectVars e
 collectVars (EDoOrigin _ e) = collectVars e
 collectVars _ = []
+
+-- P0-18: the extra symbol a resolved EMethodAt route references beyond its bare
+-- name — the mangled standalone symbol carried by an `RLocal <sym>` fallback.
+routeExtraRefs : Route -> List String
+routeExtraRefs (RLocal "") = []
+routeExtraRefs (RLocal s) = [s]
+routeExtraRefs _ = []
 
 letBindVars : LetBind -> List String
 letBindVars (LetBind _ clauses) = flatMap funClauseVars clauses

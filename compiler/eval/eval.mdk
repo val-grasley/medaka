@@ -841,7 +841,7 @@ routeTag env (RDict d) = match lookupEnv env d
 routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
-routeTag _ RLocal = ""
+routeTag _ (RLocal _) = ""
 -- RScalar tags an arithmetic EBinOp for the backend's Float path; it is never a
 -- typeclass dispatch route, so eval never routes a method through it.
 routeTag _ (RScalar _) =
@@ -871,7 +871,7 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
-dictOfRoute _ RLocal = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
+dictOfRoute _ (RLocal _) = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
 -- RScalar is an arithmetic binop tag (backend Float path), never a dict route.
 dictOfRoute _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -899,7 +899,7 @@ methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
 -- RLocal: not a method dispatch — the EMethodAt arm resolves the standalone
 -- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
 -- exists only to keep the match exhaustive; it returns the value unnarrowed.
-methodAtNarrow _ v RLocal = (v, [])
+methodAtNarrow _ v (RLocal _) = (v, [])
 -- RScalar is an arithmetic binop tag (backend Float path), never a dispatch route.
 methodAtNarrow _ _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -1061,7 +1061,10 @@ eval _ _ = panic "eval: unsupported node (slice 2)"
 -- route is a genuine method dispatch: resolve the VMulti past any nearer same-
 -- named standalone shadow with lookupMethod (C5 / lib/eval.ml:223), then narrow.
 evalMethodAt : EvalEnv -> String -> Route -> List Route -> List Route -> <Mut> Value
-evalMethodAt env name RLocal _ _ = lookupEnv env name
+-- P0-18: the carried String is the MANGLED standalone symbol on the emit path;
+-- "" (the un-mangled run/check path) falls back to the bare method name.
+evalMethodAt env name (RLocal sym) _ _ =
+  lookupEnv env (if sym == "" then name else sym)
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
   let (narrowed, fwdReqs0) = methodAtNarrow env lm route

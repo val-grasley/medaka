@@ -40,7 +40,8 @@ routeSexp RNone = "RNone"
 routeSexp (RKey k _) = node "RKey" [escStr k]
 routeSexp (RDict d) = node "RDict" [escStr d]
 routeSexp (RDictFwd d) = node "RDictFwd" [escStr d]
-routeSexp RLocal = "RLocal"
+routeSexp (RLocal "") = "RLocal"
+routeSexp (RLocal s) = node "RLocal" [escStr s]
 routeSexp (RScalar s) = node "RScalar" [escStr s]
 
 -- ── CExpr ─────────────────────────────────────────────────────────────────────

@@ -59,6 +59,7 @@ import frontend.exhaust.{
   desugarPat,
 }
 import support.char.{isUpper}
+import backend.private_mangle.{mangledName}
 import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import list.{replicate}
 import support.util.{
@@ -1430,6 +1431,35 @@ standaloneValuesRef = Ref []
 definerShadowNamesRef : Ref (List String)
 definerShadowNamesRef = Ref []
 
+-- P0-18 (EMIT path only): the mangler (`mangleUnits`) renames a definer-shadow
+-- standalone def + its call sites to `<mid>__name` BEFORE marking, but (correctly)
+-- leaves the interface method name bare — so the mark pass's NAME-based shadow
+-- detector (buildStandaloneShadowsGraph / buildDefinerShadows, keyed on
+-- funDef-name ∩ iface-method-name) no longer sees a shadow and the occurrence never
+-- becomes an `EMethodAt` dispatch site (→ a silent direct call to the standalone =
+-- the build miscompile).  elaborateModules recovers the shadow post-mangle by
+-- forward-constructing `mangledName mid method` for every (module, iface-method)
+-- pair and checking it against the module's actual funDef names; each hit is a
+-- `(mangledSymbol ↦ bareMethod)` entry recorded here.  The mark pass then (a) marks
+-- the mangled occurrence `EMethodAt` with the BARE dispatch name (so `implFor` finds
+-- the impl for a receiver that HAS one) and (b) carries the mangled symbol in the
+-- route's `RLocal <symbol>` fallback for a receiver that does NOT.  EMPTY on the
+-- un-mangled run/check path (forward-construction never matches a bare funDef), so
+-- every non-emit path is byte-identical.  Set once at the top of elaborateModules;
+-- deliberately NOT cleared by resetState (checkModuleFullImpl's per-module resetState
+-- must not wipe it mid-graph) — the forward-construction membership check makes a
+-- stale value inert (no funDef matches → no entry).
+mangledShadowMapRef : Ref (List (String, String))
+mangledShadowMapRef = Ref []
+
+-- the MANGLED standalone symbol a route's RLocal fallback should call, or "" for
+-- the bare-name (un-mangled) case.  Read off the marked EMethodAt route at record
+-- time (before resolveArgStamps may overwrite the ref with an RKey) so the mangled
+-- symbol survives into the pendingRLocalSites entry.
+routeLocalSym : Route -> String
+routeLocalSym (RLocal s) = s
+routeLocalSym _ = ""
+
 -- Bug C: importer-shadow method names → their IMPORTED STANDALONE scheme (e.g.
 -- `toList` → `Map k v -> List (k, v)`).  env1 rebinds these names to the polymorphic
 -- INTERFACE-METHOD scheme (so a genuine method call types polymorphically), which
@@ -1477,7 +1507,10 @@ methodShadowNamesRef = Ref []
 -- resolveRLocalSites reads the cell post-inference and stamps RLocal when the
 -- receiver grounds to a head with no impl.
 -- Mirrors lib/typecheck.ml's EApp-receiver RLocal stamp.  Reset by resetState.
-pendingRLocalSites : Ref (List (String, Ref Route, Mono))
+-- (name, routeRef, receiverMono, mangledSym) — mangledSym (P0-18) is the mangled
+-- standalone symbol read off the marked route at record time; resolveRLocalSite
+-- stamps `RLocal mangledSym` for a no-impl receiver.  "" on the un-mangled path.
+pendingRLocalSites : Ref (List (String, Ref Route, Mono, String))
 pendingRLocalSites = Ref []
 
 -- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
@@ -3427,7 +3460,7 @@ recordRLocalSite _ name tagRef inst
   | otherwise = match methodDispatchIdx name
     None => ()
     Some idx => match nthArgMono idx inst
-      Some am => setRef pendingRLocalSites ((name, tagRef, am)::pendingRLocalSites.value)
+      Some am => setRef pendingRLocalSites ((name, tagRef, am, routeLocalSym tagRef.value)::pendingRLocalSites.value)
       None => ()
 
 -- C5: the dispatch-arg index of an interface method, from the graph-wide map
@@ -4976,9 +5009,18 @@ definerShadowArgHead _ = None
 -- ALSO pushing the standalone's declared domain (which would mis-route `Box`→`Int`).
 inferDefinerShadowApp : TcEnv -> String -> Ref Route -> Ref (List Route) -> Expr -> Expr -> <Mut> Mono
 inferDefinerShadowApp env name tagRef implRef f x =
+  let sym = routeLocalSym tagRef.value
   let _ = setRef suppressRLocalRecord True
   let _ = setRef suppressArgStamp True
-  let ft = infer env f
+  -- P0-18: type the head against the STANDALONE scheme.  On the un-mangled run/check
+  -- path `infer env f` already resolves the bare name to the standalone (which shadows
+  -- the method in scope).  On the EMIT path the bare name resolves to the interface
+  -- METHOD scheme instead (the standalone was renamed to `<mid>__name`), whose result
+  -- loses the concrete element type — e.g. Map's `toList` would type `List a` not
+  -- `List (k, v)`, so a downstream `debug (toList m)` resolves the WRONG element dict
+  -- and SIGSEGVs.  When we carry the mangled symbol, instantiate its (standalone)
+  -- scheme directly so the impl-body types exactly as the run path does.
+  let ft = definerShadowHeadType env sym f
   let _ = setRef suppressRLocalRecord False
   let _ = setRef suppressArgStamp False
   let xt = infer env x
@@ -4988,18 +5030,28 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- build path).  xt grounds to the real receiver post-inference; the two default
   -- pushes (recordRLocalSite / recordArgStamp) that would carry the standalone's
   -- declared domain are suppressed above.
-  let _ = setRef pendingRLocalSites ((name, tagRef, xt)::pendingRLocalSites.value)
+  let _ = setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value)::pendingRLocalSites.value)
   let _ = match argDispatchOf name
     Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value, None)::pendingArgStamps.value)
     None => ()
   inferApp (envAlphaLets env) (EApp f x) ft xt
+
+-- P0-18: the type of a definer-shadow application HEAD.  With a mangled symbol (the
+-- emit path), instantiate the standalone's own scheme (bound under `<mid>__name`) so
+-- the concrete result type survives; else infer the head node (the un-mangled path,
+-- where the bare name already resolves to the standalone).
+definerShadowHeadType : TcEnv -> String -> Expr -> <Mut> Mono
+definerShadowHeadType env "" f = infer env f
+definerShadowHeadType env sym f = match lookupVar env sym
+  Some s => instantiate s
+  None => infer env f
 
 -- stamp every route ref (one for the marked EMethodAt form, none for the unmarked
 -- check-path EVar form) RLocal.
 stampRoutes : List (Ref Route) -> <Mut> Unit
 stampRoutes [] = ()
 stampRoutes (r::rest) =
-  let _ = setRef r RLocal
+  let _ = setRef r (RLocal (routeLocalSym r.value))
   stampRoutes rest
 
 -- set currentLoc only when the lambda carried a span (mirror the ELoc arm), so
@@ -6177,7 +6229,9 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let _ = setRef argDispatchIdxRef (argDispatchIndices prog)
   let argNames = map fst argDispatchIdxRef.value
-  let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
+  -- P0-18: [] — the confirmed definer-shadow-emit path is elaborateModules; this
+  -- single-file scratch elaborate stays shadow-map-free (byte-identical discovery).
+  let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames [] prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let _ = expandSupersTable prog2
   let implTable = buildImplTable prog2
@@ -6294,7 +6348,7 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
 -- arg-position dispatch surfaces inferred constraints (recordArgSiteFn → methodSiteFns).
 discoverPromotedJoint : List Decl -> List Decl -> List String -> List String -> List String -> <Mut> List String
 discoverPromotedJoint runtimeDecls joint rpNames argNames current =
-  let prog1 = prePassDictArg (rpNames ++ methodConstraintNames joint) current argNames joint
+  let prog1 = prePassDictArg (rpNames ++ methodConstraintNames joint) current argNames [] joint
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog1
   discoverNextJoint
     runtimeDecls
@@ -6479,11 +6533,14 @@ rewriteRPDict _ _ e = e
 -- only changes behaviour for a genuinely-shadowing local: an arg-method
 -- `lt`/`gt`/`sub`, a constrained fn `elem`, or a return-position method `debug`).
 -- The non-emit `mapProg` path (argNames == []) stays scope-blind.
-prePassDictArg : List String -> List String -> List String -> List Decl -> List Decl
-prePassDictArg rpNames dictNames [] prog =
+-- [shadowMap] (P0-18) is the mangle definer-shadow map — non-empty only on the emit
+-- path (argNames non-empty).  The scope-blind `mapProg` path (argNames == []) never
+-- has mangled shadows, so it ignores it and stays byte-identical.
+prePassDictArg : List String -> List String -> List String -> List (String, String) -> List Decl -> List Decl
+prePassDictArg rpNames dictNames [] _ prog =
   mapProg (rewriteRPDictArg rpNames dictNames []) prog
-prePassDictArg rpNames dictNames argNames prog =
-  map (prePassDeclScoped (ArgRw rpNames dictNames argNames)) prog
+prePassDictArg rpNames dictNames argNames shadowMap prog =
+  map (prePassDeclScoped (ArgRw rpNames dictNames argNames shadowMap)) prog
 
 rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
 rewriteRPDictArg rpNames dictNames argNames (EVar n)
@@ -6496,7 +6553,10 @@ rewriteRPDictArg _ _ _ e = e
 -- ── scope-aware arg-position prepass (emit path; D3a shadow guard) ───────────
 -- The three name sets carried through the scope-threaded rewrite (rp = return-
 -- position methods, dn = constrained-fn dict names, an = arg-position methods).
-data ArgRw = ArgRw (List String) (List String) (List String)
+-- rp = return-position methods, dn = constrained-fn dict names, an = arg-position
+-- methods, sm = the P0-18 mangle definer-shadow map (mangledSymbol ↦ bareMethod).
+data ArgRw =
+  | ArgRw (List String) (List String) (List String) (List (String, String))
 
 -- rewrite a decl body with its own parameters seeded into the bound set.  Mirrors
 -- desugar's mapDecl coverage exactly (DFunDef / DInterface / DImpl / DProp /
@@ -6560,7 +6620,15 @@ propParamName (PropParam n _) = n
 -- binders) extend `bound`; every other node recurses into its children with the
 -- same `bound`.
 rewriteArgScoped : ArgRw -> List String -> Expr -> Expr
-rewriteArgScoped (ArgRw rp dn an) bound (EVar n)
+rewriteArgScoped (ArgRw rp dn an sm) bound (EVar n)
+  -- P0-18: `n` is a MANGLED definer-shadow standalone (`<mid>__size`).  Mark it
+  -- `EMethodAt` with the BARE dispatch name (so `implFor` finds the impl when the
+  -- receiver has one) and seed the route's `RLocal <n>` fallback with the mangled
+  -- symbol (so a no-impl receiver still reaches the standalone `@mdk_<mid>__size`).
+  | not (contains n bound) && isSome (lookupAssoc n sm) =
+    match lookupAssoc n sm
+      Some bare => EMethodAt bare (Ref (RLocal n)) (Ref []) (Ref [])
+      None => EVar n
   | contains n rp && not (contains n bound) =
     EMethodAt n (Ref RNone) (Ref []) (Ref [])
   | contains n an && not (contains n bound) =
@@ -6888,10 +6956,10 @@ implExistsForHead ((KeyEntry methods tag2 _ _)::rest) name tag
 -- the route untouched (RNone → eval arg-tag-dispatches to the real impl).  An
 -- ungrounded receiver (still a tyvar) → leave it (polymorphic, deferred).  Mirrors
 -- lib/typecheck.ml:1603-1640: RLocal only when impl_exists is false.
-resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono) -> <Mut> Unit
+resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String) -> <Mut> Unit
 resolveRLocalSites _ [] = ()
-resolveRLocalSites keyTable ((name, tagRef, am)::rest) =
-  let _ = resolveRLocalSite keyTable name tagRef am
+resolveRLocalSites keyTable ((name, tagRef, am, sym)::rest) =
+  let _ = resolveRLocalSite keyTable name tagRef am sym
   resolveRLocalSites keyTable rest
 
 -- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
@@ -6901,8 +6969,8 @@ resolveRLocalSites keyTable ((name, tagRef, am)::rest) =
 -- stamped the correct RKey<receiverHead> via resolveArgStamps.
 -- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
-resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
-resolveRLocalSite keyTable name tagRef am = match headTyconMono am
+resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+resolveRLocalSite keyTable name tagRef am sym = match headTyconMono am
   -- P0-18: route per-receiver for BOTH importer and definer shadows.  A GROUNDED
   -- receiver whose head has an impl of the shadowed interface dispatches to the
   -- method (leave the route → eval arg-tag / emit RKey); one with NO impl is the
@@ -6913,17 +6981,17 @@ resolveRLocalSite keyTable name tagRef am = match headTyconMono am
   -- each applied only to their own type, which has NO impl of the shadowed interface,
   -- so they still resolve RLocal.  am is the ACTUAL argument type (inferDefinerShadowApp
   -- records it), not the standalone's declared domain, so the impl query is meaningful.
-  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
+  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef sym
   -- An UNGROUNDED definer-shadow receiver keeps the old default (RLocal → standalone);
   -- other (importer) ungrounded sites stay untouched (deferred/polymorphic).
-  None => if contains name definerShadowNamesRef.value then setRef tagRef RLocal else ()
+  None => if contains name definerShadowNamesRef.value then setRef tagRef (RLocal sym) else ()
 
 -- C5: hasImpl ⇒ genuine method; route already correct (RNone for arg-tag eval,
 -- or RKey stamped by resolveArgStamps on emit) — leave untouched.
 -- no impl ⇒ standalone shadow ⇒ RLocal.
-stampRLocalOrFallback : Bool -> Ref Route -> <Mut> Unit
-stampRLocalOrFallback True _ = ()
-stampRLocalOrFallback False tagRef = setRef tagRef RLocal
+stampRLocalOrFallback : Bool -> Ref Route -> String -> <Mut> Unit
+stampRLocalOrFallback True _ _ = ()
+stampRLocalOrFallback False tagRef sym = setRef tagRef (RLocal sym)
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
 -- a method at that type reads.  A return-position method at a HIGHER-KINDED
@@ -11344,22 +11412,53 @@ buildStandaloneShadows implDecls prog =
 -- RESULT-type RKey (`toList`'s `List`) and the method dispatches on the WRONG impl.
 -- Unlike importer shadows these keep their LOCAL standalone scheme (NOT rebound to the
 -- method scheme), since the impl bodies apply them to the concrete receiver.
-buildDefinerShadows : List Decl -> List Decl -> List String
+buildDefinerShadows : List Decl -> List Decl -> <Mut> List String
 buildDefinerShadows implDecls prog =
   let methodNames = allIfaceMethodNames implDecls
   let localNames = dedup (map fst (funDefs prog))
-  filter (n => contains n methodNames) localNames
+  let direct = filter (n => contains n methodNames) localNames
+  -- P0-18: on the EMIT path this module's funDefs are MANGLED, so `direct` finds no
+  -- shadow.  For each mangled funDef that the mangle map flags as an iface-method
+  -- shadow, register the BARE method name — that is the name the mark pass stamped
+  -- on the `EMethodAt`, which `definerShadowArgHead`/`resolveRLocalSite` key off.
+  let bares = flatMap (n => match lookupAssoc n mangledShadowMapRef.value
+    Some bare => [bare]
+    None => []) localNames
+  dedup (direct ++ bares)
 
 -- C5: graph-wide standalone-shadow names — every top-level funDef name in [userDecls]
 -- (the user modules, NOT core) that is also an interface method name anywhere in
 -- [allDecls].  Used by the MARK pass to rewrite such occurrences to EMethodAt (so the
 -- route ref exists for resolveRLocalSites to stamp).  Excludes core's own decls as the
 -- funDef source so core's elaboration (no standalone shadows there) is untouched.
-buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
+-- P0-18: recover, per (module, iface-method) pair, the mangled standalone symbol the
+-- mangler produced for a definer-shadow funDef.  Forward-constructs `mangledName mid
+-- method` (using the KNOWN mid — exact, not lossy prefix-stripping) and checks it
+-- against the module's actual funDef names; a hit is a `(mangledSymbol ↦ bareMethod)`
+-- entry.  On the un-mangled path no funDef matches → [] → every consumer unchanged.
+computeMangledShadowMap : List Decl -> List (String, List Decl) -> List (String, String)
+computeMangledShadowMap allDecls units =
+  let methodNames = allIfaceMethodNames allDecls
+  flatMap (unitMangledShadows methodNames) units
+
+unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
+unitMangledShadows methodNames (mid, decls) =
+  let fns = dedup (map fst (funDefs decls))
+  flatMap
+    (m => if contains (mangledName mid m) fns then [(mangledName mid m, m)] else [])
+    methodNames
+
+buildStandaloneShadowsGraph : List Decl -> List Decl -> <Mut> List String
 buildStandaloneShadowsGraph allDecls userDecls =
   let methodNames = allIfaceMethodNames allDecls
   let fns = dedup (map fst (funDefs userDecls))
-  filter (n => contains n methodNames) fns
+  let direct = filter (n => contains n methodNames) fns
+  -- P0-18: on the EMIT path the funDef names are MANGLED (`<mid>__toList`), so the
+  -- `direct` name-intersection misses them; recover them via the mangle map so the
+  -- prePass marks their (mangled) occurrences `EMethodAt`.  Empty on the un-mangled
+  -- path (the map is empty there) → `direct` alone → byte-identical.
+  let mangled = filter (n => isSome (lookupAssoc n mangledShadowMapRef.value)) fns
+  dedup (direct ++ mangled)
 
 -- `public export data` / `public export record` decls — re-registered in every
 -- importing module so their constructors + field layout are in scope.
@@ -11791,6 +11890,10 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = setRef crossModuleMethodConstraintsRef []
   let _ = setRef crossModuleMethodConstraintsQualRef []
   let allDecls = coreDecls ++ flatMap snd modules
+  -- P0-18: recover the definer-shadow map from the (already-mangled on the emit path)
+  -- decls BEFORE marking/typecheck reads it.  Empty on the un-mangled path.  Set once
+  -- here; per-module resetState (in checkModuleFullImpl) does NOT clear it.
+  let _ = setRef mangledShadowMapRef (computeMangledShadowMap allDecls (("core", coreDecls)::modules))
   let _ = setRef superDeclsRef allDecls  -- WS-1b: interfaces in scope for the discovery scratch typecheck
   let _ = setRef userIfaceNamesRef (collectIfaceNames (flatMap snd modules))  -- WS-1b: gate super-expansion to user interfaces
   let rpNames = returnPosMethodNames allDecls
@@ -11801,8 +11904,8 @@ elaborateModules runtimeDecls coreDecls modules =
   let promoted = discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames
   let dictNames = dedup (moduleDictNames coreDecls allDecls modules ++ promoted)
   let markRpNames = dedup (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (flatMap snd modules))
-  let core2 = prePassDictArg markRpNames dictNames argNames coreDecls
-  let modules2 = map (prePassModulePairArg markRpNames dictNames argNames) modules
+  let core2 = prePassDictArg markRpNames dictNames argNames mangledShadowMapRef.value coreDecls
+  let modules2 = map (prePassModulePairArg markRpNames dictNames argNames mangledShadowMapRef.value) modules
   let runtimeSeed = externSchemes runtimeDecls
   let coreSchemes = elabModuleStamp "" runtimeSeed [] core2 core2
   let _ = elabModulesGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls core2) core2 modules2
@@ -12142,9 +12245,9 @@ prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 -- (argNames) AND `=>`-constrained-fn occurrences to EDictAt (dictNames); both
 -- non-empty only under emitArgStampPasses.  Degenerates to prePassModulePair when both
 -- are [] (prePassDictArg with empty argNames/dictNames == prePassDict).
-prePassModulePairArg : List String -> List String -> List String -> (String, List Decl) -> (String, List Decl)
-prePassModulePairArg rpNames dictNames argNames (mid, prog) =
-  (mid, prePassDictArg rpNames dictNames argNames prog)
+prePassModulePairArg : List String -> List String -> List String -> List (String, String) -> (String, List Decl) -> (String, List Decl)
+prePassModulePairArg rpNames dictNames argNames shadowMap (mid, prog) =
+  (mid, prePassDictArg rpNames dictNames argNames shadowMap prog)
 
 -- The mark sub-phase of elaborateModules (RKey-only): compute rpNames over the
 -- full module graph and prePassDict each module.  Exported so profiling drivers
