@@ -1480,6 +1480,22 @@ methodShadowNamesRef = Ref []
 pendingRLocalSites : Ref (List (String, Ref Route, Mono))
 pendingRLocalSites = Ref []
 
+-- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
+-- application (`size (Box 3)`), suppress recordRLocalSite's default push — the
+-- standalone scheme's declared domain (`Int`) is NOT the actual receiver type.
+-- inferDefinerShadowApp instead records the ACTUAL argument mono so per-receiver
+-- routing sees `Box` (which has a `Sizeable` impl → method) vs `Int` (no impl →
+-- standalone).  Set only around that occurrence's `infer env f`; false everywhere else.
+suppressRLocalRecord : Ref Bool
+suppressRLocalRecord = Ref False
+
+-- P0-18: same idea as suppressRLocalRecord for the EMIT path — while typing a
+-- definer-shadow method occurrence heading an application, suppress recordArgStamp's
+-- default push (standalone declared domain) so inferDefinerShadowApp can record the
+-- ACTUAL argument mono into pendingArgStamps instead.
+suppressArgStamp : Ref Bool
+suppressArgStamp = Ref False
+
 -- one entry per occurrence of a registered interface method: (iface, typarams,
 -- declared method Ty, the occurrence's instantiated mono).  Resolved post-inference.
 -- B.10.2c: the 5th element is the `currentLoc` span snapshotted at the RECORD
@@ -1954,9 +1970,11 @@ nthArgMono n m = match normalize m
 -- also carry [name] + the impl-dicts ref so a concrete-head site can thread the
 -- element dict for a parametric `requires` impl.
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> Option String -> <Mut> Unit
-recordArgStamp name tagRef implRef idx mono hint = match nthArgMono idx mono
-  Some am => setRef pendingArgStamps ((name, tagRef, implRef, am, currentFn.value, hint)::pendingArgStamps.value)
-  None => ()
+recordArgStamp name tagRef implRef idx mono hint
+  | suppressArgStamp.value = ()
+  | otherwise = match nthArgMono idx mono
+    Some am => setRef pendingArgStamps ((name, tagRef, implRef, am, currentFn.value, hint)::pendingArgStamps.value)
+    None => ()
 
 -- Cause-A prerequisite: an ARG-position method occurrence's discriminating-arg
 -- mono, keyed by the enclosing fn (currentFn), pushed into methodSiteFns — the
@@ -3404,6 +3422,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
 -- declared interface type (methodDispatchIdx), independent of emitArgStampPasses.
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
 recordRLocalSite _ name tagRef inst
+  | suppressRLocalRecord.value = ()
   | not (contains name standaloneValuesRef.value) = ()
   | otherwise = match methodDispatchIdx name
     None => ()
@@ -4847,7 +4866,9 @@ inferAppExpr env f x = match hintArgName x
       inferApp (envAlphaLets env) (EApp f x) ft xt
     None => match shadowStandaloneHead env f
       Some (mname, tagRefs) => inferShadowApp env mname tagRefs f x
-      None => match detectSwappedArgs2 env f x
+      None => match definerShadowArgHead f
+       Some (dname, dtagRef, dimplRef) => inferDefinerShadowApp env dname dtagRef dimplRef f x
+       None => match detectSwappedArgs2 env f x
         Some swapResult => swapResult
         None =>
           let ft = infer env f
@@ -4929,6 +4950,49 @@ inferShadowApp env mname tagRefs f x =
         r
       None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
     None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
+
+-- P0-18: peel a single-argument application's head to a DEFINER-shadow interface-
+-- method occurrence (the user's OWN top-level fn reuses a single-param interface
+-- method name, e.g. this module's `size : Int -> Int` shadowing `Sizeable`'s
+-- `size`).  Unlike importer shadows (shadowStandaloneHead / inferShadowApp), the
+-- user's definition SHADOWS the method in scope, so the occurrence is typed against
+-- the standalone scheme whose declared domain (`Int`) is NOT the actual receiver.
+-- Returning the route ref lets inferDefinerShadowApp record the REAL argument mono
+-- for per-receiver routing (`Box` has a `Sizeable` impl → method; `Int` → standalone).
+definerShadowArgHead : Expr -> <Mut> Option (String, Ref Route, Ref (List Route))
+definerShadowArgHead (ELoc _ f) = definerShadowArgHead f
+definerShadowArgHead (EMethodAt name tagRef implRef _)
+  | contains name definerShadowNamesRef.value && singleParamIfaceMethod name =
+    Some (name, tagRef, implRef)
+  | otherwise = None
+definerShadowArgHead _ = None
+
+-- P0-18: type `size (Box 3)` exactly as the ordinary path (against the standalone
+-- scheme the env rebound `size` to, preserving program types), but record the
+-- ACTUAL argument mono (`Box`) as this site's receiver so resolveRLocalSite routes
+-- per-receiver: a receiver head WITH an impl of the shadowed interface dispatches to
+-- the method (route left untouched → eval arg-tag / emit RKey), one WITHOUT an impl
+-- stays the standalone (RLocal).  suppressRLocalRecord stops recordRLocalSite from
+-- ALSO pushing the standalone's declared domain (which would mis-route `Box`→`Int`).
+inferDefinerShadowApp : TcEnv -> String -> Ref Route -> Ref (List Route) -> Expr -> Expr -> <Mut> Mono
+inferDefinerShadowApp env name tagRef implRef f x =
+  let _ = setRef suppressRLocalRecord True
+  let _ = setRef suppressArgStamp True
+  let ft = infer env f
+  let _ = setRef suppressRLocalRecord False
+  let _ = setRef suppressArgStamp False
+  let xt = infer env x
+  -- Route by the ACTUAL argument type on BOTH the eval path (pendingRLocalSites,
+  -- read by resolveRLocalSites) and the emit path (pendingArgStamps, read by
+  -- resolveArgStamps — only recorded when this method arg-dispatches, i.e. on the
+  -- build path).  xt grounds to the real receiver post-inference; the two default
+  -- pushes (recordRLocalSite / recordArgStamp) that would carry the standalone's
+  -- declared domain are suppressed above.
+  let _ = setRef pendingRLocalSites ((name, tagRef, xt)::pendingRLocalSites.value)
+  let _ = match argDispatchOf name
+    Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value, None)::pendingArgStamps.value)
+    None => ()
+  inferApp (envAlphaLets env) (EApp f x) ft xt
 
 -- stamp every route ref (one for the marked EMethodAt form, none for the unmarked
 -- check-path EVar form) RLocal.
@@ -6838,16 +6902,21 @@ resolveRLocalSites keyTable ((name, tagRef, am)::rest) =
 -- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
 resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
-resolveRLocalSite keyTable name tagRef am
-  -- Facet 2: a DEFINER shadow (user's OWN top-level fn shadowing a method) ALWAYS
-  -- routes RLocal — a direct call resolves to the user's definition, even when the
-  -- receiver's head has an impl of the interface (`eq [1] [2]` → the user's `eq`,
-  -- NOT the `Eq (List a)` impl).  This overrides resolveArgStamps' RKey<head> stamp,
-  -- bringing the eval path into agreement with the emit path + the oracle (run==build).
-  | contains name definerShadowNamesRef.value = setRef tagRef RLocal
-  | otherwise = match headTyconMono am
-    Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
-    None => ()
+resolveRLocalSite keyTable name tagRef am = match headTyconMono am
+  -- P0-18: route per-receiver for BOTH importer and definer shadows.  A GROUNDED
+  -- receiver whose head has an impl of the shadowed interface dispatches to the
+  -- method (leave the route → eval arg-tag / emit RKey); one with NO impl is the
+  -- standalone (RLocal).  Previously a DEFINER shadow was UNCONDITIONALLY RLocal
+  -- (Facet 2), which mis-routed `size (Box 3)` — `Box` HAS a `Sizeable` impl — to
+  -- the standalone `size n = n + 1` (run → `unknown op '+'`, build → garbage).  The
+  -- existing definer shadows (map/hash_map `toList`/`isEmpty`, parser `orElse`) are
+  -- each applied only to their own type, which has NO impl of the shadowed interface,
+  -- so they still resolve RLocal.  am is the ACTUAL argument type (inferDefinerShadowApp
+  -- records it), not the standalone's declared domain, so the impl query is meaningful.
+  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
+  -- An UNGROUNDED definer-shadow receiver keeps the old default (RLocal → standalone);
+  -- other (importer) ungrounded sites stay untouched (deferred/polymorphic).
+  None => if contains name definerShadowNamesRef.value then setRef tagRef RLocal else ()
 
 -- C5: hasImpl ⇒ genuine method; route already correct (RNone for arg-tag eval,
 -- or RKey stamped by resolveArgStamps on emit) — leave untouched.
