@@ -1,0 +1,9 @@
+-- entry imports `double` THROUGH mid (which re-exports it from base).  Correct
+-- output: double 21 = 42.  `run` always worked (the interpreter's `pubReexports`
+-- threads the original definer's cell); `build` panicked pre-fix.
+import mid.{double}
+
+total : Int
+total = double 21
+
+main = putStrLn (intToString total)
