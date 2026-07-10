@@ -67,7 +67,7 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 - Expected: never a bare signal death. "stack overflow: recursion too deep in <fn>" /
   E-LET-REFUTE parity / cyclic-value diagnostic.
 
-## P0-3: `deriving` on record constructors is broken in BOTH pipelines, opposite directions
+## P0-3: `deriving` on record constructors is broken in BOTH pipelines, opposite directions — ⚠️ PARTIAL 2026-07-10 (`6636e356`): `data X = X{…}` deriving FIXED (run==build). Residuals: (1) NEW **P0-20** general record-impl build bug (any impl on a `record`-kw type crashes build — ctor/type mangling desync, NOT deriving); (2) Eq/Ord-reject on non-derivable field = typechecker residual-constraint hole; (3) Debug/Display placeholder needs a typecheck seam. See PLAN.md top.
 - Class: run-build-divergence / crash. Source: numerics#F1, playground#F6, type-system#F4.
   Re-verified both directions.
 - Repros:
