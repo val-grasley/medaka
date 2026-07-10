@@ -1,0 +1,20 @@
+-- Bite A (language-trim): the anonymous single-constructor record short form
+-- `data X = { … }` desugars to the named ctor `data X = X { … }`.  It must be
+-- indistinguishable downstream — construct, field-access, deriving, and a
+-- hand-written impl all work; run == check == build all ACCEPT and agree.
+data Point = { x : Int, y : Int } deriving (Display)
+
+data Box a = { v : a }
+
+interface Area a where
+  area : a -> Int
+
+impl Area Point where
+  area p = p.x * p.y
+
+main =
+  let p = Point { x = 3, y = 4 }
+  let b = Box { v = 7 }
+  println (display p)
+  println "\{area p}"
+  println "\{b.v}"

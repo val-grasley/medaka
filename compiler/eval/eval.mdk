@@ -276,7 +276,7 @@ ctorFieldOrderEntries (DData _ _ _ variants _) =
 ctorFieldOrderEntries _ = []
 
 variantFieldOrder : Variant -> List (String, List String)
-variantFieldOrder (Variant n (ConNamed fs)) = [(n, map fieldName fs)]
+variantFieldOrder (Variant n (ConNamed fs _)) = [(n, map fieldName fs)]
 variantFieldOrder _ = []
 
 fieldName : Field -> String
@@ -1439,7 +1439,7 @@ ctorEntry (Variant n payload) = (n, makeCtor n (payloadArity payload))
 
 export payloadArity : ConPayload -> Int
 payloadArity (ConPos tys) = listLen tys
-payloadArity (ConNamed fs) = listLen fs
+payloadArity (ConNamed fs _) = listLen fs
 
 funDefs : List Decl -> List (String, (List Pat, Expr))
 funDefs [] = []

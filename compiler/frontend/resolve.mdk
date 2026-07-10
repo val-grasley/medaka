@@ -850,7 +850,7 @@ checkDecl _ _ = []
 
 checkVariant : Env -> Variant -> List ResError
 checkVariant env (Variant _ (ConPos tys)) = flatMap (checkType None env) tys
-checkVariant env (Variant _ (ConNamed fs)) = flatMap (checkFieldType env) fs
+checkVariant env (Variant _ (ConNamed fs _)) = flatMap (checkFieldType env) fs
 
 checkFieldType : Env -> Field -> List ResError
 checkFieldType env (Field _ t) = checkType None env t
@@ -1007,7 +1007,7 @@ recordFieldOwner : String -> Field -> (String, String)
 recordFieldOwner owner (Field fname _) = (fname, owner)
 
 variantFieldOwners : Variant -> List (String, String)
-variantFieldOwners (Variant cname (ConNamed fs)) =
+variantFieldOwners (Variant cname (ConNamed fs _)) =
   map (recordFieldOwner cname) fs
 variantFieldOwners (Variant _ (ConPos _)) = []
 

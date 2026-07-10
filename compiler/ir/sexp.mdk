@@ -223,7 +223,7 @@ fieldSexp (Field n t) = node "field" [escStr n, tySexp t]
 
 payloadSexp : ConPayload -> String
 payloadSexp (ConPos tys) = node "ConPos" (map tySexp tys)
-payloadSexp (ConNamed fs) = node "ConNamed" (map fieldSexp fs)
+payloadSexp (ConNamed fs _) = node "ConNamed" (map fieldSexp fs)
 
 variantSexp : Variant -> String
 variantSexp (Variant n pl) = node "variant" [escStr n, payloadSexp pl]

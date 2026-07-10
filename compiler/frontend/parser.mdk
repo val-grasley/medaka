@@ -2536,7 +2536,7 @@ parseData vis = do
   expectTok TData
   name <- upperNameP
   params <- many lowerNameP
-  bodyAndDerives <- dataBody
+  bodyAndDerives <- dataBody name
   let variants = fst bodyAndDerives
   let blockDerives = snd bodyAndDerives
   outerDerives <- derivingClause
@@ -2560,20 +2560,20 @@ combineDerives block _ = block
 -- inline (`= …`) or block (`INDENT = … DEDENT`) variant list.  Returns the
 -- variants paired with any deriving names found INSIDE a block body (empty for
 -- the inline form).
-dataBody : Parser (List Variant, List String)
-dataBody = do
+dataBody : String -> Parser (List Variant, List String)
+dataBody tyName = do
   t <- peekP
-  dataBodyFor t
+  dataBodyFor tyName t
 
-dataBodyFor : Token -> Parser (List Variant, List String)
-dataBodyFor TEqual = do
+dataBodyFor : String -> Token -> Parser (List Variant, List String)
+dataBodyFor tyName TEqual = do
   advance
   t <- peekP
-  dataAfterEq t
-dataBodyFor TIndent = do
+  dataAfterEq tyName t
+dataBodyFor tyName TIndent = do
   advance
   expectTok TEqual
-  vs <- dataVariants
+  vs <- dataVariantsN tyName
   derives <- derivingClause
   skipNewlines
   expectTok TDedent
@@ -2583,7 +2583,7 @@ dataBodyFor TIndent = do
 -- derivingClause stops at the RPAREN; skip its trailing NEWLINE so the DEDENT
 -- is the next token.
 
-dataBodyFor _ = pure ([], [])
+dataBodyFor _ _ = pure ([], [])
 
 -- After a header-line `=` (inline `data Foo = …`) the body is EITHER an inline
 -- variant list on the same line, OR — the new multiline form — a line-final `=`
@@ -2595,18 +2595,18 @@ dataBodyFor _ = pure ([], [])
 -- before the first variant is optional (lenient); the formatter always emits it.
 -- `deriving (…)` inside the block is consumed before the DEDENT, mirroring the
 -- old `TIndent` block form.
-dataAfterEq : Token -> Parser (List Variant, List String)
-dataAfterEq TIndent = do
+dataAfterEq : String -> Token -> Parser (List Variant, List String)
+dataAfterEq tyName TIndent = do
   advance
   skipNewlines
   _ <- optPipe
-  vs <- dataVariants
+  vs <- dataVariantsN tyName
   derives <- derivingClause
   skipNewlines
   expectTok TDedent
   pure (vs, derives)
-dataAfterEq _ = do
-  vs <- dataVariants
+dataAfterEq tyName _ = do
+  vs <- dataVariantsN tyName
   pure (vs, [])
 
 -- Consume a leading `|` if present (the new multiline form's per-variant pipe
@@ -2621,6 +2621,23 @@ optPipeFor TPipe = do
   advance
   pure ()
 optPipeFor _ = pure ()
+
+-- Variant list with the tycon name in scope, so the anonymous short form
+-- `data X = { … }` (a single brace-group, no ctor name, no `|`) can synthesize
+-- a single named constructor whose name is the tycon name (`X`), flagged
+-- `nameOmitted = True` so the printer round-trips the short form.  Any other
+-- shape falls through to the normal `dataVariants` path.  A leading `{` is the
+-- unambiguous trigger — no legal named/positional variant starts with `{`.
+dataVariantsN : String -> Parser (List Variant)
+dataVariantsN tyName = do
+  t <- peekP
+  dataVariantsNFor tyName t
+
+dataVariantsNFor : String -> Token -> Parser (List Variant)
+dataVariantsNFor tyName TLBrace = do
+  fields <- parseNamedFields
+  pure [Variant tyName (ConNamed fields True)]
+dataVariantsNFor _ _ = dataVariants
 
 dataVariants : Parser (List Variant)
 dataVariants = do
@@ -2661,11 +2678,19 @@ payloadFor _ = do
 
 parseNamedPayload : Parser ConPayload
 parseNamedPayload = do
+  fields <- parseNamedFields
+  pure (ConNamed fields False)
+
+-- The brace-group of a named-field payload: `{ f0 : T0, f1 : T1, … }`.  Shared
+-- by the explicit-name form (`parseNamedPayload`) and the anonymous short form
+-- (`data X = { … }`, `dataAnonVariant`).
+parseNamedFields : Parser (List Field)
+parseNamedFields = do
   expectTok TLBrace
   fields <- sepBy1 parseField (expectTok TComma)
   optTrailingComma
   expectTok TRBrace
-  pure (ConNamed fields)
+  pure fields
 
 parseField : Parser Field
 parseField = do
