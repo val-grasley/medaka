@@ -65,16 +65,21 @@ All four SHADOW-SEMANTICS §5 BUG cells are fixed, in two batches, pure `compile
   `diff_compiler_check_cli_modules` **14/0** (new d8 leg), llvm 195/0, llvm_typed 44/0, build 60/0, typecheck 14/0,
   check 77/0, **fixpoint C3a/C3b YES**. 5 stdlib definer-shadows + all accept cells (d1–d7) unchanged.
 
-**⚠️ SECURITY (found during this session's OOB audit, fix IN FLIGHT): `bytesToFloat64` is a userland OOB
-read.** The extern `bytesToFloat64 : Array Int -> Int -> Float` was omitted from `internalExterns`
-(`compiler/frontend/resolve.mdk:205`) — publicly callable, does unchecked raw 8-word reads at a user offset →
-native `build` silently leaks live heap as a Float (info-disclosure), `run` panics/SIGSEGVs. All other indexed
-surface (Array `.[i]`/slice, MutArray, hash tables, String, the 5 gated array externs) is bounds-checked + gated.
-Fix (user-approved, gate + bounds-check defense-in-depth): add `bytesToFloat64` to `internalExterns` AND add
-`off>=0 && off+8<=len` checks in `runtime/medaka_rt.c` (`mdk_bytes_to_float64`) + `compiler/eval/eval.mdk`
-(`pBytesToFloat64`), panic `E-INDEX-OOB`. Legit callers (byteparser `beFloat64`/`leFloat64`, always `off=0` on
-≥8-len arrays) unaffected. Follow-up idea: invert the hand-maintained denylist to an allowlist / add a lint that
-every pointer-arithmetic extern is gated-or-checked.
+**✅ SECURITY — `bytesToFloat64` userland OOB read CLOSED (`39a755a2`).** Found by this session's OOB audit:
+the extern `bytesToFloat64 : Array Int -> Int -> Float` was omitted from `internalExterns`
+(`compiler/frontend/resolve.mdk`) — publicly callable, unchecked raw 8-word reads at a user offset → native
+`build` silently leaked live heap as a Float (info-disclosure), `run` panicked/SIGSEGVed, `check` accepted. Fixed
+defense-in-depth: (A) added `bytesToFloat64` to `internalExterns` (userland now `R-INTERNAL-EXTERN` on
+check/run/build, every backend); (B) bounds-checked the extern — `off<0 || off+8>a[0]` → `mdk_oob()` in
+`runtime/medaka_rt.c:1372` (`off` arrives untagged; `a[0]`=count; reads 8 *elements*) and `off<0 || off+8 >
+arrayLength arr` → `E-INDEX-OOB` panic in `compiler/eval/eval.mdk` `pBytesToFloat64`. Verified: userland
+rejected; `--allow-internal` OOB now TRAPS (was leak); valid `off=0` returns a float; byteparser doctests 33/33;
+agreement 25/0, llvm 195/0, fixpoint C3a/C3b YES; no re-mint. **All other indexed surface (Array `.[i]`/slice,
+MutArray, hash tables, String, the 5 gated array externs) audited AIRTIGHT.** Wasm follow-up (low-pri): the gate
+already blocks userland on wasm; a wasm-side bounds check (`wasm_emit.mdk:1055`) would only harden
+`--allow-internal` wasm. **Systemic follow-up worth doing:** `internalExterns` is a hand-maintained *denylist*
+this extern slipped through — invert to an allowlist, or add a lint/test asserting every pointer-arithmetic
+extern in `medaka_rt.c` is gated-or-bounds-checked.
 
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED incl. importer-no-impl residual. `main` = `cfc4fa5a`
 
