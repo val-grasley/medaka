@@ -181,6 +181,15 @@ after P0-5 (shares lexer/parser/desugar/eval). The batch:
   NOT a bare type-mismatch. (`!x` now means `x.value`, so `!aBool` will fail to unify Bool with `Ref a`;
   intercept that shape and surface the `not`-function hint.) Net: Refs get OCaml-standard ergonomics — `Ref x` / `!x` / `x := v`.
   **Also update P0-5's `R-IMMUTABLE-ASSIGN` error copy** from `.value` to the nicer `!c` once this lands.
+- **SWAP not-equals `!=` → `/=` (user 2026-07-10; FOLD INTO the `!`→deref bite — same theme/files).** Coherence:
+  once `!` = deref, nothing in the negation family should use `!` — `!=` reads as "deref-equals". Make **`/=`
+  the canonical not-equals** and turn **`!=` into a beginner-hint** (`"did you mean '/='?"`). The machinery is
+  already HALF-BUILT and just needs FLIPPING: today the lexer tags `/=` as `TSlashEq` purely to emit
+  `"unexpected '/='. (Did you mean '!='?)"` (`parser.mdk:3850`, `firstSlashEqIdx` ~`:3583`) — reverse it so
+  `!=` (`TNeq`) becomes the hinted token and `/=` parses as the real operator (mirror the `TNeq` binop +
+  `sectionOpStr` wiring at `parser.mdk:484`/`:1020`). Migration: **54 `!=` sites** in stdlib+compiler →
+  mechanical rewrite to `/=`. No new ambiguity (`/` is only division; no compound-assign exists — mutation is
+  `:=`). Fits the ML/Haskell `Eq`-class idiom (`==`/`/=`).
 - **KEEP-FOR-FUTURE:** compose `>>`/`<<` (foundational point-free FP, near-zero carry cost; pairs
   with the kept pipe `|>`). Everything else audited = KEEP (earned or high newcomer value).
 Removal surface is dominated by `test/construct_fixtures/*` goldens + reference docs, not compiler
