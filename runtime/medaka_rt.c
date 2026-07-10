@@ -383,6 +383,16 @@ noreturn void mdk_nonexhaustive_match(void) {
   fputs("runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match\n", stderr);
   exit(1);
 }
+/* A refutable block-`let` (`let (Some y) = e` with no `else`) whose scrutinee did
+   not match the pattern.  The interpreter's blockLet runtimePanics
+   "E-LET-REFUTE"; the emitter previously destructured with NO tag check → an OOB
+   field load on a mismatching cell → SIGSEGV.  The emitter now tag-checks the
+   head ctor and calls this noreturn trap on a miss, matching run's message MINUS
+   the source location (Core IR carries no loc); nonzero exit. */
+noreturn void mdk_let_refute(void) {
+  fputs("runtime error [E-LET-REFUTE]: let pattern match failed\n", stderr);
+  exit(1);
+}
 noreturn void mdk_exit(long long tagged) { exit((int)(tagged >> 1)); }
 
 /* Concatenate a built-in List String (native extern catalog slice 5).

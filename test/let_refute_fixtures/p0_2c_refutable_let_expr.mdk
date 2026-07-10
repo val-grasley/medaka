@@ -1,0 +1,5 @@
+-- P0-2c: the expression-level analog `let (Some y) = e in y` — previously a
+-- build-time gapE; now traps [E-LET-REFUTE] like run.
+main =
+  let x = (let (Some y) = (None : Option Int) in y)
+  println x

@@ -1,0 +1,6 @@
+-- P0-2c: a REFUTABLE block-`let` with no `else` whose scrutinee does not match.
+-- `run` traps [E-LET-REFUTE]; `build`+exec previously SIGSEGV'd (loaded field 0 of
+-- a None cell). It must now trap identically.
+main =
+  let (Some y) = (None : Option Int)
+  println y

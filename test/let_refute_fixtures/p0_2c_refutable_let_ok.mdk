@@ -1,0 +1,5 @@
+-- P0-2c: a REFUTABLE block-`let` whose scrutinee DOES match — the tag check passes
+-- and the field binds; run and build+exec both print 7.
+main =
+  let (Some y) = (Some 7 : Option Int)
+  println y

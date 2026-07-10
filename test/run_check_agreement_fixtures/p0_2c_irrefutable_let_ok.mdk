@@ -1,0 +1,7 @@
+-- P0-2c: IRREFUTABLE block-lets (tuple destructure + single-constructor `data`)
+-- MUST keep the no-tag-check fast path — check/run/build all ACCEPT and agree.
+data Box a = Box a
+main =
+  let (a, b) = (1, 2)
+  let Box n = Box 3
+  println (a + b + n)

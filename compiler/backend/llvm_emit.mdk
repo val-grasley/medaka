@@ -2861,6 +2861,21 @@ emitLet e env False (PTuple ps) e1 e2 =
 emitLet e env True (PVar f) (CLam pats body) e2 =
   let (w, ty) = emitRecLam e env f pats body
   emitExpr e ((f, (w, ty))::env) e2
+-- P0-2c: general expression-level `let pat = e1 in e2` for a non-recursive,
+-- non-(var/wild/tuple) pattern (PCon/PCons/PList/PAs) — the expression-position
+-- analog of emitBlock's general CSLet arms.  Mirrors them: an irrefutable head
+-- (single-ctor PCon) destructures unchecked (bindPattern); a refutable head
+-- (sibling ctors, list) gets the trap-on-miss check (emitRefutableCsLet), matching
+-- the interpreter's blockLet "E-LET-REFUTE" panic.  Previously this shape hit the
+-- gapE catch-all (build-fail); it now lowers.  Placed after the PVar/PWild/PTuple
+-- and recursive-function arms so those stay byte-identical.
+emitLet e env False pat e1 e2 =
+  let (v, _) = emitExpr e env e1
+  let env2 = if refutableCsLet e pat then
+    emitRefutableCsLet e env pat v
+  else
+    bindPattern e env pat v e2
+  emitExpr e env2 e2
 emitLet _ _ _ _ _ _ =
   gapE
     "unsupported let (slice 5b: only non-recursive let var/_/tuple = e, or function-let)"
@@ -3096,25 +3111,38 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
   let (v, _) = emitExpr e env ex
   let env2 = bindPattern e env (PTuple ps) v (CBlock rest)
   emitBlock e env2 rest
--- General irrefutable block-let `let pat = e` for an ARBITRARY pattern (PCon,
--- PCons, PList, PAs, nested).  A bare `CSLet _ pat` is irrefutable by
--- construction — a refutable surface let desugars to CSLetElse (handled above) —
--- so we destructure with NO failure branch, exactly as cevalBlock's cBlockLet
--- does (core_ir_eval :269) and as the PTuple arm above does.  Reuses bindPattern,
--- the same destructure path match-arm emission uses; the `rest` block evaluates
--- in the extended env.  Placed after the specialized PVar/PWild/PTuple arms so
--- those stay byte-identical.
+-- General block-let `let pat = e` for an ARBITRARY pattern (PCon, PCons, PList,
+-- PAs, nested).  Two cases (P0-2c):
+--  • IRREFUTABLE pattern (PVar/PWild/PAs-of-irrefutable, or a PCon of a
+--    single-constructor type) — destructure with NO failure branch, exactly as
+--    cevalBlock's cBlockLet does (core_ir_eval :269) and as the PTuple arm above.
+--    Reuses bindPattern; keeps existing goldens byte-identical.
+--  • REFUTABLE pattern (a PCon of a type with sibling ctors, or a list pattern) —
+--    a plain `let (Some y) = e` with NO `else` can FAIL at runtime.  The
+--    interpreter's blockLet runtimePanics "E-LET-REFUTE"; before this fix the
+--    emitter blindly loaded field 0 of a mismatching cell → SIGSEGV.  Now emit a
+--    head-ctor tag check that traps @mdk_let_refute on a miss (emitRefutableCsLet),
+--    mirroring emitLetElse but targeting a panic instead of an `else` alt.
+-- Placed after the specialized PVar/PWild/PTuple arms so those stay byte-identical.
 emitBlock e env ((CSLet _ pat ex)::rest) =
   let (v, _) = emitExpr e env ex
-  let env2 = bindPattern e env pat v (CBlock rest)
-  emitBlock e env2 rest
+  if refutableCsLet e pat then
+    let env2 = emitRefutableCsLet e env pat v
+    emitBlock e env2 rest
+  else
+    let env2 = bindPattern e env pat v (CBlock rest)
+    emitBlock e env2 rest
 -- last-position block-let `[let pat = e]`: mirror cevalBlock's cBlockLetLast
 -- (core_ir_eval :265/:277) — evaluate `e` (for effect + to honour the binding),
 -- destructure, and the block yields Unit.  Without this a block ending in a let
--- would recurse into `emitBlock e env2 []` and hit the "empty block" gap.
+-- would recurse into `emitBlock e env2 []` and hit the "empty block" gap.  A
+-- refutable pattern still gets the trap-on-miss check (P0-2c).
 emitBlock e env [CSLet _ pat ex] =
   let (v, _) = emitExpr e env ex
-  let _ = bindPattern e env pat v (CLit (LInt 0))
+  let _ = if refutableCsLet e pat then
+    let _ = emitRefutableCsLet e env pat v
+    env
+  else bindPattern e env pat v (CLit (LInt 0))
   ("1", LTUnit)
 -- `let mut x = e` reuses the irrefutable `CSLet _ (PVar x)` arm above (the mut
 -- flag carries no extra emit work — a mutable local is just an SSA value the
@@ -3208,6 +3236,54 @@ irrefutableLet PWild = True
 irrefutableLet (PTuple _) = True
 irrefutableLet (PAs _ p) = irrefutableLet p
 irrefutableLet _ = False
+
+-- P0-2c: does a general block-`let` pattern (already NOT PVar/PWild/PTuple — those
+-- have specialized irrefutable arms) need a runtime match-failure trap?  A PCon is
+-- refutable iff its type has SIBLING constructors (a single-ctor `data` — e.g.
+-- `Box` — always matches → keep the no-check fast path so goldens stay
+-- byte-identical); a cons / non-empty list pattern can always miss (Nil).  Only the
+-- TOP-LEVEL head is classified here — nested refutability inside fields shares
+-- emitLetElse's single-level-check limitation (see emitRefutableCsLet).
+refutableCsLet : Emit -> Pat -> <Mut> Bool
+refutableCsLet e (PAs _ p) = refutableCsLet e p
+refutableCsLet e (PCon c _) = ctorHasSiblings e c
+refutableCsLet _ (PCons _ _) = True
+refutableCsLet _ (PList (_::_)) = True
+refutableCsLet _ _ = False
+
+-- True when constructor `c` shares its type with at least one other constructor
+-- (so a pattern on `c` can fail to match).  Unknown ctors (absent from the
+-- ctor→type table — e.g. the built-in list Cons/Nil) are conservatively refutable.
+ctorHasSiblings : Emit -> String -> <Mut> Bool
+ctorHasSiblings e c = match lookupAssoc c (ctorTypeTable e)
+  Some ty => listLen (ctorsOfType e ty) > 1
+  None => True
+
+-- P0-2c: emit a REFUTABLE block-`let` bind with a trap-on-miss.  Mirrors
+-- emitLetElse's head-ctor tag check but branches to a noreturn @mdk_let_refute
+-- panic (matching the interpreter's blockLet runtimePanic "E-LET-REFUTE") instead
+-- of an `else` alt.  On a tag match, bind the fields (bindFieldList → bindPattern,
+-- the same single-level extract emitLetElse uses) and return the extended env; the
+-- caller continues emission in the `ok` block.  A non-constructor-head refutable
+-- pattern (letElseHead None — e.g. a bare Nil `let [] = …`) falls back to the old
+-- unchecked bindPattern behaviour (no regression, shared with emitLetElse).
+emitRefutableCsLet : Emit -> List (String, (String, LTy)) -> Pat -> String -> <Mut> List (String, (String, LTy))
+emitRefutableCsLet e env pat sv = match letElseHead pat
+  Some (c, a, fieldPats) =>
+    let tag = loadDiscriminant e sv
+    let cmp = freshReg e
+    let _ = emit e "  \{cmp} = icmp eq i64 \{tag}, \{intToString (cellTag e c)}"
+    let n = intToString (freshId e)
+    let ok = "letrefok" ++ n
+    let no = "letrefno" ++ n
+    let _ = emit e "  br i1 \{cmp}, label %\{ok}, label %\{no}"
+    let _ = emit e (no ++ ":")
+    let _ = emit e "  call void @mdk_let_refute()"
+    let _ = emit e "  unreachable"
+    let _ = emit e (ok ++ ":")
+    let fields = loadFields e sv a 0
+    bindFieldList e env fieldPats fields
+  None => bindPattern e env pat sv (CLit (LInt 0))
 
 -- ── function application (slices 2 + 4) ─────────────────────────────────────
 -- Three call shapes, by the application spine's head:
