@@ -167,7 +167,30 @@ engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/
 
 **⭐ Language trim + Ref-ergonomics batch (DECIDED 2026-07-09; queued after P0-5).** Backed by the
 read-only `LANGUAGE-SURFACE-AUDIT.md` (dogfood-usage census of every optional construct). Sequence
-after P0-5 (shares lexer/parser/desugar/eval). The batch:
+after P0-5 (shares lexer/parser/desugar/eval).
+
+> **⚠️ REMOVAL DISCIPLINE (user 2026-07-10): actually DELETE the leftover machinery — keep the compiler
+> clean.** For every REMOVED construct, don't just make it error/hint at the surface — excise the dead
+> machinery it fed: lexer tokens, parser productions, AST nodes/fields, resolve/typecheck/exhaust/desugar
+> arms, eval/emit/printer/fmt/sexp cases, and now-dead helpers. Default to FULL removal (the `EFunction`
+> desugar-dead arms make this exhaustiveness-self-guiding). If a full removal genuinely balloons (the P0-5
+> mutability precedent — the inert `DoLet`/`ELet` Bool field was kept ONLY because removal was ~87 sites/18
+> files incl. sexp round-trip), STOP and surface it as a decision — do NOT silently leave an inert stub.
+> Each bite's gate: no dangling references, `medaka lint` clean, fixpoint C3a/C3b YES.
+
+**Record consolidation (added to this batch 2026-07-10 — see the `record`→`data` discussion above):**
+- **Bite A ✅ LANDED (`f441a796`):** `data X = { … }` name-omission sugar (single braced ctor ⇒ ctor named
+  after the type). Pure sugar → existing `ConNamed` path; `nameOmitted` marker for fmt round-trip. Gates
+  parse 33/0, fmt 64/0, llvm 195/0, build 60/0, agreement 30/0, fixpoint YES. Verified: short form ==
+  explicit on check/run/build incl. deriving + hand-written impl.
+- **Bite B (NEXT):** REMOVE the `record` keyword → beginner-hint ("use `data X = { … }`"); migrate the 8
+  dogfooded `record` decls (`Env`/`Rule`/`Oracle`/`RField`/`Finding`/`CrossFileRule`/`ModuleExports`/
+  `ImportAdds`) to the short form; and **DELETE the `DRecord` representation** end-to-end (parser/ast/
+  resolve/typecheck/mangle/core-lower/emit/exhaust/printer/fmt/lsp) per the removal discipline. This
+  DISSOLVES P0-20 + P0-3's record residual by deletion (proven: `data X = X{…}` already dispatches/derives
+  correctly; `DRecord` was the buggy redundant path). Fixpoint + full differential suite gate it.
+
+The construct removals:
 - **REMOVE (0 dogfood uses, redundant, low newcomer+future value):** the **`function` keyword**
   (→ RESERVE as a beginner-hint: "use `x => match x` or multi-clause"; `EFunction` arms are
   desugar-dead so removal is exhaustiveness-self-guiding across ~13 files); **backtick infix**
