@@ -84,6 +84,34 @@ after P0-5 (shares lexer/parser/desugar/eval). The batch:
 Removal surface is dominated by `test/construct_fixtures/*` goldens + reference docs, not compiler
 logic. Verify each cut construct isn't half-baked first; keep LLVM IR byte-identical + fixpoint.
 
+**⭐ Interface-generalization batch (DECIDED 2026-07-09).** Backed by `INTERFACE-CANDIDATES.md`
+(dispatch mechanism: operators stay `EBinOp` + a `binopMethod` map + obligation; "already general"
+iff it has a `binopMethod` entry). Turn narrow/monomorphic operators into interface-dispatched ones
+(like `+`→`Num`, `==`→`Eq`, `a[i]`→`Index`):
+- **`++` → `Semigroup`** (HIGH value / LOW cost — do first). Interface EXISTS (`core.mdk`,
+  `append : a -> a -> a`, List/String impls) but `++` bypasses it (`inferBinop "++" = arithOp`, no
+  `binopMethod` entry, eval `appendVal` welded to VList/VString). Wire like `==`→`eq`: add
+  `binopMethod "++" = "append"`, swap `arithOp` for a Semigroup-obligation op, route eval fall-through
+  to the stamped method, KEEP VList/VString fast paths byte-identical (fixpoint-safe; verify no re-mint).
+- **Unary minus `-x` → `Num.negate`** (LOW cost). `Num` already declares `negate`; `-x` is a hardcoded
+  no-op ignoring it. Fold into the same batch.
+- **Ranges `[lo..hi]`/`[lo..=hi]` → new minimal `Enum`** (`enumFromTo` + inclusive variant). Fixes a
+  real asymmetry: range PATTERNS accept Char (`'a'..'z'` matches) but range EXPRESSIONS reject it.
+  Enables `['a'..'z']` + user enums. Stepped ranges (`[0,2..]`) out of scope. New interface + Char/enum impls.
+- **SKIP (ambiguity trap):** overloaded list literals `[1,2,3]`→`FromList` and string literals→`IsString`
+  (bare `[…]`/`"…"` have no head-pin to disambiguate — the OverloadedLists can-of-worms). KEEP monomorphic.
+- **Keep narrow (rejected):** `&&`/`||`/`if`-conditions (truthiness footgun), `!`/`not`, `::`, `|>`/`>>`/`<<`.
+
+## ⭐ Pre-beta sequencing (DECIDED 2026-07-09, soundness-first)
+1. **P0-5** (Ref-only mutability + `:=` + immutability enforcement + `let mut`→parser-error) — IN FLIGHT.
+2. **P0-19** — the 2 silent build-garbage shadow-conformance holes (rows 12/13) + rows 10/14 divergences
+   (same class as the just-closed P0-18 hole; fixtures exist in `test/shadow_fixtures/`). SOUNDNESS FIRST.
+3. **Language batches** (all share lexer/parser/desugar/typecheck/eval → strictly sequential):
+   trim + `!`→deref → interface generalizations (`++`/negate/Enum) → indexing (`Index`/`IndexMut`;
+   design pass then impl; `:=` from P0-5 is its write-side prerequisite).
+4. **Remaining P0 bugs:** P0-2 (silent crashes), P0-10 (hash under run), P0-12 (REPL), playground trio
+   P0-7/8/9 (needs node≥24 in the Docker image first — a cheap prereq bite).
+
 **⭐ PRE-BETA (user elevated 2026-07-09): typeclass-based `[ ]` indexing — `Index`/`IndexMut`.**
 "Affects ergonomics around common data structures a lot" → in the beta, not a fast-follow. A real
 language-feature arc (interface(s) + NEW postfix `[expr]` grammar — none today, parser postfix does
