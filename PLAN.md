@@ -65,13 +65,28 @@ mut` → located error pointing to `Ref`; mutation via a NEW **`:=` operator** (
 clarity feature (OCaml/SML-style). Reframed P0-5 = enforcement + `:=` sugar + docs (no branch-write
 engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/§5 superseded).
 
-**Queued fast-follow (user-approved 2026-07-09): `[ ]` index read+write sugar for the array types.**
-After P0-5 + P0-19. Add postfix `[ ]` indexing (NEW grammar — none today; parser postfix does only
-`.`) for **MutArray + Array only, NOT List** (rule: `[ ]` = O(1) random access; `xs[0]` on a List
-keeps its "not indexable — use `get`/fold" hint — the perf footgun stays a teaching moment).
-**Symmetric:** `a[i]` READS the element (bounds-checked → clean `E-INDEX-OOB`, NOT `Option` — even
-though `MutArray.get` returns `Option`; ties into the deferred coded-OOB seam), `a[i] := v` WRITES
-(→ `MutArray.set i v a`). Its own small parser+resolve+desugar bite; not a P0 blocker.
+**Queued fast-follow (user-approved 2026-07-09): typeclass-based `[ ]` indexing.** After P0-5 + P0-19.
+A proper small language-feature arc (interface(s) + NEW postfix `[expr]` grammar — none today, parser
+postfix does only `.` — + desugar + impls + inference check), NOT a quick sugar. **Design LOCKED:**
+- **Shape A — HKT single-param, Int-keyed** (fits the Foldable/Mappable pattern + the
+  language-design.md:847 "avoid `Collection c e` multi-param" principle; Medaka DOES support
+  multi-param interfaces à la `FromEntries c e`, but we stay single-param here). **Rust names** (don't
+  reinvent): `interface Index f where index : f a -> Int -> a` and
+  `interface IndexMut f requires Index f where setIndex : f a -> Int -> a -> <Mut> Unit`. NB Rust's
+  `IndexMut` returns an lvalue `&mut`; Medaka has no lvalue refs, so ours is a **setter** (`<Mut>`),
+  not a place-returning `index_mut`.
+- **Desugar:** `a[i]` → `index a i`; `a[i] := v` → `setIndex a i v`.
+- **Read semantics:** `a[i]` returns the ELEMENT, bounds-checked → clean **`E-INDEX-OOB`** trap on
+  miss (NOT `Option`, even though `MutArray.get`/`Array.get` return `Option`); the `Option` form stays
+  the safe `.get`. Ties into the deferred coded-OOB seam.
+- **Impls:** Array + MutArray (IndexMut) for sure. **List/trees: OPEN sub-decision** — provide
+  `impl Index List` (O(n) convenience, but the perf footgun the current `xs[0]` hint avoids) vs
+  arrays-only (keep the hint). Settle in the design pass.
+- **Maps/HashMap (`m[k]`, k-keyed) NOT covered** by Shape A — a separate, deliberate later decision
+  (Shape B multi-param `Index c k v`, or a `Keyed`/`Lookup` class; also where missing-key read
+  semantics get thorny). Deferred.
+Do a short design pass to lock impls + grammar precedence + the coded-OOB seam before implementing.
+Not a P0 blocker.
 
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED (run/check + build); soundness hole gone. `main` = `01ac360d`
 
