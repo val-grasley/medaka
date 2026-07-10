@@ -11710,7 +11710,14 @@ checkModuleFullDiags seedVars accData accAll prog =
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
   let _ = setRef matchWarningLocs []
-  let _ = setRef matchOracle (buildOracle (accData ++ prog))
+  -- P0-9: THIS module's own decls (`prog`) come FIRST so its constructors win
+  -- the oracle's first-wins bare-name tables.  Another loaded module (in accData)
+  -- can define a same-named ctor at a different arity (`map`'s arity-5 `Bin` vs
+  -- `set`'s arity-4 `Bin`); with accData first, the type-aware `check_match` reads
+  -- the WRONG arity/type for this module's own `Bin` in a match and false-warns
+  -- W-NONEXHAUSTIVE.  buildOracle is duplicate-tolerant, and accData still
+  -- supplies prelude Option/Result ctors (this module never redefines them).
+  let _ = setRef matchOracle (buildOracle (prog ++ accData))
   -- Bug C: pass the cumulative full impl universe (core + earlier modules) as
   -- implDecls (was checkModuleFull, i.e. implDecls=[]) so buildStandaloneShadows sees
   -- an imported standalone funDef that shadows an interface method (`map`'s `toList`

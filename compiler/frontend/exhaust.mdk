@@ -704,15 +704,25 @@ interpBinds (InterpExpr e) = collectLetBinds e
 
 -- ── top-level entry ───────────────────────────────────────────────────────
 -- `checkGuardExhaustivenessWith oracleDecls checkDecls` builds the constructor
--- oracle from `oracleDecls` (a safe SUPERSET — runtime + core + every loaded
--- module) while only CHECKING the function groups in `checkDecls` (the target
--- module).  Feeding a superset to `buildOracle` only ever adds ctor knowledge, so
--- it never causes a missed warning; it is what lets the multi-clause path see
--- IMPORTED ADTs (`Expr`/`Decl`/`Result`/…) and stop false-flagging exhaustive
--- functions over them.  Each warning carries an optional per-group loc.
+-- oracle from `oracleDecls` (a SUPERSET — runtime + core + every loaded module)
+-- while only CHECKING the function groups in `checkDecls` (the target module).
+-- The superset lets the multi-clause path see IMPORTED ADTs
+-- (`Expr`/`Decl`/`Result`/…) and stop false-flagging exhaustive functions over
+-- them.  Each warning carries an optional per-group loc.
+--
+-- P0-9: `checkDecls` (the target module's OWN decls) is prepended so its
+-- constructors WIN the oracle's first-wins bare-name tables.  Two loaded modules
+-- can define a same-named ctor at different arities (`map`'s arity-5 `Bin` vs
+-- `set`'s arity-4 `Bin`); this pass runs pre-typecheck with no scrutinee type, so
+-- it infers each column's type from the pattern's ctor name (`inferCol0Type` →
+-- `oGetCtorType`) and reads its arity (`oGetArity`) — both first-wins.  Without
+-- this ordering a superset would resolve the target module's own `Bin` to the
+-- OTHER module's arity/type, producing a spurious W-NONEXHAUSTIVE-CLAUSES warning
+-- against a genuinely exhaustive group.  (`buildOracle` is duplicate-tolerant, so
+-- the checkDecls⊆oracleDecls overlap is harmless.)
 export checkGuardExhaustivenessWith : List Decl -> List Decl -> List (String, Option Loc)
 checkGuardExhaustivenessWith oracleDecls checkDecls =
-  let oracle = buildOracle oracleDecls
+  let oracle = buildOracle (checkDecls ++ oracleDecls)
   flatMap (checkNamedGroup oracle) (groupByName (topFunDefClauses checkDecls))
     ++ flatMap (declBodyWarnings oracle) checkDecls
 

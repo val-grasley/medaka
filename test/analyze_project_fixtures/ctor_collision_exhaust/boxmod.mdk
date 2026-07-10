@@ -1,0 +1,9 @@
+-- A Map-like tree: `Bin` has ARITY 5 (mirrors stdlib/map.mdk).
+data Box k v = Tip | Bin Int k v (Box k v) (Box k v)
+
+export boxSingleton : k -> v -> Box k v
+boxSingleton k v = Bin 1 k v Tip Tip
+
+export boxIsEmpty : Box k v -> Bool
+boxIsEmpty Tip = True
+boxIsEmpty (Bin _ _ _ _ _) = False

@@ -2388,7 +2388,15 @@ buildModInfos : List (String, Ref Value) -> List (String, List (String, Ref Valu
 buildModInfos _ _ [] = []
 buildModInfos globalCells exportsMap ((mid, decls)::rest) =
   let grps = groupsOf decls
-  let localCells = map (n => (n, Ref VUnit)) (map fst grps)
+  -- P0-9: each module's OWN constructors ALSO live in its LOCAL frame (they stay
+  -- in the shared global too — see evalModules — for by-name / `Type(..)`
+  -- cross-module ctor imports and back-compat).  The local copy SHADOWS the
+  -- global, so a module whose code constructs a same-named ctor that another
+  -- module also defines at a different arity (e.g. `map`'s arity-5 `Bin` vs
+  -- `set`'s arity-4 `Bin`) builds via ITS OWN `makeCtor` — the shared global is
+  -- first-wins and would otherwise pick the wrong module's arity (E-NOT-A-FUNCTION).
+  let modCtors = collectCtors decls
+  let localCells = map (n => (n, Ref VUnit)) (map fst grps ++ map fst modCtors)
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
   let exports = localCells ++ pubReexports exportsMap decls
@@ -2397,8 +2405,11 @@ buildModInfos globalCells exportsMap ((mid, decls)::rest) =
 -- pass 2: install each module's funDef groups into its own cells (its env)
 installModGroups : List ModInfo -> <Mut> Unit
 installModGroups [] = ()
-installModGroups ((ModInfo _ _ grps cells menv)::rest) =
+installModGroups ((ModInfo _ decls grps cells menv)::rest) =
   let _ = installGroups menv cells grps
+  -- P0-9: install this module's own ctor values into its local cells (allocated
+  -- in buildModInfos), so map/set construct their own arity-correct `Bin`/`Tip`.
+  let _ = installConsts cells (collectCtors decls)
   installModGroups rest
 
 -- a module's impl methods / interface defaults close over ITS env but coalesce

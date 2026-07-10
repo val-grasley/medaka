@@ -1,0 +1,21 @@
+-- A Set-like tree: same ctor NAMES (`Tip`/`Bin`) as boxmod but `Bin` has ARITY 4.
+-- Importing boxmod forces boxmod's decls into this module's oracle superset.
+-- Both clause groups below are GENUINELY EXHAUSTIVE over Bag; before P0-9's fix
+-- the shared project-wide oracle resolved `Bin` to boxmod's arity 5 (first-wins)
+-- and false-flagged them W-NONEXHAUSTIVE (witness `Bin _ _ _ _ _`).
+import boxmod.{boxSingleton, boxIsEmpty}
+
+data Bag a = Tip | Bin Int a (Bag a) (Bag a)
+
+-- single-column clause group (like set.mdk `size`)
+export bagSize : Bag a -> Int
+bagSize Tip = 0
+bagSize (Bin s _ _ _) = s
+
+-- non-head-column clause group (like set.mdk `has`)
+export bagHas : Int -> Bag Int -> Bool
+bagHas x Tip = False
+bagHas x (Bin _ y l r) = x == y
+
+export useBox : Bool
+useBox = boxIsEmpty (boxSingleton 1 2)

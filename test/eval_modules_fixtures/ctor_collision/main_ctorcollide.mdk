@@ -1,0 +1,9 @@
+-- P0-9 regression: importing two modules that define a same-named ctor (`Bin`)
+-- at different arities (5 vs 4) must NOT crash the interpreter with
+-- E-NOT-A-FUNCTION.  Each module's code constructs via its OWN ctor arity.
+import boxmod.{singletonBox, boxKey}
+import bagmod.{singletonBag, bagElem}
+
+main =
+  println (boxKey (singletonBox 7 "seven"))
+  println (bagElem (singletonBag 42))

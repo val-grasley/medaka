@@ -1,0 +1,3 @@
+import bagmod.{bagSize, bagHas, useBox}
+
+main = println "ok"

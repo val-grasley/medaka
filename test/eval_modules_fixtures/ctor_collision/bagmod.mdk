@@ -1,0 +1,10 @@
+-- A Set-like tree whose `Bin` constructor has arity 4 (mirrors stdlib/set.mdk):
+-- same ctor NAMES as boxmod (`Tip`/`Bin`) but a DIFFERENT `Bin` arity.
+data Bag a = Tip | Bin Int a (Bag a) (Bag a)
+
+export singletonBag : a -> Bag a
+singletonBag x = Bin 1 x Tip Tip
+
+export bagElem : Bag a -> Option a
+bagElem Tip = None
+bagElem (Bin _ x _ _) = Some x
