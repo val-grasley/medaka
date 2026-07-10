@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cells I1 + I2: IMPORTER shadow — `size` is imported from prov
+-- and shadows the LOCAL interface method `Sizeable.size`.  Live-impl receiver
+-- (Box) dispatches to the local impl; no-impl receiver (Int) falls back to the
+-- imported standalone.  (The cfc4fa5a residual-fix shape.)
+-- Expected: run/build print 3 then 4; check accepts.
+import prov.{size}
+
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+main =
+  println (size (Box 3))
+  println (size 3)

@@ -1,0 +1,10 @@
+-- SHADOW-SEMANTICS cell I3: importer shadow where the shadowed interface, the
+-- receiver type, and its impl are ALL IMPORTED (from ifc), and the standalone is
+-- imported from a second module (prov).  The call site's module owns neither side.
+-- Expected (per the resolution rule): 3 then 4 on run/build; check accepts.
+import ifc.{Sizeable, Box(..)}
+import prov.{size}
+
+main =
+  println (size (Box 3))
+  println (size 3)

@@ -1,0 +1,15 @@
+-- SHADOW-SEMANTICS cell D4: definer shadow in VALUE position (passed to a HOF,
+-- not applied) — the bare name denotes the STANDALONE (Phase 112).
+-- Expected: run/build print [2, 3, 4]; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main = println (map size [1, 2, 3])

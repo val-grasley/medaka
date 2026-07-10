@@ -1,0 +1,17 @@
+-- SHADOW-SEMANTICS cell D2: definer shadow, receiver HAS a live impl → RKey
+-- dispatch to the impl; the no-impl receiver falls back to the standalone.
+-- Expected: run/build print 3 then 4; check accepts.  (The P0-18 shape.)
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  println (size (Box 3))
+  println (size 3)

@@ -1,0 +1,11 @@
+-- SHADOW-SEMANTICS cell D8: DEFINER shadow whose shadowed interface + the
+-- receiver's impl are IMPORTED — this module defines only the standalone.
+-- Expected: run/build print 3 then 4; check accepts.
+import prov.{Sizeable, Box(..)}
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  println (size (Box 3))
+  println (size 3)

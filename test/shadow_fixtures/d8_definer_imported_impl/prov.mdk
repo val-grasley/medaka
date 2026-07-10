@@ -1,0 +1,9 @@
+-- SHADOW-SEMANTICS cell D8 provider: interface + receiver type + impl, exported;
+-- the CONSUMER defines the shadowing standalone.
+export interface Sizeable a where
+  size : a -> Int
+
+public export data Box = Box Int
+
+export impl Sizeable Box where
+  size (Box n) = n

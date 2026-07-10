@@ -1,0 +1,7 @@
+-- SHADOW-SEMANTICS cell I4 provider: the stdlib `map.mdk` shape — a module that
+-- defines a NEW type plus a standalone whose name shadows a PRELUDE Foldable
+-- method (isEmpty).
+public export data Tok = Tok Int
+
+export isEmpty : Tok -> Bool
+isEmpty (Tok n) = n == 0

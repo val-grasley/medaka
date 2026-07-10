@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cell D7: definer shadow of a TWO-parameter interface method.
+-- The per-receiver machinery is gated to single-param methods
+-- (singleParamIfaceMethod), so this cell records what the binary does outside
+-- that gate.  Ideal-spec outcome: 3 (dispatch) then 6 (standalone).
+interface Comb a where
+  comb : a -> a -> Int
+
+data Box = Box Int
+
+impl Comb Box where
+  comb (Box a) (Box b) = a + b
+
+comb : Int -> Int -> Int
+comb a b = a * b
+
+main =
+  println (comb (Box 1) (Box 2))
+  println (comb 2 3)

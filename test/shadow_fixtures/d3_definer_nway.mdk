@@ -1,0 +1,23 @@
+-- SHADOW-SEMANTICS cell D3: definer shadow, N-way multi-impl selection — each
+-- receiver selects its OWN impl; the no-impl receiver gets the standalone.
+-- Expected: run/build print 3, 30, 4; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+data Bar = Bar Int Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+impl Sizeable Bar where
+  size (Bar a b) = a + b
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  println (size (Box 3))
+  println (size (Bar 10 20))
+  println (size 3)

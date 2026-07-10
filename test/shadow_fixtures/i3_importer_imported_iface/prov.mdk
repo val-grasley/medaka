@@ -1,0 +1,3 @@
+-- SHADOW-SEMANTICS cell I3 provider 2: the standalone that shadows ifc's method.
+export size : Int -> Int
+size n = n + 1

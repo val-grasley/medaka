@@ -1,0 +1,12 @@
+-- SHADOW-SEMANTICS cell I4: importer shadow of a PRELUDE method (Foldable's
+-- isEmpty), the everyday stdlib pattern (`import map` → `isEmpty m`).  The
+-- shadow's own type (Tok, no Foldable impl) routes to the imported standalone;
+-- a List receiver (live prelude Foldable impl) dispatches to the METHOD.
+-- Expected: run/build print True, False, False, True; check accepts.
+import prov.{Tok(..), isEmpty}
+
+main =
+  println (isEmpty (Tok 0))
+  println (isEmpty (Tok 1))
+  println (isEmpty [1, 2])
+  println (isEmpty [])

@@ -1,0 +1,10 @@
+-- SHADOW-SEMANTICS cell D1b: definer shadow where the shadowed interface has NO
+-- impls at all (the parser.mdk `orElse` shape) → RLocal standalone.
+-- Expected: run/build print 4; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+size : Int -> Int
+size n = n + 1
+
+main = println (size 3)

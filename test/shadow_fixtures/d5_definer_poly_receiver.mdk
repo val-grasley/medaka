@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cell D5: definer shadow applied to an UNGROUNDED receiver (a
+-- polymorphic parameter).  The ungrounded arm routes RLocal → the standalone, so
+-- the wrapper monomorphises to the standalone's domain (Int).
+-- Expected: run/build print 4; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+useIt x = size x
+
+main = println (useIt 3)

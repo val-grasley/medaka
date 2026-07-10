@@ -1,0 +1,17 @@
+-- SHADOW-SEMANTICS cell D6: definer shadow, live impl for a PARAMETRIC receiver
+-- head (impl Sizeable (P a)) — head-tycon grounding must still select the impl.
+-- Expected: run/build print 9 then 4; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data P a = P a
+
+impl Sizeable (P a) where
+  size (P _) = 9
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  println (size (P True))
+  println (size 3)

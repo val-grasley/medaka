@@ -1,0 +1,17 @@
+-- SHADOW-SEMANTICS cell D5b: the D5 wrapper called at a LIVE-IMPL type.  If the
+-- ungrounded-receiver rule pins the wrapper to the standalone (Int), this must
+-- REJECT (Box vs Int) rather than dispatch.  Records the actual behavior.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+useIt x = size x
+
+main = println (useIt (Box 3))

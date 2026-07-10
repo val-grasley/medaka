@@ -1,0 +1,4 @@
+-- SHADOW-SEMANTICS cell I1/I2 provider: exports the standalone that shadows the
+-- consumer's LOCAL interface method.
+export size : Int -> Int
+size n = n + 1

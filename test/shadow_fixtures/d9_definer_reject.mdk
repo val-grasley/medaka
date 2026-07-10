@@ -1,0 +1,16 @@
+-- SHADOW-SEMANTICS cell D9: definer shadow applied to a receiver with NO impl
+-- whose type also does NOT match the standalone's domain (String vs Int) — the
+-- standalone fallback must then fail to type.
+-- Expected: check REJECTS (located type error); run/build reject likewise.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main = println (size "hi")

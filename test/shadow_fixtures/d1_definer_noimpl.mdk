@@ -1,0 +1,15 @@
+-- SHADOW-SEMANTICS cell D1: definer shadow, receiver has NO impl of the shadowed
+-- interface (an impl for another type exists) → RLocal standalone.
+-- Expected: run/build print 4; check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main = println (size 3)

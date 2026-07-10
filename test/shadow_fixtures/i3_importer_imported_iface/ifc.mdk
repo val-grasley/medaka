@@ -1,0 +1,9 @@
+-- SHADOW-SEMANTICS cell I3 provider 1: the interface, the receiver type, and its
+-- impl all live HERE and are exported.
+export interface Sizeable a where
+  size : a -> Int
+
+public export data Box = Box Int
+
+export impl Sizeable Box where
+  size (Box n) = n
