@@ -65,28 +65,35 @@ mut` → located error pointing to `Ref`; mutation via a NEW **`:=` operator** (
 clarity feature (OCaml/SML-style). Reframed P0-5 = enforcement + `:=` sugar + docs (no branch-write
 engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/§5 superseded).
 
-**Queued fast-follow (user-approved 2026-07-09): typeclass-based `[ ]` indexing.** After P0-5 + P0-19.
-A proper small language-feature arc (interface(s) + NEW postfix `[expr]` grammar — none today, parser
-postfix does only `.` — + desugar + impls + inference check), NOT a quick sugar. **Design LOCKED:**
-- **Shape A — HKT single-param, Int-keyed** (fits the Foldable/Mappable pattern + the
-  language-design.md:847 "avoid `Collection c e` multi-param" principle; Medaka DOES support
-  multi-param interfaces à la `FromEntries c e`, but we stay single-param here). **Rust names** (don't
-  reinvent): `interface Index f where index : f a -> Int -> a` and
-  `interface IndexMut f requires Index f where setIndex : f a -> Int -> a -> <Mut> Unit`. NB Rust's
-  `IndexMut` returns an lvalue `&mut`; Medaka has no lvalue refs, so ours is a **setter** (`<Mut>`),
-  not a place-returning `index_mut`.
+**⭐ PRE-BETA (user elevated 2026-07-09): typeclass-based `[ ]` indexing — `Index`/`IndexMut`.**
+"Affects ergonomics around common data structures a lot" → in the beta, not a fast-follow. A real
+language-feature arc (interface(s) + NEW postfix `[expr]` grammar — none today, parser postfix does
+only `.` — + desugar + impls + inference check). **Design LOCKED (Shape B, unified multi-param):**
+- **Unified multi-param `Index c k v`** covering arrays (k=Int) AND maps (k=key) in one interface —
+  NO associated types, NO blessed hatch. Justified by the existing `FromEntries c e` precedent
+  (`core.mdk:888`, `impl FromEntries (Map k v) (k, v)`): Medaka's multi-param interfaces dispatch on
+  the container head `c` and GROUND the trailing params from the matched impl. Ordinary
+  dict-dispatched impls — NOT associated type families → the type-level-programming box never opens.
+  User containers can opt in. **Rust names:** `interface Index c k v where index : c -> k -> v` and
+  `interface IndexMut c k v requires Index c k v where setIndex : c -> k -> v -> <Mut> Unit` (a
+  `<Mut>` setter, since Medaka has no lvalue `&mut`).
+- **Revisits `language-design.md:847`** ("prefer HKT single-param; avoid `Collection c e` multi-param"):
+  we now BLESS a small curated set of core multi-param interfaces (`FromEntries`, `Index`, `IndexMut`)
+  as the sanctioned exceptions — the user's "blessed" instinct, relocated from a new type-system
+  mechanism to interface-usage discipline. Update that note.
 - **Desugar:** `a[i]` → `index a i`; `a[i] := v` → `setIndex a i v`.
-- **Read semantics:** `a[i]` returns the ELEMENT, bounds-checked → clean **`E-INDEX-OOB`** trap on
-  miss (NOT `Option`, even though `MutArray.get`/`Array.get` return `Option`); the `Option` form stays
-  the safe `.get`. Ties into the deferred coded-OOB seam.
-- **Impls:** Array + MutArray (IndexMut) for sure. **List/trees: OPEN sub-decision** — provide
-  `impl Index List` (O(n) convenience, but the perf footgun the current `xs[0]` hint avoids) vs
-  arrays-only (keep the hint). Settle in the design pass.
-- **Maps/HashMap (`m[k]`, k-keyed) NOT covered** by Shape A — a separate, deliberate later decision
-  (Shape B multi-param `Index c k v`, or a `Keyed`/`Lookup` class; also where missing-key read
-  semantics get thorny). Deferred.
-Do a short design pass to lock impls + grammar precedence + the coded-OOB seam before implementing.
-Not a P0 blocker.
+- **Read semantics:** `a[i]` returns the ELEMENT, bounds/key-checked → clean **`E-INDEX-OOB`** /
+  key-missing trap (NOT `Option`, even though `get` returns `Option`); the `Option` form stays the
+  safe `.get`. Ties into the deferred coded-OOB seam.
+- **Impls:** Array, MutArray, Map, HashMap (IndexMut for the mutable ones). **List/trees: OPEN
+  sub-decision** — `impl Index List` (O(n) convenience vs the `xs[0]` perf-footgun hint). Design pass.
+- **ONE feasibility check for the design pass:** `FromEntries` is 2-param; `Index` wants **3** (`c k v`).
+  Confirm the multi-param machinery is arity-general at 3 params (likely yes). **Fallback if not:** the
+  blessed-associated-types hatch (allow assoc types for compiler-blessed builtins only). Also lock:
+  postfix `[]` grammar precedence, the coded-OOB trap seam, read-in-expression-position inference.
+Sequence: after P0-5 lands, run the indexing DESIGN PASS (needs Docker → after P0-5 frees the volume),
+then implement. Order vs P0-19 (soundness) TBD — lean soundness-first, indexing design pass can prep
+in parallel (read-only).
 
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED (run/check + build); soundness hole gone. `main` = `01ac360d`
 
