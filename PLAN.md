@@ -103,7 +103,7 @@ iff it has a `binopMethod` entry). Turn narrow/monomorphic operators into interf
 - **Keep narrow (rejected):** `&&`/`||`/`if`-conditions (truthiness footgun), `!`/`not`, `::`, `|>`/`>>`/`<<`.
 
 ## ⭐ Pre-beta sequencing (DECIDED 2026-07-09, soundness-first)
-1. **P0-5** (Ref-only mutability + `:=` + immutability enforcement + `let mut`→parser-error) — IN FLIGHT.
+1. **P0-5** ✅ DONE (`31f4ea80`+`b80ea8c7`, merged `36228029`): `:=` write operator (→`setRef`), `R-IMMUTABLE-ASSIGN` on bare reassignment, `let mut`→parser error (all `mut` LOGIC stripped; the `DoLet`/`ELet` Bool field kept inert+commented — full field removal was ~87 sites/18 files incl. s-expr round-trip, the documented balloon). Read is `.value` (NOT `!`). Verified in Docker: `:=` run==build, reject matrix (reassign/let-mut REJECT, shadow ACCEPT), agreement gate 20/0, llvm 195/0 byte-identical, fixpoint C3a/C3b YES, no re-mint.
 2. **P0-19** — the 2 silent build-garbage shadow-conformance holes (rows 12/13) + rows 10/14 divergences
    (same class as the just-closed P0-18 hole; fixtures exist in `test/shadow_fixtures/`). SOUNDNESS FIRST.
 3. **Language batches** (all share lexer/parser/desugar/typecheck/eval → strictly sequential):

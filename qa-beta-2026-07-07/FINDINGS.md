@@ -90,7 +90,15 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
   `check`'s non-exhaustive warning literally suggests adding `Person _ _ => …`.
 - Expected: run == build.
 
-## P0-5: Mutability is not enforced; branch-writes are lost or crash the emitter
+## P0-5: Mutability is not enforced; branch-writes are lost or crash the emitter — ✅ RESOLVED 2026-07-09 (`36228029`) via a MODEL PIVOT
+- **Resolution (user-directed pivot):** dropped `let mut` entirely; mutability now lives ONLY in the
+  `Ref` type + `<Mut>` effect (already dogfooded by the compiler). New model: bindings immutable
+  (`=` declaration only), mutation via a new **`:=`** operator (`x := v` → `setRef x v`), read via
+  `.value`. Bare reassignment → `R-IMMUTABLE-ASSIGN`; `let mut` → clean parser error pointing to `Ref`.
+  This dissolves the whole finding: no mutable-binding branch-writes to lose/crash. All `mut` logic
+  stripped (inert Bool field kept). Verified: `:=` run==build, agreement gate 20/0, llvm byte-identical,
+  fixpoint C3a/C3b YES, no re-mint. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/§5
+  superseded by the pivot).
 - Class: silent-wrong / crash / divergence. Source: bindings#F1/F2/F5 (the session's seed
   finding, expanded).
 - Repros:
