@@ -7,6 +7,27 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ P0-18 fully closed + P0-5 mutability PIVOT shipped + a pre-beta LANGUAGE-COHERENCE design pass (2026-07-09 evening). `main` = `b708ee06`
+
+A long design-heavy session. Two implementations shipped; a large amount of language design locked + queued. Owning memory **`project_prebeta_language_coherence_2026_07_09`** (full detail); PLAN.md top entries; three read-only audit docs on main. **Everything verified in Docker, fixpoint C3a/C3b YES throughout, ZERO seed re-mints.**
+
+**✅ SHIPPED this session:**
+- **P0-18 fully closed** (`953d9ea1` run/check + `0b4a7882`/`01ac360d` build-path Option-3 + `cfc4fa5a` importer-no-impl residual): definer-shadow-vs-method dispatch correct on run AND build, incl. N-way + importer cases. A formal **`SHADOW-SEMANTICS.md`** conformance spec (`c1ea45d8`) then surfaced **P0-19** (below).
+- **P0-5 mutability MODEL PIVOT** (`31f4ea80`+`b80ea8c7`): dropped `let mut` entirely; mutability now lives ONLY in `Ref` + `<Mut>`. `=` is declaration-only; mutate via new **`:=`** (`x := v`→`setRef`); **read a Ref via `.value`** (NOT `!` — `!` is boolean-not). Bare reassign → `R-IMMUTABLE-ASSIGN`; `let mut` → clean parser error. All `mut` logic stripped (inert `DoLet`/`ELet` Bool field kept — full removal was ~87 sites/18 files). Verified: agreement 20/0, llvm 195/0 byte-identical, fixpoint YES.
+
+**⭐ DO FIRST tomorrow: P0-19** — the 2 SILENT BUILD-GARBAGE shadow-conformance holes (rows 12 & 13: `useIt x = size x; useIt (Box 3)` and `size "hi"` → check accepts, build prints garbage — same class as the P0-18 hole just closed) + rows 10/14 divergences. **Fully mapped:** `SHADOW-SEMANTICS.md` §5 has per-cell repros + hypotheses, §4 the gate-adoption plan, and the **fixtures already exist** in `test/shadow_fixtures/`. Soundness-first per the sequencing. Opus; reproduce-first; the REJECT-expected cells become `diff_compiler_run_check_agreement` `.expected=REJECT` regressions.
+
+**QUEUED language batches (DECIDED, specified, not built — all in PLAN.md + the memory; strictly sequential, shared front-end files):**
+1. **Trim + `!`→deref:** REMOVE `function` kw (→ beginner-hint), backtick infix, `let rec…with` group, `let-else`; REPURPOSE `!` boolean-not → Ref-deref sugar (`!x`→`.value`; `not` = sole negation). Completes OCaml-clean refs. Audit: `LANGUAGE-SURFACE-AUDIT.md`. KEEP-FOR-FUTURE: `>>`/`<<`.
+2. **Interface generalizations:** `++`→`Semigroup` (GOLD — interface exists but bypassed), unary `-`→`Num.negate`, ranges→minimal `Enum`. SKIP overloaded literals. Audit: `INTERFACE-CANDIDATES.md`.
+3. **Indexing `Index`/`IndexMut`** (PRE-BETA): unified multi-param `Index c k v` (arrays+maps, NO associated types — `FromEntries c e` at core.mdk:888 proves the pattern). `a[i]`→`index a i` (element, `E-INDEX-OOB`), `a[i] := v`→`setIndex`. NEW postfix `[expr]` grammar. Needs a design pass first (verify 3-param multi-param works; List O(n) impl call).
+4. Then remaining **P0 bugs:** P0-2 (silent crashes), P0-10 (hash under run), P0-12 (REPL), playground trio P0-7/8/9 (needs node≥24 in `docker/Dockerfile` first — cheap prereq bite).
+
+**OPS / gotchas for next session:**
+- **Cyberhaven still spikes to ~3 cores during in-Docker FORCE-oracle rebuilds** (the Docker VM disk image is a host file the scanner re-scans; incremental builds stay ~idle at 1.4 cores). **Workflow change owed: stop baking blanket `FORCE=1 build_oracles` (all 67) into agent prompts** — force only affected oracles, keep the `medaka-work` volume warm. A data-backed IT allowlist request was drafted + delivered to the user.
+- **114 stale `agent-*` worktrees** have accumulated (`git worktree list`) — prune the merged ones (preserve any running agent's + this orchestrator's). Leave any the harness won't release.
+- **Verification is Docker-only** (`scripts/docker-dev.sh`); the agreement gate + llvm differential do NOT read `test/bin` oracles (fresh `./medaka` / captured text goldens), so most decisive checks skip the FORCE storm.
+
 ## RESUME — ✅ Beta-hardening batch 2 (usage-constrained, Sonnet-only small wins): P0-15 + P0-14 fixed, P0-4 retired, P1-9 keyword subset (2026-07-09). `main` = `d0fdf122`
 
 A short, usage-constrained session — small Sonnet-sized bites only, each design→delegate→isolated-worktree→salvage→verify→merge. **All fixpoint C3a/C3b YES, ZERO seed re-mints** (verify against the committed seed before assuming otherwise). Owning memory `project_beta_qa_sweep_2026_07_07` (batch-2 entry has full detail).
