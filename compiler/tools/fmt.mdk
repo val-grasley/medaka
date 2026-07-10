@@ -247,7 +247,7 @@ isDataDeclF _ = False
 -- through the generic interior splice instead (see stepDecl).  Only the bare
 -- (non-attribute-wrapped) shape, to avoid dropping `@attr` annotations.
 isSingleNamedFieldData : Decl -> Bool
-isSingleNamedFieldData (DData _ _ _ [Variant _ (ConNamed _)] _) = True
+isSingleNamedFieldData (DData _ _ _ [Variant _ (ConNamed _ _)] _) = True
 isSingleNamedFieldData _ = False
 
 -- Render a single-variant named-field data decl one-field-per-line, consuming its

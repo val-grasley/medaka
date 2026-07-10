@@ -200,7 +200,7 @@ ppDataVariant : Variant -> String
 ppDataVariant (Variant name (ConPos [])) = name
 ppDataVariant (Variant name (ConPos tys)) =
   "\{name} \{joinWith " " (map (ppTyP 2) tys)}"
-ppDataVariant (Variant name (ConNamed fs)) =
+ppDataVariant (Variant name (ConNamed fs _)) =
   "\{name} { \{joinWith ", " (map ppFieldDoc fs)} }"
 
 ppFieldDoc : Field -> String

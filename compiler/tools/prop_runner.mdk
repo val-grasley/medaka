@@ -185,7 +185,7 @@ genUser tydefs subst name tydef args =
 genVariant : List (String, TyDef) -> List (String, Ty) -> Variant -> <Mut> Value
 genVariant tydefs subst (Variant cname payload) = match payload
   ConPos tys => VCon cname (map (genForType tydefs subst) tys)
-  ConNamed fields => VCon cname (map (genFieldTy tydefs subst) fields)
+  ConNamed fields _ => VCon cname (map (genFieldTy tydefs subst) fields)
 
 genField : List (String, TyDef) -> List (String, Ty) -> Field -> <Mut> (String, Value)
 genField tydefs subst (Field fname fty) = (fname, genForType tydefs subst fty)

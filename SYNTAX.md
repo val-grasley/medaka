@@ -299,6 +299,11 @@ data Shape                                         -- block form
   | Rectangle Float Float
 
 data Point = Pt { x : Int, y : Int }              -- named-field variant (inline)
+data Vec = { x : Int, y : Int }                   -- SHORT form: single braced ctor,
+                                                    -- name omitted → ctor name = tycon
+                                                    -- (`Vec`); == `data Vec = Vec { … }`.
+                                                    -- Only for a lone `{ … }` ctor with
+                                                    -- no `|`; multi-ctor stays explicit.
 data Event                                          -- named-field variant (block)
   = Click { x : Int, y : Int }
   | Scroll Int

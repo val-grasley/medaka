@@ -160,7 +160,7 @@ variantName (Variant n _) = n
 
 variantArity : Variant -> (String, Int)
 variantArity (Variant n (ConPos tys)) = (n, listLen tys)
-variantArity (Variant n (ConNamed fs)) = (n, listLen fs)
+variantArity (Variant n (ConNamed fs _)) = (n, listLen fs)
 
 variantCtorType : String -> Variant -> (String, String)
 variantCtorType tyname (Variant n _) = (n, tyname)
@@ -171,7 +171,7 @@ dataCtorFields (DRecord _ tyname _ fields _) = [(tyname, map fieldName fields)]
 dataCtorFields _ = []
 
 variantCtorFields : Variant -> List (String, List String)
-variantCtorFields (Variant n (ConNamed fs)) = [(n, map fieldName fs)]
+variantCtorFields (Variant n (ConNamed fs _)) = [(n, map fieldName fs)]
 variantCtorFields _ = []
 
 fieldName : Field -> String

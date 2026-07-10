@@ -297,7 +297,13 @@ public export data ImplMethod = ImplMethod String (List Pat) Expr
 -- data/record declarations
 public export data DataVis = VisPrivate | VisAbstract | VisPublic
 public export data Field = Field String Ty
-public export data ConPayload = ConPos (List Ty) | ConNamed (List Field)
+-- `ConNamed fields nameOmitted`: named-field (record-style) constructor
+-- payload.  `nameOmitted` is a pure surface marker — True when the ctor name
+-- was omitted in the source short form `data X = { … }` (the synthesized ctor
+-- name equals the tycon name).  It changes nothing downstream (typecheck / eval
+-- / emit / deriving all use the stored name); only the printer/fmt consults it
+-- to round-trip the short form back as `data X = { … }`.
+public export data ConPayload = ConPos (List Ty) | ConNamed (List Field) Bool
 public export data Variant = Variant String ConPayload
 
 -- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`

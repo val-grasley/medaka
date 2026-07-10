@@ -538,7 +538,7 @@ recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner
 recPatFieldOrderEntries _ = []
 
 variantNamedOrder : Variant -> List (String, List String)
-variantNamedOrder (Variant n (ConNamed fs)) = [(n, map fieldLabel fs)]
+variantNamedOrder (Variant n (ConNamed fs _)) = [(n, map fieldLabel fs)]
 variantNamedOrder _ = []
 
 fieldLabel : Field -> String
@@ -1003,7 +1003,7 @@ ctorFieldTypeEntries _ = []
 
 variantFieldTypeEntry : Variant -> (String, List String)
 variantFieldTypeEntry (Variant name (ConPos tys)) = (name, map tyHeadName tys)
-variantFieldTypeEntry (Variant name (ConNamed fields)) =
+variantFieldTypeEntry (Variant name (ConNamed fields _)) =
   (name, map fieldTyHeadName fields)
 
 fieldTyHeadName : Field -> String
@@ -1104,7 +1104,7 @@ variantArity (Variant n payload) = (n, payloadArityL payload)
 
 payloadArityL : ConPayload -> Int
 payloadArityL (ConPos tys) = listLen tys
-payloadArityL (ConNamed fs) = listLen fs
+payloadArityL (ConNamed fs _) = listLen fs
 
 -- a readable tag for the unsupported-node panic
 nodeTag : Expr -> String

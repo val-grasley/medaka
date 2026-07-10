@@ -508,7 +508,7 @@ paramReq iface p = Require iface [TyVar p]
 
 conArity : Variant -> Int
 conArity (Variant _ (ConPos tys)) = listLen tys
-conArity (Variant _ (ConNamed fs)) = listLen fs
+conArity (Variant _ (ConNamed fs _)) = listLen fs
 
 -- positional binder names: genVars "__a" 2 = ["__a0", "__a1"]
 genVars : String -> Int -> List String
@@ -527,7 +527,7 @@ genVarsGo prefix i n
 -- emitter accepts both — so PRec makes the derived match work in BOTH pipelines.
 conBindPat : Variant -> List String -> Pat
 conBindPat (Variant cname (ConPos _)) vars = PCon cname (map PVar vars)
-conBindPat (Variant cname (ConNamed fs)) vars =
+conBindPat (Variant cname (ConNamed fs _)) vars =
   PRec cname (recPatFields fs vars) False
 
 recPatFields : List Field -> List String -> List RecPatField

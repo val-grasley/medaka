@@ -5749,7 +5749,7 @@ variantFieldTailNames (Variant _ payload) =
 
 payloadAstTypes : ConPayload -> List Ty
 payloadAstTypes (ConPos tys) = tys
-payloadAstTypes (ConNamed fields) = map fieldTyOf fields
+payloadAstTypes (ConNamed fields _) = map fieldTyOf fields
 
 fieldTyOf : Field -> Ty
 fieldTyOf (Field _ ty) = ty
@@ -5793,7 +5793,7 @@ collectRowEffvarIds [] = []
 -- literals resolve (the positional ctor scheme is still added by addVariants).
 registerNamedFieldVariants : String -> List String -> List Variant -> <Mut> Unit
 registerNamedFieldVariants _ _ [] = ()
-registerNamedFieldVariants tyName params ((Variant cname (ConNamed fields))::rest) =
+registerNamedFieldVariants tyName params ((Variant cname (ConNamed fields _))::rest) =
   let _ = registerRecordInfoKeyed cname tyName params fields
   registerNamedFieldVariants tyName params rest
 registerNamedFieldVariants tyName params (_::rest) =
@@ -5821,7 +5821,7 @@ addVariants env tvs etbl paramTyIds rowEffvarIds result ((Variant cname payload)
 
 payloadTypesE : List (String, Ref Effvar) -> List (String, Mono) -> ConPayload -> <Mut> List Mono
 payloadTypesE etbl tvs (ConPos tys) = map (fromAstTypeE etbl tvs) tys
-payloadTypesE etbl tvs (ConNamed fields) = map (fieldTypeE etbl tvs) fields
+payloadTypesE etbl tvs (ConNamed fields _) = map (fieldTypeE etbl tvs) fields
 
 fieldTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Field -> <Mut> Mono
 fieldTypeE etbl tvs (Field _ ty) = fromAstTypeE etbl tvs ty

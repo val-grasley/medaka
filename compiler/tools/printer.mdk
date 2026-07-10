@@ -1444,13 +1444,18 @@ printVariant (Variant name (ConPos tys)) =
 -- comma; the `}` sits on its own line one step under the name.  `Line`/`FlatAlt`
 -- switch each piece by group mode; the outer `nest` indents `{`/`}` one step
 -- under the name, the inner `nest` indents the fields one step further.
-printVariant (Variant name (ConNamed fields)) =
+-- `nameOmitted = True` prints the short anonymous-record form `{ … }` with no
+-- ctor name (`data X = { … }`); the leading space is supplied by the ` = `
+-- separator in `dataVariantDocs`.  False keeps the explicit `name { … }` form.
+printVariant (Variant name (ConNamed fields nameOmitted)) =
   let sep = Cat (text ",") Line
   let trailing = FlatAlt (text ",") Nil
+  let namePart = if nameOmitted then Nil else text name
+  let braceOpen = if nameOmitted then text "{" else text " {"
   group (Cat
-    (text name)
+    namePart
     (nest (Cat
-      (text " {")
+      braceOpen
       (Cat
         (nest (Cat Line (Cat (sepBy sep (map fieldTyDoc fields)) trailing)))
         (Cat Line (text "}"))))))
@@ -1472,8 +1477,9 @@ fieldTyDoc (Field fn ft) = Cat (text fn) (Cat (text " : ") (printType ft))
 -- interior-comment splice re-attaches each field's trailing comment by source-line
 -- index.  Falls back to the plain renderer for any non-single-ConNamed shape.
 export printNamedFieldData : DataVis -> String -> List String -> List Variant -> List String -> Doc
-printNamedFieldData vis n params [Variant cname (ConNamed fields)] derives =
-  let head = Cat (text "data ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) (Cat (text " = ") (text cname))))
+printNamedFieldData vis n params [Variant cname (ConNamed fields nameOmitted)] derives =
+  let eqPart = if nameOmitted then text " =" else Cat (text " = ") (text cname)
+  let head = Cat (text "data ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) eqPart))
   let body = Cat (text " {") (Cat (Nest 4 (concatD (map (f => Cat Hardline (Cat (fieldTyDoc f) (text ","))) fields))) (indentBlock (text "}")))
   let deriveDoc = if isEmptyL derives then
     Nil
