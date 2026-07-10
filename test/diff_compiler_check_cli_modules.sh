@@ -264,5 +264,46 @@ case "$dia_out" in
      else fail=$((fail+1)); printf 'FAIL coh-xmod/diamond (exit %d: [%s])\n' "$dia_code" "$dia_out"; fi ;;
 esac
 
+# 9. P0-18 importer-shadow on a NO-IMPL receiver.  `size` is IMPORTED from `impprov`
+#    and shadows the LOCAL interface method `Sizeable.size`.  `size (Box 3)` must
+#    dispatch to the local `impl Sizeable Box` (3); `size 3` (Int, NO impl) must fall
+#    back to the imported standalone (4).  Before the fix `check` REJECTED (`No impl of
+#    Sizeable for Int`) and `build` PANICKED, while `run` correctly returned the
+#    standalone — the imported shadow's bare name was invisible to the emit-path shadow
+#    detection (mangled) AND its no-impl obligation was not skipped on the check path.
+#    check must ACCEPT and build must AGREE (dispatch 3 then standalone 4).
+cat > "$TMP/impprov.mdk" <<'EOF'
+export size : Int -> Int
+size n = n + 1
+EOF
+cat > "$TMP/impmain.mdk" <<'EOF'
+import impprov.{size}
+
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+main =
+  println (size (Box 3))
+  println (size 3)
+EOF
+imp_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/impmain.mdk" 2>/dev/null)"
+imp_code=$?
+case "$imp_out" in
+  *"No impl"*) fail=$((fail+1)); printf 'FAIL importer-shadow/check (spurious no-impl reject: [%s])\n' "$imp_out" ;;
+  *) if [ "$imp_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   importer-shadow/check (imported shadow on no-impl receiver accepted)\n'
+     else fail=$((fail+1)); printf 'FAIL importer-shadow/check (exit %d: [%s])\n' "$imp_code" "$imp_out"; fi ;;
+esac
+# build AGREEMENT: the same project must build AND run to `3` then `4`.
+if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/impmain.mdk" -o "$TMP/imp.bin" >/dev/null 2>&1 && [ -x "$TMP/imp.bin" ]; then
+  imp_bld="$("$TMP/imp.bin" 2>/dev/null | tr '\n' ',')"
+  if [ "$imp_bld" = "3,4," ]; then pass=$((pass+1)); printf 'ok   importer-shadow/build (dispatch 3 + standalone 4)\n'
+  else fail=$((fail+1)); printf 'FAIL importer-shadow/build (got [%s], want [3,4,])\n' "$imp_bld"; fi
+else fail=$((fail+1)); printf 'FAIL importer-shadow/build (native build failed)\n'; fi
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

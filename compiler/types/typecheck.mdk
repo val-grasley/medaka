@@ -4669,15 +4669,24 @@ lookupAssocS2 k ((k2, v)::rest)
 -- same via inferMethodAt; the bare typecheck_main path records here.
 recordImplObligation : String -> Mono -> <Mut> Mono
 recordImplObligation x mono
-  -- A definer shadow (a local top-level funDef that reuses an interface-method
-  -- name, e.g. parser.mdk's own `orElse : Parser a -> Parser a -> Parser a`)
-  -- resolves in-scope to the USER's definition, not the method — the scope-blind
-  -- marker still rewrites its occurrences to EMethodAt, but there is no method
-  -- dispatch and hence no impl obligation.  Recording one here surfaces a spurious
-  -- `No impl of <Iface> for <T>` under checkImplObligations (the build path skips
-  -- that check, so it never saw this).  Routes for these are already stamped RLocal
-  -- (resolveRLocalSite); skip the obligation to match.
-  | contains x definerShadowNamesRef.value = mono
+  -- A standalone shadow (a top-level funDef that reuses an interface-method name)
+  -- resolves in-scope to that standalone, not the method — the scope-blind marker
+  -- still rewrites its occurrences to EMethodAt, but a NO-IMPL receiver legitimately
+  -- falls back to the standalone (resolveRLocalSite stamps RLocal), so there is no
+  -- impl obligation.  Recording one surfaces a spurious `No impl of <Iface> for <T>`
+  -- under checkImplObligations (the build path skips that check, so it only bites
+  -- `check`).  Skip for EVERY standalone shadow — definer (`definerShadowNamesRef`)
+  -- AND importer (an imported standalone; `standaloneValuesRef` holds both).  P0-18:
+  -- this closes the `check`-side of the importer-shadow-on-a-no-impl-receiver residual
+  -- (`size 3` where `size` is imported) which was REJECTED while `run` correctly
+  -- returned the standalone.  Sound: the name genuinely has a standalone fallback, so
+  -- a no-impl receiver is not an error — the route decides impl-vs-standalone per
+  -- receiver; a receiver WITH an impl still dispatches (and that impl exists).
+  -- Check BOTH refs: the single-file check path (checkProgram) sets only
+  -- `definerShadowNamesRef`, while the multi-module path sets `standaloneValuesRef`
+  -- (importer ∪ definer) — so either alone would miss one path's shadows.
+  | contains x definerShadowNamesRef.value || contains x standaloneValuesRef.value =
+    mono
   | otherwise = match lookupAssoc x methodIfaceParamsRef.value
     None => mono
     Some (iface, typarams, mty) =>
@@ -4992,11 +5001,21 @@ inferShadowApp env mname tagRefs f x =
 -- the standalone scheme whose declared domain (`Int`) is NOT the actual receiver.
 -- Returning the route ref lets inferDefinerShadowApp record the REAL argument mono
 -- for per-receiver routing (`Box` has a `Sizeable` impl → method; `Int` → standalone).
+-- P0-18 (importer residual): on the EMIT path a definer shadow's bare name is NOT
+-- in definerShadowNamesRef when the standalone is IMPORTED from another module (that
+-- ref is keyed on module-local funDefs).  But the mark pass ALREADY seeded such an
+-- occurrence's route with the mangled standalone symbol (`RLocal <sym>`), so a
+-- non-empty route symbol is an equally-good "this is a shadow" signal that works
+-- cross-module.  Firing here routes the occurrence through inferDefinerShadowApp,
+-- which types it against the standalone scheme and records the per-receiver mono —
+-- so an importer shadow on a live-impl receiver dispatches to the impl, and one on a
+-- no-impl receiver falls back to the standalone (RLocal <sym>), exactly like a
+-- definer shadow.  On the un-mangled run/check path the route is RNone (sym ""), so
+-- this branch is inert there and the ordinary definerShadowNames branch governs.
 definerShadowArgHead : Expr -> <Mut> Option (String, Ref Route, Ref (List Route))
 definerShadowArgHead (ELoc _ f) = definerShadowArgHead f
 definerShadowArgHead (EMethodAt name tagRef implRef _)
-  | contains name definerShadowNamesRef.value && singleParamIfaceMethod name =
-    Some (name, tagRef, implRef)
+  | singleParamIfaceMethod name && (contains name definerShadowNamesRef.value || routeLocalSym tagRef.value != "") = Some (name, tagRef, implRef)
   | otherwise = None
 definerShadowArgHead _ = None
 
@@ -11189,7 +11208,13 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- scheme (which would unify `t a ~ Map String Int` → `a ↦ Int`, giving the wrong
   -- `List Int` result element type).
   let _ = setRef shadowStandaloneSchemesRef (pickStandaloneSchemes importerShadows seedVars)
-  let _ = setRef shadowKeyTableRef (buildKeyTable implDecls)
+  -- P0-18 (importer residual): include THIS module's own impls so inferShadowApp's
+  -- `implExistsForHead` sees a LOCAL impl of the shadowed interface (the `impl
+  -- Sizeable Box` lives in `prog`, not the imported [implDecls]).  Without it an
+  -- importer shadow applied to a live-impl receiver (`size (Box 3)`) found no impl,
+  -- fell through to the standalone (`Int -> Int`), and mis-typed `Box vs Int`.  Emit
+  -- is unaffected (the importer path is unreachable there — standaloneValues empty).
+  let _ = setRef shadowKeyTableRef (buildKeyTable (implDecls ++ prog))
   let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
   let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
@@ -11396,7 +11421,18 @@ allIfaceMethodNames (_::rest) = allIfaceMethodNames rest
 -- standalone_values ∩ method_iface, minus env.locals.
 buildStandaloneShadows : List Decl -> List Decl -> List String
 buildStandaloneShadows implDecls prog =
-  let methodNames = allIfaceMethodNames implDecls
+  -- P0-18 (importer residual, check path): scan interface methods across BOTH the
+  -- imported universe [implDecls] AND this module [prog] — the shadowed interface may
+  -- be defined LOCALLY in the importing module (e.g. `import prov.{size}` where THIS
+  -- module declares `interface Sizeable a where size : a -> Int`).  With only
+  -- [implDecls] the local interface's `size` was invisible, so the imported standalone
+  -- was not recognised as an importer shadow → recordImplObligation fired a spurious
+  -- `No impl of Sizeable for Int` on a no-impl receiver (`size 3`) that `run`
+  -- correctly resolved to the standalone.  EMIT path is unaffected: there the method
+  -- names are bare but the imported funDefs are mangled (`<mid>__size`), so the
+  -- intersection stays empty (the emit-side importer routing is recovered separately
+  -- via the mark-seeded RLocal route in definerShadowArgHead).
+  let methodNames = allIfaceMethodNames (implDecls ++ prog)
   let localNames = map fst (funDefs prog)
   let importedFns = map fst (funDefs implDecls)
   filter
