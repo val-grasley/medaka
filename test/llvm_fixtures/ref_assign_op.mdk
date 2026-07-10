@@ -1,0 +1,8 @@
+-- beta mutability: the `:=` write operator (surface sugar for `setRef`).
+-- `c := e` desugars to `setRef c e`; reads stay `.value`. Prelude-free: start at
+-- 10, overwrite with `:=` to 5, then `:= c.value + 1` -> 6 (proves write + read).
+main =
+  let c = Ref 10
+  c := 5
+  c := c.value + 1
+  c.value

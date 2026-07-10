@@ -1,7 +1,0 @@
--- T2: `let mut … in …` is only valid inside an indented block (where
--- sequential reassignment is possible), not in inline `let … in …` position.
--- The oracle raises `MutLetRequiresBlock`; the self-hosted typechecker must
--- accumulate the byte-identical message.
-main =
-  let v = let mut x = [] in x
-  v

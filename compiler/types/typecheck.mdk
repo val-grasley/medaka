@@ -1009,235 +1009,6 @@ checkOneAxis l name _ =
       l
       ("unknown product axis '" ++ name ++ "' (known axes: Host, Method)"))
 
--- T2: oracle `MutLetRequiresBlock` message (lib/typecheck.ml:788-789) — must be
--- byte-identical so the typecheck-error gate matches.
-mutLetRequiresBlockMsg : String -> String
-mutLetRequiresBlockMsg x = "'let mut "
-  ++ x
-  ++ "' must be inside an indented block; reassignment is only possible in sequential blocks, not inline `let ... in ...` expressions"
-
--- OBS1: oracle `MutLetInDo` message (lib/typecheck.ml:786-787 / lib/desugar.ml:836)
--- — `let mut` is not allowed inside a `do` block; must be byte-identical.
-mutLetInDoMsg : String -> String
-mutLetInDoMsg x = "'let mut "
-  ++ x
-  ++ "' is not allowed inside a `do` block. Use a bare sequential block"
-
--- ── OBS1: pre-desugar do-block well-formedness check ─────────────────────────
--- Mirror of lib/desugar.ml's `check_do_wellformed` (the `DoLet isMut=true` arm
--- at line 834).  The oracle raises `Do_error` at desugar time; the compiler
--- replicates the prohibition by walking the RAW (pre-desugared) `List Decl`
--- and returning a list of `TYPE ERROR: …` lines for each `DoLet isMut=True`
--- inside an `EDo` block.  Returns early-exit on first error (matching the
--- oracle: Do_error terminates processing).
---
--- Returns `List String` (pure) — the caller prepends to typecheck output before
--- printing; this avoids the resetState() stomping on the typeErrors accumulator.
--- Called from both compiler entry points: typecheck_main.mdk and check.mdk.
-export collectDoWellformedErrors : List Decl -> List String
-collectDoWellformedErrors prog = collectDeclsErrors prog
-
-collectDeclsErrors : List Decl -> List String
-collectDeclsErrors [] = []
-collectDeclsErrors (d::rest) = match collectDeclErrors d
-  [] => collectDeclsErrors rest
-  errs => errs  -- stop at first error (oracle exits on first Do_error)
-
-collectDeclErrors : Decl -> List String
-collectDeclErrors (DFunDef _ _ _ e) = collectExprErrors e
-collectDeclErrors (d@(DInterface { methods, ... })) =
-  collectIfaceMethodErrors methods
-collectDeclErrors (d@(DImpl { methods, ... })) = collectImplMethodErrors methods
-collectDeclErrors (DProp _ _ _ e) = collectExprErrors e
-collectDeclErrors (DTest _ _ e) = collectExprErrors e
-collectDeclErrors (DBench _ _ e) = collectExprErrors e
-collectDeclErrors (DAttrib _ d) = collectDeclErrors d
-collectDeclErrors _ = []
-
-collectIfaceMethodErrors : List IfaceMethod -> List String
-collectIfaceMethodErrors [] = []
-collectIfaceMethodErrors ((IfaceMethod _ _ None)::rest) =
-  collectIfaceMethodErrors rest
-collectIfaceMethodErrors ((IfaceMethod _ _ (Some (MethodDefault _ e)))::rest) = match collectExprErrors e
-  [] => collectIfaceMethodErrors rest
-  errs => errs
-
-collectImplMethodErrors : List ImplMethod -> List String
-collectImplMethodErrors [] = []
-collectImplMethodErrors ((ImplMethod _ _ e)::rest) = match collectExprErrors e
-  [] => collectImplMethodErrors rest
-  errs => errs
-
--- Check a do-stmt list for disallowed `let mut` (non-final only — final stmts
--- can't be DoLet per the parser).  Returns the first error found.
-collectDoStmtErrors : List DoStmt -> List String
-collectDoStmtErrors [] = []
-collectDoStmtErrors [_] = []
-collectDoStmtErrors ((DoLet True _ pat _)::_) =
-  let nm = match pat
-    PVar x => x
-    _ => "_"
-  ["TYPE ERROR: " ++ mutLetInDoMsg nm]
-collectDoStmtErrors (_::rest) = collectDoStmtErrors rest
-
--- Recurse into an expr, collecting the FIRST do-wellformed error found.
-collectExprErrors : Expr -> List String
-collectExprErrors (ELoc _ e) = collectExprErrors e
-collectExprErrors (EDoOrigin _ e) = collectExprErrors e
-collectExprErrors (EApp a b) = match collectExprErrors a
-  [] => collectExprErrors b
-  errs => errs
-collectExprErrors (ELam _ e) = collectExprErrors e
-collectExprErrors (ELet _ _ _ e1 e2) = match collectExprErrors e1
-  [] => collectExprErrors e2
-  errs => errs
-collectExprErrors (ELetGroup bs e) = match collectLetBindErrors bs
-  [] => collectExprErrors e
-  errs => errs
-collectExprErrors (EMatch e arms) = match collectExprErrors e
-  [] => collectArmErrors arms
-  errs => errs
-collectExprErrors (EIf c t el) = match collectExprErrors c
-  [] => match collectExprErrors t
-    [] => collectExprErrors el
-    errs => errs
-  errs => errs
-collectExprErrors (EBinOp _ a b _) = match collectExprErrors a
-  [] => collectExprErrors b
-  errs => errs
-collectExprErrors (EUnOp _ e) = collectExprErrors e
-collectExprErrors (EInfix _ a b) = match collectExprErrors a
-  [] => collectExprErrors b
-  errs => errs
-collectExprErrors (EFieldAccess e _ _) = collectExprErrors e
-collectExprErrors (ERecordCreate _ fs) = collectFieldAssignErrors fs
-collectExprErrors (ERecordUpdate e fs) = match collectExprErrors e
-  [] => collectFieldAssignErrors fs
-  errs => errs
-collectExprErrors (EVariantUpdate _ e fs) = match collectExprErrors e
-  [] => collectFieldAssignErrors fs
-  errs => errs
-collectExprErrors (EArrayLit es) = collectExprsErrors es
-collectExprErrors (EListLit es) = collectExprsErrors es
-collectExprErrors (ETuple es) = collectExprsErrors es
-collectExprErrors (EIndex e i _) = match collectExprErrors e
-  [] => collectExprErrors i
-  errs => errs
-collectExprErrors (ERangeList lo hi _) = match collectExprErrors lo
-  [] => collectExprErrors hi
-  errs => errs
-collectExprErrors (ERangeArray lo hi _) = match collectExprErrors lo
-  [] => collectExprErrors hi
-  errs => errs
-collectExprErrors (ESlice e lo hi _ _) = match collectExprErrors e
-  [] => match collectExprErrors lo
-    [] => collectExprErrors hi
-    errs => errs
-  errs => errs
-collectExprErrors (EBlock stmts) = collectDoStmtsSubExprs stmts
--- EDo: check for OBS1 prohibition, then recurse into sub-expressions.
-collectExprErrors (EDo stmts) = match collectDoStmtErrors stmts
-  [] => collectDoStmtsSubExprs stmts
-  errs => errs
-collectExprErrors (EAnnot e _) = collectExprErrors e
-collectExprErrors (EHeadAnnot e _) = collectExprErrors e
-collectExprErrors (EStringInterp parts) = collectInterpPartErrors parts
-collectExprErrors (EGuards arms) = collectGuardArmErrors arms
-collectExprErrors (EFunction arms) = collectArmErrors arms
-collectExprErrors (ESection (SecRight _ e)) = collectExprErrors e
-collectExprErrors (ESection (SecLeft e _)) = collectExprErrors e
-collectExprErrors (EMapLit _ kvs) = collectKvErrors kvs
-collectExprErrors (ESetLit _ es) = collectExprsErrors es
-collectExprErrors _ = []
-
-collectExprsErrors : List Expr -> List String
-collectExprsErrors [] = []
-collectExprsErrors (e::rest) = match collectExprErrors e
-  [] => collectExprsErrors rest
-  errs => errs
-
--- Recurse into the sub-expressions of a do-stmt list (without checking the list itself).
-collectDoStmtsSubExprs : List DoStmt -> List String
-collectDoStmtsSubExprs [] = []
-collectDoStmtsSubExprs ((DoExpr e)::rest) = match collectExprErrors e
-  [] => collectDoStmtsSubExprs rest
-  errs => errs
-collectDoStmtsSubExprs ((DoBind _ e)::rest) = match collectExprErrors e
-  [] => collectDoStmtsSubExprs rest
-  errs => errs
-collectDoStmtsSubExprs ((DoLet _ _ _ e)::rest) = match collectExprErrors e
-  [] => collectDoStmtsSubExprs rest
-  errs => errs
-collectDoStmtsSubExprs ((DoAssign _ e)::rest) = match collectExprErrors e
-  [] => collectDoStmtsSubExprs rest
-  errs => errs
-collectDoStmtsSubExprs ((DoFieldAssign _ _ e)::rest) = match collectExprErrors e
-  [] => collectDoStmtsSubExprs rest
-  errs => errs
-collectDoStmtsSubExprs ((DoLetElse _ e alt)::rest) = match collectExprErrors e
-  [] => match collectExprErrors alt
-    [] => collectDoStmtsSubExprs rest
-    errs => errs
-  errs => errs
-
-collectLetBindErrors : List LetBind -> List String
-collectLetBindErrors [] = []
-collectLetBindErrors ((LetBind _ clauses)::rest) = match collectFunClauseErrors clauses
-  [] => collectLetBindErrors rest
-  errs => errs
-
-collectFunClauseErrors : List FunClause -> List String
-collectFunClauseErrors [] = []
-collectFunClauseErrors ((FunClause _ e)::rest) = match collectExprErrors e
-  [] => collectFunClauseErrors rest
-  errs => errs
-
-collectArmErrors : List Arm -> List String
-collectArmErrors [] = []
-collectArmErrors ((Arm _ gs e)::rest) = match collectGuardErrors gs
-  [] => match collectExprErrors e
-    [] => collectArmErrors rest
-    errs => errs
-  errs => errs
-
-collectGuardErrors : List Guard -> List String
-collectGuardErrors [] = []
-collectGuardErrors ((GBool e)::rest) = match collectExprErrors e
-  [] => collectGuardErrors rest
-  errs => errs
-collectGuardErrors ((GBind _ e)::rest) = match collectExprErrors e
-  [] => collectGuardErrors rest
-  errs => errs
-
-collectGuardArmErrors : List GuardArm -> List String
-collectGuardArmErrors [] = []
-collectGuardArmErrors ((GuardArm gs e)::rest) = match collectGuardErrors gs
-  [] => match collectExprErrors e
-    [] => collectGuardArmErrors rest
-    errs => errs
-  errs => errs
-
-collectFieldAssignErrors : List FieldAssign -> List String
-collectFieldAssignErrors [] = []
-collectFieldAssignErrors ((FieldAssign _ e)::rest) = match collectExprErrors e
-  [] => collectFieldAssignErrors rest
-  errs => errs
-
-collectInterpPartErrors : List InterpPart -> List String
-collectInterpPartErrors [] = []
-collectInterpPartErrors ((InterpStr _)::rest) = collectInterpPartErrors rest
-collectInterpPartErrors ((InterpExpr e)::rest) = match collectExprErrors e
-  [] => collectInterpPartErrors rest
-  errs => errs
-
-collectKvErrors : List (Expr, Expr) -> List String
-collectKvErrors [] = []
-collectKvErrors ((k, v)::rest) = match collectExprErrors k
-  [] => match collectExprErrors v
-    [] => collectKvErrors rest
-    errs => errs
-  errs => errs
-
 -- replace a row's bound tail effvar with its fresh instance from [esub], so each
 -- call site of a polymorphic HOF gets its own effect variable
 substRow : List (Int, Ref Effvar) -> EffRow -> EffRow
@@ -3880,8 +3651,8 @@ inferStmt env (DoExpr e) =
   let _ = infer env e
   env
 inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
-inferStmt env (DoLet isMut _ pat e) = blockLet env isMut pat e
-inferStmt env (DoLetElse pat e _) = blockLet env False pat e
+inferStmt env (DoLet _ _ pat e) = blockLet env pat e
+inferStmt env (DoLetElse pat e _) = blockLet env pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
 -- A `<-` bind (DoBind) reaching a bare block is a user error: `<-` is
 -- monadic-`do`-only, and a monadic `do` lowers to EDo (desugared before
@@ -3913,8 +3684,8 @@ blockRecLet env x e =
   let _ = recordLocalBind x t1  -- LSP hover (block rec-let bypasses inferPat)
   seedAlphaLets (extendVar env x (generalize t1)) x e  -- WS-2: α scope-seed
 
-blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
-blockLet env isMut (PVar x) e =
+blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
+blockLet env (PVar x) e =
   let _ = enterLevel ()
   let oblN0 = listLen pendingImplObligations.value
   let t = infer env e
@@ -3923,16 +3694,10 @@ blockLet env isMut (PVar x) e =
   let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t]   -- RETPOS soundness
   let _ = recordLocalBind x t   -- LSP hover (block let bypasses inferPat)
-  -- WS-2: α scope-seed — stable (non-mut) bindings only; a `let mut` RHS can be
-  -- reassigned, so its prefix is not stable.
-  let env1 = extendVar env x (genRestricted (not isMut && isNonexpansive e) t)
-  if isMut then env1 else seedAlphaLets env1 x e
--- T1b: a `mut` binding must be monomorphic — generalizing it (when the RHS is
--- nonexpansive, e.g. `let mut x = []`) lets later assignments re-instantiate,
--- so the binding would accept heterogeneous values.  Force the value-restricted
--- (monomorphic) path when mut.
-
-blockLet env _ pat e =
+  -- WS-2: α scope-seed — bindings are immutable, so the prefix is stable.
+  let env1 = extendVar env x (genRestricted (isNonexpansive e) t)
+  seedAlphaLets env1 x e
+blockLet env pat e =
   let t = infer env e
   let pr = inferPat env pat
   let _ = unify (fst pr) t
@@ -5407,23 +5172,14 @@ inferLam env pats body =
   let _ = setRef curEffect saved
   arrowsWithLastEffect (fst pr) bodyEff bodyTy
 
+-- The first Bool (`mut`) is always False — `let mut` is a parser error (beta
+-- mutability model), so no inline mut-let path remains here.
 inferLet : TcEnv -> Bool -> Bool -> Pat -> Expr -> Expr -> <Mut> Mono
-inferLet env isMut isFun pat e1 e2
-  | isMut =
-    let nm = match pat
-      PVar x => x
-      _ => "_"
-    let _ = pushTypeError "T-MUT-LET-BLOCK" (mutLetRequiresBlockMsg nm)
-    inferLetSimple env pat e1 e2
+inferLet env _ isFun pat e1 e2
   | isFun = match pat
     PVar x => inferRecLet env x e1 e2
     _ => inferLetSimple env pat e1 e2
   | otherwise = inferLetSimple env pat e1 e2
--- T2: inline `let mut … in …` is rejected — reassignment needs a block
--- (oracle `lib/typecheck.ml:1664-1667`, `MutLetRequiresBlock`).
-
--- record the error but still bind the pattern + type the body, so
--- accumulation continues without a spurious unbound-variable panic
 
 -- T2: a recursive inline function binding (`let go n = … in …`) must
 -- pre-bind `go` with a monomorphic placeholder so the RHS can reference

@@ -17,9 +17,9 @@ vowelKind c = match c
   'a'..'z' => "lower"
   _ => "other"
 counter =
-  let mut a = 0
-  a = a + 1
-  a
+  let a = Ref 0
+  a := a.value + 1
+  a.value
 setField r =
   r.x = 1
   r.pos.y = 2

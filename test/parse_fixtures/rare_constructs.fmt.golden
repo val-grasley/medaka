@@ -6,7 +6,7 @@
 -- Covered here: operator sections, unary not, the
 -- `function` keyword (incl. an `if` arm guard), array
 -- ranges `[|lo..hi|]`, array slices/index `e.[lo..hi]` / `e.[i]`, range
--- patterns (int + char), `let mut` + assignment, field assignment, let-else,
+-- patterns (int + char), `Ref` + `:=` write, field assignment, let-else,
 -- a do-block function-let, and record patterns `C { f = p, … }` / `C { .. }`.
 -- (Other rares already live in the corpus: inclusive/exclusive list ranges +
 -- array literals in where_ranges, bare/right +/* sections in sections_litpats,
@@ -45,9 +45,9 @@ vowelKind c = match c
   _ => "other"
 
 counter =
-  let mut a = 0
-  a = a + 1
-  a
+  let a = Ref 0
+  a := a.value + 1
+  a.value
 
 setField r =
   r.x = 1

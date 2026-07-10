@@ -1,4 +1,4 @@
--- explicit Refs (Ref / setRef / .value) + block-local rebinding (<-)
+-- explicit Refs (Ref / setRef / .value) + pure recursive accumulation
 countUp n =
   let r = Ref 0
   let _ = bump r n
@@ -7,10 +7,7 @@ bump r 0 = r.value
 bump r k =
   let _ = setRef r (r.value + 1)
   bump r (k - 1)
-sumTo n =
-  let mut acc = 0
-  let mut i = 1
-  loop acc i n
+sumTo n = loop 0 1 n
 loop acc i n
   | i > n = acc
   | otherwise = loop (acc + i) (i + 1) n

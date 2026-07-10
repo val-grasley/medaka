@@ -318,8 +318,26 @@ skipNlFor _ = pure ()
 -- ladder: lam → or → and → cmp → cons → append → add → mul → app → postfix → atom
 parseExpr : Parser Expr
 parseExpr = do
-  e <- parseLam
+  e <- parseAssign
   orElse (annotTail e) (pure e)
+
+-- `:=` reference assignment (mutation). Looser than lambda so the RHS may be a
+-- full lambda (`r := x => x`), right-associative (`a := b := c` ⇒ `a := (b := c)`)
+-- like OCaml. Desugars to `setRef lhs rhs` in `desugar.mdk` (an `EBinOp ":="` node
+-- survives resolve/typecheck only up to that lowering).
+parseAssign : Parser Expr
+parseAssign = do
+  e <- parseLam
+  orElse (assignTail e) (pure e)
+
+assignTail : Expr -> Parser Expr
+assignTail lhs = located (assignTailRaw lhs)
+
+assignTailRaw : Expr -> Parser Expr
+assignTailRaw lhs = do
+  expectTok TColonEq
+  rhs <- parseAssign
+  pure (EBinOp ":=" lhs rhs (Ref RNone))
 
 -- expression type annotation `e : ty` (loosest level)
 annotTail : Expr -> Parser Expr
@@ -1167,46 +1185,18 @@ parseLet = do
   letExprKind t
 
 letExprKind : Token -> Parser Expr
-letExprKind TMut = letMutExpr
+-- beta mutability model: `let mut` has been removed (bindings are immutable).
+-- It is rejected here at the parser so the `mut` flag is never constructed
+-- anywhere downstream. See `letMutRemovedMsg`.
+letExprKind TMut = failP letMutRemovedMsg
 letExprKind TRec = letRecExpr
 letExprKind (TIdent name) = letIdentExpr name
 letExprKind _ = letPatExpr
 
--- `let mut IDENT [: ty] = e in e2` or `let mut pat = e in e2`
-letMutExpr : Parser Expr
-letMutExpr = do
-  expectTok TMut
-  t <- peekP
-  letMutKind t
-
-letMutKind : Token -> Parser Expr
-letMutKind (TIdent name) = do
-  advance
-  t <- peekP
-  letMutIdentRest name t
-letMutKind _ = do
-  pat <- parsePat
-  expectTok TEqual
-  e1 <- parseExpr
-  expectTok TIn
-  e2 <- parseExpr
-  pure (ELet True False pat e1 e2)
-
-letMutIdentRest : String -> Token -> Parser Expr
-letMutIdentRest name TColon = do
-  advance
-  ty <- parseTy
-  expectTok TEqual
-  e1 <- parseExpr
-  expectTok TIn
-  e2 <- parseExpr
-  pure (ELet True False (PVar name) (EAnnot e1 ty) e2)
-letMutIdentRest name _ = do
-  expectTok TEqual
-  e1 <- parseExpr
-  expectTok TIn
-  e2 <- parseExpr
-  pure (ELet True False (PVar name) e1 e2)
+-- The single parser rejection message for `let mut` (used at both the
+-- expression-level and statement-level `let` productions). Points at `Ref`/`:=`.
+letMutRemovedMsg : String
+letMutRemovedMsg = "`let mut` has been removed — bindings are immutable. For mutable state use a `Ref` cell: `let x = Ref 0`, write `x := newValue`, and read it with `x.value`"
 
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e`, each followed by `in e2`
@@ -2903,26 +2893,11 @@ parseLetStmt = do
   letKind t
 
 letKind : Token -> Parser DoStmt
-letKind TMut = do
-  advance
-  pat <- parsePat
-  t <- peekP
-  letMutBody pat t
+-- beta mutability model: `let mut` has been removed — rejected at the parser
+-- (see `letMutRemovedMsg`), so no `mut` flag is ever built downstream.
+letKind TMut = failP letMutRemovedMsg
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
-
--- `let mut p = e` or annotated `let mut p : ty = e`
-letMutBody : Pat -> Token -> Parser DoStmt
-letMutBody pat TColon = do
-  advance
-  ty <- parseTy
-  expectTok TEqual
-  e1 <- parseRhsExpr
-  pure (DoLet True False pat (EAnnot e1 ty))
-letMutBody pat _ = do
-  expectTok TEqual
-  e1 <- parseRhsExpr
-  pure (DoLet True False pat e1)
 
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e [in/else]`
@@ -3611,6 +3586,17 @@ firstSlashEqIdx toks i
   | peekTok toks i == TSlashEq = i
   | otherwise = firstSlashEqIdx toks (i + 1)
 
+-- beta mutability model: `let mut` has been removed. `mut` (TMut) is a keyword
+-- with no remaining valid use, so its presence is always the removed `let mut`.
+-- A pre-grammar token scan surfaces a clean, located error (pointing at `mut`)
+-- instead of the recursive-descent's swallowed-then-"expected dedent" fallback
+-- (`stmtsLoop`'s `orElse … (pure [])` discards a failed statement's own error).
+firstMutIdx : Array Token -> Int -> Int
+firstMutIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TMut = i
+  | otherwise = firstMutIdx toks (i + 1)
+
 -- Scan forward from token index `i` (depth=accumulated INDENT/DEDENT) looking
 -- for `TIn` at depth=0 before the enclosing block exits (a `TDedent` that would
 -- take depth below 0, or `TEof`).  Returns True if the inline `let` is
@@ -3845,6 +3831,7 @@ parseResult src = match tokenizeWithOffsets src
     let offs = arrayFromList offList
     let srcLen = stringLength src
     let seIdx = firstSlashEqIdx toks 0
+    let lmIdx = firstMutIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
@@ -3861,6 +3848,8 @@ parseResult src = match tokenizeWithOffsets src
       None =>
         if seIdx >= 0 then
           Err (mkLocated src toks offs srcLen "unexpected '/='. (Did you mean '!='?)" seIdx)
+        else if lmIdx >= 0 then
+          Err (mkLocated src toks offs srcLen letMutRemovedMsg lmIdx)
         else if ilIdx >= 0 then
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
         else if coIdx >= 0 then

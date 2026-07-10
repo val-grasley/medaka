@@ -3,7 +3,6 @@
 -- params, the two `where` placements, and nested record update.
 
 annotatedLet x = let y : Int = x + 1 in y * 2
-mutLet x = let mut acc = x in acc
 recLet n = let rec go = k => go k in go n
 recWithLet n = let rec ping = k => pong k with pong = k => ping k in ping n
 

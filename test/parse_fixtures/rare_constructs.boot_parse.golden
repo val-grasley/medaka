@@ -9,7 +9,7 @@
 (DFunDef false "indexIt" ((PVar "xs")) (EIndex (EVar "xs") (ELit (LInt 0))))
 (DFunDef false "grade" ((PVar "n")) (EMatch (EVar "n") (arm (PRng (LInt 0) (LInt 59) false) () (ELit (LString "F"))) (arm (PRng (LInt 60) (LInt 100) true) () (ELit (LString "P")))))
 (DFunDef false "vowelKind" ((PVar "c")) (EMatch (EVar "c") (arm (PRng (LChar "a") (LChar "z") false) () (ELit (LString "lower"))) (arm PWild () (ELit (LString "other")))))
-(DFunDef false "counter" () (EBlock (DoLet true false (PVar "a") (ELit (LInt 0))) (DoAssign "a" (EBinOp "+" (EVar "a") (ELit (LInt 1)))) (DoExpr (EVar "a"))))
+(DFunDef false "counter" () (EBlock (DoLet false false (PVar "a") (EApp (EVar "Ref") (ELit (LInt 0)))) (DoExpr (EBinOp ":=" (EVar "a") (EBinOp "+" (EFieldAccess (EVar "a") "value") (ELit (LInt 1))))) (DoExpr (EFieldAccess (EVar "a") "value"))))
 (DFunDef false "setField" ((PVar "r")) (EBlock (DoFieldAssign "r" ("x") (ELit (LInt 1))) (DoFieldAssign "r" ("pos" "y") (ELit (LInt 2)))))
 (DFunDef false "withFallback" ((PVar "m")) (EBlock (DoLetElse (PCon "Some" (PVar "v")) (EVar "m") (EVar "fallback")) (DoExpr (EVar "v"))))
 (DFunDef false "doFunLet" () (EBlock (DoLet false false (PVar "twice") (ELam ((PVar "n")) (EBinOp "+" (EVar "n") (EVar "n")))) (DoExpr (EApp (EVar "twice") (ELit (LInt 21))))))

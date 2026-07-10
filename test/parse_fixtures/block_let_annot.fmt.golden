@@ -4,12 +4,6 @@ annotated =
   let q = addOne : Int -> Int
   q p
 
--- mut block-let with annotation
-mutAnnot =
-  let mut r = 5 : Int
-  r = r + 1
-  r
-
 -- un-annotated block-let still parses (no regression)
 plain =
   let s = 5

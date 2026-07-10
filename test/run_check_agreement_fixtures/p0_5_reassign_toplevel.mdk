@@ -1,0 +1,4 @@
+-- beta mutability (P0-5): redefining a TOP-LEVEL value binding is rejected.
+x = 1
+x = 2
+main = println x

@@ -14,7 +14,6 @@ import types.typecheck.{
   checkToLines,
   checkToLinesWithRuntime,
   setCoherenceUserDecls,
-  collectDoWellformedErrors,
 }
 
 main = match args ()
@@ -24,12 +23,7 @@ main = match args ()
 
 withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
-  Ok src =>
-    let raw = parse src
-    let doErrs = collectDoWellformedErrors raw
-    match doErrs
-      [] => putStr (checkToLines (desugar raw))
-      e::_ => putStrLn e
+  Ok src => putStr (checkToLines (desugar (parse src)))
   Err msg => ePutStrLn msg
 
 withRuntime : String -> String -> <IO, Mut> Unit
@@ -40,12 +34,7 @@ withRuntime runtimePath targetPath = match readFile runtimePath
 withRuntimeTarget : String -> String -> <IO, Mut> Unit
 withRuntimeTarget rsrc targetPath = match readFile targetPath
   Ok src =>
-    let raw = parse src
-    let doErrs = collectDoWellformedErrors raw
-    match doErrs
-      [] =>
-        let desugared = desugar raw
-        let _ = setCoherenceUserDecls desugared
-        putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
-      e::_ => putStrLn e
+    let desugared = desugar (parse src)
+    let _ = setCoherenceUserDecls desugared
+    putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
   Err msg => ePutStrLn msg

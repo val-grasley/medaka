@@ -1,0 +1,5 @@
+-- beta mutability (P0-5): `let mut` has been removed. REJECT with a Ref-pointing
+-- message.
+main =
+  let mut x = 1
+  println x

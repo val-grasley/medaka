@@ -1,0 +1,6 @@
+-- beta mutability (P0-5): bare reassignment of a LOCAL binding is rejected —
+-- bindings are immutable. REJECT on check/run/build.
+main =
+  let x = 1
+  x = 2
+  println x

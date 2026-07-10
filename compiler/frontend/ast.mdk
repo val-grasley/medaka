@@ -106,6 +106,11 @@ public export data Arm = Arm Pat (List Guard) Expr
 public export data DoStmt =
   | DoExpr Expr
   | DoBind Pat Expr
+  -- DoLet <mut> <rec> pat rhs. NOTE: the `mut` Bool is ALWAYS False — `let mut`
+  -- is rejected at the parser (`letKind TMut = failP letMutRemovedMsg`, beta
+  -- immutability model), so no `mut`-flag logic remains anywhere downstream.
+  -- The field is retained (vs. dropped) only to avoid an ~87-site arity churn
+  -- across every pass + the s-expr round-trip.
   | DoLet Bool Bool Pat Expr
   | DoAssign String Expr
   | DoFieldAssign String (List String) Expr
@@ -137,6 +142,8 @@ public export data Expr =
   | EVar String
   | EApp Expr Expr
   | ELam (List Pat) Expr
+  -- ELet <mut> <rec> pat rhs body. The `mut` Bool is ALWAYS False (see DoLet
+  -- above): `let mut` is a parser error, so no mut-flag logic exists downstream.
   | ELet Bool Bool Pat Expr Expr
   | EMatch Expr (List Arm)
   | EIf Expr Expr Expr

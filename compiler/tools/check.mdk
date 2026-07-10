@@ -39,7 +39,6 @@ import frontend.exhaust.{exhaustToLinesWith}
 import types.typecheck.{
   checkToLinesWithRuntime,
   setCoherenceUserDecls,
-  collectDoWellformedErrors,
   checkErrorsWithRuntime,
   checkModulesEntryReport,
   checkModulesEntryHasErrors,
@@ -51,16 +50,12 @@ import types.typecheck.{
 export runCheck : String -> String -> String -> <Mut> String
 runCheck rsrc csrc tsrc =
   let raw = parse tsrc
-  let doErrs = collectDoWellformedErrors raw
-  match doErrs
-    e::_ => e ++ "\n"
-    [] =>
-      let desugared = desugar raw
-      let runtimeP = parse rsrc
-      let coreP = parse csrc
-      let importErrs = singleFileImportErrors desugared
-      let importDiags = joinNl (map ppResError importErrs)
-      routeImportCheck importDiags runtimeP coreP raw desugared
+  let desugared = desugar raw
+  let runtimeP = parse rsrc
+  let coreP = parse csrc
+  let importErrs = singleFileImportErrors desugared
+  let importDiags = joinNl (map ppResError importErrs)
+  routeImportCheck importDiags runtimeP coreP raw desugared
 -- R3: check for imports of unknown modules before resolve so we emit
 -- UnknownModule (right category) rather than falling through to a
 -- spurious typecheck "Unbound variable".  In single-file mode there is
@@ -97,33 +92,27 @@ joinNonEmpty a b = "\{a}\n\{b}"
 -- error?  This is the exit-code predicate for the native CLI: runCheck returns a
 -- REPORT string whose success path is a NON-empty signature dump, so "report
 -- non-empty" is NOT "had an error".  checkHasErrors instead mirrors runCheck's
--- exact short-circuit ROUTING (do-wellformedness → single-file imports → resolve
--- → typecheck) and tests each error CATEGORY for content, reusing the same error
+-- exact short-circuit ROUTING (single-file imports → resolve → typecheck) and
+-- tests each error CATEGORY for content, reusing the same error
 -- sources, while ignoring exhaustiveness WARNINGS (not errors) and the success
 -- scheme dump.  Keeping this separate from runCheck leaves its stdout byte-
 -- identical (the diff_native_cli gate stays green); only the exit code is gated.
 export checkHasErrors : String -> String -> String -> <Mut> Bool
 checkHasErrors rsrc csrc tsrc =
   let raw = parse tsrc
-  let doErrs = collectDoWellformedErrors raw
-  match doErrs
+  let desugared = desugar raw
+  let runtimeP = parse rsrc
+  let coreP = parse csrc
+  let importErrs = singleFileImportErrors desugared
+  match importErrs
     _::_ => True
     [] =>
-      let desugared = desugar raw
-      let runtimeP = parse rsrc
-      let coreP = parse csrc
-      let importErrs = singleFileImportErrors desugared
-      match importErrs
-        _::_ => True
-        [] =>
-          let resDiags = resolveToLines runtimeP coreP desugared
-          match resDiags
-            "" =>
-              let _ = setCoherenceUserDecls desugared
-              checkErrorsWithRuntime
-                (desugar runtimeP)
-                (desugar coreP ++ desugared)
-            _ => True
+      let resDiags = resolveToLines runtimeP coreP desugared
+      match resDiags
+        "" =>
+          let _ = setCoherenceUserDecls desugared
+          checkErrorsWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+        _ => True
 
 -- ── multi-module `check` (DRIVER-COLLAPSE Phase 4, OPTION A) ───────────────
 -- The unified `medaka check` path for IMPORT-BEARING files.  The CLI loads the

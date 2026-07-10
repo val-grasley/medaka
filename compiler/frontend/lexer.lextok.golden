@@ -273,6 +273,9 @@ PIPE
 UPPER "TColon"
 NEWLINE
 PIPE
+UPPER "TColonEq"
+NEWLINE
+PIPE
 UPPER "TComma"
 NEWLINE
 PIPE
@@ -778,6 +781,11 @@ IDENT "tokenToString"
 UPPER "TColon"
 EQUAL
 STRING "COLON"
+NEWLINE
+IDENT "tokenToString"
+UPPER "TColonEq"
+EQUAL
+STRING "COLONEQ"
 NEWLINE
 IDENT "tokenToString"
 UPPER "TComma"
@@ -1309,6 +1317,11 @@ IDENT "describeToken"
 UPPER "TColon"
 EQUAL
 STRING "`:`"
+NEWLINE
+IDENT "describeToken"
+UPPER "TColonEq"
+EQUAL
+STRING "`:=`"
 NEWLINE
 IDENT "describeToken"
 UPPER "TComma"
@@ -3449,7 +3462,7 @@ LPAREN
 UPPER "TFloat"
 LPAREN
 IDENT "fromOption"
-FLOAT 0.0
+FLOAT
 LPAREN
 IDENT "stringToFloat"
 LPAREN
@@ -6793,6 +6806,24 @@ IDENT "pos"
 IDENT "depth"
 IDENT "id"
 UPPER "TCons"
+INT 2
+INT 0
+NEWLINE
+PIPE
+IDENT "is2"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+CHAR ":"
+CHAR "="
+EQUAL
+IDENT "emit"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "depth"
+IDENT "id"
+UPPER "TColonEq"
 INT 2
 INT 0
 NEWLINE

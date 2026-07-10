@@ -113,6 +113,7 @@ public export data Token =
   | TAsAt
   | TEqual
   | TColon
+  | TColonEq
   | TComma
   | TDot
   | TPipe
@@ -212,6 +213,7 @@ tokenToString TBang = "BANG"
 tokenToString TAsAt = "AS_AT"
 tokenToString TEqual = "EQUAL"
 tokenToString TColon = "COLON"
+tokenToString TColonEq = "COLONEQ"
 tokenToString TComma = "COMMA"
 tokenToString TDot = "DOT"
 tokenToString TPipe = "PIPE"
@@ -314,6 +316,7 @@ describeToken TBang = "`!`"
 describeToken TAsAt = "`@`"
 describeToken TEqual = "`=`"
 describeToken TColon = "`:`"
+describeToken TColonEq = "`:=`"
 describeToken TComma = "`,`"
 describeToken TDot = "`.`"
 describeToken TPipe = "`|`"
@@ -897,6 +900,7 @@ scanOp src len pos depth id c
   | is2 src len pos '-' '>' = emit src len pos depth id TArrow 2 0
   | is2 src len pos '<' '-' = emit src len pos depth id TLArrow 2 0
   | is2 src len pos ':' ':' = emit src len pos depth id TCons 2 0
+  | is2 src len pos ':' '=' = emit src len pos depth id TColonEq 2 0
   | is2 src len pos '+' '+' = emit src len pos depth id TPlusPlus 2 0
   | is2 src len pos '=' '=' = emit src len pos depth id TEqEq 2 0
   | is2 src len pos '!' '=' = emit src len pos depth id TNeq 2 0

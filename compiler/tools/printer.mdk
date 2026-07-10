@@ -430,37 +430,40 @@ printPatArm p = printPat p
 
 precTop : Int
 precTop = 0
+precAssign : Int
+precAssign = 1
 precPipe : Int
-precPipe = 1
+precPipe = 2
 precCompose : Int
-precCompose = 2
+precCompose = 3
 precOr : Int
-precOr = 3
+precOr = 4
 precAnd : Int
-precAnd = 4
+precAnd = 5
 precCmp : Int
-precCmp = 5
+precCmp = 6
 precCons : Int
-precCons = 6
+precCons = 7
 precAppend : Int
-precAppend = 7
+precAppend = 8
 precAdd : Int
-precAdd = 8
+precAdd = 9
 precMul : Int
-precMul = 9
+precMul = 10
 precInfix : Int
-precInfix = 10
+precInfix = 11
 precApp : Int
-precApp = 11
+precApp = 12
 precUnary : Int
-precUnary = 12
+precUnary = 13
 precPostfix : Int
-precPostfix = 13
+precPostfix = 14
 precAtom : Int
-precAtom = 14
+precAtom = 15
 
 binopPrec : String -> Int
 binopPrec op
+  | op == ":=" = precAssign
   | op == "|>" = precPipe
   | op == ">>" = precCompose
   | op == "<<" = precCompose
@@ -482,6 +485,7 @@ binopPrec op
 
 isRightAssoc : String -> Bool
 isRightAssoc "::" = True
+isRightAssoc ":=" = True
 isRightAssoc _ = False
 
 isContinuationOp : String -> Bool

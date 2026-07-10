@@ -1,9 +1,0 @@
--- OBS1: `let mut` inside a `do` block is prohibited.
--- Oracle (lib/desugar.ml:check_do_wellformed line 834) raises Do_error;
--- tc_probe.exe now catches it as TYPE ERROR (dev/tc_probe.ml).
--- Selfhost (typecheck.mdk:collectDoWellformedErrors) walks the raw AST
--- and returns the same message, checked before desugar discards isMut.
-compute = do
-  x <- Some 5
-  let mut y = 2
-  Some (x + y)

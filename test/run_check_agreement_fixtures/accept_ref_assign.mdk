@@ -1,0 +1,7 @@
+-- beta mutability (P0-5): `:=` reference-write sugar. A `Ref` LHS + `:=` write
+-- type-checks, runs, and builds. ACCEPT on all three.
+main =
+  let c = Ref 0
+  c := 5
+  c := c.value + 1
+  println c.value

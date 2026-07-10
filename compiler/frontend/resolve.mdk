@@ -124,6 +124,10 @@ public export data ResError =
   -- module that is neither in the standard library nor compiled with
   -- `--allow-internal` (see internalExterns / Env.internalGuard)
   | InternalExternAccess String (Option Loc)
+  -- beta mutability model (P0-5): a bare reassignment `x = e` of an existing
+  -- binding. Bindings are immutable; `=` (without `let`) is not a declaration.
+  -- Carries the reassigned name + span. Mutation lives on `Ref`/`:=`.
+  | ReassignImmutable String (Option Loc)
 
 -- The did-you-mean pair (misspelled name, suggested name) for a resolve error,
 -- or None.  Only an UnboundVariable that carries a suggestion qualifies today.
@@ -160,6 +164,7 @@ resErrorLoc (DuplicateBinder _ _ l) = l
 resErrorLoc (AsPatternMisplaced l) = l
 resErrorLoc (AmbiguousOccurrence _ _ l) = l
 resErrorLoc (InternalExternAccess _ l) = l
+resErrorLoc (ReassignImmutable _ l) = l
 
 -- ── The name environment ──────────────────────────────────────────────────
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
@@ -756,7 +761,12 @@ checkStmt cur env scope (DoLet _ True p e) = (
   checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env (patBindings p ++ scope) e,
   patBindings p ++ scope,
 )
-checkStmt cur env scope (DoAssign _ e) = (checkExpr cur env scope e, scope)
+-- beta: a bare reassignment `x = e` (no `let`) of an existing binding is an
+-- error — bindings are immutable. Still check the RHS so its errors surface too.
+checkStmt cur env scope (DoAssign x e) = (
+  ReassignImmutable x (orElseLocL (firstExprLoc e) cur) :: checkExpr cur env scope e,
+  scope,
+)
 checkStmt cur env scope (DoFieldAssign _ _ e) =
   (checkExpr cur env scope e, scope)
 checkStmt cur env scope (DoLetElse p e alt) = (
@@ -1324,6 +1334,7 @@ resErrorSexp (AsPatternMisplaced _) = "AsPatternMisplaced"
 resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
   ++ joinWith " " (escStr n :: map escStr mods)
   ++ ")"
+resErrorSexp (ReassignImmutable n _) = "(ReassignImmutable " ++ escStr n ++ ")"
 
 -- String key for an `Option Loc`, used only to distinguish dedup candidates
 -- (NOT a serialization contract like resErrorSexp): `None` collapses to a
@@ -1416,6 +1427,7 @@ ppResError (AmbiguousOccurrence n mods _) = "Ambiguous occurrence: '\{n}' is exp
 ppResError (InternalExternAccess n _) = "'"
   ++ n
   ++ "' is an internal-only primitive. Cannot be used outside the standard library (pass --allow-internal to override)"
+ppResError (ReassignImmutable n _) = "Cannot reassign '\{n}' — bindings are immutable. To bind a new value, shadow it with `let \{n} = ...`. For mutable state, use a `Ref`: `let \{n} = Ref 0`, then write `\{n} := \{n}.value + 1` (read the cell with `\{n}.value`)"
 
 -- Stable diagnostic code (DIAGNOSTIC-CODES-DESIGN §2) for a resolve error — one
 -- `R-*` code per ResError constructor.  Authored here (a single chokepoint), so
@@ -1444,6 +1456,7 @@ resErrorCode (DuplicateBinder _ _ _) = "R-DUP-BINDER"
 resErrorCode (AsPatternMisplaced _) = "R-AS-PATTERN-MISPLACED"
 resErrorCode (AmbiguousOccurrence _ _ _) = "R-AMBIGUOUS-OCCURRENCE"
 resErrorCode (InternalExternAccess _ _) = "R-INTERNAL-EXTERN"
+resErrorCode (ReassignImmutable _ _) = "R-IMMUTABLE-ASSIGN"
 
 -- Mirror lib/resolve.ml's mod_phrase: two modules → "both `a` and `b`";
 -- otherwise a comma-separated list of backtick-quoted module names.

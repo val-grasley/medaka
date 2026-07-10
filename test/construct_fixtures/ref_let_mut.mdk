@@ -1,5 +1,6 @@
+-- beta mutability: Ref cell create + `:=` write + `.value` read.
 main : <IO, Mut> Unit
 main =
-  let mut r = Ref 0
-  setRef r 42
+  let r = Ref 0
+  r := 42
   println (debug r.value)

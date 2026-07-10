@@ -1,0 +1,6 @@
+-- beta mutability (P0-5): reassigning a PARAMETER is rejected — params are
+-- immutable bindings. REJECT.
+bump n =
+  n = n + 1
+  n
+main = println (bump 4)

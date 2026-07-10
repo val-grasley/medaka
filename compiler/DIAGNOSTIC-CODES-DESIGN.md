@@ -129,7 +129,6 @@ kinds (enumerated from the message families):
 | effect leak | effect-leak message (`:906`) | `T-EFFECT-LEAK` |
 | effect param | `Invalid effect parameter on <L>: …` / host-pattern (`:972`,`:993`) | `T-EFFECT-PARAM` |
 | non-recursive value let | `'x' is not in scope on the RHS of its own binding …` (`:4923`) | `T-NONREC-VALUE-LET` |
-| mut-let needs block | `mutLetRequiresBlockMsg` (`:4484`) | `T-MUT-LET-BLOCK` |
 | do not a monad | `do requires a monad` | `T-DO-NOT-MONAD` |
 | `<-` bind outside do | `bindOutsideDoMsg` — `<-` in a bare (non-`do`) block | `T-BIND-OUTSIDE-DO` |
 | cyclic superinterface | `cyclic superinterface: …` | `T-CYCLIC-SUPERINTERFACE` |
@@ -202,6 +201,7 @@ kebab-case; never renumber (append only).
 | `R-DUP-BINDER` | `DuplicateBinder` (non-linear pattern / repeated parameter) |
 | `R-AMBIGUOUS-OCCURRENCE` | `AmbiguousOccurrence` |
 | `R-INTERNAL-EXTERN` | `InternalExternAccess` |
+| `R-IMMUTABLE-ASSIGN` | `ReassignImmutable` — bare reassignment `x = e` of an existing binding (beta immutability model; use `Ref` + `:=`). Note: `let mut` is rejected earlier, at the parser (a `P-*` parse error), not here. |
 
 ### Type — see the §1 typecheck table (`T-TYPE-MISMATCH`, `T-NO-IMPL`,
 `T-MISSING-CONSTRAINT`, `T-AMBIGUOUS-INSTANCE`, `T-INFINITE-TYPE`,

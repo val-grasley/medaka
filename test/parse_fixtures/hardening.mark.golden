@@ -1,5 +1,4 @@
 (DFunDef false "annotatedLet" ((PVar "x")) (ELet false (PVar "y") (EAnnot (EBinOp "+" (EVar "x") (ELit (LInt 1))) (TyCon "Int")) (EBinOp "*" (EVar "y") (ELit (LInt 2)))))
-(DFunDef false "mutLet" ((PVar "x")) (ELet true (PVar "acc") (EVar "x") (EVar "acc")))
 (DFunDef false "recLet" ((PVar "n")) (ELetGroup ((lgb "go" (clause () (ELam ((PVar "k")) (EApp (EVar "go") (EVar "k")))))) (EApp (EVar "go") (EVar "n"))))
 (DFunDef false "recWithLet" ((PVar "n")) (ELetGroup ((lgb "ping" (clause () (ELam ((PVar "k")) (EApp (EVar "pong") (EVar "k"))))) (lgb "pong" (clause () (ELam ((PVar "k")) (EApp (EVar "ping") (EVar "k")))))) (EApp (EVar "ping") (EVar "n"))))
 (DFunDef false "ifLet" ((PVar "opt")) (EMatch (EVar "opt") (arm (PCon "Some" (PVar "x")) () (EVar "x")) (arm PWild () (ELit (LInt 0)))))

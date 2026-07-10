@@ -200,6 +200,11 @@ rewriteSugar (EFunction arms) =
   ELam [PVar "__fn_arg"] (EMatch (EVar "__fn_arg") arms)
 rewriteSugar (ESection s) = sectionToCore s
 rewriteSugar (EStringInterp parts) = interpToCore parts
+-- `x := e` (reference write) → `setRef x e` (the existing `<Mut>` extern).
+-- Pure surface sugar: no dedicated typecheck/eval arm — the application flows
+-- through `setRef`'s signature (`Ref a -> a -> <Mut> Unit`), so a non-`Ref` LHS
+-- is a type error at the call site.
+rewriteSugar (EBinOp ":=" lhs rhs _) = callBin "setRef" lhs rhs
 rewriteSugar e = e
 
 -- guard arms → nested if/match, terminated by `__fallthrough__ ()` (fold_right)

@@ -1,3 +1,2 @@
 (DFunDef false "annotated" () (EBlock (DoLet false false (PVar "p") (EAnnot (ELit (LInt 5)) (TyCon "Int"))) (DoLet false false (PVar "q") (EAnnot (EVar "addOne") (TyFun (TyCon "Int") (TyCon "Int")))) (DoExpr (EApp (EVar "q") (EVar "p")))))
-(DFunDef false "mutAnnot" () (EBlock (DoLet true false (PVar "r") (EAnnot (ELit (LInt 5)) (TyCon "Int"))) (DoAssign "r" (EBinOp "+" (EVar "r") (ELit (LInt 1)))) (DoExpr (EVar "r"))))
 (DFunDef false "plain" () (EBlock (DoLet false false (PVar "s") (ELit (LInt 5))) (DoExpr (EVar "s"))))

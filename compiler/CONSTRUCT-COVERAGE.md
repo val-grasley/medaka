@@ -122,8 +122,8 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | `let rec f = x => ...` in block | GAP | see §Gaps below |
 | `let rec ... with ...` at top-level | PASS | `letgroup_toplevel.mdk` (eval+build) |
 | Top-level mutual recursion (separate clauses) | PASS | `toplevel_mutual_rec.mdk` |
-| `let mut x = e` + reassignment `x = e` | PASS | `let_mut_reassign.mdk` |
-| `let mut r = Ref e` + `set_ref r v` + `r.value` | PASS | `ref_let_mut.mdk` |
+| `Ref` cell + `:=` reassignment (`x := x.value * 2`) | PASS | `let_mut_reassign.mdk` (beta: was `let mut`, removed 2026-07-09) |
+| `Ref e` create + `:=` write + `.value` read | PASS | `ref_let_mut.mdk` (beta: was `let mut`, removed 2026-07-09) |
 | `let Some x = opt else panic` | PASS | `let_else.mdk` |
 | `where` clause (indented block form) | PASS | `where_multi_defs.mdk` |
 | `where` clause (inline form `f x = e where g = ...`) | GAP | see §Gaps below |
@@ -287,7 +287,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | `do`-notation for Result (Int) | PASS | `do_result_int.mdk` |
 | `do`-notation for Result (Float) | PASS (works with `Result ErrType Float` type order; verified done 2026-06-22: `safeDiv 10.0 2.0` in do-block → `Ok 7.0`) | `do_result_int.mdk` style |
 | `do`-notation for IO (multi-statement) | BY DESIGN (see A8) — both compilers reject `do` on IO (`do` requires a monad; use bare indented block for IO sequencing instead) | — |
-| `Ref` cell create + `set_ref` + `.value` read | PASS | `ref_let_mut.mdk` |
+| `Ref` cell create + `:=` write + `.value` read | PASS | `ref_let_mut.mdk` |
 
 ### Misc declarations
 
