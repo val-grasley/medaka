@@ -207,8 +207,16 @@ same "which stage owns S4/S6" decision.
 > `test/run_check_agreement_fixtures/p0_19_{poly_wrapper_shadow,noimpl_domain_mismatch}`
 > (`.expected=REJECT`); agreement gate 22/0, fixpoint C3a/C3b YES. Bonus: row 11's
 > over-general wrapper scheme (`useIt : a -> Int`) is fixed to `Int -> Int`.
-> **Still open:** row **10 (d4b)** value-position (`inferVar` owns S4 — a bare
-> non-applied shadow name must resolve to the standalone without breaking the
-> applied dispatch head that shares `inferVar`; NOT a soundness hole, build prints
-> a defined `[1,2]`) and row **14 (d8)** cross-module definer-shadow dispatch (S6,
-> opposite direction — deferred by decision).
+>
+> **✅ UPDATE 2026-07-10 (P0-19 batch 2, `ebb8ee90`, main `ebb8ee90`) — the last two
+> cells CLOSED; all 4 BUG cells now conformant.** Row **10 (d4b)** value-position
+> now REJECTs `Int vs Box` (d4 over-Int still accepts `[2,3,4]`): a new
+> `shadowHeadCtxRef` flag distinguishes "shadow `EVar` as app head" (keeps the
+> method scheme for dispatch) from "bare value position" (pinned to the standalone
+> scheme via `maybeStandaloneValueMono`). Row **14 (d8)** now DISPATCHES cross-module
+> (run+build print `3`,`4`, matching d2): `shadowKeyTableRef` seeded from the global
+> `accData ++ implDecls ++ prog` (was missing the imported impl on the check path),
+> and both definer-shadow app paths decide per-receiver — a receiver with a visible
+> impl fetches the method scheme from `methodIfaceParamsRef`, else the standalone
+> scheme. Fixtures `p0_19_value_pos_{shadow=REJECT,ok=ACCEPT}` + a d8 leg in
+> `diff_compiler_check_cli_modules` (14/0); agreement 24/0, fixpoint C3a/C3b YES.

@@ -32,33 +32,49 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
-## Current status (2026-07-10) — P0-19 both silent soundness holes CLOSED (rows 12/13); row 10 residual, row 14 deferred. `main` = `ef0874f3`
+## Current status (2026-07-10) — ✅ P0-19 shadow-conformance workstream FULLY CLOSED (all 4 BUG cells). `main` = `ebb8ee90`
 
-The two **silent build-garbage soundness holes** are fixed (`ef0874f3`, pure `compiler/types/typecheck.mdk`):
+All four SHADOW-SEMANTICS §5 BUG cells are fixed, in two batches, pure `compiler/types/typecheck.mdk`
+(+ gate/fixtures). SHADOW-SEMANTICS matrix now conformant. Fixpoint C3a/C3b YES both batches, no re-mint.
+
+**Batch 1 (`ef0874f3`) — the 2 silent build-garbage soundness holes:**
 - **Row 12 (d5b)** `useIt x = size x; useIt (Box 3)` and **Row 13 (d9)** `size "hi"` now `check`/`run`/`build`
-  all REJECT with a located `Type mismatch: Int vs Box` / `Int vs String` (no binary emitted). Bonus: row 11's
-  over-general scheme fixed — `useIt : Int -> Int`, not `a -> Int`.
+  all REJECT with a located `Type mismatch: Int vs Box` / `Int vs String`. Bonus: row 11's over-general scheme
+  fixed — `useIt : Int -> Int`, not `a -> Int`.
 - **Root cause:** `recordImplObligation` (typecheck.mdk:4453) skipped the impl obligation for every definer-shadow
-  name and nothing re-imposed the standalone's declared domain when a shadow occurrence resolved to the standalone
-  (argument typed against the poly *method* scheme, not `Int -> Int`). Non-obvious second fact: the single-file
-  `check` path runs **no marker**, so shadow heads arrive as bare `EVar` and never reached `inferDefinerShadowApp`
-  (matches `EMethodAt` only). Fix: new `enforceStandaloneDomain` imposes the standalone domain on both the marked
-  (run/build) path and a new un-marked `EVar` check path (`definerShadowVarHead`/`inferDefinerShadowVarApp`),
-  gated by `shadowKeyTableRef` so a receiver *with* an impl still dispatches. Standalone sigs stashed in new
-  `definerShadowSigsRef`; single-file `checkProgramSeeded` seeds `shadowKeyTableRef`.
-- **Gates (orchestrator-verified):** agreement **22/0** (2 new REJECT fixtures `p0_19_poly_wrapper_shadow` +
-  `p0_19_noimpl_domain_mismatch`), llvm 195/0, llvm_typed 44/0, build 60/0, typecheck 14/0, check 77/0,
-  **fixpoint C3a/C3b YES**, no re-mint; 5 stdlib definer-shadows + accept cells (d1–d7) unchanged.
+  name and nothing re-imposed the standalone's declared domain when a shadow occurrence resolved to the standalone.
+  Non-obvious second fact: the single-file `check` path runs **no marker**, so shadow heads arrive as bare `EVar`
+  and never reached `inferDefinerShadowApp` (matches `EMethodAt` only). Fix: `enforceStandaloneDomain` on both the
+  marked (run/build) path and a new un-marked `EVar` check path (`definerShadowVarHead`/`inferDefinerShadowVarApp`),
+  gated by `shadowKeyTableRef`; standalone sigs in new `definerShadowSigsRef`; `checkProgramSeeded` seeds `shadowKeyTableRef`.
 
-**Residual / deferred (not soundness holes):**
-- **Row 10 (d4b)** `map size [Box 1, Box 2]` (value position, S4) still `check` ACCEPTs, build prints a *defined*
-  `[1, 2]` (dispatches) — NOT garbage. The fix lives in `inferVar`'s resolution of a bare (non-applied)
-  definer-shadow name, decoupled from the applied dispatch head (which shares `inferVar`); the applied helpers
-  would then fetch the method scheme from `methodIfaceParamsRef` rather than `infer env f`. Genuinely a different,
-  broader "which stage owns S4" mechanism — deferred, agent STOPPed here per guardrail.
-- **Row 14 (d8)** definer shadow with imported interface+impl → all paths reject `Int vs Box` (loud/safe
-  over-rejection). Opposite direction (relax to cross-module dispatch, S6) — a separate feature, deferred by
-  decision (out of this batch's scope).
+**Batch 2 (`ebb8ee90`) — the 2 remaining cells (value-position + cross-module):**
+- **Row 10 (d4b)** `map size [Box 1, Box 2]` (value position, S4) now REJECTs `Int vs Box` on all three paths;
+  d4 (`map size [1,2,3]` → `[2,3,4]`) still accepts. **Root cause:** in value position the shadow name resolved
+  via `inferVar`/`inferMethodAt` to the permissive *method* scheme `a -> Int`. Hard part: the same two functions
+  produce the head type when `size` IS an app head (where the method scheme is needed for dispatch). Fix: a new
+  `shadowHeadCtxRef : Ref Bool` flags "inferring an app head"; `maybeStandaloneValueMono` pins a bare value-position
+  definer shadow to the standalone scheme only when the flag is False; the app-head paths set it around head-infer.
+- **Row 14 (d8)** definer shadow with imported interface+impl now dispatches (run+build print `3` then `4`), matching
+  d2 (local interface), per S6 (global impl universe). **Root cause (two parts):** (1) `shadowKeyTableRef` seeded
+  from `implDecls ++ prog` excluded the imported impl on the check path (`implDecls=[]`) → now seeded from
+  `accData ++ implDecls ++ prog`; (2) the multi-module env rebinds the method name to the local standalone, so both
+  app paths now decide **per receiver** (mirroring importer `inferShadowApp`): a receiver with a visible impl fetches
+  the method scheme explicitly from `methodIfaceParamsRef`, a no-impl/ungrounded receiver uses the standalone scheme.
+- **Gates (orchestrator-verified):** agreement **24/0** (4 new fixtures across both batches), modules
+  `diff_compiler_check_cli_modules` **14/0** (new d8 leg), llvm 195/0, llvm_typed 44/0, build 60/0, typecheck 14/0,
+  check 77/0, **fixpoint C3a/C3b YES**. 5 stdlib definer-shadows + all accept cells (d1–d7) unchanged.
+
+**⚠️ SECURITY (found during this session's OOB audit, fix IN FLIGHT): `bytesToFloat64` is a userland OOB
+read.** The extern `bytesToFloat64 : Array Int -> Int -> Float` was omitted from `internalExterns`
+(`compiler/frontend/resolve.mdk:205`) — publicly callable, does unchecked raw 8-word reads at a user offset →
+native `build` silently leaks live heap as a Float (info-disclosure), `run` panics/SIGSEGVs. All other indexed
+surface (Array `.[i]`/slice, MutArray, hash tables, String, the 5 gated array externs) is bounds-checked + gated.
+Fix (user-approved, gate + bounds-check defense-in-depth): add `bytesToFloat64` to `internalExterns` AND add
+`off>=0 && off+8<=len` checks in `runtime/medaka_rt.c` (`mdk_bytes_to_float64`) + `compiler/eval/eval.mdk`
+(`pBytesToFloat64`), panic `E-INDEX-OOB`. Legit callers (byteparser `beFloat64`/`leFloat64`, always `off=0` on
+≥8-len arrays) unaffected. Follow-up idea: invert the hand-maintained denylist to an allowlist / add a lint that
+every pointer-arithmetic extern is gated-or-checked.
 
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED incl. importer-no-impl residual. `main` = `cfc4fa5a`
 
