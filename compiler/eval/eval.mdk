@@ -1905,6 +1905,11 @@ externBindings = [
   ("intBitsToFloat", prim1 pIntBitsToFloat),
   ("bytesToFloat64", prim2 pBytesToFloat64),
   ("floatToBytes64", prim1 pFloatToBytes64),
+  ("hashInt", prim1 pHashInt),
+  ("hashFloat", prim1 pHashFloat),
+  ("hashString", prim1 pHashString),
+  ("hashChar", prim1 pHashChar),
+  ("hashBool", prim1 pHashBool),
   (fallthroughName, VPrim (_ => VFallthrough)),
 ]
 
@@ -1985,6 +1990,69 @@ pFloatToBytes64 (VFloat f) =
   let bs = floatToBytes64 f
   VArray (arrayMakeWith 8 (i => VInt (arrayGetUnsafe i bs)))
 pFloatToBytes64 _ = panic "floatToBytes64: not a Float"
+
+-- ── Interpreter-local Hashable hashers (P0-10) ──────────────────────────────
+-- The native backend's mdk_hash_* (runtime/medaka_rt.c) are a byte-exact
+-- SplitMix64/FNV-1a spec that the interpreter can't reproduce faithfully
+-- (Medaka's Int is a 63-bit fixnum, not the C runtime's raw uint64), and it
+-- doesn't need to: hash_map/hash_set only require `hash key % cap` to be
+-- INTRA-engine consistent (same engine, same key -> same bucket every time),
+-- never cross-engine byte-identical. So these are a separate, simpler,
+-- deterministic, well-distributed mixer -- masked into [0, 2^30) to match the
+-- native MDK_HASH_MASK range so bucket-count math behaves the same way.
+hashMask30 : Int
+hashMask30 = 1073741823  -- 0x3FFFFFFF, 2^30 - 1
+
+-- xorshift-style integer mixer: deterministic, no multiplication (so no
+-- reliance on Int overflow/wrap semantics), decent avalanche for hash_map
+-- bucket distribution.
+mixInt30 : Int -> Int
+mixInt30 x =
+  let a = bitXor x (shiftRight x 13)
+  let b = bitXor a (shiftLeft a 17)
+  let c = bitXor b (shiftRight b 5)
+  bitAnd c hashMask30
+
+fnvOffset30 : Int
+fnvOffset30 = 2166136261  -- FNV-1a 32-bit offset basis
+
+fnvPrime30 : Int
+fnvPrime30 = 16777619  -- FNV-1a 32-bit prime
+
+-- One FNV-1a step, kept within 32 bits between steps so the `* fnvPrime30`
+-- multiply never approaches Int's 63-bit range (no overflow risk).
+fnvStep30 : Int -> Int -> Int
+fnvStep30 h byte = bitAnd (bitXor h byte * fnvPrime30) 4294967295
+
+fnvFoldList30 : List Int -> Int -> Int
+fnvFoldList30 [] h = h
+fnvFoldList30 (x::xs) h = fnvFoldList30 xs (fnvStep30 h x)
+
+pHashInt : Value -> Value
+pHashInt (VInt n) = VInt (mixInt30 n)
+pHashInt _ = panic "hashInt: not an Int"
+
+pHashChar : Value -> Value
+pHashChar (VChar s) =
+  VInt (mixInt30 (charCode (arrayGetUnsafe 0 (stringToChars s))))
+pHashChar _ = panic "hashChar: not a Char"
+
+pHashBool : Value -> Value
+pHashBool (VBool b) = VInt (boolToInt b)
+pHashBool _ = panic "hashBool: not a Bool"
+
+pHashFloat : Value -> Value
+pHashFloat (VFloat f) =
+  let bs = floatToBytes64 f
+  VInt (bitAnd (fnvFoldList30 (arrayToListG bs) fnvOffset30) hashMask30)
+pHashFloat _ = panic "hashFloat: not a Float"
+
+pHashString : Value -> Value
+pHashString (VString s) =
+  VInt (bitAnd
+    (fnvFoldList30 (arrayToListG (stringToUtf8Bytes s)) fnvOffset30)
+    hashMask30)
+pHashString _ = panic "hashString: not a String"
 
 pFloatToString : Value -> Value
 pFloatToString (VFloat f) = VString (floatToString f)

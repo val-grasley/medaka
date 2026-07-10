@@ -34,10 +34,18 @@
 #     hash-table work below.  `medaka test stdlib/{array,mut_array}.mdk` now run clean
 #     end-to-end natively (no `$dict_*` unbound) — add to the gate once their props are
 #     made RNG-independent (or trimmed to passing-only).
-#   stdlib/hash_map.mdk / hash_set.mdk — need byte-identical hashInt/hashString
-#     (SplitMix64 / FNV-1a) in the compiler eval oracle (64-bit wrapping bitwise,
-#     no Int64 extern yet).
 #   error-path doctests — compiler eval has no per-binding panic recovery.
+#
+# hash_map.mdk / hash_set.mdk (P0-10, un-deferred): the interpreter (compiler
+# eval.mdk) previously had no hashInt/hashString/etc externs at all — `medaka run`
+# panicked "unbound identifier: hashString" before any doctest could execute.
+# Fixed by binding a simple deterministic interpreter-local hasher (xorshift for
+# Int/Char/Bool, FNV-1a for Float/String bytes, masked to [0, 2^30)) — NOT
+# byte-identical to the native runtime's SplitMix64/FNV-1a (mdk_hash_*), which
+# hash_map/hash_set never need: `hash key % cap` only has to be INTRA-engine
+# consistent, and every doctest in these two files asserts on size/get/has/eq/
+# keys/values results, never on raw bucket layout, so cross-engine hash identity
+# is not gate-observable. Both files' doctests are in the default set now.
 #
 # Passing props only (`OK (100 tests)` is RNG-independent); a failing prop's shrunk
 # counterexample depends on the RNG draw, which differs across implementations.
@@ -68,6 +76,8 @@ else
          $ROOT/stdlib/async.mdk \
          $ROOT/stdlib/byteparser.mdk \
          $ROOT/stdlib/bytebuilder.mdk \
+         $ROOT/stdlib/hash_map.mdk \
+         $ROOT/stdlib/hash_set.mdk \
          $ROOT/test/compiler_test_fixtures/mixed.mdk \
          $ROOT/test/compiler_test_fixtures/sum_dict.mdk \
          $ROOT/test/compiler_test_fixtures/mappable_not_foldable.mdk \
