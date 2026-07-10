@@ -213,6 +213,21 @@ iff it has a `binopMethod` entry). Turn narrow/monomorphic operators into interf
   (bare `[…]`/`"…"` have no head-pin to disambiguate — the OverloadedLists can-of-worms). KEEP monomorphic.
 - **Keep narrow (rejected):** `&&`/`||`/`if`-conditions (truthiness footgun), `!`/`not`, `::`, `|>`/`>>`/`<<`.
 
+**⭐ Record field defaults (roadmap candidate, DECIDED to queue 2026-07-10; post-trim / fast-follow).**
+`data Opts = { host : String, port : Int = 80 }` — a field may carry a default expression; constructing
+`Opts { host = "x" }` fills omitted fields from their defaults (missing-field error only for a field with
+NO default). **This is the DELIBERATE answer to "should we add keyword/labeled function args (`~name`)":
+NO — records are THE named-args primitive, and field defaults turn them into a full
+kwargs-with-optionals mechanism WITHOUT a redundant second labeled-args subsystem** (which would overlap
+records, add label-matching/partial-application/optional corners, and cut against the simplicity north
+star). Grounding (verified 2026-07-10): records are NOMINAL (no anonymous `{…}` at call sites) and have NO
+defaults today, so "pass a record" is currently clunky for optional params — field defaults fixes exactly
+that. Scope: parser (accept `field : T = <expr>`), ast (optional default expr per field), typecheck/desugar
+(fill omitted fields at construction, evaluate the default expr in the decl's scope, typecheck against the
+field type), record-update `{ r | … }` unaffected. Pairs naturally with the `data X = { … }` sugar (trim
+Bite A) — together they make records the ergonomic struct/kwargs story. Defer OCaml-style `~name` labeled
+args to post-beta, only if records+defaults prove insufficient in practice.
+
 ## ⭐ Pre-beta sequencing (DECIDED 2026-07-09, soundness-first)
 1. **P0-5** ✅ DONE (`31f4ea80`+`b80ea8c7`, merged `36228029`): `:=` write operator (→`setRef`), `R-IMMUTABLE-ASSIGN` on bare reassignment, `let mut`→parser error (all `mut` LOGIC stripped; the `DoLet`/`ELet` Bool field kept inert+commented — full field removal was ~87 sites/18 files incl. s-expr round-trip, the documented balloon). Read is `.value` (NOT `!`). Verified in Docker: `:=` run==build, reject matrix (reassign/let-mut REJECT, shadow ACCEPT), agreement gate 20/0, llvm 195/0 byte-identical, fixpoint C3a/C3b YES, no re-mint.
 2. **P0-19** — the 2 silent build-garbage shadow-conformance holes (rows 12/13) + rows 10/14 divergences
