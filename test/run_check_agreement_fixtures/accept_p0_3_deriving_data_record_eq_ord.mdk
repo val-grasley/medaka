@@ -1,0 +1,7 @@
+-- P0-3: `deriving (Eq, Ord)` on a multi-field named-field data constructor.
+-- The derived eq/compare match arms now use record patterns, matching the record
+-- value under both eval (run) and the emitter (build).
+data R = R { a : Int, b : Int } deriving (Eq, Ord)
+main =
+  println (R { a = 1, b = 2 } == R { a = 1, b = 2 })
+  println (compare (R { a = 1, b = 2 }) (R { a = 1, b = 3 }))

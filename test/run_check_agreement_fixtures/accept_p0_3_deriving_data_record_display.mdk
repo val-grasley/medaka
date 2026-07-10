@@ -1,0 +1,7 @@
+-- P0-3: `deriving (Display)` on a named-field (record-shaped) data constructor.
+-- Was a run != build divergence: the derived match used a positional PCon which
+-- eval could not match against the record value → E-NONEXHAUSTIVE-MATCH under
+-- `run`, while `build` accepted it. Now the deriver emits a record pattern, so
+-- run == build == check accept.
+data P = P { a : Int } deriving (Display)
+main = println (P { a = 1 })

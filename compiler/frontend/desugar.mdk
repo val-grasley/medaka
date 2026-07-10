@@ -519,8 +519,22 @@ genVarsGo prefix i n
   | i >= n = []
   | otherwise = prefix ++ intToString i :: genVarsGo prefix (i + 1) n
 
-conPatVars : String -> List String -> Pat
-conPatVars cname vars = PCon cname (map PVar vars)
+-- Bind a variant's fields to the positional binder vars the derived body uses.
+-- A positional (ConPos) variant yields `PCon C [PVar v0, …]`. A named-field
+-- (ConNamed / record-shaped) variant yields a record pattern
+-- `PRec C { f0 = v0, … }`: eval represents a named-field constructor value as
+-- VRecord, which a positional `PCon` cannot match (only `PRec` can), whereas the
+-- emitter accepts both — so PRec makes the derived match work in BOTH pipelines.
+conBindPat : Variant -> List String -> Pat
+conBindPat (Variant cname (ConPos _)) vars = PCon cname (map PVar vars)
+conBindPat (Variant cname (ConNamed fs)) vars =
+  PRec cname (recPatFields fs vars) False
+
+recPatFields : List Field -> List String -> List RecPatField
+recPatFields [] _ = []
+recPatFields _ [] = []
+recPatFields ((Field n _)::fs) (v::vs) =
+  RecPatField n (Some (PVar v)) :: recPatFields fs vs
 
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.
@@ -535,7 +549,7 @@ deriveShowData iface callName name variants = derivedImpl
 showArm : String -> Variant -> Arm
 showArm callName (v@(Variant cname _)) =
   let vars = genVars "__a" (conArity v)
-  Arm (conPatVars cname vars) [] (showBody callName cname vars)
+  Arm (conBindPat v vars) [] (showBody callName cname vars)
 
 showBody : String -> String -> List String -> Expr
 showBody _ cname [] = ELit (LString cname)
@@ -569,11 +583,10 @@ eqArms variants
   | otherwise = map eqSameConArm variants
 
 eqSameConArm : Variant -> Arm
-eqSameConArm (v@(Variant cname _)) =
+eqSameConArm (v@(Variant _ _)) =
   let n = conArity v
   Arm
-    (PTuple
-      [conPatVars cname (genVars "__a" n), conPatVars cname (genVars "__b" n)])
+    (PTuple [conBindPat v (genVars "__a" n), conBindPat v (genVars "__b" n)])
     []
     (eqBody n (genVars "__a" n) (genVars "__b" n))
 
@@ -623,8 +636,7 @@ ordCell i vi (j, vj) =
   let avars = genVars "__a" (conArity vi)
   let bvars = genVars "__b" (conArity vj)
   Arm
-    (PTuple
-      [conPatVars (variantName vi) avars, conPatVars (variantName vj) bvars])
+    (PTuple [conBindPat vi avars, conBindPat vj bvars])
     []
     (ordBody i j avars bvars)
 
@@ -633,9 +645,6 @@ ordBody i j avars bvars
   | i < j = EVar "Lt"
   | i > j = EVar "Gt"
   | otherwise = lexCompareExprs (zipExprPairs avars bvars)
-
-variantName : Variant -> String
-variantName (Variant n _) = n
 
 zipExprPairs : List String -> List String -> List (Expr, Expr)
 zipExprPairs [] _ = []
@@ -667,7 +676,7 @@ deriveGenericData name variants = derivedImpl
 genericArm : Variant -> Arm
 genericArm (v@(Variant cname _)) =
   let vars = genVars "__a" (conArity v)
-  Arm (conPatVars cname vars) [] (genericRcon cname vars)
+  Arm (conBindPat v vars) [] (genericRcon cname vars)
 
 genericRcon : String -> List String -> Expr
 genericRcon cname vars =
