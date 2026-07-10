@@ -32,6 +32,15 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-10) — ✅ P0-2(a)+(b) silent-crash class CLOSED. `main` = `b32fff20`
+
+Every bare SIGBUS/SIGSEGV death is now a clean coded error on run AND build (`b32fff20`, full scope — user-approved). Three mechanisms:
+- **Native signal backstop** (`runtime/medaka_rt.c`): `sigaltstack` (256 KB) + a `SIGSEGV`/`SIGBUS` handler installed on the worker thread AFTER `GC_INIT`, captures/chains the prior handler. A stack-shaped fault (si_addr within worker-stack bounds ± 1 MB) → `[E-STACK-OVERFLOW]: stack overflow` exit 134; any other fatal fault → chain, else `[E-FATAL-SIGNAL]` exit 139 — never silent. Async-safe `write`/`_exit` only. Boehm coexists (holds no SIGSEGV handler in non-incremental mode — empirically confirmed).
+- **Eval depth guard** (`compiler/eval/eval.mdk`): balanced inc/dec counter in `apply`; past **25000** frames → located `E-STACK-OVERFLOW: recursion too deep` (limit binary-searched under the ~28-29k `run` hard-crash boundary; fixpoint-green confirms self-compile fits).
+- **Cyclic-value black-holing** (`compiler/eval/eval.mdk`): `forceCell`/`forceMemo` overwrite the cell with a black-hole thunk before running; re-entry → `E-CYCLIC-VALUE: <name> refers to itself during initialization`.
+- **Residual (acceptable, honest):** cyclic-value under `build` (no interpreter black-holing on the native path) traps the generic `E-FATAL-SIGNAL` (exit 139) rather than `E-CYCLIC-VALUE` — still clean/no-silent, meets the goal. Also inherent: the interpreter's non-tail recursion ceiling (~25k) is below native's (no tree-walker TCO), so a 25k–10M-deep program is `E-STACK-OVERFLOW` under `run` but succeeds under `build` — a pre-existing, expected divergence, now clean instead of silent.
+- Gates: new `diff_compiler_stack_overflow` 3/0; eval 23/0, check 77/0, llvm 195/0, build 60/0, eval_run 50/0, eval_modules 5/0; **fixpoint C3a/C3b YES**; GC-heavy program healthy.
+
 ## Current status (2026-07-10) — run≠build parity cluster: P0-2(c) + P0-10 + P0-9 CLOSED; P0-2(a)/(b) deferred. `main` = `2b17677f`
 
 Three run≠build/parity P0s from the beta QA sweep, each diagnosed (one read-only pass) → fixed →

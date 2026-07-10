@@ -53,7 +53,7 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 - Expected: `run` rejects exactly what `check` rejects. Other error classes DO gate run,
   so the gate exists but skips constraint/no-impl errors.
 
-## P0-2: Silent signal crashes (SIGBUS/SIGSEGV, zero output) — ⚠️ PARTIAL: (c) refutable-let build SIGSEGV ✅ FIXED 2026-07-10 (`ed8be866`); (a) stack-overflow + (b) cyclic-value STILL OPEN (design item)
+## P0-2: Silent signal crashes (SIGBUS/SIGSEGV, zero output) — ✅ FULLY FIXED 2026-07-10: (c) refutable-let build (`ed8be866`); (a) stack-overflow + (b) cyclic-value (`b32fff20` — sigaltstack native backstop + eval depth guard@25k + cyclic black-holing). Every bare signal death now a clean coded error.
 - Class: crash. Source: patterns#F5, playground#F2, numerics#F10, bindings#F6.
 - Repros:
   - `main = println (sum [1..=100000])` → `medaka run` exits 138 (SIGBUS), **no output at
