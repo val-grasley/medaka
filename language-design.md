@@ -261,8 +261,8 @@ result = do
 
 **Bare blocks vs `do` blocks.** Medaka distinguishes two kinds of indented blocks:
 
-- **Bare sequential blocks** (function bodies, `if`/`else` branches, match-arm bodies, any indented multi-statement block without a `do` keyword): purely sequential evaluation. Allowed statements: `let`, `let mut`, expression statements, reassignment (`x = e`), field assignment (`x.f = e`), `let else`. **`<-` is forbidden.**
-- **Monadic `do` blocks** (introduced by the explicit `do` keyword): every statement is sequenced through monadic bind. Allowed statements: `let` (no `mut`), `<-` bind, expression statements (each must unify to `m a`), `let else`. **`let mut`, reassignment, and field assignment are forbidden** — monads are for computational composition, not in-place mutation.
+- **Bare sequential blocks** (function bodies, `if`/`else` branches, match-arm bodies, any indented multi-statement block without a `do` keyword): purely sequential evaluation. Allowed statements: `let` (immutable declaration), expression statements (including `Ref` writes `x := e`), field assignment (`x.f = e`), `let else`. **`<-` is forbidden.** Bindings are immutable — a bare reassignment `x = e` is an error, and `let mut` is not a construct (use a `Ref`).
+- **Monadic `do` blocks** (introduced by the explicit `do` keyword): every statement is sequenced through monadic bind. Allowed statements: `let`, `<-` bind, expression statements (each must unify to `m a`), `let else`. **Reassignment and field assignment are forbidden** — monads are for computational composition, not in-place mutation.
 
 If you write `<-` inside a bare block, the typechecker emits a clear error pointing you at the `do` keyword.
 
@@ -739,11 +739,11 @@ map (x => x + 1) arr         -- [|2, 3, 4|], same interface as List
 ```
 
 #### MutArray — mutable array
-Opt-in mutability for performance. Requires `let mut`. Carries `<Mut>` effect.
+Opt-in mutability for performance. The cell is mutable; the binding is immutable. Mutating operations carry the `<Mut>` effect.
 
 ```
-let mut arr = [|1, 2, 3|]
-arr[0] = 5                    -- fine, Mut effect tracked
+let arr = MutArray [|1, 2, 3|]
+arr[0] = 5                    -- index assignment, Mut effect tracked
 ```
 
 Conversion between Array and MutArray:
@@ -763,41 +763,49 @@ m `insert` ("charlie", 35)        -- returns new Map, cheap via structural shari
 ```
 
 #### HashMap — mutable hash map
-Hash-based, mutable. Requires `let mut`. Carries `<Mut>` effect. Faster for update-heavy code.
+Hash-based, mutable. Its mutating operations carry the `<Mut>` effect. Faster for update-heavy code.
 
 ```
-let mut m = HashMap { "alice" => 30 }
-m `insert` ("charlie", 35)        -- mutates in place
+let m = HashMap { "alice" => 30 }
+m `insert` ("charlie", 35)        -- mutates in place (<Mut>)
 ```
 
 #### Set and HashSet
 Same immutable/mutable distinction as Map/HashMap:
 - `Set` — immutable tree set
-- `HashSet` — mutable hash set, requires `let mut`
+- `HashSet` — mutable hash set (mutating ops carry `<Mut>`)
 
 ### Mutability Rules
 Universal and consistent across all collection types and bindings:
 
-**If mutation happens, `mut` is there. Always. No exceptions.**
+**Bindings are immutable. Mutation lives in a `Ref` cell, surfaced by the
+`<Mut>` effect.** There is no mutable binding form — `let mut` has been removed,
+and a bare reassignment `x = e` of an already-bound name is an error. `=` (with
+`let`, or at the top level) is *declaration only*.
 
 ```
 let x = 5                              -- immutable binding
-let mut x = 5                          -- mutable binding
+x = 6                                  -- ERROR (R-IMMUTABLE-ASSIGN): reassignment
+let x = 6                              -- OK: shadowing declares a NEW binding
 
-let arr = [|1, 2, 3|]                 -- immutable array
-let mut arr = [|1, 2, 3|]             -- mutable array
-
-let m = Map { "alice" => 30 }         -- immutable map
-let mut m = HashMap { "alice" => 30 } -- mutable map
+let count = Ref 0                      -- an immutable binding of a mutable CELL
+count := count.value + 1               -- `:=` writes the cell; read with `.value`
+println count.value                    -- => 1
 
 let p = Person { name = "Alice", age = 30 }     -- immutable record
-let mut p = Person { name = "Alice", age = 30 } -- mutable record
-p.age = 31                             -- fine
+p.age = 31                             -- field assignment (in-place record mutation)
 ```
 
-The `mut` keyword and the `<Mut>` effect are two faces of the same concept. Any function that touches a `mut` binding automatically carries `<Mut>` in its inferred type signature.
+`Ref` is the single mutation primitive:
+- construct — `Ref v` (type `a -> Ref a`)
+- write — `x := e` (surface sugar for `setRef x e`, type `Ref a -> a -> <Mut> Unit`)
+- read — `x.value`
 
-Practical benefit: grep a codebase for `mut` and find every place mutation is introduced.
+Any function that writes a `Ref` carries `<Mut>` in its inferred type signature.
+The `Ref` type and the `<Mut>` effect are two faces of the same concept.
+
+Practical benefit: grep a codebase for `Ref` / `:=` and find every place mutation
+is introduced.
 
 ### Strings
 

@@ -1,5 +1,21 @@
 # P0-5 — Beta Mutability Model: enforce immutability + make `let mut` work
 
+> **⚠️ PIVOT (2026-07-09, SHIPPED).** The user re-decided the model: **`let mut`
+> is DROPPED, not fixed.** Mutability consolidates on the **`Ref` type + `<Mut>`
+> effect**. Bindings are immutable; `=` is declaration only; a bare reassignment
+> `x = e` of an existing binding is a located error (`R-IMMUTABLE-ASSIGN`), and
+> `let mut` is a located error (`R-MUT-LET-REMOVED`) pointing at `Ref`. Mutation:
+> construct `Ref v`, **write** with the new **`:=`** operator (`x := e`, surface
+> sugar for `setRef x e`), **read** with `.value`. Shadowing (`let x = …` reusing
+> a name) stays legal.
+>
+> **Superseded by this pivot:** §4/§5 below (the `let mut` branch-write
+> representation + closure-snapshot engine) — there is **no mutable-binding
+> engine**. What SURVIVES and was implemented: the enforcement map + the
+> reassignment/`let mut` rejection sites. See `SYNTAX.md` (§Refs, §let/mutation)
+> and `language-design.md` (§Mutability Rules) for the shipped model.
+
+
 **Status:** design / scoping pass (no compiler source changed). Deliverable is this
 doc. All behavior below verified empirically on the current binary, built and run
 **in the Docker Linux container** (`scripts/docker-dev.sh build`; ad-hoc runs against

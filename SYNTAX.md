@@ -249,7 +249,6 @@ the body on a *following* line, all on the `else` line, is **not** a block opene
 
 ```
 let x = 5 in x + 1
-let mut x = 5 in x                  -- mutable binding
 let f x = x + 1 in f 5             -- let-bound function
 let g x y = x + y in g 1 2
 let rec f = x => f x in f 0        -- recursive value (RHS must be a lambda)
@@ -265,10 +264,16 @@ let rec isEven = n => if n == 0 then True else isOdd (n - 1)
 with isOdd = n => if n == 0 then False else isEven (n - 1)
 ```
 
-Inside a bare (non-`do`) indented block, statements may be `let`, `let mut`,
-expression statements, reassignment `x = e`, field assignment `x.f = e`,
-nested field assignment `a.b.c = e`, and `let else`. **`<-` is forbidden in a
-bare block** — use `do`.
+Inside a bare (non-`do`) indented block, statements may be `let`,
+expression statements, field assignment `x.f = e`, nested field assignment
+`a.b.c = e`, and `let else`. **`<-` is forbidden in a bare block** — use `do`.
+
+**Bindings are immutable.** `=` (with `let`, or a top-level definition) is
+*declaration only*; there is no mutable binding. A bare reassignment `x = e` of
+an already-bound name is an error (`R-IMMUTABLE-ASSIGN`), and `let mut` has been
+removed (a parse error pointing at `Ref`). Shadowing — a *new* `let x = …` that reuses a
+name — stays legal (it declares a fresh binding). For in-place mutable state,
+use a `Ref` (see [Refs](#refs)).
 
 ## do notation (`do` keyword required)
 
@@ -419,12 +424,21 @@ baz x = x
 
 ## Refs
 
+Mutable state lives in a `Ref` cell (carrying the `<Mut>` effect), not in the
+binding. Construct with `Ref v`, write with the `:=` operator, read the `.value`
+field:
+
 ```
 main =
-  let mut count = Ref 0
-  setRef count 42        -- mutate a Ref cell
-  println count.value    -- .value reads it
+  let count = Ref 0      -- immutable BINDING of a mutable CELL
+  count := 42            -- `:=` writes the cell (sugar for `setRef count 42`)
+  count := count.value + 1  -- read with `.value`; `:=` is right-assoc, low prec
+  println count.value    -- .value reads it  => 43
 ```
+
+`x := e` is surface sugar that desugars to `setRef x e` (type
+`Ref a -> a -> <Mut> Unit`), so `x` must be a `Ref`; a non-`Ref` left side is a
+type error. `setRef` may still be called directly.
 
 ## Map / Set literals
 
