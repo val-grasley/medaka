@@ -1371,6 +1371,9 @@ long long mdk_int_bits_to_float(long long n) {
  * Returns a boxed Float. */
 long long mdk_bytes_to_float64(long long arr_word, long long off) {
   const long long *a = (const long long *)arr_word;
+  /* a[0] = count (raw, untagged); `off` is already untagged (emitter untags it).
+   * Reads 8 elements a[1+off+0..7]; bounds-check to prevent an OOB heap read. */
+  if (off < 0 || off + 8 > a[0]) mdk_oob();
   /* a[0] = count; a[1+i] = element i (TAGGED: raw >> 1 to get byte value) */
   unsigned long long bits =
     ((unsigned long long)((a[1 + off + 0] >> 1) & 0xFF) << 56) |

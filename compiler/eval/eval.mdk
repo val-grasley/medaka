@@ -1970,6 +1970,8 @@ getByte64 off arr i = match arrayGetUnsafe (off + i) arr
   _ => panic "bytesToFloat64: array element not Int"
 
 pBytesToFloat64 : Value -> Value -> Value
+pBytesToFloat64 (VArray arr) (VInt off)
+  | off < 0 || off + 8 > arrayLength arr = runtimePanic "E-INDEX-OOB" ("index " ++ intToString off ++ " out of bounds")
 pBytesToFloat64 (VArray arr) (VInt off) =
   -- Build a host Array Int of 8 bytes, then delegate to the C bytesToFloat64.
   -- Avoids the 63-bit integer overflow that plagues assembleBits+intBitsToFloat

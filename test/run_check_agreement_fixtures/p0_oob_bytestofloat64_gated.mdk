@@ -1,0 +1,7 @@
+-- P0 SECURITY: bytesToFloat64 reads 8 words from a user-controlled offset with
+-- no bounds check and was NOT on the internal-extern denylist, so a user file
+-- could call it to read adjacent live heap (info-disclosure). It is now GATED as
+-- an internal extern (R-INTERNAL-EXTERN), so a direct userland call is rejected
+-- by check == run == build alike. Expected verdict = REJECT.
+arr = arrayFromList [1, 2, 3]
+main = println (floatToString (bytesToFloat64 arr 8))

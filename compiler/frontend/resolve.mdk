@@ -208,6 +208,7 @@ internalExterns = [
   "arrayBlit",
   "arrayFill",
   "arraySortInPlaceBy",
+  "bytesToFloat64",
 ]
 
 -- The internal-extern guard list for a module given whether internal access is
