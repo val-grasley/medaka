@@ -61,7 +61,8 @@ soundness holes); candidate for the next fix batch after P0-5.
 runtime-identical to `let`); consolidate on the **`Ref` type + `<Mut>` effect** already dogfooded
 by the compiler. Beta model: bindings immutable (`=` = declaration only); bare reassignment + `let
 mut` → located error pointing to `Ref`; mutation via a NEW **`:=` operator** (`x := v` desugars to
-`setRef x v`), read via `!`. Reserving `:=` for mutation vs `=` for declaration is a deliberate
+`setRef x v`), read via `.value` (field-access deref; `!` is boolean-not, NOT a Ref reader).
+Reserving `:=` for mutation vs `=` for declaration is a deliberate
 clarity feature (OCaml/SML-style). Reframed P0-5 = enforcement + `:=` sugar + docs (no branch-write
 engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/§5 superseded).
 
