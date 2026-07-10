@@ -66,6 +66,24 @@ Reserving `:=` for mutation vs `=` for declaration is a deliberate
 clarity feature (OCaml/SML-style). Reframed P0-5 = enforcement + `:=` sugar + docs (no branch-write
 engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/§5 superseded).
 
+**⭐ Language trim + Ref-ergonomics batch (DECIDED 2026-07-09; queued after P0-5).** Backed by the
+read-only `LANGUAGE-SURFACE-AUDIT.md` (dogfood-usage census of every optional construct). Sequence
+after P0-5 (shares lexer/parser/desugar/eval). The batch:
+- **REMOVE (0 dogfood uses, redundant, low newcomer+future value):** the **`function` keyword**
+  (→ RESERVE as a beginner-hint: "use `x => match x` or multi-clause"; `EFunction` arms are
+  desugar-dead so removal is exhaustiveness-self-guiding across ~13 files); **backtick infix**
+  `` x `f` y `` (Haskell-flavored, redundant with prefix app); the **`let rec … with` mutual-group**
+  (keep single `let rec` for local recursive lambdas; drop only the `with` grouping); **`let-else`**.
+- **REPURPOSE `!` (boolean-not → Ref-DEREF sugar).** `!x` desugars to `x.value` (the existing Ref
+  read — mirrors `:=`→`setRef`; no new eval/emit arm). `not` becomes the SOLE boolean negation
+  (already a prelude fn). 0 dogfood `!`-as-not uses → no compiler/stdlib migration. Add a hint on
+  `!someBool` → "use `not`". Net: Refs get OCaml-standard ergonomics — `Ref x` / `!x` / `x := v`.
+  **Also update P0-5's `R-IMMUTABLE-ASSIGN` error copy** from `.value` to the nicer `!c` once this lands.
+- **KEEP-FOR-FUTURE:** compose `>>`/`<<` (foundational point-free FP, near-zero carry cost; pairs
+  with the kept pipe `|>`). Everything else audited = KEEP (earned or high newcomer value).
+Removal surface is dominated by `test/construct_fixtures/*` goldens + reference docs, not compiler
+logic. Verify each cut construct isn't half-baked first; keep LLVM IR byte-identical + fixpoint.
+
 **⭐ PRE-BETA (user elevated 2026-07-09): typeclass-based `[ ]` indexing — `Index`/`IndexMut`.**
 "Affects ergonomics around common data structures a lot" → in the beta, not a fast-follow. A real
 language-feature arc (interface(s) + NEW postfix `[expr]` grammar — none today, parser postfix does
