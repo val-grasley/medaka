@@ -1,0 +1,18 @@
+-- P0-19 batch 2 (SHADOW-SEMANTICS row 9 / cell d4): the no-regression twin of
+-- p0_19_value_pos_shadow — a definer-shadow standalone `size` in VALUE position over
+-- elements that DO match its declared domain (Int).  S4 pins the value to the
+-- standalone `Int -> Int`, so `map size [1,2,3]` types and runs the standalone,
+-- printing [2, 3, 4].  Locks that pinning the value position to the standalone did
+-- not over-reject the accept side.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main = println (map size [1, 2, 3])

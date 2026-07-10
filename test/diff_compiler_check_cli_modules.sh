@@ -305,5 +305,47 @@ if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/impmain.mdk"
   else fail=$((fail+1)); printf 'FAIL importer-shadow/build (got [%s], want [3,4,])\n' "$imp_bld"; fi
 else fail=$((fail+1)); printf 'FAIL importer-shadow/build (native build failed)\n'; fi
 
+# 10. P0-19 (SHADOW-SEMANTICS row 14 / cell d8) DEFINER shadow with IMPORTED
+#     interface+impl.  The CONSUMER defines the standalone `size : Int -> Int` and
+#     IMPORTS the interface `Sizeable` + type `Box(..)` + its impl from `dprov`.
+#     S6: the impl universe is GLOBAL, so `size (Box 3)` must DISPATCH to the imported
+#     `impl Sizeable Box` (3) and `size 3` (Int, no impl) fall back to the standalone
+#     (4) — exactly like the all-local cell d2.  Before the fix all three paths
+#     REJECTED `Int vs Box` (the definer-shadow app typed against the local standalone
+#     before the per-receiver machinery saw the imported impl).  check must ACCEPT and
+#     build must AGREE (3 then 4).
+cat > "$TMP/dprov.mdk" <<'EOF'
+export interface Sizeable a where
+  size : a -> Int
+
+public export data Box = Box Int
+
+export impl Sizeable Box where
+  size (Box n) = n
+EOF
+cat > "$TMP/dmain.mdk" <<'EOF'
+import dprov.{Sizeable, Box(..)}
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  println (size (Box 3))
+  println (size 3)
+EOF
+dfn_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/dmain.mdk" 2>/dev/null)"
+dfn_code=$?
+case "$dfn_out" in
+  *"Type mismatch"*|*"No impl"*) fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (spurious reject: [%s])\n' "$dfn_out" ;;
+  *) if [ "$dfn_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/check (imported iface+impl dispatch accepted)\n'
+     else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (exit %d: [%s])\n' "$dfn_code" "$dfn_out"; fi ;;
+esac
+# build AGREEMENT: the same project must build AND run to `3` then `4`.
+if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/dmain.mdk" -o "$TMP/dfn.bin" >/dev/null 2>&1 && [ -x "$TMP/dfn.bin" ]; then
+  dfn_bld="$("$TMP/dfn.bin" 2>/dev/null | tr '\n' ',')"
+  if [ "$dfn_bld" = "3,4," ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/build (dispatch 3 + standalone 4)\n'
+  else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (got [%s], want [3,4,])\n' "$dfn_bld"; fi
+else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (native build failed)\n'; fi
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

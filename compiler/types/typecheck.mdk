@@ -1214,6 +1214,17 @@ definerShadowNamesRef = Ref []
 definerShadowSigsRef : Ref (List (String, Ty))
 definerShadowSigsRef = Ref []
 
+-- P0-19 d4b (S4): True while inferring the HEAD of a definer-shadow APPLICATION
+-- (`size (Box 3)`) — set around the head-infer call in inferDefinerShadowVarApp /
+-- inferDefinerShadowApp.  A shadow occurrence reaches inferVar / inferMethodAt in
+-- two shapes: as an application head (dispatch-vs-standalone decided per-receiver by
+-- the surrounding shadow-app machinery, so the head must keep the permissive METHOD
+-- scheme `a -> Int`) OR in bare VALUE position (`map size xs`, `let f = size`), which
+-- S4 says ALWAYS denotes the standalone.  This flag distinguishes the two so only the
+-- value-position occurrence is pinned to the standalone scheme.  Default/reset False.
+shadowHeadCtxRef : Ref Bool
+shadowHeadCtxRef = Ref False
+
 -- P0-18 (EMIT path only): the mangler (`mangleUnits`) renames a definer-shadow
 -- standalone def + its call sites to `<mid>__name` BEFORE marking, but (correctly)
 -- leaves the interface method name bare — so the mark pass's NAME-based shadow
@@ -2081,6 +2092,7 @@ resetState _ =
   let _ = setRef shadowStandaloneSchemesRef []
   let _ = setRef definerShadowNamesRef []
   let _ = setRef definerShadowSigsRef []
+  let _ = setRef shadowHeadCtxRef False
   let _ = setRef shadowKeyTableRef []
   let _ = setRef pendingBinopSites []
   let _ = setRef pendingArithSites []
@@ -3213,12 +3225,20 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
     let _ = recordMethodDicts name methodRef (snd inst)
     let _ = recordImplObligation name (fst inst)
     let _ = recordRLocalSite env name tagRef (fst inst)
-    match argDispatchOf name
+    let ret = match argDispatchOf name
       Some idx =>
         let _ = recordArgStamp name tagRef implRef idx (fst inst) hint
         let _ = recordArgSiteFn name idx (fst inst)
         fst inst
       None => recordSiteHinted name tagRef implRef (fst inst) hint
+    -- P0-19 d4b (S4): a bare value-position definer shadow (`map size xs`, marked to
+    -- `EMethodAt`) denotes the STANDALONE — return its declared scheme type so the type
+    -- mismatches live-impl elements (Box vs Int) instead of dispatching, while the route
+    -- side-effects above still stamp RLocal (ungrounded receiver) so `map size [1,2,3]`
+    -- runs the standalone.  Inert for an application head (shadowHeadCtxRef True).
+    match maybeStandaloneValueMono name
+      Some m => m
+      None => ret
 -- C5: if [name] is a standalone-shadow method, record its discriminating-arg
 -- mono cell UNGATED so resolveRLocalSites can route RLocal when the receiver
 -- grounds to a no-impl head (the arg-stamp path would otherwise leave it RNone
@@ -4397,7 +4417,13 @@ inferInfix env op l r =
   inferApp (envAlphaLets env) (EApp inner r) (inferApp (envAlphaLets env) inner ft lt) rt
 
 inferVar : TcEnv -> String -> <Mut> Mono
-inferVar env x = match lookupVar env x
+inferVar env x = match maybeStandaloneValueMono x
+  -- P0-19 d4b (S4): bare value-position definer shadow → the standalone scheme.
+  Some m => m
+  None => inferVarPlain env x
+
+inferVarPlain : TcEnv -> String -> <Mut> Mono
+inferVarPlain env x = match lookupVar env x
   Some s =>
     let mono = instantiateVarTracked x s
     -- @Impl (check path): a method occurrence may carry a pending `@Name` hint set
@@ -4812,20 +4838,40 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- P0-19: capture the application's location BEFORE inferring the argument (which
   -- moves currentLoc), so a standalone-domain mismatch reports at the call site.
   let dloc = currentLoc.value
+  -- P0-19 d8 (S2/S6): infer the argument FIRST so the head scheme is chosen PER
+  -- RECEIVER.  A receiver with a VISIBLE impl of the shadowed interface (impl universe
+  -- is GLOBAL — shadowKeyTableRef spans local ∪ imported ∪ prelude) DISPATCHES → type
+  -- the head against the METHOD scheme; else it is the STANDALONE.  Without this the
+  -- mangled emit path (sym != "") ALWAYS typed against the standalone scheme
+  -- (`Int -> Int`), so a definer shadow whose impl is IMPORTED (`size (Box 3)`, d8)
+  -- rejected `Int vs Box` at build/run instead of dispatching to the imported impl.
+  let xt = infer env x
+  let dispatches = definerReceiverDispatches name xt
   let _ = setRef suppressRLocalRecord True
   let _ = setRef suppressArgStamp True
-  -- P0-18: type the head against the STANDALONE scheme.  On the un-mangled run/check
-  -- path `infer env f` already resolves the bare name to the standalone (which shadows
-  -- the method in scope).  On the EMIT path the bare name resolves to the interface
-  -- METHOD scheme instead (the standalone was renamed to `<mid>__name`), whose result
-  -- loses the concrete element type — e.g. Map's `toList` would type `List a` not
-  -- `List (k, v)`, so a downstream `debug (toList m)` resolves the WRONG element dict
-  -- and SIGSEGVs.  When we carry the mangled symbol, instantiate its (standalone)
-  -- scheme directly so the impl-body types exactly as the run path does.
-  let ft = definerShadowHeadType env sym f
+  -- P0-19 d4b: this is an application head (marked EMethodAt on run/build) → keep the
+  -- method scheme for per-receiver dispatch; suppress the value-position standalone pin.
+  let _ = setRef shadowHeadCtxRef True
+  -- P0-18: for the STANDALONE arm, type the head against the STANDALONE scheme.  On the
+  -- un-mangled run/check path `infer env f` already resolves the bare name to the
+  -- standalone (which shadows the method in scope).  On the EMIT path the bare name
+  -- resolves to the interface METHOD scheme instead (the standalone was renamed to
+  -- `<mid>__name`), whose result loses the concrete element type — e.g. Map's `toList`
+  -- would type `List a` not `List (k, v)`, so a downstream `debug (toList m)` resolves
+  -- the WRONG element dict and SIGSEGVs.  When we carry the mangled symbol, instantiate
+  -- its (standalone) scheme directly so the impl-body types exactly as the run path
+  -- does.  For the DISPATCH arm, type against the METHOD scheme (`definerShadowHeadType
+  -- env ""`) so a live-impl receiver unifies and the result comes from the method.
+  -- DISPATCH arm: the interface METHOD scheme, fetched EXPLICITLY from
+  -- methodIfaceParamsRef (which spans imported interfaces) — NOT `infer env f`, because
+  -- on the multi-module path the env rebinds the bare method name to the LOCAL
+  -- standalone (`Int -> Int`), so inferMethodAt's lookupVar would hand back `Int -> Int`
+  -- and reject a live-impl receiver (`Box`).  STANDALONE arm: the standalone scheme
+  -- (mangled sym on the emit path preserves the concrete result type).
+  let ft = if dispatches then shadowVarHeadMethodScheme env name f else definerShadowHeadType env sym f
+  let _ = setRef shadowHeadCtxRef False
   let _ = setRef suppressRLocalRecord False
   let _ = setRef suppressArgStamp False
-  let xt = infer env x
   -- Route by the ACTUAL argument type on BOTH the eval path (pendingRLocalSites,
   -- read by resolveRLocalSites) and the emit path (pendingArgStamps, read by
   -- resolveArgStamps — only recorded when this method arg-dispatches, i.e. on the
@@ -4848,6 +4894,15 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- which enforces the domain itself, so this stays inert there.
   let _ = if sym == "" then enforceStandaloneDomain env name xt dloc else ()
   inferApp (envAlphaLets env) (EApp f x) ft xt
+
+-- P0-19 (d8): True iff the definer-shadow [name] applied to a receiver of type [xt]
+-- should DISPATCH — its grounded head tycon has a visible impl of the shadowed
+-- interface in the GLOBAL impl universe (shadowKeyTableRef, seeded local ∪ imported ∪
+-- prelude).  An ungrounded receiver is NOT a dispatch (it is the standalone, S5).
+definerReceiverDispatches : String -> Mono -> <Mut> Bool
+definerReceiverDispatches name xt = match headTyconMono xt
+  Some head => implExistsForHead shadowKeyTableRef.value name head
+  None => False
 
 -- P0-19: impose a definer-shadow standalone's declared domain on the actual argument
 -- [xt] WHEN the occurrence resolves to the standalone (RLocal): a grounded receiver
@@ -4883,6 +4938,30 @@ standaloneShadowDomain name = match lookupAssoc name definerShadowSigsRef.value
     TFun a _ _ => Some a
     _ => None
 
+-- P0-19 d4b (S4): a definer-shadow occurrence in bare VALUE position (NOT the head of
+-- its own application — shadowHeadCtxRef is False) denotes the STANDALONE.  Returns the
+-- standalone's declared scheme freshly instantiated so a HOF sees `Int -> Int`, not the
+-- permissive method scheme `a -> Int` — making `map size [Box …]` a located reject
+-- (Box vs Int) while `map size [1,2,3]` still accepts.  Only fires for a single-param
+-- interface-method name that is a module-local standalone WITH a declared signature;
+-- everything else (app head, non-shadow, unsignatured standalone) returns None → the
+-- ordinary env lookup / method scheme, unchanged.
+maybeStandaloneValueMono : String -> <Mut> Option Mono
+maybeStandaloneValueMono name
+  | shadowHeadCtxRef.value = None
+  | not (singleParamIfaceMethod name) = None
+  | not (contains name definerShadowNamesRef.value) = None
+  | otherwise = standaloneShadowScheme name
+
+-- P0-19: a definer-shadow standalone's full declared scheme (`Int -> Int`), freshly
+-- instantiated.  None when the standalone has no top-level signature (nothing to pin —
+-- the permissive fallback stays).  Used both for value-position pinning (d4b) and to
+-- type a standalone-fallback application against the standalone's result type (d8).
+standaloneShadowScheme : String -> <Mut> Option Mono
+standaloneShadowScheme name = map
+  (ty => instantiate (sigToScheme ty))
+  (lookupAssoc name definerShadowSigsRef.value)
+
 -- P0-19: peel an application head to a definer-shadow interface-method occurrence on
 -- the UN-MARKED path (the `check` pipeline runs no marker, so the head is a bare
 -- `EVar`, not the `EMethodAt` that definerShadowArgHead matches on run/build).  Same
@@ -4896,18 +4975,64 @@ definerShadowVarHead (EVar name)
   | otherwise = None
 definerShadowVarHead _ = None
 
--- P0-19: type an un-marked (check-path) definer-shadow application.  The head still
--- infers to the permissive METHOD scheme (`a -> Int`) so the result stays `Int` for
--- both dispatch and standalone, but enforceStandaloneDomain imposes the standalone's
--- declared domain when the receiver has no impl / is ungrounded — the check-path twin
--- of inferDefinerShadowApp's enforcement, giving `run`/`check`/`build` agreement.
+-- P0-19: type an un-marked (check-path) definer-shadow application PER RECEIVER,
+-- mirroring the importer path (inferShadowApp).  A receiver head with a VISIBLE impl
+-- of the shadowed interface DISPATCHES (impl universe is GLOBAL — shadowKeyTableRef
+-- spans local ∪ imported ∪ prelude) → type against the METHOD scheme so the result
+-- comes from the method; a grounded no-impl head, or an ungrounded receiver (S5), is
+-- the STANDALONE → type against the LOCAL standalone scheme (its result type) and
+-- localize a domain mismatch to the call.  Using the method scheme EXPLICITLY (not
+-- `infer env f`) is what makes d8 (S6) dispatch: on the multi-module path the env
+-- rebinds the bare name to the LOCAL standalone (`Int -> Int`), so `infer env f` there
+-- would reject a live-impl receiver (`Box`) — the row-14 `Int vs Box` bug — instead of
+-- dispatching to the imported impl.  On the single-file path the standalone/method
+-- split is unchanged (d1/d2/d9 stay green).
 inferDefinerShadowVarApp : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferDefinerShadowVarApp env name f x =
   let dloc = currentLoc.value
-  let ft = infer env f
   let xt = infer env x
-  let _ = enforceStandaloneDomain env name xt dloc
-  inferApp (envAlphaLets env) (EApp f x) ft xt
+  match headTyconMono xt
+    Some head =>
+      if implExistsForHead shadowKeyTableRef.value name head then
+        inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
+      else
+        inferDefinerStandaloneVarApp env name f x xt dloc
+    None => inferDefinerStandaloneVarApp env name f x xt dloc
+
+-- P0-19 (d8 dispatch arm): the interface METHOD scheme for [name], from
+-- methodIfaceParamsRef (which spans imported interfaces) so per-receiver dispatch works
+-- even when the multi-module env has rebound the bare name to the local standalone.
+-- Falls back to `infer env f` (flagged as an app head so maybeStandaloneValueMono does
+-- not pin it) when the method type is unavailable.
+shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> <Mut> Mono
+shadowVarHeadMethodScheme env name f = match lookupAssoc name methodIfaceParamsRef.value
+  Some (_, _, ty) => instantiate (sigToScheme ty)
+  None =>
+    let _ = setRef shadowHeadCtxRef True
+    let ft = infer env f
+    let _ = setRef shadowHeadCtxRef False
+    ft
+
+-- P0-19 (standalone arm): type the application against the LOCAL standalone scheme so
+-- the result is the standalone's (S2/S5); a domain mismatch (`size "hi"`) or a wrapper
+-- generalized over the shadow receiver then called at a foreign type localizes to the
+-- call [dloc].  No declared signature ⇒ fall back to the permissive method-scheme head
+-- + enforceStandaloneDomain (the pre-P0-19 permissive behavior, unchanged).
+inferDefinerStandaloneVarApp : TcEnv -> String -> Expr -> Expr -> Mono -> Option Loc -> <Mut> Mono
+inferDefinerStandaloneVarApp env name f x xt dloc = match standaloneShadowScheme name
+  Some smono =>
+    let r = freshVar ()
+    let eff = openRow ()
+    let _ = setRef currentLoc dloc
+    let _ = unify smono (TFun xt eff r)
+    let _ = performEffect curEffect eff
+    r
+  None =>
+    let _ = setRef shadowHeadCtxRef True
+    let ft = infer env f
+    let _ = setRef shadowHeadCtxRef False
+    let _ = enforceStandaloneDomain env name xt dloc
+    inferApp (envAlphaLets env) (EApp f x) ft xt
 
 -- P0-18: the type of a definer-shadow application HEAD.  With a mangled symbol (the
 -- emit path), instantiate the standalone's own scheme (bound under `<mid>__name`) so
@@ -11070,7 +11195,15 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- importer shadow applied to a live-impl receiver (`size (Box 3)`) found no impl,
   -- fell through to the standalone (`Int -> Int`), and mis-typed `Box vs Int`.  Emit
   -- is unaffected (the importer path is unreachable there — standaloneValues empty).
-  let _ = setRef shadowKeyTableRef (buildKeyTable (implDecls ++ prog))
+  -- P0-19 d8 (S6): ALSO scan `accData` (prior modules' PUBLIC decls, incl. exported
+  -- `DImpl`) so a DEFINER shadow whose interface + receiver impl are IMPORTED
+  -- (`import prov.{Sizeable, Box(..)}`, local `size : Int -> Int`) dispatches to the
+  -- imported impl for `size (Box 3)` and falls to the standalone for `size 3`.  The
+  -- impl universe is GLOBAL (local ∪ imported ∪ prelude) — mirrors buildDefinerShadows
+  -- / registerMethodIfaceParamsAll above, which already scan `accData ++ implDecls ++
+  -- prog`.  Without this, batch-1's enforceStandaloneDomain saw no impl for `Box` and
+  -- forced the standalone domain `Int` onto it → the row-14 `Int vs Box` reject.
+  let _ = setRef shadowKeyTableRef (buildKeyTable (accData ++ implDecls ++ prog))
   let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
   let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value

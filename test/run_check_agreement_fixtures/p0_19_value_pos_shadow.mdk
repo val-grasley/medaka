@@ -1,0 +1,18 @@
+-- P0-19 batch 2 (SHADOW-SEMANTICS row 10 / cell d4b): a definer-shadow standalone
+-- `size` used in VALUE position (passed to `map`, not applied to a receiver) over
+-- LIVE-impl elements.  S4 says a bare, non-applied shadow name ALWAYS denotes the
+-- standalone (`Int -> Int`) — dispatching would require the value to be the method.
+-- So `map size [Box …]` must be a located REJECT (Box vs Int), never a silent
+-- dispatch (build printed `[1, 2]`) or runtime panic.  This locks that fix.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Int -> Int
+size n = n + 1
+
+main = println (map size [Box 1, Box 2])
