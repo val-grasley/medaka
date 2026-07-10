@@ -197,3 +197,18 @@ Rows 12 and 13 are **silent build soundness holes** (check accepts, binary
 prints garbage) — the same severity class as the original P0-18 build hole, and
 strong candidates for the next fix batch, with rows 10/14 folded in as the
 same "which stage owns S4/S6" decision.
+
+> **✅ UPDATE (2026-07-10, `ef0874f3` — P0-19 batch 1):** rows **12 (d5b)** and **13
+> (d9)** are FIXED — both now `check`/`run`/`build` REJECT with a located
+> `Type mismatch` (`enforceStandaloneDomain` re-imposes the standalone's declared
+> domain whenever a definer-shadow occurrence resolves to the standalone, on both
+> the marked run/build path and a new un-marked `EVar` check path; gated by
+> `shadowKeyTableRef` so live-impl receivers still dispatch). Regression fixtures
+> `test/run_check_agreement_fixtures/p0_19_{poly_wrapper_shadow,noimpl_domain_mismatch}`
+> (`.expected=REJECT`); agreement gate 22/0, fixpoint C3a/C3b YES. Bonus: row 11's
+> over-general wrapper scheme (`useIt : a -> Int`) is fixed to `Int -> Int`.
+> **Still open:** row **10 (d4b)** value-position (`inferVar` owns S4 — a bare
+> non-applied shadow name must resolve to the standalone without breaking the
+> applied dispatch head that shares `inferVar`; NOT a soundness hole, build prints
+> a defined `[1,2]`) and row **14 (d8)** cross-module definer-shadow dispatch (S6,
+> opposite direction — deferred by decision).

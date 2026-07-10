@@ -32,6 +32,34 @@ quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) and a
 unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN.md`
 §D0). The prior north star (self-hosting → LLVM) is ✅ COMPLETE.
 
+## Current status (2026-07-10) — P0-19 both silent soundness holes CLOSED (rows 12/13); row 10 residual, row 14 deferred. `main` = `ef0874f3`
+
+The two **silent build-garbage soundness holes** are fixed (`ef0874f3`, pure `compiler/types/typecheck.mdk`):
+- **Row 12 (d5b)** `useIt x = size x; useIt (Box 3)` and **Row 13 (d9)** `size "hi"` now `check`/`run`/`build`
+  all REJECT with a located `Type mismatch: Int vs Box` / `Int vs String` (no binary emitted). Bonus: row 11's
+  over-general scheme fixed — `useIt : Int -> Int`, not `a -> Int`.
+- **Root cause:** `recordImplObligation` (typecheck.mdk:4453) skipped the impl obligation for every definer-shadow
+  name and nothing re-imposed the standalone's declared domain when a shadow occurrence resolved to the standalone
+  (argument typed against the poly *method* scheme, not `Int -> Int`). Non-obvious second fact: the single-file
+  `check` path runs **no marker**, so shadow heads arrive as bare `EVar` and never reached `inferDefinerShadowApp`
+  (matches `EMethodAt` only). Fix: new `enforceStandaloneDomain` imposes the standalone domain on both the marked
+  (run/build) path and a new un-marked `EVar` check path (`definerShadowVarHead`/`inferDefinerShadowVarApp`),
+  gated by `shadowKeyTableRef` so a receiver *with* an impl still dispatches. Standalone sigs stashed in new
+  `definerShadowSigsRef`; single-file `checkProgramSeeded` seeds `shadowKeyTableRef`.
+- **Gates (orchestrator-verified):** agreement **22/0** (2 new REJECT fixtures `p0_19_poly_wrapper_shadow` +
+  `p0_19_noimpl_domain_mismatch`), llvm 195/0, llvm_typed 44/0, build 60/0, typecheck 14/0, check 77/0,
+  **fixpoint C3a/C3b YES**, no re-mint; 5 stdlib definer-shadows + accept cells (d1–d7) unchanged.
+
+**Residual / deferred (not soundness holes):**
+- **Row 10 (d4b)** `map size [Box 1, Box 2]` (value position, S4) still `check` ACCEPTs, build prints a *defined*
+  `[1, 2]` (dispatches) — NOT garbage. The fix lives in `inferVar`'s resolution of a bare (non-applied)
+  definer-shadow name, decoupled from the applied dispatch head (which shares `inferVar`); the applied helpers
+  would then fetch the method scheme from `methodIfaceParamsRef` rather than `infer env f`. Genuinely a different,
+  broader "which stage owns S4" mechanism — deferred, agent STOPPed here per guardrail.
+- **Row 14 (d8)** definer shadow with imported interface+impl → all paths reject `Int vs Box` (loud/safe
+  over-rejection). Opposite direction (relax to cross-module dispatch, S6) — a separate feature, deferred by
+  decision (out of this batch's scope).
+
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED incl. importer-no-impl residual. `main` = `cfc4fa5a`
 
 Final residual closed (`cfc4fa5a`): an **importer shadow on a no-impl receiver** (imported `size`,
@@ -47,15 +75,6 @@ P0-18 (run/check + build + importer/N-way generalization + residual) is now clos
 landed — decision matrix (24 cells) + per-stage enforcement table + fixture-per-cell plan
 (`test/shadow_fixtures/`, all created, not yet gate-wired). Result: **14 OK / 4 BUG / 3 untested**.
 Memory `project_shadow_semantics_spec`.
-
-**⭐ NEW P0 (added to punchlist): P0-19 — the 4 shadow-conformance BUG cells.** Rows 12 & 13 are
-**silent build soundness holes** (check accepts, binary prints garbage — same class as the original
-P0-18 hole): row 12 = poly-wrapper generalizes over the shadow receiver (`useIt x = size x`), row 13
-= no-impl domain mismatch (`size "hi"`) unchecked. Row 10 = value-position three-way split (`map size
-[Box 1, Box 2]`), row 14 = definer shadow with imported interface+impl doesn't dispatch cross-module.
-All in the shadow-dispatch machinery (`typecheck.mdk`) — a coherent follow-on batch to P0-18; fixtures
-exist. FINDINGS P0-19; spec §5 has repros+hypotheses, §4 the gate-adoption plan. High priority (2
-soundness holes); candidate for the next fix batch after P0-5.
 
 **Mutability model PIVOTED (user decision 2026-07-09):** drop `let mut` (0 real sites, half-broken,
 runtime-identical to `let`); consolidate on the **`Ref` type + `<Mut>` effect** already dogfooded
