@@ -245,6 +245,36 @@ beta (first-day user pain, but survivable). **P2** = fix soon after / document. 
 
 ---
 
+## P0-19: Shadow-semantics conformance BUG cells (from `SHADOW-SEMANTICS.md`, 2026-07-09) — 4 cells, 2 silent build soundness holes
+- Class: soundness / run-build-divergence. Source: the `SHADOW-SEMANTICS.md` conformance
+  spec (`c1ea45d8`) — matrix 14 OK / **4 BUG** / 3 untested. Fixtures ALREADY EXIST in
+  `test/shadow_fixtures/` (not yet gate-wired). All four live in the declaration-shadowing
+  dispatch machinery (mostly `compiler/types/typecheck.mdk`) — a coherent follow-on batch to
+  the P0-18 arc. Owning doc: `SHADOW-SEMANTICS.md` §5; memory `project_shadow_semantics_spec`.
+- **Row 12 (⚠️ SILENT BUILD SOUNDNESS HOLE)** — generalization over the shadow receiver.
+  `useIt x = size x; useIt (Box 3)` → check ACCEPTS (`useIt : a -> Int`), run E-PANICs, **build
+  prints a garbage int** (Box ptr + 1). The ungrounded-receiver occurrence types against the
+  polymorphic METHOD scheme so the wrapper generalizes instead of monomorphising to the
+  standalone domain (S5). Fixture `d5b_definer_poly_liveimpl_call.mdk`.
+- **Row 13 (⚠️ SILENT BUILD SOUNDNESS HOLE)** — no-impl receiver + domain mismatch.
+  `size "hi"` → check ACCEPTS, run E-PANICs, **build prints garbage**. `recordImplObligation`
+  skips the impl obligation for every occurrence of a shadow name and nothing re-imposes the
+  standalone's domain on the check path (the S2 "must type against the standalone" half is
+  unenforced). Fixture `d9_definer_reject.mdk`.
+- **Row 10** — value-position shadow over live-impl elements: three-way split. `map size
+  [Box 1, Box 2]` → check accepts, run E-PANICs, build dispatches to the impl (`[1,2]`). Three
+  stages, three S4 answers. Fixture `d4b_definer_value_pos_liveimpl.mdk`.
+- **Row 14** — definer shadow with imported interface+impl: consistent but WRONG (no
+  cross-module dispatch). Local `size : Int -> Int` + `import prov.{Sizeable, Box(..)}`;
+  `size (Box 3)` → all three paths reject `Int vs Box`, but S6 says dispatch → 3. Fixture
+  `d8_definer_imported_impl/`.
+- Expected: run==check==build on every cell (spec clause S7). Rows 12/13 REJECT-expected
+  cells become regression tests via `diff_compiler_run_check_agreement` (`.expected=REJECT`);
+  the spec's §4 gives the full fixture-adoption plan. Spec recommends rows 12/13 first, with
+  10/14 folded in as the same "which stage owns S4/S6" decision.
+
+---
+
 # P1 — Fix before beta if at all possible
 
 ## P1-1: Int is 63-bit and literals silently wrap

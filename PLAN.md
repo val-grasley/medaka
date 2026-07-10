@@ -43,11 +43,19 @@ interface; importer dispatch includes the module's own impls). New gate `diff_co
 12/0; agreement 14/0, build 60/0, llvm byte-identical, fixpoint C3a/C3b YES, no re-mint. **All of
 P0-18 (run/check + build + importer/N-way generalization + residual) is now closed.**
 
-**Follow-up queued (user will run in a separate session):** a formal `SHADOW-SEMANTICS.md`
-conformance spec for declaration shadowing (decision matrix over is-shadow × definer/importer ×
-receiver-has-impl × N-way × same/cross-module, a per-stage enforcement table, and a fixture-per-cell
-plan) — this arc produced 4 bugs across 4 pipeline stages, the signature of an under-specified
-cross-cutting invariant. Prompt written; to run once this is settled on main.
+**Follow-up ✅ DONE (separate session, `c1ea45d8`):** `SHADOW-SEMANTICS.md` conformance spec
+landed — decision matrix (24 cells) + per-stage enforcement table + fixture-per-cell plan
+(`test/shadow_fixtures/`, all created, not yet gate-wired). Result: **14 OK / 4 BUG / 3 untested**.
+Memory `project_shadow_semantics_spec`.
+
+**⭐ NEW P0 (added to punchlist): P0-19 — the 4 shadow-conformance BUG cells.** Rows 12 & 13 are
+**silent build soundness holes** (check accepts, binary prints garbage — same class as the original
+P0-18 hole): row 12 = poly-wrapper generalizes over the shadow receiver (`useIt x = size x`), row 13
+= no-impl domain mismatch (`size "hi"`) unchecked. Row 10 = value-position three-way split (`map size
+[Box 1, Box 2]`), row 14 = definer shadow with imported interface+impl doesn't dispatch cross-module.
+All in the shadow-dispatch machinery (`typecheck.mdk`) — a coherent follow-on batch to P0-18; fixtures
+exist. FINDINGS P0-19; spec §5 has repros+hypotheses, §4 the gate-adoption plan. High priority (2
+soundness holes); candidate for the next fix batch after P0-5.
 
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED (run/check + build); soundness hole gone. `main` = `01ac360d`
 
