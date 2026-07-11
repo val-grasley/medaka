@@ -1,6 +1,7 @@
 -- Declaration/expression forms the self-hosted parser was hardened to accept:
 -- type aliases, newtypes (with/without deriving), top-level mutually-recursive
--- let-groups, declaration attributes, and Map/Set literals.
+-- let-groups (each as its own `let rec`), declaration attributes, and
+-- Map/Set literals.
 
 type Name = String
 type Wrapper a = Option a
@@ -9,7 +10,7 @@ newtype UserId = UserId Int
 newtype Age = Age Int deriving (Eq, Ord)
 
 let rec isEven = n => if n == 0 then True else isOdd (n - 1)
-with isOdd = n => if n == 0 then False else isEven (n - 1)
+let rec isOdd = n => if n == 0 then False else isEven (n - 1)
 
 @inline
 double x = x + x

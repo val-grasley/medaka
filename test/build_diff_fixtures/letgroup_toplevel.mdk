@@ -1,6 +1,7 @@
--- Top-level DLetGroup (`let rec … with …`): constrained mutual-recursive build.
+-- Top-level DLetGroup (`let rec …`): constrained mutual-recursive build via
+-- two separate top-level `let rec` bindings.
 let rec isEven n = if n == 0 then True else isOdd (n - 1)
-with isOdd n = if n == 0 then False else isEven (n - 1)
+let rec isOdd n = if n == 0 then False else isEven (n - 1)
 
 main : <IO> Unit
 main =

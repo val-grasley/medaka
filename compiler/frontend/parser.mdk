@@ -1242,14 +1242,16 @@ letPatExpr = do
   e2 <- parseExpr
   pure (ELet False False pat e1 e2)
 
--- `let rec f a… = e with g a… = e … in e2` → ELetGroup (Phase 57 inline form)
+-- `let rec f a… = e in e2` → ELetGroup with a single binding (Phase 57 inline
+-- form). Mutual-recursion grouping via `with` has been removed — each
+-- recursive binding is its own `let rec`.
 letRecExpr : Parser Expr
 letRecExpr = do
   expectTok TRec
-  clauses <- sepBy1 letRecInlineClause (expectTok TWith)
+  clause <- letRecInlineClause
   expectTok TIn
   e2 <- parseExpr
-  pure (ELetGroup (coalesceClauses clauses) e2)
+  pure (ELetGroup (coalesceClauses [clause]) e2)
 
 letRecInlineClause : Parser (String, List Pat, Expr)
 letRecInlineClause = do
@@ -1991,32 +1993,16 @@ parseNewtype pub = do
   skipNewlines
   pure (DNewtype pub name params con fty derives)
 
--- top-level `let rec f a… = body with g a… = body …` → DLetGroup.  Each clause
--- is terminated by newlines; WITH (at the LET REC indentation) begins the next.
+-- top-level `let rec f a… = body` → DLetGroup with a single binding.
+-- Mutual-recursion grouping via `with` has been removed — each recursive
+-- top-level binding is its own `let rec`.
 parseLetGroupDecl : Bool -> Parser Decl
 parseLetGroupDecl pub = do
   expectTok TLet
   expectTok TRec
-  clauses <- letRecDeclClauses
-  pure (DLetGroup pub (coalesceClauses clauses))
-
-letRecDeclClauses : Parser (List (String, List Pat, Expr))
-letRecDeclClauses = do
   c <- letRecDeclClause
   skipNewlines
-  rest <- letRecDeclClausesRest
-  pure (c::rest)
-
-letRecDeclClausesRest : Parser (List (String, List Pat, Expr))
-letRecDeclClausesRest = do
-  t <- peekP
-  letRecDeclClausesRestFor t
-
-letRecDeclClausesRestFor : Token -> Parser (List (String, List Pat, Expr))
-letRecDeclClausesRestFor TWith = do
-  advance
-  letRecDeclClauses
-letRecDeclClausesRestFor _ = pure []
+  pure (DLetGroup pub (coalesceClauses [c]))
 
 letRecDeclClause : Parser (String, List Pat, Expr)
 letRecDeclClause = do
@@ -3664,6 +3650,20 @@ firstBacktickIdx toks i
 backtickInfixMsg : String
 backtickInfixMsg = "backtick infix application (`f`) is not supported — use prefix application `f x y`"
 
+-- `let rec … with …` mutual-recursion grouping has been removed: each
+-- recursive binding is its own `let rec`. `with` (TWith) is now used nowhere
+-- else in the grammar, so its presence is always the removed construct.  A
+-- pre-grammar token scan surfaces a located hint (pointing at `with`).
+-- Index of the first `TWith` in the stream, or -1 if absent.
+firstWithIdx : Array Token -> Int -> Int
+firstWithIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TWith = i
+  | otherwise = firstWithIdx toks (i + 1)
+
+letRecWithRemovedMsg : String
+letRecWithRemovedMsg = "`let rec … with` (mutual-recursion grouping) has been removed — define each binding as a separate `let rec`"
+
 -- Haskell type signature (`f :: T`) vs Medaka's single-colon `f : T`: `::` is
 -- Medaka's CONS operator (`x :: xs`), a legitimate infix op that appears all
 -- over real bodies/guards (`f = 1 :: [2,3]`, `f x | y :: z = …`) AND in match-
@@ -3842,6 +3842,7 @@ parseResult src = match tokenizeWithOffsets src
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
     let btIdx = firstBacktickIdx toks 0
+    let wiIdx = firstWithIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
     let bcIdx = firstBlockCommentIdx toks 0
     let bbIdx = firstBraceBlockIdx toks 0
@@ -3868,6 +3869,8 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
         else if btIdx >= 0 then
           Err (mkLocated src toks offs srcLen backtickInfixMsg btIdx)
+        else if wiIdx >= 0 then
+          Err (mkLocated src toks offs srcLen letRecWithRemovedMsg wiIdx)
         else if sigIdx >= 0 then
           Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
         else if bcIdx >= 0 then

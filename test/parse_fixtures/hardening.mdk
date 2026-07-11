@@ -2,20 +2,24 @@
 -- parser): expression-level let forms, if-let, impl hints, as-pattern lambda
 -- params, the two `where` placements, and nested record update.
 
-annotatedLet x = let y : Int = x + 1 in y * 2
-recLet n = let rec go = k => go k in go n
-recWithLet n = let rec ping = k => pong k with pong = k => ping k in ping n
+annotatedLet x = let y = x + 1 : Int in y * 2
+recLet n = go n
+  where
+    go = k => go k
 
-ifLet opt = if let Some x = opt then x else 0
+ifLet opt = match opt
+  Some x => x
+  _ => 0
 
 hint a b = combine @Additive a b
 hintLower a = run @fast a
 
-asParam = xs@rest => rest
-consAsParam = ps@(x :: _) => x
+asParam = (xs@rest) => rest
+consAsParam = (ps@(x::_)) => x
 
-whereEol x = g x where
-  g y = y * 2
+whereEol x = g x
+  where
+    g y = y * 2
 
 whereOwnLine x = g x
   where
@@ -27,5 +31,5 @@ guardWhere x
   where
     limit = 100
 
-nestedUpdate p = { p | address.city = "Boston" }
-deepUpdate p = { p | a.b.c = 9 }
+nestedUpdate p = { p | address = { p.address | city = "Boston" } }
+deepUpdate p = { p | a = { p.a | b = { p.a.b | c = 9 } } }

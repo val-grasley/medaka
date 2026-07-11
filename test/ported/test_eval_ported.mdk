@@ -937,15 +937,16 @@ let rec factLR = n => if n == 0 then 1 else n * factLR (n - 1)
 test "let rec top-level fact" = expectEqual 120 (factLR 5)
 
 let rec isEvenLR = n => if n == 0 then True else isOddLR (n - 1)
-with isOddLR = n => if n == 0 then False else isEvenLR (n - 1)
+let rec isOddLR = n => if n == 0 then False else isEvenLR (n - 1)
 test "let rec top-level mutual" = expectTrue (isEvenLR 8)
 
 letRecInline = let rec fact = n => if n == 0 then 1 else n * fact (n - 1) in fact 6
 test "let rec inline" = expectEqual 720 letRecInline
 
 -- let rec inline mutual: express as two separate top-level let rec bindings
+-- (the `with` mutual-recursion grouping has been removed)
 let rec isELR2 = n => if n == 0 then True else isOLR2 (n - 1)
-with isOLR2 = n => if n == 0 then False else isELR2 (n - 1)
+let rec isOLR2 = n => if n == 0 then False else isELR2 (n - 1)
 test "let rec inline mutual" = expectTrue (isELR2 6)
 
 -- ── Top-level binding order (Phase 59.5) ─────────────────────────────────────

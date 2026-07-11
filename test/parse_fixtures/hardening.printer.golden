@@ -2,10 +2,6 @@ annotatedLet x = let y = x + 1 : Int in y * 2
 recLet n = go n
   where
     go = k => go k
-recWithLet n = ping n
-  where
-    ping = k => pong k
-    pong = k => ping k
 ifLet opt = match opt
   Some x => x
   _ => 0

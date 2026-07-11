@@ -252,16 +252,15 @@ let x = 5 in x + 1
 let f x = x + 1 in f 5             -- let-bound function
 let g x y = x + y in g 1 2
 let rec f = x => f x in f 0        -- recursive value (RHS must be a lambda)
-let rec f = x => g x with g = x => f x in f 0  -- mutual; inline `in` form is ONE line
 let Some x = opt else panic "no"   -- let-else: refutable; else must diverge (panic / early return)
 ```
 
-Mutual recursion as a *top-level* declaration (the `with` group may span lines
-here, unlike the inline `in` form above):
+`let rec` binds exactly ONE recursive binding — there is no `with` grouping
+for mutual recursion (removed; define each binding as its own separate
+`let rec`). This also works as a top-level declaration:
 
 ```
-let rec isEven = n => if n == 0 then True else isOdd (n - 1)
-with isOdd = n => if n == 0 then False else isEven (n - 1)
+let rec isEven n = if n == 0 then True else isOdd (n - 1)
 ```
 
 Inside a bare (non-`do`) indented block, statements may be `let`,

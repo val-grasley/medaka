@@ -3,7 +3,7 @@ type Wrapper a = Option a
 newtype UserId = UserId Int
 newtype Age = Age Int deriving (Eq, Ord)
 let rec isEven = n => if n == 0 then True else isOdd (n - 1)
-with isOdd = n => if n == 0 then False else isEven (n - 1)
+let rec isOdd = n => if n == 0 then False else isEven (n - 1)
 @inline
 double x = x + x
 @deprecated "use double"
