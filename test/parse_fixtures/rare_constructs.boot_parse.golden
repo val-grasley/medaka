@@ -11,6 +11,5 @@
 (DFunDef false "vowelKind" ((PVar "c")) (EMatch (EVar "c") (arm (PRng (LChar "a") (LChar "z") false) () (ELit (LString "lower"))) (arm PWild () (ELit (LString "other")))))
 (DFunDef false "counter" () (EBlock (DoLet false false (PVar "a") (EApp (EVar "Ref") (ELit (LInt 0)))) (DoExpr (EBinOp ":=" (EVar "a") (EBinOp "+" (EFieldAccess (EVar "a") "value") (ELit (LInt 1))))) (DoExpr (EFieldAccess (EVar "a") "value"))))
 (DFunDef false "setField" ((PVar "r")) (EBlock (DoFieldAssign "r" ("x") (ELit (LInt 1))) (DoFieldAssign "r" ("pos" "y") (ELit (LInt 2)))))
-(DFunDef false "withFallback" ((PVar "m")) (EBlock (DoLetElse (PCon "Some" (PVar "v")) (EVar "m") (EVar "fallback")) (DoExpr (EVar "v"))))
 (DFunDef false "doFunLet" () (EBlock (DoLet false false (PVar "twice") (ELam ((PVar "n")) (EBinOp "+" (EVar "n") (EVar "n")))) (DoExpr (EApp (EVar "twice") (ELit (LInt 21))))))
 (DFunDef false "shape" ((PVar "s")) (EMatch (EVar "s") (arm (PRec "Point" ((rf "x" (PVar "px")) (rf "y" (PVar "py"))) false) () (EBinOp "+" (EVar "px") (EVar "py"))) (arm (PRec "Circle" ((rf "radius" None)) false) () (EVar "radius")) (arm (PRec "Box" ((rf "w" None)) true) () (EVar "w")) (arm (PRec "Empty" () true) () (ELit (LInt 0)))))

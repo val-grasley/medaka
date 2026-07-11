@@ -85,9 +85,6 @@ eagerVarsStmts b ((CSLet _ pat ex)::rest) = eagerVars b ex
   ++ eagerVarsStmts (patVars pat ++ b) rest
 eagerVarsStmts b ((CSAssign _ ex)::rest) = eagerVars b ex
   ++ eagerVarsStmts b rest
-eagerVarsStmts b ((CSLetElse pat ex alt)::rest) = eagerVars b ex
-  ++ eagerVars b alt
-  ++ eagerVarsStmts (patVars pat ++ b) rest
 eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
 
 eagerVarsBinds : List String -> List CBind -> List String

@@ -23,9 +23,6 @@ counter =
 setField r =
   r.x = 1
   r.pos.y = 2
-withFallback m =
-  let (Some v) = m else fallback
-  v
 doFunLet =
   let twice = n => n + n
   twice 21

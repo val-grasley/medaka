@@ -1345,7 +1345,6 @@ stmtExprs (DoBind _ e) = [e]
 stmtExprs (DoLet _ _ _ e) = [e]
 stmtExprs (DoAssign _ e) = [e]
 stmtExprs (DoFieldAssign _ _ e) = [e]
-stmtExprs (DoLetElse _ e alt) = [e, alt]
 
 letBindExprs : LetBind -> List Expr
 letBindExprs (LetBind _ clauses) = flatMap funClauseExprs clauses
@@ -1472,8 +1471,6 @@ rewriteBindStmt orc (DoLet m r p e) = DoLet m r p (rewriteBindExpr orc e)
 rewriteBindStmt orc (DoAssign x e) = DoAssign x (rewriteBindExpr orc e)
 rewriteBindStmt orc (DoFieldAssign x fs e) =
   DoFieldAssign x fs (rewriteBindExpr orc e)
-rewriteBindStmt orc (DoLetElse p e alt) =
-  DoLetElse p (rewriteBindExpr orc e) (rewriteBindExpr orc alt)
 
 rewriteBindArm : Oracle -> Arm -> Arm
 rewriteBindArm orc (Arm p gs body) =
@@ -1736,8 +1733,6 @@ rewriteLamStmt (DoBind p e) = DoBind p (rewriteLamExpr e)
 rewriteLamStmt (DoLet m r p e) = DoLet m r p (rewriteLamExpr e)
 rewriteLamStmt (DoAssign x e) = DoAssign x (rewriteLamExpr e)
 rewriteLamStmt (DoFieldAssign x fs e) = DoFieldAssign x fs (rewriteLamExpr e)
-rewriteLamStmt (DoLetElse p e alt) =
-  DoLetElse p (rewriteLamExpr e) (rewriteLamExpr alt)
 
 rewriteLamArm : Arm -> Arm
 rewriteLamArm (Arm p gs body) =
@@ -1988,8 +1983,6 @@ rewriteIfMaxMinStmt (DoLet m r p e) = DoLet m r p (rewriteIfMaxMinExpr e)
 rewriteIfMaxMinStmt (DoAssign x e) = DoAssign x (rewriteIfMaxMinExpr e)
 rewriteIfMaxMinStmt (DoFieldAssign x fs e) =
   DoFieldAssign x fs (rewriteIfMaxMinExpr e)
-rewriteIfMaxMinStmt (DoLetElse p e alt) =
-  DoLetElse p (rewriteIfMaxMinExpr e) (rewriteIfMaxMinExpr alt)
 
 rewriteIfMaxMinArm : Arm -> Arm
 rewriteIfMaxMinArm (Arm p gs body) =
@@ -2276,8 +2269,6 @@ rewriteAndThenPureMapStmt (DoAssign x e) =
   DoAssign x (rewriteAndThenPureMapExpr e)
 rewriteAndThenPureMapStmt (DoFieldAssign x fs e) =
   DoFieldAssign x fs (rewriteAndThenPureMapExpr e)
-rewriteAndThenPureMapStmt (DoLetElse p e alt) =
-  DoLetElse p (rewriteAndThenPureMapExpr e) (rewriteAndThenPureMapExpr alt)
 
 rewriteAndThenPureMapArm : Arm -> Arm
 rewriteAndThenPureMapArm (Arm p gs body) =
@@ -2388,7 +2379,6 @@ mapChildStmt g (DoBind p e) = DoBind p (g e)
 mapChildStmt g (DoLet m r p e) = DoLet m r p (g e)
 mapChildStmt g (DoAssign x e) = DoAssign x (g e)
 mapChildStmt g (DoFieldAssign x fs e) = DoFieldAssign x fs (g e)
-mapChildStmt g (DoLetElse p e alt) = DoLetElse p (g e) (g alt)
 
 mapChildArm : (Expr -> Expr) -> Arm -> Arm
 mapChildArm g (Arm p gs body) = Arm p (map (mapChildGuard g) gs) (g body)

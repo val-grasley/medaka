@@ -114,9 +114,6 @@ freeVarsStmts b ((CSExpr ex)::rest) = freeVars b ex ++ freeVarsStmts b rest
 freeVarsStmts b ((CSLet _ pat ex)::rest) = freeVars b ex
   ++ freeVarsStmts (patVars pat ++ b) rest
 freeVarsStmts b ((CSAssign _ ex)::rest) = freeVars b ex ++ freeVarsStmts b rest
-freeVarsStmts b ((CSLetElse pat ex alt)::rest) = freeVars b ex
-  ++ freeVars b alt
-  ++ freeVarsStmts (patVars pat ++ b) rest
 freeVarsStmts b (_::rest) = freeVarsStmts b rest
 
 export freeVarsBinds : List String -> List CBind -> List String
@@ -408,8 +405,6 @@ export mentionsSelfMethodStmt : String -> String -> CStmt -> Bool
 mentionsSelfMethodStmt method tag (CSExpr ex) = mentionsSelfMethod method tag ex
 mentionsSelfMethodStmt method tag (CSLet _ _ ex) =
   mentionsSelfMethod method tag ex
-mentionsSelfMethodStmt method tag (CSLetElse _ ex el) = mentionsSelfMethod method tag ex
-  || mentionsSelfMethod method tag el
 mentionsSelfMethodStmt method tag (CSAssign _ ex) =
   mentionsSelfMethod method tag ex
 

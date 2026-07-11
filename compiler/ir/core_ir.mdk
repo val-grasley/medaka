@@ -185,7 +185,6 @@ public export data CHead =
 public export data CStmt =
   | CSExpr CExpr
   | CSLet Bool Pat CExpr
-  | CSLetElse Pat CExpr CExpr
   | CSAssign String CExpr
 
 -- a let-group / top-level function binding: a name with one or more coalesced

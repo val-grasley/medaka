@@ -451,7 +451,6 @@ lowerClause (FunClause pats body) = CClause pats (lower body)
 lowerStmt : DoStmt -> CStmt
 lowerStmt (DoExpr e) = CSExpr (lower e)
 lowerStmt (DoLet b _ pat e) = CSLet b pat (lower e)
-lowerStmt (DoLetElse pat e alt) = CSLetElse pat (lower e) (lower alt)
 lowerStmt (DoAssign x e) = CSAssign x (lower e)
 lowerStmt _ = panic "core_ir lower: unsupported block statement"
 
@@ -660,8 +659,6 @@ rewriteStmtRP : List (String, List String) -> CStmt -> CStmt
 rewriteStmtRP fo (CSExpr e) = CSExpr (rewriteExprRP fo e)
 rewriteStmtRP fo (CSLet r pat e) =
   CSLet r (rewritePat fo pat) (rewriteExprRP fo e)
-rewriteStmtRP fo (CSLetElse pat e alt) =
-  CSLetElse (rewritePat fo pat) (rewriteExprRP fo e) (rewriteExprRP fo alt)
 rewriteStmtRP fo (CSAssign x e) = CSAssign x (rewriteExprRP fo e)
 
 rewriteFieldRP : List (String, List String) -> CField -> CField

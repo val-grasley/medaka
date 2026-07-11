@@ -243,7 +243,6 @@ collectStmt (DoBind _ e) = collectEVars e
 collectStmt (DoLet _ _ _ e) = collectEVars e
 collectStmt (DoAssign _ e) = collectEVars e
 collectStmt (DoFieldAssign _ _ e) = collectEVars e
-collectStmt (DoLetElse _ e1 e2) = collectEVars e1 ++ collectEVars e2
 
 concatMapCP : (a -> List b) -> List a -> List b
 concatMapCP _ [] = []

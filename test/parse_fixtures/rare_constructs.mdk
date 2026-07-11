@@ -6,7 +6,7 @@
 -- Covered here: operator sections, unary not, a
 -- point-free one-arg match `x => match x { … }` (incl. an `if` arm guard), array
 -- ranges `[|lo..hi|]`, array slices/index `e.[lo..hi]` / `e.[i]`, range
--- patterns (int + char), `Ref` + `:=` write, field assignment, let-else,
+-- patterns (int + char), `Ref` + `:=` write, field assignment,
 -- a do-block function-let, and record patterns `C { f = p, … }` / `C { .. }`.
 -- (Other rares already live in the corpus: inclusive/exclusive list ranges +
 -- array literals in where_ranges, bare/right +/* sections in sections_litpats,
@@ -52,10 +52,6 @@ counter =
 setField r =
   r.x = 1
   r.pos.y = 2
-
-withFallback m =
-  let (Some v) = m else fallback
-  v
 
 doFunLet =
   let twice = n => n + n

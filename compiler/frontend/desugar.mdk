@@ -128,7 +128,6 @@ mapDoStmt f (DoBind p e) = DoBind p (mapExpr f e)
 mapDoStmt f (DoLet m r p e) = DoLet m r p (mapExpr f e)
 mapDoStmt f (DoAssign x e) = DoAssign x (mapExpr f e)
 mapDoStmt f (DoFieldAssign x fs e) = DoFieldAssign x fs (mapExpr f e)
-mapDoStmt f (DoLetElse p e alt) = DoLetElse p (mapExpr f e) (mapExpr f alt)
 
 mapInterp : (Expr -> Expr) -> InterpPart -> InterpPart
 mapInterp _ (InterpStr s) = InterpStr s
@@ -272,7 +271,6 @@ doStmtLoc (DoBind _ e) = exprLoc e
 doStmtLoc (DoLet _ _ _ e) = exprLoc e
 doStmtLoc (DoAssign _ e) = exprLoc e
 doStmtLoc (DoFieldAssign _ _ e) = exprLoc e
-doStmtLoc (DoLetElse _ e _) = exprLoc e
 
 exprLoc : Expr -> Option Loc
 exprLoc (ELoc l _) = Some l
@@ -286,8 +284,6 @@ lowerDo [DoBind pat e] =
 lowerDo ((DoExpr e)::rest) = callBin "andThen" e (ELam [PWild] (lowerDo rest))
 lowerDo ((DoBind pat e)::rest) = callBin "andThen" e (doCont pat (lowerDo rest))
 lowerDo ((DoLet _ isFun pat e)::rest) = ELet False isFun pat e (lowerDo rest)
-lowerDo ((DoLetElse pat e alt)::rest) =
-  EMatch e [Arm pat [] (lowerDo rest), Arm PWild [] alt]
 lowerDo _ = fallthrough
 
 -- bind continuation: a bare lambda for an irrefutable pattern, else a 1-arg

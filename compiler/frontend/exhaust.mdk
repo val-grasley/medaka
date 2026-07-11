@@ -691,7 +691,6 @@ doStmtBinds (DoBind _ e) = collectLetBinds e
 doStmtBinds (DoLet _ _ _ e) = collectLetBinds e
 doStmtBinds (DoAssign _ e) = collectLetBinds e
 doStmtBinds (DoFieldAssign _ _ e) = collectLetBinds e
-doStmtBinds (DoLetElse _ e alt) = collectLetBinds e ++ collectLetBinds alt
 
 interpBinds : InterpPart -> List LetBind
 interpBinds (InterpStr _) = []

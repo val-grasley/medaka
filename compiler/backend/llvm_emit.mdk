@@ -3121,8 +3121,7 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
 --    a plain `let (Some y) = e` with NO `else` can FAIL at runtime.  The
 --    interpreter's blockLet runtimePanics "E-LET-REFUTE"; before this fix the
 --    emitter blindly loaded field 0 of a mismatching cell → SIGSEGV.  Now emit a
---    head-ctor tag check that traps @mdk_let_refute on a miss (emitRefutableCsLet),
---    mirroring emitLetElse but targeting a panic instead of an `else` alt.
+--    head-ctor tag check that traps @mdk_let_refute on a miss (emitRefutableCsLet).
 -- Placed after the specialized PVar/PWild/PTuple arms so those stay byte-identical.
 emitBlock e env ((CSLet _ pat ex)::rest) =
   let (v, _) = emitExpr e env ex
@@ -3159,58 +3158,8 @@ emitBlock e env ((CSAssign x ex)::rest) =
 emitBlock e env [CSAssign _ ex] =
   let _ = emitExpr e env ex
   ("1", LTUnit)
--- let-else `let pat = e else alt` (gap B2): match `e` against `pat`; on success
--- bind pattern vars + continue the block; on failure emit `alt` (which diverges —
--- panic / early-exit).  Mirrors core_ir_eval's `cBlockLetElse`.  For an
--- irrefutable pattern the else is dead, so just bind + continue.
-emitBlock e env ((CSLetElse pat ex alt)::rest) =
-  if irrefutableLet pat then
-    let (v, _) = emitExpr e env ex
-    let env2 = bindPattern e env pat v (CLit (LInt 0))
-    emitBlock e env2 rest
-  else emitLetElse e env pat ex alt rest
 emitBlock _ _ [] = gapE "empty block"
 emitBlock _ _ _ = gapE "unsupported block statement (slice 1)"
-
--- emit a let-else with a REFUTABLE pattern: evaluate the scrutinee, test its
--- discriminant against the pattern's head ctor; on a tag match bind the fields and
--- continue the block into a result slot; on a miss run `alt` (diverges).  Reuses
--- loadDiscriminant / cellTag / loadFields / bindPattern — the same primitives the
--- decision-tree switch chain uses.  Result is the continuation block's value.
-emitLetElse : Emit -> List (String, (String, LTy)) -> Pat -> CExpr -> CExpr -> List CStmt -> <Mut> (String, LTy)
-emitLetElse e env pat ex alt rest = match letElseHead pat
-  Some (c, a, fieldPats) =>
-    let (sv, _) = emitExpr e env ex
-    let slot = freshReg e
-    let _ = emit e ("  " ++ slot ++ " = alloca i64")
-    let rty = Ref LTInt
-    let tag = loadDiscriminant e sv
-    let cmp = freshReg e
-    let _ = emit e "  \{cmp} = icmp eq i64 \{tag}, \{intToString (cellTag e c)}"
-    let n = intToString (freshId e)
-    let yes = "letelseok" ++ n
-    let no = "letelsealt" ++ n
-    let endL = "letelseend" ++ n
-    let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{no}"
-    let _ = emit e (yes ++ ":")
-    let fields = loadFields e sv a 0
-    let env2 = bindFieldList e env fieldPats fields
-    let (bv, bty) = emitBlock e env2 rest
-    let _ = setRef rty bty
-    let _ = emit e "  store i64 \{bv}, ptr \{slot}"
-    let _ = emit e ("  br label %" ++ endL)
-    let _ = emit e (no ++ ":")
-    let (av, _) = emitExpr e env alt
-    let _ = emit e "  store i64 \{av}, ptr \{slot}"
-    let _ = emit e ("  br label %" ++ endL)
-    let _ = emit e (endL ++ ":")
-    let r = freshReg e
-    let _ = emit e "  \{r} = load i64, ptr \{slot}"
-    (r, rty.value)
-  None =>
-    let _ = gapU "let-else with a non-constructor refutable pattern (B2: constructor patterns only)"
-    let _ = emitExpr e env ex
-    ("1", LTUnit)
 
 -- bind a list of field patterns to a parallel list of loaded field words.
 bindFieldList : Emit -> List (String, (String, LTy)) -> List Pat -> List String -> <Mut> List (String, (String, LTy))
@@ -3228,22 +3177,13 @@ letElseHead (PCons h t) = Some ("Cons", 2, [h, t])
 letElseHead (PList (p::ps)) = Some ("Cons", 2, [p, PList ps])
 letElseHead _ = None
 
--- a let-else pattern whose else branch is statically dead (always matches): a bare
--- var / wildcard / tuple (single inhabitant).  A PLit / ctor / cons can miss.
-irrefutableLet : Pat -> Bool
-irrefutableLet (PVar _) = True
-irrefutableLet PWild = True
-irrefutableLet (PTuple _) = True
-irrefutableLet (PAs _ p) = irrefutableLet p
-irrefutableLet _ = False
-
 -- P0-2c: does a general block-`let` pattern (already NOT PVar/PWild/PTuple — those
 -- have specialized irrefutable arms) need a runtime match-failure trap?  A PCon is
 -- refutable iff its type has SIBLING constructors (a single-ctor `data` — e.g.
 -- `Box` — always matches → keep the no-check fast path so goldens stay
 -- byte-identical); a cons / non-empty list pattern can always miss (Nil).  Only the
 -- TOP-LEVEL head is classified here — nested refutability inside fields shares
--- emitLetElse's single-level-check limitation (see emitRefutableCsLet).
+-- emitRefutableCsLet's single-level-check limitation.
 refutableCsLet : Emit -> Pat -> <Mut> Bool
 refutableCsLet e (PAs _ p) = refutableCsLet e p
 refutableCsLet e (PCon c _) = ctorHasSiblings e c
@@ -3259,14 +3199,14 @@ ctorHasSiblings e c = match lookupAssoc c (ctorTypeTable e)
   Some ty => listLen (ctorsOfType e ty) > 1
   None => True
 
--- P0-2c: emit a REFUTABLE block-`let` bind with a trap-on-miss.  Mirrors
--- emitLetElse's head-ctor tag check but branches to a noreturn @mdk_let_refute
--- panic (matching the interpreter's blockLet runtimePanic "E-LET-REFUTE") instead
--- of an `else` alt.  On a tag match, bind the fields (bindFieldList → bindPattern,
--- the same single-level extract emitLetElse uses) and return the extended env; the
+-- P0-2c: emit a REFUTABLE block-`let` bind with a trap-on-miss.  Emits a
+-- head-ctor tag check that branches to a noreturn @mdk_let_refute panic
+-- (matching the interpreter's blockLet runtimePanic "E-LET-REFUTE").  On a tag
+-- match, bind the fields (bindFieldList → bindPattern, a single-level extract)
+-- and return the extended env; the
 -- caller continues emission in the `ok` block.  A non-constructor-head refutable
 -- pattern (letElseHead None — e.g. a bare Nil `let [] = …`) falls back to the old
--- unchecked bindPattern behaviour (no regression, shared with emitLetElse).
+-- unchecked bindPattern behaviour (no regression).
 emitRefutableCsLet : Emit -> List (String, (String, LTy)) -> Pat -> String -> <Mut> List (String, (String, LTy))
 emitRefutableCsLet e env pat sv = match letElseHead pat
   Some (c, a, fieldPats) =>
@@ -8204,9 +8144,6 @@ scanStmtsRecords ((CSExpr ex)::rest) = scanExprRecords ex
 scanStmtsRecords ((CSLet _ _ ex)::rest) = scanExprRecords ex
   ++ scanStmtsRecords rest
 scanStmtsRecords ((CSAssign _ ex)::rest) = scanExprRecords ex
-  ++ scanStmtsRecords rest
-scanStmtsRecords ((CSLetElse _ ex alt)::rest) = scanExprRecords ex
-  ++ scanExprRecords alt
   ++ scanStmtsRecords rest
 scanStmtsRecords (_::rest) = scanStmtsRecords rest
 

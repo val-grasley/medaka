@@ -114,7 +114,6 @@ public export data DoStmt =
   | DoLet Bool Bool Pat Expr
   | DoAssign String Expr
   | DoFieldAssign String (List String) Expr
-  | DoLetElse Pat Expr Expr
 
 -- parts of an interpolated string `"…\{expr}…"`
 public export data InterpPart = InterpStr String | InterpExpr Expr

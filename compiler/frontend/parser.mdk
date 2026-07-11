@@ -2910,7 +2910,7 @@ letFunTailFor name pats e1 TIn = do
 letFunTailFor name pats e1 _ =
   pure (DoLet False True (PVar name) (curryLam pats e1))
 
--- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e else alt`, …
+-- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e`, …
 letPat : Parser DoStmt
 letPat = do
   pat <- parsePat
@@ -2924,10 +2924,6 @@ letTailFor pat e1 TIn = do
   advance
   e2 <- parseExpr
   pure (DoExpr (ELet False False pat e1 e2))
-letTailFor pat e1 TElse = do
-  advance
-  alt <- parseExpr
-  pure (DoLetElse pat e1 alt)
 letTailFor pat e1 _ = pure (DoLet False False pat e1)
 
 -- mirror the reference `curry_lam`: one single-arg ELam per param

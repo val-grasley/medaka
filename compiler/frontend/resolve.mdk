@@ -767,10 +767,6 @@ checkStmt cur env scope (DoAssign x e) = (
 )
 checkStmt cur env scope (DoFieldAssign _ _ e) =
   (checkExpr cur env scope e, scope)
-checkStmt cur env scope (DoLetElse p e alt) = (
-  checkPat cur env p ++ patGroupDupErrors cur "pattern" [p] ++ checkExpr cur env scope e ++ checkExpr cur env scope alt,
-  patBindings p ++ scope,
-)
 
 checkInterp : Option Loc -> Env -> List String -> InterpPart -> List ResError
 checkInterp _ _ _ (InterpStr _) = []

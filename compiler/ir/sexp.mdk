@@ -209,8 +209,6 @@ doStmtSexp (DoLet m r p e) =
 doStmtSexp (DoAssign x e) = node "DoAssign" [escStr x, exprSexp e]
 doStmtSexp (DoFieldAssign x fs e) =
   node "DoFieldAssign" [escStr x, slist (map escStr fs), exprSexp e]
-doStmtSexp (DoLetElse p e alt) =
-  node "DoLetElse" [patSexp p, exprSexp e, exprSexp alt]
 
 visSexp : DataVis -> String
 visSexp VisPrivate = "Private"

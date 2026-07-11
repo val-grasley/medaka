@@ -1,9 +1,0 @@
--- W11: a refutable `let pat = e else alt` whose pattern MATCHES — the bound var
--- scopes into the continuation; the else path is dead.
-data Opt = Nay | Yay Int
-
-f o =
-  let Yay v = o else 0
-  v + 100
-
-main = f (Yay 7)

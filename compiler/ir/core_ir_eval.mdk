@@ -324,7 +324,6 @@ cevalBlock env ((CSExpr e)::rest) =
   let _ = ceval env e
   cevalBlock env rest
 cevalBlock env ((CSLet _ pat e)::rest) = cBlockLet env pat e rest
-cevalBlock env ((CSLetElse pat e alt)::rest) = cBlockLetElse env pat e alt rest
 cevalBlock env [CSAssign _ e] =
   let _ = ceval env e
   VUnit
@@ -339,11 +338,6 @@ cBlockLetLast env pat e = match matchPat pat (ceval env e)
 cBlockLet : EvalEnv -> Pat -> CExpr -> List CStmt -> <Mut> Value
 cBlockLet env pat e rest = match matchPat pat (ceval env e)
   None => panic "let pattern match failure in block"
-  Some binds => cevalBlock (extendEnv env binds) rest
-
-cBlockLetElse : EvalEnv -> Pat -> CExpr -> CExpr -> List CStmt -> <Mut> Value
-cBlockLetElse env pat e alt rest = match matchPat pat (ceval env e)
-  None => ceval env alt
   Some binds => cevalBlock (extendEnv env binds) rest
 
 -- ── let-groups (where / mutually-recursive coalesced bindings) ─────────────

@@ -3683,7 +3683,6 @@ inferStmt env (DoExpr e) =
   env
 inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
 inferStmt env (DoLet _ _ pat e) = blockLet env pat e
-inferStmt env (DoLetElse pat e _) = blockLet env pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
 -- A `<-` bind (DoBind) reaching a bare block is a user error: `<-` is
 -- monadic-`do`-only, and a monadic `do` lowers to EDo (desugared before
@@ -6738,7 +6737,7 @@ rewriteArgGuards rw bound ((GBind p e)::rest) =
   let (rest2, bnd) = rewriteArgGuards rw (patVarsTc p ++ bound) rest
   (GBind p e2 :: rest2, bnd)
 
--- do/block statements: a DoBind/DoLet/DoLetElse pattern binds for SUBSEQUENT
+-- do/block statements: a DoBind/DoLet pattern binds for SUBSEQUENT
 -- statements (a recursive DoLet also for its own RHS).
 rewriteArgStmts : ArgRw -> List String -> List DoStmt -> List DoStmt
 rewriteArgStmts _ _ [] = []
@@ -6755,9 +6754,6 @@ rewriteArgStmts rw bound ((DoAssign x e)::rest) =
 rewriteArgStmts rw bound ((DoFieldAssign x fs e)::rest) =
   DoFieldAssign x fs (rewriteArgScoped rw bound e) ::
     rewriteArgStmts rw bound rest
-rewriteArgStmts rw bound ((DoLetElse p e alt)::rest) =
-  DoLetElse p (rewriteArgScoped rw bound e) (rewriteArgScoped rw bound alt) ::
-    rewriteArgStmts rw (patVarsTc p ++ bound) rest
 
 letBindNamesTc : List LetBind -> List String
 letBindNamesTc binds = map letBindNameTc binds
@@ -8699,7 +8695,6 @@ doStmtSites (DoLet _ _ _ e) = collectMethodSites e
 doStmtSites (DoBind _ e) = collectMethodSites e
 doStmtSites (DoAssign _ e) = collectMethodSites e
 doStmtSites (DoFieldAssign _ _ e) = collectMethodSites e
-doStmtSites (DoLetElse _ e alt) = collectMethodSites e ++ collectMethodSites alt
 
 fieldAssignSites : FieldAssign -> List (Ref Route)
 fieldAssignSites (FieldAssign _ e) = collectMethodSites e
@@ -8768,7 +8763,6 @@ doStmtDictSites (DoLet _ _ _ e) = collectDictSites e
 doStmtDictSites (DoBind _ e) = collectDictSites e
 doStmtDictSites (DoAssign _ e) = collectDictSites e
 doStmtDictSites (DoFieldAssign _ _ e) = collectDictSites e
-doStmtDictSites (DoLetElse _ e alt) = collectDictSites e ++ collectDictSites alt
 
 fieldAssignDictSites : FieldAssign -> List (Ref (List Route))
 fieldAssignDictSites (FieldAssign _ e) = collectDictSites e
@@ -10099,7 +10093,6 @@ doStmtEVars (DoLet _ _ _ e) = allEVars e
 doStmtEVars (DoBind _ e) = allEVars e
 doStmtEVars (DoAssign _ e) = allEVars e
 doStmtEVars (DoFieldAssign _ _ e) = allEVars e
-doStmtEVars (DoLetElse _ e alt) = allEVars e ++ allEVars alt
 
 fieldAssignEVars : FieldAssign -> List String
 fieldAssignEVars (FieldAssign _ e) = allEVars e

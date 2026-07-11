@@ -782,12 +782,6 @@ renameStmts rm bound ((DoAssign x e)::rest) =
   DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
 renameStmts rm bound ((DoFieldAssign x fs e)::rest) =
   DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound ((DoLetElse p e alt)::rest) =
-  DoLetElse
-      (renamePat rm p)
-      (renameScoped rm bound e)
-      (renameScoped rm bound alt) ::
-    renameStmts rm (patVarsPM p ++ bound) rest
 
 letBindNamesPM : List LetBind -> List String
 letBindNamesPM binds = map letBindName binds

@@ -1217,16 +1217,6 @@ printDoStmt (DoFieldAssign x fields e) =
       (Cat
         (text (joinWith "." fields))
         (Cat (text " = ") (printExpr precTop e))))
-printDoStmt (DoLetElse pat e alt) =
-  Cat
-    (text "let ")
-    (Cat
-      (printPat pat)
-      (Cat
-        (text " = ")
-        (Cat
-          (printExpr precTop e)
-          (Cat (text " else ") (printExpr precTop alt)))))
 
 interpPartDoc : InterpPart -> Doc
 interpPartDoc (InterpStr s) = text (stringEscaped s)

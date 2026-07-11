@@ -240,9 +240,6 @@ annotateStmts fr ((DoLet m r p e)::rest) =
   DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoBind p e)::rest) =
   DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
-annotateStmts fr ((DoLetElse p e alt)::rest) =
-  let s2 = DoLetElse p (annotateExpr fr e) (annotateExpr fr alt)
-  s2 :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoAssign x e)::rest) =
   DoAssign x (annotateExpr fr e) :: annotateStmts ([x]::fr) rest
 annotateStmts fr ((DoFieldAssign x fs e)::rest) =

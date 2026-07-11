@@ -342,7 +342,6 @@ doStmtVars (DoBind _ e) = collectVars e
 doStmtVars (DoLet _ _ _ e) = collectVars e
 doStmtVars (DoAssign _ e) = collectVars e
 doStmtVars (DoFieldAssign _ _ e) = collectVars e
-doStmtVars (DoLetElse _ e alt) = collectVars e ++ collectVars alt
 
 interpVars : InterpPart -> List String
 interpVars (InterpStr _) = []
@@ -447,9 +446,6 @@ doStmtBound (DoBind p e) = patBindings p ++ localBoundExpr e
 doStmtBound (DoLet _ _ p e) = patBindings p ++ localBoundExpr e
 doStmtBound (DoAssign _ e) = localBoundExpr e
 doStmtBound (DoFieldAssign _ _ e) = localBoundExpr e
-doStmtBound (DoLetElse p e alt) = patBindings p
-  ++ localBoundExpr e
-  ++ localBoundExpr alt
 
 interpBound : InterpPart -> List String
 interpBound (InterpStr _) = []

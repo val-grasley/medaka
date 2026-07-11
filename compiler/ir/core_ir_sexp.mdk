@@ -146,8 +146,6 @@ export cstmtSexp : CStmt -> String
 cstmtSexp (CSExpr e) = node "CSExpr" [cexprSexp e]
 cstmtSexp (CSLet isRec pat e) =
   node "CSLet" [boolStr isRec, patSexp pat, cexprSexp e]
-cstmtSexp (CSLetElse pat e alt) =
-  node "CSLetElse" [patSexp pat, cexprSexp e, cexprSexp alt]
 cstmtSexp (CSAssign x e) = node "CSAssign" [escStr x, cexprSexp e]
 
 -- ── CBind, CClause ────────────────────────────────────────────────────────────

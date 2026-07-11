@@ -253,8 +253,6 @@ toCStmt : SExp -> CStmt
 toCStmt (SList ((SAtom "CSExpr")::[e])) = CSExpr (toCExpr e)
 toCStmt (SList ((SAtom "CSLet")::[isRec, pat, e])) =
   CSLet (toBool isRec) (toPat pat) (toCExpr e)
-toCStmt (SList ((SAtom "CSLetElse")::[pat, e, alt])) =
-  CSLetElse (toPat pat) (toCExpr e) (toCExpr alt)
 toCStmt (SList ((SAtom "CSAssign")::[x, e])) = CSAssign (toStr x) (toCExpr e)
 toCStmt other = panic ("core_ir_sexp_parse: bad CStmt: " ++ sexprToStr other)
 

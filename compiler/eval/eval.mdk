@@ -1244,7 +1244,6 @@ evalBlock env ((DoExpr e)::rest) =
   evalBlock env rest
 evalBlock env ((DoLet _ True (PVar f) e)::rest) = blockRecLet env f e rest
 evalBlock env ((DoLet _ _ pat e)::rest) = blockLet env pat e rest
-evalBlock env ((DoLetElse pat e alt)::rest) = blockLetElse env pat e alt rest
 evalBlock env [DoAssign _ e] =
   let _ = eval env e
   VUnit
@@ -1268,11 +1267,6 @@ blockRecLet env f e rest =
 blockLet : EvalEnv -> Pat -> Expr -> List DoStmt -> <Mut> Value
 blockLet env pat e rest = match matchPat pat (eval env e)
   None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
-  Some binds => evalBlock (extendEnv env binds) rest
-
-blockLetElse : EvalEnv -> Pat -> Expr -> Expr -> List DoStmt -> <Mut> Value
-blockLetElse env pat e alt rest = match matchPat pat (eval env e)
-  None => eval env alt
   Some binds => evalBlock (extendEnv env binds) rest
 
 evalRecLet : EvalEnv -> String -> Expr -> Expr -> <Mut> Value

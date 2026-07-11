@@ -823,24 +823,11 @@ impl GreetW Int where
 
 test "iface default with where helper" = expectEqual "Hi there" (helloW 42)
 
--- ── if let / let else (Phase 38) ─────────────────────────────────────────────
--- Ported from: t_if_let_match, t_if_let_no_match, t_let_else_match,
---              t_let_else_no_match
+-- ── if let (Phase 38) ────────────────────────────────────────────────────────
+-- Ported from: t_if_let_match, t_if_let_no_match
 
 test "if let match" = expectEqual 5 (if let Some x = Some 5 then x else 0)
 test "if let no match" = expectEqual 0 (if let Some x = None then x else 0)
-
-letElseMatch = do
-  _ <- Some ()
-  let Some x = Some 42 else None
-  pure x
-test "let else match" = expectEqual (Some 42) letElseMatch
-
-letElseNoMatch = do
-  _ <- Some ()
-  let Some _ = (None : Option Int) else None
-  pure 1
-test "let else no match" = expectEqual (None : Option Int) letElseNoMatch
 
 -- ── Recursive constrained functions (Phase 74 follow-up) ────────────────────
 -- Ported from: t_rec_eq_constraint_true, t_rec_eq_constraint_false,
