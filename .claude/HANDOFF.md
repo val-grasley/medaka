@@ -7,6 +7,27 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ BIG soundness + language-trim session (2026-07-10→11). `main` = `2dcf888d`. Seed RE-MINTED (cold bootstrap green).
+
+A long, high-throughput session: soundness cluster → OOB security fix → language streamlining. Every landing design→delegate→isolated-worktree→verify→merge; ALL fixpoint C3a/C3b YES; **seed re-minted at the end (`2dcf888d`, cold `bootstrap_from_seed` C3a PASS)** — locks in all wins + greens cold bootstrap (was deferred-stale). Owning memories `project_beta_qa_sweep_2026_07_07`, `project_oob_memory_safety_audit`, `project_shadow_semantics_spec`. PLAN.md top entries have per-item detail.
+
+**SHIPPED (all merged, fixpoint YES):**
+- **P0-19** shadow-conformance — all 4 SHADOW-SEMANTICS BUG cells (`ef0874f3` rows 12/13 silent soundness holes; `ebb8ee90` rows 10/14 value-position + cross-module dispatch).
+- **`bytesToFloat64` userland OOB heap read (P0 security, `39a755a2`)** — found by a dedicated audit; gate + bounds-check. **Audit verdict: the rest of the indexed surface is AIRTIGHT.** `internalExterns` is a hand-maintained denylist — invert to allowlist someday. See `project_oob_memory_safety_audit`.
+- **run≠build parity cluster:** P0-2(c) refutable-let SIGSEGV→`E-LET-REFUTE` trap (`ed8be866`); P0-10 hash-under-run (`16a53cdd`); P0-9 map+set ctor collision (`2b17677f`); P0-2(a)+(b) silent stack-overflow/cyclic-value → clean coded errors + native sigaltstack backstop (`b32fff20`).
+- **P0-3 deriving-on-records Part 1** (`6636e356`): `data X = X{…}` deriving works both pipelines.
+- **⭐ Language streamlining (user-directed, "keep it clean = actually delete the machinery"):** consolidated records onto `data` — **`data X = { … }` name-omission sugar** (`f441a796`) + **removed the `record` keyword & DELETED `DRecord`** end-to-end (`442cb766`, −291 LOC) which **DISSOLVED P0-20 + P0-3's record residual by deletion**. Removed the **`function` keyword** (`acd1f5b8`) and **backtick infix** (`f6dabd5a`).
+
+**⭐ DO-FIRST context for next session:**
+- **The "native DCE/codegen miscompile" (from the backtick bite) is a NON-BUG** — an Opus agent proved emitted IR byte-identical live-vs-dead; root cause was the PRELUDE (`core.mdk`) using the removed construct → binary fails to load prelude on EVERY program. **LESSON: a construct-removal census MUST scan `stdlib/core.mdk` (always-loaded) for real uses.**
+- **Trim batch PAUSED at 3/5** (user). Remaining, both entangled (PLAN.md trim STATUS block has the map): **`let-else`** (shares `emitLetElse`/`letElseHead` with the P0-2c refutable-let SOUNDNESS fix — protect it; touches llvm+wasm emit) and **`let rec … with`** (surgical: drop only the `with` grouping). Plus the **`!`→deref + `!=`→`/=` "negation coherence" bite** (`!x`→`.value`, `!`-on-Bool→`not` hint, `!=`→`/=` swap + 54-site migration — machinery half-built, flip `firstSlashEqIdx`). Roadmap also queues **record field defaults** (the deliberate "no labeled args" answer) + interface generalizations (`++`→Semigroup etc.) + indexing.
+- **OPTIONAL zero-re-mint follow-up:** migrate the 8 compiler-internal records (`Env`/`Rule`/`Oracle`/…) from explicit `data X = X{…}` to the short `data X = {…}` — byte-identical IR, the new seed parses it.
+
+**PROCESS notes (recurring this session):**
+- **Empty-report + respawning-oracle-pool failure mode hit MULTIPLE agents** (they end with a stray "…in progress" line + re-kick `build_oracles` each wake). Fix: **`TaskStop` the agent FIRST** (stops the respawn), then reap the pool (kill `build_oracles.sh` parents before `medaka build` children), then salvage (commit complete WIP) or discard+re-spawn (if incomplete). Bake into prompts: **NEVER bare `build_oracles`; single oracle via `FORCE=1 JOBS=1 … --build-one <name>`; WAIT-and-report, never end with gates running.**
+- **Fresh isolated worktrees lack `./medaka_emitter` + cold-bootstrap-from-seed WAS stale** — agents borrowed `cp .../iridescent-wondering-wozniak/medaka_emitter ./` to warm-build. (The re-mint fixes cold bootstrap now.)
+- Verify-before-merge caught an **incomplete salvage** (function removal left `rare_constructs` multi-stage + `andthen_pure_map` goldens stale → red main; cleaned up `9fc3da3a`).
+
 ## RESUME — ✅ P0-18 fully closed + P0-5 mutability PIVOT shipped + a pre-beta LANGUAGE-COHERENCE design pass (2026-07-09 evening). `main` = `b708ee06`
 
 A long design-heavy session. Two implementations shipped; a large amount of language design locked + queued. Owning memory **`project_prebeta_language_coherence_2026_07_09`** (full detail); PLAN.md top entries; three read-only audit docs on main. **Everything verified in Docker, fixpoint C3a/C3b YES throughout, ZERO seed re-mints.**
