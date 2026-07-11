@@ -36,7 +36,11 @@ unknown is the Linux deep-recursion stack, spiked first per `DISTRIBUTION-DESIGN
 
 **✅ Part 1 (`6636e356`)** — `deriving (Display/Debug/Eq/Ord/Generic)` on a **`data X = X { … }`** (named-field/`ConNamed`) constructor now works run==build==check==correct (was: run panicked `E-NONEXHAUSTIVE-MATCH`, build fine). Root: the derivers built a **positional** `PCon "X" [PVar …]` pattern, but eval represents a named-field ctor as a by-name `VRecord` (the eval drivers never set `ctorFieldOrdersRef`), and `PCon` matches only `VCon` → nonexhaustive at run; the build path lays it out positionally so `PCon` matched. Fix: variant-aware `conBindPat` in `desugar.mdk` — `ConNamed` → a `PRec X { f = v }` pattern (matches `VRecord` in eval AND lowers to the same positional cell test in emit); `ConPos` unchanged (byte-identical, llvm 195/0). Gates: agreement 29/0, desugar 117/0, llvm 195/0, build 60/0, check 77/0, eval 23/0, fixpoint C3a/C3b YES.
 
-**⭐ NEW P0-20 (elevated from P0-3's `record X` residual — GENERAL record-impl bug, verified, NOT deriving-specific):** ANY user impl on a **`record`-keyword** type breaks the **build** path (run is correct). `impl Display Person` on a `record Person` → built binary crashes `E-NONEXHAUSTIVE-MATCH`; a custom `impl Sizeable Box` on a `record Box` → emitter-panic `no impl of method 'size' for type 'custom__Box' (slice 6)`. Root cause (agent-traced via emitted IR + djb2 decode): universal ctor-mangling renames a record's name (ctor==type) to `<module>__Name` at the `DRecord` def (`private_mangle.mdk:605`) and `ERecordCreate` (`:713`), and the typecheck-stamped call-site dict route key inherits the **mangled** name — but the impl-head dispatch tag (`lowerImplMethod`/`headTyconHead`, `core_ir_lower.mdk:817-825`) resolves to the **bare** name → dict key never matches any dispatcher branch → impl unreachable. Data types are immune (`renameDecl` leaves the `DData` type name bare). **Fix must separate a record's mangled *ctor* identity (needed for cross-module cell construction) from its *type/dispatch* identity (must stay bare, like data) — record-vs-data-aware handling in the mangle/lower path. Naively renaming impl heads via the ctor map is UNSOUND (breaks `data Foo = Foo`, ctor==type).** Architectural; own workstream.
+**✅ P0-20 DISSOLVED (`442cb766`, trim Bite B) — by DELETING `DRecord`, not patching it.** Removing the
+`record` keyword + the `DRecord` representation entirely (records are now `data X = { … }`) routes them
+through the same DData `ConNamed` mangling as every ctor, so the desync below no longer exists. Verified:
+impl + deriving on a record-shaped type builds==runs. (Original diagnosis retained for the record.)
+**~~NEW P0-20~~ (elevated from P0-3's `record X` residual — GENERAL record-impl bug, verified, NOT deriving-specific):** ANY user impl on a **`record`-keyword** type breaks the **build** path (run is correct). `impl Display Person` on a `record Person` → built binary crashes `E-NONEXHAUSTIVE-MATCH`; a custom `impl Sizeable Box` on a `record Box` → emitter-panic `no impl of method 'size' for type 'custom__Box' (slice 6)`. Root cause (agent-traced via emitted IR + djb2 decode): universal ctor-mangling renames a record's name (ctor==type) to `<module>__Name` at the `DRecord` def (`private_mangle.mdk:605`) and `ERecordCreate` (`:713`), and the typecheck-stamped call-site dict route key inherits the **mangled** name — but the impl-head dispatch tag (`lowerImplMethod`/`headTyconHead`, `core_ir_lower.mdk:817-825`) resolves to the **bare** name → dict key never matches any dispatcher branch → impl unreachable. Data types are immune (`renameDecl` leaves the `DData` type name bare). **Fix must separate a record's mangled *ctor* identity (needed for cross-module cell construction) from its *type/dispatch* identity (must stay bare, like data) — record-vs-data-aware handling in the mangle/lower path. Naively renaming impl heads via the ctor map is UNSOUND (breaks `data Foo = Foo`, ctor==type).** Architectural; own workstream.
 
 **P0-3 Part 2 residuals (both reproduce with HAND-WRITTEN impls — not deriving bugs):**
 - **Eq/Ord reject on a non-derivable field** (`data F = F (Int->Int) deriving (Eq)` → check wrongly ACCEPTs, run `F g == F g`→`False`): a general typechecker hole — a residual constraint from an **`impl` method body** (the derived/hand-written `eq` calling `==` on a function field) isn't solved (top-level `g == h` on a no-Eq type IS rejected; the same call inside an impl body is not). harden-typechecker work in `typecheck.mdk`, wide blast radius. User policy = reject at check.
@@ -183,12 +187,17 @@ after P0-5 (shares lexer/parser/desugar/eval).
   after the type). Pure sugar → existing `ConNamed` path; `nameOmitted` marker for fmt round-trip. Gates
   parse 33/0, fmt 64/0, llvm 195/0, build 60/0, agreement 30/0, fixpoint YES. Verified: short form ==
   explicit on check/run/build incl. deriving + hand-written impl.
-- **Bite B (NEXT):** REMOVE the `record` keyword → beginner-hint ("use `data X = { … }`"); migrate the 8
-  dogfooded `record` decls (`Env`/`Rule`/`Oracle`/`RField`/`Finding`/`CrossFileRule`/`ModuleExports`/
-  `ImportAdds`) to the short form; and **DELETE the `DRecord` representation** end-to-end (parser/ast/
-  resolve/typecheck/mangle/core-lower/emit/exhaust/printer/fmt/lsp) per the removal discipline. This
-  DISSOLVES P0-20 + P0-3's record residual by deletion (proven: `data X = X{…}` already dispatches/derives
-  correctly; `DRecord` was the buggy redundant path). Fixpoint + full differential suite gate it.
+- **Bite B ✅ LANDED (`442cb766`, −291 LOC net):** `record` keyword REMOVED → located beginner-hint
+  (`firstRecordIdx` scan); 8 dogfooded records migrated to `data`; **`DRecord` representation DELETED
+  end-to-end** (`grep DRecord = 0`; ~20 files incl. the `private_mangle.mdk` desync). **P0-20 + P0-3's
+  record residual DISSOLVED by deletion** — verified: `data Box = { v } deriving (Eq, Debug)` + hand-written
+  `impl` → run==build==`42 True Box { v = 42 }`. Gates: fixpoint C3a/C3b YES, check 77/0, llvm 195/0, build
+  60/0, lint 0, fmt clean, 27 goldens recaptured (all record→data / DRecord→DData, each inspected).
+  ⚠️ **SEED RE-MINT OWED (see below):** the committed cold-bootstrap seed's parser PREDATES Bite A's
+  `data X = { }` short form, so it can't parse the short form in always-loaded `core.mdk`. Bite B kept the 8
+  **compiler-internal** records on the EXPLICIT `data X = X { … }` form (seed-parseable; `nameOmitted` is
+  dropped in sexp so it's byte-identical → fixpoint green). Test fixtures use the short form. A seed re-mint
+  (batched at the end of the trim batch) will let compiler internals adopt the short form too.
 
 The construct removals:
 - **REMOVE (0 dogfood uses, redundant, low newcomer+future value):** the **`function` keyword**

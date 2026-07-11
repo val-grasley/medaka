@@ -316,19 +316,21 @@ Pt { p | y = 9 }                                    -- variant functional update
 
 ## Records
 
+A record is just a single-constructor `data` type with named fields. There is no
+separate `record` keyword — write `data X = { … }` (the constructor is named after
+the type) or the explicit `data X = X { … }`.
+
 ```
-record Person
-  name : String
-  age  : Int
+data Person = { name : String, age : Int }   -- record = single-ctor named data
+                                              -- (ctor implicitly named `Person`)
+data Person = Person { name : String, age : Int }  -- explicit ctor name (equivalent)
 
 Person { name = "Alice", age = 30 }   -- construction (all fields required)
 Person { name, age }                   -- pun shorthand (name = name, ...)
 person.name                            -- field access
 { p | age = 31 }                       -- functional update
 { p | address.city = "Boston" }        -- nested update sugar
-record Person                          -- deriving
-  x : Int
-  deriving (Debug)
+data Boxed = { x : Int } deriving (Debug)   -- deriving on a record-shaped data type
 ```
 
 ## Type aliases & newtypes
