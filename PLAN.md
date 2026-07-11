@@ -181,6 +181,11 @@ after P0-5 (shares lexer/parser/desugar/eval).
 > mutability precedent — the inert `DoLet`/`ELet` Bool field was kept ONLY because removal was ~87 sites/18
 > files incl. sexp round-trip), STOP and surface it as a decision — do NOT silently leave an inert stub.
 > Each bite's gate: no dangling references, `medaka lint` clean, fixpoint C3a/C3b YES.
+> **⚠️ CORRECTED REMOVAL TARGET (learned on backtick 2026-07-10): the lexer TOKEN is KEPT as the
+> reserved-word HINT SENTINEL** (exactly as `TFunction`/`TRecord`/`TMut`/`TSlashEq` are kept). Delete the
+> **grammar production + AST node + downstream logic/desugar/emit**, and add a `firstXIdx` pre-grammar hint
+> scan on the token — do NOT chase `grep <TToken> = 0` (the token must survive for the hint). The success
+> signal is: the parser has no production for the construct + the construct yields the located hint.
 
 **Record consolidation (added to this batch 2026-07-10 — see the `record`→`data` discussion above):**
 - **Bite A ✅ LANDED (`f441a796`):** `data X = { … }` name-omission sugar (single braced ctor ⇒ ctor named
