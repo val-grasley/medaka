@@ -138,7 +138,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Inline application `(x y => x+y) 3 4` | PASS | (tested) |
 | Tuple-destructuring lambda `(a,b) => a+b` | PASS | `tuple_pat_lambda.mdk` |
 | Constructor-pattern function param | PASS | `ctor_pat_lambda.mdk` |
-| `function` keyword point-free match | PASS | `function_keyword.mdk` |
+| Point-free one-arg match `x => match x { … }` (the `function` keyword was removed; this is the replacement idiom) | PASS | `function_keyword.mdk` |
 | Partial application | PASS | `partial_apply.mdk` |
 | Higher-order function (HOF) | PASS | `hof_multi.mdk` |
 

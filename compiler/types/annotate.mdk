@@ -160,7 +160,6 @@ annotateExpr fr (EDo stmts) = EDo (annotateStmts fr stmts)
 annotateExpr fr (EStringInterp parts) =
   EStringInterp (map (annotateInterp fr) parts)
 annotateExpr fr (EGuards arms) = EGuards (map (annotateGuardArm fr) arms)
-annotateExpr fr (EFunction arms) = EFunction (map (annotateArm fr) arms)
 annotateExpr fr (ERecordCreate name fs) =
   ERecordCreate name (map (annotateFieldAssign fr) fs)
 annotateExpr fr (ERecordUpdate e0 fs) =

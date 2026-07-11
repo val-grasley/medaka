@@ -155,7 +155,6 @@ exprSexp (ESlice e lo hi incl _) =
 exprSexp (ELetGroup binds body) =
   node "ELetGroup" [slist (map letBindSexp binds), exprSexp body]
 exprSexp (ESection s) = node "ESection" [sectionSexp s]
-exprSexp (EFunction arms) = node "EFunction" (map armSexp arms)
 exprSexp (EIndex a i _) = node "EIndex" [exprSexp a, exprSexp i]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
 exprSexp (EHeadAnnot e t) = node "EHeadAnnot" [exprSexp e, tySexp t]

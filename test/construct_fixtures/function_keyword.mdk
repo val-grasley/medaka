@@ -1,5 +1,5 @@
 describe : Option Int -> String
-describe = function
+describe = x => match x
   Some x => "got " ++ debug x
   None => "nothing"
 main : <IO> Unit

@@ -1200,15 +1200,14 @@ prevIsTrailingOp None = False
 
 -- Inside a bracket (free-form), the ONLY lines that arm a nested layout context
 -- are the locked herald set (LAYOUT-BRACKETS §6.1): `match`/`record` (carried by
--- the `opener` flag) and the `do`/`function` keywords (whose own next line opens
--- the block).  Crucially this is NOT the generic top-level `not prevCanEnd` rule
+-- the `opener` flag) and the `do` keyword (whose own next line opens the
+-- block).  Crucially this is NOT the generic top-level `not prevCanEnd` rule
 -- — after a `,` (or `=` etc.) `prevCanEnd` is also false, but a `,`-led
 -- continuation like `[1,\n 2]` must STAY free-form, not open a block.  The
 -- bare-`INDENT` block herald is DEFERRED inside brackets (no keyword to arm it
 -- without regressing free-form).
 armsHerald : Bool -> Option Token -> Bool
 armsHerald opener (Some TDo) = True
-armsHerald opener (Some TFunction) = True
 armsHerald opener _ = opener
 
 -- a token that can START an application-argument atom

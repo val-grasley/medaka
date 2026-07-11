@@ -282,7 +282,6 @@ collectVars (EDo stmts) = flatMap doStmtVars stmts
 collectVars (EAnnot e0 _) = collectVars e0
 collectVars (EStringInterp parts) = flatMap interpVars parts
 collectVars (EGuards arms) = flatMap guardArmVars arms
-collectVars (EFunction arms) = flatMap armVars arms
 collectVars (ESection (SecRight _ e0)) = collectVars e0
 collectVars (ESection (SecLeft e0 _)) = collectVars e0
 -- Post-typecheck elaborated reference nodes (EVarAt/EMethodAt/EDictAt all carry
@@ -410,7 +409,6 @@ localBoundExpr (EDo stmts) = flatMap doStmtBound stmts
 localBoundExpr (EAnnot e0 _) = localBoundExpr e0
 localBoundExpr (EStringInterp parts) = flatMap interpBound parts
 localBoundExpr (EGuards arms) = flatMap guardArmBound arms
-localBoundExpr (EFunction arms) = flatMap armBound arms
 localBoundExpr (ESection (SecRight _ e0)) = localBoundExpr e0
 localBoundExpr (ESection (SecLeft e0 _)) = localBoundExpr e0
 localBoundExpr (EHeadAnnot e0 _) = localBoundExpr e0

@@ -177,7 +177,6 @@ public export data Expr =
   | ESlice Expr Expr Expr Bool (Ref String)
   | ELetGroup (List LetBind) Expr
   | ESection Section
-  | EFunction (List Arm)
   | EIndex Expr Expr (Ref String)
   | EAnnot Expr Ty
   -- Head-pinned type annotation (`e :~ T`).  The parser never produces this, but

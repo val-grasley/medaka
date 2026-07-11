@@ -660,7 +660,6 @@ collectLetBinds (EDo stmts) = flatMap doStmtBinds stmts
 collectLetBinds (EAnnot e0 _) = collectLetBinds e0
 collectLetBinds (EStringInterp parts) = flatMap interpBinds parts
 collectLetBinds (EGuards arms) = flatMap guardArmBinds arms
-collectLetBinds (EFunction arms) = flatMap collectArmBinds arms
 collectLetBinds (ESection (SecRight _ e0)) = collectLetBinds e0
 collectLetBinds (ESection (SecLeft e0 _)) = collectLetBinds e0
 collectLetBinds (ELoc _ e) = collectLetBinds e

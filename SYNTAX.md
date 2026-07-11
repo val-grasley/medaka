@@ -148,8 +148,8 @@ x y => x + y                -- multi-param (NOT curried `x => y => ...`)
 _ => 0                      -- wildcard param
 xs@rest => xs               -- as-pattern param
 
--- `function`: one-arg lambda that immediately matches
-function
+-- point-free one-arg lambda that immediately matches (no `function` keyword)
+x => match x
   Some x => x
   None   => 0
 ```

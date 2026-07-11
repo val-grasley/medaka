@@ -93,7 +93,6 @@ mapKids f (EDo stmts) = EDo (map (mapDoStmt f) stmts)
 mapKids f (EAnnot e0 t) = EAnnot (mapExpr f e0) t
 mapKids f (EStringInterp parts) = EStringInterp (map (mapInterp f) parts)
 mapKids f (EGuards arms) = EGuards (map (mapGuardArm f) arms)
-mapKids f (EFunction arms) = EFunction (map (mapArm f) arms)
 mapKids f (ESection (SecRight op e0)) = ESection (SecRight op (mapExpr f e0))
 mapKids f (ESection (SecLeft e0 op)) = ESection (SecLeft (mapExpr f e0) op)
 mapKids f (EMapLit n kvs) = EMapLit n (map (mapKv f) kvs)
@@ -192,8 +191,6 @@ binMethod m a b body = ImplMethod m [PVar a, PVar b] body
 -- Mirror of lib/desugar.ml's rewrite_sugar, applied bottom-up by mapProg.
 rewriteSugar : Expr -> Expr
 rewriteSugar (EGuards arms) = guardsToCore arms
-rewriteSugar (EFunction arms) =
-  ELam [PVar "__fn_arg"] (EMatch (EVar "__fn_arg") arms)
 rewriteSugar (ESection s) = sectionToCore s
 rewriteSugar (EStringInterp parts) = interpToCore parts
 -- `x := e` (reference write) → `setRef x e` (the existing `<Mut>` extern).

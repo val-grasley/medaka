@@ -182,7 +182,7 @@ lookupParam k ((l, p)::rest) = if k == l then Some p else lookupParam k rest
 -- ── 2. call graph from the desugared AST ────────────────────────────────────
 -- collectEVars: every EVar name referenced in an expression (conservative —
 -- includes non-call uses, safe for the chain heuristic).  Mirror collect_evars
--- in bin/main.ml; the desugared tree has no EGuards/EFunction/ESection/EBlock
+-- in bin/main.ml; the desugared tree has no EGuards/ESection/EBlock
 -- surface sugar, so those arms are omitted (already lowered).
 collectEVars : Expr -> List String
 collectEVars (EVar n) = [n]

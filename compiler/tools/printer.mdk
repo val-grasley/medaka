@@ -562,7 +562,6 @@ exprPrec (EBlock _) = precTop
 exprPrec (EDo _) = precTop
 exprPrec (EAnnot _ _) = precTop
 exprPrec (EHeadAnnot _ _) = precTop
-exprPrec (EFunction _) = precTop
 exprPrec (EGuards _) = precTop
 -- typed-pipeline-only nodes (never from the parser); give them atom precedence.
 exprPrec (EVarAt _ _) = precAtom
@@ -579,7 +578,6 @@ isBlockBody (EMatch _ _) = True
 isBlockBody (EBlock _) = True
 isBlockBody (EDo _) = True
 isBlockBody (EGuards _) = True
-isBlockBody (EFunction _) = True
 isBlockBody (EIf _ t e) = isBlockBody t || isBlockBody e
 isBlockBody _ = False
 
@@ -679,7 +677,6 @@ printExprRaw (EIndex e i _) =
     (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
 printExprRaw (EMatch sc arms) =
   Cat (text "match ") (Cat (printExpr precTop sc) (printMatchArms arms))
-printExprRaw (EFunction arms) = Cat (text "function") (printMatchArms arms)
 printExprRaw (EGuards arms) = printGuardArms arms
 printExprRaw (ESection (SecBare op)) = Cat (text "(") (Cat (text op) (text ")"))
 printExprRaw (ESection (SecRight op e)) =
@@ -813,10 +810,9 @@ isDoMatchFnBody : Expr -> Bool
 isDoMatchFnBody (ELoc _ e) = isDoMatchFnBody e
 isDoMatchFnBody (EDo _) = True
 isDoMatchFnBody (EMatch _ _) = True
-isDoMatchFnBody (EFunction _) = True
 isDoMatchFnBody _ = False
 
--- EBlock self-indents; a do/match/function body keeps its keyword adjacent (`else
+-- EBlock self-indents; a do/match body keeps its keyword adjacent (`else
 -- do`); other block bodies indent onto their own line; a simple body inlines.
 ifBranch : String -> Expr -> Doc
 ifBranch kw (EBlock stmts) = Cat (text kw) (printExprBody (EBlock stmts))
@@ -1259,7 +1255,7 @@ escEChars cs i
 
 -- The RHS of `<header> = <body>`: `=` spaced for the body shape.
 printDefRhs : Expr -> Doc
--- strip ELoc so the body-shape dispatch (EGuards/EBlock/EDo/EMatch/EFunction/
+-- strip ELoc so the body-shape dispatch (EGuards/EBlock/EDo/EMatch/
 -- EApp) sees the raw node — else a wrapped `do`/`match` body mis-renders as a
 -- block on a fresh indented line instead of the inline `= do`/`= match` form.
 printDefRhs (ELoc _ e) = printDefRhs e
@@ -1280,7 +1276,6 @@ printDefRhsGeneral body = match printIfRhs body
   None => match body
     EMatch sc arms => Cat (text " = ") (printExprBody (EMatch sc arms))
     EDo stmts => Cat (text " = ") (printExprBody (EDo stmts))
-    EFunction arms => Cat (text " = ") (printExprBody (EFunction arms))
     -- Application body: hang one indent-line below `=` (head on its own line),
     -- then let the spine break THERE if it still overflows — instead of keeping
     -- the head on the `=` line with a mangled `head⏎  arg⏎  arg` spine.  EXCEPT a
@@ -1354,7 +1349,6 @@ hangAlwaysAtSep sep bodyDoc = Cat (text sep) (group (nest (Cat Line bodyDoc)))
 isSelfIndentingArg : Expr -> Bool
 isSelfIndentingArg (ELoc _ e) = isSelfIndentingArg e
 isSelfIndentingArg (ELam _ _) = True
-isSelfIndentingArg (EFunction _) = True
 isSelfIndentingArg (EBlock _) = True
 isSelfIndentingArg (EDo _) = True
 isSelfIndentingArg (EMatch _ _) = True

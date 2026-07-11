@@ -683,7 +683,6 @@ parseAtomRaw = do
     TIf => parseIf
     TLet => parseLet
     TMatch => parseMatch
-    TFunction => parseFunction
     TDo => parseDo
     TInterpOpen _ => parseInterp
     TAt => parseAtHint
@@ -907,9 +906,9 @@ interpRestFor e (TInterpEnd s) = do
 interpRestFor e _ = failP "expected interpolation mid/end"
 
 -- Bracket block-expressions (LAYOUT-BRACKETS-DESIGN.md, Gate B).  The locked
--- herald set is match/do/function/record/bare-INDENT block.  All of those
+-- herald set is match/do/record/bare-INDENT block.  All of those
 -- EXCEPT the bare-INDENT block already reach bracket element positions because
--- parseAtomRaw dispatches TMatch/TFunction/TDo (and records via TUpper/TLBrace)
+-- parseAtomRaw dispatches TMatch/TDo (and records via TUpper/TLBrace)
 -- as atoms, so parseExpr reaches them.  The one herald NOT reachable from the
 -- expression chain is the bare-INDENT block (it lives only in the decl-body
 -- `indentedBody`).  parseBracketBlock is the dedicated, contained reader for it;
@@ -1206,6 +1205,13 @@ recordRemovedMsg : String
 recordRemovedMsg =
   "`record` is not a keyword — declare a record as `data X = { field : T, … }`"
 
+-- `function` is no longer a keyword: the point-free one-arg match it wrote
+-- (`function\n  pat => body`) is redundant with `x => match x { pat => body }`
+-- and with multi-clause definitions. A pre-grammar token scan surfaces a
+-- clean, located hint (pointing at `function`).
+functionRemovedMsg : String
+functionRemovedMsg = "`function` is not a keyword — use `x => match x { … }` or a multi-clause definition"
+
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e`, each followed by `in e2`
 letIdentExpr : String -> Parser Expr
@@ -1273,15 +1279,6 @@ parseMatch = do
   arms <- parseArms
   expectTok TDedent
   pure (EMatch scrut arms)
-
--- `function INDENT arms DEDENT` — an anonymous match on one argument
-parseFunction : Parser Expr
-parseFunction = do
-  expectTok TFunction
-  expectTok TIndent
-  arms <- parseArms
-  expectTok TDedent
-  pure (EFunction arms)
 
 parseArms : Parser (List Arm)
 parseArms = do
@@ -3595,6 +3592,18 @@ firstRecordIdx toks i
   | peekTok toks i == TRecord = i
   | otherwise = firstRecordIdx toks (i + 1)
 
+-- `function` has been removed as a keyword: a point-free one-arg match is
+-- spelled `x => match x { … }`, or as a multi-clause definition.  `function`
+-- (TFunction) is a reserved word with no remaining valid use, so its presence
+-- is always the removed keyword.  A pre-grammar token scan surfaces a located
+-- hint (pointing at `function`).
+-- Index of the first `TFunction` in the stream, or -1 if absent.
+firstFunctionIdx : Array Token -> Int -> Int
+firstFunctionIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TFunction = i
+  | otherwise = firstFunctionIdx toks (i + 1)
+
 -- Scan forward from token index `i` (depth=accumulated INDENT/DEDENT) looking
 -- for `TIn` at depth=0 before the enclosing block exits (a `TDedent` that would
 -- take depth below 0, or `TEof`).  Returns True if the inline `let` is
@@ -3831,6 +3840,7 @@ parseResult src = match tokenizeWithOffsets src
     let seIdx = firstSlashEqIdx toks 0
     let lmIdx = firstMutIdx toks 0
     let recIdx = firstRecordIdx toks 0
+    let fnIdx = firstFunctionIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
@@ -3851,6 +3861,8 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen letMutRemovedMsg lmIdx)
         else if recIdx >= 0 then
           Err (mkLocated src toks offs srcLen recordRemovedMsg recIdx)
+        else if fnIdx >= 0 then
+          Err (mkLocated src toks offs srcLen functionRemovedMsg fnIdx)
         else if ilIdx >= 0 then
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
         else if coIdx >= 0 then

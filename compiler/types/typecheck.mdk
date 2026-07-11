@@ -6680,8 +6680,6 @@ rewriteArgScoped rw bound (EStringInterp parts) =
   EStringInterp (map (rewriteArgInterp rw bound) parts)
 rewriteArgScoped rw bound (EGuards arms) =
   EGuards (map (rewriteArgGuardArm rw bound) arms)
-rewriteArgScoped rw bound (EFunction arms) =
-  EFunction (map (rewriteArgArm rw bound) arms)
 rewriteArgScoped rw bound (ESection (SecRight op e0)) =
   ESection (SecRight op (rewriteArgScoped rw bound e0))
 rewriteArgScoped rw bound (ESection (SecLeft e0 op)) =

@@ -445,7 +445,6 @@ checkExpr cur env scope (EStringInterp parts) =
   flatMap (checkInterp cur env scope) parts
 checkExpr cur env scope (EGuards arms) =
   flatMap (checkGuardArm cur env scope) arms
-checkExpr cur env scope (EFunction arms) = flatMap (checkArm cur env scope) arms
 checkExpr cur env scope (ERecordCreate name fs) =
   checkRecordCreate cur env scope name fs
 checkExpr cur env scope (ERecordUpdate e0 fs) =

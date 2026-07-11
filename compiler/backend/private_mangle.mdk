@@ -715,8 +715,6 @@ renameScoped rm bound (EStringInterp parts) =
   EStringInterp (map (renameInterp rm bound) parts)
 renameScoped rm bound (EGuards arms) =
   EGuards (map (renameGuardArm rm bound) arms)
-renameScoped rm bound (EFunction arms) =
-  EFunction (map (renameArm rm bound) arms)
 renameScoped rm bound (ESection (SecRight op e0)) =
   ESection (SecRight op (renameScoped rm bound e0))
 renameScoped rm bound (ESection (SecLeft e0 op)) =

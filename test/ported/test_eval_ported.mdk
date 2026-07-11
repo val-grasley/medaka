@@ -926,17 +926,17 @@ isLowerFn c =
 test "range pat char hit" = expectTrue (isLowerFn 'g')
 test "range pat char miss" = expectFalse (isLowerFn 'G')
 
--- ── function keyword (Phase 44) ──────────────────────────────────────────────
+-- ── point-free one-arg match (Phase 44; the `function` keyword was removed) ──
 -- Ported from: t_function_eval, t_function_guard_eval
 
 classifyFnKw =
-  function
+  x => match x
     0 => "zero"
     _ => "nonzero"
 test "function keyword" = expectEqual "zero" (classifyFnKw 0)
 
 signFnKw =
-  function
+  x => match x
     n if n > 0 => 1
     n if n < 0 => (-1)
     _ => 0
