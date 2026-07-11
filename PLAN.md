@@ -173,13 +173,15 @@ engine); IN FLIGHT. Design: `qa-beta-2026-07-07/P0-5-MUTABILITY-DESIGN.md` (§4/
 read-only `LANGUAGE-SURFACE-AUDIT.md` (dogfood-usage census of every optional construct). Sequence
 after P0-5 (shares lexer/parser/desugar/eval).
 
-> **STATUS (2026-07-11): 3 of 5 done, batch PAUSED (user) + seed re-minted (`2dcf888d`, cold bootstrap
-> C3a PASS).** ✅ `record`+`DRecord` (`442cb766`) · ✅ `function` (`acd1f5b8`) · ✅ backtick (`f6dabd5a`).
-> **DEFERRED (more entangled — scope carefully next time):** (a) **`let-else`** shares emit machinery
-> (`emitLetElse`/`letElseHead`) with the P0-2c refutable-let SOUNDNESS fix (`emitRefutableCsLet`) + touches
-> BOTH `llvm_emit` AND `wasm_emit` — removing it must NOT regress the `E-LET-REFUTE` trap; (b) **`let rec …
-> with`** is surgical (drop only the `with` mutual-grouping, keep single `let rec`; `ELetGroup`/`DLetGroup`
-> shared). Both 0 real dogfood uses. **Also pending:** the `!`→deref + `!=`→`/=` "negation coherence" bite
+> **STATUS (2026-07-11): 4 of 5 done, batch PAUSED (user) + seed re-mint OWED (deferred to checkpoint).**
+> ✅ `record`+`DRecord` (`442cb766`) · ✅ `function` (`acd1f5b8`) · ✅ backtick (`f6dabd5a`) · ✅ **`let-else`
+> (`6e63982b`)** — deleted `DoLetElse`/`CSLetElse`/`emitLetElse` end-to-end across both backends + 23 files
+> (incl. `printer.mdk`, which UTF-8 box chars make plain `grep` skip — use `grep -a`); soundness helpers
+> (`letElseHead`/`refutableCsLet`/`emitRefutableCsLet`/`@mdk_let_refute`) untouched, `let_refute` 3/0, fixpoint
+> C3a/C3b YES. `let-else` seed re-mint is now OWED (batch it with the last trim item).
+> **DEFERRED (1 left):** **`let rec … with`** is surgical (drop only the `with` mutual-grouping, keep single
+> `let rec`; `ELetGroup`/`DLetGroup` shared). 0 real dogfood uses; NOT yet user-authorized to spawn.
+> **Also pending:** the `!`→deref + `!=`→`/=` "negation coherence" bite
 > (below) + the OPTIONAL zero-re-mint follow-up to migrate the 8 compiler-internal records from `data X = X{…}`
 > to the short `data X = {…}` (byte-identical IR; the new seed parses it). **LESSON (backtick): census the
 > always-loaded PRELUDE (`stdlib/core.mdk`) for real uses before removing a construct — a missed `core.mdk`
