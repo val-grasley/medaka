@@ -34,7 +34,7 @@ negOverApplied m = andThen m (x => pure step x)
 -- NEGATIVE: multi-param continuation lambda.
 negMultiParam m = andThen m (x y => pure (g x y))
 
--- NEGATIVE: a guarded `function` continuation — not a single-param lambda.
-negGuardFn m = andThen m (function
+-- NEGATIVE: a guarded match continuation — not a bare `x => pure (f x)` shape.
+negGuardFn m = andThen m (x => match x
   n if n > 0 => pure (dec n)
   _ => pure zero)

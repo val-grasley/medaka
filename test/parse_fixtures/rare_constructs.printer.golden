@@ -1,7 +1,7 @@
 leftSection = (2 * _)
 cmpSection = (== 0)
 notFlag b = !b
-classify = function
+classify = x => match x
   0 => "zero"
   n if n < 0 => "neg"
   n => "pos"

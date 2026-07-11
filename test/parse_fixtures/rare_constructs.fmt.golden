@@ -3,8 +3,8 @@
 -- barely use them. Validated byte-for-byte against the OCaml reference by
 -- test/diff_compiler_parse.sh.
 --
--- Covered here: operator sections, unary not, the
--- `function` keyword (incl. an `if` arm guard), array
+-- Covered here: operator sections, unary not, a
+-- point-free one-arg match `x => match x { … }` (incl. an `if` arm guard), array
 -- ranges `[|lo..hi|]`, array slices/index `e.[lo..hi]` / `e.[i]`, range
 -- patterns (int + char), `Ref` + `:=` write, field assignment, let-else,
 -- a do-block function-let, and record patterns `C { f = p, … }` / `C { .. }`.
@@ -21,7 +21,7 @@ cmpSection = (== 0)
 
 notFlag b = !b
 
-classify = function
+classify = x => match x
   0 => "zero"
   n if n < 0 => "neg"
   n => "pos"

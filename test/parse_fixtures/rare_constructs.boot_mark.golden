@@ -1,7 +1,7 @@
 (DFunDef false "leftSection" () (ELam ((PVar "_s")) (EBinOp "*" (ELit (LInt 2)) (EVar "_s"))))
 (DFunDef false "cmpSection" () (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (ELit (LInt 0)))))
 (DFunDef false "notFlag" ((PVar "b")) (EUnOp "!" (EVar "b")))
-(DFunDef false "classify" () (ELam ((PVar "__fn_arg")) (EMatch (EVar "__fn_arg") (arm (PLit (LInt 0)) () (ELit (LString "zero"))) (arm (PVar "n") ((GBool (EBinOp "<" (EVar "n") (ELit (LInt 0))))) (ELit (LString "neg"))) (arm (PVar "n") () (ELit (LString "pos"))))))
+(DFunDef false "classify" () (ELam ((PVar "x")) (EMatch (EVar "x") (arm (PLit (LInt 0)) () (ELit (LString "zero"))) (arm (PVar "n") ((GBool (EBinOp "<" (EVar "n") (ELit (LInt 0))))) (ELit (LString "neg"))) (arm (PVar "n") () (ELit (LString "pos"))))))
 (DFunDef false "arrRange" () (ERangeArray (ELit (LInt 1)) (ELit (LInt 5)) false))
 (DFunDef false "arrRangeIncl" () (ERangeArray (ELit (LInt 0)) (ELit (LInt 9)) true))
 (DFunDef false "sliceIt" ((PVar "xs")) (ESlice (EVar "xs") (ELit (LInt 1)) (ELit (LInt 3)) false))
