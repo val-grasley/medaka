@@ -1,8 +1,6 @@
-record Inv
-  shared : Int
+data Inv = { shared : Int }
 
-record Wat
-  shared : String
+data Wat = { shared : String }
 
 invShared : Inv -> Int
 invShared a = a.shared

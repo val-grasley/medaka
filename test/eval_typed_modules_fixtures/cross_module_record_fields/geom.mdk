@@ -1,6 +1,4 @@
-public export record Point
-  x : Int
-  y : Int
+public export data Point = { x : Int, y : Int }
 
 export mkPoint : Int -> Int -> Point
 mkPoint a b = Point { x = a, y = b }

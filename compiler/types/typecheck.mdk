@@ -1105,15 +1105,13 @@ aliasTableRef = Ref []
 abstractRecordTypesRef : Ref (List String)
 abstractRecordTypesRef = Ref []
 
--- collect the names of all VisAbstract record-shaped (DRecord, or DData whose
--- variants carry named fields) decls across the given decl list.  Only
+-- collect the names of all VisAbstract record-shaped (a DData whose variants
+-- carry named fields) decls across the given decl list.  Only
 -- record-shaped abstract types can be a dot-access receiver, but harvesting any
 -- abstract DData name too is harmless (a positional ADT can't reach the abstract
 -- branch with a field access — its fields never exist).
 collectAbstractRecordTypes : List Decl -> List String
 collectAbstractRecordTypes [] = []
-collectAbstractRecordTypes ((DRecord VisAbstract n _ _ _)::rest) =
-  n :: collectAbstractRecordTypes rest
 collectAbstractRecordTypes ((DData VisAbstract n _ _ _)::rest) =
   n :: collectAbstractRecordTypes rest
 collectAbstractRecordTypes (_::rest) = collectAbstractRecordTypes rest
@@ -5673,26 +5671,13 @@ inferLetGroup env binds body =
 registerData : TcEnv -> Decl -> <Mut> TcEnv
 registerData env (DData _ name params variants _) =
   registerVariants env name params variants
-registerData env (DRecord _ name params fields _) =
-  let _ = registerRecordInfo name params fields
-  -- Register the record's declared arity (all KType params — records have no
-  -- effect-row-tail syntax) into dataParamKindsRef, exactly like a `data` decl.
-  -- This makes a record a recognized user-declared derivable type, so a missing
-  -- `Display`/`Eq`/… impl gets the same `add 'deriving …'` hint (noImplHint) a
-  -- `data` type gets, and its type-app arity is known to the kind-directed passes.
-  let _ = setRef dataParamKindsRef ((name, map (_ => KType) params)::dataParamKindsRef.value)
-  env
 registerData env (DTypeAlias _ name params rhs) =
   let _ = setRef aliasTableRef ((name, (params, rhs))::aliasTableRef.value)
   env
 registerData env _ = env
 
 -- ── record metadata registration & instantiation ──────────────────────────
-registerRecordInfo : String -> List String -> List Field -> <Mut> Unit
-registerRecordInfo name params fields =
-  registerRecordInfoKeyed name name params fields
-
--- like registerRecordInfo but with a distinct registry KEY and result TYPE name:
+-- registerRecordInfoKeyed uses a distinct registry KEY and result TYPE name:
 -- for a record they coincide, but a named-field data variant is keyed by its
 -- constructor (DInterface) while its values have the data type (Decl).
 registerRecordInfoKeyed : String -> String -> List String -> List Field -> <Mut> Unit
@@ -11493,14 +11478,12 @@ buildStandaloneShadowsGraph allDecls userDecls =
 -- `Num`'s entry in methodIfaceParamsRef), AND public DImpl (so checkImplObligations'
 -- implHeadsOf sees core's `impl Num Int` etc. — without it a legitimately Int-typed
 -- literal's Num obligation finds no matching impl head and is spuriously rejected).
--- registerAllData and buildOracle read only DData/DRecord, so the extra DInterface/
+-- registerAllData and buildOracle read only DData, so the extra DInterface/
 -- DImpl entries are inert for them.
 publicDataDecls : List Decl -> List Decl
 publicDataDecls [] = []
 publicDataDecls ((DData VisPublic n ps vs ds)::rest) =
   DData VisPublic n ps vs ds :: publicDataDecls rest
-publicDataDecls ((DRecord VisPublic n ps fs ds)::rest) =
-  DRecord VisPublic n ps fs ds :: publicDataDecls rest
 publicDataDecls ((d@(DInterface { pub = True, ... }))::rest) =
   d :: publicDataDecls rest
 publicDataDecls ((d@(DImpl { pub = True, ... }))::rest) =
@@ -11742,8 +11725,8 @@ checkModuleFullDiags seedVars accData accAll prog =
 -- its `buildOracle prog` already includes Option/Result; the multi-module path
 -- keeps modules separate, so prelude ADTs live in accData.  Seeding with only
 -- `prog` left the oracle missing Some/None|Ok/Err → exhaustive matches on
--- Option/Result false-warned "non-exhaustive".  buildOracle reads only DData/
--- DRecord and is duplicate-tolerant, so accData ++ prog is safe.
+-- Option/Result false-warned "non-exhaustive".  buildOracle reads only DData
+-- and is duplicate-tolerant, so accData ++ prog is safe.
 
 -- checkModuleFull → checkModuleFullImpl runs resetState () first (clears
 -- typeErrors + currentLevel), so the snapshot below is this module's own errors.

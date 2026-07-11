@@ -69,11 +69,13 @@ import frontend.lexer.{Comment, collectComments, commentLine, commentText}
 
 -- One lint hit: which rule produced it, the human message, its severity (the
 -- CLI may promote this via `lintProgram`), and an optional source span.
-public export record Finding
-  rule : String
-  message : String
-  severity : Severity
-  loc : Option Loc
+public export data Finding =
+  | Finding {
+      rule : String,
+      message : String,
+      severity : Severity,
+      loc : Option Loc,
+    }
 
 -- A registered rule.  `check` is the whole pass for that rule: the target file
 -- PATH (so a rule may scope itself, e.g. skip stdlib-owned files) + Positions
@@ -84,13 +86,15 @@ public export record Finding
 -- decl, it returns `Some replacementDecls` if the rule can safely rewrite that
 -- decl, else `None`.  `None` = the rule is not auto-fixable.
 -- `enabled`/`severity` are the defaults the CLI may override before running.
-public export record Rule
-  name : String
-  descr : String
-  severity : Severity
-  enabled : Bool
-  check : String -> String -> Positions -> List Decl -> List Finding
-  fix : Option (Oracle -> Decl -> Option (List Decl))
+public export data Rule =
+  | Rule {
+      name : String,
+      descr : String,
+      severity : Severity,
+      enabled : Bool,
+      check : String -> String -> Positions -> List Decl -> List Finding,
+      fix : Option (Oracle -> Decl -> Option (List Decl)),
+    }
 
 -- A registered CROSS-FILE rule.  Unlike `Rule` (one file at a time), `check`
 -- sees EVERY target file's `(path, Positions, decls)` triple at once, so it can
@@ -99,12 +103,14 @@ public export record Rule
 -- CrossFileRule-record access stays inside this module (the CLI passes/receives
 -- only plain data).  Adding a cross-file rule = one `check` fn + one binding +
 -- one `allCrossFileRules` entry.
-public export record CrossFileRule
-  name : String
-  descr : String
-  severity : Severity
-  enabled : Bool
-  check : List (String, Positions, List Decl) -> List Finding
+public export data CrossFileRule =
+  | CrossFileRule {
+      name : String,
+      descr : String,
+      severity : Severity,
+      enabled : Bool,
+      check : List (String, Positions, List Decl) -> List Finding,
+    }
 
 -- ── rule names (kept in sync between the Rule entry and its Findings) ─────────
 ruleNameMatchParam : String
@@ -3317,7 +3323,6 @@ nonDefRefL (DFunDef _ _ _ _) = []
 nonDefRefL (DTypeSig _ _ _) = []
 nonDefRefL (DExtern _ _ _) = []
 nonDefRefL (DData _ _ _ _ _) = []
-nonDefRefL (DRecord _ _ _ _ _) = []
 nonDefRefL (DUse _ _ _) = []
 nonDefRefL (DEffect _ _ _ _) = []
 nonDefRefL (DTypeAlias _ _ _ _) = []

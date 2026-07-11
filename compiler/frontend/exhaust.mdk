@@ -107,12 +107,12 @@ digitVal c = charCode c - charCode '0'
 -- it overrides the builtins (mirrors Hashtbl.replace's last-wins for find).
 -- (exported, with `buildOracle`, so typecheck.mdk's `check_match` can reuse the
 -- same oracle + matrix machinery — see the note at the top of this file.)
-public export record Oracle
-  typeCtors : List (String, List String)
-  ctorArity : List (String, Int)
-  ctorType : List (String, String)
-  -- ctor → declared field names in order (DRecord + DData ConNamed variants)
-  ctorFields : List (String, List String)
+public export data Oracle = Oracle {
+    typeCtors : List (String, List String),
+    ctorArity : List (String, Int),
+    ctorType : List (String, String),
+    ctorFields : List (String, List String),  -- ctor → declared field names in order (DData ConNamed variants)
+  }
 
 export buildOracle : List Decl -> Oracle
 buildOracle prog = Oracle {
@@ -141,18 +141,15 @@ builtinCtorType = [
 dataTypeCtors : Decl -> List (String, List String)
 dataTypeCtors (DData _ tyname _ variants _) =
   [(tyname, map variantName variants)]
-dataTypeCtors (DRecord _ tyname _ _ _) = [(tyname, [tyname])]
 dataTypeCtors _ = []
 
 dataArity : Decl -> List (String, Int)
 dataArity (DData _ _ _ variants _) = map variantArity variants
-dataArity (DRecord _ tyname _ fields _) = [(tyname, listLen fields)]
 dataArity _ = []
 
 dataCtorType : Decl -> List (String, String)
 dataCtorType (DData _ tyname _ variants _) =
   map (variantCtorType tyname) variants
-dataCtorType (DRecord _ tyname _ _ _) = [(tyname, tyname)]
 dataCtorType _ = []
 
 variantName : Variant -> String
@@ -167,7 +164,6 @@ variantCtorType tyname (Variant n _) = (n, tyname)
 
 dataCtorFields : Decl -> List (String, List String)
 dataCtorFields (DData _ _ _ variants _) = flatMap variantCtorFields variants
-dataCtorFields (DRecord _ tyname _ fields _) = [(tyname, map fieldName fields)]
 dataCtorFields _ = []
 
 variantCtorFields : Variant -> List (String, List String)

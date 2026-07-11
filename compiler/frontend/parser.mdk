@@ -1198,6 +1198,14 @@ letExprKind _ = letPatExpr
 letMutRemovedMsg : String
 letMutRemovedMsg = "`let mut` has been removed — bindings are immutable. For mutable state use a `Ref` cell: `let x = Ref 0`, write `x := newValue`, and read it with `x.value`"
 
+-- `record` is no longer a keyword: a single-constructor named-field product is
+-- the degenerate case of `data`, so declare a record with the `data X = { … }`
+-- short form.  A pre-grammar token scan surfaces a clean, located hint (pointing
+-- at `record`) for users arriving from other languages.
+recordRemovedMsg : String
+recordRemovedMsg =
+  "`record` is not a keyword — declare a record as `data X = { field : T, … }`"
+
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e`, each followed by `in e2`
 letIdentExpr : String -> Parser Expr
@@ -1872,7 +1880,6 @@ parseDecl = do
     TExport => afterExport
     TPublic => afterPublic
     TData => parseData VisPrivate
-    TRecord => parseRecord VisPrivate
     TExtern => parseExtern False
     TProp => parseProp False
     TTest => parseTest False
@@ -1909,7 +1916,6 @@ afterExport = do
   match t
     TImport => parseImport True
     TData => parseData VisAbstract
-    TRecord => parseRecord VisAbstract
     TExtern => parseExtern True
     TProp => parseProp True
     TTest => parseTest True
@@ -1934,8 +1940,7 @@ afterPublic = do
 
 afterPublicFor : Token -> Parser Decl
 afterPublicFor TData = parseData VisPublic
-afterPublicFor TRecord = parseRecord VisPublic
-afterPublicFor _ = failP "expected data or record after public export"
+afterPublicFor _ = failP "expected data after public export"
 
 parseFunOrSig : Bool -> Parser Decl
 parseFunOrSig pub = do
@@ -2714,49 +2719,6 @@ derivingFor TDeriving = do
   expectTok TRParen
   pure names
 derivingFor _ = pure []
-
-parseRecord : DataVis -> Parser Decl
-parseRecord vis = do
-  expectTok TRecord
-  name <- upperNameP
-  params <- many lowerNameP
-  expectTok TIndent
-  fields <- recordFields
-  blockDerives <- derivingClause
-  skipNewlines
-  expectTok TDedent
-  outerDerives <- derivingClause
-  skipNewlines
-  pure (DRecord
-    vis
-    name
-    params
-    fields
-    (combineDerives blockDerives outerDerives))
--- `deriving (…)` may sit INSIDE the block (indented line kept within the
--- INDENT/DEDENT span), so consume it before the DEDENT; otherwise the inline
--- form after the DEDENT is picked up below.  derivingClause stops at the
--- RPAREN; skip its trailing NEWLINE so the DEDENT is next.
-
-recordFields : Parser (List Field)
-recordFields = do
-  skipNewlines
-  f <- parseField
-  rest <- recordFieldsRest
-  pure (f::rest)
-
-recordFieldsRest : Parser (List Field)
-recordFieldsRest = do
-  skipNewlines
-  t <- peekP
-  recordFieldsRestFor t
-
-recordFieldsRestFor : Token -> Parser (List Field)
-recordFieldsRestFor (TIdent _) = do
-  f <- parseField
-  rest <- recordFieldsRest
-  pure (f::rest)
-recordFieldsRestFor _ = pure []
 
 -- a decl body is an inline expr, or an INDENT block of statements: a single
 -- expression statement unwraps to that expr; anything else becomes an EBlock
@@ -3622,6 +3584,17 @@ firstMutIdx toks i
   | peekTok toks i == TMut = i
   | otherwise = firstMutIdx toks (i + 1)
 
+-- `record` has been removed as a declaration keyword (records are now the
+-- `data X = { … }` short form).  `record` (TRecord) is a reserved word with no
+-- remaining valid use, so its presence is always the removed keyword.  A
+-- pre-grammar token scan surfaces a located hint (pointing at `record`).
+-- Index of the first `TRecord` in the stream, or -1 if absent.
+firstRecordIdx : Array Token -> Int -> Int
+firstRecordIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | peekTok toks i == TRecord = i
+  | otherwise = firstRecordIdx toks (i + 1)
+
 -- Scan forward from token index `i` (depth=accumulated INDENT/DEDENT) looking
 -- for `TIn` at depth=0 before the enclosing block exits (a `TDedent` that would
 -- take depth below 0, or `TEof`).  Returns True if the inline `let` is
@@ -3857,6 +3830,7 @@ parseResult src = match tokenizeWithOffsets src
     let srcLen = stringLength src
     let seIdx = firstSlashEqIdx toks 0
     let lmIdx = firstMutIdx toks 0
+    let recIdx = firstRecordIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
@@ -3875,6 +3849,8 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen "unexpected '/='. (Did you mean '!='?)" seIdx)
         else if lmIdx >= 0 then
           Err (mkLocated src toks offs srcLen letMutRemovedMsg lmIdx)
+        else if recIdx >= 0 then
+          Err (mkLocated src toks offs srcLen recordRemovedMsg recIdx)
         else if ilIdx >= 0 then
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
         else if coIdx >= 0 then

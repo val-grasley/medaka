@@ -1,5 +1,4 @@
-record Pt
-  x : Int
+data Pt = { x : Int }
 
 f r = match r
   Pt { x = a, y = b } => a + b

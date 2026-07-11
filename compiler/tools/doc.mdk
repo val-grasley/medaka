@@ -206,9 +206,6 @@ ppDataVariant (Variant name (ConNamed fs _)) =
 ppFieldDoc : Field -> String
 ppFieldDoc (Field fn ft) = "\{fn} : \{ppTyDoc ft}"
 
-ppRecordFields : List Field -> String
-ppRecordFields fields = "{ " ++ joinWith ", " (map ppFieldDoc fields) ++ " }"
-
 ppRequiresDoc : List Require -> String
 ppRequiresDoc [] = ""
 ppRequiresDoc rs = " requires " ++ joinWith ", " (map ppRequireOne rs)
@@ -265,10 +262,6 @@ renderSig (DData vis name params variants _) _
       [] => ""
       _ => "\n  = " ++ joinWith "\n  | " (map ppDataVariant variants)
     Some (name, "data \{head}\{body}")
-renderSig (DRecord vis name params fields _) _
-  | not (dataVisPrivate vis) =
-    let head = joinWith " " (name::params)
-    Some (name, "record \{head} \{ppRecordFields fields}")
 renderSig (DInterface { pub = True, name, typarams, methods }) _ =
   let head = joinWith " " (name::typarams)
   let ms = map ppIfaceMethod methods

@@ -26,9 +26,7 @@ vs : Box (Box (String -> String))
 vs = v
 
 -- Record creation of non-expansive fields generalizes
-record Pair a
-  l : a -> a
-  r : a -> a
+data Pair a = { l : a -> a, r : a -> a }
 p = Pair { l = (x => x), r = (x => x) }
 pi : Pair Int
 pi = p

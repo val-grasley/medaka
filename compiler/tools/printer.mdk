@@ -1591,17 +1591,6 @@ printDecl (DData vis n params variants derives) =
   else
     Cat Line (printDerives derives)
   group (Cat (visPrefix vis) (Cat head (Cat variantDocs deriveDoc)))
-printDecl (DRecord vis n params fields derives) = Cat
-  (visPrefix vis)
-  (Cat
-    (text "record ")
-    (Cat
-      (text n)
-      (Cat
-        (concatD (map (p => Cat (text " ") (text p)) params))
-        (Cat
-          (indentBlock (sepBy Hardline (map fieldTyDoc fields)))
-          (if isEmptyL derives then Nil else Cat Hardline (Cat (text "deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))
 printDecl (DTypeAlias pub n params rhs) = Cat
   (if pub then text "export " else Nil)
   (Cat

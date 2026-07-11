@@ -314,7 +314,6 @@ public export data Decl =
   | DExtern Bool String Ty
   | DFunDef Bool String (List Pat) Expr
   | DData DataVis String (List String) (List Variant) (List String)
-  | DRecord DataVis String (List String) (List Field) (List String)
   | DUse Bool UsePath Loc
   -- pub? name domain? internal?  `effect Foo` (atomic security capability),
   -- `effect Net Prefix` (domain-carrying), `internal effect Mut` (purity-only,

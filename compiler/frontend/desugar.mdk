@@ -171,10 +171,6 @@ callBin fn a b = EApp (EApp (EVar fn) a) b
 binOp : String -> Expr -> Expr -> Expr
 binOp op a b = EBinOp op a b (Ref RNone)
 
--- field read off a named variable: `v.n`
-fieldOf : String -> String -> Expr
-fieldOf v n = EFieldAccess (EVar v) n (Ref "")
-
 -- a derived impl head with the fixed pub / non-default / no-name shape;
 -- applyDeriveParams rewrites tys + reqs afterwards for the type's params.
 derivedImpl : String -> String -> List ImplMethod -> Decl
@@ -333,9 +329,6 @@ expandDecl : Decl -> List Decl
 expandDecl (DData vis name params variants derives) =
   DData vis name params variants [] ::
     deriveImpls (deriveForData name params variants) derives
-expandDecl (DRecord vis name params fields derives) =
-  DRecord vis name params fields [] ::
-    deriveImpls (deriveForRecord name params fields) derives
 expandDecl (DNewtype vis name params con fty derives) =
   DNewtype vis name params con fty [] ::
     deriveImpls (deriveForNewtype name params con fty) derives
@@ -372,106 +365,6 @@ deriveForData name params variants "Generic" =
 deriveForData name params variants "Ord" =
   Some (applyDeriveParams name params (deriveOrdData name variants))
 deriveForData _ _ _ _ = None
-
--- Records derive via dedicated field-access generators (a record's fields are
--- read by name through EFieldAccess, not pattern-bound positionally like a
--- data constructor), mirroring lib/desugar.ml's derive_*_record family.
-deriveForRecord : String -> List String -> List Field -> String -> Option Decl
-deriveForRecord name params fields "Eq" =
-  Some (applyDeriveParams name params (deriveEqRecord name fields))
-deriveForRecord name params fields "Ord" =
-  Some (applyDeriveParams name params (deriveOrdRecord name fields))
-deriveForRecord name params fields "Debug" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowRecord "Debug" "debug" name fields))
-deriveForRecord name params fields "Display" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowRecord "Display" "display" name fields))
-deriveForRecord name params fields "Generic" =
-  Some (applyDeriveParams name params (deriveGenericRecord name fields))
-deriveForRecord _ _ _ _ = None
-
-fieldName : Field -> String
-fieldName (Field n _) = n
-
--- Eq: AND-fold `eq __a.f __b.f` over the declared fields (True if none).
-deriveEqRecord : String -> List Field -> Decl
-deriveEqRecord name fields = derivedImpl
-  "Eq"
-  name
-  [binMethod "eq" "__a" "__b" (andAll (map eqFieldCall fields))]
-
-eqFieldCall : Field -> Expr
-eqFieldCall f =
-  let n = fieldName f
-  callBin "eq" (fieldOf "__a" n) (fieldOf "__b" n)
-
--- Ord: lexicographic compare over the declared fields in order.
-deriveOrdRecord : String -> List Field -> Decl
-deriveOrdRecord name fields = derivedImpl
-  "Ord"
-  name
-  [binMethod "compare" "__a" "__b" (lexCompareExprs (map ordFieldPair fields))]
-
-ordFieldPair : Field -> (Expr, Expr)
-ordFieldPair f =
-  let n = fieldName f
-  (fieldOf "__a" n, fieldOf "__b" n)
-
--- Debug/Display: `"Name {" ++ " f = " ++ <call> __r.f ++ ", g = " ++ … ++ " }"`.
--- The first field is prefixed " ", later fields ", " (lib/desugar.ml).
-deriveShowRecord : String -> String -> String -> List Field -> Decl
-deriveShowRecord iface callName name fields = derivedImpl
-  iface
-  name
-  [
-    ImplMethod callName [PVar "__r"] (concatStrings (showRecordParts callName name fields))
-  ]
-
-showRecordParts : String -> String -> List Field -> List Expr
-showRecordParts callName name fields =
-  ELit (LString (name ++ " {")) ::
-    showRecordFields callName 0 fields ++ [ELit (LString " }")]
-
-showRecordFields : String -> Int -> List Field -> List Expr
-showRecordFields _ _ [] = []
-showRecordFields callName i (f::fs) = showRecordField callName i f
-  ++ showRecordFields callName (i + 1) fs
-
-showRecordField : String -> Int -> Field -> List Expr
-showRecordField callName i f =
-  let n = fieldName f
-  [
-    ELit (LString "\{recordFieldPrefix i}\{n} = "),
-    EApp (EVar callName) (fieldOf "__r" n),
-  ]
-
-recordFieldPrefix : Int -> String
-recordFieldPrefix 0 = " "
-recordFieldPrefix _ = ", "
-
--- Generic: `RRecord "Name" [RField { fld_name = "f", fld_rep = to_rep __r.f }, …]`.
-deriveGenericRecord : String -> List Field -> Decl
-deriveGenericRecord name fields = derivedImpl
-  "Generic"
-  name
-  [
-    ImplMethod "to_rep" [PVar "__r"] (callBin "RRecord" (ELit (LString name)) (EListLit (map genericRField fields)))
-  ]
-
-genericRField : Field -> Expr
-genericRField f =
-  let n = fieldName f
-  ERecordCreate
-    "RField"
-    [
-      FieldAssign "fld_name" (ELit (LString n)),
-      FieldAssign "fld_rep" (EApp (EVar "to_rep") (fieldOf "__r" n)),
-    ]
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
 -- data derivers produce the right tagged rendering via a synthetic variant.
@@ -547,13 +440,19 @@ deriveShowData iface callName name variants = derivedImpl
   ]
 
 showArm : String -> Variant -> Arm
-showArm callName (v@(Variant cname _)) =
+showArm callName (v@(Variant cname payload)) =
   let vars = genVars "__a" (conArity v)
-  Arm (conBindPat v vars) [] (showBody callName cname vars)
+  Arm (conBindPat v vars) [] (showBody callName cname payload vars)
 
-showBody : String -> String -> List String -> Expr
-showBody _ cname [] = ELit (LString cname)
-showBody callName cname (v::vs) =
+-- A positional variant renders `Con a0 a1 …`; a named-field (ConNamed /
+-- record-shaped) variant renders `Con { f0 = a0, f1 = a1, … }`, matching the
+-- surface record literal syntax.
+showBody : String -> String -> ConPayload -> List String -> Expr
+showBody _ cname _ [] = ELit (LString cname)
+showBody callName cname (ConNamed fs _) (v::vs) =
+  concatStrings
+    (ELit (LString (cname ++ " {")) :: showNamedParts callName 0 fs (v::vs) ++ [ELit (LString " }")])
+showBody callName cname _ (v::vs) =
   concatStrings
     (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v::vs))
 
@@ -565,6 +464,19 @@ showFieldParts callName i (v::vs) = showFieldPart callName i v
 showFieldPart : String -> Int -> String -> List Expr
 showFieldPart callName 0 v = [EApp (EVar callName) (EVar v)]
 showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
+
+-- ` f0 = <call> a0, f1 = <call> a1, …` inside the record braces.
+showNamedParts : String -> Int -> List Field -> List String -> List Expr
+showNamedParts _ _ [] _ = []
+showNamedParts _ _ _ [] = []
+showNamedParts callName i ((Field fn _)::fs) (v::vs) = showNamedPart callName i fn v
+  ++ showNamedParts callName (i + 1) fs vs
+
+showNamedPart : String -> Int -> String -> String -> List Expr
+showNamedPart callName 0 fn v =
+  [ELit (LString " \{fn} = "), EApp (EVar callName) (EVar v)]
+showNamedPart callName _ fn v =
+  [ELit (LString ", \{fn} = "), EApp (EVar callName) (EVar v)]
 
 -- Eq: same-constructor arms compare fields pairwise; a cross-constructor
 -- wildcard arm (only with ≥2 variants) returns False.
@@ -674,13 +586,30 @@ deriveGenericData name variants = derivedImpl
   ]
 
 genericArm : Variant -> Arm
-genericArm (v@(Variant cname _)) =
+genericArm (v@(Variant cname payload)) =
   let vars = genVars "__a" (conArity v)
-  Arm (conBindPat v vars) [] (genericRcon cname vars)
+  Arm (conBindPat v vars) [] (genericRep cname payload vars)
 
-genericRcon : String -> List String -> Expr
-genericRcon cname vars =
+-- Positional variant → `RCon name [to_rep a0, …]`; named-field (record-shaped)
+-- variant → `RRecord name [RField { fld_name = "f", fld_rep = to_rep a0 }, …]`,
+-- so `to_rep` reflects the field labels a record carries.
+genericRep : String -> ConPayload -> List String -> Expr
+genericRep cname (ConNamed fs _) vars =
+  callBin "RRecord" (ELit (LString cname)) (EListLit (genericRFields fs vars))
+genericRep cname _ vars =
   callBin "RCon" (ELit (LString cname)) (EListLit (map toRep vars))
+
+genericRFields : List Field -> List String -> List Expr
+genericRFields [] _ = []
+genericRFields _ [] = []
+genericRFields ((Field fn _)::fs) (v::vs) =
+  ERecordCreate
+      "RField"
+      [
+        FieldAssign "fld_name" (ELit (LString fn)),
+        FieldAssign "fld_rep" (toRep v),
+      ] ::
+    genericRFields fs vs
 
 toRep : String -> Expr
 toRep x = EApp (EVar "to_rep") (EVar x)
@@ -819,11 +748,21 @@ desugarRecordPuns : List Decl -> List Decl
 desugarRecordPuns prog =
   mapProg (rewriteRecordPun (collectRecordNames prog)) prog
 
+-- Names that can head a record-literal brace = every ConNamed constructor of a
+-- `data` decl (records are the `data X = { … }` short form, whose synthesized
+-- ctor is the type name; explicit named-payload ctors `data T = MkT { … }`
+-- qualify too).
 collectRecordNames : List Decl -> List String
 collectRecordNames [] = []
-collectRecordNames ((DRecord _ name _ _ _)::rest) =
-  name :: collectRecordNames rest
+collectRecordNames ((DData _ _ _ variants _)::rest) = conNamedCtorNames variants
+  ++ collectRecordNames rest
 collectRecordNames (_::rest) = collectRecordNames rest
+
+conNamedCtorNames : List Variant -> List String
+conNamedCtorNames [] = []
+conNamedCtorNames ((Variant n (ConNamed _ _))::rest) =
+  n :: conNamedCtorNames rest
+conNamedCtorNames ((Variant _ (ConPos _))::rest) = conNamedCtorNames rest
 
 rewriteRecordPun : List String -> Expr -> Expr
 rewriteRecordPun recordNames (ESetLit name items)

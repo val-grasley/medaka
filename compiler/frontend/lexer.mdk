@@ -1144,7 +1144,6 @@ bracketCloser _ = False
 
 isOpener : Token -> Bool
 isOpener TMatch = True
-isOpener TRecord = True
 isOpener _ = False
 
 -- a token that can syntactically END an expression (atom-ender whitelist)

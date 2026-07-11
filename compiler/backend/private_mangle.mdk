@@ -46,15 +46,15 @@
 --     would lose the tag.  Excluded at the ctor-export step (`isReservedCtor`).
 --
 -- CONSTRUCTOR MANGLING (the cross-module ctor-name-collision fix).  The flat emit
--- path also folds EVERY module's `DData`/`DRecord`/`DNewtype` ctors into ONE global
+-- path also folds EVERY module's `DData`/`DNewtype` ctors into ONE global
 -- bare-name-keyed ctor table (arity / tag / type-id / ordinal in llvm_emit.mdk).
 -- Two ADTs in different modules declaring a same-named ctor with DIFFERENT arity
 -- therefore COLLAPSE into one entry — a nullary ctor inheriting a payload ctor's
 -- arity is emitted as a boxed cell instead of an immediate → corrupted value →
 -- SIGSEGV (the interpreter is immune: it is structural, no arity table).  Fix: the
 -- SAME universal per-module mangling, extended to constructors — every NON-reserved
--- ctor is renamed `<owningMid>__<ctor>` at its DEFINITION (DData variant / DRecord
--- name / DNewtype con) AND at every USE site (EVar construct, PCon / PRec match,
+-- ctor is renamed `<owningMid>__<ctor>` at its DEFINITION (DData variant /
+-- DNewtype con) AND at every USE site (EVar construct, PCon / PRec match,
 -- ERecordCreate, EVariantUpdate), import-aware (a `import M.{T(..)}` maps T's ctors
 -- to `<M>__<ctor>`).  Collisions are then impossible by construction; the per-site
 -- owning module comes from the importing unit's scope, so construct and match always
@@ -210,11 +210,6 @@ unitCtorExportEntry (mid, decls) = (mid, flatMap ctorExportEntries decls)
 ctorExportEntries : Decl -> List (String, List String)
 ctorExportEntries (DData _ tyname _ variants _) =
   [(tyname, filterList nonReservedCtor (map variantCtorName variants))]
-ctorExportEntries (DRecord _ name _ _ _) =
-  if nonReservedCtor name then
-    [(name, [name])]
-  else
-    []
 ctorExportEntries (DNewtype _ tyname _ con _ _) =
   if nonReservedCtor con then
     [(tyname, [con])]
@@ -263,7 +258,6 @@ unitLocalCtorNames decls =
 
 localCtorNames : Decl -> List String
 localCtorNames (DData _ _ _ variants _) = map variantCtorName variants
-localCtorNames (DRecord _ name _ _ _) = [name]
 localCtorNames (DNewtype _ _ _ con _ _) = [con]
 localCtorNames (DAttrib _ d) = localCtorNames d
 localCtorNames _ = []
@@ -593,16 +587,15 @@ renameDecl rm (DTest pub name body) = DTest pub name (renameScoped rm [] body)
 renameDecl rm (DBench pub name body) = DBench pub name (renameScoped rm [] body)
 renameDecl rm (DLetGroup pub binds) =
   DLetGroup pub (map (renameLetBindDef rm) binds)
--- DATA / RECORD / NEWTYPE definition sites: rename the constructor names (which the
+-- DATA / NEWTYPE definition sites: rename the constructor names (which the
 -- emitter's ctor tables key on) in lockstep with the use-site rewrites below.  The
 -- DData TYPE name is left as-is (it is only the VALUE in buildCtorToType — ctorsOf-
--- Type groups by it but never emits it as a symbol); a DRecord's name IS its ctor,
--- so it is renamed; a DNewtype's con is its ctor.  Reserved ctors are not in `rm`
+-- Type groups by it but never emits it as a symbol); a record (the `data X = { … }`
+-- short form) is a ConNamed variant renamed like any ctor; a DNewtype's con is its
+-- ctor.  Reserved ctors are not in `rm`
 -- (excluded at export), so renameDefName leaves them unchanged.
 renameDecl rm (DData vis tyname tps variants derives) =
   DData vis tyname tps (map (renameVariant rm) variants) derives
-renameDecl rm (DRecord vis name tps fields derives) =
-  DRecord vis (renameDefName rm name) tps fields derives
 renameDecl rm (DNewtype pub tyname tps con fty derives) =
   DNewtype pub tyname tps (renameDefName rm con) fty derives
 renameDecl rm (DAttrib attrs d) = DAttrib attrs (renameDecl rm d)

@@ -1,13 +1,7 @@
 -- records: create, field access (incl. nested), update, patterns; parametric
-record P
-  x : Int
-  y : Int
-record Box a
-  val : a
-  tag : String
-record Line
-  a : P
-  b : P
+data P = { x : Int, y : Int }
+data Box a = { val : a, tag : String }
+data Line = { a : P, b : P }
 mkP a b = P { x = a, y = b }
 getX p = p.x
 sumP p = p.x + p.y

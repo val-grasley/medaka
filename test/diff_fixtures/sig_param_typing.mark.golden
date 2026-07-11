@@ -1,5 +1,5 @@
-(DRecord Private "Inv" () ((field "shared" (TyCon "Int"))) ())
-(DRecord Private "Wat" () ((field "shared" (TyCon "String"))) ())
+(DData Private "Inv" () ((variant "Inv" (ConNamed (field "shared" (TyCon "Int"))))) ())
+(DData Private "Wat" () ((variant "Wat" (ConNamed (field "shared" (TyCon "String"))))) ())
 (DTypeSig false "invShared" (TyFun (TyCon "Inv") (TyCon "Int")))
 (DFunDef false "invShared" ((PVar "a")) (EFieldAccess (EVar "a") "shared"))
 (DTypeSig false "watShared" (TyFun (TyCon "Wat") (TyCon "String")))

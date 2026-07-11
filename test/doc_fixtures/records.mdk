@@ -1,9 +1,5 @@
 -- A 2D point.
-public export record Point
-  x : Int
-  y : Int
+public export data Point = { x : Int, y : Int }
 
 -- A named person.
-public export record Person a
-  name : String
-  age : a
+public export data Person a = { name : String, age : a }

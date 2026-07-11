@@ -1,6 +1,4 @@
-record Point
-  x : Int
-  y : Int
+data Point = { x : Int, y : Int }
 
 distSq p = p.x * p.x + p.y * p.y
 

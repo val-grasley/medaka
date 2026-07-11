@@ -1,8 +1,4 @@
-record Point
-  x : Int
-  y : Int
-
-deriving (Eq, Ord)
+data Point = { x : Int, y : Int } deriving (Eq, Ord)
 
 main : <IO> Unit
 main =

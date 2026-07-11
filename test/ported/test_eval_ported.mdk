@@ -191,9 +191,7 @@ test "as-pattern lambda param" =
 -- Ported from: t_record, t_record_update, t_variant_update, t_record_update_nested,
 --              t_record_update_nested_deep, t_record_update_nested_unchanged
 
-record Point
-  x : Int
-  y : Int
+data Point = { x : Int, y : Int }
 pVal = Point { x = 3, y = 4 }
 test "record create and access" = expectEqual 7 (pVal.x + pVal.y)
 
@@ -212,24 +210,17 @@ updDA = match updD
   Other _ => 0
 test "variant update preserves other fields" = expectEqual 1 updDA
 
-record Address
-  city : String
-record Person
-  name : String
-  address : Address
+data Address = { city : String }
+data Person = { name : String, address : Address }
 addrVal = Address { city = "Cambridge" }
 personVal = Person { name = "Alice", address = addrVal }
 person2Val = { personVal | address.city = "Boston" }
 test "nested record update" = expectEqual "Boston" person2Val.address.city
 test "nested record update unchanged" = expectEqual "Alice" person2Val.name
 
-record Country
-  code : String
-record Address2
-  country : Country
-record Person2
-  name : String
-  address : Address2
+data Country = { code : String }
+data Address2 = { country : Country }
+data Person2 = { name : String, address : Address2 }
 cVal = Country { code = "UK" }
 addr2Val = Address2 { country = cVal }
 person3Val = Person2 { name = "Alice", address = addr2Val }
@@ -729,9 +720,7 @@ test "where self-rec" = expectEqual 15 (sumTo 5)
 -- Ported from: t_field_assign_record, t_field_assign_multi, t_field_assign_ref_value,
 --              t_multi_field_assign, t_multi_field_ref_mid
 
-record PersonF
-  name : String
-  age  : Int
+data PersonF = { name : String, age : Int }
 
 fieldAssignAge =
   let mut p = PersonF { name = "Alice", age = 30 }
@@ -752,10 +741,8 @@ refValueAssign =
   r.value
 test "Ref .value assign" = expectEqual 42 refValueAssign
 
-record InnerF
-  c : Int
-record OuterF
-  b : InnerF
+data InnerF = { c : Int }
+data OuterF = { b : InnerF }
 
 multiFieldAssign =
   let mut o = OuterF { b = InnerF { c = 1 } }
@@ -763,8 +750,7 @@ multiFieldAssign =
   o.b.c
 test "multi-level field assign" = expectEqual 42 multiFieldAssign
 
-record BoxF
-  cell : Ref Int
+data BoxF = { cell : Ref Int }
 
 multiFieldRefMid =
   let mut box = BoxF { cell = Ref 0 }
@@ -775,9 +761,7 @@ test "multi-level Ref mid" = expectEqual 7 multiFieldRefMid
 -- ── Record patterns (Phase 31) ───────────────────────────────────────────────
 -- Ported from: t_rec_pat_pun, t_rec_pat_explicit, t_rec_pat_rest
 
-record PersonP
-  name : String
-  age  : Int
+data PersonP = { name : String, age : Int }
 
 recPatPunR = match PersonP { name = "Alice", age = 30 }
   PersonP { name } => name

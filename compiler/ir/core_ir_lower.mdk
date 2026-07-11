@@ -485,44 +485,16 @@ lowerProgram prog =
 -- positional `PCon` rewrite (a `PCon` would not match a `VRecord`).  Hence it lives
 -- in `lowerProgramEmit` — which the LLVM emit drivers call — NOT in the shared
 -- `lowerProgram` that core_ir_main / core_ir_eval use.  The field-order map is
--- DECLARED order (DRecord field list + DData named-field variants), the same order
+-- DECLARED order (DData named-field variants), the same order
 -- the emitter's record cell layout / recFieldTable use, so the positional indices
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
 export lowerProgramEmit : List Decl -> <Mut> CProgram
 lowerProgramEmit prog =
-  registerRecordCtors
-    prog
-    (rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog))
+  rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
 
--- EMIT-ONLY: register each single-constructor `record` decl's ctor in the Core IR
--- ctor tables (ctorArs: name→field-count; ctorTypes: name→its own type name).  The
--- shared `ctorArities`/`buildCtorToType` builders cover only DData/DNewtype — a
--- DRecord falls through their catch-alls, so a record-literal construction
--- (`ImportAdds { … }`, `Env { … }`, `ModuleExports { … }`, `Oracle { … }`) reaches
--- the LLVM/Wasm emitters with its ctor absent from ctorArs/ctorTypes →
--- `ctorOrdinal`/`ctorTypeName` miss and emit the "unknown constructor" gap.  This is
--- EMIT-ONLY (mirrors rewriteProgramRecPats's rationale): the tree-walking interpreter
--- evaluates a record to a by-name `VRecord` and must NOT see a positional ctor for it
--- (it reads ctorArs to synthesize ctor functions, line `cevalProgram`), so we add the
--- record entries here in `lowerProgramEmit` rather than the shared builders.  A
--- record's ctor is arity = field count, owning type = the record name itself (ordinal
--- 0, consistent with the single-cell layout `emitRecordRef` already assumes).
-registerRecordCtors : List Decl -> CProgram -> CProgram
-registerRecordCtors decls (CProgram groups ctorArs ctorTypes implEntries) =
-  let recArs = flatMap recordCtorArity decls
-  let recTys = flatMap recordCtorType decls
-  CProgram groups (ctorArs ++ recArs) (ctorTypes ++ recTys) implEntries
-
-recordCtorArity : Decl -> List (String, Int)
-recordCtorArity (DRecord _ name _ fields _) = [(name, listLen fields)]
-recordCtorArity _ = []
-
-recordCtorType : Decl -> List (String, String)
-recordCtorType (DRecord _ name _ _ _) = [(name, name)]
-recordCtorType _ = []
-
--- type/ctor name → [field label in declared order], from every DRecord and every
--- DData named-field (`ConNamed`) variant.  (`DInterface`/`DImpl` are themselves
+-- type/ctor name → [field label in declared order], from every DData named-field
+-- (`ConNamed`) variant — records are the `data X = { … }` short form, whose
+-- synthesized ctor is a ConNamed variant.  (`DInterface`/`DImpl` are themselves
 -- named-field variants of the AST's `Decl` type — declared in ast.mdk via `data
 -- Decl = … | DInterface { … }` — so a self-hosted compiler that destructures them
 -- gets their orders through the `DData ConNamed` branch when ast.mdk is in `prog`.)
@@ -530,8 +502,6 @@ buildRecPatFieldOrders : List Decl -> List (String, List String)
 buildRecPatFieldOrders prog = flatMap recPatFieldOrderEntries prog
 
 recPatFieldOrderEntries : Decl -> List (String, List String)
-recPatFieldOrderEntries (DRecord _ name _ fields _) =
-  [(name, map fieldLabel fields)]
 recPatFieldOrderEntries (DData _ _ _ variants _) =
   flatMap variantNamedOrder variants
 recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner

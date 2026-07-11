@@ -17,7 +17,6 @@ import frontend.ast.{
   Expr,
   DProp,
   DData,
-  DRecord,
   DNewtype,
   PropParam,
   Ty(..),
@@ -60,17 +59,13 @@ randBoolL _ = rngNextLocal () % 2 == 1
 
 -- ── tydef registry (built from the program's data/record decls) ─────────────
 
-public export data TyDef =
-  | TDData (List String) (List Variant)
-  | TDRecord (List String) (List Field)
+public export data TyDef = TDData (List String) (List Variant)
 
 buildTyDefs : List Decl -> List (String, TyDef)
 buildTyDefs [] = []
 buildTyDefs (d::rest) = match d
   DData _ name params variants _ =>
     (name, TDData params variants) :: buildTyDefs rest
-  DRecord _ name params fields _ =>
-    (name, TDRecord params fields) :: buildTyDefs rest
   DNewtype _ name params con fty _ =>
     (name, TDData params [Variant con (ConPos [fty])]) :: buildTyDefs rest
   _ => buildTyDefs rest
@@ -175,20 +170,11 @@ genUser tydefs subst name tydef args =
         []
       let v = nthList variants (randIntRange 0 (listLen variants - 1))
       genVariant tydefs subst2 v
-    TDRecord params fields =>
-      let subst2 = if listLen params == listLen args2 then
-        zipL params args2
-      else
-        []
-      VRecord name (map (genField tydefs subst2) fields)
 
 genVariant : List (String, TyDef) -> List (String, Ty) -> Variant -> <Mut> Value
 genVariant tydefs subst (Variant cname payload) = match payload
   ConPos tys => VCon cname (map (genForType tydefs subst) tys)
   ConNamed fields _ => VCon cname (map (genFieldTy tydefs subst) fields)
-
-genField : List (String, TyDef) -> List (String, Ty) -> Field -> <Mut> (String, Value)
-genField tydefs subst (Field fname fty) = (fname, genForType tydefs subst fty)
 
 genFieldTy : List (String, TyDef) -> List (String, Ty) -> Field -> <Mut> Value
 genFieldTy tydefs subst (Field _ fty) = genForType tydefs subst fty

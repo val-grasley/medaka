@@ -14,12 +14,8 @@ data Shape3 = Disc Int | Tri Int Int deriving (Eq, Debug)
 
 data Shape4 = Dot Int | Seg Int Int deriving (Eq, Debug)
 
-record Point
-  x : Int
-  y : Int
+data Point = { x : Int, y : Int }
 
-record Tagged
-  label : Int
-deriving (Eq, Debug)
+data Tagged = { label : Int } deriving (Eq, Debug)
 
 data Event = Click { x : Int, y : Int } | Scroll Int

@@ -5,26 +5,12 @@
 -- Int/Float collision (exercises the float-field-label routing fix).  Invisible to
 -- `run` (the interpreter resolves fields by the value's own assoc list); only the
 -- native build path was wrong.
-record Other
-  check : Int
-  tag : String
-record Rule
-  name : String
-  enabled : Bool
-  check : Int
-record A
-  handler : Int -> Int
-  size : Int
-record B
-  size : Int
-  label : String
-  handler : Int -> Int
-record Pt
-  ptag : String
-  amount : Float
-record Cnt
-  amount : Int
-  cname : String
+data Other = { check : Int, tag : String }
+data Rule = { name : String, enabled : Bool, check : Int }
+data A = { handler : Int -> Int, size : Int }
+data B = { size : Int, label : String, handler : Int -> Int }
+data Pt = { ptag : String, amount : Float }
+data Cnt = { amount : Int, cname : String }
 
 o : Other
 o = Other { check = 7, tag = "o" }

@@ -178,8 +178,6 @@ declTypeAnnotations : List Decl -> List (String, String)
 declTypeAnnotations [] = []
 declTypeAnnotations ((DData _ n _ _ _)::rest) =
   ("type", n) :: declTypeAnnotations rest
-declTypeAnnotations ((DRecord _ n _ _ _)::rest) =
-  ("record", n) :: declTypeAnnotations rest
 declTypeAnnotations ((DInterface { name = n, ... })::rest) =
   ("interface", n) :: declTypeAnnotations rest
 declTypeAnnotations (_::rest) = declTypeAnnotations rest

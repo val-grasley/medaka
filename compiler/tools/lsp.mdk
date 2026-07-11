@@ -84,7 +84,6 @@ import frontend.ast.{
   DExtern,
   DFunDef,
   DData,
-  DRecord,
   DUse,
   DEffect,
   DProp,
@@ -363,6 +362,19 @@ variantName (Variant n _) = n
 fieldName : Field -> String
 fieldName (Field n _) = n
 
+-- Outline children for one data variant: a nameOmitted record variant
+-- (`data X = { … }`) exposes its fields as Field symbols (kind 8); any other
+-- variant shows its constructor name (kind 22).
+variantSymChildren : Json -> Variant -> List Json
+variantSymChildren range (Variant _ (ConNamed fs True)) =
+  map ((Field fn _) => jChild fn 8 range) fs
+variantSymChildren range (Variant vn _) = [jChild vn 22 range]
+
+-- The named-field labels of a variant (empty for positional variants).
+variantFieldNames : Variant -> List String
+variantFieldNames (Variant _ (ConNamed fs _)) = map fieldName fs
+variantFieldNames (Variant _ (ConPos _)) = []
+
 ifaceMethodName : IfaceMethod -> String
 ifaceMethodName (IfaceMethod n _ _) = n
 
@@ -387,11 +399,10 @@ symbolOfDecl d dp =
         let kids = map ((LetBind n _) => jChild n 12 range) binds
         Some (jSymbol n0 12 range kids)
     DData _ name _ variants _ =>
-      let kids = map ((Variant vn _) => jChild vn 22 range) variants
+      -- records (the `data X = { … }` short form, nameOmitted) expose their
+      -- fields as child symbols (kind 8); ordinary variants show their ctor name.
+      let kids = flatMap (variantSymChildren range) variants
       Some (jSymbol name 10 range kids)
-    DRecord _ name _ fields _ =>
-      let kids = map ((Field fn _) => jChild fn 8 range) fields
-      Some (jSymbol name 23 range kids)
     DInterface { name = n, methods = ms, ... } =>
       let kids = map ((IfaceMethod mn _ _) => jChild mn 6 range) ms
       Some (jSymbol n 11 range kids)
@@ -453,8 +464,9 @@ declDefines d name = match innerDecl d
   DExtern _ n _ => n == name
   DFunDef _ n _ _ => n == name
   DLetGroup _ binds => anyName (map letBindName binds) name
-  DData _ n _ vs _ => n == name || anyName (map variantName vs) name
-  DRecord _ n _ fs _ => n == name || anyName (map fieldName fs) name
+  DData _ n _ vs _ => n == name
+    || anyName (map variantName vs) name
+    || anyName (flatMap variantFieldNames vs) name
   DInterface { name = n, methods = ms, ... } => n == name
     || anyName (map ifaceMethodName ms) name
   DImpl { methods = ms, ... } => anyName (map implMethodName ms) name

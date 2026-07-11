@@ -14,7 +14,7 @@
 -- would be a silent miscompile.  So this is the CONSERVATIVE sound rule:
 --
 --   * RETAIN every non-`DFunDef` decl untouched — all DImpl, DInterface, DData,
---     DRecord, DTypeSig, DExtern, DUse, DEffect, DTypeAlias, DNewtype, DLetGroup,
+--     DTypeSig, DExtern, DUse, DEffect, DTypeAlias, DNewtype, DLetGroup,
 --     DProp/DTest/DBench, DAttrib.  Impls and interface defaults are kept WHOLE.
 --   * Eliminate ONLY plain top-level `DFunDef` bindings unreachable from the roots.
 --

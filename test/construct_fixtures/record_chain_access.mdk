@@ -1,7 +1,5 @@
-record Inner
-  val : Int
-record Outer
-  inner : Inner
+data Inner = { val : Int }
+data Outer = { inner : Inner }
 main : <IO> Unit
 main =
   let o = Outer { inner = Inner { val = 42 } }

@@ -1302,9 +1302,7 @@ public export data Rep =
   | RUnit
 
 -- | A named field inside an `RRecord`.
-public export record RField
-  fld_name : String
-  fld_rep : Rep
+public export data RField = RField { fld_name : String, fld_rep : Rep }
 
 {- | Types with a structural representation.  `to_rep` is synthesised by
    `deriving (Generic)`.  `from_rep` is return-type polymorphic, which the

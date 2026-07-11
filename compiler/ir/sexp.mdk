@@ -242,15 +242,6 @@ declSexp (DData vis n ps vs ds) = node
     slist (map variantSexp vs),
     slist (map escStr ds),
   ]
-declSexp (DRecord vis n ps fs ds) = node
-  "DRecord"
-  [
-    visSexp vis,
-    escStr n,
-    slist (map escStr ps),
-    slist (map fieldSexp fs),
-    slist (map escStr ds),
-  ]
 declSexp (DUse pub path _) = node "DUse" [boolStr pub, usePathSexp path]
 declSexp (DEffect pub n dom isInternal) =
   node "DEffect" [boolStr pub, escStr n, optStrSexp dom, boolStr isInternal]

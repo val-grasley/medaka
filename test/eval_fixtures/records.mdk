@@ -1,10 +1,6 @@
 -- record create / field access / update / pattern match
-record Point
-  x : Int
-  y : Int
-record Box
-  label : String
-  pt : Point
+data Point = { x : Int, y : Int }
+data Box = { label : String, pt : Point }
 distSq p = p.x * p.x + p.y * p.y
 moveRight p = { p | x = p.x + 1 }
 swap p = match p

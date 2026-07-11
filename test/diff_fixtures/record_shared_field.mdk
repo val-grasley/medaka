@@ -1,8 +1,6 @@
-record Cat
-  name : String
+data Cat = { name : String }
 
-record Box
-  name : Int
+data Box = { name : Int }
 
 catName c = (c : Cat).name
 

@@ -6,9 +6,7 @@
 
 data Box a = Box a
 
-record Point
-  x : Int
-  y : Int
+data Point = { x : Int, y : Int }
 
 data Color = Red | Green | Blue
 

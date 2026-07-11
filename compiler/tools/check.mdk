@@ -151,7 +151,7 @@ checkModulesHasErrors allowInternal trustedMods rtD coreD mods =
 -- Oracle superset = runtime + core + EVERY loaded module's decls (so a
 -- multi-clause function in the entry module over an IMPORTED ADT is not
 -- false-flagged); only the entry module (last) is CHECKED.  `rtD`/`coreD`/`mods`
--- are the DESUGARED decls, which still carry the DData/DRecord the oracle reads.
+-- are the DESUGARED decls, which still carry the DData the oracle reads.
 entryExhaust : List Decl -> List Decl -> List (String, List Decl) -> String
 entryExhaust rtD coreD mods =
   let oracleDecls = rtD ++ coreD ++ flatMap declsOfMod mods

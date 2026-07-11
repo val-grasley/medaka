@@ -1,8 +1,4 @@
-record Point
-  x : Int
-  y : Int
-
-deriving (Eq, Ord, Debug)
+data Point = { x : Int, y : Int } deriving (Eq, Ord, Debug)
 
 main =
   let p1 = Point { x = 1, y = 2 }

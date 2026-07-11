@@ -1,8 +1,5 @@
-record Addr
-  city : String
-record Person
-  name : String
-  addr : Addr
+data Addr = { city : String }
+data Person = { name : String, addr : Addr }
 main : <IO> Unit
 main =
   let a = Addr { city = "Portland" }

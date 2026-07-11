@@ -1,7 +1,5 @@
 -- record patterns through the decision tree (PRec arms with fall-through)
-record Vec
-  dx : Int
-  dy : Int
+data Vec = { dx : Int, dy : Int }
 
 magnitude v = v.dx * v.dx + v.dy * v.dy
 

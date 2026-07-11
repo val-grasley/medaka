@@ -170,28 +170,26 @@ resErrorLoc (ReassignImmutable _ l) = l
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
 -- hash_map; membership is a linear `contains`).
 -- `fieldOwners` is (field, owner) pairs; `ifaceMethods` is (iface, methods).
-public export record Env
-  values : List String
-  types : List String
-  ctors : List String
-  fields : List String
-  fieldOwners : List (String, String)
-  interfaces : List String
-  ifaceMethods : List (String, List String)
-  effects : List String
-  imported : List String
-  -- (modId, expValues) pairs for every non-`core` module this file `import`s
-  -- (multi-module path only; single-file `buildEnv` leaves this `[]`) — lets
-  -- `checkVar` recognize an unbound name that's an export of an ALREADY
-  -- imported module (needs a selective import, not a typo fix; audit #5).
-  importedModuleValues : List (String, List String)
-  -- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
-  -- non-`core` module ids that export it unqualified
-  ambiguous : List (String, List String)
-  -- internal-only externs (arrayGetUnsafe, …) that this module is NOT permitted
-  -- to reference (empty when the module is trusted: a stdlib module, or any
-  -- module under `--allow-internal`).  checkVar flags a reference to one of these.
-  internalGuard : List String
+public export data Env = Env {
+    values : List String,
+    types : List String,
+    ctors : List String,
+    fields : List String,
+    fieldOwners : List (String, String),
+    interfaces : List String,
+    ifaceMethods : List (String, List String),
+    effects : List String,
+    imported : List String,
+    importedModuleValues : List (String, List String),  -- (modId, expValues) pairs for every non-`core` module this file `import`s
+    ambiguous : List (String, List String),  -- (multi-module path only; single-file `buildEnv` leaves this `[]`) — lets
+    internalGuard : List String,  -- `checkVar` recognize an unbound name that's an export of an ALREADY
+  }  -- imported module (needs a selective import, not a typo fix; audit #5).
+-- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
+-- non-`core` module ids that export it unqualified
+
+-- internal-only externs (arrayGetUnsafe, …) that this module is NOT permitted
+-- to reference (empty when the module is trusted: a stdlib module, or any
+-- module under `--allow-internal`).  checkVar flags a reference to one of these.
 
 -- ── internal-only externs ──────────────────────────────────────────────────
 -- Array-kernel primitives declared in stdlib/runtime.mdk that bypass bounds
@@ -835,7 +833,6 @@ checkDecl env (DLetGroup _ binds) =
 checkDecl env (DTypeSig _ _ t) = checkType None env t
 checkDecl env (DExtern _ _ t) = checkType None env t
 checkDecl env (DData _ _ _ vs _) = flatMap (checkVariant env) vs
-checkDecl env (DRecord _ _ _ fs _) = flatMap (checkFieldType env) fs
 checkDecl env (DProp _ _ params body) = checkProp env params body
 checkDecl env (DTest _ _ body) = checkExpr None env [] body
 checkDecl env (DBench _ _ body) = checkExpr None env [] body
@@ -935,7 +932,6 @@ externNames (_::rest) = externNames rest
 dataRecordNames : List Decl -> List String
 dataRecordNames [] = []
 dataRecordNames ((DData _ n _ _ _)::rest) = n :: dataRecordNames rest
-dataRecordNames ((DRecord _ n _ _ _)::rest) = n :: dataRecordNames rest
 dataRecordNames ((DTypeAlias _ n _ _)::rest) = n :: dataRecordNames rest
 dataRecordNames ((DNewtype _ n _ _ _ _)::rest) = n :: dataRecordNames rest
 dataRecordNames ((DAttrib _ d)::rest) = dataRecordNames (d::rest)
@@ -997,8 +993,6 @@ userValueNames (_::rest) = userValueNames rest
 
 fieldOwnersOf : List Decl -> List (String, String)
 fieldOwnersOf [] = []
-fieldOwnersOf ((DRecord _ n _ fs _)::rest) = map (recordFieldOwner n) fs
-  ++ fieldOwnersOf rest
 fieldOwnersOf ((DData _ _ _ vs _)::rest) = flatMap variantFieldOwners vs
   ++ fieldOwnersOf rest
 fieldOwnersOf (_::rest) = fieldOwnersOf rest
@@ -1500,16 +1494,17 @@ singleFileImportErrors (_::rest) = singleFileImportErrors rest
 
 -- The public interface of a resolved module (mirror lib/resolve.ml's
 -- module_exports; exp_fields is dropped — consumers only read field OWNERS).
-public export record ModuleExports
-  modId : String
-  expValues : List String
-  expTypes : List String
-  expCtors : List String
-  expTypeCtors : List (String, List String)
-  expFieldOwners : List (String, String)
-  expInterfaces : List String
-  expIfaceMethods : List (String, List String)
-  expEffects : List String  -- exported effect labels (Phase 146)
+public export data ModuleExports = ModuleExports {
+    modId : String,
+    expValues : List String,
+    expTypes : List String,
+    expCtors : List String,
+    expTypeCtors : List (String, List String),
+    expFieldOwners : List (String, String),
+    expInterfaces : List String,
+    expIfaceMethods : List (String, List String),
+    expEffects : List String,  -- exported effect labels (Phase 146)
+  }
 -- public type → its exported ctors
 -- (field, owner type/ctor)
 
@@ -1618,14 +1613,16 @@ expandMemberErrs exp (UseMember name True loc) = match typeCtorsOf name exp
       []
 
 -- ── import contributions to the env ────────────────────────────────────────
-public export record ImportAdds
-  iaImported : List String
-  iaValues : List String
-  iaTypes : List String
-  iaCtors : List String
-  iaIfaces : List String
-  iaFieldOwners : List (String, String)
-  iaErrors : List ResError
+public export data ImportAdds =
+  | ImportAdds {
+      iaImported : List String,
+      iaValues : List String,
+      iaTypes : List String,
+      iaCtors : List String,
+      iaIfaces : List String,
+      iaFieldOwners : List (String, String),
+      iaErrors : List ResError,
+    }
 
 emptyAdds : ImportAdds
 emptyAdds = ImportAdds {
@@ -1912,8 +1909,6 @@ expTypesDirect [] = []
 expTypesDirect ((DNewtype True n _ _ _ _)::rest) = n :: expTypesDirect rest
 expTypesDirect ((DData VisPublic n _ _ _)::rest) = n :: expTypesDirect rest
 expTypesDirect ((DData VisAbstract n _ _ _)::rest) = n :: expTypesDirect rest
-expTypesDirect ((DRecord VisPublic n _ _ _)::rest) = n :: expTypesDirect rest
-expTypesDirect ((DRecord VisAbstract n _ _ _)::rest) = n :: expTypesDirect rest
 expTypesDirect ((DTypeAlias True n _ _)::rest) = n :: expTypesDirect rest
 expTypesDirect (_::rest) = expTypesDirect rest
 
@@ -1936,8 +1931,6 @@ expTypeCtorsDirect (_::rest) = expTypeCtorsDirect rest
 -- field owners for PUBLIC data (named-field variants) + record
 expFieldOwnersDirect : List Decl -> List (String, String)
 expFieldOwnersDirect [] = []
-expFieldOwnersDirect ((DRecord VisPublic n _ fs _)::rest) = map (recordFieldOwner n) fs
-  ++ expFieldOwnersDirect rest
 expFieldOwnersDirect ((DData VisPublic _ _ vs _)::rest) = flatMap variantFieldOwners vs
   ++ expFieldOwnersDirect rest
 expFieldOwnersDirect (_::rest) = expFieldOwnersDirect rest
