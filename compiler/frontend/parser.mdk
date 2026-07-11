@@ -534,23 +534,11 @@ unaryFor TBang = do
   pure (EUnOp "!" e)
 unaryFor _ = parseInfix
 
--- backtick infix operators: ``a `div` b`` → EInfix (left-associative)
+-- backtick infix application (``a `div` b``) has been removed.  The lexer still
+-- produces `TBacktickIdent` as a sentinel; a pre-grammar scan surfaces a located
+-- hint pointing at the backtick operator.
 parseInfix : Parser Expr
-parseInfix = chainl1 parseApp backtickOp
-
-backtickOp : Parser (Expr -> Expr -> Expr)
-backtickOp = do
-  name <- backtickName
-  pure (l r => EInfix name l r)
-
-backtickName : Parser String
-backtickName = do
-  t <- peekP
-  backtickNameFor t
-
-backtickNameFor : Token -> Parser String
-backtickNameFor (TBacktickIdent s) = emit s
-backtickNameFor _ = failP "expected backtick operator"
+parseInfix = parseApp
 
 parseApp : Parser Expr
 parseApp = do
@@ -3666,6 +3654,20 @@ firstHsCaseOfIdx toks i
 hsCaseOfMsg : String
 hsCaseOfMsg = "Medaka has no 'case … of'. Use 'match e' with indented 'pattern => body' arms"
 
+-- Backtick infix application (``x `f` y``) has been removed.  `TBacktickIdent`
+-- is a sentinel with no remaining valid use, so its presence is always the
+-- removed construct.  A pre-grammar token scan surfaces a located hint.
+-- Index of the first `TBacktickIdent` in the stream, or -1 if absent.
+firstBacktickIdx : Array Token -> Int -> Int
+firstBacktickIdx toks i
+  | i >= arrayLength toks = 0 - 1
+  | otherwise = match peekTok toks i
+    TBacktickIdent _ => i
+    _ => firstBacktickIdx toks (i + 1)
+
+backtickInfixMsg : String
+backtickInfixMsg = "backtick infix application (`f`) is not supported — use prefix application `f x y`"
+
 -- Haskell type signature (`f :: T`) vs Medaka's single-colon `f : T`: `::` is
 -- Medaka's CONS operator (`x :: xs`), a legitimate infix op that appears all
 -- over real bodies/guards (`f = 1 :: [2,3]`, `f x | y :: z = …`) AND in match-
@@ -3843,6 +3845,7 @@ parseResult src = match tokenizeWithOffsets src
     let fnIdx = firstFunctionIdx toks 0
     let ilIdx = firstInlineLetMissingIn toks 0
     let coIdx = firstHsCaseOfIdx toks 0
+    let btIdx = firstBacktickIdx toks 0
     let sigIdx = firstHsSigIdx toks 0 0 True
     let bcIdx = firstBlockCommentIdx toks 0
     let bbIdx = firstBraceBlockIdx toks 0
@@ -3867,6 +3870,8 @@ parseResult src = match tokenizeWithOffsets src
           Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
         else if coIdx >= 0 then
           Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
+        else if btIdx >= 0 then
+          Err (mkLocated src toks offs srcLen backtickInfixMsg btIdx)
         else if sigIdx >= 0 then
           Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
         else if bcIdx >= 0 then

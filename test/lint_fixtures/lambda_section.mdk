@@ -31,10 +31,6 @@ negSelf = (x => x + x)
 -- NEGATIVE: param buried in a sub-expression — must NOT fire.
 negSubexpr = (x => f x + 1)
 
--- NEGATIVE: backtick infix does not round-trip as a section — must NOT fire.
-negBacktick = (x => x `div` 2)
-negBacktickBare = (x y => x `max` y)
-
 -- NEGATIVE: two params out of order — must NOT fire.
 negReorder = (x y => y + x)
 

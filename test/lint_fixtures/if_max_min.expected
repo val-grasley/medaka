@@ -1,13 +1,11 @@
 warning: [rule-dead-code] private top-level 'geNormal' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'geReversed' is unreachable from exports/main/doctests — remove it (dead code)
-warning: [rule-dead-code] private top-level 'gt' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'gtNormal' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'gtReversed' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'leNormal' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'leReversed' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'ltNormal' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'ltReversed' is unreachable from exports/main/doctests — remove it (dead code)
-warning: [rule-dead-code] private top-level 'negBacktick' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'negClampZero' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'negOtherBranch' is unreachable from exports/main/doctests — remove it (dead code)
 warning: [rule-dead-code] private top-level 'negSameOperand' is unreachable from exports/main/doctests — remove it (dead code)
@@ -23,14 +21,12 @@ warning: [rule-if-max-min] if-then-else selects the smaller of the same two oper
 warning: [rule-if-max-min] if-then-else selects the smaller of the same two operands. Rewrite as 'min a b'
 warning: [rule-missing-signature] top-level 'geNormal' has no type signature. Add a `geNormal : …` declaration
 warning: [rule-missing-signature] top-level 'geReversed' has no type signature. Add a `geReversed : …` declaration
-warning: [rule-missing-signature] top-level 'gt' has no type signature. Add a `gt : …` declaration
 warning: [rule-missing-signature] top-level 'gtNormal' has no type signature. Add a `gtNormal : …` declaration
 warning: [rule-missing-signature] top-level 'gtReversed' has no type signature. Add a `gtReversed : …` declaration
 warning: [rule-missing-signature] top-level 'leNormal' has no type signature. Add a `leNormal : …` declaration
 warning: [rule-missing-signature] top-level 'leReversed' has no type signature. Add a `leReversed : …` declaration
 warning: [rule-missing-signature] top-level 'ltNormal' has no type signature. Add a `ltNormal : …` declaration
 warning: [rule-missing-signature] top-level 'ltReversed' has no type signature. Add a `ltReversed : …` declaration
-warning: [rule-missing-signature] top-level 'negBacktick' has no type signature. Add a `negBacktick : …` declaration
 warning: [rule-missing-signature] top-level 'negClampZero' has no type signature. Add a `negClampZero : …` declaration
 warning: [rule-missing-signature] top-level 'negOtherBranch' has no type signature. Add a `negOtherBranch : …` declaration
 warning: [rule-missing-signature] top-level 'negSameOperand' has no type signature. Add a `negSameOperand : …` declaration

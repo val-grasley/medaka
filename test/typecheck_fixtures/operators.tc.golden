@@ -1,17 +1,17 @@
 add : a -> a -> a
-andb : Bool -> Bool -> Bool
-appx : a -> a -> a
-backtick : (a -> b -> c) -> a -> b -> c
-bwd : (a -> b) -> (c -> a) -> c -> b
-clampish : a -> a -> a -> a
-consx : a -> List a -> List a
-eqp : a -> a -> Bool
-fwd : (a -> b) -> (b -> c) -> a -> c
-ltp : a -> a -> Bool
+poly : Num a => a -> a -> a -> a
 negI : Num a => a -> a
 negP : a -> a
-notb : Bool -> Bool
+eqp : a -> a -> Bool
+ltp : a -> a -> Bool
+clampish : a -> a -> a -> a
+andb : Bool -> Bool -> Bool
 orb : Bool -> Bool -> Bool
+notb : Bool -> Bool
+appx : a -> a -> a
+consx : a -> List a -> List a
 pipeIt : a -> (a -> b) -> b
-poly : Num a => a -> a -> a -> a
+fwd : (a -> b) -> (b -> c) -> a -> c
+bwd : (a -> b) -> (c -> a) -> c -> b
+applyfn : (a -> b -> c) -> a -> b -> c
 total : Num a => L a -> a

@@ -6,4 +6,4 @@
 (DFunDef false "clamp" ((PVar "lo") (PVar "hi")) (EBinOp ">>" (EApp (EVar "min") (EVar "hi")) (EApp (EVar "max") (EVar "lo"))))
 (DFunDef false "combine" () (EBinOp "<<" (EVar "f") (EVar "g")))
 (DFunDef false "deleteAt" ((PVar "x") (PVar "count")) (EIf (EApp (EVar "has") (EVar "x")) (EBlock (DoExpr (EApp (EVar "remove") (EVar "x"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "count")) (EBinOp "-" (EFieldAccess (EVar "count") "value") (ELit (LInt 1)))))) (ELit LUnit)))
-(DFunDef false "divides" ((PVar "a") (PVar "b")) (EBinOp "==" (EInfix "mod" (EVar "a") (EVar "b")) (ELit (LInt 0))))
+(DFunDef false "divides" ((PVar "a") (PVar "b")) (EBinOp "==" (EApp (EApp (EVar "mod") (EVar "a")) (EVar "b")) (ELit (LInt 0))))

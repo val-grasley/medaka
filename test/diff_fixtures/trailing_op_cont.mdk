@@ -46,8 +46,4 @@ composeR x = (addN 1 >> addN 2) x
 composeL : Int -> Int
 composeL x = (addN 1 << addN 2) x
 
-btick : Int -> Int -> Int
-btick a b = a `addN`
-  b
-
 main = println (arith 3 4)

@@ -13,5 +13,5 @@ consx : a -> List a -> List a
 pipeIt : a -> (a -> b) -> b
 fwd : (a -> b) -> (b -> c) -> a -> c
 bwd : (a -> b) -> (c -> a) -> c -> b
-backtick : (a -> b -> c) -> a -> b -> c
+applyfn : (a -> b -> c) -> a -> b -> c
 total : Num a => L a -> a

@@ -651,7 +651,7 @@ myEqFn x y = eq x y
 test "inferred wrapper eq true" = expectTrue (myEqFn 3 3)
 test "inferred wrapper eq false" = expectFalse (myEqFn 3 4)
 
-test "backtick method eval" = expectTrue (3 `eq` 3)
+test "prefix method eval" = expectTrue (eq 3 3)
 
 interface PickN a where
   pickN : Bool -> Bool -> a
@@ -660,8 +660,8 @@ impl PickN Int where
 impl PickN String where
   pickN _ _ = "s"
 pickNResult : Int
-pickNResult = True `pickN` False
-test "backtick return-position" = expectEqual 1 pickNResult
+pickNResult = pickN True False
+test "prefix return-position" = expectEqual 1 pickNResult
 
 -- ── Point-free constrained dispatch (Phase 89) ──────────────────────────────
 -- Ported from: t_pf_dispatch_list, t_pf_dispatch_option,

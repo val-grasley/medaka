@@ -1367,7 +1367,7 @@ prop "discard replaces the payload with Unit" (x : Int) =
   eq (discard (Some x)) (Some ())
 
 prop "on agrees with its hand expansion" (a : Int) (b : Int) =
-  ((x y => x + y) `on` (n => n * 2)) a b == a * 2 + b * 2
+  on (x y => x + y) (n => n * 2) a b == a * 2 + b * 2
 
 prop "map2 on Some matches direct application" (a : Int) (b : Int) =
   eq (map2 (x y => x + y) (Some a) (Some b)) (Some (a + b))

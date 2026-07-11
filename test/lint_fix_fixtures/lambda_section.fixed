@@ -8,5 +8,4 @@ bareAdd = (+)
 nestedInApp = filterOut (> 0) items
 negRightSub = (x => x - 5)
 negSelf = (x => x + x)
-negBacktick = (x => x `div` 2)
 negReorder = (x y => y + x)

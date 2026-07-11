@@ -34,9 +34,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # Known native-CLI gaps DEFERRED (no .build.golden captured; gate skips them):
-#   2 emitter gaps — fail the emitter on BOTH the OCaml and native build host, so
-#     they were ALREADY RED on the original OCaml-oracle gate (147 ok / 2 fail):
-#       backtick_infix  — `divide` not a known emitter fn (operator-section gap)
+#   1 emitter gap — fails the emitter on BOTH the OCaml and native build host, so
+#     it was ALREADY RED on the original OCaml-oracle gate:
 #       tuple_neq       — `not` not a known emitter fn (operator-section gap)
 #   4 native typecheck-GATE gaps — OCaml `medaka build` accepts them, but the
 #     native CLI's G1 typecheck gate (compiler/driver/medaka_cli.mdk) rejects them.
@@ -47,7 +46,7 @@ trap 'rm -rf "$WORK"' EXIT
 #         (multi-module stdlib import not resolved by the gate's roots)
 #       newtype_ctor_fn  — `newtype` constructor not recognised by native check
 #       type_alias       — `type Name = String` alias not unified by native check
-SKIP="backtick_infix tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias"
+SKIP="tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias"
 skipped=0
 
 pass=0; fail=0

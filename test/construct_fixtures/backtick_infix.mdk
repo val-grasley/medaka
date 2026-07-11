@@ -1,4 +1,0 @@
--- Gap D1: backtick infix `a `f` b` calls the plain top-level function `f`.
-divide a b = a / b
-
-main = println (intToString (10 `divide` 2))

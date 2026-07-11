@@ -22,6 +22,4 @@
 (DFunDef false "composeR" ((PVar "x")) (EApp (EBinOp ">>" (EApp (EVar "addN") (ELit (LInt 1))) (EApp (EVar "addN") (ELit (LInt 2)))) (EVar "x")))
 (DTypeSig false "composeL" (TyFun (TyCon "Int") (TyCon "Int")))
 (DFunDef false "composeL" ((PVar "x")) (EApp (EBinOp "<<" (EApp (EVar "addN") (ELit (LInt 1))) (EApp (EVar "addN") (ELit (LInt 2)))) (EVar "x")))
-(DTypeSig false "btick" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
-(DFunDef false "btick" ((PVar "a") (PVar "b")) (EInfix "addN" (EVar "a") (EVar "b")))
 (DFunDef false "main" () (EApp (EVar "println") (EApp (EApp (EVar "arith") (ELit (LInt 3))) (ELit (LInt 4)))))

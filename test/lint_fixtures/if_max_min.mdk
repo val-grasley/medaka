@@ -24,9 +24,5 @@ negOtherBranch a b c = if a > b then a else c
 -- rewrite (reads as "clamp", not "select of two values" — see rule doc).
 negClampZero x = if x < 0 then 0 else x
 
--- NEGATIVE: backtick comparison is `EInfix`, not `EBinOp` — not handled.
-gt a b = a > b
-negBacktick a b = if a `gt` b then a else b
-
 -- NEGATIVE: degenerate — both comparison operands are structurally identical.
 negSameOperand a = if a > a then a else a

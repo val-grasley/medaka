@@ -204,22 +204,6 @@ INT 2
 RPAREN
 IDENT "x"
 NEWLINE
-IDENT "btick"
-COLON
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-NEWLINE
-IDENT "btick"
-IDENT "a"
-IDENT "b"
-EQUAL
-IDENT "a"
-BACKTICK_IDENT "addN"
-IDENT "b"
-NEWLINE
 IDENT "main"
 EQUAL
 IDENT "println"
@@ -249,140 +233,138 @@ logic p q = p && q || False
 listcat : List Int -> List Int -> List Int
 listcat xs ys = xs ++ ys
 cons : Int -> List Int -> List Int
-cons h t = h :: t
+cons h t = h::t
 pipeline : Int -> Int
 pipeline x = x |> addN 1
 composeR : Int -> Int
 composeR x = (addN 1 >> addN 2) x
 composeL : Int -> Int
 composeL x = (addN 1 << addN 2) x
-btick : Int -> Int -> Int
-btick a b = a `addN` b
 main = println (arith 3 4)
+
 === TYPES ===
-abs : a -> a
-add : a -> a -> a
-addN : Int -> Int -> Int
-all : Foldable b => (a -> Bool) -> b a -> Bool
-and : Bool -> Bool -> Bool
-andThen : a b -> (b -> a c) -> a c
-any : Foldable b => (a -> Bool) -> b a -> Bool
-ap : a (b -> c) -> a b -> a c
-append : a -> a -> a
-apply : (a -> b) -> a -> b
-arbitrary : Unit -> <Rand> a
-arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
-arbitraryString : Unit -> <Rand> String
-arith : Int -> Int -> Int
-bimap : (a -> b) -> (c -> d) -> e a c -> e b d
-btick : Int -> Int -> Int
-clamp : Ord a => a -> a -> a -> a
-cmp : Int -> Int -> Bool
-cmp2 : Int -> Int -> Bool
-compare : a -> a -> Ordering
-compose : (a -> b) -> (c -> a) -> c -> b
-composeL : Int -> Int
-composeR : Int -> Int
-cons : Int -> List Int -> List Int
-const : a -> b -> a
-count : Foldable b => (a -> Bool) -> b a -> Int
-curry : ((a, b) -> c) -> a -> b -> c
-debug : a -> String
-debugArrayItems : Debug a => Array a -> Int -> Int -> String
-debugListItems : Debug a => List a -> String
-discard : Mappable a => a b -> a Unit
-display : a -> String
-displayArrayItems : Display a => Array a -> Int -> Int -> String
-displayListItems : Display a => List a -> String
-div : a -> a -> a
-divmod : Int -> Int -> Int
-elem : (Eq a, Foldable b) => a -> b a -> Bool
-empty : a
 eq : a -> a -> Bool
-filter : (a -> Bool) -> b a -> b a
-filterMap : (a -> Option b) -> c a -> c b
-filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a)
-find : Foldable b => (a -> Bool) -> b a -> Option a
-flat : Thenable a => a (a b) -> a b
-flatMap : Thenable b => (a -> b c) -> b a -> b c
-flip : (a -> b -> c) -> b -> a -> c
-fold : (a -> b -> a) -> a -> c b -> a
-foldMap : (a -> b) -> c a -> b
-foldRight : (a -> b -> b) -> b -> c a -> b
-foldThen : (Applicative c, Thenable c) => (a -> b -> c a) -> a -> List b -> c a
-forEach : (Applicative b, Thenable b) => List a -> (a -> b Unit) -> b Unit
-fromEntries : List a -> b
-fromInt : Int -> a
-fromOption : a -> Option a -> a
-fromResult : Result a b -> Option b
-fromResultOr : a -> Result b a -> a
-from_rep : Rep -> a
-fst : (a, b) -> a
-gt : a -> a -> Bool
-gte : a -> a -> Bool
-guard : (Alternative a, Applicative a) => Bool -> a Unit
-hash : a -> Int
-hashListItems : Hashable a => Int -> List a -> Int
-identity : a -> a
-isEmpty : a b -> Bool
-isErr : Result a b -> Bool
-isEven : Int -> Bool
-isNone : Option a -> Bool
-isOdd : Int -> Bool
-isOk : Result a b -> Bool
-isSome : Option a -> Bool
-length : a b -> Int
-listcat : List Int -> List Int -> List Int
-logic : Bool -> Bool -> Bool
+append : a -> a -> a
+empty : a
+compare : a -> a -> Ordering
 lt : a -> a -> Bool
+gt : a -> a -> Bool
 lte : a -> a -> Bool
-main : Unit
+gte : a -> a -> Bool
+min : a -> a -> a
+max : a -> a -> a
+debug : a -> String
+display : a -> String
+hash : a -> Int
+add : a -> a -> a
+sub : a -> a -> a
+mul : a -> a -> a
+div : a -> a -> a
+negate : a -> a
+abs : a -> a
+signum : a -> a
+fromInt : Int -> a
+minBound : a
+maxBound : a
 map : (a -> b) -> c a -> c b
-map2 : (Applicative d, Mappable d) => (a -> b -> c) -> d a -> d b -> d c
-map3 : (Applicative e, Mappable e) => (a -> b -> c -> d) -> e a -> e b -> e c -> e d
-mapErr : (a -> b) -> Result a c -> Result b c
+pure : a -> b a
+ap : a (b -> c) -> a b -> a c
+andThen : a b -> (b -> a c) -> a c
+noMatch : a b
+orElse : a b -> a b -> a b
+bimap : (a -> b) -> (c -> d) -> e a c -> e b d
 mapFirst : (a -> b) -> c a d -> c b d
 mapSecond : (a -> b) -> c d a -> c d b
-max : a -> a -> a
-maxBound : a
-maximum : Foldable a => a b -> Option b
-min : a -> a -> a
-minBound : a
-minimum : Foldable a => a b -> Option b
-mul : a -> a -> a
-negate : a -> a
-neq : Eq a => a -> a -> Bool
-noMatch : a b
-not : Bool -> Bool
-notElem : (Eq a, Foldable b) => a -> b a -> Bool
-on : (a -> a -> b) -> (c -> a) -> c -> c -> b
-or : Bool -> Bool -> Bool
-orElse : a b -> a b -> a b
-otherwise : Bool
-pipe : (a -> b) -> (b -> c) -> a -> c
-pipeline : Int -> Int
-print : Display a => a -> <IO> Unit
-println : Display a => a -> <IO> Unit
-product : (Foldable a, Num b) => a b -> b
-pure : a -> b a
-repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
-replaceWith : Mappable a => a b -> c -> a c
-runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
-sequence : a (b c) -> b (a c)
-shrink : a -> List a
-signum : a -> a
-snd : (a, b) -> b
-sub : Int -> Int -> Int
-sub : a -> a -> a
-sum : (Foldable a, Num b) => a b -> b
-thenCmp : Ordering -> Ordering -> Ordering
+fold : (a -> b -> a) -> a -> c b -> a
+foldRight : (a -> b -> b) -> b -> c a -> b
+foldMap : (a -> b) -> c a -> b
 toList : a b -> List b
-toResult : a -> Option b -> Result a b
-to_rep : a -> Rep
+isEmpty : a b -> Bool
+length : a b -> Int
+filterMap : (a -> Option b) -> c a -> c b
+filter : (a -> Bool) -> b a -> b a
+fromEntries : List a -> b
 traverse : (a -> b c) -> d a -> b (d c)
-uncurry : (a -> b -> c) -> (a, b) -> c
-unless : Applicative a => Bool -> a Unit -> a Unit
+sequence : a (b c) -> b (a c)
+arbitrary : Unit -> <Rand> a
+shrink : a -> List a
+to_rep : a -> Rep
+from_rep : Rep -> a
+not : Bool -> Bool
+neq : Eq a => a -> a -> Bool
+clamp : Ord a => a -> a -> a -> a
+isEven : Int -> Bool
+isOdd : Int -> Bool
+thenCmp : Ordering -> Ordering -> Ordering
+debugListItems : Debug a => List a -> String
+otherwise : Bool
+debugArrayItems : Debug a => Array a -> Int -> Int -> String
+displayListItems : Display a => List a -> String
+displayArrayItems : Display a => Array a -> Int -> Int -> String
+hashListItems : Hashable a => Int -> List a -> Int
+println : Display a => a -> <IO> Unit
+print : Display a => a -> <IO> Unit
+replaceWith : Mappable a => a b -> c -> a c
+map2 : (Applicative d, Mappable d) => (a -> b -> c) -> d a -> d b -> d c
+map3 : (Applicative e, Mappable e) => (a -> b -> c -> d) -> e a -> e b -> e c -> e d
+flatMap : Thenable b => (a -> b c) -> b a -> b c
+identity : a -> a
+flat : Thenable a => a (a b) -> a b
 when : Applicative a => Bool -> a Unit -> a Unit
+unless : Applicative a => Bool -> a Unit -> a Unit
+foldThen : (Applicative c, Thenable c) => (a -> b -> c a) -> a -> List b -> c a
+repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
+filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a)
+forEach : (Applicative b, Thenable b) => List a -> (a -> b Unit) -> b Unit
+runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
+guard : (Alternative a, Applicative a) => Bool -> a Unit
+any : Foldable b => (a -> Bool) -> b a -> Bool
+all : Foldable b => (a -> Bool) -> b a -> Bool
+find : Foldable b => (a -> Bool) -> b a -> Option a
+count : Foldable b => (a -> Bool) -> b a -> Int
+sum : (Foldable a, Num b) => a b -> b
+product : (Foldable a, Num b) => a b -> b
+elem : (Eq a, Foldable b) => a -> b a -> Bool
+notElem : (Eq a, Foldable b) => a -> b a -> Bool
+maximum : Foldable a => a b -> Option b
+minimum : Foldable a => a b -> Option b
+and : Bool -> Bool -> Bool
+or : Bool -> Bool -> Bool
 xor : Bool -> Bool -> Bool
+isSome : Option a -> Bool
+isNone : Option a -> Bool
+fromOption : a -> Option a -> a
+toResult : a -> Option b -> Result a b
+fromResult : Result a b -> Option b
+isOk : Result a b -> Bool
+isErr : Result a b -> Bool
+fromResultOr : a -> Result b a -> a
+mapErr : (a -> b) -> Result a c -> Result b c
+fst : (a, b) -> a
+snd : (a, b) -> b
+const : a -> b -> a
+flip : (a -> b -> c) -> b -> a -> c
+on : (a -> a -> b) -> (c -> a) -> c -> c -> b
+curry : ((a, b) -> c) -> a -> b -> c
+uncurry : (a -> b -> c) -> (a, b) -> c
+discard : Mappable a => a b -> a Unit
+compose : (a -> b) -> (c -> a) -> c -> b
+pipe : (a -> b) -> (b -> c) -> a -> c
+apply : (a -> b) -> a -> b
+arbitraryString : Unit -> <Rand> String
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
+addN : Int -> Int -> Int
+arith : Int -> Int -> Int
+sub : Int -> Int -> Int
+divmod : Int -> Int -> Int
+cmp : Int -> Int -> Bool
+cmp2 : Int -> Int -> Bool
+logic : Bool -> Bool -> Bool
+listcat : List Int -> List Int -> List Int
+cons : Int -> List Int -> List Int
+pipeline : Int -> Int
+composeR : Int -> Int
+composeL : Int -> Int
+main : Unit
 === EVAL ===
 11

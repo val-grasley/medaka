@@ -1,0 +1,4 @@
+add a b = a + b
+main =
+  let z = 3 `add` 4
+  println z

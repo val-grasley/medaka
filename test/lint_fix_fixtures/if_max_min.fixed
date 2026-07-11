@@ -16,7 +16,4 @@ nested xs ys = max (len xs) (len ys) + 1
 negOtherBranch a b c = if a > b then a else c
 negClampZero x = if x < 0 then 0 else x
 
-gt a b = a > b
-negBacktick a b = if a `gt` b then a else b
-
 negSameOperand a = if a > a then a else a

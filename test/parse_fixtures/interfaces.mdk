@@ -25,4 +25,4 @@ deleteAt x count =
     remove x
     setRef count (count.value - 1)
 
-divides a b = a `mod` b == 0
+divides a b = mod a b == 0
