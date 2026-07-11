@@ -138,7 +138,7 @@ import tools.check_policy.{
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
-  [] => runReplCmd []
+  [] => usage ()
   "help"::_ => usage ()
   "--help"::_ => usage ()
   "-h"::_ => usage ()
@@ -165,8 +165,7 @@ usage _ = putStrLn (stringConcat
     "medaka. A functional language compiler\n",
     "\n",
     "Usage:\n",
-    "  medaka                    Start the REPL\n",
-    "  medaka repl               Start the REPL\n",
+    "  medaka                    Show this message\n",
     "  medaka run [--release] <file.mdk>   Type-check and run a program\n",
     "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n",
     "  medaka check [--json] <file.mdk>    Type-check without running\n",
