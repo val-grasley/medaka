@@ -40,6 +40,25 @@ const stderrDecoder = new TextDecoder('utf-8', { fatal: false });
 
 let floatFmtBuf = [];
 
+// W12 IO host surface (readFile/fileExists/args/getEnv/exit) + layer-6 stringToFloat
+// share a byte-channel: the guest pushes a path/name into `pathBuf` one byte at a time
+// (mdk_path_reset/mdk_path_push), then calls the op that consumes it. None of the real
+// IO ops (file/env/args/exit) are available inside the worker sandbox — those throw a
+// CapabilityError with a friendly message instead of a cryptic LinkError/trap; the
+// str_to_float / path plumbing itself is pure and IS implemented for real (mirrors
+// test/wasm/run.js byte-for-byte).
+let pathBuf = [];
+const takePath = () => { const s = new TextDecoder('utf-8').decode(new Uint8Array(pathBuf)); pathBuf = []; return s; };
+
+// Thrown by the IO-capability stubs below. Caught in the instantiate .catch handler
+// and surfaced verbatim (no "instantiate failed:" prefix, no generic panic wording).
+class CapabilityError extends Error {}
+const capabilityStub = (name) => () => {
+  throw new CapabilityError(
+    `${name} is not available in the online playground — use \`medaka build\` locally for file/IO access.`
+  );
+};
+
 const stdoutBuf = [];
 const stderrBuf = [];
 // B5: a persistent copy of ALL stderr bytes (stderrBuf is drained on each flush). On a
@@ -85,6 +104,25 @@ self.onmessage = function(e) {
       return floatFmtBuf.length;
     },
     mdk_float_fmt_byte: (i) => floatFmtBuf[i] & 0xff,
+    // layer-6 stringToFloat: real, pure — parse the pathBuf bytes as a float via
+    // Number() (byte-identical to C strtod on the valid-decimal subset medaka uses).
+    mdk_str_to_float: () => { const s = takePath(); return Number(s); },
+    // path/name byte-channel plumbing itself is pure and shared by str_to_float and the
+    // (stubbed) IO ops below — real either way.
+    mdk_path_reset: () => { pathBuf = []; },
+    mdk_path_push: (b) => { pathBuf.push(b & 0xff); },
+    // IO group: no real filesystem/env/argv/process in a Web Worker sandbox — friendly
+    // capability errors instead of a cryptic LinkError/trap. Each must still be a
+    // callable so instantiation SUCCEEDS; the friendly error fires at call-time.
+    mdk_read_file: capabilityStub('readFile'),
+    mdk_file_exists: capabilityStub('fileExists'),
+    mdk_get_env: capabilityStub('getEnv'),
+    mdk_args_count: capabilityStub('args'),
+    mdk_arg_len: capabilityStub('args'),
+    mdk_arg_byte: capabilityStub('args'),
+    mdk_result_len: capabilityStub('readFile/getEnv result'),
+    mdk_result_byte: capabilityStub('readFile/getEnv result'),
+    mdk_exit: capabilityStub('exit'),
   } };
 
   // (start $__init) runs main during instantiate — no entry to call after.
@@ -111,7 +149,9 @@ self.onmessage = function(e) {
       const isPanic = /unreachable|trap|RuntimeError/i.test(engineMsg);
       self.postMessage({
         type: 'error',
-        message: coded ? coded : (isPanic ? 'program panicked' : 'instantiate failed: ' + engineMsg),
+        message: coded ? coded
+          : err instanceof CapabilityError ? engineMsg
+          : (isPanic ? 'program panicked' : 'instantiate failed: ' + engineMsg),
       });
     });
 };
