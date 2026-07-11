@@ -136,12 +136,27 @@ import tools.check_policy.{
   ManifestArgs(..),
 }
 
+-- FLAG for user confirmation: exact version string/format not yet confirmed —
+-- using "0.1.0-preview" (the 0.1.0 public-preview target named in AGENTS.md)
+-- pending sign-off. No existing version constant was found elsewhere in
+-- compiler/ (lsp.mdk hardcodes a literal "0.1.0" for its own protocol reply;
+-- new_cmd.mdk hardcodes a literal "0.1.0" into scaffolded medaka.toml — neither
+-- is a shared constant this could reuse).
+medakaVersion : String
+medakaVersion = "0.1.0-preview"
+
+printVersion : Unit -> <IO> Unit
+printVersion _ = putStrLn ("medaka " ++ medakaVersion)
+
 main : <IO, Mut, Panic> Unit
 main = match args ()
   [] => usage ()
   "help"::_ => usage ()
   "--help"::_ => usage ()
   "-h"::_ => usage ()
+  "--version"::_ => printVersion ()
+  "-v"::_ => printVersion ()
+  "version"::_ => printVersion ()
   "check"::rest => runCheckCmd rest
   "fmt"::rest => runFmtCmd rest
   "new"::rest => runNewCmd rest
@@ -177,6 +192,7 @@ usage _ = putStrLn (stringConcat
     "  medaka new <name>         Scaffold a new project directory\n",
     "  medaka lsp                Run the language server over stdio\n",
     "  medaka help               Show this message\n",
+    "  medaka --version          Show the compiler version\n",
   ])
 
 -- ── deferred subcommands ──────────────────────────────────────────────────
@@ -594,7 +610,13 @@ emitLocatedWarnings src file ws =
   ePutStrLn (joinNl (map (ppDiagCliSrc src file) ws))
 
 -- Mirrors lib/fmt.ml's single-file dispatch: default --write (in place),
--- --stdout prints, --check reports.  MVP handles exactly one file.
+-- --stdout prints, --check reports.  A single literal-file target keeps the
+-- ORIGINAL single-file path byte-for-byte (goldens depend on this).  A
+-- directory target (or multiple targets) recursively expands via the SAME
+-- `expandLintTarget`/`collectMdkFiles` walk `medaka lint` uses (dir/file
+-- discriminated by `listDir`; skips dotfiles/dot-dirs; no test/-exclusion,
+-- matching lint's own behavior) and formats every `.mdk` found, aggregating
+-- exit codes the way `medaka lint`'s multi-file path does (any error → exit 1).
 data FmtMode = FmtWrite | FmtStdout | FmtCheck
 
 runFmtCmd : List String -> <IO, Mut, Panic> Unit
@@ -602,13 +624,68 @@ runFmtCmd argv = match parseFmtArgs argv FmtWrite []
   Err msg =>
     let _ = ePutStrLn msg
     exit 2
-  Ok (mode, [file]) => fmtOne mode file
   Ok (_, []) =>
-    let _ = ePutStrLn "Usage: medaka fmt [--check | --stdout | --write] <path>"
+    let _ = ePutStrLn "Usage: medaka fmt [--check | --stdout | --write] <path>..."
     exit 2
-  Ok (_, _) =>
-    let _ = ePutStrLn "medaka fmt: native CLI handles exactly one file"
-    exit 2
+  -- `listDir` Err = literal file (EXACT original single-file behavior); Ok =
+  -- a directory, recursively expanded.
+  Ok (mode, [target]) => match listDir target
+    Err _ => fmtOne mode target
+    Ok _ => fmtManyTargets mode [target]
+  Ok (mode, targets) => fmtManyTargets mode targets
+
+-- Multiple targets and/or a directory target: expand to concrete .mdk files
+-- and format each, aggregating. `--stdout` only makes sense for one file.
+fmtManyTargets : FmtMode -> List String -> <IO, Mut, Panic> Unit
+fmtManyTargets FmtStdout _ =
+  let _ = ePutStrLn "medaka fmt: --stdout requires exactly one file"
+  exit 2
+fmtManyTargets mode targets =
+  let files = flatMap expandLintTarget targets
+  match files
+    [] =>
+      let _ = ePutStrLn "medaka fmt: no .mdk files found"
+      exit 2
+    _ => if fmtFilesGo mode files False then exit 1 else ()
+
+-- Fold over an expanded file list, formatting each and aggregating whether any
+-- error occurred (read failure, parse error, or --check finding unformatted
+-- output) — mirrors `lintFilesGo`'s aggregation.
+fmtFilesGo : FmtMode -> List String -> Bool -> <IO, Mut, Panic> Bool
+fmtFilesGo _ [] acc = acc
+fmtFilesGo mode (f::rest) acc =
+  let hadErr = fmtOneReport mode f
+  fmtFilesGo mode rest (acc || hadErr)
+
+-- Like `fmtOne` but reports to stdout/stderr and RETURNS whether an error
+-- occurred instead of exiting immediately, so `fmtFilesGo` can aggregate
+-- across many files (the single-file path still calls `fmtOne` directly and
+-- exits per its own original codes, unchanged).
+fmtOneReport : FmtMode -> String -> <IO, Mut, Panic> Bool
+fmtOneReport mode file = match readFile file
+  Err msg =>
+    let _ = ePutStrLn "\{file}: \{msg}"
+    True
+  Ok src => match parseResult src
+    Err e =>
+      let _ = ePutStrLn (ppParseError src file e)
+      True
+    Ok _ =>
+      let formatted = formatSource src
+      match mode
+        FmtStdout =>
+          let _ = putStr formatted
+          False
+        FmtCheck => if formatted == src then False
+        else
+          let _ = ePutStrLn (file ++ ": not formatted")
+          True
+        FmtWrite => if formatted == src then False
+        else match writeFile file formatted
+          Err msg =>
+            let _ = ePutStrLn "\{file}: \{msg}"
+            True
+          Ok _ => False
 
 parseFmtArgs : List String -> FmtMode -> List String -> Result String (FmtMode, List String)
 parseFmtArgs [] mode acc = Ok (mode, reverseL acc)
