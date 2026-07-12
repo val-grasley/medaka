@@ -99,6 +99,7 @@ import frontend.ast.{
   TyEffect,
   Loc(..),
   Variant,
+  ConPayload(..),
   Field,
   IfaceMethod,
   ImplMethod,

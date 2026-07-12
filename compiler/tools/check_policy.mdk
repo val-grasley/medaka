@@ -484,7 +484,7 @@ stubSource = stringConcat
 -- Run `fn` on the sample request "X-Forwarded-For: 192.168.1.1" with stub
 -- platform impls, returning the captured stdout (LOG lines) ++ the transform
 -- line.  Mirror the OCaml accept-path eval block.
-runPlugin : String -> String -> List Decl -> List Decl -> List Decl -> <Mut> String
+runPlugin : String -> List Decl -> List Decl -> List Decl -> <Mut> String
 runPlugin fnName rtD coreD userD =
   let stubD = desugar (parse stubSource)
   let prelude = coreD ++ stubD
