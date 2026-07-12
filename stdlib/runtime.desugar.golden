@@ -23,6 +23,7 @@
 (DExtern false "runCommand" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ((hole "Exec")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyTuple (TyCon "Int") (TyCon "String") (TyCon "String")))))))
 (DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
+(DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))

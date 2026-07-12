@@ -13,9 +13,9 @@ running doctests in stdlib/json.mdk
   ok   stdlib/json.mdk:414: parse "nope"
   ok   stdlib/json.mdk:433: lookup "b" (jObject [("a", JInt 1), ("b", JInt 2)]) == Some (JInt 2)
   ok   stdlib/json.mdk:435: lookup "z" (jObject [("a", JInt 1)]) == None
-  ok   stdlib/json.mdk:449: index 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
-  ok   stdlib/json.mdk:451: index 5 (jArray [JInt 10]) == None
-  ok   stdlib/json.mdk:453: index 0 (JInt 1) == None
+  ok   stdlib/json.mdk:449: at 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
+  ok   stdlib/json.mdk:451: at 5 (jArray [JInt 10]) == None
+  ok   stdlib/json.mdk:453: at 0 (JInt 1) == None
   ok   stdlib/json.mdk:463: asString (JString "hi") == Some "hi"
   ok   stdlib/json.mdk:465: asString (JInt 1) == None
   ok   stdlib/json.mdk:473: asInt (JInt 7) == Some 7
@@ -39,7 +39,7 @@ Testing "asString (JString s) == Some s" ... OK (100 tests)
 Testing "asBool (JBool b) == Some b" ... OK (100 tests)
 Testing "asFloat (JFloat f) == Some f" ... OK (100 tests)
 Testing "asArray recovers a built JArray" ... OK (100 tests)
-Testing "index k recovers the k-th element of a JArray" ... OK (100 tests)
+Testing "at k recovers the k-th element of a JArray" ... OK (100 tests)
 Testing "lookup finds an inserted key" ... OK (100 tests)
 
 12 passed, 0 failed

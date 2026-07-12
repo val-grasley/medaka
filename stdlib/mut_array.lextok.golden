@@ -9,6 +9,10 @@ COMMA
 UPPER "Foldable"
 COMMA
 UPPER "Option"
+COMMA
+UPPER "Index"
+COMMA
+UPPER "IndexMut"
 RBRACE
 NEWLINE
 PUBLIC
@@ -201,6 +205,59 @@ PIPE
 IDENT "otherwise"
 EQUAL
 UPPER "None"
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IMPL
+UPPER "Index"
+LPAREN
+UPPER "MutArray"
+IDENT "a"
+RPAREN
+UPPER "Int"
+IDENT "a"
+WHERE
+INDENT
+IDENT "index"
+LPAREN
+UPPER "MutArray"
+IDENT "backing"
+IDENT "len"
+RPAREN
+IDENT "i"
+EQUAL
+INDENT
+IF
+IDENT "i"
+GEQ
+INT 0
+AND
+IDENT "i"
+LT
+IDENT "len"
+DOT
+IDENT "value"
+THEN
+INDENT
+IDENT "arrayGetUnsafe"
+IDENT "i"
+IDENT "backing"
+DOT
+IDENT "value"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "indexError"
+INTERP_OPEN "index "
+IDENT "intToString"
+IDENT "i"
+INTERP_END " out of bounds"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -576,6 +633,65 @@ IDENT "otherwise"
 EQUAL
 IDENT "panic"
 STRING "MutArray.set: index out of bounds"
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IMPL
+UPPER "IndexMut"
+LPAREN
+UPPER "MutArray"
+IDENT "a"
+RPAREN
+UPPER "Int"
+IDENT "a"
+WHERE
+INDENT
+IDENT "setIndex"
+LPAREN
+UPPER "MutArray"
+IDENT "backing"
+IDENT "len"
+RPAREN
+IDENT "i"
+IDENT "v"
+EQUAL
+INDENT
+IF
+IDENT "i"
+GEQ
+INT 0
+AND
+IDENT "i"
+LT
+IDENT "len"
+DOT
+IDENT "value"
+THEN
+INDENT
+LET
+UNDERSCORE
+EQUAL
+IDENT "arraySetUnsafe"
+IDENT "i"
+IDENT "v"
+IDENT "backing"
+DOT
+IDENT "value"
+NEWLINE
+UPPER "MutArray"
+IDENT "backing"
+IDENT "len"
+NEWLINE
+DEDENT
+ELSE
+IDENT "indexError"
+INTERP_OPEN "index "
+IDENT "intToString"
+IDENT "i"
+INTERP_END " out of bounds"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
