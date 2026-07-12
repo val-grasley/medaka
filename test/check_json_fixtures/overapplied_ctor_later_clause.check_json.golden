@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-TYPE-MISMATCH","kind":"type","message":"Type mismatch: Tok vs a -> b","range":{"end":{"character":30,"line":14},"start":{"character":22,"line":14}},"severity":1,"source":"medaka"}]}]}

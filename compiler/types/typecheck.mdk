@@ -5310,6 +5310,15 @@ inferAppNotFunction appExpr ft r =
 
 inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
 inferLam env pats body =
+  -- Patterns carry no source Loc, so a pattern-level type error (e.g. an
+  -- over-applied nullary constructor `A _`) would otherwise be recorded at the
+  -- STALE `currentLoc` left by the previous clause/function's body inference —
+  -- mis-blaming an innocent sibling clause.  Anchor `currentLoc` to THIS clause's
+  -- body loc before inferring the patterns, so the error lands on the right
+  -- clause (the body re-sets `currentLoc` via its own ELoc arm afterwards).
+  let _ = match exprLoc body
+    Some l => setRef currentLoc (Some l)
+    None => ()
   let pr = inferPats env pats
   let saved = curEffect.value
   let _ = setRef curEffect (openRow ())
@@ -10443,6 +10452,14 @@ inferMemberClauses env peel v (cl::rest) =
 -- inferring the body (bidirectional checking mode).
 inferClauseEff : TcEnv -> Option Mono -> (List Pat, Expr) -> <Mut> (Mono, List Atom)
 inferClauseEff env peel (pats, body) =
+  -- Anchor currentLoc to THIS clause's body loc before inferring patterns:
+  -- patterns carry no source Loc, so an over-applied-constructor / arity pattern
+  -- error would otherwise be recorded at the STALE loc left by the previous
+  -- clause's (or a previous function's) body inference — mis-blaming an innocent
+  -- sibling clause.  See the twin note in inferLam.
+  let _ = match exprLoc body
+    Some l => setRef currentLoc (Some l)
+    None => ()
   let pr = inferPats env pats
   let _ = peelOntoParams peel (fst pr) pats
   let saved = curEffect.value
