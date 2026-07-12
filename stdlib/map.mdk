@@ -40,6 +40,7 @@ import core.{
   Ordering,
   Option,
   FromEntries,
+  Index,
 }
 
 {- The representation.  `Tip` is the empty tree; `Bin size key value left right`
@@ -170,6 +171,16 @@ get k (Bin _ k2 v l r) = match compare k k2
   Lt => get k l
   Gt => get k r
   Eq => Some v
+
+{- | `index m k` looks up `m`'s value at key `k` (`m[k]` sugar dispatches
+   here).  Raises the coded `indexError` (E-INDEX-OOB) when the key is
+   absent -- use `get` for a safe `Option`-returning read instead.  Note the
+   flipped argument order vs. `get k m`: the `Index` interface always takes
+   the container first (`index m k`). -}
+export impl Index (Map k v) k v requires Ord k where
+  index m k = match get k m
+    Some v => v
+    None => indexError "key not found"
 
 {- | `True` when the key is present.
 

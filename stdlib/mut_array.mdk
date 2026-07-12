@@ -17,7 +17,7 @@
    first `push`, using the pushed element as the fill — so no dummy/default
    value is needed to construct one. -}
 
-import core.{Eq, Debug, Foldable, Option}
+import core.{Eq, Debug, Foldable, Option, Index, IndexMut}
 
 {- `MutArray backing len`: `backing.value` is the capacity-sized store,
    `len.value` the live count; both mutated in place. -}
@@ -70,6 +70,17 @@ export get : Int -> MutArray a -> Option a
 get i (MutArray backing len)
   | i >= 0 && i < len.value = Some (arrayGetUnsafe i backing.value)
   | otherwise = None
+
+{- | `index ma i` reads `ma`'s element at `i` (`ma[i]` sugar dispatches here),
+   over the live range `[0, length)`.  O(1).  Raises the coded `indexError`
+   (E-INDEX-OOB) when `i` is out of range -- use `get` for a safe
+   `Option`-returning read instead. -}
+export impl Index (MutArray a) Int a where
+  index (MutArray backing len) i =
+    if i >= 0 && i < len.value then
+      arrayGetUnsafe i backing.value
+    else
+      indexError "index \{intToString i} out of bounds"
 
 {- | First element, or `None` when empty.
 
@@ -142,6 +153,16 @@ export set : Int -> a -> MutArray a -> <Mut> Unit
 set i x (MutArray backing len)
   | i >= 0 && i < len.value = arraySetUnsafe i x backing.value
   | otherwise = panic "MutArray.set: index out of bounds"
+
+{- | `setIndex ma i v` writes `v` at `ma`'s index `i`, in place, over the live
+   range `[0, length)`, and returns `ma`.  O(1).  Raises the coded
+   `indexError` (E-INDEX-OOB) when `i` is out of range. -}
+export impl IndexMut (MutArray a) Int a where
+  setIndex (MutArray backing len) i v =
+    if i >= 0 && i < len.value then
+      let _ = arraySetUnsafe i v backing.value
+      MutArray backing len
+    else indexError "index \{intToString i} out of bounds"
 
 {- | Exchange the elements at two indices.  Caller ensures both are in range. -}
 export swap : Int -> Int -> MutArray a -> <Mut> Unit

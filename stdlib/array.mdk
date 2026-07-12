@@ -36,6 +36,8 @@ import core.{
   Monoid,
   Ordering,
   Option,
+  Index,
+  IndexMut,
 }
 
 -- ── Construction ────────────────────────────────────────────────────────
@@ -114,6 +116,26 @@ get i arr =
     None
   else
     Some (arrayGetUnsafe i arr)
+
+{- | `index arr i` reads `arr`'s element at `i` (`arr[i]` sugar dispatches
+   here).  O(1).  Raises the coded `indexError` (E-INDEX-OOB) when `i` is
+   out of range -- use `get` for a safe `Option`-returning read instead. -}
+export impl Index (Array a) Int a where
+  index arr i =
+    if i < 0 || i >= arrayLength arr then
+      indexError "index \{intToString i} out of bounds"
+    else
+      arrayGetUnsafe i arr
+
+{- | `setIndex arr i v` writes `v` at `arr`'s index `i`, in place, and
+   returns `arr`.  O(1).  Raises the coded `indexError` (E-INDEX-OOB) when
+   `i` is out of range. -}
+export impl IndexMut (Array a) Int a where
+  setIndex arr i v =
+    if i < 0 || i >= arrayLength arr then indexError "index \{intToString i} out of bounds"
+    else
+      let _ = arraySetUnsafe i v arr
+      arr
 
 {- | First element, or `None` when empty.
 

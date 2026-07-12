@@ -888,6 +888,19 @@ export interface Filterable f requires Mappable f where
 export interface FromEntries c e where
   fromEntries : List e -> c
 
+{- | Read access to a container `c` keyed by `k`, yielding a `v`.  `index c k`
+   looks up the value at key/index `k`; impls raise the coded `indexError`
+   abort (E-INDEX-OOB) on an out-of-range index or missing key. -}
+export interface Index c k v where
+  index : c -> k -> v
+
+{- | Write access to a container `c` keyed by `k`.  `setIndex c k v` writes
+   `v` at key/index `k`, returning the (possibly mutated in place) container.
+   Requires `Index c k v` (a container you can write into, you can also read
+   from). -}
+export interface IndexMut c k v requires Index c k v where
+  setIndex : c -> k -> v -> <Mut> c
+
 export impl Foldable List where
   fold _ acc [] = acc
   fold f acc (x::xs) = fold f (f acc x) xs

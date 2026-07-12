@@ -1889,6 +1889,7 @@ externBindings = [
   ("ePutStr", prim1M pDiscard),
   ("ePutStrLn", prim1M pDiscard),
   ("panic", prim1 pPanic),
+  ("indexError", prim1 (s => runtimePanic "E-INDEX-OOB" (unString s))),
   ("debugStringLit", prim1 pDebugStringLit),
   ("debugCharLit", prim1 pDebugCharLit),
   ("stringToFloat", prim1 pStringToFloat),

@@ -42,7 +42,7 @@
 -- caller who prefers the other container converts in one call rather than us
 -- doubling the API surface.
 
-import core.{Eq, Ord, Debug, Foldable, Mappable, Option, Ordering}
+import core.{Eq, Ord, Debug, Foldable, Mappable, Option, Ordering, Index}
 
 -- ── Rendering ─────────────────────────────────────────────────────────────
 -- `Debug String` and `Debug Char` now live in the core prelude (`core.mdk`)
@@ -135,6 +135,18 @@ fromChar c = charToStr c
    6 -}
 export toChars : String -> Array Char
 toChars s = stringToChars s
+
+{- | `index s i` is the codepoint `Char` of `s` at position `i` (`s[i]` sugar
+   dispatches here; codepoints, not grapheme clusters -- matches `toChars`).
+   Raises the coded `indexError` (E-INDEX-OOB) when `i` is out of range.  No
+   `IndexMut` impl: `String` is immutable. -}
+export impl Index String Int Char where
+  index s i =
+    let cs = stringToChars s
+    if i < 0 || i >= arrayLength cs then
+      indexError "index \{intToString i} out of bounds"
+    else
+      arrayGetUnsafe i cs
 
 {- | Build a string from a `List Char`.  For an `Array Char` (e.g. the result
    of `toChars`), use the kernel `stringFromChars` directly.

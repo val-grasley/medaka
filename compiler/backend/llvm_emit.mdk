@@ -1560,14 +1560,22 @@ emitIoExtern _ _ name _ = gapE ("unsupported IO extern " ++ name)
 -- auto-print emitted downstream is dead code.  Return ("1", LTUnit) so
 -- emitPrint sees LTUnit (safe) rather than LTCon/LTClosure (compile panic).
 isAbortExtern : String -> Bool
-isAbortExtern name = contains name ["panic", "exit"]
+isAbortExtern name = contains name ["panic", "exit", "indexError"]
 
 emitAbortExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitAbortExtern e env name args = match emitArgs e env args
   [a] =>
-    let cname = if name == "panic" then "panic" else "exit"
-    let _ = emit e "  call void @mdk_\{cname}(i64 \{a})"
-    ("1", LTUnit)
+    if name == "indexError" then
+      -- indexError reuses the existing coded E-INDEX-OOB abort (@mdk_oob); the
+      -- message argument is evaluated above (for consistency with the other
+      -- abort externs) but ignored -- @mdk_oob takes no args and prints the
+      -- fixed "runtime error [E-INDEX-OOB]: index out of bounds" text.
+      let _ = emit e "  call void @mdk_oob()"
+      ("1", LTUnit)
+    else
+      let cname = if name == "panic" then "panic" else "exit"
+      let _ = emit e "  call void @mdk_\{cname}(i64 \{a})"
+      ("1", LTUnit)
   _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes exactly one argument (slice 4)")
 
 -- array intrinsics (native extern catalog slice 6).
