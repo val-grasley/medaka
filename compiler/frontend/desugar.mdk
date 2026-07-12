@@ -195,7 +195,30 @@ rewriteSugar (EStringInterp parts) = interpToCore parts
 -- through `setRef`'s signature (`Ref a -> a -> <Mut> Unit`), so a non-`Ref` LHS
 -- is a type error at the call site.
 rewriteSugar (EBinOp ":=" lhs rhs _) = callBin "setRef" lhs rhs
+-- `a[i]` / `a.[i]` (read position) → `index a i` (Index interface dispatch).
+rewriteSugar (EIndex a i _) = callBin "index" a i
 rewriteSugar e = e
+
+-- ── Pass: rewrite_assign_index (`a[i] := v` → `setIndex a i v`) ───────────
+-- Runs BEFORE rewriteSugar.  Because mapExpr is post-order, the EIndex LHS of a
+-- `:=` would be rewritten to `index a i` before the parent `:=` node is ever
+-- visited, so a single combined arm on rewriteSugar could never fire.  This
+-- first pass discriminates the `:=` LHS while the EIndex node is still intact;
+-- a non-EIndex LHS is left as a plain `:=` for rewriteSugar to lower to setRef.
+rewriteAssignIndex : Expr -> Expr
+rewriteAssignIndex (EBinOp ":=" lhs v r) =
+  assignIndexLhs (stripLocE lhs) lhs v r
+rewriteAssignIndex e = e
+
+assignIndexLhs : Expr -> Expr -> Expr -> Ref Route -> Expr
+assignIndexLhs (EIndex a i _) _ v _ = EApp (callBin "setIndex" a i) v
+assignIndexLhs _ lhs v r = EBinOp ":=" lhs v r
+
+-- Peel transparent ELoc wrappers so the LHS shape is visible (mirror of the
+-- parser's local `stripLoc`).
+stripLocE : Expr -> Expr
+stripLocE (ELoc _ e) = stripLocE e
+stripLocE e = e
 
 -- guard arms → nested if/match, terminated by `__fallthrough__ ()` (fold_right)
 guardsToCore : List GuardArm -> Expr
@@ -812,4 +835,5 @@ desugar prog = mergeIfaceDefaults prog
   |> desugarRecordPuns
   |> lowerContainerLiterals
   |> mapProg rewriteDo
+  |> mapProg rewriteAssignIndex
   |> mapProg rewriteSugar

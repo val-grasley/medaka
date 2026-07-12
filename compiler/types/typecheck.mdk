@@ -3109,7 +3109,8 @@ infer env (EDictAt name routesRef) = inferDictAt env name routesRef
 infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
-infer env (EIndex arr idx r) = inferIndex env arr idx r
+-- EIndex is desugared to an `index` method call before typecheck (Phase #16b);
+-- the built-in index-inference path is retired, so no `EIndex` arm here.
 infer env (ESlice arr lo hi _ r) = inferSlice env arr lo hi r
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
@@ -3141,40 +3142,12 @@ inferIntRange env lo hi container =
   let _ = unify (infer env hi) (TCon "Int")
   TApp container (TCon "Int")
 
--- a.[i] : element of a List container (the only indexed container in the stdlib
--- type-checked here; Array/String indexing would extend this)
--- a.[i] : index preserves container element type, mirroring the oracle
--- (typecheck.ml:2198-2210): String -> Char (codepoint), Array a -> a, List a -> a,
--- and an UNDETERMINED receiver (or a clean mismatch) defaults to Array, NOT List.
-inferIndex : TcEnv -> Expr -> Expr -> Ref String -> <Mut> Mono
-inferIndex env arr idx r =
-  let _ = unify (infer env idx) (TCon "Int")
-  let at = infer env arr
-  let nat = normalize at
-  let _ = setRef r (indexKind nat)
-  inferIndexElem at nat
-
--- receiver-kind discriminator stamped onto the EIndex/ESlice Ref: lowering routes
--- "String" to CStringIndex/CStringSlice; "List"/"Array" stay on the array path
--- (List indexing on the build path is a separate pre-existing gap, unchanged).
+-- receiver-kind discriminator stamped onto the ESlice Ref: lowering routes
+-- "String" to CStringSlice; "List"/"Array" stay on the array path.
 indexKind : Mono -> String
 indexKind (TCon "String") = "String"
 indexKind (TApp (TCon "List") _) = "List"
 indexKind _ = "Array"
-
--- normalize-and-branch on the receiver head; `at` is the raw receiver mono, `nat`
--- its normalized form. String -> Char; List -> element; everything else (Array,
--- undetermined TVar, clean mismatch) defaults to Array a -> a.
-inferIndexElem : Mono -> Mono -> <Mut> Mono
-inferIndexElem at (TCon "String") = TCon "Char"
-inferIndexElem at (TApp (TCon "List") _) = indexElemAs at (TCon "List")
-inferIndexElem at _ = indexElemAs at (TCon "Array")
-
-indexElemAs : Mono -> Mono -> <Mut> Mono
-indexElemAs at con =
-  let elem = freshVar ()
-  let _ = unify at (TApp con elem)
-  elem
 
 -- a.[lo..hi] : same container type as a
 inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> <Mut> Mono
