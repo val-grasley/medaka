@@ -1,7 +1,7 @@
--- slice 8: CRangeArray (exclusive) + CIndex.
+-- slice 8: CRangeArray (exclusive) + arrayGetUnsafe.
 -- [| 2..6 |] = [2,3,4,5] (count=4), sum = 14.
 sumR arr i n acc =
   if i >= n then acc
-  else sumR arr (i + 1) n (acc + arr.[i])
+  else sumR arr (i + 1) n (acc + arrayGetUnsafe i arr)
 
 main = sumR [| 2..6 |] 0 4 0

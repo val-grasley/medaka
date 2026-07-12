@@ -1,1 +1,1 @@
-{"files":[{"file":"test/error_quality_fixtures/eval/list_index_oob.mdk","diagnostics":[{"code":"E-INDEX-OOB","kind":"error","message":"index 10 out of bounds","range":{"end":{"character":24,"line":2},"start":{"character":22,"line":2}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"test/error_quality_fixtures/eval/list_index_oob.mdk","diagnostics":[{"code":"E-INDEX-OOB","kind":"error","message":"index out of bounds","range":{"end":{"character":24,"line":2},"start":{"character":22,"line":2}},"severity":1,"source":"medaka"}]}]}

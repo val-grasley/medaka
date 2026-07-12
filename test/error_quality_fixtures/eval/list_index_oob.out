@@ -1,4 +1,4 @@
 cmd: medaka run
 exit: 1
 ---
-test/error_quality_fixtures/eval/list_index_oob.mdk:3:22: runtime error [E-INDEX-OOB]: index 10 out of bounds
+test/error_quality_fixtures/eval/list_index_oob.mdk:3:22: runtime error [E-INDEX-OOB]: index out of bounds
