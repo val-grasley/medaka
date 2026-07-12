@@ -1,0 +1,25 @@
+-- Regression for the Index arc (#16a): the prelude-defined return-position
+-- multi-param interface `Index c k v` (v return-only) must dispatch through the
+-- module loader when a container's Index impl is imported.  Exercises BOTH
+-- directions the diagnosis distinguished:
+--   (1) ambiguous-v grounded ONLY by the concrete container `c` (index xs i),
+--   (2) v additionally grounded by call-site context (greet (index a i)).
+-- A prelude-vs-user-file dispatch regression would refake the historical
+-- "No impl of Index ..." / "Ambiguous instance for Display" failures.
+-- Run with:  medaka run --allow-internal test/index_fixtures/prelude_index_dispatch.mdk
+import array
+import list
+import string
+
+greet : String -> String
+greet s = s
+
+main =
+  let a : Array String = [|"x", "y", "z"|]
+  let xs : List String = ["p", "q", "r"]
+  -- direction (1): v grounded from the container alone
+  println (index a 1)
+  println (index xs 2)
+  println (index "hello" 1)
+  -- direction (2): v grounded by call-site context (greet : String -> String)
+  println (greet (index a 0))
