@@ -126,15 +126,17 @@ sys.exit(0 if ok else 1)
 PY
 check "initialize advertises the four B.10.3 providers" "$?"
 
-# ── fixture: a file with a record, a data decl, and a function ──────────────
-SRC='record Point\n  x : Int\n  y : Int\n\ndata Shape = Circle Int | Square Int\n\narea s = match s\n  Circle r => r * r\n  Square w => w * w\n'
+# ── fixture: a file with a record (anonymous single-ctor record short form,
+# the `record` keyword's replacement — PLAN 2026-07-11), a data decl, and a
+# function ───────────────────────────────────────────────────────────────────
+SRC='data Point = { x : Int, y : Int }\n\ndata Shape = Circle Int | Square Int\n\narea s = match s\n  Circle r => r * r\n  Square w => w * w\n'
 # JSON-string-escaped form (the \n become \\n inside the JSON message).
-SRC_JSON='record Point\n  x : Int\n  y : Int\n\ndata Shape = Circle Int | Square Int\n\narea s = match s\n  Circle r => r * r\n  Square w => w * w\n'
+SRC_JSON='data Point = { x : Int, y : Int }\n\ndata Shape = Circle Int | Square Int\n\narea s = match s\n  Circle r => r * r\n  Square w => w * w\n'
 printf "$SRC" > "$TMP/sym.mdk"
 DIDOPEN='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///s.mdk","languageId":"medaka","version":1,"text":"'"$SRC_JSON"'"}}}'
 SYM='{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///s.mdk"}}}'
-DEF='{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":6,"character":0}}}'
-HL='{"jsonrpc":"2.0","id":4,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":6,"character":0}}}'
+DEF='{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":4,"character":0}}}'
+HL='{"jsonrpc":"2.0","id":4,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":4,"character":0}}}'
 SHUT='{"jsonrpc":"2.0","id":9,"method":"shutdown","params":{}}'
 EXIT='{"jsonrpc":"2.0","method":"exit","params":{}}'
 
@@ -174,7 +176,7 @@ def loc0(r):
     if not r: return None
     e=r[0]; return (e.get("uri"), e["range"]["start"]["line"])
 s=loc0(res(load(sys.argv[1]),3)); o=loc0(res(load(sys.argv[2]),3))
-ok=(s==o and s is not None and s[1]==6 and s[0]=="file:///s.mdk")
+ok=(s==o and s is not None and s[1]==4 and s[0]=="file:///s.mdk")
 if not ok: sys.stderr.write("self=%s oracle=%s\n"%(s,o))
 sys.exit(0 if ok else 1)
 PY
@@ -190,7 +192,7 @@ def ranges(r): return sorted((h["range"]["start"]["line"],h["range"]["start"]["c
                               h["range"]["end"]["line"],h["range"]["end"]["character"]) for h in (r or []))
 s=ranges(res(load(sys.argv[1]),4)); o=ranges(res(load(sys.argv[2]),4))
 # `area` occurs once (the decl); both must agree on the full range.
-ok=(s==o and s==[(6,0,6,4)])
+ok=(s==o and s==[(4,0,4,4)])
 if not ok: sys.stderr.write("self=%s oracle=%s\n"%(s,o))
 sys.exit(0 if ok else 1)
 PY

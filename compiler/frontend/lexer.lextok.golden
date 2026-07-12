@@ -3462,7 +3462,7 @@ LPAREN
 UPPER "TFloat"
 LPAREN
 IDENT "fromOption"
-FLOAT
+FLOAT 0.0
 LPAREN
 IDENT "stringToFloat"
 LPAREN
@@ -8959,11 +8959,6 @@ EQUAL
 UPPER "True"
 NEWLINE
 IDENT "isOpener"
-UPPER "TRecord"
-EQUAL
-UPPER "True"
-NEWLINE
-IDENT "isOpener"
 UNDERSCORE
 EQUAL
 UPPER "False"
@@ -9233,15 +9228,6 @@ IDENT "opener"
 LPAREN
 UPPER "Some"
 UPPER "TDo"
-RPAREN
-EQUAL
-UPPER "True"
-NEWLINE
-IDENT "armsHerald"
-IDENT "opener"
-LPAREN
-UPPER "Some"
-UPPER "TFunction"
 RPAREN
 EQUAL
 UPPER "True"
@@ -11976,6 +11962,224 @@ IDENT "off"
 INT 0
 INT 1
 INT 0
+NEWLINE
+EXPORT
+IDENT "lineStartsOf"
+COLON
+UPPER "String"
+ARROW
+UPPER "Array"
+UPPER "Int"
+NEWLINE
+IDENT "lineStartsOf"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "src"
+EQUAL
+IDENT "stringToChars"
+IDENT "s"
+NEWLINE
+LET
+IDENT "len"
+EQUAL
+IDENT "arrayLength"
+IDENT "src"
+NEWLINE
+IDENT "arrayFromList"
+LPAREN
+INT 0
+CONS
+IDENT "lineStartsGo"
+IDENT "src"
+IDENT "len"
+INT 0
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "lineStartsGo"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Int"
+NEWLINE
+IDENT "lineStartsGo"
+IDENT "src"
+IDENT "len"
+IDENT "i"
+INDENT
+PIPE
+IDENT "i"
+GEQ
+IDENT "len"
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+PIPE
+IDENT "arrayGetUnsafe"
+IDENT "i"
+IDENT "src"
+EQ_EQ
+CHAR "\n"
+EQUAL
+IDENT "i"
+PLUS
+INT 1
+CONS
+IDENT "lineStartsGo"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "i"
+PLUS
+INT 1
+RPAREN
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "lineStartsGo"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "i"
+PLUS
+INT 1
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IDENT "offsetToLineColFast"
+COLON
+UPPER "Array"
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+LPAREN
+UPPER "Int"
+COMMA
+UPPER "Int"
+RPAREN
+NEWLINE
+IDENT "offsetToLineColFast"
+IDENT "lineStarts"
+IDENT "off"
+EQUAL
+INDENT
+LET
+IDENT "idx"
+EQUAL
+IDENT "lineStartSearch"
+IDENT "lineStarts"
+IDENT "off"
+INT 0
+LPAREN
+IDENT "arrayLength"
+IDENT "lineStarts"
+MINUS
+INT 1
+RPAREN
+NEWLINE
+LPAREN
+IDENT "idx"
+PLUS
+INT 1
+COMMA
+IDENT "off"
+MINUS
+IDENT "arrayGetUnsafe"
+IDENT "idx"
+IDENT "lineStarts"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "lineStartSearch"
+COLON
+UPPER "Array"
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "lineStartSearch"
+IDENT "arr"
+IDENT "off"
+IDENT "lo"
+IDENT "hi"
+INDENT
+PIPE
+IDENT "lo"
+GEQ
+IDENT "hi"
+EQUAL
+IDENT "lo"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+INDENT
+LET
+IDENT "mid"
+EQUAL
+LPAREN
+IDENT "lo"
+PLUS
+IDENT "hi"
+PLUS
+INT 1
+RPAREN
+SLASH
+INT 2
+NEWLINE
+IF
+IDENT "arrayGetUnsafe"
+IDENT "mid"
+IDENT "arr"
+LEQ
+IDENT "off"
+THEN
+INDENT
+IDENT "lineStartSearch"
+IDENT "arr"
+IDENT "off"
+IDENT "mid"
+IDENT "hi"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "lineStartSearch"
+IDENT "arr"
+IDENT "off"
+IDENT "lo"
+LPAREN
+IDENT "mid"
+MINUS
+INT 1
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "offsetsToLines"
 COLON

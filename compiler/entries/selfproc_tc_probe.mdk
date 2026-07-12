@@ -34,6 +34,6 @@ import types.typecheck.{checkToLines}
 --   * let-polymorphism + generalize/instantiate (`poly`/`twice`);
 --   * pp_mono rendering of TApp / TFun / tuple / record types.
 src : String
-src = "record Pt\n  x : Int\n  y : Int\ndata Opt a = Non | Som a\nmkP a b = Pt { x = a, y = b }\nmoveX p d = { p | x = p.x + d }\nfromOpt d o = match o\n  Som v => v\n  Non => d\ndist p = p.x * p.x + p.y * p.y\nswap (a, b) = (b, a)\npoly x = x\ntwice f x = f (f x)\nbig a b c = if a == b then c else a\nmain = fromOpt 0 (Som 5)\n"
+src = "data Pt = { x : Int, y : Int }\ndata Opt a = Non | Som a\nmkP a b = Pt { x = a, y = b }\nmoveX p d = { p | x = p.x + d }\nfromOpt d o = match o\n  Som v => v\n  Non => d\ndist p = p.x * p.x + p.y * p.y\nswap (a, b) = (b, a)\npoly x = x\ntwice f x = f (f x)\nbig a b c = if a == b then c else a\nmain = fromOpt 0 (Som 5)\n"
 
 main = putStr (checkToLines (desugar (parse src)))

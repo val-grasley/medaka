@@ -14,18 +14,6 @@ UPPER "Debug"
 RPAREN
 NEWLINE
 EXPORT
-EXTERN
-IDENT "runExpectation"
-COLON
-LPAREN
-UPPER "Unit"
-ARROW
-UPPER "Expectation"
-RPAREN
-ARROW
-UPPER "Expectation"
-NEWLINE
-EXPORT
 IDENT "pass"
 COLON
 UPPER "Expectation"
@@ -362,8 +350,9 @@ IDENT "passed"
 IDENT "failed"
 EQUAL
 MATCH
-IDENT "runExpectation"
 IDENT "thunk"
+LPAREN
+RPAREN
 INDENT
 UPPER "Pass"
 FAT_ARROW

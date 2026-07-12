@@ -1,1 +1,0 @@
-{"files":[{"file":"test/error_quality_fixtures/eval/let_else_fail.mdk","diagnostics":[{"code":"E-PANIC","kind":"error","message":"empty list","range":{"end":{"character":43,"line":2},"start":{"character":31,"line":2}},"severity":1,"source":"medaka"}]}]}
