@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-UNKNOWN-FIELD","kind":"resolve","message":"Unknown field: b","range":{"end":{"character":15,"line":12},"start":{"character":14,"line":12}},"severity":1,"source":"medaka"}]}]}

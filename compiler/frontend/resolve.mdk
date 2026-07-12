@@ -703,10 +703,18 @@ dupClauseTail _ _ _ [] = []
 dupClauseTail cur n seen ((FunClause _ body)::rest) = whenL seen [DuplicateValueBinding n (orElseLocL (firstExprLoc body) cur)]
   ++ dupClauseTail cur n True rest
 
+-- Parameter patterns are checked BEFORE the body's expr walk ever sees an
+-- ELoc, so a bare `cur` (often None here — e.g. a top-level where-group)
+-- would leave a pattern-position error (unknown record field in a
+-- destructuring param) permanently unlocated. Fall back to the clause
+-- body's own first ELoc span, same approximation `dupClauseTail`/`declLoc`
+-- already use for pattern-adjacent errors.
 checkFunClause : Option Loc -> Env -> List String -> FunClause -> List ResError
-checkFunClause cur env scope (FunClause pats body) = flatMap (checkPat cur env) pats
-  ++ patGroupDupErrors cur "parameter list" pats
-  ++ checkExpr cur env (patsBindings pats ++ scope) body
+checkFunClause cur env scope (FunClause pats body) =
+  let patLoc = orElseLocL (firstExprLoc body) cur
+  flatMap (checkPat patLoc env) pats
+    ++ patGroupDupErrors patLoc "parameter list" pats
+    ++ checkExpr cur env (patsBindings pats ++ scope) body
 
 checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
 checkArm cur env scope (Arm pat gs body) =
@@ -818,7 +826,7 @@ checkSection cur env scope (SecLeft e _) = checkExpr cur env scope e
 -- lib/resolve.ml resetting `current_loc := None` per decl); the body's `ELoc`
 -- wrappers re-set it as the expr walk descends.
 checkDecl : Env -> Decl -> List ResError
-checkDecl env (DFunDef _ _ pats body) = flatMap (checkPat None env) pats
+checkDecl env (DFunDef _ _ pats body) = flatMap (checkPat (firstExprLoc body) env) pats
   ++ patGroupDupErrors (firstExprLoc body) "parameter list" pats
   ++ checkExpr None env (patsBindings pats) body
 checkDecl env (DLetGroup _ binds) =
@@ -871,7 +879,7 @@ checkSuper env (Super iface _) =
 checkIfaceMethod : Env -> IfaceMethod -> List ResError
 checkIfaceMethod env (IfaceMethod _ t None) = checkType None env t
 checkIfaceMethod env (IfaceMethod _ t (Some (MethodDefault pats body))) = checkType None env t
-  ++ flatMap (checkPat None env) pats
+  ++ flatMap (checkPat (firstExprLoc body) env) pats
   ++ checkExpr None env (patsBindings pats) body
 
 checkImplDecl : Env -> String -> List Ty -> List Require -> List ImplMethod -> List ResError
@@ -885,7 +893,7 @@ checkRequire env (Require iface tys) = (if contains iface env.interfaces then []
   ++ flatMap (checkType None env) tys
 
 checkImplMethod : Env -> ImplMethod -> List ResError
-checkImplMethod env (ImplMethod _ pats body) = flatMap (checkPat None env) pats
+checkImplMethod env (ImplMethod _ pats body) = flatMap (checkPat (firstExprLoc body) env) pats
   ++ checkExpr None env (patsBindings pats) body
 
 checkImplIface : Env -> String -> List ImplMethod -> List ResError

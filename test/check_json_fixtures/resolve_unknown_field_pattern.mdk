@@ -1,0 +1,15 @@
+-- Regression: an unknown field named in a RECORD-DESTRUCTURING PATTERN (as
+-- opposed to a `.field` projection, which is checked later in typecheck and
+-- was already located) must still carry a real source location. Patterns
+-- carry no source Loc of their own, and the top-level decl entry points
+-- (checkDecl DFunDef / checkFunClause / checkImplMethod / checkIfaceMethod
+-- default) reset `cur` to `None` per decl, expecting the body's expr walk to
+-- set it via the first ELoc — but pattern checking runs BEFORE that walk, so
+-- this class of error used to report at `<unknown location>` with a
+-- `{0,0}`-`{0,0}` dummy range instead of pointing at the offending clause.
+data R = R { a : Int }
+
+f : R -> Int
+f (R { b }) = b
+
+main = println "x"
