@@ -67,13 +67,17 @@ MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/good.mdk" >/dev/null 2>&1
 if [ "$?" -eq 0 ]; then pass=$((pass+1)); printf 'ok   exit0/good\n'
 else fail=$((fail+1)); printf 'FAIL exit0/good (exit %d)\n' "$?"; fi
 
-# 3. type-err: import-bearing type error → TYPE ERROR + exit 1.
+# 3. type-err: import-bearing type error → a LOCATED diagnostic + exit 1.
+#    (Imported-module diagnostics fix): the multi-module CLI `check` now renders the
+#    accumulated per-module diagnostics LOCATED (`file:L:C: message` + caret), the
+#    same surface `--json` mirrors, instead of the old loc-free `TYPE ERROR: …`.  We
+#    require the entry error to carry its `bad.mdk:LINE:COL:` location AND the message.
 bad_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/bad.mdk" 2>/dev/null)"
 bad_code=$?
 case "$bad_out" in
-  *"TYPE ERROR"*) if [ "$bad_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   type-err/bad (TYPE ERROR, exit 1)\n'
-                  else fail=$((fail+1)); printf 'FAIL type-err/bad (TYPE ERROR but exit %d)\n' "$bad_code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL type-err/bad (no TYPE ERROR: [%s])\n' "$bad_out" ;;
+  *bad.mdk:*:*:*"Type mismatch"*) if [ "$bad_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   type-err/bad (located file:L:C diagnostic, exit 1)\n'
+                  else fail=$((fail+1)); printf 'FAIL type-err/bad (located but exit %d)\n' "$bad_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL type-err/bad (no located diagnostic: [%s])\n' "$bad_out" ;;
 esac
 
 # 4. agree: build rejects the SAME type-error project (exit 1) — check==build.
@@ -346,6 +350,42 @@ if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/dmain.mdk" -
   if [ "$dfn_bld" = "3,4," ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/build (dispatch 3 + standalone 4)\n'
   else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (got [%s], want [3,4,])\n' "$dfn_bld"; fi
 else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (native build failed)\n'; fi
+
+# 11. IMPORTED-MODULE diagnostics (the regression this gate's fix targets).  A type
+#     error in an IMPORTED module (badhelper.mdk) used to be invisible on the very
+#     command the deflection told you to run: `check` reported the entry only (loc-
+#     free), `run`/`build` deflected to "type error in main.mdk", yet `--json` DID
+#     carry the imported error with a real range.  All THREE human commands must now
+#     surface the IMPORTED module's error LOCATED (badhelper.mdk:L:C:), matching JSON.
+cat > "$TMP/badhelper.mdk" <<'EOF'
+export badFn : Int -> Int
+badFn x = x + "notanint"
+EOF
+cat > "$TMP/impuse.mdk" <<'EOF'
+import badhelper.{badFn}
+main = println (badFn 3)
+EOF
+imp_chk="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/impuse.mdk" 2>&1)"
+imp_chk_code=$?
+case "$imp_chk" in
+  *badhelper.mdk:*:*:*"Type mismatch"*) if [ "$imp_chk_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   imported-diag/check (imported error located, exit 1)\n'
+                  else fail=$((fail+1)); printf 'FAIL imported-diag/check (located but exit %d)\n' "$imp_chk_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL imported-diag/check (imported error not located: [%s])\n' "$imp_chk" ;;
+esac
+imp_run="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/impuse.mdk" 2>&1)"
+imp_run_code=$?
+case "$imp_run" in
+  *badhelper.mdk:*:*:*"Type mismatch"*) if [ "$imp_run_code" -ne 0 ]; then pass=$((pass+1)); printf 'ok   imported-diag/run (imported error located, nonzero exit)\n'
+                  else fail=$((fail+1)); printf 'FAIL imported-diag/run (located but exit 0)\n'; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL imported-diag/run (imported error not located: [%s])\n' "$imp_run" ;;
+esac
+imp_bld="$(MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/impuse.mdk" -o "$TMP/impuse.out" 2>&1)"
+imp_bld_code=$?
+case "$imp_bld" in
+  *badhelper.mdk:*:*:*"Type mismatch"*) if [ "$imp_bld_code" -ne 0 ] && [ ! -x "$TMP/impuse.out" ]; then pass=$((pass+1)); printf 'ok   imported-diag/build (imported error located, no binary)\n'
+                  else fail=$((fail+1)); printf 'FAIL imported-diag/build (located but built? exit %d)\n' "$imp_bld_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL imported-diag/build (imported error not located: [%s])\n' "$imp_bld" ;;
+esac
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

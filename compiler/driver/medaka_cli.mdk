@@ -15,12 +15,7 @@
 -- subcommand falls through to the catch-all, which prints "not yet in native
 -- CLI" and exits 1.
 
-import tools.check.{
-  runCheck,
-  checkHasErrors,
-  runCheckModules,
-  checkModulesHasErrors,
-}
+import tools.check.{runCheck, checkHasErrors, runCheckModules}
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{
@@ -275,7 +270,7 @@ runCheckCmd argv =
                   exit 1
                 Ok mods =>
                   let trusted = stdlibTrustedMods target roots stdlibDir mods
-                  checkRoute typesMode allowInternal trusted rsrc csrc tsrc target mods
+                  checkRoute typesMode allowInternal trusted roots rsrc csrc tsrc target mods
     _ =>
       let _ = ePutStrLn "usage: medaka check [--json] [--types] [--allow-internal] <file.mdk>"
       exit 1
@@ -307,6 +302,41 @@ moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
       None => msg
       Some loc => ppDiagCliSrc tsrc target (Diag SevError "R-MODULE-LOAD" msg (Some loc) None None)
 
+-- Render every ERROR diagnostic across a loaded multi-module project as located
+-- human text (`file:L:C: msg` + caret), reusing the SAME `analyzeProject` the
+-- `--json` path uses (line ~549).  This is what lets `check`/`run`/`build`
+-- surface an IMPORTED-module type error WITH its location — not just the entry
+-- module, and not the loc-free `TYPE ERROR: …`/boolean-deflection they used to
+-- collapse to.  `None` when the project has no error diagnostics (clean).
+-- Dependency-first file order (helper before entry), same as the loader/JSON.
+locatedProjectErrors : String -> List String -> String -> String -> <IO, Mut> Option String
+locatedProjectErrors target roots rsrc csrc =
+  let cacheRef = Ref []
+  let parseCacheRef = Ref []
+  let results = analyzeProject cacheRef parseCacheRef (_ => None) target roots rsrc csrc
+  let triples = map readDiagSrc results
+  let rendered = flatMap renderTripleErrors triples
+  match rendered
+    [] => None
+    _ => Some (joinNl rendered)
+
+renderTripleErrors : (String, String, List Diag) -> List String
+renderTripleErrors (path, src, diags) =
+  map (ppDiagCliSrc src path) (filter isDiagError diags)
+
+-- For the run/build multi-module gates, whose SOUNDNESS predicate stays the
+-- looser `hadTypeErrors` (checkModulesHasErrors over-rejects valid code — see
+-- typecheckGateRoute's note): once that gate has already fired, render the located
+-- per-module diagnostics for the human message, falling back to the generic
+-- deflection only if analyzeProject surfaces none (never leaves the user with
+-- exit 1 and no text).
+locatedOrGeneric : String -> List String -> String -> String -> <IO, Mut> String
+locatedOrGeneric target roots rsrc csrc = match locatedProjectErrors target roots rsrc csrc
+  Some t => t
+  None => "error: type error in "
+    ++ target
+    ++ ". Run `medaka check` for details"
+
 -- Route by module count: a single loaded module (no non-core imports) ⇒ the
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
 -- import-resolving report.  `mods` is dependency-first, entry last.
@@ -321,8 +351,8 @@ moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
 -- user's OWN top-level bindings (`userSchemeLines`) — filtering happens HERE,
 -- CLI-only, so the probe-driven goldens (check_main.mdk et al., which call
 -- `runCheck`/`runCheckModules` directly) keep dumping unconditionally.
-checkRoute : Bool -> Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute typesMode allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
+checkRoute : Bool -> Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+checkRoute typesMode allowInternal _ _ rsrc csrc tsrc target [(mid, decls)] =
   let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
@@ -346,7 +376,7 @@ checkRoute typesMode allowInternal _ rsrc csrc tsrc target [(mid, decls)] =
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
-checkRoute typesMode allowInternal trusted rsrc csrc tsrc target mods =
+checkRoute typesMode allowInternal trusted roots rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -359,10 +389,18 @@ checkRoute typesMode allowInternal trusted rsrc csrc tsrc target mods =
   let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
   match resDiags
     "" =>
-      let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
-      match checkModulesHasErrors allowInternal trusted rtD coreD modsD
-        True => exit 1
-        False =>
+      -- BUGFIX (imported-module diagnostics): when there ARE type errors, render
+      -- the accumulated per-module diagnostics LOCATED (`file:L:C: msg` + caret),
+      -- across ALL modules — reusing the exact analyzeProject surface `--json`
+      -- mirrors — instead of runCheckModules's loc-free `TYPE ERROR: …` (which
+      -- also dropped every imported-module error's location).  Clean ⇒ the schemes
+      -- dump + main-shape warnings, unchanged.
+      match locatedProjectErrors target roots rsrc csrc
+        Some errText =>
+          let _ = putStr errText
+          exit 1
+        None =>
+          let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
           -- 0.1.0 main-shape warning (see below): runCheckModules/
           -- checkModulesHasErrors never call elaborateModules, so mainSchemeRef
           -- is never populated on this route either — mainShapeWarnings runs
@@ -812,7 +850,7 @@ typecheckGate allowInternal root input =
             Err msg => TGErr msg
             Ok mods =>
               let trusted = stdlibTrustedMods input roots stdlibDir mods
-              typecheckGateRoute allowInternal trusted rsrc csrc tsrc input mods
+              typecheckGateRoute allowInternal trusted roots rsrc csrc tsrc input mods
 
 -- Route by module count.  A single loaded module (no non-core imports) runs the
 -- ACCURATE located check `medaka check` uses for single files — analyzeLocatedG
@@ -828,14 +866,14 @@ typecheckGate allowInternal root input =
 -- build of a compiler entry even though those programs typecheck-for-emit, build,
 -- and self-host cleanly.  So multi-module keeps its prior (looser but sound)
 -- behaviour; the located single-file path is what this fix tightens.
-typecheckGateRoute : Bool -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> TypecheckGate
-typecheckGateRoute allowInternal _ rsrc csrc tsrc target [_] =
+typecheckGateRoute : Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> TypecheckGate
+typecheckGateRoute allowInternal _ _ rsrc csrc tsrc target [_] =
   let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
     [] => TGOk
     _ => TGErr (joinNl (map (ppDiagCliSrc tsrc target) errs))
-typecheckGateRoute allowInternal trusted rsrc csrc tsrc target mods =
+typecheckGateRoute allowInternal trusted roots rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -845,7 +883,11 @@ typecheckGateRoute allowInternal trusted rsrc csrc tsrc target mods =
       let _ = resetTypeErrorsSticky ()
       let _ = elaborateModules rtD coreD modsD
       match hadTypeErrors ()
-        True => TGErr ("error: type error in " ++ target ++ ". Run `medaka check` for details")
+        -- Gate stays the looser (sound, non-over-rejecting) hadTypeErrors, but the
+        -- MESSAGE is now the located per-module diagnostics (matching `--json`/
+        -- `check`), so a build failure points at the offending file:L:C — including
+        -- an IMPORTED module — instead of the opaque entry-only deflection.
+        True => TGErr (locatedOrGeneric target roots rsrc csrc)
         False => TGOk
     _ => TGErr resDiags
 
@@ -1002,7 +1044,12 @@ runRunCmd argv =
                         let elaborated = elaborateModules rtD coreD modsD
                         match hadTypeErrors ()
                           True =>
-                            let _ = ePutStrLn ("error: type error in " ++ target ++ ". Run `medaka check` for details")
+                            -- Located per-module diagnostics (matching `--json`/
+                            -- `check`/`build`) so `run`'s rejection points at the
+                            -- offending file:L:C, imported modules included, rather
+                            -- than the opaque entry-only deflection.  Gate stays the
+                            -- sound hadTypeErrors (see the note above).
+                            let _ = ePutStrLn (locatedOrGeneric target roots rsrc csrc)
                             exit 1
                           False => finishRunEval target jsonMode elaborated mods
                       _ =>
