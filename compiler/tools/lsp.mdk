@@ -1125,7 +1125,7 @@ public export data SemTok = SemTok Int Int Int Int
 -- Layout tokens update depth/line-start; a real token may flip the mode and
 -- always clears line-start.
 classify : Token -> SemCtx -> (Option Int, SemCtx)
-classify (TIndent _) (SemCtx depth ls mode) = (None, SemCtx (depth + 1) ls mode)
+classify TIndent (SemCtx depth ls mode) = (None, SemCtx (depth + 1) ls mode)
 classify TDedent (SemCtx depth ls mode) = (None, SemCtx (depth - 1) ls mode)
 classify TNewline (SemCtx depth _ mode) =
   let mode2 = if depth <= 0 then MExpr else mode
