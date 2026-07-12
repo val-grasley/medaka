@@ -1,0 +1,83 @@
+#cloud-config
+# Medaka build box — base provisioning. Injected as Hetzner user_data by
+# snipe_hetzner.py. Installs the exact toolchain from docker/Dockerfile plus
+# Node 24 (wasm/sqlite/playground gates), and drops /root/bootstrap.sh.
+#
+# NO secrets here: the repo is private, so the clone + build happen when YOU
+# ssh in with agent forwarding (ssh -A) and run ./bootstrap.sh. Root SSH auth
+# comes from the Hetzner project SSH key passed at create time.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - clang
+  - libgc-dev
+  - libc6-dev
+  - make
+  - bash
+  - perl
+  - coreutils
+  - gzip
+  - git
+  - pkg-config
+  - python3
+  - rsync
+  - ca-certificates
+  - curl
+
+write_files:
+  - path: /root/bootstrap.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Clone (private, via your forwarded ssh-agent), cold-bootstrap the native
+      # compiler from the checked-in seed, install the pre-commit hook, and run
+      # the gate suite. Prints a clear PASS/FAIL banner. Re-runnable.
+      set -uo pipefail
+      REPO="${1:-git@github.com:val-grasley/medaka.git}"
+      cd /root
+
+      # Trust github's host key so the non-interactive clone doesn't prompt.
+      mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      if [ ! -d medaka/.git ]; then
+        echo "== cloning (needs ssh -A / forwarded agent for private repo) =="
+        git clone "$REPO" medaka || { echo "CLONE: FAIL (did you ssh -A ?)"; exit 1; }
+      fi
+      cd medaka
+
+      echo "== installing pre-commit hook =="
+      cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit" \
+        && chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-commit"
+
+      # Large initial heap defers Boehm collections ~30% on the serial emit
+      # (per compiler/PERF-RESULTS.md); safe on a 16-32GB box.
+      export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-2g}"
+
+      echo "== cold-bootstrap: make medaka (from compiler/seed/emitter.ll.gz) =="
+      if ! time make medaka; then echo; echo "RESULT: BUILD FAIL"; exit 1; fi
+
+      echo "== smoke test: run a trivial program on the fresh x86 binary =="
+      printf 'main = println "medaka-ok"\n' > /tmp/smoke.mdk
+      OUT="$(./medaka run /tmp/smoke.mdk 2>&1)"
+      echo "  -> $OUT"
+      [ "$OUT" = "medaka-ok" ] || { echo "RESULT: SMOKE FAIL"; exit 1; }
+
+      echo "== gate suite: sh test/run_gates.sh =="
+      if sh test/run_gates.sh; then GATES=PASS; else GATES=FAIL; fi
+
+      echo
+      echo "============================================"
+      echo " BUILD: PASS   SMOKE: PASS   GATES: $GATES"
+      echo " x86 medaka is $( [ "$GATES" = PASS ] && echo GREEN || echo 'built but gates RED' )"
+      echo "============================================"
+      [ "$GATES" = PASS ]
+
+runcmd:
+  - curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+  - touch /root/.provision-done
+
+final_message: "Base provisioning done in $UPTIME s. Now: ssh -A root@<ip> && ./bootstrap.sh"
