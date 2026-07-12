@@ -126,5 +126,31 @@ else
   fail=$((fail + 1)); printf 'FAIL list.mdk exit code: expected 0 (all-passing), got %d\n' "$list_code"
 fi
 
+# `test "…" = <Expectation>` runner regression (Phase 127 restored 2026-07-11):
+# discovery + eval + per-test report + summary + exit code.  The fixture imports
+# `test` (in stdlib), so stdlib must be a search root alongside the fixture dir.
+td="$ROOT/test/compiler_test_fixtures/test_decls.mdk"
+td_out="$("$RUN" "$RUNTIME" "$CORE" "$td" "$ROOT/test/compiler_test_fixtures" "$ROOT/stdlib" 2>/dev/null | sed "s#$ROOT/##g")"
+td_code=0
+"$RUN" "$RUNTIME" "$CORE" "$td" "$ROOT/test/compiler_test_fixtures" "$ROOT/stdlib" >/dev/null 2>&1 || td_code=$?
+td_expected="running tests in test/compiler_test_fixtures/test_decls.mdk
+  ok   test/compiler_test_fixtures/test_decls.mdk:8: passing assertion
+  FAIL test/compiler_test_fixtures/test_decls.mdk:9: failing assertion
+       expected 1 but got 2
+  FAIL test/compiler_test_fixtures/test_decls.mdk:10: explicit fail
+       boom
+
+test/compiler_test_fixtures/test_decls.mdk: 1/3 passed (2 failed, 0 errors)"
+if printf '%s' "$td_out" | grep -qF "$td_expected"; then
+  pass=$((pass + 1)); printf 'ok   test_decls.mdk (test-decl runner: discovery + ok/FAIL report + summary)\n'
+else
+  fail=$((fail + 1)); printf 'FAIL test_decls.mdk report mismatch\n  --- expected ---\n%s\n  --- actual ---\n%s\n' "$td_expected" "$td_out"
+fi
+if [ "$td_code" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'ok   test_decls.mdk exit code (%d != 0, has FAILing tests)\n' "$td_code"
+else
+  fail=$((fail + 1)); printf 'FAIL test_decls.mdk exit code: expected nonzero (has failing tests), got 0\n'
+fi
+
 printf '\n%d matched, %d differing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

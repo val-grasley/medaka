@@ -8814,6 +8814,7 @@ checkProgramSeeded seed prog =
   let _ = inferImplBodiesIfEnabled preludeBodyEnv prog
   let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog
   let _ = inferPropBodies preludeBodyEnv prog
+  let _ = inferTestBodies preludeBodyEnv prog
   let _ = groundMultiParamObligations prog pendingImplObligations.value
   let _ = checkImplCompleteness prog prog   -- P0-17: impl missing a required method
   let _ = checkImplObligations prog pendingImplObligations.value
@@ -8881,6 +8882,19 @@ inferPropBodiesGo env ((DProp _ _ params body)::rest) =
   let _ = infer local body
   inferPropBodiesGo env rest
 inferPropBodiesGo env (_::rest) = inferPropBodiesGo env rest
+
+-- Phase 127 (restored 2026-07-11): typecheck each `test "…" = body` body,
+-- requiring it to have type `Expectation` (a nullary TCon, so a plain nominal
+-- unify).  Unlike props, test bodies ARE dict-passed (their `expectEqual`/… calls
+-- come from `import test`), so this runs on the normal inference path with binop
+-- stamping enabled (no snapshot/restore).  Without this, `test "x" = 1 + "str"`
+-- and `test "x" = 42` slipped through `check` with zero diagnostics.
+inferTestBodies : TcEnv -> List Decl -> <Mut> Unit
+inferTestBodies _ [] = ()
+inferTestBodies env ((DTest _ _ body)::rest) =
+  let _ = unify (infer env body) (TCon "Expectation")
+  inferTestBodies env rest
+inferTestBodies env (_::rest) = inferTestBodies env rest
 
 -- bind each prop param `x : ty` as a monomorphic scheme in the env (fresh tyvars
 -- for any free type variable in ty; props are normally concrete, e.g. `List Int`).
@@ -11073,6 +11087,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
+  let _ = inferTestBodies (extendVars env1 topSchemes) prog
   -- WS-1b: append each constrained fn's transitive super slots to funConstraintsRef/
   -- funConstraintIfacesRef NOW (after this module's inference, before the cross-module
   -- + qualified mirrors snapshot it below) so every downstream reader — the qual ref

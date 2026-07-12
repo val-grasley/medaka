@@ -17,7 +17,7 @@
 --
 -- Run with: medaka test test/ported/test_run_ported.mdk
 
-import test.{expectEqual, expectTrue, expectFalse, expectAll, pass, fail, runTests, runExpectation, Pass, Fail}
+import test.{expectEqual, expectTrue, expectFalse, expectAll, pass, fail, runTests, Pass, Fail}
 
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -499,44 +499,8 @@ pongP n = if n <= 0 then tagP 1 else pingP (n - 1)
 
 test "inferred return-pos mutual bool" = expectTrue (pingP 5 : Bool)
 
--- ── Runtime-error detection ───────────────────────────────────────────────────
--- Ported from: t_runtime_err, t_guard_exhausted_err, t_string_bracket_index_oob
--- (t_recursive_value_force_err / _msg skipped: top-level recursive value fires
---  at load time, before any thunk reaches runExpectation; let rec requires a
---  lambda RHS so the forcing pattern cannot be replicated inline.)
---
--- Pattern: assertCrashes wraps runExpectation and flips Fail→pass (crash=good).
-
-assertCrashes thunk = match runExpectation thunk
-  Fail _ => pass
-  Pass => fail "expected a runtime error but evaluation succeeded"
-
--- t_runtime_err: non-exhaustive match raises Eval_error at runtime
-runtimeErrFn n = match n
-  1 => "one"
-  2 => "two"
-
-runtimeErrThunk _ =
-  let _ = runtimeErrFn 99
-  pass
-
-test "runtime error non-exhaustive match" = assertCrashes runtimeErrThunk
-
--- t_guard_exhausted_err: single guard clause with no fallthrough; calling with
--- a value that fails the guard raises Eval_error (Phase 91)
-bigFn x
-  | x > 100 = "big"
-
-guardExhaustedThunk _ =
-  let _ = bigFn 5
-  pass
-
-test "guard exhausted crashes" = assertCrashes guardExhaustedThunk
-
--- t_string_bracket_index_oob: s.[i] on a 6-codepoint string with i=6 (past end)
-stringOobThunk _ =
-  let s = "héllo→"
-  let _ = s.[6]
-  pass
-
-test "string bracket index oob crashes" = assertCrashes stringOobThunk
+-- ── Runtime-error detection (REMOVED 2026-07-11) ─────────────────────────────
+-- t_runtime_err / t_guard_exhausted_err / t_string_bracket_index_oob used the
+-- `runExpectation` extern to catch a panic and flip it to Fail.  That extern is
+-- removed: per Medaka's `no-catchable-panics` invariant a crashing test body is
+-- unrecoverable and aborts the run, so these are no longer expressible.

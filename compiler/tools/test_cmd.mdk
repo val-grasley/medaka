@@ -30,8 +30,8 @@
 -- (loadProgram + elaborateModules + evalModules), so cross-module instances/values
 -- resolve.  Neither path calls the flat elaborateDict/evalProgram anymore.
 
-import frontend.ast.{Decl, DData, DInterface}
-import frontend.parser.{parse}
+import frontend.ast.{Decl, DData, DInterface, Expr}
+import frontend.parser.{parse, parseLocated}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram}
 import types.typecheck.{elaborateOne, elaborateModules}
@@ -61,6 +61,7 @@ import tools.doctest.{
   synthName,
 }
 import tools.prop_runner.{runAllProps, hasProps}
+import tools.test_runner.{collectTests, runOneTest, hasTests}
 import support.util.{listLen}
 import support.path.{dirOf}
 
@@ -92,7 +93,8 @@ driveAll runtimeDecls coreDecls target tsrc roots =
   let userDecls = desugar (parse tsrc)
   let doctestsOk = runDoctests runtimeDecls coreDecls target tsrc userDecls roots
   let propsOk = runProps runtimeDecls coreDecls target userDecls roots
-  doctestsOk && propsOk
+  let testsOk = runTestDecls runtimeDecls coreDecls target tsrc userDecls roots
+  doctestsOk && propsOk && testsOk
 
 -- ── doctest phase ────────────────────────────────────────────────────────────
 
@@ -302,3 +304,108 @@ lookupModuleDecls _ [] = None
 lookupModuleDecls rootId ((mid, decls)::rest)
   | mid == rootId = Some decls
   | otherwise = lookupModuleDecls rootId rest
+
+-- ── test phase (Phase 127 restored 2026-07-11) ───────────────────────────────
+-- Symmetric with the prop phase: only runs (and prints) if the file declares
+-- `test "…"` decls.  Each body is evaluated to an `Expectation` VALUE (panics are
+-- NOT caught — a genuinely-crashing body aborts the run), and the pass/fail is
+-- reported with the SAME shape as the doctest phase (RunResult/ExResult + loc +
+-- summary + exit code), per P0-6.  Discovery routes through the same multi-module
+-- vs single-file split as the prop phase, and — like runPropsMulti — pulls the
+-- DTest bodies from the ELABORATED root module so their `expectEqual`/… call sites
+-- carry the dict argument (`import test`'s constrained assertions).
+
+runTestDecls : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runTestDecls runtimeDecls coreDecls target tsrc userDecls roots
+  | not (hasTests userDecls) = True
+  | hasUseDecls userDecls =
+    runTestDeclsMulti runtimeDecls coreDecls target tsrc userDecls roots
+  | otherwise = runTestDeclsSingle runtimeDecls coreDecls target tsrc userDecls
+
+-- Line map keyed by test name, from a POSITION-populating reparse of the source
+-- (the bare `parse` used elsewhere leaves placeholder line-1 locs).
+testLineTests : String -> <Mut> List (String, Int, Expr)
+testLineTests tsrc = collectTests (desugar (parseLocated tsrc))
+
+runTestDeclsSingle : List Decl -> List Decl -> String -> String -> List Decl -> <IO, Mut> Bool
+runTestDeclsSingle runtimeDecls coreDecls target tsrc userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = if programIsCore userDecls then
+    []
+  else
+    dropShadowedExp userNames coreDecls
+  let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
+  let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+  let rootTests = match lookupModuleDecls "__user__" (snd elaborated)
+    Some decls => decls
+    None => userDecls
+  reportTests
+    target
+    env
+    (attachRawLines (testLineTests tsrc) (collectTests rootTests))
+
+runTestDeclsMulti : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runTestDeclsMulti runtimeDecls coreDecls target tsrc userDecls roots = match loadProgram target roots
+  Err e =>
+    let _ = ePutStrLn e
+    False
+  Ok mods =>
+    let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
+    let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+    let rootTests = elaboratedRootProps target (snd elaborated) userDecls
+    reportTests
+      target
+      env
+      (attachRawLines (testLineTests tsrc) (collectTests rootTests))
+
+-- The elaborated (dict-passed) body loses its leading ELoc (the marker rewrites
+-- the leftmost method EVar into a dict node), so take each test's line from the
+-- RAW parsed decls (matched by unique test name) and keep the elaborated body.
+attachRawLines : List (String, Int, Expr) -> List (String, Int, Expr) -> List (String, Int, Expr)
+attachRawLines _ [] = []
+attachRawLines raw ((name, _, body)::rest) =
+  (name, lookupRawLine name raw, body) :: attachRawLines raw rest
+
+lookupRawLine : String -> List (String, Int, Expr) -> Int
+lookupRawLine _ [] = 0
+lookupRawLine name ((n, l, _)::rest)
+  | n == name = l
+  | otherwise = lookupRawLine name rest
+
+-- Reuses the doctest reporting SHAPE (`ok`/`FAIL <f>:<line>: <name>`, then the
+-- `<f>: P/T passed[ (F failed, E errors)]` summary + exit code, P0-6).  Like the
+-- prop phase, each result is printed AS its body is evaluated (not batched), so a
+-- body that aborts the run still leaves the tests that already passed on screen.
+-- Returns True iff every test passed.
+reportTests : String -> List (String, Value) -> List (String, Int, Expr) -> <IO, Mut> Bool
+reportTests target env tests =
+  let _ = putStrLn ("running tests in " ++ target)
+  let (passed, failed, errors) = runTestLoop target env tests 0 0 0
+  let total = passed + failed + errors
+  let _ = putStr "\n\{target}: \{intToString passed}/\{intToString total} passed"
+  let _ = putStr (testFailSuffix failed errors)
+  let _ = putStr "\n"
+  failed == 0 && errors == 0
+
+runTestLoop : String -> List (String, Value) -> List (String, Int, Expr) -> Int -> Int -> Int -> <IO, Mut> (Int, Int, Int)
+runTestLoop _ _ [] passed failed errors = (passed, failed, errors)
+runTestLoop target env ((name, line, body)::rest) passed failed errors =
+  let loc = "\{target}:\{intToString line}"
+  match runOneTest env body
+    Pass =>
+      let _ = putStrLn "  ok   \{loc}: \{name}"
+      runTestLoop target env rest (passed + 1) failed errors
+    Fail msg _ =>
+      let _ = putStrLn "  FAIL \{loc}: \{name}"
+      let _ = putStrLn ("       " ++ msg)
+      runTestLoop target env rest passed (failed + 1) errors
+    Errored msg =>
+      let _ = putStrLn "  FAIL \{loc}: \{name}"
+      let _ = putStrLn ("       " ++ msg)
+      runTestLoop target env rest passed failed (errors + 1)
+
+testFailSuffix : Int -> Int -> String
+testFailSuffix failed errors
+  | failed > 0 || errors > 0 =
+    " (\{intToString failed} failed, \{intToString errors} errors)"
+  | otherwise = ""

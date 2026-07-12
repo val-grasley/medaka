@@ -6,12 +6,6 @@
 {- | The result of a single test expectation. -}
 public export data Expectation = Pass | Fail String deriving (Debug)
 
-{- | Catch an OCaml-level Eval_error or Impl_no_match raised by the thunk,
-   turning it into a `Fail` rather than aborting the test suite.  This is a
-   narrow escape hatch — not a general try/catch — implemented as a primitive
-   so a crashed test never silences the tests that follow it. -}
-export extern runExpectation : (Unit -> Expectation) -> Expectation
-
 -- ── Primitive assertions ─────────────────────────────────────────────────
 
 {- | Always passes.
@@ -121,7 +115,7 @@ goTests : List (String, Unit -> Expectation) -> Int -> Int -> <IO> Bool
 goTests [] passed failed =
   println "\n\{intToString passed} passed, \{intToString failed} failed"
   eq failed 0
-goTests ((name, thunk)::rest) passed failed = match runExpectation thunk
+goTests ((name, thunk)::rest) passed failed = match thunk ()
   Pass =>
     println ("  ok   " ++ name)
     goTests rest (passed + 1) failed

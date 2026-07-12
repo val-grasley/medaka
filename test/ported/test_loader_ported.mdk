@@ -28,13 +28,12 @@
 --
 -- Run with: medaka test test/ported/test_loader_ported.mdk
 
-import test.{expectEqual, expectTrue, expectFalse, expectAll, pass, fail, runTests, runExpectation, Pass, Fail}
+import test.{expectEqual, expectTrue, expectFalse, expectAll, pass, fail, runTests, Pass, Fail}
 
 -- ── Helpers ─────────────────────────────────────────────────────────────────
 
-assertCrashes thunk = match runExpectation thunk
-  Fail _ => pass
-  Pass => fail "expected a runtime error but evaluation succeeded"
+-- (assertCrashes removed 2026-07-11: the `runExpectation` panic-catching extern
+-- was dropped — per the `no-catchable-panics` invariant a crashing test aborts.)
 
 -- ── Phase 130: cross-module user interface ───────────────────────────────────
 -- Ported from: test_eval_cross_module_user_interface

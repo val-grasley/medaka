@@ -1,0 +1,51 @@
+-- Self-hosted `test "…" = <expr>` runner (Phase 127 restored 2026-07-11).
+--
+-- A `test "name" = body` declaration is symmetric with `prop`: the host
+-- (test_cmd.mdk) discovers every `DTest` decl, evaluates its body to an
+-- `Expectation` VALUE (never catching panics — a genuinely-crashing body is
+-- unrecoverable and aborts the run, per the `no-catchable-panics` invariant),
+-- and reports pass/fail using the SAME reporting shape as doctests (ok/FAIL +
+-- loc + per-file summary + exit code, P0-6).
+--
+-- This module owns discovery (`collectTests`/`hasTests`) and the single-body
+-- evaluator (`runOneTest`); test_cmd owns the incremental print loop + summary
+-- (it can't live here — test_cmd imports this module, not the reverse).  Like
+-- prop_runner, results are printed AS each test is evaluated, so a body that
+-- aborts the run does not mask the tests that already passed.
+
+import frontend.ast.{Decl, DTest, Expr(..), Loc(..)}
+import eval.eval.{Value(..), EvalEnv(..), eval, extendEnv, force, ppValue}
+import tools.doctest.{ExResult(..)}
+
+-- True iff the program declares at least one `test "…"`.
+export hasTests : List Decl -> Bool
+hasTests [] = False
+hasTests ((DTest _ _ _)::_) = True
+hasTests (_::rest) = hasTests rest
+
+-- Line number of a body expr (peel the transparent ELoc wrapper).
+exprLine : Expr -> Int
+exprLine (ELoc (Loc _ l _ _ _) _) = l
+exprLine (EApp f _) = exprLine f
+exprLine (EAnnot e _) = exprLine e
+exprLine (EHeadAnnot e _) = exprLine e
+exprLine _ = 0
+
+-- Each `test "…" = body` as (name, line, body), in source order.
+export collectTests : List Decl -> List (String, Int, Expr)
+collectTests [] = []
+collectTests ((DTest _ name body)::rest) =
+  (name, exprLine body, body) :: collectTests rest
+collectTests (_::rest) = collectTests rest
+
+-- Evaluate one test body to an Expectation value and classify it.  A body that
+-- does not reduce to Pass/Fail is an `Errored` (e.g. a partial closure); a body
+-- that genuinely panics is unrecoverable and aborts the whole run.
+export runOneTest : List (String, Value) -> Expr -> <Mut> ExResult
+runOneTest evalEnv body =
+  let env = extendEnv (EvalEnv [[]]) evalEnv
+  match force (eval env body)
+    VCon "Pass" [] => Pass
+    VCon "Fail" [VString msg] => Fail msg ""
+    VCon "Fail" [v] => Fail (ppValue v) ""
+    other => Errored ("test body did not evaluate to an Expectation: " ++ ppValue other)

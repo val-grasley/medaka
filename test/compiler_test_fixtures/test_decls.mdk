@@ -1,0 +1,10 @@
+-- Regression fixture for the restored `test "…" = <Expectation>` runner
+-- (Phase 127, 2026-07-11).  Exercises a PASSING and a FAILING `test` assertion
+-- so the `medaka test` report (ok/FAIL loc+name, summary, exit code) and the
+-- discovery/eval path stay pinned.  Imports `test` → runs the multi-module path.
+
+import test.{expectEqual, fail}
+
+test "passing assertion" = expectEqual 42 42
+test "failing assertion" = expectEqual 1 2
+test "explicit fail" = fail "boom"
