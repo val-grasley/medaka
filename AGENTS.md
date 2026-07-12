@@ -148,6 +148,10 @@ Correctness gates (all shell-based, golden-diff style):
 sh test/run_gates.sh                    # run the WHOLE diff_compiler_* suite in PARALLEL (~32s)
 bash test/diff_compiler_*.sh           # differential: native output vs captured goldens (~67 suites)
 bash test/selfcompile_fixpoint.sh      # emitter self-compile fixpoint (C3a/C3b)
+bash test/typecheck_compiler_source.sh # strict-typecheck the WHOLE compiler source (~4min); run
+                                       #   alongside the fixpoint for compiler .mdk changes — the
+                                       #   bootstrap emit path does NOT gate on hadTypeErrors(), so
+                                       #   an ill-typed compiler source builds green without this
 bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
 FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (parallel; always FORCE=1 — stale-prone)
 ```
