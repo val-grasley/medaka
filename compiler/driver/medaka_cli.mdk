@@ -352,8 +352,16 @@ locatedOrGeneric target roots rsrc csrc = match locatedProjectErrors target root
 -- CLI-only, so the probe-driven goldens (check_main.mdk et al., which call
 -- `runCheck`/`runCheckModules` directly) keep dumping unconditionally.
 checkRoute : Bool -> Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
-checkRoute typesMode allowInternal _ _ rsrc csrc tsrc target [(mid, decls)] =
-  let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
+checkRoute typesMode allowInternal trusted _ rsrc csrc tsrc target [(mid, decls)] =
+  -- BUGFIX (internal-extern noise on stdlib/compiler self-checks): the caller
+  -- already computed `trusted` (stdlibTrustedMods, owning-root based) for
+  -- EVERY module count, but this single-module arm used to discard it and
+  -- gate purely on the CLI `--allow-internal` flag — so `medaka check` on a
+  -- bare stdlib file (e.g. `stdlib/array.mdk`, no non-core imports ⇒ this
+  -- arm) flagged its OWN legitimate internal-extern calls as errors unless
+  -- the flag was passed every time, even with MEDAKA_ROOT correctly set.
+  -- Honour `trusted` here too, matching the multi-module arm below.
+  let diags = analyzeLocatedG (allowInternal || contains mid trusted) rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
     [] =>
@@ -574,9 +582,13 @@ runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir =
           let _ = println (cjAllToJson triples)
           exit 1
         Ok mods => match mods
-          [_] =>
+          [(mid, _)] =>
             -- Single module: analyzeLocated (single-file path, correct for type errors).
-            let diags = analyzeLocatedG allowInternal rsrc csrc src
+            -- Same fix as checkRoute: honour the owning-root trust signal too
+            -- (stdlibTrustedMods), not just `--allow-internal`, so a bare
+            -- stdlib/compiler file checked via `--json` isn't noise-flagged.
+            let trusted = stdlibTrustedMods target roots stdlibDir mods
+            let diags = analyzeLocatedG (allowInternal || contains mid trusted) rsrc csrc src
             let _ = println (cjAllToJson [(target, src, diags)])
             let hasErr = any isDiagError diags
             if hasErr then exit 1 else ()
@@ -867,8 +879,10 @@ typecheckGate allowInternal root input =
 -- and self-host cleanly.  So multi-module keeps its prior (looser but sound)
 -- behaviour; the located single-file path is what this fix tightens.
 typecheckGateRoute : Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> TypecheckGate
-typecheckGateRoute allowInternal _ _ rsrc csrc tsrc target [_] =
-  let diags = analyzeLocatedG allowInternal rsrc csrc tsrc
+typecheckGateRoute allowInternal trusted _ rsrc csrc tsrc target [(mid, _)] =
+  -- Same fix as checkRoute's single-module arm: honour the caller-computed
+  -- `trusted` (owning-root) signal here too, not just `--allow-internal`.
+  let diags = analyzeLocatedG (allowInternal || contains mid trusted) rsrc csrc tsrc
   let errs = filter isDiagError diags
   match errs
     [] => TGOk

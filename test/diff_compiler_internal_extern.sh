@@ -18,6 +18,14 @@
 #                      externs) resolves clean WITHOUT the flag — no false positive.
 #   8. fallthrough-ok: a user program with guard fallthrough (desugar emits
 #                      `__fallthrough__`) is NOT flagged.
+#   9. self-check-rel: `medaka check` on a REAL stdlib file, by its RELATIVE
+#                      path from the repo root (e.g. `stdlib/array.mdk`, no
+#                      non-core imports ⇒ the single-module route), resolves
+#                      clean WITHOUT `--allow-internal` — a check-usability
+#                      papercut fix (was: the single-module CLI route ignored
+#                      the already-computed owning-root trust list, AND that
+#                      list's root comparison broke on a relative-path root).
+#  10. self-check-abs: same file, by its ABSOLUTE path — also clean.
 #
 # Usage:  sh test/diff_compiler_internal_extern.sh
 set -u
@@ -132,6 +140,26 @@ case "$out" in
   pos*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   fallthrough-ok (guard fallthrough not flagged)\n'
         else fail=$((fail+1)); printf 'FAIL fallthrough-ok (printed but exit %d)\n' "$code"; fi ;;
   *) fail=$((fail+1)); printf 'FAIL fallthrough-ok ([%s])\n' "$out" ;;
+esac
+
+# 9. self-check-rel: `medaka check stdlib/array.mdk` (relative path, run with
+#    cwd=$ROOT) — a genuine stdlib file that itself calls arrayGetUnsafe —
+#    must resolve clean with NO flag.
+out="$(cd "$ROOT" && MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check stdlib/array.mdk 2>&1)"
+code=$?
+case "$out" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-rel (false positive on stdlib/array.mdk: [%s])\n' "$out" ;;
+  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-rel (stdlib/array.mdk clean, relative path, no flag)\n'
+     else fail=$((fail+1)); printf 'FAIL self-check-rel (exit %d: [%s])\n' "$code" "$out"; fi ;;
+esac
+
+# 10. self-check-abs: same file, absolute path — also clean with no flag.
+out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$ROOT/stdlib/array.mdk" 2>&1)"
+code=$?
+case "$out" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-abs (false positive on stdlib/array.mdk: [%s])\n' "$out" ;;
+  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-abs (stdlib/array.mdk clean, absolute path, no flag)\n'
+     else fail=$((fail+1)); printf 'FAIL self-check-abs (exit %d: [%s])\n' "$code" "$out"; fi ;;
 esac
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

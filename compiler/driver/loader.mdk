@@ -616,20 +616,32 @@ visitMods deps roots stack visited acc (d::ds) = match visitMod deps roots stack
 -- user file).  GENERIC: compares against the caller-supplied `stdlibRoot`, no
 -- literal path baked in.  The caller (driver) ADDITIONALLY honours
 -- `--allow-internal` to trust the entry project's own modules.
+-- BUGFIX (internal-extern check-usability papercut): `owningRoot` (from
+-- `findModuleFile`) is whichever literal `roots` entry matched first — often a
+-- RELATIVE path (e.g. `entrySearchRoots` seeds a bare `"stdlib"` root when the
+-- entry itself is invoked as a relative path like `medaka check
+-- stdlib/array.mdk` from the repo root) — while `stdlibRoot` here is always the
+-- ABSOLUTE `<MEDAKA_ROOT>/stdlib`.  Comparing them as literal strings silently
+-- failed for exactly the self-hosting case this trust list exists for: a bare
+-- stdlib file checked by its relative path was never recognized as
+-- stdlib-owned, so its own legitimate internal-extern calls flooded as errors.
+-- Realpath-canonicalize BOTH sides (mirrors `canonicalModId`/`revLookupRoot`'s
+-- established pattern for the identical "two spellings, one physical dir"
+-- problem) so the comparison is spelling-independent.
 export stdlibTrustedMods : String -> List String -> String -> List (String, List Decl) -> <IO> List String
 stdlibTrustedMods entry roots stdlibRoot mods =
   let deps = readDeps (findProjectRoot (parentDir entry))
-  trustedModsGo deps roots stdlibRoot (map fst mods)
+  trustedModsGo deps roots (canonicalizePath stdlibRoot) (map fst mods)
 
 trustedModsGo : List (String, String) -> List String -> String -> List String -> <IO> List String
 trustedModsGo _ _ _ [] = []
-trustedModsGo deps roots stdlibRoot (m::ms) = match findModuleFile deps roots m
+trustedModsGo deps roots cStdlibRoot (m::ms) = match findModuleFile deps roots m
   Some (_, owningRoot) =>
-    if owningRoot == stdlibRoot then
-      m :: trustedModsGo deps roots stdlibRoot ms
+    if canonicalizePath owningRoot == cStdlibRoot then
+      m :: trustedModsGo deps roots cStdlibRoot ms
     else
-      trustedModsGo deps roots stdlibRoot ms
-  None => trustedModsGo deps roots stdlibRoot ms
+      trustedModsGo deps roots cStdlibRoot ms
+  None => trustedModsGo deps roots cStdlibRoot ms
 
 export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
 loadProgram entry roots =
