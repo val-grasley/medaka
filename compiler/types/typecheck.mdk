@@ -5967,7 +5967,14 @@ registerAmbiguousConstraints obls monos =
 oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
 oblDispatchMonos (iface, typarams, mty, occ, _)
   | iface == "Num" = []
-  | otherwise = dispatchMonosOf typarams mty occ
+  -- F0: dispatch/ambiguity keys off the RECEIVER (dispatch) typaram only, NOT every
+  -- interface typaram.  A return-only typaram (`v` in `Get c v where get1 : c -> v`)
+  -- is determined by the impl AFTER the receiver picks it, so it must never be
+  -- registered as an independent impl-selection obligation — else the still-unbound
+  -- `v`, grounded later by groundMultiParamObligations, is re-checked as a single-mono
+  -- obligation with no matching impl (`No impl of Get for Int`).  dispatchTyparams
+  -- = [first typaram], the same receiver classification argDispatchOfMethod uses.
+  | otherwise = dispatchMonosOf (dispatchTyparams typarams) mty occ
 
 -- the unbound var ids carried by a dispatch mono WITH a concrete head (`Set _a` →
 -- [_a]); a bare-var dispatch (`t0`) anchors nothing.
@@ -5993,7 +6000,10 @@ registerAmbiguousGo ((iface, typarams, mty, occ, loc)::rest) groupLevel memberId
 registerOneAmbiguous : String -> List String -> Ty -> Mono -> Option Loc -> Int -> List Int -> List Int -> <Mut> Unit
 registerOneAmbiguous iface typarams mty occ loc groupLevel memberIds anchoredIds
   | iface == "Num" = ()
-  | otherwise = registerDispatchMonos iface (dispatchMonosOf typarams mty occ) loc groupLevel memberIds anchoredIds
+  -- F0: register call obligations for the RECEIVER (dispatch) typaram only — a
+  -- return-only typaram is impl-determined, not an impl-selection key (see
+  -- oblDispatchMonos).
+  | otherwise = registerDispatchMonos iface (dispatchMonosOf (dispatchTyparams typarams) mty occ) loc groupLevel memberIds anchoredIds
 
 registerDispatchMonos : String -> List Mono -> Option Loc -> Int -> List Int -> List Int -> <Mut> Unit
 registerDispatchMonos _ [] _ _ _ _ = ()
