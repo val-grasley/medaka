@@ -7,6 +7,27 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — ✅ INDEX ARC #16 SHIPPED: typeclass indexing `a[i]` / `a[i][j]` / `a[i] := v` + coded `E-INDEX-OOB`. `main` = `c9478073`. Seed RE-MINTED (cold C3a + fixpoint C3b PASS). Tree GREEN (run_gates 77/1/1). (2026-07-12)
+
+The user gated "go straight to the Index arc"; **#16 (Index+IndexMut CORE) is done end-to-end**. Design was decision-ready (`INDEX-DESIGN.md` + a new `INDEX-16-PLAN.md` that resolved the one open seam). Shipped as 7 isolated-worktree sub-stages, each gated+merged; owning memory **`project_index_arc_16_shipped`** has full detail.
+
+### ⭐ DO-FIRST STATE
+- **`main` = `c9478073`.** Tree green: `FORCE=1 build_oracles` then `run_gates` → **77 pass / 1 fail / 1 skip**. The 1 fail is the **pre-existing #35** (`diff_compiler_core_ir_modules` ctor_collision; a cross-session memory `project_ctor_collision_x86_divergence` notes it CRASHES on the x86 box but is a golden-diff on Mac — unrelated to this arc).
+- **Seed re-minted** (`2379ff24`) — adding the `indexError` extern forced it (pre-arc seed can't emit the new stdlib). Cold `bootstrap_from_seed` C3a + `selfcompile_fixpoint` C3b both PASS.
+
+### WHAT SHIPPED (#16a–#16e + 16b-2 + 16d, all merged)
+- `Index c k v` / `IndexMut c k v requires Index` interfaces in `stdlib/core.mdk`; impls Array/List/String (prelude → **no import needed**) + Map/MutArray (their modules). `index`/`setIndex` methods; `a.[i]`→`index a i` desugar (F2a **retires the built-in `EIndex` path**); `a[i] := v`→`setIndex` (two-pass desugar for the post-order hazard); bare **`a[i]`** grammar (F1 `TLBracketTight` lex + `postfixTail`); printer renders bare `a[i]`. Write is in-place `<Mut>` for Array/MutArray only. OOB → coded `E-INDEX-OOB` via a new `indexError : String -> a` abort extern (reuses `@mdk_oob`/`wasmTrap`).
+- **Two latent bugs the full differential suite caught** (stage agents only run full-pipeline probes; the ORCHESTRATOR runs the suite): **#16d** prelude-free probe regressions (`eval_main` is `~prelude:false`; F2a makes `.[i]` need the prelude `index` → fixture migration to `arrayGetUnsafe`/prelude-bearing harness); **#16e** a return-position-dispatch value-rep SEGFAULT on build (a return-only-param method returning an array-slot `Char` was mis-typed as the head type → `mdk_string_eq` deref → SIGSEGV; fixed in `core_ir_lower.mdk` by restricting `ifaceReturnsSelfEntry` to the HEAD param). Both were general (minimal repros used a plain user interface), pre-existing-latent, exposed by the arc.
+
+### ⭐ NEXT (still open in the Index arc — user-gated):
+- **#17 slicing `a[i..j]`** — bare-slice grammar (currently DEFERRED: the tight-bracket branch rejects `..` with a clean error; `a.[i..j]` dot-form still works). Native/wasm slice is NOT bounds-checked (`E-SLICE-OOB` interpreter-only) — closing that is a rider.
+- **#18 operator-interface generalizations** — `++`→`Semigroup` (GOLD), ranges→minimal `Enum`, unary `-`→`Num.negate`. SKIP overloaded literals. Independent of Index (single-param classes) but shares front-end files → serial. May sweep up a #30 eval-gap (user `++`).
+
+### PROCESS LEARNINGS (new this arc)
+- **The full differential suite is the ONLY thing that catches probe-context + codegen regressions** a self-hosting feature introduces — green fixpoint + agent full-pipeline probes are NOT enough (both #16d and #16e passed those). Always run the whole `run_gates` (and eyeball the OUTPUT-comparing gates eval/llvm/build separately from dump gates) before merging a feature that changes desugar/emit.
+- **A missing `import` mimics a dispatch bug** — I mis-aimed an Opus agent at the typechecker for what were missing-`import` errors; it correctly disproved the hypothesis. See `project_stdlib_impl_needs_import_to_dispatch`.
+- **Golden recapture after a front-end/emit change spans ~8 families with distinct capture paths** (`--frozen desugar/mark/fmt/printer`; lex/tc/core_ir_sexp regenerate by mirroring each gate's RUN+strip_unit pipe; `diff_fixtures` TYPES need a surgical splice). Only indexing fixtures actually shift, so the changed-file count stays small — a good benign-ness signal. The recapture-agent choked on `build_oracles` respawn (TaskStop+reap+DIY).
+
 ## RESUME — ✅ PRE-INDEX RUNWAY: trim finish, dispatch cleanup, testing-DX, a compiler-wide type-safety gate, and a ~53× parse speedup. `main` = `b5fd5e84`. Seed RE-MINTED (cold C3a PASS). Tree GREEN (run_gates 77/1/1). (2026-07-11)
 
 A very long, high-throughput session. Everything design→delegate→isolated-worktree→VERIFY→merge; fixpoint C3a/C3b YES on every landing; **seed re-minted at the end (`b5fd5e84`, cold `bootstrap_from_seed` C3a PASS)** batching ~15 emitter-graph changes. User PAUSED before the Index arc — it needs an explicit go-ahead.
