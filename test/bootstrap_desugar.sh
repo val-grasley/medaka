@@ -2,7 +2,7 @@
 # BOOTSTRAP (B3) — natively compiled self-hosted DESUGAR stage == reference over
 # parse_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
 # captured from `main.exe run compiler/entries/desugar_main.mdk <fixture>`
-# (test/capture_goldens.sh boot_desugar); native = test/bin/desugar_main (the
+# (test/capture_goldens.sh --frozen boot_desugar); native = test/bin/desugar_main (the
 # desugar_main entry native-compiled by `./medaka build`).  Strip the native
 # trailing "()" before the diff.  See bootstrap_lex.sh for the full rationale.
 #
@@ -24,7 +24,7 @@ for fix in "$FIXDIR"/*.mdk; do
   name="$(basename "$fix")"
   golden="${fix%.mdk}.boot_desugar.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .boot_desugar.golden — run sh test/capture_goldens.sh boot_desugar)\n' "$name"; continue
+    fail=$((fail+1)); printf 'FAIL %s (no .boot_desugar.golden — run sh test/capture_goldens.sh --frozen boot_desugar)\n' "$name"; continue
   fi
   ref="$(cat "$golden")"
   self="$("$RUN" "$fix" 2>/dev/null | strip_unit)"

@@ -2,7 +2,7 @@
 # BOOTSTRAP (B5) — natively compiled self-hosted MARK stage == reference over
 # parse_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
 # captured from `main.exe run compiler/entries/mark_main.mdk core <fixture>`
-# (test/capture_goldens.sh boot_mark); native = test/bin/mark_main with the SAME
+# (test/capture_goldens.sh --frozen boot_mark); native = test/bin/mark_main with the SAME
 # positional args (core fixture).  Strip the native trailing "()" before the
 # diff.  See bootstrap_lex.sh for the full rationale.
 #
@@ -25,7 +25,7 @@ for fix in "$FIXDIR"/*.mdk; do
   name="$(basename "$fix")"
   golden="${fix%.mdk}.boot_mark.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .boot_mark.golden — run sh test/capture_goldens.sh boot_mark)\n' "$name"; continue
+    fail=$((fail+1)); printf 'FAIL %s (no .boot_mark.golden — run sh test/capture_goldens.sh --frozen boot_mark)\n' "$name"; continue
   fi
   ref="$(cat "$golden")"
   self="$("$RUN" "$CORE" "$fix" 2>/dev/null | strip_unit)"

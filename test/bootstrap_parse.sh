@@ -2,7 +2,7 @@
 # BOOTSTRAP (B2) — natively compiled self-hosted PARSE stage == reference parser
 # over parse_fixtures.  OCaml-free (REROOT-PLAN §2e): reference = committed golden
 # captured from `main.exe run compiler/entries/parse_main.mdk <fixture>`
-# (test/capture_goldens.sh boot_parse); native = test/bin/parse_main (the
+# (test/capture_goldens.sh --frozen boot_parse); native = test/bin/parse_main (the
 # parse_main entry native-compiled by `./medaka build`, test/build_oracles.sh).
 # The native runtime auto-prints main's Unit value as a trailing "()"; strip it
 # before the diff.  See bootstrap_lex.sh for the full rationale.
@@ -25,7 +25,7 @@ for fix in "$FIXDIR"/*.mdk; do
   name="$(basename "$fix")"
   golden="${fix%.mdk}.boot_parse.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .boot_parse.golden — run sh test/capture_goldens.sh boot_parse)\n' "$name"; continue
+    fail=$((fail+1)); printf 'FAIL %s (no .boot_parse.golden — run sh test/capture_goldens.sh --frozen boot_parse)\n' "$name"; continue
   fi
   ref="$(cat "$golden")"
   self="$("$RUN" "$fix" 2>/dev/null | strip_unit)"

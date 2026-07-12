@@ -44,7 +44,7 @@ for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   golden="${f%.mdk}.printer.golden"
-  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh printer)"; fail=$((fail+1)); continue; }
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh --frozen printer)"; fail=$((fail+1)); continue; }
   expected="$(norm < "$golden")"
   actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
   if [ "$expected" = "$actual" ]; then

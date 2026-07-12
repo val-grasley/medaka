@@ -2,7 +2,7 @@
 # Differential gate for the self-hosted FORMATTER (compiler/entries/fmt_main.mdk).
 #
 # OCaml-free (REROOT-PLAN §2c): native host test/bin/fmt_main vs a committed
-# golden captured from `main.exe fmt --stdout <f>` (test/capture_goldens.sh fmt).
+# golden captured from `test/bin/fmt_main <f>` (test/capture_goldens.sh --frozen fmt).
 # The gate applies `norm` (float-text normalization) to BOTH the golden and the
 # native output, and strip_unit's the native binary's trailing "()" Unit auto-print
 # before the compare.  Sibling golden: <fixture>.fmt.golden.
@@ -35,7 +35,7 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.fmt.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .fmt.golden — run sh test/capture_goldens.sh fmt)\n' "$name"; continue
+    fail=$((fail+1)); printf 'FAIL %s (no .fmt.golden — run sh test/capture_goldens.sh --frozen fmt)\n' "$name"; continue
   fi
   expected="$(norm < "$golden")"
   actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"

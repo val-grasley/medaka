@@ -43,11 +43,84 @@ PRINTER_NATIVE="$ROOT/test/bin/printer_main"
 
 CHECK=0
 FILTER=""
+FROZEN_TAG=""
 case "${1:-}" in
   --check) CHECK=1 ;;
+  --frozen)
+    FROZEN_TAG="${2:-}"
+    [ -n "$FROZEN_TAG" ] || {
+      echo "usage: sh test/capture_goldens.sh --frozen <parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark>"
+      exit 2
+    }
+    ;;
   "") ;;
   *) FILTER="$1" ;;
 esac
+
+# --frozen <tag> : EXPLICITLY regenerate ONE frozen family (see the FROZEN list
+# below) by re-running the EXACT `test/bin/<stage>_main` invocation + strip_unit
+# that the corresponding diff_compiler_*.sh / bootstrap_*.sh gate uses to produce
+# its "actual" side — so the regenerated golden is guaranteed to be what that gate
+# compares against. Needs only the stage oracle binaries (`sh test/build_oracles.sh
+# --build-one <entry>`, or the full test/build_oracles.sh), NOT $MAIN. Deliberately
+# opt-in — a bare `capture_goldens.sh` / `--check` never touches these, so the
+# "these families are frozen" default is unchanged; this only fires when a
+# developer follows a gate's "no golden ... run sh test/capture_goldens.sh --frozen
+# <tag>" hint on purpose.
+if [ -n "$FROZEN_TAG" ]; then
+  strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
+  BIN="$ROOT/test/bin"
+  CORE="$ROOT/stdlib/core.mdk"
+  DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+
+  fwrote=0
+  # regen_frozen <run-binary> <golden-suffix> <extra-first-arg-or-""> <globs...>
+  regen_frozen() {
+    run_bin="$1"; suffix="$2"; extra="$3"; shift 3
+    RUN="$BIN/$run_bin"
+    [ -x "$RUN" ] || { echo "missing $RUN — run: sh test/build_oracles.sh --build-one $run_bin (or sh test/build_oracles.sh)"; return 2; }
+    for glob in "$@"; do
+      for f in $glob; do
+        [ -f "$f" ] || continue
+        golden="${f%.mdk}.$suffix"
+        if [ -n "$extra" ]; then
+          "$RUN" "$extra" "$f" 2>/dev/null | strip_unit | sed "s#$ROOT/##g" > "$golden"
+        else
+          "$RUN" "$f" 2>/dev/null | strip_unit | sed "s#$ROOT/##g" > "$golden"
+        fi
+        fwrote=$((fwrote+1))
+      done
+    done
+  }
+
+  case "$FROZEN_TAG" in
+    parse)
+      regen_frozen parse_main parse.golden "" \
+        "$ROOT/test/parse_fixtures/*.mdk" "$ROOT/test/parse_only_fixtures/*.mdk" ;;
+    desugar)
+      regen_frozen desugar_main desugar.golden "" $DM_CORPUS ;;
+    mark)
+      regen_frozen mark_main mark.golden "$CORE" $DM_CORPUS ;;
+    fmt)
+      regen_frozen fmt_main fmt.golden "" \
+        "$ROOT/test/fmt_fixtures/*.mdk" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    printer)
+      regen_frozen printer_main printer.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    boot_parse)
+      regen_frozen parse_main boot_parse.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    boot_desugar)
+      regen_frozen desugar_main boot_desugar.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    boot_mark)
+      regen_frozen mark_main boot_mark.golden "$CORE" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    *)
+      echo "unknown --frozen tag: $FROZEN_TAG (expected parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark)"
+      exit 2 ;;
+  esac
+  status=$?
+  [ "$status" -eq 0 ] || exit "$status"
+  printf 'CAPTURED (frozen %s): %d goldens written\n' "$FROZEN_TAG" "$fwrote"
+  exit 0
+fi
 
 [ -x "$MAIN" ]  || { echo "build first: make medaka (missing $MAIN)"; exit 2; }
 
@@ -66,6 +139,15 @@ oracle_print_probe() { "$PRINTER_NATIVE" "$1" 2>/dev/null | sed '$ s/()$//; ${/^
 #   diag_analyze / resolve / exhaust / check_match (diagdump.exe)
 #   parse_result (astdump.exe)
 #   stack (eval_probe.exe)
+#
+# Of these, parse / desugar / mark / fmt / printer (and their boot_parse /
+# boot_desugar / boot_mark siblings) now HAVE a native equivalent
+# (test/bin/{parse,desugar,mark,fmt,printer}_main, built by test/build_oracles.sh)
+# — they stay frozen by DEFAULT (a plain `capture_goldens.sh` run must not churn
+# them), but a developer who hits a gate's "no golden ... run sh
+# test/capture_goldens.sh --frozen <tag>" hint can regenerate that ONE family on
+# purpose via `sh test/capture_goldens.sh --frozen <tag>` (see the FROZEN_TAG
+# block below) instead of hand-replicating the gate's capture invocation.
 
 # rows: "<glob>::<oracle-tag>::<golden-suffix>"
 # FROZEN families omitted (eval/eval_prelude/eval_list/positions_dump/comment_dump/
