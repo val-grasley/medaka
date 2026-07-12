@@ -148,7 +148,7 @@ fi
 # ── newest compiler/*.mdk mtime — any source newer than a binary => rebuild it ─
 newest_src=0
 for f in $(find "$ROOT/compiler" -name '*.mdk'); do
-  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
+  m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
   [ "$m" -gt "$newest_src" ] && newest_src=$m
 done
 
@@ -163,7 +163,7 @@ for e in $ENTRIES; do
   out="$BINDIR/$e"
   [ -f "$src" ] || { echo "FAIL: missing entry $src"; exit 1; }
   if [ "${FORCE:-0}" != "1" ] && [ -x "$out" ]; then
-    bm=$(stat -f %m "$out" 2>/dev/null || stat -c %Y "$out" 2>/dev/null)
+    bm=$(stat -c %Y "$out" 2>/dev/null || stat -f %m "$out" 2>/dev/null)
     if [ "$bm" -ge "$newest_src" ]; then
       uptodate=$((uptodate+1)); printf 'up-to-date  %s\n' "$e"; continue
     fi
