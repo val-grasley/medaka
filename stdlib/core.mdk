@@ -901,6 +901,47 @@ export interface Index c k v where
 export interface IndexMut c k v requires Index c k v where
   setIndex : c -> k -> v -> <Mut> c
 
+{- | `index arr i` reads `arr`'s element at `i` (`arr[i]` sugar dispatches
+   here).  O(1).  Raises the coded `indexError` (E-INDEX-OOB) when `i` is
+   out of range -- use `get` for a safe `Option`-returning read instead. -}
+export impl Index (Array a) Int a where
+  index arr i =
+    if i < 0 || i >= arrayLength arr then
+      indexError "index \{intToString i} out of bounds"
+    else
+      arrayGetUnsafe i arr
+
+{- | `setIndex arr i v` writes `v` at `arr`'s index `i`, in place, and
+   returns `arr`.  O(1).  Raises the coded `indexError` (E-INDEX-OOB) when
+   `i` is out of range. -}
+export impl IndexMut (Array a) Int a where
+  setIndex arr i v =
+    if i < 0 || i >= arrayLength arr then indexError "index \{intToString i} out of bounds"
+    else
+      let _ = arraySetUnsafe i v arr
+      arr
+
+{- | `index xs i` is `xs`'s element at position `i`.  O(n) — a singly-linked
+   list has no random access, so this walks `i` cons cells; prefer `Array`/
+   `MutArray` for index-heavy workloads.  Raises the coded `indexError`
+   (E-INDEX-OOB) when `i` is out of range.  No `IndexMut` impl: `List` is
+   immutable / has no in-place element write. -}
+export impl Index (List a) Int a where
+  index [] _ = indexError "index out of bounds"
+  index (h::t) i = if i <= 0 then h else index t (i - 1)
+
+{- | `index s i` is the codepoint `Char` of `s` at position `i` (`s[i]` sugar
+   dispatches here; codepoints, not grapheme clusters -- matches `toChars`).
+   Raises the coded `indexError` (E-INDEX-OOB) when `i` is out of range.  No
+   `IndexMut` impl: `String` is immutable. -}
+export impl Index String Int Char where
+  index s i =
+    let cs = stringToChars s
+    if i < 0 || i >= arrayLength cs then
+      indexError "index \{intToString i} out of bounds"
+    else
+      arrayGetUnsafe i cs
+
 export impl Foldable List where
   fold _ acc [] = acc
   fold f acc (x::xs) = fold f (f acc x) xs
