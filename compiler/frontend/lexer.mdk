@@ -1487,6 +1487,44 @@ tokenizeWithOffsetPairs s =
 export offsetToLineCol : String -> Int -> (Int, Int)
 offsetToLineCol s off = posLineColFrom (stringToChars s) off 0 1 0
 
+-- Precompute the sorted array of line-start char offsets for a source string:
+-- offset 0, plus the offset just after every '\n'.  One O(N) scan.  Fed to
+-- `offsetToLineColFast` so the located-parse pass can resolve each offset in
+-- O(log N) instead of re-walking from 0 (which made `locOfSpan` O(N²)).
+export lineStartsOf : String -> Array Int
+lineStartsOf s =
+  let src = stringToChars s
+  let len = arrayLength src
+  arrayFromList (0 :: lineStartsGo src len 0)
+
+lineStartsGo : Array Char -> Int -> Int -> List Int
+lineStartsGo src len i
+  | i >= len = []
+  | arrayGetUnsafe i src == '\n' = i + 1 :: lineStartsGo src len (i + 1)
+  | otherwise = lineStartsGo src len (i + 1)
+
+-- Resolve a 0-based char offset to a (1-based line, 0-based column) pair using a
+-- precomputed line-starts array (`lineStartsOf`), by binary search.  This is
+-- byte-identical to `offsetToLineCol` for every offset: line = 1 + (# newlines
+-- strictly before `off`); col = off - (start of that line).  The '\n' AT `off`
+-- is NOT counted (mirrors `posLineColFrom`'s `p >= target` guard checked first).
+export offsetToLineColFast : Array Int -> Int -> (Int, Int)
+offsetToLineColFast lineStarts off =
+  let idx = lineStartSearch lineStarts off 0 (arrayLength lineStarts - 1)
+  (idx + 1, off - arrayGetUnsafe idx lineStarts)
+
+-- Rightmost index `idx` in [lo, hi] with `lineStarts[idx] <= off`.
+-- `lineStarts[0]` is 0 and `off >= 0`, so such an index always exists in range.
+lineStartSearch : Array Int -> Int -> Int -> Int -> Int
+lineStartSearch arr off lo hi
+  | lo >= hi = lo
+  | otherwise =
+    let mid = (lo + hi + 1) / 2
+    if arrayGetUnsafe mid arr <= off then
+      lineStartSearch arr off mid hi
+    else
+      lineStartSearch arr off lo (mid - 1)
+
 -- Convert a list of char offsets (in non-decreasing-ish source order — the
 -- synthetic tail tokens all share the EOF offset, which is monotone) to 1-based
 -- source lines in a single left-to-right walk over the source, mirroring

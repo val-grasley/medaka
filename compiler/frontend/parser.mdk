@@ -55,6 +55,8 @@ import frontend.lexer.{
   tokenizeWithOffsets,
   tokenizeWithOffsetPairs,
   offsetToLineCol,
+  lineStartsOf,
+  offsetToLineColFast,
   describeToken,
 }
 import support.util.{reverseL, joinWith}
@@ -132,9 +134,16 @@ locSrcRef = Ref ""
 locOffsRef : Ref (Array (Int, Int))
 locOffsRef = Ref (arrayFromList [])
 
+-- Precomputed sorted line-start char offsets for `locSrcRef`'s source, so
+-- `locOfSpan` resolves each offset in O(log N) via binary search instead of
+-- re-walking the whole source from 0 (which made the located-parse pass O(N²)).
+locLineStartsRef : Ref (Array Int)
+locLineStartsRef = Ref (arrayFromList [0])
+
 setLocState : String -> Array (Int, Int) -> <Mut> Unit
 setLocState src offs =
   let _ = setRef locSrcRef src
+  let _ = setRef locLineStartsRef (lineStartsOf src)
   setRef locOffsRef offs
 
 -- start char offset of token `i` (0 when out of range / unset).
@@ -158,10 +167,10 @@ tokEndOffsetAt i =
 -- OCaml LSP's range exactly.  `file` is left "" for the caller to fill.
 locOfSpan : Int -> Int -> Loc
 locOfSpan startIdx endIdx =
-  let src = locSrcRef.value
+  let lineStarts = locLineStartsRef.value
   let lastIdx = if endIdx > startIdx then endIdx - 1 else startIdx
-  match offsetToLineCol src (tokOffsetAt startIdx)
-    (sl, sc) => match offsetToLineCol src (tokEndOffsetAt lastIdx)
+  match offsetToLineColFast lineStarts (tokOffsetAt startIdx)
+    (sl, sc) => match offsetToLineColFast lineStarts (tokEndOffsetAt lastIdx)
       (el, ec) => Loc "" sl sc el ec
 
 -- Wrap an expr production in a transparent ELoc capturing its token span.
