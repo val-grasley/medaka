@@ -9054,11 +9054,11 @@ checkOneCallObligation prog heads iface occ loc =
     pushNoImplError iface loc args
   -- A function-typed constraint obligation is fully ground yet has no impl — report
   -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
-  else if anyList monoIsFunction args && not (implMatches heads iface args) then
+  else if anyList monoIsFunction args && not (implMatchesReceiver heads iface (normalize occ)) then
     pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
     checkUndeterminedObligation heads iface occ loc
-  else if implMatches heads iface args then
+  else if implMatchesReceiver heads iface (normalize occ) then
     -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
@@ -9550,6 +9550,25 @@ allHeadArgsMatch [] = True
 allHeadArgsMatch ((ty, m)::rest) = match matchTyMono ty m
   Some _ => allHeadArgsMatch rest
   None => False
+
+-- Does some impl of [iface] have a RECEIVER (first head type) matching the single
+-- dispatch mono [dm]?  The call-obligation path (checkOneCallObligation) only ever
+-- carries the receiver dispatch mono — NOT every interface param — so it must match
+-- against the impl head's receiver position alone.  For a single-param interface
+-- (`Eq (List a)`) this is identical to implMatches (the head has one type); for a
+-- MULTI-param interface (`Index (Array a) Int a`) a full-length implMatches would
+-- length-mismatch [dm] (1) against the 3-type head and spuriously reject.  Soundness
+-- is preserved because the full-arity checkImplObligations path (recordImplObligation)
+-- still validates all interface params of the same occurrence.
+implMatchesReceiver : List (String, List Ty) -> String -> Mono -> <Mut> Bool
+implMatchesReceiver [] _ _ = False
+implMatchesReceiver ((iface2, tys)::rest) iface dm
+  | iface2 == iface = match tys
+    recv::_ => match matchTyMono recv dm
+      Some _ => True
+      None => implMatchesReceiver rest iface dm
+    [] => implMatchesReceiver rest iface dm
+  | otherwise = implMatchesReceiver rest iface dm
 
 -- render the dispatch monos space-separated under ONE shared naming context
 -- (mirrors lib/typecheck.ml's pp_monos), so distinct free vars don't all collapse
