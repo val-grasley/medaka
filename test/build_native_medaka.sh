@@ -153,9 +153,10 @@ trim_unit "$CLI_LL"
 # not the CLI interpreter), so -O2 here would be a straight +~4s clang cost on the
 # most frequent command. But `medaka run`/`test`/`check` DO run the CLI's tree-walk
 # interpreter, which is ~2× faster at -O2 (medaka test 1.3s→0.65s). So for
-# interpreter/doctest-heavy workflows, opt in with CLI_OPT=-O2. (The EMITTER, by
-# contrast, is always -O2 — it's the reused workhorse; see stage A.)
-CLI_OPT="${CLI_OPT:--O0}"
+# interpreter/doctest-heavy workflows, -O2 is the default (medaka test 1.3s→0.65s);
+# for build-heavy loops where the +~4s clang cost dominates, opt out with CLI_OPT=-O0.
+# (The EMITTER, by contrast, is always -O2 — it's the reused workhorse; see stage A.)
+CLI_OPT="${CLI_OPT:--O2}"
 echo "stage B: clang(medaka_cli.ll, $CLI_OPT) -> $OUT ..."
 if ! "$CC" -pthread "$CLI_OPT" $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS -lm -o "$OUT" 2>"$WORK/cc.err"; then
   echo "FAIL (clang medaka): $(cat "$WORK/cc.err")"; exit 1
