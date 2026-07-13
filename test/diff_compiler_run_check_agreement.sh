@@ -28,6 +28,21 @@
 # comment in each fixture for which FINDINGS.md item it's from and which direction
 # it diverges (if any) on current main.
 #
+# T-6: every ACCEPT fixture MUST also ship a <name>.out file pinning the exact
+# expected stdout — this is REQUIRED, not optional. A missing .out on an ACCEPT
+# fixture is graded FAIL (value column = NOPIN), never silently skipped. Why
+# required rather than merely optional: without a mandatory pin, a fixture where
+# `run` and `build` agree on the SAME WRONG value sails through undetected (they
+# agree with each other, just not with reality — this is exactly the shape the
+# record-update shadow bug would have hidden in), and a contributor adding a new
+# ACCEPT fixture gets no signal that they forgot to pin ground truth. REJECT
+# fixtures never execute (check rejects before run/build produce output), so
+# they are exempt — a .out on a REJECT fixture would be meaningless; there is no
+# ledgered exception list because no current ACCEPT fixture has a legitimate
+# reason to lack one (all output is deterministic). When minting a .out, DO NOT
+# blindly capture whatever the binary currently prints as truth — read the
+# fixture source and confirm the value is actually correct before pinning it.
+#
 # Usage:  sh test/diff_compiler_run_check_agreement.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -70,23 +85,27 @@ for f in "$FIXDIR"/*.mdk; do
   # exit 0 while printing a WRONG NUMBER (a Bool rendered through intToString), which an
   # accept-vs-reject gate cannot see — it would have graded that fixture PASS.  So for an
   # ACCEPT fixture also require the two ENGINES to agree on the VALUE (`run` stdout ==
-  # the built binary's stdout), and, when the fixture ships a `.out` file, require that
-  # value to be the specified one.  Without a `.out` the value column is still a genuine
-  # run-vs-build differential; with one it also pins the semantics.
+  # the built binary's stdout), AND (T-6) require a `.out` file pinning that value to be
+  # present and correct — a missing `.out` is its own FAIL category (NOPIN), not a skip,
+  # because two engines agreeing with each other proves nothing if they agree on garbage.
   value_v='-'
-  if [ "$expected" = 'ACCEPT' ] && [ "$run_v" = 'ACCEPT' ] && [ "$build_v" = 'ACCEPT' ]; then
-    "$TMP/out_$base" >"$TMP/build_$base.out" 2>/dev/null
-    if ! cmp -s "$TMP/run_$base.out" "$TMP/build_$base.out"; then
-      value_v='DIFF'
-    elif [ -f "$FIXDIR/$base.out" ] && ! cmp -s "$FIXDIR/$base.out" "$TMP/run_$base.out"; then
-      value_v='WRONG'
-    else
-      value_v='ok'
+  if [ "$expected" = 'ACCEPT' ]; then
+    if [ ! -f "$FIXDIR/$base.out" ]; then
+      value_v='NOPIN'
+    elif [ "$run_v" = 'ACCEPT' ] && [ "$build_v" = 'ACCEPT' ]; then
+      "$TMP/out_$base" >"$TMP/build_$base.out" 2>/dev/null
+      if ! cmp -s "$TMP/run_$base.out" "$TMP/build_$base.out"; then
+        value_v='DIFF'
+      elif ! cmp -s "$FIXDIR/$base.out" "$TMP/run_$base.out"; then
+        value_v='WRONG'
+      else
+        value_v='ok'
+      fi
     fi
   fi
 
   if [ "$check_v" = "$expected" ] && [ "$run_v" = "$expected" ] && [ "$build_v" = "$expected" ] \
-     && [ "$value_v" != 'DIFF' ] && [ "$value_v" != 'WRONG' ]; then
+     && [ "$value_v" != 'DIFF' ] && [ "$value_v" != 'WRONG' ] && [ "$value_v" != 'NOPIN' ]; then
     pass=$((pass+1))
     result='PASS'
   else

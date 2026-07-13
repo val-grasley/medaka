@@ -13,6 +13,20 @@
 # gaps (#54/#21/#55) — a fixture whose binary segfaults or prints nothing has an
 # empty golden, which the native binary reproduces.  Only stdout is compared (not
 # exit code), matching the original gate's `2>/dev/null` discipline.
+#
+# ── T-3 triage (2026-07-13) ──────────────────────────────────────────────────
+# This gate was RED for months (excluded via test/CI-COVERAGE-EXCEPTIONS.txt)
+# with "1 FAILING, 5 skipped" never looked at. Both turned out stale:
+#   - FAILING `let_else` used the `let PAT = EXPR else DEFAULT` construct, which
+#     was REMOVED from the language (see test/check_removed_constructs.sh). The
+#     fixture + its .build.golden were retired, not resurrected.
+#   - Of the 5 documented SKIPs, 4 (`tuple_neq`, `json_parse`,
+#     `mod_reverse_string`, `type_alias`) turned out to be fixed already —
+#     their documented gaps (operator-section `not`, multi-module stdlib
+#     import resolution, type-alias unification) no longer reproduce on
+#     current `./medaka build`. Verified individually, goldens captured, moved
+#     into the normal pass set. Only `newtype_ctor_fn` is still a real,
+#     reproducing gap (see below) and remains skipped.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,20 +47,15 @@ else echo "libgc (bdw-gc) not found — skipping (install bdw-gc)"; exit 2; fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Known native-CLI gaps DEFERRED (no .build.golden captured; gate skips them):
-#   1 emitter gap — fails the emitter on BOTH the OCaml and native build host, so
-#     it was ALREADY RED on the original OCaml-oracle gate:
-#       tuple_neq       — `not` not a known emitter fn (operator-section gap)
-#   4 native typecheck-GATE gaps — OCaml `medaka build` accepts them, but the
-#     native CLI's G1 typecheck gate (compiler/driver/medaka_cli.mdk) rejects them.
-#     Same medaka_cli typecheck-gate family as the deferred lsp host; surfaced by
-#     re-rooting the build host from OCaml to native.  Pre-existing native-CLI
-#     limitations, NOT a backend regression:
-#       json_parse, mod_reverse_string — `(UnknownModule "json"/"list"/"string")`
-#         (multi-module stdlib import not resolved by the gate's roots)
-#       newtype_ctor_fn  — `newtype` constructor not recognised by native check
-#       type_alias       — `type Name = String` alias not unified by native check
-SKIP="tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias"
+# Known native-CLI gap DEFERRED (no .build.golden captured; gate skips it):
+#   newtype_ctor_fn — a `newtype`'s implicit constructor used as a callable
+#     (arity-1 function) or in a match pattern is not recognised by native
+#     `check`/`build`: `Unknown constructor: UserId` / `Unbound variable:
+#     UserId`. Reproduces on current `./medaka check`/`./medaka build`
+#     (verified 2026-07-13; the fixture itself is annotated "Gap D2"). This is
+#     a real, narrow compiler gap — not a stale fixture — left for a
+#     dedicated newtype-constructor task; do not resurrect it here.
+SKIP="newtype_ctor_fn"
 skipped=0
 
 pass=0; fail=0

@@ -183,16 +183,42 @@ jobs:
               continue
             fi
             case "$f" in
+              # ── test/ IS NEVER DOCS. This arm MUST come first. ────────────────────
+              # test/ holds 175 .md files and they are FUNCTIONAL, not prose: 167 are
+              # snapshot GOLDENS (test/snapshots/**/*.md), plus CAPABILITY-MATRIX.md,
+              # ENGINE-DIVERGENCE.md and the error_quality_fixtures/ graded corpus.
+              # Classifying a blessed golden re-cut as "docs-only" would SKIP THE ENTIRE
+              # SUITE on the exact change most likely to need it — manufacturing the
+              # silent-green failure this suite exists to prevent. Never relax this.
+              test/*) docs_only=false ;;
+
+              # ── SYNTAX.md IS NOT PROSE — IT IS AN EXECUTABLE SPEC. ────────────────
+              # AGENTS.md designates SYNTAX.md the ground truth for what the binary
+              # accepts, and test/check_syntax_examples.sh RUNS every one of its
+              # examples through `medaka check`. That gate needs a built compiler, so
+              # it lives in a gate shard — and shards are SKIPPED when docs_only=true.
+              # Classifying a SYNTAX.md edit as docs-only would therefore skip the one
+              # gate that exists to check it, on the one change that needs it.
+              #
+              # This is not hypothetical: SYNTAX.md shipped for months documenting FIVE
+              # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
+              # impls, default impl, @Name) because nothing ever executed it. Same
+              # silent-green shape as the test/ arm above; same answer.
+              SYNTAX.md) docs_only=false ;;
+
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
-              *.md)
-                # A *.md path is docs ONLY if it has no directory component. Any
-                # nested .md (test/snapshots/*.md goldens included) is NOT docs.
-                case "$f" in
-                  */*) docs_only=false ;;
-                  *) : ;;
-                esac
-                ;;
+
+              # Every OTHER .md in the tree is prose: root (50), compiler/ (47 design
+              # docs), .claude/ (16 agent playbooks), sqlite/, archive/, qa-beta*/ …
+              # Verified: nothing in the build, in any gate, or in any workflow READS a
+              # .md outside test/ at runtime.
+              # Scoped to `.md` ON PURPOSE — .claude/ also holds hooks/skill-triage.py and
+              # settings.json, and compiler/ holds .mdk source; those are executable and
+              # fall through to the `*)` catch-all as NOT docs. Do not widen to a bare
+              # directory glob.
+              *.md) : ;;
+
               *) docs_only=false ;;
             esac
           done < "$changed_file"
@@ -222,7 +248,10 @@ jobs:
           # And do NOT use brace expansion: run_gates.sh runs under POSIX sh (dash),
           # which does not expand braces, so it would glob to nothing.
           - name: engines
-            pattern: "'diff_compiler_engines'"
+            # build_construct_coverage (T-3, ~300s, no extra oracle needed) added here —
+            # smallest shard, so it runs concurrently with diff_compiler_engines instead
+            # of queueing behind a bigger shard.
+            pattern: "'diff_compiler_engines' 'build_construct_coverage'"
           - name: frontend
             pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
           - name: types
@@ -393,6 +422,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # ── DELIBERATELY UNGUARDED: this step runs even when docs_only=true. ─────────
+      # Every other step in every heavy job is skipped on a docs-only PR. A doc-link
+      # gate guarded that way would be skipped on precisely the PRs it exists to
+      # police — present in the repo, looking like protection, providing none.
+      # It needs no compiler (pure text analysis), so it is nearly free to always run.
+      #
+      # Lives in `soundness` because that job already answers "is the tree coherent?",
+      # and because soundness is a REQUIRED check — so this gates on merge today,
+      # with no repo-settings change needed to make a new job required.
+      - name: Docs must not cite dead paths
+        run: sh test/check_doc_links.sh
+
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
         run: |
