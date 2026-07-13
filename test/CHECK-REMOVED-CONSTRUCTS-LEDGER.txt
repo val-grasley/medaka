@@ -1,0 +1,30 @@
+# CHECK-REMOVED-CONSTRUCTS-LEDGER.txt — expected findings for
+# check_removed_constructs.sh, one per line.
+#
+# This is a LEDGER, not a skip-list. The distinction is the whole point (see
+# test/CI-COVERAGE-EXCEPTIONS.txt for the canonical statement of it): a
+# skip-list only checks "is this path excused" and stops looking, so it can
+# never notice when the excuse expires — a deleted fixture or an accidentally
+# -fixed diagnostic just silently vanishes from view. A ledger instead pins
+# the EXACT SET of (file, construct) pairs the gate expects to find, and the
+# gate diffs the ACTUAL finding set against this file in BOTH directions:
+#
+#   actual finding not in this ledger   -> FAIL ("new use of a removed
+#                                           construct" — a real regression)
+#   ledger entry not an actual finding  -> FAIL ("this got fixed or deleted —
+#                                           remove the ledger entry below")
+#
+# The second direction is the one a skip-list structurally cannot see, and
+# it's the reason this file exists instead of an in-script case statement.
+#
+# Every entry needs a real reason. "It's broken so I excluded it" is only
+# acceptable with a task number next to it and an owner fixing it.
+#
+# Format (tab-separated):  <path>\t<construct>\t<reason>
+# <construct> is the TIER1/TIER2 label check_removed_constructs.sh emits:
+# let_mut, record_keyword, function_keyword, backtick_infix, default_impl,
+# named_impl, let_else, at_name_hint.
+
+test/run_check_agreement_fixtures/p0_5_let_mut_removed.mdk	let_mut	verifies letMutRemovedMsg fires + its exact wording (P0-5 regression fixture; .expected pins the output)
+test/parse_error_loc_fixtures/backtick_infix.mdk	backtick_infix	verifies the backtick-removal diagnostic's caret location (test/diff_compiler_parse_error_loc.sh)
+test/native_fixtures/keyword_import_record/main.mdk	record_keyword	NOT stale: real regression test for `import record.*` (record as a MODULE NAME, not the removed keyword). Blocked on compiler bug T-11 — the removal diagnostic fires on the bare token regardless of syntactic position (also reproduces for `mut`/`function` as plain identifiers). Delete this entry when T-11 lands.
