@@ -237,6 +237,9 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodIfaceOf,
   methodArityOf,
+  ftPrefix,
+  ftLabelOf,
+  labelFallthrough,
 }
 
 -- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
@@ -258,15 +261,23 @@ gapLog = Ref []
 curGapBind : Ref String
 curGapBind = Ref "?"
 
--- The fallthrough target for a multi-clause function (or guarded match) emitted as
--- a CHAIN of single-clause decision trees: when clause K's pattern fails to match
--- (CTFail) OR its guard chain falls through (`__fallthrough__ ()`), control must
--- resume at clause K+1's entry block — exactly the interpreter's VFallthrough →
--- "try next clause" semantics (eval.mdk's fallthroughToNone).  Holds the current
--- next-clause LLVM label; "" means "no next clause" → the historical `@mdk_oob`
--- non-exhaustive abort.  Set per-clause by emitClauseChain; read by CTFail and the
--- `__fallthrough__` arm of emitApp.  A module-level Ref (mirrors gapLog) to avoid
--- threading the label through every emitTree/emitExpr arm.
+-- The CTFail target for a multi-clause function emitted as a CHAIN of single-clause
+-- decision trees: when clause K's PATTERN fails to match, control must resume at
+-- clause K+1's entry block — the interpreter's "try next clause" semantics.  Holds
+-- the current next-clause LLVM label; "" means "no next clause" → a genuine
+-- non-exhaustive-match abort.  Set per-clause by emitClauseChain; read ONLY by
+-- emitTree's CTFail arm.  A module-level Ref (mirrors gapLog) to avoid threading
+-- the label through every emitTree arm.
+--
+-- ⚠️ This Ref is for CTFail and NOTHING ELSE.  emitDecision/emitTrmcBody/emitGDispBody
+-- save+NULL it across a body-level `match` precisely because such a match's own CTFail
+-- is a genuine abort, not the enclosing chain's fallthrough.  The `__fallthrough__ ()`
+-- SENTINEL — desugar's "this clause's guard chain fell through" marker — is a
+-- different thing and used to read this same Ref, which is why a refutable
+-- pattern-guard on a multi-clause function MISCOMPILED (it desugars to a body-level
+-- CDecision, so the null erased its target and the sentinel became `@mdk_oob`).  The
+-- sentinel now carries its own target in the node (`__ft__<label>`, stamped by
+-- `labelFallthrough`) — see backend/emit_support.mdk.  Do NOT re-merge the two.
 fallthroughLabelRef : Ref String
 fallthroughLabelRef = Ref ""
 
@@ -296,15 +307,25 @@ closureArityRef = Ref []
 closureRetTyRef : Ref (List (String, LTy))
 closureRetTyRef = Ref []
 
--- emit a branch to the current next-clause fallthrough target, or the historical
--- @mdk_oob abort when there is none (single-clause / exhausted chains).
-emitFallthrough : Emit -> <Mut> (String, LTy)
-emitFallthrough e = match fallthroughLabelRef.value
-  "" =>
-    let _ = emit e "  call void @mdk_oob()"
-    ("0", LTInt)
-  lbl =>
+-- is this CVar name the fall-through sentinel — either BARE (`__fallthrough__`, no
+-- enclosing clause chain) or LABELLED by emit_support's `labelFallthrough`
+-- (`__ft__<block>`, "resume at that clause's block")?
+isFallthroughVar : String -> Bool
+isFallthroughVar x = x == fallthroughName || startsWith ftPrefix x
+
+-- lower the fall-through sentinel: a LABELLED one branches to the next clause's
+-- block; a BARE one (single-clause fn, or a `__fallthrough__` under a CLam, which
+-- labelFallthrough deliberately does not enter) has no next clause → the @mdk_oob
+-- non-exhaustive abort.  `@mdk_oob` is not a terminator, so the caller's
+-- store+branch stays well-formed; the `br` path leaves them in a dead anonymous
+-- block, which LLVM discards.
+emitFallthrough : Emit -> String -> <Mut> (String, LTy)
+emitFallthrough e fname = match ftLabelOf fname
+  Some lbl =>
     let _ = emit e ("  br label %" ++ lbl)
+    ("0", LTInt)
+  None =>
+    let _ = emit e "  call void @mdk_oob()"
     ("0", LTInt)
 
 -- ── TRMC (tail-recursion-modulo-cons) context (PLAN #56, TRMC-DESIGN.md) ─────
@@ -3334,7 +3355,7 @@ emitApp e env app =
               if isImplMethod e fname && hasArgs args then
                 let argOps = emitArgs e env args
                 emitMethodArgDispatch e fname argOps
-              else if fname == fallthroughName then emitFallthrough e else emitIndirect e env hd args
+              else if isFallthroughVar fname then emitFallthrough e fname else emitIndirect e env hd args
     CMethod name route implRoutes methRoutes =>
       let argOps = emitArgs e env args
       emitMethod e env name route implRoutes methRoutes argOps
@@ -5016,14 +5037,28 @@ emitClauseChain : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat,
 emitClauseChain _ _ _ [] _ _ _ _ _ = ()
 emitClauseChain e env arity (c::rest) roots slot endL rty outer =
   let nextL = chainNextLabel e rest outer
-  let arms = [clauseArm arity c]
-  let tree = compileTree [False] (implRows [c] 0)
+  -- Stamp this clause's next-clause label INTO its `__fallthrough__` sentinels
+  -- (emit_support's labelFallthrough) before building the arms, so the sentinel
+  -- lowers to `br %nextL` from the var name alone.  The old code left the sentinel
+  -- bare and had emitFallthrough read `fallthroughLabelRef` — which emitDecision
+  -- NULLS, so a refutable pattern-guard clause (whose guard chain desugars to a
+  -- body-level CDecision) fell through to `@mdk_oob` instead of the next clause.
+  let c2 = ftClause nextL c
+  let arms = [clauseArm arity c2]
+  let tree = compileTree [False] (implRows [c2] 0)
   let _ = setRef fallthroughLabelRef nextL
   let _ = emitTree e env roots arms roots slot endL rty tree
   if isEmptyL rest then ()
   else
     let _ = emit e (nextL ++ ":")
     emitClauseChain e env arity rest roots slot endL rty outer
+
+-- label a clause's fall-through sentinels with the block to resume at.  An EMPTY
+-- label means "no next clause" (the last clause of a top-level chain): leave the
+-- sentinels BARE so emitFallthrough lowers them to the non-exhaustive abort.
+ftClause : String -> (List Pat, CExpr) -> (List Pat, CExpr)
+ftClause "" c = c
+ftClause lbl (pats, body) = (pats, labelFallthrough body lbl)
 
 -- the next clause's entry label: the outer fallthrough when this is the last
 -- clause, else a fresh `clauseN` block label.
@@ -5995,8 +6030,9 @@ emitTree : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> L
 -- silent SIGTRAP, no output); call the noreturn @mdk_nonexhaustive_match (prints
 -- `runtime error [E-NONEXHAUSTIVE-MATCH]` to stderr, exits nonzero — the
 -- interpreter's message MINUS `file:L:C:`, Core IR carrying no loc) before the
--- `unreachable`, mirroring the div-by-zero trap.  emitFallthrough emits the branch
--- for the chained case; the redundant `unreachable` keeps the block well-formed.
+-- `unreachable`, mirroring the div-by-zero trap.  (The GUARD-chain half of "try the
+-- next clause" is NOT this arm — that is the `__fallthrough__` sentinel, lowered by
+-- emitFallthrough from the label stamped into the node.)
 emitTree e _ _ _ _ _ _ _ CTFail = match fallthroughLabelRef.value
   "" =>
     let _ = emit e "  call void @mdk_nonexhaustive_match()"

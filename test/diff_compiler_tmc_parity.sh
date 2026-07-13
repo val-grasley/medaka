@@ -16,14 +16,27 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# self-provision the wasm emit probes (CI shards build only build_oracles.sh
-# oracles; a SKIP here would silently drop the parity signal — build instead).
-[ -x "$ROOT/test/bin/wasm_emit_main" ] || {
-  echo "wasm emit probes missing — building (sh test/wasm/build_wasm_oracle.sh) ..."
-  sh "$ROOT/test/wasm/build_wasm_oracle.sh" > /dev/null 2>&1 || {
-    echo "skipping (could not build the wasm emit probes)"
-    exit 2
-  }
+# Self-provision the emit probes (CI shards build only build_oracles.sh oracles, and the
+# emit probes are NOT in its ENTRIES — a SKIP here would silently drop the parity signal).
+#
+# Check EVERY probe the census reads, not just the first one. This used to test only
+# wasm_emit_main, so a tree that happened to have that one but not wasm_emit_modules_main
+# sailed past the guard and then died inside tmc_census.sh with
+# "missing test/bin/wasm_emit_modules_main" — which reads like a regression and is not one.
+# A guard that checks a subset of its dependencies is a guard that lies.
+_need=""
+for _p in llvm_emit_main wasm_emit_main wasm_emit_modules_main; do
+  [ -x "$ROOT/test/bin/$_p" ] || _need="$_need $_p"
+done
+[ -z "$_need" ] || {
+  echo "emit probes missing:$_need — building (sh test/wasm/build_wasm_oracle.sh) ..."
+  sh "$ROOT/test/wasm/build_wasm_oracle.sh" > /dev/null 2>&1
+  for _p in llvm_emit_main wasm_emit_main wasm_emit_modules_main; do
+    [ -x "$ROOT/test/bin/$_p" ] || {
+      echo "skipping (could not build emit probe: $_p)"
+      exit 2
+    }
+  done
 }
 
 OUT="$(mktemp -d /tmp/tmc_parity.XXXXXX)"

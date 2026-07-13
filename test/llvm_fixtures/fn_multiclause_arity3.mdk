@@ -1,0 +1,23 @@
+-- COVERAGE GAP (found 2026-07-13, task T28): every `fn_multiclause_*` fixture was
+-- arity 1 or 2.  The multi-column clause matrix (roots = one occurrence word PER
+-- PARAM, since the per-call argument tuple was retired) is only meaningfully
+-- exercised at arity >= 3: `compileTree` must specialize a NON-leftmost column, and
+-- `bindArm`/`bindEach` must line pattern i up with param word i.  An off-by-one in
+-- that pairing is invisible at arity <= 2.
+--
+-- Deliberately mixes column KINDS across the 3 params (int literal / constructor /
+-- var) and puts the discriminating column in each position in turn, so a
+-- column/word misalignment cannot cancel out.
+-- sel 0 (P a b) z = a * 100 + b * 10 + z   -- discriminates on col 0
+-- sel x (P a b) 0 = x + a + b              -- discriminates on col 2
+-- sel x Q z       = x * z                  -- discriminates on col 1
+-- sel x _ z       = 0 - (x + z)
+data PQ = P Int Int | Q
+
+sel : Int -> PQ -> Int -> Int
+sel 0 (P a b) z = a * 100 + b * 10 + z
+sel x (P a b) 0 = x + a + b
+sel x Q z = x * z
+sel x _ z = 0 - (x + z)
+
+main = sel 0 (P 1 2) 3 + sel 5 (P 1 2) 0 * 1000 + sel 5 Q 3 * 10000 + sel 5 (P 9 9) 3 * 100000

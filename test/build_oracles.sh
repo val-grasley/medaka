@@ -196,16 +196,34 @@ if [ "${1:-}" = "--for" ]; then
   done
   [ -n "$_gates" ] || { echo "FAIL: --for matched no gates: $*"; exit 1; }
   _sel=""
+  _foreign=""
   for _g in $_gates; do
     for _o in $(grep -ohE 'test/bin/[a-z_0-9]+' "$_g" 2>/dev/null | sed 's|test/bin/||' | sort -u); do
       # only accept names that are real entries — a gate may mention a path we
       # don't build, and silently "building" a non-entry would be a lie.
       case " $ENTRIES " in
         *" $_o "*) case " $_sel " in *" $_o "*) ;; *) _sel="$_sel $_o" ;; esac ;;
+        # A test/bin/<name> this script does NOT know how to build. Until 2026-07-13 we
+        # DROPPED these silently — and that is a phantom-FAIL generator, because the gate
+        # still READS them. The emit probes (llvm_emit_main, wasm_emit_main,
+        # wasm_emit_modules_main) are not in ENTRIES at all; they are built by
+        # test/wasm/build_wasm_oracle.sh. So the documented fresh-worktree recipe
+        # (`--for 'diff_compiler_*'`) left diff_compiler_tmc_parity with no probes and it
+        # failed with "missing test/bin/wasm_emit_modules_main" — a red gate for no reason,
+        # on a clean tree, following the instructions. An agent lost time to exactly this.
+        #
+        # Dropping is still the right behavior (we genuinely cannot build them here). SAYING
+        # NOTHING was the bug. Now it names them and names the script that does build them.
+        *) case " $_foreign " in *" $_o "*) ;; *) _foreign="$_foreign $_o" ;; esac ;;
       esac
     done
   done
   [ -n "$_sel" ] || { echo "FAIL: --for selected no oracles from: $*"; exit 1; }
+  if [ -n "$_foreign" ]; then
+    echo "note: these gates also read probe binaries this script does not build:$_foreign"
+    echo "      build them with:  sh test/wasm/build_wasm_oracle.sh"
+    echo "      (skipping them here is correct — but they are NOT optional for those gates.)"
+  fi
   printf 'building %s of %s oracles (only what these gates read)\n' \
     "$(printf '%s\n' $_sel | grep -vc '^$')" "$(printf '%s\n' $ENTRIES | grep -vc '^$')"
   ENTRIES="$_sel"
