@@ -1,3 +1,107 @@
+# Next-orchestrator handoff — Medaka (2026-07-13)
+
+## 🚦 READ THIS FIRST: how work lands now
+
+**`main` is PROTECTED. You cannot push to it.** Everything goes through a PR.
+
+```sh
+git checkout -b <topic>
+# ... work; `make preflight` while iterating ...
+git push -u origin <topic>
+gh pr create --fill
+gh pr merge --auto --merge      # self-merges the moment all 9 checks go green
+```
+
+**9 required checks:** six `gates (…)` shards, **`soundness`**, `seed-health`, `inlang`.
+**0 approvals** — the checks are the gate, not a human. **No admin bypass.**
+
+- **`soundness` must never be dropped.** It runs the compiler-source typecheck + the
+  self-compile fixpoint. **All 83 gates pass on an ill-typed compiler** (`make medaka` does
+  not gate on type errors) — that is exactly how a compiler with unbound constructors shipped
+  to main today, with every gate green.
+- **A PR must be up to date with main before it merges** (strict). CI therefore tests **your
+  branch merged onto main**, not your branch alone. This is load-bearing: two green branches
+  have merged cleanly into a **crashing** tree.
+- **No merge queue, and there cannot be one** — GitHub requires an org-owned repo; this one is
+  user-owned. `strict` is the mitigation. The `merge_group:` trigger is already in `ci.yml`, so
+  a queue is a one-line ruleset addition the day this moves to a `medaka` org.
+
+## 🚨 THE ONE THING THAT WILL BITE YOU: agents build in YOUR worktree
+
+The harness injects **your** `CLAUDE.md` path into every subagent's context, so agents `cd`
+into **your** tree. **Four incidents in one session** (T32):
+
+- one ran `make medaka` concurrently with mine, same `./medaka` — its build exited 0 and was
+  **worthless**;
+- one's `git diff > patch` swept up a sibling's unstaged golden;
+- one had uncommitted **emitter** edits present while I ran `refresh_seed.sh`;
+- one had its uncommitted `typecheck.mdk` semantics change **swept into my commit by
+  `git add -A`** — `ab395e0b`'s message claims it touches only test ledgers. It does not.
+
+**Rules, until the harness is fixed:**
+1. **State the absolute worktree path in every agent prompt**, and tell the agent to ignore the
+   CLAUDE.md path in its context.
+2. **STAGE COMMITS BY PATH. NEVER `git add -A`.**
+3. Never run `refresh_seed.sh` / `make medaka` in a tree you have not just confirmed clean.
+
+## Verifying the seed (if you ever suspect contamination)
+
+C3a passing does **NOT** prove the seed is clean — I claimed that and was wrong. A contaminated
+seed affects the *codegen* of the intermediate generation while the emission still comes from
+source, so C3a can pass with a dirty seed. The only real test is a byte comparison:
+
+```sh
+git worktree add --detach /tmp/chk <sha> && cd /tmp/chk
+gunzip -c compiler/seed/emitter.ll.gz > /tmp/committed.ll
+sh test/refresh_seed.sh && sh test/refresh_seed.sh    # TWICE — see below
+gunzip -c compiler/seed/emitter.ll.gz > /tmp/fresh.ll
+cmp /tmp/committed.ll /tmp/fresh.ll                   # identical => clean
+```
+
+**`refresh_seed.sh` is ONE pass and is NOT idempotent after a codegen change — run it TWICE.**
+Pass 1 mints with the old-generation emitter (`C3a: NO`); pass 2 mints with an emitter built
+from the new seed and converges (`C3a: YES`).
+
+**A stale seed can make the fixpoint SEGFAULT on a perfectly correct change.** After the
+arg-tuple removal the fixpoint died at step 2 while `make medaka` succeeded and all 83 gates
+passed. Nothing was wrong with the merge — the *intermediate* generation, compiled by the stale
+seed's fat pre-optimization codegen, blew the stack. **Re-mint before you go bug-hunting.**
+
+## State of the tree
+
+- `run_gates.sh` baseline: **83 passed / 0 failed / 0 skipped**
+- Coverage: **103 of 110** gates in CI; the rest ledgered in `test/CI-COVERAGE-EXCEPTIONS.txt`
+  (one, `build_construct_coverage`, is **RED and unexamined** — 138 ok / 1 failing)
+- Fixpoint: C3a YES + C3b YES byte-for-byte · compiler source type-clean
+- `run_gates` now **REFUSES** to run against stale oracles (they don't fail, they *lie* — three
+  agents were burned, one nearly re-diagnosed its own already-fixed bug from a stale binary)
+
+## Open bugs, worst first
+
+| | |
+|---|---|
+| **T33(a)** | **SILENT.** A definer shadow whose standalone is *constrained* miscompiles — build prints **garbage**, even with no impl at the receiver head. The `RLocal`-vs-dict-passing seam. Fix = thread a dict through ast + route + eval + LLVM + wasm. Real work, not a patch. |
+| **T30** | A duplicate top-level function name **SEGFAULTS the emitter** instead of erroring; the diagnostic ("clauses must be contiguous") gives *actively wrong* advice. |
+| **T34** | **TWO auto-print contracts.** The llvm gate's probe prints `false`; `medaka build` prints `False`. The gate validates a path users never take. Also: there is **no supported way** to regenerate a `test/llvm_fixtures` golden — AGENTS.md's recipe is wrong for that corpus. |
+| **T33(b)** | A multi-typaram interface bypasses the definer-shadow machinery entirely (loud, not silent). |
+| **T21** | 11th quadratic: `resolve`'s scopes are `List String` with linear `contains`. Top allocator, 3.82x per doubling. |
+| **T19** | `medaka check` runs the front end 2–3x per invocation (~3x constant factor). |
+| **T27** | Missing stdlib: an effectful traversal family (`mapMut`/`foldlMut`/`zipWithMut`). Because `map`/`zip`/`foldl` are pure, **every** `<Mut>` traversal in the compiler gets hand-rolled — the emitter carries four near-clones. |
+| **T20** | Diagnostic quality: a **fabricated `1:0` source location**; leading-`->` in a multi-line signature rejected with a misleading "indentation" error. |
+
+## What the friction rule is worth
+
+Most of today's best finds came from the mandatory FRICTION REPORT, not from the assigned
+tasks: the formatter writing a raw NUL that made `grep` silently blind; the two-rebuild
+benchmarking trap (an agent measured its own 2.2x win as a 2.5x *slowdown*); the stale-oracle
+false REDs; `preflight` being broken for every compiler change. **Keep demanding it, and keep
+demanding it name MISSING STDLIB FUNCTIONS.**
+
+---
+---
+
+# ── ARCHIVE (previous handoffs below) ──
+
 # Next-orchestrator handoff — Medaka, WasmGC backend + soak (2026-06-19)
 
 ## RESUME — ⚖️ TMC PARITY ARC SHIPPED + MERGED TO MAIN: both backends apply TMC to the SAME functions, gated. LLVM gained dispatch-graph (b′) TMC; a SILENT guarded-arm TRMC miscompile found+fixed. Branch `tmc-parity-arc`, merged. (2026-07-13)
