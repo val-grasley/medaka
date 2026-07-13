@@ -51,6 +51,49 @@ you, you must update and re-run. That is the whole point — and it is not a for
 **PR CI tests your branch. Only the merged result matters.** Never assume a clean auto-merge
 means agreement; see "A clean auto-merge is NOT agreement" below.
 
+### ⚠️ QUEUED PRs COST O(N²). BATCH THEM.
+
+`strict` means **every merge invalidates every other open PR** — each one goes `BEHIND`, must be
+updated to the new `main`, and must re-run all nine checks. With **N** PRs queued you pay
+roughly **N²/2** CI runs to land them, and the last one in line re-runs N times. A merge queue
+is exactly what batches that away, and **we do not have one** (see below).
+
+So when several PRs are in flight at once, **consider combining them into one branch.**
+
+**And expect to babysit the update.** `gh pr merge --auto` does **not** update a branch that
+falls `BEHIND` — it only waits for checks. When another PR merges ahead of yours, yours goes
+stale and its auto-merge just sits there. Kick it:
+
+```sh
+gh api -X PUT repos/<owner>/<repo>/pulls/<N>/update-branch
+```
+
+(`allow_update_branch` is enabled on the repo, which is what makes that call — and the "Update
+branch" button — available at all. It still has to be *triggered*; GitHub will not do it for
+you.) Every kick re-runs all nine checks. That is the O(N²) above, in the form you will actually
+meet it.
+
+**Batch when:**
+- The changes are **related** (same subsystem, same arc) — they were going to be reviewed
+  together anyway.
+- They are **small and low-risk** (docs, a gate, a fixture, a ledger entry). Two doc PRs racing
+  each other through nine checks is pure waste.
+- You are the author of all of them — batching someone else's work into your branch steals their
+  attribution and their bisect point.
+
+**Do NOT batch when:**
+- One of them is **risky and one is not.** A red result on a combined branch tells you the
+  *batch* is bad, not *which change* is bad — you have destroyed the bisect. Keep an emitter
+  change, a typechecker change, and a golden re-cut **separate**, precisely so a red CI names
+  the culprit.
+- The changes touch the **same files** — you have just recreated the merge problem inside your
+  own branch, with none of git's warnings. (And remember: **a clean auto-merge is not
+  agreement.**)
+- One is ready and one is not. Do not hold a finished fix hostage to an unfinished one.
+
+**Rule of thumb:** batch for *throughput*, split for *diagnosis*. If you would not be able to
+tell which half broke it, split.
+
 ### There is NO merge queue, and there cannot be one here
 
 The `merge_queue` ruleset rule is rejected by the API: **GitHub's merge queue requires an
@@ -82,7 +125,31 @@ scope-read (bounded) → frame a precise prompt → get approval → spawn (bg, 
 
 ---
 
+## Workstreams — the backlog, split so orchestrators don't collide
+
+`.claude/workstreams/` holds one self-contained backlog per orchestrator:
+**TESTING** · **COMPILER-SOUNDNESS** · **PERF** · **STDLIB** · **DIAGNOSTICS** · **HARNESS**.
+
+Each names the files it touches, and `workstreams/README.md` carries the **collision map** —
+read it before running two in parallel. The short version: TESTING is safe alongside anything
+(it only touches `test/`); `stdlib/core.mdk` is the **prelude**, so it moves every golden and
+must land alone at a checkpoint.
+
+---
+
 ## Agents do NOT run the full suite (2026-07-13)
+
+**And with CI, they should not run it AT ALL unless it is genuinely load-bearing for their
+change.** The full suite is CI's job now — six parallel hosted runners, free, on someone else's
+machine. Locally it costs the *shared box*: one agent running all 83 gates plus a 54-binary
+oracle build pushes the load average past 10 and turns everyone else's 30-second gate run into
+several minutes. That has happened repeatedly.
+
+Instruct every agent: **`make preflight` while iterating; push; let CI answer.** A full local
+run is justified only for a `compiler/backend/*` change (the fixpoint is decisive and CI is too
+late), a `compiler/support/*` or `stdlib/core.mdk` change (blast radius genuinely is everything),
+a merge of two branches that touched one subsystem, or a CI failure you cannot reproduce.
+
 
 **The old default — every agent runs `make medaka` + `FORCE=1 build_oracles.sh` +
 the full gate suite — is what serialized this box.** `build_oracles.sh` compiles

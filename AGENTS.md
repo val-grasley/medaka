@@ -183,6 +183,36 @@ handle — it doesn't move when wording changes). When WRITING a new diagnostic,
 `compiler/ERROR-QUALITY.md` (the rubric + copy standard — located, names the rule, actionable fix,
 carries a code) and add the code to the taxonomy in `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
 
+### 🛑 DO NOT RUN THE FULL SUITE LOCALLY. CI RUNS IT, FOR FREE, ON SOMEONE ELSE'S MACHINE.
+
+**Now that every change goes through a PR, the full suite is CI's job — not yours.** Run the
+gates your change actually touches; push; let CI run the other 80 across six parallel hosted
+runners while you do something useful.
+
+```sh
+make preflight                          # ✅ THE LOOP: derives the gate set from YOUR diff
+sh test/run_gates.sh 'diff_compiler_parse*'   # ✅ targeted, by name
+sh test/run_gates.sh                    # ❌ all 83. Don't — unless you truly need it.
+FORCE=1 sh test/build_oracles.sh        # ❌ all 54 oracles. Almost never right.
+```
+
+**This is a real cost, not an aesthetic preference.** Several agents share this box. One agent
+running the whole suite + a full oracle build takes the load average past 10 and **turns a
+30-second gate run into several minutes for everyone else** — which has happened, repeatedly.
+`build_oracles.sh` builds **54 probe binaries** (54 × `medaka build` + clang) when your gates
+read **four**.
+
+**When a full local run IS justified** — you decide, but these are the real cases:
+- You changed **`compiler/backend/*`** → run `selfcompile_fixpoint.sh`. For the emitter it is
+  the decisive gate and finding out in CI is too late. (`preflight` forces this for you.)
+- You changed **`compiler/support/*`** or **`stdlib/core.mdk`** → it is used *everywhere*;
+  the blast radius genuinely is the whole suite.
+- You are about to **merge two branches that touched the same subsystem** — pre-merge greens do
+  not carry over, and a clean auto-merge is not agreement.
+- CI is telling you something you cannot reproduce, and you need to bisect locally.
+
+Outside those: **push and let CI answer.** A green preflight plus a PR is the fast path.
+
 ### ⚡ START HERE: `make preflight` (2026-07-13). Do NOT run the whole suite.
 
 **The agent loop is `make preflight`.** It derives the gate set from `git diff
