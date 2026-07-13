@@ -66,10 +66,13 @@ machine." File:line references are from the audited tree.
    (build shells to clang); acceptable for a developer audience; optionally
    smoothed with a prebuilt `libmedaka_rt`.
 
-6. **Hardcoded `/tmp` scratch paths** — the IR file `/tmp/medaka_build_<out>.ll`
-   (`build_cmd.mdk:148`) and GC probe (`:114-116`). Works on mac/linux but assumes
-   a writable `/tmp`; namespaced only by output basename (race note already in
-   AGENTS.md). Low priority; note for hardening.
+6. ~~**Hardcoded `/tmp` scratch paths**~~ — **FIXED 2026-07-13.** The IR file was
+   `/tmp/medaka_build_<output basename>.ll` and the GC probe used *fixed* `/tmp`
+   paths, so concurrent builds sharing an output basename silently linked each
+   other's IR (a wrong binary, not a crash — 19/20 concurrent iterations wrong).
+   `build_cmd.mdk` now stages every scratch file in a per-invocation `mktemp -d`
+   directory and removes it afterwards. Residual (unchanged, benign): the temp
+   root is still `/tmp`, i.e. a writable `/tmp` is assumed.
 
 7. **`brew --prefix bdw-gc` is macOS-only** (`build_cmd.mdk:99`) — harmless middle
    tier; on Linux success rides on pkg-config or a system `-lgc`.

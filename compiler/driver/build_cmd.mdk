@@ -26,7 +26,7 @@
 
 import support.util.{reverseL, stringTrim}
 import driver.loader.{entrySearchRoots}
-import support.path.{dirOf, baseOf, chopExt, joinPath}
+import support.path.{dirOf, chopExt, joinPath}
 
 -- A build either succeeds (writing the binary) or fails with a message.
 public export data BuildResult = BuildOk String | BuildErr String
@@ -97,24 +97,72 @@ stripTrailingUnit s =
   else
     s
 
+-- ---- per-invocation scratch directory ----
+-- SCRATCH-PATH INVARIANT.  Every temp file this driver stages — the emitted
+-- .ll / .wat, and the bare-`-lgc` probe source + probe binary — lives inside ONE
+-- directory created by `mktemp -d`, unique to this `medaka build` process, and
+-- removed before the driver returns.
+--
+-- This is the only scheme that is actually collision-proof.  Two earlier ones
+-- were not:
+--   * keying the IR path on the OUTPUT BASENAME (`/tmp/medaka_build_<base>.ll`)
+--     is only *basename*-safe.  /tmp is GLOBAL: two concurrent builds of
+--     DIFFERENT inputs that both write `-o <somedir>/out` — different worktrees,
+--     different sessions, different repos — collided on one
+--     /tmp/medaka_build_out.ll and linked each other's IR.  The failure was not
+--     a crash but a stable-looking WRONG binary.
+--   * the gc probe paths (/tmp/medaka_build_gcprobe.{c,out}) were FIXED — not
+--     uniquified at all.
+-- Even keying on the ABSOLUTE output path would not suffice: a rebuild racing
+-- itself writes the same output path.  mktemp -d allocates the directory
+-- atomically, so uniqueness depends on nothing but the process.  The 6-X
+-- template is accepted by both GNU and BSD mktemp (dual-platform).
+makeTempDir : Unit -> <IO> Result String String
+makeTempDir _ = match runCommand "mktemp" ["-d", "/tmp/medaka_build_XXXXXX"]
+  Err e => Err e
+  Ok (0, out, _) =>
+    let dir = stringTrim out
+    if dir == "" then Err "mktemp -d printed no path" else Ok dir
+  Ok (_, _, mtErr) =>
+    let msg = stringTrim mtErr
+    Err (if msg == "" then "mktemp -d failed" else msg)
+
+-- Best-effort unlink of every entry the build staged in the scratch dir.  The
+-- driver only ever writes flat files there, so removeFile suffices.
+removeEntries : String -> List String -> <IO> Unit
+removeEntries _ [] = ()
+removeEntries dir (n::rest) =
+  let _ = removeFile (joinPath dir n)
+  removeEntries dir rest
+
+-- Tear the scratch dir down so a build leaks nothing into /tmp.  Every Result is
+-- discarded on purpose: a cleanup failure must never fail an otherwise-good build.
+cleanupTempDir : String -> <IO> Unit
+cleanupTempDir dir = match listDir dir
+  Err _ => ()
+  Ok entries =>
+    let _ = removeEntries dir entries
+    let _ = removeDir dir
+    ()
+
 -- ---- Boehm GC flag detection (pkg-config → brew → bare -lgc) ----
--- Returns Some (cflags, libs) or None.  Mirrors detect_gc in build_cmd.ml and
--- the harness scripts.
-detectGC : String -> <IO> Option (List String, List String)
-detectGC cc = match runCommand "pkg-config" ["--exists", "bdw-gc"]
+-- Returns Some (cflags, libs) or None.  tmpDir is the caller's per-invocation
+-- scratch dir (the bare-lgc probe is staged inside it).
+detectGC : String -> String -> <IO> Option (List String, List String)
+detectGC cc tmpDir = match runCommand "pkg-config" ["--exists", "bdw-gc"]
   Ok (0, _, _) =>
     let cflags = gcQuery "pkg-config" ["--cflags", "bdw-gc"]
     let libs = gcQuery "pkg-config" ["--libs", "bdw-gc"]
     Some (splitWS cflags, splitWS libs)
-  _ => detectGCBrew cc
+  _ => detectGCBrew cc tmpDir
 
 gcQuery : String -> List String -> <IO> String
 gcQuery prog args = match runCommand prog args
   Ok (_, out, _) => stringTrim out
   Err _ => ""
 
-detectGCBrew : String -> <IO> Option (List String, List String)
-detectGCBrew cc = match runCommand "brew" ["--prefix", "bdw-gc"]
+detectGCBrew : String -> String -> <IO> Option (List String, List String)
+detectGCBrew cc tmpDir = match runCommand "brew" ["--prefix", "bdw-gc"]
   Ok (0, out, _) =>
     let prefix = stringTrim out
     if prefix != "" && fileExists (joinPath prefix "include/gc.h") then
@@ -123,15 +171,18 @@ detectGCBrew cc = match runCommand "brew" ["--prefix", "bdw-gc"]
         ["-L" ++ joinPath prefix "lib", "-lgc"],
       )
     else
-      detectGCBare cc
-  _ => detectGCBare cc
+      detectGCBare cc tmpDir
+  _ => detectGCBare cc tmpDir
 
--- Bare -lgc probe: compile a trivial gc.h program from a temp source.
-detectGCBare : String -> <IO> Option (List String, List String)
-detectGCBare cc =
-  let probe = "/tmp/medaka_build_gcprobe.c"
+-- Bare -lgc probe: compile a trivial gc.h program from a temp source.  Both the
+-- probe source and its output binary go in the per-invocation scratch dir — they
+-- used to be fixed /tmp paths, which two concurrent builds raced on.
+detectGCBare : String -> String -> <IO> Option (List String, List String)
+detectGCBare cc tmpDir =
+  let probe = joinPath tmpDir "gcprobe.c"
+  let probeOut = joinPath tmpDir "gcprobe.out"
   let _ = writeFile probe "#include <gc.h>\nint main(void){return 0;}\n"
-  match runCommand cc [probe, "-lgc", "-o", "/tmp/medaka_build_gcprobe.out"]
+  match runCommand cc [probe, "-lgc", "-o", probeOut]
     Ok (0, _, _) => Some ([], ["-lgc"])
     _ => None
 
@@ -149,8 +200,21 @@ runBuild root medaka cc TWasm inputAbs outPath =
   runBuildWasm root medaka inputAbs outPath
 
 -- ---- native (LLVM/clang) target — the original path ----
+-- Wrapper: allocate the per-invocation scratch dir (see makeTempDir), run the
+-- build inside it, then tear it down whatever the outcome.  `res` is bound (and
+-- so fully forced — Medaka is strict) BEFORE cleanupTempDir runs, so the .ll is
+-- still on disk while clang reads it.
 runBuildNative : String -> String -> String -> String -> String -> <IO> BuildResult
-runBuildNative root medaka cc inputAbs outPath =
+runBuildNative root medaka cc inputAbs outPath = match makeTempDir ()
+  Err e =>
+    BuildErr "error: could not create a scratch directory for the build: \{e}"
+  Ok tmpDir =>
+    let res = runBuildNativeIn root medaka cc inputAbs outPath tmpDir
+    let _ = cleanupTempDir tmpDir
+    res
+
+runBuildNativeIn : String -> String -> String -> String -> String -> String -> <IO> BuildResult
+runBuildNativeIn root medaka cc inputAbs outPath tmpDir =
   let emitter = joinPath root "compiler/entries/llvm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
@@ -165,12 +229,11 @@ runBuildNative root medaka cc inputAbs outPath =
   -- swallow the sibling-import case whenever a `medaka.toml` sat above the
   -- entry's own directory.
   let inputRoots = entrySearchRoots (dirOf inputAbs)
-  -- Key the temp IR on the OUTPUT path (unique per build invocation), NOT the
-  -- input basename: two concurrent `medaka build` of same-named inputs (e.g. two
-  -- multi-module dirs each with entry.mdk) would otherwise collide on one
-  -- /tmp/medaka_build_entry.ll and corrupt each other. Output paths are distinct
-  -- per invocation, so this makes parallel builds race-safe.
-  let llPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".ll"
+  -- Stage the IR inside THIS invocation's private scratch dir (makeTempDir).  It
+  -- used to be /tmp/medaka_build_<output basename>.ll, which is only
+  -- basename-unique in a GLOBAL directory — concurrent builds writing the same
+  -- output basename (very common: `-o <tmpdir>/out`) overwrote each other's IR.
+  let llPath = joinPath tmpDir "program.ll"
   let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let emitter2 = envOr "MEDAKA_EMITTER" defaultMedakaEmitter
   let useNative = emitter2 != ""
@@ -188,7 +251,7 @@ runBuildNative root medaka cc inputAbs outPath =
       if stringLength ir == 0 then BuildErr "error: emitter produced empty IR for \{inputAbs}\n\{emitErr}"
       else match writeFile llPath ir
         Err e => BuildErr ("error: could not write IR: " ++ e)
-        Ok _ => clangLink cc rtC llPath outPath inputAbs
+        Ok _ => clangLink cc rtC llPath outPath inputAbs tmpDir
 
 -- ---- wasm (WasmGC + wasm-tools) target ----
 -- Structurally identical to runBuildNative: run the emitter (here the WasmGC
@@ -209,7 +272,16 @@ runBuildNative root medaka cc inputAbs outPath =
 -- <runtime> <core> <entry> <inputDir> <compiler> <stdlib> (the wasm entry takes
 -- any number of roots after the entry).
 runBuildWasm : String -> String -> String -> String -> <IO> BuildResult
-runBuildWasm root medaka inputAbs outPath =
+runBuildWasm root medaka inputAbs outPath = match makeTempDir ()
+  Err e =>
+    BuildErr "error: could not create a scratch directory for the build: \{e}"
+  Ok tmpDir =>
+    let res = runBuildWasmIn root medaka inputAbs outPath tmpDir
+    let _ = cleanupTempDir tmpDir
+    res
+
+runBuildWasmIn : String -> String -> String -> String -> String -> <IO> BuildResult
+runBuildWasmIn root medaka inputAbs outPath tmpDir =
   let emitter = joinPath root "compiler/entries/wasm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
@@ -217,10 +289,10 @@ runBuildWasm root medaka inputAbs outPath =
   let stdlibDir = joinPath root "stdlib"
   -- P0-13: see the comment on runBuildNative's inputRoots — same fix.
   let inputRoots = entrySearchRoots (dirOf inputAbs)
-  -- Key on the OUTPUT path (unique per invocation) so concurrent wasm builds of
-  -- same-named inputs don't collide on one /tmp/medaka_build_<in>.wat (see the
-  -- native path above for the full rationale).
-  let watPath = "/tmp/medaka_build_" ++ baseOf outPath ++ ".wat"
+  -- Same scratch-path invariant as the native path: the WAT is staged in THIS
+  -- invocation's private mktemp dir, not at a globally-shared
+  -- /tmp/medaka_build_<output basename>.wat that a concurrent build can clobber.
+  let watPath = joinPath tmpDir "program.wat"
   let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
   let useNativeBin = wasmEmitter != ""
@@ -275,8 +347,8 @@ wasmAssemble watPath outPath inputAbs = match runCommand "wasm-tools" ["parse", 
 -- the loader's root-ordered search and build_cmd.ml's emit_argv.
 
 -- STEP 2: clang the IR + C runtime + Boehm GC into a native binary.
-clangLink : String -> String -> String -> String -> String -> <IO> BuildResult
-clangLink cc rtC llPath outPath inputAbs = match detectGC cc
+clangLink : String -> String -> String -> String -> String -> String -> <IO> BuildResult
+clangLink cc rtC llPath outPath inputAbs tmpDir = match detectGC cc tmpDir
   None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config"
   Some (gcCflags, gcLibs) =>
     -- Optimization level is overridable via MEDAKA_CLANG_OPT (default -O2). The

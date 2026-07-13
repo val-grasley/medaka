@@ -180,9 +180,17 @@ default **-O2** — it's the reused workhorse), `ORACLE_OPT` (oracle clang, defa
 fixpoint; NOT the parallel oracle build, where 10× the RSS causes pressure). See
 `compiler/PERF-RESULTS.md`.
 
-⚠️ **When parallelizing a gate that shells to `medaka build`, watch for same-named
-inputs** (e.g. multiple `entry.mdk`): `build_cmd.mdk` keys its temp IR on the
-OUTPUT path (fixed 2026-07-02) so concurrent builds are race-safe, but ALWAYS run a
+**Concurrent `medaka build` is scratch-path safe (2026-07-13).** `build_cmd.mdk` stages every
+scratch file it writes — the emitted `.ll`/`.wat` and the bare-`-lgc` probe — inside ONE
+`mktemp -d` directory unique to that build process, and removes it on the way out. Uniqueness
+therefore depends on nothing but the process: not the input name, not the output basename, not the
+output path. ⚠️ **This claim was previously FALSE and the failure mode was silent.** Until
+2026-07-13 the IR path was keyed on the OUTPUT BASENAME in global `/tmp`
+(`/tmp/medaka_build_<base>.ll`) and the gc-probe paths were fixed constants, so two concurrent
+builds of *different* programs that both wrote `-o <somedir>/out` — different worktrees, different
+sessions, different repos — clobbered each other's IR and produced a **stable-looking WRONG
+binary** (measured: 19/20 concurrent iterations wrong). Anything that "keys the temp file on
+something distinctive" is a trap; the only correct answer is a per-process temp dir. Still run a
 newly-parallelized gate several times — a temp-collision flake only shows ~1 in N.
 
 **In a `.claude/worktrees/<name>` worktree:** `make medaka` works from the worktree
