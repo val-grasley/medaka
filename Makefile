@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links
+.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -95,6 +95,13 @@ ci: medaka
 ##           and test/check_doc_links.sh's header for the FILE/REF format.
 docs-links:
 	sh test/check_doc_links.sh
+
+## docs-index — regenerate docs/README.md (THE doc index) from every doc's H1
+##           + `**Status:**` banner. GENERATED file — never hand-edit it; run
+##           this after moving/adding/renaming a doc. Idempotent (same input
+##           -> byte-identical output), pure text analysis, no build.
+docs-index:
+	sh test/gen_docs_index.sh
 
 ## clean   — remove native build artifacts (keeps the checked-in seed)
 clean:
