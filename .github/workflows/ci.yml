@@ -192,6 +192,20 @@ jobs:
               # silent-green failure this suite exists to prevent. Never relax this.
               test/*) docs_only=false ;;
 
+              # ── SYNTAX.md IS NOT PROSE — IT IS AN EXECUTABLE SPEC. ────────────────
+              # AGENTS.md designates SYNTAX.md the ground truth for what the binary
+              # accepts, and test/check_syntax_examples.sh RUNS every one of its
+              # examples through `medaka check`. That gate needs a built compiler, so
+              # it lives in a gate shard — and shards are SKIPPED when docs_only=true.
+              # Classifying a SYNTAX.md edit as docs-only would therefore skip the one
+              # gate that exists to check it, on the one change that needs it.
+              #
+              # This is not hypothetical: SYNTAX.md shipped for months documenting FIVE
+              # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
+              # impls, default impl, @Name) because nothing ever executed it. Same
+              # silent-green shape as the test/ arm above; same answer.
+              SYNTAX.md) docs_only=false ;;
+
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
 
@@ -408,6 +422,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # ── DELIBERATELY UNGUARDED: this step runs even when docs_only=true. ─────────
+      # Every other step in every heavy job is skipped on a docs-only PR. A doc-link
+      # gate guarded that way would be skipped on precisely the PRs it exists to
+      # police — present in the repo, looking like protection, providing none.
+      # It needs no compiler (pure text analysis), so it is nearly free to always run.
+      #
+      # Lives in `soundness` because that job already answers "is the tree coherent?",
+      # and because soundness is a REQUIRED check — so this gates on merge today,
+      # with no repo-settings change needed to make a new job required.
+      - name: Docs must not cite dead paths
+        run: sh test/check_doc_links.sh
+
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
         run: |
