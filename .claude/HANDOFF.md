@@ -81,10 +81,18 @@ All have minimal repros in their task descriptions. **The two silent miscompiles
    gates correctly); must be a **constraint/missing-impl** error (a plain `Type mismatch` IS gated); and **the exit code is 1
    either way** — `run` still exits nonzero, just for the wrong reason (unrelated runtime panic). Any "does run reject this?"
    probe answers yes. Assert on the DIAGNOSTIC and on whether the program EXECUTED.
-3. **`#42` ⚠️ `floatToString` truncates to ~12 sig digits — Float print/parse ROUND-TRIP IS BROKEN.** `0.1 + 0.2` prints as
-   `0.3`, not `0.30000000000000004`. Not cosmetics: **`stdlib/json.mdk` serializes Floats through this**, so it's a data-corruption
-   path. Needs shortest-round-trip (Ryu/Grisu). Adjacent known gap: scientific-notation float literals are REJECTED (`1e308` →
-   `Unbound variable: e308`) — if you can't print full precision AND can't parse scientific notation, Float isn't usable for data.
+3. **`#42` ⚠️ THE FLOAT-FIDELITY ARC — three filed bugs that are ONE problem, and it is ACTIVELY DESTROYING SOURCE.**
+   (a) `floatToString` truncates to ~12 sig digits — `0.1 + 0.2` prints `0.3`, not `0.30000000000000004`. It prints a value that
+   **is not the float you have**; print-then-reparse gives a *different* Float. (b) The **lexer REJECTS scientific-notation float
+   literals** (`1e308` → `Unbound variable: e308`) — long-standing. (c) ⚠️ **Therefore `medaka fmt --write` DESTROYS SOURCE**
+   (B10, verified by `sqlite-arc`, `sqlite/findings/COMPILER-BUGS.md`): `big = 9000000000000000.0` → fmt writes `big = 9e+15`
+   via `floatToString` → **the lexer can't read it back and the file no longer compiles.**
+   **⚠️⚠️ THIS IS LIVE IN OUR OWN WORKFLOW** — the pre-commit hook runs `medaka fmt`, and every agent prompt instructs
+   `medaka fmt --write` before committing. Any `.mdk` with a float ≥ 1e15 is silently destroyed.
+   **They are one arc:** the correct fix for (a) is shortest-round-trip (Ryu/Grisu), and the shortest round-trip of a large float
+   *is* scientific notation — so fixing (a) makes (c) WORSE unless (b) is fixed too. The printer must emit only what the lexer can
+   read. **One property test pins all three: for any Float `f`, `parse(floatToString f) == f` and `lex(print f)` succeeds.**
+   Blast radius: `stdlib/json.mdk` serializes Floats through this (data-corruption path); sqlite Float columns; any Float golden.
 4. **`#39` REGRESSION — `check` wrongly REJECTS a valid program** where a fn PARAMETER shadows a same-named top-level fn
    (`applyEq eq x y = eq x y`). My hypothesis (BISECT, don't trust it): the **P0-19 shadow work over-firing on a local binder**,
    NOT the Index arc as the audit guessed. ⚠️ Do NOT fix by weakening P0-19 — it closed two silent-build-garbage holes.
