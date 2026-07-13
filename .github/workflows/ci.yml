@@ -116,17 +116,29 @@ jobs:
   # unmergeable — not fast, blocked. So every required job must always RUN and
   # always REPORT (success or failure); only its STEPS are conditional.
   #
-  # ⚠️ "docs" is an ALLOWLIST, not a `**.md` denylist. test/snapshots/ alone holds
-  # 167 golden files with a `.md` extension (also test/CAPABILITY-MATRIX.md,
-  # test/ENGINE-DIVERGENCE.md, test/error_quality_fixtures/{INVENTORY,GRADING}.md).
+  # ⚠️ THE RULE: `test/**` is NEVER docs. Every OTHER `.md` in the tree IS docs.
+  #
+  # test/ holds 175 `.md` files and they are FUNCTIONAL, not prose: 167 are snapshot
+  # GOLDENS (test/snapshots/**/*.md), plus test/CAPABILITY-MATRIX.md,
+  # test/ENGINE-DIVERGENCE.md and test/error_quality_fixtures/{INVENTORY,GRADING}.md.
   # A naive `**.md` filter would classify a blessed golden re-cut as docs-only and
   # skip every gate that exists to catch exactly that regression — a silent-green
-  # bug, which is the one thing this test suite is built to prevent. So a path
-  # counts as docs ONLY if it is a top-level `*.md`, under `docs/**`, or
-  # `LICENSE`/`LICENSE.*` — every other path (any `test/**`, `compiler/**`,
-  # `stdlib/**`, `runtime/**`, `.github/**`, `Makefile`, `ops/**`, `sqlite/**`,
-  # `playground/**`, nested `.md` outside `docs/`, or anything unrecognized) forces
-  # the full suite. Conservative by construction: any doubt → docs_only=false.
+  # bug, which is the one thing this test suite is built to prevent. So the `test/*`
+  # arm comes FIRST in the case below and must stay there.
+  #
+  # Everything else that ends in `.md` is prose and takes the fast path: the ~50
+  # top-level docs, compiler/**'s ~47 design docs, .claude/**'s playbooks, sqlite/,
+  # archive/, stdlib/README.md, docs/**, LICENSE. Verified: nothing in the build, in
+  # any gate, or in any workflow READS a `.md` outside test/ at runtime.
+  #
+  # Still scoped to the `.md` EXTENSION on purpose — .claude/ also holds
+  # hooks/skill-triage.py and settings.json, compiler/ holds .mdk source, and
+  # runtime/ holds C. Those are executable and fall through to the `*)` catch-all as
+  # NOT docs. Do not widen this to a bare directory glob.
+  #
+  # Conservative in the direction that matters: any unrecognized path → the full
+  # suite. A false "docs-only" is a shipped bug; a false "not docs-only" costs some
+  # CI minutes, which are free on a public repo.
   #
   # Only meaningful for `pull_request` (there IS a base/head diff to classify).
   # Every other trigger (push to main/testing-arc, merge_group, workflow_dispatch)

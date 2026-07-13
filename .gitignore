@@ -6,6 +6,10 @@ _build/
 
 # bootstrap_from_seed.sh output (regenerable native emitter binary)
 /medaka_emitter
+# Provenance stamp: the compiler-source fingerprint ./medaka_emitter was built from.
+# Deliberately NOT checked in and deliberately not copied by `cp medaka_emitter` — a
+# stamp-less emitter is one of unknown provenance and must be rebuilt.
+/.medaka_emitter.srcstamp
 # build_native_medaka.sh output (the native OCaml-free `medaka` CLI binary)
 /medaka
 
