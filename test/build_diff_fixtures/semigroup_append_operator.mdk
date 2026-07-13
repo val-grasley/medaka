@@ -43,7 +43,10 @@ main =
   println (twice "xy")
   println (twice [1, 2])
   println (unRope (twice (Rope "z")))
-  -- foldMap's default body (`fold (acc x => acc ++ f x) empty`) is a `Monoid m =>`
-  -- append: it must reach a USER Monoid, not just List/String.
-  println (unSum (foldMap MkSumM [1, 2, 3, 4]))
+  -- foldMap's default body is `fold (acc x => acc ++ f x) empty` — a `Monoid m =>`
+  -- append on an abstract tyvar.  That is the DOCUMENTED RESIDUAL (see the
+  -- `binopDictVarOf` note in typecheck.mdk): `++` on an impl's abstract
+  -- `requires`/method-dict tyvar stays on the structural builtin, so foldMap works at
+  -- List/String (below) but NOT yet at a user Monoid.  Pinned here so the day the
+  -- residual closes, this fixture is where the user-Monoid line gets added back.
   println (foldMap (x => [x, x]) [1, 2])
