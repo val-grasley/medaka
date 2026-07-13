@@ -1325,7 +1325,7 @@ childExprs (EDo stmts) = flatMap stmtExprs stmts
 childExprs (EStringInterp parts) = flatMap interpPartExprs parts
 childExprs (EGuards arms) = flatMap guardArmExprs arms
 childExprs (ERecordCreate _ fs) = map fieldAssignExpr fs
-childExprs (ERecordUpdate e fs) = e :: map fieldAssignExpr fs
+childExprs (ERecordUpdate e fs _) = e :: map fieldAssignExpr fs
 childExprs (EVariantUpdate _ e fs) = e :: map fieldAssignExpr fs
 childExprs (EMapLit _ kvs) = flatMap kvExprs kvs
 childExprs (ESetLit _ es) = es
@@ -1438,8 +1438,8 @@ rewriteBindExpr orc (EGuards arms) =
   EGuards (map (rewriteBindGuardArm orc) arms)
 rewriteBindExpr orc (ERecordCreate n fs) =
   ERecordCreate n (map (rewriteBindField orc) fs)
-rewriteBindExpr orc (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
+rewriteBindExpr orc (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs) r
 rewriteBindExpr orc (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
 rewriteBindExpr orc (EMapLit n kvs) = EMapLit n (map (rewriteBindKv orc) kvs)
@@ -1716,8 +1716,8 @@ rewriteLamExpr (EStringInterp parts) =
   EStringInterp (map rewriteLamInterp parts)
 rewriteLamExpr (EGuards arms) = EGuards (map rewriteLamGuardArm arms)
 rewriteLamExpr (ERecordCreate n fs) = ERecordCreate n (map rewriteLamField fs)
-rewriteLamExpr (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteLamExpr e) (map rewriteLamField fs)
+rewriteLamExpr (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteLamExpr e) (map rewriteLamField fs) r
 rewriteLamExpr (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteLamExpr e) (map rewriteLamField fs)
 rewriteLamExpr (EMapLit n kvs) = EMapLit n (map rewriteLamKv kvs)
@@ -1963,8 +1963,8 @@ rewriteIfMaxMinExpr (EStringInterp parts) =
 rewriteIfMaxMinExpr (EGuards arms) = EGuards (map rewriteIfMaxMinGuardArm arms)
 rewriteIfMaxMinExpr (ERecordCreate n fs) =
   ERecordCreate n (map rewriteIfMaxMinField fs)
-rewriteIfMaxMinExpr (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs)
+rewriteIfMaxMinExpr (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs) r
 rewriteIfMaxMinExpr (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs)
 rewriteIfMaxMinExpr (EMapLit n kvs) = EMapLit n (map rewriteIfMaxMinKv kvs)
@@ -2239,10 +2239,11 @@ rewriteAndThenPureMapExpr (EGuards arms) =
   EGuards (map rewriteAndThenPureMapGuardArm arms)
 rewriteAndThenPureMapExpr (ERecordCreate n fs) =
   ERecordCreate n (map rewriteAndThenPureMapField fs)
-rewriteAndThenPureMapExpr (ERecordUpdate e fs) =
+rewriteAndThenPureMapExpr (ERecordUpdate e fs r) =
   ERecordUpdate
     (rewriteAndThenPureMapExpr e)
     (map rewriteAndThenPureMapField fs)
+    r
 rewriteAndThenPureMapExpr (EVariantUpdate c e fs) =
   EVariantUpdate
     c
@@ -2359,8 +2360,8 @@ mapChildExprs g (EStringInterp parts) =
 mapChildExprs g (EGuards arms) = EGuards (map (mapChildGuardArm g) arms)
 mapChildExprs g (ERecordCreate n fs) =
   ERecordCreate n (map (mapChildField g) fs)
-mapChildExprs g (ERecordUpdate e fs) =
-  ERecordUpdate (g e) (map (mapChildField g) fs)
+mapChildExprs g (ERecordUpdate e fs r) =
+  ERecordUpdate (g e) (map (mapChildField g) fs) r
 mapChildExprs g (EVariantUpdate c e fs) =
   EVariantUpdate c (g e) (map (mapChildField g) fs)
 mapChildExprs g (EMapLit n kvs) = EMapLit n (map (mapChildKv g) kvs)

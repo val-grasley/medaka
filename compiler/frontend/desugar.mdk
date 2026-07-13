@@ -75,8 +75,8 @@ mapKids f (EUnOp op a r) = EUnOp op (mapExpr f a) r
 mapKids f (EInfix op a b) = EInfix op (mapExpr f a) (mapExpr f b)
 mapKids f (EFieldAccess e0 n r) = EFieldAccess (mapExpr f e0) n r
 mapKids f (ERecordCreate n fs) = ERecordCreate n (map (mapFieldAssign f) fs)
-mapKids f (ERecordUpdate e0 fs) =
-  ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs)
+mapKids f (ERecordUpdate e0 fs r) =
+  ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs) r
 mapKids f (EVariantUpdate c e0 fs) =
   EVariantUpdate c (mapExpr f e0) (map (mapFieldAssign f) fs)
 mapKids f (EArrayLit es) = EArrayLit (map (mapExpr f) es)

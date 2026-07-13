@@ -73,8 +73,8 @@ cexprSexp (CRecord name fields) =
   node "CRecord" (escStr name :: map cfieldSexp fields)
 cexprSexp (CFieldAccess e f n) =
   node "CFieldAccess" [cexprSexp e, escStr f, escStr n]
-cexprSexp (CRecordUpdate base fields) =
-  node "CRecordUpdate" (cexprSexp base :: map cfieldSexp fields)
+cexprSexp (CRecordUpdate name base fields) =
+  node "CRecordUpdate" (escStr name :: cexprSexp base :: map cfieldSexp fields)
 cexprSexp (CVariantUpdate con base fields) =
   node "CVariantUpdate" (escStr con :: cexprSexp base :: map cfieldSexp fields)
 cexprSexp (CArray es) = node "CArray" (map cexprSexp es)
