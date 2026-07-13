@@ -1466,12 +1466,34 @@ lintTargets (x::rest)
 --
 -- R0 has NO `--bless` on purpose: `--new` creates a missing snapshot and refuses to
 -- touch an existing one, so no regression can be silently re-blessed.
+-- A snapshot target that does not exist is a HARNESS error, not a fixture outcome.
+--
+-- Without this guard, an unreadable path was RENDERED as a snapshot whose entire
+-- body was `# CRASH: cannot read fixture` — and `--check` then compared that section
+-- against itself, matched, and reported PASS. Forever. So a typo'd path, or a
+-- DELETED fixture, silently became a permanently-passing snapshot that tested
+-- nothing.
+--
+-- That is exactly the silent-green bug class this whole harness was built to
+-- REPLACE (see TESTING-DESIGN.md §2.3: a missing oracle used to exit 2 = SKIP, and
+-- a fresh clone ran zero tests and printed "0 failed"). Never let "I could not read
+-- it" become an expected output. Fail loudly, up front.
+assertSnapshotTargetsExist : List String -> <IO, Mut, Panic> Unit
+assertSnapshotTargetsExist files =
+  let missing = filter (f => not (fileExists f)) files
+  if missing == [] then ()
+  else
+    let _ = ePutStrLn "medaka snapshot: these targets do not exist:"
+    let _ = ePutStrLn (joinNl (map (m => "  \{m}") missing))
+    exit 1
+
 runSnapshotCmd : List String -> <IO, Mut, Panic> Unit
 runSnapshotCmd argv =
   let root = match snapFlagValue "--root" argv
     Some r => r
     None => envOr "MEDAKA_ROOT" defaultMedakaRoot
   let files = flatMap expandLintTarget (snapshotTargets argv)
+  let _ = assertSnapshotTargetsExist files
   if files == [] then
     let _ = ePutStrLn "usage: medaka snapshot [--check|--new] [--out <dir>] <paths...>"
     exit 1
