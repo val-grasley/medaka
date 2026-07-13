@@ -1,0 +1,156 @@
+-- | sqlite.lib.overflow — SQLite's overflow-page threshold arithmetic.
+--
+-- THE single source of truth for how a table-leaf cell's payload is split
+-- between the leaf page and an overflow-page chain.  Both the READ path
+-- (`btree.mdk`, which reassembles a spilled payload) and the WRITE path
+-- (`dbwriter.mdk`, which produces the split) call these functions, so the two
+-- sides cannot drift: the writer is by construction the exact inverse of the
+-- reader.
+--
+-- ## The layout (SQLite file-format §1.6 "Cell payload overflow pages")
+--
+-- Let `U` = the page's *usable* size (`pageSize - reservedPerPage`; our writer
+-- reserves nothing, so `U == pageSize == 4096`) and `P` = the payload
+-- (record) length in bytes.  For a TABLE-LEAF cell:
+--
+--   X = U - 35                                (max payload stored locally)
+--   M = ((U - 12) * 32 / 255) - 23            (min payload stored locally)
+--   K = M + ((P - M) % (U - 4))
+--
+--   * `P <= X`                → the whole payload lives in the leaf cell.
+--   * `P > X` and `K <= X`    → `K` bytes live in the leaf cell.
+--   * `P > X` and `K > X`     → `M` bytes live in the leaf cell.
+--
+-- The leaf cell is then
+-- `[payload-len varint][rowid varint][local payload][4-byte BE first-overflow-page]`
+-- and the remaining `P - local` bytes are stored in a chain of overflow pages.
+-- Each overflow page is `[4-byte BE next-page][payload bytes...]`, so it carries
+-- at most `U - 4` payload bytes; a next-page of `0` terminates the chain.
+--
+-- For `U = 4096` this gives `X = 4061`, `M = 489`, and an overflow-page
+-- capacity of 4092 bytes.
+
+import list.{reverse}
+
+-- ---------------------------------------------------------------------------
+-- The three constants of the split
+-- ---------------------------------------------------------------------------
+
+-- | `X` — the largest payload a table-leaf cell may store entirely locally.
+--   A payload of exactly this size still fits in the leaf; one byte more spills.
+--
+-- > maxLocalPayload 4096
+-- 4061
+-- > maxLocalPayload 512
+-- 477
+export maxLocalPayload : Int -> Int
+maxLocalPayload usable = usable - 35
+
+-- | `M` — the minimum number of payload bytes a spilling cell keeps locally.
+--   SQLite picks this floor so a cell never degenerates to a bare pointer.
+--
+-- > minLocalPayload 4096
+-- 489
+-- > minLocalPayload 512
+-- 39
+export minLocalPayload : Int -> Int
+minLocalPayload usable = (usable - 12) * 32 / 255 - 23
+
+-- | How many payload bytes one overflow page carries (`U - 4`; the first four
+--   bytes are the big-endian next-page pointer).
+--
+-- > overflowCapacity 4096
+-- 4092
+export overflowCapacity : Int -> Int
+overflowCapacity usable = usable - 4
+
+-- ---------------------------------------------------------------------------
+-- The split
+-- ---------------------------------------------------------------------------
+
+-- | How many bytes of a `payloadLen`-byte table-leaf payload are stored in the
+--   leaf cell itself.  `localPayloadSize u p == p` exactly when the payload
+--   does not spill.
+--
+-- A payload at or below `X` is entirely local:
+--
+-- > localPayloadSize 4096 4061
+-- 4061
+--
+-- One byte over `X` spills.  Here `K` = 489 + (4062-489) % 4092 = 4062, which
+-- is still > `X`, so the local share collapses to the floor `M` = 489:
+--
+-- > localPayloadSize 4096 4062
+-- 489
+--
+-- The 10005-byte payload of a 10 000-byte TEXT column keeps 1821 bytes locally
+-- (verified byte-for-byte against a database written by the real sqlite3 CLI):
+--
+-- > localPayloadSize 4096 10005
+-- 1821
+export localPayloadSize : Int -> Int -> Int
+localPayloadSize usable payloadLen =
+  let x = maxLocalPayload usable
+  if payloadLen <= x then payloadLen
+  else
+    let m = minLocalPayload usable
+    let k = m + (payloadLen - m) % overflowCapacity usable
+    if k <= x then k else m
+
+-- | True if a payload of this length spills onto overflow pages.
+--
+-- > spills 4096 4061
+-- False
+-- > spills 4096 4062
+-- True
+export spills : Int -> Int -> Bool
+spills usable payloadLen = payloadLen > maxLocalPayload usable
+
+-- | The number of bytes that spill out of the leaf onto the overflow chain.
+--
+-- > spilledSize 4096 10005
+-- 8184
+export spilledSize : Int -> Int -> Int
+spilledSize usable payloadLen = payloadLen - localPayloadSize usable payloadLen
+
+-- | How many overflow pages a `spilled`-byte tail needs (ceiling division).
+--   Zero spilled bytes need zero pages.
+--
+-- > overflowPageCount 4096 0
+-- 0
+-- > overflowPageCount 4096 1
+-- 1
+-- > overflowPageCount 4096 4092
+-- 1
+-- > overflowPageCount 4096 4093
+-- 2
+-- > overflowPageCount 4096 8184
+-- 2
+export overflowPageCount : Int -> Int -> Int
+overflowPageCount usable spilled =
+  if spilled <= 0 then 0
+  else
+    let cap = overflowCapacity usable
+    (spilled + cap - 1) / cap
+
+-- ---------------------------------------------------------------------------
+-- Chain page numbers
+-- ---------------------------------------------------------------------------
+
+-- | The page numbers of the overflow chain for a `spilled`-byte tail whose
+--   first overflow page is `firstPage` — the chain is contiguous.
+--
+-- > overflowChainPages 4096 5 8184
+-- [5, 6]
+-- > overflowChainPages 4096 5 0
+-- []
+export overflowChainPages : Int -> Int -> Int -> List Int
+overflowChainPages usable firstPage spilled =
+  chainGo firstPage (overflowPageCount usable spilled) 0 []
+
+chainGo : Int -> Int -> Int -> List Int -> List Int
+chainGo firstPage n i acc =
+  if i >= n then
+    reverse acc
+  else
+    chainGo firstPage n (i + 1) (firstPage + i :: acc)

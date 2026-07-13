@@ -1,0 +1,172 @@
+-- | dml_probe — the PARSE-level gate for `lib.sqlstmt`'s DML/DDL grammar.
+--
+-- Two corpora, both asserted, neither diffed against sqlite3 (that is
+-- `sqlite/test/dml_oracle.sh`'s job — this one needs no database):
+--
+--   1. RENDER — for each `(sql, expected)` pair, `renderStmt (parseStmt sql)` must
+--      equal `expected` EXACTLY.  This is what catches a SILENTLY DROPPED CLAUSE:
+--      a parser that quietly forgot the `WHERE` of an UPDATE still round-trips to
+--      a fixpoint (`render . parse . render . parse == render . parse`), so a
+--      fixpoint check proves nothing.  Only an expected-output assertion does.
+--
+--   2. REJECT — for each SQL string, `parseStmt` must return `Err`.  These are the
+--      constructs we do not support; a silent accept is a wrong-answer bug.
+--
+-- The verdict is the LAST LINE of stdout, not an exit code (`exit` is
+-- unimplemented in the interpreter — see findings/sql-parser-select.md F2 — so the
+-- probe stays runnable under BOTH `medaka run` and a native build).
+--
+--     medaka run sqlite/dml_probe.mdk
+--     medaka build sqlite/dml_probe.mdk -o /tmp/dmlprobe && /tmp/dmlprobe
+
+import lib.sqlstmt.{parseStmt, renderStmt}
+import demo_support.{bullet, verdict}
+
+-- ---------------------------------------------------------------------------
+-- 1. RENDER: parse, render, and compare against the expected text
+-- ---------------------------------------------------------------------------
+
+renderCorpus : List (String, String)
+renderCorpus = [
+  -- INSERT: positional, named, multi-row, NULL, negative, float, blob, arithmetic
+  ("INSERT INTO t VALUES (1)", "INSERT INTO t VALUES (1)"),
+  ("insert into t values (1, 'a', NULL)", "INSERT INTO t VALUES (1, 'a', NULL)"),
+  ("INSERT INTO t (a, b) VALUES (1, 'x')", "INSERT INTO t (a, b) VALUES (1, 'x')"),
+  (
+    "INSERT INTO t VALUES (1,'a'),(2,'b'),(3,'c')",
+    "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+  ),
+  ("INSERT INTO t (id) VALUES (NULL)", "INSERT INTO t (id) VALUES (NULL)"),
+  ("INSERT INTO t VALUES (-7, 1.5)", "INSERT INTO t VALUES (-7, 1.5)"),
+  ("INSERT INTO t VALUES (X'4142')", "INSERT INTO t VALUES (X'4142')"),
+  ("INSERT INTO t VALUES (2 * 3 + 1)", "INSERT INTO t VALUES (((2 * 3) + 1))"),
+  ("INSERT INTO t VALUES ('it''s')", "INSERT INTO t VALUES ('it''s')"),
+  -- UPDATE: one SET, many SETs, expression RHS, WHERE, no WHERE, trailing ';'
+  ("UPDATE t SET a = 1", "UPDATE t SET a = 1"),
+  ("update t set a = 1, b = 'x' ;", "UPDATE t SET a = 1, b = 'x'"),
+  ("UPDATE t SET a = a + 1 WHERE b > 2", "UPDATE t SET a = (a + 1) WHERE (b > 2)"),
+  (
+    "UPDATE t SET a = NULL WHERE b IS NOT NULL AND c = 'q'",
+    "UPDATE t SET a = NULL WHERE ((b IS NOT NULL) AND (c = 'q'))",
+  ),
+  -- DELETE
+  ("DELETE FROM t", "DELETE FROM t"),
+  ("delete from t where a = 1", "DELETE FROM t WHERE (a = 1)"),
+  ("DELETE FROM t WHERE NOT a > 1 OR b IS NULL", "DELETE FROM t WHERE ((NOT (a > 1)) OR (b IS NULL))"),
+  -- CREATE TABLE
+  ("CREATE TABLE t(a INTEGER)", "CREATE TABLE t(a INTEGER)"),
+  (
+    "create table users ( id integer primary key , name text not null , age integer , score real )",
+    "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER, score REAL)",
+  ),
+  ("CREATE TABLE t(a VARCHAR(20), b BLOB)", "CREATE TABLE t(a VARCHAR(20), b BLOB)"),
+  ("CREATE TABLE t(a)", "CREATE TABLE t(a)"),
+  -- SELECT still routes through the same entry point
+  ("SELECT * FROM t", "SELECT * FROM t"),
+  ("select a from t where a = 1", "SELECT a FROM t WHERE (a = 1)"),
+]
+
+-- ---------------------------------------------------------------------------
+-- 2. REJECT: SQL we deliberately do not support
+-- ---------------------------------------------------------------------------
+
+rejectCorpus : List String
+rejectCorpus = [
+  -- statement kinds we do not implement
+  "DROP TABLE t",
+  "ALTER TABLE t ADD COLUMN x INTEGER",
+  "CREATE INDEX i ON t(a)",
+  "CREATE VIEW v AS SELECT 1",
+  "CREATE TABLE IF NOT EXISTS t(a INTEGER)",
+  "REPLACE INTO t VALUES (1)",
+  "BEGIN",
+  "VACUUM",
+  -- INSERT forms
+  "INSERT INTO t SELECT a FROM u",
+  "INSERT OR REPLACE INTO t VALUES (1)",
+  "INSERT INTO t DEFAULT VALUES",
+  "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
+  "INSERT INTO t VALUES (1) RETURNING a",
+  "INSERT INTO t VALUES ()",
+  "INSERT INTO t (a,) VALUES (1)",
+  "INSERT INTO t VALUES (1,)",
+  "INSERT INTO t",
+  "INSERT INTO main.t VALUES (1)",
+  -- UPDATE forms
+  "UPDATE t SET a = 1 ORDER BY a",
+  "UPDATE t SET a = 1 LIMIT 1",
+  "UPDATE t SET a = 1 FROM u",
+  "UPDATE t SET",
+  "UPDATE t SET a",
+  "UPDATE t SET a = ",
+  "UPDATE t SET a = 1 WHERE",
+  "UPDATE t SET a = 1 RETURNING a",
+  -- DELETE forms
+  "DELETE FROM t LIMIT 1",
+  "DELETE FROM t ORDER BY a",
+  "DELETE FROM",
+  "DELETE FROM t WHERE",
+  "DELETE t",
+  -- CREATE TABLE constraint forms outside the supported set
+  "CREATE TABLE t(a INTEGER DEFAULT 1)",
+  "CREATE TABLE t(a INTEGER UNIQUE)",
+  "CREATE TABLE t(a INTEGER CHECK (a > 0))",
+  "CREATE TABLE t(a TEXT COLLATE NOCASE)",
+  "CREATE TABLE t(a INTEGER PRIMARY KEY AUTOINCREMENT)",
+  "CREATE TABLE t(a INTEGER, b INTEGER, PRIMARY KEY (a, b))",
+  "CREATE TABLE t(a INTEGER, UNIQUE(a))",
+  "CREATE TABLE t(a INTEGER, FOREIGN KEY (a) REFERENCES u(id))",
+  "CREATE TABLE t(k TEXT PRIMARY KEY)",
+  "CREATE TABLE t(a INTEGER PRIMARY KEY, b INTEGER PRIMARY KEY)",
+  "CREATE TABLE t(a INTEGER, a TEXT)",
+  "CREATE TABLE t()",
+  "CREATE TABLE t",
+  "CREATE TABLE t(a INTEGER) WITHOUT ROWID",
+  "CREATE TABLE main.t(a INTEGER)",
+  -- an aggregate is not a per-row value
+  "DELETE FROM t WHERE count(*) > 1",
+  "UPDATE t SET a = 1 WHERE sum(b) > 2",
+  -- garbage
+  "",
+  "TRUNCATE t",
+  "SELEC * FROM t",
+]
+
+-- ---------------------------------------------------------------------------
+-- Runners
+-- ---------------------------------------------------------------------------
+
+checkRender : (String, String) -> List String
+checkRender (sql, want) = match parseStmt sql
+  Err e => ["render '\{sql}': parse failed: \{e}"]
+  Ok st => renderEq sql want (renderStmt st)
+
+renderEq : String -> String -> String -> List String
+renderEq sql want got =
+  if got == want then
+    []
+  else
+    ["render '\{sql}':\n    want: \{want}\n    got : \{got}"]
+
+checkReject : String -> List String
+checkReject sql = match parseStmt sql
+  Err _ => []
+  Ok st => ["NOT REJECTED '\{sql}' — parsed as: \{renderStmt st}"]
+
+renderFails : List String
+renderFails = flatMap checkRender renderCorpus
+
+rejectFails : List String
+rejectFails = flatMap checkReject rejectCorpus
+
+allFails : List String
+allFails = renderFails ++ rejectFails
+
+main : <IO> Unit
+main =
+  println
+    "render : \{intToString (length renderCorpus - length renderFails)}/\{intToString (length renderCorpus)} ok"
+  println
+    "reject : \{intToString (length rejectCorpus - length rejectFails)}/\{intToString (length rejectCorpus)} ok"
+  print (bullet allFails)
+  println "TOTAL: \{verdict (length allFails)}"

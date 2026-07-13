@@ -32,7 +32,7 @@ DBS="$TMP/sqlite.db"   # mutated by the sqlite3 CLI (the oracle)
 trap 'rm -rf "$TMP"' EXIT
 
 MEDAKA="$ROOT/medaka"
-PROBE="$ROOT/update_expr_demo"
+PROBE="$TMP/update_expr_probe"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 

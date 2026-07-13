@@ -1,0 +1,8 @@
+boom : Int -> Int
+boom 0 = panic "deliberate"
+boom n = n
+
+main : <IO> Unit
+main =
+  println "PRINTED BEFORE PANIC"
+  println "\{boom 0}"

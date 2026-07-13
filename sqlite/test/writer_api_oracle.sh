@@ -29,8 +29,8 @@ TMPDIR_LOC="$(mktemp -d)"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-WRITER="$ROOT/writer_api_demo"
-READER="$ROOT/sqlite_reader"
+WRITER="$TMPDIR_LOC/writer_api_probe"
+READER="$TMPDIR_LOC/sqlite_reader"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 

@@ -77,6 +77,9 @@ import array
 -- callers.  This pure-list mirror stays local to avoid that effect
 -- propagation.
 
+-- WORKAROUND(MUT): this duplicates stdlib `bytebuilder.emitBeSint` purely to avoid
+-- <Mut> propagating through encodeRecord and all callers. Delete and use bytebuilder
+-- when MUT closes. See MUT-SCOPING-DESIGN.md.
 -- | Encode an nbytes-wide big-endian two's-complement signed integer as a
 --   forward `List Int`.
 beSintBytes : Int -> Int -> List Int

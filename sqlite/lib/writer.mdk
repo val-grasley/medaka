@@ -13,8 +13,10 @@
 --   * Row validation (width == column count) with a clean `Err`.
 --   * IPK derivation from the schema (finds the `isPrimaryKey = True` column).
 --
--- v1 scope: INTEGER / TEXT / BLOB / REAL / NULL-affinity columns;
--- single leaf page.
+-- Scope: INTEGER / TEXT / BLOB / REAL / NULL-affinity columns.  Rows may span
+-- any number of leaf pages, and a row too large for one leaf cell spills onto
+-- overflow pages (`lib.overflow` / `lib.dbwriter`) — a multi-KB TEXT or BLOB is
+-- written correctly and reads back in `sqlite3`.
 --
 -- Note on field access: the native emitter discovers record field labels by
 -- scanning CRecord constructor expressions in the current compilation unit.
@@ -127,8 +129,9 @@ validateRows expected (r::rest) =
 --   at position `i`; that value becomes the cell's rowid and is stored as
 --   `CNull` in the record (IPK affinity).  For tables without an IPK the
 --   rowid auto-increments 1..N.
--- * Returns `Err` on a row width mismatch, an IPK type mismatch, or a
---   single-page overflow.
+-- * A row too large for one leaf cell is stored on overflow pages — there is
+--   no size limit on a TEXT/BLOB value.
+-- * Returns `Err` on a row width mismatch or an IPK type mismatch.
 export writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
 writeTable path schema rows = match schema
   TableSchema { schemaTableName = name, columns } => do
@@ -155,10 +158,11 @@ buildTable schema rows = match schema
 --
 -- Write N tables into ONE `.sqlite` file.  Each entry is a `(schema, rows)`
 -- pair; the tables are laid out in the order given (page 1 = sqlite_master with
--- one record per table, then each table's contiguous page range).  Each table
--- may be single-leaf or multi-page independently.  Residual: the N
+-- one record per table, then each table's contiguous page range, then the
+-- overflow-page region).  Each table may be single-leaf or multi-page
+-- independently, and any row may spill onto overflow pages.  Residual: the N
 -- sqlite_master records must fit one leaf page (multi-page sqlite_master is out
--- of scope — overflow yields a clean `Err "sqlite_master overflow: …"`).
+-- of scope — that yields a clean `Err "sqlite_master overflow: …"`).
 
 -- | Convert one `(schema, rows)` entry into the low-level dbwriter spec,
 -- validating row width and deriving the CREATE text + IPK index from the

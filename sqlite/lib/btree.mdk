@@ -22,13 +22,25 @@
 -- Table-leaf cell (§3): [payload-len varint] [rowid varint] [payload].
 -- Table-interior cell (§3): [left-child-page 4-byte BE] [rowid varint].
 --
+-- OVERFLOW PAGES: a payload longer than the leaf's local capacity (see
+-- `lib.overflow`) is NOT stored contiguously.  Only its first
+-- `localPayloadSize` bytes live in the leaf cell; those are followed by a
+-- 4-byte big-endian page number pointing at the head of a chain of overflow
+-- pages, each `[4-byte BE next-page][payload bytes]` (next = 0 ends the
+-- chain).  `decodeLeafCell` reassembles the payload from the leaf prefix plus
+-- the chain before handing it to `parseRecord`.  Every page-geometry-aware
+-- entry point therefore takes the `pageSize` and the *usable* page size
+-- (`pageSize - reservedPerPage`).
+--
 -- We decode each row into a `Row` = (rowid, cells).
 -- `scanTablePage` recursively walks interior pages, collecting all leaf rows
 -- in key order: left-child of cell[0], left-child of cell[1], ...,
 -- left-child of cell[n-1], rightmost-child.
 
+import array.{slice, concat}
 import byteparser.{BOk, BErr, BResult, runBP}
 import lib.varint.{sqVarint}
+import lib.overflow.{localPayloadSize, overflowCapacity}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, parseRecord}
 import list.{reverse}
 import string.{join}
@@ -68,7 +80,7 @@ byteAt bytes off =
   if off < 0 || off >= arrayLength bytes then
     Err "byte offset \{intToString off} out of bounds (length \{intToString (arrayLength bytes)})"
   else
-    Ok bytes.[off]
+    Ok bytes[off]
 
 -- | Read a big-endian uint32 at absolute byte offset `off` in `bytes`.
 --   Used for the right-most-child pointer and interior-cell left-child pointer.
@@ -127,44 +139,118 @@ bStep label (BOk a pos) k = k a pos
 
 -- | Decode all rows of a TABLE-LEAF page.
 --
--- `pageBase` is the absolute byte offset of the start of the page (for page N
--- this is (N-1)*pageSize).  `hdrOffset` is where the B-tree header starts
--- (= pageBase, except page 1 where it is pageBase + dbHeaderSize).
+-- `pageSize` / `usable` describe the page geometry (`usable = pageSize -
+-- reservedPerPage`); they are needed to locate overflow pages.  `pageBase` is
+-- the absolute byte offset of the start of the page (for page N this is
+-- (N-1)*pageSize).  `hdrOffset` is where the B-tree header starts (= pageBase,
+-- except page 1 where it is pageBase + dbHeaderSize).
 --
 -- Returns Err if the page is not a table-leaf page.
-export decodeLeafPage : Array Int -> Int -> Int -> Result String (List Row)
-decodeLeafPage bytes pageBase hdrOffset = do
+export decodeLeafPage : Array Int -> Int -> Int -> Int -> Int -> Result String (List Row)
+decodeLeafPage bytes pageSize usable pageBase hdrOffset = do
   pt <- pageType bytes hdrOffset
   if pt != pageTableLeaf then Err "decodeLeafPage: page type \{intToString pt} is not a table-leaf page (0x0D)"
   else do
     nc <- pageCellCount bytes hdrOffset
-    decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
+    decodeCells
+      bytes
+      pageSize
+      usable
+      pageBase
+      (hdrOffset + leafHeaderSize)
+      nc
+      0
+      []
 
 -- Iterate the cell-pointer array, decoding each table-leaf cell.
-decodeCells : Array Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
-decodeCells bytes pageBase cpArrayStart nCells i acc
+decodeCells : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
+decodeCells bytes pageSize usable pageBase cpArrayStart nCells i acc
   | i >= nCells = Ok (reverse acc)
   | otherwise = do
       -- cell pointer i is a uint16 at cpArrayStart + i*2; it is a page-relative
       -- offset, so the absolute cell offset is pageBase + cellPtr.
       cellPtr <- beU16 bytes (cpArrayStart + i * 2)
       let cellOffset = pageBase + cellPtr
-      row <- decodeLeafCell bytes cellOffset
-      decodeCells bytes pageBase cpArrayStart nCells (i + 1) (row::acc)
+      row <- decodeLeafCell bytes pageSize usable cellOffset
+      decodeCells bytes pageSize usable pageBase cpArrayStart nCells (i + 1) (row::acc)
 
 -- | Decode one table-leaf cell at absolute byte offset `off`:
---   [payload-len varint] [rowid varint] [record payload].
+--   [payload-len varint] [rowid varint] [local payload] [4-byte BE overflow page]
+--   — the trailing pointer present only when the payload spills.
 --
 -- A complete leaf cell for rowid 3, record (NULL, "Carol", 25): payload-length
--- 10, rowid 3, then the 10-byte record (header 4: NULL, text-5, int8):
+-- 10, rowid 3, then the 10-byte record (header 4: NULL, text-5, int8).  Ten
+-- bytes is far below the local limit, so nothing spills:
 --
--- > showRow (decodeLeafCell (arrayFromList [10, 3, 4, 0, 23, 1, 67, 97, 114, 111, 108, 25]) 0)
+-- > showRow (decodeLeafCell (arrayFromList [10, 3, 4, 0, 23, 1, 67, 97, 114, 111, 108, 25]) 4096 4096 0)
 -- "3: NULL|Carol|25"
-export decodeLeafCell : Array Int -> Int -> Result String Row
-decodeLeafCell bytes off = bStep
+--
+-- See `lib.overflow` for the threshold arithmetic that decides how much of a
+-- payload stays in the cell.
+export decodeLeafCell : Array Int -> Int -> Int -> Int -> Result String Row
+decodeLeafCell bytes pageSize usable off = bStep
   "payload-length varint"
   (runBP sqVarint bytes off)
-  (payloadLen pos1 => bStep "rowid varint" (runBP sqVarint bytes pos1) (rowid pos2 => bStep "record" (runBP parseRecord bytes pos2) (cells _ => Ok (Row rowid cells))))
+  (payloadLen pos1 => bStep "rowid varint" (runBP sqVarint bytes pos1) (rowid pos2 => decodeCellPayload bytes pageSize usable payloadLen rowid pos2))
+
+-- Reassemble a cell's payload (following the overflow chain when it spills),
+-- then parse the record out of it.
+--
+-- The NO-SPILL path parses in place, straight out of the file image at `pos`,
+-- exactly as before overflow support existed — no copy, no behaviour change.
+decodeCellPayload : Array Int -> Int -> Int -> Int -> Int -> Int -> Result String Row
+decodeCellPayload bytes pageSize usable payloadLen rowid pos =
+  let local = localPayloadSize usable payloadLen
+  if local >= payloadLen then bStep "record" (runBP parseRecord bytes pos) (cells _ => Ok (Row rowid cells))
+  else do
+    payload <- gatherPayload bytes pageSize usable payloadLen local pos
+    bStep
+      "overflow record"
+      (runBP parseRecord payload 0)
+      (cells _ => Ok (Row rowid cells))
+
+-- Build the whole payload of a spilling cell: the `local` bytes held in the
+-- leaf, followed by the chain chunks.  The 4-byte big-endian first-overflow
+-- page number sits immediately after the local bytes.
+gatherPayload : Array Int -> Int -> Int -> Int -> Int -> Int -> Result String (Array Int)
+gatherPayload bytes pageSize usable payloadLen local pos = do
+  _ <- requireBytes bytes (pos + local + 4) "leaf cell local payload"
+  firstPage <- beU32 bytes (pos + local)
+  chunks <- followChain bytes pageSize usable firstPage (payloadLen - local) []
+  -- WORKAROUND(MUT): pure slice+concat instead of the natural arrayMake+blit gather,
+  -- because <Mut> has no scoping combinator and would infect the whole READ path.
+  -- Costs O(chunks x bytes) instead of O(bytes). See MUT-SCOPING-DESIGN.md.
+  Ok (concat (arrayFromList (slice pos (pos + local) bytes :: chunks)))
+
+-- Walk the overflow chain, collecting `remaining` more payload bytes.  Each
+-- page contributes at most `overflowCapacity usable` bytes after its 4-byte
+-- next-page pointer; a next-page of 0 must coincide with remaining == 0.
+followChain : Array Int -> Int -> Int -> Int -> Int -> List (Array Int) -> Result String (List (Array Int))
+followChain bytes pageSize usable page remaining acc
+  | remaining <= 0 = Ok (reverse acc)
+  | page < 1 = Err "overflow chain ended early: \{intToString remaining} payload bytes unaccounted for"
+  | otherwise =
+    let base = (page - 1) * pageSize
+    let chunkLen = min remaining (overflowCapacity usable)
+    do
+      _ <- requireBytes bytes (base + 4 + chunkLen) "overflow page \{intToString page}"
+      next <- beU32 bytes base
+      followChain
+        bytes
+        pageSize
+        usable
+        next
+        (remaining - chunkLen)
+        (slice (base + 4) (base + 4 + chunkLen) bytes :: acc)
+
+-- Fail (rather than silently truncate, which is what `array.slice` would do)
+-- if the file image is too short to contain the bytes we are about to read.
+requireBytes : Array Int -> Int -> String -> Result String Unit
+requireBytes bytes need what =
+  if need > arrayLength bytes then
+    Err "\{what}: file truncated (need \{intToString need} bytes, have \{intToString (arrayLength bytes)})"
+  else
+    Ok ()
 
 -- ---------------------------------------------------------------------------
 -- Multi-page recursive B-tree scan
@@ -189,34 +275,43 @@ pageHdrOffset pageSize pageNum =
 -- then the right-most child), yielding rows in rowid order.
 --
 -- `hdrOffset` for page 1 = dbHeaderSize; for all other pages = pageBase.
-export scanTablePage : Array Int -> Int -> Int -> Int -> Result String (List Row)
-scanTablePage bytes pageSize pageNum hdrOffset = do
+-- `usable` is `pageSize - reservedPerPage` (needed for overflow-chain reads).
+export scanTablePage : Array Int -> Int -> Int -> Int -> Int -> Result String (List Row)
+scanTablePage bytes pageSize usable pageNum hdrOffset = do
   ptype <- pageType bytes hdrOffset
   if ptype == pageTableLeaf then do
     let pageBase = (pageNum - 1) * pageSize
     nc <- pageCellCount bytes hdrOffset
-    decodeCells bytes pageBase (hdrOffset + leafHeaderSize) nc 0 []
-  else if ptype == pageTableInterior then scanInteriorPage bytes pageSize pageNum hdrOffset else Err "scanTablePage: unexpected page type \{intToString ptype} on page \{intToString pageNum}"
+    decodeCells
+      bytes
+      pageSize
+      usable
+      pageBase
+      (hdrOffset + leafHeaderSize)
+      nc
+      0
+      []
+  else if ptype == pageTableInterior then scanInteriorPage bytes pageSize usable pageNum hdrOffset else Err "scanTablePage: unexpected page type \{intToString ptype} on page \{intToString pageNum}"
 
 -- Scan an interior page: recurse into all left-children then the rightmost child.
-scanInteriorPage : Array Int -> Int -> Int -> Int -> Result String (List Row)
-scanInteriorPage bytes pageSize pageNum hdrOffset = do
+scanInteriorPage : Array Int -> Int -> Int -> Int -> Int -> Result String (List Row)
+scanInteriorPage bytes pageSize usable pageNum hdrOffset = do
   let pageBase = (pageNum - 1) * pageSize
   nCells <- pageCellCount bytes hdrOffset
   -- right-most child pointer is at hdrOffset + leafHeaderSize
   rightmost <- beU32 bytes (hdrOffset + leafHeaderSize)
   -- interior page cell-pointer array starts at hdrOffset + interiorHeaderSize
   let cpArrayStart = hdrOffset + interiorHeaderSize
-  scanInteriorCells bytes pageSize cpArrayStart pageBase nCells 0 rightmost []
+  scanInteriorCells bytes pageSize usable cpArrayStart pageBase nCells 0 rightmost []
 
 -- Iterate interior cells; each cell gives us a left-child page to recurse into.
 -- After all left-children, recurse into rightmost.
-scanInteriorCells : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
-scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
+scanInteriorCells : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> List Row -> Result String (List Row)
+scanInteriorCells bytes pageSize usable cpArrayStart pageBase nCells i rightmost acc
   | i >= nCells = do
       -- all left-children visited; now the rightmost child
       let rmHdr = pageHdrOffset pageSize rightmost
-      rows <- scanTablePage bytes pageSize rightmost rmHdr
+      rows <- scanTablePage bytes pageSize usable rightmost rmHdr
       Ok (acc ++ rows)
   | otherwise = do
       cellPtr <- beU16 bytes (cpArrayStart + i * 2)
@@ -224,8 +319,17 @@ scanInteriorCells bytes pageSize cpArrayStart pageBase nCells i rightmost acc
       -- interior cell: [4-byte left-child] [rowid varint] — we only need left-child
       leftChild <- beU32 bytes cellOff
       let childHdr = pageHdrOffset pageSize leftChild
-      rows <- scanTablePage bytes pageSize leftChild childHdr
-      scanInteriorCells bytes pageSize cpArrayStart pageBase nCells (i + 1) rightmost (acc ++ rows)
+      rows <- scanTablePage bytes pageSize usable leftChild childHdr
+      scanInteriorCells
+        bytes
+        pageSize
+        usable
+        cpArrayStart
+        pageBase
+        nCells
+        (i + 1)
+        rightmost
+        (acc ++ rows)
 
 -- ---------------------------------------------------------------------------
 

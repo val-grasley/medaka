@@ -1,0 +1,25 @@
+-- Control: same shape, but the PAP is over a plain FUNCTION, not a constructor.
+
+data Op = OAdd | OSub
+
+data Ex = Num Int | Bin Op Ex Ex
+
+-- A plain function with exactly the constructor's arity/shape.
+mkBin : Op -> Ex -> Ex -> Ex
+mkBin o l r = Bin o l r
+
+apply2 : (Ex -> Ex -> Ex) -> Ex -> Ex -> Ex
+apply2 f a b = f a b
+
+describe : Ex -> String
+describe (Bin OAdd (Num a) (Num b)) = "add \{a} \{b}"
+describe (Num n) = "num \{n}"
+describe _ = "OTHER"
+
+main =
+  let viaFn = apply2 (mkBin OAdd) (Num 1) (Num 2)
+  let viaCtorEta = apply2 (l r => Bin OAdd l r) (Num 1) (Num 2)
+  let viaCtorPap = apply2 (Bin OAdd) (Num 1) (Num 2)
+  println "fn-pap      : \{describe viaFn}"
+  println "ctor-eta    : \{describe viaCtorEta}"
+  println "ctor-pap    : \{describe viaCtorPap}"

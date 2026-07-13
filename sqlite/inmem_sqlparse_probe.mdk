@@ -1,0 +1,157 @@
+-- | In-memory SQL-STRING probe — the stage-C WasmGC tandem oracle for the SQL
+-- statement parser (`lib.sqlstmt`) + the unified query engine.
+--
+-- Builds TWO tables (`users`, `orders`) entirely in memory (`buildDatabaseMulti`
+-- → `fromBytes`, no file I/O) and then drives the engine from SQL TEXT: every
+-- query below is a `String` that goes through `parseSelect` → `query`, exactly as
+-- a user would type it.  That is the whole front end — lexing, the parsec
+-- combinators, the expression grammar, the statement grammar, the ADT assembly —
+-- exercised on both backends.
+--
+-- Because it is bytes-first (buildDatabaseMulti → fromBytes → queryString) it
+-- emits + runs IDENTICALLY under the native LLVM backend and the WasmGC backend;
+-- `test/wasm/diff_sqlite.sh` builds it for both targets and diffs stdout.
+--
+-- Same schema + data as test/sql_oracle.sh, so the two agree row-for-row: user
+-- `dee` has no orders (an INNER JOIN drops her, a LEFT JOIN null-pads her), user
+-- `bob` has a NULL age (the three-valued-logic probe — `NOT age = 30` must DROP
+-- him), and order 5 has a NULL amount (COUNT(*) counts the row; SUM/AVG/MIN/MAX
+-- skip it).  Every avg() is exact, because `floatToString` renders only ~12
+-- significant digits (findings/sql-parser-select.md F3).
+--
+-- The last block is the REJECTION corpus: SQL we deliberately do not support must
+-- print a clean `error: ...`, never a wrong answer and never a panic.  On wasm a
+-- panic would be a trap, so this doubles as a "no trap on bad input" assertion.
+
+-- Probes are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+import lib.rowtype.{tCells}
+import lib.sqlstmt.{queryStringDistinct}
+import demo_support.{printRows, showCellRow}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT)"
+
+ordersSql : String
+ordersSql = "CREATE TABLE orders(id INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER, qty INTEGER)"
+
+usersRows : List (List Cell)
+usersRows = [
+  [CInt 1, CText "ada", CInt 30, CText "pdx"],
+  [CInt 2, CText "bob", CNull, CText "nyc"],
+  [CInt 3, CText "cyd", CInt 24, CText "pdx"],
+  [CInt 4, CText "dee", CInt 30, CNull],
+]
+
+ordersRows : List (List Cell)
+ordersRows = [
+  [CInt 1, CInt 1, CInt 100, CInt 2],
+  [CInt 2, CInt 1, CInt 200, CInt 3],
+  [CInt 3, CInt 2, CInt 150, CInt 1],
+  [CInt 4, CInt 3, CInt 75, CInt 5],
+  [CInt 5, CInt 3, CNull, CInt 2],
+  [CInt 6, CInt 1, CInt 300, CInt 1],
+]
+
+-- Echo the SQL, then its rows (or its error).  The SQL text is part of the
+-- output, so a divergence names the query that caused it.
+runSql : Db -> String -> <IO> Unit
+runSql db sql =
+  let _ = println "-- \{sql}"
+  match queryStringDistinct db sql tCells
+    Err e => println "error: \{e}"
+    Ok rows => printRows showCellRow rows
+
+runAll : Db -> List String -> <IO> Unit
+runAll _ [] = ()
+runAll db (sql::rest) =
+  let _ = runSql db sql
+  runAll db rest
+
+-- Every clause of the grammar, driven from SQL TEXT.
+queries : List String
+queries = [
+  -- plain SELECT / WHERE / SELECT *
+  "SELECT * FROM users ORDER BY id",
+  "SELECT name, age FROM users WHERE age > 25 ORDER BY name",
+  "SELECT name FROM users WHERE name = 'bob' OR age = 24 ORDER BY id",
+  -- three-valued logic: bob's age is NULL, so `NOT age = 30` DROPS him
+  "SELECT name FROM users WHERE NOT age = 30 ORDER BY id",
+  "SELECT name FROM users WHERE NOT (age = 30 AND name = 'ada') ORDER BY id",
+  -- IS [NOT] NULL
+  "SELECT name FROM users WHERE age IS NULL",
+  "SELECT name FROM users WHERE city IS NOT NULL ORDER BY id",
+  -- projection + arithmetic
+  "SELECT amount, qty, amount * qty FROM orders ORDER BY id",
+  "SELECT (amount + qty) * 2 FROM orders WHERE id = 1",
+  "SELECT amount * 1.5 FROM orders WHERE id = 1",
+  -- operator precedence
+  "SELECT name FROM users WHERE age = 30 OR age = 24 AND name = 'cyd' ORDER BY id",
+  "SELECT name FROM users WHERE (age = 30 OR age = 24) AND name = 'cyd' ORDER BY id",
+  -- DISTINCT (honoured: queryStringDistinct dedups the DECODED rows)
+  "SELECT DISTINCT age FROM users ORDER BY age",
+  "SELECT DISTINCT city FROM users ORDER BY city",
+  -- INNER JOIN, qualified columns
+  "SELECT users.name, orders.amount FROM users INNER JOIN orders ON users.id = orders.uid ORDER BY orders.id",
+  "SELECT users.name FROM users JOIN orders ON users.id = orders.uid WHERE orders.amount > 100 ORDER BY orders.id",
+  -- LEFT JOIN (dee is null-padded)
+  "SELECT users.name, orders.amount FROM users LEFT JOIN orders ON users.id = orders.uid ORDER BY users.id, orders.id",
+  "SELECT users.name FROM users LEFT OUTER JOIN orders ON users.id = orders.uid WHERE orders.id IS NULL",
+  -- aggregates, GROUP BY, HAVING
+  "SELECT count(*) FROM users",
+  "SELECT count(*), count(age), sum(age), min(age), max(age), avg(age) FROM users",
+  "SELECT uid, count(*), sum(amount), avg(amount) FROM orders GROUP BY uid ORDER BY uid",
+  "SELECT uid, count(*) FROM orders GROUP BY uid HAVING count(*) > 1 ORDER BY uid",
+  "SELECT sum(amount * qty) FROM orders",
+  "SELECT users.name, count(*), sum(orders.amount) FROM users INNER JOIN orders ON users.id = orders.uid GROUP BY users.name ORDER BY users.name",
+  -- ORDER BY: multi-key, DESC, computed, aggregate
+  "SELECT name, age FROM users ORDER BY age ASC, name DESC",
+  "SELECT amount, qty FROM orders ORDER BY amount * qty DESC, id ASC",
+  "SELECT uid, count(*) FROM orders GROUP BY uid ORDER BY count(*) DESC, uid ASC",
+  -- LIMIT / OFFSET
+  "SELECT id, name FROM users ORDER BY id LIMIT 2 OFFSET 1",
+  "SELECT uid, count(*) FROM orders GROUP BY uid ORDER BY count(*) DESC, uid ASC LIMIT 1",
+  -- case-insensitive keywords, trailing semicolon
+  "select name from users where age Is Not Null Order By age Desc, id Asc;",
+  "SELECT COUNT(*) FROM orders;",
+]
+
+-- Unsupported SQL: each MUST come back as a clean `error: ...`.
+rejects : List String
+rejects = [
+  "SELECT a FROM t UNION SELECT b FROM u",
+  "SELECT name AS n FROM users",
+  "SELECT name FROM users WHERE name LIKE 'a%'",
+  "SELECT name FROM users WHERE age BETWEEN 20 AND 30",
+  "SELECT upper(name) FROM users",
+  "SELECT name FROM users WHERE flag = TRUE",
+  "SELECT users.name FROM users RIGHT JOIN orders ON users.id = orders.uid",
+  "SELECT name FROM users WHERE count(*) > 1",
+  "SELECT sum(*) FROM orders",
+  "SELECT name, count(*) FROM users GROUP BY city",
+  "SELECT * FROM users WHERE age >",
+  "SELECT * FROM users LIMIT 'x'",
+  "SELECT nosuch FROM users",
+]
+
+specs : List (String, String, Option Int, List (List Cell))
+specs = [
+  ("users", usersSql, Some 0, usersRows),
+  ("orders", ordersSql, Some 0, ordersRows),
+]
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE users + orders (in-memory) --"
+  match buildDatabaseMulti specs
+    Err e => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db =>
+        let _ = runAll db queries
+        let _ = println "-- REJECTIONS (each must be a clean error) --"
+        runAll db rejects

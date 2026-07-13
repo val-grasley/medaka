@@ -1,0 +1,213 @@
+-- | sqlparse_probe — the correctness evidence for `lib.sqlparse`.
+--
+-- Two independent proofs:
+--
+--   1. ROUND TRIP.  For every expression in `corpus`:  parse it, render it back
+--      to SQL text with literals inlined (`renderSqlExpr`), parse THAT, and
+--      require the two ASTs to be structurally EQUAL (`==`, via `deriving (Eq)`
+--      on `SqlExpr`).  This is `parse ∘ render ∘ parse == parse` — it catches any
+--      operator that parses to the wrong shape, since a wrong shape re-renders
+--      to different (but still parseable) text.  We additionally require the
+--      RENDERED TEXT to be a fixpoint (`render e1 == render e2`).
+--
+--   2. PRECEDENCE.  For a set of expressions whose binding is the whole point,
+--      assert the EXACT constructor tree via `dumpExpr` (a fully-parenthesized
+--      dump — the derived `Debug` cannot be used, see findings F2).
+--
+-- Run:  ./medaka run sqlite/sqlparse_probe.mdk
+
+-- The remaining structural duplication against sql_probe.mdk (`rtFailures`,
+-- `precCompare` vs its `shapeCompare`) is NOT consolidatable: each closes over a
+-- file-local parser/comparator.  The genuinely shared reporters (`bullet`,
+-- `verdict`) DID move to demo_support.
+-- lint-disable-file rule-duplicate-body
+
+import lib.sqlparse.{parseSqlExpr, renderSqlExpr, dumpExpr}
+import lib.select.{SqlExpr}
+import demo_support.{bullet, verdict}
+
+-- ---------------------------------------------------------------------------
+-- 1. Round-trip corpus
+-- ---------------------------------------------------------------------------
+
+corpus : List String
+corpus = [
+  -- literals
+  "1",
+  "-7",
+  "0",
+  "3.5",
+  "-2.25",
+  "1.0",
+  "NULL",
+  "'hello'",
+  "''",
+  "'it''s'",
+  "'a''''b'",
+  "X'4142'",
+  "X''",
+  -- columns, bare and qualified
+  "age",
+  "users.age",
+  "_private",
+  "col_1",
+  -- every comparison operator
+  "a = 1",
+  "a == 1",
+  "a != 1",
+  "a <> 1",
+  "a < 1",
+  "a <= 1",
+  "a > 1",
+  "a >= 1",
+  -- every arithmetic operator
+  "a + 1",
+  "a - 1",
+  "a * 2",
+  "a / 2",
+  "a % 2",
+  -- precedence / associativity
+  "a + b * c",
+  "(a + b) * c",
+  "a - b - c",
+  "a / b / c",
+  "a = 1 OR b = 2 AND c = 3",
+  "(a = 1 OR b = 2) AND c = 3",
+  "NOT a = 1",
+  "NOT NOT a",
+  "a OR b AND NOT c",
+  "a + b > c * d",
+  -- null tests
+  "a IS NULL",
+  "a IS NOT NULL",
+  "a IS NOT NULL AND b > 3",
+  "users.email IS NULL OR users.age < 18",
+  -- unary minus on a column (SqlExpr has no negate node: becomes 0 - x)
+  "-x",
+  "-x + 1",
+  "a * -2",
+  "a - -2",
+  -- case-insensitive keywords
+  "a = 1 and b = 2",
+  "a = 1 Or b = 2",
+  "a is null",
+  "a Is Not Null",
+  "not a",
+  -- identifiers that merely START with a keyword must stay columns
+  "NOTES = 1",
+  "ANDY > 2",
+  "ORDERS.total >= 10",
+  "ISBN = '123'",
+  "NULLABLE IS NULL",
+  -- deeper nesting
+  "((a))",
+  "(a + (b * (c - d))) / e",
+  "a = 1 AND (b = 2 OR c = 3) AND NOT d IS NULL",
+  "t.x * (t.y + 2) <= 100 OR t.z IS NOT NULL",
+]
+
+data RT = RtOk | RtFail String
+
+-- parse → render → parse, and require the two ASTs to be EQUAL.
+roundTrip : String -> RT
+roundTrip src = match parseSqlExpr src
+  Err e => RtFail "\{src}  ==> parse failed: \{e}"
+  Ok e1 => roundTripBack src e1
+
+roundTripBack : String -> SqlExpr -> RT
+roundTripBack src e1 =
+  let s2 = renderSqlExpr e1
+  match parseSqlExpr s2
+    Err e => RtFail "\{src}  ==> re-parse of `\{s2}` failed: \{e}"
+    Ok e2 => roundTripCompare src e1 e2 s2
+
+roundTripCompare : String -> SqlExpr -> SqlExpr -> String -> RT
+roundTripCompare src e1 e2 s2 =
+  if e1 != e2 then
+    RtFail "\{src}  ==> AST CHANGED\n      first : \{dumpExpr e1}\n      second: \{dumpExpr e2}"
+  else if renderSqlExpr e2 != s2 then
+    RtFail "\{src}  ==> render is not a fixpoint: `\{s2}` vs `\{renderSqlExpr e2}`"
+  else
+    RtOk
+
+rtFailures : List String -> List String
+rtFailures [] = []
+rtFailures (s::rest) = match roundTrip s
+  RtOk => rtFailures rest
+  RtFail m => m :: rtFailures rest
+
+-- ---------------------------------------------------------------------------
+-- 2. Precedence assertions — the EXACT tree, spelled out
+-- ---------------------------------------------------------------------------
+
+precCases : List (String, String)
+precCases = [
+  -- AND binds tighter than OR, so OR is the ROOT.
+  (
+    "a = 1 OR b = 2 AND c = 3",
+    "EOr (EBin OpEq (ECol a) (ELit (LInt 1))) (EAnd (EBin OpEq (ECol b) (ELit (LInt 2))) (EBin OpEq (ECol c) (ELit (LInt 3))))",
+  ),
+  -- NOT binds LOOSER than a comparison: it wraps the whole `a = 1`.
+  ("NOT a = 1", "ENot (EBin OpEq (ECol a) (ELit (LInt 1)))"),
+  -- `*` binds tighter than `+`.
+  ("a + b * c", "EArith AAdd (ECol a) (EArith AMul (ECol b) (ECol c))"),
+  -- ...and parentheses override that.
+  ("(a + b) * c", "EArith AMul (EArith AAdd (ECol a) (ECol b)) (ECol c)"),
+  -- IS NOT NULL is a postfix at comparison level, so AND is the root.
+  (
+    "a IS NOT NULL AND b > 3",
+    "EAnd (ENotNull (ECol a)) (EBin OpGt (ECol b) (ELit (LInt 3)))",
+  ),
+  -- `-` is LEFT-associative: (a - b) - c, not a - (b - c).
+  ("a - b - c", "EArith ASub (EArith ASub (ECol a) (ECol b)) (ECol c)"),
+  -- OR is left-associative and looser than AND, which is looser than NOT.
+  ("a OR b AND NOT c", "EOr (ECol a) (EAnd (ECol b) (ENot (ECol c)))"),
+  -- Comparison binds looser than arithmetic on BOTH sides.
+  (
+    "a + b > c * d",
+    "EBin OpGt (EArith AAdd (ECol a) (ECol b)) (EArith AMul (ECol c) (ECol d))",
+  ),
+  -- Keywords are case-insensitive.
+  (
+    "a = 1 and b = 2",
+    "EAnd (EBin OpEq (ECol a) (ELit (LInt 1))) (EBin OpEq (ECol b) (ELit (LInt 2)))",
+  ),
+  -- A column whose name merely BEGINS with a keyword is still a column:
+  -- `NOTES` is not `NOT` + `ES`.
+  ("NOTES = 1", "EBin OpEq (ECol NOTES) (ELit (LInt 1))"),
+  -- A negative integer is a LITERAL, not a unary minus applied to one.
+  ("a > -7", "EBin OpGt (ECol a) (ELit (LInt -7))"),
+  -- Unary minus on a COLUMN has no ADT node, so it lowers to `0 - x`.
+  (
+    "-x + 1",
+    "EArith AAdd (EArith ASub (ELit (LInt 0)) (ECol x)) (ELit (LInt 1))",
+  ),
+]
+
+precFailures : List (String, String) -> List String
+precFailures [] = []
+precFailures ((src, want)::rest) = match parseSqlExpr src
+  Err e => "\{src}  ==> parse failed: \{e}" :: precFailures rest
+  Ok tree => precCompare src want (dumpExpr tree) (precFailures rest)
+
+precCompare : String -> String -> String -> List String -> List String
+precCompare src want got rest =
+  if want == got then
+    rest
+  else
+    "\{src}\n      want: \{want}\n      got : \{got}"::rest
+
+-- ---------------------------------------------------------------------------
+-- Report
+-- ---------------------------------------------------------------------------
+
+main =
+  let rtBad = rtFailures corpus
+  let precBad = precFailures precCases
+  println
+    "round-trip (parse . render . parse == parse): \{length corpus - length rtBad}/\{length corpus} \{verdict (length rtBad)}"
+  print (bullet rtBad)
+  println
+    "precedence  (exact constructor tree):          \{length precCases - length precBad}/\{length precCases} \{verdict (length precBad)}"
+  print (bullet precBad)
+  println "TOTAL: \{verdict (length rtBad + length precBad)}"

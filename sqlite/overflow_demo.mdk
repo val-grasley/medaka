@@ -1,0 +1,168 @@
+-- sqlite overflow-page demo / overflow-oracle entry.
+--
+-- Drives the overflow-page WRITE path (`lib.dbwriter`) and the overflow-page
+-- READ path (`lib.btree`) so `sqlite/test/overflow_oracle.sh` can diff both
+-- against the real `sqlite3` CLI.
+--
+-- Usage:
+--   overflow_demo write    <out.db> <size> [<size> ...]
+--   overflow_demo writemix <out.db> <size> [<size> ...]
+--   overflow_demo read     <db>
+--   overflow_demo update   <db> <rowid> <newsize>
+--   overflow_demo delete   <db> <rowid>
+--
+-- The table is
+--   CREATE TABLE big(id INTEGER PRIMARY KEY, t TEXT, b BLOB, n INTEGER)
+--
+-- `write` emits TWO rows per requested size — one TEXT-only (blob NULL) and one
+-- BLOB-only (text NULL).  Keeping exactly one big column per row makes the
+-- record payload track `size` almost 1:1, which is what lets the oracle sweep
+-- the local-payload threshold (X = 4061) one byte at a time.  `writemix` emits
+-- one row per size with BOTH columns big (payload ~2*size), covering the
+-- several-big-columns-in-one-row case.
+--
+-- Payloads are generated deterministically (see `textOf`/`blobOf`); the oracle
+-- script generates the SAME bytes in Python and compares.
+--
+-- `read` prints one line per row in EXACTLY the format
+--   sqlite3 db "SELECT id, t, hex(b), n FROM big"
+-- produces, so the two outputs can be diffed byte-for-byte.
+
+import lib.dbwriter.{writeDatabase}
+import lib.mutate.{delete, update, assign}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, nthCell}
+import lib.select.{eColInt, eEq, eLitI, eLitT}
+import lib.sqlite.{Db, openDb, scanTableRowsIpk, rowCellsWithIpk}
+import lib.btree.{Row}
+import hex.{encodeUpper}
+import list.{reverse}
+import demo_support.{printRows, parseN}
+import string.{fromUtf8}
+
+tableName : String
+tableName = "big"
+
+createSql : String
+createSql =
+  "CREATE TABLE big(id INTEGER PRIMARY KEY, t TEXT, b BLOB, n INTEGER)"
+
+-- Column 0 (id) is the INTEGER PRIMARY KEY → stored as the rowid.
+ipkIdx : Option Int
+ipkIdx = Some 0
+
+-- ---------------------------------------------------------------------------
+-- Deterministic payload generators (mirrored in the oracle's Python)
+-- ---------------------------------------------------------------------------
+
+-- | `n` bytes of ASCII text: byte i is 'a' + (i % 26).  No newline, no '|',
+--   so a row survives a line-oriented diff against sqlite3's output.
+textOf : Int -> String
+textOf n = fromUtf8 (arrayFromList (textGo n 0 []))
+
+textGo : Int -> Int -> List Int -> List Int
+textGo n i acc =
+  if i >= n then
+    reverse acc
+  else
+    textGo n (i + 1) (97 + i % 26 :: acc)
+
+-- | `n` bytes of blob: byte i is (i * 7 + 3) % 256 — covers 0x00 and 0xFF.
+blobOf : Int -> Array Int
+blobOf n = arrayFromList (blobGo n 0 [])
+
+blobGo : Int -> Int -> List Int -> List Int
+blobGo n i acc =
+  if i >= n then
+    reverse acc
+  else
+    blobGo n (i + 1) ((i * 7 + 3) % 256 :: acc)
+
+-- Two rows per size: a TEXT-only row then a BLOB-only row.  Exactly one big
+-- column per row keeps the record payload ~= size, so a size sweep is a
+-- payload sweep.
+rowsOf : List Int -> List (List Cell)
+rowsOf sizes = rowsGo sizes 1 []
+
+rowsGo : List Int -> Int -> List (List Cell) -> List (List Cell)
+rowsGo [] _ acc = reverse acc
+rowsGo (s::rest) i acc =
+  let textRow = [CInt i, CText (textOf s), CNull, CInt s]
+  let blobRow = [CInt (i + 1), CNull, CBlob (blobOf s), CInt s]
+  rowsGo rest (i + 2) (blobRow :: textRow::acc)
+
+-- One row per size with BOTH columns big (payload ~= 2*size).
+mixRowsOf : List Int -> List (List Cell)
+mixRowsOf sizes = mixGo sizes 1 []
+
+mixGo : List Int -> Int -> List (List Cell) -> List (List Cell)
+mixGo [] _ acc = reverse acc
+mixGo (s::rest) i acc =
+  mixGo rest (i + 1) ([CInt i, CText (textOf s), CBlob (blobOf s), CInt s]::acc)
+
+-- ---------------------------------------------------------------------------
+-- Rendering — byte-identical to `sqlite3 db "SELECT id, t, hex(b), n FROM big"`
+-- ---------------------------------------------------------------------------
+
+renderCell : Cell -> String
+renderCell CNull = ""
+renderCell (CInt n) = intToString n
+renderCell (CText s) = s
+renderCell (CBlob a) = encodeUpper a
+renderCell (CFloat f) = floatToString f
+
+renderRow : Option Int -> Row -> String
+renderRow pkIdx row =
+  let cells = rowCellsWithIpk pkIdx row
+  let f = renderCell (nthCell cells 0)
+  let t = renderCell (nthCell cells 1)
+  let b = renderCell (nthCell cells 2)
+  let n = renderCell (nthCell cells 3)
+  "\{f}|\{t}|\{b}|\{n}"
+
+-- ---------------------------------------------------------------------------
+-- Commands
+-- ---------------------------------------------------------------------------
+
+main : <IO, FileRead, FileWrite, Mut> Unit
+main = match args ()
+  "write"::out::sizes => doWrite out (rowsOf (map parseN sizes))
+  "writemix"::out::sizes => doWrite out (mixRowsOf (map parseN sizes))
+  ["read", db] => doRead db
+  ["update", db, rid, newSize] => doUpdate db (parseN rid) (parseN newSize)
+  ["delete", db, rid] => doDelete db (parseN rid)
+  _ => println "usage: overflow_demo write|writemix <out.db> <size>... | read <db> | update <db> <rowid> <newsize> | delete <db> <rowid>"
+
+doWrite : String -> List (List Cell) -> <IO, FileWrite, Mut> Unit
+doWrite out rows =
+  let res = writeDatabase out tableName createSql 4 ipkIdx rows
+  match res
+    Err e => println "Error: \{e}"
+    Ok _ => println "wrote \{out}"
+
+doRead : String -> <IO, FileRead> Unit
+doRead path = match openDb path
+  Err e => println "Error opening \{path}: \{e}"
+  Ok db => dumpRows db
+
+dumpRows : Db -> <IO> Unit
+dumpRows db = match scanTableRowsIpk db tableName
+  Err e => println "Error: \{e}"
+  Ok (pkIdx, rows) => printRows (renderRow pkIdx) rows
+
+-- UPDATE the `t` column of one row to a fresh `newSize`-byte text, exercising
+-- the mutate wall: this rewrites the WHOLE file, so it only works if every row
+-- in the table — including the multi-KB ones — can be re-emitted.
+doUpdate : String -> Int -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+doUpdate path rid newSize =
+  let sets = [assign "t" (eLitT (textOf newSize)), assign "n" (eLitI newSize)]
+  let res = update path tableName sets (eEq (eColInt "id") (eLitI rid))
+  match res
+    Err e => println "Error: \{e}"
+    Ok n => println "updated \{intToString n}"
+
+doDelete : String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+doDelete path rid =
+  let res = delete path tableName (eEq (eColInt "id") (eLitI rid))
+  match res
+    Err e => println "Error: \{e}"
+    Ok n => println "deleted \{intToString n}"

@@ -7,7 +7,42 @@
 -- files.  Consolidated here so the demos `import demo_support` instead of
 -- each carrying its own copy.
 
-import string.{toInt}
+import lib.recordfmt.{Cell, cellToString}
+import string.{toInt, join}
+
+-- | Render a raw row the way `sqlite3`'s default `-list` mode does: the columns
+--   joined by `|`, with NULL as the EMPTY string.  This is what makes a
+--   byte-for-byte diff against the `sqlite3` CLI possible, so it is shared rather
+--   than re-derived — the demo and the wasm probe must agree exactly.
+--
+--   Pairs with `lib.rowtype.tCells` (the dynamic row type): a SQL string typed by
+--   the user has no statically-known column list, so the row arrives as raw cells.
+--
+-- > showCellRow [CInt 1, CText "ada", CNull]
+-- "1|ada|"
+export showCellRow : List Cell -> String
+showCellRow cells = join "|" (map cellToString cells)
+
+-- | Render a probe's failure list as one indented `FAIL <msg>` line each (empty
+--   list ⇒ empty string).  Shared by the probe reporters.
+--
+-- > bullet ["a", "b"]
+-- "  FAIL a\n  FAIL b\n"
+-- > bullet []
+-- ""
+export bullet : List String -> String
+bullet [] = ""
+bullet (m::rest) = "  FAIL \{m}\n\{bullet rest}"
+
+-- | `"PASS"` for zero failures, `"FAIL"` otherwise.
+--
+-- > verdict 0
+-- "PASS"
+-- > verdict 3
+-- "FAIL"
+export verdict : Int -> String
+verdict 0 = "PASS"
+verdict _ = "FAIL"
 
 -- | Print one line per element via a caller-supplied show function.
 export printRows : (a -> String) -> List a -> <IO> Unit
