@@ -30,7 +30,13 @@
 --   * `compilePred` error (unknown column in WHERE).
 --   * UPDATE targeting the INTEGER PRIMARY KEY column (would move the rowid).
 --   * UPDATE assigning an unknown column name.
---   * Write-path errors (row too large, sqlite_master overflow, etc.) propagate.
+--   * Write-path errors (sqlite_master overflow, etc.) propagate.
+--
+-- NOTE: because both statements rewrite the WHOLE file, a table containing a
+-- row too large for one page USED to make every UPDATE and DELETE on it fail —
+-- even one matching no rows.  The write path now emits overflow pages
+-- (`lib.overflow` / `lib.dbwriter`), so multi-KB TEXT/BLOB rows round-trip
+-- through a mutation unharmed; `sqlite/test/overflow_oracle.sh` gates it.
 
 import lib.sqlite.{
   Db,
@@ -80,11 +86,11 @@ upperCharsGo : Array Char -> Int -> Int -> List Char -> List Char
 upperCharsGo arr i n acc =
   if i >= n then reverse acc
   else
-    let c = charCode arr.[i]
+    let c = charCode arr[i]
     let uc = if c >= 97 && c <= 122 then c - 32 else c
     let ch = match charFromCode uc
       Some x => x
-      None => arr.[i]
+      None => arr[i]
     upperCharsGo arr (i + 1) n (ch::acc)
 
 stringContains : String -> String -> Bool
@@ -108,7 +114,7 @@ charsMatchAt : Array Char -> Array Char -> Int -> Int -> Int -> Bool
 charsMatchAt h nd hi ni nl =
   if ni >= nl then
     True
-  else if charCode h.[hi + ni] == charCode nd.[ni] then
+  else if charCode h[hi + ni] == charCode nd[ni] then
     charsMatchAt h nd hi (ni + 1) nl
   else
     False

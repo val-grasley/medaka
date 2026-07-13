@@ -46,7 +46,22 @@
 --     +7  u8   fragmented free   = 0
 --   then the N×u16 page-relative cell-pointer array (rowid-ascending), then the
 --   cell content area packed from the page END downward.  A table-leaf cell is
---   `[payload-len varint][rowid varint][record bytes]`.
+--   `[payload-len varint][rowid varint][local payload][4-byte BE overflow page]`
+--   — the trailing pointer present only when the payload spills (see below).
+--
+-- ### OVERFLOW PAGES (the exact inverse of `btree.gatherPayload`)
+-- A record longer than the leaf's local capacity is SPLIT: `lib.overflow`'s
+-- `localPayloadSize` decides how many bytes stay in the leaf cell; the rest go
+-- into a chain of overflow pages, each `[4-byte BE next-page][payload bytes]`
+-- (capacity `usable - 4` bytes; next-page 0 ends the chain).  Both sides of the
+-- library call the SAME threshold arithmetic, so the writer cannot drift from
+-- the reader — or from `sqlite3`, which uses the identical formula.
+--
+-- Overflow pages are allocated from the same page counter as the b-tree pages,
+-- in a REGION AFTER every b-tree page: pages 1..T are the sqlite_master leaf +
+-- the tables' b-trees exactly as before, and pages T+1.. are the overflow
+-- chains.  That keeps the no-overflow byte image bit-for-bit identical to what
+-- this writer emitted before overflow support existed.
 --
 -- ### IPK handling (mandatory; mirrors `rowCellsWithIpk` on the read side)
 -- If the table has an `INTEGER PRIMARY KEY` column (located by
@@ -54,9 +69,10 @@
 -- integer value becomes the cell's **rowid**.  Otherwise the rowid
 -- auto-increments 1..N in row order.
 --
--- ### Single-leaf-page cap
--- If the cells + pointer array do not fit in the available page space the
--- writer returns a clean `Err` — it never silently overflows.
+-- ### Residual cap
+-- A `sqlite_master` record big enough to overflow (a CREATE TABLE text of
+-- multiple KB) is still refused with a clean `Err` — multi-page sqlite_master
+-- is out of scope.  User-table rows of any size are supported.
 
 -- ## Byte emission via the shared SQLite varint codec
 --
@@ -69,7 +85,7 @@
 -- random-access page layout stays on `Array` (set/blit) because Builder cannot
 -- express positional writes.
 
-import array.{set, blit}
+import array.{set, blit, slice}
 import bytebuilder.{
   newBuilder,
   emitU8,
@@ -82,6 +98,7 @@ import bytebuilder.{
 import list.{reverse, get}
 import lib.header.{magicBytes}
 import lib.varint.{sqVarintBytes}
+import lib.overflow.{localPayloadSize, overflowCapacity, overflowPageCount}
 import lib.recordenc.{encodeRecord}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat}
 
@@ -111,6 +128,12 @@ pageTableLeafByte = 13  -- 0x0D
 pageTableInteriorByte : Int
 pageTableInteriorByte = 5  -- 0x05
 
+-- We reserve no bytes per page (file-header byte 20 = 0), so the USABLE page
+-- size — the size SQLite's overflow arithmetic is defined over — is the whole
+-- page.  Named separately because `lib.overflow` is parameterized by it.
+usableSize : Int
+usableSize = pageSize
+
 -- Usable bytes for cells + cell-pointer array on an ordinary leaf page
 -- (header at offset 0).  A batch of leaf cells must satisfy
 -- `sum(cellLen) + 2*count <= leafCapacity`.
@@ -122,18 +145,51 @@ sqliteVersionNumber : Int
 sqliteVersionNumber = 3046000
 
 -- ---------------------------------------------------------------------------
--- Leaf-cell encoding: [payload-len varint][rowid varint][record bytes]
+-- Leaf-cell encoding
+--   [payload-len varint][rowid varint][local payload][4-byte BE overflow page]
 -- ---------------------------------------------------------------------------
+--
+-- A "pending row" (`PRow`) is the writer's unit of work between encoding and
+-- page assignment:
+--
+--   (rowid, cellBytes, spilledBytes)
+--
+-- `cellBytes` is the FINAL leaf cell — including, when the payload spills, a
+-- 4-byte trailer that is ZERO until page assignment patches in the real first
+-- overflow page number.  Its LENGTH is already final either way, which is what
+-- lets `packLeaves` partition rows into leaves before any page number is known.
+-- `spilledBytes` is empty for a row that fits locally.
 
--- | Encode one table-leaf cell given its rowid and its record bytes.
---   payload-len is the byte length of the record (the payload), as a varint.
-encodeLeafCell : Int -> Array Int -> <Mut> Array Int
+-- The rowid of a pending row.
+prowRowid : (Int, Array Int, Array Int) -> Int
+prowRowid (rid, _, _) = rid
+
+-- The leaf-cell bytes of a pending row.
+prowCell : (Int, Array Int, Array Int) -> Array Int
+prowCell (_, cell, _) = cell
+
+-- The overflow (spilled) payload bytes of a pending row; empty if it fits.
+prowSpill : (Int, Array Int, Array Int) -> Array Int
+prowSpill (_, _, spill) = spill
+
+-- | Encode one table-leaf cell given its rowid and its record bytes, splitting
+--   the record at the local-payload threshold.  Returns the cell bytes and the
+--   spilled tail (empty when the record fits in the leaf).
+--
+--   When the record fits, the emitted cell is byte-for-byte what this writer
+--   emitted before overflow support: `slice 0 len rec == rec` and no trailer.
+encodeLeafCell : Int -> Array Int -> <Mut> (Array Int, Array Int)
 encodeLeafCell rowid recBytes =
+  let plen = arrayLength recBytes
+  let local = localPayloadSize usableSize plen
   let buf = newBuilder ()
-  emitBytes (sqVarintBytes (arrayLength recBytes)) buf
+  emitBytes (sqVarintBytes plen) buf
   emitBytes (sqVarintBytes rowid) buf
-  emitBytes (toList recBytes) buf
-  buildArray buf
+  emitBytes (toList (slice 0 local recBytes)) buf
+  -- Placeholder first-overflow-page pointer; `assignOverflow` patches it once
+  -- page numbers are known.  Absent entirely when nothing spills.
+  let _ = if local < plen then emitU32BE 0 buf else ()
+  (buildArray buf, slice local plen recBytes)
 
 -- ---------------------------------------------------------------------------
 -- Page assembly
@@ -280,6 +336,74 @@ buildInteriorPage entries rightmost = do
   Ok page
 
 -- ---------------------------------------------------------------------------
+-- Overflow-page allocation and chain construction
+-- ---------------------------------------------------------------------------
+--
+-- Called AFTER the b-tree page count is known and BEFORE the leaf pages are
+-- assembled (`buildLeafPage` blits the cell bytes into the page image, so the
+-- 4-byte pointer must already be patched in by then).  Overflow pages are
+-- handed out sequentially from `next`, and the pages are returned in exactly
+-- that order, so the caller can simply append them to the file.
+
+-- | Patch a spilling cell's trailing 4-byte big-endian first-overflow-page
+--   pointer, which `encodeLeafCell` left as zero.
+patchOverflowPtr : Array Int -> Int -> <Mut> Unit
+patchOverflowPtr cell page = setU32BE cell (arrayLength cell - 4) page
+
+-- | Build the overflow chain carrying `spill`, starting at page `firstPage`.
+--   Each page is `[4-byte BE next][chunk]`, zero-padded to `pageSize`; the last
+--   page's next pointer is 0.  Pages come back in file order.
+buildOverflowChain : Array Int -> Int -> <Mut> List (Array Int)
+buildOverflowChain spill firstPage =
+  chainGo
+    spill
+    firstPage
+    0
+    (overflowPageCount usableSize (arrayLength spill))
+    []
+
+chainGo : Array Int -> Int -> Int -> Int -> List (Array Int) -> <Mut> List (Array Int)
+chainGo spill firstPage i total acc =
+  if i >= total then reverse acc
+  else
+    let cap = overflowCapacity usableSize
+    let off = i * cap
+    let chunk = min cap (arrayLength spill - off)
+    let next = if i == total - 1 then 0 else firstPage + i + 1
+    let page = arrayMake pageSize 0
+    let _ = setU32BE page 0 next
+    let _ = blit spill off page 4 chunk
+    chainGo spill firstPage (i + 1) total (page::acc)
+
+-- | Assign overflow pages to every spilling row in `rows`, patching each cell's
+--   pointer and emitting its chain.  Threads the next free page number.
+--   `acc` accumulates chain pages in REVERSE file order (the caller reverses).
+assignOverflow : List (Int, Array Int, Array Int) -> Int -> List (Array Int) -> <Mut> (Int, List (Array Int))
+assignOverflow [] next acc = (next, acc)
+assignOverflow (row::rest) next acc =
+  let spill = prowSpill row
+  if arrayLength spill == 0 then assignOverflow rest next acc
+  else
+    let nPages = overflowPageCount usableSize (arrayLength spill)
+    let _ = patchOverflowPtr (prowCell row) next
+    let pages = buildOverflowChain spill next
+    assignOverflow rest (next + nPages) (reverse pages ++ acc)
+
+-- | Assign overflow pages across every leaf batch of every table plan, in file
+--   order (table by table, leaf by leaf, cell by cell).
+assignOverflowPlans : List (String, String, List (List (Int, Array Int, Array Int))) -> Int -> List (Array Int) -> <Mut> (Int, List (Array Int))
+assignOverflowPlans [] next acc = (next, acc)
+assignOverflowPlans ((_, _, batches)::rest) next acc =
+  let (next2, acc2) = assignOverflowBatches batches next acc
+  assignOverflowPlans rest next2 acc2
+
+assignOverflowBatches : List (List (Int, Array Int, Array Int)) -> Int -> List (Array Int) -> <Mut> (Int, List (Array Int))
+assignOverflowBatches [] next acc = (next, acc)
+assignOverflowBatches (b::rest) next acc =
+  let (next2, acc2) = assignOverflow b next acc
+  assignOverflowBatches rest next2 acc2
+
+-- ---------------------------------------------------------------------------
 -- File header (100 bytes), written into the first 100 bytes of page 1
 -- ---------------------------------------------------------------------------
 
@@ -350,22 +474,24 @@ nullifyGo p idx (c::rest) =
 
 -- | Encode one user row into a full leaf cell, computing its rowid (IPK or
 --   auto-increment) and storing the IPK column as NULL in the record.
---   Returns the (rowid, cell-bytes) pair; the rowid is kept for interior-page
---   key construction when the table spans multiple leaves.
-encodeRow : Option Int -> Int -> List Cell -> <Mut> Result String (Int, Array Int)
+--   Returns the pending row `(rowid, cell-bytes, spilled-bytes)`; the rowid is
+--   kept for interior-page key construction when the table spans multiple
+--   leaves, and the spill (empty for a row that fits) for overflow allocation.
+encodeRow : Option Int -> Int -> List Cell -> <Mut> Result String (Int, Array Int, Array Int)
 encodeRow ipk autoRowid cells = do
   rowid <- rowidFor ipk autoRowid cells
   recBytes <- encodeRecord (nullifyIpk ipk cells)
-  Ok (rowid, encodeLeafCell rowid recBytes)
+  let (cell, spill) = encodeLeafCell rowid recBytes
+  Ok (rowid, cell, spill)
 
 -- Encode every user row, threading the auto-increment rowid.  Cells come back
 -- in input order (which must already be rowid-ascending for the writer), each
 -- paired with its rowid.
-encodeRows : Option Int -> Int -> List (List Cell) -> List (Int, Array Int) -> <Mut> Result String (List (Int, Array Int))
+encodeRows : Option Int -> Int -> List (List Cell) -> List (Int, Array Int, Array Int) -> <Mut> Result String (List (Int, Array Int, Array Int))
 encodeRows _ _ [] acc = Ok (reverse acc)
 encodeRows ipk autoRowid (row::rest) acc = do
-  pair <- encodeRow ipk autoRowid row
-  encodeRows ipk (autoRowid + 1) rest (pair::acc)
+  prow <- encodeRow ipk autoRowid row
+  encodeRows ipk (autoRowid + 1) rest (prow::acc)
 
 -- Encode every user row using an EXPLICIT rowid supplied per row (instead of
 -- auto-incrementing 1..N).  Each input is `(rowid, cells)`.
@@ -377,11 +503,11 @@ encodeRows ipk autoRowid (row::rest) acc = do
 --     renumbering survivors to 1..N.
 -- Rows must still be supplied in rowid-ascending order (the writer's existing
 -- single/multi-leaf + interior-key machinery assumes ascending rowids).
-encodeRowsExplicit : Option Int -> List (Int, List Cell) -> List (Int, Array Int) -> <Mut> Result String (List (Int, Array Int))
+encodeRowsExplicit : Option Int -> List (Int, List Cell) -> List (Int, Array Int, Array Int) -> <Mut> Result String (List (Int, Array Int, Array Int))
 encodeRowsExplicit _ [] acc = Ok (reverse acc)
 encodeRowsExplicit ipk ((rid, row)::rest) acc = do
-  pair <- encodeRow ipk rid row
-  encodeRowsExplicit ipk rest (pair::acc)
+  prow <- encodeRow ipk rid row
+  encodeRowsExplicit ipk rest (prow::acc)
 
 -- ---------------------------------------------------------------------------
 -- sqlite_master row (page 1)
@@ -398,19 +524,26 @@ masterCells name createSql rootPage =
 -- Multi-leaf partitioning
 -- ---------------------------------------------------------------------------
 --
--- Partition the encoded (rowid, cell) pairs into batches that each fit one
--- leaf page (`sum(cellLen) + 2*count <= leafCapacity`), greedily in rowid
--- order.  The tree is intentionally UNBALANCED — each batch is filled toward
--- capacity; balancing/redistribution is out of scope.  `cur` accumulates the
--- current batch reversed; `done` accumulates completed batches reversed;
--- `used` is the running byte cost of `cur`.  Empty input yields one empty
--- batch (`[[]]`) so the single-leaf path still produces a valid empty table.
-packLeaves : List (Int, Array Int) -> List (Int, Array Int) -> List (List (Int, Array Int)) -> Int -> Result String (List (List (Int, Array Int)))
+-- Partition the pending rows into batches that each fit one leaf page
+-- (`sum(cellLen) + 2*count <= leafCapacity`), greedily in rowid order.  The
+-- tree is intentionally UNBALANCED — each batch is filled toward capacity;
+-- balancing/redistribution is out of scope.  `cur` accumulates the current
+-- batch reversed; `done` accumulates completed batches reversed; `used` is the
+-- running byte cost of `cur`.  Empty input yields one empty batch (`[[]]`) so
+-- the single-leaf path still produces a valid empty table.
+--
+-- Since `encodeLeafCell` caps a cell's local payload at `maxLocalPayload`
+-- (= usable - 35), a single cell can no longer exceed the page: the largest
+-- possible cell is 35 - 4 = 31 bytes of slack below `usable`, comfortably
+-- inside `leafCapacity`.  The guard below is therefore now DEFENSIVE (it can
+-- only fire if the geometry constants are ever made inconsistent), not the
+-- "row too large" wall it used to be.
+packLeaves : List (Int, Array Int, Array Int) -> List (Int, Array Int, Array Int) -> List (List (Int, Array Int, Array Int)) -> Int -> Result String (List (List (Int, Array Int, Array Int)))
 packLeaves [] cur done used = Ok (reverse (reverse cur :: done))
 packLeaves (p::rest) cur done used =
-  let clen = arrayLength (snd p)
+  let clen = arrayLength (prowCell p)
   let need = clen + 2
-  if need > leafCapacity then Err "row too large for one page (\{intToString clen} bytes); overflow pages not supported"
+  if need > leafCapacity then Err "internal: leaf cell of \{intToString clen} bytes exceeds the page (leafCapacity = \{intToString leafCapacity})"
   else match cur
     [] => packLeaves rest [p] done need
     _ =>
@@ -421,9 +554,9 @@ packLeaves (p::rest) cur done used =
 
 -- | The largest rowid in a rowid-ascending batch (its last element's rowid).
 --   Used as the interior-cell key for a non-rightmost leaf.
-lastRowid : List (Int, Array Int) -> Int
+lastRowid : List (Int, Array Int, Array Int) -> Int
 lastRowid [] = 0
-lastRowid [p] = fst p
+lastRowid [p] = prowRowid p
 lastRowid (_::rest) = lastRowid rest
 
 -- ---------------------------------------------------------------------------
@@ -444,8 +577,10 @@ lastRowid (_::rest) = lastRowid rest
 --   rootpage = 2.  If the rows fit one leaf page, page 2 IS that data leaf
 --   (the original 2-page layout, byte-for-byte unchanged).  Otherwise page 2
 --   is a table-interior (0x05) root whose children are the data leaves on
---   pages 3..N (a valid-but-unbalanced tree).  Returns `Err` on a row that
---   exceeds one page, more leaves than fit one interior page, or any
+--   pages 3..N (a valid-but-unbalanced tree).  A row too large for a leaf cell
+--   spills onto overflow pages appended after the b-tree (any size of
+--   TEXT/BLOB is fine).  Returns `Err` on more leaves than fit one interior
+--   page, a sqlite_master record too large for one page, or any
 --   record-encoding error.
 export buildDatabase : String -> String -> Int -> Option Int -> List (List Cell) -> <Mut> Result String (Array Int)
 buildDatabase name createSql colCount ipkColIdx rows =
@@ -468,9 +603,9 @@ buildDatabase name createSql colCount ipkColIdx rows =
 --
 -- Returns the pages in file order; the table's rootpage is always `basePage`.
 
-buildTablePages : Int -> List (List (Int, Array Int)) -> <Mut> Result String (List (Array Int))
+buildTablePages : Int -> List (List (Int, Array Int, Array Int)) -> <Mut> Result String (List (Array Int))
 buildTablePages basePage [single] = do
-  leaf <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map snd single))
+  leaf <- mapErr (e => "data page: \{e}") (buildLeafPage 0 (map prowCell single))
   Ok [leaf]
 buildTablePages basePage batches = do
   let nLeaves   = length batches
@@ -481,9 +616,11 @@ buildTablePages basePage batches = do
   interior  <- mapErr (e => "interior page: \{e}") (buildInteriorPage entries rightmost)
   Ok (interior :: leafPages)
 
--- | How many file pages a table with these leaf batches occupies:
---   1 for a single leaf, else 1 (interior root) + one per leaf.
-pageCountOf : List (List (Int, Array Int)) -> Int
+-- | How many B-TREE file pages a table with these leaf batches occupies:
+--   1 for a single leaf, else 1 (interior root) + one per leaf.  Overflow
+--   pages are NOT counted here — they live in a region after every b-tree page
+--   and are counted by `assignOverflowPlans`.
+pageCountOf : List (List (Int, Array Int, Array Int)) -> Int
 pageCountOf [_] = 1
 pageCountOf batches = 1 + length batches
 
@@ -510,20 +647,74 @@ pageCountOf batches = 1 + length batches
 export buildDatabaseMulti : List (String, String, Option Int, List (List Cell)) -> <Mut> Result String (Array Int)
 buildDatabaseMulti specs = do
   plans <- planTables specs []
-  (masterCellList, tablePages) <- buildAllTables plans 2 1 [] []
-  page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize masterCellList)
-  let fileHdr = buildFileHeader (totalPageCount plans 1)
-  let _ = blit fileHdr 0 page1 0 fileHeaderSize
-  Ok (concatPageList (page1::tablePages))
+  assembleImage plans
 
 -- Encode each table's rows and partition them into leaf batches, yielding a
 -- plan `(name, createSql, batches)` per table (page count is then known).
-planTables : List (String, String, Option Int, List (List Cell)) -> List (String, String, List (List (Int, Array Int))) -> <Mut> Result String (List (String, String, List (List (Int, Array Int))))
+planTables : List (String, String, Option Int, List (List Cell)) -> List (String, String, List (List (Int, Array Int, Array Int))) -> <Mut> Result String (List (String, String, List (List (Int, Array Int, Array Int))))
 planTables [] acc = Ok (reverse acc)
 planTables ((name, sql, ipk, rows)::rest) acc = do
-  dataPairs <- encodeRows ipk 1 rows []
-  batches <- packLeaves dataPairs [] [] 0
+  dataRows <- encodeRows ipk 1 rows []
+  batches <- packLeaves dataRows [] [] 0
   planTables rest ((name, sql, batches)::acc)
+
+-- ---------------------------------------------------------------------------
+-- Image assembly — shared by the auto-rowid and explicit-rowid entry points
+-- ---------------------------------------------------------------------------
+--
+-- ORDER MATTERS.  `assignOverflowPlans` PATCHES each spilling cell's trailing
+-- 4-byte pointer in place, and `buildTablePages` blits those cell bytes into
+-- the page images — so overflow assignment must happen FIRST, while the cells
+-- are still standalone arrays.
+--
+-- Page map:
+--   1                        sqlite_master leaf
+--   2 .. btreeTotal          the tables' b-trees (unchanged by overflow)
+--   btreeTotal+1 .. endPage-1  the overflow chains, in row order
+assembleImage : List (String, String, List (List (Int, Array Int, Array Int))) -> <Mut> Result String (Array Int)
+assembleImage plans = do
+  let btreeTotal = totalPageCount plans 1
+  masterRows <- buildMasterRows plans 2 1 []
+  _ <- refuseMasterOverflow masterRows
+  let (endPage, ovRev) = assignOverflowPlans plans (btreeTotal + 1) []
+  tablePages <- buildAllTablePages plans 2 []
+  page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize (map prowCell masterRows))
+  let fileHdr = buildFileHeader (endPage - 1)
+  let _ = blit fileHdr 0 page1 0 fileHeaderSize
+  Ok (concatPageList (page1 :: tablePages ++ reverse ovRev))
+
+-- One sqlite_master pending row per table: (type, name, tbl_name, rootpage,
+-- sql), rowid 1..N.  Each table's rootpage is the first page of its contiguous
+-- range, walked from page 2.
+buildMasterRows : List (String, String, List (List (Int, Array Int, Array Int))) -> Int -> Int -> List (Int, Array Int, Array Int) -> <Mut> Result String (List (Int, Array Int, Array Int))
+buildMasterRows [] _ _ acc = Ok (reverse acc)
+buildMasterRows ((name, sql, batches)::rest) base rid acc = do
+  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name sql base))
+  let (cell, spill) = encodeLeafCell rid masterRec
+  buildMasterRows
+    rest
+    (base + pageCountOf batches)
+    (rid + 1)
+    ((rid, cell, spill)::acc)
+
+-- A `sqlite_master` record that spills would need its own overflow chain AND a
+-- pointer patched before page 1 is assembled.  Multi-page sqlite_master stays
+-- out of scope, so refuse cleanly rather than emit a truncated schema.
+refuseMasterOverflow : List (Int, Array Int, Array Int) -> Result String Unit
+refuseMasterOverflow [] = Ok ()
+refuseMasterOverflow (r::rest) =
+  if arrayLength (prowSpill r) > 0 then
+    Err "sqlite_master overflow: the CREATE TABLE text is too large to store in one page (multi-page sqlite_master is not supported)"
+  else
+    refuseMasterOverflow rest
+
+-- Build every table's b-tree pages, walking the contiguous page ranges from
+-- `base` (page 2) upward.  Returns them flattened in file order.
+buildAllTablePages : List (String, String, List (List (Int, Array Int, Array Int))) -> Int -> List (List (Array Int)) -> <Mut> Result String (List (Array Int))
+buildAllTablePages [] _ acc = Ok (flattenPages (reverse acc))
+buildAllTablePages ((_, _, batches)::rest) base acc = do
+  pages <- buildTablePages base batches
+  buildAllTablePages rest (base + pageCountOf batches) (pages::acc)
 
 -- ---------------------------------------------------------------------------
 -- Explicit-rowid multi-table build (rowid-faithful rewrite)
@@ -546,41 +737,21 @@ buildDatabaseExplicit name createSql colCount ipkColIdx rows =
 export buildDatabaseMultiExplicit : List (String, String, Option Int, List (Int, List Cell)) -> <Mut> Result String (Array Int)
 buildDatabaseMultiExplicit specs = do
   plans <- planTablesExplicit specs []
-  (masterCellList, tablePages) <- buildAllTables plans 2 1 [] []
-  page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize masterCellList)
-  let fileHdr = buildFileHeader (totalPageCount plans 1)
-  let _ = blit fileHdr 0 page1 0 fileHeaderSize
-  Ok (concatPageList (page1::tablePages))
+  assembleImage plans
 
 -- Encode each table's rows using their explicit rowids and partition them into
 -- leaf batches.  Mirrors `planTables` (which assigns 1..N), differing only in
 -- the rowid source.
-planTablesExplicit : List (String, String, Option Int, List (Int, List Cell)) -> List (String, String, List (List (Int, Array Int))) -> <Mut> Result String (List (String, String, List (List (Int, Array Int))))
+planTablesExplicit : List (String, String, Option Int, List (Int, List Cell)) -> List (String, String, List (List (Int, Array Int, Array Int))) -> <Mut> Result String (List (String, String, List (List (Int, Array Int, Array Int))))
 planTablesExplicit [] acc = Ok (reverse acc)
 planTablesExplicit ((name, sql, ipk, rows)::rest) acc = do
-  dataPairs <- encodeRowsExplicit ipk rows []
-  batches <- packLeaves dataPairs [] [] 0
+  dataRows <- encodeRowsExplicit ipk rows []
+  batches <- packLeaves dataRows [] [] 0
   planTablesExplicit rest ((name, sql, batches)::acc)
 
--- Walk the plans assigning each a contiguous page range from `base` upward;
--- build its pages (rooted at `base`) and its sqlite_master record (rowid `rid`,
--- rootpage = `base`).  Returns (master cells in order, all table pages in file
--- order).
-buildAllTables : List (String, String, List (List (Int, Array Int))) -> Int -> Int -> List (Array Int) -> List (List (Array Int)) -> <Mut> Result String (List (Array Int), List (Array Int))
-buildAllTables [] _ _ mAcc pAcc = Ok (reverse mAcc, flattenPages (reverse pAcc))
-buildAllTables ((name, sql, batches)::rest) base rid mAcc pAcc = do
-  pages <- buildTablePages base batches
-  masterRec <- mapErr (e => "sqlite_master record: \{e}") (encodeRecord (masterCells name sql base))
-  let mcell = encodeLeafCell rid masterRec
-  buildAllTables
-    rest
-    (base + pageCountOf batches)
-    (rid + 1)
-    (mcell::mAcc)
-    (pages::pAcc)
-
--- Total file pages: page 1 (sqlite_master) plus every table's page span.
-totalPageCount : List (String, String, List (List (Int, Array Int))) -> Int -> Int
+-- Total B-TREE file pages: page 1 (sqlite_master) plus every table's page span.
+-- Overflow pages are allocated on top of this (see `assembleImage`).
+totalPageCount : List (String, String, List (List (Int, Array Int, Array Int))) -> Int -> Int
 totalPageCount [] acc = acc
 totalPageCount ((_, _, batches)::rest) acc =
   totalPageCount rest (acc + pageCountOf batches)
@@ -591,15 +762,15 @@ flattenPages [] = []
 flattenPages (p::rest) = p ++ flattenPages rest
 
 -- Build one leaf page per batch, numbering pages from `pageNum` upward.
-buildLeafPages : List (List (Int, Array Int)) -> Int -> List (Array Int) -> <Mut> Result String (List (Array Int))
+buildLeafPages : List (List (Int, Array Int, Array Int)) -> Int -> List (Array Int) -> <Mut> Result String (List (Array Int))
 buildLeafPages [] _ acc = Ok (reverse acc)
 buildLeafPages (b::rest) pageNum acc = do
-  page <- mapErr (e => "data page \{intToString pageNum}: \{e}") (buildLeafPage 0 (map snd b))
+  page <- mapErr (e => "data page \{intToString pageNum}: \{e}") (buildLeafPage 0 (map prowCell b))
   buildLeafPages rest (pageNum + 1) (page::acc)
 
 -- Interior cell (child-page, max-rowid) entries for every NON-rightmost leaf,
 -- ascending by key.  The last batch is the right-most child (no cell).
-interiorEntries : List (List (Int, Array Int)) -> Int -> List (Int, Int) -> List (Int, Int)
+interiorEntries : List (List (Int, Array Int, Array Int)) -> Int -> List (Int, Int) -> List (Int, Int)
 interiorEntries [] _ acc = reverse acc
 interiorEntries [_] _ acc = reverse acc
 interiorEntries (b::rest) pageNum acc =
