@@ -38,9 +38,7 @@ shipped to `main`. The gate shards would have waved it through.
 ### ✅ THERE IS A MERGE QUEUE NOW (2026-07-13). Do not hand-manage staleness.
 
 The repo moved to the **MedakaLang org** and the merge queue is **ON**. This replaced
-`strict` mode, and it changes the day-to-day flow in ways the rest of this doc used to
-prescribe the opposite of. **Everything below about `BEHIND` branches, `update-branch` kicks,
-and batching PRs to dodge an O(N²) tax is now OBSOLETE. Do not do it.**
+`strict` mode.
 
 ```sh
 gh pr merge --auto --merge     # enqueues; the queue does the rest
@@ -456,15 +454,15 @@ likely with several agents live). Tell agents **`git merge origin/main`**.
 Every delegated task prompt should contain, in order:
 
 1. **One-line project framing** + what the task is.
-2. **STEP 0 — sync + VERIFY BASE:** `git merge main --no-edit` as the agent's first
-   action (orchestrator work is ahead of origin on LOCAL main), THEN a base assert:
+2. **STEP 0 — sync + VERIFY BASE:** `git merge origin/main --no-edit` as the agent's first
+   action (**never bare `git merge main`** — see above), THEN a base assert:
    `git merge-base --is-ancestor <expected-tip-SHA> HEAD && echo BASE_OK || echo BASE_STALE`
    — must print `BASE_OK`, else STOP+report. (This session an agent silently built Phase 5
    on a base missing two prior phases because local `main` was behind the real tip and its
    merge pulled the stale `main`; a redo was needed. The base-check makes this impossible.)
    NEVER fetch/origin/push.
-3. **Environment rules:** how to build (e.g. worktree `--root .`), the no-`eval`
-   /PATH quirks, no-`dune test`, the `perl -e 'alarm N; exec @ARGV'` timeout shim.
+3. **Environment rules:** how to build (`make -C <worktree> medaka`), the no-`eval`
+   /PATH quirks, the `perl -e 'alarm N; exec @ARGV'` timeout shim.
 4. **Context (verified facts):** the root cause + file:line pointers you already
    confirmed, and the existing template/precedent to mirror. This is where your
    bounded scope-read pays off — hand the agent the map, not a treasure hunt.
@@ -614,11 +612,11 @@ to the decisive checks:
   `test/build_oracles.sh` mtime-skips, so your own "re-verify" can read a stale binary too —
   `FORCE=1 bash test/build_oracles.sh` first. A green/red on a stale oracle means nothing
   (this masked a real prop regression as "9/0 unchanged" until a forced rebuild showed 5/4).
-- Only after green: `git merge <branch> --no-edit` into local main **in the primary checkout**
-  (`git -C /root/medaka merge`), then **confirm the integration branch actually advanced**:
-  `git rev-parse main` == the new tip (and `git reflog main` shows the merge). A "Fast-forward"
-  printed on a *detached HEAD* is indistinguishable from one on the branch — this session that
-  silently stranded two phases (see Failure modes). Then reconcile docs/tasks/memory.
+- Only after green: **push the branch and open a PR** — the queue lands it. (You cannot push
+  `main`.) If you *do* combine branches locally first, do it on a topic branch and **confirm the
+  branch actually advanced** (`git rev-parse <branch>` == the new tip): a "Fast-forward" printed
+  on a *detached HEAD* is indistinguishable from one on the branch, and that silently stranded
+  two phases (see Failure modes). Then reconcile docs/tasks/memory.
 
 ---
 
@@ -818,12 +816,10 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   NOTHING — but its WIP is live in its worktree (`git -C <worktree> status`). Preserve it (commit on
   its branch), then verify INDEPENDENTLY from scratch (it left no report) and give it a real commit
   message. This session W5 was fully salvaged this way; the work was real and correct.
-- **Two more stale-binary footguns (beyond `FORCE=1 build_oracles`):** (1) `make medaka`'s
+- **A third stale-binary footgun (beyond `FORCE=1 build_oracles`):** `make medaka`'s
   `find -newer` short-circuit can leave `./medaka` NOT carrying a lexer/compiler-graph change →
-  `FORCE_EMITTER_REBUILD=1 make medaka` when verifying such a change. (2) the OCaml oracle
-  `_build/default/bin/main.exe` is rebuilt by `dune build --root . bin/main.exe`, NOT by `make medaka`
-  — a stale main.exe made a fixed repro falsely read `oracle=REJECT`. Rebuild the specific binary the
-  check reads before trusting it.
+  `FORCE_EMITTER_REBUILD=1 make medaka` when verifying such a change. Rebuild the specific binary
+  the check reads before trusting it.
 - Agent commits then ends with an empty/"waiting" report → verify from git + gates.
 - **A returned agent with ≈0 tool uses + a boilerplate/empty result = a failed run, not a
   completed one.** Don't act on it; re-spawn (sometimes a different agent type helps).
@@ -844,7 +840,7 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 - **Non-isolated background agents SHARE the orchestrator's worktree filesystem + git HEAD.** An Agent spawned WITHOUT `isolation: worktree` runs in your worktree's working dir: it `git checkout -b`s there (leaving YOUR worktree on its branch when it finishes — `git checkout <branch>` later prints "Already on …"), and its builds write the same `./medaka`/`_build` artifacts as yours. Consequences this session: (1) **never run two build-heavy things at once** (your fixpoint + an agent's `make medaka` would corrupt shared artifacts) — sequence heavy builds, spawn build-touching agents one at a time or after your own build finishes; (2) a clean `git status` doesn't prove an agent isn't mid-edit — it may just not have written yet; (3) merge still happens safely in the PRIMARY checkout (`git -C /root/medaka merge <sha>`) — that's a different working dir, so it never disturbs a running agent. For genuinely parallel write-agents on overlapping files, pass `isolation: worktree`.
 - **An agent can commit stray build-artifact binaries via `git add -A`.** This session an agent's commit included 5 root-level demo binaries (~250 KB each, not gitignored) alongside the real change. Caught by the standard pre-merge `git diff --stat <main> <branch>` surface check (Bin entries that don't match the reported change). Fix: rebuild a CLEAN commit off main with only the intended files (`git checkout -B clean main; git checkout <agent-sha> -- <good files>; commit`), then merge that — do NOT merge the polluted commit. Bake "commit ONLY your changed source + fixtures, never `git add -A`" into agent prompts.
 - Agent leaves detached background gate processes → reap with `ps`/`pkill`.
-- **The empty-report + RESPAWNING-oracle-pool failure mode (recurred on MANY agents 2026-07-10, Sonnet AND Opus).** An agent ends its turn with a stray line ("Background scan in progress…", "I'll wait for the oracle build…") instead of a real report, AND it launched a bare `build_oracles.sh` (a big `xargs -P` pool) that didn't finish inside the turn — so each time the harness re-invokes/wakes it, it RESTARTS the pool. Reaping the pool alone doesn't work (it respawns). **Remedy, in order: (1) `TaskStop <agentId>` FIRST to stop the respawn; (2) reap — `pkill -f build_oracles.sh` (PARENTS) then `pkill -f '<worktree>/medaka build'` (children) then `pkill -f 'xargs -P'`; (3) salvage or discard.** Salvage IF the WIP in the agent's worktree is COMPLETE (`git -C <wt> status` + a grep for the target end-state, e.g. `grep EFunction=0`): fmt/build/gate it yourself, commit on its branch, finish any unrecaptured goldens it left. DISCARD + re-spawn if the WIP is a partial/hack (e.g. one file, target not met). **Bake into every agent prompt: NEVER run bare `build_oracles.sh`; build a single oracle with `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>`; WAIT for gates and REPORT real numbers; never end with anything running.** (Even so, expect some agents to ignore it — the `TaskStop`+salvage loop is routine.)
+- **The empty-report + RESPAWNING-oracle-pool failure mode (recurred on MANY agents 2026-07-10, Sonnet AND Opus).** An agent ends its turn with a stray line ("Background scan in progress…", "I'll wait for the oracle build…") instead of a real report, AND it launched a bare `build_oracles.sh` (a big `xargs -P` pool) that didn't finish inside the turn — so each time the harness re-invokes/wakes it, it RESTARTS the pool. Reaping the pool alone doesn't work (it respawns). **Remedy, in order: (1) `TaskStop <agentId>` FIRST to stop the respawn; (2) reap ONLY that agent's own PIDs (`ps -eo pid,args | grep "agent-<id>" | grep -v grep | awk '{print $1}' | xargs -r kill`) — NEVER a box-wide `pkill -f build_oracles.sh` / `pkill -f 'xargs -P'`, which kills other sessions' builds (the sandbox blocks it, correctly); (3) salvage or discard.** Salvage IF the WIP in the agent's worktree is COMPLETE (`git -C <wt> status` + a grep for the target end-state, e.g. `grep EFunction=0`): fmt/build/gate it yourself, commit on its branch, finish any unrecaptured goldens it left. DISCARD + re-spawn if the WIP is a partial/hack (e.g. one file, target not met). **Bake into every agent prompt: NEVER run bare `build_oracles.sh`; build a single oracle with `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>`; WAIT for gates and REPORT real numbers; never end with anything running.** (Even so, expect some agents to ignore it — the `TaskStop`+salvage loop is routine.)
 - **Fresh isolated worktrees have NO `./medaka_emitter` — but plain `make medaka` WORKS there. A lagging seed does NOT break cold bootstrap.** ⚠️ This bullet used to claim "a deferred-stale seed makes cold-bootstrap-from-seed FAIL", and that is **FALSE** — it was the premise behind the `cp` advice below, and the two together are what made every agent think it had broken the seed. Since the tolerant seed policy (`9df88b32`), a drifted seed only **WARNS** (`C3a WARN … lagging seed`) and still builds a working emitter; `bootstrap_from_seed.sh` hard-fails **only** if the seed can no longer build one at all. Verified 2026-07-13 against a genuinely drifted seed.
   - `cp <a-current-worktree>/medaka_emitter ./medaka_emitter` before `make medaka` remains a worthwhile **speedup** (skips the seed gunzip + clang + bootstrap: one ~4 s stage-A emit instead of ~1–2 min), and it is now **safe**.
   - It was NOT safe before 2026-07-13, and this is the bug every agent kept reporting. Stage A decided "is this emitter current?" by **mtime** (`find compiler -name '*.mdk' -newer ./medaka_emitter`). `cp` stamps the copy with the *current* time — newer than every file `git worktree add` just checked out — so the test found nothing newer and **skipped the rebuild** on a binary that was arbitrarily old *in source terms*. Stage B then fed that stale binary the CLI graph, it died on syntax it predated (`parse error` — e.g. an emitter older than `b2990236` cannot parse `compiler/tools/snapshot.mdk`, which now uses `import … as …`), and the build fell back to a full **cold re-bootstrap**, printing the unrelated-and-terrifying `C3a WARN: … lagging seed`. The mtime was not a weak signal, it was an **inverted** one: the staler the emitter's origin, the fresher its copy time.
@@ -855,8 +851,9 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   STOP guardrail catches it; re-scope rather than ship "panic-gone but output-wrong."
 - **About to spawn a fix at a parked gap that's actually already closed** (or whose symptom
   has shifted) → reproduce-on-current-main *before* spawning. See "The gap docs lie."
-- Stale worktree: a long-lived orchestrator worktree drifts behind local main →
-  `git merge main` it before relying on its state.
+- Stale worktree: a long-lived orchestrator worktree drifts behind →
+  `git merge origin/main` it before relying on its state (**never bare `git merge main`** —
+  it SILENTLY NO-OPS when another worktree has `main` checked out).
 - **⚠️ A GATE THAT CAN SILENTLY NO-OP WILL. "Green" is not the same as "ran".** Three separate
   instances in one session: (1) every wasm gate shells out to `wasm-tools`, which **was not
   installed** — so each one printed `skipping` and **exited 0**. The suite reported green while
@@ -884,40 +881,30 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 
 ## Medaka specifics
 
-- ⚠️ **THIS DOC STILL CONTAINS STALE OCaml/dune INSTRUCTIONS BELOW.** OCaml, `dune`,
-  `opam`, and `_build/default/bin/main.exe` were **REMOVED 2026-06-26**. There is no
-  OCaml oracle to diff against — the "differential" gates now compare the native
-  compiler against goldens captured *from itself*. Anywhere this file says `dune
-  build`, read `make medaka`. Anywhere it says "vs the OCaml oracle", read "vs a
-  checked-in golden". Left in place rather than silently rewritten because the
-  surrounding *lessons* are still true; but do not follow the commands.
 - **Build:** `make -C /absolute/path/to/worktree medaka` (the shell cwd resets between
-  calls, so a bare `make medaka` would build the MAIN checkout). A fresh isolated
-  worktree has **no `./medaka_emitter`** and cannot cold-bootstrap — `cp
-  /root/medaka/medaka_emitter "$PWD/medaka_emitter"` first (the warm path).
+  calls, so a bare `make medaka` would build the MAIN checkout). A fresh isolated worktree
+  has **no `./medaka_emitter`**, and that is fine — plain `make medaka` cold-bootstraps from
+  the seed there (see Failure modes for why the old "`cp` the emitter first" advice was a trap).
 - **Never `pkill -f build_oracles.sh` / `pkill -f 'xargs -P'` on this box.** Those are
   box-wide pattern kills; with several sessions running they will terminate *other
   people's* builds. (The sandbox now blocks it, correctly.) Scope every reap to the
   offending agent's own PIDs:
   `ps -eo pid,args | grep "agent-<id>" | grep -v grep | awk '{print $1}' | xargs -r kill`
-- **Local main is ahead of origin.** Orchestrator merges agent branches into LOCAL
-  main; `main` is checked out in the primary checkout `/root/medaka` — merge there
-  (`git -C /root/medaka merge <branch>`). **As of 2026-07-13 pushing IS expected** for
-  the PR-based CI flow (see "Agents do NOT run the full suite" above): the orchestrator
-  pushes a branch and opens a PR; CI runs the full suite on free hosted runners. Agents
-  still never push and never merge.
-- **Emitter-graph changes (`compiler/llvm_emit.mdk` etc.) leave the committed seed
-  `compiler/seed/emitter.ll` STALE.** Agents do NOT re-mint — they verify
+- **The orchestrator pushes; agents never do.** The orchestrator pushes an agent's branch,
+  opens a PR, and lets the queue land it. Nobody pushes `main` (it is protected). Agents
+  never push and never merge.
+- **Emitter-graph changes (`compiler/backend/llvm_emit.mdk` etc.) leave the committed seed
+  `compiler/seed/emitter.ll.gz` STALE.** Agents do NOT re-mint — they verify
   `test/selfcompile_fixpoint.sh` (C3a/C3b YES; it self-compiles fresh, doesn't read
-  the committed seed) and SKIP `bootstrap_from_seed.sh`. The orchestrator re-mints
-  (`test/refresh_seed.sh`, OCaml-only, then verify `bootstrap_from_seed.sh`) only at
-  **real release checkpoints** — defer during heavy iteration to avoid ~10 MB churn
-  commits. `bootstrap_from_seed` red is expected while the seed is deferred-stale.
+  the committed seed). The orchestrator re-mints (`sh test/refresh_seed.sh` — **run it
+  TWICE**, it is not idempotent after a codegen change — then verify
+  `test/bootstrap_from_seed.sh`) only at **real checkpoints**; it is a multi-MB churn commit.
+  A lagging seed only WARNS; it does not break cold bootstrap.
 - **The decisive emitter gate is the fixpoint** (C3a = native == interpreted
-  emission; C3b = native reproduces its own IR). Plus the byte-identical differential
-  suite vs the OCaml oracle: `diff_compiler_llvm` (172) / `_modules` (8) / `_typed`
-  (37) / `diff_compiler_build` (9), and the front-end/typecheck/eval `diff_compiler_*`
-  gates for those stages.
+  emission; C3b = native reproduces its own IR). Plus the byte-identical
+  `diff_compiler_llvm` / `_modules` / `_typed` / `diff_compiler_build` differentials
+  (native vs checked-in goldens — **there is no OCaml oracle**; OCaml was removed
+  2026-06-26), and the front-end/typecheck/eval `diff_compiler_*` gates.
 - **The OTHER stale-binary footgun: the `test/bin/*` oracle binaries.** Gates like
   `diff_compiler_test` / `diff_compiler_eval_*` run a committed native oracle binary built from
   `compiler/` source by `test/build_oracles.sh` — which **mtime-skips rebuilds** ("N up-to-date").
@@ -927,10 +914,8 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   before trusting ANY `test/bin/*` gate** (FORCE overrides the mtime skip) — bake it into agent
   prompts touching typecheck/eval and into your own re-verification. Same shape as the `./medaka`
   stale-binary footgun; a green/red on a stale binary means nothing.
-- **Decided invariants — do not relitigate** (see memory): retirement ≠ removal
-  (lib/ stays frozen until a confidence gate); lazy top-level nullary canonical;
-  no catchable panics.
+- **Decided invariants — do not relitigate** (see memory): retirement ≠ removal;
+  lazy top-level nullary canonical; no catchable panics.
 - **A new gap in a tool's native compile** (a tool pulled into the native graph for
-  the first time) is the recurring shape: census it gap-tolerantly
-  (`compiler/entries/llvm_emit_gaps_main.mdk` over the tool's entry), then close each gap
-  principled. EMITTER-GAPS.md is the gap ledger.
+  the first time) is the recurring shape: census it gap-tolerantly, then close each gap
+  principled. `compiler/EMITTER-GAPS.md` is the gap ledger.
