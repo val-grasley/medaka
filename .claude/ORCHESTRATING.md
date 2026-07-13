@@ -31,6 +31,69 @@ scope-read (bounded) → frame a precise prompt → get approval → spawn (bg, 
 
 ---
 
+## Agents do NOT run the full suite (2026-07-13)
+
+**The old default — every agent runs `make medaka` + `FORCE=1 build_oracles.sh` +
+the full gate suite — is what serialized this box.** `build_oracles.sh` compiles
+**all 54** probe binaries (54 × `medaka build` + clang) even when the agent's gates
+read **four**. Two agents doing that at once already contend; that is why the
+"one heavy op at a time GLOBALLY" rule existed. It was a symptom, not a law.
+
+**The new loop:**
+
+```
+agent:  make preflight            # targeted: build + run ONLY what the diff touches
+        commit on its own branch, REPORT THE SHA
+orchestrator:
+        verify → push the branch → open a PR → CI runs the FULL suite (free, hosted)
+        merge ONLY on green CI
+```
+
+- **`make preflight`** (`test/preflight.sh`) derives the gate set from
+  `git diff --name-only`, derives the ORACLE set from those gates, and builds only
+  those. An agent touching `parser.mdk` builds **9 oracles and runs 11 gates**, not
+  54 and 82. It deliberately skips the two expensive things — `diff_compiler_engines`
+  (346 fixtures × clang) and the fixpoint — **except** that a `compiler/backend/*`
+  change forces the fixpoint, because there it is the decisive gate and finding out
+  in CI is too late.
+- **`sh test/build_oracles.sh --for '<gate-pattern>'…`** builds only the oracles those
+  gates read. A gate names its oracle as `test/bin/<name>`, so the set is *derived*
+  from the gate scripts — there is no hand-maintained map to drift. CI shards and
+  `preflight.sh` share this one derivation.
+- **`make test`** = the IN-LANGUAGE suite (doctests, props, `test "…"` decls). Needs
+  no oracles. **`make gates`** = the full 82-gate differential suite. These were the
+  same target until 2026-07-13, and the misnomer bit CI immediately.
+
+### ⚠️ THE PREFLIGHT IS A FILTER, NOT AN AUTHORITY
+
+A green preflight means *the gates most likely to notice your change did not break*.
+Nothing more. **CI, running the full suite on the PR, is the authority. Do not merge
+on a green preflight.**
+
+This matters more than it sounds. A targeted local run re-introduces the *exact*
+hazard this project's testing overhaul exists to kill: **a suite reporting green
+while testing less than it appears to.** That is not hypothetical —
+`diff_compiler_lint_multi` sat "skipped" for months (dash could not parse it, exit 2
+was counted as SKIP) and was *also failing* the whole time; and a fresh clone used to
+run **zero tests and print "0 failed."** So `preflight.sh` **ends by printing what it
+did not run**, and it must stay loud. A miss in the change→gate map then costs a slow
+round-trip, not a shipped bug.
+
+### CI (2026-07-13)
+
+`.github/workflows/ci.yml`, GitHub-**hosted** runners (free + unlimited on a public
+repo; 20 concurrent jobs). **No self-hosted runner** — a fork PR on a public repo with
+a self-hosted runner is arbitrary code execution on the host. Do not reintroduce one.
+
+Sharded: 6 gate shards + `inlang`, each cold-bootstrapping from the seed and building
+only its own oracles. Every one of the 82 `diff_compiler_*` gates is in **exactly one**
+shard (verified: 0 missing, 0 duplicated) — a gate falling between shards would
+silently never run. Each shard ends with a **review gate** (`git diff --exit-code`) on
+the tree its gates just ran over; it cannot be a separate job, because a fresh checkout
+in a fresh VM would never see the drift.
+
+---
+
 ## The gap docs lie — reproduce before you trust them (the #1 lesson)
 
 The project's own gap/status docs (gap censuses, audit docs, "known gaps", roadmap
@@ -393,12 +456,28 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 
 ## Medaka specifics
 
-- **Build:** `dune build --root .` inside a `.claude/worktrees/<name>` worktree
-  (plain `dune build` climbs to the parent checkout and fails). Never `dune test`
-  (hangs) — run individual suites / `test/diff_compiler_*.sh` / `test/*_fixpoint.sh`.
+- ⚠️ **THIS DOC STILL CONTAINS STALE OCaml/dune INSTRUCTIONS BELOW.** OCaml, `dune`,
+  `opam`, and `_build/default/bin/main.exe` were **REMOVED 2026-06-26**. There is no
+  OCaml oracle to diff against — the "differential" gates now compare the native
+  compiler against goldens captured *from itself*. Anywhere this file says `dune
+  build`, read `make medaka`. Anywhere it says "vs the OCaml oracle", read "vs a
+  checked-in golden". Left in place rather than silently rewritten because the
+  surrounding *lessons* are still true; but do not follow the commands.
+- **Build:** `make -C /absolute/path/to/worktree medaka` (the shell cwd resets between
+  calls, so a bare `make medaka` would build the MAIN checkout). A fresh isolated
+  worktree has **no `./medaka_emitter`** and cannot cold-bootstrap — `cp
+  /root/medaka/medaka_emitter "$PWD/medaka_emitter"` first (the warm path).
+- **Never `pkill -f build_oracles.sh` / `pkill -f 'xargs -P'` on this box.** Those are
+  box-wide pattern kills; with several sessions running they will terminate *other
+  people's* builds. (The sandbox now blocks it, correctly.) Scope every reap to the
+  offending agent's own PIDs:
+  `ps -eo pid,args | grep "agent-<id>" | grep -v grep | awk '{print $1}' | xargs -r kill`
 - **Local main is ahead of origin.** Orchestrator merges agent branches into LOCAL
-  main; never fetch/push. `main` is checked out in the primary checkout
-  `/root/medaka` — merge there (`git -C /root/medaka merge <branch>`).
+  main; `main` is checked out in the primary checkout `/root/medaka` — merge there
+  (`git -C /root/medaka merge <branch>`). **As of 2026-07-13 pushing IS expected** for
+  the PR-based CI flow (see "Agents do NOT run the full suite" above): the orchestrator
+  pushes a branch and opens a PR; CI runs the full suite on free hosted runners. Agents
+  still never push and never merge.
 - **Emitter-graph changes (`compiler/llvm_emit.mdk` etc.) leave the committed seed
   `compiler/seed/emitter.ll` STALE.** Agents do NOT re-mint — they verify
   `test/selfcompile_fixpoint.sh` (C3a/C3b YES; it self-compiles fresh, doesn't read
