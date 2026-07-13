@@ -160,6 +160,8 @@ bash test/typecheck_compiler_source.sh # strict-typecheck the WHOLE compiler sou
                                        #   alongside the fixpoint for compiler .mdk changes — the
                                        #   bootstrap emit path does NOT gate on hadTypeErrors(), so
                                        #   an ill-typed compiler source builds green without this
+bash test/diff_compiler_tmc_parity.sh # BOTH backends TMC the same functions (census markers;
+                                       #   needs the wasm probes: sh test/wasm/build_wasm_oracle.sh)
 bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
 FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (parallel; always FORCE=1 — stale-prone)
 sh test/check_removed_constructs.sh   # tree-wide scan (incl. non-gated test/) for stale uses of

@@ -4493,6 +4493,7 @@ trmcImplTry e fname method tag positions arity clauses =
       (ps, b)::_ => (ps, b)
       [] => ([], CLit LUnit)
     let single = listLen clauses == 1 && allClausesPVar clauses
+    let _ = tmcMarker e fname "trmc"
     let _ = emitTrmcHeader e fname arity
     let _ = emitTrmcLoopBody e self arity slotTys clauses single spats sbody
     let _ = emit e "}"
@@ -6739,8 +6740,31 @@ clausePairs ((CClause pats body)::rest) = (pats, body) :: clausePairs rest
 -- exit loads the hole (the final list head) and rets it.  destSlot holds the
 -- ADDRESS of the next i64 to fill; the hole's address is the first destination, a
 -- linked cell's tail slot (cell+16) each subsequent one.
+-- census marker (TMC-parity gate): one deterministic `; tmc: <fn> <mode>`
+-- comment per TMC decision — the LLVM peer of wasm's wTmcMarker.
+-- test/tmc_census.sh + diff_compiler_tmc_parity.sh extract these to diff both
+-- backends' TMC'd source-function sets.  Census-normalized name (leading `mdk_`
+-- stripped).
+tmcMarker : Emit -> String -> String -> <Mut> Unit
+tmcMarker e sym mode =
+  let name = if startsWith "mdk_" sym then
+    stringSlice 4 (stringLength sym) sym
+  else
+    sym
+  emit e "; tmc: \{name} \{mode}"
+
+tmcGroupMarkers : Emit -> String -> List String -> <Mut> Unit
+tmcGroupMarkers _ _ [] = ()
+tmcGroupMarkers e root (m::rest) =
+  let _ = if m == root then
+    tmcMarker e m "group-root"
+  else
+    tmcMarker e m ("group:" ++ root)
+  tmcGroupMarkers e root rest
+
 emitTrmcFn : Emit -> String -> Int -> List LTy -> List (List Pat, CExpr) -> Bool -> List Pat -> CExpr -> <Mut> Unit
 emitTrmcFn e name arity ptys clauses single singlePats singleBody =
+  let _ = tmcMarker e name "trmc"
   let _ = emitTrmcHeader e ("mdk_" ++ name) arity
   let _ = emitTrmcLoopBody e (SelfByVar name) arity ptys clauses single singlePats singleBody
   let _ = emit e "}"
@@ -7051,6 +7075,7 @@ emitGDispGroup e grp =
   let binds = gDispBindsRef.value
   let rootArity = gDispFnArity root
   let u = gDispMaxArity members 0
+  let _ = tmcGroupMarkers e root members
   let _ = emitTrmcHeader e ("mdk_" ++ root) rootArity
   let uslots = gDispEmitSlots e u rootArity 0
   let hole = freshReg e

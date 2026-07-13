@@ -53,8 +53,8 @@ extract_ll() {
 
 # extract_wat FILE — same contract for a WAT artifact.
 extract_wat() {
-  if grep -q '^;; tmc: ' "$1"; then
-    sed -n 's/^;; tmc: //p' "$1"
+  if grep -q '^ *;; tmc: ' "$1"; then
+    sed -n 's/^ *;; tmc: //p' "$1"
   else
     { awk '/\(func \$/{fn=$0; sub(/.*\(func \$/,"",fn); sub(/[ )].*/,"",fn); cur=fn}
            /\$tmcloop/{print cur " trmc"}' "$1"

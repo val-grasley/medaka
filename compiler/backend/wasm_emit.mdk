@@ -5708,7 +5708,7 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorSet =
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   let sig = "  (func $\{funcSym}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
-  [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
+  wTmcMarker funcSym "trmc" :: [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Stage-2/3 WasmGC DISPATCH-GRAPH TMC (shape (b′)) — WASMGC-TRMC-DESIGN §7/§11,
@@ -5837,6 +5837,16 @@ wDispIsSatRootCall prog root arity e =
 wDispIsRoot : DispGroup -> String -> Bool
 wDispIsRoot (DispGroup root _) name = root == name
 
+-- census marker (TMC-parity gate): one deterministic `;; tmc: <fn> <mode>`
+-- comment per TMC decision; test/tmc_census.sh + diff_compiler_tmc_parity.sh
+-- extract these to diff both backends' TMC'd source-function sets.  The name is
+-- census-normalized (leading `mdk_` stripped, so an impl fn reads
+-- `impl_<tag>_<method>` on both backends).
+wTmcMarker : String -> String -> String
+wTmcMarker sym mode =
+  let name = if startsWithStr sym "mdk_" then dropPrefix sym "mdk_" else sym
+  "  ;; tmc: \{name} \{mode}"
+
 -- emit a group ROOT: the reset wrapper `$root` (zero the dest globals, return_call the
 -- inner loop) + the inner `$root__disploop` (the real body, leaves redirected).
 emitWDispRoot : Prog -> DispGroup -> Int -> List CClause -> <Mut> List String
@@ -5846,7 +5856,7 @@ emitWDispRoot prog grp arity clauses =
   let loopName = wDispLoopName name
   let resetWrapper = wDispResetWrapper name loopName params arity
   let inner = emitWDispMemberFn prog grp loopName name arity clauses
-  resetWrapper ++ inner
+  wTmcMarker name "group-root" :: resetWrapper ++ inner
 
 -- the reset wrapper: (func $root (param …) (result (ref eq))
 --   i32.const 1  global.set $g_tmc_first
@@ -5889,11 +5899,14 @@ emitWDispMemberFn prog grp emitName origName arity clauses =
   let extraLocals = filterList (notIn params) (dedupKeep allLocals)
   let scratch = scratchLocals (clausesMaxDepth clauses)
   let sig = "  (func $\{gname emitName}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
+  -- census marker for a NON-root member (the root's marker is emitted by
+  -- emitWDispRoot; the inner __disploop is the root's own body, not a member).
+  let marker = if emitName == origName then [wTmcMarker origName ("group:" ++ root)] else []
   -- the member needs the tmc temp local ($__tmc_t0 = the fresh cell stash).
   let tmcLocal = ["(local " ++ wTrmcTempL 0 ++ " (ref null eq))"]
   let localDecls = map localDeclRef (extraLocals ++ scratch)
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
-  [sig] ++ map ("  " ++ _) (tmcLocal ++ localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
+  marker ++ [sig] ++ map ("  " ++ _) (tmcLocal ++ localDecls ++ w7Decls) ++ indent bodyLines ++ ["  )"]
 
 -- the spine-cons leaf rewrite (case 2), generalized to N cells + any group-member
 -- target: build each peeled cell in source order (lead field + placeholder tail),
