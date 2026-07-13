@@ -204,7 +204,7 @@ jobs:
               # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
               # impls, default impl, @Name) because nothing ever executed it. Same
               # silent-green shape as the test/ arm above; same answer.
-              SYNTAX.md) docs_only=false ;;
+              docs/spec/SYNTAX.md) docs_only=false ;;
 
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
@@ -434,6 +434,24 @@ jobs:
       # with no repo-settings change needed to make a new job required.
       - name: Docs must not cite dead paths
         run: sh test/check_doc_links.sh
+
+      # Also unguarded, and for the same reason. docs/README.md is GENERATED from the
+      # docs' `**Status:**` banners — the whole point being that a hand-maintained index
+      # rots (AGENTS.md's own doc-index table sat mislabelling a doc as "IN PROGRESS"
+      # that the doc itself called COMPLETE, and nothing noticed for weeks).
+      #
+      # But a generator nothing checks is just a suggestion: add a doc, forget
+      # `make docs-index`, and the index silently goes stale — reintroducing the exact
+      # rot it exists to prevent. So regenerate it here and fail if it differs.
+      # That is also why gen_docs_index.sh needs no CI-COVERAGE exception: it is named
+      # in a run: step, which is what the shard-coverage gate asks for.
+      - name: Docs index must be regenerated, not hand-edited
+        run: |
+          sh test/gen_docs_index.sh
+          if ! git diff --exit-code -- docs/README.md; then
+            echo "::error::docs/README.md is stale. Run 'make docs-index' and commit the result."
+            exit 1
+          fi
 
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
