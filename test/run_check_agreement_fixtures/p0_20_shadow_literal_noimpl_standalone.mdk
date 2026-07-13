@@ -1,0 +1,20 @@
+-- P0-20 CONTROL — the stdlib pattern must not regress.  Same shape, but the receiver's
+-- head (`Int`) has NO impl of the shadowed interface (only `Box` does), so S2 falls back
+-- to the STANDALONE: `size 3` is `4`, not a dispatch.
+--
+-- This is the `map.mdk`/`hash_map.mdk` `toList`/`isEmpty` and `parser.mdk` `orElse` cell —
+-- every definer shadow in the tree is this one.  P0-20 grounds a literal receiver to the
+-- standalone's declared domain BEFORE asking the impl question, and the answer here is
+-- still "no impl for Int" => standalone.  Prints 4.
+interface Sz a where
+  size : a -> String
+
+data Box = Box Int
+
+impl Sz Box where
+  size (Box n) = "IMPL"
+
+size : Int -> Int
+size n = n + 1
+
+main = println (size 3)

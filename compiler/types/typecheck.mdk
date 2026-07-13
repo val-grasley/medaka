@@ -1328,10 +1328,17 @@ methodShadowNamesRef = Ref []
 -- resolveRLocalSites reads the cell post-inference and stamps RLocal when the
 -- receiver grounds to a head with no impl.
 -- Mirrors lib/typecheck.ml's EApp-receiver RLocal stamp.  Reset by resetState.
--- (name, routeRef, receiverMono, mangledSym) — mangledSym (P0-18) is the mangled
--- standalone symbol read off the marked route at record time; resolveRLocalSite
+-- (name, routeRef, receiverMono, mangledSym, forceLocal) — mangledSym (P0-18) is the
+-- mangled standalone symbol read off the marked route at record time; resolveRLocalSite
 -- stamps `RLocal mangledSym` for a no-impl receiver.  "" on the un-mangled path.
-pendingRLocalSites : Ref (List (String, Ref Route, Mono, String))
+-- P0-20: forceLocal — the definer-shadow APP path (inferDefinerShadowApp) has ALREADY
+-- committed the site's TYPE to the standalone's scheme, so its route is not open to
+-- re-derivation: post-inference the receiver can ground to a head that HAS an impl (Num
+-- defaulting on an unsignatured standalone) and resolveRLocalSite would dispatch a site
+-- typed as the standalone — check says one thing, the binary does another.  True pins
+-- the route to RLocal.  recordRLocalSite (value position / importer shadows) pushes
+-- False and keeps the old per-receiver re-derivation.
+pendingRLocalSites : Ref (List (String, Ref Route, Mono, String, Bool))
 pendingRLocalSites = Ref []
 
 -- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
@@ -3338,7 +3345,7 @@ recordRLocalSite _ name tagRef inst
   | otherwise = match methodDispatchIdx name
     None => ()
     Some idx => match nthArgMono idx inst
-      Some am => setRef pendingRLocalSites ((name, tagRef, am, routeLocalSym tagRef.value)::pendingRLocalSites.value)
+      Some am => setRef pendingRLocalSites ((name, tagRef, am, routeLocalSym tagRef.value, False)::pendingRLocalSites.value)
       None => ()
 
 -- C5: the dispatch-arg index of an interface method, from the graph-wide map
@@ -4989,7 +4996,7 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- P0-20: ground an ungrounded receiver to the standalone's declared domain BEFORE the
   -- dispatch decision, so typecheck asks the impl question about the SAME head the
   -- post-inference route resolver will.  See groundShadowReceiver.
-  let _ = groundShadowReceiver name xt isDictVar dloc
+  let _ = groundShadowReceiver (shadowDomainFor env name sym) xt isDictVar dloc
   let dispatches = definerReceiverDispatches name xt
   let _ = setRef suppressRLocalRecord True
   let _ = setRef suppressArgStamp True
@@ -5026,8 +5033,13 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- arm stamps RLocal unconditionally, which would route a genuine dict dispatch to the
   -- shadowing standalone.  Not recording the site leaves the route for ordinary dispatch
   -- (RNone → eval arg-tag / emit RKey via resolveArgStamps).
+  -- P0-20: the route FOLLOWS THE ARM (`not dispatches` ⇒ forceLocal).  `ft` above has
+  -- already committed this site's TYPE, so re-deriving its route from a receiver mono
+  -- that may ground LATER (Num defaulting on an unsignatured standalone) is exactly how
+  -- `check` and the binary came to disagree.  A dispatching receiver still re-derives
+  -- (its head is already ground; RKey comes from resolveArgStamps on the emit path).
   let _ = if isDictVar then ()
-    else setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value)::pendingRLocalSites.value)
+    else setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value, not dispatches)::pendingRLocalSites.value)
   let _ = match argDispatchOf name
     Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value)::pendingArgStamps.value)
     None => ()
@@ -5151,13 +5163,32 @@ enforceStandaloneDomain _ name xt dloc = match standaloneShadowDomain name
 -- are all untouched; so is a standalone whose domain head has NO impl of the shadowed
 -- interface (map's `toList : Map k v -> …` — there is deliberately no `impl Foldable
 -- Map`), which is every definer shadow in the tree.
-groundShadowReceiver : String -> Mono -> Bool -> Option Loc -> <Mut> Unit
-groundShadowReceiver name xt isDictVar dloc
+--
+-- [dom] MUST come from shadowDomainFor, not standaloneShadowDomain: on the MANGLED emit
+-- path the standalone was renamed `<mid>__eq`, so the bare-name sig table is empty there
+-- and grounding would be silently inert — which is not a no-op, it flips the emit path to
+-- the STANDALONE arm while check/run dispatch.  (Observed: `build` printed 3, `run`
+-- printed False.)  Same bug, other direction.
+groundShadowReceiver : Option Mono -> Mono -> Bool -> Option Loc -> <Mut> Unit
+groundShadowReceiver dom xt isDictVar dloc
   | isDictVar = ()
   | isSome (headTyconMono xt) = ()
-  | otherwise = match standaloneShadowDomain name
+  | otherwise = match dom
     None => ()
-    Some dom => unifyStandaloneDomain dom xt dloc
+    Some d => unifyStandaloneDomain d xt dloc
+
+-- P0-20: the definer-shadow standalone's declared domain, resolved on EITHER path.
+-- Un-mangled run/check (sym == ""): the module's own sig table, keyed by the bare name.
+-- Mangled emit (sym != ""): private_mangle renamed the standalone to `<mid>__name`, so
+-- definerShadowSigsRef has no `name` entry — take the domain off the env binding for the
+-- mangled symbol, which is the very scheme definerShadowHeadType types this site against.
+shadowDomainFor : TcEnv -> String -> String -> <Mut> Option Mono
+shadowDomainFor _ name "" = standaloneShadowDomain name
+shadowDomainFor env _ sym = match lookupVar env sym
+  None => None
+  Some s => match normalize (instantiate s)
+    TFun a _ _ => Some a
+    _ => None
 
 -- unify the standalone domain against the argument at the call's location.
 unifyStandaloneDomain : Mono -> Mono -> Option Loc -> <Mut> Unit
@@ -5231,7 +5262,7 @@ inferDefinerShadowVarApp env name f x =
   -- P0-20: ground an ungrounded receiver to the standalone's declared domain BEFORE the
   -- dispatch decision (see groundShadowReceiver) — otherwise `check` types `eq 1 2`
   -- against the standalone while run/build dispatch to `impl Eq Int`.
-  let _ = groundShadowReceiver name xt (definerReceiverIsDictVar name xt) dloc
+  let _ = groundShadowReceiver (standaloneShadowDomain name) xt (definerReceiverIsDictVar name xt) dloc
   match headTyconMono xt
     Some head =>
       if implExistsForHead shadowKeyTableRef.value name head then
@@ -7208,10 +7239,13 @@ implExistsForHead ((KeyEntry methods tag2 _ _)::rest) name tag
 -- the route untouched (RNone → eval arg-tag-dispatches to the real impl).  An
 -- ungrounded receiver (still a tyvar) → leave it (polymorphic, deferred).  Mirrors
 -- lib/typecheck.ml:1603-1640: RLocal only when impl_exists is false.
-resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String) -> <Mut> Unit
+resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String, Bool) -> <Mut> Unit
 resolveRLocalSites _ [] = ()
-resolveRLocalSites keyTable ((name, tagRef, am, sym)::rest) =
-  let _ = resolveRLocalSite keyTable name tagRef am sym
+resolveRLocalSites keyTable ((name, tagRef, am, sym, forceLocal)::rest) =
+  let _ = if forceLocal then
+    setRef tagRef (RLocal sym)
+  else
+    resolveRLocalSite keyTable name tagRef am sym
   resolveRLocalSites keyTable rest
 
 -- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
