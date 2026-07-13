@@ -162,6 +162,26 @@ case "$out" in
   *) report B8 FIXED "prose blockquotes are not treated as doctests" ;;
 esac
 
+# --- B10: `fmt --write` CORRUPTS source (float literal >= 1e15) -------------
+# The printer emits scientific notation; the lexer cannot read ANY exponent
+# form back. fmt runs in the pre-commit hook, so this destroys the file.
+cat > "$TMP/b10.mdk" <<'EOF'
+big : Float
+big = 9000000000000000.0
+main : <IO> Unit
+main = println "\{big}"
+EOF
+if "$MEDAKA" check "$TMP/b10.mdk" >/dev/null 2>&1; then
+  "$MEDAKA" fmt --write "$TMP/b10.mdk" >/dev/null 2>&1
+  if "$MEDAKA" check "$TMP/b10.mdk" >/dev/null 2>&1; then
+    report B10 FIXED "fmt round-trips a >=1e15 float literal"
+  else
+    report B10 OPEN "fmt --write REWROTE a valid float to '$(grep '^big = ' "$TMP/b10.mdk" | cut -d= -f2 | tr -d ' ')' which no longer parses"
+  fi
+else
+  report B10 OPEN "cannot even check the pre-fmt source (unexpected)"
+fi
+
 # --- Mut: is <Mut> a purity guarantee? (spec says yes; binary says no) ------
 cat > "$TMP/mut.mdk" <<'EOF'
 counter : Ref Int

@@ -15,7 +15,7 @@
 > **When something reports FIXED: mark it closed here, and move its repro into a real regression
 > fixture so it stays closed.**
 >
-> Snapshot at the time of writing (`ed80b40f`, the SQLite dogfood branch): **9 open, 0 fixed.**
+> Snapshot at the time of writing (the SQLite dogfood branch): **10 open, 0 fixed.**
 
 Consolidated from the per-agent findings files in this directory. **Every item marked ✅ VERIFIED
 was reproduced by the orchestrator on the binary**, independently of the agent that reported it —
@@ -55,6 +55,41 @@ only in compiled code is invisible to the entire test suite. The SQL expression 
 32/32 green doctests while *every arithmetic operator in its grammar* was silently broken in the
 native binary (B1). That is a gap in the testing strategy, not just a set of bugs — a differential
 `run` vs `build` gate over the existing doctest corpus would have caught B1, B5, B6 and B8 for free.
+
+---
+
+## P0 — `medaka fmt --write` DESTROYS SOURCE CODE
+
+### B10 ✅ VERIFIED — `fmt` rewrites a float literal ≥ 1e15 into a form the lexer cannot read
+
+    big : Float
+    big = 9000000000000000.0     -- valid: checks, runs, prints 9e+15
+
+    $ medaka fmt --write big.mdk
+    $ cat big.mdk
+    big = 9e+15                  -- fmt wrote this
+
+    $ medaka check big.mdk
+    big.mdk:2:6: No impl of Num for (Float -> Float)
+
+The **printer emits scientific notation** (via `floatToString`) while the **lexer rejects every
+exponent form** (`1e-05`, `9e15`, `9e+15`, `1.5e10` — all rejected; `9e+15` lexes as an
+*application*, hence the surreal `Num for (Float -> Float)`). The two halves of the round trip
+disagree, and `fmt --write` is what forces them to meet.
+
+**Why this is P0 rather than a curiosity:** `medaka fmt --check` runs in the **pre-commit hook** on
+every staged `.mdk`. So the hook rejects your unformatted file, you run `fmt --write` as instructed,
+and it silently destroys the file.
+
+**Blast radius (measured):** the threshold is **1e15**. `1700000000.0` (which really does appear, in
+`compiler/eval/eval.mdk:1809`) is *below* it, and `fmt` is a no-op there — so **the tree is not
+currently corrupted**. This is latent, not active: it detonates the first time anyone writes a large
+float literal. Related to the known-open "scientific notation rejected" gap, which turns out to be
+not merely an input limitation but a **source-corruption vector**.
+
+**AGENTS.md is wrong** where it says *"`medaka fmt` is safe (0 corruptions / 0 non-idempotent
+repo-wide) and idempotent"*. That claim was established by a soak over the existing tree, which
+happens to contain no literal above the threshold — it is a statement about the corpus, not the tool.
 
 ---
 
