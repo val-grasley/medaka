@@ -29,7 +29,7 @@ import lib.sqlite.{
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
 import list.{reverse, take, drop, sortBy, nub}
-import string.{join}
+import string.{join, fromChars, replaceAll}
 
 -- ---------------------------------------------------------------------------
 -- Untyped core
@@ -123,17 +123,38 @@ deriving (Eq, Debug)
 --   projection/ORDER BY/HAVING sub-expression against a GROUP BY key and (b)
 --   dedup the aggregate list, so `count(*)` mentioned in both the select list and
 --   ORDER BY is computed once.
+--   `EConcat` is `||` string concatenation (NULL if either side is NULL;
+--   numbers are coerced to text — SQLite semantics).  `ELike x pat` is `x LIKE
+--   pat` (case-insensitive for ASCII only, `%`/`_` wildcards); `NOT LIKE` is
+--   just `ENot (ELike ..)`.  `EIn x vs` is `x IN (v1, .., vn)`; `NOT IN` is
+--   `ENot (EIn ..)`.  There is no `EBetween` — `x BETWEEN a AND b` desugars at
+--   PARSE time to `EAnd (EBin OpGe x a) (EBin OpLe x b)` (exactly SQLite's own
+--   definition), so it needs no new evaluator code and renders/round-trips
+--   through the existing AND/comparison machinery.  `ECase` is CASE/WHEN/THEN/
+--   ELSE/END (the simple `CASE x WHEN v THEN r` form desugars at parse time to
+--   `WHEN x = v THEN r`, so only the searched form is a real node).
+--   `ECoalesce` backs both `COALESCE(a, b, ..)` and `IFNULL(a, b)` (`IFNULL` is
+--   parsed as a 2-argument `ECoalesce` — SQLite defines it that way).  `EFn`
+--   is a scalar string-function call (`LENGTH`/`UPPER`/`LOWER`/`SUBSTR`/`TRIM`/
+--   `LTRIM`/`RTRIM`/`REPLACE`); the name is validated at parse time, so
+--   `compileFnCall`'s arity fallback is defensive dead code, not a live path.
 public export data SqlExpr =
   | ECol String
   | ELit Literal
   | EAgg AggFn (Option SqlExpr)
   | EBin CmpOp SqlExpr SqlExpr
   | EArith ArithOp SqlExpr SqlExpr
+  | EConcat SqlExpr SqlExpr
   | EAnd SqlExpr SqlExpr
   | EOr SqlExpr SqlExpr
   | ENot SqlExpr
   | EIsNull SqlExpr
   | ENotNull SqlExpr
+  | ELike SqlExpr SqlExpr
+  | EIn SqlExpr (List SqlExpr)
+  | ECase (List (SqlExpr, SqlExpr)) (Option SqlExpr)
+  | ECoalesce (List SqlExpr)
+  | EFn String (List SqlExpr)
 deriving (Eq, Debug)
 
 -- | The join kind: `JInner` drops unmatched left rows (SQL INNER JOIN);
@@ -284,6 +305,100 @@ eDiv l r = MkExpr (EArith ADiv (unExpr l) (unExpr r))
 
 export eMod : Expr a -> Expr a -> Expr a
 eMod l r = MkExpr (EArith AMod (unExpr l) (unExpr r))
+
+-- | `||` string concatenation.  Typed `String -> String -> String` (the typed
+--   layer does not model SQLite's number-to-text coercion — that is a runtime
+--   behavior of the untyped evaluator, not something the phantom layer should
+--   pretend is type-safe).
+export eConcat : Expr String -> Expr String -> Expr String
+eConcat l r = MkExpr (EConcat (unExpr l) (unExpr r))
+
+-- | `x LIKE pattern` / `x NOT LIKE pattern` — case-insensitive (ASCII only).
+export eLike : Expr String -> Expr String -> Expr Bool
+eLike x pat = MkExpr (ELike (unExpr x) (unExpr pat))
+
+export eNotLike : Expr String -> Expr String -> Expr Bool
+eNotLike x pat = MkExpr (ENot (ELike (unExpr x) (unExpr pat)))
+
+-- | `x IN (v1, .., vn)` / `x NOT IN (v1, .., vn)`.
+export eIn : Expr a -> List (Expr a) -> Expr Bool
+eIn x vs = MkExpr (EIn (unExpr x) (map unExpr vs))
+
+export eNotIn : Expr a -> List (Expr a) -> Expr Bool
+eNotIn x vs = MkExpr (ENot (EIn (unExpr x) (map unExpr vs)))
+
+-- | `x BETWEEN lo AND hi` / `x NOT BETWEEN lo AND hi` — inclusive, exactly
+--   `lo <= x AND x <= hi` (SQLite's own definition; there is no `EBetween`
+--   node, see the `SqlExpr` doc comment).
+export eBetween : Expr a -> Expr a -> Expr a -> Expr Bool
+eBetween x lo hi =
+  MkExpr (EAnd
+    (EBin OpGe (unExpr x) (unExpr lo))
+    (EBin OpLe (unExpr x) (unExpr hi)))
+
+export eNotBetween : Expr a -> Expr a -> Expr a -> Expr Bool
+eNotBetween x lo hi =
+  MkExpr (ENot (EAnd
+    (EBin OpGe (unExpr x) (unExpr lo))
+    (EBin OpLe (unExpr x) (unExpr hi))))
+
+-- | `COALESCE(a, b, ..)` — the first non-NULL argument, or NULL if all are.
+export eCoalesce : List (Expr a) -> Expr a
+eCoalesce es = MkExpr (ECoalesce (map unExpr es))
+
+-- | `IFNULL(a, b)` — SQLite defines this as exactly `COALESCE(a, b)`.
+export eIfNull : Expr a -> Expr a -> Expr a
+eIfNull a b = MkExpr (ECoalesce [unExpr a, unExpr b])
+
+-- | Searched `CASE WHEN c1 THEN r1 .. [ELSE re] END`.  There is no typed
+--   builder for the simple `CASE x WHEN v THEN r` form — build the equivalent
+--   `eEq x v` conditions directly, exactly what the SQL parser desugars to.
+export eCase : List (Expr Bool, Expr a) -> Option (Expr a) -> Expr a
+eCase whens els = MkExpr (ECase (map unExprPair whens) (map unExpr els))
+
+unExprPair : (Expr Bool, Expr a) -> (SqlExpr, SqlExpr)
+unExprPair (c, r) = (unExpr c, unExpr r)
+
+-- | `TRUE` / `FALSE` — SQLite represents both as the integer literals `1`/`0`.
+export eTrue : Expr Bool
+eTrue = MkExpr (ELit (LInt 1))
+
+export eFalse : Expr Bool
+eFalse = MkExpr (ELit (LInt 0))
+
+-- String scalar functions (SQLite semantics — see the evaluator section below
+-- for the exact per-function NULL/coercion rules, verified against `sqlite3`).
+export eLength : Expr String -> Expr Int
+eLength s = MkExpr (EFn "LENGTH" [unExpr s])
+
+export eUpper : Expr String -> Expr String
+eUpper s = MkExpr (EFn "UPPER" [unExpr s])
+
+export eLower : Expr String -> Expr String
+eLower s = MkExpr (EFn "LOWER" [unExpr s])
+
+export eTrimSql : Expr String -> Expr String
+eTrimSql s = MkExpr (EFn "TRIM" [unExpr s])
+
+export eLtrim : Expr String -> Expr String
+eLtrim s = MkExpr (EFn "LTRIM" [unExpr s])
+
+export eRtrim : Expr String -> Expr String
+eRtrim s = MkExpr (EFn "RTRIM" [unExpr s])
+
+-- | `substr(s, start)` — 1-indexed, negative `start` counts from the end.
+export eSubstr2 : Expr String -> Expr Int -> Expr String
+eSubstr2 s start = MkExpr (EFn "SUBSTR" [unExpr s, unExpr start])
+
+-- | `substr(s, start, len)` — see `fnSubstr3`'s doc comment for the exact
+--   (verified-against-`sqlite3`) rules for zero/negative `start`/`len`.
+export eSubstr3 : Expr String -> Expr Int -> Expr Int -> Expr String
+eSubstr3 s start len =
+  MkExpr (EFn "SUBSTR" [unExpr s, unExpr start, unExpr len])
+
+export eReplaceSql : Expr String -> Expr String -> Expr String -> Expr String
+eReplaceSql s from to =
+  MkExpr (EFn "REPLACE" [unExpr s, unExpr from, unExpr to])
 
 -- Logical combinators: force `Expr Bool` operands and result.
 export eAnd : Expr Bool -> Expr Bool -> Expr Bool
@@ -578,6 +693,7 @@ renderExpr (EAgg fn None) =
     "render: \{aggFnSql fn}(*) is not valid — only count(*) may omit its operand"
 renderExpr (EBin op l r) = renderBinary (cmpSql op) l r
 renderExpr (EArith op l r) = renderBinary (arithSql op) l r
+renderExpr (EConcat l r) = renderBinary "||" l r
 renderExpr (EAnd l r) = renderBinary "AND" l r
 renderExpr (EOr l r) = renderBinary "OR" l r
 renderExpr (ENot inner) =
@@ -586,6 +702,35 @@ renderExpr (EIsNull inner) =
   map ((sql, binds) => ("(\{sql} IS NULL)", binds)) (renderExpr inner)
 renderExpr (ENotNull inner) =
   map ((sql, binds) => ("(\{sql} IS NOT NULL)", binds)) (renderExpr inner)
+renderExpr (ELike x pat) = renderBinary "LIKE" x pat
+renderExpr (EIn x vs) = do
+  (xsql, xbinds) <- renderExpr x
+  (partsSql, partsBinds) <- renderColumnParts vs
+  Ok ("(\{xsql} IN (\{join ", " partsSql}))", xbinds ++ partsBinds)
+renderExpr (ECase whens els) = do
+  (whenSql, whenBinds) <- renderCaseWhens whens
+  (elsSql, elsBinds) <- renderCaseElse els
+  Ok ("(CASE \{whenSql}\{elsSql}END)", whenBinds ++ elsBinds)
+renderExpr (ECoalesce es) = do
+  (partsSql, partsBinds) <- renderColumnParts es
+  Ok ("coalesce(\{join ", " partsSql})", partsBinds)
+renderExpr (EFn name args) = do
+  (partsSql, partsBinds) <- renderColumnParts args
+  Ok ("\{asciiFold asciiLowerChar name}(\{join ", " partsSql})", partsBinds)
+
+renderCaseWhens : List (SqlExpr, SqlExpr) -> Result String (String, List Literal)
+renderCaseWhens [] = Ok ("", [])
+renderCaseWhens ((c, r)::rest) = do
+  (csql, cbinds) <- renderExpr c
+  (rsql, rbinds) <- renderExpr r
+  (restSql, restBinds) <- renderCaseWhens rest
+  Ok ("WHEN \{csql} THEN \{rsql} \{restSql}", cbinds ++ rbinds ++ restBinds)
+
+renderCaseElse : Option SqlExpr -> Result String (String, List Literal)
+renderCaseElse None = Ok ("", [])
+renderCaseElse (Some e) = do
+  (sql, binds) <- renderExpr e
+  Ok ("ELSE \{sql} ", binds)
 
 renderBinary : String -> SqlExpr -> SqlExpr -> Result String (String, List Literal)
 renderBinary opSql l r = do
@@ -769,6 +914,34 @@ compileTri lookup (EBin op l r) = compileCmp lookup op l r
 compileTri lookup (EArith op l r) = do
   g <- compileOperand lookup (EArith op l r)
   Ok (cells => cellTri (g cells))
+compileTri lookup (EConcat l r) = do
+  g <- compileOperand lookup (EConcat l r)
+  Ok (cells => cellTri (g cells))
+-- `LIKE` has its own NULL rule (either side NULL ⇒ UNKNOWN, never a match/miss
+-- collapsed via `cellTri`), so it gets a dedicated arm rather than routing
+-- through `compileOperand` + `cellTri`.
+compileTri lookup (ELike x pat) = do
+  gx <- compileOperand lookup x
+  gp <- compileOperand lookup pat
+  Ok (cells => likeTri (gx cells) (gp cells))
+-- `IN` is literally `x = v1 OR x = v2 OR ..`, so its NULL behavior falls out of
+-- the SAME `cmpCellsTri OpEq` + tri-OR rules used everywhere else — no separate
+-- truth table to get wrong.  `5 IN (1, NULL)` ⇒ UNKNOWN (not FALSE): the `NULL`
+-- element's comparison is UNKNOWN, and UNKNOWN survives an OR unless a TRUE is
+-- found.  Verified against `sqlite3` — see findings.
+compileTri lookup (EIn x vs) = do
+  gx <- compileOperand lookup x
+  gvs <- compileProjections lookup vs
+  Ok (cells => inTri (gx cells) (map (g => g cells) gvs))
+compileTri lookup (ECase whens els) = do
+  g <- compileOperand lookup (ECase whens els)
+  Ok (cells => cellTri (g cells))
+compileTri lookup (ECoalesce es) = do
+  g <- compileOperand lookup (ECoalesce es)
+  Ok (cells => cellTri (g cells))
+compileTri lookup (EFn name args) = do
+  g <- compileOperand lookup (EFn name args)
+  Ok (cells => cellTri (g cells))
 compileTri lookup (EAnd l r) = do
   pl <- compileTri lookup l
   pr <- compileTri lookup r
@@ -811,17 +984,332 @@ compileOperand lookup (EArith op l r) = do
   gl <- compileOperand lookup l
   gr <- compileOperand lookup r
   Ok (cells => evalArith op (gl cells) (gr cells))
+compileOperand lookup (EConcat l r) = do
+  gl <- compileOperand lookup l
+  gr <- compileOperand lookup r
+  Ok (cells => evalConcat (gl cells) (gr cells))
+compileOperand lookup (ECase whens els) = do
+  wtri <- compileCaseWhens lookup whens
+  gEls <- compileCaseElseVal lookup els
+  Ok (evalCaseGo wtri gEls)
+compileOperand lookup (ECoalesce es) = do
+  gs <- compileProjections lookup es
+  Ok (evalCoalesceGo gs)
+compileOperand lookup (EFn name args) = do
+  gs <- compileProjections lookup args
+  compileFnCall name gs
 -- An `EAgg` reaching here is an aggregate in a per-ROW position: either inside a
 -- WHERE/ON, or nested inside another aggregate's operand.  Both are SQL errors.
 compileOperand _ (EAgg fn _) =
   Err
     "\{aggFnSql fn}(...): aggregate functions cannot be nested or used per-row — they are only valid in the SELECT list, HAVING, or ORDER BY of a grouped query"
+-- `ELike`/`EIn` (and the boolean-combinator nodes `EBin`/`EAnd`/`EOr`/`ENot`/
+-- `EIsNull`/`ENotNull`) are not usable as VALUE operands — a pre-existing
+-- limitation this task does not extend (real SQLite treats a boolean as an
+-- Int 0/1/NULL value; this engine does not, for ANY of these nodes).
 compileOperand lookup _ = Err "compilePred: operand must be a column or literal"
 
 -- | Compile any `SqlExpr` value operand to a per-row `List Cell -> Cell`
 --   accessor (an alias of `compileOperand` for the UPDATE SET call site).
 export compileValue : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Cell)
 compileValue = compileOperand
+
+-- ---------------------------------------------------------------------------
+-- CASE evaluation
+--
+-- WHEN conditions are three-valued (a NULL/UNKNOWN condition is treated as not
+-- taken — `CASE WHEN NULL THEN 'a' ELSE 'b' END` is `'b'`, verified against
+-- `sqlite3`), so each condition compiles via `compileTri`, collapsed to a
+-- branch decision exactly like the WHERE boundary: the branch fires iff its
+-- condition is definitively `TTrue`.  The result expressions are ordinary
+-- VALUE operands.
+-- ---------------------------------------------------------------------------
+
+compileCaseWhens : (String -> Option Int) -> List (SqlExpr, SqlExpr) -> Result String (List (List Cell -> Tri, List Cell -> Cell))
+compileCaseWhens _ [] = Ok []
+compileCaseWhens lookup ((c, r)::rest) = do
+  ct <- compileTri lookup c
+  cr <- compileOperand lookup r
+  rest2 <- compileCaseWhens lookup rest
+  Ok ((ct, cr)::rest2)
+
+compileCaseElseVal : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Cell)
+compileCaseElseVal _ None = Ok (_ => CNull)
+compileCaseElseVal lookup (Some e) = compileOperand lookup e
+
+evalCaseGo : List (List Cell -> Tri, List Cell -> Cell) -> (List Cell -> Cell) -> List Cell -> Cell
+evalCaseGo [] gEls cells = gEls cells
+evalCaseGo ((ct, cr)::rest) gEls cells =
+  if ct cells == TTrue then
+    cr cells
+  else
+    evalCaseGo rest gEls cells
+
+-- ---------------------------------------------------------------------------
+-- COALESCE / IFNULL evaluation: the first non-NULL argument, NULL if all are
+-- (or the list is empty — unreachable, the parser demands at least one arg).
+-- ---------------------------------------------------------------------------
+
+evalCoalesceGo : List (List Cell -> Cell) -> List Cell -> Cell
+evalCoalesceGo [] _ = CNull
+evalCoalesceGo (g::gs) cells =
+  let c = g cells
+  if cellIsNull c then evalCoalesceGo gs cells else c
+
+-- ---------------------------------------------------------------------------
+-- `x IN (v1, .., vn)` — three-valued via the SAME `cmpCellsTri OpEq` used by
+-- ordinary comparisons: TRUE if `x` equals any element; UNKNOWN if it matches
+-- none but at least one element (or `x` itself) is NULL; else FALSE.
+-- ---------------------------------------------------------------------------
+
+inTri : Cell -> List Cell -> Tri
+inTri x vs = inTriGo x vs False
+
+inTriGo : Cell -> List Cell -> Bool -> Tri
+inTriGo _ [] sawUnknown = if sawUnknown then TUnknown else TFalse
+inTriGo x (v::rest) sawUnknown = match cmpCellsTri OpEq x v
+  TTrue => TTrue
+  TFalse => inTriGo x rest sawUnknown
+  TUnknown => inTriGo x rest True
+
+-- ---------------------------------------------------------------------------
+-- `||` concatenation and `LIKE` share a coercion rule: SQLite auto-converts a
+-- non-NULL, non-text operand to its text representation (`5 || 'x'` is
+-- `"5x"`; `5 LIKE '5%'` is true) — verified against `sqlite3`.  A BLOB is
+-- decoded byte-for-byte via `charFromCode` (best-effort; SQLite's own blob
+-- text coercion is likewise a raw byte reinterpretation, but only ASCII bytes
+-- are verified here — see findings).
+-- ---------------------------------------------------------------------------
+
+cellToTextOp : Cell -> Option String
+cellToTextOp CNull = None
+cellToTextOp (CInt n) = Some "\{n}"
+cellToTextOp (CFloat f) = Some "\{f}"
+cellToTextOp (CText s) = Some s
+cellToTextOp (CBlob b) = Some (blobToText b)
+
+blobToText : Array Int -> String
+blobToText b = fromChars (blobToCharsGo b 0 (arrayLength b))
+
+blobToCharsGo : Array Int -> Int -> Int -> List Char
+blobToCharsGo b i n =
+  if i >= n then []
+  else match charFromCode b[i]
+    Some c => c :: blobToCharsGo b (i + 1) n
+    None => blobToCharsGo b (i + 1) n
+
+evalConcat : Cell -> Cell -> Cell
+evalConcat a b = match (cellToTextOp a, cellToTextOp b)
+  (Some sa, Some sb) => CText (sa ++ sb)
+  _ => CNull
+
+likeTri : Cell -> Cell -> Tri
+likeTri x pat = match (cellToTextOp x, cellToTextOp pat)
+  (Some s, Some p) => boolTri (likeMatch (asciiFold asciiUpperChar s) (asciiFold asciiUpperChar p))
+  _ => TUnknown
+
+-- A classic backtracking LIKE matcher: `%` matches any run (incl. empty),
+-- `_` matches exactly one char.  Both operands are pre-folded to the SAME
+-- case by the caller, so this is a plain codepoint comparison.
+likeMatch : String -> String -> Bool
+likeMatch text pat =
+  let tc = stringToChars text
+  let pc = stringToChars pat
+  likeMatchGo tc (arrayLength tc) 0 pc (arrayLength pc) 0
+
+likeMatchGo : Array Char -> Int -> Int -> Array Char -> Int -> Int -> Bool
+likeMatchGo tc tn ti pc pn pi =
+  if pi >= pn then
+    ti >= tn
+  else if pc[pi] == '%' then
+    likeMatchStar tc tn ti pc pn (pi + 1)
+  else if pc[pi] == '_' then
+    ti < tn && likeMatchGo tc tn (ti + 1) pc pn (pi + 1)
+  else
+    ti < tn && tc[ti] == pc[pi] && likeMatchGo tc tn (ti + 1) pc pn (pi + 1)
+
+likeMatchStar : Array Char -> Int -> Int -> Array Char -> Int -> Int -> Bool
+likeMatchStar tc tn ti pc pn pi =
+  if likeMatchGo tc tn ti pc pn pi then
+    True
+  else if ti < tn then
+    likeMatchStar tc tn (ti + 1) pc pn pi
+  else
+    False
+
+-- ---------------------------------------------------------------------------
+-- ASCII-only case fold.  SQLite's built-in `LIKE`/`UPPER`/`LOWER` fold ONLY
+-- `a`-`z`/`A`-`Z` — unlike `string.toUpper`/`toLower` (full Unicode, so
+-- `upper('café')` stays `'café'` in real sqlite but `string.toUpper "café"`
+-- would produce `"CAFÉ"`).  Verified against `sqlite3`; see findings — this is
+-- exactly the kind of stdlib/domain-semantics mismatch worth flagging rather
+-- than silently reusing the Unicode-correct function and getting a wrong
+-- answer on non-ASCII input.
+-- ---------------------------------------------------------------------------
+
+-- Exported (not just used locally) so `lib.sqlparse` can lowercase an `EFn`
+-- name for rendering with the SAME ASCII-only fold, rather than hand-rolling
+-- a second copy (a first draft did exactly that; `medaka lint`'s cross-file
+-- `rule-duplicate-body` caught the two `charFromCodeOr`-shaped helpers).
+export asciiUpperChar : Char -> Char
+asciiUpperChar c =
+  let n = charCode c
+  if n >= 97 && n <= 122 then charFromCodeOr c (n - 32) else c
+
+export asciiLowerChar : Char -> Char
+asciiLowerChar c =
+  let n = charCode c
+  if n >= 65 && n <= 90 then charFromCodeOr c (n + 32) else c
+
+charFromCodeOr : Char -> Int -> Char
+charFromCodeOr fallback n = match charFromCode n
+  Some c => c
+  None => fallback
+
+export asciiFold : (Char -> Char) -> String -> String
+asciiFold f s =
+  let chars = stringToChars s
+  fromChars (asciiFoldGo f chars 0 (arrayLength chars))
+
+asciiFoldGo : (Char -> Char) -> Array Char -> Int -> Int -> List Char
+asciiFoldGo f chars i n =
+  if i >= n then
+    []
+  else
+    f chars[i] :: asciiFoldGo f chars (i + 1) n
+
+-- ---------------------------------------------------------------------------
+-- Scalar string functions.  Every one of these auto-coerces a non-NULL,
+-- non-text operand to text first (`length(12345)` is `5`, `upper(123)` is
+-- `"123"` — verified against `sqlite3`), via the SAME `cellToTextOp` `||`/
+-- `LIKE` use; any NULL argument makes the whole call NULL.
+-- ---------------------------------------------------------------------------
+
+compileFnCall : String -> List (List Cell -> Cell) -> Result String (List Cell -> Cell)
+compileFnCall "LENGTH" [g] = Ok (cells => fnLength (g cells))
+compileFnCall "UPPER" [g] = Ok (cells => fnUpperSql (g cells))
+compileFnCall "LOWER" [g] = Ok (cells => fnLowerSql (g cells))
+compileFnCall "TRIM" [g] = Ok (cells => fnTrimSql (g cells))
+compileFnCall "LTRIM" [g] = Ok (cells => fnLtrimSql (g cells))
+compileFnCall "RTRIM" [g] = Ok (cells => fnRtrimSql (g cells))
+compileFnCall "REPLACE" [g1, g2, g3] =
+  Ok (cells => fnReplaceSql (g1 cells) (g2 cells) (g3 cells))
+compileFnCall "SUBSTR" [g1, g2] = Ok (cells => fnSubstr2 (g1 cells) (g2 cells))
+compileFnCall "SUBSTR" [g1, g2, g3] =
+  Ok (cells => fnSubstr3 (g1 cells) (g2 cells) (g3 cells))
+-- Unreachable: the parser validates name+arity before ever building an `EFn`
+-- node.  Kept so `compileFnCall` stays total rather than panicking.
+compileFnCall name _ = Err "internal: bad arity for function '\{name}'"
+
+fnLength : Cell -> Cell
+fnLength c = match cellToTextOp c
+  None => CNull
+  Some s => CInt (stringLength s)
+
+fnUpperSql : Cell -> Cell
+fnUpperSql c = match cellToTextOp c
+  None => CNull
+  Some s => CText (asciiFold asciiUpperChar s)
+
+fnLowerSql : Cell -> Cell
+fnLowerSql c = match cellToTextOp c
+  None => CNull
+  Some s => CText (asciiFold asciiLowerChar s)
+
+-- SQLite's 1-argument `trim`/`ltrim`/`rtrim` strip ONLY the ASCII space
+-- character (0x20) — NOT general whitespace (tab/newline survive), verified
+-- against `sqlite3`.  This is a real divergence from `string.trim*` (which
+-- strips all Unicode whitespace) — see findings.
+fnTrimSql : Cell -> Cell
+fnTrimSql c = match cellToTextOp c
+  None => CNull
+  Some s => CText (spaceTrimRight (spaceTrimLeft s))
+
+fnLtrimSql : Cell -> Cell
+fnLtrimSql c = match cellToTextOp c
+  None => CNull
+  Some s => CText (spaceTrimLeft s)
+
+fnRtrimSql : Cell -> Cell
+fnRtrimSql c = match cellToTextOp c
+  None => CNull
+  Some s => CText (spaceTrimRight s)
+
+spaceTrimLeft : String -> String
+spaceTrimLeft s =
+  let chars = stringToChars s
+  let n = arrayLength chars
+  stringSlice (spaceTrimLeftIdx chars 0 n) n s
+
+spaceTrimLeftIdx : Array Char -> Int -> Int -> Int
+spaceTrimLeftIdx chars i n =
+  if i < n && charCode chars[i] == 32 then
+    spaceTrimLeftIdx chars (i + 1) n
+  else
+    i
+
+spaceTrimRight : String -> String
+spaceTrimRight s =
+  let chars = stringToChars s
+  let n = arrayLength chars
+  stringSlice 0 (spaceTrimRightIdx chars n) s
+
+spaceTrimRightIdx : Array Char -> Int -> Int
+spaceTrimRightIdx chars j =
+  if j > 0 && charCode chars[j - 1] == 32 then
+    spaceTrimRightIdx chars (j - 1)
+  else
+    j
+
+-- `replace(X, Y, Z)`: every non-overlapping occurrence of Y replaced by Z;
+-- unchanged if Y is empty.  `string.replaceAll` already has EXACTLY this
+-- contract (verified against `sqlite3`, including the empty-`Y` case), so it
+-- is reused directly rather than re-implemented.
+fnReplaceSql : Cell -> Cell -> Cell -> Cell
+fnReplaceSql xc yc zc = match (cellToTextOp xc, cellToTextOp yc, cellToTextOp zc)
+  (Some s, Some old, Some new) => CText (replaceAll old new s)
+  _ => CNull
+
+-- ---------------------------------------------------------------------------
+-- `substr(X, Y [, Z])` — SQLite semantics, derived and checked exhaustively
+-- against `sqlite3` (1-indexed; Y=0 and negative Y/Z all have specific rules
+-- that are easy to get subtly wrong — see findings for the derivation and the
+-- verification matrix).  Unified formula: let `vs` be the 0-based virtual
+-- start position (`Y - 1` for `Y >= 0`; `n + Y` for `Y < 0`, i.e. "count from
+-- the end").  With no `Z`: slice from `clamp(vs, 0, n)` to `n`.  With `Z >=
+-- 0`: slice `[clamp(vs,0,n), clamp(vs+Z,0,n))`.  With `Z < 0` ("the
+-- characters preceding the Y-th"): slice `[clamp(vs+Z,0,n), clamp(vs,0,n))`.
+-- ---------------------------------------------------------------------------
+
+fnSubstr2 : Cell -> Cell -> Cell
+fnSubstr2 xc yc = match (cellToTextOp xc, cellToIntPart yc)
+  (Some s, Some y) => CText (substrFrom s y)
+  _ => CNull
+
+substrFrom : String -> Int -> String
+substrFrom s y =
+  let n = stringLength s
+  let vs = substrVirtualStart n y
+  stringSlice (clampInt vs 0 n) n s
+
+fnSubstr3 : Cell -> Cell -> Cell -> Cell
+fnSubstr3 xc yc zc = match (cellToTextOp xc, cellToIntPart yc, cellToIntPart zc)
+  (Some s, Some y, Some z) => CText (substrFromLen s y z)
+  _ => CNull
+
+substrFromLen : String -> Int -> Int -> String
+substrFromLen s y z =
+  let n = stringLength s
+  let vs = substrVirtualStart n y
+  let start = clampInt (if z >= 0 then vs else vs + z) 0 n
+  let end = clampInt (if z >= 0 then vs + z else vs) 0 n
+  if end <= start then "" else stringSlice start end s
+
+substrVirtualStart : Int -> Int -> Int
+substrVirtualStart n y = if y >= 0 then y - 1 else n + y
+
+clampInt : Int -> Int -> Int -> Int
+clampInt v lo hi = max lo (min v hi)
 
 -- ---------------------------------------------------------------------------
 -- Arithmetic evaluation (SQLite semantics)
@@ -1143,11 +1631,22 @@ aggsIn (ELit _) = []
 aggsIn (EAgg fn operand) = [EAgg fn operand]
 aggsIn (EBin _ l r) = aggsIn l ++ aggsIn r
 aggsIn (EArith _ l r) = aggsIn l ++ aggsIn r
+aggsIn (EConcat l r) = aggsIn l ++ aggsIn r
 aggsIn (EAnd l r) = aggsIn l ++ aggsIn r
 aggsIn (EOr l r) = aggsIn l ++ aggsIn r
 aggsIn (ENot e) = aggsIn e
 aggsIn (EIsNull e) = aggsIn e
 aggsIn (ENotNull e) = aggsIn e
+aggsIn (ELike x p) = aggsIn x ++ aggsIn p
+aggsIn (EIn x vs) = aggsIn x ++ concatAggs vs
+aggsIn (ECase whens els) = concatAggs (aggsCasePairs whens)
+  ++ concatAggs (optionToList els)
+aggsIn (ECoalesce es) = concatAggs es
+aggsIn (EFn _ args) = concatAggs args
+
+aggsCasePairs : List (SqlExpr, SqlExpr) -> List SqlExpr
+aggsCasePairs [] = []
+aggsCasePairs ((c, r)::rest) = c :: r :: aggsCasePairs rest
 
 containsAgg : List SqlExpr -> Bool
 containsAgg es = match concatAggs es
@@ -1270,6 +1769,14 @@ rewriteOptPostGroup : List SqlExpr -> List SqlExpr -> Option SqlExpr -> Result S
 rewriteOptPostGroup _ _ None = Ok None
 rewriteOptPostGroup gb aggs (Some e) = map Some (rewritePostGroup gb aggs e)
 
+rewriteCaseWhens : List SqlExpr -> List SqlExpr -> List (SqlExpr, SqlExpr) -> Result String (List (SqlExpr, SqlExpr))
+rewriteCaseWhens _ _ [] = Ok []
+rewriteCaseWhens gb aggs ((c, r)::rest) = do
+  c2 <- rewritePostGroup gb aggs c
+  r2 <- rewritePostGroup gb aggs r
+  rest2 <- rewriteCaseWhens gb aggs rest
+  Ok ((c2, r2)::rest2)
+
 -- A whole sub-expression that IS a GROUP BY key resolves to that key's slot —
 -- checked FIRST, so `GROUP BY (a + b)` makes `SELECT a + b` legal.  Otherwise we
 -- recurse structurally.
@@ -1297,6 +1804,28 @@ rewriteInner gb aggs (EArith op l r) = do
   l2 <- rewritePostGroup gb aggs l
   r2 <- rewritePostGroup gb aggs r
   Ok (EArith op l2 r2)
+rewriteInner gb aggs (EConcat l r) = do
+  l2 <- rewritePostGroup gb aggs l
+  r2 <- rewritePostGroup gb aggs r
+  Ok (EConcat l2 r2)
+rewriteInner gb aggs (ELike x p) = do
+  x2 <- rewritePostGroup gb aggs x
+  p2 <- rewritePostGroup gb aggs p
+  Ok (ELike x2 p2)
+rewriteInner gb aggs (EIn x vs) = do
+  x2 <- rewritePostGroup gb aggs x
+  vs2 <- rewriteAllPostGroup gb aggs vs
+  Ok (EIn x2 vs2)
+rewriteInner gb aggs (ECase whens els) = do
+  whens2 <- rewriteCaseWhens gb aggs whens
+  els2 <- rewriteOptPostGroup gb aggs els
+  Ok (ECase whens2 els2)
+rewriteInner gb aggs (ECoalesce es) = do
+  es2 <- rewriteAllPostGroup gb aggs es
+  Ok (ECoalesce es2)
+rewriteInner gb aggs (EFn name args) = do
+  args2 <- rewriteAllPostGroup gb aggs args
+  Ok (EFn name args2)
 rewriteInner gb aggs (EAnd l r) = do
   l2 <- rewritePostGroup gb aggs l
   r2 <- rewritePostGroup gb aggs r
@@ -1680,6 +2209,28 @@ decodeCells rt (cells::rest) acc = do
 --
 -- > renderShow (render (withColumns [unExpr (aSum (eMul (eColInt "price") (eColInt "qty")))] (selectFrom "orders")))
 -- "SELECT sum((price * qty)) FROM orders ## []"
+--
+-- `||` concatenation, `LIKE`, `IN`, `BETWEEN` (which renders as the AND-of-
+-- comparisons it desugars to — see the `SqlExpr` doc comment), `COALESCE`, and
+-- a scalar string function all render with their own `?`-bind literals.
+--
+-- > renderShow (render (withColumns [unExpr (eConcat (eColText "first") (eLitT " "))] (selectFrom "users")))
+-- "SELECT (first || ?) FROM users ## [LText  ]"
+--
+-- > renderShow (render (withWhere (eLike (eColText "name") (eLitT "a%")) (selectFrom "users")))
+-- "SELECT * FROM users WHERE (name LIKE ?) ## [LText a%]"
+--
+-- > renderShow (render (withWhere (eIn (eColInt "age") [eLitI 20, eLitI 30]) (selectFrom "users")))
+-- "SELECT * FROM users WHERE (age IN (?, ?)) ## [LInt 20, LInt 30]"
+--
+-- > renderShow (render (withWhere (eBetween (eColInt "age") (eLitI 20) (eLitI 30)) (selectFrom "users")))
+-- "SELECT * FROM users WHERE ((age >= ?) AND (age <= ?)) ## [LInt 20, LInt 30]"
+--
+-- > renderShow (render (withColumns [unExpr (eCoalesce [eColText "nick", eColText "name"])] (selectFrom "users")))
+-- "SELECT coalesce(nick, name) FROM users ## []"
+--
+-- > renderShow (render (withColumns [unExpr (eUpper (eColText "name"))] (selectFrom "users")))
+-- "SELECT upper(name) FROM users ## []"
 export renderShow : Result String (String, List Literal) -> String
 renderShow (Err e) = "ERR \{e}"
 renderShow (Ok (sql, binds)) = "\{sql} ## \{showBinds binds}"

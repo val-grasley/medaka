@@ -20,14 +20,37 @@
 -- cmpExpr := addExpr cmpSuffix*                 -- left-assoc
 -- cmpSuffix := (= | == | != | <> | < | <= | > | >=) addExpr
 --            | IS [NOT] NULL
+--            | [NOT] LIKE addExpr
+--            | [NOT] IN '(' expr (',' expr)* ')'
+--            | [NOT] BETWEEN addExpr AND addExpr
 -- addExpr := mulExpr ((+ | -) mulExpr)*         -- left-assoc
--- mulExpr := atom    ((* | / | %) atom)*        -- left-assoc
--- atom    := '(' expr ')' | literal | '-' atom | aggCall | column
+-- mulExpr := concatExpr ((* | / | %) concatExpr)*  -- left-assoc
+-- concatExpr := atom ('||' atom)*               -- left-assoc; BINDS TIGHTER
+--                                                -- than `* / %` — see the
+--                                                -- precedence note below
+-- atom    := '(' expr ')' | literal | '-' atom | caseExpr | aggCall | fnCall
+--          | column
+-- caseExpr := CASE [addExpr] (WHEN expr THEN expr)+ [ELSE expr] END
 -- aggCall := aggFn '(' ('*' | expr) ')'         -- '*' only for COUNT
 -- aggFn   := COUNT | SUM | AVG | MIN | MAX      -- case-insensitive
+-- fnCall  := fnName '(' expr (',' expr)* ')'    -- arity checked per fnName
+-- fnName  := LENGTH | UPPER | LOWER | SUBSTR | TRIM | LTRIM | RTRIM
+--          | REPLACE | COALESCE | IFNULL       -- case-insensitive
 -- column  := ident ['.' ident]                  -- bare `age` or `users.age`
--- literal := NULL | integer | float | 'text' | X'blob'
+-- literal := NULL | TRUE | FALSE | integer | float | 'text' | X'blob'
 -- ```
+--
+-- ## `||` precedence — NOT what you'd guess
+--
+-- SQLite's real operator-precedence table puts `||` ABOVE `* / %` (i.e.
+-- TIGHTER, second only to unary `-`/`+`) — verified against `sqlite3`:
+-- `1+2 || 3+4` evaluates to `28`, i.e. `(1 + (2||3)) + 4` = `1 + 23 + 4`
+-- (`2||3` is the TEXT `"23"`, which SQLite's arithmetic then coerces back to
+-- a number).  `concatExpr` therefore sits between `mulExpr` and `atom`, not
+-- beside `+ -` at the additive tier.  This engine does NOT implement the
+-- text→number coercion that makes `1 + "23"` work — arithmetic on a `||`
+-- result stays out of scope (see findings) — but the PRECEDENCE itself is
+-- implemented correctly, independent of that coercion gap.
 --
 -- ## Notes on the design
 --
@@ -66,9 +89,11 @@
 --
 -- ## Deliberately out of scope
 --
--- `TRUE`/`FALSE` keywords, `LIKE`/`IN`/`BETWEEN`/`CASE`, non-aggregate function
--- calls, `||` concatenation, quoted `"identifiers"`, and bare `.5` / `1.` float
--- forms.
+-- Sub-queries (`IN (SELECT ...)`), the `LIKE ... ESCAPE '..'` clause, non-
+-- aggregate/non-scalar function calls, `GLOB`/`MATCH`/`REGEXP`, `COLLATE`,
+-- the `->`/`->>` JSON arrow operators, quoted `"identifiers"`, bare `.5` /
+-- `1.` float forms, and text→number coercion in arithmetic (`1 + '2'`).
+-- Each is a clean parse-time `Err`, never a silent wrong answer.
 
 import parsec.lib.parser.{
   Parser,
@@ -87,6 +112,7 @@ import parsec.lib.parser.{
   attempt,
   label,
   digit,
+  sepBy1,
 }
 import lib.select.{
   SqlExpr,
@@ -94,11 +120,19 @@ import lib.select.{
   ELit,
   EBin,
   EArith,
+  EConcat,
   EAnd,
   EOr,
   ENot,
   EIsNull,
   ENotNull,
+  ELike,
+  EIn,
+  ECase,
+  ECoalesce,
+  EFn,
+  asciiFold,
+  asciiLowerChar,
   EAgg,
   AggFn,
   FnCount,
@@ -135,6 +169,7 @@ import string.{
   isAlpha,
   isAlphaNum,
   replaceAll,
+  join,
 }
 import hex.{decode, encodeUpper}
 
@@ -240,12 +275,18 @@ word = do
 --   covers the statement keywords stage 2 needs (`SELECT`/`FROM`/…) as well as
 --   the expression keywords stage 1 uses (`AND`/`OR`/`NOT`/`IS`/`NULL`).
 --
---   `TRUE`/`FALSE` are here for a DIFFERENT reason: they are SQLite boolean
---   literals we do not support, and reserving them is what makes `boolReject`'s
---   message reachable.  Rejecting in `boolReject` alone is NOT enough —
---   `orElse` takes a success from the right branch outright, so as long as
---   `column` could still read `TRUE` as a column reference, it would win the
---   `choice` and `boolReject`'s failure would be discarded.
+--   `TRUE`/`FALSE` are reserved even though `literal` now parses them directly
+--   (as `LInt 1`/`LInt 0`) — reserving them still matters so that a column
+--   literally named `true` is a clean "reserved word" error rather than a
+--   silent ambiguity between "the literal" and "a column of that name".
+--
+--   `LIKE`/`IN`/`BETWEEN`/`CASE`/`WHEN`/`THEN`/`ELSE`/`END` are reserved for
+--   the same reason `AND`/`OR`/`NOT`/`IS` are: each is consumed as a KEYWORD
+--   by the expression grammar (`cmpSuffixHead`, `caseExpr`), so a bare column
+--   of that name would otherwise be ambiguous.  Scalar function names
+--   (`LENGTH`/`UPPER`/…/`COALESCE`/`IFNULL`) are deliberately NOT reserved —
+--   same rationale as `COUNT`/`SUM`/…: a bare `length` with no `(` after it is
+--   still an ordinary column, exactly as in SQLite.
 export reservedWords : List String
 reservedWords = [
   "AND",
@@ -255,6 +296,14 @@ reservedWords = [
   "NULL",
   "TRUE",
   "FALSE",
+  "LIKE",
+  "IN",
+  "BETWEEN",
+  "CASE",
+  "WHEN",
+  "THEN",
+  "ELSE",
+  "END",
   "SELECT",
   "DISTINCT",
   "FROM",
@@ -366,8 +415,15 @@ identCheck w =
 --
 -- > map dumpExpr (runParser column "users.age")
 -- Ok "ECol users.age"
--- > runParser column "upper(name)"
--- Err "unsupported function 'upper' — only count/sum/avg/min/max are supported at 6"
+--
+-- `column` on its own doesn't know about `aggCall`/`fnCall` (those are tried
+-- FIRST in `atom`'s `choice`, so a real `upper(name)` never reaches here) — it
+-- only ever sees a name `atom` has ALREADY failed to recognize as a call, so
+-- its error message lists every supported function so the reader knows what
+-- to write instead:
+--
+-- > runParser column "foo(name)"
+-- Err "unsupported function 'foo' — only count/sum/avg/min/max/length/upper/lower/substr/trim/ltrim/rtrim/replace/coalesce/ifnull are supported at 4"
 export column : Parser SqlExpr
 column = do
   name <- sqlIdent
@@ -382,14 +438,15 @@ notCall : String -> Option Char -> Parser SqlExpr
 notCall name None = pure (ECol name)
 notCall name (Some _) =
   failWith
-    "unsupported function '\{name}' — only count/sum/avg/min/max are supported"
+    "unsupported function '\{name}' — only count/sum/avg/min/max/length/upper/lower/substr/trim/ltrim/rtrim/replace/coalesce/ifnull are supported"
 
 -- ---------------------------------------------------------------------------
 -- Literals
 -- ---------------------------------------------------------------------------
 
--- | A SQL literal: `NULL`, an integer, a float, a `'quoted string'` (with `''`
---   as the escaped single quote), or an `X'48EX'`-style blob.
+-- | A SQL literal: `NULL`, `TRUE`/`FALSE`, an integer, a float, a `'quoted
+--   string'` (with `''` as the escaped single quote), or an `X'48EX'`-style
+--   blob.
 --
 -- > map dumpLiteral (runParser literal "42")
 -- Ok "LInt 42"
@@ -399,6 +456,14 @@ notCall name (Some _) =
 -- Ok "LFloat 3.5"
 -- > map dumpLiteral (runParser literal "NULL")
 -- Ok "LNull"
+--
+-- `TRUE`/`FALSE` are SQLite's boolean literals — represented as the integers
+-- `1`/`0`, exactly what `typeof(TRUE)` reports in `sqlite3`:
+--
+-- > map dumpLiteral (runParser literal "TRUE")
+-- Ok "LInt 1"
+-- > map dumpLiteral (runParser literal "false")
+-- Ok "LInt 0"
 --
 -- `''` is the SQL escape for a single quote inside a string:
 --
@@ -415,14 +480,22 @@ notCall name (Some _) =
 -- > map dumpLiteral (runParser literal "X'4142'")
 -- Ok "LBlob X'4142'"
 export literal : Parser Literal
-literal =
-  label "expected a literal" (choice [nullLit, blobLit, numLit, textLit])
+literal = label
+  "expected a literal"
+  (choice [nullLit, boolLit, blobLit, numLit, textLit])
 
 -- NULL.  `keyword` gives word-granularity, so a column `nullable` is safe.
 nullLit : Parser Literal
 nullLit = do
   _ <- keyword "NULL"
   pure LNull
+
+-- TRUE / FALSE, mapped to the integer literals SQLite itself uses under the
+-- hood (`typeof(TRUE)` is `"integer"`, `TRUE = 1` is true, verified).
+boolLit : Parser Literal
+boolLit = orElse
+  (map (_ => LInt 1) (keyword "TRUE"))
+  (map (_ => LInt 0) (keyword "FALSE"))
 
 -- An integer or float: [-] digits [ . digits ] [ (e|E) [+|-] digits ].
 -- Presence of a fraction or an exponent makes it a Float, otherwise an Int.
@@ -578,9 +651,14 @@ cmpExpr = do
   l <- addExpr
   cmpSuffixes l
 
--- The HEAD of a comparison suffix: the `IS` keyword, or a comparison operator.
--- Matching one COMMITS the parser to the rest of the suffix (see `cmpSuffixes`).
-data SuffixHead = HIs | HCmp CmpOp
+-- The HEAD of a comparison suffix: the `IS` keyword, a comparison operator, or
+-- (optionally `NOT`-prefixed) `LIKE`/`IN`/`BETWEEN`.  Matching one COMMITS the
+-- parser to the rest of the suffix (see `cmpSuffixes`).  The `Bool` on
+-- `HLike`/`HIn`/`HBetween` is `True` when a suffix-position `NOT` preceded it
+-- (`x NOT LIKE y`) — a DIFFERENT `NOT` from `notExpr`'s PREFIX `NOT` two
+-- levels up (`NOT x = y`): by the time `cmpSuffixHead` runs, `x` has already
+-- been consumed as the left operand, so seeing `NOT` here is unambiguous.
+data SuffixHead = HIs | HCmp CmpOp | HLike Bool | HIn Bool | HBetween Bool
 
 -- `cmpSuffixes` is a FUNCTION (it takes the accumulated left operand), so its
 -- self-recursion is ordinary function recursion — no cyclic-value hazard.
@@ -598,7 +676,32 @@ cmpSuffixes l = do
   cmpSuffixTail l h
 
 cmpSuffixHead : Parser SuffixHead
-cmpSuffixHead = orElse (map (_ => HIs) (keyword "IS")) (map HCmp cmpOp)
+cmpSuffixHead = choice
+  [
+    map (_ => HIs) (keyword "IS"),
+    negatedSuffixHead,
+    map (_ => HLike False) (keyword "LIKE"),
+    map (_ => HIn False) (keyword "IN"),
+    map (_ => HBetween False) (keyword "BETWEEN"),
+    map HCmp cmpOp,
+  ]
+
+-- `NOT LIKE` / `NOT IN` / `NOT BETWEEN`.  Once `NOT` itself matches (a clean,
+-- non-consuming failure otherwise — `keyword` is internally `attempt`-wrapped,
+-- so a plain `x = 1` never even tries this branch), one of the three keywords
+-- is MANDATORY: `x NOT foo` is a real error, not a silent fallback.
+negatedSuffixHead : Parser SuffixHead
+negatedSuffixHead = do
+  _ <- keyword "NOT"
+  negatedSuffixTail
+
+negatedSuffixTail : Parser SuffixHead
+negatedSuffixTail = choice
+  [
+    map (_ => HLike True) (keyword "LIKE"),
+    map (_ => HIn True) (keyword "IN"),
+    map (_ => HBetween True) (keyword "BETWEEN"),
+  ]
 
 cmpSuffixTail : SqlExpr -> Option SuffixHead -> Parser SqlExpr
 cmpSuffixTail l None = pure l
@@ -609,6 +712,27 @@ cmpSuffixTail l (Some HIs) = do
 cmpSuffixTail l (Some (HCmp op)) = do
   r <- addExpr
   cmpSuffixes (EBin op l r)
+cmpSuffixTail l (Some (HLike neg)) = do
+  p <- addExpr
+  cmpSuffixes (negateIf neg (ELike l p))
+cmpSuffixTail l (Some (HIn neg)) = do
+  _ <- symbol "("
+  vs <- sepBy1 sqlExpr (symbol ",")
+  _ <- symbol ")"
+  cmpSuffixes (negateIf neg (EIn l vs))
+-- `BETWEEN lo AND hi` desugars HERE to `lo <= x AND x <= hi` (exactly SQLite's
+-- own definition — see the `SqlExpr` doc comment in `lib.select`), so no
+-- `EBetween` node exists and the rest of the pipeline (render/eval/rewrite)
+-- needs no new cases for it.
+cmpSuffixTail l (Some (HBetween neg)) = do
+  lo <- addExpr
+  _ <- keyword "AND"
+  hi <- addExpr
+  cmpSuffixes (negateIf neg (EAnd (EBin OpGe l lo) (EBin OpLe l hi)))
+
+negateIf : Bool -> SqlExpr -> SqlExpr
+negateIf True e = ENot e
+negateIf False e = e
 
 nullTest : Option Unit -> SqlExpr -> SqlExpr
 nullTest None = EIsNull
@@ -641,12 +765,22 @@ addExpr = chainl1 mulExpr addOp
 addOp : Parser (SqlExpr -> SqlExpr -> SqlExpr)
 addOp = choice [arithTok "+" AAdd, arithTok "-" ASub]
 
--- Multiplicative — binds tightest of the binary operators, left-associative.
+-- Multiplicative — left-associative.
 mulExpr : Parser SqlExpr
-mulExpr = chainl1 atom mulOp
+mulExpr = chainl1 concatExpr mulOp
 
 mulOp : Parser (SqlExpr -> SqlExpr -> SqlExpr)
 mulOp = choice [arithTok "*" AMul, arithTok "/" ADiv, arithTok "%" AMod]
+
+-- `||` concatenation — binds TIGHTER than `* / %` (see the module header's
+-- precedence note), left-associative.
+concatExpr : Parser SqlExpr
+concatExpr = chainl1 atom concatOp
+
+concatOp : Parser (SqlExpr -> SqlExpr -> SqlExpr)
+concatOp = do
+  _ <- symbol "||"
+  pure (l r => EConcat l r)
 
 -- NOTE the eta-expanded lambda `(l r => EArith op l r)` rather than the natural
 -- partial application `EArith op`.  This is a WORKAROUND for a native-backend
@@ -663,19 +797,23 @@ arithTok s op = do
   _ <- symbol s
   pure (l r => EArith op l r)
 
--- An atom: a parenthesized expression, a literal, a unary minus, an aggregate
--- call, or a column.
+-- An atom: a parenthesized expression, a literal, a unary minus, a CASE
+-- expression, an aggregate call, a scalar function call, or a column.
 --
 -- ORDER MATTERS.  `literal` is tried before `column` so that `X'41'` is a blob
--- rather than a column named `X`; `literal` backtracks cleanly when it isn't one
--- (parsec's `orElse` re-runs the alternative from the ORIGINAL position), so a
--- column actually named `x` still parses.  `aggCall` sits before `column` for the
--- same reason: `count` is not a reserved word, so `column` would happily eat the
--- name and strand the `(`.
+-- rather than a column named `X` (and so `TRUE`/`FALSE` are read as literals,
+-- not attempted as columns — though `column` would reject them anyway, being
+-- reserved words); `literal` backtracks cleanly when it isn't one (parsec's
+-- `orElse` re-runs the alternative from the ORIGINAL position), so a column
+-- actually named `x` still parses.  `caseExpr` sits before `aggCall`/`fnCall`
+-- since `CASE` is a reserved word (no ambiguity, but keeps the reserved-word
+-- constructs grouped).  `aggCall`/`fnCall` sit before `column` for the same
+-- reason as always: `count`/`length`/etc. are NOT reserved words, so `column`
+-- would happily eat the name and strand the `(`.
 atom : Parser SqlExpr
 atom = label
   "expected an expression"
-  (choice [parens, litAtom, negAtom, aggCall, boolReject, column])
+  (choice [parens, litAtom, negAtom, caseExpr, aggCall, fnCall, column])
 
 -- The recursive reference to `sqlExpr` is in a do-continuation, NOT in argument
 -- position.  Writing this as `between (symbol "(") (symbol ")") sqlExpr` would
@@ -698,35 +836,147 @@ negAtom = do
   e <- atom
   pure (EArith ASub (ELit (LInt 0)) e)
 
--- SQLite has had `TRUE` / `FALSE` boolean literals since 3.23; `SqlExpr` has no
--- boolean literal, so we do not.  Without this arm they would parse as COLUMN
--- REFERENCES named `TRUE`/`FALSE` — which is not a wrong answer today (the
--- executor then errors with "unknown column: TRUE"), but it IS a booby trap: over
--- a table that happens to have such a column, `WHERE flag = TRUE` would silently
--- compare two columns.  So reject them by name, with a message that says what to
--- write instead.
+-- ---------------------------------------------------------------------------
+-- CASE expressions
+-- ---------------------------------------------------------------------------
+
+-- | A CASE expression, both forms.  SEARCHED: `CASE WHEN c1 THEN r1 [WHEN c2
+--   THEN r2 ..] [ELSE re] END`.  SIMPLE: `CASE x WHEN v1 THEN r1 ..  END` —
+--   desugared HERE, at parse time, to the searched form's `WHEN x = v1 THEN
+--   r1 ..` (so the evaluator/render/rewrite only ever see `ECase`'s searched
+--   shape).  A NULL/UNKNOWN `WHEN` condition is treated as not-taken (`CASE
+--   WHEN NULL THEN 'a' ELSE 'b' END` is `'b'`, verified against `sqlite3`).
 --
--- The `attempt` is what keeps this arm from hijacking OTHER errors: on any word
--- that is NOT `TRUE`/`FALSE` it rewinds to the start position, where `atom`'s
--- `label` rewrites it to the ordinary "expected an expression".  Only a real
--- `TRUE`/`FALSE` gets to fail DEEP (past the word), which is what makes its
--- message outrank every sibling in the `choice`.
-boolReject : Parser SqlExpr
-boolReject = do
-  _ <- attempt boolWord
-  failWith "TRUE/FALSE literals are not supported — write 1 / 0 instead"
+-- > map dumpExpr (runParser caseExpr "CASE WHEN a > 1 THEN 'x' ELSE 'y' END")
+-- Ok "ECase [((EBin OpGt (ECol a) (ELit (LInt 1))), (ELit (LText 'x')))] (Some (ELit (LText 'y')))"
+--
+-- No ELSE ⇒ `None` (falls through to NULL at evaluation time):
+--
+-- > map dumpExpr (runParser caseExpr "CASE WHEN a > 1 THEN 'x' END")
+-- Ok "ECase [((EBin OpGt (ECol a) (ELit (LInt 1))), (ELit (LText 'x')))] None"
+--
+-- The SIMPLE form desugars its subject into an `=` on every WHEN branch:
+--
+-- > map dumpExpr (runParser caseExpr "CASE a WHEN 1 THEN 'one' WHEN 2 THEN 'two' END")
+-- Ok "ECase [((EBin OpEq (ECol a) (ELit (LInt 1))), (ELit (LText 'one'))), ((EBin OpEq (ECol a) (ELit (LInt 2))), (ELit (LText 'two')))] None"
+export caseExpr : Parser SqlExpr
+caseExpr = do
+  _ <- keyword "CASE"
+  subj <- optional addExpr
+  whens <- many1 whenThen
+  els <- optional elseClause
+  _ <- keyword "END"
+  buildCase subj whens els
 
-boolWord : Parser String
-boolWord = do
-  w <- lexeme word
-  boolWordCheck w
+whenThen : Parser (SqlExpr, SqlExpr)
+whenThen = do
+  _ <- keyword "WHEN"
+  c <- sqlExpr
+  _ <- keyword "THEN"
+  r <- sqlExpr
+  pure (c, r)
 
-boolWordCheck : String -> Parser String
-boolWordCheck w =
-  if toUpper w == "TRUE" || toUpper w == "FALSE" then
-    pure w
+elseClause : Parser SqlExpr
+elseClause = do
+  _ <- keyword "ELSE"
+  sqlExpr
+
+buildCase : Option SqlExpr -> List (SqlExpr, SqlExpr) -> Option SqlExpr -> Parser SqlExpr
+buildCase None whens els = pure (ECase whens els)
+buildCase (Some subj) whens els = pure (ECase (map (simpleWhen subj) whens) els)
+
+simpleWhen : SqlExpr -> (SqlExpr, SqlExpr) -> (SqlExpr, SqlExpr)
+simpleWhen subj (v, r) = (EBin OpEq subj v, r)
+
+-- ---------------------------------------------------------------------------
+-- Scalar function calls
+-- ---------------------------------------------------------------------------
+
+-- | A scalar string-function call: `LENGTH`/`UPPER`/`LOWER`/`SUBSTR`/`TRIM`/
+--   `LTRIM`/`RTRIM`/`REPLACE`, plus `COALESCE`/`IFNULL` (which build `select`'s
+--   `ECoalesce` node directly rather than `EFn` — see `lib.select`).  Arity is
+--   validated HERE, at parse time, so a wrong-arity call is a clean parse
+--   error rather than reaching the evaluator.
+--
+-- > map dumpExpr (runParser fnCall "upper(name)")
+-- Ok "EFn UPPER [ECol name]"
+-- > map dumpExpr (runParser fnCall "substr(name, 1, 3)")
+-- Ok "EFn SUBSTR [ECol name, ELit (LInt 1), ELit (LInt 3)]"
+-- > map dumpExpr (runParser fnCall "ifnull(a, b)")
+-- Ok "ECoalesce [ECol a, ECol b]"
+--
+-- A known name with the wrong arity is a clean error, not a crash:
+--
+-- > runParser fnCall "upper(a, b)"
+-- Err "UPPER(...) expects exactly 1 argument at 11"
+--
+-- An unknown name is NOT consumed here — it falls through to `column` in
+-- `atom`'s `choice`, which reports the "unsupported function" error (see
+-- `notCall`) with the FULL list of what IS supported.
+export fnCall : Parser SqlExpr
+fnCall = do
+  name <- fnHead
+  args <- sepBy1 sqlExpr (symbol ",")
+  _ <- symbol ")"
+  fnFromArgs name args
+
+-- The COMMITTING head: a KNOWN scalar-function name IMMEDIATELY followed by
+-- `(`.  Wrapped in `attempt`, exactly like `aggHead` — an unknown name (or a
+-- known one used bare) rewinds cleanly to position 0.
+fnHead : Parser String
+fnHead = attempt
+  (do
+    w <- lexeme word
+    name <- scalarFnName w
+    _ <- symbol "("
+    pure name)
+
+scalarFnName : String -> Parser String
+scalarFnName w =
+  if isScalarFnName (toUpper w) then
+    pure (toUpper w)
   else
-    failWith "not a boolean literal"
+    failWith "not a scalar function"
+
+isScalarFnName : String -> Bool
+isScalarFnName name = elem
+  name
+  [
+    "LENGTH",
+    "UPPER",
+    "LOWER",
+    "SUBSTR",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "REPLACE",
+    "COALESCE",
+    "IFNULL",
+  ]
+
+fnFromArgs : String -> List SqlExpr -> Parser SqlExpr
+fnFromArgs "LENGTH" [a] = pure (EFn "LENGTH" [a])
+fnFromArgs "LENGTH" _ = failWith "LENGTH(...) expects exactly 1 argument"
+fnFromArgs "UPPER" [a] = pure (EFn "UPPER" [a])
+fnFromArgs "UPPER" _ = failWith "UPPER(...) expects exactly 1 argument"
+fnFromArgs "LOWER" [a] = pure (EFn "LOWER" [a])
+fnFromArgs "LOWER" _ = failWith "LOWER(...) expects exactly 1 argument"
+fnFromArgs "TRIM" [a] = pure (EFn "TRIM" [a])
+fnFromArgs "TRIM" _ = failWith "TRIM(...) expects exactly 1 argument"
+fnFromArgs "LTRIM" [a] = pure (EFn "LTRIM" [a])
+fnFromArgs "LTRIM" _ = failWith "LTRIM(...) expects exactly 1 argument"
+fnFromArgs "RTRIM" [a] = pure (EFn "RTRIM" [a])
+fnFromArgs "RTRIM" _ = failWith "RTRIM(...) expects exactly 1 argument"
+fnFromArgs "REPLACE" [a, b, c] = pure (EFn "REPLACE" [a, b, c])
+fnFromArgs "REPLACE" _ = failWith "REPLACE(...) expects exactly 3 arguments"
+fnFromArgs "SUBSTR" [a, b] = pure (EFn "SUBSTR" [a, b])
+fnFromArgs "SUBSTR" [a, b, c] = pure (EFn "SUBSTR" [a, b, c])
+fnFromArgs "SUBSTR" _ = failWith "SUBSTR(...) expects 2 or 3 arguments"
+fnFromArgs "COALESCE" args = pure (ECoalesce args)
+fnFromArgs "IFNULL" [a, b] = pure (ECoalesce [a, b])
+fnFromArgs "IFNULL" _ = failWith "IFNULL(...) expects exactly 2 arguments"
+-- Unreachable: `fnHead` only accepts names in `isScalarFnName`.
+fnFromArgs name _ = failWith "internal: unknown scalar function '\{name}'"
 
 -- ---------------------------------------------------------------------------
 -- Aggregate calls
@@ -815,11 +1065,24 @@ hasAgg (ELit _) = False
 hasAgg (EAgg _ _) = True
 hasAgg (EBin _ l r) = hasAgg l || hasAgg r
 hasAgg (EArith _ l r) = hasAgg l || hasAgg r
+hasAgg (EConcat l r) = hasAgg l || hasAgg r
 hasAgg (EAnd l r) = hasAgg l || hasAgg r
 hasAgg (EOr l r) = hasAgg l || hasAgg r
 hasAgg (ENot e) = hasAgg e
 hasAgg (EIsNull e) = hasAgg e
 hasAgg (ENotNull e) = hasAgg e
+hasAgg (ELike x p) = hasAgg x || hasAgg p
+hasAgg (EIn x vs) = hasAgg x || any hasAgg vs
+hasAgg (ECase whens els) = any hasAggPair whens || hasAggOpt els
+hasAgg (ECoalesce es) = any hasAgg es
+hasAgg (EFn _ args) = any hasAgg args
+
+hasAggPair : (SqlExpr, SqlExpr) -> Bool
+hasAggPair (c, r) = hasAgg c || hasAgg r
+
+hasAggOpt : Option SqlExpr -> Bool
+hasAggOpt None = False
+hasAggOpt (Some e) = hasAgg e
 
 -- ---------------------------------------------------------------------------
 -- renderSqlExpr : the inverse projection (literals INLINED)
@@ -842,6 +1105,26 @@ hasAgg (ENotNull e) = hasAgg e
 --
 -- > map renderSqlExpr (parseSqlExpr "name = 'it''s'")
 -- Ok "(name = 'it''s')"
+--
+-- `BETWEEN` round-trips through its AND-of-comparisons DESUGARING (there is
+-- no `EBetween` node — see `lib.select`'s `SqlExpr` doc comment), so the
+-- printed form is not literally `BETWEEN` but re-parses to the SAME tree:
+--
+-- > map renderSqlExpr (parseSqlExpr "age BETWEEN 1 AND 10")
+-- Ok "((age >= 1) AND (age <= 10))"
+--
+-- `||`, `LIKE`, `IN`, `CASE`, and a scalar function call:
+--
+-- > map renderSqlExpr (parseSqlExpr "a || b")
+-- Ok "(a || b)"
+-- > map renderSqlExpr (parseSqlExpr "name LIKE 'a%'")
+-- Ok "(name LIKE 'a%')"
+-- > map renderSqlExpr (parseSqlExpr "age IN (1, 2, 3)")
+-- Ok "(age IN (1, 2, 3))"
+-- > map renderSqlExpr (parseSqlExpr "CASE WHEN a > 1 THEN 'x' ELSE 'y' END")
+-- Ok "(CASE WHEN (a > 1) THEN 'x' ELSE 'y' END)"
+-- > map renderSqlExpr (parseSqlExpr "upper(name)")
+-- Ok "upper(name)"
 export renderSqlExpr : SqlExpr -> String
 renderSqlExpr (ECol name) = name
 renderSqlExpr (ELit l) = renderLiteral l
@@ -849,6 +1132,7 @@ renderSqlExpr (EBin op l r) =
   "(\{renderSqlExpr l} \{cmpText op} \{renderSqlExpr r})"
 renderSqlExpr (EArith op l r) =
   "(\{renderSqlExpr l} \{arithText op} \{renderSqlExpr r})"
+renderSqlExpr (EConcat l r) = "(\{renderSqlExpr l} || \{renderSqlExpr r})"
 renderSqlExpr (EAnd l r) = "(\{renderSqlExpr l} AND \{renderSqlExpr r})"
 renderSqlExpr (EOr l r) = "(\{renderSqlExpr l} OR \{renderSqlExpr r})"
 renderSqlExpr (ENot e) = "(NOT \{renderSqlExpr e})"
@@ -856,6 +1140,28 @@ renderSqlExpr (EIsNull e) = "(\{renderSqlExpr e} IS NULL)"
 renderSqlExpr (ENotNull e) = "(\{renderSqlExpr e} IS NOT NULL)"
 renderSqlExpr (EAgg fn None) = "\{aggFnSql fn}(*)"
 renderSqlExpr (EAgg fn (Some e)) = "\{aggFnSql fn}(\{renderSqlExpr e})"
+renderSqlExpr (ELike x pat) = "(\{renderSqlExpr x} LIKE \{renderSqlExpr pat})"
+renderSqlExpr (EIn x vs) =
+  "(\{renderSqlExpr x} IN (\{join ", " (map renderSqlExpr vs)}))"
+renderSqlExpr (ECase whens els) =
+  "(CASE \{renderCaseWhensText whens}\{renderCaseElseText els}END)"
+renderSqlExpr (ECoalesce es) = "coalesce(\{join ", " (map renderSqlExpr es)})"
+-- `EFn`'s name is stored canonical-uppercase (see `fnFromArgs`); render it
+-- lowercase for readability, matching `aggFnSql`'s convention, via the SAME
+-- ASCII-only fold `lib.select` uses for `UPPER`/`LOWER` — reused rather than
+-- re-implemented (a first draft hand-rolled a second copy here; `medaka
+-- lint`'s cross-file `rule-duplicate-body` caught it).
+renderSqlExpr (EFn name args) =
+  "\{asciiFold asciiLowerChar name}(\{join ", " (map renderSqlExpr args)})"
+
+renderCaseWhensText : List (SqlExpr, SqlExpr) -> String
+renderCaseWhensText [] = ""
+renderCaseWhensText ((c, r)::rest) =
+  "WHEN \{renderSqlExpr c} THEN \{renderSqlExpr r} \{renderCaseWhensText rest}"
+
+renderCaseElseText : Option SqlExpr -> String
+renderCaseElseText None = ""
+renderCaseElseText (Some e) = "ELSE \{renderSqlExpr e} "
 
 -- | Render a single literal, inlined (NOT as a `?` placeholder).
 --
@@ -902,12 +1208,33 @@ cmpText OpGe = ">="
 --
 -- > map dumpExpr (parseSqlExpr "a = 1 OR b = 2 AND c = 3")
 -- Ok "EOr (EBin OpEq (ECol a) (ELit (LInt 1))) (EAnd (EBin OpEq (ECol b) (ELit (LInt 2))) (EBin OpEq (ECol c) (ELit (LInt 3))))"
+--
+-- `||` binds TIGHTER than `*` (see the module header's precedence note): the
+-- `*` is the ROOT, not `||`.
+--
+-- > map dumpExpr (parseSqlExpr "2 || 3 * 4")
+-- Ok "EArith AMul (EConcat (ELit (LInt 2)) (ELit (LInt 3))) (ELit (LInt 4))"
+--
+-- `LIKE`/`IN`/`BETWEEN` sit at the SAME (comparison) tier as `=` — `AND`
+-- still binds tighter than the whole chain, so it stays the ROOT here too:
+--
+-- > map dumpExpr (parseSqlExpr "a LIKE 'x%' AND b IN (1, 2)")
+-- Ok "EAnd (ELike (ECol a) (ELit (LText 'x%'))) (EIn (ECol b) [ELit (LInt 1), ELit (LInt 2)])"
+--
+-- `NOT LIKE` / `NOT IN` / `NOT BETWEEN` are `ENot` wrapping the plain node —
+-- no separate negated constructors exist:
+--
+-- > map dumpExpr (parseSqlExpr "a NOT LIKE 'x%'")
+-- Ok "ENot (ELike (ECol a) (ELit (LText 'x%')))"
+-- > map dumpExpr (parseSqlExpr "a NOT BETWEEN 1 AND 10")
+-- Ok "ENot (EAnd (EBin OpGe (ECol a) (ELit (LInt 1))) (EBin OpLe (ECol a) (ELit (LInt 10))))"
 export dumpExpr : SqlExpr -> String
 dumpExpr (ECol name) = "ECol \{name}"
 dumpExpr (ELit l) = "ELit (\{dumpLiteral l})"
 dumpExpr (EBin op l r) = "EBin \{dumpCmp op} (\{dumpExpr l}) (\{dumpExpr r})"
 dumpExpr (EArith op l r) =
   "EArith \{dumpArith op} (\{dumpExpr l}) (\{dumpExpr r})"
+dumpExpr (EConcat l r) = "EConcat (\{dumpExpr l}) (\{dumpExpr r})"
 dumpExpr (EAnd l r) = "EAnd (\{dumpExpr l}) (\{dumpExpr r})"
 dumpExpr (EOr l r) = "EOr (\{dumpExpr l}) (\{dumpExpr r})"
 dumpExpr (ENot e) = "ENot (\{dumpExpr e})"
@@ -915,6 +1242,22 @@ dumpExpr (EIsNull e) = "EIsNull (\{dumpExpr e})"
 dumpExpr (ENotNull e) = "ENotNull (\{dumpExpr e})"
 dumpExpr (EAgg fn None) = "EAgg \{debug fn} None"
 dumpExpr (EAgg fn (Some e)) = "EAgg \{debug fn} (Some (\{dumpExpr e}))"
+dumpExpr (ELike x pat) = "ELike (\{dumpExpr x}) (\{dumpExpr pat})"
+dumpExpr (EIn x vs) = "EIn (\{dumpExpr x}) [\{join ", " (map dumpExpr vs)}]"
+dumpExpr (ECase whens els) =
+  "ECase [\{dumpCaseWhens whens}] \{dumpCaseElse els}"
+dumpExpr (ECoalesce es) = "ECoalesce [\{join ", " (map dumpExpr es)}]"
+dumpExpr (EFn name args) = "EFn \{name} [\{join ", " (map dumpExpr args)}]"
+
+dumpCaseWhens : List (SqlExpr, SqlExpr) -> String
+dumpCaseWhens [] = ""
+dumpCaseWhens [(c, r)] = "((\{dumpExpr c}), (\{dumpExpr r}))"
+dumpCaseWhens ((c, r)::rest) =
+  "((\{dumpExpr c}), (\{dumpExpr r})), \{dumpCaseWhens rest}"
+
+dumpCaseElse : Option SqlExpr -> String
+dumpCaseElse None = "None"
+dumpCaseElse (Some e) = "(Some (\{dumpExpr e}))"
 
 -- | An unambiguous constructor dump of a `Literal`.
 --
