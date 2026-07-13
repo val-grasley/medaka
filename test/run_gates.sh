@@ -65,13 +65,27 @@ if [ "${1:-}" = "--run-one" ]; then
   exit 0
 fi
 
-pat="${1:-diff_compiler_*}"
+# Accept MULTIPLE patterns, so the suite can be sharded across CI jobs:
+#   sh test/run_gates.sh 'diff_compiler_lex*' 'diff_compiler_parse*'
+# Do NOT be tempted to pass a brace expansion ('diff_compiler_{lex*,parse*}') —
+# this script runs under POSIX sh (dash on Debian), which does NOT expand braces.
+# It would silently glob to nothing; the "no gates match" guard below is what turns
+# that into a loud failure instead of a green no-op.
+#
+# A gate matching two patterns is deduped, so overlapping shards are safe.
+[ "$#" -gt 0 ] || set -- 'diff_compiler_*'
+
 gates=""
-for g in "$ROOT"/test/$pat.sh; do
-  [ -f "$g" ] || continue
-  gates="$gates $g"
+for pat in "$@"; do
+  for g in "$ROOT"/test/$pat.sh; do
+    [ -f "$g" ] || continue
+    case " $gates " in
+      *" $g "*) ;;              # already selected by an earlier pattern
+      *) gates="$gates $g" ;;
+    esac
+  done
 done
-[ -n "$gates" ] || { echo "no gates match: $pat"; exit 1; }
+[ -n "$gates" ] || { echo "no gates match: $*"; exit 1; }
 
 export INNER_JOBS
 printf '%s\n' $gates \
