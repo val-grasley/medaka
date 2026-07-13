@@ -209,10 +209,17 @@ tail-call optimisation and overflows past depth 25000. It says so cleanly
 (`E-STACK-OVERFLOW`, with an explanatory message). A legitimate, documented engine
 limitation — the only category here that is arguably *not* a bug.
 
-### 4.3 `eval:unsupported-node` — 1 fixture
+### 4.3 `eval:unsupported-node` — 0 fixtures (FIXED 2026-07-13)
 
-`wasm/w7_variant_update` → `E-PANIC: eval: unsupported node (slice 2)`. An AST node
-the interpreter never learned to evaluate. Both backends handle it.
+`wasm/w7_variant_update` → was `E-PANIC: eval: unsupported node (slice 2)` (bug #32):
+`compiler/eval/eval.mdk`'s `eval` had no `EVariantUpdate` arm at all. Fixing it surfaced
+a second, deeper gap in the pre-existing `evalVariantUpdate` helper (already used by
+`core_ir_eval.mdk`'s `cevalModules`): it only matched a `VCon` base, but the tree-walking
+`run` path's own `ERecordCreate` arm never populates `ctorFieldOrdersRef` (only the
+Core-IR lowering/eval drivers do), so a named-field constructor value on `run` is always
+a `VRecord`, never a `VCon` — `evalVariantUpdate` needed a matching `VRecord` arm too.
+Both fixed in lockstep; `wasm/w7_variant_update` now agrees on all three engines and its
+`test/engine_divergence.txt` line was deleted (promoted).
 
 ### 4.4 `eval:intended-abort` — 2 fixtures
 

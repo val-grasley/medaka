@@ -64,7 +64,7 @@ upd d =
     _ => d
 
 test "cross-module named-field variant construct and update" =
-  expectEqual "C 11 2" (debug (upd mk2))
+  expectEqual "C { x = 11, y = 2 }" (debug (upd mk2))
 
 -- ── Phase 69.x: cross-module constrained dispatch ────────────────────────────
 -- Ported from: test_eval_dict_passing_cross_module

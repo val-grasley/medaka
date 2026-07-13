@@ -1,5 +1,5 @@
 # META
-source_lines=2922
+source_lines=2931
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -1044,6 +1044,8 @@ eval env (ERecordCreate name fields) =
     None => VRecord name assigns
 eval env (ERecordUpdate base fields) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
+eval env (EVariantUpdate con base fields) =
+  evalVariantUpdate con (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
 eval env (EFieldAccess e field _) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
@@ -1186,8 +1188,15 @@ evalVariantUpdate con (VCon con' vals) updates
   | con == con' =
     VCon con (applyVariantUpdates updates (ctorFieldOrderFor con) vals)
   | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
-evalVariantUpdate con _ _ =
-  panic ("evalVariantUpdate: not a constructor: " ++ con)
+-- The tree-walking `run` path (compiler/eval/eval.mdk's own `ERecordCreate` arm)
+-- never populates `ctorFieldOrdersRef` (only the Core-IR lowering/eval drivers
+-- do), so a named-field constructor value on this path is a `VRecord`, never a
+-- `VCon`. Mirror `evalRecordUpdate`'s merge, keeping the constructor tag.
+evalVariantUpdate con (VRecord con' fields) updates
+  | con == con' = VRecord con' (map (mergeField updates) fields)
+  | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
+evalVariantUpdate con v _ =
+  panic "evalVariantUpdate: not a constructor: \{con} got \{ppValue v}"
 
 ctorFieldOrderFor : String -> List String
 ctorFieldOrderFor con = match lookupAssoc con ctorFieldOrdersRef.value
@@ -3409,6 +3418,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EVar "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
@@ -3462,7 +3472,8 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "mergeField" ((PVar "updates") (PTuple (PVar "k") (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "updates")) (arm (PCon "Some" (PVar "v2")) () (ETuple (EVar "k") (EVar "v2"))) (arm (PCon "None") () (ETuple (EVar "k") (EVar "v")))))
 (DTypeSig true "evalVariantUpdate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VCon" (PVar "con'") (PVar "vals")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VCon") (EVar "con")) (EApp (EApp (EApp (EVar "applyVariantUpdates") (EVar "updates")) (EApp (EVar "ctorFieldOrderFor") (EVar "con"))) (EVar "vals"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EVar "con"))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VRecord" (PVar "con'") (PVar "fields")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VRecord") (EVar "con'")) (EApp (EApp (EVar "map") (EApp (EVar "mergeField") (EVar "updates"))) (EVar "fields"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") (PVar "v") PWild) (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString "")))))
 (DTypeSig false "ctorFieldOrderFor" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "ctorFieldOrderFor" ((PVar "con")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "fs")) () (EVar "fs")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: unknown constructor ")) (EVar "con"))))))
 (DTypeSig false "applyVariantUpdates" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))
@@ -4718,6 +4729,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
@@ -4771,7 +4783,8 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "mergeField" ((PVar "updates") (PTuple (PVar "k") (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "updates")) (arm (PCon "Some" (PVar "v2")) () (ETuple (EVar "k") (EVar "v2"))) (arm (PCon "None") () (ETuple (EVar "k") (EVar "v")))))
 (DTypeSig true "evalVariantUpdate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VCon" (PVar "con'") (PVar "vals")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VCon") (EVar "con")) (EApp (EApp (EApp (EVar "applyVariantUpdates") (EVar "updates")) (EApp (EVar "ctorFieldOrderFor") (EVar "con"))) (EVar "vals"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EVar "con"))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VRecord" (PVar "con'") (PVar "fields")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VRecord") (EVar "con'")) (EApp (EApp (EMethodRef "map") (EApp (EVar "mergeField") (EVar "updates"))) (EVar "fields"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") (PVar "v") PWild) (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString "")))))
 (DTypeSig false "ctorFieldOrderFor" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "ctorFieldOrderFor" ((PVar "con")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "fs")) () (EVar "fs")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: unknown constructor ")) (EVar "con"))))))
 (DTypeSig false "applyVariantUpdates" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))
