@@ -1,0 +1,5 @@
+-- lint-disable-file rule-duplicate-body
+import lib.t.{Foo}
+
+main : <IO> Unit
+main = println "\{Foo 1}"
