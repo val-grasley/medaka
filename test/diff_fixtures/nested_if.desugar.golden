@@ -1,1 +1,0 @@
-(DFunDef false "main" () (EIf (EVar "True") (EIf (EVar "False") (EApp (EVar "println") (ELit (LString "a"))) (EApp (EVar "println") (ELit (LString "b")))) (EApp (EVar "println") (ELit (LString "c")))))

@@ -3,7 +3,6 @@ addProvenance : List (String, List String) -> String -> String -> List (String, 
 ambigModPhrase : List String -> String
 ambigMods : Env -> String -> List String
 ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
-appendMissing : List String -> List String -> List String -> List String
 bestCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
 bestOf : String -> Int -> List String -> Option String
 buildEnv : List Decl -> List Decl -> List Decl -> List String -> Env
@@ -47,8 +46,9 @@ checkSuper : Env -> Super -> List ResError
 checkType : Option Loc -> Env -> Ty -> List ResError
 checkVar : Option Loc -> Env -> List String -> String -> List ResError
 checkVariant : Env -> Variant -> List ResError
+closeMissing : List String -> List String -> Map String Unit -> Map String Unit
 collectImports : List ModuleExports -> List Decl -> ImportAdds
-contigGo : List String -> List String -> List Decl -> List ResError
+contigGo : Map String Unit -> List String -> List Decl -> List ResError
 contiguityErrors : List Decl -> List ResError
 ctorNames : List Decl -> List String
 dataRecordNames : List Decl -> List String
@@ -56,6 +56,7 @@ declBindNames : Decl -> List String
 declLoc : Decl -> Option Loc
 dedupResErrors : List ResError -> List ResError
 dedupResErrorsGo : List ResError -> List String -> List ResError
+deleteAllStr : List String -> Map String Unit -> Map String Unit
 dupClauseTail : Option Loc -> String -> Bool -> List FunClause -> List ResError
 dupErr : String -> String -> ResError
 dupValClause : Decl -> Option (String, Bool, Option Loc)
@@ -131,7 +132,7 @@ matchesExport : String -> (String, List String) -> List String
 memberName : UseMember -> String
 mergeAdds : ImportAdds -> ImportAdds -> ImportAdds
 modulesExportingName : Env -> String -> List String
-newlyDuplicated : Option Loc -> List String -> List String -> List ResError
+newlyDuplicated : Option Loc -> Map String Unit -> List String -> List ResError
 oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
 oneImportEffects : List ModuleExports -> UsePath -> List String
 oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
@@ -183,7 +184,6 @@ recUpdateField : Option Loc -> Env -> List String -> FieldAssign -> List ResErro
 recUpdateVerdict : Option Loc -> String -> List String -> List ResError
 recordFieldOwner : String -> Field -> (String, String)
 reexportNamesOf : UsePath -> ModuleExports -> List String
-removeAll : List String -> List String -> List String
 resErrorCode : ResError -> String
 resErrorDidYouMean : ResError -> Option (String, String)
 resErrorLoc : ResError -> Option Loc

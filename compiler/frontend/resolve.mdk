@@ -44,6 +44,7 @@ import frontend.ast.{
   Variant(..),
   Decl(..),
 }
+import support.ordmap.{OrdMap, omEmpty, omInsert, omHasKey, omDelete}
 import support.util.{
   contains,
   editDistance,
@@ -1156,10 +1157,18 @@ isTransparentDecl (DTypeSig _ _ _) = True
 isTransparentDecl _ = False
 
 contiguityErrors : List Decl -> List ResError
-contiguityErrors prog = contigGo [] [] prog
+contiguityErrors prog = contigGo omEmpty [] prog
 
--- closed = names whose run ended; opened = names in their current run
-contigGo : List String -> List String -> List Decl -> List ResError
+-- closed = names whose run ended; opened = names in their current run.
+--
+-- `closed` is an OrdMap-backed SET, not a list: it accumulates every top-level
+-- name in the file and is only ever probed for membership (order is irrelevant —
+-- error order comes from `ns`).  As a list it made this walk O(N²) in both time
+-- and allocation, since every decl rebuilt the whole accumulator (`unionStr`'s
+-- `acc ++ [x]`, then `removeAll`'s full copy).  That was ~100% of the resolve
+-- stage's cost on a large file.  `opened` stays a list — by construction it never
+-- holds more than a single decl's binders (opened2 ⊆ ns), so it is O(1)-sized.
+contigGo : OrdMap Unit -> List String -> List Decl -> List ResError
 contigGo _ _ [] = []
 contigGo closed opened (d::rest)
   | isTransparentDecl d = contigGo closed opened rest
@@ -1167,14 +1176,14 @@ contigGo closed opened (d::rest)
     let ns = declBindNames d
     -- close every open name not bound by this decl
     let stillOpen = filterKeepOpen ns opened
-    let nowClosed = appendMissing opened stillOpen closed
+    let nowClosed = closeMissing opened stillOpen closed
     -- process this decl's bound names against the closed set
     let errs = newlyDuplicated (declLoc d) nowClosed ns
     -- re-open the names this decl binds (whether fresh or re-opened)
     let opened2 = unionStr stillOpen ns
     -- a re-opened (previously closed) name leaves the closed set; harmless to keep,
     -- but removing it avoids a second spurious flag on a third occurrence
-    let closed2 = removeAll ns nowClosed
+    let closed2 = deleteAllStr ns nowClosed
     errs ++ contigGo closed2 opened2 rest
 
 -- names from `opened` that are still bound by the current decl (stay open)
@@ -1184,20 +1193,25 @@ filterKeepOpen ns (o::os)
   | contains o ns = o :: filterKeepOpen ns os
   | otherwise = filterKeepOpen ns os
 
--- add every `opened` name NOT in `stillOpen` to the closed accumulator
-appendMissing : List String -> List String -> List String -> List String
-appendMissing [] _ closed = closed
-appendMissing (o::os) stillOpen closed
-  | contains o stillOpen = appendMissing os stillOpen closed
-  | otherwise = appendMissing os stillOpen (unionStr closed [o])
+-- add every `opened` name NOT in `stillOpen` to the closed set
+closeMissing : List String -> List String -> OrdMap Unit -> OrdMap Unit
+closeMissing [] _ closed = closed
+closeMissing (o::os) stillOpen closed
+  | contains o stillOpen = closeMissing os stillOpen closed
+  | otherwise = closeMissing os stillOpen (omInsert o () closed)
+
+-- drop every name in `ns` from the closed set
+deleteAllStr : List String -> OrdMap Unit -> OrdMap Unit
+deleteAllStr [] closed = closed
+deleteAllStr (n::ns) closed = deleteAllStr ns (omDelete n closed)
 
 -- a bound name that is in the closed set is a non-contiguous re-appearance.
 -- Stage B: carry the offending decl's source span (first ELoc in its body, mirror
 -- lib/resolve.ml's `decl_loc`).
-newlyDuplicated : Option Loc -> List String -> List String -> List ResError
+newlyDuplicated : Option Loc -> OrdMap Unit -> List String -> List ResError
 newlyDuplicated _ _ [] = []
 newlyDuplicated loc closed (n::ns)
-  | contains n closed = DuplicateBinding n loc :: newlyDuplicated loc closed ns
+  | omHasKey n closed = DuplicateBinding n loc :: newlyDuplicated loc closed ns
   | otherwise = newlyDuplicated loc closed ns
 
 -- decl_loc: the first ELoc span found in a pre-order walk of a decl's body
@@ -1251,12 +1265,6 @@ unionStr acc [] = acc
 unionStr acc (x::xs)
   | contains x acc = unionStr acc xs
   | otherwise = unionStr (acc ++ [x]) xs
-
-removeAll : List String -> List String -> List String
-removeAll _ [] = []
-removeAll ns (x::xs)
-  | contains x ns = removeAll ns xs
-  | otherwise = x :: removeAll ns xs
 
 externWithBodyErrors : List String -> List Decl -> List ResError
 externWithBodyErrors _ [] = []

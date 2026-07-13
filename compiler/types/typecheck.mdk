@@ -60,7 +60,14 @@ import frontend.exhaust.{
 }
 import support.char.{isUpper}
 import backend.private_mangle.{mangledName}
-import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
+import support.ordmap.{
+  OrdMap,
+  omEmpty,
+  omInsert,
+  omLookup,
+  omHasKey,
+  omFromPairs,
+}
 import list.{replicate}
 import support.util.{
   listLen,
@@ -1338,6 +1345,24 @@ suppressArgStamp = Ref False
 pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
 pendingImplObligations = Ref []
 
+-- PERF: the obligation list's length, in O(1).  That list grows with every
+-- constrained occurrence in the program and is NEVER trimmed, yet each top-level
+-- group brackets its inference with a length-before / length-after pair to recover
+-- the obligations IT added (they are consed on the front, so `takeFirst` recovers
+-- them).  Measuring that length by walking the list was O(N) over an O(N) list once
+-- per group — O(N²), and the single hottest symbol in the typecheck stage on a large
+-- file.  This counter mirrors the list's length exactly; the ONLY mutators of the
+-- list are `resetState` (clears both), `pushPendingObl` (extends both), and
+-- inferDefaultMethodBody's error rollback (restores both from a snapshot).
+pendingImplObligationsN : Ref Int
+pendingImplObligationsN = Ref 0
+
+-- The one and only way to add an obligation: keeps the length counter in step.
+pushPendingObl : (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+pushPendingObl obl =
+  let _ = setRef pendingImplObligations (obl::pendingImplObligations.value)
+  setRef pendingImplObligationsN (pendingImplObligationsN.value + 1)
+
 -- PLAN.md #11: one entry per source integer literal (ENumLit):
 -- (litVar, fref, n, dref).  [litVar] is the literal's fresh Num-obligated type var;
 -- [fref] is the node's own Option Float cell; [n] the int value; [dref] is the
@@ -1370,6 +1395,20 @@ poisonedVars = Ref []
 -- regardless of unify direction.  Error-path only; reset per run.
 numlitVarLocs : Ref (List (Mono, Loc))
 numlitVarLocs = Ref []
+
+-- PERF: the literals that are NOT YET operator-tainted.  `markNumlitOpTaint` scans
+-- THIS instead of the full `numlitVarLocs` (which is never trimmed).  Sound because
+-- tainting is idempotent: it appends a loc to `numlitOpLocs`, whose only reader
+-- (`numlitReframeLoc`) does a membership test — so re-tainting an already-tainted
+-- literal cannot change any outcome, and a tainted literal may leave the worklist.
+-- Scanning EVERY literal ever recorded on EVERY arithmetic operand was O(N²), and
+-- after the allocation fix (see `rootIdOf`) it was still the typecheck stage's
+-- dominant remaining cost on a large file.
+--
+-- `numlitVarLocs` itself keeps every literal — `numlitReframeLoc` and
+-- `tagLitLocsWithRoot` both still need the complete list.
+numlitUntainted : Ref (List (Mono, Loc))
+numlitUntainted = Ref []
 
 -- Chunk D: locs of literals whose var was ALSO an operand of an arithmetic op
 -- (recordNumObligation).  Such a literal keeps the Num message — the operator is the
@@ -1468,6 +1507,19 @@ funConstraintIfacesRef = Ref []
 pendingCallObligations : Ref (List (String, Mono, Option Loc))
 pendingCallObligations = Ref []
 
+-- PERF: `pendingCallObligations`' length in O(1) — see `pendingImplObligationsN`.
+-- processSCC brackets each top-level group with a length-before / length-after pair
+-- (three reads per group), and this list is never trimmed, so walking it to measure
+-- its length was O(N) per group — O(N²) over a large file.  Mutated ONLY by
+-- `resetState` and `pushCallObl`.
+pendingCallObligationsN : Ref Int
+pendingCallObligationsN = Ref 0
+
+pushCallObl : (String, Mono, Option Loc) -> <Mut> Unit
+pushCallObl obl =
+  let _ = setRef pendingCallObligations (obl::pendingCallObligations.value)
+  setRef pendingCallObligationsN (pendingCallObligationsN.value + 1)
+
 -- #11 soundness (native obligation hole, ALWAYS-ON, independent of the dict-
 -- elaboration machinery): per top-level binding, the deferred impl obligations it
 -- generalizes over — (iface, the quantified-var id the obligation discriminates on).
@@ -1550,6 +1602,16 @@ currentImportDefinersRef = Ref []
 -- `expanded` (iface, id) pairing inferDictAtFound already builds for recordCallObligations.
 pendingDictApps : Ref (List (Ref (List Route), List Mono, List String))
 pendingDictApps = Ref []
+
+-- PERF: `pendingDictApps`' length in O(1) — same O(N²)-per-group length scan as
+-- `pendingCallObligationsN`.  Mutated ONLY by `resetState` and `pushDictApp`.
+pendingDictAppsN : Ref Int
+pendingDictAppsN = Ref 0
+
+pushDictApp : (Ref (List Route), List Mono, List String) -> <Mut> Unit
+pushDictApp app =
+  let _ = setRef pendingDictApps (app::pendingDictApps.value)
+  setRef pendingDictAppsN (pendingDictAppsN.value + 1)
 
 -- method-level-constraint dict-passing (the reference's res_method_dicts, Phase
 -- 69.x-e).  An interface method whose signature carries a `=>` constraint over a
@@ -1654,11 +1716,26 @@ currentImplBody = Ref False
 --   dictEligibleRef: the USER fn names eligible for promotion (the prelude's
 --                   constrained fns stay arg-tag/RKey — out of scope).  Set by
 --                   elaborateDict; NOT cleared by resetState (constant per run).
-methodSiteFns : Ref (List (String, Mono))
-methodSiteFns = Ref []
+--
+-- PERF: both are INDEXED BY ENCLOSING FN rather than kept as flat (fn, mono) assoc
+-- lists.  Their sole reader, `inferredConstraintIds`, selects the entries of ONE fn,
+-- and it runs once per member of every top-level group — so scanning a flat list that
+-- accumulates a site for every constrained occurrence in the whole file was O(N²).
+-- Each key's list is built by consing, exactly like the flat lists were, so a fn's
+-- sites keep the same most-recent-first order the old scan produced.
+methodSiteFns : Ref (OrdMap (List Mono))
+methodSiteFns = Ref omEmpty
 
-dictAppFns : Ref (List (String, List Mono))
-dictAppFns = Ref []
+dictAppFns : Ref (OrdMap (List (List Mono)))
+dictAppFns = Ref omEmpty
+
+-- cons [x] onto the entry for [fn] (absent ⇒ a fresh single-element entry)
+consSiteFn : String -> a -> OrdMap (List a) -> OrdMap (List a)
+consSiteFn fn x idx = omInsert fn (x :: sitesFor fn idx) idx
+
+-- the sites recorded for [fn], most-recent-first
+sitesFor : String -> OrdMap (List a) -> List a
+sitesFor fn idx = fromOption [] (omLookup fn idx)
 
 promotedRef : Ref (List String)
 promotedRef = Ref []
@@ -1713,6 +1790,19 @@ emitArgStampPasses = Ref False
 -- this before elaborateDict; the golden/oracle drivers leave it off).
 export enableEmitArgStampPasses : Unit -> <Mut> Unit
 enableEmitArgStampPasses _ = setRef emitArgStampPasses True
+
+-- SET the flag either way.  Every OTHER driver is single-mode — a probe binary is
+-- an emit driver OR an eval/golden driver, never both, so it only ever needs to
+-- flip this ON once and `resetState` deliberately leaves it alone ("set by the
+-- driver, constant").  The snapshot runner (compiler/tools/snapshot.mdk) breaks
+-- that assumption: it renders the OFF-mode stages (TYPES / CORE_IR / EVAL) *and*
+-- the ON-mode stages (LLVM / WASM) for many fixtures in ONE process, so it must
+-- restore the OFF default between fixtures — otherwise fixture #1's LLVM emit
+-- would silently leave every later fixture's TYPES/CORE_IR/EVAL on the emit path.
+-- (Measured: those three stages render byte-identically either way on 204/204
+-- fixtures today, so this is defence against a future divergence, not a live bug.)
+export setEmitArgStampPasses : Bool -> <Mut> Unit
+setEmitArgStampPasses b = setRef emitArgStampPasses b
 
 -- #55 EVAL residual: active on the multi-module EVAL path (elaborateModules with
 -- emitArgStampPasses OFF) when there is a RETURN-position constrained fn to dict-pass
@@ -1799,7 +1889,8 @@ recordArgStamp name tagRef implRef idx mono
 -- (constraint) tyvar must be discovered.
 recordArgSiteFn : String -> Int -> Mono -> <Mut> Unit
 recordArgSiteFn _ idx mono = match nthArgMono idx mono
-  Some am => setRef methodSiteFns ((currentFn.value, am)::methodSiteFns.value)
+  Some am =>
+    setRef methodSiteFns (consSiteFn currentFn.value am methodSiteFns.value)
   None => ()
 
 -- D3a/D3b-1: stamp each queued arg-position route from its now-resolved
@@ -2084,10 +2175,12 @@ resetState _ =
   let _ = setRef pendingArithSites []
   let _ = setRef methodIfaceParamsRef []
   let _ = setRef pendingImplObligations []
+  let _ = setRef pendingImplObligationsN 0
   let _ = setRef numlitRefs []  -- PLAN.md #11
   let _ = setRef poisonedVars []  -- Chunk A: reset error-path cascade suppression
   let _ = setRef tupleCallCandidates []  -- P0-16: reset beginner tuple-call hints
   let _ = setRef numlitVarLocs []  -- Chunk D: reset Num-mis-framing provenance
+  let _ = setRef numlitUntainted []
   let _ = setRef numlitOpLocs []  -- Chunk D
   let _ = setRef numlitCtxTags []  -- Chunk D
   let _ = setRef localBindRefs []
@@ -2099,7 +2192,9 @@ resetState _ =
   let _ = setRef funConstraintIfacesRef []
   let _ = setRef currentImportDefinersRef []
   let _ = setRef pendingDictApps []
+  let _ = setRef pendingDictAppsN 0
   let _ = setRef pendingCallObligations []
+  let _ = setRef pendingCallObligationsN 0
   let _ = setRef schemeObligationsRef []
   let _ = setRef methodConstraintsRef []
   let _ = setRef methodConstraintPositionsRef []
@@ -2107,8 +2202,8 @@ resetState _ =
   let _ = setRef pendingRecDictApps []
   let _ = setRef currentFn ""
   let _ = setRef currentImplBody False
-  let _ = setRef methodSiteFns []
-  let _ = setRef dictAppFns []
+  let _ = setRef methodSiteFns omEmpty
+  let _ = setRef dictAppFns omEmpty
   let _ = setRef promotedRef []
   let _ = setRef methodShadowNamesRef []
   let _ = setRef typeErrors []
@@ -3321,7 +3416,7 @@ recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
 recordSite name tagRef implRef methodType =
   let stripped = stripArrows methodType
   let _ = setRef pendingSites ((name, tagRef, implRef, stripped, methodType, currentFn.value)::pendingSites.value)
-  let _ = setRef methodSiteFns ((currentFn.value, stripped)::methodSiteFns.value)
+  let _ = setRef methodSiteFns (consSiteFn currentFn.value stripped methodSiteFns.value)
   methodType
 
 -- a constrained-function occurrence (`f` where `f : C a => …`): instantiate f's
@@ -3404,8 +3499,8 @@ inferDictAtFound name routesRef inst =
     let ids = map snd expanded
     let monos = constraintMonosOf ids (snd inst)
     let ifaces = map fst expanded
-    let _ = setRef pendingDictApps ((routesRef, monos, ifaces) :: pendingDictApps.value)
-    let _ = setRef dictAppFns ((currentFn.value, monos) :: dictAppFns.value)
+    let _ = pushDictApp (routesRef, monos, ifaces)
+    let _ = setRef dictAppFns (consSiteFn currentFn.value monos dictAppFns.value)
     -- #11 soundness: record this call's instantiated impl obligations (iface paired
     -- with the call's constraint mono), checked after inference by checkCallObligations.
     -- The iface list is slot-parallel to [monos]; a concrete-head mono with no impl
@@ -3436,7 +3531,7 @@ recordCallObligations _ [] = ()
 recordCallObligations (iface::ifs) (mono::ms)
   | iface == "" = recordCallObligations ifs ms
   | otherwise =
-    let _ = setRef pendingCallObligations ((iface, mono, currentLoc.value)::pendingCallObligations.value)
+    let _ = pushCallObl (iface, mono, currentLoc.value)
     recordCallObligations ifs ms
 
 -- String-keyed assoc lookup over funConstraintIfacesRef (returns the iface name list).
@@ -3640,13 +3735,13 @@ inferStmt _ _ = panic "typecheck: unsupported block statement"
 blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv
 blockRecLet env x e =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
+  let oblN0 = pendingImplObligationsN.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e
   let _ = unify placeholder t1
   let _ = exitLevel ()
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
   let _ = recordLocalBind x t1  -- LSP hover (block rec-let bypasses inferPat)
@@ -3655,10 +3750,10 @@ blockRecLet env x e =
 blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
 blockLet env (PVar x) e =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
+  let oblN0 = pendingImplObligationsN.value
   let t = infer env e
   let _ = exitLevel ()
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t]   -- RETPOS soundness
   let _ = recordLocalBind x t   -- LSP hover (block let bypasses inferPat)
@@ -4131,7 +4226,8 @@ appendOp lt rt =
 
 recordSemigroupObligation : Mono -> <Mut> Unit
 recordSemigroupObligation lt
-  | semigroupIfaceRegistered () = setRef pendingImplObligations (("Semigroup", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | semigroupIfaceRegistered () =
+    pushPendingObl ("Semigroup", ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
 semigroupIfaceRegistered : Unit -> <Mut> Bool
@@ -4173,7 +4269,8 @@ numArithOp lt rt =
 -- constraint on `+`, so gating here keeps the no-prelude drivers byte-identical.
 recordNumObligation : Mono -> <Mut> Unit
 recordNumObligation lt
-  | numIfaceRegistered () = setRef pendingImplObligations (("Num", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | numIfaceRegistered () =
+    pushPendingObl ("Num", ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
 -- True iff a `Num` interface is registered (its methods are in methodIfaceParamsRef,
@@ -4218,7 +4315,7 @@ inferNumLit env n fref dref
 inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
 inferNumLitBare n fref =
   let a = freshVar ()
-  let _ = setRef pendingImplObligations (("Num", ["a"], TyVar "a", a, currentLoc.value)::pendingImplObligations.value)
+  let _ = pushPendingObl ("Num", ["a"], TyVar "a", a, currentLoc.value)
   let _ = setRef numlitRefs ((a, fref, n, Ref RNone)::numlitRefs.value)
   let _ = recordNumlitLoc a  -- Chunk D: literal provenance for Num mis-framing
   a
@@ -4228,7 +4325,9 @@ inferNumLitBare n fref =
 -- literal from an arithmetic-operator operand.  [currentLoc] is the ENumLit span.
 recordNumlitLoc : Mono -> <Mut> Unit
 recordNumlitLoc a = match currentLoc.value
-  Some l => setRef numlitVarLocs ((a, l)::numlitVarLocs.value)
+  Some l =>
+    let _ = setRef numlitVarLocs ((a, l)::numlitVarLocs.value)
+    setRef numlitUntainted ((a, l)::numlitUntainted.value)
   None => ()
 
 -- Called from recordNumObligation (arithmetic `+`/`-`/`*`/`/`/`%`): any recorded
@@ -4237,24 +4336,49 @@ recordNumlitLoc a = match currentLoc.value
 -- inference (vars still unbound), so `normalize` reveals the shared root regardless
 -- of which operand became the root at unify time.
 markNumlitOpTaint : Mono -> <Mut> Unit
-markNumlitOpTaint m = match normalize m
-  TVar cell => markOpTaintId (tyvarId cell) numlitVarLocs.value
-  _ => ()
-
-markOpTaintId : Int -> List (Mono, Loc) -> <Mut> Unit
-markOpTaintId _ [] = ()
-markOpTaintId id ((v, l)::rest) =
-  let _ = if sameRootId id v then
-    setRef numlitOpLocs (l::numlitOpLocs.value)
-  else
+markNumlitOpTaint m =
+  let id = rootIdOf m
+  if id < 0 || not (anyRootMatch id numlitUntainted.value) then
     ()
-  markOpTaintId id rest
+  else
+    setRef numlitUntainted (taintAndDrop id numlitUntainted.value)
+
+-- True iff SOME worklist literal shares the union-find root [id].  Short-circuits via
+-- `||` and allocates nothing, so the common case (this operand taints no literal)
+-- leaves the worklist alone — rebuilding it unconditionally would put back an O(N)
+-- allocation per operand, which is the very thing `rootIdOf` removed.
+anyRootMatch : Int -> List (Mono, Loc) -> Bool
+anyRootMatch _ [] = False
+anyRootMatch id ((v, _)::rest) = sameRootId id v || anyRootMatch id rest
+
+-- Taint every worklist literal sharing the root [id] (record its loc as
+-- operator-tainted) and DROP it from the worklist; keep the others.
+taintAndDrop : Int -> List (Mono, Loc) -> <Mut> List (Mono, Loc)
+taintAndDrop _ [] = []
+taintAndDrop id ((v, l)::rest)
+  | sameRootId id v =
+    let _ = setRef numlitOpLocs (l::numlitOpLocs.value)
+    taintAndDrop id rest
+  | otherwise = (v, l) :: taintAndDrop id rest
+
+-- The union-find ROOT id of [v]; -1 if it does not normalize to a type variable.
+-- This is a NON-ALLOCATING `normalize`: it chases Links straight to the root and
+-- reads the id, where `normalize` rebuilds a `TVar` cell for the root it found.
+-- PERF: `sameRootId` is applied to EVERY recorded literal on EVERY arithmetic /
+-- comparison operand (markOpTaintId and tagLitLocsWithRoot each scan the whole,
+-- never-trimmed `numlitVarLocs` list), so that rebuilt `TVar` cost one allocation
+-- per literal per operator — O(N²) allocation across a large file, and the
+-- typecheck stage's single dominant allocation source.  Tyvar ids come from a
+-- counter that starts at 0 (`newTyvarId`), so -1 can never collide with a real id.
+rootIdOf : Mono -> Int
+rootIdOf (TVar cell) = match cell.value
+  Link t => rootIdOf t
+  Unbound id _ => id
+rootIdOf _ = 0 - 1
 
 -- True iff [v] normalizes to the unbound var [id] (same union-find root).
 sameRootId : Int -> Mono -> Bool
-sameRootId id v = match normalize v
-  TVar cell => tyvarId cell == id
-  _ => False
+sameRootId id v = rootIdOf v == id
 
 -- Chunk D: if one of [a]/[b] is a still-unbound literal var and the other is
 -- concrete-headed, tag that literal's loc with [kind] so the reframe can use
@@ -4311,7 +4435,8 @@ eqCompareOp lt rt =
 
 recordEqObligation : Mono -> <Mut> Unit
 recordEqObligation lt
-  | eqIfaceRegistered () = setRef pendingImplObligations (("Eq", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | eqIfaceRegistered () =
+    pushPendingObl ("Eq", ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
 eqIfaceRegistered : Unit -> <Mut> Bool
@@ -4343,7 +4468,8 @@ ordCompareOp lt rt =
 
 recordOrdObligation : Mono -> <Mut> Unit
 recordOrdObligation lt
-  | ordIfaceRegistered () = setRef pendingImplObligations (("Ord", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | ordIfaceRegistered () =
+    pushPendingObl ("Ord", ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
 ordIfaceRegistered : Unit -> <Mut> Bool
@@ -4457,7 +4583,7 @@ recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> <Mut> Un
 recordSchemeCallObligations [] _ = ()
 recordSchemeCallObligations ((iface, id)::rest) subst = match lookupAssocI id subst
   Some mono =>
-    let _ = setRef pendingCallObligations ((iface, mono, currentLoc.value)::pendingCallObligations.value)
+    let _ = pushCallObl (iface, mono, currentLoc.value)
     recordSchemeCallObligations rest subst
   None => recordSchemeCallObligations rest subst
 
@@ -4496,7 +4622,7 @@ recordImplObligation x mono
   | otherwise = match lookupAssoc x methodIfaceParamsRef.value
     None => mono
     Some (iface, typarams, mty) =>
-      let _ = setRef pendingImplObligations ((iface, typarams, mty, mono, currentLoc.value)::pendingImplObligations.value)
+      let _ = pushPendingObl (iface, typarams, mty, mono, currentLoc.value)
       mono
 
 -- Expected-type propagation for an application whose argument is a lambda.
@@ -5396,13 +5522,13 @@ inferLet env _ isFun pat e1 e2
 inferRecLet : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferRecLet env x e1 e2 =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
+  let oblN0 = pendingImplObligationsN.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e1
   let _ = unify placeholder t1
   let _ = exitLevel ()
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
   let _ = recordLocalBind x t1  -- LSP hover (recursive PVar let bypasses inferPat)
@@ -5411,13 +5537,13 @@ inferRecLet env x e1 e2 =
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLetSimple env pat e1 e2 =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
+  let oblN0 = pendingImplObligationsN.value
   let t1 = infer env e1
   let _ = exitLevel ()
   -- PLAN.md #11: ground an ambiguous Num-only var before this inner let
   -- generalizes, so `let z = 2 in y + z` (y:Float) is a clean type error and
   -- never leaks an unbound Num var.  Scoped to this binding's new obligations.
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   let _ = defaultAmbiguousNum addedObls t1
   let _ = registerAmbiguousConstraints addedObls [t1]   -- RETPOS soundness
   inferLetBody env pat t1 e1 e2
@@ -5566,21 +5692,65 @@ unreachableArmWarning = "Warning: unreachable match arm. This pattern is already
 
 checkMatchRedundant : Mono -> List Arm -> <Mut> Unit
 checkMatchRedundant scrutTy arms =
-  checkRedundantGo (matchCol0Type scrutTy) [] arms
+  checkRedundantGo (matchCol0Type scrutTy) [] omEmpty False arms
 
-checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
-checkRedundantGo _ _ [] = ()
-checkRedundantGo col0 prec ((Arm pat gs body)::rest) =
+-- PERF: `prec` accumulates the preceding arms' patterns and is PREPENDED to, so
+-- it holds them in REVERSE arm order.  It used to be built with `prec ++ [[dp]]`,
+-- which copies the whole accumulator once per arm — O(N²) allocation on a match
+-- with many arms, and the dominant allocation source in the redundancy check.
+--
+-- Reversing the rows is sound because `useful` is a PREDICATE OVER THE SET of
+-- matrix rows ("does some value match the query and no row?"): `specializeCon` /
+-- `specializeLit` / `defaultMatrix` are row-wise filters, and the only decision
+-- that reads rows in order is `inferCol0Type`, which just needs SOME column-0
+-- constructor to name the column's type — and it is consulted only when `col0`
+-- is `None`, i.e. when the scrutinee type has no concrete head, in which case no
+-- arm carries a constructor pattern and there is no head constructor to find in
+-- either order.
+checkRedundantGo : Option String -> List (List Pat) -> OrdMap Unit -> Bool -> List Arm -> <Mut> Unit
+checkRedundantGo _ _ _ _ [] = ()
+checkRedundantGo col0 prec heads offCol ((Arm pat gs body)::rest) =
   let dp = desugarPat matchOracle.value pat
-  let _ = if patUnreachable matchOracle.value col0 prec dp then
+  let _ = if armUnreachable col0 prec heads offCol dp then
     let _ = setRef matchWarnings (unreachableArmWarning :: matchWarnings.value)
     setRef matchWarningLocs (orElseLoc (exprLoc body) currentLoc.value :: matchWarningLocs.value)
   else ()
   -- Only UNGUARDED, range-free arms contribute to the covered set: a guarded arm
   -- may not fire, and a range collapses to a wildcard that over-states coverage
   -- (patHasRange) — either would produce a false "redundant" on a later arm.
-  let prec2 = if armIsUnguarded gs && not (patHasRange pat) then prec ++ [[dp]] else prec
-  checkRedundantGo col0 prec2 rest
+  let contributes = armIsUnguarded gs && not (patHasRange pat)
+  let prec2 = if contributes then [dp] :: prec else prec
+  let heads2 = if contributes then noteHeadCtor dp heads else heads
+  let offCol2 = offCol || (contributes && not (isConPat dp))
+  checkRedundantGo col0 prec2 heads2 offCol2 rest
+
+-- PERF fast path.  `patUnreachable` runs the full Maranget `useful` recursion, which
+-- re-scans EVERY preceding row — so the fold as a whole is O(arms²) on a wide match.
+-- But a constructor arm `C …` can only be unreachable if some preceding row could
+-- match a `C` value, and the only rows that can are (a) rows headed by `C` itself and
+-- (b) rows with a WILDCARD head, which match anything.  When neither exists,
+-- `specializeCon C` yields the EMPTY matrix and `useful _ _ [] _` is `True` by
+-- definition — the arm is reachable — so the recursion is guaranteed to say
+-- "reachable" and we can skip it outright.
+--
+-- `heads` is the set of head constructors of the preceding contributing rows and
+-- `offCol` records whether any of them has a NON-constructor head.  `offCol` is a
+-- deliberate over-approximation of "has a wildcard head" (it also trips on a literal
+-- head, which `specializeCon` would in fact discard): erring towards `True` only ever
+-- costs us the fast path and falls back to the exact check, never an answer.
+armUnreachable : Option String -> List (List Pat) -> OrdMap Unit -> Bool -> Pat -> <Mut> Bool
+armUnreachable col0 prec heads offCol (PCon c args)
+  | not offCol && not (omHasKey c heads) = False
+  | otherwise = patUnreachable matchOracle.value col0 prec (PCon c args)
+armUnreachable col0 prec _ _ dp = patUnreachable matchOracle.value col0 prec dp
+
+noteHeadCtor : Pat -> OrdMap Unit -> OrdMap Unit
+noteHeadCtor (PCon c _) heads = omInsert c () heads
+noteHeadCtor _ heads = heads
+
+isConPat : Pat -> Bool
+isConPat (PCon _ _) = True
+isConPat _ = False
 
 -- Only UNGUARDED arms contribute to the covered set (a guarded arm may not fire).
 armIsUnguarded : List Guard -> Bool
@@ -5877,7 +6047,7 @@ groupNames ((n, _)::rest) seen = match omLookup n seen
 processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
+  let oblN0 = pendingImplObligationsN.value
   let placeholders = map letBindPlaceholder binds
   let env2 = extendVars env placeholders
   let _ = inferLetBinds env2 (zipL binds placeholders)
@@ -5885,7 +6055,7 @@ processLetGroup env binds =
   -- PLAN.md #11: ground ambiguous Num-only vars (not arg-reachable from any
   -- where-binding's type) before this group generalizes.  Scoped to this group's
   -- newly added obligations.
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   let _ = defaultGroupNum addedObls (map (p => schemeMono (snd p)) placeholders)
   let _ = registerAmbiguousConstraints addedObls (map (p => schemeMono (snd p)) placeholders)   -- RETPOS soundness
   generalizeGroup env (zipL binds placeholders)
@@ -6069,10 +6239,7 @@ registerDispatchMonos : String -> List Mono -> Option Loc -> Int -> List Int -> 
 registerDispatchMonos _ [] _ _ _ _ = ()
 registerDispatchMonos iface (dm::rest) loc groupLevel memberIds anchoredIds =
   let ambig = filterList (p => snd p <= groupLevel && not (containsI (fst p) memberIds) && not (containsI (fst p) anchoredIds)) (monoUnboundVarLevels dm)
-  let _ = if isEmptyL ambig then
-    ()
-  else
-    setRef pendingCallObligations ((iface, dm, loc)::pendingCallObligations.value)
+  let _ = if isEmptyL ambig then () else pushCallObl (iface, dm, loc)
   registerDispatchMonos iface rest loc groupLevel memberIds anchoredIds
 
 -- the (id, level) of every UNBOUND tyvar in [t] (sibling of monoUnboundIds, but
@@ -9190,6 +9357,7 @@ inferDefaultMethod _ _ _ = ()
 inferDefaultMethodBody : String -> TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
 inferDefaultMethodBody mname env expectedTy pats body =
   let oblSnapshot = pendingImplObligations.value
+  let oblSnapshotN = pendingImplObligationsN.value
   let errsBefore = listLen typeErrors.value
   let actualTy = inferClauses env [(pats, body)]
   let errsAfter = listLen typeErrors.value
@@ -9201,7 +9369,13 @@ inferDefaultMethodBody mname env expectedTy pats body =
     let _ = setRef currentMethodMismatch None
     -- mismatch reported ⇒ restore the pre-body obligation list (drop the body's
     -- own added `Num <wrong-type>` cascade, prepended at the front)
-    if listLen typeErrors.value != errsPreUnify then setRef pendingImplObligations oblSnapshot else ()
+    if listLen typeErrors.value != errsPreUnify then restorePendingObls oblSnapshot oblSnapshotN else ()
+
+-- Restore the obligation list (and its length counter) to a snapshot.
+restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> <Mut> Unit
+restorePendingObls obls n =
+  let _ = setRef pendingImplObligations obls
+  setRef pendingImplObligationsN n
 
 -- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
 -- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
@@ -9216,7 +9390,7 @@ inferDefaultMethodBody mname env expectedTy pats body =
 -- NO impl is rejected — both matching the oracle.
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligations prog obligations =
-  checkImplObligationsGo prog (implHeadsOf prog) obligations
+  checkImplObligationsGo (implDeclsWithReqs prog) (implHeadsOf prog) obligations
 
 -- #11 soundness (native obligation hole): check each constrained-fn CALL site's
 -- instantiated obligation.  When `f : C a => …` is applied (`g = f "hello"`),
@@ -9228,22 +9402,26 @@ checkImplObligations prog obligations =
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligations prog obligations =
-  checkCallObligationsGo prog (implHeadsOf prog) [] obligations
+  checkCallObligationsGo
+    (implDeclsWithReqs prog)
+    (implHeadsOf prog)
+    []
+    obligations
 
 -- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
 -- be recorded by more than one path (a use marked both EVar and, on the emit path,
 -- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
-checkCallObligationsGo : List Decl -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
+checkCallObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligationsGo _ _ _ [] = ()
-checkCallObligationsGo prog heads seen ((iface, occ, loc)::rest) =
+checkCallObligationsGo ireqs heads seen ((iface, occ, loc)::rest) =
   let key = "\{iface}|\{fromOption "" (headTyconMono occ)}"
-  if contains key seen then checkCallObligationsGo prog heads seen rest
+  if contains key seen then checkCallObligationsGo ireqs heads seen rest
   else
-    let _ = checkOneCallObligation prog heads iface occ loc
-    checkCallObligationsGo prog heads (key::seen) rest
+    let _ = checkOneCallObligation ireqs heads iface occ loc
+    checkCallObligationsGo ireqs heads (key::seen) rest
 
-checkOneCallObligation : List Decl -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
-checkOneCallObligation prog heads iface occ loc =
+checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+checkOneCallObligation ireqs heads iface occ loc =
   let args = [normalize occ]
   if iface == "Num" && anyList numUnimplementableHead args then
     pushNoImplError iface loc args
@@ -9258,7 +9436,7 @@ checkOneCallObligation prog heads iface occ loc =
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
     -- match silently accepting (→ null element dict → SIGSEGV at runtime).
-    checkNestedReqs prog heads iface args loc
+    checkNestedReqs ireqs heads iface args loc
   else
     pushNoImplError iface loc args
 
@@ -9397,14 +9575,14 @@ substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
 substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
 substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
 
-checkImplObligationsGo : List Decl -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligationsGo _ _ [] = ()
-checkImplObligationsGo prog heads ((iface, typarams, mty, occ, loc)::rest) =
-  let _ = checkOneImplObligation prog heads iface typarams mty occ loc
-  checkImplObligationsGo prog heads rest
+checkImplObligationsGo ireqs heads ((iface, typarams, mty, occ, loc)::rest) =
+  let _ = checkOneImplObligation ireqs heads iface typarams mty occ loc
+  checkImplObligationsGo ireqs heads rest
 
-checkOneImplObligation : List Decl -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
-checkOneImplObligation prog heads iface typarams mty occ loc =
+checkOneImplObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
+checkOneImplObligation ireqs heads iface typarams mty occ loc =
   let args = dispatchMonosOf typarams mty occ
   -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
   -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
@@ -9423,7 +9601,7 @@ checkOneImplObligation prog heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyList eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyList ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if anyList monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs prog heads iface args loc else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyList numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyList eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyList ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if anyList monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
 
 -- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
 -- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
@@ -9446,9 +9624,9 @@ monoIsFunction m = match normalize m
 -- accepting the unsatisfiable element constraint (→ null element dict → SIGSEGV).
 -- A satisfied requirement (`Display Int`, `Display String`) recurses into ITS own
 -- (empty) requires and accepts, so `(5, "hi")` / `[1,2,3]` still build.
-checkNestedReqs : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
-checkNestedReqs prog heads iface args loc =
-  checkReqObligations prog heads loc (reqObligationsFor prog iface args)
+checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkNestedReqs ireqs heads iface args loc =
+  checkReqObligations ireqs heads loc (reqObligationsFor ireqs iface args)
 
 -- Impl decls paired with their `requires` (implHeadsOf drops reqs; this keeps them).
 implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
@@ -9462,8 +9640,14 @@ implDeclWithReqs _ = []
 -- The substituted requirement obligations of the impl of [iface] whose head
 -- matches [args]: bind the impl's typaram vars from the head match, then apply that
 -- binding to each `Require`'s type args.  No matching impl / no reqs → [].
-reqObligationsFor : List Decl -> String -> List Mono -> <Mut> List (String, List Mono)
-reqObligationsFor prog iface args = match findMatchingImplReqs (implDeclsWithReqs prog) iface args
+-- PERF: takes the ALREADY-COMPUTED impl-reqs table, not `prog`.  It used to take
+-- `prog` and call `implDeclsWithReqs` itself — a flatMap over every decl in the
+-- program, re-run once per obligation.  With O(N) obligations over an O(N)-decl
+-- program that was O(N²) time AND allocation, and it dominated the typecheck stage
+-- on a large file.  The table is now hoisted to the checkImplObligations /
+-- checkCallObligations entry points and threaded, exactly like `heads`.
+reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> <Mut> List (String, List Mono)
+reqObligationsFor ireqs iface args = match findMatchingImplReqs ireqs iface args
   None => []
   Some (subst, reqs) => map (reqToObligation subst) reqs
 
@@ -9495,11 +9679,11 @@ reqTyToMono sub (TyConstrained _ t) = reqTyToMono sub t
 
 -- Check each substituted requirement with the SAME accept/reject logic as a
 -- top-level obligation, recursing into a satisfied conditional impl's own reqs.
-checkReqObligations : List Decl -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
+checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
 checkReqObligations _ _ _ [] = ()
-checkReqObligations prog heads loc ((ifaceR, monoArgs)::rest) =
-  let _ = checkReqOne prog heads ifaceR monoArgs loc
-  checkReqObligations prog heads loc rest
+checkReqObligations ireqs heads loc ((ifaceR, monoArgs)::rest) =
+  let _ = checkReqOne ireqs heads ifaceR monoArgs loc
+  checkReqObligations ireqs heads loc rest
 
 -- A function-typed requirement arg is fully GROUND yet structurally un-Ord/Eq/etc
 -- (no `impl Ord (a -> b)` exists), so it must REJECT — but its head has no tycon,
@@ -9508,12 +9692,12 @@ checkReqObligations prog heads loc ((ifaceR, monoArgs)::rest) =
 -- `requires Ord k` with k = (Int -> Int) — e.g. `Map { f => 1 }` selecting
 -- `FromEntries (Map k v) (k, v) requires Ord k` — would DEFER into a silent accept,
 -- and `check` would pass a program `run` rejects at runtime (P0-18).
-checkReqOne : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
-checkReqOne prog heads iface args loc
+checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkReqOne ireqs heads iface args loc
   | anyList monoIsFunction args && not (implMatches heads iface args) =
     pushNoImplError iface loc args
   | not (allConcreteHeads args) = ()
-  | implMatches heads iface args = checkNestedReqs prog heads iface args loc
+  | implMatches heads iface args = checkNestedReqs ireqs heads iface args loc
   | otherwise = pushNoImplError iface loc args
 
 -- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
@@ -10350,9 +10534,22 @@ sigNamesToSet : List (String, Ty) -> OrdMap Unit -> OrdMap Unit
 sigNamesToSet [] m = m
 sigNamesToSet ((n, _)::rest) m = sigNamesToSet rest (omInsert n () m)
 
+-- PERF: name → declared signature, the same `sigs` assoc list as an index.  Three
+-- sites (preunifySigsEx, checkEffectEscape, checkSigConstraintOne) did
+-- `lookupAssoc m sigs` — an O(N) scan of EVERY top-level signature, run per member
+-- of every group, so O(N²) over a large file.  Companion to `sigNameSetRef`, seeded
+-- from the same `sigs` in processTopGroups.
+--
+-- Built from the REVERSED list: `omFromPairs` is last-write-wins, while the
+-- `lookupAssoc` it replaces was first-match-wins, so reversing preserves which
+-- signature a duplicated name resolves to.
+sigTyMapRef : Ref (OrdMap Ty)
+sigTyMapRef = Ref omEmpty
+
 processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
 processTopGroups env sigs defs names =
   let _ = setRef sigNameSetRef (sigNamesToSet sigs omEmpty)
+  let _ = setRef sigTyMapRef (omFromPairs (reverseL sigs) omEmpty)
   let grouped = groupClauses defs
   let ordered = tarjanSCCs names (depGraphMap names grouped)
   processSCCs env sigs grouped ordered
@@ -10430,9 +10627,9 @@ allDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "" then [] el
 processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
   let _ = enterLevel ()
-  let oblN0 = listLen pendingImplObligations.value
-  let callN0 = listLen pendingCallObligations.value
-  let dictN0 = listLen pendingDictApps.value
+  let oblN0 = pendingImplObligationsN.value
+  let callN0 = pendingCallObligationsN.value
+  let dictN0 = pendingDictAppsN.value
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
@@ -10449,15 +10646,15 @@ processSCC env sigs grouped members =
   -- added obligations (prepended at the front) so an earlier group's already-
   -- generalized var is never touched.  Mirrors lib/typecheck.ml's
   -- process_letrec_group group-level pass + per-binding default_ambiguous_num.
-  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let addedObls = takeFirst (pendingImplObligationsN.value - oblN0) pendingImplObligations.value
   -- #23: also ground an ambiguous Num var that reaches this group ONLY through a
   -- constrained-callee instantiation (its Num obligation lives on the call/dict deltas,
   -- not pendingImplObligations).  See numCallObls/numDictObls.  The synthetic entries
   -- feed ONLY the Num-defaulting search; addedObls alone still drives the
   -- ambiguous-constraint/scheme-obligation registration below.
   let extraNumObls =
-        numCallObls (takeFirst (listLen pendingCallObligations.value - callN0) pendingCallObligations.value)
-        ++ numDictObls (takeFirst (listLen pendingDictApps.value - dictN0) pendingDictApps.value)
+        numCallObls (takeFirst (pendingCallObligationsN.value - callN0) pendingCallObligations.value)
+        ++ numDictObls (takeFirst (pendingDictAppsN.value - dictN0) pendingDictApps.value)
   let defaultObls = addedObls ++ extraNumObls
   let _ = defaultGroupNum defaultObls (map snd placeholders)
   let _ = defaultEachMember defaultObls placeholders
@@ -10468,8 +10665,8 @@ processSCC env sigs grouped members =
   -- schemeObligationsRef, so a caller of this group re-instantiates them and its
   -- own group can ground the shared ambiguous var.  See allCallObls/allDictObls.
   let forwardedObls =
-        allCallObls (takeFirst (listLen pendingCallObligations.value - callN0) pendingCallObligations.value)
-        ++ allDictObls (takeFirst (listLen pendingDictApps.value - dictN0) pendingDictApps.value)
+        allCallObls (takeFirst (pendingCallObligationsN.value - callN0) pendingCallObligations.value)
+        ++ allDictObls (takeFirst (pendingDictAppsN.value - dictN0) pendingDictApps.value)
   let _ = registerSchemeObligations (addedObls ++ forwardedObls) schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
   -- interface constraint on one of its own quantified vars that its declared `=>`
@@ -10505,7 +10702,7 @@ preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String
 preunifySigsEx _ [] = ([], [])
 preunifySigsEx sigs ((m, v)::rest) =
   let (restRegs, restTvs) = preunifySigsEx sigs rest
-  match lookupAssoc m sigs
+  match omLookup m sigTyMapRef.value
     Some ty =>
       let inst = instantiateSigTracked ty
       let _ = unify v (fst inst)
@@ -10688,7 +10885,7 @@ peelOntoParams (Some src) patTypes pats =
 -- doesn't declare; effect *variables* (polymorphic `<e>`) carry no labels and so
 -- never escape (Phase 79e)
 checkEffectEscape : List (String, Ty) -> String -> List Atom -> <Mut> Unit
-checkEffectEscape sigs m effs = match lookupAssoc m sigs
+checkEffectEscape sigs m effs = match omLookup m sigTyMapRef.value
   None => ()
   Some ty => match atomsEscape effs (declaredEffects ty)
     [] => ()
@@ -10900,7 +11097,7 @@ checkSigConstraintCoverage regs sigs sigTvMaps addedObls ((m, sch)::rest) =
   checkSigConstraintCoverage regs sigs sigTvMaps addedObls rest
 
 checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> <Mut> Unit
-checkSigConstraintOne regs sigs sigTvMaps addedObls m sch = match lookupAssoc m sigs
+checkSigConstraintOne regs sigs sigTvMaps addedObls m sch = match omLookup m sigTyMapRef.value
   None => ()   -- unsigned member: its inferred constraints are promoted, not checked
   Some _ =>
     let declared = censusSuperClose superDeclsRef.value (declaredPairsFor m regs)
@@ -11001,21 +11198,10 @@ missingConstraintMsg name iface varName = "Could not deduce '\{iface} \{varName}
 inferredConstraintIds : String -> List Int -> List Int
 inferredConstraintIds m boundIds =
   dedupI
-    (constraintIdsFromSites m boundIds methodSiteFns.value ++ constraintIdsFromApps m boundIds dictAppFns.value)
+    (flatMap (boundTvarId boundIds) (sitesFor m methodSiteFns.value) ++ flatMap (monosTvarIds boundIds) (sitesFor m dictAppFns.value))
 
-constraintIdsFromSites : String -> List Int -> List (String, Mono) -> List Int
-constraintIdsFromSites _ _ [] = []
-constraintIdsFromSites m boundIds ((fn, mono)::rest)
-  | fn == m = boundTvarId boundIds mono
-    ++ constraintIdsFromSites m boundIds rest
-  | otherwise = constraintIdsFromSites m boundIds rest
-
-constraintIdsFromApps : String -> List Int -> List (String, List Mono) -> List Int
-constraintIdsFromApps _ _ [] = []
-constraintIdsFromApps m boundIds ((fn, monos)::rest)
-  | fn == m = flatMap (boundTvarId boundIds) monos
-    ++ constraintIdsFromApps m boundIds rest
-  | otherwise = constraintIdsFromApps m boundIds rest
+monosTvarIds : List Int -> List Mono -> List Int
+monosTvarIds boundIds monos = flatMap (boundTvarId boundIds) monos
 
 -- [mono] normalizing to a tyvar this scheme generalized → that (constraint var)
 -- id; a pinned-concrete or foreign var → none

@@ -1,2 +1,0 @@
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (ELit (LInt 42)))) (DoExpr (EApp (EVar "println") (EBinOp "+" (ELit (LInt 2)) (ELit (LInt 3))))) (DoExpr (EApp (EVar "println") (EBinOp "-" (ELit (LInt 10)) (ELit (LInt 4))))) (DoExpr (EApp (EVar "println") (EBinOp "*" (ELit (LInt 3)) (ELit (LInt 7))))) (DoExpr (EApp (EVar "println") (EVar "True"))) (DoExpr (EApp (EVar "println") (EVar "False")))))

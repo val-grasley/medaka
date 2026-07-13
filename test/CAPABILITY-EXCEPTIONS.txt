@@ -46,36 +46,62 @@
 #                        substring the gate greps for in eval.mdk on every
 #                        run — if it disappears, the gate FAILS and asks a
 #                        human to check whether it was fixed for real.
+#                        NOTE (2026-07-13): all SIX interp FROZEN-CONSTANT rows
+#                        (wallTimeSec/monotonicSec/sleepMs/allocBytes/ePutStr/
+#                        ePutStrLn) are now PROMOTED — `medaka run` installs real
+#                        host clock/GC/stderr prims from eval.mdk's
+#                        `ioExternBindings`.  The deterministic stand-ins still
+#                        exist in the PURE `externBindings` table, but only the
+#                        DIFFERENTIAL-ORACLE drivers install that table alone, and
+#                        their determinism is required (the goldens diff stdout).
+#                        `medaka run` overrides them (last-write-wins on the
+#                        duplicate name).  So the category currently has no
+#                        members; keep it for the next time an extern is bound to
+#                        a lie.
 #
 # Every row was hand-verified against source on 2026-07-13 (see the citations
 # in the reason text and in diff_compiler_capability_matrix.sh's header).
 
 # ============================================================================
-# INTERPRETER — 37 rows, ALL category BUG. These are NOT permanent exceptions.
+# INTERPRETER — 14 rows, ALL category BUG (was 37 + 6 FROZEN-CONSTANT).
 # eval.mdk was written as a value-oracle for differential testing against the
 # (now-deleted) OCaml reference compiler, so effectful/IO externs were "out of
 # scope" by construction. When OCaml was removed (2026-06-26) eval.mdk was
 # silently promoted to be the `medaka run` production engine and this gap was
-# never re-litigated. Fix tracked as a separate, larger workstream (an
-# effect-polymorphic Value refactor) — NOT in scope for this gate itself.
+# never re-litigated.
+#
+# CLOSED 2026-07-13 (28 rows promoted): the effect-polymorphic `Value` refactor
+# landed the `ioExternBindings` seam (real-I/O prims installed by `medaka run`'s
+# driver ONLY, so the differential oracle stays pure by type), and the File (12),
+# Env (3: args/getEnv/executablePath), Stdin (4) and Clock/GC/stderr (6) families
+# now have real implementations there — plus the three pure/<Mut> array ops
+# (arrayFill/arraySortInPlaceBy/arraySortBy) in the shared pure table.
+#
+# STILL OPEN, deliberately (the 14 below):
+#   exit           — needs a POLICY decision, not an implementation: a doctest
+#                    calling `exit 0` would kill `medaka test` with a SUCCESS
+#                    status, silently skipping every remaining test. It must be
+#                    host-installed PER DRIVER (`run` gets the real one;
+#                    `test`/`repl` get a located E-EXIT panic).
+#   runCommand +   — a security-posture call: these are to be gated behind
+#   the 10 net       `--allow-exec` / `--allow-net` before the interpreter binds
+#   externs          them.
+#   flushStdout    — meaningless while `run` buffers stdout in `outputRef` and
+#                    prints it after `main` returns; fix it together with the
+#                    "run drops stdout on panic" bug.
+#   assertSnapshot — unimplemented in ALL THREE engines (see the llvm/wasm TODO
+#                    rows); not an interpreter-specific gap at all.
+#
+# ALSO NOT FIXED BY THE 2026-07-13 pass: only `medaka run` installs
+# ioExternBindings. `medaka test` / `medaka repl` / `medaka check-policy` drive
+# evalModules/evalModulesRootEnv, which install the PURE table alone — so a
+# DOCTEST still sees the frozen clock, still has its stderr discarded, and still
+# gets "unbound identifier" for `args`/`readFile`/… That is the same per-driver
+# host-installation decision `exit` is blocked on; do them together.
 # ============================================================================
 
-# --- file I/O (13): LLVM implements the whole isFileExtern family; the
-#     interpreter implements none of it. ---
-appendFile	interp	BUG	implemented by llvm (isFileExtern) and wasm-partially, missing from interp — BUG(T7)
-canonicalizePath	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-fileExists	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-listDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-makeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-readFileBytes	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-removeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-removeFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-rename	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-statFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-writeFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-writeFileBytes	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-
-# --- net (10): LLVM implements the whole isNetExtern family; interpreter none. ---
+# --- net (10): LLVM implements the whole isNetExtern family; interpreter none.
+#     Gated on the --allow-net security posture, not on implementation work. ---
 netClose	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netListenPort	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netRecv	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
@@ -87,27 +113,10 @@ netTcpAccept	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netTcpConnect	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netTcpListen	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 
-# --- stdin (4) ---
-readAll	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-readExactly	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-readLine	interp	BUG	implemented by llvm, missing from interp — BUG(T7); `readLine` is one of the most basic IO primitives a beginner reaches for
-readLineOpt	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-
-# --- env (3) ---
-args	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-executablePath	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-getEnv	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
-
 # --- singles ---
-exit	interp	BUG	implemented by llvm (isAbortExtern) and wasm, missing from interp — BUG(T7)
-flushStdout	interp	BUG	implemented by llvm (isIoExtern), missing from interp — BUG(T7)
-runCommand	interp	BUG	implemented by llvm (isFileExtern family), missing from interp — BUG(T7)
-
-# --- pure / <Mut> array ops (3) — NOT effect-related; even a PURE extern
-#     with no effect row at all (arraySortBy) panics under `medaka run`. ---
-arrayFill	interp	BUG	implemented by llvm and wasm (isArrLeafExtern/isArrayExternW), missing from interp — BUG(T7); actively called by stdlib/array.mdk's `fill` (stdlib/array.mdk:282), so any user calling Array.fill under `medaka run` panics today
-arraySortBy	interp	BUG	NOT called by current stdlib (RUNTIME-DESIGN.md §4 / STDLIB.md: sort/sortBy were rewritten →MEDAKA as a pure mergeSortBy 2026-06-07, and this extern is "dead in the stdlib") but it is NOT internal-extern-guarded (compiler/frontend/resolve.mdk internalExterns), so a user program CAN call it directly and hit "unbound identifier" under `medaka run` even though llvm/wasm also don't implement it (see the llvm/wasm DEAD rows below) — mark BUG(T7) per the interpreter-specific asymmetry-with-nothing-else framing, but note this one is closer to a dead/vestigial extern than a live regression
-arraySortInPlaceBy	interp	BUG	same →MEDAKA-superseded history as arraySortBy above; IS internal-extern-guarded (compiler/frontend/resolve.mdk:208), so only reachable via --allow-internal or from within stdlib itself, neither of which calls it — mark BUG(T7) per the task framing, lowest-risk of the 37
+exit	interp	BUG	implemented by llvm (isAbortExtern) and wasm, missing from interp — BUG(T7). DEFERRED ON PURPOSE (2026-07-13): binding it needs a per-driver policy (see the header) — a doctest calling `exit 0` would kill `medaka test` with a SUCCESS status
+flushStdout	interp	BUG	implemented by llvm (isIoExtern), missing from interp — BUG(T7). No-op-by-construction while `run` buffers stdout into outputRef and prints it after main returns; fix with the "run drops stdout on panic" bug
+runCommand	interp	BUG	implemented by llvm (isFileExtern family), missing from interp — BUG(T7). DEFERRED ON PURPOSE (2026-07-13): --allow-exec security posture first
 
 # --- assertSnapshot (1) — unimplemented in ALL THREE engines, but the task
 #     spec explicitly bundles it into "the 37" so it is filed as interp BUG
@@ -116,17 +125,16 @@ arraySortInPlaceBy	interp	BUG	same →MEDAKA-superseded history as arraySortBy a
 assertSnapshot	interp	BUG	unimplemented in all 3 engines (see llvm/wasm TODO rows); no stdlib caller yet — a forward-declared snapshot-testing primitive (TESTING-DESIGN.md §4.7 "medaka test --promote"); filed BUG(T7) here per the 37-count framing even though it isn't an asymmetric regression against another engine
 
 # ============================================================================
-# INTERPRETER — FROZEN-CONSTANT (6). These ARE bound (is_impl=Y), so no
-# pass/fail row is needed above, but they're worse than missing: every one
-# silently returns a fabricated/no-op value instead of doing the real thing.
-# `pattern` is the literal source substring the gate re-checks every run.
+# INTERPRETER — FROZEN-CONSTANT (0, was 6). ALL PROMOTED 2026-07-13.
+# wallTimeSec / monotonicSec / sleepMs / allocBytes / ePutStr / ePutStrLn used to
+# be bound to a lie (a Nov-2023 timestamp; a monotonic clock frozen at 1000.0, so
+# EVERY elapsed measurement under `medaka run` was exactly 0.0; a no-op sleep; 0.0
+# alloc bytes; and a pDiscard that swallowed every byte of stderr). `medaka run`
+# now installs real host prims for all six from eval.mdk's `ioExternBindings`.
+# The frozen values still exist in the pure `externBindings` table — but ONLY the
+# differential-oracle drivers install that table alone, where determinism is the
+# point. See the FROZEN-CONSTANT note in the category legend above.
 # ============================================================================
-wallTimeSec	interp	FROZEN-CONSTANT	eval.mdk:1809 hardcodes 1700000000.0 — the interpreter has no FFI to gettimeofday	pWallTimeSec _ = VFloat 1700000000.0
-monotonicSec	interp	FROZEN-CONSTANT	eval.mdk:1816 hardcodes 1000.0 — so every elapsed-time measurement under `medaka run` is exactly 0.0	pMonotonicSec _ = VFloat 1000.0
-sleepMs	interp	FROZEN-CONSTANT	eval.mdk:1818-1820 is a no-op (returns VUnit immediately, never actually sleeps)	pSleepMs (VInt _) = VUnit
-allocBytes	interp	FROZEN-CONSTANT	eval.mdk:1823 hardcodes 0.0 — no FFI to the Boehm GC's allocation counters	pAllocBytes _ = VFloat 0.0
-ePutStr	interp	FROZEN-CONSTANT	eval.mdk:1897 binds to pDiscard — ALL stderr output is silently swallowed under `medaka run`	("ePutStr", prim1M pDiscard)
-ePutStrLn	interp	FROZEN-CONSTANT	eval.mdk:1898 binds to pDiscard — ALL stderr output is silently swallowed under `medaka run`	("ePutStrLn", prim1M pDiscard)
 
 # ============================================================================
 # LLVM — 3 rows.

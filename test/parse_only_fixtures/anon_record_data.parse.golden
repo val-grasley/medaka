@@ -1,4 +1,0 @@
-(DData Private "Point" () ((variant "Point" (ConNamed (field "x" (TyCon "Int")) (field "y" (TyCon "Int"))))) ())
-(DData Private "Box" ("a") ((variant "Box" (ConNamed (field "v" (TyVar "a"))))) ())
-(DData Private "Named" () ((variant "Named" (ConNamed (field "a" (TyCon "Int")) (field "b" (TyCon "Int"))))) ())
-(DData Private "Multi" () ((variant "Foo" (ConPos (TyCon "Int"))) (variant "Bar" (ConNamed (field "z" (TyCon "Int"))))) ())

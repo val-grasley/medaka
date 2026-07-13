@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap test gates preflight ci clean help
+.PHONY: medaka emitter seed bootstrap seed-health test gates preflight ci clean help
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -18,9 +18,19 @@ medaka:
 emitter:
 	sh test/bootstrap_from_seed.sh
 
-## bootstrap — STRICT seed-currency gate: verify the gzipped seed == current native
-##             re-emission (C3a byte-identical) + builds medaka_emitter OCaml-free
+## bootstrap — STRICT seed-currency gate (CHECKPOINT USE): verify the gzipped seed
+##             == current native re-emission, byte-identical (C3a). Run this before
+##             cutting a release or a seed re-mint — NOT on every emitter change.
+##             The everyday requirement is only that the seed still WORKS (which
+##             `make medaka` proves on its cold path); byte-currency is a drift
+##             detector. See the SEED POLICY note in test/bootstrap_from_seed.sh:
+##             conflating the two drove 41 re-mints = 86 MB = 40% of git history.
 bootstrap:
+	SEED_STRICT=1 sh test/bootstrap_from_seed.sh
+
+## seed-health — the EVERYDAY check (what CI runs): the seed must still BUILD a
+##             working emitter from current source. C3a drift only WARNS.
+seed-health:
 	sh test/bootstrap_from_seed.sh
 
 ## seed    — RE-MINT the gzipped IR seed via the NATIVE emitter (OCaml-free)

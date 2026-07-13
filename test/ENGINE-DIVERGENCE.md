@@ -125,7 +125,35 @@ backends' corpora were disjoint — which is precisely the thesis this gate test
 70 fixtures cannot be run by at least one engine. These are ledgered, never silently
 skipped, and each carries its specific reason.
 
-### 4.1 `eval:extern-not-implemented` — 25 fixtures. **`medaka run` cannot do I/O.**
+### 4.1 `eval:extern-not-implemented` — 23 fixtures (was 25). **`medaka run` could not do I/O.**
+
+> **STATUS 2026-07-13 — LARGELY FIXED.** `medaka run` now installs real host I/O
+> primitives from `eval.mdk`'s **`ioExternBindings`** table (the "host is the
+> handler" seam — `EFFECTS-SEMANTICS.md` §7): the File family (12), Env
+> (`args`/`getEnv`/`executablePath`), Stdin (4), Clock (`wallTimeSec`/
+> `monotonicSec`/`sleepMs`), `allocBytes`, and `ePutStr`/`ePutStrLn` (which
+> previously **silently discarded all stderr**). `arrayFill`/`arraySortInPlaceBy`/
+> `arraySortBy` — pure/`<Mut>`, no I/O at all — went into the shared pure table.
+> Interpreter extern coverage: **98/134 → 120/134**. The differential oracle still
+> installs ONLY the pure `externBindings`, so every eval golden is byte-identical.
+>
+> The two fixtures that were failing purely on `arrayFill` (`llvm/arr_fill`,
+> `wasm/stagea_extern_probe`) are **promoted out of the ledger**. The verbatim
+> `readFile` and `args` repros below now both work, including the
+> AGENTS.md-documented probe workflow (`medaka run compiler/entries/eval_main.mdk
+> <file>`), which had been broken.
+>
+> **STILL OPEN** (why the remaining fixtures stay in the ledger): `exit` (needs a
+> per-driver policy — a doctest calling `exit 0` would kill `medaka test` with a
+> SUCCESS status, silently skipping every remaining test), `runCommand` + the 10
+> `net` externs (gated on the `--allow-exec`/`--allow-net` security posture), and
+> `flushStdout` (a no-op by construction while `run` buffers stdout — fix it with
+> the "run drops stdout on panic" bug). Also: only `medaka run` installs the I/O
+> table; `medaka test`/`repl`/`check-policy` still drive the pure one, so a
+> *doctest* still sees the frozen clock and has its stderr dropped. See
+> `test/CAPABILITY-EXCEPTIONS.txt`.
+>
+> Everything below this line is the ORIGINAL census text, kept for the diagnosis.
 
 This is the largest finding in the census, and it deserves its own workstream.
 

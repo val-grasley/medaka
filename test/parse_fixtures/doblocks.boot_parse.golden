@@ -1,2 +1,0 @@
-(DFunDef false "combine" ((PVar "m") (PVar "n")) (EDo (DoBind (PVar "x") (EVar "m")) (DoBind (PVar "y") (EVar "n")) (DoExpr (EApp (EVar "pure") (EBinOp "+" (EVar "x") (EVar "y"))))))
-(DFunDef false "chained" ((PVar "m")) (EDo (DoBind (PVar "a") (EVar "m")) (DoBind (PVar "b") (EApp (EVar "f") (EVar "a"))) (DoExpr (EApp (EVar "g") (EVar "b")))))

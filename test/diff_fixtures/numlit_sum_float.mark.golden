@@ -1,2 +1,0 @@
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EApp (EDictApp "println") (EApp (EDictApp "sum") (EListLit (ELit (LFloat 1.0)) (ELit (LFloat 2.0)) (ELit (LFloat 3.0))))))

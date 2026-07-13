@@ -26,6 +26,7 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 import frontend.marker.{markWithPrelude}
 import types.typecheck.{checkToLinesWithRuntime}
+import frontend.exhaust.{checkGuardExhaustivenessWith}
 import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
 import support.util.{listLen}
 
@@ -64,6 +65,26 @@ runStaged on rsrc csrc tsrc =
   let raw = parse tsrc
   let tP1 = now ()
   let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) (intToString (listLen raw) ++ " decls")
+  -- GUARD EXHAUSTIVENESS. This pass was INVISIBLE to this profiler until 2026-07-13,
+  -- and that blind spot is exactly why a quadratic hid in it.
+  --
+  -- It is architecturally easy to miss: AGENTS.md's stage table lists the pipeline as
+  -- lex -> parse -> desugar -> resolve -> mark -> typecheck (with exhaustiveness
+  -- "called from inside typecheck" per EMatch). But `checkGuardExhaustiveness` is a
+  -- SEPARATE STANDALONE PASS over the RAW, PRE-DESUGAR AST — it has to be, because it
+  -- needs the surface `EGuards` shape that desugar has already lowered away. Only the
+  -- CLI ran it, so it appeared in no profiler and in no stage table.
+  --
+  -- Consequence: `medaka check` was ~2.3s slower at N=2000 than the sum of every
+  -- profiled stage, and the gap was unexplained until someone hand-built a probe. The
+  -- quadratic (groupByName, O(n^2) TWICE OVER) was sitting in the one pass nothing
+  -- measured. An unprofiled stage is an unprofilable bug.
+  let tX0 = now ()
+  let aX0 = allocSnap ()
+  let _ = checkGuardExhaustivenessWith cRaw raw
+  let tX1 = now ()
+  let _ = emitPhaseA on "exhaust-guards" (tX1 - tX0) (allocSnap () - aX0)
+            (intToString (listLen raw) ++ " decls")
   let tD0 = now ()
   let aD0 = allocSnap ()
   let desugared = desugar raw

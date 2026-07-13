@@ -150,20 +150,76 @@ handle — it doesn't move when wording changes). When WRITING a new diagnostic,
 `compiler/ERROR-QUALITY.md` (the rubric + copy standard — located, names the rule, actionable fix,
 carries a code) and add the code to the taxonomy in `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
 
+### ⚡ START HERE: `make preflight` (2026-07-13). Do NOT run the whole suite.
+
+**The agent loop is `make preflight`.** It derives the gate set from `git diff
+--name-only`, derives the ORACLE set from those gates, and builds only those. An agent
+touching `parser.mdk` builds **9 oracles and runs 11 gates**, not 54 and 82.
+
+```sh
+make preflight            # targeted: build + run only what your diff touches
+```
+
+**Why this matters:** the old default — every agent runs `FORCE=1 build_oracles.sh`
+(all 54 probe binaries) plus the full 82-gate suite — is what SERIALIZED this box.
+Two agents doing it at once already contend.
+
+⚠️ **`preflight` is a FILTER, NOT AN AUTHORITY.** It runs a SUBSET and prints what it
+skipped. **CI on the PR is the authority. Nothing merges on a green preflight.**
+
+**Never run bare `FORCE=1 bash test/build_oracles.sh`.** It spawns a big `xargs -P`
+pool that outlives an agent's turn and gets RESPAWNED by the harness — it has killed
+several agents. Use the targeted forms:
+
+```sh
+sh test/build_oracles.sh --for 'diff_compiler_parse*' 'diff_compiler_fmt'
+                                       # only the oracles those gates READ (derived
+                                       #   from the gate scripts — no map to drift)
+sh test/build_oracles.sh --for 'diff_compiler_*'
+                                       # the fresh-worktree recipe: 52 oracles, ~2 min,
+                                       #   foreground, safe
+FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>    # exactly one
+```
+
+If `run_gates.sh` says a pile of gates FAILED with *"phantom skip: oracle/binary not
+built"* — that is **not a compiler regression**, you just have no oracles. (They are
+counted as FAILED and not skipped on purpose: a gate that ran nothing must never
+report green. A fresh clone used to run ZERO tests and print "0 failed".)
+
 Correctness gates (all shell-based, golden-diff style):
 
 ```sh
-sh test/run_gates.sh                    # run the WHOLE diff_compiler_* suite in PARALLEL (~32s)
-bash test/diff_compiler_*.sh           # differential: native output vs captured goldens (~67 suites)
-bash test/selfcompile_fixpoint.sh      # emitter self-compile fixpoint (C3a/C3b)
-bash test/typecheck_compiler_source.sh # strict-typecheck the WHOLE compiler source (~4min); run
+make preflight                          # ⚡ THE AGENT LOOP — targeted, cheap, honest
+make test                               # the IN-LANGUAGE suite (doctests, props,
+                                        #   `test "…"` decls). Needs NO oracles.
+make gates                              # the FULL 84-gate differential suite
+sh test/run_gates.sh 'pat*' 'pat2*'     # multiple patterns (deduped). NOT brace
+                                        #   expansion — POSIX sh does not expand braces
+bash test/diff_compiler_*.sh           # differential: native output vs captured goldens
+bash test/selfcompile_fixpoint.sh      # emitter self-compile fixpoint (C3a/C3b) — THE
+                                       #   decisive gate for any compiler-source change
+bash test/typecheck_compiler_source.sh # strict-typecheck the WHOLE compiler source; run
                                        #   alongside the fixpoint for compiler .mdk changes — the
                                        #   bootstrap emit path does NOT gate on hadTypeErrors(), so
                                        #   an ill-typed compiler source builds green without this
 bash test/diff_compiler_tmc_parity.sh # BOTH backends TMC the same functions (census markers;
                                        #   needs the wasm probes: sh test/wasm/build_wasm_oracle.sh)
 bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
-FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (parallel; always FORCE=1 — stale-prone)
+sh test/diff_compiler_engines.sh      # THE 3-ENGINE DIFFERENTIAL: eval == native == wasm on the
+                                       #   SAME programs. Medaka has three implementations of its
+                                       #   own semantics and they were never compared. Found 4 bug
+                                       #   classes on its first run. Ledger: test/engine_divergence.txt
+sh test/diff_compiler_capability_matrix.sh
+                                       #   every extern in stdlib/runtime.mdk vs what each engine
+                                       #   ACTUALLY implements. Its absence is why 37 externs and 6
+                                       #   fabricated constants drifted for six weeks.
+                                       #   Ledger: test/CAPABILITY-EXCEPTIONS.txt
+sh test/diff_compiler_perf_scaling.sh # THE O(n²) DETECTOR. Feeds inputs at N and 2N and checks the
+                                       #   ALLOCATION growth ratio per doubling (linear ~2.0x;
+                                       #   QUADRATIC ~4.0x). Allocation, not wall-clock: GC bytes are
+                                       #   DETERMINISTIC, so the gate is machine-independent AND
+                                       #   noise-free — which no timing gate can be on a shared runner.
+                                       #   SIX quadratics were found in the compiler on 2026-07-13.
 sh test/check_removed_constructs.sh   # tree-wide scan (incl. non-gated test/) for stale uses of
                                        #   removed constructs (record/function/backtick/let-mut/
                                        #   let-else/named-impl/@Name/default-impl); ~2-3min, JOBS= knob
@@ -247,6 +303,58 @@ playground/build_playground_wasm.sh` — the harness never builds it); launches
 `chromium.launch({channel:'chrome'})` — the **system** Google Chrome, not a Playwright-downloaded
 browser, because `npx playwright install` TLS-fails on this machine (do not try to bypass TLS
 verification to fix that). See `playground/e2e/README.md` for the full list.
+
+## Hunting an O(n²) — the method that worked six times
+
+Six quadratics were found in the compiler on 2026-07-13 (`resolve`'s `contigGo`; five
+sites in `typecheck`; `exhaust`'s `groupByName`, quadratic *twice over*; the CLI's
+`userSchemeLines`). **Every single one was the same shape: a `List` scanned,
+`elem`-checked, `lookup`-ed, or REBUILT once per element.** Note `xs ++ [x]` inside a
+fold is O(n²) all by itself, since list append is O(n).
+
+The workflow, in order:
+
+1. **`MEDAKA_PERF=1 test/bin/profile_main <runtime.mdk> <core.mdk> <target.mdk>`** —
+   per-stage time AND allocation. **Allocation is the reliable signal**: it is
+   deterministic (no runner noise), and it exposed every one of the six more sharply
+   than wall-clock did. A stage whose allocation ~4× across an input doubling is
+   quadratic. Some stages are milliseconds at these sizes, so their *timing* is pure
+   noise while their *allocation ratio* is stark.
+2. **`perf`** (`apt-get install linux-perf` — it is NOT installed by default) to NAME
+   the hot symbol.
+
+   ⚠️ **USE DWARF CALL GRAPHS. Flat counts will mislead you.**
+   ```sh
+   perf record --call-graph dwarf,16384 -- <cmd>
+   ```
+   **This works** — the emitted LLVM carries CFI, so DWARF unwinding produces clean
+   stacks. (An earlier version of this doc said call graphs were "unusable"; that was
+   WRONG, it referred to frame-pointer unwinding, and it cost an agent a wrong turn.
+   Fixed 2026-07-13.)
+
+   **Why flat counts mislead here, specifically:** they profile **TIME**, but the perf
+   gate grades **ALLOCATION** — and on this workload those point at *different
+   functions*. Flat counts named `rootIdOf` at 28%, which is pure CPU and allocates
+   nothing, so it was invisible to the gate. The move that actually works is to pipe
+   `perf script` through a filter that attributes each `GC_malloc_kind` sample to its
+   nearest `mdk_` frame — i.e. **allocation attribution**, which is what the gate
+   measures. That named the two guilty functions in one shot.
+
+   Corollary: if the profile looks flat and allocation-dominated (`GC_malloc_kind`
+   ~11%, everything else <2%), you are looking at the wrong axis. Get allocation
+   attribution, or fall back to a stage-timing probe.
+3. Read the source to find *why* it is O(N), then **stub-and-measure** to confirm.
+4. ⚠️ **`whenL False (expensiveCall …)` is NOT a stub.** Medaka is STRICT — the argument
+   still evaluates. This produced a false "hypothesis disproved" on a *correct*
+   hypothesis. There is no lazy escape hatch; to stub something out, actually remove
+   the call.
+
+⚠️ **An unprofiled stage is an unprofilable bug.** `checkGuardExhaustiveness` is a
+standalone pass over the RAW, PRE-DESUGAR AST (it needs the surface `EGuards` shape
+that desugar lowers away), so it is in **no stage table** and was in **no profiler** —
+which is exactly why a quadratic hid in it, and why `medaka check` was 2.3s slower than
+the sum of every profiled stage. It is now emitted as `[perf] exhaust-guards`. If you
+add a pass, profile it.
 
 ## Gotchas
 

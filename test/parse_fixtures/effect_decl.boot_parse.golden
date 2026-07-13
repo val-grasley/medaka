@@ -1,4 +1,0 @@
-(DEffect false "KV" None false)
-(DEffect true "Fetch" None false)
-(DTypeSig false "get" (TyFun (TyCon "String") (TyEffect ("KV") None (TyCon "String"))))
-(DFunDef false "get" ((PVar "k")) (EVar "k"))

@@ -92,7 +92,17 @@ printf '%s\n' $gates \
   | xargs -P "$JOBS" -n 1 -I{} sh "$0" --run-one {} "$RESULTDIR"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-pass=0; fail=0; skip=0; failed=""
+# status 9 = "phantom skip": the gate exited 2 because its oracle/binary was never
+# built. That IS a failure (a gate that ran nothing must not report green — see the
+# header), but it is a DIFFERENT failure from "the compiler is broken", and the
+# summary must not conflate them.
+#
+# On a fresh worktree with no test/bin, EVERY oracle-reading gate phantom-skips, and
+# the old summary printed a bare "63 failed" — which reads as a catastrophic
+# regression. An agent hit exactly this tonight and had to read the per-gate
+# annotations to discover the real message was just "you haven't built the oracles".
+# Being loud is right; being loud AND misleading is not.
+pass=0; fail=0; skip=0; phantom=0; failed=""
 for s in "$RESULTDIR"/*.status; do
   [ -f "$s" ] || continue
   name="$(basename "$s" .status)"
@@ -100,13 +110,38 @@ for s in "$RESULTDIR"/*.status; do
   case "$st" in
     0) pass=$((pass+1)) ;;
     2) skip=$((skip+1)) ;;
+    9) fail=$((fail+1)); phantom=$((phantom+1)); failed="$failed $name" ;;
     *) fail=$((fail+1)); failed="$failed $name" ;;
   esac
 done
 
 printf '\n=== gates: %d passed, %d failed, %d skipped (JOBS=%s) ===\n' "$pass" "$fail" "$skip" "$JOBS"
 if [ "$fail" -gt 0 ]; then
+  # If EVERY failure is a phantom skip, the compiler is fine — you just have no
+  # oracles. Say that, instead of printing a bare failure count that reads like a
+  # catastrophic regression.
+  if [ "$phantom" -eq "$fail" ]; then
+    cat <<EOF
+FAIL: none of these gates could run — their oracle binaries are not built.
+      This is NOT a compiler regression. test/bin/ is not committed, so a fresh
+      clone or worktree has no oracles.
+
+      Build them:  sh test/build_oracles.sh --for 'diff_compiler_*'
+                   (52 oracles, ~2 min, foreground — the safe recipe)
+
+      Or just what you need:
+                   sh test/preflight.sh          # derives them from your diff
+                   sh test/build_oracles.sh --for '<gate-pattern>'
+
+      (These gates are counted as FAILED, not skipped, on purpose: a gate that ran
+       nothing must never report green. That is a deliberate fix — a fresh clone
+       used to run ZERO tests and print "0 failed".)
+EOF
+    echo "PHANTOM-SKIPPED:$failed"
+    exit 1
+  fi
   echo "FAILED:$failed"
+  [ "$phantom" -gt 0 ] && echo "  ($phantom of these are phantom skips: oracle not built — see above)"
   echo "(logs in the run's temp dir; re-run a single gate with: sh test/<name>.sh)"
   exit 1
 fi

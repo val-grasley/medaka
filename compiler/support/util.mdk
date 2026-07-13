@@ -218,6 +218,24 @@ endsWith suf s =
   let k = stringLength suf
   k <= n && stringSlice (n - k) n s == suf
 
+-- ── scheme-dump line head ────────────────────────────────────────────────
+-- The name a `"name : scheme"` dump line binds: everything before the FIRST
+-- " : " separator, or None when the line has none (e.g. a blank line).
+--
+-- An identifier can never contain a space, so this head is the ONLY name for
+-- which `startsWith "\{name} : " line` could hold.  That lets a caller test
+-- "does this line name one of my bindings?" with a single set lookup instead
+-- of scanning every candidate name per line — see medaka_cli's userSchemeLines,
+-- which was O(lines × names) before.  Linear in the line's length.
+export schemeLineName : String -> Option String
+schemeLineName l = schemeLineNameGo l 0 (stringLength l)
+
+schemeLineNameGo : String -> Int -> Int -> Option String
+schemeLineNameGo l i n
+  | i + 3 > n = None
+  | stringSlice i (i + 3) l == " : " = Some (stringSlice 0 i l)
+  | otherwise = schemeLineNameGo l (i + 1) n
+
 export isSome : Option a -> Bool
 isSome (Some _) = True
 isSome None = False

@@ -376,7 +376,6 @@ combine @Additive                          -- impl hint: pick a named instance a
 import utils.greet                  -- single name
 import utils.{greet, helper}        -- group
 import utils.*                      -- wildcard
-import collections.HashMap as HM    -- alias
 import colors.{Color(..)}           -- type + all its constructors
 import m.{f, T(..), g}              -- mixed
 export import list.{map, filter}    -- re-export
@@ -387,6 +386,31 @@ foo x = x
 public export data Color = Red | Green | Blue   -- export type + constructors
 export data Color = Red | Green | Blue           -- abstract export (type only)
 ```
+
+### ⚠️ There is NO import aliasing. `as` does not work.
+
+This file used to list `import collections.HashMap as HM  -- alias`. **That was wrong**,
+and since this file is supposed to be the ground truth for what the current binary
+accepts, it was actively misleading. Verified 2026-07-13:
+
+| form | actual behavior |
+|---|---|
+| `import list as L` | **parses, then SILENTLY NO-OPS.** `L` is unbound; bare `length` works as if the `as` clause were absent. No error, no warning. |
+| `import list.map as L` | parses, but misresolves `list.map` as a *module path* → "unknown module" |
+| `import list.{map} as L` | **parse error:** ``unexpected `as` `` |
+| `import list.* as L` | **parse error** |
+
+`as` IS a lexer keyword (`TAs`, `lexer.mdk:429`), so the token exists — but nothing
+downstream binds an alias.
+
+**Consequence:** two modules exporting the same name cannot both be imported. There is
+no way to disambiguate. This is not hypothetical — `backend.llvm_emit` and
+`backend.wasm_emit` both export `emitProgram`, and the only way to use both in one
+module is a hand-written re-export shim (`compiler/tools/snap_wasm.mdk` exists solely
+for this).
+
+**A silently-ignored `as` is worse than a parse error** — it looks like it worked.
+Either implement aliasing or reject `as` outright.
 
 ## Externs (primitive declarations — see stdlib/runtime.mdk)
 

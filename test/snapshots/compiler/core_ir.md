@@ -1,0 +1,260 @@
+# META
+source_lines=226
+stages=DESUGAR,MARK
+# SOURCE
+-- Core IR — STAGE2-DESIGN §2.1.  A serializable, backend-neutral intermediate
+-- representation lowered from the elaborated (desugared + typed + dict-routed)
+-- AST.  The Stage-2 design's load-bearing discipline (Axis 1, Condition 1) is
+-- that this IR lives ABOVE any ISA: bytecode/LLVM are *lowerings* of it, never
+-- the IR itself, so the lexical-addressing, decision-tree-match and dict-routing
+-- work transfers to whichever backend consumes it.
+--
+-- What makes this a Core IR rather than a copy of `ast.mdk`'s `Expr`:
+--   • DESUGARED — only the core node set survives (sugar already lowered by
+--     desugar.mdk: sections, comprehensions, do/blocks, guards→if/fallthrough).
+--   • PRIMITIVE — surface operators that are really sugar are lowered away here:
+--     `&&`/`||`→`CIf` (short-circuit preserved), `|>`→`CApp`, `>>`/`<<`→`CLam`.
+--     Only the genuinely-primitive binops survive as `CBinPrim` (arith, compare,
+--     `::`, `++`).
+--   • LEXICALLY ADDRESSED — every variable carries its resolved `Addr` (the
+--     `(frame,slot)` from STAGE2-DESIGN §2.0).  Slice-1 carries it structurally;
+--     the slot-indexing consume-half (eval over array frames) is 2.0's parked
+--     supervised rework, so today's `ceval` still resolves by name — exactly the
+--     status of the `EVarAt` EMIT half in `ast.mdk`.
+--   • DICTS EXPLICIT — typeclass dispatch is the structural `CMethod`/`CDict`
+--     carrying the typechecker's resolved `Route`s (immutable here — the AST's
+--     `Ref Route` mutable cell is read out at lowering time).  These are the
+--     "dictionaries already explicit" the design names as the foundation both
+--     backends share.  (Emitted/evaluated from slice 5 on; present now so the IR
+--     type is complete.)
+--   • EFFECTS FULLY ERASED — the frozen-IR contract for effect-polymorphism
+--     (STAGE2-DESIGN §2.3).  Effects are TYPE-level only: they live inside `Ty`
+--     (`TyEffect`, `ast.mdk`) and the typechecker's `EffRow`/`Effvar` arrows
+--     (`typecheck.mdk`), never as standalone expression nodes, and the language
+--     has NO runtime effect construct (no perform/handle/resume — Phase 146 is a
+--     typecheck-time discipline: open-row inference, propagation, escape,
+--     laundering).  So effects erase WITH types at lowering
+--     (`lower (EAnnot e _) = lower e` in core_ir_lower.mdk) and the runtime has
+--     nothing to witness.  Representation after erasure, stated as a freeze:
+--     an effect-polymorphic function is represented IDENTICALLY to a monomorphic
+--     one — no effect node, no effect parameter, no effect-directed dispatch.
+--     This is the exact OPPOSITE of typeclass polymorphism: a `=>` constraint
+--     carries a runtime witness (the `CMethod`/`CDict` dict above); a `<e>`
+--     effect row carries NONE.  Dispatch is type-head directed, not effect
+--     directed, so erasure cannot perturb a `Route`.  (Verified by equivalence:
+--     a combinator instantiated at `<Mut>` and at the pure row evaluates
+--     identically across tree-walker / Core IR / bytecode VM — fixture
+--     `test/eval_fixtures/effect_poly.mdk`; the Core IR dump carries 0 effect
+--     tokens.)
+--
+-- Validation (the net-new-IR oracle problem, §2.1): there is no OCaml reference
+-- for Core IR.  It is validated by EQUIVALENCE — lower the elaborated AST to Core
+-- IR, evaluate the IR (core_ir_eval.mdk), and diff stdout/pp_value against the
+-- AST tree-walker over the whole fixture corpus.  Core IR is correct iff
+-- evaluating it matches evaluating the AST.
+
+import frontend.ast.{Lit, Pat, Addr, Route}
+
+-- ── expressions ────────────────────────────────────────────────────────────
+public export data CExpr =
+  | CLit Lit
+  -- a variable, carrying its resolved lexical address (slice-1: by-name lookup,
+  -- address unconsumed — see header).  `AGlobal` = top-level / extern / ctor.
+  | CVar String Addr
+  | CApp CExpr CExpr
+  | CLam (List Pat) CExpr
+  -- rec? pat = rhs in body
+  | CLet Bool Pat CExpr CExpr
+  -- a `where` / let-group: mutually-recursive coalesced bindings, then a body
+  | CLetGroup (List CBind) CExpr
+  | CMatch CExpr (List CArm)
+  -- a `match` compiled to a DECISION TREE (the §2.1 decision-tree match
+  -- compilation, driven by the same Maranget pattern-matrix analysis as
+  -- exhaust.mdk): the scrutinee, the original arms (indexed by the tree's
+  -- leaves — re-matched to recover bindings + run guards + bodies), and the
+  -- compiled tree.  Lowering emits this in place of `CMatch` for every match
+  -- whose arm patterns are tree-able; matches that use record/range patterns
+  -- fall back to the ordered-arm `CMatch` above.  Semantically equal — the tree
+  -- only changes HOW the arm is selected (each scrutinee field's head tested
+  -- once across all arms, instead of re-tested per clause).
+  | CDecision CExpr (List CArm) CTree
+  | CIf CExpr CExpr CExpr
+  -- a primitive binary operator that survives lowering: arithmetic (`+`…),
+  -- comparison (`==`,`<`…), `::`, `++`.  (`&&`/`||`/`|>`/`>>`/`<<` are lowered
+  -- to CIf/CApp/CLam and never appear here.)  The 4th field is the scalar-type
+  -- tag stamped by typecheck for a MONOMORPHIC concrete-primitive arithmetic
+  -- operand ("Float"/"Int"; "" = unstamped → today's structural/dict path).  The
+  -- native emitter reads it (emitBin → fieldNameToLTy → LTFloat) to bypass the
+  -- type-lost `staticIsFloat` blind spot (SHARED-FLOAT-RESIDUAL-DESIGN §3(C)).
+  | CBinPrim String CExpr CExpr String
+  | CUnOp String CExpr
+  | CTuple (List CExpr)
+  | CList (List CExpr)
+  -- record create / field access / update (slice 3)
+  | CRecord String (List CField)
+  -- field access `r.f`; 3rd = resolved record name ("" = unknown) so emit can
+  -- resolve the field index by (recName, label) instead of label alone.
+  | CFieldAccess CExpr String String
+  | CRecordUpdate CExpr (List CField)
+  -- named-field variant (constructor) update: `Con { base | f = v … }` (§2.3)
+  | CVariantUpdate String CExpr (List CField)
+  -- array / range / index / slice (slice 3)
+  | CArray (List CExpr)
+  | CRangeList CExpr CExpr Bool
+  | CRangeArray CExpr CExpr Bool
+  | CIndex CExpr CExpr
+  | CSlice CExpr CExpr CExpr Bool
+  -- String-receiver index/slice (lowered from EIndex/ESlice whose receiver-kind
+  -- discriminator is "String").  The String runtime rep is a packed UTF-8 cell,
+  -- NOT an i64-element array, so these emit codepoint-indexed char extract /
+  -- substring (via @mdk_string_to_chars / @mdk_string_slice) instead of the
+  -- array GEP path.  CIndex/CSlice stay array-only (byte-identical emit).
+  | CStringIndex CExpr CExpr
+  | CStringSlice CExpr CExpr CExpr Bool
+  -- List-receiver index/slice (lowered from EIndex/ESlice whose receiver-kind
+  -- discriminator is "List").  A List is a chain of Cons cells ([tag|head@8|
+  -- tail@16], Nil = odd immediate), NOT a contiguous i64-element array, so these
+  -- emit a cons-cell walk (via @mdk_list_index / @mdk_list_slice) instead of the
+  -- array GEP path.  CIndex/CSlice stay array-only (byte-identical emit).
+  | CListIndex CExpr CExpr
+  | CListSlice CExpr CExpr CExpr Bool
+  -- a bare sequential block (desugar's EBlock — imperative IO / let-sequencing)
+  | CBlock (List CStmt)
+  -- typeclass dispatch, dicts explicit (slice 5; Route read out of the AST's
+  -- mutable cell at lowering time so the IR is immutable):
+  --   CMethod = a return-position method occurrence narrowed by its RKey/RDict;
+  --             implRoutes applies per-instance requires dicts (Phase 83/84);
+  --             methRoutes applies method-level constraint dicts (Phase 69.x-e).
+  --   CDict   = a constrained-function occurrence, one Route per `=>` constraint.
+  | CMethod String Route (List Route) (List Route)
+  | CDict String (List Route)
+
+-- a record field assignment `field = expr`
+public export data CField = CField String CExpr
+
+-- a match arm: pattern, guard qualifiers (fall through to next arm), body
+public export data CArm = CArm Pat (List CGuard) CExpr
+
+public export data CGuard = CGBool CExpr | CGBind Pat CExpr
+
+-- ── decision tree (§2.1 decision-tree match compilation) ───────────────────
+-- A `CMatch`'s ordered arms re-test the scrutinee's fields once per clause; the
+-- decision tree tests each field's head exactly once and routes to the matching
+-- arm.  Driven by the SAME Maranget pattern matrix (specialize / default /
+-- head-ctors) the exhaust stage uses — only the OUTPUT differs (a tree, not a
+-- usefulness verdict).  Leaves carry an arm INDEX rather than inlined bindings:
+-- the evaluator re-matches that one arm's pattern against the scrutinee to
+-- recover its variable bindings (a single per-arm walk, vs the per-clause
+-- re-walk the ordered arms do), so the tree itself only drives DISCRIMINATION
+-- and needs no occurrence/binding bookkeeping.  Guard fall-through is preserved
+-- by CTGuard: a failed guard resumes the ordered semantics over the matrix rows
+-- below the guarded clause (its `fail` subtree, compiled at the same column
+-- context, so it reads the same live sub-values).
+public export data CTree =
+  -- no arm matches → runtime error (mirrors falling off the ordered arms)
+  | CTFail
+  -- arm i matched unconditionally → re-match it for bindings, eval its body
+  | CTLeaf Int
+  -- arm i matched but is guarded → eval its guards; on guard failure → CTree
+  | CTGuard Int CTree
+  -- test the focus value's head: first matching branch wins (heads are
+  -- disjoint), else the default subtree
+  | CTSwitch (List CTBranch) CTree
+  -- the focus column is all-wildcard (nothing to test) → discard it, continue
+  | CTDrop CTree
+
+-- one switch branch: the head to test the focus value against, and the subtree
+-- taken when it matches (the head's fields become the new leading columns).
+public export data CTBranch = CTBranch CHead CTree
+
+-- a constructor / literal "head" a switch tests a runtime Value against.  It
+-- carries just enough to (a) statically partition the pattern matrix and (b)
+-- dynamically test + decompose the Value via eval.mdk's `matchPat` — so the
+-- evaluator needs NO new value-decomposition code (lists are VList, tuples are
+-- VTuple, bools VBool, unit VUnit — `matchPat` already knows each).
+public export data CHead =
+  | HCon String Int
+  -- a named constructor (incl. True/False), with its arity
+  | HTuple Int
+  -- a tuple of the given arity
+  | HCons
+  -- list cons (arity 2: head element, tail list)
+  | HNil
+  -- empty list
+  | HUnit
+  -- the unit value
+  | HLit Lit  -- a literal (Int/Float/String/Char), arity 0
+
+-- one block statement (mirrors ast.DoStmt, post-desugar core subset)
+public export data CStmt =
+  | CSExpr CExpr
+  | CSLet Bool Pat CExpr
+  | CSAssign String CExpr
+
+-- a let-group / top-level function binding: a name with one or more coalesced
+-- clauses (multi-clause dispatch + guard fall-through stay structural — the
+-- decision-tree compilation of these into a single match is a later 2.1 step).
+public export data CBind = CBind String (List CClause)
+public export data CClause = CClause (List Pat) CExpr
+
+-- ── typeclass impls (slice 5) ───────────────────────────────────────────────
+-- A lowered typeclass method binding — one impl-method clause or one interface
+-- default.  The dispatch decision (concrete type-head tag, dispatch positions,
+-- specificity score) is computed at lowering time from the AST's iface + impl
+-- decls — exactly as eval.mdk's `declImplEntries`/`implMethodEntry` do — so the
+-- IR stays Ty-free; only the method body is lowered to `CExpr`.  core_ir_eval
+-- turns each entry into a tagged `VTypedImpl` (impl methods) or an untagged
+-- fallback (defaults), then coalesces same-named candidates into the one `VMulti`
+-- the arg-tag dispatcher (`applyValue`) consumes — identical to the AST walker.
+-- One entry PER CLAUSE (multi-clause impl methods coalesce into a VMulti whose
+-- clauses fall through, mirroring the AST path).
+-- CImplEntry: method name, specificity score, body.
+-- CImplBody:
+--   CImplTagged = a tagged impl method (concrete type-head tag, the canonical
+--     full-type impl key [for type-arg-distinct same-head dispatch, mirrors
+--     eval.mdk's VTypedImpl `k`], iface, dispatch
+--     positions, the clause's patterns, its lowered body).
+--   CImplDefault = an untagged interface default (patterns + lowered body — the
+--     fallback).
+public export data CImplEntry = CImplEntry String Int CImplBody
+public export data CImplBody =
+  | CImplTagged String String String (List Int) (List Pat) CExpr
+  | CImplDefault (List Pat) CExpr
+
+-- ── programs ───────────────────────────────────────────────────────────────
+-- A lowered program: top-level function groups (coalesced multi-clause), the
+-- constructor table (name → arity, for building VCon makers), the ctor→type map
+-- eval needs for runtime type tags, and (slice 5) the lowered typeclass
+-- impl/default entries.  Slice-1 programs carry an empty impl list.
+public export data CProgram =
+  | CProgram (List CBind) (List (String, Int)) (List (String, String)) (List CImplEntry)
+# DESUGAR
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" false) (mem "Pat" false) (mem "Addr" false) (mem "Route" false))))
+(DData Public "CExpr" () ((variant "CLit" (ConPos (TyCon "Lit"))) (variant "CVar" (ConPos (TyCon "String") (TyCon "Addr"))) (variant "CApp" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CLam" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr"))) (variant "CLet" (ConPos (TyCon "Bool") (TyCon "Pat") (TyCon "CExpr") (TyCon "CExpr"))) (variant "CLetGroup" (ConPos (TyApp (TyCon "List") (TyCon "CBind")) (TyCon "CExpr"))) (variant "CMatch" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CArm")))) (variant "CDecision" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CArm")) (TyCon "CTree"))) (variant "CIf" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr"))) (variant "CBinPrim" (ConPos (TyCon "String") (TyCon "CExpr") (TyCon "CExpr") (TyCon "String"))) (variant "CUnOp" (ConPos (TyCon "String") (TyCon "CExpr"))) (variant "CTuple" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CList" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CRecord" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CFieldAccess" (ConPos (TyCon "CExpr") (TyCon "String") (TyCon "String"))) (variant "CRecordUpdate" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CVariantUpdate" (ConPos (TyCon "String") (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CArray" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CRangeList" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CRangeArray" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CStringIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CStringSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CListIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CListSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CBlock" (ConPos (TyApp (TyCon "List") (TyCon "CStmt")))) (variant "CMethod" (ConPos (TyCon "String") (TyCon "Route") (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route")))) (variant "CDict" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route"))))) ())
+(DData Public "CField" () ((variant "CField" (ConPos (TyCon "String") (TyCon "CExpr")))) ())
+(DData Public "CArm" () ((variant "CArm" (ConPos (TyCon "Pat") (TyApp (TyCon "List") (TyCon "CGuard")) (TyCon "CExpr")))) ())
+(DData Public "CGuard" () ((variant "CGBool" (ConPos (TyCon "CExpr"))) (variant "CGBind" (ConPos (TyCon "Pat") (TyCon "CExpr")))) ())
+(DData Public "CTree" () ((variant "CTFail" (ConPos)) (variant "CTLeaf" (ConPos (TyCon "Int"))) (variant "CTGuard" (ConPos (TyCon "Int") (TyCon "CTree"))) (variant "CTSwitch" (ConPos (TyApp (TyCon "List") (TyCon "CTBranch")) (TyCon "CTree"))) (variant "CTDrop" (ConPos (TyCon "CTree")))) ())
+(DData Public "CTBranch" () ((variant "CTBranch" (ConPos (TyCon "CHead") (TyCon "CTree")))) ())
+(DData Public "CHead" () ((variant "HCon" (ConPos (TyCon "String") (TyCon "Int"))) (variant "HTuple" (ConPos (TyCon "Int"))) (variant "HCons" (ConPos)) (variant "HNil" (ConPos)) (variant "HUnit" (ConPos)) (variant "HLit" (ConPos (TyCon "Lit")))) ())
+(DData Public "CStmt" () ((variant "CSExpr" (ConPos (TyCon "CExpr"))) (variant "CSLet" (ConPos (TyCon "Bool") (TyCon "Pat") (TyCon "CExpr"))) (variant "CSAssign" (ConPos (TyCon "String") (TyCon "CExpr")))) ())
+(DData Public "CBind" () ((variant "CBind" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "CClause"))))) ())
+(DData Public "CClause" () ((variant "CClause" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr")))) ())
+(DData Public "CImplEntry" () ((variant "CImplEntry" (ConPos (TyCon "String") (TyCon "Int") (TyCon "CImplBody")))) ())
+(DData Public "CImplBody" () ((variant "CImplTagged" (ConPos (TyCon "String") (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr"))) (variant "CImplDefault" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr")))) ())
+(DData Public "CProgram" () ((variant "CProgram" (ConPos (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "CImplEntry"))))) ())
+# MARK
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" false) (mem "Pat" false) (mem "Addr" false) (mem "Route" false))))
+(DData Public "CExpr" () ((variant "CLit" (ConPos (TyCon "Lit"))) (variant "CVar" (ConPos (TyCon "String") (TyCon "Addr"))) (variant "CApp" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CLam" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr"))) (variant "CLet" (ConPos (TyCon "Bool") (TyCon "Pat") (TyCon "CExpr") (TyCon "CExpr"))) (variant "CLetGroup" (ConPos (TyApp (TyCon "List") (TyCon "CBind")) (TyCon "CExpr"))) (variant "CMatch" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CArm")))) (variant "CDecision" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CArm")) (TyCon "CTree"))) (variant "CIf" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr"))) (variant "CBinPrim" (ConPos (TyCon "String") (TyCon "CExpr") (TyCon "CExpr") (TyCon "String"))) (variant "CUnOp" (ConPos (TyCon "String") (TyCon "CExpr"))) (variant "CTuple" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CList" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CRecord" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CFieldAccess" (ConPos (TyCon "CExpr") (TyCon "String") (TyCon "String"))) (variant "CRecordUpdate" (ConPos (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CVariantUpdate" (ConPos (TyCon "String") (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CField")))) (variant "CArray" (ConPos (TyApp (TyCon "List") (TyCon "CExpr")))) (variant "CRangeList" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CRangeArray" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CStringIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CStringSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CListIndex" (ConPos (TyCon "CExpr") (TyCon "CExpr"))) (variant "CListSlice" (ConPos (TyCon "CExpr") (TyCon "CExpr") (TyCon "CExpr") (TyCon "Bool"))) (variant "CBlock" (ConPos (TyApp (TyCon "List") (TyCon "CStmt")))) (variant "CMethod" (ConPos (TyCon "String") (TyCon "Route") (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route")))) (variant "CDict" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route"))))) ())
+(DData Public "CField" () ((variant "CField" (ConPos (TyCon "String") (TyCon "CExpr")))) ())
+(DData Public "CArm" () ((variant "CArm" (ConPos (TyCon "Pat") (TyApp (TyCon "List") (TyCon "CGuard")) (TyCon "CExpr")))) ())
+(DData Public "CGuard" () ((variant "CGBool" (ConPos (TyCon "CExpr"))) (variant "CGBind" (ConPos (TyCon "Pat") (TyCon "CExpr")))) ())
+(DData Public "CTree" () ((variant "CTFail" (ConPos)) (variant "CTLeaf" (ConPos (TyCon "Int"))) (variant "CTGuard" (ConPos (TyCon "Int") (TyCon "CTree"))) (variant "CTSwitch" (ConPos (TyApp (TyCon "List") (TyCon "CTBranch")) (TyCon "CTree"))) (variant "CTDrop" (ConPos (TyCon "CTree")))) ())
+(DData Public "CTBranch" () ((variant "CTBranch" (ConPos (TyCon "CHead") (TyCon "CTree")))) ())
+(DData Public "CHead" () ((variant "HCon" (ConPos (TyCon "String") (TyCon "Int"))) (variant "HTuple" (ConPos (TyCon "Int"))) (variant "HCons" (ConPos)) (variant "HNil" (ConPos)) (variant "HUnit" (ConPos)) (variant "HLit" (ConPos (TyCon "Lit")))) ())
+(DData Public "CStmt" () ((variant "CSExpr" (ConPos (TyCon "CExpr"))) (variant "CSLet" (ConPos (TyCon "Bool") (TyCon "Pat") (TyCon "CExpr"))) (variant "CSAssign" (ConPos (TyCon "String") (TyCon "CExpr")))) ())
+(DData Public "CBind" () ((variant "CBind" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "CClause"))))) ())
+(DData Public "CClause" () ((variant "CClause" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr")))) ())
+(DData Public "CImplEntry" () ((variant "CImplEntry" (ConPos (TyCon "String") (TyCon "Int") (TyCon "CImplBody")))) ())
+(DData Public "CImplBody" () ((variant "CImplTagged" (ConPos (TyCon "String") (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr"))) (variant "CImplDefault" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "CExpr")))) ())
+(DData Public "CProgram" () ((variant "CProgram" (ConPos (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "CImplEntry"))))) ())

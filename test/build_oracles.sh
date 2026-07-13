@@ -40,6 +40,12 @@ if [ "${1:-}" = "--build-one" ]; then
   e="$2"
   src="$ROOT/compiler/entries/$e.mdk"
   out="$BINDIR/$e"
+  # A fresh worktree/clone has no test/bin (it is not committed). The MAIN path
+  # mkdir's it, but this worker path did not — so `--build-one` on a fresh tree died
+  # with `cannot create .../test/bin/<e>.buildlog: Directory nonexistent`, and then a
+  # SECOND, misleading error (`tail: cannot open ... buildlog`) hid the real cause.
+  # Reported by two separate agents who each lost time to it.
+  mkdir -p "$BINDIR"
   printf 'building    %s ...\n' "$e"
   if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O0}" "$MEDAKA" build --allow-internal "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
     echo "FAIL: could not native-compile $e:" >&2; tail -8 "$BINDIR/$e.buildlog" >&2; exit 1
@@ -79,12 +85,12 @@ fi
 #                           same auto-print contract `medaka build` and wasm_emit do)
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
 #   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
-#   parse_main            — diff_compiler_parse.sh
+#   parse_main            — diff_compiler_parse_errors.sh
 #   parse_result_main     — diff_compiler_parse_result.sh
-#   desugar_main          — diff_compiler_desugar.sh
-#   desugar_batch         — diff_compiler_desugar_batch.sh
-#   mark_main             — diff_compiler_mark.sh
-#   mark_batch            — diff_compiler_mark_batch.sh
+#   (parse/desugar/mark:  MIGRATED to test/diff_compiler_snapshot_frontend.sh — the
+#                         snapshot runner calls the stages in-process, so those five
+#                         gates need no probe binary at all.  parse_main survives only
+#                         because diff_compiler_parse_errors.sh still drives it.)
 #   resolve_main          — diff_compiler_resolve.sh
 #   resolve_batch         — diff_compiler_resolve_batch.sh
 #   resolve_modules_main  — diff_compiler_resolve_modules.sh
@@ -119,13 +125,13 @@ core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core
 llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
 lex_main parse_main parse_result_main \
-desugar_main desugar_batch mark_main mark_batch \
 resolve_main resolve_batch resolve_modules_main \
 printer_main positions_main lex_comments_main \
 typecheck_main typecheck_golden_batch check_main check_batch \
 check_modules_main check_all_main check_match_main exhaust_main lint_main lint_fix_main \
 diagnostics_main diagnostics_project_main \
-fmt_main new_main test_main repl_main fuzz_gen_main"
+fmt_main new_main test_main repl_main fuzz_gen_main \
+ profile_main"
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {

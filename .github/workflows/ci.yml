@@ -72,7 +72,7 @@ jobs:
           - name: engines
             pattern: "'diff_compiler_engines'"
           - name: frontend
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_desugar*' 'diff_compiler_mark*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project'"
           - name: eval
@@ -80,7 +80,7 @@ jobs:
           - name: backend
             pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute'"
           - name: tools
-            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir'"
+            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
@@ -132,6 +132,47 @@ jobs:
             echo "::error::A gate in the '${{ matrix.name }}' shard left untracked files behind:"
             echo "$untracked"
             exit 1
+          fi
+
+  # ── The trust anchor ─────────────────────────────────────────────────────────
+  #
+  # THIS WAS NOT GATED AT ALL until 2026-07-13, and the seed was silently stale on
+  # main. The hole was subtle and is worth understanding, because it is the same
+  # bug class as everything else this suite was hardened against:
+  #
+  #   `make medaka` asks   "CAN I build from the seed?"        -> it passed
+  #   this gate asks       "does the seed still WORK, and how far has it DRIFTED?"
+  #
+  # Those are different questions. A stale seed still cold-bootstraps fine (proven:
+  # it did, seven times over, while C3a was failing) — so the cold build passing
+  # tells you nothing about currency. Nobody was asking the second question.
+  #
+  # POLICY (see the SEED POLICY note in test/bootstrap_from_seed.sh): the seed only
+  # has to WORK. Byte-currency (C3a) is a DRIFT DETECTOR, not a requirement, and
+  # demanding it forced a re-mint on every emitter change — 41 re-mints, 86 MB, 40%
+  # of the repo's entire git history. So here drift WARNS and a seed that can no
+  # longer do its job FAILS. Re-mint at checkpoints (`make bootstrap` is strict).
+  seed-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+      - name: Seed must still build a working emitter (drift only warns)
+        run: |
+          sh test/bootstrap_from_seed.sh 2>&1 | tee /tmp/seed.log
+          # A seed that cannot do its job is a HARD failure — the script exits
+          # nonzero for that, and `set -e`-less `tee` would hide it, so check.
+          if ! grep -q 'BOOTSTRAP-FROM-SEED PASS' /tmp/seed.log; then
+            echo "::error::The seed can no longer build a working emitter. Re-mint: sh test/refresh_seed.sh"
+            exit 1
+          fi
+          # Drift is informative, not actionable-right-now. Surface it, don't block.
+          if grep -q 'C3a WARN' /tmp/seed.log; then
+            echo "::warning::Seed has DRIFTED from current emission (still works). Re-mint at the next checkpoint: sh test/refresh_seed.sh"
           fi
 
   # ── The in-language suite: doctests, properties, `test "..."` decls ───────────

@@ -9,8 +9,74 @@ bash gates are all still there.
 
 ## 0. AS-BUILT — what actually shipped, and what it found
 
-Suite went from **"78 passed, 0 failed, 1 skipped — fully green"** to
-**81 passed, 1 failed, 0 skipped**. The skip is gone; the red is real.
+Suite went from **"78 passed, 0 failed, 1 skipped — fully green"** to **84 passed, 0
+failed, 0 skipped**, over a *larger* corpus. The "skip" had **never run once**. The
+repo is now public (Apache-2.0) with CI green on `main` — the first automated,
+authoritative signal on the default branch in the project's history.
+
+### 0.0 The one-sentence version
+
+> **The recurring bug in this codebase is not in the compiler. It is that
+> *"this didn't run"* is indistinguishable from *"this passed."***
+
+It appeared as: a missing oracle exiting 2 = SKIP ≠ FAIL (a fresh clone ran **zero
+tests and printed "0 failed"**); a gate `dash` could not even *parse*, "skipped" for
+months **while also failing**; `test/ported/`'s 323 assertions run by nothing and
+rotted; `$ROOT/compiler/*.mdk` globbing to zero files after the subfolder reorg, so
+the compiler's own sources silently left the corpus; a `norm()` erasing floats from
+**both sides** of a comparison; a gate matching **no CI shard**; an unreadable
+snapshot target rendering as `# CRASH: cannot read fixture` and then *passing forever*;
+and the **seed silently stale on `main`** with nothing watching. Every new gate here is
+built to fail loudly on *silence*, and every exception list must detect an **accidental
+fix** — because a list that only suppresses failures rots, which is how `test/ported/`
+died.
+
+### 0.0.1 Six quadratics, found by building the perf gate
+
+Agents kept introducing O(n²) algorithms and nothing was watching. Designing the
+detector found six *before a line of it was written*:
+
+| site | |
+|---|---|
+| `resolve` `contigGo` | a `closed` list **rebuilt per decl** (`acc ++ [x]` in a fold is O(n²) by itself). Stubbing it dropped resolve 114 MB → 3.2 MB — it *was* the stage. |
+| `typecheck` × 5 | `reqObligationsFor` re-derived a flatMap over **every decl, per obligation**; `normalize` rebuilt a `TVar` cell just to read its root; three global lists had their **length measured per group**. |
+| `exhaust` `groupByName` | quadratic **twice over** — and `check` ran it **twice**. |
+| CLI `userSchemeLines` | an `anyList` over every name **per dump line** (~8.5M string builds at 2k fns). |
+
+**`medaka check` on 2,000 top-level fns: 17.6s → 1.3s. Growth 3.88× → 2.12× (linear).**
+`typecheck_compiler_source`: 35.7s → 7.6s.
+
+**Every one was the same shape: a `List` scanned / `elem`-checked / rebuilt once per
+element.** And the gate that catches them measures **allocation, not wall-clock** — GC
+bytes are *deterministic*, so the gate is machine-independent **and** noise-free, which
+no timing gate can be on a shared CI runner.
+
+⚠️ **An unprofiled stage is an unprofilable bug.** `checkGuardExhaustiveness` is a
+standalone pre-desugar pass, so it was in no stage table and no profiler — which is
+*exactly* why a quadratic hid there, and why `medaka check` was 2.3s slower than the
+sum of every profiled stage.
+
+### 0.0.2 The friction rule out-earned the tasks
+
+Every agent prompt now demands: *"surface every bug, gap, pain point, workaround,
+misleading error — **even if you worked around it**."* Agents are extremely good at
+routing around problems and never mentioning them, and everything they route around is
+a bug the user hits later. It produced, in one night:
+
+- **`SYNTAX.md` was lying.** It advertised `import … as` aliasing. Reality: `import list
+  as L` **parses, typechecks, and silently no-ops** — the alias is unbound. A feature
+  that does nothing and warns about nothing. *That* is why `snap_wasm.mdk` exists:
+  `llvm_emit` and `wasm_emit` both export `emitProgram` and there is no way to
+  disambiguate.
+- The profiler blind spot above.
+- `build_oracles --build-one` not `mkdir`-ing `test/bin`, killing fresh worktrees with a
+  doubly-misleading error. Two agents lost time to it.
+- `run_gates` printing a bare **"63 failed"** on a fresh worktree — correct, but reads as
+  catastrophe. Now it says *"NOT a compiler regression; you have no oracles; run this."*
+
+---
+
+### 0.1 (historical) The first landing
 
 | Commit | |
 |---|---|

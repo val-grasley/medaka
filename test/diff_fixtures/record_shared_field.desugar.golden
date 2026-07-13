@@ -1,6 +1,0 @@
-(DData Private "Cat" () ((variant "Cat" (ConNamed (field "name" (TyCon "String"))))) ())
-(DData Private "Box" () ((variant "Box" (ConNamed (field "name" (TyCon "Int"))))) ())
-(DFunDef false "catName" ((PVar "c")) (EFieldAccess (EAnnot (EVar "c") (TyCon "Cat")) "name"))
-(DFunDef false "boxName" ((PVar "b")) (EFieldAccess (EAnnot (EVar "b") (TyCon "Box")) "name"))
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EBlock (DoLet false false (PVar "c") (ERecordCreate "Cat" ((fa "name" (ELit (LString "Tom")))))) (DoLet false false (PVar "b") (ERecordCreate "Box" ((fa "name" (ELit (LInt 7)))))) (DoExpr (EApp (EVar "println") (EApp (EVar "catName") (EVar "c")))) (DoExpr (EApp (EVar "println") (EApp (EVar "boxName") (EVar "b"))))))

@@ -1,3 +1,0 @@
-(DFunDef false "total" ((PVar "xs")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "+" (EVar "_a") (EVar "_b")))) (ELit (LInt 0))) (EVar "xs")))
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (EApp (EVar "total") (EListLit (ELit (LFloat 1.0)) (ELit (LFloat 2.0)))))) (DoExpr (EApp (EVar "println") (EApp (EVar "total") (EListLit (ELit (LInt 1)) (ELit (LInt 2))))))))

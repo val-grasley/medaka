@@ -1,4 +1,0 @@
-(DFunDef false "double" ((PVar "a")) (ELet false (PVar "s") (EBinOp "+" (EVar "a") (ELit (LInt 1))) (EBinOp "*" (EVar "s") (ELit (LInt 2)))))
-(DFunDef false "swap" ((PVar "p")) (ELet false (PVar "x") (EFieldAccess (EVar "p") "a") (ELet false (PVar "y") (EFieldAccess (EVar "p") "b") (ETuple (EVar "y") (EVar "x")))))
-(DFunDef false "stepDown" ((PVar "x")) (ELet false (PVar "go") (ELam ((PVar "n")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EVar "go") (EBinOp "-" (EVar "n") (ELit (LInt 1)))))) (EApp (EVar "go") (EVar "x"))))
-(DFunDef false "counted" ((PVar "x")) (ELet false (PVar "loop") (ELam ((PVar "n")) (ELam ((PVar "acc")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (EVar "acc") (EApp (EApp (EVar "loop") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))))) (EApp (EApp (EVar "loop") (EVar "x")) (ELit (LInt 0)))))

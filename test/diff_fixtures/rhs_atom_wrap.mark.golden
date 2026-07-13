@@ -1,2 +1,0 @@
-(DFunDef false "r" () (EApp (EVar "identity") (ELit (LInt 5))))
-(DFunDef false "main" () (EApp (EDictApp "println") (EVar "r")))

@@ -1,5 +1,0 @@
-(DFunDef false "expectEqual" ((PVar "expected") (PVar "actual")) (EIf (EApp (EApp (EVar "eq") (EVar "expected")) (EVar "actual")) (EVar "Pass") (EApp (EVar "Fail") (ELit (LString "mismatch")))))
-(DFunDef false "goTests" ((PVar "t")) (EMatch (EApp (EVar "runExpectation") (EVar "t")) (arm (PCon "Pass") () (EBlock (DoExpr (EApp (EVar "println") (ELit (LString "ok")))) (DoExpr (EApp (EVar "done") (ELit (LInt 1)))))) (arm (PCon "Fail" (PVar "msg")) () (EBlock (DoExpr (EApp (EVar "println") (EVar "msg"))) (DoExpr (EApp (EVar "done") (ELit (LInt 0))))))))
-(DProp false "reverse is involutive" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EApp (EApp (EVar "eq") (EApp (EVar "reverse") (EApp (EVar "reverse") (EVar "xs")))) (EVar "xs")))
-(DProp false "span recovers" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "n" (TyCon "Int"))) (EBlock (DoLet false false (PTuple (PVar "a") (PVar "b")) (EApp (EApp (EVar "span") (EVar "p")) (EVar "xs"))) (DoExpr (EApp (EApp (EVar "eq") (EBinOp "++" (EVar "a") (EVar "b"))) (EVar "xs")))))
-(DTest false "two plus two" (EApp (EApp (EVar "expectEqual") (ELit (LInt 4))) (EBinOp "+" (ELit (LInt 2)) (ELit (LInt 2)))))

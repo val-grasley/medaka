@@ -34,6 +34,7 @@ anyHoleAtom : List Atom -> Bool
 anyIdPinned : List Int -> List (Int, Mono) -> Bool
 anyIn : List Int -> List Int -> Bool
 anyMember : List String -> List String -> Bool
+anyRootMatch : Int -> List (Mono, Loc) -> Bool
 appArgLoc : Expr -> Option Loc
 appFallback : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> <Mut> Mono
 appSpineArgCount : Expr -> Int
@@ -59,6 +60,7 @@ armDictSites : Arm -> List (Ref (List Route))
 armEVars : Arm -> List String
 armIsUnguarded : List Guard -> Bool
 armSites : Arm -> List (Ref Route)
+armUnreachable : Option String -> List (List Pat) -> Map String Unit -> Bool -> Pat -> <Mut> Bool
 arrowsWithLastEffect : List Mono -> EffRow -> Mono -> <Mut> Mono
 assignName : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
 astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
@@ -111,7 +113,7 @@ censusSuperCloseFix : List Decl -> List (String, Int) -> List (String, Int) -> L
 censusSuperSlotsOf : List Decl -> (String, Int) -> List (String, Int)
 checkAnnotTooGeneral : Ty -> List Mono -> <Mut> Unit
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> <Mut> Unit
-checkCallObligationsGo : List Decl -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
+checkCallObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCoherence : List Decl -> <Mut> Unit
 checkEffectAtoms : List (String, Option String) -> <Mut> Unit
 checkEffectEscape : List (String, Ty) -> String -> List Atom -> <Mut> Unit
@@ -122,7 +124,7 @@ checkEffectParamsTys : List Ty -> <Mut> Unit
 checkErrorsWithRuntime : List Decl -> List Decl -> <Mut> Bool
 checkImplCompleteness : List Decl -> List Decl -> <Mut> Unit
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
-checkImplObligationsGo : List Decl -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkInterfaceCycles : List Decl -> <Mut> Unit
 checkLetBind : String -> List FunClause -> <Mut> Unit
 checkLetBinds : List LetBind -> <Mut> Unit
@@ -144,12 +146,12 @@ checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) 
 checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
 checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
 checkModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
-checkNestedReqs : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
 checkOneAxis : String -> String -> Param -> <Mut> Unit
-checkOneCallObligation : List Decl -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
 checkOneEffectParam : String -> String -> <Mut> Unit
 checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> <Mut> Unit
-checkOneImplObligation : List Decl -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
+checkOneImplObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
 checkPhantomMethods : List Decl -> <Mut> Unit
 checkProductAxes : String -> Param -> <Mut> Unit
 checkProductAxesGo : String -> List (String, Param) -> <Mut> Unit
@@ -157,9 +159,9 @@ checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, String, Optio
 checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
 checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
-checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
-checkReqObligations : List Decl -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
-checkReqOne : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> <Mut> Unit
+checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
+checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
 checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> <Mut> Unit
 checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> <Mut> Unit
 checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
@@ -218,13 +220,12 @@ computeMangledShadowMap : List Decl -> List (String, List Decl) -> List (String,
 concreteDomainScheme : String -> List (String, Scheme) -> <Mut> Option Scheme
 concreteHeadVarIds : Mono -> List Int
 consOp : Mono -> Mono -> <Mut> Mono
+consSiteFn : String -> a -> Map String (List a) -> Map String (List a)
 constrainedSigArity : Decl -> List (String, List Int)
 constrainedSigName : Decl -> List String
 constrainedSigNames : List Decl -> List String
 constraintArgVarNames : Constraint -> List String
 constraintFirstNonParam : List String -> Constraint -> List String
-constraintIdsFromApps : String -> List Int -> List (String, List Mono) -> List Int
-constraintIdsFromSites : String -> List Int -> List (String, Mono) -> List Int
 constraintIsMethodLevel : List String -> Constraint -> Bool
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintNonParamVars : List String -> Constraint -> List String
@@ -290,7 +291,7 @@ depReaches : List String -> String -> String -> List (String, List Decl) -> Bool
 depsOf : String -> Map String Unit -> Map String (List (List Pat, Expr)) -> List String
 derivableIface : String -> Bool
 detectSwappedArgs2 : TcEnv -> Expr -> Expr -> <Mut> Option Mono
-dictAppFns : Ref (List (String, List Mono))
+dictAppFns : Ref (Map String (List (List Mono)))
 dictArityOf : String -> Int
 dictEligibleRef : Ref (List String)
 dictEligibleSetRef : Ref (Map String Unit)
@@ -624,6 +625,7 @@ instantiateVarTracked : String -> Scheme -> <Mut> Mono
 intercalateComma : List String -> String
 ioAliasLabels : List String
 isArithBinop : String -> Bool
+isConPat : Pat -> Bool
 isConstrainedTy : Ty -> Bool
 isCtorAppHead : Expr -> Bool
 isHoleParam : Param -> Bool
@@ -691,7 +693,6 @@ mangledShadowMapRef : Ref (List (String, String))
 mapLocalSchemes : List (String, Mono) -> <Mut> List (String, Scheme)
 markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 markNumlitOpTaint : Mono -> <Mut> Unit
-markOpTaintId : Int -> List (Mono, Loc) -> <Mut> Unit
 matchCol0Type : Mono -> Option String
 matchOracle : Ref Oracle
 matchTyMono : Ty -> Mono -> Option (List (String, Mono))
@@ -725,7 +726,7 @@ methodLevelConstraintVarNames : List String -> Ty -> List String
 methodSchemes : List String -> List IfaceMethod -> <Mut> List (String, Scheme)
 methodSchemesPure : List IfaceMethod -> <Mut> List (String, Scheme)
 methodShadowNamesRef : Ref (List String)
-methodSiteFns : Ref (List (String, Mono))
+methodSiteFns : Ref (Map String (List Mono))
 methodTyOf : String -> List IfaceMethod -> Option Ty
 mintParamReprs : List Kind -> <Mut> List Mono
 missingConstraintMsg : String -> String -> String -> String
@@ -749,6 +750,7 @@ monoTyvarId : Mono -> Int
 monoTyvarIds : Mono -> List Int
 monoUnboundIds : Mono -> List Int
 monoUnboundVarLevels : Mono -> List (Int, Int)
+monosTvarIds : List Int -> List Mono -> List Int
 nameOf : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
 namesToSet : List String -> Map String Unit -> Map String Unit
 negateOp : Mono -> <Mut> Mono
@@ -765,6 +767,7 @@ normHole : Param -> Param
 normalize : Mono -> Mono
 notAFunctionHint : Option String -> String
 notAFunctionMsg : String -> String
+noteHeadCtor : Pat -> Map String Unit -> Map String Unit
 noteNumlitCtx : Mono -> Mono -> String -> <Mut> Unit
 nthArgMono : Int -> Mono -> Option Mono
 nthInt : Int -> List Int -> Int
@@ -783,6 +786,7 @@ numlitMismatchMsg : Option Loc -> List Mono -> <Mut> String
 numlitOpLocs : Ref (List Loc)
 numlitReframeLoc : Option Loc -> <Mut> Bool
 numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
+numlitUntainted : Ref (List (Mono, Loc))
 numlitVarLocs : Ref (List (Mono, Loc))
 oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
 occursAdjust : Int -> Int -> Mono -> <Mut> Unit
@@ -809,8 +813,11 @@ pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono, String)
 pendingArithSites : Ref (List (Ref Route, Mono))
 pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
 pendingCallObligations : Ref (List (String, Mono, Option Loc))
+pendingCallObligationsN : Ref Int
 pendingDictApps : Ref (List (Ref (List Route), List Mono, List String))
+pendingDictAppsN : Ref Int
 pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
+pendingImplObligationsN : Ref Int
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingRLocalSites : Ref (List (String, Ref Route, Mono, String))
 pendingRecDictApps : Ref (List RecDictApp)
@@ -881,8 +888,11 @@ propParamNamesTc : List PropParam -> List String
 publicDataDecls : List Decl -> List Decl
 publicValNames : List Decl -> List String
 pureRow : EffRow
+pushCallObl : (String, Mono, Option Loc) -> <Mut> Unit
+pushDictApp : (Ref (List Route), List Mono, List String) -> <Mut> Unit
 pushIncompleteImpl : (Option Loc, String) -> <Mut> Unit
 pushNoImplError : String -> Option Loc -> List Mono -> <Mut> Unit
+pushPendingObl : (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 pushTypeError : String -> String -> <Mut> Unit
 pushTypeErrorHelpFixAt : String -> Option Loc -> String -> String -> Option (Loc, String) -> <Mut> Unit
 pushTypeErrorOnce : String -> String -> <Mut> Unit
@@ -964,7 +974,7 @@ reopenRowN : Bool -> EffRow -> <Mut> EffRow
 reportAmbiguousImpl : String -> <Mut> Route
 reportNumOrNoImpl : String -> List Mono -> Option Loc -> <Mut> Unit
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> <Mut> Unit
-reqObligationsFor : List Decl -> String -> List Mono -> <Mut> List (String, List Mono)
+reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> <Mut> List (String, List Mono)
 reqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> <Mut> Route
 reqRouteD : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Int -> <Mut> Route
 reqToObligation : List (String, Mono) -> Require -> <Mut> (String, List Mono)
@@ -991,6 +1001,7 @@ resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Ro
 resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> <Mut> Unit
 resolveUnopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
 resolveUnopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> <Mut> Unit
+restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> <Mut> Unit
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethodNames : List Decl -> List String
 returnPosOfDecl : Decl -> List String
@@ -1008,6 +1019,7 @@ rewriteArgStmts : ArgRw -> List String -> List DoStmt -> List DoStmt
 rewriteBinopExpr : Expr -> Expr
 rewriteRPDict : List String -> List String -> Expr -> Expr
 rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
+rootIdOf : Mono -> Int
 routeLocalSym : Route -> String
 routeOfMono : List ImplEntry -> Mono -> <Mut> Route
 routeOfMonoEncl : List ImplEntry -> String -> String -> Mono -> <Mut> Route
@@ -1041,6 +1053,7 @@ semigroupEntry : (String, (String, List String, Ty)) -> Bool
 semigroupIfaceRegistered : Unit -> <Mut> Bool
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> <Mut> Unit
+setEmitArgStampPasses : Bool -> <Mut> Unit
 setLocIfSome : Option Loc -> <Mut> Unit
 setNumlitFloats : Unit -> <Mut> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Unit
@@ -1056,10 +1069,12 @@ sigToScheme : Ty -> <Mut> Scheme
 sigToSchemeTvs : Ty -> <Mut> (Scheme, List (String, Mono))
 sigTooGeneralMsg : String -> Ty -> String
 sigTvarIds : List Mono -> List Int
+sigTyMapRef : Ref (Map String Ty)
 sigsOf : List Decl -> List (String, Ty)
 singleParamIfaceMethod : String -> <Mut> Bool
 siteRDictName : Ref Route -> List String
 siteRDictNamesL : Ref (List Route) -> List String
+sitesFor : String -> Map String (List a) -> List a
 sortAxes : List (String, Param) -> List (String, Param)
 spineFirstArg : Expr -> Option Expr
 spineHeadIsApp : Expr -> Bool
@@ -1108,6 +1123,7 @@ tagLitLocsWithRoot : Int -> String -> List (Mono, Loc) -> <Mut> Unit
 tagNumlitCtxIf : Mono -> Mono -> String -> <Mut> Unit
 tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
 tailNameList : Option String -> List String
+taintAndDrop : Int -> List (Mono, Loc) -> <Mut> List (Mono, Loc)
 takeFirst : Int -> List a -> List a
 takeUntilInclusiveS : String -> List String -> List String
 tarjanAll : List String -> Map String (List String) -> <Mut> Unit
