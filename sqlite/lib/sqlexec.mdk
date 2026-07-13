@@ -1,0 +1,174 @@
+-- | sqlite.lib.sqlexec — the statement EXECUTOR: `String -> Stmt -> ExecOut`.
+--
+-- Stage 3 of the SQL front end, and the last one.  `lib.sqlstmt` turns SQL text
+-- into a `Stmt`; this module runs a `Stmt` against a database file by
+-- dispatching it to the engine that already exists:
+--
+--   `SSelect` → `lib.sqlstmt.runSelect` (the query engine, `lib.select`)
+--   `SInsert` → `lib.mutate.insert`
+--   `SUpdate` → `lib.mutate.update`
+--   `SDelete` → `lib.mutate.delete`
+--   `SCreate` → `lib.mutate.createTableIn`
+--
+-- There is no second storage engine here and no second query engine — the whole
+-- module is a dispatcher plus ONE piece of real work: folding an INSERT's `VALUES`
+-- expressions down to `Cell`s.
+--
+-- ## Constant folding of VALUES
+--
+-- `VALUES (2 * 3, 'ada', NULL)` holds `SqlExpr`s, not literals, because the
+-- expression grammar is shared with WHERE.  `constCell` folds each one by
+-- compiling it against a column resolver that knows NO columns, so a literal and
+-- a constant arithmetic expression fold, while a COLUMN reference (or an
+-- aggregate, or any operator the value compiler does not handle) is a clean `Err`
+-- naming the offending expression.  sqlite3 does accept a bare `INSERT INTO t
+-- VALUES(x)` only inside an UPSERT/trigger context we do not have, so refusing is
+-- right — and it is refused, not silently read as NULL.
+--
+-- ## What a statement PRINTS
+--
+-- `ExecOut` mirrors the `sqlite3` CLI: a SELECT yields rows, and INSERT / UPDATE
+-- / DELETE / CREATE yield nothing on stdout (the changed-row count is returned to
+-- the caller, which is what a `--changes`-style flag would print).  That is what
+-- lets `sqlite/main.mdk`'s output be diffed byte-for-byte against `sqlite3`.
+
+import lib.sqlite.{Db, openDb}
+import lib.rowtype.{tCells}
+import lib.recordfmt.{Cell}
+import lib.sqlparse.{renderSqlExpr}
+import lib.sqlstmt.{
+  Stmt,
+  SSelect,
+  SInsert,
+  SUpdate,
+  SDelete,
+  SCreate,
+  parseStmt,
+  runSelect,
+}
+import lib.select.{SqlExpr, ELit, Literal, LInt, Expr, mkE, compileValue}
+import lib.mutate.{Assign, insert, update, delete, createTableIn}
+import list.{reverse}
+
+-- ---------------------------------------------------------------------------
+-- The result of running one statement
+-- ---------------------------------------------------------------------------
+
+-- | What a statement produced.
+--
+--   * `OutRows rows` — a SELECT's result set, as raw cells (the CLI does not know
+--     the column types at compile time, so `lib.rowtype.tCells` is the decoder).
+--   * `OutChanged n` — the number of rows an INSERT / UPDATE / DELETE touched.
+--   * `OutOk` — a CREATE TABLE succeeded.
+public export data ExecOut = OutRows (List (List Cell)) | OutChanged Int | OutOk
+
+-- | The rows a statement produced — empty for everything but a SELECT.  This is
+--   what the CLI prints.
+--
+-- > outRows (OutChanged 3)
+-- []
+-- > outRows OutOk
+-- []
+export outRows : ExecOut -> List (List Cell)
+outRows (OutRows rows) = rows
+outRows (OutChanged _) = []
+outRows OutOk = []
+
+-- | The number of rows a statement changed — `0` for a SELECT or a CREATE.
+--
+-- > outChanged (OutChanged 3)
+-- 3
+-- > outChanged OutOk
+-- 0
+export outChanged : ExecOut -> Int
+outChanged (OutChanged n) = n
+outChanged (OutRows _) = 0
+outChanged OutOk = 0
+
+-- ---------------------------------------------------------------------------
+-- Execution
+-- ---------------------------------------------------------------------------
+
+-- | Parse `sql` and run it against the database at `path`.  The whole
+--   `String → ExecOut` path in one call — this is what the CLI drives.
+--
+--   (No doctest: it needs a live database file.  Every statement kind, and every
+--   rejection, is gated end-to-end against the real `sqlite3` CLI by
+--   `sqlite/test/dml_oracle.sh`.)
+export execSql : String -> String -> <FileRead, FileWrite, Mut> Result String ExecOut
+execSql path sql = do
+  st <- parseStmt sql
+  execStmt path st
+
+-- | Run an already-parsed `Stmt` against the database at `path`.
+--
+--   (No doctest: it needs a live database file — see `execSql`.)
+export execStmt : String -> Stmt -> <FileRead, FileWrite, Mut> Result String ExecOut
+execStmt path (SSelect sel) = do
+  db <- openDb path
+  rows <- runSelect db sel tCells
+  Ok (OutRows rows)
+execStmt path (SInsert tbl cols rows) = do
+  cellRows <- foldValues rows []
+  n <- insert path tbl cols cellRows
+  Ok (OutChanged n)
+execStmt path (SUpdate tbl assigns where_) = do
+  n <- update path tbl (map toAssign assigns) (predOf where_)
+  Ok (OutChanged n)
+execStmt path (SDelete tbl where_) = do
+  n <- delete path tbl (predOf where_)
+  Ok (OutChanged n)
+execStmt path (SCreate ct) = do
+  _ <- createTableIn path ct
+  Ok OutOk
+
+toAssign : (String, SqlExpr) -> Assign
+toAssign (col, e) = Assign col e
+
+-- A missing WHERE means "every row": the constant-true predicate.  (`compilePred`
+-- reads a non-NULL, non-zero literal as TRUE, exactly as SQL does.)
+predOf : Option SqlExpr -> Expr Bool
+predOf None = mkE (ELit (LInt 1))
+predOf (Some e) = mkE e
+
+-- ---------------------------------------------------------------------------
+-- VALUES → cells
+-- ---------------------------------------------------------------------------
+
+foldValues : List (List SqlExpr) -> List (List Cell) -> Result String (List (List Cell))
+foldValues [] acc = Ok (reverse acc)
+foldValues (row::rest) acc = do
+  cells <- foldRow row []
+  foldValues rest (cells::acc)
+
+foldRow : List SqlExpr -> List Cell -> Result String (List Cell)
+foldRow [] acc = Ok (reverse acc)
+foldRow (e::rest) acc = do
+  c <- constCell e
+  foldRow rest (c::acc)
+
+-- | Fold one `VALUES` expression to a constant `Cell`.  Literals and constant
+--   arithmetic fold; a column reference, an aggregate, or an operator the value
+--   compiler does not handle is a clean `Err` that NAMES the expression.
+--
+-- > constCell (ELit (LInt 7))
+-- Ok CInt 7
+--
+-- > constCell (EArith AMul (ELit (LInt 2)) (ELit (LInt 3)))
+-- Ok CInt 6
+--
+-- > constCell (ECol "x")
+-- Err "VALUES: 'x' is not a constant expression — a column reference cannot appear in an INSERT's VALUES"
+export constCell : SqlExpr -> Result String Cell
+constCell e = constApply e (compileValue noColumns e)
+
+constApply : SqlExpr -> Result String (List Cell -> Cell) -> Result String Cell
+constApply e (Err _) =
+  Err
+    "VALUES: '\{renderSqlExpr e}' is not a constant expression — a column reference cannot appear in an INSERT's VALUES"
+constApply _ (Ok g) = Ok (g [])
+
+-- The resolver that knows no columns: it is what makes `compileValue` reject a
+-- column reference inside a VALUES list.
+noColumns : String -> Option Int
+noColumns _ = None

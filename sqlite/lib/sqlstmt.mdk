@@ -1,19 +1,25 @@
--- | sqlite.lib.sqlstmt — the SQL **statement** parser: `String -> Select`.
+-- | sqlite.lib.sqlstmt — the SQL **statement** parser: `String -> Stmt`.
 --
 -- Stage 2 of the SQL front end.  `lib.sqlparse` reads an EXPRESSION; this module
--- reads a whole `SELECT` statement into the unified `lib.select.Select` ADT, so a
--- plain SQL string can drive the real query engine:
+-- reads a whole STATEMENT — `SELECT` into the unified `lib.select.Select` ADT,
+-- and the four DML/DDL statements into the `Stmt` ADT — so a plain SQL string can
+-- drive the real query engine and the real write path:
 --
 --     parseSelect "SELECT dept, count(*) FROM emp GROUP BY dept HAVING count(*) > 2"
 --       |> query db rowType
 --
+--     parseStmt "INSERT INTO emp (name, dept) VALUES ('ada', 'eng')"
+--       |> execStmt "emp.db"           -- lib.sqlexec
+--
 -- It is built ON TOP of `lib.sqlparse`'s exported sub-parsers (`sqlExpr`,
--- `sqlIdent`, `keyword`, `symbol`, `lexeme`) — the expression grammar is not
--- forked.
+-- `sqlIdent`, `keyword`, `symbol`, `lexeme`) and `lib.schemadef`'s
+-- `createTableP` — neither the expression grammar nor the DDL grammar is forked.
 --
 -- ## Grammar
 --
 -- ```
+-- stmt    := select | insert | update | delete | create
+--
 -- select  := SELECT [DISTINCT] selList
 --            FROM ident
 --            join*
@@ -22,11 +28,19 @@
 --            [HAVING expr]
 --            [ORDER BY orderKey (',' orderKey)*]
 --            [LIMIT int] [OFFSET int]
---            [';']
 -- selList  := '*' | expr (',' expr)*
 -- join     := [INNER | LEFT [OUTER]] JOIN ident ON expr
 -- orderKey := expr [ASC | DESC]
+--
+-- insert  := INSERT INTO ident [ '(' ident (',' ident)* ')' ]
+--            VALUES row (',' row)*
+-- row     := '(' expr (',' expr)* ')'
+-- update  := UPDATE ident SET ident '=' expr (',' ident '=' expr)* [WHERE expr]
+-- delete  := DELETE FROM ident [WHERE expr]
+-- create  := CREATE TABLE ident '(' colDef (',' colDef)* ')'      -- lib.schemadef
 -- ```
+--
+-- Every statement tolerates a trailing `;`.
 --
 -- `SELECT *` yields the EMPTY `columns` list — that is the `Select` ADT's "no
 -- projection" encoding (see `lib.select`), not a lost clause.
@@ -46,6 +60,11 @@
 --     PARSE time (the executor rejects it too, but later)
 --   * `SELECT *, expr` (the mixed star-and-columns form)
 --   * a schema-qualified table name (`main.users`)
+--   * `INSERT … SELECT`, `INSERT OR REPLACE`, `UPSERT` / `ON CONFLICT`,
+--     `RETURNING`, `INSERT … DEFAULT VALUES`
+--   * `UPDATE … FROM`, `ORDER BY` / `LIMIT` on an UPDATE or DELETE
+--   * every DDL that is not `CREATE TABLE` (`CREATE INDEX`, `ALTER`, `DROP`, …),
+--     and the `CREATE TABLE` constraint forms `lib.schemadef` refuses
 --
 -- ## Committed loops
 --
@@ -54,8 +73,9 @@
 -- underneath it.  The naive `optional (do { keyword "WHERE"; sqlExpr })` would
 -- swallow a broken WHERE whole and blame the failure on a far-away "expected end
 -- of input" (parsec's F5 limitation — a SUCCEEDING alternative discards the
--- deeper failure explored beneath it).  `afterKeyword` / `commaSep1` /
--- `joinClauses` / `groupByClause` / `orderByClause` all follow this shape.
+-- deeper failure explored beneath it).  `afterKeyword` / `commaSep1` (both from
+-- `lib.schemadef`) / `joinClauses` / `groupByClause` / `orderByClause` all follow
+-- this shape.
 
 import parsec.lib.parser.{
   Parser,
@@ -79,6 +99,13 @@ import lib.sqlparse.{
   word,
   hasAgg,
   renderSqlExpr,
+}
+import lib.schemadef.{
+  CreateTable,
+  createTableP,
+  renderCreate,
+  afterKeyword,
+  commaSep1,
 }
 import lib.select.{
   Select,
@@ -342,42 +369,6 @@ intOf s = match toInt s
   None => failWith "malformed integer '\{s}'"
 
 -- ---------------------------------------------------------------------------
--- Generic committed combinators
--- ---------------------------------------------------------------------------
-
--- `optional kw` followed by a MANDATORY `p`.  Once the keyword has matched, a
--- failure in `p` propagates instead of being swallowed by the `optional`.
-afterKeyword : String -> Parser a -> Parser (Option a)
-afterKeyword kw p = do
-  k <- optional (keyword kw)
-  afterKeywordStep k p
-
-afterKeywordStep : Option Unit -> Parser a -> Parser (Option a)
-afterKeywordStep None _ = pure None
-afterKeywordStep (Some _) p = map Some p
-
--- One-or-more `p`, comma separated, COMMITTED: a `,` obliges another `p`.
--- (parsec's `sepBy1` uses `many`, which swallows the failure after a trailing
--- comma and leaves the `,` to surface far away as "expected end of input".)
-commaSep1 : Parser a -> Parser (List a)
-commaSep1 p = do
-  x <- p
-  xs <- commaSepRest p
-  pure (x::xs)
-
-commaSepRest : Parser a -> Parser (List a)
-commaSepRest p = do
-  c <- optional (symbol ",")
-  commaSepStep p c
-
-commaSepStep : Parser a -> Option String -> Parser (List a)
-commaSepStep _ None = pure []
-commaSepStep p (Some _) = do
-  x <- p
-  xs <- commaSepRest p
-  pure (x::xs)
-
--- ---------------------------------------------------------------------------
 -- Assembly: the parsed pieces → a `Select`, through the PUBLIC builders only
 -- ---------------------------------------------------------------------------
 
@@ -518,11 +509,193 @@ runNonDistinct db sel rt =
 export queryStringDistinct : Eq a => Db -> String -> RowType a -> Result String (List a)
 queryStringDistinct db sql rt = do
   sel <- parseSelect sql
-  runEither db sel rt
+  runSelect db sel rt
 
-runEither : Eq a => Db -> Select -> RowType a -> Result String (List a)
-runEither db sel rt =
+-- | Run an already-parsed `Select`, honouring its `DISTINCT` flag (dedup on the
+--   DECODED rows, hence the `Eq a`).  This is what `lib.sqlexec` dispatches a
+--   `SSelect` to; `queryStringDistinct` is the same thing with the parse in front.
+--
+--   (No doctest: it needs a live `Db`.  Gated end-to-end by
+--   `sqlite/test/sql_oracle.sh` and `sqlite/test/dml_oracle.sh`.)
+export runSelect : Eq a => Db -> Select -> RowType a -> Result String (List a)
+runSelect db sel rt =
   if sel.distinct then
     queryDistinct db sel rt
   else
     query db sel rt
+
+-- ---------------------------------------------------------------------------
+-- The whole-statement ADT
+-- ---------------------------------------------------------------------------
+
+-- | Any statement this library can execute.  One constructor per SQL statement
+--   kind; `lib.sqlexec` is the executor that discriminates on it.
+--
+--   * `SSelect sel` — a query (`lib.select`'s ADT).
+--   * `SInsert tbl cols rows` — `cols` is `None` for the column-list-less form
+--     (values map POSITIONALLY against the schema) and `Some names` otherwise
+--     (values map BY NAME, omitted columns get NULL).  `rows` is the `VALUES`
+--     list; each row is a list of value EXPRESSIONS (a constant expression like
+--     `2 * 3` is folded by the executor; a column reference is an error there).
+--   * `SUpdate tbl assigns where_` — `assigns` is the `SET` list in source order.
+--   * `SDelete tbl where_`.
+--   * `SCreate ct` — `lib.schemadef`'s parsed `CREATE TABLE`.
+--
+--   Positional, not records: three of these carry a bare `String` table name and
+--   a `List SqlExpr`, and giving them record fields would put same-named fields
+--   in a module that `lib.mutate` and `lib.sqlexec` both import — the exact shape
+--   of the cross-module record-field slot bug logged in `findings/`.
+public export data Stmt =
+  | SSelect Select
+  | SInsert String (Option (List String)) (List (List SqlExpr))
+  | SUpdate String (List (String, SqlExpr)) (Option SqlExpr)
+  | SDelete String (Option SqlExpr)
+  | SCreate CreateTable
+
+-- | Parse ANY supported statement.  A trailing `;` is tolerated; anything left
+--   over is an error, never a silently dropped clause.
+--
+-- > map renderStmt (parseStmt "SELECT name FROM users WHERE age > 20")
+-- Ok "SELECT name FROM users WHERE (age > 20)"
+--
+-- > map renderStmt (parseStmt "insert into users values (1, 'ada', 30)")
+-- Ok "INSERT INTO users VALUES (1, 'ada', 30)"
+--
+-- > map renderStmt (parseStmt "INSERT INTO users (id, name) VALUES (1,'ada'), (2,'bob')")
+-- Ok "INSERT INTO users (id, name) VALUES (1, 'ada'), (2, 'bob')"
+--
+-- > map renderStmt (parseStmt "UPDATE users SET age = age + 1, city = 'pdx' WHERE id = 2;")
+-- Ok "UPDATE users SET age = (age + 1), city = 'pdx' WHERE (id = 2)"
+--
+-- > map renderStmt (parseStmt "DELETE FROM users")
+-- Ok "DELETE FROM users"
+--
+-- > map renderStmt (parseStmt "CREATE TABLE t(id INTEGER PRIMARY KEY, n TEXT NOT NULL)")
+-- Ok "CREATE TABLE t(id INTEGER PRIMARY KEY, n TEXT NOT NULL)"
+--
+-- Every unsupported statement kind is named, not shrugged at:
+--
+-- > parseStmt "DROP TABLE users"
+-- Err "expected SELECT, INSERT, UPDATE, DELETE or CREATE TABLE at 0"
+--
+-- > parseStmt "INSERT INTO t SELECT a FROM u"
+-- Err "expected keyword 'VALUES' at 14"
+--
+-- > parseStmt "DELETE FROM t LIMIT 1"
+-- Err "unsupported SQL: 'LIMIT' at 20"
+export parseStmt : String -> Result String Stmt
+parseStmt s = runParser statementAny s
+
+statementAny : Parser Stmt
+statementAny = do
+  _ <- spaces
+  st <- stmtBody
+  _ <- optional (symbol ";")
+  _ <- endOfStatement
+  pure st
+
+-- The dispatcher.  `label` only rewrites a failure that consumed NOTHING, so a
+-- statement that picked its branch and then failed deeper (a broken VALUES list,
+-- say) keeps its own, more specific message.
+stmtBody : Parser Stmt
+stmtBody = label
+  "expected SELECT, INSERT, UPDATE, DELETE or CREATE TABLE"
+  (choice
+    [selectBranch, insertBranch, updateBranch, deleteBranch, createBranch])
+
+selectBranch : Parser Stmt
+selectBranch = do
+  sel <- selectStmt
+  pure (SSelect sel)
+
+createBranch : Parser Stmt
+createBranch = do
+  ct <- createTableP
+  pure (SCreate ct)
+
+-- ---------------------------------------------------------------------------
+-- INSERT
+-- ---------------------------------------------------------------------------
+
+insertBranch : Parser Stmt
+insertBranch = do
+  _ <- keyword "INSERT"
+  _ <- keyword "INTO"
+  tbl <- tableName
+  cols <- optional insertCols
+  _ <- keyword "VALUES"
+  rows <- commaSep1 valuesRow
+  pure (SInsert tbl cols rows)
+
+insertCols : Parser (List String)
+insertCols = do
+  _ <- symbol "("
+  ns <- commaSep1 sqlIdent
+  _ <- symbol ")"
+  pure ns
+
+valuesRow : Parser (List SqlExpr)
+valuesRow = do
+  _ <- symbol "("
+  es <- commaSep1 sqlExpr
+  _ <- symbol ")"
+  pure es
+
+-- ---------------------------------------------------------------------------
+-- UPDATE
+-- ---------------------------------------------------------------------------
+
+updateBranch : Parser Stmt
+updateBranch = do
+  _ <- keyword "UPDATE"
+  tbl <- tableName
+  _ <- keyword "SET"
+  asgs <- commaSep1 setAssign
+  w <- afterKeyword "WHERE" (predicate "WHERE")
+  pure (SUpdate tbl asgs w)
+
+setAssign : Parser (String, SqlExpr)
+setAssign = do
+  col <- sqlIdent
+  _ <- symbol "="
+  e <- sqlExpr
+  pure (col, e)
+
+-- ---------------------------------------------------------------------------
+-- DELETE
+-- ---------------------------------------------------------------------------
+
+deleteBranch : Parser Stmt
+deleteBranch = do
+  _ <- keyword "DELETE"
+  _ <- keyword "FROM"
+  tbl <- tableName
+  w <- afterKeyword "WHERE" (predicate "WHERE")
+  pure (SDelete tbl w)
+
+-- ---------------------------------------------------------------------------
+-- renderStmt — the inverse projection (literals INLINED), as `renderSelect` is
+-- for a SELECT.  `parseStmt . renderStmt` is the identity on `Stmt` (proved over
+-- a corpus in `sqlite/dml_probe.mdk`).
+-- ---------------------------------------------------------------------------
+
+-- | Render any `Stmt` back to SQL text with literals inlined.
+--
+-- > map renderStmt (parseStmt "delete from t where a is null")
+-- Ok "DELETE FROM t WHERE (a IS NULL)"
+export renderStmt : Stmt -> String
+renderStmt (SSelect sel) = renderSelect sel
+renderStmt (SCreate ct) = renderCreate ct
+renderStmt (SInsert tbl cols rows) = "INSERT INTO \{tbl}\{renderInsertCols cols} VALUES \{join ", " (map renderValuesRow rows)}"
+renderStmt (SUpdate tbl asgs w) = "UPDATE \{tbl} SET \{join ", " (map renderAssign asgs)}\{renderOpt " WHERE " w}"
+renderStmt (SDelete tbl w) = "DELETE FROM \{tbl}\{renderOpt " WHERE " w}"
+
+renderInsertCols : Option (List String) -> String
+renderInsertCols None = ""
+renderInsertCols (Some ns) = " (\{join ", " ns})"
+
+renderValuesRow : List SqlExpr -> String
+renderValuesRow es = "(\{join ", " (map renderSqlExpr es)})"
+
+renderAssign : (String, SqlExpr) -> String
+renderAssign (col, e) = "\{col} = \{renderSqlExpr e}"

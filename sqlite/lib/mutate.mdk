@@ -1,42 +1,71 @@
--- | sqlite.lib.mutate — DELETE and UPDATE via read-transform-rewrite.
+-- | sqlite.lib.mutate — INSERT, UPDATE and DELETE via read-transform-rewrite,
+--   plus CREATE TABLE.
 --
--- Pipeline (DELETE):
+-- All three DML statements share ONE engine, `rewriteTable`:
+--
 --   1. Open the database; read the schema.
 --   2. Refusal guard: if ANY schema entry is a secondary index (`type='index'`)
 --      or any table's CREATE SQL contains "WITHOUT ROWID", return a clean `Err`.
 --      Indexes are silently dropped by the rewrite (and `integrity_check` still
 --      says ok — the only protection is this guard).
 --   3. Read ALL tables' rows with their original rowids via `scanTableRowsIpk`.
---   4. For the TARGET table, compile the `Expr Bool` WHERE predicate via
---      `compilePred` (reusing `lib.select`) and FILTER OUT matching rows.
---      Keep track of how many rows were removed.
+--   4. Hand the TARGET table's stored `CREATE` text and its `(rowid, cells)` rows
+--      to a caller-supplied pure transform, which returns the new row list and a
+--      changed-row count.  DELETE filters, UPDATE maps, INSERT appends.
 --   5. Rewrite the WHOLE file via the EXPLICIT-ROWID writer
 --      (`buildDatabaseMultiExplicit`) — preserving every surviving row's original
 --      rowid (gaps included) and every non-target table byte-for-byte-equivalently.
---   6. Return `Ok deletedCount`.
+--   6. Return `Ok changedCount`.
 --
--- Pipeline (UPDATE):
---   Same as DELETE, but instead of filtering rows, each matching row has its
---   cells at the assigned-column positions replaced by the literal values.
---   The row's rowid is always preserved (only non-IPK cells may be changed;
---   assigning the IPK column is refused with a clean `Err`).
+-- `createTableIn` is the odd one out: it ADDS a table (to a new file, or to an
+-- existing one) rather than transforming an existing table's rows, so it drives
+-- the same writer directly.
 --
--- Refusal cases (clean `Err`, never silent corruption):
---   * Any schema entry with `type='index'` (secondary index would be silently
---     dropped; `integrity_check` can't detect the loss).
---   * Any table CREATE SQL containing "WITHOUT ROWID" (rowid-free tables are
---     outside the write path's rowid model).
---   * Unknown target table name.
---   * `compilePred` error (unknown column in WHERE).
---   * UPDATE targeting the INTEGER PRIMARY KEY column (would move the rowid).
---   * UPDATE assigning an unknown column name.
+-- ## Constraint enforcement (INSERT and UPDATE)
+--
+-- Both re-parse the target table's stored `CREATE` text with `lib.schemadef` and
+-- then, for every cell they are about to store:
+--
+--   * apply the column's TYPE AFFINITY (`INSERT INTO t(n) VALUES('5')` stores the
+--     INTEGER 5 when `n` is INTEGER — skipping this is a silent wrong answer);
+--   * enforce `NOT NULL`;
+--   * for the `INTEGER PRIMARY KEY` column, enforce integer-or-NULL, auto-assign
+--     `max(rowid)+1` on NULL, and reject a duplicate rowid.
+--
+-- A stored `CREATE` text `lib.schemadef` cannot parse is a REFUSAL, not a
+-- best-effort write: a schema we do not understand may carry a constraint
+-- (`DEFAULT`, `UNIQUE`, `CHECK`) that a blind rewrite would silently violate.
+--
+-- ## The IPK cross-check
+--
+-- The READ path finds the rowid-alias column with `lib.sqlite.pkColumnIndex`, a
+-- case-SENSITIVE scan for the literal `"INTEGER PRIMARY KEY"`.  `lib.schemadef`
+-- finds it by parsing.  If the two disagree — a sqlite3-authored
+-- `id integer primary key` in lowercase does exactly that — the writer would put
+-- the value in the record while the reader looks for it in the rowid field, i.e.
+-- CORRUPT the table.  Every write path calls `ipkAgrees` and refuses on a
+-- mismatch.
+--
+-- ## Refusal cases (clean `Err`, never silent corruption)
+--
+--   * Any schema entry with `type='index'` (a secondary index would be silently
+--     dropped; `integrity_check` cannot detect the loss).
+--   * Any table CREATE SQL containing "WITHOUT ROWID".
+--   * A target table whose stored CREATE text `lib.schemadef` cannot parse, or
+--     whose IPK column the two finders disagree about.
+--   * Unknown target table name; unknown column in a WHERE, a SET, or an INSERT
+--     column list; a duplicate column in an INSERT column list.
+--   * `UPDATE` targeting the INTEGER PRIMARY KEY column (it would move the rowid).
+--   * Arity mismatch between an INSERT's values and the table's columns.
+--   * A NOT NULL violation, a non-integer IPK value, a duplicate rowid.
 --   * Write-path errors (sqlite_master overflow, etc.) propagate.
 --
--- NOTE: because both statements rewrite the WHOLE file, a table containing a
--- row too large for one page USED to make every UPDATE and DELETE on it fail —
--- even one matching no rows.  The write path now emits overflow pages
--- (`lib.overflow` / `lib.dbwriter`), so multi-KB TEXT/BLOB rows round-trip
--- through a mutation unharmed; `sqlite/test/overflow_oracle.sh` gates it.
+-- NOTE: because every statement rewrites the WHOLE file, a table containing a
+-- row too large for one page USED to make every mutation on it fail — even one
+-- matching no rows.  The write path now emits overflow pages (`lib.overflow` /
+-- `lib.dbwriter`), so multi-KB TEXT/BLOB rows round-trip through a mutation
+-- unharmed; `sqlite/test/overflow_oracle.sh` and `sqlite/test/dml_oracle.sh`
+-- gate it.
 
 import lib.sqlite.{
   Db,
@@ -53,9 +82,24 @@ import lib.sqlite.{
 }
 import lib.btree.{Row, rowRowid}
 import lib.dbwriter.{buildDatabaseMultiExplicit}
-import lib.recordfmt.{Cell}
+import lib.recordfmt.{Cell, CNull, CInt}
+import lib.schemadef.{
+  CreateTable,
+  ColDef,
+  parseCreateTable,
+  renderCreate,
+  ctTable,
+  ctCols,
+  ctIpkIndex,
+  ctColIndex,
+  cdName,
+  cdNotNull,
+  cdAffinity,
+  applyAffinity,
+  ipkAgrees,
+}
 import lib.select.{Expr, SqlExpr, unExpr, compilePred, compileValue}
-import list.{reverse}
+import list.{reverse, get, sortBy, zip}
 
 -- ---------------------------------------------------------------------------
 -- Refusal guard
@@ -158,8 +202,113 @@ requireSome _ (Some x) = Ok x
 requireSome msg None = Err msg
 
 -- ---------------------------------------------------------------------------
--- Row partition helpers
+-- The shared read-transform-rewrite engine
 -- ---------------------------------------------------------------------------
+
+-- | Read the whole database, hand the target table's stored `CREATE` text and
+--   its `(rowid, cells)` rows to the pure transform `f`, and rewrite the file
+--   with `f`'s result.  `verb` only names the statement in an error message.
+--   Returns `f`'s changed-row count.
+--
+--   Exported because it is the reusable half of every DML statement: a new
+--   row-level statement is a new `f`, not a new storage engine.
+--
+--   (No doctest: it needs a live database file.  Gated end-to-end against the
+--   real `sqlite3` CLI by `sqlite/test/dml_oracle.sh`.)
+export rewriteTable : String -> String -> String -> (String -> List (Int, List Cell) -> Result String (List (Int, List Cell), Int)) -> <FileRead, FileWrite, Mut> Result String Int
+rewriteTable verb path table f = do
+  db <- openDb path
+  (img, cnt) <- rewriteImage verb db table f
+  _ <- writeFileBytes path img
+  Ok cnt
+
+-- Build the new database image.  Pure-ish: only `buildDatabaseMultiExplicit`
+-- carries `<Mut>`.
+rewriteImage : String -> Db -> String -> (String -> List (Int, List Cell) -> Result String (List (Int, List Cell), Int)) -> <Mut> Result String (Array Int, Int)
+rewriteImage verb db table f = do
+  schema <- readSchema db
+  _ <- refuseIfUnsupported schema
+  specs <- collectTableSpecs db schema []
+  (_, sql, pkIdx, rows) <- requireSome "\{verb}: table not found: \{table}" (findSpecByName specs table)
+  (newRows, cnt) <- f sql rows
+  let newSpecs = replaceSpec specs table (table, sql, pkIdx, newRows)
+  img <- buildDatabaseMultiExplicit newSpecs
+  Ok (img, cnt)
+
+-- ---------------------------------------------------------------------------
+-- Schema of the target table (the constraint oracle)
+-- ---------------------------------------------------------------------------
+
+-- Parse the table's stored `CREATE` text and cross-check its IPK against the
+-- READ path's `pkColumnIndex`.  Any disagreement, or any CREATE text we cannot
+-- parse, is a refusal — see the header.
+targetSchema : String -> Result String CreateTable
+targetSchema sql = do
+  ct <- schemaOf sql
+  ipkCheck ct sql
+
+schemaOf : String -> Result String CreateTable
+schemaOf sql = match parseCreateTable sql
+  Ok ct => Ok ct
+  Err e => Err "cannot write to a table whose stored schema this library cannot parse (\{e}): \{sql}"
+
+ipkCheck : CreateTable -> String -> Result String CreateTable
+ipkCheck ct sql =
+  if ipkAgrees ct (pkColumnIndex sql) then
+    Ok ct
+  else
+    Err "refusing to write: the parsed schema and the reader's INTEGER PRIMARY KEY scan disagree about the rowid column (parsed \{renderCreate ct}, stored \{sql}) — writing would corrupt the table"
+
+-- ---------------------------------------------------------------------------
+-- Per-cell constraint enforcement
+-- ---------------------------------------------------------------------------
+
+isNullCell : Cell -> Bool
+isNullCell c = c == CNull
+
+-- Coerce a value toward column `idx`'s affinity, then enforce its NOT NULL.
+coerceAt : CreateTable -> Int -> Cell -> Result String Cell
+coerceAt ct idx c = match get idx (ctCols ct)
+  None => Err "internal: column index \{intToString idx} out of range for \{ctTable ct}"
+  Some cd => coerceCell (ctTable ct) cd c
+
+coerceCell : String -> ColDef -> Cell -> Result String Cell
+coerceCell tbl cd c = nullCheck tbl cd (applyAffinity (cdAffinity cd) c)
+
+nullCheck : String -> ColDef -> Cell -> Result String Cell
+nullCheck tbl cd v =
+  if cdNotNull cd && isNullCell v then
+    Err "NOT NULL constraint failed: \{tbl}.\{cdName cd}"
+  else
+    Ok v
+
+-- Coerce a whole row, cell by cell, left to right.
+coerceRow : CreateTable -> List Cell -> Result String (List Cell)
+coerceRow ct cells = coerceRowGo ct cells 0 []
+
+coerceRowGo : CreateTable -> List Cell -> Int -> List Cell -> Result String (List Cell)
+coerceRowGo _ [] _ acc = Ok (reverse acc)
+coerceRowGo ct (c::rest) i acc = do
+  v <- coerceAt ct i c
+  coerceRowGo ct rest (i + 1) (v::acc)
+
+-- ---------------------------------------------------------------------------
+-- DELETE
+-- ---------------------------------------------------------------------------
+
+-- | Delete all rows of `table` in the SQLite file at `path` where `where_`
+--   evaluates to true.  Returns `Ok n` where `n` is the count of rows deleted.
+export delete : String -> String -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
+delete path table where_ = rewriteTable
+  "delete"
+  path
+  table
+  (sql rows => deleteRows sql rows (unExpr where_))
+
+deleteRows : String -> List (Int, List Cell) -> SqlExpr -> Result String (List (Int, List Cell), Int)
+deleteRows sql rows whereExpr = do
+  pred <- compilePred (columnIndex sql) whereExpr
+  Ok (partitionRows pred rows)
 
 partitionRows : (List Cell -> Bool) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
 partitionRows pred rows = partitionGo pred rows [] 0
@@ -171,34 +320,6 @@ partitionGo pred ((rowid, cells)::rest) acc n =
     partitionGo pred rest acc (n + 1)
   else
     partitionGo pred rest ((rowid, cells)::acc) n
-
--- ---------------------------------------------------------------------------
--- DELETE — read-transform-rewrite
--- ---------------------------------------------------------------------------
-
--- | Delete all rows of `table` in the SQLite file at `path` where `where_`
---   evaluates to true.  Returns `Ok n` where `n` is the count of rows deleted.
-export delete : String -> String -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-delete path table where_ = do
-  db <- openDb path
-  (img, cnt) <- buildImage db table (unExpr where_)
-  _ <- writeFileBytes path img
-  Ok cnt
-
--- Build the new database image after filtering the target table.
--- Pure-ish: only `buildDatabaseMultiExplicit` carries `<Mut>`.
-buildImage : Db -> String -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildImage db table whereExpr = do
-  schema <- readSchema db
-  _ <- refuseIfUnsupported schema
-  specs <- collectTableSpecs db schema []
-  (_, sql, pkIdx, rows) <- requireSome "delete: table not found: \{table}" (findSpecByName specs table)
-  let lookup = columnIndex sql
-  pred <- compilePred lookup whereExpr
-  let (survivors, cnt) = partitionRows pred rows
-  let newSpecs = replaceSpec specs table (table, sql, pkIdx, survivors)
-  img <- buildDatabaseMultiExplicit newSpecs
-  Ok (img, cnt)
 
 -- ---------------------------------------------------------------------------
 -- Assign — a SET assignment for UPDATE
@@ -217,57 +338,45 @@ export assign : String -> Expr a -> Assign
 assign col e = Assign col (unExpr e)
 
 -- ---------------------------------------------------------------------------
--- UPDATE — read-transform-rewrite
+-- UPDATE
 -- ---------------------------------------------------------------------------
 
 -- | Update all rows of `table` in the SQLite file at `path` where `where_`
 --   evaluates to true, applying each `Assign` to the matching rows.
 --   Returns `Ok n` where `n` is the count of rows updated.
 --
---   Refused (clean `Err`) when:
---     * The database has secondary indexes or WITHOUT ROWID tables.
---     * Any `Assign` targets the table's INTEGER PRIMARY KEY column.
---     * Any `Assign` names an unknown column.
---     * The target table is not found.
+--   Every assigned value goes through the column's affinity and its NOT NULL
+--   check (see the header), so `SET n = '5'` on an INTEGER column stores the
+--   integer 5, exactly as sqlite3 does, and `SET n = NULL` on a NOT NULL column
+--   is an `Err` rather than a quietly-corrupted row.
 export update : String -> String -> List Assign -> Expr Bool -> <FileRead, FileWrite, Mut> Result String Int
-update path table assigns where_ = do
-  db <- openDb path
-  (img, cnt) <- buildUpdateImage db table assigns (unExpr where_)
-  _ <- writeFileBytes path img
-  Ok cnt
+update path table assigns where_ = rewriteTable
+  "update"
+  path
+  table
+  (sql rows => updateRows sql rows assigns (unExpr where_))
 
--- Build the new database image after applying the SET assignments to matching rows.
-buildUpdateImage : Db -> String -> List Assign -> SqlExpr -> <Mut> Result String (Array Int, Int)
-buildUpdateImage db table assigns whereExpr = do
-  schema <- readSchema db
-  _ <- refuseIfUnsupported schema
-  specs <- collectTableSpecs db schema []
-  (_, sql, pkIdx, rows) <- requireSome "update: table not found: \{table}" (findSpecByName specs table)
+updateRows : String -> List (Int, List Cell) -> List Assign -> SqlExpr -> Result String (List (Int, List Cell), Int)
+updateRows sql rows assigns whereExpr = do
+  ct <- targetSchema sql
   let lookup = columnIndex sql
-  _ <- refuseIpkAssign pkIdx sql assigns
+  _ <- refuseIpkAssign (ctIpkIndex ct) ct assigns
   idxedAssign <- resolveAssigns lookup assigns []
   pred <- compilePred lookup whereExpr
-  let (updatedRows, cnt) = applyUpdate pred idxedAssign rows
-  let newSpecs = replaceSpec specs table (table, sql, pkIdx, updatedRows)
-  img <- buildDatabaseMultiExplicit newSpecs
-  Ok (img, cnt)
+  applyUpdate ct pred idxedAssign rows
 
--- Refuse if any Assign targets the IPK column.
---
--- NOTE: the third clause's `pkIdx` is always `Some _` here — the first clause
--- already catches every `None` call regardless of `sql`/`assigns`, so a
--- `None`-arm inside this clause's body would be dead code.  Written directly
--- against the bound `idx` (== `pkIdx`'s payload) instead, dropping that arm.
-refuseIpkAssign : Option Int -> String -> List Assign -> Result String Unit
+-- Refuse if any Assign targets the IPK column: it is the rowid, and moving a
+-- rowid is a delete+insert, not an update.
+refuseIpkAssign : Option Int -> CreateTable -> List Assign -> Result String Unit
 refuseIpkAssign None _ _ = Ok ()
 refuseIpkAssign _ _ [] = Ok ()
-refuseIpkAssign (Some idx) sql ((Assign col _)::rest) = match columnIndex sql col
-  None => refuseIpkAssign (Some idx) sql rest
+refuseIpkAssign (Some idx) ct ((Assign col _)::rest) = match ctColIndex ct col
+  None => refuseIpkAssign (Some idx) ct rest
   Some colIdx =>
     if colIdx == idx then
       Err "cannot UPDATE the INTEGER PRIMARY KEY column"
     else
-      refuseIpkAssign (Some idx) sql rest
+      refuseIpkAssign (Some idx) ct rest
 
 -- Resolve each Assign's column name to an index AND compile its RHS `SqlExpr`
 -- to a per-row `List Cell -> Cell` accessor (via the exported `compileValue`).
@@ -284,27 +393,28 @@ resolveAssigns lookup ((Assign col rhs)::rest) acc = match lookup col
 -- Returns the (possibly-modified) row list and the count of rows changed.
 -- Each RHS accessor is evaluated against the row's ORIGINAL (pre-update) cells,
 -- so a `SET a = b, b = a` swap reads both originals before any assignment lands.
-applyUpdate : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
-applyUpdate pred assigns rows = applyUpdateGo pred assigns rows [] 0
+applyUpdate : CreateTable -> (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> Result String (List (Int, List Cell), Int)
+applyUpdate ct pred assigns rows = applyUpdateGo ct pred assigns rows [] 0
 
-applyUpdateGo : (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> (List (Int, List Cell), Int)
-applyUpdateGo _ _ [] acc n = (reverse acc, n)
-applyUpdateGo pred assigns ((rowid, cells)::rest) acc n =
-  if pred cells
-  then
+applyUpdateGo : CreateTable -> (List Cell -> Bool) -> List (Int, List Cell -> Cell) -> List (Int, List Cell) -> List (Int, List Cell) -> Int -> Result String (List (Int, List Cell), Int)
+applyUpdateGo _ _ _ [] acc n = Ok (reverse acc, n)
+applyUpdateGo ct pred assigns ((rowid, cells)::rest) acc n =
+  if pred cells then do
     -- Evaluate every RHS against the ORIGINAL cells first, then apply.
-    let resolved = evalAssignsAt assigns cells
+    resolved <- evalAssignsAt ct assigns cells []
     let newCells = applyCellAssigns resolved cells
-    applyUpdateGo pred assigns rest ((rowid, newCells) :: acc) (n + 1)
+    applyUpdateGo ct pred assigns rest ((rowid, newCells) :: acc) (n + 1)
   else
-    applyUpdateGo pred assigns rest ((rowid, cells) :: acc) n
+    applyUpdateGo ct pred assigns rest ((rowid, cells) :: acc) n
 
--- Evaluate each (idx, accessor) against the given (original) cells, yielding
--- the constant (idx, Cell) replacements to apply.
-evalAssignsAt : List (Int, List Cell -> Cell) -> List Cell -> List (Int, Cell)
-evalAssignsAt [] _ = []
-evalAssignsAt ((idx, g)::rest) cells =
-  (idx, g cells) :: evalAssignsAt rest cells
+-- Evaluate each (idx, accessor) against the given (original) cells, coerce the
+-- result to the column's affinity and enforce its NOT NULL, yielding the
+-- constant (idx, Cell) replacements to apply.
+evalAssignsAt : CreateTable -> List (Int, List Cell -> Cell) -> List Cell -> List (Int, Cell) -> Result String (List (Int, Cell))
+evalAssignsAt _ [] _ acc = Ok (reverse acc)
+evalAssignsAt ct ((idx, g)::rest) cells acc = do
+  v <- coerceAt ct idx (g cells)
+  evalAssignsAt ct rest cells ((idx, v)::acc)
 
 -- Apply a list of (index, Cell) replacements to a cell list.
 applyCellAssigns : List (Int, Cell) -> List Cell -> List Cell
@@ -324,3 +434,190 @@ findAssign ((i, cell)::rest) idx orig =
     cell
   else
     findAssign rest idx orig
+
+-- ---------------------------------------------------------------------------
+-- INSERT
+-- ---------------------------------------------------------------------------
+
+-- | Insert `rows` into `table` of the SQLite file at `path`.
+--
+--   `cols` is `None` for the column-list-less form — each row's values map
+--   POSITIONALLY against the schema and must be exactly as wide as the table.
+--   `Some names` maps BY NAME; every column not named gets NULL (which is then
+--   subject to that column's NOT NULL check, and, for the IPK column, to rowid
+--   auto-assignment).
+--
+--   Rowid handling follows sqlite3 exactly: for an `INTEGER PRIMARY KEY` table
+--   the IPK cell IS the rowid — supplied ⇒ used verbatim (duplicate ⇒ `Err`),
+--   NULL or omitted ⇒ `max(rowid) + 1`.  A table without an IPK auto-assigns
+--   `max(rowid) + 1` too.  The surviving rows are re-sorted into rowid order, so
+--   an explicit rowid that lands BEFORE existing rows is written in the right
+--   place rather than corrupting the b-tree's key ordering.
+--
+--   Returns `Ok n`, the number of rows inserted.
+--
+--   (No doctest: it needs a live database file.  Gated end-to-end against the
+--   real `sqlite3` CLI by `sqlite/test/dml_oracle.sh`.)
+export insert : String -> String -> Option (List String) -> List (List Cell) -> <FileRead, FileWrite, Mut> Result String Int
+insert path table cols rows = rewriteTable
+  "insert"
+  path
+  table
+  (sql existing => insertRows sql existing cols rows)
+
+insertRows : String -> List (Int, List Cell) -> Option (List String) -> List (List Cell) -> Result String (List (Int, List Cell), Int)
+insertRows sql existing cols rows = do
+  ct <- targetSchema sql
+  positional <- mapRows ct cols rows []
+  built <- assignRowids ct (ctIpkIndex ct) (nextRowid existing) (rowidsOf existing) positional []
+  Ok (sortBy byRowid (existing ++ built), length built)
+
+byRowid : (Int, List Cell) -> (Int, List Cell) -> Ordering
+byRowid (a, _) (b, _) = compare a b
+
+rowidsOf : List (Int, List Cell) -> List Int
+rowidsOf rows = map (r => rowidOf r) rows
+
+rowidOf : (Int, List Cell) -> Int
+rowidOf (rid, _) = rid
+
+-- `max(rowid) + 1`, or 1 for an empty table — sqlite3's auto-rowid rule.
+nextRowid : List (Int, List Cell) -> Int
+nextRowid rows = fold (best r => max best (rowidOf r)) 0 rows + 1
+
+-- ---- values → full positional row -----------------------------------------
+
+mapRows : CreateTable -> Option (List String) -> List (List Cell) -> List (List Cell) -> Result String (List (List Cell))
+mapRows _ _ [] acc = Ok (reverse acc)
+mapRows ct cols (r::rest) acc = do
+  row <- mapRow ct cols r
+  mapRows ct cols rest (row::acc)
+
+mapRow : CreateTable -> Option (List String) -> List Cell -> Result String (List Cell)
+mapRow ct None vals = positionalRow ct vals (length (ctCols ct)) (length vals)
+mapRow ct (Some names) vals =
+  namedRow ct names vals (length names) (length vals)
+
+positionalRow : CreateTable -> List Cell -> Int -> Int -> Result String (List Cell)
+positionalRow ct vals want got =
+  if want == got then
+    Ok vals
+  else
+    Err "table \{ctTable ct} has \{intToString want} columns but \{intToString got} values were supplied"
+
+namedRow : CreateTable -> List String -> List Cell -> Int -> Int -> Result String (List Cell)
+namedRow ct names vals want got =
+  if want != got then Err "\{intToString want} columns named but \{intToString got} values supplied"
+  else do
+    idxs <- resolveColNames ct names []
+    Ok (scatter (length (ctCols ct)) idxs vals)
+
+resolveColNames : CreateTable -> List String -> List Int -> Result String (List Int)
+resolveColNames _ [] acc = Ok (reverse acc)
+resolveColNames ct (n::rest) acc = match ctColIndex ct n
+  None => Err "table \{ctTable ct} has no column named '\{n}'"
+  Some i =>
+    if elem i acc then
+      Err "column '\{n}' named more than once"
+    else
+      resolveColNames ct rest (i::acc)
+
+-- Place each value at its column index; every unnamed column gets NULL.
+scatter : Int -> List Int -> List Cell -> List Cell
+scatter width idxs vals = scatterGo width (zip idxs vals) 0 []
+
+scatterGo : Int -> List (Int, Cell) -> Int -> List Cell -> List Cell
+scatterGo width pairs i acc =
+  if i >= width then
+    reverse acc
+  else
+    scatterGo width pairs (i + 1) (findAssign pairs i CNull :: acc)
+
+-- ---- rowid assignment ------------------------------------------------------
+
+-- Walk the new rows left to right, giving each its rowid (explicit IPK value or
+-- the running auto-increment), coercing every cell, and rejecting a duplicate.
+assignRowids : CreateTable -> Option Int -> Int -> List Int -> List (List Cell) -> List (Int, List Cell) -> Result String (List (Int, List Cell))
+assignRowids _ _ _ _ [] acc = Ok (reverse acc)
+assignRowids ct ipk next taken (row::rest) acc = do
+  coerced <- coerceRow ct row
+  (rid, cells) <- rowWithRowid ct ipk next coerced
+  _ <- refuseDuplicate ct ipk rid taken
+  assignRowids ct ipk (max next rid + 1) (rid::taken) rest ((rid, cells)::acc)
+
+-- For an IPK table the rowid IS the IPK cell (auto-assigned when NULL, and
+-- written back into the cell so the reader's `rowCellsWithIpk` sees it).  For a
+-- table without an IPK the rowid is the running auto-increment.
+rowWithRowid : CreateTable -> Option Int -> Int -> List Cell -> Result String (Int, List Cell)
+rowWithRowid _ None next cells = Ok (next, cells)
+rowWithRowid ct (Some i) next cells = match get i cells
+  None => Err "internal: IPK column \{intToString i} missing from row"
+  Some CNull => Ok (next, applyCellAssigns [(i, CInt next)] cells)
+  Some (CInt v) => Ok (v, cells)
+  Some _ => Err "datatype mismatch: the INTEGER PRIMARY KEY column '\{ipkName ct i}' of \{ctTable ct} must be an integer or NULL"
+
+ipkName : CreateTable -> Int -> String
+ipkName ct i = match get i (ctCols ct)
+  None => "?"
+  Some cd => cdName cd
+
+refuseDuplicate : CreateTable -> Option Int -> Int -> List Int -> Result String Unit
+refuseDuplicate ct ipk rid taken =
+  if elem rid taken then
+    Err "UNIQUE constraint failed: \{ctTable ct}.\{dupKeyName ct ipk}"
+  else
+    Ok ()
+
+dupKeyName : CreateTable -> Option Int -> String
+dupKeyName _ None = "rowid"
+dupKeyName ct (Some i) = ipkName ct i
+
+-- ---------------------------------------------------------------------------
+-- CREATE TABLE
+-- ---------------------------------------------------------------------------
+
+-- | Create `ct` in the SQLite file at `path`, which may or may not exist yet.
+--
+--   * The file does not exist ⇒ a fresh single-table database.
+--   * The file exists ⇒ the whole database is read and rewritten with the new
+--     (empty) table appended, exactly as a DML statement is.  An existing table
+--     of the same name is an `Err` (sqlite3 says `table t already exists`), never
+--     a silent replacement.
+--
+--   The stored `CREATE` text is `renderCreate ct`, NOT the user's verbatim SQL:
+--   the read path's `pkColumnIndex` scans for the literal, case-sensitive
+--   `"INTEGER PRIMARY KEY"`, so a normalized rendering is what keeps the rowid
+--   alias findable.  The column names, order, types and constraints are exactly
+--   as written.
+--
+--   (No doctest: it needs a live database file.  Gated end-to-end against the
+--   real `sqlite3` CLI by `sqlite/test/dml_oracle.sh`.)
+export createTableIn : String -> CreateTable -> <FileRead, FileWrite, Mut> Result String Unit
+createTableIn path ct = createWith path ct (fileExists path)
+
+-- (`fileExists` yields a bare `Bool`, not a `Result`, so it cannot be `<-`-bound
+-- inside the Result `do` below — it is threaded in as a parameter instead.)
+createWith : String -> CreateTable -> Bool -> <FileRead, FileWrite, Mut> Result String Unit
+createWith path ct exists = do
+  img <- createImage path ct exists
+  writeFileBytes path img
+
+createImage : String -> CreateTable -> Bool -> <FileRead, Mut> Result String (Array Int)
+createImage _ ct False = buildDatabaseMultiExplicit [newSpec ct]
+createImage path ct True = do
+  db <- openDb path
+  schema <- readSchema db
+  _ <- refuseIfUnsupported schema
+  _ <- refuseExisting ct schema
+  specs <- collectTableSpecs db schema []
+  buildDatabaseMultiExplicit (specs ++ [newSpec ct])
+
+newSpec : CreateTable -> (String, String, Option Int, List (Int, List Cell))
+newSpec ct = (ctTable ct, renderCreate ct, ctIpkIndex ct, [])
+
+refuseExisting : CreateTable -> List SchemaEntry -> Result String Unit
+refuseExisting ct entries =
+  if elem (ctTable ct) (map (e => schemaName e) entries) then
+    Err "table \{ctTable ct} already exists"
+  else
+    Ok ()

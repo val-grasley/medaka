@@ -1,0 +1,658 @@
+-- | sqlite.lib.schemadef — the `CREATE TABLE` model: parse, render, and the
+--   column-AFFINITY rules SQLite applies to every value on the way in.
+--
+-- Stage 3 of the SQL front end needs to know what a table's columns ARE, not
+-- just what they are called:
+--
+--   * `INSERT INTO t VALUES (…)` without a column list maps values POSITIONALLY,
+--     so it needs the column order.
+--   * `INTEGER PRIMARY KEY` is the rowid (SQLite's IPK substitution), so the
+--     INSERT path needs to know WHICH column that is — and, critically, to agree
+--     with `lib.sqlite.pkColumnIndex` (the READ side's oracle).  A disagreement
+--     is a corruption hazard, so it is checked and refused (`ipkAgrees`).
+--   * `NOT NULL` must be ENFORCED, not merely parsed — a stored `CREATE` text
+--     that says NOT NULL while the table holds a NULL is a database that sqlite3
+--     accepts but that nobody meant.
+--   * A value's storage class depends on the column's declared type: sqlite3
+--     turns `INSERT INTO t(n) VALUES ('5')` into the INTEGER 5 when `n` has
+--     INTEGER affinity.  Skipping that step is a silent wrong-answer bug (the
+--     row reads back as the TEXT '5'), so `applyAffinity` implements the rule.
+--
+-- This module is the single owner of all four.  It is deliberately BELOW
+-- `lib.sqlstmt` (which imports it) so the model has no dependency on the
+-- statement grammar; the committed-loop combinators `commaSep1` / `afterKeyword`
+-- live here too, because both grammars need them and duplicating them would be a
+-- cross-file `rule-duplicate-body` finding as well as a divergence hazard.
+--
+-- ## Grammar
+--
+-- ```
+-- create   := CREATE TABLE ident '(' colDef (',' colDef)* ')'
+-- colDef   := ident [type] [PRIMARY KEY] [NOT NULL]
+-- type     := word [ '(' int [',' int] ')' ]         -- e.g. VARCHAR(20)
+-- ```
+--
+-- ## What it REJECTS (loudly)
+--
+--   * `PRIMARY KEY` on a non-`INTEGER` column — sqlite3 answers that with an
+--     automatic UNIQUE INDEX, and this library's writer cannot emit an index
+--     (`lib.mutate` already refuses to touch any database that has one).  A
+--     silent accept would produce a table that sqlite3 reads back without the
+--     uniqueness constraint anyone asked for.
+--   * more than one `PRIMARY KEY` column, and duplicate column names.
+--   * a zero-column table.
+--   * a table-level constraint (`PRIMARY KEY (a, b)`, `UNIQUE`, `CHECK`,
+--     `FOREIGN KEY`), a column `DEFAULT`, `COLLATE`, `AUTOINCREMENT`, `UNIQUE`,
+--     `WITHOUT ROWID` — anything past `[PRIMARY KEY] [NOT NULL]` is an error, not
+--     a dropped clause.
+--
+-- ## Affinity
+--
+-- `affinityOfType` is SQLite's rule verbatim (type-name substring test, in this
+-- order): `INT` ⇒ INTEGER · `CHAR`/`CLOB`/`TEXT` ⇒ TEXT · `BLOB` or empty ⇒ BLOB ·
+-- `REAL`/`FLOA`/`DOUB` ⇒ REAL · otherwise NUMERIC.  NUMERIC is folded onto
+-- `AffInt`: the two differ only in an internal float-compaction detail that this
+-- writer does not expose.
+--
+-- Residual (documented, not silent): sqlite3's text→number cast accepts a few
+-- shapes Medaka's `toInt`/`toFloat` do not (hex literals, `+5`).  `numFromText`
+-- trims and then defers to the stdlib, so such a value stays TEXT here while
+-- sqlite3 would store a number.  Everything the oracle exercises — `'5'`, `'2.0'`,
+-- `'1.5'`, `' 7 '`, `'0012'`, `'1e3'`, `'.5'`, `'abc'` — agrees exactly.
+
+import parsec.lib.parser.{
+  Parser,
+  runParser,
+  optional,
+  choice,
+  spaces,
+  eof,
+  failWith,
+  attempt,
+  label,
+  many1,
+  digit,
+}
+import lib.sqlparse.{sqlIdent, keyword, symbol, lexeme, word}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
+import string.{toUpper, toInt, toFloat, contains, trim, join, fromChars}
+import list.{reverse}
+
+-- ---------------------------------------------------------------------------
+-- The model
+-- ---------------------------------------------------------------------------
+
+-- | One column definition: name, DECLARED type text (`""` when omitted), whether
+--   it is the `PRIMARY KEY`, and whether it is `NOT NULL`.
+--
+--   Positional, not a record, on purpose: the emitter's cross-module
+--   record-field hazard (see `lib.writer`'s header) and the record-update
+--   slot-collision bug both key off record FIELD names, and this type is read
+--   from three other modules.
+public export data ColDef = ColDef String String Bool Bool deriving (Eq, Debug)
+
+-- | A parsed `CREATE TABLE`: the table name and its ordered columns.
+public export data CreateTable =
+  | CreateTable String (List ColDef)
+deriving (Eq, Debug)
+
+-- | A column's type AFFINITY — the storage class SQLite coerces values toward.
+--   NUMERIC is folded onto `AffInt` (see the header).
+public export data Affinity =
+  | AffInt
+  | AffReal
+  | AffText
+  | AffBlob
+deriving (Eq, Debug)
+
+-- | The column's name.
+--
+-- > cdName (ColDef "id" "INTEGER" True False)
+-- "id"
+export cdName : ColDef -> String
+cdName (ColDef n _ _ _) = n
+
+-- | The column's DECLARED type text, uppercased; `""` when the DDL omitted it.
+--
+-- > cdType (ColDef "id" "INTEGER" True False)
+-- "INTEGER"
+export cdType : ColDef -> String
+cdType (ColDef _ t _ _) = t
+
+-- | Is this column the `PRIMARY KEY`?
+--
+-- > cdIsPk (ColDef "id" "INTEGER" True False)
+-- True
+export cdIsPk : ColDef -> Bool
+cdIsPk (ColDef _ _ pk _) = pk
+
+-- | Is this column `NOT NULL`?
+--
+-- > cdNotNull (ColDef "name" "TEXT" False True)
+-- True
+export cdNotNull : ColDef -> Bool
+cdNotNull (ColDef _ _ _ nn) = nn
+
+-- | The table's name.
+--
+-- > ctTable (CreateTable "users" [])
+-- "users"
+export ctTable : CreateTable -> String
+ctTable (CreateTable n _) = n
+
+-- | The table's columns, in DDL order.
+--
+-- > map cdName (ctCols (CreateTable "t" [ColDef "a" "INTEGER" False False]))
+-- ["a"]
+export ctCols : CreateTable -> List ColDef
+ctCols (CreateTable _ cs) = cs
+
+-- | The table's column names, in DDL order.
+--
+-- > ctColNames (CreateTable "t" [ColDef "a" "INTEGER" False False, ColDef "b" "TEXT" False False])
+-- ["a", "b"]
+export ctColNames : CreateTable -> List String
+ctColNames ct = map cdName (ctCols ct)
+
+-- ---------------------------------------------------------------------------
+-- Derived indices
+-- ---------------------------------------------------------------------------
+
+-- | The 0-based index of the `INTEGER PRIMARY KEY` column, if any.  A `PRIMARY
+--   KEY` on any other declared type is NOT an IPK (SQLite requires the type to be
+--   spelled exactly `INTEGER`), and `createTableP` refuses to build one, so this
+--   never silently downgrades a PK to a plain column.
+--
+-- > ctIpkIndex (CreateTable "t" [ColDef "a" "TEXT" False False, ColDef "id" "INTEGER" True False])
+-- Some 1
+-- > ctIpkIndex (CreateTable "t" [ColDef "a" "TEXT" False False])
+-- None
+export ctIpkIndex : CreateTable -> Option Int
+ctIpkIndex ct = ipkGo (ctCols ct) 0
+
+ipkGo : List ColDef -> Int -> Option Int
+ipkGo [] _ = None
+ipkGo (c::rest) i =
+  if cdIsPk c && cdType c == "INTEGER" then
+    Some i
+  else
+    ipkGo rest (i + 1)
+
+-- | The 0-based indices of the `NOT NULL` columns.
+--
+-- > ctNotNullIndexes (CreateTable "t" [ColDef "a" "TEXT" False True, ColDef "b" "TEXT" False False, ColDef "c" "INTEGER" False True])
+-- [0, 2]
+export ctNotNullIndexes : CreateTable -> List Int
+ctNotNullIndexes ct = nnGo (ctCols ct) 0 []
+
+nnGo : List ColDef -> Int -> List Int -> List Int
+nnGo [] _ acc = reverse acc
+nnGo (c::rest) i acc =
+  if cdNotNull c then
+    nnGo rest (i + 1) (i::acc)
+  else
+    nnGo rest (i + 1) acc
+
+-- | The 0-based index of the column named `name` (case-insensitive, as SQL
+--   identifiers are).  `None` when the table has no such column.
+--
+-- > ctColIndex (CreateTable "t" [ColDef "a" "INTEGER" False False, ColDef "bee" "TEXT" False False]) "BEE"
+-- Some 1
+-- > ctColIndex (CreateTable "t" [ColDef "a" "INTEGER" False False]) "zz"
+-- None
+export ctColIndex : CreateTable -> String -> Option Int
+ctColIndex ct name = colIdxGo (ctCols ct) (toUpper name) 0
+
+colIdxGo : List ColDef -> String -> Int -> Option Int
+colIdxGo [] _ _ = None
+colIdxGo (c::rest) upper i =
+  if toUpper (cdName c) == upper then
+    Some i
+  else
+    colIdxGo rest upper (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Affinity
+-- ---------------------------------------------------------------------------
+
+-- | SQLite's affinity-from-declared-type rule, applied in the documented order.
+--
+-- > [affinityOfType "INTEGER", affinityOfType "BIGINT", affinityOfType "VARCHAR"]
+-- [AffInt, AffInt, AffText]
+-- > [affinityOfType "BLOB", affinityOfType "", affinityOfType "DOUBLE"]
+-- [AffBlob, AffBlob, AffReal]
+-- > [affinityOfType "DECIMAL", affinityOfType "REAL", affinityOfType "CLOB"]
+-- [AffInt, AffReal, AffText]
+export affinityOfType : String -> Affinity
+affinityOfType t =
+  let u = toUpper t
+  if contains "INT" u then
+    AffInt
+  else if contains "CHAR" u || contains "CLOB" u || contains "TEXT" u then
+    AffText
+  else if u == "" || contains "BLOB" u then
+    AffBlob
+  else if contains "REAL" u || contains "FLOA" u || contains "DOUB" u then
+    AffReal
+  else
+    AffInt
+
+-- | The affinity of a column.
+--
+-- > cdAffinity (ColDef "n" "VARCHAR(20)" False False)
+-- AffText
+export cdAffinity : ColDef -> Affinity
+cdAffinity c = affinityOfType (cdType c)
+
+-- | Coerce a value toward a column's affinity, exactly as sqlite3 does on the
+--   way in.  NULL is never coerced; a BLOB-affinity column never coerces.
+--
+-- > applyAffinity AffInt (CText "5")
+-- CInt 5
+-- > applyAffinity AffInt (CText "1.5")
+-- CFloat 1.5
+-- > applyAffinity AffInt (CText "abc")
+-- CText "abc"
+-- > applyAffinity AffInt (CFloat 2.0)
+-- CInt 2
+-- > applyAffinity AffReal (CInt 3)
+-- CFloat 3.0
+-- > applyAffinity AffText (CInt 1)
+-- CText "1"
+-- > applyAffinity AffBlob (CText "7")
+-- CText "7"
+-- > applyAffinity AffText CNull
+-- CNull
+export applyAffinity : Affinity -> Cell -> Cell
+applyAffinity _ CNull = CNull
+applyAffinity AffBlob c = c
+applyAffinity AffText c = textify c
+applyAffinity AffInt c = numify c
+applyAffinity AffReal c = realify c
+
+textify : Cell -> Cell
+textify (CInt n) = CText (intToString n)
+textify (CFloat f) = CText (floatToString f)
+textify c = c
+
+numify : Cell -> Cell
+numify (CFloat f) = intIfExact f
+numify (CText s) = numFromText s
+numify c = c
+
+realify : Cell -> Cell
+realify (CInt n) = CFloat (intToFloat n)
+realify (CText s) = realFromText s
+realify c = c
+
+-- A float with no fractional part becomes an INTEGER (SQLite's rule), but only
+-- inside the range where `floatToInt` round-trips — outside it the conversion
+-- would silently corrupt the value, so the float is kept.
+--
+-- ⚠️ The bound is built from an INT literal (`intToFloat 9000000000000000`)
+-- rather than written as a Float literal, and that is not a style choice.  Both
+-- Float spellings are broken by the toolchain:
+--   * `9.0e15` does not LEX — the exponent is read as an identifier, giving
+--     `Unbound variable: e15` (findings/sql-dml-cli.md F1);
+--   * `9000000000000000.0` lexes, but `medaka fmt --write` REWRITES it to
+--     `9e+15` (its printer uses `floatToString`), which does not lex either —
+--     i.e. running the formatter CORRUPTS the source (findings F2).
+-- An Int literal survives both.
+intIfExact : Float -> Cell
+intIfExact f = intIfExactWithin f (intToFloat 9000000000000000)
+
+intIfExactWithin : Float -> Float -> Cell
+intIfExactWithin f lim =
+  if f > 0.0 - lim && f < lim && intToFloat (floatToInt f) == f then
+    CInt (floatToInt f)
+  else
+    CFloat f
+
+numFromText : String -> Cell
+numFromText s = intFromText (trim s) s
+
+intFromText : String -> String -> Cell
+intFromText t s = match toInt t
+  Some n => CInt n
+  None => floatOrText t s
+
+floatOrText : String -> String -> Cell
+floatOrText t s = match toFloat t
+  Some f => intIfExact f
+  None => CText s
+
+realFromText : String -> Cell
+realFromText s = realOfTrimmed (trim s) s
+
+realOfTrimmed : String -> String -> Cell
+realOfTrimmed t s = match toFloat t
+  Some f => CFloat f
+  None => CText s
+
+-- ---------------------------------------------------------------------------
+-- Rendering
+-- ---------------------------------------------------------------------------
+
+-- | Render a `CreateTable` back to the exact `CREATE TABLE …` text that this
+--   library STORES in `sqlite_master`.  Type names and the `PRIMARY KEY` /
+--   `NOT NULL` keywords are UPPERCASED, which is not cosmetic: the read path's
+--   `lib.sqlite.pkColumnIndex` scans for the literal, case-SENSITIVE string
+--   `"INTEGER PRIMARY KEY"`, so a lowercase rendering would lose the rowid alias.
+--
+-- > renderCreate (CreateTable "users" [ColDef "id" "INTEGER" True False, ColDef "name" "TEXT" False True])
+-- "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+--
+-- > renderCreate (CreateTable "kv" [ColDef "k" "" False False, ColDef "v" "REAL" False False])
+-- "CREATE TABLE kv(k, v REAL)"
+export renderCreate : CreateTable -> String
+renderCreate ct =
+  "CREATE TABLE \{ctTable ct}(\{join ", " (map renderColDef (ctCols ct))})"
+
+renderColDef : ColDef -> String
+renderColDef c = "\{cdName c}\{typeText (cdType c)}\{pkText (cdIsPk c)}\{nnText (cdNotNull c)}"
+
+typeText : String -> String
+typeText "" = ""
+typeText t = " \{t}"
+
+pkText : Bool -> String
+pkText False = ""
+pkText True = " PRIMARY KEY"
+
+nnText : Bool -> String
+nnText False = ""
+nnText True = " NOT NULL"
+
+-- ---------------------------------------------------------------------------
+-- The parser
+-- ---------------------------------------------------------------------------
+
+-- | Parse a whole `CREATE TABLE` statement.  Used both to read the user's DDL
+--   and to re-read the text this library stored in `sqlite_master` — the second
+--   use is what lets INSERT/UPDATE know a table's affinities and NOT NULL set.
+--
+-- > map renderCreate (parseCreateTable "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)")
+-- Ok "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)"
+--
+-- Whitespace, case and a trailing `;` are all free; a sized type keeps its text:
+--
+-- > map renderCreate (parseCreateTable "create table t ( a varchar(20) , b integer primary key ) ;")
+-- Ok "CREATE TABLE t(a VARCHAR(20), b INTEGER PRIMARY KEY)"
+--
+-- A `PRIMARY KEY` that is not an `INTEGER` needs an index we cannot write:
+--
+-- > parseCreateTable "CREATE TABLE t(k TEXT PRIMARY KEY, v INTEGER)"
+-- Err "PRIMARY KEY on column 'k' is supported only when its declared type is INTEGER (the rowid alias) — any other PRIMARY KEY needs a UNIQUE index, which this writer cannot emit at 45"
+--
+-- Anything past `[PRIMARY KEY] [NOT NULL]` is an error, never a dropped clause:
+--
+-- > parseCreateTable "CREATE TABLE t(a INTEGER DEFAULT 1)"
+-- Err "unsupported column constraint 'DEFAULT' on column 'a' — only PRIMARY KEY and NOT NULL are supported at 33"
+-- > parseCreateTable "CREATE TABLE t(a INTEGER, UNIQUE(a))"
+-- Err "table-level constraint 'UNIQUE' is not supported — only per-column PRIMARY KEY and NOT NULL are at 32"
+-- > parseCreateTable "CREATE TABLE t(a INTEGER) WITHOUT ROWID"
+-- Err "unsupported SQL after CREATE TABLE: 'WITHOUT' at 34"
+export parseCreateTable : String -> Result String CreateTable
+parseCreateTable s = runParser createStatement s
+
+createStatement : Parser CreateTable
+createStatement = do
+  _ <- spaces
+  ct <- createTableP
+  _ <- optional (symbol ";")
+  _ <- endOfCreate
+  pure ct
+
+endOfCreate : Parser Unit
+endOfCreate = orElse eof createTail
+
+createTail : Parser Unit
+createTail = do
+  w <- lexeme word
+  failWith "unsupported SQL after CREATE TABLE: '\{w}'"
+
+-- | The `CREATE TABLE` parser WITHOUT the end-of-input demand — the statement
+--   dispatcher in `lib.sqlstmt` drops this into a `choice`.
+--
+-- > map ctTable (runParser createTableP "CREATE TABLE t(a INTEGER)")
+-- Ok "t"
+export createTableP : Parser CreateTable
+createTableP = do
+  _ <- keyword "CREATE"
+  _ <- keyword "TABLE"
+  name <- sqlIdent
+  _ <- tableNameOk name
+  _ <- symbol "("
+  cols <- commaSep1 colDefP
+  _ <- symbol ")"
+  buildCreate name cols
+
+tableNameOk : String -> Parser Unit
+tableNameOk n =
+  when
+    (contains "." n)
+    (failWith "schema-qualified table name '\{n}' is not supported")
+
+-- Reject duplicate column names, a second PRIMARY KEY, and a PRIMARY KEY on a
+-- non-INTEGER column here, where the whole column list is in hand.
+buildCreate : String -> List ColDef -> Parser CreateTable
+buildCreate name cols = dupCheck
+  name
+  cols
+  (dupName (map (c => toUpper (cdName c)) cols))
+  (pkCount cols)
+
+dupCheck : String -> List ColDef -> Option String -> Int -> Parser CreateTable
+dupCheck _ _ (Some d) _ = failWith "duplicate column name '\{d}'"
+dupCheck name cols None npk =
+  if npk > 1 then
+    failWith "a table may have at most one PRIMARY KEY column (found \{intToString npk})"
+  else
+    pkTypeCheck name cols (badPk cols)
+
+-- A `PRIMARY KEY` whose declared type is not exactly `INTEGER` is NOT a rowid
+-- alias: sqlite3 answers it with an automatic UNIQUE INDEX, which this writer
+-- cannot emit (and `lib.mutate` refuses to touch any database that has one).
+-- Accepting it would produce a table with no uniqueness constraint at all.
+pkTypeCheck : String -> List ColDef -> Option String -> Parser CreateTable
+pkTypeCheck name cols None = pure (CreateTable name cols)
+pkTypeCheck _ _ (Some c) =
+  failWith
+    "PRIMARY KEY on column '\{c}' is supported only when its declared type is INTEGER (the rowid alias) — any other PRIMARY KEY needs a UNIQUE index, which this writer cannot emit"
+
+badPk : List ColDef -> Option String
+badPk [] = None
+badPk (c::rest) =
+  if cdIsPk c && cdType c != "INTEGER" then
+    Some (cdName c)
+  else
+    badPk rest
+
+pkCount : List ColDef -> Int
+pkCount cols = fold (n c => pkBump n (cdIsPk c)) 0 cols
+
+pkBump : Int -> Bool -> Int
+pkBump n False = n
+pkBump n True = n + 1
+
+dupName : List String -> Option String
+dupName [] = None
+dupName (x::rest) = if elem x rest then Some x else dupName rest
+
+-- One column definition: `ident [type] [PRIMARY KEY] [NOT NULL]`, and NOTHING
+-- else.  Any other trailing word (DEFAULT, UNIQUE, COLLATE, CHECK, REFERENCES,
+-- AUTOINCREMENT, …) is named and refused.
+colDefP : Parser ColDef
+colDefP = do
+  n <- sqlIdent
+  _ <- notATableConstraint n
+  t <- optional typeNameP
+  pk <- optional primaryKeyP
+  nn <- optional notNullP
+  _ <- noMoreConstraints n
+  pure (ColDef n (optOr "" t) (isSome pk) (isSome nn))
+
+-- A column-list entry that STARTS with a table-constraint keyword is a
+-- table-level constraint (`PRIMARY KEY (a, b)`, `UNIQUE(a)`, `CHECK(…)`,
+-- `FOREIGN KEY …`), not a column.  Named and refused, rather than mis-read as a
+-- column called `UNIQUE` and then blamed on the stray `(`.
+notATableConstraint : String -> Parser Unit
+notATableConstraint n =
+  when
+    (elem (toUpper n) tableConstraintWords)
+    (failWith
+      "table-level constraint '\{toUpper n}' is not supported — only per-column PRIMARY KEY and NOT NULL are")
+
+tableConstraintWords : List String
+tableConstraintWords = ["PRIMARY", "UNIQUE", "CHECK", "FOREIGN", "CONSTRAINT"]
+
+optOr : String -> Option String -> String
+optOr d None = d
+optOr _ (Some s) = s
+
+-- A declared type: a word that is not a constraint keyword, plus an optional
+-- `(n)` / `(n,m)` size, which SQLite keeps in the text but which does not affect
+-- affinity.  `attempt` makes the whole thing rewind, so `a PRIMARY KEY` (a
+-- typeless PK column) parses as "no type".
+typeNameP : Parser String
+typeNameP = attempt
+  (do
+    w <- lexeme word
+    _ <- notAConstraint w
+    sz <- optional typeSizeP
+    pure "\{toUpper w}\{optOr "" sz}")
+
+notAConstraint : String -> Parser Unit
+notAConstraint w =
+  when
+    (elem (toUpper w) constraintWords)
+    (failWith "'\{w}' is a constraint keyword, not a type name")
+
+-- | The words that may FOLLOW a column's type.  `PRIMARY` and `NOT` are handled;
+--   the rest exist so `typeNameP` does not mistake one of them for a type name
+--   and so `noMoreConstraints` can name what it refused.
+export constraintWords : List String
+constraintWords = [
+  "PRIMARY",
+  "NOT",
+  "NULL",
+  "UNIQUE",
+  "CHECK",
+  "DEFAULT",
+  "COLLATE",
+  "REFERENCES",
+  "GENERATED",
+  "AS",
+  "CONSTRAINT",
+  "AUTOINCREMENT",
+]
+
+typeSizeP : Parser String
+typeSizeP = do
+  _ <- symbol "("
+  a <- intDigits
+  b <- optional secondSize
+  _ <- symbol ")"
+  pure "(\{a}\{optOr "" b})"
+
+secondSize : Parser String
+secondSize = do
+  _ <- symbol ","
+  d <- intDigits
+  pure ", \{d}"
+
+intDigits : Parser String
+intDigits = label "expected a number" (lexeme (map fromChars (many1 digit)))
+
+primaryKeyP : Parser Unit
+primaryKeyP = attempt
+  (do
+    _ <- keyword "PRIMARY"
+    keyword "KEY")
+
+notNullP : Parser Unit
+notNullP = attempt
+  (do
+    _ <- keyword "NOT"
+    keyword "NULL")
+
+-- After `[PRIMARY KEY] [NOT NULL]` the only legal next tokens are `,` and `)`.
+-- Anything word-shaped is an unsupported constraint — named, never dropped.
+noMoreConstraints : String -> Parser Unit
+noMoreConstraints col = do
+  w <- optional (attempt (lexeme word))
+  constraintReject col w
+
+constraintReject : String -> Option String -> Parser Unit
+constraintReject _ None = pure ()
+constraintReject col (Some w) =
+  failWith
+    "unsupported column constraint '\{toUpper w}' on column '\{col}' — only PRIMARY KEY and NOT NULL are supported"
+
+-- ---------------------------------------------------------------------------
+-- The IPK cross-check
+-- ---------------------------------------------------------------------------
+
+-- | Does this parsed schema's IPK index agree with the READ path's oracle
+--   (`lib.sqlite.pkColumnIndex`, a case-SENSITIVE text scan for
+--   `"INTEGER PRIMARY KEY"`)?  A `CREATE` text that disagrees — e.g. a
+--   sqlite3-authored `id integer primary key` in lowercase — would have the
+--   writer store the rowid in the record while the reader expects it in the
+--   rowid field, i.e. CORRUPT the table.  Every write path calls this and refuses
+--   on a mismatch rather than guessing.
+--
+-- > ipkAgrees (CreateTable "t" [ColDef "id" "INTEGER" True False]) (Some 0)
+-- True
+-- > ipkAgrees (CreateTable "t" [ColDef "id" "INTEGER" True False]) None
+-- False
+export ipkAgrees : CreateTable -> Option Int -> Bool
+ipkAgrees ct readerIpk = ctIpkIndex ct == readerIpk
+
+-- ---------------------------------------------------------------------------
+-- Committed combinators (shared with lib.sqlstmt)
+-- ---------------------------------------------------------------------------
+
+-- | `optional (keyword kw)` followed by a MANDATORY `p`.  Once the keyword has
+--   matched, a failure in `p` propagates instead of being swallowed by the
+--   `optional` and re-surfacing far away as "expected end of input".
+--
+-- > runParser (afterKeyword "WHERE" intDigits) "WHERE 42"
+-- Ok Some "42"
+-- > runParser (afterKeyword "WHERE" intDigits) ""
+-- Ok None
+-- > runParser (afterKeyword "WHERE" intDigits) "WHERE x"
+-- Err "expected a number at 6"
+export afterKeyword : String -> Parser a -> Parser (Option a)
+afterKeyword kw p = do
+  k <- optional (keyword kw)
+  afterKeywordStep k p
+
+afterKeywordStep : Option Unit -> Parser a -> Parser (Option a)
+afterKeywordStep None _ = pure None
+afterKeywordStep (Some _) p = map Some p
+
+-- | One-or-more `p`, comma separated, COMMITTED: a `,` obliges another `p`.
+--   (parsec's `sepBy1` uses `many`, which swallows the failure after a trailing
+--   comma and leaves the `,` to surface far away as "expected end of input".)
+--
+-- > runParser (commaSep1 intDigits) "1, 2,3"
+-- Ok ["1", "2", "3"]
+-- > runParser (commaSep1 intDigits) "1,"
+-- Err "expected a number at 2"
+export commaSep1 : Parser a -> Parser (List a)
+commaSep1 p = do
+  x <- p
+  xs <- commaSepRest p
+  pure (x::xs)
+
+commaSepRest : Parser a -> Parser (List a)
+commaSepRest p = do
+  c <- optional (symbol ",")
+  commaSepStep p c
+
+commaSepStep : Parser a -> Option String -> Parser (List a)
+commaSepStep _ None = pure []
+commaSepStep p (Some _) = do
+  x <- p
+  xs <- commaSepRest p
+  pure (x::xs)
