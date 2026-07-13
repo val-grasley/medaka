@@ -17,10 +17,28 @@
 #
 #   for each fixture f:   eval(f) == native(f) == wasm(f)
 #
-# Corpus: the UNION of test/llvm_fixtures/ (195) + test/wasm/fixtures/ (151) = 346.
+# Corpus: the UNION of ALL FOUR emitter corpora —
+#
+#   test/llvm_fixtures/        (201)   untyped, prelude-free
+#   test/llvm_fixtures_typed/   (45)   real prelude, TYPECHECKS
+#   test/wasm/fixtures/        (149)   untyped, prelude-free
+#   test/wasm/fixtures_typed/    (9)   real prelude, TYPECHECKS
+#                              ────
+#                               404
+#
 # Before this gate the two backends were validated on essentially disjoint corpora
 # (5 basenames in common) — which is exactly why 7 of the 22 known divergences are
 # wasm bugs on fixtures only the LLVM corpus ever had.
+#
+# ⚠️ The two TYPED corpora could not be here until 2026-07-14, and the reason is the
+# whole point of that day's change (see "Arms" below).  The gate is a THREE-WAY
+# differential, so a fixture must run on ALL THREE arms to be in the corpus at all —
+# the corpus is therefore capped by the WEAKEST arm.  The wasm arm used to be the
+# prelude-free probe `test/bin/wasm_emit_main` (parse → desugar → annotate → lower →
+# emit: NO TYPECHECK, NO PRELUDE), so no fixture that needs the prelude could join,
+# and the gate STRUCTURALLY COULD NOT EXPRESS A TYPE-DIRECTED BUG.  It could not have
+# caught the record-update miscompile (#38).  Moving the wasm arm onto the shipping
+# CLI raised the ceiling; the typed corpora walked in.
 #
 # ── Three tiers ───────────────────────────────────────────────────────────────
 #   T1  eval == native   over every fixture both engines can run   (no golden)
@@ -52,13 +70,34 @@
 #
 # ── Arms ──────────────────────────────────────────────────────────────────────
 #   eval    test/bin/eval_autoprint_main <runtime> <core> <f> <dir(f)> <stdlib>
-#   native  medaka build --allow-internal <f> -o <UNIQUE>.bin && <UNIQUE>.bin
-#   wasm    test/bin/wasm_emit_main <f> | wasm-tools parse+validate | node run.js
+#   native  medaka build              --allow-internal <f> -o <UNIQUE>.bin && <UNIQUE>.bin
+#   wasm    medaka build --target wasm --allow-internal <f> -o <UNIQUE>.wasm && node run.js
 #
-# The wasm arm uses the PRELUDE-FREE annotate entry (wasm_emit_main), the same one
-# test/wasm/diff_wasm.sh uses.  The real-prelude WasmGC path (wasm_emit_modules_main)
-# still has the point-free-impl eta-expansion gap documented in diff_wasm_modules.sh,
-# so it cannot run this corpus.
+# ⚠️ ALL THREE ARMS ARE NOW THE COMPILER USERS ACTUALLY RUN.  Until 2026-07-14 the wasm
+# arm shelled the probe `test/bin/wasm_emit_main`, whose entry (compiler/entries/
+# wasm_emit_main.mdk) runs parse → desugar → annotate → lower → emit — NO TYPECHECK and
+# NO PRELUDE.  That is a DIFFERENT COMPILER from `medaka build --target wasm`, and the
+# consequences were not academic:
+#
+#   * `println` is an unbound variable on that path, and `.[i]` desugars to the `Index`
+#     INTERFACE METHOD, which only resolves on a path that typechecks.  So the probe
+#     rejected perfectly good programs, and its error message —
+#         "wasm_emit gap — ref-mode: unbound variable 'index'"
+#     — READS LIKE A BACKEND DEFECT.  Four fixtures (w7_array_*) were filed and ledgered
+#     as `wasm:emitter-gap` on the strength of that wording.  They were never wasm bugs:
+#     under `medaka build --target wasm` all four build and agree with native exactly.
+#     TWELVE more ledger rows (char_lit, num_pi, num_e, num_int_min/max, uni_to_lower/
+#     upper, abort_exit*, where_local_rec, where_sibling_ref, char_unicode) fell the same
+#     way when the arm moved.  A gate that tests a configuration users never run will
+#     keep filing its own artifacts as compiler bugs.
+#
+#   * and, per the corpus note above, it capped the corpus at the prelude-free fixtures.
+#
+# The wasm CLI path needs a COMPILED wasm emitter (MEDAKA_WASM_EMITTER = test/bin/
+# wasm_emit_modules_main, built by test/wasm/build_wasm_oracle.sh), exactly as the LLVM
+# path needs MEDAKA_EMITTER.  `medaka build --target wasm` runs wasm-tools parse+validate
+# itself (build_cmd.mdk:wasmAssemble), so this gate no longer shells wasm-tools directly —
+# but wasm-tools must still be on PATH for the CLI to find.
 #
 # ⚠️ The native arm's `-o` basename MUST be unique per fixture.  build_cmd.mdk derives
 # its scratch IR path from the output BASENAME, not the full path
@@ -93,7 +132,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MEDAKA="$ROOT/medaka"
 EMITTER="$ROOT/medaka_emitter"
 EVALBIN="$ROOT/test/bin/eval_autoprint_main"
-WASMBIN="$ROOT/test/bin/wasm_emit_main"
+# The COMPILED wasm emitter the `medaka build --target wasm` CLI path shells out to
+# (build_cmd.mdk reads it from $MEDAKA_WASM_EMITTER).  This is the real-prelude modules
+# entry — NOT the prelude-free `wasm_emit_main` probe this gate used before 2026-07-14.
+WASMBIN="${MEDAKA_WASM_EMITTER:-$ROOT/test/bin/wasm_emit_modules_main}"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 STDLIB="$ROOT/stdlib"
@@ -110,12 +152,20 @@ run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no cor
 # "eq:eq:eq:ran:ran:ran".  Plus <slug>.detail (the three outputs + why an arm is n/a).
 if [ "${1:-}" = "--one" ]; then
   f="$2"
-  # Key by CORPUS + basename: 5 basenames (adt_option, fn_factorial, fn_gcd,
-  # fn_tailsum, global_chain) exist in BOTH corpora as different files.
+  # Key by CORPUS + basename.  18 basenames collide across the four corpora as
+  # DIFFERENT files (adt_option, fn_factorial, fn_gcd, fn_tailsum, global_chain,
+  # ctor_pap_arity across the two untyped ones; arr_get, str_lit, uni_to_upper, …
+  # between llvm_fixtures and its typed sibling; record_update_shared_field between
+  # the two typed ones), so a bare basename would silently alias them.
+  # NOTE the typed patterns must be tested FIRST: */llvm_fixtures/* does not match
+  # llvm_fixtures_typed (the glob needs a literal /llvm_fixtures/), but relying on
+  # that is a trap for the next person to add a corpus — be explicit.
   case "$f" in
-    */llvm_fixtures/*) key="llvm/$(basename "$f" .mdk)" ;;
-    */wasm/fixtures/*) key="wasm/$(basename "$f" .mdk)" ;;
-    *)                 key="other/$(basename "$f" .mdk)" ;;
+    */llvm_fixtures_typed/*) key="llvmT/$(basename "$f" .mdk)" ;;
+    */wasm/fixtures_typed/*) key="wasmT/$(basename "$f" .mdk)" ;;
+    */llvm_fixtures/*)       key="llvm/$(basename "$f" .mdk)"  ;;
+    */wasm/fixtures/*)       key="wasm/$(basename "$f" .mdk)"  ;;
+    *)                       key="other/$(basename "$f" .mdk)" ;;
   esac
   slug="${key//\//__}"
   W="$WORKDIR/$slug"; mkdir -p "$W"
@@ -144,20 +194,26 @@ if [ "${1:-}" = "--one" ]; then
   fi
 
   # -- wasm -------------------------------------------------------------------
-  # `na` = the emitter could not produce a module that assembles and validates.  A
-  # module that validates but TRAPS at run counts as `ran` (empty stdout): a trap is
+  # THE SHIPPING CLI, exactly as the native arm above — same compiler, same front end,
+  # same typecheck; only `--target wasm` differs.  `medaka build --target wasm` emits
+  # the WAT (via MEDAKA_WASM_EMITTER) and runs wasm-tools parse+validate itself, so a
+  # nonzero exit covers ALL of: front-end rejection, emitter gap, unassemblable WAT,
+  # and a module that fails GC validation.  `na` = no module was produced.
+  #
+  # A module that validates but TRAPS at run counts as `ran` (empty stdout): a trap is
   # a real disagreement with the other engines, not an unavailability.
+  #
+  # The unique `-o` basename matters here for the same reason it does on the native arm
+  # (see the warning above) — and `$slug` is already corpus-qualified, so the four
+  # corpora's 18 colliding basenames cannot collide in scratch either.
   wsm=ran
   if [ "$WASM_OK" != 1 ]; then
     wsm=off
-  elif ! run_t "$TIMEOUT" "$WASMBIN" "$f" >"$W/w.wat" 2>>"$W/wasm.err"; then
-    wsm=na; echo "the wasm emitter failed on this fixture" >>"$W/wasm.err"
-  elif ! wasm-tools parse "$W/w.wat" -o "$W/w.wasm" 2>>"$W/wasm.err"; then
-    wsm=na; echo "wasm-tools parse rejected the emitted WAT" >>"$W/wasm.err"
-  elif ! wasm-tools validate --features=all "$W/w.wasm" 2>>"$W/wasm.err"; then
-    wsm=na; echo "wasm-tools validate rejected the emitted module" >>"$W/wasm.err"
+  elif ! run_t "$TIMEOUT" "$MEDAKA" build --target wasm --allow-internal "$f" \
+        -o "$W/$slug.wasm" >"$W/wasm.err" 2>&1; then
+    wsm=na
   else
-    run_t "$TIMEOUT" "$NODE" "$RUNJS" "$W/w.wasm" >"$W/wasm.out" 2>>"$W/wasm.err" || true
+    run_t "$TIMEOUT" "$NODE" "$RUNJS" "$W/$slug.wasm" >"$W/wasm.out" 2>>"$W/wasm.err" || true
   fi
 
   # -- compare ----------------------------------------------------------------
@@ -197,7 +253,9 @@ if [ "${1:-}" = "--one" ]; then
     printf '  wasm   [%-3s] %s\n' "$wsm" "$(head -c 200 "$W/wasm.out"   | tr '\n' '|')"
     [ "$eva" = na ] && printf '  eval-why:   %s\n' "$(grep -m1 'runtime error' "$W/eval.err")"
     [ "$nat" = na ] && printf '  native-why: %s\n' "$(head -1 "$W/native.err")"
-    [ "$wsm" = na ] && printf '  wasm-why:   %s\n' "$(tail -1 "$W/wasm.err")"
+    # The CLI's wasm failure is a 2-3 line report (`error: <what>` then the tool's own
+    # stderr), and the SECOND line is the diagnosis — so print the head, not the tail.
+    [ "$wsm" = na ] && printf '  wasm-why:   %s\n' "$(head -3 "$W/wasm.err" | tr '\n' ' ')"
   } > "$RESULTDIR/$slug.detail"
 
   [ -n "${VERBOSE:-}" ] && printf '%-34s %s\n' "$key" "$agree:$eva:$nat:$wsm"
@@ -222,7 +280,7 @@ command -v clang >/dev/null 2>&1 || { echo "no C compiler (clang) on PATH — sk
 WASM_OK=1; WASM_OFF_WHY=""
 NODE="${NODE:-node}"
 if ! [ -x "$WASMBIN" ]; then
-  WASM_OK=0; WASM_OFF_WHY="test/bin/wasm_emit_main not built (sh test/wasm/build_wasm_oracle.sh)"
+  WASM_OK=0; WASM_OFF_WHY="test/bin/wasm_emit_modules_main not built (sh test/wasm/build_wasm_oracle.sh)"
 elif ! command -v wasm-tools >/dev/null 2>&1; then
   WASM_OK=0; WASM_OFF_WHY="wasm-tools not on PATH"
 else
@@ -241,11 +299,20 @@ else
 fi
 
 [ -x "$EMITTER" ] && export MEDAKA_EMITTER="$EMITTER"
+# `medaka build --target wasm` reads the compiled wasm emitter from here (build_cmd.mdk);
+# without it the CLI falls back to `medaka run`ning the emitter entry, which cannot
+# resolve the `args` extern.  Exactly the MEDAKA_EMITTER contract, one target over.
+[ "$WASM_OK" = 1 ] && export MEDAKA_WASM_EMITTER="$WASMBIN"
 
 WORK="$(mktemp -d)"; RESULTS="$(mktemp -d)"
 trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
-CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk "$ROOT"/test/wasm/fixtures/*.mdk 2>/dev/null)"
+# All FOUR emitter corpora — the two untyped (prelude-free) and, since the wasm arm
+# moved onto the shipping CLI, the two TYPED ones as well.  See the header.
+CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
+             "$ROOT"/test/llvm_fixtures_typed/*.mdk \
+             "$ROOT"/test/wasm/fixtures/*.mdk \
+             "$ROOT"/test/wasm/fixtures_typed/*.mdk 2>/dev/null)"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
 
 # Fan-out. NOTE this gate deliberately does NOT honour run_gates.sh's INNER_JOBS
@@ -264,6 +331,7 @@ printf '%s\n' "$CORPUS" \
   | MEDAKA="$MEDAKA" EVALBIN="$EVALBIN" WASMBIN="$WASMBIN" RUNTIME="$RUNTIME" CORE="$CORE" \
     STDLIB="$STDLIB" RUNJS="$RUNJS" NODE="$NODE" TIMEOUT="$TIMEOUT" VERBOSE="${VERBOSE:-}" \
     WASM_OK="$WASM_OK" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
+    MEDAKA_WASM_EMITTER="${MEDAKA_WASM_EMITTER:-}" \
     WORKDIR="$WORK" RESULTDIR="$RESULTS" \
     xargs -P "$JOBS" -n 1 -I{} bash "$0" --one {}
 
@@ -332,7 +400,7 @@ t3p=$(tier 5 pass); t3f=$(tier 5 fail); t3n=$(tier 5 na)
 
 echo
 echo "══════════════════════════════════════════════════════════════════════"
-echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm_fixtures ∪ wasm/fixtures)"
+echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed)"
 echo "══════════════════════════════════════════════════════════════════════"
 printf ' T1  eval   == native   %4d agree  %3d differ  %3d n/a\n' "$t1p" "$t1f" "$t1n"
 if [ "$WASM_OK" = 1 ]; then
