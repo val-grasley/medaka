@@ -1,3 +1,0 @@
-(DFunDef false "fromMaybe" ((PVar "d") (PVar "m")) (EMatch (EVar "m") (arm (PCon "None") () (EVar "d")) (arm (PCon "Some" (PVar "x")) () (EVar "x"))))
-(DFunDef false "len" ((PVar "xs")) (EMatch (EVar "xs") (arm (PList) () (ELit (LInt 0))) (arm (PCons (PVar "y") (PVar "ys")) () (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "len") (EVar "ys"))))))
-(DFunDef false "classify" ((PVar "n")) (EMatch (EVar "n") (arm (PLit (LInt 0)) () (ELit (LString "zero"))) (arm PWild () (ELit (LString "other")))))

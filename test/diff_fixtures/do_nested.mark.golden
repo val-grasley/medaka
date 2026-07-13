@@ -1,1 +1,0 @@
-(DFunDef false "main" () (ELet false (PVar "x") (ELit (LInt 1)) (EApp (EDictApp "println") (EVar "x"))))

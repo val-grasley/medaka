@@ -1,3 +1,0 @@
-(DFunDef false "x" () (ELit (LInt 1)))
-(DFunDef false "y" () (ELit (LInt 2)))
-(DFunDef false "main" () (EApp (EDictApp "println") (EBinOp "+" (EVar "x") (EVar "y"))))

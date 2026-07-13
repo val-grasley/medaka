@@ -1,1 +1,0 @@
-(DFunDef false "main" () (EIf (EVar "True") (EApp (EDictApp "println") (ELit (LString "yes"))) (EApp (EDictApp "println") (ELit (LString "no")))))

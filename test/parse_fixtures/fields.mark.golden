@@ -1,3 +1,0 @@
-(DFunDef false "getX" ((PVar "p")) (EFieldAccess (EVar "p") "x"))
-(DFunDef false "deep" ((PVar "p")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "p") "a") "b") "c"))
-(DFunDef false "combine" ((PVar "p") (PVar "q")) (EBinOp "+" (EFieldAccess (EVar "p") "x") (EFieldAccess (EVar "q") "y")))

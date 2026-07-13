@@ -72,7 +72,7 @@ jobs:
           - name: engines
             pattern: "'diff_compiler_engines'"
           - name: frontend
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_desugar*' 'diff_compiler_mark*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project'"
           - name: eval

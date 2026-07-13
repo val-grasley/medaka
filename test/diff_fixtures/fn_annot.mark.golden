@@ -1,6 +1,0 @@
-(DTypeSig false "double" (TyFun (TyCon "Int") (TyCon "Int")))
-(DFunDef false "double" ((PVar "x")) (EBinOp "*" (EVar "x") (ELit (LInt 2))))
-(DTypeSig false "greet" (TyFun (TyCon "String") (TyCon "String")))
-(DFunDef false "greet" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EVar "name")) (ELit (LString "!"))))
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EBlock (DoExpr (EApp (EDictApp "println") (EApp (EVar "double") (ELit (LInt 21))))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "greet") (ELit (LString "world")))))))

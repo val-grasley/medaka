@@ -1,3 +1,0 @@
-(DFunDef false "x" () (ELit (LInt 5)))
-(DFunDef false "y" () (EUnOp "-" (EVar "x")))
-(DFunDef false "main" () (EApp (EVar "println") (EVar "y")))

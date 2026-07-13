@@ -1,4 +1,0 @@
-(DFunDef false "a" () (EApp (EApp (EVar "f") (EVar "x")) (EVar "y")))
-(DFunDef false "b" () (EApp (EApp (EVar "twice") (EVar "g")) (EVar "z")))
-(DFunDef false "c" () (EApp (EApp (EVar "f") (EApp (EVar "g") (EVar "x"))) (EApp (EVar "h") (EVar "y"))))
-(DFunDef false "compose" ((PVar "f") (PVar "g") (PVar "x")) (EApp (EVar "f") (EApp (EVar "g") (EVar "x"))))

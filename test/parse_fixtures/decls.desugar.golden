@@ -1,5 +1,0 @@
-(DFunDef false "identity" ((PVar "x")) (EVar "x"))
-(DFunDef false "add" ((PVar "x") (PVar "y")) (EBinOp "+" (EVar "x") (EVar "y")))
-(DFunDef false "const" ((PVar "x") (PVar "y")) (EVar "x"))
-(DFunDef false "apply" ((PVar "f") (PVar "x")) (EApp (EVar "f") (EVar "x")))
-(DFunDef false "answer" () (ELit (LInt 42)))

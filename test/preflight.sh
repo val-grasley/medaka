@@ -61,14 +61,14 @@ for f in $changed; do
     # ── front-end: everything downstream of it is suspect ──
     compiler/frontend/lexer.mdk)
       add 'diff_compiler_lex*'; add 'diff_compiler_comments'; add 'diff_compiler_positions'
-      add 'diff_compiler_parse*'; add 'diff_compiler_desugar*'; add 'diff_compiler_mark*' ;;
+      add 'diff_compiler_parse*'; add 'diff_compiler_snapshot*' ;;
     compiler/frontend/parser.mdk|compiler/frontend/ast.mdk)
       add 'diff_compiler_parse*'; add 'diff_compiler_printer'; add 'diff_compiler_positions'
-      add 'diff_compiler_desugar*'; add 'diff_compiler_mark*'; add 'diff_compiler_fmt' ;;
+      add 'diff_compiler_snapshot*'; add 'diff_compiler_fmt' ;;
     compiler/frontend/desugar.mdk)
-      add 'diff_compiler_desugar*'; add 'diff_compiler_mark*'; add 'diff_compiler_eval*' ;;
+      add 'diff_compiler_snapshot*'; add 'diff_compiler_eval*' ;;
     compiler/frontend/resolve.mdk|compiler/frontend/marker.mdk)
-      add 'diff_compiler_resolve*'; add 'diff_compiler_mark*'; add 'diff_compiler_check*' ;;
+      add 'diff_compiler_resolve*'; add 'diff_compiler_snapshot*'; add 'diff_compiler_check*' ;;
     compiler/frontend/exhaust.mdk)
       add 'diff_compiler_exhaust'; add 'diff_compiler_check_match' ;;
 
@@ -96,6 +96,8 @@ for f in $changed; do
     compiler/tools/lint*.mdk)      add 'diff_compiler_lint*' ;;
     compiler/tools/fmt.mdk|compiler/tools/printer.mdk) add 'diff_compiler_fmt'; add 'diff_compiler_printer' ;;
     compiler/tools/lsp.mdk)        add 'diff_compiler_lsp*' ;;
+    compiler/tools/snapshot.mdk|compiler/tools/snap_wasm.mdk)
+                                   add 'diff_compiler_snapshot*' ;;
     compiler/tools/repl.mdk)       add 'diff_compiler_repl' ;;
     compiler/tools/*test*|compiler/tools/doctest.mdk|compiler/tools/prop_runner.mdk)
       add 'diff_compiler_test'; add 'diff_compiler_ported' ;;
@@ -106,8 +108,8 @@ for f in $changed; do
     stdlib/runtime.mdk|runtime/*)
       add 'diff_compiler_capability_matrix'; add 'diff_compiler_eval*'; add 'diff_compiler_test' ;;
     stdlib/*)
-      add 'diff_compiler_test'; add 'diff_compiler_desugar*'; add 'diff_compiler_mark*'
-      add 'diff_compiler_lex*' ;;                              # stdlib carries golden siblings
+      add 'diff_compiler_test'; add 'diff_compiler_snapshot*'
+      add 'diff_compiler_lex*' ;;                              # stdlib is IN the snapshot corpus
 
     # ── a changed gate runs itself ──
     test/diff_compiler_*.sh)

@@ -1,4 +1,0 @@
-(DUse false (UseGroup ("ir" "core_ir") ((mem "CProgram" false))))
-(DUse false (UseGroup ("backend" "wasm_emit") ((mem "emitProgram" false))))
-(DTypeSig true "wasmText" (TyFun (TyCon "CProgram") (TyEffect ("Mut") None (TyCon "String"))))
-(DFunDef false "wasmText" ((PVar "cp")) (EApp (EVar "emitProgram") (EVar "cp")))

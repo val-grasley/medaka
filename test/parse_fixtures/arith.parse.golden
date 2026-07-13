@@ -1,6 +1,0 @@
-(DFunDef false "a" () (EBinOp "+" (EBinOp "+" (ELit (LInt 1)) (ELit (LInt 2))) (ELit (LInt 3))))
-(DFunDef false "b" () (EBinOp "+" (ELit (LInt 1)) (EBinOp "*" (ELit (LInt 2)) (ELit (LInt 3)))))
-(DFunDef false "c" () (EBinOp "-" (EBinOp "-" (ELit (LInt 10)) (ELit (LInt 4))) (ELit (LInt 1))))
-(DFunDef false "d" () (EBinOp "+" (EBinOp "*" (ELit (LInt 2)) (ELit (LInt 3))) (EBinOp "*" (ELit (LInt 4)) (ELit (LInt 5)))))
-(DFunDef false "e" () (EBinOp "-" (EApp (EVar "g") (ELit (LInt 1))) (EApp (EVar "h") (ELit (LInt 2)))))
-(DFunDef false "f" () (EBinOp "/" (EBinOp "/" (ELit (LInt 100)) (ELit (LInt 5))) (ELit (LInt 2))))

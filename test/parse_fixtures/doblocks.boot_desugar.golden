@@ -1,2 +1,0 @@
-(DFunDef false "combine" ((PVar "m") (PVar "n")) (EApp (EApp (EVar "andThen") (EVar "m")) (ELam ((PVar "x")) (EApp (EApp (EVar "andThen") (EVar "n")) (ELam ((PVar "y")) (EApp (EVar "pure") (EBinOp "+" (EVar "x") (EVar "y"))))))))
-(DFunDef false "chained" ((PVar "m")) (EApp (EApp (EVar "andThen") (EVar "m")) (ELam ((PVar "a")) (EApp (EApp (EVar "andThen") (EApp (EVar "f") (EVar "a"))) (ELam ((PVar "b")) (EApp (EVar "g") (EVar "b")))))))

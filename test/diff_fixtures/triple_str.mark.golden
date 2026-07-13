@@ -1,5 +1,0 @@
-(DFunDef false "inline" () (ELit (LString "one \"quoted\" line")))
-(DFunDef false "block" () (ELit (LString "first\n  indented\nlast\n")))
-(DFunDef false "interp" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "\n  Hello, ")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "!\n  Bye.\n  "))))
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EBlock (DoExpr (EApp (EDictApp "println") (EVar "inline"))) (DoExpr (EApp (EDictApp "println") (EVar "block"))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "interp") (ELit (LString "Medaka")))))))

@@ -1,1 +1,0 @@
-(DFunDef false "compute" () (EDo (DoBind (PVar "x") (EVar "fetch")) (DoLet false false (PVar "x") (EAnnot (EVar "x") (TyCon "Int"))) (DoBind (PVar "y") (EVar "other")) (DoExpr (EApp (EVar "wrap") (EBinOp "+" (EVar "x") (EVar "y"))))))

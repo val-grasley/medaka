@@ -1,4 +1,0 @@
-(DData Private "Color" () ((variant "Red" (ConPos)) (variant "Green" (ConPos)) (variant "Blue" (ConPos))) ())
-(DTypeSig false "colorName" (TyFun (TyCon "Color") (TyCon "String")))
-(DFunDef false "colorName" ((PVar "c")) (EMatch (EVar "c") (arm (PCon "Red") () (ELit (LString "red"))) (arm (PCon "Green") () (ELit (LString "green")))))
-(DFunDef false "main" () (EApp (EDictApp "println") (EApp (EVar "colorName") (EVar "Red"))))

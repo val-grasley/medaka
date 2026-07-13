@@ -85,12 +85,12 @@ fi
 #                           same auto-print contract `medaka build` and wasm_emit do)
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
 #   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
-#   parse_main            — diff_compiler_parse.sh
+#   parse_main            — diff_compiler_parse_errors.sh
 #   parse_result_main     — diff_compiler_parse_result.sh
-#   desugar_main          — diff_compiler_desugar.sh
-#   desugar_batch         — diff_compiler_desugar_batch.sh
-#   mark_main             — diff_compiler_mark.sh
-#   mark_batch            — diff_compiler_mark_batch.sh
+#   (parse/desugar/mark:  MIGRATED to test/diff_compiler_snapshot_frontend.sh — the
+#                         snapshot runner calls the stages in-process, so those five
+#                         gates need no probe binary at all.  parse_main survives only
+#                         because diff_compiler_parse_errors.sh still drives it.)
 #   resolve_main          — diff_compiler_resolve.sh
 #   resolve_batch         — diff_compiler_resolve_batch.sh
 #   resolve_modules_main  — diff_compiler_resolve_modules.sh
@@ -125,7 +125,6 @@ core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core
 llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
 lex_main parse_main parse_result_main \
-desugar_main desugar_batch mark_main mark_batch \
 resolve_main resolve_batch resolve_modules_main \
 printer_main positions_main lex_comments_main \
 typecheck_main typecheck_golden_batch check_main check_batch \

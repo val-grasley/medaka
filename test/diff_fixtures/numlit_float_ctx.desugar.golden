@@ -1,4 +1,0 @@
-(DTypeSig false "x" (TyCon "Float"))
-(DFunDef false "x" () (ELit (LInt 0)))
-(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
-(DFunDef false "main" () (EApp (EVar "println") (EVar "x")))

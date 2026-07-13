@@ -1,2 +1,0 @@
-(DFunDef false "r" () (EBinOp "::" (EListLit (ELit (LInt 1)) (ELit (LInt 2))) (EListLit (EListLit (ELit (LInt 3)) (ELit (LInt 4))))))
-(DFunDef false "main" () (EApp (EVar "println") (EVar "r")))

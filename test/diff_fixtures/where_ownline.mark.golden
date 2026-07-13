@@ -1,2 +1,0 @@
-(DFunDef false "f" ((PVar "x")) (ELetGroup ((lgb "go" (clause ((PVar "n")) (EBinOp "+" (EVar "n") (ELit (LInt 1)))))) (EApp (EVar "go") (EVar "x"))))
-(DFunDef false "main" () (EApp (EDictApp "println") (EApp (EVar "f") (ELit (LInt 5)))))

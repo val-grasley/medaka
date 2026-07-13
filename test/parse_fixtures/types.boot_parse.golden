@@ -1,6 +1,0 @@
-(DTypeSig false "inc" (TyFun (TyCon "Int") (TyCon "Int")))
-(DTypeSig false "add" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
-(DTypeSig false "ids" (TyApp (TyCon "List") (TyVar "a")))
-(DTypeSig false "pair" (TyTuple (TyCon "Int") (TyCon "String")))
-(DTypeSig false "mapper" (TyFun (TyFun (TyVar "a") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
-(DTypeSig false "const" (TyFun (TyVar "a") (TyFun (TyVar "b") (TyVar "a"))))
