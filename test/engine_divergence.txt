@@ -122,4 +122,5 @@ wasm/w_file_exists_true            na:eq:na:na:ran:ran        eval:extern-not-im
 wasm/w_readfile_ok                 na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no readFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 wasm/w_trmc_deep_cons              na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
 wasm/w_trmc_dispatch               na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_trmc_mixed_ctor             na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
 wasm/w_trmc_strip_clauses          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly

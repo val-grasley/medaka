@@ -5260,10 +5260,16 @@ emitArgsArray prog env d args =
 -- (the decisive "TMC fired" property): a cons/ctor leaf builds a cell, struct.sets it
 -- into the parent's recursive slot, advances the dest, recomputes the self-call args
 -- into the loop's param locals, and `br`s to the loop header.
--- WTrmcOn self arity pslots ctorName selfFieldIdx loopLbl exitLbl
+-- WTrmcOn self arity pslots ctorSet loopLbl exitLbl — `ctorSet` is the fn's
+-- distinct (ctorName, selfFieldIdx) leaf-ctor pairs in first-seen clause order.
+-- A singleton set emits exactly the historical uniform-ctor code; a MIXED set
+-- (P3, TMC-parity arc — LLVM always handled mixed ctors) additionally tracks
+-- WHICH ctor the current dest cell is in the i32 local $__tmc_dctor (its index
+-- into ctorSet) and link sites dispatch on it (ref.cast to that ctor's struct +
+-- struct.set at its recursive field).
 data WTrmcCtx =
   | WTrmcOff
-  | WTrmcOn SelfRef Int (List String) String Int String String
+  | WTrmcOn SelfRef Int (List String) (List (String, Int)) String String
 
 wTrmcCtxRef : Ref WTrmcCtx
 wTrmcCtxRef = Ref WTrmcOff
@@ -5297,6 +5303,8 @@ wTrmcFirstL : String
 wTrmcFirstL = "$__tmc_first"
 wTrmcTempL : Int -> String
 wTrmcTempL k = "$__tmc_t" ++ intToString k
+wTrmcDctorL : String
+wTrmcDctorL = "$__tmc_dctor"
 
 -- Emit `body` in TAIL position of the enclosing function.  Descends into the tails
 -- of if/let/block/decision so the syntactic tail call is found wherever it sits.
@@ -5310,12 +5318,12 @@ wTrmcTempL k = "$__tmc_t" ++ intToString k
 -- the LLVM self-call walk).
 emitRefTail : Prog -> List String -> Int -> CExpr -> <Mut> List String
 emitRefTail prog env arity e = match wTrmcCtxRef.value
-  WTrmcOn self sarity pslots cellStruct selfIdx loopLbl exitLbl =>
+  WTrmcOn self sarity pslots ctorSet loopLbl exitLbl =>
     -- TMC active: descend the structural tail wrappers (if/let/block/decision) with the
     -- context STILL LIVE so their inner leaves re-enter here; redirect every LEAF
     -- (cons/ctor-tail, plain self-call, or base) to the destination-passing emit.
     if isWTrmcWrapper e then emitRefTailWrap prog env arity e
-    else emitWasmTrmcLeaf prog env self sarity pslots cellStruct selfIdx loopLbl exitLbl e
+    else emitWasmTrmcLeaf prog env self sarity pslots ctorSet loopLbl exitLbl e
   WTrmcOff => match wDispCtxRef.value
     WDispOn root loopLbl rootArity members =>
       -- Stage-2/3 (b′) active: descend the structural tail wrappers with the dispatch
@@ -5409,21 +5417,31 @@ isWTrmcWrapper _ = False
 -- a TMC tail leaf: an eligible cons/ctor-tail conses into the destination + loops; a
 -- bare saturated plain self-call recomputes its args + loops (iterate-on-shorter-list);
 -- any other leaf is the BASE — store it into the current destination + exit.
-emitWasmTrmcLeaf : Prog -> List String -> SelfRef -> Int -> List String -> String -> Int -> String -> String -> CExpr -> <Mut> List String
-emitWasmTrmcLeaf prog env self arity pslots cellStruct selfIdx loopLbl exitLbl e = if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity e then emitWasmTrmcCtor prog env self arity pslots cellStruct selfIdx loopLbl (ctorTailLeadFields e) (consTailArgs e) else if isSelfSatApp self arity e then emitWasmTrmcTailCall prog env pslots loopLbl e else emitWasmTrmcBase prog env exitLbl e
+emitWasmTrmcLeaf : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> String -> String -> CExpr -> <Mut> List String
+emitWasmTrmcLeaf prog env self arity pslots ctorSet loopLbl exitLbl e =
+  if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity e then
+    emitWasmTrmcCtor prog env self arity pslots ctorSet (ctorTailName e) (ctorTailSelfIdx e) loopLbl (ctorTailLeadFields e) (consTailArgs e)
+  else if isSelfSatApp self arity e then
+    emitWasmTrmcTailCall prog env pslots loopLbl e
+  else
+    emitWasmTrmcBase prog env exitLbl e
 
--- cons/ctor leaf: build the cell with its NON-recursive (leading) fields + a placeholder
--- in the recursive slot, link it into the parent's recursive slot (or seed $__tmc_head on
--- the first cell), advance the destination to this cell, recompute the self-call args into
--- the loop's param locals, and br to the loop header.  NO recursive call is emitted.
+-- cons/ctor leaf: build THIS leaf's ctor cell with its NON-recursive (leading) fields
+-- + a placeholder in the recursive slot, link it into the parent's recursive slot (or
+-- seed $__tmc_head on the first cell), advance the destination to this cell, recompute
+-- the self-call args into the loop's param locals, and br to the loop header.  NO
+-- recursive call is emitted.
 --   • first cell  → $__tmc_head := cell ; $__tmc_first := 0
---   • later cells → struct.set <cellStruct> $__tmc_dest <selfIdx+1> cell
---   • always      → $__tmc_dest := cell
+--   • later cells → struct.set <parent ctor's struct> $__tmc_dest <its selfIdx+1> cell
+--     (the PARENT may be a different ctor than this leaf's — wTrmcLinkParent
+--     dispatches on $__tmc_dctor when the fn's leaf-ctor set is mixed)
+--   • always      → $__tmc_dest := cell (+ record THIS ctor's set-index in
+--     $__tmc_dctor when mixed)
 -- The recursive slot is `(mut (ref eq))` (Stage 0), seeded here with a safe i31 nil
 -- placeholder (never dereferenced — it is overwritten by the next iteration's struct.set,
 -- or stays as the cell's tail which the BASE leaf fills before exit).
-emitWasmTrmcCtor : Prog -> List String -> SelfRef -> Int -> List String -> String -> Int -> String -> List CExpr -> List CExpr -> <Mut> List String
-emitWasmTrmcCtor prog env self arity pslots ctorName selfIdx loopLbl leadFields args =
+emitWasmTrmcCtor : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> String -> Int -> String -> List CExpr -> List CExpr -> <Mut> List String
+emitWasmTrmcCtor prog env self arity pslots ctorSet ctorName selfIdx loopLbl leadFields args =
   let cellStruct = ctorStructName ctorName
   let tag = ["i32.const " ++ intToString (ctorOrdinal prog ctorName)]
   let leadInstrs = flatMap (a => emitRefExpr prog env 0 a) leadFields
@@ -5432,15 +5450,60 @@ emitWasmTrmcCtor prog env self arity pslots ctorName selfIdx loopLbl leadFields 
   let buildCell = tag ++ leadInstrs ++ placeholder ++ ["struct.new $" ++ cellStruct]
   -- stash new cell in temp 0; link into prev dest (or seed head); advance dest := new.
   let stashNew = buildCell ++ ["local.set " ++ wTrmcTempL 0]
-  let linkSet = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")", "local.get " ++ wTrmcTempL 0, "ref.as_non_null", "struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
+  let cellVal = ["local.get " ++ wTrmcTempL 0, "ref.as_non_null"]
+  let linkSet = wTrmcLinkParent ctorSet cellVal
   let linkSeed = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcHeadL, "i32.const 0", "local.set " ++ wTrmcFirstL]
   let linkInstrs = ["local.get " ++ wTrmcFirstL, "if"] ++ indent linkSeed ++ ["else"] ++ indent linkSet ++ ["end"]
   let advance = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcDestL]
+    ++ wTrmcRecordDctor ctorSet ctorName
   -- recompute the self-call args into temps (an arg may read an old param), then store
   -- into the param slots, then loop.  Args occupy temps 1..arity (temp 0 = the cell).
   let argTemps = wTrmcEmitArgsToTemps prog env args 1
   let storeSlots = wTrmcStoreSlots pslots args 1
   stashNew ++ linkInstrs ++ advance ++ argTemps ++ storeSlots ++ ["br " ++ loopLbl]
+
+-- store `valInstrs` into the CURRENT dest cell's recursive slot.  Singleton
+-- leaf-ctor set: the parent's type is static — exactly the historical uniform
+-- emit.  Mixed set: dispatch on $__tmc_dctor (the parent ctor's set-index) with
+-- an if/else chain; the LAST entry needs no test (the index is exhaustive).
+wTrmcLinkParent : List (String, Int) -> List String -> List String
+wTrmcLinkParent [(ctorName, selfIdx)] valInstrs =
+  wTrmcLinkOne ctorName selfIdx valInstrs
+wTrmcLinkParent ctorSet valInstrs = wTrmcLinkChain ctorSet 0 valInstrs
+
+wTrmcLinkOne : String -> Int -> List String -> List String
+wTrmcLinkOne ctorName selfIdx valInstrs =
+  let cellStruct = ctorStructName ctorName
+  ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")"]
+    ++ valInstrs
+    ++ ["struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
+
+wTrmcLinkChain : List (String, Int) -> Int -> List String -> List String
+wTrmcLinkChain [] _ _ = []
+wTrmcLinkChain [(ctorName, selfIdx)] _ valInstrs =
+  wTrmcLinkOne ctorName selfIdx valInstrs
+wTrmcLinkChain ((ctorName, selfIdx)::rest) k valInstrs = ["local.get " ++ wTrmcDctorL, "i32.const " ++ intToString k, "i32.eq", "if"]
+  ++ indent (wTrmcLinkOne ctorName selfIdx valInstrs)
+  ++ ["else"]
+  ++ indent (wTrmcLinkChain rest (k + 1) valInstrs)
+  ++ ["end"]
+
+-- record which ctor the NEW dest cell is (mixed sets only; a singleton set needs
+-- no tracking — the parent type is static).
+wTrmcRecordDctor : List (String, Int) -> String -> List String
+wTrmcRecordDctor [_] _ = []
+wTrmcRecordDctor ctorSet ctorName = [
+  "i32.const " ++ intToString (wTrmcCtorIndex ctorSet ctorName 0),
+  "local.set " ++ wTrmcDctorL,
+]
+
+wTrmcCtorIndex : List (String, Int) -> String -> Int -> Int
+wTrmcCtorIndex [] _ _ = 0
+wTrmcCtorIndex ((n, _)::rest) ctorName k =
+  if n == ctorName then
+    k
+  else
+    wTrmcCtorIndex rest ctorName (k + 1)
 
 -- plain saturated self-call leaf (no cell): recompute args into temps + store into the
 -- param slots + br.  Leaves the destination UNCHANGED (the next iter fills the same slot).
@@ -5458,13 +5521,12 @@ emitWasmTrmcBase : Prog -> List String -> String -> CExpr -> <Mut> List String
 emitWasmTrmcBase prog env exitLbl e =
   let valInstrs = emitRefExpr prog env 0 e
   -- if no cell was built, the whole result IS this value → head := value.
-  -- else store it into the current dest's recursive slot.  We need the dest's struct type;
-  -- it is the active cellStruct, threaded via the ctx — but emitWasmTrmcBase doesn't carry
-  -- it.  Fetch from the ctx.
+  -- else store it into the current dest's recursive slot (the parent ctor's type
+  -- is static for a singleton leaf-ctor set; a mixed set dispatches on
+  -- $__tmc_dctor — wTrmcLinkParent).  Fetch the set from the ctx.
   match wTrmcCtxRef.value
-    WTrmcOn _ _ _ ctorName selfIdx _ _ =>
-      let cellStruct = ctorStructName ctorName
-      let storeBranch = ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")"] ++ valInstrs ++ ["struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
+    WTrmcOn _ _ _ ctorSet _ _ =>
+      let storeBranch = wTrmcLinkParent ctorSet valInstrs
       let seedBranch = valInstrs ++ ["local.set " ++ wTrmcHeadL]
       ["local.get " ++ wTrmcFirstL, "if"] ++ indent seedBranch ++ ["else"] ++ indent storeBranch ++ ["end", "br " ++ exitLbl]
     WTrmcOff => valInstrs ++ ["return"]
@@ -5495,10 +5557,11 @@ wTrmcStoreGo (p::ps) (_::as_) base k = [
 
 -- ── the Stage-1 driver: decide eligibility + emit the destination-passing loop ──
 -- Returns `Some fnDef` when `name`/`clauses` is a top-level non-dict self-recursive
--- define that is `trmcEligible` for the self-only cons/ctor-tail shape (a) AND every
--- cons/ctor-tail leaf builds the SAME ctor (so the single typed dest local + casts are
--- sound).  Otherwise `None` → the caller falls back to the ordinary (stack-growing)
--- codegen (no regression).
+-- define that is `trmcEligible` for the self-only cons/ctor-tail shape (a).
+-- Otherwise `None` → the caller falls back to the ordinary (stack-growing)
+-- codegen (no regression).  MIXED leaf ctors are supported (P3, TMC-parity arc):
+-- the emit dispatches link sites on the parent cell's ctor; the old uniform-ctor
+-- gate (a wasm-only restriction the LLVM backend never had) is retired.
 wasmTrmcTry : Prog -> String -> Int -> List CClause -> <Mut> Option (List String)
 wasmTrmcTry prog name arity clauses =
   let self = SelfByVar name
@@ -5514,7 +5577,7 @@ wasmTrmcTry prog name arity clauses =
   if arity > 0
      && dispNonDict clauses
      && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
-    map (emitWasmTrmcFn prog name arity clauses) (wTrmcUniformCtor prog self arity pairs)
+    Some (emitWasmTrmcFn prog name arity clauses (wTrmcCtorSet prog self arity pairs))
   else None
 
 clauseToPair : CClause -> (List Pat, CExpr)
@@ -5542,41 +5605,49 @@ wTrmcImplTry prog method tag arity clauses =
   let self = SelfByMethod method tag
   let pairs = map clauseToPair clauses
   if arity > 0 && dispNonDict clauses && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
-    map (emitWasmTrmcCore prog (implFnSym tag method) self (implFnSym tag method) arity clauses) (wTrmcUniformCtor prog self arity pairs)
+    Some (emitWasmTrmcCore prog (implFnSym tag method) self (implFnSym tag method) arity clauses (wTrmcCtorSet prog self arity pairs))
   else
     None
 
 wIsDictParamName : String -> Bool
 wIsDictParamName x = startsWithStr x "$dict"
 
--- the single ctor name every cons/ctor-tail leaf in the body builds, if uniform; None if
--- the bodies build no ctor-tail or DISAGREE (mixed ctors would need a per-leaf-typed dest;
--- out of scope — fall back).  Cons-tail leaves report ctor "Cons" (struct $C_Cons).
-wTrmcUniformCtor : Prog -> SelfRef -> Int -> List (List Pat, CExpr) -> <Mut> Option String
-wTrmcUniformCtor prog self arity pairs =
-  let names = dedupKeep (flatMap (pr => wTrmcCtorNamesOf prog self arity (snd pr)) pairs)
-  match names
-    [n] => Some n
-    _ => None
+-- the fn's distinct (ctorName, selfFieldIdx) leaf-ctor pairs, in first-seen
+-- clause/leaf order (deterministic).  Cons-tail leaves report ("Cons", 1).
+-- trmcEligible guarantees ≥1 cons/ctor-tail leaf, so the set is never empty;
+-- Axis-A eligibility puts the self-call in the LAST field, so a ctor's selfIdx
+-- is a function of the ctor — dedup by NAME is exact.
+wTrmcCtorSet : Prog -> SelfRef -> Int -> List (List Pat, CExpr) -> <Mut> List (String, Int)
+wTrmcCtorSet prog self arity pairs = wTrmcDedupCtors
+  (flatMap (pr => wTrmcCtorTailsOf prog self arity (snd pr)) pairs)
+  []
+
+wTrmcDedupCtors : List (String, Int) -> List String -> List (String, Int)
+wTrmcDedupCtors [] _ = []
+wTrmcDedupCtors ((n, i)::rest) seen =
+  if contains n seen then
+    wTrmcDedupCtors rest seen
+  else
+    (n, i) :: wTrmcDedupCtors rest (n::seen)
 
 snd : (a, b) -> b
 snd (_, b) = b
 
--- collect the ctor NAMES of every cons/ctor-tail leaf reachable through the tail
--- wrappers (if/let/block/decision).  Mirrors trmcBodyHasCons's descent.
-wTrmcCtorNamesOf : Prog -> SelfRef -> Int -> CExpr -> <Mut> List String
-wTrmcCtorNamesOf prog self arity (CIf _ t f) = wTrmcCtorNamesOf prog self arity t
-  ++ wTrmcCtorNamesOf prog self arity f
-wTrmcCtorNamesOf prog self arity (CLet _ _ _ b) =
-  wTrmcCtorNamesOf prog self arity b
-wTrmcCtorNamesOf prog self arity (CBlock stmts) = match lastStmtExpr stmts
-  Some ex => wTrmcCtorNamesOf prog self arity ex
+-- collect the (ctor name, selfIdx) of every cons/ctor-tail leaf reachable through
+-- the tail wrappers (if/let/block/decision).  Mirrors trmcBodyHasCons's descent.
+wTrmcCtorTailsOf : Prog -> SelfRef -> Int -> CExpr -> <Mut> List (String, Int)
+wTrmcCtorTailsOf prog self arity (CIf _ t f) = wTrmcCtorTailsOf prog self arity t
+  ++ wTrmcCtorTailsOf prog self arity f
+wTrmcCtorTailsOf prog self arity (CLet _ _ _ b) =
+  wTrmcCtorTailsOf prog self arity b
+wTrmcCtorTailsOf prog self arity (CBlock stmts) = match lastStmtExpr stmts
+  Some ex => wTrmcCtorTailsOf prog self arity ex
   None => []
-wTrmcCtorNamesOf prog self arity (CDecision _ arms _) =
-  flatMap (a => wTrmcCtorNamesOf prog self arity (armBody a)) arms
-wTrmcCtorNamesOf prog self arity ex =
+wTrmcCtorTailsOf prog self arity (CDecision _ arms _) =
+  flatMap (a => wTrmcCtorTailsOf prog self arity (armBody a)) arms
+wTrmcCtorTailsOf prog self arity ex =
   if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity ex then
-    [ctorTailName ex]
+    [(ctorTailName ex, ctorTailSelfIdx ex)]
   else
     []
 
@@ -5587,29 +5658,25 @@ wTrmcCtorNamesOf prog self arity ex =
 --     block $tmcexit  loop $tmcloop  <body via emitRefTail under WTrmcOn>  end  end
 --     local.get $__tmc_head)
 -- Every cons/ctor leaf `br $tmcloop` (no recursive call); the base leaf `br $tmcexit`.
-emitWasmTrmcFn : Prog -> String -> Int -> List CClause -> String -> <Mut> List String
-emitWasmTrmcFn prog name arity clauses ctorName =
+emitWasmTrmcFn : Prog -> String -> Int -> List CClause -> List (String, Int) -> <Mut> List String
+emitWasmTrmcFn prog name arity clauses ctorSet =
   -- top-level define: the func symbol is `gname name`, the self-ref is `SelfByVar name`,
   -- and `name` doubles as the clause-block label root.
-  emitWasmTrmcCore prog (gname name) (SelfByVar name) name arity clauses ctorName
+  emitWasmTrmcCore prog (gname name) (SelfByVar name) name arity clauses ctorSet
 
 -- the shared destination-passing-loop emitter for BOTH the top-level path (SelfByVar) and
 -- the Phase-2 B-dispatch impl path (SelfByMethod).  `funcSym` is the rendered func symbol
 -- (no leading `$`; `gname name` for a top-level fn, `implFnSym tag method` for an impl);
 -- `self` is the SelfRef the TMC analysis + leaf-emit thread (CVar vs CMethod recognition);
 -- `lblRoot` is the clause-block label root (unique per emitted define).
-emitWasmTrmcCore : Prog -> String -> SelfRef -> String -> Int -> List CClause -> String -> <Mut> List String
-emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
+emitWasmTrmcCore : Prog -> String -> SelfRef -> String -> Int -> List CClause -> List (String, Int) -> <Mut> List String
+emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorSet =
   let params = synthParams arity
-  -- the recursive self-call field index — scan EVERY clause body (the cons/ctor-tail
-  -- leaf may live in a LATER clause: `stripComments`'s base `[]` is clause 1, the
-  -- cons-tail is clause 3), not just the first.
-  let selfIdx = wTrmcSelfIdxClauses prog self arity clauses
   let pslots = map gname params
   let loopLbl = "$tmcloop"
   let exitLbl = "$tmcexit"
   let saved = wTrmcCtxRef.value
-  let _ = setRef wTrmcCtxRef (WTrmcOn self arity pslots ctorName selfIdx loopLbl exitLbl)
+  let _ = setRef wTrmcCtxRef (WTrmcOn self arity pslots ctorSet loopLbl exitLbl)
   -- Single all-PVar clause (no fallthrough): the fast path — alias params to the
   -- synthetic positions and TMC-emit the body directly.  Otherwise (multi-clause OR
   -- a clause carries a list/ctor pattern, e.g. `stripComments`/the `map` impl): route
@@ -5628,7 +5695,12 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
       ++ ["end", "end"]
       ++ ["local.get " ++ wTrmcHeadL, "ref.as_non_null"]
   -- locals: the tmc bookkeeping + temps (t0..t_arity), then the ordinary clause/scratch.
+  -- a MIXED leaf-ctor set additionally tracks the dest cell's ctor set-index.
+  let dctorLocal = match ctorSet
+    [_] => []
+    _ => ["(local " ++ wTrmcDctorL ++ " i32)"]
   let tmcLocals = ["(local " ++ wTrmcHeadL ++ " (ref null eq))", "(local " ++ wTrmcDestL ++ " (ref null eq))", "(local " ++ wTrmcFirstL ++ " i32)"]
+    ++ dctorLocal
     ++ map (k => "(local " ++ wTrmcTempL k ++ " (ref null eq))") (rangeList 0 (arity + 1))
   let allLocals = clauseLocals clauses
   let extraLocals = filterList (notIn params) (dedupKeep allLocals)
@@ -5637,38 +5709,6 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorName =
   let w7Decls = w7LocalDecls (clausesMaxDepth clauses)
   let sig = "  (func $\{funcSym}\{joinWith "" (map paramDeclRef params)} (result (ref eq))"
   [sig] ++ map ("  " ++ _) (tmcLocals ++ localDecls ++ w7Decls) ++ indent loopShell ++ ["  )"]
-
--- the recursive self-call field index, scanning EVERY clause's body for the first
--- cons/ctor-tail leaf (the leaf may live in a clause after a base clause).  Defaults
--- to 1 (Cons tail field) when no clause has a ctor-tail (a pure plain-tail fn).
-wTrmcSelfIdxClauses : Prog -> SelfRef -> Int -> List CClause -> <Mut> Int
-wTrmcSelfIdxClauses _ _ _ [] = 1
-wTrmcSelfIdxClauses prog self arity ((CClause _ body)::rest) = match wTrmcFirstCtorTail prog self arity body
-  Some ex => ctorTailSelfIdx ex
-  None => wTrmcSelfIdxClauses prog self arity rest
-
-wTrmcFirstCtorTail : Prog -> SelfRef -> Int -> CExpr -> <Mut> Option CExpr
-wTrmcFirstCtorTail prog self arity (CIf _ t f) = match wTrmcFirstCtorTail prog self arity t
-  Some ex => Some ex
-  None => wTrmcFirstCtorTail prog self arity f
-wTrmcFirstCtorTail prog self arity (CLet _ _ _ b) =
-  wTrmcFirstCtorTail prog self arity b
-wTrmcFirstCtorTail prog self arity (CBlock stmts) = match lastStmtExpr stmts
-  Some ex => wTrmcFirstCtorTail prog self arity ex
-  None => None
-wTrmcFirstCtorTail prog self arity (CDecision _ arms _) =
-  wTrmcFirstCtorTailArms prog self arity arms
-wTrmcFirstCtorTail prog self arity ex =
-  if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity ex then
-    Some ex
-  else
-    None
-
-wTrmcFirstCtorTailArms : Prog -> SelfRef -> Int -> List CArm -> <Mut> Option CExpr
-wTrmcFirstCtorTailArms _ _ _ [] = None
-wTrmcFirstCtorTailArms prog self arity (a::rest) = match wTrmcFirstCtorTail prog self arity (armBody a)
-  Some ex => Some ex
-  None => wTrmcFirstCtorTailArms prog self arity rest
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Stage-2/3 WasmGC DISPATCH-GRAPH TMC (shape (b′)) — WASMGC-TRMC-DESIGN §7/§11,
@@ -5766,6 +5806,9 @@ wDetectDispatchGroups prog allBinds = detectDispatchGroups
 
 -- would Stage-1 (wasmTrmcTry) already claim this fn as a self-TMC loop?  (The
 -- shared dispValidate v5 keeps such singletons on Stage-1 — no group machinery.)
+-- Since the uniform-ctor gate retired (P3), this predicate is semantically
+-- IDENTICAL to the LLVM backend's gDispStage1Claims — v5 decides the same way
+-- on both backends by construction.
 wDispStage1Claims : Prog -> String -> Int -> List CClause -> <Mut> Bool
 wDispStage1Claims prog name arity clauses =
   let self = SelfByVar name
@@ -5773,7 +5816,6 @@ wDispStage1Claims prog name arity clauses =
   arity > 0
     && dispNonDict clauses
     && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs
-    && isSome (wTrmcUniformCtor prog self arity pairs)
 
 -- shared spine classifier, closed over `prog` (detection, validation, and the
 -- leaf emit below all agree on what is — and is not — a spine cons).
