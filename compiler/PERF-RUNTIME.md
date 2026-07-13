@@ -1,5 +1,11 @@
 # PERF-RUNTIME.md — general compiled-program performance
 
+**Status:** IMPLEMENTED — 11 fixpoint-gated native-codegen wins (float unboxing,
+constant-cell hoisting) landed and are live in the emitter today. Well-maintained: the
+2026-07-12 banner below already self-corrects the machine/flags staleness (Mac M5 →
+Linux box migration) in place. Its "Remaining levers" section is genuine open forward
+work, not stale content.
+
 Performance of **native-compiled Medaka programs** (the `medaka build` → LLVM IR →
 clang path), as distinct from compiler self-compile speed (that is
 `compiler/PERF-RESULTS.md`). Started 2026-06-17 (overnight session 3).

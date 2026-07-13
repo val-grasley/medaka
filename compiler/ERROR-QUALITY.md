@@ -1,5 +1,11 @@
 # ERROR-QUALITY.md
 
+**Status:** IMPLEMENTED (as a live spec — the rubric/exemplar/copy-standard content is
+evergreen and still the standard in use; graded corpus + scores live in
+`test/error_quality_fixtures/{INVENTORY,GRADING}.md`). Its "Open decisions" list below
+was stale — 3 of 6 items were decided and shipped elsewhere without this doc being
+updated; struck in place below, 2026-07-13.
+
 The authoritative **grading key** and **copy standard** for Medaka's error
 messages. Use this to (a) score existing diagnostics against a fixed rubric and
 (b) write new ones. It is a design doc, not an implementation plan: it describes
@@ -332,32 +338,27 @@ a real span. `help`/`fix` are the follow-on wins and can land per-category.
 
 These need a human call before implementation; do not decide unilaterally.
 
-1. **Error-code scheme.** Rust-style opaque numeric (`E0308`) vs. readable
-   kebab tags (`E-UNBOUND`, `E-NO-IMPL`, `W-NONEXHAUSTIVE`, used above). Readable
-   tags are more agent- and human-legible and don't need a central registry
-   allocator; numeric codes are terser and doc-linkable. Also: one flat
-   namespace vs. per-stage prefixes (`P-*` parse, `R-*` resolve, `T-*` type).
+1. ~~**Error-code scheme.**~~ **DECIDED + SHIPPED** — readable, per-stage-prefixed
+   kebab tags (`L-*`/`P-*`/`R-*`/`T-*`/`W-*`). See `compiler/DIAGNOSTIC-CODES-DESIGN.md`
+   ("Decided upstream") and live source (`pushIncompleteImpl` emits
+   `"T-INCOMPLETE-IMPL"`, etc.).
 
 2. **`help:` line format.** Single `help:` line (Rust-like, chosen in the
    exemplars) vs. multiple `help:`/`note:` lines. Whether `help:` is part of the
    CLI text *and* a JSON field, or JSON-only with the CLI staying one block.
 
-3. **Machine `fix` scope.** Do we commit to emitting applicable-edit `fix`
-   objects (range + replacement) for the mechanical categories (misspelling,
-   `/=`→`!=`, add-missing-case), or ship `help` prose only in v1 and defer
-   structured fixes? This also gates whether `medaka check --fix` becomes a
-   thing (parallel to `medaka lint --fix`).
+3. ~~**Machine `fix` scope.**~~ **DECIDED + SHIPPED** — yes, structured `fix` objects
+   (range + replacement) are emitted; `cjDiagnostic` (`compiler/driver/diagnostics.mdk:769`)
+   carries a `fix` field, matching AGENTS.md's live description of `medaka check --json`.
 
 4. **Suggestion machinery cost.** Nearest-name suggestions need an
    edit-distance pass over in-scope names in `resolve`. Decide the threshold
    (max distance) and whether it runs always or only when the JSON/`--verbose`
    consumer asks (it is pure and cheap, so "always" is likely fine).
 
-5. **Warning-range regression.** Fixing warnings to carry a real `range`
-   (instead of loc-in-message + `{0,0}`) changes the `--json` output and will
-   perturb `test/diff_compiler_diagnostics` and `check_json` goldens. Confirm
-   we recapture those goldens as part of the workstream (the current shape is a
-   deliberate oracle-compat artifact, not a bug per se).
+5. ~~**Warning-range regression.**~~ **DECIDED + SHIPPED** — warnings now carry a real
+   `range`, not `{0,0}`. See `compiler/DIAGNOSTICS-SURFACING-PLAN.md`'s Stage A/B/C
+   completion.
 
 6. **How much prose.** House style is one compact `file:L:C:` block + caret +
    optional `help:` — explicitly *not* Elm/Roc full-screen boxes. Confirm this

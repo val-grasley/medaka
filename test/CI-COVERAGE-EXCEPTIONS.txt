@@ -48,16 +48,22 @@ diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 w
 # run in CI. Twelve were green and cheap and are now in shards (cross_project_*,
 # diff_native_cli, diff_native_stack, diff_net, the four effect_*_domain gates,
 # manifest_emit, lsp_harness, selfcompile_lex, selfcompile_emit, selfcompile_build_fixpoint).
-# These three are not, and each says why. Every one of them is a task, not a shrug.
-build_construct_coverage  RED: 138 ok, 1 FAILING, 5 skipped (of 144), and 330s. Needs triage — the failure is real and unexamined. Do not enroll until it is green.
-
-# check_removed_constructs and fuzz_diff (formerly ledgered here) are COVERED as of
-# T-4: .github/workflows/nightly.yml runs both on a schedule (+ workflow_dispatch).
-# Neither belongs on the PR path — check_removed_constructs is a correct but slow
-# (~2-3 min) tree-wide scan, fuzz_diff is a nondeterministic fuzzer (a green PR run
-# would prove nothing, a red one might not reproduce) — but the coverage gate now
-# scans EVERY workflow file under .github/workflows/, not just ci.yml, so it sees
-# both named literally in nightly.yml's `run:` steps and classifies them as
-# NAMED/covered without needing a ledger line here. If nightly.yml is ever renamed
-# or stops invoking these scripts by their literal names, the coverage gate will
-# flag them as missing again — that is the intended fail-safe, not a bug.
+# ALL THREE OF THE REMAINDER ARE NOW COVERED (2026-07-13). This section has no entries left.
+#
+# `build_construct_coverage` (T-3) — was RED and unexamined (138 ok, 1 FAILING, 5 skipped
+# of 144). Triaged: the failure was a stale `let_else` fixture for a REMOVED construct, and
+# FOUR of the five "skips" were stale too — their documented gaps had been fixed elsewhere
+# and nobody had re-checked the skip list against a current binary. Now 142 ok / 0 failing /
+# 1 skipped, and enrolled in the `engines` shard (see ci.yml). The one honest remaining skip
+# is `newtype_ctor_fn`, a real open compiler bug (a `newtype`'s implicit constructor is
+# unusable as a callable or a pattern), justified in the gate's own header.
+#
+# `check_removed_constructs` and `fuzz_diff` (T-4) — COVERED by .github/workflows/nightly.yml,
+# on a schedule (+ workflow_dispatch). Neither belongs on the PR path: check_removed_constructs
+# is a correct but slow (~2-3 min) tree-wide scan, and fuzz_diff is a nondeterministic FUZZER
+# (a green PR run would prove nothing; a red one might not reproduce), so it FILES findings
+# rather than failing. The coverage gate now scans EVERY workflow under .github/workflows/,
+# not just ci.yml, so it sees both named literally in nightly.yml and classifies them as
+# covered without needing a ledger line here. If nightly.yml is ever renamed or stops invoking
+# these scripts by their literal names, the coverage gate flags them as missing again — that
+# is the intended fail-safe, not a bug.

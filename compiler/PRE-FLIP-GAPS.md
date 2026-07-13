@@ -1,6 +1,12 @@
-STATUS: COMPLETE — all 9 items closed 2026-06-12; milestone flip done.
-
 # PRE-FLIP-GAPS.md — outstanding native-compiler items to close before the canonicalization milestone flip
+
+**Status:** IMPLEMENTED — all 9 items closed `0836d1e`, 2026-06-12; milestone flip done
+(native `medaka` is canonical). The "How to verify any item" / "Standard gates" sections
+below are STALE and point at a dead OCaml oracle binary (`./_build/default/bin/main.exe`,
+removed 2026-06-26) and a dead `dune build` instruction — struck in place below
+(2026-07-13 doc pass). To verify a fix today: reproduce the repro fixture on the current
+native `medaka`, and run the equivalent `test/diff_compiler_*.sh` gate (native output vs
+captured goldens, not a live OCaml comparison).
 
 **Status: ✅ ALL 9 ITEMS CLOSED (2026-06-12).** The punch-list gate on the milestone flip
 (make native `medaka` canonical, retire OCaml) is **clear**. Each item was reproduced on
@@ -31,16 +37,18 @@ several — see notes), fixed, and verified native==interp with the full differe
 > every time. The per-gap sections below are the ORIGINAL audit hypotheses (historical; several
 > were wrong — see the result table above for what each actually was).
 
-## How to verify any item
-- Oracle (reference): `./_build/default/bin/main.exe run <f>` and `… check <f>`.
-- Native build path: `./_build/default/bin/main.exe build <f> -o <o> && <o>`.
+## How to verify any item (HISTORICAL — see the STRUCK note above for the current method)
+- ~~Oracle (reference): `./_build/default/bin/main.exe run <f>` and `… check <f>`.~~ Dead —
+  OCaml removed 2026-06-26; use `./medaka run <f>` / `./medaka check <f>` and compare
+  against a captured golden instead.
+- Native build path: `./medaka build <f> -o <o> && <o>`.
 - Selfhost typecheck path: `… run compiler/entries/check_main.mdk stdlib/runtime.mdk stdlib/core.mdk <f>`.
 - Stdlib-method / typed cases: the typed emit path (`compiler/entries/llvm_emit_typed_main.mdk` + runtime + core).
-- Native CLI: `compiler/medaka_cli.mdk` (the canonical target) uses the **self-hosted**
+- Native CLI: `compiler/driver/medaka_cli.mdk` (the canonical target) uses the **self-hosted**
   parser/typecheck/emit for every subcommand — its behavior is what users hit post-flip.
 
-## Standard gates for any fix
-`dune build --root .` clean · the item's repro (interp == native, before→after) ·
+## Standard gates for any fix (HISTORICAL — `dune build` is dead; see AGENTS.md's `make preflight`)
+~~`dune build --root .` clean~~ · the item's repro (interp == native, before→after) ·
 `diff_compiler_llvm`/`_modules`/`_typed` (172/9/37) + `diff_compiler_build` byte-identical ·
 **`selfcompile_fixpoint` C3a/C3b YES (MANDATORY for emitter changes)** · `diff_native_cli` 54 ·
 emitter/typecheck-graph changes **leave the seed STALE** (orchestrator re-mints at the

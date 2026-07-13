@@ -1,5 +1,10 @@
 # WASM-SELFHOST-ROADMAP.md — driving the WasmGC backend to compile the compiler
 
+**Status:** IMPLEMENTED — census progress 1428 → 0, every category ✅ DONE, in-browser
+WAT assembly resolved, playground wired (all 2026-06-22). Most recently touched
+2026-07-13 as part of a proactive documentation-hygiene sweep (`95496ecc`) — the healthiest
+maintenance pattern found across this doc family.
+
 > **Goal:** run the Medaka compiler *itself*, compiled to WasmGC, in a browser — a
 > frontend-only playground with **no server-side compilation**. This is the
 > `WASMGC-DESIGN.md` §1 "far horizon" made concrete. The compute+print MVP (W1–W9b +

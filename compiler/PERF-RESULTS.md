@@ -1,5 +1,13 @@
 # PERF-RESULTS.md — native-backend performance log
 
+**Status:** PARTIAL — live, actively-updated log, but its own numbers have drifted
+through at least three self-corrections (2.12s original → 1.72s → the 2026-07-02 banner's
+~5.4s) and AGENTS.md now cites a still-newer ~3.7s figure not reflected here. Trust
+AGENTS.md's summary line over the numbers in this file's body; this doc still needs a
+fresh dated entry to reconcile them (not done in this pass — this is a documentation-status
+pass, not a benchmarking one; see AGENTS.md's own "two rebuilds" warning before
+re-measuring an emitter change).
+
 Running log of measured native-backend performance. Companion to
 `compiler/PERF-SCOPE.md` (the scoping/plan). Each entry: what changed, the
 gate state, and the numbers (min-of-N, single-threaded, quiet machine).
@@ -92,7 +100,7 @@ Workloads:
 ## Entry 1 — Baseline -O0 + flip to -O2 (2026-06-10)
 
 **Change:** added `-O2` to the clang link step in both build drivers
-(`lib/build_cmd.ml:233`, `compiler/build_cmd.mdk:219`). Previously all 6 clang
+(`lib/build_cmd.ml:233`, `compiler/driver/build_cmd.mdk:219`). Previously all 6 clang
 invocations ran at implicit `-O0`.
 
 **Gates (all green, both at -O2):**
@@ -244,7 +252,7 @@ heavy batch use.
 
 ## Entry 4 — emitter lifted-define buffer: O(N²) → O(N) (2026-06-10)
 
-**Change:** `compiler/llvm_emit.mdk` accumulated all lifted-lambda / global /
+**Change:** `compiler/backend/llvm_emit.mdk` accumulated all lifted-lambda / global /
 impl `define`s into the `lamsRef` side buffer with `acc ++ reverseL chunk` at 10
 append sites — each append copies the *entire growing* buffer, so building the
 side buffer was **O(N²)** in the number of accumulated lines. Switched the buffer
@@ -293,7 +301,7 @@ isolate compute from GC) ranked the hot symbols: O(N²) dedup/closure routines
 dominate — `dedupSGo`/`clausesFor` (typechecker), and the DCE pass
 (`addRefs`/`filterReachable`/`dedupAgainst`/`closure`).
 
-**Change (`compiler/dce.mdk`):** the DCE reachability result is consumed *only* by
+**Change (`compiler/ir/dce.mdk`):** the DCE reachability result is consumed *only* by
 `filterReachable`'s membership test (`contains n reach`), and `filterReachable`
 emits decls in their original order — so the reachable list's **order and
 duplicates are irrelevant**, only its set membership matters. That makes every
@@ -375,7 +383,7 @@ builder, `depGraphMap`) among the top compute hotspots. `buildAdj` calls
 refs = filterList (r => containsName r allNames) refs` did a linear `containsName`
 scan of *all* top-level names per ref → O(names²·refs) over the whole compiler.
 
-**Change (`compiler/typecheck.mdk`):** build an `SMap Unit` name-membership set
+**Change (`compiler/types/typecheck.mdk`):** build an `SMap Unit` name-membership set
 **once** (`namesToSet`, the in-tree balanced BST already used for the adjacency
 map) and thread it through `buildAdj`/`depsOf`; `keepGroupNames` now tests
 `smHasKey` (O(log n)) instead of `containsName` (O(names)). `filterList` is
@@ -408,7 +416,7 @@ follow-up.
 
 ## Entry 10 — typecheck `clausesFor` group-by (2026-06-11)
 
-**Change (`compiler/typecheck.mdk`):** the follow-up flagged in Entry 9.
+**Change (`compiler/types/typecheck.mdk`):** the follow-up flagged in Entry 9.
 `depsOf` re-scanned all defs (`clausesFor name defs`, O(defs)) for every name →
 O(names·defs). Now `depGraphMap` groups defs by name **once** into an
 `SMap (List clauses)` (`groupClauses`, built by O(1) prepend; `clausesOf`
@@ -429,7 +437,7 @@ cumulative this session 12.04 s → 4.00 s (**3.01×**); vs OCaml interpreter 31
 
 ## Entry 8 — DCE graph also via HashMap; full O(N) DCE (2026-06-11)
 
-**Change (`compiler/dce.mdk`):** completed the DCE rewrite — the call graph
+**Change (`compiler/ir/dce.mdk`):** completed the DCE rewrite — the call graph
 (`funGraph`/`addRefs` assoc list, O(N²) to build; `refsOf` O(N) scan) is now a
 `HashMap String (List String)` with O(1) insert/merge/lookup, and the visited set
 is a `HashMap String Unit` (replacing Entry 7's `HashSet` — `hash_map` carries
@@ -452,7 +460,7 @@ RSS ~207 MB. DCE is no longer a profile hotspot.
 
 ## Entry 7 — DCE membership via HashSet: O(N²) → O(N) (2026-06-11)
 
-**Change (`compiler/dce.mdk`):** the reachability closure and `filterReachable`
+**Change (`compiler/ir/dce.mdk`):** the reachability closure and `filterReachable`
 used linear-scan `contains` for set membership (O(N²) over the reachable set).
 Replaced the visited set with a `stdlib/hash_set.mdk` `HashSet String`: the
 closure is now a BFS that `insert`s each unseen name and skips seen ones (O(1)
@@ -495,7 +503,7 @@ but the structural blocker is cleared.
 
 ## Entry 11 — typecheck SCC clause lookup: whole-defs scan → grouped lookup (2026-06-11)
 
-**Change (`compiler/typecheck.mdk`):** `processSCCs` passed the **whole** top-level
+**Change (`compiler/types/typecheck.mdk`):** `processSCCs` passed the **whole** top-level
 defs list (~2 800) to every `processSCC`, and `inferMembers`/`sccSchemes` then did
 `clausesFor m defs` (a full O(defs) scan) for every SCC member → O(members·defs) =
 O(N²) over the whole compiler. This `clausesFor` was the #1 profile hotspot.
@@ -516,7 +524,7 @@ Eliminated the largest remaining hotspot. Cumulative this session: 12.04 s →
 
 ## Entry 12 — typecheck `dedupS` via SMap (2026-06-11)
 
-**Change (`compiler/typecheck.mdk`):** `dedupS` (used to dedup free-variable ref
+**Change (`compiler/types/typecheck.mdk`):** `dedupS` (used to dedup free-variable ref
 lists in the dep-graph build and type-variable lists in instantiation) kept its
 `seen` set as a list with an O(n) `containsName` scan → O(n²) per call. Switched
 `seen` to an `SMap Unit` (O(log n) membership). First-occurrence order is
@@ -534,7 +542,7 @@ preserved exactly, so output is byte-identical. One-function change.
 
 ## Entry 13 — typecheck member sig presence via module-level SMap (2026-06-11)
 
-**Change (`compiler/typecheck.mdk`):** `memberPeelSource`/`memberSigIsFun` (called
+**Change (`compiler/types/typecheck.mdk`):** `memberPeelSource`/`memberSigIsFun` (called
 per SCC member in `inferMembers`/`sccSchemes`) did `lookupAssocS m sigs` — an
 O(sigs) linear scan of the whole top-level signature list per member →
 O(members·sigs) over the compiler. Build a sig-name presence set (`SMap Unit`)
@@ -603,7 +611,7 @@ already meet the OCaml-retirement performance bar with wide margin.
 
 ## Entry 14 — memoize `distinctTypeNames` (emitter) (2026-06-11)
 
-**Change (`compiler/llvm_emit.mdk`):** `ctorTypeId` (per ADT-constructor emission)
+**Change (`compiler/backend/llvm_emit.mdk`):** `ctorTypeId` (per ADT-constructor emission)
 called `distinctTypeNames e`, which recomputed `nubStr (typeNamesOf …)` — an O(n²)
 dedup — *every* call, though the ctor→type table is constant during a program's
 emission. Memoize the result (a plain `List String`) in a module-level
@@ -628,7 +636,7 @@ recompute hotspots can use a plain-List memo safely; only hash *containers* insi
 
 ## Entry 15 — private-name collision detection O(n²) → O(n log n) (2026-06-11)
 
-**Change (`compiler/private_mangle.mdk`):** `collidingNames` found cross-unit name
+**Change (`compiler/backend/private_mangle.mdk`):** `collidingNames` found cross-unit name
 collisions with `collidingGo`, calling `countOccPM n allNames` (a full O(n) scan)
 per name → O(n²) over all top-level names (~2 800). Replaced with a local merge
 sort (`msortPM`/`mergePM`/`splitAltPM`, using the `stringCompare` extern — no new
@@ -692,7 +700,7 @@ sorted index won't give O(1) on a linked list).
 
 ## Entry 16 — core_ir_lower group-by O(n²) → O(n log n) (2026-06-11)
 
-**Change (`compiler/core_ir_lower.mdk`):** `lowerGroups` did
+**Change (`compiler/ir/core_ir_lower.mdk`):** `lowerGroups` did
 `map (n => CBind n (clausesFor n clauses)) (groupNames clauses [])` — O(names·clauses)
 (a full clause rescan per name) + O(n²) `groupNames`. Replaced with an
 index-carrying merge-sort group (`lgGroup`): tag clauses with their position,
@@ -745,7 +753,7 @@ OCaml-retirement performance bar is met with very wide margin.
 
 ## Entry 17 — isKnownFn via EMap index (constant fnNames) (2026-06-11)
 
-**Change (`compiler/llvm_emit.mdk`):** `isKnownFn e name = containsStr name (fnNames e)`
+**Change (`compiler/backend/llvm_emit.mdk`):** `isKnownFn e name = containsStr name (fnNames e)`
 was an O(fns) scan per CApp/CVar node → O(nodes·fns). Index `fnNames` into a plain
 BST (`EMap`) installed at emitProgram; `isKnownFn` now does an O(log n) `emLookup`.
 
@@ -769,7 +777,7 @@ that profiles hot.
 
 ## Entry 18 — typecheck groupNames O(n²) → O(n log n) (2026-06-11)
 
-**Change (`compiler/typecheck.mdk`):** `groupNames` (the unique-top-level-name
+**Change (`compiler/types/typecheck.mdk`):** `groupNames` (the unique-top-level-name
 dedup feeding `processTopGroups`) kept its `seen` set as a list with O(n)
 `containsName` → O(n²). Switched `seen` to `SMap Unit` (the same fix as `dedupS`);
 first-occurrence order preserved → output byte-identical. Callers updated
@@ -786,7 +794,7 @@ Cumulative this session: 12.04 s → 2.20 s (**5.47×**); vs OCaml interpreter 5
 
 ## Entry 19 — index constant ctor table via EMap (2026-06-11)
 
-**Change (`compiler/llvm_emit.mdk`):** `isCtor`/`ctorArity` did `lookupAssoc name
+**Change (`compiler/backend/llvm_emit.mdk`):** `isCtor`/`ctorArity` did `lookupAssoc name
 (ctorTable e)` — O(ctors) per query. The ctor-arity table (`ct` field) is set once
 at Emit construction and never mutated (constant, like `fnNames`), so index it into
 an `EMap Int` (`installCtorMap ctorArs` at emitProgram); both now do O(log n)

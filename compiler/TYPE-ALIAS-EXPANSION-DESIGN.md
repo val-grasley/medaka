@@ -1,5 +1,11 @@
 # Type-Alias Expansion — Design
 
+**Status:** IMPLEMENTED — `aa57e3c1`, 2026-06-30 (§10 "AS-BUILT"). Verified live:
+`compiler/types/typecheck.mdk` has a `registerData env (DTypeAlias _ name params rhs) = ...`
+arm (~line 6007); type aliases now expand transparently, retiring the `data`-wrap
+workaround this doc was written to eliminate. The header below ("DESIGN... No source
+modified") predates the fix.
+
 Status: DESIGN (read-only investigation). Built and reproduced against
 `./medaka` at commit `e9f5866` (BASE_OK). No `.mdk` source was modified.
 

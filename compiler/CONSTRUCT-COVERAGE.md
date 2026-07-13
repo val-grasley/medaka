@@ -1,5 +1,13 @@
 # CONSTRUCT-COVERAGE.md — `medaka build` native coverage matrix
 
+**Status:** PARTIAL — actively maintained (last substantive update 2026-07-10). Per its
+own Summary: 123+ PASS fixtures; genuine remaining emitter gaps are same-head-tycon
+dispatch (C7-native) and overlapping-tuple-impl. The `## Gaps` sections are authoritative
+over the per-row matrix when they disagree. Bare `compiler/*.mdk` path citations in this
+doc have been corrected to their post-restructure subfolder paths (2026-07-13 doc pass);
+`lib/*.ml` citations are historical OCaml-oracle comparisons from before the 2026-06-26
+OCaml removal — no live OCaml oracle exists to re-run them against.
+
 Stage 3 #2b. Tested 2026-06-10 against the compiler LLVM backend (`medaka build`).
 Each construct was exercised with a minimal `main` program, diffed native vs
 `medaka run` (interpreter oracle). Fixture programs live in
@@ -360,7 +368,7 @@ repros all hit A1 first, masking the real downstream behavior):**
   `medaka run` → `Parse error` for each. Reference grammar `pat_atom`
   (parser.mly:549-573) has NO standalone `MINUS INT → PLit` production; `MINUS
   INT` appears in patterns ONLY as a range bound (parser.mly:561-566). Adding a
-  bare-negative-literal pattern to `compiler/parser.mdk` would make compiler
+  bare-negative-literal pattern to `compiler/frontend/parser.mdk` would make compiler
   accept what the reference rejects → diverge from the differential oracle.
   The task premise ("the OCaml reference parser accepts it") does not hold.
   **No compiler change made.**
@@ -372,12 +380,12 @@ repros all hit A1 first, masking the real downstream behavior):**
 | A10 | Annotated `let x : T = e` in block (block form) | Both ref and compiler fail; ref: `Parse error` | N/A — both parsers reject this |
 | A11 | `@`-pattern in lambda / function param (e.g. `setX v p@(Pt {x,y}) = ...`) | ✅ CLOSED (2026-06-18 audit) — works in both fn params AND lambda | `f p@{x,y} = x` |
 
-**Fix target:** `compiler/parser.mdk` for A2/A3 emit; A7 CLOSED (see above).
+**Fix target:** `compiler/frontend/parser.mdk` for A2/A3 emit; A7 CLOSED (see above).
 
 ---
 
 ### Gap Group B: Emitter missing block statement forms — CLOSED (2026-06-10)
-`emitBlock` in `compiler/llvm_emit.mdk` historically only handled `CSLet`(PVar/
+`emitBlock` in `compiler/backend/llvm_emit.mdk` historically only handled `CSLet`(PVar/
 PWild/PTuple) and `CSExpr`; missing cases produced `panic: unsupported block
 statement (slice 1)`. Both gaps are now closed (EMIT-ONLY, deterministic).
 
@@ -406,7 +414,7 @@ branches: match → `loadFields` + `bindPattern` + continue the block into a res
 slot; miss → emit `alt` (which diverges via `@mdk_panic`/exit). Reuses the exact
 primitives the decision-tree switch chain uses; no decision-tree builder needed.
 
-**Location:** `compiler/llvm_emit.mdk` `emitBlock` (new `CSAssign`/`CSLetElse`
+**Location:** `compiler/backend/llvm_emit.mdk` `emitBlock` (new `CSAssign`/`CSLetElse`
 arms) + new helpers `emitLetElse` / `bindFieldList` / `letElseHead` /
 `irrefutableLet`. The four CStmt-walking analyses (`freeVarsStmts`,
 `eagerVarsStmts`, `blockTy`, `scanStmtsRecords`) gained explicit `CSAssign` /
@@ -458,7 +466,7 @@ lowers correctly to `CApp (CApp (CVar "f" AGlobal) a) b`. The bug was NOT in
 emit — it was DCE: `marker.collectVars (EInfix _ a b)` dropped the operator name,
 so the backtick-referenced function `f` looked unreachable and `dce.dceFilter`
 removed its `DFunDef`. The emitter then hit `unbound variable 'f'`. Fix:
-`collectVars (EInfix op a b) = op :: …` (`compiler/marker.mdk`). Built-in operator
+`collectVars (EInfix op a b) = op :: …` (`compiler/frontend/marker.mdk`). Built-in operator
 symbols (`+`/`==`) never name a `DFunDef`, so the added name is inert for them.
 
 **D2 root cause + fix (2026-06-10).** `core_ir_lower.ctorArities` only scanned
@@ -467,9 +475,9 @@ and `UserId 42` resolved to an unbound variable. A newtype is structurally a
 single-constructor, single-field data type (the oracle uses `make_ctor con 1`),
 so the fix registers it as an arity-1 ctor:
 `ctorArities ((DNewtype _ _ _ con _ _)::rest) = (con, 1) :: …`
-(`compiler/core_ir_lower.mdk`). EMIT-ONLY — no eval/canonPat/Core-IR shape change.
+(`compiler/ir/core_ir_lower.mdk`). EMIT-ONLY — no eval/canonPat/Core-IR shape change.
 
-**Fix target (remaining):** `compiler/llvm_emit.mdk` — D3: impl hints; D4: mutual-rec top-level wiring.
+**Fix target (remaining):** `compiler/backend/llvm_emit.mdk` — D3: impl hints; D4: mutual-rec top-level wiring.
 
 ---
 
@@ -481,7 +489,7 @@ impl/interface bodies. Reachability is computed with `marker.collectVars`
 fails to walk a sub-expression or a NAME that can reference a top-level binding,
 DCE silently drops a *reachable* function → emitter `unbound variable` crash
 (this is exactly how D1 bit us). This audit enumerated every `Expr`, pattern,
-and `Decl` form (`compiler/ast.mdk`) against the walk.
+and `Decl` form (`compiler/frontend/ast.mdk`) against the walk.
 
 **`collectVars` — Expr forms (all 40 ctors):**
 
@@ -545,7 +553,7 @@ emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
 | E2 | ADT with two Float fields, extracting both: `Rect Float Float; Rect w h => w * h` | `12.` | `12.` | **CLOSED 2026-06-10 (Fix B):** field vars now typed from ctor's DECLARED field types — see Gap E note below |
 | E3 | lambda Float param `(y => y + 1.0) 3.0` | `4.` | `4.` | **CLOSED 2026-06-10 (Fix A)** — lambda params typed via `paramUseTy` |
 
-**Fix target:** `compiler/llvm_emit.mdk` — all three closed. Gap E is the LLVM emitter's static `LTy` recovery guessing too weakly; each fix sources a stronger, DECLARED type into inference rather than relying on body-use.
+**Fix target:** `compiler/backend/llvm_emit.mdk` — all three closed. Gap E is the LLVM emitter's static `LTy` recovery guessing too weakly; each fix sources a stronger, DECLARED type into inference rather than relying on body-use.
 
 ---
 
@@ -559,7 +567,7 @@ emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
 **Layer 1 (return-type inference) — FIXED (Stage 3 #2b layering, construct-gap F1, 2026-06-10).**
 `f`'s body lowers to `CApp (CDict "println" routes) [s]` — a constrained-function
 occurrence with a `CDict`/`CMethod` head, not a bare `CVar`. `typeOf`'s
-application arm in `compiler/llvm_emit.mdk` only handled a `CVar` head (routing to
+application arm in `compiler/backend/llvm_emit.mdk` only handled a `CVar` head (routing to
 `callRetTy`) and defaulted every other head — including `CDict`/`CMethod` — to
 `LTInt`. So `f`'s inferred return type was `LTInt`, propagating to `main`'s result
 LTy and auto-printing `0` instead of `()`. Fix: extend `typeOf`'s app arm with
@@ -577,11 +585,11 @@ emitted as `mdk_f(i64 %arg0)` (no dict param) and `f`'s body calls
 Display dict-dispatch switch over its dict arg; dict `0` matches no impl tag and
 falls to the `unreachable` terminator → SIGSEGV. The emitter is faithfully
 lowering what dict_pass produced; the missing leading dict param + `RDictFwd` route
-is upstream in `compiler/typecheck.mdk` (dict-passing for a user fn that is generic
+is upstream in `compiler/types/typecheck.mdk` (dict-passing for a user fn that is generic
 over a constraint consumed by a return-position constrained call). This is an
 EMIT-ONLY-out-of-scope dispatch fix, deferred.
 
-**Fix target (Layer 2):** `compiler/typecheck.mdk` — give a user fn generic over a
+**Fix target (Layer 2):** `compiler/types/typecheck.mdk` — give a user fn generic over a
 constraint used in a return-position constrained call a leading dict parameter and
 route the constrained call through `RDictFwd` (not `RNone`).
 
@@ -598,19 +606,19 @@ operand type.
 
 **The fix (A2):**
 1. **AST ref.** `EBinOp` carries a dispatch ref — `lib/ast.ml:155` (`resolved option ref`)
-   and `compiler/ast.mdk:118` (`Ref Route`). `None`/`RNone` for primitives, arithmetic, and
+   and `compiler/frontend/ast.mdk:118` (`Ref Route`). `None`/`RNone` for primitives, arithmetic, and
    other operators; sexp/astdump ignore it (byte-identical dumps).
 2. **Typecheck stamp (the recursion-avoidance gate).** At a comparison `EBinOp`, once the
    operand type is **ground**, if its head is a **non-primitive** (NOT
    Int/Float/Char/String/Bool) with an Eq/Ord impl, stamp the impl key (RKey):
-   `lib/typecheck.ml` `binop_usages` + `check_binop_usages`; `compiler/typecheck.mdk`
+   `lib/typecheck.ml` `binop_usages` + `check_binop_usages`; `compiler/types/typecheck.mdk`
    `pendingBinopSites` + `resolveBinopSites`. Primitive/ungroundable operands stay
    `None`/`RNone` → the structural-builtin `EBinOp` path (so `impl Eq Int.eq a b = a == b`
    never recurses).
 3. **Rewrite pass.** The stamped node becomes a method application via the existing
    Phase-69 dispatch node: `lib/dict_pass.ml` `rewrite_binops` (wired into `Dict_pass.run`
    AND `Eval.eval_modules` — the loader path uses `run_decl` directly, not `run`) →
-   `EMethodRef`-based app; `compiler/typecheck.mdk` `dictPass`→`rewriteBinopExpr` →
+   `EMethodRef`-based app; `compiler/types/typecheck.mdk` `dictPass`→`rewriteBinopExpr` →
    `EMethodAt`-based app. `<`→`lt a b`, `>`→`gt`, `<=`→`lte`, `>=`→`gte`, `==`→`eq a b`,
    `!=`→`not (eq a b)`. Backends need NO new comparison logic — the rewritten node is an
    ordinary method app they already dispatch (arg-tag selects the impl).
@@ -629,7 +637,7 @@ gap a direct `lt` call does. This is the Gap-C/D3b class; NOT fixed here (out of
 
 **Out of scope (pre-existing) — NOW FIXED 2026-06-10.** A compiler-vs-oracle divergence on
 *derived* `Ord` `compare`/`lt` (e.g. `compare Red Blue` = `Gt` compiler vs `Lt` oracle)
-existed on `main`, independent of operators. **Root cause:** `compiler/desugar.mdk`'s
+existed on `main`, independent of operators. **Root cause:** `compiler/frontend/desugar.mdk`'s
 `deriveForData` had no `"Ord"` arm, so derived `Ord` for `data`/record types was silently
 dropped → fell back to the inverted primitive ctor-tag `compare`. The generator
 `deriveOrdData` already existed and was correct (wired only into `deriveForNewtype`). **Fix:**
@@ -667,7 +675,7 @@ hard-codes a structural built-in that ignores the impl:
 | Backend | built-in for ADT `<` | orders by |
 |---|---|---|
 | `lib/eval.ml:1267-1270` (`eval_arith`, `Stdlib.compare` on `value`) | constructor **NAME** (alphabetical) |
-| `compiler/eval.mdk:1143-1146` (`evalArith`→`valueCompare`, `:438`) | constructor **NAME** |
+| `compiler/eval/eval.mdk:1143-1146` (`evalArith`→`valueCompare`, `:438`) | constructor **NAME** |
 | native: `core_ir_lower.mdk:68` `EBinOp`→`CBinPrim` → `llvm_emit.mdk:1508` `emitIntCmp` | constructor **TAG** (declaration order) |
 
 `==`/`!=` have the identical defect (`eval.ml:1265-1266`, `eval.mdk:1141-1142`).
@@ -692,7 +700,7 @@ correctness bug in *every* backend, not just an oracle quirk.
 
 **Fix plan (recommended; DEFERRED — needs oversight):** desugar `EBinOp {==,!=,<,>,<=,>=}`
 into the corresponding method application (`<`→`lt`, `==`→`eq`, `!=`→`not (eq …)`, …)
-in `lib/desugar.ml` + the `compiler/desugar.mdk` mirror, routing operators through the
+in `lib/desugar.ml` + the `compiler/frontend/desugar.mdk` mirror, routing operators through the
 existing Phase-69.x dispatch so all three backends agree and call the user impl. The
 `eval_arith`/`emitIntCmp` arms for these ops become dead. **Must special-case
 primitives** (`Int`/`Float`/`Char`/`String`/`Bool`) onto the fast structural path to
@@ -729,7 +737,7 @@ Zebra))` → should be `False`; all three backends give `True`.
 |---|-----------|--------|--------|------|
 | I1 | Function returning `<IO \| e> Unit` called from main | `42` | `42\n0` | The open-row function emits an extra `0` (unit value) before the trailing `()` |
 
-**Fix target:** `compiler/llvm_emit.mdk` — open effect row functions should return the same Unit value as closed-row `<IO> Unit` functions.
+**Fix target:** `compiler/backend/llvm_emit.mdk` — open effect row functions should return the same Unit value as closed-row `<IO> Unit` functions.
 
 ---
 
