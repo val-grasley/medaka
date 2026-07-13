@@ -189,7 +189,7 @@ usage _ = putStrLn (stringConcat
     "Usage:\n",
     "  medaka                    Show this message\n",
     "  medaka run [--release] <file.mdk>   Type-check and run a program\n",
-    "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n",
+    "  medaka build <file.mdk> [-o <out>] [--keep-ir]  Compile to a native binary (LLVM + clang)\n",
     "  medaka check [--json] <file.mdk>    Type-check without running\n",
     "  medaka test [file.mdk]    Run doctests + prop tests\n",
     "  medaka bench [file.mdk]   Run bench declarations\n",
@@ -816,31 +816,53 @@ runNewCmd _ =
 -- getcwd/executable_name extern.  MEDAKA defaults to "./medaka" so a build with
 -- no MEDAKA set re-invokes THIS native binary as the emitter host (no OCaml).
 runBuildCmd : List String -> <IO, Mut, Panic> Unit
-runBuildCmd argv = match parseBuildArgs argv
-  Err msg =>
-    let _ = ePutStrLn msg
-    exit 1
-  Ok (input, outOpt, target) => if not (fileExists input) then
-    let _ = ePutStrLn ("error: no such file: " ++ input)
-    exit 1
-  else
-    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
-    let medaka = envOr "MEDAKA" "medaka"
-    let cc = envOr "CC" "clang"
-    let inputAbs = input
-    let allowInternal = hasFlag "--allow-internal" argv
-    let outPath = match outOpt
-      Some o => o
-      None => defaultOutPath target input
-    match typecheckGate allowInternal root inputAbs
-      TGErr msg =>
-        let _ = ePutStrLn msg
-        exit 1
-      TGOk => match runBuild root medaka cc target inputAbs outPath
-        BuildOk msg => println msg
-        BuildErr msg =>
+runBuildCmd argv =
+  if hasFlag "--help" argv || hasFlag "-h" argv then buildUsage ()
+  else match parseBuildArgs argv
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 1
+    Ok (input, outOpt, target) => if not (fileExists input) then
+      let _ = ePutStrLn ("error: no such file: " ++ input)
+      exit 1
+    else
+      let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+      let medaka = envOr "MEDAKA" "medaka"
+      let cc = envOr "CC" "clang"
+      let inputAbs = input
+      let allowInternal = hasFlag "--allow-internal" argv
+      let keepIrCli = hasFlag "--keep-ir" argv
+      let outPath = match outOpt
+        Some o => o
+        None => defaultOutPath target input
+      match typecheckGate allowInternal root inputAbs
+        TGErr msg =>
           let _ = ePutStrLn msg
           exit 1
+        TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
+          BuildOk msg => println msg
+          BuildErr msg =>
+            let _ = ePutStrLn msg
+            exit 1
+
+-- `medaka build --help` / `-h`: a subcommand-local usage, since the global
+-- `usage()` (only matched when --help/-h is argv[0]) never sees this — dispatch
+-- routes "build"::rest to runBuildCmd before the top-level --help arm gets a
+-- chance.  Exists specifically so --keep-ir (and the other build-only flags)
+-- are discoverable without reading the source.
+buildUsage : Unit -> <IO> Unit
+buildUsage _ = putStrLn (stringConcat
+  [
+    "usage: medaka build [--target native|wasm] <file.mdk> [-o <out>] [--keep-ir] [--allow-internal]\n",
+    "\n",
+    "  -o <out>          output path for the binary (default: <file> with its extension dropped)\n",
+    "  --target <t>      backend: native (LLVM + clang, default) or wasm (WasmGC + wasm-tools)\n",
+    "  --keep-ir         keep the emitted IR (.ll for native, .wat for wasm) at <out>.ll/.wat\n",
+    "                    instead of discarding it with the build's scratch directory; the\n",
+    "                    kept path is printed. Env var MEDAKA_KEEP_IR=1 does the same for a\n",
+    "                    build invoked by something else (e.g. a test harness)\n",
+    "  --allow-internal  permit internal-only externs outside stdlib/\n",
+  ])
 
 -- Default output path per target: native drops the extension (a bare exe name);
 -- wasm appends `.wasm` to the entry's base.
@@ -946,6 +968,11 @@ parseBuildGo ("--target"::v::rest) acc out _ = match parseTarget v
 parseBuildGo ["--target"] _ _ _ =
   Err "error: --target requires an argument (native|wasm)"
 parseBuildGo ("--allow-internal"::rest) acc out target =
+  parseBuildGo rest acc out target
+-- --keep-ir: read separately via hasFlag in runBuildCmd (same convention as
+-- --allow-internal above) — just strip it here so it doesn't fall through to
+-- finishBuildArgs and get mistaken for the input file.
+parseBuildGo ("--keep-ir"::rest) acc out target =
   parseBuildGo rest acc out target
 parseBuildGo (x::rest) acc out target = parseBuildGo rest (x::acc) out target
 
