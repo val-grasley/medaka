@@ -1,0 +1,63 @@
+availableModuleIds : String -> <IO> List String
+availableModulesHint : String -> <IO> String
+availableModulesText : String -> <IO> String
+canonicalModId : List (String, String) -> List String -> String -> <IO> String
+childDeps : List (String, String) -> String -> List String -> <IO> List (String, String)
+childRoots : String -> List String -> List String
+collectDeps : String -> List String -> List (String, String)
+collectDepsIn : String -> List String -> List (String, String)
+cycleChain : String -> List String -> List String
+directImports : List Decl -> List String
+dropKey : String -> List (String, List Decl) -> List (String, List Decl)
+dropPrefix : Int -> String -> String
+entrySearchRoots : String -> <IO> List String
+fileOfModuleId : String -> String -> String
+findImportLoc : String -> List Decl -> Option Loc
+findInRoots : List String -> String -> <IO> Option (String, String)
+findModuleFile : List (String, String) -> List String -> String -> <IO> Option (String, String)
+findProjectRoot : String -> <IO> String
+findRootGo : String -> String -> <IO> String
+importModId : UsePath -> String
+joinArrow : List String -> String
+joinComma : List String -> String
+joinPathL : String -> String -> String
+joinSlash : List String -> String
+keyBeforeEq : String -> String
+keyEqGo : String -> Int -> Int -> String
+lastOr : a -> List a -> a
+loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
+loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+mdkBaseName : String -> Option String
+moduleIdOfPath : List String -> String -> String
+parentDir : String -> String
+parentGo : String -> Int -> String
+parseCacheLimit : Int
+parseCachedLocated : Ref (List (String, List Decl)) -> String -> <Mut> List Decl
+readDeps : String -> <IO> List (String, String)
+readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (String, List Decl)
+readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> String -> <IO, Mut> Result String (String, String, List Decl)
+relUnderRoots : List String -> String -> String
+resolveDepFile : List (String, String) -> String -> <IO> Option (String, String)
+revLookupRoot : String -> List (String, String) -> <IO> Option String
+rewriteDecl : List (String, String) -> List String -> Decl -> <IO> Decl
+rewriteDecls : List (String, String) -> List String -> List Decl -> <IO> List Decl
+rewriteUsePath : String -> UsePath -> UsePath
+slashToDot : String -> String
+splitDot : String -> List String
+splitGo : String -> String -> Int -> Int -> String -> List String
+splitOnChar : String -> String -> List String
+stdlibTrustedMods : String -> List String -> String -> List (String, List Decl) -> <IO> List String
+stripSuffixStr : String -> String -> String
+takeFirst : Int -> List a -> List a
+takeTo : String -> List String -> List String
+trustedModsGo : List (String, String) -> List String -> String -> List String -> <IO> List String
+unknownModuleIdOf : String -> Option String
+unquote : String -> String
+valAfterEq : String -> String
+valEqGo : String -> Int -> Int -> String
+visitMod : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
+visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
+visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))

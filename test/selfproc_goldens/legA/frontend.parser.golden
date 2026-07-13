@@ -1,0 +1,483 @@
+advance : Parser Token
+advanceR : Token -> Int -> PR Token
+afterDefault : Bool -> Parser Decl
+afterDefaultFor : Bool -> Token -> Parser Decl
+afterExport : Parser Decl
+afterNoise : Parser Unit
+afterPublic : Parser Decl
+afterPublicFor : Token -> Parser Decl
+aliasName : Parser String
+aliasNameFor : Token -> Parser String
+allChainLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List (List Int)
+allVariantLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List Int
+annotTail : Expr -> Parser Expr
+anyField : List KvItem -> Bool
+anyKV : List KvItem -> Bool
+apPR : Parser (a -> b) -> Parser a -> Array Token -> Int -> PR b
+appArg : Bool -> Parser Expr
+appToParams : Expr -> List Pat
+appToPat : Expr -> Pat
+appToPatCtor : String -> List Expr -> Pat
+appToPatH : Expr -> List Expr -> Pat
+applyAll : Expr -> List Expr -> Expr
+armGuardFor : Token -> Parser (List Guard)
+armGuardOpt : Parser (List Guard)
+armsCons : Parser (List Arm)
+armsLoop : Parser (List Arm)
+arrayAfterComma : Expr -> Token -> Parser Expr
+arrayFor : Token -> Parser Expr
+arrayRangeAfter : Expr -> Bool -> Parser Expr
+arrayRest : Expr -> Token -> Parser Expr
+assignFromLhs : Expr -> Expr -> Parser DoStmt
+assignTail : Expr -> Parser Expr
+assignTailRaw : Expr -> Parser Expr
+attrArg : String -> Token -> Parser Attr
+backtickInfixMsg : String
+bareMinusSection : Parser Expr
+binOp : Token -> String -> Parser (Expr -> Expr -> Expr)
+bindAnnot : Expr -> Ty -> Expr -> List DoStmt
+bindPR : Parser a -> (a -> Parser b) -> Array Token -> Int -> PR b
+bindStmts : Expr -> Expr -> List DoStmt
+blockCommentMsg : String
+blockOrExpr : List DoStmt -> Expr
+blockStmtAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
+blockStmtGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
+blockStmtLines : Array Token -> Array Int -> Int -> Int -> List Int
+bodyChainTopOp : Expr -> Option String
+bodyIsBlock : Expr -> Bool
+braceBlockFrom : Array Token -> Int -> Int -> Int -> Int
+braceBlockMsg : String
+braceItems : String -> Parser Expr
+braceItemsFor : String -> Token -> Parser Expr
+bracketIndexRest : Expr -> Expr -> Token -> Parser Expr
+bracketIndexTail : Expr -> Parser Expr
+branchBlock : Parser Expr
+caseHasOfBeforeBoundary : Array Token -> Int -> Int -> Bool
+chainOpLinesAt : Array Token -> Array Int -> String -> Int -> Int -> Int -> Token -> List Int
+chainOpLinesGo : Array Token -> Array Int -> String -> Int -> Int -> Int -> List Int
+chainOpTokEq : String -> Token -> Bool
+chainOperandLines : Array Token -> Array Int -> String -> Int -> Int -> List Int
+chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
+chainl1More : Parser a -> Parser (a -> a -> a) -> a -> Parser a
+chainl1Rest : Parser a -> Parser (a -> a -> a) -> a -> Parser a
+charBound : Parser Lit
+charBoundFor : Token -> Parser Lit
+charPatRest : Lit -> Parser Pat
+choice : List (Parser a) -> Parser a
+classifyBrace : String -> List KvItem -> Expr
+cmpOp : Parser (Expr -> Expr -> Expr)
+coalesceClauses : List (String, List Pat, Expr) -> List LetBind
+coalesceGo : String -> List FunClause -> List (String, List Pat, Expr) -> List LetBind
+coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
+combineDerives : List String -> List String -> List String
+concatMapC : List Ty -> List Constraint
+consField : RecPatField -> (List RecPatField, Bool) -> (List RecPatField, Bool)
+consTail : Expr -> Parser Expr
+constraintTail : Ty -> Parser Ty
+ctorOrVar : String -> Pat
+curryLam : List Pat -> Expr -> Expr
+dataAfterEq : String -> Token -> Parser (List Variant, List String)
+dataBody : String -> Parser (List Variant, List String)
+dataBodyFor : String -> Token -> Parser (List Variant, List String)
+dataVariants : Parser (List Variant)
+dataVariantsN : String -> Parser (List Variant)
+dataVariantsNFor : String -> Token -> Parser (List Variant)
+declBlockRhs : Decl -> Bool
+declChainLines : Array Token -> Array Int -> Decl -> Int -> Int -> List Int
+declChainTopOp : Decl -> Option String
+declPosEndLine : DeclPos -> Int
+declPosLine : DeclPos -> Int
+declPosOf : Array Token -> Array Int -> (Decl, Int, Int) -> DeclPos
+declThenNoise : Parser Decl
+declWithSpan : Parser (Decl, Int, Int)
+deepenLeftover : String -> Array Token -> Array Int -> Int -> Int -> ParseError
+defaultImplRemovedMsg : String
+derivingClause : Parser (List String)
+derivingFor : Token -> Parser (List String)
+desugarDottedField : Expr -> (List String, Expr) -> FieldAssign
+dotFor : Expr -> Token -> Parser Expr
+dotTail : Expr -> Parser Expr
+dottedGo : Expr -> List String -> Expr -> Expr
+dropFirst : List a -> List a
+effAtomP : Parser (String, Option String)
+effDomainFor : Token -> Parser (Option String)
+effDomainP : Parser (Option String)
+effParamDispatch : Token -> Token -> Parser (Option String)
+effParamFor : Token -> Parser (Option String)
+effParamP : Parser (Option String)
+effectBody : Parser (List (String, Option String), Option String)
+effectBodyFor : Token -> Parser (List (String, Option String), Option String)
+elseBranch : Parser Expr
+elsePresent : Parser Expr
+emit : a -> Parser a
+encodeAxis : (String, String) -> String
+encodeProductParam : List (String, String) -> String
+encodeSetParam : List String -> String
+expectGo : Token -> Token -> Parser Unit
+expectMinus : Parser Unit
+expectMinusGo : Token -> Parser Unit
+expectTok : Token -> Parser Unit
+exprStmtFor : Expr -> Token -> Parser (List DoStmt)
+exprToParams : Expr -> List Pat
+exprToPat : Expr -> Pat
+externName : Parser String
+externNameFor : Token -> Parser String
+extractConstraints : Ty -> List Constraint
+failP : String -> Parser a
+fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
+firstBacktickIdx : Array Token -> Int -> Int
+firstBlockCommentIdx : Array Token -> Int -> Int
+firstBraceBlockIdx : Array Token -> Int -> Int
+firstContentAt : Array Token -> Int -> Int -> Int
+firstForeignKwIdx : Array Token -> Int -> Bool -> Int
+firstFunctionIdx : Array Token -> Int -> Int
+firstHsCaseOfIdx : Array Token -> Int -> Int
+firstHsSigIdx : Array Token -> Int -> Int -> Bool -> Int
+firstIndentIdx : Array Token -> Int -> Int -> Int
+firstInlineLetMissingIn : Array Token -> Int -> Int
+firstLexError : Array Token -> Int -> Option (Int, String)
+firstMutIdx : Array Token -> Int -> Int
+firstRecordIdx : Array Token -> Int -> Int
+firstSlashEqIdx : Array Token -> Int -> Int
+firstWithIdx : Array Token -> Int -> Int
+flattenFieldPath : Expr -> Option (String, List String)
+foreignKwMsg : Token -> String
+functionRemovedMsg : String
+getPos : Parser Int
+guardArmsCons : Parser (List GuardArm)
+guardArmsLoop : Parser (List GuardArm)
+guardArmsWhereFor : List GuardArm -> Token -> Parser Expr
+guardArmsWhereOpt : List GuardArm -> Parser Expr
+guardFor : Expr -> Token -> Parser Guard
+headIsNumeric : Expr -> Bool
+hsCaseOfMsg : String
+hsSigMsg : String
+identNameFor : Token -> Parser String
+identNameP : Parser String
+ifKind : Token -> Parser Expr
+ifLet : Parser Expr
+ifPlain : Parser Expr
+ifaceBody : Parser (List IfaceMethod)
+ifaceBodyFor : Token -> Parser (List IfaceMethod)
+ifaceMember : Parser IfaceMethod
+ifaceMemberRest : String -> List Pat -> Token -> Parser IfaceMethod
+ifaceMembers : Parser (List IfaceMethod)
+ifaceMembersCons : Parser (List IfaceMethod)
+ifaceMembersLoop : Parser (List IfaceMethod)
+ifaceSuper : Parser (List Super)
+ifaceSuperEntry : Parser Super
+ifaceSuperFor : Token -> Parser (List Super)
+ifaceWhereBody : Token -> Parser (List IfaceMethod)
+implBody : Parser (List ImplMethod)
+implBodyFor : Token -> Parser (List ImplMethod)
+implHead : Bool -> Token -> Parser Decl
+implMethod : Parser ImplMethod
+implMethods : Parser (List ImplMethod)
+implMethodsCons : Parser (List ImplMethod)
+implMethodsLoop : Parser (List ImplMethod)
+implRequireEntry : Parser Require
+implRequires : Parser (List Require)
+implRequiresFor : Token -> Parser (List Require)
+implRest : Bool -> String -> Parser Decl
+implWhereBody : Token -> Parser (List ImplMethod)
+importIdent : Parser String
+importIdentFor : Token -> Parser String
+importMember : Parser UseMember
+importMemberFor : Int -> Token -> Parser UseMember
+importPathFor : List String -> Parser UsePath
+importPathForT : List String -> Token -> Parser UsePath
+importQualRest : Parser (List String)
+importQualRestFor : Token -> Parser (List String)
+importQuals : Parser (List String)
+indentedBody : Parser Expr
+indexOrSlice : Expr -> Parser Expr
+indexOrSliceRest : Expr -> Expr -> Token -> Parser Expr
+inlineLetMissingInMsg : String
+intBound : Parser Lit
+intBoundFor : Token -> Parser Lit
+intPatRest : Lit -> Parser Pat
+interpOpenFor : Token -> Parser String
+interpOpenStr : Parser String
+interpRest : Parser (List InterpPart)
+interpRestFor : Expr -> Token -> Parser (List InterpPart)
+isBracketCloseTok : Token -> Bool
+isBracketOpenTok : Token -> Bool
+isCloseDelim : Token -> Bool
+isContinuationOpStr : String -> Bool
+isCtorChars : Array Char -> Bool
+isCtorName : String -> Bool
+isDataDecl : Decl -> Bool
+isForeignKwTok : Token -> Bool
+isLayoutTok : Token -> Bool
+isNoiseTok : Token -> Bool
+isOpenDelim : Token -> Bool
+isPlainIdentTok : Token -> Bool
+joinComma : List String -> String
+joinSemi : List String -> String
+kvElemToField : Expr -> FieldAssign
+kvElems : List KvItem -> List Expr
+kvKVorElemFor : Expr -> Token -> Parser KvItem
+kvPairs : List KvItem -> List (Expr, Expr)
+kvToField : KvItem -> FieldAssign
+lamTail : Expr -> Parser Expr
+lamTailRaw : Expr -> Parser Expr
+lastContentIdx : Array Token -> Int -> Int -> Int
+lastContentLineGo : Array Token -> Array Int -> List (Decl, Int, Int) -> Int -> Int
+lastContentLineOf : Array Token -> Array Int -> List (Decl, Int, Int) -> Int
+leadingIndentAllBlank : Array Char -> Int -> Int -> Bool
+leadingIndentAt : String -> Int -> Option Int
+leadingIndentLineStart : Array Char -> Int -> Int
+leftSectionGo : Expr -> Expr -> Expr
+leftSectionOrExpr : Expr -> Expr
+leftSectionRhs : Expr -> String -> Expr -> Expr -> Expr
+letExprKind : Token -> Parser Expr
+letFunTailFor : String -> List Pat -> Expr -> Token -> Parser DoStmt
+letIdent : String -> Parser DoStmt
+letIdentBody : String -> List Pat -> Token -> Parser DoStmt
+letIdentExpr : String -> Parser Expr
+letIdentExprRest : String -> List Pat -> Token -> Parser Expr
+letIdentRest : String -> List Pat -> Expr -> Parser DoStmt
+letKind : Token -> Parser DoStmt
+letMutRemovedMsg : String
+letPat : Parser DoStmt
+letPatExpr : Parser Expr
+letRecDeclClause : Parser (String, List Pat, Expr)
+letRecExpr : Parser Expr
+letRecInlineClause : Parser (String, List Pat, Expr)
+letRecWithRemovedMsg : String
+letTailFor : Pat -> Expr -> Token -> Parser DoStmt
+lineAt : Array Int -> Int -> Int
+lineTrailingColonNoEq : Array Token -> Int -> Int -> Bool -> Bool -> Bool
+listAfterComma : Expr -> Token -> Parser Expr
+listFor : Token -> Parser Expr
+listRest : Expr -> Token -> Parser Expr
+locLineStartsRef : Ref (Array Int)
+locOfSpan : Int -> Int -> Loc
+locOffsRef : Ref (Array (Int, Int))
+locSrcRef : Ref String
+locateOffset : Array Token -> Array Int -> Int -> Int -> Int
+located : Parser Expr -> Parser Expr
+lowerNameFor : Token -> Parser String
+lowerNameP : Parser String
+many : Parser a -> Parser (List a)
+manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
+manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
+mapPR : (a -> b) -> PR a -> PR b
+mkAttr : String -> Option String -> Attr
+mkEffect : (List (String, Option String), Option String) -> Ty -> Ty
+mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
+mkRec : String -> (List RecPatField, Bool) -> Pat
+namedImplRemovedMsg : String
+negIntPat : Parser Pat
+negIntRng : Lit -> Parser Pat
+negLitArg : Bool -> Parser Expr
+negLitArgFor : Token -> Token -> Parser Expr
+nextSigIsPipe : Array Token -> Int -> Int -> Bool
+offsetAt : Array Int -> Int -> Int -> Int
+optPipe : Parser Unit
+optPipeFor : Token -> Parser Unit
+optTrailingComma : Parser Unit
+optTrailingCommaFor : Token -> Parser Unit
+optTrailingCommaTuple : List a -> Parser Unit
+orElse : Parser a -> Parser a -> Parser a
+orElseR : Parser a -> Parser a -> Array Token -> Int -> PR a
+orElseRb : String -> Int -> PR a -> PR a
+paramsForCtor : String -> Expr -> List Pat
+paramsForHead : Expr -> Expr -> List Pat
+parenFor : Token -> Parser Expr
+parenResult : List Expr -> Expr
+parenSectionOr : Token -> Parser Expr
+parse : String -> List Decl
+parseAdd : Parser Expr
+parseAnd : Parser Expr
+parseApp : Parser Expr
+parseAppend : Parser Expr
+parseArm : Parser Arm
+parseArms : Parser (List Arm)
+parseArray : Parser Expr
+parseAsPat : Parser Pat
+parseAspat : Parser Expr
+parseAspatAt : Parser Expr
+parseAspatAtRaw : Parser Expr
+parseAssign : Parser Expr
+parseAtom : Parser Expr
+parseAtomRaw : Parser Expr
+parseAttrib : Parser Decl
+parseBench : Bool -> Parser Decl
+parseBody : Parser Expr
+parseBodyExpr : Parser Expr
+parseBracketBlock : Parser Expr
+parseBracketElem : Parser Expr
+parseBranch : Parser Expr
+parseCmp : Parser Expr
+parseCompose : Parser Expr
+parseCons : Parser Expr
+parseData : DataVis -> Parser Decl
+parseDecl : Parser Decl
+parseDo : Parser Expr
+parseEffect : Bool -> Parser Decl
+parseEffectTy : Parser Ty
+parseErrorCol : ParseError -> Int
+parseErrorLine : ParseError -> Int
+parseErrorMessage : ParseError -> String
+parseExpr : Parser Expr
+parseExprStmt : Parser (List DoStmt)
+parseExtern : Bool -> Parser Decl
+parseField : Parser Field
+parseFunOrSig : Bool -> Parser Decl
+parseGuard : Parser Guard
+parseGuardArm : Parser GuardArm
+parseGuardArms : Parser (List GuardArm)
+parseIf : Parser Expr
+parseImpl : Bool -> Parser Decl
+parseImport : Bool -> Parser Decl
+parseInfix : Parser Expr
+parseInterface : Bool -> Bool -> Parser Decl
+parseInternalEffect : Parser Decl
+parseInterp : Parser Expr
+parseKvBlockElem : Parser KvItem
+parseKvField : Parser KvItem
+parseKvKVorElem : Parser KvItem
+parseKvOrE : Parser KvItem
+parseLam : Parser Expr
+parseLet : Parser Expr
+parseLetGroupDecl : Bool -> Parser Decl
+parseLetStmt : Parser DoStmt
+parseListE : Parser Expr
+parseLocated : String -> <Mut> List Decl
+parseMatch : Parser Expr
+parseMul : Parser Expr
+parseNamedFields : Parser (List Field)
+parseNamedPayload : Parser ConPayload
+parseNewtype : Bool -> Parser Decl
+parseOr : Parser Expr
+parseParamAsPat : Parser Pat
+parseParamPat : Parser Pat
+parseParen : Parser Expr
+parseParenExpr : Parser Expr
+parsePat : Parser Pat
+parsePatApp : Parser Pat
+parsePatAtom : Parser Pat
+parsePatCons : Parser Pat
+parsePatList : Parser Pat
+parsePatParen : Parser Pat
+parsePayload : Parser ConPayload
+parsePipe : Parser Expr
+parsePostfix : Parser Expr
+parseProgram : Parser (List Decl)
+parseProp : Bool -> Parser Decl
+parseRecordUpdate : Parser Expr
+parseResult : String -> Result ParseError (List Decl)
+parseRhsExpr : Parser Expr
+parseSectionOp : String -> Parser Expr
+parseStmt : Parser (List DoStmt)
+parseStmts : Parser (List DoStmt)
+parseTest : Bool -> Parser Decl
+parseTupleCtorTail : Int -> Parser Ty
+parseTy : Parser Ty
+parseTyApp : Parser Ty
+parseTyAtom : Parser Ty
+parseTyFun : Parser Ty
+parseTyParen : Parser Ty
+parseTyParenBody : Token -> Parser Ty
+parseTypeAlias : Bool -> Parser Decl
+parseUnary : Parser Expr
+parseUpperAtom : String -> Parser Expr
+parseVariant : Parser Variant
+parseWhereBinding : Parser (String, List Pat, Expr)
+parseWhereBindings : Parser (List (String, List Pat, Expr))
+parseWithPositions : String -> (List Decl, Positions)
+parseWithPositionsOpt : String -> Option (List Decl, Positions)
+patAppFor : Token -> Parser Pat
+patConsTail : Pat -> Parser Pat
+patListFor : Token -> Parser Pat
+patParenFor : Token -> Parser Pat
+payloadFor : Token -> Parser ConPayload
+peek2P : Parser Token
+peekP : Parser Token
+peekTok : Array Token -> Int -> Token
+pipeTail : Parser (Option String)
+pipeTailFor : Token -> Parser (Option String)
+positionsChainLines : Positions -> List (List Int)
+positionsDecls : Positions -> List DeclPos
+positionsLastContentLine : Positions -> Int
+positionsVariantLines : Positions -> List Int
+postfixTail : Expr -> Parser Expr
+productAxes : Parser (List (String, String))
+productAxesMore : Parser (List (String, String))
+productAxesMoreFor : Token -> Token -> Parser (List (String, String))
+productAxis : Parser (String, String)
+productAxisVal : Parser String
+productAxisValFor : Token -> Parser String
+productParamP : Parser (Option String)
+programWithSpans : Parser (List (Decl, Int, Int))
+propParam : Parser PropParam
+rangeAfter : Expr -> Bool -> Parser Expr
+recordFieldExpr : Parser (List String, Expr)
+recordFieldExprRest : List String -> Token -> Parser (List String, Expr)
+recordPat : String -> Parser Pat
+recordPatField : Parser RecPatField
+recordPatFieldRest : String -> Token -> Parser RecPatField
+recordPatFields : Parser (List RecPatField, Bool)
+recordPatFieldsFor : Token -> Parser (List RecPatField, Bool)
+recordPatFieldsRest : RecPatField -> Token -> Parser (List RecPatField, Bool)
+recordRemovedMsg : String
+resultDecls : Array Token -> PR (List Decl) -> List Decl
+resultDeclsResult : String -> Array Token -> Array Int -> Int -> PR (List Decl) -> Result ParseError (List Decl)
+rhsStartIdx : Array Token -> Int -> Int -> Int -> Int
+rngPatRest : Lit -> Parser Lit -> Token -> Parser Pat
+runP : Parser a -> Array Token -> Int -> PR a
+scanForLetIn : Array Token -> Int -> Int -> Bool
+sectionOpStr : Token -> Option String
+sectionTail : String -> Token -> Parser Expr
+semicolonMsg : String
+sepBy1 : Parser a -> Parser b -> Parser (List a)
+sepThen : Parser a -> Parser b -> Parser b
+setLocState : String -> Array (Int, Int) -> <Mut> Unit
+skipNewlines : Parser Unit
+skipNlFor : Token -> Parser Unit
+skipNoise : Parser Unit
+skipNoiseFor : Token -> Parser Unit
+sliceHi : Expr -> Expr -> Bool -> Parser Expr
+spanDeclThenNoise : Parser (Decl, Int, Int)
+spineHead : Expr -> Expr
+spineList : Expr -> List Expr
+spineOnto : Expr -> List Expr -> List Expr
+stmtFor : Token -> Parser (List DoStmt)
+stmtsCons : Parser (List DoStmt)
+stmtsLoop : Parser (List DoStmt)
+stringLitFor : Token -> Parser String
+stringLitP : Parser String
+stripLoc : Expr -> Expr
+tokEndOffsetAt : Int -> Int
+tokOffsetAt : Int -> Int
+tupleCtorTailFor : Int -> Token -> Parser Ty
+tupleCtorTyName : Int -> String
+tupleCtorTyOfArity : Int -> Parser Ty
+tuplePatOrSingle : List Pat -> Pat
+tyApplyAll : Ty -> List Ty -> Ty
+tyArrowSkipLayout : Token -> Parser Bool
+tyArrowTail : Ty -> Parser Ty
+tyFor : Token -> Parser Ty
+tyTupleOrSingle : List Ty -> Ty
+unaryFor : Token -> Parser Expr
+unexpectedLeftoverMsg : String -> Array Token -> Array Int -> Int -> Int -> String
+upperAtomRest : String -> Token -> Parser Pat
+upperBrace : String -> Parser Expr
+upperNameFor : Token -> Parser String
+upperNameP : Parser String
+upperPatRest : String -> Token -> Parser Pat
+upperTail : String -> Token -> Parser Expr
+variantStartsAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
+variantStartsGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
+variantStartsIn : Array Token -> Array Int -> Int -> Int -> List Int
+variantUpdateTail : String -> Parser Expr
+variantsRest : Parser (List Variant)
+variantsRestFor : Token -> Parser (List Variant)
+whereBindRest : String -> List Pat -> Token -> Parser (String, List Pat, Expr)
+whereBindingsCons : Parser (List (String, List Pat, Expr))
+whereBindingsLoop : Parser (List (String, List Pat, Expr))
+whereEol : Expr -> Parser Expr
+whereTail : Expr -> Parser Expr
+withAllFor : Int -> String -> Token -> Parser UseMember
+withAllOrNot : Int -> String -> Parser UseMember

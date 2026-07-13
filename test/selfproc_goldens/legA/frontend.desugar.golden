@@ -1,0 +1,116 @@
+andAll : List Expr -> Expr
+andLeft : Expr -> List Expr -> Expr
+anyRefutable : List Pat -> Bool
+appliedHead : String -> List String -> Ty
+appliedHeadGo : Ty -> List String -> Ty
+applyDeriveParams : String -> List String -> Decl -> Decl
+armChain : List Guard -> Expr -> Expr -> Expr
+assignIndexLhs : Expr -> Expr -> Expr -> Ref Route -> Expr
+attribHead : List Attr -> List Decl -> List Decl
+binMethod : String -> String -> String -> Expr -> ImplMethod
+binOp : String -> Expr -> Expr -> Expr
+callBin : String -> Expr -> Expr -> Expr
+collectRecordNames : List Decl -> List String
+conArity : Variant -> Int
+conBindPat : Variant -> List String -> Pat
+conNamedCtorNames : List Variant -> List String
+concatLeft : Expr -> List Expr -> Expr
+concatLists : List (List a) -> List a
+concatMapDecl : (Decl -> List Decl) -> List Decl -> List Decl
+concatStrings : List Expr -> Expr
+containsMethod : String -> List IfaceMethod -> Bool
+deriveEqData : String -> List Variant -> Decl
+deriveForData : String -> List String -> List Variant -> String -> Option Decl
+deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
+deriveGenericData : String -> List Variant -> Decl
+deriveImpls : (String -> Option Decl) -> List String -> List Decl
+deriveOrdData : String -> List Variant -> Decl
+deriveShowData : String -> String -> String -> List Variant -> Decl
+derivedImpl : String -> String -> List ImplMethod -> Decl
+desugar : List Decl -> List Decl
+desugarRecordPuns : List Decl -> List Decl
+doCont : Pat -> Expr -> Expr
+doStmtLoc : DoStmt -> Option Loc
+eqArms : List Variant -> List Arm
+eqBody : Int -> List String -> List String -> Expr
+eqSameConArm : Variant -> Arm
+expandDecl : Decl -> List Decl
+exprLoc : Expr -> Option Loc
+fallthrough : Expr
+fillImplDecl : List Decl -> Decl -> Decl
+fillImplDefaults : List Decl -> List Decl
+firstDoStmtLoc : List DoStmt -> Option Loc
+foldlMethods : List IfaceMethod -> List IfaceMethod -> List IfaceMethod
+genVars : String -> Int -> List String
+genVarsGo : String -> Int -> Int -> List String
+genericArm : Variant -> Arm
+genericRFields : List Field -> List String -> List Expr
+genericRep : String -> ConPayload -> List String -> Expr
+guardsToCore : List GuardArm -> Expr
+ifaceDefaults : String -> List Decl -> List IfaceMethod
+ifaceDefaultsStep : String -> Decl -> List Decl -> List IfaceMethod
+ifaceMethodHasDefault : IfaceMethod -> Bool
+implDefines : String -> List ImplMethod -> Bool
+implMethodNamed : String -> ImplMethod -> Bool
+indexFrom : Int -> List a -> List (Int, a)
+insertMethod : List IfaceMethod -> IfaceMethod -> List IfaceMethod
+interpPartToExpr : InterpPart -> Expr
+interpToCore : List InterpPart -> Expr
+isRefutable : Pat -> Bool
+isVarExpr : Expr -> Bool
+kvToTuple : (Expr, Expr) -> Expr
+lexCompareExprs : List (Expr, Expr) -> Expr
+lowerContainerLiterals : List Decl -> List Decl
+lowerDo : List DoStmt -> Expr
+mapArm : (Expr -> Expr) -> Arm -> Arm
+mapDecl : (Expr -> Expr) -> Decl -> Decl
+mapDoStmt : (Expr -> Expr) -> DoStmt -> DoStmt
+mapExpr : (Expr -> Expr) -> Expr -> Expr
+mapFieldAssign : (Expr -> Expr) -> FieldAssign -> FieldAssign
+mapFunClause : (Expr -> Expr) -> FunClause -> FunClause
+mapGuard : (Expr -> Expr) -> Guard -> Guard
+mapGuardArm : (Expr -> Expr) -> GuardArm -> GuardArm
+mapIfaceMethod : (Expr -> Expr) -> IfaceMethod -> IfaceMethod
+mapImplMethod : (Expr -> Expr) -> ImplMethod -> ImplMethod
+mapInterp : (Expr -> Expr) -> InterpPart -> InterpPart
+mapKids : (Expr -> Expr) -> Expr -> Expr
+mapKv : (Expr -> Expr) -> (Expr, Expr) -> (Expr, Expr)
+mapLetBind : (Expr -> Expr) -> LetBind -> LetBind
+mapProg : (Expr -> Expr) -> List Decl -> List Decl
+mergeIfaceDecl : Decl -> Decl
+mergeIfaceDefaults : List Decl -> List Decl
+mergeIfaceMethods : List IfaceMethod -> List IfaceMethod
+mergeInto : List IfaceMethod -> IfaceMethod -> List IfaceMethod
+mergeTwo : IfaceMethod -> IfaceMethod -> IfaceMethod
+mergedDefault : Option MethodDefault -> Option MethodDefault -> Option MethodDefault
+mergedType : Ty -> Ty -> Ty
+methodName : IfaceMethod -> String
+ordArms : List Variant -> List Arm
+ordBody : Int -> Int -> List String -> List String -> Expr
+ordCell : Int -> Variant -> (Int, Variant) -> Arm
+ordRow : List (Int, Variant) -> (Int, Variant) -> List Arm
+paramReq : String -> String -> Require
+paramRequires : String -> List String -> List Require
+pinType : String -> List Ty -> Ty
+pinTypeGo : Ty -> List Ty -> Ty
+punField : Expr -> FieldAssign
+recPatFields : List Field -> List String -> List RecPatField
+rewriteAssignIndex : Expr -> Expr
+rewriteContainerLit : Expr -> Expr
+rewriteDo : Expr -> Expr
+rewriteRecordPun : List String -> Expr -> Expr
+rewriteSugar : Expr -> Expr
+sectionToCore : Section -> Expr
+showArm : String -> Variant -> Arm
+showBody : String -> String -> ConPayload -> List String -> Expr
+showFieldPart : String -> Int -> String -> List Expr
+showFieldParts : String -> Int -> List String -> List Expr
+showNamedPart : String -> Int -> String -> String -> List Expr
+showNamedParts : String -> Int -> List Field -> List String -> List Expr
+stripLocE : Expr -> Expr
+synthDefaultMethods : List ImplMethod -> List IfaceMethod -> List ImplMethod
+synthFromDefault : IfaceMethod -> ImplMethod
+toRep : String -> Expr
+wrapDoOrigin : List DoStmt -> Expr -> Expr
+zipEqCalls : List String -> List String -> List Expr
+zipExprPairs : List String -> List String -> List (Expr, Expr)

@@ -261,6 +261,52 @@ Every delegated task prompt should contain, in order:
 
 ---
 
+## Every agent prompt MUST demand a FRICTION REPORT
+
+Bake this into the report-back contract of **every** agent you spawn:
+
+> **Surface everything that fought you.** In your final report, include a section listing
+> any bug, gap, missing feature, pain point, workaround you had to invent, unclear or
+> misleading error message, stale/wrong documentation, or surprising behavior you hit —
+> **even if you worked around it and even if it is unrelated to your task.** Do not
+> silently absorb friction. If you had to do something ugly to make progress, say what
+> and why. If an error message sent you down the wrong path, quote it. A clean report
+> that hides three workarounds is worse than a messy one that names them.
+
+**Why this is not optional.** Agents are extremely good at *routing around* problems and
+then never mentioning them. Everything they route around is a bug the user will hit
+later, with less context and less patience. This session alone, agents silently worked
+around: `medaka run` being unable to read `args`; `import … as` not parsing despite
+SYNTAX.md advertising it; `emitProgram` name-colliding across two backends with no
+aliasing available; `/bin/sh` being dash so a gate could not even be parsed. **Every one
+of those was a real, filed-worthy defect that surfaced only because an agent happened to
+mention it in passing.**
+
+**The orchestrator TRIAGES the friction report.** For each item: reproduce it (the gap
+docs lie — see above), then either fix it, file it in the backlog / PLAN.md, or record it
+as a known-red ledger entry with accidental-fix detection. **Do not let it evaporate.**
+An agent's incidental "oh, I had to work around X" is one of the highest-signal inputs
+you get — it is a bug found by *use* rather than by *audit*, which is the only kind that
+reliably matters.
+
+---
+
+## Review every agent PR before merging
+
+An agent's own report is a claim, not a review. After an agent opens a PR (and after CI
+is green), spawn a **Sonnet reviewer** over the diff. It is cheap, it is parallel, and it
+catches the class of thing gates cannot: style drift, obvious inefficiency, a missing
+test, a comment that lies, a workaround left in.
+
+**This is a different job from the gates.** Gates prove *behavior*; the reviewer judges
+*craft*. Green CI on a bad diff is still a bad diff.
+
+See **`.claude/skills/pr-review/SKILL.md`** for the playbook the reviewer runs. Keep the
+reviewer READ-ONLY — it reports findings; you decide what to act on, and the *authoring*
+agent fixes them (it has the context; you do not).
+
+---
+
 ## Verifying a landing — never trust prose
 
 An agent saying "done, all gates green" is a claim, not evidence. Verify, bounded

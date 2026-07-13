@@ -1,0 +1,61 @@
+allFunDefNames : List Decl -> List String
+applyRenames : List String -> List Decl -> List Decl
+armBound : Arm -> List String
+armVars : Arm -> List String
+collectVars : Expr -> List String
+constrainedAdd : String -> Ty -> List String -> List String
+constrainedFnNames : List Decl -> List String
+declBodies : Decl -> List Expr
+declDefines : Decl -> List String
+declExternalRefs : Decl -> List String
+declLocalBound : Decl -> List String
+declRefs : Decl -> List String
+doStmtBound : DoStmt -> List String
+doStmtVars : DoStmt -> List String
+droppablePreludeFns : List Decl -> List String
+externalRefs : List Decl -> List String
+fieldAssignBound : FieldAssign -> List String
+fieldAssignVars : FieldAssign -> List String
+funClauseBody : FunClause -> Expr
+funClauseBound : FunClause -> List String
+funClauseVars : FunClause -> List String
+guardArmBound : GuardArm -> List String
+guardArmVars : GuardArm -> List String
+guardBound : Guard -> List String
+guardVars : Guard -> List String
+ifaceMethodBodies : IfaceMethod -> List Expr
+ifaceMethodName : IfaceMethod -> String
+implMethodBody : ImplMethod -> Expr
+implMethodNameOf : ImplMethod -> String
+interfaceMethodNames : List Decl -> List String
+interpBound : InterpPart -> List String
+interpVars : InterpPart -> List String
+keepIn : List String -> List String -> List String
+keepNotIn : List String -> List String -> List String
+letBindBodies : LetBind -> List Expr
+letBindBound : LetBind -> List String
+letBindVars : LetBind -> List String
+localBoundExpr : Expr -> List String
+localBoundNames : List Decl -> List String
+mapLitPairBound : (Expr, Expr) -> List String
+mapLitPairVars : (Expr, Expr) -> List String
+markDecl : List String -> List String -> Decl -> Decl
+markFunClause : (Expr -> Expr) -> FunClause -> FunClause
+markInfix : List String -> List String -> String -> Expr -> Expr -> Expr
+markLetBind : (Expr -> Expr) -> LetBind -> LetBind
+markNode : List String -> List String -> Expr -> Expr
+markProgram : List String -> List String -> List Decl -> List Decl
+markVar : List String -> List String -> String -> Expr
+markWith : List String -> List String -> List String -> List Decl -> List Decl
+markWithPrelude : List Decl -> List Decl -> List Decl
+markerFor : List Decl -> List Decl -> List Decl
+patBindings : Pat -> List String
+preludePlainFnNames : List Decl -> List String
+recFieldBindings : RecPatField -> List String
+renameDecl : List String -> Decl -> Decl
+renameVar : List String -> Expr -> Expr
+routeExtraRefs : Route -> List String
+shadowRename : List String -> List Decl -> List Decl
+shadowRenames : List String -> List Decl -> List String
+subName : List String -> String -> String
+userValueNames : List Decl -> List String

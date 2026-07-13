@@ -475,7 +475,7 @@
 (DFunDef false "eval" ((PVar "env") (PCon "EIf" (PVar "c") (PVar "t") (PVar "e"))) (EApp (EApp (EApp (EApp (EVar "evalIf") (EVar "env")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "c"))) (EVar "t")) (EVar "e")))
 (DFunDef false "eval" ((PVar "env") (PCon "EBinOp" (PVar "op") (PVar "l") (PVar "r") PWild)) (EApp (EApp (EApp (EApp (EVar "evalBinop") (EVar "env")) (EVar "op")) (EVar "l")) (EVar "r")))
 (DFunDef false "eval" ((PVar "env") (PCon "EInfix" (PVar "op") (PVar "l") (PVar "r"))) (EApp (EApp (EVar "apply") (EApp (EApp (EVar "apply") (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "op"))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "l")))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "r"))))
-(DFunDef false "eval" ((PVar "env") (PCon "EUnOp" (PVar "op") (PVar "e"))) (EApp (EApp (EVar "evalUnop") (EVar "op")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
+(DFunDef false "eval" ((PVar "env") (PCon "EUnOp" (PVar "op") (PVar "e") PWild)) (EApp (EApp (EVar "evalUnop") (EVar "op")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "ETuple" (PVar "es"))) (EApp (EVar "VTuple") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "VList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
