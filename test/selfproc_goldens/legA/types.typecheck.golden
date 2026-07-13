@@ -296,6 +296,7 @@ defaultAmbiguousNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -
 defaultEachMember : List (String, List String, Ty, Mono, Option Loc) -> List (String, Mono) -> <Mut> Unit
 defaultGroupNum : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit
 definerReceiverDispatches : String -> Mono -> <Mut> Bool
+definerReceiverIsDictVar : String -> Mono -> <Mut> Bool
 definerShadowArgHead : Expr -> <Mut> Option (String, Ref Route, Ref (List Route))
 definerShadowHeadType : TcEnv -> String -> Expr -> <Mut> Mono
 definerShadowNamesRef : Ref (List String)
@@ -319,7 +320,9 @@ dictPassDecl : List String -> List String -> Decl -> Decl
 dictPassLetBind : List String -> LetBind -> LetBind
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 dictPassModulesScoped : List String -> List ((String, String), List Int) -> List Decl -> List (String, List Decl) -> List (String, List Decl) -> <Mut> List (String, List Decl)
+dictVarSatisfiesIface : String -> Int -> List (String, Mono) -> <Mut> Bool
 directImports : String -> List (String, List Decl) -> List String
+directSupers : String -> <Mut> List String
 discoverAll : List Decl -> List Decl -> List String -> List String -> <Mut> List String
 discoverNext : List Decl -> List Decl -> List String -> List String -> <Mut> List String
 discoverNextJoint : List Decl -> List Decl -> List String -> List String -> List String -> List String -> <Mut> List String
@@ -462,6 +465,7 @@ groundNumVars : List (String, List String, Ty, Mono, Option Loc) -> List Int -> 
 groundOneObligation : List Decl -> String -> List String -> Ty -> Mono -> <Mut> Unit
 groupClauses : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr))
 groupClausesGo : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr)) -> Map String (List (List Pat, Expr))
+groupConstraintMonosRef : Ref (List (String, Mono))
 groupNames : List (String, (List Pat, Expr)) -> Map String Unit -> List String
 groupRefs : List (List Pat, Expr) -> List String
 guardDictSites : Guard -> List (Ref (List Route))
@@ -497,6 +501,7 @@ ifaceMethodSchemes : List Decl -> <Mut> List (String, Scheme)
 ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
 ifaceParamMonos : String -> Mono -> <Mut> Option (List Mono)
 ifaceRequiredMethods : List Decl -> String -> Option (List String)
+ifaceSelfAndSupers : String -> <Mut> List String
 ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
 implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
 implCountForIface : List (String, List Ty) -> String -> Int
@@ -767,6 +772,7 @@ monoIsApp : Mono -> Bool
 monoIsFloat : Mono -> <Mut> Bool
 monoIsFunction : Mono -> Bool
 monoIsNumeric : Mono -> <Mut> Bool
+monoIsTyvarId : Mono -> Int -> <Mut> Bool
 monoSameShape : Mono -> Mono -> <Mut> Bool
 monoScheme : Mono -> Scheme
 monoSpineHeadIsCon : Mono -> <Mut> Bool
@@ -1138,11 +1144,13 @@ substRow : List (Int, Ref Effvar) -> EffRow -> EffRow
 substTyVars : List (String, Ty) -> Ty -> Ty
 suggestField : String -> List String -> Option String
 superDeclsRef : Ref (List Decl)
+superIfaceName : Super -> String
 superImplExists : List Decl -> String -> List Ty -> Bool
 superImplMsgsOf : List Decl -> Decl -> List String
 superMsgFor : List Decl -> String -> List Ty -> List (String, Ty) -> Super -> List String
 superSlotOf : List (String, Int) -> Super -> List (String, Int)
 superSlotsOf : List Decl -> (String, Int) -> List (String, Int)
+supersFix : List String -> List String -> <Mut> List String
 suppressArgStamp : Ref Bool
 suppressRLocalRecord : Ref Bool
 swapArgFix : Expr -> Expr -> String -> Option (Loc, String)

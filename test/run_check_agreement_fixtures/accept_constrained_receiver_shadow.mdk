@@ -1,0 +1,29 @@
+-- P0-19 (constrained-receiver arm): a CONSTRAINED function that calls an interface
+-- method on its OWN dict-bound `=>` variable, in a program where a top-level standalone
+-- SHADOWS that method's name, must DISPATCH through the dict — not be typed against the
+-- standalone and monomorphised to its declared domain.
+--
+-- Before the fix, `enforceStandaloneDomain`'s "ungrounded receiver ⇒ standalone" rule
+-- (P0-19 S5) fired on `sz x` inside `twice`, unifying `a := Int` — so `twice True`
+-- REJECTED with `Type mismatch: Int vs Bool` at check, even though `Sz Bool` has an impl.
+-- The same bug, via the PRELUDE's own `neq : Eq a => a -> a -> Bool` (`neq x y =
+-- not (eq x y)`), made ANY program with a top-level `eq`/`compare` fail to compile.
+--
+-- S5 itself is unchanged: an UNCONSTRAINED wrapper (`useIt x = sz x`) still
+-- monomorphises to the standalone's domain — see d5_definer_poly_receiver /
+-- p0_19_poly_wrapper_shadow.
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Bool where
+  sz _ = 7
+
+-- the definer shadow: a top-level standalone reusing the method name.
+sz : Int -> Int
+sz n = n + 1
+
+-- the constrained caller: `a` is dict-bound, so `sz x` is a DISPATCH.
+twice : Sz a => a -> Int
+twice x = sz x + sz x
+
+main = println (twice True)

@@ -464,7 +464,7 @@ declLocalBound (DAttrib _ d) = declLocalBound d
 declLocalBound (DLetGroup _ binds) = flatMap letBindBound binds
 declLocalBound d = flatMap localBoundExpr (declBodies d)
 
-localBoundNames : List Decl -> List String
+export localBoundNames : List Decl -> List String
 localBoundNames prog = flatMap declLocalBound prog
 
 -- ── Top-level entry ───────────────────────────────────────────────────────

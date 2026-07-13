@@ -330,6 +330,22 @@ as a perf baseline.** It is a shared mutable artifact — another agent rebuilt 
 and silently invalidated every "before" number derived from it. Build your own baseline
 binary from your own base commit, in your own worktree.
 
+**The same two-generation logic governs the SEED, in two ways that will bite you:**
+
+1. **`test/refresh_seed.sh` is ONE pass and is NOT idempotent after a codegen change. Run it
+   TWICE.** Pass 1 mints the seed using the *old-generation* emitter, so the fixpoint still
+   reports `C3a: NO`. Pass 2 mints it using an emitter that was itself built from the new
+   seed, and it converges (`C3a: YES`; the seed also shrinks). Measured 2026-07-13.
+
+2. **A stale seed can make the fixpoint SEGFAULT on a change that is perfectly correct.**
+   After the arg-tuple removal (−71% allocation, −23% emitted IR), the fixpoint died with
+   `E-FATAL-SIGNAL: fatal memory fault` at *step 2* — while `make medaka` succeeded, all 83
+   gates passed, and the compiler-source typecheck was clean. Nothing was wrong with the
+   merge. The crash was in the **intermediate bootstrap generation**: new source compiled by
+   the *stale seed's fat pre-optimization codegen*, which blew the stack. The seed was stale
+   by exactly the change that fixes it. **Re-mint before you go bug-hunting** — the symptom
+   points at your diff and the cause is the seed.
+
 ## Hunting an O(n²) — the method that worked six times
 
 Six quadratics were found in the compiler on 2026-07-13 (`resolve`'s `contigGo`; five

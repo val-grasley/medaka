@@ -1,2 +1,0 @@
--- W7: a range Array [|2..=6|] (counted fill loop) + index.
-main = [|2..=6|].[3]

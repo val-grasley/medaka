@@ -1,2 +1,0 @@
--- W7: an Array slice [|…|].[lo..hi] (array.copy) then index into the slice.
-main = [|10, 20, 30, 40, 50|].[1..4].[1]

@@ -468,7 +468,7 @@ declLocalBound (DAttrib _ d) = declLocalBound d
 declLocalBound (DLetGroup _ binds) = flatMap letBindBound binds
 declLocalBound d = flatMap localBoundExpr (declBodies d)
 
-localBoundNames : List Decl -> List String
+export localBoundNames : List Decl -> List String
 localBoundNames prog = flatMap declLocalBound prog
 
 -- ── Top-level entry ───────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ markerFor preludeProg =
 (DFunDef false "declLocalBound" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declLocalBound") (EVar "d")))
 (DFunDef false "declLocalBound" ((PCon "DLetGroup" PWild (PVar "binds"))) (EApp (EApp (EVar "flatMap") (EVar "letBindBound")) (EVar "binds")))
 (DFunDef false "declLocalBound" ((PVar "d")) (EApp (EApp (EVar "flatMap") (EVar "localBoundExpr")) (EApp (EVar "declBodies") (EVar "d"))))
-(DTypeSig false "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DTypeSig true "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundNames" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "declLocalBound")) (EVar "prog")))
 (DTypeSig false "markWith" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))))
 (DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methods")) (EVar "constrained")) (EVar "prog2")))))
@@ -1011,7 +1011,7 @@ markerFor preludeProg =
 (DFunDef false "declLocalBound" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declLocalBound") (EVar "d")))
 (DFunDef false "declLocalBound" ((PCon "DLetGroup" PWild (PVar "binds"))) (EApp (EApp (EDictApp "flatMap") (EVar "letBindBound")) (EVar "binds")))
 (DFunDef false "declLocalBound" ((PVar "d")) (EApp (EApp (EDictApp "flatMap") (EVar "localBoundExpr")) (EApp (EVar "declBodies") (EVar "d"))))
-(DTypeSig false "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DTypeSig true "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundNames" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "declLocalBound")) (EVar "prog")))
 (DTypeSig false "markWith" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))))
 (DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methods")) (EVar "constrained")) (EVar "prog2")))))

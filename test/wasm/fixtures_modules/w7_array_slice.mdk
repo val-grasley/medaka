@@ -1,0 +1,4 @@
+-- W7/W9: an Array slice `[|…|].[lo..hi]` (CSlice → array.copy) then `.[i]` into the
+-- slice.  ESlice is still a first-class node; `.[i]` is `Index` dispatch (#16b), so
+-- this needs the real prelude — MODULES corpus.
+main = [|10, 20, 30, 40, 50|].[1..4].[1]

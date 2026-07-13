@@ -1,0 +1,3 @@
+-- W7/W9: a range Array `[|2..=6|]` (CRangeArray → counted fill loop) + `.[i]`.
+-- `.[i]` is `Index` dispatch (#16b) → needs the real prelude (MODULES corpus).
+main = [|2..=6|].[3]

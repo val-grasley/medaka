@@ -1,0 +1,6 @@
+-- W7/W9: an out-of-bounds Array index.  Since #16b the bound check lives in the
+-- prelude's `impl Index (Array a) Int a`, which raises the coded `indexError`
+-- (E-INDEX-OOB) — so this needs the real prelude (MODULES corpus).  Both the native
+-- oracle and the WasmGC module abort with EMPTY stdout (native: stderr + nonzero
+-- exit; WasmGC: a trap).  The gate compares stdout, so empty == empty.
+main = [|5, 6, 7|].[9]
