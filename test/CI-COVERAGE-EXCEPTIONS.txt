@@ -15,9 +15,15 @@
 # Adding a line here is a deliberate, reviewable act. "It's broken so I excluded
 # it" is only acceptable with a task number next to it and an owner fixing it.
 #
-# Format:  <gate-stem>  <reason>
+# KEYS ARE REPO-RELATIVE PATHS (minus `.sh`), not basenames. Gates do not all live
+# under test/ — the coverage gate now enumerates every `.sh` in the repo — and
+# basenames collide across roots (test/native_fixtures/run.sh vs
+# playground/e2e/run.sh both stem to "run"). A ledger keyed on a colliding name is a
+# ledger that excuses the wrong file.
+#
+# Format:  <repo-relative-path-without-.sh>  <reason>
 
-# ── wasm backend (4 gates, 153 fixtures) ──────────────────────────────────────
+# ── wasm backend (5 gates) ────────────────────────────────────────────────────
 # The WasmGC backend — one of Medaka's two production backends — had ZERO CI
 # coverage until 2026-07-13. Not one job touched test/wasm/. That is precisely why
 # 4 real codegen failures sat unnoticed in it:
@@ -32,38 +38,94 @@
 #
 # These are EXCLUDED ONLY UNTIL THAT FIX LANDS (task T25). They are excluded
 # because they are RED, and a red gate wired into CI would just get ignored — the
-# worst outcome. The moment T25 lands, DELETE these four lines and add the wasm job
+# worst outcome. The moment T25 lands, DELETE these lines and add the wasm job
 # to .github/workflows/ci.yml. The gate below will then police them forever.
 #
 # Note the wasm backend is NOT entirely unwatched in the meantime:
 # diff_compiler_engines (tier 2: native == wasm) IS in CI and does cover a slice of it.
-diff_wasm          RED: 4 ref-mode failures — T25. Delete this line when T25 lands.
-diff_wasm_typed    RED: disp_hof_shadows_method — T25. Delete this line when T25 lands.
-diff_wasm_modules  gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
-diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
+test/wasm/diff_wasm          RED: 4 ref-mode failures — T25. Delete this line when T25 lands.
+test/wasm/diff_wasm_typed    RED: disp_hof_shadows_method — T25. Delete this line when T25 lands.
+test/wasm/diff_wasm_modules  gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
+test/wasm/diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
+#
+# build_wasm_cmd is the ONLY one of the five that is GREEN (verified 2026-07-13: 4 ok,
+# 0 failing). It is here for a TOOLING reason, not a correctness one — and it is here at
+# all only because T8 found it MISFILED IN CI-COVERAGE-TOOLS.TXT as a "wasm build helper",
+# which is a claim that running it proves nothing about the compiler. That was false: it
+# is the end-to-end gate for the shipping `medaka build --target wasm` CLI flag, it diffs
+# each fixture's wasm stdout against the native build's, and it ends in `[ "$fail" -eq 0 ]`.
+# It needs `wasm-tools` on PATH and node>=22 — neither is on a stock ubuntu-latest runner —
+# plus a compiled wasm emitter oracle. No CI job installs that toolchain today; the T25
+# wasm job is what will. It goes in that job, NOT into an existing shard, because adding a
+# wasm-tools install to all six gate shards would tax every one of them for a gate only one
+# needs. Delete this line when the T25 wasm job lands.
+test/build_wasm_cmd  GREEN (4/4) but needs wasm-tools + node>=22 — no CI job has that toolchain. Lands with the T25 wasm job.
+
+# ── playground browser e2e ────────────────────────────────────────────────────
+# A real gate (Playwright drives a real browser against the built CM6 playground and
+# asserts on run output + inline type-error squiggles; it exits with the harness's
+# status). It cannot run on a stock hosted runner as written for TWO independent
+# reasons, and BOTH must be solved before it can be un-ledgered:
+#
+#   1. It launches `chromium.launch({channel:'chrome'})` — the SYSTEM Google Chrome —
+#      because `npx playwright install` TLS-fails on the dev box (AGENTS.md is explicit:
+#      do not bypass TLS verification to fix that). A hosted runner would want the
+#      normal Playwright-managed browser, so the launch path needs a switch.
+#   2. It refuses to build its own input: it needs playground/dist/playground.wasm
+#      (~2.6 MB) already built, and playground/dist/ is NOT committed (only a
+#      .gitignore). So CI must run playground/build_playground_wasm.sh first, which is
+#      minutes of extra work on the PR path.
+#
+# NO OWNING TASK YET — this is honestly unowned, and saying so is the point. It is NOT
+# known-red: it has simply never been run in CI, and nobody knows its true status there.
+# Do not delete this line by making the gate skip; delete it by making it run.
+playground/e2e/run  needs system Chrome + an un-committed 2.6MB playground/dist build. UNOWNED — status in CI genuinely unknown.
 
 # ── the long tail found when the gate was widened to enumerate EVERYTHING (2026-07-13) ──
 #
-# Teaching this gate to look past `diff_compiler_*` found SEVENTEEN gates that had never
-# run in CI. Twelve were green and cheap and are now in shards (cross_project_*,
+# ROUND 1. Teaching this gate to look past `diff_compiler_*` found SEVENTEEN gates that had
+# never run in CI. Twelve were green and cheap and are now in shards (cross_project_*,
 # diff_native_cli, diff_native_stack, diff_net, the four effect_*_domain gates,
 # manifest_emit, lsp_harness, selfcompile_lex, selfcompile_emit, selfcompile_build_fixpoint).
-# ALL THREE OF THE REMAINDER ARE NOW COVERED (2026-07-13). This section has no entries left.
 #
 # `build_construct_coverage` (T-3) — was RED and unexamined (138 ok, 1 FAILING, 5 skipped
 # of 144). Triaged: the failure was a stale `let_else` fixture for a REMOVED construct, and
 # FOUR of the five "skips" were stale too — their documented gaps had been fixed elsewhere
 # and nobody had re-checked the skip list against a current binary. Now 142 ok / 0 failing /
-# 1 skipped, and enrolled in the `engines` shard (see ci.yml). The one honest remaining skip
-# is `newtype_ctor_fn`, a real open compiler bug (a `newtype`'s implicit constructor is
-# unusable as a callable or a pattern), justified in the gate's own header.
+# 1 skipped, and enrolled in the `engines` shard (see ci.yml).
 #
 # `check_removed_constructs` and `fuzz_diff` (T-4) — COVERED by .github/workflows/nightly.yml,
 # on a schedule (+ workflow_dispatch). Neither belongs on the PR path: check_removed_constructs
 # is a correct but slow (~2-3 min) tree-wide scan, and fuzz_diff is a nondeterministic FUZZER
 # (a green PR run would prove nothing; a red one might not reproduce), so it FILES findings
-# rather than failing. The coverage gate now scans EVERY workflow under .github/workflows/,
-# not just ci.yml, so it sees both named literally in nightly.yml and classifies them as
-# covered without needing a ledger line here. If nightly.yml is ever renamed or stops invoking
-# these scripts by their literal names, the coverage gate flags them as missing again — that
-# is the intended fail-safe, not a bug.
+# rather than failing. The coverage gate scans EVERY workflow under .github/workflows/, not
+# just ci.yml, so it sees both named literally in nightly.yml and classifies them as covered
+# without needing a ledger line here.
+#
+# ROUND 2 (T8). "EVERYTHING" turned out to mean `test/*.sh` + `test/wasm/*.sh` — a curated
+# pair of globs, not an enumeration. The gate that exists to stop a completeness check from
+# defining its own scope WAS DEFINING ITS OWN SCOPE. Widening it to every `.sh` in the repo
+# found 24 more real gates that ran nowhere:
+#
+#   sqlite/test/*_oracle.sh (22)  Differential gates diffing the pure-Medaka SQLite library
+#                                 against the REAL sqlite3 CLI. All 22 verified green
+#                                 (2026-07-13, ~5 min serial). Now in the `sqlite` shard.
+#   test/native_fixtures/run.sh   11 native-only regression assertions. Lives one directory
+#                                 DOWN from test/, so even `test/*.sh` missed it. It was RED
+#                                 — and had been for an unknown length of time. Triaged: one
+#                                 REAL compiler bug (a user fn shadowing a prelude interface
+#                                 method is silently ignored; T-12) and one STALE ASSERTION
+#                                 pinning an em-dash the diagnostic no longer emits. The bug
+#                                 is now an XFAIL in the gate's OWN expected-failure ledger —
+#                                 which fails if it regresses AND fails if it gets accidentally
+#                                 fixed — so the gate RUNS in the `frontend` shard rather than
+#                                 being excused here. That is the shape to copy: a red gate
+#                                 belongs in CI with its known failure ledgered, not out of CI.
+#   playground/e2e/run.sh         see its own entry above.
+#
+# `test/build_cmd.sh` and `test/build_wasm_cmd.sh` were not invisible — they were MISFILED as
+# "helpers" in CI-COVERAGE-TOOLS.txt, so the coverage gate SUBTRACTED them from its own scope
+# and then certified full coverage. build_cmd (14 programs through the shipping `medaka build`
+# CLI, stdout diffed against committed goldens — 14 ok / 0 failing) is now in the `backend`
+# shard. It is the gate that would have caught this session's `diff_compiler_llvm` bug, where
+# 201/201 passed against goldens no `medaka build` binary can actually produce.
