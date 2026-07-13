@@ -1714,6 +1714,19 @@ emitArgStampPasses = Ref False
 export enableEmitArgStampPasses : Unit -> <Mut> Unit
 enableEmitArgStampPasses _ = setRef emitArgStampPasses True
 
+-- SET the flag either way.  Every OTHER driver is single-mode — a probe binary is
+-- an emit driver OR an eval/golden driver, never both, so it only ever needs to
+-- flip this ON once and `resetState` deliberately leaves it alone ("set by the
+-- driver, constant").  The snapshot runner (compiler/tools/snapshot.mdk) breaks
+-- that assumption: it renders the OFF-mode stages (TYPES / CORE_IR / EVAL) *and*
+-- the ON-mode stages (LLVM / WASM) for many fixtures in ONE process, so it must
+-- restore the OFF default between fixtures — otherwise fixture #1's LLVM emit
+-- would silently leave every later fixture's TYPES/CORE_IR/EVAL on the emit path.
+-- (Measured: those three stages render byte-identically either way on 204/204
+-- fixtures today, so this is defence against a future divergence, not a live bug.)
+export setEmitArgStampPasses : Bool -> <Mut> Unit
+setEmitArgStampPasses b = setRef emitArgStampPasses b
+
 -- #55 EVAL residual: active on the multi-module EVAL path (elaborateModules with
 -- emitArgStampPasses OFF) when there is a RETURN-position constrained fn to dict-pass
 -- (sum/product via `fromInt`, when/unless via `pure`).  Distinct from emitArgStampPasses:

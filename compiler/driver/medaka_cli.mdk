@@ -16,6 +16,7 @@
 -- CLI" and exits 1.
 
 import tools.check.{runCheck, checkHasErrors, runCheckModules}
+import tools.snapshot.{runSnapshotWorker, runSnapshotSupervisor}
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{
@@ -158,6 +159,7 @@ main = match args ()
   "build"::rest => runBuildCmd rest
   "run"::rest => runRunCmd rest
   "test"::rest => runTestCmd rest
+  "snapshot"::rest => runSnapshotCmd rest
   "doc"::rest => runDocCmd rest
   "lint"::rest => runLintCmd rest
   "check-policy"::rest => runCheckPolicyCmd rest
@@ -183,6 +185,7 @@ usage _ = putStrLn (stringConcat
     "  medaka bench [file.mdk]   Run bench declarations\n",
     "  medaka doc [file.mdk]     Generate Markdown documentation\n",
     "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n",
+    "  medaka snapshot [--check|--new] [paths...]  Per-stage snapshot tests (--out <dir>)\n",
     "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
     "  medaka new <name>         Scaffold a new project directory\n",
     "  medaka lsp                Run the language server over stdio\n",
@@ -1448,6 +1451,59 @@ lintTargets [] = []
 lintTargets (x::rest)
   | startsWith "--" x = lintTargets rest
   | otherwise = x :: lintTargets rest
+
+-- ── snapshot ──────────────────────────────────────────────────────────────
+-- `medaka snapshot [--check | --new] [--out <dir>] [--isolate] <paths...>`
+--
+-- Directory targets are expanded by the SAME `expandLintTarget`/`collectMdkFiles`
+-- pair `medaka lint` and `medaka fmt` already use — dir-vs-file discrimination,
+-- dotfile skipping and recursion all live in one place.
+--
+-- `--worker` is INTERNAL: the supervisor re-spawns this same binary with it (that is
+-- the whole crash-resume mechanism, see tools/snapshot.mdk).  `--isolate` forces one
+-- process per fixture and is a DEBUG aid only — the steady-state answer to a known
+-- crasher is `isolate=true` in its `# META`.
+--
+-- R0 has NO `--bless` on purpose: `--new` creates a missing snapshot and refuses to
+-- touch an existing one, so no regression can be silently re-blessed.
+runSnapshotCmd : List String -> <IO, Mut, Panic> Unit
+runSnapshotCmd argv =
+  let root = match snapFlagValue "--root" argv
+    Some r => r
+    None => envOr "MEDAKA_ROOT" defaultMedakaRoot
+  let files = flatMap expandLintTarget (snapshotTargets argv)
+  if files == [] then
+    let _ = ePutStrLn "usage: medaka snapshot [--check|--new] [--out <dir>] <paths...>"
+    exit 1
+  else
+    if hasFlag "--worker" argv then runSnapshotWorker root files
+    else
+      let check = hasFlag "--check" argv
+      if not check && not (hasFlag "--new" argv) then
+        let _ = ePutStrLn "medaka snapshot: pass --check (verify) or --new (create missing snapshots)"
+        exit 1
+      else
+        let ok = runSnapshotSupervisor root check (hasFlag "--isolate" argv) (snapFlagValue "--out" argv) files
+        if ok then () else exit 1
+
+-- Non-flag args, minus the VALUE of the two value-taking flags (--out/--root).
+snapshotTargets : List String -> List String
+snapshotTargets [] = []
+snapshotTargets ("--out"::_::rest) = snapshotTargets rest
+snapshotTargets ("--root"::_::rest) = snapshotTargets rest
+snapshotTargets (x::rest)
+  | startsWith "--" x = snapshotTargets rest
+  | otherwise = x :: snapshotTargets rest
+
+-- `--flag value` (space-separated, unlike lint's `--flag=v1,v2`).
+snapFlagValue : String -> List String -> Option String
+snapFlagValue _ [] = None
+snapFlagValue _ [_] = None
+snapFlagValue name (a::v::rest) =
+  if a == name then
+    Some v
+  else
+    snapFlagValue name (v::rest)
 
 -- Parse --prefix=v1,v2,... from argv; returns [] if not present.
 parseLintFlagList : String -> List String -> List String
