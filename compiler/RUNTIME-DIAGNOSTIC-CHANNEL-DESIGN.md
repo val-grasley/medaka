@@ -1,5 +1,14 @@
 # RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN
 
+**Status:** IMPLEMENTED — `8f446ff6` (located, coded runtime error text) +
+`37e7ab0d` (`medaka run --json`), 2026-07-04+. The `runtimePanic` helper is pervasive
+through `compiler/eval/eval.mdk` (`runtimePanic "E-DIV-ZERO" "division by zero"` at
+line 1387, plus `E-NONEXHAUSTIVE-MATCH`/`E-INDEX-OOB`/`E-STACK-OVERFLOW`/
+`E-NOT-A-FUNCTION`/`E-SLICE-OOB`/`E-LET-REFUTE`), matching this doc's proposal exactly.
+The original header below ("proposed, decision-ready... no source changed") predates the
+fix — cross-backend consistency is the natural sequel, tracked in
+`compiler/RUNTIME-TRAP-UNIFY-DESIGN.md` (still OPEN).
+
 **Status:** proposed, decision-ready. Read-only design pass — no source changed.
 **Owning goal:** error-message quality (`compiler/ERROR-QUALITY.md`,
 `test/error_quality_fixtures/`). The whole compile-time "F-arc" is done (corpus

@@ -1,12 +1,21 @@
 # Multi-Clause Function Exhaustiveness — Design
 
+**Status:** IMPLEMENTED — `f317fef6`, after 2026-07-07. **This header originally said
+"DESIGN ONLY... Nothing built" — that is now FALSE.** `checkGuardExhaustivenessWith
+oracleDecls checkDecls` (`compiler/frontend/exhaust.mdk:824`) builds the constructor
+oracle from a superset (runtime + core + every loaded module) exactly as this doc's §3
+recommends, closing the false-positive class this doc diagnosed. Verified live in source.
+
+Below (kept for record) is the doc's original text, which predates the fix — read it as
+history, not as the current state:
+
 Status: **DESIGN ONLY (read-only measurement pass, 2026-07-07).** Nothing built.
 No compiler source committed. A throwaway gate-removal edit was applied to
 `compiler/frontend/exhaust.mdk` **for measurement only** and reverted
 (`git checkout`); the tree is clean.
 
-All file:line citations are against this worktree
-(`/Users/val/medaka/.claude/worktrees/agent-a1852a91739f17948/`).
+All file:line citations were against a since-discarded agent worktree (path removed,
+2026-07-13 doc pass — never a valid path for anyone else).
 
 Base check: `git merge-base --is-ancestor 54344aba HEAD` → **BASE_OK**.
 

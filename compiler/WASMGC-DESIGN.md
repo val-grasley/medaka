@@ -1,5 +1,8 @@
 # WASMGC-DESIGN.md — WasmGC backend implementation plan
 
+**Status:** IMPLEMENTED — compute+print MVP MET (2026-06-19). Slices W1–W9b are done and
+on `main`.
+
 > **Status: IMPLEMENTED — compute+print MVP MET (2026-06-19).** Slices W1–W9b are
 > done and on `main`; the per-slice §9 entries below were the original plan and are
 > NOT all re-ticked — see the **Implementation status** banner at §9 for the real state.

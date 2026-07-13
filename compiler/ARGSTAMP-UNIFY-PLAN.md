@@ -1,6 +1,12 @@
-STATUS: COMPLETE — all phases (0–5) done 2026-06-14; eval-vs-emit dispatch fork retired.
-
 # ARGSTAMP-UNIFY-PLAN.md — retire the `emitArgStampPasses` eval-vs-emit dispatch fork
+
+**Status:** IMPLEMENTED — `d01a411a`, 2026-06-14. All phases (0–5) done; eval-vs-emit
+dispatch fork retired (`evalDictLayerActive` has zero live code readers — verified via
+`grep -n evalDictLayerActive compiler/types/typecheck.mdk compiler/eval/eval.mdk`, all
+hits are `--` comments). One residual explicitly deferred (Gap 3 / generic prelude
+free-fn over a typeclass receiver), tracked in `GAP3-SLICE7-DESIGN.md`. NOTE: AGENTS.md's
+doc-index table currently (mis)describes this plan as "IN PROGRESS" / "is being
+retired" — that is stale; this doc's own record is correct.
 
 Status: **COMPLETE 2026-06-14.** All phases (0/1/2+3/4/5) DONE. Eval and emit now run
 ONE elaboration mode (full static dict-threading); arg-tag (`filterByTag`) survives only

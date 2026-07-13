@@ -1,5 +1,11 @@
 # MESSAGE-AUDIT.md
 
+**Status:** PARTIAL — this is a read-only proposal, not a tracked plan ("proposes copy
+only; it changes no source"). Its one concrete recommendation (don't centralize into a
+`compiler/messages.mdk`) was followed — no such file exists. Whether the ~65 flagged
+tone/consistency issues were individually fixed is unverified; treat this as a
+still-actionable punch list, not a closed item.
+
 A read-only audit of **every user-facing message string** Medaka emits through
 `medaka check`/`run`/`build`/`fmt`/`lint`/`test`/CLI — graded for **tone**
 ("LLM-ish" persona, hedging, chattiness) and **cross-corpus consistency**

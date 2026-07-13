@@ -1,5 +1,12 @@
 # Composite-`main` Auto-Print — Design (Option A: uniform auto-print)
 
+**Status:** PARTIAL — `build` path IMPLEMENTED (`5cc879dc`/`a92c5a6c`/`cd789d40`,
+2026-07-07; glue in `compiler/entries/entry_support.mdk`). The `run` path (interactive
+`medaka run`) was deliberately deferred (§10: "a LATER bite") and remains unimplemented
+— `compiler/driver/medaka_cli.mdk`'s `runRunCmd` still only emits a `W-MAIN-SHAPE`
+warning (`mainNonUnitWarning`), confirmed live, no `autoPrintWrap`/`shouldAutoPrintMain`
+present in that file.
+
 Status: DESIGN (2026-07-07). Chosen direction = **Option A** (auto-print ALL main
 types on both `run` and `build`, killing the run/build divergence). Owning task:
 playground-filed deferred item "Bare non-Unit `main` — run/build divergence +
