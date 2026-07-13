@@ -74,6 +74,19 @@ on:
   push:
     branches: [main, testing-arc]
   pull_request:
+  # REQUIRED BY THE MERGE QUEUE. A queued PR is tested on a `merge_group` event — a
+  # temporary branch holding YOUR pr merged on top of everything already queued ahead
+  # of it. Without this trigger the required checks never run on that branch, the entry
+  # waits forever, and the queue DEADLOCKS. Do not remove it while a merge queue exists.
+  #
+  # This is the whole point of the queue for THIS repo: PR CI tests your BRANCH, the queue
+  # tests the MERGED RESULT. Two green branches merging into a broken tree is not
+  # hypothetical here — it happened twice on 2026-07-13. Git flagged 2 conflicts between the
+  # TMC arc and the arg-tuple removal and cleanly auto-merged a THIRD break it could not see
+  # (a new caller of a signature the other branch had rewritten — different lines, so no
+  # conflict); the merged tree crashed. Separately, two branches that both touched
+  # typecheck.mdk auto-merged fine and their GOLDENS silently diverged, taking main red.
+  merge_group:
   workflow_dispatch:
 
 concurrency:
