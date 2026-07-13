@@ -222,6 +222,14 @@ import backend.trmc_analysis.{
   splitLastF,
   selfFree,
   mentionsSelfMethod,
+  DispGroup(..),
+  dispRootOf,
+  dispMembersOf,
+  dispGroupOf,
+  dispFindBind,
+  detectDispatchGroups,
+  dispSpineParts,
+  clauseArityOf,
 }
 import backend.private_mangle.{hashName, safeChar}
 import backend.emit_support.{
@@ -324,6 +332,52 @@ data TrmcCtx = TrmcOff | TrmcOn SelfRef Int String String String (List String)
 
 trmcCtxRef : Ref TrmcCtx
 trmcCtxRef = Ref TrmcOff
+
+-- ── dispatch-graph (b′) TMC context (TMC-parity arc; TRMC-DESIGN §Phase 3) ────
+-- The active group context during a member-body emit: `GDispOn root members
+-- uslots destSlot exitL` — root/member names (the leaf redirect recognizes
+-- sanctioned tail edges), the U shared `alloca i64` param slots, the mutable
+-- destination slot (the SAME local-alloca protocol as TrmcOn — dest seeded to
+-- &hole, no globals), and the group define's shared exit label.  GDispOff =
+-- ordinary codegen.  Mirrors trmcCtxRef (saved+cleared by emitDecision for an
+-- expression-position match; kept LIVE across a tail-position CDecision).
+data GDispCtx =
+  | GDispOff
+  | GDispOn String (List String) (List String) String String
+
+gDispCtxRef : Ref GDispCtx
+gDispCtxRef = Ref GDispOff
+
+-- the detected (b′) groups (shared detection, backend/trmc_analysis.mdk), the fn
+-- binds they were detected over, and the fn-arity table with wasm's `progFnArity`
+-- contract (clause arity; -1 when not a top-level fn — an 0-when-unknown lookup
+-- would let a 0-arg call "saturate").  Computed once per emitProgram; reset (to
+-- empty) by emitProgramGaps so a prior program's groups can never leak into the
+-- gap-census path.
+gDispGroupsRef : Ref (List DispGroup)
+gDispGroupsRef = Ref []
+
+gDispBindsRef : Ref (List CBind)
+gDispBindsRef = Ref []
+
+gDispArsRef : Ref (List (String, Int))
+gDispArsRef = Ref []
+
+gDispIsFn : String -> <Mut> Bool
+gDispIsFn n = match lookupAssoc n gDispArsRef.value
+  Some _ => True
+  None => False
+
+gDispFnArity : String -> <Mut> Int
+gDispFnArity n = match lookupAssoc n gDispArsRef.value
+  Some a => a
+  None => 0 - 1
+
+-- is `n` a member (root included) of a detected group?
+gDispIsMember : String -> <Mut> Bool
+gDispIsMember n = match dispGroupOf gDispGroupsRef.value n
+  Some _ => True
+  None => False
 
 export enableGapRecord : Unit -> <Mut> Unit
 enableGapRecord _ = setRef gapRecordEnabled True
@@ -4439,6 +4493,7 @@ trmcImplTry e fname method tag positions arity clauses =
       (ps, b)::_ => (ps, b)
       [] => ([], CLit LUnit)
     let single = listLen clauses == 1 && allClausesPVar clauses
+    let _ = tmcMarker e fname "trmc"
     let _ = emitTrmcHeader e fname arity
     let _ = emitTrmcLoopBody e self arity slotTys clauses single spats sbody
     let _ = emit e "}"
@@ -5896,9 +5951,12 @@ emitDecision e env scrut arms tree =
   let _ = setRef fallthroughLabelRef ""
   let savedTrmc = trmcCtxRef.value
   let _ = setRef trmcCtxRef TrmcOff
+  let savedGDisp = gDispCtxRef.value
+  let _ = setRef gDispCtxRef GDispOff
   let _ = emitTree e env sv arms [sv] slot endL rty tree
   let _ = setRef fallthroughLabelRef saved
   let _ = setRef trmcCtxRef savedTrmc
+  let _ = setRef gDispCtxRef savedGDisp
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e "  \{r} = load i64, ptr \{slot}"
@@ -5967,13 +6025,15 @@ emitLeaf : Emit -> List (String, (String, LTy)) -> String -> List CArm -> Int ->
 emitLeaf e env root arms i slot endL rty = match nthArm arms i
   Some (CArm pat _ body) =>
     let env2 = bindPattern e env pat root body
-    match trmcCtxRef.value
-      TrmcOn _ _ _ _ _ _ => emitTrmcBody e env2 body
-      TrmcOff =>
-        let (bv, bty) = emitExpr e env2 body
-        let _ = setRef rty bty
-        let _ = emit e "  store i64 \{bv}, ptr \{slot}"
-        emit e ("  br label %" ++ endL)
+    match gDispCtxRef.value
+      GDispOn _ _ _ _ _ => emitGDispBody e env2 body
+      GDispOff => match trmcCtxRef.value
+        TrmcOn _ _ _ _ _ _ => emitTrmcBody e env2 body
+        TrmcOff =>
+          let (bv, bty) = emitExpr e env2 body
+          let _ = setRef rty bty
+          let _ = emit e "  store i64 \{bv}, ptr \{slot}"
+          emit e ("  br label %" ++ endL)
   None => gapU "decision arm index out of range"
 -- TRMC (TRMC-DESIGN.md): when a destination-passing loop is active (multi-clause
 -- eligible fn — emitClauseTree's clause-selection tree), the clause body is a
@@ -5994,10 +6054,22 @@ emitGuardedArm e env root arms occs pat guards body fail slot endL rty =
   let failL = "guardfail" ++ intToString (freshId e)
   let env2 = emitRefutMatch e env pat root body failL
   let env3 = emitGuardChain e env2 guards body failL
-  let (bv, bty) = emitExpr e env3 body
-  let _ = setRef rty bty
-  let _ = emit e "  store i64 \{bv}, ptr \{slot}"
-  let _ = emit e ("  br label %" ++ endL)
+  -- Under an ACTIVE TRMC loop the guarded arm's body is a TAIL leaf: descend it
+  -- via emitTrmcBody (cons-into-dest+loop / plain-tail+loop / base+exit), exactly
+  -- like emitLeaf's TrmcOn branch.  Value-emitting it here instead stored into
+  -- `slot` and branched to the TAIL match's DEAD end block (`trmcdecend:` … loads
+  -- then `unreachable`) — runtime UB, a SILENT MISCOMPILE (native returned `[]`/0
+  -- where the interpreter and WasmGC returned the right list; wasm's tail engine
+  -- always handled guards).  Fixture: test/stack_fixtures/guard_arm_trmc.mdk.
+  let _ = match gDispCtxRef.value
+    GDispOn _ _ _ _ _ => emitGDispBody e env3 body
+    GDispOff => match trmcCtxRef.value
+      TrmcOn _ _ _ _ _ _ => emitTrmcBody e env3 body
+      TrmcOff =>
+        let (bv, bty) = emitExpr e env3 body
+        let _ = setRef rty bty
+        let _ = emit e "  store i64 \{bv}, ptr \{slot}"
+        emit e ("  br label %" ++ endL)
   let _ = emit e (failL ++ ":")
   emitTree e env root arms occs slot endL rty fail
 
@@ -6408,21 +6480,31 @@ emitFns e (b::rest) =
   let _ = emitFn e b
   emitFns e rest
 
+-- (b′) routing first (mirrors wasm's emitRefFnBind precedence: a multi-member
+-- group claims its members ahead of Stage-1 TRMC; the shared detection's v5 keeps
+-- Stage-1-claimable SINGLETONS out of groups).  A group MEMBER emits nothing
+-- standalone — its body lives as basic blocks inside the root's group define
+-- (v3/v4 prove nothing outside the group references it); the ROOT emits the whole
+-- group define at its own bind position (deterministic emission order).
 emitFn : Emit -> CBind -> <Mut> Unit
-emitFn e (CBind name [CClause pats body]) =
-  let (pats2, body2) = etaSaturateMethodBody e name pats body
-  if trmcTryFn e name [(pats2, body2)] True then
-    ()
-  else if allPVar pats2 then
-    emitFnClause e name pats2 body2
-  else
-    emitMultiClauseFn e name [(pats2, body2)]
-emitFn e (CBind name (c::rest)) =
-  let clauses = clausePairs (c::rest)
-  if trmcTryFn e name clauses False then
-    ()
-  else
-    emitMultiClauseFn e name clauses
+emitFn e (CBind name [CClause pats body]) = match dispGroupOf gDispGroupsRef.value name
+  Some grp => if dispRootOf grp == name then emitGDispGroup e grp else ()
+  None =>
+    let (pats2, body2) = etaSaturateMethodBody e name pats body
+    if trmcTryFn e name [(pats2, body2)] True then
+      ()
+    else if allPVar pats2 then
+      emitFnClause e name pats2 body2
+    else
+      emitMultiClauseFn e name [(pats2, body2)]
+emitFn e (CBind name (c::rest)) = match dispGroupOf gDispGroupsRef.value name
+  Some grp => if dispRootOf grp == name then emitGDispGroup e grp else ()
+  None =>
+    let clauses = clausePairs (c::rest)
+    if trmcTryFn e name clauses False then
+      ()
+    else
+      emitMultiClauseFn e name clauses
 emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
 
 -- TRMC branch point (TRMC-DESIGN.md §"Emitter touchpoints" #2): if `name`'s
@@ -6658,8 +6740,31 @@ clausePairs ((CClause pats body)::rest) = (pats, body) :: clausePairs rest
 -- exit loads the hole (the final list head) and rets it.  destSlot holds the
 -- ADDRESS of the next i64 to fill; the hole's address is the first destination, a
 -- linked cell's tail slot (cell+16) each subsequent one.
+-- census marker (TMC-parity gate): one deterministic `; tmc: <fn> <mode>`
+-- comment per TMC decision — the LLVM peer of wasm's wTmcMarker.
+-- test/tmc_census.sh + diff_compiler_tmc_parity.sh extract these to diff both
+-- backends' TMC'd source-function sets.  Census-normalized name (leading `mdk_`
+-- stripped).
+tmcMarker : Emit -> String -> String -> <Mut> Unit
+tmcMarker e sym mode =
+  let name = if startsWith "mdk_" sym then
+    stringSlice 4 (stringLength sym) sym
+  else
+    sym
+  emit e "; tmc: \{name} \{mode}"
+
+tmcGroupMarkers : Emit -> String -> List String -> <Mut> Unit
+tmcGroupMarkers _ _ [] = ()
+tmcGroupMarkers e root (m::rest) =
+  let _ = if m == root then
+    tmcMarker e m "group-root"
+  else
+    tmcMarker e m ("group:" ++ root)
+  tmcGroupMarkers e root rest
+
 emitTrmcFn : Emit -> String -> Int -> List LTy -> List (List Pat, CExpr) -> Bool -> List Pat -> CExpr -> <Mut> Unit
 emitTrmcFn e name arity ptys clauses single singlePats singleBody =
+  let _ = tmcMarker e name "trmc"
   let _ = emitTrmcHeader e ("mdk_" ++ name) arity
   let _ = emitTrmcLoopBody e (SelfByVar name) arity ptys clauses single singlePats singleBody
   let _ = emit e "}"
@@ -6925,6 +7030,320 @@ emitTrmcBase e env ex destSlot exitL =
   let _ = emit e "  \{d} = load ptr, ptr \{destSlot}"
   let _ = emit e "  store i64 \{v}, ptr \{d}"
   emit e ("  br label %" ++ exitL)
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Dispatch-graph (b′) TMC — the LLVM group emit (TMC-parity arc, TRMC-DESIGN
+-- §Phase 3).  The shared detection (backend/trmc_analysis.mdk) finds a family of
+-- mutually tail-calling fns rooted at ONE external entry (the lexer's `scan`
+-- token spine, the offside-rule `layout` family), whose spine conses bottom in
+-- saturated member calls.  The WasmGC emit keeps members as separate funcs and
+-- loops via `return_call` + per-group dest GLOBALS; LLVM has no `return_call`
+-- and `musttail` demands caller/callee prototype equality — but the detection's
+-- v4 check PROVES no bind or impl outside the group references a non-root
+-- member, so the whole group INLINES into the root's single define:
+--   • one labeled entry block per member (`gdisp_<member>:`), its body emitted
+--     by the ORDINARY clause machinery (direct tail descent / emitClauseTree)
+--     under a live gDispCtxRef, leaves redirected;
+--   • every sanctioned tail edge = recompute the callee's args into fresh regs,
+--     store them into the shared param slots, `br %gdisp_<callee>` — a plain
+--     branch, no call, no musttail (the "heterogeneous member arities" obstacle
+--     that deferred the 2026-06-22 port is moot: there is no cross-define edge);
+--   • the destination is a LOCAL `alloca` seeded to &hole — the Stage-1 protocol
+--     verbatim (no module globals, no first-cell flag; a nested outer call to
+--     the root gets a fresh frame, so re-entrancy is safe by construction);
+--   • a spine-cons leaf links its 1..N Cons cells into *dest in source order
+--     and advances dest through each tail slot before branching to the bottom
+--     callee; a base leaf stores its value into *dest and exits (emitTrmcBase).
+-- Members emit NO standalone define; the root's public `@mdk_<root>` IS the
+-- group define, so external callers and fn-as-value eta closures over the root
+-- are untouched.
+
+-- the member's basic-block label inside the group define (member names are
+-- unique within a group; LLVM labels are function-scoped, so two groups may
+-- reuse the scheme).
+gDispLabel : String -> String
+gDispLabel m = "gdisp_" ++ m
+
+-- emit the whole group define, rooted at `@mdk_<root>` with the root's real
+-- params.  U = max member arity shared slots; slots 0..rootArity seed from
+-- %argK, the rest from 0 (never read before a store — zeroed only so no undef
+-- load exists).
+emitGDispGroup : Emit -> DispGroup -> <Mut> Unit
+emitGDispGroup e grp =
+  let root = dispRootOf grp
+  let members = dispMembersOf grp
+  let binds = gDispBindsRef.value
+  let rootArity = gDispFnArity root
+  let u = gDispMaxArity members 0
+  let _ = tmcGroupMarkers e root members
+  let _ = emitTrmcHeader e ("mdk_" ++ root) rootArity
+  let uslots = gDispEmitSlots e u rootArity 0
+  let hole = freshReg e
+  let _ = emit e ("  " ++ hole ++ " = alloca i64")
+  let destSlot = freshReg e
+  let _ = emit e ("  " ++ destSlot ++ " = alloca ptr")
+  let _ = emit e "  store ptr \{hole}, ptr \{destSlot}"
+  let exitL = "gdispexit" ++ intToString (freshId e)
+  let _ = emit e ("  br label %" ++ gDispLabel root)
+  let saved = gDispCtxRef.value
+  let _ = setRef gDispCtxRef (GDispOn root members uslots destSlot exitL)
+  let _ = emitGDispMembers e binds members
+  let _ = setRef gDispCtxRef saved
+  let _ = emit e (exitL ++ ":")
+  let r = freshReg e
+  let _ = emit e "  \{r} = load i64, ptr \{hole}"
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  emit e ""
+
+-- one shared `alloca i64` slot per uniform param position, seeded from the
+-- root's %argK (< rootArity) or 0.
+gDispEmitSlots : Emit -> Int -> Int -> Int -> <Mut> List String
+gDispEmitSlots e u rootArity i
+  | i >= u = []
+  | otherwise =
+    let slot = freshReg e
+    let _ = emit e ("  " ++ slot ++ " = alloca i64")
+    let seed = if i < rootArity then "%arg" ++ intToString i else "0"
+    let _ = emit e "  store i64 \{seed}, ptr \{slot}"
+    slot :: gDispEmitSlots e u rootArity (i + 1)
+
+gDispMaxArity : List String -> Int -> <Mut> Int
+gDispMaxArity [] acc = acc
+gDispMaxArity (m::rest) acc =
+  let a = gDispFnArity m
+  gDispMaxArity rest (maxInt a acc)
+
+emitGDispMembers : Emit -> List CBind -> List String -> <Mut> Unit
+emitGDispMembers _ _ [] = ()
+emitGDispMembers e binds (m::rest) =
+  let _ = match dispFindBind binds m
+    Some b => emitGDispMember e b
+    None => gapU ("(b') group member without a bind: " ++ m)
+  emitGDispMembers e binds rest
+
+-- a member's entry block: reload its arity-many slots (typed from its inferred
+-- sig, LTInt-padded — the same trmcReloadParams the Stage-1 loop head uses,
+-- binding the synthetic `aK` scrutinee names), then run the ordinary dispatch:
+-- a single all-PVar clause descends its body directly (emitGDispBody); anything
+-- else reuses emitClauseTree verbatim (its emitLeaf/emitGuardedArm are
+-- gDispCtx-aware).  fallthroughLabelRef is saved+nulled per member (each
+-- member's clause chain manages its own fallthroughs).
+emitGDispMember : Emit -> CBind -> <Mut> Unit
+emitGDispMember e (CBind name clauses) = match gDispCtxRef.value
+  GDispOff => gapU "(b') member emit with no active group context"
+  GDispOn _ _ uslots _ _ =>
+    let arity = clauseArityOf clauses
+    let ptys = match sigLookup e name
+      Some (FnSig ts _) => ts
+      None => []
+    let _ = emit e (gDispLabel name ++ ":")
+    let reloaded = trmcReloadParams e (gDispTake arity uslots) ptys 0
+    let savedFT = fallthroughLabelRef.value
+    let _ = setRef fallthroughLabelRef ""
+    let pairs = clausePairs clauses
+    let _ = match pairs
+      [(pats, body)] =>
+        if allPVar pats then
+          emitGDispBody e (trmcRenameEnv pats reloaded) body
+        else
+          emitClauseTree e reloaded arity pairs
+      _ => emitClauseTree e reloaded arity pairs
+    setRef fallthroughLabelRef savedFT
+
+gDispTake : Int -> List a -> List a
+gDispTake n _
+  | n <= 0 = []
+gDispTake _ [] = []
+gDispTake n (x::rest) = x :: gDispTake (n - 1) rest
+
+-- member-body TAIL descent.  Mirrors the shared detection's wrapper set EXACTLY
+-- (dispLeavesOk: CIf / non-rec CLet PVar+PWild / CBlock / CDecision), so the
+-- emit redirects precisely the leaves the detection sanctioned.  A CLetGroup is
+-- deliberately NOT descended (the detection treats it as a leaf: base if
+-- member-free, else the group was rejected).
+emitGDispBody : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+emitGDispBody e env (CIf c t f) =
+  let (cv, _) = emitExpr e env c
+  let ci = untagInt e cv
+  let cb = freshReg e
+  let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
+  let n = intToString (freshId e)
+  let thenL = "gdispthen" ++ n
+  let elseL = "gdispelse" ++ n
+  let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
+  let _ = emit e (thenL ++ ":")
+  let _ = emitGDispBody e env t
+  let _ = emit e (elseL ++ ":")
+  emitGDispBody e env f
+emitGDispBody e env (CLet False (PVar x) rhs b) =
+  let (v, ty) = emitExpr e env rhs
+  emitGDispBody e ((x, (v, ty))::env) b
+emitGDispBody e env (CLet False PWild rhs b) =
+  let _ = emitExpr e env rhs
+  emitGDispBody e env b
+emitGDispBody e env (CBlock stmts) = emitGDispBlock e env stmts
+-- tail-position decision tree: keep gDispCtxRef LIVE across the tree (each arm
+-- body is a redirected tail leaf via emitLeaf/emitGuardedArm), save+null the
+-- fallthrough label (a non-exhaustive tail match's CTFail is a genuine abort).
+-- The result slot + end label are a DEAD block (no leaf stores there under an
+-- active group ctx) — the Stage-1 B-match precedent.
+emitGDispBody e env (CDecision scrut arms tree) =
+  let (sv, _) = emitExpr e env scrut
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let endL = "gdispdecend" ++ intToString (freshId e)
+  let rty = Ref LTInt
+  let savedFT = fallthroughLabelRef.value
+  let _ = setRef fallthroughLabelRef ""
+  let _ = emitTree e env sv arms [sv] slot endL rty tree
+  let _ = setRef fallthroughLabelRef savedFT
+  let _ = emit e (endL ++ ":")
+  let r = freshReg e
+  let _ = emit e "  \{r} = load i64, ptr \{slot}"
+  emit e "  unreachable"
+emitGDispBody e env ex = emitGDispLeaf e env ex
+
+-- block TAIL descent: emit the prefix statements exactly as emitBlock does
+-- (minus its float-let unboxing specialization — a boxed binding is the
+-- universal rep, semantics unchanged), then descend the final CSExpr.  The
+-- detection only sanctions blocks whose LAST statement is a CSExpr
+-- (lastStmtExpr); any other tail form falls to the base leaf (member-free by
+-- detection, so emitting it whole as a value is sound).
+emitGDispBlock : Emit -> List (String, (String, LTy)) -> List CStmt -> <Mut> Unit
+emitGDispBlock e env [CSExpr ex] = emitGDispBody e env ex
+emitGDispBlock e env ((CSExpr ex)::rest) =
+  let _ = emitExpr e env ex
+  emitGDispBlock e env rest
+emitGDispBlock e env ((CSLet _ (PVar x) ex)::rest) =
+  let (v, ty) = emitExpr e env ex
+  emitGDispBlock e ((x, (v, ty))::env) rest
+emitGDispBlock e env ((CSLet _ PWild ex)::rest) =
+  let _ = emitExpr e env ex
+  emitGDispBlock e env rest
+emitGDispBlock e env ((CSLet _ pat ex)::rest) =
+  let (v, _) = emitExpr e env ex
+  if refutableCsLet e pat then
+    let env2 = emitRefutableCsLet e env pat v
+    emitGDispBlock e env2 rest
+  else
+    let env2 = bindPattern e env pat v (CBlock rest)
+    emitGDispBlock e env2 rest
+emitGDispBlock e env ((CSAssign x ex)::rest) =
+  let (v, ty) = emitExpr e env ex
+  emitGDispBlock e ((x, (v, ty))::env) rest
+emitGDispBlock e env stmts = emitGDispLeaf e env (CBlock stmts)
+
+-- a group TAIL leaf.  Three classes, matching the detection's dispLeafOk:
+--   • spine cons `<h1> :: … :: f <sat>` (f a member) — link the 1..N cells into
+--     the dest in source order, then edge to `f`;
+--   • bare saturated member call — edge to `f` (dest threads through untouched);
+--   • anything else — a base value: close the dest + exit (emitTrmcBase; the
+--     detection guarantees it references no member, so no member symbol — which
+--     does not exist — can be emitted).
+emitGDispLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+emitGDispLeaf e env ex = match gDispCtxRef.value
+  GDispOff => emitValueRet e env ex
+  GDispOn _ members uslots destSlot exitL => match gDispSpine e members ex
+    Some (heads, f, args) =>
+      let _ = emitGDispCells e env heads destSlot
+      emitGDispEdge e env f args uslots
+    None => match flattenApp ex []
+      (CVar f0 _, args) =>
+        let f = canonFnName e f0
+        let fa = gDispFnArity f
+        if contains f members && fa >= 0 && listLen args == fa then
+          emitGDispEdge e env f args uslots
+        else
+          emitTrmcBase e env ex destSlot exitL
+      _ => emitTrmcBase e env ex destSlot exitL
+
+-- the shared spine classifier, closed over this emitter's hooks (identical to
+-- what the detection ran, so emit and detection agree leaf-by-leaf).
+gDispSpine : Emit -> List String -> CExpr -> <Mut> Option (List CExpr, String, List CExpr)
+gDispSpine e members ex = dispSpineParts
+  (n => canonFnName e n)
+  (n => gDispIsFn n)
+  (n => gDispFnArity n)
+  (f => contains f members)
+  ex
+
+-- link one Cons cell per peeled head into the destination, in source order:
+-- head value → alloc 24 → tag Cons → store head at +8 → link the cell word into
+-- *dest → advance dest to THIS cell's tail slot (+16).  The tail word stays
+-- zeroed (GC_malloc) until the next cell/base fills it — the Stage-1 GC-safety
+-- argument verbatim.
+emitGDispCells : Emit -> List (String, (String, LTy)) -> List CExpr -> String -> <Mut> Unit
+emitGDispCells _ _ [] _ = ()
+emitGDispCells e env (h::rest) destSlot =
+  let hv = emitArgs e env [h]
+  let cell = freshReg e
+  let _ = emit e "  \{cell} = call ptr @mdk_alloc(i64 24)"
+  let _ = emit e "  store i64 \{intToString (cellTag e "Cons")}, ptr \{cell}"
+  let _ = storeFields e cell hv 0
+  let cellw = freshReg e
+  let _ = emit e "  \{cellw} = ptrtoint ptr \{cell} to i64"
+  let d = freshReg e
+  let _ = emit e "  \{d} = load ptr, ptr \{destSlot}"
+  let _ = emit e "  store i64 \{cellw}, ptr \{d}"
+  let newdest = freshReg e
+  let _ = emit e "  \{newdest} = getelementptr i8, ptr \{cell}, i64 16"
+  let _ = emit e "  store ptr \{newdest}, ptr \{destSlot}"
+  emitGDispCells e env rest destSlot
+
+-- a sanctioned tail edge: recompute the callee's args into fresh regs FIRST (an
+-- arg may read the current member's params), store them into the shared slots
+-- (positional, first arity_f slots), branch to the callee's entry block.  NO
+-- call — the branch IS the loop edge.
+emitGDispEdge : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> List String -> <Mut> Unit
+emitGDispEdge e env f args uslots =
+  let argOps = emitArgs e env args
+  let _ = trmcStoreParamSlots e uslots argOps
+  emit e ("  br label %" ++ gDispLabel f)
+
+-- the clause-derived fn-arity table (wasm's collectFnArities contract: name →
+-- first clause's param count) — the detection's isFn/fa hooks read it.
+gDispFnArsOf : List CBind -> List (String, Int)
+gDispFnArsOf [] = []
+gDispFnArsOf ((CBind n cs)::rest) = (n, clauseArityOf cs) :: gDispFnArsOf rest
+
+-- would the LLVM Stage-1 self-TMC (trmcTryFn's gate) already claim this fn?
+-- (the shared dispValidate v5 keeps such singletons on Stage-1.)
+gDispStage1Claims : Emit -> String -> Int -> List CClause -> <Mut> Bool
+gDispStage1Claims e name arity clauses =
+  let pairs = clausePairs clauses
+  arity > 0
+    && trmcNonDict pairs
+    && trmcEligible (isCtor e) (ctorArity e) (SelfByVar name) arity pairs
+
+-- keep only groups whose every SINGLE-CLAUSE member has eta deficit 0 (the
+-- multi-clause emitFn arm never eta-saturates, so multi-clause members are
+-- always stable).  A deficit member's ordinary define would gain params
+-- (etaSaturateMethodBody), diverging from the group's clause-arity slot
+-- protocol — no real group contains one (members are non-dict with cons/call/
+-- base tails), but reject deterministically rather than assume.
+gDispKeepEtaStable : Emit -> List CBind -> List DispGroup -> <Mut> List DispGroup
+gDispKeepEtaStable _ _ [] = []
+gDispKeepEtaStable e binds (g::rest) =
+  if gDispMembersEtaStable e binds (dispMembersOf g) then
+    g :: gDispKeepEtaStable e binds rest
+  else
+    gDispKeepEtaStable e binds rest
+
+gDispMembersEtaStable : Emit -> List CBind -> List String -> <Mut> Bool
+gDispMembersEtaStable _ _ [] = True
+gDispMembersEtaStable e binds (m::rest) = match dispFindBind binds m
+  Some (CBind name [CClause pats body]) => etaDeficit e name pats body (methodBodyDeficit e body) == 0
+    && gDispMembersEtaStable e binds rest
+  Some _ => gDispMembersEtaStable e binds rest
+  None => False
+
+-- drop group members from the float worker-wrapper advertisement set.
+gDispDropMembers : List (String, (Int, List Int)) -> <Mut> List (String, (Int, List Int))
+gDispDropMembers [] = []
+gDispDropMembers ((n, v)::rest) =
+  let isMember = gDispIsMember n
+  if isMember then gDispDropMembers rest else (n, v) :: gDispDropMembers rest
 
 -- like implParamEnv, but types each synthetic `aK` scrutinee param from the fn's
 -- inferred signature param types (FnSig ts) instead of defaulting to LTInt.
@@ -8708,7 +9127,31 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
   let _ = installDefArityMap e (fnBinds groups)
-  let _ = setRef floatFwSetRef (collectFloatFw e (fnBinds groups))
+  -- (b′) dispatch-graph TMC: run the SHARED detection (backend/trmc_analysis.mdk)
+  -- before any fn emit, so emitFn can route group members/roots.  Hooks: the LLVM
+  -- canonFnName + a clause-derived fn-arity table with wasm's progFnArity contract
+  -- (-1 when unknown); v5's stage-1-claims hook is the LLVM Stage-1 gate (no
+  -- uniform-ctor condition — the backends' hooks unify when wasm's gate retires).
+  -- gDispGroupEtaStable then drops any group containing a single-clause member
+  -- that eta-saturation would re-arity (deficit > 0 — such a member's inlined
+  -- clause-arity body would diverge from the ordinary define's ABI); dropped
+  -- groups fall back to ordinary codegen, no transform, no regression.
+  let _ = setRef gDispArsRef (gDispFnArsOf (fnBinds groups))
+  let _ = setRef gDispBindsRef (fnBinds groups)
+  let dispGroups0 = detectDispatchGroups
+    (n => canonFnName e n)
+    (n => gDispIsFn n)
+    (n => gDispFnArity n)
+    (nm ar cs => gDispStage1Claims e nm ar cs)
+    (fnBinds groups)
+    groups
+    implEntries
+  let _ = setRef gDispGroupsRef (gDispKeepEtaStable e (fnBinds groups) dispGroups0)
+  -- a group member must never be ADVERTISED as having a float `__fw` worker (the
+  -- group path emits no standalone defines, so a float-context caller would call
+  -- a nonexistent symbol; v3/v4 make external float callers impossible anyway —
+  -- belt and braces).
+  let _ = setRef floatFwSetRef (gDispDropMembers (collectFloatFw e (fnBinds groups)))
   let _ = setRef floatClosureFnsRef (collectFloatClosureFns e (fnBinds groups))
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
@@ -8904,6 +9347,9 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installDefArityMap e (fnBinds groups)
   let _ = setRef floatFwSetRef (collectFloatFw e (fnBinds groups))
   let _ = setRef floatClosureFnsRef (collectFloatClosureFns e (fnBinds groups))
+  -- the gap census emits every bind ORDINARILY — reset the (b′) groups so a prior
+  -- emitProgram's routing state can never leak into this path.
+  let _ = setRef gDispGroupsRef []
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e

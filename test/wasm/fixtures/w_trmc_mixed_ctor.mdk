@@ -1,0 +1,25 @@
+-- P3 (TMC-parity arc): a MIXED-ctor deep builder — the cons/ctor-tail leaves
+-- build TWO different constructors (LinkA / LinkB), the shape the retired
+-- wasm-only `wTrmcUniformCtor` gate used to reject (the LLVM backend always
+-- handled it).  The emit tracks the dest cell's ctor in $__tmc_dctor and link
+-- sites dispatch on it.  WITHOUT mixed-ctor TMC the 2,000,000-deep build
+-- overflows the engine stack (the ctor-arg self-call is not a tail call);
+-- WITH it the loop runs in constant stack and prints the depth.
+data Chain =
+  | LinkA Int Chain
+  | LinkB Int Chain
+  | End
+
+build : Int -> Chain
+build n
+  | n <= 0 = End
+  | n - (n / 2) * 2 == 0 = LinkA n (build (n - 1))
+  | otherwise = LinkB n (build (n - 1))
+
+depth : Int -> Chain -> Int
+depth acc c = match c
+  End => acc
+  LinkA _ t => depth (acc + 1) t
+  LinkB _ t => depth (acc + 1) t
+
+main = depth 0 (build 2000000)

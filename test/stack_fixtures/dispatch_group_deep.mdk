@@ -1,0 +1,39 @@
+-- WASMGC-TRMC Stage 2 (§7 Stage 2, shape (b′)): a DISPATCH-into-single-target cons
+-- builder that mirrors the lexer's `scan`/`scanAt`/leaf shape.  `scan` is a cons-free
+-- dispatcher that fans out (by a cycling tag `k`) to one of three LEAF builders; each
+-- leaf does `tok :: scan (n+1) hi (next k)` — a spine cons whose tail is a saturated call
+-- to the single root `scan`.  WITHOUT dispatch-TMC the leaf frames (`leafA`/`leafB`/
+-- `leafC`) stay live to the end (the `scan` call is a struct.new ARG) → 2,000,000 frames
+-- deep → Node throws `RangeError: Maximum call stack size exceeded`.  WITH it the group
+-- loops in constant stack and prints the summed length.
+scan : Int -> Int -> Int -> List Int
+scan n hi k
+  | n > hi = []
+  | otherwise = scanAt n hi k
+
+scanAt : Int -> Int -> Int -> List Int
+scanAt n hi k
+  | k == 0 = leafA n hi k
+  | k == 1 = leafB n hi k
+  | otherwise = leafC n hi k
+
+next : Int -> Int
+next k = if k == 2 then 0 else k + 1
+
+leafA : Int -> Int -> Int -> List Int
+leafA n hi k = (n + 100) :: scan (n + 1) hi (next k)
+
+leafB : Int -> Int -> Int -> List Int
+leafB n hi k = (n + 200) :: scan (n + 1) hi (next k)
+
+leafC : Int -> Int -> Int -> List Int
+leafC n hi k =
+  let v = n + 300
+  v :: scan (n + 1) hi (next k)
+
+lenAcc : Int -> List Int -> Int
+lenAcc acc xs = match xs
+  [] => acc
+  _ :: t => lenAcc (acc + 1) t
+
+main = lenAcc 0 (scan 1 2000000 0)

@@ -1,0 +1,24 @@
+-- Guarded arm inside a TRMC tail-position match (regression, fixed 2026-07-13):
+-- emitGuardedArm must descend the arm body as a TAIL leaf under an active TRMC
+-- loop (cons-into-dest+loop for the kept arm, plain-tail F3 loop for the drop
+-- arm).  Before the fix it value-emitted the body into the tail match's DEAD
+-- `trmcdecend` block (`load` + `unreachable`) — runtime UB, a silent miscompile
+-- (native printed 0/[] where the interpreter and WasmGC printed the right list).
+-- 2M-deep so the guarded cons arm must also be a LOOP edge (stack safety), with
+-- the guard actually gating (half kept, half dropped).
+build : Int -> List Int
+build n
+  | n <= 0 = []
+  | otherwise = n :: build (n - 1)
+
+keepBig : List Int -> List Int
+keepBig [] = []
+keepBig (x::xs) = match x
+  y if y > 1000000 => y :: keepBig xs
+  _ => keepBig xs
+
+lenAcc : Int -> List Int -> Int
+lenAcc acc [] = acc
+lenAcc acc (_::xs) = lenAcc (acc + 1) xs
+
+main = lenAcc 0 (keepBig (build 2000000))

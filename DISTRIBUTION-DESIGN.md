@@ -137,7 +137,8 @@ build, one frame per token, spine live to EOF. This is *exactly* the
 identified (single fixed self-call target `scan`; the cons is built in the
 per-kind dispatch leaves) — **the shape the native TMC does not handle and the
 WasmGC backend already fixed** (native never needed it because the deep C stack
-masked it).
+masked it).  *(Update 2026-07-13: the native TMC now DOES handle it — Track 2
+shipped, see below.)*
 
 Implication: porting `b′` to the native LLVM emitter would eliminate *this*
 overflow entirely (very possibly letting native self-compile fit Linux's default
@@ -196,13 +197,16 @@ the observed case. This is what splits the fix cleanly into two tracks (D2).
     stack** (the compiler self-provisions), macOS byte-identical (`diff_compiler_llvm`
     194/0, `_build` 53/0), fixpoint C3a/C3b YES, cold `bootstrap_from_seed` C3a PASS.
     Correctness-complete for ALL recursion shapes incl. tree-depth.
-  - **Track 2 (fast-follow, own workstream): port WasmGC `b′` dispatch-TMC to
-    native.** The backtrace (§3a) proves the observed overflow is 100% the
-    `b′`-shaped lexer token-spine — one shape, one file (`lexer.mdk`), already
-    designed (`WASMGC-TRMC-DESIGN.md`). Fixes the observed overflow at the root,
-    closes a native↔wasm parity gap, hardens against pathologically long *lists*
-    (which blow even a 256MB stack), reduces GC/stack pressure. Optimization +
-    robustness, not the stack fix.
+  - **Track 2 — ✅ DONE 2026-07-13 (TMC-parity arc): WasmGC `b′` dispatch-TMC
+    ported to native.** The backtrace (§3a) proved the observed overflow is 100%
+    the `b′`-shaped lexer token-spine; the native LLVM emitter now transforms it
+    (shared detection in `backend/trmc_analysis.mdk`; the group inlines into the
+    root's single define — `compiler/TRMC-DESIGN.md` §Phase 3). The lexer token
+    spine is O(1) native stack (2M-deep gate fixture); both backends TMC
+    identical function sets, gated by `test/diff_compiler_tmc_parity.sh`.
+    (Note: the §3a speculation that this alone lets self-compile fit an 8 MB
+    stack is untestable as shipped — Track 1's 256 MB worker pthread
+    self-provisions regardless of ulimit.)
   - **Track 3 (capstone, aligns with error-quality): recursion-depth guard.** A
     clean `expression nesting too deep` diagnostic instead of a segfault on
     adversarial deep nesting — the piece that actually makes "never crash on any

@@ -541,7 +541,53 @@ correct-after fixture (F1(b): `data T = N T Int`/field-0 + a self-in-middle ctor
 prelude-free path; F2(b): a synthetic `instance Builder T requires C a` through the typed
 path) + full `diff_compiler_*` + `selfcompile_fixpoint` C3a/C3b.
 
-## Phase 3 — (b′) dispatch-into-single-target for LLVM — SCOPED & DEFERRED (2026-06-22)
+## Phase 3 — dispatch-graph (b′) TMC for LLVM — **SHIPPED 2026-07-13 (TMC-parity arc)**
+
+> The 2026-06-22 deferral below is retained as history.  Both of its blocking
+> obstacles dissolved:
+>
+> - **musttail prototype-match — MOOT.** The deferral (and the preserved WIP
+>   patch) assumed group members stay separate defines, forcing a uniform-arity
+>   `musttail` inner ring.  But the Stage-3 detection's **v4 validation proves no
+>   bind or impl outside the group references a non-root member** — so the whole
+>   group INLINES into the root's ONE define: member bodies are `gdisp_<m>:`
+>   basic blocks, every sanctioned tail edge is `store args into shared slots +
+>   br` (no call of any kind), and the destination is a LOCAL `alloca` seeded to
+>   `&hole` — the Phase-1 protocol verbatim (no module globals, no first-cell
+>   flag, no reset wrapper; re-entrancy safe per activation).  Members emit no
+>   standalone define.  Emit: `emitGDispGroup`/`emitGDispBody`/`emitGDispLeaf`
+>   (+ leaf hooks in `emitLeaf`/`emitGuardedArm`, save/clear in `emitDecision` —
+>   the same discipline as `trmcCtxRef`).
+> - **detection non-termination — SOLVED upstream.** The WASM Stage-3 detector
+>   (pass-0 precomputed head tables, worklist growth, hard 256-cap BFS) replaced
+>   the algorithm that hung; it was lifted into the shared
+>   `backend/trmc_analysis.mdk` (`detectDispatchGroups`, hook-parameterized) and
+>   now runs in BOTH emitters.  Measured on the compiler's own graphs: detection
+>   is ~0.6% of emit time (perf profile); whole-emit delta vs the pre-arc seed
+>   emitter ≈ +4–8% on `check_main`.
+>
+> **Parity is the invariant now:** every eligibility decision (Stage-1/impl
+> `trmcEligible`, the dispatch-graph detection, the v5 stage-1-claims predicate)
+> lives in `backend/trmc_analysis.mdk`; the wasm-only uniform-ctor gate was
+> retired (mixed leaf-ctor sets now emit on both backends); both emitters write
+> `; tmc:` / `;; tmc:` census markers, and `test/diff_compiler_tmc_parity.sh`
+> FAILS on any per-function TMC-set difference across backends
+> (`test/tmc_census.sh` is the underlying census; corpus = stack fixtures + wasm
+> TMC fixtures + the `check_main` module graph — 109 TMC'd fns incl. 11 dispatch
+> groups, byte-identical sets).  Fixtures: `test/stack_fixtures/
+> {dispatch_group_deep,mixed_ctor_deep,guard_arm_trmc}.mdk` +
+> `test/wasm/fixtures/w_trmc_mixed_ctor.mdk`.
+>
+> **Bug found by the port (fixed 2026-07-13):** `emitGuardedArm` had no `TrmcOn`
+> branch — a guarded arm in a TRMC tail-position match value-emitted its body
+> into the dead `trmcdecend`/`unreachable` block: runtime UB, a SILENT
+> MISCOMPILE (native printed `[]`/0 where the interpreter and WasmGC were
+> correct).  Fixed by descending the guarded body via `emitTrmcBody` (and the
+> group analogue); fixture `guard_arm_trmc.mdk`.
+
+### The 2026-06-22 deferral (historical)
+
+## Phase 3 (historical) — (b′) dispatch-into-single-target for LLVM — SCOPED & DEFERRED (2026-06-22)
 
 The WasmGC backend gained a novel **dispatch-into-single-target (b′)** TMC
 (`compiler/WASMGC-TRMC-DESIGN.md`): a tail-connected GROUP rooted at one cons-target
@@ -580,8 +626,10 @@ non-termination, on the canonical backend, with fixpoint risk) far exceeds the b
 **The backends stay in sync on self-recursive + dispatched-method TMC (Phase 1/2); they
 differ on (b′) by ISA necessity, not oversight.**
 
-**If ever resumed** (a real native (b′) overflow appears): the reverted WIP is preserved
-at `compiler/bprime-llvm-wip.patch` (819 lines, against base `243dbb9` — will need
-rebasing). Forward options, ranked: (1) homogeneous-arity-only subset (sound, passes
-fixpoint, but the real lexer group is heterogeneous so it wouldn't transform — synthetic
-value only); (2) the full uniform-arity dual-define + fix the detection non-termination.
+**If ever resumed** (a real native (b′) overflow appears): the reverted WIP was preserved
+at `compiler/bprime-llvm-wip.patch` (819 lines, against base `243dbb9`). Forward options,
+ranked: (1) homogeneous-arity-only subset (sound, passes fixpoint, but the real lexer
+group is heterogeneous so it wouldn't transform — synthetic value only); (2) the full
+uniform-arity dual-define + fix the detection non-termination.
+*(Resolved 2026-07-13 by the single-define inlining above — neither option was needed;
+the WIP patch was deleted as superseded.)*

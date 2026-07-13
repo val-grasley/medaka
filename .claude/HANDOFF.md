@@ -1,5 +1,35 @@
 # Next-orchestrator handoff — Medaka, WasmGC backend + soak (2026-06-19)
 
+## RESUME — ⚖️ TMC PARITY ARC SHIPPED + MERGED TO MAIN: both backends apply TMC to the SAME functions, gated. LLVM gained dispatch-graph (b′) TMC; a SILENT guarded-arm TRMC miscompile found+fixed. Branch `tmc-parity-arc`, merged. (2026-07-13)
+
+**Merge note:** main advanced mid-arc (snapshot-R1 gate migration, `a9f0a8a5` — parse/desugar/mark
+goldens deleted for an in-process snapshot family). Merged main into the arc, resolved by taking the
+deletions + re-cutting the 3 changed backend snapshots (`rm test/snapshots/compiler/<f>.md` +
+`--new`); `diff_compiler_tmc_parity` added to the CI backend shard (the new
+`ci_shard_coverage` meta-gate caught it) and made self-provisioning (builds the wasm probes instead
+of skipping). **Seed re-minted from the MERGED source** (both sides had minted; post-merge mint is
+the valid one) — cold `bootstrap_from_seed` PASS. Post-merge: run_gates **81/81** (the new suite),
+stack 10/10, fixpoint C3a/C3b YES, type-clean.
+
+Plan: `/root/.claude/plans/ancient-stargazing-planet.md`. Owning docs: `compiler/TRMC-DESIGN.md` §Phase 3 (rewritten — SHIPPED), `compiler/WASMGC-TRMC-DESIGN.md` header note. PLAN.md "Native TMC parity" row CLOSED.
+
+### WHAT SHIPPED (5 commits, each independently gated)
+- **P0/P4 census + gate** — `test/tmc_census.sh` + `test/diff_compiler_tmc_parity.sh` (globbed by run_gates; needs `sh test/wasm/build_wasm_oracle.sh`, else skip exit 2). Both emitters write `; tmc:` / `;; tmc:` markers per TMC decision; the gate FAILS on any per-function set diff. check_main graph: **149 == 149 byte-identical** (11 groups incl. lexer `scan`, `layout`, `intersperse` + ~40 members + 98 Stage-1/impl fns).
+- **P1 detection lift** — Stage-3 dispatch-graph detection moved from `wasm_emit.mdk` into shared `backend/trmc_analysis.mdk` (hook-parameterized). WAT byte-identical; emitter IR byte-identical (DCE'd until P2).
+- **P2 LLVM (b′) emit — the 2026-06-22 deferral's obstacles both dissolved.** No musttail needed: detection v4 proves the root is the group's sole external entry, so the whole group INLINES into the root's one define (`gdisp_<m>` blocks, `br` edges, LOCAL alloca dest = Stage-1 protocol; members emit no standalone define). Detection non-termination was already fixed by the Stage-3 algorithm (pass-0 tables + 256-cap BFS): measured **~0.6% of emit**; whole-emit vs pre-arc seed emitter ≈ **+4–8%** on check_main. The compiler's own lexer token spine is now O(1) NATIVE stack (fixture `dispatch_group_deep`, 2M deep). `bprime-llvm-wip.patch` deleted (superseded).
+- **P3 wasm mixed-ctor TMC** — `wTrmcUniformCtor` gate retired; mixed leaf-ctor sets link via `$__tmc_dctor` dispatch (singleton sets byte-identical to before — whole corpus WAT verified). Made v5 stage-1-claims backend-identical. Fixtures `w_trmc_mixed_ctor` + `mixed_ctor_deep`.
+- **🐛 SILENT MISCOMPILE fixed (found by reading for the port):** `emitGuardedArm` had no TrmcOn branch — a guarded arm in a TRMC tail-position match value-emitted into the dead `trmcdecend`/`unreachable` block (UB: native printed `[]`/0, interpreter + wasm correct). Fixture `guard_arm_trmc` (2M deep). Commit `02446e85`.
+
+### STATE
+- run_gates **83/0/0** (incl. the new parity gate); diff_native_stack 10/10; fixpoint C3a/C3b YES; compiler type-clean; **seed RE-MINTED on this branch + cold `bootstrap_from_seed` PASS** (covers the re-mint previously owed for #35 — testing-arc merged first, per the deferral plan).
+- wasm gates: 149 ok / **4 pre-existing FAILs** (`w7_array_*`: "unbound variable 'index'" — Index-arc fallout, reproduced on pristine main) + typed 7/1 (`disp_hof_shadows_method` oracle build type error). NOT this arc's; worth filing.
+- Engines-ledger gotcha: a new deep fixture in `test/wasm/fixtures/` auto-enrolls in `diff_compiler_engines` — add its `eval:no-tco` line to `test/engine_divergence.txt` (done for `w_trmc_mixed_ctor`).
+
+### OPEN / NEXT
+- Merge the branch; re-run `sh test/run_gates.sh` + `bash test/bootstrap_from_seed.sh` post-merge (seed is valid as long as no other emitter-graph change lands in between).
+- File the 4+1 pre-existing wasm gate failures (Index arc).
+- DISTRIBUTION-DESIGN D2 Track 2 can be marked done; the "native self-compile in 8 MB" claim is untestable as-is (Track 1's 256 MB worker pthread self-provisions regardless).
+
 ## RESUME — 🗄️ THE SQLITE LIBRARY NOW SPEAKS SQL + the dogfood flushed 10 compiler bugs (2 P0 silent miscompiles, 1 P0 `fmt` corrupting source). Branch `sqlite-arc`, merged to main. (2026-07-13)
 
 Ran the **SQLite workstream** in parallel with a compiler orchestrator (they owned `compiler/`, I owned `sqlite/` + docs). Everything was **pure-library**, so no fixpoint / seed re-mint was ever owed. All five sub-agents ran in isolated worktrees, each independently gated + merged.
