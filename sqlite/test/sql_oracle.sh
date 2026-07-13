@@ -142,6 +142,65 @@ QUERIES=(
   "SELECT id FROM orders WHERE amount IS NULL"
   "SELECT id FROM orders WHERE amount IS NOT NULL AND qty > 1 ORDER BY id"
   "SELECT name FROM users WHERE city IS NULL"
+  # -- `||` concatenation (NULL propagates; numbers coerce to text) ----------
+  "SELECT name || '-' || city FROM users ORDER BY id"
+  "SELECT id, amount || '' FROM orders ORDER BY id"
+  "SELECT id, 1 || 2 FROM orders WHERE id = 1"
+  "SELECT name || NULL FROM users ORDER BY id"
+  # -- LIKE / NOT LIKE (case-insensitive ASCII; NULL on either side ⇒ UNKNOWN) -
+  "SELECT name FROM users WHERE name LIKE 'a%' ORDER BY id"
+  "SELECT name FROM users WHERE name LIKE '_da' ORDER BY id"
+  "SELECT name FROM users WHERE name LIKE 'A%' ORDER BY id"
+  "SELECT name FROM users WHERE name NOT LIKE 'a%' ORDER BY id"
+  "SELECT name FROM users WHERE city LIKE 'p%' ORDER BY id"
+  "SELECT name FROM users WHERE city NOT LIKE 'p%' ORDER BY id"
+  # -- IN / NOT IN (the classic NULL-in-list trap: UNKNOWN, not FALSE) --------
+  "SELECT name FROM users WHERE age IN (24, 30) ORDER BY id"
+  "SELECT name FROM users WHERE age NOT IN (24, 30) ORDER BY id"
+  "SELECT name FROM users WHERE age IN (24, NULL) ORDER BY id"
+  "SELECT name FROM users WHERE age NOT IN (24, NULL) ORDER BY id"
+  # -- BETWEEN / NOT BETWEEN (inclusive; NULL on any of the 3 ⇒ UNKNOWN) ------
+  "SELECT name FROM users WHERE age BETWEEN 25 AND 30 ORDER BY id"
+  "SELECT name FROM users WHERE age NOT BETWEEN 25 AND 30 ORDER BY id"
+  "SELECT id FROM orders WHERE amount BETWEEN 100 AND 200 ORDER BY id"
+  "SELECT id FROM orders WHERE amount NOT BETWEEN 100 AND 200 ORDER BY id"
+  # -- CASE (searched + simple forms; NULL/UNKNOWN WHEN ⇒ not taken) ----------
+  "SELECT name, CASE WHEN age > 25 THEN 'old' WHEN age IS NULL THEN 'unknown' ELSE 'young' END FROM users ORDER BY id"
+  "SELECT name, CASE WHEN age > 25 THEN 'old' ELSE 'young' END FROM users ORDER BY id"
+  "SELECT age, CASE age WHEN 30 THEN 'thirty' WHEN 24 THEN 'twenty-four' ELSE 'other' END FROM users ORDER BY id"
+  "SELECT id, CASE WHEN amount IS NULL THEN -1 ELSE amount END FROM orders ORDER BY id"
+  # -- COALESCE / IFNULL -------------------------------------------------------
+  "SELECT name, COALESCE(city, 'unknown') FROM users ORDER BY id"
+  "SELECT name, IFNULL(city, 'unknown') FROM users ORDER BY id"
+  "SELECT id, COALESCE(NULL, NULL, 'x') FROM orders WHERE id = 1"
+  "SELECT id, COALESCE(amount, 0) FROM orders ORDER BY id"
+  # -- TRUE / FALSE literals ---------------------------------------------------
+  "SELECT id, TRUE, FALSE FROM orders WHERE id = 1"
+  "SELECT name FROM users WHERE age >= 24 AND TRUE ORDER BY id"
+  # -- scalar string functions (NULL propagates; non-text coerces to text) ----
+  "SELECT upper(name), lower(name) FROM users ORDER BY id"
+  "SELECT length(name) FROM users ORDER BY id"
+  "SELECT length(city) FROM users ORDER BY id"
+  "SELECT id, length(amount) FROM orders ORDER BY id"
+  "SELECT substr(name, 1, 2) FROM users ORDER BY id"
+  "SELECT substr(name, -2) FROM users ORDER BY id"
+  "SELECT substr(name, 2) FROM users ORDER BY id"
+  "SELECT substr(city, 1, 2) FROM users ORDER BY id"
+  "SELECT trim('  ' || name || '  ') FROM users ORDER BY id"
+  "SELECT ltrim('  ' || name) FROM users ORDER BY id"
+  "SELECT rtrim(name || '  ') FROM users ORDER BY id"
+  "SELECT replace(name, 'a', 'X') FROM users ORDER BY id"
+  "SELECT replace(city, 'p', 'X') FROM users ORDER BY id"
+  # -- substr's Y=0 / negative-Y / negative-Z corner cases (pin ONE row so the
+  #    result doesn't depend on scan order) ------------------------------------
+  "SELECT substr('hello', 0, 3) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 3, -2) FROM orders WHERE id = 1"
+  "SELECT substr('hello', -1, -2) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 1, -1) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 10) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 10, 3) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 0) FROM orders WHERE id = 1"
+  "SELECT substr('hello', 1, 0) FROM orders WHERE id = 1"
   # -- operator precedence ----------------------------------------------------
   "SELECT name FROM users WHERE age = 30 OR age = 24 AND name = 'cyd' ORDER BY id"
   "SELECT name FROM users WHERE (age = 30 OR age = 24) AND name = 'cyd' ORDER BY id"
@@ -171,14 +230,16 @@ REJECTS=(
   # aliases
   "SELECT name AS n FROM users"
   "SELECT u.name FROM users u"
-  # unsupported expression syntax
-  "SELECT name FROM users WHERE name LIKE 'a%'"
-  "SELECT name FROM users WHERE age BETWEEN 20 AND 30"
-  "SELECT name FROM users WHERE age IN (25, 30)"
-  "SELECT CASE WHEN age > 25 THEN 1 ELSE 0 END FROM users"
-  "SELECT name || city FROM users"
-  "SELECT upper(name) FROM users"
+  # unsupported expression syntax: the ESCAPE clause, GLOB/MATCH/REGEXP,
+  # COLLATE, JSON arrows, an unknown scalar function, malformed CASE/IN
+  "SELECT name FROM users WHERE name LIKE 'a%' ESCAPE '\\'"
+  "SELECT name FROM users WHERE name GLOB 'a*'"
+  "SELECT name FROM users WHERE name MATCH 'a'"
+  "SELECT name FROM users WHERE name REGEXP 'a'"
   "SELECT name FROM users WHERE age > 25 COLLATE NOCASE"
+  "SELECT foo(name) FROM users"
+  "SELECT CASE END FROM users"
+  "SELECT name FROM users WHERE age IN ()"
   # unsupported joins
   "SELECT users.name FROM users CROSS JOIN orders"
   "SELECT users.name FROM users NATURAL JOIN orders"
