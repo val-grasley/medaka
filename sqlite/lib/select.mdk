@@ -139,14 +139,16 @@ deriving (Eq, Debug)
 -- | The join kind: `JInner` drops unmatched left rows (SQL INNER JOIN);
 --   `JLeft` keeps every left row, null-padding the right side when no match is
 --   found (SQL LEFT [OUTER] JOIN).
-public export data JoinKind = JInner | JLeft
+public export data JoinKind = JInner | JLeft deriving (Eq, Debug)
 
 -- | A single JOIN clause: the joined table, its kind, and its ON predicate.
 --   The ON expression references columns by qualified name (`table.column`) or
 --   by an unambiguous bare column name; it is compiled over the COMBINED row
 --   (all tables concatenated, `from`-table columns first, then each join's
 --   columns in `joins` order).
-public export data Join = Join { table : String, kind : JoinKind, on : SqlExpr }
+public export data Join =
+  | Join { table : String, kind : JoinKind, on : SqlExpr }
+deriving (Eq, Debug)
 
 -- | A whole SELECT — the single query ADT.  One `Select`, one executor
 --   (`runPipeline`), running the real SQL evaluation order:
@@ -201,6 +203,7 @@ public export data Select =
       distinct : Bool,
       columns : List SqlExpr,
     }
+deriving (Eq, Debug)
 
 -- ---------------------------------------------------------------------------
 -- Phantom type-safe layer: Expr a
@@ -683,51 +686,117 @@ dotIndex chars i n =
 -- compilePred : SqlExpr -> (List Cell -> Bool)
 --
 -- Compile a predicate to a closure over the RAW cell list (so we can filter on
--- columns the RowType doesn't project).  SQL three-valued logic is collapsed to
--- two-valued at the WHERE boundary: any comparison touching a NULL is false-ish,
--- matching `sqlite3`'s `WHERE` (a row is kept only when the predicate is TRUE).
+-- columns the RowType doesn't project).
+--
+-- ⚠️ SQL logic is THREE-valued (TRUE / FALSE / UNKNOWN) and this evaluator now
+-- says so (`Tri`).  It used to collapse UNKNOWN to FALSE at every node, which is
+-- *accidentally* right everywhere EXCEPT under a `NOT` — and there it is a
+-- silent WRONG ANSWER:
+--
+--     age  = NULL
+--     WHERE NOT age = 30
+--       SQL:  NOT (NULL = 30)  =  NOT UNKNOWN  =  UNKNOWN  ⇒ row DROPPED
+--       old:  not (False)      =  True                     ⇒ row KEPT  ✗
+--
+-- The same hole swallowed `NOT (a AND b)` whenever a sub-term was UNKNOWN.  It
+-- survived every earlier oracle because none of them put a `NOT` over a nullable
+-- column; the SQL-string oracle (test/sql_oracle.sh) caught it on its first run.
+--
+-- So: evaluate to `Tri`, and collapse to Bool exactly ONCE, at the WHERE / ON /
+-- HAVING boundary — "keep the row iff the predicate is definitively TRUE", which
+-- is precisely SQL's rule.  AND/OR/NOT/IS NULL follow the standard truth tables
+-- (`triAnd` / `triOr` / `triNot`); `IS [NOT] NULL` is the one construct that is
+-- never UNKNOWN, which is the whole reason SQL has it.
 -- ---------------------------------------------------------------------------
 
+-- | SQL's three truth values.  `TUnknown` is what a comparison against NULL
+--   yields — it is NOT the same as `TFalse`, and conflating them mis-evaluates
+--   `NOT`.
+data Tri = TTrue | TFalse | TUnknown deriving (Eq)
+
+-- NOT: UNKNOWN is a fixpoint (that is the entire subtlety).
+triNot : Tri -> Tri
+triNot TTrue = TFalse
+triNot TFalse = TTrue
+triNot TUnknown = TUnknown
+
+-- AND: FALSE dominates (FALSE AND UNKNOWN = FALSE); otherwise UNKNOWN infects.
+triAnd : Tri -> Tri -> Tri
+triAnd TFalse _ = TFalse
+triAnd _ TFalse = TFalse
+triAnd TTrue TTrue = TTrue
+triAnd _ _ = TUnknown
+
+-- OR: TRUE dominates (TRUE OR UNKNOWN = TRUE); otherwise UNKNOWN infects.
+triOr : Tri -> Tri -> Tri
+triOr TTrue _ = TTrue
+triOr _ TTrue = TTrue
+triOr TFalse TFalse = TFalse
+triOr _ _ = TUnknown
+
+-- A raw cell in a boolean position: NULL is UNKNOWN, not FALSE.
+cellTri : Cell -> Tri
+cellTri CNull = TUnknown
+cellTri c = boolTri (cellTruthy c)
+
+litTri : Literal -> Tri
+litTri LNull = TUnknown
+litTri l = boolTri (litTruthy l)
+
+boolTri : Bool -> Tri
+boolTri True = TTrue
+boolTri False = TFalse
+
 -- | Compile `expr` against a column-name→index resolver into a row predicate.
---   `Err` on an unknown column name.
+--   The row is kept iff the predicate evaluates to `TTrue` — SQL's rule.  `Err`
+--   on an unknown column name.
 export compilePred : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Bool)
-compilePred lookup (ECol name) = match lookup name
+compilePred lookup e = do
+  t <- compileTri lookup e
+  Ok (cells => t cells == TTrue)
+
+-- The three-valued evaluator.  Everything above the WHERE boundary stays in
+-- `Tri`; only `compilePred` collapses it.
+compileTri : (String -> Option Int) -> SqlExpr -> Result String (List Cell -> Tri)
+compileTri lookup (ECol name) = match lookup name
   None => Err "compilePred: unknown column: \{name}"
-  Some i => Ok (cells => cellTruthy (nthCell cells i))
-compilePred lookup (ELit lit) = Ok (_ => litTruthy lit)
-compilePred _ (EAgg fn _) =
+  Some i => Ok (cells => cellTri (nthCell cells i))
+compileTri _ (ELit lit) = Ok (_ => litTri lit)
+compileTri _ (EAgg fn _) =
   Err
     "\{aggFnSql fn}(...): aggregate functions are not allowed in WHERE or a JOIN's ON — put the condition in HAVING"
-compilePred lookup (EBin op l r) = compileCmp lookup op l r
-compilePred lookup (EArith op l r) = do
+compileTri lookup (EBin op l r) = compileCmp lookup op l r
+compileTri lookup (EArith op l r) = do
   g <- compileOperand lookup (EArith op l r)
-  Ok (cells => cellTruthy (g cells))
-compilePred lookup (EAnd l r) = do
-  pl <- compilePred lookup l
-  pr <- compilePred lookup r
-  Ok (cells => pl cells && pr cells)
-compilePred lookup (EOr l r) = do
-  pl <- compilePred lookup l
-  pr <- compilePred lookup r
-  Ok (cells => pl cells || pr cells)
-compilePred lookup (ENot inner) = do
-  p <- compilePred lookup inner
-  Ok (cells => not (p cells))
-compilePred lookup (EIsNull inner) = do
+  Ok (cells => cellTri (g cells))
+compileTri lookup (EAnd l r) = do
+  pl <- compileTri lookup l
+  pr <- compileTri lookup r
+  Ok (cells => triAnd (pl cells) (pr cells))
+compileTri lookup (EOr l r) = do
+  pl <- compileTri lookup l
+  pr <- compileTri lookup r
+  Ok (cells => triOr (pl cells) (pr cells))
+compileTri lookup (ENot inner) = do
+  p <- compileTri lookup inner
+  Ok (cells => triNot (p cells))
+-- `IS NULL` / `IS NOT NULL` are the two constructs that are NEVER UNKNOWN — a
+-- NULL operand is exactly what they are asking about.
+compileTri lookup (EIsNull inner) = do
   g <- compileOperand lookup inner
-  Ok (cells => cellIsNull (g cells))
-compilePred lookup (ENotNull inner) = do
+  Ok (cells => boolTri (cellIsNull (g cells)))
+compileTri lookup (ENotNull inner) = do
   g <- compileOperand lookup inner
-  Ok (cells => not (cellIsNull (g cells)))
+  Ok (cells => boolTri (not (cellIsNull (g cells))))
 
 -- Compile a comparison.  Both operands resolve to a `List Cell -> Cell`
--- accessor; the result row is kept only when the comparison is definitively
--- TRUE (any NULL operand ⇒ False, matching SQL WHERE semantics).
-compileCmp : (String -> Option Int) -> CmpOp -> SqlExpr -> SqlExpr -> Result String (List Cell -> Bool)
+-- accessor; a NULL on either side makes the result UNKNOWN (NOT false), which is
+-- what lets a `NOT` above it stay UNKNOWN rather than flipping to TRUE.
+compileCmp : (String -> Option Int) -> CmpOp -> SqlExpr -> SqlExpr -> Result String (List Cell -> Tri)
 compileCmp lookup op l r = do
   gl <- compileOperand lookup l
   gr <- compileOperand lookup r
-  Ok (cells => cmpCells op (gl cells) (gr cells))
+  Ok (cells => cmpCellsTri op (gl cells) (gr cells))
 
 -- An operand is a column (resolved to an index accessor), a literal (a constant
 -- cell), or an arithmetic expression (both sides compiled to accessors, then
@@ -848,15 +917,16 @@ litToCell (LFloat f) = CFloat f
 litToCell (LBlob b) = CBlob b
 litToCell LNull = CNull
 
--- Compare two cells under `op`.  Any NULL operand ⇒ False (SQL WHERE).
--- Numeric cells (CInt/CFloat) compare numerically across the int/float split.
-cmpCells : CmpOp -> Cell -> Cell -> Bool
-cmpCells op a b =
+-- Compare two cells under `op`.  Any NULL operand ⇒ UNKNOWN (SQL), NOT False —
+-- see the `Tri` note above `compilePred`.  Numeric cells (CInt/CFloat) compare
+-- numerically across the int/float split.
+cmpCellsTri : CmpOp -> Cell -> Cell -> Tri
+cmpCellsTri op a b =
   if cellIsNull a || cellIsNull b
-  then False
+  then TUnknown
   else match cmpOrder a b
-    None   => False                 -- incomparable shapes ⇒ not matched
-    Some o => applyCmp op o
+    None   => TFalse                -- incomparable shapes ⇒ definitively unequal
+    Some o => boolTri (applyCmp op o)
 
 -- A three-way ordering of two non-null cells, or None if the shapes are not comparable.
 cmpOrder : Cell -> Cell -> Option Ordering

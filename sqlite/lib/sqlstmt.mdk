@@ -1,0 +1,528 @@
+-- | sqlite.lib.sqlstmt — the SQL **statement** parser: `String -> Select`.
+--
+-- Stage 2 of the SQL front end.  `lib.sqlparse` reads an EXPRESSION; this module
+-- reads a whole `SELECT` statement into the unified `lib.select.Select` ADT, so a
+-- plain SQL string can drive the real query engine:
+--
+--     parseSelect "SELECT dept, count(*) FROM emp GROUP BY dept HAVING count(*) > 2"
+--       |> query db rowType
+--
+-- It is built ON TOP of `lib.sqlparse`'s exported sub-parsers (`sqlExpr`,
+-- `sqlIdent`, `keyword`, `symbol`, `lexeme`) — the expression grammar is not
+-- forked.
+--
+-- ## Grammar
+--
+-- ```
+-- select  := SELECT [DISTINCT] selList
+--            FROM ident
+--            join*
+--            [WHERE expr]
+--            [GROUP BY expr (',' expr)*]
+--            [HAVING expr]
+--            [ORDER BY orderKey (',' orderKey)*]
+--            [LIMIT int] [OFFSET int]
+--            [';']
+-- selList  := '*' | expr (',' expr)*
+-- join     := [INNER | LEFT [OUTER]] JOIN ident ON expr
+-- orderKey := expr [ASC | DESC]
+-- ```
+--
+-- `SELECT *` yields the EMPTY `columns` list — that is the `Select` ADT's "no
+-- projection" encoding (see `lib.select`), not a lost clause.
+--
+-- ## What it REJECTS (loudly — never silently drops a clause)
+--
+-- The whole statement must be consumed: after the optional `;` the parser demands
+-- end of input, so anything it cannot represent is an `Err`, never a dropped
+-- clause.  Concretely rejected, each with a message:
+--
+--   * set operations — `UNION` / `INTERSECT` / `EXCEPT`
+--   * sub-queries, CTEs (`WITH`), `AS` aliases (column or table)
+--   * `RIGHT` / `FULL` / `CROSS` / `NATURAL` joins, `USING (...)`
+--   * `LIKE` / `IN` / `BETWEEN` / `CASE` / `||`, non-aggregate function calls,
+--     `TRUE` / `FALSE`, quoted `"identifiers"`  (all inherited from `lib.sqlparse`)
+--   * an aggregate in WHERE or in a JOIN's ON — SQL forbids it, and so do we, at
+--     PARSE time (the executor rejects it too, but later)
+--   * `SELECT *, expr` (the mixed star-and-columns form)
+--   * a schema-qualified table name (`main.users`)
+--
+-- ## Committed loops
+--
+-- Every optional clause is parsed as "speculative HEAD, then MANDATORY tail":
+-- `optional (keyword "WHERE")` and, once that matched, a non-optional `sqlExpr`
+-- underneath it.  The naive `optional (do { keyword "WHERE"; sqlExpr })` would
+-- swallow a broken WHERE whole and blame the failure on a far-away "expected end
+-- of input" (parsec's F5 limitation — a SUCCEEDING alternative discards the
+-- deeper failure explored beneath it).  `afterKeyword` / `commaSep1` /
+-- `joinClauses` / `groupByClause` / `orderByClause` all follow this shape.
+
+import parsec.lib.parser.{
+  Parser,
+  runParser,
+  many1,
+  optional,
+  choice,
+  spaces,
+  eof,
+  failWith,
+  attempt,
+  label,
+  digit,
+}
+import lib.sqlparse.{
+  sqlExpr,
+  sqlIdent,
+  keyword,
+  symbol,
+  lexeme,
+  word,
+  hasAgg,
+  renderSqlExpr,
+}
+import lib.select.{
+  Select,
+  SqlExpr,
+  Join,
+  JoinKind,
+  JInner,
+  JLeft,
+  selectFrom,
+  innerJoin,
+  leftJoin,
+  withWhere,
+  withGroupExprs,
+  withHavingPred,
+  withOrderByExpr,
+  withLimit,
+  withOffset,
+  withDistinct,
+  withColumns,
+  mkE,
+  query,
+  queryDistinct,
+}
+import lib.sqlite.{Db}
+import lib.rowtype.{RowType}
+import string.{toInt, fromChars, contains, join}
+
+-- ---------------------------------------------------------------------------
+-- Entry point
+-- ---------------------------------------------------------------------------
+
+-- | Parse a whole `SELECT` statement into a `Select`.  A trailing `;` is
+--   tolerated; anything else left over is an error (never a silently dropped
+--   clause).
+--
+-- > map renderSelect (parseSelect "SELECT * FROM users")
+-- Ok "SELECT * FROM users"
+--
+-- Every clause at once — DISTINCT, projection, JOIN, WHERE, GROUP BY, HAVING,
+-- ORDER BY, LIMIT, OFFSET:
+--
+-- > map renderSelect (parseSelect "SELECT DISTINCT users.name, count(*) FROM users LEFT OUTER JOIN orders ON users.id = orders.uid WHERE amount > 10 GROUP BY users.name HAVING count(*) > 2 ORDER BY count(*) DESC, users.name LIMIT 5 OFFSET 1")
+-- Ok "SELECT DISTINCT users.name, count(*) FROM users LEFT JOIN orders ON (users.id = orders.uid) WHERE (amount > 10) GROUP BY users.name HAVING (count(*) > 2) ORDER BY count(*) DESC, users.name ASC LIMIT 5 OFFSET 1"
+--
+-- Keywords are case-insensitive and a trailing `;` is fine:
+--
+-- > map renderSelect (parseSelect "select a from t where a is not null;")
+-- Ok "SELECT a FROM t WHERE (a IS NOT NULL)"
+--
+-- A construct we cannot represent is an `Err`, not a dropped clause:
+--
+-- > parseSelect "SELECT a FROM t UNION SELECT b FROM u"
+-- Err "unsupported SQL: 'UNION' at 22"
+--
+-- An aggregate in WHERE is rejected at parse time (SQL forbids it):
+--
+-- > parseSelect "SELECT a FROM t WHERE count(*) > 2"
+-- Err "aggregate functions are not allowed in WHERE — use HAVING at 34"
+export parseSelect : String -> Result String Select
+parseSelect s = runParser statement s
+
+-- Skip leading space, read the SELECT, tolerate `;`, then demand end of input.
+statement : Parser Select
+statement = do
+  _ <- spaces
+  sel <- selectStmt
+  _ <- optional (symbol ";")
+  _ <- endOfStatement
+  pure sel
+
+-- Demand end of input; if something is left, name it.  `orElse` keeps the
+-- FARTHER failure, and `unsupportedTail` fails AFTER consuming the offending
+-- word, so its message wins whenever the leftover starts with a word (`UNION`,
+-- `AS`, `RIGHT`, …).  When the leftover is punctuation, `word` fails at the same
+-- position as `eof` did, the tie goes left, and the plain "expected end of input"
+-- stands.
+endOfStatement : Parser Unit
+endOfStatement = orElse eof unsupportedTail
+
+unsupportedTail : Parser Unit
+unsupportedTail = do
+  w <- lexeme word
+  failWith "unsupported SQL: '\{w}'"
+
+-- ---------------------------------------------------------------------------
+-- The statement
+-- ---------------------------------------------------------------------------
+
+selectStmt : Parser Select
+selectStmt = do
+  _ <- keyword "SELECT"
+  dist <- optional (keyword "DISTINCT")
+  cols <- selectList
+  _ <- keyword "FROM"
+  tbl <- tableName
+  js <- joinClauses
+  w <- afterKeyword "WHERE" (predicate "WHERE")
+  gb <- groupByClause
+  h <- afterKeyword "HAVING" sqlExpr
+  ob <- orderByClause
+  lm <- afterKeyword "LIMIT" intLit
+  off <- afterKeyword "OFFSET" intLit
+  pure (assemble tbl js (isSome dist) cols w gb h ob lm off)
+
+-- `SELECT *` (⇒ the empty projection list) or a comma-separated expression list.
+-- The mixed `SELECT *, expr` form is NOT accepted: `starList` succeeds on the
+-- `*`, and the `,` then fails against `FROM`.  That is a deliberate rejection —
+-- the `Select` ADT has no way to say "all columns AND these extras".
+selectList : Parser (List SqlExpr)
+selectList = orElse starList (commaSep1 sqlExpr)
+
+starList : Parser (List SqlExpr)
+starList = do
+  _ <- symbol "*"
+  pure []
+
+-- A table name: a bare, unqualified, non-reserved identifier.  A schema-qualified
+-- `main.users` is rejected — `Select.from` is a single table name and the engine
+-- has no schema concept, so accepting it would silently ignore the schema.
+tableName : Parser String
+tableName = do
+  n <- sqlIdent
+  tableNameCheck n
+
+tableNameCheck : String -> Parser String
+tableNameCheck n =
+  if contains "." n then
+    failWith "schema-qualified table name '\{n}' is not supported"
+  else
+    pure n
+
+-- A predicate slot (WHERE / ON) — an expression that may NOT contain an
+-- aggregate.  SQL forbids it (an aggregate is not a per-row value), and catching
+-- it here beats letting the executor discover it three phases later.
+predicate : String -> Parser SqlExpr
+predicate slot = do
+  e <- sqlExpr
+  predicateCheck slot e
+
+predicateCheck : String -> SqlExpr -> Parser SqlExpr
+predicateCheck slot e =
+  if hasAgg e then
+    failWith "aggregate functions are not allowed in \{slot} — use HAVING"
+  else
+    pure e
+
+-- ---------------------------------------------------------------------------
+-- JOIN clauses (a committed loop)
+-- ---------------------------------------------------------------------------
+
+joinClauses : Parser (List (JoinKind, String, SqlExpr))
+joinClauses = do
+  k <- optional joinHead
+  joinClausesStep k
+
+joinClausesStep : Option JoinKind -> Parser (List (JoinKind, String, SqlExpr))
+joinClausesStep None = pure []
+joinClausesStep (Some k) = do
+  tbl <- tableName
+  _ <- keyword "ON"
+  e <- predicate "a JOIN's ON"
+  rest <- joinClauses
+  pure ((k, tbl, e)::rest)
+
+-- `[INNER | LEFT [OUTER]] JOIN`.  A bare `JOIN` is an INNER join, as in SQL.
+-- `attempt` rewinds the reported position so that "no join here" does not
+-- out-rank a real failure further along.
+joinHead : Parser JoinKind
+joinHead = attempt (choice [innerHead, leftHead, plainHead])
+
+innerHead : Parser JoinKind
+innerHead = do
+  _ <- keyword "INNER"
+  _ <- keyword "JOIN"
+  pure JInner
+
+leftHead : Parser JoinKind
+leftHead = do
+  _ <- keyword "LEFT"
+  _ <- optional (keyword "OUTER")
+  _ <- keyword "JOIN"
+  pure JLeft
+
+plainHead : Parser JoinKind
+plainHead = do
+  _ <- keyword "JOIN"
+  pure JInner
+
+-- ---------------------------------------------------------------------------
+-- GROUP BY / ORDER BY / LIMIT / OFFSET
+-- ---------------------------------------------------------------------------
+
+groupByClause : Parser (List SqlExpr)
+groupByClause = do
+  k <- optional groupByHead
+  groupByStep k
+
+groupByHead : Parser Unit
+groupByHead = attempt
+  (do
+    _ <- keyword "GROUP"
+    keyword "BY")
+
+groupByStep : Option Unit -> Parser (List SqlExpr)
+groupByStep None = pure []
+groupByStep (Some _) = commaSep1 sqlExpr
+
+orderByClause : Parser (List (SqlExpr, Bool))
+orderByClause = do
+  k <- optional orderByHead
+  orderByStep k
+
+orderByHead : Parser Unit
+orderByHead = attempt
+  (do
+    _ <- keyword "ORDER"
+    keyword "BY")
+
+orderByStep : Option Unit -> Parser (List (SqlExpr, Bool))
+orderByStep None = pure []
+orderByStep (Some _) = commaSep1 orderKey
+
+-- `expr [ASC | DESC]`; the direction defaults to ASC, as in SQL.
+orderKey : Parser (SqlExpr, Bool)
+orderKey = do
+  e <- sqlExpr
+  d <- optional sortDir
+  pure (e, ascOf d)
+
+sortDir : Parser Bool
+sortDir = orElse ascKw descKw
+
+ascKw : Parser Bool
+ascKw = do
+  _ <- keyword "ASC"
+  pure True
+
+descKw : Parser Bool
+descKw = do
+  _ <- keyword "DESC"
+  pure False
+
+ascOf : Option Bool -> Bool
+ascOf None = True
+ascOf (Some b) = b
+
+-- A bare non-negative integer (LIMIT / OFFSET).  Deliberately NOT `literal` — a
+-- `LIMIT 'x'` must be an error, not a silently-ignored text bind.  (Nor is it an
+-- expression: SQLite allows `LIMIT expr`, `Select.limit` is an `Option Int`.)
+intLit : Parser Int
+intLit = label "expected a non-negative integer" (attempt (lexeme intDigits))
+
+intDigits : Parser Int
+intDigits = do
+  ds <- many1 digit
+  intOf (fromChars ds)
+
+intOf : String -> Parser Int
+intOf s = match toInt s
+  Some n => pure n
+  None => failWith "malformed integer '\{s}'"
+
+-- ---------------------------------------------------------------------------
+-- Generic committed combinators
+-- ---------------------------------------------------------------------------
+
+-- `optional kw` followed by a MANDATORY `p`.  Once the keyword has matched, a
+-- failure in `p` propagates instead of being swallowed by the `optional`.
+afterKeyword : String -> Parser a -> Parser (Option a)
+afterKeyword kw p = do
+  k <- optional (keyword kw)
+  afterKeywordStep k p
+
+afterKeywordStep : Option Unit -> Parser a -> Parser (Option a)
+afterKeywordStep None _ = pure None
+afterKeywordStep (Some _) p = map Some p
+
+-- One-or-more `p`, comma separated, COMMITTED: a `,` obliges another `p`.
+-- (parsec's `sepBy1` uses `many`, which swallows the failure after a trailing
+-- comma and leaves the `,` to surface far away as "expected end of input".)
+commaSep1 : Parser a -> Parser (List a)
+commaSep1 p = do
+  x <- p
+  xs <- commaSepRest p
+  pure (x::xs)
+
+commaSepRest : Parser a -> Parser (List a)
+commaSepRest p = do
+  c <- optional (symbol ",")
+  commaSepStep p c
+
+commaSepStep : Parser a -> Option String -> Parser (List a)
+commaSepStep _ None = pure []
+commaSepStep p (Some _) = do
+  x <- p
+  xs <- commaSepRest p
+  pure (x::xs)
+
+-- ---------------------------------------------------------------------------
+-- Assembly: the parsed pieces → a `Select`, through the PUBLIC builders only
+-- ---------------------------------------------------------------------------
+
+-- Note this goes through `selectFrom` + the `with*` builders rather than
+-- constructing the `Select` record literal directly.  That keeps `lib.select` the
+-- single owner of the record's shape (a new field gets a default from
+-- `selectFrom` instead of a type error here), and it keeps this module clear of
+-- the cross-module record-field hazards the earlier stages logged.
+assemble : String -> List (JoinKind, String, SqlExpr) -> Bool -> List SqlExpr -> Option SqlExpr -> List SqlExpr -> Option SqlExpr -> List (SqlExpr, Bool) -> Option Int -> Option Int -> Select
+assemble tbl js dist cols w gb h ob lm off = selectFrom tbl
+  |> addJoins js
+  |> withColumns cols
+  |> applyDistinct dist
+  |> applyOpt (e sel => withWhere (mkE e) sel) w
+  |> withGroupExprs gb
+  |> applyOpt (e sel => withHavingPred (mkE e) sel) h
+  |> addOrderKeys ob
+  |> applyOpt withLimit lm
+  |> applyOpt withOffset off
+
+addJoins : List (JoinKind, String, SqlExpr) -> Select -> Select
+addJoins js sel = fold (acc j => addJoin j acc) sel js
+
+addJoin : (JoinKind, String, SqlExpr) -> Select -> Select
+addJoin (JInner, tbl, e) sel = innerJoin tbl (mkE e) sel
+addJoin (JLeft, tbl, e) sel = leftJoin tbl (mkE e) sel
+
+addOrderKeys : List (SqlExpr, Bool) -> Select -> Select
+addOrderKeys ob sel = fold (acc (e, asc) => withOrderByExpr e asc acc) sel ob
+
+applyDistinct : Bool -> Select -> Select
+applyDistinct False sel = sel
+applyDistinct True sel = withDistinct sel
+
+applyOpt : (a -> Select -> Select) -> Option a -> Select -> Select
+applyOpt _ None sel = sel
+applyOpt f (Some x) sel = f x sel
+
+-- ---------------------------------------------------------------------------
+-- renderSelect : the inverse projection (literals INLINED)
+--
+-- `lib.select.render` is the OTHER projection: it turns every literal into a `?`
+-- placeholder plus an ordered bind list, which is the injection-safe thing to
+-- hand a real database — but a `?` is not a literal, so `render`'s output is NOT
+-- re-parseable.  The round-trip property (`parseSelect ∘ renderSelect == id`)
+-- needs a projection that INLINES literals, exactly as `lib.sqlparse`'s
+-- `renderSqlExpr` does for expressions.  This is that projection, and it reuses
+-- `renderSqlExpr` for every expression slot.
+-- ---------------------------------------------------------------------------
+
+-- | Render a `Select` back to SQL text with literals INLINED and every
+--   expression fully parenthesized.  `parseSelect . renderSelect` is the identity
+--   on `Select` (proved over a corpus in `sqlite/sql_probe.mdk`).
+--
+-- > map renderSelect (parseSelect "SELECT a+b, name FROM t WHERE a=1 ORDER BY a DESC LIMIT 2")
+-- Ok "SELECT (a + b), name FROM t WHERE (a = 1) ORDER BY a DESC LIMIT 2"
+--
+-- > map renderSelect (parseSelect "SELECT count(*) FROM t")
+-- Ok "SELECT count(*) FROM t"
+export renderSelect : Select -> String
+renderSelect (Select { from = tbl, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, limit = lm, offset = off, distinct = dist, columns = cols }) =
+  let kw = if dist then "SELECT DISTINCT" else "SELECT"
+  "\{kw} \{renderCols cols} FROM \{tbl}\{renderJoinList js}\{renderOpt " WHERE " w}\{renderGroup gb}\{renderOpt " HAVING " h}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
+
+renderCols : List SqlExpr -> String
+renderCols [] = "*"
+renderCols cols = join ", " (map renderSqlExpr cols)
+
+renderJoinList : List Join -> String
+renderJoinList js = join "" (map renderJoin js)
+
+renderJoin : Join -> String
+renderJoin (Join { table = tbl, kind = k, on = e }) =
+  " \{joinKindText k} \{tbl} ON \{renderSqlExpr e}"
+
+joinKindText : JoinKind -> String
+joinKindText JInner = "INNER JOIN"
+joinKindText JLeft = "LEFT JOIN"
+
+renderOpt : String -> Option SqlExpr -> String
+renderOpt _ None = ""
+renderOpt kw (Some e) = "\{kw}\{renderSqlExpr e}"
+
+renderGroup : List SqlExpr -> String
+renderGroup [] = ""
+renderGroup gb = " GROUP BY \{join ", " (map renderSqlExpr gb)}"
+
+renderOrder : List (SqlExpr, Bool) -> String
+renderOrder [] = ""
+renderOrder ob = " ORDER BY \{join ", " (map renderOrderKey ob)}"
+
+renderOrderKey : (SqlExpr, Bool) -> String
+renderOrderKey (e, asc) = "\{renderSqlExpr e} \{dirText asc}"
+
+dirText : Bool -> String
+dirText True = "ASC"
+dirText False = "DESC"
+
+renderInt : String -> Option Int -> String
+renderInt _ None = ""
+renderInt kw (Some n) = "\{kw}\{n}"
+
+-- ---------------------------------------------------------------------------
+-- Convenience entry points: SQL string → rows
+-- ---------------------------------------------------------------------------
+
+-- | Parse `sql` and run it, decoding each row with `rt`.  The whole `String →
+--   rows` path in one call.
+--
+--   ⚠️ `SELECT DISTINCT` is REJECTED here, deliberately.  DISTINCT dedups on the
+--   DECODED rows, which needs `Eq a` — a constraint `query` does not carry (see
+--   `lib.select`).  Rather than parse a `DISTINCT` and then silently ignore it
+--   (a wrong-answer bug), this errors and points at `queryStringDistinct`.
+--
+--   (No doctest: it needs a live `Db`.  Both entry points — including the
+--   DISTINCT rejection — are exercised end-to-end against `sqlite3` by
+--   `sqlite/test/sql_oracle.sh` and on both backends by
+--   `sqlite/inmem_sqlparse_probe.mdk`.)
+export queryString : Db -> String -> RowType a -> Result String (List a)
+queryString db sql rt = do
+  sel <- parseSelect sql
+  runNonDistinct db sel rt
+
+runNonDistinct : Db -> Select -> RowType a -> Result String (List a)
+runNonDistinct db sel rt =
+  if sel.distinct then
+    Err "SELECT DISTINCT needs queryStringDistinct (dedup runs on the DECODED rows, which requires Eq a)"
+  else
+    query db sel rt
+
+-- | Parse `sql` and run it, HONOURING `SELECT DISTINCT`: the decoded rows are
+--   deduped (stably, so an ORDER BY survives) only when the statement actually
+--   said `DISTINCT`.  This is the entry point to reach for whenever the SQL is
+--   not known at compile time; it costs one `Eq a`.
+--
+--   (Note it is strictly better-behaved than the raw `lib.select.queryDistinct`,
+--   which dedups UNCONDITIONALLY and leaves honouring the flag to its caller.)
+export queryStringDistinct : Eq a => Db -> String -> RowType a -> Result String (List a)
+queryStringDistinct db sql rt = do
+  sel <- parseSelect sql
+  runEither db sel rt
+
+runEither : Eq a => Db -> Select -> RowType a -> Result String (List a)
+runEither db sel rt =
+  if sel.distinct then
+    queryDistinct db sel rt
+  else
+    query db sel rt
