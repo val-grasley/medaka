@@ -19,7 +19,7 @@ gh pr merge --auto --merge      # self-merges the moment all 9 checks go green
   self-compile fixpoint. **All 83 gates pass on an ill-typed compiler** (`make medaka` does
   not gate on type errors) — that is exactly how a compiler with unbound constructors shipped
   to main today, with every gate green.
-- **A PR must be up to date with main before it merges** (strict). CI therefore tests **your
+- **There is a MERGE QUEUE (2026-07-13, MedakaLang org).** `gh pr merge --auto --merge` ENQUEUES; the queue tests **your
   branch merged onto main**, not your branch alone. This is load-bearing: two green branches
   have merged cleanly into a **crashing** tree.
 - **No merge queue, and there cannot be one** — GitHub requires an org-owned repo; this one is

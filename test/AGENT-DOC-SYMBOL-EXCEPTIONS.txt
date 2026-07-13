@@ -1,0 +1,113 @@
+# test/AGENT-DOC-SYMBOL-EXCEPTIONS.txt — checked-in ledger of every KNOWN
+# backticked symbol-shaped token in the agent-facing docs that resolves
+# nowhere in compiler/*.mdk, stdlib/*.mdk, or runtime/*.c, but is NOT a
+# fabrication. Read test/check_agent_doc_symbols.sh first.
+#
+# This is a RATCHET, not a skip-list. Every line must ACTIVELY EARN ITS PLACE
+# on every run: the token is still unresolved AND something still cites it.
+# When either half stops being true, the gate FAILS and the line must be
+# deleted. test/check_agent_doc_symbols.sh enforces all four ways a line can
+# stop earning it:
+#
+#   1. STALE SYM   — the excused token NOW RESOLVES in source. The claim is
+#                    no longer dead; leaving the line in would hide a FUTURE
+#                    regression at that same name forever (e.g. if a symbol
+#                    genuinely gets renamed BACK to a name sitting in here).
+#   2. ORPHAN SYM  — NO document cites that token anymore. This is the other
+#                    half of "no longer needed" — the half a naive skip-list
+#                    misses. See test/DOC-LINK-EXCEPTIONS.txt's header for the
+#                    exact historical incident this mirrors (a drained
+#                    citation left an orphaned, now-fictional reason string).
+#   3. STALE FILE  — the excused doc no longer exists.
+#   4. ORPHAN FILE — the excused doc no longer has a SINGLE dead symbol claim,
+#                    so the blanket excuse is dead weight — and would
+#                    silently excuse any FUTURE fabrication in that file.
+#
+# Format (TAB-separated; blank lines and '#' comments ignored):
+#   KIND<TAB>pattern<TAB>reason
+#
+#   KIND ∈ SYM | FILE
+#     SYM   pattern is the EXACT token (case-sensitive), excused everywhere
+#           it's cited across the whole doc corpus. Use for a one-off token
+#           that is genuinely not a source-code citation, in an otherwise-
+#           LIVING doc whose other claims must stay held to account.
+#     FILE  pattern is a citing-file shell glob (`case` syntax — an exact
+#           filename has no metacharacters and is matched literally), and
+#           excuses EVERY dead symbol claim found while scanning a matching
+#           file. Use ONLY when a doc's STATED PURPOSE is to name symbols
+#           that do not exist yet — see the STDLIB.md entry below, whose own
+#           header says "Owns: missing stdlib/support functions." That is a
+#           structurally different genre from the playbooks this gate exists
+#           to guard: a backlog says "build this", a playbook says "this is
+#           real, use it" — only the second kind can silently mislead an
+#           agent into calling a function that was never there.
+#
+# ── Derived against main @ e070a8f4 (2026-07-13) ─────────────────────────────
+#   11 SYM exceptions: non-code proper nouns (Claude Code harness tool/hook
+#       names: Monitor, TaskList, TaskStop, UserPromptSubmit — these docs also
+#       describe the AGENT HARNESS itself, not just Medaka source), one
+#       external C library symbol this repo never defines (GC_malloc_kind —
+#       Boehm GC internal, referenced only for `perf` attribution), a naming-
+#       CONVENTION shorthand ("Msg" standing for the "*Msg"-suffixed builder
+#       family, not a literal identifier), a meta-syntactic placeholder
+#       (isXxxExtern, standing for the "is*Extern" predicate family — the
+#       real members are cited separately and DO resolve), one deliberately-
+#       forbidden future name (TypeError — the doc explicitly says "do NOT
+#       introduce a TypeError ADT"), one deliberately-wrong past claim quoted
+#       as a cautionary tale (runST — narrated as an agent's premature
+#       conclusion, not a real symbol), one legitimately-removed-and-narrated-
+#       as-such workaround (suppressBinopStamp — the sentence's own grammar
+#       says "removed the X workaround", correctly past tense), and one
+#       proposed rename target that doesn't exist yet by design
+#       (singleTyparamIfaceMethod).
+#    1 FILE exception (STDLIB.md, covers 5 dead tokens): a workstream backlog
+#       whose own header states its content is MISSING functions.
+#
+#   The REAL violations found while deriving this ledger were deliberately NOT
+#   excused here — a fabrication belongs in the source of the claim, not in a
+#   skip-list. All four were FIXED in the same PR that turned this gate on:
+#     - `checkGuardExhaust` (AGENTS.md)   -> `checkGuardExhaustiveness`
+#                                            (compiler/frontend/exhaust.mdk:835)
+#     - `checkMatch`        (AGENTS.md)   -> `checkMatchExhaustive`
+#                                            (compiler/types/typecheck.mdk:5847 — the
+#                                            per-EMatch call typecheck.mdk:5829 makes)
+#     - `EFunction`  (AGENTS.md x2, debug-pipeline/SKILL.md x1) -> no such AST
+#                                            constructor; a ghost of the REMOVED
+#                                            `function` keyword. The real surface-sugar
+#                                            nodes are EGuards/ESection/EStringInterp/EDo.
+#     - `argStampEnabled`   (AGENTS.md)   -> `emitArgStampPasses`
+#                                            (compiler/types/typecheck.mdk:1809), and the
+#                                            fork is RETIRED (ARGSTAMP-UNIFY-PLAN.md:
+#                                            COMPLETE d01a411a, 2026-06-14), not
+#                                            "being retired" as the doc claimed.
+#   If any of those four names reappears in a doc, this gate fails again — which
+#   is the point.
+
+# ── SYM: agent-harness / Claude Code concepts, not Medaka source ───────────
+SYM	Monitor	.claude/ORCHESTRATING.md describes the Claude Code Monitor TOOL (streams background-process events) — an agent-harness concept, not a Medaka compiler symbol
+SYM	TaskList	.claude/ORCHESTRATING.md describes chaining sub-agent tasks via TaskList (blockedBy dependencies) — an agent-harness/orchestration concept, not Medaka source
+SYM	TaskStop	.claude/ORCHESTRATING.md's oracle-pool-respawn remedy names the TaskStop tool (stops a runaway background agent) — an agent-harness concept, not Medaka source
+SYM	UserPromptSubmit	AGENTS.md names the Claude Code hook event UserPromptSubmit (`.claude/hooks/skill-triage.py`'s trigger) — a Claude Code harness concept, not Medaka source
+
+# ── SYM: real external symbol, but external to this repo ───────────────────
+SYM	GC_malloc_kind	AGENTS.md/PERF.md reference this ONLY as the Boehm GC internal allocation-tag function `perf script` attributes samples to for profiling — it is part of libgc, never defined in this repo's compiler/stdlib/runtime source
+
+# ── SYM: naming-convention shorthand / meta-syntactic placeholder, not a literal citation ─
+SYM	Msg	harden-typechecker/SKILL.md's "an existing `Msg` builder" is prose shorthand for the "*Msg"-suffixed message-builder naming convention (effectLeakMsg, ambiguousImplMsg, …) — those real names are cited separately; "Msg" alone was never claimed to be a standalone identifier
+SYM	isXxxExtern	add-primitive/SKILL.md's "one of the isXxxExtern family predicates" is a meta-syntactic placeholder for the "is*Extern" predicate family — the real members (isAnyExtern, isStrExternW, isLeafExternW, isArrayExternW) are cited by name in the same sentence and do resolve
+
+# ── SYM: deliberately non-existent (forbidden future name / wrong past claim quoted as a lesson) ─
+SYM	TypeError	harden-typechecker/SKILL.md explicitly instructs "do **not** introduce a `TypeError` ADT as part of an unrelated change" — the token names something that must NOT exist, the mirror image of DOC-LINK-EXCEPTIONS.txt's `compiler/foo.mdk` (a deliberately fictional illustrative name)
+SYM	runST	ORCHESTRATING.md quotes "An agent reported 'we need `runST`'" as a cautionary example of a PREMATURE conclusion that was wrong — narrated as history of a claim that should NOT be trusted, not an assertion that runST exists
+
+# (A `suppressBinopStamp` SYM exception used to live here, excusing an AGENTS.md
+#  doc-index row that narrated gap #21's closure. The AGENTS.md terseness pass
+#  removed that row, so nothing cited the token anymore and the gate's ORPHAN SYM
+#  check correctly demanded this line's deletion. Left as a note because it is the
+#  ratchet's whole point working end-to-end on its first real cut.)
+
+# ── SYM: proposed rename target, doesn't exist yet by design ───────────────
+SYM	singleTyparamIfaceMethod	COMPILER-SOUNDNESS.md workstream: "**Rename it `singleTyparamIfaceMethod`** as part of this" — a proposed rename of the real (and correctly-cited) `singleParamIfaceMethod`; the new name is not expected to exist until that workstream item lands
+
+# ── FILE: backlog doc whose STATED PURPOSE is to name missing functions ────
+FILE	.claude/workstreams/STDLIB.md	header states "Owns: missing stdlib/support functions" — the file's L-1..L-5 items propose functions that do not exist yet by design (currently dead: foldlMut, zipWithMut, boolToString, strLen, dropSuffix); that is the doc's entire point, not fabrication. (Siblings it mentions in passing — mapMut, dropPrefix, stripPrefix, startsWith, endsWith — already exist and resolve fine on their own, no exception needed for those.)

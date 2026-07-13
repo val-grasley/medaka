@@ -6,6 +6,47 @@
 #       must `check` cleanly (oracle accepts it; the bug was compiler-parser).
 # These are NATIVE-ONLY: the frozen OCaml oracle mislocates #2 and accepts #3
 # (so they are deliberately NOT in test/diff_fixtures/).
+#
+# ── THIS GATE RAN NOWHERE UNTIL 2026-07-13 (T8) ──────────────────────────────
+#
+# It is a real gate — 11 assertions, `exit $fail` — but nothing invoked it. Not
+# run_gates.sh (which globs only `test/diff_compiler_*.sh`), not the Makefile, not
+# ci.yml. And it lives one directory DOWN from test/, so even the coverage gate that
+# polices "every gate must run in CI" could not see it: that gate enumerated
+# `test/*.sh` + `test/wasm/*.sh`, and this is `test/native_fixtures/run.sh`.
+#
+# When it was finally run, it was RED — 9 ok, 2 failing — and had been for an unknown
+# length of time. One failure was a REAL COMPILER BUG (see the EXPECTED-FAILURE ledger
+# below); the other was a stale assertion in this file, pinning an em-dash the
+# diagnostic no longer uses (the message itself is correct, and better). That is what
+# a gate nobody runs decays into: you cannot tell the regression from the rot.
+#
+# ── EXPECTED-FAILURE LEDGER ──────────────────────────────────────────────────
+#
+# A LEDGER, NOT A SKIP-LIST (see test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt for the
+# canonical statement). An assertion named in XFAIL below is expected to FAIL, for the
+# stated reason. The gate diffs expectation against reality in BOTH directions:
+#
+#   an XFAIL assertion that PASSES  -> FAIL ("accidentally fixed — delete the entry")
+#   any other assertion that FAILS  -> FAIL (an ordinary regression)
+#
+# The first direction is the one a skip-list structurally cannot see, and it is why
+# this is a ledger. Every entry needs a reason and an owning task.
+#
+#   method_shadow_run  T-12  A user top-level fn that SHADOWS a prelude interface
+#       method is silently ignored at the call site; the interface impl wins.
+#       Minimal repro (both `medaka run` AND `medaka build` print False; True is correct):
+#           eq : List Int -> List Int -> Bool
+#           eq a b = True
+#           main = println (debug (eq [1] [2]))
+#       Dispatch arg-stamps `eq [1] [2]` to the `Eq (List a)` impl (structural -> False)
+#       instead of resolving to the user's `eq`. run == build, so it is not a run/build
+#       divergence — both are wrong the same way. The user's definition is DEAD CODE with
+#       no diagnostic. `method_shadow_check` (the `check` half) still passes, so only the
+#       value is wrong, not the types. Fixing it means touching compiler/ dispatch, which
+#       is out of scope for T8. Delete this entry when T-12 lands.
+XFAIL='method_shadow_run'
+
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 M="$ROOT/medaka"
@@ -13,21 +54,44 @@ FIX="$ROOT/test/native_fixtures"
 [ -x "$M" ] || { echo "build ./medaka first: FORCE_EMITTER_REBUILD=1 make medaka"; exit 2; }
 
 fail=0
+xfail_ok=0        # ledgered failures that are still failing (as expected)
+xfail_fixed=""    # ledgered failures that now PASS — the ledger is stale
+
+is_xfail() { case " $XFAIL " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# ok <assertion-name> / bad <assertion-name> <detail> — route each verdict through the
+# ledger so an accidental fix is as loud as a regression.
+ok() {
+  if is_xfail "$1"; then
+    xfail_fixed="$xfail_fixed $1"
+    echo "XPASS $1 — ledgered as failing, but it PASSES now"
+  else
+    echo "ok   $1"
+  fi
+}
+bad() {
+  if is_xfail "$1"; then
+    xfail_ok=$((xfail_ok + 1))
+    echo "xfail $1 (known — see the EXPECTED-FAILURE ledger in this file)"
+  else
+    echo "FAIL $1: $2"; fail=$((fail + 1))
+  fi
+}
 
 # #2: located error at the `/=` column with the hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/slasheq_error.mdk" 2>&1)"
 case "$out" in
   *":7: unexpected '/='. (Did you mean '!='?)"*)
-    echo "ok   slasheq_error (located /= diagnostic)" ;;
-  *) echo "FAIL slasheq_error: got [$out]"; fail=1 ;;
+    ok slasheq_error ;;
+  *) bad slasheq_error "got [$out]" ;;
 esac
 
 # #3: multiline let RHS + if/then/else checks cleanly (exit 0).
 perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/let_multiline_rhs_if.mdk" >/dev/null 2>&1
 if [ $? -eq 0 ]; then
-  echo "ok   let_multiline_rhs_if (indented let RHS parses)"
+  ok let_multiline_rhs_if
 else
-  echo "FAIL let_multiline_rhs_if: check returned non-zero"; fail=1
+  bad let_multiline_rhs_if "check returned non-zero"
 fi
 
 # method-name shadow (facet 1): a user top-level fn shadowing a prelude interface
@@ -37,9 +101,9 @@ fi
 # oracle accepts it (method-marks the prop ref), so this is NATIVE-only assurance.
 perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/method_shadow_check.mdk" >/dev/null 2>&1
 if [ $? -eq 0 ]; then
-  echo "ok   method_shadow_check (user fn shadowing eq/gt checks)"
+  ok method_shadow_check
 else
-  echo "FAIL method_shadow_check: check returned non-zero"; fail=1
+  bad method_shadow_check "check returned non-zero"
 fi
 
 # method-name shadow (facet 2): a DIRECT call to the user's shadowing `eq` must
@@ -48,8 +112,8 @@ fi
 # the `Eq (List a)` impl → False; the user's `eq` returns True).
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" run "$FIX/method_shadow_run.mdk" 2>&1)"
 case "$out" in
-  True) echo "ok   method_shadow_run (eval routes to user's eq, run==build==oracle)" ;;
-  *) echo "FAIL method_shadow_run: expected True, got [$out]"; fail=1 ;;
+  True) ok method_shadow_run ;;
+  *) bad method_shadow_run "expected True, got [$out]" ;;
 esac
 
 # inline-let missing-in: located error at the `let` keyword with a hint.
@@ -57,16 +121,16 @@ esac
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/inline_let_missing_in.mdk" 2>&1)"
 case "$out" in
   *"inline 'let' requires 'in'"*)
-    echo "ok   inline_let_missing_in (located helpful diagnostic at let keyword)" ;;
-  *) echo "FAIL inline_let_missing_in: got [$out]"; fail=1 ;;
+    ok inline_let_missing_in ;;
+  *) bad inline_let_missing_in "got [$out]" ;;
 esac
 
 # arrayBlit + arraySetUnsafe in native interpreter: MutArray.push triggers both.
 # Before the fix: "unbound identifier: arrayBlit" on the 3rd push (first grow).
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" run "$FIX/mut_array_push.mdk" 2>&1)"
 case "$out" in
-  ok) echo "ok   mut_array_push (arrayBlit + arraySetUnsafe in native interp)" ;;
-  *) echo "FAIL mut_array_push: expected 'ok', got [$out]"; fail=1 ;;
+  ok) ok mut_array_push ;;
+  *) bad mut_array_push "expected 'ok', got [$out]" ;;
 esac
 
 # PARSE-ERROR-LOCATION Stage 1 (caret) + Stage 2 (foreign-syntax hints).
@@ -77,40 +141,58 @@ esac
 # AND the Stage-1 caret block (the `^` line proves the snippet renderer fired).
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/brace_block_if.mdk" 2>&1)"
 case "$out" in
-  *":1:15: unexpected '{' — Medaka has no brace blocks"*"^"*)
-    echo "ok   brace_block_if (located brace hint + caret)" ;;
-  *) echo "FAIL brace_block_if: got [$out]"; fail=1 ;;
+  *":1:15: unexpected '{'"*"Medaka has no brace blocks"*"^"*)
+    ok brace_block_if ;;
+  *) bad brace_block_if "got [$out]" ;;
 esac
 
 # Stage 2: `for` loop — located at the `for` keyword with the recursion hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/for_loop.mdk" 2>&1)"
 case "$out" in
-  *"Medaka has no 'for' loops"*) echo "ok   for_loop (located for hint)" ;;
-  *) echo "FAIL for_loop: got [$out]"; fail=1 ;;
+  *"Medaka has no 'for' loops"*) ok for_loop ;;
+  *) bad for_loop "got [$out]" ;;
 esac
 
 # Stage 2: `def` function header — located at the `def` keyword with the hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/def_keyword.mdk" 2>&1)"
 case "$out" in
-  *":1:0: Medaka has no 'def'"*) echo "ok   def_keyword (located def hint)" ;;
-  *) echo "FAIL def_keyword: got [$out]"; fail=1 ;;
+  *":1:0: Medaka has no 'def'"*) ok def_keyword ;;
+  *) bad def_keyword "got [$out]" ;;
 esac
 
 # Stage 2: `/* … */` block comment — located at the `/` with the `{- -}`/`--` hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/block_comment.mdk" 2>&1)"
 case "$out" in
   *"Medaka has no '/* … */' block comments"*)
-    echo "ok   block_comment (located block-comment hint)" ;;
-  *) echo "FAIL block_comment: got [$out]"; fail=1 ;;
+    ok block_comment ;;
+  *) bad block_comment "got [$out]" ;;
 esac
 
 # Stage 2: trailing `;` statement terminator — located at the `;` with the hint.
 out="$(perl -e 'alarm 30; exec @ARGV' -- "$M" check "$FIX/semicolon_stmt.mdk" 2>&1)"
 case "$out" in
   *"Medaka has no statement terminator ';'"*)
-    echo "ok   semicolon_stmt (located semicolon hint)" ;;
-  *) echo "FAIL semicolon_stmt: got [$out]"; fail=1 ;;
+    ok semicolon_stmt ;;
+  *) bad semicolon_stmt "got [$out]" ;;
 esac
 
-[ $fail -eq 0 ] && echo "all native_fixtures pass" || echo "native_fixtures FAILED"
+echo
+
+# ── The ledger bites in BOTH directions ───────────────────────────────────────
+# A regression fails. An ACCIDENTAL FIX also fails — an XFAIL entry that starts
+# passing means the ledger is now a lie, and a lie nobody is forced to notice is
+# exactly how a skip-list rots into permanent blindness.
+if [ -n "$xfail_fixed" ]; then
+  echo "FAIL: these assertions are ledgered as EXPECTED-FAILING, but they now PASS:"
+  for a in $xfail_fixed; do echo "       $a"; done
+  echo "       They got fixed. DELETE them from XFAIL at the top of this file (and"
+  echo "       close the task named in the EXPECTED-FAILURE ledger there)."
+  fail=$((fail + 1))
+fi
+
+if [ "$fail" -eq 0 ]; then
+  echo "native_fixtures: PASS ($xfail_ok known-failing, ledgered)"
+else
+  echo "native_fixtures: FAILED ($fail)"
+fi
 exit $fail

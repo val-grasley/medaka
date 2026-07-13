@@ -1,0 +1,19 @@
+-- S-2 (soundness audit 2026-07-13): a duplicate top-level function — same
+-- name, same arity, its OWN second type signature, no intervening decl — used
+-- to be accepted with ZERO diagnostics by check/run/build alike: the second
+-- definition silently shadowed the first as dead code (`greet` printed
+-- "Hello, " forever; the "Bye, " clause was unreachable). The discriminator
+-- fixed in compiler/frontend/resolve.mdk (DuplicateSignature): a legitimate
+-- multi-clause function carries exactly ONE type signature for its name; two
+-- signatures for the same top-level name is unambiguously two definitions.
+-- .expected = REJECT — check/run/build must all now refuse this program with
+-- "'greet' is already defined at line 1" (R-DUPLICATE-SIGNATURE), not
+-- silently execute the first definition.
+greet : String -> String
+greet name = "Hello, " ++ name
+
+greet : String -> String
+greet name = "Bye, " ++ name
+
+main : <IO> Unit
+main = println (greet "World")

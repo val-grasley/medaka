@@ -263,9 +263,30 @@ jobs:
             # build_construct_coverage (T-3, ~300s, no extra oracle needed) added here —
             # smallest shard, so it runs concurrently with diff_compiler_engines instead
             # of queueing behind a bigger shard.
-            pattern: "'diff_compiler_engines' 'build_construct_coverage'"
+            #
+            # 'sqlite/test/*_oracle' (T8): the 22 differential gates that diff the
+            # pure-Medaka SQLite library against the REAL sqlite3 CLI. They had never run
+            # in CI — not because anyone excluded them, but because NO PATTERN COULD REACH
+            # THEM: run_gates.sh globbed `$ROOT/test/<pat>.sh` and these live in
+            # sqlite/test/. run_gates.sh, build_oracles.sh --for, and the coverage gate now
+            # all resolve a pattern against BOTH `$ROOT/test/` and `$ROOT/`, so a shard can
+            # name a gate anywhere in the tree. All 22 are green (~5 min serial, ~2 min
+            # across run_gates' pool). They read no test/bin oracle; they need `sqlite3`,
+            # installed in the toolchain step below.
+            #
+            # NOTE the glob is '*oracle', not '*_oracle': 21 of them are <name>_oracle.sh but
+            # the 22nd is plain `oracle.sh`. '*_oracle' silently left it out — and the coverage
+            # gate caught that immediately, on its first run after being widened. Which is the
+            # whole argument for the widened gate in one line.
+            pattern: "'diff_compiler_engines' 'build_construct_coverage' 'sqlite/test/*oracle'"
           - name: frontend
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
+            # 'native_fixtures/run' (T8): 11 native-only regression assertions (parse-error
+            # location + foreign-syntax hints + one eval dispatch check). A real gate that
+            # ran NOWHERE — it sits one directory below test/, so even the coverage gate's
+            # `test/*.sh` glob could not see it. It was RED. Its one real failure (compiler
+            # bug T-12) is now an XFAIL in the gate's own expected-failure ledger, so it runs
+            # here green and still fails loudly if the bug regresses OR gets fixed.
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'native_fixtures/run'"
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project' 'effect_param_domain' 'effect_builtin_param_domain' 'effect_product_domain' 'effect_set_domain'"
           - name: eval
@@ -277,18 +298,33 @@ jobs:
             # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
             pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
-            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack'"
+            # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
+            # 14 real programs built through the actual CLI, each binary's stdout diffed
+            # against a committed golden. It was MISFILED in CI-COVERAGE-TOOLS.txt as a
+            # "build helper", which is a claim that running it proves nothing about the
+            # compiler; that claim was false, and filing it there made the coverage gate
+            # SUBTRACT it from its own scope and then certify full coverage. Nothing had
+            # invoked it in an unknown length of time. It is the gate that would have caught
+            # this session's diff_compiler_llvm bug (201/201 green against goldens no
+            # `medaka build` binary can produce — it was grading its own probe).
+            # 14 ok / 0 failing. Reads no test/bin oracle; needs only ./medaka + the emitter.
+            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack' 'build_cmd'"
           - name: tools
             pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
 
+      # sqlite3 is the ORACLE for the 22 sqlite/test/*_oracle.sh gates in the `engines`
+      # shard — they generate a .db with the real sqlite3 CLI, read it back with both
+      # sqlite3 and the Medaka library, and diff. It ships on ubuntu-latest, but it is
+      # named EXPLICITLY here: an oracle that a gate silently depends on and the workflow
+      # never mentions is exactly how "this didn't run" starts looking like "this passed".
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang libgc-dev
+          sudo apt-get install -y clang libgc-dev sqlite3
 
       # See the "Caching" note at the top of this file for the completeness
       # argument. Exact-match key only — no restore-keys.
@@ -446,6 +482,18 @@ jobs:
       # with no repo-settings change needed to make a new job required.
       - name: Docs must not cite dead paths
         run: sh test/check_doc_links.sh
+
+      # Also unguarded, and for the same reason — and this one needs it most. The
+      # sibling gate above checks that a doc's cited PATHS exist; this one checks that
+      # its cited SYMBOLS do. A repo-wide review found ~44 false concrete claims in the
+      # .claude/skills/*/SKILL.md playbooks agents EXECUTE (a `pushTypeError` taught at
+      # the wrong arity, a `Show` typeclass that never existed, a 20-name "grep these"
+      # index that was 19/20 fictional) — and ~30 were the same mechanical shape: a
+      # backticked symbol resolving nowhere in source. Doc rot lands in prose-only PRs,
+      # so guarding this on docs_only would skip it on exactly the PRs it must police.
+      # Pure text analysis, no compiler.
+      - name: Docs must not cite fabricated symbols
+        run: sh test/check_agent_doc_symbols.sh
 
       # Also unguarded, and for the same reason. docs/README.md is GENERATED from the
       # docs' `**Status:**` banners — the whole point being that a hand-maintained index

@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index
+.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index agent-doc-symbols
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -102,6 +102,17 @@ docs-links:
 ##           -> byte-identical output), pure text analysis, no build.
 docs-index:
 	sh test/gen_docs_index.sh
+
+## agent-doc-symbols — agent-facing doc SYMBOL-claim rot gate. Pure text
+##           analysis (no build, no toolchain, safe to run anywhere): checks
+##           every backticked, symbol-shaped token in AGENTS.md,
+##           .claude/skills/*/SKILL.md, .claude/workstreams/*.md, and
+##           .claude/ORCHESTRATING.md against compiler/*.mdk, stdlib/*.mdk,
+##           and runtime/*.c. Ratcheted by test/AGENT-DOC-SYMBOL-EXCEPTIONS.txt
+##           — see that file and test/check_agent_doc_symbols.sh's header for
+##           the SYM/FILE format.
+agent-doc-symbols:
+	sh test/check_agent_doc_symbols.sh
 
 ## clean   — remove native build artifacts (keeps the checked-in seed)
 clean:

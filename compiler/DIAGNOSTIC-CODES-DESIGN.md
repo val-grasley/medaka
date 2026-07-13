@@ -147,9 +147,9 @@ kinds (enumerated from the message families):
 | **non-exhaustive match** (warning) | `non-exhaustive match — some values may not be covered` (`:4644`) | `W-NONEXHAUSTIVE` |
 | **unreachable match arm** (warning) | `unreachable match arm — this pattern is already covered by an earlier arm` | `W-UNREACHABLE-ARM` |
 
-**Distinct-kind totals:** lex 4 · parse 3 · resolve 19 · typecheck 25 · warnings 3
+**Distinct-kind totals:** lex 4 · parse 3 · resolve 20 · typecheck 25 · warnings 3
 (`W-NONEXHAUSTIVE` + `W-UNREACHABLE-ARM` from typecheck + `W-GUARD-INEXHAUSTIVE`
-from exhaust). **≈ 54 codes** (the "~47" TL;DR figure rounds the near-duplicate
+from exhaust). **≈ 55 codes** (the "~47" TL;DR figure rounds the near-duplicate
 field kinds together; plan for a ~50-code table).
 
 ---
@@ -206,6 +206,7 @@ kebab-case; never renumber (append only).
 | `R-NONREC-VALUE-LET` | `NonRecursiveValueLet` |
 | `R-DUPLICATE-BINDING` | `DuplicateBinding` |
 | `R-DUP-BINDING` | `DuplicateValueBinding` |
+| `R-DUPLICATE-SIGNATURE` | `DuplicateSignature` — a top-level name carries >=2 of its own type signatures (unambiguous: a legitimate multi-clause function has exactly one). S-2 fix (2026-07-13); for a name this check covers, it replaces `R-DUPLICATE-BINDING`'s "must be contiguous, merge them" advice — that advice is wrong when the two runs are genuinely unrelated definitions, not one function split by accident. |
 | `R-DUP-BINDER` | `DuplicateBinder` (non-linear pattern / repeated parameter) |
 | `R-AMBIGUOUS-OCCURRENCE` | `AmbiguousOccurrence` |
 | `R-INTERNAL-EXTERN` | `InternalExternAccess` |
