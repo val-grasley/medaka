@@ -5994,10 +5994,20 @@ emitGuardedArm e env root arms occs pat guards body fail slot endL rty =
   let failL = "guardfail" ++ intToString (freshId e)
   let env2 = emitRefutMatch e env pat root body failL
   let env3 = emitGuardChain e env2 guards body failL
-  let (bv, bty) = emitExpr e env3 body
-  let _ = setRef rty bty
-  let _ = emit e "  store i64 \{bv}, ptr \{slot}"
-  let _ = emit e ("  br label %" ++ endL)
+  -- Under an ACTIVE TRMC loop the guarded arm's body is a TAIL leaf: descend it
+  -- via emitTrmcBody (cons-into-dest+loop / plain-tail+loop / base+exit), exactly
+  -- like emitLeaf's TrmcOn branch.  Value-emitting it here instead stored into
+  -- `slot` and branched to the TAIL match's DEAD end block (`trmcdecend:` … loads
+  -- then `unreachable`) — runtime UB, a SILENT MISCOMPILE (native returned `[]`/0
+  -- where the interpreter and WasmGC returned the right list; wasm's tail engine
+  -- always handled guards).  Fixture: test/stack_fixtures/guard_arm_trmc.mdk.
+  let _ = match trmcCtxRef.value
+    TrmcOn _ _ _ _ _ _ => emitTrmcBody e env3 body
+    TrmcOff =>
+      let (bv, bty) = emitExpr e env3 body
+      let _ = setRef rty bty
+      let _ = emit e "  store i64 \{bv}, ptr \{slot}"
+      emit e ("  br label %" ++ endL)
   let _ = emit e (failL ++ ":")
   emitTree e env root arms occs slot endL rty fail
 
