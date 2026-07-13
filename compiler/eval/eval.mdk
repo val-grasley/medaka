@@ -52,6 +52,11 @@ import support.util.{
   joinDot,
   dedup,
 }
+-- stdlib `sortBy` is effect-POLYMORPHIC (`(a -> a -> <e> Ordering) -> …`), which
+-- is exactly what the arraySort* prims need: their comparator is a Value closure
+-- applied through `apply` (`<Mut | e>`).  List's instances live in `core`, so this
+-- import drags in no new instance surface (AGENTS.md: near-free).
+import list.{sortBy}
 -- Reused JSON diagnostic shaping for `medaka run --json` (RUNTIME-DIAGNOSTIC-
 -- CHANNEL-DESIGN.md Fork C). diagnostics.mdk sits above frontend/types in the
 -- pipeline and does not import eval.mdk (no cycle) — verified by grep before
@@ -1628,7 +1633,9 @@ prim1M f = VPrim f
 
 -- captured stdout: putStr/putStrLn append here instead of doing real IO, so the
 -- output buffer can be diffed against the === EVAL === goldens (no <IO> effect;
--- appending is just <Mut>).  ePutStr/ePutStrLn (stderr) are discarded.
+-- appending is just <Mut>).  ePutStr/ePutStrLn (stderr) are discarded HERE (the
+-- oracle table); under `medaka run` ioExternBindings overrides them with prims
+-- that stream to the real host stderr.
 export outputRef : Ref String
 outputRef = Ref ""
 
@@ -1814,18 +1821,18 @@ pSetSeed (VInt seed) =
   VUnit
 pSetSeed _ = panic "setSeed: expected Int"
 
--- wallTimeSec / allocBytes: real-IO externs (gettimeofday / GC bytes) in the
--- native backend.  The interpreter is a buffered-output oracle with no FFI to
--- the clock or GC, so — like randomFloat (deterministic LCG, not OCaml's
--- entropy) — it returns a fixed plausible value rather than crashing.  These
--- are nondeterministic externs, so the output diff gates don't compare them.
+-- ORACLE-ONLY frozen constants for the clock/GC externs.  These are the
+-- DIFFERENTIAL-ORACLE bindings: the oracle drivers diff captured stdout, so a
+-- real clock would make every golden nondeterministic.  They live in the pure
+-- `externBindings` table and are OVERRIDDEN under `medaka run` by the real host
+-- clock/GC prims in `ioExternBindings` (last-write-wins on the duplicate name —
+-- see the note there).  Historically these WERE the only implementation, and the
+-- comment here claimed "the interpreter has no FFI to the clock" — a fossil from
+-- when eval.mdk was purely a value oracle.  It is compiled by the LLVM backend
+-- and linked against runtime/medaka_rt.c; there is no FFI barrier.
 pWallTimeSec : Value e -> <Mut | e> Value e
 pWallTimeSec _ = VFloat 1700000000.0
 
--- monotonicSec / sleepMs: real-Clock externs (clock_gettime / nanosleep) in the
--- native backend.  Under the interpreter oracle there is no FFI to the clock, so
--- monotonicSec returns a fixed plausible value and sleepMs is a no-op — like
--- wallTimeSec above.  Nondeterministic, so the output diff gates don't compare them.
 pMonotonicSec : Value e -> <Mut | e> Value e
 pMonotonicSec _ = VFloat 1000.0
 
@@ -1908,6 +1915,9 @@ externBindings _ = [
   ("arrayCopy", prim1 pArrayCopy),
   ("arraySetUnsafe", prim3M pArraySetUnsafe),
   ("arrayBlit", prim5M pArrayBlit),
+  ("arrayFill", prim2M pArrayFill),
+  ("arraySortInPlaceBy", prim2M pArraySortInPlaceBy),
+  ("arraySortBy", prim2M pArraySortBy),
   ("Ref", prim1 pRef),
   ("setRef", prim2M pSetRef),
   ("putStr", prim1M pPutStr),
@@ -2273,6 +2283,46 @@ pArraySetUnsafe (VInt i) v (VArray a) =
   VUnit
 pArraySetUnsafe _ _ _ = panic "arraySetUnsafe: bad operands"
 
+-- arrayFill : a -> Array a -> <Mut> Unit — set every slot to v.  Takes no
+-- callback, so it delegates straight to the host extern (unlike the sorts and
+-- arrayMakeWith below, whose function argument is a Value closure).
+pArrayFill : Value e -> Value e -> <Mut | e> Value e
+pArrayFill v (VArray a) =
+  let _ = arrayFill v a
+  VUnit
+pArrayFill _ _ = panic "arrayFill: not an Array"
+
+-- arraySortInPlaceBy / arraySortBy : the comparator arrives as a Value CLOSURE,
+-- so it has to be applied through `apply` (effect `<Mut | e>`) and CANNOT be
+-- handed to the PURE host `arraySortInPlaceBy` extern — same reason
+-- pArrayMakeWith rebuilds via a list instead of delegating.  So sort the element
+-- list with the effect-polymorphic stdlib `sortBy` and write it back.
+valueToOrdering : Value e -> Ordering
+valueToOrdering (VCon "Lt" []) = Lt
+valueToOrdering (VCon "Eq" []) = Eq
+valueToOrdering (VCon "Gt" []) = Gt
+valueToOrdering _ = panic "sort comparator: did not return an Ordering"
+
+sortValues : Value e -> List (Value e) -> <Mut | e> List (Value e)
+sortValues cmp vs = sortBy (a b => valueToOrdering (apply (apply cmp a) b)) vs
+
+writeBackFrom : Array (Value e) -> Int -> List (Value e) -> <Mut | e> Unit
+writeBackFrom _ _ [] = ()
+writeBackFrom a i (v::rest) =
+  let _ = arraySetUnsafe i v a
+  writeBackFrom a (i + 1) rest
+
+pArraySortInPlaceBy : Value e -> Value e -> <Mut | e> Value e
+pArraySortInPlaceBy cmp (VArray a) =
+  let _ = writeBackFrom a 0 (sortValues cmp (arrayToListG a))
+  VUnit
+pArraySortInPlaceBy _ _ = panic "arraySortInPlaceBy: not an Array"
+
+pArraySortBy : Value e -> Value e -> <Mut | e> Value e
+pArraySortBy cmp (VArray a) =
+  VArray (arrayFromList (sortValues cmp (arrayToListG a)))
+pArraySortBy _ _ = panic "arraySortBy: not an Array"
+
 -- arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
 -- Copies len elements from src[srcOff..] into dst[dstOff..] in place.
 -- Mirrors OCaml Array.blit semantics (memmove; handles overlapping regions).
@@ -2583,21 +2633,218 @@ evalModulesOutput preludeDecls modules =
 -- ── run-path real-I/O externs (B2, RUN-EFFECTS) ────────────────────────────
 -- Real-I/O primitives installed ONLY by `medaka run`'s driver
 -- (evalModulesOutputRun) — never by the differential-oracle drivers, so the
--- oracle's `e := <Mut>` instantiation stays pure by type.  First (and so far
--- only) resident: `readFile`; the remaining runtime.mdk I/O externs migrate
--- here in the follow-up workstream.
+-- oracle's `e := <Mut>` instantiation stays pure by type.
+--
+-- OVERRIDE SEMANTICS: evalModulesWith installs `externBindings () ++ extraExterns`
+-- through installConsts, which is LAST-WRITE-WINS on a duplicate name (findCell
+-- returns the first cell; installConsts writes each entry in turn).  So an extern
+-- present in BOTH tables resolves to the ioExternBindings one under `medaka run`
+-- and to the externBindings one under the oracle.  That is deliberate for the
+-- clock/GC/stderr prims: the oracle keeps its DETERMINISTIC frozen constants (it
+-- diffs output, so a real clock would make it nondeterministic), while `run` — the
+-- production engine — gets the real host clock.  Before this seam existed the
+-- frozen constants were the ONLY implementation, so `medaka run` silently reported
+-- every elapsed interval as 0.0 and silently discarded every byte of stderr.
+--
+-- STDERR IS UNBUFFERED, STDOUT IS NOT.  putStr/putStrLn append to `outputRef` and
+-- the CLI prints the buffer after `main` returns; ePutStr/ePutStrLn below write
+-- through to the host stderr IMMEDIATELY.  Streaming is the right call for a
+-- diagnostic channel: a log line that only appears after the program finishes is
+-- much less useful, and — unlike buffered stdout, which is lost when a program
+-- panics — a streamed stderr line survives the abort.  The cost is that stdout and
+-- stderr do not interleave in real time when both are redirected to one file;
+-- that is a property of the buffered-stdout design, tracked separately as
+-- "`run` drops stdout on panic", and streaming stderr is a step toward, not away
+-- from, fixing it.
 pReadFile : Value e -> <FileRead "_", Mut | e> Value e
 pReadFile (VString path) = match readFile path
   Ok s => VCon "Ok" [VString s]
   Err m => VCon "Err" [VString m]
 pReadFile _ = panic "readFile: not a String"
 
-export ioExternBindings : Unit -> List (String, Value e)
-ioExternBindings _ = [("readFile", prim1 pReadFile)]
+-- ── Value marshalling for the I/O prims ───────────────────────────────────
+resultToValue : Result String (Value e) -> Value e
+resultToValue (Ok v) = VCon "Ok" [v]
+resultToValue (Err m) = VCon "Err" [VString m]
 
--- `medaka run`'s output driver: evalModulesOutput plus the real-I/O externs,
--- declaring the row those externs perform (readFile ⇒ FileRead).
-export evalModulesOutputRun : List Decl -> List (String, List Decl) -> <FileRead "_", Mut> String
+unitResultToValue : Result String Unit -> Value e
+unitResultToValue r = resultToValue (mapResultOk (_ => VUnit) r)
+
+mapResultOk : (a -> b) -> Result String a -> Result String b
+mapResultOk f (Ok v) = Ok (f v)
+mapResultOk _ (Err m) = Err m
+
+vStringList : List String -> Value e
+vStringList xs = VList (map VString xs)
+
+vIntArray : Array Int -> Value e
+vIntArray bs = VArray (arrayFromList (map VInt (arrayToListG bs)))
+
+unIntArray : Value e -> Array Int
+unIntArray (VArray vs) = arrayFromList (map unInt (arrayToListG vs))
+unIntArray _ = panic "expected an Array of Int"
+
+vOptionString : Option String -> Value e
+vOptionString o = optionToValue (mapOption VString o)
+
+-- ── Clock / GC (was: frozen constants) ────────────────────────────────────
+pWallTimeSecIO : Value e -> <Clock, Mut | e> Value e
+pWallTimeSecIO _ = VFloat (wallTimeSec ())
+
+pMonotonicSecIO : Value e -> <Clock, Mut | e> Value e
+pMonotonicSecIO _ = VFloat (monotonicSec ())
+
+pSleepMsIO : Value e -> <Clock, Mut | e> Value e
+pSleepMsIO (VInt n) =
+  let _ = sleepMs n
+  VUnit
+pSleepMsIO _ = panic "sleepMs: expected Int"
+
+pAllocBytesIO : Value e -> <IO, Mut | e> Value e
+pAllocBytesIO _ = VFloat (allocBytes ())
+
+-- ── stderr (was: pDiscard — ALL stderr was silently dropped) ───────────────
+pEPutStr : Value e -> <Stderr, Mut | e> Value e
+pEPutStr (VString s) =
+  let _ = ePutStr s
+  VUnit
+pEPutStr _ = panic "ePutStr: not a String"
+
+pEPutStrLn : Value e -> <Stderr, Mut | e> Value e
+pEPutStrLn (VString s) =
+  let _ = ePutStrLn s
+  VUnit
+pEPutStrLn _ = panic "ePutStrLn: not a String"
+
+-- ── File ──────────────────────────────────────────────────────────────────
+pReadFileBytes : Value e -> <FileRead "_", Mut | e> Value e
+pReadFileBytes (VString path) =
+  resultToValue (mapResultOk vIntArray (readFileBytes path))
+pReadFileBytes _ = panic "readFileBytes: not a String"
+
+pFileExists : Value e -> <FileRead "_", Mut | e> Value e
+pFileExists (VString path) = VBool (fileExists path)
+pFileExists _ = panic "fileExists: not a String"
+
+pCanonicalizePath : Value e -> <FileRead "_", Mut | e> Value e
+pCanonicalizePath (VString path) = VString (canonicalizePath path)
+pCanonicalizePath _ = panic "canonicalizePath: not a String"
+
+pListDir : Value e -> <FileRead "_", Mut | e> Value e
+pListDir (VString path) = resultToValue (mapResultOk vStringList (listDir path))
+pListDir _ = panic "listDir: not a String"
+
+-- statFile : String -> Result String (Int, Bool, Bool, Float)  (size, isDir, isFile, mtime)
+pStatFile : Value e -> <FileRead "_", Mut | e> Value e
+pStatFile (VString path) = resultToValue (mapResultOk statTuple (statFile path))
+pStatFile _ = panic "statFile: not a String"
+
+statTuple : (Int, Bool, Bool, Float) -> Value e
+statTuple (sz, isDir, isFile, mtime) =
+  VTuple [VInt sz, VBool isDir, VBool isFile, VFloat mtime]
+
+pWriteFile : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pWriteFile (VString path) (VString s) = unitResultToValue (writeFile path s)
+pWriteFile _ _ = panic "writeFile: expected String String"
+
+pWriteFileBytes : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pWriteFileBytes (VString path) bs =
+  unitResultToValue (writeFileBytes path (unIntArray bs))
+pWriteFileBytes _ _ = panic "writeFileBytes: expected String (Array Int)"
+
+pAppendFile : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pAppendFile (VString path) (VString s) = unitResultToValue (appendFile path s)
+pAppendFile _ _ = panic "appendFile: expected String String"
+
+pMakeDir : Value e -> <FileWrite "_", Mut | e> Value e
+pMakeDir (VString path) = unitResultToValue (makeDir path)
+pMakeDir _ = panic "makeDir: not a String"
+
+pRemoveFile : Value e -> <FileWrite "_", Mut | e> Value e
+pRemoveFile (VString path) = unitResultToValue (removeFile path)
+pRemoveFile _ = panic "removeFile: not a String"
+
+pRemoveDir : Value e -> <FileWrite "_", Mut | e> Value e
+pRemoveDir (VString path) = unitResultToValue (removeDir path)
+pRemoveDir _ = panic "removeDir: not a String"
+
+pRename : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pRename (VString old) (VString new) = unitResultToValue (rename old new)
+pRename _ _ = panic "rename: expected String String"
+
+-- ── Env ───────────────────────────────────────────────────────────────────
+-- `args` is the interpreted PROGRAM's argv, not the host `medaka` process's:
+-- under `medaka run [flags] prog.mdk a b c` the program must see ["a","b","c"].
+-- The CLI's run arm knows where its own flags/target end, so it publishes the
+-- trailing args here (setRef progArgsRef) before driving the evaluator; deriving
+-- them inside eval.mdk would mean re-parsing the CLI's own grammar.  Default []
+-- keeps every other driver (which never sets it) at "no program args".
+export progArgsRef : Ref (List String)
+progArgsRef = Ref []
+
+pArgs : Value e -> <Env, Mut | e> Value e
+pArgs _ = vStringList progArgsRef.value
+
+pGetEnv : Value e -> <Env "_", Mut | e> Value e
+pGetEnv (VString name) = vOptionString (getEnv name)
+pGetEnv _ = panic "getEnv: not a String"
+
+pExecutablePath : Value e -> <Env, Mut | e> Value e
+pExecutablePath _ = VString (executablePath ())
+
+-- ── Stdin ─────────────────────────────────────────────────────────────────
+pReadLine : Value e -> <Stdin, Mut | e> Value e
+pReadLine _ = VString (readLine ())
+
+pReadLineOpt : Value e -> <Stdin, Mut | e> Value e
+pReadLineOpt _ = vOptionString (readLineOpt ())
+
+pReadAll : Value e -> <Stdin, Mut | e> Value e
+pReadAll _ = VString (readAll ())
+
+pReadExactly : Value e -> <Stdin, Mut | e> Value e
+pReadExactly (VInt n) = vOptionString (readExactly n)
+pReadExactly _ = panic "readExactly: expected Int"
+
+export ioExternBindings : Unit -> List (String, Value e)
+ioExternBindings _ = [
+  -- Clock / GC / stderr — these OVERRIDE the frozen constants in externBindings
+  ("wallTimeSec", prim1M pWallTimeSecIO),
+  ("monotonicSec", prim1M pMonotonicSecIO),
+  ("sleepMs", prim1M pSleepMsIO),
+  ("allocBytes", prim1M pAllocBytesIO),
+  ("ePutStr", prim1M pEPutStr),
+  ("ePutStrLn", prim1M pEPutStrLn),
+  -- File
+  ("readFile", prim1 pReadFile),
+  ("readFileBytes", prim1 pReadFileBytes),
+  ("fileExists", prim1 pFileExists),
+  ("canonicalizePath", prim1 pCanonicalizePath),
+  ("listDir", prim1 pListDir),
+  ("statFile", prim1 pStatFile),
+  ("writeFile", prim2M pWriteFile),
+  ("writeFileBytes", prim2M pWriteFileBytes),
+  ("appendFile", prim2M pAppendFile),
+  ("makeDir", prim1 pMakeDir),
+  ("removeFile", prim1 pRemoveFile),
+  ("removeDir", prim1 pRemoveDir),
+  ("rename", prim2M pRename),
+  -- Env
+  ("args", prim1M pArgs),
+  ("getEnv", prim1 pGetEnv),
+  ("executablePath", prim1M pExecutablePath),
+  -- Stdin
+  ("readLine", prim1M pReadLine),
+  ("readLineOpt", prim1M pReadLineOpt),
+  ("readAll", prim1M pReadAll),
+  ("readExactly", prim1 pReadExactly),
+]
+
+-- `medaka run`'s output driver: evalModulesOutput plus the real-I/O externs.
+-- The row is the coarse `IO` alias: ioExternBindings now spans FileRead/FileWrite/
+-- Env/Stdin/Stderr/Clock, and `IO` in a BOUND expands to exactly that join
+-- (typecheck.expandIoInBound), so writing them out one by one would buy nothing.
+export evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO, Mut> String
 evalModulesOutputRun preludeDecls modules =
   let _ = setRef outputRef ""
   let binds = evalModulesWith (ioExternBindings ()) preludeDecls modules

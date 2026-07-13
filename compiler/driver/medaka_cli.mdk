@@ -106,6 +106,7 @@ import eval.eval.{
   evalModulesOutputAsync,
   currentEvalFile,
   runJsonMode,
+  progArgsRef,
 }
 import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
@@ -987,13 +988,17 @@ runRunCmd argv =
     [] =>
       let _ = ePutStrLn "usage: medaka run [--release] [--json] <file.mdk>"
       exit 1
-    target::_ =>
+    target::progArgs =>
       let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
       let rtPath = root ++ "/stdlib/runtime.mdk"
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
       let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
       let allowInternal = hasFlag "--allow-internal" argv
+      -- publish the args AFTER the target for the run-path `args` extern
+      -- (eval.mdk's pArgs reads this Ref): `medaka run prog.mdk a b` ⇒ ["a","b"],
+      -- matching what the same program's compiled binary sees.
+      let _ = setRef progArgsRef progArgs
       match readFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
@@ -1096,8 +1101,8 @@ dropModPath (mid, _, prog) = (mid, prog)
 -- value; a plain `main` keeps the ordinary force-for-effect path.  mainTypeIsAsync
 -- reads the scheme elaborateModules just stashed, so this must run post-elaborate.
 -- B2 (RUN-EFFECTS): the plain path is evalModulesOutputRun — evalModulesOutput
--- plus the real-I/O externs (readFile), hence the FileRead in the row.
-runProgramOutput : List Decl -> List (String, List Decl) -> <FileRead "_", Mut> String
+-- plus the real-I/O externs (File/Env/Stdin/Stderr/Clock), hence the `IO` row.
+runProgramOutput : List Decl -> List (String, List Decl) -> <IO, Mut> String
 runProgramOutput preludeDecls modules = match mainTypeIsAsync ()
   True => evalModulesOutputAsync preludeDecls modules
   False => evalModulesOutputRun preludeDecls modules

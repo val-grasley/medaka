@@ -90,7 +90,7 @@ evalMethodAt : EvalEnv (Value <Mut | a>) -> String -> Route -> List Route -> Lis
 evalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value a)
 evalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
 evalModulesOutputAsync : List Decl -> List (String, List Decl) -> <Mut> String
-evalModulesOutputRun : List Decl -> List (String, List Decl) -> <FileRead, Mut> String
+evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO, Mut> String
 evalModulesRootEnv : List Decl -> List (String, List Decl) -> <Mut> List (String, Value a)
 evalModulesWith : List (String, Value <Mut | a>) -> List Decl -> List (String, List Decl) -> <Mut> List (String, Value <Mut | a>)
 evalOne : List Decl -> (String, List Decl) -> <Mut> List (String, Value a)
@@ -187,6 +187,7 @@ lookupPositions : String -> String -> List ((String, String), List Int) -> List 
 lookupReqCount : String -> String -> List ((String, String), Int) -> Int
 makeCtor : String -> Int -> Value a
 makeCtorGo : String -> Int -> List (Value a) -> Value a
+mapResultOk : (a -> b) -> Result String a -> Result String b
 matchAs : String -> Pat -> Value a -> Option (List (String, Value a))
 matchCons : Pat -> Pat -> Value a -> List (Value a) -> Option (List (String, Value a))
 matchPat : Pat -> Value a -> Option (List (String, Value a))
@@ -215,14 +216,20 @@ orderingToValue : Ordering -> Value a
 outputRef : Ref String
 pAcos : Value a -> <Mut> Value a
 pAllocBytes : Value a -> <Mut> Value a
+pAllocBytesIO : Value a -> <IO, Mut> Value a
+pAppendFile : Value a -> Value a -> <FileWrite, Mut> Value a
+pArgs : Value a -> <Env, Mut> Value a
 pArrayBlit : Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a
 pArrayCopy : Value a -> <Mut> Value a
+pArrayFill : Value a -> Value a -> <Mut> Value a
 pArrayFromList : Value a -> <Mut> Value a
 pArrayGetUnsafe : Value a -> Value a -> <Mut> Value a
 pArrayLength : Value a -> <Mut> Value a
 pArrayMake : Value a -> Value a -> <Mut> Value a
 pArrayMakeWith : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
 pArraySetUnsafe : Value a -> Value a -> Value a -> <Mut> Value a
+pArraySortBy : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
+pArraySortInPlaceBy : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
 pAsin : Value a -> <Mut> Value a
 pAtan : Value a -> <Mut> Value a
 pAtan2 : Value a -> Value a -> <Mut> Value a
@@ -231,6 +238,7 @@ pBitNot : Value a -> <Mut> Value a
 pBitOr : Value a -> Value a -> <Mut> Value a
 pBitXor : Value a -> Value a -> <Mut> Value a
 pBytesToFloat64 : Value a -> Value a -> <Mut> Value a
+pCanonicalizePath : Value a -> <FileRead, Mut> Value a
 pCbrt : Value a -> <Mut> Value a
 pCeil : Value a -> <Mut> Value a
 pCharCode : Value a -> <Mut> Value a
@@ -243,12 +251,17 @@ pCosh : Value a -> <Mut> Value a
 pDebugCharLit : Value a -> <Mut> Value a
 pDebugStringLit : Value a -> <Mut> Value a
 pDiscard : Value a -> <Mut> Value a
+pEPutStr : Value a -> <Mut, Stderr> Value a
+pEPutStrLn : Value a -> <Mut, Stderr> Value a
+pExecutablePath : Value a -> <Env, Mut> Value a
 pExp : Value a -> <Mut> Value a
+pFileExists : Value a -> <FileRead, Mut> Value a
 pFloatRem : Value a -> Value a -> <Mut> Value a
 pFloatToBytes64 : Value a -> <Mut> Value a
 pFloatToInt : Value a -> <Mut> Value a
 pFloatToString : Value a -> <Mut> Value a
 pFloor : Value a -> <Mut> Value a
+pGetEnv : Value a -> <Env, Mut> Value a
 pHashBool : Value a -> <Mut> Value a
 pHashChar : Value a -> <Mut> Value a
 pHashFloat : Value a -> <Mut> Value a
@@ -258,10 +271,13 @@ pHypot : Value a -> Value a -> <Mut> Value a
 pIntBitsToFloat : Value a -> <Mut> Value a
 pIntToFloat : Value a -> <Mut> Value a
 pIntToString : Value a -> <Mut> Value a
+pListDir : Value a -> <FileRead, Mut> Value a
 pLog : Value a -> <Mut> Value a
 pLog10 : Value a -> <Mut> Value a
 pLog2 : Value a -> <Mut> Value a
+pMakeDir : Value a -> <FileWrite, Mut> Value a
 pMonotonicSec : Value a -> <Mut> Value a
+pMonotonicSecIO : Value a -> <Clock, Mut> Value a
 pPanic : Value a -> <Mut> b
 pPow : Value a -> Value a -> <Mut> Value a
 pPutStr : Value a -> <Mut> Value a
@@ -270,8 +286,16 @@ pRandomBool : Value a -> <Mut> Value a
 pRandomChar : Value a -> <Mut> Value a
 pRandomFloat : Value a -> <Mut> Value a
 pRandomInt : Value a -> Value a -> <Mut> Value a
+pReadAll : Value a -> <Mut, Stdin> Value a
+pReadExactly : Value a -> <Mut, Stdin> Value a
 pReadFile : Value a -> <FileRead, Mut> Value a
+pReadFileBytes : Value a -> <FileRead, Mut> Value a
+pReadLine : Value a -> <Mut, Stdin> Value a
+pReadLineOpt : Value a -> <Mut, Stdin> Value a
 pRef : Value a -> <Mut> Value a
+pRemoveDir : Value a -> <FileWrite, Mut> Value a
+pRemoveFile : Value a -> <FileWrite, Mut> Value a
+pRename : Value a -> Value a -> <FileWrite, Mut> Value a
 pRound : Value a -> <Mut> Value a
 pSetRef : Value a -> Value a -> <Mut> Value a
 pSetSeed : Value a -> <Mut> Value a
@@ -280,7 +304,9 @@ pShiftRight : Value a -> Value a -> <Mut> Value a
 pSin : Value a -> <Mut> Value a
 pSinh : Value a -> <Mut> Value a
 pSleepMs : Value a -> <Mut> Value a
+pSleepMsIO : Value a -> <Clock, Mut> Value a
 pSqrt : Value a -> <Mut> Value a
+pStatFile : Value a -> <FileRead, Mut> Value a
 pStringCompare : Value a -> Value a -> <Mut> Value a
 pStringConcat : Value a -> <Mut> Value a
 pStringFromChars : Value a -> <Mut> Value a
@@ -297,6 +323,9 @@ pTan : Value a -> <Mut> Value a
 pTanh : Value a -> <Mut> Value a
 pTrunc : Value a -> <Mut> Value a
 pWallTimeSec : Value a -> <Mut> Value a
+pWallTimeSecIO : Value a -> <Clock, Mut> Value a
+pWriteFile : Value a -> Value a -> <FileWrite, Mut> Value a
+pWriteFileBytes : Value a -> Value a -> <FileWrite, Mut> Value a
 payloadArity : ConPayload -> Int
 pickByTag : List (Value a) -> String -> Value a
 ppField : (String, Value a) -> String
@@ -312,6 +341,7 @@ prim2M : (Value a -> Value a -> <Mut> Value a) -> Value a
 prim3 : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
 prim3M : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
 prim5M : (Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
+progArgsRef : Ref (List String)
 pubReexports : List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
 pushFrame : EvalEnv (Value a) -> List (String, Ref (Value a)) -> EvalEnv (Value a)
 rangeArrayMk : List Int -> Value a
@@ -321,6 +351,7 @@ receiverParam : List String -> List String
 recordCreateVals : String -> List String -> List (String, Value a) -> List (Value a)
 reexport : List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 resolveMembers : UsePath -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
+resultToValue : Result String (Value a) -> Value a
 rngNext : Unit -> <Mut> Int
 rngStateRef : Ref Int
 rootFullEnv : List (ModInfo (Value a)) -> List (String, Ref (Value a)) -> <Mut> List (String, Value a)
@@ -337,7 +368,9 @@ shadowedFun : List String -> Decl -> Bool
 sliceArray : Array (Value a) -> Int -> Int -> Value a
 sortByScore : List (Int, Value a) -> List (Int, Value a)
 sortGo : List (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
+sortValues : Value <Mut | a> -> List (Value <Mut | a>) -> <Mut> List (Value <Mut | a>)
 startsWithAt : String -> Bool
+statTuple : (Int, Bool, Bool, Float) -> Value a
 storeMemo : Ref (Option (Value a)) -> Value a -> <Mut> Value a
 stringIndexCp : String -> Int -> Value a
 stripBody : Value a -> Value a -> <Mut> Value a
@@ -351,14 +384,21 @@ tyMentions : Ty -> List String -> Bool
 tyvarsInArgs : List Ty -> Int
 unChar : Value a -> Char
 unInt : Value a -> Int
+unIntArray : Value a -> Array Int
 unString : Value a -> String
+unitResultToValue : Result String Unit -> Value a
 updateEvalLoc : Loc -> <Mut> Unit
 useImports : List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 useModuleId : UsePath -> String
+vIntArray : Array Int -> Value a
+vOptionString : Option String -> Value a
+vStringList : List String -> Value a
 valueCompare : Value a -> Value a -> Ordering
 valueEq : Value a -> Value a -> Bool
 valueListEq : List (Value a) -> List (Value a) -> Bool
 valueTag : Value a -> Int
+valueToOrdering : Value a -> Ordering
 variantFieldOrder : Variant -> List (String, List String)
 variantName : Variant -> String
+writeBackFrom : Array (Value a) -> Int -> List (Value a) -> <Mut> Unit
 zipFieldOrder : List String -> List (Value a) -> List (String, Value a)
