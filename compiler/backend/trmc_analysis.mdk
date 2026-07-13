@@ -105,6 +105,13 @@ routeDictNames b ((RDict d)::rest) = (if contains d b then [] else [d])
   ++ routeDictNames b rest
 routeDictNames b ((RDictFwd d)::rest) = (if contains d b then [] else [d])
   ++ routeDictNames b rest
+-- S-1: an RLocal route carries the shadowing standalone's OWN constraint dicts, and
+-- one of those slots can be an RDict — a constrained caller forwarding its own dict
+-- param into the standalone (`outer : Num a => a -> a; outer v = size v`).  That name
+-- is a genuine free local: recurse.  Empty dicts (every unconstrained standalone) ⇒
+-- [] ⇒ byte-identical to the pre-S1 catch-all.
+routeDictNames b ((RLocal _ dicts)::rest) = routeDictNames b dicts
+  ++ routeDictNames b rest
 routeDictNames b (_::rest) = routeDictNames b rest
 
 export freeVarsFields : List String -> List CField -> List String

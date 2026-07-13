@@ -231,8 +231,8 @@ toAddr other = panic ("core_ir_sexp_parse: bad Addr: " ++ sexprToStr other)
 
 toRoute : SExp -> Route
 toRoute (SAtom "RNone") = RNone
-toRoute (SAtom "RLocal") = RLocal ""
-toRoute (SList ((SAtom "RLocal")::[s])) = RLocal (toStr s)
+toRoute (SAtom "RLocal") = RLocal "" []
+toRoute (SList ((SAtom "RLocal")::[s])) = RLocal (toStr s) []
 toRoute (SList ((SAtom "RKey")::[k])) = RKey (toStr k) []
 toRoute (SList ((SAtom "RDict")::[d])) = RDict (toStr d)
 toRoute (SList ((SAtom "RDictFwd")::[d])) = RDictFwd (toStr d)
@@ -484,8 +484,8 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toAddr" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad Addr: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toRoute" (TyFun (TyCon "SExp") (TyCon "Route")))
 (DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RNone")))) (EVar "RNone"))
-(DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RLocal")))) (EApp (EVar "RLocal") (ELit (LString ""))))
-(DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RLocal"))) (PList (PVar "s"))))) (EApp (EVar "RLocal") (EApp (EVar "toStr") (EVar "s"))))
+(DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RLocal")))) (EApp (EApp (EVar "RLocal") (ELit (LString ""))) (EListLit)))
+(DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RLocal"))) (PList (PVar "s"))))) (EApp (EApp (EVar "RLocal") (EApp (EVar "toStr") (EVar "s"))) (EListLit)))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RKey"))) (PList (PVar "k"))))) (EApp (EApp (EVar "RKey") (EApp (EVar "toStr") (EVar "k"))) (EListLit)))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RDict"))) (PList (PVar "d"))))) (EApp (EVar "RDict") (EApp (EVar "toStr") (EVar "d"))))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RDictFwd"))) (PList (PVar "d"))))) (EApp (EVar "RDictFwd") (EApp (EVar "toStr") (EVar "d"))))
@@ -680,8 +680,8 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toAddr" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad Addr: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toRoute" (TyFun (TyCon "SExp") (TyCon "Route")))
 (DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RNone")))) (EVar "RNone"))
-(DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RLocal")))) (EApp (EVar "RLocal") (ELit (LString ""))))
-(DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RLocal"))) (PList (PVar "s"))))) (EApp (EVar "RLocal") (EApp (EVar "toStr") (EVar "s"))))
+(DFunDef false "toRoute" ((PCon "SAtom" (PLit (LString "RLocal")))) (EApp (EApp (EVar "RLocal") (ELit (LString ""))) (EListLit)))
+(DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RLocal"))) (PList (PVar "s"))))) (EApp (EApp (EVar "RLocal") (EApp (EVar "toStr") (EVar "s"))) (EListLit)))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RKey"))) (PList (PVar "k"))))) (EApp (EApp (EVar "RKey") (EApp (EVar "toStr") (EVar "k"))) (EListLit)))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RDict"))) (PList (PVar "d"))))) (EApp (EVar "RDict") (EApp (EVar "toStr") (EVar "d"))))
 (DFunDef false "toRoute" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "RDictFwd"))) (PList (PVar "d"))))) (EApp (EVar "RDictFwd") (EApp (EVar "toStr") (EVar "d"))))

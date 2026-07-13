@@ -235,6 +235,7 @@ consSiteFn : String -> a -> Map String (List a) -> Map String (List a)
 constrainedSigArity : Decl -> List (String, List Int)
 constrainedSigName : Decl -> List String
 constrainedSigNames : List Decl -> List String
+constraintArgVarName : Ty -> Option String
 constraintArgVarNames : Constraint -> List String
 constraintFirstNonParam : List String -> Constraint -> List String
 constraintIsMethodLevel : List String -> Constraint -> Bool
@@ -279,6 +280,7 @@ declIfaceMethods : Decl -> <Mut> List (String, Scheme)
 declMethodNames : List Decl -> List String
 declMethodNamesOf : Decl -> List String
 declTopFnNames : List Decl -> List String
+declaredConstraintSlots : String -> <Mut> (List Int, List String)
 declaredEffects : Ty -> List Atom
 declaredPairOne : (String, Mono) -> <Mut> List (String, Int)
 declaredPairsFor : String -> List (String, List (String, Mono)) -> <Mut> List (String, Int)
@@ -850,7 +852,7 @@ pendingDictAppsN : Ref Int
 pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
 pendingImplObligationsN : Ref Int
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
-pendingRLocalSites : Ref (List (String, Ref Route, Mono, String, Bool))
+pendingRLocalSites : Ref (List RLocalSite)
 pendingRecDictApps : Ref (List RecDictApp)
 pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono, Mono, String))
 pendingUnopSites : Ref (List (String, Ref Route, Mono, Bool, String))
@@ -947,6 +949,7 @@ recordDoMonadError : Loc -> <Mut> Unit
 recordEqObligation : Mono -> <Mut> Unit
 recordHasField : String -> RecordInfo -> Bool
 recordImplObligation : String -> Mono -> <Mut> Mono
+recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> <Mut> Unit
 recordLocalBind : String -> Mono -> <Mut> Unit
 recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> <Mut> Unit
 recordNumObligation : Mono -> <Mut> Unit
@@ -955,7 +958,10 @@ recordOrdObligation : Mono -> <Mut> Unit
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
 recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> <Mut> Unit
 recordSemigroupObligation : Mono -> <Mut> Unit
+recordSigConstraintArgs : String -> List Ty -> List (String, Mono) -> List (Int, Mono) -> <Mut> Unit
+recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, Mono) -> <Mut> Unit
 recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
+recordStandaloneSigObligations : String -> String -> Mono -> <Mut> Unit
 recordUnopSite : String -> Ref Route -> Mono -> <Mut> Unit
 recordsRef : Ref (List (String, RecordInfo))
 reexportSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
@@ -1028,8 +1034,8 @@ resolveFieldByOwners : Mono -> String -> <Mut> Option (String, RecordInfo)
 resolveFieldRecord : Mono -> String -> <Mut> Option (String, RecordInfo)
 resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
 resolveMethodDicts : List ImplEntry -> List (Ref (List Route), List Mono) -> <Mut> Unit
-resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
-resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String, Bool) -> <Mut> Unit
+resolveRLocalSite : List Decl -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> <Mut> Unit
+resolveRLocalSites : List Decl -> List ImplEntry -> List KeyEntry -> List RLocalSite -> <Mut> Unit
 resolveRecMono : String -> Mono -> <Mut> Route
 resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> <Mut> Unit
 resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> <Mut> Unit
@@ -1095,10 +1101,15 @@ setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Uni
 shadowDomainFor : TcEnv -> String -> String -> <Mut> Option Mono
 shadowHeadCtxRef : Ref Bool
 shadowKeyTableRef : Ref (List KeyEntry)
+shadowStandaloneDictSlots : (List Int, List String) -> List (Int, Mono) -> <Mut> (List Mono, List String)
+shadowStandaloneDictSlotsAt : Option Scheme -> String -> Mono -> <Mut> (List Mono, List String)
+shadowStandaloneDicts : TcEnv -> String -> String -> Mono -> <Mut> (List Mono, List String)
+shadowStandaloneDictsWith : Option Scheme -> String -> String -> Mono -> <Mut> (List Mono, List String)
 shadowStandaloneHead : TcEnv -> Expr -> <Mut> Option (String, List (Ref Route))
 shadowStandaloneSchemesRef : Ref (List (String, Scheme))
 shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> <Mut> Mono
 sigConstraints : Ty -> List (String, String)
+sigConstraintsOf : Ty -> List Constraint
 sigNameSetRef : Ref (Map String Unit)
 sigNamesToSet : List (String, Ty) -> Map String Unit -> Map String Unit
 sigToScheme : Ty -> <Mut> Scheme
@@ -1123,11 +1134,13 @@ splitOnFirstEqStr : String -> Option Int
 splitOnSemi : String -> List String
 splitOnSemiGo : String -> Int -> Int -> List String -> List String
 stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
-stampRLocalOrFallback : Bool -> Ref Route -> String -> <Mut> Unit
+stampRLocalOrFallback : Bool -> Ref Route -> String -> List Route -> <Mut> Unit
 stampRoutes : List (Ref Route) -> <Mut> Unit
 stampUnopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+standaloneSchemeFor : TcEnv -> String -> String -> <Mut> Option Scheme
 standaloneShadowDomain : String -> <Mut> Option Mono
 standaloneShadowScheme : String -> <Mut> Option Mono
+standaloneShadowSigTy : String -> String -> <Mut> Option Ty
 standaloneValuesRef : Ref (List String)
 strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool

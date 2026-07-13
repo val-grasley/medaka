@@ -860,7 +860,7 @@ routeTag env (RDict d) = match lookupEnv env d
 routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
-routeTag _ (RLocal _) = ""
+routeTag _ (RLocal _ _) = ""
 -- RScalar tags an arithmetic EBinOp for the backend's Float path; it is never a
 -- typeclass dispatch route, so eval never routes a method through it.
 routeTag _ (RScalar _) =
@@ -890,7 +890,12 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
-dictOfRoute _ (RLocal _) = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
+-- S-1: an RLocal route's OWN dicts (the shadowing standalone's `=>` constraints) are
+-- applied by evalMethodAt's RLocal arm via applyDicts — they are the call's leading
+-- dict ARGS, not a dict witness FOR this route.  So as a *witness* RLocal is still the
+-- no-op dict.  (Pre-S1 this arm's comment claimed "RLocal never carries a dict"; that
+-- invariant was the S-1 bug and is now false — see ast.mdk's Route doc + S9.)
+dictOfRoute _ (RLocal _ _) = VDict "" []
 -- RScalar is an arithmetic binop tag (backend Float path), never a dict route.
 dictOfRoute _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -918,7 +923,7 @@ methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
 -- RLocal: not a method dispatch — the EMethodAt arm resolves the standalone
 -- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
 -- exists only to keep the match exhaustive; it returns the value unnarrowed.
-methodAtNarrow _ v (RLocal _) = (v, [])
+methodAtNarrow _ v (RLocal _ _) = (v, [])
 -- RScalar is an arithmetic binop tag (backend Float path), never a dispatch route.
 methodAtNarrow _ _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -1073,8 +1078,15 @@ eval _ _ = panic "eval: unsupported node (slice 2)"
 evalMethodAt : EvalEnv (Value e) -> String -> Route -> List Route -> List Route -> <Mut | e> Value e
 -- P0-18: the carried String is the MANGLED standalone symbol on the emit path;
 -- "" (the un-mangled run/check path) falls back to the bare method name.
-evalMethodAt env name (RLocal sym) _ _ =
-  lookupEnv env (if sym == "" then name else sym)
+-- S-1: apply the standalone's OWN constraint dicts as leading args (`dicts` is empty
+-- for an unconstrained standalone ⇒ applyDicts is the identity ⇒ byte-identical to
+-- the pre-S1 bare lookupEnv).  A CONSTRAINED standalone was given leading dict PARAMS
+-- by dictPassDecl, so without this the call under-applies by exactly one word per
+-- constraint and the first real argument lands in the dict slot.  This is literally
+-- the EDictAt arm's body (`applyDicts env (lookupEnv env name) routes`) — the same
+-- machinery, now reachable from the shadow arm that the marking prePass consumes.
+evalMethodAt env name (RLocal sym dicts) _ _ =
+  applyDicts env (lookupEnv env (if sym == "" then name else sym)) dicts
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
   let (narrowed, fwdReqs0) = methodAtNarrow env lm route

@@ -1,5 +1,5 @@
 # META
-source_lines=505
+source_lines=509
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted method_marker stage — Stage 1 port of `lib/method_marker.ml`.
@@ -316,9 +316,13 @@ collectVars _ = []
 
 -- P0-18: the extra symbol a resolved EMethodAt route references beyond its bare
 -- name — the mangled standalone symbol carried by an `RLocal <sym>` fallback.
+-- S-1: the RLocal dict routes need NO extra DCE root — they name dict PARAMS
+-- (locals) and impl HEADS, and DCE already keeps every DImpl/DInterface whole
+-- (pruning an impl would be a silent miscompile under runtime dict-passing), which
+-- is exactly why RKey's nested requires-routes need no root here either.
 routeExtraRefs : Route -> List String
-routeExtraRefs (RLocal "") = []
-routeExtraRefs (RLocal s) = [s]
+routeExtraRefs (RLocal "" _) = []
+routeExtraRefs (RLocal s _) = [s]
 routeExtraRefs _ = []
 
 letBindVars : LetBind -> List String
@@ -652,8 +656,8 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "collectVars") (EVar "e")))
 (DFunDef false "collectVars" (PWild) (EListLit))
 (DTypeSig false "routeExtraRefs" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")))) (EListLit))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s"))) (EListLit (EVar "s")))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")) PWild)) (EListLit))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s") PWild)) (EListLit (EVar "s")))
 (DFunDef false "routeExtraRefs" (PWild) (EListLit))
 (DTypeSig false "letBindVars" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "letBindVars" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EVar "flatMap") (EVar "funClauseVars")) (EVar "clauses")))
@@ -908,8 +912,8 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "collectVars") (EVar "e")))
 (DFunDef false "collectVars" (PWild) (EListLit))
 (DTypeSig false "routeExtraRefs" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")))) (EListLit))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s"))) (EListLit (EVar "s")))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")) PWild)) (EListLit))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s") PWild)) (EListLit (EVar "s")))
 (DFunDef false "routeExtraRefs" (PWild) (EListLit))
 (DTypeSig false "letBindVars" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "letBindVars" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EDictApp "flatMap") (EVar "funClauseVars")) (EVar "clauses")))

@@ -312,9 +312,13 @@ collectVars _ = []
 
 -- P0-18: the extra symbol a resolved EMethodAt route references beyond its bare
 -- name — the mangled standalone symbol carried by an `RLocal <sym>` fallback.
+-- S-1: the RLocal dict routes need NO extra DCE root — they name dict PARAMS
+-- (locals) and impl HEADS, and DCE already keeps every DImpl/DInterface whole
+-- (pruning an impl would be a silent miscompile under runtime dict-passing), which
+-- is exactly why RKey's nested requires-routes need no root here either.
 routeExtraRefs : Route -> List String
-routeExtraRefs (RLocal "") = []
-routeExtraRefs (RLocal s) = [s]
+routeExtraRefs (RLocal "" _) = []
+routeExtraRefs (RLocal s _) = [s]
 routeExtraRefs _ = []
 
 letBindVars : LetBind -> List String

@@ -1,0 +1,8 @@
+-- S-1: a declared signature is NOT load-bearing -- an unsignatured standalone whose
+-- `Num` constraint is INFERRED breaks identically.  Must print 4.
+interface Sz a where
+  size : a -> String
+
+size x = x + 1
+
+main = println (size 3)

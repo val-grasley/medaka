@@ -1,5 +1,5 @@
 # META
-source_lines=7685
+source_lines=7697
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -3039,10 +3039,19 @@ emitMethodRef prog env d name RNone implRoutes methRoutes args =
 -- the method name.  Emit a DIRECT call to that standalone top-level fn, exactly as a
 -- known-fn CApp would.  `target` is the carried MANGLED symbol `<mid>__name` when
 -- non-empty (the marked EMethodAt carries the bare dispatch name), else the bare name.
-emitMethodRef prog env d name (RLocal sym) implRoutes methRoutes args =
+-- S-1 (wasm peer of llvm_emit's emitMethod RLocal emitDictApp delegation): a
+-- CONSTRAINED shadowing standalone has leading dict PARAMS, so the call must push the
+-- matching dict witnesses first.  Delegate to emitDictRef — the SAME tested helper the
+-- ordinary CDict path uses.  Without this the raw `call` below pushes one operand too
+-- few and wasm-tools rejects the module outright ("type mismatch: expected (ref eq) but
+-- nothing on stack" — that "nothing" IS the missing dict word).  `dicts == []` keeps the
+-- byte-identical pre-S1 direct call.
+emitMethodRef prog env d name (RLocal sym dicts) implRoutes methRoutes args =
   let target = if sym == "" then name else sym
-  let argInstrs = flatMap (a => emitRefExpr prog env d a) args
-  argInstrs ++ ["call $" ++ gname target]
+  if isEmpty dicts then
+    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
+    argInstrs ++ ["call $" ++ gname target]
+  else emitDictRef prog env d target dicts args
 emitMethodRef prog env d name (RScalar _) implRoutes methRoutes args =
   gapL ("wasm W5: RScalar route for method '" ++ name ++ "' is out of slice")
 
@@ -3168,9 +3177,11 @@ routeWitness _ env _ (RDictFwd dpar) =
   else
     gapL ("wasm W5: forwarded dict '" ++ dpar ++ "' not in scope")
 routeWitness _ _ _ RNone = gapL "wasm W5: RNone route as a dict witness"
--- RLocal (method-shadow) / RScalar (scalar-tag) carry no dict: emit the no-op i31
--- witness (dict tag 0), mirroring llvm_emit's `dictWordOfRoute (RLocal _) = "0"`.
-routeWitness _ _ _ (RLocal _) = ["i32.const 0", "ref.i31"]
+-- S-1: RLocal's own dicts are the call's leading dict ARGS (pushed by emitMethodRef's
+-- RLocal arm via emitDictRef), not a dict WITNESS for this route — so as a witness it
+-- stays the no-op i31 (dict tag 0), mirroring llvm_emit's
+-- `dictWordOfRoute (RLocal _ _) = "0"`.  RScalar (scalar-tag) likewise.
+routeWitness _ _ _ (RLocal _ _) = ["i32.const 0", "ref.i31"]
 routeWitness _ _ _ (RScalar _) = ["i32.const 0", "ref.i31"]
 
 -- a constrained-function occurrence applied to `args`: prepend the materialized
@@ -6455,11 +6466,12 @@ freeVarsRoute bound (RDict d) = if contains d bound then [] else [d]
 freeVarsRoute bound (RDictFwd d) = if contains d bound then [] else [d]
 freeVarsRoute bound (RKey _ rs) = flatMap (freeVarsRoute bound) rs
 freeVarsRoute bound RNone = []
--- RLocal (P0-18 method-shadow → direct call to a top-level standalone) and RScalar
--- (a scalar-tag route from CBinPrim arithmetic) carry NO captured local — the target
--- is a global symbol / scalar tag, never a closed-over variable.  Mirrors llvm_emit's
--- methValDictNames (`_ => []`): RKey/RNone/RLocal/RScalar capture nothing.
-freeVarsRoute _ (RLocal _) = []
+-- S-1 (wasm peer of llvm_emit's methValDictNames RLocal arm): an RLocal route's TARGET
+-- is a global symbol, but its DICT slots can hold an RDict — the enclosing constrained
+-- fn's own dict param, a genuine captured local.  Recurse into them.  Empty dicts (every
+-- unconstrained standalone) ⇒ [] ⇒ byte-identical to the pre-S1 arm.  RScalar (a
+-- scalar-tag route from CBinPrim arithmetic) still captures nothing.
+freeVarsRoute bound (RLocal _ dicts) = flatMap (freeVarsRoute bound) dicts
 freeVarsRoute _ (RScalar _) = []
 
 -- free vars of a CLetGroup binding's clauses (each clause's params are locally bound).
@@ -8448,7 +8460,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDict" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDictFwd" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RNone arg-tag dispatch for '")) (EVar "name")) (ELit (LString "' is out of slice")))))
-(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))))
+(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EVar "isEmpty") (EVar "dicts")) (EBlock (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDictRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "target")) (EVar "dicts")) (EVar "args"))))))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RScalar" PWild) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RScalar route for method '")) (EVar "name")) (ELit (LString "' is out of slice")))))
 (DTypeSig false "emitMethodDispatchRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitMethodDispatchRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "dpar") (PVar "args")) (EBlock (DoLet false false (PVar "impls") (EApp (EApp (EVar "methodImpls") (EVar "prog")) (EVar "name"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoLet false false (PVar "tagRead") (EApp (EApp (EApp (EVar "readDictParam") (EVar "prog")) (EVar "env")) (EVar "dpar"))) (DoLet false false (PVar "blk") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$disp_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "d")))) (ELit (LString "")))) (DoLet false false (PVar "chain") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDispatchChain") (EVar "prog")) (EVar "name")) (EVar "impls")) (EVar "blk")) (EVar "tagRead")) (EVar "dpar")) (EVar "argInstrs")) (EApp (EVar "listLen") (EVar "args")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "block ")) (EVar "blk")) (ELit (LString " (result (ref eq))")))) (EApp (EVar "indent") (EVar "chain"))) (EListLit (ELit (LString "unreachable")) (ELit (LString "end")))))))
@@ -8469,7 +8481,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDict" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDictFwd" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RNone")) (EApp (EVar "gapL") (ELit (LString "wasm W5: RNone route as a dict witness"))))
-(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
+(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RScalar" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DTypeSig false "emitDictRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitDictRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "routes") (PVar "args")) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EApp (EVar "progFnNames") (EVar "prog"))) (EBlock (DoLet false false (PVar "dictWords") (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "routeWitness") (EVar "prog")) (EVar "env")) (EVar "d"))) (EVar "routes"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "name"))))))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: CDict over unknown function '")) (EVar "name")) (ELit (LString "'"))))))
@@ -9232,7 +9244,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RDictFwd" (PVar "d"))) (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "bound")) (EListLit) (EListLit (EVar "d"))))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RKey" PWild (PVar "rs"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "rs")))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RNone")) (EListLit))
-(DFunDef false "freeVarsRoute" (PWild (PCon "RLocal" PWild)) (EListLit))
+(DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "dicts")))
 (DFunDef false "freeVarsRoute" (PWild (PCon "RScalar" PWild)) (EListLit))
 (DTypeSig false "freeVarsClauses" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CBind") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "freeVarsClauses" ((PVar "bound") (PCon "CBind" PWild (PVar "clauses"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsClause") (EVar "bound"))) (EVar "clauses")))
@@ -10435,7 +10447,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDict" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDictFwd" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RNone arg-tag dispatch for '")) (EVar "name")) (ELit (LString "' is out of slice")))))
-(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))))
+(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EMethodRef "isEmpty") (EVar "dicts")) (EBlock (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDictRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "target")) (EVar "dicts")) (EVar "args"))))))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RScalar" PWild) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RScalar route for method '")) (EVar "name")) (ELit (LString "' is out of slice")))))
 (DTypeSig false "emitMethodDispatchRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitMethodDispatchRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "dpar") (PVar "args")) (EBlock (DoLet false false (PVar "impls") (EApp (EApp (EVar "methodImpls") (EVar "prog")) (EVar "name"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoLet false false (PVar "tagRead") (EApp (EApp (EApp (EVar "readDictParam") (EVar "prog")) (EVar "env")) (EVar "dpar"))) (DoLet false false (PVar "blk") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$disp_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "d")))) (ELit (LString "")))) (DoLet false false (PVar "chain") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDispatchChain") (EVar "prog")) (EVar "name")) (EVar "impls")) (EVar "blk")) (EVar "tagRead")) (EVar "dpar")) (EVar "argInstrs")) (EApp (EVar "listLen") (EVar "args")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "block ")) (EVar "blk")) (ELit (LString " (result (ref eq))")))) (EApp (EVar "indent") (EVar "chain"))) (EListLit (ELit (LString "unreachable")) (ELit (LString "end")))))))
@@ -10456,7 +10468,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDict" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDictFwd" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RNone")) (EApp (EVar "gapL") (ELit (LString "wasm W5: RNone route as a dict witness"))))
-(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
+(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RScalar" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DTypeSig false "emitDictRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitDictRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "routes") (PVar "args")) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EApp (EVar "progFnNames") (EVar "prog"))) (EBlock (DoLet false false (PVar "dictWords") (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "routeWitness") (EVar "prog")) (EVar "env")) (EVar "d"))) (EVar "routes"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "name"))))))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: CDict over unknown function '")) (EVar "name")) (ELit (LString "'"))))))
@@ -11219,7 +11231,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RDictFwd" (PVar "d"))) (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "bound")) (EListLit) (EListLit (EVar "d"))))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RKey" PWild (PVar "rs"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "rs")))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RNone")) (EListLit))
-(DFunDef false "freeVarsRoute" (PWild (PCon "RLocal" PWild)) (EListLit))
+(DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "dicts")))
 (DFunDef false "freeVarsRoute" (PWild (PCon "RScalar" PWild)) (EListLit))
 (DTypeSig false "freeVarsClauses" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CBind") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "freeVarsClauses" ((PVar "bound") (PCon "CBind" PWild (PVar "clauses"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsClause") (EVar "bound"))) (EVar "clauses")))

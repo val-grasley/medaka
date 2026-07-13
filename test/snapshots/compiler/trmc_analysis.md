@@ -1,5 +1,5 @@
 # META
-source_lines=945
+source_lines=952
 stages=DESUGAR,MARK
 # SOURCE
 -- TRMC eligibility analysis (TRMC-DESIGN.md §"Phase 1 scope" + §"Backend portability").
@@ -108,6 +108,13 @@ routeDictNames _ [] = []
 routeDictNames b ((RDict d)::rest) = (if contains d b then [] else [d])
   ++ routeDictNames b rest
 routeDictNames b ((RDictFwd d)::rest) = (if contains d b then [] else [d])
+  ++ routeDictNames b rest
+-- S-1: an RLocal route carries the shadowing standalone's OWN constraint dicts, and
+-- one of those slots can be an RDict — a constrained caller forwarding its own dict
+-- param into the standalone (`outer : Num a => a -> a; outer v = size v`).  That name
+-- is a genuine free local: recurse.  Empty dicts (every unconstrained standalone) ⇒
+-- [] ⇒ byte-identical to the pre-S1 catch-all.
+routeDictNames b ((RLocal _ dicts)::rest) = routeDictNames b dicts
   ++ routeDictNames b rest
 routeDictNames b (_::rest) = routeDictNames b rest
 
@@ -993,6 +1000,7 @@ anyListM p (x::rest) =
 (DFunDef false "routeDictNames" (PWild (PList)) (EListLit))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RDict" (PVar "d")) (PVar "rest"))) (EBinOp "++" (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "b")) (EListLit) (EListLit (EVar "d"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RDictFwd" (PVar "d")) (PVar "rest"))) (EBinOp "++" (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "b")) (EListLit) (EListLit (EVar "d"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
+(DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RLocal" PWild (PVar "dicts")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "dicts")) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest")))
 (DTypeSig true "freeVarsFields" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "freeVarsFields" (PWild (PList)) (EListLit))
@@ -1358,6 +1366,7 @@ anyListM p (x::rest) =
 (DFunDef false "routeDictNames" (PWild (PList)) (EListLit))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RDict" (PVar "d")) (PVar "rest"))) (EBinOp "++" (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "b")) (EListLit) (EListLit (EVar "d"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RDictFwd" (PVar "d")) (PVar "rest"))) (EBinOp "++" (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "b")) (EListLit) (EListLit (EVar "d"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
+(DFunDef false "routeDictNames" ((PVar "b") (PCons (PCon "RLocal" PWild (PVar "dicts")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "dicts")) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest"))))
 (DFunDef false "routeDictNames" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "routeDictNames") (EVar "b")) (EVar "rest")))
 (DTypeSig true "freeVarsFields" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "freeVarsFields" (PWild (PList)) (EListLit))

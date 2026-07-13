@@ -40,8 +40,12 @@ routeSexp RNone = "RNone"
 routeSexp (RKey k _) = node "RKey" [escStr k]
 routeSexp (RDict d) = node "RDict" [escStr d]
 routeSexp (RDictFwd d) = node "RDictFwd" [escStr d]
-routeSexp (RLocal "") = "RLocal"
-routeSexp (RLocal s) = node "RLocal" [escStr s]
+-- S-1: the dict list is DROPPED here, exactly as RKey's nested requires-routes are
+-- (`RKey k _` above) — the S-expr form is a debug/golden projection, not a faithful
+-- round-trip of the route.  Keeping it lossy holds every core_ir_sexp golden
+-- byte-identical across the S-1 route widening.
+routeSexp (RLocal "" _) = "RLocal"
+routeSexp (RLocal s _) = node "RLocal" [escStr s]
 routeSexp (RScalar s) = node "RScalar" [escStr s]
 
 -- ── CExpr ─────────────────────────────────────────────────────────────────────

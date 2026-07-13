@@ -1,5 +1,5 @@
 # META
-source_lines=2919
+source_lines=2931
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -864,7 +864,7 @@ routeTag env (RDict d) = match lookupEnv env d
 routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
-routeTag _ (RLocal _) = ""
+routeTag _ (RLocal _ _) = ""
 -- RScalar tags an arithmetic EBinOp for the backend's Float path; it is never a
 -- typeclass dispatch route, so eval never routes a method through it.
 routeTag _ (RScalar _) =
@@ -894,7 +894,12 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
-dictOfRoute _ (RLocal _) = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
+-- S-1: an RLocal route's OWN dicts (the shadowing standalone's `=>` constraints) are
+-- applied by evalMethodAt's RLocal arm via applyDicts — they are the call's leading
+-- dict ARGS, not a dict witness FOR this route.  So as a *witness* RLocal is still the
+-- no-op dict.  (Pre-S1 this arm's comment claimed "RLocal never carries a dict"; that
+-- invariant was the S-1 bug and is now false — see ast.mdk's Route doc + S9.)
+dictOfRoute _ (RLocal _ _) = VDict "" []
 -- RScalar is an arithmetic binop tag (backend Float path), never a dict route.
 dictOfRoute _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -922,7 +927,7 @@ methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
 -- RLocal: not a method dispatch — the EMethodAt arm resolves the standalone
 -- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
 -- exists only to keep the match exhaustive; it returns the value unnarrowed.
-methodAtNarrow _ v (RLocal _) = (v, [])
+methodAtNarrow _ v (RLocal _ _) = (v, [])
 -- RScalar is an arithmetic binop tag (backend Float path), never a dispatch route.
 methodAtNarrow _ _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -1077,8 +1082,15 @@ eval _ _ = panic "eval: unsupported node (slice 2)"
 evalMethodAt : EvalEnv (Value e) -> String -> Route -> List Route -> List Route -> <Mut | e> Value e
 -- P0-18: the carried String is the MANGLED standalone symbol on the emit path;
 -- "" (the un-mangled run/check path) falls back to the bare method name.
-evalMethodAt env name (RLocal sym) _ _ =
-  lookupEnv env (if sym == "" then name else sym)
+-- S-1: apply the standalone's OWN constraint dicts as leading args (`dicts` is empty
+-- for an unconstrained standalone ⇒ applyDicts is the identity ⇒ byte-identical to
+-- the pre-S1 bare lookupEnv).  A CONSTRAINED standalone was given leading dict PARAMS
+-- by dictPassDecl, so without this the call under-applies by exactly one word per
+-- constraint and the first real argument lands in the dict slot.  This is literally
+-- the EDictAt arm's body (`applyDicts env (lookupEnv env name) routes`) — the same
+-- machinery, now reachable from the shadow arm that the marking prePass consumes.
+evalMethodAt env name (RLocal sym dicts) _ _ =
+  applyDicts env (lookupEnv env (if sym == "" then name else sym)) dicts
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
   let (narrowed, fwdReqs0) = methodAtNarrow env lm route
@@ -3323,7 +3335,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "routeTag" (PWild (PCon "RKey" (PVar "key") PWild)) (EVar "key"))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
-(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild)) (ELit (LString "")))
+(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild PWild)) (ELit (LString "")))
 (DFunDef false "routeTag" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "applyDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "applyDicts" (PWild (PVar "v") (PList)) (EVar "v"))
@@ -3336,14 +3348,14 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" (PWild (PCon "RNone")) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
-(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
+(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
 (DFunDef false "dictOfRoute" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "methodAtNarrow" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyCon "Route") (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RNone")) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RKey" (PVar "key") PWild)) (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EListLit)))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
-(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild)) (ETuple (EVar "v") (EListLit)))
+(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild PWild)) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig false "oneOrMultiV" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "oneOrMultiV" ((PList (PVar "v")) PWild) (EVar "v"))
@@ -3417,7 +3429,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "eval" (PWild PWild) (EApp (EVar "panic") (ELit (LString "eval: unsupported node (slice 2)"))))
 (DTypeSig false "evalMethodAt" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
-(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) PWild PWild) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))))
+(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route")))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EVar "implRoutes"))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
@@ -4630,7 +4642,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "routeTag" (PWild (PCon "RKey" (PVar "key") PWild)) (EVar "key"))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
-(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild)) (ELit (LString "")))
+(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild PWild)) (ELit (LString "")))
 (DFunDef false "routeTag" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "applyDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "applyDicts" (PWild (PVar "v") (PList)) (EVar "v"))
@@ -4643,14 +4655,14 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" (PWild (PCon "RNone")) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
-(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
+(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
 (DFunDef false "dictOfRoute" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "methodAtNarrow" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyCon "Route") (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RNone")) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RKey" (PVar "key") PWild)) (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EListLit)))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
-(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild)) (ETuple (EVar "v") (EListLit)))
+(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild PWild)) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig false "oneOrMultiV" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "oneOrMultiV" ((PList (PVar "v")) PWild) (EVar "v"))
@@ -4724,7 +4736,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "eval" (PWild PWild) (EApp (EVar "panic") (ELit (LString "eval: unsupported node (slice 2)"))))
 (DTypeSig false "evalMethodAt" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
-(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) PWild PWild) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))))
+(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route")))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EVar "implRoutes"))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
