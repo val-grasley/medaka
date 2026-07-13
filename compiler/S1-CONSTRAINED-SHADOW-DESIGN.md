@@ -1,8 +1,14 @@
 # S-1 — a CONSTRAINED definer-shadow standalone is miscompiled
 
-**Status:** design, read-only. Diagnosed empirically on `main` (`d23de250`), traced through
+**Status:** IMPLEMENTED — `ee0593bd`, 2026-07-14. The fix ships in the same PR as this
+design (`RLocal String (List Route)`; new `SHADOW-SEMANTICS.md` clause S9). One residual
+remains OPEN — `S1-RESIDUAL-B` (imported constrained shadow on an *ungrounded* receiver;
+`inferShadowApp` lacks the P0-20 `groundShadowReceiver` call its definer peer has), tracked
+in `SHADOW-SEMANTICS.md` §6. `S1-RESIDUAL-A` (value position) appears CLOSED by this change
+and is pending confirmation. Diagnosed empirically on `main` (`d23de250`), traced through
 the source, not taken from the filing. **Peer docs:** `SHADOW-SEMANTICS.md` (the S1–S8
-conformance spec + decision matrix), `.claude/workstreams/COMPILER-SOUNDNESS.md` (S-1's filing).
+conformance spec + decision matrix), `SHADOW-INVERSION-DESIGN.md` (the S2 inversion, for
+which this fix is a hard prerequisite), `.claude/workstreams/COMPILER-SOUNDNESS.md`.
 
 ---
 
