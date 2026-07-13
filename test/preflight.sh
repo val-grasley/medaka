@@ -84,21 +84,13 @@ add() { case " $pats " in *" $1 "*) ;; *) pats="$pats $1" ;; esac; }
 # by naming convention also rots the same way a hand-maintained map does: every
 # new gate with a novel name needs a new entry.
 #
-# So: the universe is EVERY test/*.sh and test/wasm/*.sh file, MINUS a short,
-# stable EXCLUDE list of scripts that are infra (build/capture/orchestrate/
-# profile), not pass/fail regression gates over a fixture corpus. This list is
-# far more stable than an include-list would be — a new *gate* is added
+# So: the universe is EVERY GATE, MINUS the scripts that are infra (build/capture/
+# orchestrate/profile) rather than pass/fail regression gates over a corpus. An
+# EXCLUDE-list is far more stable than an include-list — a new *gate* is added
 # constantly; a new *infra utility* is not.
-#   build_oracles.sh / build_wasm_oracle.sh / build_native_medaka.sh  — build probes/binaries
-#   capture_goldens.sh   — explicitly documented "never in the gate loop" (WRITES fixtures)
-#   refresh_seed.sh      — seed maintenance
-#   run_gates.sh         — the runner itself
-#   preflight.sh         — this script
-#   profile_compiler.sh / bench.sh — timing/profiling harnesses, not pass/fail
-#   tmc_census.sh        — inspection helper wrapped by diff_compiler_tmc_parity.sh
-#                          (its own header: "run standalone to inspect"); its
-#                          corpus reference is still picked up via the one-hop
-#                          _invokes check on the gate that wraps it
+#
+# ⚠️ The exclude-list is NOT written here. It is test/CI-COVERAGE-TOOLS.txt — see
+# _gate_candidates below for why a second copy of it in this file was itself a bug.
 # ── THE GATE UNIVERSE: every TRACKED .sh in the repo that is not a TOOL ───────
 #
 # This used to enumerate `test/*.sh` + `test/wasm/*.sh`, filtered by a hand-written
@@ -321,10 +313,18 @@ for f in $changed; do
       else
         _gset="$(_gates_for_fixture_dir "$_fdir")"
         if [ -z "$_gset" ]; then
-          echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every test/*.sh and test/wasm/*.sh gate — see _NONGATE for the small infra exclude list — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the full diff_compiler_* suite for safety."
+          echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every tracked gate script in the repo — every .sh not listed in test/CI-COVERAGE-TOOLS.txt, which now includes sqlite/test/, test/native_fixtures/ and playground/e2e/ — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the full diff_compiler_* suite for safety."
           add 'diff_compiler_*'
         else
-          printf 'preflight: %s → %s\n' "$_fdir" "$(printf '%s\n' "$_gset" | xargs -n1 basename | tr '\n' ' ')"
+          # Report each fixture dir ONCE, however many of its files changed. Adding a
+          # .mdk plus its .expected golden is the normal case and printed the same
+          # derivation line twice, which reads like the derivation ran twice.
+          case " ${_reported_dirs:-} " in
+            *" $_fdir "*) ;;
+            *) _reported_dirs="${_reported_dirs:-} $_fdir"
+               printf 'preflight: %s → %s\n' "$_fdir" \
+                 "$(printf '%s\n' "$_gset" | xargs -n1 basename | tr '\n' ' ')" ;;
+          esac
           for _g in $_gset; do
             _pat="${_g#"$ROOT"/test/}"
             add "${_pat%.sh}"
