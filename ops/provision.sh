@@ -27,11 +27,16 @@ export DEBIAN_FRONTEND=noninteractive
 log() { printf '\n== %s ==\n' "$*"; }
 
 # 1. Toolchain — the docker/Dockerfile set + Node 24 (wasm/sqlite/playground gates).
-log "installing toolchain (clang, libgc, node 24, ...)"
+#    `sqlite3` is the differential ORACLE for every sqlite/test/*_oracle.sh; without
+#    it those 18 gates die on the first CREATE TABLE. `wasm-tools` is what every wasm
+#    gate shells out to (test/build_wasm_cmd.sh); without it they all report "skipping"
+#    and exit 0 — a silent no-op that reads as green. Both were missing on the first
+#    provisioned box.
+log "installing toolchain (clang, libgc, node 24, sqlite3, ...)"
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \
   clang libgc-dev libc6-dev make bash perl coreutils gzip git \
-  pkg-config python3 rsync ca-certificates curl
+  pkg-config python3 rsync ca-certificates curl sqlite3
 NODE_MAJOR="$(node -v 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')"
 if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 24 ]; then
   # NodeSource setup, piped safe for both root ($SUDO empty) and sudo users —
@@ -39,6 +44,17 @@ if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 24 ]; then
   curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh
   $SUDO bash /tmp/nodesource_setup.sh
   $SUDO apt-get install -y nodejs
+fi
+
+# wasm-tools — no apt package and no Rust toolchain here, so take the upstream
+# prebuilt release binary.
+if ! command -v wasm-tools >/dev/null 2>&1; then
+  WT_VER=1.219.1
+  WT_TGZ="/tmp/wasm-tools-${WT_VER}.tar.gz"
+  curl -fsSL -o "$WT_TGZ" \
+    "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WT_VER}/wasm-tools-${WT_VER}-x86_64-linux.tar.gz"
+  tar xzf "$WT_TGZ" -C /tmp
+  $SUDO install -m755 "/tmp/wasm-tools-${WT_VER}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
 fi
 
 # 2. Clone — private repo, so this needs your forwarded ssh-agent (ssh -A).

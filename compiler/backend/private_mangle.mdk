@@ -677,7 +677,7 @@ renameScoped rm bound (EIf c t e) =
     (renameScoped rm bound e)
 renameScoped rm bound (EBinOp op l r dr) =
   EBinOp op (renameScoped rm bound l) (renameScoped rm bound r) dr
-renameScoped rm bound (EUnOp op x) = EUnOp op (renameScoped rm bound x)
+renameScoped rm bound (EUnOp op x dr) = EUnOp op (renameScoped rm bound x) dr
 renameScoped rm bound (EInfix op l r) =
   EInfix op (renameScoped rm bound l) (renameScoped rm bound r)
 renameScoped rm bound (EFieldAccess e0 n r) =

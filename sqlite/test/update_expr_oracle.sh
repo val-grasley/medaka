@@ -32,13 +32,12 @@ DBS="$TMP/sqlite.db"   # mutated by the sqlite3 CLI (the oracle)
 trap 'rm -rf "$TMP"' EXIT
 
 MEDAKA="$ROOT/medaka"
-PROBE="$ROOT/update_expr_demo"
+PROBE="$TMP/update_expr_probe"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
 # 1. Build the Medaka arithmetic-UPDATE probe binary.
-"$MEDAKA" build --allow-internal sqlite/update_expr_demo.mdk >/dev/null
-mv -f "$ROOT/update_expr_demo" "$PROBE"
+"$MEDAKA" build --allow-internal sqlite/update_expr_demo.mdk -o "$PROBE" >/dev/null
 
 # 2. Seed the database (one file, eight tables).  ids start at 1 so `id >= 0`
 #    used inside the probe is a full-table WHERE.

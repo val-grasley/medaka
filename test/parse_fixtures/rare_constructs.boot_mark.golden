@@ -6,7 +6,7 @@
 (DFunDef false "arrRangeIncl" () (ERangeArray (ELit (LInt 0)) (ELit (LInt 9)) true))
 (DFunDef false "sliceIt" ((PVar "xs")) (ESlice (EVar "xs") (ELit (LInt 1)) (ELit (LInt 3)) false))
 (DFunDef false "sliceInclIt" ((PVar "xs")) (ESlice (EVar "xs") (ELit (LInt 1)) (ELit (LInt 3)) true))
-(DFunDef false "indexIt" ((PVar "xs")) (EIndex (EVar "xs") (ELit (LInt 0))))
+(DFunDef false "indexIt" ((PVar "xs")) (EApp (EApp (EMethodRef "index") (EVar "xs")) (ELit (LInt 0))))
 (DFunDef false "grade" ((PVar "n")) (EMatch (EVar "n") (arm (PRng (LInt 0) (LInt 59) false) () (ELit (LString "F"))) (arm (PRng (LInt 60) (LInt 100) true) () (ELit (LString "P")))))
 (DFunDef false "vowelKind" ((PVar "c")) (EMatch (EVar "c") (arm (PRng (LChar "a") (LChar "z") false) () (ELit (LString "lower"))) (arm PWild () (ELit (LString "other")))))
 (DFunDef false "counter" () (EBlock (DoLet false false (PVar "a") (EApp (EVar "Ref") (ELit (LInt 0)))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "a")) (EBinOp "+" (EFieldAccess (EVar "a") "value") (ELit (LInt 1))))) (DoExpr (EFieldAccess (EVar "a") "value"))))

@@ -1306,7 +1306,7 @@ childExprs (ELet _ _ _ e1 e2) = [e1, e2]
 childExprs (EMatch s arms) = s :: flatMap armExprs arms
 childExprs (EIf c t el) = [c, t, el]
 childExprs (EBinOp _ a b _) = [a, b]
-childExprs (EUnOp _ a) = [a]
+childExprs (EUnOp _ a _) = [a]
 childExprs (EInfix _ a b) = [a, b]
 childExprs (EFieldAccess e _ _) = [e]
 childExprs (ETuple es) = es
@@ -1402,7 +1402,7 @@ rewriteBindExpr orc (EIf c t el) =
   EIf (rewriteBindExpr orc c) (rewriteBindExpr orc t) (rewriteBindExpr orc el)
 rewriteBindExpr orc (EBinOp op a b r) =
   EBinOp op (rewriteBindExpr orc a) (rewriteBindExpr orc b) r
-rewriteBindExpr orc (EUnOp op a) = EUnOp op (rewriteBindExpr orc a)
+rewriteBindExpr orc (EUnOp op a r) = EUnOp op (rewriteBindExpr orc a) r
 rewriteBindExpr orc (EInfix op a b) =
   EInfix op (rewriteBindExpr orc a) (rewriteBindExpr orc b)
 rewriteBindExpr orc (EFieldAccess e f r) =
@@ -1692,7 +1692,7 @@ rewriteLamExpr (EIf c t el) =
   EIf (rewriteLamExpr c) (rewriteLamExpr t) (rewriteLamExpr el)
 rewriteLamExpr (EBinOp op a b r) =
   EBinOp op (rewriteLamExpr a) (rewriteLamExpr b) r
-rewriteLamExpr (EUnOp op a) = EUnOp op (rewriteLamExpr a)
+rewriteLamExpr (EUnOp op a r) = EUnOp op (rewriteLamExpr a) r
 rewriteLamExpr (EInfix op a b) = EInfix op (rewriteLamExpr a) (rewriteLamExpr b)
 rewriteLamExpr (EFieldAccess e f r) = EFieldAccess (rewriteLamExpr e) f r
 rewriteLamExpr (ETuple es) = ETuple (map rewriteLamExpr es)
@@ -1930,7 +1930,7 @@ rewriteIfMaxMinExpr (EIf c t el) =
     (rewriteIfMaxMinExpr el)
 rewriteIfMaxMinExpr (EBinOp op a b r) =
   EBinOp op (rewriteIfMaxMinExpr a) (rewriteIfMaxMinExpr b) r
-rewriteIfMaxMinExpr (EUnOp op a) = EUnOp op (rewriteIfMaxMinExpr a)
+rewriteIfMaxMinExpr (EUnOp op a r) = EUnOp op (rewriteIfMaxMinExpr a) r
 rewriteIfMaxMinExpr (EInfix op a b) =
   EInfix op (rewriteIfMaxMinExpr a) (rewriteIfMaxMinExpr b)
 rewriteIfMaxMinExpr (EFieldAccess e f r) =
@@ -2195,7 +2195,8 @@ rewriteAndThenPureMapExpr (EIf c t el) =
     (rewriteAndThenPureMapExpr el)
 rewriteAndThenPureMapExpr (EBinOp op a b r) =
   EBinOp op (rewriteAndThenPureMapExpr a) (rewriteAndThenPureMapExpr b) r
-rewriteAndThenPureMapExpr (EUnOp op a) = EUnOp op (rewriteAndThenPureMapExpr a)
+rewriteAndThenPureMapExpr (EUnOp op a r) =
+  EUnOp op (rewriteAndThenPureMapExpr a) r
 rewriteAndThenPureMapExpr (EInfix op a b) =
   EInfix op (rewriteAndThenPureMapExpr a) (rewriteAndThenPureMapExpr b)
 rewriteAndThenPureMapExpr (EFieldAccess e f r) =
@@ -2336,7 +2337,7 @@ mapChildExprs g (ELet m isf p e1 e2) = ELet m isf p (g e1) (g e2)
 mapChildExprs g (EMatch s arms) = EMatch (g s) (map (mapChildArm g) arms)
 mapChildExprs g (EIf c t el) = EIf (g c) (g t) (g el)
 mapChildExprs g (EBinOp op a b r) = EBinOp op (g a) (g b) r
-mapChildExprs g (EUnOp op a) = EUnOp op (g a)
+mapChildExprs g (EUnOp op a r) = EUnOp op (g a) r
 mapChildExprs g (EInfix op a b) = EInfix op (g a) (g b)
 mapChildExprs g (EFieldAccess e f r) = EFieldAccess (g e) f r
 mapChildExprs g (ETuple es) = ETuple (map g es)
@@ -2495,7 +2496,7 @@ noExcl _ = False
 -- return the negated operand `X`.  `not` parses to `EApp (EVar "not") X`.
 notArgOf : Expr -> Option Expr
 notArgOf (EApp hd x) = if isEVarNamed "not" hd then Some x else None
-notArgOf (EUnOp "!" x) = Some x
+notArgOf (EUnOp "!" x _) = Some x
 notArgOf _ = None
 
 -- build `not e` in the canonical `not <e>` (prelude fn) form the printer renders.

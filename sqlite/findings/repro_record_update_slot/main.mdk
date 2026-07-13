@@ -1,0 +1,12 @@
+import lib.a.{Sel, mkSel}
+
+-- `groupBy` is the FIRST field here (slot 0) — same NAME, different SLOT
+data Agg = Agg { groupBy : List Int, n : Int }
+
+withGroupBy : List Int -> Agg -> Agg
+withGroupBy cols q = { q | groupBy = cols }
+
+main : <IO> Unit
+main =
+  let a = withGroupBy [3] Agg { groupBy = [], n = 1 }
+  println "\{debug mkSel.groupBy} \{debug a.groupBy}"

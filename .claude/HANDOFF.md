@@ -1,11 +1,170 @@
 # Next-orchestrator handoff — Medaka, WasmGC backend + soak (2026-06-19)
 
+## RESUME — 🗄️ THE SQLITE LIBRARY NOW SPEAKS SQL + the dogfood flushed 10 compiler bugs (2 P0 silent miscompiles, 1 P0 `fmt` corrupting source). Branch `sqlite-arc`, merged to main. (2026-07-13)
+
+Ran the **SQLite workstream** in parallel with a compiler orchestrator (they owned `compiler/`, I owned `sqlite/` + docs). Everything was **pure-library**, so no fixpoint / seed re-mint was ever owed. All five sub-agents ran in isolated worktrees, each independently gated + merged.
+
+### ⭐ DO-FIRST
+- **`bash sqlite/findings/verify_compiler_bugs.sh` — the bug list is SELF-CHECKING.** It re-runs every repro against the current `./medaka`, prints OPEN/FIXED per bug, **and prints the `WORKAROUND(id)` sites in the library to revert when one closes**. Do NOT trust the prose in `COMPILE R-BUGS.md`; run the script. It already caught B1 being fixed upstream mid-session (`ced6342d`), and I reverted that workaround.
+- **⚠️ B10 is a live footgun: `medaka fmt --write` DESTROYS SOURCE.** A float literal ≥ 1e15 is rewritten to scientific notation that **the lexer cannot read back** (it rejects every exponent form). `fmt --check` runs in the **pre-commit hook**, so the hook tells you to run the command that corrupts your file. Latent only because no committed `.mdk` currently holds such a literal. **AGENTS.md's "fmt is safe, 0 corruptions repo-wide" is a claim about the CORPUS, not the tool.**
+- **The whole test suite is blind to build-only bugs — every doctest runs under the interpreter.** The SQL parser shipped 32/32 green doctests while *every arithmetic operator in its grammar* was silently miscompiled in the native binary. **A differential `run`-vs-`build` gate over the existing doctest corpus would have caught 4 of these 10 for free.** Strongly recommended.
+
+### WHAT SHIPPED (all merged; 22/0 native oracles vs the real `sqlite3` CLI, 11/0 WasmGC tandem)
+`medaka run sqlite/main.mdk db.sqlite "<any SQL>"` now creates, queries and mutates a real `.sqlite` that `sqlite3` validates (`integrity_check=ok`) and reads back byte-identically.
+- **SQL front end** — `sqlparse.mdk` (expressions; built on the `parsec` dogfood lib via a cross-project dep) → `sqlstmt.mdk` (SELECT/INSERT/UPDATE/DELETE/CREATE TABLE) → `sqlexec.mdk` + `schemadef.mdk` → `main.mdk` CLI. Unsupported SQL = clean `Err`, **never a silently dropped clause**.
+- **Query engine UNIFIED** (the big design fix): `Select` + `AggQuery` were two disjoint ADTs/executors — no aggregates over joins, no ORDER BY/LIMIT on aggregates, and aggregates were smuggled as **fake column names** (`eCountStar = ECol "count(*)"`). Now one `Select`, one executor, real pipeline, genuine `EAgg` node. Dissolved the "ORDER BY can't reference a computed column" limitation for free. `AggQuery` kept as a shim → every prior oracle passed untouched.
+- **Overflow pages read+write.** Reads were **silently corrupting** payloads past the local/overflow boundary (correct length, wrong bytes — the "out of scope" comments were stale, and my own spot-check was too coarse to see it; an agent's byte-level `cmp` caught it). Removed the **mutate wall**: UPDATE/DELETE rewrite the whole file, so one >4 KB row used to make *every* mutation on that table fail.
+- **Expression surface**: `||`, `LIKE`, `IN`, `BETWEEN`, `CASE`, `COALESCE`/`IFNULL`, `TRUE`/`FALSE`, scalar string fns — NULL semantics pinned against `sqlite3` (120 SQL strings, 0 diffs).
+
+### 🐛 THE DOGFOOD YIELD → `sqlite/findings/COMPILER-BUGS.md` (10 bugs; 1 already closed)
+2 P0 **silent** build miscompiles (partially-applied constructor — **FIXED upstream**; cross-module record **update** writing the wrong slot — OPEN), P0 `fmt` source corruption, `check`-accepts/`build`-rejects (`deriving (Eq)` over an `Array` field — and **`lint` recommends the unbuildable program**), multi-module `run` not gating type errors (**exit code is 1 either way**, so exit-code tests miss it), `run` dropping stdout on panic, `exit` unbound under `run`, `Float` unable to round-trip through display (**`0.1 + 0.2` prints `0.3`**), and `medaka test` treating a Markdown blockquote as a doctest — which had **silently disabled every doctest in `rowtype.mdk` for months**.
+
+Also found **in our own engine** by feeding real SQL text to both engines: `compilePred` evaluated SQL's 3-valued logic as 2-valued — accidentally right under a top-level WHERE, **wrong under `NOT`**. Every prior oracle hand-built its query as an ADT, so none had ever put a `NOT` over a nullable column.
+
+### 🧠 LANGUAGE DESIGN: `<Mut>` effect masking → `MUT-SCOPING-DESIGN.md` (decision-ready, surfaced in PLAN.md)
+Two independent authors hit the same wall: `<Mut>` is contagious, so a pure fn can't use a local mutable buffer (allocate→fill→freeze is unavailable to pure code). Cost: a duplicated stdlib encoder + an O(chunks×bytes) gather. **The classification question turns out to be settled, and the answer is NEITHER capability NOR purity tracker:** `check_policy.mdk:588` drops `Mut` from the manifest, AND a **pure-TYPED function observably returns two answers across a mutation** (alloc + reads are pure). It's a *writer-discipline marker*. `stdlib/runtime.mdk:190` already ships two **unchecked trusted masks** with a comment naming the missing feature ("Medaka has no effect masking"). Recommends a `mut` block (trusted, with a perimeter check) — and records the tempting `runMut`-no-`Ref`-in-result proposal **with the 3 counterexamples that kill it** (all reproduced on the binary).
+
+### ENV / PROCESS
+- **`sqlite3` and `wasm-tools` were MISSING from this box** — and both fail as *success*: the sqlite oracles die on the first CREATE TABLE, and every wasm gate prints "skipping" and **exits 0** (this was the standing "1 skip" in `run_gates` 78/0/1 — the WasmGC tandem gate had never actually run here). Both added to `ops/provision.sh`.
+- **Two sqlite oracles had NEVER been able to pass** (`update_expr`, `writer_api`): each `mv`'d a binary onto itself. 16/2 → 18/0. (main fixed these independently — same bug, same session.)
+- **Isolated agent worktrees are cut from `main`, NOT from your session branch.** Bake `git reset --hard <branch>` into STEP 0.
+- **Agents disproved the orchestrator twice** (my "overflow read works" was wrong; my `runMut` soundness argument was wrong). Both times the STOP-and-disprove instruction is what caught it. Keep it in every prompt.
+
+### OPEN (next session)
+Library: TEXT-operand arithmetic returns NULL where sqlite3 coerces (`'7'+1`=8 — a **wrong answer**); `rowid` pseudo-column unaddressable; `SELECT` with no `FROM`; then indexes / WITHOUT ROWID / b-tree balancing / transactions+WAL.
+Compiler: the 9 still-OPEN bugs (run the script).
+
+
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
 delegate work to subagents, verify their output against gates, and keep `main` + docs
 coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.md` first`**
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
+
+## RESUME — 🐛 BUG-FINDING SESSION. 3 landings, but the REAL output is a filed bug queue + the discovery that our green signal covered only ~60% of the gates. `main` = `49d8d1d7`. ⚠️ SEED RE-MINT OWED. (2026-07-13)
+
+This session set out to do the `#18` operator-interface arc and ended up mostly finding bugs — several
+severe, all reproduced and root-caused, all filed as tasks with minimal repros. **Read the BUG QUEUE
+below before picking anything up; it is the payload.**
+
+### ⭐ DO-FIRST STATE
+- **`main` = `49d8d1d7`.** Globbed suite `run_gates` **78/0/1**; fixpoint **C3a YES / C3b YES**;
+  compiler source type-clean. Warm `make medaka` fine.
+- **⚠️ SEED RE-MINT IS OWED — cold `bootstrap_from_seed` is RED, and that is EXPECTED, not a break.**
+  `#35` changed the emitter graph (`llvm_emit.mdk` + `wasm_emit.mdk`). I verified cold bootstrap fails.
+  **The re-mint was DELIBERATELY DEFERRED (Val's call)** because the parallel `testing-arc` session is
+  concurrently rewriting `eval.mdk`/`core_ir_eval.mdk`, which would invalidate a re-mint immediately.
+  **Do ONE re-mint after BOTH settle** (`sh test/refresh_seed.sh`, then verify `bash test/bootstrap_from_seed.sh` C3a PASS).
+- **⚠️ TWO ORCHESTRATOR FOOTGUNS BIT ME AT ONCE while verifying `#35` — I nearly rejected a CORRECT fix.**
+  (1) A `cd /root/medaka && …` chain meant my "sync the worktree" step ran in the **primary checkout**, so I
+  rebuilt+tested against **pre-merge source**. Use `git -C <abs-worktree>` for every step. (2) `medaka build`
+  shells out to `./medaka_emitter`, and `make medaka`'s `find -newer` short-circuit can leave that binary NOT
+  carrying a compiler-graph change → **`FORCE_EMITTER_REBUILD=1 make medaka`** when verifying emitter work.
+  **Before blaming an agent for a red repro, confirm the fix is even IN the source you compiled** (`grep` for
+  its new symbol).
+
+### ⭐⭐ THE BIGGEST FINDING — "the tree is green" was measuring ~60% of the tree
+**`test/run_gates.sh` globs ONLY `test/diff_compiler_*.sh`** (`pat="${1:-diff_compiler_*}"`). A read-only audit
+found **~53 real correctness gates OUTSIDE that glob — 10 of them RED**, some for days, unnoticed. This drift has
+now happened TWICE (fixed once by `121ee5147` on 2026-07-07, back 6 days later after the Index arc).
+- **Cleaned up this session (10 red → 3):** `diff_native_cli` 48/107 → **107/0**; `bootstrap_{desugar,mark,typecheck}` → green;
+  `build_cmd` → green; two sqlite oracle scripts that `mv`'d a file **onto itself** and died before running a single
+  test → fixed, both pass.
+- **STILL RED (all filed):** the 4 wasm Index-arc fixtures (`w7_array_*`, real backend gap), `disp_hof_shadows_method`
+  (**a real typecheck REGRESSION**, task #39), and `build_construct_coverage`'s stale `let_else` fixture.
+- **➡️ HIGHEST-LEVERAGE STRUCTURAL TASK: widen `run_gates`** (task in the list) so this stops recurring. The auditor's
+  recommendation (endorsed): don't rename these into `diff_compiler_*` — add a second explicit manifest. Two footguns
+  for whoever does it: the sqlite scripts need **`bash`** (not `sh`) and `MEDAKA_ROOT` exported from the repo root.
+
+### ✅ SHIPPED (all merged, gated, fixpoint YES)
+- **`#35` — ⚠️ SILENT MISCOMPILE, under-applied data constructor — ✅ LLVM FIXED / ❌ WASM STILL BROKEN (REOPENED)** (`d1bbfdcb`).
+  `mkAdd = Bin OAdd` (arity 3, 1 arg), saturated later → `run` correct, `build` produced a **malformed cell**
+  (`E-NONEXHAUSTIVE-MATCH`). Root: `emitApp`'s ctor arm called `emitCtorAlloc` with **no saturation check**, allocating a cell
+  from however many args were present. The comment at `llvm_emit.mdk:5320` *asserted* the invariant ("emitApp only builds the
+  cell when the ctor is SATURATED") and it was never enforced. Fixed via `emitCtorApp` (saturated → unchanged/byte-identical;
+  under → ctor PAP; over → `mdk_apply`). **LLVM half is verified good** (trigger matrix run==build, llvm 196/0, fixpoint YES).
+  **⚠️ THE WASM HALF DOES NOT WORK — see task `#35-wasm`.** `diff_wasm` is **147/5** on main and `ctor_pap_arity` fails
+  `wasm-tools validate` (`type mismatch: expected (ref eq), found i32`) — the exact pre-fix symptom. `emitCtorApp` IS present in
+  `wasm_emit.mdk`, so it's not a lost merge: either the agent measured a stale wasm oracle, or its assumption that "`emitAppTail`
+  routes back through `emitAppRef` so it's covered for free" is wrong. **Independently caught by the `sqlite-arc` session**
+  (`a26a1bef`), not by me.
+  **⭐ HOW I MISSED IT — the session's own lesson, self-inflicted: the wasm gates are OUTSIDE the `run_gates` glob**, so my
+  "78/0/1 green" never covered them and I merged on the agent's self-reported wasm numbers. **Re-run wasm gates yourself, with a
+  freshly-rebuilt wasm oracle** (it timed out once under CPU contention this session — a stale-oracle hazard).
+- **`#18a` — `++` → `Semigroup`** (`5fff0680`). Closed a **build-path SIGSEGV** (the native `++` primitive was
+  memory-unsafe on a non-List/String operand). `++` on a no-`Semigroup` type now rejects at check. `typecheck.mdk`-only:
+  the dict-pass layer rewrites a stamped `EBinOp` → `EMethodAt` **upstream of Core IR**, so eval/LLVM/wasm needed nothing.
+- **`#18c` — unary `-` → `Num.negate`** (`49d8d1d7`). `EUnOp` had **no `Ref Route` field at all**; added one and threaded
+  it through 16 files. `-v` on a user `impl Num` now dispatches to their `negate`; `-s` on a String rejects.
+- **`#24` — tree-wide removed-construct gate** (`d710a226`): `test/check_removed_constructs.sh`. Verified it catches all 7
+  removed constructs and has **0 false positives across 1659 files**. NOT yet enrolled as a ratchet (2 findings open).
+- **Test-corpus cleanup** (`431d4072`): ~66 stale goldens recaptured. Verified by tallying EVERY changed line — 57×`+index`,
+  57×`+setIndex`, 1 orphaned `btick`. Nothing blessed.
+
+### 🐛 THE BUG QUEUE — reproduce-verified, root-caused, ranked by severity
+All have minimal repros in their task descriptions. **The two silent miscompiles are the reason I recommended bugs-before-features.**
+1. **`#38` ⚠️ SILENT MISCOMPILE — record update writes the WRONG record's slot.** Two record types sharing a field name at
+   different slot indices + a `{ r | f = v }` site on each → `build` writes the wrong slot AND tags the cell as the wrong type.
+   `run` correct. Root: `emitRecordUpdate` (`llvm_emit.mdk:~7996`) finds the record **by searching for the first type having a
+   field of that name** (`findRecordByLabel`) — bare-name first-wins, the P0-9 hazard again. **The fix is signposted:**
+   `fieldIdxByName(table, recName, label)` sits directly above and resolves correctly *given a record name*, and the sibling
+   `emitVariantUpdate` takes its ctor name explicitly. `CRecordUpdate` just doesn't carry the receiver type. Check wasm too.
+2. **`#40` ⚠️ multi-module `run` does not gate on CONSTRAINT/missing-impl errors — it EXECUTES the ill-typed program.**
+   Exact repro filed by another session at `sqlite/findings/repro_multimodule_run_typecheck_gap/` (`0ba2a1f7`, `sqlite-arc`).
+   **Three traps that hid it (I initially declared it NOT-REPRODUCIBLE and was WRONG):** must be multi-module (single-file
+   gates correctly); must be a **constraint/missing-impl** error (a plain `Type mismatch` IS gated); and **the exit code is 1
+   either way** — `run` still exits nonzero, just for the wrong reason (unrelated runtime panic). Any "does run reject this?"
+   probe answers yes. Assert on the DIAGNOSTIC and on whether the program EXECUTED.
+3. **`#42` ⚠️ THE FLOAT-FIDELITY ARC — three filed bugs that are ONE problem, and it is ACTIVELY DESTROYING SOURCE.**
+   (a) `floatToString` truncates to ~12 sig digits — `0.1 + 0.2` prints `0.3`, not `0.30000000000000004`. It prints a value that
+   **is not the float you have**; print-then-reparse gives a *different* Float. (b) The **lexer REJECTS scientific-notation float
+   literals** (`1e308` → `Unbound variable: e308`) — long-standing. (c) ⚠️ **Therefore `medaka fmt --write` DESTROYS SOURCE**
+   (B10, verified by `sqlite-arc`, `sqlite/findings/COMPILER-BUGS.md`): `big = 9000000000000000.0` → fmt writes `big = 9e+15`
+   via `floatToString` → **the lexer can't read it back and the file no longer compiles.**
+   **⚠️⚠️ THIS IS LIVE IN OUR OWN WORKFLOW** — the pre-commit hook runs `medaka fmt`, and every agent prompt instructs
+   `medaka fmt --write` before committing. Any `.mdk` with a float ≥ 1e15 is silently destroyed.
+   **They are one arc:** the correct fix for (a) is shortest-round-trip (Ryu/Grisu), and the shortest round-trip of a large float
+   *is* scientific notation — so fixing (a) makes (c) WORSE unless (b) is fixed too. The printer must emit only what the lexer can
+   read. **One property test pins all three: for any Float `f`, `parse(floatToString f) == f` and `lex(print f)` succeeds.**
+   Blast radius: `stdlib/json.mdk` serializes Floats through this (data-corruption path); sqlite Float columns; any Float golden.
+4. **`#39` REGRESSION — `check` wrongly REJECTS a valid program** where a fn PARAMETER shadows a same-named top-level fn
+   (`applyEq eq x y = eq x y`). My hypothesis (BISECT, don't trust it): the **P0-19 shadow work over-firing on a local binder**,
+   NOT the Index arc as the audit guessed. ⚠️ Do NOT fix by weakening P0-19 — it closed two silent-build-garbage holes.
+5. **`#31` `newtype` is ENTIRELY UNUSABLE** — `newtype F = F Int; F 5` → `Unbound variable: F` on check/run/build. It's
+   DOCUMENTED in SYNTAX.md, and the trim removed named impls on the rationale that "newtype-wrappers are the accepted answer".
+   **One missing arm:** `registerData` (`typecheck.mdk:5587`) handles `DData`/`DTypeAlias` and drops `DNewtype` on its catch-all.
+   Everything else in the pipeline already handles `DNewtype`. **Blast radius ~ZERO** (0 uses in `compiler/`+`stdlib/`). Closes 9
+   trimmed test cases + un-skips the parked `newtype_ctor_fn` fixture. **Best value-to-risk item on the board.**
+6. **`#45`** the REAL bug under `#18a`'s regression: **arg-dispatch indices are not re-offset when impl-`requires` dict params
+   are prepended** (Phase 83/84). Consequence: `++`/`-` on an impl's abstract `requires` tyvar stay on the structural builtin
+   (so a user-Monoid `foldMap` still panics — a residual, NOT a regression). Also contains a SECOND latent bug **proven on
+   pristine main**: `binop_parametric_eq` passes only because it's a single-method impl.
+7. Cheaper bites: **`#41`** `run` discards buffered stdout on panic (build flushes) — vicious debugging footgun;
+   **`#44`** doctest extractor eats a Markdown blockquote (the marker IS `>`) → unlocated panic kills EVERY doctest in the file
+   (silently disabled all of `rowtype.mdk`'s for months); **`#37`** derived `Debug` doesn't parenthesize nested ctor args
+   (`B L 1 B L 2 L 3`) so it can't be a tree oracle; **`#36`** parse error in an IMPORTED module reports unlocated;
+   **`#46`** ⚠️ **`capture_goldens.sh` (full run) silently BLANKS a golden** — the tool we use to establish ground truth
+   destroys it; **`#32`** `EVariantUpdate` missing from eval's dispatcher (one arm; helpers already exist).
+
+### 🔀 MERGE TRIAGE — other live sessions (check before you branch)
+- **`testing-arc` OWNS task `#43`** (`exit` unbound under `run`) — and found the whole class: a **37-extern interpreter gap**,
+  plus a capability-coverage gate to prevent recurrence. **Do not spawn that.** It is rewriting `eval.mdk`/`core_ir_eval.mdk`
+  structurally (`data Value e`, "medaka run can do IO"). ⚠️ **`#18c` touched `eval.mdk`** (a mechanical `EUnOp` passthrough arm)
+  — expect a merge conflict there; it is small and mechanical.
+- **`sqlite-arc` is compiler-clean** (confined to `sqlite/` + `test/` + docs; its apparent `typecheck.mdk` diff is a
+  branch-base artifact). It merges clean. It is also the source of several bugs above — it's dogfooding, and it's working.
+
+### PROCESS LEARNINGS (new)
+- **A failed reproduction is NOT evidence of absence until you've checked your probe COULD have seen the bug.** I publicly told
+  Val his `#40` report was stale. It wasn't — my probe was blind to it (wrong error class + exit-code-based assertion). New
+  memory: `feedback_probe_the_diagnostic_not_the_exit_code`.
+- **The orchestrator must run the FULL suite before merging, not just the fast/decisive gates.** I merged `#18a` after the
+  fixpoint + behavioral probes were green, and the full suite then caught a real regression → had to revert main. Green-then-merge,
+  never merge-then-green.
+- **Cross-workstream collisions are invisible to agents.** `#18a` made `1 ++ 2` a (correct) check error, which broke a *layout*
+  fixture that used `++`-on-Int incidentally — and that fixture is only typechecked by a gate OUTSIDE the `run_gates` glob. Neither
+  the agent nor `run_gates` could have caught it. The orchestrator is the only one who can see across.
 
 ## MERGE — 🔀 local Index-arc main ⨝ origin (Netcup move + #35 close). (2026-07-13, last macOS session's final act)
 

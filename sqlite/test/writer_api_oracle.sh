@@ -29,18 +29,16 @@ TMPDIR_LOC="$(mktemp -d)"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-WRITER="$ROOT/writer_api_demo"
-READER="$ROOT/sqlite_reader"
+WRITER="$TMPDIR_LOC/writer_api_probe"
+READER="$TMPDIR_LOC/sqlite_reader"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
 # 1. Build the Medaka writer_api_demo binary.
-"$MEDAKA" build sqlite/writer_api_demo.mdk >/dev/null
-mv -f "$ROOT/writer_api_demo" "$WRITER"
+"$MEDAKA" build sqlite/writer_api_demo.mdk -o "$WRITER" >/dev/null
 
 # 2. Build the Medaka reader binary (for the self round-trip gate).
-"$MEDAKA" build sqlite/main.mdk >/dev/null
-mv -f "$ROOT/main" "$READER" 2>/dev/null || true
+"$MEDAKA" build sqlite/main.mdk -o "$READER" >/dev/null
 
 # 3. Helper: write one database + produce one section of the report.
 write_section () {

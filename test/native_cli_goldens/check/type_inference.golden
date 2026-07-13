@@ -56,6 +56,7 @@ hash : a -> Int
 hashListItems : Hashable a => Int -> List a -> Int
 identity : a -> a
 inc : Num a => a -> a
+index : a -> b -> c
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
 isEven : Int -> Bool
@@ -99,6 +100,7 @@ repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
 replaceWith : Mappable a => a b -> c -> a c
 runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
 sequence : a (b c) -> b (a c)
+setIndex : a -> b -> c -> <Mut> a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b

@@ -85,8 +85,9 @@ test "adt match red" = expectEqual "red" (colorName Red)
 test "adt match green" = expectEqual "green" (colorName Green)
 test "adt match blue" = expectEqual "blue" (colorName Blue)
 
--- ── Ref + reassignment (was `let mut`, removed by the P0-5 mutability→Ref pivot) ──
--- Ported from: t_let_mut
+-- ── Ref + reassignment ───────────────────────────────────────────────────────
+-- Ported from: t_let_mut. `let mut` + bare reassignment has been removed
+-- (beta mutability model, P0-5) — rewritten onto `Ref`/`:=`/`.value`.
 
 letMutResult =
   let x = Ref 0

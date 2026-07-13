@@ -162,6 +162,9 @@ bash test/typecheck_compiler_source.sh # strict-typecheck the WHOLE compiler sou
                                        #   an ill-typed compiler source builds green without this
 bash test/bootstrap_*.sh              # each native pipeline stage == interpreter output
 FORCE=1 bash test/build_oracles.sh    # force-rebuild oracles (parallel; always FORCE=1 — stale-prone)
+sh test/check_removed_constructs.sh   # tree-wide scan (incl. non-gated test/) for stale uses of
+                                       #   removed constructs (record/function/backtick/let-mut/
+                                       #   let-else/named-impl/@Name/default-impl); ~2-3min, JOBS= knob
 ```
 
 **Parallelism (2026-07-02).** `build_oracles.sh`, `run_gates.sh`, the heavy compiler

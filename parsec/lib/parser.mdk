@@ -61,12 +61,32 @@ export impl Thenable Parser where
 
 -- Left-biased, full-backtracking alternative.  `noMatch` always fails;
 -- `orElse p q` tries `p`, and on failure re-runs `q` from the ORIGINAL pos.
+--
+-- ERROR SELECTION: when BOTH branches fail, we keep the failure that got
+-- FARTHEST into the input, rather than (as a naive left-biased `orElse` does)
+-- unconditionally keeping the RIGHTMOST branch's message.  The deepest failure
+-- is almost always the informative one: a `choice` over N alternatives where the
+-- first alternative consumed 40 characters before choking should blame column
+-- 40, not report the last (and shallowest) alternative's "no match at 0".
+-- Ties go to the LEFT branch, preserving left-bias.
+--
+-- Note the residual limitation this does NOT fix: an alternative that SUCCEEDS
+-- discards any deeper failure explored underneath it (`orElse deepFailingP (pure
+-- x)` — the shape of `optional`/`many`/`chainl1`'s loop tail).  Fixing that needs
+-- the farthest-failure to be threaded through SUCCESS as well, i.e. carried in
+-- `POk` too.  See `sqlite/findings/sql-parser-expr.md` (F5).
 export impl Alternative Parser where
   noMatch = Parser (_ pos => PErr "noMatch" pos)
   orElse p q = Parser (input pos =>
     match runP p input pos
       POk a pos2 => POk a pos2
-      PErr _ _ => runP q input pos)
+      PErr m1 e1 => keepFarther m1 e1 (runP q input pos))
+
+-- Keep whichever of the two failures reached farther into the input; a success
+-- from the right branch always wins outright.  Ties favour the LEFT branch.
+keepFarther : String -> Int -> PResult a -> PResult a
+keepFarther _ _ (POk a pos2) = POk a pos2
+keepFarther m1 e1 (PErr m2 e2) = if e1 >= e2 then PErr m1 e1 else PErr m2 e2
 
 -- ---------------------------------------------------------------------------
 -- Primitives
@@ -76,6 +96,51 @@ export impl Alternative Parser where
 export failWith : String -> Parser a
 failWith msg = Parser (_ pos => PErr msg pos)
 
+-- ---------------------------------------------------------------------------
+-- Error-reporting combinators
+--
+-- `orElse` picks the FARTHEST failure when both branches fail (see the
+-- `Alternative` impl).  That heuristic is only as good as the positions the
+-- branches report, so two combinators exist to control them:
+--
+--   * `attempt` — rewind a failure's REPORTED position back to where the parser
+--     started.  Use it around a speculative multi-character token (`<=`, a
+--     keyword, a number) so that half-matching one does not look like "deep
+--     progress" and hijack the error message.
+--   * `label` — replace the message of a failure that occurred at the parser's
+--     START position (i.e. one that consumed nothing), leaving deeper, more
+--     specific failures alone.  This is the `<?>` of classic parsec.
+-- ---------------------------------------------------------------------------
+
+-- | Run `p`, but if it fails, report the failure at the position where `p`
+--   STARTED rather than wherever inside `p` it actually gave up.
+--
+--   Input backtracking is already automatic (`orElse` re-runs the alternative
+--   from the original position); `attempt` fixes only the reported POSITION, so
+--   that a partially-consumed token does not out-rank a genuinely deeper error.
+--
+-- > runParser (orElse (attempt (string "abc")) (string "abd")) "abd"
+-- Ok "abd"
+export attempt : Parser a -> Parser a
+attempt p = Parser (input pos => rewindErr pos (runP p input pos))
+
+rewindErr : Int -> PResult a -> PResult a
+rewindErr _ (POk a pos2) = POk a pos2
+rewindErr pos (PErr m _) = PErr m pos
+
+-- | Replace `p`'s error message when `p` failed WITHOUT consuming input (its
+--   failure position is still the start position).  A failure deeper inside `p`
+--   is left untouched — it is more specific than the label.
+--
+-- > runParser (label "expected a digit" digit) "x"
+-- Err "expected a digit at 0"
+export label : String -> Parser a -> Parser a
+label msg p = Parser (input pos => relabel msg pos (runP p input pos))
+
+relabel : String -> Int -> PResult a -> PResult a
+relabel _ _ (POk a pos2) = POk a pos2
+relabel msg pos (PErr m ep) = if ep == pos then PErr msg ep else PErr m ep
+
 -- | Consume one char if it satisfies the predicate.
 export satisfy : (Char -> Bool) -> Parser Char
 satisfy pred = Parser (satisfyStep pred)
@@ -83,7 +148,7 @@ satisfy pred = Parser (satisfyStep pred)
 satisfyStep : (Char -> Bool) -> Array Char -> Int -> PResult Char
 satisfyStep pred input pos
   | pos >= arrayLength input = PErr "unexpected end of input" pos
-  | pred input.[pos] = POk input.[pos] (pos + 1)
+  | pred input[pos] = POk input[pos] (pos + 1)
   | otherwise = PErr "unexpected character" pos
 
 -- | Consume any single char.
@@ -97,7 +162,7 @@ anyChar = satisfy (_ => True)
 -- > runParser (char 'a') "xyz"
 -- Err "unexpected character at 0"
 export char : Char -> Parser Char
-char c = satisfy (x => x == c)
+char c = satisfy (== c)
 
 -- | Match the empty input (end of input).  Yields Unit; consumes nothing.
 export eof : Parser Unit
@@ -187,25 +252,42 @@ stringGo want wi input pos original =
     POk original pos
   else if pos >= arrayLength input then
     PErr "unexpected end of input" pos
-  else if input.[pos] == want.[wi] then
+  else if input[pos] == want[wi] then
     stringGo want (wi + 1) input (pos + 1) original
   else
     PErr "string: mismatch" pos
 
 -- | Left-associative chaining of `p` separated by an operator parser `op`
 --   whose value is a binary function.  `1-2-3` parses as `((1-2)-3)`.
+--
+--   COMMITTED after the operator: only the OPERATOR is speculative (`optional
+--   op` backtracks cleanly when there is no operator left).  Once an operator HAS
+--   matched, the right operand is MANDATORY, and its failure propagates instead
+--   of being swallowed.
+--
+--   This matters for error quality, and it is also the faithful reading of
+--   classic Parsec's `chainl1`: there, `<|>` declines to backtrack once the left
+--   branch has CONSUMED input, so a matched operator already commits the parse.
+--   Our `orElse` backtracks unconditionally, so the naive transcription
+--   (`orElse (do f <- op; y <- p; …) (pure acc)`) silently turns `1 +` into a
+--   successful parse of `1` with `+` left over — and then the REAL error surfaces
+--   far away, as a bogus "expected end of input" pointing at the operator rather
+--   than at the missing operand.  Committing restores the intended behaviour.
 export chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
 chainl1 p op = do
   x <- p
   chainl1Rest p op x
 
 chainl1Rest : Parser a -> Parser (a -> a -> a) -> a -> Parser a
-chainl1Rest p op acc = orElse
-  (do
-    f <- op
-    y <- p
-    chainl1Rest p op (f acc y))
-  (pure acc)
+chainl1Rest p op acc = do
+  f <- optional op
+  chainl1Step p op acc f
+
+chainl1Step : Parser a -> Parser (a -> a -> a) -> a -> Option (a -> a -> a) -> Parser a
+chainl1Step _ _ acc None = pure acc
+chainl1Step p op acc (Some f) = do
+  y <- p
+  chainl1Rest p op (f acc y)
 
 -- | Skip zero-or-more whitespace.
 export spaces : Parser Unit
@@ -215,7 +297,7 @@ skipSpaces : Array Char -> Int -> Int
 skipSpaces input pos =
   if pos >= arrayLength input then
     pos
-  else if isSpace input.[pos] then
+  else if isSpace input[pos] then
     skipSpaces input (pos + 1)
   else
     pos

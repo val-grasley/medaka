@@ -19,6 +19,11 @@ _build/
 # Playground deployable site folder (built by playground/build_site.sh; not committed)
 /playground/site/
 
-# SQLite demo/probe build artifacts (built to repo root by demos/oracles)
+# SQLite demo/probe build artifacts (built to repo root by demos/oracles).
+# `/*_demo` covers the whole family (delete_demo, update_demo, update_expr_demo,
+# writer_demo, writer_api_demo, overflow_demo, rowid_roundtrip_demo,
+# multipage_write_demo, multitable_write_demo, …) — these were being enumerated one
+# at a time, and the ones that got missed (e.g. update_expr_demo) sat untracked at
+# the root as ~330 KB git-add-A landmines. An agent once committed 5 of them.
 /sqlite_*
-/writer_api_demo
+/*_demo

@@ -1,7 +1,7 @@
-joined = 1 ++ 2 ++ 3
-trailing = 1 ++
-  2 ++
-  3
+joined = [1] ++ [2] ++ [3]
+trailing = [1] ++
+  [2] ++
+  [3]
 consJoined = 1 :: 2 :: rest
 consTrailing = 1 ::
   2 ::

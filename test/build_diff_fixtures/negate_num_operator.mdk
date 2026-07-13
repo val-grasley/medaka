@@ -1,0 +1,44 @@
+-- Roadmap #18c: unary minus `-x` dispatches through the `Num` interface's
+-- `negate` method.
+--
+-- Before this landed, `-` was hardwired to the VInt/VFloat structural negation:
+-- a user `impl Num` type defining `negate` was unreachable from the operator
+-- (`check` had no obligation at all — it silently ACCEPTED `-s` on a `String`
+-- and `run`/`build` would panic/misbehave at the raw `evalUnop`/`CUnOp`
+-- structural path). This fixture pins the operator routing to a user impl on
+-- the native build path, alongside the Int/Float fast paths staying literal.
+
+data Vec2 = Vec2 Int Int deriving (Eq)
+
+impl Num Vec2 where
+  add (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 + x2) (y1 + y2)
+  sub (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 - x2) (y1 - y2)
+  mul (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 * x2) (y1 * y2)
+  div (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 / x2) (y1 / y2)
+  negate (Vec2 x y) = Vec2 (0 - x) (0 - y)
+  abs (Vec2 x y) = Vec2 x y
+  signum (Vec2 x y) = Vec2 1 1
+  fromInt n = Vec2 n n
+
+showVec : Vec2 -> String
+showVec (Vec2 x y) = "Vec2(\{x}, \{y})"
+
+-- a polymorphic `Num a =>` site: the operand never grounds, so it routes the
+-- enclosing function's own dict rather than a literal impl key.  (NOTE: `-(-x)`
+-- must keep the space/parens apart — `--x` lexes as a `--` line comment, not
+-- double unary minus.)
+negOp : Num a => a -> a
+negOp x = -x
+
+main =
+  -- Int/Float structural fast paths (VInt/VFloat), unchanged.
+  println (-5)
+  println (-3.5)
+  -- user impl, concrete operand (the new dispatch route).
+  println (showVec (-(Vec2 3 4)))
+  -- dict-forwarded polymorphic negate, at both an Int and a user-impl head.
+  println (negOp 7)
+  println (showVec (negOp (Vec2 1 2)))
+  -- direct `negate` call agrees with the operator.
+  println (negate 5)
+  println (showVec (negate (Vec2 3 4)))

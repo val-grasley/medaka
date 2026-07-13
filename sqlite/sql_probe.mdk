@@ -1,0 +1,307 @@
+-- | sql_probe — the correctness evidence for `lib.sqlstmt` that needs no database.
+--
+-- Three independent proofs, all pure (no `.sqlite` file, no I/O):
+--
+--   1. ROUND TRIP.  For every SQL string in `corpus`: `parseSelect` it,
+--      `renderSelect` it back to SQL text (literals INLINED — see the note below),
+--      `parseSelect` THAT, and require the two `Select` values to be structurally
+--      EQUAL (`==`, via `deriving (Eq)` on `Select`/`Join`/`SqlExpr`).  We also
+--      require the rendered TEXT to be a fixpoint, which pins the projection down
+--      to one canonical form.  A clause that the parser silently DROPPED would
+--      survive step 1 but is caught here only if it changes the tree — so the
+--      round trip is backed up by the `sqlite3` row diff in test/sql_oracle.sh,
+--      which catches a dropped clause by getting the wrong ROWS.
+--
+--   2. REJECTION.  For every SQL string in `rejects`: `parseSelect` MUST return
+--      `Err`.  These are the constructs the engine genuinely cannot do.  Silently
+--      accepting one (by ignoring the clause) would be a wrong-answer bug — the
+--      exact class this workstream exists to eliminate — so it is asserted, not
+--      assumed.
+--
+--   3. SHAPE.  A handful of statements whose parse is the whole point (clause
+--      order, DISTINCT, the `SELECT *` = empty-columns encoding, join kinds,
+--      ASC-by-default) asserted against their EXACT rendered form.
+--
+-- NOTE on the two renderers.  `lib.select.render` projects a `Select` to
+-- PARAMETERIZED SQL (`?` placeholders + an ordered bind list) — the injection-safe
+-- thing to hand a database.  Its output is deliberately NOT re-parseable (a `?` is
+-- not a literal).  `lib.sqlstmt.renderSelect` is the other projection: literals
+-- INLINED, so `parseSelect ∘ renderSelect == id`.  That is the round trip, and it
+-- mirrors `lib.sqlparse.renderSqlExpr` at the expression level.
+--
+-- Run:  ./medaka run sqlite/sql_probe.mdk    (or build it — test/sql_oracle.sh does)
+
+-- The remaining structural duplication against sqlparse_probe.mdk (`rtFailures`,
+-- `shapeCompare` vs its `precCompare`) is NOT consolidatable: each closes over a
+-- file-local parser/comparator.  The genuinely shared reporters (`bullet`,
+-- `verdict`) live in demo_support.
+-- lint-disable-file rule-duplicate-body
+
+import lib.sqlstmt.{parseSelect, renderSelect}
+import lib.select.{Select}
+import demo_support.{bullet, verdict}
+
+-- ---------------------------------------------------------------------------
+-- 1. Round-trip corpus — the same SQL the sqlite3 oracle diffs, plus the
+--    shapes that only matter to the PARSER (whitespace, case, semicolons).
+-- ---------------------------------------------------------------------------
+
+corpus : List String
+corpus = [
+  -- plain SELECT / WHERE
+  "SELECT id, name, age FROM users ORDER BY id",
+  "SELECT name FROM users WHERE age > 25 ORDER BY name",
+  "SELECT name, age FROM users WHERE age > 20 AND age < 30 ORDER BY id",
+  "SELECT name FROM users WHERE name = 'bob' OR age = 25 ORDER BY id",
+  "SELECT name FROM users WHERE NOT age = 30 ORDER BY id",
+  -- SELECT * (the empty-columns encoding)
+  "SELECT * FROM users",
+  "SELECT * FROM users ORDER BY id",
+  "SELECT * FROM orders WHERE amount >= 100 ORDER BY id",
+  -- projection + arithmetic
+  "SELECT amount, qty, amount * qty FROM orders ORDER BY id",
+  "SELECT amount + 1, amount - 1, amount * 2, amount / 3, amount % 7 FROM orders",
+  "SELECT (amount + qty) * 2 FROM orders",
+  "SELECT amount * 1.5 FROM orders",
+  "SELECT id, -amount FROM orders",
+  -- DISTINCT
+  "SELECT DISTINCT age FROM users ORDER BY age",
+  "SELECT DISTINCT city FROM users ORDER BY city",
+  "SELECT DISTINCT uid FROM orders ORDER BY uid LIMIT 2",
+  -- joins, qualified columns
+  "SELECT users.name, orders.amount FROM users INNER JOIN orders ON users.id = orders.uid ORDER BY orders.id",
+  "SELECT users.name FROM users JOIN orders ON users.id = orders.uid",
+  "SELECT users.name, orders.amount FROM users LEFT JOIN orders ON users.id = orders.uid ORDER BY users.id, orders.id",
+  "SELECT users.name FROM users LEFT OUTER JOIN orders ON users.id = orders.uid",
+  "SELECT a.x FROM a INNER JOIN b ON a.i = b.i INNER JOIN c ON b.j = c.j",
+  -- aggregates, GROUP BY, HAVING
+  "SELECT count(*) FROM users",
+  "SELECT count(*), count(age), sum(age), min(age), max(age), avg(age) FROM users",
+  "SELECT uid, count(*) FROM orders GROUP BY uid ORDER BY uid",
+  "SELECT uid, count(*) FROM orders GROUP BY uid HAVING count(*) > 1 ORDER BY uid",
+  "SELECT sum(amount * qty) FROM orders",
+  "SELECT uid, sum(amount * qty) FROM orders GROUP BY uid ORDER BY uid",
+  "SELECT salary / 1000, count(*) FROM emp GROUP BY salary / 1000",
+  -- ORDER BY: multi-key, ASC/DESC, computed, aggregate
+  "SELECT name, age FROM users ORDER BY age ASC, name DESC",
+  "SELECT amount, qty FROM orders ORDER BY amount * qty DESC, id ASC",
+  "SELECT uid, count(*) FROM orders GROUP BY uid ORDER BY count(*) DESC, uid ASC",
+  -- LIMIT / OFFSET
+  "SELECT id, name FROM users ORDER BY id LIMIT 2",
+  "SELECT id, name FROM users ORDER BY id LIMIT 2 OFFSET 1",
+  "SELECT id FROM users LIMIT 0",
+  -- IS [NOT] NULL
+  "SELECT name FROM users WHERE age IS NULL",
+  "SELECT name FROM users WHERE age IS NOT NULL ORDER BY id",
+  -- precedence
+  "SELECT name FROM users WHERE age = 30 OR age = 25 AND name = 'cyd'",
+  "SELECT name FROM users WHERE (age = 30 OR age = 25) AND name = 'cyd'",
+  "SELECT id FROM orders WHERE amount + qty * 2 > 105",
+  "SELECT id FROM orders WHERE amount > 50 AND qty < 3 OR uid = 3",
+  -- literals of every kind
+  "SELECT * FROM t WHERE a = 'it''s' AND b = 3.5 AND c = -7 AND d = X'4142' AND e IS NULL",
+  -- parser-only shapes: case, whitespace, trailing semicolon
+  "select name, age from users where age is not null order by age desc, id asc;",
+  "SELECT   name   FROM   users   WHERE   age  >  25  ",
+  "Select Distinct City From Users Order By City Asc;",
+  "SELECT COUNT(*) FROM ORDERS;",
+  "SELECT MAX(t.age), MIN(t.age) FROM t GROUP BY t.city",
+  -- `||`, LIKE, IN, BETWEEN, CASE, COALESCE/IFNULL, TRUE/FALSE, scalar fns
+  "SELECT name || city FROM users",
+  "SELECT name FROM users WHERE name LIKE 'a%'",
+  "SELECT name FROM users WHERE name NOT LIKE 'a%'",
+  "SELECT name FROM users WHERE age BETWEEN 20 AND 30",
+  "SELECT name FROM users WHERE age NOT BETWEEN 20 AND 30",
+  "SELECT name FROM users WHERE age IN (25, 30)",
+  "SELECT name FROM users WHERE age NOT IN (25, 30)",
+  "SELECT name FROM users WHERE age IN (25, NULL)",
+  "SELECT CASE WHEN age > 25 THEN 1 ELSE 0 END FROM users",
+  "SELECT CASE WHEN age > 25 THEN 1 END FROM users",
+  "SELECT CASE age WHEN 30 THEN 'old' WHEN 25 THEN 'young' ELSE 'other' END FROM users",
+  "SELECT COALESCE(city, 'unknown') FROM users",
+  "SELECT IFNULL(city, 'unknown') FROM users",
+  "SELECT name FROM users WHERE flag = TRUE",
+  "SELECT name FROM users WHERE flag = FALSE",
+  "SELECT upper(name) FROM users",
+  "SELECT lower(name) FROM users",
+  "SELECT length(name) FROM users",
+  "SELECT substr(name, 1, 2) FROM users",
+  "SELECT substr(name, -2) FROM users",
+  "SELECT trim(name), ltrim(name), rtrim(name) FROM users",
+  "SELECT replace(name, 'a', 'X') FROM users",
+]
+
+data RT = RtOk | RtFail String
+
+-- parse → render → parse, and require the two `Select`s to be EQUAL.
+roundTrip : String -> RT
+roundTrip src = match parseSelect src
+  Err e => RtFail "\{src}  ==> parse failed: \{e}"
+  Ok s1 => roundTripBack src s1
+
+roundTripBack : String -> Select -> RT
+roundTripBack src s1 =
+  let txt = renderSelect s1
+  match parseSelect txt
+    Err e => RtFail "\{src}  ==> re-parse of `\{txt}` failed: \{e}"
+    Ok s2 => roundTripCompare src s1 s2 txt
+
+roundTripCompare : String -> Select -> Select -> String -> RT
+roundTripCompare src s1 s2 txt =
+  if s1 != s2 then
+    RtFail "\{src}  ==> Select CHANGED\n      first : \{txt}\n      second: \{renderSelect s2}"
+  else if renderSelect s2 != txt then
+    RtFail "\{src}  ==> render is not a fixpoint: `\{txt}` vs `\{renderSelect s2}`"
+  else
+    RtOk
+
+rtFailures : List String -> List String
+rtFailures [] = []
+rtFailures (s::rest) = match roundTrip s
+  RtOk => rtFailures rest
+  RtFail m => m :: rtFailures rest
+
+-- ---------------------------------------------------------------------------
+-- 2. Rejection corpus — every one of these MUST be an `Err`.
+-- ---------------------------------------------------------------------------
+
+rejects : List String
+rejects = [
+  -- set operations / sub-queries / CTEs
+  "SELECT a FROM t UNION SELECT b FROM u",
+  "SELECT a FROM t INTERSECT SELECT b FROM u",
+  "SELECT a FROM t EXCEPT SELECT b FROM u",
+  "WITH x AS (SELECT 1) SELECT * FROM x",
+  "SELECT id FROM users WHERE id IN (SELECT uid FROM orders)",
+  -- aliases (column and table)
+  "SELECT name AS n FROM users",
+  "SELECT u.name FROM users u",
+  "SELECT name FROM users AS u",
+  -- unsupported expression syntax
+  "SELECT name FROM users WHERE name LIKE 'a%' ESCAPE '\\'",
+  "SELECT name FROM users WHERE name GLOB 'a*'",
+  "SELECT name FROM users WHERE name MATCH 'a'",
+  "SELECT name FROM users WHERE name REGEXP 'a'",
+  "SELECT name FROM users WHERE age > 25 COLLATE NOCASE",
+  "SELECT json_col -> 'x' FROM t",
+  "SELECT foo(name) FROM users",
+  "SELECT \"name\" FROM users",
+  "SELECT CASE END FROM users",
+  "SELECT age IN () FROM users",
+  -- unsupported joins
+  "SELECT users.name FROM users CROSS JOIN orders",
+  "SELECT users.name FROM users NATURAL JOIN orders",
+  "SELECT users.name FROM users RIGHT JOIN orders ON users.id = orders.uid",
+  "SELECT users.name FROM users FULL OUTER JOIN orders ON users.id = orders.uid",
+  "SELECT users.name FROM users JOIN orders USING (uid)",
+  "SELECT users.name FROM users JOIN orders",
+  -- an aggregate in a per-row position: SQL forbids it, and so do we, AT PARSE TIME
+  "SELECT name FROM users WHERE count(*) > 1",
+  "SELECT users.name FROM users JOIN orders ON count(*) > 1",
+  "SELECT sum(*) FROM orders",
+  "SELECT avg(*) FROM orders",
+  -- ill-formed / half-written statements
+  "SELECT * FROM",
+  "SELECT FROM users",
+  "SELECT a, FROM users",
+  "SELECT * FROM users WHERE",
+  "SELECT * FROM users WHERE age >",
+  "SELECT * FROM users WHERE age > AND b = 1",
+  "SELECT * FROM users ORDER BY",
+  "SELECT * FROM users ORDER BY a,",
+  "SELECT * FROM users GROUP BY",
+  "SELECT * FROM users LIMIT",
+  "SELECT * FROM users LIMIT 'x'",
+  "SELECT * FROM users OFFSET",
+  "SELECT * FROM users EXTRA",
+  "SELECT *, name FROM users",
+  "SELECT * FROM main.users",
+  "SELECT count(name FROM users",
+  "UPDATE users SET age = 1",
+  "",
+]
+
+rejFailures : List String -> List String
+rejFailures [] = []
+rejFailures (s::rest) = match parseSelect s
+  Err _ => rejFailures rest
+  Ok sel => "ACCEPTED (should be Err): `\{s}`  ==> \{renderSelect sel}" :: rejFailures rest
+
+-- ---------------------------------------------------------------------------
+-- 3. Shape assertions — the EXACT canonical rendering, spelled out.
+-- ---------------------------------------------------------------------------
+
+shapeCases : List (String, String)
+shapeCases = [
+  -- `SELECT *` is the EMPTY projection list, and renders back as `*`.
+  ("SELECT * FROM t", "SELECT * FROM t"),
+  -- A bare `JOIN` is an INNER join.
+  (
+    "SELECT * FROM a JOIN b ON a.i = b.i",
+    "SELECT * FROM a INNER JOIN b ON (a.i = b.i)",
+  ),
+  -- `LEFT OUTER JOIN` and `LEFT JOIN` are the same node.
+  (
+    "SELECT * FROM a LEFT OUTER JOIN b ON a.i = b.i",
+    "SELECT * FROM a LEFT JOIN b ON (a.i = b.i)",
+  ),
+  -- ORDER BY direction defaults to ASC.
+  ("SELECT * FROM t ORDER BY a", "SELECT * FROM t ORDER BY a ASC"),
+  -- Clause order is canonical, regardless of how much whitespace came in.
+  (
+    "select distinct a , count(*) from t where b = 1 group by a having count(*) > 2 order by count(*) desc limit 5 offset 1 ;",
+    "SELECT DISTINCT a, count(*) FROM t WHERE (b = 1) GROUP BY a HAVING (count(*) > 2) ORDER BY count(*) DESC LIMIT 5 OFFSET 1",
+  ),
+  -- `count(*)` keeps its operand-less form; `count(x)` does not.
+  ("SELECT count(*), count(x) FROM t", "SELECT count(*), count(x) FROM t"),
+  -- An aggregate over an EXPRESSION.
+  ("SELECT sum(price * qty) FROM t", "SELECT sum((price * qty)) FROM t"),
+  -- Precedence is pinned by the fully-parenthesized rendering: AND binds tighter
+  -- than OR, so the OR is the root.
+  (
+    "SELECT * FROM t WHERE a = 1 OR b = 2 AND c = 3",
+    "SELECT * FROM t WHERE ((a = 1) OR ((b = 2) AND (c = 3)))",
+  ),
+  -- A GROUP BY key may be an expression.
+  (
+    "SELECT salary / 1000 FROM emp GROUP BY salary / 1000",
+    "SELECT (salary / 1000) FROM emp GROUP BY (salary / 1000)",
+  ),
+]
+
+shapeFailures : List (String, String) -> List String
+shapeFailures [] = []
+shapeFailures ((src, want)::rest) = match parseSelect src
+  Err e => "\{src}  ==> parse failed: \{e}" :: shapeFailures rest
+  Ok sel => shapeCompare src want (renderSelect sel) (shapeFailures rest)
+
+shapeCompare : String -> String -> String -> List String -> List String
+shapeCompare src want got rest =
+  if want == got then
+    rest
+  else
+    "\{src}\n      want: \{want}\n      got : \{got}"::rest
+
+-- ---------------------------------------------------------------------------
+-- Report
+-- ---------------------------------------------------------------------------
+
+-- The verdict is carried in the LAST LINE of stdout ("TOTAL: PASS" / "TOTAL:
+-- FAIL"), not in the exit code, and test/sql_oracle.sh greps for it.  It would be
+-- more natural to `exit 1` here — but `exit` is a `medaka run`-vs-`medaka build`
+-- divergence: the native binary exits correctly while the INTERPRETER dies with
+-- `runtime error [E-PANIC]: unbound identifier: exit`, so an `exit`-based probe
+-- could not be run with `medaka run` at all.  See findings/sql-parser-select.md F2.
+main : <IO> Unit
+main =
+  let rtBad = rtFailures corpus
+  let rejBad = rejFailures rejects
+  let shapeBad = shapeFailures shapeCases
+  let bad = length rtBad + length rejBad + length shapeBad
+  let _ = println "round-trip (parseSelect . renderSelect == id): \{length corpus - length rtBad}/\{length corpus} \{verdict (length rtBad)}"
+  let _ = print (bullet rtBad)
+  let _ = println "rejection  (unsupported SQL is a clean Err):   \{length rejects - length rejBad}/\{length rejects} \{verdict (length rejBad)}"
+  let _ = print (bullet rejBad)
+  let _ = println "shape      (exact canonical rendering):        \{length shapeCases - length shapeBad}/\{length shapeCases} \{verdict (length shapeBad)}"
+  let _ = print (bullet shapeBad)
+  println "TOTAL: \{verdict bad}"

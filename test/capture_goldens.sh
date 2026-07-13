@@ -49,7 +49,7 @@ case "${1:-}" in
   --frozen)
     FROZEN_TAG="${2:-}"
     [ -n "$FROZEN_TAG" ] || {
-      echo "usage: sh test/capture_goldens.sh --frozen <parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark>"
+      echo "usage: sh test/capture_goldens.sh --frozen <parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck>"
       exit 2
     }
     ;;
@@ -112,8 +112,10 @@ if [ -n "$FROZEN_TAG" ]; then
       regen_frozen desugar_main boot_desugar.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
     boot_mark)
       regen_frozen mark_main boot_mark.golden "$CORE" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    boot_typecheck)
+      regen_frozen typecheck_main boot_typecheck.golden "" "$ROOT/test/typecheck_fixtures/*.mdk" ;;
     *)
-      echo "unknown --frozen tag: $FROZEN_TAG (expected parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark)"
+      echo "unknown --frozen tag: $FROZEN_TAG (expected parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck)"
       exit 2 ;;
   esac
   status=$?

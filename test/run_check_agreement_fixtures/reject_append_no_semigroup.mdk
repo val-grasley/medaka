@@ -1,0 +1,8 @@
+-- Roadmap #18a: `++` on a type with no `Semigroup` impl must be REJECTED by check.
+-- Before #18a this was the worst shape in the corpus: check ACCEPTED, run panicked
+-- (E-PANIC), and the native build SEGFAULTED (E-FATAL-SIGNAL) on the bad operand.
+data Box = Box Int
+
+main =
+  let b = Box 1 ++ Box 2
+  println 0

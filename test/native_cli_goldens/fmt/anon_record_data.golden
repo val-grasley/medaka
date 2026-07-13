@@ -1,0 +1,7 @@
+data Point = { x : Int, y : Int }
+
+data Box a = { v : a }
+
+data Named = Named { a : Int, b : Int }
+
+data Multi = Foo Int | Bar { z : Int }

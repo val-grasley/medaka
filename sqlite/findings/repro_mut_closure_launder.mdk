@@ -1,0 +1,20 @@
+-- Counterexample (a): a Ref laundered out inside a CLOSURE.
+-- My proposed restriction was "runMut's result may not mention Ref".
+-- This escapes a Ref with NO Ref anywhere in the result type.
+
+bumpAndGet : Ref Int -> <Mut> Int
+bumpAndGet r =
+  setRef r (r.value + 1)
+  r.value
+
+-- Result type is (Unit -> <Mut> Int). No `Ref` in sight.
+-- And note mkCounter's OWN signature carries no <Mut>: it is typed PURE.
+mkCounter : Unit -> Unit -> <Mut> Int
+mkCounter _ =
+  let r = Ref 0
+  _ => bumpAndGet r
+
+main : <IO, Mut> Unit
+main =
+  let c = mkCounter ()
+  println "\{c ()} \{c ()} \{c ()}   <-- three identical calls, three answers"

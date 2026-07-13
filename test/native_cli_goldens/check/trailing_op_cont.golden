@@ -13,7 +13,6 @@ arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
 arbitraryString : Unit -> <Rand> String
 arith : Int -> Int -> Int
 bimap : (a -> b) -> (c -> d) -> e a c -> e b d
-btick : Int -> Int -> Int
 clamp : Ord a => a -> a -> a -> a
 cmp : Int -> Int -> Bool
 cmp2 : Int -> Int -> Bool
@@ -62,6 +61,7 @@ guard : (Alternative a, Applicative a) => Bool -> a Unit
 hash : a -> Int
 hashListItems : Hashable a => Int -> List a -> Int
 identity : a -> a
+index : a -> b -> c
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
 isEven : Int -> Bool
@@ -107,6 +107,7 @@ repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
 replaceWith : Mappable a => a b -> c -> a c
 runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
 sequence : a (b c) -> b (a c)
+setIndex : a -> b -> c -> <Mut> a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b

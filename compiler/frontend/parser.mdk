@@ -532,15 +532,15 @@ unaryFor : Token -> Parser Expr
 unaryFor TMinus = do
   advance
   e <- parseUnary
-  pure (EUnOp "-" e)
+  pure (EUnOp "-" e (Ref RNone))
 unaryFor TMinusTight = do
   advance
   e <- parseUnary
-  pure (EUnOp "-" e)
+  pure (EUnOp "-" e (Ref RNone))
 unaryFor TBang = do
   advance
   e <- parseUnary
-  pure (EUnOp "!" e)
+  pure (EUnOp "!" e (Ref RNone))
 unaryFor _ = parseInfix
 
 -- backtick infix application (``a `div` b``) has been removed.  The lexer still

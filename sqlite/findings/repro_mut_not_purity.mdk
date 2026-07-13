@@ -1,0 +1,17 @@
+counter : Ref Int
+counter = Ref 0
+
+-- NOTE the signature: NO <Mut>. This function is typed PURE.
+peek : Unit -> Int
+peek _ = counter.value
+
+bump : Unit -> <Mut> Unit
+bump _ = setRef counter (counter.value + 1)
+
+main : <IO, Mut> Unit
+main =
+  let a = peek ()
+  bump ()
+  let b = peek ()
+  println
+    "peek() before = \{a}, peek() after = \{b}   <-- same pure call, two answers"

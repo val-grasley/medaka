@@ -1,0 +1,41 @@
+-- | sql_demo — run a SQL string against a real `.sqlite` file.
+--
+-- THE differential harness for `lib.sqlstmt`: the same SQL TEXT that goes to the
+-- `sqlite3` CLI goes to this binary, and `sqlite/test/sql_oracle.sh` diffs the two
+-- row-by-row.  One input language, two engines.
+--
+--   medaka build sqlite/sql_demo.mdk -o /tmp/sqldem
+--   /tmp/sqldem shop.db "SELECT name, count(*) FROM users GROUP BY name"
+--
+-- Output format is `sqlite3`'s default `-list` mode: one row per line, columns
+-- joined by `|`, NULL rendered as the empty string.  That is what makes a
+-- byte-for-byte diff against the CLI possible.
+--
+-- The row type is `tCells` — the DYNAMIC decoder.  A SQL string's column list is
+-- not known until run time, so there is no static tuple to decode into; `tCells`
+-- hands back the raw `List Cell` and we render it.  This is also why `lib.recordfmt`
+-- needed an `Eq Cell` impl: `queryStringDistinct` dedups on the DECODED rows.
+--
+-- An error (parse OR execution) prints `error: <msg>` and exits 0 — the oracle
+-- asserts on that text for the rejection corpus, so a rejection must be a clean,
+-- readable message, never a panic.
+
+import lib.sqlite.{Db, openDb}
+import lib.rowtype.{tCells}
+import lib.sqlstmt.{queryStringDistinct}
+import demo_support.{printRows, showCellRow}
+
+runSql : Db -> String -> <IO> Unit
+runSql db sql = match queryStringDistinct db sql tCells
+  Err e => println "error: \{e}"
+  Ok rows => printRows showCellRow rows
+
+main : <IO> Unit
+main = match args ()
+  db::sql::_ => runWith db sql
+  _ => println "usage: sql_demo <db-path> <sql>"
+
+runWith : String -> String -> <IO> Unit
+runWith path sql = match openDb path
+  Err e => println "open error: \{e}"
+  Ok db => runSql db sql

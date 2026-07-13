@@ -1,0 +1,52 @@
+-- Roadmap #18a: `++` dispatches through the `Semigroup` interface.
+--
+-- Before this landed, `++` was hardwired to the VList/VString structural append:
+-- a user `impl Semigroup` was unreachable from the operator, so `run` panicked
+-- (E-PANIC "'++' requires Semigroup"), `check` wrongly ACCEPTED, and the native
+-- `build` path SEGFAULTED on the non-List/String operand.  This fixture pins all
+-- four shapes on the native build path.
+
+data Rope = Rope String
+
+impl Semigroup Rope where
+  append (Rope a) (Rope b) = Rope (a ++ b)
+
+data SumM = MkSumM Int
+
+impl Semigroup SumM where
+  append (MkSumM a) (MkSumM b) = MkSumM (a + b)
+
+impl Monoid SumM where
+  empty = MkSumM 0
+
+unRope : Rope -> String
+unRope (Rope s) = s
+
+unSum : SumM -> Int
+unSum (MkSumM n) = n
+
+-- a polymorphic `Semigroup a =>` site: the operand never grounds, so it routes
+-- the enclosing function's dict rather than a literal impl key.
+twice : Semigroup a => a -> a
+twice x = x ++ x
+
+main =
+  -- user impl, concrete operand (the old SIGSEGV)
+  println (unRope (Rope "ab" ++ Rope "cd"))
+  println (unSum (MkSumM 1 ++ MkSumM 2))
+  -- the builtin String/List appends must NOT route to `append`: core.mdk's own
+  -- `impl Semigroup (List a) where append xs ys = xs ++ ys` is written in terms of
+  -- the operator, so routing them would recurse forever.
+  println ("ab" ++ "cd")
+  println ([1, 2] ++ [3, 4])
+  -- dict-forwarded polymorphic append, at all three heads
+  println (twice "xy")
+  println (twice [1, 2])
+  println (unRope (twice (Rope "z")))
+  -- foldMap's default body is `fold (acc x => acc ++ f x) empty` — a `Monoid m =>`
+  -- append on an abstract tyvar.  That is the DOCUMENTED RESIDUAL (see the
+  -- `binopDictVarOf` note in typecheck.mdk): `++` on an impl's abstract
+  -- `requires`/method-dict tyvar stays on the structural builtin, so foldMap works at
+  -- List/String (below) but NOT yet at a user Monoid.  Pinned here so the day the
+  -- residual closes, this fixture is where the user-Monoid line gets added back.
+  println (foldMap (x => [x, x]) [1, 2])
