@@ -15,12 +15,12 @@
 #   ./provision.sh                                  # ~a few min: deps + build + gates
 #
 # Env knobs:
-#   MEDAKA_REPO   git URL         (default git@github.com:val-grasley/medaka.git)
+#   MEDAKA_REPO   git URL         (default git@github.com:MedakaLang/medaka.git)
 #   MEDAKA_DIR    checkout path   (default $HOME/medaka)
 #   GC_INITIAL_HEAP_SIZE          (default 2g — defers Boehm GC on the serial emit)
 set -uo pipefail
 
-REPO="${MEDAKA_REPO:-git@github.com:val-grasley/medaka.git}"
+REPO="${MEDAKA_REPO:-git@github.com:MedakaLang/medaka.git}"
 WORKDIR="${MEDAKA_DIR:-$HOME/medaka}"
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 export DEBIAN_FRONTEND=noninteractive

@@ -35,11 +35,58 @@ typecheck + the self-compile fixpoint. **All 83 gates pass on an ill-typed compi
 build does not gate on type errors) — that is exactly how a compiler with unbound constructors
 shipped to `main`. The gate shards would have waved it through.
 
-### "Require branches to be up to date" is doing the merge queue's job
+### ✅ THERE IS A MERGE QUEUE NOW (2026-07-13). Do not hand-manage staleness.
 
-`strict` is ON: a PR **cannot merge unless it is up to date with `main`**. So CI runs on *your
-branch merged onto current main*, not your branch in isolation. If main advances underneath
-you, you must update and re-run. That is the whole point — and it is not a formality:
+The repo moved to the **`MedakaLang` org** and the merge queue is **ON**. This replaced
+`strict` mode, and it changes the day-to-day flow in ways the rest of this doc used to
+prescribe the opposite of. **Everything below about `BEHIND` branches, `update-branch` kicks,
+and batching PRs to dodge an O(N²) tax is now OBSOLETE. Do not do it.**
+
+```sh
+gh pr merge --auto --merge     # enqueues; the queue does the rest
+```
+
+**What the queue actually does — and why it is STRICTLY STRONGER than what it replaced.**
+It builds a temporary branch containing *your PR merged onto current `main`, plus everything
+queued ahead of you*, runs all nine required checks **on that**, and merges only if green. That
+is the real guarantee `strict` was crudely approximating. It also **batches**: up to 5 entries
+test together in one CI run (`ALLGREEN` grouping — one bad PR fails its group and gets bisected
+out; 5-minute accumulation window; a lone PR never stalls waiting for company).
+
+Config: `merge_method=MERGE`, `grouping_strategy=ALLGREEN`, batch 1–5, 5-min wait, 60-min check
+timeout. The `merge_group:` trigger in `ci.yml` is what makes the checks run on the queue's temp
+branch — **without it the queue deadlocks** (entries wait forever for checks that never start).
+Do not remove it.
+
+**`strict` is now OFF, and that is deliberate — it is not a weakening.** `strict` and the queue
+are redundant, and together they are actively harmful: `strict` forces every open PR to rebase
+onto every merge and re-run all nine checks, which is precisely the O(N²) tax the queue exists
+to delete. Leaving both on means paying the tax and gaining nothing.
+
+**Why this mattered here, in real numbers** (the day we turned it on): **13 merges to `main` in
+one hour** across three concurrent orchestrators. Under `strict`, each merge invalidated every
+open PR. One PR paid **five full 20-minute suites** without landing; two more starved the same
+way; and it took a hand-coordinated *merge pause* between two orchestrators to let one through.
+That is the failure the queue removes.
+
+**What this obsoletes — stop doing all of it:**
+- ❌ `gh api -X PUT .../pulls/<N>/update-branch` kicks. (They were also **impossible** on any PR
+  touching `.github/workflows/` — `gh`'s OAuth app lacks `workflow` scope and the call 403s.)
+- ❌ Watching for `BEHIND` and babysitting stale branches.
+- ❌ **Batching unrelated PRs onto one branch to save CI runs.** The queue batches for you, at
+  the *merge* layer, without destroying anyone's bisect point.
+
+**What still holds, and is now the ONLY reason to batch:** batch for *diagnosis*, not for
+throughput. If two changes are so entangled that a red result would not tell you which one broke
+it, they belong together. Otherwise **keep them separate** — a red queue entry that names one PR
+is worth more than a saved CI run. And **a clean auto-merge is still NOT agreement** (see below):
+the queue tests the *merged* result, which is exactly why it catches what `strict` could not — but
+it cannot tell you that two semantically incompatible changes merged cleanly and are now both
+wrong. That remains a human job.
+
+### Why testing the MERGED result is the whole point
+
+CI on your branch alone is not enough, and this is not a formality:
 
 - Two green branches (TMC arc + the arg-tuple removal) merged cleanly and **crashed**. Git
   flagged 2 conflicts and silently auto-merged a THIRD break it could not see: TMC had added a
@@ -48,61 +95,7 @@ you, you must update and re-run. That is the whole point — and it is not a for
 - Two more branches both touched `typecheck.mdk`, auto-merged fine, and their **goldens**
   diverged — taking `main` red.
 
-**PR CI tests your branch. Only the merged result matters.** Never assume a clean auto-merge
-means agreement; see "A clean auto-merge is NOT agreement" below.
-
-### ⚠️ QUEUED PRs COST O(N²). BATCH THEM.
-
-`strict` means **every merge invalidates every other open PR** — each one goes `BEHIND`, must be
-updated to the new `main`, and must re-run all nine checks. With **N** PRs queued you pay
-roughly **N²/2** CI runs to land them, and the last one in line re-runs N times. A merge queue
-is exactly what batches that away, and **we do not have one** (see below).
-
-So when several PRs are in flight at once, **consider combining them into one branch.**
-
-**And expect to babysit the update.** `gh pr merge --auto` does **not** update a branch that
-falls `BEHIND` — it only waits for checks. When another PR merges ahead of yours, yours goes
-stale and its auto-merge just sits there. Kick it:
-
-```sh
-gh api -X PUT repos/<owner>/<repo>/pulls/<N>/update-branch
-```
-
-(`allow_update_branch` is enabled on the repo, which is what makes that call — and the "Update
-branch" button — available at all. It still has to be *triggered*; GitHub will not do it for
-you.) Every kick re-runs all nine checks. That is the O(N²) above, in the form you will actually
-meet it.
-
-**Batch when:**
-- The changes are **related** (same subsystem, same arc) — they were going to be reviewed
-  together anyway.
-- They are **small and low-risk** (docs, a gate, a fixture, a ledger entry). Two doc PRs racing
-  each other through nine checks is pure waste.
-- You are the author of all of them — batching someone else's work into your branch steals their
-  attribution and their bisect point.
-
-**Do NOT batch when:**
-- One of them is **risky and one is not.** A red result on a combined branch tells you the
-  *batch* is bad, not *which change* is bad — you have destroyed the bisect. Keep an emitter
-  change, a typechecker change, and a golden re-cut **separate**, precisely so a red CI names
-  the culprit.
-- The changes touch the **same files** — you have just recreated the merge problem inside your
-  own branch, with none of git's warnings. (And remember: **a clean auto-merge is not
-  agreement.**)
-- One is ready and one is not. Do not hold a finished fix hostage to an unfinished one.
-
-**Rule of thumb:** batch for *throughput*, split for *diagnosis*. If you would not be able to
-tell which half broke it, split.
-
-### There is NO merge queue, and there cannot be one here
-
-The `merge_queue` ruleset rule is rejected by the API: **GitHub's merge queue requires an
-ORGANIZATION-owned repository.** `val-grasley/medaka` is owned by a *user* account, so the
-feature is unavailable on any plan. `strict` mode above is the mitigation — it gives the same
-correctness guarantee, serialized instead of batched (you re-run CI after each merge rather
-than testing a batch once). **If this repo ever moves to a `medaka` org, turn the merge queue
-on** — the `merge_group:` trigger is already in `ci.yml` waiting for it, and without that
-trigger a queue would deadlock (its checks would never run).
+**Only the merged result matters.** The queue now tests exactly that, on every entry.
 
 ---
 

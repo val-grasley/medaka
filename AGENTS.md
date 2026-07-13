@@ -102,17 +102,28 @@ gh pr merge --auto --merge           # merges itself the moment all 9 checks go 
 
 **Nine required checks:** the six `gates (…)` shards, `soundness`, `seed-health`, `inlang`.
 **Zero approvals required** — the *checks* are the gate, not a human, so an agent can
-self-merge on green. There is no merge queue (GitHub requires an org-owned repo).
+self-merge on green. The repo is org-owned (`MedakaLang`), so a **merge queue is live** — see above; `--auto` enqueues.
 
 Two things that are easy to get wrong:
 
 - **`soundness` is required on purpose.** It runs `typecheck_compiler_source.sh` + the
-  self-compile fixpoint + the doc gates. **All gates pass on an ill-typed compiler** —
-  `make medaka` does not gate on type errors — which is exactly how a compiler with unbound
-  constructors once shipped to `main` with every gate green.
-- **A PR must be up to date with `main` to merge** ("strict"), so CI runs on *your branch
-  merged onto current main*. Not a formality: two green branches have merged cleanly into a
-  **crashing** tree (git auto-merged a break it could not see — no conflict marker).
+  self-compile fixpoint + the doc gates. **All gates pass on an ill-typed compiler** — `make medaka` does
+  not gate on type errors — which is exactly how a compiler with unbound constructors once
+  shipped to `main` with every gate green. The gate shards cannot catch that; `soundness` can.
+- **There is a MERGE QUEUE (2026-07-13).** `gh pr merge --auto --merge` **enqueues** your PR;
+  the queue does the rest. It builds a temp branch of *your PR merged onto current `main`, plus
+  everything queued ahead of you*, runs all nine checks **on that**, and merges only if green —
+  so what CI validates is the **merged result**, not your branch in isolation. That is not a
+  formality: two green branches have merged cleanly into a **crashing** tree (git auto-merged a
+  break it could not see — one branch had added a caller into machinery the other was re-signing,
+  on different lines, so no conflict marker).
+
+  **You do NOT need to keep your branch up to date with `main`.** "Strict" mode is OFF and
+  `update-branch` kicks are obsolete — the queue handles staleness. If a doc tells you to babysit
+  a `BEHIND` branch, that doc is stale.
+
+**Where the backlog and the orchestration rules live** — none of this is reachable from
+anywhere else, so it is listed here:
 
 | Path | What it is |
 |------|-----------|
