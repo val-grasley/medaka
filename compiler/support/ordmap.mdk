@@ -5,7 +5,7 @@
 -- The `om*` helpers below are thin String-keyed wrappers kept for the existing
 -- call sites in types/typecheck.mdk, backend/llvm_emit.mdk, and support/util.mdk.
 
-import map.{Map(..), set, get, has, size}
+import map.{Map(..), set, get, has, size, delete}
 
 export type OrdMap a = Map String a
 
@@ -23,6 +23,9 @@ omLookup k m = get k m
 
 export omHasKey : String -> OrdMap a -> Bool
 omHasKey k m = has k m
+
+export omDelete : String -> OrdMap a -> OrdMap a
+omDelete k m = delete k m
 
 -- Build a membership set from a name list.
 export omFromNames : List String -> OrdMap Unit -> OrdMap Unit
