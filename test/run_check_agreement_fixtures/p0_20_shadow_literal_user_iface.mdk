@@ -1,0 +1,21 @@
+-- P0-20 (peer of p0_20_shadow_literal_receiver, with a USER interface so the cell is
+-- readable without prelude knowledge, and with a method whose RESULT TYPE DIFFERS from
+-- the standalone's — which is what makes the disagreement observable rather than merely
+-- theoretical).
+--
+-- `size` is a definer shadow whose declared domain (`Int`) is ALSO the head of a live
+-- impl (`impl Sz Int`).  Per SHADOW-SEMANTICS S2 a grounded receiver with a visible impl
+-- DISPATCHES, so `size 3` is the method: `"IMPL"`, not `4`.
+--
+-- Before the fix: check typed it Int (standalone), run panicked, build printed a raw
+-- POINTER (`47059475956112`) — a String cell read as an Int.
+interface Sz a where
+  size : a -> String
+
+impl Sz Int where
+  size n = "IMPL"
+
+size : Int -> Int
+size n = n + 1
+
+main = println (size 3)

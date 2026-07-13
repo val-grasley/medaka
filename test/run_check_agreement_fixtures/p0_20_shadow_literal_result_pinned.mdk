@@ -1,0 +1,20 @@
+-- P0-20, the REJECT direction.  Same shadow as p0_20_shadow_literal_user_iface, but the
+-- result is pinned to the STANDALONE's return type (`Int`).  Since a literal receiver
+-- grounds to `Int` and `impl Sz Int` exists, the occurrence DISPATCHES and yields
+-- `String` — so this must be a located `Type mismatch`, on all three engines.
+--
+-- Before the fix `check` ACCEPTED this (it typed the site against the standalone,
+-- `Int -> Int`), so it is the direct check-side regression test: the fix is not "make
+-- check silent", it is "make check say what the binary will actually do".
+interface Sz a where
+  size : a -> String
+
+impl Sz Int where
+  size n = "IMPL"
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  let s = size 3 : Int
+  println s

@@ -220,3 +220,59 @@ same "which stage owns S4/S6" decision.
 > impl fetches the method scheme from `methodIfaceParamsRef`, else the standalone
 > scheme. Fixtures `p0_19_value_pos_{shadow=REJECT,ok=ACCEPT}` + a d8 leg in
 > `diff_compiler_check_cli_modules` (14/0); agreement 24/0, fixpoint C3a/C3b YES.
+
+> **🐛 NEW CELL + ✅ FIX (2026-07-13, P0-20) — row 25: a LITERAL receiver.  The worst
+> cell in the arc: `check` accepted, `run` panicked, and `build` SILENTLY PRINTED A WRONG
+> NUMBER.** The matrix above varies the *shape* of the receiver (grounded / ungrounded /
+> dict-bound) but never its *provenance*, and that is where the hole was:
+>
+> ```
+> eq : Int -> Int -> Int      -- a definer shadow of the PRELUDE's `Eq` method
+> eq a b = a + b
+> main = println (eq 1 2)     -- check: Int · run: E-PANIC · build: prints 0
+> ```
+>
+> A **numeric literal is `Num a => a`, i.e. UNGROUNDED at inference time**, so typecheck
+> took the S5 (ungrounded ⇒ standalone) arm and typed the site against `eq : Int -> Int ->
+> Int`. But typing it against the standalone *unifies `Int` into the receiver* — so by the
+> time the POST-inference route resolver (`resolveRLocalSite`) ran, the receiver WAS
+> grounded, to `Int`, which has `impl Eq Int`, and it left the site to **dispatch**. The
+> TYPE came from one arm and the ROUTE from the other. `eq 1 2` evaluated to a `Bool` that
+> `println` rendered with `Display Int`: `run` panicked (`intToString: not an Int`), and
+> the native binary printed **`0`** with exit 0. (With a user interface whose method
+> returns a `String` the binary printed a raw heap **pointer**; with `abs` it SEGFAULTED.)
+> Only literal receivers were affected — `f k = eq k 1` (k : Int, grounded on arrival)
+> dispatched consistently on all three paths, which is why the arc missed it.
+>
+> Per **S2 the answer is DISPATCH** (the receiver grounds to `Int`; `Eq Int` has an impl),
+> so `eq 1 2` is now `False` on check == run == build, and the user's own `eq` is reachable
+> only at a type with no `Eq` impl — exactly as `d2` already specified for `Box`.
+>
+> Fix (`compiler/types/typecheck.mdk`): `groundShadowReceiver` performs S5's
+> monomorphisation to the standalone's declared domain **BEFORE** the dispatch decision, so
+> typecheck asks the S2 impl question about the SAME head the route resolver will see; and
+> `pendingRLocalSites` gained a `forceLocal` flag so **the route FOLLOWS THE ARM** typecheck
+> actually took instead of being independently re-derived post-inference. The domain lookup
+> is sym-aware (`shadowDomainFor`) — on the mangled emit path the standalone is
+> `<mid>__eq`, so a bare-name sig lookup is silently inert there, which flips *build* to the
+> standalone while check/run dispatch (the same bug, mirrored).
+>
+> Fixtures: `test/run_check_agreement_fixtures/p0_20_shadow_literal_{receiver,user_iface,
+> result_pinned,noimpl_standalone}` — and that gate now also compares the **VALUE** (`run`
+> stdout == the built binary's stdout, plus an optional `.out` pin). It graded exit codes
+> only, so a build that exits 0 while printing a wrong number was invisible to it: **the
+> gate that owns this bug class could not see this bug.** Agreement 42/0, run_gates 83/0/0,
+> fixpoint C3a/C3b YES.
+>
+> **Residuals found while closing this (NOT fixed, both pre-existing on `main`, both filed):**
+> 1. **A definer shadow whose standalone is CONSTRAINED (`size : Num a => a -> a`) is
+>    miscompiled** — `check` accepts, `run` panics, `build` prints garbage — even with **no
+>    impl at the receiver head**, i.e. with no dispatch decision involved at all. The
+>    `RLocal` route carries no dictionary, so it calls a dict-passed standalone without its
+>    dict word and gets a partial application back. This is the `RLocal`-vs-dict-passing
+>    seam, not S2. Repro: `interface Sz a where { size : a -> String }` + `impl Sz Box` +
+>    `size : Num a => a -> a` + `size 3`.
+> 2. **A multi-TYPARAM interface (`interface Ix a i`) bypasses the whole definer-shadow
+>    machinery** (every entry point is gated on `singleParamIfaceMethod`, which counts
+>    interface TYPE PARAMS, not method params). `check` and `build` agree, `run` panics.
+>    S8 speaks to multi-*param methods*; it does not cover multi-*typaram interfaces*.

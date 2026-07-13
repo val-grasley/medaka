@@ -42,8 +42,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
-printf '%-46s %-8s %-6s %-6s %-6s %s\n' 'fixture' 'expect' 'check' 'run' 'build' 'result'
-printf '%-46s %-8s %-6s %-6s %-6s %s\n' '--------------------------------------------' '--------' '------' '------' '------' '------'
+printf '%-46s %-8s %-6s %-6s %-6s %-6s %s\n' 'fixture' 'expect' 'check' 'run' 'build' 'value' 'result'
+printf '%-46s %-8s %-6s %-6s %-6s %-6s %s\n' '--------------------------------------------' '--------' '------' '------' '------' '------' '------'
 
 for f in "$FIXDIR"/*.mdk; do
   base="$(basename "$f" .mdk)"
@@ -57,7 +57,7 @@ for f in "$FIXDIR"/*.mdk; do
 
   bound "$MEDAKA" check "$f" >/dev/null 2>&1
   check_code=$?
-  bound "$MEDAKA" run "$f" >/dev/null 2>&1
+  bound "$MEDAKA" run "$f" >"$TMP/run_$base.out" 2>/dev/null
   run_code=$?
   bound "$MEDAKA" build "$f" -o "$TMP/out_$base" >/dev/null 2>&1
   build_code=$?
@@ -66,22 +66,41 @@ for f in "$FIXDIR"/*.mdk; do
   if [ "$run_code" -ne 0 ]; then run_v='REJECT'; else run_v='ACCEPT'; fi
   if [ "$build_code" -ne 0 ]; then build_v='REJECT'; else build_v='ACCEPT'; fi
 
-  if [ "$check_v" = "$expected" ] && [ "$run_v" = "$expected" ] && [ "$build_v" = "$expected" ]; then
+  # P0-20: exit codes are NOT enough.  The bug this corpus exists to catch had `build`
+  # exit 0 while printing a WRONG NUMBER (a Bool rendered through intToString), which an
+  # accept-vs-reject gate cannot see — it would have graded that fixture PASS.  So for an
+  # ACCEPT fixture also require the two ENGINES to agree on the VALUE (`run` stdout ==
+  # the built binary's stdout), and, when the fixture ships a `.out` file, require that
+  # value to be the specified one.  Without a `.out` the value column is still a genuine
+  # run-vs-build differential; with one it also pins the semantics.
+  value_v='-'
+  if [ "$expected" = 'ACCEPT' ] && [ "$run_v" = 'ACCEPT' ] && [ "$build_v" = 'ACCEPT' ]; then
+    "$TMP/out_$base" >"$TMP/build_$base.out" 2>/dev/null
+    if ! cmp -s "$TMP/run_$base.out" "$TMP/build_$base.out"; then
+      value_v='DIFF'
+    elif [ -f "$FIXDIR/$base.out" ] && ! cmp -s "$FIXDIR/$base.out" "$TMP/run_$base.out"; then
+      value_v='WRONG'
+    else
+      value_v='ok'
+    fi
+  fi
+
+  if [ "$check_v" = "$expected" ] && [ "$run_v" = "$expected" ] && [ "$build_v" = "$expected" ] \
+     && [ "$value_v" != 'DIFF' ] && [ "$value_v" != 'WRONG' ]; then
     pass=$((pass+1))
     result='PASS'
   else
     fail=$((fail+1))
     result='FAIL'
   fi
-  printf '%-46s %-8s %-6s %-6s %-6s %s\n' "$base" "$expected" "$check_v" "$run_v" "$build_v" "$result"
+  printf '%-46s %-8s %-6s %-6s %-6s %-6s %s\n' "$base" "$expected" "$check_v" "$run_v" "$build_v" "$value_v" "$result"
 done
 
 echo
-printf '%s: %d passed, %d failed (RED expected on current main until the run==check fix lands)\n' \
-  "$(basename "$0")" "$pass" "$fail"
+printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 
-# This gate is diagnostic/documentary while the underlying divergence is open —
-# it does not force exit-nonzero for the known-red fixtures. Once the compiler
-# fix lands, re-run and every fixture should read PASS; at that point this
-# script's final `[ "$fail" -eq 0 ]` becomes meaningful as a real regression gate.
+# This gate is GREEN and load-bearing: it exits nonzero on any disagreement.  (It used to
+# print "RED expected on current main until the run==check fix lands" unconditionally —
+# stale since the P0-1/P0-17/P0-18/P0-19 fixes; a gate that announces its own redness
+# trains readers to ignore it.)
 [ "$fail" -eq 0 ]

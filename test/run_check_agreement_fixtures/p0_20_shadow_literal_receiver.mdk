@@ -1,0 +1,22 @@
+-- P0-20 (SILENT WRONG ANSWER — the worst cell yet found in the shadow arc).
+--
+-- A top-level `eq` shadowing the PRELUDE's `Eq` method `eq`, applied to LITERAL
+-- receivers.  Before the fix the three engines each did something different:
+--
+--   check  typed `eq 1 2` as Int (the standalone)         -> 0 diagnostics
+--   run    DISPATCHED to `impl Eq Int`, got a Bool        -> E-PANIC "intToString"
+--   build  DISPATCHED too, and printed it as an Int       -> SILENTLY PRINTED 0
+--
+-- Root cause: a numeric literal is `Num a => a`, i.e. UNGROUNDED at inference time, so
+-- typecheck took the ungrounded arm (S5 => standalone) — but typing the site against the
+-- standalone's scheme UNIFIES `Int` into the receiver, so the POST-inference route
+-- resolver saw a grounded `Int`, found `impl Eq Int`, and dispatched.  The type came from
+-- one arm and the route from the other.  See groundShadowReceiver in typecheck.mdk.
+--
+-- SHADOW-SEMANTICS S2 is unambiguous about the answer: the receiver grounds to `Int` and
+-- `Eq Int` has an impl, so this DISPATCHES.  `println (eq 1 2)` prints False on all three
+-- engines; the user's own `eq` is reachable only at a type with no `Eq` impl.
+eq : Int -> Int -> Int
+eq a b = a + b
+
+main = println (eq 1 2)
