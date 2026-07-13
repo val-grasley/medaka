@@ -447,6 +447,18 @@ jobs:
       - name: Docs must not cite dead paths
         run: sh test/check_doc_links.sh
 
+      # Also unguarded, and for the same reason — and this one needs it most. The
+      # sibling gate above checks that a doc's cited PATHS exist; this one checks that
+      # its cited SYMBOLS do. A repo-wide review found ~44 false concrete claims in the
+      # .claude/skills/*/SKILL.md playbooks agents EXECUTE (a `pushTypeError` taught at
+      # the wrong arity, a `Show` typeclass that never existed, a 20-name "grep these"
+      # index that was 19/20 fictional) — and ~30 were the same mechanical shape: a
+      # backticked symbol resolving nowhere in source. Doc rot lands in prose-only PRs,
+      # so guarding this on docs_only would skip it on exactly the PRs it must police.
+      # Pure text analysis, no compiler.
+      - name: Docs must not cite fabricated symbols
+        run: sh test/check_agent_doc_symbols.sh
+
       # Also unguarded, and for the same reason. docs/README.md is GENERATED from the
       # docs' `**Status:**` banners — the whole point being that a hand-maintained index
       # rots (AGENTS.md's own doc-index table sat mislabelling a doc as "IN PROGRESS"

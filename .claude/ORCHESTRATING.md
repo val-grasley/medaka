@@ -37,7 +37,7 @@ shipped to `main`. The gate shards would have waved it through.
 
 ### ✅ THERE IS A MERGE QUEUE NOW (2026-07-13). Do not hand-manage staleness.
 
-The repo moved to the **`MedakaLang` org** and the merge queue is **ON**. This replaced
+The repo moved to the **MedakaLang org** and the merge queue is **ON**. This replaced
 `strict` mode, and it changes the day-to-day flow in ways the rest of this doc used to
 prescribe the opposite of. **Everything below about `BEHIND` branches, `update-branch` kicks,
 and batching PRs to dodge an O(N²) tax is now OBSOLETE. Do not do it.**
