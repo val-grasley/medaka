@@ -67,7 +67,6 @@ canonicalizePath	interp	BUG	implemented by llvm and wasm, missing from interp �
 fileExists	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
 listDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 makeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
-readFile	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7); type-checks GREEN, panics "unbound identifier: readFile" at runtime under `medaka run`
 readFileBytes	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
 removeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 removeFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)

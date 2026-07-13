@@ -117,8 +117,43 @@ grep -E '^extern [A-Za-z_][A-Za-z0-9_]*' "$RUNTIME" | awk '{print $2}' | sort -u
 N_ALL="$(wc -l < "$WORK/all.txt" | tr -d ' ')"
 
 # ── 2. interpreter ───────────────────────────────────────────────────────────
-sed -n '/^externBindings = \[/,/^\]/p' "$EVALMDK" \
+# Match BOTH `externBindings = [` (a plain value) and `externBindings _ = [` (a
+# Unit-taking fn). The latter is what it became when `Value` was made
+# effect-polymorphic (`externBindings : Unit -> List (String, Value e)`): a
+# constructor application is not generalized by this typechecker, so the table
+# had to become a function to stay polymorphic in `e`.
+# The interpreter has MORE THAN ONE binding table, and the gate must union them
+# all or it under-reports (the dangerous direction: it would keep a fixed extern
+# filed as a BUG and never demand promotion).
+#   externBindings    — the pure/deterministic base. The differential oracle
+#                       installs ONLY this, which is what keeps its goldens
+#                       byte-identical.
+#   ioExternBindings  — the host-installed capability table (the "host is the
+#                       handler" seam, EFFECTS-SEMANTICS.md §7). `medaka run`
+#                       installs it; the oracle entries do not.
+# Any NEW table must be added here. The guard below is the backstop if one is
+# forgotten... but it only catches a total parse failure, not a missed table,
+# so keep this list honest.
+sed -n -e '/^externBindings\( _\)\? = \[/,/^\]/p' \
+       -e '/^ioExternBindings\( _\)\? = \[/,/^\]/p' "$EVALMDK" \
   | grep -oE '\("[A-Za-z_][A-Za-z0-9_]*"' | sed -E 's/^\(//' | tr -d '"' | sort -u > "$WORK/interp_impl.txt"
+
+# GUARD: a parse failure must NOT masquerade as "every extern is missing".
+# This gate reads eval.mdk as TEXT, so any refactor of the table's shape can
+# silently zero it out — and the gate would then report ~100 bogus SILENT
+# OMISSIONs (which is exactly what happened when the decl gained its `_` param).
+# A real table has ~100 entries; anything tiny means the sed pattern stopped
+# matching, which is a GATE bug, not a compiler bug. Say so, loudly, and exit
+# distinctly rather than emitting a wall of false accusations.
+N_PARSED="$(wc -l < "$WORK/interp_impl.txt" | tr -d ' ')"
+if [ "$N_PARSED" -lt 50 ]; then
+  echo "FAIL: could not parse eval.mdk's externBindings table — got only $N_PARSED entries (expected ~100)." >&2
+  echo "      This is a GATE bug, not a missing-extern bug: the table's declaration shape probably changed." >&2
+  echo "      Fix the sed pattern at $0 (§2) to match the current shape of:" >&2
+  grep -nE '^externBindings' "$EVALMDK" | sed 's/^/        /' >&2
+  exit 1
+fi
+
 # fallthroughName resolves to "__fallthrough__" (support/util.mdk:320) but is
 # bound via a variable key, not a string literal — the grep above can't see
 # it, so add it explicitly (see PARSING NOTES above).
