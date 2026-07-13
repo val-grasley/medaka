@@ -44,18 +44,69 @@ public export data Literal =
   | LBlob (Array Int)
   | LNull
 
+-- `Eq Literal` is HAND-WRITTEN, not derived, and that is deliberate: `deriving
+-- (Eq)` on a type with an `Array` field type-checks and RUNS (the interpreter's
+-- arg-tag fallback finds something) but the native emitter then dies with
+-- `no impl of method 'eq' for type 'Array'` — there is no `Eq (Array a)` impl.
+-- See findings/query-engine-unify.md F1.  Blobs compare element-wise here.
+--
+-- `rule-hand-rolled-derivable` fires here and its advice is WRONG: taking it
+-- (swapping this for `deriving (Eq)`) produces a binary that cannot be built.
+-- The rule is blind to whether the field types actually have an `Eq` impl.
+-- lint-disable-next-line rule-hand-rolled-derivable
+export impl Eq Literal where
+  eq (LInt a) (LInt b) = a == b
+  eq (LText a) (LText b) = a == b
+  eq (LFloat a) (LFloat b) = a == b
+  eq (LBlob a) (LBlob b) = arrayEqInt a b
+  eq LNull LNull = True
+  eq _ _ = False
+
+arrayEqInt : Array Int -> Array Int -> Bool
+arrayEqInt a b =
+  if arrayLength a != arrayLength b then
+    False
+  else
+    arrayEqGo a b 0 (arrayLength a)
+
+arrayEqGo : Array Int -> Array Int -> Int -> Int -> Bool
+arrayEqGo a b i n =
+  if i >= n then
+    True
+  else if a[i] != b[i] then
+    False
+  else
+    arrayEqGo a b (i + 1) n
+
 -- | A comparison operator.
-public export data CmpOp = OpEq | OpNe | OpLt | OpLe | OpGt | OpGe
+public export data CmpOp = OpEq | OpNe | OpLt | OpLe | OpGt | OpGe deriving (Eq)
 
 -- | An arithmetic operator: `+`, `-`, `*`, `/` (division), `%` (modulo).
-public export data ArithOp = AAdd | ASub | AMul | ADiv | AMod
+public export data ArithOp = AAdd | ASub | AMul | ADiv | AMod deriving (Eq)
+
+-- | An aggregate function.  `FnCount` is the only one that may appear with NO
+--   operand — that is `COUNT(*)`.
+public export data AggFn = FnCount | FnSum | FnAvg | FnMin | FnMax deriving (Eq)
 
 -- | An untyped boolean/value expression tree.  `ECol`/`ELit` are leaves;
 --   `EBin` is a comparison; `EArith` is a numeric binary op; `EAnd`/`EOr`/`ENot`
 --   are logical; `EIsNull`/`ENotNull` are the null tests.
+--
+--   `EAgg fn operand` is a REAL aggregate node: `EAgg FnCount None` is
+--   `COUNT(*)` (the `None` operand is what encodes the `*`), `EAgg FnSum (Some e)`
+--   is `SUM(e)`.  Because the operand is a full `SqlExpr` — not a bare column
+--   name — `sum(price * qty)` is expressible.  An aggregate is legal in the
+--   SELECT list, in HAVING, and in ORDER BY; it is REJECTED in WHERE and in a
+--   JOIN's ON (compile-time `Err`), and it may not nest inside another aggregate.
+--
+--   `Eq SqlExpr` is derived: the executor uses structural equality to (a) match a
+--   projection/ORDER BY/HAVING sub-expression against a GROUP BY key and (b)
+--   dedup the aggregate list, so `count(*)` mentioned in both the select list and
+--   ORDER BY is computed once.
 public export data SqlExpr =
   | ECol String
   | ELit Literal
+  | EAgg AggFn (Option SqlExpr)
   | EBin CmpOp SqlExpr SqlExpr
   | EArith ArithOp SqlExpr SqlExpr
   | EAnd SqlExpr SqlExpr
@@ -63,6 +114,7 @@ public export data SqlExpr =
   | ENot SqlExpr
   | EIsNull SqlExpr
   | ENotNull SqlExpr
+deriving (Eq)
 
 -- | The join kind: `JInner` drops unmatched left rows (SQL INNER JOIN);
 --   `JLeft` keeps every left row, null-padding the right side when no match is
@@ -76,34 +128,54 @@ public export data JoinKind = JInner | JLeft
 --   columns in `joins` order).
 public export data Join = Join { table : String, kind : JoinKind, on : SqlExpr }
 
--- | A whole SELECT: source table, INNER joins (applied in order), optional
---   WHERE, optional ORDER BY, optional limit/offset, optional DISTINCT.
---   Projection is the `RowType` passed to `query`, NOT a field here (decision d2).
+-- | A whole SELECT — the single query ADT.  One `Select`, one executor
+--   (`runPipeline`), running the real SQL evaluation order:
+--
+--     FROM → JOIN → WHERE → GROUP BY → HAVING → project (SELECT list)
+--       → DISTINCT → ORDER BY → LIMIT/OFFSET
 --
 --   The COMBINED row (when `joins` is non-empty) lays out cells as: all of the
 --   `from` table's columns, then each join table's columns in `joins` order.
---   The `RowType` passed to `query` decodes this wide row left-to-right.
+--
+--   `columns` is the PROJECTION expression list (SELECT a+b, count(*) FROM t).
+--   The default `[]` means `SELECT *`: in an UNGROUPED query the raw cells pass
+--   through decode unchanged (so every pre-unification query stays
+--   byte-identical); in a GROUPED query it means the synthetic group row —
+--   group-key cells (in `groupBy` order) followed by the aggregate cells.  The
+--   `RowType` passed to `query` decodes the PROJECTED row positionally, so it
+--   must match the projection's cell order/types.
+--
+--   `groupBy` is a list of key EXPRESSIONS (not just column names).  A query is
+--   AGGREGATE when `groupBy` is non-empty, OR `having` is set, OR an `EAgg`
+--   appears anywhere in `columns`/`having`/`orderBy` — matching SQL.  In an
+--   aggregate query every non-aggregate projection/HAVING/ORDER BY expression
+--   must be built from GROUP BY keys and literals; a bare column that is not a
+--   key is an `Err` (SQL's "must appear in the GROUP BY clause" rule) rather
+--   than silent garbage.  With no GROUP BY there is exactly ONE group over the
+--   whole filtered table (`SELECT count(*) FROM t` = one row, 0 on empty).
+--
+--   `orderBy` keys are EXPRESSIONS too, so ORDER BY can name an original column,
+--   a computed column, or an aggregate — the v1 "ORDER BY cannot reference a
+--   computed column" limitation is gone.  Sort keys are evaluated against the
+--   pre-projection row (raw row when ungrouped, synthetic group row when
+--   grouped), which is exactly what lets `ORDER BY count(*) DESC` work whether
+--   or not `count(*)` is in the select list.  Grouped output is key-ascending by
+--   default; an explicit `orderBy` sorts on top of that (so it is a deterministic
+--   tiebreak, `sortBy` being stable).
 --
 --   `distinct` is a flag only — `render` reads it to emit `SELECT DISTINCT`,
 --   but `query` (unconstrained: no `Eq a`) ignores it entirely. DISTINCT
 --   *execution* dedups on the DECODED projected values, which needs `Eq a`,
 --   so it lives in the separate `queryDistinct` entry point below. Plain
 --   `query` MUST stay unconstrained — don't add `Eq a` here.
---   `columns` is the PROJECTION expression list (SELECT a+b, name FROM t).
---   The default `[]` means `SELECT *` — the raw cells pass through decode
---   unchanged, so every existing query stays byte-identical. A non-empty list
---   transforms each RAW row (after WHERE + ORDER BY, which reference ORIGINAL
---   columns) into a projected `List Cell` — `[ eval e1 row, eval e2 row, … ]` —
---   BEFORE decode. The `RowType` passed to `query` then decodes the PROJECTED
---   row positionally, so it must match the projection's cell order/types.
---   v1 limitation: WHERE/ORDER BY run on the raw row, so ORDER BY cannot
---   reference a computed column.
 public export data Select =
   | Select {
       from : String,
       joins : List Join,
       where_ : Option SqlExpr,
-      orderBy : List (String, Bool),
+      groupBy : List SqlExpr,
+      having : Option SqlExpr,
+      orderBy : List (SqlExpr, Bool),
       limit : Option Int,
       offset : Option Int,
       distinct : Bool,
@@ -207,16 +279,46 @@ eIsNull e = MkExpr (EIsNull (unExpr e))
 export eNotNull : Expr a -> Expr Bool
 eNotNull e = MkExpr (ENotNull (unExpr e))
 
+-- Aggregate constructors.  These build a REAL `EAgg` node — unlike the legacy
+-- `lib.aggregate` `eCountStar`/`eSum`/… builders, which fake an aggregate as an
+-- `ECol` whose *name* happens to read "count(*)".  Each takes a full `Expr a`
+-- operand, so `aSum (eMul (eColInt "price") (eColInt "qty"))` is `SUM(price*qty)`.
+-- The phantom result type follows SQL: COUNT is an Int, AVG is a Float, and
+-- SUM/MIN/MAX stay in the operand's domain.
+
+-- | `COUNT(*)` — counts rows, NULLs included.  The only operand-less aggregate.
+export aCountStar : Expr Int
+aCountStar = MkExpr (EAgg FnCount None)
+
+-- | `COUNT(e)` — counts the rows where `e` is non-NULL.
+export aCount : Expr a -> Expr Int
+aCount e = MkExpr (EAgg FnCount (Some (unExpr e)))
+
+export aSum : Expr a -> Expr a
+aSum e = MkExpr (EAgg FnSum (Some (unExpr e)))
+
+export aAvg : Expr a -> Expr Float
+aAvg e = MkExpr (EAgg FnAvg (Some (unExpr e)))
+
+export aMin : Expr a -> Expr a
+aMin e = MkExpr (EAgg FnMin (Some (unExpr e)))
+
+export aMax : Expr a -> Expr a
+aMax e = MkExpr (EAgg FnMax (Some (unExpr e)))
+
 -- ---------------------------------------------------------------------------
 -- Select builders
 -- ---------------------------------------------------------------------------
 
--- | A bare SELECT over a table: no WHERE, no ORDER BY, no limit/offset.
+-- | A bare SELECT over a table: no WHERE, no GROUP BY, no ORDER BY, no
+--   limit/offset.
 export selectFrom : String -> Select
 selectFrom tbl = Select {
   from = tbl,
   joins = [],
   where_ = None,
+  groupBy = [],
+  having = None,
   orderBy = [],
   limit = None,
   offset = None,
@@ -264,8 +366,37 @@ withOffset n sel = { sel | offset = Some n }
 --   Multi-column ORDER BY: each call APPENDS a key, so the first call is the
 --   primary sort key, the second breaks ties on the first, etc. — matching
 --   `ORDER BY a ASC, b DESC` when chained `withOrderBy "a" True |> withOrderBy "b" False`.
+--   Sugar for `withOrderByExpr (ECol col)`.
 export withOrderBy : String -> Bool -> Select -> Select
-withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(col, asc)] }
+withOrderBy col asc sel = { sel | orderBy = sel.orderBy ++ [(ECol col, asc)] }
+
+-- | Order by an arbitrary EXPRESSION — a computed column (`ORDER BY price*qty`)
+--   or an aggregate (`ORDER BY count(*) DESC`).  Appends, exactly like
+--   `withOrderBy`.  In an aggregate query the expression must be built from
+--   GROUP BY keys, aggregates, and literals; otherwise it is an `Err` at
+--   execution, matching SQL.  The key need NOT appear in the select list.
+export withOrderByExpr : SqlExpr -> Bool -> Select -> Select
+withOrderByExpr e asc sel = { sel | orderBy = sel.orderBy ++ [(e, asc)] }
+
+-- | GROUP BY the named columns (left-to-right key order).  Sugar for
+--   `withGroupExprs (map ECol cols)`.
+export withGroupCols : List String -> Select -> Select
+withGroupCols cols sel = { sel | groupBy = map ECol cols }
+
+-- | GROUP BY arbitrary key EXPRESSIONS (e.g. `GROUP BY salary / 1000`).  Any
+--   non-aggregate projection / HAVING / ORDER BY expression must then be built
+--   from these keys (structurally) plus literals.
+export withGroupExprs : List SqlExpr -> Select -> Select
+withGroupExprs es sel = { sel | groupBy = es }
+
+-- | Attach a HAVING predicate — a filter over the GROUPED rows, so it may
+--   reference aggregates (`aCountStar`, `aSum …`) and GROUP BY keys.  Setting a
+--   HAVING makes the query an aggregate query even with no GROUP BY, matching SQL.
+--
+--   NAME: deliberately NOT `withHaving` — `lib.aggregate` already exports that
+--   for the legacy `AggQuery`, and a module importing both would collide.
+export withHavingPred : Expr Bool -> Select -> Select
+withHavingPred e sel = { sel | having = Some (unExpr e) }
 
 -- | Mark the SELECT as DISTINCT: `render` emits `SELECT DISTINCT`, and
 --   `queryDistinct` dedups the DECODED, projected rows (see `Select.distinct`
@@ -296,18 +427,37 @@ withColumns cols sel = { sel | columns = cols }
 --   Identifiers (table + column names) are charset-asserted (`[A-Za-z0-9_]`);
 --   an illegal identifier yields `Err`.
 export render : Select -> Result String (String, List Literal)
-render (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, distinct = dst, columns = cols }) =
+render (Select { from = tbl, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, limit = lm, offset = of_, distinct = dst, columns = cols }) =
   if not (validIdent tbl) then Err "render: invalid table name: \{tbl}"
   else do
     (joinSql, joinBinds) <- renderJoins js
     (colSql, colBinds) <- renderColumns cols
     (whereSql, binds) <- renderWhere w
-    ordSql <- renderOrderBy ob
+    (grpSql, grpBinds) <- renderGroupBy gb
+    (havSql, havBinds) <- renderHaving h
+    (ordSql, ordBinds) <- renderOrderBy ob
     let limOff = renderLimitOffset lm of_
     let distPfx = if dst then "SELECT DISTINCT " else "SELECT "
     let selectSql = "\{distPfx}\{colSql}"
-    let sql = "\{selectSql} FROM \{tbl}\{joinSql}\{whereSql}\{ordSql}\{limOffSql limOff}"
-    Ok (sql, colBinds ++ joinBinds ++ binds ++ limOffBinds limOff lm of_)
+    let sql = "\{selectSql} FROM \{tbl}\{joinSql}\{whereSql}\{grpSql}\{havSql}\{ordSql}\{limOffSql limOff}"
+    Ok
+      (
+        sql,
+        colBinds ++ joinBinds ++ binds ++ grpBinds ++ havBinds ++ ordBinds ++ limOffBinds limOff lm of_,
+      )
+
+-- Render the GROUP BY clause (comma-joined key expressions).  Empty ⇒ no clause.
+renderGroupBy : List SqlExpr -> Result String (String, List Literal)
+renderGroupBy [] = Ok ("", [])
+renderGroupBy gb = map
+  ((parts, binds) => (" GROUP BY \{join ", " parts}", binds))
+  (renderColumnParts gb)
+
+-- Render the HAVING clause (with leading " HAVING ") and collect its binds.
+renderHaving : Option SqlExpr -> Result String (String, List Literal)
+renderHaving None = Ok ("", [])
+renderHaving (Some e) =
+  map ((sql, binds) => (" HAVING \{sql}", binds)) (renderExpr e)
 
 -- Render the projection column list.  Empty ⇒ `*` (SELECT *); non-empty ⇒ each
 -- expr rendered via `renderExpr`, comma-joined, binds accumulated left-to-right.
@@ -352,22 +502,23 @@ renderLimitOffset lm of_ =
     None => ""
   "\{l}\{o}"
 
--- Render the ORDER BY clause (no bind params — column names are validated
--- identifiers, not parameters).  Returns `Err` on the first illegal column
--- name.  Empty key list ⇒ no clause at all.
-renderOrderBy : List (String, Bool) -> Result String String
-renderOrderBy [] = Ok ""
-renderOrderBy keys =
-  map (parts => " ORDER BY " ++ join ", " parts) (renderOrderByParts keys)
+-- Render the ORDER BY clause.  Keys are EXPRESSIONS now, so they render through
+-- `renderExpr` (a bare `ECol "age"` still renders as plain `age`, keeping every
+-- pre-unification rendering byte-identical) and may carry binds — e.g.
+-- `ORDER BY (price * ?)`.  Empty key list ⇒ no clause at all.
+renderOrderBy : List (SqlExpr, Bool) -> Result String (String, List Literal)
+renderOrderBy [] = Ok ("", [])
+renderOrderBy keys = map
+  ((parts, binds) => (" ORDER BY \{join ", " parts}", binds))
+  (renderOrderByParts keys)
 
-renderOrderByParts : List (String, Bool) -> Result String (List String)
-renderOrderByParts [] = Ok []
-renderOrderByParts ((col, asc)::rest) =
-  if not (validQualIdent col) then Err "render: invalid ORDER BY column: \{col}"
-  else do
-    let dir = if asc then "ASC" else "DESC"
-    restParts <- renderOrderByParts rest
-    Ok ("\{col} \{dir}"::restParts)
+renderOrderByParts : List (SqlExpr, Bool) -> Result String (List String, List Literal)
+renderOrderByParts [] = Ok ([], [])
+renderOrderByParts ((e, asc)::rest) = do
+  (sql, binds) <- renderExpr e
+  let dir = if asc then "ASC" else "DESC"
+  (restParts, restBinds) <- renderOrderByParts rest
+  Ok ("\{sql} \{dir}"::restParts, binds ++ restBinds)
 
 limOffSql : String -> String
 limOffSql s = s
@@ -396,6 +547,12 @@ renderExpr (ECol name) =
   else
     Err "render: invalid column name: \{name}"
 renderExpr (ELit lit) = Ok ("?", [lit])
+renderExpr (EAgg FnCount None) = Ok ("count(*)", [])
+renderExpr (EAgg fn (Some operand)) =
+  map ((sql, binds) => ("\{aggFnSql fn}(\{sql})", binds)) (renderExpr operand)
+renderExpr (EAgg fn None) =
+  Err
+    "render: \{aggFnSql fn}(*) is not valid — only count(*) may omit its operand"
 renderExpr (EBin op l r) = renderBinary (cmpSql op) l r
 renderExpr (EArith op l r) = renderBinary (arithSql op) l r
 renderExpr (EAnd l r) = renderBinary "AND" l r
@@ -412,6 +569,17 @@ renderBinary opSql l r = do
   (lsql, lbinds) <- renderExpr l
   (rsql, rbinds) <- renderExpr r
   Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
+
+-- | The canonical SQL name of an aggregate function.  Rendering `EAgg` through
+--   this reproduces exactly the strings the legacy `lib.aggregate.aggName` puns
+--   on (`count(*)`, `sum(salary)`, …) — so the render output of a shimmed
+--   `AggQuery` and a native `Select` agree.
+export aggFnSql : AggFn -> String
+aggFnSql FnCount = "count"
+aggFnSql FnSum = "sum"
+aggFnSql FnAvg = "avg"
+aggFnSql FnMin = "min"
+aggFnSql FnMax = "max"
 
 arithSql : ArithOp -> String
 arithSql AAdd = "+"
@@ -442,7 +610,7 @@ validIdentGo : Array Char -> Int -> Int -> Bool
 validIdentGo chars i n =
   if i >= n then
     True
-  else if identChar (charCode chars.[i]) then
+  else if identChar (charCode chars[i]) then
     validIdentGo chars (i + 1) n
   else
     False
@@ -472,7 +640,7 @@ countDots chars i n acc =
   if i >= n then
     acc
   else
-    countDots chars (i + 1) n (if charCode chars.[i] == 46 then acc + 1 else acc)
+    countDots chars (i + 1) n (if charCode chars[i] == 46 then acc + 1 else acc)
 
 -- Split on the first '.' (caller guarantees exactly one).  Returns (before, after).
 splitOnDot : String -> (String, String)
@@ -486,7 +654,7 @@ dotIndex : Array Char -> Int -> Int -> Int
 dotIndex chars i n =
   if i >= n then
     n
-  else if charCode chars.[i] == 46 then
+  else if charCode chars[i] == 46 then
     i
   else
     dotIndex chars (i + 1) n
@@ -507,6 +675,9 @@ compilePred lookup (ECol name) = match lookup name
   None => Err "compilePred: unknown column: \{name}"
   Some i => Ok (cells => cellTruthy (nthCell cells i))
 compilePred lookup (ELit lit) = Ok (_ => litTruthy lit)
+compilePred _ (EAgg fn _) =
+  Err
+    "\{aggFnSql fn}(...): aggregate functions are not allowed in WHERE or a JOIN's ON — put the condition in HAVING"
 compilePred lookup (EBin op l r) = compileCmp lookup op l r
 compilePred lookup (EArith op l r) = do
   g <- compileOperand lookup (EArith op l r)
@@ -551,6 +722,11 @@ compileOperand lookup (EArith op l r) = do
   gl <- compileOperand lookup l
   gr <- compileOperand lookup r
   Ok (cells => evalArith op (gl cells) (gr cells))
+-- An `EAgg` reaching here is an aggregate in a per-ROW position: either inside a
+-- WHERE/ON, or nested inside another aggregate's operand.  Both are SQL errors.
+compileOperand _ (EAgg fn _) =
+  Err
+    "\{aggFnSql fn}(...): aggregate functions cannot be nested or used per-row — they are only valid in the SELECT list, HAVING, or ORDER BY of a grouped query"
 compileOperand lookup _ = Err "compilePred: operand must be a column or literal"
 
 -- | Compile any `SqlExpr` value operand to a per-row `List Cell -> Cell`
@@ -687,54 +863,442 @@ applyCmp op o = match (op, o)
   _ => False
 
 -- ---------------------------------------------------------------------------
--- query : run a Select against a Db, decoding survivors via a RowType
+-- The unified executor
+--
+-- ONE pipeline, running SQL's real evaluation order:
+--
+--   FROM → JOIN → WHERE → GROUP BY → HAVING → project → DISTINCT → ORDER BY
+--     → LIMIT/OFFSET → decode
+--
+-- `runPipeline` does everything up to and including ORDER BY, and hands back the
+-- final, ordered, PROJECTED cell rows.  The two public entry points differ ONLY
+-- in what they do after that — which is exactly the `Eq a` split:
+--
+--   * `query`         : slice (offset/limit) → decode.       No constraint.
+--   * `queryDistinct` : decode → nub → slice.                Needs `Eq a`.
+--
+-- DISTINCT dedups on DECODED values, so it cannot live in `runPipeline` (which
+-- is still in cell-land) without dragging `Eq a` onto plain `query`.  Keeping
+-- `query` unconstrained is a hard invariant — do not "simplify" these together.
 -- ---------------------------------------------------------------------------
 
--- | Execute a `Select`:  resolve `where_` to a cell predicate over the table's
---   column-index map, scan the table (rowid ascending), filter on cells, sort by
---   ORDER BY (if specified), drop `offset`, take `limit`, and decode each survivor
---   via `rt`.  A decode error on any survivor aborts the whole query (fail-fast).
---   SQL semantics: ORDER BY is applied BEFORE LIMIT/OFFSET.
+-- | Execute a `Select` and decode each result row via `rt`.  Ignores `distinct`
+--   (see `queryDistinct`).  A decode error on any row aborts the whole query.
 export query : Db -> Select -> RowType a -> Result String (List a)
-query db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, columns = cols }) rt =
-  match js
-    [] => do
-      -- Single-table path: materialize IPK-substituted cells and run the shared
-      -- pipeline.  Byte-identical to the pre-join behaviour (joins = []).
-      entry <- findTable db tbl
-      let lookup = mkLookup (schemaSql entry)
-      (pkIdx, rows) <- scanTableRowsIpk db tbl
-      let rowsCells = map (rowCellsWithIpk pkIdx) rows
-      runOverCells lookup w ob lm of_ cols rt rowsCells
-    _  => do
-      -- Join path: gather every table (from :: joins) as materialized cell rows
-      -- with its base offset, build a combined lookup, nested-loop join on each
-      -- ON predicate, then run the same shared pipeline over the wide rows.
-      infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
-      let lookup = mkJoinLookup (map infoLookup infos)
-      joined <- runJoins lookup infos js
-      runOverCells lookup w ob lm of_ cols rt joined
+query db sel rt = do
+  rows <- runPipeline db sel
+  decodeCells rt (applyOffsetLimit (selOffset sel) (selLimit sel) rows) []
 
--- | Execute a `Select` with DISTINCT semantics: same resolve/scan/join/WHERE/
---   ORDER BY as `query`, but dedups on the DECODED, PROJECTED rows (via `rt`)
---   rather than the raw cells, and applies LIMIT/OFFSET AFTER dedup (matching
---   SQL: DISTINCT collapses duplicates in the result set, and LIMIT/OFFSET
---   slice that already-deduped set). `query` itself ignores `distinct` and
---   stays unconstrained; this is the separate `Eq a`-constrained entry point
---   DISTINCT execution needs (see the `Select.distinct` doc comment).
+-- | Execute a `Select` with DISTINCT semantics: identical to `query` through
+--   ORDER BY, but dedups on the DECODED, PROJECTED rows and applies LIMIT/OFFSET
+--   AFTER the dedup (SQL: DISTINCT collapses the result set, LIMIT slices what's
+--   left).  `nub` is stable, so the ORDER BY ordering survives the dedup.
 export queryDistinct : Eq a => Db -> Select -> RowType a -> Result String (List a)
-queryDistinct db (Select { from = tbl, joins = js, where_ = w, orderBy = ob, limit = lm, offset = of_, columns = cols }) rt = match js
-  [] => do
-    entry <- findTable db tbl
-    let lookup = mkLookup (schemaSql entry)
-    (pkIdx, rows) <- scanTableRowsIpk db tbl
-    let rowsCells = map (rowCellsWithIpk pkIdx) rows
-    runOverCellsDistinct lookup w ob lm of_ cols rt rowsCells
-  _ => do
-    infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
-    let lookup = mkJoinLookup (map infoLookup infos)
-    joined <- runJoins lookup infos js
-    runOverCellsDistinct lookup w ob lm of_ cols rt joined
+queryDistinct db sel rt = do
+  rows <- runPipeline db sel
+  decoded <- decodeCells rt rows []
+  Ok (dropTakeList (selOffset sel) (selLimit sel) (nub decoded))
+
+selLimit : Select -> Option Int
+selLimit sel = sel.limit
+
+selOffset : Select -> Option Int
+selOffset sel = sel.offset
+
+-- The shared engine: source rows → WHERE → (grouped | flat) → ordered, projected
+-- cell rows.  Everything except DISTINCT, LIMIT/OFFSET, and decode.
+runPipeline : Db -> Select -> Result String (List (List Cell))
+runPipeline db (Select { from = tbl, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, columns = cols }) = do
+  (lookup, rawRows) <- sourceRows db tbl js
+  pred <- compileWhere lookup w
+  let kept = filter pred rawRows
+  if isAggregate gb h ob cols then
+    runGrouped lookup gb h ob cols kept
+  else
+    runFlat lookup ob cols kept
+
+-- FROM + JOINs → (combined column resolver, materialized wide rows).
+-- The no-join case keeps its own single-table lookup (`columnIndex` over the one
+-- CREATE TABLE) rather than routing through the join machinery, so a plain
+-- single-table query behaves exactly as it did before joins existed.
+sourceRows : Db -> String -> List Join -> Result String (String -> Option Int, List (List Cell))
+sourceRows db tbl [] = do
+  entry <- findTable db tbl
+  let lookup = mkLookup (schemaSql entry)
+  (pkIdx, rows) <- scanTableRowsIpk db tbl
+  Ok (lookup, map (rowCellsWithIpk pkIdx) rows)
+sourceRows db tbl js = do
+  infos <- gatherJoinInfos db (tbl :: map joinTable js) 0 []
+  let lookup = mkJoinLookup (map infoLookup infos)
+  joined <- runJoins lookup infos js
+  Ok (lookup, joined)
+
+-- | Is this an aggregate query?  SQL's rule: yes if there is a GROUP BY, OR a
+--   HAVING (a HAVING with no GROUP BY still collapses the table to one group),
+--   OR an aggregate function anywhere in the select list / HAVING / ORDER BY.
+isAggregate : List SqlExpr -> Option SqlExpr -> List (SqlExpr, Bool) -> List SqlExpr -> Bool
+isAggregate gb h ob cols = match (gb, h)
+  ([], None) => containsAgg (cols ++ map fst ob)
+  _ => True
+
+-- ---------------------------------------------------------------------------
+-- The ungrouped path
+--
+-- Sort keys are evaluated against the RAW (pre-projection) row.  That is what
+-- retires the old v1 limitation "ORDER BY cannot reference a computed column":
+-- a computed column IS just an expression over the raw columns, so `ORDER BY
+-- (price * qty)` evaluates the very same expression the select list projects —
+-- no need to look it up in the projected row.  It also keeps SQL's other
+-- allowance (ORDER BY on a column that is NOT in the select list) working.
+-- ---------------------------------------------------------------------------
+
+runFlat : (String -> Option Int) -> List (SqlExpr, Bool) -> List SqlExpr -> List (List Cell) -> Result String (List (List Cell))
+runFlat lookup ob cols kept = do
+  projEvals <- compileProjections lookup cols
+  sortKeys <- compileSortKeys lookup ob
+  Ok (map fst (sortPairs sortKeys (pairRows cols projEvals kept)))
+
+-- ---------------------------------------------------------------------------
+-- The grouped path
+--
+-- Each group reduces to a SYNTHETIC row: the group-key cells (in `groupBy`
+-- order) followed by one cell per distinct aggregate.  The select list, HAVING,
+-- and ORDER BY are then REWRITTEN against that synthetic row — every
+-- sub-expression that is structurally a GROUP BY key becomes a positional
+-- reference, every `EAgg` becomes a positional reference to its computed cell,
+-- and a bare column that is neither is the SQL error "must appear in the GROUP BY
+-- clause".  After the rewrite the ordinary `compileOperand`/`compilePred`
+-- machinery runs unchanged over the synthetic row — the grouped and ungrouped
+-- paths share the whole expression evaluator.
+--
+-- Groups come out key-ascending (SQLite value ordering), matching what
+-- `sqlite3` prints for `GROUP BY k` and what the legacy `queryAgg` promised.  An
+-- explicit ORDER BY then sorts on top, so it inherits key-ascending as a stable
+-- tiebreak instead of leaving equal-ranked groups in an arbitrary order.
+-- ---------------------------------------------------------------------------
+
+runGrouped : (String -> Option Int) -> List SqlExpr -> Option SqlExpr -> List (SqlExpr, Bool) -> List SqlExpr -> List (List Cell) -> Result String (List (List Cell))
+runGrouped lookup gb h ob cols kept = do
+  -- 1. GROUP BY: evaluate the key expressions per raw row, bucket, sort by key.
+  keyEvals <- compileProjections lookup gb
+  let groups = groupRows gb keyEvals kept
+  -- 2. Reduce every distinct aggregate mentioned anywhere to one cell per group.
+  let obExprs = map fst ob
+  let aggs = collectAggs (cols ++ optionToList h ++ obExprs)
+  aggEvals <- compileAggs lookup aggs
+  let synths = map ((k, rows) => k ++ map (f => f rows) aggEvals) groups
+  -- 3. Rewrite the post-group expressions against the synthetic row.
+  let slookup = synthLookup (length gb + length aggs)
+  hR <- rewriteOptPostGroup gb aggs h
+  colsR <- rewriteAllPostGroup gb aggs cols
+  obR <- rewriteAllPostGroup gb aggs obExprs
+  -- 4. HAVING → project → ORDER BY, all over the synthetic row.
+  hpred <- compileWhere slookup hR
+  let survivors = filter hpred synths
+  projEvals <- compileProjections slookup colsR
+  sortKeys <- compileSortKeys slookup (zipKeys obR (map snd ob))
+  Ok (map fst (sortPairs sortKeys (pairRows colsR projEvals survivors)))
+
+-- Bucket rows by their group key.  NO group-by keys ⇒ exactly ONE group over the
+-- whole (possibly empty) input, which is what makes `SELECT count(*) FROM t`
+-- return a single `0` row on an empty table.  With keys, an empty input yields
+-- ZERO groups.  Groups are emitted key-ascending.
+groupRows : List SqlExpr -> List (List Cell -> Cell) -> List (List Cell) -> List (List Cell, List (List Cell))
+groupRows [] _ rows = [([], rows)]
+groupRows _ keyEvals rows =
+  let keyed = map (r => (map (g => g r) keyEvals, r)) rows
+  let keys = distinctKeys (map fst keyed)
+  let grouped = map (k => (k, map snd (filter ((kk, _) => cellListEq kk k) keyed))) keys
+  sortBy
+    (a b => match (a, b)
+      ((ka, _), (kb, _)) => cellListOrder ka kb)
+    grouped
+
+-- Distinct group keys, in first-encounter order (the sort below fixes the final
+-- order; encounter order just keeps this deterministic).
+distinctKeys : List (List Cell) -> List (List Cell)
+distinctKeys ks = reverse (distinctKeysGo ks [])
+
+distinctKeysGo : List (List Cell) -> List (List Cell) -> List (List Cell)
+distinctKeysGo [] acc = acc
+distinctKeysGo (k::rest) acc =
+  if containsKey k acc then
+    distinctKeysGo rest acc
+  else
+    distinctKeysGo rest (k::acc)
+
+containsKey : List Cell -> List (List Cell) -> Bool
+containsKey _ [] = False
+containsKey k (x::xs) = if cellListEq k x then True else containsKey k xs
+
+-- ---------------------------------------------------------------------------
+-- Aggregate collection + reduction
+-- ---------------------------------------------------------------------------
+
+-- Every distinct `EAgg` node appearing in the given expressions, in order.  The
+-- dedup (via the derived `Eq SqlExpr`) is why `count(*)` in BOTH the select list
+-- and `ORDER BY count(*) DESC` is computed once and shares one output cell.
+collectAggs : List SqlExpr -> List SqlExpr
+collectAggs es = nub (concatAggs es)
+
+concatAggs : List SqlExpr -> List SqlExpr
+concatAggs [] = []
+concatAggs (e::rest) = aggsIn e ++ concatAggs rest
+
+-- The aggregate nodes inside an expression.  Does NOT descend into an aggregate's
+-- own operand — a nested aggregate is an error, caught later by `compileOperand`.
+aggsIn : SqlExpr -> List SqlExpr
+aggsIn (ECol _) = []
+aggsIn (ELit _) = []
+aggsIn (EAgg fn operand) = [EAgg fn operand]
+aggsIn (EBin _ l r) = aggsIn l ++ aggsIn r
+aggsIn (EArith _ l r) = aggsIn l ++ aggsIn r
+aggsIn (EAnd l r) = aggsIn l ++ aggsIn r
+aggsIn (EOr l r) = aggsIn l ++ aggsIn r
+aggsIn (ENot e) = aggsIn e
+aggsIn (EIsNull e) = aggsIn e
+aggsIn (ENotNull e) = aggsIn e
+
+containsAgg : List SqlExpr -> Bool
+containsAgg es = match concatAggs es
+  [] => False
+  _ => True
+
+-- Compile each aggregate to a `group rows -> Cell` reducer.
+compileAggs : (String -> Option Int) -> List SqlExpr -> Result String (List (List (List Cell) -> Cell))
+compileAggs _ [] = Ok []
+compileAggs lookup (a::rest) = do
+  f <- compileAgg lookup a
+  fs <- compileAggs lookup rest
+  Ok (f::fs)
+
+-- COUNT(*) counts ROWS (NULLs included).  Every other aggregate — including
+-- COUNT(e) — evaluates its operand per row and SKIPS NULLs, matching sqlite3.
+compileAgg : (String -> Option Int) -> SqlExpr -> Result String (List (List Cell) -> Cell)
+compileAgg _ (EAgg FnCount None) = Ok (rows => CInt (length rows))
+compileAgg lookup (EAgg fn (Some operand)) = do
+  g <- compileOperand lookup operand
+  reduce <- aggReducer fn
+  Ok (rows => reduce (nonNull (map g rows)))
+compileAgg _ (EAgg fn None) =
+  Err "\{aggFnSql fn}(*) is not valid — only count(*) may omit its operand"
+compileAgg _ _ = Err "internal: compileAgg called on a non-aggregate expression"
+
+-- Reduce a group's non-NULL operand cells to one cell.  Empty (or all-NULL)
+-- group: COUNT = 0, everything else = NULL — sqlite3's rule.
+aggReducer : AggFn -> Result String (List Cell -> Cell)
+aggReducer FnCount = Ok (cs => CInt (length cs))
+aggReducer FnSum = Ok sumCells
+aggReducer FnAvg = Ok avgCells
+aggReducer FnMin = Ok minCells
+aggReducer FnMax = Ok maxCells
+
+nonNull : List Cell -> List Cell
+nonNull cells = filter (c => not (cellIsNull c)) cells
+
+-- SUM: NULL over an empty set; integer while every value is an integer, float as
+-- soon as one is a float.
+sumCells : List Cell -> Cell
+sumCells [] = CNull
+sumCells cells =
+  if any isFloatCell cells then
+    CFloat (sumFloat cells)
+  else
+    CInt (sumInt cells)
+
+sumFloat : List Cell -> Float
+sumFloat cells = fold (acc c => acc + cellNumF c) 0.0 cells
+
+sumInt : List Cell -> Int
+sumInt cells = fold (acc c => acc + cellNumI c) 0 cells
+
+-- AVG is always a Float (= sum / count over the non-NULLs); NULL over an empty set.
+avgCells : List Cell -> Cell
+avgCells [] = CNull
+avgCells cells = CFloat (sumFloat cells / intToFloat (length cells))
+
+minCells : List Cell -> Cell
+minCells [] = CNull
+minCells (c::rest) =
+  fold (acc x => if cellOrder x acc == Lt then x else acc) c rest
+
+maxCells : List Cell -> Cell
+maxCells [] = CNull
+maxCells (c::rest) =
+  fold (acc x => if cellOrder x acc == Gt then x else acc) c rest
+
+isFloatCell : Cell -> Bool
+isFloatCell (CFloat _) = True
+isFloatCell _ = False
+
+cellNumF : Cell -> Float
+cellNumF (CInt n) = intToFloat n
+cellNumF (CFloat f) = f
+cellNumF _ = 0.0
+
+cellNumI : Cell -> Int
+cellNumI (CInt n) = n
+cellNumI _ = 0
+
+-- ---------------------------------------------------------------------------
+-- Post-group rewrite: expressions over the raw row → expressions over the
+-- synthetic group row (key cells ++ aggregate cells)
+--
+-- The synthetic row is addressed POSITIONALLY.  We reuse `ECol` for that, with
+-- the name being the decimal index — safe because after the rewrite there are no
+-- original column names left in the tree (any that survived would be exactly the
+-- ones SQL forbids, and they are rejected here instead).
+-- ---------------------------------------------------------------------------
+
+-- Resolve `name` against the synthetic row: the rewrite emits `ECol "0"`,
+-- `ECol "1"`, … so the lookup is just "is this one of my `n` slot names".
+synthLookup : Int -> String -> Option Int
+synthLookup n = name => indexOfString name (slotNames 0 n)
+
+slotNames : Int -> Int -> List String
+slotNames i n = if i >= n then [] else intToString i :: slotNames (i + 1) n
+
+indexOfString : String -> List String -> Option Int
+indexOfString name names = indexOfStringGo name names 0
+
+indexOfStringGo : String -> List String -> Int -> Option Int
+indexOfStringGo _ [] _ = None
+indexOfStringGo name (x::rest) i =
+  if name == x then
+    Some i
+  else
+    indexOfStringGo name rest (i + 1)
+
+rewriteAllPostGroup : List SqlExpr -> List SqlExpr -> List SqlExpr -> Result String (List SqlExpr)
+rewriteAllPostGroup _ _ [] = Ok []
+rewriteAllPostGroup gb aggs (e::rest) = do
+  e2 <- rewritePostGroup gb aggs e
+  rest2 <- rewriteAllPostGroup gb aggs rest
+  Ok (e2::rest2)
+
+rewriteOptPostGroup : List SqlExpr -> List SqlExpr -> Option SqlExpr -> Result String (Option SqlExpr)
+rewriteOptPostGroup _ _ None = Ok None
+rewriteOptPostGroup gb aggs (Some e) = map Some (rewritePostGroup gb aggs e)
+
+-- A whole sub-expression that IS a GROUP BY key resolves to that key's slot —
+-- checked FIRST, so `GROUP BY (a + b)` makes `SELECT a + b` legal.  Otherwise we
+-- recurse structurally.
+rewritePostGroup : List SqlExpr -> List SqlExpr -> SqlExpr -> Result String SqlExpr
+rewritePostGroup gb aggs e = match indexOfExpr e gb
+  Some i => Ok (ECol (intToString i))
+  None => rewriteInner gb aggs e
+
+rewriteInner : List SqlExpr -> List SqlExpr -> SqlExpr -> Result String SqlExpr
+rewriteInner gb aggs (EAgg fn operand) = match indexOfExpr (EAgg fn operand) aggs
+  Some j => Ok (ECol (intToString (length gb + j)))
+  None => Err "internal: aggregate was not collected before the rewrite"
+rewriteInner _ _ (ELit lit) = Ok (ELit lit)
+-- THE rule: in an aggregate query a bare column must be a GROUP BY key or sit
+-- inside an aggregate.  sqlite is lenient here (it silently picks an arbitrary
+-- row from the group); we reject, because "silently returns garbage" is worse.
+rewriteInner _ _ (ECol name) =
+  Err
+    "column '\{name}' must appear in the GROUP BY clause or be used in an aggregate function"
+rewriteInner gb aggs (EBin op l r) = do
+  l2 <- rewritePostGroup gb aggs l
+  r2 <- rewritePostGroup gb aggs r
+  Ok (EBin op l2 r2)
+rewriteInner gb aggs (EArith op l r) = do
+  l2 <- rewritePostGroup gb aggs l
+  r2 <- rewritePostGroup gb aggs r
+  Ok (EArith op l2 r2)
+rewriteInner gb aggs (EAnd l r) = do
+  l2 <- rewritePostGroup gb aggs l
+  r2 <- rewritePostGroup gb aggs r
+  Ok (EAnd l2 r2)
+rewriteInner gb aggs (EOr l r) = do
+  l2 <- rewritePostGroup gb aggs l
+  r2 <- rewritePostGroup gb aggs r
+  Ok (EOr l2 r2)
+rewriteInner gb aggs (ENot e) = map ENot (rewritePostGroup gb aggs e)
+rewriteInner gb aggs (EIsNull e) = map EIsNull (rewritePostGroup gb aggs e)
+rewriteInner gb aggs (ENotNull e) = map ENotNull (rewritePostGroup gb aggs e)
+
+indexOfExpr : SqlExpr -> List SqlExpr -> Option Int
+indexOfExpr e es = indexOfExprGo e es 0
+
+indexOfExprGo : SqlExpr -> List SqlExpr -> Int -> Option Int
+indexOfExprGo _ [] _ = None
+indexOfExprGo e (x::rest) i =
+  if e == x then
+    Some i
+  else
+    indexOfExprGo e rest (i + 1)
+
+optionToList : Option SqlExpr -> List SqlExpr
+optionToList None = []
+optionToList (Some e) = [e]
+
+zipKeys : List SqlExpr -> List Bool -> List (SqlExpr, Bool)
+zipKeys [] _ = []
+zipKeys _ [] = []
+zipKeys (e::es) (d::ds) = (e, d) :: zipKeys es ds
+
+-- ---------------------------------------------------------------------------
+-- Projection + sorting (shared by both paths)
+-- ---------------------------------------------------------------------------
+
+-- Pair each row with its projection: `(projected, sortSource)`.  The SOURCE row
+-- is kept alongside so ORDER BY can sort on expressions that never made it into
+-- the select list.  An empty column list is SELECT * — the projected row IS the
+-- source row (raw row when flat; synthetic group row when grouped, which is
+-- exactly the layout the legacy `queryAgg` promised).
+pairRows : List SqlExpr -> List (List Cell -> Cell) -> List (List Cell) -> List (List Cell, List Cell)
+pairRows [] _ rows = map (r => (r, r)) rows
+pairRows _ evals rows = map (r => (map (g => g r) evals, r)) rows
+
+compileProjections : (String -> Option Int) -> List SqlExpr -> Result String (List (List Cell -> Cell))
+compileProjections _ [] = Ok []
+compileProjections lookup (e::rest) = do
+  g <- compileValue lookup e
+  gs <- compileProjections lookup rest
+  Ok (g::gs)
+
+-- Compile the ORDER BY keys to accessors over the SOURCE row.  Unlike the old
+-- name-based version, an unresolvable key is an `Err` rather than being silently
+-- dropped — a typo'd sort column used to just leave the rows unsorted.
+compileSortKeys : (String -> Option Int) -> List (SqlExpr, Bool) -> Result String (List (List Cell -> Cell, Bool))
+compileSortKeys _ [] = Ok []
+compileSortKeys lookup ((e, asc)::rest) = do
+  g <- compileValue lookup e
+  gs <- compileSortKeys lookup rest
+  Ok ((g, asc)::gs)
+
+sortPairs : List (List Cell -> Cell, Bool) -> List (List Cell, List Cell) -> List (List Cell, List Cell)
+sortPairs [] pairs = pairs
+sortPairs keys pairs = sortBy (a b => comparePairs keys a b) pairs
+
+-- Fold the keys left-to-right; the first non-Eq decides.  `asc = False` flips the
+-- operands rather than negating the Ordering, so NULL ordering stays consistent.
+comparePairs : List (List Cell -> Cell, Bool) -> (List Cell, List Cell) -> (List Cell, List Cell) -> Ordering
+comparePairs [] _ _ = Eq
+comparePairs ((g, asc)::rest) (pa, sa) (pb, sb) =
+  let o = if asc then cellOrder (g sa) (g sb) else cellOrder (g sb) (g sa)
+  match o
+    Eq => comparePairs rest (pa, sa) (pb, sb)
+    _ => o
+
+cellListEq : List Cell -> List Cell -> Bool
+cellListEq [] [] = True
+cellListEq (a::xs) (b::ys) =
+  if cellOrder a b == Eq then
+    cellListEq xs ys
+  else
+    False
+cellListEq _ _ = False
+
+cellListOrder : List Cell -> List Cell -> Ordering
+cellListOrder [] [] = Eq
+cellListOrder [] _ = Lt
+cellListOrder _ [] = Gt
+cellListOrder (a::xs) (b::ys) = match cellOrder a b
+  Eq => cellListOrder xs ys
+  o => o
 
 joinTable : Join -> String
 joinTable (Join { table = t }) = t
@@ -745,57 +1309,8 @@ joinOn (Join { on = e }) = e
 joinKind : Join -> JoinKind
 joinKind (Join { kind = k }) = k
 
--- Shared post-scan pipeline over already-materialized cell rows: compile WHERE,
--- filter, sort by ORDER BY, offset/limit, decode.
-runOverCells : (String -> Option Int) -> Option SqlExpr -> List (String, Bool) -> Option Int -> Option Int -> List SqlExpr -> RowType a -> List (List Cell) -> Result String (List a)
-runOverCells lookup w ob lm of_ cols rt rowsCells = do
-  pred <- compileWhere lookup w
-  let kept = filter pred rowsCells
-  let sorted = sortCells lookup ob kept
-  let sliced = applyOffsetLimit of_ lm sorted
-  projected <- projectCells lookup cols sliced
-  decodeCells rt projected []
-
--- DISTINCT sibling of `runOverCells`: filter, sort (on cells, same as
--- `query`), decode ALL survivors, `nub` (dedup on the decoded, projected
--- value — stable, keeps first occurrence, so sort order is preserved),
--- THEN offset/limit over the deduped `List a`. Decode-then-dedup-then-slice
--- (vs. `query`'s slice-then-decode) is the entire distinct-vs-plain
--- difference; everything upstream (WHERE compile/filter/sort) is identical.
-runOverCellsDistinct : Eq a => (String -> Option Int) -> Option SqlExpr -> List (String, Bool) -> Option Int -> Option Int -> List SqlExpr -> RowType a -> List (List Cell) -> Result String (List a)
-runOverCellsDistinct lookup w ob lm of_ cols rt rowsCells = do
-  pred <- compileWhere lookup w
-  let kept = filter pred rowsCells
-  let sorted = sortCells lookup ob kept
-  projected <- projectCells lookup cols sorted
-  decoded <- decodeCells rt projected []
-  let deduped = nub decoded
-  Ok (dropTakeList of_ lm deduped)
-
--- Apply the projection column list to each raw row, in order.  Empty `cols` ⇒
--- rows pass through UNCHANGED (SELECT *, byte-identical to the pre-projection
--- path — no compile, no map).  Non-empty ⇒ compile each projection `SqlExpr` to
--- a per-row `List Cell -> Cell` accessor (via the shared `compileValue`
--- evaluator, against the SAME `lookup` — so it works for joins too), then map
--- each row → `[ eval_1 row, eval_2 row, … ]`.  A compile error (unknown column /
--- bad operand) aborts the whole query, matching WHERE's fail-fast.
-projectCells : (String -> Option Int) -> List SqlExpr -> List (List Cell) -> Result String (List (List Cell))
-projectCells _ [] rows = Ok rows
-projectCells lookup cols rows = do
-  evals <- compileProjections lookup cols
-  Ok (map (row => map (g => g row) evals) rows)
-
--- Compile each projection expr to a per-row accessor (left-to-right, fail-fast).
-compileProjections : (String -> Option Int) -> List SqlExpr -> Result String (List (List Cell -> Cell))
-compileProjections _ [] = Ok []
-compileProjections lookup (e::rest) = do
-  g <- compileValue lookup e
-  gs <- compileProjections lookup rest
-  Ok (g::gs)
-
--- Drop `offset` elements then keep at most `limit`, over a generic list —
--- the DISTINCT-path sibling of `applyOffsetLimit`, which is specialized to
--- `List (List Cell)` because it runs BEFORE decode on the non-distinct path.
+-- Drop `offset` elements then keep at most `limit`, over the DECODED list —
+-- the DISTINCT path's slicer, which must run after `nub`.
 dropTakeList : Option Int -> Option Int -> List a -> List a
 dropTakeList of_ lm xs =
   let afterOffset = match of_
@@ -922,36 +1437,6 @@ crossOneMatches onPred l (r::rights) =
 -- `n` `CNull` cells, used to pad an unmatched LEFT JOIN right side.
 nullPad : Int -> List Cell
 nullPad n = if n <= 0 then [] else CNull :: nullPad (n - 1)
-
--- Sort cell rows by the ORDER BY key list (if any).  Each key's column name is
--- resolved to a combined-row index via `lookup`; an unknown column DROPS just
--- that key (single-column "unknown ⇒ unsorted" leniency) and the rest apply.
--- Empty resolved list leaves rows unchanged.  Comparison folds left-to-right;
--- the first key that isn't `Eq` decides, flipping operand order when `asc = False`.
--- SQLite value ordering: NULL < Int/Float (numeric) < Text < Blob.
-sortCells : (String -> Option Int) -> List (String, Bool) -> List (List Cell) -> List (List Cell)
-sortCells lookup keys rowsCells =
-  let resolved = resolveOrderKeys lookup keys
-  match resolved
-    [] => rowsCells
-    _ => sortBy (a b => compareByKeys resolved a b) rowsCells
-
-resolveOrderKeys : (String -> Option Int) -> List (String, Bool) -> List (Int, Bool)
-resolveOrderKeys _ [] = []
-resolveOrderKeys lookup ((col, asc)::rest) = match lookup col
-  None => resolveOrderKeys lookup rest
-  Some idx => (idx, asc) :: resolveOrderKeys lookup rest
-
-compareByKeys : List (Int, Bool) -> List Cell -> List Cell -> Ordering
-compareByKeys [] _ _ = Eq
-compareByKeys ((idx, asc)::rest) a b =
-  let o = if asc then
-    cellOrder (nthCell a idx) (nthCell b idx)
-  else
-    cellOrder (nthCell b idx) (nthCell a idx)
-  match o
-    Eq => compareByKeys rest a b
-    _ => o
 
 -- | Three-way ordering of two Cell values following SQLite's type ordering:
 --   NULL < Int/Float (numeric, interleaved) < Text (lexicographic) < Blob.
@@ -1081,6 +1566,30 @@ decodeCells rt (cells::rest) acc = do
 --
 -- > renderShow (render (withColumns [unExpr (eAdd (eColInt "a") (eColInt "b")), unExpr (eColText "name")] (selectFrom "t")))
 -- "SELECT (a + b), name FROM t ## []"
+--
+-- An aggregate renders as its canonical SQL text: `count(*)` for the operand-less
+-- `EAgg FnCount None`, `sum(<expr>)` for the rest. GROUP BY follows WHERE.
+--
+-- > renderShow (render (withColumns [unExpr (eColText "dept"), unExpr aCountStar] (withGroupCols ["dept"] (selectFrom "emp"))))
+-- "SELECT dept, count(*) FROM emp GROUP BY dept ## []"
+--
+-- Full clause order: SELECT … FROM … WHERE … GROUP BY … HAVING … ORDER BY … LIMIT.
+-- ORDER BY names an AGGREGATE here — impossible before the engines were unified.
+--
+-- > renderShow (render topDepts)
+-- "SELECT dept, count(*) FROM emp WHERE (active = ?) GROUP BY dept HAVING (count(*) > ?) ORDER BY count(*) DESC LIMIT ? ## [LInt 1, LInt 2, LInt 5]"
+--
+-- ORDER BY on a COMPUTED column — the retired v1 limitation. Sort keys are
+-- expressions, so they render (and carry binds) exactly like any other.
+--
+-- > renderShow (render (withOrderByExpr (unExpr (eMul (eColInt "price") (eColInt "qty"))) False (selectFrom "orders")))
+-- "SELECT * FROM orders ORDER BY (price * qty) DESC ## []"
+--
+-- An aggregate over an EXPRESSION (`sum(price * qty)`) — the legacy `Agg` could
+-- only aggregate a bare column name.
+--
+-- > renderShow (render (withColumns [unExpr (aSum (eMul (eColInt "price") (eColInt "qty")))] (selectFrom "orders")))
+-- "SELECT sum((price * qty)) FROM orders ## []"
 export renderShow : Result String (String, List Literal) -> String
 renderShow (Err e) = "ERR \{e}"
 renderShow (Ok (sql, binds)) = "\{sql} ## \{showBinds binds}"
@@ -1094,6 +1603,22 @@ andLimitSel =
       (withWhere
         (eAnd (eGt (eColInt "age") (eLitI 18)) (eNotNull (eColInt "email")))
         (selectFrom "users")))
+
+-- `SELECT dept, count(*) FROM emp WHERE active = 1 GROUP BY dept
+--  HAVING count(*) > 2 ORDER BY count(*) DESC LIMIT 5` — every clause at once.
+topDepts : Select
+topDepts = withLimit
+  5
+  (withOrderByExpr
+    (unExpr aCountStar)
+    False
+    (withHavingPred
+      (eGt aCountStar (eLitI 2))
+      (withColumns
+        [unExpr (eColText "dept"), unExpr aCountStar]
+        (withGroupCols
+          ["dept"]
+          (withWhere (eEq (eColInt "active") (eLitI 1)) (selectFrom "emp"))))))
 
 orNullSel : Select
 orNullSel =

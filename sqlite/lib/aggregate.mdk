@@ -1,55 +1,94 @@
--- | sqlite.lib.aggregate — aggregates + GROUP BY + HAVING over the read path.
+-- | sqlite.lib.aggregate — the LEGACY aggregate surface, now a thin shim.
 --
--- Sibling of `lib.select`: where `Select`/`query` project & filter individual
--- rows, `AggQuery`/`queryAgg` GROUP filtered rows by one or more columns and
--- REDUCE each group to a row of aggregate values.  It reuses the whole WHERE
--- machinery from `lib.select` (`compilePred` over the raw `List Cell`) for the
--- pre-aggregation filter, and reuses `lib.select`'s phantom `Expr a` layer for
--- HAVING (a predicate over the SYNTHETIC aggregate-output row).
+-- HISTORY.  This module used to be a second, disjoint query engine: `AggQuery`
+-- (from / where / groupBy / aggs / having) with its own executor `queryAgg`,
+-- sitting beside `lib.select`'s `Select` / `query`.  Neither could do the other's
+-- job — `Select` had joins, ORDER BY, LIMIT and projection but could not
+-- aggregate; `AggQuery` could aggregate but had no joins, no ORDER BY, no LIMIT.
+-- So the single most ordinary analytics query in existence —
 --
--- Pipeline:  findTable → scan → WHERE filter → GROUP BY key → reduce to
--- aggregate cells → HAVING filter → decode via `RowType`.
+--     SELECT name, count(*) FROM orders JOIN users ON …
+--       GROUP BY name ORDER BY count(*) DESC LIMIT 5
 --
--- Output-row layout (PINNED): the group-by key cells (in `groupBy` order) FIRST,
--- then the aggregate value cells (in `aggs` order).  A caller's `RowType` decodes
--- exactly that flat layout.  With no GROUP BY there is always EXACTLY ONE group
--- over the whole filtered table (even when empty — `count(*)` = 0), matching
--- `sqlite3`.  With a GROUP BY over zero rows there are ZERO output rows.
+-- — was not even REPRESENTABLE.  Worse, `AggQuery` had no aggregate node: HAVING
+-- referenced an aggregate by smuggling its SQL text through a column name
+-- (`eCountStar = mkE (ECol "count(*)")`), a string-keyed pun that `aggName`
+-- matched later.
 --
--- SQL semantics (verified against `sqlite3`):
---   * `COUNT(*)` counts rows incl. NULLs; `COUNT(col)`/`SUM`/`AVG`/`MIN`/`MAX`
---     SKIP NULLs.
---   * `AVG` is a Float (= SUM / COUNT over the non-NULLs).
---   * `SUM`/`AVG`/`MIN`/`MAX` over an all-NULL / empty group = NULL; `COUNT` = 0.
---   * `SUM` of an all-integer column is an integer; a float value makes it float.
---   * MIN/MAX/ordering use SQLite value ordering (NULL < numeric < text < blob).
+-- `lib.select` now owns ONE `Select` and ONE executor running the real SQL
+-- evaluation order (FROM → JOIN → WHERE → GROUP BY → HAVING → project → DISTINCT
+-- → ORDER BY → LIMIT/OFFSET), with a real `EAgg` node in `SqlExpr`.
 --
--- HAVING reuses `lib.select`'s `Expr Bool`.  Aggregates are referenced in a
--- HAVING predicate via the smart constructors `eCountStar`/`eCount`/`eSum`/
--- `eAvg`/`eMin`/`eMax` (each names the aggregate by its canonical SQL text, e.g.
--- `"count(*)"`, `"sum(salary)"`); group-by columns are referenced with the usual
--- `eCol*` constructors.  The HAVING lookup resolves both against the output row.
+-- THIS MODULE IS NOW A COMPATIBILITY SHIM.  Every name it used to export still
+-- exists and still behaves identically — `AggQuery`, `Agg`, `aggFrom`,
+-- `withAggWhere`, `withGroupBy`, `withHaving`, `queryAgg`, `aggName`, and the
+-- `eCountStar`/`eCount`/`eSum`/`eAvg`/`eMin`/`eMax` phantom builders — but
+-- `queryAgg` is now three lines: lower the `AggQuery` to a `Select` and run the
+-- unified engine.  The fake-column pun is confined to `substAggNames` below,
+-- which translates it into real `EAgg` nodes on the way in.
+--
+-- NEW CODE SHOULD NOT USE THIS MODULE.  Build a `Select` in `lib.select`:
+-- `withGroupCols` / `withHavingPred` / `withOrderByExpr` plus the real aggregate
+-- constructors `aCountStar` / `aCount` / `aSum` / `aAvg` / `aMin` / `aMax`.  That
+-- gets you joins, ORDER BY and LIMIT on an aggregate query, which this surface
+-- cannot express.
+--
+-- Behaviour preserved by the shim (all still verified by test/aggregate_oracle.sh):
+--   * Output-row layout: group-by key cells (in `groupBy` order) FIRST, then the
+--     aggregate value cells (in `aggs` order).  A caller's `RowType` decodes that
+--     flat layout.  The shim gets this for free by setting the `Select`'s
+--     projection list to exactly `keys ++ aggs`.
+--   * With no GROUP BY there is EXACTLY ONE group over the whole filtered table
+--     (even when empty — `count(*)` = 0).  With a GROUP BY over zero rows there
+--     are ZERO output rows.
+--   * Groups come out ordered by group-by key ascending (SQLite value ordering),
+--     matching `sqlite3 … GROUP BY k ORDER BY k`.
+--   * COUNT(*) counts rows incl. NULLs; COUNT(col)/SUM/AVG/MIN/MAX skip NULLs.
+--     AVG is a Float.  SUM/AVG/MIN/MAX over an empty/all-NULL group = NULL,
+--     COUNT = 0.  SUM stays integral until a float value appears.
 
-import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, nthCell}
-import lib.sqlite.{
-  Db,
-  scanTableRowsIpk,
-  rowCellsWithIpk,
-  columnIndex,
-  findTable,
-  schemaSql,
+import lib.sqlite.{Db}
+import lib.rowtype.{RowType}
+import lib.select.{
+  SqlExpr,
+  ECol,
+  ELit,
+  EAgg,
+  EBin,
+  EArith,
+  EAnd,
+  EOr,
+  ENot,
+  EIsNull,
+  ENotNull,
+  AggFn,
+  FnCount,
+  FnSum,
+  FnAvg,
+  FnMin,
+  FnMax,
+  Select,
+  Expr,
+  mkE,
+  unExpr,
+  selectFrom,
+  withWhere,
+  withColumns,
+  withGroupExprs,
+  withHavingPred,
+  query,
 }
-import lib.btree.{Row}
-import lib.rowtype.{RowType, rtDecode}
-import lib.select.{SqlExpr, ECol, Expr, mkE, unExpr, compilePred}
-import list.{reverse, sortBy}
 
 -- ---------------------------------------------------------------------------
--- Aggregate descriptors
+-- Aggregate descriptors (unchanged public surface)
 -- ---------------------------------------------------------------------------
 
 -- | One aggregate function in the select-list.  `AggCountStar` is `COUNT(*)`;
 --   the rest carry the column name they aggregate over.
+--
+--   Note the expressiveness gap this shim cannot close: an `Agg` can only
+--   aggregate a bare COLUMN.  The unified `EAgg` takes a whole `SqlExpr`, so
+--   `sum(price * qty)` is expressible there and not here.
 public export data Agg =
   | AggCountStar
   | AggCount String
@@ -68,50 +107,75 @@ aggName (AggAvg c) = "avg(\{c})"
 aggName (AggMin c) = "min(\{c})"
 aggName (AggMax c) = "max(\{c})"
 
+-- The real `SqlExpr` an `Agg` denotes.  This is the bridge from the legacy
+-- descriptor to the unified aggregate node.
+aggExpr : Agg -> SqlExpr
+aggExpr AggCountStar = EAgg FnCount None
+aggExpr (AggCount c) = EAgg FnCount (Some (ECol c))
+aggExpr (AggSum c) = EAgg FnSum (Some (ECol c))
+aggExpr (AggAvg c) = EAgg FnAvg (Some (ECol c))
+aggExpr (AggMin c) = EAgg FnMin (Some (ECol c))
+aggExpr (AggMax c) = EAgg FnMax (Some (ECol c))
+
 -- ---------------------------------------------------------------------------
--- AggQuery + builders
+-- AggQuery + builders (unchanged public surface)
 -- ---------------------------------------------------------------------------
 
 -- | An aggregate query: source table, optional WHERE, GROUP BY columns (empty =
 --   whole-table single group), the aggregate select-list, optional HAVING.
+--
+--   FIELDS ARE `aq`-PREFIXED TO DODGE A COMPILER BUG — do not "tidy" them back.
+--   This module now has BOTH `AggQuery` and `lib.select`'s `Select` in scope, and
+--   the two records shared four field names (`from`, `where_`, `groupBy`,
+--   `having`).  A record field name that belongs to two record types in one
+--   module's scope MISCOMPILES: `medaka check` passes and `medaka run` gives the
+--   right answer, but the natively BUILT binary dies with `E-NONEXHAUSTIVE-MATCH`
+--   as soon as the field is read or updated — a construct/update/pattern binds
+--   the OTHER record's slot.  See findings/query-engine-unify.md F2 for the
+--   minimal repro.  Prefixing every field here removes the overlap.
+--   Every exported FUNCTION keeps its name, type and behaviour; only these
+--   internal field labels moved, and nothing outside this module ever read them.
 public export data AggQuery =
   | AggQuery {
-      from : String,
-      where_ : Option SqlExpr,
-      groupBy : List String,
-      aggs : List Agg,
-      having : Option SqlExpr,
+      aqFrom : String,
+      aqWhere : Option SqlExpr,
+      aqGroupCols : List String,
+      aqAggs : List Agg,
+      aqHaving : Option SqlExpr,
     }
 
 -- | A bare aggregate query over a table with an aggregate select-list, no
 --   WHERE / GROUP BY / HAVING.
 export aggFrom : String -> List Agg -> AggQuery
 aggFrom tbl aggs = AggQuery {
-  from = tbl,
-  where_ = None,
-  groupBy = [],
-  aggs = aggs,
-  having = None,
+  aqFrom = tbl,
+  aqWhere = None,
+  aqGroupCols = [],
+  aqAggs = aggs,
+  aqHaving = None,
 }
 
 -- | Attach a pre-aggregation WHERE (typed `Expr Bool`, same as `withWhere`).
 export withAggWhere : Expr Bool -> AggQuery -> AggQuery
-withAggWhere e q = { q | where_ = Some (unExpr e) }
+withAggWhere e q = { q | aqWhere = Some (unExpr e) }
 
 -- | Group by one or more columns (left-to-right key order).
 export withGroupBy : List String -> AggQuery -> AggQuery
-withGroupBy cols q = { q | groupBy = cols }
+withGroupBy cols q = { q | aqGroupCols = cols }
 
 -- | Attach a HAVING predicate over the aggregate-output row.
 export withHaving : Expr Bool -> AggQuery -> AggQuery
-withHaving e q = { q | having = Some (unExpr e) }
+withHaving e q = { q | aqHaving = Some (unExpr e) }
 
 -- ---------------------------------------------------------------------------
--- HAVING aggregate references (phantom smart constructors)
+-- HAVING aggregate references (the legacy phantom pun — preserved)
 --
--- These name an aggregate by its canonical SQL text so a HAVING predicate can
--- reference it through the normal `Expr a` comparison combinators, e.g.
---   withHaving (eGt eCountStar (eLitI 1)) q
+-- These do NOT build an aggregate node.  Each builds an `ECol` whose *name* is
+-- the aggregate's canonical SQL text ("count(*)", "sum(salary)"), and
+-- `substAggNames` below turns that name back into a real `EAgg` when lowering to
+-- a `Select`.  They are kept working for backward compatibility; new code should
+-- use `lib.select`'s `aCountStar`/`aCount`/`aSum`/`aAvg`/`aMin`/`aMax`, which are
+-- real aggregates and therefore also work in the SELECT list and in ORDER BY.
 -- ---------------------------------------------------------------------------
 
 export eCountStar : Expr Int
@@ -133,259 +197,64 @@ export eMax : String -> Expr a
 eMax c = mkE (ECol (aggName (AggMax c)))
 
 -- ---------------------------------------------------------------------------
--- queryAgg : execute an AggQuery, decoding each output group via a RowType
+-- Lowering: AggQuery → Select
 -- ---------------------------------------------------------------------------
 
--- | Execute an `AggQuery`: filter (WHERE), group by the GROUP BY columns, reduce
---   each group to its aggregate cells, filter groups (HAVING), then decode each
---   output row (= key cells ++ aggregate cells) via `rt`.  Output groups are
---   ordered by their group-by key ascending (SQLite value ordering), matching
---   `sqlite3 ... GROUP BY k ORDER BY k`.
+-- | Lower a legacy `AggQuery` to the unified `Select` it means.  Exported so a
+--   caller migrating off this module can see (and keep) the exact query it had:
+--   `render (toSelect q)` prints its SQL.
+--
+--   The projection list is set to `groupBy keys ++ aggregates`, which reproduces
+--   the pinned output-row layout the old executor guaranteed.
+export toSelect : AggQuery -> Select
+toSelect (AggQuery { aqFrom = tbl, aqWhere = w, aqGroupCols = gcols, aqAggs = aggs, aqHaving = h }) =
+  let keyExprs = map ECol gcols
+  let base = withColumns (keyExprs ++ map aggExpr aggs) (withGroupExprs keyExprs (selectFrom tbl))
+  applyHaving aggs h (applyWhere w base)
+
+applyWhere : Option SqlExpr -> Select -> Select
+applyWhere None sel = sel
+applyWhere (Some e) sel = withWhere (mkE e) sel
+
+-- HAVING is where the legacy pun lives: rewrite every `ECol "count(*)"`-style
+-- fake column back into the real `EAgg` node it was standing in for, then hand it
+-- to the unified engine.  A group-by column referenced by its real name needs no
+-- rewriting — the engine matches it structurally against the GROUP BY key.
+applyHaving : List Agg -> Option SqlExpr -> Select -> Select
+applyHaving _ None sel = sel
+applyHaving aggs (Some e) sel = withHavingPred (mkE (substAggNames aggs e)) sel
+
+substAggNames : List Agg -> SqlExpr -> SqlExpr
+substAggNames aggs (ECol name) = match findAggByName aggs name
+  Some a => aggExpr a
+  None => ECol name
+substAggNames _ (ELit lit) = ELit lit
+substAggNames _ (EAgg fn operand) = EAgg fn operand
+substAggNames aggs (EBin op l r) =
+  EBin op (substAggNames aggs l) (substAggNames aggs r)
+substAggNames aggs (EArith op l r) =
+  EArith op (substAggNames aggs l) (substAggNames aggs r)
+substAggNames aggs (EAnd l r) =
+  EAnd (substAggNames aggs l) (substAggNames aggs r)
+substAggNames aggs (EOr l r) = EOr (substAggNames aggs l) (substAggNames aggs r)
+substAggNames aggs (ENot e) = ENot (substAggNames aggs e)
+substAggNames aggs (EIsNull e) = EIsNull (substAggNames aggs e)
+substAggNames aggs (ENotNull e) = ENotNull (substAggNames aggs e)
+
+findAggByName : List Agg -> String -> Option Agg
+findAggByName [] _ = None
+findAggByName (a::rest) name =
+  if aggName a == name then
+    Some a
+  else
+    findAggByName rest name
+
+-- ---------------------------------------------------------------------------
+-- queryAgg : now just "lower, then run the one engine"
+-- ---------------------------------------------------------------------------
+
+-- | Execute an `AggQuery`, decoding each output group via `rt`.  Byte-identical
+--   in behaviour to the old standalone executor — it is now the unified
+--   `lib.select.query` running the lowered `Select`.
 export queryAgg : Db -> AggQuery -> RowType a -> Result String (List a)
-queryAgg db (AggQuery { from = tbl, where_ = w, groupBy = gcols, aggs = aggs, having = h }) rt = do
-  entry <- findTable db tbl
-  let createSql = schemaSql entry
-  let lookup = name => columnIndex createSql name
-  pred <- compileMaybe lookup w
-  (pkIdx, rows) <- scanTableRowsIpk db tbl
-  let keptCells = keepCells pkIdx pred rows
-  gIdxs <- resolveCols lookup gcols
-  let groups = groupRows gcols gIdxs keptCells
-  outRows <- reduceGroups aggs lookup groups
-  hpred <- compileMaybe (havingLookup gcols aggs) h
-  let finalRows = filter (cells => hpred cells) outRows
-  decodeAll rt finalRows []
-
--- Compile an optional predicate; None → always true.
-compileMaybe : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Bool)
-compileMaybe _ None = Ok (_ => True)
-compileMaybe lookup (Some e) = compilePred lookup e
-
--- Materialize the IPK-substituted cells of every row that passes the predicate.
-keepCells : Option Int -> (List Cell -> Bool) -> List Row -> List (List Cell)
-keepCells _ _ [] = []
-keepCells pkIdx pred (row::rest) =
-  let cells = rowCellsWithIpk pkIdx row
-  if pred cells then
-    cells :: keepCells pkIdx pred rest
-  else
-    keepCells pkIdx pred rest
-
--- Resolve each GROUP BY column name to its index (Err on an unknown column).
-resolveCols : (String -> Option Int) -> List String -> Result String (List Int)
-resolveCols _ [] = Ok []
-resolveCols lookup (c::rest) = match lookup c
-  None => Err "queryAgg: unknown GROUP BY column: \{c}"
-  Some i => map (i :: _) (resolveCols lookup rest)
-
--- ---------------------------------------------------------------------------
--- Grouping
--- ---------------------------------------------------------------------------
-
--- Group filtered rows by their group-by key.  With NO group-by columns there is
--- always exactly one group over the whole (possibly empty) input.  Otherwise the
--- distinct keys are collected in encounter order, each key's rows gathered, and
--- the groups sorted by key ascending (SQLite value ordering).
-groupRows : List String -> List Int -> List (List Cell) -> List (List Cell, List (List Cell))
-groupRows [] gIdxs cells = [([], cells)]
-groupRows _ gIdxs cells =
-  let keys = distinctKeys gIdxs cells
-  let grouped = map (k => (k, filter (c => cellListEq (keyOf gIdxs c) k) cells)) keys
-  sortBy
-    (a b => match (a, b)
-      ((ka, _), (kb, _)) => cellListOrder ka kb)
-    grouped
-
--- Extract the key cells (in group-by order) from a row's cells.
-keyOf : List Int -> List Cell -> List Cell
-keyOf idxs cells = map (i => nthCell cells i) idxs
-
--- Distinct keys, in first-encounter order.
-distinctKeys : List Int -> List (List Cell) -> List (List Cell)
-distinctKeys gIdxs cells = reverse (dkGo gIdxs cells [])
-
-dkGo : List Int -> List (List Cell) -> List (List Cell) -> List (List Cell)
-dkGo _ [] acc = acc
-dkGo gIdxs (c::rest) acc =
-  let k = keyOf gIdxs c
-  if containsKey k acc then dkGo gIdxs rest acc else dkGo gIdxs rest (k::acc)
-
-containsKey : List Cell -> List (List Cell) -> Bool
-containsKey _ [] = False
-containsKey k (x::xs) = if cellListEq k x then True else containsKey k xs
-
--- ---------------------------------------------------------------------------
--- Reduction — one output row per group
--- ---------------------------------------------------------------------------
-
-reduceGroups : List Agg -> (String -> Option Int) -> List (List Cell, List (List Cell)) -> Result String (List (List Cell))
-reduceGroups _ _ [] = Ok []
-reduceGroups aggs lookup (g::rest) = do
-  row <- reduceGroup aggs lookup g
-  rows <- reduceGroups aggs lookup rest
-  Ok (row::rows)
-
-reduceGroup : List Agg -> (String -> Option Int) -> (List Cell, List (List Cell)) -> Result String (List Cell)
-reduceGroup aggs lookup (key, rows) =
-  map (key ++ _) (reduceAggs aggs lookup rows)
-
-reduceAggs : List Agg -> (String -> Option Int) -> List (List Cell) -> Result String (List Cell)
-reduceAggs [] _ _ = Ok []
-reduceAggs (a::rest) lookup rows = do
-  c <- aggregateOne a lookup rows
-  cs <- reduceAggs rest lookup rows
-  Ok (c::cs)
-
--- Reduce a single aggregate over a group's rows to one Cell.
-aggregateOne : Agg -> (String -> Option Int) -> List (List Cell) -> Result String Cell
-aggregateOne AggCountStar _ rows = Ok (CInt (length rows))
-aggregateOne (AggCount c) lookup rows =
-  map (i => CInt (length (nonNull (colCells i rows)))) (resolveCol lookup c)
-aggregateOne (AggSum c) lookup rows =
-  map (i => sumCells (nonNull (colCells i rows))) (resolveCol lookup c)
-aggregateOne (AggAvg c) lookup rows =
-  map (i => avgCells (nonNull (colCells i rows))) (resolveCol lookup c)
-aggregateOne (AggMin c) lookup rows =
-  map (i => minCells (nonNull (colCells i rows))) (resolveCol lookup c)
-aggregateOne (AggMax c) lookup rows =
-  map (i => maxCells (nonNull (colCells i rows))) (resolveCol lookup c)
-
-resolveCol : (String -> Option Int) -> String -> Result String Int
-resolveCol lookup c = match lookup c
-  None => Err "queryAgg: unknown aggregate column: \{c}"
-  Some i => Ok i
-
--- The cell at column `idx` for every row in the group.
-colCells : Int -> List (List Cell) -> List Cell
-colCells idx rows = map (r => nthCell r idx) rows
-
-nonNull : List Cell -> List Cell
-nonNull cells = filter (c => not (cellIsNull c)) cells
-
--- SUM: NULL over an empty set; integer if all values are integers, else float.
-sumCells : List Cell -> Cell
-sumCells [] = CNull
-sumCells cells =
-  if any isFloatCell cells then
-    CFloat (sumFloat cells)
-  else
-    CInt (sumInt cells)
-
-sumFloat : List Cell -> Float
-sumFloat cells = fold (acc c => acc + cellNumF c) 0.0 cells
-
-sumInt : List Cell -> Int
-sumInt cells = fold (acc c => acc + cellNumI c) 0 cells
-
--- AVG: NULL over an empty set; else Float sum / count.
-avgCells : List Cell -> Cell
-avgCells [] = CNull
-avgCells cells = CFloat (sumFloat cells / intToFloat (length cells))
-
--- MIN/MAX by SQLite value ordering over the non-null cells.
-minCells : List Cell -> Cell
-minCells [] = CNull
-minCells (c::rest) =
-  fold (acc x => if cellOrder x acc == Lt then x else acc) c rest
-
-maxCells : List Cell -> Cell
-maxCells [] = CNull
-maxCells (c::rest) =
-  fold (acc x => if cellOrder x acc == Gt then x else acc) c rest
-
--- ---------------------------------------------------------------------------
--- HAVING lookup — resolve names against the synthetic output row
--- ---------------------------------------------------------------------------
-
--- Output row = group-by key cells (0 .. k-1) ++ aggregate cells (k .. k+m-1).
--- Group-by columns resolve by their real name; aggregates by their canonical
--- SQL text (`aggName`).
-havingLookup : List String -> List Agg -> String -> Option Int
-havingLookup gcols aggs = name => match indexOfString name gcols 0
-  Some i => Some i
-  None => indexOfAgg name aggs (length gcols)
-
-indexOfString : String -> List String -> Int -> Option Int
-indexOfString _ [] _ = None
-indexOfString name (x::rest) i =
-  if name == x then
-    Some i
-  else
-    indexOfString name rest (i + 1)
-
-indexOfAgg : String -> List Agg -> Int -> Option Int
-indexOfAgg _ [] _ = None
-indexOfAgg name (a::rest) i =
-  if name == aggName a then
-    Some i
-  else
-    indexOfAgg name rest (i + 1)
-
--- ---------------------------------------------------------------------------
--- Decode output rows via the caller's RowType
--- ---------------------------------------------------------------------------
-
-decodeAll : RowType a -> List (List Cell) -> List a -> Result String (List a)
-decodeAll _ [] acc = Ok (reverse acc)
-decodeAll rt (cells::rest) acc = do
-  v <- rtDecode rt cells
-  decodeAll rt rest (v::acc)
-
--- ---------------------------------------------------------------------------
--- Cell helpers (kept local to avoid re-exporting lib.select internals)
--- ---------------------------------------------------------------------------
-
-cellIsNull : Cell -> Bool
-cellIsNull CNull = True
-cellIsNull _ = False
-
-isFloatCell : Cell -> Bool
-isFloatCell (CFloat _) = True
-isFloatCell _ = False
-
-cellNumF : Cell -> Float
-cellNumF (CInt n) = intToFloat n
-cellNumF (CFloat f) = f
-cellNumF _ = 0.0
-
-cellNumI : Cell -> Int
-cellNumI (CInt n) = n
-cellNumI _ = 0
-
-cellListEq : List Cell -> List Cell -> Bool
-cellListEq [] [] = True
-cellListEq (a::xs) (b::ys) =
-  if cellOrder a b == Eq then
-    cellListEq xs ys
-  else
-    False
-cellListEq _ _ = False
-
-cellListOrder : List Cell -> List Cell -> Ordering
-cellListOrder [] [] = Eq
-cellListOrder [] _ = Lt
-cellListOrder _ [] = Gt
-cellListOrder (a::xs) (b::ys) = match cellOrder a b
-  Eq => cellListOrder xs ys
-  o => o
-
--- | Three-way ordering of two Cell values (SQLite type ordering):
---   NULL < Int/Float (numeric, interleaved) < Text < Blob.
-cellOrder : Cell -> Cell -> Ordering
-cellOrder CNull CNull = Eq
-cellOrder CNull _ = Lt
-cellOrder _ CNull = Gt
-cellOrder (CInt x) (CInt y) = compare x y
-cellOrder (CFloat x) (CFloat y) = compare x y
-cellOrder (CInt x) (CFloat y) = compare (intToFloat x) y
-cellOrder (CFloat x) (CInt y) = compare x (intToFloat y)
-cellOrder (CText x) (CText y) = compare x y
-cellOrder (CBlob x) (CBlob y) = compare (arrayLength x) (arrayLength y)
-cellOrder a b = compare (cellTypeRank a) (cellTypeRank b)
-
-cellTypeRank : Cell -> Int
-cellTypeRank CNull = 0
-cellTypeRank (CInt _) = 1
-cellTypeRank (CFloat _) = 1
-cellTypeRank (CText _) = 2
-cellTypeRank (CBlob _) = 3
+queryAgg db q rt = query db (toSelect q) rt
