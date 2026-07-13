@@ -6,8 +6,8 @@
 #
 # Desugar lowers surface sugar (EGuards/EDo/ESection/EStringInterp/EListComp/
 # EFunction/…) to core nodes that compiler/ir/sexp.mdk already renders, so no new
-# dump rendering is needed — only the compiler desugar pass.  FLOAT literal text
-# is normalized away (OCaml %g vs floatToString), like the other harnesses.
+# dump rendering is needed — only the compiler desugar pass.  Compared LITERALLY
+# against the golden — no float normalization (one deterministic renderer now).
 #
 # Usage:  sh test/diff_compiler_desugar.sh [file.mdk ...]
 #         (default corpus: stdlib + diff_fixtures + parse_fixtures + compiler)
@@ -22,12 +22,10 @@ RUN="$ROOT/test/bin/desugar_main"
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 fi
 
 pass=0
@@ -37,8 +35,8 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.desugar.golden"
   [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh --frozen desugar)"; fail=$((fail+1)); continue; }
-  expected="$(norm < "$golden")"
-  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
+  expected="$(cat "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

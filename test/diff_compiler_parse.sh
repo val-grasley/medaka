@@ -6,8 +6,8 @@
 # Runs over test/parse_fixtures/ + test/parse_only_fixtures/ — small .mdk programs
 # scoped to what the parser currently handles (the corpus grows as the
 # recursive-descent port grows; the stage is done when it covers the real
-# test/diff_fixtures/ files).  FLOAT literal text is normalized away (OCaml %g vs
-# floatToString), like the lexer harness.
+# test/diff_fixtures/ files).  Compared LITERALLY against the golden — no float
+# normalization (there is one deterministic renderer now that OCaml is gone).
 #
 # parse_only_fixtures/ holds constructs the parser accepts but the *downstream*
 # self-host stages (desugar/mark/…) don't handle yet — type aliases, newtypes,
@@ -26,8 +26,6 @@ RUN="$ROOT/test/bin/parse_main"
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
@@ -41,8 +39,8 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.parse.golden"
   [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh --frozen parse)"; fail=$((fail+1)); continue; }
-  expected="$(norm < "$golden")"
-  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
+  expected="$(cat "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

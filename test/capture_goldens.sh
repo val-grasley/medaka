@@ -49,7 +49,7 @@ case "${1:-}" in
   --frozen)
     FROZEN_TAG="${2:-}"
     [ -n "$FROZEN_TAG" ] || {
-      echo "usage: sh test/capture_goldens.sh --frozen <parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck>"
+      echo "usage: sh test/capture_goldens.sh --frozen <parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck|selfproc_legA>"
       exit 2
     }
     ;;
@@ -71,7 +71,7 @@ if [ -n "$FROZEN_TAG" ]; then
   strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
   BIN="$ROOT/test/bin"
   CORE="$ROOT/stdlib/core.mdk"
-  DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+  DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 
   fwrote=0
   # regen_frozen <run-binary> <golden-suffix> <extra-first-arg-or-""> <globs...>
@@ -112,10 +112,33 @@ if [ -n "$FROZEN_TAG" ]; then
       regen_frozen desugar_main boot_desugar.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
     boot_mark)
       regen_frozen mark_main boot_mark.golden "$CORE" "$ROOT/test/parse_fixtures/*.mdk" ;;
+    selfproc_legA)
+      # Mirrors LEG A of test/diff_compiler_selfproc.sh EXACTLY: one full-closure
+      # check_all_main run over all_modules_entry.mdk, split by `## MODULE <mid>`,
+      # one golden per module id (LC_ALL=C sorted, matching the gate's own sort
+      # before comparing). No OCaml oracle exists for this leg any more — the
+      # native self-hosted front-end's own output IS the reference (like every
+      # other FROZEN native-canonical family in this file).
+      CHECK_ALL="$BIN/check_all_main"
+      [ -x "$CHECK_ALL" ] || { echo "missing $CHECK_ALL — run: sh test/build_oracles.sh --build-one check_all_main"; exit 2; }
+      RUNTIME="$ROOT/stdlib/runtime.mdk"
+      ENTRY="$ROOT/compiler/entries/all_modules_entry.mdk"
+      LEGA_GOLD="$ROOT/test/selfproc_goldens/legA"
+      mkdir -p "$LEGA_GOLD"
+      ALL="$(mktemp)"
+      trap 'rm -f "$ALL"' EXIT
+      "$CHECK_ALL" "$RUNTIME" "$CORE" "$ENTRY" "$ROOT/compiler" "$ROOT/stdlib" 2>/dev/null > "$ALL"
+      MODULES="frontend.ast frontend.lexer frontend.parser ir.sexp frontend.desugar frontend.marker types.annotate frontend.resolve frontend.exhaust driver.loader types.typecheck eval.eval tools.check"
+      for m in $MODULES; do
+        awk -v M="$m" '/^## MODULE /{cur=($3==M)?1:0; next} cur{print}' "$ALL" | LC_ALL=C sort > "$LEGA_GOLD/$m.golden"
+        fwrote=$((fwrote+1))
+      done
+      rm -f "$ALL"; trap - EXIT
+      ;;
     boot_typecheck)
       regen_frozen typecheck_main boot_typecheck.golden "" "$ROOT/test/typecheck_fixtures/*.mdk" ;;
     *)
-      echo "unknown --frozen tag: $FROZEN_TAG (expected parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck)"
+      echo "unknown --frozen tag: $FROZEN_TAG (expected parse|desugar|mark|fmt|printer|boot_parse|boot_desugar|boot_mark|boot_typecheck|selfproc_legA)"
       exit 2 ;;
   esac
   status=$?
@@ -277,7 +300,7 @@ fi
 
 # desugar + mark : FROZEN (native canonical; astdump.exe --desugar/--mark had no
 # native equivalent).  Committed .desugar.golden/.mark.golden files are the reference.
-DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 
 # parse_result : FROZEN (native canonical; astdump.exe had no native equivalent).
 # Committed .parse_result_oracle files are the reference.
