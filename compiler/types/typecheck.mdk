@@ -2128,6 +2128,15 @@ mainTypeIsFloat _ = match mainSchemeRef.value
 matchWarnings : Ref (List String)
 matchWarnings = Ref []
 
+-- True iff the last typecheck pass pushed any match warning.  Read by the snapshot
+-- runner (`tools/snapshot.mdk`) to decide whether a rendered `# TYPES` section carries
+-- diagnostic prose — a `W-*` warning is graded by `compiler/ERROR-QUALITY.md` exactly
+-- like an error is, so a `# TYPES` section holding one is NOT `--bless`-able.  Keyed on
+-- the accumulator rather than sniffing the rendered text: the renderer must not have to
+-- guess which of its own lines are diagnostics.
+export hadMatchWarnings : Unit -> <Mut> Bool
+hadMatchWarnings _ = matchWarnings.value != []
+
 -- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
 -- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
 -- path (`checkProgramDiags`) zips the two so the CLI/--json warning carries a
@@ -11959,6 +11968,125 @@ aliasEntriesFor mid (UseGroup _ ms) qual =
   flatMap (memberAliasEntry mid qual) ms
 aliasEntriesFor _ _ _ = []
 
+-- ── import aliasing of an interface/impl METHOD ─────────────────────────────────
+-- A method is GLOBAL-BY-NAME.  Impl coalescing, dispatch routing, the emitter's method
+-- tables and the METHOD-side dict-arity tables are every one of them keyed by the
+-- method's own name, and there is exactly ONE cell per name — a method is deliberately
+-- NOT a per-module binding (eval.mdk's globalCells / coalesceImpls).  So an alias of a
+-- method is not a new binding at all: it is a second SPELLING of the same method.
+--
+-- Resolve it back to the origin name here, once, right after resolve has validated the
+-- alias and before ANY marking / route-stamping / dict-arity machinery runs.  Every
+-- downstream stage — marker, typecheck route stamping, private_mangle, the emitter, both
+-- eval drivers — then sees an ordinary method reference and needs no alias awareness.
+--
+-- That is also precisely why the METHOD-side dict-arity tables (methodConstraintsRef /
+-- crossModuleMethodConstraintsQualRef / scopeMethodArities) need no alias re-keying the
+-- way funConstraintsRef did: by the time they are built, no aliased method name survives.
+-- The standalone `=>`-constrained functions are the opposite case — they ARE per-module
+-- bindings that keep their local name, which is why they needed the re-keying.
+--
+-- Caveat, shared with the marker's own shadowRename: the rewrite is scope-blind, so a
+-- LOCAL binder whose name equals an alias local would also be rewritten.  An alias local
+-- is chosen by the importing file, so this is a self-inflicted collision.
+-- The rewrite has TWO halves, and they must agree: rewriting only the references would
+-- leave them bound to nothing.
+--   (a) every reference to an aliased method  → the origin method name
+--   (b) the module's own `DUse` decls          → import that method under its ORIGIN name
+-- With (b) in place, the import seed (typecheck), the import frame (eval) and the
+-- rename map (private_mangle) all bind the origin name by their ORDINARY un-aliased
+-- paths — none of them needs to learn anything about aliases.
+renameAliasedMethods : List Decl -> List (String, List Decl) -> List (String, List Decl)
+renameAliasedMethods coreDecls modules =
+  let methodsPerMid = ("core", declMethodNames coreDecls) :: map midMethodNames modules
+  map (renameAliasedMethodsIn methodsPerMid) modules
+
+midMethodNames : (String, List Decl) -> (String, List String)
+midMethodNames (mid, decls) = (mid, declMethodNames decls)
+
+renameAliasedMethodsIn : List (String, List String) -> (String, List Decl) -> (String, List Decl)
+renameAliasedMethodsIn methodsPerMid (mid, prog) = match aliasMethodRenames methodsPerMid prog
+  [] => (mid, prog)
+  renames =>
+    let prog2 = flatMap (deAliasMethodImports methodsPerMid) prog
+    (mid, mapProg (renameMethodVar renames) prog2)
+
+-- (b): make each import bind the METHODS it names under their ORIGIN name.
+--   `import m.{area as computeArea}` → `import m.{area}`  (the alias is dropped: a method
+--                                      is global-by-name, so the rename already points
+--                                      every reference at `area`)
+--   `import m as A`                  → keep it (its non-method values are still `A.f`)
+--                                      and ADD `import m.{…m's methods…}`, which is what
+--                                      `A.area` was rewritten to refer to.
+deAliasMethodImports : List (String, List String) -> Decl -> List Decl
+deAliasMethodImports mm (DAttrib attrs d) =
+  map (DAttrib attrs) (deAliasMethodImports mm d)
+deAliasMethodImports mm (d@(DUse pub path loc)) = match lookupAssoc (usePathModuleId path) mm
+  None => [d]
+  Some methods => match path
+    UseGroup quals ms =>
+      [DUse pub (UseGroup quals (map (deAliasMethodMember methods) ms)) loc]
+    UseAlias quals _ => match methodMembersOf methods loc
+      [] => [d]
+      mems => [d, DUse pub (UseGroup quals mems) loc]
+    _ => [d]
+deAliasMethodImports _ d = [d]
+
+deAliasMethodMember : List String -> UseMember -> UseMember
+deAliasMethodMember methods (m@(UseMember n allCtors loc _))
+  | contains n methods = UseMember n allCtors loc None
+  | otherwise = m
+
+methodMembersOf : List String -> Loc -> List UseMember
+methodMembersOf methods loc = map (n => UseMember n False loc None) methods
+
+renameMethodVar : List (String, String) -> Expr -> Expr
+renameMethodVar renames (e@(EVar x)) = match lookupAssoc x renames
+  Some origin => EVar origin
+  None => e
+renameMethodVar _ e = e
+
+-- (localName, originMethodName) for every import in [prog] whose ORIGIN is a method of
+-- the module it comes from.  Only an alias yields an entry — an un-aliased import already
+-- carries the origin name, which is why this gap stayed invisible for so long.
+aliasMethodRenames : List (String, List String) -> List Decl -> List (String, String)
+aliasMethodRenames methodsPerMid prog =
+  flatMap (aliasMethodRenamesOf methodsPerMid) prog
+
+aliasMethodRenamesOf : List (String, List String) -> Decl -> List (String, String)
+aliasMethodRenamesOf mm (DAttrib _ d) = aliasMethodRenamesOf mm d
+aliasMethodRenamesOf mm (DUse _ path _) = match lookupAssoc (usePathModuleId path) mm
+  None => []
+  Some methods => aliasMethodRenamesOfPath methods path
+aliasMethodRenamesOf _ _ = []
+
+aliasMethodRenamesOfPath : List String -> UsePath -> List (String, String)
+-- `import m as A` → `A.area` is method `area`
+aliasMethodRenamesOfPath methods (UseAlias _ a) =
+  map (n => (qualifiedLocal a n, n)) methods
+-- `import m.{area as computeArea}` → `computeArea` is method `area`
+aliasMethodRenamesOfPath methods (UseGroup _ ms) =
+  flatMap (memberMethodRename methods) ms
+aliasMethodRenamesOfPath _ _ = []
+
+memberMethodRename : List String -> UseMember -> List (String, String)
+memberMethodRename methods m = match useMemberAlias m
+  Some local =>
+    let origin = useMemberOrigin m
+    if contains origin methods then [(local, origin)] else []
+  None => []
+
+-- every interface/impl method name a decl list declares (interface methods with or
+-- without a default, plus impl method names).
+declMethodNames : List Decl -> List String
+declMethodNames decls = dedup (flatMap declMethodNamesOf decls)
+
+declMethodNamesOf : Decl -> List String
+declMethodNamesOf (DAttrib _ d) = declMethodNamesOf d
+declMethodNamesOf (DInterface { methods, ... }) = ifaceMethodNames methods
+declMethodNamesOf (DImpl { methods, ... }) = map implMethodName methods
+declMethodNamesOf _ = []
+
 -- IMPORT ALIASING: the LOCAL names, across every module, under which a CONSTRAINED
 -- function is reachable through an alias.  These must join dictNames or the aliased
 -- call site is never marked as a dict application (see the call site of this fn).
@@ -12321,8 +12449,13 @@ export elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> 
 -- TYPECHECK golden probes use checkModulesEntryLines/checkModulesDiags (NOT
 -- elaborateModules), so their goldens are unaffected; the emit-path diff gates run
 -- with emitArgStampPasses True, where impl inference was already ON — also unchanged.
-elaborateModules runtimeDecls coreDecls modules =
+elaborateModules runtimeDecls coreDecls modulesIn =
   let _ = setRef implInferEnabled True
+  -- IMPORT ALIASING of an interface/impl METHOD — resolve it back to the origin name
+  -- before ANY of the marking / stamping / dict-arity machinery below runs.  See
+  -- renameAliasedMethods: a method is global-by-name, so an alias of one is a second
+  -- SPELLING, not a second binding.
+  let modules = renameAliasedMethods coreDecls modulesIn
   let _ = setRef mainSchemeRef None
   let _ = setRef crossModuleFunConstraintsRef []
   let _ = setRef crossModuleFunConstraintsQualRef []

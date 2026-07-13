@@ -1,5 +1,5 @@
 # META
-source_lines=12813
+source_lines=12946
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -2131,6 +2131,15 @@ mainTypeIsFloat _ = match mainSchemeRef.value
 -- (the schemes/selfproc paths) simply never read it.
 matchWarnings : Ref (List String)
 matchWarnings = Ref []
+
+-- True iff the last typecheck pass pushed any match warning.  Read by the snapshot
+-- runner (`tools/snapshot.mdk`) to decide whether a rendered `# TYPES` section carries
+-- diagnostic prose — a `W-*` warning is graded by `compiler/ERROR-QUALITY.md` exactly
+-- like an error is, so a `# TYPES` section holding one is NOT `--bless`-able.  Keyed on
+-- the accumulator rather than sniffing the rendered text: the renderer must not have to
+-- guess which of its own lines are diagnostics.
+export hadMatchWarnings : Unit -> <Mut> Bool
+hadMatchWarnings _ = matchWarnings.value != []
 
 -- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
 -- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
@@ -11963,6 +11972,125 @@ aliasEntriesFor mid (UseGroup _ ms) qual =
   flatMap (memberAliasEntry mid qual) ms
 aliasEntriesFor _ _ _ = []
 
+-- ── import aliasing of an interface/impl METHOD ─────────────────────────────────
+-- A method is GLOBAL-BY-NAME.  Impl coalescing, dispatch routing, the emitter's method
+-- tables and the METHOD-side dict-arity tables are every one of them keyed by the
+-- method's own name, and there is exactly ONE cell per name — a method is deliberately
+-- NOT a per-module binding (eval.mdk's globalCells / coalesceImpls).  So an alias of a
+-- method is not a new binding at all: it is a second SPELLING of the same method.
+--
+-- Resolve it back to the origin name here, once, right after resolve has validated the
+-- alias and before ANY marking / route-stamping / dict-arity machinery runs.  Every
+-- downstream stage — marker, typecheck route stamping, private_mangle, the emitter, both
+-- eval drivers — then sees an ordinary method reference and needs no alias awareness.
+--
+-- That is also precisely why the METHOD-side dict-arity tables (methodConstraintsRef /
+-- crossModuleMethodConstraintsQualRef / scopeMethodArities) need no alias re-keying the
+-- way funConstraintsRef did: by the time they are built, no aliased method name survives.
+-- The standalone `=>`-constrained functions are the opposite case — they ARE per-module
+-- bindings that keep their local name, which is why they needed the re-keying.
+--
+-- Caveat, shared with the marker's own shadowRename: the rewrite is scope-blind, so a
+-- LOCAL binder whose name equals an alias local would also be rewritten.  An alias local
+-- is chosen by the importing file, so this is a self-inflicted collision.
+-- The rewrite has TWO halves, and they must agree: rewriting only the references would
+-- leave them bound to nothing.
+--   (a) every reference to an aliased method  → the origin method name
+--   (b) the module's own `DUse` decls          → import that method under its ORIGIN name
+-- With (b) in place, the import seed (typecheck), the import frame (eval) and the
+-- rename map (private_mangle) all bind the origin name by their ORDINARY un-aliased
+-- paths — none of them needs to learn anything about aliases.
+renameAliasedMethods : List Decl -> List (String, List Decl) -> List (String, List Decl)
+renameAliasedMethods coreDecls modules =
+  let methodsPerMid = ("core", declMethodNames coreDecls) :: map midMethodNames modules
+  map (renameAliasedMethodsIn methodsPerMid) modules
+
+midMethodNames : (String, List Decl) -> (String, List String)
+midMethodNames (mid, decls) = (mid, declMethodNames decls)
+
+renameAliasedMethodsIn : List (String, List String) -> (String, List Decl) -> (String, List Decl)
+renameAliasedMethodsIn methodsPerMid (mid, prog) = match aliasMethodRenames methodsPerMid prog
+  [] => (mid, prog)
+  renames =>
+    let prog2 = flatMap (deAliasMethodImports methodsPerMid) prog
+    (mid, mapProg (renameMethodVar renames) prog2)
+
+-- (b): make each import bind the METHODS it names under their ORIGIN name.
+--   `import m.{area as computeArea}` → `import m.{area}`  (the alias is dropped: a method
+--                                      is global-by-name, so the rename already points
+--                                      every reference at `area`)
+--   `import m as A`                  → keep it (its non-method values are still `A.f`)
+--                                      and ADD `import m.{…m's methods…}`, which is what
+--                                      `A.area` was rewritten to refer to.
+deAliasMethodImports : List (String, List String) -> Decl -> List Decl
+deAliasMethodImports mm (DAttrib attrs d) =
+  map (DAttrib attrs) (deAliasMethodImports mm d)
+deAliasMethodImports mm (d@(DUse pub path loc)) = match lookupAssoc (usePathModuleId path) mm
+  None => [d]
+  Some methods => match path
+    UseGroup quals ms =>
+      [DUse pub (UseGroup quals (map (deAliasMethodMember methods) ms)) loc]
+    UseAlias quals _ => match methodMembersOf methods loc
+      [] => [d]
+      mems => [d, DUse pub (UseGroup quals mems) loc]
+    _ => [d]
+deAliasMethodImports _ d = [d]
+
+deAliasMethodMember : List String -> UseMember -> UseMember
+deAliasMethodMember methods (m@(UseMember n allCtors loc _))
+  | contains n methods = UseMember n allCtors loc None
+  | otherwise = m
+
+methodMembersOf : List String -> Loc -> List UseMember
+methodMembersOf methods loc = map (n => UseMember n False loc None) methods
+
+renameMethodVar : List (String, String) -> Expr -> Expr
+renameMethodVar renames (e@(EVar x)) = match lookupAssoc x renames
+  Some origin => EVar origin
+  None => e
+renameMethodVar _ e = e
+
+-- (localName, originMethodName) for every import in [prog] whose ORIGIN is a method of
+-- the module it comes from.  Only an alias yields an entry — an un-aliased import already
+-- carries the origin name, which is why this gap stayed invisible for so long.
+aliasMethodRenames : List (String, List String) -> List Decl -> List (String, String)
+aliasMethodRenames methodsPerMid prog =
+  flatMap (aliasMethodRenamesOf methodsPerMid) prog
+
+aliasMethodRenamesOf : List (String, List String) -> Decl -> List (String, String)
+aliasMethodRenamesOf mm (DAttrib _ d) = aliasMethodRenamesOf mm d
+aliasMethodRenamesOf mm (DUse _ path _) = match lookupAssoc (usePathModuleId path) mm
+  None => []
+  Some methods => aliasMethodRenamesOfPath methods path
+aliasMethodRenamesOf _ _ = []
+
+aliasMethodRenamesOfPath : List String -> UsePath -> List (String, String)
+-- `import m as A` → `A.area` is method `area`
+aliasMethodRenamesOfPath methods (UseAlias _ a) =
+  map (n => (qualifiedLocal a n, n)) methods
+-- `import m.{area as computeArea}` → `computeArea` is method `area`
+aliasMethodRenamesOfPath methods (UseGroup _ ms) =
+  flatMap (memberMethodRename methods) ms
+aliasMethodRenamesOfPath _ _ = []
+
+memberMethodRename : List String -> UseMember -> List (String, String)
+memberMethodRename methods m = match useMemberAlias m
+  Some local =>
+    let origin = useMemberOrigin m
+    if contains origin methods then [(local, origin)] else []
+  None => []
+
+-- every interface/impl method name a decl list declares (interface methods with or
+-- without a default, plus impl method names).
+declMethodNames : List Decl -> List String
+declMethodNames decls = dedup (flatMap declMethodNamesOf decls)
+
+declMethodNamesOf : Decl -> List String
+declMethodNamesOf (DAttrib _ d) = declMethodNamesOf d
+declMethodNamesOf (DInterface { methods, ... }) = ifaceMethodNames methods
+declMethodNamesOf (DImpl { methods, ... }) = map implMethodName methods
+declMethodNamesOf _ = []
+
 -- IMPORT ALIASING: the LOCAL names, across every module, under which a CONSTRAINED
 -- function is reachable through an alias.  These must join dictNames or the aliased
 -- call site is never marked as a dict application (see the call site of this fn).
@@ -12325,8 +12453,13 @@ export elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> 
 -- TYPECHECK golden probes use checkModulesEntryLines/checkModulesDiags (NOT
 -- elaborateModules), so their goldens are unaffected; the emit-path diff gates run
 -- with emitArgStampPasses True, where impl inference was already ON — also unchanged.
-elaborateModules runtimeDecls coreDecls modules =
+elaborateModules runtimeDecls coreDecls modulesIn =
   let _ = setRef implInferEnabled True
+  -- IMPORT ALIASING of an interface/impl METHOD — resolve it back to the origin name
+  -- before ANY of the marking / stamping / dict-arity machinery below runs.  See
+  -- renameAliasedMethods: a method is global-by-name, so an alias of one is a second
+  -- SPELLING, not a second binding.
+  let modules = renameAliasedMethods coreDecls modulesIn
   let _ = setRef mainSchemeRef None
   let _ = setRef crossModuleFunConstraintsRef []
   let _ = setRef crossModuleFunConstraintsQualRef []
@@ -13401,6 +13534,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "mainTypeIsFloat" (PWild) (EMatch (EFieldAccess (EVar "mainSchemeRef") "value") (arm (PCon "Some" (PCon "Forall" PWild PWild (PVar "t"))) () (EMatch (EApp (EVar "normalize") (EVar "t")) (arm (PCon "TCon" (PLit (LString "Float"))) () (EVar "True")) (arm PWild () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "matchWarnings" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "matchWarnings" () (EApp (EVar "Ref") (EListLit)))
+(DTypeSig true "hadMatchWarnings" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "hadMatchWarnings" (PWild) (EBinOp "!=" (EFieldAccess (EVar "matchWarnings") "value") (EListLit)))
 (DTypeSig false "matchWarningLocs" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
 (DFunDef false "matchWarningLocs" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "matchOracle" (TyApp (TyCon "Ref") (TyCon "Oracle")))
@@ -16155,6 +16290,42 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "aliasEntriesFor" ((PVar "mid") (PCon "UseAlias" PWild (PVar "a")) (PVar "qual")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EVar "moduleAliasEntry") (EVar "mid")) (EVar "a"))) (EVar "qual")))
 (DFunDef false "aliasEntriesFor" ((PVar "mid") (PCon "UseGroup" PWild (PVar "ms")) (PVar "qual")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EVar "memberAliasEntry") (EVar "mid")) (EVar "qual"))) (EVar "ms")))
 (DFunDef false "aliasEntriesFor" (PWild PWild PWild) (EListLit))
+(DTypeSig false "renameAliasedMethods" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))
+(DFunDef false "renameAliasedMethods" ((PVar "coreDecls") (PVar "modules")) (EBlock (DoLet false false (PVar "methodsPerMid") (EBinOp "::" (ETuple (ELit (LString "core")) (EApp (EVar "declMethodNames") (EVar "coreDecls"))) (EApp (EApp (EVar "map") (EVar "midMethodNames")) (EVar "modules")))) (DoExpr (EApp (EApp (EVar "map") (EApp (EVar "renameAliasedMethodsIn") (EVar "methodsPerMid"))) (EVar "modules")))))
+(DTypeSig false "midMethodNames" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "midMethodNames" ((PTuple (PVar "mid") (PVar "decls"))) (ETuple (EVar "mid") (EApp (EVar "declMethodNames") (EVar "decls"))))
+(DTypeSig false "renameAliasedMethodsIn" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))
+(DFunDef false "renameAliasedMethodsIn" ((PVar "methodsPerMid") (PTuple (PVar "mid") (PVar "prog"))) (EMatch (EApp (EApp (EVar "aliasMethodRenames") (EVar "methodsPerMid")) (EVar "prog")) (arm (PList) () (ETuple (EVar "mid") (EVar "prog"))) (arm (PVar "renames") () (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "flatMap") (EApp (EVar "deAliasMethodImports") (EVar "methodsPerMid"))) (EVar "prog"))) (DoExpr (ETuple (EVar "mid") (EApp (EApp (EVar "mapProg") (EApp (EVar "renameMethodVar") (EVar "renames"))) (EVar "prog2"))))))))
+(DTypeSig false "deAliasMethodImports" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "Decl")))))
+(DFunDef false "deAliasMethodImports" ((PVar "mm") (PCon "DAttrib" (PVar "attrs") (PVar "d"))) (EApp (EApp (EVar "map") (EApp (EVar "DAttrib") (EVar "attrs"))) (EApp (EApp (EVar "deAliasMethodImports") (EVar "mm")) (EVar "d"))))
+(DFunDef false "deAliasMethodImports" ((PVar "mm") (PAs "d" (PCon "DUse" (PVar "pub") (PVar "path") (PVar "loc")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "usePathModuleId") (EVar "path"))) (EVar "mm")) (arm (PCon "None") () (EListLit (EVar "d"))) (arm (PCon "Some" (PVar "methods")) () (EMatch (EVar "path") (arm (PCon "UseGroup" (PVar "quals") (PVar "ms")) () (EListLit (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EApp (EApp (EVar "map") (EApp (EVar "deAliasMethodMember") (EVar "methods"))) (EVar "ms")))) (EVar "loc")))) (arm (PCon "UseAlias" (PVar "quals") PWild) () (EMatch (EApp (EApp (EVar "methodMembersOf") (EVar "methods")) (EVar "loc")) (arm (PList) () (EListLit (EVar "d"))) (arm (PVar "mems") () (EListLit (EVar "d") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "mems"))) (EVar "loc")))))) (arm PWild () (EListLit (EVar "d")))))))
+(DFunDef false "deAliasMethodImports" (PWild (PVar "d")) (EListLit (EVar "d")))
+(DTypeSig false "deAliasMethodMember" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UseMember") (TyCon "UseMember"))))
+(DFunDef false "deAliasMethodMember" ((PVar "methods") (PAs "m" (PCon "UseMember" (PVar "n") (PVar "allCtors") (PVar "loc") PWild))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "methods")) (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "n")) (EVar "allCtors")) (EVar "loc")) (EVar "None")) (EIf (EVar "otherwise") (EVar "m") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "methodMembersOf" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Loc") (TyApp (TyCon "List") (TyCon "UseMember")))))
+(DFunDef false "methodMembersOf" ((PVar "methods") (PVar "loc")) (EApp (EApp (EVar "map") (ELam ((PVar "n")) (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "n")) (EVar "False")) (EVar "loc")) (EVar "None")))) (EVar "methods")))
+(DTypeSig false "renameMethodVar" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
+(DFunDef false "renameMethodVar" ((PVar "renames") (PAs "e" (PCon "EVar" (PVar "x")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "x")) (EVar "renames")) (arm (PCon "Some" (PVar "origin")) () (EApp (EVar "EVar") (EVar "origin"))) (arm (PCon "None") () (EVar "e"))))
+(DFunDef false "renameMethodVar" (PWild (PVar "e")) (EVar "e"))
+(DTypeSig false "aliasMethodRenames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenames" ((PVar "methodsPerMid") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EVar "aliasMethodRenamesOf") (EVar "methodsPerMid"))) (EVar "prog")))
+(DTypeSig false "aliasMethodRenamesOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenamesOf" ((PVar "mm") (PCon "DAttrib" PWild (PVar "d"))) (EApp (EApp (EVar "aliasMethodRenamesOf") (EVar "mm")) (EVar "d")))
+(DFunDef false "aliasMethodRenamesOf" ((PVar "mm") (PCon "DUse" PWild (PVar "path") PWild)) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "usePathModuleId") (EVar "path"))) (EVar "mm")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "methods")) () (EApp (EApp (EVar "aliasMethodRenamesOfPath") (EVar "methods")) (EVar "path")))))
+(DFunDef false "aliasMethodRenamesOf" (PWild PWild) (EListLit))
+(DTypeSig false "aliasMethodRenamesOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenamesOfPath" ((PVar "methods") (PCon "UseAlias" PWild (PVar "a"))) (EApp (EApp (EVar "map") (ELam ((PVar "n")) (ETuple (EApp (EApp (EVar "qualifiedLocal") (EVar "a")) (EVar "n")) (EVar "n")))) (EVar "methods")))
+(DFunDef false "aliasMethodRenamesOfPath" ((PVar "methods") (PCon "UseGroup" PWild (PVar "ms"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "memberMethodRename") (EVar "methods"))) (EVar "ms")))
+(DFunDef false "aliasMethodRenamesOfPath" (PWild PWild) (EListLit))
+(DTypeSig false "memberMethodRename" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UseMember") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "memberMethodRename" ((PVar "methods") (PVar "m")) (EMatch (EApp (EVar "useMemberAlias") (EVar "m")) (arm (PCon "Some" (PVar "local")) () (EBlock (DoLet false false (PVar "origin") (EApp (EVar "useMemberOrigin") (EVar "m"))) (DoExpr (EIf (EApp (EApp (EVar "contains") (EVar "origin")) (EVar "methods")) (EListLit (ETuple (EVar "local") (EVar "origin"))) (EListLit))))) (arm (PCon "None") () (EListLit))))
+(DTypeSig false "declMethodNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "declMethodNames" ((PVar "decls")) (EApp (EVar "dedup") (EApp (EApp (EVar "flatMap") (EVar "declMethodNamesOf")) (EVar "decls"))))
+(DTypeSig false "declMethodNamesOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "declMethodNamesOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declMethodNamesOf") (EVar "d")))
+(DFunDef false "declMethodNamesOf" ((PRec "DInterface" ((rf "methods" None)) true)) (EApp (EVar "ifaceMethodNames") (EVar "methods")))
+(DFunDef false "declMethodNamesOf" ((PRec "DImpl" ((rf "methods" None)) true)) (EApp (EApp (EVar "map") (EVar "implMethodName")) (EVar "methods")))
+(DFunDef false "declMethodNamesOf" (PWild) (EListLit))
 (DTypeSig false "aliasDictNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "aliasDictNames" ((PVar "bare") (PVar "unitDecls") (PVar "modules")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "u")) (EApp (EApp (EApp (EVar "aliasDictNamesOfUnit") (EVar "bare")) (EVar "unitDecls")) (EApp (EVar "snd") (EVar "u"))))) (EVar "modules")))
 (DTypeSig false "aliasDictNamesOfUnit" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
@@ -16226,7 +16397,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "allModuleLines" ((PList)) (EListLit))
 (DFunDef false "allModuleLines" ((PCons (PTuple (PVar "mid") (PVar "ss")) (PVar "rest"))) (EBinOp "::" (EBinOp "++" (ELit (LString "## MODULE ")) (EVar "mid")) (EBinOp "++" (EApp (EVar "schemeLines") (EVar "ss")) (EApp (EVar "allModuleLines") (EVar "rest")))))
 (DTypeSig true "elaborateModules" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))))))
-(DFunDef false "elaborateModules" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "modules")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "implInferEnabled")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mainSchemeRef")) (EVar "None"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintIfacesQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsQualRef")) (EListLit))) (DoLet false false (PVar "allDecls") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mangledShadowMapRef")) (EApp (EApp (EVar "computeMangledShadowMap") (EVar "allDecls")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "superDeclsRef")) (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userIfaceNamesRef")) (EApp (EVar "collectIfaceNames") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules"))))) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "argDispatchIdxRef")) (EApp (EVar "argDispatchIndices") (EVar "allDecls")))) (DoLet false false (PVar "argNames") (EApp (EApp (EVar "map") (EVar "fst")) (EFieldAccess (EVar "argDispatchIdxRef") "value"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleRef")) (EApp (EVar "moduleUserFnNames") (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleSetRef")) (EApp (EApp (EVar "namesToSet") (EApp (EVar "moduleUserFnNames") (EVar "modules"))) (EVar "omEmpty")))) (DoLet false false (PVar "promoted") (EApp (EApp (EApp (EApp (EApp (EVar "discoverPromotedModules") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "modules")) (EVar "rpNames")) (EVar "argNames"))) (DoLet false false (PVar "bareDictNames") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EApp (EVar "moduleDictNames") (EVar "coreDecls")) (EVar "allDecls")) (EVar "modules")) (EVar "promoted")))) (DoLet false false (PVar "dictNames") (EApp (EVar "dedup") (EBinOp "++" (EVar "bareDictNames") (EApp (EApp (EApp (EVar "aliasDictNames") (EVar "bareDictNames")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))) (EVar "modules"))))) (DoLet false false (PVar "markRpNames") (EApp (EVar "dedup") (EBinOp "++" (EBinOp "++" (EVar "rpNames") (EApp (EVar "methodConstraintNames") (EVar "allDecls"))) (EApp (EApp (EVar "buildStandaloneShadowsGraph") (EVar "allDecls")) (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules")))))) (DoLet false false (PVar "core2") (EApp (EApp (EApp (EApp (EApp (EVar "prePassDictArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value")) (EVar "coreDecls"))) (DoLet false false (PVar "modules2") (EApp (EApp (EVar "map") (EApp (EApp (EApp (EApp (EVar "prePassModulePairArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value"))) (EVar "modules"))) (DoLet false false (PVar "runtimeSeed") (EApp (EVar "externSchemes") (EVar "runtimeDecls"))) (DoLet false false (PVar "coreSchemes") (EApp (EApp (EApp (EApp (EApp (EVar "elabModuleStamp") (ELit (LString ""))) (EVar "runtimeSeed")) (EListLit)) (EVar "core2")) (EVar "core2"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "elabModulesGo") (EBinOp "++" (EVar "runtimeSeed") (EVar "coreSchemes"))) (EListLit)) (EApp (EVar "publicDataDecls") (EVar "core2"))) (EVar "core2")) (EVar "modules2"))) (DoExpr (EApp (EApp (EApp (EVar "dictPassModulesIfEnabled") (EVar "dictNames")) (EVar "core2")) (EVar "modules2")))))
+(DFunDef false "elaborateModules" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "modulesIn")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "implInferEnabled")) (EVar "True"))) (DoLet false false (PVar "modules") (EApp (EApp (EVar "renameAliasedMethods") (EVar "coreDecls")) (EVar "modulesIn"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mainSchemeRef")) (EVar "None"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintIfacesQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsQualRef")) (EListLit))) (DoLet false false (PVar "allDecls") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mangledShadowMapRef")) (EApp (EApp (EVar "computeMangledShadowMap") (EVar "allDecls")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "superDeclsRef")) (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userIfaceNamesRef")) (EApp (EVar "collectIfaceNames") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules"))))) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "argDispatchIdxRef")) (EApp (EVar "argDispatchIndices") (EVar "allDecls")))) (DoLet false false (PVar "argNames") (EApp (EApp (EVar "map") (EVar "fst")) (EFieldAccess (EVar "argDispatchIdxRef") "value"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleRef")) (EApp (EVar "moduleUserFnNames") (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleSetRef")) (EApp (EApp (EVar "namesToSet") (EApp (EVar "moduleUserFnNames") (EVar "modules"))) (EVar "omEmpty")))) (DoLet false false (PVar "promoted") (EApp (EApp (EApp (EApp (EApp (EVar "discoverPromotedModules") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "modules")) (EVar "rpNames")) (EVar "argNames"))) (DoLet false false (PVar "bareDictNames") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EApp (EVar "moduleDictNames") (EVar "coreDecls")) (EVar "allDecls")) (EVar "modules")) (EVar "promoted")))) (DoLet false false (PVar "dictNames") (EApp (EVar "dedup") (EBinOp "++" (EVar "bareDictNames") (EApp (EApp (EApp (EVar "aliasDictNames") (EVar "bareDictNames")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))) (EVar "modules"))))) (DoLet false false (PVar "markRpNames") (EApp (EVar "dedup") (EBinOp "++" (EBinOp "++" (EVar "rpNames") (EApp (EVar "methodConstraintNames") (EVar "allDecls"))) (EApp (EApp (EVar "buildStandaloneShadowsGraph") (EVar "allDecls")) (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules")))))) (DoLet false false (PVar "core2") (EApp (EApp (EApp (EApp (EApp (EVar "prePassDictArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value")) (EVar "coreDecls"))) (DoLet false false (PVar "modules2") (EApp (EApp (EVar "map") (EApp (EApp (EApp (EApp (EVar "prePassModulePairArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value"))) (EVar "modules"))) (DoLet false false (PVar "runtimeSeed") (EApp (EVar "externSchemes") (EVar "runtimeDecls"))) (DoLet false false (PVar "coreSchemes") (EApp (EApp (EApp (EApp (EApp (EVar "elabModuleStamp") (ELit (LString ""))) (EVar "runtimeSeed")) (EListLit)) (EVar "core2")) (EVar "core2"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "elabModulesGo") (EBinOp "++" (EVar "runtimeSeed") (EVar "coreSchemes"))) (EListLit)) (EApp (EVar "publicDataDecls") (EVar "core2"))) (EVar "core2")) (EVar "modules2"))) (DoExpr (EApp (EApp (EApp (EVar "dictPassModulesIfEnabled") (EVar "dictNames")) (EVar "core2")) (EVar "modules2")))))
 (DTypeSig false "dictPassModulesIfEnabled" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))))))
 (DFunDef false "dictPassModulesIfEnabled" ((PVar "dictNames") (PVar "core2") (PVar "modules2")) (EBlock (DoLet false false (PVar "allModDecls") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules2"))) (DoLet false false (PVar "promotedQ") (EFieldAccess (EVar "crossModuleFunConstraintsQualRef") "value")) (DoLet false false (PVar "allMods") (EApp (EApp (EVar "namesToSet") (EApp (EApp (EVar "map") (EVar "fst")) (EVar "modules2"))) (EVar "omEmpty"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "funConstraintsRef")) (EApp (EApp (EApp (EVar "scopeArities") (EVar "promotedQ")) (EVar "allMods")) (EBinOp "++" (EVar "core2") (EVar "allModDecls"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "methodConstraintsRef")) (EApp (EApp (EVar "scopeMethodArities") (EFieldAccess (EVar "crossModuleMethodConstraintsQualRef") "value")) (EVar "allMods")))) (DoLet false false (PVar "core2'") (EApp (EApp (EVar "dictPass") (EVar "dictNames")) (EVar "core2"))) (DoLet false false (PVar "modules2'") (EApp (EApp (EApp (EApp (EApp (EVar "dictPassModulesScoped") (EVar "dictNames")) (EVar "promotedQ")) (EVar "core2")) (EVar "modules2")) (EVar "modules2"))) (DoExpr (ETuple (EVar "core2'") (EVar "modules2'")))))
 (DTypeSig false "dictPassModulesScoped" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))))))
@@ -16878,6 +17049,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "mainTypeIsFloat" (PWild) (EMatch (EFieldAccess (EVar "mainSchemeRef") "value") (arm (PCon "Some" (PCon "Forall" PWild PWild (PVar "t"))) () (EMatch (EApp (EVar "normalize") (EVar "t")) (arm (PCon "TCon" (PLit (LString "Float"))) () (EVar "True")) (arm PWild () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "matchWarnings" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "matchWarnings" () (EApp (EVar "Ref") (EListLit)))
+(DTypeSig true "hadMatchWarnings" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "hadMatchWarnings" (PWild) (EBinOp "!=" (EFieldAccess (EVar "matchWarnings") "value") (EListLit)))
 (DTypeSig false "matchWarningLocs" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
 (DFunDef false "matchWarningLocs" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "matchOracle" (TyApp (TyCon "Ref") (TyCon "Oracle")))
@@ -19632,6 +19805,42 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "aliasEntriesFor" ((PVar "mid") (PCon "UseAlias" PWild (PVar "a")) (PVar "qual")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EVar "moduleAliasEntry") (EVar "mid")) (EVar "a"))) (EVar "qual")))
 (DFunDef false "aliasEntriesFor" ((PVar "mid") (PCon "UseGroup" PWild (PVar "ms")) (PVar "qual")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EVar "memberAliasEntry") (EVar "mid")) (EVar "qual"))) (EVar "ms")))
 (DFunDef false "aliasEntriesFor" (PWild PWild PWild) (EListLit))
+(DTypeSig false "renameAliasedMethods" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))
+(DFunDef false "renameAliasedMethods" ((PVar "coreDecls") (PVar "modules")) (EBlock (DoLet false false (PVar "methodsPerMid") (EBinOp "::" (ETuple (ELit (LString "core")) (EApp (EVar "declMethodNames") (EVar "coreDecls"))) (EApp (EApp (EMethodRef "map") (EVar "midMethodNames")) (EVar "modules")))) (DoExpr (EApp (EApp (EMethodRef "map") (EApp (EVar "renameAliasedMethodsIn") (EVar "methodsPerMid"))) (EVar "modules")))))
+(DTypeSig false "midMethodNames" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "midMethodNames" ((PTuple (PVar "mid") (PVar "decls"))) (ETuple (EVar "mid") (EApp (EVar "declMethodNames") (EVar "decls"))))
+(DTypeSig false "renameAliasedMethodsIn" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))
+(DFunDef false "renameAliasedMethodsIn" ((PVar "methodsPerMid") (PTuple (PVar "mid") (PVar "prog"))) (EMatch (EApp (EApp (EVar "aliasMethodRenames") (EVar "methodsPerMid")) (EVar "prog")) (arm (PList) () (ETuple (EVar "mid") (EVar "prog"))) (arm (PVar "renames") () (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EDictApp "flatMap") (EApp (EVar "deAliasMethodImports") (EVar "methodsPerMid"))) (EVar "prog"))) (DoExpr (ETuple (EVar "mid") (EApp (EApp (EVar "mapProg") (EApp (EVar "renameMethodVar") (EVar "renames"))) (EVar "prog2"))))))))
+(DTypeSig false "deAliasMethodImports" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "Decl")))))
+(DFunDef false "deAliasMethodImports" ((PVar "mm") (PCon "DAttrib" (PVar "attrs") (PVar "d"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "DAttrib") (EVar "attrs"))) (EApp (EApp (EVar "deAliasMethodImports") (EVar "mm")) (EVar "d"))))
+(DFunDef false "deAliasMethodImports" ((PVar "mm") (PAs "d" (PCon "DUse" (PVar "pub") (PVar "path") (PVar "loc")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "usePathModuleId") (EVar "path"))) (EVar "mm")) (arm (PCon "None") () (EListLit (EVar "d"))) (arm (PCon "Some" (PVar "methods")) () (EMatch (EVar "path") (arm (PCon "UseGroup" (PVar "quals") (PVar "ms")) () (EListLit (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EApp (EApp (EMethodRef "map") (EApp (EVar "deAliasMethodMember") (EVar "methods"))) (EVar "ms")))) (EVar "loc")))) (arm (PCon "UseAlias" (PVar "quals") PWild) () (EMatch (EApp (EApp (EVar "methodMembersOf") (EVar "methods")) (EVar "loc")) (arm (PList) () (EListLit (EVar "d"))) (arm (PVar "mems") () (EListLit (EVar "d") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "mems"))) (EVar "loc")))))) (arm PWild () (EListLit (EVar "d")))))))
+(DFunDef false "deAliasMethodImports" (PWild (PVar "d")) (EListLit (EVar "d")))
+(DTypeSig false "deAliasMethodMember" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UseMember") (TyCon "UseMember"))))
+(DFunDef false "deAliasMethodMember" ((PVar "methods") (PAs "m" (PCon "UseMember" (PVar "n") (PVar "allCtors") (PVar "loc") PWild))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "methods")) (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "n")) (EVar "allCtors")) (EVar "loc")) (EVar "None")) (EIf (EVar "otherwise") (EVar "m") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "methodMembersOf" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Loc") (TyApp (TyCon "List") (TyCon "UseMember")))))
+(DFunDef false "methodMembersOf" ((PVar "methods") (PVar "loc")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "n")) (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "n")) (EVar "False")) (EVar "loc")) (EVar "None")))) (EVar "methods")))
+(DTypeSig false "renameMethodVar" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
+(DFunDef false "renameMethodVar" ((PVar "renames") (PAs "e" (PCon "EVar" (PVar "x")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "x")) (EVar "renames")) (arm (PCon "Some" (PVar "origin")) () (EApp (EVar "EVar") (EVar "origin"))) (arm (PCon "None") () (EVar "e"))))
+(DFunDef false "renameMethodVar" (PWild (PVar "e")) (EVar "e"))
+(DTypeSig false "aliasMethodRenames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenames" ((PVar "methodsPerMid") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "aliasMethodRenamesOf") (EVar "methodsPerMid"))) (EVar "prog")))
+(DTypeSig false "aliasMethodRenamesOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenamesOf" ((PVar "mm") (PCon "DAttrib" PWild (PVar "d"))) (EApp (EApp (EVar "aliasMethodRenamesOf") (EVar "mm")) (EVar "d")))
+(DFunDef false "aliasMethodRenamesOf" ((PVar "mm") (PCon "DUse" PWild (PVar "path") PWild)) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "usePathModuleId") (EVar "path"))) (EVar "mm")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "methods")) () (EApp (EApp (EVar "aliasMethodRenamesOfPath") (EVar "methods")) (EVar "path")))))
+(DFunDef false "aliasMethodRenamesOf" (PWild PWild) (EListLit))
+(DTypeSig false "aliasMethodRenamesOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "aliasMethodRenamesOfPath" ((PVar "methods") (PCon "UseAlias" PWild (PVar "a"))) (EApp (EApp (EMethodRef "map") (ELam ((PVar "n")) (ETuple (EApp (EApp (EVar "qualifiedLocal") (EVar "a")) (EVar "n")) (EVar "n")))) (EVar "methods")))
+(DFunDef false "aliasMethodRenamesOfPath" ((PVar "methods") (PCon "UseGroup" PWild (PVar "ms"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "memberMethodRename") (EVar "methods"))) (EVar "ms")))
+(DFunDef false "aliasMethodRenamesOfPath" (PWild PWild) (EListLit))
+(DTypeSig false "memberMethodRename" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UseMember") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "memberMethodRename" ((PVar "methods") (PVar "m")) (EMatch (EApp (EVar "useMemberAlias") (EVar "m")) (arm (PCon "Some" (PVar "local")) () (EBlock (DoLet false false (PVar "origin") (EApp (EVar "useMemberOrigin") (EVar "m"))) (DoExpr (EIf (EApp (EApp (EVar "contains") (EVar "origin")) (EVar "methods")) (EListLit (ETuple (EVar "local") (EVar "origin"))) (EListLit))))) (arm (PCon "None") () (EListLit))))
+(DTypeSig false "declMethodNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "declMethodNames" ((PVar "decls")) (EApp (EVar "dedup") (EApp (EApp (EDictApp "flatMap") (EVar "declMethodNamesOf")) (EVar "decls"))))
+(DTypeSig false "declMethodNamesOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "declMethodNamesOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declMethodNamesOf") (EVar "d")))
+(DFunDef false "declMethodNamesOf" ((PRec "DInterface" ((rf "methods" None)) true)) (EApp (EVar "ifaceMethodNames") (EVar "methods")))
+(DFunDef false "declMethodNamesOf" ((PRec "DImpl" ((rf "methods" None)) true)) (EApp (EApp (EMethodRef "map") (EVar "implMethodName")) (EVar "methods")))
+(DFunDef false "declMethodNamesOf" (PWild) (EListLit))
 (DTypeSig false "aliasDictNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "aliasDictNames" ((PVar "bare") (PVar "unitDecls") (PVar "modules")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "u")) (EApp (EApp (EApp (EVar "aliasDictNamesOfUnit") (EVar "bare")) (EVar "unitDecls")) (EApp (EVar "snd") (EVar "u"))))) (EVar "modules")))
 (DTypeSig false "aliasDictNamesOfUnit" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
@@ -19703,7 +19912,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "allModuleLines" ((PList)) (EListLit))
 (DFunDef false "allModuleLines" ((PCons (PTuple (PVar "mid") (PVar "ss")) (PVar "rest"))) (EBinOp "::" (EBinOp "++" (ELit (LString "## MODULE ")) (EVar "mid")) (EBinOp "++" (EApp (EVar "schemeLines") (EVar "ss")) (EApp (EVar "allModuleLines") (EVar "rest")))))
 (DTypeSig true "elaborateModules" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))))))
-(DFunDef false "elaborateModules" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "modules")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "implInferEnabled")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mainSchemeRef")) (EVar "None"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintIfacesQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsQualRef")) (EListLit))) (DoLet false false (PVar "allDecls") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mangledShadowMapRef")) (EApp (EApp (EVar "computeMangledShadowMap") (EVar "allDecls")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "superDeclsRef")) (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userIfaceNamesRef")) (EApp (EVar "collectIfaceNames") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules"))))) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "argDispatchIdxRef")) (EApp (EVar "argDispatchIndices") (EVar "allDecls")))) (DoLet false false (PVar "argNames") (EApp (EApp (EMethodRef "map") (EVar "fst")) (EFieldAccess (EVar "argDispatchIdxRef") "value"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleRef")) (EApp (EVar "moduleUserFnNames") (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleSetRef")) (EApp (EApp (EVar "namesToSet") (EApp (EVar "moduleUserFnNames") (EVar "modules"))) (EVar "omEmpty")))) (DoLet false false (PVar "promoted") (EApp (EApp (EApp (EApp (EApp (EVar "discoverPromotedModules") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "modules")) (EVar "rpNames")) (EVar "argNames"))) (DoLet false false (PVar "bareDictNames") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EApp (EVar "moduleDictNames") (EVar "coreDecls")) (EVar "allDecls")) (EVar "modules")) (EVar "promoted")))) (DoLet false false (PVar "dictNames") (EApp (EVar "dedup") (EBinOp "++" (EVar "bareDictNames") (EApp (EApp (EApp (EVar "aliasDictNames") (EVar "bareDictNames")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))) (EVar "modules"))))) (DoLet false false (PVar "markRpNames") (EApp (EVar "dedup") (EBinOp "++" (EBinOp "++" (EVar "rpNames") (EApp (EVar "methodConstraintNames") (EVar "allDecls"))) (EApp (EApp (EVar "buildStandaloneShadowsGraph") (EVar "allDecls")) (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules")))))) (DoLet false false (PVar "core2") (EApp (EApp (EApp (EApp (EApp (EVar "prePassDictArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value")) (EVar "coreDecls"))) (DoLet false false (PVar "modules2") (EApp (EApp (EMethodRef "map") (EApp (EApp (EApp (EApp (EVar "prePassModulePairArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value"))) (EVar "modules"))) (DoLet false false (PVar "runtimeSeed") (EApp (EVar "externSchemes") (EVar "runtimeDecls"))) (DoLet false false (PVar "coreSchemes") (EApp (EApp (EApp (EApp (EApp (EVar "elabModuleStamp") (ELit (LString ""))) (EVar "runtimeSeed")) (EListLit)) (EVar "core2")) (EVar "core2"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "elabModulesGo") (EBinOp "++" (EVar "runtimeSeed") (EVar "coreSchemes"))) (EListLit)) (EApp (EVar "publicDataDecls") (EVar "core2"))) (EVar "core2")) (EVar "modules2"))) (DoExpr (EApp (EApp (EApp (EVar "dictPassModulesIfEnabled") (EVar "dictNames")) (EVar "core2")) (EVar "modules2")))))
+(DFunDef false "elaborateModules" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "modulesIn")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "implInferEnabled")) (EVar "True"))) (DoLet false false (PVar "modules") (EApp (EApp (EVar "renameAliasedMethods") (EVar "coreDecls")) (EVar "modulesIn"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mainSchemeRef")) (EVar "None"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintsQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleFunConstraintIfacesQualRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "crossModuleMethodConstraintsQualRef")) (EListLit))) (DoLet false false (PVar "allDecls") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "mangledShadowMapRef")) (EApp (EApp (EVar "computeMangledShadowMap") (EVar "allDecls")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "superDeclsRef")) (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userIfaceNamesRef")) (EApp (EVar "collectIfaceNames") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules"))))) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "argDispatchIdxRef")) (EApp (EVar "argDispatchIndices") (EVar "allDecls")))) (DoLet false false (PVar "argNames") (EApp (EApp (EMethodRef "map") (EVar "fst")) (EFieldAccess (EVar "argDispatchIdxRef") "value"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleRef")) (EApp (EVar "moduleUserFnNames") (EVar "modules")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "dictEligibleSetRef")) (EApp (EApp (EVar "namesToSet") (EApp (EVar "moduleUserFnNames") (EVar "modules"))) (EVar "omEmpty")))) (DoLet false false (PVar "promoted") (EApp (EApp (EApp (EApp (EApp (EVar "discoverPromotedModules") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "modules")) (EVar "rpNames")) (EVar "argNames"))) (DoLet false false (PVar "bareDictNames") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EApp (EVar "moduleDictNames") (EVar "coreDecls")) (EVar "allDecls")) (EVar "modules")) (EVar "promoted")))) (DoLet false false (PVar "dictNames") (EApp (EVar "dedup") (EBinOp "++" (EVar "bareDictNames") (EApp (EApp (EApp (EVar "aliasDictNames") (EVar "bareDictNames")) (EBinOp "::" (ETuple (ELit (LString "core")) (EVar "coreDecls")) (EVar "modules"))) (EVar "modules"))))) (DoLet false false (PVar "markRpNames") (EApp (EVar "dedup") (EBinOp "++" (EBinOp "++" (EVar "rpNames") (EApp (EVar "methodConstraintNames") (EVar "allDecls"))) (EApp (EApp (EVar "buildStandaloneShadowsGraph") (EVar "allDecls")) (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules")))))) (DoLet false false (PVar "core2") (EApp (EApp (EApp (EApp (EApp (EVar "prePassDictArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value")) (EVar "coreDecls"))) (DoLet false false (PVar "modules2") (EApp (EApp (EMethodRef "map") (EApp (EApp (EApp (EApp (EVar "prePassModulePairArg") (EVar "markRpNames")) (EVar "dictNames")) (EVar "argNames")) (EFieldAccess (EVar "mangledShadowMapRef") "value"))) (EVar "modules"))) (DoLet false false (PVar "runtimeSeed") (EApp (EVar "externSchemes") (EVar "runtimeDecls"))) (DoLet false false (PVar "coreSchemes") (EApp (EApp (EApp (EApp (EApp (EVar "elabModuleStamp") (ELit (LString ""))) (EVar "runtimeSeed")) (EListLit)) (EVar "core2")) (EVar "core2"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "elabModulesGo") (EBinOp "++" (EVar "runtimeSeed") (EVar "coreSchemes"))) (EListLit)) (EApp (EVar "publicDataDecls") (EVar "core2"))) (EVar "core2")) (EVar "modules2"))) (DoExpr (EApp (EApp (EApp (EVar "dictPassModulesIfEnabled") (EVar "dictNames")) (EVar "core2")) (EVar "modules2")))))
 (DTypeSig false "dictPassModulesIfEnabled" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))))))
 (DFunDef false "dictPassModulesIfEnabled" ((PVar "dictNames") (PVar "core2") (PVar "modules2")) (EBlock (DoLet false false (PVar "allModDecls") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules2"))) (DoLet false false (PVar "promotedQ") (EFieldAccess (EVar "crossModuleFunConstraintsQualRef") "value")) (DoLet false false (PVar "allMods") (EApp (EApp (EVar "namesToSet") (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "modules2"))) (EVar "omEmpty"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "funConstraintsRef")) (EApp (EApp (EApp (EVar "scopeArities") (EVar "promotedQ")) (EVar "allMods")) (EBinOp "++" (EVar "core2") (EVar "allModDecls"))))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "methodConstraintsRef")) (EApp (EApp (EVar "scopeMethodArities") (EFieldAccess (EVar "crossModuleMethodConstraintsQualRef") "value")) (EVar "allMods")))) (DoLet false false (PVar "core2'") (EApp (EApp (EVar "dictPass") (EVar "dictNames")) (EVar "core2"))) (DoLet false false (PVar "modules2'") (EApp (EApp (EApp (EApp (EApp (EVar "dictPassModulesScoped") (EVar "dictNames")) (EVar "promotedQ")) (EVar "core2")) (EVar "modules2")) (EVar "modules2"))) (DoExpr (ETuple (EVar "core2'") (EVar "modules2'")))))
 (DTypeSig false "dictPassModulesScoped" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))))))

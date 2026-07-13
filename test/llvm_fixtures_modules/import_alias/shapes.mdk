@@ -1,0 +1,15 @@
+-- Interface + impls live HERE and are reached from entry.mdk THROUGH AN IMPORT ALIAS.
+-- A method is global-by-name (one coalesced dispatcher) and so appears in no module's
+-- export list, which is why an aliased method used to bind to nothing on every engine
+-- while an un-aliased one silently worked by falling through to the global frame.
+public export data Circle = Circle Int
+public export data Square = Square Int
+
+export interface Shape a where
+  area : a -> Int
+
+export impl Shape Circle where
+  area (Circle r) = 3 * r * r
+
+export impl Shape Square where
+  area (Square s) = s * s

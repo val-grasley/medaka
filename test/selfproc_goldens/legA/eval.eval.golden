@@ -142,6 +142,7 @@ headTyconHead : List Ty -> Option String
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
 ifaceMethodArity : IfaceMethod -> (String, Int)
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
+ifaceMethodNmE : IfaceMethod -> String
 implDeclNames : Decl -> List String
 implKeyOf : String -> List Ty -> Option String -> String
 implMethodEntry : EvalEnv (Value <Mut | a>) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value <Mut | a>))
@@ -200,11 +201,15 @@ memoThunk : EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
 memoThunkOf : Ref (Option (Value <Mut | a>)) -> EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
 mergeField : List (String, Value a) -> (String, Value a) -> (String, Value a)
 methodAtNarrow : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Route -> <Mut> (Value <Mut | a>, List (Value <Mut | a>))
+methodCell : List (String, Ref (Value a)) -> String -> List (String, Ref (Value a))
+methodCellsOf : List (String, Ref (Value a)) -> List Decl -> List (String, Ref (Value a))
 methodDeclArities : Decl -> List (String, Int)
 methodReqCountRef : Ref (List ((String, String), Int))
 mixInt30 : Int -> Int
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 modImplEntries : List ((String, String), List Int) -> ModInfo (Value <Mut | a>) -> List (String, (Int, Value <Mut | a>))
+moduleMethodNames : List Decl -> List String
+moduleMethodNamesOf : Decl -> List String
 narrowMethod : Value a -> String -> <Mut> Value a
 noMainMsg : String
 oneOrMulti : List (Value a) -> Value a
@@ -228,8 +233,6 @@ pArrayLength : Value a -> <Mut> Value a
 pArrayMake : Value a -> Value a -> <Mut> Value a
 pArrayMakeWith : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
 pArraySetUnsafe : Value a -> Value a -> Value a -> <Mut> Value a
-pArraySortBy : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
-pArraySortInPlaceBy : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
 pAsin : Value a -> <Mut> Value a
 pAtan : Value a -> <Mut> Value a
 pAtan2 : Value a -> Value a -> <Mut> Value a
@@ -370,7 +373,6 @@ shadowedFun : List String -> Decl -> Bool
 sliceArray : Array (Value a) -> Int -> Int -> Value a
 sortByScore : List (Int, Value a) -> List (Int, Value a)
 sortGo : List (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
-sortValues : Value <Mut | a> -> List (Value <Mut | a>) -> <Mut> List (Value <Mut | a>)
 startsWithAt : String -> Bool
 statTuple : (Int, Bool, Bool, Float) -> Value a
 storeMemo : Ref (Option (Value a)) -> Value a -> <Mut> Value a
@@ -399,8 +401,6 @@ valueCompare : Value a -> Value a -> Ordering
 valueEq : Value a -> Value a -> Bool
 valueListEq : List (Value a) -> List (Value a) -> Bool
 valueTag : Value a -> Int
-valueToOrdering : Value a -> Ordering
 variantFieldOrder : Variant -> List (String, List String)
 variantName : Variant -> String
-writeBackFrom : Array (Value a) -> Int -> List (Value a) -> <Mut> Unit
 zipFieldOrder : List String -> List (Value a) -> List (String, Value a)

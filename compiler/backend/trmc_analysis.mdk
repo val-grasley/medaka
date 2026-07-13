@@ -16,8 +16,20 @@ import ir.core_ir.{
   CStmt(..),
   CArm(..),
   CGuard(..),
+  CImplEntry(..),
+  CImplBody(..),
 }
-import support.util.{contains, listLen}
+import support.util.{
+  contains,
+  listLen,
+  filterList,
+  reverseL,
+  lookupAssoc,
+  startsWith,
+  anyList,
+  isNonEmptyL,
+  dedup,
+}
 
 -- How the eligible function refers to ITSELF in a tail self-call.  A top-level
 -- define recurses by NAME (`CVar self`); a dispatched instance method (Phase 2
@@ -471,3 +483,463 @@ export ctorTailSelfIdx : CExpr -> Int
 ctorTailSelfIdx (CBinPrim "::" _ _ _) = 1
 ctorTailSelfIdx ex = match flattenApp ex []
   (_, fields) => lengthS fields - 1
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Dispatch-graph (b′) TMC group DETECTION — WASMGC-TRMC-DESIGN §11/§12 Stage 3,
+-- lifted out of `wasm_emit.mdk` (TMC-parity arc) so BOTH backends detect the
+-- SAME groups by construction.  The lexer's per-token leaf does `tok :: scan …`:
+-- the cons-target is the single dispatcher `scan`, NOT the leaf itself, so the
+-- self-recursive analysis above never fires across the dispatch boundary.  A "TMC
+-- group" is a set of functions tail-connected under an EXTERNAL-ENTRY root `R`
+-- (`scan`, the layout family's `layout`), where every tail leaf is either
+--   (1) a base case (no call to a group member), or
+--   (2) a SPINE cons — a peeled chain of 1..N member-free heads bottoming in a
+--       saturated call to ANY group member (the overflow site), or
+--   (3) a saturated tail-call to another group member.
+-- The EMIT stays backend-specific (wasm: per-group dest globals + return_call
+-- loop; LLVM: the group inlined into one define with a local alloca dest).
+--
+-- The program-coupled lookups are PARAMETERIZED exactly like `trmcEligible`'s
+-- ctor hooks, so this module carries no backend emit state:
+--   `cf   : String -> <Mut> String` — canonical fn name (bare→`core__` alias
+--           resolution: wasm `canonFn`, LLVM `canonFnName`).
+--   `isFn : String -> <Mut> Bool`   — is a defined top-level fn.
+--   `fa   : String -> <Mut> Int`    — a top-level fn's declared arity; the
+--           contract is wasm's `progFnArity`: -1 when not a known fn (an LLVM
+--           hook returning 0-when-unknown would let a 0-arg call "saturate").
+--   `s1   : String -> Int -> List CClause -> <Mut> Bool` — "would the backend's
+--           Stage-1 self-TMC already claim this fn?" (the v5 singleton check).
+--           A hook while the backends' Stage-1 gates differ (wasm's uniform-ctor
+--           gate); collapses to one shared predicate when that gate is retired.
+
+public export data DispGroup = DispGroup String (List String)
+
+-- the root / member names of a group (members include the root).
+export dispRootOf : DispGroup -> String
+dispRootOf (DispGroup root _) = root
+
+export dispMembersOf : DispGroup -> List String
+dispMembersOf (DispGroup _ members) = members
+
+-- look up which group (if any) a fn name belongs to.
+export dispGroupOf : List DispGroup -> String -> Option DispGroup
+dispGroupOf [] _ = None
+dispGroupOf ((DispGroup root members)::rest) name =
+  if contains name members then
+    Some (DispGroup root members)
+  else
+    dispGroupOf rest name
+
+-- ── clause/arm accessors shared by the detection and both emitters ───────────
+export clauseArityOf : List CClause -> Int
+clauseArityOf ((CClause pats _)::_) = listLen pats
+clauseArityOf [] = 0
+
+export clauseBodyOf : CClause -> CExpr
+clauseBodyOf (CClause _ body) = body
+
+export armBody : CArm -> CExpr
+armBody (CArm _ _ body) = body
+
+-- only ordinary bool guards (a refutable guard binder would complicate the leaf
+-- rewrite — reject the group).
+export allBoolGuards : List CGuard -> Bool
+allBoolGuards [] = True
+allBoolGuards ((CGBool _)::rest) = allBoolGuards rest
+allBoolGuards _ = False
+
+export lastStmtExpr : List CStmt -> Option CExpr
+lastStmtExpr [] = None
+lastStmtExpr [CSExpr ex] = Some ex
+lastStmtExpr (_::rest) = lastStmtExpr rest
+
+-- a non-dict define: no clause has a leading `$dict…` param (dict-passed methods /
+-- lifted lambdas are out of scope for the TMC transforms).
+export dispNonDict : List CClause -> Bool
+dispNonDict clauses = not (anyList dispClauseHasLeadingDict clauses)
+
+dispClauseHasLeadingDict : CClause -> Bool
+dispClauseHasLeadingDict (CClause ((PVar x)::_) _) = dispIsDictParamName x
+dispClauseHasLeadingDict _ = False
+
+dispIsDictParamName : String -> Bool
+dispIsDictParamName x = startsWith "$dict" x
+
+-- ── the detection entry point ─────────────────────────────────────────────────
+-- Try to grow a (b′) group rooted at each candidate root `R`, greedy in bind
+-- order (deterministic; groups are disjoint by v7).  `binds` = the user fn binds
+-- (candidate roots/members); `allBinds` = ALL binds (fn + value — the
+-- external-entry check must see references from value-bind bodies too); `impls`
+-- = the lowered impl/default entries (their bodies can call into a group).
+export detectDispatchGroups : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> (String -> Int -> List CClause -> <Mut> Bool) -> List CBind -> List CBind -> List CImplEntry -> <Mut> List DispGroup
+detectDispatchGroups cf isFn fa s1 binds allBinds impls =
+  let fnNames = map bindName binds
+  -- pass 0: global tables.  `consTargets` = the bottom callee of every peeled
+  -- tail spine cons (root-candidacy pre-gate: only a fn somebody conses onto can
+  -- anchor a spine; a family whose external entry is never itself a cons target
+  -- is out of scope — documented residual).  `headsMap` = per-bind referenced
+  -- heads over ALL binds (fn + value); `implHeads` = the same over impl bodies.
+  let consTargets = dedup (flatMap (b => dispBindConsTargets cf isFn fa fnNames b) binds)
+  let headsMap = map (b => (bindName b, dedup (dispBindHeads cf b))) allBinds
+  let implHeads = dedup (flatMap (e => dispImplEntryHeads cf e) impls)
+  dispDetectGo cf isFn fa s1 binds fnNames headsMap implHeads consTargets binds []
+
+dispDetectGo : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> (String -> Int -> List CClause -> <Mut> Bool) -> List CBind -> List String -> List (String, List String) -> List String -> List String -> List CBind -> List DispGroup -> <Mut> List DispGroup
+dispDetectGo _ _ _ _ _ _ _ _ _ [] accepted = reverseL accepted
+dispDetectGo cf isFn fa s1 binds fnNames headsMap implHeads consTargets (b::rest) accepted = match dispTryRoot cf isFn fa s1 binds fnNames headsMap implHeads consTargets accepted b
+  Some grp => dispDetectGo cf isFn fa s1 binds fnNames headsMap implHeads consTargets rest (grp::accepted)
+  None => dispDetectGo cf isFn fa s1 binds fnNames headsMap implHeads consTargets rest accepted
+
+-- the bind's group if it roots a valid one, else None.
+dispTryRoot : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> (String -> Int -> List CClause -> <Mut> Bool) -> List CBind -> List String -> List (String, List String) -> List String -> List String -> List DispGroup -> CBind -> <Mut> Option DispGroup
+dispTryRoot cf isFn fa s1 binds fnNames headsMap implHeads consTargets accepted (CBind root clauses) =
+  let arity = clauseArityOf clauses
+  let claimed = flatMap dispMembersOf accepted
+  if arity > 0 && dispNonDict clauses && contains root consTargets && not (contains root claimed) then match dispGrow cf isFn fa binds fnNames root [root] [root]
+    Some members => dispValidate cf isFn fa s1 binds headsMap implHeads claimed root arity clauses members
+    None => None
+  else None
+
+-- the post-growth soundness checks.  Some ⇒ accept; None ⇒ no transform.
+--   v2 the group builds a Cons spine somewhere;
+--   v3 member bodies reference group fns ONLY on the sanctioned tail edges (the
+--      bare tail callee / the spine-cons bottom callee) — every OTHER referenced
+--      head, expanded TRANSITIVELY through top-level helpers, must stay outside
+--      the group (a mid-spine re-entry corrupts the in-flight destination);
+--   v4 external entry: no bind or impl body outside the group references a
+--      member other than the root;
+--   v5 a Stage-1-claimable singleton stays with Stage-1 (its local-dest loop
+--      needs no group machinery at all);
+--   v7 groups are disjoint (a claimed member is never re-grouped).
+dispValidate : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> (String -> Int -> List CClause -> <Mut> Bool) -> List CBind -> List (String, List String) -> List String -> List String -> String -> Int -> List CClause -> List String -> <Mut> Option DispGroup
+dispValidate cf isFn fa s1 binds headsMap implHeads claimed root arity clauses members =
+  if anyList (m => contains m claimed) members then None
+  else if not (dispGroupHasSpineCons cf isFn fa binds members) then None
+  else if members == [root] && s1 root arity clauses then None
+  else
+    let allNames = map fst headsMap
+    let nt = filterList (h => contains h allNames) (dedup (flatMap (m => dispMemberNonTailHeads cf isFn fa binds members m) members))
+    let closure = dispBfs headsMap nt []
+    -- an oversize helper closure ⇒ same-group isolation not cheaply provable ⇒ reject.
+    if listLen closure > 256 then None
+    else if anyList (h => contains h members) closure then None
+    else
+      let inner = filterList (!= root) members
+      if anyList (p => dispEntryRefs members inner p) headsMap then None
+      else if anyList (h => contains h inner) implHeads then None
+      else Some (DispGroup root members)
+
+-- does a bind OUTSIDE the group reference a non-root member?
+dispEntryRefs : List String -> List String -> (String, List String) -> Bool
+dispEntryRefs members inner (name, heads) =
+  if contains name members then
+    False
+  else
+    anyList (h => contains h inner) heads
+
+-- transitive closure of `work` over the top-level referenced-heads graph, capped
+-- (the caller treats a past-cap closure as un-provable and rejects the group).
+dispBfs : List (String, List String) -> List String -> List String -> List String
+dispBfs _ [] visited = visited
+dispBfs headsMap (h::rest) visited =
+  if contains h visited || listLen visited > 256 then dispBfs headsMap rest visited
+  else
+    let nexts = match lookupAssoc h headsMap
+      Some hs => hs
+      None => []
+    dispBfs headsMap (nexts ++ rest) (h::visited)
+
+-- peel a chain of conses `h1 :: h2 :: … :: bottom` → (heads, bottom).
+export dispPeelCons : CExpr -> (List CExpr, CExpr)
+dispPeelCons (CBinPrim "::" h t _) =
+  let (hs, b) = dispPeelCons t
+  (h::hs, b)
+dispPeelCons e = ([], e)
+
+-- a spine-cons leaf `<h1> :: … :: f <saturated>` where `ok f` holds: Some (peeled
+-- heads, bottom callee, its args); None if the leaf is not that shape.  This ONE
+-- classifier is shared by detection, validation, and the leaf emit, so the three
+-- agree exactly on what is (and is not) a spine cons.
+export dispSpineParts : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> (String -> Bool) -> CExpr -> <Mut> Option (List CExpr, String, List CExpr)
+dispSpineParts cf isFn fa ok e = match dispPeelCons e
+  ([], _) => None
+  (heads, bottom) => match flattenApp bottom []
+    (CVar f0 _, args) =>
+      let f = cf f0
+      if ok f && isFn f && listLen args == fa f then
+        Some (heads, f, args)
+      else
+        None
+    _ => None
+
+-- pass 0: the bottom-target names of every peeled tail-position spine cons.
+dispBindConsTargets : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> CBind -> <Mut> List String
+dispBindConsTargets cf isFn fa fnNames (CBind _ clauses) = flatMap
+  (c => dispExprConsTargets cf isFn fa fnNames (clauseBodyOf c))
+  clauses
+
+dispExprConsTargets : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> CExpr -> <Mut> List String
+dispExprConsTargets cf isFn fa fnNames (CIf _ t f) = dispExprConsTargets cf isFn fa fnNames t
+  ++ dispExprConsTargets cf isFn fa fnNames f
+dispExprConsTargets cf isFn fa fnNames (CLet _ _ _ b) =
+  dispExprConsTargets cf isFn fa fnNames b
+dispExprConsTargets cf isFn fa fnNames (CBlock stmts) = match lastStmtExpr stmts
+  Some ex => dispExprConsTargets cf isFn fa fnNames ex
+  None => []
+dispExprConsTargets cf isFn fa fnNames (CDecision _ arms _) =
+  flatMap (a => dispExprConsTargets cf isFn fa fnNames (armBody a)) arms
+dispExprConsTargets cf isFn fa fnNames other = match dispSpineParts cf isFn fa (f => contains f fnNames) other
+  Some (_, f, _) => [f]
+  None => []
+
+-- a saturated direct call to `root` (canonicalized): flattenApp head is `CVar f`,
+-- `cf f == root`, arg count == arity.
+export dispIsSatRootCall : (String -> <Mut> String) -> String -> Int -> CExpr -> <Mut> Bool
+dispIsSatRootCall cf root arity e = match flattenApp e []
+  (CVar f _, args) => cf f == root && listLen args == arity
+  _ => False
+
+-- does `e` mention `root` as a call head anywhere (used to keep cons HEADS
+-- root-free so the cell's lead fields don't themselves re-enter the spine)?
+export dispCallsRoot : (String -> <Mut> String) -> String -> CExpr -> <Mut> Bool
+dispCallsRoot cf root e = contains root (allCallHeads cf e)
+
+export allCallHeads : (String -> <Mut> String) -> CExpr -> <Mut> List String
+allCallHeads cf (CVar f _) = [cf f]
+allCallHeads cf (CApp f a) = allCallHeads cf f ++ allCallHeads cf a
+allCallHeads cf (CLam _ b) = allCallHeads cf b
+allCallHeads cf (CLet _ _ e1 e2) = allCallHeads cf e1 ++ allCallHeads cf e2
+allCallHeads cf (CLetGroup binds b) = flatMap (bd => dispBindHeads cf bd) binds
+  ++ allCallHeads cf b
+allCallHeads cf (CBlock stmts) = flatMap (allCallHeadsStmt cf) stmts
+allCallHeads cf (CIf c t f) = allCallHeads cf c
+  ++ allCallHeads cf t
+  ++ allCallHeads cf f
+allCallHeads cf (CBinPrim _ l r _) = allCallHeads cf l ++ allCallHeads cf r
+allCallHeads cf (CUnOp _ x) = allCallHeads cf x
+allCallHeads cf (CMatch s arms) = allCallHeads cf s
+  ++ flatMap (allArmHeads cf) arms
+allCallHeads cf (CDecision s arms _) = allCallHeads cf s
+  ++ flatMap (allArmHeads cf) arms
+allCallHeads cf (CTuple es) = flatMap (allCallHeads cf) es
+allCallHeads cf (CList es) = flatMap (allCallHeads cf) es
+allCallHeads cf (CArray es) = flatMap (allCallHeads cf) es
+allCallHeads cf (CRecord _ fs) =
+  flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
+allCallHeads cf (CFieldAccess x _ _) = allCallHeads cf x
+allCallHeads cf (CRecordUpdate base fs) = allCallHeads cf base
+  ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
+allCallHeads cf (CVariantUpdate _ base fs) = allCallHeads cf base
+  ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
+allCallHeads cf (CRangeList lo hi _) = allCallHeads cf lo ++ allCallHeads cf hi
+allCallHeads cf (CRangeArray lo hi _) = allCallHeads cf lo ++ allCallHeads cf hi
+allCallHeads cf (CIndex a i) = allCallHeads cf a ++ allCallHeads cf i
+allCallHeads cf (CSlice a lo hi _) = allCallHeads cf a
+  ++ allCallHeads cf lo
+  ++ allCallHeads cf hi
+allCallHeads cf (CStringIndex a i) = allCallHeads cf a ++ allCallHeads cf i
+allCallHeads cf (CStringSlice a lo hi _) = allCallHeads cf a
+  ++ allCallHeads cf lo
+  ++ allCallHeads cf hi
+allCallHeads cf (CListIndex a i) = allCallHeads cf a ++ allCallHeads cf i
+allCallHeads cf (CListSlice a lo hi _) = allCallHeads cf a
+  ++ allCallHeads cf lo
+  ++ allCallHeads cf hi
+allCallHeads _ _ = []
+
+-- an arm's heads, INCLUDING its guard expressions (a guard runs before the arm
+-- body is selected — a group-fn reference there is just as live as one in the body).
+allArmHeads : (String -> <Mut> String) -> CArm -> <Mut> List String
+allArmHeads cf (CArm _ guards body) = flatMap (dispGuardHeads cf) guards
+  ++ allCallHeads cf body
+
+dispGuardHeads : (String -> <Mut> String) -> CGuard -> <Mut> List String
+dispGuardHeads cf (CGBool c) = allCallHeads cf c
+dispGuardHeads cf (CGBind _ e) = allCallHeads cf e
+
+-- every head referenced anywhere in a bind's clause bodies (pass-0 table for the
+-- external-entry + helper-closure checks).
+dispBindHeads : (String -> <Mut> String) -> CBind -> <Mut> List String
+dispBindHeads cf (CBind _ clauses) =
+  flatMap (c => allCallHeads cf (clauseBodyOf c)) clauses
+
+-- every head referenced from a lowered impl/default body (impl bodies are outside
+-- the CBind list but can still call into a group).
+dispImplEntryHeads : (String -> <Mut> String) -> CImplEntry -> <Mut> List String
+dispImplEntryHeads cf (CImplEntry _ _ (CImplTagged _ _ _ _ _ body)) =
+  allCallHeads cf body
+dispImplEntryHeads cf (CImplEntry _ _ (CImplDefault _ body)) =
+  allCallHeads cf body
+
+allCallHeadsStmt : (String -> <Mut> String) -> CStmt -> <Mut> List String
+allCallHeadsStmt cf (CSExpr e) = allCallHeads cf e
+allCallHeadsStmt cf (CSLet _ _ e) = allCallHeads cf e
+allCallHeadsStmt cf (CSAssign _ e) = allCallHeads cf e
+allCallHeadsStmt _ _ = []
+
+dispFieldExpr : CField -> CExpr
+dispFieldExpr (CField _ e) = e
+
+-- grow the group: `worklist` = members yet to scan, `acc` = accepted members.  For each
+-- member, every tail leaf must be (1) base, (2) a peeled spine cons bottoming in a
+-- saturated group-fn call, or (3) a saturated tail-call to a group fn (NEW group members
+-- are added to the worklist).  Any other tail leaf shape ⇒ reject (None).  `fuel` via
+-- the worklist (finite # fns).
+dispGrow : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List CBind -> List String -> String -> List String -> List String -> <Mut> Option (List String)
+dispGrow _ _ _ _ _ _ [] acc = Some acc
+dispGrow cf isFn fa binds fnNames root (m::rest) acc =
+  match dispFindBind binds m
+    None => None
+    Some (CBind _ clauses) =>
+      -- a non-root member must be non-dict (it is emitted via the normal clause
+      -- machinery with redirected leaves); it MAY have literal- or ctor-pattern
+      -- clauses (singleOp dispatch on a Char, `layout` dispatch on the RawTok
+      -- head) — the clause-chain emit handles them and the context redirect
+      -- reaches each arm's leaves.
+      if not (dispNonDict clauses) then None
+      else match dispMemberTailsOk cf isFn fa fnNames root acc clauses
+        None => None
+        Some newMembers =>
+          let toAdd = dedup (filterList (n => not (contains n acc)) newMembers)
+          dispGrow cf isFn fa binds fnNames root (rest ++ toAdd) (acc ++ toAdd)
+
+export dispFindBind : List CBind -> String -> Option CBind
+dispFindBind [] _ = None
+dispFindBind ((CBind n cs)::rest) m =
+  if n == m then
+    Some (CBind n cs)
+  else
+    dispFindBind rest m
+
+-- check every clause's every tail leaf; collect the NEW group fns referenced by case-(2)
+-- cons bottoms and case-(3) tail-calls.  Returns None if any leaf is an unsupported shape.
+dispMemberTailsOk : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> String -> List String -> List CClause -> <Mut> Option (List String)
+dispMemberTailsOk cf isFn fa fnNames root acc clauses =
+  dispClausesGo cf isFn fa fnNames root acc clauses []
+
+dispClausesGo : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> String -> List String -> List CClause -> List String -> <Mut> Option (List String)
+dispClausesGo _ _ _ _ _ _ [] found = Some found
+dispClausesGo cf isFn fa fnNames root acc ((CClause _ body)::rest) found = match dispLeavesOk cf isFn fa fnNames root acc body found
+  None => None
+  Some found2 => dispClausesGo cf isFn fa fnNames root acc rest found2
+
+-- descend the tail wrappers; check each leaf; accumulate referenced new group fns.
+-- (Block-prefix statements, let-RHSs, guards, and scrutinees are validated by
+-- dispValidate's v3 non-tail-heads walk against the FINAL member set.)
+dispLeavesOk : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> String -> List String -> CExpr -> List String -> <Mut> Option (List String)
+dispLeavesOk cf isFn fa fnNames root acc (CIf _ t f) found = match dispLeavesOk cf isFn fa fnNames root acc t found
+  None => None
+  Some f2 => dispLeavesOk cf isFn fa fnNames root acc f f2
+dispLeavesOk cf isFn fa fnNames root acc (CLet False (PVar _) _ b) found =
+  dispLeavesOk cf isFn fa fnNames root acc b found
+dispLeavesOk cf isFn fa fnNames root acc (CLet False PWild _ b) found =
+  dispLeavesOk cf isFn fa fnNames root acc b found
+dispLeavesOk cf isFn fa fnNames root acc (CBlock stmts) found = match lastStmtExpr stmts
+  Some ex => dispLeavesOk cf isFn fa fnNames root acc ex found
+  None => None
+dispLeavesOk cf isFn fa fnNames root acc (CDecision _ arms _) found =
+  dispArmsOk cf isFn fa fnNames root acc arms found
+dispLeavesOk cf isFn fa fnNames root acc other found =
+  dispLeafOk cf isFn fa fnNames root acc other found
+
+dispArmsOk : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> String -> List String -> List CArm -> List String -> <Mut> Option (List String)
+dispArmsOk _ _ _ _ _ _ [] found = Some found
+dispArmsOk cf isFn fa fnNames root acc ((CArm _ guards body)::rest) found =
+  -- only ordinary bool guards (the same restriction the tail emit honors); a refutable
+  -- guard binder would complicate the leaf rewrite — reject the group.
+  if not (allBoolGuards guards) then None
+  else match dispLeavesOk cf isFn fa fnNames root acc body found
+    None => None
+    Some f2 => dispArmsOk cf isFn fa fnNames root acc rest f2
+
+-- classify a single LEAF.  peeled spine cons bottoming in a saturated user-fn call
+-- ⇒ ok + the bottom fn joins the group.  bare saturated tail-call to a user fn ⇒ ok
+-- + it joins.  base (no reference to root) ⇒ ok.  Anything else ⇒ None.
+dispLeafOk : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> String -> List String -> CExpr -> List String -> <Mut> Option (List String)
+dispLeafOk cf isFn fa fnNames root acc e found =
+  match dispSpineParts cf isFn fa (f => contains f fnNames) e
+    Some (heads, f, _) =>
+      -- the heads become the cells' lead fields; one that re-enters the root would
+      -- run a nested spine build mid-leaf — poison the group.  (Non-root member
+      -- references in heads are caught by dispValidate v3.)
+      if anyListM (h => dispCallsRoot cf root h) heads then None
+      else Some (f :: found)
+    None => match flattenApp e []
+      ((CVar f0 _), args) =>
+        let f = cf f0
+        if contains f fnNames && isFn f && listLen args == fa f then
+          -- saturated tail-call to a user fn (the root included): pull it into the
+          -- group (case 3).  Its own tails are validated when the worklist reaches it.
+          Some (f :: found)
+        else if dispLeafIsBase cf root e then Some found
+        else None
+      _ => if dispLeafIsBase cf root e then Some found else None
+
+-- a BASE leaf: a value with NO call to `root` and no tail-call into a group fn — e.g. `[]`,
+-- a literal, a non-recursive value.  (Root-free here; dispValidate v3 re-checks every
+-- base against the FULL member set.)
+dispLeafIsBase : (String -> <Mut> String) -> String -> CExpr -> <Mut> Bool
+dispLeafIsBase cf root e = not (dispCallsRoot cf root e)
+
+-- the group built a Cons spine somewhere (sanity: the dest carries Cons cells).
+dispGroupHasSpineCons : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List CBind -> List String -> <Mut> Bool
+dispGroupHasSpineCons cf isFn fa binds members =
+  anyListM (m => dispMemberHasSpineCons cf isFn fa binds members m) members
+
+dispMemberHasSpineCons : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List CBind -> List String -> String -> <Mut> Bool
+dispMemberHasSpineCons cf isFn fa binds members m = match dispFindBind binds m
+  Some (CBind _ cs) => anyListM (c => isNonEmptyL (dispExprConsTargets cf isFn fa members (clauseBodyOf c))) cs
+  None => False
+
+-- v3 walk: every fn-name head in a member body that is NOT on a sanctioned tail edge
+-- (the bare tail callee / the spine-cons bottom callee).  Mirrors dispLeavesOk's
+-- structural descent EXACTLY, so detection, validation, and emit classify each leaf
+-- identically.  Collected: if-conds, let-RHSs, block prefixes, scrutinees, guards,
+-- cons heads, sanctioned-call args, and whole base exprs.
+dispMemberNonTailHeads : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List CBind -> List String -> String -> <Mut> List String
+dispMemberNonTailHeads cf isFn fa binds members m = match dispFindBind binds m
+  Some (CBind _ clauses) => flatMap (c => dispNonTailHeads cf isFn fa members (clauseBodyOf c)) clauses
+  None => []
+
+dispNonTailHeads : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> CExpr -> <Mut> List String
+dispNonTailHeads cf isFn fa members (CIf c t f) = allCallHeads cf c
+  ++ dispNonTailHeads cf isFn fa members t
+  ++ dispNonTailHeads cf isFn fa members f
+dispNonTailHeads cf isFn fa members (CLet False (PVar _) rhs b) = allCallHeads cf rhs
+  ++ dispNonTailHeads cf isFn fa members b
+dispNonTailHeads cf isFn fa members (CLet False PWild rhs b) = allCallHeads cf rhs
+  ++ dispNonTailHeads cf isFn fa members b
+dispNonTailHeads cf isFn fa members (CBlock stmts) =
+  dispStmtNonTailHeads cf isFn fa members stmts
+dispNonTailHeads cf isFn fa members (CDecision scrut arms _) = allCallHeads cf scrut
+  ++ flatMap (a => dispArmNonTailHeads cf isFn fa members a) arms
+dispNonTailHeads cf isFn fa members leaf = match dispSpineParts cf isFn fa (f => contains f members) leaf
+  Some (heads, _, args) => flatMap (allCallHeads cf) heads
+    ++ flatMap (allCallHeads cf) args
+  None => match flattenApp leaf []
+    (CVar f0 _, args) =>
+      let f = cf f0
+      if contains f members && listLen args == fa f then
+        flatMap (allCallHeads cf) args
+      else
+        allCallHeads cf leaf
+    _ => allCallHeads cf leaf
+
+dispArmNonTailHeads : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> CArm -> <Mut> List String
+dispArmNonTailHeads cf isFn fa members (CArm _ guards body) = flatMap (dispGuardHeads cf) guards
+  ++ dispNonTailHeads cf isFn fa members body
+
+dispStmtNonTailHeads : (String -> <Mut> String) -> (String -> <Mut> Bool) -> (String -> <Mut> Int) -> List String -> List CStmt -> <Mut> List String
+dispStmtNonTailHeads cf isFn fa members [CSExpr ex] =
+  dispNonTailHeads cf isFn fa members ex
+dispStmtNonTailHeads cf isFn fa members (s::rest) = allCallHeadsStmt cf s
+  ++ dispStmtNonTailHeads cf isFn fa members rest
+dispStmtNonTailHeads _ _ _ _ [] = []
+
+-- effectful (`<Mut>`) anyList: the spine-cons / call-head walks thread the
+-- <Mut> hooks, so a short-circuiting any over a <Mut> predicate is needed.
+anyListM : (a -> <Mut> Bool) -> List a -> <Mut> Bool
+anyListM _ [] = False
+anyListM p (x::rest) =
+  let h = p x
+  if h then True else anyListM p rest

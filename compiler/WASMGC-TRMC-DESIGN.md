@@ -1,6 +1,17 @@
 # WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5)
 
 > **Status: IMPLEMENTED — Stages 0–2 COMPLETE, layer-5 CLOSED (2026-06-22).** See §11 "AS BUILT" for the implementation log. This doc was originally a design/scoping pass; the implementation was added in §11 without updating this header. No source edited in the initial design pass.
+>
+> **TMC-parity update (2026-07-13):** the Stage-3 dispatch-graph DETECTION was
+> lifted out of `wasm_emit.mdk` into the shared `backend/trmc_analysis.mdk`
+> (hook-parameterized `detectDispatchGroups`), and the **LLVM backend now emits
+> (b′) groups too** (single-define inlining — `TRMC-DESIGN.md` §Phase 3), so both
+> backends TMC the SAME functions by construction.  The wasm-only
+> `wTrmcUniformCtor` gate was retired (mixed leaf-ctor sets emit via a
+> `$__tmc_dctor` link dispatch; singleton sets byte-identical to before), which
+> also made the v5 stage-1-claims predicate backend-identical.  Both emitters
+> write `;; tmc:` / `; tmc:` census markers; `test/diff_compiler_tmc_parity.sh`
+> gates the per-function TMC sets equal.
 > Companion to `TRMC-DESIGN.md` (the LLVM-backend TRMC), `WASM-SELFHOST-ROADMAP.md`
 > (the layer log — this is **layer-5**), `WASMGC-DESIGN.md` (value rep). The next agent
 > implements; this doc only scopes the fix and surfaces the human-decision forks.

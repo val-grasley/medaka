@@ -3,6 +3,12 @@ import emit_a as A
 import emit_b as B
 -- member alias: rename one value on import
 import emit_a.{describe as descA}
+-- METHOD aliasing. A method is global-by-name (one coalesced dispatcher), so it is in
+-- NO module's export list — which is exactly why an aliased method used to bind to
+-- nothing while an un-aliased one silently fell through to the global frame.
+import shapes as S
+import shapes.{area as areaOf, tagged as tagIt, Circle(..), Square(..)}
+import shapes_extra.{Tri(..), Boxed(..)}
 
 main =
   println (A.emit 1)
@@ -12,3 +18,19 @@ main =
   println (B.describe True)
   -- and through a member alias
   println (descA "x")
+  -- a bare interface method through a MEMBER alias — must still DISPATCH, not just bind
+  println (areaOf (Circle 2))
+  println (areaOf (Square 3))
+  -- the same method through a MODULE alias
+  println (S.area (Circle 2))
+  println (S.name (Square 3))
+  -- an impl declared in a DIFFERENT module from its interface (the METHOD still belongs
+  -- to `shapes`, so it is reached through shapes' alias — `X.name` is correctly an error)
+  println (S.area (Tri 4))
+  println (areaOf (Tri 4))
+  -- a CONSTRAINED impl (`requires Shape a`), reached through both alias forms
+  println (areaOf (Boxed (Circle 2)))
+  println (S.name (Boxed (Square 3)))
+  -- a method with its OWN `=>` constraint, through both alias forms
+  println (S.tagged (Circle 1) [1, 2])
+  println (tagIt (Circle 1) True)

@@ -5,7 +5,7 @@ Status: **active**, 2026-07-13.
 ## The bug this exists to catch
 
 Medaka has three execution engines that each must independently implement
-every `extern` primitive declared in `stdlib/runtime.mdk` (~134 of them):
+every `extern` primitive declared in `stdlib/runtime.mdk` (~132 of them):
 
 - the tree-walking **interpreter** (`compiler/eval/eval.mdk`) — runs
   `medaka run` / `medaka test`

@@ -74,8 +74,9 @@
 # landed the `ioExternBindings` seam (real-I/O prims installed by `medaka run`'s
 # driver ONLY, so the differential oracle stays pure by type), and the File (12),
 # Env (3: args/getEnv/executablePath), Stdin (4) and Clock/GC/stderr (6) families
-# now have real implementations there — plus the three pure/<Mut> array ops
-# (arrayFill/arraySortInPlaceBy/arraySortBy) in the shared pure table.
+# now have real implementations there — plus the pure/<Mut> array op (arrayFill)
+# in the shared pure table. (arraySortInPlaceBy/arraySortBy were REMOVED
+# entirely, catalog and all — see the deletion note below.)
 #
 # STILL OPEN, deliberately (the 14 below):
 #   exit           — needs a POLICY decision, not an implementation: a doctest
@@ -137,16 +138,20 @@ assertSnapshot	interp	BUG	unimplemented in all 3 engines (see llvm/wasm TODO row
 # ============================================================================
 
 # ============================================================================
-# LLVM — 3 rows.
+# LLVM — 1 row.
+# (arraySortBy/arraySortInPlaceBy formerly filed DEAD here — REMOVED 2026-07-13:
+# both were declared in stdlib/runtime.mdk, implemented by NOBODY, called by
+# NOTHING; superseded by the pure-Medaka mergeSortBy since 2026-06. Deleting the
+# catalog entries (not just the exception rows) removes the extern, and with it
+# the `run != build` divergence a since-reverted interpreter binding had opened.)
 # ============================================================================
-arraySortBy	llvm	DEAD	no `is*Extern` family or exact-name dispatch matches it in llvm_emit.mdk; superseded by the →MEDAKA pure-Medaka mergeSortBy (RUNTIME-DESIGN.md §4, STDLIB.md) — "dead in the stdlib" but user-reachable since it is not internal-extern-guarded
-arraySortInPlaceBy	llvm	DEAD	same →MEDAKA history as arraySortBy; additionally internal-extern-guarded (compiler/frontend/resolve.mdk:208), so lowest practical risk of the two
 assertSnapshot	llvm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression
 
 # ============================================================================
-# WASM — 60 rows: 10 PERMANENT (net), 2 TRAP-STUB (int bounds), 2 DEAD
-# (sorts, same history as the llvm rows above), 1 TODO (assertSnapshot),
-# 45 WASM-GAP (unported, no structural blocker).
+# WASM — 58 rows: 10 PERMANENT (net), 2 TRAP-STUB (int bounds), 1 TODO
+# (assertSnapshot), 45 WASM-GAP (unported, no structural blocker).
+# (arraySortBy/arraySortInPlaceBy formerly filed DEAD here — REMOVED 2026-07-13,
+# same history as the LLVM rows above.)
 # ============================================================================
 
 # --- net (10) — PERMANENT. wasm_emit.mdk's own gapL message says so
@@ -171,10 +176,6 @@ netTcpListen	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit
 #     value. Comment there calls this W8b-shaped/deferred. ---
 intMinBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
 intMaxBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
-
-# --- sorts (2) — DEAD, same history as the llvm rows. ---
-arraySortBy	wasm	DEAD	no `is*ExternW` family matches it; superseded by the →MEDAKA pure-Medaka mergeSortBy (WASMGC-DESIGN.md §"→MEDAKA (3)" lists it explicitly as "already pure-Medaka stdlib | unchanged") — dead in the stdlib but user-reachable (not internal-extern-guarded)
-arraySortInPlaceBy	wasm	DEAD	same →MEDAKA history as arraySortBy; internal-extern-guarded, lowest practical risk
 
 # --- assertSnapshot (1) — TODO, same as the llvm row. ---
 assertSnapshot	wasm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression

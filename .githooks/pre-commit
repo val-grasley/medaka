@@ -1,9 +1,10 @@
 #!/bin/sh
-# Medaka pre-commit hook — reject commits containing unformatted or lint-failing .mdk source.
+# Medaka pre-commit hook — reject commits containing unformatted or lint-failing .mdk
+# source, or a snapshot suite the author forgot to re-run.
 #
-# Two checks over every staged .mdk file (added/copied/modified); `test/` fixtures
-# are deliberately excluded from both — they are golden inputs kept intentionally
-# unformatted and often intentionally violate style rules.
+# Checks 1–2 run over every staged .mdk (added/copied/modified); `test/` fixtures are
+# deliberately excluded from BOTH — they are golden inputs kept intentionally unformatted
+# and often violate style rules on purpose. Check 4 has a wider trigger (see below).
 #
 #   1. FORMAT: `medaka fmt --check` — aborts if any file differs from its formatted form.
 #   2. LINT:   `medaka lint --only=<gated rules> --deny=<gated rules>` — aborts if any
@@ -13,6 +14,28 @@
 #      ESLint-style directive comment, e.g. `-- lint-disable-next-line rule-lambda-section`
 #      (also -line / -file forms). If a gated style rule proves too noisy in practice,
 #      remove it from GATED_LINT_RULES below (it then still warns under plain `medaka lint`).
+#   3. CROSS-FILE LINT: one project-wide scan (rule-duplicate-body can't be checked
+#      per-staged-file).
+#   4. SNAPSHOT: `make snapshot-check` — the per-stage snapshot suite, CHECK ONLY.
+#
+# ── check 4, and the one thing a hook must never be ──────────────────────────
+# The hook's job here is "you did not forget to run the suite". It is NOT, and cannot be,
+# the review gate for BLESSING a snapshot: the author runs the hook, and the bless button
+# is right there. A hook that offered to re-cut the goldens it just found stale would be
+# a rubber stamp with a progress bar. So it runs `--check` and stops; re-cutting is an
+# explicit, named, human act:
+#
+#     sh test/diff_compiler_snapshot_frontend.sh --bless <the file you changed>
+#
+# and the actual review gate is `git diff` on test/snapshots/ — which is what a reviewer
+# and every CI shard look at. (See compiler/tools/snapshot.mdk for the three locks on
+# --bless: scoped, non-creating, and refuses diagnostic-bearing sections outright.)
+#
+# The trigger is WIDER than checks 1–3: the corpus contains the compiler's own 50 sources,
+# all of stdlib, AND test/{parse,parse_only,diff}_fixtures — so a staged test/ fixture
+# moves a snapshot too, and so does a pure `medaka fmt` reflow of a compiler source. The
+# hook therefore fires on ANY staged .mdk (test/ included) or any staged
+# test/snapshots/**.md.
 #
 # Install (from the repo root):
 #     cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"
@@ -50,9 +73,12 @@ if [ ! -x "$MEDAKA" ]; then
   fi
 fi
 
-# Staged .mdk files, excluding test/ fixtures.
+# Staged .mdk files, excluding test/ fixtures (checks 1–3).
 files="$(git diff --cached --name-only --diff-filter=ACM -- '*.mdk' ':(exclude)test/**')"
-[ -z "$files" ] && exit 0
+# Anything that can move a snapshot (check 4): ANY staged .mdk — test/ fixtures included,
+# they are in the corpus — plus the snapshots themselves.
+snapfiles="$(git diff --cached --name-only --diff-filter=ACMD -- '*.mdk' 'test/snapshots/*.md')"
+[ -z "$files" ] && [ -z "$snapfiles" ] && exit 0
 
 # ── 1. formatter check ───────────────────────────────────────────────────────
 bad=""
@@ -101,7 +127,7 @@ fi
 # One project-wide scan over all source roots at once, so cross-ROOT duplicates
 # (a body shared between compiler/ and stdlib/, etc.) are caught too.
 roots=""
-for r in $LINT_ROOTS; do [ -d "$ROOT/$r" ] && roots="$roots $ROOT/$r"; done
+[ -n "$files" ] && for r in $LINT_ROOTS; do [ -d "$ROOT/$r" ] && roots="$roots $ROOT/$r"; done
 if [ -n "$roots" ]; then
   # shellcheck disable=SC2086
   if ! "$MEDAKA" lint --only="$GATED_CROSSFILE_RULES" --deny="$GATED_CROSSFILE_RULES" $roots >/dev/null 2>&1; then
@@ -115,6 +141,36 @@ if [ -n "$roots" ]; then
     echo "  Bypass once:    git commit --no-verify" >&2
     echo "" >&2
     exit 1
+  fi
+fi
+
+# ── 4. snapshot suite (CHECK only — this hook can never bless) ────────────────
+# ~7s, no oracle binaries needed. Runs against the BUILT ./medaka, so if you have staged
+# a compiler change you have not rebuilt, this checks the OLD compiler's behaviour — it
+# still catches the common case it is here for (a fixture/source edit that moved a
+# `# SOURCE` section), and `make medaka` before committing makes it exact.
+if [ -n "$snapfiles" ]; then
+  snapgate="$ROOT/test/diff_compiler_snapshot_frontend.sh"
+  if [ -f "$snapgate" ]; then
+    snapout="$(MEDAKA="$MEDAKA" sh "$snapgate" 2>&1)"; snapst=$?
+    if [ "$snapst" -eq 2 ]; then
+      echo "pre-commit: snapshot suite could not run (compiler not built) — skipping check 4." >&2
+    elif [ "$snapst" -ne 0 ]; then
+      echo "" >&2
+      echo "✗ pre-commit: the snapshot suite is stale (make snapshot-check):" >&2
+      echo "" >&2
+      printf '%s\n' "$snapout" | grep -E ': (FAIL|ERROR)' | sed 's/^/    /' >&2
+      echo "" >&2
+      echo "  Re-cut ONLY the fixtures you changed, by name:" >&2
+      echo "      sh test/diff_compiler_snapshot_frontend.sh --bless <file.mdk> ..." >&2
+      echo "  then re-stage test/snapshots/ and READ the diff — that diff is the review gate." >&2
+      echo "  (There is no whole-suite bless. A diagnostic-bearing section will refuse to" >&2
+      echo "   bless at all: read the new message, then rm the .md and re-cut it with --new.)" >&2
+      echo "" >&2
+      echo "  Bypass once:  git commit --no-verify" >&2
+      echo "" >&2
+      exit 1
+    fi
   fi
 fi
 

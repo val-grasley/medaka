@@ -55,11 +55,6 @@ import support.util.{
   joinDot,
   dedup,
 }
--- stdlib `sortBy` is effect-POLYMORPHIC (`(a -> a -> <e> Ordering) -> …`), which
--- is exactly what the arraySort* prims need: their comparator is a Value closure
--- applied through `apply` (`<Mut | e>`).  List's instances live in `core`, so this
--- import drags in no new instance surface (AGENTS.md: near-free).
-import list.{sortBy}
 -- Reused JSON diagnostic shaping for `medaka run --json` (RUNTIME-DIAGNOSTIC-
 -- CHANNEL-DESIGN.md Fork C). diagnostics.mdk sits above frontend/types in the
 -- pipeline and does not import eval.mdk (no cycle) — verified by grep before
@@ -1919,8 +1914,6 @@ externBindings _ = [
   ("arraySetUnsafe", prim3M pArraySetUnsafe),
   ("arrayBlit", prim5M pArrayBlit),
   ("arrayFill", prim2M pArrayFill),
-  ("arraySortInPlaceBy", prim2M pArraySortInPlaceBy),
-  ("arraySortBy", prim2M pArraySortBy),
   ("Ref", prim1 pRef),
   ("setRef", prim2M pSetRef),
   ("putStr", prim1M pPutStr),
@@ -2295,37 +2288,6 @@ pArrayFill v (VArray a) =
   VUnit
 pArrayFill _ _ = panic "arrayFill: not an Array"
 
--- arraySortInPlaceBy / arraySortBy : the comparator arrives as a Value CLOSURE,
--- so it has to be applied through `apply` (effect `<Mut | e>`) and CANNOT be
--- handed to the PURE host `arraySortInPlaceBy` extern — same reason
--- pArrayMakeWith rebuilds via a list instead of delegating.  So sort the element
--- list with the effect-polymorphic stdlib `sortBy` and write it back.
-valueToOrdering : Value e -> Ordering
-valueToOrdering (VCon "Lt" []) = Lt
-valueToOrdering (VCon "Eq" []) = Eq
-valueToOrdering (VCon "Gt" []) = Gt
-valueToOrdering _ = panic "sort comparator: did not return an Ordering"
-
-sortValues : Value e -> List (Value e) -> <Mut | e> List (Value e)
-sortValues cmp vs = sortBy (a b => valueToOrdering (apply (apply cmp a) b)) vs
-
-writeBackFrom : Array (Value e) -> Int -> List (Value e) -> <Mut | e> Unit
-writeBackFrom _ _ [] = ()
-writeBackFrom a i (v::rest) =
-  let _ = arraySetUnsafe i v a
-  writeBackFrom a (i + 1) rest
-
-pArraySortInPlaceBy : Value e -> Value e -> <Mut | e> Value e
-pArraySortInPlaceBy cmp (VArray a) =
-  let _ = writeBackFrom a 0 (sortValues cmp (arrayToListG a))
-  VUnit
-pArraySortInPlaceBy _ _ = panic "arraySortInPlaceBy: not an Array"
-
-pArraySortBy : Value e -> Value e -> <Mut | e> Value e
-pArraySortBy cmp (VArray a) =
-  VArray (arrayFromList (sortValues cmp (arrayToListG a)))
-pArraySortBy _ _ = panic "arraySortBy: not an Array"
-
 -- arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
 -- Copies len elements from src[srcOff..] into dst[dstOff..] in place.
 -- Mirrors OCaml Array.blit semantics (memmove; handles overlapping regions).
@@ -2490,8 +2452,45 @@ buildModInfos globalCells exportsMap ((mid, decls)::rest) =
   let localCells = map (n => (n, Ref VUnit)) (map fst grps ++ map fst modCtors)
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
-  let exports = localCells ++ pubReexports exportsMap decls
+  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports exportsMap decls
   ModInfo mid decls grps localCells menv :: buildModInfos globalCells ((mid, exports)::exportsMap) rest
+
+-- IMPORT ALIASING: a module must ALSO export the interface/impl METHODS it declares.
+--
+-- Methods are not in `localCells`: they are coalesced into ONE GLOBAL cell per bare name
+-- (evalModules' `globalNames`/`coalesceImpls`), because impl dispatch is global-by-name.
+-- So they were absent from every module's `exports` — the very list resolveMembers /
+-- importFrameOf consult to bind an import.  That gap was INVISIBLE while every import
+-- kept its origin name: the reference simply fell through to the global frame unchanged.
+-- The moment a local name diverges from the origin — either alias form — nothing bound
+-- it anywhere, and `import shapes.{area as computeArea}` died with "unbound identifier".
+--
+-- The exported entry is the SAME global cell, never a copy: that cell holds the
+-- coalesced dispatcher, so an alias is a second name for one dispatcher and impl
+-- coalescing is untouched.
+export methodCellsOf : List (String, Ref (Value e)) -> List Decl -> List (String, Ref (Value e))
+methodCellsOf globalCells decls =
+  flatMap (methodCell globalCells) (moduleMethodNames decls)
+
+methodCell : List (String, Ref (Value e)) -> String -> List (String, Ref (Value e))
+methodCell globalCells n = match lookupAssoc n globalCells
+  Some cell => [(n, cell)]
+  None => []
+
+-- every interface/impl method name THIS module declares (unlike implMethodNames, an
+-- interface method with NO default counts — it still has a global dispatch cell, put
+-- there by whichever module impls it).
+moduleMethodNames : List Decl -> List String
+moduleMethodNames decls = dedup (flatMap moduleMethodNamesOf decls)
+
+moduleMethodNamesOf : Decl -> List String
+moduleMethodNamesOf (DImpl { methods, ... }) = map implMethodName methods
+moduleMethodNamesOf (DInterface { methods, ... }) = map ifaceMethodNmE methods
+moduleMethodNamesOf (DAttrib _ d) = moduleMethodNamesOf d
+moduleMethodNamesOf _ = []
+
+ifaceMethodNmE : IfaceMethod -> String
+ifaceMethodNmE (IfaceMethod n _ _) = n
 
 -- pass 2: install each module's funDef groups into its own cells (its env)
 installModGroups : List (ModInfo (Value e)) -> <Mut | e> Unit

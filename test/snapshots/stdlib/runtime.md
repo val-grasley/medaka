@@ -1,5 +1,5 @@
 # META
-source_lines=233
+source_lines=231
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -190,10 +190,8 @@ extern arraySetUnsafe : Int -> a -> Array a -> <Mut> Unit
 extern arrayCopy : Array a -> Array a
 extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
 extern arrayFill : a -> Array a -> <Mut> Unit
-extern arraySortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit
--- Pure wrappers.  Encapsulate "alloc + locally mutate + return fresh" so
--- the <Mut> doesn't leak into pure callers (Medaka has no effect masking).
-extern arraySortBy : (a -> a -> Ordering) -> Array a -> Array a
+-- Pure wrapper.  Encapsulates "alloc + locally mutate + return fresh" so the
+-- <Mut> doesn't leak into pure callers (Medaka has no effect masking).
 extern arrayFromList : List a -> Array a
 
 -- String/Char kernel (Phase 75).  String is a sequence of Unicode codepoints,
@@ -346,8 +344,6 @@ extern stringToLower : String -> String
 (DExtern false "arrayCopy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
 (DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
-(DExtern false "arraySortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyCon "Ordering"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
-(DExtern false "arraySortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyCon "Ordering"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayFromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "stringToChars" (TyFun (TyCon "String") (TyApp (TyCon "Array") (TyCon "Char"))))
 (DExtern false "stringFromChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyCon "String")))
@@ -481,8 +477,6 @@ extern stringToLower : String -> String
 (DExtern false "arrayCopy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
 (DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
-(DExtern false "arraySortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyCon "Ordering"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
-(DExtern false "arraySortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyCon "Ordering"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayFromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "stringToChars" (TyFun (TyCon "String") (TyApp (TyCon "Array") (TyCon "Char"))))
 (DExtern false "stringFromChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyCon "String")))

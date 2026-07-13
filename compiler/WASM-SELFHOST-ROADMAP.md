@@ -157,8 +157,11 @@ wrapper emitted → ref-to-undefined). Gate: `test/wasm/assemble_check_main.sh`.
   dispatch-hash `i32.const`s (deltas 2^30; `wasm_emit.mdk:3028` djb2 `acc*33` overflows i32 in the wasm
   runtime, i64 native). Self-consistent (emitted program runs correctly); true byte-identity-to-native needs
   the hash-width fix. Deferred-latent: `List_andThen`/`flatMap` (~3653-deep, didn't surface).
-- **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it; see
-  `TRMC-DESIGN.md` §"Phase 3 … DEFERRED" + WIP `compiler/bprime-llvm-wip.patch`.
+- **LLVM (b′) port DEFERRED** (2026-06-22) — musttail-arity ISA wall + native doesn't need it.
+  **RESOLVED 2026-07-13 (TMC-parity arc):** the musttail wall was moot — LLVM inlines the whole
+  group into the root's single define (detection v4 proves the root is the sole external entry);
+  detection now SHARED in `backend/trmc_analysis.mdk`; both backends TMC identical fn sets, gated
+  by `test/diff_compiler_tmc_parity.sh`. See `TRMC-DESIGN.md` §Phase 3 (the WIP patch was deleted).
 
 **SEED: ✅ RE-MINTED (`11f2229`), `bootstrap_from_seed` PASS.** (Was stale from the step-8
 in-graph `core_ir_lower.mdk` change; re-minted at the census-0 checkpoint.)

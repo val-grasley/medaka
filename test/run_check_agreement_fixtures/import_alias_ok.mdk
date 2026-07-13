@@ -1,0 +1,7 @@
+-- Import aliasing must be ACCEPTED identically by check, run and build.  Aliasing was
+-- the reverse of the usual P0-1 gap: `check` was GREEN while `run`/`build` DIED, because
+-- the alias bound a name that only typecheck's import seed knew about.
+import list as L
+import list.{reverse as rev}
+
+main = println (L.zip (rev [1, 2, 3]) [4, 5, 6])

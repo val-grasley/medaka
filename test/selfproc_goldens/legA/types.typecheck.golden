@@ -16,6 +16,9 @@ aliasDictNamesOfDecl : List String -> List (String, List Decl) -> Decl -> List S
 aliasDictNamesOfPath : List String -> List (String, List Decl) -> String -> UsePath -> List String
 aliasDictNamesOfUnit : List String -> List (String, List Decl) -> List Decl -> List String
 aliasEntriesFor : String -> UsePath -> List ((String, String), List a) -> List (String, List a)
+aliasMethodRenames : List (String, List String) -> List Decl -> List (String, String)
+aliasMethodRenamesOf : List (String, List String) -> Decl -> List (String, String)
+aliasMethodRenamesOfPath : List String -> UsePath -> List (String, String)
 aliasSchemeEntry : String -> String -> (String, Scheme) -> (String, Scheme)
 aliasSchemes : String -> String -> List (String, Scheme) -> List (String, Scheme)
 aliasTableRef : Ref (List (String, (List String, Ty)))
@@ -268,9 +271,13 @@ currentMethodMismatch : Ref (Option String)
 currentSeedSchemes : Unit -> <Mut> List (String, Scheme)
 cyclicSuperIfaceMsg : List String -> String
 dataParamKindsRef : Ref (List (String, List Kind))
+deAliasMethodImports : List (String, List String) -> Decl -> List Decl
+deAliasMethodMember : List String -> UseMember -> UseMember
 declBodyVars : String -> List Decl -> List String
 declBodyVarsOf : String -> Decl -> List String
 declIfaceMethods : Decl -> <Mut> List (String, Scheme)
+declMethodNames : List Decl -> List String
+declMethodNamesOf : Decl -> List String
 declTopFnNames : List Decl -> List String
 declaredEffects : Ty -> List Atom
 declaredPairOne : (String, Mono) -> <Mut> List (String, Int)
@@ -460,6 +467,7 @@ groupRefs : List (List Pat, Expr) -> List String
 guardDictSites : Guard -> List (Ref (List Route))
 guardEVars : Guard -> List String
 guardSites : Guard -> List (Ref Route)
+hadMatchWarnings : Unit -> <Mut> Bool
 hadTypeErrors : Unit -> <Mut> Bool
 hasAssocSL2 : String -> List (String, List Int) -> Bool
 hasDupI : List Int -> Bool
@@ -717,6 +725,7 @@ memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> Lis
 memberBinding : UseMember -> (String, String)
 memberClauseIsValue : (List Pat, Expr) -> Bool
 memberDictName : List String -> UseMember -> List String
+memberMethodRename : List String -> UseMember -> List (String, String)
 memberPeelSource : List (String, Ty) -> String -> Mono -> Option Mono
 memberSigIsFun : List (String, Ty) -> String -> Mono -> Bool
 memberSuffix : String -> String
@@ -735,11 +744,13 @@ methodDispatchIdx : String -> <Mut> Option Int
 methodDispatchIdxRef : Ref (List (String, Int))
 methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
 methodLevelConstraintVarNames : List String -> Ty -> List String
+methodMembersOf : List String -> Loc -> List UseMember
 methodSchemes : List String -> List IfaceMethod -> <Mut> List (String, Scheme)
 methodSchemesPure : List IfaceMethod -> <Mut> List (String, Scheme)
 methodShadowNamesRef : Ref (List String)
 methodSiteFns : Ref (Map String (List Mono))
 methodTyOf : String -> List IfaceMethod -> Option Ty
+midMethodNames : (String, List Decl) -> (String, List String)
 mintParamReprs : List Kind -> <Mut> List Mono
 missingConstraintMsg : String -> String -> String -> String
 missingFieldMsg : String -> String -> String
@@ -973,6 +984,9 @@ registerVariants : TcEnv -> String -> List String -> List Variant -> <Mut> TcEnv
 registersElementDict : String -> List String -> <Mut> Bool
 rejectCyclicAliases : Unit -> <Mut> Unit
 removeAllS : List String -> List String -> List String
+renameAliasedMethods : List Decl -> List (String, List Decl) -> List (String, List Decl)
+renameAliasedMethodsIn : List (String, List String) -> (String, List Decl) -> (String, List Decl)
+renameMethodVar : List (String, String) -> Expr -> Expr
 renderAtom : Atom -> String
 renderAtoms : List Atom -> String
 renderAxis : (String, Param) -> String

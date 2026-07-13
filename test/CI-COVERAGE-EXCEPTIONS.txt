@@ -1,0 +1,41 @@
+# CI-COVERAGE-EXCEPTIONS.txt — gates deliberately NOT run in CI, each with a reason.
+#
+# diff_compiler_ci_shard_coverage.sh requires EVERY gate script to be either
+#   (a) matched by a shard `pattern:` in .github/workflows/ci.yml, or
+#   (b) named literally by some step in that workflow, or
+#   (c) listed HERE, with a reason.
+#
+# This file is a LEDGER, not a skip-list. The distinction is the whole point:
+# a skip-list rots silently, because nothing ever revisits it. A ledger entry is
+# PRINTED BY THE GATE ON EVERY RUN, names the reason, and names the task that
+# retires it — so it is impossible to forget and expensive to leave lying around.
+#
+# Adding a line here is a deliberate, reviewable act. "It's broken so I excluded
+# it" is only acceptable with a task number next to it and an owner fixing it.
+#
+# Format:  <gate-stem>  <reason>
+
+# ── wasm backend (4 gates, 153 fixtures) ──────────────────────────────────────
+# The WasmGC backend — one of Medaka's two production backends — had ZERO CI
+# coverage until 2026-07-13. Not one job touched test/wasm/. That is precisely why
+# 4 real codegen failures sat unnoticed in it:
+#
+#     w7_array_index / w7_array_slice / w7_array_oob / w7_range_array
+#         E-PANIC: wasm_emit gap — ref-mode: unbound variable 'index'
+#     disp_hof_shadows_method  (typed gate)
+#
+# `.[i]` sugar desugars to the Index interface's `index` method, and wasm_emit's
+# ref-mode path cannot resolve interface methods. The LLVM backend compiles the
+# same fixtures correctly, so this is wasm-only.
+#
+# These are EXCLUDED ONLY UNTIL THAT FIX LANDS (task T25). They are excluded
+# because they are RED, and a red gate wired into CI would just get ignored — the
+# worst outcome. The moment T25 lands, DELETE these four lines and add the wasm job
+# to .github/workflows/ci.yml. The gate below will then police them forever.
+#
+# Note the wasm backend is NOT entirely unwatched in the meantime:
+# diff_compiler_engines (tier 2: native == wasm) IS in CI and does cover a slice of it.
+diff_wasm          RED: 4 ref-mode failures — T25. Delete this line when T25 lands.
+diff_wasm_typed    RED: disp_hof_shadows_method — T25. Delete this line when T25 lands.
+diff_wasm_modules  gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
+diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 wasm job.

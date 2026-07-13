@@ -16,7 +16,12 @@
 -- CLI" and exits 1.
 
 import tools.check.{runCheck, checkHasErrors, runCheckModules}
-import tools.snapshot.{runSnapshotWorker, runSnapshotSupervisor, parseStages}
+import tools.snapshot.{
+  runSnapshotWorker,
+  runSnapshotSupervisor,
+  parseStages,
+  SnapMode(..),
+}
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{
@@ -33,10 +38,12 @@ import driver.build_cmd.{
 import support.util.{
   reverseL,
   joinNl,
+  joinWith,
   splitNl,
   startsWith,
   endsWith,
   anyList,
+  filterList,
   contains,
   sortUniqS,
   schemeLineName,
@@ -188,7 +195,7 @@ usage _ = putStrLn (stringConcat
     "  medaka bench [file.mdk]   Run bench declarations\n",
     "  medaka doc [file.mdk]     Generate Markdown documentation\n",
     "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n",
-    "  medaka snapshot [--check|--new] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n",
+    "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n",
     "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
     "  medaka new <name>         Scaffold a new project directory\n",
     "  medaka lsp                Run the language server over stdio\n",
@@ -1471,7 +1478,7 @@ lintTargets (x::rest)
   | otherwise = x :: lintTargets rest
 
 -- ── snapshot ──────────────────────────────────────────────────────────────
--- `medaka snapshot [--check | --new] [--out <dir>] [--isolate] <paths...>`
+-- `medaka snapshot [--check | --new | --bless] [--out <dir>] [--isolate] <paths...>`
 --
 -- Directory targets are expanded by the SAME `expandLintTarget`/`collectMdkFiles`
 -- pair `medaka lint` and `medaka fmt` already use — dir-vs-file discrimination,
@@ -1482,8 +1489,29 @@ lintTargets (x::rest)
 -- process per fixture and is a DEBUG aid only — the steady-state answer to a known
 -- crasher is `isolate=true` in its `# META`.
 --
--- R0 has NO `--bless` on purpose: `--new` creates a missing snapshot and refuses to
--- touch an existing one, so no regression can be silently re-blessed.
+-- The three modes are mutually exclusive and one is REQUIRED (an unqualified `medaka
+-- snapshot <paths>` exits): "what do you want me to do with these files" has no safe
+-- default when one of the answers is "rewrite the expectations".
+--
+--   --check  compare; write nothing.                                    (the gate)
+--   --new    create a MISSING snapshot; never touch an existing one.
+--   --bless  rewrite an EXISTING snapshot; never create one; and REFUSE outright if any
+--            differing section carries diagnostic prose.  The three locks are argued in
+--            tools/snapshot.mdk's header block; the SCOPE lock is enforced right here.
+--
+-- SCOPE (lock 1).  `--bless` requires explicit targets, and `assertBlessIsScoped` below
+-- is the enforcement.  Yes, `files == []` already exits on the usage line — but that is
+-- an accident of "no targets means nothing to do", and a later refactor that gave the
+-- command a default corpus would silently turn `medaka snapshot --bless` into
+-- bless-the-world.  OCaml's promote has a scope and deliberately no `make all`; naming
+-- what you approve is the ONLY friction that survives with no CI in the loop, so it gets
+-- its own guard with its own reason attached, not a side effect of another check.
+--
+-- Targets are FIXTURES (`.mdk`), never snapshot `.md` files — in either direction, for
+-- every mode.  `--out` flattens fixtures from five different roots into one snapshot
+-- dir by basename, so the `.md` -> fixture map is not invertible and a `.md` target
+-- could not be resolved back to the source it must re-render.
+--
 -- A snapshot target that does not exist is a HARNESS error, not a fixture outcome.
 --
 -- Without this guard, an unreadable path was RENDERED as a snapshot whose entire
@@ -1505,27 +1533,56 @@ assertSnapshotTargetsExist files =
     let _ = ePutStrLn (joinNl (map (m => "  \{m}") missing))
     exit 1
 
+-- Lock 1, on its own, with its own message.  A `--bless` naming nothing is refused BEFORE
+-- target expansion, so the refusal cannot be confused with "your glob matched no files".
+assertBlessIsScoped : List String -> List String -> <IO, Mut, Panic> Unit
+assertBlessIsScoped argv targets =
+  if not (hasFlag "--bless" argv) || targets != [] then ()
+  else
+    let _ = ePutStrLn "medaka snapshot: --bless requires explicit targets — there is no whole-suite bless."
+    let _ = ePutStrLn "  Name what you are approving, e.g.:"
+    let _ = ePutStrLn "    medaka snapshot --bless --out test/snapshots/compiler compiler/frontend/lexer.mdk"
+    let _ = ePutStrLn "  (or, family-aware:  sh test/diff_compiler_snapshot_frontend.sh --bless compiler/frontend/lexer.mdk)"
+    exit 1
+
 runSnapshotCmd : List String -> <IO, Mut, Panic> Unit
 runSnapshotCmd argv =
   let root = match snapFlagValue "--root" argv
     Some r => r
     None => envOr "MEDAKA_ROOT" defaultMedakaRoot
   let sel = snapshotStages argv
-  let files = flatMap expandLintTarget (snapshotTargets argv)
+  let targets = snapshotTargets argv
+  let _ = assertBlessIsScoped argv targets
+  let files = flatMap expandLintTarget targets
   let _ = assertSnapshotTargetsExist files
   if files == [] then
-    let _ = ePutStrLn "usage: medaka snapshot [--check|--new] [--out <dir>] [--stages <a,b,…>] <paths...>"
+    let _ = ePutStrLn "usage: medaka snapshot [--check|--new|--bless] [--out <dir>] [--stages <a,b,…>] <paths...>"
     exit 1
   else
     if hasFlag "--worker" argv then runSnapshotWorker root sel files
-    else
-      let check = hasFlag "--check" argv
-      if not check && not (hasFlag "--new" argv) then
-        let _ = ePutStrLn "medaka snapshot: pass --check (verify) or --new (create missing snapshots)"
+    else match snapshotMode argv
+      None =>
+        let _ = ePutStrLn "medaka snapshot: pass --check (verify), --new (create missing snapshots) or --bless (rewrite existing ones)"
         exit 1
-      else
-        let ok = runSnapshotSupervisor root check (hasFlag "--isolate" argv) (snapFlagValue "--out" argv) sel files
+      Some mode =>
+        let ok = runSnapshotSupervisor root mode (hasFlag "--isolate" argv) (snapFlagValue "--out" argv) sel files
         if ok then () else exit 1
+
+-- Exactly one mode, and it is mandatory.  Two modes at once is a hard error rather than
+-- a precedence rule: `--check --bless` is a person who does not know which one they
+-- meant, and guessing for them is how a verify run turns into a rewrite run.
+snapshotMode : List String -> <IO, Mut, Panic> Option SnapMode
+snapshotMode argv =
+  let modes = filterList (f => hasFlag f argv) ["--check", "--new", "--bless"]
+  match modes
+    ["--check"] => Some SnapCheck
+    ["--new"] => Some SnapNew
+    ["--bless"] => Some SnapBless
+    [] => None
+    many =>
+      let _ = ePutStrLn "medaka snapshot: \{joinWith " " many} are mutually exclusive — pick one."
+      let _ = exit 1
+      None
 
 -- `--stages parse,desugar,mark` restricts which sections a fixture renders (see
 -- tools/snapshot.mdk).  Absent == every stage.  A typo'd stage name EXITS rather than

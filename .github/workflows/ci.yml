@@ -33,6 +33,42 @@ name: CI
 # NOTE: this repo previously used a self-hosted runner on the dev box. It was
 # removed before going public — a fork PR on a PUBLIC repo with a self-hosted runner
 # is arbitrary code execution on the runner host. Do not reintroduce one.
+#
+# ── Caching (added 2026-07-13) — read this before touching a `key:` below ──────
+#
+# `./medaka` + `./medaka_emitter` (the "Build medaka" step) and each shard's
+# `test/bin/*` oracles are cached across runs, keyed on a hash of everything those
+# artifacts are built FROM. This is the exact bug class the testing arc was
+# hardened against, one level up — build_oracles.sh's OWN staleness check once
+# scanned only `compiler/**.mdk` and missed `stdlib/`/`runtime/`, so every oracle
+# went silently stale (see AGENTS.md). Any cache key here must be held to the same
+# standard: provably cover everything the cached artifact depends on, or don't
+# cache it.
+#
+# The key hashes: `compiler/**` (source + entries + the seed — see below),
+# `stdlib/**` (every oracle and ./medaka link the whole stdlib), `runtime/**` (the
+# C runtime linked into every binary), and the build SCRIPTS themselves
+# (test/build_native_medaka.sh, test/bootstrap_from_seed.sh, test/build_oracles.sh,
+# Makefile) — a fix to HOW we build must bust the cache exactly as much as a
+# change to WHAT we build. `compiler/**` also sweeps in
+# compiler/seed/emitter.ll.gz, which the built binary does NOT actually depend on
+# (self-hosting is a fixpoint: ./medaka's bytes are a pure function of current
+# source, cold- or warm-bootstrapped) — so a seed re-mint busts the cache one
+# build more than strictly necessary. That's the safe direction to be wrong in:
+# the alternative (hand-picking `*.mdk`/`*.c`/`*.h` extensions) is the same
+# one-line mistake that caused the original bug, so the wider, provably-complete
+# glob wins even at the cost of a little hit-rate.
+#
+# Every key below is an EXACT match — no `restore-keys` fallback anywhere. A
+# partial/nearest-match restore is precisely the "close enough" staleness this
+# suite keeps getting bitten by. A MISS always falls straight through to the
+# untouched cold-build step; it is NEVER treated as a pass.
+#
+# The COLD bootstrap-from-seed path is never fully removed from the workflow:
+# `seed-health` (below) is NOT cached and runs it on every single push — that is
+# the trust anchor, and this caching must never be the only thing proving the seed
+# still works. The `gates`/`inlang` jobs may skip their OWN cold bootstrap on a
+# cache hit, but the anchor job always re-proves it independently.
 
 on:
   push:
@@ -76,9 +112,15 @@ jobs:
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project'"
           - name: eval
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*'"
+            # The 4 bootstrap_* stage gates (each native pipeline stage == the interpreter's
+            # output) also ran in NO CI job until 2026-07-13 — found by the coverage gate
+            # once it was taught to look past the diff_compiler_* family. All 4 green, ~2s.
+            #
+            # Named individually, NOT globbed as 'bootstrap_*': that glob also catches
+            # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
-            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute'"
+            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity'"
           - name: tools
             pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage'"
     name: gates (${{ matrix.name }})
@@ -90,15 +132,65 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
 
+      # See the "Caching" note at the top of this file for the completeness
+      # argument. Exact-match key only — no restore-keys.
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+
       # A fresh checkout has no ./medaka_emitter, so this is the COLD path: it
       # bootstraps from the checked-in seed (compiler/seed/emitter.ll.gz). Every
       # shard therefore re-proves the trust anchor. If the seed ever goes stale,
       # this is what catches it — before anything downstream can be trusted. 80s.
+      #
+      # Skipped ONLY on an exact cache hit above. The `seed-health` job (never
+      # cached — see the top-of-file note) still runs this same cold path on
+      # every push regardless, so the trust anchor is proven at least once per
+      # run even when every gates/inlang job skips it here.
       - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
         run: make medaka
 
+      # Per-shard: this shard's oracle set, keyed the same way as the binary
+      # above (plus test/build_oracles.sh itself — the script that builds them)
+      # AND the shard's own `pattern`.
+      #
+      # The pattern is load-bearing in the key and it is easy to miss. WHICH oracles a
+      # shard builds is derived FROM the pattern (`build_oracles.sh --for <pattern>`),
+      # so changing the pattern changes the contents of test/bin. Without the pattern in
+      # the key, a `test/bin` cached before the pattern changed would restore, the build
+      # step would be SKIPPED, and the newly-needed oracles would simply be ABSENT.
+      #
+      # This is not hypothetical — it went live the moment the eval shard gained the
+      # bootstrap_* gates. It fails loudly rather than silently (run_gates.sh reclassifies
+      # a missing oracle as FAIL*, phantom skip, not SKIP — see T1), so it could never
+      # have passed-while-proving-nothing. But it would have read as a baffling CI failure
+      # on an unrelated commit.
+      #
+      # We hash the WHOLE ci.yml rather than the pattern string: a pattern contains quotes,
+      # spaces and `*`, none of which are legal in a cache key, and Actions has no
+      # hash-a-string function. So a comment-only edit to this file also busts the oracle
+      # cache. That over-invalidates, and it is deliberately the safe direction to be wrong
+      # in — the same trade the `compiler/**` glob above makes, for the same reason.
+      - name: Restore cached oracles for this shard
+        id: oracle-cache
+        uses: actions/cache@v4
+        with:
+          path: test/bin
+          key: oracles-${{ matrix.name }}-v2-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
       # Only the oracles THIS shard's gates actually read. See the header.
+      # Skipped only on an exact cache hit above — a miss always rebuilds with
+      # FORCE=1, so a restored oracle is never trusted on mtime alone (a cache
+      # restore sets mtimes to extraction time, not original-build time, which
+      # would otherwise defeat build_oracles.sh's own staleness check).
       - name: Build the oracles this shard needs
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
         run: FORCE=1 sh test/build_oracles.sh --for ${{ matrix.pattern }}
 
       # run_gates.sh hard-fails when zero gates matched, and reclassifies a
@@ -152,6 +244,85 @@ jobs:
   # demanding it forced a re-mint on every emitter change — 41 re-mints, 86 MB, 40%
   # of the repo's entire git history. So here drift WARNS and a seed that can no
   # longer do its job FAILS. Re-mint at checkpoints (`make bootstrap` is strict).
+  # ── Compiler soundness: the two gates that were documented but never enforced ──
+  #
+  # AGENTS.md has always said: for a compiler `.mdk` change, run the self-compile
+  # fixpoint AND typecheck_compiler_source.sh. Neither ran in CI. They ran when an
+  # agent remembered — which is a habit, not a gate.
+  #
+  # It cost us: `snapshot.mdk` declared `export data SnapMode` (which exports a type
+  # ABSTRACTLY), medaka_cli.mdk imported `SnapMode(..)`, and every SnapCheck/SnapNew/
+  # SnapBless in the CLI was an UNBOUND VARIABLE. It shipped to main and every gate
+  # stayed green — because the emitter's ctor table is global, so the ill-typed source
+  # still emitted a working binary, and `make medaka` does not gate on hadTypeErrors().
+  # Fixed in a10c2705. The bug is not that it broke; it is that it COULDN'T be seen.
+  #
+  #   typecheck  — is the compiler source well-typed?      (the build does NOT ask)
+  #   fixpoint   — does the emitter reproduce itself?      (C3a/C3b byte-identical)
+  #
+  # These two ask questions no other job asks. `gates` runs the compiler; it never
+  # typechecks it. `seed-health` proves the seed WORKS; it never proves the current
+  # source is well-typed, nor that emission has reached a fixpoint.
+  soundness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+      - name: Build medaka (cold bootstrap from seed)
+        run: make medaka
+
+      # typecheck_compiler_source.sh exits 2 (SKIP) when its oracle is absent. In CI
+      # a skip here is INDISTINGUISHABLE FROM A PASS — the precise bug this whole job
+      # exists to close — so build the oracle first and assert on the PASS line, not
+      # on the exit status.
+      - name: Build the typecheck oracle
+        run: FORCE=1 sh test/build_oracles.sh --build-one diagnostics_project_main
+
+      - name: Compiler source must be well-typed
+        run: |
+          bash test/typecheck_compiler_source.sh 2>&1 | tee /tmp/tc.log
+          if ! grep -q 'PASS: compiler source is type-clean' /tmp/tc.log; then
+            echo "::error::The compiler source is ILL-TYPED (or the gate skipped). The build does not gate on this — that is why the gate exists."
+            exit 1
+          fi
+
+      # The script asserts C3a AND C3b (its exit status is `c3a && c3b`), which is the
+      # right bar for a checkpoint re-mint but the WRONG bar for CI. They answer two
+      # different questions, and the SEED POLICY (test/bootstrap_from_seed.sh, and the
+      # seed-health job below) is explicit that only one of them may block:
+      #
+      #   C3b — IR1 == IR2. The compiled compiler reproduces its own output. This is
+      #         SOUNDNESS, it is independent of the seed, and it must HARD FAIL.
+      #   C3a — IR1 == the seed-bootstrapped reference. This is a DRIFT DETECTOR: it
+      #         says the checked-in seed is byte-CURRENT, not that anything is broken.
+      #
+      # Blocking on C3a would turn CI red on every emitter change until someone re-mints
+      # the seed — which is precisely the churn that produced 41 re-mints / 86 MB / 40%
+      # of this repo's git history before the policy was fixed. So: C3b errors, C3a warns.
+      #
+      # Do not "simplify" this to the script's exit status. (Also note `| tee` would mask
+      # that status anyway — assert on the verdict lines, as seed-health does.)
+      - name: Emitter must reproduce itself (C3b fixpoint; C3a drift only warns)
+        run: |
+          bash test/selfcompile_fixpoint.sh 2>&1 | tee /tmp/fp.log || true
+          # A skip is not a pass. We just installed clang+libgc, so a toolchain skip here
+          # means something is wrong, not absent.
+          if grep -q 'skipping spike' /tmp/fp.log; then
+            echo "::error::The fixpoint gate SKIPPED on a runner with a full toolchain. A skip is not a pass."
+            exit 1
+          fi
+          if ! grep -q 'C3b PASS' /tmp/fp.log; then
+            echo "::error::NO FIXPOINT: the compiled compiler does not reproduce its own output (C3b). This is a miscompile in the emitter."
+            exit 1
+          fi
+          if grep -q 'C3a FAIL' /tmp/fp.log; then
+            echo "::warning::Seed has DRIFTED from current emission (it still works, and the compiler still reaches a fixpoint). Re-mint at the next checkpoint: sh test/refresh_seed.sh"
+          fi
+
   seed-health:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -185,7 +356,17 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
+      # Same cache as the `gates` job — see the top-of-file "Caching" note.
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
       - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
         run: make medaka
       - name: Doctests, properties, and test decls
         run: make test
