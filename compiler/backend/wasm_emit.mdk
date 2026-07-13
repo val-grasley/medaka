@@ -1193,7 +1193,7 @@ scanExprW7 (CIndex a i) =
 scanExprW7 (CSlice a lo hi _) = let _ = setRef useArrayRef True in let _ = scanExprW7 a in let _ = scanExprW7 lo in scanExprW7 hi
 scanExprW7 (CRecord _ fields) = forEachU (f => scanExprW7 (cFieldExpr f)) fields
 scanExprW7 (CFieldAccess ex _ _) = scanExprW7 ex
-scanExprW7 (CRecordUpdate base fields) =
+scanExprW7 (CRecordUpdate _ base fields) =
   let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
 scanExprW7 (CVariantUpdate _ base fields) =
   let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
@@ -1404,7 +1404,7 @@ scanRecFields (CRecord name fields) =
   (name, map cFieldName fields) ::
     flatMap (f => scanRecFields (cFieldExpr f)) fields
 scanRecFields (CFieldAccess ex _ _) = scanRecFields ex
-scanRecFields (CRecordUpdate base fields) = scanRecFields base
+scanRecFields (CRecordUpdate _ base fields) = scanRecFields base
   ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
 scanRecFields (CVariantUpdate _ base fields) = scanRecFields base
   ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
@@ -1549,7 +1549,7 @@ scanExprValueUses fnNames fnArs ctorArs (CRecord _ fs) =
   flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
 scanExprValueUses fnNames fnArs ctorArs (CFieldAccess r _ _) =
   scanExprValueUses fnNames fnArs ctorArs r
-scanExprValueUses fnNames fnArs ctorArs (CRecordUpdate r fs) = scanExprValueUses fnNames fnArs ctorArs r
+scanExprValueUses fnNames fnArs ctorArs (CRecordUpdate _ r fs) = scanExprValueUses fnNames fnArs ctorArs r
   ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
 scanExprValueUses fnNames fnArs ctorArs (CVariantUpdate _ r fs) = scanExprValueUses fnNames fnArs ctorArs r
   ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
@@ -3897,10 +3897,10 @@ emitRefExpr prog env d (CSlice a lo hi incl) =
   emitSliceRef prog env d a lo hi incl
 emitRefExpr prog env d (CRecord name fields) =
   emitRecordRef prog env d name fields
-emitRefExpr prog env d (CFieldAccess ex label _) =
-  emitFieldAccessRef prog env d ex label
-emitRefExpr prog env d (CRecordUpdate base fields) =
-  emitRecordUpdateRef prog env d base fields
+emitRefExpr prog env d (CFieldAccess ex label recName) =
+  emitFieldAccessRef prog env d ex label recName
+emitRefExpr prog env d (CRecordUpdate recName base fields) =
+  emitRecordUpdateRef prog env d recName base fields
 emitRefExpr prog env d (CVariantUpdate con base fields) =
   emitVariantUpdateRef prog env d con base fields
 emitRefExpr prog env d other =
@@ -4400,9 +4400,10 @@ cexprIsFloat prog env (CApp f a) = match appHead (CApp f a)
     && (contains fn ["intToFloat", "randomFloat"] || fnReturnsFloat fn)
   _ => False
 -- W-SQLITE-4 stage 2: a record field access whose field is declared Float.
--- Look up the record ctor that owns `label` (via recFieldsRef) and check if
--- that field's 0-based index is in ctorFloatFieldsRef.
-cexprIsFloat prog env (CFieldAccess _ label _) = match findRecByField recFieldsRef.value label
+-- Look up the record ctor that owns `label` (by the stamped record name when
+-- available, else by label) and check if that field's 0-based index is in
+-- ctorFloatFieldsRef.
+cexprIsFloat prog env (CFieldAccess _ label recName) = match recByName recFieldsRef.value recName label
   Some (ctor, labels) =>
     isFloatCtorField ctor (orZeroIdx (indexOfL label labels))
   None => False
@@ -6420,7 +6421,7 @@ freeVarsExpr bound (CList es) = flatMap (freeVarsExpr bound) es
 freeVarsExpr bound (CArray es) = flatMap (freeVarsExpr bound) es
 freeVarsExpr bound (CRecord _ fields) = flatMap (freeVarsField bound) fields
 freeVarsExpr bound (CFieldAccess e _ _) = freeVarsExpr bound e
-freeVarsExpr bound (CRecordUpdate e fields) = freeVarsExpr bound e
+freeVarsExpr bound (CRecordUpdate _ e fields) = freeVarsExpr bound e
   ++ flatMap (freeVarsField bound) fields
 freeVarsExpr bound (CVariantUpdate _ e fields) = freeVarsExpr bound e
   ++ flatMap (freeVarsField bound) fields
@@ -6641,9 +6642,9 @@ emitRecordRef prog env d name fields =
 -- field access `r.label`: cast to the record's ctor struct and struct.get the field
 -- at index (1 + its declared position).  The record ctor + its field order come from
 -- the recFieldsRef table built in emitProgram.
-emitFieldAccessRef : Prog -> List String -> Int -> CExpr -> String -> <Mut> List String
-emitFieldAccessRef prog env d ex label =
-  match findRecByField recFieldsRef.value label
+emitFieldAccessRef : Prog -> List String -> Int -> CExpr -> String -> String -> <Mut> List String
+emitFieldAccessRef prog env d ex label recName =
+  match recByName recFieldsRef.value recName label
     Some (ctor, labels) =>
       let idx = orZeroIdx (indexOfL label labels)
       emitRefExpr prog env d ex
@@ -6658,12 +6659,31 @@ emitFieldAccessRef prog env d ex label =
 
 -- functional update `{ base | f = v … }`: copy the base's struct, overriding the
 -- named fields.  The record type is recovered from the first update field's label.
-emitRecordUpdateRef : Prog -> List String -> Int -> CExpr -> List CField -> <Mut> List String
-emitRecordUpdateRef prog env d base fields = match firstFieldLabel fields
+emitRecordUpdateRef : Prog -> List String -> Int -> String -> CExpr -> List CField -> <Mut> List String
+emitRecordUpdateRef prog env d recName base fields = match firstFieldLabel fields
   None => gapL "ref-mode: empty record update"
-  Some k0 => match findRecByField recFieldsRef.value k0
+  Some k0 => match recByName recFieldsRef.value recName k0
     Some (ctor, labels) => emitUpdateCopy prog env d ctor labels base fields
     None => gapL ("ref-mode: CRecordUpdate on unknown field '" ++ k0 ++ "'")
+
+-- Resolve a record by the typecheck-stamped record name (carried on
+-- CFieldAccess / CRecordUpdate) when it is usable — non-empty, in the
+-- field-order table, and actually owning `label` — else fall back to the
+-- label-only search.  Two records sharing a field name at DIFFERENT slot indices
+-- are indistinguishable from the label alone, so the label-only guess picked the
+-- wrong ctor: a `ref.cast` to the other record's struct (instantiation-time
+-- "illegal cast") and, where the cast happened to pass, the wrong slot written
+-- (bug #38, peer of the LLVM backend's recordByName).
+recByName : List (String, List String) -> String -> String -> Option (String, List String)
+recByName table recName label =
+  if recName == "" then findRecByField table label
+  else match lookupAssoc recName table
+    Some labels =>
+      if indexOfL label labels >= 0 then
+        Some (recName, labels)
+      else
+        findRecByField table label
+    None => findRecByField table label
 
 firstFieldLabel : List CField -> Option String
 firstFieldLabel [] = None
@@ -7447,7 +7467,7 @@ maxIndexAt (CArray es) d = foldMaxI (map (x => maxIndexAt x d) es)
 maxIndexAt (CRecord _ fields) d =
   foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields)
 -- CRecordUpdate/CVariantUpdate stash the base in $__rub<d> at their own emit site.
-maxIndexAt (CRecordUpdate b fields) d = maxI
+maxIndexAt (CRecordUpdate _ b fields) d = maxI
   d
   (maxI
     (maxIndexAt b d)
@@ -7652,7 +7672,7 @@ ctag (CList _) = "CList (W7)"
 ctag (CArray _) = "CArray (W7)"
 ctag (CRecord _ _) = "CRecord (W7)"
 ctag (CFieldAccess _ _ _) = "CFieldAccess (W7)"
-ctag (CRecordUpdate _ _) = "CRecordUpdate (W7)"
+ctag (CRecordUpdate _ _ _) = "CRecordUpdate (W7)"
 ctag (CVariantUpdate _ _ _) = "CVariantUpdate (W7)"
 ctag (CRangeList _ _ _) = "CRangeList (W7)"
 ctag (CRangeArray _ _ _) = "CRangeArray (W7)"

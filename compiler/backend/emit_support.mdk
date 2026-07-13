@@ -47,7 +47,7 @@ eagerVars b (CList es) = eagerVarsList b es
 eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CRecord _ fields) = eagerVarsFields b fields
 eagerVars b (CFieldAccess ex _ _) = eagerVars b ex
-eagerVars b (CRecordUpdate base updates) = eagerVars b base
+eagerVars b (CRecordUpdate _ base updates) = eagerVars b base
   ++ eagerVarsFields b updates
 eagerVars b (CVariantUpdate _ base updates) = eagerVars b base
   ++ eagerVarsFields b updates

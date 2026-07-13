@@ -1,0 +1,23 @@
+-- Bug #38 (SILENT MISCOMPILE, both backends): two record types share the field
+-- name `groupBy` at DIFFERENT slot indices (Sel.groupBy = slot 1, Agg.groupBy =
+-- slot 0).  `CRecordUpdate` used to carry no receiver type name, so each emitter
+-- guessed the record from the bare field label, first-match-wins: `{ q | groupBy
+-- = … }` on an Agg wrote SEL's slot 1 (i.e. Agg.n), leaving Agg.groupBy stale —
+-- exit 0, wrong answer.  Typecheck now stamps the receiver's record name onto the
+-- node and both emitters resolve the slot by name.  Correct = 317; the old
+-- label-guess emits 37 (groupBy stays 0, n clobbered to 3).
+-- Typed corpus on purpose: the stamp only exists on a path that TYPECHECKS, so
+-- the untyped single-file probes (llvm_fixtures/) cannot exercise this.
+data Sel = Sel { tag : Int, groupBy : Int }
+data Agg = Agg { groupBy : Int, n : Int }
+
+withGroupBy : Int -> Agg -> Agg
+withGroupBy cols q = { q | groupBy = cols }
+
+sel : Sel
+sel = Sel { tag = 9, groupBy = 7 }
+
+agg : Agg
+agg = withGroupBy 3 (Agg { groupBy = 0, n = 1 })
+
+main = agg.groupBy * 100 + agg.n * 10 + sel.groupBy

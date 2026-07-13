@@ -1037,7 +1037,7 @@ eval env (ERecordCreate name fields) =
   match lookupAssoc name ctorFieldOrdersRef.value
     Some order => VCon name (recordCreateVals name order assigns)
     None => VRecord name assigns
-eval env (ERecordUpdate base fields) =
+eval env (ERecordUpdate base fields _) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
 eval env (EFieldAccess e field _) = evalField (eval env e) field

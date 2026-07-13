@@ -60,6 +60,162 @@ echo
 pats=""
 add() { case " $pats " in *" $1 "*) ;; *) pats="$pats $1" ;; esac; }
 
+# ── fixture/golden directory → its ACTUAL consumers ──────────────────────────
+#
+# Naively, ANY change under a `*fixtures*`/`*goldens*` dir used to `add
+# 'diff_compiler_*'` — every gate, including `diff_compiler_engines` (346
+# fixtures × clang, the single most expensive gate in the tree). That is every
+# well-behaved bug fix, since a regression fixture is required with every fix.
+#
+# Fix: derive the consuming gates from the gate SCRIPTS, same philosophy as the
+# rest of this file (and `build_oracles.sh --for`) — never a hand-maintained
+# fixture-dir→gate map, which drifts. AGENTS.md already prescribes this
+# procedure manually ("Before touching a fixture dir, find every consumer:
+# `grep -rl '<fixture_dir>' test/`. Then run all of them.") — this automates it.
+#
+# "gate" candidate universe. First cut was an INCLUDE-list by naming family
+# (diff_compiler_*, bootstrap_*, selfcompile_*, wasm/diff_*) — wrong: this repo
+# has plenty of real corpus-consuming gates outside those families
+# (cross_project_twonames.sh reads test/cross_project_fixtures/twonames/goldens,
+# check_removed_constructs.sh, effect_*_domain.sh, build_construct_coverage.sh,
+# manifest_emit.sh, lsp_harness.sh, assemble_check_main.sh, w1.sh, …), so an
+# include-list silently produced FALSE "no consumer found" on real corpora —
+# exactly the failure mode this derivation exists to prevent. An include-list
+# by naming convention also rots the same way a hand-maintained map does: every
+# new gate with a novel name needs a new entry.
+#
+# So: the universe is EVERY test/*.sh and test/wasm/*.sh file, MINUS a short,
+# stable EXCLUDE list of scripts that are infra (build/capture/orchestrate/
+# profile), not pass/fail regression gates over a fixture corpus. This list is
+# far more stable than an include-list would be — a new *gate* is added
+# constantly; a new *infra utility* is not.
+#   build_oracles.sh / build_wasm_oracle.sh / build_native_medaka.sh  — build probes/binaries
+#   capture_goldens.sh   — explicitly documented "never in the gate loop" (WRITES fixtures)
+#   refresh_seed.sh      — seed maintenance
+#   run_gates.sh         — the runner itself
+#   preflight.sh         — this script
+#   profile_compiler.sh / bench.sh — timing/profiling harnesses, not pass/fail
+#   tmc_census.sh        — inspection helper wrapped by diff_compiler_tmc_parity.sh
+#                          (its own header: "run standalone to inspect"); its
+#                          corpus reference is still picked up via the one-hop
+#                          _invokes check on the gate that wraps it
+# ── THE GATE UNIVERSE: every TRACKED .sh in the repo that is not a TOOL ───────
+#
+# This used to enumerate `test/*.sh` + `test/wasm/*.sh`, filtered by a hand-written
+# _NONGATE list. Both halves were the same bug, and it is the bug this whole workstream
+# exists to kill:
+#
+#   * The ROOTS were a curated pair of globs. So the derivation could not see
+#     test/native_fixtures/run.sh (a SUBDIRECTORY of test/), the 22
+#     sqlite/test/*oracle.sh gates, or playground/e2e/run.sh — 24 real gates. A corpus
+#     consumed only by one of those derived ZERO consumers, hit the fallback, and ran
+#     the full 83-gate suite while proving nothing about what actually reads it.
+#   * _NONGATE was a SECOND, hand-maintained copy of the tools list, free to drift from
+#     test/CI-COVERAGE-TOOLS.txt — the file that already answers "is this a gate?" and
+#     that diff_compiler_ci_shard_coverage.sh treats as authoritative.
+#
+# So: one source of truth (CI-COVERAGE-TOOLS.txt), and the same universe the coverage
+# gate enumerates. This makes preflight the FIFTH consumer of one rule, alongside
+# run_gates.sh, build_oracles.sh --for, the coverage gate, and preflight's own pattern
+# resolver. A derivation that disagreed with the other four would quietly under-run.
+#
+# `git ls-files`, not a filesystem walk: this box keeps ~30 agent worktrees under
+# `.claude/worktrees/`, and a `find` from the main checkout would happily enumerate every
+# OTHER worktree's copy of every gate. A gate is a tracked file.
+_TOOLS=" $(grep -v '^[[:space:]]*#' "$ROOT/test/CI-COVERAGE-TOOLS.txt" 2>/dev/null \
+           | awk 'NF { print $1 }' | tr '\n' ' ')"
+_gate_candidates() {
+  git -C "$ROOT" ls-files '*.sh' 2>/dev/null | while IFS= read -r _rel; do
+    case "$_TOOLS" in *" ${_rel%.sh} "*) continue ;; esac
+    [ -f "$ROOT/$_rel" ] || continue
+    printf '%s\n' "$ROOT/$_rel"
+  done
+}
+
+# Live (non-comment) reference to fixture-dir $2 inside file $1. Comments are
+# stripped FIRST (full-line `#...` only) so a gate's header PROSE can't be
+# mistaken for a live dependency — the exact bug `run_gates.sh`'s stale-oracle
+# scrape has today (it greps `test/bin/...` including comment blocks, so a gate
+# whose header says "REPLACES test/bin/parse_main" is believed to depend on a
+# probe it never opens). Word-boundaries on both sides so `llvm_fixtures`
+# cannot match `llvm_fixtures_modules`/`llvm_fixtures_typed` (real sibling
+# corpora in this tree), and so `test/diff_fixtures` cannot match inside
+# `test/snapshots/diff_fixtures` (also real, also distinct).
+_refs() {
+  grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE "(^|[^A-Za-z0-9_])$2([^A-Za-z0-9_]|\$)"
+}
+
+# Other test/*.sh or test/wasm/*.sh scripts $1 ACTUALLY INVOKES (live,
+# non-comment). Anchored on the literal `sh "$ROOT/test/...` idiom this repo
+# uses EVERY real invocation site (verified: 9/9 real invocations in test/*.sh
+# use this exact quoted-$ROOT form). Deliberately NOT a bare `test/[name].sh`
+# scrape — this codebase is full of human-readable hint strings like
+# `echo "build oracles first: sh test/build_oracles.sh"` that name a script
+# without invoking it; a bare scrape (the same shape as run_gates.sh's stale-
+# oracle `test/bin/...` bug) falsely turned diff_compiler_new.sh into an
+# "indirect consumer" of test/llvm_fixtures via its unrelated
+# `echo "no golden tree ... run sh test/capture_goldens.sh"` error message,
+# ballooning one fixture's consumer set from 3 gates to 42. Caught by testing
+# this derivation against the real corpus before trusting it.
+_invokes() {
+  grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -ohE 'sh "\$ROOT/test/(wasm/)?[A-Za-z0-9_]+\.sh' \
+    | sed 's/^sh "\$ROOT\///' | sort -u
+}
+
+# Does gate $1 consume fixture dir $2 — directly, OR indirectly via one hop
+# through a helper it invokes? (Real case: diff_compiler_tmc_parity.sh never
+# mentions test/wasm/fixtures itself — it shells to test/tmc_census.sh, and
+# THAT script reads the corpus. Missing this one-hop case would silently drop
+# a genuine consumer, exactly the false-negative this derivation must avoid.)
+_consumes() {
+  _gate="$1"; _d="$2"
+  _refs "$_gate" "$_d" && return 0
+  for _h in $(_invokes "$_gate"); do
+    _hp="$ROOT/$_h"
+    [ -f "$_hp" ] && [ "$_hp" != "$_gate" ] && _refs "$_hp" "$_d" && return 0
+  done
+  return 1
+}
+
+# Fixture directory for a changed path: climb from its parent to the nearest
+# ancestor whose name contains "fixtures" or "goldens".
+_fixture_dir_for() {
+  _fd="$(dirname "$1")"
+  while [ "$_fd" != "." ] && [ "$_fd" != "/" ] && [ "$_fd" != "test" ]; do
+    case "$(basename "$_fd")" in
+      *fixtures*|*goldens*) printf '%s\n' "$_fd"; return 0 ;;
+    esac
+    _fd="$(dirname "$_fd")"
+  done
+  return 1
+}
+
+# Gates that consume fixture dir $1. If the exact dir has no direct/one-hop
+# consumer, climb to its parent and retry — some gates key off the PARENT, not
+# the leaf (real case: test/snapshots/diff_fixtures is a snapshot-golden
+# subdir; diff_compiler_snapshot_frontend.sh reads `$ROOT/test/snapshots`
+# as a whole via SNAPDIR, never the literal string "test/snapshots/diff_fixtures").
+# Stops before climbing to bare "test" (which would trivially match everything).
+_gates_for_fixture_dir() {
+  _d="$1"
+  while : ; do
+    _found=""
+    for _g in $(_gate_candidates); do
+      _consumes "$_g" "$_d" && _found="$_found
+$_g"
+    done
+    if [ -n "$_found" ]; then
+      printf '%s\n' "$_found" | grep -v '^$'
+      return 0
+    fi
+    _parent="$(dirname "$_d")"
+    case "$_parent" in
+      test|.) return 1 ;;
+    esac
+    _d="$_parent"
+  done
+}
+
 need_fixpoint=0
 for f in $changed; do
   case "$f" in
@@ -116,28 +272,65 @@ for f in $changed; do
       add 'diff_compiler_test'; add 'diff_compiler_snapshot*'
       add 'diff_compiler_lex*' ;;                              # stdlib is IN the snapshot corpus
 
-    # ── a changed gate runs itself ──
-    test/diff_compiler_*.sh)
-      add "$(basename "$f" .sh)" ;;
-
-    # ── gates that do NOT live in test/ (T8) ──────────────────────────────────
-    # A pattern containing a slash resolves from the repo ROOT. run_gates.sh,
-    # build_oracles.sh --for and diff_compiler_ci_shard_coverage.sh all resolve
-    # patterns the same way, so these are the same names CI's shards use.
+    # ── a changed GATE SCRIPT runs itself ─────────────────────────────────────
     #
-    # Without these arms, editing the SQLite library or a native fixture derived NO
-    # gates at all and preflight printed a confident green having run nothing about
-    # the thing you changed — the exact failure this whole task is about, in the tool
-    # agents use most.
-    sqlite/test/*.sh|sqlite/lib/*|sqlite/*.mdk)
-      add 'sqlite/test/*oracle' ;;
-    test/native_fixtures/*)
-      add 'native_fixtures/run'; add 'diff_compiler_*' ;;      # also in the snapshot corpus
-    test/build_cmd.sh|test/build_cmd_fixtures/*)
-      add 'build_cmd' ;;
+    # ⚠️ CASE-ARM ORDER IS LOAD-BEARING, AND THIS ARM MUST STAY ABOVE THE CORPUS ARM.
+    # `test/native_fixtures/run.sh` matches BOTH this arm and `test/*fixtures*/*` below,
+    # and in a `case` the FIRST match wins. The split is deliberate and is the whole rule:
+    #
+    #     you changed a GATE      -> run that gate
+    #     you changed a FIXTURE   -> derive the gates that CONSUME that fixture dir
+    #
+    # Not covered by the corpus derivation, and not redundant with it: the derivation
+    # answers "who READS this corpus", which is a different question from "I edited this
+    # gate's own code".
+    #
+    # The pattern is the repo-relative path minus `.sh`, minus a leading `test/` —
+    # 'diff_compiler_lexer', 'native_fixtures/run', 'build_cmd'. run_gates.sh,
+    # build_oracles.sh --for and the coverage gate all resolve a slash-bearing pattern
+    # from the repo ROOT, so these are exactly the names CI's shards use.
+    test/diff_compiler_*.sh|test/build_cmd.sh|test/native_fixtures/run.sh)
+      _p="${f#test/}"; add "${_p%.sh}" ;;
 
+    # ── sqlite: the derivation structurally CANNOT reach it ───────────────────
+    # `_fixture_dir_for` only fires for a path with a `*fixtures*`/`*goldens*` ancestor
+    # directory. The SQLite corpus has none — its goldens sit loose in `sqlite/test/`
+    # next to the oracles that read them — so the corpus derivation never triggers and
+    # these gates would derive NOTHING. That is not a redundant arm; it is the only
+    # thing standing between "edit the SQLite library" and "preflight runs nothing about
+    # it and prints green".
+    sqlite/test/*|sqlite/lib/*|sqlite/*.mdk|sqlite/medaka.toml)
+      add 'sqlite/test/*oracle' ;;
+
+    # ── fixture/golden corpus change: run its ACTUAL consumers, not everything.
+    # See _gates_for_fixture_dir above. A directory with zero discoverable
+    # consumers is a real finding (dead corpus, or a gap in this derivation) —
+    # loudly fall back to the full suite rather than silently running nothing.
+    #
+    # T8 note: this now composes with the gates that do not live in test/. The
+    # derivation scans the FULL gate universe (see _gate_candidates), so
+    # `test/native_fixtures/*.mdk` correctly derives `native_fixtures/run` and
+    # `test/build_cmd_fixtures/*` correctly derives `build_cmd` — no explicit arm
+    # needed for either, and none is present. Before the universe was widened, both
+    # corpora had ZERO discoverable consumers and hit the full-suite fallback.
     test/*fixtures*/*|test/*goldens*/*)
-      add 'diff_compiler_*' ;;                                 # corpus change: run everything
+      _fdir="$(_fixture_dir_for "$f")" || _fdir=""
+      if [ -z "$_fdir" ]; then
+        echo "preflight: WARNING — could not identify a fixture directory for '$f'; falling back to the full diff_compiler_* suite."
+        add 'diff_compiler_*'
+      else
+        _gset="$(_gates_for_fixture_dir "$_fdir")"
+        if [ -z "$_gset" ]; then
+          echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every test/*.sh and test/wasm/*.sh gate — see _NONGATE for the small infra exclude list — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the full diff_compiler_* suite for safety."
+          add 'diff_compiler_*'
+        else
+          printf 'preflight: %s → %s\n' "$_fdir" "$(printf '%s\n' "$_gset" | xargs -n1 basename | tr '\n' ' ')"
+          for _g in $_gset; do
+            _pat="${_g#"$ROOT"/test/}"
+            add "${_pat%.sh}"
+          done
+        fi
+      fi ;;
   esac
 done
 
@@ -208,6 +401,17 @@ for pat in $pats; do
   fi
 done
 
+# ── PREFLIGHT_DRY=1: print the derived gate set and stop ──────────────────────
+# The change→gate derivation is the part most likely to silently under-run, and it was
+# the only part with no way to inspect it short of a full 5-minute build+run. Now you
+# can ask it what it WOULD run, which is also how the T8/T15 integration cases are
+# verified.
+if [ -n "${PREFLIGHT_DRY:-}" ]; then
+  printf '── would run %s gate(s) ─────\n' "$(printf '%s\n' $gates | grep -c .)"
+  for g in $gates; do printf '  %s\n' "${g#"$ROOT"/}"; done
+  exit 0
+fi
+
 # Build this diff's oracles by DELEGATING to build_oracles.sh --for. Do not re-derive
 # the set here.
 #
@@ -248,12 +452,48 @@ if [ "$need_fixpoint" -eq 1 ]; then
 fi
 
 # ── SAY WHAT YOU DID NOT RUN. Never be quiet about this. ─────────────────────
+#
+# Two things this block must get right, both learned the hard way:
+#
+# 1. The TOTAL must be derived from the same universe `run_gates.sh` uses for
+#    its bare-invocation default (`test/diff_compiler_*.sh`), not a hardcoded
+#    literal. The gate count has drifted across docs (72/82/83/84 — see
+#    AGENTS.md) and WILL drift again; a baked-in number is guaranteed to go
+#    stale, and when it does the arithmetic below UNDERFLOWS to a negative
+#    "the other -N of 82 gates" the moment ran_count exceeds it (reproduced:
+#    a `diff_compiler_*` wildcard match currently pulls in all 83 gates,
+#    against a hardcoded 82 → "the other -1 of 82 gates").
+# 2. `diff_compiler_engines` is called out here as a standing skip, but a
+#    wildcard `add 'diff_compiler_*'` (support/corpus changes) pulls it INTO
+#    $gates and it runs above like everything else — printing it here
+#    unconditionally then contradicts its own PASS/FAIL line a few lines up.
+#    Check whether it actually ran before naming it a skip.
+total_gates=$(ls "$ROOT"/test/diff_compiler_*.sh 2>/dev/null | wc -l | tr -d ' ')
+ran_count=$(printf '%s\n' $gates | grep -vc '^$')
+remaining=$(( total_gates - ran_count ))
+if [ "$remaining" -lt 0 ]; then
+  # Every gate $gates can contain comes from matching test/diff_compiler_*.sh
+  # (the same glob total_gates counts), so ran_count > total_gates should be
+  # impossible. Surface it loudly rather than silently clamping and hiding a
+  # real bookkeeping bug.
+  echo "preflight: INTERNAL INCONSISTENCY — ran_count ($ran_count) exceeds total_gates ($total_gates); the skip-count math below is WRONG. Report this, don't trust the number."
+  remaining=0
+fi
+
+engines_gate="$ROOT/test/diff_compiler_engines.sh"
+case " $gates " in
+  *" $engines_gate "*)
+    engines_line="  diff_compiler_engines      ran above (pulled in by a wildcard gate match) — not a skip" ;;
+  *)
+    engines_line="  diff_compiler_engines      the 3-engine differential (346 fixtures × clang)" ;;
+esac
+
 cat <<EOF
 
 ── NOT RUN LOCALLY (CI runs these on the PR) ─────────────────────
-  diff_compiler_engines      the 3-engine differential (346 fixtures × clang)
+$engines_line
 $([ "$need_fixpoint" -eq 1 ] || echo "  selfcompile_fixpoint       (not a backend change)")
-  the other $(( 82 - $(printf '%s\n' $gates | grep -vc '^$') )) of 82 gates
+  the other $remaining of $total_gates gates
 
   This preflight is a FILTER, not an authority. A green run here means the gates
   most likely to notice your change did not break — nothing more. Push a branch and

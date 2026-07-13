@@ -753,7 +753,7 @@ collectLetBinds (EUnOp _ a _) = collectLetBinds a
 collectLetBinds (EInfix _ a b) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (EFieldAccess e0 _ _) = collectLetBinds e0
 collectLetBinds (ERecordCreate _ fs) = flatMap fieldAssignBinds fs
-collectLetBinds (ERecordUpdate e0 fs) = collectLetBinds e0
+collectLetBinds (ERecordUpdate e0 fs _) = collectLetBinds e0
   ++ flatMap fieldAssignBinds fs
 collectLetBinds (EVariantUpdate _ e0 fs) = collectLetBinds e0
   ++ flatMap fieldAssignBinds fs
@@ -1173,7 +1173,7 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "collectLetBinds" ((PCon "EInfix" PWild (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "a")) (EApp (EVar "collectLetBinds") (EVar "b"))))
 (DFunDef false "collectLetBinds" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "collectLetBinds") (EVar "e0")))
 (DFunDef false "collectLetBinds" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBinds")) (EVar "fs")))
-(DFunDef false "collectLetBinds" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
+(DFunDef false "collectLetBinds" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
 (DFunDef false "collectLetBinds" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
 (DFunDef false "collectLetBinds" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "collectLetBinds")) (EVar "es")))
 (DFunDef false "collectLetBinds" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "collectLetBinds")) (EVar "es")))
@@ -1539,7 +1539,7 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "collectLetBinds" ((PCon "EInfix" PWild (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "a")) (EApp (EVar "collectLetBinds") (EVar "b"))))
 (DFunDef false "collectLetBinds" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "collectLetBinds") (EVar "e0")))
 (DFunDef false "collectLetBinds" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBinds")) (EVar "fs")))
-(DFunDef false "collectLetBinds" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
+(DFunDef false "collectLetBinds" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
 (DFunDef false "collectLetBinds" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectLetBinds") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBinds")) (EVar "fs"))))
 (DFunDef false "collectLetBinds" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "collectLetBinds")) (EVar "es")))
 (DFunDef false "collectLetBinds" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "collectLetBinds")) (EVar "es")))

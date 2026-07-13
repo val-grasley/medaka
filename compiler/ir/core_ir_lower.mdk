@@ -117,8 +117,8 @@ lower (ESlice a lo hi incl r) =
     CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f r) = CFieldAccess (lower e) f r.value
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
-lower (ERecordUpdate base fields) =
-  CRecordUpdate (lower base) (map lowerField fields)
+lower (ERecordUpdate base fields r) =
+  CRecordUpdate r.value (lower base) (map lowerField fields)
 lower (EVariantUpdate con base fields) =
   CVariantUpdate con (lower base) (map lowerField fields)
 lower (EBlock stmts) = CBlock (map lowerStmt stmts)
@@ -604,8 +604,8 @@ rewriteExprRP fo (CList es) = CList (map (rewriteExprRP fo) es)
 rewriteExprRP fo (CRecord name fields) =
   CRecord name (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CFieldAccess ex f n) = CFieldAccess (rewriteExprRP fo ex) f n
-rewriteExprRP fo (CRecordUpdate base fields) =
-  CRecordUpdate (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CRecordUpdate name base fields) =
+  CRecordUpdate name (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CVariantUpdate con base fields) =
   CVariantUpdate con (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CArray es) = CArray (map (rewriteExprRP fo) es)

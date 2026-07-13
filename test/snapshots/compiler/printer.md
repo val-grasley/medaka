@@ -561,7 +561,7 @@ exprPrec (EMapLit _ _) = precAtom
 exprPrec (ESetLit _ _) = precAtom
 exprPrec (EStringInterp _) = precAtom
 exprPrec (ERecordCreate _ _) = precAtom
-exprPrec (ERecordUpdate _ _) = precAtom
+exprPrec (ERecordUpdate _ _ _) = precAtom
 exprPrec (EVariantUpdate _ _ _) = precAtom
 exprPrec (ERangeList _ _ _) = precAtom
 exprPrec (ERangeArray _ _ _) = precAtom
@@ -661,7 +661,7 @@ printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =
   Cat (text n) (Cat (text " ") (braced (map fieldAssignDoc fs)))
-printExprRaw (ERecordUpdate e fs) =
+printExprRaw (ERecordUpdate e fs _) =
   Cat
     (text "{ ")
     (Cat
@@ -1365,7 +1365,7 @@ isSelfIndentingArg (EDo _) = True
 isSelfIndentingArg (EMatch _ _) = True
 isSelfIndentingArg (EIf _ _ _) = True
 isSelfIndentingArg (ERecordCreate _ _) = True
-isSelfIndentingArg (ERecordUpdate _ _) = True
+isSelfIndentingArg (ERecordUpdate _ _ _) = True
 isSelfIndentingArg (EVariantUpdate _ _ _) = True
 isSelfIndentingArg (EListLit (_::_)) = True
 isSelfIndentingArg (EArrayLit (_::_)) = True
@@ -2050,7 +2050,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "exprPrec" ((PCon "ESetLit" PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EStringInterp" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERecordCreate" PWild PWild)) (EVar "precAtom"))
-(DFunDef false "exprPrec" ((PCon "ERecordUpdate" PWild PWild)) (EVar "precAtom"))
+(DFunDef false "exprPrec" ((PCon "ERecordUpdate" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EVariantUpdate" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERangeList" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERangeArray" PWild PWild PWild)) (EVar "precAtom"))
@@ -2109,7 +2109,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExprRaw" ((PCon "EUnOp" (PVar "op") (PVar "e") PWild)) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "op"))) (EApp (EApp (EVar "printExpr") (EVar "precUnary")) (EVar "e"))))
 (DFunDef false "printExprRaw" ((PCon "EFieldAccess" (PVar "e") (PVar "f") PWild)) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precPostfix")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString ".")))) (EApp (EVar "text") (EVar "f")))))
 (DFunDef false "printExprRaw" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "n"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " ")))) (EApp (EVar "braced") (EApp (EApp (EVar "map") (EVar "fieldAssignDoc")) (EVar "fs"))))))
-(DFunDef false "printExprRaw" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "{ ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EVar "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }"))))))))
+(DFunDef false "printExprRaw" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "{ ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EVar "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }"))))))))
 (DFunDef false "printExprRaw" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "c"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " { ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EVar "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }")))))))))
 (DFunDef false "printExprRaw" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EApp (EVar "delimited") (ELit (LString "[|"))) (ELit (LString "|]"))) (EApp (EApp (EVar "map") (EApp (EVar "printExpr") (EVar "precTop"))) (EVar "es"))))
 (DFunDef false "printExprRaw" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EApp (EVar "delimited") (ELit (LString "["))) (ELit (LString "]"))) (EApp (EApp (EVar "map") (EApp (EVar "printExpr") (EVar "precTop"))) (EVar "es"))))
@@ -2343,7 +2343,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "isSelfIndentingArg" ((PCon "EMatch" PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EIf" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "ERecordCreate" PWild PWild)) (EVar "True"))
-(DFunDef false "isSelfIndentingArg" ((PCon "ERecordUpdate" PWild PWild)) (EVar "True"))
+(DFunDef false "isSelfIndentingArg" ((PCon "ERecordUpdate" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EVariantUpdate" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EListLit" (PCons PWild PWild))) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EArrayLit" (PCons PWild PWild))) (EVar "True"))
@@ -2711,7 +2711,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "exprPrec" ((PCon "ESetLit" PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EStringInterp" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERecordCreate" PWild PWild)) (EVar "precAtom"))
-(DFunDef false "exprPrec" ((PCon "ERecordUpdate" PWild PWild)) (EVar "precAtom"))
+(DFunDef false "exprPrec" ((PCon "ERecordUpdate" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EVariantUpdate" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERangeList" PWild PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ERangeArray" PWild PWild PWild)) (EVar "precAtom"))
@@ -2770,7 +2770,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExprRaw" ((PCon "EUnOp" (PVar "op") (PVar "e") PWild)) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "op"))) (EApp (EApp (EVar "printExpr") (EVar "precUnary")) (EVar "e"))))
 (DFunDef false "printExprRaw" ((PCon "EFieldAccess" (PVar "e") (PVar "f") PWild)) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precPostfix")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString ".")))) (EApp (EVar "text") (EVar "f")))))
 (DFunDef false "printExprRaw" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "n"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " ")))) (EApp (EVar "braced") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignDoc")) (EVar "fs"))))))
-(DFunDef false "printExprRaw" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "{ ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EMethodRef "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }"))))))))
+(DFunDef false "printExprRaw" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "{ ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EMethodRef "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }"))))))))
 (DFunDef false "printExprRaw" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "c"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " { ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precTop")) (EVar "e"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " | ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EApp (EApp (EMethodRef "map") (EVar "fieldAssignDoc")) (EVar "fs")))) (EApp (EVar "text") (ELit (LString " }")))))))))
 (DFunDef false "printExprRaw" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EApp (EVar "delimited") (ELit (LString "[|"))) (ELit (LString "|]"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "printExpr") (EVar "precTop"))) (EVar "es"))))
 (DFunDef false "printExprRaw" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EApp (EVar "delimited") (ELit (LString "["))) (ELit (LString "]"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "printExpr") (EVar "precTop"))) (EVar "es"))))
@@ -3004,7 +3004,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "isSelfIndentingArg" ((PCon "EMatch" PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EIf" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "ERecordCreate" PWild PWild)) (EVar "True"))
-(DFunDef false "isSelfIndentingArg" ((PCon "ERecordUpdate" PWild PWild)) (EVar "True"))
+(DFunDef false "isSelfIndentingArg" ((PCon "ERecordUpdate" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EVariantUpdate" PWild PWild PWild)) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EListLit" (PCons PWild PWild))) (EVar "True"))
 (DFunDef false "isSelfIndentingArg" ((PCon "EArrayLit" (PCons PWild PWild))) (EVar "True"))

@@ -79,7 +79,7 @@ freeVars b (CList es) = freeVarsList b es
 freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _ _) = freeVars b ex
-freeVars b (CRecordUpdate base updates) = freeVars b base
+freeVars b (CRecordUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
 freeVars b (CVariantUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
@@ -368,7 +368,7 @@ mentionsSelfMethod method tag (CRecord _ fields) =
   mentionsSelfMethodFields method tag fields
 mentionsSelfMethod method tag (CFieldAccess ex _ _) =
   mentionsSelfMethod method tag ex
-mentionsSelfMethod method tag (CRecordUpdate base ups) = mentionsSelfMethod method tag base
+mentionsSelfMethod method tag (CRecordUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
 mentionsSelfMethod method tag (CVariantUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
@@ -731,7 +731,7 @@ allCallHeads cf (CArray es) = flatMap (allCallHeads cf) es
 allCallHeads cf (CRecord _ fs) =
   flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CFieldAccess x _ _) = allCallHeads cf x
-allCallHeads cf (CRecordUpdate base fs) = allCallHeads cf base
+allCallHeads cf (CRecordUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CVariantUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
@@ -976,7 +976,7 @@ anyListM p (x::rest) =
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "lo")) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "hi"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "fields")))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "ex")))
-(DFunDef false "freeVars" ((PVar "b") (PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
+(DFunDef false "freeVars" ((PVar "b") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CArray" (PVar "es"))) (EApp (EApp (EVar "freeVarsList") (EVar "b")) (EVar "es")))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "lo")) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "hi"))))
@@ -1104,7 +1104,7 @@ anyListM p (x::rest) =
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "lo")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "hi"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "fields")))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "ex")))
-(DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecordUpdate" (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
+(DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "a")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "i"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "a")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "lo"))) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "hi"))))
@@ -1237,7 +1237,7 @@ anyListM p (x::rest) =
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CArray" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "allCallHeads") (EVar "cf"))) (EVar "es")))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecord" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs")))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CFieldAccess" (PVar "x") PWild PWild)) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "x")))
-(DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecordUpdate" (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
+(DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "lo")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "hi"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "lo")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "hi"))))
@@ -1341,7 +1341,7 @@ anyListM p (x::rest) =
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "lo")) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "hi"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "fields")))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "ex")))
-(DFunDef false "freeVars" ((PVar "b") (PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
+(DFunDef false "freeVars" ((PVar "b") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "base")) (EApp (EApp (EVar "freeVarsFields") (EVar "b")) (EVar "updates"))))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CArray" (PVar "es"))) (EApp (EApp (EVar "freeVarsList") (EVar "b")) (EVar "es")))
 (DFunDef false "freeVars" ((PVar "b") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "lo")) (EApp (EApp (EVar "freeVars") (EVar "b")) (EVar "hi"))))
@@ -1469,7 +1469,7 @@ anyListM p (x::rest) =
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "lo")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "hi"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "fields")))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "ex")))
-(DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecordUpdate" (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
+(DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "ups"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "base")) (EApp (EApp (EApp (EVar "mentionsSelfMethodFields") (EVar "method")) (EVar "tag")) (EVar "ups"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "a")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "i"))))
 (DFunDef false "mentionsSelfMethod" ((PVar "method") (PVar "tag") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "a")) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "lo"))) (EApp (EApp (EApp (EVar "mentionsSelfMethod") (EVar "method")) (EVar "tag")) (EVar "hi"))))
@@ -1602,7 +1602,7 @@ anyListM p (x::rest) =
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CArray" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "allCallHeads") (EVar "cf"))) (EVar "es")))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecord" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs")))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CFieldAccess" (PVar "x") PWild PWild)) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "x")))
-(DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecordUpdate" (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
+(DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CVariantUpdate" PWild (PVar "base") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EApp (EVar "dispFieldExpr") (EVar "f"))))) (EVar "fs"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "lo")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "hi"))))
 (DFunDef false "allCallHeads" ((PVar "cf") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "lo")) (EApp (EApp (EVar "allCallHeads") (EVar "cf")) (EVar "hi"))))

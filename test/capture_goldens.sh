@@ -43,8 +43,33 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # NATIVE Stage-4 oracles (OCaml-free).
 MAIN="${MAIN:-$ROOT/medaka}"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdlib/runtime.mdk"
-FMT_NATIVE="$ROOT/test/bin/fmt_main"
-PRINTER_NATIVE="$ROOT/test/bin/printer_main"
+DICT_BIN="$ROOT/test/bin/eval_dict_main"
+TYPED_BIN="$ROOT/test/bin/eval_typed_main"
+EVAL_MODULES_BIN="$ROOT/test/bin/eval_modules_main"
+REPL_BIN="$ROOT/test/bin/repl_main"
+
+# capture_build_golden <fixture.mdk> <golden path> — mirrors
+# test/build_construct_coverage.sh's check() EXACTLY: `medaka build
+# --allow-internal <fixture> -o <bin>` under the same MEDAKA_ROOT/
+# MEDAKA_EMITTER env, then run <bin> and capture stdout. Defined here (ahead
+# of the FROZEN_TAG block below, which calls it and `exit 0`s before reaching
+# the rest of this file) rather than down in the §2d comment block where it
+# used to live — see that block for the "why" (it was dead code for months).
+# CHECK/fixtures/mism/wrote are all defined by the caller before use.
+capture_build_golden() {  # $1=fixture .mdk  $2=golden path
+  src="$1"; golden="$2"; fixtures=$((fixtures+1))
+  bin="$TMP/cb.bin"; out="$TMP/cb.out"
+  rm -f "$bin"
+  MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="${MEDAKA_EMITTER:-$ROOT/medaka_emitter}" \
+    perl -e 'alarm 180; exec @ARGV' -- "$MAIN" build --allow-internal "$src" -o "$bin" >/dev/null 2>&1 || true
+  if [ -x "$bin" ]; then "$bin" > "$out" 2>/dev/null || true; else : > "$out"; fi
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+    else mism=$((mism+1)); [ -f "$golden" ] && { echo "DRIFT $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; } || echo "MISSING $golden"; fi
+  else
+    cp "$out" "$golden"; wrote=$((wrote+1))
+  fi
+}
 
 CHECK=0
 FILTER=""
@@ -54,7 +79,7 @@ case "${1:-}" in
   --frozen)
     FROZEN_TAG="${2:-}"
     [ -n "$FROZEN_TAG" ] || {
-      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA|llvm_eval>"
+      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct>"
       exit 2
     }
     ;;
@@ -186,8 +211,31 @@ if [ -n "$FROZEN_TAG" ]; then
       [ "$fwrote" -gt 0 ] || { echo "wrote 0 goldens — no fixtures found under test/llvm_fixtures/"; exit 2; }
       [ "$lfail" -eq 0 ] || { echo "$lfail fixture(s) failed to emit/compile — goldens NOT written for those"; exit 1; }
       ;;
+    build_construct)
+      # test/construct_fixtures/*.build.golden — see capture_build_golden
+      # (defined near the top of this file) for the producer contract.
+      # Skips the SAME 5 known native-CLI-gap fixtures that
+      # build_construct_coverage.sh's own SKIP list skips (kept in sync
+      # manually — that file is out of scope to edit from here); those 5
+      # have no golden and the gate never checks them, so capturing one
+      # would be dead weight the gate never reads.
+      [ -x "$MAIN" ] || { echo "missing $MAIN — run: make medaka"; exit 2; }
+      BC_SKIP=" tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias "
+      fixtures=0; mism=0; wrote=0
+      TMP="$(mktemp -d)"
+      trap 'rm -rf "$TMP"' EXIT
+      for f in "$ROOT"/test/construct_fixtures/*.mdk; do
+        [ -f "$f" ] || continue
+        label="$(basename "$f" .mdk)"
+        case "$BC_SKIP" in *" $label "*) continue ;; esac
+        capture_build_golden "$f" "${f%.mdk}.build.golden"
+      done
+      rm -rf "$TMP"; trap - EXIT
+      fwrote="$wrote"
+      [ "$fwrote" -gt 0 ] || { echo "wrote 0 goldens — no fixtures found under test/construct_fixtures/"; exit 2; }
+      ;;
     *)
-      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA|llvm_eval)"
+      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct)"
       exit 2 ;;
   esac
   status=$?
@@ -200,8 +248,30 @@ fi
 
 # ── driver table ───────────────────────────────────────────────────────────────
 # oracle_<tag> <fixture> -> stdout.
-oracle_run_file()    { "$MAIN" run "$1"; }                             # eval_dict / eval_typed / core_ir_typed
-oracle_print_probe() { "$PRINTER_NATIVE" "$1" 2>/dev/null | sed '$ s/()$//; ${/^$/d;}'; }  # printer reprint (NATIVE; strip_unit to match the gate)
+#
+# ⚠️ eval_dict / eval_typed do NOT use `medaka run` as their oracle. `medaka run`
+# gates on a STRICTER/DIFFERENT check than the probes it's supposed to stand in
+# for (e.g. it rejects `test/eval_dict_fixtures/inferred_chain.mdk` with
+# "Ambiguous instance for `Semigroup`" — a program the dict-passing probe
+# resolves and diff_compiler_eval_dict.sh runs green, 26/26). A `medaka run`
+# oracle silently regenerated a "drifted" golden that was never wrong — the
+# committed golden was right, `medaka run` was the wrong reference. Mirror the
+# gate's REAL producer exactly (test/bin/eval_dict_main / eval_typed_main with
+# the same $RUNTIME/$CORE args and the same strip_unit), so a regenerated
+# golden is BY CONSTRUCTION the gate's "actual" side — same model as the
+# `--frozen llvm_eval` row below.
+oracle_eval_dict() {
+  [ -x "$DICT_BIN" ] || { echo "missing $DICT_BIN — run: sh test/build_oracles.sh --build-one eval_dict_main" >&2; return 2; }
+  "$DICT_BIN" "$RUNTIME" "$CORE" "$1" 2>/dev/null | sed '${/^()$/d;}'
+}
+oracle_eval_typed() {
+  [ -x "$TYPED_BIN" ] || { echo "missing $TYPED_BIN — run: sh test/build_oracles.sh --build-one eval_typed_main" >&2; return 2; }
+  "$TYPED_BIN" "$RUNTIME" "$CORE" "$1" 2>/dev/null | sed '${/^()$/d;}'
+}
+# (`oracle_print_probe`/`FMT_NATIVE`/`PRINTER_NATIVE` used to live here — 100%
+# dead code, called from nowhere: fmt/printer regeneration goes through the
+# `regen_frozen` helper in the `--frozen` block above against
+# test/bin/{fmt,printer}_main directly. Removed rather than left to rot further.)
 
 # FROZEN families (dev/ OCaml probes had no native equivalent; goldens committed as-is):
 #   eval / eval_prelude / eval_list (eval_probe.exe)
@@ -229,9 +299,82 @@ oracle_print_probe() { "$PRINTER_NATIVE" "$1" 2>/dev/null | sed '$ s/()$//; ${/^
 # native build; eval_typed_modules/build_*/test/new/native_cli — require an
 # up-to-date native binary to reproduce committed goldens).
 ROWS="
-$ROOT/test/eval_dict_fixtures/*.mdk::run_file::eval.golden
-$ROOT/test/eval_typed_fixtures/*.mdk::run_file::eval.golden
+$ROOT/test/eval_dict_fixtures/*.mdk::eval_dict::eval.golden
+$ROOT/test/eval_typed_fixtures/*.mdk::eval_typed::eval.golden
 "
+
+want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
+  [ -z "$FILTER" ] && return 0
+  case "eval" in "$FILTER"*) return 0 ;; esac
+  case "$1" in "$FILTER"*) return 0 ;; esac
+  return 1
+}
+
+# ── PREFLIGHT: a missing test/bin/* probe must NEVER look like a golden drift ──
+#
+# This mirrors test/run_gates.sh's stale-oracle refusal (same principle, same
+# reason it exists): "I could not run this" and "the answer was wrong" are
+# different failures and this tool must never conflate them. Before this
+# preflight existed, a missing probe made `oracle_eval_dict`/`oracle_eval_typed`
+# print "missing <bin> — run: ..." to STDERR, which `emit_golden` immediately
+# discards (`"$@" 2>/dev/null`) — so the warning vanished, the probe's empty
+# stdout got compared (or, in capture mode, WRITTEN) as if it were real output,
+# and `--check` reported a wall of "DRIFT" for every fixture in that row. Worse:
+# a plain (non-`--check`) capture run with the probe missing SILENTLY OVERWROTE
+# every golden in that row with empty content and printed "0 oracle failures" —
+# a real golden-corruption bug, not just a misleading message.
+#
+# So: determine which test/bin/* binaries THIS invocation actually needs
+# (honoring $FILTER with the exact same row/tag selection the loops below use),
+# check them ALL before touching a single golden, and if any are missing or
+# non-executable, name them, print the exact fix, and exit — zero comparisons
+# happened, so this is not a mismatch and must not be counted as one.
+missing_bins=""
+add_missing() {  # add_missing <binary-basename> (deduped)
+  case " $missing_bins " in
+    *" $1 "*) ;;
+    *) missing_bins="$missing_bins $1" ;;
+  esac
+}
+for row in $ROWS; do
+  [ -n "$row" ] || continue
+  glob="${row%%::*}"; rest="${row#*::}"
+  tag="${rest%%::*}"; suffix="${rest#*::}"
+  if [ -n "$FILTER" ]; then
+    case "$suffix" in "$FILTER"*) ;; *) case "$tag" in "$FILTER"*) ;; *) continue ;; esac ;; esac
+  fi
+  case "$tag" in
+    eval_dict)  [ -x "$DICT_BIN" ]  || add_missing eval_dict_main ;;
+    eval_typed) [ -x "$TYPED_BIN" ] || add_missing eval_typed_main ;;
+  esac
+done
+if want eval_modules; then
+  [ -x "$EVAL_MODULES_BIN" ] || add_missing eval_modules_main
+fi
+if want repl; then
+  [ -x "$REPL_BIN" ] || add_missing repl_main
+fi
+
+if [ -n "$missing_bins" ]; then
+  echo "════════════════════════════════════════════════════════════════════"
+  echo "MISSING ORACLE BINARIES — REFUSING TO RUN."
+  echo
+  echo "  Required by this invocation but not built (or not executable):"
+  for b in $missing_bins; do echo "    test/bin/$b"; done
+  echo
+  echo "A missing probe is NOT a golden drift and this run made ZERO"
+  echo "comparisons — do not read anything below this line as one."
+  echo "(Comparing — or worse, in capture mode, WRITING — a missing binary's"
+  echo "empty output against a committed golden looks exactly like a real"
+  echo "regression, or silently corrupts the golden.)"
+  echo
+  echo "  Build them:"
+  for b in $missing_bins; do
+    echo "    FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $b"
+  done
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 2
+fi
 
 total=0 wrote=0 mism=0 fixtures=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -301,25 +444,35 @@ done
 # These goldens are captured from the EXACT OCaml oracle each gate used (a compiler
 # entry run via main.exe, or `main.exe run <entry>` per fixture dir), so the
 # re-rooted gate diffs its native host's stdout against this committed reference.
+# (`want()` used to be defined here; moved up next to the PREFLIGHT block above —
+# that block needs it too, and `want()` doesn't depend on anything defined between
+# the two locations.)
 
-want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
-  [ -z "$FILTER" ] && return 0
-  case "eval" in "$FILTER"*) return 0 ;; esac
-  case "$1" in "$FILTER"*) return 0 ;; esac
-  return 1
-}
-
-# eval_modules : golden = native `./medaka run <entry>` per dir.
-# (Fixture files are plain Medaka programs — no compiler args() dependency —
-#  so the native interpreter produces byte-identical output to the OCaml oracle.)
+# eval_modules : golden = the SAME native loader-driven probe
+# diff_compiler_eval_modules.sh diffs against (test/bin/eval_modules_main),
+# invoked identically ($CORE $entry $dir + strip_unit), so a regenerated
+# golden is BY CONSTRUCTION the gate's "actual" side.
+#
+# Previously used `medaka run <entry>` as a stand-in (same risk class as the
+# eval_dict/eval_typed rows above: `medaka run` runs a typecheck GATE the raw
+# probe doesn't, so agreement isn't guaranteed). It happened not to diverge
+# on this corpus — verified byte-identical on all 6 fixtures before this
+# change — but the probe is the actual gate producer, so use it directly
+# rather than relying on that agreement continuing to hold by luck.
+oracle_eval_modules_dir() { "$EVAL_MODULES_BIN" "$1" "$2" "$3" 2>/dev/null | sed '${/^()$/d;}'; }
 if want eval_modules; then
   total=$((total+1))
-  for dir in "$ROOT"/test/eval_modules_fixtures/*/; do
-    [ -d "$dir" ] || continue
-    entry="$(ls "$dir"main_*.mdk 2>/dev/null | head -1)"
-    [ -n "$entry" ] || continue
-    emit_golden "${dir%/}/main.eval.golden" "$MAIN" run "$entry"
-  done
+  if [ -x "$EVAL_MODULES_BIN" ]; then
+    for dir in "$ROOT"/test/eval_modules_fixtures/*/; do
+      [ -d "$dir" ] || continue
+      entry="$(ls "$dir"main_*.mdk 2>/dev/null | head -1)"
+      [ -n "$entry" ] || continue
+      emit_golden "${dir%/}/main.eval.golden" oracle_eval_modules_dir "$CORE" "$entry" "${dir%/}"
+    done
+  else
+    mism=$((mism+1))
+    echo "missing $EVAL_MODULES_BIN — run: sh test/build_oracles.sh --build-one eval_modules_main"
+  fi
 fi
 
 # eval_typed_modules : FROZEN — committed goldens require the current native binary;
@@ -379,23 +532,24 @@ fi
 #        Re-capture after Phase 3 rebuild.
 
 # ── §2d build goldens : FROZEN ──────────────────────────────────────────────────
-# build_cmd / build_diff / build_construct committed *.build.golden files require
-# the current native binary (stale worktree binary produces different output).
-# Re-capture after Phase 3 rebuild.  The capture_build_golden function is kept for
-# use by the native_cli build subsection below.
-capture_build_golden() {  # $1=fixture .mdk  $2=golden path
-  src="$1"; golden="$2"; fixtures=$((fixtures+1))
-  bin="$TMP/cb.bin"; out="$TMP/cb.out"
-  rm -f "$bin"
-  perl -e 'alarm 180; exec @ARGV' -- "$MAIN" build "$src" -o "$bin" >/dev/null 2>&1 || true
-  if [ -x "$bin" ]; then "$bin" > "$out" 2>/dev/null || true; else : > "$out"; fi
-  if [ "$CHECK" -eq 1 ]; then
-    if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
-    else mism=$((mism+1)); [ -f "$golden" ] && { echo "DRIFT $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; } || echo "MISSING $golden"; fi
-  else
-    cp "$out" "$golden"; wrote=$((wrote+1))
-  fi
-}
+# build_cmd / build_diff committed *.build.golden files require the current
+# native binary (stale worktree binary produces different output).  Re-capture
+# after Phase 3 rebuild.
+#
+# build_construct is now WIRED UP as an opt-in `--frozen build_construct` tag
+# (see the FROZEN_TAG block near the top of this file; `capture_build_golden`
+# is defined up there too, alongside the other oracle helpers, so it's
+# available when the FROZEN_TAG block runs — that block executes and `exit 0`s
+# before reaching this point in the file) — it used to be dead code:
+# `capture_build_golden` was defined but never called from anywhere in this
+# script, and `test/build_construct_coverage.sh`'s own header told developers
+# to run `sh test/capture_goldens.sh build_construct` to regenerate a missing
+# golden — a tag/invocation that did not exist. Fixed here rather than there:
+# mirroring `build_construct_coverage.sh` is out of scope for this file to
+# edit, but this file owns the regenerator, so the fix belongs here. It is
+# `--frozen`-gated, not a bare-`want` default row, because it is 144
+# `medaka build` + clang link/run invocations — the same "must not churn a
+# plain run" reasoning fmt/printer/llvm_eval are already gated on.
 
 # ── §2d `repl` golden — captured from the NATIVE repl (CANONICAL), NOT OCaml ──
 # DESIGN CALL (flagged for maintainer): the OCaml `medaka repl` and the self-hosted

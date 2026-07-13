@@ -309,8 +309,8 @@ toCExpr (SList ((SAtom "CRecord")::name::fields)) =
   CRecord (toStr name) (map toCField fields)
 toCExpr (SList ((SAtom "CFieldAccess")::[e, f, n])) =
   CFieldAccess (toCExpr e) (toStr f) (toStr n)
-toCExpr (SList ((SAtom "CRecordUpdate")::base::fields)) =
-  CRecordUpdate (toCExpr base) (map toCField fields)
+toCExpr (SList ((SAtom "CRecordUpdate")::name::base::fields)) =
+  CRecordUpdate (toStr name) (toCExpr base) (map toCField fields)
 toCExpr (SList ((SAtom "CVariantUpdate")::con::base::fields)) =
   CVariantUpdate (toStr con) (toCExpr base) (map toCField fields)
 toCExpr (SList ((SAtom "CArray")::es)) = CArray (map toCExpr es)

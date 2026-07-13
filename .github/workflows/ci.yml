@@ -116,17 +116,29 @@ jobs:
   # unmergeable — not fast, blocked. So every required job must always RUN and
   # always REPORT (success or failure); only its STEPS are conditional.
   #
-  # ⚠️ "docs" is an ALLOWLIST, not a `**.md` denylist. test/snapshots/ alone holds
-  # 167 golden files with a `.md` extension (also test/CAPABILITY-MATRIX.md,
-  # test/ENGINE-DIVERGENCE.md, test/error_quality_fixtures/{INVENTORY,GRADING}.md).
+  # ⚠️ THE RULE: `test/**` is NEVER docs. Every OTHER `.md` in the tree IS docs.
+  #
+  # test/ holds 175 `.md` files and they are FUNCTIONAL, not prose: 167 are snapshot
+  # GOLDENS (test/snapshots/**/*.md), plus test/CAPABILITY-MATRIX.md,
+  # test/ENGINE-DIVERGENCE.md and test/error_quality_fixtures/{INVENTORY,GRADING}.md.
   # A naive `**.md` filter would classify a blessed golden re-cut as docs-only and
   # skip every gate that exists to catch exactly that regression — a silent-green
-  # bug, which is the one thing this test suite is built to prevent. So a path
-  # counts as docs ONLY if it is a top-level `*.md`, under `docs/**`, or
-  # `LICENSE`/`LICENSE.*` — every other path (any `test/**`, `compiler/**`,
-  # `stdlib/**`, `runtime/**`, `.github/**`, `Makefile`, `ops/**`, `sqlite/**`,
-  # `playground/**`, nested `.md` outside `docs/`, or anything unrecognized) forces
-  # the full suite. Conservative by construction: any doubt → docs_only=false.
+  # bug, which is the one thing this test suite is built to prevent. So the `test/*`
+  # arm comes FIRST in the case below and must stay there.
+  #
+  # Everything else that ends in `.md` is prose and takes the fast path: the ~50
+  # top-level docs, compiler/**'s ~47 design docs, .claude/**'s playbooks, sqlite/,
+  # archive/, stdlib/README.md, docs/**, LICENSE. Verified: nothing in the build, in
+  # any gate, or in any workflow READS a `.md` outside test/ at runtime.
+  #
+  # Still scoped to the `.md` EXTENSION on purpose — .claude/ also holds
+  # hooks/skill-triage.py and settings.json, compiler/ holds .mdk source, and
+  # runtime/ holds C. Those are executable and fall through to the `*)` catch-all as
+  # NOT docs. Do not widen this to a bare directory glob.
+  #
+  # Conservative in the direction that matters: any unrecognized path → the full
+  # suite. A false "docs-only" is a shipped bug; a false "not docs-only" costs some
+  # CI minutes, which are free on a public repo.
   #
   # Only meaningful for `pull_request` (there IS a base/head diff to classify).
   # Every other trigger (push to main/testing-arc, merge_group, workflow_dispatch)
@@ -191,6 +203,20 @@ jobs:
               # SUITE on the exact change most likely to need it — manufacturing the
               # silent-green failure this suite exists to prevent. Never relax this.
               test/*) docs_only=false ;;
+
+              # ── SYNTAX.md IS NOT PROSE — IT IS AN EXECUTABLE SPEC. ────────────────
+              # AGENTS.md designates SYNTAX.md the ground truth for what the binary
+              # accepts, and test/check_syntax_examples.sh RUNS every one of its
+              # examples through `medaka check`. That gate needs a built compiler, so
+              # it lives in a gate shard — and shards are SKIPPED when docs_only=true.
+              # Classifying a SYNTAX.md edit as docs-only would therefore skip the one
+              # gate that exists to check it, on the one change that needs it.
+              #
+              # This is not hypothetical: SYNTAX.md shipped for months documenting FIVE
+              # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
+              # impls, default impl, @Name) because nothing ever executed it. Same
+              # silent-green shape as the test/ arm above; same answer.
+              SYNTAX.md) docs_only=false ;;
 
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
@@ -284,7 +310,7 @@ jobs:
             # 14 ok / 0 failing. Reads no test/bin oracle; needs only ./medaka + the emitter.
             pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack' 'build_cmd'"
           - name: tools
-            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
+            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
@@ -444,6 +470,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # ── DELIBERATELY UNGUARDED: this step runs even when docs_only=true. ─────────
+      # Every other step in every heavy job is skipped on a docs-only PR. A doc-link
+      # gate guarded that way would be skipped on precisely the PRs it exists to
+      # police — present in the repo, looking like protection, providing none.
+      # It needs no compiler (pure text analysis), so it is nearly free to always run.
+      #
+      # Lives in `soundness` because that job already answers "is the tree coherent?",
+      # and because soundness is a REQUIRED check — so this gates on merge today,
+      # with no repo-settings change needed to make a new job required.
+      - name: Docs must not cite dead paths
+        run: sh test/check_doc_links.sh
+
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
         run: |

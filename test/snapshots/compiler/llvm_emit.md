@@ -1,5 +1,5 @@
 # META
-source_lines=9471
+source_lines=9487
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -1239,8 +1239,8 @@ emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label recName) =
   emitFieldAccess e env ex label recName
-emitExpr e env (CRecordUpdate base updates) =
-  emitRecordUpdate e env base updates
+emitExpr e env (CRecordUpdate name base updates) =
+  emitRecordUpdate e env name base updates
 emitExpr e env (CVariantUpdate con base updates) =
   emitVariantUpdate e env con base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) =
@@ -8558,16 +8558,32 @@ fieldIdxByName table recName label =
       None => findFieldIdx table label
     None => findFieldIdx table label
 
-emitRecordUpdate : Emit -> List (String, (String, LTy)) -> CExpr -> List CField -> <Mut> (String, LTy)
-emitRecordUpdate e env base updates =
+emitRecordUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
+emitRecordUpdate e env recName base updates =
   let (bw, _) = emitExpr e env base
   let firstLabel = cFieldFirstLabel updates
-  match findRecordByLabel (recFieldTable e) firstLabel
+  match recordByName (recFieldTable e) recName firstLabel
     None => gapE ("CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
     Some (name, labels) =>
       let updatePairs = emitUpdatePairs e env updates
       let words = buildUpdateWords e bw labels updatePairs 0
       emitCtorAlloc e name words
+
+-- Resolve the RECEIVER record of an update by the typecheck-stamped record name
+-- (CRecordUpdate's 1st field) when it is usable — non-empty, present in the
+-- field-order table, and actually owning the update label — else fall back to
+-- today's label-only search (unstamped / synthesized updates).  The by-name path
+-- is what makes two records that share a field name at DIFFERENT slot indices
+-- update the correct slot; the label-only guess silently wrote the other
+-- record's slot (bug #38).  Peer of fieldIdxByName on the access path.
+recordByName : List (String, List String) -> String -> String -> Option (String, List String)
+recordByName table recName label =
+  if recName == "" then findRecordByLabel table label
+  else match lookupAssoc recName table
+    Some labels => match indexOfStr label labels
+      Some _ => Some (recName, labels)
+      None => findRecordByLabel table label
+    None => findRecordByLabel table label
 
 emitVariantUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
 emitVariantUpdate e env con base updates =
@@ -8666,7 +8682,7 @@ scanExprRecords : CExpr -> List (String, List String)
 scanExprRecords (CRecord name fields) =
   (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
 scanExprRecords (CFieldAccess ex _ _) = scanExprRecords ex
-scanExprRecords (CRecordUpdate base updates) = scanExprRecords base
+scanExprRecords (CRecordUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
 scanExprRecords (CVariantUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
@@ -9393,7 +9409,7 @@ ctag (CList _) = "CList"
 ctag (CArray _) = "CArray"
 ctag (CRecord _ _) = "CRecord"
 ctag (CFieldAccess _ _ _) = "CFieldAccess"
-ctag (CRecordUpdate _ _) = "CRecordUpdate"
+ctag (CRecordUpdate _ _ _) = "CRecordUpdate"
 ctag (CRangeList _ _ _) = "CRangeList"
 ctag (CRangeArray _ _ _) = "CRangeArray"
 ctag (CIndex _ _) = "CIndex"
@@ -9760,7 +9776,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CTuple" (PVar "es"))) (EApp (EApp (EApp (EVar "emitTuple") (EVar "e")) (EVar "env")) (EVar "es")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EApp (EApp (EVar "emitRecordCreate") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "fields")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CFieldAccess" (PVar "ex") (PVar "label") (PVar "recName"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccess") (EVar "e")) (EVar "env")) (EVar "ex")) (EVar "label")) (EVar "recName")))
-(DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EVar "emitRecordUpdate") (EVar "e")) (EVar "env")) (EVar "base")) (EVar "updates")))
+(DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecordUpdate" (PVar "name") (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdate") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "base")) (EVar "updates")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitVariantUpdate") (EVar "e")) (EVar "env")) (EVar "con")) (EVar "base")) (EVar "updates")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CMethod" (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValue") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CDict" (PVar "name") (PVar "routes"))) (EApp (EApp (EApp (EApp (EVar "emitDictValue") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "routes")))
@@ -11326,8 +11342,10 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitFieldAccess" ((PVar "e") (PVar "env") (PVar "ex") (PVar "label") (PVar "recName")) (EBlock (DoLet false false (PTuple (PVar "w") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EApp (EVar "loadField") (EVar "e")) (EVar "w")) (ELit (LInt 0)))) (DoExpr (ETuple (EVar "f") (EVar "LTInt")))) (EBlock (DoLet false false (PVar "idx") (EApp (EApp (EApp (EVar "fieldIdxByName") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "recName")) (EVar "label"))) (DoLet false false (PVar "f") (EApp (EApp (EApp (EVar "loadField") (EVar "e")) (EVar "w")) (EVar "idx"))) (DoExpr (ETuple (EVar "f") (EVar "LTInt"))))))))
 (DTypeSig false "fieldIdxByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Int")))))
 (DFunDef false "fieldIdxByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EMatch (EApp (EApp (EVar "indexOfStr") (EVar "label")) (EVar "labels")) (arm (PCon "Some" (PVar "i")) () (EVar "i")) (arm (PCon "None") () (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label"))))) (arm (PCon "None") () (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label"))))))
-(DTypeSig false "emitRecordUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))
-(DFunDef false "emitRecordUpdate" ((PVar "e") (PVar "env") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoLet false false (PVar "firstLabel") (EApp (EVar "cFieldFirstLabel") (EVar "updates"))) (DoExpr (EMatch (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "firstLabel")) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CRecordUpdate: unknown record type for field '")) (EVar "firstLabel")) (ELit (LString "'"))))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "labels"))) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "name")) (EVar "words")))))))))
+(DTypeSig false "emitRecordUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))))
+(DFunDef false "emitRecordUpdate" ((PVar "e") (PVar "env") (PVar "recName") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoLet false false (PVar "firstLabel") (EApp (EVar "cFieldFirstLabel") (EVar "updates"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "recordByName") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "recName")) (EVar "firstLabel")) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CRecordUpdate: unknown record type for field '")) (EVar "firstLabel")) (ELit (LString "'"))))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "labels"))) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "name")) (EVar "words")))))))))
+(DTypeSig false "recordByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "recordByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EMatch (EApp (EApp (EVar "indexOfStr") (EVar "label")) (EVar "labels")) (arm (PCon "Some" PWild) () (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label"))))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label"))))))
 (DTypeSig false "emitVariantUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))))
 (DFunDef false "emitVariantUpdate" ((PVar "e") (PVar "env") (PVar "con") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EApp (EVar "recFieldTable") (EVar "e"))) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CVariantUpdate: unknown variant type for constructor '")) (EVar "con")) (ELit (LString "'"))))) (arm (PCon "Some" (PVar "labels")) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "con")) (EVar "words")))))))))
 (DTypeSig false "emitRefAlloc" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))
@@ -11371,7 +11389,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "scanExprRecords" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "scanExprRecords" ((PCon "CRecord" (PVar "name") (PVar "fields"))) (EBinOp "::" (ETuple (EVar "name") (EApp (EVar "cFieldLabels") (EVar "fields"))) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "fields")))))
 (DFunDef false "scanExprRecords" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanExprRecords") (EVar "ex")))
-(DFunDef false "scanExprRecords" ((PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
+(DFunDef false "scanExprRecords" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
 (DFunDef false "scanExprRecords" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
 (DFunDef false "scanExprRecords" ((PCon "CTuple" (PVar "es"))) (EApp (EVar "scanExprsRecords") (EVar "es")))
 (DFunDef false "scanExprRecords" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "f")) (EApp (EVar "scanExprRecords") (EVar "a"))))
@@ -11497,7 +11515,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "ctag" ((PCon "CArray" PWild)) (ELit (LString "CArray")))
 (DFunDef false "ctag" ((PCon "CRecord" PWild PWild)) (ELit (LString "CRecord")))
 (DFunDef false "ctag" ((PCon "CFieldAccess" PWild PWild PWild)) (ELit (LString "CFieldAccess")))
-(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild)) (ELit (LString "CRecordUpdate")))
+(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild PWild)) (ELit (LString "CRecordUpdate")))
 (DFunDef false "ctag" ((PCon "CRangeList" PWild PWild PWild)) (ELit (LString "CRangeList")))
 (DFunDef false "ctag" ((PCon "CRangeArray" PWild PWild PWild)) (ELit (LString "CRangeArray")))
 (DFunDef false "ctag" ((PCon "CIndex" PWild PWild)) (ELit (LString "CIndex")))
@@ -11811,7 +11829,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CTuple" (PVar "es"))) (EApp (EApp (EApp (EVar "emitTuple") (EVar "e")) (EVar "env")) (EVar "es")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EApp (EApp (EVar "emitRecordCreate") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "fields")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CFieldAccess" (PVar "ex") (PVar "label") (PVar "recName"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccess") (EVar "e")) (EVar "env")) (EVar "ex")) (EVar "label")) (EVar "recName")))
-(DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EVar "emitRecordUpdate") (EVar "e")) (EVar "env")) (EVar "base")) (EVar "updates")))
+(DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CRecordUpdate" (PVar "name") (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdate") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "base")) (EVar "updates")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "updates"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitVariantUpdate") (EVar "e")) (EVar "env")) (EVar "con")) (EVar "base")) (EVar "updates")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CMethod" (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValue") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")))
 (DFunDef false "emitExpr" ((PVar "e") (PVar "env") (PCon "CDict" (PVar "name") (PVar "routes"))) (EApp (EApp (EApp (EApp (EVar "emitDictValue") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "routes")))
@@ -13377,8 +13395,10 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitFieldAccess" ((PVar "e") (PVar "env") (PVar "ex") (PVar "label") (PVar "recName")) (EBlock (DoLet false false (PTuple (PVar "w") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EApp (EVar "loadField") (EVar "e")) (EVar "w")) (ELit (LInt 0)))) (DoExpr (ETuple (EVar "f") (EVar "LTInt")))) (EBlock (DoLet false false (PVar "idx") (EApp (EApp (EApp (EVar "fieldIdxByName") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "recName")) (EVar "label"))) (DoLet false false (PVar "f") (EApp (EApp (EApp (EVar "loadField") (EVar "e")) (EVar "w")) (EVar "idx"))) (DoExpr (ETuple (EVar "f") (EVar "LTInt"))))))))
 (DTypeSig false "fieldIdxByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Int")))))
 (DFunDef false "fieldIdxByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EMatch (EApp (EApp (EVar "indexOfStr") (EVar "label")) (EVar "labels")) (arm (PCon "Some" (PVar "i")) () (EVar "i")) (arm (PCon "None") () (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label"))))) (arm (PCon "None") () (EApp (EApp (EVar "findFieldIdx") (EVar "table")) (EVar "label"))))))
-(DTypeSig false "emitRecordUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))
-(DFunDef false "emitRecordUpdate" ((PVar "e") (PVar "env") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoLet false false (PVar "firstLabel") (EApp (EVar "cFieldFirstLabel") (EVar "updates"))) (DoExpr (EMatch (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "firstLabel")) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CRecordUpdate: unknown record type for field '")) (EVar "firstLabel")) (ELit (LString "'"))))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "labels"))) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "name")) (EVar "words")))))))))
+(DTypeSig false "emitRecordUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))))
+(DFunDef false "emitRecordUpdate" ((PVar "e") (PVar "env") (PVar "recName") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoLet false false (PVar "firstLabel") (EApp (EVar "cFieldFirstLabel") (EVar "updates"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "recordByName") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "recName")) (EVar "firstLabel")) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CRecordUpdate: unknown record type for field '")) (EVar "firstLabel")) (ELit (LString "'"))))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "labels"))) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "name")) (EVar "words")))))))))
+(DTypeSig false "recordByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "recordByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EMatch (EApp (EApp (EVar "indexOfStr") (EVar "label")) (EVar "labels")) (arm (PCon "Some" PWild) () (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label"))))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EVar "table")) (EVar "label"))))))
 (DTypeSig false "emitVariantUpdate" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))))
 (DFunDef false "emitVariantUpdate" ((PVar "e") (PVar "env") (PVar "con") (PVar "base") (PVar "updates")) (EBlock (DoLet false false (PTuple (PVar "bw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "base"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EApp (EVar "recFieldTable") (EVar "e"))) (arm (PCon "None") () (EApp (EVar "gapE") (EBinOp "++" (EBinOp "++" (ELit (LString "CVariantUpdate: unknown variant type for constructor '")) (EVar "con")) (ELit (LString "'"))))) (arm (PCon "Some" (PVar "labels")) () (EBlock (DoLet false false (PVar "updatePairs") (EApp (EApp (EApp (EVar "emitUpdatePairs") (EVar "e")) (EVar "env")) (EVar "updates"))) (DoLet false false (PVar "words") (EApp (EApp (EApp (EApp (EApp (EVar "buildUpdateWords") (EVar "e")) (EVar "bw")) (EVar "labels")) (EVar "updatePairs")) (ELit (LInt 0)))) (DoExpr (EApp (EApp (EApp (EVar "emitCtorAlloc") (EVar "e")) (EVar "con")) (EVar "words")))))))))
 (DTypeSig false "emitRefAlloc" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy")))))))
@@ -13422,7 +13442,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "scanExprRecords" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "scanExprRecords" ((PCon "CRecord" (PVar "name") (PVar "fields"))) (EBinOp "::" (ETuple (EVar "name") (EApp (EVar "cFieldLabels") (EVar "fields"))) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "fields")))))
 (DFunDef false "scanExprRecords" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanExprRecords") (EVar "ex")))
-(DFunDef false "scanExprRecords" ((PCon "CRecordUpdate" (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
+(DFunDef false "scanExprRecords" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
 (DFunDef false "scanExprRecords" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "base")) (EApp (EVar "scanExprsRecords") (EApp (EVar "cFieldExprs") (EVar "updates")))))
 (DFunDef false "scanExprRecords" ((PCon "CTuple" (PVar "es"))) (EApp (EVar "scanExprsRecords") (EVar "es")))
 (DFunDef false "scanExprRecords" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBinOp "++" (EApp (EVar "scanExprRecords") (EVar "f")) (EApp (EVar "scanExprRecords") (EVar "a"))))
@@ -13548,7 +13568,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "ctag" ((PCon "CArray" PWild)) (ELit (LString "CArray")))
 (DFunDef false "ctag" ((PCon "CRecord" PWild PWild)) (ELit (LString "CRecord")))
 (DFunDef false "ctag" ((PCon "CFieldAccess" PWild PWild PWild)) (ELit (LString "CFieldAccess")))
-(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild)) (ELit (LString "CRecordUpdate")))
+(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild PWild)) (ELit (LString "CRecordUpdate")))
 (DFunDef false "ctag" ((PCon "CRangeList" PWild PWild PWild)) (ELit (LString "CRangeList")))
 (DFunDef false "ctag" ((PCon "CRangeArray" PWild PWild PWild)) (ELit (LString "CRangeArray")))
 (DFunDef false "ctag" ((PCon "CIndex" PWild PWild)) (ELit (LString "CIndex")))

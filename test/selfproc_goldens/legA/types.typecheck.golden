@@ -619,8 +619,8 @@ inferRecPatFieldWith : TcEnv -> Mono -> String -> Option Pat -> <Mut> List (Stri
 inferRecPatFields : TcEnv -> String -> List (String, Mono) -> List RecPatField -> <Mut> List (String, Scheme)
 inferRecordCreate : TcEnv -> String -> List FieldAssign -> <Mut> Mono
 inferRecordCreateWith : TcEnv -> String -> RecordInfo -> List FieldAssign -> <Mut> Mono
-inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
-inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
+inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> Ref String -> <Mut> Mono
+inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> Ref String -> <Mut> Mono
 inferRecordUpdatePicked : String -> Mono -> TcEnv -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRecordUpdateWith : TcEnv -> String -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> <Mut> Unit

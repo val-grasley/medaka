@@ -43,7 +43,7 @@ WFDIR="$ROOT/.github/workflows"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found (needed to parse the workflow YAML)"; exit 2; }
 
 python3 - "$ROOT" "$WFDIR" <<'PY'
-import sys, glob, pathlib, re
+import sys, glob, pathlib, re, subprocess
 
 root, wfdir = sys.argv[1], sys.argv[2]
 
@@ -146,13 +146,22 @@ if parse_failed and not pats:
 # A gate is identified by its REPO-RELATIVE PATH (minus `.sh`), not its basename: basenames
 # COLLIDE across roots (test/native_fixtures/run.sh vs playground/e2e/run.sh both stem to
 # "run"), and a ledger keyed on a colliding name is a ledger that classifies the wrong file.
-SKIP_DIRS = ('.git/', 'node_modules/')
-all_gates = set()
-for p in glob.glob(f'{root}/**/*.sh', recursive=True):
-    rel = str(pathlib.Path(p).relative_to(root))
-    if any(part in rel for part in SKIP_DIRS):
-        continue
-    all_gates.add(rel[:-3])          # strip '.sh'; the key IS the path
+# Enumerate TRACKED scripts, via `git ls-files` — not a filesystem walk.
+#
+# A `glob('**/*.sh')` happens to work only because Python's `**` silently skips
+# dot-directories, and this box keeps ~30 agent worktrees under `.claude/worktrees/`.
+# One `find`-based rewrite, or one `include_hidden=True`, and this gate would enumerate
+# every OTHER worktree's copy of every gate. Depending on a glob's dotfile behavior for
+# correctness is exactly the kind of luck this gate exists to remove — so ask git, which
+# knows what is actually in the repo, and gets build artifacts and node_modules right for
+# free. (A gate must be a tracked file; an untracked .sh is a scratch script.)
+out = subprocess.run(['git', '-C', root, 'ls-files', '-z', '*.sh'],
+                     capture_output=True, text=True)
+if out.returncode != 0:
+    print(f"FAIL: `git ls-files` failed in {root} — cannot enumerate the gate universe.")
+    print("      Refusing to certify coverage from a partial list.")
+    sys.exit(1)
+all_gates = {p[:-3] for p in out.stdout.split('\0') if p.endswith('.sh')}
 if not all_gates:
     print("FAIL: found no scripts at all in the repo (harness bug)")
     sys.exit(1)

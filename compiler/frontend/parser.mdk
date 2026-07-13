@@ -838,7 +838,7 @@ parseRecordUpdate = do
   fields <- sepBy1 recordFieldExpr (expectTok TComma)
   optTrailingComma
   expectTok TRBrace
-  pure (ERecordUpdate e (map (desugarDottedField e) fields))
+  pure (ERecordUpdate e (map (desugarDottedField e) fields) (Ref ""))
 
 -- a record-update field `path = expr` (dotted path) or a pun `name`
 -- (mirrors lib/parser.mly `record_field_expr`).
@@ -867,10 +867,11 @@ desugarDottedField base (path, value) = match path
   [] => FieldAssign "_" value
 
 dottedGo : Expr -> List String -> Expr -> Expr
-dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value]
+dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value] (Ref "")
 dottedGo cur (f::fs) value = ERecordUpdate
   cur
   [FieldAssign f (dottedGo (EFieldAccess cur f (Ref "")) fs value)]
+  (Ref "")
 dottedGo cur [] value = value
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
