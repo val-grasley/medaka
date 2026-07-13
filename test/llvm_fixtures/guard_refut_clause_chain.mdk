@@ -1,0 +1,31 @@
+-- REGRESSION (2026-07-13, task T28), harder shape than guard_refut_clause.mdk:
+-- a refutable pattern-guard on a MIDDLE clause of a 3-clause function, where
+--   • the guard chain MIXES a refutable bind with a Bool qualifier to its right
+--     (`Yes x <- a, x > 10`) — so the bound var must scope rightward into the later
+--     qualifier AND into the body;
+--   • the clause has a CONSTRUCTOR pattern column too (not just a bare var), so the
+--     clause-selection tree and the guard both have work to do;
+--   • fall-through must reach the NEXT clause, not the abort — and from the middle
+--     of the chain, not the head.
+-- The pre-fix emitter aborted the built binary with E-INDEX-OOB on every path that
+-- fell through the refutable guard.
+--
+-- pick (Box (Yes 30)) = 30 * 2 = 60        (guard binds x=30, 30 > 10 → arm 1)
+-- pick (Box (Yes 4))  = 4 + 1000 = 1004    (x=4 fails `x > 10` → clause 2, the Box arm)
+-- pick (Box No)       = 0 + 1000 = 1000    (refutable bind FAILS → clause 2)
+-- pick Nil            = 7                  (clause 3)
+-- main = 60 + 1004 + 1000 + 7 = 2071
+data Opt = Yes Int | No
+
+data Box = Box Opt | Nil
+
+payload : Opt -> Int
+payload (Yes n) = n
+payload No = 0
+
+pick : Box -> Int
+pick (Box a) | Yes x <- a, x > 10 = x * 2
+pick (Box a) = payload a + 1000
+pick Nil = 7
+
+main = pick (Box (Yes 30)) + pick (Box (Yes 4)) + pick (Box No) + pick Nil

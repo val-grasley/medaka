@@ -1,0 +1,18 @@
+-- COVERAGE GAP (found 2026-07-13, task T28): no fixture pinned CHAR literal columns
+-- in a multi-clause function.  Chars are immediates like Ints but flow through a
+-- distinct `LChar` literal head in emitClauseTree's switch, and a distinct
+-- `charToInt`/`intToChar` boundary; neither was gated on the clause-chain path.
+-- digit '0' = 0 … digit '9' = 9 ; digit _ = -1
+-- classify 'a' 'b' pins a 2-column char clause matrix.
+digit '0' = 0
+digit '1' = 1
+digit '7' = 7
+digit '9' = 9
+digit _ = 0 - 1
+
+classify 'a' 'b' = 100
+classify 'a' _ = 200
+classify _ 'b' = 300
+classify _ _ = 400
+
+main = digit '7' * 1000 + digit '9' * 100 + digit 'x' + classify 'a' 'b' + classify 'a' 'q' + classify 'q' 'b' + classify 'q' 'q'

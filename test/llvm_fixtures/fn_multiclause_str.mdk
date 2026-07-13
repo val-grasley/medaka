@@ -1,0 +1,19 @@
+-- COVERAGE GAP (found 2026-07-13, task T28): every `fn_multiclause_*` fixture used
+-- INT literal heads or constructor heads.  A multi-clause function whose clause
+-- columns are STRING literals routes emitClauseTree's switch through a different
+-- head (`HLit (LString …)`) — string equality tests, not an i31 icmp — and nothing
+-- in the corpus pinned it.  (It works; it was simply never gated.)
+-- code "red" = 1 ; code "green" = 2 ; code "blue" = 3 ; code _ = 0
+-- Also pins a 2-column string clause (`pair`), so the multi-column matrix sees
+-- string literals in more than the leftmost column.
+code "red" = 1
+code "green" = 2
+code "blue" = 3
+code _ = 0
+
+pair "a" "b" = 10
+pair "a" _ = 20
+pair _ "b" = 30
+pair _ _ = 40
+
+main = code "green" * 1000 + code "red" * 100 + code "nope" * 10 + pair "a" "b" + pair "a" "z" + pair "z" "b" + pair "z" "z"
