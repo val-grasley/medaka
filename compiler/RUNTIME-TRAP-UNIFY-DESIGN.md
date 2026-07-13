@@ -1,5 +1,11 @@
 # Runtime-trap-format unification — design
 
+**Status:** OPEN — verified live: `stdlib/array.mdk:268` still has a bare, uncoded
+`panic "Array.set: index out of bounds"`, matching this doc's reproduction matrix row
+for `Array.set`/`MutArray.set` OOB ("wrong code, stdlib loc"). Staged-and-ready open work
+(reproduction matrix, target format, touchpoints, staging plan already written); resolves
+`compiler/RUNTIME-DESIGN.md`'s explicitly-deferred "panic unwind model" item.
+
 Status: DESIGN (2026-07-07, read-only scoping over `90d775fd`, every row reproduced
 on the built binary incl. wasm via Node 24). Playground-filed deferred item. The four
 backends trap differently on the same runtime error.

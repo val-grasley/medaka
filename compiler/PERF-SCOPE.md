@@ -1,6 +1,11 @@
-STATUS: COMPLETE — bar-4 executed 2026-06-11; results in PERF-RESULTS.md.
-
 # PERF-SCOPE.md — Stage-3 bar-item-4 performance scoping
+
+**Status:** IMPLEMENTED — bar-4 executed 2026-06-11; results in `compiler/PERF-RESULTS.md`.
+Kept as historical rationale/hot-path analysis (its own ✅ banner below is accurate). The
+dual OCaml+native scoping content and the Mach-O-only `-Wl,-stack_size` link flag are
+historical — both are gone (OCaml removed 2026-06-26; the stack flag retired with the
+Mac→Linux box migration, see `compiler/PERF-RUNTIME.md`). Dead bare `compiler/build_cmd.mdk`
+citations corrected to `compiler/driver/build_cmd.mdk` (2026-07-13 doc pass).
 
 > ✅ **EXECUTED 2026-06-11 — see [`PERF-RESULTS.md`](./PERF-RESULTS.md).** This was the
 > read-only scoping pass; the work it planned (and much more) is done: `-O2` flipped, GC tuned,
@@ -9,7 +14,7 @@ STATUS: COMPLETE — bar-4 executed 2026-06-11; results in PERF-RESULTS.md.
 > confirmed empirically. Kept for the rationale/hot-path analysis.
 
 > Read-only scoping pass, 2026-06-10. Sources inspected:
-> `compiler/build_cmd.mdk`, `lib/build_cmd.ml`, `test/bootstrap_from_seed.sh`,
+> `compiler/driver/build_cmd.mdk`, `lib/build_cmd.ml`, `test/bootstrap_from_seed.sh`,
 > `test/selfcompile_build_fixpoint.sh`, `test/refresh_seed.sh`,
 > `runtime/medaka_rt.c`, `compiler/seed/emitter.ll` (271 277 lines / ~9.6 MB text IR).
 
@@ -25,7 +30,7 @@ currently compile at clang's default, which is `-O0`.
 | Location | Exact command template | Change for `-O2` |
 |---|---|---|
 | `lib/build_cmd.ml:231–237` | `[cc; "-Wl,-stack_size,0x20000000"] @ gc_cflags @ [ll_path; rt_c] @ gc_libs @ ["-o"; out_path]` | Insert `"-O2"` after the stack flag |
-| `compiler/build_cmd.mdk:219–223` | `["-Wl,-stack_size,0x20000000"] ++ gcCflags ++ [llPath; rtC] ++ gcLibs ++ ["-o"; outPath]` | Insert `"-O2"` after the stack flag |
+| `compiler/driver/build_cmd.mdk:219–223` | `["-Wl,-stack_size,0x20000000"] ++ gcCflags ++ [llPath; rtC] ++ gcLibs ++ ["-o"; outPath]` | Insert `"-O2"` after the stack flag |
 | `test/bootstrap_from_seed.sh:66` | `"$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$SEED" "$RT" $GC_LIBS -o "$SEED_EMITTER"` | Add `-O2` before `$GC_CFLAGS` |
 | `test/bootstrap_from_seed.sh:90` | `"$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$EMITTER2" "$RT" $GC_LIBS -o "$OUT"` | Add `-O2` before `$GC_CFLAGS` |
 | `test/selfcompile_build_fixpoint.sh:64` | `"$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$INTERP" "$RT" $GC_LIBS -o "$EMITA"` | Add `-O2` before `$GC_CFLAGS` |
@@ -46,7 +51,7 @@ For `lib/build_cmd.ml` line 232:
 ([ cc; "-Wl,-stack_size,0x20000000"; "-O2" ]
 ```
 
-For `compiler/build_cmd.mdk` line 219:
+For `compiler/driver/build_cmd.mdk` line 219:
 ```
 let clangArgs = ["-Wl,-stack_size,0x20000000", "-O2"]
 ```
@@ -325,7 +330,7 @@ to:
 ([ cc; "-Wl,-stack_size,0x20000000"; "-O2" ]
 ```
 
-`compiler/build_cmd.mdk` line 219 — change:
+`compiler/driver/build_cmd.mdk` line 219 — change:
 ```
 let clangArgs = ["-Wl,-stack_size,0x20000000"]
 ```
@@ -458,7 +463,7 @@ The current pipeline has NO `opt` or `llc` step — it goes directly
 ## Summary (for the session log)
 
 - **6 clang invocations**, all at implicit `-O0`. One-line change: add `"-O2"` to
-  the `clangArgs` list in `lib/build_cmd.ml:232` and `compiler/build_cmd.mdk:219`.
+  the `clangArgs` list in `lib/build_cmd.ml:232` and `compiler/driver/build_cmd.mdk:219`.
   Shell scripts need manual edits for their bootstrap paths.
 - **`-O2` does NOT threaten the fixpoint.** The fixpoint compares emitted text IR
   (pre-clang), which is invariant to clang optimization level.
