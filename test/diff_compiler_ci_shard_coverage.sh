@@ -118,10 +118,43 @@ if parse_failed and not pats:
 #   in a CI shard  |  named by a job  |  in the EXCEPTIONS ledger  |  in the TOOLS list.
 # A new script that is none of the four fails this gate. That is the point: you cannot
 # add a gate and forget to run it, and you cannot quietly shrink the scope.
-all_gates = {pathlib.Path(p).stem
-             for p in glob.glob(f'{root}/test/*.sh') + glob.glob(f'{root}/test/wasm/*.sh')}
+#
+# ── AND IT DID IT AGAIN, ONE LEVEL UP (fixed 2026-07-13) ──────────────────────
+#
+# The line above used to read:
+#
+#     all_gates = {pathlib.Path(p).stem
+#                  for p in glob.glob(f'{root}/test/*.sh') + glob.glob(f'{root}/test/wasm/*.sh')}
+#
+# "EVERYTHING" meant everything *under test/*. So this gate — whose entire reason for
+# existing is the sentence "a completeness check that defines its own scope will always
+# certify itself complete" — DEFINED ITS OWN SCOPE, AND CERTIFIED ITSELF COMPLETE. It
+# printed "106 of 110 covered, PASS" while THIRTY-EIGHT scripts sat outside its two globs,
+# including 24 REAL GATES that ran nowhere:
+#
+#   sqlite/test/*_oracle.sh    22 differential gates diffing the pure-Medaka SQLite
+#                              library against the real sqlite3 CLI. All 22 green. None ran.
+#   test/native_fixtures/run.sh  11 native-only regression assertions — in a SUBDIRECTORY
+#                              of test/, so even the `test/*.sh` glob missed it. RED: 2
+#                              failing, and nobody knew (see the EXCEPTIONS ledger).
+#   playground/e2e/run.sh      the Playwright browser harness.
+#
+# Two separate blind spots, same shape: a curated glob list (`test/*.sh`, `test/wasm/*.sh`)
+# instead of an actual enumeration. So the scope is now literally EVERY `.sh` IN THE REPO.
+# Not test/. Not a list of roots someone remembered. The whole tree.
+#
+# A gate is identified by its REPO-RELATIVE PATH (minus `.sh`), not its basename: basenames
+# COLLIDE across roots (test/native_fixtures/run.sh vs playground/e2e/run.sh both stem to
+# "run"), and a ledger keyed on a colliding name is a ledger that classifies the wrong file.
+SKIP_DIRS = ('.git/', 'node_modules/')
+all_gates = set()
+for p in glob.glob(f'{root}/**/*.sh', recursive=True):
+    rel = str(pathlib.Path(p).relative_to(root))
+    if any(part in rel for part in SKIP_DIRS):
+        continue
+    all_gates.add(rel[:-3])          # strip '.sh'; the key IS the path
 if not all_gates:
-    print("FAIL: found no scripts at all under test/ (harness bug)")
+    print("FAIL: found no scripts at all in the repo (harness bug)")
     sys.exit(1)
 
 # TOOLS: scripts that are not gates. See test/CI-COVERAGE-TOOLS.txt for why this file
@@ -153,16 +186,26 @@ if exc_path.exists():
         stem, _, reason = line.partition(' ')
         exc[stem] = reason.strip()
 
+# A shard pattern resolves against BOTH `$ROOT/test/` and `$ROOT/` — the SAME rule
+# run_gates.sh and build_oracles.sh --for use, so all three agree on which gates a
+# pattern selects. They MUST agree: if this gate believed a pattern selected a gate
+# that run_gates.sh could not actually glob, CI would certify coverage of a gate that
+# silently never ran — the exact bug, reintroduced through the back door.
 seen, dupes = {}, []
 for name, pat in pats.items():
     for g in re.findall(r"'([^']+)'", pat):
-        for p in glob.glob(f'{root}/test/{g}.sh'):
-            stem = pathlib.Path(p).stem
-            if stem in seen:
-                dupes.append((stem, seen[stem], name))
-            seen[stem] = name
+        for p in glob.glob(f'{root}/test/{g}.sh') + glob.glob(f'{root}/{g}.sh'):
+            key = str(pathlib.Path(p).relative_to(root))[:-3]
+            if key in seen and seen[key] != name:
+                dupes.append((key, seen[key], name))
+            seen[key] = name
 
-named = {g for g in all_gates if g not in seen and re.search(rf'\b{re.escape(g)}\.sh\b', wf_text)}
+# "Named" = a workflow step invokes the script by its repo-relative path (that is how
+# the `soundness` job runs the fixpoint + the compiler-source typecheck, and how
+# nightly.yml runs check_removed_constructs / fuzz_diff). Matching on the PATH, not on
+# a bare basename, is what keeps `run.sh` from matching two different gates.
+named = {g for g in all_gates
+         if g not in seen and re.search(rf'(?<![\w/-]){re.escape(g)}\.sh\b', wf_text)}
 missing = sorted(all_gates - set(seen) - named - set(exc))
 
 for name in pats:

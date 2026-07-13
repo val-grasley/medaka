@@ -119,6 +119,23 @@ for f in $changed; do
     # ── a changed gate runs itself ──
     test/diff_compiler_*.sh)
       add "$(basename "$f" .sh)" ;;
+
+    # ── gates that do NOT live in test/ (T8) ──────────────────────────────────
+    # A pattern containing a slash resolves from the repo ROOT. run_gates.sh,
+    # build_oracles.sh --for and diff_compiler_ci_shard_coverage.sh all resolve
+    # patterns the same way, so these are the same names CI's shards use.
+    #
+    # Without these arms, editing the SQLite library or a native fixture derived NO
+    # gates at all and preflight printed a confident green having run nothing about
+    # the thing you changed — the exact failure this whole task is about, in the tool
+    # agents use most.
+    sqlite/test/*.sh|sqlite/lib/*|sqlite/*.mdk)
+      add 'sqlite/test/*oracle' ;;
+    test/native_fixtures/*)
+      add 'native_fixtures/run'; add 'diff_compiler_*' ;;      # also in the snapshot corpus
+    test/build_cmd.sh|test/build_cmd_fixtures/*)
+      add 'build_cmd' ;;
+
     test/*fixtures*/*|test/*goldens*/*)
       add 'diff_compiler_*' ;;                                 # corpus change: run everything
   esac
@@ -173,7 +190,12 @@ make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"
 gates=""
 for pat in $pats; do
   matched=0
-  for g in "$ROOT"/test/$pat.sh; do
+  # Resolve against BOTH $ROOT/test/ and $ROOT/ — the same rule run_gates.sh,
+  # build_oracles.sh --for and diff_compiler_ci_shard_coverage.sh use, so a pattern
+  # naming a gate outside test/ ('sqlite/test/*oracle') resolves identically in all
+  # four. Without this arm, preflight's own "matches NO gate" guard fired on the very
+  # patterns its change→gate map had just emitted.
+  for g in "$ROOT"/test/$pat.sh "$ROOT"/$pat.sh; do
     [ -f "$g" ] || continue
     matched=1
     case " $gates " in *" $g "*) ;; *) gates="$gates $g" ;; esac
