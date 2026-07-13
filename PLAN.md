@@ -520,7 +520,7 @@ Design→delegate→verify→merge, isolated worktrees; two batched seed re-mint
 - **D1 — exe-relative stdlib discovery (`1ce178b6`, Sonnet):** `executablePath : Unit -> <Env> String` extern (mac `_NSGetExecutablePath`, Linux `readlink /proc/self/exe`, realpath-resolved; C `mdk_executable_path` + emitter `isFileExtern` arm + preamble decl) → `MEDAKA_ROOT`/`MEDAKA_EMITTER` default exe-relative in `medaka_cli.mdk`/`build_cmd.mdk` (explicit env still wins). A `medaka` copied outside the repo `run`/`check`/`build`s with no env; in-repo build unchanged. Finding: the file/env/exec extern family is native-only (unbound under `medaka run`'s pure interpreter) so no `eval.mdk` arm was needed. Gates: eval_run 50/0, check 73/0, fixpoint YES.
 - **D2 Track 1 — big-stack pthread (`595b303e`, merge `40de5955`, Opus):** emitted `@main`→`@mdk_program_main`; `runtime/medaka_rt.c` owns `int main` spawning a **256MB-stack worker thread via `GC_pthread_create`** (`GC_THREADS` + thread-aware Boehm — the #1 trap: a raw `pthread_create` leaves the worker's stack unscanned → heap corruption). Dropped `-Wl,-stack_size` from all 6 link sites, added `-pthread`/`-lm`. **Linux spike PASSES at the default 8MB stack** (the compiler self-provisions — the deep-recursion overflow is gone on Linux), macOS byte-identical (`diff_compiler_llvm` 194/0, `_build` 53/0). Correctness-complete for ALL recursion shapes incl. tree-depth on both platforms.
 - **Seed re-mint (`f5243120`):** the `@main` rename + new `int main` forced a re-mint (the committed seed stamped `@main` → duplicate-`main` link failure). Done via a one-time bridge (old emitter output linked against the pre-D2 runtime → a `mdk_program_main`-stamping bridge emitter → normal native mint). Verified: cold `bootstrap_from_seed` C3a PASS, `selfcompile_fixpoint` C3a/C3b YES, Linux spike PASS off the committed seed.
-- **Next:** D3/D4 packaging (Homebrew formula + Linux tarball + release CI matrix) is the path to a downloadable binary. Track 2 (native TMC port) + Track 3 (recursion-depth guard) are independent robustness follow-ups, not launch blockers. Floor items W2–W9 (playground polish, quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) are parallel.
+- **Next:** D3/D4 packaging (Homebrew formula + Linux tarball + release CI matrix) is the path to a downloadable binary. Track 2 (native TMC port) ✅ shipped 2026-07-13 (TMC-parity arc — see the Open-issues index row); Track 3 (recursion-depth guard) remains an independent robustness follow-up, not a launch blocker. Floor items W2–W9 (playground polish, quickstart, stdlib docs, public repo, LICENSE, KNOWN-GAPS, `--version`) are parallel.
 
 ## Current status (2026-07-04) — error-message quality: 0.1.0 BEGINNER-FACING pass DONE (freeze-for-preview); corpus 12.04/14 (`01cf6684`)
 
@@ -1719,8 +1719,9 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   [`compiler/HELPER-CENSUS.md`](./compiler/HELPER-CENSUS.md).
 - **Deferred design seams (not pending work, tracked for provenance):** the `set_ref` write
   barrier (needed only if Boehm GC is ever replaced — [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §7);
-  TRMC Phase 2 F1(b)/F2(b) + the Phase 3 b′ dispatch variant (no corpus target; emit seams
-  pre-parameterized — [`compiler/TRMC-DESIGN.md`](./compiler/TRMC-DESIGN.md)). *(The `panic`
+  TRMC Phase 2 F1(b)/F2(b) (no corpus target; emit seams pre-parameterized — the Phase 3 b′
+  dispatch variant SHIPPED 2026-07-13, TMC-parity arc —
+  [`compiler/TRMC-DESIGN.md`](./compiler/TRMC-DESIGN.md)). *(The `panic`
   unwind model is resolved by decision — abort, not catchable — see memory
   `no-catchable-panics-isolation`; not an open item.)*
 
