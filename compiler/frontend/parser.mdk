@@ -616,7 +616,28 @@ parsePostfix = do
   postfixTail e
 
 postfixTail : Expr -> Parser Expr
-postfixTail e = orElse (dotTail e) (pure e)
+postfixTail e = orElse (bracketIndexTail e) (orElse (dotTail e) (pure e))
+
+-- bare `a[i]` postfix indexing (no dot) — fires only on the adjacency-lexed
+-- TLBracketTight token, so a spaced `a [i]` (application to a list literal)
+-- is untouched. Builds the SAME EIndex node dotTail's `.[i]` produces. Bare
+-- slice `a[i..j]`/`a[i..=j]` is deferred (#17) — clean error, not ESlice.
+bracketIndexTail : Expr -> Parser Expr
+bracketIndexTail e = do
+  expectTok TLBracketTight
+  lo <- parseExpr
+  t <- peekP
+  bracketIndexRest e lo t
+
+bracketIndexRest : Expr -> Expr -> Token -> Parser Expr
+bracketIndexRest _ _ TDotDot =
+  failP "bare slice `a[i..j]` is not yet supported — use `a.[i..j]`"
+bracketIndexRest _ _ TDotDotEq =
+  failP "bare slice `a[i..=j]` is not yet supported — use `a.[i..=j]`"
+bracketIndexRest e lo TRBracket = do
+  advance
+  postfixTail (EIndex e lo (Ref "Array"))
+bracketIndexRest _ _ _ = failP "expected ']' in index expression"
 
 -- after a `.`: a field access `.field`, an index `.[i]`, or a slice `.[lo..hi]`
 dotTail : Expr -> Parser Expr
@@ -3125,6 +3146,7 @@ isLayoutTok _ = False
 isOpenDelim : Token -> Bool
 isOpenDelim TLParen = True
 isOpenDelim TLBracket = True
+isOpenDelim TLBracketTight = True
 isOpenDelim TLBrace = True
 isOpenDelim TLArray = True
 isOpenDelim _ = False
@@ -3691,6 +3713,7 @@ hsSigMsg =
 isBracketOpenTok : Token -> Bool
 isBracketOpenTok TLParen = True
 isBracketOpenTok TLBracket = True
+isBracketOpenTok TLBracketTight = True
 isBracketOpenTok TLBrace = True
 isBracketOpenTok _ = False
 

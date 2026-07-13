@@ -21,7 +21,13 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RUN="$ROOT/test/bin/eval_main"
+# Prelude-bearing eval entry: index sugar (`.[i]`) desugars to a prelude `index`
+# method call (F2a retired the built-in EIndex path), so the OOB fixtures need
+# stdlib/core.mdk prepended to reach the `Index` impls that raise E-INDEX-OOB.
+# The other (prelude-free) fixtures produce byte-identical messages with core
+# prepended, so one prelude-bearing entry covers the whole corpus.
+RUN="$ROOT/test/bin/eval_prelude_main"
+CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/eval_error_fixtures"
 
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
@@ -42,13 +48,13 @@ for f in "$FIXDIR"/*.mdk; do
   ok=1; reason=""
 
   # B. Self-hosted must exit non-zero
-  "$RUN" "$f" >/dev/null 2>&1
+  "$RUN" "$CORE" "$f" >/dev/null 2>&1
   exit_code=$?
   [ "$exit_code" -ne 0 ] || { ok=0; reason="compiler exited 0 (should error)"; }
 
   # C. Self-hosted message must match golden
   if [ "$ok" -eq 1 ]; then
-    self_out="$("$RUN" "$f" 2>&1 >/dev/null | norm_msg)"
+    self_out="$("$RUN" "$CORE" "$f" 2>&1 >/dev/null | norm_msg)"
     [ "$self_out" = "$golden" ] || { ok=0; reason="compiler: got \"$self_out\" want \"$golden\""; }
   fi
 

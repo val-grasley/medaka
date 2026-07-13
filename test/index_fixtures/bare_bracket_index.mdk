@@ -1,0 +1,36 @@
+-- Regression for #16c: bare `a[i]` postfix indexing (no dot) desugars to the
+-- SAME `EIndex` node as `a.[i]`. Covers success across containers, chaining
+-- (`a[i][j]`, `a[i].field`, `f(x)[i]`), the tight/spaced disambiguation
+-- (`a[i]` index vs `a [i]` application-to-list), and `a[i] := v` mutation.
+-- Run with:  medaka run test/index_fixtures/bare_bracket_index.mdk
+
+data P = P { x : Int }
+
+f y = [|y, y + 1, y + 2|]
+
+identityFn = y => y
+
+a = [|10, 20, 30|]
+xs = ["p", "q", "r"]
+grid = [|[|1, 2|], [|3, 4|]|]
+ps = [|P { x = 5 }, P { x = 9 }|]
+arr = [|0, 0|]
+
+main =
+  -- bare index across containers
+  println a[1]
+  println xs[1]
+  println "hello"[1]
+  -- chaining: index-then-index, index-then-field, call-then-index
+  println grid[1][0]
+  println ps[1].x
+  println (f 10)[1]
+  -- tight vs spaced disambiguation: `a[i]` indexes; a SPACED bracket after an
+  -- identifier is application to a list literal, not indexing
+  println (identityFn [1, 2, 3])
+  -- `x =[1]` (no space before `[`, but after `=`) stays a list literal
+  let y = [1]
+  println y
+  -- mutation through bare-bracket LHS
+  arr[0] := 9
+  println arr[0]

@@ -1,10 +1,10 @@
-build : Container b => a -> a -> b a
-collect : Container a => a b -> List b
-empty2 : a b
 eq2 : a -> a -> Bool
-insert2 : a -> b a -> b a
-map2 : (a -> b) -> c a -> c b
-mapTwice : (Mappable2 c, Mappable2 d) => (a -> b) -> c (d a) -> c (d b)
 neq2 : a -> a -> Bool
+map2 : (a -> b) -> c a -> c b
+empty2 : a b
+insert2 : a -> b a -> b a
 toL : a b -> List b
 useEq : Eq2 a => a -> a -> Bool
+mapTwice : (Mappable2 c, Mappable2 d) => (a -> b) -> c (d a) -> c (d b)
+build : Container b => a -> a -> b a
+collect : Container a => a b -> List b

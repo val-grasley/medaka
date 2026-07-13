@@ -5,6 +5,6 @@
 (DTypeSig false "watShared" (TyFun (TyCon "Wat") (TyCon "String")))
 (DFunDef false "watShared" ((PVar "b")) (EFieldAccess (EVar "b") "shared"))
 (DTypeSig false "charAt" (TyFun (TyCon "String") (TyCon "Char")))
-(DFunDef false "charAt" ((PVar "s")) (EIndex (EVar "s") (ELit (LInt 0))))
+(DFunDef false "charAt" ((PVar "s")) (EApp (EApp (EMethodRef "index") (EVar "s")) (ELit (LInt 0))))
 (DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
 (DFunDef false "main" () (EBlock (DoLet false false (PVar "i") (ERecordCreate "Inv" ((fa "shared" (ELit (LInt 7)))))) (DoLet false false (PVar "w") (ERecordCreate "Wat" ((fa "shared" (ELit (LString "hi")))))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "invShared") (EVar "i")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "watShared") (EVar "w")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "charAt") (ELit (LString "abc")))))))

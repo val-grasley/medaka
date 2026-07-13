@@ -159,6 +159,10 @@ intSeq lo end
   | lo >= end = []
   | otherwise = lo :: intSeq (lo + 1) end
 
+-- Retained for the Core-IR interpreter's CIndex/CStringIndex/CListIndex arms
+-- (core_ir_eval.ceval).  Those Core-IR nodes are now unreachable — EIndex is
+-- desugared to an `index` method call before lowering (Phase #16b) — but kept in
+-- place (tier ii) to shrink the diff, so their eval helper stays too.
 listNthAt : List Value -> Int -> Int -> Value
 listNthAt [] orig _ =
   runtimePanic "E-INDEX-OOB" ("index " ++ intToString orig ++ " out of bounds")
@@ -1026,7 +1030,8 @@ eval env (EFieldAccess e field _) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
 eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
-eval env (EIndex arr idx _) = evalIndex (eval env arr) (eval env idx)
+-- EIndex is desugared to an `index` method call before eval (Phase #16b); the
+-- built-in index path is retired, so no `EIndex` arm here.
 eval env (ESlice arr lo hi incl _) =
   evalSlice (eval env arr) (eval env lo) (eval env hi) incl
 eval env (ERangeList lo hi incl) =
@@ -1078,6 +1083,9 @@ evalMethodAt env name route implRoutes methodRoutes =
 -- — so applying the route's dicts would over-apply to a constructor/scalar
 -- ("applied non-function"). Drop them when the narrowed value awaits no args.
 
+-- Retained for the Core-IR interpreter's CIndex/CStringIndex/CListIndex arms
+-- (see the note on listNthAt above): the EIndex eval arm is gone (desugared to
+-- `index`), so this is only reachable via the now-unreachable Core-IR nodes.
 export evalIndex : Value -> Value -> Value
 evalIndex container (VInt i) = evalIndexInt container i
 evalIndex _ _ = panic "index is not an Int"
@@ -1091,7 +1099,7 @@ evalIndexInt (VList vs) i = listNthAt vs i i
 evalIndexInt (VString s) i = stringIndexCp s i
 evalIndexInt _ _ = panic "index on non-array/list/string"
 
--- codepoint-indexed Char (Phase 77), mirroring lib/eval.ml's EIndex String arm
+-- codepoint-indexed Char (Phase 77)
 stringIndexCp : String -> Int -> Value
 stringIndexCp s i
   | i < 0 || i >= stringLength s =
@@ -1889,6 +1897,7 @@ externBindings = [
   ("ePutStr", prim1M pDiscard),
   ("ePutStrLn", prim1M pDiscard),
   ("panic", prim1 pPanic),
+  ("indexError", prim1 (s => runtimePanic "E-INDEX-OOB" (unString s))),
   ("debugStringLit", prim1 pDebugStringLit),
   ("debugCharLit", prim1 pDebugCharLit),
   ("stringToFloat", prim1 pStringToFloat),

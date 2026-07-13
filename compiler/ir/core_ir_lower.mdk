@@ -807,8 +807,24 @@ ifaceReturnsSelfEntries (DInterface { name = ifaceName, typarams = typeParams, m
 ifaceReturnsSelfEntries _ = []
 
 ifaceReturnsSelfEntry : String -> List String -> IfaceMethod -> ((String, String), Bool)
-ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) =
-  ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
+ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) = (
+  (ifaceName, mname),
+  tyMentionsParams (methodResultTy mty) (headParamOnly typeParams),
+)
+
+-- Only the HEAD (first) interface type parameter — the one whose concrete
+-- instantiation names the impl's dispatch/head tag (`headTyconHead typeArgs`
+-- takes typeArgs[0]).  A method's result is the self/container type ONLY when it
+-- mentions THIS param; the emitter then types the RKey result as `tagToLTy
+-- headTag`.  A multi-param interface (`Ix c v`) whose result mentions a NON-head
+-- param (`v`, the element) is NOT self-returning: typing its Char/element result
+-- as `tagToLTy headTag` (e.g. LTStr for `impl Ix String Char`) would route a
+-- downstream `==` through @mdk_string_eq, dereferencing a Char immediate as a
+-- String pointer → SIGSEGV.  (Previously ALL typeParams were checked, mis-marking
+-- `ix` self-returning and mis-typing its array-slot Char result.)
+headParamOnly : List String -> List String
+headParamOnly [] = []
+headParamOnly (p::_) = [p]
 
 -- the RESULT type of a method type: the final tail after stripping the TyFun
 -- argument chain (and any leading constraint/effect wrappers).

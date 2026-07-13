@@ -297,6 +297,9 @@ PIPE
 UPPER "TLBracket"
 NEWLINE
 PIPE
+UPPER "TLBracketTight"
+NEWLINE
+PIPE
 UPPER "TRBracket"
 NEWLINE
 PIPE
@@ -821,6 +824,11 @@ IDENT "tokenToString"
 UPPER "TLBracket"
 EQUAL
 STRING "LBRACKET"
+NEWLINE
+IDENT "tokenToString"
+UPPER "TLBracketTight"
+EQUAL
+STRING "LBRACKET_TIGHT"
 NEWLINE
 IDENT "tokenToString"
 UPPER "TRBracket"
@@ -1355,6 +1363,11 @@ STRING "`)`"
 NEWLINE
 IDENT "describeToken"
 UPPER "TLBracket"
+EQUAL
+STRING "`[`"
+NEWLINE
+IDENT "describeToken"
+UPPER "TLBracketTight"
 EQUAL
 STRING "`[`"
 NEWLINE
@@ -7364,15 +7377,22 @@ IDENT "depth"
 IDENT "id"
 CHAR "["
 EQUAL
+INDENT
 IDENT "emit"
 IDENT "src"
 IDENT "len"
 IDENT "pos"
 IDENT "depth"
 IDENT "id"
-UPPER "TLBracket"
+LPAREN
+IDENT "bracketTok"
+IDENT "src"
+IDENT "pos"
+RPAREN
 INT 1
 INT 1
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "singleOp"
 IDENT "src"
@@ -7537,6 +7557,68 @@ IDENT "c"
 INTERP_END "'"
 NEWLINE
 DEDENT
+NEWLINE
+IDENT "bracketTok"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Token"
+NEWLINE
+IDENT "bracketTok"
+IDENT "src"
+IDENT "pos"
+INDENT
+PIPE
+IDENT "pos"
+GT
+INT 0
+AND
+IDENT "isExprEnd"
+LPAREN
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "pos"
+MINUS
+INT 1
+RPAREN
+RPAREN
+EQUAL
+UPPER "TLBracketTight"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+UPPER "TLBracket"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "isExprEnd"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isExprEnd"
+IDENT "c"
+EQUAL
+IDENT "isAlnum"
+IDENT "c"
+OR
+IDENT "c"
+EQ_EQ
+CHAR ")"
+OR
+IDENT "c"
+EQ_EQ
+CHAR "]"
+OR
+IDENT "c"
+EQ_EQ
+CHAR "\""
 NEWLINE
 IDENT "atToken"
 COLON
@@ -8893,6 +8975,11 @@ UPPER "True"
 NEWLINE
 IDENT "bracketOpener"
 UPPER "TLBracket"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "bracketOpener"
+UPPER "TLBracketTight"
 EQUAL
 UPPER "True"
 NEWLINE

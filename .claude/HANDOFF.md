@@ -7,6 +7,33 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## MERGE — 🔀 local Index-arc main ⨝ origin (Netcup move + #35 close). (2026-07-13, last macOS session's final act)
+
+Synced the macOS work laptop's local `main` (the Index arc #16, below) with `origin/main` (the Netcup-box work: the machine move + #35 close, next section). **Disjoint changes** — the sole textual conflict was this file (two RESUME logs). Post-merge reconciliation:
+- **#35 (`ctor_collision`) is CLOSED by the remote** (`837d737b`, the P0-9 port into `compiler/ir/core_ir_eval.mdk`'s per-module frames). So the merged tree is **`run_gates` 78/0/1 — fully green**; my Index entry's "the 1 fail is #35" is superseded, and the remote correctly notes it was **never an x86 bug** (red on Mac too) and the fix file was `core_ir_eval.mdk`, NOT `core_ir_lower.mdk` (the memory `project_ctor_collision_x86_divergence` is thus resolved — plain #35).
+- **Seed RE-MINTED post-merge** — the remote changed a compiled compiler file (`core_ir_eval.mdk`), so my Index-arc seed was stale against the merged source. Re-minted from merged source; cold `bootstrap_from_seed` C3a + `selfcompile_fixpoint` C3b re-verified, full `run_gates` re-verified, before pushing.
+- **Dev now lives on the Netcup Linux box** (next section) — the Index arc's Mac-centric notes (Docker, `medaka_emitter` borrow paths, Apple-clang perf) belong to the retired environment.
+
+## RESUME — ✅ INDEX ARC #16 SHIPPED: typeclass indexing `a[i]` / `a[i][j]` / `a[i] := v` + coded `E-INDEX-OOB`. Seed RE-MINTED (cold C3a + fixpoint C3b PASS). Tree GREEN. (2026-07-12)
+
+The user gated "go straight to the Index arc"; **#16 (Index+IndexMut CORE) is done end-to-end**. Design was decision-ready (`INDEX-DESIGN.md` + a new `INDEX-16-PLAN.md` that resolved the one open seam). Shipped as 7 isolated-worktree sub-stages, each gated+merged; owning memory **`project_index_arc_16_shipped`** has full detail.
+
+### ⭐ DO-FIRST STATE
+- At the time this arc landed on the macOS laptop, `run_gates` was **77 pass / 1 fail / 1 skip**, the 1 fail being the pre-existing **#35** `ctor_collision` — **now CLOSED by the merge with origin** (see the MERGE note above; the remote's `core_ir_eval.mdk` port fixes it, so the merged tree is 78/0/1).
+- **Seed re-minted** (`2379ff24`) — adding the `indexError` extern forced it (pre-arc seed can't emit the new stdlib). Cold `bootstrap_from_seed` C3a + `selfcompile_fixpoint` C3b both PASS.
+
+### WHAT SHIPPED (#16a–#16e + 16b-2 + 16d, all merged)
+- `Index c k v` / `IndexMut c k v requires Index` interfaces in `stdlib/core.mdk`; impls Array/List/String (prelude → **no import needed**) + Map/MutArray (their modules). `index`/`setIndex` methods; `a.[i]`→`index a i` desugar (F2a **retires the built-in `EIndex` path**); `a[i] := v`→`setIndex` (two-pass desugar for the post-order hazard); bare **`a[i]`** grammar (F1 `TLBracketTight` lex + `postfixTail`); printer renders bare `a[i]`. Write is in-place `<Mut>` for Array/MutArray only. OOB → coded `E-INDEX-OOB` via a new `indexError : String -> a` abort extern (reuses `@mdk_oob`/`wasmTrap`).
+- **Two latent bugs the full differential suite caught** (stage agents only run full-pipeline probes; the ORCHESTRATOR runs the suite): **#16d** prelude-free probe regressions (`eval_main` is `~prelude:false`; F2a makes `.[i]` need the prelude `index` → fixture migration to `arrayGetUnsafe`/prelude-bearing harness); **#16e** a return-position-dispatch value-rep SEGFAULT on build (a return-only-param method returning an array-slot `Char` was mis-typed as the head type → `mdk_string_eq` deref → SIGSEGV; fixed in `core_ir_lower.mdk` by restricting `ifaceReturnsSelfEntry` to the HEAD param). Both were general (minimal repros used a plain user interface), pre-existing-latent, exposed by the arc.
+
+### ⭐ NEXT (still open in the Index arc — user-gated):
+- **#17 slicing `a[i..j]`** — bare-slice grammar (currently DEFERRED: the tight-bracket branch rejects `..` with a clean error; `a.[i..j]` dot-form still works). Native/wasm slice is NOT bounds-checked (`E-SLICE-OOB` interpreter-only) — closing that is a rider.
+- **#18 operator-interface generalizations** — `++`→`Semigroup` (GOLD), ranges→minimal `Enum`, unary `-`→`Num.negate`. SKIP overloaded literals. Independent of Index (single-param classes) but shares front-end files → serial. May sweep up a #30 eval-gap (user `++`).
+
+### PROCESS LEARNINGS (new this arc)
+- **The full differential suite is the ONLY thing that catches probe-context + codegen regressions** a self-hosting feature introduces — green fixpoint + agent full-pipeline probes are NOT enough (both #16d and #16e passed those). Always run the whole `run_gates` (and eyeball the OUTPUT-comparing gates eval/llvm/build separately from dump gates) before merging a feature that changes desugar/emit.
+- **A missing `import` mimics a dispatch bug** — I mis-aimed an Opus agent at the typechecker for what were missing-`import` errors; it correctly disproved the hypothesis. See `project_stdlib_impl_needs_import_to_dispatch`.
+- **Golden recapture after a front-end/emit change spans ~8 families with distinct capture paths** (`--frozen desugar/mark/fmt/printer`; lex/tc/core_ir_sexp regenerate by mirroring each gate's RUN+strip_unit pipe; `diff_fixtures` TYPES need a surgical splice). Only indexing fixtures actually shift, so the changed-file count stays small — a good benign-ness signal. The recapture-agent choked on `build_oracles` respawn (TaskStop+reap+DIY).
 ## RESUME — 🖥️ NEW HOME: dev moved to a dedicated x86_64 Linux box. Docs + memories swept. (2026-07-13)
 
 **The machine changed.** Primary dev is no longer the macOS work laptop — it is a **dedicated

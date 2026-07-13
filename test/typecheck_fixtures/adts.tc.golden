@@ -1,7 +1,7 @@
-applyPair : Pair (a -> b) a -> b
+wrap : a -> Opt a
 fromOpt : a -> Opt a -> a
 mapOpt : (a -> b) -> Opt a -> Opt b
-mirror : Tree a -> Tree a
-single : a -> Tree a
 swap : Pair a b -> Pair b a
-wrap : a -> Opt a
+applyPair : Pair (a -> b) a -> b
+single : a -> Tree a
+mirror : Tree a -> Tree a

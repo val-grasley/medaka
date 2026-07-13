@@ -1,7 +1,7 @@
--- slice 8: CRangeArray (inclusive) + CIndex via recursive sum.
+-- slice 8: CRangeArray (inclusive) + arrayGetUnsafe via recursive sum.
 -- [| 0..=4 |] = [0,1,2,3,4], sum = 10.
 sumR arr i n acc =
   if i >= n then acc
-  else sumR arr (i + 1) n (acc + arr.[i])
+  else sumR arr (i + 1) n (acc + arrayGetUnsafe i arr)
 
 main = sumR [| 0..=4 |] 0 5 0

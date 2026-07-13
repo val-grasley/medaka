@@ -34,7 +34,7 @@ sliceIt xs = xs.[1..3]
 
 sliceInclIt xs = xs.[1..=3]
 
-indexIt xs = xs.[0]
+indexIt xs = xs[0]
 
 grade n = match n
   0..59 => "F"

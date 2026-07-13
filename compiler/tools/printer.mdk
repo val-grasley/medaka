@@ -674,7 +674,7 @@ printExprRaw (ETuple es) = delimited "(" ")" (map (printExpr precTop) es)
 printExprRaw (EIndex e i _) =
   Cat
     (printExpr precPostfix e)
-    (Cat (text ".[") (Cat (printExpr precTop i) (text "]")))
+    (Cat (text "[") (Cat (printExpr precTop i) (text "]")))
 printExprRaw (EMatch sc arms) =
   Cat (text "match ") (Cat (printExpr precTop sc) (printMatchArms arms))
 printExprRaw (EGuards arms) = printGuardArms arms

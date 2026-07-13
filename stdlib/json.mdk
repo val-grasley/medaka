@@ -446,17 +446,17 @@ lookupGo key pairs i n
 
 {- | Element at an index in a `JArray` (O(1)), or `None`.
 
-   > index 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
+   > at 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
    True
-   > index 5 (jArray [JInt 10]) == None
+   > at 5 (jArray [JInt 10]) == None
    True
-   > index 0 (JInt 1) == None
+   > at 0 (JInt 1) == None
    True -}
-export index : Int -> Json -> Option Json
-index k (JArray arr)
+export at : Int -> Json -> Option Json
+at k (JArray arr)
   | k >= 0 && k < arrayLength arr = Some (arrayGetUnsafe k arr)
   | otherwise = None
-index _ _ = None
+at _ _ = None
 
 {- | The `String` inside a `JString`, or `None`.
 
@@ -584,9 +584,9 @@ prop "asArray recovers a built JArray" (xs : List Int) =
   let arr = map JInt xs
   map JArray (asArray (jArray arr)) == Some (jArray arr)
 
-prop "index k recovers the k-th element of a JArray" (n : Int) =
+prop "at k recovers the k-th element of a JArray" (n : Int) =
   let k = if n < 0 then 0 - n else n
-  index k (jArray (map JInt [0..=k])) == Some (JInt k)
+  at k (jArray (map JInt [0..=k])) == Some (JInt k)
 
 prop "lookup finds an inserted key" (k : Int) (v : Int) =
   lookup (intToString k) (jObject [(intToString k, JInt v)]) == Some (JInt v)

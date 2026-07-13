@@ -327,6 +327,17 @@ Sequence: after P0-5 lands, run the indexing DESIGN PASS (needs Docker → after
 then implement. Order vs P0-19 (soundness) TBD — lean soundness-first, indexing design pass can prep
 in parallel (read-only).
 
+> **✅ SHIPPED 2026-07-12 as Index arc #16 (`c9478073`).** Design → `INDEX-DESIGN.md` +
+> `INDEX-16-PLAN.md`. Multi-param arity-general at 3 params CONFIRMED (no blessed-assoc-types
+> hatch needed). Delivered: `Index`/`IndexMut` interfaces in `core.mdk`; impls Array/List/String
+> (prelude, no import) + Map/MutArray; `a.[i]` AND bare **`a[i]`** grammar; `a[i][j]` chaining;
+> `a[i] := v` in-place `<Mut>` write (Array/MutArray only); coded `E-INDEX-OOB` via a new
+> `indexError` abort extern; F2a retired the built-in `EIndex` path. The full differential suite
+> caught 2 latent bugs the stage agents missed (prelude-free probe regressions; a return-position
+> array-`Char` value-rep segfault on build). **Still open in the arc: #17 bare-slice `a[i..j]`
+> (deferred — dot-form `a.[i..j]` works; bare rejects `..`) and #18 operator generalizations
+> (`++`→Semigroup, ranges→Enum, unary `-`→Num.negate).** See memory `project_index_arc_16_shipped`.
+
 ## Current status (2026-07-09) — P0-18 standalone-shadow dispatch FULLY CLOSED (run/check + build); soundness hole gone. `main` = `01ac360d`
 
 Both halves of P0-18 landed (Opus, Docker-gated throughout):

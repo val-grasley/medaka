@@ -3109,7 +3109,8 @@ infer env (EDictAt name routesRef) = inferDictAt env name routesRef
 infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
-infer env (EIndex arr idx r) = inferIndex env arr idx r
+-- EIndex is desugared to an `index` method call before typecheck (Phase #16b);
+-- the built-in index-inference path is retired, so no `EIndex` arm here.
 infer env (ESlice arr lo hi _ r) = inferSlice env arr lo hi r
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
@@ -3141,40 +3142,12 @@ inferIntRange env lo hi container =
   let _ = unify (infer env hi) (TCon "Int")
   TApp container (TCon "Int")
 
--- a.[i] : element of a List container (the only indexed container in the stdlib
--- type-checked here; Array/String indexing would extend this)
--- a.[i] : index preserves container element type, mirroring the oracle
--- (typecheck.ml:2198-2210): String -> Char (codepoint), Array a -> a, List a -> a,
--- and an UNDETERMINED receiver (or a clean mismatch) defaults to Array, NOT List.
-inferIndex : TcEnv -> Expr -> Expr -> Ref String -> <Mut> Mono
-inferIndex env arr idx r =
-  let _ = unify (infer env idx) (TCon "Int")
-  let at = infer env arr
-  let nat = normalize at
-  let _ = setRef r (indexKind nat)
-  inferIndexElem at nat
-
--- receiver-kind discriminator stamped onto the EIndex/ESlice Ref: lowering routes
--- "String" to CStringIndex/CStringSlice; "List"/"Array" stay on the array path
--- (List indexing on the build path is a separate pre-existing gap, unchanged).
+-- receiver-kind discriminator stamped onto the ESlice Ref: lowering routes
+-- "String" to CStringSlice; "List"/"Array" stay on the array path.
 indexKind : Mono -> String
 indexKind (TCon "String") = "String"
 indexKind (TApp (TCon "List") _) = "List"
 indexKind _ = "Array"
-
--- normalize-and-branch on the receiver head; `at` is the raw receiver mono, `nat`
--- its normalized form. String -> Char; List -> element; everything else (Array,
--- undetermined TVar, clean mismatch) defaults to Array a -> a.
-inferIndexElem : Mono -> Mono -> <Mut> Mono
-inferIndexElem at (TCon "String") = TCon "Char"
-inferIndexElem at (TApp (TCon "List") _) = indexElemAs at (TCon "List")
-inferIndexElem at _ = indexElemAs at (TCon "Array")
-
-indexElemAs : Mono -> Mono -> <Mut> Mono
-indexElemAs at con =
-  let elem = freshVar ()
-  let _ = unify at (TApp con elem)
-  elem
 
 -- a.[lo..hi] : same container type as a
 inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> <Mut> Mono
@@ -9081,11 +9054,11 @@ checkOneCallObligation prog heads iface occ loc =
     pushNoImplError iface loc args
   -- A function-typed constraint obligation is fully ground yet has no impl — report
   -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
-  else if anyList monoIsFunction args && not (implMatches heads iface args) then
+  else if anyList monoIsFunction args && not (implMatchesReceiver heads iface (normalize occ)) then
     pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
     checkUndeterminedObligation heads iface occ loc
-  else if implMatches heads iface args then
+  else if implMatchesReceiver heads iface (normalize occ) then
     -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
@@ -9577,6 +9550,25 @@ allHeadArgsMatch [] = True
 allHeadArgsMatch ((ty, m)::rest) = match matchTyMono ty m
   Some _ => allHeadArgsMatch rest
   None => False
+
+-- Does some impl of [iface] have a RECEIVER (first head type) matching the single
+-- dispatch mono [dm]?  The call-obligation path (checkOneCallObligation) only ever
+-- carries the receiver dispatch mono — NOT every interface param — so it must match
+-- against the impl head's receiver position alone.  For a single-param interface
+-- (`Eq (List a)`) this is identical to implMatches (the head has one type); for a
+-- MULTI-param interface (`Index (Array a) Int a`) a full-length implMatches would
+-- length-mismatch [dm] (1) against the 3-type head and spuriously reject.  Soundness
+-- is preserved because the full-arity checkImplObligations path (recordImplObligation)
+-- still validates all interface params of the same occurrence.
+implMatchesReceiver : List (String, List Ty) -> String -> Mono -> <Mut> Bool
+implMatchesReceiver [] _ _ = False
+implMatchesReceiver ((iface2, tys)::rest) iface dm
+  | iface2 == iface = match tys
+    recv::_ => match matchTyMono recv dm
+      Some _ => True
+      None => implMatchesReceiver rest iface dm
+    [] => implMatchesReceiver rest iface dm
+  | otherwise = implMatchesReceiver rest iface dm
 
 -- render the dispatch monos space-separated under ONE shared naming context
 -- (mirrors lib/typecheck.ml's pp_monos), so distinct free vars don't all collapse

@@ -961,6 +961,10 @@ isLeafExternW name = contains name [
   -- validates as any result type — matches the native @mdk_panic abort).  The message
   -- arg is emitted-then-dropped; printing it to stderr is a nice-to-have not done here.
   "panic",
+  -- Index-16a: `indexError : String -> a` -- the coded-OOB abort extern the Index/
+  -- IndexMut impls call; lowers to the same fixed E-INDEX-OOB trap CIndex/CStringIndex
+  -- already emit (message dropped, per the seam design).
+  "indexError",
   -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Pure i64 ops over the
   -- box/unbox seam; no $str/$arr/$float dependencies.
   "bitAnd", "shiftLeft", "shiftRight"]
@@ -1006,6 +1010,8 @@ externArityW name =
     "floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat",
     -- W10: panic msg (1); arrayLength/arrayFromList/arrayCopy (1).
     "panic", "arrayLength", "arrayFromList", "arrayCopy",
+    -- Index-16a: indexError msg (1) -- the coded-OOB abort extern.
+    "indexError",
     -- stage-B: floatToBytes64 : Float -> Array Int (1-arg).
     "floatToBytes64",
     -- W11b: stringToChars/stringFromChars/charFromCode are each 1-arg.
@@ -4923,6 +4929,14 @@ emitLeafExternRef prog env d "panic" [msg] = wasmTrapBytes "runtime error [E-PAN
   ++ ["unreachable"]
 emitLeafExternRef prog env d "panic" _ =
   gapL "wasm W10: panic takes exactly one argument"
+-- Index-16a: `indexError msg` reuses the existing coded E-INDEX-OOB trap (the
+-- same fixed text CIndex/CStringIndex OOB already emit) -- the message
+-- argument is dropped, matching the native @mdk_oob() abort (which also
+-- ignores its message and prints the fixed text).
+emitLeafExternRef prog env d "indexError" [msg] =
+  wasmTrap "E-INDEX-OOB" "index out of bounds"
+emitLeafExternRef prog env d "indexError" _ =
+  gapL "wasm Index-16a: indexError takes exactly one argument"
 -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Args are (ref eq) boxed Ints;
 -- unbox both to i64 via $mdk_unbox_int, apply the i64 op, rebox via $mdk_box_int.
 -- shiftRight uses i64.shr_u (LOGICAL) — shiftRight is defined as logical in runtime/medaka_rt.c

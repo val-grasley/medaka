@@ -10,10 +10,10 @@ kind c = match c
   '0'..'9' => "digit"
   _ => "sym"
 main =
-  ( "hello".[0]
+  ( arrayGetUnsafe 0 (stringToChars "hello")
   , "hello".[1..3]
   , "hello".[1..=3]
-  , "héllo".[1]
+  , arrayGetUnsafe 1 (stringToChars "héllo")
   , classify 3
   , classify 42
   , classify 500

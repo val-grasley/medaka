@@ -1,4 +1,4 @@
-f : Array a -> a
-fa : Int
-fc : Char
-fl : a -> List a -> a
+TYPE ERROR: Unbound variable: index
+TYPE ERROR: Unbound variable: index
+TYPE ERROR: Unbound variable: index
+TYPE ERROR: Unbound variable: index

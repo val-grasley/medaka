@@ -121,6 +121,7 @@ public export data Token =
   | TLParen
   | TRParen
   | TLBracket
+  | TLBracketTight
   | TRBracket
   | TLBrace
   | TRBrace
@@ -221,6 +222,7 @@ tokenToString TUnderscore = "UNDERSCORE"
 tokenToString TLParen = "LPAREN"
 tokenToString TRParen = "RPAREN"
 tokenToString TLBracket = "LBRACKET"
+tokenToString TLBracketTight = "LBRACKET_TIGHT"
 tokenToString TRBracket = "RBRACKET"
 tokenToString TLBrace = "LBRACE"
 tokenToString TRBrace = "RBRACE"
@@ -324,6 +326,7 @@ describeToken TUnderscore = "`_`"
 describeToken TLParen = "`(`"
 describeToken TRParen = "`)`"
 describeToken TLBracket = "`[`"
+describeToken TLBracketTight = "`[`"
 describeToken TRBracket = "`]`"
 describeToken TLBrace = "`{`"
 describeToken TRBrace = "`}`"
@@ -932,7 +935,8 @@ singleOp src len pos depth id '.' = emit src len pos depth id TDot 1 0
 singleOp src len pos depth id '|' = emit src len pos depth id TPipe 1 0
 singleOp src len pos depth id '(' = emit src len pos depth id TLParen 1 1
 singleOp src len pos depth id ')' = emit src len pos depth id TRParen 1 (0 - 1)
-singleOp src len pos depth id '[' = emit src len pos depth id TLBracket 1 1
+singleOp src len pos depth id '[' =
+  emit src len pos depth id (bracketTok src pos) 1 1
 singleOp src len pos depth id ']' =
   emit src len pos depth id TRBracket 1 (0 - 1)
 singleOp src len pos depth id '{' = openBrace src len pos depth id
@@ -958,6 +962,18 @@ singleOp src len pos depth id '$' =
     "Medaka has no '$'. Apply directly 'f x', parenthesize '(f x)', or pipe with '|>'"
 singleOp src len pos depth id c =
   lexErrorTok pos "unexpected character '\{charToStr c}'"
+
+-- A `[` lexes as TLBracketTight (postfix indexing, `a[i]`) when it
+-- immediately follows an expr-ender (alnum/`_`/`)`/`]`/`"`) with no
+-- intervening space — else it's an ordinary TLBracket (list literal /
+-- spaced application arg). Mirrors the `atToken`/`minusTok` adjacency tests.
+bracketTok : Array Char -> Int -> Token
+bracketTok src pos
+  | pos > 0 && isExprEnd (at src (pos - 1)) = TLBracketTight
+  | otherwise = TLBracket
+
+isExprEnd : Char -> Bool
+isExprEnd c = isAlnum c || c == ')' || c == ']' || c == '"'
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
@@ -1130,6 +1146,7 @@ flushCloseGo t off rest (top::tl) f fs opener
 bracketOpener : Token -> Bool
 bracketOpener TLParen = True
 bracketOpener TLBracket = True
+bracketOpener TLBracketTight = True
 bracketOpener TLArray = True
 bracketOpener TLBrace = True
 bracketOpener TDotLBrace = True

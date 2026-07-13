@@ -10,7 +10,7 @@ peekByte input pos =
   if pos >= arrayLength input then
     errorResult "unexpected end of input here" pos
   else
-    okResult input.[pos] pos
+    okResult input[pos] pos
 
 -- #1: `let x = if …` statement RHS (own line) also breaks
 emitVarint v buf =
@@ -33,7 +33,7 @@ demo =
 
 -- #3: `::` spacing by operand atomhood
 consAtoms x acc = x::acc
-consIndex input pos acc = input.[pos]::acc
+consIndex input pos acc = input[pos]::acc
 consChain rest = 1 :: 2::rest
 consSpacedLeft b r = bitAnd b 255 :: r.value
 consSpacedBoth x rest = x + 128 :: addContBits rest

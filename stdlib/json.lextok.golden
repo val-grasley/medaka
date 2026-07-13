@@ -3201,7 +3201,7 @@ NEWLINE
 DEDENT
 NEWLINE
 EXPORT
-IDENT "index"
+IDENT "at"
 COLON
 UPPER "Int"
 ARROW
@@ -3210,7 +3210,7 @@ ARROW
 UPPER "Option"
 UPPER "Json"
 NEWLINE
-IDENT "index"
+IDENT "at"
 IDENT "k"
 LPAREN
 UPPER "JArray"
@@ -3241,7 +3241,7 @@ UPPER "None"
 NEWLINE
 DEDENT
 NEWLINE
-IDENT "index"
+IDENT "at"
 UNDERSCORE
 UNDERSCORE
 EQUAL
@@ -3891,7 +3891,7 @@ NEWLINE
 DEDENT
 NEWLINE
 PROP
-STRING "index k recovers the k-th element of a JArray"
+STRING "at k recovers the k-th element of a JArray"
 LPAREN
 IDENT "n"
 COLON
@@ -3913,7 +3913,7 @@ IDENT "n"
 ELSE
 IDENT "n"
 NEWLINE
-IDENT "index"
+IDENT "at"
 IDENT "k"
 LPAREN
 IDENT "jArray"
