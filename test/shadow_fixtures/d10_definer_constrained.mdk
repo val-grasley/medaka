@@ -1,18 +1,9 @@
 -- SHADOW-SEMANTICS cell D10: definer shadow whose standalone is CONSTRAINED
--- (`Num a =>`) -- SHADOW-SEMANTICS.md S1-RESIDUAL-B / "S-1" (see doc section 5,
--- residual #1, 2026-07-13). The standalone is dict-passed; the RLocal route
--- carries no dictionary, so the call under-applies the dict-passed standalone.
--- KNOWN-BAD on current main (fix designed in compiler/S1-CONSTRAINED-SHADOW-
--- DESIGN.md, open PR fix/s1-constrained-shadow-dict, NOT merged as of this
--- writing): check ACCEPTS, run E-PANICs (`intToString: not an Int` -- the
--- under-applied dict-passed fn returns a partial application, not an Int),
--- build exits 0 and prints a GARBAGE, NON-DETERMINISTIC integer (a heap
--- pointer) instead of 4 -- a silent build miscompile.
--- Spec (S2/S9) says this should DISPATCH-OR-STANDALONE exactly like d1: no
--- impl of Sizeable for Int, so `size 3` should print 4 on all three paths.
--- This fixture pins the CURRENT wrong behavior (test/diff_compiler_shadow_
--- semantics.sh KNOWN-BAD row) so the day this lands, the gate goes red and
--- must be updated to the corrected expectation -- not so it stays broken.
+-- (`Num a =>`) — the S-1 bug. The standalone is dict-passed, so the RLocal route
+-- must carry its dictionary (clause S9); before the fix the call was marked
+-- EMethodAt but never EDictAt, so it under-applied and `build` printed a raw
+-- heap pointer while `check` stayed green.
+-- Expected: run/build print 4 (the standalone, correctly dict-applied); check accepts.
 interface Sizeable a where
   size : a -> Int
 

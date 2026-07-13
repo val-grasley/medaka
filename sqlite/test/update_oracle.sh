@@ -37,13 +37,23 @@ DB_IPK="$TMP/ipk.db"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-UPDATER="$ROOT/sqlite_updater"
+# Scratch binaries live in a PER-PROCESS temp dir, never at the repo root.
+#
+# These used to run `medaka build sqlite/main.mdk` with NO `-o`, which emits the binary
+# as ./<entry> at the REPO ROOT, and then `mv`d it to a FIXED path ($ROOT/sqlite_reader).
+# Both halves are a race: two of these oracles running concurrently clobbered each
+# other's ./main and shared one sqlite_reader. Serially all 22 passed; under run_gates'
+# parallel pool, 2 failed — and which 2 varied. (Same bug class, and same fix, as the
+# `medaka build` scratch-path collision in AGENTS.md: the only correct answer is a
+# per-process temp dir. Anything keyed on the entry name is a trap.)
+BINDIR="$(mktemp -d)"
+trap 'rm -rf "$BINDIR"' EXIT
+UPDATER="$BINDIR/sqlite_updater"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
 # 1. Build the Medaka update probe binary.
-"$MEDAKA" build sqlite/update_demo.mdk >/dev/null
-mv -f "$ROOT/update_demo" "$UPDATER"
+"$MEDAKA" build sqlite/update_demo.mdk -o "$UPDATER" >/dev/null
 
 # 2. Seed the main test database with sqlite3.
 #    users: IPK 1,5,9 (non-contiguous); kv: non-IPK with a rowid GAP (1,3,4).

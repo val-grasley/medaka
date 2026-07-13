@@ -40,16 +40,25 @@ DST="$TMP/dst.db"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-PROBE="$ROOT/sqlite_rowid_rt"
-READER="$ROOT/sqlite_reader"
+# Scratch binaries live in a PER-PROCESS temp dir, never at the repo root.
+#
+# These used to run `medaka build sqlite/main.mdk` with NO `-o`, which emits the binary
+# as ./<entry> at the REPO ROOT, and then `mv`d it to a FIXED path ($ROOT/sqlite_reader).
+# Both halves are a race: two of these oracles running concurrently clobbered each
+# other's ./main and shared one sqlite_reader. Serially all 22 passed; under run_gates'
+# parallel pool, 2 failed — and which 2 varied. (Same bug class, and same fix, as the
+# `medaka build` scratch-path collision in AGENTS.md: the only correct answer is a
+# per-process temp dir. Anything keyed on the entry name is a trap.)
+BINDIR="$(mktemp -d)"
+trap 'rm -rf "$BINDIR"' EXIT
+PROBE="$BINDIR/sqlite_rowid_rt"
+READER="$BINDIR/sqlite_reader"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
 # 1. Build the Medaka round-trip probe + reader binaries.
-"$MEDAKA" build sqlite/rowid_roundtrip_demo.mdk >/dev/null
-mv -f "$ROOT/rowid_roundtrip_demo" "$PROBE"
-"$MEDAKA" build sqlite/main.mdk >/dev/null
-mv -f "$ROOT/main" "$READER" 2>/dev/null || true
+"$MEDAKA" build sqlite/rowid_roundtrip_demo.mdk -o "$PROBE" >/dev/null
+"$MEDAKA" build sqlite/main.mdk -o "$READER" >/dev/null
 
 # 2. Seed the source db with sqlite3: a non-IPK gap + an IPK gap.
 rm -f "$SRC" "$DST"

@@ -1,5 +1,5 @@
 # META
-source_lines=1745
+source_lines=1772
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/medaka_cli.mdk — the native `medaka` CLI dispatcher (Phase C
@@ -193,7 +193,7 @@ usage _ = putStrLn (stringConcat
     "Usage:\n",
     "  medaka                    Show this message\n",
     "  medaka run [--release] <file.mdk>   Type-check and run a program\n",
-    "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n",
+    "  medaka build <file.mdk> [-o <out>] [--keep-ir]  Compile to a native binary (LLVM + clang)\n",
     "  medaka check [--json] <file.mdk>    Type-check without running\n",
     "  medaka test [file.mdk]    Run doctests + prop tests\n",
     "  medaka bench [file.mdk]   Run bench declarations\n",
@@ -820,31 +820,53 @@ runNewCmd _ =
 -- getcwd/executable_name extern.  MEDAKA defaults to "./medaka" so a build with
 -- no MEDAKA set re-invokes THIS native binary as the emitter host (no OCaml).
 runBuildCmd : List String -> <IO, Mut, Panic> Unit
-runBuildCmd argv = match parseBuildArgs argv
-  Err msg =>
-    let _ = ePutStrLn msg
-    exit 1
-  Ok (input, outOpt, target) => if not (fileExists input) then
-    let _ = ePutStrLn ("error: no such file: " ++ input)
-    exit 1
-  else
-    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
-    let medaka = envOr "MEDAKA" "medaka"
-    let cc = envOr "CC" "clang"
-    let inputAbs = input
-    let allowInternal = hasFlag "--allow-internal" argv
-    let outPath = match outOpt
-      Some o => o
-      None => defaultOutPath target input
-    match typecheckGate allowInternal root inputAbs
-      TGErr msg =>
-        let _ = ePutStrLn msg
-        exit 1
-      TGOk => match runBuild root medaka cc target inputAbs outPath
-        BuildOk msg => println msg
-        BuildErr msg =>
+runBuildCmd argv =
+  if hasFlag "--help" argv || hasFlag "-h" argv then buildUsage ()
+  else match parseBuildArgs argv
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 1
+    Ok (input, outOpt, target) => if not (fileExists input) then
+      let _ = ePutStrLn ("error: no such file: " ++ input)
+      exit 1
+    else
+      let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+      let medaka = envOr "MEDAKA" "medaka"
+      let cc = envOr "CC" "clang"
+      let inputAbs = input
+      let allowInternal = hasFlag "--allow-internal" argv
+      let keepIrCli = hasFlag "--keep-ir" argv
+      let outPath = match outOpt
+        Some o => o
+        None => defaultOutPath target input
+      match typecheckGate allowInternal root inputAbs
+        TGErr msg =>
           let _ = ePutStrLn msg
           exit 1
+        TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
+          BuildOk msg => println msg
+          BuildErr msg =>
+            let _ = ePutStrLn msg
+            exit 1
+
+-- `medaka build --help` / `-h`: a subcommand-local usage, since the global
+-- `usage()` (only matched when --help/-h is argv[0]) never sees this — dispatch
+-- routes "build"::rest to runBuildCmd before the top-level --help arm gets a
+-- chance.  Exists specifically so --keep-ir (and the other build-only flags)
+-- are discoverable without reading the source.
+buildUsage : Unit -> <IO> Unit
+buildUsage _ = putStrLn (stringConcat
+  [
+    "usage: medaka build [--target native|wasm] <file.mdk> [-o <out>] [--keep-ir] [--allow-internal]\n",
+    "\n",
+    "  -o <out>          output path for the binary (default: <file> with its extension dropped)\n",
+    "  --target <t>      backend: native (LLVM + clang, default) or wasm (WasmGC + wasm-tools)\n",
+    "  --keep-ir         keep the emitted IR (.ll for native, .wat for wasm) at <out>.ll/.wat\n",
+    "                    instead of discarding it with the build's scratch directory; the\n",
+    "                    kept path is printed. Env var MEDAKA_KEEP_IR=1 does the same for a\n",
+    "                    build invoked by something else (e.g. a test harness)\n",
+    "  --allow-internal  permit internal-only externs outside stdlib/\n",
+  ])
 
 -- Default output path per target: native drops the extension (a bare exe name);
 -- wasm appends `.wasm` to the entry's base.
@@ -950,6 +972,11 @@ parseBuildGo ("--target"::v::rest) acc out _ = match parseTarget v
 parseBuildGo ["--target"] _ _ _ =
   Err "error: --target requires an argument (native|wasm)"
 parseBuildGo ("--allow-internal"::rest) acc out target =
+  parseBuildGo rest acc out target
+-- --keep-ir: read separately via hasFlag in runBuildCmd (same convention as
+-- --allow-internal above) — just strip it here so it doesn't fall through to
+-- finishBuildArgs and get mistaken for the input file.
+parseBuildGo ("--keep-ir"::rest) acc out target =
   parseBuildGo rest acc out target
 parseBuildGo (x::rest) acc out target = parseBuildGo rest (x::acc) out target
 
@@ -1778,7 +1805,7 @@ runLspCmd _ =
 (DTypeSig false "main" (TyEffect ("IO" "Mut" "Panic") None (TyCon "Unit")))
 (DFunDef false "main" () (EMatch (EApp (EVar "args") (ELit LUnit)) (arm (PList) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "help")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "--help")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "-h")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "--version")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "-v")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "version")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "check")) (PVar "rest")) () (EApp (EVar "runCheckCmd") (EVar "rest"))) (arm (PCons (PLit (LString "fmt")) (PVar "rest")) () (EApp (EVar "runFmtCmd") (EVar "rest"))) (arm (PCons (PLit (LString "new")) (PVar "rest")) () (EApp (EVar "runNewCmd") (EVar "rest"))) (arm (PCons (PLit (LString "build")) (PVar "rest")) () (EApp (EVar "runBuildCmd") (EVar "rest"))) (arm (PCons (PLit (LString "run")) (PVar "rest")) () (EApp (EVar "runRunCmd") (EVar "rest"))) (arm (PCons (PLit (LString "test")) (PVar "rest")) () (EApp (EVar "runTestCmd") (EVar "rest"))) (arm (PCons (PLit (LString "snapshot")) (PVar "rest")) () (EApp (EVar "runSnapshotCmd") (EVar "rest"))) (arm (PCons (PLit (LString "doc")) (PVar "rest")) () (EApp (EVar "runDocCmd") (EVar "rest"))) (arm (PCons (PLit (LString "lint")) (PVar "rest")) () (EApp (EVar "runLintCmd") (EVar "rest"))) (arm (PCons (PLit (LString "check-policy")) (PVar "rest")) () (EApp (EVar "runCheckPolicyCmd") (EVar "rest"))) (arm (PCons (PLit (LString "manifest")) (PVar "rest")) () (EApp (EVar "runManifestCmd") (EVar "rest"))) (arm (PCons (PLit (LString "repl")) (PVar "rest")) () (EApp (EVar "runReplCmd") (EVar "rest"))) (arm (PCons (PLit (LString "lsp")) (PVar "rest")) () (EApp (EVar "runLspCmd") (EVar "rest"))) (arm (PCons (PVar "sub") PWild) () (EApp (EVar "notYet") (EVar "sub")))))
 (DTypeSig false "usage" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "usage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka. A functional language compiler\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka                    Show this message\n")) (ELit (LString "  medaka run [--release] <file.mdk>   Type-check and run a program\n")) (ELit (LString "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n")) (ELit (LString "  medaka check [--json] <file.mdk>    Type-check without running\n")) (ELit (LString "  medaka test [file.mdk]    Run doctests + prop tests\n")) (ELit (LString "  medaka bench [file.mdk]   Run bench declarations\n")) (ELit (LString "  medaka doc [file.mdk]     Generate Markdown documentation\n")) (ELit (LString "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n")) (ELit (LString "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n")) (ELit (LString "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n")) (ELit (LString "  medaka new <name>         Scaffold a new project directory\n")) (ELit (LString "  medaka lsp                Run the language server over stdio\n")) (ELit (LString "  medaka help               Show this message\n")) (ELit (LString "  medaka --version          Show the compiler version\n"))))))
+(DFunDef false "usage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka. A functional language compiler\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka                    Show this message\n")) (ELit (LString "  medaka run [--release] <file.mdk>   Type-check and run a program\n")) (ELit (LString "  medaka build <file.mdk> [-o <out>] [--keep-ir]  Compile to a native binary (LLVM + clang)\n")) (ELit (LString "  medaka check [--json] <file.mdk>    Type-check without running\n")) (ELit (LString "  medaka test [file.mdk]    Run doctests + prop tests\n")) (ELit (LString "  medaka bench [file.mdk]   Run bench declarations\n")) (ELit (LString "  medaka doc [file.mdk]     Generate Markdown documentation\n")) (ELit (LString "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n")) (ELit (LString "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n")) (ELit (LString "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n")) (ELit (LString "  medaka new <name>         Scaffold a new project directory\n")) (ELit (LString "  medaka lsp                Run the language server over stdio\n")) (ELit (LString "  medaka help               Show this message\n")) (ELit (LString "  medaka --version          Show the compiler version\n"))))))
 (DTypeSig false "notYet" (TyFun (TyCon "String") (TyEffect ("IO" "Panic") None (TyCon "Unit"))))
 (DFunDef false "notYet" ((PVar "sub")) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "medaka: subcommand '")) (EVar "sub")) (ELit (LString "' not yet in native CLI"))))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))
 (DTypeSig false "ppParseError" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "ParseError") (TyCon "String")))))
@@ -1883,7 +1910,9 @@ runLspCmd _ =
 (DFunDef false "runNewCmd" ((PList (PVar "name"))) (EBlock (DoLet false false (PVar "code") (EApp (EVar "newProject") (EVar "name"))) (DoExpr (EIf (EBinOp "==" (EVar "code") (ELit (LInt 0))) (ELit LUnit) (EApp (EVar "exit") (EVar "code"))))))
 (DFunDef false "runNewCmd" (PWild) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (ELit (LString "Usage: medaka new <name>")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 2))))))
 (DTypeSig false "runBuildCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO" "Mut" "Panic") None (TyCon "Unit"))))
-(DFunDef false "runBuildCmd" ((PVar "argv")) (EMatch (EApp (EVar "parseBuildArgs") (EVar "argv")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PTuple (PVar "input") (PVar "outOpt") (PVar "target"))) () (EIf (EApp (EVar "not") (EApp (EVar "fileExists") (EVar "input"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "error: no such file: ")) (EVar "input")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "medaka") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA"))) (ELit (LString "medaka")))) (DoLet false false (PVar "cc") (EApp (EApp (EVar "envOr") (ELit (LString "CC"))) (ELit (LString "clang")))) (DoLet false false (PVar "inputAbs") (EVar "input")) (DoLet false false (PVar "allowInternal") (EApp (EApp (EVar "hasFlag") (ELit (LString "--allow-internal"))) (EVar "argv"))) (DoLet false false (PVar "outPath") (EMatch (EVar "outOpt") (arm (PCon "Some" (PVar "o")) () (EVar "o")) (arm (PCon "None") () (EApp (EApp (EVar "defaultOutPath") (EVar "target")) (EVar "input"))))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "typecheckGate") (EVar "allowInternal")) (EVar "root")) (EVar "inputAbs")) (arm (PCon "TGErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "TGOk") () (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuild") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "target")) (EVar "inputAbs")) (EVar "outPath")) (arm (PCon "BuildOk" (PVar "msg")) () (EApp (EVar "println") (EVar "msg"))) (arm (PCon "BuildErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))))))))))))
+(DFunDef false "runBuildCmd" ((PVar "argv")) (EIf (EBinOp "||" (EApp (EApp (EVar "hasFlag") (ELit (LString "--help"))) (EVar "argv")) (EApp (EApp (EVar "hasFlag") (ELit (LString "-h"))) (EVar "argv"))) (EApp (EVar "buildUsage") (ELit LUnit)) (EMatch (EApp (EVar "parseBuildArgs") (EVar "argv")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PTuple (PVar "input") (PVar "outOpt") (PVar "target"))) () (EIf (EApp (EVar "not") (EApp (EVar "fileExists") (EVar "input"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "error: no such file: ")) (EVar "input")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "medaka") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA"))) (ELit (LString "medaka")))) (DoLet false false (PVar "cc") (EApp (EApp (EVar "envOr") (ELit (LString "CC"))) (ELit (LString "clang")))) (DoLet false false (PVar "inputAbs") (EVar "input")) (DoLet false false (PVar "allowInternal") (EApp (EApp (EVar "hasFlag") (ELit (LString "--allow-internal"))) (EVar "argv"))) (DoLet false false (PVar "keepIrCli") (EApp (EApp (EVar "hasFlag") (ELit (LString "--keep-ir"))) (EVar "argv"))) (DoLet false false (PVar "outPath") (EMatch (EVar "outOpt") (arm (PCon "Some" (PVar "o")) () (EVar "o")) (arm (PCon "None") () (EApp (EApp (EVar "defaultOutPath") (EVar "target")) (EVar "input"))))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "typecheckGate") (EVar "allowInternal")) (EVar "root")) (EVar "inputAbs")) (arm (PCon "TGErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "TGOk") () (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuild") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "target")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")) (arm (PCon "BuildOk" (PVar "msg")) () (EApp (EVar "println") (EVar "msg"))) (arm (PCon "BuildErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))))))))))))
+(DTypeSig false "buildUsage" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "buildUsage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "usage: medaka build [--target native|wasm] <file.mdk> [-o <out>] [--keep-ir] [--allow-internal]\n")) (ELit (LString "\n")) (ELit (LString "  -o <out>          output path for the binary (default: <file> with its extension dropped)\n")) (ELit (LString "  --target <t>      backend: native (LLVM + clang, default) or wasm (WasmGC + wasm-tools)\n")) (ELit (LString "  --keep-ir         keep the emitted IR (.ll for native, .wat for wasm) at <out>.ll/.wat\n")) (ELit (LString "                    instead of discarding it with the build's scratch directory; the\n")) (ELit (LString "                    kept path is printed. Env var MEDAKA_KEEP_IR=1 does the same for a\n")) (ELit (LString "                    build invoked by something else (e.g. a test harness)\n")) (ELit (LString "  --allow-internal  permit internal-only externs outside stdlib/\n"))))))
 (DTypeSig false "defaultOutPath" (TyFun (TyCon "BuildTarget") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "defaultOutPath" ((PCon "TNative") (PVar "input")) (EApp (EVar "chopExt") (EApp (EVar "baseOf") (EVar "input"))))
 (DFunDef false "defaultOutPath" ((PCon "TWasm") (PVar "input")) (EBinOp "++" (EApp (EVar "chopExt") (EApp (EVar "baseOf") (EVar "input"))) (ELit (LString ".wasm"))))
@@ -1902,6 +1931,7 @@ runLspCmd _ =
 (DFunDef false "parseBuildGo" ((PCons (PLit (LString "--target")) (PCons (PVar "v") (PVar "rest"))) (PVar "acc") (PVar "out") PWild) (EMatch (EApp (EVar "parseTarget") (EVar "v")) (arm (PCon "Err" (PVar "msg")) () (EApp (EVar "Err") (EVar "msg"))) (arm (PCon "Ok" (PVar "t")) () (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "t")))))
 (DFunDef false "parseBuildGo" ((PList (PLit (LString "--target"))) PWild PWild PWild) (EApp (EVar "Err") (ELit (LString "error: --target requires an argument (native|wasm)"))))
 (DFunDef false "parseBuildGo" ((PCons (PLit (LString "--allow-internal")) (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "target")))
+(DFunDef false "parseBuildGo" ((PCons (PLit (LString "--keep-ir")) (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "target")))
 (DFunDef false "parseBuildGo" ((PCons (PVar "x") (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EBinOp "::" (EVar "x") (EVar "acc"))) (EVar "out")) (EVar "target")))
 (DTypeSig false "parseTarget" (TyFun (TyCon "String") (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "BuildTarget"))))
 (DFunDef false "parseTarget" ((PLit (LString "native"))) (EApp (EVar "Ok") (EVar "TNative")))
@@ -2062,7 +2092,7 @@ runLspCmd _ =
 (DTypeSig false "main" (TyEffect ("IO" "Mut" "Panic") None (TyCon "Unit")))
 (DFunDef false "main" () (EMatch (EApp (EVar "args") (ELit LUnit)) (arm (PList) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "help")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "--help")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "-h")) PWild) () (EApp (EVar "usage") (ELit LUnit))) (arm (PCons (PLit (LString "--version")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "-v")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "version")) PWild) () (EApp (EVar "printVersion") (ELit LUnit))) (arm (PCons (PLit (LString "check")) (PVar "rest")) () (EApp (EVar "runCheckCmd") (EVar "rest"))) (arm (PCons (PLit (LString "fmt")) (PVar "rest")) () (EApp (EVar "runFmtCmd") (EVar "rest"))) (arm (PCons (PLit (LString "new")) (PVar "rest")) () (EApp (EVar "runNewCmd") (EVar "rest"))) (arm (PCons (PLit (LString "build")) (PVar "rest")) () (EApp (EVar "runBuildCmd") (EVar "rest"))) (arm (PCons (PLit (LString "run")) (PVar "rest")) () (EApp (EVar "runRunCmd") (EVar "rest"))) (arm (PCons (PLit (LString "test")) (PVar "rest")) () (EApp (EVar "runTestCmd") (EVar "rest"))) (arm (PCons (PLit (LString "snapshot")) (PVar "rest")) () (EApp (EVar "runSnapshotCmd") (EVar "rest"))) (arm (PCons (PLit (LString "doc")) (PVar "rest")) () (EApp (EVar "runDocCmd") (EVar "rest"))) (arm (PCons (PLit (LString "lint")) (PVar "rest")) () (EApp (EVar "runLintCmd") (EVar "rest"))) (arm (PCons (PLit (LString "check-policy")) (PVar "rest")) () (EApp (EVar "runCheckPolicyCmd") (EVar "rest"))) (arm (PCons (PLit (LString "manifest")) (PVar "rest")) () (EApp (EVar "runManifestCmd") (EVar "rest"))) (arm (PCons (PLit (LString "repl")) (PVar "rest")) () (EApp (EVar "runReplCmd") (EVar "rest"))) (arm (PCons (PLit (LString "lsp")) (PVar "rest")) () (EApp (EVar "runLspCmd") (EVar "rest"))) (arm (PCons (PVar "sub") PWild) () (EApp (EVar "notYet") (EMethodRef "sub")))))
 (DTypeSig false "usage" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "usage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka. A functional language compiler\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka                    Show this message\n")) (ELit (LString "  medaka run [--release] <file.mdk>   Type-check and run a program\n")) (ELit (LString "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang)\n")) (ELit (LString "  medaka check [--json] <file.mdk>    Type-check without running\n")) (ELit (LString "  medaka test [file.mdk]    Run doctests + prop tests\n")) (ELit (LString "  medaka bench [file.mdk]   Run bench declarations\n")) (ELit (LString "  medaka doc [file.mdk]     Generate Markdown documentation\n")) (ELit (LString "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n")) (ELit (LString "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n")) (ELit (LString "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n")) (ELit (LString "  medaka new <name>         Scaffold a new project directory\n")) (ELit (LString "  medaka lsp                Run the language server over stdio\n")) (ELit (LString "  medaka help               Show this message\n")) (ELit (LString "  medaka --version          Show the compiler version\n"))))))
+(DFunDef false "usage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka. A functional language compiler\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka                    Show this message\n")) (ELit (LString "  medaka run [--release] <file.mdk>   Type-check and run a program\n")) (ELit (LString "  medaka build <file.mdk> [-o <out>] [--keep-ir]  Compile to a native binary (LLVM + clang)\n")) (ELit (LString "  medaka check [--json] <file.mdk>    Type-check without running\n")) (ELit (LString "  medaka test [file.mdk]    Run doctests + prop tests\n")) (ELit (LString "  medaka bench [file.mdk]   Run bench declarations\n")) (ELit (LString "  medaka doc [file.mdk]     Generate Markdown documentation\n")) (ELit (LString "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n")) (ELit (LString "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n")) (ELit (LString "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n")) (ELit (LString "  medaka new <name>         Scaffold a new project directory\n")) (ELit (LString "  medaka lsp                Run the language server over stdio\n")) (ELit (LString "  medaka help               Show this message\n")) (ELit (LString "  medaka --version          Show the compiler version\n"))))))
 (DTypeSig false "notYet" (TyFun (TyCon "String") (TyEffect ("IO" "Panic") None (TyCon "Unit"))))
 (DFunDef false "notYet" ((PVar "sub")) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "medaka: subcommand '")) (EMethodRef "sub")) (ELit (LString "' not yet in native CLI"))))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))
 (DTypeSig false "ppParseError" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "ParseError") (TyCon "String")))))
@@ -2167,7 +2197,9 @@ runLspCmd _ =
 (DFunDef false "runNewCmd" ((PList (PVar "name"))) (EBlock (DoLet false false (PVar "code") (EApp (EVar "newProject") (EVar "name"))) (DoExpr (EIf (EBinOp "==" (EVar "code") (ELit (LInt 0))) (ELit LUnit) (EApp (EVar "exit") (EVar "code"))))))
 (DFunDef false "runNewCmd" (PWild) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (ELit (LString "Usage: medaka new <name>")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 2))))))
 (DTypeSig false "runBuildCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO" "Mut" "Panic") None (TyCon "Unit"))))
-(DFunDef false "runBuildCmd" ((PVar "argv")) (EMatch (EApp (EVar "parseBuildArgs") (EVar "argv")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PTuple (PVar "input") (PVar "outOpt") (PVar "target"))) () (EIf (EApp (EVar "not") (EApp (EVar "fileExists") (EVar "input"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "error: no such file: ")) (EVar "input")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "medaka") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA"))) (ELit (LString "medaka")))) (DoLet false false (PVar "cc") (EApp (EApp (EVar "envOr") (ELit (LString "CC"))) (ELit (LString "clang")))) (DoLet false false (PVar "inputAbs") (EVar "input")) (DoLet false false (PVar "allowInternal") (EApp (EApp (EVar "hasFlag") (ELit (LString "--allow-internal"))) (EVar "argv"))) (DoLet false false (PVar "outPath") (EMatch (EVar "outOpt") (arm (PCon "Some" (PVar "o")) () (EVar "o")) (arm (PCon "None") () (EApp (EApp (EVar "defaultOutPath") (EVar "target")) (EVar "input"))))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "typecheckGate") (EVar "allowInternal")) (EVar "root")) (EVar "inputAbs")) (arm (PCon "TGErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "TGOk") () (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuild") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "target")) (EVar "inputAbs")) (EVar "outPath")) (arm (PCon "BuildOk" (PVar "msg")) () (EApp (EDictApp "println") (EVar "msg"))) (arm (PCon "BuildErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))))))))))))
+(DFunDef false "runBuildCmd" ((PVar "argv")) (EIf (EBinOp "||" (EApp (EApp (EVar "hasFlag") (ELit (LString "--help"))) (EVar "argv")) (EApp (EApp (EVar "hasFlag") (ELit (LString "-h"))) (EVar "argv"))) (EApp (EVar "buildUsage") (ELit LUnit)) (EMatch (EApp (EVar "parseBuildArgs") (EVar "argv")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PTuple (PVar "input") (PVar "outOpt") (PVar "target"))) () (EIf (EApp (EVar "not") (EApp (EVar "fileExists") (EVar "input"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "error: no such file: ")) (EVar "input")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "medaka") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA"))) (ELit (LString "medaka")))) (DoLet false false (PVar "cc") (EApp (EApp (EVar "envOr") (ELit (LString "CC"))) (ELit (LString "clang")))) (DoLet false false (PVar "inputAbs") (EVar "input")) (DoLet false false (PVar "allowInternal") (EApp (EApp (EVar "hasFlag") (ELit (LString "--allow-internal"))) (EVar "argv"))) (DoLet false false (PVar "keepIrCli") (EApp (EApp (EVar "hasFlag") (ELit (LString "--keep-ir"))) (EVar "argv"))) (DoLet false false (PVar "outPath") (EMatch (EVar "outOpt") (arm (PCon "Some" (PVar "o")) () (EVar "o")) (arm (PCon "None") () (EApp (EApp (EVar "defaultOutPath") (EVar "target")) (EVar "input"))))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "typecheckGate") (EVar "allowInternal")) (EVar "root")) (EVar "inputAbs")) (arm (PCon "TGErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "TGOk") () (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuild") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "target")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")) (arm (PCon "BuildOk" (PVar "msg")) () (EApp (EDictApp "println") (EVar "msg"))) (arm (PCon "BuildErr" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))))))))))))
+(DTypeSig false "buildUsage" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "buildUsage" (PWild) (EApp (EVar "putStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "usage: medaka build [--target native|wasm] <file.mdk> [-o <out>] [--keep-ir] [--allow-internal]\n")) (ELit (LString "\n")) (ELit (LString "  -o <out>          output path for the binary (default: <file> with its extension dropped)\n")) (ELit (LString "  --target <t>      backend: native (LLVM + clang, default) or wasm (WasmGC + wasm-tools)\n")) (ELit (LString "  --keep-ir         keep the emitted IR (.ll for native, .wat for wasm) at <out>.ll/.wat\n")) (ELit (LString "                    instead of discarding it with the build's scratch directory; the\n")) (ELit (LString "                    kept path is printed. Env var MEDAKA_KEEP_IR=1 does the same for a\n")) (ELit (LString "                    build invoked by something else (e.g. a test harness)\n")) (ELit (LString "  --allow-internal  permit internal-only externs outside stdlib/\n"))))))
 (DTypeSig false "defaultOutPath" (TyFun (TyCon "BuildTarget") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "defaultOutPath" ((PCon "TNative") (PVar "input")) (EApp (EVar "chopExt") (EApp (EVar "baseOf") (EVar "input"))))
 (DFunDef false "defaultOutPath" ((PCon "TWasm") (PVar "input")) (EBinOp "++" (EApp (EVar "chopExt") (EApp (EVar "baseOf") (EVar "input"))) (ELit (LString ".wasm"))))
@@ -2186,6 +2218,7 @@ runLspCmd _ =
 (DFunDef false "parseBuildGo" ((PCons (PLit (LString "--target")) (PCons (PVar "v") (PVar "rest"))) (PVar "acc") (PVar "out") PWild) (EMatch (EApp (EVar "parseTarget") (EVar "v")) (arm (PCon "Err" (PVar "msg")) () (EApp (EVar "Err") (EVar "msg"))) (arm (PCon "Ok" (PVar "t")) () (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "t")))))
 (DFunDef false "parseBuildGo" ((PList (PLit (LString "--target"))) PWild PWild PWild) (EApp (EVar "Err") (ELit (LString "error: --target requires an argument (native|wasm)"))))
 (DFunDef false "parseBuildGo" ((PCons (PLit (LString "--allow-internal")) (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "target")))
+(DFunDef false "parseBuildGo" ((PCons (PLit (LString "--keep-ir")) (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EVar "acc")) (EVar "out")) (EVar "target")))
 (DFunDef false "parseBuildGo" ((PCons (PVar "x") (PVar "rest")) (PVar "acc") (PVar "out") (PVar "target")) (EApp (EApp (EApp (EApp (EVar "parseBuildGo") (EVar "rest")) (EBinOp "::" (EVar "x") (EVar "acc"))) (EVar "out")) (EVar "target")))
 (DTypeSig false "parseTarget" (TyFun (TyCon "String") (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "BuildTarget"))))
 (DFunDef false "parseTarget" ((PLit (LString "native"))) (EApp (EVar "Ok") (EVar "TNative")))

@@ -227,8 +227,8 @@ toAddr other = panic ("core_ir_sexp_parse: bad Addr: " ++ sexprToStr other)
 
 toRoute : SExp -> Route
 toRoute (SAtom "RNone") = RNone
-toRoute (SAtom "RLocal") = RLocal ""
-toRoute (SList ((SAtom "RLocal")::[s])) = RLocal (toStr s)
+toRoute (SAtom "RLocal") = RLocal "" []
+toRoute (SList ((SAtom "RLocal")::[s])) = RLocal (toStr s) []
 toRoute (SList ((SAtom "RKey")::[k])) = RKey (toStr k) []
 toRoute (SList ((SAtom "RDict")::[d])) = RDict (toStr d)
 toRoute (SList ((SAtom "RDictFwd")::[d])) = RDictFwd (toStr d)

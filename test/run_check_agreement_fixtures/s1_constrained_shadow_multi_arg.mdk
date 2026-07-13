@@ -1,0 +1,9 @@
+-- S-1: a 2-ary constrained standalone shadow -- the dict word must be prepended ahead
+-- of BOTH value args, matching the leading dict params dictPassDecl prepends.  Prints 7.
+interface Sz a where
+  size : a -> String
+
+size : Num a => a -> a -> a
+size x y = x + y
+
+main = println (size 3 4)
