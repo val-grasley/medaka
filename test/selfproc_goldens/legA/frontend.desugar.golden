@@ -115,5 +115,6 @@ synthDefaultMethods : List ImplMethod -> List IfaceMethod -> List ImplMethod
 synthFromDefault : IfaceMethod -> ImplMethod
 toRep : String -> Expr
 wrapDoOrigin : List DoStmt -> Expr -> Expr
+wrappedFieldCall : String -> String -> Expr
 zipEqCalls : List String -> List String -> List Expr
 zipExprPairs : List String -> List String -> List (Expr, Expr)
