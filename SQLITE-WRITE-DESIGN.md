@@ -1,6 +1,7 @@
 # SQLite WRITE path — design (v1)
 
-Companion to `SQLITE-DESIGN.md` (the read path). The pure-Medaka `sqlite/` library
+**Status:** IMPLEMENTED — complete through multi-table writes (P0-P7 staged build
+log below, all DONE). Companion to `SQLITE-DESIGN.md` (the read path). The pure-Medaka `sqlite/` library
 gains the ability to **generate** a real `.sqlite` file that `sqlite3` can query.
 Scope locked 2026-06-24 (user-confirmed). Format map verified against a real
 `sqlite3`-created DB.
@@ -172,7 +173,11 @@ b-tree balancing/redistribution; `UPDATE`/`DELETE`; transactions/journal/WAL; co
 Goldens must strip absolute build paths (MEMORY footgun).
 
 ## Implementation pointers
-- `readFileBytes` wiring (the P0 template): `stdlib/runtime.mdk:35`, `lib/eval.ml:1391`,
-  `runtime/medaka_rt.c:714`, `compiler/backend/llvm_emit.mdk:1692/1718` (commit `1b25c9b`).
+- `readFileBytes` wiring (the P0 template, historical — `lib/eval.ml` no longer
+  exists, removed 2026-06-26): `stdlib/runtime.mdk:35`, `runtime/medaka_rt.c:714`,
+  `compiler/backend/llvm_emit.mdk:1692/1718` (commit `1b25c9b`). For the current
+  extern-wiring pattern, see any live extern's four-site touch (`stdlib/runtime.mdk`
+  declare, `compiler/eval/eval.mdk` interpreter primitive, `runtime/medaka_rt.c` C
+  impl, `compiler/backend/llvm_emit.mdk` emit arm) — native has no fifth OCaml site.
 - Readers to invert: `sqlite/lib/{header,btree,recordfmt}.mdk`; IPK locator
   `pkColumnIndex` in `sqlite/lib/sqlite.mdk`. Buffer: `stdlib/mut_array.mdk`.

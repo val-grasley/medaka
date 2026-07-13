@@ -6,10 +6,11 @@
 delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** WS-3
 (`Set`), WS-3b (Env/Exec hole-fill) — both **native-only**.
 
-> **Scope: NATIVE-ONLY.** The frozen OCaml oracle (`lib/typecheck.ml`) has no
-> Set/Product domain and is slated for removal (soak tail). This design adds a new
-> `RefinementDomain` instance + parser clause + literal syntax to the **canonical**
-> compiler compiler only. It must NOT require any OCaml `lib/` edit, and must keep
+> **Scope: NATIVE-ONLY (historical).** At design time, the frozen OCaml oracle
+> (`lib/typecheck.ml`) had no Set/Product domain and was slated for removal (soak
+> tail) — since executed (`lib/` removed 2026-06-26, `06356a80`). This design added
+> a new `RefinementDomain` instance + parser clause + literal syntax to the
+> **canonical** compiler only, without requiring any OCaml `lib/` edit, keeping
 > every existing `diff_compiler_*` gate byte-identical (the abstraction-leak canary).
 
 ---

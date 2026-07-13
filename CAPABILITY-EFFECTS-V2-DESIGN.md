@@ -1,8 +1,12 @@
 # Capability-Effects v2 — design doc (parameterized effects + IO decomposition)
 
-Status: **IMPLEMENTED (2026-06-21, verified done 2026-06-22).** See `EFFECTS-CONFORMANCE-ROADMAP.md`
-for the authoritative completion record (WS-1 through WS-4 done; WS-5 standing; WS-3b
-shared-runtime flip deferred to `lib/`-removal soak tail). Companion to
+**Status:** IMPLEMENTED — 2026-06-21, verified done 2026-06-22. See
+`EFFECTS-CONFORMANCE-ROADMAP.md` for the authoritative completion record (WS-1
+through WS-4 done; WS-5 standing; the `lib/`-removal soak tail WS-3b was deferred
+to has since happened — `lib/` was removed 2026-06-26, `06356a80`). ⚠️ **§1.2 and
+§6 below describe a dual-typechecker (`compiler/` canonical + OCaml `lib/`
+frozen-oracle) grounding that no longer exists — see the note at the top of each
+section.** Companion to
 [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) (the v1 atomic-effect feature, shipped),
 [`CAPABILITY-EFFECTS-RESEARCH.md`](./CAPABILITY-EFFECTS-RESEARCH.md) (manifest/host research),
 and [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) (the runtime that consumes this).
@@ -30,7 +34,10 @@ All §7 forks are resolved as follows (authoritative for implementation):
 - **(i) `check-policy`/manifest → native CLI:** port to the canonical native toolchain (the headline feature must run on the canonical binary), in the Stage-3 manifest work.
 - **NON-GOAL (firm):** `Throws`/typed-error effects. `Result` is the canonical error representation; `panic` is the sole uncatchable/unrecoverable escape hatch (honors `no-catchable-panics-isolation`). Param representation stays DATA-shaped — no type-parameter domain.
 
-**Both typecheckers (compiler `typecheck.mdk` + OCaml `lib/typecheck.ml`) must change in lockstep; every stage is fixpoint-gated.**
+**(Historical, at design time) Both typecheckers (compiler `typecheck.mdk` + OCaml
+`lib/typecheck.ml`) had to change in lockstep; every stage was fixpoint-gated.**
+`lib/` was removed 2026-06-26 (`06356a80`) — there is now only one typechecker, so
+this rule no longer applies to any future change.
 
 ---
 
@@ -69,7 +76,13 @@ So v2's job is to make the parameterized surface real, on a general domain repre
 
 ### 1.2 Effect representation today (both typecheckers, file:line)
 
-**OCaml oracle — `lib/typecheck.ml`:**
+> **Historical grounding snapshot from before `lib/` (OCaml) was removed
+> 2026-06-26 (`06356a80`).** The `lib/*.ml` file:line citations below no longer
+> resolve — `lib/` no longer exists. The design itself still holds; only the
+> dual-implementation grounding is dead. The "Selfhost canonical" half below
+> (`compiler/types/typecheck.mdk`) remains live and citable.
+
+**OCaml oracle — `lib/typecheck.ml`** (removed 2026-06-26; kept for historical grounding):
 
 - `type effect_set = string list` — sorted, deduped set of **bare-string** labels (line 24).
 - `and effrow = { labels : effect_set; tail : effvar option }` (line 44). `tail=None` ⇒ closed
@@ -147,8 +160,8 @@ The known-prefix analysis (§2.4) reads **core** string-producing forms; desugar
 
 ### 1.5 `check-policy` and the manifest path
 
-`medaka check-policy <file> [--allow L1,L2] [--fn name]` exists in `bin/main.ml` (lines
-413–540): parse → build a conservative `EVar` call graph (`collect_evars`) → read the entry
+At design time, `medaka check-policy <file> [--allow L1,L2] [--fn name]` existed in the
+now-removed `bin/main.ml` (lines 413–540): parse → build a conservative `EVar` call graph (`collect_evars`) → read the entry
 fn's inferred row → check `inferred ⊆ allow` → accept (run on a sample) or reject with the
 introducing call chain. **As of WS-1a/1b/1c (2026-06-21) this is FULLY PORTED to the native
 CLI** (`compiler/driver/medaka_cli.mdk` + `compiler/tools/check_policy.mdk`) with parameter-level
@@ -160,8 +173,9 @@ the parameterized atoms are the per-label parameter the manifest carries.
 ### 1.6 Decided invariants honored by this design
 
 Lazy top-level nullary; **no catchable panics / no try-catch** (panics are the sole
-unrecoverable escape); `Result` is the canonical error type; retirement≠removal (both
-typecheckers stay in lockstep, fixpoint-gated). v2 introduces **no** control-flow or runtime
+unrecoverable escape); `Result` is the canonical error type; retirement≠removal (at design
+time, both typecheckers had to stay in lockstep, fixpoint-gated — moot since `lib/`
+removal). v2 introduces **no** control-flow or runtime
 mechanism — it is purely a richer row representation + a local static analysis, erased before
 codegen.
 
@@ -350,7 +364,8 @@ tracked separately and were never part of `IO` semantically.
 ### 3.3 Migration steps + cost
 
 1. **Define the labels** as builtins with domains (resolver vocabulary + the `IO` alias
-   expansion). One edit each in `lib/resolve.ml` builtins + `compiler/.../resolve.mdk`.
+   expansion). One edit each in `lib/resolve.ml` builtins (removed 2026-06-26) +
+   `compiler/frontend/resolve.mdk`.
 2. **Re-annotate the 21 `IO` leaf externs** in `stdlib/runtime.mdk` to their narrow labels
    (table §3.1) — 21 single-line edits. `Mut`/`Rand`/`Panic` externs unchanged.
 3. **Let inference propagate upward.** The ~7 stdlib wrappers (`println`/`print` in `core.mdk`;
@@ -408,8 +423,13 @@ builtin/`effect`-decl record; internal labels reject a domain clause at parse/re
 
 ## 6. Staged implementation plan
 
-Each stage touches **both typecheckers** (compiler canonical + OCaml frozen oracle — must stay
-byte-identical) and is **fixpoint-gated** (`selfcompile_fixpoint`) and differential-gated
+> **Historical (as-planned, at design time).** This is the completed implementation
+> log — every stage below shipped (see the Status line at the top). At design time
+> each stage touched both typecheckers; `lib/` (the OCaml oracle) was removed
+> 2026-06-26, so this dual-implementation instruction no longer applies to future work.
+
+Each stage touched **both typecheckers** (compiler canonical + OCaml frozen oracle — had to stay
+byte-identical) and was **fixpoint-gated** (`selfcompile_fixpoint`) and differential-gated
 (`diff_compiler_typecheck` / `_error` / `_golden` and `eval_dict`). The representation work
 (domain abstraction + taxonomy axis) is done up front; the domain *content* is narrow.
 

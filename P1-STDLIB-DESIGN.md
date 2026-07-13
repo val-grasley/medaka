@@ -1,6 +1,19 @@
 # P1 Standard Library — Design & Prioritization
 
-Status: **design proposal** (2026-07-01). Read-only planning doc. Decides *what
+**Status:** PARTIAL — most P1 tier items (§3) shipped 2026-07-01: `math`
+(Module 16), `path` (Module 13), `fs` extend (Module 17), `hex`/`base64`
+(Modules 14-15), `time` (Module 18), `net` (Module 19) — see STDLIB.md for each
+module's ✅ entry. **Exception:** item #4 "`bytes` flesh-out" is itself
+PARTIAL — little-endian `le*` variants landed in `stdlib/byteparser.mdk`
+(`leUint`/`leSint`/`leFloat64`) and hex/base64 landed as their own modules, but
+the standalone `stdlib/bytes.mdk` buffer/slice/concat ergonomic layer this item
+specifically proposed was never built (path does not exist). §1's "current
+surface" gap table below now describes most shipped items as still-missing;
+treat it as historical. The P2 tier (§3, regex/csv/
+timezone-datetime/http/bigint) remains genuinely open — none of those exist in
+STDLIB.md.
+
+Status (at design time): **design proposal** (2026-07-01). Read-only planning doc. Decides *what
 the stdlib grows next* and *in what order*, with per-item implementation-cost
 classification so bites can be handed to implementation agents cheapest-first.
 

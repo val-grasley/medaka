@@ -1,5 +1,15 @@
 # HANDOFF.md — start here (next session)
 
+**Status:** PARTIAL / STALE SNAPSHOT (last updated 2026-07-04) — Track 2 below
+(NEXT ACTIONS item 4) is now DONE (`fd625f26`/`6ded5e9f`, TMC-parity arc; see
+`DISTRIBUTION-DESIGN.md`'s Track 2 entry and PLAN.md's Open Issues Index, "Native
+TMC parity — ✅ CLOSED 2026-07-13"), contradicting this doc's own "→ START HERE
+NEXT" framing below, which still treats it as future work. The "What's DONE"
+section also predates subsequent distribution progress recorded in
+`DISTRIBUTION-DESIGN.md` (which is current as of today). Treat this file as a
+historical snapshot of 2026-07-04 state, not live guidance — go to
+`DISTRIBUTION-DESIGN.md` / `RELEASE-0.1.0-PLAN.md` for current status.
+
 > **Live handoff for the next agent.** Read this first, then the owning docs it
 > links. Current phase = the **0.1.0 public preview** north star. When you finish a
 > chunk, update this file (or delete it once the workstream has a stable home in
@@ -76,15 +86,13 @@ well-scoped codegen change). None of it gates on the others except as noted.
    Package manager handles clang/libgc; tagged CI produces mac+linux artifacts.
    See `DISTRIBUTION-DESIGN.md` §5.
 
-4. **Track 2 (fast-follow, independent) — port WasmGC `b′` TMC to native.** Fixes
-   the lexer overflow at root, closes a native↔wasm parity gap, hardens vs
-   pathologically long lists. NOT a 0.1.0 blocker (Track 1 covers correctness).
-   Template: `compiler/WASMGC-TRMC-DESIGN.md` §1 + §11 (AS BUILT). Lands in the
-   native emitter (`compiler/backend/llvm_emit.mdk` + `trmc_analysis.mdk`). Scope
-   it off the backtrace (the exact functions are `lexer.mdk`'s `scan`/`scanAt`/
-   per-kind scanners). Reach for the `add-language-feature`-style cross-cutting
-   care, and verify with the Linux harness at 8MB (should pass with NO big stack
-   once `b′` linearizes the token spine).
+4. ✅ **Track 2 — port WasmGC `b′` TMC to native — DONE 2026-07-13** (`fd625f26`/
+   `6ded5e9f`, TMC-parity arc; see `DISTRIBUTION-DESIGN.md` Track 2 entry, PLAN.md
+   Open Issues Index "Native TMC parity — ✅ CLOSED"). *(Below is the original,
+   now-historical, forward description of the work.)* Ported the WasmGC `b′` TMC
+   to native, fixing the lexer overflow at root, closing the native↔wasm parity
+   gap, hardening vs pathologically long lists. Landed in the
+   native emitter (`compiler/backend/llvm_emit.mdk` + `trmc_analysis.mdk`).
 
 5. **Track 3 (capstone) — recursion-depth guard.** Clean `expression nesting too
    deep` diagnostic instead of a segfault on adversarial deep input. Makes "never
@@ -98,7 +106,8 @@ quest: fs/net in the interpreter (`RELEASE-0.1.0-PLAN.md` §4).
 
 ## Gotchas for this workstream
 
-- **Worktree:** this is the `splendid-soaring-sphinx` worktree. Build with
+- **Worktree:** (historical — named a specific, now-gone worktree at the time
+  this was written; not meaningful to a different session/worktree.) Build with
   `make -C <abs-worktree-path> medaka`; edit only worktree-absolute paths (shell
   cwd resets to the main checkout between calls — see `AGENTS.md`).
 - **Seed re-mint:** any change that perturbs emitted IR (Track 1 runtime/link,

@@ -1,19 +1,21 @@
 # LAYOUT-SEMANTICS.md — Medaka's layout rule, formalized
 
-**Status:** idealized formal specification + conformance anchor.
+**Status:** OPEN (living spec) — idealized formal specification + conformance
+anchor, continuously maintained ground truth, not a "did this ship" tracker.
 **Scope:** the indentation-sensitive token-stream transformation that inserts
 `INDENT` / `DEDENT` / `NEWLINE` (Medaka's "offside rule").
-**Audience:** compiler maintainers; the two lexers
-(`compiler/frontend/lexer.mdk` — canonical; `lib/lexer.mll` — frozen oracle)
-must both conform to *this document*.
+**Audience:** compiler maintainers. `compiler/frontend/lexer.mdk` (the sole
+lexer — `lib/lexer.mll`, the former OCaml frozen oracle, was removed
+2026-06-26) must conform to *this document*.
 
-> **Why this file exists.** The layout rule lives only as imperative code in two
-> lexers that must agree, and it is where the recurring lexer bugs concentrate.
-> This is the declarative ground truth: it states what layout *should* do, so the
-> two implementations can be audited against one definition rather than against
-> each other. When `lib/` is removed (the soak-tail plan, AGENTS.md), this file —
-> not the OCaml oracle — is the conformance anchor that
-> `compiler/frontend/lexer.mdk` is validated against. Written to outlive `lib/`.
+> **Why this file exists.** The layout rule is where the recurring lexer bugs
+> concentrate. This is the declarative ground truth: it states what layout
+> *should* do, so the implementation can be audited against one definition. At
+> design time this doc audited **two** lexers against each other; `lib/` was
+> removed 2026-06-26 (`06356a80`), so this file — not a second lexer — is now
+> the sole conformance anchor `compiler/frontend/lexer.mdk` is validated
+> against. §12 below still describes the old dual-lexer conformance contract in
+> places; treat those as historical (see the note at §12).
 >
 > Cross-references: `SYNTAX.md` "Layout notes" is the operational *what-parses*
 > cheat-sheet (doc drift erased by WS-1, `eb01df3`, 2026-06-21 — see
@@ -68,9 +70,10 @@ is closed instead. This couples the lexer to the parser.
 
 The transformation `source → cooked token stream` factors into three stages. The
 canonical lexer (`compiler/frontend/lexer.mdk`) implements them as three
-literal passes; the OCaml oracle (`lib/lexer.mll`) **fuses** all three into one
-stateful ocamllex pass with a pending-token queue, but computes the identical
-relation. This document specifies the *relation*; either factoring conforms.
+literal passes. (Historical: the former OCaml oracle, `lib/lexer.mll`, fused
+all three into one stateful ocamllex pass with a pending-token queue, but
+computed the identical relation.) This document specifies the *relation*; any
+conforming factoring is valid.
 
 ```
                  ┌──────────────────────────────────────────────┐
@@ -122,9 +125,9 @@ initial: [0]              -- the top-level block at column 0; never empties
 
 Each entry is the **column** of an open implicit layout block. The stack is
 initialized `[0]` and the base `0` is never popped before `EOF`. `INDENT` pushes
-a column; `DEDENT` pops one. (Both lexers store exactly this: `indent_stack`
-in `lib/lexer.mll`, the `List Int` argument to `layout` in
-`compiler/frontend/lexer.mdk`.)
+a column; `DEDENT` pops one. (The lexer stores exactly this: the `List Int`
+argument to `layout` in `compiler/frontend/lexer.mdk`. Historical: the former
+OCaml oracle stored the same shape as `indent_stack` in `lib/lexer.mll`.)
 
 ---
 
@@ -287,13 +290,15 @@ enforced in two complementary places, and **both** are required:
   catches the *same-column* and *dedented* cases (II and III) that Stage B
   emitted a `NEWLINE` for.
 
-> **Implementation note / latent-divergence site.** The OCaml oracle fuses these
-> as `filter_newline` (one-token lookahead, drop `NEWLINE` before `THEN`/`ELSE`)
-> plus `resolve_pending` (the deferred-INDENT path). The compiler lexer uses
-> `resolveCont` + a pure-list `elseFilter`. These are *different code* computing
-> the *same relation*; they are verified equivalent across the audit battery, but
-> a future edit to one without the other is the single most likely way to
-> reintroduce a layout divergence. See `archive/LAYOUT-CONFORMANCE-ROADMAP.md` WS-2.
+> **Implementation note (historical latent-divergence site).** At the time both
+> lexers existed, the OCaml oracle fused these as `filter_newline` (one-token
+> lookahead, drop `NEWLINE` before `THEN`/`ELSE`) plus `resolve_pending` (the
+> deferred-INDENT path), while the compiler lexer used `resolveCont` + a
+> pure-list `elseFilter` — *different code* computing the *same relation*,
+> verified equivalent across the audit battery. `lib/lexer.mll` no longer
+> exists (removed 2026-06-26), so this specific divergence risk is moot; kept
+> for the general lesson (two independent implementations of the same relation
+> is where such bugs concentrate). See `archive/LAYOUT-CONFORMANCE-ROADMAP.md` WS-2.
 
 ---
 
@@ -327,12 +332,13 @@ in a comment throwing off brace counting).
 ### 6.1 Bracket block-expressions — herald-armed nested layout (NEW)
 
 > **Status: LANDED (2026-06-23).** The model below is the *locked* design
-> (`LAYOUT-BRACKETS-DESIGN.md`, LOCKED SCOPE 2026-06-23), now implemented in BOTH
-> lexers (Stage 3 — the lexer Gate A — complete): `compiler/frontend/lexer.mdk`
+> (`LAYOUT-BRACKETS-DESIGN.md`, LOCKED SCOPE 2026-06-23), implemented in
+> `compiler/frontend/lexer.mdk` (Stage 3 — the lexer Gate A — complete): it
 > threads a bracket-frame stack (`frames`) through the layout pass
-> (`flushClose`/`applyNlFrame`/`armsHerald`); `lib/lexer.mll` mirrors it
-> byte-identically (`bracket_frames` + `flush_close` + the free-form branch in
-> `handle_indent`). The grammar (Gate B) was landed earlier. A bracketed
+> (`flushClose`/`applyNlFrame`/`armsHerald`). (Historical: at the time, `lib/lexer.mll`
+> mirrored it byte-identically via `bracket_frames` + `flush_close` + the
+> free-form branch in `handle_indent`; `lib/` was removed 2026-06-26.) The
+> grammar (Gate B) was landed earlier. A bracketed
 > `match`/`do`/`function` herald block now lexes, checks, runs, and builds
 > end-to-end. **Two documented limitations** (acceptable per the locked scope):
 > (1) the **bare-`INDENT` block** herald is DEFERRED inside brackets — there is no
@@ -394,9 +400,9 @@ is re-enabled only on the herald-armed path.
 
 **Grammar side (implemented now).** In the grammar, the four herald forms
 `match`/`do`/`function`/record already reach bracket element positions through
-the ordinary expression chain (`expr_no_block → expr_lam` in `lib/parser.mly`;
-`parseAtomRaw`'s `TMatch`/`TFunction`/`TDo`/record dispatch in
-`compiler/frontend/parser.mdk`). The one herald not reachable there is the
+the ordinary expression chain (`parseAtomRaw`'s `TMatch`/`TFunction`/`TDo`/record
+dispatch in `compiler/frontend/parser.mdk`; historical: the mirror was
+`expr_no_block → expr_lam` in the now-removed `lib/parser.mly`). The one herald not reachable there is the
 **bare-`INDENT` block**, which previously lived only in the decl-body production.
 A dedicated, contained nonterminal (`bracket_block` / `parseBracketBlock`) admits
 it in the paren, list, array, tuple, and record-field-value element positions,
@@ -485,7 +491,7 @@ An empty source lexes to exactly `NEWLINE EOF`. (Both lexers: verified.)
 | `match s` arms | implicit | `match` arms `opener` ⟹ arm line opens block; arms are siblings (II) |
 | `Arm => body` (body on next line) | implicit | `=>` heralds the arm-body block |
 | `if / then / else` (multi-line) | none | `then`/`else` leading a line continue the `if` (§5.4); **no** block. Corollary: `else let x = e` with the body on a *following* line is a **parse error by design** — `let x = e`'s RHS (`e`) is the last token (`canEndExpr`, §7.1), so the next line is absorbed as a continuation (§5.0/I.c), not a block; and the inline `let` form requires `in`. Use `else let x = e in body` (one-liner) or `else`-on-its-own-line + an indented `let … ⏎ body` block. Same root as the §11 `x = id⏎ let …` example. |
-| `data T =⏎ \| A \| B` (leading `\|`) | implicit | `=` heralds the variant block; each `\| A` is a sibling line (II). **Lexes identically in both; the OCaml *parser* rejects leading-`\|`, the native parser accepts it — a frozen-oracle parser gap, not a layout gap.** See AUDIT P-DATAPIPE |
+| `data T =⏎ \| A \| B` (leading `\|`) | implicit | `=` heralds the variant block; each `\| A` is a sibling line (II). The native parser accepts leading-`\|`. (Historical: the former OCaml oracle parser rejected it — a frozen-oracle parser gap, not a layout gap, moot since `lib/` removal.) See AUDIT P-DATAPIPE |
 | record `{ … }`, set `{ … }`, list `[ … ]`, array `[\| … \|]`, tuple `( … )` | **explicit** | bracket depth > 0 ⟹ layout **off** (§6); free-form multi-line |
 | string interpolation `"… \{e} …"` | explicit | separate interp depth; layout off inside `e` |
 
@@ -545,27 +551,41 @@ left-shifted.
 
 ## 12. Conformance contract
 
-1. **Both lexers compute the relation L of §4 plus the Stage-A/§5/§6 rules,
-   bit-for-bit.** The differential gates `test/diff_compiler_lexer.sh`
-   (curated corpus) and `test/diff_compiler_lex_files.sh` (the stdlib + the
-   lexer itself) enforce token-stream identity. As of this writing they pass and
-   the audit battery (≈65 probes beyond the corpus) finds **zero** token-level
-   divergence.
+> **Rewritten 2026-07-13 to drop the dual-lexer premise.** `lib/lexer.mll` (the
+> former OCaml oracle) was removed 2026-06-26 (`06356a80`). §4-8 of this file
+> are now the sole definition `compiler/frontend/lexer.mdk` is held to directly
+> — there is no second implementation to diff against. The old differential
+> gates (`diff_compiler_lexer.sh`/`diff_compiler_lex_files.sh`, item 1 below)
+> and the `dune build dev/lextok.exe` oracle probe (item 2) are historical: they
+> compared native lexer output against the OCaml oracle, which no longer
+> exists. Use `test/bin/lex_main <file>` alone to observe the current lexer's
+> token stream (build via `sh test/build_oracles.sh`); it prints one token per
+> line in the canonical `token_to_string` form, including
+> `INDENT`/`DEDENT`/`NEWLINE`.
 
-2. **Dump probes (how to observe the relation):**
-   - canonical: `test/bin/lex_main <file>` (the native lexer on the interpreter
-     entry `compiler/entries/lex_main.mdk`; build via `sh test/build_oracles.sh`),
-   - oracle: `./_build/default/dev/lextok.exe <file>` (OCaml
-     `Lexer.tokenize_string`; build via `dune build dev/lextok.exe`).
-   Both print one token per line in the canonical `token_to_string` form,
-   including `INDENT` / `DEDENT` / `NEWLINE`.
+1. *(Historical.)* Both lexers computed the relation L of §4 plus the
+   Stage-A/§5/§6 rules, bit-for-bit. The differential gates
+   `test/diff_compiler_lexer.sh` (curated corpus) and
+   `test/diff_compiler_lex_files.sh` (the stdlib + the lexer itself) enforced
+   token-stream identity against the OCaml oracle before its removal; they
+   passed and the audit battery (≈65 probes beyond the corpus) found **zero**
+   token-level divergence.
 
-3. **When `lib/` is removed,** §4–§8 of this file replace the oracle as the
-   definition `compiler/frontend/lexer.mdk` is held to; the audit's probe battery
-   (promoted to fixtures per ROADMAP WS-7) becomes the regression net.
+2. *(Historical dump-probe pair — the oracle side is dead.)* Canonical:
+   `test/bin/lex_main <file>` (the native lexer on the interpreter entry
+   `compiler/entries/lex_main.mdk`; build via `sh test/build_oracles.sh`) — this
+   one still works and is the current way to observe the relation. The former
+   oracle probe, `./_build/default/dev/lextok.exe <file>` (OCaml
+   `Lexer.tokenize_string`, built via `dune build dev/lextok.exe`), no longer
+   resolves — `dune`/`_build`/`dev/` are all gone.
+
+3. **§4–§8 of this file are the definition `compiler/frontend/lexer.mdk` is
+   held to** (the "when `lib/` is removed" trigger condition in the old text
+   fired 2026-06-26; this is now simply the standing state, not a future
+   contingency).
 
 4. **This file is updated to track the binary, never the reverse for accepted
-   behavior** — but a *newly discovered* divergence between a lexer and this
+   behavior** — but a *newly discovered* divergence between the lexer and this
    spec is a lexer bug (file a ROADMAP item), whereas a divergence between this
    spec and SYNTAX.md/PLAN.md is a doc-drift bug in *those* files (this file is
    the layout ground truth).

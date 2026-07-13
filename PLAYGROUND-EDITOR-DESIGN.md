@@ -1,8 +1,15 @@
 # PLAYGROUND-EDITOR-DESIGN.md — Tier 3 in-browser editor
 
+**Status:** IMPLEMENTED — `d5306c81` (S1 highlighting + S2 squiggles),
+`ed70e786` (S3 hover + S4 completion). All four stages below shipped: CodeMirror 6
+replaces the `<textarea>`, with syntax highlighting, inline diagnostics, hover-types,
+and autocomplete, verified end-to-end by the Playwright harness
+(`playground/e2e/tests/playground.spec.mjs`, "hover-type"/completion checks). This
+doc's staged plan (§8, S1-S4) is the historical record of how it was built.
+
 Decision-ready design for upgrading the server-free playground (`playground/`) from a
 plain `<textarea>` to TypeScript-playground-grade editing: syntax highlighting, inline
-red squiggles, hover-types, autocomplete. **Read-only design pass — nothing implemented.**
+red squiggles, hover-types, autocomplete.
 
 ---
 

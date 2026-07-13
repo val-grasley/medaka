@@ -1,5 +1,11 @@
 # Re-export does not thread schemes into the importer's typecheck seed
 
+**Status:** IMPLEMENTED — see `compiler/types/typecheck.mdk:12373`, `reexportSeed :
+List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)`,
+matching this doc's proposed mechanism; fixture
+`test/eval_typed_modules_fixtures/cross_module_method_userconstraint_diamond/`
+(named in this doc's Stage 0 plan) exists in the tree.
+
 Status: DESIGN (read-only investigation, 2026-06-25). Base verified: `git
 merge-base --is-ancestor 221af36 HEAD` → BASE_OK (D2 method-constraint fix
 landed). No source edited.

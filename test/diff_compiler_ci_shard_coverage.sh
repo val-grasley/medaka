@@ -6,6 +6,14 @@
 # name matches NO shard's pattern is never run in CI — silently. It still passes
 # locally, `run_gates.sh` still counts it, and nothing anywhere says it was skipped.
 #
+# This gate scans EVERY workflow file under .github/workflows/, not just ci.yml —
+# a gate that is deliberately unsuited to the PR path (a slow tree-wide scan, a
+# nondeterministic fuzzer) can be "named" by a step in a scheduled workflow
+# (e.g. nightly.yml) instead, and that counts as covered too. Only ci.yml's
+# `gates` job matrix contributes shard `pattern:` entries (that's the only job
+# with a `strategy.matrix.include` shape) — a NAMED reference (a gate script
+# invoked literally in a `run:` step, in ANY workflow file) is enough either way.
+#
 # THIS IS NOT HYPOTHETICAL. It happened the same day the sharding landed: the new
 # perf-scaling gate (diff_compiler_perf_scaling.sh) matched none of the six shard
 # patterns and would have silently never run in CI. It was caught only because
@@ -29,31 +37,62 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WF="$ROOT/.github/workflows/ci.yml"
+WFDIR="$ROOT/.github/workflows"
 
-[ -f "$WF" ] || { echo "no CI workflow at $WF — nothing to check"; exit 1; }
+[ -d "$WFDIR" ] || { echo "no workflow dir at $WFDIR — nothing to check"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found (needed to parse the workflow YAML)"; exit 2; }
 
-python3 - "$ROOT" "$WF" <<'PY'
+python3 - "$ROOT" "$WFDIR" <<'PY'
 import sys, glob, pathlib, re
 
-root, wf = sys.argv[1], sys.argv[2]
+root, wfdir = sys.argv[1], sys.argv[2]
 
-try:
-    import yaml
-    doc = yaml.safe_load(open(wf))
-    shards = doc['jobs']['gates']['strategy']['matrix']['include']
-    pats = {e['name']: e['pattern'] for e in shards}
-except Exception:
-    # No PyYAML? Fall back to a regex over the `pattern:` lines. Do NOT silently
-    # pass — a coverage check that cannot read the workflow must say so.
-    txt = pathlib.Path(wf).read_text()
-    found = re.findall(r'- name: (\w+)\n\s+pattern: "([^"]+)"', txt)
-    if not found:
-        print("FAIL: could not parse any shard patterns out of the workflow.")
-        print("      This is a HARNESS failure, not a pass — refusing to certify coverage.")
-        sys.exit(1)
-    pats = dict(found)
+wf_paths = sorted(pathlib.Path(wfdir).glob('*.yml')) + sorted(pathlib.Path(wfdir).glob('*.yaml'))
+if not wf_paths:
+    print(f"FAIL: no workflow files under {wfdir} — nothing to check")
+    sys.exit(1)
+
+# `pats` (shard name -> glob pattern) only ever comes from a job shaped like
+# ci.yml's `gates` job (a `strategy.matrix.include` list of {name, pattern}
+# dicts) — but that shape isn't unique to ci.yml BY DESIGN: any workflow file
+# may define shard-style matrix coverage and it is picked up the same way.
+# `wf_text` is the concatenation of every workflow file's raw text, so a gate
+# named literally in a `run:` step in ANY workflow (e.g. nightly.yml) counts.
+pats = {}
+wf_text_parts = []
+parse_failed = []
+for wf in wf_paths:
+    txt = wf.read_text()
+    wf_text_parts.append(txt)
+    try:
+        import yaml
+        doc = yaml.safe_load(txt)
+        for job in (doc.get('jobs') or {}).values():
+            include = (((job or {}).get('strategy') or {}).get('matrix') or {}).get('include')
+            if not include:
+                continue
+            for e in include:
+                if 'name' in e and 'pattern' in e:
+                    pats[e['name']] = e['pattern']
+    except Exception:
+        # No PyYAML, or this file didn't parse? Fall back to a regex over the
+        # `pattern:` lines for THIS file. Do NOT silently drop it — a coverage
+        # check that cannot read a workflow must say so, not pretend it's empty.
+        found = re.findall(r'- name: (\w+)\n\s+pattern: "([^"]+)"', txt)
+        if found:
+            pats.update(dict(found))
+        else:
+            parse_failed.append(str(wf))
+
+wf_text = '\n'.join(wf_text_parts)
+
+if parse_failed and not pats:
+    print("FAIL: could not parse any shard patterns out of any workflow, and these files")
+    print("      could not even be regex-scanned as a fallback:")
+    for p in parse_failed:
+        print(f"       {p}")
+    print("      This is a HARNESS failure, not a pass — refusing to certify coverage.")
+    sys.exit(1)
 
 # ── EVERY gate family, not just diff_compiler_*. ──────────────────────────────
 #
@@ -96,10 +135,11 @@ if tools_path.exists():
             tools.add(line.split()[0])
 all_gates -= tools
 
-# A gate counts as covered if a shard pattern globs it OR the workflow names it
-# literally in some step (that is how the `soundness` job runs the fixpoint and the
-# compiler-source typecheck — they are not sharded, they are named).
-wf_text = pathlib.Path(wf).read_text()
+# A gate counts as covered if a shard pattern globs it OR any workflow file names
+# it literally in some step (that is how the `soundness` job runs the fixpoint and
+# the compiler-source typecheck — they are not sharded, they are named; it is also
+# how a scheduled workflow like nightly.yml covers a gate unsuited to the PR path).
+# `wf_text` was already built as the concatenation of every workflow file, above.
 
 # Exceptions LEDGER: deliberately-not-in-CI, each with a reason. See the file header
 # for why this is a ledger and not a skip-list.

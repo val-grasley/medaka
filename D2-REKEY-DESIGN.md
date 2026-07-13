@@ -1,5 +1,13 @@
 # D2 cross-module dict-identity — design (reproduced + root-caused)
 
+**Status:** IMPLEMENTED — `221af369`, "fix(typecheck): D2 — align cross-module
+method-constraint dict ids at the read site." `methodConstraintsRef`/
+`recordMethodDicts` (`compiler/types/typecheck.mdk`) implement the staged fix this
+doc proposes; fixture `test/eval_typed_modules_fixtures/cross_module_method_userconstraint/`
+exists. (Not independently re-run through the gate suite in this pass — build/gate
+runs are out of scope for this doc-only pass — but the fix commit + matching fixture
+are direct evidence.)
+
 > Read-only planning artifact. Reproduced on current `main` (merge-base of
 > `da2469d` is an ancestor of HEAD; native `medaka` rebuilt
 > `FORCE_EMITTER_REBUILD=1 make medaka`; oracle `_build/default/bin/main.exe`).

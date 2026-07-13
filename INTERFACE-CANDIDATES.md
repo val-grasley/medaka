@@ -1,5 +1,12 @@
 # INTERFACE-CANDIDATES.md — which built-in constructs could generalize behind an interface
 
+**Status:** PARTIAL — `++`→`Semigroup` (§1, "do first") shipped `05c517b1`,
+2026-07-13, AFTER this doc's last edit (`binopMethod "++" = Some "append"` in
+`compiler/types/typecheck.mdk`) — this doc's own recommendation #1 is now DONE,
+not open, despite reading as a live recommendation below. The `Enum` interface
+(ranges) and unary-minus→`Num.negate` recommendations remain genuinely open (not
+found in `compiler/types/typecheck.mdk` or `stdlib/core.mdk` as of this pass).
+
 Read-only design audit (2026-07-09). Surveys every built-in operator, literal,
 and syntactic form in Medaka and classifies whether it is (A) already
 interface-dispatched, (B) hardcoded but a good generalization candidate, or
