@@ -1,5 +1,10 @@
 # Stage 2 backend architecture — bytecode VM first, or straight to LLVM?
 
+**Status:** IMPLEMENTED — see the doc's own accurate as-built banner immediately below
+(a model example of a design doc correctly narrating proposal → built → partially
+reverted → historical, all in one place). One dead bare-path citation fixed
+(`compiler/llvm_emit.mdk` → `compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass).
+
 Status: ✅ **BUILT (2026-06-08).** This was the design proposal; it is now the
 as-built record. Both on-ramps were taken — the Core IR + bytecode VM (§2.1–2.2)
 and the native **LLVM backend**, which now self-hosts the compiler to a
@@ -1121,7 +1126,7 @@ near-term sequence"):
    unicode round-trip `wörld` + codepoint slice `café→af` verified), **slice 14 DONE
    2026-06-07** (`charIsAlpha/Space/Upper/Lower/Punct`, `charToUpper/Lower`,
    `stringToUpper/Lower`; nine C helpers in `medaka_rt.c`; `isUnicodeExtern`/
-   `emitUnicodeExtern` in `compiler/llvm_emit.mdk`; predicates call C and tag raw 0/1
+   `emitUnicodeExtern` in `compiler/backend/llvm_emit.mdk`; predicates call C and tag raw 0/1
    to Bool via `tagInt`; `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps
    ASCII members, NOT `ispunct()` — `+`/`$`/`=`/`^`/`|`/`~` return `False`; string
    case-map is byte-wise ASCII, UTF-8 multi-byte bytes pass through; 101/101 plain +
