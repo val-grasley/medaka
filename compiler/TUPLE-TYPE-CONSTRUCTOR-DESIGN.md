@@ -1,6 +1,7 @@
 # Tuple as a real type constructor — design doc
 
-**Status: SHIPPED (2026-07-02).** Stage 1 (`a642a43`, zero observable change —
+**Status:** IMPLEMENTED — `a642a43e`/`c00ee2bf`, 2026-07-02 (verified both SHAs exist).
+Stage 1 (`a642a43`, zero observable change —
 tuples internally became `__tupleN__`-headed `TApp` spines, type-layer-contained,
 NO seed re-mint needed for this stage alone) then Stage 2 (`c00ee2b`, Parts A+B —
 `(,)`/`(,,)`/`(,,,)`/`(,,,,)` surface syntax for arities 2–5 names the bare

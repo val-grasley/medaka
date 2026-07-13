@@ -1,5 +1,14 @@
 # compiler/ generic-helper census
 
+**Status:** PARTIAL — steps 1-2 of the centralization plan shipped (OrdMap→stdlib `Map`;
+`util.mdk`'s `reverseL`/`zipL`/`joinWith`→stdlib `list`/`string`, per the box below). The
+bulk of the file-by-file dedup plan (§6 table) shows no completion markers and remains
+open. The doc's own "highest-value finding" (a quadratic `joinWith sep rest` duplicated
+in `types/typecheck.mdk` and `eval/eval.mdk`) was independently re-checked here
+(2026-07-13): zero matches for that pattern in either file today — only calls to the
+canonical `util`/stdlib `joinWith` remain, so that specific finding is fixed; do not
+re-fix it.
+
 > **⚠️ UPDATE 2026-06-30 — this doc predates the stdlib-import policy change and two measured migrations. Read this box first.**
 > 1. The compiler **MAY** now import `stdlib/` (policy changed 2026-06-29). OrdMap→stdlib `Map` (step 1) and `util.mdk`'s `reverseL`/`zipL`/`joinWith`→stdlib `list`/`string` (step 2) have shipped.
 > 2. **Cost rule (measured):** importing a stdlib module whose types' instances are **core-defined** (`list`/`string`) is **near-free** (no new instance surface; DCE trims to referenced fns; −256 B, +2%). Importing one that defines a **new type** (`map`) pulls its whole instance surface (+34 KB, +4.8%).

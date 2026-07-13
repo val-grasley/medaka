@@ -1,5 +1,9 @@
 # Real source locations for the 3 `{0,0}`-range resolver diagnostics (F3)
 
+**Status:** IMPLEMENTED — Chunk A `9d6398ad` (R-UNKNOWN-TYPE), Chunk B `2d9138fb`
+(R-PRIVATE-NAME/R-MODULE-LOAD), 2026-07-03. Both chunks done per the doc's own
+"AS-BUILT" section (fixpoint C3a/C3b YES, zero re-mint).
+
 Error-quality workstream. Three resolver diagnostics emit a dummy `{0,0}` range
 (print `<unknown location>`), capping them at rubric A=1, giving them no L score
 and no machine `fix`. This design gives them real source locations. Design pass

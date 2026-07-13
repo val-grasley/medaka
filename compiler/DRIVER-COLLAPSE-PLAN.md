@@ -1,6 +1,9 @@
-STATUS: COMPLETE — all phases done 2026-06-13; single-file/multi-module drivers collapsed; `medaka check` resolves imports.
-
 # DRIVER-COLLAPSE-PLAN.md — collapse the dual single-file / multi-module drivers
+
+**Status:** IMPLEMENTED — `6874c3f6`, 2026-06-13. All phases done; single-file/
+multi-module drivers collapsed; `medaka check` resolves imports (option A — no
+single-file-only tool variant kept). `checkProgram`, the flat `elaborate`, `evalProgram`,
+and `evalOutput` were deleted per the doc's own Phase-5 log.
 
 Status: APPROVED 2026-06-13 (user). Implements `compiler/TYPECHECK-AUDIT.md §6`
 ("Dual drivers … the recurring defect"). Collapse the single-file typecheck+eval

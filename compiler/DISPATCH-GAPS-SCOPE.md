@@ -1,4 +1,10 @@
 # DISPATCH-GAPS-SCOPE.md
+
+**Status:** IMPLEMENTED — all four gaps closed, `c1f31ce5` (#55 eval path) /
+`5ee7eef3` (#21), 2026-06-11–14. See the doc's own ✅ banner below (already accurate and
+self-updating — a model example in this doc family). Shared root cause retired by
+`compiler/ARGSTAMP-UNIFY-PLAN.md` (also verified IMPLEMENTED, see that doc).
+
 ## Scoping Audit — Four Native-Backend Dispatch Gaps
 **Date:** 2026-06-10 (audit) · **Updated 2026-06-14**
 
@@ -21,7 +27,7 @@
 
 These four gaps were explicitly parked on 2026-06-10 as NOT on the Phase-C CLI capstone critical path.  They are stdlib-completeness gaps: any user program that calls `toList` on a `Map`, uses `sum`/`product`, calls `max`/`min` through a generic `Ord a`, or has a two-level boxed ADT fails at `medaka build` while succeeding under `medaka run`.
 
-The native backend pipeline: `typecheck.mdk` `elaborateModules` route-stamps → `compiler/llvm_emit.mdk` → text LLVM IR → `clang` → native binary.
+The native backend pipeline: `typecheck.mdk` `elaborateModules` route-stamps → `compiler/backend/llvm_emit.mdk` → text LLVM IR → `clang` → native binary.
 
 ---
 
@@ -139,7 +145,7 @@ The specific failure: `max` is point-free (`callMax = max`), so at the call to `
 
 **More precisely:** the garbaged output `2189658104` = an uninitialized register or an integer read from a stack slot. `callMax = max` desugars to a point-free binding that emits as a GLOBAL (E1b). The global `mdk_g_callMax` is initialized in `@main`'s prologue to the VALUE of `max` — but `max` is a method reference, not a concrete function. In the `@main` prologue, `emitVar "max"` looks up `max` in the emitter's method table and (pre-dict-passing) emits a partial closure or returns `0` as a fallback. The whole-program binding `callMax = max` is stored into the global as this `0` or stale address; `callMax 3 7` then dispatches through a null/stale pointer.
 
-**Fix location:** `compiler/llvm_emit.mdk` — the point-free global init path for a method name. `emitVar "max"` (and all interface method names used as first-class values) should NOT be emitted as a raw var lookup; they need an eta-expanded closure wrapping the RDict dispatch. The RDict path for `emitMethodDispatch` already exists; the issue is that `callMax = max` stores the method VALUE (at compile time, before any dict is known) rather than a closure that, at call time, takes `(dict, x, y)` and dispatches. Alternative fix: detect top-level point-free `=>` constrained bindings that are pure method aliases and emit them as forwarding wrappers directly.
+**Fix location:** `compiler/backend/llvm_emit.mdk` — the point-free global init path for a method name. `emitVar "max"` (and all interface method names used as first-class values) should NOT be emitted as a raw var lookup; they need an eta-expanded closure wrapping the RDict dispatch. The RDict path for `emitMethodDispatch` already exists; the issue is that `callMax = max` stores the method VALUE (at compile time, before any dict is known) rather than a closure that, at call time, takes `(dict, x, y)` and dispatches. Alternative fix: detect top-level point-free `=>` constrained bindings that are pure method aliases and emit them as forwarding wrappers directly.
 
 **Cite lines:** `llvm_emit.mdk` `emitVar` (searches `lookupVarG` / `isKnownMethod`) — the fallback for a method name in value position. Related: `emitDefaultDispatchChain` at lines 2317–2333 (correct for non-point-free callers). `emitGroupBody` / the global init path for `E1b` globals at `emitTopGlobals`.
 
@@ -513,6 +519,6 @@ All four gaps were reproduced. None failed to trigger on the native path.
 
 | Gap | Key files |
 |-----|-----------|
-| #50, #55 | `compiler/llvm_emit.mdk` (`emitVar`, `emitTopGlobals`, `emitMethodDispatch`, `emitDefaultDispatchChain`); `compiler/typecheck.mdk` (`constrainedSigNames`, `registerConstraintRegs`, `funConstraintsRef`, `elabModuleStamp`) |
-| #54 | `compiler/typecheck.mdk` (`buildKeyTable`, `implExistsForHead`, `resolveRLocalSites`, `buildStandaloneShadows`, `elabModuleStamp`); `stdlib/map.mdk` (standalone `toList` at line 350; calls in `eq`/`compare`/`debug`/`display` impls lines 447–482) |
-| #21 | `compiler/typecheck.mdk` (`implRequiresRoutesRec` line 3796, `reqRoute` line 3784, `elabModuleStamp` line 5836, `resolveSites` line 3279); `compiler/llvm_emit.mdk` (`dictWordOfRoute`, `emitDispatchChain`, `loadReqDicts`) |
+| #50, #55 | `compiler/backend/llvm_emit.mdk` (`emitVar`, `emitTopGlobals`, `emitMethodDispatch`, `emitDefaultDispatchChain`); `compiler/types/typecheck.mdk` (`constrainedSigNames`, `registerConstraintRegs`, `funConstraintsRef`, `elabModuleStamp`) |
+| #54 | `compiler/types/typecheck.mdk` (`buildKeyTable`, `implExistsForHead`, `resolveRLocalSites`, `buildStandaloneShadows`, `elabModuleStamp`); `stdlib/map.mdk` (standalone `toList` at line 350; calls in `eq`/`compare`/`debug`/`display` impls lines 447–482) |
+| #21 | `compiler/types/typecheck.mdk` (`implRequiresRoutesRec` line 3796, `reqRoute` line 3784, `elabModuleStamp` line 5836, `resolveSites` line 3279); `compiler/backend/llvm_emit.mdk` (`dictWordOfRoute`, `emitDispatchChain`, `loadReqDicts`) |

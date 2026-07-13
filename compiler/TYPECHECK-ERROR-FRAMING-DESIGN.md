@@ -1,5 +1,12 @@
 # TYPECHECK ERROR FRAMING — Design (Tier-3 "typecheck mis-framing" reservoir)
 
+**Status:** IMPLEMENTED — Chunk A `f1705a7f`, Chunk C `29d1644a`, Chunk D `00ca0bfa`
+(all verified live), 2026-07-03. Chunk B was deliberately DROPPED (the target's secondary
+error is genuinely independent, not a cascade). At landing time, 3 unrelated failing gates
+were noted as pre-existing tech debt (`diff_compiler_lex_files`, `diff_compiler_lsp_b4`,
+`diff_compiler_test`) — a stale-golden recapture pass was flagged as owed; not
+independently re-verified whether that has since happened.
+
 Owning workstream: error-message quality (`compiler/ERROR-QUALITY.md`,
 `test/error_quality_fixtures/GRADING.md`; memory `project_error_quality_workstream`).
 This design targets the graded corpus's largest remaining quality reservoir:

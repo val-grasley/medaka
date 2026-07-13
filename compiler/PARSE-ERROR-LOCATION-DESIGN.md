@@ -1,5 +1,14 @@
 # PARSE-ERROR-LOCATION-DESIGN
 
+**Status:** PARTIAL/IMPLEMENTED — the location half (furthest-failure heuristic) shipped
+`98d2a89c` (P0-11): `orElseR`/`orElseRb` in `compiler/frontend/parser.mdk` propagate the
+deeper of two failures, exactly this doc's §2 mechanism. The doc's own "no source
+touched" framing below predates that fix — it describes the pre-fix state, not current
+reality. Not independently re-verified here whether the driver-side caret-rendering half
+(this doc's other named component) is fully closed, or whether
+`DIAGNOSTICS-SURFACING-PLAN.md`'s residual #1 (parse-error column accuracy) is resolved
+as a result.
+
 Scope: make Medaka's parse errors **located (caret) with a real explanation**, to
 the bar its typecheck errors already hit. Audit finding #2 — parse errors are the
 worst part of the compiler for beginners. READ-ONLY design doc; no source touched.

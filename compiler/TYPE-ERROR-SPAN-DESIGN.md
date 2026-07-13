@@ -1,6 +1,12 @@
 # Type-error span precision — design
 
-Status: DESIGN (2026-07-07, read-only scoping over `90d775fd`, reproduced on the
+**Status:** IMPLEMENTED — Bite 1 `893d9f20` (string-literal span), Bites 2+3 `01f4ee9e`
+(whole-binop span, wrong-arg-type argument span), 2026-07-07. All four staged bites this
+doc names are verifiably implemented, with in-source comments echoing this doc's own
+"Bite N" terminology verbatim. Header below never flipped to SHIPPED despite the fix
+landing.
+
+Original header (predates the fix): Status: DESIGN (2026-07-07, read-only scoping over `90d775fd`, reproduced on the
 built binary). Playground-filed deferred item. Improves CM6 inline squiggles (the
 0.1.0 front door): type errors currently squiggle ~1 char instead of the offending
 expression.
