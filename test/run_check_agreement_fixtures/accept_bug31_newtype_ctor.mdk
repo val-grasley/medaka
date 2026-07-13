@@ -1,0 +1,15 @@
+-- Bug #31 regression: `newtype` was ENTIRELY UNUSABLE — all three of `check`,
+-- `run`, and `build` failed with "Unbound variable: F". Root cause:
+-- `registerData` in compiler/types/typecheck.mdk handled `DData`/`DTypeAlias`
+-- but silently dropped `DNewtype` on its catch-all, so the typechecker never
+-- got a scheme for a newtype's constructor even though resolve legitimately
+-- bound it. A second, deeper-than-filed gap: compiler/eval/eval.mdk's
+-- `ctorsOfDecl`/`ctorTypeEntries` (which seed the `run`-path environment with
+-- constructor closures) ALSO dropped `DNewtype`, so even after the typecheck
+-- fix, `run` alone panicked with "unbound identifier: F" (build already
+-- worked, since the Core-IR lowering path had its own DNewtype ctorArities
+-- handling). Both are fixed; this fixture exercises construction, pattern
+-- match unwrapping, and a derived Display instance.
+newtype F = F Int deriving (Display)
+main : <IO> Unit
+main = println (F 5)

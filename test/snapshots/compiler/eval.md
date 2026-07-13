@@ -1,5 +1,5 @@
 # META
-source_lines=2919
+source_lines=2922
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -219,6 +219,7 @@ buildCtorToType prog = flatMap ctorTypeEntries prog
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
   map (v => (variantName v, tyname)) variants
+ctorTypeEntries (DNewtype _ tyname _ con _ _) = [(con, tyname)]
 ctorTypeEntries _ = []
 
 variantName : Variant -> String
@@ -1412,6 +1413,8 @@ collectCtors prog = flatMap ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value e)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
+ctorsOfDecl (DNewtype _ _ _ con fty _) =
+  [ctorEntry (Variant con (ConPos [fty]))]
 ctorsOfDecl _ = []
 
 ctorEntry : Variant -> (String, Value e)
@@ -2985,6 +2988,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "buildCtorToType" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "ctorTypeEntries")) (EVar "prog")))
 (DTypeSig false "ctorTypeEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "ctorTypeEntries" ((PCon "DData" PWild (PVar "tyname") PWild (PVar "variants") PWild)) (EApp (EApp (EVar "map") (ELam ((PVar "v")) (ETuple (EApp (EVar "variantName") (EVar "v")) (EVar "tyname")))) (EVar "variants")))
+(DFunDef false "ctorTypeEntries" ((PCon "DNewtype" PWild (PVar "tyname") PWild (PVar "con") PWild PWild)) (EListLit (ETuple (EVar "con") (EVar "tyname"))))
 (DFunDef false "ctorTypeEntries" (PWild) (EListLit))
 (DTypeSig false "variantName" (TyFun (TyCon "Variant") (TyCon "String")))
 (DFunDef false "variantName" ((PCon "Variant" (PVar "n") PWild)) (EVar "n"))
@@ -3592,6 +3596,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "collectCtors" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "ctorsOfDecl")) (EVar "prog")))
 (DTypeSig false "ctorsOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "ctorsOfDecl" ((PCon "DData" PWild PWild PWild (PVar "variants") PWild)) (EApp (EApp (EVar "map") (EVar "ctorEntry")) (EVar "variants")))
+(DFunDef false "ctorsOfDecl" ((PCon "DNewtype" PWild PWild PWild (PVar "con") (PVar "fty") PWild)) (EListLit (EApp (EVar "ctorEntry") (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "ctorsOfDecl" (PWild) (EListLit))
 (DTypeSig false "ctorEntry" (TyFun (TyCon "Variant") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "ctorEntry" ((PCon "Variant" (PVar "n") (PVar "payload"))) (ETuple (EVar "n") (EApp (EApp (EVar "makeCtor") (EVar "n")) (EApp (EVar "payloadArity") (EVar "payload")))))
@@ -4292,6 +4297,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "buildCtorToType" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "ctorTypeEntries")) (EVar "prog")))
 (DTypeSig false "ctorTypeEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "ctorTypeEntries" ((PCon "DData" PWild (PVar "tyname") PWild (PVar "variants") PWild)) (EApp (EApp (EMethodRef "map") (ELam ((PVar "v")) (ETuple (EApp (EVar "variantName") (EVar "v")) (EVar "tyname")))) (EVar "variants")))
+(DFunDef false "ctorTypeEntries" ((PCon "DNewtype" PWild (PVar "tyname") PWild (PVar "con") PWild PWild)) (EListLit (ETuple (EVar "con") (EVar "tyname"))))
 (DFunDef false "ctorTypeEntries" (PWild) (EListLit))
 (DTypeSig false "variantName" (TyFun (TyCon "Variant") (TyCon "String")))
 (DFunDef false "variantName" ((PCon "Variant" (PVar "n") PWild)) (EVar "n"))
@@ -4899,6 +4905,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "collectCtors" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "ctorsOfDecl")) (EVar "prog")))
 (DTypeSig false "ctorsOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "ctorsOfDecl" ((PCon "DData" PWild PWild PWild (PVar "variants") PWild)) (EApp (EApp (EMethodRef "map") (EVar "ctorEntry")) (EVar "variants")))
+(DFunDef false "ctorsOfDecl" ((PCon "DNewtype" PWild PWild PWild (PVar "con") (PVar "fty") PWild)) (EListLit (EApp (EVar "ctorEntry") (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "ctorsOfDecl" (PWild) (EListLit))
 (DTypeSig false "ctorEntry" (TyFun (TyCon "Variant") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "ctorEntry" ((PCon "Variant" (PVar "n") (PVar "payload"))) (ETuple (EVar "n") (EApp (EApp (EVar "makeCtor") (EVar "n")) (EApp (EVar "payloadArity") (EVar "payload")))))

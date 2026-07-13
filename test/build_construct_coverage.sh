@@ -37,16 +37,18 @@ trap 'rm -rf "$WORK"' EXIT
 #   1 emitter gap — fails the emitter on BOTH the OCaml and native build host, so
 #     it was ALREADY RED on the original OCaml-oracle gate:
 #       tuple_neq       — `not` not a known emitter fn (operator-section gap)
-#   4 native typecheck-GATE gaps — OCaml `medaka build` accepts them, but the
+#   3 native typecheck-GATE gaps — OCaml `medaka build` accepts them, but the
 #     native CLI's G1 typecheck gate (compiler/driver/medaka_cli.mdk) rejects them.
 #     Same medaka_cli typecheck-gate family as the deferred lsp host; surfaced by
 #     re-rooting the build host from OCaml to native.  Pre-existing native-CLI
 #     limitations, NOT a backend regression:
 #       json_parse, mod_reverse_string — `(UnknownModule "json"/"list"/"string")`
 #         (multi-module stdlib import not resolved by the gate's roots)
-#       newtype_ctor_fn  — `newtype` constructor not recognised by native check
 #       type_alias       — `type Name = String` alias not unified by native check
-SKIP="tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias"
+#   newtype_ctor_fn — UN-SKIPPED (bug #31, 2026-07-13): `newtype` ctors were
+#     unbound at typecheck (registerData dropped DNewtype) AND at eval
+#     (ctorsOfDecl/ctorTypeEntries dropped it too); both fixed, golden captured.
+SKIP="tuple_neq json_parse mod_reverse_string type_alias"
 skipped=0
 
 pass=0; fail=0

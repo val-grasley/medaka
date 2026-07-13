@@ -215,6 +215,7 @@ buildCtorToType prog = flatMap ctorTypeEntries prog
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
   map (v => (variantName v, tyname)) variants
+ctorTypeEntries (DNewtype _ tyname _ con _ _) = [(con, tyname)]
 ctorTypeEntries _ = []
 
 variantName : Variant -> String
@@ -1408,6 +1409,8 @@ collectCtors prog = flatMap ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value e)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
+ctorsOfDecl (DNewtype _ _ _ con fty _) =
+  [ctorEntry (Variant con (ConPos [fty]))]
 ctorsOfDecl _ = []
 
 ctorEntry : Variant -> (String, Value e)
