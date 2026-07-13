@@ -102,7 +102,7 @@ gh pr merge --auto --merge           # merges itself the moment all 9 checks go 
 
 **Nine required checks:** the six `gates (…)` shards, `soundness`, `seed-health`, `inlang`.
 **Zero approvals required** — the *checks* are the gate, not a human, so an agent can
-self-merge on green. The repo is org-owned (`MedakaLang`), so a **merge queue is live** — see above; `--auto` enqueues.
+self-merge on green. The repo is org-owned (MedakaLang), so a **merge queue is live** — see above; `--auto` enqueues.
 
 Two things that are easy to get wrong:
 
