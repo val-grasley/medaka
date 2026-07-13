@@ -1,5 +1,13 @@
 # DIAGNOSTIC-CODES-DESIGN.md
 
+**Status:** IMPLEMENTED — Stage 1 `ab61283c`, Stage 2 `761516e6`. Both stages landed:
+codes are authored at push sites (`pushIncompleteImpl` → `"T-INCOMPLETE-IMPL"` in
+`compiler/types/typecheck.mdk`, `"W-GUARD-INEXHAUSTIVE"` in
+`compiler/driver/diagnostics.mdk`), and `cjDiagnostic` (`compiler/driver/diagnostics.mdk:769`)
+emits the full `code`/`kind`/`help`/`fix`/`range`/`severity` JSON contract. This doc's own
+body never added a closing status line — it still reads as an open plan; treat the "Decided
+upstream" box and the contract shape as the current source of truth, not "not yet decided."
+
 Design + census for **stable error codes on every Medaka diagnostic**. Companion
 to `ERROR-QUALITY.md` (the grading key / copy standard). This doc is the
 implementation design for its §5 machine-readable contract and its "Open
