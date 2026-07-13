@@ -1,6 +1,13 @@
 # Signature Constraint Soundness — Design + Blast-Radius Census
 
-**Status:** DESIGN + CENSUS (no fix shipped). 2026-07-03.
+**Status:** IMPLEMENTED — `9fddb349`, after 2026-07-03. **This header originally said
+"no fix shipped" — that is now FALSE.** `missingConstraintMsg`/`T-MISSING-CONSTRAINT`
+(`compiler/types/typecheck.mdk:11342/11372`) is the shipped implementation, matching
+this doc's §2.4 proposed wording almost verbatim. Not independently re-verified whether
+every subtlety (§2.1 obligation-source union, §2.2 `requires`-closure, §2.3
+`superDeclsRef` population) was implemented exactly as specified.
+
+Original header (predates the fix): **Status:** DESIGN + CENSUS (no fix shipped). 2026-07-03.
 **File under study:** `compiler/types/typecheck.mdk` (~10.7k lines).
 **Base:** ancestor of `32a51317` (BASE_OK).
 
