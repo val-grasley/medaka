@@ -1,16 +1,52 @@
--- sqlite reader demo / differential-oracle entry.
+-- | sqlite/main.mdk — the Medaka SQLite CLI.
 --
--- Usage: medaka build sqlite/main.mdk ... ; ./sqlite_main <db> <table>
---   (or `medaka run` for the pure paths — but openDb needs a compiled binary,
---    since readFileBytes is unavailable in the native interpreter).
+-- Usage (after `medaka build sqlite/main.mdk -o sqlite_cli`):
 --
--- Prints, for the given table:
---   the stored CREATE statement (the `sql` column of sqlite_master), and
---   one line per row, columns joined by "|", matching `sqlite3 db "SELECT *"`.
+--     sqlite_cli <db>                    -- dump the schema:  type|name|rootpage
+--     sqlite_cli <db> <table>            -- dump a table:     SELECT * FROM <table>
+--     sqlite_cli <db> "<SQL>"            -- run ONE statement
 --
--- INTEGER PRIMARY KEY columns are stored as NULL in the record (the value IS
--- the rowid); we substitute the rowid for that column so the output matches
--- sqlite3's `SELECT *`.
+-- The third form is the real one: it parses and executes ANY statement
+-- `lib.sqlstmt` supports —
+--
+--     SELECT … | INSERT INTO … VALUES … | UPDATE … SET … | DELETE FROM …
+--     | CREATE TABLE …
+--
+-- — against the file at `<db>`, creating it if a `CREATE TABLE` names a file that
+-- does not exist yet.  Rows print in `sqlite3`'s default `-list` mode (one row per
+-- line, columns joined by `|`, NULL as the empty string), so the output can be
+-- diffed BYTE-FOR-BYTE against `sqlite3 <db> "<same SQL>"`; that diff IS the gate
+-- (`sqlite/test/dml_oracle.sh`).  INSERT / UPDATE / DELETE / CREATE print nothing
+-- on success, exactly as the `sqlite3` CLI does.
+--
+-- The row type is `lib.rowtype.tCells`, the DYNAMIC decoder: a SQL string's
+-- column list is not known until run time, so there is no static tuple to decode
+-- into.
+--
+-- ## Dispatch between the `<table>` and `<SQL>` forms
+--
+-- The second argument is a bare TABLE NAME only when it is a SINGLE word that is
+-- not one of the five statement keywords; ANY other argument is SQL.  An
+-- unquoted SQL table name can never contain whitespace, so the split is
+-- unambiguous — and it keeps the long-standing `<db> <table>` reader form (which
+-- eight oracles drive) working untouched, while still routing an UNSUPPORTED
+-- statement (`DROP TABLE t`) to the parser, where it gets a real diagnostic
+-- instead of "table not found: DROP TABLE t".
+--
+-- ## Errors
+--
+-- A bad statement, an unsupported construct, or a constraint violation prints one
+-- `error: <message>` line and exits 0 — never a panic, never a partial write.
+-- (`lib.mutate` builds the whole new image in memory and only then writes it, so
+-- a refused statement cannot leave a half-written database behind.)
+--
+-- ## Known divergence from the `sqlite3` CLI
+--
+-- A BLOB column prints as `<blob>` (`lib.recordfmt.cellToString`), where sqlite3
+-- prints the blob's raw bytes.  Medaka strings are UTF-8, so a raw non-ASCII byte
+-- cannot be put on stdout at all; rather than print something almost-right, this
+-- prints a marker.  Blob STORAGE is gated instead by comparing `sqlite3`'s own
+-- `hex(col)` across the two engines (see `dml_oracle.sh`).
 
 import lib.sqlite.{
   Db,
@@ -28,7 +64,8 @@ import lib.sqlite.{
 }
 import lib.btree.{Row, rowRowid, rowCells}
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob, CFloat, cellToString}
-import string.{join}
+import lib.sqlexec.{execSql, outRows}
+import string.{join, toUpper, words}
 
 -- Render a row to a "|"-joined line, substituting the rowid for the PK column.
 renderRow : Option Int -> Row -> String
@@ -67,13 +104,51 @@ printSchema (e::rest) =
   println "\{schemaType e}|\{schemaName e}|\{intToString (schemaRootPage e)}"
   printSchema rest
 
-main : <IO> Unit
+-- ---------------------------------------------------------------------------
+-- The SQL path
+-- ---------------------------------------------------------------------------
+
+-- The five words that open a statement.  Anything else in argument position 2 is
+-- a table name (the legacy reader form).
+statementKeywords : List String
+statementKeywords = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE"]
+
+isStatement : String -> Bool
+isStatement s = notATableName (words s)
+
+notATableName : List String -> Bool
+notATableName [] = False
+notATableName [w] = elem (toUpper w) statementKeywords
+notATableName _ = True
+
+-- Run one statement and print its rows (nothing, for a non-SELECT).
+runSql : String -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runSql path sql = match execSql path sql
+  Err e => println "error: \{e}"
+  Ok out => printCellRows (outRows out)
+
+printCellRows : List (List Cell) -> <IO> Unit
+printCellRows [] = ()
+printCellRows (cells::rest) =
+  println (join "|" (renderCells cells))
+  printCellRows rest
+
+-- ---------------------------------------------------------------------------
+
+main : <IO, FileRead, FileWrite, Mut> Unit
 main = match args ()
   [path] => runOpen path dumpSchema
-  path::table::_ => runOpen path (db => dumpTable db table)
-  _ => println "usage: sqlite_main <db> [table]"
+  path::arg::_ => runArg path arg
+  _ => println "usage: sqlite_cli <db> [<table> | \"<SQL>\"]"
 
-runOpen : String -> (Db -> <IO> Unit) -> <IO> Unit
+runArg : String -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runArg path arg =
+  if isStatement arg then
+    runSql path arg
+  else
+    runOpen path (db => dumpTable db arg)
+
+runOpen : String -> (Db -> <IO> Unit) -> <IO, FileRead> Unit
 runOpen path k = match openDb path
   Err e => println "Error opening \{path}: \{e}"
   Ok db => k db
