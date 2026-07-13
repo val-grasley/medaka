@@ -157,13 +157,32 @@ jobs:
         run: make medaka
 
       # Per-shard: this shard's oracle set, keyed the same way as the binary
-      # above (plus test/build_oracles.sh itself — the script that builds them).
+      # above (plus test/build_oracles.sh itself — the script that builds them)
+      # AND the shard's own `pattern`.
+      #
+      # The pattern is load-bearing in the key and it is easy to miss. WHICH oracles a
+      # shard builds is derived FROM the pattern (`build_oracles.sh --for <pattern>`),
+      # so changing the pattern changes the contents of test/bin. Without the pattern in
+      # the key, a `test/bin` cached before the pattern changed would restore, the build
+      # step would be SKIPPED, and the newly-needed oracles would simply be ABSENT.
+      #
+      # This is not hypothetical — it went live the moment the eval shard gained the
+      # bootstrap_* gates. It fails loudly rather than silently (run_gates.sh reclassifies
+      # a missing oracle as FAIL*, phantom skip, not SKIP — see T1), so it could never
+      # have passed-while-proving-nothing. But it would have read as a baffling CI failure
+      # on an unrelated commit.
+      #
+      # We hash the WHOLE ci.yml rather than the pattern string: a pattern contains quotes,
+      # spaces and `*`, none of which are legal in a cache key, and Actions has no
+      # hash-a-string function. So a comment-only edit to this file also busts the oracle
+      # cache. That over-invalidates, and it is deliberately the safe direction to be wrong
+      # in — the same trade the `compiler/**` glob above makes, for the same reason.
       - name: Restore cached oracles for this shard
         id: oracle-cache
         uses: actions/cache@v4
         with:
           path: test/bin
-          key: oracles-${{ matrix.name }}-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+          key: oracles-${{ matrix.name }}-v2-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}-${{ hashFiles('.github/workflows/ci.yml') }}
 
       # Only the oracles THIS shard's gates actually read. See the header.
       # Skipped only on an exact cache hit above — a miss always rebuilds with
