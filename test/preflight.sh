@@ -186,21 +186,31 @@ for pat in $pats; do
   fi
 done
 
-oracles=""
-for g in $gates; do
-  for o in $(grep -ohE 'test/bin/[a-z_0-9]+' "$g" 2>/dev/null | sed 's|test/bin/||' | sort -u); do
-    case " $oracles " in *" $o "*) ;; *) oracles="$oracles $o" ;; esac
-  done
-done
-
-n_o=$(printf '%s\n' $oracles | grep -vc '^$' 2>/dev/null || echo 0)
-echo "── building %s of 54 oracles (only what these gates read) ─────" >/dev/null
-printf '── building %s of 54 oracles (only what these gates read) ─────\n' "$n_o"
-for o in $oracles; do
-  printf '  %s\n' "$o"
-  FORCE=1 JOBS=1 sh "$ROOT/test/build_oracles.sh" --build-one "$o" >/dev/null 2>&1 \
-    || { echo "preflight: oracle build FAILED: $o"; exit 1; }
-done
+# Build this diff's oracles by DELEGATING to build_oracles.sh --for. Do not re-derive
+# the set here.
+#
+# preflight used to scrape `test/bin/<name>` out of the gate scripts itself, with the
+# same one-line grep build_oracles uses — but WITHOUT build_oracles' crucial second
+# step: intersecting the scraped names against the authoritative ENTRIES list. The grep
+# matches COMMENTS, and diff_compiler_snapshot_frontend.sh:9 carries a comment naming
+# `test/bin/desugar_batch` — an oracle whose entry was deleted when that gate was
+# migrated into the snapshot corpus. So preflight dutifully tried to build a
+# nonexistent oracle and hard-failed:
+#
+#     preflight: oracle build FAILED: desugar_batch
+#
+# after ~4.5 minutes of building. That made preflight — THE agent inner loop — unusable
+# for ANY compiler-source change, since snapshot_frontend is in almost every gate set.
+#
+# The bug is not really the grep. It is that TWO PLACES derived the same set and only one
+# of them knew the rule. So now there is one: build_oracles.sh --for is the single source
+# of truth for "which oracles does this gate set need", and preflight calls it. Same
+# derivation, one implementation, cannot drift again.
+printf '── building the oracles these gates read ─────\n'
+if ! sh "$ROOT/test/build_oracles.sh" --for $pats; then
+  echo "preflight: oracle build FAILED"
+  exit 1
+fi
 
 # ── run the targeted gates ───────────────────────────────────────────────────
 echo
