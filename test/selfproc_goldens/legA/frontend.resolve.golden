@@ -57,6 +57,7 @@ declLoc : Decl -> Option Loc
 dedupResErrors : List ResError -> List ResError
 dedupResErrorsGo : List ResError -> List String -> List ResError
 deleteAllStr : List String -> Map String Unit -> Map String Unit
+dropLocOfExpanded : (String, String, Loc) -> (String, String)
 dupClauseTail : Option Loc -> String -> Bool -> List FunClause -> List ResError
 dupErr : String -> String -> ResError
 dupValClause : Decl -> Option (String, Bool, Option Loc)
@@ -74,7 +75,7 @@ expTypeCtorsDirect : List Decl -> List (String, List String)
 expTypesDirect : List Decl -> List String
 expValuesDirect : List Decl -> List String
 expandMemberErrs : ModuleExports -> UseMember -> List ResError
-expandMemberNames : ModuleExports -> UseMember -> List (String, Loc)
+expandMemberNames : ModuleExports -> UseMember -> List (String, String, Loc)
 externNames : List Decl -> List String
 externWithBodyErrors : List String -> List Decl -> List ResError
 fieldCheck : Option Loc -> Env -> String -> String -> List ResError
@@ -127,9 +128,10 @@ lastOf : List String -> String
 letBindDupErrors : Option Loc -> String -> List FunClause -> List ResError
 letBindName : LetBind -> String
 locKey : Option Loc -> String
+localOfExpanded : (String, String, Loc) -> String
+localsExportedFrom : List String -> List (String, String) -> List String
 lookupValue : Env -> List String -> String -> Bool
 matchesExport : String -> (String, List String) -> List String
-memberName : UseMember -> String
 mergeAdds : ImportAdds -> ImportAdds -> ImportAdds
 modulesExportingName : Env -> String -> List String
 newlyDuplicated : Option Loc -> Map String Unit -> List String -> List ResError
@@ -156,6 +158,7 @@ primitiveTypes : List String
 programIsCore : List Decl -> Bool
 propParamName : PropParam -> String
 pubErr : ModuleExports -> String -> List ResError
+pubErrExpanded : ModuleExports -> (String, String, Loc) -> List ResError
 pubErrLoc : ModuleExports -> (String, Loc) -> List ResError
 pubIfaceMethodSets : List Decl -> List (List String)
 pubUsePaths : List Decl -> List UsePath
@@ -183,7 +186,8 @@ recPatHead : Option Loc -> Env -> String -> List ResError
 recUpdateField : Option Loc -> Env -> List String -> FieldAssign -> List ResError
 recUpdateVerdict : Option Loc -> String -> List String -> List ResError
 recordFieldOwner : String -> Field -> (String, String)
-reexportNamesOf : UsePath -> ModuleExports -> List String
+reexportBindings : UsePath -> ModuleExports -> List (String, String)
+reexportOrigins : UsePath -> ModuleExports -> List String
 resErrorCode : ResError -> String
 resErrorDidYouMean : ResError -> Option (String, String)
 resErrorLoc : ResError -> Option Loc
@@ -201,6 +205,7 @@ resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
 resolveProgramG2 : List String -> List Decl -> List Decl -> List Decl -> List ResError
 resolveToLines : List Decl -> List Decl -> List Decl -> String
 rewriteNonRec : List String -> ResError -> ResError
+selfBinding : String -> (String, String)
 singleFileImportErrors : List Decl -> List ResError
 startsWithAt : Array Char -> Bool
 stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds

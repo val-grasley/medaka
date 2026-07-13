@@ -96,7 +96,7 @@ for f in $changed; do
     compiler/tools/lint*.mdk)      add 'diff_compiler_lint*' ;;
     compiler/tools/fmt.mdk|compiler/tools/printer.mdk) add 'diff_compiler_fmt'; add 'diff_compiler_printer' ;;
     compiler/tools/lsp.mdk)        add 'diff_compiler_lsp*' ;;
-    compiler/tools/snapshot.mdk|compiler/tools/snap_wasm.mdk)
+    compiler/tools/snapshot.mdk)
                                    add 'diff_compiler_snapshot*' ;;
     compiler/tools/repl.mdk)       add 'diff_compiler_repl' ;;
     compiler/tools/*test*|compiler/tools/doctest.mdk|compiler/tools/prop_runner.mdk)

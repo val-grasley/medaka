@@ -1,5 +1,5 @@
 # META
-source_lines=3889
+source_lines=3986
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -38,6 +38,8 @@ import frontend.ast.{
   Loc(..),
   UseMember(..),
   UsePath(..),
+  useMemberOrigin,
+  useMemberAlias,
   PropParam(..),
   MethodDefault(..),
   IfaceMethod(..),
@@ -2068,8 +2070,35 @@ parseImport pub = do
   quals <- importQuals
   path <- importPathFor quals
   e <- getPos
+  noExportedAlias pub path
   skipNewlines
   pure (DUse pub path (locOfSpan s e))
+
+-- An `export import` may NOT be aliased, in either form.  Both would re-export a name
+-- that does not exist in the module that actually defines it:
+--
+--   `export import m as A`        binds `A.name` — names meaningful only against OUR
+--                                 private alias, which an importer could not write.
+--   `export import m.{a as b}`    would re-export `b`, but a module's export table maps
+--                                 (name → defining module) and the real symbol is
+--                                 rebuilt from that pair — so `b` would rebuild as
+--                                 `m__b`, while the symbol is `m__a`.
+--
+-- Rejecting is the honest option: an alias is FILE-LOCAL.  Re-export the module
+-- (`export import m`) or the member under its own name (`export import m.{a}`), and let
+-- the importer alias it.
+noExportedAlias : Bool -> UsePath -> Parser Unit
+noExportedAlias True (UseAlias _ a) =
+  failP
+    "`export import … as \{a}` is not allowed — a module alias is file-local (it binds `\{a}.name`, which an importer could not write). Re-export the module itself (`export import m`) and let the importer choose its own alias."
+noExportedAlias True (UseGroup _ members) = failIfAliasedMember members
+noExportedAlias _ _ = pure ()
+
+failIfAliasedMember : List UseMember -> Parser Unit
+failIfAliasedMember [] = pure ()
+failIfAliasedMember (m::rest) = match useMemberAlias m
+  Some a => failP "`export import` cannot rename a member — re-exporting `\{useMemberOrigin m}` as `\{a}` would export a name its defining module does not have. Re-export it under its own name (`export import m.{\{useMemberOrigin m}}`) and let the importer alias it."
+  None => failIfAliasedMember rest
 
 importQuals : Parser (List String)
 importQuals = do
@@ -2118,15 +2147,33 @@ importPathForT quals TDotLBrace = do
   ms <- sepBy1 importMember (expectTok TComma)
   optTrailingComma
   expectTok TRBrace
+  noTrailingAlias "a selective import"
   pure (UseGroup quals ms)
 importPathForT quals TDotStar = do
   advance
+  noTrailingAlias "a wildcard import"
   pure (UseWild quals)
 importPathForT quals TAs = do
   advance
   a <- aliasName
   pure (UseAlias quals a)
 importPathForT quals _ = pure (UseName quals)
+
+-- `import m.{a, b} as A` / `import m.* as A` are REJECTED, not silently ignored.
+-- Both forms are self-contradictory: the group/wildcard says "bind these names
+-- unqualified HERE", the alias says "bind them only under `A.`".  A module alias
+-- (`import m as A`) already covers everything the module exports, and a member alias
+-- (`import m.{a as b}`) covers renaming a single name — so neither form loses power.
+noTrailingAlias : String -> Parser Unit
+noTrailingAlias what = do
+  t <- peekP
+  noTrailingAliasFor what t
+
+noTrailingAliasFor : String -> Token -> Parser Unit
+noTrailingAliasFor what TAs =
+  failP
+    "`as` cannot alias \{what} — write `import m as A` to alias the whole module (then use `A.name`), or `import m.{name as alias}` to rename one member"
+noTrailingAliasFor _ _ = pure ()
 
 importMember : Parser UseMember
 importMember = do
@@ -2137,8 +2184,7 @@ importMember = do
 importMemberFor : Int -> Token -> Parser UseMember
 importMemberFor s (TIdent x) = do
   advance
-  q <- getPos
-  pure (UseMember x False (locOfSpan s q))
+  memberAliasOrNot s x False
 importMemberFor s (TUpper x) = do
   advance
   withAllOrNot s x
@@ -2149,17 +2195,66 @@ withAllOrNot s x = do
   t <- peekP
   withAllFor s x t
 
+-- An Uppercase member is a TYPE, CONSTRUCTOR or INTERFACE, and none of those may be
+-- aliased.  Impl coherence and constructor identity are resolved on the REAL name
+-- globally, so binding one under a local alias would be a silent soundness hole, not a
+-- rename.  Reject it here rather than accept-and-ignore.
 withAllFor : Int -> String -> Token -> Parser UseMember
 withAllFor s x TLParen = do
   advance
   expectTok TDotDot
   expectTok TRParen
   q <- getPos
-  pure (UseMember x True (locOfSpan s q))
+  noMemberAlias x
+  pure (UseMember x True (locOfSpan s q) None)
 withAllFor s x _ = do
   q <- getPos
-  pure (UseMember x False (locOfSpan s q))
+  noMemberAlias x
+  pure (UseMember x False (locOfSpan s q) None)
 
+noMemberAlias : String -> Parser Unit
+noMemberAlias x = do
+  t <- peekP
+  noMemberAliasFor x t
+
+noMemberAliasFor : String -> Token -> Parser Unit
+noMemberAliasFor x TAs =
+  failP
+    "`\{x}` is a type or constructor and cannot be aliased — only a value member can be renamed (`import m.{name as alias}`). Import it under its own name."
+noMemberAliasFor _ _ = pure ()
+
+-- a value member's optional `as <alias>`: `import m.{a as b}` binds m's `a` under `b`.
+memberAliasOrNot : Int -> String -> Bool -> Parser UseMember
+memberAliasOrNot s x allCtors = do
+  t <- peekP
+  memberAliasFor s x allCtors t
+
+memberAliasFor : Int -> String -> Bool -> Token -> Parser UseMember
+memberAliasFor s x allCtors TAs = do
+  advance
+  a <- memberAliasName
+  q <- getPos
+  pure (UseMember x allCtors (locOfSpan s q) (Some a))
+memberAliasFor s x allCtors _ = do
+  q <- getPos
+  pure (UseMember x allCtors (locOfSpan s q) None)
+
+-- A value member's alias is itself a value name ⇒ lowercase.
+memberAliasName : Parser String
+memberAliasName = do
+  t <- peekP
+  memberAliasNameFor t
+
+memberAliasNameFor : Token -> Parser String
+memberAliasNameFor (TIdent x) = emit x
+memberAliasNameFor (TUpper x) =
+  failP
+    "a value member's alias must be lowercase — `as \{x}` names a type or constructor"
+memberAliasNameFor _ = failP "expected alias name after `as`"
+
+-- A MODULE alias must be Uppercase.  It is referenced as `A.name`, which parses as a
+-- field access on `A`; requiring uppercase keeps it unambiguous against `rec.field` on
+-- a lowercase local (record fields are accessed with the same `.`).
 aliasName : Parser String
 aliasName = do
   t <- peekP
@@ -2167,8 +2262,10 @@ aliasName = do
 
 aliasNameFor : Token -> Parser String
 aliasNameFor (TUpper x) = emit x
-aliasNameFor (TIdent x) = emit x
-aliasNameFor _ = failP "expected alias name"
+aliasNameFor (TIdent x) =
+  failP
+    "a module alias must be capitalized — `as \{x}` should be an Uppercase name (it is used as a qualifier, `Alias.name`)"
+aliasNameFor _ = failP "expected alias name after `as`"
 
 -- ── prop / test / bench declarations ─────────────────────────────────────
 stringLitP : Parser String
@@ -3892,7 +3989,7 @@ parseResult src = match tokenizeWithOffsets src
         else
           resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
 # DESUGAR
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Loc" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true) (mem "Route" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Loc" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberOrigin" false) (mem "useMemberAlias" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true) (mem "Route" true))))
 (DUse false (UseGroup ("frontend" "lexer") ((mem "Token" true) (mem "tokenize" false) (mem "tokenizeWithLines" false) (mem "tokenizeWithOffsets" false) (mem "tokenizeWithOffsetPairs" false) (mem "offsetToLineCol" false) (mem "lineStartsOf" false) (mem "offsetToLineColFast" false) (mem "describeToken" false))))
 (DUse false (UseGroup ("support" "util") ((mem "reverseL" false) (mem "joinWith" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
@@ -4609,7 +4706,14 @@ parseResult src = match tokenizeWithOffsets src
 (DFunDef false "externNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
 (DFunDef false "externNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected extern name"))))
 (DTypeSig false "parseImport" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
-(DFunDef false "parseImport" ((PVar "pub")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TImport"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "importQuals")) (ELam ((PVar "quals")) (EApp (EApp (EVar "andThen") (EApp (EVar "importPathFor") (EVar "quals"))) (ELam ((PVar "path")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EVar "path")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "e")))))))))))))))))
+(DFunDef false "parseImport" ((PVar "pub")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TImport"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "importQuals")) (ELam ((PVar "quals")) (EApp (EApp (EVar "andThen") (EApp (EVar "importPathFor") (EVar "quals"))) (ELam ((PVar "path")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "noExportedAlias") (EVar "pub")) (EVar "path"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EVar "path")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "e")))))))))))))))))))
+(DTypeSig false "noExportedAlias" (TyFun (TyCon "Bool") (TyFun (TyCon "UsePath") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noExportedAlias" ((PCon "True") (PCon "UseAlias" PWild (PVar "a"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`export import … as ")) (EApp (EVar "display") (EVar "a"))) (ELit (LString "` is not allowed — a module alias is file-local (it binds `"))) (EApp (EVar "display") (EVar "a"))) (ELit (LString ".name`, which an importer could not write). Re-export the module itself (`export import m`) and let the importer choose its own alias.")))))
+(DFunDef false "noExportedAlias" ((PCon "True") (PCon "UseGroup" PWild (PVar "members"))) (EApp (EVar "failIfAliasedMember") (EVar "members")))
+(DFunDef false "noExportedAlias" (PWild PWild) (EApp (EVar "pure") (ELit LUnit)))
+(DTypeSig false "failIfAliasedMember" (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "failIfAliasedMember" ((PList)) (EApp (EVar "pure") (ELit LUnit)))
+(DFunDef false "failIfAliasedMember" ((PCons (PVar "m") (PVar "rest"))) (EMatch (EApp (EVar "useMemberAlias") (EVar "m")) (arm (PCon "Some" (PVar "a")) () (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`export import` cannot rename a member — re-exporting `")) (EApp (EVar "display") (EApp (EVar "useMemberOrigin") (EVar "m")))) (ELit (LString "` as `"))) (EApp (EVar "display") (EVar "a"))) (ELit (LString "` would export a name its defining module does not have. Re-export it under its own name (`export import m.{"))) (EApp (EVar "display") (EApp (EVar "useMemberOrigin") (EVar "m")))) (ELit (LString "}`) and let the importer alias it."))))) (arm (PCon "None") () (EApp (EVar "failIfAliasedMember") (EVar "rest")))))
 (DTypeSig false "importQuals" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "importQuals" () (EApp (EApp (EVar "andThen") (EVar "importIdent")) (ELam ((PVar "first")) (EApp (EApp (EVar "andThen") (EVar "importQualRest")) (ELam ((PVar "rest")) (EApp (EVar "pure") (EBinOp "::" (EVar "first") (EVar "rest"))))))))
 (DTypeSig false "importQualRest" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "String"))))
@@ -4630,27 +4734,48 @@ parseResult src = match tokenizeWithOffsets src
 (DTypeSig false "importPathFor" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Parser") (TyCon "UsePath"))))
 (DFunDef false "importPathFor" ((PVar "quals")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "importPathForT") (EVar "quals")) (EVar "t")))))
 (DTypeSig false "importPathForT" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UsePath")))))
-(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotLBrace")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "importMember")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "ms")) (EApp (EApp (EVar "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "ms"))))))))))))
-(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotStar")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EVar "pure") (EApp (EVar "UseWild") (EVar "quals"))))))
+(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotLBrace")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "importMember")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "ms")) (EApp (EApp (EVar "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "noTrailingAlias") (ELit (LString "a selective import")))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "ms"))))))))))))))
+(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotStar")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "noTrailingAlias") (ELit (LString "a wildcard import")))) (ELam (PWild) (EApp (EVar "pure") (EApp (EVar "UseWild") (EVar "quals"))))))))
 (DFunDef false "importPathForT" ((PVar "quals") (PCon "TAs")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "aliasName")) (ELam ((PVar "a")) (EApp (EVar "pure") (EApp (EApp (EVar "UseAlias") (EVar "quals")) (EVar "a"))))))))
 (DFunDef false "importPathForT" ((PVar "quals") PWild) (EApp (EVar "pure") (EApp (EVar "UseName") (EVar "quals"))))
+(DTypeSig false "noTrailingAlias" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "noTrailingAlias" ((PVar "what")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "noTrailingAliasFor") (EVar "what")) (EVar "t")))))
+(DTypeSig false "noTrailingAliasFor" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noTrailingAliasFor" ((PVar "what") (PCon "TAs")) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "`as` cannot alias ")) (EApp (EVar "display") (EVar "what"))) (ELit (LString " — write `import m as A` to alias the whole module (then use `A.name`), or `import m.{name as alias}` to rename one member")))))
+(DFunDef false "noTrailingAliasFor" (PWild PWild) (EApp (EVar "pure") (ELit LUnit)))
 (DTypeSig false "importMember" (TyApp (TyCon "Parser") (TyCon "UseMember")))
 (DFunDef false "importMember" () (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "importMemberFor") (EVar "s")) (EVar "t")))))))
 (DTypeSig false "importMemberFor" (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember")))))
-(DFunDef false "importMemberFor" ((PVar "s") (PCon "TIdent" (PVar "x"))) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))))
+(DFunDef false "importMemberFor" ((PVar "s") (PCon "TIdent" (PVar "x"))) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EApp (EVar "memberAliasOrNot") (EVar "s")) (EVar "x")) (EVar "False")))))
 (DFunDef false "importMemberFor" ((PVar "s") (PCon "TUpper" (PVar "x"))) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "withAllOrNot") (EVar "s")) (EVar "x")))))
 (DFunDef false "importMemberFor" (PWild PWild) (EApp (EVar "failP") (ELit (LString "expected import member"))))
 (DTypeSig false "withAllOrNot" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "UseMember")))))
 (DFunDef false "withAllOrNot" ((PVar "s") (PVar "x")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EVar "withAllFor") (EVar "s")) (EVar "x")) (EVar "t")))))
 (DTypeSig false "withAllFor" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember"))))))
-(DFunDef false "withAllFor" ((PVar "s") (PVar "x") (PCon "TLParen")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TDotDot"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRParen"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "True")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))))))))
-(DFunDef false "withAllFor" ((PVar "s") (PVar "x") PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))
+(DFunDef false "withAllFor" ((PVar "s") (PVar "x") (PCon "TLParen")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TDotDot"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRParen"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EApp (EVar "andThen") (EApp (EVar "noMemberAlias") (EVar "x"))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "True")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))))))))))
+(DFunDef false "withAllFor" ((PVar "s") (PVar "x") PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EApp (EVar "andThen") (EApp (EVar "noMemberAlias") (EVar "x"))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))))
+(DTypeSig false "noMemberAlias" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "noMemberAlias" ((PVar "x")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "noMemberAliasFor") (EVar "x")) (EVar "t")))))
+(DTypeSig false "noMemberAliasFor" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noMemberAliasFor" ((PVar "x") (PCon "TAs")) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "`")) (EApp (EVar "display") (EVar "x"))) (ELit (LString "` is a type or constructor and cannot be aliased — only a value member can be renamed (`import m.{name as alias}`). Import it under its own name.")))))
+(DFunDef false "noMemberAliasFor" (PWild PWild) (EApp (EVar "pure") (ELit LUnit)))
+(DTypeSig false "memberAliasOrNot" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "UseMember"))))))
+(DFunDef false "memberAliasOrNot" ((PVar "s") (PVar "x") (PVar "allCtors")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EApp (EVar "memberAliasFor") (EVar "s")) (EVar "x")) (EVar "allCtors")) (EVar "t")))))
+(DTypeSig false "memberAliasFor" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember")))))))
+(DFunDef false "memberAliasFor" ((PVar "s") (PVar "x") (PVar "allCtors") (PCon "TAs")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "memberAliasName")) (ELam ((PVar "a")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "allCtors")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EApp (EVar "Some") (EVar "a")))))))))))
+(DFunDef false "memberAliasFor" ((PVar "s") (PVar "x") (PVar "allCtors") PWild) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "allCtors")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))
+(DTypeSig false "memberAliasName" (TyApp (TyCon "Parser") (TyCon "String")))
+(DFunDef false "memberAliasName" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "memberAliasNameFor") (EVar "t")))))
+(DTypeSig false "memberAliasNameFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))
+(DFunDef false "memberAliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
+(DFunDef false "memberAliasNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "a value member's alias must be lowercase — `as ")) (EApp (EVar "display") (EVar "x"))) (ELit (LString "` names a type or constructor")))))
+(DFunDef false "memberAliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name after `as`"))))
 (DTypeSig false "aliasName" (TyApp (TyCon "Parser") (TyCon "String")))
 (DFunDef false "aliasName" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "aliasNameFor") (EVar "t")))))
 (DTypeSig false "aliasNameFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))
 (DFunDef false "aliasNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
-(DFunDef false "aliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
-(DFunDef false "aliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name"))))
+(DFunDef false "aliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "a module alias must be capitalized — `as ")) (EApp (EVar "display") (EVar "x"))) (ELit (LString "` should be an Uppercase name (it is used as a qualifier, `Alias.name`)")))))
+(DFunDef false "aliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name after `as`"))))
 (DTypeSig false "stringLitP" (TyApp (TyCon "Parser") (TyCon "String")))
 (DFunDef false "stringLitP" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "stringLitFor") (EVar "t")))))
 (DTypeSig false "stringLitFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))
@@ -5158,7 +5283,7 @@ parseResult src = match tokenizeWithOffsets src
 (DTypeSig true "parseResult" (TyFun (TyCon "String") (TyApp (TyApp (TyCon "Result") (TyCon "ParseError")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "parseResult" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithOffsets") (EVar "src")) (arm (PTuple (PVar "tokList") (PVar "offList")) () (EBlock (DoLet false false (PVar "toks") (EApp (EVar "arrayFromList") (EVar "tokList"))) (DoLet false false (PVar "offs") (EApp (EVar "arrayFromList") (EVar "offList"))) (DoLet false false (PVar "srcLen") (EApp (EVar "stringLength") (EVar "src"))) (DoLet false false (PVar "seIdx") (EApp (EApp (EVar "firstSlashEqIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "lmIdx") (EApp (EApp (EVar "firstMutIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "recIdx") (EApp (EApp (EVar "firstRecordIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "fnIdx") (EApp (EApp (EVar "firstFunctionIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "ilIdx") (EApp (EApp (EVar "firstInlineLetMissingIn") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "coIdx") (EApp (EApp (EVar "firstHsCaseOfIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "btIdx") (EApp (EApp (EVar "firstBacktickIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "wiIdx") (EApp (EApp (EVar "firstWithIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "sigIdx") (EApp (EApp (EApp (EApp (EVar "firstHsSigIdx") (EVar "toks")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "True"))) (DoLet false false (PVar "bcIdx") (EApp (EApp (EVar "firstBlockCommentIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "bbIdx") (EApp (EApp (EVar "firstBraceBlockIdx") (EVar "toks")) (ELit (LInt 0)))) (DoLet false false (PVar "fkwIdx") (EApp (EApp (EApp (EVar "firstForeignKwIdx") (EVar "toks")) (ELit (LInt 0))) (EVar "True"))) (DoExpr (EMatch (EApp (EApp (EVar "firstLexError") (EVar "toks")) (ELit (LInt 0))) (arm (PCon "Some" (PTuple (PVar "leIdx") (PVar "leMsg"))) () (EBlock (DoLet false false (PVar "leMsg2") (EIf (EBinOp "==" (EVar "leMsg") (ELit (LString "unexpected character ';'"))) (EVar "semicolonMsg") (EVar "leMsg"))) (DoExpr (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "leMsg2")) (EVar "leIdx")))))) (arm (PCon "None") () (EIf (EBinOp ">=" (EVar "seIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (ELit (LString "unexpected '/='. (Did you mean '!='?)"))) (EVar "seIdx"))) (EIf (EBinOp ">=" (EVar "lmIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "letMutRemovedMsg")) (EVar "lmIdx"))) (EIf (EBinOp ">=" (EVar "recIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "recordRemovedMsg")) (EVar "recIdx"))) (EIf (EBinOp ">=" (EVar "fnIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "functionRemovedMsg")) (EVar "fnIdx"))) (EIf (EBinOp ">=" (EVar "ilIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "inlineLetMissingInMsg")) (EVar "ilIdx"))) (EIf (EBinOp ">=" (EVar "coIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "hsCaseOfMsg")) (EVar "coIdx"))) (EIf (EBinOp ">=" (EVar "btIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "backtickInfixMsg")) (EVar "btIdx"))) (EIf (EBinOp ">=" (EVar "wiIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "letRecWithRemovedMsg")) (EVar "wiIdx"))) (EIf (EBinOp ">=" (EVar "sigIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "hsSigMsg")) (EVar "sigIdx"))) (EIf (EBinOp ">=" (EVar "bcIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "blockCommentMsg")) (EVar "bcIdx"))) (EIf (EBinOp ">=" (EVar "bbIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EVar "braceBlockMsg")) (EVar "bbIdx"))) (EIf (EBinOp ">=" (EVar "fkwIdx") (ELit (LInt 0))) (EApp (EVar "Err") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "mkLocated") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EApp (EVar "foreignKwMsg") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "fkwIdx")))) (EVar "fkwIdx"))) (EApp (EApp (EApp (EApp (EApp (EVar "resultDeclsResult") (EVar "src")) (EVar "toks")) (EVar "offs")) (EVar "srcLen")) (EApp (EApp (EApp (EVar "runP") (EVar "parseProgram")) (EVar "toks")) (ELit (LInt 0)))))))))))))))))))))))
 # MARK
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Loc" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true) (mem "Route" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Loc" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberOrigin" false) (mem "useMemberAlias" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true) (mem "Route" true))))
 (DUse false (UseGroup ("frontend" "lexer") ((mem "Token" true) (mem "tokenize" false) (mem "tokenizeWithLines" false) (mem "tokenizeWithOffsets" false) (mem "tokenizeWithOffsetPairs" false) (mem "offsetToLineCol" false) (mem "lineStartsOf" false) (mem "offsetToLineColFast" false) (mem "describeToken" false))))
 (DUse false (UseGroup ("support" "util") ((mem "reverseL" false) (mem "joinWith" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
@@ -5875,7 +6000,14 @@ parseResult src = match tokenizeWithOffsets src
 (DFunDef false "externNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
 (DFunDef false "externNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected extern name"))))
 (DTypeSig false "parseImport" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
-(DFunDef false "parseImport" ((PVar "pub")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TImport"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "importQuals")) (ELam ((PVar "quals")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "importPathFor") (EVar "quals"))) (ELam ((PVar "path")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EVar "path")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "e")))))))))))))))))
+(DFunDef false "parseImport" ((PVar "pub")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TImport"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "importQuals")) (ELam ((PVar "quals")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "importPathFor") (EVar "quals"))) (ELam ((PVar "path")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "noExportedAlias") (EVar "pub")) (EVar "path"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "DUse") (EVar "pub")) (EVar "path")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "e")))))))))))))))))))
+(DTypeSig false "noExportedAlias" (TyFun (TyCon "Bool") (TyFun (TyCon "UsePath") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noExportedAlias" ((PCon "True") (PCon "UseAlias" PWild (PVar "a"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`export import … as ")) (EApp (EMethodRef "display") (EVar "a"))) (ELit (LString "` is not allowed — a module alias is file-local (it binds `"))) (EApp (EMethodRef "display") (EVar "a"))) (ELit (LString ".name`, which an importer could not write). Re-export the module itself (`export import m`) and let the importer choose its own alias.")))))
+(DFunDef false "noExportedAlias" ((PCon "True") (PCon "UseGroup" PWild (PVar "members"))) (EApp (EVar "failIfAliasedMember") (EVar "members")))
+(DFunDef false "noExportedAlias" (PWild PWild) (EApp (EMethodRef "pure") (ELit LUnit)))
+(DTypeSig false "failIfAliasedMember" (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "failIfAliasedMember" ((PList)) (EApp (EMethodRef "pure") (ELit LUnit)))
+(DFunDef false "failIfAliasedMember" ((PCons (PVar "m") (PVar "rest"))) (EMatch (EApp (EVar "useMemberAlias") (EVar "m")) (arm (PCon "Some" (PVar "a")) () (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`export import` cannot rename a member — re-exporting `")) (EApp (EMethodRef "display") (EApp (EVar "useMemberOrigin") (EVar "m")))) (ELit (LString "` as `"))) (EApp (EMethodRef "display") (EVar "a"))) (ELit (LString "` would export a name its defining module does not have. Re-export it under its own name (`export import m.{"))) (EApp (EMethodRef "display") (EApp (EVar "useMemberOrigin") (EVar "m")))) (ELit (LString "}`) and let the importer alias it."))))) (arm (PCon "None") () (EApp (EVar "failIfAliasedMember") (EVar "rest")))))
 (DTypeSig false "importQuals" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "importQuals" () (EApp (EApp (EMethodRef "andThen") (EVar "importIdent")) (ELam ((PVar "first")) (EApp (EApp (EMethodRef "andThen") (EVar "importQualRest")) (ELam ((PVar "rest")) (EApp (EMethodRef "pure") (EBinOp "::" (EVar "first") (EVar "rest"))))))))
 (DTypeSig false "importQualRest" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "String"))))
@@ -5896,27 +6028,48 @@ parseResult src = match tokenizeWithOffsets src
 (DTypeSig false "importPathFor" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Parser") (TyCon "UsePath"))))
 (DFunDef false "importPathFor" ((PVar "quals")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "importPathForT") (EVar "quals")) (EVar "t")))))
 (DTypeSig false "importPathForT" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UsePath")))))
-(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotLBrace")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "importMember")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "ms")) (EApp (EApp (EMethodRef "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "ms"))))))))))))
-(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotStar")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EVar "UseWild") (EVar "quals"))))))
+(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotLBrace")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "importMember")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "ms")) (EApp (EApp (EMethodRef "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "noTrailingAlias") (ELit (LString "a selective import")))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EVar "UseGroup") (EVar "quals")) (EVar "ms"))))))))))))))
+(DFunDef false "importPathForT" ((PVar "quals") (PCon "TDotStar")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "noTrailingAlias") (ELit (LString "a wildcard import")))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EVar "UseWild") (EVar "quals"))))))))
 (DFunDef false "importPathForT" ((PVar "quals") (PCon "TAs")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "aliasName")) (ELam ((PVar "a")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "UseAlias") (EVar "quals")) (EVar "a"))))))))
 (DFunDef false "importPathForT" ((PVar "quals") PWild) (EApp (EMethodRef "pure") (EApp (EVar "UseName") (EVar "quals"))))
+(DTypeSig false "noTrailingAlias" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "noTrailingAlias" ((PVar "what")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "noTrailingAliasFor") (EVar "what")) (EVar "t")))))
+(DTypeSig false "noTrailingAliasFor" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noTrailingAliasFor" ((PVar "what") (PCon "TAs")) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "`as` cannot alias ")) (EApp (EMethodRef "display") (EVar "what"))) (ELit (LString " — write `import m as A` to alias the whole module (then use `A.name`), or `import m.{name as alias}` to rename one member")))))
+(DFunDef false "noTrailingAliasFor" (PWild PWild) (EApp (EMethodRef "pure") (ELit LUnit)))
 (DTypeSig false "importMember" (TyApp (TyCon "Parser") (TyCon "UseMember")))
 (DFunDef false "importMember" () (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "importMemberFor") (EVar "s")) (EVar "t")))))))
 (DTypeSig false "importMemberFor" (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember")))))
-(DFunDef false "importMemberFor" ((PVar "s") (PCon "TIdent" (PVar "x"))) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))))
+(DFunDef false "importMemberFor" ((PVar "s") (PCon "TIdent" (PVar "x"))) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EApp (EVar "memberAliasOrNot") (EVar "s")) (EVar "x")) (EVar "False")))))
 (DFunDef false "importMemberFor" ((PVar "s") (PCon "TUpper" (PVar "x"))) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "withAllOrNot") (EVar "s")) (EVar "x")))))
 (DFunDef false "importMemberFor" (PWild PWild) (EApp (EVar "failP") (ELit (LString "expected import member"))))
 (DTypeSig false "withAllOrNot" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "UseMember")))))
 (DFunDef false "withAllOrNot" ((PVar "s") (PVar "x")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EVar "withAllFor") (EVar "s")) (EVar "x")) (EVar "t")))))
 (DTypeSig false "withAllFor" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember"))))))
-(DFunDef false "withAllFor" ((PVar "s") (PVar "x") (PCon "TLParen")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TDotDot"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRParen"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "True")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))))))))
-(DFunDef false "withAllFor" ((PVar "s") (PVar "x") PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q")))))))
+(DFunDef false "withAllFor" ((PVar "s") (PVar "x") (PCon "TLParen")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TDotDot"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRParen"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "noMemberAlias") (EVar "x"))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "True")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))))))))))
+(DFunDef false "withAllFor" ((PVar "s") (PVar "x") PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "noMemberAlias") (EVar "x"))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "False")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))))
+(DTypeSig false "noMemberAlias" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "Unit"))))
+(DFunDef false "noMemberAlias" ((PVar "x")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "noMemberAliasFor") (EVar "x")) (EVar "t")))))
+(DTypeSig false "noMemberAliasFor" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Unit")))))
+(DFunDef false "noMemberAliasFor" ((PVar "x") (PCon "TAs")) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "`")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString "` is a type or constructor and cannot be aliased — only a value member can be renamed (`import m.{name as alias}`). Import it under its own name.")))))
+(DFunDef false "noMemberAliasFor" (PWild PWild) (EApp (EMethodRef "pure") (ELit LUnit)))
+(DTypeSig false "memberAliasOrNot" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "UseMember"))))))
+(DFunDef false "memberAliasOrNot" ((PVar "s") (PVar "x") (PVar "allCtors")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EApp (EVar "memberAliasFor") (EVar "s")) (EVar "x")) (EVar "allCtors")) (EVar "t")))))
+(DTypeSig false "memberAliasFor" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "UseMember")))))))
+(DFunDef false "memberAliasFor" ((PVar "s") (PVar "x") (PVar "allCtors") (PCon "TAs")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "memberAliasName")) (ELam ((PVar "a")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "allCtors")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EApp (EVar "Some") (EVar "a")))))))))))
+(DFunDef false "memberAliasFor" ((PVar "s") (PVar "x") (PVar "allCtors") PWild) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "UseMember") (EVar "x")) (EVar "allCtors")) (EApp (EApp (EVar "locOfSpan") (EVar "s")) (EVar "q"))) (EVar "None"))))))
+(DTypeSig false "memberAliasName" (TyApp (TyCon "Parser") (TyCon "String")))
+(DFunDef false "memberAliasName" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "memberAliasNameFor") (EVar "t")))))
+(DTypeSig false "memberAliasNameFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))
+(DFunDef false "memberAliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
+(DFunDef false "memberAliasNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "a value member's alias must be lowercase — `as ")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString "` names a type or constructor")))))
+(DFunDef false "memberAliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name after `as`"))))
 (DTypeSig false "aliasName" (TyApp (TyCon "Parser") (TyCon "String")))
 (DFunDef false "aliasName" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "aliasNameFor") (EVar "t")))))
 (DTypeSig false "aliasNameFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))
 (DFunDef false "aliasNameFor" ((PCon "TUpper" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
-(DFunDef false "aliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "emit") (EVar "x")))
-(DFunDef false "aliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name"))))
+(DFunDef false "aliasNameFor" ((PCon "TIdent" (PVar "x"))) (EApp (EVar "failP") (EBinOp "++" (EBinOp "++" (ELit (LString "a module alias must be capitalized — `as ")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString "` should be an Uppercase name (it is used as a qualifier, `Alias.name`)")))))
+(DFunDef false "aliasNameFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected alias name after `as`"))))
 (DTypeSig false "stringLitP" (TyApp (TyCon "Parser") (TyCon "String")))
 (DFunDef false "stringLitP" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "stringLitFor") (EVar "t")))))
 (DTypeSig false "stringLitFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "String"))))

@@ -64,10 +64,12 @@ routing around problems and never mentioning them, and everything they route aro
 a bug the user hits later. It produced, in one night:
 
 - **`SYNTAX.md` was lying.** It advertised `import … as` aliasing. Reality: `import list
-  as L` **parses, typechecks, and silently no-ops** — the alias is unbound. A feature
-  that does nothing and warns about nothing. *That* is why `snap_wasm.mdk` exists:
-  `llvm_emit` and `wasm_emit` both export `emitProgram` and there is no way to
-  disambiguate.
+  as L` **parsed, typechecked, and silently no-opped** — the alias was unbound. A feature
+  that does nothing and warns about nothing. *That* is why `snap_wasm.mdk` existed:
+  `llvm_emit` and `wasm_emit` both export `emitProgram` and there was no way to
+  disambiguate. **(FIXED 2026-07-13: aliasing is implemented — `import m as A` and
+  `import m.{a as b}` — and `snap_wasm.mdk` is deleted, which was the acceptance test.
+  Every form that is NOT supported is now a real parse error, never a silent no-op.)**
 - The profiler blind spot above.
 - `build_oracles --build-one` not `mkdir`-ing `test/bin`, killing fresh worktrees with a
   doubly-misleading error. Two agents lost time to it.

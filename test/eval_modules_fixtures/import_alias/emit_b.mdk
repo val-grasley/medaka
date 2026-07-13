@@ -1,0 +1,5 @@
+export emit : Int -> String
+emit n = "B:\{n}"
+
+export describe : Debug a => a -> String
+describe x = "B<\{debug x}>"

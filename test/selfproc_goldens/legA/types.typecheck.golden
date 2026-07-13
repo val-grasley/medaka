@@ -7,9 +7,17 @@ activeDictVars : Ref (List (Int, String))
 addCtor : TcEnv -> String -> Scheme -> TcEnv
 addVariants : TcEnv -> List (String, Mono) -> List (String, Ref Effvar) -> List Int -> List Int -> Mono -> List Variant -> <Mut> TcEnv
 aliasArityMsg : String -> Int -> Int -> String
+aliasConstraintEntries : List Decl -> List ((String, String), List a) -> List (String, List a)
 aliasDfsVisit : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> String -> <Mut> Unit
 aliasDfsVisitAll : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
 aliasDfsVisitNeighbors : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
+aliasDictNames : List String -> List (String, List Decl) -> List (String, List Decl) -> List String
+aliasDictNamesOfDecl : List String -> List (String, List Decl) -> Decl -> List String
+aliasDictNamesOfPath : List String -> List (String, List Decl) -> String -> UsePath -> List String
+aliasDictNamesOfUnit : List String -> List (String, List Decl) -> List Decl -> List String
+aliasEntriesFor : String -> UsePath -> List ((String, String), List a) -> List (String, List a)
+aliasSchemeEntry : String -> String -> (String, Scheme) -> (String, Scheme)
+aliasSchemes : String -> String -> List (String, Scheme) -> List (String, Scheme)
 aliasTableRef : Ref (List (String, (List String, Ty)))
 alignedMethodConstraintIds : String -> List (Int, Mono) -> <Mut> Option (List Int)
 allCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
@@ -515,9 +523,9 @@ implRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> <Mut> List
 implRequiresRoutesRecD : List ImplEntry -> String -> String -> Mono -> Int -> <Mut> List Route
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
 importDefinersOf : List Decl -> List (String, String)
-importFormSchemes : UsePath -> List (String, Scheme) -> List (String, Scheme)
+importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
 importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
-importedMembers : UsePath -> Option (List String)
+importedBindings : UsePath -> Option (List (String, String))
 indexKind : Mono -> String
 indexOfId : Int -> List Int -> Option Int
 indexOfIdGo : Int -> Int -> List Int -> Option Int
@@ -632,6 +640,7 @@ isHoleParam : Param -> Bool
 isHoleStr : String -> Bool
 isLetrecGroup : List String -> Bool
 isLitArg : Expr -> Bool
+isMangledFor : String -> String -> Bool
 isNonexpansive : Expr -> Bool
 isShadowStandalone : String -> <Mut> Bool
 isSubTop : Param -> Bool
@@ -704,7 +713,10 @@ matchedEntry : List KeyEntry -> String -> Mono -> Option KeyEntry
 matchingEntries : List KeyEntry -> String -> Mono -> List KeyEntry
 maybeInferConstraint : List (String, Ty) -> String -> Scheme -> <Mut> Unit
 maybeStandaloneValueMono : String -> <Mut> Option Mono
+memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> List (String, List a)
+memberBinding : UseMember -> (String, String)
 memberClauseIsValue : (List Pat, Expr) -> Bool
+memberDictName : List String -> UseMember -> List String
 memberPeelSource : List (String, Ty) -> String -> Mono -> Option Mono
 memberSigIsFun : List (String, Ty) -> String -> Mono -> Bool
 memberSuffix : String -> String
@@ -734,6 +746,7 @@ missingFieldMsg : String -> String -> String
 missingImplMethodMsg : String -> List Ty -> String -> String
 missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
 modInScope : String -> Map String Unit -> Bool
+moduleAliasEntry : String -> String -> ((String, String), List a) -> List (String, List a)
 moduleDictNames : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List String
 moduleUserFnNames : List (String, List Decl) -> List String
 monoArgUnboundIds : Mono -> List Int
@@ -992,7 +1005,7 @@ resolveDictApps : List Decl -> List ImplEntry -> List (Ref (List Route), List Mo
 resolveFieldAmbiguous : Mono -> String -> List String -> <Mut> Option (String, RecordInfo)
 resolveFieldByOwners : Mono -> String -> <Mut> Option (String, RecordInfo)
 resolveFieldRecord : Mono -> String -> <Mut> Option (String, RecordInfo)
-resolveMemberSchemes : String -> List (String, Scheme) -> List (String, Scheme)
+resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
 resolveMethodDicts : List ImplEntry -> List (Ref (List Route), List Mono) -> <Mut> Unit
 resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
 resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String) -> <Mut> Unit
@@ -1049,6 +1062,7 @@ seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> <Mut> Unit
 seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
 seedEffectDomains : Unit -> <Mut> Unit
 seedSchemesOut : Ref (List (String, Scheme))
+selfBinding : String -> (String, String)
 semigroupEntry : (String, (String, List String, Ty)) -> Bool
 semigroupIfaceRegistered : Unit -> <Mut> Bool
 setCardCap : Int
@@ -1210,7 +1224,6 @@ unopDictVarOf : String -> Mono -> Bool -> String -> <Mut> Option String
 unopMethod : String -> Option String
 unopMethodApp : String -> Expr -> Ref Route -> Expr
 unreachableArmWarning : String
-useMemberName : UseMember -> String
 useModuleId : Decl -> List String
 usePathModuleId : UsePath -> String
 userIfaceNamesRef : Ref (List String)

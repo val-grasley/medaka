@@ -1,0 +1,3 @@
+import list.{reverse} as L
+
+main = println 1

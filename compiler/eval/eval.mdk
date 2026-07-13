@@ -34,6 +34,9 @@ import frontend.ast.{
   ImplMethod(..),
   UsePath(..),
   UseMember(..),
+  useMemberOrigin,
+  useMemberLocal,
+  qualifiedLocal,
   Decl(..),
 }
 import support.util.{
@@ -2582,24 +2585,37 @@ reexport exportsMap (DUse True path _) = match lookupAssoc (useModuleId path) ex
   Some exports => resolveMembers path exports
 reexport _ _ = []
 
+-- The cells an import binds into the importing module's frame, keyed by the LOCAL name.
+-- The origin module's cell is shared by REFERENCE, so an alias is a second name for the
+-- very same cell — never a copy.
 resolveMembers : UsePath -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 resolveMembers (UseName ns) exports =
   if listLen ns > 1 then
-    bindNames [lastOfList ns] exports
+    bindNames [selfBind (lastOfList ns)] exports
   else
     []
-resolveMembers (UseGroup _ ms) exports = bindNames (map memberNm ms) exports
+resolveMembers (UseGroup _ ms) exports = bindNames (map memberBind ms) exports
 resolveMembers (UseWild _) exports = exports
-resolveMembers (UseAlias _ _) _ = []
+-- `import m as A` → every export of m, under `A.name`.  This is what makes two modules
+-- exporting the SAME name importable at once: their cells land under distinct keys, so
+-- the importing frame's first-match lookup can no longer collapse them.
+resolveMembers (UseAlias _ a) exports = map (qualifyCell a) exports
 
-bindNames : List String -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
+qualifyCell : String -> (String, Ref (Value e)) -> (String, Ref (Value e))
+qualifyCell a (n, cell) = (qualifiedLocal a n, cell)
+
+-- bind (origin, local) pairs: look the cell up by ORIGIN, enter it under LOCAL.
+bindNames : List (String, String) -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 bindNames [] _ = []
-bindNames (n::rest) exports = match lookupAssoc n exports
-  Some cell => (n, cell) :: bindNames rest exports
+bindNames ((origin, local)::rest) exports = match lookupAssoc origin exports
+  Some cell => (local, cell) :: bindNames rest exports
   None => bindNames rest exports
 
-memberNm : UseMember -> String
-memberNm (UseMember n _ _) = n
+memberBind : UseMember -> (String, String)
+memberBind m = (useMemberOrigin m, useMemberLocal m)
+
+selfBind : String -> (String, String)
+selfBind n = (n, n)
 
 useModuleId : UsePath -> String
 useModuleId (UseName ns) =

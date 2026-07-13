@@ -282,12 +282,51 @@ public export data Expr =
   | ENumLit Int (Ref (Option Float)) (Ref Route)
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
-public export data UseMember = UseMember String Bool Loc
+--
+-- IMPORT ALIASING — every import binds (ORIGIN name, LOCAL name) pairs.  The origin
+-- is the name in the EXPORTING module; the local is the name it lands under HERE.
+-- Without an alias the two coincide, which is why every consumer historically used a
+-- single bare name.  Two surface forms introduce a divergence:
+--
+--   `import m.{a as b}`  member alias  → origin `a`, local `b`
+--   `import m as A`      module alias  → origin `f`, local `A.f`, for every value
+--                                        `f` that `m` exports
+--
+-- An alias REPLACES the unqualified import: `import m as A` does NOT also bind bare
+-- `f`, and `import m.{a as b}` does NOT also bind `a`.  That is what makes a name
+-- collision between two modules resolvable (the whole point of aliasing).
+--
+-- A module alias's local names are DOTTED (`A.f`).  That is deliberate: a dot cannot
+-- occur in a surface identifier, so `A.f` can never collide with a user name, and it
+-- reads correctly in a diagnostic ("Unbound variable: A.f").  It is only ever a SCOPE
+-- KEY — `frontend/desugar.mdk` rewrites the qualified reference `A.f` (parsed as an
+-- `EFieldAccess` on the alias) to a plain `EVar "A.f"`, and `backend/private_mangle.mdk`
+-- maps it back to the origin module's real symbol, so no dotted name ever reaches the
+-- emitted code.
+public export data UseMember = UseMember String Bool Loc (Option String)
 public export data UsePath =
   | UseName (List String)
   | UseGroup (List String) (List UseMember)
   | UseWild (List String)
   | UseAlias (List String) String
+
+-- the name a UseGroup member has in the EXPORTING module (what to look up).
+export useMemberOrigin : UseMember -> String
+useMemberOrigin (UseMember n _ _ _) = n
+
+-- the member's alias, if it was written `a as b`.
+export useMemberAlias : UseMember -> Option String
+useMemberAlias (UseMember _ _ _ alias) = alias
+
+-- the name a UseGroup member binds HERE: its alias if it has one, else its own name.
+export useMemberLocal : UseMember -> String
+useMemberLocal (UseMember n _ _ alias) = match alias
+  Some a => a
+  None => n
+
+-- the local name a MODULE alias binds an origin export under: `A` + `f` → `A.f`.
+export qualifiedLocal : String -> String -> String
+qualifiedLocal alias n = "\{alias}.\{n}"
 
 -- a property-test parameter `(name : ty)`
 public export data PropParam = PropParam String Ty

@@ -42,6 +42,10 @@ import frontend.ast.{
   GuardArm(..),
   UsePath(..),
   UseMember(..),
+  useMemberOrigin,
+  useMemberLocal,
+  useMemberAlias,
+  qualifiedLocal,
 }
 import frontend.desugar.{mapProg}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
@@ -11472,6 +11476,20 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
   let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
+  -- IMPORT ALIASING: both tables above are keyed by the name AT THE CALL SITE, but an
+  -- alias makes that name differ from the DEFINITION's.  Re-key each aliased origin's
+  -- entry under the LOCAL name this module actually writes, or a constrained callee
+  -- reached through an alias finds NO entry → zero dict routes → a silently
+  -- under-applied partial closure (the Phase-134 failure mode: `check` green, `run`
+  -- dies with "putStrLn: not a String").  Prepended so it wins the first-match.
+  --
+  -- Driven off the (definerMid, name) QUALIFIED tables, so only the ALIASED module's
+  -- own entries are ever copied — a same-named constrained fn in some other module can
+  -- never be picked up by mistake.
+  let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossModuleFunConstraintsQualRef.value
+    ++ funConstraintsRef.value)
+  let _ = setRef funConstraintIfacesRef (aliasConstraintEntries prog crossModuleFunConstraintIfacesQualRef.value
+    ++ funConstraintIfacesRef.value)
   -- WS-2/D2: map THIS module's imported value names to their import-source module id,
   -- so inferDictAtFound can route a cross-module constrained callee's dict arity by
   -- module identity (the qual tables) rather than the collision-prone bare first-match.
@@ -11835,16 +11853,24 @@ monoSpineHeadIsCon m = match normalize m
 --   UseName ns       → [last ns] if dotted (import a.b.name), else [] (bare name)
 --   UseAlias _       → [] (alias only — no auto-imported value names)
 -- `None` ⇒ wildcard (every scheme); `Some names` ⇒ exactly those member names.
-useMemberName : UseMember -> String
-useMemberName (UseMember n _ _) = n
-
-importedMembers : UsePath -> Option (List String)
-importedMembers (UseGroup _ ms) = Some (map useMemberName ms)
-importedMembers (UseWild _) = None
-importedMembers (UseName ns)
-  | listLen ns > 1 = Some [lastComponent ns]
+-- (ORIGIN, LOCAL) per imported member.  They differ only under a member alias
+-- (`import m.{a as b}`): the SCHEME is looked up under the origin `a` in the
+-- dependency, and bound into this module's env under the local `b`.
+importedBindings : UsePath -> Option (List (String, String))
+importedBindings (UseGroup _ ms) = Some (map memberBinding ms)
+importedBindings (UseWild _) = None
+importedBindings (UseName ns)
+  | listLen ns > 1 = Some [selfBinding (lastComponent ns)]
   | otherwise = Some []
-importedMembers (UseAlias _ _) = Some []
+-- A module alias enumerates the dependency's schemes, so it cannot be expressed as a
+-- fixed member list — importFormSchemes handles it directly.
+importedBindings (UseAlias _ _) = Some []
+
+memberBinding : UseMember -> (String, String)
+memberBinding m = (useMemberOrigin m, useMemberLocal m)
+
+selfBinding : String -> (String, String)
+selfBinding n = (n, n)
 
 -- resolve one imported bare member name to its actual key in a dependency's public
 -- schemes.  The golden path keys schemes by the bare name; the EMIT path runs after
@@ -11863,17 +11889,125 @@ endsWithStr suf s =
   let lsuf = stringLength suf
   lsuf <= ls && stringSlice (ls - lsuf) ls s == suf
 
-resolveMemberSchemes : String -> List (String, Scheme) -> List (String, Scheme)
-resolveMemberSchemes n depSchemes = match lookupAssoc n depSchemes
-  Some s => [(n, s)]
-  None => filter (kv => endsWithStr (memberSuffix n) (fst kv)) depSchemes
+-- Look the member up by its ORIGIN name, bind it under its LOCAL name.  Without an
+-- alias the two coincide and this is the historical behaviour.
+--
+-- On the MANGLED emit path the bare origin is absent (the dep's keys are `<dep>__name`)
+-- AND the reference in this module's body has itself been mangled to `<dep>__name` by
+-- backend/private_mangle — so the suffix-matched entries are passed through under their
+-- MANGLED keys, which is exactly the key the mangled reference will look up.  (A member
+-- alias is erased by the same mangling, so it needs no rebinding there.)
+resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
+resolveMemberSchemes (origin, local) depSchemes = match lookupAssoc origin depSchemes
+  Some s => [(local, s)]
+  None => filter (kv => endsWithStr (memberSuffix origin) (fst kv)) depSchemes
+
+-- `import m as A` binds EVERY value m exports under `A.name` — so it enumerates the
+-- dependency's schemes rather than a fixed member list.
+--
+-- Same golden/mangled split as above, made exact by testing the dep's own mangle prefix
+-- (`<sanitized mid>__`) instead of guessing: on the emit path the reference is already
+-- `<mid>__name`, so the key must stay mangled; on the golden path the reference is the
+-- flat `A.name` that desugar produced, so bind it under that.
+aliasSchemes : String -> String -> List (String, Scheme) -> List (String, Scheme)
+aliasSchemes mid alias depSchemes = map (aliasSchemeEntry mid alias) depSchemes
+
+aliasSchemeEntry : String -> String -> (String, Scheme) -> (String, Scheme)
+aliasSchemeEntry mid alias (k, s) =
+  if isMangledFor mid k then
+    (k, s)
+  else
+    (qualifiedLocal alias k, s)
+
+-- does `k` carry the `<sanitized mid>__` prefix the mangler would have given it?
+isMangledFor : String -> String -> Bool
+isMangledFor mid k =
+  let pre = mangledName mid ""
+  let lp = stringLength pre
+  lp <= stringLength k && stringSlice 0 lp k == pre
 
 -- the (key, scheme) pairs a single `import` form brings into scope, resolving each
 -- member to its (possibly mangled) key in the dependency's schemes.
-importFormSchemes : UsePath -> List (String, Scheme) -> List (String, Scheme)
-importFormSchemes path depSchemes = match importedMembers path
+importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
+importFormSchemes mid (UseAlias _ alias) depSchemes =
+  aliasSchemes mid alias depSchemes
+importFormSchemes _ path depSchemes = match importedBindings path
   None => depSchemes
-  Some names => flatMap (n => resolveMemberSchemes n depSchemes) names
+  Some bindings => flatMap (b => resolveMemberSchemes b depSchemes) bindings
+
+-- ── import aliasing: re-key the dict-arity / dict-iface tables ───────────────────
+-- Both tables (funConstraintsRef, funConstraintIfacesRef) are keyed by the name a CALL
+-- SITE writes.  An alias makes that name differ from the definition's, so without this
+-- an aliased constrained callee gets zero dict routes and under-applies.  Generic over
+-- the payload so the arity table (List Int) and the iface table (List String) share it.
+--
+-- [qual] is the (definerMid, name)-keyed table, which is what makes this PRECISE: an
+-- entry is copied only when its DEFINER is the very module the alias names.
+aliasConstraintEntries : List Decl -> List ((String, String), List a) -> List (String, List a)
+aliasConstraintEntries [] _ = []
+aliasConstraintEntries ((DAttrib _ d)::rest) qual = aliasConstraintEntries [d] qual
+  ++ aliasConstraintEntries rest qual
+aliasConstraintEntries ((DUse _ path _)::rest) qual = aliasEntriesFor (usePathModuleId path) path qual
+  ++ aliasConstraintEntries rest qual
+aliasConstraintEntries (_::rest) qual = aliasConstraintEntries rest qual
+
+aliasEntriesFor : String -> UsePath -> List ((String, String), List a) -> List (String, List a)
+-- `import m as A` → every constrained fn m defines is callable as `A.<name>`.
+aliasEntriesFor mid (UseAlias _ a) qual = flatMap (moduleAliasEntry mid a) qual
+-- `import m.{x as y}` → `y` carries `x`'s dict arity.
+aliasEntriesFor mid (UseGroup _ ms) qual =
+  flatMap (memberAliasEntry mid qual) ms
+aliasEntriesFor _ _ _ = []
+
+-- IMPORT ALIASING: the LOCAL names, across every module, under which a CONSTRAINED
+-- function is reachable through an alias.  These must join dictNames or the aliased
+-- call site is never marked as a dict application (see the call site of this fn).
+--
+-- [bare] is the un-aliased dictNames; [unitDecls] is (mid, decls) for core + every
+-- module, used to ask which fns a given module actually DEFINES — so `import m as A`
+-- contributes `A.<n>` only for m's own constrained fns, never for a same-named
+-- constrained fn belonging to some other module.
+aliasDictNames : List String -> List (String, List Decl) -> List (String, List Decl) -> List String
+aliasDictNames bare unitDecls modules =
+  flatMap (u => aliasDictNamesOfUnit bare unitDecls (snd u)) modules
+
+aliasDictNamesOfUnit : List String -> List (String, List Decl) -> List Decl -> List String
+aliasDictNamesOfUnit bare unitDecls decls =
+  flatMap (aliasDictNamesOfDecl bare unitDecls) decls
+
+aliasDictNamesOfDecl : List String -> List (String, List Decl) -> Decl -> List String
+aliasDictNamesOfDecl bare unitDecls (DAttrib _ d) =
+  aliasDictNamesOfDecl bare unitDecls d
+aliasDictNamesOfDecl bare unitDecls (DUse _ path _) =
+  aliasDictNamesOfPath bare unitDecls (usePathModuleId path) path
+aliasDictNamesOfDecl _ _ _ = []
+
+aliasDictNamesOfPath : List String -> List (String, List Decl) -> String -> UsePath -> List String
+aliasDictNamesOfPath bare unitDecls mid (UseAlias _ a) = match lookupAssoc mid unitDecls
+  Some ds =>
+    map (qualifiedLocal a) (filter (n => contains n bare) (declTopFnNames ds))
+  None => []
+aliasDictNamesOfPath bare _ _ (UseGroup _ ms) = flatMap (memberDictName bare) ms
+aliasDictNamesOfPath _ _ _ _ = []
+
+memberDictName : List String -> UseMember -> List String
+memberDictName bare m = match useMemberAlias m
+  Some local => if contains (useMemberOrigin m) bare then [local] else []
+  None => []
+
+moduleAliasEntry : String -> String -> ((String, String), List a) -> List (String, List a)
+moduleAliasEntry mid a ((defMid, n), ids)
+  | defMid == mid = [(qualifiedLocal a n, ids)]
+  | otherwise = []
+
+memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> List (String, List a)
+memberAliasEntry mid qual m = match useMemberAlias m
+  None => []
+  Some local =>
+    let origin = useMemberOrigin m
+    map
+      (e => (local, snd e))
+      (filter (e => fst (fst e) == mid && snd (fst e) == origin) qual)
 
 -- build THIS module's import-scoped seed: walk its DUse decls, and for each one
 -- pick the imported names out of the named dependency's public schemes (held in
@@ -11887,18 +12021,29 @@ importSeed ((DUse _ path _)::rest) depEnv =
   let depId = usePathModuleId path
   match lookupAssoc depId depEnv
     None => importSeed rest depEnv
-    Some depSchemes => importFormSchemes path depSchemes
+    Some depSchemes => importFormSchemes depId path depSchemes
       ++ importSeed rest depEnv
 importSeed (_::rest) depEnv = importSeed rest depEnv
 
 -- WS-2/D2: THIS module's imported value name → import-source module id, from its DUse
--- decls.  Mirrors importSeed's walk but records (memberName, depId) for EXPLICIT imports
--- only (importedMembers = Some names); a wildcard `import mod.*` (None) is skipped — it
--- can't enumerate names here, so those names fall back to the bare arity table at the
+-- decls.  Mirrors importSeed's walk but records (localName, depId) for EXPLICIT imports
+-- only (importedBindings = Some bindings); a wildcard `import mod.*` (None) is skipped —
+-- it can't enumerate names here, so those names fall back to the bare arity table at the
 -- call site.  `core` is skipped (core fns route via the prelude dict machinery, never the
 -- cross-module qual tables).  depId == usePathModuleId == the loader mid == the qual
 -- tables' definer key for a DIRECT import; a re-exported fn's depId is the intermediate
 -- (≠ definer), so its qual lookup misses and it too falls back to bare (correct).
+--
+-- Keyed by the LOCAL name, because that is the name the CALL SITE writes: under a member
+-- alias (`import m.{a as b}`) the call site says `b`, so `b` is what must map to m.
+--
+-- A whole-module alias (`import m as A`) contributes nothing, for the same reason a
+-- wildcard doesn't: its locals are one-per-export and this walk has no depEnv to
+-- enumerate them.  Those call sites take the same documented bare-table fallback as
+-- every wildcard import does today.  The dict ARGS themselves are unaffected — they are
+-- stamped from the callee's SCHEME, which importSeed binds under the alias local — so
+-- this costs only the cross-module arity DISAMBIGUATION, and only when two modules
+-- export same-named constrained fns of differing dict arity.
 importDefinersOf : List Decl -> List (String, String)
 importDefinersOf [] = []
 importDefinersOf ((DAttrib _ d)::rest) = importDefinersOf [d]
@@ -11906,9 +12051,9 @@ importDefinersOf ((DAttrib _ d)::rest) = importDefinersOf [d]
 importDefinersOf ((DUse _ path _)::rest) =
   let depId = usePathModuleId path
   if depId == "core" then importDefinersOf rest
-  else match importedMembers path
+  else match importedBindings path
     None => importDefinersOf rest
-    Some names => map (n => (n, depId)) names ++ importDefinersOf rest
+    Some bindings => map (b => (snd b, depId)) bindings ++ importDefinersOf rest
 importDefinersOf (_::rest) = importDefinersOf rest
 
 -- the (key, scheme) pairs a module RE-EXPORTS via `export import` (`DUse True`).
@@ -11932,7 +12077,7 @@ reexportSeed ((DUse True path _)::rest) depEnv =
   let depId = usePathModuleId path
   match lookupAssoc depId depEnv
     None => reexportSeed rest depEnv
-    Some depSchemes => importFormSchemes path depSchemes
+    Some depSchemes => importFormSchemes depId path depSchemes
       ++ reexportSeed rest depEnv
 reexportSeed (_::rest) depEnv = reexportSeed rest depEnv
 
@@ -12197,7 +12342,14 @@ elaborateModules runtimeDecls coreDecls modules =
   let _ = setRef dictEligibleRef (moduleUserFnNames modules)
   let _ = setRef dictEligibleSetRef (namesToSet (moduleUserFnNames modules) omEmpty)
   let promoted = discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames
-  let dictNames = dedup (moduleDictNames coreDecls allDecls modules ++ promoted)
+  let bareDictNames = dedup (moduleDictNames coreDecls allDecls modules ++ promoted)
+  -- IMPORT ALIASING: prePassDict* marks a call site `EVar n` as a dict application only
+  -- when `n` is in dictNames — a set of DEFINITION names.  An aliased call site writes
+  -- the LOCAL name, so unless the alias locals are added here the call is never marked,
+  -- receives no dict arguments, and silently UNDER-APPLIES: `check` stays green and
+  -- `run` dies downstream with a type-confused value (the Phase-134 shape).
+  let dictNames = dedup (bareDictNames
+    ++ aliasDictNames bareDictNames (("core", coreDecls)::modules) modules)
   let markRpNames = dedup (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (flatMap snd modules))
   let core2 = prePassDictArg markRpNames dictNames argNames mangledShadowMapRef.value coreDecls
   let modules2 = map (prePassModulePairArg markRpNames dictNames argNames mangledShadowMapRef.value) modules
@@ -12335,7 +12487,14 @@ dictPassModulesScoped dictNames promotedQ core2 allModules ((mid, prog)::rest) =
   let importerDecls = transitiveImporterDecls mid allModules
   let scope = core2 ++ prog ++ importerDecls
   let scopeMods = namesToSet (mid :: transitiveImporterIds mid allModules) omEmpty
-  let _ = setRef funConstraintsRef (scopeArities promotedQ scopeMods scope)
+  -- IMPORT ALIASING: scopeArities keys arity by the DEFINITION's name, but an aliased
+  -- call site in THIS module writes the LOCAL name.  Re-key this module's own aliases
+  -- (from its DUse decls) onto the origin's arity, else the aliased call under-applies
+  -- its dicts.  This is the RUN/eval path's counterpart to the same fix in
+  -- checkModuleFullImpl — the EMIT path never needs it, because private_mangle has
+  -- already rewritten `A.name` to the origin's real symbol before this point.
+  let _ = setRef funConstraintsRef (aliasConstraintEntries prog promotedQ
+    ++ scopeArities promotedQ scopeMods scope)
   let _ = setRef methodConstraintsRef (scopeMethodArities crossModuleMethodConstraintsQualRef.value scopeMods)
   (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedQ core2 allModules rest
 

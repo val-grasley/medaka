@@ -26,10 +26,20 @@
 --      name) → LEFT UNCHANGED.
 -- The per-unit import structure comes straight from the unit's `DUse` decls + the
 -- per-module set of EXPORTED (pub) function names — both already present at the
--- mangle point (the `(mid, decls)` units).  No resolve.mdk change is needed: the
--- compiler namespace is FLAT (references to imported names are bare, never
--- qualified — see resolve.mdk `useStubNames`), so a bare-name → origin-module map
--- per unit is sufficient.
+-- mangle point (the `(mid, decls)` units).  No resolve.mdk change is needed: a
+-- per-unit LOCAL-name → origin-module map is sufficient.
+--
+-- IMPORT ALIASING does not perturb any of this, because it only changes what the
+-- LOCAL name is, never the shape of the map:
+--   `import M.{a as b}`  → local `b`      ↦ `<M>__a`   (origin ≠ local)
+--   `import M as A`      → local `A.<n>`  ↦ `<M>__<n>`, for every export `n` of M
+-- The `A.<n>` local is the flat name `frontend/desugar.mdk` produces for the qualified
+-- reference `A.n` (a dot cannot occur in a surface identifier, so it is collision-free).
+-- Mapping it here is exactly what ERASES the alias from the emitted code — no dotted
+-- name ever reaches the output.  Note the two-sided consequence: the symbol is always
+-- rebuilt from the ORIGIN (`mangledName definer origin`), never from the local, which is
+-- why a RE-EXPORTED alias is rejected in the parser — a module's export table maps
+-- (name → definer) and could not express "the export `b` is really `a`".
 --
 -- EXCLUDED (never mangled):
 --   • the entry `main` — the emitter emits it as `@main`, the program entry point
@@ -91,6 +101,9 @@ import frontend.ast.{
   PropParam(..),
   UsePath(..),
   UseMember(..),
+  useMemberOrigin,
+  useMemberLocal,
+  qualifiedLocal,
   Variant(..),
 }
 import support.util.{
@@ -173,7 +186,7 @@ reexportMembers (UseName ns) srcExports =
 reexportMembers (UseAlias _ _) _ = []
 
 reexportMember : List (String, String) -> UseMember -> List (String, String)
-reexportMember srcExports (UseMember n _ _) = reexportOne srcExports n
+reexportMember srcExports m = reexportOne srcExports (useMemberOrigin m)
 
 reexportOne : List (String, String) -> String -> List (String, String)
 reexportOne srcExports n = match lookupDefiner n srcExports
@@ -310,7 +323,7 @@ useCtorPathEntries ctorExportsPerUnit path =
 -- all of type `name`'s ctors; `UseMember name False` enters `name` itself iff it is
 -- one of M's exported ctors.
 ctorMemberEntry : String -> List (String, List String) -> UseMember -> List (String, String)
-ctorMemberEntry mid typeEntries (UseMember name wild _) =
+ctorMemberEntry mid typeEntries (UseMember name wild _ _) =
   if wild then match lookupCtorTypeEntry name typeEntries
     Some ctors => flatMap (originCtorEntry mid) ctors
     None => []
@@ -412,13 +425,19 @@ declImportEntries exportsPerUnit (DAttrib _ d) =
   declImportEntries exportsPerUnit d
 declImportEntries _ _ = []
 
--- the bare names a UsePath brings in, each mapped to `<originMid>__<name>`.
--- Only names that are EXPORTED FUNCTIONS of the origin module are entered (a member
--- that is a type/ctor/value isn't a top-level fn symbol, so leave it unchanged).
---   UseGroup `import M.{a, b}`  → only the listed members ∩ M's exports
---   UseWild  `import M.*`       → every exported fn of M
---   UseName  `import M[.sub]`   → the single stub name (last component), if an export
---   UseAlias `import M as A`    → A is a module handle, not a fn ⇒ no entry
+-- the LOCAL names a UsePath brings in, each mapped to its ORIGIN's real symbol
+-- `<originMid>__<name>`.  Only names that are EXPORTED FUNCTIONS of the origin module
+-- are entered (a member that is a type/ctor/value isn't a top-level fn symbol, so leave
+-- it unchanged).
+--   UseGroup `import M.{a, b}`      → only the listed members ∩ M's exports
+--   UseGroup `import M.{a as b}`    → local `b` → M's `a` symbol
+--   UseWild  `import M.*`           → every exported fn of M
+--   UseName  `import M[.sub]`       → the single stub name (last component), if an export
+--   UseAlias `import M as A`        → every exported fn of M, under `A.<name>`
+--
+-- The UseAlias case is what erases a module alias from the emitted code: desugar turned
+-- the qualified reference into the flat name `A.name`, and this maps that name onto M's
+-- real symbol.  No dotted name ever reaches the LLVM/Wasm output.
 usePathEntries : List (String, List (String, String)) -> UsePath -> List (String, String)
 usePathEntries exportsPerUnit path =
   let mid = useModIdU path
@@ -429,21 +448,27 @@ usePathEntries exportsPerUnit path =
       UseGroup _ members => flatMap (memberEntry exports) members
       UseWild _ => flatMap originEntryPair exports
       UseName ns => originEntry exports (lastOfPM ns)
-      UseAlias _ _ => []
+      UseAlias _ a => flatMap (aliasEntryPair a) exports
 
--- a UseGroup member → entry if it names an exported fn of the origin module.
+-- a UseGroup member → entry if its ORIGIN names an exported fn of the origin module;
+-- the entry is keyed by the member's LOCAL name (its alias, if it has one).
 memberEntry : List (String, String) -> UseMember -> List (String, String)
-memberEntry exports (UseMember n _ _) = originEntry exports n
+memberEntry exports m =
+  originEntryAs exports (useMemberOrigin m) (useMemberLocal m)
 
 -- bare name `n` → `<definer>__<n>` iff `n` is an exported fn of the imported module
 -- (`exports` is that module's (name, definer) pairs).  For a RE-EXPORTED name the
 -- definer is the ORIGINAL owning module, so the reference points at the real symbol
 -- rather than the re-exporter's non-existent one.
 originEntry : List (String, String) -> String -> List (String, String)
-originEntry exports n
-  | isExcludedName n = []
-  | otherwise = match lookupDefiner n exports
-    Some definer => [(n, mangledName definer n)]
+originEntry exports n = originEntryAs exports n n
+
+-- like originEntry, but the entry is keyed by an arbitrary LOCAL name (an alias).
+originEntryAs : List (String, String) -> String -> String -> List (String, String)
+originEntryAs exports origin local
+  | isExcludedName origin = []
+  | otherwise = match lookupDefiner origin exports
+    Some definer => [(local, mangledName definer origin)]
     None => []
 
 -- a wildcard import iterates the (name, definer) pairs directly.
@@ -451,6 +476,12 @@ originEntryPair : (String, String) -> List (String, String)
 originEntryPair (n, definer)
   | isExcludedName n = []
   | otherwise = [(n, mangledName definer n)]
+
+-- a module alias iterates the same pairs, keying each under `A.<name>`.
+aliasEntryPair : String -> (String, String) -> List (String, String)
+aliasEntryPair a (n, definer)
+  | isExcludedName n = []
+  | otherwise = [(qualifiedLocal a n, mangledName definer n)]
 
 useModIdU : UsePath -> String
 useModIdU (UseName ns) =

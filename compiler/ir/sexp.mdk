@@ -318,7 +318,11 @@ implMethodSexp (ImplMethod name pats body) =
 -- loc-free by design (mirrors tySexp/declSexp) — keeps .mark/.desugar goldens
 -- byte-identical since imports erase before codegen.
 useMemberSexp : UseMember -> String
-useMemberSexp (UseMember n withAll _) = node "mem" [escStr n, boolStr withAll]
+-- An un-aliased member keeps its historical 2-field shape, so every existing golden is
+-- byte-identical; only `a as b` adds the third field.
+useMemberSexp (UseMember n withAll _ alias) = match alias
+  Some a => node "mem" [escStr n, boolStr withAll, escStr a]
+  None => node "mem" [escStr n, boolStr withAll]
 
 usePathSexp : UsePath -> String
 usePathSexp (UseName ids) = node "UseName" [slist (map escStr ids)]

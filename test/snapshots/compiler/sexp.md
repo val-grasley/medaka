@@ -1,5 +1,5 @@
 # META
-source_lines=332
+source_lines=336
 stages=DESUGAR,MARK
 # SOURCE
 -- Structural S-expression dump of the self-host AST, mirroring dev/astdump.ml
@@ -322,7 +322,11 @@ implMethodSexp (ImplMethod name pats body) =
 -- loc-free by design (mirrors tySexp/declSexp) — keeps .mark/.desugar goldens
 -- byte-identical since imports erase before codegen.
 useMemberSexp : UseMember -> String
-useMemberSexp (UseMember n withAll _) = node "mem" [escStr n, boolStr withAll]
+-- An un-aliased member keeps its historical 2-field shape, so every existing golden is
+-- byte-identical; only `a as b` adds the third field.
+useMemberSexp (UseMember n withAll _ alias) = match alias
+  Some a => node "mem" [escStr n, boolStr withAll, escStr a]
+  None => node "mem" [escStr n, boolStr withAll]
 
 usePathSexp : UsePath -> String
 usePathSexp (UseName ids) = node "UseName" [slist (map escStr ids)]
@@ -498,7 +502,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DTypeSig false "implMethodSexp" (TyFun (TyCon "ImplMethod") (TyCon "String")))
 (DFunDef false "implMethodSexp" ((PCon "ImplMethod" (PVar "name") (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "im"))) (EListLit (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "patSexp")) (EVar "pats"))) (EApp (EVar "exprSexp") (EVar "body")))))
 (DTypeSig false "useMemberSexp" (TyFun (TyCon "UseMember") (TyCon "String")))
-(DFunDef false "useMemberSexp" ((PCon "UseMember" (PVar "n") (PVar "withAll") PWild)) (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")))))
+(DFunDef false "useMemberSexp" ((PCon "UseMember" (PVar "n") (PVar "withAll") PWild (PVar "alias"))) (EMatch (EVar "alias") (arm (PCon "Some" (PVar "a")) () (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")) (EApp (EVar "escStr") (EVar "a"))))) (arm (PCon "None") () (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")))))))
 (DTypeSig false "usePathSexp" (TyFun (TyCon "UsePath") (TyCon "String")))
 (DFunDef false "usePathSexp" ((PCon "UseName" (PVar "ids"))) (EApp (EApp (EVar "node") (ELit (LString "UseName"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ids"))))))
 (DFunDef false "usePathSexp" ((PCon "UseGroup" (PVar "ids") (PVar "ms"))) (EApp (EApp (EVar "node") (ELit (LString "UseGroup"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ids"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "useMemberSexp")) (EVar "ms"))))))
@@ -670,7 +674,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DTypeSig false "implMethodSexp" (TyFun (TyCon "ImplMethod") (TyCon "String")))
 (DFunDef false "implMethodSexp" ((PCon "ImplMethod" (PVar "name") (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "im"))) (EListLit (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "patSexp")) (EVar "pats"))) (EApp (EVar "exprSexp") (EVar "body")))))
 (DTypeSig false "useMemberSexp" (TyFun (TyCon "UseMember") (TyCon "String")))
-(DFunDef false "useMemberSexp" ((PCon "UseMember" (PVar "n") (PVar "withAll") PWild)) (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")))))
+(DFunDef false "useMemberSexp" ((PCon "UseMember" (PVar "n") (PVar "withAll") PWild (PVar "alias"))) (EMatch (EVar "alias") (arm (PCon "Some" (PVar "a")) () (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")) (EApp (EVar "escStr") (EVar "a"))))) (arm (PCon "None") () (EApp (EApp (EVar "node") (ELit (LString "mem"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "boolStr") (EVar "withAll")))))))
 (DTypeSig false "usePathSexp" (TyFun (TyCon "UsePath") (TyCon "String")))
 (DFunDef false "usePathSexp" ((PCon "UseName" (PVar "ids"))) (EApp (EApp (EVar "node") (ELit (LString "UseName"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ids"))))))
 (DFunDef false "usePathSexp" ((PCon "UseGroup" (PVar "ids") (PVar "ms"))) (EApp (EApp (EVar "node") (ELit (LString "UseGroup"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ids"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "useMemberSexp")) (EVar "ms"))))))

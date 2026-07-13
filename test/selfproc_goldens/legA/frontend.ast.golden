@@ -1,0 +1,4 @@
+qualifiedLocal : String -> String -> String
+useMemberAlias : UseMember -> Option String
+useMemberLocal : UseMember -> String
+useMemberOrigin : UseMember -> String

@@ -1,0 +1,3 @@
+import list as l
+
+main = println 1

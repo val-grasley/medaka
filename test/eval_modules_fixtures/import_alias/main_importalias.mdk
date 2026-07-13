@@ -1,0 +1,14 @@
+-- module alias: `A.name` / `B.name` — the two colliding `emit`s coexist
+import emit_a as A
+import emit_b as B
+-- member alias: rename one value on import
+import emit_a.{describe as descA}
+
+main =
+  println (A.emit 1)
+  println (B.emit 2)
+  -- constrained fns through a module alias (dicts must be threaded)
+  println (A.describe [1, 2])
+  println (B.describe True)
+  -- and through a member alias
+  println (descA "x")

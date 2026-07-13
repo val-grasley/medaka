@@ -32,6 +32,8 @@ import frontend.ast.{
   Expr(..),
   UseMember(..),
   UsePath(..),
+  useMemberLocal,
+  qualifiedLocal,
   PropParam(..),
   MethodDefault(..),
   IfaceMethod(..),
@@ -58,6 +60,7 @@ import support.util.{
   reverseL,
   initList,
   joinDot,
+  filterList,
 }
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
@@ -1021,12 +1024,13 @@ useImportNames path = if useModId path == "core" then [] else useStubNames path
 
 useStubNames : UsePath -> List String
 useStubNames (UseName ns) = [lastOf ns]
-useStubNames (UseGroup _ ms) = map memberName ms
+useStubNames (UseGroup _ ms) = map useMemberLocal ms
 useStubNames (UseWild _) = []
-useStubNames (UseAlias _ a) = [a]
-
-memberName : UseMember -> String
-memberName (UseMember n _ _) = n
+-- A module alias binds `A.name` per EXPORT, which this single-file stub path cannot
+-- enumerate (it has no ModuleExports).  Binding bare `A` here would be a lie — `A`
+-- alone is never a value.  A non-core import in a single file is already reported by
+-- `singleFileImportErrors`, so contributing nothing is right.
+useStubNames (UseAlias _ _) = []
 
 useModId : UsePath -> String
 useModId (UseName ns) =
@@ -1578,13 +1582,17 @@ importedNamesMM (UseName ns) exp =
     ([nm], pubErr exp nm)
   else ([], [])
 importedNamesMM (UseGroup _ members) exp =
-  let namedLocs = flatMap (expandMemberNames exp) members
-  let names = map fst namedLocs
+  let expanded = flatMap (expandMemberNames exp) members
+  let names = map localOfExpanded expanded
   let expandErrs = flatMap (expandMemberErrs exp) members
-  (names, expandErrs ++ flatMap (pubErrLoc exp) namedLocs)
+  (names, expandErrs ++ flatMap (pubErrExpanded exp) expanded)
 importedNamesMM (UseWild _) exp =
   (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
-importedNamesMM (UseAlias _ a) exp = ([a], [])
+-- `import m as A` binds m's exported VALUES as `A.name`, and nothing unqualified.
+-- Values only: a qualified reference parses as a field access, whose field must be
+-- lowercase, so `A.SomeType` / `A.SomeCtor` cannot be spelled at all (it is a parse
+-- error, not a silent miss).  Types and ctors are imported with `import m.{T(..)}`.
+importedNamesMM (UseAlias _ a) exp = (map (qualifiedLocal a) exp.expValues, [])
 
 pubErr : ModuleExports -> String -> List ResError
 pubErr exp n =
@@ -1607,15 +1615,29 @@ pubErrLoc exp (n, loc) =
 -- itself.  `T(..)` on an abstractly-exported type is a NoExportedConstructors.
 -- Each expanded name carries the source member's own Loc (ctors expanded from
 -- `T(..)` inherit T's member loc).
-expandMemberNames : ModuleExports -> UseMember -> List (String, Loc)
-expandMemberNames _ (UseMember name False loc) = [(name, loc)]
-expandMemberNames exp (UseMember name True loc) = match typeCtorsOf name exp
-  Some ctors => (name, loc) :: map (c => (c, loc)) ctors
-  None => [(name, loc)]
+--
+-- Each entry is (ORIGIN, LOCAL, loc).  They differ only under a member alias
+-- (`import m.{a as b}` → origin `a`, local `b`): the privacy check must ask about the
+-- ORIGIN (that is the name m exports), while scope binds the LOCAL.  Conflating the
+-- two would make `import m.{privateThing as x}` silently legal.  Ctors expanded from
+-- `T(..) as U` keep their OWN names — one alias cannot rename N constructors.
+expandMemberNames : ModuleExports -> UseMember -> List (String, String, Loc)
+expandMemberNames _ (m@(UseMember name False loc _)) =
+  [(name, useMemberLocal m, loc)]
+expandMemberNames exp (m@(UseMember name True loc _)) = match typeCtorsOf name exp
+  Some ctors => (name, useMemberLocal m, loc) :: map (c => (c, c, loc)) ctors
+  None => [(name, useMemberLocal m, loc)]
+
+localOfExpanded : (String, String, Loc) -> String
+localOfExpanded (_, local, _) = local
+
+-- privacy is checked against the ORIGIN name, with the member's own Loc.
+pubErrExpanded : ModuleExports -> (String, String, Loc) -> List ResError
+pubErrExpanded exp (origin, _, loc) = pubErrLoc exp (origin, loc)
 
 expandMemberErrs : ModuleExports -> UseMember -> List ResError
-expandMemberErrs _ (UseMember _ False _) = []
-expandMemberErrs exp (UseMember name True loc) = match typeCtorsOf name exp
+expandMemberErrs _ (UseMember _ False _ _) = []
+expandMemberErrs exp (UseMember name True loc _) = match typeCtorsOf name exp
   Some _ => []
   None =>
     if contains name exp.expTypes then
@@ -1973,15 +1995,39 @@ reExpEffectsFrom _ _ = []
 -- ── pub-import re-export (export import …) — mirror lib's reexport_name ──────
 -- The names a pub use-path re-exports from its source module (errors suppressed
 -- here — they were already reported when the module imported them).
-reexportNamesOf : UsePath -> ModuleExports -> List String
-reexportNamesOf (UseName ns) _ = if listLen ns > 1 then [lastOf ns] else []
-reexportNamesOf (UseGroup _ members) src =
-  map fst (flatMap (expandMemberNames src) members)
-reexportNamesOf (UseWild _) src = src.expValues
-  ++ src.expTypes
-  ++ src.expCtors
-  ++ src.expInterfaces
-reexportNamesOf (UseAlias _ _) _ = []
+-- (ORIGIN, LOCAL) per re-exported name.  The origin is what the SOURCE module exports
+-- (so it is what the `filterContains src.expX` guards below must test); the local is
+-- the name THIS module re-exports it under.  They differ only for a member alias
+-- (`export import m.{a as b}` re-exports m's `a` as `b`).
+--
+-- A whole-module alias is absent on purpose: `export import m as A` is rejected in the
+-- parser.  Re-exporting `A.f` would export a name no importer could write without
+-- knowing our private alias.
+reexportBindings : UsePath -> ModuleExports -> List (String, String)
+reexportBindings (UseName ns) _ =
+  if listLen ns > 1 then
+    let n = lastOf ns
+    [(n, n)]
+  else []
+reexportBindings (UseGroup _ members) src =
+  map dropLocOfExpanded (flatMap (expandMemberNames src) members)
+reexportBindings (UseWild _) src =
+  map
+    selfBinding
+    (src.expValues ++ src.expTypes ++ src.expCtors ++ src.expInterfaces)
+reexportBindings (UseAlias _ _) _ = []
+
+dropLocOfExpanded : (String, String, Loc) -> (String, String)
+dropLocOfExpanded (origin, local, _) = (origin, local)
+
+selfBinding : String -> (String, String)
+selfBinding n = (n, n)
+
+-- the LOCAL names whose ORIGIN is one of `origins` (the source module's export list of
+-- the relevant kind).  This is the aliased form of the old `filterContains`.
+localsExportedFrom : List String -> List (String, String) -> List String
+localsExportedFrom origins bindings =
+  map snd (filterList (b => contains (fst b) origins) bindings)
 
 reExpValues : List ModuleExports -> List Decl -> List String
 reExpValues known prog =
@@ -1989,8 +2035,9 @@ reExpValues known prog =
 
 reExpValuesFrom : UsePath -> ModuleExports -> List String
 reExpValuesFrom path src =
-  let names = reexportNamesOf path src
-  filterContains src.expValues names ++ flatMap (ifaceValsOf src) names
+  let bindings = reexportBindings path src
+  localsExportedFrom src.expValues bindings
+    ++ flatMap (ifaceValsOf src) (map fst bindings)
 
 ifaceValsOf : ModuleExports -> String -> List String
 ifaceValsOf src n =
@@ -2004,22 +2051,31 @@ reExpTypes known prog =
   flatMap (overPubUse known reExpTypesFrom) (pubUsePaths prog)
 
 reExpTypesFrom : UsePath -> ModuleExports -> List String
-reExpTypesFrom path src = filterContains src.expTypes (reexportNamesOf path src)
+reExpTypesFrom path src =
+  localsExportedFrom src.expTypes (reexportBindings path src)
 
 reExpCtors : List ModuleExports -> List Decl -> List String
 reExpCtors known prog =
   flatMap (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
 
 reExpCtorsFrom : UsePath -> ModuleExports -> List String
-reExpCtorsFrom path src = filterContains src.expCtors (reexportNamesOf path src)
+reExpCtorsFrom path src =
+  localsExportedFrom src.expCtors (reexportBindings path src)
 
 reExpInterfaces : List ModuleExports -> List Decl -> List String
 reExpInterfaces known prog =
   flatMap (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
 
+-- Interfaces / types / ctors / field owners key off the ORIGIN name: only a VALUE
+-- member can carry an alias (parser-enforced), so for these kinds origin == local and
+-- the origin list is exactly the old behaviour.  Keying an interface by an alias would
+-- be unsound anyway — impl coherence is resolved on the real interface name globally.
+reexportOrigins : UsePath -> ModuleExports -> List String
+reexportOrigins path src = map fst (reexportBindings path src)
+
 reExpInterfacesFrom : UsePath -> ModuleExports -> List String
 reExpInterfacesFrom path src =
-  filterContains src.expInterfaces (reexportNamesOf path src)
+  filterContains src.expInterfaces (reexportOrigins path src)
 
 reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
 reExpIfaceMethods known prog =
@@ -2029,7 +2085,7 @@ reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
 reExpIfaceMethodsFrom path src =
   ifaceMethodPairs
     src
-    (filterContains src.expInterfaces (reexportNamesOf path src))
+    (filterContains src.expInterfaces (reexportOrigins path src))
 
 ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
 ifaceMethodPairs _ [] = []
@@ -2043,7 +2099,7 @@ reExpFieldOwners known prog =
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
 reExpFieldOwnersFrom path src =
   ownersForTypes
-    (filterContains src.expTypes (reexportNamesOf path src))
+    (filterContains src.expTypes (reexportOrigins path src))
     src.expFieldOwners
 
 ownersForTypes : List String -> List (String, String) -> List (String, String)

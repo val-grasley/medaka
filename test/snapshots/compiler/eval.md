@@ -1,5 +1,5 @@
 # META
-source_lines=2899
+source_lines=2915
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -38,6 +38,9 @@ import frontend.ast.{
   ImplMethod(..),
   UsePath(..),
   UseMember(..),
+  useMemberOrigin,
+  useMemberLocal,
+  qualifiedLocal,
   Decl(..),
 }
 import support.util.{
@@ -2586,24 +2589,37 @@ reexport exportsMap (DUse True path _) = match lookupAssoc (useModuleId path) ex
   Some exports => resolveMembers path exports
 reexport _ _ = []
 
+-- The cells an import binds into the importing module's frame, keyed by the LOCAL name.
+-- The origin module's cell is shared by REFERENCE, so an alias is a second name for the
+-- very same cell — never a copy.
 resolveMembers : UsePath -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 resolveMembers (UseName ns) exports =
   if listLen ns > 1 then
-    bindNames [lastOfList ns] exports
+    bindNames [selfBind (lastOfList ns)] exports
   else
     []
-resolveMembers (UseGroup _ ms) exports = bindNames (map memberNm ms) exports
+resolveMembers (UseGroup _ ms) exports = bindNames (map memberBind ms) exports
 resolveMembers (UseWild _) exports = exports
-resolveMembers (UseAlias _ _) _ = []
+-- `import m as A` → every export of m, under `A.name`.  This is what makes two modules
+-- exporting the SAME name importable at once: their cells land under distinct keys, so
+-- the importing frame's first-match lookup can no longer collapse them.
+resolveMembers (UseAlias _ a) exports = map (qualifyCell a) exports
 
-bindNames : List String -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
+qualifyCell : String -> (String, Ref (Value e)) -> (String, Ref (Value e))
+qualifyCell a (n, cell) = (qualifiedLocal a n, cell)
+
+-- bind (origin, local) pairs: look the cell up by ORIGIN, enter it under LOCAL.
+bindNames : List (String, String) -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 bindNames [] _ = []
-bindNames (n::rest) exports = match lookupAssoc n exports
-  Some cell => (n, cell) :: bindNames rest exports
+bindNames ((origin, local)::rest) exports = match lookupAssoc origin exports
+  Some cell => (local, cell) :: bindNames rest exports
   None => bindNames rest exports
 
-memberNm : UseMember -> String
-memberNm (UseMember n _ _) = n
+memberBind : UseMember -> (String, String)
+memberBind m = (useMemberOrigin m, useMemberLocal m)
+
+selfBind : String -> (String, String)
+selfBind n = (n, n)
 
 useModuleId : UsePath -> String
 useModuleId (UseName ns) =
@@ -2902,7 +2918,7 @@ export evalOneRootEnv : List Decl -> (String, List Decl) -> <Mut | e> List (Stri
 evalOneRootEnv preludeDecls (rootId, prog) =
   evalModulesRootEnv preludeDecls [(rootId, prog)]
 # DESUGAR
-(DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Route" true) (mem "ConPayload" true) (mem "Field" true) (mem "Variant" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "UsePath" true) (mem "UseMember" true) (mem "Decl" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Route" true) (mem "ConPayload" true) (mem "Field" true) (mem "Variant" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "UsePath" true) (mem "UseMember" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "reverseL" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "joinWith" false) (mem "fallthroughName" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "initList" false) (mem "mapOption" false) (mem "joinDot" false) (mem "dedup" false))))
 (DUse false (UseGroup ("list") ((mem "sortBy" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Diag" true) (mem "Severity" true) (mem "cjAllToJson" false))))
@@ -4080,15 +4096,19 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "reexport" ((PVar "exportsMap") (PCon "DUse" (PCon "True") (PVar "path") PWild)) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "useModuleId") (EVar "path"))) (EVar "exportsMap")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exports")) () (EApp (EApp (EVar "resolveMembers") (EVar "path")) (EVar "exports")))))
 (DFunDef false "reexport" (PWild PWild) (EListLit))
 (DTypeSig false "resolveMembers" (TyFun (TyCon "UsePath") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
-(DFunDef false "resolveMembers" ((PCon "UseName" (PVar "ns")) (PVar "exports")) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EApp (EVar "bindNames") (EListLit (EApp (EVar "lastOfList") (EVar "ns")))) (EVar "exports")) (EListLit)))
-(DFunDef false "resolveMembers" ((PCon "UseGroup" PWild (PVar "ms")) (PVar "exports")) (EApp (EApp (EVar "bindNames") (EApp (EApp (EVar "map") (EVar "memberNm")) (EVar "ms"))) (EVar "exports")))
+(DFunDef false "resolveMembers" ((PCon "UseName" (PVar "ns")) (PVar "exports")) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EApp (EVar "bindNames") (EListLit (EApp (EVar "selfBind") (EApp (EVar "lastOfList") (EVar "ns"))))) (EVar "exports")) (EListLit)))
+(DFunDef false "resolveMembers" ((PCon "UseGroup" PWild (PVar "ms")) (PVar "exports")) (EApp (EApp (EVar "bindNames") (EApp (EApp (EVar "map") (EVar "memberBind")) (EVar "ms"))) (EVar "exports")))
 (DFunDef false "resolveMembers" ((PCon "UseWild" PWild) (PVar "exports")) (EVar "exports"))
-(DFunDef false "resolveMembers" ((PCon "UseAlias" PWild PWild) PWild) (EListLit))
-(DTypeSig false "bindNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DFunDef false "resolveMembers" ((PCon "UseAlias" PWild (PVar "a")) (PVar "exports")) (EApp (EApp (EVar "map") (EApp (EVar "qualifyCell") (EVar "a"))) (EVar "exports")))
+(DTypeSig false "qualifyCell" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))) (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DFunDef false "qualifyCell" ((PVar "a") (PTuple (PVar "n") (PVar "cell"))) (ETuple (EApp (EApp (EVar "qualifiedLocal") (EVar "a")) (EVar "n")) (EVar "cell")))
+(DTypeSig false "bindNames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "bindNames" ((PList) PWild) (EListLit))
-(DFunDef false "bindNames" ((PCons (PVar "n") (PVar "rest")) (PVar "exports")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "exports")) (arm (PCon "Some" (PVar "cell")) () (EBinOp "::" (ETuple (EVar "n") (EVar "cell")) (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))) (arm (PCon "None") () (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))))
-(DTypeSig false "memberNm" (TyFun (TyCon "UseMember") (TyCon "String")))
-(DFunDef false "memberNm" ((PCon "UseMember" (PVar "n") PWild PWild)) (EVar "n"))
+(DFunDef false "bindNames" ((PCons (PTuple (PVar "origin") (PVar "local")) (PVar "rest")) (PVar "exports")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "origin")) (EVar "exports")) (arm (PCon "Some" (PVar "cell")) () (EBinOp "::" (ETuple (EVar "local") (EVar "cell")) (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))) (arm (PCon "None") () (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))))
+(DTypeSig false "memberBind" (TyFun (TyCon "UseMember") (TyTuple (TyCon "String") (TyCon "String"))))
+(DFunDef false "memberBind" ((PVar "m")) (ETuple (EApp (EVar "useMemberOrigin") (EVar "m")) (EApp (EVar "useMemberLocal") (EVar "m"))))
+(DTypeSig false "selfBind" (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "String"))))
+(DFunDef false "selfBind" ((PVar "n")) (ETuple (EVar "n") (EVar "n")))
 (DTypeSig false "useModuleId" (TyFun (TyCon "UsePath") (TyCon "String")))
 (DFunDef false "useModuleId" ((PCon "UseName" (PVar "ns"))) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EVar "joinDot") (EApp (EVar "initList") (EVar "ns"))) (EApp (EVar "firstOrEmpty") (EVar "ns"))))
 (DFunDef false "useModuleId" ((PCon "UseGroup" (PVar "ns") PWild)) (EApp (EVar "joinDot") (EVar "ns")))
@@ -4209,7 +4229,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DTypeSig true "evalOneRootEnv" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "evalOneRootEnv" ((PVar "preludeDecls") (PTuple (PVar "rootId") (PVar "prog"))) (EApp (EApp (EVar "evalModulesRootEnv") (EVar "preludeDecls")) (EListLit (ETuple (EVar "rootId") (EVar "prog")))))
 # MARK
-(DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Route" true) (mem "ConPayload" true) (mem "Field" true) (mem "Variant" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "UsePath" true) (mem "UseMember" true) (mem "Decl" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "Route" true) (mem "ConPayload" true) (mem "Field" true) (mem "Variant" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "UsePath" true) (mem "UseMember" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "reverseL" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "joinWith" false) (mem "fallthroughName" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "initList" false) (mem "mapOption" false) (mem "joinDot" false) (mem "dedup" false))))
 (DUse false (UseGroup ("list") ((mem "sortBy" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Diag" true) (mem "Severity" true) (mem "cjAllToJson" false))))
@@ -5387,15 +5407,19 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "reexport" ((PVar "exportsMap") (PCon "DUse" (PCon "True") (PVar "path") PWild)) (EMatch (EApp (EApp (EVar "lookupAssoc") (EApp (EVar "useModuleId") (EVar "path"))) (EVar "exportsMap")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exports")) () (EApp (EApp (EVar "resolveMembers") (EVar "path")) (EVar "exports")))))
 (DFunDef false "reexport" (PWild PWild) (EListLit))
 (DTypeSig false "resolveMembers" (TyFun (TyCon "UsePath") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
-(DFunDef false "resolveMembers" ((PCon "UseName" (PVar "ns")) (PVar "exports")) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EApp (EVar "bindNames") (EListLit (EApp (EVar "lastOfList") (EVar "ns")))) (EVar "exports")) (EListLit)))
-(DFunDef false "resolveMembers" ((PCon "UseGroup" PWild (PVar "ms")) (PVar "exports")) (EApp (EApp (EVar "bindNames") (EApp (EApp (EMethodRef "map") (EVar "memberNm")) (EVar "ms"))) (EVar "exports")))
+(DFunDef false "resolveMembers" ((PCon "UseName" (PVar "ns")) (PVar "exports")) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EApp (EVar "bindNames") (EListLit (EApp (EVar "selfBind") (EApp (EVar "lastOfList") (EVar "ns"))))) (EVar "exports")) (EListLit)))
+(DFunDef false "resolveMembers" ((PCon "UseGroup" PWild (PVar "ms")) (PVar "exports")) (EApp (EApp (EVar "bindNames") (EApp (EApp (EMethodRef "map") (EVar "memberBind")) (EVar "ms"))) (EVar "exports")))
 (DFunDef false "resolveMembers" ((PCon "UseWild" PWild) (PVar "exports")) (EVar "exports"))
-(DFunDef false "resolveMembers" ((PCon "UseAlias" PWild PWild) PWild) (EListLit))
-(DTypeSig false "bindNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DFunDef false "resolveMembers" ((PCon "UseAlias" PWild (PVar "a")) (PVar "exports")) (EApp (EApp (EMethodRef "map") (EApp (EVar "qualifyCell") (EVar "a"))) (EVar "exports")))
+(DTypeSig false "qualifyCell" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))) (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DFunDef false "qualifyCell" ((PVar "a") (PTuple (PVar "n") (PVar "cell"))) (ETuple (EApp (EApp (EVar "qualifiedLocal") (EVar "a")) (EVar "n")) (EVar "cell")))
+(DTypeSig false "bindNames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "bindNames" ((PList) PWild) (EListLit))
-(DFunDef false "bindNames" ((PCons (PVar "n") (PVar "rest")) (PVar "exports")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "exports")) (arm (PCon "Some" (PVar "cell")) () (EBinOp "::" (ETuple (EVar "n") (EVar "cell")) (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))) (arm (PCon "None") () (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))))
-(DTypeSig false "memberNm" (TyFun (TyCon "UseMember") (TyCon "String")))
-(DFunDef false "memberNm" ((PCon "UseMember" (PVar "n") PWild PWild)) (EVar "n"))
+(DFunDef false "bindNames" ((PCons (PTuple (PVar "origin") (PVar "local")) (PVar "rest")) (PVar "exports")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "origin")) (EVar "exports")) (arm (PCon "Some" (PVar "cell")) () (EBinOp "::" (ETuple (EVar "local") (EVar "cell")) (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))) (arm (PCon "None") () (EApp (EApp (EVar "bindNames") (EVar "rest")) (EVar "exports")))))
+(DTypeSig false "memberBind" (TyFun (TyCon "UseMember") (TyTuple (TyCon "String") (TyCon "String"))))
+(DFunDef false "memberBind" ((PVar "m")) (ETuple (EApp (EVar "useMemberOrigin") (EVar "m")) (EApp (EVar "useMemberLocal") (EVar "m"))))
+(DTypeSig false "selfBind" (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "String"))))
+(DFunDef false "selfBind" ((PVar "n")) (ETuple (EVar "n") (EVar "n")))
 (DTypeSig false "useModuleId" (TyFun (TyCon "UsePath") (TyCon "String")))
 (DFunDef false "useModuleId" ((PCon "UseName" (PVar "ns"))) (EIf (EBinOp ">" (EApp (EVar "listLen") (EVar "ns")) (ELit (LInt 1))) (EApp (EVar "joinDot") (EApp (EVar "initList") (EVar "ns"))) (EApp (EVar "firstOrEmpty") (EVar "ns"))))
 (DFunDef false "useModuleId" ((PCon "UseGroup" (PVar "ns") PWild)) (EApp (EVar "joinDot") (EVar "ns")))
