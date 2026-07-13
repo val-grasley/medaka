@@ -1,0 +1,1 @@
+TYPE ERROR: No impl of Semigroup for Box; write an 'impl Semigroup Box'.
