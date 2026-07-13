@@ -40,6 +40,12 @@ if [ "${1:-}" = "--build-one" ]; then
   e="$2"
   src="$ROOT/compiler/entries/$e.mdk"
   out="$BINDIR/$e"
+  # A fresh worktree/clone has no test/bin (it is not committed). The MAIN path
+  # mkdir's it, but this worker path did not — so `--build-one` on a fresh tree died
+  # with `cannot create .../test/bin/<e>.buildlog: Directory nonexistent`, and then a
+  # SECOND, misleading error (`tail: cannot open ... buildlog`) hid the real cause.
+  # Reported by two separate agents who each lost time to it.
+  mkdir -p "$BINDIR"
   printf 'building    %s ...\n' "$e"
   if ! ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O0}" "$MEDAKA" build --allow-internal "$src" -o "$out" ) >"$BINDIR/$e.buildlog" 2>&1; then
     echo "FAIL: could not native-compile $e:" >&2; tail -8 "$BINDIR/$e.buildlog" >&2; exit 1
