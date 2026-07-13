@@ -4,7 +4,7 @@
 # WS-4 NATIVE-ONLY gate for the PRODUCT refinement domain — a structure-aware
 # `Net = Host(Prefix) x Method(Set)`.  A program opts in with `effect Net Product`
 # and writes structured literals `<Net Host="…" Method={…}>` (keyword-axes,
-# capitalized; Option A of WS-4-DESIGN.md).  Confinement is the standard escape
+# capitalized; Option A of archive/design/WS-4-DESIGN.md).  Confinement is the standard escape
 # check against a declared bound, now POINTWISE over the two axes — Host and Method
 # confine INDEPENDENTLY (the WS-4 headline).
 #

@@ -1,8 +1,8 @@
 # WS-4 Design — `Product` refinement domain (structure-aware `Net = Host(Prefix) × Method(Set)`)
 
 **Status:** IMPLEMENTED (verified done 2026-06-22 — `PProduct` arm in `compiler/types/typecheck.mdk:116`, `encodeProductParam` in `compiler/frontend/parser.mdk:1699`, `test/effect_product_domain.sh` gate exists). The design-pass recommendation to DEFER was superseded. **Roadmap item:**
-[`EFFECTS-CONFORMANCE-ROADMAP.md`](EFFECTS-CONFORMANCE-ROADMAP.md) §WS-4 (E2, "largest, last").
-**Spec:** [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) §2.1 domain interface, §2.3
+[`EFFECTS-CONFORMANCE-ROADMAP.md`](../../docs/design/EFFECTS-CONFORMANCE-ROADMAP.md) §WS-4 (E2, "largest, last").
+**Spec:** [`EFFECTS-SEMANTICS.md`](../../docs/spec/EFFECTS-SEMANTICS.md) §2.1 domain interface, §2.3
 delimiter discipline, §2.5 row order, domain table (line 145). **Precedent:** WS-3
 (`Set`), WS-3b (Env/Exec hole-fill) — both **native-only**.
 

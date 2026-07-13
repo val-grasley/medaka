@@ -259,7 +259,7 @@ the stage is done when all pass.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 
-- ✅ **Hardening pass (2026-06-04): every SYNTAX.md construct swept through the
+- ✅ **Hardening pass (2026-06-04): every docs/spec/SYNTAX.md construct swept through the
   diff harness; all real `parser.mdk` gaps vs the OCaml parser closed.** The
   earlier "coverage complete" claim was optimistic — a systematic sweep found 16
   constructs the OCaml parser accepts that the port rejected or mis-parsed. Now

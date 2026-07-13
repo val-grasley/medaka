@@ -206,7 +206,7 @@ main =
 EOF
 out="$("$MEDAKA" run "$TMP/mut.mdk" 2>&1)"
 if [ "$out" = "01" ]; then
-  report MUT OPEN "a PURE-typed fn returns 2 answers across a mutation (EFFECTS-SEMANTICS.md:448 says Mut = purity tracking)"
+  report MUT OPEN "a PURE-typed fn returns 2 answers across a mutation (docs/spec/EFFECTS-SEMANTICS.md:448 says Mut = purity tracking)"
 else
   report MUT FIXED "pure-typed reads of mutable state no longer diverge (or are now rejected)"
 fi

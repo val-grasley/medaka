@@ -426,7 +426,7 @@ module-qualified identity.
 
 ## 10. How to read the recurring defects against this spec
 
-**Audit completed 2026-06-21 — see [`archive/DICT-CONFORMANCE-AUDIT.md`](archive/DICT-CONFORMANCE-AUDIT.md) (archived); all D1–D10 divergences closed.** The lens below remains useful for diagnosing future regressions.
+**Audit completed 2026-06-21 — see [`archive/DICT-CONFORMANCE-AUDIT.md`](../../archive/DICT-CONFORMANCE-AUDIT.md) (archived); all D1–D10 divergences closed.** The lens below remains useful for diagnosing future regressions.
 
 Each known trouble area maps to a
 specific clause; that mapping is the audit's starting point.

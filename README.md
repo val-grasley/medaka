@@ -2,7 +2,7 @@
 
 A pragmatic, modern functional programming language. Sits at the intersection of
 a cleaned-up OCaml, a practical Haskell, and a more functional, garbage-collected
-Rust. See [language-design.md](./language-design.md) for the full design.
+Rust. See [language-design.md](docs/spec/language-design.md) for the full design.
 
 The compiler is written in Medaka (`compiler/`) and a
 native **LLVM backend** compiles it — all seven pipeline stages are native-compiled
@@ -43,10 +43,10 @@ driver/ tools/ support/ entries/ seed/`):
   byte-for-byte self-compile fixpoint (`test/selfcompile_fixpoint.sh`)
 
 The standard library is developed in Medaka itself on top of the `extern`
-primitives — see [STDLIB.md](./STDLIB.md). Self-hosting + native LLVM codegen are
+primitives — see [STDLIB.md](docs/stdlib/STDLIB.md). Self-hosting + native LLVM codegen are
 done (the native compiler self-hosts to a reproducing fixpoint). See
 [PLAN.md](./PLAN.md) for the roadmap (and
-[PLAN-ARCHIVE.md](./PLAN-ARCHIVE.md) for the completed-phase history).
+[PLAN-ARCHIVE.md](archive/PLAN-ARCHIVE.md) for the completed-phase history).
 
 ## Building
 
@@ -234,7 +234,7 @@ program at type-check and eval time, so its data types (`Option`, `Result`,
 `flip`, `compose`, `filter`, …) are available without an explicit import.
 The remaining stdlib modules (`list`, `string`, `array`, …) are written in
 Medaka itself and developed interactively via the REPL. See
-[STDLIB.md](STDLIB.md) for the module plan.
+[STDLIB.md](docs/stdlib/STDLIB.md) for the module plan.
 
 ## Editor setup
 

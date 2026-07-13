@@ -11,7 +11,7 @@ maintenance pattern found across this doc family.
 > W8b) is done; this doc tracks the gap-closing toward self-host.
 >
 > **Companion docs:** `WASMGC-DESIGN.md` (backend design + slices), `WASM-SELFHOST-GAPS.md`
-> (the raw gap census), `PLAYGROUND-DESIGN.md` (the product surface).
+> (the raw gap census), `../archive/design/PLAYGROUND-DESIGN.md` (the product surface).
 
 ## How the census works (the measurement loop)
 
@@ -205,5 +205,5 @@ with the native `wasm-tools` 1.252.0 used in `build_playground_wasm.sh`.
 The in-browser playground is live: `playground/` contains the fully client-side Medaka
 playground. The compiler (`compiler/entries/playground_main.mdk`) is compiled to WasmGC
 (`playground/dist/playground.wasm`) and runs entirely in the browser — no server-side
-compilation. See `playground/README.md` for build + run instructions and `PLAYGROUND-DESIGN.md`
+compilation. See `playground/README.md` for build + run instructions and `../archive/design/PLAYGROUND-DESIGN.md`
 for architecture details.

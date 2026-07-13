@@ -1,6 +1,6 @@
 ---
 name: extend-stdlib
-description: Implement or extend a pure-Medaka stdlib function/instance in stdlib/{core,list,string,array}.mdk (function bodies, typeclass impls, doctests, props) — as opposed to native externs. Use when explicitly asked to add stdlib logic per STDLIB.md. For native primitives (externs) use add-primitive instead.
+description: Implement or extend a pure-Medaka stdlib function/instance in stdlib/{core,list,string,array}.mdk (function bodies, typeclass impls, doctests, props) — as opposed to native externs. Use when explicitly asked to add stdlib logic per docs/stdlib/STDLIB.md. For native primitives (externs) use add-primitive instead.
 ---
 
 # Extend the Medaka stdlib (pure-Medaka modules)
@@ -10,8 +10,8 @@ doctests, props. The native-extern path is the separate **add-primitive** skill;
 this skill is for code written *in Medaka* on top of the prelude + kernel.
 
 **Division of labor:** the user normally hand-writes the stdlib on purpose (it
-stress-tests the language). Only do this when **explicitly asked**. STDLIB.md is
-the checklist/spec; keep its ✅/⏳/🟡/⛔ statuses current as you go.
+stress-tests the language). Only do this when **explicitly asked**. `docs/stdlib/STDLIB.md`
+is the checklist/spec; keep its ✅/⏳/🟡/⛔ statuses current as you go.
 
 ## Conventions (match existing code)
 

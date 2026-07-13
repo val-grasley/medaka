@@ -42,7 +42,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MEDAKA="$ROOT/medaka"
-DOC="$ROOT/SYNTAX.md"
+DOC="$ROOT/docs/spec/SYNTAX.md"
 
 if [ ! -x "$MEDAKA" ]; then
   echo "check_syntax_examples: native binary not found/executable at $MEDAKA" >&2

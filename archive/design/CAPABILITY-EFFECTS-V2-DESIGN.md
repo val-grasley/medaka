@@ -7,9 +7,9 @@ to has since happened — `lib/` was removed 2026-06-26, `06356a80`). ⚠️ **�
 §6 below describe a dual-typechecker (`compiler/` canonical + OCaml `lib/`
 frozen-oracle) grounding that no longer exists — see the note at the top of each
 section.** Companion to
-[`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) (the v1 atomic-effect feature, shipped),
+[`CAPABILITY-EFFECTS.md`](../../docs/design/CAPABILITY-EFFECTS.md) (the v1 atomic-effect feature, shipped),
 [`CAPABILITY-EFFECTS-RESEARCH.md`](./CAPABILITY-EFFECTS-RESEARCH.md) (manifest/host research),
-and [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) (the runtime that consumes this).
+and [`CAPABILITY-PLATFORM.md`](../../docs/design/CAPABILITY-PLATFORM.md) (the runtime that consumes this).
 
 This doc supersedes **§6a of `CAPABILITY-EFFECTS.md`** (the finite-set-lattice sketch of
 parameterized effects). The settled v2 shape is **a general refinement-DOMAIN representation**

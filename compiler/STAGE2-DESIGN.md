@@ -1151,8 +1151,8 @@ near-term sequence"):
    to a standalone native binary.
 
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
-capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
-[`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
+capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../docs/design/CAPABILITY-EFFECTS.md) /
+[`../CAPABILITY-PLATFORM.md`](../docs/design/CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
 WasmGC is a *planned* sibling backend, not someday-maybe — reached by a **direct
 WasmGC emitter** (LLVM targets only linear-memory Wasm, not WasmGC). The discipline
 is a **soft pivot**, decided 2026-06-06: LLVM stays the *first* backend (serves the

@@ -72,7 +72,7 @@ n="$(grep -c '^same ' "$OUT/SUMMARY")"
 # "skipped" for months while ALSO failing; `$ROOT/compiler/*.mdk` globbing to zero
 # files so the compiler's own sources silently left the corpus; a preflight glob
 # matching zero gates; a snapshot target that could not be read rendering as
-# "# CRASH: cannot read fixture" and then passing forever. See TESTING-DESIGN.md §0.0.
+# "# CRASH: cannot read fixture" and then passing forever. See docs/ops/TESTING-DESIGN.md §0.0.
 #
 # A parity gate is especially prone to it: parity between two empty sets is vacuous.
 if [ "$n" -eq 0 ]; then

@@ -1,6 +1,6 @@
 #!/bin/sh
 # diff_compiler_snapshot_frontend.sh — the front-end (parse / desugar / mark) family, as
-# ONE snapshot gate.  TESTING-DESIGN.md §4.3.
+# ONE snapshot gate.  docs/ops/TESTING-DESIGN.md §4.3.
 #
 # REPLACES five bash gates and everything they needed to exist:
 #

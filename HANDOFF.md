@@ -21,10 +21,10 @@ New north star landed: **ship a public 0.1.0 preview** of Medaka. The compiler i
 mature; the remaining distance is outward-facing surface (distribution, a front
 door, docs, release hygiene). Full plan + workstreams:
 
-- **[`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md)** — the release hub: the
+- **[`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md)** — the release hub: the
   funnel (playground front door → native download), floor vs ceiling, all nine
   workstreams (W1–W9 + showcase + error-quality freeze).
-- **[`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md)** — native-binary
+- **[`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md)** — native-binary
   packaging design + the repo-dependency blocker map + the phased plan (D0–D5).
 - `PLAN.md` — hub: new north-star section, Workstreams table rows, Open-issues
   index entries for every 0.1.0 item.

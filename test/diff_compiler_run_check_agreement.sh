@@ -1,7 +1,7 @@
 #!/bin/sh
 # run == check == build agreement gate (beta P0-1 / P0-17 / P0-18).
 #
-# The single biggest systemic beta-hardening finding (qa-beta-2026-07-07/FINDINGS.md
+# The single biggest systemic beta-hardening finding (archive/findings/qa-beta-2026-07-07/FINDINGS.md
 # theme #1): `medaka run` does not reject the same programs `medaka check` rejects.
 # `check` runs the full diagnostic pass (resolve + typecheck + constraint/coherence/
 # no-impl checks) and is treated here as the SOURCE OF TRUTH for whether a program

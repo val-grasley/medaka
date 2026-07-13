@@ -4,7 +4,7 @@
 dispatch fork retired (`evalDictLayerActive` has zero live code readers — verified via
 `grep -n evalDictLayerActive compiler/types/typecheck.mdk compiler/eval/eval.mdk`, all
 hits are `--` comments). One residual explicitly deferred (Gap 3 / generic prelude
-free-fn over a typeclass receiver), tracked in `GAP3-SLICE7-DESIGN.md`. NOTE: AGENTS.md's
+free-fn over a typeclass receiver), tracked in `../docs/design/GAP3-SLICE7-DESIGN.md`. NOTE: AGENTS.md's
 doc-index table currently (mis)describes this plan as "IN PROGRESS" / "is being
 retired" — that is stale; this doc's own record is correct.
 
@@ -50,11 +50,11 @@ residual.
     generic/primitive receiver (`sequence : (Traversable t, Thenable m) => …` as a
     free fn) fails `medaka build`: the caller's arg-position `debug` stays `RNone` →
     arg-tag-dispatches over primitive impl groups (no cell tag). The real fix is the
-    cross-cutting **A+B** in [`../GAP3-SLICE7-DESIGN.md`](../GAP3-SLICE7-DESIGN.md)
+    cross-cutting **A+B** in [`../GAP3-SLICE7-DESIGN.md`](../docs/design/GAP3-SLICE7-DESIGN.md)
     (typecheck arg-stamp grounding so the site never reaches arg-tag, + a
     generic-receiver dict-threading ABI). DEFERRED (2026-06-26): zero current callers
     (per-impl specialization covers `sequence`); schedule with the A+B staging
-    (`GAP3-SLICE7-DESIGN.md` §7) when a real generic prelude free-fn forces it. This is
+    (`../docs/design/GAP3-SLICE7-DESIGN.md` §7) when a real generic prelude free-fn forces it. This is
     the concrete instance of "the site never reaches arg-tag" for a non-primitive
     generic receiver — adjacent to, but distinct from, the primitive `Eq Int` residual above.
 - **Fixpoint is HELPED**: the compiler already self-compiles under `emitArgStampPasses=True`

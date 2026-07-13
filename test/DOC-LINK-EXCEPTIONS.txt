@@ -61,25 +61,50 @@
 # history.
 #
 # ── Split, re-derived against main @ 3fdd93bb (PRs #8/#10/#12 merged) ────────
-#   13 FILE exceptions — all point-in-time records (closed audits/plans,
-#       dated logs, the bootstrap narrative, archive/*, PLAN-ARCHIVE.md).
-#       Legitimate history; not counted as debt. All 13 still earn their place.
+#   15 FILE exceptions — all point-in-time records (closed audits/plans,
+#       dated logs, the bootstrap narrative, the 6 archive/*.md flat files —
+#       listed EXPLICITLY, not as an "archive/*" glob, since shell `case`
+#       globbing doesn't stop at `/`: a glob would also swallow
+#       archive/design/** and archive/findings/**, which are NEWLY archived
+#       (2026-07-13 docs-tree reorg) current docs whose links must stay live).
+#       Legitimate history; not counted as debt. All 15 still earn their place.
 #    1 REF exception   — compiler/foo.mdk, a deliberately fictional filename in
 #       AGENTS.md's own worktree-gotcha example. Not a doc bug.
-#   27 REF exceptions  — TODO(docs-cleanup): real stale paths in LIVING docs.
+#   25 REF exceptions  — TODO(docs-cleanup): real stale paths in LIVING docs.
 #       This is the punch list: mostly the compiler/*.mdk -> subfolder move
-#       (compiler/typecheck.mdk -> compiler/types/typecheck.mdk etc.), plus a
-#       stage/gates.
+#       (compiler/typecheck.mdk -> compiler/types/typecheck.mdk etc.) and the
+#       retired bytecode stage/gates.
 #
 #   DRAINED by the orphan check when re-derived against merged main (5 lines,
 #   all deleted — no longer cited by anything, so no longer earning a place):
 #     compiler/frontend/printer.mdk · test/diff_compiler_roundtrip.sh
 #     compiler/.../resolve.mdk · D's args · D ā_C   (last three: now dropped at
 #     extraction as parser false positives, not excused)
+#
+#   DRAINED AGAIN 2026-07-13 (docs-tree pass, 5 more lines, base branch had
+#   drifted past main since the split above): compiler/CONSTRUCT-COVERAGE.md,
+#   compiler/PERF-RESULTS.md, compiler/DISPATCH-GAPS-SCOPE.md (all three FILE
+#   exceptions — every dead ref they once excused now resolves), plus REF
+#   compiler/private_mangle.mdk (its only citation, compiler/BOOTSTRAP.md, is
+#   already FILE-excused, so the REF line shadowed and earned nothing) and REF
+#   lib/eval.ml (the bare-path extraction tier only tracks the
+#   compiler|stdlib|test|runtime|playground prefixes — lib/ was never matched,
+#   so this line could never earn its place no matter how many docs cite it).
+#
+#   FOLDED 2026-07-13 (docs-tree reorg, PRs #8/#10/#12/#14 status-banner work
+#   now landing): the standalone `FILE PLAN-ARCHIVE.md` entry was deleted —
+#   PLAN-ARCHIVE.md moved to archive/PLAN-ARCHIVE.md, which the existing
+#   `FILE archive/*` glob already covers, so the standalone line was made
+#   redundant (and, being a single non-glob path, would have failed the STALE
+#   FILE check the moment the move landed).
 
 # ── FILE: point-in-time records (leave the paths as they were when written) ─
-FILE	PLAN-ARCHIVE.md	completed-Phase archive; narrates the compiler tree as it existed at each phase, including the pre-restructure flat compiler/*.mdk layout and the pre-removal lib/*.ml OCaml reference — rewriting its paths would make it describe a tree that never existed at the time
-FILE	archive/*	moved-to-archive historical audits/roadmaps (see archive/ itself); same "narrates a past tree" reasoning as PLAN-ARCHIVE.md
+FILE	archive/DICT-CONFORMANCE-AUDIT.md	moved-to-archive historical audit (see archive/README.md); closed record, not rewritten
+FILE	archive/DICT-CONFORMANCE-ROADMAP.md	moved-to-archive historical roadmap (see archive/README.md); closed record, not rewritten
+FILE	archive/EFFECTS-CONFORMANCE-AUDIT.md	moved-to-archive historical audit (see archive/README.md); closed record, not rewritten
+FILE	archive/LAYOUT-CONFORMANCE-AUDIT.md	moved-to-archive historical audit (see archive/README.md); closed record, not rewritten
+FILE	archive/LAYOUT-CONFORMANCE-ROADMAP.md	moved-to-archive historical roadmap (see archive/README.md); closed record, not rewritten
+FILE	archive/PLAN-ARCHIVE.md	completed-Phase archive; narrates the compiler tree as it existed at each phase, including the pre-restructure flat compiler/*.mdk layout and the pre-removal lib/*.ml OCaml reference — rewriting its paths would make it describe a tree that never existed at the time. Moved from root to archive/PLAN-ARCHIVE.md in the 2026-07-13 docs-tree reorg (this line moved with it — NOT a bare "archive/*" glob, which would over-match archive/design/** and archive/findings/**, files that are current and DO get their links kept correct)
 FILE	compiler/BOOTSTRAP.md	the B1-B7 + C1-C3 native self-compile bootstrap LOG (AGENTS.md's own description) — narrates each slice as it landed, against the compiler layout at that point in time
 FILE	compiler/TYPECHECK-AUDIT.md	dated 2026-06-09 point-in-time audit against the (now-removed) OCaml reference compiler in lib/ — a closed historical record, not a living reference
 FILE	compiler/PRE-FLIP-GAPS.md	header: "STATUS: COMPLETE - all 9 items closed 2026-06-12; milestone flip done" — closed punch-list, historical

@@ -3,7 +3,7 @@
 The working handoff between sessions. Read it before starting a task; update it
 when you finish one. This document holds only **forward-looking** work — the
 completed Phases (1–145+, with their detailed implementation notes) live in
-[`PLAN-ARCHIVE.md`](./PLAN-ARCHIVE.md). When a phase here is finished, move its
+[`PLAN-ARCHIVE.md`](archive/PLAN-ARCHIVE.md). When a phase here is finished, move its
 write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
@@ -46,9 +46,9 @@ is a soundness item and should be split out into the bug queue.
 **The current-phase north star is a public 0.1.0 preview** — the point where Medaka
 goes in front of strangers. The compiler is mature; the distance is almost entirely
 **outward-facing surface** (distribution, a front door, human docs, release hygiene).
-Owning doc: **[`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md)**; the meatiest
+Owning doc: **[`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md)**; the meatiest
 technical workstream (native binary distribution) has its own design +
-blocker-map doc **[`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md)**. See the new
+blocker-map doc **[`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md)**. See the new
 [North star (current phase) — 0.1.0 public preview](#north-star-current-phase--010-public-preview)
 section and the 0.1.0 rows in the [Workstreams table](#workstreams--where-each-roadmap-lives).
 
@@ -788,7 +788,7 @@ reproduced on the binary, gated, merged:
   (mirrored from the OCaml desugar.ml, now removed) synthesizes a concrete-receiver per-impl copy of every same-module
   interface default into each impl that omits it — so a default that *sibling-dispatches on the
   receiver* (like `sequence ta = traverse identity ta`) gets a concrete receiver and dispatches/codegens
-  correctly. Closes the whole class, not just `sequence`. Design: [`TRAVERSABLE-DEFAULT-METHOD-DESIGN.md`](./TRAVERSABLE-DEFAULT-METHOD-DESIGN.md).
+  correctly. Closes the whole class, not just `sequence`. Design: [`TRAVERSABLE-DEFAULT-METHOD-DESIGN.md`](archive/design/TRAVERSABLE-DEFAULT-METHOD-DESIGN.md).
 - **`sequence` as a default (`f6c7f33`).** Moved `sequence` into the `Traversable` interface body,
   deleted the 3 per-impl copies.
 - **Emitter dict-threading for true universal (`6ae5248`).** Two further gaps that blocked literal
@@ -873,7 +873,7 @@ green:
 (`main` = `5e041ab`, seed re-minted, `bootstrap_from_seed` C3a byte-for-byte PASS, fixpoint
 C3a/C3b YES). Grew out of the dogfood session below — `parsec` had to lift every `=> match` body into
 a named top-level helper because brackets fully disabled layout (the deliberate `LAYOUT-SEMANTICS §6`
-rule). Design + locked scope: [`LAYOUT-BRACKETS-DESIGN.md`](./LAYOUT-BRACKETS-DESIGN.md). Staged:
+rule). Design + locked scope: [`LAYOUT-BRACKETS-DESIGN.md`](archive/design/LAYOUT-BRACKETS-DESIGN.md). Staged:
 - **Design pass** reproduced the boundary; found it was TWO gates (lexer §6 + a presumed grammar gap).
 - **Stage 1+2 grammar** (`2ca1df3`) — KEY finding: `match`/`do`/`function`/`record` ALREADY parsed
   inside brackets (`expr_no_block → expr_lam`); only the bare-`INDENT` block was a real grammar gap
@@ -935,10 +935,10 @@ each independently re-verified before merge:
   correctly via declared-arity head-pin (was rejected `Map vs Map Int`).
 - **Use-time ambiguous-import error** (`421a4bd`, both compilers) — an unqualified name
   exported by ≥2 non-`core` modules → located `AmbiguousOccurrence` at the use (Haskell
-  semantics). [`MAP-SET-AMBIGUITY-DESIGN.md`](./MAP-SET-AMBIGUITY-DESIGN.md).
+  semantics). [`MAP-SET-AMBIGUITY-DESIGN.md`](archive/design/MAP-SET-AMBIGUITY-DESIGN.md).
 - **`ppTy` effect rows** (`067c897`) — renders `<…>` like OCaml `pp_ty` (was dropping).
 - **`@Impl` named-instance hints ported to native** (`45d52f7`) —
-  [`AT-IMPL-PORT-DESIGN.md`](./AT-IMPL-PORT-DESIGN.md). Closes audit D9.
+  [`AT-IMPL-PORT-DESIGN.md`](docs/design/AT-IMPL-PORT-DESIGN.md). Closes audit D9.
 - **Typechecker-item sweep:** all 5 documented items reproduce-verified — #1 (ppTy) and D9
   (@Impl) were real and fixed; **D7, D8, foldMap-RNone confirmed latent/dormant** (not
   observable on the binary), re-labeled accordingly. (Methodology note: every item needed
@@ -1079,19 +1079,19 @@ enumerated in the [Open issues index](#open-issues-index) below.**
 
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
-| **⭐ 0.1.0 public preview (CURRENT NORTH STAR)** | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) | 🔴 **NEW — kicking off** | Funnel: playground front door (built, needs polish) → native download (ceiling). **Floor:** playground polish · Val-authored quickstart · stdlib docs · public repo · LICENSE · KNOWN-GAPS · `--version`. **Ceiling:** native `medaka build` binaries mac/linux + release CI + `.vsix`. **First task:** Linux build spike (`DISTRIBUTION-DESIGN.md` §D0 — the one unknown). Side quest: fs/net in interpreter. |
-| **Native binary distribution (0.1.0 §W1)** | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) | 🟢 **D0 Linux spike GREEN (2026-07-04); viable** | Dependency audit done (codegen/runtime already portable; work is packaging seam). **D0 spike:** full pipeline builds+runs on Docker ubuntu:24.04 aarch64 (seed→CLI→`medaka build`→ELF prints 3). **Stack:** measured need ~32MB@-O2 / ~128MB@-O0; gdb backtrace shows the overflow is **100% the lexer `b′` token-spine** (TMC-able). D2 = 2 tracks: (1) big-stack pthread 256MB both-platforms (0.1.0 baseline, mandatory for tree-depth); (2) port WasmGC `b′` TMC to native (fast-follow parity/robustness — [Native TMC parity](#open-issues-index)). +`-lm`, +Darwin-conditional stack flag (trivial). Remaining mechanical: exe-relative discovery (D1), Homebrew+tarball (D3), release CI (D4). |
+| **⭐ 0.1.0 public preview (CURRENT NORTH STAR)** | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) | 🔴 **NEW — kicking off** | Funnel: playground front door (built, needs polish) → native download (ceiling). **Floor:** playground polish · Val-authored quickstart · stdlib docs · public repo · LICENSE · KNOWN-GAPS · `--version`. **Ceiling:** native `medaka build` binaries mac/linux + release CI + `.vsix`. **First task:** Linux build spike (`DISTRIBUTION-DESIGN.md` §D0 — the one unknown). Side quest: fs/net in interpreter. |
+| **Native binary distribution (0.1.0 §W1)** | [`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md) | 🟢 **D0 Linux spike GREEN (2026-07-04); viable** | Dependency audit done (codegen/runtime already portable; work is packaging seam). **D0 spike:** full pipeline builds+runs on Docker ubuntu:24.04 aarch64 (seed→CLI→`medaka build`→ELF prints 3). **Stack:** measured need ~32MB@-O2 / ~128MB@-O0; gdb backtrace shows the overflow is **100% the lexer `b′` token-spine** (TMC-able). D2 = 2 tracks: (1) big-stack pthread 256MB both-platforms (0.1.0 baseline, mandatory for tree-depth); (2) port WasmGC `b′` TMC to native (fast-follow parity/robustness — [Native TMC parity](#open-issues-index)). +`-lm`, +Darwin-conditional stack flag (trivial). Remaining mechanical: exe-relative discovery (D1), Homebrew+tarball (D3), release CI (D4). |
 | **Self-hosting (Stage 1)** | [`compiler/README.md`](./compiler/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md) + [`compiler/BOOTSTRAP.md`](./compiler/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
 | **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🏁 **COMPLETE** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE. **OCaml compiler (`lib/`+`bin/`) REMOVED 2026-06-26** (tag `oracle-frozen`). |
-| **Capability-effects wedge (Phase 146)** | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) (v2 conformance) + [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟢 **conformance substantially CLOSED (2026-06-21)** | E1/E6 manifest (WS-1a/b/c `41509f6`), E3 α scope-seeding (WS-2 `98bf22b`, both compilers), E2 `Set` (WS-3 `5a1d215`) + `Product`/structured Net (WS-4 `b948ff3`), E4 Env/Exec native machinery + builtin-extern flip (WS-3b `2188e6a`, ✅ DONE 2026-07-01 `2d010b2`) — all native-canonical, fixpoint-gated. **Open:** WS-5 (extern-row assurance, standing discipline) + Phase 146b. WS-4 design banked in `WS-4-DESIGN.md`. |
-| **`<Mut>` effect masking (language capability)** | [`MUT-SCOPING-DESIGN.md`](./MUT-SCOPING-DESIGN.md) | 🔴 **NEW — decision-ready, not started (2026-07-13)** | **The gap:** `<Mut>` is contagious, so a pure function cannot use a local mutable buffer — **allocate→fill→freeze**, the fundamental idiom of all binary-format code, is unavailable to pure code. Surfaced by the SQLite dogfood: **two independent authors hit it in one library**, and both paid — `recordenc.mdk` duplicates a stdlib encoder to dodge the effect, and `btree.mdk`'s overflow gather runs **O(chunks × bytes) instead of O(bytes)** (~25× the necessary work on a 100 KB payload). **The classification question is SETTLED, and the answer is "neither":** `<Mut>` is **not a capability** (`check_policy.mdk:588` — `isSecurity l = not (l == "Mut" \|\| l == "Panic")`; the manifest drops it, `<IO>` excludes it) and **not a purity tracker** (`EFFECTS-SEMANTICS.md:448` claims it is, but alloc + reads are both pure, so a **pure-typed function observably returns two answers** across a mutation — repro on the branch). It is a **writer-discipline marker**, and under that reading masking scope-local writes is principled. **Precedent already shipped:** `stdlib/runtime.mdk:190` blesses `arraySortBy`/`arrayFromList` as *unchecked* trusted masks, with a comment naming the absent feature — *"Medaka has no effect masking"*. **Recommendation:** a **`mut` block** (the `TMut` token is free since the P0-5 `Ref` pivot) subtracting `Mut` atoms from the body's row (**keep the tail open** so effect-polymorphic callbacks stay honest), plus a transitive no-mutable-handle / no-arrow result check — shipped as a **TRUSTED** mask, *not* advertised as sound. A sound version is impossible without rank-2 regions, and (proved) **cannot serve the use case that motivates it**. Purely additive; every existing signature stays valid; the security half of the effect system is untouched by construction. Design doc records the rejected `runMut`-with-no-`Ref`-in-result proposal + the 3 counterexamples that kill it (all reproduced on the binary) — it is the proposal the next person will reach for. |
+| **Capability-effects wedge (Phase 146)** | [`EFFECTS-CONFORMANCE-ROADMAP.md`](docs/design/EFFECTS-CONFORMANCE-ROADMAP.md) (v2 conformance) + [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](docs/design/CAPABILITY-PLATFORM.md) §10 (product) | 🟢 **conformance substantially CLOSED (2026-06-21)** | E1/E6 manifest (WS-1a/b/c `41509f6`), E3 α scope-seeding (WS-2 `98bf22b`, both compilers), E2 `Set` (WS-3 `5a1d215`) + `Product`/structured Net (WS-4 `b948ff3`), E4 Env/Exec native machinery + builtin-extern flip (WS-3b `2188e6a`, ✅ DONE 2026-07-01 `2d010b2`) — all native-canonical, fixpoint-gated. **Open:** WS-5 (extern-row assurance, standing discipline) + Phase 146b. WS-4 design banked in `WS-4-DESIGN.md`. |
+| **`<Mut>` effect masking (language capability)** | [`MUT-SCOPING-DESIGN.md`](docs/design/MUT-SCOPING-DESIGN.md) | 🔴 **NEW — decision-ready, not started (2026-07-13)** | **The gap:** `<Mut>` is contagious, so a pure function cannot use a local mutable buffer — **allocate→fill→freeze**, the fundamental idiom of all binary-format code, is unavailable to pure code. Surfaced by the SQLite dogfood: **two independent authors hit it in one library**, and both paid — `recordenc.mdk` duplicates a stdlib encoder to dodge the effect, and `btree.mdk`'s overflow gather runs **O(chunks × bytes) instead of O(bytes)** (~25× the necessary work on a 100 KB payload). **The classification question is SETTLED, and the answer is "neither":** `<Mut>` is **not a capability** (`check_policy.mdk:588` — `isSecurity l = not (l == "Mut" \|\| l == "Panic")`; the manifest drops it, `<IO>` excludes it) and **not a purity tracker** (`EFFECTS-SEMANTICS.md:448` claims it is, but alloc + reads are both pure, so a **pure-typed function observably returns two answers** across a mutation — repro on the branch). It is a **writer-discipline marker**, and under that reading masking scope-local writes is principled. **Precedent already shipped:** `stdlib/runtime.mdk:190` blesses `arraySortBy`/`arrayFromList` as *unchecked* trusted masks, with a comment naming the absent feature — *"Medaka has no effect masking"*. **Recommendation:** a **`mut` block** (the `TMut` token is free since the P0-5 `Ref` pivot) subtracting `Mut` atoms from the body's row (**keep the tail open** so effect-polymorphic callbacks stay honest), plus a transitive no-mutable-handle / no-arrow result check — shipped as a **TRUSTED** mask, *not* advertised as sound. A sound version is impossible without rank-2 regions, and (proved) **cannot serve the use case that motivates it**. Purely additive; every existing signature stays valid; the security half of the effect system is untouched by construction. Design doc records the rejected `runMut`-with-no-`Ref`-in-result proposal + the 3 counterexamples that kill it (all reproduced on the binary) — it is the proposal the next person will reach for. |
 | **WasmGC backend (2nd backend)** | [`compiler/WASMGC-DESIGN.md`](./compiler/WASMGC-DESIGN.md) §9 (slices) + [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) (self-host gap-closing) + [`compiler/WASMGC-TRMC-DESIGN.md`](./compiler/WASMGC-TRMC-DESIGN.md) (stack-safety) | 🟢🏁 **self-hosted FRONT-END runs on WasmGC byte-identical to native; browser playground LIVE** (2026-06-22) | Direct Core IR→WAT emitter. Compute+print MVP (W1–W9b+W8b) byte-identical to `medaka build`. **Playground Stages 0–4 DONE** (`playground/`): compiler-as-wasm runs fully client-side, static-only server, WAT assembly via committed `vendor/wat2wasm/` blob. Done: per-binding emitter-gap census **1428→0**; whole-program linkage + `wasm-tools validate` (`check_main` = 6.77 MB WAT); runtime layers 1–4 (escape runtime, value-global init topo-sort, list-`++`, UTF-8 cp_count); **layer-5 CLOSED — the WasmGC TRMC arc (Stages 0–2, `8c69296`/`8737d11`/`2688edb`)** ported the LLVM TMC (`TRMC-DESIGN.md`) + a novel **dispatch-into-single-target (b′)** TMC for the lexer; the self-hosted **lexer now runs to completion under Node** (flat `tokenize→parse→runCheck` trace). **layer-6 CLOSED** — `stringToFloat` via host seam (`a332da7`). **layers 7–13 CLOSED** — parser/resolve/typecheck correctness bugs; `check_main` runs to completion byte-identical to native. **THE EMITTER RUNS ON WasmGC (2026-06-22)** — WasmGC-compiled emitter compiles `println (1+2)` → 52K-line WAT, assembles + runs + prints `3`. `wasm_emit.mdk` is OUTSIDE the compiler graph → emitter changes need no fixpoint/seed. **Remaining:** `hashName`/`dictTag` i32-vs-i64 width (layer-17, pre-existing, self-consistent); `List_andThen`/`flatMap` overflow (layer-18, latent); eventual `wasm-opt` perf pass. See `WASM-SELFHOST-ROADMAP.md` for full layer log. |
-| **SQLite library (capstone + dogfood vehicle)** | [`SQLITE-DESIGN.md`](./SQLITE-DESIGN.md) · bugs: [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md) | 🟢 **THE LIBRARY NOW SPEAKS SQL (2026-07-13)** — `medaka run sqlite/main.mdk db.sqlite "<any SQL>"` creates/queries/mutates a real `.sqlite` that `sqlite3` validates (`integrity_check=ok`) and reads back byte-identically | **2026-07-13 arc (pure-library; 22/0 native oracles vs the `sqlite3` CLI, 11/0 WasmGC tandem native==wasm):** **(1) SQL front end** — `sqlparse.mdk` (expressions, full precedence, built on the `parsec` dogfood lib via a cross-project dep) → `sqlstmt.mdk` (`SELECT`/`INSERT`/`UPDATE`/`DELETE`/`CREATE TABLE` → `parseStmt`) → `sqlexec.mdk`/`schemadef.mdk` → `main.mdk` as a real CLI. Unsupported SQL is a clean `Err`, **never a silently dropped clause**. **(2) Query engine UNIFIED** — `Select` and `AggQuery` were two disjoint ADTs with two executors (no aggregates over joins; no ORDER BY/LIMIT on aggregates; aggregates smuggled as *fake column names*, `eCountStar = ECol "count(*)"`). Now ONE `Select`, one executor running the real pipeline FROM→JOIN→WHERE→GROUP BY→HAVING→project→DISTINCT→ORDER BY→LIMIT, with a genuine `EAgg` node (so `sum(price*qty)` works) — which also **dissolved the "ORDER BY can't reference a computed column" limitation**. `AggQuery` survives as a shim, so all prior oracles passed untouched. **(3) Overflow pages read+write** — reads were **silently CORRUPTING** payloads past the local/overflow boundary (right length, wrong bytes; the "out of scope" comments were stale). Both directions now share one threshold module, so the writer is by construction the reader's inverse; thresholds confirmed exact against `sqlite3`'s own `dbstat`. **This removed the mutate wall:** UPDATE/DELETE rewrite the whole file, so *any* >4 KB row used to make *every* mutation on that table fail. **(4) Expression surface** — `||`, `LIKE`, `IN`, `BETWEEN`, `CASE`, `COALESCE`/`IFNULL`, `TRUE`/`FALSE`, and the scalar string fns, each with SQL three-valued NULL semantics pinned against `sqlite3` (120 SQL strings, 0 diffs; 36 clean rejections). **Bugs the SQL oracle caught in our OWN engine:** `compilePred` evaluated 3-valued logic as 2-valued — accidentally right under a top-level WHERE, **wrong under `NOT`** (`WHERE NOT age = 30` kept NULL rows). Fixed with a `Tri` evaluator collapsed exactly once at the WHERE/ON/HAVING boundary. **⭐ Dogfood yield → [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md), which is SELF-CHECKING** (`bash sqlite/findings/verify_compiler_bugs.sh` reprints OPEN/FIXED per bug + the workaround sites to revert). 10 filed, **B1 already closed by `ced6342d`** and its workarounds reverted. **Open (next session):** TEXT-operand arithmetic returns NULL where sqlite3 coerces (`'7'+1`=8) — a wrong answer; `rowid` pseudo-column unaddressable; `SELECT` with no `FROM`; indexes; WITHOUT ROWID; b-tree balancing; transactions/WAL. |
+| **SQLite library (capstone + dogfood vehicle)** | [`SQLITE-DESIGN.md`](archive/design/SQLITE-DESIGN.md) · bugs: [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md) | 🟢 **THE LIBRARY NOW SPEAKS SQL (2026-07-13)** — `medaka run sqlite/main.mdk db.sqlite "<any SQL>"` creates/queries/mutates a real `.sqlite` that `sqlite3` validates (`integrity_check=ok`) and reads back byte-identically | **2026-07-13 arc (pure-library; 22/0 native oracles vs the `sqlite3` CLI, 11/0 WasmGC tandem native==wasm):** **(1) SQL front end** — `sqlparse.mdk` (expressions, full precedence, built on the `parsec` dogfood lib via a cross-project dep) → `sqlstmt.mdk` (`SELECT`/`INSERT`/`UPDATE`/`DELETE`/`CREATE TABLE` → `parseStmt`) → `sqlexec.mdk`/`schemadef.mdk` → `main.mdk` as a real CLI. Unsupported SQL is a clean `Err`, **never a silently dropped clause**. **(2) Query engine UNIFIED** — `Select` and `AggQuery` were two disjoint ADTs with two executors (no aggregates over joins; no ORDER BY/LIMIT on aggregates; aggregates smuggled as *fake column names*, `eCountStar = ECol "count(*)"`). Now ONE `Select`, one executor running the real pipeline FROM→JOIN→WHERE→GROUP BY→HAVING→project→DISTINCT→ORDER BY→LIMIT, with a genuine `EAgg` node (so `sum(price*qty)` works) — which also **dissolved the "ORDER BY can't reference a computed column" limitation**. `AggQuery` survives as a shim, so all prior oracles passed untouched. **(3) Overflow pages read+write** — reads were **silently CORRUPTING** payloads past the local/overflow boundary (right length, wrong bytes; the "out of scope" comments were stale). Both directions now share one threshold module, so the writer is by construction the reader's inverse; thresholds confirmed exact against `sqlite3`'s own `dbstat`. **This removed the mutate wall:** UPDATE/DELETE rewrite the whole file, so *any* >4 KB row used to make *every* mutation on that table fail. **(4) Expression surface** — `||`, `LIKE`, `IN`, `BETWEEN`, `CASE`, `COALESCE`/`IFNULL`, `TRUE`/`FALSE`, and the scalar string fns, each with SQL three-valued NULL semantics pinned against `sqlite3` (120 SQL strings, 0 diffs; 36 clean rejections). **Bugs the SQL oracle caught in our OWN engine:** `compilePred` evaluated 3-valued logic as 2-valued — accidentally right under a top-level WHERE, **wrong under `NOT`** (`WHERE NOT age = 30` kept NULL rows). Fixed with a `Tri` evaluator collapsed exactly once at the WHERE/ON/HAVING boundary. **⭐ Dogfood yield → [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md), which is SELF-CHECKING** (`bash sqlite/findings/verify_compiler_bugs.sh` reprints OPEN/FIXED per bug + the workaround sites to revert). 10 filed, **B1 already closed by `ced6342d`** and its workarounds reverted. **Open (next session):** TEXT-operand arithmetic returns NULL where sqlite3 coerces (`'7'+1`=8) — a wrong answer; `rowid` pseudo-column unaddressable; `SELECT` with no `FROM`; indexes; WITHOUT ROWID; b-tree balancing; transactions/WAL. |
 
 | **Linter (`medaka lint`)** | **this file** → top status entry | 🟢 **v1 SHIPPED 2026-06-29** | Modular AST linter (`compiler/tools/lint.mdk`), runs on the RAW pre-desugar AST (mirrors `checkGuardExhaustiveness`). Per-file registry of `Rule { name, descr, severity, enabled, check, fix }` + a **cross-file registry** `CrossFileRule { …, check : List (path, Positions, decls) → List Finding }` — adding a rule = one fn + one list entry. Per-file rules: §8 match-on-bare-param → multi-clause; §6 hand-rolled `Eq`/`Ord`/`Debug` → `deriving`; §7a stdlib-name re-spelling. Cross-file rule: `rule-duplicate-body` (structurally-identical function bodies across ≥2 files, via `ir.sexp.exprSexp` key + node-count threshold). ESLint-style per-rule severity (`--deny=<rule>` → exit 1); `--disable`/`--only` filters; `--fix` autofix for §8; targets = files / dir / `medaka.toml`-project, **recursive into subdirs** (skips dotdirs). **Open follow-ups:** §3 match-on-computed-value rule (deferred — false-positive-prone); config-file rule toggles; autofix for §6/§7a (not safely auto-fixable as-is); more cross-file rules. |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
-| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
+| **Standard library** | [`STDLIB.md`](docs/stdlib/STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
 | **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ full-prelude (H closed, 2026-06-18 audit); `check --json` multi-file ✅ CLOSED; `medaka doc` ✅ ported to native CLI (single-file, 2026-06-18) |
 
 ---
@@ -1101,9 +1101,9 @@ enumerated in the [Open issues index](#open-issues-index) below.**
 The goal that orders the current phase: **ship a very preliminary public 0.1.0
 preview** — the point where Medaka goes in front of strangers (HN/Reddit-scale).
 The compiler is mature; the remaining distance is **outward-facing surface**.
-Owning doc: **[`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md)** (hub for all
+Owning doc: **[`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md)** (hub for all
 release workstreams); native-distribution technical design + blocker map:
-**[`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md)**.
+**[`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md)**.
 
 **Testable statement:** a stranger goes from a link to a **working, formatted,
 type-checked, running** Medaka program in **under ten minutes**, and **every hole
@@ -1151,7 +1151,7 @@ Three stages, each a gate on the next.
 
 > **Why native matters — the wedge.** Self-hosting + LLVM aren't the end goal;
 > they're what *enables* it. The candidate "killer feature" is **capability-safe
-> effects** (Phase 146 / [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md)): a
+> effects** (Phase 146 / [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md)): a
 > function's type becomes a compiler-verified manifest of what it can do, aimed at
 > **WebAssembly edge / plugin / sandboxed compute** for untrusted, increasingly
 > AI-generated modules. The native (WasmGC) backend is the delivery vehicle for
@@ -1162,7 +1162,7 @@ Three stages, each a gate on the next.
 Stages 0 (prerequisites), 1 (self-host on the interpreter), and 2 (LLVM backend)
 are done — Medaka self-hosts and the native backend compiles it to a reproducing
 fixpoint (see [Current status](#current-status-2026-06-18)). Full per-stage detail
-archived in [`PLAN-ARCHIVE.md` → Archived north star stages 0 to 2](./PLAN-ARCHIVE.md#archived-north-star-stages-0-to-2);
+archived in [`PLAN-ARCHIVE.md` → Archived north star stages 0 to 2](archive/PLAN-ARCHIVE.md#archived-north-star-stages-0-to-2);
 owning docs: `compiler/README.md` (Stage 1), `compiler/STAGE2-DESIGN.md` +
 `compiler/BOOTSTRAP.md` (Stage 2). Forward work is
 [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml).
@@ -1181,7 +1181,7 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
 
 
 **Status: Stage 3 is essentially COMPLETE — see the full item-by-item log in
-[PLAN-ARCHIVE.md → Stage 3 — native-canonical completion log](./PLAN-ARCHIVE.md#stage-3--native-canonical-completion-log-archived-2026-06-14).**
+[PLAN-ARCHIVE.md → Stage 3 — native-canonical completion log](archive/PLAN-ARCHIVE.md#stage-3--native-canonical-completion-log-archived-2026-06-14).**
 The native LLVM backend is canonical (2026-06-12 flip): `make medaka` builds it
 OCaml-free; all PRE-FLIP-GAPS soundness/capability gaps (G1–G9) closed; the full
 TYPECHECK-AUDIT (16 findings — S1·S2·T1·T1b·T2·S3·C1·C2·C3·C6·C7·C8·C9·OBS3·OBS4)
@@ -1222,23 +1222,23 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Open item | Area | Tracked in |
 |-----------|------|-----------|
 | **⚠️ SQLite-dogfood compiler bugs (10 open) — incl. `fmt` CORRUPTING SOURCE + 2 silent build miscompiles** | Compiler / language | [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md). **Self-checking:** `MEDAKA_ROOT=$PWD bash sqlite/findings/verify_compiler_bugs.sh` re-runs every repro and prints OPEN/FIXED — **run it before believing the list.** **P0: `medaka fmt --write` DESTROYS SOURCE** — it rewrites a float literal ≥1e15 into scientific notation that the lexer cannot read back, and `fmt` runs in the **pre-commit hook** (latent: the tree holds no such literal today). P0: partially-applied **constructor** miscompiles (`build` returns a wrong answer, exit 0); cross-module record **update** writes the wrong slot (ditto). P1: multi-module `run` doesn't gate type errors (executes ill-typed code; *exit code is 1 either way*, so exit-code tests miss it); `run` drops buffered stdout on panic; `deriving (Eq)` over an `Array` field can't be built (and `lint` recommends it); `exit` unbound under `run`; `Float` can't round-trip through display (`0.1 + 0.2` prints `0.3`). P2: a Markdown blockquote in a doc comment is run as a doctest → unlocated panic that **silently disabled a whole file's doctests for months**. |
-| **`<Mut>` effect masking (`mut` block) — pure fns can't use a local mutable buffer** | Language capability | [`MUT-SCOPING-DESIGN.md`](./MUT-SCOPING-DESIGN.md) — decision-ready; recommendation + rejected alternative + 3 counterexamples |
-| **`EFFECTS-SEMANTICS.md` §7 mis-classifies `Mut` as "purity tracking"** — falsified on the binary (pure-typed fn returns two answers across a mutation); amend to "writer discipline" | Language / spec | [`MUT-SCOPING-DESIGN.md`](./MUT-SCOPING-DESIGN.md) §2 |
-| **0.1.0 — native binary distribution (mac/linux `medaka build`)** | 0.1.0 release | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) (D0 Linux spike first) |
-| **0.1.0 — playground polished into a front door** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W2; [`PLAYGROUND-DESIGN.md`](./PLAYGROUND-DESIGN.md) |
-| **0.1.0 — Val-authored quickstart / language overview** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W3 (serialization bottleneck — start early) |
-| **0.1.0 — stdlib reference docs (agent-generated via `medaka doc`)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W4 |
-| **0.1.0 — curated public repo (downstream export) + LICENSE + KNOWN-GAPS** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W5/W6/W7 |
-| **0.1.0 — release hygiene (`--version`, release CI matrix, crash→report)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W8 |
-| **0.1.0 — editor extension published (`.vsix`)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W9 |
-| **0.1.0 — fs/net in the tree-walk interpreter (side quest, non-blocking)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §4 |
+| **`<Mut>` effect masking (`mut` block) — pure fns can't use a local mutable buffer** | Language capability | [`MUT-SCOPING-DESIGN.md`](docs/design/MUT-SCOPING-DESIGN.md) — decision-ready; recommendation + rejected alternative + 3 counterexamples |
+| **`EFFECTS-SEMANTICS.md` §7 mis-classifies `Mut` as "purity tracking"** — falsified on the binary (pure-typed fn returns two answers across a mutation); amend to "writer discipline" | Language / spec | [`MUT-SCOPING-DESIGN.md`](docs/design/MUT-SCOPING-DESIGN.md) §2 |
+| **0.1.0 — native binary distribution (mac/linux `medaka build`)** | 0.1.0 release | [`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md) (D0 Linux spike first) |
+| **0.1.0 — playground polished into a front door** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W2; [`PLAYGROUND-DESIGN.md`](archive/design/PLAYGROUND-DESIGN.md) |
+| **0.1.0 — Val-authored quickstart / language overview** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W3 (serialization bottleneck — start early) |
+| **0.1.0 — stdlib reference docs (agent-generated via `medaka doc`)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W4 |
+| **0.1.0 — curated public repo (downstream export) + LICENSE + KNOWN-GAPS** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W5/W6/W7 |
+| **0.1.0 — release hygiene (`--version`, release CI matrix, crash→report)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W8 |
+| **0.1.0 — editor extension published (`.vsix`)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §W9 |
+| **0.1.0 — fs/net in the tree-walk interpreter (side quest, non-blocking)** | 0.1.0 release | [`RELEASE-0.1.0-PLAN.md`](docs/ops/RELEASE-0.1.0-PLAN.md) §4 |
 | **Native TMC parity — ✅ CLOSED 2026-07-13 (TMC-parity arc)** | Native backend / distribution | Both backends now TMC the SAME functions by construction: shared detection in `backend/trmc_analysis.mdk`; LLVM emits `b′` groups by inlining the whole group into the root's single define (no musttail needed — [`compiler/TRMC-DESIGN.md`](./compiler/TRMC-DESIGN.md) §Phase 3); wasm's uniform-ctor gate retired (mixed-ctor TMC both sides); gated by `test/diff_compiler_tmc_parity.sh` (census markers, `check_main` 109 TMC'd fns byte-identical sets). The lexer token spine is O(1) native stack; also fixed a silent guarded-arm TRMC miscompile found during the port. |
-| **Recursion-depth guard — clean `nesting too deep` diagnostic instead of segfault on adversarial deep input** | Compiler / error-quality | [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) §D2 Track 3. Makes "never crash on any input" true (with big-stack); aligns with error-quality workstream. |
+| **Recursion-depth guard — clean `nesting too deep` diagnostic instead of segfault on adversarial deep input** | Compiler / error-quality | [`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md) §D2 Track 3. Makes "never crash on any input" true (with big-stack); aligns with error-quality workstream. |
 | Confidence-gated `lib/` (OCaml) removal — the soak tail | ✅ DONE 2026-06-26 | see top status entry |
-| Manifest emission (`[package.capabilities]` from a verified entry's effect row) | Capability-effects | this file → [wedge sequence](#capability-effects-wedge--near-term-sequence); [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §5a |
-| WS-3b builtin-extern label flip (`getEnv`/`runCommand`, plus FileRead/FileWrite path refinement) | Capability-effects | ✅ DONE 2026-07-01 (`2d010b2`) — see [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
-| WS-5 extern-row assurance (standing discipline) | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](./EFFECTS-CONFORMANCE-ROADMAP.md) |
-| Phase 146b — parameterized effects (`<Fetch "x.com">`, `<KV "ns">`) | Capability-effects | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §6a |
+| Manifest emission (`[package.capabilities]` from a verified entry's effect row) | Capability-effects | this file → [wedge sequence](#capability-effects-wedge--near-term-sequence); [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md) §5a |
+| WS-3b builtin-extern label flip (`getEnv`/`runCommand`, plus FileRead/FileWrite path refinement) | Capability-effects | ✅ DONE 2026-07-01 (`2d010b2`) — see [`EFFECTS-CONFORMANCE-ROADMAP.md`](docs/design/EFFECTS-CONFORMANCE-ROADMAP.md) |
+| WS-5 extern-row assurance (standing discipline) | Capability-effects | [`EFFECTS-CONFORMANCE-ROADMAP.md`](docs/design/EFFECTS-CONFORMANCE-ROADMAP.md) |
+| Phase 146b — parameterized effects (`<Fetch "x.com">`, `<KV "ns">`) | Capability-effects | [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md) §6a |
 | `hashName`/`dictTag` i32-vs-i64 width (layer-17, self-consistent) | WasmGC backend | [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) |
 | `List_andThen`/`flatMap` overflow (layer-18, latent) | WasmGC backend | [`compiler/WASM-SELFHOST-ROADMAP.md`](./compiler/WASM-SELFHOST-ROADMAP.md) |
 | `wasm-opt` perf pass (eventual) | WasmGC backend | [`compiler/WASMGC-DESIGN.md`](./compiler/WASMGC-DESIGN.md) §9 |
@@ -1257,8 +1257,8 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Point-free constrained binding (`f = g identity`) mis-dispatches return-pos `pure` | Compiler / language | ✅ DONE (2026-06-25, `bf7243c`) — CDict-spine eta-saturation; see [Compiler / language](#compiler--language) |
 | Per-method-constraint dict conflated w/ dispatch type's own instance — blocked `Traversable` interface | Compiler / language | ✅ DONE (2026-06-25, `104c69a` + `b5ae3a2`) — `Traversable t` shipped; see [Compiler / language](#compiler--language) |
 | `sequence` only dispatches per-impl; default-method form misdispatches | Compiler / language | ✅ DONE (2026-06-26, `f333125`) — `sequence` is now a `Traversable` default via universal default-method specialization; see [Compiler / language](#compiler--language) |
-| Generic prelude free-fn over a typeclass with generic/primitive receiver fails `build` (slice-7) — DEFERRED (zero callers; cross-cutting A+B; = ARGSTAMP-UNIFY irreducible residual) | Compiler / language | [`GAP3-SLICE7-DESIGN.md`](./GAP3-SLICE7-DESIGN.md); this file → [Compiler / language](#compiler--language) |
-| Ambiguous return-position interface constraint silently mis-resolved (`run≠build`) | Compiler / language | ✅ DONE (2026-06-26, `d6e59aa`) — typecheck rejects ambiguous constraints; see [Compiler / language](#compiler--language) + [`RETPOS-DISPATCH-DESIGN.md`](./RETPOS-DISPATCH-DESIGN.md) |
+| Generic prelude free-fn over a typeclass with generic/primitive receiver fails `build` (slice-7) — DEFERRED (zero callers; cross-cutting A+B; = ARGSTAMP-UNIFY irreducible residual) | Compiler / language | [`GAP3-SLICE7-DESIGN.md`](docs/design/GAP3-SLICE7-DESIGN.md); this file → [Compiler / language](#compiler--language) |
+| Ambiguous return-position interface constraint silently mis-resolved (`run≠build`) | Compiler / language | ✅ DONE (2026-06-26, `d6e59aa`) — typecheck rejects ambiguous constraints; see [Compiler / language](#compiler--language) + [`RETPOS-DISPATCH-DESIGN.md`](archive/design/RETPOS-DISPATCH-DESIGN.md) |
 | Bug 1 — comparison OPERATORS (`==`/`<`/…) on a bare constraint tyvar mis-route (`RNone`→arg-tag) → `run≠build` wrong value (HashSet/HashMap of non-primitives silently wrong) | Compiler / language | ✅ DONE (2026-06-27, `7450cf6`) — route enclosing fn's forwarded class dict via `enclDictVarOf`; memory `project_comparison_operator_forwarded_dict_bug` |
 | Bug 2 — partial/escaping typeclass-method closure doesn't capture forwarded dict → `run≠build` SIGSEGV/empty (even `Int`) | Compiler / language | ✅ DONE (2026-06-27, `95ee25b`) — `emitMethodPap` + `defArityOf` define-arity table; memory `project_partial_method_closure_dict_capture_bug` |
 | Bug 3 — String `.[]` index/slice sugar array-indexes a String (`CIndex`/`CSlice` type-lost) → `run≠build` wrong Char/oob | Compiler / language | ✅ DONE (2026-06-27, `493a5eb` String + `b9739ee` List) — new `CStringIndex`/`CStringSlice` + `CListIndex`/`CListSlice` nodes; memory `project_string_index_slice_emit_bug` |
@@ -1267,7 +1267,7 @@ the linked location holds live detail. (Keep this table in sync when an item ope
 | Phase 149 (proposed) — record rest-capture + construction spread sugar | Compiler / language | this file → [Compiler / language](#compiler--language) |
 | D7 (latent, verified), foldMap RNone emit-site (latent, verified), helper dedup, deferred GC/TRMC seams | Self-host internals | this file → [Self-host … open items](#self-host-typecheck--dispatch--runtime--known-open-items) |
 | Leading-`|` `data` decls (native-only by design; now the sole ground truth since `lib/` removed) | Parser | this file → [Known parser gaps](#known-parser-gaps-compiler-parsermdk) |
-| `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint string indexing; effect-label refinement | Stdlib | [`STDLIB.md`](./STDLIB.md) §"Remaining work" / §"Label refinement roadmap" |
+| `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint string indexing; effect-label refinement | Stdlib | [`STDLIB.md`](docs/stdlib/STDLIB.md) §"Remaining work" / §"Label refinement roadmap" |
 | Diagnostic-position follow-ups (parse-error column accuracy; pattern-position spans; guard-exhaustiveness + multi-module match warnings still `None`) | Tooling / diagnostics | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10); [`compiler/DIAGNOSTICS-SURFACING-PLAN.md`](./compiler/DIAGNOSTICS-SURFACING-PLAN.md) |
 | Auxiliary port: `coverage.ml` + `bench_runner.ml` (port last) | Tooling | this file → [Stage 4](#stage-4--full-tooling-port--native-medaka-retire-ocaml-decided-2026-06-10) |
 | Structured type-error ADT (replace string messages; enables LSP error codes/quickfixes) | Parked ideas / diagnostics | this file → "Future idea (parked): structured type-error ADT"; [`compiler/DIAGNOSTICS-SURFACING-PLAN.md`](./compiler/DIAGNOSTICS-SURFACING-PLAN.md) |
@@ -1284,7 +1284,7 @@ differential-tested byte-identical vs OCaml, and the **Phase-C native-CLI capsto
 (`compiler/driver/medaka_cli.mdk`, Slices 0–4) is done: the native `medaka` binary does
 all 8 subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`repl`/`lsp`) with no OCaml at
 runtime. Full per-tool / per-slice completion log archived in
-[PLAN-ARCHIVE.md → Stage 4 — tooling-port completion log](./PLAN-ARCHIVE.md#stage-4--tooling-port-completion-log-archived-2026-06-14).
+[PLAN-ARCHIVE.md → Stage 4 — tooling-port completion log](archive/PLAN-ARCHIVE.md#stage-4--tooling-port-completion-log-archived-2026-06-14).
 
 **Remaining (minor, not retirement-blocking):**
 - **Diagnostics surfacing layer** — ✅ **substantially DONE (2026-06-21, WS-4/F6,
@@ -1343,7 +1343,7 @@ printer/`fmt` machinery to edit in place, comment-preserving).
 LSP (B.10.x), `parseWithPositions`/`ELoc` for the edit site, and `fmt`/printer for the rewrite.
 
 **Why parked:** nice-to-have ergonomics, not on the retirement path. Lands naturally AFTER the
-LSP code-action infrastructure exists. Cross-ref [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md).
+LSP code-action infrastructure exists. Cross-ref [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md).
 
 ### Future idea (parked, not scheduled): stack-performance recursion lint
 
@@ -1398,10 +1398,10 @@ same column can never be `foo bar` today. Work is:
 
 ### Capability-effects wedge — near-term sequence
 
-**Owning roadmap:** [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (language
-work) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product/runtime).
+**Owning roadmap:** [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md) §9 (language
+work) + [`CAPABILITY-PLATFORM.md`](docs/design/CAPABILITY-PLATFORM.md) §10 (product/runtime).
 Architecture context: the "Targets & the WASM soft-pivot" callout above. Effect
-labels also drive [`STDLIB.md`](./STDLIB.md) §"Label refinement roadmap".
+labels also drive [`STDLIB.md`](docs/stdlib/STDLIB.md) §"Label refinement roadmap".
 
 **Done (foundation):** effect soundness — propagation/inference, higher-order `<e>`
 composition, binding-boundary escape, laundering soundness — gap 1, reference +
@@ -1440,7 +1440,7 @@ Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 
 The D0–D4 dispatch-staging + native-extern-catalog build log (how the spike
 became a self-hosting native compiler) is archived in
-[`PLAN-ARCHIVE.md` → Archived native backend build log](./PLAN-ARCHIVE.md#archived-native-backend-build-log).
+[`PLAN-ARCHIVE.md` → Archived native backend build log](archive/PLAN-ARCHIVE.md#archived-native-backend-build-log).
 Current native-backend state + residual gaps: `compiler/BOOTSTRAP.md`,
 `compiler/EMITTER-GAPS.md`. Forward work:
 [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml).
@@ -1596,7 +1596,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 - **D9 — `@Impl` named-instance-selection hint — ✅ DONE (2026-06-23, `45d52f7`, native).**
   Was a REAL observable divergence (the audit's "→VUnit" symptom had shifted to native
   `check` rejecting `combine @Additive` as `Unbound variable: @Additive`; oracle returned
-  `7`/`12`). Ported to native per [`AT-IMPL-PORT-DESIGN.md`](./AT-IMPL-PORT-DESIGN.md): the
+  `7`/`12`). Ported to native per [`AT-IMPL-PORT-DESIGN.md`](docs/design/AT-IMPL-PORT-DESIGN.md): the
   feature was ~80% present (parser/resolve-exemption/named-impl-key-storage/`VTypedImpl`
   value-rep done); added the typecheck `EApp(f, EVar "@hint")` arm + `currentImplHintRef`,
   stamped `RKey` with the named impl key (reuses C7 narrow-by-key — no new value variant),
@@ -1662,7 +1662,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   `33972aa`, seed re-minted `6a1a67e`; native-only).** The loader keyed modules by the dotted module-id
   STRING, so the SAME file reached via two import spellings (a dep's rebased `import lib.byteparser` vs the
   dep-name `import byteparser.lib.byteparser`) got two modIds → loaded TWICE → `conflicting impl` in
-  `checkCoherence`. **Fix (loader-contained, design [`F1B-MODULE-IDENTITY-DESIGN.md`](./F1B-MODULE-IDENTITY-DESIGN.md)):**
+  `checkCoherence`. **Fix (loader-contained, design [`F1B-MODULE-IDENTITY-DESIGN.md`](archive/design/F1B-MODULE-IDENTITY-DESIGN.md)):**
   the loader now rewrites every `DUse` to ONE canonical dep-name-prefixed modId derived from WHERE the
   import resolves (`canonicalModId`/`revLookupRoot`/`rewriteUsePath`/`rewriteDecls` in
   `compiler/driver/loader.mdk`, applied in `visitMod`/`visitModF`). Both spellings collapse to one string
@@ -1801,7 +1801,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   owns no constructors (slice 7: primitive receiver carries no cell tag)`. The `sequence` work
   DODGED this by specializing to concrete receivers; it only bites a future generic prelude free-fn
   over a typeclass with a generic/primitive receiver — **no such stdlib helper exists today (zero
-  current callers).** Authoritative design + reproduction: [`GAP3-SLICE7-DESIGN.md`](./GAP3-SLICE7-DESIGN.md).
+  current callers).** Authoritative design + reproduction: [`GAP3-SLICE7-DESIGN.md`](docs/design/GAP3-SLICE7-DESIGN.md).
   - **The filed framing was partly wrong (corrected by the design pass).** Slice-7 fires on the
     **caller's arg-position `debug`**, NOT the inner `traverse`: `debug`'s result mono is an unsolved
     tyvar so its route stays `RNone`, and the emitter arg-tag-dispatches over `debug`'s primitive impl
@@ -1825,7 +1825,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
 
 - **Ambiguous return-position interface constraint silently mis-resolved (`run ≠ build`) —
   ✅ DONE (2026-06-26, `d6e59aa`, seed re-minted).** Filed as "return-position-only method
-  mis-dispatches"; the diagnose-first design pass ([`RETPOS-DISPATCH-DESIGN.md`](./RETPOS-DISPATCH-DESIGN.md))
+  mis-dispatches"; the diagnose-first design pass ([`RETPOS-DISPATCH-DESIGN.md`](archive/design/RETPOS-DISPATCH-DESIGN.md))
   **overturned that framing: it was type AMBIGUITY, not dict mis-threading.** In
   `f x = reveal (make (reveal x))` (`f : Thing a => a -> Int`), `make`'s result tyvar is never
   tied to `f`'s constraint var — `f` infers as `a -> Int` with the tyvar appearing nowhere (the
@@ -1858,7 +1858,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   Clean on the 3 risky interactions (Bug-C method+standalone single-module shadow still routes the
   standalone; local-binding shadow wins; disjoint explicit groups). Fix landed in
   `compiler/frontend/resolve.mdk` (the frozen OCaml oracle was also patched for gate parity, and is now removed). Design:
-  [`MAP-SET-AMBIGUITY-DESIGN.md`](./MAP-SET-AMBIGUITY-DESIGN.md). Gates: `diff_compiler_resolve` 16/0,
+  [`MAP-SET-AMBIGUITY-DESIGN.md`](archive/design/MAP-SET-AMBIGUITY-DESIGN.md). Gates: `diff_compiler_resolve` 16/0,
   `_resolve_modules` 12/0 (incl. 2 new `test/resolve_module_fixtures/` + corpus no-false-positives),
   check/typecheck differentials 0-failing, fixpoint C3a/C3b YES (orchestrator-re-verified). **Note:**
   the surfacing of this was a multi-step soak find — see the Bug-C / container-literal entries below;
@@ -1914,7 +1914,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   the compiler/native compiler; `x : Float; x = 0`, `1.0 + 2`, `g : Float -> Float; g x = x + 1`,
   and **polymorphic literal-bearing fns** (`inc x = x + 1` applied to `2.5` → `3.5`) all typecheck,
   `run`, AND `build` correctly (oracle == `medaka run` == `medaka build`). Full design + locked
-  decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). **Landing log:** Stages 0-2 OCaml (`eac278b`);
+  decisions: [`NUMLIT-DESIGN.md`](archive/design/NUMLIT-DESIGN.md). **Landing log:** Stages 0-2 OCaml (`eac278b`);
   Stages 3-4 compiler+native (`7424b64`); **soundness fix** OCaml (`e7031e6`) + compiler (`183b7b4`);
   **emitter Gap E/C4 closure** (`a8b95d7`). Mechanism: a transparent `ENumLit` AST node (renders
   identically to `ELit (LInt n)` so sexp/round-trip unaffected) carries a `Num` obligation; a
@@ -1965,7 +1965,7 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   Skill: cross-cutting → **add-language-feature**. **Note:** deliberately revisits
   the *row-polymorphism* rejection in PLAN-ARCHIVE §8, narrowed to *effect* rows.
   - **Full design, per-piece status, and the implementation log live in
-    [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §5a.** The near-term sequence
+    [`CAPABILITY-EFFECTS.md`](docs/design/CAPABILITY-EFFECTS.md) §5a.** The near-term sequence
     is the [Capability-effects wedge](#capability-effects-wedge--near-term-sequence)
     section above.
   - **Done:** gap 1 (soundness — propagation, laundering, directional subsumption),
@@ -2178,7 +2178,7 @@ non-package-manager gaps:
 
 ### Standard library (Phase 19)
 
-**Owning roadmap:** [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label
+**Owning roadmap:** [`STDLIB.md`](docs/stdlib/STDLIB.md) §"Remaining work" + §"Label
 refinement roadmap" (the effect-label half is shared with the capability wedge).
 
 Core modules 1–9 are **complete** (`core`/`list`/`array`/`string` + `map`/`set`,
