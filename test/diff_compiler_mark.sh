@@ -7,8 +7,8 @@
 # Method_marker rewrites interface-method / constrained-fn EVar occurrences to
 # EMethodRef / EDictApp (refs left unfilled until typecheck).  The reference
 # --mark dump renders them as (EMethodRef "name") / (EDictApp "name"); the
-# compiler side needs those two nodes in ast.mdk + sexp.mdk.  FLOAT literal text
-# is normalized away (OCaml %g vs floatToString), like the other harnesses.
+# compiler side needs those two nodes in ast.mdk + sexp.mdk.  Compared LITERALLY
+# against the golden — no float normalization (one deterministic renderer now).
 #
 # Usage:  sh test/diff_compiler_mark.sh [file.mdk ...]
 #         (default corpus: stdlib + diff_fixtures + parse_fixtures + compiler)
@@ -23,12 +23,10 @@ RUN="$ROOT/test/bin/mark_main"
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 fi
 
 pass=0
@@ -38,8 +36,8 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.mark.golden"
   [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh --frozen mark)"; fail=$((fail+1)); continue; }
-  expected="$(norm < "$golden")"
-  actual="$("$RUN" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | strip_unit | norm)"
+  expected="$(cat "$golden")"
+  actual="$("$RUN" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

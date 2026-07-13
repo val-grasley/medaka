@@ -39,10 +39,17 @@
 #     reference eval by test/capture_goldens.sh while
 #     OCaml was trusted.  The gate strips the native runtime's trailing "()" from
 #     the self-hosted eval output before comparing.
-#   * LEG A iterates flat module names (ast lexer ...) which no longer exist under
-#     the folder layout (frontend/ast.mdk, ...), so it checks nothing today — it
-#     is preserved verbatim (sans OCaml) as a no-op; its reference would be a
-#     per-module golden under test/selfproc_goldens/legA/.
+#   * LEG A (fixed 2026-07-13): used to iterate flat module names (ast lexer ...)
+#     that no longer exist under the folder layout, so `[ -f "$SHDIR/$m.mdk" ]`
+#     silently `continue`d for all 12 modules and the leg checked nothing — a
+#     silent regression from the 2026-06-12 Phase-A subfolder move (1c0cebfd),
+#     which updated the files but not this lookup. MODULES now holds dotted mids
+#     (frontend.ast, ...) matching the `## MODULE <mid>` marker + `import
+#     frontend.ast` style; the per-module lookup maps mid -> subfolder path
+#     (tr '.' '/'). Reference: per-module goldens under
+#     test/selfproc_goldens/legA/, captured from the native self-hosted
+#     front-end itself (no OCaml oracle left) via
+#     `sh test/capture_goldens.sh --frozen selfproc_legA`.
 #
 # Usage:  sh test/diff_compiler_selfproc.sh
 # Exit:   0 iff every module's front-end output matches AND the eval leg matches.
@@ -82,7 +89,13 @@ pass=0; fail=0
 
 # ── LEG A: front-end self-processing (typecheck closure) ───────────────────
 echo "== LEG A: self-hosted front-end typechecks its own source =="
-MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
+# mid = dotted module id (post-reorg, matches `import frontend.ast.{…}` style and
+# the `## MODULE <mid>` marker emitted by checkModulesAllLines — see
+# compiler/types/typecheck.mdk). Bare flat names (pre-2026-06-12 Phase-A reorg)
+# no longer exist on disk or in the dump, which is why this leg silently checked
+# nothing for a while (`$SHDIR/$m.mdk` never matched) — fixed by mapping mid ->
+# subfolder path below.
+MODULES="frontend.ast frontend.lexer frontend.parser ir.sexp frontend.desugar frontend.marker types.annotate frontend.resolve frontend.exhaust driver.loader types.typecheck eval.eval tools.check"
 
 # One full-closure run emits every module's schemes (sections marked
 # `## MODULE <mid>`).  all_modules_entry imports one name from each module so the
@@ -95,13 +108,14 @@ section() {  # section <dumpfile> <mid>
 }
 
 for m in $MODULES; do
-  [ -f "$SHDIR/$m.mdk" ] || continue
+  mpath="$(printf '%s' "$m" | tr '.' '/')"
+  [ -f "$SHDIR/$mpath.mdk" ] || continue
   if ! grep -q "^## MODULE $m\$" "$TMP/all.txt"; then
     fail=$((fail+1)); printf 'FAIL %-10s (not covered by aggregate entry closure)\n' "$m"; continue
   fi
   golden="$LEGA_GOLD/$m.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %-10s (no golden — run: sh test/capture_goldens.sh selfproc)\n' "$m"; continue
+    fail=$((fail+1)); printf 'FAIL %-10s (no golden — run: sh test/capture_goldens.sh --frozen selfproc_legA)\n' "$m"; continue
   fi
   self="$(section "$TMP/all.txt" "$m" | LC_ALL=C sort)"
   ref="$(LC_ALL=C sort "$golden")"

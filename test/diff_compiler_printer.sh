@@ -10,9 +10,9 @@
 # lib/printer.ml's layout, precedence, and spelling exactly.
 #
 # Runs over test/parse_fixtures/ — the same small corpus diff_compiler_parse.sh
-# uses.  FLOAT literal text would be normalized away (OCaml %g vs floatToString),
-# like the parser/lexer harnesses, though no fixture currently contains a float
-# literal.
+# uses.  Compared LITERALLY, including float text: golden and "actual" both come
+# from the same native test/bin/printer_main (test/capture_goldens.sh --frozen
+# printer), so there is no cross-engine formatting skew to normalize away.
 #
 # Usage:  sh test/diff_compiler_printer.sh [file.mdk ...]
 # Exit:   0 if every file's reprint matches, else 1.
@@ -28,10 +28,6 @@ RUN="$ROOT/test/bin/printer_main"
 # Printer output ends in a newline, so the "()" is a sole final line here.
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-# Normalize float-literal text (OCaml %g vs compiler floatToString) so a float
-# literal does not spuriously fail; no fixture exercises this today.
-norm() { sed -E 's/-?[0-9]+\.[0-9eE+-]+/<F>/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
@@ -45,8 +41,8 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.printer.golden"
   [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh --frozen printer)"; fail=$((fail+1)); continue; }
-  expected="$(norm < "$golden")"
-  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
+  expected="$(cat "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

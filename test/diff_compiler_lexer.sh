@@ -24,9 +24,16 @@ FIXDIR="$ROOT/test/diff_fixtures"
 # sole "()" line.  The OCaml-captured golden has none; drop it.
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-# Normalize float-token text: collapse "FLOAT <value>" → "FLOAT" so that host
-# float-formatting differences (OCaml %g "2" vs native "2.0") don't cause false
-# failures.  This mirrors the normalization in diff_compiler_lex_files.sh.
+# STILL LOAD-BEARING (verified 2026-07-13, unlike the sibling matcher in
+# diff_compiler_lex_files.sh which was proven dead and removed): these
+# test/diff_fixtures/*.golden TOKENS sections were captured by the OCaml
+# `Lexer.tokenize_string` (test/thorough/gen_golden.ml, removed 2026-06-26) and
+# have never been re-captured natively, so they still carry OCaml's `%g` float
+# rendering (`FLOAT 1`) while the native `floatToString` renders `FLOAT 1.0`.
+# Confirmed via direct diff: golden says "FLOAT 1", native ./test/bin/lex_main
+# says "FLOAT 1.0" for the same source (test/diff_fixtures/numlit_sum_float.mdk).
+# Collapse "FLOAT <value>" → "FLOAT" so that real cross-engine float-formatting
+# skew doesn't cause a false failure; any other diff is a real divergence.
 norm() { sed 's/^FLOAT .*/FLOAT/'; }
 
 # Extract the lines between '=== TOKENS ===' and the next '=== ' header.
