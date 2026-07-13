@@ -56,6 +56,20 @@ was attempted. Two consequences:
 - **A landing often closes adjacent gaps.** After a merge, re-verify the broader set
   before spawning the next agent — universal mangling alone closed three separate parked
   gaps + mooted a fourth.
+- **"Fixed" can be TRUE and MISLEADING — a one-backend fix is a half fix.** This project has
+  two backends (LLVM + WasmGC). A compiler fix for a partially-applied-constructor miscompile
+  landed in the LLVM emitter and **never reached the WasmGC one**. My bug-verifier said FIXED
+  (correctly!), so I reverted the library's workaround, re-verified under native `build` — all
+  green — and was one command from merging a library that **silently no longer compiled to
+  wasm**. Only the wasm tandem gate caught it. **When a fix lands, re-verify it on every
+  target/config the code actually ships to, not just the one the repro used.**
+- **A spot-check is not a diff — and an agent disproving YOU is a success.** I "verified" that
+  overflow-page reads worked by sampling a few indices of a patterned payload. They matched. The
+  read path was in fact **silently corrupting data** — my pattern used 1000-char blocks, so the
+  4-byte payload shift landed inside the same block and every sample still matched. An agent's
+  byte-level `cmp` caught it (diverged at byte 1817) and overturned a "verified fact" I had
+  already told the user. **For data fidelity, compare bytes, not samples.** And bake
+  "disprove my premises" into prompts — it fired twice this session, both times against me.
 
 Run this same discipline as a **verified audit before any milestone**: fan out read-only
 agents by domain that REPRODUCE each claimed item (don't recite the doc) and report what
@@ -147,6 +161,34 @@ to the decisive checks:
 
 ---
 
+## Hand-offs that don't rot — make the bug list EXECUTABLE
+
+"The gap docs lie" (above) says *reproduce before you trust them*. That is the diagnosis. This is
+the **remedy**, and it worked so well this session it should be the default whenever you hand a
+list of defects to someone else (another orchestrator, a future session, a human).
+
+**Do not hand over prose. Hand over a script.**
+
+- **Encode every verified repro in a status script** (`verify_<topic>.sh`) that re-runs each one
+  against the current binary and prints **OPEN / FIXED** per item. Status report, **not a gate** —
+  always exit 0, so nobody wires it into CI and starts ignoring it. Put a
+  **"⚠️ DO NOT TRUST THIS LIST — RUN THE SCRIPT"** banner at the top of the companion doc.
+  Payoff: while my branch was in flight, another orchestrator fixed one of my P0s. The script
+  detected it **with zero bookkeeping from either of us.** A static list would have been wrong
+  within hours.
+- **Tag every workaround in the code with a greppable marker** — `WORKAROUND(B2): … revert when
+  B2 closes` — and have the script **print the marker sites beneath its OPEN/FIXED report.** Then
+  the same command that tells you a bug is fixed tells you exactly which lines to delete.
+  Otherwise workarounds quietly become permanent architecture long after the bug is gone. (We
+  were carrying 7 workarounds for 4 bugs; one got reverted the same day its bug closed.)
+- **Separate what YOU reproduced from what an agent claimed.** Mark them differently
+  (✅ VERIFIED / 🟡 REPORTED). Agent root-causes were wrong often enough to matter, and a
+  confident-but-wrong entry poisons the next person's search.
+- **Distinguish the diagnosis from the inference.** An agent reported "we need `runST`". The
+  *observation* (two authors hit the same wall, with measured cost) was gold; the *conclusion* was
+  premature — the real defect was upstream, in what the effect actually meant. Log what hurt, not
+  what you'd build.
+
 ## Choosing the model
 
 - **Sonnet** — surgical, scoped, additive, read-only, or mechanical-with-a-clear-
@@ -164,6 +206,13 @@ to the decisive checks:
 - Parallelize only **non-overlapping files**. Never put two agents on one file;
   never pile agents onto the single hottest file. Sequential when they share a file
   (each must verify-green + merge before the next branches, to avoid conflicts).
+- **The MERGE is where integration bugs live — verify the merged result, not the branches.**
+  Two agents on genuinely disjoint files both reported green and git merged them with **zero
+  conflicts** — and the merged tree had three real defects neither could have seen: git happily
+  auto-merged agent A's `deriving (Eq)` on top of agent B's *deliberately hand-written* `impl Eq`
+  (→ overlapping impls), and A's exhaustive `match` predated the new ADT constructor B added
+  (→ latent panic). **"No conflict" means textually compatible, not semantically compatible.**
+  Always run the full gate suite on the merged tree, never just trust two green branches.
 - **Read-only audits parallelize freely** — zero merge risk; good use of otherwise-
   idle time while a write agent runs. For a broad review (a milestone gate), **fan out by
   domain** (typecheck / emitter / parser / error-path) — one consolidated agent is shallower.
@@ -175,6 +224,30 @@ to the decisive checks:
   work doesn't contend, build-heavy work does.
 
 ---
+
+## Dogfooding as a bug-finding strategy (when the goal is "find compiler bugs")
+
+Building a real library in the language is the highest-yield bug finder we have — but **only if
+you choose the work deliberately.** Two levers:
+
+- **Pick work that stresses NEW language surface, not more of the same shape.** The six SQL query
+  features before this session found **zero** compiler bugs — not luck: they were all the same
+  shape (add an ADT node, add an evaluator arm, add an oracle). The moment we did work with a
+  *different* shape — a parser built on a user-defined monad, byte-chain manipulation, a
+  cross-project dependency — bugs fell out immediately. **Before scoping a dogfood task, ask:
+  "what part of the language does this exercise that nothing else has?"** If the answer is
+  "nothing," it will grow the library and find nothing.
+- **Know which execution path your tests actually cover.** Every doctest in this repo runs under
+  the **interpreter**. So a bug that exists only in *compiled* code is invisible to the entire
+  suite: the SQL parser shipped **32/32 green doctests** while *every arithmetic operator in its
+  grammar* was silently miscompiled in the native binary. **Tell agents explicitly that an
+  interpreter-green result proves nothing, and require every gate to run against a real `build`.**
+  (The systemic fix — a differential `run`-vs-`build` gate over the existing doctest corpus —
+  would have caught 4 of this session's 10 bugs for free. Recommended.)
+- **Feed the system real input, not hand-built structures.** Every prior oracle constructed its
+  query as an ADT by hand; none ever put a `NOT` over a nullable column. The first time we fed
+  actual SQL *text* through the same engine, it exposed a wrong-answer bug (3-valued logic
+  collapsed to 2-valued) that had been sitting there the whole time.
 
 ## Principles (this session's keepers)
 
@@ -206,6 +279,18 @@ thing. The pattern that worked:
    recommends the mechanism, maps the touchpoints, and returns a **decision-ready design
    with an explicit "design forks (need a human decision)" section.** Persist it as a
    `*-DESIGN.md` doc (the implementation agents share one spec; it's also the future record).
+   Two rules learned the hard way on a language-design question this session:
+   - **Ask "does an existing spec already answer this?" FIRST, before reasoning from principles.**
+     I was about to write a design doc from scratch; the reviewer found the question *was* already
+     answered in a spec I hadn't read — and, better, that **the implementation contradicted the
+     spec**. That reframed the whole problem (the defect was in what the effect *meant*, not in
+     the feature we thought was missing). One `grep` would have saved an hour of theorising.
+   - **Hand the reviewer your hypothesis and tell it to BREAK it — an independent model is worth
+     more than a second opinion that agrees.** I proposed a soundness argument for a new construct
+     and asked for it to be attacked. It was demolished three ways, and I reproduced all three
+     counterexamples on the binary. Ship the design **with the rejected alternative and the
+     counterexamples that kill it** — it is the proposal the next person will reach for, and it
+     looks right until you try to break it.
 2. **Surface the forks to the user**, lock scope (e.g. "do (a), keep (b) a clean future
    extension"), and write the locked scope into the design doc.
 3. **Staged implementation agents** — one per sub-part, ordered by ascending risk, each
@@ -281,6 +366,15 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   has shifted) → reproduce-on-current-main *before* spawning. See "The gap docs lie."
 - Stale worktree: a long-lived orchestrator worktree drifts behind local main →
   `git merge main` it before relying on its state.
+- **⚠️ A GATE THAT CAN SILENTLY NO-OP WILL. "Green" is not the same as "ran".** Three separate
+  instances in one session: (1) every wasm gate shells out to `wasm-tools`, which **was not
+  installed** — so each one printed `skipping` and **exited 0**. The suite reported green while
+  running *nothing*; the WasmGC tandem gate had never once executed on this machine (this was the
+  standing "1 skip" everyone read past). (2) `sqlite3`, the differential oracle for 18 gates, was
+  also absent. (3) Two oracle scripts had **never been able to pass** — each `mv`'d a binary onto
+  itself and died before running a single assertion. **At session start, prove your gates actually
+  execute: check the tool deps exist, and look at assertion COUNTS, not exit codes.** A gate whose
+  failure mode is "exit 0" is worse than no gate, because it manufactures confidence.
 - **Session start:** `git worktree list` + `ps` — check for other live sessions, orphan
   gate processes, and accumulated stale worktrees (they pile up fast; prune the merged ones,
   preserving your own + any running agent's + branches with unmerged commits).
