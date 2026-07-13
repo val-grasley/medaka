@@ -1,0 +1,1207 @@
+abstractFieldMsg : String -> String -> String
+abstractRecordTypesRef : Ref (List String)
+activeDictVarForEncl : Mono -> String -> Option String
+activeDictVarOf : Mono -> Option String
+activeDictVarOfEncl : Mono -> String -> <Mut> Option String
+activeDictVars : Ref (List (Int, String))
+addCtor : TcEnv -> String -> Scheme -> TcEnv
+addVariants : TcEnv -> List (String, Mono) -> List (String, Ref Effvar) -> List Int -> List Int -> Mono -> List Variant -> <Mut> TcEnv
+aliasArityMsg : String -> Int -> Int -> String
+aliasDfsVisit : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> String -> <Mut> Unit
+aliasDfsVisitAll : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
+aliasDfsVisitNeighbors : List (String, List String) -> Ref (List String) -> Ref (List String) -> Ref (List String) -> List String -> <Mut> Unit
+aliasTableRef : Ref (List (String, (List String, Ty)))
+alignedMethodConstraintIds : String -> List (Int, Mono) -> <Mut> Option (List Int)
+allCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
+allConcreteHeads : List Mono -> Bool
+allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
+allEVars : Expr -> List String
+allHeadArgsMatch : List (Ty, Mono) -> <Mut> Bool
+allIfaceMethodNames : List Decl -> List String
+allInRange : List Int -> Int -> Bool
+allList : (a -> Bool) -> List a -> Bool
+allModuleLines : List (String, List (String, Scheme)) -> <Mut> List String
+alpha : List (String, Expr) -> Expr -> KP
+alphaArms : List (String, Expr) -> Option String -> List Arm -> KP
+alphaCollectBinds : List LetBind -> List (String, Expr) -> List (String, Expr)
+alphaLeftPrefix : KP -> KP
+ambiguousFieldMsg : String -> List String -> String
+ambiguousImplMsg : String -> String
+annotTooGeneralMsg : Ty -> String
+anyArgMentions : List String -> List Ty -> Bool
+anyDepReaches : List String -> List String -> String -> List (String, List Decl) -> Bool
+anyHoleAtom : List Atom -> Bool
+anyIdPinned : List Int -> List (Int, Mono) -> Bool
+anyIn : List Int -> List Int -> Bool
+anyMember : List String -> List String -> Bool
+appArgLoc : Expr -> Option Loc
+appFallback : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> <Mut> Mono
+appSpineArgCount : Expr -> Int
+appSpineName : Expr -> Option String
+appendOp : Mono -> Mono -> <Mut> Mono
+applyParams : Mono -> List Mono -> Mono
+argDispatchIdxRef : Ref (List (String, Int))
+argDispatchIndices : List Decl -> List (String, Int)
+argDispatchOf : String -> <Mut> Option Int
+argDispatchOfDecl : Decl -> List (String, Int)
+argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
+argImplDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+argImplDictRoutesForEncl : List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argImplReqRoutes : List ImplEntry -> String -> List (String, Mono) -> List Require -> <Mut> List Route
+argImplRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+argImplRequiresRoutesRecEncl : List ImplEntry -> String -> String -> String -> Mono -> <Mut> List Route
+argLitFits : Expr -> Mono -> <Mut> Bool
+argMentions : List String -> Ty -> Bool
+argReqRoute : List ImplEntry -> String -> String -> List (String, Mono) -> List Ty -> <Mut> Route
+argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
+armDictSites : Arm -> List (Ref (List Route))
+armEVars : Arm -> List String
+armIsUnguarded : List Guard -> Bool
+armSites : Arm -> List (Ref Route)
+arrowsWithLastEffect : List Mono -> EffRow -> Mono -> <Mut> Mono
+assignName : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
+astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
+astTypeFreshTbl : Ty -> <Mut> (Mono, List (String, Mono))
+atomInsert : Atom -> List Atom -> List Atom
+atomLabel : Atom -> String
+atomOfLabel : String -> Atom
+atomOfWritten : (String, Option String) -> Atom
+atomParam : Atom -> Param
+atomsDiff : List Atom -> List Atom -> List Atom
+atomsEscape : List Atom -> List Atom -> List Atom
+atomsNorm : List Atom -> List Atom
+atomsNormGo : List Atom -> List Atom -> List Atom
+atomsOfWritten : List (String, Option String) -> List Atom
+atomsUnion : List Atom -> List Atom -> List Atom
+attachEntryDiag : (String, String, Option Loc) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+attributeMethodModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
+attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
+attributeModuleArrIfaces : String -> List Decl -> List (String, List String) -> List ((String, String), List String)
+augmentWithParams : List (String, Mono) -> List Ty -> List Mono -> List (String, Mono)
+axisSub : List (String, Param) -> (String, Param) -> Bool
+axisUnion : List (String, Param) -> List (String, Param) -> List String
+bestAlignedEntry : List (Int, Mono) -> List (String, List Int) -> Int -> Option (List Int) -> Option (List Int)
+bestFieldCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
+bindOutsideDoMsg : String
+bindRecPatFieldsFresh : TcEnv -> List RecPatField -> <Mut> List (String, Scheme)
+bindVar : Ref Tyvar -> Mono -> <Mut> Unit
+binopBuiltinHead : String -> String -> Bool
+binopDictVarOf : String -> Mono -> Bool -> String -> <Mut> Option String
+binopMethod : String -> Option String
+binopMethodApp : String -> Expr -> Expr -> Ref Route -> Expr
+binopPrimitiveHead : String -> Bool
+binopRouteSplit : Route -> (Route, List Route)
+binopSpanLoc : Expr -> Expr -> Option Loc
+blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
+blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv
+bodyRDictNames : Expr -> List String
+boolOp : Mono -> Mono -> <Mut> Mono
+boundTvarId : List Int -> Mono -> List Int
+buildAdj : List String -> Map String Unit -> Map String (List (List Pat, Expr)) -> Map String (List String) -> Map String (List String)
+buildAliasGraphEntry : List String -> (String, (List String, Ty)) -> (String, List String)
+buildDefinerShadows : List Decl -> List Decl -> <Mut> List String
+buildImplTable : List Decl -> List ImplEntry
+buildKeyTable : List Decl -> List KeyEntry
+buildStandaloneShadows : List Decl -> List Decl -> List String
+buildStandaloneShadowsGraph : List Decl -> List Decl -> <Mut> List String
+buildTupleCallHint : String -> List Expr -> Expr -> Expr -> <Mut> (String, Option (Loc, String))
+censusSuperClose : List Decl -> List (String, Int) -> List (String, Int)
+censusSuperCloseFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
+censusSuperSlotsOf : List Decl -> (String, Int) -> List (String, Int)
+checkAnnotTooGeneral : Ty -> List Mono -> <Mut> Unit
+checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> <Mut> Unit
+checkCallObligationsGo : List Decl -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
+checkCoherence : List Decl -> <Mut> Unit
+checkEffectAtoms : List (String, Option String) -> <Mut> Unit
+checkEffectEscape : List (String, Ty) -> String -> List Atom -> <Mut> Unit
+checkEffectParams : List Decl -> <Mut> Unit
+checkEffectParamsDecl : Decl -> <Mut> Unit
+checkEffectParamsTy : Ty -> <Mut> Unit
+checkEffectParamsTys : List Ty -> <Mut> Unit
+checkErrorsWithRuntime : List Decl -> List Decl -> <Mut> Bool
+checkImplCompleteness : List Decl -> List Decl -> <Mut> Unit
+checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+checkImplObligationsGo : List Decl -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+checkInterfaceCycles : List Decl -> <Mut> Unit
+checkLetBind : String -> List FunClause -> <Mut> Unit
+checkLetBinds : List LetBind -> <Mut> Unit
+checkLetRecDecls : List Decl -> <Mut> Unit
+checkMatchExhaustive : Mono -> List Arm -> <Mut> Unit
+checkMatchRedundant : Mono -> List Arm -> <Mut> Unit
+checkMatchToLines : List Decl -> List Decl -> <Mut> String
+checkMissingFields : String -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
+checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
+checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModulesEntryFullGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+checkModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
+checkNestedReqs : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkOneAxis : String -> String -> Param -> <Mut> Unit
+checkOneCallObligation : List Decl -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+checkOneEffectParam : String -> String -> <Mut> Unit
+checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> <Mut> Unit
+checkOneImplObligation : List Decl -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
+checkPhantomMethods : List Decl -> <Mut> Unit
+checkProductAxes : String -> Param -> <Mut> Unit
+checkProductAxesGo : String -> List (String, Param) -> <Mut> Unit
+checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, String, Option Loc), List (String, Option Loc))
+checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
+checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
+checkReqObligations : List Decl -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
+checkReqOne : List Decl -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
+checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> <Mut> Unit
+checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> <Mut> Unit
+checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
+checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> <Mut> Unit
+checkSuperImpls : List Decl -> List Decl -> <Mut> Unit
+checkToLines : List Decl -> <Mut> String
+checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
+checkUndeterminedObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+clauseImplDictUser : Int -> ImplMethod -> List String
+clauseIsNonFunction : FunClause -> Bool
+clauseIsValue : FunClause -> Bool
+clauseRefs : (List Pat, Expr) -> List String
+clausesAreValue : List FunClause -> Bool
+clausesAt : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesOf : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> <Mut> Option String
+cohBind : Ref (List (Int, Mono)) -> Int -> Mono -> <Mut> Bool
+cohCollectImpls : List Decl -> <Mut> List CohImpl
+cohCollectModuleImpls : List (String, List Decl) -> <Mut> List CohImpl
+cohConflictWith : CohImpl -> List CohImpl -> <Mut> Option String
+cohCrossModuleMsg : String -> String -> String -> <Mut> String
+cohEqMono : Mono -> Mono -> <Mut> Bool
+cohEqR : Mono -> Mono -> <Mut> Bool
+cohFirstConflict : List CohImpl -> <Mut> Option String
+cohFreshTys : List Ty -> <Mut> List Mono
+cohGo : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohGoR : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohImplIface : CohImpl -> String
+cohImplsOf : Decl -> <Mut> List CohImpl
+cohImplsOfMid : String -> Decl -> <Mut> List CohImpl
+cohOverlap : List Mono -> List Mono -> <Mut> Bool
+cohOverlapGo : Ref (List (Int, Mono)) -> List (Mono, Mono) -> <Mut> Bool
+cohOverlapMsg : String -> List Mono -> List Mono -> <Mut> String
+cohPpEach : Ref (List (Int, String)) -> Ref Int -> List Mono -> <Mut> List String
+cohPpPair : List Mono -> List Mono -> <Mut> (String, String)
+cohResolve : Ref (List (Int, Mono)) -> Mono -> <Mut> Mono
+cohStrictlyMoreSpecific : List Mono -> List Mono -> <Mut> Bool
+cohSub : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohSubGo : Ref (List (Int, Mono)) -> List (Mono, Mono) -> <Mut> Bool
+cohSubR : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohSubsumes : List Mono -> List Mono -> <Mut> Bool
+coherenceUserDecls : Ref (List Decl)
+collectAbstractRecordTypes : List Decl -> List String
+collectByParam : List String -> List (String, Mono) -> List Mono
+collectByParamGo : List String -> List (String, Mono) -> Option (List Mono)
+collectDictSites : Expr -> List (Ref (List Route))
+collectIfaceNames : List Decl -> List String
+collectMethodSites : Expr -> List (Ref Route)
+collectRowEffvarIds : List Mono -> List Int
+collectTyIds : List Mono -> List Int
+combineSubst : Option (List (String, Mono)) -> Option (List (String, Mono)) -> Option (List (String, Mono))
+commaStr : Int -> String
+commonPrefixLen : String -> String -> Int -> Int
+composeOp : Mono -> Mono -> Bool -> <Mut> Mono
+computeMangledShadowMap : List Decl -> List (String, List Decl) -> List (String, String)
+concreteDomainScheme : String -> List (String, Scheme) -> <Mut> Option Scheme
+concreteHeadVarIds : Mono -> List Int
+consOp : Mono -> Mono -> <Mut> Mono
+constrainedSigArity : Decl -> List (String, List Int)
+constrainedSigName : Decl -> List String
+constrainedSigNames : List Decl -> List String
+constraintArgVarNames : Constraint -> List String
+constraintFirstNonParam : List String -> Constraint -> List String
+constraintIdsFromApps : String -> List Int -> List (String, List Mono) -> List Int
+constraintIdsFromSites : String -> List Int -> List (String, Mono) -> List Int
+constraintIsMethodLevel : List String -> Constraint -> Bool
+constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
+constraintNonParamVars : List String -> Constraint -> List String
+constraintSlotId : List String -> List (String, Mono) -> Constraint -> List Int
+constraintTyVars : Constraint -> List (String, String)
+constraintVarIfaceMonos : List (String, String) -> List (String, Mono) -> List (String, Mono)
+constraintVarNamesTy : Ty -> List String
+constraintsHaveMethodLevel : List String -> List Constraint -> Bool
+containerArgHint : String -> String
+containerArgMsg : Option String -> String -> String
+containerParamScalarArg : Mono -> Mono -> <Mut> Option String
+containsI : Int -> List Int -> Bool
+containsPair : (String, Int) -> List (String, Int) -> Bool
+countHead : List KeyEntry -> String -> String -> Int
+countInSubst : List Int -> List (Int, Mono) -> Int
+crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String))
+crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
+crossModuleFunConstraintsQualRef : Ref (List ((String, String), List Int))
+crossModuleFunConstraintsRef : Ref (List (String, List Int))
+crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int))
+crossModuleMethodConstraintsRef : Ref (List (String, List Int))
+ctorHeadIsUpper : String -> Bool
+curEffect : Ref EffRow
+currentDoOrigin : Ref (Option Loc)
+currentFn : Ref String
+currentImplBody : Ref Bool
+currentImportDefinersRef : Ref (List (String, String))
+currentLevel : Ref Int
+currentLoc : Ref (Option Loc)
+currentLocalSchemes : Unit -> <Mut> List (String, Scheme)
+currentMethodMismatch : Ref (Option String)
+currentSeedSchemes : Unit -> <Mut> List (String, Scheme)
+cyclicSuperIfaceMsg : List String -> String
+dataParamKindsRef : Ref (List (String, List Kind))
+declBodyVars : String -> List Decl -> List String
+declBodyVarsOf : String -> Decl -> List String
+declIfaceMethods : Decl -> <Mut> List (String, Scheme)
+declTopFnNames : List Decl -> List String
+declaredEffects : Ty -> List Atom
+declaredPairOne : (String, Mono) -> <Mut> List (String, Int)
+declaredPairsFor : String -> List (String, List (String, Mono)) -> <Mut> List (String, Int)
+decodeAxis : String -> (String, Param)
+decodeAxisVal : String -> Param
+decodeProductParam : String -> Param
+decodeSetParam : String -> List String
+dedupI : List Int -> List Int
+dedupIGo : List Int -> List Int -> List Int
+dedupPairs : List (String, Int) -> List (String, Int)
+dedupPairsGo : List (String, Int) -> List (String, Int) -> List (String, Int)
+dedupStr : List String -> List String
+dedupStrGo : List String -> List String -> List String
+defaultAmbiguousNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -> <Mut> Unit
+defaultEachMember : List (String, List String, Ty, Mono, Option Loc) -> List (String, Mono) -> <Mut> Unit
+defaultGroupNum : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit
+definerReceiverDispatches : String -> Mono -> <Mut> Bool
+definerShadowArgHead : Expr -> <Mut> Option (String, Ref Route, Ref (List Route))
+definerShadowHeadType : TcEnv -> String -> Expr -> <Mut> Mono
+definerShadowNamesRef : Ref (List String)
+definerShadowSigsRef : Ref (List (String, Ty))
+definerShadowVarHead : Expr -> <Mut> Option String
+depGraphMap : List String -> Map String (List (List Pat, Expr)) -> Map String (List String)
+depReaches : List String -> String -> String -> List (String, List Decl) -> Bool
+depsOf : String -> Map String Unit -> Map String (List (List Pat, Expr)) -> List String
+derivableIface : String -> Bool
+detectSwappedArgs2 : TcEnv -> Expr -> Expr -> <Mut> Option Mono
+dictAppFns : Ref (List (String, List Mono))
+dictArityOf : String -> Int
+dictEligibleRef : Ref (List String)
+dictEligibleSetRef : Ref (Map String Unit)
+dictParamName : String -> Int -> String
+dictParams : String -> Int -> List Pat
+dictParamsFrom : String -> Int -> Int -> List Pat
+dictParamsGo : String -> Int -> Int -> List Pat
+dictPass : List String -> List Decl -> List Decl
+dictPassDecl : List String -> List String -> Decl -> Decl
+dictPassLetBind : List String -> LetBind -> LetBind
+dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
+dictPassModulesScoped : List String -> List ((String, String), List Int) -> List Decl -> List (String, List Decl) -> List (String, List Decl) -> <Mut> List (String, List Decl)
+directImports : String -> List (String, List Decl) -> List String
+discoverAll : List Decl -> List Decl -> List String -> List String -> <Mut> List String
+discoverNext : List Decl -> List Decl -> List String -> List String -> <Mut> List String
+discoverNextJoint : List Decl -> List Decl -> List String -> List String -> List String -> List String -> <Mut> List String
+discoverPromoted : List Decl -> List Decl -> List String -> <Mut> List String
+discoverPromotedJoint : List Decl -> List Decl -> List String -> List String -> List String -> <Mut> List String
+discoverPromotedModules : List Decl -> List Decl -> List (String, List Decl) -> List String -> List String -> <Mut> List String
+dispatchMonosOf : List String -> Ty -> Mono -> List Mono
+dispatchTyparams : List String -> List String
+djoin : Param -> Param -> Param
+djoinN : Param -> Param -> Param
+doRequiresMonadMsg : String
+doStmtDictSites : DoStmt -> List (Ref (List Route))
+doStmtEVars : DoStmt -> List String
+doStmtSites : DoStmt -> List (Ref Route)
+domainIsTupleOfArity : Mono -> Int -> <Mut> Bool
+domainParam : Option String -> Bool -> Param
+drender : Param -> String
+drenderN : Param -> String
+dropPairs : Int -> List (String, Int) -> List (String, Int)
+dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
+dropShadowedCore : List String -> List Decl -> List Decl
+dsub : Param -> Param -> Bool
+dsubN : Param -> Param -> Bool
+dtopFor : String -> Param
+effHoleSrc : String
+effStr : List Atom -> String
+effTailNames : Ty -> List String
+effectDomains : Ref (List (String, Param))
+effectEscapeMsg : String -> List Atom -> List Atom -> String
+effectLeakCheck : List Atom -> List Atom -> <Mut> Unit
+effectLeakMsg : List Atom -> List Atom -> String
+effectParamMsg : String -> String -> String
+effrowLabels : EffRow -> List Atom
+effrowNorm : EffRow -> EffRow
+effvarCounter : Ref Int
+effvarId : Ref Effvar -> Int
+effvarIdOf : (String, Ref Effvar) -> Int
+effvarLevel : Ref Effvar -> Int
+elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+elabModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
+elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
+elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
+elaborateOne : List Decl -> List Decl -> (String, List Decl) -> <Mut> List Decl
+emitArgStampPasses : Ref Bool
+emitCyclicAliasErrors : List String -> <Mut> Unit
+emitSwapDiag : String -> Expr -> Expr -> <Mut> Option Mono
+enableEmitArgStampPasses : Unit -> <Mut> Unit
+enclDictVarOf : Mono -> String -> <Mut> Option String
+enclSlot : String -> Mono -> Option Int
+endsWithStr : String -> String -> Bool
+enforceStandaloneDomain : TcEnv -> String -> Mono -> Option Loc -> <Mut> Unit
+enterLevel : Unit -> <Mut> Unit
+entryCovers : KeyEntry -> KeyEntry -> Bool
+entryCoversAllOthers : KeyEntry -> List KeyEntry -> Bool
+entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
+envAlphaLets : TcEnv -> List (String, Expr)
+eqCompareOp : Mono -> Mono -> <Mut> Mono
+eqEntry : (String, (String, List String, Ty)) -> Bool
+eqIfaceRegistered : Unit -> <Mut> Bool
+eqUnimplementableHead : Mono -> Bool
+exitLevel : Unit -> <Mut> Unit
+expandIoInBound : List Atom -> List Atom
+expandSupersCross : List Decl -> List (String, List Int) -> List (String, List String) -> (List (String, List Int), List (String, List String))
+expandSupersEntry : List Decl -> List (String, List String) -> (String, List Int) -> (String, List Int)
+expandSupersFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
+expandSupersIfaceEntry : List Decl -> (String, List String) -> (String, List String)
+expandSupersPairs : List Decl -> List (String, Int) -> List (String, Int)
+expandSupersTable : List Decl -> <Mut> Unit
+expectedParamTypes : Mono -> Int -> List Mono
+exprLoc : Expr -> Option Loc
+extendPropParams : TcEnv -> List PropParam -> <Mut> TcEnv
+extendVar : TcEnv -> String -> Scheme -> TcEnv
+extendVars : TcEnv -> List (String, Scheme) -> TcEnv
+externSchemes : List Decl -> <Mut> List (String, Scheme)
+fieldAssignContains : String -> List FieldAssign -> Bool
+fieldAssignDictSites : FieldAssign -> List (Ref (List Route))
+fieldAssignEVars : FieldAssign -> List String
+fieldAssignSites : FieldAssign -> List (Ref Route)
+fieldFixFrom : Option Loc -> String -> Option (Loc, String)
+fieldOwnerNames : String -> List String
+fieldOwnerNamesGo : String -> List (String, RecordInfo) -> List String
+fieldTyOf : Field -> Ty
+fieldTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Field -> <Mut> Mono
+fillHoleAtom : List (String, Expr) -> Option Expr -> Atom -> Atom
+fillHolesInRow : List (String, Expr) -> EffRow -> Option Expr -> EffRow
+filterImplTysFor : List Decl -> String -> String -> List (List Ty)
+filterMaybeIds : List (Option Int) -> List Int
+filterNonSelf : String -> List String -> List String
+findAtom : String -> List Atom -> Option Atom
+findHelpFixEntry : String -> List (String, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
+findImplEntry : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
+findMatchWarningHelpEntry : String -> List (String, String) -> Option String
+findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> <Mut> Option (List (String, Mono), List Require)
+findMostSpecificEntry : List KeyEntry -> List KeyEntry -> Option KeyEntry
+findSigTvMap : String -> List (String, Ty, List (String, Mono)) -> Option (List (String, Mono))
+findTupleCand : String -> List (Mono, String, Option (Loc, String)) -> <Mut> Option (String, Option (Loc, String))
+findTvName : Int -> List (String, Mono) -> <Mut> Option String
+findTvarInMono : Mono -> Int -> Option Mono
+findTvarN : Mono -> Int -> Option Mono
+firstDictForEncl : Int -> String -> List (Int, String) -> Option String
+firstDispatchIdx : List String -> Int -> List Ty -> Option Int
+firstFieldName : List FieldAssign -> Option String
+firstImplMethodLoc : List ImplMethod -> Option Loc
+firstOrZero : List Int -> Int
+firstTupleCallHint : List Mono -> <Mut> Option (String, Option (Loc, String))
+firstTvar : Mono -> Mono -> Int -> Option Mono
+foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> <Mut> Mono
+foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> <Mut> Mono
+foldrFun : List Mono -> Mono -> Mono
+foreachUnit : (a -> <Mut> Unit) -> List a -> <Mut> Unit
+freeEffvars : Mono -> List Int
+freeGenVars : Int -> Mono -> List Int
+freshEffMap : List String -> <Mut> List (String, Ref Effvar)
+freshEffSubst : List Int -> <Mut> List (Int, Ref Effvar)
+freshEffvar : Unit -> <Mut> Ref Effvar
+freshEffvarAt : Int -> <Mut> Ref Effvar
+freshSubst : List Int -> <Mut> List (Int, Mono)
+freshTvMap : List String -> <Mut> List (String, Mono)
+freshVar : Unit -> <Mut> Mono
+freshVars : Int -> <Mut> List Mono
+fromAstType : List (String, Mono) -> Ty -> <Mut> Mono
+fromAstTypeApp : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> <Mut> Mono
+fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> <Mut> Mono
+funArity : Mono -> <Mut> Int
+funClauseDictSites : FunClause -> List (Ref (List Route))
+funClauseEVars : FunClause -> List String
+funClausePair : FunClause -> (List Pat, Expr)
+funClauseSites : FunClause -> List (Ref Route)
+funConstraintIfacesRef : Ref (List (String, List String))
+funConstraintsRef : Ref (List (String, List Int))
+funDefs : List Decl -> List (String, (List Pat, Expr))
+funDomain : Mono -> <Mut> Mono
+funParams2 : Mono -> <Mut> Option (Mono, Mono)
+genRestricted : Bool -> Mono -> <Mut> Scheme
+generalize : Mono -> <Mut> Scheme
+generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
+globalCoherenceConflict : List (String, List Decl) -> <Mut> Option String
+groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
+groundNumVars : List (String, List String, Ty, Mono, Option Loc) -> List Int -> <Mut> Unit
+groundOneObligation : List Decl -> String -> List String -> Ty -> Mono -> <Mut> Unit
+groupClauses : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr))
+groupClausesGo : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr)) -> Map String (List (List Pat, Expr))
+groupNames : List (String, (List Pat, Expr)) -> Map String Unit -> List String
+groupRefs : List (List Pat, Expr) -> List String
+guardDictSites : Guard -> List (Ref (List Route))
+guardEVars : Guard -> List String
+guardSites : Guard -> List (Ref Route)
+hadTypeErrors : Unit -> <Mut> Bool
+hasAssocSL2 : String -> List (String, List Int) -> Bool
+hasDupI : List Int -> Bool
+hasKeySL2 : String -> List (String, List Int) -> Bool
+hasMethodLevelConstraint : List String -> Ty -> Bool
+headAnnotTy : Ty -> <Mut> Mono
+headCollides : List KeyEntry -> String -> String -> Bool
+headL : List String -> String
+headSubstWithParams : Ty -> List Ty -> Mono -> List Mono -> Option (List (String, Mono))
+headTyconMono : Mono -> Option String
+headTyconTy : Ty -> Option String
+holeFillParam : String -> List (String, Expr) -> Option Expr -> Param
+idsForIfaceSlots : List String -> List Int
+idsForIfaceSlotsGo : Int -> List String -> List Int
+ifaceAtMonoId : Int -> List Mono -> List String -> <Mut> Option String
+ifaceDfsCycle : List Decl -> Ref (List String) -> List String -> String -> <Mut> List String
+ifaceDfsCycleOneSuper : List Decl -> Ref (List String) -> List String -> String -> <Mut> List String
+ifaceDfsCycleSupers : List Decl -> Ref (List String) -> List String -> List Super -> <Mut> List String
+ifaceDictPassDefault : String -> Ty -> List Pat -> Expr -> Int -> IfaceMethod
+ifaceDictPassMethod : IfaceMethod -> IfaceMethod
+ifaceForConstraintId : Int -> <Mut> String
+ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> String
+ifaceForInferredId : String -> Int -> <Mut> String
+ifaceFromDictApps : Int -> List (Ref (List Route), List Mono, List String) -> <Mut> String
+ifaceMethodNames : List IfaceMethod -> List String
+ifaceMethodSchemes : List Decl -> <Mut> List (String, Scheme)
+ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
+ifaceParamMonos : String -> Mono -> <Mut> Option (List Mono)
+ifaceRequiredMethods : List Decl -> String -> Option (List String)
+ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
+implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
+implCountForIface : List (String, List Ty) -> String -> Int
+implDeclWithReqs : Decl -> List (String, List Ty, List Require)
+implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
+implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
+implDictNames : String -> Int -> List String
+implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
+implDictRoutesForFull : List ImplEntry -> String -> String -> Mono -> List Mono -> <Mut> List Route
+implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> List Mono -> <Mut> List Route
+implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List ImplEntry
+implEntryOf : Decl -> List ImplEntry
+implExistsForHead : List KeyEntry -> String -> String -> Bool
+implHeadMatchesArgs : List Ty -> List Mono -> <Mut> Bool
+implHeadOf : Decl -> List (String, List Ty)
+implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
+implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
+implHeadTagForIface : String -> Decl -> List String
+implHeadTagsForIface : List Decl -> String -> List String
+implHeadTagsFromHeads : List (String, List Ty) -> String -> List String
+implHeadsOf : List Decl -> List (String, List Ty)
+implInferEnabled : Ref Bool
+implKeyTc : String -> List Ty -> String
+implMatches : List (String, List Ty) -> String -> List Mono -> <Mut> Bool
+implMatchesReceiver : List (String, List Ty) -> String -> Mono -> <Mut> Bool
+implMatchesSuper : String -> List Ty -> Decl -> Bool
+implMethodName : ImplMethod -> String
+implMethodNameTc : ImplMethod -> String
+implReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
+implReqRoutesD : List ImplEntry -> List (String, Mono) -> List Require -> Int -> <Mut> List Route
+implRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+implRequiresRoutesRecD : List ImplEntry -> String -> String -> Mono -> Int -> <Mut> List Route
+implTysIfMatch : String -> String -> Decl -> List (List Ty)
+importDefinersOf : List Decl -> List (String, String)
+importFormSchemes : UsePath -> List (String, Scheme) -> List (String, Scheme)
+importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+importedMembers : UsePath -> Option (List String)
+indexKind : Mono -> String
+indexOfId : Int -> List Int -> Option Int
+indexOfIdGo : Int -> Int -> List Int -> Option Int
+indexOfInt : Int -> List Int -> Int
+indexOfIntGo : Int -> List Int -> Int -> Int
+infer : TcEnv -> Expr -> <Mut> Mono
+inferAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
+inferApp : List (String, Expr) -> Expr -> Mono -> Mono -> <Mut> Mono
+inferAppExpr : TcEnv -> Expr -> Expr -> <Mut> Mono
+inferAppNotFunction : Expr -> Mono -> Mono -> <Mut> Mono
+inferArm : TcEnv -> Mono -> Mono -> Pat -> List Guard -> Expr -> <Mut> Unit
+inferArmGuards : TcEnv -> List Guard -> <Mut> TcEnv
+inferArms : TcEnv -> Mono -> Mono -> List Arm -> <Mut> Unit
+inferArrayLit : TcEnv -> List Expr -> <Mut> Mono
+inferBinop : String -> Mono -> Mono -> <Mut> Mono
+inferBinopE : TcEnv -> String -> Expr -> Expr -> Ref Route -> <Mut> Mono
+inferBlock : TcEnv -> List DoStmt -> <Mut> Mono
+inferClauseEff : TcEnv -> Option Mono -> (List Pat, Expr) -> <Mut> (Mono, List Atom)
+inferClauses : TcEnv -> List (List Pat, Expr) -> <Mut> Mono
+inferDefaultBodies : TcEnv -> List Decl -> <Mut> Unit
+inferDefaultBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
+inferDefaultMethod : TcEnv -> List String -> IfaceMethod -> <Mut> Unit
+inferDefaultMethodBody : String -> TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
+inferDefaultMethods : TcEnv -> List String -> List IfaceMethod -> <Mut> Unit
+inferDefinerShadowApp : TcEnv -> String -> Ref Route -> Ref (List Route) -> Expr -> Expr -> <Mut> Mono
+inferDefinerShadowVarApp : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
+inferDefinerStandaloneVarApp : TcEnv -> String -> Expr -> Expr -> Mono -> Option Loc -> <Mut> Mono
+inferDictAt : TcEnv -> String -> Ref (List Route) -> <Mut> Mono
+inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
+inferEach : TcEnv -> List Expr -> <Mut> List Mono
+inferFieldAccess : TcEnv -> Expr -> String -> Ref String -> <Mut> Mono
+inferFieldOfRecord : Mono -> String -> RecordInfo -> String -> <Mut> Mono
+inferHeadAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
+inferIf : TcEnv -> Expr -> Expr -> Expr -> <Mut> Mono
+inferImplBodies : TcEnv -> List Decl -> List String -> List Decl -> <Mut> Unit
+inferImplBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
+inferImplMethod : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> ImplMethod -> <Mut> Unit
+inferImplMethods : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> List ImplMethod -> <Mut> Unit
+inferInfix : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
+inferIntRange : TcEnv -> Expr -> Expr -> Mono -> <Mut> Mono
+inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
+inferLamChecked : TcEnv -> List Mono -> List Pat -> Expr -> <Mut> Mono
+inferLastStmt : TcEnv -> DoStmt -> <Mut> Mono
+inferLet : TcEnv -> Bool -> Bool -> Pat -> Expr -> Expr -> <Mut> Mono
+inferLetBinds : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> Unit
+inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
+inferLetGroup : TcEnv -> List LetBind -> Expr -> <Mut> Mono
+inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
+inferListLit : TcEnv -> List Expr -> <Mut> Mono
+inferMatch : TcEnv -> Mono -> List Arm -> <Mut> Mono
+inferMemberClauses : TcEnv -> Option Mono -> Mono -> List (List Pat, Expr) -> <Mut> List Atom
+inferMembers : TcEnv -> List (String, Ty) -> Map String (List (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
+inferMethodAt : TcEnv -> String -> Ref Route -> Ref (List Route) -> Ref (List Route) -> <Mut> Mono
+inferModuleImplBodiesIfEnabled : TcEnv -> List Decl -> List Decl -> <Mut> Unit
+inferNumLit : TcEnv -> Int -> Ref (Option Float) -> Ref Route -> <Mut> Mono
+inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
+inferOneIfaceDefaults : TcEnv -> Decl -> <Mut> Unit
+inferOneImpl : TcEnv -> List Decl -> List String -> Decl -> <Mut> Unit
+inferParamKinds : List String -> List Variant -> List Kind
+inferPat : TcEnv -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatAs : TcEnv -> String -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCon : TcEnv -> String -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatConWith : TcEnv -> Scheme -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCons : TcEnv -> Pat -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatList : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatRec : TcEnv -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRecWith : TcEnv -> String -> RecordInfo -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRng : Lit -> Lit -> <Mut> (Mono, List (String, Scheme))
+inferPatTuple : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPats : TcEnv -> List Pat -> <Mut> (List Mono, List (String, Scheme))
+inferPlainImpl : TcEnv -> List Decl -> String -> List Ty -> List ImplMethod -> <Mut> Unit
+inferPropBodies : TcEnv -> List Decl -> <Mut> Unit
+inferPropBodiesGo : TcEnv -> List Decl -> <Mut> Unit
+inferRecLet : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
+inferRecPatField : TcEnv -> String -> List (String, Mono) -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatFieldWith : TcEnv -> Mono -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatFields : TcEnv -> String -> List (String, Mono) -> List RecPatField -> <Mut> List (String, Scheme)
+inferRecordCreate : TcEnv -> String -> List FieldAssign -> <Mut> Mono
+inferRecordCreateWith : TcEnv -> String -> RecordInfo -> List FieldAssign -> <Mut> Mono
+inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
+inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
+inferRecordUpdatePicked : String -> Mono -> TcEnv -> List FieldAssign -> RecordInfo -> <Mut> Mono
+inferRecordUpdateWith : TcEnv -> String -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
+inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> <Mut> Unit
+inferShadowApp : TcEnv -> String -> List (Ref Route) -> Expr -> Expr -> <Mut> Mono
+inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> <Mut> Mono
+inferStmt : TcEnv -> DoStmt -> <Mut> TcEnv
+inferTestBodies : TcEnv -> List Decl -> <Mut> Unit
+inferUnop : String -> Mono -> <Mut> Mono
+inferUnopE : TcEnv -> String -> Expr -> Ref Route -> <Mut> Mono
+inferValueField : TcEnv -> Expr -> <Mut> Mono
+inferVar : TcEnv -> String -> <Mut> Mono
+inferVarPlain : TcEnv -> String -> <Mut> Mono
+inferVariantUpdate : TcEnv -> String -> Expr -> List FieldAssign -> <Mut> Mono
+inferredConstraintIds : String -> List Int -> List Int
+inferredIfacePairs : String -> List Int -> <Mut> List (String, Int)
+initialEnv : TcEnv
+innerDefaultMethod : String -> String
+insertAxis : (String, Param) -> List (String, Param) -> List (String, Param)
+instantiate : Scheme -> <Mut> Mono
+instantiateRecord : RecordInfo -> <Mut> (Mono, List (String, Mono))
+instantiateSigTracked : Ty -> <Mut> (Mono, List (String, Mono))
+instantiateTracked : Scheme -> <Mut> (Mono, List (Int, Mono))
+instantiateVarTracked : String -> Scheme -> <Mut> Mono
+intercalateComma : List String -> String
+ioAliasLabels : List String
+isArithBinop : String -> Bool
+isConstrainedTy : Ty -> Bool
+isCtorAppHead : Expr -> Bool
+isHoleParam : Param -> Bool
+isHoleStr : String -> Bool
+isLetrecGroup : List String -> Bool
+isLitArg : Expr -> Bool
+isNonexpansive : Expr -> Bool
+isShadowStandalone : String -> <Mut> Bool
+isSubTop : Param -> Bool
+isSyntacticLambda : Expr -> Bool
+isTupleTyName : String -> Bool
+joinAxis : List (String, Param) -> List (String, Param) -> String -> (String, Param)
+keepBetterField : String -> Int -> Option (String, Int) -> Option (String, Int)
+keepGroupNames : Map String Unit -> List String -> List String
+keptConstraintIfaces : List (String, Mono) -> <Mut> List String
+keyEntryOf : Decl -> List KeyEntry
+keyForSite : List KeyEntry -> String -> Mono -> Option String
+kindArgMono : List (String, Ref Effvar) -> List (String, Mono) -> Kind -> Ty -> <Mut> Mono
+kpLcp : String -> String -> KP
+krowArgVarNames : List Kind -> List Ty -> List String
+krowEtbl : List String -> List Kind -> List Mono -> List (String, Ref Effvar)
+ktypeTvs : List String -> List Kind -> List Mono -> List (String, Mono)
+lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
+lastComponent : List String -> String
+letBindDictSites : LetBind -> List (Ref (List Route))
+letBindEVars : LetBind -> List String
+letBindNameTc : LetBind -> String
+letBindNamesTc : List LetBind -> List String
+letBindPlaceholder : LetBind -> <Mut> (String, Scheme)
+letBindSites : LetBind -> List (Ref Route)
+letGroupDefs : List LetBind -> List (String, (List Pat, Expr))
+letRecNonFunctionMsg : String -> String
+letters : String
+litType : Lit -> Mono
+liveNumVarGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Option Mono
+locEq : Loc -> Loc -> Bool
+localBindRefs : Ref (List (String, Mono))
+localSchemesOut : Ref (List (String, Scheme))
+lookupAssocI : Int -> List (Int, a) -> Option a
+lookupAssocS : String -> List (String, List String) -> Option (List String)
+lookupAssocS2 : String -> List (String, List (String, Int)) -> Option (List (String, Int))
+lookupAssocSL2 : String -> List (String, List Int) -> Option (List Int)
+lookupAxis : String -> List (String, Param) -> Option Param
+lookupAxisOrTop : String -> List (String, Param) -> Param -> Param
+lookupCtor : TcEnv -> String -> Option Scheme
+lookupCtxKind : Loc -> List (Loc, String) -> Option String
+lookupDomain : String -> List (String, Param) -> Param
+lookupIfaceById : Int -> List (String, Int) -> Option String
+lookupMatchWarningHelp : String -> Option String
+lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
+lookupQualIfaces : String -> String -> List ((String, String), List String) -> Option (List String)
+lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)
+lookupRecordByName : String -> Option RecordInfo
+lookupSchemeIface : String -> Int -> List (String, List (String, Int)) -> Option String
+lookupTypeErrorHelpFix : String -> Option (String, Option (Loc, String))
+lookupVar : TcEnv -> String -> Option Scheme
+lowerRowLevels : Int -> EffRow -> <Mut> Unit
+lowerToCurrent : Mono -> <Mut> Unit
+mainSchemeRef : Ref (Option Scheme)
+mainTypeIsAsync : Unit -> <Mut> Bool
+mainTypeIsFloat : Unit -> <Mut> Bool
+mainTypeIsUnit : Unit -> <Mut> Bool
+mangledHeadCandidates : String -> String -> List (String, RecordInfo) -> List (String, RecordInfo)
+mangledShadowMapRef : Ref (List (String, String))
+mapLocalSchemes : List (String, Mono) -> <Mut> List (String, Scheme)
+markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
+markNumlitOpTaint : Mono -> <Mut> Unit
+markOpTaintId : Int -> List (Mono, Loc) -> <Mut> Unit
+matchCol0Type : Mono -> Option String
+matchOracle : Ref Oracle
+matchTyMono : Ty -> Mono -> Option (List (String, Mono))
+matchTyMonoList : List Ty -> List Mono -> Option (List (String, Mono))
+matchWarningHelp : Ref (List (String, String))
+matchWarningLocs : Ref (List (Option Loc))
+matchWarnings : Ref (List String)
+matchedEntry : List KeyEntry -> String -> Mono -> Option KeyEntry
+matchingEntries : List KeyEntry -> String -> Mono -> List KeyEntry
+maybeInferConstraint : List (String, Ty) -> String -> Scheme -> <Mut> Unit
+maybeStandaloneValueMono : String -> <Mut> Option Mono
+memberClauseIsValue : (List Pat, Expr) -> Bool
+memberPeelSource : List (String, Ty) -> String -> Mono -> Option Mono
+memberSigIsFun : List (String, Ty) -> String -> Mono -> Bool
+memberSuffix : String -> String
+mergeOne : List (String, Mono) -> String -> Mono -> List (String, Mono)
+mergeSubstPreferConcrete : List (String, Mono) -> List (String, Mono) -> List (String, Mono)
+methodArgs : Ty -> List Ty
+methodConstrainedIds : Unit -> List Int
+methodConstraintNameOf : List String -> IfaceMethod -> List String
+methodConstraintNames : List Decl -> List String
+methodConstraintNamesOfDecl : Decl -> List String
+methodConstraintPositionsRef : Ref (List (String, List Int))
+methodConstraintSlotIds : List String -> Ty -> List (String, Mono) -> List Int
+methodConstraintsRef : Ref (List (String, List Int))
+methodDictArityOf : String -> Int
+methodDispatchIdx : String -> <Mut> Option Int
+methodDispatchIdxRef : Ref (List (String, Int))
+methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
+methodLevelConstraintVarNames : List String -> Ty -> List String
+methodSchemes : List String -> List IfaceMethod -> <Mut> List (String, Scheme)
+methodSchemesPure : List IfaceMethod -> <Mut> List (String, Scheme)
+methodShadowNamesRef : Ref (List String)
+methodSiteFns : Ref (List (String, Mono))
+methodTyOf : String -> List IfaceMethod -> Option Ty
+mintParamReprs : List Kind -> <Mut> List Mono
+missingConstraintMsg : String -> String -> String -> String
+missingFieldMsg : String -> String -> String
+missingImplMethodMsg : String -> List Ty -> String -> String
+missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
+modInScope : String -> Map String Unit -> Bool
+moduleDictNames : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List String
+moduleUserFnNames : List (String, List Decl) -> List String
+monoArgUnboundIds : Mono -> List Int
+monoConcrete : Mono -> <Mut> Bool
+monoHeadCon : Mono -> <Mut> Option String
+monoIsApp : Mono -> Bool
+monoIsFloat : Mono -> <Mut> Bool
+monoIsFunction : Mono -> Bool
+monoIsNumeric : Mono -> <Mut> Bool
+monoSameShape : Mono -> Mono -> <Mut> Bool
+monoScheme : Mono -> Scheme
+monoSpineHeadIsCon : Mono -> <Mut> Bool
+monoTyvarId : Mono -> Int
+monoTyvarIds : Mono -> List Int
+monoUnboundIds : Mono -> List Int
+monoUnboundVarLevels : Mono -> List (Int, Int)
+nameOf : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
+namesToSet : List String -> Map String Unit -> Map String Unit
+negateOp : Mono -> <Mut> Mono
+newEffvarId : Unit -> <Mut> Int
+newTyvarId : Unit -> <Mut> Int
+noImplAdvice : String -> String -> String
+noImplFoundMsg : String -> List Mono -> <Mut> String
+noImplFoundMsgHinted : String -> List Mono -> <Mut> (String, Option String)
+noImplHint : String -> List Mono -> <Mut> Option String
+nonExhaustiveMatchWarning : String
+nonExhaustiveMsg : Mono -> List (List Pat) -> <Mut> String
+nonGuardedRows : List Arm -> List (List Pat)
+normHole : Param -> Param
+normalize : Mono -> Mono
+notAFunctionHint : Option String -> String
+notAFunctionMsg : String -> String
+noteNumlitCtx : Mono -> Mono -> String -> <Mut> Unit
+nthArgMono : Int -> Mono -> Option Mono
+nthInt : Int -> List Int -> Int
+numArithOp : Mono -> Mono -> <Mut> Mono
+numCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
+numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> <Mut> List Int
+numDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
+numEntry : (String, (String, List String, Ty)) -> Bool
+numIfaceRegistered : Unit -> <Mut> Bool
+numObligIds : (String, List String, Ty, Mono, Option Loc) -> List Int
+numUnimplementableHead : Mono -> Bool
+numlitCtxKind : Option Loc -> <Mut> Option String
+numlitCtxTags : Ref (List (Loc, String))
+numlitMismatchHint : Option Loc -> List Mono -> <Mut> String
+numlitMismatchMsg : Option Loc -> List Mono -> <Mut> String
+numlitOpLocs : Ref (List Loc)
+numlitReframeLoc : Option Loc -> <Mut> Bool
+numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
+numlitVarLocs : Ref (List (Mono, Loc))
+oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
+occursAdjust : Int -> Int -> Mono -> <Mut> Unit
+occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> <Mut> Unit
+occursAdjustVar : Int -> Int -> Ref Tyvar -> <Mut> Unit
+occursCheckFailed : Ref Bool
+openRow : Unit -> <Mut> EffRow
+orElseLoc : Option Loc -> Option Loc -> Option Loc
+ordCompareOp : Mono -> Mono -> <Mut> Mono
+ordEntry : (String, (String, List String, Ty)) -> Bool
+ordIfaceRegistered : Unit -> <Mut> Bool
+ordUnimplementableHead : Mono -> Bool
+overAppliedMsg : String -> Int -> Int -> String
+pairIface : String -> Int -> <Mut> List (String, Int)
+pairRecordByName : String -> <Mut> Option (String, RecordInfo)
+paramMonoOf : List (String, Mono) -> String -> Mono
+patVarsListTc : List Pat -> List String
+patVarsTc : Pat -> List String
+payloadAstTypes : ConPayload -> List Ty
+payloadTypesE : List (String, Ref Effvar) -> List (String, Mono) -> ConPayload -> <Mut> List Mono
+peelArrows : Int -> Mono -> List Mono
+peelOntoParams : Option Mono -> List Mono -> List Pat -> <Mut> Unit
+pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono, String))
+pendingArithSites : Ref (List (Ref Route, Mono))
+pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+pendingCallObligations : Ref (List (String, Mono, Option Loc))
+pendingDictApps : Ref (List (Ref (List Route), List Mono, List String))
+pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
+pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
+pendingRLocalSites : Ref (List (String, Ref Route, Mono, String))
+pendingRecDictApps : Ref (List RecDictApp)
+pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono, Mono, String))
+pendingUnopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+performEffect : Ref EffRow -> EffRow -> <Mut> Unit
+performLink : Ref Effvar -> Ref Effvar -> <Mut> Unit
+phantomMethodMsg : String -> List String -> IfaceMethod -> List String
+phantomMethodMsgs : Decl -> List String
+pickMostSpecificEntry : List KeyEntry -> Option KeyEntry
+pickSchemes : List String -> List (String, Scheme) -> List (String, Scheme)
+pickStandaloneSchemes : List String -> List (String, Scheme) -> <Mut> List (String, Scheme)
+pipeOp : Mono -> Mono -> <Mut> Mono
+placeholderBinding : (String, Mono) -> (String, Scheme)
+poisonMismatchVars : Mono -> Mono -> <Mut> Unit
+poisonedVars : Ref (List Int)
+populateEffectDomains : List Decl -> <Mut> Unit
+populateGo : List Decl -> <Mut> Unit
+positionMatch : String -> List (Int, Mono) -> List (String, List Int) -> Option (List Int)
+ppApp : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> Mono -> <Mut> String
+ppConName : String -> String
+ppConstraint : Constraint -> String
+ppConstraints : List Constraint -> String
+ppEach : Ref (List (Int, String)) -> Ref Int -> Int -> List Mono -> <Mut> List String
+ppEachShared : Ref (List (Int, String)) -> Ref Int -> List Mono -> <Mut> List String
+ppEffArg : Ref (List (Int, String)) -> Ref Int -> EffRow -> <Mut> String
+ppEffArgFmt : String -> String -> String
+ppEffAtomTy : (String, Option String) -> String
+ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> EffRow -> Mono -> <Mut> String
+ppGo : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> <Mut> String
+ppMono : Mono -> <Mut> String
+ppMonosShared : List Mono -> <Mut> String
+ppScheme : Scheme -> <Mut> String
+ppSchemeCon : List (String, Int) -> Scheme -> <Mut> String
+ppSchemeNamed : String -> Scheme -> <Mut> String
+ppTy : Ty -> String
+ppTyAtom : Ty -> String
+ppTyFunArg : Ty -> String
+ppVar : Ref (List (Int, String)) -> Ref Int -> Ref Tyvar -> <Mut> String
+prePassDeclScoped : ArgRw -> Decl -> Decl
+prePassDict : List String -> List String -> List Decl -> List Decl
+prePassDictArg : List String -> List String -> List String -> List (String, String) -> List Decl -> List Decl
+prePassFunClauseScoped : ArgRw -> FunClause -> FunClause
+prePassIfaceMethodScoped : ArgRw -> IfaceMethod -> IfaceMethod
+prePassImplMethodScoped : ArgRw -> ImplMethod -> ImplMethod
+prePassLetBindScoped : ArgRw -> LetBind -> LetBind
+prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
+prePassModulePairArg : List String -> List String -> List String -> List (String, String) -> (String, List Decl) -> (String, List Decl)
+preferConcrete : Mono -> Mono -> Mono
+prefixConcrete : String -> String
+prefixPatternErrMsg : String -> String -> String
+prefixPatternOk : String -> Bool
+preludeArgPosDictNames : List Decl -> List Decl -> List String
+preludeReturnPosDictNames : List Decl -> List Decl -> List String
+prependDictClause : String -> Int -> FunClause -> FunClause
+prependImplDictIfUser : Int -> List String -> ImplMethod -> ImplMethod
+preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String, List (String, Mono)), List (String, Ty, List (String, Mono)))
+processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
+processSCC : TcEnv -> List (String, Ty) -> Map String (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
+processSCCs : TcEnv -> List (String, Ty) -> Map String (List (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
+processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
+productNorm : List (String, Param) -> Param
+promotedConstraintIfaces : List String -> List (String, List String) -> List (String, List String)
+promotedConstraints : List String -> List (String, List Int) -> List (String, List Int)
+promotedRef : Ref (List String)
+propParamName : PropParam -> String
+propParamNamesTc : List PropParam -> List String
+publicDataDecls : List Decl -> List Decl
+publicValNames : List Decl -> List String
+pureRow : EffRow
+pushIncompleteImpl : (Option Loc, String) -> <Mut> Unit
+pushNoImplError : String -> Option Loc -> List Mono -> <Mut> Unit
+pushTypeError : String -> String -> <Mut> Unit
+pushTypeErrorHelpFixAt : String -> Option Loc -> String -> String -> Option (Loc, String) -> <Mut> Unit
+pushTypeErrorOnce : String -> String -> <Mut> Unit
+pushTypeErrorOnceAt : String -> Option Loc -> String -> <Mut> Unit
+pushUnknownField : String -> String -> <Mut> Unit
+pushUnknownFieldMaybeSuggest : String -> String -> List String -> <Mut> Unit
+qualConstraintFor : String -> Option (List Int, List String)
+quoteStr : String -> String
+rangeFromCount : Int -> Int -> List Int
+realizeRecDictApps : List RecDictApp -> <Mut> Unit
+recFieldMono : List (String, Mono) -> Field -> <Mut> (String, Mono)
+recPatFieldVarsTc : RecPatField -> List String
+recRoute : String -> Mono -> Int -> <Mut> Route
+recRoutes : String -> Mono -> List Int -> <Mut> List Route
+recordArgSiteFn : String -> Int -> Mono -> <Mut> Unit
+recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> <Mut> Unit
+recordArithSite : String -> Ref Route -> Mono -> <Mut> Unit
+recordBinopSite : String -> Ref Route -> Mono -> <Mut> Unit
+recordCallObligations : List String -> List Mono -> <Mut> Unit
+recordDoMonadError : Loc -> <Mut> Unit
+recordEqObligation : Mono -> <Mut> Unit
+recordHasField : String -> RecordInfo -> Bool
+recordImplObligation : String -> Mono -> <Mut> Mono
+recordLocalBind : String -> Mono -> <Mut> Unit
+recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> <Mut> Unit
+recordNumObligation : Mono -> <Mut> Unit
+recordNumlitLoc : Mono -> <Mut> Unit
+recordOrdObligation : Mono -> <Mut> Unit
+recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
+recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> <Mut> Unit
+recordSemigroupObligation : Mono -> <Mut> Unit
+recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
+recordUnopSite : String -> Ref Route -> Mono -> <Mut> Unit
+recordsRef : Ref (List (String, RecordInfo))
+reexportSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+registerActiveDictVars : String -> Int -> List Int -> <Mut> Unit
+registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
+registerAmbiguousConstraints : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit
+registerAmbiguousGo : List (String, List String, Ty, Mono, Option Loc) -> Int -> List Int -> List Int -> <Mut> Unit
+registerConstraintRegs : List (String, List (String, Mono)) -> <Mut> Unit
+registerData : TcEnv -> Decl -> <Mut> TcEnv
+registerDispatchMonos : String -> List Mono -> Option Loc -> Int -> List Int -> List Int -> <Mut> Unit
+registerEachActive : List Int -> String -> <Mut> Unit
+registerEffectDomain : String -> Option String -> Bool -> <Mut> Unit
+registerImplMethodDictOne : String -> Int -> String -> List (String, Mono) -> <Mut> Unit
+registerImplMethodDicts : String -> List String -> Ty -> List (String, Mono) -> <Mut> Unit
+registerImplMethodDictsGo : String -> Int -> List String -> List (String, Mono) -> <Mut> Unit
+registerImplRequires : List (String, Mono) -> List String -> List Require -> List ImplMethod -> <Mut> Unit
+registerInferredConstraints : List (String, Ty) -> List (String, Scheme) -> <Mut> Unit
+registerInferredFor : String -> List Int -> <Mut> Unit
+registerMember : String -> List (String, Mono) -> <Mut> Unit
+registerMemberSlots : String -> Int -> List Mono -> <Mut> List Int
+registerMethodConstraints : List String -> String -> Ty -> List (String, Mono) -> List Int -> <Mut> Unit
+registerMethodDictSlots : String -> Int -> List Int -> List (Int, Mono) -> <Mut> Unit
+registerMethodIfaceParamsAll : List Decl -> <Mut> Unit
+registerMethodIfaceParamsDecl : Decl -> <Mut> Unit
+registerMethodIfaceParamsMethods : String -> List String -> List IfaceMethod -> <Mut> Unit
+registerNamedFieldVariants : String -> List String -> List Variant -> <Mut> Unit
+registerOneAmbiguous : String -> List String -> Ty -> Mono -> Option Loc -> Int -> List Int -> List Int -> <Mut> Unit
+registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> <Mut> Unit
+registerRecordInfoKeyed : String -> String -> List String -> List Field -> <Mut> Unit
+registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> <Mut> Unit
+registerSchemeObligations : List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> <Mut> Unit
+registerVariants : TcEnv -> String -> List String -> List Variant -> <Mut> TcEnv
+registersElementDict : String -> List String -> <Mut> Bool
+rejectCyclicAliases : Unit -> <Mut> Unit
+removeAllS : List String -> List String -> List String
+renderAtom : Atom -> String
+renderAtoms : List Atom -> String
+renderAxis : (String, Param) -> String
+renderAxisVal : Param -> String
+renderCallArg : Expr -> Option String
+renderCallArgs : List Expr -> Option (List String)
+renderConstraintCtx : Ref (List (Int, String)) -> Ref Int -> List (String, Int) -> <Mut> List String
+renderLitArg : Expr -> Option String
+renderProductLit : List (String, Param) -> String
+reopenRow : Bool -> EffRow -> <Mut> EffRow
+reopenRowN : Bool -> EffRow -> <Mut> EffRow
+reportAmbiguousImpl : String -> <Mut> Route
+reportNumOrNoImpl : String -> List Mono -> Option Loc -> <Mut> Unit
+reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> <Mut> Unit
+reqObligationsFor : List Decl -> String -> List Mono -> <Mut> List (String, List Mono)
+reqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> <Mut> Route
+reqRouteD : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Int -> <Mut> Route
+reqToObligation : List (String, Mono) -> Require -> <Mut> (String, List Mono)
+reqTyToMono : List (String, Mono) -> Ty -> <Mut> Mono
+requiredMethodNames : List IfaceMethod -> List String
+resetState : Unit -> <Mut> Unit
+resetTypeErrorsSticky : Unit -> <Mut> Unit
+resolveArgStamp : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> <Mut> Unit
+resolveArgStamps : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> <Mut> Unit
+resolveArithSite : Ref Route -> Mono -> <Mut> Unit
+resolveArithSites : List (Ref Route, Mono) -> <Mut> Unit
+resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
+resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> <Mut> Unit
+resolveDictApps : List Decl -> List ImplEntry -> List (Ref (List Route), List Mono, List String) -> <Mut> Unit
+resolveFieldAmbiguous : Mono -> String -> List String -> <Mut> Option (String, RecordInfo)
+resolveFieldByOwners : Mono -> String -> <Mut> Option (String, RecordInfo)
+resolveFieldRecord : Mono -> String -> <Mut> Option (String, RecordInfo)
+resolveMemberSchemes : String -> List (String, Scheme) -> List (String, Scheme)
+resolveMethodDicts : List ImplEntry -> List (Ref (List Route), List Mono) -> <Mut> Unit
+resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String) -> <Mut> Unit
+resolveRecMono : String -> Mono -> <Mut> Route
+resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> <Mut> Unit
+resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> <Mut> Unit
+resolveUnopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
+resolveUnopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> <Mut> Unit
+returnPosMethod : List String -> IfaceMethod -> List String
+returnPosMethodNames : List Decl -> List String
+returnPosOfDecl : Decl -> List String
+revClauses : List (List Pat, Expr) -> List (List Pat, Expr) -> List (List Pat, Expr)
+rewriteArgArm : ArgRw -> List String -> Arm -> Arm
+rewriteArgField : ArgRw -> List String -> FieldAssign -> FieldAssign
+rewriteArgFunClause : ArgRw -> List String -> FunClause -> FunClause
+rewriteArgGuardArm : ArgRw -> List String -> GuardArm -> GuardArm
+rewriteArgGuards : ArgRw -> List String -> List Guard -> (List Guard, List String)
+rewriteArgInterp : ArgRw -> List String -> InterpPart -> InterpPart
+rewriteArgKv : ArgRw -> List String -> (Expr, Expr) -> (Expr, Expr)
+rewriteArgLetBind : ArgRw -> List String -> LetBind -> LetBind
+rewriteArgScoped : ArgRw -> List String -> Expr -> Expr
+rewriteArgStmts : ArgRw -> List String -> List DoStmt -> List DoStmt
+rewriteBinopExpr : Expr -> Expr
+rewriteRPDict : List String -> List String -> Expr -> Expr
+rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
+routeLocalSym : Route -> String
+routeOfMono : List ImplEntry -> Mono -> <Mut> Route
+routeOfMonoEncl : List ImplEntry -> String -> String -> Mono -> <Mut> Route
+routeOfMonoTop : List Decl -> List ImplEntry -> String -> Mono -> <Mut> Route
+routeRDictName : Route -> List String
+routeUndeterminedTop : List Decl -> List ImplEntry -> String -> <Mut> Route
+routesOfMonos : List ImplEntry -> List Mono -> <Mut> List Route
+routesOfMonosTop : List Decl -> List ImplEntry -> List Mono -> List String -> <Mut> List Route
+rowArgNames : Ty -> List String
+rowArgNamesApp : String -> List Ty -> List String -> List String
+rowArgOf : List (String, Ref Effvar) -> Ty -> EffRow
+rowFreeEffvars : EffRow -> List Int
+sameRootId : Int -> Mono -> Bool
+scEdge : String -> String -> Map String (List String) -> <Mut> Unit
+scEdges : String -> List String -> Map String (List String) -> <Mut> Unit
+sccSchemes : List (String, Ty) -> Map String (List (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
+schemeHasConcreteDomain : Scheme -> <Mut> Bool
+schemeIds : Scheme -> List Int
+schemeLines : List (String, Scheme) -> <Mut> List String
+schemeMono : Scheme -> Mono
+schemeObligationOne : List Int -> String -> List String -> Ty -> Mono -> <Mut> List (String, Int)
+schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> List (String, Int)
+schemeObligationsRef : Ref (List (String, List (String, Int)))
+scopeArities : List ((String, String), List Int) -> Map String Unit -> List Decl -> List (String, List Int)
+scopeMethodArities : List ((String, String), List Int) -> Map String Unit -> List (String, List Int)
+seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> <Mut> Unit
+seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
+seedEffectDomains : Unit -> <Mut> Unit
+seedSchemesOut : Ref (List (String, Scheme))
+semigroupEntry : (String, (String, List String, Ty)) -> Bool
+semigroupIfaceRegistered : Unit -> <Mut> Bool
+setCardCap : Int
+setCoherenceUserDecls : List Decl -> <Mut> Unit
+setLocIfSome : Option Loc -> <Mut> Unit
+setNumlitFloats : Unit -> <Mut> Unit
+setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Unit
+shadowHeadCtxRef : Ref Bool
+shadowKeyTableRef : Ref (List KeyEntry)
+shadowStandaloneHead : TcEnv -> Expr -> <Mut> Option (String, List (Ref Route))
+shadowStandaloneSchemesRef : Ref (List (String, Scheme))
+shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> <Mut> Mono
+sigConstraints : Ty -> List (String, String)
+sigNameSetRef : Ref (Map String Unit)
+sigNamesToSet : List (String, Ty) -> Map String Unit -> Map String Unit
+sigToScheme : Ty -> <Mut> Scheme
+sigToSchemeTvs : Ty -> <Mut> (Scheme, List (String, Mono))
+sigTooGeneralMsg : String -> Ty -> String
+sigTvarIds : List Mono -> List Int
+sigsOf : List Decl -> List (String, Ty)
+singleParamIfaceMethod : String -> <Mut> Bool
+siteRDictName : Ref Route -> List String
+siteRDictNamesL : Ref (List Route) -> List String
+sortAxes : List (String, Param) -> List (String, Param)
+spineFirstArg : Expr -> Option Expr
+spineHeadIsApp : Expr -> Bool
+spineHeadMono : Mono -> Mono
+spineParts : Mono -> (Mono, List Mono)
+splitOnComma : String -> List String
+splitOnCommaGo : String -> Int -> Int -> List String -> List String
+splitOnFirstEqGo : String -> Int -> Int -> Option Int
+splitOnFirstEqStr : String -> Option Int
+splitOnSemi : String -> List String
+splitOnSemiGo : String -> Int -> Int -> List String -> List String
+stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+stampRLocalOrFallback : Bool -> Ref Route -> String -> <Mut> Unit
+stampRoutes : List (Ref Route) -> <Mut> Unit
+stampUnopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+standaloneShadowDomain : String -> <Mut> Option Mono
+standaloneShadowScheme : String -> <Mut> Option Mono
+standaloneValuesRef : Ref (List String)
+strHasSlash : String -> Bool
+strHasSlashGo : String -> Int -> Int -> Bool
+stripArrows : Mono -> Mono
+stripEff : Ty -> Ty
+stripTyConstraints : Ty -> Ty
+stripTyWrap : Ty -> Ty
+strongconnect : String -> Map String (List String) -> <Mut> Unit
+subTopOf : Param -> Param
+subsetStr : List String -> List String -> Bool
+substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
+substMono : List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> Mono
+substMonoP : Bool -> List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> <Mut> Mono
+substParams : List String -> List (String, Ty) -> List Ty
+substRow : List (Int, Ref Effvar) -> EffRow -> EffRow
+substTyVars : List (String, Ty) -> Ty -> Ty
+suggestField : String -> List String -> Option String
+superDeclsRef : Ref (List Decl)
+superImplExists : List Decl -> String -> List Ty -> Bool
+superImplMsgsOf : List Decl -> Decl -> List String
+superMsgFor : List Decl -> String -> List Ty -> List (String, Ty) -> Super -> List String
+superSlotOf : List (String, Int) -> Super -> List (String, Int)
+superSlotsOf : List Decl -> (String, Int) -> List (String, Int)
+suppressArgStamp : Ref Bool
+suppressRLocalRecord : Ref Bool
+swapArgFix : Expr -> Expr -> String -> Option (Loc, String)
+tagAllLitLocs : Mono -> String -> <Mut> Unit
+tagLitLocsWithRoot : Int -> String -> List (Mono, Loc) -> <Mut> Unit
+tagNumlitCtxIf : Mono -> Mono -> String -> <Mut> Unit
+tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
+tailNameList : Option String -> List String
+takeFirst : Int -> List a -> List a
+takeUntilInclusiveS : String -> List String -> List String
+tarjanAll : List String -> Map String (List String) -> <Mut> Unit
+tarjanSCCs : List String -> Map String (List String) -> <Mut> List (List String)
+tcClauseDef : String -> FunClause -> (String, (List Pat, Expr))
+teErrMsg : (String, String, Option Loc) -> String
+tjCounter : Ref Int
+tjIndex : Ref (Map String Int)
+tjLow : Ref (Map String Int)
+tjLowOf : String -> Int
+tjOn : Ref (Map String Bool)
+tjOnStack : String -> Bool
+tjOut : Ref (List (List String))
+tjPop : String -> List String -> <Mut> Unit
+tjStack : Ref (List String)
+tjVisit : String -> Map String (List String) -> <Mut> Unit
+transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
+transitiveImporterIds : String -> List (String, List Decl) -> List String
+transitivelyImports : String -> String -> List (String, List Decl) -> Bool
+trySwapReport : String -> Expr -> Expr -> Mono -> Mono -> <Mut> Option Mono
+tupleArgElems : Expr -> Option (List Expr)
+tupleCallCandidates : Ref (List (Mono, String, Option (Loc, String)))
+tupleCallHintFor : Mono -> <Mut> Option (String, Option (Loc, String))
+tupleCallShapeHint : Expr -> Expr -> Mono -> <Mut> Option (String, Option (Loc, String))
+tupleCallSpanLoc : Expr -> Expr -> Option Loc
+tupleHeadTagTc : Int -> String
+tupleMono : List Mono -> Mono
+tupleSpine : Mono -> Option (List Mono)
+tupleSpineOf : Mono -> List Mono -> Mono
+tupleTagArity : String -> Option Int
+tupleTagArityGo : String -> Int -> Option Int
+tupleUnifyClash : Mono -> Mono -> <Mut> Bool
+twoArgCallee : TcEnv -> Expr -> <Mut> Option (String, Expr, Mono, Mono)
+tyAppSpine : Ty -> (Ty, List Ty)
+tyConNamesInConstraint : Constraint -> List String
+tyConNamesInTy : Ty -> List String
+tyHeadEq : Ty -> Ty -> Bool
+tyIsConcrete : Ty -> Bool
+tyMatchesAst : Ty -> Ty -> Bool
+tyOfMsg : Option String -> String
+tyStrictlyMoreSpecific : Ty -> Ty -> Bool
+tyStructEq : Ty -> Ty -> Bool
+tyStructEqList : List Ty -> List Ty -> Bool
+tySubsumeGo : Ty -> Ty -> Option (List (String, Ty)) -> Option (List (String, Ty))
+tySubsumeGoList : List Ty -> List Ty -> Option (List (String, Ty)) -> Option (List (String, Ty))
+tySubsumes : Ty -> Ty -> Bool
+tyVarArgNames : List Ty -> List String
+tyVarNames : Ty -> List String
+tyVarNamesWithConstraints : Ty -> List String
+typeErrorHelpFix : Ref (List (String, String, Option (Loc, String)))
+typeErrorLines : List String -> List String
+typeErrors : Ref (List (String, String, Option Loc))
+typeErrorsSticky : Ref Bool
+typeMismatch : Mono -> Mono -> <Mut> Unit
+typeMismatchInDo : Mono -> Mono -> Loc -> <Mut> Unit
+typeMismatchReport : Mono -> Mono -> <Mut> Unit
+tyvarCounter : Ref Int
+tyvarId : Ref Tyvar -> Int
+tyvarLevel : Ref Tyvar -> Int
+unboundSpineHead : Mono -> Bool
+unboundVarFresh : String -> <Mut> Mono
+unboundVarMsg : String -> String
+unify : Mono -> Mono -> <Mut> Unit
+unifyAll : Mono -> List Mono -> <Mut> Unit
+unifyAllNumlit : Mono -> List Mono -> <Mut> Unit
+unifyClauses : TcEnv -> Mono -> List (List Pat, Expr) -> <Mut> Unit
+unifyFieldAssign : TcEnv -> String -> List (String, Mono) -> String -> Expr -> <Mut> Unit
+unifyFieldAssigns : TcEnv -> String -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
+unifyN : Mono -> Mono -> <Mut> Unit
+unifyParamsExpected : List Mono -> List Mono -> <Mut> Unit
+unifyRow : EffRow -> EffRow -> <Mut> Unit
+unifyRowN : EffRow -> EffRow -> <Mut> Unit
+unifyStandaloneDomain : Mono -> Mono -> Option Loc -> <Mut> Unit
+unifyVars : Ref Tyvar -> Ref Tyvar -> <Mut> Unit
+uniqueImplTysFor : List Decl -> String -> String -> Option (List Ty)
+unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
+unknownCtorMsg : String -> String
+unknownFieldFresh : String -> String -> List String -> <Mut> Mono
+unknownFieldMsg : String -> String -> String
+unknownRecordFresh : String -> <Mut> Mono
+unknownRecordMsg : String -> String
+unlocExpr : Expr -> Expr
+unopDictVarOf : String -> Mono -> Bool -> String -> <Mut> Option String
+unopMethod : String -> Option String
+unopMethodApp : String -> Expr -> Ref Route -> Expr
+unreachableArmWarning : String
+useMemberName : UseMember -> String
+useModuleId : Decl -> List String
+usePathModuleId : UsePath -> String
+userIfaceNamesRef : Ref (List String)
+usesImplDict : String -> Int -> Expr -> Bool
+varNameForId : List (String, Ty, List (String, Mono)) -> String -> Int -> <Mut> String
+variantFieldTailNames : Variant -> List String
+walkDispatch : List String -> Ty -> Mono -> List (String, Mono)
+wrapIf : Bool -> String -> String
+zerosL : Int -> List Int
+zipUnify : List Mono -> List Mono -> <Mut> Unit

@@ -1,14 +1,14 @@
 ROOT/test/lint_multi_fixtures/a_findings.mdk:
-ROOT/test/lint_multi_fixtures/a_findings.mdk:3:1: [rule-match-on-param] function 'greet' matches on parameter 'x' — consider a multi-clause function definition
+ROOT/test/lint_multi_fixtures/a_findings.mdk:3:1: [rule-match-on-param] function 'greet' matches on parameter 'x' — use a multi-clause function definition
   |
 3 | greet x = match x
   |  ^
-ROOT/test/lint_multi_fixtures/a_findings.mdk:3:1: [rule-dead-code] private top-level 'greet' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_multi_fixtures/a_findings.mdk:3:1: [rule-dead-code] private top-level 'greet' is unreachable from exports/main/doctests — remove it (dead code)
   |
 3 | greet x = match x
   |  ^
 ROOT/test/lint_multi_fixtures/b_clean.mdk:
-ROOT/test/lint_multi_fixtures/b_clean.mdk:3:1: [rule-dead-code] private top-level 'add' is unreachable from exports/main/doctests — dead code (remove it)
+ROOT/test/lint_multi_fixtures/b_clean.mdk:3:1: [rule-dead-code] private top-level 'add' is unreachable from exports/main/doctests — remove it (dead code)
   |
 3 | add x y = x + y
   |  ^

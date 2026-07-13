@@ -1,0 +1,125 @@
+# test/engine_divergence.txt — the KNOWN-FAILURE LEDGER for diff_compiler_engines.sh.
+#
+# rustc's tests/crashes model: every line asserts the CURRENT (wrong or degraded)
+# behaviour of a fixture, so that (a) nothing regresses further, and (b) AN
+# ACCIDENTAL FIX IS DETECTED — the gate FAILS if a line here starts passing, and
+# tells you to promote it by deleting the line.  A plain skip-list cannot do that,
+# and a silent skip is how this suite already lies to itself (TESTING-DESIGN §2.3).
+#
+# Format:   <key>  <signature>  <category>  <reason>
+#
+#   key        llvm/<name> or wasm/<name>  (corpus + fixture basename)
+#
+#   signature  <en>:<nw>:<ew>:<eval>:<native>:<wasm>
+#                en / nw / ew  the three PAIRWISE verdicts — eval-vs-native,
+#                              native-vs-wasm, eval-vs-wasm — each  eq | ne | na
+#                eval/native/wasm  whether that arm could run at all —  ran | na
+#              All three pairs are recorded rather than one collapsed "agree" flag,
+#              so that when an arm is unavailable (no wasm-tools, say) the gate can
+#              still soundly enforce the pairs that DO NOT depend on it, instead of
+#              dropping the whole fixture.
+#
+#   category   one of (see test/ENGINE-DIVERGENCE.md for the full write-up):
+#                eval:rng-hash-lcg          eval:extern-not-implemented
+#                eval:no-tco                eval:unsupported-node
+#                eval:intended-abort        native:prelude-collision
+#                native:autoprint-ambiguous wasm:emitter-gap
+#                wasm:codegen-bug
+#
+#   reason     the specific bug, one line.  NEVER leave it as TODO.
+#
+# A fixture ABSENT from this file is expected to be CLEAN: eq:eq:eq:ran:ran:ran.
+# Regenerate with CAPTURE=1 (then review the diff and write the reasons).
+
+llvm/abort_exit_after_output       na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/abort_exit                    na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: wasm-tools parse rejected the WAT: error: unknown type: failed to find name `$str`
+llvm/abort_exit_nonzero            na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: wasm-tools parse rejected the WAT: error: unknown type: failed to find name `$str`
+llvm/abort_panic                   na:na:na:na:na:ran         eval:intended-abort native:autoprint-ambiguous the program's OWN intended panic; the na classifier is conservative (any interpreter E-* counts as na) | native: main = panic .. is polymorphic, so the auto-print wrap cannot resolve Display
+llvm/adt_list_fold                 na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/adt_option                    na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build ('orElse' expects a container (like List or Array) here, but got Maybe. Pass a List or Array, or convert the Maybe to one first.)
+llvm/arr_fill                      na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no arrayFill — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/arr_set_unit                  eq:ne:ne:ran:ran:ran       wasm:codegen-bug the wasm scalar auto-print renders a Unit main as 0; eval+native correctly print nothing
+llvm/bitwise_ops                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'bitOr' [in showI]
+llvm/char_lit                      eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
+llvm/char_max                      eq:ne:ne:ran:ran:ran       wasm:codegen-bug charCode leaks the i31 tag: wasm prints 2n+1 (2228223 for 1114111); eval+native agree
+llvm/char_min                      eq:ne:ne:ran:ran:ran       wasm:codegen-bug charCode leaks the i31 tag: wasm prints 2n+1 (1 for 0); eval+native agree
+llvm/char_unicode                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
+llvm/clo_adt                       na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/clock_monotonic_sleep         eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'monotonicSec' [in ?]
+llvm/debug_charlit                 eq:ne:ne:ran:ran:ran       wasm:codegen-bug debugCharLit traps at run with 'illegal cast'; eval+native print '\n'
+llvm/debug_strlit                  eq:ne:ne:ran:ran:ran       wasm:codegen-bug debugStringLit traps at run with 'illegal cast'; eval+native print the escaped string
+llvm/env_args_empty                na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no args — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/env_getenv_none               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/env_getenv_some               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/fn_bool_return                eq:ne:ne:ran:ran:ran       wasm:codegen-bug the wasm scalar auto-print renders a Bool main as 1, not True (formatting, not a value bug)
+llvm/fn_float_chain                eq:ne:ne:ran:ran:ran       wasm:codegen-bug wasm float detection is signature-driven (declSigTypeNames); an UNSIGNATURED float fn traps with 'illegal cast' — adding f : Float -> Float fixes it
+llvm/guard_refut_ctor              eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: refutable pattern guard (`p <- e`) in a tail match arm — not yet lowered
+llvm/hash_int                      ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+llvm/hash_string                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+llvm/lam_rec_tuple                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
+llvm/let_local_fn                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
+llvm/let_local_rec                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
+llvm/list_filter                   na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/list_sum                      na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/lit_int_large_tag             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'intBitsToFloat' [in ?]
+llvm/match_char_lit                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 9 failed to validate
+llvm/match_str_default             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 22 failed to validate
+llvm/match_str_lit                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 22 failed to validate
+llvm/math_externs                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'sqrt' [in ?]
+llvm/num_e                         eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'e'
+llvm/num_int_max                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'intMaxBound'
+llvm/num_int_min                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'intMinBound'
+llvm/num_pi                        eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'pi'
+llvm/rec_build                     na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
+llvm/rec_local                     eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
+llvm/rec_update                    na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
+llvm/rng_bool                      ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+llvm/rng_char                      ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+llvm/rng_float                     ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+llvm/rng_int                       ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; setSeed 42 then randomInt 1 6 gives 4 under run, 2 under build
+llvm/rng_pat_char                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): ?
+llvm/rng_pat_int_excl              eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): ?
+llvm/rng_pat_int_incl              eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): ?
+llvm/rng_pat_int_neg               eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unsupported pattern in match arm (variable / wildcard / constructor / literal): ?
+llvm/rng_seq                       ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+llvm/s13_append                    na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
+llvm/s13_exists_false              na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no fileExists — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+llvm/s13_exists_true               na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
+llvm/s13_listdir_err               na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no listDir — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'listDir' [in ?]
+llvm/s13_listdir_ok                na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no listDir — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'listDir' [in ?]
+llvm/s13_make_dir                  na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no makeDir — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'makeDir' [in ?]
+llvm/s13_remove_dir_err            na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no removeDir — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'removeDir' [in ?]
+llvm/s13_remove_file_err           na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no removeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'removeFile' [in ?]
+llvm/s13_remove_file               na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
+llvm/s13_rename                    na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
+llvm/s13_run_command               na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no runCommand — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'runCommand' [in ?]
+llvm/s13_stat_err                  na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no statFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'statFile' [in ?]
+llvm/s13_stat_file                 na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFileBytes — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'statFile' [in ?]
+llvm/s13_write_read                na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
+llvm/uni_to_lower                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
+llvm/uni_to_upper                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
+llvm/where_local_rec               eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CLetGroup (where/let-group — W4)
+llvm/where_sibling_ref             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CLetGroup (where/let-group — W4)
+wasm/clos_deep_tco                 na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/clos_reftco_indirect          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/stagea_extern_probe           na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no arrayFill — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+wasm/w7_array_index                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'index' [in ?]
+wasm/w7_array_oob                  na:na:na:na:ran:na         eval:intended-abort wasm:emitter-gap the program's OWN intended OOB trap; the na classifier is conservative (any interpreter E-* counts as na) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'index' [in ?]
+wasm/w7_array_slice                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'index' [in ?]
+wasm/w7_range_array                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'index' [in ?]
+wasm/w7_variant_update             na:eq:na:na:ran:ran        eval:unsupported-node eval: unsupported node (slice 2) — an AST node the interpreter never learned to evaluate
+wasm/w8b_hash_float                ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+wasm/w8b_rng_float_determinism     ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; the seeded-determinism contract is violated under run
+wasm/w8_hash_char                  ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+wasm/w8_hash_int                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+wasm/w8_hash_string                ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
+wasm/w8_rng_bool                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+wasm/w8_rng_char                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
+wasm/w8_rng_int_determinism        ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; the seeded-determinism contract is violated under run
+wasm/w_deep_append                 na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_file_exists_false           na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no fileExists — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+wasm/w_file_exists_true            na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no fileExists — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+wasm/w_readfile_ok                 na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no readFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
+wasm/w_trmc_deep_cons              na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_trmc_dispatch               na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_trmc_strip_clauses          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly

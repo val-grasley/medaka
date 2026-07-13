@@ -1,0 +1,225 @@
+addImportProvenance : List (String, List String) -> String -> List String -> List (String, List String)
+addProvenance : List (String, List String) -> String -> String -> List (String, List String)
+ambigModPhrase : List String -> String
+ambigMods : Env -> String -> List String
+ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+appendMissing : List String -> List String -> List String -> List String
+bestCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
+bestOf : String -> Int -> List String -> Option String
+buildEnv : List Decl -> List Decl -> List Decl -> List String -> Env
+buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> List String -> (Env, List ResError)
+buildErrors : List Decl -> List Decl -> List ResError
+buildExports : List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+builtInEffects : List String
+checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
+checkArmGuards : Option Loc -> Env -> List String -> List Guard -> (List ResError, List String)
+checkConstraint : Option Loc -> Env -> Constraint -> List ResError
+checkDecl : Env -> Decl -> List ResError
+checkEffect : Option Loc -> Env -> String -> List ResError
+checkExpr : Option Loc -> Env -> List String -> Expr -> List ResError
+checkFieldAssign : Option Loc -> Env -> List String -> FieldAssign -> List ResError
+checkFieldType : Env -> Field -> List ResError
+checkFunClause : Option Loc -> Env -> List String -> FunClause -> List ResError
+checkGuard : Option Loc -> Env -> List String -> Guard -> List ResError
+checkGuardArm : Option Loc -> Env -> List String -> GuardArm -> List ResError
+checkIfaceMethod : Env -> IfaceMethod -> List ResError
+checkImplDecl : Env -> String -> List Ty -> List Require -> List ImplMethod -> List ResError
+checkImplIface : Env -> String -> List ImplMethod -> List ResError
+checkImplMethod : Env -> ImplMethod -> List ResError
+checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
+checkInterp : Option Loc -> Env -> List String -> InterpPart -> List ResError
+checkLet : Option Loc -> Env -> List String -> Bool -> Pat -> Expr -> Expr -> List ResError
+checkLetBind : Option Loc -> Env -> List String -> LetBind -> List ResError
+checkLetGroup : Option Loc -> Env -> List String -> List LetBind -> Expr -> List ResError
+checkMethodMember : String -> List String -> ImplMethod -> List ResError
+checkPat : Option Loc -> Env -> Pat -> List ResError
+checkProp : Env -> List PropParam -> Expr -> List ResError
+checkPropParamTy : Env -> PropParam -> List ResError
+checkRecField : Option Loc -> Env -> String -> RecPatField -> List ResError
+checkRecPat : Option Loc -> Env -> String -> List RecPatField -> List ResError
+checkRecordCreate : Option Loc -> Env -> List String -> String -> List FieldAssign -> List ResError
+checkRecordUpdate : Option Loc -> Env -> List String -> Expr -> List FieldAssign -> List ResError
+checkRequire : Env -> Require -> List ResError
+checkSection : Option Loc -> Env -> List String -> Section -> List ResError
+checkStmt : Option Loc -> Env -> List String -> DoStmt -> (List ResError, List String)
+checkStmts : Option Loc -> Env -> List String -> List DoStmt -> List ResError
+checkSuper : Env -> Super -> List ResError
+checkType : Option Loc -> Env -> Ty -> List ResError
+checkVar : Option Loc -> Env -> List String -> String -> List ResError
+checkVariant : Env -> Variant -> List ResError
+collectImports : List ModuleExports -> List Decl -> ImportAdds
+contigGo : List String -> List String -> List Decl -> List ResError
+contiguityErrors : List Decl -> List ResError
+ctorNames : List Decl -> List String
+dataRecordNames : List Decl -> List String
+declBindNames : Decl -> List String
+declLoc : Decl -> Option Loc
+dedupResErrors : List ResError -> List ResError
+dedupResErrorsGo : List ResError -> List String -> List ResError
+dupClauseTail : Option Loc -> String -> Bool -> List FunClause -> List ResError
+dupErr : String -> String -> ResError
+dupValClause : Decl -> Option (String, Bool, Option Loc)
+dupValGo : Option String -> Bool -> List Decl -> List ResError
+dupValueBindingErrors : List Decl -> List ResError
+duplicateErrors : List Decl -> List Decl -> List ResError
+effectNames : List Decl -> List String
+emptyAdds : ImportAdds
+expCtorsDirect : List Decl -> List String
+expEffectsDirect : List Decl -> List String
+expFieldOwnersDirect : List Decl -> List (String, String)
+expIfaceMethodsDirect : List Decl -> List (String, List String)
+expInterfacesDirect : List Decl -> List String
+expTypeCtorsDirect : List Decl -> List (String, List String)
+expTypesDirect : List Decl -> List String
+expValuesDirect : List Decl -> List String
+expandMemberErrs : ModuleExports -> UseMember -> List ResError
+expandMemberNames : ModuleExports -> UseMember -> List (String, Loc)
+externNames : List Decl -> List String
+externWithBodyErrors : List String -> List Decl -> List ResError
+fieldCheck : Option Loc -> Env -> String -> String -> List ResError
+fieldKnownErr : Option Loc -> Env -> String -> List ResError
+fieldOwnersOf : List Decl -> List (String, String)
+fieldVerdict : Option Loc -> Env -> String -> String -> List String -> List ResError
+filterContains : List String -> List String -> List String
+filterIfaceMethods : List String -> List (String, List String) -> List (String, List String)
+filterKeepOpen : List String -> List String -> List String
+findDups : List String -> List String -> List String
+findExports : String -> List ModuleExports -> Option ModuleExports
+firstExprLoc : Expr -> Option Loc
+firstLocList : List Expr -> Option Loc
+firstOr : String -> List String -> String
+foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
+foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+hasFoldable : List Decl -> Bool
+hasNullaryClause : List FunClause -> Bool
+hasOrdering : List Decl -> Bool
+haskellCtorAliases : List (String, String)
+haskellNote : String -> String -> String
+haskellTypeAliases : List (String, String)
+haskellValueAliases : List (String, String)
+ifaceMethodNm : IfaceMethod -> String
+ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
+ifaceMethodsOf : String -> List (String, List String) -> List String
+ifaceValsOf : ModuleExports -> String -> List String
+implMethodNm : ImplMethod -> String
+importValueNames : List ModuleExports -> UsePath -> List String
+importedEffects : List ModuleExports -> List Decl -> List String
+importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
+importedModuleValueSets : List ModuleExports -> List Decl -> List (String, List String)
+importedNames : List Decl -> List String
+importedNamesMM : UsePath -> ModuleExports -> (List String, List ResError)
+interfaceList : List Decl -> List (String, List String)
+internalExterns : List String
+internalGuardFor : Bool -> List String
+isAmbiguous : Env -> String -> Bool
+isEmptyL : List a -> Bool
+isHaskellAliasPair : String -> String -> Bool
+isHint : String -> Bool
+isNonEmpty : List a -> Bool
+isPubExp : ModuleExports -> String -> Bool
+isTransparentDecl : Decl -> Bool
+isTupleCtorTyName : String -> Bool
+keepAmbiguous : List String -> List (String, List String) -> List (String, List String)
+keepBetter : String -> Int -> Option (String, Int) -> Option (String, Int)
+keepBoundMethods : Env -> List String -> List String
+lastOf : List String -> String
+letBindDupErrors : Option Loc -> String -> List FunClause -> List ResError
+letBindName : LetBind -> String
+locKey : Option Loc -> String
+lookupValue : Env -> List String -> String -> Bool
+matchesExport : String -> (String, List String) -> List String
+memberName : UseMember -> String
+mergeAdds : ImportAdds -> ImportAdds -> ImportAdds
+modulesExportingName : Env -> String -> List String
+newlyDuplicated : Option Loc -> List String -> List String -> List ResError
+oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
+oneImportEffects : List ModuleExports -> UsePath -> List String
+oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
+oneImportedModuleValues : List ModuleExports -> UsePath -> List (String, List String)
+optStrEq : Option String -> String -> Bool
+orElseLocL : Option Loc -> Option Loc -> Option Loc
+overPubUse : List ModuleExports -> (UsePath -> ModuleExports -> List a) -> UsePath -> List a
+ownedFieldOwners : ModuleExports -> List (String, String) -> List (String, String)
+ownersForTypes : List String -> List (String, String) -> List (String, String)
+ownersOf : String -> List (String, String) -> List String
+ownsAnyField : String -> List (String, String) -> Bool
+patBindings : Pat -> List String
+patGroupDupErrors : Option Loc -> String -> List Pat -> List ResError
+patsBindings : List Pat -> List String
+ppResError : ResError -> String
+ppResErrorLocated : ResError -> String
+ppResErrorLocatedF : String -> ResError -> String
+preludeValueNames : List Decl -> List String
+primitiveConstructors : List String
+primitiveTypes : List String
+programIsCore : List Decl -> Bool
+propParamName : PropParam -> String
+pubErr : ModuleExports -> String -> List ResError
+pubErrLoc : ModuleExports -> (String, Loc) -> List ResError
+pubIfaceMethodSets : List Decl -> List (List String)
+pubUsePaths : List Decl -> List UsePath
+publicIfaceMethodVals : List Decl -> Env -> List String
+reExpCtors : List ModuleExports -> List Decl -> List String
+reExpCtorsFrom : UsePath -> ModuleExports -> List String
+reExpEffects : List ModuleExports -> List Decl -> List String
+reExpEffectsFrom : UsePath -> ModuleExports -> List String
+reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
+reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
+reExpInterfaces : List ModuleExports -> List Decl -> List String
+reExpInterfacesFrom : UsePath -> ModuleExports -> List String
+reExpTypes : List ModuleExports -> List Decl -> List String
+reExpTypesFrom : UsePath -> ModuleExports -> List String
+reExpValues : List ModuleExports -> List Decl -> List String
+reExpValuesFrom : UsePath -> ModuleExports -> List String
+realImport : ModuleExports -> UsePath -> Loc -> ImportAdds
+recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
+recCreateHead : Option Loc -> Env -> String -> List FieldAssign -> List ResError
+recFieldBindings : RecPatField -> List String
+recFieldSub : Option Loc -> Env -> Option Pat -> List ResError
+recPatHead : Option Loc -> Env -> String -> List ResError
+recUpdateField : Option Loc -> Env -> List String -> FieldAssign -> List ResError
+recUpdateVerdict : Option Loc -> String -> List String -> List ResError
+recordFieldOwner : String -> Field -> (String, String)
+reexportNamesOf : UsePath -> ModuleExports -> List String
+removeAll : List String -> List String -> List String
+resErrorCode : ResError -> String
+resErrorDidYouMean : ResError -> Option (String, String)
+resErrorLoc : ResError -> Option Loc
+resErrorSexp : ResError -> String
+resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+resolveModulesErrors : List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesToHumane : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToLinesG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
+resolveProgramG2 : List String -> List Decl -> List Decl -> List Decl -> List ResError
+resolveToLines : List Decl -> List Decl -> List Decl -> String
+rewriteNonRec : List String -> ResError -> ResError
+singleFileImportErrors : List Decl -> List ResError
+startsWithAt : Array Char -> Bool
+stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
+suggestCtor : String -> Option String
+suggestName : Env -> List String -> String -> Option String
+suggestNameFuzzy : Env -> List String -> String -> Option String
+suggestType : Env -> String -> Option String
+suggestTypeFuzzy : Env -> String -> Option String
+typeCtorsOf : String -> ModuleExports -> Option (List String)
+unboundVarErrors : Option Loc -> Env -> List String -> String -> List ResError
+unionStr : List String -> List String -> List String
+useImportNames : UsePath -> List String
+useModId : UsePath -> String
+usePathLocsOf : List Decl -> List (UsePath, Loc)
+usePathsOf : List Decl -> List UsePath
+useStubNames : UsePath -> List String
+userValueNames : List Decl -> List String
+valueProvenance : List ModuleExports -> List UsePath -> List (String, List String)
+variantFieldOwners : Variant -> List (String, String)
+variantName : Variant -> String
+whenL : Bool -> List a -> List a
+withResErrorLoc : Loc -> ResError -> ResError

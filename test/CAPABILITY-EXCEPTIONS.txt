@@ -1,0 +1,234 @@
+# test/CAPABILITY-EXCEPTIONS.txt — checked-in source of truth for every KNOWN
+# (extern, engine) capability gap. Read test/CAPABILITY-MATRIX.md first.
+#
+# Consumed by test/diff_compiler_capability_matrix.sh. That gate FAILS if:
+#   - an extern is unsupported by an engine and has NO row here (a "silent
+#     omission" — exactly how the interpreter's 37-extern gap survived
+#     undetected), or
+#   - an extern DOES have a row here claiming it's unsupported, but the
+#     engine's source now actually implements it (an "accidental fix" —
+#     promote it: delete the row). Same principle as test/fuzz_allowlist.txt
+#     in this arc (rustc's tests/crashes model).
+#
+# Format (TAB-separated; blank lines and '#' comments ignored):
+#   extern<TAB>engine<TAB>category<TAB>reason[<TAB>pattern]
+#
+#   engine   ∈ interp | llvm | wasm
+#   category ∈ BUG | DEAD | TODO | PERMANENT | TRAP-STUB | WASM-GAP | FROZEN-CONSTANT
+#     BUG             — the extern works in >=1 OTHER engine; this engine's
+#                        absence is a real regression, to be fixed (NOT a
+#                        permanent exception — see PLAN.md for the tracked
+#                        interpreter-Value-refactor workstream).
+#     DEAD            — declared in runtime.mdk but not called by any current
+#                        stdlib code path (superseded by a →MEDAKA rewrite);
+#                        still directly reachable by a user program that
+#                        names the extern explicitly, so not risk-free, but
+#                        not an active regression either.
+#     TODO            — unimplemented in EVERY engine; a planned/forward
+#                        primitive with no caller yet, not an asymmetric gap.
+#     PERMANENT       — will never be implemented by this engine for a
+#                        documented structural reason (e.g. WasmGC has no
+#                        raw-socket equivalent). Not expected to close.
+#     TRAP-STUB       — bound in source, but to an `unreachable`/abort
+#                        instruction rather than a real implementation; a
+#                        program that actually evaluates it crashes loudly
+#                        (better than FROZEN-CONSTANT's silent wrong value,
+#                        but still not a real implementation).
+#     WASM-GAP        — unported to the WasmGC backend; no structural
+#                        blocker (unlike PERMANENT), just not done yet.
+#     FROZEN-CONSTANT — WORSE than missing: the interpreter DOES bind this
+#                        name (so `is_impl=Y` — no exceptions row is needed
+#                        for the pass/fail check), but to a fabricated/no-op
+#                        value instead of a real implementation, which is
+#                        silent wrong behavior, not a loud panic. Tracked
+#                        here anyway (per the task spec) so it can't be
+#                        forgotten; the `pattern` column is a literal
+#                        substring the gate greps for in eval.mdk on every
+#                        run — if it disappears, the gate FAILS and asks a
+#                        human to check whether it was fixed for real.
+#
+# Every row was hand-verified against source on 2026-07-13 (see the citations
+# in the reason text and in diff_compiler_capability_matrix.sh's header).
+
+# ============================================================================
+# INTERPRETER — 37 rows, ALL category BUG. These are NOT permanent exceptions.
+# eval.mdk was written as a value-oracle for differential testing against the
+# (now-deleted) OCaml reference compiler, so effectful/IO externs were "out of
+# scope" by construction. When OCaml was removed (2026-06-26) eval.mdk was
+# silently promoted to be the `medaka run` production engine and this gap was
+# never re-litigated. Fix tracked as a separate, larger workstream (an
+# effect-polymorphic Value refactor) — NOT in scope for this gate itself.
+# ============================================================================
+
+# --- file I/O (13): LLVM implements the whole isFileExtern family; the
+#     interpreter implements none of it. ---
+appendFile	interp	BUG	implemented by llvm (isFileExtern) and wasm-partially, missing from interp — BUG(T7)
+canonicalizePath	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+fileExists	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+listDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+makeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+readFileBytes	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+removeDir	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+removeFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+rename	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+statFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+writeFile	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+writeFileBytes	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+
+# --- net (10): LLVM implements the whole isNetExtern family; interpreter none. ---
+netClose	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netListenPort	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netRecv	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netResolve	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netSend	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netSetTimeout	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netShutdown	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netTcpAccept	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netTcpConnect	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+netTcpListen	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+
+# --- stdin (4) ---
+readAll	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+readExactly	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+readLine	interp	BUG	implemented by llvm, missing from interp — BUG(T7); `readLine` is one of the most basic IO primitives a beginner reaches for
+readLineOpt	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+
+# --- env (3) ---
+args	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+executablePath	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
+getEnv	interp	BUG	implemented by llvm and wasm, missing from interp — BUG(T7)
+
+# --- singles ---
+exit	interp	BUG	implemented by llvm (isAbortExtern) and wasm, missing from interp — BUG(T7)
+flushStdout	interp	BUG	implemented by llvm (isIoExtern), missing from interp — BUG(T7)
+runCommand	interp	BUG	implemented by llvm (isFileExtern family), missing from interp — BUG(T7)
+
+# --- pure / <Mut> array ops (3) — NOT effect-related; even a PURE extern
+#     with no effect row at all (arraySortBy) panics under `medaka run`. ---
+arrayFill	interp	BUG	implemented by llvm and wasm (isArrLeafExtern/isArrayExternW), missing from interp — BUG(T7); actively called by stdlib/array.mdk's `fill` (stdlib/array.mdk:282), so any user calling Array.fill under `medaka run` panics today
+arraySortBy	interp	BUG	NOT called by current stdlib (RUNTIME-DESIGN.md §4 / STDLIB.md: sort/sortBy were rewritten →MEDAKA as a pure mergeSortBy 2026-06-07, and this extern is "dead in the stdlib") but it is NOT internal-extern-guarded (compiler/frontend/resolve.mdk internalExterns), so a user program CAN call it directly and hit "unbound identifier" under `medaka run` even though llvm/wasm also don't implement it (see the llvm/wasm DEAD rows below) — mark BUG(T7) per the interpreter-specific asymmetry-with-nothing-else framing, but note this one is closer to a dead/vestigial extern than a live regression
+arraySortInPlaceBy	interp	BUG	same →MEDAKA-superseded history as arraySortBy above; IS internal-extern-guarded (compiler/frontend/resolve.mdk:208), so only reachable via --allow-internal or from within stdlib itself, neither of which calls it — mark BUG(T7) per the task framing, lowest-risk of the 37
+
+# --- assertSnapshot (1) — unimplemented in ALL THREE engines, but the task
+#     spec explicitly bundles it into "the 37" so it is filed as interp BUG
+#     here; see the llvm/wasm rows below where it is filed TODO instead
+#     (no asymmetry there — nobody implements it yet). ---
+assertSnapshot	interp	BUG	unimplemented in all 3 engines (see llvm/wasm TODO rows); no stdlib caller yet — a forward-declared snapshot-testing primitive (TESTING-DESIGN.md §4.7 "medaka test --promote"); filed BUG(T7) here per the 37-count framing even though it isn't an asymmetric regression against another engine
+
+# ============================================================================
+# INTERPRETER — FROZEN-CONSTANT (6). These ARE bound (is_impl=Y), so no
+# pass/fail row is needed above, but they're worse than missing: every one
+# silently returns a fabricated/no-op value instead of doing the real thing.
+# `pattern` is the literal source substring the gate re-checks every run.
+# ============================================================================
+wallTimeSec	interp	FROZEN-CONSTANT	eval.mdk:1809 hardcodes 1700000000.0 — the interpreter has no FFI to gettimeofday	pWallTimeSec _ = VFloat 1700000000.0
+monotonicSec	interp	FROZEN-CONSTANT	eval.mdk:1816 hardcodes 1000.0 — so every elapsed-time measurement under `medaka run` is exactly 0.0	pMonotonicSec _ = VFloat 1000.0
+sleepMs	interp	FROZEN-CONSTANT	eval.mdk:1818-1820 is a no-op (returns VUnit immediately, never actually sleeps)	pSleepMs (VInt _) = VUnit
+allocBytes	interp	FROZEN-CONSTANT	eval.mdk:1823 hardcodes 0.0 — no FFI to the Boehm GC's allocation counters	pAllocBytes _ = VFloat 0.0
+ePutStr	interp	FROZEN-CONSTANT	eval.mdk:1897 binds to pDiscard — ALL stderr output is silently swallowed under `medaka run`	("ePutStr", prim1M pDiscard)
+ePutStrLn	interp	FROZEN-CONSTANT	eval.mdk:1898 binds to pDiscard — ALL stderr output is silently swallowed under `medaka run`	("ePutStrLn", prim1M pDiscard)
+
+# ============================================================================
+# LLVM — 3 rows.
+# ============================================================================
+arraySortBy	llvm	DEAD	no `is*Extern` family or exact-name dispatch matches it in llvm_emit.mdk; superseded by the →MEDAKA pure-Medaka mergeSortBy (RUNTIME-DESIGN.md §4, STDLIB.md) — "dead in the stdlib" but user-reachable since it is not internal-extern-guarded
+arraySortInPlaceBy	llvm	DEAD	same →MEDAKA history as arraySortBy; additionally internal-extern-guarded (compiler/frontend/resolve.mdk:208), so lowest practical risk of the two
+assertSnapshot	llvm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression
+
+# ============================================================================
+# WASM — 60 rows: 10 PERMANENT (net), 2 TRAP-STUB (int bounds), 2 DEAD
+# (sorts, same history as the llvm rows above), 1 TODO (assertSnapshot),
+# 45 WASM-GAP (unported, no structural blocker).
+# ============================================================================
+
+# --- net (10) — PERMANENT. wasm_emit.mdk's own gapL message says so
+#     (~line 4590/6311): "raw BSD sockets have no WasmGC equivalent. Build
+#     for a native target instead." A `medaka build --target wasm` on a
+#     net-importing program is REJECTED with that message, not silently
+#     miscompiled — this is the honest, by-design gap in the whole matrix. ---
+netClose	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netListenPort	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netRecv	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netResolve	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netSend	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netSetTimeout	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netShutdown	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netTcpAccept	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netTcpConnect	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+netTcpListen	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
+
+# --- int bounds (2) — TRAP-STUB. Present in source but lower to
+#     `["unreachable"]` (wasm_emit.mdk ~line 4116); a program that actually
+#     evaluates intMinBound/intMaxBound aborts rather than getting a wrong
+#     value. Comment there calls this W8b-shaped/deferred. ---
+intMinBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
+intMaxBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
+
+# --- sorts (2) — DEAD, same history as the llvm rows. ---
+arraySortBy	wasm	DEAD	no `is*ExternW` family matches it; superseded by the →MEDAKA pure-Medaka mergeSortBy (WASMGC-DESIGN.md §"→MEDAKA (3)" lists it explicitly as "already pure-Medaka stdlib | unchanged") — dead in the stdlib but user-reachable (not internal-extern-guarded)
+arraySortInPlaceBy	wasm	DEAD	same →MEDAKA history as arraySortBy; internal-extern-guarded, lowest practical risk
+
+# --- assertSnapshot (1) — TODO, same as the llvm row. ---
+assertSnapshot	wasm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression
+
+# --- WASM-GAP (45) — genuinely unported, no structural blocker like net's.
+#     Grouped by theme below; each still gets its own row. ---
+
+# libm math (23): LLVM ports these to direct `call double @mdk_<name>`
+# (isMathUnary/isMathBinary); wasm has no libm host-import or WAT
+# implementation for any of them yet.
+acos	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm (no libm host-import/WAT impl)
+asin	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+atan	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+atan2	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
+cbrt	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+ceil	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+cos	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+cosh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+exp	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+floatRem	wasm	WASM-GAP	fmod(a,b) — ported in llvm (isNumExtern direct list), not yet in wasm
+floor	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+hypot	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
+log	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+log10	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+log2	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+pow	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
+round	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+sin	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+sinh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+sqrt	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+tan	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+tanh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+trunc	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
+
+# bitwise (3) + intBitsToFloat (1): wasm's isLeafExternW ports bitAnd/
+# shiftLeft/shiftRight only; llvm's isBitExtern ports all six.
+bitNot	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
+bitOr	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
+bitXor	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
+intBitsToFloat	wasm	WASM-GAP	ported in llvm (isNumExtern direct list), not yet in wasm
+
+# perf (4): llvm's isPerfExtern does real gettimeofday/clock_gettime/nanosleep/
+# GC-byte-counter FFI; wasm has none of it (no host-import wired for it).
+allocBytes	wasm	WASM-GAP	real GC-byte-counter FFI in llvm (isPerfExtern), no wasm host-import wired
+monotonicSec	wasm	WASM-GAP	real clock_gettime FFI in llvm (isPerfExtern), no wasm host-import wired
+sleepMs	wasm	WASM-GAP	real nanosleep FFI in llvm (isPerfExtern), no wasm host-import wired
+wallTimeSec	wasm	WASM-GAP	real gettimeofday FFI in llvm (isPerfExtern), no wasm host-import wired
+
+# file/stdin/env residual (14): wasm's isLeafExternW ports readFile/
+# fileExists/args/getEnv/canonicalizePath/readFileBytes/writeFileBytes but
+# not the rest of llvm's isFileExtern family.
+appendFile	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+executablePath	wasm	WASM-GAP	ported in llvm (isEnvExtern), not yet in wasm
+listDir	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+makeDir	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+readAll	wasm	WASM-GAP	ported in llvm (isFileExtern, stdin family), not yet in wasm
+readExactly	wasm	WASM-GAP	ported in llvm (isFileExtern, stdin family), not yet in wasm
+readLine	wasm	WASM-GAP	ported in llvm (isFileExtern, stdin family), not yet in wasm
+readLineOpt	wasm	WASM-GAP	ported in llvm (isFileExtern, stdin family), not yet in wasm
+removeDir	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+removeFile	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+rename	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+runCommand	wasm	WASM-GAP	ported in llvm (isFileExtern family, <Exec>), not yet in wasm — a subprocess-exec seam has no obvious browser equivalent either, but it isn't documented PERMANENT anywhere in wasm_emit.mdk the way net is, so filed WASM-GAP not PERMANENT
+statFile	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
+writeFile	wasm	WASM-GAP	ported in llvm (isFileExtern); wasm has writeFileBytes but not the text-mode writeFile

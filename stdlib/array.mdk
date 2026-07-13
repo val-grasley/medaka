@@ -302,7 +302,7 @@ blit src srcOff dst dstOff len =
 -- | Sort in place using the supplied comparison.
 export sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <Mut | e> Unit
 sortInPlaceBy cmp arr =
-  let sorted = mergeSortBy cmp arr
+  let sorted = sortBy cmp arr
   arrayBlit sorted 0 arr 0 (arrayLength arr)
 
 -- | Sort in place by the `Ord` instance.
@@ -318,7 +318,14 @@ sortInPlace arr = sortInPlaceBy compare arr
    > toList (sortBy (x y => compare y x) (fromList [3, 1, 2]))
    [3, 2, 1] -}
 export sortBy : (a -> a -> <e> Ordering) -> Array a -> <e> Array a
-sortBy cmp arr = mergeSortBy cmp arr
+sortBy cmp arr =
+  let n = arrayLength arr
+  if n <= 1 then arrayCopy arr
+  else
+    let mid = n / 2
+    let left = arrayMakeWith mid (i => arrayGetUnsafe i arr)
+    let right = arrayMakeWith (n - mid) (i => arrayGetUnsafe (mid + i) arr)
+    merge cmp (sortBy cmp left) (sortBy cmp right)
 
 {- | Sort into a fresh array by the `Ord` instance.
 
@@ -339,24 +346,12 @@ sortOn key arr =
   let sorted = sortBy ((k1, _) (k2, _) => compare k1 k2) decorated
   arrayMakeWith (arrayLength sorted) (i => snd (arrayGetUnsafe i sorted))
 
--- ── Mergesort helpers (→MEDAKA: Medaka implementation for LLVM backend) ─
-
--- Top-down stable mergesort: returns a fresh sorted array.  No mutation —
--- slices are built with `arrayMakeWith` (pure extern) and the merge step
--- collects into a list then calls `arrayFromList`.
-mergeSortBy : (a -> a -> <e> Ordering) -> Array a -> <e> Array a
-mergeSortBy cmp arr =
-  let n = arrayLength arr
-  if n <= 1 then arrayCopy arr
-  else
-    let mid = n / 2
-    let left = arrayMakeWith mid (i => arrayGetUnsafe i arr)
-    let right = arrayMakeWith (n - mid) (i => arrayGetUnsafe (mid + i) arr)
-    mergeArraysBy cmp (mergeSortBy cmp left) (mergeSortBy cmp right)
+-- ── Merge helpers (→MEDAKA: Medaka implementation for LLVM backend) ────
 
 -- Merge two sorted arrays into a fresh sorted array (stable: equal → left first).
-mergeArraysBy : (a -> a -> <e> Ordering) -> Array a -> Array a -> <e> Array a
-mergeArraysBy cmp left right =
+-- No mutation — collects into a list then calls `arrayFromList`.
+merge : (a -> a -> <e> Ordering) -> Array a -> Array a -> <e> Array a
+merge cmp left right =
   arrayFromList (mergeGo
     cmp
     left

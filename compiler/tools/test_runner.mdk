@@ -41,7 +41,7 @@ collectTests (_::rest) = collectTests rest
 -- Evaluate one test body to an Expectation value and classify it.  A body that
 -- does not reduce to Pass/Fail is an `Errored` (e.g. a partial closure); a body
 -- that genuinely panics is unrecoverable and aborts the whole run.
-export runOneTest : List (String, Value) -> Expr -> <Mut> ExResult
+export runOneTest : List (String, Value e) -> Expr -> <Mut | e> ExResult
 runOneTest evalEnv body =
   let env = extendEnv (EvalEnv [[]]) evalEnv
   match force (eval env body)

@@ -1341,7 +1341,7 @@ INDENT
 LET
 IDENT "sorted"
 EQUAL
-IDENT "mergeSortBy"
+IDENT "sortBy"
 IDENT "cmp"
 IDENT "arr"
 NEWLINE
@@ -1405,9 +1405,79 @@ IDENT "sortBy"
 IDENT "cmp"
 IDENT "arr"
 EQUAL
-IDENT "mergeSortBy"
-IDENT "cmp"
+INDENT
+LET
+IDENT "n"
+EQUAL
+IDENT "arrayLength"
 IDENT "arr"
+NEWLINE
+IF
+IDENT "n"
+LEQ
+INT 1
+THEN
+IDENT "arrayCopy"
+IDENT "arr"
+ELSE
+INDENT
+LET
+IDENT "mid"
+EQUAL
+IDENT "n"
+SLASH
+INT 2
+NEWLINE
+LET
+IDENT "left"
+EQUAL
+IDENT "arrayMakeWith"
+IDENT "mid"
+LPAREN
+IDENT "i"
+FAT_ARROW
+IDENT "arrayGetUnsafe"
+IDENT "i"
+IDENT "arr"
+RPAREN
+NEWLINE
+LET
+IDENT "right"
+EQUAL
+IDENT "arrayMakeWith"
+LPAREN
+IDENT "n"
+MINUS
+IDENT "mid"
+RPAREN
+LPAREN
+IDENT "i"
+FAT_ARROW
+IDENT "arrayGetUnsafe"
+LPAREN
+IDENT "mid"
+PLUS
+IDENT "i"
+RPAREN
+IDENT "arr"
+RPAREN
+NEWLINE
+IDENT "merge"
+IDENT "cmp"
+LPAREN
+IDENT "sortBy"
+IDENT "cmp"
+IDENT "left"
+RPAREN
+LPAREN
+IDENT "sortBy"
+IDENT "cmp"
+IDENT "right"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
 NEWLINE
 EXPORT
 IDENT "sort"
@@ -1522,107 +1592,7 @@ RPAREN
 NEWLINE
 DEDENT
 NEWLINE
-IDENT "mergeSortBy"
-COLON
-LPAREN
-IDENT "a"
-ARROW
-IDENT "a"
-ARROW
-LT
-IDENT "e"
-GT
-UPPER "Ordering"
-RPAREN
-ARROW
-UPPER "Array"
-IDENT "a"
-ARROW
-LT
-IDENT "e"
-GT
-UPPER "Array"
-IDENT "a"
-NEWLINE
-IDENT "mergeSortBy"
-IDENT "cmp"
-IDENT "arr"
-EQUAL
-INDENT
-LET
-IDENT "n"
-EQUAL
-IDENT "arrayLength"
-IDENT "arr"
-NEWLINE
-IF
-IDENT "n"
-LEQ
-INT 1
-THEN
-IDENT "arrayCopy"
-IDENT "arr"
-ELSE
-INDENT
-LET
-IDENT "mid"
-EQUAL
-IDENT "n"
-SLASH
-INT 2
-NEWLINE
-LET
-IDENT "left"
-EQUAL
-IDENT "arrayMakeWith"
-IDENT "mid"
-LPAREN
-IDENT "i"
-FAT_ARROW
-IDENT "arrayGetUnsafe"
-IDENT "i"
-IDENT "arr"
-RPAREN
-NEWLINE
-LET
-IDENT "right"
-EQUAL
-IDENT "arrayMakeWith"
-LPAREN
-IDENT "n"
-MINUS
-IDENT "mid"
-RPAREN
-LPAREN
-IDENT "i"
-FAT_ARROW
-IDENT "arrayGetUnsafe"
-LPAREN
-IDENT "mid"
-PLUS
-IDENT "i"
-RPAREN
-IDENT "arr"
-RPAREN
-NEWLINE
-IDENT "mergeArraysBy"
-IDENT "cmp"
-LPAREN
-IDENT "mergeSortBy"
-IDENT "cmp"
-IDENT "left"
-RPAREN
-LPAREN
-IDENT "mergeSortBy"
-IDENT "cmp"
-IDENT "right"
-RPAREN
-NEWLINE
-DEDENT
-NEWLINE
-DEDENT
-NEWLINE
-IDENT "mergeArraysBy"
+IDENT "merge"
 COLON
 LPAREN
 IDENT "a"
@@ -1647,7 +1617,7 @@ GT
 UPPER "Array"
 IDENT "a"
 NEWLINE
-IDENT "mergeArraysBy"
+IDENT "merge"
 IDENT "cmp"
 IDENT "left"
 IDENT "right"

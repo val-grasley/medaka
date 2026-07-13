@@ -1,0 +1,11 @@
+checkHasErrors : String -> String -> String -> <Mut> Bool
+checkModulesHasErrors : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+declsOfMod : (String, List Decl) -> List Decl
+entryExhaust : List Decl -> List Decl -> List (String, List Decl) -> String
+entryExhaustGo : List Decl -> List (String, List Decl) -> String
+joinNonEmpty : String -> String -> String
+reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+runCheck : String -> String -> String -> <Mut> String
+runCheckModules : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> String

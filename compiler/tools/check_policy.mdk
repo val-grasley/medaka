@@ -498,7 +498,7 @@ runPlugin fnName rtD coreD userD =
       let logged = outputRef.value
       "\{logged}   transform \{escStr sample} = \{ppValue result}\n"
 
-lookupValue : String -> List (String, Value) -> Option Value
+lookupValue : String -> List (String, Value e) -> Option (Value e)
 lookupValue _ [] = None
 lookupValue k ((n, v)::rest) = if k == n then Some v else lookupValue k rest
 

@@ -31,6 +31,153 @@ scope-read (bounded) → frame a precise prompt → get approval → spawn (bg, 
 
 ---
 
+## Agents do NOT run the full suite (2026-07-13)
+
+**The old default — every agent runs `make medaka` + `FORCE=1 build_oracles.sh` +
+the full gate suite — is what serialized this box.** `build_oracles.sh` compiles
+**all 54** probe binaries (54 × `medaka build` + clang) even when the agent's gates
+read **four**. Two agents doing that at once already contend; that is why the
+"one heavy op at a time GLOBALLY" rule existed. It was a symptom, not a law.
+
+**The new loop:**
+
+```
+agent:  make preflight            # targeted: build + run ONLY what the diff touches
+        commit on its own branch, REPORT THE SHA
+orchestrator:
+        verify → push the branch → open a PR → CI runs the FULL suite (free, hosted)
+        merge ONLY on green CI
+```
+
+- **`make preflight`** (`test/preflight.sh`) derives the gate set from
+  `git diff --name-only`, derives the ORACLE set from those gates, and builds only
+  those. An agent touching `parser.mdk` builds **9 oracles and runs 11 gates**, not
+  54 and 82. It deliberately skips the two expensive things — `diff_compiler_engines`
+  (346 fixtures × clang) and the fixpoint — **except** that a `compiler/backend/*`
+  change forces the fixpoint, because there it is the decisive gate and finding out
+  in CI is too late.
+- **`sh test/build_oracles.sh --for '<gate-pattern>'…`** builds only the oracles those
+  gates read. A gate names its oracle as `test/bin/<name>`, so the set is *derived*
+  from the gate scripts — there is no hand-maintained map to drift. CI shards and
+  `preflight.sh` share this one derivation.
+- **`make test`** = the IN-LANGUAGE suite (doctests, props, `test "…"` decls). Needs
+  no oracles. **`make gates`** = the full 82-gate differential suite. These were the
+  same target until 2026-07-13, and the misnomer bit CI immediately.
+
+### ⚠️ THE PREFLIGHT IS A FILTER, NOT AN AUTHORITY
+
+A green preflight means *the gates most likely to notice your change did not break*.
+Nothing more. **CI, running the full suite on the PR, is the authority. Do not merge
+on a green preflight.**
+
+This matters more than it sounds. A targeted local run re-introduces the *exact*
+hazard this project's testing overhaul exists to kill: **a suite reporting green
+while testing less than it appears to.** That is not hypothetical —
+`diff_compiler_lint_multi` sat "skipped" for months (dash could not parse it, exit 2
+was counted as SKIP) and was *also failing* the whole time; and a fresh clone used to
+run **zero tests and print "0 failed."** So `preflight.sh` **ends by printing what it
+did not run**, and it must stay loud. A miss in the change→gate map then costs a slow
+round-trip, not a shipped bug.
+
+### The orchestrator OWNS red CI — watch it, don't wait to be told
+
+**Arm a persistent background `Monitor` on CI as soon as you push anything.** A CI
+failure nobody is watching is just a slower version of no CI, and the whole point of
+moving the suite off the box was to make the *authoritative* signal cheap — which is
+worthless if the signal isn't read.
+
+```
+Monitor (persistent, 60s poll):
+  gh run list --limit 15 --json databaseId,status,conclusion,headBranch
+  -> emit a line for EVERY newly-terminal run, and on failure list the failed jobs
+```
+
+⚠️ **Emit on every terminal state, not just failures.** A monitor that greps only for
+red is *silent* through a cancelled run, a timeout, or a crashloop — and silence is
+indistinguishable from "still running." Seed the seen-set with already-completed runs
+at arm time so you only get new events.
+
+**When CI comes back red, the orchestrator acts — it does not just report:**
+
+1. **Diagnose first, from the log** (`gh run view <id> --log-failed`). Establish whether
+   it is (a) an infra/workflow bug, (b) a real regression, or (c) an already-known red.
+2. **Fix it yourself if it is small and mechanical** — a bad glob, a YAML quoting error,
+   a stale golden, a misnamed make target, a missing `chmod +x`. Do not spawn an agent
+   to change three characters. (Real examples from this arc: a shard pattern using brace
+   expansion that dash cannot expand; `pattern: 'a' 'b'` being invalid YAML; `make test`
+   secretly running the 82-gate suite.)
+3. **Re-spawn the responsible agent** when the failure is inside work it just did, with
+   the CI failure pasted in and a STOP guardrail. Do not "fix" an agent's logic for it —
+   you'll lose the context it has.
+4. **Record it as known-red ONLY with a ledger entry that detects an accidental fix.**
+   Never a bare skip. A skip-list cannot notice when the bug is fixed, so it rots — which
+   is exactly how `test/ported/` died and how `diff_compiler_lint_multi` sat "skipped"
+   for months while also failing.
+
+**Never merge on red, and never merge on a green *preflight*.** The full suite on the
+PR is the only authority.
+
+### Branching off an UNVERIFIED base — a judgment call, not a rule
+
+CI is now the authority, but it is also **minutes**, and agents are cheap. Waiting for
+green before spawning the next agent serializes the thing you just spent the effort to
+parallelize. So: **you MAY branch new work off a base whose CI is still running.** Do it
+deliberately, priced against the chance CI comes back red.
+
+**The question is not "is the base green?" It is "if this base turns red, what does it
+cost me?"**
+
+Cheap to be wrong (branch freely):
+- The new agent's work is **disjoint** from the risky change (different files, different
+  subsystem). A red base then gets fixed *underneath* it and the agent's branch rebases
+  cleanly, or merges as-is.
+- The base's uncertainty is in **docs, CI config, or a gate script**, not the compiler.
+- The new work is **additive new files** (a new module, a new gate) rather than an edit
+  to something the base touched.
+
+Expensive to be wrong (WAIT):
+- The new work **builds directly on** the uncertain change (e.g. the base rewrote the
+  emitter and the new agent is emitting IR through it). A red base means the agent's
+  premise is void and its work is *discarded*, not rebased.
+- The base changed **goldens or the seed**. A red there means recapture, and everything
+  downstream of it is now founded on wrong expectations.
+- You would have to **re-derive a diagnosis**, not just re-apply a diff.
+
+**Signals that the base is low-risk** (so branch away): the change was doc/config only;
+`make preflight` was green locally; the fixpoint + `typecheck_compiler_source` already
+passed on it; the diff is additive; CI has already gone green on an *earlier* commit of
+the same branch and this push was small.
+
+**Signals that it is high-risk** (so wait, or branch off the last KNOWN-GREEN commit
+instead): the emitter/`Value`/dispatch was touched; goldens moved; a shard is already
+red; the change is one an agent reported without you verifying it.
+
+**The escape hatch nobody remembers:** you can branch off the **last known-green SHA**
+rather than the branch tip. You get parallelism *and* a verified base; the cost is one
+merge later. When the tip is risky but you want to keep moving, this is usually the
+right answer and it is strictly better than either waiting or gambling.
+
+⚠️ **If you do branch off an unverified tip, say so in the agent's prompt.** Its STEP-0
+`BASE_OK` assert will happily pass against a base that CI is about to reject — the assert
+proves *ancestry*, not *correctness*. An agent that knows its base is provisional will
+STOP and report when something upstream looks wrong, instead of "fixing" your bug for you
+and tangling the two changes together.
+
+### CI (2026-07-13)
+
+`.github/workflows/ci.yml`, GitHub-**hosted** runners (free + unlimited on a public
+repo; 20 concurrent jobs). **No self-hosted runner** — a fork PR on a public repo with
+a self-hosted runner is arbitrary code execution on the host. Do not reintroduce one.
+
+Sharded: 6 gate shards + `inlang`, each cold-bootstrapping from the seed and building
+only its own oracles. Every one of the 82 `diff_compiler_*` gates is in **exactly one**
+shard (verified: 0 missing, 0 duplicated) — a gate falling between shards would
+silently never run. Each shard ends with a **review gate** (`git diff --exit-code`) on
+the tree its gates just ran over; it cannot be a separate job, because a fresh checkout
+in a fresh VM would never see the drift.
+
+---
+
 ## The gap docs lie — reproduce before you trust them (the #1 lesson)
 
 The project's own gap/status docs (gap censuses, audit docs, "known gaps", roadmap
@@ -111,6 +258,52 @@ Every delegated task prompt should contain, in order:
 9. **Report-back contract:** "your final message is the ONLY thing I see — be
    self-contained, WAIT for gates to finish and report real numbers, do not leave
    background tasks running and end."
+
+---
+
+## Every agent prompt MUST demand a FRICTION REPORT
+
+Bake this into the report-back contract of **every** agent you spawn:
+
+> **Surface everything that fought you.** In your final report, include a section listing
+> any bug, gap, missing feature, pain point, workaround you had to invent, unclear or
+> misleading error message, stale/wrong documentation, or surprising behavior you hit —
+> **even if you worked around it and even if it is unrelated to your task.** Do not
+> silently absorb friction. If you had to do something ugly to make progress, say what
+> and why. If an error message sent you down the wrong path, quote it. A clean report
+> that hides three workarounds is worse than a messy one that names them.
+
+**Why this is not optional.** Agents are extremely good at *routing around* problems and
+then never mentioning them. Everything they route around is a bug the user will hit
+later, with less context and less patience. This session alone, agents silently worked
+around: `medaka run` being unable to read `args`; `import … as` not parsing despite
+SYNTAX.md advertising it; `emitProgram` name-colliding across two backends with no
+aliasing available; `/bin/sh` being dash so a gate could not even be parsed. **Every one
+of those was a real, filed-worthy defect that surfaced only because an agent happened to
+mention it in passing.**
+
+**The orchestrator TRIAGES the friction report.** For each item: reproduce it (the gap
+docs lie — see above), then either fix it, file it in the backlog / PLAN.md, or record it
+as a known-red ledger entry with accidental-fix detection. **Do not let it evaporate.**
+An agent's incidental "oh, I had to work around X" is one of the highest-signal inputs
+you get — it is a bug found by *use* rather than by *audit*, which is the only kind that
+reliably matters.
+
+---
+
+## Review every agent PR before merging
+
+An agent's own report is a claim, not a review. After an agent opens a PR (and after CI
+is green), spawn a **Sonnet reviewer** over the diff. It is cheap, it is parallel, and it
+catches the class of thing gates cannot: style drift, obvious inefficiency, a missing
+test, a comment that lies, a workaround left in.
+
+**This is a different job from the gates.** Gates prove *behavior*; the reviewer judges
+*craft*. Green CI on a bad diff is still a bad diff.
+
+See **`.claude/skills/pr-review/SKILL.md`** for the playbook the reviewer runs. Keep the
+reviewer READ-ONLY — it reports findings; you decide what to act on, and the *authoring*
+agent fixes them (it has the context; you do not).
 
 ---
 
@@ -393,12 +586,28 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 
 ## Medaka specifics
 
-- **Build:** `dune build --root .` inside a `.claude/worktrees/<name>` worktree
-  (plain `dune build` climbs to the parent checkout and fails). Never `dune test`
-  (hangs) — run individual suites / `test/diff_compiler_*.sh` / `test/*_fixpoint.sh`.
+- ⚠️ **THIS DOC STILL CONTAINS STALE OCaml/dune INSTRUCTIONS BELOW.** OCaml, `dune`,
+  `opam`, and `_build/default/bin/main.exe` were **REMOVED 2026-06-26**. There is no
+  OCaml oracle to diff against — the "differential" gates now compare the native
+  compiler against goldens captured *from itself*. Anywhere this file says `dune
+  build`, read `make medaka`. Anywhere it says "vs the OCaml oracle", read "vs a
+  checked-in golden". Left in place rather than silently rewritten because the
+  surrounding *lessons* are still true; but do not follow the commands.
+- **Build:** `make -C /absolute/path/to/worktree medaka` (the shell cwd resets between
+  calls, so a bare `make medaka` would build the MAIN checkout). A fresh isolated
+  worktree has **no `./medaka_emitter`** and cannot cold-bootstrap — `cp
+  /root/medaka/medaka_emitter "$PWD/medaka_emitter"` first (the warm path).
+- **Never `pkill -f build_oracles.sh` / `pkill -f 'xargs -P'` on this box.** Those are
+  box-wide pattern kills; with several sessions running they will terminate *other
+  people's* builds. (The sandbox now blocks it, correctly.) Scope every reap to the
+  offending agent's own PIDs:
+  `ps -eo pid,args | grep "agent-<id>" | grep -v grep | awk '{print $1}' | xargs -r kill`
 - **Local main is ahead of origin.** Orchestrator merges agent branches into LOCAL
-  main; never fetch/push. `main` is checked out in the primary checkout
-  `/root/medaka` — merge there (`git -C /root/medaka merge <branch>`).
+  main; `main` is checked out in the primary checkout `/root/medaka` — merge there
+  (`git -C /root/medaka merge <branch>`). **As of 2026-07-13 pushing IS expected** for
+  the PR-based CI flow (see "Agents do NOT run the full suite" above): the orchestrator
+  pushes a branch and opens a PR; CI runs the full suite on free hosted runners. Agents
+  still never push and never merge.
 - **Emitter-graph changes (`compiler/llvm_emit.mdk` etc.) leave the committed seed
   `compiler/seed/emitter.ll` STALE.** Agents do NOT re-mint — they verify
   `test/selfcompile_fixpoint.sh` (C3a/C3b YES; it self-compiles fresh, doesn't read

@@ -1,10 +1,20 @@
-#!/bin/sh
+#!/bin/bash
 # Multi-file lint gate: invokes the CLI with a directory target and diffs output.
 # Uses the ./medaka CLI directly (multi-file orchestration lives in runLintCmd,
 # not the lint_main oracle binary).
 #
 # Usage:  sh test/diff_compiler_lint_multi.sh
 #         CAPTURE=1 sh test/diff_compiler_lint_multi.sh   # (re)capture golden
+#
+# ⚠️ THIS GATE USES BASH (process substitution `diff <(..) <(..)`) but run_gates.sh
+# invokes every gate as `sh <gate>`, and /bin/sh here is dash. It therefore died
+# with `Syntax error: "(" unexpected` -> exit 2, which the OLD run_gates counted as
+# a SKIP. So this gate NEVER RAN — for long enough that its golden rotted (a lint
+# message was reworded and nobody noticed). That is exactly the "1 skipped" in the
+# old "78 passed, 0 failed, 1 skipped — fully green" report. run_gates now
+# reclassifies a non-toolchain exit-2 as a FAILURE, which is what surfaced it.
+# The re-exec below makes the gate run under bash regardless of how it is invoked.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

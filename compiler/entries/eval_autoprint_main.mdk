@@ -1,0 +1,44 @@
+-- The INTERPRETER arm of the 3-engine differential gate (test/diff_engines.sh,
+-- TESTING-DESIGN.md §4.4).
+--
+--   medaka run compiler/entries/eval_autoprint_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- This is `medaka run` (loadProgram → elaborateModules → evalModulesOutput) PLUS
+-- the composite-main auto-print wrap that `medaka build` applies
+-- (driver/main_autoprint.mdk).  It exists because the three engines do NOT agree
+-- on what to do with a bare VALUE `main` (`main = 1 + 2`) — the shape essentially
+-- every fixture in test/llvm_fixtures/ and test/wasm/fixtures/ uses:
+--
+--   * `medaka build` rewrites `main = <e>` → `main = println <e>` and prints it;
+--   * the WasmGC emitter mirrors that auto-print;
+--   * `medaka run` REFUSES it ("'main' must be a value of type Unit") — a
+--     deliberate CLI/UX decision, not a semantics difference.
+--
+-- Comparing the interpreter against the backends therefore needs an interpreter
+-- driver under the SAME auto-print contract, or every value-main fixture would
+-- register as a spurious three-way disagreement.  That is all this entry adds: the
+-- eval path itself is byte-for-byte `medaka run`'s (eval_typed_modules_main.mdk).
+--
+-- Like every compiler/entries/*.mdk this is a probe driver — not compiled into the
+-- `medaka` binary and not in the emitter seed graph — so it owes no re-mint.
+
+import frontend.ast.{Decl}
+import types.typecheck.{elaborateModules}
+import eval.eval.{evalModulesOutput}
+import driver.main_autoprint.{autoPrintWrapModules, shouldAutoPrintMain}
+import entries.entry_support.{driveModules}
+
+main = driveModules runElab
+
+-- Elaborate once to learn `main`'s type (populates mainSchemeRef, which
+-- shouldAutoPrintMain reads), wrap a bare non-Unit value main, then elaborate the
+-- (possibly wrapped) graph for real and force it.  The double elaborate mirrors
+-- entry_support.runEmitWith / playground_main.doEmit, which do exactly this.
+runElab : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runElab runtimeDecls coreDecls modules =
+  let _ = elaborateModules runtimeDecls coreDecls modules
+  let modulesW = match shouldAutoPrintMain coreDecls modules
+    True => autoPrintWrapModules modules
+    False => modules
+  let elaborated = elaborateModules runtimeDecls coreDecls modulesW
+  putStr (evalModulesOutput (fst elaborated) (snd elaborated))

@@ -7,8 +7,8 @@
 #
 # This runs compiler/entries/desugar_batch.mdk ONCE over the whole corpus (modules loaded
 # once), splits the delimited output per file in a single awk pass, and compares
-# each section against dev/astdump.exe --desugar.  FLOAT literal text is
-# normalized away (OCaml %g vs floatToString), like the original.
+# each section against the golden.  Compared LITERALLY — no float normalization
+# (one deterministic renderer now that OCaml is gone).
 #
 # Usage:  sh test/diff_compiler_desugar_batch.sh [file.mdk ...]
 set -u
@@ -16,12 +16,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/desugar_batch"
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 fi
 
 # Stable list of existing files.
@@ -44,9 +42,9 @@ pass=0; fail=0
 for f in $list; do
   name="$(basename "$f")"
   golden="${f%.mdk}.desugar.golden"
-  if [ -f "$golden" ]; then expected="$(norm < "$golden")"; else expected=""; fi
+  if [ -f "$golden" ]; then expected="$(cat "$golden")"; else expected=""; fi
   key="$(printf '%s' "$f" | tr '/.' '__')"
-  if [ -f "$SECDIR/$key" ]; then actual="$(norm < "$SECDIR/$key")"; else actual=""; fi
+  if [ -f "$SECDIR/$key" ]; then actual="$(cat "$SECDIR/$key")"; else actual=""; fi
   if [ "$expected" = "$actual" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

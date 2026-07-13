@@ -1,0 +1,110 @@
+allCovered : List String -> List String -> Bool
+bindCtors : Oracle -> Option String -> Option (List String)
+boolAlwaysTrue : Expr -> Bool
+buildOracle : List Decl -> Oracle
+builtinArity : List (String, Int)
+builtinCtorType : List (String, String)
+builtinTypeCtors : List (String, List String)
+charsPrefixTuple : Array Char -> Bool
+charsSuffixUnder : Array Char -> Int -> Bool
+checkGroup : Oracle -> String -> List (List Pat, Expr) -> List (String, Option Loc)
+checkGroupClauses : Oracle -> String -> List (List Pat, Expr) -> List (String, Option Loc)
+checkGroupCovered : Oracle -> List (List Pat, Expr) -> List (String, Option Loc)
+checkGuardExhaustiveness : List Decl -> List String
+checkGuardExhaustivenessWith : List Decl -> List Decl -> List (String, Option Loc)
+checkLetBind : Oracle -> LetBind -> List (String, Option Loc)
+checkNamedGroup : Oracle -> (String, List (List Pat, Expr)) -> List (String, Option Loc)
+clauseBodyLoc : Expr -> Option Loc
+clauseGuardsTotal : (List Pat, Expr) -> Bool
+clauseIsGuardedPartial : (List Pat, Expr) -> Bool
+clausePats : (List Pat, Expr) -> List Pat
+clausesForName : List (String, (List Pat, Expr)) -> String -> List (List Pat, Expr)
+collectArmBinds : Arm -> List LetBind
+collectLetBindInner : LetBind -> List LetBind
+collectLetBinds : Expr -> List LetBind
+dataArity : Decl -> List (String, Int)
+dataCtorFields : Decl -> List (String, List String)
+dataCtorType : Decl -> List (String, String)
+dataTypeCtors : Decl -> List (String, List String)
+declBodyWarnings : Oracle -> Decl -> List (String, Option Loc)
+defRow : List Pat -> Option (List Pat)
+defaultMatrix : List (List Pat) -> List (List Pat)
+desugarPat : Oracle -> Pat -> Pat
+digitVal : Char -> Int
+doStmtBinds : DoStmt -> List LetBind
+exhaustToLines : List Decl -> String
+exhaustToLinesWith : List Decl -> List Decl -> String
+fieldAssignBinds : FieldAssign -> List LetBind
+fieldName : Field -> String
+filterMapRows : (List Pat -> Option (List Pat)) -> List (List Pat) -> List (List Pat)
+findRecField : String -> List RecPatField -> Option (Option Pat)
+firstMissing : List String -> List String -> Option String
+firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
+firstWitnessBranch : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
+funClauseBinds : FunClause -> List LetBind
+funClauseToClause : FunClause -> (List Pat, Expr)
+groupArity : List (List Pat, Expr) -> Int
+groupByName : List (String, (List Pat, Expr)) -> List (String, List (List Pat, Expr))
+groupLoc : List (List Pat, Expr) -> Option Loc
+guardAlwaysFires : Guard -> Bool
+guardArmBinds : GuardArm -> List LetBind
+guardArmTotal : GuardArm -> Bool
+guardArmsTotal : List GuardArm -> Bool
+guardBinds : Guard -> List LetBind
+guardWarning : String
+guardsDecidablyExhaustive : List Guard -> Bool
+headCtors : List (List Pat) -> List String
+ifaceMethodWarnings : Oracle -> IfaceMethod -> List (String, Option Loc)
+implClauses : List ImplMethod -> List (String, (List Pat, Expr))
+implMethodBodyWarnings : Oracle -> ImplMethod -> List (String, Option Loc)
+inferCol0Type : Oracle -> List (List Pat) -> Option String
+interpBinds : InterpPart -> List LetBind
+isDigitC : Char -> Bool
+isEmptyArgs : List Pat -> Bool
+isIrrefutablePat : Pat -> Bool
+letGroupWarnings : Oracle -> Expr -> List (String, Option Loc)
+lookupRecField : Oracle -> List RecPatField -> String -> Pat
+missingCtorPat : Oracle -> List String -> List String -> Pat
+nonExhaustiveClausesMsg : Oracle -> String -> Int -> List (List Pat) -> String
+oGetArity : Oracle -> String -> Int
+oGetCtorFields : Oracle -> String -> Option (List String)
+oGetCtorType : Oracle -> String -> Option String
+oGetCtors : Oracle -> String -> Option (List String)
+parenWrapWit : Bool -> String -> String
+parseDigits : Array Char -> Int -> Int -> Option Int
+parseDigitsGo : Array Char -> Int -> Int -> Int -> Bool -> Option Int
+patHasRange : Pat -> Bool
+patUnreachable : Oracle -> Option String -> List (List Pat) -> Pat -> Bool
+presentIn : List String -> String -> Bool
+recFieldHasRange : RecPatField -> Bool
+recFieldIrrefutable : RecPatField -> Bool
+renderClauseWitness : Int -> Pat -> String
+renderConWit : Bool -> String -> List Pat -> String
+renderCons : Bool -> List Pat -> String
+renderWit : Bool -> Pat -> String
+renderWitness : Pat -> String
+specConRow : String -> Int -> List Pat -> Option (List Pat)
+specLitRow : Lit -> List Pat -> Option (List Pat)
+specializeCon : String -> Int -> List (List Pat) -> List (List Pat)
+specializeLit : Lit -> List (List Pat) -> List (List Pat)
+topFunDefClauses : List Decl -> List (String, (List Pat, Expr))
+totalClauseRows : Oracle -> List (List Pat, Expr) -> List (List Pat)
+tryEachType : Oracle -> List String -> Option String
+tupleArityCheck : Array Char -> Int -> Option Int
+tupleArityOfName : String -> Option Int
+tupleCtorName : Int -> String
+useful : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
+usefulBranch : Oracle -> List (List Pat) -> List Pat -> String -> Bool
+usefulCovered : Oracle -> List String -> List (List Pat) -> List Pat -> Bool
+usefulHead : Oracle -> Option String -> List (List Pat) -> Pat -> List Pat -> Bool
+usefulWild : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
+usefulWildCtors : Oracle -> Option (List String) -> List (List Pat) -> List Pat -> Bool
+usefulWitness : Oracle -> Option String -> List (List Pat) -> Int -> Option (List Pat)
+variantArity : Variant -> (String, Int)
+variantCtorFields : Variant -> List (String, List String)
+variantCtorType : String -> Variant -> (String, String)
+variantName : Variant -> String
+witnessBranch : Oracle -> String -> List (List Pat) -> Int -> Option (List Pat)
+witnessPrepend : Pat -> Option (List Pat) -> Option (List Pat)
+witnessSig : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
+witnessWild : Oracle -> Option (List String) -> List (List Pat) -> Int -> Option (List Pat)

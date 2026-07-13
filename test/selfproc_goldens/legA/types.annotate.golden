@@ -1,0 +1,27 @@
+addrOf : List (List String) -> String -> Addr
+addrOfGo : List (List String) -> String -> Int -> Addr
+annotateArm : List (List String) -> Arm -> Arm
+annotateClause : List (List String) -> FunClause -> FunClause
+annotateDecl : Decl -> Decl
+annotateExpr : List (List String) -> Expr -> Expr
+annotateFieldAssign : List (List String) -> FieldAssign -> FieldAssign
+annotateGuardArm : List (List String) -> GuardArm -> GuardArm
+annotateGuards : List (List String) -> List Guard -> (List Guard, List (List String))
+annotateIfaceMethod : IfaceMethod -> IfaceMethod
+annotateImplMethod : ImplMethod -> ImplMethod
+annotateInterp : List (List String) -> InterpPart -> InterpPart
+annotateKv : List (List String) -> (Expr, Expr) -> (Expr, Expr)
+annotateLet : List (List String) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
+annotateLetBind : List (List String) -> LetBind -> LetBind
+annotateLetGroup : List (List String) -> List LetBind -> Expr -> Expr
+annotateProgram : List Decl -> List Decl
+annotateSection : List (List String) -> Section -> Section
+annotateStmts : List (List String) -> List DoStmt -> List DoStmt
+isHint : String -> Bool
+letBindName : LetBind -> String
+paramFrames : List Pat -> List (List String)
+patBindings : Pat -> List String
+propParamName : PropParam -> String
+recFieldBindings : RecPatField -> List String
+slotIn : List String -> String -> Int -> Option Int
+startsWithAt : Array Char -> Bool

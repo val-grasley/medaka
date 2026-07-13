@@ -1,0 +1,37 @@
+armSexp : Arm -> String
+attrSexp : Attr -> String
+boolStr : Bool -> String
+constraintSexp : Constraint -> String
+declSexp : Decl -> String
+doStmtSexp : DoStmt -> String
+effAtomSexp : (String, Option String) -> String
+exprSexp : Expr -> String
+fieldAssignSexp : FieldAssign -> String
+fieldSexp : Field -> String
+funClauseSexp : FunClause -> String
+guardArmSexp : GuardArm -> String
+guardSexp : Guard -> String
+ifaceMethodSexp : IfaceMethod -> String
+implMethodSexp : ImplMethod -> String
+interpPartSexp : InterpPart -> String
+joinSp : List String -> String
+kvSexp : (Expr, Expr) -> String
+letBindSexp : LetBind -> String
+litSexp : Lit -> String
+methodDefaultSexp : Option MethodDefault -> String
+node : String -> List String -> String
+optStrSexp : Option String -> String
+patSexp : Pat -> String
+payloadSexp : ConPayload -> String
+programToSexp : List Decl -> String
+propParamSexp : PropParam -> String
+recPatFieldSexp : RecPatField -> String
+requireSexp : Require -> String
+sectionSexp : Section -> String
+slist : List String -> String
+superSexp : Super -> String
+tySexp : Ty -> String
+useMemberSexp : UseMember -> String
+usePathSexp : UsePath -> String
+variantSexp : Variant -> String
+visSexp : DataVis -> String

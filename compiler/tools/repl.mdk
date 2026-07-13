@@ -199,7 +199,7 @@ lookupScheme name ((n, s)::rest)
   | name == n = Some s
   | otherwise = lookupScheme name rest
 
-runPipeline : List Decl -> <Mut> (List String, List (String, Scheme), List (String, Value))
+runPipeline : List Decl -> <Mut | e> (List String, List (String, Scheme), List (String, Value e))
 runPipeline combined =
   let runtimeDecls = runtimeDeclsRef.value
   let preludeDecls = preludeDeclsRef.value

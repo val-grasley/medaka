@@ -1,19 +1,18 @@
 #!/bin/sh
 # Batched variant of diff_compiler_mark.sh — PROTOTYPE for prelude caching.
 # Runs compiler/entries/mark_batch.mdk ONCE over the whole corpus (prelude parsed once),
-# splits the delimited output per file, and compares each against astdump --mark.
+# splits the delimited output per file, and compares each section LITERALLY
+# against its golden — no float normalization (one deterministic renderer now).
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/mark_batch"
 CORE="$ROOT/stdlib/core.mdk"
 [ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
-
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/*.mdk"
+  files="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/compiler/frontend/*.mdk $ROOT/compiler/types/*.mdk $ROOT/compiler/ir/*.mdk $ROOT/compiler/backend/*.mdk $ROOT/compiler/eval/*.mdk $ROOT/compiler/driver/*.mdk $ROOT/compiler/tools/*.mdk $ROOT/compiler/support/*.mdk"
 fi
 
 # Expand to a stable list of existing files.
@@ -38,9 +37,9 @@ pass=0; fail=0
 for f in $list; do
   name="$(basename "$f")"
   golden="${f%.mdk}.mark.golden"
-  if [ -f "$golden" ]; then expected="$(norm < "$golden")"; else expected=""; fi
+  if [ -f "$golden" ]; then expected="$(cat "$golden")"; else expected=""; fi
   key="$(printf '%s' "$f" | tr '/.' '__')"
-  if [ -f "$SECDIR/$key" ]; then actual="$(norm < "$SECDIR/$key")"; else actual=""; fi
+  if [ -f "$SECDIR/$key" ]; then actual="$(cat "$SECDIR/$key")"; else actual=""; fi
   if [ "$expected" = "$actual" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

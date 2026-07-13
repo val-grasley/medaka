@@ -73,6 +73,10 @@ fi
 #   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs golden)
 #   llvm_emit_typed_main  — diff_compiler_llvm_typed.sh
 #   llvm_emit_modules_main — diff_compiler_llvm_modules.sh
+#   eval_autoprint_main   — diff_compiler_engines.sh    (the INTERPRETER arm of the
+#                           3-engine differential: `medaka run`'s exact eval path plus
+#                           driver/main_autoprint's value-main wrap, so eval honours the
+#                           same auto-print contract `medaka build` and wasm_emit do)
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
 #   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
 #   parse_main            — diff_compiler_parse.sh
@@ -110,7 +114,7 @@ fi
 ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
-eval_typed_modules_main eval_modules_main \
+eval_typed_modules_main eval_modules_main eval_autoprint_main \
 core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core_ir_modules_main \
 llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
@@ -145,12 +149,61 @@ if [ ! -x "$MEDAKA" ] || [ ! -x "$EMITTER" ]; then
 fi
 [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "FAIL: ./medaka or ./medaka_emitter still missing"; exit 1; }
 
-# ── newest compiler/*.mdk mtime — any source newer than a binary => rebuild it ─
+# ── newest source mtime across everything an oracle links — any source newer
+# than a binary => rebuild it. This MUST cover stdlib/*.mdk and runtime/*.c(.h)
+# too: every test/bin/* oracle links stdlib/*.mdk and runtime/medaka_rt.c, so
+# scanning only compiler/**.mdk left all 53 oracles silently stale whenever the
+# stdlib or C runtime changed (a one-line bug — see AGENTS.md staleness gotcha).
 newest_src=0
-for f in $(find "$ROOT/compiler" -name '*.mdk'); do
+for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; find "$ROOT/runtime" -name '*.c' -o -name '*.h'); do
   m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
   [ "$m" -gt "$newest_src" ] && newest_src=$m
 done
+
+# ── `--for <gate-pattern>...` : build ONLY the oracles those gates actually read ──
+#
+# Building all 54 oracles is 54 × (medaka build + clang). That is the single most
+# expensive thing in the whole test system: measured at ~34s on a 12-core box but
+# **18+ minutes on a 2-core CI runner**, where it was 93% of the build job (the
+# cold bootstrap from seed, by contrast, is only 80s).
+#
+# But no gate needs all 54. A gate names its oracle as `test/bin/<name>`, so the
+# set is derivable from the gate scripts themselves — no hand-maintained mapping to
+# drift. Per-shard need: engines 2, frontend 14, types 10, eval 19, backend 6,
+# tools 6. So CI shards build ~19 max, concurrently, instead of 54 serially; and
+# `test/preflight.sh` uses the same derivation so an agent touching the parser
+# builds 9, not 54.
+#
+#   sh test/build_oracles.sh --for 'diff_compiler_parse*' 'diff_compiler_fmt'
+#
+# The derivation is intentionally shared with preflight.sh and the CI matrix: ONE
+# source of truth for "which oracle does this gate read".
+if [ "${1:-}" = "--for" ]; then
+  shift
+  [ "$#" -gt 0 ] || { echo "usage: $0 --for '<gate-pattern>' ..."; exit 1; }
+  _gates=""
+  for _pat in "$@"; do
+    for _g in "$ROOT"/test/$_pat.sh; do
+      [ -f "$_g" ] || continue
+      case " $_gates " in *" $_g "*) ;; *) _gates="$_gates $_g" ;; esac
+    done
+  done
+  [ -n "$_gates" ] || { echo "FAIL: --for matched no gates: $*"; exit 1; }
+  _sel=""
+  for _g in $_gates; do
+    for _o in $(grep -ohE 'test/bin/[a-z_0-9]+' "$_g" 2>/dev/null | sed 's|test/bin/||' | sort -u); do
+      # only accept names that are real entries — a gate may mention a path we
+      # don't build, and silently "building" a non-entry would be a lie.
+      case " $ENTRIES " in
+        *" $_o "*) case " $_sel " in *" $_o "*) ;; *) _sel="$_sel $_o" ;; esac ;;
+      esac
+    done
+  done
+  [ -n "$_sel" ] || { echo "FAIL: --for selected no oracles from: $*"; exit 1; }
+  printf 'building %s of %s oracles (only what these gates read)\n' \
+    "$(printf '%s\n' $_sel | grep -vc '^$')" "$(printf '%s\n' $ENTRIES | grep -vc '^$')"
+  ENTRIES="$_sel"
+fi
 
 # ── Worklist: which entries actually need (re)building ─────────────────────────
 # The probe entries are COMPILER internals (compiler/entries/*) whose graphs use

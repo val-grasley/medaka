@@ -380,7 +380,7 @@ impl BaseF BoxS where
 impl SubF BoxS where
   same x = x
 
-mkS : SubF m => a -> m a
+mkS : (BaseF m, SubF m) => a -> m a
 mkS x = same (base x)
 
 test "super dict dispatch Box" = expectEqual "BoxS 5" (display (mkS 5 : BoxS Int))
