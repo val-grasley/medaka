@@ -4041,6 +4041,12 @@ recordArithSite op dref m
     setRef pendingArithSites ((dref, m)::pendingArithSites.value)
   | otherwise = ()
 
+-- Roadmap #18a: `++` is the surface operator for `Semigroup`'s `append`, so it
+-- joins the comparison operators on the recordBinopSite/resolveBinopSites seam —
+-- a ground non-builtin operand (a user `impl Semigroup MyRope`) gets its route
+-- stamped and rewriteBinopExpr turns the EBinOp into an `EMethodAt "append"`
+-- application.  The builtin String/List appends never route (binopBuiltinHead) —
+-- see the recursion note there.
 binopMethod : String -> Option String
 binopMethod "==" = Some "eq"
 binopMethod "!=" = Some "eq"
@@ -4048,6 +4054,7 @@ binopMethod "<" = Some "lt"
 binopMethod ">" = Some "gt"
 binopMethod "<=" = Some "lte"
 binopMethod ">=" = Some "gte"
+binopMethod "++" = Some "append"
 binopMethod _ = None
 
 inferBinop : String -> Mono -> Mono -> <Mut> Mono
@@ -4056,7 +4063,7 @@ inferBinop "-" lt rt = numArithOp lt rt
 inferBinop "*" lt rt = numArithOp lt rt
 inferBinop "/" lt rt = numArithOp lt rt
 inferBinop "%" lt rt = numArithOp lt rt
-inferBinop "++" lt rt = arithOp lt rt
+inferBinop "++" lt rt = appendOp lt rt
 inferBinop "==" lt rt = eqCompareOp lt rt
 inferBinop "!=" lt rt = eqCompareOp lt rt
 inferBinop "<" lt rt = ordCompareOp lt rt
@@ -4071,14 +4078,42 @@ inferBinop ">>" lt rt = composeOp lt rt False
 inferBinop "<<" lt rt = composeOp lt rt True
 inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
 
-arithOp : Mono -> Mono -> <Mut> Mono
-arithOp lt rt =
+-- Roadmap #18a: `++` (append) carries a `Semigroup` obligation on its (unified)
+-- operand type — a verbatim mirror of `eqCompareOp`/`recordEqObligation` for `==`,
+-- and the reason `"x" ++ Box 1` is now a located `No impl of Semigroup for Box`
+-- reject at CHECK time rather than an eval-time `E-PANIC`.  Reuses the same
+-- pendingImplObligations / checkImplObligations path: a synthetic Semigroup
+-- obligation with a bare iface-param declared type (`TyVar "a"`, typaram ["a"]) so
+-- dispatchMonosOf recovers exactly the operand mono.  `Monoid a requires Semigroup
+-- a`, so a declared `Monoid a =>` constraint superclass-closes to satisfy it (this
+-- is what keeps core.mdk's `foldMap f = fold (acc x => acc ++ f x) empty` typing).
+-- A still-polymorphic operand defers to the caller, exactly like Num/Eq/Ord.
+--
+-- Gated on the `Semigroup` interface being REGISTERED (prelude loaded), mirroring
+-- numIfaceRegistered/eqIfaceRegistered: the bare-HM no-prelude oracle (tc_probe /
+-- typecheck_main.mdk) has no `Semigroup` class, so recording the obligation only
+-- when it exists keeps those drivers byte-identical while `medaka check` rejects.
+appendOp : Mono -> Mono -> <Mut> Mono
+appendOp lt rt =
   let _ = unify lt rt
+  let _ = recordSemigroupObligation lt
   lt
+
+recordSemigroupObligation : Mono -> <Mut> Unit
+recordSemigroupObligation lt
+  | semigroupIfaceRegistered () = setRef pendingImplObligations (("Semigroup", ["a"], TyVar "a", lt, currentLoc.value)::pendingImplObligations.value)
+  | otherwise = ()
+
+semigroupIfaceRegistered : Unit -> <Mut> Bool
+semigroupIfaceRegistered _ = anyList semigroupEntry methodIfaceParamsRef.value
+
+semigroupEntry : (String, (String, List String, Ty)) -> Bool
+semigroupEntry (_, (iface, _, _)) = iface == "Semigroup"
 
 -- G2: arithmetic `+ - * / %` carry a `Num` obligation on their (unified) operand
 -- type — mirrors the oracle's `No impl of Num for <T>` reject (lib/typecheck.ml).
--- `++` (string/list APPEND) is NOT Num and stays on plain arithOp.  We reuse the
+-- `++` (append) is NOT Num — it carries a `Semigroup` obligation instead (appendOp
+-- above).  We reuse the
 -- existing pendingImplObligations / checkImplObligations path: a synthetic Num
 -- obligation with a bare iface-param declared type (`TyVar "a"`, typaram ["a"]) so
 -- dispatchMonosOf recovers exactly the operand mono.  When it grounds to a concrete
@@ -6929,6 +6964,21 @@ enclDictVarOf m encl
 binopPrimitiveHead : String -> Bool
 binopPrimitiveHead h = contains h ["Int", "Float", "String", "Bool", "Char"]
 
+-- Roadmap #18a: the heads a binop lowers to a BUILTIN for, and must therefore never
+-- route to a typeclass method.  For the comparison operators that is exactly the
+-- scalar primitives.  For `++` (→ Semigroup's `append`) it is those PLUS `List`:
+-- `++` on a String/List is lowered structurally (eval's `appendVal`; the emitter's
+-- `mdk_string_append`/`mdk_list_append`), and core.mdk's own builtin impls are
+-- written in terms of the operator —
+--     impl Semigroup (List a) where append xs ys = xs ++ ys
+--     impl Semigroup String   where append s1 s2 = s1 ++ s2
+-- — so routing a List/String `++` to `append` would make those bodies call
+-- themselves unboundedly.  Every OTHER head still routes, which is precisely what
+-- makes a user `impl Semigroup MyRope` reachable from `a ++ b`.
+binopBuiltinHead : String -> String -> Bool
+binopBuiltinHead "append" tag = binopPrimitiveHead tag || tag == "List"
+binopBuiltinHead _ tag = binopPrimitiveHead tag
+
 -- SHARED-FLOAT-RESIDUAL §3(C): after the module is inferred, zonk each recorded
 -- arithmetic operand mono; when it grounds to concrete Float, stamp RScalar
 -- "Float" on the node's route so lowering carries it into CBinPrim and the native
@@ -6978,12 +7028,46 @@ resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl
 -- line PRECISELY: it consults `funConstraintsRef[encl]` (the enclosing fn's OWN
 -- declared constraint slots, keyed by fn name) — NOT the global activeDictVars — so
 -- it fires ONLY when the operand var is genuinely one of encl's constraint vars, and
--- can never pick up a stale cross-impl element-var id.  In-impl operator sites keep
--- activeDictVarOf (impl methods register their element vars in activeDictVars via
--- registerImplRequires, not funConstraintsRef).  A concrete operand (no active dict
--- var / not a constraint var, grounds to Some tag) keeps the existing RKey path.
+-- can never pick up a stale cross-impl element-var id.  A concrete operand (no active
+-- dict var / not a constraint var, grounds to Some tag) keeps the existing RKey path.
+--
+-- Roadmap #18a RESIDUAL — `++`/`append` does NOT take the IN-IMPL element-dict route.
+-- `binopDictVarOf` sends `append` to `enclDictVarOf` even when inImpl, so an operand
+-- that is an impl's abstract `requires` tyvar stays RNone (the structural builtin)
+-- instead of routing the impl's threaded element dict.
+--
+-- WHY (measured, not assumed).  Taking that route for `append` regresses
+-- `test/eval_typed_modules_fixtures/impl_requires_nonfunctor_sibling`:
+--     impl Applicative (VT e) requires Semigroup e where
+--       pure a = VS a
+--       ap (VF e1) (VF e2) = VF (e1 ++ e2)
+-- Routing `e1 ++ e2` to `$dict_ap_0` makes `usesImplDict "ap"` true for the FIRST
+-- time, so `implDictPassMethods` PREPENDS an impl-`requires` dict param to `ap` —
+-- which shifts `ap`'s arg-position dispatch index by one.  The VTypedImpl's recorded
+-- discriminating indices are NOT re-offset to match, so the impl then tag-checks its
+-- leading DICT argument instead of its receiver, rejects it, and every candidate
+-- falls through → `no matching impl for dispatch`.  (Before #18a that
+-- `requires Semigroup e` was effectively DEAD — nothing in the body consumed it —
+-- which is why the latent hole never fired.)  Fixing it properly means re-offsetting
+-- arg-dispatch indices when impl-dict params are prepended: Phase 83/84 territory,
+-- across ast/typecheck/dict_pass/eval, and deliberately NOT attempted here.
+--
+-- What still works (all gated): a GROUND non-builtin operand (`Rope "a" ++ Rope "b"`)
+-- routes RKey to the user impl — the whole point of #18a, and the fix for the `build`
+-- SIGSEGV; a TOP-LEVEL declared `Semigroup a => a -> a` routes RDict through
+-- `enclDictVarOf` (the enclosing fn's OWN declared constraint slot, a different and
+-- already-sound dict source); and String/List stay on the structural builtin.
+-- What does NOT: `++` on an impl's abstract `requires`-bound tyvar — it keeps the
+-- pre-#18a builtin behaviour exactly (correct for List/String, which is every such
+-- site in the tree today), so this is a residual, not a regression.
+binopDictVarOf : String -> Mono -> Bool -> String -> <Mut> Option String
+binopDictVarOf "append" m _ encl = enclDictVarOf m encl
+binopDictVarOf _ m inImpl encl
+  | inImpl = activeDictVarOf m
+  | otherwise = enclDictVarOf m encl
+
 resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
-resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl = match if inImpl then activeDictVarOf operandMono else enclDictVarOf operandMono encl
+resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl = match binopDictVarOf method operandMono inImpl encl
   Some dname => setRef tagRef (RDict dname)
   None => match headTyconMono operandMono
     Some tag => stampBinopRoute implTable keyTable method tagRef operandMono tag
@@ -7012,7 +7096,7 @@ resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl = matc
 -- the plain `@mdk_default_<op>_<tag>(a, b)` direct call, unchanged.
 stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
 stampBinopRoute implTable keyTable method tagRef operandMono tag
-  | binopPrimitiveHead tag = ()
+  | binopBuiltinHead method tag = ()
   | otherwise =
     let key = fromOption tag (keyForSite keyTable method operandMono)
     let dictMethod = if implDefinesMethodAt implTable method tag then
@@ -9368,9 +9452,28 @@ noImplFoundMsg iface args = "No impl of \{iface} for \{ppMonosShared args}"
 -- message) rather than print misleading advice.
 noImplHint : String -> List Mono -> <Mut> Option String
 noImplHint iface [arg] = match headTyconMono arg
-  Some n => map (_ => "add 'deriving \{iface}' to the '\{n}' type, or write an 'impl \{iface} \{n}'.") (lookupAssoc n dataParamKindsRef.value)
+  Some n =>
+    map (_ => noImplAdvice iface n) (lookupAssoc n dataParamKindsRef.value)
   None => None
 noImplHint _ _ = None
+
+-- Roadmap #18a: only a DERIVABLE interface may be suggested via `deriving`.  A
+-- `deriving <iface>` for anything outside that set is silently DROPPED by desugar's
+-- `deriveImpls` (its `deriveForData`/`deriveForNewtype` return None), so the old
+-- unconditional "add 'deriving X'" sent the user down a dead end for every other
+-- interface — including the `Semigroup` reject `a ++ b` now raises, and the
+-- pre-existing user-interface case (`No impl of Printable for Foo`).  For those the
+-- only real fix is to write the impl, so that is all we advise.
+noImplAdvice : String -> String -> String
+noImplAdvice iface n
+  | derivableIface iface = "add 'deriving \{iface}' to the '\{n}' type, or write an 'impl \{iface} \{n}'."
+  | otherwise = "write an 'impl \{iface} \{n}'."
+
+-- The interfaces desugar.mdk can actually synthesize an impl for (deriveForData /
+-- deriveForNewtype).  `Generic` is data-only; the other four cover both.
+derivableIface : String -> Bool
+derivableIface iface =
+  contains iface ["Eq", "Ord", "Debug", "Display", "Generic"]
 
 -- Append the hint (when applicable) to the plain `noImplFoundMsg`, mirroring
 -- the did-you-mean append convention (base message ++ " — " ++ hint).

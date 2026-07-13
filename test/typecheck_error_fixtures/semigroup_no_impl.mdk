@@ -1,0 +1,8 @@
+-- Roadmap #18a: `++` carries a Semigroup obligation, so an operand with no impl is
+-- a located type error rather than an eval-time panic.  Prelude-dependent (the
+-- obligation is gated on the `Semigroup` interface being registered), so this
+-- fixture is listed in PRELUDE_DEP and runs Driver B only.
+data Box = Box Int
+
+bad : Box -> Box -> Box
+bad x y = x ++ y

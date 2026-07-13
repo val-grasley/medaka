@@ -172,14 +172,45 @@ types are niche.
 2. **Overloaded string literals → `IsString`.** Same ambiguity/defaulting cost as
    list literals, with even less demand (no second string type in stdlib today).
    Recommend NO unless/until a `Text`/bytestring type lands.
-3. **`Enum` scope (couples to recommendation #2 above).** If ranges generalize,
-   decide the interface shape: minimal `enumFromTo`/`enumFromThenTo` (Haskell) vs
-   a `succ`/`pred`/`fromEnum`/`toEnum` core. Also: does `[lo..=hi]` inclusive vs
-   `[lo..hi]` exclusive stay a `Bool` flag on the node, or become two methods?
-   And should stepped ranges (`[0,2..10]`) be in scope? These are design
-   decisions, not mechanical wiring.
+3. **~~`Enum` scope~~ — ✅ RESOLVED (Val, 2026-07-13). See "Locked scope for #18b" below.**
 
 ---
+
+## Locked scope for #18b — the `Enum` interface (DECIDED 2026-07-13, Val)
+
+Resolves DISCUSS #3. The implementing agent inherits this; do not re-derive it.
+
+**Shape: the `succ`/`pred`/`fromEnum`/`toEnum` core**, with the range functions as
+**default methods** derived from it. Chosen over the minimal `enumFromTo`-only
+interface because it is more expressive (`succ` becomes usable standalone, and
+stepped ranges stay a purely additive future extension), and because a user enum
+ADT then only has to write `fromEnum`/`toEnum` — the ranges come for free:
+
+```
+interface Enum a where
+  fromEnum : a -> Int
+  toEnum   : Int -> a
+  succ : a -> a
+  pred : a -> a
+  -- ranges as DEFAULT methods over fromEnum/toEnum
+  enumFromTo lo hi = map toEnum [fromEnum lo .. fromEnum hi]
+
+impl Enum Weekday where
+  fromEnum Mon = 0 ...
+  toEnum 0 = Mon ...
+```
+
+**Out of scope: stepped ranges `[0,2..10]`.** They are new *surface syntax* (a new
+AST node + parser work), not an interface generalization — a separate feature, and
+folding them in would balloon a bite that is otherwise typecheck+eval only. The
+`succ`/`fromEnum` core is deliberately chosen so that adding them later is additive.
+
+**Still to settle at implementation time (mechanical, agent's call):** whether
+`[lo..=hi]` inclusive vs `[lo..hi]` exclusive stays a `Bool` flag on the AST node
+(status quo) or becomes two distinct default methods. Ship `impl Enum Int` +
+`impl Enum Char` (the `Char` impl is the point — it kills the live asymmetry where
+`'a'..'z'` already works as a *pattern* but `['a'..'z']` fails to typecheck as an
+*expression*). `ERangeArray` needs the same treatment as `ERangeList`.
 
 ## Bottom line for the orchestrator
 

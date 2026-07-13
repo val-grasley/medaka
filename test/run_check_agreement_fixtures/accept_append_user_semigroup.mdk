@@ -1,0 +1,12 @@
+-- Roadmap #18a: `++` on a type WITH a `Semigroup` impl must be ACCEPTED by check
+-- and must actually run/build (it used to panic under `run` and SIGSEGV under
+-- `build`, while check wrongly accepted it).
+data SumM = MkSumM Int
+
+impl Semigroup SumM where
+  append (MkSumM a) (MkSumM b) = MkSumM (a + b)
+
+unSum : SumM -> Int
+unSum (MkSumM n) = n
+
+main = println (unSum (MkSumM 1 ++ MkSumM 2))

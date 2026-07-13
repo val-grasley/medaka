@@ -54,6 +54,7 @@ guard : (Alternative a, Applicative a) => Bool -> a Unit
 hash : a -> Int
 hashListItems : Hashable a => Int -> List a -> Int
 identity : a -> a
+index : a -> b -> c
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
 isEven : Int -> Bool
@@ -96,6 +97,7 @@ repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
 replaceWith : Mappable a => a b -> c -> a c
 runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
 sequence : a (b c) -> b (a c)
+setIndex : a -> b -> c -> <Mut> a
 shout : String
 shrink : a -> List a
 signum : a -> a

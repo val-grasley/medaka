@@ -4584,7 +4584,7 @@ emitAppRef prog env d app =
       -- correct.  Mirrors emitVarRefPlain's `contains x env`-first priority for the bare
       -- VALUE reference, and the LLVM emitApp E24 `isLocal`-first guard.
       else if contains f0 env then emitIndirectApp prog env d hd args
-      else if isCtor prog f then emitCtorConstruct prog env d f args
+      else if isCtor prog f then emitCtorApp prog env d f args
       else if f == "Ref" then emitRefBoxNew prog env d args
       else if f == "setRef" then emitRefBoxSet prog env d args
       else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
@@ -5200,6 +5200,26 @@ b2fByteRead arrL offL bitsL i = [
   "i64.or",
   "local.set " ++ bitsL,
 ]
+
+-- #35 (wasm peer of llvm_emit's emitCtorApp): an APPLIED constructor, dispatched on
+-- SATURATION.  This arm used to call `emitCtorConstruct` unconditionally, so an
+-- UNDER-applied ctor (`Bin OAdd` for arity-3 `Bin`) emitted a `struct.new $S_Bin`
+-- with only 1 of its 3 fields on the stack — the identical shape (and identical
+-- silent wrong-value miscompile: `check` accepts, `run` is right, `build` is garbage)
+-- as the LLVM bug, and the same shape as the pre-W9b bare-ctor bug that
+-- emitCtorEtaClosure was introduced to fix.  The eta-wrapper IS the missing piece: an
+-- under-applied ctor is just its full-arity eta CLOSURE applied to the args it does
+-- have, and `$__mdk_apply` already turns that into a `$mdk_pap` (§4 universal apply:
+-- exact / under→PAP / over→saturate+reapply).  So no ctor-specific PAP forwarder is
+-- needed here — unlike LLVM, whose call sites take a lifted define, wasm reads arity
+-- from the VALUE.  Over-application is unreachable for a well-typed program but falls
+-- out of the same path safely.  SATURATED stays `emitCtorConstruct`, byte-identical.
+emitCtorApp : Prog -> List String -> Int -> String -> List CExpr -> <Mut> List String
+emitCtorApp prog env d ctor args =
+  if listLen args == ctorArity prog ctor then
+    emitCtorConstruct prog env d ctor args
+  else
+    emitCtorEtaClosure prog ctor ++ emitArgsArray prog env d args ++ ["call $__mdk_apply"]
 
 -- an indirect application: emit the head (a (ref eq) closure value), pack the args
 -- into an $argarr, and `call $__mdk_apply` — which dispatches on the closure's arity
