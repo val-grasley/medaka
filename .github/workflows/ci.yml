@@ -183,24 +183,28 @@ jobs:
               continue
             fi
             case "$f" in
+              # ── test/ IS NEVER DOCS. This arm MUST come first. ────────────────────
+              # test/ holds 175 .md files and they are FUNCTIONAL, not prose: 167 are
+              # snapshot GOLDENS (test/snapshots/**/*.md), plus CAPABILITY-MATRIX.md,
+              # ENGINE-DIVERGENCE.md and the error_quality_fixtures/ graded corpus.
+              # Classifying a blessed golden re-cut as "docs-only" would SKIP THE ENTIRE
+              # SUITE on the exact change most likely to need it — manufacturing the
+              # silent-green failure this suite exists to prevent. Never relax this.
+              test/*) docs_only=false ;;
+
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
-              # Agent-facing prose: .claude/{ORCHESTRATING,HANDOFF}.md, skills/*/SKILL.md,
-              # workstreams/*.md. Nothing in the build or any gate READS these at runtime
-              # (verified: the only .claude reference in any workflow is a comment).
-              # NOTE this arm must precede the generic *.md arm below, which rejects every
-              # nested .md.  It is scoped to .md ON PURPOSE: .claude/ also holds
-              # hooks/skill-triage.py and settings.json, which ARE executable config and
-              # fall through to the `*)` catch-all as NOT docs. Do not widen to `.claude/*`.
-              .claude/*.md) : ;;
-              *.md)
-                # A *.md path is docs ONLY if it has no directory component. Any
-                # nested .md (test/snapshots/*.md goldens included) is NOT docs.
-                case "$f" in
-                  */*) docs_only=false ;;
-                  *) : ;;
-                esac
-                ;;
+
+              # Every OTHER .md in the tree is prose: root (50), compiler/ (47 design
+              # docs), .claude/ (16 agent playbooks), sqlite/, archive/, qa-beta*/ …
+              # Verified: nothing in the build, in any gate, or in any workflow READS a
+              # .md outside test/ at runtime.
+              # Scoped to `.md` ON PURPOSE — .claude/ also holds hooks/skill-triage.py and
+              # settings.json, and compiler/ holds .mdk source; those are executable and
+              # fall through to the `*)` catch-all as NOT docs. Do not widen to a bare
+              # directory glob.
+              *.md) : ;;
+
               *) docs_only=false ;;
             esac
           done < "$changed_file"
