@@ -76,7 +76,13 @@ jobs:
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project'"
           - name: eval
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*'"
+            # The 4 bootstrap_* stage gates (each native pipeline stage == the interpreter's
+            # output) also ran in NO CI job until 2026-07-13 — found by the coverage gate
+            # once it was taught to look past the diff_compiler_* family. All 4 green, ~2s.
+            #
+            # Named individually, NOT globbed as 'bootstrap_*': that glob also catches
+            # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
             pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity'"
           - name: tools

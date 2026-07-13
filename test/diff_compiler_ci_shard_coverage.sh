@@ -55,10 +55,47 @@ except Exception:
         sys.exit(1)
     pats = dict(found)
 
-all_gates = {pathlib.Path(p).stem for p in glob.glob(f'{root}/test/diff_compiler_*.sh')}
+# ── EVERY gate family, not just diff_compiler_*. ──────────────────────────────
+#
+# This gate used to enumerate ONLY test/diff_compiler_*.sh — and so it certified
+# "82/82 covered, PASS" while the ENTIRE WasmGC BACKEND (4 gates, 153 fixtures, one
+# of Medaka's two production backends) ran in NO CI job at all. Four real codegen
+# failures had been sitting in it, unseen, because nothing was looking.
+#
+# The coverage gate had the same blind spot as the thing it was policing: it only
+# checked the family it already knew about. A completeness check that defines its own
+# scope will always certify itself complete. So the scope is now every gate script,
+# and anything deliberately left out must say so out loud in CI-COVERAGE-EXCEPTIONS.txt.
+GATE_GLOBS = [
+    'test/diff_compiler_*.sh',
+    'test/wasm/diff_*.sh',
+    'test/bootstrap_*.sh',
+    'test/selfcompile_fixpoint.sh',
+    'test/typecheck_compiler_source.sh',
+]
+all_gates = set()
+for g in GATE_GLOBS:
+    all_gates |= {pathlib.Path(p).stem for p in glob.glob(f'{root}/{g}')}
 if not all_gates:
-    print("FAIL: found no diff_compiler_*.sh gates at all (harness bug)")
+    print("FAIL: found no gate scripts at all (harness bug)")
     sys.exit(1)
+
+# A gate counts as covered if a shard pattern globs it OR the workflow names it
+# literally in some step (that is how the `soundness` job runs the fixpoint and the
+# compiler-source typecheck — they are not sharded, they are named).
+wf_text = pathlib.Path(wf).read_text()
+
+# Exceptions LEDGER: deliberately-not-in-CI, each with a reason. See the file header
+# for why this is a ledger and not a skip-list.
+exc = {}
+exc_path = pathlib.Path(root) / 'test' / 'CI-COVERAGE-EXCEPTIONS.txt'
+if exc_path.exists():
+    for line in exc_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        stem, _, reason = line.partition(' ')
+        exc[stem] = reason.strip()
 
 seen, dupes = {}, []
 for name, pat in pats.items():
@@ -69,20 +106,42 @@ for name, pat in pats.items():
                 dupes.append((stem, seen[stem], name))
             seen[stem] = name
 
-missing = sorted(all_gates - set(seen))
+named = {g for g in all_gates if g not in seen and re.search(rf'\b{re.escape(g)}\.sh\b', wf_text)}
+missing = sorted(all_gates - set(seen) - named - set(exc))
 
 for name in pats:
     n = sum(1 for v in seen.values() if v == name)
     print(f"  {name:<10} {n:>2} gates")
-print(f"  {'TOTAL':<10} {len(seen):>2} of {len(all_gates)}")
+print(f"  {'named':<10} {len(named):>2} gates (run by name, unsharded — e.g. the soundness job)")
+if exc:
+    print(f"  {'EXCEPTED':<10} {len(exc):>2} gates (NOT run in CI — ledger below)")
+print(f"  {'TOTAL':<10} {len(seen) + len(named):>2} of {len(all_gates)} covered")
 
 rc = 0
+if exc:
+    print()
+    print("  CI-COVERAGE-EXCEPTIONS.txt — these gates do NOT run in CI:")
+    for stem, reason in sorted(exc.items()):
+        live = " (ledger entry is STALE — this gate no longer exists)" if stem not in all_gates else ""
+        print(f"       {stem}: {reason}{live}")
+    # A ledger entry for a gate that no longer exists is rot — the exact failure mode
+    # a plain skip-list has. Fail on it, so the ledger cannot quietly outlive its gate.
+    stale = sorted(set(exc) - all_gates)
+    if stale:
+        print()
+        print("FAIL: the exceptions ledger names gates that DO NOT EXIST:")
+        for s in stale:
+            print(f"       {s}")
+        print("       Remove them from test/CI-COVERAGE-EXCEPTIONS.txt.")
+        rc = 1
+
 if missing:
     print()
     print("FAIL: these gates match NO CI shard and would SILENTLY NEVER RUN in CI:")
     for m in missing:
         print(f"       {m}")
-    print("       Add them to a shard's `pattern` in .github/workflows/ci.yml.")
+    print("       Add them to a shard's `pattern` in .github/workflows/ci.yml, run them")
+    print("       by name in a job, or add them to test/CI-COVERAGE-EXCEPTIONS.txt WITH A REASON.")
     rc = 1
 if dupes:
     print()

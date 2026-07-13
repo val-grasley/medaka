@@ -1,5 +1,5 @@
 # META
-source_lines=1151
+source_lines=1157
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/snapshot.mdk — `medaka snapshot`, the in-process snapshot runner
@@ -257,7 +257,13 @@ sectionCollides content = anyList isHeaderLine (splitNl content)
 -- ── modes ────────────────────────────────────────────────────────────────────
 -- See the header block: Check is the gate, New creates only what is missing, Bless
 -- rewrites only what already exists (and never a diagnostic).
-export data SnapMode = SnapCheck | SnapNew | SnapBless
+-- `public export`, not plain `export`: a plain `export data` exports the type
+-- ABSTRACTLY (no constructors), so medaka_cli's `import tools.snapshot.{SnapMode(..)}`
+-- had nothing to bind and every SnapCheck/SnapNew/SnapBless there was unbound.
+-- It ran anyway — the emitter's ctor table is global, so the built binary worked
+-- while the source was ill-typed, and `make medaka` does not gate on type errors.
+-- Only test/typecheck_compiler_source.sh catches this. That is why that gate exists.
+public export data SnapMode = SnapCheck | SnapNew | SnapBless
 
 -- ── a rendered section ───────────────────────────────────────────────────────
 -- (name, content, isDiagnostic).  The flag is set by the WORKER at the render site and
@@ -1178,7 +1184,7 @@ mapUnit f (x::rest) =
 (DFunDef false "isHeaderLine" ((PVar "l")) (EApp (EApp (EVar "anyList") (ELam ((PVar "n")) (EBinOp "==" (EVar "l") (EBinOp "++" (EBinOp "++" (ELit (LString "# ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString "")))))) (EVar "snapSections")))
 (DTypeSig false "sectionCollides" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "sectionCollides" ((PVar "content")) (EApp (EApp (EVar "anyList") (EVar "isHeaderLine")) (EApp (EVar "splitNl") (EVar "content"))))
-(DData Abstract "SnapMode" () ((variant "SnapCheck" (ConPos)) (variant "SnapNew" (ConPos)) (variant "SnapBless" (ConPos))) ())
+(DData Public "SnapMode" () ((variant "SnapCheck" (ConPos)) (variant "SnapNew" (ConPos)) (variant "SnapBless" (ConPos))) ())
 (DTypeAlias false "RunSec" () (TyTuple (TyCon "String") (TyCon "String") (TyCon "Bool")))
 (DTypeSig false "secName" (TyFun (TyCon "RunSec") (TyCon "String")))
 (DFunDef false "secName" ((PTuple (PVar "n") PWild PWild)) (EVar "n"))
@@ -1461,7 +1467,7 @@ mapUnit f (x::rest) =
 (DFunDef false "isHeaderLine" ((PVar "l")) (EApp (EApp (EVar "anyList") (ELam ((PVar "n")) (EBinOp "==" (EVar "l") (EBinOp "++" (EBinOp "++" (ELit (LString "# ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "")))))) (EVar "snapSections")))
 (DTypeSig false "sectionCollides" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "sectionCollides" ((PVar "content")) (EApp (EApp (EVar "anyList") (EVar "isHeaderLine")) (EApp (EVar "splitNl") (EVar "content"))))
-(DData Abstract "SnapMode" () ((variant "SnapCheck" (ConPos)) (variant "SnapNew" (ConPos)) (variant "SnapBless" (ConPos))) ())
+(DData Public "SnapMode" () ((variant "SnapCheck" (ConPos)) (variant "SnapNew" (ConPos)) (variant "SnapBless" (ConPos))) ())
 (DTypeAlias false "RunSec" () (TyTuple (TyCon "String") (TyCon "String") (TyCon "Bool")))
 (DTypeSig false "secName" (TyFun (TyCon "RunSec") (TyCon "String")))
 (DFunDef false "secName" ((PTuple (PVar "n") PWild PWild)) (EVar "n"))
