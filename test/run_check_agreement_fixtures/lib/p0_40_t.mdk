@@ -1,0 +1,7 @@
+-- Imported module for the bug #40 multi-module run/check/build agreement fixtures.
+-- `Foo` deliberately has NO Display impl: an entry that interpolates it is
+-- ill-typed, and check/run/build must all say so.
+public export data Foo = Foo Int
+
+export bump : Int -> Int
+bump n = n + 1

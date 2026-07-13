@@ -1,0 +1,24 @@
+-- Bug #40: multi-module `medaka run` did NOT gate on constraint / missing-impl
+-- type errors.  `check` printed the real located `No impl of Display for Foo`,
+-- but `run` EXECUTED the program and died on an unrelated runtime panic
+-- (`E-PANIC: intToString: not an Int`), and `build` gave a THIRD message
+-- (`no impl of method 'display' for type 'Foo' (slice 6)`).
+--
+-- Root cause: the multi-module run/build gate was `elaborateModules +
+-- hadTypeErrors`, and elaborateModules sets implInferEnabled, under which
+-- typecheck SKIPS checkImplObligations — the pass that raises `No impl of …`.
+-- So the sticky error flag was never set.  A plain unification `Type mismatch`
+-- DID set it, which is why the hole hid: probing with a mismatch shows correct
+-- behaviour.  Single-file run/build were never affected (their gate is
+-- analyzeLocatedG, which runs with implInferEnabled OFF) — hence the
+-- single-file twin below, and the fact that this MUST stay multi-module.
+--
+-- ⚠️ EXIT CODE ALONE CANNOT SEE THIS BUG: `run` exited 1 either way, just for
+-- the wrong reason.  The `println` below is the real assertion — if it ever
+-- appears in `run`'s stdout, the ill-typed program EXECUTED.
+import lib.p0_40_t.{Foo}
+
+main : <IO> Unit
+main =
+  println "MUST-NOT-EXECUTE"
+  println "\{Foo 1}"
