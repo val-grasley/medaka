@@ -1,6 +1,11 @@
 # WASM-FLOAT-TYPING-DESIGN — the principled fix for W-SQLITE-4
 
-**Status:** DESIGN (read-mostly scoping). No emitter/lib source changed. Bug =
+**Status:** IMPLEMENTED — stage 1 `b5eb9606`, stage 2 `2d321af6`, 2026-06-30. Verified
+live: `floatRetFnsRef`/`floatParamsRef`/`ctorFloatFieldsRef` all present in
+`compiler/backend/wasm_emit.mdk` (7 source markers, matching this doc's own and
+`SHARED-FLOAT-RESIDUAL-DESIGN.md`'s claims). Header below predates the fix.
+
+Original header (predates the fix): **Status:** DESIGN (read-mostly scoping). No emitter/lib source changed. Bug =
 `EMITTER-GAPS.md` §W-SQLITE-4: type-erased Float arithmetic on WasmGC miscompiles
 as INTEGER arith → `mdk_unbox_int` (`i31.get_s`/`ref.cast (ref i31)`) on a boxed
 `$float` → runtime **"illegal cast"** trap. This is the WasmGC analog of the native
