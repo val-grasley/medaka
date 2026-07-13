@@ -132,12 +132,37 @@ echo "── building ./medaka ────────────────�
 make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"; exit 1; }
 
 # ── resolve gates → the ORACLES they actually need ───────────────────────────
+#
+# ⚠️ A PATTERN THAT MATCHES ZERO GATES IS AN ERROR, NOT AN EMPTY SET.
+#
+# The change→gate map above hardcodes gate-name globs. When a gate is RENAMED or
+# DELETED — which the snapshot migration does, on purpose, family by family — a stale
+# glob silently matches NOTHING. The mapped file then resolves to NO GATE AT ALL, and
+# preflight cheerfully reports success having tested that file with nothing.
+#
+# This ALREADY happened: the snapshot migration deleted diff_compiler_{parse,desugar,
+# mark,desugar_batch,mark_batch}.sh, and preflight's `'diff_compiler_desugar*'` /
+# `'diff_compiler_mark*'` globs went dead. A change to frontend/desugar.mdk would have
+# mapped to zero gates and passed.
+#
+# It is the same bug as `$ROOT/compiler/*.mdk` globbing to zero files after the
+# subfolder reorg (which silently dropped the compiler's own sources from the desugar
+# corpus), and the same as a gate matching no CI shard. "This didn't run" must never be
+# indistinguishable from "this passed."
 gates=""
 for pat in $pats; do
+  matched=0
   for g in "$ROOT"/test/$pat.sh; do
     [ -f "$g" ] || continue
+    matched=1
     case " $gates " in *" $g "*) ;; *) gates="$gates $g" ;; esac
   done
+  if [ "$matched" -eq 0 ]; then
+    echo "preflight: FAIL — the change→gate map points at '$pat', which matches NO gate."
+    echo "  A gate was probably renamed or deleted (the snapshot migration does this)."
+    echo "  Your change would have been tested by NOTHING. Fix the map in $0."
+    exit 1
+  fi
 done
 
 oracles=""
