@@ -1235,8 +1235,8 @@ emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label recName) =
   emitFieldAccess e env ex label recName
-emitExpr e env (CRecordUpdate base updates) =
-  emitRecordUpdate e env base updates
+emitExpr e env (CRecordUpdate name base updates) =
+  emitRecordUpdate e env name base updates
 emitExpr e env (CVariantUpdate con base updates) =
   emitVariantUpdate e env con base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) =
@@ -3531,14 +3531,22 @@ emitMethod e env name (RDictFwd d) implRoutes methRoutes argOps =
   emitMethodDispatch e env name d methRoutes argOps
 emitMethod e env name RNone implRoutes methRoutes argOps =
   emitMethodArgDispatch e name argOps
-emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
+-- S-1: a CONSTRAINED shadowing standalone was given leading dict PARAMS by
+-- dictPassDecl, so its call must supply the matching dict WORDS.  Delegate to
+-- emitDictApp — the SAME tested helper the ordinary CDict path uses (it prepends the
+-- dict words and, via defArityOf, builds a residual PAP when genuinely
+-- under-applied).  Without this the direct emitKnownFnSat call below supplies one
+-- word too few, emitKnownFnSat correctly reads that as under-application, and the
+-- program silently prints a PAP heap pointer instead of the answer (the S-1 bug).
+-- `dicts == []` (every unconstrained standalone, incl. all 5 of the compiler's own
+-- definer shadows) keeps the byte-identical pre-S1 direct call ⇒ the self-compile
+-- fixpoint cannot move.
+emitMethod e env name (RLocal sym dicts) implRoutes methRoutes argOps =
   let target = if sym == "" then name else sym
-  emitKnownFnSat
-    e
-    ("mdk_" ++ target)
-    argOps
-    (fnArity e target)
-    (fnRetTy e target)
+  if isEmpty dicts then
+    emitKnownFnSat e ("mdk_" ++ target) argOps (fnArity e target) (fnRetTy e target)
+  else
+    emitDictApp e env target dicts argOps
 -- native backend: a method whose RESULT mentions the interface/self
 -- type variable (map/ap/andThen) returns the CONTAINER; type its
 -- RKey-dispatched result as the impl's own type (tagToLTy tag) so a
@@ -3567,6 +3575,12 @@ emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
 -- CAPTURES the dict word and rebinds it from `%clos` field 1 in the body, so the
 -- runtime impl switch still reads the caller's dict.  A nullary method (arity 0,
 -- e.g. `def`) is a plain value — keep the immediate `emitMethod .. []`.
+-- ⚠️ S1-RESIDUAL-A (open; SHADOW-SEMANTICS.md §6): a VALUE-position standalone SHADOW
+-- (`map size [1,2,3]`) miscompiles here — the built binary SEGFAULTs (wasm: `illegal
+-- cast`), while `run` is correct.  NOT an S-1/dict bug: an UNCONSTRAINED shadow, which
+-- takes the `dicts == []` path and is byte-identical to pre-S1 codegen, segfaults exactly
+-- the same way.  The lift builds a closure of `methodArityOf name` — the interface
+-- METHOD's arity — for a body that calls the STANDALONE, whose value arity need not match.
 emitMethodValue : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> <Mut> (String, LTy)
 emitMethodValue e env name route implRoutes methRoutes =
   let arity = methodArityOf name
@@ -3585,6 +3599,11 @@ emitMethodValue e env name route implRoutes methRoutes =
 methValDictNames : Route -> List String
 methValDictNames (RDict d) = [d]
 methValDictNames (RDictFwd d) = [d]
+-- S-1: a VALUE-position constrained shadow (`map size xs`) lifts to a closure, and its
+-- RLocal route's dict slots may include an RDict — the enclosing constrained fn's own
+-- dict param.  That word must be CAPTURED or the lifted body reads an out-of-scope
+-- name.  Empty dicts ⇒ [] ⇒ byte-identical to the pre-S1 catch-all.
+methValDictNames (RLocal _ dicts) = routeDictNames [] dicts
 methValDictNames _ = []
 
 -- the operand words for each captured dict name, looked up in the current emit env.
@@ -4367,7 +4386,10 @@ dictWordOfRoute e env (RKey key reqs) =
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
-dictWordOfRoute _ _ (RLocal _) = "0"  -- C5: RLocal carries no dict (mirror eval.mdk's no-op dict)
+-- S-1: RLocal's own dicts are the call's leading dict ARGS (emitted by emitMethod's
+-- RLocal arm via emitDictApp), not a dict WITNESS for this route — so as a witness it
+-- stays the no-op 0 dict, mirroring eval's `dictOfRoute (RLocal _ _) = VDict "" []`.
+dictWordOfRoute _ _ (RLocal _ _) = "0"
 
 -- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … | i64 req_(n-1) ]`
 -- via @mdk_alloc and return its pointer word (ptrtoint).  Mirrors emitCtorAlloc's
@@ -8554,16 +8576,32 @@ fieldIdxByName table recName label =
       None => findFieldIdx table label
     None => findFieldIdx table label
 
-emitRecordUpdate : Emit -> List (String, (String, LTy)) -> CExpr -> List CField -> <Mut> (String, LTy)
-emitRecordUpdate e env base updates =
+emitRecordUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
+emitRecordUpdate e env recName base updates =
   let (bw, _) = emitExpr e env base
   let firstLabel = cFieldFirstLabel updates
-  match findRecordByLabel (recFieldTable e) firstLabel
+  match recordByName (recFieldTable e) recName firstLabel
     None => gapE ("CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
     Some (name, labels) =>
       let updatePairs = emitUpdatePairs e env updates
       let words = buildUpdateWords e bw labels updatePairs 0
       emitCtorAlloc e name words
+
+-- Resolve the RECEIVER record of an update by the typecheck-stamped record name
+-- (CRecordUpdate's 1st field) when it is usable — non-empty, present in the
+-- field-order table, and actually owning the update label — else fall back to
+-- today's label-only search (unstamped / synthesized updates).  The by-name path
+-- is what makes two records that share a field name at DIFFERENT slot indices
+-- update the correct slot; the label-only guess silently wrote the other
+-- record's slot (bug #38).  Peer of fieldIdxByName on the access path.
+recordByName : List (String, List String) -> String -> String -> Option (String, List String)
+recordByName table recName label =
+  if recName == "" then findRecordByLabel table label
+  else match lookupAssoc recName table
+    Some labels => match indexOfStr label labels
+      Some _ => Some (recName, labels)
+      None => findRecordByLabel table label
+    None => findRecordByLabel table label
 
 emitVariantUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
 emitVariantUpdate e env con base updates =
@@ -8662,7 +8700,7 @@ scanExprRecords : CExpr -> List (String, List String)
 scanExprRecords (CRecord name fields) =
   (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
 scanExprRecords (CFieldAccess ex _ _) = scanExprRecords ex
-scanExprRecords (CRecordUpdate base updates) = scanExprRecords base
+scanExprRecords (CRecordUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
 scanExprRecords (CVariantUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
@@ -9389,7 +9427,7 @@ ctag (CList _) = "CList"
 ctag (CArray _) = "CArray"
 ctag (CRecord _ _) = "CRecord"
 ctag (CFieldAccess _ _ _) = "CFieldAccess"
-ctag (CRecordUpdate _ _) = "CRecordUpdate"
+ctag (CRecordUpdate _ _ _) = "CRecordUpdate"
 ctag (CRangeList _ _ _) = "CRangeList"
 ctag (CRangeArray _ _ _) = "CRangeArray"
 ctag (CIndex _ _) = "CIndex"

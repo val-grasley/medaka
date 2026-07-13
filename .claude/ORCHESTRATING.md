@@ -35,11 +35,58 @@ typecheck + the self-compile fixpoint. **All 83 gates pass on an ill-typed compi
 build does not gate on type errors) — that is exactly how a compiler with unbound constructors
 shipped to `main`. The gate shards would have waved it through.
 
-### "Require branches to be up to date" is doing the merge queue's job
+### ✅ THERE IS A MERGE QUEUE NOW (2026-07-13). Do not hand-manage staleness.
 
-`strict` is ON: a PR **cannot merge unless it is up to date with `main`**. So CI runs on *your
-branch merged onto current main*, not your branch in isolation. If main advances underneath
-you, you must update and re-run. That is the whole point — and it is not a formality:
+The repo moved to the **MedakaLang org** and the merge queue is **ON**. This replaced
+`strict` mode, and it changes the day-to-day flow in ways the rest of this doc used to
+prescribe the opposite of. **Everything below about `BEHIND` branches, `update-branch` kicks,
+and batching PRs to dodge an O(N²) tax is now OBSOLETE. Do not do it.**
+
+```sh
+gh pr merge --auto --merge     # enqueues; the queue does the rest
+```
+
+**What the queue actually does — and why it is STRICTLY STRONGER than what it replaced.**
+It builds a temporary branch containing *your PR merged onto current `main`, plus everything
+queued ahead of you*, runs all nine required checks **on that**, and merges only if green. That
+is the real guarantee `strict` was crudely approximating. It also **batches**: up to 5 entries
+test together in one CI run (`ALLGREEN` grouping — one bad PR fails its group and gets bisected
+out; 5-minute accumulation window; a lone PR never stalls waiting for company).
+
+Config: `merge_method=MERGE`, `grouping_strategy=ALLGREEN`, batch 1–5, 5-min wait, 60-min check
+timeout. The `merge_group:` trigger in `ci.yml` is what makes the checks run on the queue's temp
+branch — **without it the queue deadlocks** (entries wait forever for checks that never start).
+Do not remove it.
+
+**`strict` is now OFF, and that is deliberate — it is not a weakening.** `strict` and the queue
+are redundant, and together they are actively harmful: `strict` forces every open PR to rebase
+onto every merge and re-run all nine checks, which is precisely the O(N²) tax the queue exists
+to delete. Leaving both on means paying the tax and gaining nothing.
+
+**Why this mattered here, in real numbers** (the day we turned it on): **13 merges to `main` in
+one hour** across three concurrent orchestrators. Under `strict`, each merge invalidated every
+open PR. One PR paid **five full 20-minute suites** without landing; two more starved the same
+way; and it took a hand-coordinated *merge pause* between two orchestrators to let one through.
+That is the failure the queue removes.
+
+**What this obsoletes — stop doing all of it:**
+- ❌ `gh api -X PUT .../pulls/<N>/update-branch` kicks. (They were also **impossible** on any PR
+  touching `.github/workflows/` — `gh`'s OAuth app lacks `workflow` scope and the call 403s.)
+- ❌ Watching for `BEHIND` and babysitting stale branches.
+- ❌ **Batching unrelated PRs onto one branch to save CI runs.** The queue batches for you, at
+  the *merge* layer, without destroying anyone's bisect point.
+
+**What still holds, and is now the ONLY reason to batch:** batch for *diagnosis*, not for
+throughput. If two changes are so entangled that a red result would not tell you which one broke
+it, they belong together. Otherwise **keep them separate** — a red queue entry that names one PR
+is worth more than a saved CI run. And **a clean auto-merge is still NOT agreement** (see below):
+the queue tests the *merged* result, which is exactly why it catches what `strict` could not — but
+it cannot tell you that two semantically incompatible changes merged cleanly and are now both
+wrong. That remains a human job.
+
+### Why testing the MERGED result is the whole point
+
+CI on your branch alone is not enough, and this is not a formality:
 
 - Two green branches (TMC arc + the arg-tuple removal) merged cleanly and **crashed**. Git
   flagged 2 conflicts and silently auto-merged a THIRD break it could not see: TMC had added a
@@ -48,61 +95,7 @@ you, you must update and re-run. That is the whole point — and it is not a for
 - Two more branches both touched `typecheck.mdk`, auto-merged fine, and their **goldens**
   diverged — taking `main` red.
 
-**PR CI tests your branch. Only the merged result matters.** Never assume a clean auto-merge
-means agreement; see "A clean auto-merge is NOT agreement" below.
-
-### ⚠️ QUEUED PRs COST O(N²). BATCH THEM.
-
-`strict` means **every merge invalidates every other open PR** — each one goes `BEHIND`, must be
-updated to the new `main`, and must re-run all nine checks. With **N** PRs queued you pay
-roughly **N²/2** CI runs to land them, and the last one in line re-runs N times. A merge queue
-is exactly what batches that away, and **we do not have one** (see below).
-
-So when several PRs are in flight at once, **consider combining them into one branch.**
-
-**And expect to babysit the update.** `gh pr merge --auto` does **not** update a branch that
-falls `BEHIND` — it only waits for checks. When another PR merges ahead of yours, yours goes
-stale and its auto-merge just sits there. Kick it:
-
-```sh
-gh api -X PUT repos/<owner>/<repo>/pulls/<N>/update-branch
-```
-
-(`allow_update_branch` is enabled on the repo, which is what makes that call — and the "Update
-branch" button — available at all. It still has to be *triggered*; GitHub will not do it for
-you.) Every kick re-runs all nine checks. That is the O(N²) above, in the form you will actually
-meet it.
-
-**Batch when:**
-- The changes are **related** (same subsystem, same arc) — they were going to be reviewed
-  together anyway.
-- They are **small and low-risk** (docs, a gate, a fixture, a ledger entry). Two doc PRs racing
-  each other through nine checks is pure waste.
-- You are the author of all of them — batching someone else's work into your branch steals their
-  attribution and their bisect point.
-
-**Do NOT batch when:**
-- One of them is **risky and one is not.** A red result on a combined branch tells you the
-  *batch* is bad, not *which change* is bad — you have destroyed the bisect. Keep an emitter
-  change, a typechecker change, and a golden re-cut **separate**, precisely so a red CI names
-  the culprit.
-- The changes touch the **same files** — you have just recreated the merge problem inside your
-  own branch, with none of git's warnings. (And remember: **a clean auto-merge is not
-  agreement.**)
-- One is ready and one is not. Do not hold a finished fix hostage to an unfinished one.
-
-**Rule of thumb:** batch for *throughput*, split for *diagnosis*. If you would not be able to
-tell which half broke it, split.
-
-### There is NO merge queue, and there cannot be one here
-
-The `merge_queue` ruleset rule is rejected by the API: **GitHub's merge queue requires an
-ORGANIZATION-owned repository.** `val-grasley/medaka` is owned by a *user* account, so the
-feature is unavailable on any plan. `strict` mode above is the mitigation — it gives the same
-correctness guarantee, serialized instead of batched (you re-run CI after each merge rather
-than testing a batch once). **If this repo ever moves to a `medaka` org, turn the merge queue
-on** — the `merge_group:` trigger is already in `ci.yml` waiting for it, and without that
-trigger a queue would deadlock (its checks would never run).
+**Only the merged result matters.** The queue now tests exactly that, on every entry.
 
 ---
 
@@ -737,7 +730,11 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 - **An agent can commit stray build-artifact binaries via `git add -A`.** This session an agent's commit included 5 root-level demo binaries (~250 KB each, not gitignored) alongside the real change. Caught by the standard pre-merge `git diff --stat <main> <branch>` surface check (Bin entries that don't match the reported change). Fix: rebuild a CLEAN commit off main with only the intended files (`git checkout -B clean main; git checkout <agent-sha> -- <good files>; commit`), then merge that — do NOT merge the polluted commit. Bake "commit ONLY your changed source + fixtures, never `git add -A`" into agent prompts.
 - Agent leaves detached background gate processes → reap with `ps`/`pkill`.
 - **The empty-report + RESPAWNING-oracle-pool failure mode (recurred on MANY agents 2026-07-10, Sonnet AND Opus).** An agent ends its turn with a stray line ("Background scan in progress…", "I'll wait for the oracle build…") instead of a real report, AND it launched a bare `build_oracles.sh` (a big `xargs -P` pool) that didn't finish inside the turn — so each time the harness re-invokes/wakes it, it RESTARTS the pool. Reaping the pool alone doesn't work (it respawns). **Remedy, in order: (1) `TaskStop <agentId>` FIRST to stop the respawn; (2) reap — `pkill -f build_oracles.sh` (PARENTS) then `pkill -f '<worktree>/medaka build'` (children) then `pkill -f 'xargs -P'`; (3) salvage or discard.** Salvage IF the WIP in the agent's worktree is COMPLETE (`git -C <wt> status` + a grep for the target end-state, e.g. `grep EFunction=0`): fmt/build/gate it yourself, commit on its branch, finish any unrecaptured goldens it left. DISCARD + re-spawn if the WIP is a partial/hack (e.g. one file, target not met). **Bake into every agent prompt: NEVER run bare `build_oracles.sh`; build a single oracle with `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>`; WAIT for gates and REPORT real numbers; never end with anything running.** (Even so, expect some agents to ignore it — the `TaskStop`+salvage loop is routine.)
-- **Fresh isolated worktrees have NO `./medaka_emitter`, and a deferred-stale seed makes cold-bootstrap-from-seed FAIL.** So an agent's first `make medaka` in a fresh worktree can't build. Remedy baked into prompts: `cp <a-current-worktree>/medaka_emitter ./medaka_emitter` before `make medaka` (warm path). Keep ONE orchestrator worktree with a freshly-built current emitter for agents to borrow. (A **seed re-mint** — `sh test/refresh_seed.sh` then verify `bash test/bootstrap_from_seed.sh` C3a PASS — fixes cold bootstrap; do it at real checkpoints, it's a ~2.5 MB churn commit. A byte-identical-IR source change, e.g. `data X=X{}`→`data X={}`, needs NO re-mint.)
+- **Fresh isolated worktrees have NO `./medaka_emitter` — but plain `make medaka` WORKS there. A lagging seed does NOT break cold bootstrap.** ⚠️ This bullet used to claim "a deferred-stale seed makes cold-bootstrap-from-seed FAIL", and that is **FALSE** — it was the premise behind the `cp` advice below, and the two together are what made every agent think it had broken the seed. Since the tolerant seed policy (`9df88b32`), a drifted seed only **WARNS** (`C3a WARN … lagging seed`) and still builds a working emitter; `bootstrap_from_seed.sh` hard-fails **only** if the seed can no longer build one at all. Verified 2026-07-13 against a genuinely drifted seed.
+  - `cp <a-current-worktree>/medaka_emitter ./medaka_emitter` before `make medaka` remains a worthwhile **speedup** (skips the seed gunzip + clang + bootstrap: one ~4 s stage-A emit instead of ~1–2 min), and it is now **safe**.
+  - It was NOT safe before 2026-07-13, and this is the bug every agent kept reporting. Stage A decided "is this emitter current?" by **mtime** (`find compiler -name '*.mdk' -newer ./medaka_emitter`). `cp` stamps the copy with the *current* time — newer than every file `git worktree add` just checked out — so the test found nothing newer and **skipped the rebuild** on a binary that was arbitrarily old *in source terms*. Stage B then fed that stale binary the CLI graph, it died on syntax it predated (`parse error` — e.g. an emitter older than `b2990236` cannot parse `compiler/tools/snapshot.mdk`, which now uses `import … as …`), and the build fell back to a full **cold re-bootstrap**, printing the unrelated-and-terrifying `C3a WARN: … lagging seed`. The mtime was not a weak signal, it was an **inverted** one: the staler the emitter's origin, the fresher its copy time.
+  - Fixed by giving the emitter a **provenance stamp**: `build_native_medaka.sh` hashes `compiler/**/*.mdk` into `.medaka_emitter.srcstamp` (gitignored, never travels with a `cp`) and rebuilds any emitter whose stamp is missing or mismatched. A borrowed emitter is now correctly treated as unknown-provenance and refreshed instead of silently trusted.
+  - A **seed re-mint** (`sh test/refresh_seed.sh` — run it **TWICE**, it is not idempotent after a codegen change — then verify `bash test/bootstrap_from_seed.sh`) is for *byte-currency*, not for making cold bootstrap work. Do it at real checkpoints; it is a ~2.5 MB churn commit. A byte-identical-IR source change (e.g. `data X=X{}`→`data X={}`) needs NO re-mint.
 - **A construct-removal census MUST scan the always-loaded prelude (`stdlib/core.mdk`) for REAL uses** (not just doc-comment/string matches). A missed prelude use makes the *compiled* binary fail to load the prelude → it errors on EVERY program, which mimics a native codegen/DCE miscompile (2026-07-10: a whole Opus agent spent a 12-build bisection before another proved the emitted IR was byte-identical live-vs-dead and the real cause was `core.mdk` using the removed construct). Grep the prelude first; there is no DCE miscompile.
 - A "surgical one-node" scope hypothesis turns out coupled to a deeper issue → the
   STOP guardrail catches it; re-scope rather than ship "panic-gone but output-wrong."

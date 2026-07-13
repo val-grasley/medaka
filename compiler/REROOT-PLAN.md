@@ -1,8 +1,13 @@
-STATUS: COMPLETE — all gates re-rooted off the OCaml oracle 2026-06-13; every correctness gate is OCaml-free.
-
 # REROOT-PLAN — taking the gate suite OFF the OCaml oracle
 
-**Status:** PLAN (read-only analysis, 2026-06-12). Change no gates until reviewed.
+**Status:** IMPLEMENTED — all gates re-rooted off the OCaml oracle by 2026-06-13
+(consistent with `4398fbd1`, "re-rooting... done"); every correctness gate was
+OCaml-free even before the later, larger `lib/`/`bin/`/`gen/`/`dev/` removal
+(2026-06-26). This is the direct predecessor to that removal — it explicitly scoped
+itself to NOT delete `lib/` yet ("retirement ≠ removal"). Its extensive OCaml content
+is the subject matter (a migration-off-OCaml plan), not staleness.
+
+Status (original, pre-completion): PLAN (read-only analysis, 2026-06-12). Change no gates until reviewed.
 **Goal:** every gate runs with NO OCaml — no `_build/default/bin/main.exe`, no
 `dev/eval_probe.exe`, no `dev/*_probe.exe`, no `dune build`. OCaml `lib/`+`bin/`
 stays FROZEN through a soak and is removed LATER behind a confidence gate

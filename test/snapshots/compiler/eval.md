@@ -219,7 +219,6 @@ buildCtorToType prog = flatMap ctorTypeEntries prog
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
   map (v => (variantName v, tyname)) variants
-ctorTypeEntries (DNewtype _ tyname _ con _ _) = [(con, tyname)]
 ctorTypeEntries _ = []
 
 variantName : Variant -> String
@@ -865,7 +864,7 @@ routeTag env (RDict d) = match lookupEnv env d
 routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
-routeTag _ (RLocal _) = ""
+routeTag _ (RLocal _ _) = ""
 -- RScalar tags an arithmetic EBinOp for the backend's Float path; it is never a
 -- typeclass dispatch route, so eval never routes a method through it.
 routeTag _ (RScalar _) =
@@ -895,7 +894,12 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
-dictOfRoute _ (RLocal _) = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
+-- S-1: an RLocal route's OWN dicts (the shadowing standalone's `=>` constraints) are
+-- applied by evalMethodAt's RLocal arm via applyDicts — they are the call's leading
+-- dict ARGS, not a dict witness FOR this route.  So as a *witness* RLocal is still the
+-- no-op dict.  (Pre-S1 this arm's comment claimed "RLocal never carries a dict"; that
+-- invariant was the S-1 bug and is now false — see ast.mdk's Route doc + S9.)
+dictOfRoute _ (RLocal _ _) = VDict "" []
 -- RScalar is an arithmetic binop tag (backend Float path), never a dict route.
 dictOfRoute _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -923,7 +927,7 @@ methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
 -- RLocal: not a method dispatch — the EMethodAt arm resolves the standalone
 -- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
 -- exists only to keep the match exhaustive; it returns the value unnarrowed.
-methodAtNarrow _ v (RLocal _) = (v, [])
+methodAtNarrow _ v (RLocal _ _) = (v, [])
 -- RScalar is an arithmetic binop tag (backend Float path), never a dispatch route.
 methodAtNarrow _ _ (RScalar _) =
   panic "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"
@@ -1042,10 +1046,8 @@ eval env (ERecordCreate name fields) =
   match lookupAssoc name ctorFieldOrdersRef.value
     Some order => VCon name (recordCreateVals name order assigns)
     None => VRecord name assigns
-eval env (ERecordUpdate base fields) =
+eval env (ERecordUpdate base fields _) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
-eval env (EVariantUpdate con base fields) =
-  evalVariantUpdate con (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
 eval env (EFieldAccess e field _) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
@@ -1080,8 +1082,15 @@ eval _ _ = panic "eval: unsupported node (slice 2)"
 evalMethodAt : EvalEnv (Value e) -> String -> Route -> List Route -> List Route -> <Mut | e> Value e
 -- P0-18: the carried String is the MANGLED standalone symbol on the emit path;
 -- "" (the un-mangled run/check path) falls back to the bare method name.
-evalMethodAt env name (RLocal sym) _ _ =
-  lookupEnv env (if sym == "" then name else sym)
+-- S-1: apply the standalone's OWN constraint dicts as leading args (`dicts` is empty
+-- for an unconstrained standalone ⇒ applyDicts is the identity ⇒ byte-identical to
+-- the pre-S1 bare lookupEnv).  A CONSTRAINED standalone was given leading dict PARAMS
+-- by dictPassDecl, so without this the call under-applies by exactly one word per
+-- constraint and the first real argument lands in the dict slot.  This is literally
+-- the EDictAt arm's body (`applyDicts env (lookupEnv env name) routes`) — the same
+-- machinery, now reachable from the shadow arm that the marking prePass consumes.
+evalMethodAt env name (RLocal sym dicts) _ _ =
+  applyDicts env (lookupEnv env (if sym == "" then name else sym)) dicts
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
   let (narrowed, fwdReqs0) = methodAtNarrow env lm route
@@ -1188,15 +1197,8 @@ evalVariantUpdate con (VCon con' vals) updates
   | con == con' =
     VCon con (applyVariantUpdates updates (ctorFieldOrderFor con) vals)
   | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
--- The tree-walking `run` path (compiler/eval/eval.mdk's own `ERecordCreate` arm)
--- never populates `ctorFieldOrdersRef` (only the Core-IR lowering/eval drivers
--- do), so a named-field constructor value on this path is a `VRecord`, never a
--- `VCon`. Mirror `evalRecordUpdate`'s merge, keeping the constructor tag.
-evalVariantUpdate con (VRecord con' fields) updates
-  | con == con' = VRecord con' (map (mergeField updates) fields)
-  | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
-evalVariantUpdate con v _ =
-  panic "evalVariantUpdate: not a constructor: \{con} got \{ppValue v}"
+evalVariantUpdate con _ _ =
+  panic ("evalVariantUpdate: not a constructor: " ++ con)
 
 ctorFieldOrderFor : String -> List String
 ctorFieldOrderFor con = match lookupAssoc con ctorFieldOrdersRef.value
@@ -1422,8 +1424,6 @@ collectCtors prog = flatMap ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value e)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
-ctorsOfDecl (DNewtype _ _ _ con fty _) =
-  [ctorEntry (Variant con (ConPos [fty]))]
 ctorsOfDecl _ = []
 
 ctorEntry : Variant -> (String, Value e)
@@ -2997,7 +2997,6 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "buildCtorToType" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "ctorTypeEntries")) (EVar "prog")))
 (DTypeSig false "ctorTypeEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "ctorTypeEntries" ((PCon "DData" PWild (PVar "tyname") PWild (PVar "variants") PWild)) (EApp (EApp (EVar "map") (ELam ((PVar "v")) (ETuple (EApp (EVar "variantName") (EVar "v")) (EVar "tyname")))) (EVar "variants")))
-(DFunDef false "ctorTypeEntries" ((PCon "DNewtype" PWild (PVar "tyname") PWild (PVar "con") PWild PWild)) (EListLit (ETuple (EVar "con") (EVar "tyname"))))
 (DFunDef false "ctorTypeEntries" (PWild) (EListLit))
 (DTypeSig false "variantName" (TyFun (TyCon "Variant") (TyCon "String")))
 (DFunDef false "variantName" ((PCon "Variant" (PVar "n") PWild)) (EVar "n"))
@@ -3336,7 +3335,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "routeTag" (PWild (PCon "RKey" (PVar "key") PWild)) (EVar "key"))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
-(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild)) (ELit (LString "")))
+(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild PWild)) (ELit (LString "")))
 (DFunDef false "routeTag" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "applyDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "applyDicts" (PWild (PVar "v") (PList)) (EVar "v"))
@@ -3349,14 +3348,14 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" (PWild (PCon "RNone")) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
-(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
+(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
 (DFunDef false "dictOfRoute" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "methodAtNarrow" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyCon "Route") (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RNone")) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RKey" (PVar "key") PWild)) (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EListLit)))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
-(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild)) (ETuple (EVar "v") (EListLit)))
+(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild PWild)) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig false "oneOrMultiV" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "oneOrMultiV" ((PList (PVar "v")) PWild) (EVar "v"))
@@ -3417,8 +3416,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "VList") (EApp (EApp (EVar "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EVar "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
-(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
-(DFunDef false "eval" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields") PWild)) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
@@ -3431,7 +3429,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "eval" (PWild PWild) (EApp (EVar "panic") (ELit (LString "eval: unsupported node (slice 2)"))))
 (DTypeSig false "evalMethodAt" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
-(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) PWild PWild) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))))
+(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route")))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EVar "implRoutes"))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
@@ -3472,8 +3470,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "mergeField" ((PVar "updates") (PTuple (PVar "k") (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "updates")) (arm (PCon "Some" (PVar "v2")) () (ETuple (EVar "k") (EVar "v2"))) (arm (PCon "None") () (ETuple (EVar "k") (EVar "v")))))
 (DTypeSig true "evalVariantUpdate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VCon" (PVar "con'") (PVar "vals")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VCon") (EVar "con")) (EApp (EApp (EApp (EVar "applyVariantUpdates") (EVar "updates")) (EApp (EVar "ctorFieldOrderFor") (EVar "con"))) (EVar "vals"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VRecord" (PVar "con'") (PVar "fields")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VRecord") (EVar "con'")) (EApp (EApp (EVar "map") (EApp (EVar "mergeField") (EVar "updates"))) (EVar "fields"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") (PVar "v") PWild) (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EApp (EVar "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EVar "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString "")))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EVar "con"))))
 (DTypeSig false "ctorFieldOrderFor" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "ctorFieldOrderFor" ((PVar "con")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "fs")) () (EVar "fs")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: unknown constructor ")) (EVar "con"))))))
 (DTypeSig false "applyVariantUpdates" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))
@@ -3607,7 +3604,6 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "collectCtors" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "ctorsOfDecl")) (EVar "prog")))
 (DTypeSig false "ctorsOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "ctorsOfDecl" ((PCon "DData" PWild PWild PWild (PVar "variants") PWild)) (EApp (EApp (EVar "map") (EVar "ctorEntry")) (EVar "variants")))
-(DFunDef false "ctorsOfDecl" ((PCon "DNewtype" PWild PWild PWild (PVar "con") (PVar "fty") PWild)) (EListLit (EApp (EVar "ctorEntry") (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "ctorsOfDecl" (PWild) (EListLit))
 (DTypeSig false "ctorEntry" (TyFun (TyCon "Variant") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "ctorEntry" ((PCon "Variant" (PVar "n") (PVar "payload"))) (ETuple (EVar "n") (EApp (EApp (EVar "makeCtor") (EVar "n")) (EApp (EVar "payloadArity") (EVar "payload")))))
@@ -4308,7 +4304,6 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "buildCtorToType" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "ctorTypeEntries")) (EVar "prog")))
 (DTypeSig false "ctorTypeEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "ctorTypeEntries" ((PCon "DData" PWild (PVar "tyname") PWild (PVar "variants") PWild)) (EApp (EApp (EMethodRef "map") (ELam ((PVar "v")) (ETuple (EApp (EVar "variantName") (EVar "v")) (EVar "tyname")))) (EVar "variants")))
-(DFunDef false "ctorTypeEntries" ((PCon "DNewtype" PWild (PVar "tyname") PWild (PVar "con") PWild PWild)) (EListLit (ETuple (EVar "con") (EVar "tyname"))))
 (DFunDef false "ctorTypeEntries" (PWild) (EListLit))
 (DTypeSig false "variantName" (TyFun (TyCon "Variant") (TyCon "String")))
 (DFunDef false "variantName" ((PCon "Variant" (PVar "n") PWild)) (EVar "n"))
@@ -4647,7 +4642,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "routeTag" (PWild (PCon "RKey" (PVar "key") PWild)) (EVar "key"))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
 (DFunDef false "routeTag" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") PWild) () (EVar "key")) (arm PWild () (ELit (LString "")))))
-(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild)) (ELit (LString "")))
+(DFunDef false "routeTag" (PWild (PCon "RLocal" PWild PWild)) (ELit (LString "")))
 (DFunDef false "routeTag" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "applyDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "applyDicts" (PWild (PVar "v") (PList)) (EVar "v"))
@@ -4660,14 +4655,14 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" ((PVar "env") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (EApp (EApp (EVar "VDict") (EVar "key")) (EVar "reqs"))) (arm PWild () (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))))
 (DFunDef false "dictOfRoute" (PWild (PCon "RNone")) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
-(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
+(DFunDef false "dictOfRoute" (PWild (PCon "RLocal" PWild PWild)) (EApp (EApp (EVar "VDict") (ELit (LString ""))) (EListLit)))
 (DFunDef false "dictOfRoute" (PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig true "methodAtNarrow" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyCon "Route") (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RNone")) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RKey" (PVar "key") PWild)) (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EListLit)))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDict" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
 (DFunDef false "methodAtNarrow" ((PVar "env") (PVar "v") (PCon "RDictFwd" (PVar "d"))) (EMatch (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "d")) (arm (PCon "VDict" (PVar "key") (PVar "reqs")) () (ETuple (EApp (EApp (EVar "narrowMethod") (EVar "v")) (EVar "key")) (EVar "reqs"))) (arm PWild () (ETuple (EVar "v") (EListLit)))))
-(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild)) (ETuple (EVar "v") (EListLit)))
+(DFunDef false "methodAtNarrow" (PWild (PVar "v") (PCon "RLocal" PWild PWild)) (ETuple (EVar "v") (EListLit)))
 (DFunDef false "methodAtNarrow" (PWild PWild (PCon "RScalar" PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: RScalar is an arithmetic binop tag, not a dispatch route"))))
 (DTypeSig false "oneOrMultiV" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "oneOrMultiV" ((PList (PVar "v")) PWild) (EVar "v"))
@@ -4728,8 +4723,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "VList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
-(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
-(DFunDef false "eval" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields") PWild)) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
@@ -4742,7 +4736,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "eval" (PWild PWild) (EApp (EVar "panic") (ELit (LString "eval: unsupported node (slice 2)"))))
 (DTypeSig false "evalMethodAt" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
-(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) PWild PWild) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))))
+(DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route")))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EVar "implRoutes"))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
@@ -4783,8 +4777,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "mergeField" ((PVar "updates") (PTuple (PVar "k") (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "updates")) (arm (PCon "Some" (PVar "v2")) () (ETuple (EVar "k") (EVar "v2"))) (arm (PCon "None") () (ETuple (EVar "k") (EVar "v")))))
 (DTypeSig true "evalVariantUpdate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VCon" (PVar "con'") (PVar "vals")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VCon") (EVar "con")) (EApp (EApp (EApp (EVar "applyVariantUpdates") (EVar "updates")) (EApp (EVar "ctorFieldOrderFor") (EVar "con"))) (EVar "vals"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") (PCon "VRecord" (PVar "con'") (PVar "fields")) (PVar "updates")) (EIf (EBinOp "==" (EVar "con") (EVar "con'")) (EApp (EApp (EVar "VRecord") (EVar "con'")) (EApp (EApp (EMethodRef "map") (EApp (EVar "mergeField") (EVar "updates"))) (EVar "fields"))) (EIf (EVar "otherwise") (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: expected ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EVar "con'"))) (ELit (LString "")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DFunDef false "evalVariantUpdate" ((PVar "con") (PVar "v") PWild) (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EApp (EMethodRef "display") (EVar "con"))) (ELit (LString " got "))) (EApp (EMethodRef "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString "")))))
+(DFunDef false "evalVariantUpdate" ((PVar "con") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: not a constructor: ")) (EVar "con"))))
 (DTypeSig false "ctorFieldOrderFor" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "ctorFieldOrderFor" ((PVar "con")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "con")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "fs")) () (EVar "fs")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "evalVariantUpdate: unknown constructor ")) (EVar "con"))))))
 (DTypeSig false "applyVariantUpdates" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))
@@ -4918,7 +4911,6 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "collectCtors" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "ctorsOfDecl")) (EVar "prog")))
 (DTypeSig false "ctorsOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
 (DFunDef false "ctorsOfDecl" ((PCon "DData" PWild PWild PWild (PVar "variants") PWild)) (EApp (EApp (EMethodRef "map") (EVar "ctorEntry")) (EVar "variants")))
-(DFunDef false "ctorsOfDecl" ((PCon "DNewtype" PWild PWild PWild (PVar "con") (PVar "fty") PWild)) (EListLit (EApp (EVar "ctorEntry") (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "ctorsOfDecl" (PWild) (EListLit))
 (DTypeSig false "ctorEntry" (TyFun (TyCon "Variant") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "ctorEntry" ((PCon "Variant" (PVar "n") (PVar "payload"))) (ETuple (EVar "n") (EApp (EApp (EVar "makeCtor") (EVar "n")) (EApp (EVar "payloadArity") (EVar "payload")))))

@@ -52,6 +52,7 @@ contigGo : Map String Unit -> List String -> List Decl -> List ResError
 contiguityErrors : List Decl -> List ResError
 ctorNames : List Decl -> List String
 dataRecordNames : List Decl -> List String
+dbName : ResError -> String
 declBindNames : Decl -> List String
 declLoc : Decl -> Option Loc
 dedupResErrors : List ResError -> List ResError
@@ -60,10 +61,15 @@ deleteAllStr : List String -> Map String Unit -> Map String Unit
 dropLocOfExpanded : (String, String, Loc) -> (String, String)
 dupClauseTail : Option Loc -> String -> Bool -> List FunClause -> List ResError
 dupErr : String -> String -> ResError
+dupSigGo : List Decl -> Map String (Option Loc) -> List ResError
+dupSigName : ResError -> String
+dupSigOf : Decl -> Option (String, Option Loc)
+dupSignatureErrors : List Decl -> List ResError
 dupValClause : Decl -> Option (String, Bool, Option Loc)
 dupValGo : Option String -> Bool -> List Decl -> List ResError
 dupValueBindingErrors : List Decl -> List ResError
 duplicateErrors : List Decl -> List Decl -> List ResError
+dvbName : ResError -> String
 effectNames : List Decl -> List String
 emptyAdds : ImportAdds
 expCtorsDirect : List Decl -> List String
@@ -85,11 +91,14 @@ fieldVerdict : Option Loc -> Env -> String -> String -> List String -> List ResE
 filterContains : List String -> List String -> List String
 filterIfaceMethods : List String -> List (String, List String) -> List (String, List String)
 filterKeepOpen : List String -> List String -> List String
+filterOutNamesIn : List String -> (ResError -> String) -> List ResError -> List ResError
 findDups : List String -> List String -> List String
 findExports : String -> List ModuleExports -> Option ModuleExports
 firstExprLoc : Expr -> Option Loc
 firstLocList : List Expr -> Option Loc
 firstOr : String -> List String -> String
+firstTyLoc : Ty -> Option Loc
+firstTyLocList : List Ty -> Option Loc
 foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
 hasFoldable : List Decl -> Bool

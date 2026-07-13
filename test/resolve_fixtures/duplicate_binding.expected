@@ -1,1 +1,1 @@
-Clauses of 'foo' must be contiguous. An earlier same-named binding is separated by another declaration; group all clauses (and the signature) together
+'foo' is already defined at line 1. A name may have only one type signature — rename or remove this duplicate definition, or merge the clauses into a single multi-clause function if that was the intent

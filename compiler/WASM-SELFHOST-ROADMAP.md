@@ -1,12 +1,17 @@
 # WASM-SELFHOST-ROADMAP.md — driving the WasmGC backend to compile the compiler
 
+**Status:** IMPLEMENTED — census progress 1428 → 0, every category ✅ DONE, in-browser
+WAT assembly resolved, playground wired (all 2026-06-22). Most recently touched
+2026-07-13 as part of a proactive documentation-hygiene sweep (`95496ecc`) — the healthiest
+maintenance pattern found across this doc family.
+
 > **Goal:** run the Medaka compiler *itself*, compiled to WasmGC, in a browser — a
 > frontend-only playground with **no server-side compilation**. This is the
 > `WASMGC-DESIGN.md` §1 "far horizon" made concrete. The compute+print MVP (W1–W9b +
 > W8b) is done; this doc tracks the gap-closing toward self-host.
 >
 > **Companion docs:** `WASMGC-DESIGN.md` (backend design + slices), `WASM-SELFHOST-GAPS.md`
-> (the raw gap census), `PLAYGROUND-DESIGN.md` (the product surface).
+> (the raw gap census), `../archive/design/PLAYGROUND-DESIGN.md` (the product surface).
 
 ## How the census works (the measurement loop)
 
@@ -200,5 +205,5 @@ with the native `wasm-tools` 1.252.0 used in `build_playground_wasm.sh`.
 The in-browser playground is live: `playground/` contains the fully client-side Medaka
 playground. The compiler (`compiler/entries/playground_main.mdk`) is compiled to WasmGC
 (`playground/dist/playground.wasm`) and runs entirely in the browser — no server-side
-compilation. See `playground/README.md` for build + run instructions and `PLAYGROUND-DESIGN.md`
+compilation. See `playground/README.md` for build + run instructions and `../archive/design/PLAYGROUND-DESIGN.md`
 for architecture details.

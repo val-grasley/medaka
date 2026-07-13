@@ -3,7 +3,7 @@
 #
 # `--bless` rewrites committed expectations.  That is the single most dangerous verb in a
 # golden suite: the person who broke the golden is the person who presses the button, and
-# every survey point in TESTING-DESIGN.md §3.1 tells the same story about what happens
+# every survey point in docs/ops/TESTING-DESIGN.md §3.1 tells the same story about what happens
 # next.  So the button carries three locks, and THIS gate is what keeps them on:
 #
 #   1. SCOPED        — `--bless` with no targets is REFUSED.  There is no whole-suite

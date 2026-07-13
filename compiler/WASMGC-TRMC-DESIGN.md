@@ -1,5 +1,10 @@
 # WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5)
 
+**Status:** IMPLEMENTED — Stages 0–2 COMPLETE, layer-5 CLOSED (2026-06-22); TMC-parity
+with the LLVM backend shipped 2026-07-13. This is the model example in this doc family of
+self-documenting a header/body lag (see its own note below) — used as the template for
+fixing the same pattern elsewhere in this doc set.
+
 > **Status: IMPLEMENTED — Stages 0–2 COMPLETE, layer-5 CLOSED (2026-06-22).** See §11 "AS BUILT" for the implementation log. This doc was originally a design/scoping pass; the implementation was added in §11 without updating this header. No source edited in the initial design pass.
 >
 > **TMC-parity update (2026-07-13):** the Stage-3 dispatch-graph DETECTION was

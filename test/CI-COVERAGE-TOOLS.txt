@@ -1,7 +1,7 @@
-# CI-COVERAGE-TOOLS.txt — scripts under test/ that are TOOLS, not gates.
+# CI-COVERAGE-TOOLS.txt — scripts in the repo that are TOOLS, not gates.
 #
-# diff_compiler_ci_shard_coverage.sh enumerates EVERY *.sh under test/ and test/wasm/ and
-# demands that each one be either:
+# diff_compiler_ci_shard_coverage.sh enumerates EVERY *.sh IN THE REPO and demands that
+# each one be either:
 #   (a) run in CI (matched by a shard `pattern:`, or named literally by a job step), or
 #   (b) listed in CI-COVERAGE-EXCEPTIONS.txt with a reason (a LEDGER — printed every run), or
 #   (c) listed HERE, because it is not a gate at all.
@@ -13,29 +13,72 @@
 # that picks its own scope will always certify itself complete. The only way out is to make
 # the scope EVERYTHING and force every script to be classified exactly once.
 #
-# A script in this file makes a claim: "running me proves nothing about the compiler."
-# If that is false, it belongs in a shard, not here.
+# AND THEN IT DID IT AGAIN (fixed 2026-07-13). "EVERYTHING" meant `test/*.sh` +
+# `test/wasm/*.sh` — a curated pair of globs, not an enumeration. So 38 scripts sat outside
+# the gate's scope, including 24 real gates: the 22 `sqlite/test/*_oracle.sh` differential
+# gates (against the real sqlite3 CLI), `playground/e2e/run.sh`, and — inside test/ itself,
+# one directory down — `test/native_fixtures/run.sh`, which was RED and had been for an
+# unknown length of time. TWO OF THE ENTRIES IN THIS FILE WERE ALSO LIES: `build_cmd` and
+# `build_wasm_cmd` were filed here as "helpers" while being, by their own headers, real
+# end-to-end gates over the shipping `medaka build` CLI (14 and 4 assertions, both ending
+# in `[ "$fail" -eq 0 ]`). They are now in a shard / the ledger. The scope is now literally
+# every `.sh` in the tree.
 #
-# Format:  <stem>  <what it is>
+# A script in this file makes a claim: "running me proves nothing about the compiler."
+# If that is false, it belongs in a shard, not here. That claim was FALSE for two of the
+# entries this file used to carry. Do not add a line here to make a red gate go away —
+# that is what CI-COVERAGE-EXCEPTIONS.txt is for, and it demands a reason and an owner.
+#
+# KEYS ARE REPO-RELATIVE PATHS (minus `.sh`), not basenames — basenames collide across
+# roots (test/native_fixtures/run.sh vs playground/e2e/run.sh both stem to "run"), and a
+# ledger keyed on a colliding name classifies the wrong file.
+#
+# Format:  <repo-relative-path-without-.sh>  <what it is>
 
 # ── build / bootstrap ──
-build_native_medaka   builds ./medaka (warm 2-stage). Invoked BY the build, not a check.
-bootstrap_from_seed   cold-bootstraps from the seed. Run by the `seed-health` CI job by name.
-build_oracles         builds test/bin probe binaries. The gates' dependency, not a gate.
-build_wasm_oracle     builds the wasm probe binaries.
-build_wasm_cmd        wasm build helper.
-build_cmd             build helper.
-assemble_check_main   probe assembly helper.
-refresh_seed          re-mints compiler/seed/emitter.ll.gz. A maintenance action.
+test/build_native_medaka       builds ./medaka (warm 2-stage). Invoked BY the build, not a check.
+test/bootstrap_from_seed       cold-bootstraps from the seed. Run by the `seed-health` CI job by name.
+test/build_oracles             builds test/bin probe binaries. The gates' dependency, not a gate.
+test/wasm/build_wasm_oracle    builds the wasm probe binaries.
+test/wasm/assemble_check_main  probe assembly helper.
+test/refresh_seed              re-mints compiler/seed/emitter.ll.gz. A maintenance action.
 
 # ── harness / driver ──
-run_gates             THE gate runner. Running it IS running the gates.
-preflight             the agent inner loop — derives a gate subset from `git diff`.
-capture_goldens       (re)captures goldens. A blessing action, not a check.
+test/run_gates                 THE gate runner. Running it IS running the gates.
+test/preflight                 the agent inner loop — derives a gate subset from `git diff`.
+test/capture_goldens           (re)captures goldens. A blessing action, not a check.
+
+# ── golden capture ──
+# CHECK=1 turns this one into a comparison, but its DEFAULT action is to WRITE the goldens
+# and nothing invokes it with CHECK=1. It is a blessing action, exactly like capture_goldens.
+# (If the error-quality corpus is ever wired into CI it goes in a shard as CHECK=1 — and
+# then this line comes out.)
+test/error_quality_fixtures/capture   captures the error-quality baseline .out goldens.
 
 # ── measurement (no pass/fail verdict) ──
-bench                 perf harness. Reports numbers; asserts nothing.
-profile_compiler      per-stage time/allocation profiler.
-tmc_census            emits the TMC census that diff_compiler_tmc_parity CONSUMES.
-argstamp_parity_probe an investigation probe from the argstamp arc.
-w1                    a scratch wasm probe.
+test/bench                     perf harness. Reports numbers; asserts nothing.
+test/profile_compiler          per-stage time/allocation profiler.
+test/tmc_census                emits the TMC census that diff_compiler_tmc_parity CONSUMES.
+test/argstamp_parity_probe     an investigation probe from the argstamp arc.
+test/wasm/w1                   a scratch wasm probe.
+
+# ── sqlite (the GATES are sqlite/test/*_oracle.sh — those are in the `sqlite` shard) ──
+# Self-described, in its own header: "it is a status report, not a gate". It prints
+# OPEN/FIXED per known compiler bug and exits 0 unconditionally. Asserts nothing.
+sqlite/findings/verify_compiler_bugs  status report on COMPILER-BUGS.md. Always exits 0.
+
+# ── playground build scripts (the GATE is playground/e2e/run.sh — see the EXCEPTIONS ledger) ──
+playground/build_assembler       builds the playground's wasm assembler.
+playground/build_compiler_wasm   builds the compiler-to-wasm bundle.
+playground/build_editor          builds the CM6 editor bundle.
+playground/build_playground_wasm builds playground/dist/playground.wasm.
+playground/build_site            assembles the static playground site.
+
+# ── one-off spikes / dev-environment setup (not part of any suite) ──
+dist/linux-spike/spike         D0 Linux native-build spike (Docker). A historical experiment.
+dist/linux-spike/experiment    characterizes the Linux emitter stack overflow. An experiment.
+dist/linux-spike/bt            backtrace helper for the spike above.
+dist/linux-spike/run           driver for the three spike scripts above.
+editors/install-vscode         installs the VS Code extension. A dev-setup action.
+ops/provision                  provisions a build box. A dev-setup action.
+scripts/docker-dev             runs the build inside a Linux container. A dev wrapper.

@@ -264,7 +264,7 @@ available. Investigating it turned up a **spec defect**: `EFFECTS-SEMANTICS.md:4
 observably returns two different answers across a mutation** (`repro_mut_not_purity.mdk`).
 
 Full analysis, recommendation, and the rejected alternative with its three counterexamples:
-**[`MUT-SCOPING-DESIGN.md`](../../MUT-SCOPING-DESIGN.md)**. Surfaced in PLAN.md as a workstream.
+**[`MUT-SCOPING-DESIGN.md`](../../docs/design/MUT-SCOPING-DESIGN.md)**. Surfaced in PLAN.md as a workstream.
 
 ---
 

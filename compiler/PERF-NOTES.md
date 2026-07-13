@@ -1,13 +1,25 @@
 # Self-host performance notes & log
 
-Living record of performance work on the self-hosted compiler (`compiler/*.mdk`)
-and its diff harnesses (`test/diff_compiler_*.sh`). **Append measurements and
-findings to the Results log at the bottom** — don't rewrite history, add to it.
+**Status:** SUPERSEDED BY `compiler/PERF-RESULTS.md` / `compiler/PERF-SCOPE.md`. This is
+the pre-LLVM-backend, pre-OCaml-removal perf log (an abandoned bytecode-VM experiment
+included). **Do NOT follow the "How to run things" section below** — it instructs
+`opam`/`dune`/`./_build/default/bin/main.exe`, all removed 2026-06-26, and its
+"bytecode multi-module VM" reproduction commands (`compiler/vm_perf_modules_main.mdk`,
+`compiler/bytecode.mdk`, `compiler/vm_perf_main.mdk`) reference entry points that no
+longer exist anywhere in the tree (confirmed via `find`) — not even path-fixable. The
+runbook has been struck below (2026-07-13 doc pass) rather than repaired, since there is
+nothing left to run it against; the rest of this file is kept as historical record only.
 
-The harnesses run the OCaml interpreter (`lib/eval.ml`, a tree-walker) over the
-self-hosted compiler. So "slow" almost always means *interpretation overhead*,
-not OCaml. Baseline reality check: OCaml's own `check` of the whole self-hosted
-program is ~0.05s; a self-hosted parse of `core.mdk` (1003 lines) is ~4.4s.
+Living record of performance work on the self-hosted compiler (`compiler/*.mdk`)
+and its diff harnesses (`test/diff_compiler_*.sh`), from the era **before** the LLVM
+backend existed. **HISTORICAL — do not append new measurements here; use
+`compiler/PERF-RESULTS.md` (self-compile) or `compiler/PERF-RUNTIME.md` (compiled-program
+perf) instead.**
+
+The harnesses ran the OCaml interpreter (`lib/eval.ml`, a tree-walker, since removed) over
+the self-hosted compiler. So "slow" almost always meant *interpretation overhead*,
+not OCaml. Baseline reality check at the time: OCaml's own `check` of the whole
+self-hosted program was ~0.05s; a self-hosted parse of `core.mdk` (1003 lines) was ~4.4s.
 
 ## Methodology (read this — it is the whole game)
 
@@ -28,27 +40,12 @@ program is ~0.05s; a self-hosted parse of `core.mdk` (1003 lines) is ~4.4s.
 
 ## How to run things
 
-```sh
-export PATH="$HOME/.opam/5.4.1/bin:$PATH"     # if `dune` is not found
-dune build --root .                            # in a worktree, --root . is required
-
-# a harness (fast batch variant where one exists, else the original):
-sh test/diff_compiler_check_modules.sh
-sh test/diff_compiler_mark_batch.sh
-
-# a single check_modules entry (module as entry + its transitive imports):
-./_build/default/bin/main.exe run compiler/entries/check_modules_main.mdk \
-    stdlib/runtime.mdk stdlib/core.mdk compiler/<mod>.mdk compiler
-# its OCaml oracle (compare sorted):
-./_build/default/dev/tc_module_probe.exe compiler/<mod>.mdk compiler
-
-# sample-profile a running interpreter (macOS; flat in eval_1221 = pure interp):
-./_build/default/bin/main.exe run <args> >/dev/null 2>&1 & PID=$!
-sleep 20; sample $PID 15 -file /tmp/prof.txt; kill $PID
-```
-
-**Do NOT run `dune test`** (it can hang). Run individual `./_build/default/test/test_<name>.exe --compact`.
-`dune build @thorough` runs the exhaustive suites.
+> **STRUCK (2026-07-13) — this section instructed `opam`/`dune`/`./_build/default/bin/main.exe`,
+> all removed 2026-06-26. There is no OCaml-free equivalent worth reconstructing here: this
+> whole log predates the LLVM backend, and the current profiling method is documented in
+> AGENTS.md's "Hunting an O(n²)" section (`MEDAKA_PERF=1 test/bin/profile_main …` +
+> `perf record --call-graph dwarf`) and `compiler/PERF-SCOPE.md`/`compiler/PERF-RESULTS.md`.
+> Use those instead.**
 
 ## What's already done (don't redo)
 

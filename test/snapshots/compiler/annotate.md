@@ -166,8 +166,8 @@ annotateExpr fr (EStringInterp parts) =
 annotateExpr fr (EGuards arms) = EGuards (map (annotateGuardArm fr) arms)
 annotateExpr fr (ERecordCreate name fs) =
   ERecordCreate name (map (annotateFieldAssign fr) fs)
-annotateExpr fr (ERecordUpdate e0 fs) =
-  ERecordUpdate (annotateExpr fr e0) (map (annotateFieldAssign fr) fs)
+annotateExpr fr (ERecordUpdate e0 fs r) =
+  ERecordUpdate (annotateExpr fr e0) (map (annotateFieldAssign fr) fs) r
 annotateExpr fr (EVariantUpdate con e0 fs) =
   EVariantUpdate con (annotateExpr fr e0) (map (annotateFieldAssign fr) fs)
 annotateExpr fr (EMapLit n kvs) = EMapLit n (map (annotateKv fr) kvs)
@@ -371,7 +371,7 @@ annotateProgram prog = map annotateDecl prog
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EApp (EVar "annotateInterp") (EVar "fr"))) (EVar "parts"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EApp (EVar "annotateGuardArm") (EVar "fr"))) (EVar "arms"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "name")) (EApp (EApp (EVar "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
-(DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
+(DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "con")) (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "annotateKv") (EVar "fr"))) (EVar "kvs"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "annotateExpr") (EVar "fr"))) (EVar "es"))))
@@ -499,7 +499,7 @@ annotateProgram prog = map annotateDecl prog
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateInterp") (EVar "fr"))) (EVar "parts"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateGuardArm") (EVar "fr"))) (EVar "arms"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "name")) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
-(DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
+(DFunDef false "annotateExpr" ((PVar "fr") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "con")) (EApp (EApp (EVar "annotateExpr") (EVar "fr")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateFieldAssign") (EVar "fr"))) (EVar "fs"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateKv") (EVar "fr"))) (EVar "kvs"))))
 (DFunDef false "annotateExpr" ((PVar "fr") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "annotateExpr") (EVar "fr"))) (EVar "es"))))

@@ -1,5 +1,5 @@
 # META
-source_lines=3986
+source_lines=3987
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -842,7 +842,7 @@ parseRecordUpdate = do
   fields <- sepBy1 recordFieldExpr (expectTok TComma)
   optTrailingComma
   expectTok TRBrace
-  pure (ERecordUpdate e (map (desugarDottedField e) fields))
+  pure (ERecordUpdate e (map (desugarDottedField e) fields) (Ref ""))
 
 -- a record-update field `path = expr` (dotted path) or a pun `name`
 -- (mirrors lib/parser.mly `record_field_expr`).
@@ -871,10 +871,11 @@ desugarDottedField base (path, value) = match path
   [] => FieldAssign "_" value
 
 dottedGo : Expr -> List String -> Expr -> Expr
-dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value]
+dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value] (Ref "")
 dottedGo cur (f::fs) value = ERecordUpdate
   cur
   [FieldAssign f (dottedGo (EFieldAccess cur f (Ref "")) fs value)]
+  (Ref "")
 dottedGo cur [] value = value
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
@@ -4297,7 +4298,7 @@ parseResult src = match tokenizeWithOffsets src
 (DFunDef false "kvElems" ((PCons (PCon "KvElem" (PVar "e")) (PVar "rest"))) (EBinOp "::" (EVar "e") (EApp (EVar "kvElems") (EVar "rest"))))
 (DFunDef false "kvElems" ((PCons PWild (PVar "rest"))) (EApp (EVar "kvElems") (EVar "rest")))
 (DTypeSig false "parseRecordUpdate" (TyApp (TyCon "Parser") (TyCon "Expr")))
-(DFunDef false "parseRecordUpdate" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TLBrace"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseExpr")) (ELam ((PVar "e")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "recordFieldExpr")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "fields")) (EApp (EApp (EVar "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EVar "ERecordUpdate") (EVar "e")) (EApp (EApp (EVar "map") (EApp (EVar "desugarDottedField") (EVar "e"))) (EVar "fields")))))))))))))))))
+(DFunDef false "parseRecordUpdate" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TLBrace"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseExpr")) (ELam ((PVar "e")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "recordFieldExpr")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "fields")) (EApp (EApp (EVar "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "e")) (EApp (EApp (EVar "map") (EApp (EVar "desugarDottedField") (EVar "e"))) (EVar "fields"))) (EApp (EVar "Ref") (ELit (LString ""))))))))))))))))))
 (DTypeSig false "recordFieldExpr" (TyApp (TyCon "Parser") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))
 (DFunDef false "recordFieldExpr" () (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "identNameP")) (EApp (EVar "expectTok") (EVar "TDot")))) (ELam ((PVar "path")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "recordFieldExprRest") (EVar "path")) (EVar "t")))))))
 (DTypeSig false "recordFieldExprRest" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))))
@@ -4307,8 +4308,8 @@ parseResult src = match tokenizeWithOffsets src
 (DTypeSig false "desugarDottedField" (TyFun (TyCon "Expr") (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr")) (TyCon "FieldAssign"))))
 (DFunDef false "desugarDottedField" ((PVar "base") (PTuple (PVar "path") (PVar "value"))) (EMatch (EVar "path") (arm (PList (PVar "field")) () (EApp (EApp (EVar "FieldAssign") (EVar "field")) (EVar "value"))) (arm (PCons (PVar "field") (PVar "rest")) () (EApp (EApp (EVar "FieldAssign") (EVar "field")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "base")) (EVar "field")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "rest")) (EVar "value")))) (arm (PList) () (EApp (EApp (EVar "FieldAssign") (ELit (LString "_"))) (EVar "value")))))
 (DTypeSig false "dottedGo" (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
-(DFunDef false "dottedGo" ((PVar "cur") (PList (PVar "f")) (PVar "value")) (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EVar "value")))))
-(DFunDef false "dottedGo" ((PVar "cur") (PCons (PVar "f") (PVar "fs")) (PVar "value")) (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "cur")) (EVar "f")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "fs")) (EVar "value"))))))
+(DFunDef false "dottedGo" ((PVar "cur") (PList (PVar "f")) (PVar "value")) (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EVar "value")))) (EApp (EVar "Ref") (ELit (LString "")))))
+(DFunDef false "dottedGo" ((PVar "cur") (PCons (PVar "f") (PVar "fs")) (PVar "value")) (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "cur")) (EVar "f")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "fs")) (EVar "value"))))) (EApp (EVar "Ref") (ELit (LString "")))))
 (DFunDef false "dottedGo" ((PVar "cur") (PList) (PVar "value")) (EVar "value"))
 (DTypeSig false "parseInterp" (TyApp (TyCon "Parser") (TyCon "Expr")))
 (DFunDef false "parseInterp" () (EApp (EApp (EVar "andThen") (EVar "interpOpenStr")) (ELam ((PVar "s0")) (EApp (EApp (EVar "andThen") (EVar "interpRest")) (ELam ((PVar "rest")) (EApp (EVar "pure") (EApp (EVar "EStringInterp") (EBinOp "::" (EApp (EVar "InterpStr") (EVar "s0")) (EVar "rest")))))))))
@@ -5591,7 +5592,7 @@ parseResult src = match tokenizeWithOffsets src
 (DFunDef false "kvElems" ((PCons (PCon "KvElem" (PVar "e")) (PVar "rest"))) (EBinOp "::" (EVar "e") (EApp (EVar "kvElems") (EVar "rest"))))
 (DFunDef false "kvElems" ((PCons PWild (PVar "rest"))) (EApp (EVar "kvElems") (EVar "rest")))
 (DTypeSig false "parseRecordUpdate" (TyApp (TyCon "Parser") (TyCon "Expr")))
-(DFunDef false "parseRecordUpdate" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TLBrace"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseExpr")) (ELam ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "recordFieldExpr")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "fields")) (EApp (EApp (EMethodRef "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EVar "ERecordUpdate") (EVar "e")) (EApp (EApp (EMethodRef "map") (EApp (EVar "desugarDottedField") (EVar "e"))) (EVar "fields")))))))))))))))))
+(DFunDef false "parseRecordUpdate" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TLBrace"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseExpr")) (ELam ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "recordFieldExpr")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "fields")) (EApp (EApp (EMethodRef "andThen") (EVar "optTrailingComma")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRBrace"))) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "e")) (EApp (EApp (EMethodRef "map") (EApp (EVar "desugarDottedField") (EVar "e"))) (EVar "fields"))) (EApp (EVar "Ref") (ELit (LString ""))))))))))))))))))
 (DTypeSig false "recordFieldExpr" (TyApp (TyCon "Parser") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))
 (DFunDef false "recordFieldExpr" () (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "identNameP")) (EApp (EVar "expectTok") (EVar "TDot")))) (ELam ((PVar "path")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "recordFieldExprRest") (EVar "path")) (EVar "t")))))))
 (DTypeSig false "recordFieldExprRest" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))))
@@ -5601,8 +5602,8 @@ parseResult src = match tokenizeWithOffsets src
 (DTypeSig false "desugarDottedField" (TyFun (TyCon "Expr") (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr")) (TyCon "FieldAssign"))))
 (DFunDef false "desugarDottedField" ((PVar "base") (PTuple (PVar "path") (PVar "value"))) (EMatch (EVar "path") (arm (PList (PVar "field")) () (EApp (EApp (EVar "FieldAssign") (EVar "field")) (EVar "value"))) (arm (PCons (PVar "field") (PVar "rest")) () (EApp (EApp (EVar "FieldAssign") (EVar "field")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "base")) (EVar "field")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "rest")) (EVar "value")))) (arm (PList) () (EApp (EApp (EVar "FieldAssign") (ELit (LString "_"))) (EVar "value")))))
 (DTypeSig false "dottedGo" (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
-(DFunDef false "dottedGo" ((PVar "cur") (PList (PVar "f")) (PVar "value")) (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EVar "value")))))
-(DFunDef false "dottedGo" ((PVar "cur") (PCons (PVar "f") (PVar "fs")) (PVar "value")) (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "cur")) (EVar "f")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "fs")) (EVar "value"))))))
+(DFunDef false "dottedGo" ((PVar "cur") (PList (PVar "f")) (PVar "value")) (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EVar "value")))) (EApp (EVar "Ref") (ELit (LString "")))))
+(DFunDef false "dottedGo" ((PVar "cur") (PCons (PVar "f") (PVar "fs")) (PVar "value")) (EApp (EApp (EApp (EVar "ERecordUpdate") (EVar "cur")) (EListLit (EApp (EApp (EVar "FieldAssign") (EVar "f")) (EApp (EApp (EApp (EVar "dottedGo") (EApp (EApp (EApp (EVar "EFieldAccess") (EVar "cur")) (EVar "f")) (EApp (EVar "Ref") (ELit (LString ""))))) (EVar "fs")) (EVar "value"))))) (EApp (EVar "Ref") (ELit (LString "")))))
 (DFunDef false "dottedGo" ((PVar "cur") (PList) (PVar "value")) (EVar "value"))
 (DTypeSig false "parseInterp" (TyApp (TyCon "Parser") (TyCon "Expr")))
 (DFunDef false "parseInterp" () (EApp (EApp (EMethodRef "andThen") (EVar "interpOpenStr")) (ELam ((PVar "s0")) (EApp (EApp (EMethodRef "andThen") (EVar "interpRest")) (ELam ((PVar "rest")) (EApp (EMethodRef "pure") (EApp (EVar "EStringInterp") (EBinOp "::" (EApp (EVar "InterpStr") (EVar "s0")) (EVar "rest")))))))))

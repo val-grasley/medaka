@@ -1,6 +1,6 @@
 # FMT comment-interleaving design — fixing finding "L"
 
-**Status:** LANDED. Stages 1–2 (verbatim safety-net + parser side-channel),
+**Status:** IMPLEMENTED — `03c73613`, 2026-07-01. Stages 1–2 (verbatim safety-net + parser side-channel),
 Stage 3+4 (operator-CHAIN interior-comment interleaving), and **Stage 5
 (statement-level block/`do`/let-group interiors)** are all shipped. A decl whose
 body is a bare block (`EBlock`) or do-block (`EDo`) now FORMATS with each

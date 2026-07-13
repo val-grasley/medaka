@@ -1,0 +1,22 @@
+-- Bug #38 (SILENT MISCOMPILE): two record types share the field name `groupBy`
+-- at DIFFERENT slot indices (Sel.groupBy = slot 1, Agg.groupBy = slot 0).  The
+-- Core IR's `CRecordUpdate` used to carry no receiver type name, so each backend
+-- guessed the record from the bare field label, first-match-wins: the LLVM build
+-- updated Sel's slot 1 of an Agg (printing `[7] []`, exit 0, no error) and the
+-- WasmGC build trapped at instantiation with `illegal cast`, while `run` was
+-- correct.  `CRecordUpdate` now carries the typecheck-stamped record name (like
+-- its `CVariantUpdate` sibling always did) and both emitters resolve the slot by
+-- name.  Guards the run-vs-build VALUE, not just the exit code.
+data Sel = Sel { tag : String, groupBy : List Int }
+data Agg = Agg { groupBy : List Int, n : Int }
+
+withGroupBy : List Int -> Agg -> Agg
+withGroupBy cols q = { q | groupBy = cols }
+
+mkSel : Sel
+mkSel = Sel { tag = "sel", groupBy = [7] }
+
+main : <IO> Unit
+main =
+  let a = withGroupBy [3] Agg { groupBy = [], n = 1 }
+  println "\{debug mkSel.groupBy} \{debug a.groupBy}"

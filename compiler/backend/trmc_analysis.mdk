@@ -75,7 +75,7 @@ freeVars b (CList es) = freeVarsList b es
 freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _ _) = freeVars b ex
-freeVars b (CRecordUpdate base updates) = freeVars b base
+freeVars b (CRecordUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
 freeVars b (CVariantUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
@@ -104,6 +104,13 @@ routeDictNames _ [] = []
 routeDictNames b ((RDict d)::rest) = (if contains d b then [] else [d])
   ++ routeDictNames b rest
 routeDictNames b ((RDictFwd d)::rest) = (if contains d b then [] else [d])
+  ++ routeDictNames b rest
+-- S-1: an RLocal route carries the shadowing standalone's OWN constraint dicts, and
+-- one of those slots can be an RDict — a constrained caller forwarding its own dict
+-- param into the standalone (`outer : Num a => a -> a; outer v = size v`).  That name
+-- is a genuine free local: recurse.  Empty dicts (every unconstrained standalone) ⇒
+-- [] ⇒ byte-identical to the pre-S1 catch-all.
+routeDictNames b ((RLocal _ dicts)::rest) = routeDictNames b dicts
   ++ routeDictNames b rest
 routeDictNames b (_::rest) = routeDictNames b rest
 
@@ -364,7 +371,7 @@ mentionsSelfMethod method tag (CRecord _ fields) =
   mentionsSelfMethodFields method tag fields
 mentionsSelfMethod method tag (CFieldAccess ex _ _) =
   mentionsSelfMethod method tag ex
-mentionsSelfMethod method tag (CRecordUpdate base ups) = mentionsSelfMethod method tag base
+mentionsSelfMethod method tag (CRecordUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
 mentionsSelfMethod method tag (CVariantUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
@@ -727,7 +734,7 @@ allCallHeads cf (CArray es) = flatMap (allCallHeads cf) es
 allCallHeads cf (CRecord _ fs) =
   flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CFieldAccess x _ _) = allCallHeads cf x
-allCallHeads cf (CRecordUpdate base fs) = allCallHeads cf base
+allCallHeads cf (CRecordUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CVariantUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs

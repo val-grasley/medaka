@@ -1,5 +1,5 @@
 # META
-source_lines=505
+source_lines=510
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted method_marker stage — Stage 1 port of `lib/method_marker.ml`.
@@ -269,7 +269,8 @@ collectVars (EUnOp _ a _) = collectVars a
 collectVars (EInfix op a b) = op :: collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _ _) = collectVars e0
 collectVars (ERecordCreate _ fs) = flatMap fieldAssignVars fs
-collectVars (ERecordUpdate e0 fs) = collectVars e0 ++ flatMap fieldAssignVars fs
+collectVars (ERecordUpdate e0 fs _) = collectVars e0
+  ++ flatMap fieldAssignVars fs
 collectVars (EVariantUpdate _ e0 fs) = collectVars e0
   ++ flatMap fieldAssignVars fs
 collectVars (EArrayLit es) = flatMap collectVars es
@@ -316,9 +317,13 @@ collectVars _ = []
 
 -- P0-18: the extra symbol a resolved EMethodAt route references beyond its bare
 -- name — the mangled standalone symbol carried by an `RLocal <sym>` fallback.
+-- S-1: the RLocal dict routes need NO extra DCE root — they name dict PARAMS
+-- (locals) and impl HEADS, and DCE already keeps every DImpl/DInterface whole
+-- (pruning an impl would be a silent miscompile under runtime dict-passing), which
+-- is exactly why RKey's nested requires-routes need no root here either.
 routeExtraRefs : Route -> List String
-routeExtraRefs (RLocal "") = []
-routeExtraRefs (RLocal s) = [s]
+routeExtraRefs (RLocal "" _) = []
+routeExtraRefs (RLocal s _) = [s]
 routeExtraRefs _ = []
 
 letBindVars : LetBind -> List String
@@ -394,7 +399,7 @@ localBoundExpr (EUnOp _ a _) = localBoundExpr a
 localBoundExpr (EInfix _ a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EFieldAccess e0 _ _) = localBoundExpr e0
 localBoundExpr (ERecordCreate _ fs) = flatMap fieldAssignBound fs
-localBoundExpr (ERecordUpdate e0 fs) = localBoundExpr e0
+localBoundExpr (ERecordUpdate e0 fs _) = localBoundExpr e0
   ++ flatMap fieldAssignBound fs
 localBoundExpr (EVariantUpdate _ e0 fs) = localBoundExpr e0
   ++ flatMap fieldAssignBound fs
@@ -625,7 +630,7 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EBinOp "::" (EVar "op") (EBinOp "++" (EApp (EVar "collectVars") (EVar "a")) (EApp (EVar "collectVars") (EVar "b")))))
 (DFunDef false "collectVars" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "collectVars") (EVar "e0")))
 (DFunDef false "collectVars" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignVars")) (EVar "fs")))
-(DFunDef false "collectVars" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
+(DFunDef false "collectVars" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
 (DFunDef false "collectVars" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
 (DFunDef false "collectVars" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "collectVars")) (EVar "es")))
 (DFunDef false "collectVars" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "collectVars")) (EVar "es")))
@@ -652,8 +657,8 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "collectVars") (EVar "e")))
 (DFunDef false "collectVars" (PWild) (EListLit))
 (DTypeSig false "routeExtraRefs" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")))) (EListLit))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s"))) (EListLit (EVar "s")))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")) PWild)) (EListLit))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s") PWild)) (EListLit (EVar "s")))
 (DFunDef false "routeExtraRefs" (PWild) (EListLit))
 (DTypeSig false "letBindVars" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "letBindVars" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EVar "flatMap") (EVar "funClauseVars")) (EVar "clauses")))
@@ -703,7 +708,7 @@ markerFor preludeProg =
 (DFunDef false "localBoundExpr" ((PCon "EInfix" PWild (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "a")) (EApp (EVar "localBoundExpr") (EVar "b"))))
 (DFunDef false "localBoundExpr" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "localBoundExpr") (EVar "e0")))
 (DFunDef false "localBoundExpr" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBound")) (EVar "fs")))
-(DFunDef false "localBoundExpr" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
+(DFunDef false "localBoundExpr" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
 (DFunDef false "localBoundExpr" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
 (DFunDef false "localBoundExpr" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "localBoundExpr")) (EVar "es")))
 (DFunDef false "localBoundExpr" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "localBoundExpr")) (EVar "es")))
@@ -881,7 +886,7 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EBinOp "::" (EVar "op") (EBinOp "++" (EApp (EVar "collectVars") (EVar "a")) (EApp (EVar "collectVars") (EVar "b")))))
 (DFunDef false "collectVars" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "collectVars") (EVar "e0")))
 (DFunDef false "collectVars" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignVars")) (EVar "fs")))
-(DFunDef false "collectVars" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
+(DFunDef false "collectVars" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
 (DFunDef false "collectVars" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "collectVars") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignVars")) (EVar "fs"))))
 (DFunDef false "collectVars" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "collectVars")) (EVar "es")))
 (DFunDef false "collectVars" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "collectVars")) (EVar "es")))
@@ -908,8 +913,8 @@ markerFor preludeProg =
 (DFunDef false "collectVars" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "collectVars") (EVar "e")))
 (DFunDef false "collectVars" (PWild) (EListLit))
 (DTypeSig false "routeExtraRefs" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")))) (EListLit))
-(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s"))) (EListLit (EVar "s")))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PLit (LString "")) PWild)) (EListLit))
+(DFunDef false "routeExtraRefs" ((PCon "RLocal" (PVar "s") PWild)) (EListLit (EVar "s")))
 (DFunDef false "routeExtraRefs" (PWild) (EListLit))
 (DTypeSig false "letBindVars" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "letBindVars" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EDictApp "flatMap") (EVar "funClauseVars")) (EVar "clauses")))
@@ -959,7 +964,7 @@ markerFor preludeProg =
 (DFunDef false "localBoundExpr" ((PCon "EInfix" PWild (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "a")) (EApp (EVar "localBoundExpr") (EVar "b"))))
 (DFunDef false "localBoundExpr" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "localBoundExpr") (EVar "e0")))
 (DFunDef false "localBoundExpr" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBound")) (EVar "fs")))
-(DFunDef false "localBoundExpr" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
+(DFunDef false "localBoundExpr" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
 (DFunDef false "localBoundExpr" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "localBoundExpr") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "fieldAssignBound")) (EVar "fs"))))
 (DFunDef false "localBoundExpr" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "localBoundExpr")) (EVar "es")))
 (DFunDef false "localBoundExpr" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "localBoundExpr")) (EVar "es")))

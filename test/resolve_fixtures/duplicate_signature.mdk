@@ -1,0 +1,24 @@
+-- DuplicateSignature (S-2, 2026-07-13): a top-level name carries its OWN
+-- second type signature — same arity, contiguous with the first, no
+-- intervening declaration.  This used to be silently coalesced into "one
+-- multi-clause function" with zero diagnostics (the gap dupValueBindingErrors
+-- and contiguityErrors both missed: neither fires on a CONTIGUOUS same-arity
+-- run).  A legitimate multi-clause function has exactly one signature; two
+-- signatures for the same name is unambiguously two definitions.
+--
+-- NOTE on the golden text below: this fixture's oracle (resolve_main /
+-- diagnostics_main, both driven by the PLAIN `parse` entry — see
+-- frontend/parser.mdk's `parse` vs `parseLocated`) never threads real source
+-- positions, so the embedded "already defined at line 1" always reads line 1
+-- regardless of this file's true line 8 — a pre-existing, documented property
+-- of these specific harnesses ("locations are dropped... matching
+-- dev/diagdump.exe --resolve", top of this file), not a bug in the check
+-- itself. The real CLI (`medaka check`, which parses via `parseLocated`)
+-- reports the true line — verified: `medaka check` on this exact file says
+-- "already defined at line 8", and `medaka check --json`'s `range` correctly
+-- points at line 11 (the second signature).
+foo : Int -> Int
+foo x = x + 1
+
+foo : Int -> Int
+foo x = x * 2

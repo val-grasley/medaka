@@ -99,7 +99,148 @@ env:
   ORACLE_OPT: -O0
 
 jobs:
+  # ── T-4b: docs-only fast path ───────────────────────────────────────────────
+  #
+  # A change that touches ONLY prose (top-level *.md, docs/**, LICENSE) still runs
+  # the full 40+ min gate suite today. This job classifies the PR's changed files
+  # and every heavy job below (gates/soundness/seed-health/inlang) reads its output
+  # to skip their EXPENSIVE STEPS, not to skip THEMSELVES.
+  #
+  # ⚠️ Do NOT convert this into `if:` at the JOB level on gates/soundness/etc, and
+  # do NOT path-filter the `on:` trigger above. Branch protection requires 9 named
+  # status checks (the 6 `gates (…)` shards, `soundness`, `seed-health`, `inlang`)
+  # with ZERO approvals — the checks ARE the merge gate. A job skipped by a
+  # job-level `if:`, or a workflow that never runs because of a `paths-ignore:`
+  # trigger filter, means GitHub never receives a status for that context. It sits
+  # at "Expected — waiting for status" FOREVER and the PR becomes permanently
+  # unmergeable — not fast, blocked. So every required job must always RUN and
+  # always REPORT (success or failure); only its STEPS are conditional.
+  #
+  # ⚠️ THE RULE: `test/**` is NEVER docs. Every OTHER `.md` in the tree IS docs.
+  #
+  # test/ holds 175 `.md` files and they are FUNCTIONAL, not prose: 167 are snapshot
+  # GOLDENS (test/snapshots/**/*.md), plus test/CAPABILITY-MATRIX.md,
+  # test/ENGINE-DIVERGENCE.md and test/error_quality_fixtures/{INVENTORY,GRADING}.md.
+  # A naive `**.md` filter would classify a blessed golden re-cut as docs-only and
+  # skip every gate that exists to catch exactly that regression — a silent-green
+  # bug, which is the one thing this test suite is built to prevent. So the `test/*`
+  # arm comes FIRST in the case below and must stay there.
+  #
+  # Everything else that ends in `.md` is prose and takes the fast path: the ~50
+  # top-level docs, compiler/**'s ~47 design docs, .claude/**'s playbooks, sqlite/,
+  # archive/, stdlib/README.md, docs/**, LICENSE. Verified: nothing in the build, in
+  # any gate, or in any workflow READS a `.md` outside test/ at runtime.
+  #
+  # Still scoped to the `.md` EXTENSION on purpose — .claude/ also holds
+  # hooks/skill-triage.py and settings.json, compiler/ holds .mdk source, and
+  # runtime/ holds C. Those are executable and fall through to the `*)` catch-all as
+  # NOT docs. Do not widen this to a bare directory glob.
+  #
+  # Conservative in the direction that matters: any unrecognized path → the full
+  # suite. A false "docs-only" is a shipped bug; a false "not docs-only" costs some
+  # CI minutes, which are free on a public repo.
+  #
+  # Only meaningful for `pull_request` (there IS a base/head diff to classify).
+  # Every other trigger (push to main/testing-arc, merge_group, workflow_dispatch)
+  # defaults docs_only=false — always the full suite; those aren't PR-gating a
+  # not-yet-merged change, and the safe direction to be wrong in is "ran too much".
+  detect:
+    name: detect docs-only change
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Classify changed files
+        id: classify
+        run: |
+          set -u
+          event="${{ github.event_name }}"
+          if [ "$event" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request event ($event) — running the full suite."
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          git cat-file -e "$base" 2>/dev/null || git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+          git cat-file -e "$head" 2>/dev/null || git fetch --no-tags --depth=1 origin "$head" 2>/dev/null || true
+
+          if ! git cat-file -e "$base" 2>/dev/null || ! git cat-file -e "$head" 2>/dev/null; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "could not resolve base/head commits locally — running the full suite (conservative default)."
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$base" "$head" || true)"
+          if [ -z "$changed" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "no changed files resolved — running the full suite (conservative default)."
+            exit 0
+          fi
+
+          echo "changed files:"
+          printf '%s\n' "$changed"
+
+          # See the job header for why this is an ALLOWLIST, not a **.md denylist.
+          changed_file="$(mktemp)"
+          printf '%s\n' "$changed" > "$changed_file"
+          docs_only=true
+          while IFS= read -r f; do
+            if [ -z "$f" ]; then
+              continue
+            fi
+            case "$f" in
+              # ── test/ IS NEVER DOCS. This arm MUST come first. ────────────────────
+              # test/ holds 175 .md files and they are FUNCTIONAL, not prose: 167 are
+              # snapshot GOLDENS (test/snapshots/**/*.md), plus CAPABILITY-MATRIX.md,
+              # ENGINE-DIVERGENCE.md and the error_quality_fixtures/ graded corpus.
+              # Classifying a blessed golden re-cut as "docs-only" would SKIP THE ENTIRE
+              # SUITE on the exact change most likely to need it — manufacturing the
+              # silent-green failure this suite exists to prevent. Never relax this.
+              test/*) docs_only=false ;;
+
+              # ── SYNTAX.md IS NOT PROSE — IT IS AN EXECUTABLE SPEC. ────────────────
+              # AGENTS.md designates SYNTAX.md the ground truth for what the binary
+              # accepts, and test/check_syntax_examples.sh RUNS every one of its
+              # examples through `medaka check`. That gate needs a built compiler, so
+              # it lives in a gate shard — and shards are SKIPPED when docs_only=true.
+              # Classifying a SYNTAX.md edit as docs-only would therefore skip the one
+              # gate that exists to check it, on the one change that needs it.
+              #
+              # This is not hypothetical: SYNTAX.md shipped for months documenting FIVE
+              # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
+              # impls, default impl, @Name) because nothing ever executed it. Same
+              # silent-green shape as the test/ arm above; same answer.
+              docs/spec/SYNTAX.md) docs_only=false ;;
+
+              docs/*) : ;;
+              LICENSE|LICENSE.*) : ;;
+
+              # Every OTHER .md in the tree is prose: root (50), compiler/ (47 design
+              # docs), .claude/ (16 agent playbooks), sqlite/, archive/, qa-beta*/ …
+              # Verified: nothing in the build, in any gate, or in any workflow READS a
+              # .md outside test/ at runtime.
+              # Scoped to `.md` ON PURPOSE — .claude/ also holds hooks/skill-triage.py and
+              # settings.json, and compiler/ holds .mdk source; those are executable and
+              # fall through to the `*)` catch-all as NOT docs. Do not widen to a bare
+              # directory glob.
+              *.md) : ;;
+
+              *) docs_only=false ;;
+            esac
+          done < "$changed_file"
+          rm -f "$changed_file"
+
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "classified: docs_only=$docs_only"
+
   gates:
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -119,9 +260,33 @@ jobs:
           # And do NOT use brace expansion: run_gates.sh runs under POSIX sh (dash),
           # which does not expand braces, so it would glob to nothing.
           - name: engines
-            pattern: "'diff_compiler_engines'"
+            # build_construct_coverage (T-3, ~300s, no extra oracle needed) added here —
+            # smallest shard, so it runs concurrently with diff_compiler_engines instead
+            # of queueing behind a bigger shard.
+            #
+            # 'sqlite/test/*_oracle' (T8): the 22 differential gates that diff the
+            # pure-Medaka SQLite library against the REAL sqlite3 CLI. They had never run
+            # in CI — not because anyone excluded them, but because NO PATTERN COULD REACH
+            # THEM: run_gates.sh globbed `$ROOT/test/<pat>.sh` and these live in
+            # sqlite/test/. run_gates.sh, build_oracles.sh --for, and the coverage gate now
+            # all resolve a pattern against BOTH `$ROOT/test/` and `$ROOT/`, so a shard can
+            # name a gate anywhere in the tree. All 22 are green (~5 min serial, ~2 min
+            # across run_gates' pool). They read no test/bin oracle; they need `sqlite3`,
+            # installed in the toolchain step below.
+            #
+            # NOTE the glob is '*oracle', not '*_oracle': 21 of them are <name>_oracle.sh but
+            # the 22nd is plain `oracle.sh`. '*_oracle' silently left it out — and the coverage
+            # gate caught that immediately, on its first run after being widened. Which is the
+            # whole argument for the widened gate in one line.
+            pattern: "'diff_compiler_engines' 'build_construct_coverage' 'sqlite/test/*oracle'"
           - name: frontend
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
+            # 'native_fixtures/run' (T8): 11 native-only regression assertions (parse-error
+            # location + foreign-syntax hints + one eval dispatch check). A real gate that
+            # ran NOWHERE — it sits one directory below test/, so even the coverage gate's
+            # `test/*.sh` glob could not see it. It was RED. Its one real failure (compiler
+            # bug T-12) is now an XFAIL in the gate's own expected-failure ledger, so it runs
+            # here green and still fails loudly if the bug regresses OR gets fixed.
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'native_fixtures/run'"
           - name: types
             pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project' 'effect_param_domain' 'effect_builtin_param_domain' 'effect_product_domain' 'effect_set_domain'"
           - name: eval
@@ -133,22 +298,39 @@ jobs:
             # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
             pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
-            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack'"
+            # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
+            # 14 real programs built through the actual CLI, each binary's stdout diffed
+            # against a committed golden. It was MISFILED in CI-COVERAGE-TOOLS.txt as a
+            # "build helper", which is a claim that running it proves nothing about the
+            # compiler; that claim was false, and filing it there made the coverage gate
+            # SUBTRACT it from its own scope and then certify full coverage. Nothing had
+            # invoked it in an unknown length of time. It is the gate that would have caught
+            # this session's diff_compiler_llvm bug (201/201 green against goldens no
+            # `medaka build` binary can produce — it was grading its own probe).
+            # 14 ok / 0 failing. Reads no test/bin oracle; needs only ./medaka + the emitter.
+            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack' 'build_cmd'"
           - name: tools
-            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
+            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
 
+      # sqlite3 is the ORACLE for the 22 sqlite/test/*_oracle.sh gates in the `engines`
+      # shard — they generate a .db with the real sqlite3 CLI, read it back with both
+      # sqlite3 and the Medaka library, and diff. It ships on ubuntu-latest, but it is
+      # named EXPLICITLY here: an oracle that a gate silently depends on and the workflow
+      # never mentions is exactly how "this didn't run" starts looking like "this passed".
       - name: Install toolchain
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang libgc-dev
+          sudo apt-get install -y clang libgc-dev sqlite3
 
       # See the "Caching" note at the top of this file for the completeness
       # argument. Exact-match key only — no restore-keys.
       - name: Restore cached medaka binary
         id: medaka-cache
+        if: needs.detect.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -166,7 +348,7 @@ jobs:
       # every push regardless, so the trust anchor is proven at least once per
       # run even when every gates/inlang job skips it here.
       - name: Build medaka (cold bootstrap from seed)
-        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        if: needs.detect.outputs.docs_only != 'true' && steps.medaka-cache.outputs.cache-hit != 'true'
         run: make medaka
 
       # Per-shard: this shard's oracle set, keyed the same way as the binary
@@ -192,6 +374,7 @@ jobs:
       # in — the same trade the `compiler/**` glob above makes, for the same reason.
       - name: Restore cached oracles for this shard
         id: oracle-cache
+        if: needs.detect.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: test/bin
@@ -203,7 +386,7 @@ jobs:
       # restore sets mtimes to extraction time, not original-build time, which
       # would otherwise defeat build_oracles.sh's own staleness check).
       - name: Build the oracles this shard needs
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        if: needs.detect.outputs.docs_only != 'true' && steps.oracle-cache.outputs.cache-hit != 'true'
         run: FORCE=1 sh test/build_oracles.sh --for ${{ matrix.pattern }}
 
       # run_gates.sh hard-fails when zero gates matched, and reclassifies a
@@ -213,6 +396,7 @@ jobs:
       # (UNQUOTED substitution is deliberate; quoting it would collapse the pattern
       # list into ONE argument and silently degrade the shard to a single bad glob.)
       - name: Gate shard — ${{ matrix.name }}
+        if: needs.detect.outputs.docs_only != 'true'
         run: sh test/run_gates.sh ${{ matrix.pattern }}
 
       # THE REVIEW GATE — must be in THIS job, on the tree the gates just ran over.
@@ -225,7 +409,11 @@ jobs:
       # TODAY it catches gates that write into the tree. AFTER the snapshot migration
       # lands `medaka snapshot --bless`, it becomes the real guard. It must be
       # load-bearing BEFORE blessing gets easy, not after.
+      #
+      # Skipped on a docs-only run: nothing above ran, so there is nothing to have
+      # drifted — running it anyway would just diff an unmodified checkout.
       - name: The tree must not have drifted
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           if ! git diff --exit-code; then
             echo "::error::A gate in the '${{ matrix.name }}' shard modified tracked files."
@@ -277,15 +465,61 @@ jobs:
   # typechecks it. `seed-health` proves the seed WORKS; it never proves the current
   # source is well-typed, nor that emission has reached a fixpoint.
   soundness:
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # ── DELIBERATELY UNGUARDED: this step runs even when docs_only=true. ─────────
+      # Every other step in every heavy job is skipped on a docs-only PR. A doc-link
+      # gate guarded that way would be skipped on precisely the PRs it exists to
+      # police — present in the repo, looking like protection, providing none.
+      # It needs no compiler (pure text analysis), so it is nearly free to always run.
+      #
+      # Lives in `soundness` because that job already answers "is the tree coherent?",
+      # and because soundness is a REQUIRED check — so this gates on merge today,
+      # with no repo-settings change needed to make a new job required.
+      - name: Docs must not cite dead paths
+        run: sh test/check_doc_links.sh
+
+      # Also unguarded, and for the same reason — and this one needs it most. The
+      # sibling gate above checks that a doc's cited PATHS exist; this one checks that
+      # its cited SYMBOLS do. A repo-wide review found ~44 false concrete claims in the
+      # .claude/skills/*/SKILL.md playbooks agents EXECUTE (a `pushTypeError` taught at
+      # the wrong arity, a `Show` typeclass that never existed, a 20-name "grep these"
+      # index that was 19/20 fictional) — and ~30 were the same mechanical shape: a
+      # backticked symbol resolving nowhere in source. Doc rot lands in prose-only PRs,
+      # so guarding this on docs_only would skip it on exactly the PRs it must police.
+      # Pure text analysis, no compiler.
+      - name: Docs must not cite fabricated symbols
+        run: sh test/check_agent_doc_symbols.sh
+
+      # Also unguarded, and for the same reason. docs/README.md is GENERATED from the
+      # docs' `**Status:**` banners — the whole point being that a hand-maintained index
+      # rots (AGENTS.md's own doc-index table sat mislabelling a doc as "IN PROGRESS"
+      # that the doc itself called COMPLETE, and nothing noticed for weeks).
+      #
+      # But a generator nothing checks is just a suggestion: add a doc, forget
+      # `make docs-index`, and the index silently goes stale — reintroducing the exact
+      # rot it exists to prevent. So regenerate it here and fail if it differs.
+      # That is also why gen_docs_index.sh needs no CI-COVERAGE exception: it is named
+      # in a run: step, which is what the shard-coverage gate asks for.
+      - name: Docs index must be regenerated, not hand-edited
+        run: |
+          sh test/gen_docs_index.sh
+          if ! git diff --exit-code -- docs/README.md; then
+            echo "::error::docs/README.md is stale. Run 'make docs-index' and commit the result."
+            exit 1
+          fi
+
       - name: Install toolchain
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
       - name: Build medaka (cold bootstrap from seed)
+        if: needs.detect.outputs.docs_only != 'true'
         run: make medaka
 
       # typecheck_compiler_source.sh exits 2 (SKIP) when its oracle is absent. In CI
@@ -293,9 +527,11 @@ jobs:
       # exists to close — so build the oracle first and assert on the PASS line, not
       # on the exit status.
       - name: Build the typecheck oracle
+        if: needs.detect.outputs.docs_only != 'true'
         run: FORCE=1 sh test/build_oracles.sh --build-one diagnostics_project_main
 
       - name: Compiler source must be well-typed
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           bash test/typecheck_compiler_source.sh 2>&1 | tee /tmp/tc.log
           if ! grep -q 'PASS: compiler source is type-clean' /tmp/tc.log; then
@@ -320,6 +556,7 @@ jobs:
       # Do not "simplify" this to the script's exit status. (Also note `| tee` would mask
       # that status anyway — assert on the verdict lines, as seed-health does.)
       - name: Emitter must reproduce itself (C3b fixpoint; C3a drift only warns)
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           bash test/selfcompile_fixpoint.sh 2>&1 | tee /tmp/fp.log || true
           # A skip is not a pass. We just installed clang+libgc, so a toolchain skip here
@@ -337,15 +574,18 @@ jobs:
           fi
 
   seed-health:
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
       - name: Seed must still build a working emitter (drift only warns)
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           sh test/bootstrap_from_seed.sh 2>&1 | tee /tmp/seed.log
           # A seed that cannot do its job is a HARD failure — the script exits
@@ -361,17 +601,20 @@ jobs:
 
   # ── The in-language suite: doctests, properties, `test "..."` decls ───────────
   inlang:
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
       # Same cache as the `gates` job — see the top-of-file "Caching" note.
       - name: Restore cached medaka binary
         id: medaka-cache
+        if: needs.detect.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -379,7 +622,8 @@ jobs:
             medaka_emitter
           key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
       - name: Build medaka (cold bootstrap from seed)
-        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        if: needs.detect.outputs.docs_only != 'true' && steps.medaka-cache.outputs.cache-hit != 'true'
         run: make medaka
       - name: Doctests, properties, and test decls
+        if: needs.detect.outputs.docs_only != 'true'
         run: make test

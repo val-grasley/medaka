@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cell D10: definer shadow whose standalone is CONSTRAINED
+-- (`Num a =>`) — the S-1 bug. The standalone is dict-passed, so the RLocal route
+-- must carry its dictionary (clause S9); before the fix the call was marked
+-- EMethodAt but never EDictAt, so it under-applied and `build` printed a raw
+-- heap pointer while `check` stayed green.
+-- Expected: run/build print 4 (the standalone, correctly dict-applied); check accepts.
+interface Sizeable a where
+  size : a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+size : Num a => a -> a
+size n = n + 1
+
+main = println (size 3)

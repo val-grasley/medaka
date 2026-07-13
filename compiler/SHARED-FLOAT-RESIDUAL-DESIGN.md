@@ -1,6 +1,11 @@
 # SHARED-FLOAT-RESIDUAL-DESIGN — the signature-free type-lost-Float residual
 
-**Status:** DESIGN (read-mostly scoping). No emitter/lib source changed. This doc
+**Status:** IMPLEMENTED — approach C shipped `f3d4f71d` (C-core) + `27969e7f` (C3 wasm
+wiring), 2026-06-30. Confirmed by `compiler/EMITTER-GAPS.md`'s closing note ("Float on
+WasmGC is CLOSED"). One item explicitly deferred: C4 (bare-Float-main auto-print),
+orthogonal to the arithmetic fix.
+
+Original header (predates the fix): **Status:** DESIGN (read-mostly scoping). No emitter/lib source changed. This doc
 scopes the residual left after the two signature-driven fixes closed the anchored
 cases: the native "arith on type-lost floats" arc (`project_arith_on_typelost_floats_bug`,
 7 fixes 2026-06-18) and the wasm W-SQLITE-4 stages 1-2 (`WASM-FLOAT-TYPING-DESIGN.md`,

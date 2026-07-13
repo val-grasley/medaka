@@ -1,5 +1,5 @@
 # META
-source_lines=7685
+source_lines=7717
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -1197,7 +1197,7 @@ scanExprW7 (CIndex a i) =
 scanExprW7 (CSlice a lo hi _) = let _ = setRef useArrayRef True in let _ = scanExprW7 a in let _ = scanExprW7 lo in scanExprW7 hi
 scanExprW7 (CRecord _ fields) = forEachU (f => scanExprW7 (cFieldExpr f)) fields
 scanExprW7 (CFieldAccess ex _ _) = scanExprW7 ex
-scanExprW7 (CRecordUpdate base fields) =
+scanExprW7 (CRecordUpdate _ base fields) =
   let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
 scanExprW7 (CVariantUpdate _ base fields) =
   let _ = scanExprW7 base in forEachU (f => scanExprW7 (cFieldExpr f)) fields
@@ -1408,7 +1408,7 @@ scanRecFields (CRecord name fields) =
   (name, map cFieldName fields) ::
     flatMap (f => scanRecFields (cFieldExpr f)) fields
 scanRecFields (CFieldAccess ex _ _) = scanRecFields ex
-scanRecFields (CRecordUpdate base fields) = scanRecFields base
+scanRecFields (CRecordUpdate _ base fields) = scanRecFields base
   ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
 scanRecFields (CVariantUpdate _ base fields) = scanRecFields base
   ++ flatMap (f => scanRecFields (cFieldExpr f)) fields
@@ -1553,7 +1553,7 @@ scanExprValueUses fnNames fnArs ctorArs (CRecord _ fs) =
   flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
 scanExprValueUses fnNames fnArs ctorArs (CFieldAccess r _ _) =
   scanExprValueUses fnNames fnArs ctorArs r
-scanExprValueUses fnNames fnArs ctorArs (CRecordUpdate r fs) = scanExprValueUses fnNames fnArs ctorArs r
+scanExprValueUses fnNames fnArs ctorArs (CRecordUpdate _ r fs) = scanExprValueUses fnNames fnArs ctorArs r
   ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
 scanExprValueUses fnNames fnArs ctorArs (CVariantUpdate _ r fs) = scanExprValueUses fnNames fnArs ctorArs r
   ++ flatMap (fd => scanExprValueUses fnNames fnArs ctorArs (cFieldExpr fd)) fs
@@ -3039,10 +3039,19 @@ emitMethodRef prog env d name RNone implRoutes methRoutes args =
 -- the method name.  Emit a DIRECT call to that standalone top-level fn, exactly as a
 -- known-fn CApp would.  `target` is the carried MANGLED symbol `<mid>__name` when
 -- non-empty (the marked EMethodAt carries the bare dispatch name), else the bare name.
-emitMethodRef prog env d name (RLocal sym) implRoutes methRoutes args =
+-- S-1 (wasm peer of llvm_emit's emitMethod RLocal emitDictApp delegation): a
+-- CONSTRAINED shadowing standalone has leading dict PARAMS, so the call must push the
+-- matching dict witnesses first.  Delegate to emitDictRef — the SAME tested helper the
+-- ordinary CDict path uses.  Without this the raw `call` below pushes one operand too
+-- few and wasm-tools rejects the module outright ("type mismatch: expected (ref eq) but
+-- nothing on stack" — that "nothing" IS the missing dict word).  `dicts == []` keeps the
+-- byte-identical pre-S1 direct call.
+emitMethodRef prog env d name (RLocal sym dicts) implRoutes methRoutes args =
   let target = if sym == "" then name else sym
-  let argInstrs = flatMap (a => emitRefExpr prog env d a) args
-  argInstrs ++ ["call $" ++ gname target]
+  if isEmpty dicts then
+    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
+    argInstrs ++ ["call $" ++ gname target]
+  else emitDictRef prog env d target dicts args
 emitMethodRef prog env d name (RScalar _) implRoutes methRoutes args =
   gapL ("wasm W5: RScalar route for method '" ++ name ++ "' is out of slice")
 
@@ -3168,9 +3177,11 @@ routeWitness _ env _ (RDictFwd dpar) =
   else
     gapL ("wasm W5: forwarded dict '" ++ dpar ++ "' not in scope")
 routeWitness _ _ _ RNone = gapL "wasm W5: RNone route as a dict witness"
--- RLocal (method-shadow) / RScalar (scalar-tag) carry no dict: emit the no-op i31
--- witness (dict tag 0), mirroring llvm_emit's `dictWordOfRoute (RLocal _) = "0"`.
-routeWitness _ _ _ (RLocal _) = ["i32.const 0", "ref.i31"]
+-- S-1: RLocal's own dicts are the call's leading dict ARGS (pushed by emitMethodRef's
+-- RLocal arm via emitDictRef), not a dict WITNESS for this route — so as a witness it
+-- stays the no-op i31 (dict tag 0), mirroring llvm_emit's
+-- `dictWordOfRoute (RLocal _ _) = "0"`.  RScalar (scalar-tag) likewise.
+routeWitness _ _ _ (RLocal _ _) = ["i32.const 0", "ref.i31"]
 routeWitness _ _ _ (RScalar _) = ["i32.const 0", "ref.i31"]
 
 -- a constrained-function occurrence applied to `args`: prepend the materialized
@@ -3901,10 +3912,10 @@ emitRefExpr prog env d (CSlice a lo hi incl) =
   emitSliceRef prog env d a lo hi incl
 emitRefExpr prog env d (CRecord name fields) =
   emitRecordRef prog env d name fields
-emitRefExpr prog env d (CFieldAccess ex label _) =
-  emitFieldAccessRef prog env d ex label
-emitRefExpr prog env d (CRecordUpdate base fields) =
-  emitRecordUpdateRef prog env d base fields
+emitRefExpr prog env d (CFieldAccess ex label recName) =
+  emitFieldAccessRef prog env d ex label recName
+emitRefExpr prog env d (CRecordUpdate recName base fields) =
+  emitRecordUpdateRef prog env d recName base fields
 emitRefExpr prog env d (CVariantUpdate con base fields) =
   emitVariantUpdateRef prog env d con base fields
 emitRefExpr prog env d other =
@@ -4404,9 +4415,10 @@ cexprIsFloat prog env (CApp f a) = match appHead (CApp f a)
     && (contains fn ["intToFloat", "randomFloat"] || fnReturnsFloat fn)
   _ => False
 -- W-SQLITE-4 stage 2: a record field access whose field is declared Float.
--- Look up the record ctor that owns `label` (via recFieldsRef) and check if
--- that field's 0-based index is in ctorFloatFieldsRef.
-cexprIsFloat prog env (CFieldAccess _ label _) = match findRecByField recFieldsRef.value label
+-- Look up the record ctor that owns `label` (by the stamped record name when
+-- available, else by label) and check if that field's 0-based index is in
+-- ctorFloatFieldsRef.
+cexprIsFloat prog env (CFieldAccess _ label recName) = match recByName recFieldsRef.value recName label
   Some (ctor, labels) =>
     isFloatCtorField ctor (orZeroIdx (indexOfL label labels))
   None => False
@@ -6424,7 +6436,7 @@ freeVarsExpr bound (CList es) = flatMap (freeVarsExpr bound) es
 freeVarsExpr bound (CArray es) = flatMap (freeVarsExpr bound) es
 freeVarsExpr bound (CRecord _ fields) = flatMap (freeVarsField bound) fields
 freeVarsExpr bound (CFieldAccess e _ _) = freeVarsExpr bound e
-freeVarsExpr bound (CRecordUpdate e fields) = freeVarsExpr bound e
+freeVarsExpr bound (CRecordUpdate _ e fields) = freeVarsExpr bound e
   ++ flatMap (freeVarsField bound) fields
 freeVarsExpr bound (CVariantUpdate _ e fields) = freeVarsExpr bound e
   ++ flatMap (freeVarsField bound) fields
@@ -6455,11 +6467,12 @@ freeVarsRoute bound (RDict d) = if contains d bound then [] else [d]
 freeVarsRoute bound (RDictFwd d) = if contains d bound then [] else [d]
 freeVarsRoute bound (RKey _ rs) = flatMap (freeVarsRoute bound) rs
 freeVarsRoute bound RNone = []
--- RLocal (P0-18 method-shadow → direct call to a top-level standalone) and RScalar
--- (a scalar-tag route from CBinPrim arithmetic) carry NO captured local — the target
--- is a global symbol / scalar tag, never a closed-over variable.  Mirrors llvm_emit's
--- methValDictNames (`_ => []`): RKey/RNone/RLocal/RScalar capture nothing.
-freeVarsRoute _ (RLocal _) = []
+-- S-1 (wasm peer of llvm_emit's methValDictNames RLocal arm): an RLocal route's TARGET
+-- is a global symbol, but its DICT slots can hold an RDict — the enclosing constrained
+-- fn's own dict param, a genuine captured local.  Recurse into them.  Empty dicts (every
+-- unconstrained standalone) ⇒ [] ⇒ byte-identical to the pre-S1 arm.  RScalar (a
+-- scalar-tag route from CBinPrim arithmetic) still captures nothing.
+freeVarsRoute bound (RLocal _ dicts) = flatMap (freeVarsRoute bound) dicts
 freeVarsRoute _ (RScalar _) = []
 
 -- free vars of a CLetGroup binding's clauses (each clause's params are locally bound).
@@ -6645,9 +6658,9 @@ emitRecordRef prog env d name fields =
 -- field access `r.label`: cast to the record's ctor struct and struct.get the field
 -- at index (1 + its declared position).  The record ctor + its field order come from
 -- the recFieldsRef table built in emitProgram.
-emitFieldAccessRef : Prog -> List String -> Int -> CExpr -> String -> <Mut> List String
-emitFieldAccessRef prog env d ex label =
-  match findRecByField recFieldsRef.value label
+emitFieldAccessRef : Prog -> List String -> Int -> CExpr -> String -> String -> <Mut> List String
+emitFieldAccessRef prog env d ex label recName =
+  match recByName recFieldsRef.value recName label
     Some (ctor, labels) =>
       let idx = orZeroIdx (indexOfL label labels)
       emitRefExpr prog env d ex
@@ -6662,12 +6675,31 @@ emitFieldAccessRef prog env d ex label =
 
 -- functional update `{ base | f = v … }`: copy the base's struct, overriding the
 -- named fields.  The record type is recovered from the first update field's label.
-emitRecordUpdateRef : Prog -> List String -> Int -> CExpr -> List CField -> <Mut> List String
-emitRecordUpdateRef prog env d base fields = match firstFieldLabel fields
+emitRecordUpdateRef : Prog -> List String -> Int -> String -> CExpr -> List CField -> <Mut> List String
+emitRecordUpdateRef prog env d recName base fields = match firstFieldLabel fields
   None => gapL "ref-mode: empty record update"
-  Some k0 => match findRecByField recFieldsRef.value k0
+  Some k0 => match recByName recFieldsRef.value recName k0
     Some (ctor, labels) => emitUpdateCopy prog env d ctor labels base fields
     None => gapL ("ref-mode: CRecordUpdate on unknown field '" ++ k0 ++ "'")
+
+-- Resolve a record by the typecheck-stamped record name (carried on
+-- CFieldAccess / CRecordUpdate) when it is usable — non-empty, in the
+-- field-order table, and actually owning `label` — else fall back to the
+-- label-only search.  Two records sharing a field name at DIFFERENT slot indices
+-- are indistinguishable from the label alone, so the label-only guess picked the
+-- wrong ctor: a `ref.cast` to the other record's struct (instantiation-time
+-- "illegal cast") and, where the cast happened to pass, the wrong slot written
+-- (bug #38, peer of the LLVM backend's recordByName).
+recByName : List (String, List String) -> String -> String -> Option (String, List String)
+recByName table recName label =
+  if recName == "" then findRecByField table label
+  else match lookupAssoc recName table
+    Some labels =>
+      if indexOfL label labels >= 0 then
+        Some (recName, labels)
+      else
+        findRecByField table label
+    None => findRecByField table label
 
 firstFieldLabel : List CField -> Option String
 firstFieldLabel [] = None
@@ -7451,7 +7483,7 @@ maxIndexAt (CArray es) d = foldMaxI (map (x => maxIndexAt x d) es)
 maxIndexAt (CRecord _ fields) d =
   foldMaxI (map (x => maxIndexAt (cFieldExpr x) d) fields)
 -- CRecordUpdate/CVariantUpdate stash the base in $__rub<d> at their own emit site.
-maxIndexAt (CRecordUpdate b fields) d = maxI
+maxIndexAt (CRecordUpdate _ b fields) d = maxI
   d
   (maxI
     (maxIndexAt b d)
@@ -7656,7 +7688,7 @@ ctag (CList _) = "CList (W7)"
 ctag (CArray _) = "CArray (W7)"
 ctag (CRecord _ _) = "CRecord (W7)"
 ctag (CFieldAccess _ _ _) = "CFieldAccess (W7)"
-ctag (CRecordUpdate _ _) = "CRecordUpdate (W7)"
+ctag (CRecordUpdate _ _ _) = "CRecordUpdate (W7)"
 ctag (CVariantUpdate _ _ _) = "CVariantUpdate (W7)"
 ctag (CRangeList _ _ _) = "CRangeList (W7)"
 ctag (CRangeArray _ _ _) = "CRangeArray (W7)"
@@ -7948,7 +7980,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "scanExprW7" ((PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (ELet false PWild (EApp (EApp (EVar "setRef") (EVar "useArrayRef")) (EVar "True")) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "a")) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "lo")) (EApp (EVar "scanExprW7") (EVar "hi"))))))
 (DFunDef false "scanExprW7" ((PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields")))
 (DFunDef false "scanExprW7" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanExprW7") (EVar "ex")))
-(DFunDef false "scanExprW7" ((PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
+(DFunDef false "scanExprW7" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanExprW7" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanExprW7" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBlock (DoLet false false (PTuple (PVar "hd") (PVar "args")) (EApp (EApp (EVar "flattenApp") (EApp (EApp (EVar "CApp") (EVar "f")) (EVar "a"))) (EListLit))) (DoLet false false PWild (EApp (EVar "scanW7Head") (EVar "hd"))) (DoExpr (EApp (EApp (EVar "forEachU") (EVar "scanExprW7")) (EVar "args")))))
 (DFunDef false "scanExprW7" ((PCon "CVar" (PVar "x") PWild)) (EIf (EBinOp "==" (EVar "x") (ELit (LString "Ref"))) (EApp (EApp (EVar "setRef") (EVar "useRefBoxRef")) (EVar "True")) (EApp (EVar "noteW8Extern") (EVar "x"))))
@@ -8016,7 +8048,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "scanRecFields" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "scanRecFields" ((PCon "CRecord" (PVar "name") (PVar "fields"))) (EBinOp "::" (ETuple (EVar "name") (EApp (EApp (EVar "map") (EVar "cFieldName")) (EVar "fields"))) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanRecFields") (EVar "ex")))
-(DFunDef false "scanRecFields" ((PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
+(DFunDef false "scanRecFields" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CTuple" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "scanRecFields")) (EVar "es")))
 (DFunDef false "scanRecFields" ((PCon "CList" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "scanRecFields")) (EVar "es")))
@@ -8079,7 +8111,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CArray" (PVar "xs"))) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs"))) (EVar "xs")))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecord" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs")))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CFieldAccess" (PVar "r") PWild PWild)) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")))
-(DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecordUpdate" (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
+(DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecordUpdate" PWild (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CVariantUpdate" PWild (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "lo")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "hi"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "lo")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "hi"))))
@@ -8448,7 +8480,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDict" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDictFwd" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RNone arg-tag dispatch for '")) (EVar "name")) (ELit (LString "' is out of slice")))))
-(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))))
+(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EVar "isEmpty") (EVar "dicts")) (EBlock (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDictRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "target")) (EVar "dicts")) (EVar "args"))))))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RScalar" PWild) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RScalar route for method '")) (EVar "name")) (ELit (LString "' is out of slice")))))
 (DTypeSig false "emitMethodDispatchRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitMethodDispatchRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "dpar") (PVar "args")) (EBlock (DoLet false false (PVar "impls") (EApp (EApp (EVar "methodImpls") (EVar "prog")) (EVar "name"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoLet false false (PVar "tagRead") (EApp (EApp (EApp (EVar "readDictParam") (EVar "prog")) (EVar "env")) (EVar "dpar"))) (DoLet false false (PVar "blk") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$disp_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "d")))) (ELit (LString "")))) (DoLet false false (PVar "chain") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDispatchChain") (EVar "prog")) (EVar "name")) (EVar "impls")) (EVar "blk")) (EVar "tagRead")) (EVar "dpar")) (EVar "argInstrs")) (EApp (EVar "listLen") (EVar "args")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "block ")) (EVar "blk")) (ELit (LString " (result (ref eq))")))) (EApp (EVar "indent") (EVar "chain"))) (EListLit (ELit (LString "unreachable")) (ELit (LString "end")))))))
@@ -8469,7 +8501,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDict" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDictFwd" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RNone")) (EApp (EVar "gapL") (ELit (LString "wasm W5: RNone route as a dict witness"))))
-(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
+(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RScalar" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DTypeSig false "emitDictRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitDictRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "routes") (PVar "args")) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EApp (EVar "progFnNames") (EVar "prog"))) (EBlock (DoLet false false (PVar "dictWords") (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "routeWitness") (EVar "prog")) (EVar "env")) (EVar "d"))) (EVar "routes"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "name"))))))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: CDict over unknown function '")) (EVar "name")) (ELit (LString "'"))))))
@@ -8688,8 +8720,8 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CIndex" (PVar "a") (PVar "i"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitIndexRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EVar "i")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitSliceRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EVar "lo")) (EVar "hi")) (EVar "incl")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "fields")))
-(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CFieldAccess" (PVar "ex") (PVar "label") PWild)) (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccessRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EVar "label")))
-(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "base")) (EVar "fields")))
+(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CFieldAccess" (PVar "ex") (PVar "label") (PVar "recName"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccessRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EVar "label")) (EVar "recName")))
+(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecordUpdate" (PVar "recName") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "recName")) (EVar "base")) (EVar "fields")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitVariantUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "con")) (EVar "base")) (EVar "fields")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PVar "other")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: unsupported Core IR node ")) (EApp (EVar "display") (EApp (EVar "ctag") (EVar "other")))) (ELit (LString " [in "))) (EApp (EVar "display") (EFieldAccess (EVar "curBindRef") "value"))) (ELit (LString "]")))))
 (DTypeSig false "emitLitRef" (TyFun (TyCon "Lit") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))
@@ -8796,7 +8828,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CBlock" (PVar "stmts"))) (EApp (EApp (EApp (EVar "cexprIsFloatBlock") (EVar "prog")) (EVar "env")) (EVar "stmts")))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CIf" PWild (PVar "t") (PVar "f"))) (EBinOp "||" (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "t")) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "f"))))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CApp" (PVar "f") (PVar "a"))) (EMatch (EApp (EVar "appHead") (EApp (EApp (EVar "CApp") (EVar "f")) (EVar "a"))) (arm (PCon "CVar" (PVar "fn") PWild) () (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "fn")) (EVar "env"))) (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "fn")) (EListLit (ELit (LString "intToFloat")) (ELit (LString "randomFloat")))) (EApp (EVar "fnReturnsFloat") (EVar "fn"))))) (arm PWild () (EVar "False"))))
-(DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CFieldAccess" PWild (PVar "label") PWild)) (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EVar "isFloatCtorField") (EVar "ctor")) (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels"))))) (arm (PCon "None") () (EVar "False"))))
+(DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CFieldAccess" PWild (PVar "label") (PVar "recName"))) (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EVar "isFloatCtorField") (EVar "ctor")) (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels"))))) (arm (PCon "None") () (EVar "False"))))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") PWild) (EVar "False"))
 (DTypeSig false "isArithOp" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isArithOp" ((PVar "op")) (EApp (EApp (EVar "contains") (EVar "op")) (EListLit (ELit (LString "+")) (ELit (LString "-")) (ELit (LString "*")) (ELit (LString "/")) (ELit (LString "%")))))
@@ -9218,7 +9250,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CArray" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsExpr") (EVar "bound"))) (EVar "es")))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields")))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CFieldAccess" (PVar "e") PWild PWild)) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")))
-(DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecordUpdate" (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
+(DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecordUpdate" PWild (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CVariantUpdate" PWild (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "lo")) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "hi"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "lo")) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "hi"))))
@@ -9232,7 +9264,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RDictFwd" (PVar "d"))) (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "bound")) (EListLit) (EListLit (EVar "d"))))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RKey" PWild (PVar "rs"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "rs")))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RNone")) (EListLit))
-(DFunDef false "freeVarsRoute" (PWild (PCon "RLocal" PWild)) (EListLit))
+(DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "dicts")))
 (DFunDef false "freeVarsRoute" (PWild (PCon "RScalar" PWild)) (EListLit))
 (DTypeSig false "freeVarsClauses" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CBind") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "freeVarsClauses" ((PVar "bound") (PCon "CBind" PWild (PVar "clauses"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "freeVarsClause") (EVar "bound"))) (EVar "clauses")))
@@ -9271,10 +9303,12 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitSliceRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl")) (EBlock (DoLet false false (PVar "sfx") (EApp (EVar "intToString") (EVar "d"))) (DoLet false false (PVar "srcL") (EBinOp "++" (ELit (LString "$__slsrc")) (EVar "sfx"))) (DoLet false false (PVar "dstL") (EBinOp "++" (ELit (LString "$__sldst")) (EVar "sfx"))) (DoLet false false (PVar "loL") (EBinOp "++" (ELit (LString "$__sllo")) (EVar "sfx"))) (DoLet false false (PVar "lenL") (EBinOp "++" (ELit (LString "$__sllen")) (EVar "sfx"))) (DoLet false false (PVar "arrI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $arr)")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "srcL"))))) (DoLet false false (PVar "loI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "lo")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "loL"))))) (DoLet false false (PVar "hiI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "hi")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s"))))) (DoLet false false (PVar "adj") (EIf (EVar "incl") (EListLit (ELit (LString "i32.const 1")) (ELit (LString "i32.add"))) (EListLit))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "arrI") (EVar "loI")) (EVar "hiI")) (EVar "adj")) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "loL")) (ELit (LString "i32.sub")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "lenL")))) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "lenL")) (ELit (LString "array.new $arr")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "dstL")))) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "dstL")) (ELit (LString "ref.as_non_null")) (ELit (LString "i32.const 0")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "srcL")) (ELit (LString "ref.as_non_null")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "loL")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "lenL")) (ELit (LString "array.copy $arr $arr")))) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "dstL")) (ELit (LString "ref.as_non_null")))))))
 (DTypeSig false "emitRecordRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
 (DFunDef false "emitRecordRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "fields")) (EBlock (DoLet false false (PVar "tagField") (EListLit (EBinOp "++" (ELit (LString "i32.const ")) (EApp (EVar "intToString") (EApp (EApp (EVar "ctorOrdinal") (EVar "prog")) (EVar "name")))))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EVar "flatMap") (ELam ((PVar "f")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "tagField") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "struct.new $")) (EApp (EVar "ctorStructName") (EVar "name"))))))))
-(DTypeSig false "emitFieldAccessRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitFieldAccessRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "ex") (PVar "label")) (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EBlock (DoLet false false (PVar "idx") (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")))) (DoExpr (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "ref.cast (ref $")) (EApp (EVar "ctorStructName") (EVar "ctor"))) (ELit (LString ")"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "struct.get $")) (EApp (EVar "display") (EApp (EVar "ctorStructName") (EVar "ctor")))) (ELit (LString " "))) (EApp (EVar "display") (EApp (EVar "intToString") (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (ELit (LString "")))))))) (arm (PCon "None") () (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (ELit (LString "ref.cast (ref $refbox)")) (ELit (LString "struct.get $refbox 0")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CFieldAccess on unknown field '")) (EVar "label")) (ELit (LString "' (no record ctor in the field-order table)"))))))))
-(DTypeSig false "emitRecordUpdateRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitRecordUpdateRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "base") (PVar "fields")) (EMatch (EApp (EVar "firstFieldLabel") (EVar "fields")) (arm (PCon "None") () (EApp (EVar "gapL") (ELit (LString "ref-mode: empty record update")))) (arm (PCon "Some" (PVar "k0")) () (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "k0")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitUpdateCopy") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ctor")) (EVar "labels")) (EVar "base")) (EVar "fields"))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CRecordUpdate on unknown field '")) (EVar "k0")) (ELit (LString "'")))))))))
+(DTypeSig false "emitFieldAccessRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "emitFieldAccessRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "ex") (PVar "label") (PVar "recName")) (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EBlock (DoLet false false (PVar "idx") (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")))) (DoExpr (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "ref.cast (ref $")) (EApp (EVar "ctorStructName") (EVar "ctor"))) (ELit (LString ")"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "struct.get $")) (EApp (EVar "display") (EApp (EVar "ctorStructName") (EVar "ctor")))) (ELit (LString " "))) (EApp (EVar "display") (EApp (EVar "intToString") (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (ELit (LString "")))))))) (arm (PCon "None") () (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (ELit (LString "ref.cast (ref $refbox)")) (ELit (LString "struct.get $refbox 0")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CFieldAccess on unknown field '")) (EVar "label")) (ELit (LString "' (no record ctor in the field-order table)"))))))))
+(DTypeSig false "emitRecordUpdateRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "emitRecordUpdateRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "recName") (PVar "base") (PVar "fields")) (EMatch (EApp (EVar "firstFieldLabel") (EVar "fields")) (arm (PCon "None") () (EApp (EVar "gapL") (ELit (LString "ref-mode: empty record update")))) (arm (PCon "Some" (PVar "k0")) () (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "k0")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitUpdateCopy") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ctor")) (EVar "labels")) (EVar "base")) (EVar "fields"))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CRecordUpdate on unknown field '")) (EVar "k0")) (ELit (LString "'")))))))))
+(DTypeSig false "recByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "recByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EIf (EBinOp ">=" (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")) (ELit (LInt 0))) (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels"))) (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label"))))))
 (DTypeSig false "firstFieldLabel" (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "firstFieldLabel" ((PList)) (EVar "None"))
 (DFunDef false "firstFieldLabel" ((PCons (PCon "CField" (PVar "k") PWild) PWild)) (EApp (EVar "Some") (EVar "k")))
@@ -9550,7 +9584,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "maxIndexAt" ((PCon "CList" (PVar "es")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EVar "x")) (EVar "d")))) (EVar "es"))))
 (DFunDef false "maxIndexAt" ((PCon "CArray" (PVar "es")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EVar "x")) (EVar "d")))) (EVar "es"))))
 (DFunDef false "maxIndexAt" ((PCon "CRecord" PWild (PVar "fields")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))
-(DFunDef false "maxIndexAt" ((PCon "CRecordUpdate" (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
+(DFunDef false "maxIndexAt" ((PCon "CRecordUpdate" PWild (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
 (DFunDef false "maxIndexAt" ((PCon "CVariantUpdate" PWild (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EVar "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
 (DFunDef false "maxIndexAt" ((PCon "CFieldAccess" (PVar "e1") PWild PWild) (PVar "d")) (EApp (EApp (EVar "maxIndexAt") (EVar "e1")) (EVar "d")))
 (DFunDef false "maxIndexAt" ((PCon "CRangeList" (PVar "lo") (PVar "hi") PWild) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "lo")) (EVar "d"))) (EApp (EApp (EVar "maxIndexAt") (EVar "hi")) (EVar "d")))))
@@ -9647,7 +9681,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "ctag" ((PCon "CArray" PWild)) (ELit (LString "CArray (W7)")))
 (DFunDef false "ctag" ((PCon "CRecord" PWild PWild)) (ELit (LString "CRecord (W7)")))
 (DFunDef false "ctag" ((PCon "CFieldAccess" PWild PWild PWild)) (ELit (LString "CFieldAccess (W7)")))
-(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild)) (ELit (LString "CRecordUpdate (W7)")))
+(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild PWild)) (ELit (LString "CRecordUpdate (W7)")))
 (DFunDef false "ctag" ((PCon "CVariantUpdate" PWild PWild PWild)) (ELit (LString "CVariantUpdate (W7)")))
 (DFunDef false "ctag" ((PCon "CRangeList" PWild PWild PWild)) (ELit (LString "CRangeList (W7)")))
 (DFunDef false "ctag" ((PCon "CRangeArray" PWild PWild PWild)) (ELit (LString "CRangeArray (W7)")))
@@ -9935,7 +9969,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "scanExprW7" ((PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (ELet false PWild (EApp (EApp (EVar "setRef") (EVar "useArrayRef")) (EVar "True")) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "a")) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "lo")) (EApp (EVar "scanExprW7") (EVar "hi"))))))
 (DFunDef false "scanExprW7" ((PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields")))
 (DFunDef false "scanExprW7" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanExprW7") (EVar "ex")))
-(DFunDef false "scanExprW7" ((PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
+(DFunDef false "scanExprW7" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanExprW7" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "fields"))) (ELet false PWild (EApp (EVar "scanExprW7") (EVar "base")) (EApp (EApp (EVar "forEachU") (ELam ((PVar "f")) (EApp (EVar "scanExprW7") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanExprW7" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBlock (DoLet false false (PTuple (PVar "hd") (PVar "args")) (EApp (EApp (EVar "flattenApp") (EApp (EApp (EVar "CApp") (EVar "f")) (EVar "a"))) (EListLit))) (DoLet false false PWild (EApp (EVar "scanW7Head") (EVar "hd"))) (DoExpr (EApp (EApp (EVar "forEachU") (EVar "scanExprW7")) (EVar "args")))))
 (DFunDef false "scanExprW7" ((PCon "CVar" (PVar "x") PWild)) (EIf (EBinOp "==" (EVar "x") (ELit (LString "Ref"))) (EApp (EApp (EVar "setRef") (EVar "useRefBoxRef")) (EVar "True")) (EApp (EVar "noteW8Extern") (EVar "x"))))
@@ -10003,7 +10037,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "scanRecFields" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "scanRecFields" ((PCon "CRecord" (PVar "name") (PVar "fields"))) (EBinOp "::" (ETuple (EVar "name") (EApp (EApp (EMethodRef "map") (EVar "cFieldName")) (EVar "fields"))) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "scanRecFields") (EVar "ex")))
-(DFunDef false "scanRecFields" ((PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
+(DFunDef false "scanRecFields" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "fields"))) (EBinOp "++" (EApp (EVar "scanRecFields") (EVar "base")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EVar "scanRecFields") (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))))
 (DFunDef false "scanRecFields" ((PCon "CTuple" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "scanRecFields")) (EVar "es")))
 (DFunDef false "scanRecFields" ((PCon "CList" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "scanRecFields")) (EVar "es")))
@@ -10066,7 +10100,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CArray" (PVar "xs"))) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs"))) (EVar "xs")))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecord" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs")))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CFieldAccess" (PVar "r") PWild PWild)) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")))
-(DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecordUpdate" (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
+(DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRecordUpdate" PWild (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CVariantUpdate" PWild (PVar "r") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "r")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "fd")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EApp (EVar "cFieldExpr") (EVar "fd"))))) (EVar "fs"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "lo")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "hi"))))
 (DFunDef false "scanExprValueUses" ((PVar "fnNames") (PVar "fnArs") (PVar "ctorArs") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "lo")) (EApp (EApp (EApp (EApp (EVar "scanExprValueUses") (EVar "fnNames")) (EVar "fnArs")) (EVar "ctorArs")) (EVar "hi"))))
@@ -10435,7 +10469,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDict" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RDictFwd" (PVar "dpar")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatchRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "dpar")) (EVar "args")))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RNone arg-tag dispatch for '")) (EVar "name")) (ELit (LString "' is out of slice")))))
-(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))))
+(DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EMethodRef "isEmpty") (EVar "dicts")) (EBlock (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EVar "argInstrs") (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "target"))))))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDictRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "target")) (EVar "dicts")) (EVar "args"))))))
 (DFunDef false "emitMethodRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PCon "RScalar" PWild) (PVar "implRoutes") (PVar "methRoutes") (PVar "args")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: RScalar route for method '")) (EVar "name")) (ELit (LString "' is out of slice")))))
 (DTypeSig false "emitMethodDispatchRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitMethodDispatchRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "dpar") (PVar "args")) (EBlock (DoLet false false (PVar "impls") (EApp (EApp (EVar "methodImpls") (EVar "prog")) (EVar "name"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoLet false false (PVar "tagRead") (EApp (EApp (EApp (EVar "readDictParam") (EVar "prog")) (EVar "env")) (EVar "dpar"))) (DoLet false false (PVar "blk") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$disp_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "d")))) (ELit (LString "")))) (DoLet false false (PVar "chain") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitDispatchChain") (EVar "prog")) (EVar "name")) (EVar "impls")) (EVar "blk")) (EVar "tagRead")) (EVar "dpar")) (EVar "argInstrs")) (EApp (EVar "listLen") (EVar "args")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "block ")) (EVar "blk")) (ELit (LString " (result (ref eq))")))) (EApp (EVar "indent") (EVar "chain"))) (EListLit (ELit (LString "unreachable")) (ELit (LString "end")))))))
@@ -10456,7 +10490,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDict" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild (PVar "env") PWild (PCon "RDictFwd" (PVar "dpar"))) (EIf (EApp (EApp (EVar "contains") (EVar "dpar")) (EVar "env")) (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "dpar")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: forwarded dict '")) (EVar "dpar")) (ELit (LString "' not in scope"))))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RNone")) (EApp (EVar "gapL") (ELit (LString "wasm W5: RNone route as a dict witness"))))
-(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
+(DFunDef false "routeWitness" (PWild PWild PWild (PCon "RLocal" PWild PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DFunDef false "routeWitness" (PWild PWild PWild (PCon "RScalar" PWild)) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31"))))
 (DTypeSig false "emitDictRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitDictRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "routes") (PVar "args")) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EApp (EVar "progFnNames") (EVar "prog"))) (EBlock (DoLet false false (PVar "dictWords") (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "routeWitness") (EVar "prog")) (EVar "env")) (EVar "d"))) (EVar "routes"))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "a")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")))) (EVar "args"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "name"))))))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "wasm W5: CDict over unknown function '")) (EVar "name")) (ELit (LString "'"))))))
@@ -10675,8 +10709,8 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CIndex" (PVar "a") (PVar "i"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitIndexRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EVar "i")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitSliceRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EVar "lo")) (EVar "hi")) (EVar "incl")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "name")) (EVar "fields")))
-(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CFieldAccess" (PVar "ex") (PVar "label") PWild)) (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccessRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EVar "label")))
-(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "base")) (EVar "fields")))
+(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CFieldAccess" (PVar "ex") (PVar "label") (PVar "recName"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFieldAccessRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EVar "label")) (EVar "recName")))
+(DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CRecordUpdate" (PVar "recName") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitRecordUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "recName")) (EVar "base")) (EVar "fields")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitVariantUpdateRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "con")) (EVar "base")) (EVar "fields")))
 (DFunDef false "emitRefExpr" ((PVar "prog") (PVar "env") (PVar "d") (PVar "other")) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: unsupported Core IR node ")) (EApp (EMethodRef "display") (EApp (EVar "ctag") (EVar "other")))) (ELit (LString " [in "))) (EApp (EMethodRef "display") (EFieldAccess (EVar "curBindRef") "value"))) (ELit (LString "]")))))
 (DTypeSig false "emitLitRef" (TyFun (TyCon "Lit") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))
@@ -10783,7 +10817,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CBlock" (PVar "stmts"))) (EApp (EApp (EApp (EVar "cexprIsFloatBlock") (EVar "prog")) (EVar "env")) (EVar "stmts")))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CIf" PWild (PVar "t") (PVar "f"))) (EBinOp "||" (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "t")) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "f"))))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CApp" (PVar "f") (PVar "a"))) (EMatch (EApp (EVar "appHead") (EApp (EApp (EVar "CApp") (EVar "f")) (EVar "a"))) (arm (PCon "CVar" (PVar "fn") PWild) () (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "fn")) (EVar "env"))) (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "fn")) (EListLit (ELit (LString "intToFloat")) (ELit (LString "randomFloat")))) (EApp (EVar "fnReturnsFloat") (EVar "fn"))))) (arm PWild () (EVar "False"))))
-(DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CFieldAccess" PWild (PVar "label") PWild)) (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EVar "isFloatCtorField") (EVar "ctor")) (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels"))))) (arm (PCon "None") () (EVar "False"))))
+(DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") (PCon "CFieldAccess" PWild (PVar "label") (PVar "recName"))) (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EVar "isFloatCtorField") (EVar "ctor")) (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels"))))) (arm (PCon "None") () (EVar "False"))))
 (DFunDef false "cexprIsFloat" ((PVar "prog") (PVar "env") PWild) (EVar "False"))
 (DTypeSig false "isArithOp" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isArithOp" ((PVar "op")) (EApp (EApp (EVar "contains") (EVar "op")) (EListLit (ELit (LString "+")) (ELit (LString "-")) (ELit (LString "*")) (ELit (LString "/")) (ELit (LString "%")))))
@@ -11205,7 +11239,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CArray" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsExpr") (EVar "bound"))) (EVar "es")))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecord" PWild (PVar "fields"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields")))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CFieldAccess" (PVar "e") PWild PWild)) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")))
-(DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecordUpdate" (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
+(DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRecordUpdate" PWild (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CVariantUpdate" PWild (PVar "e") (PVar "fields"))) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "e")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsField") (EVar "bound"))) (EVar "fields"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "lo")) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "hi"))))
 (DFunDef false "freeVarsExpr" ((PVar "bound") (PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "lo")) (EApp (EApp (EVar "freeVarsExpr") (EVar "bound")) (EVar "hi"))))
@@ -11219,7 +11253,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RDictFwd" (PVar "d"))) (EIf (EApp (EApp (EVar "contains") (EVar "d")) (EVar "bound")) (EListLit) (EListLit (EVar "d"))))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RKey" PWild (PVar "rs"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "rs")))
 (DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RNone")) (EListLit))
-(DFunDef false "freeVarsRoute" (PWild (PCon "RLocal" PWild)) (EListLit))
+(DFunDef false "freeVarsRoute" ((PVar "bound") (PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsRoute") (EVar "bound"))) (EVar "dicts")))
 (DFunDef false "freeVarsRoute" (PWild (PCon "RScalar" PWild)) (EListLit))
 (DTypeSig false "freeVarsClauses" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CBind") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "freeVarsClauses" ((PVar "bound") (PCon "CBind" PWild (PVar "clauses"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "freeVarsClause") (EVar "bound"))) (EVar "clauses")))
@@ -11258,10 +11292,12 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitSliceRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl")) (EBlock (DoLet false false (PVar "sfx") (EApp (EVar "intToString") (EVar "d"))) (DoLet false false (PVar "srcL") (EBinOp "++" (ELit (LString "$__slsrc")) (EVar "sfx"))) (DoLet false false (PVar "dstL") (EBinOp "++" (ELit (LString "$__sldst")) (EVar "sfx"))) (DoLet false false (PVar "loL") (EBinOp "++" (ELit (LString "$__sllo")) (EVar "sfx"))) (DoLet false false (PVar "lenL") (EBinOp "++" (ELit (LString "$__sllen")) (EVar "sfx"))) (DoLet false false (PVar "arrI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $arr)")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "srcL"))))) (DoLet false false (PVar "loI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "lo")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "loL"))))) (DoLet false false (PVar "hiI") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "hi")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s"))))) (DoLet false false (PVar "adj") (EIf (EVar "incl") (EListLit (ELit (LString "i32.const 1")) (ELit (LString "i32.add"))) (EListLit))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "arrI") (EVar "loI")) (EVar "hiI")) (EVar "adj")) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "loL")) (ELit (LString "i32.sub")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "lenL")))) (EListLit (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "lenL")) (ELit (LString "array.new $arr")) (EBinOp "++" (ELit (LString "local.set ")) (EVar "dstL")))) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "dstL")) (ELit (LString "ref.as_non_null")) (ELit (LString "i32.const 0")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "srcL")) (ELit (LString "ref.as_non_null")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "loL")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "lenL")) (ELit (LString "array.copy $arr $arr")))) (EListLit (EBinOp "++" (ELit (LString "local.get ")) (EVar "dstL")) (ELit (LString "ref.as_non_null")))))))
 (DTypeSig false "emitRecordRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
 (DFunDef false "emitRecordRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "name") (PVar "fields")) (EBlock (DoLet false false (PVar "tagField") (EListLit (EBinOp "++" (ELit (LString "i32.const ")) (EApp (EVar "intToString") (EApp (EApp (EVar "ctorOrdinal") (EVar "prog")) (EVar "name")))))) (DoLet false false (PVar "argInstrs") (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "f")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EApp (EVar "cFieldExpr") (EVar "f"))))) (EVar "fields"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "tagField") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "struct.new $")) (EApp (EVar "ctorStructName") (EVar "name"))))))))
-(DTypeSig false "emitFieldAccessRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitFieldAccessRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "ex") (PVar "label")) (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EBlock (DoLet false false (PVar "idx") (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")))) (DoExpr (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "ref.cast (ref $")) (EApp (EVar "ctorStructName") (EVar "ctor"))) (ELit (LString ")"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "struct.get $")) (EApp (EMethodRef "display") (EApp (EVar "ctorStructName") (EVar "ctor")))) (ELit (LString " "))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (ELit (LString "")))))))) (arm (PCon "None") () (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (ELit (LString "ref.cast (ref $refbox)")) (ELit (LString "struct.get $refbox 0")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CFieldAccess on unknown field '")) (EVar "label")) (ELit (LString "' (no record ctor in the field-order table)"))))))))
-(DTypeSig false "emitRecordUpdateRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitRecordUpdateRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "base") (PVar "fields")) (EMatch (EApp (EVar "firstFieldLabel") (EVar "fields")) (arm (PCon "None") () (EApp (EVar "gapL") (ELit (LString "ref-mode: empty record update")))) (arm (PCon "Some" (PVar "k0")) () (EMatch (EApp (EApp (EVar "findRecByField") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "k0")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitUpdateCopy") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ctor")) (EVar "labels")) (EVar "base")) (EVar "fields"))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CRecordUpdate on unknown field '")) (EVar "k0")) (ELit (LString "'")))))))))
+(DTypeSig false "emitFieldAccessRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "emitFieldAccessRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "ex") (PVar "label") (PVar "recName")) (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "label")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EBlock (DoLet false false (PVar "idx") (EApp (EVar "orZeroIdx") (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")))) (DoExpr (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "ref.cast (ref $")) (EApp (EVar "ctorStructName") (EVar "ctor"))) (ELit (LString ")"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "struct.get $")) (EApp (EMethodRef "display") (EApp (EVar "ctorStructName") (EVar "ctor")))) (ELit (LString " "))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (ELit (LString "")))))))) (arm (PCon "None") () (EIf (EBinOp "==" (EVar "label") (ELit (LString "value"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ex")) (EListLit (ELit (LString "ref.cast (ref $refbox)")) (ELit (LString "struct.get $refbox 0")))) (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CFieldAccess on unknown field '")) (EVar "label")) (ELit (LString "' (no record ctor in the field-order table)"))))))))
+(DTypeSig false "emitRecordUpdateRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "emitRecordUpdateRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "recName") (PVar "base") (PVar "fields")) (EMatch (EApp (EVar "firstFieldLabel") (EVar "fields")) (arm (PCon "None") () (EApp (EVar "gapL") (ELit (LString "ref-mode: empty record update")))) (arm (PCon "Some" (PVar "k0")) () (EMatch (EApp (EApp (EApp (EVar "recByName") (EFieldAccess (EVar "recFieldsRef") "value")) (EVar "recName")) (EVar "k0")) (arm (PCon "Some" (PTuple (PVar "ctor") (PVar "labels"))) () (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitUpdateCopy") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "ctor")) (EVar "labels")) (EVar "base")) (EVar "fields"))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (ELit (LString "ref-mode: CRecordUpdate on unknown field '")) (EVar "k0")) (ELit (LString "'")))))))))
+(DTypeSig false "recByName" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "recByName" ((PVar "table") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EVar "table")) (arm (PCon "Some" (PVar "labels")) () (EIf (EBinOp ">=" (EApp (EApp (EVar "indexOfL") (EVar "label")) (EVar "labels")) (ELit (LInt 0))) (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels"))) (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecByField") (EVar "table")) (EVar "label"))))))
 (DTypeSig false "firstFieldLabel" (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "firstFieldLabel" ((PList)) (EVar "None"))
 (DFunDef false "firstFieldLabel" ((PCons (PCon "CField" (PVar "k") PWild) PWild)) (EApp (EVar "Some") (EVar "k")))
@@ -11537,7 +11573,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "maxIndexAt" ((PCon "CList" (PVar "es")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EVar "x")) (EVar "d")))) (EVar "es"))))
 (DFunDef false "maxIndexAt" ((PCon "CArray" (PVar "es")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EVar "x")) (EVar "d")))) (EVar "es"))))
 (DFunDef false "maxIndexAt" ((PCon "CRecord" PWild (PVar "fields")) (PVar "d")) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))
-(DFunDef false "maxIndexAt" ((PCon "CRecordUpdate" (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
+(DFunDef false "maxIndexAt" ((PCon "CRecordUpdate" PWild (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
 (DFunDef false "maxIndexAt" ((PCon "CVariantUpdate" PWild (PVar "b") (PVar "fields")) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "b")) (EVar "d"))) (EApp (EVar "foldMaxI") (EApp (EApp (EMethodRef "map") (ELam ((PVar "x")) (EApp (EApp (EVar "maxIndexAt") (EApp (EVar "cFieldExpr") (EVar "x"))) (EVar "d")))) (EVar "fields"))))))
 (DFunDef false "maxIndexAt" ((PCon "CFieldAccess" (PVar "e1") PWild PWild) (PVar "d")) (EApp (EApp (EVar "maxIndexAt") (EVar "e1")) (EVar "d")))
 (DFunDef false "maxIndexAt" ((PCon "CRangeList" (PVar "lo") (PVar "hi") PWild) (PVar "d")) (EApp (EApp (EVar "maxI") (EVar "d")) (EApp (EApp (EVar "maxI") (EApp (EApp (EVar "maxIndexAt") (EVar "lo")) (EVar "d"))) (EApp (EApp (EVar "maxIndexAt") (EVar "hi")) (EVar "d")))))
@@ -11634,7 +11670,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "ctag" ((PCon "CArray" PWild)) (ELit (LString "CArray (W7)")))
 (DFunDef false "ctag" ((PCon "CRecord" PWild PWild)) (ELit (LString "CRecord (W7)")))
 (DFunDef false "ctag" ((PCon "CFieldAccess" PWild PWild PWild)) (ELit (LString "CFieldAccess (W7)")))
-(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild)) (ELit (LString "CRecordUpdate (W7)")))
+(DFunDef false "ctag" ((PCon "CRecordUpdate" PWild PWild PWild)) (ELit (LString "CRecordUpdate (W7)")))
 (DFunDef false "ctag" ((PCon "CVariantUpdate" PWild PWild PWild)) (ELit (LString "CVariantUpdate (W7)")))
 (DFunDef false "ctag" ((PCon "CRangeList" PWild PWild PWild)) (ELit (LString "CRangeList (W7)")))
 (DFunDef false "ctag" ((PCon "CRangeArray" PWild PWild PWild)) (ELit (LString "CRangeArray (W7)")))

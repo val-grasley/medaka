@@ -35,18 +35,27 @@ DB="$(mktemp -d)/multipage_write.db"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-WRITER="$ROOT/sqlite_mpwriter"
-READER="$ROOT/sqlite_reader"
+# Scratch binaries live in a PER-PROCESS temp dir, never at the repo root.
+#
+# These used to run `medaka build sqlite/main.mdk` with NO `-o`, which emits the binary
+# as ./<entry> at the REPO ROOT, and then `mv`d it to a FIXED path ($ROOT/sqlite_reader).
+# Both halves are a race: two of these oracles running concurrently clobbered each
+# other's ./main and shared one sqlite_reader. Serially all 22 passed; under run_gates'
+# parallel pool, 2 failed — and which 2 varied. (Same bug class, and same fix, as the
+# `medaka build` scratch-path collision in AGENTS.md: the only correct answer is a
+# per-process temp dir. Anything keyed on the entry name is a trap.)
+BINDIR="$(mktemp -d)"
+trap 'rm -rf "$BINDIR"' EXIT
+WRITER="$BINDIR/sqlite_mpwriter"
+READER="$BINDIR/sqlite_reader"
 export MEDAKA_ROOT="$ROOT"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
 # 1. Build the Medaka multi-page writer demo binary.
-"$MEDAKA" build sqlite/multipage_write_demo.mdk >/dev/null
-mv -f "$ROOT/multipage_write_demo" "$WRITER"
+"$MEDAKA" build sqlite/multipage_write_demo.mdk -o "$WRITER" >/dev/null
 
 # 2. Build the Medaka reader binary (for the self round-trip gate).
-"$MEDAKA" build sqlite/main.mdk >/dev/null
-mv -f "$ROOT/main" "$READER" 2>/dev/null || true
+"$MEDAKA" build sqlite/main.mdk -o "$READER" >/dev/null
 
 # 3. Generate the database WITH THE MEDAKA WRITER (from scratch — no sqlite3).
 rm -f "$DB"

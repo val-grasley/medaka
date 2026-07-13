@@ -1267,7 +1267,7 @@ mangledShadowMapRef = Ref []
 -- time (before resolveArgStamps may overwrite the ref with an RKey) so the mangled
 -- symbol survives into the pendingRLocalSites entry.
 routeLocalSym : Route -> String
-routeLocalSym (RLocal s) = s
+routeLocalSym (RLocal s _) = s
 routeLocalSym _ = ""
 
 -- Bug C: importer-shadow method names → their IMPORTED STANDALONE scheme (e.g.
@@ -1338,7 +1338,19 @@ methodShadowNamesRef = Ref []
 -- typed as the standalone — check says one thing, the binary does another.  True pins
 -- the route to RLocal.  recordRLocalSite (value position / importer shadows) pushes
 -- False and keeps the old per-receiver re-derivation.
-pendingRLocalSites : Ref (List (String, Ref Route, Mono, String, Bool))
+-- S-1: `dictMonos`/`dictIfaces` are the SHADOWING STANDALONE's own `=>`-constraint
+-- slots (slot-parallel, expanded-supers, from shadowStandaloneDicts), carried here so
+-- the stamp can turn them into dict Routes.  They are read INSIDE resolveRLocalSites
+-- via routesOfMonosTop — a PURE function of the union-find-solved monos — rather than
+-- pushed through pendingDictApps, because resolveRLocalSites runs BEFORE
+-- resolveDictApps in elabModuleStamp: routing them through pendingDictApps would read
+-- `[]` and reproduce the S-1 bug with more code.  This way the fix is ordering-immune
+-- and the route has a single writer.  Empty for an unconstrained standalone.
+-- (A record, not a 6/7-tuple: Medaka tuples top out at arity 5.)
+public export data RLocalSite =
+  | RLocalSite String (Ref Route) Mono String Bool (List Mono) (List String)
+
+pendingRLocalSites : Ref (List RLocalSite)
 pendingRLocalSites = Ref []
 
 -- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
@@ -3234,7 +3246,7 @@ infer env (EUnOp op e dref) = inferUnopE env op e dref
 infer env (EInfix op l r) = inferInfix env op l r
 infer env (ERecordCreate name fields) = inferRecordCreate env name fields
 infer env (EFieldAccess e fname r) = inferFieldAccess env e fname r
-infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
+infer env (ERecordUpdate base fields r) = inferRecordUpdate env base fields r
 infer env (EVariantUpdate cname base fields) =
   inferVariantUpdate env cname base fields
 infer env (EBlock stmts) = inferBlock env stmts
@@ -3338,15 +3350,34 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
 -- shadows (standaloneValuesRef) are recorded — every other method occurrence is
 -- untouched (no entry → byte-identical).  The dispatch index comes from the method's
 -- declared interface type (methodDispatchIdx), independent of emitArgStampPasses.
+-- S-1: this is the GENERAL shadow-occurrence recorder, and it is the path that a
+-- VALUE-position shadow (`map size [1,2,3]`) and an IMPORTER shadow on an UNGROUNDED
+-- receiver (`size 3`, where the Num literal is not yet grounded so inferShadowApp's
+-- standalone arm is never reached) both take.  Both must carry the standalone's dicts or
+-- they under-apply exactly like the headline bug.  Slots only — NOT obligations; see
+-- shadowStandaloneDictSlotsAt.
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
-recordRLocalSite _ name tagRef inst
+recordRLocalSite env name tagRef inst
   | suppressRLocalRecord.value = ()
   | not (contains name standaloneValuesRef.value) = ()
   | otherwise = match methodDispatchIdx name
     None => ()
     Some idx => match nthArgMono idx inst
-      Some am => setRef pendingRLocalSites ((name, tagRef, am, routeLocalSym tagRef.value, False)::pendingRLocalSites.value)
+      Some am =>
+        let sym = routeLocalSym tagRef.value
+        let dicts = shadowStandaloneDictSlotsAt (standaloneSchemeFor env name sym) (if sym == "" then name else sym) am
+        setRef
+          pendingRLocalSites
+          (RLocalSite name tagRef am sym False (fst dicts) (snd dicts) :: pendingRLocalSites.value)
       None => ()
+
+-- the SHADOWING STANDALONE's scheme.  An IMPORTER shadow's bare name is rebound by env1
+-- to the interface-METHOD scheme, so it must come from shadowStandaloneSchemesRef; a
+-- DEFINER shadow's comes from the env (under the mangled symbol on the emit path).
+standaloneSchemeFor : TcEnv -> String -> String -> <Mut> Option Scheme
+standaloneSchemeFor env name sym = match lookupAssoc name shadowStandaloneSchemesRef.value
+  Some s => Some s
+  None => lookupVar env (if sym == "" then name else sym)
 
 -- C5: the dispatch-arg index of an interface method, from the graph-wide map
 -- methodDispatchIdxRef (built by checkModuleFullImpl from every interface decl).
@@ -3508,17 +3539,28 @@ lookupQualIfaces src name (((m, n), v)::rest)
   | m == src && n == name = Some v
   | otherwise = lookupQualIfaces src name rest
 
+-- WS-2/D2: a constrained callee's declared (constraint tyvar ids, iface names).  Prefer
+-- the (import-source, name)-keyed QUAL table for a cross-module callee; fall back to the
+-- bare-name funConstraintsRef first-match for local / wildcard / re-export.
+-- S-1: shared with shadowStandaloneDictSlots — an IMPORTED constrained standalone that
+-- shadows a method is exactly a cross-module callee, so it needs the SAME resolution.
+-- Reading only the bare-name table there left the importer shadow's dicts EMPTY on `run`
+-- (funConstraintsRef is reset per module and only re-seeded from the cross-module table
+-- on the EMIT path), so `build` was right and `run` was wrong — the inverse skew.
+declaredConstraintSlots : String -> <Mut> (List Int, List String)
+declaredConstraintSlots name = match qualConstraintFor name
+  Some (ids, ifs) => (ids, ifs)
+  None => (
+    fromOption [] (lookupAssocSL2 name funConstraintsRef.value),
+    fromOption [] (lookupAssocS name funConstraintIfacesRef.value),
+  )
+
 inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
 inferDictAtFound name routesRef inst =
-  -- WS-2/D2: prefer the (import-source, name)-keyed qual arity for a cross-module callee;
-  -- fall back to the bare-name funConstraintsRef first-match for local / wildcard / re-export.
   let q = qualConstraintFor name
-  let declaredIds = match q
-        Some (ids, _) => ids
-        None => fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
-  let declaredIfaces = match q
-        Some (_, ifs) => ifs
-        None => fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+  let slots = declaredConstraintSlots name
+  let declaredIds = fst slots
+  let declaredIfaces = snd slots
   let known = match q
         Some _ => True
         None => hasKeySL2 name funConstraintsRef.value
@@ -4077,10 +4119,10 @@ unboundVarFresh name =
   let _ = pushTypeError "T-UNBOUND" (unboundVarMsg name)
   freshVar ()
 
-inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
-inferRecordUpdate env base fields = match firstFieldName fields
+inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> Ref String -> <Mut> Mono
+inferRecordUpdate env base fields r = match firstFieldName fields
   None => panic "empty record update"
-  Some fn => inferRecordUpdateField env base fields fn
+  Some fn => inferRecordUpdateField env base fields fn r
 
 -- `Con { base | f = v, … }` — a named-field-variant update (e.g. desugar's
 -- `DInterface { d | methods = … }`).  Resolve the variant's field layout by the
@@ -4098,12 +4140,18 @@ firstFieldName ((FieldAssign fn _)::_) = Some fn
 -- receiver-directed (Phase 72), like inferFieldAccess: infer base first, then
 -- pick the owning record by the base's head tycon, falling back to the first
 -- update field's owners.
-inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
-inferRecordUpdateField env base fields fn =
+inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> Ref String -> <Mut> Mono
+inferRecordUpdateField env base fields fn r =
   let bt = normalize (infer env base)
   match resolveFieldRecord bt fn
     None => freshVar ()
-    Some (rname, ri) => inferRecordUpdatePicked rname bt env fields ri
+    Some (rname, ri) =>
+      -- stamp the RESOLVED receiver record onto the node (bug #38): both emitters
+      -- read it to pick the record by name, instead of guessing from the first
+      -- update label (which picks the wrong record — and so the wrong slot — when
+      -- two records share a field name at different indices).
+      let _ = setRef r rname
+      inferRecordUpdatePicked rname bt env fields ri
 
 inferRecordUpdatePicked : String -> Mono -> TcEnv -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRecordUpdatePicked rname bt env fields ri =
@@ -4924,6 +4972,14 @@ singleParamIfaceMethod name = match lookupAssoc name methodIfaceParamsRef.value
 -- stamp the route RLocal (when marked); if the receiver DOES have an impl (or its head
 -- is not yet concrete) fall through to ordinary dispatch (typed against the method
 -- scheme the env rebound the name to).  Mirror of lib/typecheck.ml:2308-2329.
+-- ⚠️ S1-RESIDUAL-B (open; SHADOW-SEMANTICS.md §6): this function has NO
+-- groundShadowReceiver call, unlike its definer peer inferDefinerShadowApp (which P0-20
+-- gave one).  So an UNGROUNDED receiver — a bare `Num` literal, `size 3` — never reaches
+-- the standalone arm below (headTyconMono is None), falls to the ordinary-app arm, and its
+-- dicts come back empty from the generic recordRLocalSite.  Net effect: an IMPORTED
+-- constrained standalone shadow is correct on `build`/`wasm` (they reach it through the
+-- MANGLED symbol via inferDefinerShadowApp, which does ground + dict it) but still
+-- UNDER-APPLIES on `run`.  Fix: add the P0-20 grounding here.
 inferShadowApp : TcEnv -> String -> List (Ref Route) -> Expr -> Expr -> <Mut> Mono
 inferShadowApp env mname tagRefs f x =
   let tx = infer env x
@@ -4937,9 +4993,37 @@ inferShadowApp env mname tagRefs f x =
         let _ = unify smono (TFun tx eff r)
         let _ = performEffect curEffect eff
         let _ = stampRoutes tagRefs
+        -- S-1 (Fork D — the importer half): an IMPORTED constrained standalone shadowing
+        -- a method breaks identically to a local one (its def is dict-passed in its own
+        -- module; this call must supply the dicts).  Compute them off the head type we
+        -- just unified, and defer the ROUTE stamp to resolveRLocalSites — stampRoutes
+        -- above ran mid-inference, when the receiver is not yet solved, so it could only
+        -- write `RLocal sym []`.  forceLocal=True: this arm has already committed the
+        -- site's TYPE to the standalone, so its route is not open to re-derivation.
+        let _ = recordImporterShadowDicts env mname tagRefs tx
         r
       None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
     None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
+
+-- S-1 (importer half): re-record each of the importer shadow's route refs as an
+-- RLocalSite carrying the imported standalone's own constraint dicts, so
+-- resolveRLocalSites re-stamps the ref post-inference with the dicts filled in.
+-- forceLocal=True — inferShadowApp's standalone arm already committed the site's type.
+-- Inert (no dicts, same RLocal stamp) for an unconstrained imported standalone.
+recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> <Mut> Unit
+recordImporterShadowDicts _ _ [] _ = ()
+recordImporterShadowDicts env mname (r::rest) tx =
+  -- the IMPORTED standalone's scheme, NOT `lookupVar env mname` (which env1 rebound to
+  -- the interface method) — see shadowStandaloneDictsWith.
+  let dicts = shadowStandaloneDictsWith
+    (lookupAssoc mname shadowStandaloneSchemesRef.value)
+    mname
+    (routeLocalSym r.value)
+    tx
+  let _ = setRef pendingRLocalSites
+    (RLocalSite mname r tx (routeLocalSym r.value) True (fst dicts) (snd dicts)
+      ::pendingRLocalSites.value)
+  recordImporterShadowDicts env mname rest tx
 
 -- P0-18: peel a single-argument application's head to a DEFINER-shadow interface-
 -- method occurrence (the user's OWN top-level fn reuses a single-param interface
@@ -5023,6 +5107,13 @@ inferDefinerShadowApp env name tagRef implRef f x =
   let _ = setRef shadowHeadCtxRef False
   let _ = setRef suppressRLocalRecord False
   let _ = setRef suppressArgStamp False
+  -- S-1: on the STANDALONE arm ONLY, compute that standalone's own `=>`-constraint
+  -- dicts (and record its call obligations).  The DISPATCH arm typed `ft` against the
+  -- interface METHOD scheme, whose dicts are the method's, not the standalone's — asking
+  -- there would be meaningless.  A dict-var receiver dispatches through its dict and is
+  -- likewise not the standalone.  ([], []) for an unconstrained standalone.
+  let dicts = if dispatches || isDictVar then ([], [])
+    else shadowStandaloneDicts env name sym xt
   -- Route by the ACTUAL argument type on BOTH the eval path (pendingRLocalSites,
   -- read by resolveRLocalSites) and the emit path (pendingArgStamps, read by
   -- resolveArgStamps — only recorded when this method arg-dispatches, i.e. on the
@@ -5039,7 +5130,9 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- `check` and the binary came to disagree.  A dispatching receiver still re-derives
   -- (its head is already ground; RKey comes from resolveArgStamps on the emit path).
   let _ = if isDictVar then ()
-    else setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value, not dispatches)::pendingRLocalSites.value)
+    else setRef pendingRLocalSites
+      (RLocalSite name tagRef xt (routeLocalSym tagRef.value) (not dispatches) (fst dicts) (snd dicts)
+        ::pendingRLocalSites.value)
   let _ = match argDispatchOf name
     Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value)::pendingArgStamps.value)
     None => ()
@@ -5304,6 +5397,14 @@ inferDefinerStandaloneVarApp env name f x xt dloc = match standaloneShadowScheme
     let _ = setRef currentLoc dloc
     let _ = unify smono (TFun xt eff r)
     let _ = performEffect curEffect eff
+    -- S-1 (REJECT direction).  standaloneShadowScheme instantiates the DECLARED SIG via
+    -- sigToScheme, which DROPS the `=>` constraints entirely — so `Num String` was never
+    -- asked and `check` ACCEPTED `size "hi"` against `size : Num a => a -> a`.  Re-read
+    -- the constraints off the signature and record them as call obligations at the
+    -- receiver, which makes it a located reject.  (This arm has a signature by
+    -- construction; the no-signature arm below goes through `infer env f` → inferVarPlain
+    -- → instantiateVarTracked, the ordinary obligation path.)
+    let _ = recordStandaloneSigObligations name "" xt
     r
   None =>
     let _ = setRef shadowHeadCtxRef True
@@ -5323,12 +5424,188 @@ definerShadowHeadType env sym f = match lookupVar env sym
   None => infer env f
 
 -- stamp every route ref (one for the marked EMethodAt form, none for the unmarked
--- check-path EVar form) RLocal.
+-- check-path EVar form) RLocal.  S-1: the standalone's own constraint dicts are NOT
+-- resolvable here (inference has not solved the receiver yet) — the caller ALSO pushes
+-- an RLocalSite so resolveRLocalSites re-stamps the same ref with the filled dicts
+-- post-inference.  An unconstrained standalone never gets a second stamp that differs.
 stampRoutes : List (Ref Route) -> <Mut> Unit
 stampRoutes [] = ()
 stampRoutes (r::rest) =
-  let _ = setRef r (RLocal (routeLocalSym r.value))
+  let _ = setRef r (RLocal (routeLocalSym r.value) [])
   stampRoutes rest
+
+-- ── S-1: the shadowing standalone's OWN constraint dicts ──────────────────────
+-- A `=>`-constrained top-level fn whose name collides with a visible interface method
+-- (`eq : Num a => a -> a` vs the prelude's `Eq.eq`) sits in BOTH the shadow name set
+-- and the dict name set.  The marking prePass is a first-match guard chain whose shadow
+-- arm is tested FIRST, so the occurrence becomes `EMethodAt`, never `EDictAt` — and no
+-- dict is ever computed for it.  But `dictPassDecl` (keyed on the same dict name set)
+-- still prepends the dict PARAM to the definition.  Def arity 2, call arity 1 ⇒ the
+-- call silently UNDER-APPLIES and the first real argument lands in the dict slot.
+--
+-- So: when a shadow occurrence resolves to the STANDALONE arm, compute that
+-- standalone's constraint slots here — the shadowed interface decides WHICH function,
+-- the standalone's own constraints decide WHICH DICTS (clause S9).
+--
+-- [xt] is the RECEIVER's mono.  We take a tracked instantiation of the standalone's own
+-- scheme and unify it with `xt -> <fresh>`, which pins the standalone's constraint
+-- variable to the receiver exactly as inferApp will pin the site's real head — so the
+-- subst maps each constraint id to whatever that constraint variable becomes at THIS
+-- call.  The fresh result var is a throwaway: it does NOT re-type the site (the caller's
+-- own `ft`/`inferApp` still owns the site's type), it only ties the dict to the receiver.
+--
+-- ⚠️ Unify against the RECEIVER, not against the caller's head type `ft`.  On the
+-- UN-MANGLED path `ft` is the permissive interface-METHOD scheme, not the standalone's
+-- (the two doc-comments in inferDefinerShadowApp contradict each other on this; `:5050`
+-- is the correct one).  Unifying the standalone's `a -> a` against the method's
+-- `a -> a -> Bool` is an OCCURS-CHECK failure — "Cannot construct infinite type" on the
+-- perfectly legal `eq : Num a => a -> a`.  The receiver is common to both.
+--
+-- Returns the slot-ordered (monos, ifaces) that routesOfMonosTop turns into Routes, and
+-- records the call's impl obligations so `size "hi"` (⇒ `Num String`, which has no
+-- impl) becomes a LOCATED REJECT at `check` instead of build-time garbage — the second,
+-- independent hole in this same arm.  ([] , []) for an unconstrained standalone, which
+-- SHORT-CIRCUITS BEFORE THE UNIFY, so an unconstrained shadow (all 5 of the compiler's
+-- own) does not even perturb the substitution — the fixpoint provably cannot move.
+shadowStandaloneDicts : TcEnv -> String -> String -> Mono -> <Mut> (List Mono, List String)
+shadowStandaloneDicts env name sym xt =
+  -- P0-20's sym-awareness lesson, mirrored: on the mangled emit path the standalone is
+  -- bound under `<mid>__name`, so a BARE-name lookup here would be silently inert and
+  -- `build` would emit the un-dicted call while run/check dicted correctly — the same
+  -- bug, mirrored.  shadowDomainFor exists for exactly this reason.
+  shadowStandaloneDictsWith (lookupVar env (if sym == "" then name else sym)) name sym xt
+
+-- as shadowStandaloneDicts, but with the standalone's scheme supplied explicitly.
+-- The IMPORTER shadow needs this: in the importing module `env1` deliberately rebinds the
+-- bare name to the polymorphic INTERFACE-METHOD scheme (that rebinding is the entire
+-- reason shadowStandaloneSchemesRef exists), so `lookupVar env name` hands back the
+-- METHOD — whose quantified ids are not the ones funConstraintsRef recorded for the
+-- imported standalone, so every dict slot silently resolves to nothing.  That is why the
+-- importer shadow was correct on `build`/`wasm` (which reach the standalone through the
+-- MANGLED symbol) and still under-applied on `run`.
+shadowStandaloneDictsWith : Option Scheme -> String -> String -> Mono -> <Mut> (List Mono, List String)
+shadowStandaloneDictsWith mscheme name sym xt =
+  let _ = recordStandaloneSigObligations name sym xt
+  shadowStandaloneDictSlotsAt mscheme (if sym == "" then name else sym) xt
+
+-- the dict slots ONLY — no call obligations.
+-- recordRLocalSite needs this: it fires for EVERY shadow method occurrence, at a point
+-- where the standalone-vs-dispatch choice is NOT yet made (resolveRLocalSite decides it
+-- post-inference from the grounded receiver).  Recording an obligation here would fire on
+-- the DISPATCH arm too and spuriously reject `size (Box 3)` with `Num Box`.  When the
+-- receiver does turn out to have an impl, stampRLocalOrFallback simply discards these
+-- slots and the route dispatches as before.
+shadowStandaloneDictSlotsAt : Option Scheme -> String -> Mono -> <Mut> (List Mono, List String)
+shadowStandaloneDictSlotsAt mscheme key xt =
+  let slots = declaredConstraintSlots key
+  -- REJECT direction — from the SIGNATURE, NOT from schemeObligationsRef.
+  -- ⚠️ For a SIGNATURED binding the two obligation tables live in DIFFERENT ID SPACES:
+  -- funConstraintsRef's ids (and the env scheme's quantified ids) come from
+  -- sigToSchemeTvs over the declared signature, while schemeObligationsRef's come from
+  -- GENERALIZATION.  Mapping the latter's ids through the former's substitution silently
+  -- finds nothing — which is why the dict ROUTES resolved correctly (they use
+  -- funConstraintsRef) while the obligation stayed unrecorded and `size "hi"` was
+  -- ACCEPTED.  The signature is the one source both halves can agree on.
+  -- the unconstrained standalone: nothing to solve, no unify, no perturbation at all.
+  -- This short-circuit is what makes the change provably fixpoint-safe — all 5 of the
+  -- compiler's own definer shadows are unconstrained and never reach the unify below.
+  if isEmptyL (fst slots) then ([], [])
+  else match mscheme
+    None => ([], [])
+    Some s =>
+      let inst = instantiateTracked s
+      let r = freshVar ()
+      let eff = openRow ()
+      let _ = unify (fst inst) (TFun xt eff r)
+      shadowStandaloneDictSlots slots (snd inst)
+
+-- the standalone's dict ROUTE slots for this call: its declared constraint ids mapped
+-- through the call's instantiation subst.  Expanded with transitive supers EXACTLY as
+-- inferDictAtFound does (WS-1b) — dictArityOf sizes the DEFINITION's leading dict params
+-- from the same expanded table, so call and def must agree slot-for-slot or we have
+-- merely moved the arity disagreement.  Empty on the plain `check` path
+-- (funConstraintsRef is empty there) — check stamps no routes, so that is correct;
+-- recordStandaloneSigObligations is what gives `check` its reject direction.
+shadowStandaloneDictSlots : (List Int, List String) -> List (Int, Mono) -> <Mut> (List Mono, List String)
+shadowStandaloneDictSlots slots subst =
+  if isEmptyL (fst slots) then ([], [])
+  else
+    let expanded = expandSupersPairs superDeclsRef.value (zipL (snd slots) (fst slots))
+    (constraintMonosOf (map snd expanded) subst, map fst expanded)
+
+-- ── S-1, REJECT direction on the plain `check` path ───────────────────────────
+-- Record the standalone's declared `=>` constraints as CALL obligations, resolved from
+-- its own SIGNATURE.
+--
+-- ⚠️ Why the SIGNATURE and not schemeObligationsRef: for a signatured binding those are
+-- two different ID SPACES (sigToSchemeTvs's fresh quantification vs generalization's), so
+-- schemeObligationsRef's ids are not keys of the env scheme's instantiation subst and
+-- recordSchemeCallObligations silently records nothing.  That is exactly why the dict
+-- ROUTES came out right (they key off funConstraintsRef, which IS the signature's id
+-- space) while `check` still ACCEPTED `size "hi"` (⇒ `Num String`, which has no impl).
+--
+-- ⚠️ sigToSchemeTvs's `tvs` are the scheme's BOUND tyvars, and `instantiate` RE-freshens
+-- them — so unifying the *instantiated* type against the receiver does not touch `tvs` at
+-- all.  We must instantiateTracked and map each constraint tyvar's ID through the subst,
+-- which is precisely what that function's own doc-comment prescribes ("so a caller can
+-- recover the id of a specific constraint variable … a call-site instantiation's subst
+-- maps them").  Getting this wrong records nothing and reads as "the fix does not work".
+--
+-- Keyed by the BARE name on the un-mangled run/check path and by the MANGLED symbol on
+-- the emit path (sigsOf runs over the already-renamed decls there) — try both, exactly as
+-- shadowDomainFor has to.
+recordStandaloneSigObligations : String -> String -> Mono -> <Mut> Unit
+recordStandaloneSigObligations name sym xt = match standaloneShadowSigTy name sym
+  None => ()
+  Some ty => match sigConstraintsOf ty
+    [] => ()
+    cs =>
+      let pr = sigToSchemeTvs ty
+      let inst = instantiateTracked (fst pr)
+      let r = freshVar ()
+      let eff = openRow ()
+      let _ = unify (fst inst) (TFun xt eff r)
+      recordSigConstraintObls cs (snd pr) (snd inst)
+
+-- the standalone's declared signature Ty, under whichever key this path stores it.
+standaloneShadowSigTy : String -> String -> <Mut> Option Ty
+standaloneShadowSigTy name sym = match lookupAssoc name definerShadowSigsRef.value
+  Some ty => Some ty
+  None => if sym == "" then None else lookupAssoc sym definerShadowSigsRef.value
+
+-- every `=>` constraint in the signature.  Recurses the spine like constraintVarNamesTy
+-- rather than matching only the top node, so an effect-annotated sig still yields them.
+sigConstraintsOf : Ty -> List Constraint
+sigConstraintsOf (TyConstrained cs t) = cs ++ sigConstraintsOf t
+sigConstraintsOf (TyEffect _ _ t) = sigConstraintsOf t
+sigConstraintsOf _ = []
+
+-- one obligation per (iface, constraint tyvar) in the signature, at that tyvar's mono in
+-- THIS call's instantiation.  A constraint over something other than a plain tyvar, or a
+-- tyvar absent from either map, records nothing (never over-rejects).
+recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, Mono) -> <Mut> Unit
+recordSigConstraintObls [] _ _ = ()
+recordSigConstraintObls ((Constraint iface args)::rest) tvs subst =
+  let _ = recordSigConstraintArgs iface args tvs subst
+  recordSigConstraintObls rest tvs subst
+
+recordSigConstraintArgs : String -> List Ty -> List (String, Mono) -> List (Int, Mono) -> <Mut> Unit
+recordSigConstraintArgs _ [] _ _ = ()
+recordSigConstraintArgs iface (a::rest) tvs subst =
+  let _ = match constraintArgVarName a
+    Some v => match lookupAssoc v tvs
+      Some tv => match lookupAssocI (monoTyvarId tv) subst
+        Some m => pushCallObl (iface, m, currentLoc.value)
+        None => ()
+      None => ()
+    None => ()
+  recordSigConstraintArgs iface rest tvs subst
+
+-- the tyvar NAME a constraint argument mentions (`Num a` → "a"); None for a non-tyvar
+-- argument (a concrete head), which carries no per-call obligation here.
+constraintArgVarName : Ty -> Option String
+constraintArgVarName (TyVar v) = Some v
+constraintArgVarName _ = None
 
 -- set currentLoc only when the lambda carried a span (mirror the ELoc arm), so
 -- a bare unlocated lambda doesn't blank out an enclosing position.
@@ -6944,7 +7221,7 @@ rewriteArgScoped (ArgRw rp dn an sm) bound (EVar n)
   -- symbol (so a no-impl receiver still reaches the standalone `@mdk_<mid>__size`).
   | not (contains n bound) && isSome (lookupAssoc n sm) =
     match lookupAssoc n sm
-      Some bare => EMethodAt bare (Ref (RLocal n)) (Ref []) (Ref [])
+      Some bare => EMethodAt bare (Ref (RLocal n [])) (Ref []) (Ref [])
       None => EVar n
   | contains n rp && not (contains n bound) =
     EMethodAt n (Ref RNone) (Ref []) (Ref [])
@@ -7011,10 +7288,11 @@ rewriteArgScoped rw bound (EHeadAnnot e0 t) =
   EHeadAnnot (rewriteArgScoped rw bound e0) t
 rewriteArgScoped rw bound (ERecordCreate n fs) =
   ERecordCreate n (map (rewriteArgField rw bound) fs)
-rewriteArgScoped rw bound (ERecordUpdate e0 fs) =
+rewriteArgScoped rw bound (ERecordUpdate e0 fs r) =
   ERecordUpdate
     (rewriteArgScoped rw bound e0)
     (map (rewriteArgField rw bound) fs)
+    r
 rewriteArgScoped rw bound (EVariantUpdate c e0 fs) =
   EVariantUpdate
     c
@@ -7241,14 +7519,21 @@ implExistsForHead ((KeyEntry methods tag2 _ _)::rest) name tag
 -- the route untouched (RNone → eval arg-tag-dispatches to the real impl).  An
 -- ungrounded receiver (still a tyvar) → leave it (polymorphic, deferred).  Mirrors
 -- lib/typecheck.ml:1603-1640: RLocal only when impl_exists is false.
-resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono, String, Bool) -> <Mut> Unit
-resolveRLocalSites _ [] = ()
-resolveRLocalSites keyTable ((name, tagRef, am, sym, forceLocal)::rest) =
+-- S-1: [prog]/[implTable] are here so the stamp can call routesOfMonosTop — a PURE
+-- function of the (union-find-solved) constraint monos — and fill the standalone's own
+-- dict routes IN PLACE.  Deliberately NOT routed through pendingDictApps: that list is
+-- resolved by resolveDictApps, which runs AFTER this in elabModuleStamp, so the stamp
+-- would read `[]`.  Resolving inside the stamp is ordering-immune.  An unconstrained
+-- standalone has no monos ⇒ routesOfMonosTop returns [] immediately (it cannot even
+-- reach its AmbiguousImpl arm) ⇒ `RLocal sym []` ⇒ byte-identical to the pre-S1 stamp.
+resolveRLocalSites : List Decl -> List ImplEntry -> List KeyEntry -> List RLocalSite -> <Mut> Unit
+resolveRLocalSites _ _ _ [] = ()
+resolveRLocalSites prog implTable keyTable ((RLocalSite name tagRef am sym forceLocal monos ifaces)::rest) =
   let _ = if forceLocal then
-    setRef tagRef (RLocal sym)
+    setRef tagRef (RLocal sym (routesOfMonosTop prog implTable monos ifaces))
   else
-    resolveRLocalSite keyTable name tagRef am sym
-  resolveRLocalSites keyTable rest
+    resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces
+  resolveRLocalSites prog implTable keyTable rest
 
 -- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
 -- receiver mono now grounds to a concrete head tycon with NO impl of the method.
@@ -7257,8 +7542,8 @@ resolveRLocalSites keyTable ((name, tagRef, am, sym, forceLocal)::rest) =
 -- stamped the correct RKey<receiverHead> via resolveArgStamps.
 -- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
-resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
-resolveRLocalSite keyTable name tagRef am sym = match headTyconMono am
+resolveRLocalSite : List Decl -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> <Mut> Unit
+resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces = match headTyconMono am
   -- P0-18: route per-receiver for BOTH importer and definer shadows.  A GROUNDED
   -- receiver whose head has an impl of the shadowed interface dispatches to the
   -- method (leave the route → eval arg-tag / emit RKey); one with NO impl is the
@@ -7270,16 +7555,20 @@ resolveRLocalSite keyTable name tagRef am sym = match headTyconMono am
   -- so they still resolve RLocal.  am is the ACTUAL argument type (inferDefinerShadowApp
   -- records it), not the standalone's declared domain, so the impl query is meaningful.
   Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef sym
+    (routesOfMonosTop prog implTable monos ifaces)
   -- An UNGROUNDED definer-shadow receiver keeps the old default (RLocal → standalone);
   -- other (importer) ungrounded sites stay untouched (deferred/polymorphic).
-  None => if contains name definerShadowNamesRef.value then setRef tagRef (RLocal sym) else ()
+  None => if contains name definerShadowNamesRef.value then
+    setRef tagRef (RLocal sym (routesOfMonosTop prog implTable monos ifaces))
+  else ()
 
 -- C5: hasImpl ⇒ genuine method; route already correct (RNone for arg-tag eval,
 -- or RKey stamped by resolveArgStamps on emit) — leave untouched.
--- no impl ⇒ standalone shadow ⇒ RLocal.
-stampRLocalOrFallback : Bool -> Ref Route -> String -> <Mut> Unit
-stampRLocalOrFallback True _ _ = ()
-stampRLocalOrFallback False tagRef sym = setRef tagRef (RLocal sym)
+-- no impl ⇒ standalone shadow ⇒ RLocal, carrying the standalone's own constraint
+-- dicts (S-1; [] for an unconstrained standalone ⇒ the pre-S1 stamp exactly).
+stampRLocalOrFallback : Bool -> Ref Route -> String -> List Route -> <Mut> Unit
+stampRLocalOrFallback True _ _ _ = ()
+stampRLocalOrFallback False tagRef sym dicts = setRef tagRef (RLocal sym dicts)
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
 -- a method at that type reads.  A return-position method at a HIGHER-KINDED
@@ -9052,7 +9341,7 @@ collectMethodSites (EIndex e i _) = collectMethodSites e ++ collectMethodSites i
 collectMethodSites (EAnnot e _) = collectMethodSites e
 collectMethodSites (EBlock stmts) = flatMap doStmtSites stmts
 collectMethodSites (ERecordCreate _ fs) = flatMap fieldAssignSites fs
-collectMethodSites (ERecordUpdate e fs) = collectMethodSites e
+collectMethodSites (ERecordUpdate e fs _) = collectMethodSites e
   ++ flatMap fieldAssignSites fs
 collectMethodSites (EVariantUpdate _ e fs) = collectMethodSites e
   ++ flatMap fieldAssignSites fs
@@ -9120,7 +9409,7 @@ collectDictSites (EIndex e i _) = collectDictSites e ++ collectDictSites i
 collectDictSites (EAnnot e _) = collectDictSites e
 collectDictSites (EBlock stmts) = flatMap doStmtDictSites stmts
 collectDictSites (ERecordCreate _ fs) = flatMap fieldAssignDictSites fs
-collectDictSites (ERecordUpdate e fs) = collectDictSites e
+collectDictSites (ERecordUpdate e fs _) = collectDictSites e
   ++ flatMap fieldAssignDictSites fs
 collectDictSites (EVariantUpdate _ e fs) = collectDictSites e
   ++ flatMap fieldAssignDictSites fs
@@ -10521,7 +10810,7 @@ allEVars (EIndex e i _) = allEVars e ++ allEVars i
 allEVars (EAnnot e _) = allEVars e
 allEVars (EBlock stmts) = flatMap doStmtEVars stmts
 allEVars (ERecordCreate _ fs) = flatMap fieldAssignEVars fs
-allEVars (ERecordUpdate e fs) = allEVars e ++ flatMap fieldAssignEVars fs
+allEVars (ERecordUpdate e fs _) = allEVars e ++ flatMap fieldAssignEVars fs
 allEVars (EVariantUpdate _ e fs) = allEVars e ++ flatMap fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
 allEVars (EDoOrigin _ e) = allEVars e
@@ -13045,7 +13334,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
   let _ = resolveUnopSites stampImplTable (buildKeyTable implDecls) pendingUnopSites.value
   let _ = resolveArithSites pendingArithSites.value
   let _ = resolveArgStamps stampImplTable (buildKeyTable implDecls) pendingArgStamps.value
-  let _ = resolveRLocalSites (buildKeyTable implDecls) pendingRLocalSites.value
+  let _ = resolveRLocalSites implDecls stampImplTable (buildKeyTable implDecls) pendingRLocalSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps implDecls stampImplTable pendingDictApps.value
   let _ = resolveMethodDicts stampImplTable pendingMethodDicts.value

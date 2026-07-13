@@ -1,0 +1,15 @@
+-- S-1: `Num` is not special -- a USER interface as the standalone's constraint breaks
+-- identically.  Must print 6.
+interface Dbl a where
+  dbl : a -> a
+
+impl Dbl Int where
+  dbl x = x * 2
+
+interface Sz a where
+  size : a -> String
+
+size : Dbl a => a -> a
+size x = dbl x
+
+main = println (size 3)

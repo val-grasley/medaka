@@ -1,5 +1,8 @@
 # WASMGC-DESIGN.md — WasmGC backend implementation plan
 
+**Status:** IMPLEMENTED — compute+print MVP MET (2026-06-19). Slices W1–W9b are done and
+on `main`.
+
 > **Status: IMPLEMENTED — compute+print MVP MET (2026-06-19).** Slices W1–W9b are
 > done and on `main`; the per-slice §9 entries below were the original plan and are
 > NOT all re-ticked — see the **Implementation status** banner at §9 for the real state.
@@ -11,8 +14,8 @@
 >
 > Cross-refs: `compiler/STAGE2-DESIGN.md` §2.4b/§2.4c (WasmGC ratified as the wedge
 > backend), `compiler/RUNTIME-DESIGN.md` §6a/§7/§8.4/§8.5/**§8.6** (the binding
-> abstract-value contract) and §5 (the 71-extern table), `CAPABILITY-EFFECTS.md` +
-> `CAPABILITY-PLATFORM.md` (why this matters).
+> abstract-value contract) and §5 (the 71-extern table), `../docs/design/CAPABILITY-EFFECTS.md` +
+> `../docs/design/CAPABILITY-PLATFORM.md` (why this matters).
 
 ---
 
@@ -46,7 +49,7 @@ real Core IR was found (§2).
 ## 1. Goal + framing
 
 WasmGC is Medaka's **wedge delivery vehicle**: the capability-safe-effects story
-(`CAPABILITY-EFFECTS.md`) targets WebAssembly edge / plugin / sandboxed compute,
+(`../docs/design/CAPABILITY-EFFECTS.md`) targets WebAssembly edge / plugin / sandboxed compute,
 where a program's effect-row type *is* a compiler-verified capability manifest the
 host reads to grant or deny capabilities. WasmGC is the runtime that makes that
 demo real. The backend is a **direct emitter** — Core IR → WasmGC text (WAT),
@@ -304,7 +307,7 @@ applied. WasmGC re-categorizes all 71 declared externs. Signatures are
 
 **Capability-manifest / WIT seam (downstream — note, don't design fully).** The
 effect-row on a function's type is the compiler-verified capability manifest
-(`CAPABILITY-EFFECTS.md`); effects are **erased at codegen** (no runtime witness —
+(`../docs/design/CAPABILITY-EFFECTS.md`); effects are **erased at codegen** (no runtime witness —
 `core_ir_lower.mdk` drops `EAnnot`; `CExpr` carries no effect node). So the WasmGC
 binary carries zero effect state — the manifest is *metadata* the platform reads
 off the types at link time and maps to **WIT-described host imports** (grant `<File>`

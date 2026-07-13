@@ -1,5 +1,9 @@
 # WasmGC self-host gap census
 
+**Status:** IMPLEMENTED — see the doc's own accurate banner immediately below (gap
+census is zero; generator `compiler/entries/wasm_emit_gaps_main.mdk` still exists,
+theoretically re-runnable). Historical 1428-gap body kept for the roadmap record.
+
 > **STATUS 2026-06-22 — EMITTER-GAP CENSUS IS ZERO.** The all-modules graph now emits
 > with **0 recorded gaps** (was 4: `readFile` ×2 / `fileExists` ×2). The LAST gap
 > category — the IO externs — is closed: **W12 added the IO host surface** (`readFile`,

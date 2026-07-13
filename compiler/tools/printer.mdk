@@ -557,7 +557,7 @@ exprPrec (EMapLit _ _) = precAtom
 exprPrec (ESetLit _ _) = precAtom
 exprPrec (EStringInterp _) = precAtom
 exprPrec (ERecordCreate _ _) = precAtom
-exprPrec (ERecordUpdate _ _) = precAtom
+exprPrec (ERecordUpdate _ _ _) = precAtom
 exprPrec (EVariantUpdate _ _ _) = precAtom
 exprPrec (ERangeList _ _ _) = precAtom
 exprPrec (ERangeArray _ _ _) = precAtom
@@ -657,7 +657,7 @@ printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =
   Cat (text n) (Cat (text " ") (braced (map fieldAssignDoc fs)))
-printExprRaw (ERecordUpdate e fs) =
+printExprRaw (ERecordUpdate e fs _) =
   Cat
     (text "{ ")
     (Cat
@@ -1361,7 +1361,7 @@ isSelfIndentingArg (EDo _) = True
 isSelfIndentingArg (EMatch _ _) = True
 isSelfIndentingArg (EIf _ _ _) = True
 isSelfIndentingArg (ERecordCreate _ _) = True
-isSelfIndentingArg (ERecordUpdate _ _) = True
+isSelfIndentingArg (ERecordUpdate _ _ _) = True
 isSelfIndentingArg (EVariantUpdate _ _ _) = True
 isSelfIndentingArg (EListLit (_::_)) = True
 isSelfIndentingArg (EArrayLit (_::_)) = True

@@ -7,7 +7,7 @@
 # (test/check_policy_fixtures/ws1a_<case>.golden + .rc) over the capability demo
 # plugins (demo/plugin_good.mdk, demo/plugin_malicious.mdk), across a permissive
 # policy (→ accept, exit 0) and a restrictive policy (→ reject + the call chain,
-# exit 1).  This is WS-1a of EFFECTS-CONFORMANCE-ROADMAP.md.
+# exit 1).  This is WS-1a of docs/design/EFFECTS-CONFORMANCE-ROADMAP.md.
 #
 # OCaml-free (LIB-REMOVAL-DESIGN §6 Stage A): the goldens were captured from the
 # canonical native ./medaka — no live OCaml oracle.

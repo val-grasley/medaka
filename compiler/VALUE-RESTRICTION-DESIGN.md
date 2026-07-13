@@ -1,7 +1,12 @@
 # Generalizing constructor / record applications of values (value-restriction relaxation)
 
-**Status:** design only (no code changed). Verified on `medaka` built from
-worktree `bright-knitting-eich`, base `90865a6` (BASE_OK).
+**Status:** IMPLEMENTED — `386a5433`, after 2026-06-30. `isNonexpansive`
+(`compiler/types/typecheck.mdk:2439`) now has an `EApp` arm gated by `isCtorAppHead`
+(`:2455`, excluding `Ref` by name) — a byte-for-byte match to this doc's own "LOCKED
+SCOPE" §D1/D3. Header below ("design only, no code changed") predates the fix.
+
+Original header (predates the fix): **Status:** design only (no code changed). Verified on a `medaka` built from
+a discarded worktree, base `90865a6` (BASE_OK).
 **Skill:** harden-typechecker (typechecker-internal generalization logic).
 
 Medaka's let-generalization is gated by a *value / non-expansiveness* predicate
@@ -18,7 +23,8 @@ builds a mutable cell, `Ref`** (exactly as SML special-cases `ref`).
 
 ## 1. Empirical current behavior (verbatim repro)
 
-Binary: `/Users/val/medaka/.claude/worktrees/bright-knitting-eich/medaka`,
+Binary: a `./medaka` built from a since-discarded agent worktree (path removed,
+2026-07-13 doc pass — never a valid path for anyone else),
 driver `medaka check <file>` (prints inferred top-level types on success, exit 0;
 positioned diagnostics + exit 1 on failure). Probes in scratchpad.
 
@@ -169,7 +175,7 @@ Two ways to identify a constructor:
 1. **Syntactic — uppercase-initial head `EVar`** (above). Needs no env threading;
    `isNonexpansive : Expr -> Bool` keeps its signature, so all six call sites are
    untouched. Sound because Medaka constructors are *always* uppercase-initial and
-   functions/methods/values *always* lowercase (SYNTAX.md; confirmed: `MkBox`,
+   functions/methods/values *always* lowercase (docs/spec/SYNTAX.md; confirmed: `MkBox`,
    `Some`, `Ref` upper; `map`, `e` lower). **Recommended** — minimal, local.
 2. **Semantic — look the head name up in `TcEnv`'s ctor map** (`TcEnv` =
    `TcEnv (OrdMap Scheme) (OrdMap Scheme) …`, 2nd map is ctors, typecheck.mdk:2830).
@@ -287,7 +293,7 @@ spine is checked, not just the outermost) — call that out in the handoff.
 ### Appendix — exact repro commands
 
 ```
-M=/Users/val/medaka/.claude/worktrees/bright-knitting-eich/medaka
+M=./medaka   # a built medaka binary, e.g. from `make medaka`
 # c2 (ctor app, NOT generalized):
 printf 'data Box a = MkBox a\ne = MkBox []\nuseInt : Box (List Int)\nuseInt = e\nuseStr : Box (List String)\nuseStr = e\nmain = println "ok"\n' > c2.mdk
 "$M" check c2.mdk          # -> Type mismatch: String vs Int   (exit 1)

@@ -1,5 +1,13 @@
 # BOOTSTRAP.md — Native self-compile slices
 
+**Status:** IMPLEMENTED — the bootstrap capability this doc describes is real and
+current (`make medaka` cold-bootstraps from `compiler/seed/emitter.ll.gz`, OCaml-free).
+The **B1–C3 slice log is legitimate history** — do not rewrite it. The **C4/C5 "Refresh
+runbook" and seed-format description were stale** (wrong filename, wrong platform
+scope, a dead `dune build` instruction, a dead OCaml-oracle comparison) and have been
+corrected in place below (2026-07-13 doc pass) to match `test/refresh_seed.sh`'s current
+OCaml-free behavior and AGENTS.md.
+
 Status of the native (LLVM) self-compile bootstrap: take a REAL self-hosted
 compiler subcommand, compile it natively (emit textual LLVM IR -> `clang` -> link
 `runtime/medaka_rt.c` + libgc), and prove its output **byte-matches the
@@ -685,10 +693,16 @@ Medaka emitter from `.mdk` sources **without the OCaml interpreter**. After C4, 
 is needed only to *mint* the seed (a deliberate, on-demand refresh) — never to bootstrap
 from it.
 
-**Scope decisions (fixed):** seed = checked-in **text IR** (`compiler/seed/emitter.ll`,
-NOT a binary blob); **single-platform arm64-macOS** only; **opt-in / per-release**
-gating (like the other LLVM gates — NOT a per-PR hard gate, so an emitter change does
-not force a ~10 MB seed refresh every commit).
+**Scope decisions (fixed at the time; superseded on two points, see note below):** seed
+= checked-in **text IR**; **opt-in / per-release** gating (like the other LLVM gates —
+NOT a per-PR hard gate, so an emitter change does not force a seed refresh every commit).
+
+> **UPDATE — superseded, current reality (see AGENTS.md):** the seed is now
+> **gzipped** (`compiler/seed/emitter.ll.gz`, ~1.7 MB vs ~11.5 MB raw), not the bare
+> `compiler/seed/emitter.ll` this section originally described. It is also
+> **multi-platform**, not "single-platform arm64-macOS only" — the emitted LLVM IR
+> carries no target triple, so the same checked-in seed cold-bootstraps on x86 *or*
+> arm64 (the C3a fixpoint reproduces byte-for-byte on both, per AGENTS.md).
 
 ### The build driver fixpoints too
 C3 was proven only for the gap-tolerant bootstrap driver
@@ -700,12 +714,12 @@ compiled — and confirms **C3a YES** (native IR1 == interpreted emission) and *
 (IR1 == IR2). So the strict build driver is a valid, byte-stable seed target.
 
 ### The seed
-`compiler/seed/emitter.ll` (~10.0 MB, 10,019,842 bytes) is the textual LLVM IR of the
-build driver (`llvm_emit_modules_main.mdk`) emitting **its own module graph** — the
-whole emitter + front-end + prelude, the largest program in the tree. The seed mint is
-**deterministic** (two interpreter emissions cmp byte-identical). The IR ends in `}\n`
-(pure IR — the `medaka run` interpreter path does not auto-print `main`'s Unit, so no
-trailing `()` trim is needed at mint).
+`compiler/seed/emitter.ll.gz` (gzipped, ~1.7 MB checked in; ~11.5 MB raw text IR) is the
+textual LLVM IR of the build driver (`llvm_emit_modules_main.mdk`) emitting **its own
+module graph** — the whole emitter + front-end + prelude, the largest program in the
+tree. The seed mint is **deterministic** (two emissions cmp byte-identical). The IR ends
+in `}\n` (pure IR — the `medaka run` interpreter path does not auto-print `main`'s Unit,
+so no trailing `()` trim is needed at mint).
 
 ### Bootstrap-from-seed flow (`test/bootstrap_from_seed.sh`, NO OCaml)
 Mirrors `selfcompile_fixpoint.sh` MINUS the `$MAIN run` emit step — the seed *replaces*
@@ -733,34 +747,40 @@ OCaml is required only for the *very first* mint (or a deliberate refresh after 
 emitter change), never to bootstrap from an existing seed.
 
 ### Build-driver wiring (`MEDAKA_EMITTER`)
-`compiler/build_cmd.mdk`'s `runBuild` now selects the emit subprocess by the
-`MEDAKA_EMITTER` env var:
-- **set** → invoke that native emitter binary directly, args `<runtime> <prelude>
-  <input> <inputDir> <compiler> <stdlib>` (the `"run" <emitter>` prefix dropped).
-- **unset** → fall back to the original `medaka run <emitter> …` subprocess (OCaml path;
-  nothing regresses).
+`compiler/driver/build_cmd.mdk`'s `runBuild` selects the emit subprocess by the
+`MEDAKA_EMITTER` env var: when set, it invokes that native emitter binary directly
+(args `<runtime> <prelude> <input> <inputDir> <compiler> <stdlib>`). **Historical note:**
+at the time this section was written (pre-2026-06-26), an unset `MEDAKA_EMITTER` fell
+back to a `medaka run <emitter> …` OCaml subprocess. OCaml is gone — that fallback no
+longer exists; `MEDAKA_EMITTER`-driven native emission is now the only path.
 
-Both paths receive identical args and (by the fixpoint) produce identical IR. Verified:
-a `medaka build` driven through `MEDAKA_EMITTER=./medaka_emitter` yields a working
-binary with output byte-identical to the `medaka run`-driven build (arith → `10`,
-adt → `63`).
+### Refresh runbook — current procedure (OCaml-free)
+> **UPDATE — the runbook below is HISTORICAL and WRONG as written: `dune`/`opam` were
+> removed 2026-06-26.** `test/refresh_seed.sh` is OCaml-free today — it warm-rebuilds
+> the native emitter from current source (`build_native_medaka.sh`, cold-bootstrapping
+> from the existing seed if none exists) and re-mints the seed from *that*, gzipping the
+> result. Run on-demand (per-release, or after an intentional emitter change):
+>
+> ```sh
+> sh test/refresh_seed.sh        # re-mint compiler/seed/emitter.ll.gz, OCaml-free
+> sh test/bootstrap_from_seed.sh # verify the new seed bootstraps (C3a)
+> ```
+>
+> ⚠️ **Run `refresh_seed.sh` TWICE after any codegen change** — pass 1 mints the seed
+> using the old-generation emitter (fixpoint still reports C3a: NO); pass 2 mints it
+> using an emitter built from the new seed, which converges. See AGENTS.md's
+> "Benchmarking an EMITTER change" section.
 
-### Refresh runbook (`test/refresh_seed.sh` — the ONLY OCaml-using script)
-Run on-demand (per-release, or after an intentional emitter change):
-
-```sh
-dune build --root .            # rebuild the interpreter
-sh test/refresh_seed.sh        # re-mint compiler/seed/emitter.ll via `medaka run`
-sh test/bootstrap_from_seed.sh # verify the new seed bootstraps OCaml-free (C3a)
-```
+The original (now-obsolete) instructions here described `dune build --root .` to
+"rebuild the interpreter" before re-minting — that interpreter (`lib/`, OCaml) no
+longer exists in this repo; do not attempt it.
 
 ### Validation
 - `test/selfcompile_build_fixpoint.sh` → **C3a YES** + **C3b YES** for the strict build
   driver (`llvm_emit_modules_main.mdk`).
 - `test/bootstrap_from_seed.sh` → builds `medaka_emitter` OCaml-free; seed `cmp`
   byte-identical to the native re-emission from current sources.
-- `MEDAKA_EMITTER` build path == `medaka run`-driven build (arith, adt).
-- `test/selfcompile_fixpoint.sh` (gap-tolerant driver) unchanged: C3a/C3b YES.
+- `test/selfcompile_fixpoint.sh` (gap-tolerant driver): C3a/C3b YES.
 
 
 ## Native CLI capstone — OCaml-free `build` + `run` (Phase-C Slice 2, 2026-06-10)
@@ -768,8 +788,9 @@ sh test/bootstrap_from_seed.sh # verify the new seed bootstraps OCaml-free (C3a)
 C4 made the *emitter* rebuildable without OCaml. C5 closes the loop at the **user-facing CLI**:
 the native `medaka` binary itself drives compilation and execution with no OCaml in the runtime path.
 
-- **`compiler/medaka_cli.mdk`** is the dispatcher (replaces `bin/main.ml`). Slices 0–2 wire
-  `check`/`fmt`/`new`/`build`/`run`; it native-compiles into **one OCaml-free `medaka` binary (~1.6 MB)**.
+- **`compiler/driver/medaka_cli.mdk`** is the dispatcher (replaced the removed OCaml `bin/main.ml`).
+  Slices 0–2 wire `check`/`fmt`/`new`/`build`/`run`; it native-compiles into **one OCaml-free `medaka`
+  binary (~1.6 MB)**.
 - **`build`** routes to `build_cmd.runBuild` — a *thin* driver: emit is a `runCommand` shell-out to the
   emitter binary, so the emitter graph is NOT pulled into `medaka_cli`. The OCaml-free emit host is
   `MEDAKA_EMITTER=./medaka_emitter` (the C4 seed-built native emitter). Full chain
@@ -788,7 +809,9 @@ the native `medaka` binary itself drives compilation and execution with no OCaml
   primitive would let native `run` host the emitter and pass programs the correct argv.
 
 ### Validation
-- `test/diff_native_cli.sh` → **50/0**: native `./medaka {check,fmt,new,build,run}` == OCaml oracle,
-  green with BOTH emit hosts (OCaml-free `MEDAKA_EMITTER` and OCaml `$MAIN run`).
+- `test/diff_native_cli.sh` → **50/0** at the time: native `./medaka {check,fmt,new,build,run}` ==
+  OCaml oracle, green with BOTH emit hosts (OCaml-free `MEDAKA_EMITTER` and, historically, an OCaml
+  `$MAIN run` fallback). **Historical** — the OCaml oracle side no longer exists (removed
+  2026-06-26); `diff_native_cli.sh` today diffs against captured goldens, not a live OCaml binary.
 - Mega-build (`run` wired) native-compiles clean; combined toolchain binary ~1.59 MB.
-- Seed `compiler/seed/emitter.ll` byte-identical; `selfcompile_fixpoint.sh` C3a/C3b YES.
+- Seed `compiler/seed/emitter.ll.gz` byte-identical; `selfcompile_fixpoint.sh` C3a/C3b YES.

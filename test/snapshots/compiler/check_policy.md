@@ -207,7 +207,7 @@ collectEVars (EAnnot e _) = collectEVars e
 collectEVars (EHeadAnnot e _) = collectEVars e
 collectEVars (EFieldAccess e _ _) = collectEVars e
 collectEVars (ERecordCreate _ flds) = concatMapCP collectFieldAssign flds
-collectEVars (ERecordUpdate e flds) = collectEVars e
+collectEVars (ERecordUpdate e flds _) = collectEVars e
   ++ concatMapCP collectFieldAssign flds
 collectEVars (EVariantUpdate _ e flds) = collectEVars e
   ++ concatMapCP collectFieldAssign flds
@@ -791,7 +791,7 @@ runManifestAtoms rtSrc coreSrc src fnName =
 (DFunDef false "collectEVars" ((PCon "EHeadAnnot" (PVar "e") PWild)) (EApp (EVar "collectEVars") (EVar "e")))
 (DFunDef false "collectEVars" ((PCon "EFieldAccess" (PVar "e") PWild PWild)) (EApp (EVar "collectEVars") (EVar "e")))
 (DFunDef false "collectEVars" ((PCon "ERecordCreate" PWild (PVar "flds"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds")))
-(DFunDef false "collectEVars" ((PCon "ERecordUpdate" (PVar "e") (PVar "flds"))) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
+(DFunDef false "collectEVars" ((PCon "ERecordUpdate" (PVar "e") (PVar "flds") PWild)) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
 (DFunDef false "collectEVars" ((PCon "EVariantUpdate" PWild (PVar "e") (PVar "flds"))) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
 (DFunDef false "collectEVars" ((PCon "ETuple" (PVar "es"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectEVars")) (EVar "es")))
 (DFunDef false "collectEVars" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectEVars")) (EVar "es")))
@@ -1022,7 +1022,7 @@ runManifestAtoms rtSrc coreSrc src fnName =
 (DFunDef false "collectEVars" ((PCon "EHeadAnnot" (PVar "e") PWild)) (EApp (EVar "collectEVars") (EVar "e")))
 (DFunDef false "collectEVars" ((PCon "EFieldAccess" (PVar "e") PWild PWild)) (EApp (EVar "collectEVars") (EVar "e")))
 (DFunDef false "collectEVars" ((PCon "ERecordCreate" PWild (PVar "flds"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds")))
-(DFunDef false "collectEVars" ((PCon "ERecordUpdate" (PVar "e") (PVar "flds"))) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
+(DFunDef false "collectEVars" ((PCon "ERecordUpdate" (PVar "e") (PVar "flds") PWild)) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
 (DFunDef false "collectEVars" ((PCon "EVariantUpdate" PWild (PVar "e") (PVar "flds"))) (EBinOp "++" (EApp (EVar "collectEVars") (EVar "e")) (EApp (EApp (EVar "concatMapCP") (EVar "collectFieldAssign")) (EVar "flds"))))
 (DFunDef false "collectEVars" ((PCon "ETuple" (PVar "es"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectEVars")) (EVar "es")))
 (DFunDef false "collectEVars" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "concatMapCP") (EVar "collectEVars")) (EVar "es")))

@@ -1,6 +1,12 @@
 # WASM-POLY-NUM-DESIGN — closing the wasm polymorphic-`Num` arithmetic gap
 
-**Status:** DESIGN (read-mostly scoping). No emitter/runtime source changed — this doc
+**Status:** IMPLEMENTED — approach A, `8afc6137`, 2026-06-30. Verified live in
+`compiler/backend/wasm_emit.mdk`/`compiler/backend/wasm_preamble.mdk` (`isNumPolyParam`,
+`$mdk_value_add`/`$mdk_value_mul`). Confirmed by `compiler/EMITTER-GAPS.md`'s closing note
+("Float on WasmGC is CLOSED — ... polymorphic Num/Ord (A, wasm)"). Header below predates
+the fix.
+
+Original header (predates the fix): **Status:** DESIGN (read-mostly scoping). No emitter/runtime source changed — this doc
 scopes the workstream that `SHARED-FLOAT-RESIDUAL-DESIGN.md` §4 deferred and its LOCKED
 SCOPE named as the "SEPARATE next workstream after C". It is the **polymorphic** residual:
 a `Num a`-constrained function applied to `Float` traps on WasmGC (`ref.cast` illegal cast),

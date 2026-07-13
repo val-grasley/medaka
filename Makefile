@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help
+.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index agent-doc-symbols
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -86,6 +86,33 @@ ci: medaka
 	FORCE=1 sh test/build_oracles.sh
 	sh test/run_gates.sh
 	$(MAKE) test
+
+## docs-links — doc-link rot gate. Pure text analysis (no build, no toolchain,
+##           safe to run anywhere): checks every relative markdown link and
+##           every bare `compiler/`/`stdlib/`/`test/`/`runtime/`/`playground/`
+##           source citation across the repo's markdown against the CURRENT
+##           tree. Ratcheted by test/DOC-LINK-EXCEPTIONS.txt — see that file
+##           and test/check_doc_links.sh's header for the FILE/REF format.
+docs-links:
+	sh test/check_doc_links.sh
+
+## docs-index — regenerate docs/README.md (THE doc index) from every doc's H1
+##           + `**Status:**` banner. GENERATED file — never hand-edit it; run
+##           this after moving/adding/renaming a doc. Idempotent (same input
+##           -> byte-identical output), pure text analysis, no build.
+docs-index:
+	sh test/gen_docs_index.sh
+
+## agent-doc-symbols — agent-facing doc SYMBOL-claim rot gate. Pure text
+##           analysis (no build, no toolchain, safe to run anywhere): checks
+##           every backticked, symbol-shaped token in AGENTS.md,
+##           .claude/skills/*/SKILL.md, .claude/workstreams/*.md, and
+##           .claude/ORCHESTRATING.md against compiler/*.mdk, stdlib/*.mdk,
+##           and runtime/*.c. Ratcheted by test/AGENT-DOC-SYMBOL-EXCEPTIONS.txt
+##           — see that file and test/check_agent_doc_symbols.sh's header for
+##           the SYM/FILE format.
+agent-doc-symbols:
+	sh test/check_agent_doc_symbols.sh
 
 ## clean   — remove native build artifacts (keeps the checked-in seed)
 clean:

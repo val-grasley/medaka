@@ -1,7 +1,7 @@
 #!/bin/sh
 # test/manifest_emit.sh — `medaka manifest` capability manifest emission gate.
 #
-# WS-1c of EFFECTS-CONFORMANCE-ROADMAP.md.  Verifies:
+# WS-1c of docs/design/EFFECTS-CONFORMANCE-ROADMAP.md.  Verifies:
 #   1. TOML golden output: correct key=value rendering (Prefix param → string,
 #      ⊤ param → true).
 #   2. Internal-label drop: Mut/Panic NEVER appear in the manifest.

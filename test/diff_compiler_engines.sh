@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# diff_compiler_engines.sh — the THREE-ENGINE differential gate (TESTING-DESIGN.md §4.4).
+# diff_compiler_engines.sh — the THREE-ENGINE differential gate (docs/ops/TESTING-DESIGN.md §4.4).
 #
 # Medaka owns three independent implementations of its own semantics:
 #
@@ -36,7 +36,7 @@
 #   * a ledgered entry that starts PASSING   → FAIL ("promote it: delete the line")
 #
 # That second property is the whole point, and a plain skip-list cannot do it.  A
-# silent skip is how this suite already lies to itself (TESTING-DESIGN.md §2.3).
+# silent skip is how this suite already lies to itself (docs/ops/TESTING-DESIGN.md §2.3).
 # The per-entry diagnosis lives in test/ENGINE-DIVERGENCE.md.
 #
 # ── The auto-print contract (why there is an `eval_autoprint_main` probe) ──────
@@ -218,7 +218,7 @@ command -v clang >/dev/null 2>&1 || { echo "no C compiler (clang) on PATH — sk
 # The wasm arm DEGRADES rather than skipping: with no wasm-tools / Node 24 we still
 # run T1 (eval == native), the tier that removes the golden circularity.  Skipping
 # the whole gate over an optional third arm would silently drop 300+ live two-engine
-# comparisons — the exact failure mode TESTING-DESIGN.md §2.3 indicts.
+# comparisons — the exact failure mode docs/ops/TESTING-DESIGN.md §2.3 indicts.
 WASM_OK=1; WASM_OFF_WHY=""
 NODE="${NODE:-node}"
 if ! [ -x "$WASMBIN" ]; then
