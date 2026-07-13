@@ -8,13 +8,19 @@
 -- type checker at call sites -- it lets `scanTable db t userRow` return
 -- `Result String (List User)` with no cast.
 --
--- > FOOTGUN -- the no-GADT wall.  You must NEVER pattern-match a `RowType a`
--- > value to recover its element type `a`.  There is no `IntCol`/`TextCol`
--- > constructor to match on -- the only constructor is `RowType { width, decode }`
--- > and its fields say *nothing* about `a` at runtime (`width` is an Int and
--- > `decode` is an opaque closure).  The decoder closure *is* the type
--- > information.  If you need to dispatch on a column's runtime shape, match on
--- > `Cell` (which IS an ordinary ADT) inside a decoder -- never on `RowType`.
+-- !! FOOTGUN -- the no-GADT wall.  You must NEVER pattern-match a `RowType a`
+-- !! value to recover its element type `a`.  There is no `IntCol`/`TextCol`
+-- !! constructor to match on -- the only constructor is `RowType { width, decode }`
+-- !! and its fields say *nothing* about `a` at runtime (`width` is an Int and
+-- !! `decode` is an opaque closure).  The decoder closure *is* the type
+-- !! information.  If you need to dispatch on a column's runtime shape, match on
+-- !! `Cell` (which IS an ordinary ADT) inside a decoder -- never on `RowType`.
+--
+-- (This block was a Markdown `>` blockquote until 2026-07-13.  It cannot be:
+-- `medaka test` treats EVERY `-- >` line as a doctest expression, so the
+-- blockquote was silently compiled as Medaka and blew up with an unlocated
+-- `runtime error [E-PANIC]: parse error` — which meant this module's doctests
+-- never ran at all.  See findings/sql-parser-select.md F1.)
 --
 -- Width-driven consumption: each `RowType` knows how many columns it consumes
 -- (`width`).  Products (`t2`/`t3`/`t4`) split the cell list by their children's
@@ -196,3 +202,21 @@ customDecoder f inner cells = flatMap f (rtDecode inner cells)
 --   the combinators fit.  (`mkRowType` re-exported under the design's name.)
 export tRaw : Int -> (List Cell -> Result String a) -> RowType a
 tRaw = mkRowType
+
+-- | The DYNAMIC row type: hand back the row's cells undecoded, whatever its
+--   width.  This is the decoder you want when the column list is not known at
+--   compile time — e.g. running a SQL string typed by the *user* rather than by
+--   the program (`lib.sqlstmt.queryString`), where there is no static tuple to
+--   decode into.  Dispatch on the `Cell` constructors afterwards.
+--
+--   ⚠️ TOP-LEVEL ONLY.  Its `width` is 0 (it consumes "whatever it is given"),
+--   and the product combinators (`t2`/`t3`/`t4`) and `tOption` split their cell
+--   slice BY WIDTH — so nesting `tCells` inside one of them would hand it an
+--   empty slice.  Use it as the whole row type or not at all.
+--
+-- > rtDecode tCells [CInt 1, CText "ada"]
+-- Ok [CInt 1, CText "ada"]
+-- > rtWidth tCells
+-- 0
+export tCells : RowType (List Cell)
+tCells = mkRowType 0 (cells => Ok cells)

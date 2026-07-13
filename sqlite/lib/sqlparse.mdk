@@ -22,7 +22,9 @@
 --            | IS [NOT] NULL
 -- addExpr := mulExpr ((+ | -) mulExpr)*         -- left-assoc
 -- mulExpr := atom    ((* | / | %) atom)*        -- left-assoc
--- atom    := '(' expr ')' | literal | '-' atom | column
+-- atom    := '(' expr ')' | literal | '-' atom | aggCall | column
+-- aggCall := aggFn '(' ('*' | expr) ')'         -- '*' only for COUNT
+-- aggFn   := COUNT | SUM | AVG | MIN | MAX      -- case-insensitive
 -- column  := ident ['.' ident]                  -- bare `age` or `users.age`
 -- literal := NULL | integer | float | 'text' | X'blob'
 -- ```
@@ -52,10 +54,21 @@
 --   lands inside a continuation lambda and is only forced when the parser RUNS.
 --   See `sqlite/findings/sql-parser-expr.md` (F3).
 --
--- ## Deliberately out of scope (stage 1)
+-- ## Aggregate calls (stage 2)
 --
--- `TRUE`/`FALSE` keywords, `LIKE`/`IN`/`BETWEEN`/`CASE`, function calls,
--- `||` concatenation, quoted `"identifiers"`, and bare `.5` / `1.` float forms.
+-- `count(*)`, `count(e)`, `sum(e)`, `avg(e)`, `min(e)`, `max(e)` parse to the
+-- real `EAgg` node.  The operand is a FULL expression, so `sum(price * qty)`
+-- works.  Only `count` may take `*`; `sum(*)` is an error.  The aggregate NAMES
+-- are deliberately NOT reserved words — `count` with no `(` after it is still an
+-- ordinary column, exactly as in SQLite.  `aggCall` gets that by COMMITTING only
+-- after `name (` has matched (`aggHead`), so a bare `count` backtracks cleanly to
+-- `column` while `count(` commits and reports a real error inside the parens.
+--
+-- ## Deliberately out of scope
+--
+-- `TRUE`/`FALSE` keywords, `LIKE`/`IN`/`BETWEEN`/`CASE`, non-aggregate function
+-- calls, `||` concatenation, quoted `"identifiers"`, and bare `.5` / `1.` float
+-- forms.
 
 import parsec.lib.parser.{
   Parser,
@@ -88,6 +101,11 @@ import lib.select.{
   ENotNull,
   EAgg,
   AggFn,
+  FnCount,
+  FnSum,
+  FnAvg,
+  FnMin,
+  FnMax,
   aggFnSql,
   Literal,
   LInt,
@@ -195,8 +213,19 @@ identStart c = isAlpha c || c == '_'
 identChar : Char -> Bool
 identChar c = isAlphaNum c || c == '_'
 
--- One identifier-shaped word (no trailing-space consumption, no reserved check).
-word : Parser String
+-- | One identifier-shaped word: no trailing-space consumption, no reserved-word
+--   check.  Exported for the statement parser, which uses it to NAME whatever
+--   unconsumed SQL is left over ("unsupported SQL: 'UNION'") instead of reporting
+--   a bare "expected end of input".
+--
+-- (`runParser` does NOT demand end-of-input, so a `word` stops at the first
+-- non-identifier character and the rest is simply left unconsumed.)
+--
+-- > runParser word "users.age"
+-- Ok "users"
+-- > runParser (lexeme word) "SELECT  "
+-- Ok "SELECT"
+export word : Parser String
 word = do
   c <- satisfy identStart
   cs <- many (satisfy identChar)
@@ -210,6 +239,13 @@ word = do
 --   keyword is never swallowed by the identifier parser.  The list intentionally
 --   covers the statement keywords stage 2 needs (`SELECT`/`FROM`/…) as well as
 --   the expression keywords stage 1 uses (`AND`/`OR`/`NOT`/`IS`/`NULL`).
+--
+--   `TRUE`/`FALSE` are here for a DIFFERENT reason: they are SQLite boolean
+--   literals we do not support, and reserving them is what makes `boolReject`'s
+--   message reachable.  Rejecting in `boolReject` alone is NOT enough —
+--   `orElse` takes a success from the right branch outright, so as long as
+--   `column` could still read `TRUE` as a column reference, it would win the
+--   `choice` and `boolReject`'s failure would be discarded.
 export reservedWords : List String
 reservedWords = [
   "AND",
@@ -217,6 +253,8 @@ reservedWords = [
   "NOT",
   "IS",
   "NULL",
+  "TRUE",
+  "FALSE",
   "SELECT",
   "DISTINCT",
   "FROM",
@@ -259,10 +297,12 @@ isReserved w = elem (toUpper w) reservedWords
 -- > runParser (keyword "NOT") "notes"
 -- Err "expected keyword 'NOT' at 0"
 export keyword : String -> Parser Unit
-keyword kw = attempt
-  (do
-    w <- lexeme word
-    keywordCheck kw w)
+keyword kw = label
+  "expected keyword '\{kw}'"
+  (attempt
+    (do
+      w <- lexeme word
+      keywordCheck kw w))
 
 keywordCheck : String -> String -> Parser Unit
 keywordCheck kw w =
@@ -313,12 +353,36 @@ identCheck w =
   else
     pure w
 
--- | A column reference.
+-- | A column reference — an identifier NOT followed by `(`.
+--
+--   The `notCall` guard is what keeps a FUNCTION CALL from being mis-read as a
+--   column.  Without it, `upper(name)` parses `upper` as a column and leaves the
+--   `(` to blow up somewhere downstream with a characterless "unexpected
+--   character"; worse, it means `aggCall`'s careful error (`sum(*)`) gets
+--   DISCARDED, because parsec's `orElse` takes a success from a later branch
+--   outright, however deep the earlier branch's failure was.  In SQL an
+--   identifier immediately followed by `(` is ALWAYS a call, never a column, so
+--   refusing here is safe — and it lets `atom` report which functions do exist.
 --
 -- > map dumpExpr (runParser column "users.age")
 -- Ok "ECol users.age"
+-- > runParser column "upper(name)"
+-- Err "unsupported function 'upper' — only count/sum/avg/min/max are supported at 6"
 export column : Parser SqlExpr
-column = map ECol sqlIdent
+column = do
+  name <- sqlIdent
+  paren <- optional (char '(')
+  notCall name paren
+
+-- parsec has no `notFollowedBy`, and it does not need one HERE: seeing the `(` at
+-- all means this arm is doomed, so CONSUMING it costs nothing — the parser fails
+-- either way, and failing one character deeper is exactly what makes this message
+-- outrank the sibling `choice` branches' shallower ones.
+notCall : String -> Option Char -> Parser SqlExpr
+notCall name None = pure (ECol name)
+notCall name (Some _) =
+  failWith
+    "unsupported function '\{name}' — only count/sum/avg/min/max are supported"
 
 -- ---------------------------------------------------------------------------
 -- Literals
@@ -485,8 +549,17 @@ andOp = do
 
 -- NOT — binds tighter than AND but LOOSER than a comparison, so `NOT a = 1`
 -- parses as `NOT (a = 1)`.  Right-recursive (`NOT NOT x` is legal).
+--
+-- The `label` is load-bearing for ERROR QUALITY, not just decoration.  Both
+-- branches fail AT THE SAME POSITION when the input is not an expression at all
+-- (`*`, `)`, …): `notPrefix` because `NOT` doesn't match, `cmpExpr` because no
+-- atom does.  `orElse` breaks that tie to the LEFT, so `notPrefix`'s RAW parsec
+-- message ("unexpected character") would win over the carefully-labelled
+-- "expected an expression" that `atom` produces on the right.  Re-labelling the
+-- whole level restores it (a label only rewrites a zero-consumption failure, so a
+-- real error deeper inside either branch still outranks it).
 notExpr : Parser SqlExpr
-notExpr = orElse notPrefix cmpExpr
+notExpr = label "expected an expression" (orElse notPrefix cmpExpr)
 
 -- The recursive reference to `notExpr` sits in a do-continuation (NOT in
 -- argument position), so this is productive — see the header note on
@@ -590,15 +663,19 @@ arithTok s op = do
   _ <- symbol s
   pure (l r => EArith op l r)
 
--- An atom: a parenthesized expression, a literal, a unary minus, or a column.
+-- An atom: a parenthesized expression, a literal, a unary minus, an aggregate
+-- call, or a column.
 --
 -- ORDER MATTERS.  `literal` is tried before `column` so that `X'41'` is a blob
 -- rather than a column named `X`; `literal` backtracks cleanly when it isn't one
 -- (parsec's `orElse` re-runs the alternative from the ORIGINAL position), so a
--- column actually named `x` still parses.
+-- column actually named `x` still parses.  `aggCall` sits before `column` for the
+-- same reason: `count` is not a reserved word, so `column` would happily eat the
+-- name and strand the `(`.
 atom : Parser SqlExpr
-atom =
-  label "expected an expression" (choice [parens, litAtom, negAtom, column])
+atom = label
+  "expected an expression"
+  (choice [parens, litAtom, negAtom, aggCall, boolReject, column])
 
 -- The recursive reference to `sqlExpr` is in a do-continuation, NOT in argument
 -- position.  Writing this as `between (symbol "(") (symbol ")") sqlExpr` would
@@ -620,6 +697,129 @@ negAtom = do
   _ <- symbol "-"
   e <- atom
   pure (EArith ASub (ELit (LInt 0)) e)
+
+-- SQLite has had `TRUE` / `FALSE` boolean literals since 3.23; `SqlExpr` has no
+-- boolean literal, so we do not.  Without this arm they would parse as COLUMN
+-- REFERENCES named `TRUE`/`FALSE` — which is not a wrong answer today (the
+-- executor then errors with "unknown column: TRUE"), but it IS a booby trap: over
+-- a table that happens to have such a column, `WHERE flag = TRUE` would silently
+-- compare two columns.  So reject them by name, with a message that says what to
+-- write instead.
+--
+-- The `attempt` is what keeps this arm from hijacking OTHER errors: on any word
+-- that is NOT `TRUE`/`FALSE` it rewinds to the start position, where `atom`'s
+-- `label` rewrites it to the ordinary "expected an expression".  Only a real
+-- `TRUE`/`FALSE` gets to fail DEEP (past the word), which is what makes its
+-- message outrank every sibling in the `choice`.
+boolReject : Parser SqlExpr
+boolReject = do
+  _ <- attempt boolWord
+  failWith "TRUE/FALSE literals are not supported — write 1 / 0 instead"
+
+boolWord : Parser String
+boolWord = do
+  w <- lexeme word
+  boolWordCheck w
+
+boolWordCheck : String -> Parser String
+boolWordCheck w =
+  if toUpper w == "TRUE" || toUpper w == "FALSE" then
+    pure w
+  else
+    failWith "not a boolean literal"
+
+-- ---------------------------------------------------------------------------
+-- Aggregate calls
+-- ---------------------------------------------------------------------------
+
+-- | An aggregate call: `count(*)`, `count(x)`, `sum(e)`, `avg(e)`, `min(e)`,
+--   `max(e)`.  The operand is a FULL expression, so `sum(price * qty)` parses.
+--   `*` is accepted ONLY by `count` (that is SQL's rule, and the ADT's: `EAgg fn
+--   None` is only meaningful for `FnCount`).
+--
+-- > map dumpExpr (runParser aggCall "count(*)")
+-- Ok "EAgg FnCount None"
+-- > map dumpExpr (runParser aggCall "sum(price * qty)")
+-- Ok "EAgg FnSum (Some (EArith AMul (ECol price) (ECol qty)))"
+--
+-- Case-insensitive, like every other keyword:
+--
+-- > map dumpExpr (runParser aggCall "MAX(t.age)")
+-- Ok "EAgg FnMax (Some (ECol t.age))"
+--
+-- Only `count` may take `*`:
+--
+-- > runParser aggCall "sum(*)"
+-- Err "expected an expression at 4"
+export aggCall : Parser SqlExpr
+aggCall = do
+  fn <- aggHead
+  operand <- aggOperand fn
+  _ <- symbol ")"
+  pure (EAgg fn operand)
+
+-- The COMMITTING head: an aggregate name IMMEDIATELY followed by `(`.  Wrapped
+-- in `attempt`, so `count` used as an ordinary column name rewinds to position 0
+-- and falls through to `column` in `atom`'s `choice`.  Once the head HAS matched,
+-- the operand and the `)` are mandatory and their failures propagate (they are
+-- deeper than `column`'s, so parsec's farthest-failure rule keeps them).
+aggHead : Parser AggFn
+aggHead = attempt
+  (do
+    w <- lexeme word
+    fn <- aggFnOf w
+    _ <- symbol "("
+    pure fn)
+
+aggFnOf : String -> Parser AggFn
+aggFnOf w = match lookupAggFn (toUpper w)
+  Some fn => pure fn
+  None => failWith "expected an aggregate function name"
+
+-- | The `AggFn` an (already upper-cased) word names, if any.
+--
+-- > lookupAggFn "COUNT"
+-- Some FnCount
+-- > lookupAggFn "TOTAL"
+-- None
+export lookupAggFn : String -> Option AggFn
+lookupAggFn "COUNT" = Some FnCount
+lookupAggFn "SUM" = Some FnSum
+lookupAggFn "AVG" = Some FnAvg
+lookupAggFn "MIN" = Some FnMin
+lookupAggFn "MAX" = Some FnMax
+lookupAggFn _ = None
+
+-- `count` accepts `*` (⇒ `None`, the COUNT(*) encoding) or an expression; every
+-- other aggregate demands an expression, so `sum(*)` fails inside the parens.
+aggOperand : AggFn -> Parser (Option SqlExpr)
+aggOperand FnCount = orElse starOperand (map Some sqlExpr)
+aggOperand _ = map Some sqlExpr
+
+starOperand : Parser (Option SqlExpr)
+starOperand = do
+  _ <- symbol "*"
+  pure None
+
+-- | Does this expression contain an aggregate anywhere?  Used by the statement
+--   parser to reject an aggregate in WHERE / a JOIN's ON at PARSE time (the
+--   executor would reject it too, but later and with less context).
+--
+-- > map hasAgg (parseSqlExpr "count(*) > 2")
+-- Ok True
+-- > map hasAgg (parseSqlExpr "a > 2")
+-- Ok False
+export hasAgg : SqlExpr -> Bool
+hasAgg (ECol _) = False
+hasAgg (ELit _) = False
+hasAgg (EAgg _ _) = True
+hasAgg (EBin _ l r) = hasAgg l || hasAgg r
+hasAgg (EArith _ l r) = hasAgg l || hasAgg r
+hasAgg (EAnd l r) = hasAgg l || hasAgg r
+hasAgg (EOr l r) = hasAgg l || hasAgg r
+hasAgg (ENot e) = hasAgg e
+hasAgg (EIsNull e) = hasAgg e
+hasAgg (ENotNull e) = hasAgg e
 
 -- ---------------------------------------------------------------------------
 -- renderSqlExpr : the inverse projection (literals INLINED)

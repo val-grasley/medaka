@@ -39,6 +39,40 @@ public export data Cell =
   | CFloat Float
 deriving (Debug)
 
+-- `Eq Cell` is HAND-WRITTEN, not derived.  `deriving (Eq)` on a type with an
+-- `Array` field (here `CBlob (Array Int)`) type-checks and runs under the
+-- interpreter but the native emitter then dies with `no impl of method 'eq' for
+-- type 'Array'` — there is no `Eq (Array a)` impl (see findings/query-engine-
+-- unify.md F1).  Blobs compare element-wise here.  Cross-constructor comparison
+-- is False (a `CInt 1` is not a `CText "1"`), matching SQLite's value equality.
+--
+-- `rule-hand-rolled-derivable` fires here and its advice is WRONG: taking it
+-- produces a binary that cannot be built.
+-- lint-disable-next-line rule-hand-rolled-derivable
+export impl Eq Cell where
+  eq CNull CNull = True
+  eq (CInt a) (CInt b) = a == b
+  eq (CText a) (CText b) = a == b
+  eq (CFloat a) (CFloat b) = a == b
+  eq (CBlob a) (CBlob b) = blobEq a b
+  eq _ _ = False
+
+blobEq : Array Int -> Array Int -> Bool
+blobEq a b =
+  if arrayLength a != arrayLength b then
+    False
+  else
+    blobEqGo a b 0 (arrayLength a)
+
+blobEqGo : Array Int -> Array Int -> Int -> Int -> Bool
+blobEqGo a b i n =
+  if i >= n then
+    True
+  else if a[i] != b[i] then
+    False
+  else
+    blobEqGo a b (i + 1) n
+
 export impl Display Cell where
   display CNull = "NULL"
   display (CInt n) = intToString n

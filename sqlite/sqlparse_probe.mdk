@@ -16,8 +16,15 @@
 --
 -- Run:  ./medaka run sqlite/sqlparse_probe.mdk
 
+-- The remaining structural duplication against sql_probe.mdk (`rtFailures`,
+-- `precCompare` vs its `shapeCompare`) is NOT consolidatable: each closes over a
+-- file-local parser/comparator.  The genuinely shared reporters (`bullet`,
+-- `verdict`) DID move to demo_support.
+-- lint-disable-file rule-duplicate-body
+
 import lib.sqlparse.{parseSqlExpr, renderSqlExpr, dumpExpr}
 import lib.select.{SqlExpr}
+import demo_support.{bullet, verdict}
 
 -- ---------------------------------------------------------------------------
 -- 1. Round-trip corpus
@@ -193,14 +200,6 @@ precCompare src want got rest =
 -- ---------------------------------------------------------------------------
 -- Report
 -- ---------------------------------------------------------------------------
-
-bullet : List String -> String
-bullet [] = ""
-bullet (m::rest) = "  FAIL \{m}\n\{bullet rest}"
-
-verdict : Int -> String
-verdict 0 = "PASS"
-verdict _ = "FAIL"
 
 main =
   let rtBad = rtFailures corpus
