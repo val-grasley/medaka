@@ -1,0 +1,27 @@
+# META
+source_lines=13
+stages=DESUGAR,MARK
+# SOURCE
+greet name = "Hello, " ++ name ++ "!"
+
+repeat n s =
+  match n
+    0 => ""
+    n => s ++ repeat (n - 1) s
+
+main : <IO> Unit
+main =
+  println (greet "Medaka")
+  println (repeat 3 "ab")
+  let x = 42
+  println "value: \{x}"
+# DESUGAR
+(DFunDef false "greet" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EVar "name")) (ELit (LString "!"))))
+(DFunDef false "repeat" ((PVar "n") (PVar "s")) (EMatch (EVar "n") (arm (PLit (LInt 0)) () (ELit (LString ""))) (arm (PVar "n") () (EBinOp "++" (EVar "s") (EApp (EApp (EVar "repeat") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "s"))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (EApp (EVar "greet") (ELit (LString "Medaka"))))) (DoExpr (EApp (EVar "println") (EApp (EApp (EVar "repeat") (ELit (LInt 3))) (ELit (LString "ab"))))) (DoLet false false (PVar "x") (ELit (LInt 42))) (DoExpr (EApp (EVar "println") (EBinOp "++" (EBinOp "++" (ELit (LString "value: ")) (EApp (EVar "display") (EVar "x"))) (ELit (LString "")))))))
+# MARK
+(DFunDef false "greet" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EVar "name")) (ELit (LString "!"))))
+(DFunDef false "repeat" ((PVar "n") (PVar "s")) (EMatch (EVar "n") (arm (PLit (LInt 0)) () (ELit (LString ""))) (arm (PVar "n") () (EBinOp "++" (EVar "s") (EApp (EApp (EVar "repeat") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "s"))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoExpr (EApp (EDictApp "println") (EApp (EVar "greet") (ELit (LString "Medaka"))))) (DoExpr (EApp (EDictApp "println") (EApp (EApp (EVar "repeat") (ELit (LInt 3))) (ELit (LString "ab"))))) (DoLet false false (PVar "x") (ELit (LInt 42))) (DoExpr (EApp (EDictApp "println") (EBinOp "++" (EBinOp "++" (ELit (LString "value: ")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString "")))))))

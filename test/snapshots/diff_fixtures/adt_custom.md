@@ -1,0 +1,38 @@
+# META
+source_lines=20
+stages=DESUGAR,MARK
+# SOURCE
+data Shape = Circle Int | Rect Int Int deriving (Display)
+
+area s =
+  match s
+    Circle r => r * r
+    Rect w h => w * h
+
+perimeter s =
+  match s
+    Circle r => 2 * r
+    Rect w h => 2 * (w + h)
+
+main : <IO> Unit
+main =
+  let c = Circle 5
+  let r = Rect 3 4
+  println c
+  println (area c)
+  println (area r)
+  println (perimeter r)
+# DESUGAR
+(DData Private "Shape" () ((variant "Circle" (ConPos (TyCon "Int"))) (variant "Rect" (ConPos (TyCon "Int") (TyCon "Int")))) ())
+(DImpl true "Display" ((TyCon "Shape")) () ((im "display" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Circle" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Circle ")) (EApp (EVar "display") (EVar "__a0")))) (arm (PCon "Rect" (PVar "__a0") (PVar "__a1")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Rect ")) (EApp (EVar "display") (EVar "__a0"))) (ELit (LString " "))) (EApp (EVar "display") (EVar "__a1"))))))))
+(DFunDef false "area" ((PVar "s")) (EMatch (EVar "s") (arm (PCon "Circle" (PVar "r")) () (EBinOp "*" (EVar "r") (EVar "r"))) (arm (PCon "Rect" (PVar "w") (PVar "h")) () (EBinOp "*" (EVar "w") (EVar "h")))))
+(DFunDef false "perimeter" ((PVar "s")) (EMatch (EVar "s") (arm (PCon "Circle" (PVar "r")) () (EBinOp "*" (ELit (LInt 2)) (EVar "r"))) (arm (PCon "Rect" (PVar "w") (PVar "h")) () (EBinOp "*" (ELit (LInt 2)) (EBinOp "+" (EVar "w") (EVar "h"))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoLet false false (PVar "c") (EApp (EVar "Circle") (ELit (LInt 5)))) (DoLet false false (PVar "r") (EApp (EApp (EVar "Rect") (ELit (LInt 3))) (ELit (LInt 4)))) (DoExpr (EApp (EVar "println") (EVar "c"))) (DoExpr (EApp (EVar "println") (EApp (EVar "area") (EVar "c")))) (DoExpr (EApp (EVar "println") (EApp (EVar "area") (EVar "r")))) (DoExpr (EApp (EVar "println") (EApp (EVar "perimeter") (EVar "r"))))))
+# MARK
+(DData Private "Shape" () ((variant "Circle" (ConPos (TyCon "Int"))) (variant "Rect" (ConPos (TyCon "Int") (TyCon "Int")))) ())
+(DImpl true "Display" ((TyCon "Shape")) () ((im "display" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Circle" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Circle ")) (EApp (EMethodRef "display") (EVar "__a0")))) (arm (PCon "Rect" (PVar "__a0") (PVar "__a1")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Rect ")) (EApp (EMethodRef "display") (EVar "__a0"))) (ELit (LString " "))) (EApp (EMethodRef "display") (EVar "__a1"))))))))
+(DFunDef false "area" ((PVar "s")) (EMatch (EVar "s") (arm (PCon "Circle" (PVar "r")) () (EBinOp "*" (EVar "r") (EVar "r"))) (arm (PCon "Rect" (PVar "w") (PVar "h")) () (EBinOp "*" (EVar "w") (EVar "h")))))
+(DFunDef false "perimeter" ((PVar "s")) (EMatch (EVar "s") (arm (PCon "Circle" (PVar "r")) () (EBinOp "*" (ELit (LInt 2)) (EVar "r"))) (arm (PCon "Rect" (PVar "w") (PVar "h")) () (EBinOp "*" (ELit (LInt 2)) (EBinOp "+" (EVar "w") (EVar "h"))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoLet false false (PVar "c") (EApp (EVar "Circle") (ELit (LInt 5)))) (DoLet false false (PVar "r") (EApp (EApp (EVar "Rect") (ELit (LInt 3))) (ELit (LInt 4)))) (DoExpr (EApp (EDictApp "println") (EVar "c"))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "area") (EVar "c")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "area") (EVar "r")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "perimeter") (EVar "r"))))))
