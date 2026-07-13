@@ -195,7 +195,14 @@ public export data Expr =
   | EStringInterp (List InterpPart)
   | EGuards (List GuardArm)
   | ERecordCreate String (List FieldAssign)
-  | ERecordUpdate Expr (List FieldAssign)
+  -- functional record update `{ base | f = v … }`.  The trailing `Ref String` is
+  -- the resolved record name of the RECEIVER (stamped by typecheck's
+  -- inferRecordUpdate; "" = unknown), exactly as EFieldAccess carries it — and
+  -- for the same reason: two records sharing a field name at DIFFERENT slot
+  -- indices are indistinguishable from the field label alone, so an emitter that
+  -- guesses the record from the first update label writes the wrong slot (bug
+  -- #38, a silent miscompile on both backends).  sexp/printer ignore the ref.
+  | ERecordUpdate Expr (List FieldAssign) (Ref String)
   | EVariantUpdate String Expr (List FieldAssign)
   | EMapLit String (List (Expr, Expr))
   | ESetLit String (List Expr)

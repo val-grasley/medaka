@@ -79,8 +79,8 @@ mapKids f (EUnOp op a r) = EUnOp op (mapExpr f a) r
 mapKids f (EInfix op a b) = EInfix op (mapExpr f a) (mapExpr f b)
 mapKids f (EFieldAccess e0 n r) = EFieldAccess (mapExpr f e0) n r
 mapKids f (ERecordCreate n fs) = ERecordCreate n (map (mapFieldAssign f) fs)
-mapKids f (ERecordUpdate e0 fs) =
-  ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs)
+mapKids f (ERecordUpdate e0 fs r) =
+  ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs) r
 mapKids f (EVariantUpdate c e0 fs) =
   EVariantUpdate c (mapExpr f e0) (map (mapFieldAssign f) fs)
 mapKids f (EArrayLit es) = EArrayLit (map (mapExpr f) es)
@@ -895,7 +895,7 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "mapKids" ((PVar "f") (PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "a"))) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "b"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EFieldAccess" (PVar "e0") (PVar "n") (PVar "r"))) (EApp (EApp (EApp (EVar "EFieldAccess") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EVar "n")) (EVar "r")))
 (DFunDef false "mapKids" ((PVar "f") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
-(DFunDef false "mapKids" ((PVar "f") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
+(DFunDef false "mapKids" ((PVar "f") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EVariantUpdate" (PVar "c") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "EArrayLit") (EApp (EApp (EVar "map") (EApp (EVar "mapExpr") (EVar "f"))) (EVar "es"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EListLit" (PVar "es"))) (EApp (EVar "EListLit") (EApp (EApp (EVar "map") (EApp (EVar "mapExpr") (EVar "f"))) (EVar "es"))))
@@ -1290,7 +1290,7 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "mapKids" ((PVar "f") (PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "a"))) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "b"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EFieldAccess" (PVar "e0") (PVar "n") (PVar "r"))) (EApp (EApp (EApp (EVar "EFieldAccess") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EVar "n")) (EVar "r")))
 (DFunDef false "mapKids" ((PVar "f") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
-(DFunDef false "mapKids" ((PVar "f") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
+(DFunDef false "mapKids" ((PVar "f") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EVariantUpdate" (PVar "c") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EApp (EVar "mapExpr") (EVar "f")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapFieldAssign") (EVar "f"))) (EVar "fs"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "EArrayLit") (EApp (EApp (EMethodRef "map") (EApp (EVar "mapExpr") (EVar "f"))) (EVar "es"))))
 (DFunDef false "mapKids" ((PVar "f") (PCon "EListLit" (PVar "es"))) (EApp (EVar "EListLit") (EApp (EApp (EMethodRef "map") (EApp (EVar "mapExpr") (EVar "f"))) (EVar "es"))))

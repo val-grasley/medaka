@@ -203,7 +203,7 @@ collectEVars (EAnnot e _) = collectEVars e
 collectEVars (EHeadAnnot e _) = collectEVars e
 collectEVars (EFieldAccess e _ _) = collectEVars e
 collectEVars (ERecordCreate _ flds) = concatMapCP collectFieldAssign flds
-collectEVars (ERecordUpdate e flds) = collectEVars e
+collectEVars (ERecordUpdate e flds _) = collectEVars e
   ++ concatMapCP collectFieldAssign flds
 collectEVars (EVariantUpdate _ e flds) = collectEVars e
   ++ concatMapCP collectFieldAssign flds

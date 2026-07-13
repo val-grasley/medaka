@@ -168,7 +168,7 @@ exprSexp (EStringInterp parts) = node "EStringInterp" (map interpPartSexp parts)
 exprSexp (EGuards arms) = node "EGuards" (map guardArmSexp arms)
 exprSexp (ERecordCreate n fs) =
   node "ERecordCreate" [escStr n, slist (map fieldAssignSexp fs)]
-exprSexp (ERecordUpdate e fs) =
+exprSexp (ERecordUpdate e fs _) =
   node "ERecordUpdate" [exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EVariantUpdate c e fs) =
   node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]
@@ -427,7 +427,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "exprSexp" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EVar "node") (ELit (LString "EStringInterp"))) (EApp (EApp (EVar "map") (EVar "interpPartSexp")) (EVar "parts"))))
 (DFunDef false "exprSexp" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EVar "node") (ELit (LString "EGuards"))) (EApp (EApp (EVar "map") (EVar "guardArmSexp")) (EVar "arms"))))
 (DFunDef false "exprSexp" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "ERecordCreate"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
-(DFunDef false "exprSexp" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "ERecordUpdate"))) (EListLit (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
+(DFunDef false "exprSexp" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EApp (EApp (EVar "node") (ELit (LString "ERecordUpdate"))) (EListLit (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
 (DFunDef false "exprSexp" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "EVariantUpdate"))) (EListLit (EApp (EVar "escStr") (EVar "c")) (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
 (DFunDef false "exprSexp" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "node") (ELit (LString "EMapLit"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "kvSexp")) (EVar "kvs"))))))
 (DFunDef false "exprSexp" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "node") (ELit (LString "ESetLit"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "exprSexp")) (EVar "es"))))))
@@ -599,7 +599,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "exprSexp" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EVar "node") (ELit (LString "EStringInterp"))) (EApp (EApp (EMethodRef "map") (EVar "interpPartSexp")) (EVar "parts"))))
 (DFunDef false "exprSexp" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EVar "node") (ELit (LString "EGuards"))) (EApp (EApp (EMethodRef "map") (EVar "guardArmSexp")) (EVar "arms"))))
 (DFunDef false "exprSexp" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "ERecordCreate"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
-(DFunDef false "exprSexp" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "ERecordUpdate"))) (EListLit (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
+(DFunDef false "exprSexp" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EApp (EApp (EVar "node") (ELit (LString "ERecordUpdate"))) (EListLit (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
 (DFunDef false "exprSexp" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "node") (ELit (LString "EVariantUpdate"))) (EListLit (EApp (EVar "escStr") (EVar "c")) (EApp (EVar "exprSexp") (EVar "e")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignSexp")) (EVar "fs"))))))
 (DFunDef false "exprSexp" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "node") (ELit (LString "EMapLit"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "kvSexp")) (EVar "kvs"))))))
 (DFunDef false "exprSexp" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "node") (ELit (LString "ESetLit"))) (EListLit (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "exprSexp")) (EVar "es"))))))

@@ -3234,7 +3234,7 @@ infer env (EUnOp op e dref) = inferUnopE env op e dref
 infer env (EInfix op l r) = inferInfix env op l r
 infer env (ERecordCreate name fields) = inferRecordCreate env name fields
 infer env (EFieldAccess e fname r) = inferFieldAccess env e fname r
-infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
+infer env (ERecordUpdate base fields r) = inferRecordUpdate env base fields r
 infer env (EVariantUpdate cname base fields) =
   inferVariantUpdate env cname base fields
 infer env (EBlock stmts) = inferBlock env stmts
@@ -4077,10 +4077,10 @@ unboundVarFresh name =
   let _ = pushTypeError "T-UNBOUND" (unboundVarMsg name)
   freshVar ()
 
-inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
-inferRecordUpdate env base fields = match firstFieldName fields
+inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> Ref String -> <Mut> Mono
+inferRecordUpdate env base fields r = match firstFieldName fields
   None => panic "empty record update"
-  Some fn => inferRecordUpdateField env base fields fn
+  Some fn => inferRecordUpdateField env base fields fn r
 
 -- `Con { base | f = v, … }` — a named-field-variant update (e.g. desugar's
 -- `DInterface { d | methods = … }`).  Resolve the variant's field layout by the
@@ -4098,12 +4098,18 @@ firstFieldName ((FieldAssign fn _)::_) = Some fn
 -- receiver-directed (Phase 72), like inferFieldAccess: infer base first, then
 -- pick the owning record by the base's head tycon, falling back to the first
 -- update field's owners.
-inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
-inferRecordUpdateField env base fields fn =
+inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> Ref String -> <Mut> Mono
+inferRecordUpdateField env base fields fn r =
   let bt = normalize (infer env base)
   match resolveFieldRecord bt fn
     None => freshVar ()
-    Some (rname, ri) => inferRecordUpdatePicked rname bt env fields ri
+    Some (rname, ri) =>
+      -- stamp the RESOLVED receiver record onto the node (bug #38): both emitters
+      -- read it to pick the record by name, instead of guessing from the first
+      -- update label (which picks the wrong record — and so the wrong slot — when
+      -- two records share a field name at different indices).
+      let _ = setRef r rname
+      inferRecordUpdatePicked rname bt env fields ri
 
 inferRecordUpdatePicked : String -> Mono -> TcEnv -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRecordUpdatePicked rname bt env fields ri =
@@ -7009,10 +7015,11 @@ rewriteArgScoped rw bound (EHeadAnnot e0 t) =
   EHeadAnnot (rewriteArgScoped rw bound e0) t
 rewriteArgScoped rw bound (ERecordCreate n fs) =
   ERecordCreate n (map (rewriteArgField rw bound) fs)
-rewriteArgScoped rw bound (ERecordUpdate e0 fs) =
+rewriteArgScoped rw bound (ERecordUpdate e0 fs r) =
   ERecordUpdate
     (rewriteArgScoped rw bound e0)
     (map (rewriteArgField rw bound) fs)
+    r
 rewriteArgScoped rw bound (EVariantUpdate c e0 fs) =
   EVariantUpdate
     c
@@ -9050,7 +9057,7 @@ collectMethodSites (EIndex e i _) = collectMethodSites e ++ collectMethodSites i
 collectMethodSites (EAnnot e _) = collectMethodSites e
 collectMethodSites (EBlock stmts) = flatMap doStmtSites stmts
 collectMethodSites (ERecordCreate _ fs) = flatMap fieldAssignSites fs
-collectMethodSites (ERecordUpdate e fs) = collectMethodSites e
+collectMethodSites (ERecordUpdate e fs _) = collectMethodSites e
   ++ flatMap fieldAssignSites fs
 collectMethodSites (EVariantUpdate _ e fs) = collectMethodSites e
   ++ flatMap fieldAssignSites fs
@@ -9118,7 +9125,7 @@ collectDictSites (EIndex e i _) = collectDictSites e ++ collectDictSites i
 collectDictSites (EAnnot e _) = collectDictSites e
 collectDictSites (EBlock stmts) = flatMap doStmtDictSites stmts
 collectDictSites (ERecordCreate _ fs) = flatMap fieldAssignDictSites fs
-collectDictSites (ERecordUpdate e fs) = collectDictSites e
+collectDictSites (ERecordUpdate e fs _) = collectDictSites e
   ++ flatMap fieldAssignDictSites fs
 collectDictSites (EVariantUpdate _ e fs) = collectDictSites e
   ++ flatMap fieldAssignDictSites fs
@@ -10519,7 +10526,7 @@ allEVars (EIndex e i _) = allEVars e ++ allEVars i
 allEVars (EAnnot e _) = allEVars e
 allEVars (EBlock stmts) = flatMap doStmtEVars stmts
 allEVars (ERecordCreate _ fs) = flatMap fieldAssignEVars fs
-allEVars (ERecordUpdate e fs) = allEVars e ++ flatMap fieldAssignEVars fs
+allEVars (ERecordUpdate e fs _) = allEVars e ++ flatMap fieldAssignEVars fs
 allEVars (EVariantUpdate _ e fs) = allEVars e ++ flatMap fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
 allEVars (EDoOrigin _ e) = allEVars e

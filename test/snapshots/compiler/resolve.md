@@ -448,7 +448,7 @@ checkExpr cur env scope (EGuards arms) =
   flatMap (checkGuardArm cur env scope) arms
 checkExpr cur env scope (ERecordCreate name fs) =
   checkRecordCreate cur env scope name fs
-checkExpr cur env scope (ERecordUpdate e0 fs) =
+checkExpr cur env scope (ERecordUpdate e0 fs _) =
   checkRecordUpdate cur env scope e0 fs
 checkExpr cur env scope (EVariantUpdate con e0 fs) = checkExpr cur env scope e0
   ++ checkRecordCreate cur env scope con fs
@@ -2340,7 +2340,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "checkInterp") (EVar "cur")) (EVar "env")) (EVar "scope"))) (EVar "parts")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EGuards" (PVar "arms"))) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "checkGuardArm") (EVar "cur")) (EVar "env")) (EVar "scope"))) (EVar "arms")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordCreate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "name")) (EVar "fs")))
-(DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordUpdate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EVar "fs")))
+(DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordUpdate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EVar "fs")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordCreate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "con")) (EVar "fs"))))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EAsPat" PWild (PVar "e0"))) (EBinOp "::" (EApp (EVar "AsPatternMisplaced") (EVar "cur")) (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0"))))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ESection" (PVar "s"))) (EApp (EApp (EApp (EApp (EVar "checkSection") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "s")))
@@ -3154,7 +3154,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "checkInterp") (EVar "cur")) (EVar "env")) (EVar "scope"))) (EVar "parts")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EGuards" (PVar "arms"))) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "checkGuardArm") (EVar "cur")) (EVar "env")) (EVar "scope"))) (EVar "arms")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordCreate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "name")) (EVar "fs")))
-(DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordUpdate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EVar "fs")))
+(DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordUpdate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EVar "fs")))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0")) (EApp (EApp (EApp (EApp (EApp (EVar "checkRecordCreate") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "con")) (EVar "fs"))))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "EAsPat" PWild (PVar "e0"))) (EBinOp "::" (EApp (EVar "AsPatternMisplaced") (EVar "cur")) (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "e0"))))
 (DFunDef false "checkExpr" ((PVar "cur") (PVar "env") (PVar "scope") (PCon "ESection" (PVar "s"))) (EApp (EApp (EApp (EApp (EVar "checkSection") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "s")))
