@@ -60,6 +60,19 @@ is exactly what batches that away, and **we do not have one** (see below).
 
 So when several PRs are in flight at once, **consider combining them into one branch.**
 
+**And expect to babysit the update.** `gh pr merge --auto` does **not** update a branch that
+falls `BEHIND` — it only waits for checks. When another PR merges ahead of yours, yours goes
+stale and its auto-merge just sits there. Kick it:
+
+```sh
+gh api -X PUT repos/<owner>/<repo>/pulls/<N>/update-branch
+```
+
+(`allow_update_branch` is enabled on the repo, which is what makes that call — and the "Update
+branch" button — available at all. It still has to be *triggered*; GitHub will not do it for
+you.) Every kick re-runs all nine checks. That is the O(N²) above, in the form you will actually
+meet it.
+
 **Batch when:**
 - The changes are **related** (same subsystem, same arc) — they were going to be reviewed
   together anyway.
