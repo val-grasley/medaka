@@ -1,5 +1,9 @@
 # LAYOUT-BRACKETS-DESIGN — block expressions inside brackets
 
+**Status:** IMPLEMENTED — LANDED 2026-06-23, see `LAYOUT-SEMANTICS.md` §6.1 ("now
+implemented in BOTH lexers... lexes, checks, runs, and builds end-to-end"). The
+locked-scope design below is the historical record of the decision.
+
 Status: DESIGN (2026-06-23). Goal: allow `match`/`do`/`function`/`record`/bare-`INDENT`
 block-expressions to appear directly inside `( )` `[ ]` `{ }`, so code need not lift every
 `=> match …` body into a named top-level helper (as `parsec/lib/parser.mdk` had to). Companion
@@ -81,6 +85,10 @@ the decided no-parser→layout-feedback rule); use an explicit bracket-aware clo
   surface tiny. [LOCKED 2026-06-23 ✓]
 
 ## 5. Staged implementation plan (ascending risk, each independently gated)
+
+> Historical — this plan executed in full (see Status above); `lib/parser.mly`/
+> `lib/lexer.mll` and the `dune build` gate below no longer exist (`lib/` removed
+> 2026-06-26). Kept as the record of how it was built.
 
 1. **Spec** — extend `LAYOUT-SEMANTICS.md §6` with the bracket-frame model + (a)-(e). Zero binary risk.
 2. **Grammar** (before the lexer, so tokens have a target) — add a `bracket_block` nonterminal +

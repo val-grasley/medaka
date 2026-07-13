@@ -1,6 +1,7 @@
 # `<Mut>` scoping — effect masking for allocate→fill→freeze
 
-**Status:** decision-ready design input. Not implemented. Raised by the SQLite dogfood
+**Status:** OPEN — decision-ready design input, not implemented. What remains: the
+whole `mut` block construct (see Recommendation below). Raised by the SQLite dogfood
 workstream (2026-07-13); lands in `compiler/`, which a different orchestrator owns — this doc
 exists to hand them a decided question, not a debate.
 

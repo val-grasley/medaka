@@ -1,5 +1,9 @@
 # Design: Num-polymorphic numeric literals (PLAN.md #11)
 
+**Status:** IMPLEMENTED — `7424b64`, 2026-06-16 (Stages 3-4, compiler + native;
+Stages 0-2 landed earlier at `eac278b`). Stage 5 (optional `fromInt` workaround
+revert) decided WON'T-DO 2026-06-16.
+
 > Read-only scoping pass, 2026-06-16 (worktree base `2a54937`, BASE_OK). Decisions
 > in §6 are the open forks; §0 records the locked choices once the user rules.
 

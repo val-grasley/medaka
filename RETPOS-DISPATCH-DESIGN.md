@@ -1,5 +1,10 @@
 # RETPOS-DISPATCH-DESIGN — return-position-only method mis-dispatch (run≠build)
 
+**Status:** IMPLEMENTED — see `compiler/types/typecheck.mdk:6334`, comment "RETPOS
+soundness — ambiguous interface constraint (run≠build hole)". The typecheck-only
+rejection this doc recommends is in place. The rationale/probes below (§0) have
+residual value for diagnosing similar dispatch bugs.
+
 Status: DESIGN (decision-ready). Read-only diagnostic pass, base `1b2f0ed`. Root
 cause + probes independently re-verified by the orchestrator on a fresh binary.
 

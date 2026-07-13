@@ -1,6 +1,10 @@
 # BROWSER-STACK-DIAGNOSIS.md — the playground `Maximum call stack size exceeded` overflow
 
-> **Status: DIAGNOSIS ONLY (read-only).** No compiler source changed. This doc identifies the
+**Status:** IMPLEMENTED — FIXED `921b9126`, 2026-07-05 (general dispatch-GRAPH TMC,
+Option B below). See PLAN.md "Current status (2026-07-05)" entry. This diagnosis
+(root cause + ranked fix options) is the record of how the fix was chosen.
+
+> **Status (at diagnosis time): DIAGNOSIS ONLY (read-only).** No compiler source changed. This doc identifies the
 > root cause, resolves the "b′ already fixed it" paradox, and ranks fix options for a follow-up
 > agent. Reproduced empirically against a freshly-built `playground.wasm` (current `main`).
 

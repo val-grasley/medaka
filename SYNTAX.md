@@ -528,6 +528,6 @@ main =
 
 Every example was checked against the current binary by feeding minimal
 programs through `medaka check`. To re-verify after a grammar change, build
-(`dune build --root .` in a worktree) and re-run the probes; constructs sourced
-from `test/test_eval.ml` / `test/test_run.ml` are additionally exercised
-end-to-end by those suites.
+(`make medaka` in a worktree) and re-run the probes; constructs are additionally
+exercised end-to-end by the `test/diff_compiler_*.sh` gate suite (see AGENTS.md
+"Build & test").

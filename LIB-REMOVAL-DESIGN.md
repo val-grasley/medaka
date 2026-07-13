@@ -1,5 +1,12 @@
 # LIB-REMOVAL-DESIGN — retiring the OCaml reference compiler (`lib/`+`bin/`+`gen/`)
 
+**Status:** IMPLEMENTED — `06356a80`, 2026-06-26 ("Phase D — delete OCaml compiler
+tree (lib/ bin/ gen/ dev/ dune-project)"). `lib/`, `bin/`, `gen/`, `dev/`,
+`dune-project` are all gone from the tree; native `medaka` is the sole compiler. The
+staged plan below (Stage P through Stage E) is the historical record of how the
+removal was executed — do not re-derive a removal plan from it, there is nothing
+left to remove.
+
 Decision-ready removal plan. Native LLVM-backed `medaka` is CANONICAL and OCaml-free;
 this doc maps every remaining dependency on the OCaml oracle and stages its deletion.
 All evidence is reproduced empirically (file:line), not recited from status docs.
