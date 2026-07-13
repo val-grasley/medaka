@@ -110,7 +110,7 @@ jobs:
           - name: frontend
             pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
           - name: types
-            pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project'"
+            pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project' 'effect_param_domain' 'effect_builtin_param_domain' 'effect_product_domain' 'effect_set_domain'"
           - name: eval
             # The 4 bootstrap_* stage gates (each native pipeline stage == the interpreter's
             # output) also ran in NO CI job until 2026-07-13 — found by the coverage gate
@@ -120,9 +120,9 @@ jobs:
             # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
             pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
-            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity'"
+            pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack'"
           - name: tools
-            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes'"
+            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_entry_subdir' 'diff_compiler_perf_scaling' 'diff_compiler_ci_shard_coverage' 'diff_compiler_source_bytes' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4

@@ -66,19 +66,35 @@ except Exception:
 # checked the family it already knew about. A completeness check that defines its own
 # scope will always certify itself complete. So the scope is now every gate script,
 # and anything deliberately left out must say so out loud in CI-COVERAGE-EXCEPTIONS.txt.
-GATE_GLOBS = [
-    'test/diff_compiler_*.sh',
-    'test/wasm/diff_*.sh',
-    'test/bootstrap_*.sh',
-    'test/selfcompile_fixpoint.sh',
-    'test/typecheck_compiler_source.sh',
-]
-all_gates = set()
-for g in GATE_GLOBS:
-    all_gates |= {pathlib.Path(p).stem for p in glob.glob(f'{root}/{g}')}
+# EVERY script under test/ and test/wasm/. Not a curated list of globs.
+#
+# The curated version enumerated `test/diff_compiler_*.sh` (later plus wasm/bootstrap) and
+# so certified coverage while a DOZEN REAL GATES had never run in CI: cross_project_*,
+# diff_native_cli, diff_native_stack, diff_net, the four effect_*_domain gates,
+# selfcompile_emit, manifest_emit, lsp_harness, fuzz_diff, build_construct_coverage,
+# check_removed_constructs. I wrote that curated list MYSELF, one day after building this
+# gate to catch exactly this — because I listed the globs I already knew about.
+#
+# So the scope is now EVERYTHING, and every script must be classified exactly once:
+#   in a CI shard  |  named by a job  |  in the EXCEPTIONS ledger  |  in the TOOLS list.
+# A new script that is none of the four fails this gate. That is the point: you cannot
+# add a gate and forget to run it, and you cannot quietly shrink the scope.
+all_gates = {pathlib.Path(p).stem
+             for p in glob.glob(f'{root}/test/*.sh') + glob.glob(f'{root}/test/wasm/*.sh')}
 if not all_gates:
-    print("FAIL: found no gate scripts at all (harness bug)")
+    print("FAIL: found no scripts at all under test/ (harness bug)")
     sys.exit(1)
+
+# TOOLS: scripts that are not gates. See test/CI-COVERAGE-TOOLS.txt for why this file
+# exists and what listing a script here asserts.
+tools = set()
+tools_path = pathlib.Path(root) / 'test' / 'CI-COVERAGE-TOOLS.txt'
+if tools_path.exists():
+    for line in tools_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#'):
+            tools.add(line.split()[0])
+all_gates -= tools
 
 # A gate counts as covered if a shard pattern globs it OR the workflow names it
 # literally in some step (that is how the `soundness` job runs the fixpoint and the

@@ -85,6 +85,8 @@ SNAPDIR="$ROOT/test/snapshots"
 
 fail=0
 total=0
+compared=0
+skipped=0
 
 # ── --bless <path>... ─────────────────────────────────────────────────────────
 # Scoped, and scoped LOUDLY: a bless naming nothing is an error, not a no-op that
@@ -131,6 +133,12 @@ run_family() {
   out="$("$MEDAKA" snapshot "$MODE" --root "$ROOT" --out "$SNAPDIR/$sub" --stages "$stages" "$@" 2>&1)" || fail=1
   n="$(printf '%s\n' "$out" | sed -n 's/^snapshot: \([0-9]*\) fixtures.*/\1/p')"
   total=$((total + ${n:-0}))
+  # Count what was actually COMPARED (pass) vs merely walked past (skipped). The summary
+  # below MUST NOT claim a match on the strength of fixtures it never opened.
+  p="$(printf '%s\n' "$out" | sed -n 's/.*— \([0-9]*\) pass,.*/\1/p')"
+  s="$(printf '%s\n' "$out" | sed -n 's/.*, \([0-9]*\) skipped,.*/\1/p')"
+  compared=$((compared + ${p:-0}))
+  skipped=$((skipped + ${s:-0}))
   printf '%-22s %s\n' "$sub" "$(printf '%s\n' "$out" | tail -1)"
   printf '%s\n' "$out" | grep -E '^(.*: (FAIL|ERROR))' | sed 's/^/    /'
 }
@@ -145,5 +153,38 @@ run_family compiler            desugar,mark \
   "$ROOT"/compiler/eval/*.mdk "$ROOT"/compiler/driver/*.mdk \
   "$ROOT"/compiler/tools/*.mdk "$ROOT"/compiler/support/*.mdk
 
-printf '\n%d fixtures, %s\n' "$total" "$([ "$fail" -eq 0 ] && echo 'all snapshots match' || echo 'SNAPSHOTS DIFFER')"
+# ── THE SUMMARY MUST DESCRIBE WHAT IT ACTUALLY DID ───────────────────────────
+#
+# This line used to read `$total fixtures, all snapshots match` whenever `fail` was 0 —
+# regardless of whether a single snapshot had been COMPARED. Under `--new` (which skips
+# every fixture that already has a snapshot, by design) that meant:
+#
+#     compiler   snapshot: 50 fixtures — 0 pass, 0 new, 0 blessed, 50 SKIPPED, 0 failed
+#     168 fixtures, all snapshots match          <- compared NOTHING. Exit 0.
+#
+# An agent ran exactly this after editing three compiler sources, read "all snapshots
+# match", and would have shipped stale goldens had it not distrusted the harness. The
+# per-corpus line was honest; the SUMMARY lied, and the summary is what people read.
+#
+# That is this suite's defining bug class — "this didn't run" being indistinguishable from
+# "this passed" — living inside the snapshot harness built to eradicate it. Of course it
+# is: the harness is the newest code here, and the bug is not a typo, it is an ASSUMPTION
+# (fail==0 means everything matched) that is only true in --check mode.
+#
+# So the summary now reports COMPARED, and never says "match" about a fixture it skipped.
+printf '\n'
+if [ "$fail" -ne 0 ]; then
+  printf '%d fixtures — %d compared, %d skipped: SNAPSHOTS DIFFER\n' "$total" "$compared" "$skipped"
+elif [ "$compared" -eq 0 ]; then
+  # Not a pass. In --check this means the corpus was empty or unreadable; in --new/--bless
+  # it just means nothing needed doing. Either way: say so, do not claim a match.
+  printf '%d fixtures — %d compared, %d skipped: NOTHING COMPARED (this is not a pass)\n' \
+    "$total" "$compared" "$skipped"
+  [ "$MODE" != "--check" ] || exit 1
+elif [ "$skipped" -ne 0 ]; then
+  printf '%d fixtures — %d compared and matching, %d SKIPPED (not compared)\n' \
+    "$total" "$compared" "$skipped"
+else
+  printf '%d fixtures, all %d compared and matching\n' "$total" "$compared"
+fi
 [ "$fail" -eq 0 ]

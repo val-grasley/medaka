@@ -39,3 +39,14 @@ diff_wasm          RED: 4 ref-mode failures — T25. Delete this line when T25 l
 diff_wasm_typed    RED: disp_hof_shadows_method — T25. Delete this line when T25 lands.
 diff_wasm_modules  gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
 diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
+
+# ── the long tail found when the gate was widened to enumerate EVERYTHING (2026-07-13) ──
+#
+# Teaching this gate to look past `diff_compiler_*` found SEVENTEEN gates that had never
+# run in CI. Twelve were green and cheap and are now in shards (cross_project_*,
+# diff_native_cli, diff_native_stack, diff_net, the four effect_*_domain gates,
+# manifest_emit, lsp_harness, selfcompile_lex, selfcompile_emit, selfcompile_build_fixpoint).
+# These three are not, and each says why. Every one of them is a task, not a shrug.
+build_construct_coverage  RED: 138 ok, 1 FAILING, 5 skipped (of 144), and 330s. Needs triage — the failure is real and unexamined. Do not enroll until it is green.
+check_removed_constructs  ~2-3 min tree-wide scan for stale removed constructs. Cheap to run by hand, too slow for every push. Consider a scheduled/nightly job.
+fuzz_diff                 a FUZZER — nondeterministic by design, so it cannot be a pass/fail gate on a PR (a green run proves nothing and a red run may be unreproducible). Belongs in a scheduled job that files findings, not in the PR path.
