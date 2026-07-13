@@ -5008,8 +5008,7 @@ clauseArm _ (pats, body) = CArm (PTuple pats) [] body
 -- (clauseArm) — bindArm re-matches those to bind variables.
 implRows : List (List Pat, CExpr) -> Int -> List (List Pat, Int)
 implRows [] _ = []
-implRows ((pats, _)::rest) i =
-  (map canonPat pats, i) :: implRows rest (i + 1)
+implRows ((pats, _)::rest) i = (map canonPat pats, i) :: implRows rest (i + 1)
 
 headPat : List Pat -> Pat
 headPat (p::_) = p
@@ -6073,7 +6072,8 @@ bindEach _ env _ _ _ = env
 -- bind each param pattern against its own word, branching to `failL` on a miss.
 emitRefutArm : Emit -> List (String, (String, LTy)) -> Pat -> List String -> CExpr -> String -> <Mut> List (String, (String, LTy))
 emitRefutArm e env pat [v] body failL = emitRefutMatch e env pat v body failL
-emitRefutArm e env (PTuple ps) roots body failL = emitRefutEach e env ps roots body failL
+emitRefutArm e env (PTuple ps) roots body failL =
+  emitRefutEach e env ps roots body failL
 emitRefutArm e env pat (v::_) body failL = emitRefutMatch e env pat v body failL
 emitRefutArm _ env _ [] _ _ = env
 
