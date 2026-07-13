@@ -3268,7 +3268,7 @@ emitApp e env app =
         else
           if isCtor e fname then
             let argOps = emitArgs e env args
-            emitCtorAlloc e fname argOps
+            emitCtorApp e fname argOps (ctorArity e fname)
           else
             let fname2 = canonFnName e fname
             if isKnownFn e fname2 && hasArgs args then
@@ -5316,11 +5316,70 @@ ctorArity e name = match ctorMapRef.value
     Some n => n
     None => 0
 
+-- #35: an APPLIED constructor, dispatched on saturation.  This is the arity check
+-- that the emitVar-side comment below has always ASSUMED but which emitApp did not
+-- actually perform: the ctor arm used to call `emitCtorAlloc` unconditionally, so an
+-- UNDER-applied ctor (`Bin OAdd` for arity-3 `Bin`) allocated a `Bin` cell holding 1
+-- of its 3 fields.  Saturating that later applied args to a DATA cell as if it were a
+-- closure (@mdk_apply read the ctor TAG out of the header as if it were an arity), so
+-- the value carried the right tag but junk fields — a SILENT wrong-value miscompile:
+-- `check` accepted, `run` was correct, `build` produced garbage (E-NONEXHAUSTIVE-MATCH).
+--   • SATURATED (the overwhelmingly common case) ⇒ `emitCtorAlloc`, byte-identical to
+--     before, so no gate/fixpoint churn.
+--   • UNDER-applied ⇒ a ctor PAP (emitCtorPap): a real closure cell over the supplied
+--     args whose forwarder allocates the cell once the rest arrive.
+--   • OVER-applied ⇒ unreachable for a well-typed program (typecheck rejects applying
+--     a data value), but route the surplus through the runtime @mdk_apply rather than
+--     silently storing past the cell's end.
+emitCtorApp : Emit -> String -> List String -> Int -> <Mut> (String, LTy)
+emitCtorApp e name argOps arity
+  | lengthS argOps < arity = emitCtorPap e name argOps arity
+  | lengthS argOps > arity =
+    let (cw, _) = emitCtorAlloc e name (takeS arity argOps)
+    (emitApplyAny e cw (dropS arity argOps), LTInt)
+  | otherwise = emitCtorAlloc e name argOps
+
+-- the residual PAP closure for an UNDER-applied constructor.  Exactly the E22
+-- method-PAP shape (emitMethodPap) with the dict captures dropped: the closure cell
+-- captures the k supplied arg words, its recorded arity is the RESIDUAL (arity − k)
+-- so a later over-application of the PAP still splits correctly, and the lifted
+-- forwarder reloads the captures and allocates the cell from (supplied ++ fresh).
+-- Equivalently: emitCtorEtaClosure (the captureless k==0 eta-wrapper below)
+-- generalised to k > 0 supplied args.
+emitCtorPap : Emit -> String -> List String -> Int -> <Mut> (String, LTy)
+emitCtorPap e name argOps arity =
+  let remaining = arity - lengthS argOps
+  let lamName = "mdk_ctorpap_\{name}_\{intToString (freshId e)}"
+  let _ = emitCtorPapDefine e lamName name arity (lengthS argOps)
+  emitClosureAllocA e lamName remaining argOps
+
+-- emit the under-applied-ctor PAP forwarder.  Closure cell layout: field 0 =
+-- code_ptr, fields 1..S = the S supplied arg words.  The forwarder takes `remaining`
+-- fresh `%argK` params, reloads the supplied words from fields 1..S, and allocates
+-- the ctor cell from (supplied ++ fresh).  Side-buffer swap discipline is
+-- emitCtorEtaDefine's, verbatim.
+emitCtorPapDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
+emitCtorPapDefine e lamName name arity supplied =
+  let saved = (bufRef e).value
+  let _ = setRef (bufRef e) []
+  let remaining = arity - supplied
+  let _ = emit e "define i64 @\{lamName}(\{etaParamDecls remaining}) {"
+  let _ = emit e "entry:"
+  let suppliedOps = loadPapCaptures e supplied 0
+  let (w, _) = emitCtorAlloc e name (suppliedOps ++ etaArgOps remaining 0)
+  let _ = emit e ("  ret i64 " ++ w)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  setRef (bufRef e) saved
+
 -- a CONSTRUCTOR with arity>0 referenced as a FIRST-CLASS value (`map PVar vars`):
--- emitApp only builds the cell when the ctor is SATURATED (via emitCtorAlloc), so a
--- bare/partial ctor name reaches emitVar.  Eta-wrap it into a captureless static
--- closure whose lifted forwarder allocates the ctor cell from its `%argK` words —
--- mirrors emitEtaClosure (known-fn eta) but the body is emitCtorAlloc, not a call.
+-- emitApp only builds the cell when the ctor is SATURATED (via emitCtorAlloc — see
+-- emitCtorApp above, which now ENFORCES that), so a bare ctor name reaches emitVar.
+-- Eta-wrap it into a captureless static closure whose lifted forwarder allocates the
+-- ctor cell from its `%argK` words — mirrors emitEtaClosure (known-fn eta) but the
+-- body is emitCtorAlloc, not a call.
 -- (Arity-0 ctors stay the immediate `emitCtorAlloc e name []` in emitVar — already a
 -- complete value, not a function.)
 emitCtorEtaClosure : Emit -> String -> <Mut> (String, LTy)
