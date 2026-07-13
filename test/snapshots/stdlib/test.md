@@ -133,7 +133,7 @@ export runTests : List (String, Unit -> Expectation) -> <IO> Bool
 runTests tests = goTests tests 0 0
 # DESUGAR
 (DData Public "Expectation" () ((variant "Pass" (ConPos)) (variant "Fail" (ConPos (TyCon "String")))) ())
-(DImpl true "Debug" ((TyCon "Expectation")) () ((im "debug" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Pass") () (ELit (LString "Pass"))) (arm (PCon "Fail" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Fail ")) (EApp (EVar "debug") (EVar "__a0"))))))))
+(DImpl true "Debug" ((TyCon "Expectation")) () ((im "debug" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Pass") () (ELit (LString "Pass"))) (arm (PCon "Fail" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Fail ")) (EApp (EVar "derivedShowWrap") (EApp (EVar "debug") (EVar "__a0")))))))))
 (DTypeSig true "pass" (TyCon "Expectation"))
 (DFunDef false "pass" () (EVar "Pass"))
 (DTypeSig true "fail" (TyFun (TyCon "String") (TyCon "Expectation")))
@@ -164,7 +164,7 @@ runTests tests = goTests tests 0 0
 (DFunDef false "runTests" ((PVar "tests")) (EApp (EApp (EApp (EVar "goTests") (EVar "tests")) (ELit (LInt 0))) (ELit (LInt 0))))
 # MARK
 (DData Public "Expectation" () ((variant "Pass" (ConPos)) (variant "Fail" (ConPos (TyCon "String")))) ())
-(DImpl true "Debug" ((TyCon "Expectation")) () ((im "debug" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Pass") () (ELit (LString "Pass"))) (arm (PCon "Fail" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Fail ")) (EApp (EMethodRef "debug") (EVar "__a0"))))))))
+(DImpl true "Debug" ((TyCon "Expectation")) () ((im "debug" ((PVar "__x")) (EMatch (EVar "__x") (arm (PCon "Pass") () (ELit (LString "Pass"))) (arm (PCon "Fail" (PVar "__a0")) () (EBinOp "++" (ELit (LString "Fail ")) (EApp (EVar "derivedShowWrap") (EApp (EMethodRef "debug") (EVar "__a0")))))))))
 (DTypeSig true "pass" (TyCon "Expectation"))
 (DFunDef false "pass" () (EVar "Pass"))
 (DTypeSig true "fail" (TyFun (TyCon "String") (TyCon "Expectation")))
