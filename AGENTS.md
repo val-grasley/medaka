@@ -158,6 +158,21 @@ make medaka     # WARM (./medaka_emitter present): 2-stage rebuild from current 
 ./medaka run yourfile.mdk
 ```
 
+**`C3a WARN: … lagging seed` is NOT a broken seed, and it is NOT something you did.** The seed
+is allowed to drift: `bootstrap_from_seed.sh` is TOLERANT by default (policy `9df88b32`) — the seed
+must *work*, byte-currency is only a drift detector, and `seed-health` in CI warns rather than fails
+on purpose. You only ever see this line if something triggered a **cold** bootstrap. Re-mint
+(`sh test/refresh_seed.sh`, **twice** — it is not idempotent after a codegen change) at checkpoints,
+not reflexively.
+
+**Borrowing an emitter to warm-start a fresh worktree is safe** (`cp <other-tree>/medaka_emitter .`
+then `make medaka`). `build_native_medaka.sh` fingerprints the `compiler/**/*.mdk` each emitter was
+built from into `.medaka_emitter.srcstamp` (gitignored, so it never travels with the `cp`) and
+rebuilds any emitter of unknown or mismatched provenance. ⚠️ Until 2026-07-13 it decided this by
+**mtime**, which `cp` inverts — the copy is newer than every just-checked-out source file, so a
+stale borrowed emitter was *trusted*, blew up in stage B on syntax it predated (`parse error`), and
+silently fell back to a cold re-bootstrap. That is where the spurious "lagging seed" scare came from.
+
 **Where you're running (2026-07-13).** Primary dev is a **dedicated x86_64 Linux box** (Debian 13
 trixie, 12 EPYC cores / 32 GB; repo at `/root/medaka`). Build straight on it — `make medaka`, then
 the gate suite. No container, no VM, no wrapper: run everything natively and in parallel. This box

@@ -8,9 +8,10 @@
 #     stage B: the fresh emitter compiles compiler/driver/medaka_cli.mdk -> ./medaka.
 #   Always-2-stage is correct; the rebuilt emitter's self-consistency is guaranteed
 #   separately by test/selfcompile_fixpoint.sh (not run here), so the warm loop is
-#   sound.  A timestamp short-circuit skips stage A when no compiler/**.mdk source is
-#   newer than ./medaka_emitter (correctness-preserving; can be disabled with
-#   FORCE_EMITTER_REBUILD=1).
+#   sound.  A CONTENT-FINGERPRINT short-circuit skips stage A when compiler/**.mdk
+#   hashes to what ./medaka_emitter was built from (can be disabled with
+#   FORCE_EMITTER_REBUILD=1).  See "Emitter provenance" below for why this is a
+#   hash and NOT a timestamp.
 #
 #   COLD (no ./medaka_emitter — fresh clone): bootstrap emitter_v0 from the gzipped
 #   committed seed (test/bootstrap_from_seed.sh, TOLERANT — a lagging seed only WARNS,
@@ -112,15 +113,68 @@ emit_graph() {
 }
 
 
+# ── Emitter provenance: hash the SOURCE, never trust the MTIME ────────────────
+#
+# An emitter binary's provenance — WHICH SOURCE was it built from — cannot be read
+# off its mtime, and this bit every agent on every fresh worktree until 2026-07-13.
+#
+# The documented warm path is:  cp <other-tree>/medaka_emitter . && make medaka
+# `cp` stamps the copy with the CURRENT time, which is NEWER than every file that
+# `git worktree add` just checked out. So the old `find -newer "$EMITTER"` test found
+# nothing newer and concluded "emitter up-to-date — skipping rebuild" about a binary
+# that was, in SOURCE terms, arbitrarily old. It then handed that stale binary to
+# stage B, where it died on syntax it predated ("parse error"), and the build fell
+# back to a full COLD re-bootstrap from the seed — which additionally printed
+#   "C3a WARN: committed seed differs ... (lagging seed)"
+# an alarming, entirely unrelated message that sent agents hunting a seed bug that
+# was not there. (Concretely: an emitter predating b2990236 cannot parse
+# compiler/tools/snapshot.mdk, which now uses `import ... as ...`.)
+#
+# The mtime is not a weak signal here, it is an ACTIVELY INVERTED one: the staler the
+# emitter's origin, the fresher its copy time. So fingerprint the source it was built
+# from and keep that beside the binary. A copied-in emitter carries no stamp (the
+# stamp is gitignored and never travels with a `cp`), so it is correctly treated as
+# unknown-provenance and rebuilt — which is exactly the cheap stage-A emit that makes
+# the warm path warm.
+SRC_STAMP="$ROOT/.medaka_emitter.srcstamp"
+
+# sha256 where available (Linux coreutils / macOS `shasum`); `cksum` is the POSIX
+# floor. This is a staleness check, not a signature — a weak hash only risks a
+# missed rebuild, which FORCE_EMITTER_REBUILD=1 always overrides.
+hash_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+  else cksum
+  fi
+}
+
+# Names AND contents, REPO-RELATIVE, so an add/rename/delete registers as loudly as
+# an edit and the stamp never bakes in an absolute worktree path.
+src_fingerprint() {
+  ( cd "$ROOT" && find compiler -name '*.mdk' -print | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s\n' "$f"
+      cat "$f"
+    done ) | hash_stream | cut -d' ' -f1
+}
+
 # ---- STAGE A (WARM): existing emitter rebuilds itself from CURRENT source --------
-# Skip if no compiler/**.mdk source is newer than the emitter binary (correctness-
-# preserving: an up-to-date emitter re-emits byte-identically anyway).
-NEWER="$(find "$SELFHOST" -name '*.mdk' -newer "$EMITTER" -print 2>/dev/null | head -1)"
-if [ "$FORCE_EMITTER_REBUILD" != "1" ] && [ -z "$NEWER" ]; then
-  echo "stage A: emitter up-to-date (no compiler/*.mdk newer than $EMITTER) — skipping rebuild."
+# Skip ONLY when the emitter exists AND its stamp says it was built from exactly this
+# compiler source (an up-to-date emitter re-emits byte-identically anyway).
+CUR_FP="$(src_fingerprint)"
+STAMP_FP=""
+[ -f "$SRC_STAMP" ] && STAMP_FP="$(cat "$SRC_STAMP" 2>/dev/null)"
+if [ "$FORCE_EMITTER_REBUILD" != "1" ] && [ -x "$EMITTER" ] && [ -n "$STAMP_FP" ] && [ "$STAMP_FP" = "$CUR_FP" ]; then
+  echo "stage A: emitter up-to-date (compiler source fingerprint unchanged) — skipping rebuild."
 else
-  [ -n "$NEWER" ] && echo "stage A: compiler source changed ($NEWER) — rebuilding emitter from current source ..."
-  [ "$FORCE_EMITTER_REBUILD" = "1" ] && echo "stage A: FORCE_EMITTER_REBUILD=1 — rebuilding emitter from current source ..."
+  if [ "$FORCE_EMITTER_REBUILD" = "1" ]; then
+    echo "stage A: FORCE_EMITTER_REBUILD=1 — rebuilding emitter from current source ..."
+  elif [ -z "$STAMP_FP" ]; then
+    # Either the cold branch above just minted it from the seed, or it was copied in
+    # from another tree. Both are "provenance unknown" — rebuild rather than guess.
+    echo "stage A: emitter provenance unknown (fresh bootstrap, or copied in from another tree) — rebuilding from current source ..."
+  else
+    echo "stage A: compiler source changed since this emitter was built — rebuilding emitter from current source ..."
+  fi
   EMIT_LL="$WORK/emitter.ll"
   if ! emit_graph "$EMIT_LL" "$WORK/emitA.err" "$DRIVER"; then
     echo "FAIL (emitter crashed re-emitting its own graph):"; cat "$WORK/emitA.err"; exit 1
@@ -161,6 +215,12 @@ echo "stage B: clang(medaka_cli.ll, $CLI_OPT) -> $OUT ..."
 if ! "$CC" -pthread "$CLI_OPT" $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS -lm -o "$OUT" 2>"$WORK/cc.err"; then
   echo "FAIL (clang medaka): $(cat "$WORK/cc.err")"; exit 1
 fi
+
+# Record WHICH SOURCE this emitter was built from. Correct on every path that got
+# here: stage A rebuilt it, or its stamp already matched, or emit_graph's reseed
+# rebuilt it from the current-source re-emission. Written last, so a failed build
+# never leaves a stamp claiming a provenance the binary does not have.
+printf '%s\n' "$CUR_FP" > "$SRC_STAMP"
 
 echo
 echo "BUILT $OUT — native, OCaml-free."
