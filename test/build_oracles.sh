@@ -160,6 +160,51 @@ for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; find "$ROOT/runti
   [ "$m" -gt "$newest_src" ] && newest_src=$m
 done
 
+# ── `--for <gate-pattern>...` : build ONLY the oracles those gates actually read ──
+#
+# Building all 54 oracles is 54 × (medaka build + clang). That is the single most
+# expensive thing in the whole test system: measured at ~34s on a 12-core box but
+# **18+ minutes on a 2-core CI runner**, where it was 93% of the build job (the
+# cold bootstrap from seed, by contrast, is only 80s).
+#
+# But no gate needs all 54. A gate names its oracle as `test/bin/<name>`, so the
+# set is derivable from the gate scripts themselves — no hand-maintained mapping to
+# drift. Per-shard need: engines 2, frontend 14, types 10, eval 19, backend 6,
+# tools 6. So CI shards build ~19 max, concurrently, instead of 54 serially; and
+# `test/preflight.sh` uses the same derivation so an agent touching the parser
+# builds 9, not 54.
+#
+#   sh test/build_oracles.sh --for 'diff_compiler_parse*' 'diff_compiler_fmt'
+#
+# The derivation is intentionally shared with preflight.sh and the CI matrix: ONE
+# source of truth for "which oracle does this gate read".
+if [ "${1:-}" = "--for" ]; then
+  shift
+  [ "$#" -gt 0 ] || { echo "usage: $0 --for '<gate-pattern>' ..."; exit 1; }
+  _gates=""
+  for _pat in "$@"; do
+    for _g in "$ROOT"/test/$_pat.sh; do
+      [ -f "$_g" ] || continue
+      case " $_gates " in *" $_g "*) ;; *) _gates="$_gates $_g" ;; esac
+    done
+  done
+  [ -n "$_gates" ] || { echo "FAIL: --for matched no gates: $*"; exit 1; }
+  _sel=""
+  for _g in $_gates; do
+    for _o in $(grep -ohE 'test/bin/[a-z_0-9]+' "$_g" 2>/dev/null | sed 's|test/bin/||' | sort -u); do
+      # only accept names that are real entries — a gate may mention a path we
+      # don't build, and silently "building" a non-entry would be a lie.
+      case " $ENTRIES " in
+        *" $_o "*) case " $_sel " in *" $_o "*) ;; *) _sel="$_sel $_o" ;; esac ;;
+      esac
+    done
+  done
+  [ -n "$_sel" ] || { echo "FAIL: --for selected no oracles from: $*"; exit 1; }
+  printf 'building %s of %s oracles (only what these gates read)\n' \
+    "$(printf '%s\n' $_sel | grep -vc '^$')" "$(printf '%s\n' $ENTRIES | grep -vc '^$')"
+  ENTRIES="$_sel"
+fi
+
 # ── Worklist: which entries actually need (re)building ─────────────────────────
 # The probe entries are COMPILER internals (compiler/entries/*) whose graphs use
 # the internal-only array-kernel externs (arrayGetUnsafe, …); the worker passes

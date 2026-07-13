@@ -1,22 +1,37 @@
 name: CI
 
-# GitHub-HOSTED runners. Free and unlimited for public repositories, with 20
-# concurrent jobs on the Free plan.
+# GitHub-HOSTED runners. Free and unlimited for public repositories, 20 concurrent
+# jobs on the Free plan.
 #
-# The suite is SHARDED across that concurrency rather than run as one long job.
-# This matters: a single hosted runner is small, and this suite's speed comes
-# almost entirely from parallelism (oracle build 327s -> 34s, gate suite 125s ->
-# 32s, both measured on 12 cores). Serialized onto one small runner it would crawl.
-# Fanned out across six jobs it has more aggregate throughput than the 12-core box
-# it used to run on — and the 20-job ceiling leaves room to split the engines shard
-# further if it becomes the bottleneck again.
+# ── Why there is no shared "build" job ──────────────────────────────────────────
+# The obvious shape — build once, upload an artifact, fan out — was tried and is
+# WRONG here. Measured on a hosted runner:
 #
-# Shape: build ONCE (the compiler + the 54 stage oracles), upload as an artifact,
-# then every shard downloads it. Without that, each shard would pay the ~4 min
-# build again and the sharding would be worthless.
+#     Install toolchain .................  13s
+#     make medaka (cold, from seed) .....  80s     <- fine
+#     FORCE=1 build_oracles.sh .......... 18+ min  <- 93% of the job, and climbing
+#
+# `build_oracles.sh` compiles 54 probe binaries (54 × `medaka build` + clang). On
+# the 12-core dev box that is ~34s; on a small hosted runner it dominates
+# everything and blows the timeout. Caching it would only help when the compiler is
+# untouched — which is exactly never, for compiler work.
+#
+# The fix: NO GATE NEEDS ALL 54. A gate names its oracle as `test/bin/<name>`, so
+# `build_oracles.sh --for '<gate-pattern>'` derives the set straight from the gate
+# scripts. Per shard: engines 2, frontend 14, types 10, eval 19, backend 6, tools 6.
+# So each shard builds its own handful CONCURRENTLY with the others — the critical
+# path drops from 54-serial to 19-parallel, and the artifact plumbing disappears.
+#
+# `test/preflight.sh` uses the SAME derivation, so an agent touching the parser
+# builds 9 oracles locally instead of 54. One source of truth, two consumers.
+#
+# ── Why the drift check is inside each shard ────────────────────────────────────
+# It cannot be a separate job: a fresh checkout in a fresh VM would never see drift
+# caused by gates that ran somewhere else. It has to run in the same working tree,
+# right after the gates.
 #
 # NOTE: this repo previously used a self-hosted runner on the dev box. It was
-# removed before going public: a fork PR on a PUBLIC repo with a self-hosted runner
+# removed before going public — a fork PR on a PUBLIC repo with a self-hosted runner
 # is arbitrary code execution on the runner host. Do not reintroduce one.
 
 on:
@@ -30,72 +45,30 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Oracles are throwaway binaries whose runtime is hidden by parallelism, so -O0
-  # builds them much faster. The emitter is the reused workhorse and stays -O2.
+  # Oracles are throwaway binaries; -O0 builds them much faster and their runtime is
+  # hidden by parallelism. The emitter is the reused workhorse and stays -O2.
   ORACLE_OPT: -O0
 
 jobs:
-  # ── Build once ──────────────────────────────────────────────────────────────
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang libgc-dev
-
-      # A fresh checkout has no ./medaka_emitter, so this is the COLD path: it
-      # bootstraps from the checked-in seed (compiler/seed/emitter.ll.gz). Every CI
-      # run therefore re-proves the trust anchor. If the seed ever goes stale, this
-      # is what catches it — before anything downstream can be trusted.
-      - name: Build medaka (cold bootstrap from seed)
-        run: make medaka
-
-      # FORCE is mandatory, not caution: build_oracles.sh mtime-skips, and a stale
-      # test/bin/* oracle silently makes every gate pass against an OLD compiler.
-      # (That bug is why the docs used to say "always FORCE=1".)
-      - name: Build stage oracles
-        run: FORCE=1 sh test/build_oracles.sh
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: medaka-build
-          path: |
-            medaka
-            medaka_emitter
-            test/bin/
-          retention-days: 1
-          if-no-files-found: error
-
-  # ── Fan out ─────────────────────────────────────────────────────────────────
-  #
-  # Every one of the 82 diff_compiler_* gates lands in exactly ONE shard — verified,
-  # 0 missing and 0 duplicated. A gate falling between shards would silently never
-  # run, which is precisely the class of rot this suite is being hardened against.
-  #
-  # The `pattern` values are a space-separated list of SINGLE-quoted globs inside a
-  # DOUBLE-quoted YAML scalar. Both layers of quoting are load-bearing:
-  #   * the outer double quotes make it one YAML scalar (a bare `'a' 'b'` is invalid
-  #     YAML — it parses the first token and chokes on the rest);
-  #   * the inner single quotes survive into the shell and stop it expanding the
-  #     globs before run_gates.sh sees them.
-  # And do NOT use brace expansion ('diff_compiler_{lex*,parse*}') — run_gates.sh
-  # runs under POSIX sh (dash), which does not expand braces, so it would glob to
-  # nothing. run_gates.sh takes multiple patterns for exactly this reason.
   gates:
-    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false          # one shard failing must not hide the others
       matrix:
         include:
-          # The long pole by an order of magnitude: it shells to clang once per
-          # fixture across a ~346-fixture corpus. Its own shard, so it gates nobody.
+          # Every one of the 82 diff_compiler_* gates lands in exactly ONE shard —
+          # verified: 0 missing, 0 duplicated. A gate falling between shards would
+          # silently never run, which is the exact class of rot this suite is being
+          # hardened against.
+          #
+          # Quoting is load-bearing on BOTH layers:
+          #   * outer DOUBLE quotes -> one YAML scalar (a bare `'a' 'b'` is invalid
+          #     YAML; it reads the first token and chokes on the rest);
+          #   * inner SINGLE quotes -> survive into the shell so it does not expand
+          #     the globs before run_gates.sh sees them.
+          # And do NOT use brace expansion: run_gates.sh runs under POSIX sh (dash),
+          # which does not expand braces, so it would glob to nothing.
           - name: engines
             pattern: "'diff_compiler_engines'"
           - name: frontend
@@ -117,78 +90,61 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: medaka-build
+      # A fresh checkout has no ./medaka_emitter, so this is the COLD path: it
+      # bootstraps from the checked-in seed (compiler/seed/emitter.ll.gz). Every
+      # shard therefore re-proves the trust anchor. If the seed ever goes stale,
+      # this is what catches it — before anything downstream can be trusted. 80s.
+      - name: Build medaka (cold bootstrap from seed)
+        run: make medaka
 
-      - name: Restore executable bits
-        run: chmod +x medaka medaka_emitter test/bin/* 2>/dev/null || true
+      # Only the oracles THIS shard's gates actually read. See the header.
+      - name: Build the oracles this shard needs
+        run: FORCE=1 sh test/build_oracles.sh --for ${{ matrix.pattern }}
 
-      # UNQUOTED substitution is deliberate — see the block comment above. Wrapping
-      # ${{ matrix.pattern }} in quotes here would collapse the whole list into ONE
-      # argument, silently degrading a multi-pattern shard to a single bogus glob.
-      #
       # run_gates.sh hard-fails when zero gates matched, and reclassifies a
-      # missing-oracle exit-2 as a FAILURE rather than a SKIP. So a shard whose
+      # missing-oracle exit-2 as a FAILURE rather than a SKIP — so a shard whose
       # patterns match nothing fails LOUDLY instead of reporting a green no-op.
+      #
+      # (UNQUOTED substitution is deliberate; quoting it would collapse the pattern
+      # list into ONE argument and silently degrade the shard to a single bad glob.)
       - name: Gate shard — ${{ matrix.name }}
         run: sh test/run_gates.sh ${{ matrix.pattern }}
 
-  # ── The in-language suite ───────────────────────────────────────────────────
-  inlang:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang libgc-dev
-      - uses: actions/download-artifact@v4
-        with:
-          name: medaka-build
-      - run: chmod +x medaka medaka_emitter test/bin/* 2>/dev/null || true
-      - name: Doctests, properties, and test decls
-        run: make test
-
-  # ── The review gate ─────────────────────────────────────────────────────────
-  review-gate:
-    needs: [gates, inlang]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang libgc-dev
-      - uses: actions/download-artifact@v4
-        with:
-          name: medaka-build
-      - run: chmod +x medaka medaka_emitter test/bin/* 2>/dev/null || true
-
-      # Roc's model: regeneration is the DEFAULT action, and `git diff --exit-code`
+      # THE REVIEW GATE — must be in THIS job, on the tree the gates just ran over.
+      #
+      # Roc's model: regeneration is the DEFAULT action and `git diff --exit-code`
       # forces every regenerated byte into review. That guard is what makes a
       # frictionless `--bless` safe. GHC and OCaml, lacking it, deliberately cripple
-      # blessing instead (GHC's accept only fires on already-failing tests; OCaml's
-      # `make promote` refuses to run suite-wide). This repo has had NEITHER guard —
-      # the dangerous quadrant.
+      # blessing instead. This repo has had NEITHER guard — the dangerous quadrant.
       #
-      # TODAY this catches gates that write into the tree. AFTER the snapshot
-      # migration lands `medaka snapshot --bless`, it becomes the real guard. It must
-      # be load-bearing BEFORE blessing gets easy, not after.
+      # TODAY it catches gates that write into the tree. AFTER the snapshot migration
+      # lands `medaka snapshot --bless`, it becomes the real guard. It must be
+      # load-bearing BEFORE blessing gets easy, not after.
       - name: The tree must not have drifted
         run: |
           if ! git diff --exit-code; then
-            echo "::error::The suite modified tracked files — goldens/artifacts drifted."
+            echo "::error::A gate in the '${{ matrix.name }}' shard modified tracked files."
             echo "::error::Commit them deliberately, or fix the gate that writes into the tree."
             exit 1
           fi
           untracked="$(git status --porcelain --untracked-files=normal | grep -v '^!!' || true)"
           if [ -n "$untracked" ]; then
-            echo "::error::The suite left untracked files behind:"
+            echo "::error::A gate in the '${{ matrix.name }}' shard left untracked files behind:"
             echo "$untracked"
             exit 1
           fi
+
+  # ── The in-language suite: doctests, properties, `test "..."` decls ───────────
+  inlang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+      - name: Build medaka (cold bootstrap from seed)
+        run: make medaka
+      - name: Doctests, properties, and test decls
+        run: make test
