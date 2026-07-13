@@ -1,0 +1,13 @@
+-- P0-21, the OTHER direction: scoping shadow-hood to the defining module must not
+-- DISARM it inside that module.  The user's `map` is still a definer shadow in the
+-- user's own file, so S2's standalone arm still applies — a receiver whose head has no
+-- impl of the shadowed interface must type against the standalone's DECLARED domain, and
+-- `map "hi"` is a located `Type mismatch: Int vs String` reject on check == run == build.
+--
+-- Guards the obvious wrong fix for p0_21_prelude_shadow_scope: emptying the shadow set
+-- (or gating the machinery off whenever a prelude is present) makes THAT fixture pass
+-- and silently re-opens P0-19's row-13 hole — check accepts, the binary prints garbage.
+map : Int -> Int
+map n = n + 1
+
+main = println (map "hi")

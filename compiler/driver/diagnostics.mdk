@@ -309,7 +309,7 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
   let _ = setCoherenceUserDecls desugared
   let tcDiags = match resErrs
     [] =>
-      let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
+      let (tcErrs, tcWarns) = checkProgramDiags runtimeP coreP desugared
       map diagOfTypeError tcErrs ++ map diagOfMatchWarning tcWarns
     _ => []
   -- AUTO-PRINT visibility (composite-main design §10): a bare non-Unit VALUE main

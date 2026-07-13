@@ -459,7 +459,7 @@ typesOf : List Decl -> List Decl -> <Mut> (String, Bool)
 typesOf runtimeDecls d =
   let _ = setCoherenceUserDecls d
   let _ = resetTypeErrorsSticky ()
-  let text = checkToLinesWithRuntime runtimeDecls d
+  let text = checkToLinesWithRuntime runtimeDecls [] d
   (text, hadTypeErrors () || hadMatchWarnings ())
 
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing

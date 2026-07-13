@@ -319,6 +319,69 @@ same "which stage owns S4/S6" decision.
 >    interface TYPE PARAMS, not method params). `check` and `build` agree, `run` panics.
 >    S8 speaks to multi-*param methods*; it does not cover multi-*typaram interfaces*.
 
+> **🐛 NEW CELL + ✅ FIX (2026-07-14, P0-21) — row 27: S1 ("shadow-hood is per-module")
+> was NOT enforced on the single-file/flat path — a user's shadow LEAKED INTO THE
+> PRELUDE.** Every cell in the matrix above varies the shadow's *use*; none of them asks
+> **whose module the occurrence is in**. That is where the hole was:
+>
+> ```
+> map : Int -> Int      -- defined, and NEVER USED
+> map n = n + 1
+> main = println "hello"
+> ```
+>
+> **14 errors**, every one of them raised inside the PRELUDE's own bodies
+> (`map2`/`map3`/`replaceWith`/`discard` in `stdlib/core.mdk` all call `map`), all reported
+> against the user's file at a fabricated `1:0` — including `'map' takes 1 argument(s) but
+> is applied to 2` for a call the user never wrote. This is also the source of the
+> separately-filed fabricated-`1:0` diagnostics.
+>
+> Root cause: `checkProgramSeeded` was handed ONE flat program, `core ++ user`, computed
+> `buildDefinerShadows prog prog`, and then applied that single name set to **every
+> occurrence in the flattened program, core's included**. The multi-module path never had
+> this — `checkModuleFullImpl` seeds the shadow set per module and checks `core` in
+> isolation, which is why `helper.mdk`'s `map : Int -> Int` and `other.mdk`'s
+> `map (x => x*2) [1,2,3]` have always both worked.
+>
+> Today the leak was "only" a TYPING leak — a leaked prelude occurrence with a live-impl
+> receiver still dispatched, so `println 42` and `elem 9 [1,2,3]` were merely accompanied
+> by spurious errors, not miscompiled. **That stops being true the moment S2 is inverted so
+> a standalone WINS over a same-named method**: the same leaked occurrence would then ROUTE
+> the prelude's `println` into the user's `display`. So this is Stage 0 of the inversion
+> arc (`compiler/SHADOW-INVERSION-DESIGN.md`) and had to land first.
+>
+> Fix (`compiler/types/typecheck.mdk`): the flat path now knows **where the prelude ends**.
+> Every driver that flattens the prelude into what it checks (`desugar coreP ++ desugared`)
+> passes the two halves separately — `checkProgramSeededSplit seed coreProg userProg`
+> (`checkToLinesWithRuntime` / `checkErrorsWithRuntime` / `checkProgramDiags` /
+> `checkProgramSchemes{,WithRuntime}` each gained the parameter). With the boundary known,
+> `definerShadowNamesRef` is scoped exactly as `checkModuleFullImpl` scopes it: it is the
+> USER module's shadow set (`buildDefinerShadows prog userProg`) and is toggled **empty
+> while a CORE-owned letrec group, or core's impl/default/prop/test bodies, is inferred**
+> (`flatShadowScopingRef` / `flatCoreFnNamesRef` / `flatUserShadowNamesRef`,
+> `scopeShadowsForGroup`). Every consumer of that ref — `definerShadowVarHead`,
+> `definerShadowArgHead`, `maybeStandaloneValueMono`, `recordImplObligation`'s skip arm,
+> `resolveRLocalSite` — becomes per-module for free. All three refs are cleared by
+> `resetState` and set ONLY by a `checkProgramSeededSplit` with a non-empty prelude, so the
+> multi-module path and every prelude-free probe path are byte-identical.
+>
+> The `=>`-constrained-receiver carve-out (`definerReceiverIsDictVar`) is UNCHANGED and
+> still load-bearing — it is what keeps a *user's* constrained fn dispatching through its
+> dict in a shadowing module (`accept_constrained_receiver_shadow`). It is no longer what
+> saves the prelude's own `neq x y = not (eq x y)`; the prelude is now simply not in the
+> shadow's scope.
+>
+> Fixtures: `test/run_check_agreement_fixtures/p0_21_prelude_shadow_scope` (ACCEPT — the
+> repro, plus a *used* `map 3` → 4 alongside prelude `map2`/`discard`/`elem`/`length`) and
+> `p0_21_prelude_shadow_scope_reject` (REJECT — `map "hi"`, proving the machinery is still
+> live inside the user's own module and P0-19's row-13 hole stays closed). Agreement 46/0,
+> run_gates 83/0/0, fixpoint C3a/C3b YES, `make test` green.
+>
+> **Residual (unchanged, pre-existing):** inside a module that DOES shadow, a
+> multi-*param* method (`map : (a -> b) -> f a -> f b`) still peels only its FIRST argument
+> as the receiver, so `map (x => x*2) [1,2,3]` in a file that also defines `map : Int ->
+> Int` is rejected `Int vs a -> a`. This is the S8 residual, not S1: the already-correct
+> multi-module path rejects the identical shape identically, so the two paths now AGREE.
 ---
 
 ## 6. S-1 residuals (open; grep `S1-RESIDUAL`)

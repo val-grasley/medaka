@@ -401,4 +401,4 @@ docSchemesFor runtimeSrc coreSrc rawUser =
   let runtimeDecls = desugar (fst (parseWithPositions runtimeSrc))
   let coreDecls = desugar (fst (parseWithPositions coreSrc))
   let userDecls = desugar rawUser
-  checkProgramSchemesWithRuntime runtimeDecls (coreDecls ++ userDecls)
+  checkProgramSchemesWithRuntime runtimeDecls coreDecls userDecls
