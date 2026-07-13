@@ -272,6 +272,13 @@ Bake this into the report-back contract of **every** agent you spawn:
 > silently absorb friction. If you had to do something ugly to make progress, say what
 > and why. If an error message sent you down the wrong path, quote it. A clean report
 > that hides three workarounds is worse than a messy one that names them.
+>
+> **Explicitly include MISSING STDLIB FUNCTIONS.** Did you hand-roll a helper because
+> `stdlib/` didn't have it? Did you reach for something obvious by name and find it
+> absent? Did you write the same three-line utility a second time? **Name it.** A
+> function you had to write yourself is a stdlib gap discovered by USE — which is worth
+> far more than one discovered by planning, because it comes with a real call site
+> attached. Say what you wanted, what you wrote instead, and where.
 
 **Why this is not optional.** Agents are extremely good at *routing around* problems and
 then never mentioning them. Everything they route around is a bug the user will hit
