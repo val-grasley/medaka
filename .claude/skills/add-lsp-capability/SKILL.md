@@ -13,35 +13,63 @@ When examples involve **Medaka** code, use `x y => body`, never curried form.
 
 ## Wiring (three places)
 
-1. **Advertise the capability** — in `handleInitialize`, where
-   `ServerCapabilities` is built (look for `completionProvider`,
-   `hoverProvider`, …). Add the provider field for your feature so clients
-   know it's supported.
+All three are in `compiler/tools/lsp.mdk`. Line numbers are as of 2026-07-13 —
+grep the name, not the number.
+
+1. **Advertise the capability** — `initializeResult` (`:1183`). It is a plain
+   top-level **value**, not a function and not a record type:
+   `initializeResult : Json`, built with `jObject`. Its `"capabilities"` object
+   (`:1187`) already lists `textDocumentSync`, `documentFormattingProvider`,
+   `documentSymbolProvider`, `definitionProvider`, `documentHighlightProvider`,
+   `hoverProvider`, `completionProvider`, `inlayHintProvider`,
+   `semanticTokensProvider`. Add your provider field there so clients know the
+   feature exists.
 2. **Implement the handler** — add a `handle<Feature>` function next to the
-   existing ones (e.g. `handleHover`, `handleCompletion`,
-   `handleInlayHint`). It receives the typed params, resolves the document,
-   and returns the typed result option.
-3. **Dispatch** — match the corresponding request method string in
-   `handleRequestUnsafe` and call your handler.
+   existing ones. Real templates: `handleHover` (`:648`), `handleCompletion`
+   (`:738`), `handleInlayHint` (`:825`) — all with the shape
+   `String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit`
+   (`runtimeSrc`, `coreSrc`, the request id, the params `Json`, and the open-document
+   table). They write the response themselves rather than returning a value.
+3. **Dispatch** — `dispatch` (`:1471`),
+   `dispatch : String -> String -> Json -> Docs -> <IO, Mut> Step`. It matches on
+   `methodOf msg` (`:1464`) — add an arm for your request's method string and call
+   your handler.
 
 ## Get analysis results
 
-- Documents are tracked in the `docs` table; resolve by URI.
+- Open documents live in the `Docs` table (`data Docs`, `:118`), threaded through
+  every handler as the `docs` parameter; read/write with `docsGet` (`:214`) /
+  `docsPut` (`:123`). Resolve by URI.
 - Run the compiler front end through the **loader** (multi-file aware) the same
   way the existing handlers do — reuse the shared analysis helper rather than
   re-invoking stages directly.
 - **Resilience:** mid-edit buffers often don't parse. The server keeps a
-  `lastGoodSource` table so features degrade gracefully instead of going blank
-  on a transient parse error — fall back to last-good like neighboring handlers
-  do.
+  session-lived last-good-source cache — **`projectCache : Ref (List (String,
+  String))`** (`:1231`), a module-level `Ref` mapping file path → last source that
+  parsed, **not** a table type. Features degrade gracefully instead of going blank
+  on a transient parse error; fall back to last-good like neighboring handlers do.
 
 ## Verify
+
+`main` is PROTECTED — branch, then land via PR. Before committing:
+
+```sh
+medaka fmt --write compiler/tools/lsp.mdk   # the pre-commit hook REJECTS unformatted .mdk
+medaka lint compiler/tools/lsp.mdk          # the hook is a MAX RATCHET: any new finding fails
+make preflight
+```
+
+Then:
 
 ```sh
 bash test/diff_compiler_lsp.sh
 bash test/diff_compiler_lsp_b3.sh
 bash test/diff_compiler_lsp_b4.sh
 ```
+
+New LSP output almost always **moves an LSP golden**. Re-capture it (`CAPTURE=1`
+on the specific gate) and bless it — by NAMING the path — in the **same commit**,
+or `main` goes red.
 
 For an end-to-end stdio check, use `test/lsp_harness.sh`. The harness drives
 the **compiled** `medaka lsp` binary over JSON-RPC — run `make medaka` first.

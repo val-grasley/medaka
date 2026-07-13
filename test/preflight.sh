@@ -226,12 +226,48 @@ if [ "$need_fixpoint" -eq 1 ]; then
 fi
 
 # ── SAY WHAT YOU DID NOT RUN. Never be quiet about this. ─────────────────────
+#
+# Two things this block must get right, both learned the hard way:
+#
+# 1. The TOTAL must be derived from the same universe `run_gates.sh` uses for
+#    its bare-invocation default (`test/diff_compiler_*.sh`), not a hardcoded
+#    literal. The gate count has drifted across docs (72/82/83/84 — see
+#    AGENTS.md) and WILL drift again; a baked-in number is guaranteed to go
+#    stale, and when it does the arithmetic below UNDERFLOWS to a negative
+#    "the other -N of 82 gates" the moment ran_count exceeds it (reproduced:
+#    a `diff_compiler_*` wildcard match currently pulls in all 83 gates,
+#    against a hardcoded 82 → "the other -1 of 82 gates").
+# 2. `diff_compiler_engines` is called out here as a standing skip, but a
+#    wildcard `add 'diff_compiler_*'` (support/corpus changes) pulls it INTO
+#    $gates and it runs above like everything else — printing it here
+#    unconditionally then contradicts its own PASS/FAIL line a few lines up.
+#    Check whether it actually ran before naming it a skip.
+total_gates=$(ls "$ROOT"/test/diff_compiler_*.sh 2>/dev/null | wc -l | tr -d ' ')
+ran_count=$(printf '%s\n' $gates | grep -vc '^$')
+remaining=$(( total_gates - ran_count ))
+if [ "$remaining" -lt 0 ]; then
+  # Every gate $gates can contain comes from matching test/diff_compiler_*.sh
+  # (the same glob total_gates counts), so ran_count > total_gates should be
+  # impossible. Surface it loudly rather than silently clamping and hiding a
+  # real bookkeeping bug.
+  echo "preflight: INTERNAL INCONSISTENCY — ran_count ($ran_count) exceeds total_gates ($total_gates); the skip-count math below is WRONG. Report this, don't trust the number."
+  remaining=0
+fi
+
+engines_gate="$ROOT/test/diff_compiler_engines.sh"
+case " $gates " in
+  *" $engines_gate "*)
+    engines_line="  diff_compiler_engines      ran above (pulled in by a wildcard gate match) — not a skip" ;;
+  *)
+    engines_line="  diff_compiler_engines      the 3-engine differential (346 fixtures × clang)" ;;
+esac
+
 cat <<EOF
 
 ── NOT RUN LOCALLY (CI runs these on the PR) ─────────────────────
-  diff_compiler_engines      the 3-engine differential (346 fixtures × clang)
+$engines_line
 $([ "$need_fixpoint" -eq 1 ] || echo "  selfcompile_fixpoint       (not a backend change)")
-  the other $(( 82 - $(printf '%s\n' $gates | grep -vc '^$') )) of 82 gates
+  the other $remaining of $total_gates gates
 
   This preflight is a FILTER, not an authority. A green run here means the gates
   most likely to notice your change did not break — nothing more. Push a branch and

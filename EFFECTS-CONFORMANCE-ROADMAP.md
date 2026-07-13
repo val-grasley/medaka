@@ -1,6 +1,7 @@
 # Effect-and-Capability Conformance Roadmap
 
-**Status:** roadmap (forward plan). **Target spec:**
+**Status:** PARTIAL — WS-1 through WS-4 DONE (see entries below); WS-5 "standing
+discipline" and Phase 146b remain open. **Target spec:**
 [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md). **Findings:**
 [`archive/EFFECTS-CONFORMANCE-AUDIT.md`](archive/EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
 
@@ -154,11 +155,21 @@ discipline, not a closeable item.
 
 ## 0. Principles
 
-- **Target the canonical binary.** Both typecheckers move in lockstep
-  (compiler `types/typecheck.mdk` canonical + OCaml `lib/typecheck.ml` frozen
-  oracle), every change fixpoint-gated (`selfcompile_fixpoint`) and differential-
-  gated (`diff_compiler_typecheck`/`_error`/`_golden`). This is the v2 working
-  invariant; keep it.
+> **`lib/` (the OCaml oracle) was removed 2026-06-26 (`06356a80`).** The
+> lockstep rule below is historical — it applied while both typechecker
+> implementations existed. There is now only one typechecker
+> (`compiler/types/typecheck.mdk`); see line ~140 of this same file, which
+> already notes the blocker is gone. Every change is still fixpoint-gated
+> (`selfcompile_fixpoint`) and differential-gated — that discipline stands on
+> its own without a second implementation to compare against.
+
+- **Target the canonical binary.** (Historical, pre-2026-06-26: both
+  typecheckers moved in lockstep — compiler `types/typecheck.mdk` canonical +
+  OCaml `lib/typecheck.ml` frozen oracle — every change fixpoint-gated
+  (`selfcompile_fixpoint`) and differential-gated
+  (`diff_compiler_typecheck`/`_error`/`_golden`). Now: target the canonical
+  binary, still fixpoint- and differential-gated; no second implementation
+  remains.)
 - **The manifest is the deliverable.** The typing exists to produce a verified
   capability manifest a host can enforce. E1 is therefore first priority despite
   the typing being conformant — a sound row nobody can consume is a feature that
@@ -173,9 +184,9 @@ discipline, not a closeable item.
   manifest extractor. If a domain addition touches those, the abstraction leaked —
   fix the abstraction, not the call sites.
 - **Verify on the binary, differentially.** Every change keeps `diff_compiler_*`
-  green and adds a fixture failing-before / passing-after. The frozen oracle is a
-  second opinion during the soak (the effect typing is currently byte-identical;
-  keep it so until `lib/` is removed).
+  green and adds a fixture failing-before / passing-after. (Historical: the frozen
+  oracle was a second opinion during the soak, kept byte-identical until `lib/` was
+  removed 2026-06-26.)
 
 ## 1. Priority and dependency order
 
@@ -210,11 +221,11 @@ The verified, parameter-rich row already exists in the typechecker; nothing
 consumes it on the canonical binary. Three sub-items, landable independently but
 naturally in order.
 
-**1a — Port `check-policy` to the native CLI.** Today `medaka check-policy` is
-OCaml-oracle-only (`bin/main.ml:413-660`); the native CLI stubs it
-(`compiler/driver/medaka_cli.mdk`). Port the call-graph + entry-row read + policy
-compare into the canonical toolchain. *Gate:* `./medaka check-policy` on the demos
-matches the oracle's accept/reject; differential fixture.
+**1a — Port `check-policy` to the native CLI. DONE (WS-1a, 2026-06-21).** At the
+time this was written, `medaka check-policy` was OCaml-oracle-only
+(`bin/main.ml:413-660`, since removed with `lib/`); the native CLI stubbed it
+(`compiler/driver/medaka_cli.mdk`). The call-graph + entry-row read + policy
+compare has since been ported into the canonical toolchain.
 
 **1b — Parameter-level policy.** The current compare is bare-label
 (`List.mem l policy`, `bin/main.ml:591`) — `--allow Net` permits *any* host. Extend
@@ -301,9 +312,10 @@ Two mitigations, ongoing:
 
 ## 4. Verification strategy
 
-- **Differential, both binaries, fixpoint-gated** — unchanged from v2. Type-system
-  changes (WS-3/3b/4, WS-2) land in *both* typecheckers in lockstep and must keep
-  `selfcompile_fixpoint` and `diff_compiler_typecheck`/`_error`/`_golden` green.
+- **Differential, fixpoint-gated** — unchanged from v2. (Historical: at design
+  time, type-system changes (WS-3/3b/4, WS-2) landed in *both* typecheckers in
+  lockstep; `lib/` was removed 2026-06-26, so only the canonical compiler remains.)
+  Must keep `selfcompile_fixpoint` and `diff_compiler_typecheck`/`_error`/`_golden` green.
 - **Fixture-per-finding** — each audit probe becomes a regression fixture: the
   reject-cases (A2/A3/C1/C2b/P9) guard soundness; the accept-cases (A1/B1/B2/P7/P8)
   guard precision; the gap-cases (P4, A4/outer, P11) flip on the WS that closes them.

@@ -1,5 +1,7 @@
 # Making `sequence` a default method of `Traversable t`
 
+**Status:** IMPLEMENTED — `f333125`, 2026-06-26, Fork 1 UNIVERSAL.
+
 > **AS-BUILT (2026-06-26, `main` = `f333125`): IMPLEMENTED, Fork 1 UNIVERSAL.** `fillImplDefaults`
 > landed in `compiler/frontend/desugar.mdk` (+ `lib/desugar.ml` mirror); `sequence` is a real
 > `Traversable` default. Literal universal (no Ord/Foldable exclusion) required two emitter/typecheck

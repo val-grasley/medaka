@@ -1,5 +1,11 @@
 # Medaka Standard Library Plan
 
+> Historical bug-fix citations below (`lib/prelude.ml`, `lib/resolve.ml`,
+> `lib/typecheck.ml`, `eval.ml`, `bin/main.ml`) reference the OCaml reference
+> compiler, removed 2026-06-26 (`06356a80` — see AGENTS.md / `LIB-REMOVAL-DESIGN.md`).
+> Those paths no longer exist; the fixes they describe are already reflected in
+> the native `compiler/` sources.
+
 This document lists what belongs in the first four stdlib modules. It is a
 checklist, not a spec: implementation order within a module is yours to choose.
 No code snippets — just the names, grouped so nothing slips through.

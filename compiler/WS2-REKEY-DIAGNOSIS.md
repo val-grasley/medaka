@@ -1,5 +1,12 @@
 # WS-2 full re-key — diagnosis & deferral (module-qualified dict-arity identity)
 
+**Status:** PARTIAL — every OBSERVABLE bug found along the way is fixed (fn-level
+collision, a stale-sweep method-constraint bug, a method-level twin — each with commits
+and regression fixtures). The ORIGINAL scoped task (a full `EVarFrom` AST-origin re-key,
+retiring the bare-name dict-arity tables entirely) remains explicitly and correctly
+DEFERRED — see the doc's own "Status: DEFERRED to a supervised landing" below. This is a
+genuinely still-open, real piece of code-health work.
+
 > **Follow-up (2026-06-27, FN-LEVEL OBSERVABLE BUG FOUND + FIXED — supersedes the
 > "benign by construction" verdict below).** That verdict was REFUTED. It assumed the
 > importing module *defines* the colliding callee; but a module that **imports** a

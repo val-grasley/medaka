@@ -1,6 +1,12 @@
 # TRMC-DESIGN.md — tail-recursion-modulo-cons for the native LLVM backend
 
-Design for native TRMC (destination-passing) in `compiler/llvm_emit.mdk`, the last
+**Status:** IMPLEMENTED — Phase 1 `#56` (2026-06-11), Phase 3 (dispatch-graph TMC parity
+with the wasm backend) `38459006`, 2026-07-13. Exemplary "AS BUILT" self-tracking
+throughout (see the doc's own Phase 1/2/3 status lines). One item explicitly SCOPED &
+DEFERRED (Phase 2(b)). Dead bare-basename `llvm_emit.mdk` path citations (missing subfolder prefix) corrected
+to `compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass.
+
+Design for native TRMC (destination-passing) in `compiler/backend/llvm_emit.mdk`, the last
 big architectural change in the canonicalization workstream (PLAN #56). Phase 1
 scope approved 2026-06-11. Companion to `STAGE2-DESIGN.md` / `RUNTIME-DESIGN.md`.
 
@@ -66,7 +72,7 @@ Falls back to current (stack-growing) codegen for: recursion not in cons-tail
 position; recursion under a non-`::` constructor (phase 2); mutual recursion
 (out of scope); a guarded eligible clause that can fail into another clause.
 
-## Emitter touchpoints (`compiler/llvm_emit.mdk`)
+## Emitter touchpoints (`compiler/backend/llvm_emit.mdk`)
 
 1. **New analysis** `trmcEligible name clauses : Bool` + per-clause classifier
    `consTailClause` — structural detection of `CBinPrim "::" head (CApp→self)`.
@@ -112,7 +118,7 @@ in-arm cons); (c) general single-constructor last-field TMC (not just `::`). Eac
 independently gateable. Until Phase 2, stdlib `map (+1) [1..1M]` still overflows;
 hand-rolled builders are stack-safe.
 
-## Phase 1 — AS BUILT (2026-06-11, `compiler/llvm_emit.mdk`)
+## Phase 1 — AS BUILT (2026-06-11, `compiler/backend/llvm_emit.mdk`)
 
 Implemented exactly to the destination-passing mechanism above, with an
 ALLOCA-based mutable destination + param slots (not block phis) — simpler, robust
@@ -271,7 +277,7 @@ TRMC splits into a backend-agnostic ANALYSIS and a backend-specific EMIT:
   cost; standard for TMC on any GC'd backend. Bake it into the cons/ADT struct types
   from the start.
 
-## Phase 2 Axis A — AS BUILT (2026-06-11, `compiler/llvm_emit.mdk`, #56)
+## Phase 2 Axis A — AS BUILT (2026-06-11, `compiler/backend/llvm_emit.mdk`, #56)
 
 General single-constructor LAST-field TMC. Generalizes the Phase-1 cons-only
 machinery; `::`/Cons is now the special case `ctor=Cons, arity 2, selfIdx 1`.
@@ -328,7 +334,7 @@ deferred — falls to current codegen); dispatch/dict-passed impl methods (B-dis
 match-arm tail descent (B-match). Axis A is strictly top-level non-dict `emitFn`→`trmcTryFn`
 defines.
 
-## Phase 2 B-dispatch — AS BUILT (2026-06-11, `compiler/llvm_emit.mdk`, #56)
+## Phase 2 B-dispatch — AS BUILT (2026-06-11, `compiler/backend/llvm_emit.mdk`, #56)
 
 The HEADLINE win: TRMC now reaches the DISPATCHED impl-emit path, so the stdlib
 `map` instance method (Functor List) builds a 2,000,000-element list in O(1) stack.
@@ -409,7 +415,7 @@ extended to drive the TYPED emitter (`llvm_emit_typed_main` + runtime + core, or
 (NO recursive call) → prints 2000000, exit 0, `== eval_probe --prelude`. Small: `map (+1)
 [1,2,3]` → `2,3,4`.
 
-## Phase 2 B-match-descent — AS BUILT (2026-06-11, `compiler/llvm_emit.mdk`, #56)
+## Phase 2 B-match-descent — AS BUILT (2026-06-11, `compiler/backend/llvm_emit.mdk`, #56)
 
 The LAST Phase-2 sub-part: TRMC now descends a TAIL-position `match` (`CDecision`),
 so `filterMap`'s in-arm cons (`Some y => y :: filterMap f xs`) AND its plain-tail

@@ -1,18 +1,31 @@
-# compiler — Medaka-in-Medaka compiler (Stage 1)
+# compiler — the Medaka-in-Medaka compiler
 
-The self-hosted Medaka compiler, ported one pipeline stage at a time from the
-OCaml reference in `lib/` and validated against it via differential testing.
-See the **North star → Stage 1** section of [`../PLAN.md`](../PLAN.md).
+**Status:** IMPLEMENTED / SUPERSEDED-FRAMING — the compiler is fully self-hosting,
+LLVM-canonical, and OCaml-free (OCaml removed 2026-06-26; see AGENTS.md). **This file is
+overwhelmingly a historical port-slice log** from the bootstrap era (title used to say
+"(Stage 1)", a subsection used to say "Parser (Stage 1, in progress)" — both fixed
+2026-07-13, since the whole pipeline has been self-hosting for a long time). For CURRENT
+orientation (directory layout, pipeline order, where each stage lives today) use
+**AGENTS.md's "Pipeline — where each stage lives" table**, not the "Layout" table below —
+that table predates the `frontend/`/`types/`/`ir/`/`backend/`/`eval/`/`driver/`/`tools/`/
+`support/`/`entries/`/`seed/` subfolder restructure and lists bare pre-restructure
+filenames (`lexer.mdk`, `sexp.mdk`, etc.) alongside several now-removed entry points
+(`mark_main.mdk`, `lex_main.mdk`, and the whole bytecode-VM entry family). For native
+codegen see `BOOTSTRAP.md` (as-built log) and `EMITTER-GAPS.md` — both already named below
+as the current source of truth for that part, and that disclaimer still holds.
+
+The self-hosted Medaka compiler was ported one pipeline stage at a time from a since-removed
+OCaml reference in `lib/` and validated against it via differential testing — that
+OCaml-vs-native comparison is now entirely historical (no OCaml oracle exists to compare
+against; native output is compared against captured goldens instead).
 
 Runs **on the existing tree-walking interpreter** (`medaka run …`) — correctness
-first. **Native codegen (Stage 2) is now DONE:** the native LLVM backend
-(`llvm_emit.mdk`) compiles this self-hosted compiler — all 7 stages
+first, historically. **Native codegen (Stage 2) is now DONE:** the native LLVM backend
+(`compiler/backend/llvm_emit.mdk`) compiles this self-hosted compiler — all 7 stages
 native==interpreter and the compiler self-hosts to a reproducing fixpoint. See
-[`BOOTSTRAP.md`](./BOOTSTRAP.md) (the as-built native log) and
-[`../PLAN.md` Stage 3](../PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
-(forward work). Some slice descriptions below predate that and call `llvm_emit.mdk`
-a "spike" / list now-closed out-of-scope items — `BOOTSTRAP.md`/`EMITTER-GAPS.md`
-are the current source of truth.
+[`BOOTSTRAP.md`](./BOOTSTRAP.md) (the as-built native log). Some slice descriptions below
+predate that and call `llvm_emit.mdk` a "spike" / list now-closed out-of-scope items —
+`BOOTSTRAP.md`/`EMITTER-GAPS.md` are the current source of truth.
 
 ## House style
 
@@ -100,9 +113,14 @@ only the non-exhaustive-match warnings.
 
 ## Validation
 
+> **HISTORICAL — `dune build --root .` below is dead (OCaml removed 2026-06-26).** Build
+> the native compiler with `make medaka` instead; the `test/diff_compiler_*.sh` gates
+> below still apply and now diff native output against captured goldens, not a live OCaml
+> oracle. See `AGENTS.md`'s "Build & test" section for the current workflow (`make
+> preflight` for a targeted subset — do not run the whole suite locally).
+
 ```sh
-dune build --root .                           # build the reference binary
-sh test/diff_compiler_lexer.sh                # diff the Medaka lexer vs OCaml goldens
+sh test/diff_compiler_lexer.sh                # diff the Medaka lexer vs captured goldens
 sh test/diff_compiler_parse_errors.sh         # parser/lexer rejection path (~0.4s)
 sh test/diff_compiler_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
 sh test/diff_compiler_eval_errors.sh          # eval runtime-error messages vs reference (~1s)
@@ -172,7 +190,7 @@ the stage is done when all pass.
   expression), which the OCaml reference rejects too ("Unterminated string
   literal"), so it isn't valid Medaka and there's nothing to mirror.
 
-### Parser (Stage 1, in progress)
+### Parser (Stage 1 — HISTORICAL, long since DONE; not "in progress")
 
 - ✅ Scaffold: `ast.mdk`, the `sexp.mdk` structural dumper, the OCaml reference
   dumper `dev/astdump.exe`, and the diff harness — validation in place *before*

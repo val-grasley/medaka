@@ -1,6 +1,10 @@
 # FP Standard Library — Typeclasses, Combinators & Error Handling
 
-Status: **design proposal** (2026-07-01). Read-only planning doc. Companion to
+**Status:** IMPLEMENTED — shipped 2026-07-02, see the AS-BUILT section below (all
+§0.5-locked names used as designed; `STDLIB.md` Modules 1/2/20-23 for the verified
+listing).
+
+Status (at design time): **design proposal** (2026-07-01). Read-only planning doc. Companion to
 `P1-STDLIB-DESIGN.md`, which scoped the *batteries* (math / fs / net / codecs /
 time). That doc deliberately under-covered the **functional-programming surface**:
 the typeclass hierarchy, FP combinators, monadic/applicative helpers, principled

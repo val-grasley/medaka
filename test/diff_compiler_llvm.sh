@@ -5,9 +5,12 @@
 # out to clang (no llc/opt, no C++ bindings) — against the committed value golden.
 #
 # For each prelude-free fixture in test/llvm_fixtures/:
-#   1. ref  = test/llvm_fixtures/<name>.eval.golden   (captured from dev/eval_probe.exe;
-#             the program VALUE — IR is symbol-renaming-volatile, but the program's
-#             runtime stdout is stable, see MEMORY "Diff gates compare OUTPUT not IR")
+#   1. ref  = test/llvm_fixtures/<name>.eval.golden   (the program VALUE — IR is
+#             symbol-renaming-volatile, but the program's runtime stdout is stable,
+#             see MEMORY "Diff gates compare OUTPUT not IR").
+#             REGENERATE WITH: sh test/capture_goldens.sh --frozen llvm_eval
+#             (these goldens were originally captured from the OCaml dev/eval_probe.exe,
+#             which was REMOVED 2026-06-26; the regenerator replays steps 2–4 below.)
 #   2. emit = test/bin/llvm_emit_main <fixture>       (Core IR -> textual LLVM IR)
 #   3. clang <emit>.ll runtime/medaka_rt.c -o bin     (compile + link the stub)
 #   4. self = ./bin                                   (run the native binary)
@@ -41,7 +44,7 @@ if [ "${1:-}" = "--one" ]; then
   ll="$WORKDIR/$name.ll"; bin="$WORKDIR/$name.bin"
   st=0; out=""
   if [ ! -f "$golden" ]; then
-    out="no golden for $name (run sh test/capture_goldens.sh)"; st=1
+    out="no golden for $name (run sh test/capture_goldens.sh --frozen llvm_eval)"; st=1
   elif ! "$EMITBIN" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
     out="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
   elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then

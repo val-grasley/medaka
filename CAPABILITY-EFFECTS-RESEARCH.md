@@ -1,5 +1,11 @@
 # Capability-effects research findings
 
+**Status:** IMPLEMENTED — this dated (June 2026) external-ecosystem research
+snapshot fed `CAPABILITY-EFFECTS-V2-DESIGN.md`, now shipped. Kept for provenance;
+its own "Open questions" section is self-marked RESOLVED for the items the v2
+design closed. Version/roadmap claims about WASI/Wasmtime/Spin/Cloudflare are a
+point-in-time external survey, not re-verified against the live ecosystem.
+
 Research pass for the Phase 146 capability-effects near-term sequence (item #1 from
 PLAN.md). Date: June 2026. This note is the input to the design note + manifest
 format step (item #2).

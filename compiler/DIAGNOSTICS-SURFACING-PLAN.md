@@ -1,5 +1,12 @@
 # DIAGNOSTICS-SURFACING-PLAN.md — native `check` error positions + messages (WS-4 / F6)
 
+**Status:** IMPLEMENTED — Stage A `1cbe1e16`, Stage B `dd050106`, Stage C `395a2760`
+(2026-06-21/22). "WS-4 COMPLETE": `medaka check` prints positioned, humane, carat-rendered
+diagnostics. Two low-priority residuals remain open (parse-error column accuracy on
+non-trivial inputs; pattern-position span inherits the enclosing `match` span). The
+"frozen OCaml oracle" comparison target named throughout is historical — OCaml was
+removed 2026-06-26; native is now the only error UX, exactly as this doc anticipated.
+
 Closes the native-CLI diagnostics-quality gap: `medaka check` prints errors as raw
 OCaml-style constructor sexps with no source position
 (`(UnboundVariable "foo")`), while the frozen OCaml oracle prints a positioned,
