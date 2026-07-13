@@ -217,6 +217,9 @@ gatherPayload bytes pageSize usable payloadLen local pos = do
   _ <- requireBytes bytes (pos + local + 4) "leaf cell local payload"
   firstPage <- beU32 bytes (pos + local)
   chunks <- followChain bytes pageSize usable firstPage (payloadLen - local) []
+  -- WORKAROUND(MUT): pure slice+concat instead of the natural arrayMake+blit gather,
+  -- because <Mut> has no scoping combinator and would infect the whole READ path.
+  -- Costs O(chunks x bytes) instead of O(bytes). See MUT-SCOPING-DESIGN.md.
   Ok (concat (arrayFromList (slice pos (pos + local) bytes :: chunks)))
 
 -- Walk the overflow chain, collecting `remaining` more payload bytes.  Each

@@ -54,6 +54,8 @@ deriving (Debug)
 -- `rule-hand-rolled-derivable` fires here and its advice is WRONG: taking it
 -- (swapping this for `deriving (Eq)`) produces a binary that cannot be built.
 -- The rule is blind to whether the field types actually have an `Eq` impl.
+-- WORKAROUND(B5): hand-written, not derived — `deriving (Eq)` over the `Array` field
+-- type-checks and RUNS but cannot be BUILT. Replace with `deriving (Eq)` when B5 closes.
 -- lint-disable-next-line rule-hand-rolled-derivable
 export impl Eq Literal where
   eq (LInt a) (LInt b) = a == b

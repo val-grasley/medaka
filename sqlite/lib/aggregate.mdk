@@ -135,14 +135,13 @@ aggExpr (AggMax c) = EAgg FnMax (Some (ECol c))
 --   minimal repro.  Prefixing every field here removes the overlap.
 --   Every exported FUNCTION keeps its name, type and behaviour; only these
 --   internal field labels moved, and nothing outside this module ever read them.
-public export data AggQuery =
-  | AggQuery {
-      aqFrom : String,
-      aqWhere : Option SqlExpr,
-      aqGroupCols : List String,
-      aqAggs : List Agg,
-      aqHaving : Option SqlExpr,
-    }
+public export data AggQuery = AggQuery {
+    aqFrom : String,
+    aqWhere : Option SqlExpr,  -- WORKAROUND(B2): these fields are `aq`-prefixed ONLY to dodge the cross-module
+    aqGroupCols : List String,  -- record-update slot collision with `Select`'s from/where_/groupBy/having.
+    aqAggs : List Agg,  -- Rename back to the natural names when B2 closes.
+    aqHaving : Option SqlExpr,
+  }
 
 -- | A bare aggregate query over a table with an aggregate select-list, no
 --   WHERE / GROUP BY / HAVING.

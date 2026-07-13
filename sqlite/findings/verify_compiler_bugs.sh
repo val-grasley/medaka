@@ -185,5 +185,20 @@ fi
 
 echo
 echo "  $open open, $fixed fixed"
+
+# --- Workarounds in the library, keyed to the bug that forced them -----------
+# Every workaround site carries a `WORKAROUND(<id>)` marker. When a bug above
+# flips to FIXED, these are the sites to revert — otherwise the library keeps
+# paying for a bug that no longer exists, which is how workarounds become
+# permanent.
+echo
+echo "  Workarounds in the library (grep -rn 'WORKAROUND(' sqlite/lib/):"
+if command -v grep >/dev/null && [ -d "$ROOT/sqlite/lib" ]; then
+  grep -rn "WORKAROUND(" "$ROOT/sqlite/lib" 2>/dev/null \
+    | sed -E "s|^$ROOT/||; s|(-- *)?WORKAROUND\(([A-Z0-9]+)\):|[\2]|" \
+    | awk -F: '{ file=$1; line=$2; $1=""; $2=""; sub(/^ +/,""); printf "    %-28s %s\n", file ":" line, $0 }' \
+    | sed 's/  */ /g' | cut -c1-118
+fi
+echo
 echo "  (status report only — always exits 0)"
 exit 0

@@ -48,6 +48,8 @@ deriving (Debug)
 --
 -- `rule-hand-rolled-derivable` fires here and its advice is WRONG: taking it
 -- produces a binary that cannot be built.
+-- WORKAROUND(B5): hand-written, not derived — `deriving (Eq)` over the `Array` field
+-- type-checks and RUNS but cannot be BUILT. Replace with `deriving (Eq)` when B5 closes.
 -- lint-disable-next-line rule-hand-rolled-derivable
 export impl Eq Cell where
   eq CNull CNull = True

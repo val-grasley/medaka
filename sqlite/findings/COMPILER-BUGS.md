@@ -28,6 +28,25 @@ None of these came from reading `compiler/` — they all came from trying to bui
 
 ---
 
+## Workarounds the library is currently paying for
+
+Every workaround site carries a greppable marker:
+
+```sh
+grep -rn "WORKAROUND(" sqlite/lib/          # and verify_compiler_bugs.sh prints them too
+```
+
+**When a bug flips to FIXED, revert its sites** — otherwise the library keeps paying for a bug that
+no longer exists, which is how workarounds quietly become permanent architecture.
+
+| bug | site | what to do when it closes |
+|-----|------|---------------------------|
+| **B1** | `sqlite/lib/sqlparse.mdk` (×2) | Constructors are eta-expanded (`(l r => EArith op l r)`) instead of partially applied. Restore the natural point-free form. |
+| **B2** | `sqlite/lib/aggregate.mdk` | `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
+| **B5** | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | `Eq` is hand-written for `Literal` and `Cell` because `deriving (Eq)` over their `Array` field can't be built. Replace with `deriving (Eq)` — and drop the `-- lint-disable-next-line rule-hand-rolled-derivable` that silences the linter's (currently wrong) advice. |
+| **MUT** | `sqlite/lib/btree.mdk` | The overflow gather uses pure `slice`+`concat` instead of `arrayMake`+`blit`, costing **O(chunks × bytes)** instead of O(bytes). Restore the mutable gather inside a `mut` block. |
+| **MUT** | `sqlite/lib/recordenc.mdk` | `beSintBytes` duplicates stdlib `bytebuilder.emitBeSint` purely to keep `<Mut>` out of `encodeRecord`'s signature. Delete it and call `bytebuilder`. |
+
 ## The theme worth reading first
 
 **Six of these are `check` / `run` / `build` disagreements, and three are *silent*.** The pattern
