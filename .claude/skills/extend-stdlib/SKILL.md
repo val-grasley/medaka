@@ -10,9 +10,8 @@ doctests, props. The native-extern path is the separate **add-primitive** skill;
 this skill is for code written *in Medaka* on top of the prelude + kernel.
 
 **Division of labor:** the user normally hand-writes the stdlib on purpose (it
-stress-tests the language). Only do this when **explicitly asked**. See the
-`project-stdlib-division-of-labor` memory. STDLIB.md is the checklist/spec; keep
-its ✅/⏳/🟡/⛔ statuses current as you go.
+stress-tests the language). Only do this when **explicitly asked**. STDLIB.md is
+the checklist/spec; keep its ✅/⏳/🟡/⛔ statuses current as you go.
 
 ## Conventions (match existing code)
 
@@ -33,10 +32,9 @@ its ✅/⏳/🟡/⛔ statuses current as you go.
 
 ## Language sharp edges that will bite
 
-- **`public export` is for `data`/`record` declarations only** (it exposes
-  constructors to importers alongside the type). Plain functions/values use
-  `export`. Writing `public export\nfoo : T\nfoo = …` is a parse error at the
-  type signature line — the parser only accepts `PUBLIC EXPORT inner_data_or_record`.
+- **`public export` is for `data` declarations only** (it exposes constructors to
+  importers alongside the type). Plain functions/values use plain `export`.
+  (The `record` keyword has been **removed** — `data X = { … }` replaces it.)
 - An expr RHS can't wrap onto a second indented line (keep it one line).
 - A multi-statement lambda body (match inside a fold callback) doesn't work
   inside parentheses — INDENT/DEDENT tokens are suppressed in balanced brackets.
@@ -62,30 +60,58 @@ Do NOT follow the old advice in stale comments/docs that says otherwise.
 
 ## Doctest harness traps (all-or-nothing)
 
-`medaka test` typechecks the WHOLE file (prelude + decls + every synthetic
-`__dt_N__ = show (example)`) as one program. If ONE example fails to typecheck,
-**every** example falls back to broken dispatch and ERRORs with
-`intToString: expected Int`. To find the culprit fast: strip the `import` line,
-append `dN = show (<example>)` per example, run `./medaka check` — it names the
-failing decl.
+**There is no `Show` interface in Medaka.** The rendering interface is **`Debug`**
+(`stdlib/core.mdk:264`), method **`debug`**; `Display` (`core.mdk:380`, method
+`display`) is the human-facing sibling.
 
-- A doctest's **result type needs a `Show` impl reachable in that file's context**
-  (core prelude + that file's decls). `Show Char`/`Show String` live in
-  `string.mdk`, NOT core — so a core/list/array doctest returning a `Char`/
-  `String` (or `show` of an array, which returns a `String`) fails. Use an
-  `Int`/`Bool` example, or `show (...) == "literal"` (Bool needs only core).
-- **`core.mdk` `prop`s are prepended to every downstream file's test context.**
-  Keep core props to Foldable-*only* fns (`any`/`all`/`length`/`fold`): a prop
-  calling generic `elem`/`maximum` (Foldable + `Eq`/`Ord`) mis-defaults to
-  `Array` once `default impl Foldable Array` is loaded → `Array vs List`.
+`medaka test` typechecks the WHOLE file (prelude + decls + every synthetic
+example) as one program. The harness synthesizes one binding per example —
+`__dt_N__ = debug (<your example expr>)` (`compiler/tools/doctest.mdk:250`, name
+from `synthName`, `:243`). If ONE example fails to typecheck, **every** example
+falls back to broken dispatch and ERRORs with `intToString: expected Int`. To find
+the culprit fast: strip the `import` line, append `dN = debug (<example>)` per
+example, run `./medaka check` — it names the failing decl.
+
+- A doctest's **result type needs a `Debug` impl reachable in that file's context**
+  (core prelude + that file's decls + its imports). The `Debug` impls for `Int`,
+  `Float`, `Bool`, `Char`, `String`, `Unit`, `Ordering`, `List`, `Array`, `Option`,
+  `Result` and 2–5-tuples are **all in `stdlib/core.mdk`**, so they are always
+  reachable. The ones that are NOT: `Map` (`map.mdk`), `Set` (`set.mdk`), `HashMap`
+  /`HashSet`, `MutArray`, `Json`, `Toml` — an example whose result is one of those
+  needs that module imported in the file under test, or it will not resolve.
+- **`core.mdk` `prop`s are prepended to every downstream file's test context**, so
+  a core prop that fails to resolve breaks *every* downstream module's test run,
+  not just core's. Keep core props narrow and concretely typed; if a generic
+  (`Foldable`-constrained) prop leaves its container type ambiguous, pin it with an
+  ascription (`([1,2,3] : List Int)`) rather than relying on defaulting.
 
 ## Verify
 
+`main` is PROTECTED — branch, then land via PR. Before committing:
+
+```sh
+medaka fmt --write stdlib/<mod>.mdk   # the pre-commit hook REJECTS unformatted .mdk
+medaka lint stdlib/<mod>.mdk          # the hook is a MAX RATCHET: any new finding fails
+```
+
+Then:
+
 ```sh
 ./medaka test stdlib/core.mdk   # and list/string/array
+make preflight                  # derives the gate set from your diff
 bash test/diff_compiler_check.sh
 bash test/diff_compiler_eval.sh
 ```
 
+Two blast-radius warnings:
+
+- **A `stdlib/core.mdk` change is one of the few cases where a FULL local run is
+  justified** — it is the implicit prelude, so it is used everywhere.
+- **The compiler may import stdlib modules.** If your change perturbs emitted IR,
+  it forces a **seed re-mint + fixpoint re-validation**
+  (`bash test/selfcompile_fixpoint.sh`). That is a feature, not a surprise — but
+  budget for it.
+
 See memories `project_medaka_eval_harness_gotchas`,
-`project_stdlib_doctest_gotchas`, `project_mdk_layout_continuation`.
+`project_stdlib_doctest_gotchas`, `project_mdk_layout_continuation`,
+`feedback_stdlib_perf_over_purity`.
