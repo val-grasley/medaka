@@ -1,6 +1,103 @@
 # TESTING-DESIGN.md — a coherent testing architecture for Medaka
 
-Status: **proposal**, 2026-07-13.
+Status: **partially built**, 2026-07-13. §§1–3 are the diagnosis + research (unchanged).
+§4.4 (the differential tier) and the capability gate ARE BUILT and merged on
+`testing-arc`. §4.3/§4.6/§4.7 (the snapshot migration) are **not started** — the 79
+bash gates are all still there.
+
+---
+
+## 0. AS-BUILT — what actually shipped, and what it found
+
+Suite went from **"78 passed, 0 failed, 1 skipped — fully green"** to
+**81 passed, 1 failed, 0 skipped**. The skip is gone; the red is real.
+
+| Commit | |
+|---|---|
+| `e0b7e895` | 2 silent-green harness bugs; `test/ported/` un-orphaned; `make test` |
+| `cc1a5fb3` | `/tmp` concurrent-build IR collision |
+| `2713ecfc` | capability-coverage gate (§0.2) |
+| `d1ac42ae` | tri-engine differential gate (§4.4) |
+| `86dfbc84` | `array.mdk` sort naming |
+| `e38654b3` | effect-polymorphic `Value` — `medaka run` can do I/O |
+| `5a8ceb72` | the gate that never ran (§0.3) |
+
+### 0.1 The thesis held: the gate found bugs on its first run
+
+**§4.4 predicted the three engines would disagree, and they did — 22 fixtures.**
+
+- **The interpreter's RNG/hash diverge from both backends** (15 fixtures).
+  `setSeed 42; randomInt 1 6` → **4** under `run`, **2** under `build`. Root cause is
+  *not* "unimplemented": `eval.mdk` deliberately installs an LCG, justified in a
+  comment for **prop generation** (where any RNG is fine). But `setSeed`/`randomInt`/
+  `hash*` are *also user-facing externs* with a byte-identical contract. **A scoped
+  shortcut escaped its scope.**
+- **5 genuine WasmGC codegen bugs** (7 fixtures) — `charCode` leaks the i31 tag
+  (`char_max` → 2228223 = 2·1114111+1); an *unsignatured* float fn traps.
+- **`medaka run` could not do I/O at all** — 37 externs declared, implemented in C
+  *and* wasm, absent from eval. Even `Array.fill` — pure, no effect row, called by
+  `stdlib/array.mdk:282` — panicked under `run` and worked under `build`.
+- **6 silently-fabricated constants** (worse than the panics, because silent):
+  `wallTimeSec` = hardcoded `1700000000.0`; `monotonicSec` = `1000.0`, so **every
+  elapsed measurement under `medaka run` is exactly `0.0`**; `sleepMs` = no-op;
+  **`ePutStr`/`ePutStrLn` = discard, so `medaka run` silently eats ALL stderr.**
+- **A concurrent-build corruption**, found as collateral damage while *building* the
+  harness: `build_cmd.mdk` keyed its scratch IR on the output **basename** in global
+  `/tmp`, so two `medaka build … -o out` linked each other's IR. Measured **19/20
+  wrong** under contention — and it produced *working binaries that print the wrong
+  answer*. AGENTS.md had asserted this path was race-safe since July.
+
+Root cause of the whole family: **`eval.mdk` was written as a value oracle** — it only
+ever compared a computed `main` value, so effects were deliberately out of scope. When
+the OCaml compiler was deleted (2026-06-26), that oracle was **silently promoted to be
+the production `medaka run` engine** and its contract was never re-litigated. Its own
+header still says *"eval.mdk runs on the OCaml reference … IO externs are out of
+scope."* Both halves are now false.
+
+### 0.2 The gate whose absence caused it
+
+Nothing in `test/` referenced eval's `externBindings`. `test/diff_compiler_capability_matrix.sh`
+now builds a 3-column matrix over the 134-extern catalog and fails on **silent
+omission**, on **drift**, *and* on **accidental fix**. Current state:
+
+| Engine | Implements | |
+|---|---|---|
+| LLVM | **131 / 134** | 2 dead, 1 TODO |
+| Interpreter | **98 / 134** | 36 BUG + 6 frozen-constant |
+| WasmGC | **74 / 134** | 10 permanent (BSD sockets), **45 unported**, 5 other |
+
+The wasm number was a complete surprise: **the second backend implements barely half
+the primitive catalog**, and nobody was tracking it.
+
+### 0.3 The suite was lying, twice
+
+1. **`diff_compiler_lint_multi.sh` had never run — once.** It declares `#!/bin/sh` but
+   uses bash process substitution; `run_gates.sh` invokes gates with `sh` (dash); it
+   died `Syntax error: "(" unexpected` → **exit 2** → the old runner called that a
+   SKIP. It is the "1 skipped" in *"78/0/1 — fully green."* And it wasn't merely idle:
+   run it and it **fails** — its golden had rotted (a lint message was reworded) because
+   nothing was ever comparing against it.
+2. **A fresh clone ran zero tests and printed "0 failed."** `test/bin/` isn't committed;
+   a missing oracle exited 2 = SKIP ≠ FAIL.
+
+Both are the same bug — **exit-2-means-skip** — and both are fixed. A non-toolchain
+exit-2 is now a FAILURE, and the runner hard-fails if 0 gates passed.
+
+### 0.4 Corrections to this document's own predictions
+
+- **B2 does NOT force a seed re-mint.** Predicted it would; it doesn't. The seed is
+  minted from the *emitter's* graph (`llvm_emit_modules_main`), and the emitter does not
+  import `eval`. `bootstrap_from_seed` stayed green byte-for-byte.
+- **The `<Mut>`-only interpreter was NOT a playground constraint.** The playground
+  compiles to wasm and never executes the interpreter. It was oracle inertia (§0.1).
+- **Effect-polymorphic `Value` did NOT cascade.** The feared "Scheme vs Unit"
+  generalization sharp edge never fired: `typecheck_compiler_source` reports 0 errors,
+  fixpoint C3a/C3b byte-identical, 15/15 eval oracle gates green. The oracle now
+  instantiates `e := <Mut>` and its purity is a **type-level guarantee**.
+
+---
+
+## Original proposal follows.
 
 ---
 
