@@ -222,7 +222,10 @@ jobs:
           # And do NOT use brace expansion: run_gates.sh runs under POSIX sh (dash),
           # which does not expand braces, so it would glob to nothing.
           - name: engines
-            pattern: "'diff_compiler_engines'"
+            # build_construct_coverage (T-3, ~300s, no extra oracle needed) added here —
+            # smallest shard, so it runs concurrently with diff_compiler_engines instead
+            # of queueing behind a bigger shard.
+            pattern: "'diff_compiler_engines' 'build_construct_coverage'"
           - name: frontend
             pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt'"
           - name: types
