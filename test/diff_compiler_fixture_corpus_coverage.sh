@@ -123,7 +123,14 @@ if tools_path.exists():
             tools.add(line.split()[0])
 
 sh_files = [f for f in files if f.endswith('.sh')]
-candidates = [f for f in sh_files if pathlib.Path(f).stem not in tools]
+# CI-COVERAGE-TOOLS.txt is keyed on REPO-RELATIVE PATHS (minus `.sh`), NOT basenames —
+# basenames collide across roots (test/native_fixtures/run.sh vs playground/e2e/run.sh),
+# so a ledger keyed on a colliding name excuses the wrong file. Match the same way, or the
+# exclusion set silently matches NOTHING: every tool (run_gates, build_oracles,
+# capture_goldens, preflight, bench) is then treated as a GATE, any corpus they merely
+# mention counts as CONSUMED, and this gate goes green while under-reporting orphans —
+# exactly the failure it exists to prevent.
+candidates = [f for f in sh_files if f[:-len('.sh')] not in tools]
 
 if not candidates:
     print("FAIL: found no gate-candidate *.sh scripts (harness bug, or CI-COVERAGE-TOOLS.txt swallowed everything)")
