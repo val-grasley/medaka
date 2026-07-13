@@ -16,9 +16,14 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# self-provision the wasm emit probes (CI shards build only build_oracles.sh
+# oracles; a SKIP here would silently drop the parity signal — build instead).
 [ -x "$ROOT/test/bin/wasm_emit_main" ] || {
-  echo "skipping (build the wasm emit probes first: sh test/wasm/build_wasm_oracle.sh)"
-  exit 2
+  echo "wasm emit probes missing — building (sh test/wasm/build_wasm_oracle.sh) ..."
+  sh "$ROOT/test/wasm/build_wasm_oracle.sh" > /dev/null 2>&1 || {
+    echo "skipping (could not build the wasm emit probes)"
+    exit 2
+  }
 }
 
 OUT="$(mktemp -d /tmp/tmc_parity.XXXXXX)"

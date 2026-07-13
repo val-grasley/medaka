@@ -1,6 +1,15 @@
 # Next-orchestrator handoff — Medaka, WasmGC backend + soak (2026-06-19)
 
-## RESUME — ⚖️ TMC PARITY ARC SHIPPED: both backends now apply TMC to the SAME functions, gated. LLVM gained dispatch-graph (b′) TMC; a SILENT guarded-arm TRMC miscompile found+fixed; SEED RE-MINTED (cold bootstrap PASS). Branch `worktree-ancient-stargazing-planet`, ready to merge. (2026-07-13)
+## RESUME — ⚖️ TMC PARITY ARC SHIPPED + MERGED TO MAIN: both backends apply TMC to the SAME functions, gated. LLVM gained dispatch-graph (b′) TMC; a SILENT guarded-arm TRMC miscompile found+fixed. Branch `tmc-parity-arc`, merged. (2026-07-13)
+
+**Merge note:** main advanced mid-arc (snapshot-R1 gate migration, `a9f0a8a5` — parse/desugar/mark
+goldens deleted for an in-process snapshot family). Merged main into the arc, resolved by taking the
+deletions + re-cutting the 3 changed backend snapshots (`rm test/snapshots/compiler/<f>.md` +
+`--new`); `diff_compiler_tmc_parity` added to the CI backend shard (the new
+`ci_shard_coverage` meta-gate caught it) and made self-provisioning (builds the wasm probes instead
+of skipping). **Seed re-minted from the MERGED source** (both sides had minted; post-merge mint is
+the valid one) — cold `bootstrap_from_seed` PASS. Post-merge: run_gates **81/81** (the new suite),
+stack 10/10, fixpoint C3a/C3b YES, type-clean.
 
 Plan: `/root/.claude/plans/ancient-stargazing-planet.md`. Owning docs: `compiler/TRMC-DESIGN.md` §Phase 3 (rewritten — SHIPPED), `compiler/WASMGC-TRMC-DESIGN.md` header note. PLAN.md "Native TMC parity" row CLOSED.
 
