@@ -28,6 +28,31 @@
 #
 #   reason     the specific bug, one line.  NEVER leave it as TODO.
 #
+# ⚠️ THE CATEGORY IS A CLAIM. VERIFY IT — a wrong one launders a bug behind a plausible
+# label, and it will be repeated as fact by everyone who reads this file (it was: four
+# `wasm:emitter-gap` rows for the w7_array_* fixtures asserted a wasm ref-mode gap that
+# DID NOT EXIST, and an orchestrator briefed an agent on that wrong story as if it were
+# established. The rows are deleted; see the 2026-07-13 commit).
+#
+# For `wasm:emitter-gap` specifically, there is a ONE-LINE discriminating test. Run the
+# fixture through BOTH prelude-free probe entries:
+#
+#     ./test/bin/llvm_emit_main <fixture>      # does the OTHER backend manage it?
+#     ./test/bin/wasm_emit_main <fixture>
+#
+#   * BOTH fail the same way  -> it is NOT a backend gap. It is a front-end/prelude fact
+#     about the prelude-free corpus (e.g. `.[i]` desugars to the Index INTERFACE METHOD,
+#     which has no binding in a prelude-free entry — both backends are CORRECT to reject
+#     it). Do not write `wasm:emitter-gap`. Move the fixture to the real-prelude corpus.
+#   * ONLY wasm fails -> a genuine wasm gap. (Audited 2026-07-13: all 44 remaining rows
+#     pass this test. `writeFile`/`statFile`/`listDir` are externs LLVM binds and wasm's
+#     ref-mode does not; `CRecord`/`CLetGroup` are Core IR nodes wasm cannot lower.)
+#
+# Note wasm_emit's own message is what created the confusion: it labels a GENERIC unbound
+# name as "wasm_emit gap — ref-mode: unbound variable 'x'", which reads as a backend
+# defect even when the name is simply not in scope. Do not take that wording as the
+# category.
+#
 # A fixture ABSENT from this file is expected to be CLEAN: eq:eq:eq:ran:ran:ran.
 # Regenerate with CAPTURE=1 (then review the diff and write the reasons).
 

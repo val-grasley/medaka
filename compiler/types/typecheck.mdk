@@ -4986,6 +4986,10 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- standalone scheme nor stamped RLocal (which would send eval/emit to the standalone
   -- and, e.g., apply `sz n = n + 1` to a Bool).
   let isDictVar = definerReceiverIsDictVar name xt
+  -- P0-20: ground an ungrounded receiver to the standalone's declared domain BEFORE the
+  -- dispatch decision, so typecheck asks the impl question about the SAME head the
+  -- post-inference route resolver will.  See groundShadowReceiver.
+  let _ = groundShadowReceiver name xt isDictVar dloc
   let dispatches = definerReceiverDispatches name xt
   let _ = setRef suppressRLocalRecord True
   let _ = setRef suppressArgStamp True
@@ -5125,6 +5129,36 @@ enforceStandaloneDomain _ name xt dloc = match standaloneShadowDomain name
     None =>
       if definerReceiverIsDictVar name xt then () else unifyStandaloneDomain dom xt dloc
 
+-- P0-20 (SILENT WRONG ANSWER, `eq 1 2` → the binary printed 0): typecheck's
+-- dispatch-vs-standalone decision and the POST-inference route resolver
+-- (resolveRLocalSite) must ask the S2 impl question about the SAME receiver head.
+--
+-- They did not.  A definer-shadow receiver that is not yet grounded AT INFERENCE TIME —
+-- a NUMERIC LITERAL is the everyday case, it is `Num a => a`, not `Int` — took the
+-- ungrounded arm (S5 ⇒ standalone) and was typed against the standalone's scheme.  That
+-- typing then UNIFIES the standalone's declared domain into the receiver, so by the time
+-- resolveRLocalSite runs the receiver IS grounded — to `Int` — and `Int` has `impl Eq
+-- Int`, so the route resolver left the site to DISPATCH.  Result: `check` typed
+-- `eq 1 2 : Int` (the user's `eq : Int -> Int -> Int`) while eval/emit called the
+-- interface method and produced a `Bool` — `run` panicked (`intToString: not an Int`)
+-- and `build` SILENTLY PRINTED 0.  Only literal receivers were affected: `f k = eq k 1`
+-- (k : Int, already grounded) dispatched consistently on all three paths.
+--
+-- Fix: perform S5's monomorphisation FIRST (it is the same unification the standalone
+-- arm would have done, only earlier), then decide.  With the receiver grounded to `Int`,
+-- S2 sees the impl and DISPATCHES on every path — check == run == build.  A grounded
+-- receiver, a dict-bound one, and an unsignatured standalone (no domain to ground to)
+-- are all untouched; so is a standalone whose domain head has NO impl of the shadowed
+-- interface (map's `toList : Map k v -> …` — there is deliberately no `impl Foldable
+-- Map`), which is every definer shadow in the tree.
+groundShadowReceiver : String -> Mono -> Bool -> Option Loc -> <Mut> Unit
+groundShadowReceiver name xt isDictVar dloc
+  | isDictVar = ()
+  | isSome (headTyconMono xt) = ()
+  | otherwise = match standaloneShadowDomain name
+    None => ()
+    Some dom => unifyStandaloneDomain dom xt dloc
+
 -- unify the standalone domain against the argument at the call's location.
 unifyStandaloneDomain : Mono -> Mono -> Option Loc -> <Mut> Unit
 unifyStandaloneDomain dom xt dloc =
@@ -5194,6 +5228,10 @@ inferDefinerShadowVarApp : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferDefinerShadowVarApp env name f x =
   let dloc = currentLoc.value
   let xt = infer env x
+  -- P0-20: ground an ungrounded receiver to the standalone's declared domain BEFORE the
+  -- dispatch decision (see groundShadowReceiver) — otherwise `check` types `eq 1 2`
+  -- against the standalone while run/build dispatch to `impl Eq Int`.
+  let _ = groundShadowReceiver name xt (definerReceiverIsDictVar name xt) dloc
   match headTyconMono xt
     Some head =>
       if implExistsForHead shadowKeyTableRef.value name head then
