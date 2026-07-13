@@ -43,12 +43,20 @@ import frontend.ast.{
   Decl(..),
 }
 import list.{replicate, take, drop}
+import support.ordmap.{
+  OrdMap,
+  omEmpty,
+  omInsert,
+  omLookup,
+  omHasKey,
+  omFromPairs,
+}
 import support.util.{
   contains,
   allList,
   anyList,
   listLen,
-  lookupAssoc,
+  reverseL,
   joinNl,
   joinWith,
   orElseOpt,
@@ -108,19 +116,32 @@ digitVal c = charCode c - charCode '0'
 -- (exported, with `buildOracle`, so typecheck.mdk's `check_match` can reuse the
 -- same oracle + matrix machinery — see the note at the top of this file.)
 public export data Oracle = Oracle {
-    typeCtors : List (String, List String),
-    ctorArity : List (String, Int),
-    ctorType : List (String, String),
-    ctorFields : List (String, List String),  -- ctor → declared field names in order (DData ConNamed variants)
+    typeCtors : OrdMap (List String),
+    ctorArity : OrdMap Int,
+    ctorType : OrdMap String,
+    ctorFields : OrdMap (List String),  -- ctor → declared field names in order (DData ConNamed variants)
   }
 
 export buildOracle : List Decl -> Oracle
 buildOracle prog = Oracle {
-  typeCtors = flatMap dataTypeCtors prog ++ builtinTypeCtors,
-  ctorArity = flatMap dataArity prog ++ builtinArity,
-  ctorType = flatMap dataCtorType prog ++ builtinCtorType,
-  ctorFields = flatMap dataCtorFields prog,
+  typeCtors = oracleMap (flatMap dataTypeCtors prog ++ builtinTypeCtors),
+  ctorArity = oracleMap (flatMap dataArity prog ++ builtinArity),
+  ctorType = oracleMap (flatMap dataCtorType prog ++ builtinCtorType),
+  ctorFields = oracleMap (flatMap dataCtorFields prog),
 }
+
+-- PERF: the oracle's four tables used to be plain association LISTS, so every
+-- ctor→arity / type→ctors lookup was an O(#ctors) scan.  `usefulCovered` does one
+-- per signature constructor, which makes it O(#ctors²) on a wide ADT.  An OrdMap
+-- makes each lookup O(log n).
+--
+-- The lists were consulted with `lookupAssoc`, which returns the FIRST match — the
+-- convention the tables are built for (user data is placed ahead of the builtins so
+-- it shadows them, and an earlier `data` decl shadows a later one).  `omFromPairs`
+-- is last-write-wins, so the pairs are REVERSED before folding them in, which
+-- reproduces first-match-wins exactly.
+oracleMap : List (String, a) -> OrdMap a
+oracleMap pairs = omFromPairs (reverseL pairs) omEmpty
 
 builtinTypeCtors : List (String, List String)
 builtinTypeCtors =
@@ -174,22 +195,22 @@ fieldName : Field -> String
 fieldName (Field n _) = n
 
 oGetCtorFields : Oracle -> String -> Option (List String)
-oGetCtorFields oracle c = lookupAssoc c oracle.ctorFields
+oGetCtorFields oracle c = omLookup c oracle.ctorFields
 
 export oGetCtors : Oracle -> String -> Option (List String)
 oGetCtors oracle t
   | (Some _) <- tupleArityOfName t = Some [t]
-  | otherwise = lookupAssoc t oracle.typeCtors
+  | otherwise = omLookup t oracle.typeCtors
 
 export oGetCtorType : Oracle -> String -> Option String
 oGetCtorType oracle c
   | (Some _) <- tupleArityOfName c = Some c
-  | otherwise = lookupAssoc c oracle.ctorType
+  | otherwise = omLookup c oracle.ctorType
 
 oGetArity : Oracle -> String -> Int
 oGetArity oracle c
   | (Some a) <- tupleArityOfName c = a
-  | otherwise = fromOption 0 (lookupAssoc c oracle.ctorArity)
+  | otherwise = fromOption 0 (omLookup c oracle.ctorArity)
 
 -- ── pattern → canonical matrix pattern ────────────────────────────────────
 export desugarPat : Oracle -> Pat -> Pat
@@ -232,14 +253,20 @@ findRecField fn ((RecPatField f mPat)::rest)
   | otherwise = findRecField fn rest
 
 -- ── matrix operations ─────────────────────────────────────────────────────
-filterMapRows : (List Pat -> Option (List Pat)) -> List (List Pat) -> List (List Pat)
-filterMapRows _ [] = []
-filterMapRows f (row::rest) = match f row
-  Some r => r :: filterMapRows f rest
-  None => filterMapRows f rest
-
+-- PERF: these three used to share one higher-order `filterMapRows f pmat`, with
+-- `f` a partial application (`specConRow c arity`).  A call to an OPAQUE function
+-- value goes through the runtime's generic apply path, which allocates per call —
+-- and these are the innermost loop of the Maranget recursion, run once per matrix
+-- ROW per signature CONSTRUCTOR.  On an N-constructor ADT matched by N arms that
+-- is N² generic applies, and it was the single largest allocation source in
+-- exhaustiveness checking (~108 MB at N=1000).  Open-coding each as a direct
+-- recursion makes the inner call a statically-known one: same rows, same order,
+-- no allocation per row visited.
 specializeCon : String -> Int -> List (List Pat) -> List (List Pat)
-specializeCon c arity pmat = filterMapRows (specConRow c arity) pmat
+specializeCon _ _ [] = []
+specializeCon c arity (row::rest) = match specConRow c arity row
+  Some r => r :: specializeCon c arity rest
+  None => specializeCon c arity rest
 
 specConRow : String -> Int -> List Pat -> Option (List Pat)
 specConRow _ _ [] = None
@@ -250,7 +277,10 @@ specConRow _ arity (PWild::rest) = Some (replicate arity PWild ++ rest)
 specConRow _ _ _ = None
 
 specializeLit : Lit -> List (List Pat) -> List (List Pat)
-specializeLit l pmat = filterMapRows (specLitRow l) pmat
+specializeLit _ [] = []
+specializeLit l (row::rest) = match specLitRow l row
+  Some r => r :: specializeLit l rest
+  None => specializeLit l rest
 
 specLitRow : Lit -> List Pat -> Option (List Pat)
 specLitRow _ [] = None
@@ -259,7 +289,10 @@ specLitRow _ (PWild::rest) = Some rest
 specLitRow _ _ = None
 
 defaultMatrix : List (List Pat) -> List (List Pat)
-defaultMatrix pmat = filterMapRows defRow pmat
+defaultMatrix [] = []
+defaultMatrix (row::rest) = match defRow row
+  Some r => r :: defaultMatrix rest
+  None => defaultMatrix rest
 
 defRow : List Pat -> Option (List Pat)
 defRow (PWild::rest) = Some rest
@@ -307,22 +340,75 @@ usefulWildCtors oracle None pmat restQ =
 usefulWildCtors oracle (Some ctors) pmat restQ =
   usefulCovered oracle ctors pmat restQ
 
+-- PERF: this is the hot spot of the whole checker.  It used to
+--   (a) decide coverage with `allCovered ctors (headCtors pmat)` — an O(#ctors ×
+--       #rows) list-membership scan; and
+--   (b) call `specializeCon` once per signature constructor, each call re-scanning
+--       the ENTIRE matrix.
+-- Both are O(N²) for an N-constructor `data` matched by N arms, and together they
+-- were the dominant cost of exhaustiveness checking.
+--
+-- Instead, bucket the matrix's rows by head constructor in ONE pass.  The bucket
+-- KEYS are exactly the head-constructor set, so coverage becomes an O(log N) lookup
+-- per constructor; and each branch is handed its own rows rather than re-filtering
+-- all of them.
+--
+-- One subtlety: a WILDCARD-headed row belongs to EVERY constructor's specialised
+-- matrix, so buckets alone do not reproduce `specializeCon` when the matrix has
+-- one.  Rather than splice wildcard rows back into each bucket (which would also
+-- move them to the end, perturbing row order), we fall back to the original
+-- per-constructor scan in that case.  It is rare and self-limiting: `allCovered`
+-- holds with a wildcard row present only when the match already names every
+-- constructor AND adds a redundant catch-all — which we warn about anyway.
 usefulCovered : Oracle -> List String -> List (List Pat) -> List Pat -> Bool
-usefulCovered oracle ctors pmat restQ
-  | allCovered ctors (headCtors pmat) =
-    anyList (usefulBranch oracle pmat restQ) ctors
-  | otherwise = useful oracle None (defaultMatrix pmat) restQ
+usefulCovered oracle ctors pmat restQ =
+  usefulBuckets oracle ctors pmat restQ (headBuckets pmat omEmpty)
 
-allCovered : List String -> List String -> Bool
-allCovered ctors present = allList (presentIn present) ctors
+usefulBuckets : Oracle -> List String -> List (List Pat) -> List Pat -> OrdMap (List (List Pat)) -> Bool
+usefulBuckets oracle ctors pmat restQ buckets
+  | not (allCovered ctors buckets) =
+    useful oracle None (defaultMatrix pmat) restQ
+  | anyWildHead pmat = anyList (usefulBranch oracle pmat restQ) ctors
+  | otherwise = anyList (usefulBranchIn oracle buckets restQ) ctors
 
-presentIn : List String -> String -> Bool
-presentIn present c = contains c present
+-- The matrix's rows grouped by head constructor, with that head STRIPPED
+-- (`args ++ rest`) — i.e. exactly the rows `specializeCon c` keeps, for every `c`
+-- at once, provided no row has a wildcard head (see `usefulCovered`).  Rows are
+-- prepended, so a bucket comes out in reverse row order and is reversed on read.
+headBuckets : List (List Pat) -> OrdMap (List (List Pat)) -> OrdMap (List (List Pat))
+headBuckets [] acc = acc
+headBuckets (row::rest) acc = headBuckets rest (headBucketRow row acc)
+
+headBucketRow : List Pat -> OrdMap (List (List Pat)) -> OrdMap (List (List Pat))
+headBucketRow ((PCon c args)::tl) acc =
+  omInsert c (args ++ tl :: fromOption [] (omLookup c acc)) acc
+headBucketRow _ acc = acc
+
+anyWildHead : List (List Pat) -> Bool
+anyWildHead [] = False
+anyWildHead ((PWild::_)::_) = True
+anyWildHead (_::rest) = anyWildHead rest
+
+-- The signature is fully covered when every constructor heads at least one row —
+-- i.e. has a bucket.  (Same predicate as the old `allCovered ctors (headCtors
+-- pmat)`: `headCtors` collects exactly the `PCon` heads, which are exactly the
+-- bucket keys.)
+allCovered : List String -> OrdMap (List (List Pat)) -> Bool
+allCovered ctors buckets = allList (c => omHasKey c buckets) ctors
 
 usefulBranch : Oracle -> List (List Pat) -> List Pat -> String -> Bool
 usefulBranch oracle pmat restQ c =
   let a = oGetArity oracle c
   useful oracle None (specializeCon c a pmat) (replicate a PWild ++ restQ)
+
+-- `usefulBranch` with the constructor's rows taken from the prebuilt bucket instead
+-- of re-scanning the matrix.  Only reached when the matrix has no wildcard-headed
+-- row, where the bucket IS `specializeCon c a pmat` — same rows, same order.
+usefulBranchIn : Oracle -> OrdMap (List (List Pat)) -> List Pat -> String -> Bool
+usefulBranchIn oracle buckets restQ c =
+  let a = oGetArity oracle c
+  let rows = reverseL (fromOption [] (omLookup c buckets))
+  useful oracle None rows (replicate a PWild ++ restQ)
 
 -- ── redundant / unreachable-arm detection ─────────────────────────────────
 -- The dual of exhaustiveness: an arm is UNREACHABLE when its pattern matches no
@@ -388,7 +474,7 @@ witnessWild oracle (Some ctors) pmat ncols = witnessSig oracle ctors pmat ncols
 
 witnessSig : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
 witnessSig oracle ctors pmat ncols
-  | allCovered ctors (headCtors pmat) =
+  | allCovered ctors (headBuckets pmat omEmpty) =
     firstWitnessBranch oracle ctors pmat ncols
   | otherwise = map (missingCtorPat oracle ctors (headCtors pmat) :: _) (usefulWitness oracle None (defaultMatrix pmat) (ncols - 1))
 

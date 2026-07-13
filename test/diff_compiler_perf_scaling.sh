@@ -77,20 +77,25 @@ N="${PERF_N:-250}"
 # (nothing ran it for months) and how diff_compiler_lint_multi sat "skipped" while
 # also failing. Do not "simplify" this into a skip.
 #
-#   match — exhaustiveness checking (compiler/frontend/exhaust.mdk, checkMatch,
-#           Maranget's pattern-matrix algorithm) over an N-constructor data decl
-#           with an N-arm match. MEASURED 2026-07-13, ratio CLIMBING with N:
-#               N=125->250  2.48x
-#               N=250->500  2.75x
-#               N=500->1000 3.10x     (274 MB net allocation at N=1000)
-#           A climbing ratio is the signature of a genuine quadratic, not n log n.
-#           Filed as T17. Remove this entry when it is fixed — the gate will TELL
-#           you to.
-KNOWN_SUPERLINEAR="match"
-# Per-shape ceiling while known-bad: fail if it gets WORSE than this.
-KNOWN_CEIL_match="3.0"
-# And fail if it gets BETTER than this (i.e. someone fixed it) — promote it.
-KNOWN_FIXED_match="2.3"
+# (Currently EMPTY — every shape scales sub-quadratically. Long may it last.)
+#
+# HISTORY — entries that were fixed and promoted OUT of this ledger:
+#
+#   match — exhaustiveness checking (compiler/frontend/exhaust.mdk + the
+#           `check_match` driver in compiler/types/typecheck.mdk) over an
+#           N-constructor data decl with an N-arm match. Filed as T17, ratio
+#           CLIMBING with N (2.48x -> 2.75x -> 3.10x per doubling; 274 MB net
+#           allocation at N=1000). FIXED 2026-07-13: it was FOUR quadratics
+#           stacked, all of the same "re-scan the whole thing once per element"
+#           shape — `usefulCovered` called `specializeCon` (a full matrix scan)
+#           once per signature constructor, `allCovered` did an O(#ctors x #rows)
+#           list-membership scan, the constructor oracle's four tables were assoc
+#           LISTS so every arity/type lookup was O(#ctors), and the redundant-arm
+#           fold re-ran the whole Maranget recursion against every preceding arm.
+#           Now: rows are bucketed by head constructor in ONE pass, the oracle is
+#           an OrdMap, and the redundancy fold skips arms that provably cannot be
+#           unreachable. 3.10x -> 2.18x; 274 MB -> 118 MB at N=1000.
+KNOWN_SUPERLINEAR=""
 
 is_known() {
   for k in $KNOWN_SUPERLINEAR; do [ "$k" = "$1" ] && return 0; done

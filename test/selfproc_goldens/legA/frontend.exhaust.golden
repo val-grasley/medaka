@@ -1,4 +1,5 @@
-allCovered : List String -> List String -> Bool
+allCovered : List String -> Map String (List (List Pat)) -> Bool
+anyWildHead : List (List Pat) -> Bool
 bindCtors : Oracle -> Option String -> Option (List String)
 boolAlwaysTrue : Expr -> Bool
 buildOracle : List Decl -> Oracle
@@ -36,7 +37,6 @@ exhaustToLines : List Decl -> String
 exhaustToLinesWith : List Decl -> List Decl -> String
 fieldAssignBinds : FieldAssign -> List LetBind
 fieldName : Field -> String
-filterMapRows : (List Pat -> Option (List Pat)) -> List (List Pat) -> List (List Pat)
 findRecField : String -> List RecPatField -> Option (Option Pat)
 firstMissing : List String -> List String -> Option String
 firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
@@ -53,6 +53,8 @@ guardArmsTotal : List GuardArm -> Bool
 guardBinds : Guard -> List LetBind
 guardWarning : String
 guardsDecidablyExhaustive : List Guard -> Bool
+headBucketRow : List Pat -> Map String (List (List Pat)) -> Map String (List (List Pat))
+headBuckets : List (List Pat) -> Map String (List (List Pat)) -> Map String (List (List Pat))
 headCtors : List (List Pat) -> List String
 ifaceMethodWarnings : Oracle -> IfaceMethod -> List (String, Option Loc)
 implClauses : List ImplMethod -> List (String, (List Pat, Expr))
@@ -70,12 +72,12 @@ oGetArity : Oracle -> String -> Int
 oGetCtorFields : Oracle -> String -> Option (List String)
 oGetCtorType : Oracle -> String -> Option String
 oGetCtors : Oracle -> String -> Option (List String)
+oracleMap : List (String, a) -> Map String a
 parenWrapWit : Bool -> String -> String
 parseDigits : Array Char -> Int -> Int -> Option Int
 parseDigitsGo : Array Char -> Int -> Int -> Int -> Bool -> Option Int
 patHasRange : Pat -> Bool
 patUnreachable : Oracle -> Option String -> List (List Pat) -> Pat -> Bool
-presentIn : List String -> String -> Bool
 recFieldHasRange : RecPatField -> Bool
 recFieldIrrefutable : RecPatField -> Bool
 renderClauseWitness : Int -> Pat -> String
@@ -95,6 +97,8 @@ tupleArityOfName : String -> Option Int
 tupleCtorName : Int -> String
 useful : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
 usefulBranch : Oracle -> List (List Pat) -> List Pat -> String -> Bool
+usefulBranchIn : Oracle -> Map String (List (List Pat)) -> List Pat -> String -> Bool
+usefulBuckets : Oracle -> List String -> List (List Pat) -> List Pat -> Map String (List (List Pat)) -> Bool
 usefulCovered : Oracle -> List String -> List (List Pat) -> List Pat -> Bool
 usefulHead : Oracle -> Option String -> List (List Pat) -> Pat -> List Pat -> Bool
 usefulWild : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool

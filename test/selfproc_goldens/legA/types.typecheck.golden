@@ -60,6 +60,7 @@ armDictSites : Arm -> List (Ref (List Route))
 armEVars : Arm -> List String
 armIsUnguarded : List Guard -> Bool
 armSites : Arm -> List (Ref Route)
+armUnreachable : Option String -> List (List Pat) -> Map String Unit -> Bool -> Pat -> <Mut> Bool
 arrowsWithLastEffect : List Mono -> EffRow -> Mono -> <Mut> Mono
 assignName : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
 astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
@@ -158,7 +159,7 @@ checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, String, Optio
 checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
 checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
-checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
+checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> <Mut> Unit
 checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
 checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
 checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> <Mut> Unit
@@ -624,6 +625,7 @@ instantiateVarTracked : String -> Scheme -> <Mut> Mono
 intercalateComma : List String -> String
 ioAliasLabels : List String
 isArithBinop : String -> Bool
+isConPat : Pat -> Bool
 isConstrainedTy : Ty -> Bool
 isCtorAppHead : Expr -> Bool
 isHoleParam : Param -> Bool
@@ -765,6 +767,7 @@ normHole : Param -> Param
 normalize : Mono -> Mono
 notAFunctionHint : Option String -> String
 notAFunctionMsg : String -> String
+noteHeadCtor : Pat -> Map String Unit -> Map String Unit
 noteNumlitCtx : Mono -> Mono -> String -> <Mut> Unit
 nthArgMono : Int -> Mono -> Option Mono
 nthInt : Int -> List Int -> Int

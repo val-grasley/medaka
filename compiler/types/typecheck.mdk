@@ -5692,21 +5692,65 @@ unreachableArmWarning = "Warning: unreachable match arm. This pattern is already
 
 checkMatchRedundant : Mono -> List Arm -> <Mut> Unit
 checkMatchRedundant scrutTy arms =
-  checkRedundantGo (matchCol0Type scrutTy) [] arms
+  checkRedundantGo (matchCol0Type scrutTy) [] omEmpty False arms
 
-checkRedundantGo : Option String -> List (List Pat) -> List Arm -> <Mut> Unit
-checkRedundantGo _ _ [] = ()
-checkRedundantGo col0 prec ((Arm pat gs body)::rest) =
+-- PERF: `prec` accumulates the preceding arms' patterns and is PREPENDED to, so
+-- it holds them in REVERSE arm order.  It used to be built with `prec ++ [[dp]]`,
+-- which copies the whole accumulator once per arm — O(N²) allocation on a match
+-- with many arms, and the dominant allocation source in the redundancy check.
+--
+-- Reversing the rows is sound because `useful` is a PREDICATE OVER THE SET of
+-- matrix rows ("does some value match the query and no row?"): `specializeCon` /
+-- `specializeLit` / `defaultMatrix` are row-wise filters, and the only decision
+-- that reads rows in order is `inferCol0Type`, which just needs SOME column-0
+-- constructor to name the column's type — and it is consulted only when `col0`
+-- is `None`, i.e. when the scrutinee type has no concrete head, in which case no
+-- arm carries a constructor pattern and there is no head constructor to find in
+-- either order.
+checkRedundantGo : Option String -> List (List Pat) -> OrdMap Unit -> Bool -> List Arm -> <Mut> Unit
+checkRedundantGo _ _ _ _ [] = ()
+checkRedundantGo col0 prec heads offCol ((Arm pat gs body)::rest) =
   let dp = desugarPat matchOracle.value pat
-  let _ = if patUnreachable matchOracle.value col0 prec dp then
+  let _ = if armUnreachable col0 prec heads offCol dp then
     let _ = setRef matchWarnings (unreachableArmWarning :: matchWarnings.value)
     setRef matchWarningLocs (orElseLoc (exprLoc body) currentLoc.value :: matchWarningLocs.value)
   else ()
   -- Only UNGUARDED, range-free arms contribute to the covered set: a guarded arm
   -- may not fire, and a range collapses to a wildcard that over-states coverage
   -- (patHasRange) — either would produce a false "redundant" on a later arm.
-  let prec2 = if armIsUnguarded gs && not (patHasRange pat) then prec ++ [[dp]] else prec
-  checkRedundantGo col0 prec2 rest
+  let contributes = armIsUnguarded gs && not (patHasRange pat)
+  let prec2 = if contributes then [dp] :: prec else prec
+  let heads2 = if contributes then noteHeadCtor dp heads else heads
+  let offCol2 = offCol || (contributes && not (isConPat dp))
+  checkRedundantGo col0 prec2 heads2 offCol2 rest
+
+-- PERF fast path.  `patUnreachable` runs the full Maranget `useful` recursion, which
+-- re-scans EVERY preceding row — so the fold as a whole is O(arms²) on a wide match.
+-- But a constructor arm `C …` can only be unreachable if some preceding row could
+-- match a `C` value, and the only rows that can are (a) rows headed by `C` itself and
+-- (b) rows with a WILDCARD head, which match anything.  When neither exists,
+-- `specializeCon C` yields the EMPTY matrix and `useful _ _ [] _` is `True` by
+-- definition — the arm is reachable — so the recursion is guaranteed to say
+-- "reachable" and we can skip it outright.
+--
+-- `heads` is the set of head constructors of the preceding contributing rows and
+-- `offCol` records whether any of them has a NON-constructor head.  `offCol` is a
+-- deliberate over-approximation of "has a wildcard head" (it also trips on a literal
+-- head, which `specializeCon` would in fact discard): erring towards `True` only ever
+-- costs us the fast path and falls back to the exact check, never an answer.
+armUnreachable : Option String -> List (List Pat) -> OrdMap Unit -> Bool -> Pat -> <Mut> Bool
+armUnreachable col0 prec heads offCol (PCon c args)
+  | not offCol && not (omHasKey c heads) = False
+  | otherwise = patUnreachable matchOracle.value col0 prec (PCon c args)
+armUnreachable col0 prec _ _ dp = patUnreachable matchOracle.value col0 prec dp
+
+noteHeadCtor : Pat -> OrdMap Unit -> OrdMap Unit
+noteHeadCtor (PCon c _) heads = omInsert c () heads
+noteHeadCtor _ heads = heads
+
+isConPat : Pat -> Bool
+isConPat (PCon _ _) = True
+isConPat _ = False
 
 -- Only UNGUARDED arms contribute to the covered set (a guarded arm may not fire).
 armIsUnguarded : List Guard -> Bool
