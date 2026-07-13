@@ -101,7 +101,7 @@ import types.typecheck.{
   mainTypeIsUnit,
 }
 import eval.eval.{
-  evalModulesOutput,
+  evalModulesOutputRun,
   evalModulesOutputAsync,
   currentEvalFile,
   runJsonMode,
@@ -1092,10 +1092,12 @@ dropModPath (mid, _, prog) = (mid, prog)
 -- `runAsync` (perform its stored row) instead of forcing it to an inert Async
 -- value; a plain `main` keeps the ordinary force-for-effect path.  mainTypeIsAsync
 -- reads the scheme elaborateModules just stashed, so this must run post-elaborate.
-runProgramOutput : List Decl -> List (String, List Decl) -> <Mut> String
+-- B2 (RUN-EFFECTS): the plain path is evalModulesOutputRun — evalModulesOutput
+-- plus the real-I/O externs (readFile), hence the FileRead in the row.
+runProgramOutput : List Decl -> List (String, List Decl) -> <FileRead "_", Mut> String
 runProgramOutput preludeDecls modules = match mainTypeIsAsync ()
   True => evalModulesOutputAsync preludeDecls modules
-  False => evalModulesOutput preludeDecls modules
+  False => evalModulesOutputRun preludeDecls modules
 
 -- ── test ──────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `test` arm + test_main.mdk: read <MEDAKA_ROOT>/stdlib/
