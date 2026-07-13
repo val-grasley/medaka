@@ -1,10 +1,20 @@
 # Runtime & extern strategy for the native (Stage 2.4) backend
 
+**Status:** IMPLEMENTED, with 2 items still deferred. Value representation + calling
+convention RATIFIED, String representation DECIDED, native runtime exists and is
+canonical (verified live below). Still open: the `set_ref` write barrier (moot as long
+as Boehm GC, non-moving, stays the collector) and the "panic unwind model" — the latter
+is tracked and still genuinely open in `compiler/RUNTIME-TRAP-UNIFY-DESIGN.md` (verified:
+`stdlib/array.mdk:268` still has a bare uncoded `panic "Array.set: index out of bounds"`,
+exactly the under-coded state that doc's repro matrix describes).
+
 How Medaka's 71 `extern` primitives (declared in [`../stdlib/runtime.mdk`](../stdlib/runtime.mdk),
-implemented natively in [`../lib/eval.ml`](../lib/eval.ml)'s `primitives` table)
-get realized once the tree-walking interpreter is replaced by a bytecode VM
-(Stage 2.2) and then LLVM (Stage 2.4). This is the contract the native runtime
-must satisfy and the per-extern disposition for building it.
+were originally implemented natively in a now-removed OCaml `lib/eval.ml`'s `primitives`
+table, the historical starting point for this design — that table is now
+`runtime/medaka_rt.c` + `compiler/eval/eval.mdk`) get realized once the tree-walking
+interpreter is replaced by a bytecode VM (Stage 2.2, since removed as off the canonical
+path — see `STAGE2-DESIGN.md`) and then LLVM (Stage 2.4, now canonical). This is the
+contract the native runtime must satisfy and the per-extern disposition for building it.
 
 See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decision
 (bytecode-VM-first) and [`../PLAN.md`](../PLAN.md) "North star → Stage 2".
@@ -15,7 +25,7 @@ See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decisi
 > DECIDED** (§4/§7 decision 2: UTF-8 bytes + cached codepoint count). A **native
 > runtime exists** (`runtime/medaka_rt.c`): `mdk_alloc` routes to Boehm `GC_malloc`
 > (conservative GC, verified collecting), and the Stage-2.4 backend
-> (`compiler/llvm_emit.mdk`) emits the full non-GC Core IR surface plus the **entire
+> (`compiler/backend/llvm_emit.mdk`) emits the full non-GC Core IR surface plus the **entire
 > native extern catalog** (slices 1–14: strings/numeric/IO/abort/arrays/char/unicode/
 > args-env/file-IO + ADT-returning externs), all gated byte-identical against the
 > tree-walker oracle (`test/diff_compiler_llvm{,_typed}.sh`). The three non-C-extern
@@ -120,7 +130,7 @@ through the normal path, and is validated by the existing differential harness f
 in the tree-walker only because OCaml's `Array.sort` was conveniently at hand.)
 
 **`arrayMakeWith` → INTRINSIC. DONE 2026-06-07** — emitted as an inline builder loop
-by `compiler/llvm_emit.mdk` (`emitArrayMakeWith`): alloca-counter loop, calls the Medaka
+by `compiler/backend/llvm_emit.mdk` (`emitArrayMakeWith`): alloca-counter loop, calls the Medaka
 closure `f : Int -> a` directly from the emitted loop body (code_ptr load + `call i64`)
 with the tagged index, stores each result into the allocated array cell. No C extern, no
 FFI boundary. `array.mdk`'s `mergeSortBy` and ~16 other sites use `arrayMakeWith` and
@@ -399,7 +409,7 @@ any native runtime exists.
 > the ratification is of the contract + this encoding, not a backend-specific bit
 > layout (so WasmGC compatibility is structural: it implements the same contract with
 > `i31ref` + typed structs; §8.6). The Stage-2.4 de-risking spike
-> (`compiler/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
+> (`compiler/backend/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
 > `test/diff_compiler_llvm.sh`, 43/43 byte-identical to the tree-walker) proved the
 > encoding end-to-end. **Ratified decisions (human, 2026-06-07):**
 > 1. **Native rep = Option A** (low-bit-1 immediate 63-bit `Int`/`Char`/`Bool`/`Unit`/
@@ -441,7 +451,7 @@ any native runtime exists.
 ### 8.0 What the value set actually is (the constraints)
 
 The native rep must encode every runtime value kind the tree-walker has
-(`lib/eval.ml`'s `Value` / `compiler/eval.mdk`'s `Value`), effects erased:
+(`lib/eval.ml`'s `Value` / `compiler/eval/eval.mdk`'s `Value`), effects erased:
 **immediate-ish scalars** — `Int`, `Float`, `Char`, `Bool`, `Unit`; **heap
 aggregates** — `String`, `Tuple`, `List`, `Array`, ADT (`VCon`), `Record`, `Ref`,
 closures; and the laziness cell `VThunk` (letrec / recursive values). Three facts
