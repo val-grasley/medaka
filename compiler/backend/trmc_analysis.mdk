@@ -803,7 +803,7 @@ dispGrow cf isFn fa binds fnNames root (m::rest) acc =
           let toAdd = dedup (filterList (n => not (contains n acc)) newMembers)
           dispGrow cf isFn fa binds fnNames root (rest ++ toAdd) (acc ++ toAdd)
 
-dispFindBind : List CBind -> String -> Option CBind
+export dispFindBind : List CBind -> String -> Option CBind
 dispFindBind [] _ = None
 dispFindBind ((CBind n cs)::rest) m =
   if n == m then

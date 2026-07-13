@@ -46,7 +46,8 @@ extract_ll() {
     sed -n 's/^; tmc: //p' "$1"
   else
     awk '/^define /{fn=$0; sub(/.*@/,"",fn); sub(/\(.*/,"",fn); cur=fn}
-         /br label %trmcloop/{print cur " trmc"}' "$1"
+         /br label %trmcloop/{print cur " trmc"}
+         /gdispexit[0-9]*:/{print cur " group-root"}' "$1"
   fi | sed 's/^mdk_//' | sort -u
 }
 
