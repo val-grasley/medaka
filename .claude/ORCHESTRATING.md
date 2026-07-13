@@ -438,6 +438,32 @@ list of defects to someone else (another orchestrator, a future session, a human
 
 ## Parallelism & file hygiene
 
+### 🚨 TELL EVERY AGENT TO BUILD IN ITS OWN WORKTREE — SAY IT EXPLICITLY
+
+**Two agents in one session independently ended up building in the ORCHESTRATOR'S worktree.**
+The harness injects the *orchestrator's* `CLAUDE.md`/`AGENTS.md` path into the agent's context,
+so an agent that trusts that header `cd`s into **your** tree. One of them ran `make medaka`
+there **concurrently with your own build**, writing the same `./medaka` and `./medaka_emitter`;
+its build "succeeded" with exit 0 and was worthless. The other's `git diff > patch` silently
+swept up a *sibling's* unstaged golden.
+
+It nearly went much worse: an agent had uncommitted **emitter** edits in the orchestrator's
+tree while the orchestrator ran `refresh_seed.sh` — which could have baked an unmerged,
+unreviewed emitter change into `compiler/seed/emitter.ll.gz`, **the trust anchor**, and pushed
+it. (Verified clean afterwards: a fixpoint from a *pristine* checkout of `origin/main` gave
+C3a YES + C3b YES, which is exactly what C3a is FOR — the "drift detector" is what proves the
+seed was not contaminated. Do this check if you ever suspect a leak.)
+
+So, in every agent prompt, state it in words:
+
+> Work ONLY in your own worktree. Do NOT `cd` into `/root/medaka` or any
+> `.claude/worktrees/<other>` directory, and do NOT build there — the CLAUDE.md path in your
+> context may point at someone else's tree; ignore it and use your own cwd.
+
+And on your side: **never run `refresh_seed.sh`, `make medaka`, or `git add -A` in a tree you
+have not just confirmed is clean** (`git status --short`). A shared worktree makes "capture my
+diff" unsound.
+
 - Parallelize only **non-overlapping files**. Never put two agents on one file;
   never pile agents onto the single hottest file. Sequential when they share a file
   (each must verify-green + merge before the next branches, to avoid conflicts).
