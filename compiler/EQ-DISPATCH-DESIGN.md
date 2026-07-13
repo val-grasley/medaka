@@ -1,6 +1,11 @@
 # `==`/`!=` → `Eq` Dispatch (Option A) — Design + Blast-Radius Census
 
-**Status:** DESIGN + CENSUS (no fix shipped). 2026-07-03.
+**Status:** OPEN — `==`/`!=` are still a builtin structural compare that bypasses the
+`Eq` interface (`stdlib/core.mdk:48-49` unchanged: "`==` on primitives is a builtin and
+does *not* dispatch through this interface"), verified live. Staged implementation plan
+below is ready to pick up as-is.
+
+Original doc text: **Status:** DESIGN + CENSUS (no fix shipped). 2026-07-03.
 **Base:** ancestor `9fddb349` (BASE_OK) — the live missing-constraint check.
 **Files under study:** `compiler/types/typecheck.mdk`, `compiler/eval/eval.mdk`,
 `compiler/backend/llvm_emit.mdk`, `compiler/backend/wasm_emit.mdk`,
