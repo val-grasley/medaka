@@ -37,9 +37,30 @@ Everything about the old environment that shaped our workflow is gone with it:
 Docs updated for the move: `AGENTS.md` ("Where you're running" + Environment gotcha),
 `README.md` (per-platform prereqs), `docker/README.md`, `compiler/PERF-{RESULTS,RUNTIME,SCOPE}.md`,
 `.claude/ORCHESTRATING.md` (primary-checkout path). Memories: `project_netcup_build_box` (now
-LIVE), `project_cyberhaven_docker_workflow` (SUPERSEDED), `feedback_serialize_heavy_builds`
-(DLP rationale removed; **caps are now un-tuned for 12 dedicated cores — re-tune by measurement,
-don't assume `JOBS=4` is still right**).
+LIVE), `project_cyberhaven_docker_workflow` (SUPERSEDED), `feedback_serialize_heavy_builds`.
+
+### ⚡ THE `JOBS=4` CAP IS RETIRED — use the script defaults (MEASURED 2026-07-13)
+
+Older RESUME entries below (and old agent prompts) say to bake `FORCE=1 JOBS=4 bash
+test/build_oracles.sh` / `INNER_JOBS=2` into everything, "because JOBS is a memory ceiling."
+**Both halves of that are now disproven on this box. Do not cap JOBS. Just run
+`FORCE=1 bash test/build_oracles.sh` and `sh test/run_gates.sh`.**
+
+Swept on the 12-core / 31 GB box (every gate config re-verified 78/0/1, so nothing won by racing):
+
+| `build_oracles` JOBS | 4 (old cap) | 6 | 8 | 10 | **12 (default)** | 16 | 24 |
+|---|---|---|---|---|---|---|---|
+| wall | **427s** | 332s | 294s | 288s | **277s** | 275s | 299s ↑ |
+| peak mem | 3.3 GB | 4.1 | 5.0 | 5.6 | 6.4 | 8.1 | 10.9 |
+
+`run_gates`: 4×2 → 66s · **7×3 (default) → 54s** · 12×2 → 49s. Peak mem ~2 GB flat.
+
+- **Memory NEVER binds** — 10.9 of 31 GB even at JOBS=24. The 2026-07-08 OOM was a 10-core Mac
+  *with a DLP scanner hooking every file op*, not a property of the workload.
+- **The cap cost +54% wall-clock** (427s vs 277s) on a command we run constantly.
+- **What survives:** JOBS=24 is *slower* than 12 (thrash) — same effect that made concurrent
+  agent builds pathological. So **one build-heavy op at a time, GLOBALLY** still holds, and it's
+  exactly what makes the uncapped default safe. Don't stack heavy ops; don't hobble the one running.
 
 ### ✅ TASK #35 CLOSED — the tree is now FULLY GREEN (`run_gates` **78 / 0 / 1**, was 77/1/1)
 
