@@ -1,0 +1,33 @@
+# FIXTURE-CORPUS-EXCEPTIONS.txt — fixture/golden corpora deliberately NOT
+# consumed by any gate, each with a reason.
+#
+# diff_compiler_fixture_corpus_coverage.sh requires every *fixtures*/*goldens*
+# directory to be either (a) read by some gate (directly, or one hop through an
+# invoked *.sh or *.mdk build/run target), or (b) listed HERE, with a reason.
+#
+# This file is a LEDGER, not a skip-list — same distinction as
+# test/CI-COVERAGE-EXCEPTIONS.txt and test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt.
+# A skip-list only checks "is this path excused" and stops looking, so it never
+# notices when the excuse expires. This ledger is diffed in BOTH directions by
+# the gate:
+#
+#   corpus has 0 consumers and is NOT here  -> FAIL (a real orphan)
+#   corpus IS here but NOW HAS a consumer   -> FAIL ("this got wired up, delete
+#                                                      the ledger line")
+#
+# The second direction is the one a skip-list structurally cannot see.
+#
+# Adding a line here is a deliberate, reviewable act. "Nothing reads it so I
+# excluded it" is only acceptable with a real reason and, where the corpus is a
+# genuine gap (not an intentional non-gate), an owner/task to close it.
+#
+# Format (TAB-separated):  <corpus-relpath>\t<reason>
+
+test/bench_fixtures	only consumer is test/bench.sh, a timing/profiling harness that reports numbers and asserts nothing (see test/CI-COVERAGE-TOOLS.txt: "perf harness. Reports numbers; asserts nothing." — deliberately excluded from the gate-candidate set for the same reason preflight.sh treats it as non-gate infra). By design, not a gap: a benchmark corpus is not meant to be graded pass/fail. If a real regression gate ever starts reading these fixtures too, this line must be deleted (the bidirectional check will catch it).
+
+test/doc_fixtures	real corpus (14 fixtures), zero consumers. `medaka doc` was ported to the native CLI (96b62efb, "feat(cli): port `medaka doc` to the native CLI (single-file)") but no `diff_compiler_doc.sh` golden-diff gate was ever built for it — the port shipped without regression coverage. Needs: a new test/diff_compiler_doc.sh capturing `medaka doc` output over these 14 fixtures as goldens (same shape as the other diff_compiler_* gates) plus enrollment in a CI shard. Not wired here deliberately — building it requires deciding the expected Markdown output per fixture, which is a real, reviewable piece of work, not a one-line fix. Owner: whoever picks up doc-tooling coverage.
+
+test/index_fixtures	real corpus (2 fixtures: bare_bracket_index.mdk from #16c "add bare `a[i]` postfix indexing grammar", prelude_index_dispatch.mdk from d15c1b1e's Index-dispatch regression), zero consumers. Both fixtures carry a "Run with: medaka run test/index_fixtures/…" comment — written as manual-verification files and never wired into an automated gate. Needs: enrollment in an existing run/build agreement gate (e.g. test/diff_compiler_run_check_agreement.sh) or a small dedicated golden-diff gate. Not wired here deliberately — needs captured expected output first. Owner: whoever owns the #16c/Index-dispatch follow-up.
+
+
+test/shadow_fixtures	the SHADOW-SEMANTICS decision matrix (one fixture per matrix cell — d1..d9, i1/i3/i4). docs/spec/SHADOW-SEMANTICS.md says outright (its own lines 5, 20, 102, 158): "test/shadow_fixtures/ exists but is NOT yet wired into any gate and no goldens captured." Zero consumers confirmed. This belongs to the COMPILER workstream, which is actively about to REWRITE this spec (per 2026-07-13 session notes) — wiring it now risks locking in matrix cells about to change and getting the semantics wrong from outside that workstream. Owner: the compiler/shadow-semantics workstream; do not close this line until they capture goldens and wire a gate deliberately, post-rewrite.
