@@ -1,0 +1,74 @@
+-- #35: an UNDER-APPLIED DATA CONSTRUCTOR must lower to a PAP closure, not a
+-- malformed constructor cell.  emitApp's ctor arm used to call `emitCtorAlloc`
+-- UNCONDITIONALLY, so `Bin OAdd` (arity 3, given 1 arg) allocated a `Bin` cell
+-- holding 1 of its 3 fields; saturating it later applied args to a DATA cell as if
+-- it were a closure (@mdk_apply read the ctor TAG out of the header as an arity), so
+-- the value carried the right tag and junk fields.  A SILENT wrong-value miscompile:
+-- `check` accepted, `run` was correct, `build` produced garbage (the repro below
+-- matched no `evalE` arm -> E-NONEXHAUSTIVE-MATCH).  emitApp now dispatches on
+-- saturation (emitCtorApp): saturated -> emitCtorAlloc (unchanged); under-applied ->
+-- emitCtorPap (a real closure over the supplied args whose lifted forwarder
+-- allocates the cell once the rest arrive).  Interp was always right, so this pins
+-- native == interp across the whole trigger matrix.
+data Op = OAdd | OMul
+data Expr = Lit Int | Bin Op Expr Expr
+
+evalE (Lit n) = n
+evalE (Bin OAdd l r) = evalE l + evalE r
+evalE (Bin OMul l r) = evalE l * evalE r
+
+data P = P Int Int
+
+unP (P a b) = a * 10 + b
+
+-- row 1: TOP-LEVEL binding of an arity-3 ctor given 1 arg (the original repro).
+mkAdd = Bin OAdd
+
+topLevel : Int
+topLevel = evalE (mkAdd (Lit 2) (Lit 3))
+
+-- row 2: LET-bound arity-3 ctor given 1 arg.
+letBound : Int
+letBound =
+  let mk = Bin OMul
+  evalE (mk (Lit 4) (Lit 5))
+
+-- row 3: ctor PAP passed to a HOF (reaches the callee as an opaque closure word and
+-- is applied INDIRECTLY, so the cell's arity header has to be real).
+apply2 f x y = f x y
+
+hofPassed : Int
+hofPassed = evalE (apply2 (Bin OAdd) (Lit 6) (Lit 1))
+
+-- row 4: arity-2 ctor given 1 arg.
+arity2 : Int
+arity2 =
+  let p = P 3
+  unP (p 4)
+
+-- row 5: arity-3 ctor given 2 args (residual arity 1).
+arity3of2 : Int
+arity3of2 =
+  let mk = Bin OMul (Lit 3)
+  evalE (mk (Lit 3))
+
+-- CONTROL A: a SATURATED ctor app — always compiled correctly; the fix must keep
+-- this path byte-identical.
+saturated : Int
+saturated = evalE (Bin OAdd (Lit 8) (Lit 1))
+
+-- CONTROL B: a partially-applied plain FUNCTION — always compiled correctly (it
+-- already went through emitPapClosure); pinned so the ctor fix doesn't disturb it.
+addN a b c = a + b + c
+
+fnPap : Int
+fnPap =
+  let g = addN 1 2
+  g 5
+
+-- positional-weighted sum so every row is independently pinned:
+--    5 + 20*100 + 7*10^4 + 34*10^6 + 9*10^8 + 9*10^10 + 8*10^12
+main : Int
+main =
+  topLevel + letBound * 100 + hofPassed * 10000 + arity2 * 1000000 + arity3of2 * 100000000 + saturated * 10000000000 +
+    fnPap * 1000000000000
