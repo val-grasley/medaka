@@ -79,6 +79,44 @@ run **zero tests and print "0 failed."** So `preflight.sh` **ends by printing wh
 did not run**, and it must stay loud. A miss in the change→gate map then costs a slow
 round-trip, not a shipped bug.
 
+### The orchestrator OWNS red CI — watch it, don't wait to be told
+
+**Arm a persistent background `Monitor` on CI as soon as you push anything.** A CI
+failure nobody is watching is just a slower version of no CI, and the whole point of
+moving the suite off the box was to make the *authoritative* signal cheap — which is
+worthless if the signal isn't read.
+
+```
+Monitor (persistent, 60s poll):
+  gh run list --limit 15 --json databaseId,status,conclusion,headBranch
+  -> emit a line for EVERY newly-terminal run, and on failure list the failed jobs
+```
+
+⚠️ **Emit on every terminal state, not just failures.** A monitor that greps only for
+red is *silent* through a cancelled run, a timeout, or a crashloop — and silence is
+indistinguishable from "still running." Seed the seen-set with already-completed runs
+at arm time so you only get new events.
+
+**When CI comes back red, the orchestrator acts — it does not just report:**
+
+1. **Diagnose first, from the log** (`gh run view <id> --log-failed`). Establish whether
+   it is (a) an infra/workflow bug, (b) a real regression, or (c) an already-known red.
+2. **Fix it yourself if it is small and mechanical** — a bad glob, a YAML quoting error,
+   a stale golden, a misnamed make target, a missing `chmod +x`. Do not spawn an agent
+   to change three characters. (Real examples from this arc: a shard pattern using brace
+   expansion that dash cannot expand; `pattern: 'a' 'b'` being invalid YAML; `make test`
+   secretly running the 82-gate suite.)
+3. **Re-spawn the responsible agent** when the failure is inside work it just did, with
+   the CI failure pasted in and a STOP guardrail. Do not "fix" an agent's logic for it —
+   you'll lose the context it has.
+4. **Record it as known-red ONLY with a ledger entry that detects an accidental fix.**
+   Never a bare skip. A skip-list cannot notice when the bug is fixed, so it rots — which
+   is exactly how `test/ported/` died and how `diff_compiler_lint_multi` sat "skipped"
+   for months while also failing.
+
+**Never merge on red, and never merge on a green *preflight*.** The full suite on the
+PR is the only authority.
+
 ### CI (2026-07-13)
 
 `.github/workflows/ci.yml`, GitHub-**hosted** runners (free + unlimited on a public
