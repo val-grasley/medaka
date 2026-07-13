@@ -41,36 +41,87 @@
 # resolution and no core prelude, `# TYPES` is a wall of bogus `Unbound variable` errors
 # and `# CORE_IR` is a 180 KB single line.  `stages=` in each `# META` records the choice.
 #
-# Usage:  sh test/diff_compiler_snapshot_frontend.sh          # CHECK (the gate)
-#         sh test/diff_compiler_snapshot_frontend.sh --new    # create MISSING snapshots
+# Usage:  sh test/diff_compiler_snapshot_frontend.sh              # CHECK (the gate)
+#         sh test/diff_compiler_snapshot_frontend.sh --new        # create MISSING snapshots
+#         sh test/diff_compiler_snapshot_frontend.sh --bless <path>...
+#                                                                 # re-cut the NAMED ones
 #
-# ⚠️ `--new` NEVER overwrites an existing snapshot: rewriting one from the current
-# compiler IS blessing, and there is no `--bless` by design (a runner that silently
-# re-blesses turns every regression green).  So to REGENERATE a snapshot you must delete
-# it first:
+# `--new` never overwrites (rewriting an existing snapshot from the current compiler IS
+# blessing), so re-cutting is `--bless`'s job — and `--bless` REQUIRES you to name what
+# you are approving.  There is no whole-suite bless here and there will not be one:
 #
-#     rm test/snapshots/<sub>/<name>.md && sh test/diff_compiler_snapshot_frontend.sh --new
+#     sh test/diff_compiler_snapshot_frontend.sh --bless compiler/frontend/lexer.mdk
+#     sh test/diff_compiler_snapshot_frontend.sh --bless compiler/frontend   # a dir, fine
+#     sh test/diff_compiler_snapshot_frontend.sh --bless                     # REFUSED
 #
-# This bites more often than it looks like it will, because the compiler's OWN 50 sources
-# are in the corpus: ANY edit to compiler/**.mdk (even one `medaka fmt` reflows) changes
-# that file's `# SOURCE` section and fails the gate until its snapshot is re-cut.  That is
-# the correct behaviour — the snapshot is meant to notice — but a scoped `--bless` is the
-# obvious next piece of tooling.
+# `--bless` also refuses, per-fixture, to rewrite a section carrying compiler diagnostic
+# prose (a `# PARSE` holding a parse error, a `# TYPES` holding a TYPE ERROR or a match
+# warning, a `# CRASH`).  Those are graded against compiler/ERROR-QUALITY.md and must be
+# READ, not rubber-stamped; to re-cut one you must `rm` the `.md` and `--new` it, which
+# lands in review as a delete+add.  See compiler/tools/snapshot.mdk's header for the
+# three locks and why each one is there.
 #
-# Exit:   0 if every snapshot matches, else 1.
+# WHY BLESS EXISTS AT ALL: the compiler's OWN 50 sources are in this corpus, so ANY edit
+# to compiler/**.mdk — including a pure `medaka fmt` reflow — changes that file's
+# `# SOURCE` section and fails this gate.  Before `--bless`, the only way out was
+# `rm` + `--new`, on every compiler PR.  The review gate is not the absence of a bless
+# button; it is `git diff` on the snapshot dir, which every CI shard ends with.
+#
+# Blessing takes FIXTURE paths (`.mdk`), not snapshot `.md` paths: --out flattens five
+# source roots into snapshot dirs by basename, so `.md` -> fixture is not invertible.
+# This script owns that map (the `bless_one` case below) — it is the same table as the
+# `run_family` calls, and if you add a family you must add it in both places.
+#
+# Exit:   0 if every snapshot matches (or every named fixture blessed), else 1.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MEDAKA="$ROOT/medaka"
+# $MEDAKA honoured so the pre-commit hook (which resolves the binary itself, falling back
+# to PATH) drives the SAME gate rather than a second copy of the family table.
+MEDAKA="${MEDAKA:-$ROOT/medaka}"
 SNAPDIR="$ROOT/test/snapshots"
 
 [ -x "$MEDAKA" ] || { echo "build the compiler first: make medaka (missing $MEDAKA)"; exit 2; }
 
-MODE="--check"
-[ "${1:-}" = "--new" ] && MODE="--new"
-
 fail=0
 total=0
+
+# ── --bless <path>... ─────────────────────────────────────────────────────────
+# Scoped, and scoped LOUDLY: a bless naming nothing is an error, not a no-op that
+# quietly blesses the world.
+if [ "${1:-}" = "--bless" ]; then
+  shift
+  if [ "$#" -eq 0 ]; then
+    echo "--bless requires explicit fixture paths — there is no whole-suite bless." >&2
+    echo "  e.g.  sh test/diff_compiler_snapshot_frontend.sh --bless compiler/frontend/lexer.mdk" >&2
+    exit 1
+  fi
+  rc=0
+  for p in "$@"; do
+    case "$p" in /*) ;; *) p="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" ;; esac
+    [ -e "$p" ] || { echo "no such path: $p" >&2; rc=1; continue; }
+    # Which family owns it?  Same table as the run_family calls at the bottom.
+    # `--stages` is deliberately NOT passed: an existing snapshot names its own stage set
+    # in `# META`, and a bless must re-cut the stages the file already has — never widen
+    # them behind the author's back.
+    case "$p" in
+      "$ROOT"/test/parse_only_fixtures/*) sub=parse_only_fixtures ;;
+      "$ROOT"/test/parse_fixtures/*)      sub=parse_fixtures ;;
+      "$ROOT"/test/diff_fixtures/*)       sub=diff_fixtures ;;
+      "$ROOT"/stdlib/*|"$ROOT"/stdlib)    sub=stdlib ;;
+      "$ROOT"/compiler/*|"$ROOT"/compiler) sub=compiler ;;
+      *)
+        echo "not part of the snapshot corpus: $p" >&2
+        echo "  (corpus: test/parse_fixtures, test/parse_only_fixtures, test/diff_fixtures, stdlib, compiler)" >&2
+        rc=1; continue ;;
+    esac
+    "$MEDAKA" snapshot --bless --root "$ROOT" --out "$SNAPDIR/$sub" "$p" || rc=1
+  done
+  exit "$rc"
+fi
+
+MODE="--check"
+[ "${1:-}" = "--new" ] && MODE="--new"
 
 # run_family <subdir> <stages> <glob...>
 run_family() {

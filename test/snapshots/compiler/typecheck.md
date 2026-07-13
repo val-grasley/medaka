@@ -1,5 +1,5 @@
 # META
-source_lines=12654
+source_lines=12663
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -2127,6 +2127,15 @@ mainTypeIsFloat _ = match mainSchemeRef.value
 -- (the schemes/selfproc paths) simply never read it.
 matchWarnings : Ref (List String)
 matchWarnings = Ref []
+
+-- True iff the last typecheck pass pushed any match warning.  Read by the snapshot
+-- runner (`tools/snapshot.mdk`) to decide whether a rendered `# TYPES` section carries
+-- diagnostic prose — a `W-*` warning is graded by `compiler/ERROR-QUALITY.md` exactly
+-- like an error is, so a `# TYPES` section holding one is NOT `--bless`-able.  Keyed on
+-- the accumulator rather than sniffing the rendered text: the renderer must not have to
+-- guess which of its own lines are diagnostics.
+export hadMatchWarnings : Unit -> <Mut> Bool
+hadMatchWarnings _ = matchWarnings.value != []
 
 -- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
 -- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
@@ -13242,6 +13251,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "mainTypeIsFloat" (PWild) (EMatch (EFieldAccess (EVar "mainSchemeRef") "value") (arm (PCon "Some" (PCon "Forall" PWild PWild (PVar "t"))) () (EMatch (EApp (EVar "normalize") (EVar "t")) (arm (PCon "TCon" (PLit (LString "Float"))) () (EVar "True")) (arm PWild () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "matchWarnings" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "matchWarnings" () (EApp (EVar "Ref") (EListLit)))
+(DTypeSig true "hadMatchWarnings" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "hadMatchWarnings" (PWild) (EBinOp "!=" (EFieldAccess (EVar "matchWarnings") "value") (EListLit)))
 (DTypeSig false "matchWarningLocs" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
 (DFunDef false "matchWarningLocs" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "matchOracle" (TyApp (TyCon "Ref") (TyCon "Oracle")))
@@ -16683,6 +16694,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "mainTypeIsFloat" (PWild) (EMatch (EFieldAccess (EVar "mainSchemeRef") "value") (arm (PCon "Some" (PCon "Forall" PWild PWild (PVar "t"))) () (EMatch (EApp (EVar "normalize") (EVar "t")) (arm (PCon "TCon" (PLit (LString "Float"))) () (EVar "True")) (arm PWild () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "matchWarnings" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "matchWarnings" () (EApp (EVar "Ref") (EListLit)))
+(DTypeSig true "hadMatchWarnings" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "hadMatchWarnings" (PWild) (EBinOp "!=" (EFieldAccess (EVar "matchWarnings") "value") (EListLit)))
 (DTypeSig false "matchWarningLocs" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
 (DFunDef false "matchWarningLocs" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "matchOracle" (TyApp (TyCon "Ref") (TyCon "Oracle")))

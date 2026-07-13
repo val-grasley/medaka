@@ -452,6 +452,7 @@ groupRefs : List (List Pat, Expr) -> List String
 guardDictSites : Guard -> List (Ref (List Route))
 guardEVars : Guard -> List String
 guardSites : Guard -> List (Ref Route)
+hadMatchWarnings : Unit -> <Mut> Bool
 hadTypeErrors : Unit -> <Mut> Bool
 hasAssocSL2 : String -> List (String, List Int) -> Bool
 hasDupI : List Int -> Bool

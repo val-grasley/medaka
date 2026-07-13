@@ -36,7 +36,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="${1:-main}"
 cd "$ROOT" || exit 1
 
-changed="$(git diff --name-only "$BASE"...HEAD 2>/dev/null; git diff --name-only 2>/dev/null; git ls-files -o --exclude-standard 2>/dev/null)"
+# committed-vs-base, working tree, INDEX, and untracked. `--cached` is not optional:
+# without it a fully-`git add`ed change is invisible here (working-tree diff is empty and
+# nothing is committed yet), so `preflight` printed "no changes vs main — nothing to do"
+# and exited 0 over a staged rewrite of the compiler. That is the same silent-green
+# failure as the gate-existence check below, one step earlier in the pipe.
+changed="$(git diff --name-only "$BASE"...HEAD 2>/dev/null; git diff --name-only 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files -o --exclude-standard 2>/dev/null)"
 changed="$(printf '%s\n' "$changed" | sort -u | grep -v '^$')"
 
 if [ -z "$changed" ]; then
@@ -116,6 +121,22 @@ for f in $changed; do
       add "$(basename "$f" .sh)" ;;
     test/*fixtures*/*|test/*goldens*/*)
       add 'diff_compiler_*' ;;                                 # corpus change: run everything
+  esac
+done
+
+# ── the snapshot corpus is not a fixture dir; it is the SOURCE TREE ──────────
+# Every compiler/**.mdk and stdlib/*.mdk is IN the snapshot corpus (each one carries its
+# own `# SOURCE` section), so ANY edit to one moves its snapshot — a pure `medaka fmt`
+# reflow is enough. That cuts across every arm of the table above, and `case` fires only
+# its FIRST matching arm, so it cannot be expressed there: a second pass is the only
+# correct shape.
+#
+# Without this, preflight reported GREEN on (say) a compiler/eval/ change while
+# diff_compiler_snapshot_frontend was red — the exact "your change would have been tested
+# by NOTHING" failure the gate-existence check below exists to prevent, one level up.
+for f in $changed; do
+  case "$f" in
+    compiler/*.mdk|compiler/*/*.mdk|stdlib/*.mdk) add 'diff_compiler_snapshot*' ;;
   esac
 done
 

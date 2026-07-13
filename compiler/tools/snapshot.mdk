@@ -82,6 +82,63 @@
 -- The worker RENDERS; the supervisor COMPARES and WRITES.  Keeping all file IO in the
 -- supervisor is what lets a crashed fixture still get a snapshot: the supervisor already
 -- holds every section the worker streamed before it died.
+--
+-- ── the three modes, and why `--bless` has three locks on it ─────────────────
+--
+--   --check   compare; write nothing.                             (the gate)
+--   --new     create a MISSING snapshot; never touch an existing one.
+--   --bless   rewrite an EXISTING snapshot from the current compiler; never create one.
+--
+-- Blessing is how a golden suite dies.  Every survey point in TESTING-DESIGN.md §3.1
+-- says the same thing: a bless button with no friction turns every regression green,
+-- because the author who broke it is also the one who presses it.  So `--bless` carries
+-- exactly the three locks the surveyed tools converged on:
+--
+--   1. SCOPED (OCaml's rule).  `--bless` requires explicit targets; there is no
+--      whole-suite bless and there will not be one.  OCaml has `make promote` with a
+--      scope and deliberately "no analogue to `make all`" — naming what you approve is
+--      the friction, and it is the only part of the design that survives without CI.
+--      Enforced in `medaka_cli.mdk` (a bless with no targets EXITS) and again in
+--      `test/diff_compiler_snapshot_frontend.sh` (`--bless` without paths is refused).
+--
+--   2. NON-CREATING (GHC's rule: accept cannot create a golden).  `--bless` on a fixture
+--      with no `.md` FAILS and points at `--new`.  If a broken stage could mint its own
+--      expectations, the whole corpus is worth nothing — a stage that starts emitting
+--      garbage would simply write the garbage down as correct.
+--
+--   3. DIAGNOSTICS ARE NEVER BLESSABLE (Zig's rule: it ships NO bless for expected error
+--      text, and that is *why* its errors are good).  This repo grades diagnostics in
+--      `compiler/ERROR-QUALITY.md` against a scored corpus; an auto-blessable diagnostic
+--      golden is actively hostile to that, because it lets a message regress and be
+--      re-blessed without anyone reading it.  So a fixture whose DIFFERING sections
+--      include a diagnostic-bearing one is REFUSED, whole.  Fix it, or `rm` the `.md` and
+--      `--new` it — which is a deliberate, visible act that shows up in review as a
+--      delete+add rather than a one-line edit.
+--
+-- ── mechanism for (3): the RENDERER tags, the FILE records, the BLESSER refuses ──
+--
+-- NOT a section allowlist, and the reason is `# PARSE`.  The same section name holds a
+-- blessable s-expr dump for a fixture that parses, and a *parse error message* for one
+-- that does not.  A static allowlist would have to pick one: mark PARSE unblessable and
+-- the main use case dies (a `medaka fmt` reflow of a compiler source rewrites exactly
+-- PARSE/DESUGAR/MARK); mark it blessable and error prose regresses in silence.
+-- Diagnostic-ness is a property of the RENDER, not of the section name.
+--
+-- So the WORKER tags a section diagnostic at the point it renders one, where the fact is
+-- structural rather than a text sniff (`SECD` on the wire instead of `SEC`):
+--
+--     PARSE   diagnostic iff it came from `parseResult`'s Err branch.
+--     TYPES   diagnostic iff the pass accumulated a TYPE ERROR or a match warning
+--             (`hadTypeErrors` / `hadMatchWarnings` — the accumulators themselves, not
+--             a grep for "TYPE ERROR:" in the text the renderer just produced).
+--     CRASH   always — it is a stderr dump by construction.
+--     (a future `# DIAGNOSTICS` section marks itself the same way, at its render site.)
+--
+-- The supervisor then records the set in `# META` as `diagnostics=PARSE,…`, so the fact
+-- is visible to a human reading the `.md` and, critically, so the refusal ALSO fires on
+-- the STORED snapshot: a section that is diagnostic in the file but clean in the fresh
+-- render (a diagnostic that just *disappeared*) is equally unblessable.  That direction
+-- matters — it is the one where a stage silently stops reporting an error.
 
 import frontend.ast.{Decl}
 import frontend.lexer.{tokenize, tokenToString}
@@ -116,6 +173,9 @@ import types.typecheck.{
   setEmitArgStampPasses,
   mainTypeIsUnit,
   mainTypeIsFloat,
+  hadTypeErrors,
+  hadMatchWarnings,
+  resetTypeErrorsSticky,
 }
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 import backend.llvm_emit.{
@@ -189,6 +249,35 @@ isHeaderLine l = anyList (n => l == "# \{n}") snapSections
 -- A rendered section whose content contains a header-shaped line cannot round-trip.
 sectionCollides : String -> Bool
 sectionCollides content = anyList isHeaderLine (splitNl content)
+
+-- ── modes ────────────────────────────────────────────────────────────────────
+-- See the header block: Check is the gate, New creates only what is missing, Bless
+-- rewrites only what already exists (and never a diagnostic).
+export data SnapMode = SnapCheck | SnapNew | SnapBless
+
+-- ── a rendered section ───────────────────────────────────────────────────────
+-- (name, content, isDiagnostic).  The flag is set by the WORKER at the render site and
+-- carried over the wire (`SECD`), because only the renderer knows structurally whether
+-- what it produced is compiler diagnostic prose.  Sections read back FROM a file carry
+-- no flag — there the fact lives in `# META`'s `diagnostics=` line instead.
+type RunSec = (String, String, Bool)
+
+secName : RunSec -> String
+secName (n, _, _) = n
+
+secBody : RunSec -> String
+secBody (_, b, _) = b
+
+secIsDiag : RunSec -> Bool
+secIsDiag (_, _, d) = d
+
+-- Drop the flags: everything downstream of the diagnostic check works on (name, body)
+-- pairs, exactly as a file-parsed snapshot does.
+secPairs : List RunSec -> List (String, String)
+secPairs secs = map (s => (secName s, secBody s)) secs
+
+diagNamesOf : List RunSec -> List String
+diagNamesOf secs = map secName (filterList secIsDiag secs)
 
 -- ── stage selection ──────────────────────────────────────────────────────────
 --
@@ -350,10 +439,18 @@ parseErrText line col msg =
 markOf : List Decl -> List Decl -> String
 markOf coreDecls d = programToSexp (markWithPrelude coreDecls d)
 
-typesOf : List Decl -> List Decl -> <Mut> String
+-- Returns the rendered section AND whether it carries diagnostic prose.  A `# TYPES`
+-- section is either a scheme dump (`f : Int -> Int`) or a wall of `TYPE ERROR:` lines,
+-- and it may carry `W-*` match warnings alongside the schemes — both are graded prose
+-- under ERROR-QUALITY.md, so either makes the section unblessable.  Keyed on the
+-- typecheck accumulators, never on the text: a renderer that greps its own output for
+-- "TYPE ERROR:" is one reworded message away from silently becoming blessable.
+typesOf : List Decl -> List Decl -> <Mut> (String, Bool)
 typesOf runtimeDecls d =
   let _ = setCoherenceUserDecls d
-  checkToLinesWithRuntime runtimeDecls d
+  let _ = resetTypeErrorsSticky ()
+  let text = checkToLinesWithRuntime runtimeDecls d
+  (text, hadTypeErrors () || hadMatchWarnings ())
 
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing
 -- core_ir_sexp goldens are captured from): lower the USER program only.  Elaborating
@@ -444,7 +541,8 @@ withGaps cmt text gaps =
 -- lines that look like protocol lines or like headers:
 --
 --     BEGIN <path>
---     SEC <NAME>
+--     SEC <NAME>      -- an ordinary section
+--     SECD <NAME>     -- a DIAGNOSTIC-bearing section (never blessable; see the header)
 --     D<line>...
 --     END <path>
 --
@@ -457,14 +555,26 @@ putLineFlush s =
   flushStdout ()
 
 emitSection : String -> String -> String -> <IO, Mut> Unit
-emitSection root name content = emitRaw
+emitSection root name content = emitSectionTagged root name content False
+
+-- The ONE place a section is declared diagnostic-bearing.  Called at the render site,
+-- where the fact is structural (see the header block's mechanism note).
+emitDiagSection : String -> String -> String -> <IO, Mut> Unit
+emitDiagSection root name content = emitSectionTagged root name content True
+
+emitSectionTagged : String -> String -> String -> Bool -> <IO, Mut> Unit
+emitSectionTagged root name content diag = emitRawTagged
   name
   (if isRunSection name then normalizeText root content else canonText content)
+  diag
 
 -- SOURCE bypasses normalization: it is the input, verbatim.
 emitRaw : String -> String -> <IO> Unit
-emitRaw name content =
-  let _ = putStrLn "SEC \{name}"
+emitRaw name content = emitRawTagged name content False
+
+emitRawTagged : String -> String -> Bool -> <IO> Unit
+emitRawTagged name content diag =
+  let _ = putStrLn (if diag then "SECD \{name}" else "SEC \{name}")
   let _ = putStr (encodeLines (contentLines content))
   flushStdout ()
 
@@ -506,7 +616,7 @@ workerOne root sel runtimeDecls coreDecls path =
 
 workerRender : String -> List String -> List Decl -> List Decl -> String -> <IO, Mut, Panic> Unit
 workerRender root sel runtimeDecls coreDecls path = match readFile path
-  Err msg => emitSection root "CRASH" "cannot read fixture: \{msg}\n"
+  Err msg => emitDiagSection root "CRASH" "cannot read fixture: \{msg}\n"
   Ok src =>
     -- SOURCE is emitted RAW — never normalized, never reflowed.
     let _ = emitRaw "SOURCE" src
@@ -517,7 +627,11 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
       -- Emitted even when PARSE is not in `stages`: a fixture that suddenly stops
       -- parsing must not render as an empty snapshot.  The extra section makes the
       -- run's sections differ from the file's, so `--check` FAILS — which is the point.
-      Err e => emitSection root "PARSE" (parseErrText (parseErrorLine e) (parseErrorCol e) (parseErrorMessage e))
+      --
+      -- DIAGNOSTIC: this is the one branch where `# PARSE` holds error prose rather than
+      -- an s-expr dump, and it is why diagnostic-ness cannot be a per-section-name
+      -- allowlist.  Tagged here, at the only site that can know.
+      Err e => emitDiagSection root "PARSE" (parseErrText (parseErrorLine e) (parseErrorCol e) (parseErrorMessage e))
       Ok decls => workerStages root sel runtimeDecls coreDecls decls
 
 workerStages : String -> List String -> List Decl -> List Decl -> List Decl -> <IO, Mut, Panic> Unit
@@ -527,7 +641,7 @@ workerStages root sel runtimeDecls coreDecls decls =
   let _ = if wants sel "DESUGAR" then emitSection root "DESUGAR" (programToSexp d) else ()
   let _ = if wants sel "MARK" then emitSection root "MARK" (markOf coreDecls d) else ()
   -- OFF-mode (eval-path) stages first...
-  let _ = if wants sel "TYPES" then emitSection root "TYPES" (typesOf runtimeDecls d) else ()
+  let _ = if wants sel "TYPES" then emitTypes root runtimeDecls d else ()
   let _ = if wants sel "CORE_IR" then emitSection root "CORE_IR" (coreIrOf d) else ()
   -- ...then the RUNNABLE stages, but ONLY for a fixture that has a `main`.
   --
@@ -555,6 +669,14 @@ workerStages root sel runtimeDecls coreDecls decls =
   else
     ()
 
+-- `# TYPES` is diagnostic-bearing exactly when the pass it just ran accumulated an error
+-- or a warning — so the tag is decided from `typesOf`'s second component, not from the
+-- shape of the lines it produced.
+emitTypes : String -> List Decl -> List Decl -> <IO, Mut> Unit
+emitTypes root runtimeDecls d =
+  let (text, diag) = typesOf runtimeDecls d
+  emitSectionTagged root "TYPES" text diag
+
 hasMain : List Decl -> Bool
 hasMain d = anyList (== "main") (funNamesOf d)
 
@@ -569,9 +691,9 @@ chunkSize = 25
 -- One worker process: the stage set it runs under, and the fixtures it runs.
 type Chunk = (List String, List String)
 
-export runSnapshotSupervisor : String -> Bool -> Bool -> Option String -> List String -> List String -> <IO, Mut, Panic> Bool
-runSnapshotSupervisor root check forceIsolate outDir cli files =
-  let results = superviseChunks root check outDir (chunksOf root outDir forceIsolate cli files)
+export runSnapshotSupervisor : String -> SnapMode -> Bool -> Option String -> List String -> List String -> <IO, Mut, Panic> Bool
+runSnapshotSupervisor root mode forceIsolate outDir cli files =
+  let results = superviseChunks root mode outDir (chunksOf root outDir forceIsolate cli files)
   reportResults results
 
 -- Group into chunks, but give any fixture whose META says `isolate=true` a chunk of its
@@ -627,23 +749,23 @@ metaStages (l::rest) =
     Err _ => []
   else metaStages rest
 
-superviseChunks : String -> Bool -> Option String -> List Chunk -> <IO, Mut, Panic> List SnapResult
+superviseChunks : String -> SnapMode -> Option String -> List Chunk -> <IO, Mut, Panic> List SnapResult
 superviseChunks _ _ _ [] = []
-superviseChunks root check outDir ((sel, fs)::rest) =
-  let here = runChunk root check outDir sel fs
-  here ++ superviseChunks root check outDir rest
+superviseChunks root mode outDir ((sel, fs)::rest) =
+  let here = runChunk root mode outDir sel fs
+  here ++ superviseChunks root mode outDir rest
 
 -- Run one chunk in a child.  On a crash: bank every fixture the child COMPLETED, write
 -- the crasher's snapshot from the sections it managed to stream plus its stderr, then
 -- respawn over what is left of the chunk.
-runChunk : String -> Bool -> Option String -> List String -> List String -> <IO, Mut, Panic> List SnapResult
+runChunk : String -> SnapMode -> Option String -> List String -> List String -> <IO, Mut, Panic> List SnapResult
 runChunk _ _ _ _ [] = []
-runChunk root check outDir sel pending = match runCommand (executablePath ()) (workerArgv root sel pending)
+runChunk root mode outDir sel pending = match runCommand (executablePath ()) (workerArgv root sel pending)
   Err e => map (f => (f, "ERROR spawn failed: \{e}", False)) pending
   Ok (code, out, err) =>
     let streamed = parseStream out
     let done = map fixtureOf streamed
-    let banked = map (settle root check outDir sel) streamed
+    let banked = map (settle root mode outDir sel) streamed
     let missing = notIn done pending
     -- COMPLETENESS, not exit code, decides whether the worker survived.  A fixture that
     -- calls `exit 0` kills the worker with a SUCCESS status, so `code == 0` would report
@@ -657,10 +779,13 @@ runChunk root check outDir sel pending = match runCommand (executablePath ()) (w
         None => banked ++ map (f => (f, "ERROR worker died with no BEGIN (exit \{intToString code})", False)) missing
         Some victim =>
           -- the victim's own snapshot = whatever it streamed before dying + its stderr.
-          let crashSecs = streamTail out ++ [("CRASH", normalizeText root err)]
-          let (_, v, _) = settle root check outDir sel (victim, crashSecs)
+          -- `# CRASH` is a stderr dump, so it is diagnostic BY CONSTRUCTION — which makes
+          -- a crashing fixture's snapshot permanently unblessable.  That is intended: the
+          -- day a panic message changes, someone reads it.
+          let crashSecs = streamTail out ++ [("CRASH", normalizeText root err, True)]
+          let (_, v, _) = settle root mode outDir sel (victim, crashSecs)
           let remaining = afterFirst victim pending
-          banked ++ [(victim, v, True)] ++ runChunk root check outDir sel remaining
+          banked ++ [(victim, v, True)] ++ runChunk root mode outDir sel remaining
 
 workerArgv : String -> List String -> List String -> List String
 workerArgv root [] files = ["snapshot", "--worker", "--root", root] ++ files
@@ -685,7 +810,7 @@ afterFirst victim (x::rest) =
 -- unterminated trailing fixture is the crash victim and is deliberately NOT returned
 -- here; the supervisor picks it up via `streamTail`.  (Returning it from both is what
 -- made a crashed fixture get settled twice — written as NEW, then re-settled as SKIP.)
-parseStream : String -> List (String, List (String, String))
+parseStream : String -> List (String, List RunSec)
 parseStream out = streamGo (splitNl out) "" [] []
 
 -- PERFORMANCE, and it is not incidental.  Both accumulators below are built NEWEST-FIRST
@@ -694,51 +819,56 @@ parseStream out = streamGo (splitNl out) "" [] []
 -- the section's string as it arrives) is QUADRATIC in the section's size, because each
 -- append copies the whole string built so far.  A single 80,190-line WASM section made
 -- that decoder take over ten minutes; consing makes the same input linear.
-streamGo : List String -> String -> Sections -> List (String, Sections) -> List (String, List (String, String))
+--
+-- `SECD ` is checked BEFORE `SEC ` reads its name, and neither collides with the `D`
+-- content prefix (both start `S`), so a content line may still say anything at all.
+streamGo : List String -> String -> Sections -> List (String, Sections) -> List (String, List RunSec)
 streamGo [] _ _ acc = map settleSecs (reverseL acc)
 streamGo (l::rest) cur secs acc
   | startsWith "BEGIN " l = streamGo rest (drop 6 l) [] acc
   | startsWith "END " l = streamGo rest "" [] (flushCur cur secs acc)
-  | startsWith "SEC " l = streamGo rest cur ((drop 4 l, [])::secs) acc
+  | startsWith "SECD " l = streamGo rest cur ((drop 5 l, True, [])::secs) acc
+  | startsWith "SEC " l = streamGo rest cur ((drop 4 l, False, [])::secs) acc
   | startsWith "D" l = streamGo rest cur (pushLine (drop 1 l) secs) acc
   | otherwise = streamGo rest cur secs acc
 
 -- The sections of the fixture that was in flight when the worker died (last BEGIN with
 -- no END) — everything it managed to flush before the crash.
-streamTail : String -> List (String, String)
+streamTail : String -> List RunSec
 streamTail out = streamTailGo (splitNl out) "" []
 
-streamTailGo : List String -> String -> Sections -> List (String, String)
+streamTailGo : List String -> String -> Sections -> List RunSec
 streamTailGo [] "" _ = []
 streamTailGo [] _ secs = closeSecs secs
 streamTailGo (l::rest) cur secs
   | startsWith "BEGIN " l = streamTailGo rest (drop 6 l) []
   | startsWith "END " l = streamTailGo rest "" []
-  | startsWith "SEC " l = streamTailGo rest cur ((drop 4 l, [])::secs)
+  | startsWith "SECD " l = streamTailGo rest cur ((drop 5 l, True, [])::secs)
+  | startsWith "SEC " l = streamTailGo rest cur ((drop 4 l, False, [])::secs)
   | startsWith "D" l = streamTailGo rest cur (pushLine (drop 1 l) secs)
   | otherwise = streamTailGo rest cur secs
 
 -- open sections, newest first; each one's lines newest first.
-type Sections = List (String, List String)
+type Sections = List (String, Bool, List String)
 
 pushLine : String -> Sections -> Sections
 pushLine _ [] = []
-pushLine l ((n, ls)::rest) = (n, l::ls)::rest
+pushLine l ((n, d, ls)::rest) = (n, d, l::ls)::rest
 
-closeSecs : Sections -> List (String, String)
+closeSecs : Sections -> List RunSec
 closeSecs secs = map closeSec (reverseL secs)
 
-closeSec : (String, List String) -> (String, String)
-closeSec (n, ls) = (n, blockOf (reverseL ls))
+closeSec : (String, Bool, List String) -> RunSec
+closeSec (n, d, ls) = (n, blockOf (reverseL ls), d)
 
-settleSecs : (String, Sections) -> (String, List (String, String))
+settleSecs : (String, Sections) -> (String, List RunSec)
 settleSecs (p, secs) = (p, closeSecs secs)
 
 flushCur : String -> Sections -> List (String, Sections) -> List (String, Sections)
 flushCur "" _ acc = acc
 flushCur cur secs acc = (cur, secs)::acc
 
-fixtureOf : (String, List (String, String)) -> String
+fixtureOf : (String, List RunSec) -> String
 fixtureOf (p, _) = p
 
 -- the last fixture the worker announced but never finished == the one that killed it.
@@ -785,19 +915,46 @@ renderOne n secs =
   else
     []
 
--- The META block: the keys the runner MAINTAINS (`source_lines`, `stages`) followed by
--- every authored key it does not (e.g. `isolate=true`), which survives a rewrite.
-metaLinesFor : List String -> List (String, String) -> List String
-metaLinesFor sel secs = stagesLine sel ++ metaExtraOf secs
+-- The META block: the keys the runner MAINTAINS (`source_lines`, `stages`,
+-- `diagnostics`) followed by every authored key it does not (e.g. `isolate=true`), which
+-- survives a rewrite.
+metaLinesFor : List String -> List RunSec -> List String
+metaLinesFor sel secs = stagesLine sel
+  ++ diagLine (diagNamesOf secs)
+  ++ metaExtraOf (secPairs secs)
 
 stagesLine : List String -> List String
 stagesLine [] = []
 stagesLine sel = ["stages=\{joinWith "," sel}"]
 
+-- `diagnostics=PARSE,TYPES` — the sections of THIS snapshot that hold compiler
+-- diagnostic prose, and are therefore not `--bless`-able.  Written by the runner so the
+-- fact is visible to a human opening the `.md`, and so the bless refusal also fires on
+-- the STORED file (see `blockedDiags`).
+diagLine : List String -> List String
+diagLine [] = []
+diagLine ns = ["diagnostics=\{joinWith "," ns}"]
+
 metaExtraOf : List (String, String) -> List String
-metaExtraOf secs = filterList
-  (l => not (startsWith "source_lines=" l) && not (startsWith "stages=" l))
-  (contentLines (sectionOf "META" secs))
+metaExtraOf secs =
+  filterList isAuthoredMetaLine (contentLines (sectionOf "META" secs))
+
+isAuthoredMetaLine : String -> Bool
+isAuthoredMetaLine l = not (startsWith "source_lines=" l)
+  && not (startsWith "stages=" l)
+  && not (startsWith "diagnostics=" l)
+
+-- The `diagnostics=` names recorded in an EXISTING snapshot's `# META`.
+metaDiagsOf : List (String, String) -> List String
+metaDiagsOf secs = metaDiagsIn (contentLines (sectionOf "META" secs))
+
+metaDiagsIn : List String -> List String
+metaDiagsIn [] = []
+metaDiagsIn (l::rest) =
+  if startsWith "diagnostics=" l then
+    filterList (!= "") (map (s => toUpper (trim s)) (split "," (drop 12 l)))
+  else
+    metaDiagsIn rest
 
 -- Read a snapshot back.  SOURCE is taken by exact line count from META; every other
 -- section is delimited by the header grammar.
@@ -851,41 +1008,85 @@ untilHeader (x::rest) =
 -- so the fact that it took the worker down with it has nowhere else to live.
 type SnapResult = (String, String, Bool)
 
-settle : String -> Bool -> Option String -> List String -> (String, List (String, String)) -> <IO, Mut, Panic> SnapResult
-settle root check outDir sel (path, secs) =
-  (path, settleVerdict root check outDir sel path secs, False)
+settle : String -> SnapMode -> Option String -> List String -> (String, List RunSec) -> <IO, Mut, Panic> SnapResult
+settle root mode outDir sel (path, secs) =
+  (path, settleVerdict root mode outDir sel path secs, False)
 
-settleVerdict : String -> Bool -> Option String -> List String -> String -> List (String, String) -> <IO, Mut, Panic> String
-settleVerdict root check outDir sel path secs =
+settleVerdict : String -> SnapMode -> Option String -> List String -> String -> List RunSec -> <IO, Mut, Panic> String
+settleVerdict root mode outDir sel path secs =
   match badSections secs
     -- the header-grammar invariant: refuse to write a file that cannot round-trip.
     (n::_) => "FAIL section \{n} contains a line matching the section-header grammar"
     [] =>
       let snapPath = snapPathOf root outDir path
       match readOpt snapPath
-        None => if check then
-          "FAIL no snapshot (\{snapPath}); run `medaka snapshot --new`"
-        else
-          match writeFile snapPath (renderSnapshot (metaLinesFor sel secs) secs)
-            Err e => "ERROR cannot write \{snapPath}: \{e}"
-            Ok _ => "NEW \{snapPath}"
-        Some prev => if check then
-          compareSnap prev secs
-        else
-          -- `--new` NEVER overwrites.  Rewriting an existing snapshot from the current
-          -- compiler IS blessing, and R0 has no --bless by design (it lands in R2,
-          -- scoped and non-creating): a runner that silently re-blesses turns every
-          -- regression green.
-          "SKIP exists (\{snapPath})"
+        None => verdictMissing mode snapPath sel secs
+        Some prev => verdictExisting mode snapPath sel secs prev
 
-badSections : List (String, String) -> List String
-badSections secs = map fst2 (filterList (s => sectionCollides (sndOf s)) secs)
+-- No snapshot on disk yet.
+--   --check  a fixture with no expectation FAILS — never a silent pass.
+--   --new    create it.  This is the ONLY path that creates a snapshot.
+--   --bless  REFUSE (lock 2).  A bless that can mint an expectation is a stage writing
+--            down its own output as correct; that single affordance is what would make
+--            the whole corpus worthless.
+verdictMissing : SnapMode -> String -> List String -> List RunSec -> <IO, Mut, Panic> String
+verdictMissing SnapCheck snapPath _ _ =
+  "FAIL no snapshot (\{snapPath}); run `medaka snapshot --new`"
+verdictMissing SnapBless snapPath _ _ = "FAIL no snapshot (\{snapPath}); --bless never creates one — run `medaka snapshot --new` first"
+verdictMissing SnapNew snapPath sel secs = match writeSnap snapPath sel secs
+  Err e => "ERROR cannot write \{snapPath}: \{e}"
+  Ok _ => "NEW \{snapPath}"
 
-sndOf : (String, String) -> String
-sndOf (_, b) = b
+verdictExisting : SnapMode -> String -> List String -> List RunSec -> String -> <IO, Mut, Panic> String
+verdictExisting SnapCheck _ _ secs prev = compareSnap prev secs
+-- `--new` NEVER overwrites: rewriting an existing snapshot from the current compiler IS
+-- blessing, and blessing has a door of its own, with locks on it.
+verdictExisting SnapNew snapPath _ _ _ = "SKIP exists (\{snapPath})"
+verdictExisting SnapBless snapPath sel secs prev =
+  let prevSecs = parseSnapshot prev
+  match diffSections prevSecs (secPairs secs)
+    -- Nothing to approve.  A bless over an already-matching snapshot writes NOTHING (so
+    -- it cannot churn `stat` times or reflow a file nobody asked it to touch).
+    [] => "PASS"
+    ds => match blockedDiags prevSecs secs ds
+      (b::bs) => diagRefusal snapPath (b::bs)
+      [] => match writeSnap snapPath sel secs
+        Err e => "ERROR cannot write \{snapPath}: \{e}"
+        Ok _ => "BLESS \{snapPath} (\{joinWith ", " ds})"
 
-compareSnap : String -> List (String, String) -> String
-compareSnap prev secs = match diffSections (parseSnapshot prev) secs
+-- The DIFFERING sections that carry diagnostic prose — either in the FRESH render (the
+-- worker tagged them at their render site) or in the STORED snapshot (`# META`'s
+-- `diagnostics=`).  Both directions count, and the second is the one that matters most:
+-- a section that WAS a diagnostic and now is not means a stage quietly stopped reporting
+-- an error, which is a worse bug than a reworded message and must not slide through on a
+-- clean-looking render.
+blockedDiags : List (String, String) -> List RunSec -> List String -> List String
+blockedDiags prevSecs secs ds =
+  let diags = metaDiagsOf prevSecs ++ diagNamesOf secs
+  filterList (n => anyList (== n) diags) ds
+
+-- Lock 3.  Zig ships no bless at all for expected error text, and that is precisely why
+-- its diagnostics are good; this repo grades its own against ERROR-QUALITY.md, so an
+-- auto-blessable diagnostic golden would let a graded message rot unread.  The escape
+-- hatch is deliberately louder than a bless: delete the file and re-cut it, which lands
+-- in review as a delete+add.
+diagRefusal : String -> List String -> String
+diagRefusal snapPath names =
+  let what = joinWith ", " names
+  let why = "diagnostic text is never auto-blessable (compiler/ERROR-QUALITY.md grades it)."
+  let how = "READ the new message; if it is genuinely better, `rm \{snapPath}` and re-cut it with `medaka snapshot --new`."
+  "FAIL refusing to bless diagnostic section(s) \{what} in \{snapPath}: \{why} \{how}"
+
+writeSnap : String -> List String -> List RunSec -> <IO> Result String Unit
+writeSnap snapPath sel secs =
+  writeFile snapPath (renderSnapshot (metaLinesFor sel secs) (secPairs secs))
+
+badSections : List RunSec -> List String
+badSections secs =
+  map secName (filterList (s => sectionCollides (secBody s)) secs)
+
+compareSnap : String -> List RunSec -> String
+compareSnap prev secs = match diffSections (parseSnapshot prev) (secPairs secs)
   [] => "PASS"
   ds => "FAIL differing sections: \{joinWith ", " ds}"
 
@@ -903,9 +1104,13 @@ readOpt p = match readFile p
 
 -- ── reporting ────────────────────────────────────────────────────────────────
 
+-- Failures are printed, and so is every BLESS: a rewrite that is not named on stdout is
+-- a rewrite nobody reviewed.  (`git diff` is the actual review gate — this is just the
+-- receipt.)
 reportResults : List SnapResult -> <IO, Mut, Panic> Bool
 reportResults results =
   let bad = filterList (r => isBad (verdictOf r)) results
+  let _ = mapUnit printResult (filterList (r => startsWith "BLESS" (verdictOf r)) results)
   let _ = mapUnit printResult bad
   let _ = putStrLn (summaryLine results)
   bad == []
@@ -924,10 +1129,11 @@ summaryLine results =
   let n = length results
   let pass = countWith "PASS" results
   let new = countWith "NEW" results
+  let bless = countWith "BLESS" results
   let skip = countWith "SKIP" results
   let fail = length (filterList (r => isBad (verdictOf r)) results)
   let crashed = length (filterList crashedOf results)
-  "snapshot: \{intToString n} fixtures — \{intToString pass} pass, \{intToString new} new, \{intToString skip} skipped, \{intToString fail} failed, \{intToString crashed} crashed"
+  "snapshot: \{intToString n} fixtures — \{intToString pass} pass, \{intToString new} new, \{intToString bless} blessed, \{intToString skip} skipped, \{intToString fail} failed, \{intToString crashed} crashed"
 
 countWith : String -> List SnapResult -> Int
 countWith p results =

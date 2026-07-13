@@ -2124,6 +2124,15 @@ mainTypeIsFloat _ = match mainSchemeRef.value
 matchWarnings : Ref (List String)
 matchWarnings = Ref []
 
+-- True iff the last typecheck pass pushed any match warning.  Read by the snapshot
+-- runner (`tools/snapshot.mdk`) to decide whether a rendered `# TYPES` section carries
+-- diagnostic prose — a `W-*` warning is graded by `compiler/ERROR-QUALITY.md` exactly
+-- like an error is, so a `# TYPES` section holding one is NOT `--bless`-able.  Keyed on
+-- the accumulator rather than sniffing the rendered text: the renderer must not have to
+-- guess which of its own lines are diagnostics.
+export hadMatchWarnings : Unit -> <Mut> Bool
+hadMatchWarnings _ = matchWarnings.value != []
+
 -- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
 -- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
 -- path (`checkProgramDiags`) zips the two so the CLI/--json warning carries a

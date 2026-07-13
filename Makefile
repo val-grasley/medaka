@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates preflight ci clean help
+.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -68,6 +68,18 @@ test: medaka
 ##           Slow on a small machine; CI shards it across 6 hosted runners.
 gates: medaka
 	sh test/run_gates.sh
+
+## snapshot-check — the snapshot suite, CHECK only (never blesses). ~7s, no oracles.
+##           This is what the pre-commit hook runs, and the two facts are related:
+##           the compiler's own 50 sources are IN the snapshot corpus, so any edit to
+##           compiler/**.mdk — including a pure `medaka fmt` reflow — moves that file's
+##           `# SOURCE` section and turns the gate red until it is re-cut.
+##           Re-cut what you changed, by name:
+##             sh test/diff_compiler_snapshot_frontend.sh --bless compiler/frontend/lexer.mdk
+##           There is no whole-suite bless, and a diagnostic-bearing section will refuse
+##           to bless at all (see compiler/tools/snapshot.mdk's header for the 3 locks).
+snapshot-check:
+	sh test/diff_compiler_snapshot_frontend.sh
 
 ## ci      — everything CI runs, locally. Slow. Prefer `make preflight`.
 ci: medaka
