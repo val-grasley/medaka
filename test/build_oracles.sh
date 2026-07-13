@@ -187,9 +187,16 @@ done
 if [ "${1:-}" = "--for" ]; then
   shift
   [ "$#" -gt 0 ] || { echo "usage: $0 --for '<gate-pattern>' ..."; exit 1; }
+  # A pattern resolves against BOTH $ROOT/test/ and $ROOT/ — same rule as
+  # run_gates.sh and diff_compiler_ci_shard_coverage.sh, so a shard pattern naming a
+  # gate outside test/ (e.g. 'sqlite/test/*_oracle') selects the same gate set in all
+  # three. A bare 'diff_compiler_*' matches nothing at the repo root, so this is
+  # backwards-compatible. (Gates outside test/ read no test/bin oracle, so they
+  # simply contribute none — but they must still RESOLVE, or --for would report
+  # "matched no gates" for a shard whose patterns are all outside test/.)
   _gates=""
   for _pat in "$@"; do
-    for _g in "$ROOT"/test/$_pat.sh; do
+    for _g in "$ROOT"/test/$_pat.sh "$ROOT"/$_pat.sh; do
       [ -f "$_g" ] || continue
       case " $_gates " in *" $_g "*) ;; *) _gates="$_gates $_g" ;; esac
     done
@@ -218,7 +225,29 @@ if [ "${1:-}" = "--for" ]; then
       esac
     done
   done
-  [ -n "$_sel" ] || { echo "FAIL: --for selected no oracles from: $*"; exit 1; }
+  # ── "needs no oracles" IS NOT "pattern matched nothing" ──────────────────────
+  #
+  # This used to `exit 1` with "FAIL: --for selected no oracles", conflating two
+  # conditions that could not be more different:
+  #
+  #   pattern matched NO GATES        -> a typo. A real error. Still fails loudly,
+  #                                      via the `_gates` check above.
+  #   gates matched, need NO ORACLES  -> a legitimate no-op. Must SUCCEED.
+  #
+  # Plenty of gates drive ./medaka directly and reference zero test/bin/* probes:
+  # diff_compiler_run_check_agreement, build_cmd, native_fixtures/run, and all 22
+  # sqlite/test/*oracle gates. Failing on those broke two things at once — a CI shard
+  # made only of such gates went red for having nothing to build, and `make preflight`
+  # DIED on its single most common workflow: "I fixed a compiler bug, so I added a
+  # regression fixture", which now correctly derives 1 consuming gate instead of 83 and
+  # then fell over here if that gate happened to need no oracle.
+  if [ -z "$_sel" ]; then
+    for _g in $_gates; do
+      echo "--for: $(basename "$_g" .sh) needs no oracles (drives ./medaka directly)."
+    done
+    echo "nothing to build."
+    exit 0
+  fi
   if [ -n "$_foreign" ]; then
     echo "note: these gates also read probe binaries this script does not build:$_foreign"
     echo "      build them with:  sh test/wasm/build_wasm_oracle.sh"

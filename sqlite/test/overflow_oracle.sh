@@ -32,12 +32,22 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$ROOT"
 
 MEDAKA="$ROOT/medaka"
-DEMO="$ROOT/sqlite_overflow_demo"
+# Scratch binaries live in a PER-PROCESS temp dir, never at the repo root.
+#
+# These used to run `medaka build sqlite/main.mdk` with NO `-o`, which emits the binary
+# as ./<entry> at the REPO ROOT, and then `mv`d it to a FIXED path ($ROOT/sqlite_reader).
+# Both halves are a race: two of these oracles running concurrently clobbered each
+# other's ./main and shared one sqlite_reader. Serially all 22 passed; under run_gates'
+# parallel pool, 2 failed — and which 2 varied. (Same bug class, and same fix, as the
+# `medaka build` scratch-path collision in AGENTS.md: the only correct answer is a
+# per-process temp dir. Anything keyed on the entry name is a trap.)
+BINDIR="$(mktemp -d)"
+DEMO="$BINDIR/sqlite_overflow_demo"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 export MEDAKA_ROOT="$ROOT"
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" "$BINDIR"' EXIT
 
 fail=0
 note() { echo "  $*"; }
@@ -86,8 +96,7 @@ PY
 }
 
 echo "=== building sqlite/overflow_demo.mdk"
-"$MEDAKA" build sqlite/overflow_demo.mdk >/dev/null
-mv -f "$ROOT/overflow_demo" "$DEMO"
+"$MEDAKA" build sqlite/overflow_demo.mdk -o "$DEMO" >/dev/null
 
 # ---------------------------------------------------------------------------
 # 1. Boundary sweep: Medaka WRITES; sqlite3 must read every byte back.

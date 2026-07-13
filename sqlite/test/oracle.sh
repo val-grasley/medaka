@@ -30,13 +30,24 @@ DB="$(mktemp -d)/basic.db"
 OUT="$(mktemp)"
 
 MEDAKA="$ROOT/medaka"
-READER="$ROOT/sqlite_reader"
+# Scratch binaries live in a PER-PROCESS temp dir, never at the repo root.
+#
+# These used to run `medaka build sqlite/main.mdk` with NO `-o`, which emits the binary
+# as ./<entry> at the REPO ROOT, and then `mv`d it to a FIXED path ($ROOT/sqlite_reader).
+# Both halves are a race: two of these oracles running concurrently clobbered each
+# other's ./main and shared one sqlite_reader. Serially all 22 passed; under run_gates'
+# parallel pool, 2 failed — and which 2 varied. (Same bug class, and same fix, as the
+# `medaka build` scratch-path collision in AGENTS.md: the only correct answer is a
+# per-process temp dir. Anything keyed on the entry name is a trap.)
+BINDIR="$(mktemp -d)"
+trap 'rm -rf "$BINDIR"' EXIT
+READER="$BINDIR/sqlite_reader"
 export MEDAKA_EMITTER="$ROOT/medaka_emitter"
 
-# 1. Build the Medaka reader binary from sqlite/main.mdk.
-"$MEDAKA" build sqlite/main.mdk >/dev/null
-# `medaka build` emits the binary as ./main; rename to a stable name.
-mv -f "$ROOT/main" "$READER"
+# 1. Build the Medaka reader binary from sqlite/main.mdk, straight into $BINDIR.
+# (`-o` is load-bearing: with no `-o`, `medaka build` emits ./main at the REPO ROOT,
+# which two concurrent oracles then race on. See the $BINDIR note above.)
+"$MEDAKA" build sqlite/main.mdk -o "$READER" >/dev/null
 
 # 2. Generate the test database from the checked-in SQL.
 rm -f "$DB"
