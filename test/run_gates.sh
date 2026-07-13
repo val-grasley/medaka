@@ -87,6 +87,89 @@ for pat in "$@"; do
 done
 [ -n "$gates" ] || { echo "no gates match: $*"; exit 1; }
 
+# ── STALE ORACLES: refuse to run. A stale oracle does not fail — it LIES. ────────
+#
+# test/bin/* are compiled probe binaries. If one predates the compiler source, every
+# gate that reads it is testing a compiler that no longer exists — and it reports a
+# perfectly ordinary-looking FAIL. There is no way to tell that from a real regression
+# by reading the output, and three agents were burned by it in one day:
+#
+#   * one saw `unbound variable 'areaOf'` — THE EXACT SYMPTOM OF THE BUG IT WAS FIXING —
+#     emitted by a binary built before its own fix, and nearly re-diagnosed it;
+#   * one saw diff_compiler_tmc_parity report `llvm=0 wasm=5` and read it as "my merge
+#     broke the dispatch-group path". The LLVM probe was simply pre-merge;
+#   * one chased a red eval_modules/core_ir_modules/llvm_modules trio that was purely age.
+#
+# So this is not a warning. A run against stale oracles PROVED NOTHING about the current
+# source, and "proved nothing" must never be reported as pass OR as a compiler failure —
+# that conflation is this suite's entire reason for existing (see the header).
+#
+# Skipped when NO_STALE_CHECK=1 (build_oracles.sh's own internal invocations), and
+# naturally a no-op in CI, which always builds oracles fresh.
+if [ -z "${NO_STALE_CHECK:-}" ] && [ -d "$ROOT/test/bin" ]; then
+  newest_src=0
+  for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; \
+             find "$ROOT/runtime" -name '*.c' -o -name '*.h'); do
+    m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+    [ "$m" -gt "$newest_src" ] && newest_src=$m
+  done
+
+  # Check ONLY the probes the SELECTED gates actually read — derived from the gate
+  # scripts themselves (the same `test/bin/<name>` scrape build_oracles.sh --for uses),
+  # not every file in test/bin.
+  #
+  # Checking all of test/bin was wrong and I shipped it for about five minutes: the wasm
+  # probes are built by a DIFFERENT script (test/wasm/build_wasm_oracle.sh) and are not in
+  # build_oracles' ENTRIES, so they are routinely older than source — which would have
+  # blocked an unrelated `diff_compiler_lexer` run over a probe it never opens. Scope the
+  # complaint to what this run actually depends on.
+  #
+  # This still catches the real cases: diff_compiler_tmc_parity DOES read the wasm probes,
+  # so a stale one is flagged when — and only when — that gate is selected. That is exactly
+  # the false RED that cost an agent a wrong diagnosis (`llvm=0 wasm=5`, from a pre-merge
+  # LLVM probe).
+  needed=""
+  for g in $gates; do
+    for o in $(grep -ohE 'test/bin/[a-z_0-9]+' "$g" 2>/dev/null | sed 's|test/bin/||' | sort -u); do
+      case " $needed " in *" $o "*) ;; *) needed="$needed $o" ;; esac
+    done
+  done
+
+  stale=""
+  n_stale=0
+  for o in $needed; do
+    b="$ROOT/test/bin/$o"
+    [ -f "$b" ] || continue          # MISSING is a different failure — the phantom-skip
+                                     # path below owns it, and says so in its own words.
+    m=$(stat -c %Y "$b" 2>/dev/null || stat -f %m "$b" 2>/dev/null)
+    if [ "${m:-0}" -lt "$newest_src" ]; then
+      n_stale=$((n_stale + 1))
+      [ "$n_stale" -le 6 ] && stale="$stale  $o
+"
+    fi
+  done
+
+  if [ "$n_stale" -gt 0 ]; then
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "STALE ORACLES ($n_stale) — REFUSING TO RUN."
+    echo
+    printf '%s' "$stale"
+    [ "$n_stale" -gt 6 ] && echo "  ... and $((n_stale - 6)) more"
+    echo
+    echo "These probe binaries are OLDER than compiler/ stdlib/ runtime/ source."
+    echo "A gate reading one is testing a compiler that no longer exists — and it"
+    echo "reports an ordinary-looking FAIL that is INDISTINGUISHABLE from a real"
+    echo "regression. Agents have re-diagnosed their own already-fixed bug from one."
+    echo
+    echo "  Rebuild:  FORCE=1 sh test/build_oracles.sh                  # all"
+    echo "            FORCE=1 sh test/build_oracles.sh --for '<gate>'   # just these"
+    echo
+    echo "(Override with NO_STALE_CHECK=1 only if you know exactly why.)"
+    echo "════════════════════════════════════════════════════════════════════"
+    exit 1
+  fi
+fi
+
 export INNER_JOBS
 printf '%s\n' $gates \
   | xargs -P "$JOBS" -n 1 -I{} sh "$0" --run-one {} "$RESULTDIR"
