@@ -113,9 +113,14 @@ only the non-exhaustive-match warnings.
 
 ## Validation
 
+> **HISTORICAL — `dune build --root .` below is dead (OCaml removed 2026-06-26).** Build
+> the native compiler with `make medaka` instead; the `test/diff_compiler_*.sh` gates
+> below still apply and now diff native output against captured goldens, not a live OCaml
+> oracle. See `AGENTS.md`'s "Build & test" section for the current workflow (`make
+> preflight` for a targeted subset — do not run the whole suite locally).
+
 ```sh
-dune build --root .                           # build the reference binary
-sh test/diff_compiler_lexer.sh                # diff the Medaka lexer vs OCaml goldens
+sh test/diff_compiler_lexer.sh                # diff the Medaka lexer vs captured goldens
 sh test/diff_compiler_parse_errors.sh         # parser/lexer rejection path (~0.4s)
 sh test/diff_compiler_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
 sh test/diff_compiler_eval_errors.sh          # eval runtime-error messages vs reference (~1s)

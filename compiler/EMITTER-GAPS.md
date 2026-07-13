@@ -6,8 +6,8 @@ commit-level detail; this is the most rigorously self-correcting doc in the tree
 Gotchas). **NOTE:** the generator this doc cites, `compiler/entries/llvm_emit_gaps_main.mdk`,
 no longer exists (confirmed via `test -e`) — the "Run:" block below cannot be executed
 as written; the census below is a frozen snapshot, not regenerable in place. The one
-dead `compiler/private_mangle.mdk` path citation (line 66) has been corrected to
-`compiler/backend/private_mangle.mdk`.
+dead bare-basename `private_mangle.mdk` path citation (line 66, previously missing its
+subfolder prefix) has been corrected to `compiler/backend/private_mangle.mdk`.
 
 ## D4.0: Emitter-Completeness Inventory — Self-Hosted Compiler over the LLVM Spike
 

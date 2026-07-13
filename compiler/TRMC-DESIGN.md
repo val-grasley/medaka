@@ -3,8 +3,8 @@
 **Status:** IMPLEMENTED — Phase 1 `#56` (2026-06-11), Phase 3 (dispatch-graph TMC parity
 with the wasm backend) `38459006`, 2026-07-13. Exemplary "AS BUILT" self-tracking
 throughout (see the doc's own Phase 1/2/3 status lines). One item explicitly SCOPED &
-DEFERRED (Phase 2(b)). Dead bare-path citations (`compiler/llvm_emit.mdk`) corrected to
-`compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass.
+DEFERRED (Phase 2(b)). Dead bare-basename `llvm_emit.mdk` path citations (missing subfolder prefix) corrected
+to `compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass.
 
 Design for native TRMC (destination-passing) in `compiler/backend/llvm_emit.mdk`, the last
 big architectural change in the canonicalization workstream (PLAN #56). Phase 1

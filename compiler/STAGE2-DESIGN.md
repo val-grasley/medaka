@@ -3,7 +3,7 @@
 **Status:** IMPLEMENTED — see the doc's own accurate as-built banner immediately below
 (a model example of a design doc correctly narrating proposal → built → partially
 reverted → historical, all in one place). One dead bare-path citation fixed
-(`compiler/llvm_emit.mdk` → `compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass).
+(bare basename `llvm_emit.mdk` -> `compiler/backend/llvm_emit.mdk`, 2026-07-13 doc pass).
 
 Status: ✅ **BUILT (2026-06-08).** This was the design proposal; it is now the
 as-built record. Both on-ramps were taken — the Core IR + bytecode VM (§2.1–2.2)
