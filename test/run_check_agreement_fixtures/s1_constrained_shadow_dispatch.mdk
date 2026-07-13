@@ -1,0 +1,17 @@
+-- S-1 CONTROL (must never regress): the same constrained shadow, but the receiver's
+-- head HAS an impl of the shadowed interface, so the occurrence must DISPATCH to the
+-- impl, not fall back to the standalone.  This arm worked before the S-1 fix and is
+-- exactly what a "just reorder the guard chain so the dict arm wins" repair would
+-- have broken (EDictAt carries no route and cannot dispatch).  Must print IMPL.
+data Box = Box Int
+
+interface Sz a where
+  size : a -> String
+
+impl Sz Box where
+  size _ = "IMPL"
+
+size : Num a => a -> a
+size x = x + 1
+
+main = println (size (Box 3))

@@ -35,6 +35,13 @@ public export data BuildResult = BuildOk String | BuildErr String
 -- WasmGC via the wasm_emit entry + wasm-tools assemble/validate.
 public export data BuildTarget = TNative | TWasm
 
+-- Append an informational suffix (e.g. a "kept IR" note) to a BuildResult's
+-- message, whichever arm it is — so a --keep-ir note is visible whether the
+-- rest of the build (clang / wasm-tools) went on to succeed or fail.
+appendNote : String -> BuildResult -> BuildResult
+appendNote note (BuildOk m) = BuildOk (m ++ note)
+appendNote note (BuildErr m) = BuildErr (m ++ note)
+
 -- ---- small string helpers (externs only — keeps this module self-contained) ----
 
 -- Strip leading/trailing ASCII whitespace: stringTrim (from support/util.mdk).
@@ -186,6 +193,40 @@ detectGCBare cc tmpDir =
     Ok (0, _, _) => Some ([], ["-lgc"])
     _ => None
 
+-- ---- keep-IR (--keep-ir / MEDAKA_KEEP_IR) ----
+-- Normally the emitted IR lives ONLY inside the per-process scratch dir
+-- (makeTempDir) and is gone the instant the build returns — which is exactly
+-- the problem for the project's #1 bug class ("check green / build silently
+-- wrong"): the IR that actually produced the binary is the evidence, and by
+-- default we destroy it.  `--keep-ir` (or the env var, for a build shelled out
+-- by something else, e.g. a test harness) copies that IR to a PREDICTABLE
+-- path next to the output binary — outPath ++ ".ll" (native) / ".wat" (wasm)
+-- — and reports the path in the build's own result message.  Purely additive:
+-- with neither the flag nor the env var set, effectiveKeepIr is False and
+-- nothing about the scratch-dir lifecycle changes.
+--
+-- WHY "next to the output binary" is safe under concurrency, even though two
+-- DIFFERENT builds sharing one `-o` is the exact shape that broke IR-path
+-- uniqueness before (see makeTempDir's doc comment): here the compile itself
+-- never reads this path — the kept file is a copy of IR that a build already
+-- finished reading out of ITS OWN private tmpDir, written purely for the
+-- human afterward.  So a foreign build can never be compiled from another
+-- build's IR (the actual historical failure mode — a stable-looking WRONG
+-- binary).  What remains is the ordinary last-write-wins race on `outPath`
+-- itself when two builds target the same output path concurrently — a
+-- pre-existing, accepted property of sharing an output path (the binary at
+-- outPath already has it) — the kept-IR file just shares that same, already-
+-- understood race, not a new one.
+effectiveKeepIr : Bool -> <IO> Bool
+effectiveKeepIr cliFlag = cliFlag || envOr "MEDAKA_KEEP_IR" "" != ""
+
+-- Best-effort: a kept-IR write failure must never fail an otherwise-good
+-- build, so its Result is folded into an informational note either way.
+keepIrNote : String -> String -> <IO> String
+keepIrNote path contents = match writeFile path contents
+  Ok _ => "\nkept IR: " ++ path
+  Err e => "\nwarning: could not keep IR at \{path}: " ++ e
+
 -- ---- the build pipeline ----
 -- root  = repo root (assets live under it)
 -- medaka = path to the medaka exe (for the emit shell-out)
@@ -193,28 +234,30 @@ detectGCBare cc tmpDir =
 -- target = TNative (LLVM/clang) | TWasm (WasmGC + wasm-tools)
 -- inputAbs = absolute path of the user .mdk entry
 -- outPath  = output binary path
-export runBuild : String -> String -> String -> BuildTarget -> String -> String -> <IO> BuildResult
-runBuild root medaka cc TNative inputAbs outPath =
-  runBuildNative root medaka cc inputAbs outPath
-runBuild root medaka cc TWasm inputAbs outPath =
-  runBuildWasm root medaka inputAbs outPath
+-- keepIrCli = True iff `--keep-ir` was passed on the command line (OR'd with
+--             MEDAKA_KEEP_IR inside effectiveKeepIr)
+export runBuild : String -> String -> String -> BuildTarget -> String -> String -> Bool -> <IO> BuildResult
+runBuild root medaka cc TNative inputAbs outPath keepIrCli =
+  runBuildNative root medaka cc inputAbs outPath keepIrCli
+runBuild root medaka cc TWasm inputAbs outPath keepIrCli =
+  runBuildWasm root medaka inputAbs outPath keepIrCli
 
 -- ---- native (LLVM/clang) target — the original path ----
 -- Wrapper: allocate the per-invocation scratch dir (see makeTempDir), run the
 -- build inside it, then tear it down whatever the outcome.  `res` is bound (and
 -- so fully forced — Medaka is strict) BEFORE cleanupTempDir runs, so the .ll is
 -- still on disk while clang reads it.
-runBuildNative : String -> String -> String -> String -> String -> <IO> BuildResult
-runBuildNative root medaka cc inputAbs outPath = match makeTempDir ()
+runBuildNative : String -> String -> String -> String -> String -> Bool -> <IO> BuildResult
+runBuildNative root medaka cc inputAbs outPath keepIrCli = match makeTempDir ()
   Err e =>
     BuildErr "error: could not create a scratch directory for the build: \{e}"
   Ok tmpDir =>
-    let res = runBuildNativeIn root medaka cc inputAbs outPath tmpDir
+    let res = runBuildNativeIn root medaka cc inputAbs outPath tmpDir keepIrCli
     let _ = cleanupTempDir tmpDir
     res
 
-runBuildNativeIn : String -> String -> String -> String -> String -> String -> <IO> BuildResult
-runBuildNativeIn root medaka cc inputAbs outPath tmpDir =
+runBuildNativeIn : String -> String -> String -> String -> String -> String -> Bool -> <IO> BuildResult
+runBuildNativeIn root medaka cc inputAbs outPath tmpDir keepIrCli =
   let emitter = joinPath root "compiler/entries/llvm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
@@ -251,7 +294,29 @@ runBuildNativeIn root medaka cc inputAbs outPath tmpDir =
       if stringLength ir == 0 then BuildErr "error: emitter produced empty IR for \{inputAbs}\n\{emitErr}"
       else match writeFile llPath ir
         Err e => BuildErr ("error: could not write IR: " ++ e)
-        Ok _ => clangLink cc rtC llPath outPath inputAbs tmpDir
+        Ok _ =>
+          -- --keep-ir / MEDAKA_KEEP_IR: copy the IR to a predictable path next
+          -- to the output binary AFTER clangLink returns (success or failure —
+          -- a clang failure is exactly the case where seeing the IR matters
+          -- most), not before.  This is deliberate, not incidental: two
+          -- concurrent builds of DIFFERENT programs sharing one `-o` each run
+          -- an independent last-write-wins race on outPath (pre-existing,
+          -- inherent to sharing an output path) AND, if we copied the .ll
+          -- first, a SEPARATE independent race on outPath++".ll" — the two
+          -- races can pick different "winners", pairing build A's binary with
+          -- build B's kept IR (silently misleading — measured empirically:
+          -- ~1/3 of trials crossed when the .ll copy ran before clangLink).
+          -- Writing the copy immediately after clangLink returns collapses the
+          -- two races to nearly the same instant in each process's timeline,
+          -- so whichever build's clang finishes last is also the one most
+          -- likely to finish its .ll copy last. This narrows, but for a
+          -- same-`-o` race cannot fully eliminate, the crossing window — see
+          -- the concurrency note on effectiveKeepIr for why builds to
+          -- DISTINCT `-o` paths (the normal, sane usage) have NO such race at
+          -- all.
+          let res = clangLink cc rtC llPath outPath inputAbs tmpDir
+          let note = if effectiveKeepIr keepIrCli then keepIrNote (outPath ++ ".ll") ir else ""
+          appendNote note res
 
 -- ---- wasm (WasmGC + wasm-tools) target ----
 -- Structurally identical to runBuildNative: run the emitter (here the WasmGC
@@ -271,17 +336,17 @@ runBuildNativeIn root medaka cc inputAbs outPath tmpDir =
 -- Args mirror the LLVM root set: the COMPILED binary takes positional
 -- <runtime> <core> <entry> <inputDir> <compiler> <stdlib> (the wasm entry takes
 -- any number of roots after the entry).
-runBuildWasm : String -> String -> String -> String -> <IO> BuildResult
-runBuildWasm root medaka inputAbs outPath = match makeTempDir ()
+runBuildWasm : String -> String -> String -> String -> Bool -> <IO> BuildResult
+runBuildWasm root medaka inputAbs outPath keepIrCli = match makeTempDir ()
   Err e =>
     BuildErr "error: could not create a scratch directory for the build: \{e}"
   Ok tmpDir =>
-    let res = runBuildWasmIn root medaka inputAbs outPath tmpDir
+    let res = runBuildWasmIn root medaka inputAbs outPath tmpDir keepIrCli
     let _ = cleanupTempDir tmpDir
     res
 
-runBuildWasmIn : String -> String -> String -> String -> String -> <IO> BuildResult
-runBuildWasmIn root medaka inputAbs outPath tmpDir =
+runBuildWasmIn : String -> String -> String -> String -> String -> Bool -> <IO> BuildResult
+runBuildWasmIn root medaka inputAbs outPath tmpDir keepIrCli =
   let emitter = joinPath root "compiler/entries/wasm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
@@ -311,7 +376,13 @@ runBuildWasmIn root medaka inputAbs outPath tmpDir =
         if stringLength wat == 0 then BuildErr "error: wasm emitter produced empty WAT for \{inputAbs}\n\{emitErr}"
         else match writeFile watPath wat
           Err e => BuildErr ("error: could not write WAT: " ++ e)
-          Ok _ => wasmAssemble watPath outPath inputAbs
+          Ok _ =>
+            -- Same --keep-ir handling as the native path (.wat instead of
+            -- .ll), including the AFTER-assemble ordering — see the comment
+            -- on the native path's runBuildNativeIn for why.
+            let res = wasmAssemble watPath outPath inputAbs
+            let note = if effectiveKeepIr keepIrCli then keepIrNote (outPath ++ ".wat") wat else ""
+            appendNote note res
 
 -- Probe `wasm-tools` up front (the wasm analogue of the implicit clang
 -- requirement).  `wasm-tools --version` exits 0 iff the tool is reachable.

@@ -3531,14 +3531,22 @@ emitMethod e env name (RDictFwd d) implRoutes methRoutes argOps =
   emitMethodDispatch e env name d methRoutes argOps
 emitMethod e env name RNone implRoutes methRoutes argOps =
   emitMethodArgDispatch e name argOps
-emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
+-- S-1: a CONSTRAINED shadowing standalone was given leading dict PARAMS by
+-- dictPassDecl, so its call must supply the matching dict WORDS.  Delegate to
+-- emitDictApp — the SAME tested helper the ordinary CDict path uses (it prepends the
+-- dict words and, via defArityOf, builds a residual PAP when genuinely
+-- under-applied).  Without this the direct emitKnownFnSat call below supplies one
+-- word too few, emitKnownFnSat correctly reads that as under-application, and the
+-- program silently prints a PAP heap pointer instead of the answer (the S-1 bug).
+-- `dicts == []` (every unconstrained standalone, incl. all 5 of the compiler's own
+-- definer shadows) keeps the byte-identical pre-S1 direct call ⇒ the self-compile
+-- fixpoint cannot move.
+emitMethod e env name (RLocal sym dicts) implRoutes methRoutes argOps =
   let target = if sym == "" then name else sym
-  emitKnownFnSat
-    e
-    ("mdk_" ++ target)
-    argOps
-    (fnArity e target)
-    (fnRetTy e target)
+  if isEmpty dicts then
+    emitKnownFnSat e ("mdk_" ++ target) argOps (fnArity e target) (fnRetTy e target)
+  else
+    emitDictApp e env target dicts argOps
 -- native backend: a method whose RESULT mentions the interface/self
 -- type variable (map/ap/andThen) returns the CONTAINER; type its
 -- RKey-dispatched result as the impl's own type (tagToLTy tag) so a
@@ -3567,6 +3575,12 @@ emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
 -- CAPTURES the dict word and rebinds it from `%clos` field 1 in the body, so the
 -- runtime impl switch still reads the caller's dict.  A nullary method (arity 0,
 -- e.g. `def`) is a plain value — keep the immediate `emitMethod .. []`.
+-- ⚠️ S1-RESIDUAL-A (open; SHADOW-SEMANTICS.md §6): a VALUE-position standalone SHADOW
+-- (`map size [1,2,3]`) miscompiles here — the built binary SEGFAULTs (wasm: `illegal
+-- cast`), while `run` is correct.  NOT an S-1/dict bug: an UNCONSTRAINED shadow, which
+-- takes the `dicts == []` path and is byte-identical to pre-S1 codegen, segfaults exactly
+-- the same way.  The lift builds a closure of `methodArityOf name` — the interface
+-- METHOD's arity — for a body that calls the STANDALONE, whose value arity need not match.
 emitMethodValue : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> <Mut> (String, LTy)
 emitMethodValue e env name route implRoutes methRoutes =
   let arity = methodArityOf name
@@ -3585,6 +3599,11 @@ emitMethodValue e env name route implRoutes methRoutes =
 methValDictNames : Route -> List String
 methValDictNames (RDict d) = [d]
 methValDictNames (RDictFwd d) = [d]
+-- S-1: a VALUE-position constrained shadow (`map size xs`) lifts to a closure, and its
+-- RLocal route's dict slots may include an RDict — the enclosing constrained fn's own
+-- dict param.  That word must be CAPTURED or the lifted body reads an out-of-scope
+-- name.  Empty dicts ⇒ [] ⇒ byte-identical to the pre-S1 catch-all.
+methValDictNames (RLocal _ dicts) = routeDictNames [] dicts
 methValDictNames _ = []
 
 -- the operand words for each captured dict name, looked up in the current emit env.
@@ -4367,7 +4386,10 @@ dictWordOfRoute e env (RKey key reqs) =
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
-dictWordOfRoute _ _ (RLocal _) = "0"  -- C5: RLocal carries no dict (mirror eval.mdk's no-op dict)
+-- S-1: RLocal's own dicts are the call's leading dict ARGS (emitted by emitMethod's
+-- RLocal arm via emitDictApp), not a dict WITNESS for this route — so as a witness it
+-- stays the no-op 0 dict, mirroring eval's `dictOfRoute (RLocal _ _) = VDict "" []`.
+dictWordOfRoute _ _ (RLocal _ _) = "0"
 
 -- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … | i64 req_(n-1) ]`
 -- via @mdk_alloc and return its pointer word (ptrtoint).  Mirrors emitCtorAlloc's

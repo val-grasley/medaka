@@ -1,0 +1,7 @@
+-- S-1 blast radius: NO user interface is needed.  Colliding with any PRELUDE interface
+-- method (here `Eq.eq`) is enough, so any program defining a `=>`-constrained top-level
+-- fn named `eq`/`map`/`append`/`show`/... was silently miscompiled.  Must print 4.
+eq : Num a => a -> a
+eq x = x + 1
+
+main = println (eq 3)

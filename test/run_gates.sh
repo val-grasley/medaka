@@ -42,12 +42,54 @@ trap 'rm -rf "$RESULTDIR"' EXIT
 # the gate never actually compared anything — reclassified as FAIL below.
 LEGIT_SKIP_RE='no C compiler|libgc \(bdw-gc\)|not on PATH'
 
+# ── A gate is identified by its PATH, not its basename ────────────────────────
+#
+# Gates do not all live in test/. `sqlite/test/*_oracle.sh` (22 differential gates
+# against the real sqlite3 CLI) and test/native_fixtures/run.sh are gates too, and
+# basenames COLLIDE across those roots (test/native_fixtures/run.sh vs
+# playground/e2e/run.sh both stem to "run"). A results dir keyed on the basename
+# would silently overwrite one gate's status with another's — "this didn't run"
+# masquerading as "this passed", which is the one thing this suite exists to
+# prevent. So key on the repo-relative path.
+#
+# The leading `test_` is stripped so the ~119 gates under test/ keep their familiar
+# labels (diff_compiler_lexer, not test_diff_compiler_lexer) — only gates outside
+# test/ gain a prefix, and they had no label before because they never ran.
+gate_name() {
+  printf '%s\n' "${1#"$ROOT"/}" | sed -e 's|\.sh$||' -e 's|/|_|g' -e 's|^test_||'
+}
+
+# Gates outside test/ (the sqlite oracles) locate the tree through these rather
+# than by walking up from $0. Defaults only — an explicit value always wins.
+export MEDAKA_ROOT="${MEDAKA_ROOT:-$ROOT}"
+export MEDAKA="${MEDAKA:-$ROOT/medaka}"
+export MEDAKA_EMITTER="${MEDAKA_EMITTER:-$ROOT/medaka_emitter}"
+
 # ── Worker mode: run one gate, record its status ──────────────────────────────
 if [ "${1:-}" = "--run-one" ]; then
   g="$2"
   rd="$3"
-  name="$(basename "$g" .sh)"
-  if JOBS="${INNER_JOBS:-1}" sh "$g" >"$rd/$name.log" 2>&1; then
+  name="$(gate_name "$g")"
+  # ── HONOR THE SHEBANG. Do not hardcode `sh`. ────────────────────────────────
+  #
+  # This ran EVERY gate with `sh` — which on Debian is dash. But 6 gates under test/
+  # are `#!/usr/bin/env bash` and use bashisms (`local`, `set -o pipefail`, process
+  # substitution, `${BASH_SOURCE[0]}`), and THREE OF THEM ARE ALREADY IN CI SHARDS:
+  # diff_compiler_engines, diff_compiler_lint_multi, diff_compiler_tmc_parity. They
+  # have been run under the wrong interpreter this whole time. They happen to survive
+  # it; that is luck, not design, and "the gate ran under an interpreter it wasn't
+  # written for" is not a property you want to be lucky about.
+  #
+  # It stopped being luck the moment the sqlite oracles were enrolled: all 22 are
+  # `#!/usr/bin/env bash`, and under dash all 22 FAILED — while passing perfectly when
+  # invoked directly. A gate that fails only because the runner picked the wrong shell
+  # is the purest form of the bug this suite exists to prevent: the result says
+  # "the compiler is broken" and means "the harness is broken".
+  case "$(head -n 1 "$g")" in
+    *bash*) _shell=bash ;;
+    *)      _shell=sh ;;
+  esac
+  if JOBS="${INNER_JOBS:-1}" "$_shell" "$g" >"$rd/$name.log" 2>&1; then
     st=0
   else
     st=$?
@@ -75,9 +117,20 @@ fi
 # A gate matching two patterns is deduped, so overlapping shards are safe.
 [ "$#" -gt 0 ] || set -- 'diff_compiler_*'
 
+#
+# A pattern resolves against BOTH `$ROOT/test/` and `$ROOT/`, so a shard can name a
+# gate that does not live under test/ — e.g. 'sqlite/test/*_oracle' (the 22
+# differential gates against the real sqlite3 CLI, which had never run in CI at all
+# because no pattern could even REACH them). A bare pattern like 'diff_compiler_*'
+# matches nothing at the repo root, so this is backwards-compatible.
+#
+# build_oracles.sh --for and diff_compiler_ci_shard_coverage.sh resolve patterns the
+# SAME way. All three must agree: if the coverage gate believed a shard pattern
+# selected a gate that run_gates.sh could not actually glob, CI would certify
+# coverage of a gate that silently never ran.
 gates=""
 for pat in "$@"; do
-  for g in "$ROOT"/test/$pat.sh; do
+  for g in "$ROOT"/test/$pat.sh "$ROOT"/$pat.sh; do
     [ -f "$g" ] || continue
     case " $gates " in
       *" $g "*) ;;              # already selected by an earlier pattern
@@ -238,7 +291,8 @@ EOF
   fi
   echo "FAILED:$failed"
   [ "$phantom" -gt 0 ] && echo "  ($phantom of these are phantom skips: oracle not built — see above)"
-  echo "(logs in the run's temp dir; re-run a single gate with: sh test/<name>.sh)"
+  echo "(logs in the run's temp dir; re-run a single gate by its path, e.g. sh test/<name>.sh"
+  echo " — a name like sqlite_test_oracle is the repo-relative path with '/' as '_')"
   exit 1
 fi
 # Invariant: never report success having executed zero tests — a run where

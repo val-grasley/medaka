@@ -113,6 +113,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`RUNTIME-DESIGN.md`](../compiler/RUNTIME-DESIGN.md) | Runtime & extern strategy for the native (Stage 2.4) backend | IMPLEMENTED, with 2 items still deferred |
 | [`RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN.md`](../compiler/RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN.md) | RUNTIME-DIAGNOSTIC-CHANNEL-DESIGN | IMPLEMENTED |
 | [`RUNTIME-TRAP-UNIFY-DESIGN.md`](../compiler/RUNTIME-TRAP-UNIFY-DESIGN.md) | Runtime-trap-format unification — design | OPEN |
+| [`S1-CONSTRAINED-SHADOW-DESIGN.md`](../compiler/S1-CONSTRAINED-SHADOW-DESIGN.md) | S-1 — a CONSTRAINED definer-shadow standalone is miscompiled | IMPLEMENTED |
 | [`SHARED-FLOAT-RESIDUAL-DESIGN.md`](../compiler/SHARED-FLOAT-RESIDUAL-DESIGN.md) | SHARED-FLOAT-RESIDUAL-DESIGN — the signature-free type-lost-Float residual | IMPLEMENTED |
 | [`STAGE2-DESIGN.md`](../compiler/STAGE2-DESIGN.md) | Stage 2 backend architecture — bytecode VM first, or straight to LLVM? | IMPLEMENTED |
 | [`TRMC-DESIGN.md`](../compiler/TRMC-DESIGN.md) | TRMC-DESIGN.md — tail-recursion-modulo-cons for the native LLVM backend | IMPLEMENTED |

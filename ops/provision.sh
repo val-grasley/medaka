@@ -32,11 +32,20 @@ log() { printf '\n== %s ==\n' "$*"; }
 #    gate shells out to (test/build_wasm_cmd.sh); without it they all report "skipping"
 #    and exit 0 — a silent no-op that reads as green. Both were missing on the first
 #    provisioned box.
-log "installing toolchain (clang, libgc, node 24, sqlite3, ...)"
+#    `jq` is the same lesson a third time, and it cost a whole session's CI monitoring
+#    (2026-07-14). It is NOT used by any gate — the gates stay POSIX sh + awk for the
+#    dual-platform invariant — but every orchestrator and agent reaches for it when
+#    scripting against `gh`, and its absence fails the way the other two did: a shell
+#    pipeline into a missing `jq` yields an EMPTY STRING, not an error, so the script
+#    sails on and reports nothing while appearing to run. A background PR/CI monitor
+#    built that way watched precisely nothing, all night, and looked healthy doing it.
+#    (`gh` has a built-in `--jq`, which is why the same expression works by hand and
+#    dies inside a script — an especially nasty way to be wrong.)
+log "installing toolchain (clang, libgc, node 24, sqlite3, jq, ...)"
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \
   clang libgc-dev libc6-dev make bash perl coreutils gzip git \
-  pkg-config python3 rsync ca-certificates curl sqlite3
+  pkg-config python3 rsync ca-certificates curl sqlite3 jq
 NODE_MAJOR="$(node -v 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')"
 if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 24 ]; then
   # NodeSource setup, piped safe for both root ($SUDO empty) and sudo users —
