@@ -75,7 +75,7 @@ freeVars b (CList es) = freeVarsList b es
 freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _ _) = freeVars b ex
-freeVars b (CRecordUpdate base updates) = freeVars b base
+freeVars b (CRecordUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
 freeVars b (CVariantUpdate _ base updates) = freeVars b base
   ++ freeVarsFields b updates
@@ -364,7 +364,7 @@ mentionsSelfMethod method tag (CRecord _ fields) =
   mentionsSelfMethodFields method tag fields
 mentionsSelfMethod method tag (CFieldAccess ex _ _) =
   mentionsSelfMethod method tag ex
-mentionsSelfMethod method tag (CRecordUpdate base ups) = mentionsSelfMethod method tag base
+mentionsSelfMethod method tag (CRecordUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
 mentionsSelfMethod method tag (CVariantUpdate _ base ups) = mentionsSelfMethod method tag base
   || mentionsSelfMethodFields method tag ups
@@ -727,7 +727,7 @@ allCallHeads cf (CArray es) = flatMap (allCallHeads cf) es
 allCallHeads cf (CRecord _ fs) =
   flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CFieldAccess x _ _) = allCallHeads cf x
-allCallHeads cf (CRecordUpdate base fs) = allCallHeads cf base
+allCallHeads cf (CRecordUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs
 allCallHeads cf (CVariantUpdate _ base fs) = allCallHeads cf base
   ++ flatMap (f => allCallHeads cf (dispFieldExpr f)) fs

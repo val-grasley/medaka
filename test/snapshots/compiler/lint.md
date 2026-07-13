@@ -1,5 +1,5 @@
 # META
-source_lines=3529
+source_lines=3530
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/lint.mdk — the `medaka lint` framework + seed rules.
@@ -1329,7 +1329,7 @@ childExprs (EDo stmts) = flatMap stmtExprs stmts
 childExprs (EStringInterp parts) = flatMap interpPartExprs parts
 childExprs (EGuards arms) = flatMap guardArmExprs arms
 childExprs (ERecordCreate _ fs) = map fieldAssignExpr fs
-childExprs (ERecordUpdate e fs) = e :: map fieldAssignExpr fs
+childExprs (ERecordUpdate e fs _) = e :: map fieldAssignExpr fs
 childExprs (EVariantUpdate _ e fs) = e :: map fieldAssignExpr fs
 childExprs (EMapLit _ kvs) = flatMap kvExprs kvs
 childExprs (ESetLit _ es) = es
@@ -1442,8 +1442,8 @@ rewriteBindExpr orc (EGuards arms) =
   EGuards (map (rewriteBindGuardArm orc) arms)
 rewriteBindExpr orc (ERecordCreate n fs) =
   ERecordCreate n (map (rewriteBindField orc) fs)
-rewriteBindExpr orc (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
+rewriteBindExpr orc (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteBindExpr orc e) (map (rewriteBindField orc) fs) r
 rewriteBindExpr orc (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteBindExpr orc e) (map (rewriteBindField orc) fs)
 rewriteBindExpr orc (EMapLit n kvs) = EMapLit n (map (rewriteBindKv orc) kvs)
@@ -1720,8 +1720,8 @@ rewriteLamExpr (EStringInterp parts) =
   EStringInterp (map rewriteLamInterp parts)
 rewriteLamExpr (EGuards arms) = EGuards (map rewriteLamGuardArm arms)
 rewriteLamExpr (ERecordCreate n fs) = ERecordCreate n (map rewriteLamField fs)
-rewriteLamExpr (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteLamExpr e) (map rewriteLamField fs)
+rewriteLamExpr (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteLamExpr e) (map rewriteLamField fs) r
 rewriteLamExpr (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteLamExpr e) (map rewriteLamField fs)
 rewriteLamExpr (EMapLit n kvs) = EMapLit n (map rewriteLamKv kvs)
@@ -1967,8 +1967,8 @@ rewriteIfMaxMinExpr (EStringInterp parts) =
 rewriteIfMaxMinExpr (EGuards arms) = EGuards (map rewriteIfMaxMinGuardArm arms)
 rewriteIfMaxMinExpr (ERecordCreate n fs) =
   ERecordCreate n (map rewriteIfMaxMinField fs)
-rewriteIfMaxMinExpr (ERecordUpdate e fs) =
-  ERecordUpdate (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs)
+rewriteIfMaxMinExpr (ERecordUpdate e fs r) =
+  ERecordUpdate (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs) r
 rewriteIfMaxMinExpr (EVariantUpdate c e fs) =
   EVariantUpdate c (rewriteIfMaxMinExpr e) (map rewriteIfMaxMinField fs)
 rewriteIfMaxMinExpr (EMapLit n kvs) = EMapLit n (map rewriteIfMaxMinKv kvs)
@@ -2243,10 +2243,11 @@ rewriteAndThenPureMapExpr (EGuards arms) =
   EGuards (map rewriteAndThenPureMapGuardArm arms)
 rewriteAndThenPureMapExpr (ERecordCreate n fs) =
   ERecordCreate n (map rewriteAndThenPureMapField fs)
-rewriteAndThenPureMapExpr (ERecordUpdate e fs) =
+rewriteAndThenPureMapExpr (ERecordUpdate e fs r) =
   ERecordUpdate
     (rewriteAndThenPureMapExpr e)
     (map rewriteAndThenPureMapField fs)
+    r
 rewriteAndThenPureMapExpr (EVariantUpdate c e fs) =
   EVariantUpdate
     c
@@ -2363,8 +2364,8 @@ mapChildExprs g (EStringInterp parts) =
 mapChildExprs g (EGuards arms) = EGuards (map (mapChildGuardArm g) arms)
 mapChildExprs g (ERecordCreate n fs) =
   ERecordCreate n (map (mapChildField g) fs)
-mapChildExprs g (ERecordUpdate e fs) =
-  ERecordUpdate (g e) (map (mapChildField g) fs)
+mapChildExprs g (ERecordUpdate e fs r) =
+  ERecordUpdate (g e) (map (mapChildField g) fs) r
 mapChildExprs g (EVariantUpdate c e fs) =
   EVariantUpdate c (g e) (map (mapChildField g) fs)
 mapChildExprs g (EMapLit n kvs) = EMapLit n (map (mapChildKv g) kvs)
@@ -3948,7 +3949,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "childExprs" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EVar "flatMap") (EVar "interpPartExprs")) (EVar "parts")))
 (DFunDef false "childExprs" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EVar "flatMap") (EVar "guardArmExprs")) (EVar "arms")))
 (DFunDef false "childExprs" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EVar "map") (EVar "fieldAssignExpr")) (EVar "fs")))
-(DFunDef false "childExprs" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
+(DFunDef false "childExprs" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
 (DFunDef false "childExprs" ((PCon "EVariantUpdate" PWild (PVar "e") (PVar "fs"))) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
 (DFunDef false "childExprs" ((PCon "EMapLit" PWild (PVar "kvs"))) (EApp (EApp (EVar "flatMap") (EVar "kvExprs")) (EVar "kvs")))
 (DFunDef false "childExprs" ((PCon "ESetLit" PWild (PVar "es"))) (EVar "es"))
@@ -4014,7 +4015,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindInterp") (EVar "orc"))) (EVar "parts"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindGuardArm") (EVar "orc"))) (EVar "arms"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
-(DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
+(DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindKv") (EVar "orc"))) (EVar "kvs"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "rewriteBindExpr") (EVar "orc"))) (EVar "es"))))
@@ -4136,7 +4137,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteLamExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EVar "rewriteLamInterp")) (EVar "parts"))))
 (DFunDef false "rewriteLamExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EVar "rewriteLamGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteLamExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteLamField")) (EVar "fs"))))
-(DFunDef false "rewriteLamExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteLamField")) (EVar "fs"))))
+(DFunDef false "rewriteLamExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteLamField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteLamExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteLamField")) (EVar "fs"))))
 (DFunDef false "rewriteLamExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteLamKv")) (EVar "kvs"))))
 (DFunDef false "rewriteLamExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteLamExpr")) (EVar "es"))))
@@ -4238,7 +4239,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinInterp")) (EVar "parts"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
-(DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
+(DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinKv")) (EVar "kvs"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteIfMaxMinExpr")) (EVar "es"))))
@@ -4350,7 +4351,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapInterp")) (EVar "parts"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
-(DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
+(DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapKv")) (EVar "kvs"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "rewriteAndThenPureMapExpr")) (EVar "es"))))
@@ -4412,7 +4413,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EApp (EVar "mapChildInterp") (EVar "g"))) (EVar "parts"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EApp (EVar "mapChildGuardArm") (EVar "g"))) (EVar "arms"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
-(DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
+(DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EVar "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "mapChildKv") (EVar "g"))) (EVar "kvs"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EVar "g")) (EVar "es"))))
@@ -5231,7 +5232,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "childExprs" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EDictApp "flatMap") (EVar "interpPartExprs")) (EVar "parts")))
 (DFunDef false "childExprs" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EDictApp "flatMap") (EVar "guardArmExprs")) (EVar "arms")))
 (DFunDef false "childExprs" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EMethodRef "map") (EVar "fieldAssignExpr")) (EVar "fs")))
-(DFunDef false "childExprs" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EBinOp "::" (EVar "e") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
+(DFunDef false "childExprs" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") PWild)) (EBinOp "::" (EVar "e") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
 (DFunDef false "childExprs" ((PCon "EVariantUpdate" PWild (PVar "e") (PVar "fs"))) (EBinOp "::" (EVar "e") (EApp (EApp (EMethodRef "map") (EVar "fieldAssignExpr")) (EVar "fs"))))
 (DFunDef false "childExprs" ((PCon "EMapLit" PWild (PVar "kvs"))) (EApp (EApp (EDictApp "flatMap") (EVar "kvExprs")) (EVar "kvs")))
 (DFunDef false "childExprs" ((PCon "ESetLit" PWild (PVar "es"))) (EVar "es"))
@@ -5297,7 +5298,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindInterp") (EVar "orc"))) (EVar "parts"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindGuardArm") (EVar "orc"))) (EVar "arms"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
-(DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
+(DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EApp (EVar "rewriteBindExpr") (EVar "orc")) (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindField") (EVar "orc"))) (EVar "fs"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindKv") (EVar "orc"))) (EVar "kvs"))))
 (DFunDef false "rewriteBindExpr" ((PVar "orc") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteBindExpr") (EVar "orc"))) (EVar "es"))))
@@ -5419,7 +5420,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteLamExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EVar "rewriteLamInterp")) (EVar "parts"))))
 (DFunDef false "rewriteLamExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EVar "rewriteLamGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteLamExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamField")) (EVar "fs"))))
-(DFunDef false "rewriteLamExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamField")) (EVar "fs"))))
+(DFunDef false "rewriteLamExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteLamExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteLamExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamField")) (EVar "fs"))))
 (DFunDef false "rewriteLamExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamKv")) (EVar "kvs"))))
 (DFunDef false "rewriteLamExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteLamExpr")) (EVar "es"))))
@@ -5521,7 +5522,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinInterp")) (EVar "parts"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
-(DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
+(DFunDef false "rewriteIfMaxMinExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteIfMaxMinExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinField")) (EVar "fs"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinKv")) (EVar "kvs"))))
 (DFunDef false "rewriteIfMaxMinExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteIfMaxMinExpr")) (EVar "es"))))
@@ -5633,7 +5634,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapInterp")) (EVar "parts"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapGuardArm")) (EVar "arms"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
-(DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
+(DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))) (EVar "r")))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "rewriteAndThenPureMapExpr") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapField")) (EVar "fs"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapKv")) (EVar "kvs"))))
 (DFunDef false "rewriteAndThenPureMapExpr" ((PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "rewriteAndThenPureMapExpr")) (EVar "es"))))
@@ -5695,7 +5696,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildInterp") (EVar "g"))) (EVar "parts"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildGuardArm") (EVar "g"))) (EVar "arms"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordCreate" (PVar "n") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
-(DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordUpdate" (PVar "e") (PVar "fs"))) (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
+(DFunDef false "mapChildExprs" ((PVar "g") (PCon "ERecordUpdate" (PVar "e") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))) (EVar "r")))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EVariantUpdate" (PVar "c") (PVar "e") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "c")) (EApp (EVar "g") (EVar "e"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildField") (EVar "g"))) (EVar "fs"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "mapChildKv") (EVar "g"))) (EVar "kvs"))))
 (DFunDef false "mapChildExprs" ((PVar "g") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EVar "g")) (EVar "es"))))

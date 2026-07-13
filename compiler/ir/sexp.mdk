@@ -164,7 +164,7 @@ exprSexp (EStringInterp parts) = node "EStringInterp" (map interpPartSexp parts)
 exprSexp (EGuards arms) = node "EGuards" (map guardArmSexp arms)
 exprSexp (ERecordCreate n fs) =
   node "ERecordCreate" [escStr n, slist (map fieldAssignSexp fs)]
-exprSexp (ERecordUpdate e fs) =
+exprSexp (ERecordUpdate e fs _) =
   node "ERecordUpdate" [exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EVariantUpdate c e fs) =
   node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]

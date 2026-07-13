@@ -444,7 +444,7 @@ checkExpr cur env scope (EGuards arms) =
   flatMap (checkGuardArm cur env scope) arms
 checkExpr cur env scope (ERecordCreate name fs) =
   checkRecordCreate cur env scope name fs
-checkExpr cur env scope (ERecordUpdate e0 fs) =
+checkExpr cur env scope (ERecordUpdate e0 fs _) =
   checkRecordUpdate cur env scope e0 fs
 checkExpr cur env scope (EVariantUpdate con e0 fs) = checkExpr cur env scope e0
   ++ checkRecordCreate cur env scope con fs

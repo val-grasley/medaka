@@ -735,8 +735,8 @@ renameScoped rm bound (EHeadAnnot e0 t) =
   EHeadAnnot (renameScoped rm bound e0) t
 renameScoped rm bound (ERecordCreate n fs) =
   ERecordCreate (renameDefName rm n) (map (renameField rm bound) fs)
-renameScoped rm bound (ERecordUpdate e0 fs) =
-  ERecordUpdate (renameScoped rm bound e0) (map (renameField rm bound) fs)
+renameScoped rm bound (ERecordUpdate e0 fs r) =
+  ERecordUpdate (renameScoped rm bound e0) (map (renameField rm bound) fs) r
 renameScoped rm bound (EVariantUpdate c e0 fs) =
   EVariantUpdate
     (renameDefName rm c)

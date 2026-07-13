@@ -1041,7 +1041,7 @@ eval env (ERecordCreate name fields) =
   match lookupAssoc name ctorFieldOrdersRef.value
     Some order => VCon name (recordCreateVals name order assigns)
     None => VRecord name assigns
-eval env (ERecordUpdate base fields) =
+eval env (ERecordUpdate base fields _) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
 eval env (EFieldAccess e field _) = evalField (eval env e) field
@@ -3404,7 +3404,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "VList") (EApp (EApp (EVar "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EVar "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
-(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields") PWild)) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
@@ -4711,7 +4711,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "eval" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "VList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EMethodRef "map") (EApp (EVar "eval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "eval" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EBlock (DoLet false false (PVar "assigns") (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))) (DoExpr (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "ctorFieldOrdersRef") "value")) (arm (PCon "Some" (PVar "order")) () (EApp (EApp (EVar "VCon") (EVar "name")) (EApp (EApp (EApp (EVar "recordCreateVals") (EVar "name")) (EVar "order")) (EVar "assigns")))) (arm (PCon "None") () (EApp (EApp (EVar "VRecord") (EVar "name")) (EVar "assigns")))))))
-(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "eval" ((PVar "env") (PCon "ERecordUpdate" (PVar "base") (PVar "fields") PWild)) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "evalFieldAssign") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e"))) (EVar "field")))
 (DFunDef false "eval" ((PVar "env") (PCon "EAnnot" (PVar "e") PWild)) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
