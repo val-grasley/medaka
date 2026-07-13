@@ -39,7 +39,9 @@ import support.util.{
   anyList,
   contains,
   sortUniqS,
+  schemeLineName,
 }
+import support.ordmap.{OrdMap, omEmpty, omHasKey, omFromNames}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl(..), Expr(..), Loc(..), Pat, LetBind(..)}
 import frontend.parser.{
@@ -633,12 +635,23 @@ stripWarningLines s =
 -- prelude's ~120 always-present schemes (eq/append/map/println/…). Each kept
 -- line's name is matched by exact "\{name} : " prefix (scheme lines are never
 -- "Warning: …" — those are already stripped by `stripWarningLines` upstream).
+--
+-- PERF: O(lines × log names).  This used to be O(lines × names) — an `anyList`
+-- over EVERY top-level name per dump line, each probe allocating a fresh
+-- "\{n} : " prefix string.  On a 2k-function file that is ~8.5M prefix builds +
+-- compares, and it was the single largest cost of `medaka check` on a large
+-- file.  A line's candidate name is uniquely determined (`schemeLineName`: the
+-- text before its first " : ", since identifiers hold no space), so one set
+-- lookup decides the line.
 userSchemeLines : List Decl -> String -> String
 userSchemeLines decls report =
-  let names = topLevelNames decls
-  joinNl (filter
-    (l => anyList (n => startsWith (n ++ " : ") l) names)
-    (splitNl report))
+  let names = omFromNames (topLevelNames decls) omEmpty
+  joinNl (filter (namesUserBinding names) (splitNl report))
+
+namesUserBinding : OrdMap Unit -> String -> Bool
+namesUserBinding names l = match schemeLineName l
+  Some n => omHasKey n names
+  None => False
 
 -- Every name a top-level Decl of this file introduces into value scope,
 -- regardless of `pub` (single-file `check` has no module boundary to gate on).

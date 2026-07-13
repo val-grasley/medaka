@@ -43,6 +43,7 @@ import frontend.ast.{
   Decl(..),
 }
 import list.{replicate, take, drop}
+import support.ordmap.{OrdMap, omEmpty, omInsert, omLookup, omHasKey}
 import support.util.{
   contains,
   allList,
@@ -52,6 +53,7 @@ import support.util.{
   joinNl,
   joinWith,
   orElseOpt,
+  reverseL,
 }
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -594,22 +596,42 @@ totalClauseRows oracle (c::rest)
   | otherwise = totalClauseRows oracle rest
 
 -- ── group same-name (name, clause) pairs, first-seen order ────────────────
--- Keeps the group NAME (the constructor-coverage message names the function).
+-- Keeps the group NAME (the constructor-coverage message names the function),
+-- and each group's clauses in source order.
+--
+-- PERF: O(n log n).  This used to be O(n²) TWICE over — `firstSeenNames` did a
+-- linear `contains` against a growing seen-LIST per item, and then, for EVERY
+-- distinct name, `clausesForName` rescanned the WHOLE `items` list.  `check`
+-- runs this over every top-level DFunDef in the module (twice: once via
+-- analyzeLocated, once via runCheck), so a 2k-function module cost ~4M full-list
+-- walks — it was the dominant cost of `medaka check` on a large file.  Now one
+-- pass buckets clauses by name in an OrdMap (each bucket accumulated front-first,
+-- hence `reverseL` on read-back) and records first-seen names via O(log n)
+-- membership; a second pass reads each name's bucket back out.
 groupByName : List (String, (List Pat, Expr)) -> List (String, List (List Pat, Expr))
 groupByName items =
-  map (n => (n, clausesForName items n)) (firstSeenNames items [])
+  let buckets = bucketClauses items omEmpty
+  map (n => (n, reverseL (bucketFor n buckets))) (firstSeenNames items omEmpty)
 
-firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
-firstSeenNames [] seen = []
+-- A clause group keyed by function name (the bucket map groupByName folds into).
+type ClauseBuckets = OrdMap (List (List Pat, Expr))
+
+-- Accumulate each clause under its name, newest-first (so one cons per item).
+bucketClauses : List (String, (List Pat, Expr)) -> ClauseBuckets -> ClauseBuckets
+bucketClauses [] acc = acc
+bucketClauses ((n, c)::rest) acc =
+  bucketClauses rest (omInsert n (c :: bucketFor n acc) acc)
+
+bucketFor : String -> ClauseBuckets -> List (List Pat, Expr)
+bucketFor n acc = match omLookup n acc
+  Some cs => cs
+  None => []
+
+firstSeenNames : List (String, (List Pat, Expr)) -> OrdMap Unit -> List String
+firstSeenNames [] _ = []
 firstSeenNames ((n, _)::rest) seen
-  | contains n seen = firstSeenNames rest seen
-  | otherwise = n :: firstSeenNames rest (n::seen)
-
-clausesForName : List (String, (List Pat, Expr)) -> String -> List (List Pat, Expr)
-clausesForName [] _ = []
-clausesForName ((n, c)::rest) name
-  | n == name = c :: clausesForName rest name
-  | otherwise = clausesForName rest name
+  | omHasKey n seen = firstSeenNames rest seen
+  | otherwise = n :: firstSeenNames rest (omInsert n () seen)
 
 -- ── collect where-group (ELetGroup) clause groups from an expr tree ────────
 letGroupWarnings : Oracle -> Expr -> List (String, Option Loc)

@@ -1,6 +1,8 @@
 allCovered : List String -> List String -> Bool
 bindCtors : Oracle -> Option String -> Option (List String)
 boolAlwaysTrue : Expr -> Bool
+bucketClauses : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr)) -> Map String (List (List Pat, Expr))
+bucketFor : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
 buildOracle : List Decl -> Oracle
 builtinArity : List (String, Int)
 builtinCtorType : List (String, String)
@@ -18,7 +20,6 @@ clauseBodyLoc : Expr -> Option Loc
 clauseGuardsTotal : (List Pat, Expr) -> Bool
 clauseIsGuardedPartial : (List Pat, Expr) -> Bool
 clausePats : (List Pat, Expr) -> List Pat
-clausesForName : List (String, (List Pat, Expr)) -> String -> List (List Pat, Expr)
 collectArmBinds : Arm -> List LetBind
 collectLetBindInner : LetBind -> List LetBind
 collectLetBinds : Expr -> List LetBind
@@ -39,7 +40,7 @@ fieldName : Field -> String
 filterMapRows : (List Pat -> Option (List Pat)) -> List (List Pat) -> List (List Pat)
 findRecField : String -> List RecPatField -> Option (Option Pat)
 firstMissing : List String -> List String -> Option String
-firstSeenNames : List (String, (List Pat, Expr)) -> List String -> List String
+firstSeenNames : List (String, (List Pat, Expr)) -> Map String Unit -> List String
 firstWitnessBranch : Oracle -> List String -> List (List Pat) -> Int -> Option (List Pat)
 funClauseBinds : FunClause -> List LetBind
 funClauseToClause : FunClause -> (List Pat, Expr)
