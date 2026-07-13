@@ -780,12 +780,18 @@ concatExpr = chainl1 atom concatOp
 concatOp : Parser (SqlExpr -> SqlExpr -> SqlExpr)
 concatOp = do
   _ <- symbol "||"
-  pure EConcat
+  -- WORKAROUND(B1w): eta-expanded, NOT bare `EConcat`. The partially-applied-
+  -- constructor miscompile was fixed in the LLVM backend (main `ced6342d`) but
+  -- NOT in the WasmGC one — point-free here makes `--target wasm` fail to emit.
+  -- Revert only when B1 is fixed in BOTH backends.
+  pure (l r => EConcat l r)
 
 arithTok : String -> ArithOp -> Parser (SqlExpr -> SqlExpr -> SqlExpr)
 arithTok s op = do
   _ <- symbol s
-  pure (EArith op)
+  -- WORKAROUND(B1w): eta-expanded, NOT bare `EArith op`. See above — native is
+  -- fixed, WasmGC is not. Revert only when B1 is fixed in BOTH backends.
+  pure (l r => EArith op l r)
 
 -- An atom: a parenthesized expression, a literal, a unary minus, a CASE
 -- expression, an aggregate call, a scalar function call, or a column.

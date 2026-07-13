@@ -15,9 +15,13 @@
 > **When something reports FIXED: mark it closed here, and move its repro into a real regression
 > fixture so it stays closed.**
 >
-> Snapshot: **9 open, 1 fixed.** ✅ **B1 was FIXED on `main` (`ced6342d`) while this branch was in
-> flight** — the script detected it with no bookkeeping from anyone, and its workaround-list pointed
-> at the two sites to revert (done). That is the intended lifecycle; keep using it.
+> Snapshot: **10 open, 1 fixed (B1 on LLVM only).**
+>
+> ⚠️ **B1 is a cautionary tale about "fixed".** `main`'s `ced6342d` fixed the partially-applied-
+> constructor miscompile **in the LLVM emitter and NOT in the WasmGC one.** The script said FIXED, I
+> reverted the workaround — and the **wasm tandem gate caught it**: the library no longer emitted to
+> wasm. The workaround is restored, retagged `B1w`, and the script now checks **both backends**.
+> **A one-backend fix is a half fix. Always check both.**
 
 Consolidated from the per-agent findings files in this directory. **Every item marked ✅ VERIFIED
 was reproduced by the orchestrator on the binary**, independently of the agent that reported it —
@@ -43,7 +47,7 @@ no longer exists, which is how workarounds quietly become permanent architecture
 
 | bug | site | what to do when it closes |
 |-----|------|---------------------------|
-| ~~**B1**~~ | ~~`sqlite/lib/sqlparse.mdk` (×2)~~ | ✅ **DONE** — bug fixed on `main` (`ced6342d`); eta-expansions reverted to point-free `EConcat` / `EArith op`, re-verified under native `build`. |
+| **B1w** | `sqlite/lib/sqlparse.mdk` (×2) | ⚠️ **STILL NEEDED — for WasmGC only.** `main`'s `ced6342d` fixed this in the LLVM emitter; the **WasmGC emitter still fails to emit** a partially-applied constructor. Revert the eta-expansions only when B1 is fixed in **both** backends. |
 | **B2** | `sqlite/lib/aggregate.mdk` | `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
 | **B5** | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | `Eq` is hand-written for `Literal` and `Cell` because `deriving (Eq)` over their `Array` field can't be built. Replace with `deriving (Eq)` — and drop the `-- lint-disable-next-line rule-hand-rolled-derivable` that silences the linter's (currently wrong) advice. |
 | **MUT** | `sqlite/lib/btree.mdk` | The overflow gather uses pure `slice`+`concat` instead of `arrayMake`+`blit`, costing **O(chunks × bytes)** instead of O(bytes). Restore the mutable gather inside a `mut` block. |

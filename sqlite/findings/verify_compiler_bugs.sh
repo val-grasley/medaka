@@ -46,10 +46,18 @@ main = println (describe (apply2 (Bin OAdd) (Num 1) (Num 2)))
 EOF
 if "$MEDAKA" build "$TMP/b1.mdk" -o "$TMP/b1" >/dev/null 2>&1; then
   got="$("$TMP/b1" 2>&1)"
-  [ "$got" = "add 1 2" ] && report B1 FIXED "PAP constructor builds correctly" \
+  [ "$got" = "add 1 2" ] && report B1 FIXED "PAP constructor builds correctly (LLVM)" \
                          || report B1 OPEN  "PAP ctor -> build printed '$got' (want 'add 1 2')"
 else
   report B1 OPEN "PAP ctor -> build failed outright"
+fi
+# B1w: the SAME bug on the OTHER backend. main's ced6342d fixed the LLVM emitter
+# and did NOT reach the WasmGC one — so "B1 is fixed" was true and misleading.
+# ALWAYS check both backends; a one-backend fix is a half fix.
+if "$MEDAKA" build --target wasm "$TMP/b1.mdk" -o "$TMP/b1.wat" >/dev/null 2>&1; then
+  report B1w FIXED "PAP constructor emits under --target wasm too"
+else
+  report B1w OPEN "PAP ctor -> WasmGC emitter still fails (LLVM is fixed; the fix did not reach wasm)"
 fi
 
 # --- B2: cross-module record update writes the wrong slot -------------------
