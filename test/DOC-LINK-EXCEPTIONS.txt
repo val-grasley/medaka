@@ -1,12 +1,38 @@
 # test/DOC-LINK-EXCEPTIONS.txt — checked-in ledger of every KNOWN dead doc
 # reference. Read test/check_doc_links.sh first.
 #
-# This is a RATCHET, not a skip-list: test/check_doc_links.sh FAILS if an
-# entry here refers to a path that NOW EXISTS (REF) or a citing file that NO
-# LONGER EXISTS (FILE, non-glob) — the maintainer must delete that line. A
-# ledger nobody re-checks is how test/ported/ and diff_compiler_lint_multi
-# sat silently skipped-and-failing for months; this file cannot do that,
-# because the gate re-verifies every line on every run.
+# This is a RATCHET, not a skip-list. Every line must ACTIVELY EARN ITS PLACE
+# on every run: the path is still dead AND something still cites it. When
+# either half stops being true, the gate FAILS and the line must be deleted.
+# test/check_doc_links.sh enforces all four ways a line can stop earning it:
+#
+#   1. STALE REF   — the excused path NOW EXISTS. The reference is no longer
+#                    dead; leaving the line in would hide a FUTURE regression
+#                    at that same path forever.
+#   2. ORPHAN REF  — NO DOCUMENT CITES that path anymore. This is the other
+#                    half of "no longer needed", and it is the half a naive
+#                    skip-list misses. It has already bitten: a docs-cleanup PR
+#                    fixed the add-language-feature skill by REMOVING its
+#                    citation of test/diff_compiler_roundtrip.sh. The file still
+#                    did not exist, so check 1 stayed silent — yet this ledger
+#                    still carried a line whose reason said "cited by the live
+#                    add-language-feature skill". That reason had become a LIE,
+#                    and nothing would ever have reported it. As the docs-cleanup
+#                    work drains these paths, EVERY drained entry would rot into
+#                    a silent orphan and most of this file would become fiction.
+#   3. STALE FILE  — the excused doc no longer exists.
+#   4. ORPHAN FILE — the excused doc no longer has a SINGLE dead reference, so
+#                    the blanket excuse is dead weight — and would silently
+#                    excuse any FUTURE rot in that file.
+#
+# A ledger nobody re-checks is how test/ported/ and diff_compiler_lint_multi sat
+# silently skipped-and-failing for months; this file cannot do that, because the
+# gate re-verifies every line on every run.
+#
+# NOTE: a gate that has to excuse its OWN false positives is a gate with a
+# parsing bug. Link targets containing a raw space (DICT-SEMANTICS.md math
+# notation) and ellipsis-elided paths (`compiler/.../resolve.mdk`) are therefore
+# dropped at EXTRACTION in check_doc_links.sh — not carried as exceptions here.
 #
 # Format (TAB-separated; blank lines and '#' comments ignored):
 #   KIND<TAB>pattern<TAB>reason
@@ -32,20 +58,25 @@
 # REAL bug — a stale path from the compiler subfolder restructure (or a
 # comparable rename/removal) sitting in a doc that is still current and
 # should say the right thing. Any other reason marks genuine, permanent
-# history (or a gate-extraction false positive that isn't a doc bug at all).
+# history.
 #
-# ── Split, as of the seeding pass (2026-07-13) ──────────────────────────────
+# ── Split, re-derived against main @ 3fdd93bb (PRs #8/#10/#12 merged) ────────
 #   13 FILE exceptions — all point-in-time records (closed audits/plans,
-#       dated logs, the bootstrap narrative, the two archive/ docs, and
-#       PLAN-ARCHIVE.md). Legitimate history; not counted as debt.
-#    3 REF exceptions  — gate-extraction false positives (a placeholder
-#       filename in an illustrative example, and math notation in
-#       DICT-SEMANTICS.md that happens to look like `](...)`). Not doc bugs.
-#   30 REF exceptions  — TODO(docs-cleanup): real stale paths in LIVING docs.
+#       dated logs, the bootstrap narrative, archive/*, PLAN-ARCHIVE.md).
+#       Legitimate history; not counted as debt. All 13 still earn their place.
+#    1 REF exception   — compiler/foo.mdk, a deliberately fictional filename in
+#       AGENTS.md's own worktree-gotcha example. Not a doc bug.
+#   27 REF exceptions  — TODO(docs-cleanup): real stale paths in LIVING docs.
 #       This is the punch list: mostly the compiler/*.mdk -> subfolder move
 #       (compiler/typecheck.mdk -> compiler/types/typecheck.mdk etc.), plus a
 #       few from the OCaml removal (lib/eval.ml) and the retired bytecode
 #       stage/gates.
+#
+#   DRAINED by the orphan check when re-derived against merged main (5 lines,
+#   all deleted — no longer cited by anything, so no longer earning a place):
+#     compiler/frontend/printer.mdk · test/diff_compiler_roundtrip.sh
+#     compiler/.../resolve.mdk · D's args · D ā_C   (last three: now dropped at
+#     extraction as parser false positives, not excused)
 
 # ── FILE: point-in-time records (leave the paths as they were when written) ─
 FILE	PLAN-ARCHIVE.md	completed-Phase archive; narrates the compiler tree as it existed at each phase, including the pre-restructure flat compiler/*.mdk layout and the pre-removal lib/*.ml OCaml reference — rewriting its paths would make it describe a tree that never existed at the time
@@ -62,10 +93,8 @@ FILE	compiler/DISPATCH-INVENTORY.md	explicitly a GENERATED point-in-time report 
 FILE	compiler/DRIVER-COLLAPSE-PLAN.md	header: "STATUS: COMPLETE - all phases done 2026-06-13" — closed plan, historical
 FILE	compiler/MESSAGE-AUDIT.md	a read-only, point-in-time audit of user-facing message strings — historical grading record, not a living reference
 
-# ── REF: gate-extraction false positives (not doc bugs) ─────────────────────
+# ── REF: not a doc bug (a deliberately fictional example filename) ──────────
 REF	compiler/foo.mdk	AGENTS.md's own worktree-gotcha example uses "compiler/foo.mdk" as a deliberately fictional illustrative filename ("a relative `grep -n compiler/foo.mdk` runs there..."), not a real citation
-REF	D's args	DICT-SEMANTICS.md math notation `[T̄/ā_C](D's args)` — the tier-1 link regex sees "](D's args)" and mistakes it for a markdown link target; it is prose, not a link
-REF	D ā_C	DICT-SEMANTICS.md math notation `D ā_C ∈ super(C)` inside a fenced block that also contains a real "](...)"-shaped span elsewhere on the line; same false-positive class as "D's args" above
 
 # ── REF: TODO(docs-cleanup) — real stale paths in living docs ───────────────
 REF	compiler/ast.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/ast.mdk
@@ -74,7 +103,6 @@ REF	compiler/core_ir_sexp.mdk	TODO(docs-cleanup): stale path from the compiler s
 REF	compiler/desugar.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/desugar.mdk
 REF	compiler/eval.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/eval/eval.mdk
 REF	compiler/exhaust.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/exhaust.mdk
-REF	compiler/frontend/printer.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/tools/printer.mdk (moved to tools/, not frontend/)
 REF	compiler/llvm_emit.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/backend/llvm_emit.mdk
 REF	compiler/loader.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/driver/loader.mdk
 REF	compiler/marker.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/marker.mdk
@@ -82,7 +110,6 @@ REF	compiler/parser.mdk	TODO(docs-cleanup): stale path from the compiler subfold
 REF	compiler/private_mangle.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/backend/private_mangle.mdk
 REF	compiler/resolve.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/resolve.mdk
 REF	compiler/typecheck.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/types/typecheck.mdk
-REF	compiler/.../resolve.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure (ellipsis-elided pre-restructure form); means compiler/frontend/resolve.mdk
 REF	compiler/sexp.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/ir/sexp.mdk
 REF	compiler/ir/trmc.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; the TRMC analysis file is compiler/backend/trmc_analysis.mdk
 REF	compiler/bytecode.mdk	TODO(docs-cleanup): the bytecode pipeline stage was retired entirely (not renamed) — no successor file exists; the citing doc should say so or drop the reference
@@ -96,5 +123,4 @@ REF	test/diff_compiler_bytecode_selfproc.sh	TODO(docs-cleanup): gate for the ret
 REF	test/diff_compiler_eval_bytecode.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
 REF	test/diff_compiler_eval_bytecode_modules.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
 REF	test/diff_compiler_doc.sh	TODO(docs-cleanup): gate no longer exists under this name (test/doc_fixtures/ is still present; the runner that consumed it is gone or renamed)
-REF	test/diff_compiler_roundtrip.sh	TODO(docs-cleanup): renamed to test/diff_compiler_core_ir_roundtrip.sh; cited by the live add-language-feature skill, so an agent following it hits a dead command
 REF	test/diff_wasm.sh	TODO(docs-cleanup): moved to test/wasm/diff_wasm.sh — a within-doc inconsistency in compiler/WASMGC-DESIGN.md itself, which correctly says test/wasm/diff_wasm.sh three paragraphs later

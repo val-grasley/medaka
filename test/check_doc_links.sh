@@ -126,6 +126,18 @@ function handleLink(fname, lineno, target,    frag, dir) {
   if (target ~ /^https?:\/\//) return
   if (target ~ /^mailto:/) return
   if (target ~ /^#/) return
+  # A raw SPACE in a link target means this is not a link. Markdown requires a
+  # space to be %20-escaped or the target wrapped in <>, so a "](...)" span with
+  # a bare space is prose that merely LOOKS like a link — in this repo that is
+  # the math notation in DICT-SEMANTICS.md (two spans, both with a space). Excusing
+  # those in the exceptions file would be excusing a PARSING BUG; drop them here
+  # instead. (Verified against the corpus: these two spans are the ONLY
+  # space-bearing link targets, and nothing links to the three space-named
+  # docs/guide/ files, so this exclusion loses no real reference.)
+  if (target ~ /[ \t]/) return
+  # An ellipsis-elided path ("compiler/.../resolve.mdk") is prose shorthand for
+  # "somewhere under compiler/", not a citation of a real file. Same reasoning.
+  if (target ~ /\.\.\./) return
   frag = index(target, "#")
   if (frag > 0) target = substr(target, 1, frag - 1)
   if (match(target, /:[0-9]+$/)) target = substr(target, 1, RSTART - 1)
@@ -139,6 +151,8 @@ function handleLink(fname, lineno, target,    frag, dir) {
 }
 
 function handleBare(fname, lineno, target) {
+  # Same ellipsis rule as handleLink: "compiler/.../resolve.mdk" is prose.
+  if (target ~ /\.\.\./) return
   emit(fname, lineno, "BARE", target, target)
 }
 
@@ -244,21 +258,26 @@ fi
 N_EXC_FILE="$(wc -l < "$WORK/exc_file.tsv" | tr -d ' ')"
 N_EXC_REF="$(wc -l < "$WORK/exc_ref.tsv" | tr -d ' ')"
 
+# Every exception that actually excuses a real dead reference gets its key
+# recorded here. Anything in the ledger that never shows up in this file is an
+# ORPHAN — see step 5b.
+: > "$WORK/exc_hits.tsv"
+
 is_file_excused() {
-  # $1 = citing file path. Prints the reason and returns 0 if excused.
+  # $1 = citing file path. Prints "<pattern>\t<reason>" and returns 0 if excused.
   citing="$1"
   while IFS="$(printf '\t')" read -r pat reason; do
     [ -z "$pat" ] && continue
     case "$citing" in
-      $pat) printf '%s\n' "$reason"; return 0 ;;
+      $pat) printf '%s\t%s\n' "$pat" "$reason"; return 0 ;;
     esac
   done < "$WORK/exc_file.tsv"
   return 1
 }
 
 is_ref_excused() {
-  # $1 = resolved target path. Prints the reason and returns 0 if excused.
-  awk -F '\t' -v want="$1" '$1 == want { print $2; found=1; exit } END { exit !found }' "$WORK/exc_ref.tsv"
+  # $1 = resolved target path. Prints "<pattern>\t<reason>" and returns 0 if excused.
+  awk -F '\t' -v want="$1" '$1 == want { print $1 "\t" $2; found=1; exit } END { exit !found }' "$WORK/exc_ref.tsv"
 }
 
 # ── 4. Check every reference against disk, applying exceptions. ─────────────
@@ -272,15 +291,20 @@ while IFS="$(printf '\t')" read -r fname lineno kind target resolved; do
     LIVE=$((LIVE + 1))
     continue
   fi
-  reason=""
-  if reason="$(is_file_excused "$fname")"; then
-    :
-  elif reason="$(is_ref_excused "$resolved")"; then
-    :
+  hit=""
+  if hit="$(is_file_excused "$fname")"; then
+    hitkind=FILE
+  elif hit="$(is_ref_excused "$resolved")"; then
+    hitkind=REF
   else
-    reason=""
+    hit=""
   fi
-  if [ -n "$reason" ]; then
+  if [ -n "$hit" ]; then
+    # hit is "<pattern>\t<reason>"; record the key so step 5b can tell which
+    # ledger lines actually earned their place on THIS run.
+    hitpat="${hit%%	*}"
+    reason="${hit#*	}"
+    printf '%s\t%s\n' "$hitkind" "$hitpat" >> "$WORK/exc_hits.tsv"
     case "$reason" in
       TODO\(docs-cleanup\)*) EXCUSED_TODO=$((EXCUSED_TODO + 1)) ;;
       *)                     EXCUSED_HISTORY=$((EXCUSED_HISTORY + 1)) ;;
@@ -321,6 +345,50 @@ if [ -s "$WORK/exc_file.tsv" ]; then
     if [ ! -e "$pat" ]; then
       echo "FAIL: STALE FILE EXCEPTION — '$pat' no longer exists (reason on file: $reason)"
       echo "      Delete this line from $EXC — the doc it excused is gone."
+      STALE=$((STALE + 1))
+    fi
+  done < "$WORK/exc_file.tsv"
+fi
+
+# ── 5b. Ratchet, second half: an exception that excuses NOTHING is an ORPHAN. ─
+#
+# "The path now exists" is only HALF of "this exception is no longer needed".
+# The other half is "NO DOCUMENT CITES THAT PATH ANYMORE" — and without this
+# check the ledger cannot notice it. This has already bitten: a docs-cleanup PR
+# fixed the add-language-feature skill by REMOVING its citation of
+# test/diff_compiler_roundtrip.sh. The file still does not exist, so the
+# "now exists" check above stays silent — yet the ledger still carried a line
+# whose reason string said "cited by the live add-language-feature skill",
+# which had become a LIE that nothing would ever report.
+#
+# That is precisely the skip-list rot this ledger exists to prevent: as the
+# docs-cleanup work drains these paths, EVERY drained entry would become a
+# silent orphan and most of the ledger would end up fiction. So an exception
+# must ACTIVELY EARN ITS PLACE on every run: the path is still dead AND
+# something still cites it. When either stops being true, the line must go.
+if [ -s "$WORK/exc_ref.tsv" ]; then
+  while IFS="$(printf '\t')" read -r pat reason; do
+    [ -z "$pat" ] && continue
+    [ -e "$pat" ] && continue   # already reported as STALE above; don't double-report
+    if ! awk -F '\t' -v want="$pat" '$1 == "REF" && $2 == want { found=1; exit } END { exit !found }' "$WORK/exc_hits.tsv"; then
+      echo "FAIL: ORPHAN REF EXCEPTION — '$pat' is no longer cited by ANY document (reason on file: $reason)"
+      echo "      Delete this line from $EXC — nothing references that path anymore, so the"
+      echo "      exception excuses nothing and its reason string is now fiction."
+      STALE=$((STALE + 1))
+    fi
+  done < "$WORK/exc_ref.tsv"
+fi
+
+# The same principle applies to a whole-file exception: if the doc it names no
+# longer contains a SINGLE dead reference, the blanket excuse is dead weight —
+# and worse, it would silently keep excusing any FUTURE rot in that file.
+if [ -s "$WORK/exc_file.tsv" ]; then
+  while IFS="$(printf '\t')" read -r pat reason; do
+    [ -z "$pat" ] && continue
+    if ! awk -F '\t' -v want="$pat" '$1 == "FILE" && $2 == want { found=1; exit } END { exit !found }' "$WORK/exc_hits.tsv"; then
+      echo "FAIL: ORPHAN FILE EXCEPTION — '$pat' no longer has a single dead reference (reason on file: $reason)"
+      echo "      Delete this line from $EXC — the blanket excuse is unnecessary, and leaving it"
+      echo "      in place would silently excuse any FUTURE rot in that file."
       STALE=$((STALE + 1))
     fi
   done < "$WORK/exc_file.tsv"
