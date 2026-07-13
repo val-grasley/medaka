@@ -8,6 +8,35 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`compiler/README.md`](./compiler/README.md).
 
+## Current status (2026-07-13) — 🐛 bug-finding session: 2 SILENT MISCOMPILES closed/filed, and our green signal was covering only ~60% of the gates. `main` = `49d8d1d7`. ⚠️ SEED RE-MINT OWED
+
+**Read `.claude/HANDOFF.md`'s top RESUME block first — it has the full bug queue with repros.** Summary:
+
+**Shipped:** `#35` under-applied-constructor **silent miscompile** (both backends; `emitApp`'s ctor arm had no
+saturation check — the invariant its comment asserted was never enforced); `#18a` `++`→`Semigroup` (closed a
+build-path **SIGSEGV**); `#18c` unary `-`→`Num.negate` (`EUnOp` had no route field at all); `#24` tree-wide
+removed-construct gate; a test-corpus cleanup taking the non-globbed gates from 10 red → 3.
+
+**⭐ The structural finding:** `test/run_gates.sh` globs ONLY `diff_compiler_*`, so **~53 real correctness gates
+sit outside it — 10 were RED**, some for days. This drift has happened twice now. **Widening `run_gates` is the
+highest-leverage open task.**
+
+**⚠️ Seed:** `#35` changed the emitter graph → cold `bootstrap_from_seed` is RED (expected). Re-mint **deliberately
+deferred** — the parallel `testing-arc` session is rewriting `eval.mdk`/`core_ir_eval.mdk` and would invalidate it.
+Do ONE re-mint after both settle.
+
+**🐛 Open, all reproduce-verified + root-caused (see HANDOFF for repros):** `#38` record update writes the **wrong
+record's slot** (silent miscompile; the fix is signposted by `fieldIdxByName` sitting unused right above the bug) ·
+`#40` multi-module `run` **executes ill-typed programs** (constraint/missing-impl class only; exit code is 1 either
+way, which is what hid it) · `#42` **`floatToString` round-trip is broken** (`0.1+0.2` → `0.3`; `json.mdk` serializes
+through it) · `#39` a **regression** where `check` wrongly rejects a param shadowing a top-level fn · `#31` **`newtype`
+is entirely unusable** (one missing arm in `registerData`; ~zero blast radius — best value-to-risk item) · `#45` the
+Phase 83/84 arg-dispatch-index bug under `#18a`'s residual · plus `#41`/`#44`/`#37`/`#36`/`#46`/`#32`.
+
+**Parked (Val's call — bugs before new language surface):** `#18b` ranges→`Enum` (design LOCKED in
+`INTERFACE-CANDIDATES.md`) and `#17` bare slicing. Note `#17`'s rider — native/wasm slices are **not bounds-checked** —
+is a soundness item and should be split out into the bug queue.
+
 ## Current status (2026-07-04) — NEW NORTH STAR: 0.1.0 public preview release
 
 > **Picking up the distribution workstream? Read [`HANDOFF.md`](./HANDOFF.md) first**

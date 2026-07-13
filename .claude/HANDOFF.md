@@ -7,6 +7,114 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — 🐛 BUG-FINDING SESSION. 3 landings, but the REAL output is a filed bug queue + the discovery that our green signal covered only ~60% of the gates. `main` = `49d8d1d7`. ⚠️ SEED RE-MINT OWED. (2026-07-13)
+
+This session set out to do the `#18` operator-interface arc and ended up mostly finding bugs — several
+severe, all reproduced and root-caused, all filed as tasks with minimal repros. **Read the BUG QUEUE
+below before picking anything up; it is the payload.**
+
+### ⭐ DO-FIRST STATE
+- **`main` = `49d8d1d7`.** Globbed suite `run_gates` **78/0/1**; fixpoint **C3a YES / C3b YES**;
+  compiler source type-clean. Warm `make medaka` fine.
+- **⚠️ SEED RE-MINT IS OWED — cold `bootstrap_from_seed` is RED, and that is EXPECTED, not a break.**
+  `#35` changed the emitter graph (`llvm_emit.mdk` + `wasm_emit.mdk`). I verified cold bootstrap fails.
+  **The re-mint was DELIBERATELY DEFERRED (Val's call)** because the parallel `testing-arc` session is
+  concurrently rewriting `eval.mdk`/`core_ir_eval.mdk`, which would invalidate a re-mint immediately.
+  **Do ONE re-mint after BOTH settle** (`sh test/refresh_seed.sh`, then verify `bash test/bootstrap_from_seed.sh` C3a PASS).
+- **⚠️ TWO ORCHESTRATOR FOOTGUNS BIT ME AT ONCE while verifying `#35` — I nearly rejected a CORRECT fix.**
+  (1) A `cd /root/medaka && …` chain meant my "sync the worktree" step ran in the **primary checkout**, so I
+  rebuilt+tested against **pre-merge source**. Use `git -C <abs-worktree>` for every step. (2) `medaka build`
+  shells out to `./medaka_emitter`, and `make medaka`'s `find -newer` short-circuit can leave that binary NOT
+  carrying a compiler-graph change → **`FORCE_EMITTER_REBUILD=1 make medaka`** when verifying emitter work.
+  **Before blaming an agent for a red repro, confirm the fix is even IN the source you compiled** (`grep` for
+  its new symbol).
+
+### ⭐⭐ THE BIGGEST FINDING — "the tree is green" was measuring ~60% of the tree
+**`test/run_gates.sh` globs ONLY `test/diff_compiler_*.sh`** (`pat="${1:-diff_compiler_*}"`). A read-only audit
+found **~53 real correctness gates OUTSIDE that glob — 10 of them RED**, some for days, unnoticed. This drift has
+now happened TWICE (fixed once by `121ee5147` on 2026-07-07, back 6 days later after the Index arc).
+- **Cleaned up this session (10 red → 3):** `diff_native_cli` 48/107 → **107/0**; `bootstrap_{desugar,mark,typecheck}` → green;
+  `build_cmd` → green; two sqlite oracle scripts that `mv`'d a file **onto itself** and died before running a single
+  test → fixed, both pass.
+- **STILL RED (all filed):** the 4 wasm Index-arc fixtures (`w7_array_*`, real backend gap), `disp_hof_shadows_method`
+  (**a real typecheck REGRESSION**, task #39), and `build_construct_coverage`'s stale `let_else` fixture.
+- **➡️ HIGHEST-LEVERAGE STRUCTURAL TASK: widen `run_gates`** (task in the list) so this stops recurring. The auditor's
+  recommendation (endorsed): don't rename these into `diff_compiler_*` — add a second explicit manifest. Two footguns
+  for whoever does it: the sqlite scripts need **`bash`** (not `sh`) and `MEDAKA_ROOT` exported from the repo root.
+
+### ✅ SHIPPED (all merged, gated, fixpoint YES)
+- **`#35` — ⚠️ SILENT MISCOMPILE, under-applied data constructor** (`d1bbfdcb`). `mkAdd = Bin OAdd` (arity 3, 1 arg),
+  saturated later → `run` correct, `build` produced a **malformed cell** (`E-NONEXHAUSTIVE-MATCH`). Root: `emitApp`'s ctor
+  arm called `emitCtorAlloc` with **no saturation check**, allocating a cell from however many args were present. The comment
+  at `llvm_emit.mdk:5320` *asserted* the invariant ("emitApp only builds the cell when the ctor is SATURATED") and it was
+  never enforced. Fixed in BOTH backends via `emitCtorApp` (saturated → unchanged/byte-identical; under → ctor PAP; over →
+  `mdk_apply`). **The wasm bug was LOUDER than filed** — not a miscompile but a module that **fails to validate**.
+- **`#18a` — `++` → `Semigroup`** (`5fff0680`). Closed a **build-path SIGSEGV** (the native `++` primitive was
+  memory-unsafe on a non-List/String operand). `++` on a no-`Semigroup` type now rejects at check. `typecheck.mdk`-only:
+  the dict-pass layer rewrites a stamped `EBinOp` → `EMethodAt` **upstream of Core IR**, so eval/LLVM/wasm needed nothing.
+- **`#18c` — unary `-` → `Num.negate`** (`49d8d1d7`). `EUnOp` had **no `Ref Route` field at all**; added one and threaded
+  it through 16 files. `-v` on a user `impl Num` now dispatches to their `negate`; `-s` on a String rejects.
+- **`#24` — tree-wide removed-construct gate** (`d710a226`): `test/check_removed_constructs.sh`. Verified it catches all 7
+  removed constructs and has **0 false positives across 1659 files**. NOT yet enrolled as a ratchet (2 findings open).
+- **Test-corpus cleanup** (`431d4072`): ~66 stale goldens recaptured. Verified by tallying EVERY changed line — 57×`+index`,
+  57×`+setIndex`, 1 orphaned `btick`. Nothing blessed.
+
+### 🐛 THE BUG QUEUE — reproduce-verified, root-caused, ranked by severity
+All have minimal repros in their task descriptions. **The two silent miscompiles are the reason I recommended bugs-before-features.**
+1. **`#38` ⚠️ SILENT MISCOMPILE — record update writes the WRONG record's slot.** Two record types sharing a field name at
+   different slot indices + a `{ r | f = v }` site on each → `build` writes the wrong slot AND tags the cell as the wrong type.
+   `run` correct. Root: `emitRecordUpdate` (`llvm_emit.mdk:~7996`) finds the record **by searching for the first type having a
+   field of that name** (`findRecordByLabel`) — bare-name first-wins, the P0-9 hazard again. **The fix is signposted:**
+   `fieldIdxByName(table, recName, label)` sits directly above and resolves correctly *given a record name*, and the sibling
+   `emitVariantUpdate` takes its ctor name explicitly. `CRecordUpdate` just doesn't carry the receiver type. Check wasm too.
+2. **`#40` ⚠️ multi-module `run` does not gate on CONSTRAINT/missing-impl errors — it EXECUTES the ill-typed program.**
+   Exact repro filed by another session at `sqlite/findings/repro_multimodule_run_typecheck_gap/` (`0ba2a1f7`, `sqlite-arc`).
+   **Three traps that hid it (I initially declared it NOT-REPRODUCIBLE and was WRONG):** must be multi-module (single-file
+   gates correctly); must be a **constraint/missing-impl** error (a plain `Type mismatch` IS gated); and **the exit code is 1
+   either way** — `run` still exits nonzero, just for the wrong reason (unrelated runtime panic). Any "does run reject this?"
+   probe answers yes. Assert on the DIAGNOSTIC and on whether the program EXECUTED.
+3. **`#42` ⚠️ `floatToString` truncates to ~12 sig digits — Float print/parse ROUND-TRIP IS BROKEN.** `0.1 + 0.2` prints as
+   `0.3`, not `0.30000000000000004`. Not cosmetics: **`stdlib/json.mdk` serializes Floats through this**, so it's a data-corruption
+   path. Needs shortest-round-trip (Ryu/Grisu). Adjacent known gap: scientific-notation float literals are REJECTED (`1e308` →
+   `Unbound variable: e308`) — if you can't print full precision AND can't parse scientific notation, Float isn't usable for data.
+4. **`#39` REGRESSION — `check` wrongly REJECTS a valid program** where a fn PARAMETER shadows a same-named top-level fn
+   (`applyEq eq x y = eq x y`). My hypothesis (BISECT, don't trust it): the **P0-19 shadow work over-firing on a local binder**,
+   NOT the Index arc as the audit guessed. ⚠️ Do NOT fix by weakening P0-19 — it closed two silent-build-garbage holes.
+5. **`#31` `newtype` is ENTIRELY UNUSABLE** — `newtype F = F Int; F 5` → `Unbound variable: F` on check/run/build. It's
+   DOCUMENTED in SYNTAX.md, and the trim removed named impls on the rationale that "newtype-wrappers are the accepted answer".
+   **One missing arm:** `registerData` (`typecheck.mdk:5587`) handles `DData`/`DTypeAlias` and drops `DNewtype` on its catch-all.
+   Everything else in the pipeline already handles `DNewtype`. **Blast radius ~ZERO** (0 uses in `compiler/`+`stdlib/`). Closes 9
+   trimmed test cases + un-skips the parked `newtype_ctor_fn` fixture. **Best value-to-risk item on the board.**
+6. **`#45`** the REAL bug under `#18a`'s regression: **arg-dispatch indices are not re-offset when impl-`requires` dict params
+   are prepended** (Phase 83/84). Consequence: `++`/`-` on an impl's abstract `requires` tyvar stay on the structural builtin
+   (so a user-Monoid `foldMap` still panics — a residual, NOT a regression). Also contains a SECOND latent bug **proven on
+   pristine main**: `binop_parametric_eq` passes only because it's a single-method impl.
+7. Cheaper bites: **`#41`** `run` discards buffered stdout on panic (build flushes) — vicious debugging footgun;
+   **`#44`** doctest extractor eats a Markdown blockquote (the marker IS `>`) → unlocated panic kills EVERY doctest in the file
+   (silently disabled all of `rowtype.mdk`'s for months); **`#37`** derived `Debug` doesn't parenthesize nested ctor args
+   (`B L 1 B L 2 L 3`) so it can't be a tree oracle; **`#36`** parse error in an IMPORTED module reports unlocated;
+   **`#46`** ⚠️ **`capture_goldens.sh` (full run) silently BLANKS a golden** — the tool we use to establish ground truth
+   destroys it; **`#32`** `EVariantUpdate` missing from eval's dispatcher (one arm; helpers already exist).
+
+### 🔀 MERGE TRIAGE — other live sessions (check before you branch)
+- **`testing-arc` OWNS task `#43`** (`exit` unbound under `run`) — and found the whole class: a **37-extern interpreter gap**,
+  plus a capability-coverage gate to prevent recurrence. **Do not spawn that.** It is rewriting `eval.mdk`/`core_ir_eval.mdk`
+  structurally (`data Value e`, "medaka run can do IO"). ⚠️ **`#18c` touched `eval.mdk`** (a mechanical `EUnOp` passthrough arm)
+  — expect a merge conflict there; it is small and mechanical.
+- **`sqlite-arc` is compiler-clean** (confined to `sqlite/` + `test/` + docs; its apparent `typecheck.mdk` diff is a
+  branch-base artifact). It merges clean. It is also the source of several bugs above — it's dogfooding, and it's working.
+
+### PROCESS LEARNINGS (new)
+- **A failed reproduction is NOT evidence of absence until you've checked your probe COULD have seen the bug.** I publicly told
+  Val his `#40` report was stale. It wasn't — my probe was blind to it (wrong error class + exit-code-based assertion). New
+  memory: `feedback_probe_the_diagnostic_not_the_exit_code`.
+- **The orchestrator must run the FULL suite before merging, not just the fast/decisive gates.** I merged `#18a` after the
+  fixpoint + behavioral probes were green, and the full suite then caught a real regression → had to revert main. Green-then-merge,
+  never merge-then-green.
+- **Cross-workstream collisions are invisible to agents.** `#18a` made `1 ++ 2` a (correct) check error, which broke a *layout*
+  fixture that used `++`-on-Int incidentally — and that fixture is only typechecked by a gate OUTSIDE the `run_gates` glob. Neither
+  the agent nor `run_gates` could have caught it. The orchestrator is the only one who can see across.
+
 ## MERGE — 🔀 local Index-arc main ⨝ origin (Netcup move + #35 close). (2026-07-13, last macOS session's final act)
 
 Synced the macOS work laptop's local `main` (the Index arc #16, below) with `origin/main` (the Netcup-box work: the machine move + #35 close, next section). **Disjoint changes** — the sole textual conflict was this file (two RESUME logs). Post-merge reconciliation:
