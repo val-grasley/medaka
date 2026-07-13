@@ -1,5 +1,40 @@
 # Next-orchestrator handoff — Medaka, WasmGC backend + soak (2026-06-19)
 
+## RESUME — 🗄️ THE SQLITE LIBRARY NOW SPEAKS SQL + the dogfood flushed 10 compiler bugs (2 P0 silent miscompiles, 1 P0 `fmt` corrupting source). Branch `sqlite-arc`, merged to main. (2026-07-13)
+
+Ran the **SQLite workstream** in parallel with a compiler orchestrator (they owned `compiler/`, I owned `sqlite/` + docs). Everything was **pure-library**, so no fixpoint / seed re-mint was ever owed. All five sub-agents ran in isolated worktrees, each independently gated + merged.
+
+### ⭐ DO-FIRST
+- **`bash sqlite/findings/verify_compiler_bugs.sh` — the bug list is SELF-CHECKING.** It re-runs every repro against the current `./medaka`, prints OPEN/FIXED per bug, **and prints the `WORKAROUND(id)` sites in the library to revert when one closes**. Do NOT trust the prose in `COMPILE R-BUGS.md`; run the script. It already caught B1 being fixed upstream mid-session (`ced6342d`), and I reverted that workaround.
+- **⚠️ B10 is a live footgun: `medaka fmt --write` DESTROYS SOURCE.** A float literal ≥ 1e15 is rewritten to scientific notation that **the lexer cannot read back** (it rejects every exponent form). `fmt --check` runs in the **pre-commit hook**, so the hook tells you to run the command that corrupts your file. Latent only because no committed `.mdk` currently holds such a literal. **AGENTS.md's "fmt is safe, 0 corruptions repo-wide" is a claim about the CORPUS, not the tool.**
+- **The whole test suite is blind to build-only bugs — every doctest runs under the interpreter.** The SQL parser shipped 32/32 green doctests while *every arithmetic operator in its grammar* was silently miscompiled in the native binary. **A differential `run`-vs-`build` gate over the existing doctest corpus would have caught 4 of these 10 for free.** Strongly recommended.
+
+### WHAT SHIPPED (all merged; 22/0 native oracles vs the real `sqlite3` CLI, 11/0 WasmGC tandem)
+`medaka run sqlite/main.mdk db.sqlite "<any SQL>"` now creates, queries and mutates a real `.sqlite` that `sqlite3` validates (`integrity_check=ok`) and reads back byte-identically.
+- **SQL front end** — `sqlparse.mdk` (expressions; built on the `parsec` dogfood lib via a cross-project dep) → `sqlstmt.mdk` (SELECT/INSERT/UPDATE/DELETE/CREATE TABLE) → `sqlexec.mdk` + `schemadef.mdk` → `main.mdk` CLI. Unsupported SQL = clean `Err`, **never a silently dropped clause**.
+- **Query engine UNIFIED** (the big design fix): `Select` + `AggQuery` were two disjoint ADTs/executors — no aggregates over joins, no ORDER BY/LIMIT on aggregates, and aggregates were smuggled as **fake column names** (`eCountStar = ECol "count(*)"`). Now one `Select`, one executor, real pipeline, genuine `EAgg` node. Dissolved the "ORDER BY can't reference a computed column" limitation for free. `AggQuery` kept as a shim → every prior oracle passed untouched.
+- **Overflow pages read+write.** Reads were **silently corrupting** payloads past the local/overflow boundary (correct length, wrong bytes — the "out of scope" comments were stale, and my own spot-check was too coarse to see it; an agent's byte-level `cmp` caught it). Removed the **mutate wall**: UPDATE/DELETE rewrite the whole file, so one >4 KB row used to make *every* mutation on that table fail.
+- **Expression surface**: `||`, `LIKE`, `IN`, `BETWEEN`, `CASE`, `COALESCE`/`IFNULL`, `TRUE`/`FALSE`, scalar string fns — NULL semantics pinned against `sqlite3` (120 SQL strings, 0 diffs).
+
+### 🐛 THE DOGFOOD YIELD → `sqlite/findings/COMPILER-BUGS.md` (10 bugs; 1 already closed)
+2 P0 **silent** build miscompiles (partially-applied constructor — **FIXED upstream**; cross-module record **update** writing the wrong slot — OPEN), P0 `fmt` source corruption, `check`-accepts/`build`-rejects (`deriving (Eq)` over an `Array` field — and **`lint` recommends the unbuildable program**), multi-module `run` not gating type errors (**exit code is 1 either way**, so exit-code tests miss it), `run` dropping stdout on panic, `exit` unbound under `run`, `Float` unable to round-trip through display (**`0.1 + 0.2` prints `0.3`**), and `medaka test` treating a Markdown blockquote as a doctest — which had **silently disabled every doctest in `rowtype.mdk` for months**.
+
+Also found **in our own engine** by feeding real SQL text to both engines: `compilePred` evaluated SQL's 3-valued logic as 2-valued — accidentally right under a top-level WHERE, **wrong under `NOT`**. Every prior oracle hand-built its query as an ADT, so none had ever put a `NOT` over a nullable column.
+
+### 🧠 LANGUAGE DESIGN: `<Mut>` effect masking → `MUT-SCOPING-DESIGN.md` (decision-ready, surfaced in PLAN.md)
+Two independent authors hit the same wall: `<Mut>` is contagious, so a pure fn can't use a local mutable buffer (allocate→fill→freeze is unavailable to pure code). Cost: a duplicated stdlib encoder + an O(chunks×bytes) gather. **The classification question turns out to be settled, and the answer is NEITHER capability NOR purity tracker:** `check_policy.mdk:588` drops `Mut` from the manifest, AND a **pure-TYPED function observably returns two answers across a mutation** (alloc + reads are pure). It's a *writer-discipline marker*. `stdlib/runtime.mdk:190` already ships two **unchecked trusted masks** with a comment naming the missing feature ("Medaka has no effect masking"). Recommends a `mut` block (trusted, with a perimeter check) — and records the tempting `runMut`-no-`Ref`-in-result proposal **with the 3 counterexamples that kill it** (all reproduced on the binary).
+
+### ENV / PROCESS
+- **`sqlite3` and `wasm-tools` were MISSING from this box** — and both fail as *success*: the sqlite oracles die on the first CREATE TABLE, and every wasm gate prints "skipping" and **exits 0** (this was the standing "1 skip" in `run_gates` 78/0/1 — the WasmGC tandem gate had never actually run here). Both added to `ops/provision.sh`.
+- **Two sqlite oracles had NEVER been able to pass** (`update_expr`, `writer_api`): each `mv`'d a binary onto itself. 16/2 → 18/0. (main fixed these independently — same bug, same session.)
+- **Isolated agent worktrees are cut from `main`, NOT from your session branch.** Bake `git reset --hard <branch>` into STEP 0.
+- **Agents disproved the orchestrator twice** (my "overflow read works" was wrong; my `runMut` soundness argument was wrong). Both times the STOP-and-disprove instruction is what caught it. Keep it in every prompt.
+
+### OPEN (next session)
+Library: TEXT-operand arithmetic returns NULL where sqlite3 coerces (`'7'+1`=8 — a **wrong answer**); `rowid` pseudo-column unaddressable; `SELECT` with no `FROM`; then indexes / WITHOUT ROWID / b-tree balancing / transactions+WAL.
+Compiler: the 9 still-OPEN bugs (run the script).
+
+
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
 delegate work to subagents, verify their output against gates, and keep `main` + docs
