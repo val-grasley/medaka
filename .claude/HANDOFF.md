@@ -78,12 +78,20 @@ now happened TWICE (fixed once by `121ee5147` on 2026-07-07, back 6 days later a
   for whoever does it: the sqlite scripts need **`bash`** (not `sh`) and `MEDAKA_ROOT` exported from the repo root.
 
 ### ✅ SHIPPED (all merged, gated, fixpoint YES)
-- **`#35` — ⚠️ SILENT MISCOMPILE, under-applied data constructor** (`d1bbfdcb`). `mkAdd = Bin OAdd` (arity 3, 1 arg),
-  saturated later → `run` correct, `build` produced a **malformed cell** (`E-NONEXHAUSTIVE-MATCH`). Root: `emitApp`'s ctor
-  arm called `emitCtorAlloc` with **no saturation check**, allocating a cell from however many args were present. The comment
-  at `llvm_emit.mdk:5320` *asserted* the invariant ("emitApp only builds the cell when the ctor is SATURATED") and it was
-  never enforced. Fixed in BOTH backends via `emitCtorApp` (saturated → unchanged/byte-identical; under → ctor PAP; over →
-  `mdk_apply`). **The wasm bug was LOUDER than filed** — not a miscompile but a module that **fails to validate**.
+- **`#35` — ⚠️ SILENT MISCOMPILE, under-applied data constructor — ✅ LLVM FIXED / ❌ WASM STILL BROKEN (REOPENED)** (`d1bbfdcb`).
+  `mkAdd = Bin OAdd` (arity 3, 1 arg), saturated later → `run` correct, `build` produced a **malformed cell**
+  (`E-NONEXHAUSTIVE-MATCH`). Root: `emitApp`'s ctor arm called `emitCtorAlloc` with **no saturation check**, allocating a cell
+  from however many args were present. The comment at `llvm_emit.mdk:5320` *asserted* the invariant ("emitApp only builds the
+  cell when the ctor is SATURATED") and it was never enforced. Fixed via `emitCtorApp` (saturated → unchanged/byte-identical;
+  under → ctor PAP; over → `mdk_apply`). **LLVM half is verified good** (trigger matrix run==build, llvm 196/0, fixpoint YES).
+  **⚠️ THE WASM HALF DOES NOT WORK — see task `#35-wasm`.** `diff_wasm` is **147/5** on main and `ctor_pap_arity` fails
+  `wasm-tools validate` (`type mismatch: expected (ref eq), found i32`) — the exact pre-fix symptom. `emitCtorApp` IS present in
+  `wasm_emit.mdk`, so it's not a lost merge: either the agent measured a stale wasm oracle, or its assumption that "`emitAppTail`
+  routes back through `emitAppRef` so it's covered for free" is wrong. **Independently caught by the `sqlite-arc` session**
+  (`a26a1bef`), not by me.
+  **⭐ HOW I MISSED IT — the session's own lesson, self-inflicted: the wasm gates are OUTSIDE the `run_gates` glob**, so my
+  "78/0/1 green" never covered them and I merged on the agent's self-reported wasm numbers. **Re-run wasm gates yourself, with a
+  freshly-rebuilt wasm oracle** (it timed out once under CPU contention this session — a stale-oracle hazard).
 - **`#18a` — `++` → `Semigroup`** (`5fff0680`). Closed a **build-path SIGSEGV** (the native `++` primitive was
   memory-unsafe on a non-List/String operand). `++` on a no-`Semigroup` type now rejects at check. `typecheck.mdk`-only:
   the dict-pass layer rewrites a stamped `EBinOp` → `EMethodAt` **upstream of Core IR**, so eval/LLVM/wasm needed nothing.
