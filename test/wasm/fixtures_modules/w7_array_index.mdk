@@ -1,0 +1,5 @@
+-- W7/W9: an Array literal (array.new_fixed) + `.[i]`.  Since the #16b Index arc
+-- (09e23ece) `.[i]` desugars to the `Index` INTERFACE method `index`, so this needs
+-- the real prelude (`impl Index (Array a) Int a`) — hence the MODULES corpus, not the
+-- prelude-free W1-W7 one.  Exercises bounds-checked array read through real dispatch.
+main = [|10, 20, 30, 40|].[2]

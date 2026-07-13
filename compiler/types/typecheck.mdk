@@ -44,6 +44,7 @@ import frontend.ast.{
   UseMember(..),
 }
 import frontend.desugar.{mapProg}
+import frontend.marker.{localBoundNames}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
@@ -1287,6 +1288,17 @@ shadowStandaloneSchemesRef = Ref []
 shadowKeyTableRef : Ref (List KeyEntry)
 shadowKeyTableRef = Ref []
 
+-- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
+-- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
+-- mono).  Set by processSCC between preunifySigsEx (which instantiates the sigs) and
+-- inferMembers (which infers the bodies), cleared right after — funConstraintsRef /
+-- activeDictVars are only registered AFTER inference (they need the surviving
+-- union-find root), so the bodies themselves cannot ask those which of their tyvars
+-- are dict-bound.  Read by definerReceiverIsDictVar: a definer-shadow occurrence whose
+-- receiver is one of these vars DISPATCHES through the dict and is NOT a standalone.
+groupConstraintMonosRef : Ref (List (String, Mono))
+groupConstraintMonosRef = Ref []
+
 -- C5: method name → dispatch-arg index, built graph-wide from ALL interface decls
 -- (so a PRELUDE method like Foldable's `toList` — absent from a user module's own
 -- decls — still resolves its index during that module's check).  Set per module by
@@ -2215,6 +2227,7 @@ resetState _ =
   let _ = setRef dictAppFns omEmpty
   let _ = setRef promotedRef []
   let _ = setRef methodShadowNamesRef []
+  let _ = setRef groupConstraintMonosRef []
   let _ = setRef typeErrors []
   let _ = setRef typeErrorHelpFix []
   let _ = setRef matchWarningHelp []
@@ -4964,6 +4977,11 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- (`Int -> Int`), so a definer shadow whose impl is IMPORTED (`size (Box 3)`, d8)
   -- rejected `Int vs Box` at build/run instead of dispatching to the imported impl.
   let xt = infer env x
+  -- P0-19 (constrained-receiver arm): an ungrounded receiver that is a dict-bound
+  -- constraint var dispatches through that dict — it must neither be typed against the
+  -- standalone scheme nor stamped RLocal (which would send eval/emit to the standalone
+  -- and, e.g., apply `sz n = n + 1` to a Bool).
+  let isDictVar = definerReceiverIsDictVar name xt
   let dispatches = definerReceiverDispatches name xt
   let _ = setRef suppressRLocalRecord True
   let _ = setRef suppressArgStamp True
@@ -4996,7 +5014,12 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- build path).  xt grounds to the real receiver post-inference; the two default
   -- pushes (recordRLocalSite / recordArgStamp) that would carry the standalone's
   -- declared domain are suppressed above.
-  let _ = setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value)::pendingRLocalSites.value)
+  -- ...EXCEPT for a dict-bound constraint-var receiver: resolveRLocalSite's ungrounded
+  -- arm stamps RLocal unconditionally, which would route a genuine dict dispatch to the
+  -- shadowing standalone.  Not recording the site leaves the route for ordinary dispatch
+  -- (RNone → eval arg-tag / emit RKey via resolveArgStamps).
+  let _ = if isDictVar then ()
+    else setRef pendingRLocalSites ((name, tagRef, xt, routeLocalSym tagRef.value)::pendingRLocalSites.value)
   let _ = match argDispatchOf name
     Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value)::pendingArgStamps.value)
     None => ()
@@ -5020,7 +5043,61 @@ inferDefinerShadowApp env name tagRef implRef f x =
 definerReceiverDispatches : String -> Mono -> <Mut> Bool
 definerReceiverDispatches name xt = match headTyconMono xt
   Some head => implExistsForHead shadowKeyTableRef.value name head
-  None => False
+  None => definerReceiverIsDictVar name xt
+
+-- P0-19 (constrained-receiver arm): True iff an UNGROUNDED definer-shadow receiver is
+-- one of the ENCLOSING group's `=>`-constraint variables for the SHADOWED interface (or
+-- a superinterface of it).  Such an occurrence dispatches through that dict — it is a
+-- METHOD call, not the standalone — so it must be typed against the method scheme and
+-- must NOT have the standalone's declared domain imposed on it.
+--
+-- Without this, ANY constrained function that calls the method on its own dict-bound
+-- var, in a program where some top-level fn shadows that method's name, is silently
+-- monomorphised to the shadow's domain.  That includes the PRELUDE's own bodies: on the
+-- flat single-file path `prog` is core ++ user, so a user `eq : Int -> Int -> Int`
+-- made core's `neq : Eq a => a -> a -> Bool` (`neq x y = not (eq x y)`) infer `eq x y :
+-- Int` and reject with `Type mismatch: Bool vs Int` at the top of the user's file.
+definerReceiverIsDictVar : String -> Mono -> <Mut> Bool
+definerReceiverIsDictVar name xt = match normalize xt
+  TVar cell => match lookupAssoc name methodIfaceParamsRef.value
+    Some (mIface, _, _) => dictVarSatisfiesIface mIface (tyvarId cell) groupConstraintMonosRef.value
+    None => False
+  _ => False
+
+-- does any of the group's constraint vars BOTH normalize to tyvar [id] AND carry an
+-- interface whose (self + transitive supers) closure includes [mIface]?
+dictVarSatisfiesIface : String -> Int -> List (String, Mono) -> <Mut> Bool
+dictVarSatisfiesIface _ _ [] = False
+dictVarSatisfiesIface mIface id ((cIface, cm)::rest)
+  | monoIsTyvarId cm id && contains mIface (ifaceSelfAndSupers cIface) = True
+  | otherwise = dictVarSatisfiesIface mIface id rest
+
+monoIsTyvarId : Mono -> Int -> <Mut> Bool
+monoIsTyvarId m id = match normalize m
+  TVar cell => tyvarId cell == id
+  _ => False
+
+-- [iface] plus its transitive `requires` supers (a `Ord a =>` constraint also supplies
+-- the `Eq` dict).  Reads superDeclsRef, the program's interface decls; NOT gated on
+-- userIfaceNamesRef (unlike superSlotsOf, whose gate is about dict SLOTS, not about
+-- which interfaces a constraint satisfies) — a PRELUDE super chain satisfies the
+-- superinterface just as much, it is simply serviced by arg-tag dispatch.
+ifaceSelfAndSupers : String -> <Mut> List String
+ifaceSelfAndSupers iface = supersFix [iface] [iface]
+
+supersFix : List String -> List String -> <Mut> List String
+supersFix acc [] = acc
+supersFix acc frontier =
+  let next = removeAllS acc (dedup (flatMap directSupers frontier))
+  supersFix (acc ++ next) next
+
+directSupers : String -> <Mut> List String
+directSupers iface = match ifaceSupersOf superDeclsRef.value iface
+  None => []
+  Some (_, supers) => map superIfaceName supers
+
+superIfaceName : Super -> String
+superIfaceName (Super n _) = n
 
 -- P0-19: impose a definer-shadow standalone's declared domain on the actual argument
 -- [xt] WHEN the occurrence resolves to the standalone (RLocal): a grounded receiver
@@ -5038,7 +5115,11 @@ enforceStandaloneDomain _ name xt dloc = match standaloneShadowDomain name
         ()
       else
         unifyStandaloneDomain dom xt dloc
-    None => unifyStandaloneDomain dom xt dloc
+    -- P0-19 (constrained-receiver arm): an ungrounded receiver that is one of the
+    -- enclosing group's dict-bound constraint vars DISPATCHES — imposing the
+    -- standalone's domain on it would monomorphise the constrained signature.
+    None =>
+      if definerReceiverIsDictVar name xt then () else unifyStandaloneDomain dom xt dloc
 
 -- unify the standalone domain against the argument at the call's location.
 unifyStandaloneDomain : Mono -> Mono -> Option Loc -> <Mut> Unit
@@ -5115,7 +5196,13 @@ inferDefinerShadowVarApp env name f x =
         inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
       else
         inferDefinerStandaloneVarApp env name f x xt dloc
-    None => inferDefinerStandaloneVarApp env name f x xt dloc
+    -- P0-19 (constrained-receiver arm): an ungrounded receiver that is one of the
+    -- enclosing group's dict-bound constraint vars is a DISPATCH, not the standalone.
+    None =>
+      if definerReceiverIsDictVar name xt then
+        inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
+      else
+        inferDefinerStandaloneVarApp env name f x xt dloc
 
 -- P0-19 (d8 dispatch arm): the interface METHOD scheme for [name], from
 -- methodIfaceParamsRef (which spans imported interfaces) so per-receiver dispatch works
@@ -10642,7 +10729,13 @@ processSCC env sigs grouped members =
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
+  -- P0-19 (constrained-receiver arm): publish THIS group's `=>`-constraint vars for
+  -- the duration of body inference, so a definer-shadow method occurrence on one of
+  -- them (`neq x y = not (eq x y)` under `neq : Eq a => …`) is seen as a DISPATCH and
+  -- not monomorphised to the shadowing standalone's declared domain.
+  let _ = setRef groupConstraintMonosRef (flatMap snd regs)
   let _ = inferMembers env2 sigs grouped placeholders
+  let _ = setRef groupConstraintMonosRef []
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
@@ -11713,6 +11806,14 @@ buildStandaloneShadows implDecls prog =
 -- method scheme), since the impl bodies apply them to the concrete receiver.
 buildDefinerShadows : List Decl -> List Decl -> <Mut> List String
 buildDefinerShadows implDecls prog =
+  -- A method name that is ALSO bound by a LOCAL pattern anywhere in the module (a
+  -- clause/lambda param, a let/match binder) is NOT a definer shadow at that
+  -- occurrence: lexical scope resolves it to the local.  Without this guard the
+  -- definer-shadow application path (inferDefinerShadowVarApp / inferDefinerShadowApp)
+  -- types `applyEq eq x y = eq x y` — where `eq` is a PARAMETER — against the TOP-LEVEL
+  -- standalone `eq : Int -> Int -> Int`, ignoring the binder entirely.  Mirrors the
+  -- MARK pass's identical exclusion (marker.mdk's shadowRenames `keepNotIn
+  -- (localBoundNames prog)`), so check/run/build agree on which occurrences are shadows.
   let methodNames = allIfaceMethodNames implDecls
   let localNames = dedup (map fst (funDefs prog))
   let direct = filter (n => contains n methodNames) localNames
@@ -11723,7 +11824,7 @@ buildDefinerShadows implDecls prog =
   let bares = flatMap (n => match lookupAssoc n mangledShadowMapRef.value
     Some bare => [bare]
     None => []) localNames
-  dedup (direct ++ bares)
+  removeAllS (localBoundNames prog) (dedup (direct ++ bares))
 
 -- C5: graph-wide standalone-shadow names — every top-level funDef name in [userDecls]
 -- (the user modules, NOT core) that is also an interface method name anywhere in

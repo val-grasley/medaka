@@ -1,0 +1,18 @@
+-- P0-19 (constrained-receiver arm), PRELUDE half: merely DEFINING a top-level function
+-- whose name collides with a prelude interface method (`eq`) must not break the
+-- prelude's own constrained bodies.
+--
+-- On the flat check path the program is core ++ user, so core's constrained standalone
+-- `neq : Eq a => a -> a -> Bool` (`neq x y = not (eq x y)`) had its `eq` occurrence
+-- routed through the definer-shadow path: an UNGROUNDED receiver (`x : a`) was treated
+-- as the STANDALONE (P0-19 S5) and `enforceStandaloneDomain` unified `a := Int` against
+-- THIS file's `eq : Int -> Int -> Int` — so `not (eq x y)` became `not Int` and the whole
+-- program was rejected with `Type mismatch: Bool vs Int` pointed at line 1.  Defining a
+-- top-level `eq` (or `compare`) was simply impossible.  `a` is dict-bound by `Eq a =>`,
+-- so that occurrence DISPATCHES; it is not the standalone.
+--
+-- `neq 1 2` here proves the prelude's constrained body still dispatches correctly (True).
+eq : Int -> Int -> Int
+eq a b = a + b + 100
+
+main = println (neq 1 2)

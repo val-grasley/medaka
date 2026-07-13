@@ -1,2 +1,0 @@
--- W7: an Array literal + index (array.new_fixed + bounds-checked array.get).
-main = [|10, 20, 30, 40|].[2]
