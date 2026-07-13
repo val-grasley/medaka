@@ -248,7 +248,18 @@ trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk "$ROOT"/test/wasm/fixtures/*.mdk 2>/dev/null)"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
 
-JOBS="${JOBS:-4}"
+# Fan-out. NOTE this gate deliberately does NOT honour run_gates.sh's INNER_JOBS
+# (which it exports to every gate as $JOBS, default 3). Every other gate is a
+# cheap text diff; this one shells out to clang + node once per fixture across a
+# ~346-fixture corpus, so it is the suite's long pole by an order of magnitude
+# (~295s vs ~32s for all the others combined). Throttling it to 3 would make the
+# whole suite wait on it. Because it dominates, the other gates have all finished
+# within the first ~30s and it then runs essentially alone — so a wider pool costs
+# nothing in contention. Override with ENGINE_JOBS (e.g. ENGINE_JOBS=2 on a shared
+# or loaded box). Measured on 12 cores: JOBS=3 ~5min, 4 ~3.7min, 6 ~2.5min.
+NCPU="$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+JOBS="${ENGINE_JOBS:-$(( NCPU / 2 ))}"
+[ "${JOBS:-0}" -ge 2 ] 2>/dev/null || JOBS=2
 printf '%s\n' "$CORPUS" \
   | MEDAKA="$MEDAKA" EVALBIN="$EVALBIN" WASMBIN="$WASMBIN" RUNTIME="$RUNTIME" CORE="$CORE" \
     STDLIB="$STDLIB" RUNJS="$RUNJS" NODE="$NODE" TIMEOUT="$TIMEOUT" VERBOSE="${VERBOSE:-}" \
