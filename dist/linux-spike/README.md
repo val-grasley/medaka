@@ -1,7 +1,7 @@
 # dist/linux-spike — Linux native-build harness
 
 A Docker harness for driving the native-binary distribution workstream
-([`../../DISTRIBUTION-DESIGN.md`](../../DISTRIBUTION-DESIGN.md)) against a Linux
+([`../../DISTRIBUTION-DESIGN.md`](../../docs/ops/DISTRIBUTION-DESIGN.md)) against a Linux
 target from a macOS host. Built and validated during the D0 spike (2026-07-04).
 
 ## Quick start

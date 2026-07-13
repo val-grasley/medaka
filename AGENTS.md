@@ -729,12 +729,12 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 |-----|--------------|
 | `README.md` | Full build/test/CLI usage, editor setup, layout |
 | `docker/README.md` | The `scripts/docker-dev.sh` container workflow — run `make medaka` + the gate suite entirely in a Linux VM so the write storm never hits the host FS (escapes a host DLP/endpoint scanner's CPU spikes). Read before touching the Dockerfile/wrapper or adding node/wasm gates |
-| `SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `compiler/frontend/parser.mdk`. Ground truth over `language-design.md` when they disagree |
-| `LAYOUT-SEMANTICS.md` | Offside-rule layout spec — the formal ground truth for layout work. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug (§12.4). Start here for any layout investigation |
-| `language-design.md` | Language design & semantics (intent/rationale — may describe unimplemented features) |
+| `docs/spec/SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `compiler/frontend/parser.mdk`. Ground truth over `language-design.md` when they disagree |
+| `docs/spec/LAYOUT-SEMANTICS.md` | Offside-rule layout spec — the formal ground truth for layout work. A lexer-vs-spec divergence is a lexer bug; a SYNTAX.md/PLAN.md-vs-spec divergence is a doc bug (§12.4). Start here for any layout investigation |
+| `docs/spec/language-design.md` | Language design & semantics (intent/rationale — may describe unimplemented features) |
 | `PLAN.md` | Forward-looking roadmap (open phases) |
-| `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
-| `STDLIB.md` | Stdlib module plan |
+| `archive/PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
+| `docs/stdlib/STDLIB.md` | Stdlib module plan |
 | `stdlib/README.md` | Conventions for adding extern primitives |
 | `compiler/ERROR-QUALITY.md` | Error-message rubric + copy standard (dual human+LLM-agent audience; 7-dim grading). Read before writing/changing a diagnostic. Graded corpus + scores live in `test/error_quality_fixtures/{INVENTORY,GRADING}.md` |
 | `compiler/DIAGNOSTIC-CODES-DESIGN.md` | Stable diagnostic error-code taxonomy (per-stage `T-*`/`R-*`/`P-*`/`L-*`/`W-*`) + the `Diag` `code`/`kind`/`help`/`fix` JSON contract. Add new codes here |

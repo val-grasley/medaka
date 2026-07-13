@@ -121,7 +121,7 @@ no-ops on macOS):**
 **Bottom line: native build for Linux is CONFIRMED VIABLE for 0.1.0.** No
 structural surprise; the remaining work (§5 D1–D4) is mechanical + the bounded
 runtime-stack provisioning. Reusable harness committed at
-[`dist/linux-spike/`](./dist/linux-spike/) (`sh dist/linux-spike/run.sh spike`).
+[`dist/linux-spike/`](../../dist/linux-spike/) (`sh dist/linux-spike/run.sh spike`).
 
 ### 3a. Backtrace — the overflow is 100% the lexer (a TMC-able shape)
 

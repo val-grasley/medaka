@@ -13,9 +13,9 @@ remains: see the W1-W9 workstream table below; W6 (License) is now DONE, W7
 > binary distribution) lives in [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md).
 
 Owning memory: `project_release_0_1_0` (to be written). Companion docs:
-[`PLAYGROUND-DESIGN.md`](./PLAYGROUND-DESIGN.md) + [`PLAYGROUND-EDITOR-DESIGN.md`](./PLAYGROUND-EDITOR-DESIGN.md)
+[`PLAYGROUND-DESIGN.md`](../../archive/design/PLAYGROUND-DESIGN.md) + [`PLAYGROUND-EDITOR-DESIGN.md`](../../archive/design/PLAYGROUND-EDITOR-DESIGN.md)
 (the front door), [`DISTRIBUTION-DESIGN.md`](./DISTRIBUTION-DESIGN.md) (the download),
-[`compiler/ERROR-QUALITY.md`](./compiler/ERROR-QUALITY.md) (diagnostics, freeze-for-preview).
+[`compiler/ERROR-QUALITY.md`](../../compiler/ERROR-QUALITY.md) (diagnostics, freeze-for-preview).
 
 ---
 
@@ -125,7 +125,7 @@ Summary of what's known today (dependency audit done):
 ### W2 — Playground as the front door — 🟢 built, needs polish
 
 The playground already runs the compiler fully client-side (WasmGC, server-free;
-`playground/`, Stages 0–4 done per [`PLAYGROUND-DESIGN.md`](./PLAYGROUND-DESIGN.md)).
+`playground/`, Stages 0–4 done per [`PLAYGROUND-DESIGN.md`](../../archive/design/PLAYGROUND-DESIGN.md)).
 For 0.1.0 it must become a *nice* front door, not just a tech demo. Polish
 backlog (detail → `PLAYGROUND-DESIGN.md` / `PLAYGROUND-EDITOR-DESIGN.md`):
 - ✅ **Real editor — CodeMirror 6 (S1 highlighting + S2 inline squiggles) DONE 2026-07-04**

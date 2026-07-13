@@ -16,8 +16,8 @@ roadmap.
 
 > **Forward direction — capability stratification (decided 2026-06-06).** For the
 > multi-target future (general-purpose LLVM-native + WASM-edge; see
-> [`compiler/RUNTIME-DESIGN.md`](./compiler/RUNTIME-DESIGN.md) §6a and
-> [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md)), the stdlib will be
+> [`compiler/RUNTIME-DESIGN.md`](../../compiler/RUNTIME-DESIGN.md) §6a and
+> [`CAPABILITY-EFFECTS.md`](../design/CAPABILITY-EFFECTS.md)), the stdlib will be
 > **stratified** into a **pure core** (data structures, algorithms — capability-free,
 > byte-identical on every target) vs. **capability modules** (file IO, net, KV, time,
 > RNG — effect-labeled, present only where the target grants the capability).
@@ -1209,8 +1209,8 @@ which is what makes `impl Bimappable (,)` possible.
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
 
-*Companion to [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §3a and
-[`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md). Output of the Phase 146
+*Companion to [`CAPABILITY-EFFECTS.md`](../design/CAPABILITY-EFFECTS.md) §3a and
+[`CAPABILITY-PLATFORM.md`](../design/CAPABILITY-PLATFORM.md). Output of the Phase 146
 item 3 "design-only" audit.*
 
 The stdlib is partitioned into three tiers based on whether a function

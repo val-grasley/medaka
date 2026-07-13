@@ -6,7 +6,7 @@
 the current authoritative completion record (WS-1 through WS-4 done; WS-5 standing
 discipline open).
 
-Status: **substantially complete** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
+Status: **substantially complete** (Phase 146 in [`PLAN.md`](../../PLAN.md)). Effect
 *propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
 holes that made the manifest forgeable are closed for the open/closed AND
 closed-closed point-free cases (the latter via variance-aware covariant re-open),
@@ -17,8 +17,8 @@ and the **compiler mirror is done** (2026-06-06: full effect subsystem ported in
 mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. **Manifest
 emission shipped 2026-06-21** (`medaka check-policy` + parameter-level policy +
 `medaka manifest` TOML — WS-1a/1b/1c per `EFFECTS-CONFORMANCE-ROADMAP.md`).
-See **§5a (current state)** for the precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
-(effect rows as they exist today) and [`compiler/STAGE2-DESIGN.md`](./compiler/STAGE2-DESIGN.md)
+See **§5a (current state)** for the precise done/remaining split. Companion to [`language-design.md`](../spec/language-design.md)
+(effect rows as they exist today) and [`compiler/STAGE2-DESIGN.md`](../../compiler/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
 examples) is in [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md).
@@ -327,7 +327,7 @@ gradual-verification principle Medaka applies elsewhere.
 
 ## 6a. Parameterized effects (the pinned-domain / scoped-KV layer — Phase 146b)
 
-> **Superseded by [`CAPABILITY-EFFECTS-V2-DESIGN.md`](./CAPABILITY-EFFECTS-V2-DESIGN.md).**
+> **Superseded by [`CAPABILITY-EFFECTS-V2-DESIGN.md`](../../archive/design/CAPABILITY-EFFECTS-V2-DESIGN.md).**
 > The finite-set-lattice sketch below is the pre-v2 thinking; the settled shape is a
 > general refinement-domain representation (Prefix/Set/Product), IMPLEMENTED. Read
 > the v2 doc for current ground truth; this section is kept for the design history.

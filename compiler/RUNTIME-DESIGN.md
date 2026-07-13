@@ -323,7 +323,7 @@ NOT separate forked language variants. The ratified middle path:
   effect-labeled extern declarations bound per target — not a stdlib hardcoded into
   the compiler. The same effect-labeled extern (`fetch`, `readFile`) binds to a C
   function on native and a host import on WASM: same signature/semantics, different
-  glue. (This is the platform abstraction of [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)
+  glue. (This is the platform abstraction of [`../CAPABILITY-PLATFORM.md`](../docs/design/CAPABILITY-PLATFORM.md)
   viewed from the supply side — a platform *provides* capabilities; an effect row
   *declares* which are consumed.)
 - **Stdlib stratification — a discipline to adopt NOW.** Split the library into:
@@ -333,7 +333,7 @@ NOT separate forked language variants. The ratified middle path:
     only where the target provides the capability.
   Capability-bearing functions must be effect-labeled and live in capability
   modules, never the pure core. Retrofitting this is expensive — design it into the
-  first stdlib reorganization. (See `../STDLIB.md`.)
+  first stdlib reorganization. (See `../docs/stdlib/STDLIB.md`.)
 - **Targets are configurations, not forks.** "General-purpose Medaka" = all
   capabilities + LLVM-native. "WASM-edge Medaka" = the host-granted subset + WasmGC.
   Same frontend, type system, Core IR, and pure core.

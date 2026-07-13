@@ -1,6 +1,6 @@
 ---
 name: harden-typechecker
-description: Typechecker-internal correctness and diagnostics work in compiler/types/typecheck.mdk — add or refine a type error, tighten constraint/coherence/unification logic, or fix an over/under-generalization bug. Use for the PLAN-ARCHIVE.md Phase 62–72 hardening arc, or whenever the fix lives inside the type checker rather than threading new surface syntax.
+description: Typechecker-internal correctness and diagnostics work in compiler/types/typecheck.mdk — add or refine a type error, tighten constraint/coherence/unification logic, or fix an over/under-generalization bug. Use for the archive/PLAN-ARCHIVE.md Phase 62–72 hardening arc, or whenever the fix lives inside the type checker rather than threading new surface syntax.
 ---
 
 # Harden the typechecker
@@ -10,7 +10,7 @@ work is narrower than `add-language-feature` (no lexer/parser/AST changes): you
 are making the checker *reject more*, *diagnose better*, or *generalize
 correctly*, without disturbing the two invariants below.
 
-Read the relevant PLAN-ARCHIVE.md phase first — each entry has a **Where.**
+Read the relevant archive/PLAN-ARCHIVE.md phase first — each entry has a **Where.**
 section with approximate locations and a **Done when.** acceptance test. Those
 locations drift; **confirm every name with `grep` before trusting it.** (An
 earlier version of this skill carried ~19 symbol names that had not existed since

@@ -129,7 +129,7 @@ N_ALL="$(wc -l < "$WORK/all.txt" | tr -d ' ')"
 #                       installs ONLY this, which is what keeps its goldens
 #                       byte-identical.
 #   ioExternBindings  — the host-installed capability table (the "host is the
-#                       handler" seam, EFFECTS-SEMANTICS.md §7). `medaka run`
+#                       handler" seam, docs/spec/EFFECTS-SEMANTICS.md §7). `medaka run`
 #                       installs it; the oracle entries do not.
 # Any NEW table must be added here. The guard below is the backstop if one is
 # forgotten... but it only catches a total parse failure, not a missed table,

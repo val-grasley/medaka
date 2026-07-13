@@ -32,7 +32,7 @@ diff can still be a bad diff.
   code got better, or because someone blessed a regression?*
 - Error paths, empty inputs, and the boundary the change just moved.
 - A `norm()`/`sed` applied to BOTH sides of a comparison — that is a hole in the test, not
-  a normalization (see TESTING-DESIGN.md §4.5 Law 1: normalize the ACTUAL, never the
+  a normalization (see docs/ops/TESTING-DESIGN.md §4.5 Law 1: normalize the ACTUAL, never the
   expected). This exact pattern hid a float-literal blind spot for months.
 
 **2. Silent-skip / silent-green hazards** — this project's defining bug class

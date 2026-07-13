@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-command Linux native-build harness (Docker). Drives the D0-D4 distribution
-# work on a Linux target from a macOS (or Linux) host — see ../../DISTRIBUTION-DESIGN.md.
+# work on a Linux target from a macOS (or Linux) host — see ../../docs/ops/DISTRIBUTION-DESIGN.md.
 #
 # Usage:  sh run.sh [spike|experiment|bt]     (default: spike)
 #   spike       full pipeline: cold-bootstrap from seed -> medaka CLI -> medaka

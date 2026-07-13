@@ -175,7 +175,7 @@ Two ways to identify a constructor:
 1. **Syntactic — uppercase-initial head `EVar`** (above). Needs no env threading;
    `isNonexpansive : Expr -> Bool` keeps its signature, so all six call sites are
    untouched. Sound because Medaka constructors are *always* uppercase-initial and
-   functions/methods/values *always* lowercase (SYNTAX.md; confirmed: `MkBox`,
+   functions/methods/values *always* lowercase (docs/spec/SYNTAX.md; confirmed: `MkBox`,
    `Some`, `Ref` upper; `map`, `e` lower). **Recommended** — minimal, local.
 2. **Semantic — look the head name up in `TcEnv`'s ctor map** (`TcEnv` =
    `TcEnv (OrdMap Scheme) (OrdMap Scheme) …`, 2nd map is ctors, typecheck.mdk:2830).

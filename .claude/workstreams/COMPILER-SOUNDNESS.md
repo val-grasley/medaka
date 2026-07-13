@@ -57,7 +57,7 @@ Every entry point is gated on `singleParamIfaceMethod` — which, **despite its 
 interface TYPE PARAMS, not method params.** That name states the opposite of what it does and
 sent an agent down a wrong hypothesis. **Rename it `singleTyparamIfaceMethod`** as part of this.
 
-`SHADOW-SEMANTICS.md` §S8 covers multi-*param methods*; nothing covers multi-*typaram
+`docs/spec/SHADOW-SEMANTICS.md` §S8 covers multi-*param methods*; nothing covers multi-*typaram
 interfaces*.
 
 ---

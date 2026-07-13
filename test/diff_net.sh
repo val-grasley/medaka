@@ -4,7 +4,7 @@
 # Net fixtures CANNOT use the normal test/diff_compiler_llvm.sh gate: that gate
 # goldens against the tree-walking interpreter, and net externs are
 # deliberately UNBOUND under the interpreter (NATIVE/LLVM build-only, like
-# fs/io's file externs — see stdlib/net.mdk's module doc / NET-DESIGN.md §6).
+# fs/io's file externs — see stdlib/net.mdk's module doc / archive/design/NET-DESIGN.md §6).
 # So this is a dedicated build-and-run gate: for each fixture under
 # test/net_fixtures/, `medaka build` it (native LLVM target, native emitter
 # host), run the resulting binary, and diff its stdout against a committed

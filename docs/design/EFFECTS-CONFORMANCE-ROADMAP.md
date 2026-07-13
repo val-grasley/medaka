@@ -2,8 +2,8 @@
 
 **Status:** PARTIAL — WS-1 through WS-4 DONE (see entries below); WS-5 "standing
 discipline" and Phase 146b remain open. **Target spec:**
-[`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md). **Findings:**
-[`archive/EFFECTS-CONFORMANCE-AUDIT.md`](archive/EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
+[`EFFECTS-SEMANTICS.md`](../spec/EFFECTS-SEMANTICS.md). **Findings:**
+[`archive/EFFECTS-CONFORMANCE-AUDIT.md`](../../archive/EFFECTS-CONFORMANCE-AUDIT.md) (`HEAD = bb0bf8d`).
 
 > **WS-1 — Capability manifest realization: ✅ DONE (2026-06-21, `main = 41509f6`).**
 > The headline gap E1/E6 (a verified row nothing consumes on the canonical binary)
