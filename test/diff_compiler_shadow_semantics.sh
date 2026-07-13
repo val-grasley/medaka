@@ -16,38 +16,34 @@
 # value (a P0-20-shaped bug -- build exits 0 printing a WRONG number -- is
 # invisible to an exit-code-only gate; see that gate's own history).
 #
-# As of this writing (main built from a fresh cold bootstrap, no PR merged past
-# `ef066191`), EVERY numbered matrix cell that ships a fixture in
-# test/shadow_fixtures/ (rows 3-20 in the doc's table: d1/d1b/d2/d3/d4/d4b/d5/
-# d5b/d6/d7/d8/d9/i1/i3/i4) is CONFORMANT: check/run/build agree with each
-# other AND with the doc's S1-S8-specified outcome. The doc's own matrix STATUS
-# column (section 2) still marks rows 10/12/13/14 as BUG -- that column is
-# STALE: the P0-19 (2026-07-10) and P0-20 (2026-07-13) fixes already closed all
-# four, and the doc's OWN section-5 update notes say so a few paragraphs below
-# the stale table. This gate's empirical run is the tiebreaker: those four rows
-# are pinned ACCEPT/ACCEPT/ACCEPT (or REJECT/REJECT/REJECT) below, matching
-# current reality, not the stale BUG marker.
+# As of this writing (main past PR #25/#26/#27, binary rebuilt from THAT tree),
+# every matrix cell that ships a fixture in test/shadow_fixtures/ is CONFORMANT
+# -- check/run/build agree with each other AND with the doc's S1-S9-specified
+# outcome -- EXCEPT d11 (below). That includes rows 10/12/13/14 (d4b/d5b/d9/d8),
+# whose STATUS column in the doc's section-2 table used to say BUG: that column
+# was STALE (P0-19 2026-07-10 + P0-20 2026-07-13 closed all four, as the doc's
+# OWN section-5 update notes said a few paragraphs below the stale table). This
+# gate's empirical run is what proved it, and the table has now been corrected
+# to match -- with this gate cited as the enforcement.
 #
-# Two more cells (d10, d11) exist ONLY in this gate's corpus -- added alongside
-# this gate to cover the doc's section-5 "Residuals" (2 bugs still explicitly
-# open, NOT closed by P0-19/P0-20):
-#   - d10_definer_constrained.mdk: a CONSTRAINED standalone (`Num a =>`) shadow
-#     -- the dict-passing/RLocal seam bug ("S-1"). A design doc + fix exist on
-#     branch fix/s1-constrained-shadow-dict (PR #25) but are NOT merged as of
-#     this writing, and that PR's own d10 fixture is byte-identical .mdk
-#     SOURCE to this one (only the header comment differs, since this one
-#     describes the CURRENT wrong behavior rather than the post-fix one) --
-#     expect a path collision to reconcile when that PR lands; that is
-#     intentional, not an accident, per "a ledger entry must fail when the bug
-#     is fixed."
-#   - d11_definer_multityparam_iface.mdk: a multi-TYPARAM interface
-#     (`interface Ix a i`) bypasses the whole definer-shadow machinery (every
-#     entry point gates on counting INTERFACE type params, not method params).
-#     No fix is in flight for this one.
-# Both are KNOWN-BAD rows below: pinned to the CURRENT (wrong) split behavior,
-# with a comment on what they must become once fixed. A KNOWN-BAD row is not a
-# skip -- it runs and asserts every turn; it goes red the day the bug is
-# fixed, which is the signal to correct its expectation, not silence it.
+# d10 is the ledger working as designed. It was added by THIS gate as a
+# KNOWN-BAD row pinning the S-1 bug (a CONSTRAINED standalone `Num a =>` shadow
+# whose RLocal route carried no dictionary -- check green, run E-PANIC, build
+# silently printing a garbage heap pointer). PR #25 then FIXED it, and this
+# gate went RED on the very next run -- exactly what a ledger entry is for ("it
+# must FAIL when the bug is fixed, so it can't rot"). The row is now re-pinned
+# to the FIXED behavior: ACCEPT/ACCEPT/ACCEPT, value 4, run == build.
+#
+# d11_definer_multityparam_iface.mdk remains the one KNOWN-BAD row: a
+# multi-TYPARAM interface (`interface Ix a i`) bypasses the whole
+# definer-shadow machinery, because every entry point gates on
+# `singleParamIfaceMethod`, which counts INTERFACE type params, not method
+# params. `check` and `build` agree (and are in fact per-receiver CORRECT,
+# printing 4 then 3) while `run` E-PANICs (`unknown op '*'`) -- an S7
+# path-agreement violation. No fix is in flight (doc section 5, residual #2 /
+# "S-3"). Its row is pinned to that CURRENT split; it goes red the day `run`
+# is taught this shape, which is the signal to correct the row, not silence
+# it. A KNOWN-BAD row is not a skip -- it runs and asserts every turn.
 #
 # Untested-per-the-doc (rows 21-23: importer value-position / importer N-way /
 # return-position method shadow) ship NO fixture in test/shadow_fixtures/ and
@@ -104,8 +100,8 @@ d8_definer_imported_impl/main.mdk|D8 definer, shadowed iface + impl IMPORTED (S6
 i1_importer_local_iface/main.mdk|I1/I2 importer shadow, LOCAL interface (S2/S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i3_importer_imported_iface/main.mdk|I3 importer shadow, iface+impl in a THIRD module (S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i4_importer_prelude_iface/main.mdk|I4 importer shadow of a PRELUDE method (S2, stdlib shape)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
-d10_definer_constrained.mdk|D10 KNOWN-BAD: constrained standalone, dict-passing seam (S-1, doc residual #1)|ACCEPT|REJECT|ACCEPT|BUILD_NOTEQ_INT|4
-d11_definer_multityparam_iface.mdk|D11 KNOWN-BAD: multi-typaram interface bypasses shadow machinery (doc residual #2)|ACCEPT|REJECT|ACCEPT|BUILD_EXACT|4\n3'
+d10_definer_constrained.mdk|D10 definer, CONSTRAINED standalone dict-passed via RLocal (S9, was the S-1 bug)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
+d11_definer_multityparam_iface.mdk|D11 KNOWN-BAD: multi-typaram interface bypasses shadow machinery (S-3, doc residual)|ACCEPT|REJECT|ACCEPT|BUILD_EXACT|4\n3'
 
 # --- Coverage self-audit: every top-level fixture unit (a .mdk file, or a
 # directory) in FIXDIR must appear in TABLE, or this gate silently re-creates

@@ -27,7 +27,7 @@ What parses, what it means, formal semantics. Read here first for "does X exist 
 | [`DICT-SEMANTICS.md`](spec/DICT-SEMANTICS.md) | Dictionary-Passing Semantics for Medaka Interfaces | specification |
 | [`EFFECTS-SEMANTICS.md`](spec/EFFECTS-SEMANTICS.md) | Effect-and-Capability Semantics for Medaka | specification |
 | [`LAYOUT-SEMANTICS.md`](spec/LAYOUT-SEMANTICS.md) | LAYOUT-SEMANTICS.md — Medaka's layout rule, formalized | OPEN |
-| [`SHADOW-SEMANTICS.md`](spec/SHADOW-SEMANTICS.md) | Declaration-Shadowing Semantics (standalone fn ⇄ interface method) | PARTIAL |
+| [`SHADOW-SEMANTICS.md`](spec/SHADOW-SEMANTICS.md) | Declaration-Shadowing Semantics (standalone fn ⇄ interface method) | ENFORCED |
 | [`STYLE.md`](spec/STYLE.md) | Medaka style guide | — |
 | [`SYNTAX.md`](spec/SYNTAX.md) | SYNTAX.md — Medaka construct cheat-sheet | — |
 | [`language-design.md`](spec/language-design.md) | Medaka Language Design Document | PARTIAL |
