@@ -70,29 +70,19 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MEDAKA="$ROOT/medaka"
 [ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
+LEDGER="$ROOT/test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt"
 
 NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 JOBS="${JOBS:-$NCPU}"
 
-# ── Deliberate exceptions ───────────────────────────────────────────────────
-# Fixtures that intentionally use a removed construct to verify the
-# compiler's OWN removal diagnostic (message text / caret location). Keep
-# this list SMALL; every entry must say why. One path per line.
-is_allowlisted() {
-  case "$1" in
-    test/run_check_agreement_fixtures/p0_5_let_mut_removed.mdk) return 0 ;; # verifies letMutRemovedMsg fires + its exact wording (P0-5 regression fixture; .expected pins the output)
-    test/parse_error_loc_fixtures/backtick_infix.mdk) return 0 ;;           # verifies the backtick-removal diagnostic's caret location (test/diff_compiler_parse_error_loc.sh)
-    *) return 1 ;;
-  esac
-}
-
 # ── Worker mode: classify one file, print one result line ──────────────────
+# NOTE: every file is actually run through `medaka check --json`, including
+# files with a ledger entry below — there is no early-exit "allowlisted"
+# shortcut. That's deliberate: a ledger entry pins an EXPECTED finding, and
+# the only way to notice that finding has stopped happening (fixture
+# deleted, diagnostic accidentally fixed) is to keep checking it every run.
 if [ "${1:-}" = "--check-one" ]; then
   f="$2"
-  if is_allowlisted "$f"; then
-    printf 'ALLOWLISTED\t%s\t-\n' "$f"
-    exit 0
-  fi
   case "$f" in
     /*) abs="$f" ;;
     *) abs="$ROOT/$f" ;;
@@ -173,20 +163,64 @@ xargs -P "$JOBS" -n 1 -I{} sh "$0" --check-one {} < "$WORK/files.txt" > "$WORK/a
 
 tier1=$(grep -c '^TIER1	' "$WORK/all.txt" 2>/dev/null); tier1="${tier1:-0}"
 tier2=$(grep -c '^TIER2	' "$WORK/all.txt" 2>/dev/null); tier2="${tier2:-0}"
-allow=$(grep -c '^ALLOWLISTED	' "$WORK/all.txt" 2>/dev/null); allow="${allow:-0}"
 findings=$((tier1 + tier2))
 
+# ── Ledger diff (the whole point of this gate) ──────────────────────────────
+# actual   = the (path, construct) pairs really found scanning the tree
+# ledger   = the (path, construct) pairs test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt
+#            EXPECTS to find (comments/blanks stripped)
+# unexpected = actual - ledger  -> a NEW use of a removed construct: FAIL
+# stale      = ledger - actual  -> a ledgered fixture that no longer produces
+#                                   its expected finding (deleted, or the
+#                                   diagnostic got accidentally fixed): FAIL.
+#                                   This is the direction a skip-list cannot see.
+grep -E '^TIER1	|^TIER2	' "$WORK/all.txt" 2>/dev/null \
+  | awk -F'\t' '{print $2"\t"$3}' | sort -u > "$WORK/actual.txt"
+awk -F'\t' '!/^[[:space:]]*#/ && NF>=2 && $1!="" {print $1"\t"$2}' "$LEDGER" \
+  | sort -u > "$WORK/ledger.txt"
+comm -23 "$WORK/actual.txt" "$WORK/ledger.txt" > "$WORK/unexpected.txt"
+comm -13 "$WORK/actual.txt" "$WORK/ledger.txt" > "$WORK/stale.txt"
+
+unexpected=$(wc -l < "$WORK/unexpected.txt" | tr -d ' ')
+stale=$(wc -l < "$WORK/stale.txt" | tr -d ' ')
+ledger_total=$(wc -l < "$WORK/ledger.txt" | tr -d ' ')
+
 if [ "$JSON_MODE" = "1" ]; then
-  printf '{"total":%s,"allowlisted":%s,"findings":%s,"hits":[' "$total" "$allow" "$findings"
+  printf '{"total":%s,"findings":%s,"ledger_total":%s,"unexpected":%s,"stale":%s,"hits":[' \
+    "$total" "$findings" "$ledger_total" "$unexpected" "$stale"
   first=1
   grep -E '^TIER1	|^TIER2	' "$WORK/all.txt" 2>/dev/null | while IFS="$(printf '\t')" read -r tier f key rest; do
     [ "$first" = 1 ] || printf ','
     printf '{"tier":"%s","file":"%s","construct":"%s","detail":"%s"}' "$tier" "$f" "$key" "$rest"
     first=0
   done
+  printf '],"unexpected_hits":['
+  first=1
+  while IFS="$(printf '\t')" read -r f key; do
+    [ -z "$f" ] && continue
+    [ "$first" = 1 ] || printf ','
+    printf '{"file":"%s","construct":"%s"}' "$f" "$key"
+    first=0
+  done < "$WORK/unexpected.txt"
+  printf '],"stale_ledger_entries":['
+  first=1
+  while IFS="$(printf '\t')" read -r f key; do
+    [ -z "$f" ] && continue
+    [ "$first" = 1 ] || printf ','
+    printf '{"file":"%s","construct":"%s"}' "$f" "$key"
+    first=0
+  done < "$WORK/stale.txt"
   printf ']}\n'
 else
-  echo "check_removed_constructs: scanned $total file(s), $allow allowlisted, $findings finding(s)"
+  echo "check_removed_constructs: scanned $total file(s), $findings finding(s), $ledger_total ledger entries"
+  echo
+  echo "LEDGER (expected findings — test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt, printed every run):"
+  if [ "$ledger_total" -gt 0 ]; then
+    awk -F'\t' '!/^[[:space:]]*#/ && NF>=2 && $1!="" {printf "  %-16s %s  -- %s\n", $2, $1, $3}' "$LEDGER"
+  else
+    echo "  (empty)"
+  fi
+
   if [ "$findings" -gt 0 ]; then
     echo
     echo "TIER 1 (dedicated parser diagnostic — precise):"
@@ -199,6 +233,28 @@ else
       printf '  %-16s %s (%s)\n' "$key" "$f" "$detail"
     done
   fi
+
+  if [ "$unexpected" -gt 0 ]; then
+    echo
+    echo "UNEXPECTED (actual finding NOT in the ledger — a real regression; fix it, or"
+    echo "if it's a deliberate removal-diagnostic fixture, add it to"
+    echo "test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt with a reason):"
+    while IFS="$(printf '\t')" read -r f key; do
+      [ -z "$f" ] && continue
+      printf '  %-16s %s\n' "$key" "$f"
+    done < "$WORK/unexpected.txt"
+  fi
+
+  if [ "$stale" -gt 0 ]; then
+    echo
+    echo "STALE LEDGER ENTRIES (ledgered but NOT an actual finding — the fixture was"
+    echo "deleted or the diagnostic got fixed; remove the entry from"
+    echo "test/CHECK-REMOVED-CONSTRUCTS-LEDGER.txt):"
+    while IFS="$(printf '\t')" read -r f key; do
+      [ -z "$f" ] && continue
+      printf '  %-16s %s\n' "$key" "$f"
+    done < "$WORK/stale.txt"
+  fi
 fi
 
-[ "$findings" -eq 0 ]
+[ "$unexpected" -eq 0 ] && [ "$stale" -eq 0 ]
