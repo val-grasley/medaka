@@ -1,5 +1,5 @@
 # META
-source_lines=197
+source_lines=201
 stages=DESUGAR,MARK
 # SOURCE
 -- Structural S-expression dump of the Core IR (STAGE2-DESIGN §2.1).  Mirrors
@@ -44,8 +44,12 @@ routeSexp RNone = "RNone"
 routeSexp (RKey k _) = node "RKey" [escStr k]
 routeSexp (RDict d) = node "RDict" [escStr d]
 routeSexp (RDictFwd d) = node "RDictFwd" [escStr d]
-routeSexp (RLocal "") = "RLocal"
-routeSexp (RLocal s) = node "RLocal" [escStr s]
+-- S-1: the dict list is DROPPED here, exactly as RKey's nested requires-routes are
+-- (`RKey k _` above) — the S-expr form is a debug/golden projection, not a faithful
+-- round-trip of the route.  Keeping it lossy holds every core_ir_sexp golden
+-- byte-identical across the S-1 route widening.
+routeSexp (RLocal "" _) = "RLocal"
+routeSexp (RLocal s _) = node "RLocal" [escStr s]
 routeSexp (RScalar s) = node "RScalar" [escStr s]
 
 -- ── CExpr ─────────────────────────────────────────────────────────────────────
@@ -212,8 +216,8 @@ cprogramToSexp (CProgram binds ctorArities ctorToType impls) = node
 (DFunDef false "routeSexp" ((PCon "RKey" (PVar "k") PWild)) (EApp (EApp (EVar "node") (ELit (LString "RKey"))) (EListLit (EApp (EVar "escStr") (EVar "k")))))
 (DFunDef false "routeSexp" ((PCon "RDict" (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "RDict"))) (EListLit (EApp (EVar "escStr") (EVar "d")))))
 (DFunDef false "routeSexp" ((PCon "RDictFwd" (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "RDictFwd"))) (EListLit (EApp (EVar "escStr") (EVar "d")))))
-(DFunDef false "routeSexp" ((PCon "RLocal" (PLit (LString "")))) (ELit (LString "RLocal")))
-(DFunDef false "routeSexp" ((PCon "RLocal" (PVar "s"))) (EApp (EApp (EVar "node") (ELit (LString "RLocal"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
+(DFunDef false "routeSexp" ((PCon "RLocal" (PLit (LString "")) PWild)) (ELit (LString "RLocal")))
+(DFunDef false "routeSexp" ((PCon "RLocal" (PVar "s") PWild)) (EApp (EApp (EVar "node") (ELit (LString "RLocal"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
 (DFunDef false "routeSexp" ((PCon "RScalar" (PVar "s"))) (EApp (EApp (EVar "node") (ELit (LString "RScalar"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
 (DTypeSig true "cexprSexp" (TyFun (TyCon "CExpr") (TyCon "String")))
 (DFunDef false "cexprSexp" ((PCon "CLit" (PVar "l"))) (EApp (EApp (EVar "node") (ELit (LString "CLit"))) (EListLit (EApp (EVar "litSexp") (EVar "l")))))
@@ -299,8 +303,8 @@ cprogramToSexp (CProgram binds ctorArities ctorToType impls) = node
 (DFunDef false "routeSexp" ((PCon "RKey" (PVar "k") PWild)) (EApp (EApp (EVar "node") (ELit (LString "RKey"))) (EListLit (EApp (EVar "escStr") (EVar "k")))))
 (DFunDef false "routeSexp" ((PCon "RDict" (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "RDict"))) (EListLit (EApp (EVar "escStr") (EVar "d")))))
 (DFunDef false "routeSexp" ((PCon "RDictFwd" (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "RDictFwd"))) (EListLit (EApp (EVar "escStr") (EVar "d")))))
-(DFunDef false "routeSexp" ((PCon "RLocal" (PLit (LString "")))) (ELit (LString "RLocal")))
-(DFunDef false "routeSexp" ((PCon "RLocal" (PVar "s"))) (EApp (EApp (EVar "node") (ELit (LString "RLocal"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
+(DFunDef false "routeSexp" ((PCon "RLocal" (PLit (LString "")) PWild)) (ELit (LString "RLocal")))
+(DFunDef false "routeSexp" ((PCon "RLocal" (PVar "s") PWild)) (EApp (EApp (EVar "node") (ELit (LString "RLocal"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
 (DFunDef false "routeSexp" ((PCon "RScalar" (PVar "s"))) (EApp (EApp (EVar "node") (ELit (LString "RScalar"))) (EListLit (EApp (EVar "escStr") (EVar "s")))))
 (DTypeSig true "cexprSexp" (TyFun (TyCon "CExpr") (TyCon "String")))
 (DFunDef false "cexprSexp" ((PCon "CLit" (PVar "l"))) (EApp (EApp (EVar "node") (ELit (LString "CLit"))) (EListLit (EApp (EVar "litSexp") (EVar "l")))))

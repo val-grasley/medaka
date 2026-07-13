@@ -1,0 +1,19 @@
+-- S-1: a CONSTRAINED top-level fn whose name shadows a visible interface method.
+-- The marking prePass is a first-match guard chain whose SHADOW arm is tested before
+-- the DICT arm, so this occurrence became EMethodAt and was never marked as a dict
+-- application -- while dictPassDecl still gave the DEFINITION its leading dict param.
+-- Def arity 2, call arity 1: the call silently UNDER-APPLIED and the Int 3 landed in
+-- the dict slot.  `check` was green, `run` died with `intToString: not an Int`, and
+-- `build` EXITED 0 PRINTING A RAW HEAP POINTER.  Must print 4.
+data Box = Box Int
+
+interface Sz a where
+  size : a -> String
+
+impl Sz Box where
+  size _ = "IMPL"
+
+size : Num a => a -> a
+size x = x + 1
+
+main = println (size 3)

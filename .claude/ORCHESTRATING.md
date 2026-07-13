@@ -289,7 +289,97 @@ in a fresh VM would never see the drift.
 
 ---
 
+## ⭐ DERIVE, don't encode — and where you can't, make it SELF-DRAIN (2026-07-13)
+
+This is the unifying lesson of the docs overhaul, and it generalizes far past docs.
+
+**Every defect was one shape: a statement that ENCODED a fact about the code, and the code
+moved.** `SYNTAX.md` encoded "backtick infix parses" (true once). `AGENTS.md` encoded "grep for
+`checkGuardExhaust`" (existed once). A skill encoded "insert into `primitives`" (existed once).
+The CI classifier encoded "nothing outside `test/` reads a `.md`" — **true when written, false
+within hours.** A memory encoded "prefer list comprehensions" (removed in June).
+
+**A document is an allowlist of facts about the world, with no derivation and no expiry.** That is
+the disease, and *tidying does not treat it.* In priority order:
+
+1. **DERIVE the fact instead of stating it.** `docs/README.md` is now GENERATED from the docs'
+   `**Status:**` banners and CI regenerates + diffs it. The shard-coverage gate derives the gate set
+   from the gate *scripts* — no map to drift. A hand-maintained index is what rotted in the first
+   place.
+2. **Where you must encode, ATTACH A DERIVATION.** A status banner cites the **SHA** that proves it
+   (`**Status:** IMPLEMENTED — 9100df2e, 2026-07-01`). A claim with a receipt is auditable; a claim
+   without one is a fact waiting to expire. It also turns archive-vs-keep into a *filter*, not a
+   judgment call.
+3. **Where you cannot derive, make it SELF-DRAIN.** An exceptions ledger must FAIL the build when an
+   entry stops earning its place — **both** when the excused thing came back **and** when nothing
+   cites it anymore. Half a ratchet is a skip-list, and **a skip-list cannot notice when the bug is
+   fixed, so it rots** (this is how `test/ported/` died). The doc-link gate shipped with only the
+   first half and had **3 orphaned entries within one merge.**
+
+### 🔴 The lazy fix hides the real bug
+
+Three times in one session, **refusing to "just add an exception" exposed a genuine defect**:
+
+- adding the ledger's *orphan* half → 3 entries were already fiction;
+- refusing a blanket `archive/*` exception → found that a POSIX `case` glob **`*` matches across
+  `/`**, so it was silently swallowing 10 dead links two directories deep;
+- refusing to excuse `gen_docs_index` from shard coverage, and making it a real check instead →
+  caught that **`sort` is locale-dependent** and the "generated" index produced **different bytes on
+  the dev box and the CI runner**. A generated artifact that isn't byte-reproducible is a
+  hand-written one with extra ceremony.
+
+**If your first instinct is to excuse a check, that is where the bug is.** Corollary: *a gate that
+has to excuse its own false positives is a gate with a parsing bug* — fix the parser, not the ledger.
+
+---
+
+## A gate must RUN where the bug lands — ask "where is this skipped?" FIRST
+
+Writing the gate is the easy half. **Placing it is where it dies.**
+
+`ci.yml`'s `detect` job sets `docs_only=true` for prose-only PRs, and every heavy job skips its
+steps when it is true. So **a docs gate placed in a gate shard is skipped on docs-only PRs — exactly
+the PRs it exists to police.** Green forever, checking nothing. That is the silent-green bug the
+whole suite exists to prevent, reproduced *inside the tool built to prevent it*. It nearly shipped
+twice.
+
+- **Text-only gate that must run on prose PRs** → an **UNGUARDED step in an already-REQUIRED job**
+  (`soundness`). No compiler needed, so it is nearly free — and being in a required job means it
+  gates on merge *today*, with no repo-settings change.
+- **Gate needing a built `medaka`** → a gate shard. But then **its INPUT must be reclassified as
+  not-docs-only**, or a change to that input skips the gate. Hence `SYNTAX.md) docs_only=false` —
+  it is an *executable spec*, not prose.
+- **A gate matching no shard pattern silently never runs.** `diff_compiler_ci_shard_coverage.sh`
+  catches this — and it caught me.
+
+Before adding any gate: **(1)** where is this skipped? **(2)** is the class of bug it catches exactly
+the class of change that triggers the skip? **(3)** have you *seen it fail* — broken something on
+purpose and watched it name the `file:line`? **(4)** can it no-op? Print `checked N …`; **N == 0 must
+be a FAILURE, not a pass.**
+
+---
+
 ## The gap docs lie — reproduce before you trust them (the #1 lesson)
+
+**2026-07-13 update — it is worse than this section says. EVERY LAYER LIES ABOUT THE LAYER BELOW IT:**
+the router lied about the language (AGENTS.md recommended three constructs that are hard parse
+errors); the skills lied about the code (**5 of 6 were DANGEROUS**; `harden-typechecker` taught
+`pushTypeError` at the wrong arity, which *silently drops the error*, and its "grep these names"
+index was **19/20 fictional**); the memories lied about the docs; **and the shared binary we check
+the docs against lied about `main`** (it rejected valid current syntax). None of it was findable by
+*reading*. It only fell out when something was forced to **execute** each claim against the code.
+
+### ⚠️ And an AUDIT is not evidence either — it will FABRICATE
+
+A read-only **Opus** auditor correctly found ~35 false claims in the skills — **and then invented its
+own replacements**, asserting that `registerImpl`, `ppMonos`, `implEntry`, `registerRecord` "**do**
+all exist." Four of five return **ZERO hits.** An agent executing that punch-list on trust would have
+replaced 19 dead symbols with 4 fresh dead ones — *with an audit's authority behind them.*
+
+It was caught only because the fix agent was **required to grep-prove every symbol it wrote and paste
+the evidence.** So: **never let an agent execute an audit's punch-list on trust.** And ⚠️ note
+`grep -r compiler/` also matches the `.md` docs living there, so a fabricated symbol *appears to
+resolve* — resolve symbol claims against **`.mdk`/`.c` source only**.
 
 The project's own gap/status docs (gap censuses, audit docs, "known gaps", roadmap
 status) are **systematically stale** — they drift faster than anyone updates them.
@@ -337,6 +427,31 @@ marked-closed-but-actually-broken (this is how the pre-flip soundness gaps surfa
 ---
 
 ## The agent-prompt skeleton
+
+### 🔴 Five lines that stop agents dying — put these in EVERY prompt (2026-07-13)
+
+Each is a failure actually watched happen this session:
+
+1. **"Do NOT spawn sub-agents / forks. Sequential, yourself."** An agent given a 40-file census
+   **fanned out to sub-forks, then ended its turn waiting on one** — producing nothing. The harness
+   re-invoked it and it said *"I'll wait for the batches"* **forever**. Nested forks also fail with a
+   *misleading success signal* (`Fork is not available inside a forked worker`, while one still
+   reports success and produces nothing). **Remedy: `TaskStop <agentId>` FIRST**, or it respawns.
+2. **"APPEND each result to disk as you finish it. Never buffer for a final write."** If it dies
+   halfway you want half a census on disk, not zero.
+3. **"NEVER end your turn with anything still running"** + **"Do NOT build."** A docs/audit agent has
+   no reason to run `make medaka` or `build_oracles.sh` (the latter spawns an `xargs -P` pool that
+   **outlives the turn and gets RESPAWNED**). Say: *"this is pure text analysis; it needs no
+   compiler — keep it that way."*
+4. **"GREP-PROVE every symbol and path you write. Paste the proof."** `test -e <path>`, and
+   `sed -n '<line>p' <file> | grep <sym>` — at the **exact cited line**, not "exists somewhere." *If
+   you cannot verify it, DELETE the claim rather than guess.* **This is the single highest-value line
+   in any prompt** — it is what caught the Opus auditor fabricating symbols.
+5. **"Disproving me is a SUCCESS."** Say it explicitly. It fired **three times in one session**, every
+   time against the orchestrator. An honest `UNVERIFIED` beats a confident wrong answer.
+
+⚠️ Also: **`git merge main` SILENTLY NO-OPS** when another worktree has `main` checked out (very
+likely with several agents live). Tell agents **`git merge origin/main`**.
 
 Every delegated task prompt should contain, in order:
 

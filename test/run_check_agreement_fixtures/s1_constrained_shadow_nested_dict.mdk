@@ -1,0 +1,14 @@
+-- S-1: the call sits inside a CONSTRAINED caller, so the standalone's dict slot is an
+-- RDict -- the enclosing fn's own dict param, forwarded.  This is the closure-capture
+-- case for llvm_emit's methValDictNames / wasm_emit's freeVarsRoute, both of which
+-- previously returned [] for an RLocal route ("carries NO captured local").  Prints 4.
+interface Sz a where
+  size : a -> String
+
+size : Num a => a -> a
+size x = x + 1
+
+outer : Num a => a -> a
+outer v = size v
+
+main = println (outer 3)

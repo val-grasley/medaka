@@ -32,10 +32,15 @@ into any gate — see §4). History/context: memory `project_phase112_standalone
 - **Importer shadow**: the standalone is *imported* from another module (the
   everyday `import map` → `isEmpty m` pattern; the shadowed interface may live
   in the prelude, in the consuming module, or in a third module).
-- **Routes** (`compiler/frontend/ast.mdk:69-72`): `RKey tag` = dispatch to the
-  impl whose head tycon is `tag`; `RLocal sym` = NOT a dispatch, call the
-  standalone (`sym` = the mangled standalone symbol on the build path, `""` on
-  the un-mangled run/check path).
+- **Routes** (`compiler/frontend/ast.mdk:69-72`): `RKey tag dicts` = dispatch to
+  the impl whose head tycon is `tag`; `RLocal sym dicts` = NOT a dispatch, call
+  the standalone (`sym` = the mangled standalone symbol on the build path, `""`
+  on the un-mangled run/check path). **`dicts` is the standalone's OWN
+  `=>`-constraint dicts** — see clause **S9**. It is `[]` for an unconstrained
+  standalone, which is every one of the compiler's own definer shadows.
+  ⚠️ Until 2026-07-13 this document, `ast.mdk` and `eval.mdk` all asserted
+  *"RLocal carries no dict"* as a settled **invariant**. That invariant WAS the
+  S-1 silent miscompile: it is now false by design. Do not restore it.
 
 ## 1. The resolution function (clauses S1–S8)
 
@@ -83,6 +88,36 @@ Given an occurrence of bare name `N`:
   *specified* outcome for a multi-param method shadow is the same S2 rule keyed
   on the first parameter. (Observed: the ordinary arg-position dispatch path
   covers this today — matrix row 8.)
+
+### S9 — a CONSTRAINED standalone (added 2026-07-13; closes S-1)
+
+When S2/S4/S5 resolve a shadow occurrence to **the standalone**, and that
+standalone is itself `C a => …`, the occurrence is an **ordinary constrained
+call**: `C` is solved at the receiver's type and the dictionary is supplied at
+the call site, exactly as at a non-shadow call site. **`RLocal` therefore DOES
+carry dicts** (`RLocal sym dicts`, mirroring `RKey tag dicts`).
+
+> **The shadowed interface decides WHICH function; the standalone's own
+> constraints decide WHICH DICTS. They are different interfaces.**
+
+A `C` with no impl at the receiver's type is a **located reject at `check`**
+(`No impl of Num for String` for `size "hi"`), never a runtime panic.
+
+**Why this clause exists.** Both halves of dict-passing key off the same name
+sets, and a constrained shadow is in **both**: the marking prePass is a
+first-match guard chain whose *shadow* arm is tested **before** the *dict* arm
+(`typecheck.mdk` `rewriteRPDict` / `rewriteRPDictArg` / `rewriteArgScoped`), so
+the occurrence became `EMethodAt` and was **never marked as a dict application**
+— while `dictPassDecl`, keyed on the same dict-name set, still gave the
+**definition** its leading dict parameter. Def arity 2, call arity 1: the call
+silently **under-applied**, the first real argument landed in the dict slot, and
+`build` **exited 0 printing a raw heap pointer**.
+
+**Do NOT "fix" this by reordering the guard chain so the dict arm wins.**
+`EDictAt` carries no route and cannot dispatch — that would break matrix row 5
+(`size (Box 3)` → the impl), which works. A shadow occurrence is genuinely
+*undecided* at mark time; `EMethodAt` is the node that can be either. The fix is
+to give its `RLocal` arm a dict channel.
 
 **Tie-break rationale.** *Per-receiver* (not lexical shadowing) because a live
 impl is the ground truth of intent — the user wrote a method for that exact
@@ -151,7 +186,9 @@ Line numbers at `cfc4fa5a`.
 | lowering | `compiler/ir/core_ir_lower.mdk:144` `EMethodAt name … → CMethod name …` | route + both names survive to the backends | `name` is the single bare field; the RLocal symbol rides the route |
 | emit (LLVM) | `compiler/backend/llvm_emit.mdk:3413` `emitMethod … (RKey tag)` → `implFor e name tag`; `:3435` `… (RLocal sym)` → `emitKnownFnSat e ("mdk_" ++ sym)` | S2's two arms at codegen | RKey needs the **bare** method name; RLocal needs the **mangled** symbol |
 | emit (WasmGC) | `compiler/backend/wasm_emit.mdk:3076` `emitMethodRef … (RLocal sym)` (peer arm, header `:3071`) | same split, second backend | same two-name split |
-| eval | `compiler/eval/eval.mdk:1063-1066` `evalMethodAt … (RLocal sym)` → standalone via env lookup; other routes → arg-tag/dict dispatch (`methodAtNarrow:902` treats RLocal as not-a-dispatch; `dictOfRoute:874` RLocal carries no dict) | S2 on the interpreter | run path is UN-mangled: `sym` is `""` and the bare name resolves to the standalone lexically |
+| eval | `compiler/eval/eval.mdk` `evalMethodAt … (RLocal sym dicts)` → standalone via env lookup, **then `applyDicts … dicts`** (S9); other routes → arg-tag/dict dispatch (`methodAtNarrow` treats RLocal as not-a-dispatch; `dictOfRoute (RLocal _ _)` is the no-op dict — RLocal's dicts are the call's leading dict ARGS, not a witness FOR the route) | S2 + S9 on the interpreter | run path is UN-mangled: `sym` is `""` and the bare name resolves to the standalone lexically |
+| S9 dicts (typecheck) | `shadowStandaloneDicts` / `shadowStandaloneDictSlotsAt` (slot monos, expanded-supers, from the SIGNATURE's id space) → carried on `pendingRLocalSites` (an `RLocalSite` record) → resolved **inside** `resolveRLocalSites` via `routesOfMonosTop` | the standalone's own `=>` dicts, stamped by the SAME single writer as the route | ⚠️ resolve them **inside the stamp** — `resolveRLocalSites` runs BEFORE `resolveDictApps` in `elabModuleStamp`, so routing them through `pendingDictApps` reads `[]` and reproduces the bug with more code |
+| S9 reject direction | `recordStandaloneSigObligations` → `pushCallObl` → `checkCallObligations` | `size "hi"` ⇒ located `No impl of Num for String` | ⚠️ obligations must come from the **signature**, not `schemeObligationsRef`: for a signatured binding those are **different id spaces** (generalization vs `sigToSchemeTvs`), so the id lookup silently finds nothing |
 
 ## 4. Fixture-per-cell plan (all created; adoption is a mechanical follow-up)
 
@@ -268,20 +305,21 @@ same "which stage owns S4/S6" decision.
 > gate that owns this bug class could not see this bug.** Agreement 42/0, run_gates 83/0/0,
 > fixpoint C3a/C3b YES.
 >
-> **Residuals found while closing this (NOT fixed, both pre-existing on `main`, both filed):**
-> 1. **A definer shadow whose standalone is CONSTRAINED (`size : Num a => a -> a`) is
->    miscompiled** — `check` accepts, `run` panics, `build` prints garbage — even with **no
->    impl at the receiver head**, i.e. with no dispatch decision involved at all. The
->    `RLocal` route carries no dictionary, so it calls a dict-passed standalone without its
->    dict word and gets a partial application back. This is the `RLocal`-vs-dict-passing
->    seam, not S2. Repro: `interface Sz a where { size : a -> String }` + `impl Sz Box` +
->    `size : Num a => a -> a` + `size 3`.
+> **Residuals found while closing this (both pre-existing on `main`, both filed):**
+> 1. ~~**A definer shadow whose standalone is CONSTRAINED (`size : Num a => a -> a`) is
+>    miscompiled**~~ — **FIXED 2026-07-13 (S-1; see clause S9).** `check` accepted, `run`
+>    panicked, and `build` **exited 0 printing a raw heap pointer**, even with no impl at
+>    the receiver head. The filing's mechanism was *close but wrong in the way that changes
+>    the fix*: the `RLocal` route did not **drop** a dict — **no dict was ever computed for
+>    the occurrence**, because the marking prePass's shadow arm is tested before its dict
+>    arm, so the call was never marked an `EDictAt` while the *definition* still got its
+>    dict param. `RLocal` now carries the standalone's own dicts (S9).
 > 2. **A multi-TYPARAM interface (`interface Ix a i`) bypasses the whole definer-shadow
 >    machinery** (every entry point is gated on `singleParamIfaceMethod`, which counts
 >    interface TYPE PARAMS, not method params). `check` and `build` agree, `run` panics.
 >    S8 speaks to multi-*param methods*; it does not cover multi-*typaram interfaces*.
 
-> **🐛 NEW CELL + ✅ FIX (2026-07-14, P0-21) — row 26: S1 ("shadow-hood is per-module")
+> **🐛 NEW CELL + ✅ FIX (2026-07-14, P0-21) — row 27: S1 ("shadow-hood is per-module")
 > was NOT enforced on the single-file/flat path — a user's shadow LEAKED INTO THE
 > PRELUDE.** Every cell in the matrix above varies the shadow's *use*; none of them asks
 > **whose module the occurrence is in**. That is where the hole was:
@@ -344,3 +382,40 @@ same "which stage owns S4/S6" decision.
 > as the receiver, so `map (x => x*2) [1,2,3]` in a file that also defines `map : Int ->
 > Int` is rejected `Int vs a -> a`. This is the S8 residual, not S1: the already-correct
 > multi-module path rejects the identical shape identically, so the two paths now AGREE.
+---
+
+## 6. S-1 residuals (open; grep `S1-RESIDUAL`)
+
+Found while closing S-1 (2026-07-13). **Neither is a regression and neither is a silent
+wrong answer** — both were already broken on `main`, and both now fail *loudly*. They are
+the two shadow occurrences that do **not** flow through an application-head arm.
+
+### S1-RESIDUAL-A — value-position shadow miscompiles at emit (NOT an S-1 bug)
+
+`map size [1,2,3]` (a bare shadow occurrence passed to a HOF) **segfaults at `build`** and
+`illegal cast`es under WasmGC. `run` is correct.
+
+⚠️ **This is NOT caused by the constraint, and NOT by S-1.** Verified: an **unconstrained**
+shadow (`size : Int -> Int`) in value position segfaults *identically*, and that takes the
+`dicts == []` path — byte-identical to pre-S1 codegen. The bug is in the value-position
+lift itself (`llvm_emit.mdk` `emitMethodValue` / `emitMethodValDefine`, wasm's
+`emitRefExpr` peer), which builds a closure of `methodArityOf name` — the **interface
+method's** arity — for a body that calls the **standalone**. S-1's design doc mis-attributed
+this row's `build` failure (it saw a GC OOM) to the missing dict.
+*Fix location:* `compiler/backend/llvm_emit.mdk` `emitMethodValue`; wasm peer.
+
+### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver under-applies on `run`
+
+`import prov.{size}` where `prov.size : Num a => a -> a` shadows a local interface method,
+called as `size 3`: **`build` and `wasm` are correct (4); `run` still under-applies.**
+
+Cause: a `Num` literal receiver is not grounded when `inferShadowApp` asks
+`headTyconMono tx`, so it never reaches that function's *standalone* arm (which does compute
+the dicts) and falls to its ordinary-app arm. The occurrence is then recorded by the generic
+`recordRLocalSite`, whose dict slots come back empty for this cross-module case. `build` is
+unaffected because an importer shadow reaches the standalone through the **mangled symbol**
+via `inferDefinerShadowApp`, which does compute them. `inferShadowApp` lacks the
+`groundShadowReceiver` call that P0-20 added to `inferDefinerShadowApp` — that asymmetry is
+the likely root.
+*Fix location:* `compiler/types/typecheck.mdk` `inferShadowApp` (add the P0-20 grounding) or
+`recordRLocalSite`'s cross-module slot resolution.

@@ -1,5 +1,5 @@
 # META
-source_lines=9487
+source_lines=9509
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -3535,14 +3535,22 @@ emitMethod e env name (RDictFwd d) implRoutes methRoutes argOps =
   emitMethodDispatch e env name d methRoutes argOps
 emitMethod e env name RNone implRoutes methRoutes argOps =
   emitMethodArgDispatch e name argOps
-emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
+-- S-1: a CONSTRAINED shadowing standalone was given leading dict PARAMS by
+-- dictPassDecl, so its call must supply the matching dict WORDS.  Delegate to
+-- emitDictApp — the SAME tested helper the ordinary CDict path uses (it prepends the
+-- dict words and, via defArityOf, builds a residual PAP when genuinely
+-- under-applied).  Without this the direct emitKnownFnSat call below supplies one
+-- word too few, emitKnownFnSat correctly reads that as under-application, and the
+-- program silently prints a PAP heap pointer instead of the answer (the S-1 bug).
+-- `dicts == []` (every unconstrained standalone, incl. all 5 of the compiler's own
+-- definer shadows) keeps the byte-identical pre-S1 direct call ⇒ the self-compile
+-- fixpoint cannot move.
+emitMethod e env name (RLocal sym dicts) implRoutes methRoutes argOps =
   let target = if sym == "" then name else sym
-  emitKnownFnSat
-    e
-    ("mdk_" ++ target)
-    argOps
-    (fnArity e target)
-    (fnRetTy e target)
+  if isEmpty dicts then
+    emitKnownFnSat e ("mdk_" ++ target) argOps (fnArity e target) (fnRetTy e target)
+  else
+    emitDictApp e env target dicts argOps
 -- native backend: a method whose RESULT mentions the interface/self
 -- type variable (map/ap/andThen) returns the CONTAINER; type its
 -- RKey-dispatched result as the impl's own type (tagToLTy tag) so a
@@ -3571,6 +3579,12 @@ emitMethod e env name (RLocal sym) implRoutes methRoutes argOps =
 -- CAPTURES the dict word and rebinds it from `%clos` field 1 in the body, so the
 -- runtime impl switch still reads the caller's dict.  A nullary method (arity 0,
 -- e.g. `def`) is a plain value — keep the immediate `emitMethod .. []`.
+-- ⚠️ S1-RESIDUAL-A (open; SHADOW-SEMANTICS.md §6): a VALUE-position standalone SHADOW
+-- (`map size [1,2,3]`) miscompiles here — the built binary SEGFAULTs (wasm: `illegal
+-- cast`), while `run` is correct.  NOT an S-1/dict bug: an UNCONSTRAINED shadow, which
+-- takes the `dicts == []` path and is byte-identical to pre-S1 codegen, segfaults exactly
+-- the same way.  The lift builds a closure of `methodArityOf name` — the interface
+-- METHOD's arity — for a body that calls the STANDALONE, whose value arity need not match.
 emitMethodValue : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> <Mut> (String, LTy)
 emitMethodValue e env name route implRoutes methRoutes =
   let arity = methodArityOf name
@@ -3589,6 +3603,11 @@ emitMethodValue e env name route implRoutes methRoutes =
 methValDictNames : Route -> List String
 methValDictNames (RDict d) = [d]
 methValDictNames (RDictFwd d) = [d]
+-- S-1: a VALUE-position constrained shadow (`map size xs`) lifts to a closure, and its
+-- RLocal route's dict slots may include an RDict — the enclosing constrained fn's own
+-- dict param.  That word must be CAPTURED or the lifted body reads an out-of-scope
+-- name.  Empty dicts ⇒ [] ⇒ byte-identical to the pre-S1 catch-all.
+methValDictNames (RLocal _ dicts) = routeDictNames [] dicts
 methValDictNames _ = []
 
 -- the operand words for each captured dict name, looked up in the current emit env.
@@ -4371,7 +4390,10 @@ dictWordOfRoute e env (RKey key reqs) =
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
-dictWordOfRoute _ _ (RLocal _) = "0"  -- C5: RLocal carries no dict (mirror eval.mdk's no-op dict)
+-- S-1: RLocal's own dicts are the call's leading dict ARGS (emitted by emitMethod's
+-- RLocal arm via emitDictApp), not a dict WITNESS for this route — so as a witness it
+-- stays the no-op 0 dict, mirroring eval's `dictOfRoute (RLocal _ _) = VDict "" []`.
+dictWordOfRoute _ _ (RLocal _ _) = "0"
 
 -- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … | i64 req_(n-1) ]`
 -- via @mdk_alloc and return its pointer word (ptrtoint).  Mirrors emitCtorAlloc's
@@ -10207,12 +10229,13 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RDict" (PVar "d")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatch") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "d")) (EVar "methRoutes")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RDictFwd" (PVar "d")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatch") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "d")) (EVar "methRoutes")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EVar "emitMethodArgDispatch") (EVar "e")) (EVar "name")) (EVar "argOps")))
-(DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))))))
+(DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EVar "isEmpty") (EVar "dicts")) (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitDictApp") (EVar "e")) (EVar "env")) (EVar "target")) (EVar "dicts")) (EVar "argOps"))))))
 (DTypeSig false "emitMethodValue" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))))
 (DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EVar "methodArityOf") (EVar "name"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
 (DTypeSig false "methValDictNames" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methValDictNames" ((PCon "RDict" (PVar "d"))) (EListLit (EVar "d")))
 (DFunDef false "methValDictNames" ((PCon "RDictFwd" (PVar "d"))) (EListLit (EVar "d")))
+(DFunDef false "methValDictNames" ((PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EVar "routeDictNames") (EListLit)) (EVar "dicts")))
 (DFunDef false "methValDictNames" (PWild) (EListLit))
 (DTypeSig false "capDictWords" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "capDictWords" (PWild (PList)) (EListLit))
@@ -10347,7 +10370,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "dictWordOfRoute" (PWild (PVar "env") (PCon "RDict" (PVar "d"))) (EApp (EApp (EVar "dictOperand") (EVar "env")) (EVar "d")))
 (DFunDef false "dictWordOfRoute" (PWild (PVar "env") (PCon "RDictFwd" (PVar "d"))) (EApp (EApp (EVar "dictOperand") (EVar "env")) (EVar "d")))
 (DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RNone")) (ELit (LString "0")))
-(DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RLocal" PWild)) (ELit (LString "0")))
+(DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RLocal" PWild PWild)) (ELit (LString "0")))
 (DTypeSig false "emitDictCell" (TyFun (TyCon "Emit") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyCon "String"))))))
 (DFunDef false "emitDictCell" ((PVar "e") (PVar "headTag") (PVar "reqWords")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "lengthS") (EVar "reqWords"))) (DoLet false false (PVar "p") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "p"))) (ELit (LString " = call ptr @mdk_alloc(i64 "))) (EApp (EVar "display") (EApp (EVar "intToString") (EBinOp "*" (ELit (LInt 8)) (EBinOp "+" (EVar "n") (ELit (LInt 1))))))) (ELit (LString ")"))))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  store i64 ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "headTag")))) (ELit (LString ", ptr "))) (EApp (EVar "display") (EVar "p"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "storeFields") (EVar "e")) (EVar "p")) (EVar "reqWords")) (ELit (LInt 0)))) (DoLet false false (PVar "w") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "w"))) (ELit (LString " = ptrtoint ptr "))) (EApp (EVar "display") (EVar "p"))) (ELit (LString " to i64"))))) (DoExpr (EVar "w"))))
 (DTypeSig false "dictConstCacheRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))
@@ -12260,12 +12283,13 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RDict" (PVar "d")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatch") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "d")) (EVar "methRoutes")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RDictFwd" (PVar "d")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodDispatch") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "d")) (EVar "methRoutes")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EVar "emitMethodArgDispatch") (EVar "e")) (EVar "name")) (EVar "argOps")))
-(DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))))))
+(DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EMethodRef "isEmpty") (EVar "dicts")) (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitDictApp") (EVar "e")) (EVar "env")) (EVar "target")) (EVar "dicts")) (EVar "argOps"))))))
 (DTypeSig false "emitMethodValue" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))))
 (DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EVar "methodArityOf") (EVar "name"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
 (DTypeSig false "methValDictNames" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methValDictNames" ((PCon "RDict" (PVar "d"))) (EListLit (EVar "d")))
 (DFunDef false "methValDictNames" ((PCon "RDictFwd" (PVar "d"))) (EListLit (EVar "d")))
+(DFunDef false "methValDictNames" ((PCon "RLocal" PWild (PVar "dicts"))) (EApp (EApp (EVar "routeDictNames") (EListLit)) (EVar "dicts")))
 (DFunDef false "methValDictNames" (PWild) (EListLit))
 (DTypeSig false "capDictWords" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "capDictWords" (PWild (PList)) (EListLit))
@@ -12400,7 +12424,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "dictWordOfRoute" (PWild (PVar "env") (PCon "RDict" (PVar "d"))) (EApp (EApp (EVar "dictOperand") (EVar "env")) (EVar "d")))
 (DFunDef false "dictWordOfRoute" (PWild (PVar "env") (PCon "RDictFwd" (PVar "d"))) (EApp (EApp (EVar "dictOperand") (EVar "env")) (EVar "d")))
 (DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RNone")) (ELit (LString "0")))
-(DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RLocal" PWild)) (ELit (LString "0")))
+(DFunDef false "dictWordOfRoute" (PWild PWild (PCon "RLocal" PWild PWild)) (ELit (LString "0")))
 (DTypeSig false "emitDictCell" (TyFun (TyCon "Emit") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyCon "String"))))))
 (DFunDef false "emitDictCell" ((PVar "e") (PVar "headTag") (PVar "reqWords")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "lengthS") (EVar "reqWords"))) (DoLet false false (PVar "p") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "p"))) (ELit (LString " = call ptr @mdk_alloc(i64 "))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EBinOp "*" (ELit (LInt 8)) (EBinOp "+" (EVar "n") (ELit (LInt 1))))))) (ELit (LString ")"))))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  store i64 ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "headTag")))) (ELit (LString ", ptr "))) (EApp (EMethodRef "display") (EVar "p"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "storeFields") (EVar "e")) (EVar "p")) (EVar "reqWords")) (ELit (LInt 0)))) (DoLet false false (PVar "w") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "w"))) (ELit (LString " = ptrtoint ptr "))) (EApp (EMethodRef "display") (EVar "p"))) (ELit (LString " to i64"))))) (DoExpr (EVar "w"))))
 (DTypeSig false "dictConstCacheRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))

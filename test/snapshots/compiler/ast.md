@@ -1,5 +1,5 @@
 # META
-source_lines=398
+source_lines=411
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka AST — mirror of lib/ast.ml's surface (pre-desugar) nodes,
@@ -54,14 +54,27 @@ public export data Constraint = Constraint String (List Ty)
 --   site the interface has no impl for the concrete receiver, but an explicitly-
 --   imported/local standalone function shadows the method name, so eval ignores
 --   VMulti dispatch and evaluates the bound name as the plain standalone (no
---   narrowing, no dicts).  Mirrors lib/ast.ml's RLocal.  The carried String is the
+--   narrowing).  Mirrors lib/ast.ml's RLocal.  The carried String is the
 --   MANGLED standalone symbol to call ("" = call the EMethodAt's own (bare) name).
 --   On the EMIT path (P0-18) a definer-shadow occurrence is marked `EMethodAt` with
 --   the BARE dispatch name (so `implFor` finds the impl when the receiver DOES have
 --   one), but its RLocal fallback must reach the module-qualified standalone symbol
 --   `<mid>__name` that `mangleUnits` renamed the def to — that symbol rides here.
 --   On the un-mangled run/check path the symbol is "" and eval/emit uses the bare
---   name, byte-identical to the old nullary `RLocal`.
+--   name.
+--   ⚠️ S-1 / SHADOW-SEMANTICS clause S9: RLocal DOES carry dicts.  The `List Route`
+--   is the standalone's OWN `=>`-constraint dicts, slot-ordered, exactly as
+--   `RKey`'s `List Route` carries a parametric impl's element dicts.  It is
+--   NON-EMPTY iff the shadowing standalone is itself constrained (`size : Num a =>
+--   a -> a` shadowing `Sizeable.size`): dict_pass gives such a definition leading
+--   dict PARAMETERS, so the call site must supply the matching dict WORDS or it
+--   silently UNDER-APPLIES (`check` green, `run` type-confused, `build` prints a raw
+--   PAP pointer — the S-1 miscompile).  The shadowed interface decides WHICH
+--   function (the route's RLocal-vs-RKey choice); the standalone's own constraints
+--   decide WHICH DICTS (this list).  They are different interfaces.
+--   EMPTY (`RLocal sym []`) for an UNCONSTRAINED standalone — the overwhelmingly
+--   common case, incl. all 5 of the compiler's own definer shadows — and every
+--   consumer keeps its pre-S1 byte-identical fast path on the empty list.
 -- RScalar = NOT a typeclass dispatch route.  Stamped by typecheck's
 -- resolveBinopSites onto an ARITHMETIC EBinOp whose operand grounds to a concrete
 -- primitive ("Float"/"Int"), so lowering can carry the scalar type into CBinPrim's
@@ -73,7 +86,7 @@ public export data Route =
   | RKey String (List Route)
   | RDict String
   | RDictFwd String
-  | RLocal String
+  | RLocal String (List Route)
   | RScalar String
 
 -- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the
@@ -406,7 +419,7 @@ public export data Decl =
 (DData Public "Loc" () ((variant "Loc" (ConPos (TyCon "String") (TyCon "Int") (TyCon "Int") (TyCon "Int") (TyCon "Int")))) ())
 (DData Public "Ty" () ((variant "TyCon" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "TyVar" (ConPos (TyCon "String"))) (variant "TyApp" (ConPos (TyCon "Ty") (TyCon "Ty"))) (variant "TyFun" (ConPos (TyCon "Ty") (TyCon "Ty"))) (variant "TyTuple" (ConPos (TyApp (TyCon "List") (TyCon "Ty")))) (variant "TyEffect" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String")) (TyCon "Ty"))) (variant "TyConstrained" (ConPos (TyApp (TyCon "List") (TyCon "Constraint")) (TyCon "Ty")))) ())
 (DData Public "Constraint" () ((variant "Constraint" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty"))))) ())
-(DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String"))) (variant "RScalar" (ConPos (TyCon "String")))) ())
+(DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RScalar" (ConPos (TyCon "String")))) ())
 (DData Public "Addr" () ((variant "ALocal" (ConPos (TyCon "Int") (TyCon "Int"))) (variant "AGlobal" (ConPos))) ())
 (DData Public "Pat" () ((variant "PVar" (ConPos (TyCon "String"))) (variant "PWild" (ConPos)) (variant "PLit" (ConPos (TyCon "Lit"))) (variant "PCon" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PCons" (ConPos (TyCon "Pat") (TyCon "Pat"))) (variant "PTuple" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PList" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PAs" (ConPos (TyCon "String") (TyCon "Pat"))) (variant "PRng" (ConPos (TyCon "Lit") (TyCon "Lit") (TyCon "Bool"))) (variant "PRec" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "RecPatField")) (TyCon "Bool")))) ())
 (DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
@@ -448,7 +461,7 @@ public export data Decl =
 (DData Public "Loc" () ((variant "Loc" (ConPos (TyCon "String") (TyCon "Int") (TyCon "Int") (TyCon "Int") (TyCon "Int")))) ())
 (DData Public "Ty" () ((variant "TyCon" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "TyVar" (ConPos (TyCon "String"))) (variant "TyApp" (ConPos (TyCon "Ty") (TyCon "Ty"))) (variant "TyFun" (ConPos (TyCon "Ty") (TyCon "Ty"))) (variant "TyTuple" (ConPos (TyApp (TyCon "List") (TyCon "Ty")))) (variant "TyEffect" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String")) (TyCon "Ty"))) (variant "TyConstrained" (ConPos (TyApp (TyCon "List") (TyCon "Constraint")) (TyCon "Ty")))) ())
 (DData Public "Constraint" () ((variant "Constraint" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty"))))) ())
-(DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String"))) (variant "RScalar" (ConPos (TyCon "String")))) ())
+(DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RScalar" (ConPos (TyCon "String")))) ())
 (DData Public "Addr" () ((variant "ALocal" (ConPos (TyCon "Int") (TyCon "Int"))) (variant "AGlobal" (ConPos))) ())
 (DData Public "Pat" () ((variant "PVar" (ConPos (TyCon "String"))) (variant "PWild" (ConPos)) (variant "PLit" (ConPos (TyCon "Lit"))) (variant "PCon" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PCons" (ConPos (TyCon "Pat") (TyCon "Pat"))) (variant "PTuple" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PList" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PAs" (ConPos (TyCon "String") (TyCon "Pat"))) (variant "PRng" (ConPos (TyCon "Lit") (TyCon "Lit") (TyCon "Bool"))) (variant "PRec" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "RecPatField")) (TyCon "Bool")))) ())
 (DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
