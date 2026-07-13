@@ -1,5 +1,8 @@
 # SQLITE-WASM-DESIGN.md — scoping the WasmGC port of the Medaka SQLite library
 
+**Status:** IMPLEMENTED — `3a633d7`, 2026-06-30. See the AS-BUILT section at the
+end of this file; all four staged steps landed, gated by `test/wasm/diff_sqlite.sh`.
+
 Goal: get `sqlite/` (pure-Medaka, bytes-first, today native-only via LLVM)
 compiling + running correctly under `medaka build --target wasm`, verified
 against the native path, so future SQL features land on native + wasm in tandem.

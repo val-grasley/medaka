@@ -1,8 +1,11 @@
 # MAP-SET-AMBIGUITY-DESIGN.md — ambiguous unqualified-import occurrence (use-time / approach A)
 
-**Status:** design locked 2026-06-23. **Decision (user):** USE-time ambiguity
+**Status:** IMPLEMENTED — see `compiler/frontend/resolve.mdk`, `AmbiguousOccurrence
+String (List String) (Option Loc)` error constructor wired at the use-site emission
+this doc specifies, and fixture `test/resolve_module_fixtures/map_set_ambiguous_use/`.
+**Decision (user):** USE-time ambiguity
 (Haskell "Ambiguous occurrence"), NOT import-time. Owning roadmap row: PLAN.md
-Compiler/language. Skill: **add-language-feature** (resolve-rooted, both compilers).
+Compiler/language. Skill: **add-language-feature** (resolve-rooted).
 
 ## 0. Problem
 

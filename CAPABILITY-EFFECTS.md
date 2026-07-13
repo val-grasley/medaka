@@ -1,11 +1,18 @@
 # Capability-safe effects — Medaka's headline direction
 
+**Status:** PARTIAL — core effect tracking/manifest emission shipped (see below);
+§6a's finite-set-lattice sketch is SUPERSEDED BY `CAPABILITY-EFFECTS-V2-DESIGN.md`
+(parameterized effects v2, IMPLEMENTED). See `EFFECTS-CONFORMANCE-ROADMAP.md` for
+the current authoritative completion record (WS-1 through WS-4 done; WS-5 standing
+discipline open).
+
 Status: **substantially complete** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
 *propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
 holes that made the manifest forgeable are closed for the open/closed AND
 closed-closed point-free cases (the latter via variance-aware covariant re-open),
 and the **compiler mirror is done** (2026-06-06: full effect subsystem ported into
-`compiler/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
+`compiler/types/typecheck.mdk` — path since reorganized into subfolders, was
+`compiler/typecheck.mdk` at the time — byte-identical harnesses). User-definable effect labels
 (gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + compiler
 mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. **Manifest
 emission shipped 2026-06-21** (`medaka check-policy` + parameter-level policy +
@@ -228,7 +235,8 @@ eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`
 `t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
 
 **Done (Phase 146 compiler mirror, 2026-06-06):** the full effect-tracking
-subsystem is now ported into `compiler/typecheck.mdk`. The earlier "remaining" note
+subsystem was ported into what is now `compiler/types/typecheck.mdk` (path since
+reorganized into subfolders). The earlier "remaining" note
 ("the `unify_row` subset rule and the instantiation re-opening are not yet
 mirrored") understated it: compiler had **no effect rows at all** (effects were a
 bare `List String` on `TFun`, discarded by unify; no effvars, no ambient state).
@@ -250,10 +258,11 @@ The Wasm custom-section half remains deferred (touches `wasm_emit.mdk`).
 **Done (Phase 146 gap 3, 2026-06-07):** cross-module effect label export. An
 `export effect Foo` declaration in one module is now visible across the loader
 boundary — importing modules see `<Foo>` as a known label in effect rows rather
-than `UnknownEffect`. Implementation: `exp_effects` added to `module_exports` in
-`lib/resolve.ml`; populated from public `DEffect` decls + UseWild re-exports in
-`build_exports`; installed into `env.effects` on import (same pattern as Phase 130
-iface-methods). Selfhost mirror in `compiler/resolve.mdk`: `expEffects` on
+than `UnknownEffect`. Historical (`lib/` removed 2026-06-26): `exp_effects` was
+added to `module_exports` in `lib/resolve.ml`; populated from public `DEffect`
+decls + UseWild re-exports in `build_exports`; installed into `env.effects` on
+import (same pattern as Phase 130 iface-methods). Selfhost mirror, still live,
+in `compiler/frontend/resolve.mdk`: `expEffects` on
 `ModuleExports`, `expEffectsDirect`/`reExpEffects`, `importedEffects`/
 `oneImportEffects`, `buildEnvMM` extended. Fixtures: `effect_export` (valid) +
 `effect_not_exported` (reject) in `test/resolve_module_fixtures/`; 2 inline
@@ -317,6 +326,11 @@ gradual-verification principle Medaka applies elsewhere.
   Stage 2: effects erase before codegen regardless.
 
 ## 6a. Parameterized effects (the pinned-domain / scoped-KV layer — Phase 146b)
+
+> **Superseded by [`CAPABILITY-EFFECTS-V2-DESIGN.md`](./CAPABILITY-EFFECTS-V2-DESIGN.md).**
+> The finite-set-lattice sketch below is the pre-v2 thinking; the settled shape is a
+> general refinement-domain representation (Prefix/Set/Product), IMPLEMENTED. Read
+> the v2 doc for current ground truth; this section is kept for the design history.
 
 Staged **after** the atomic-effect core (§6): a follow-on layer letting an effect
 label carry a parameter — `<Fetch "idp.example.com">`, `<KV "ab:store42:abtest">` —

@@ -1,5 +1,12 @@
 # Gap 3 — slice-7 arg-tag dispatch on a generic prelude free function
 
+**Status:** OPEN — decided WON'T-SCHEDULE. Both re-diagnosed FACE 1/FACE 2 bugs
+were fixed (E24 emitter shadowing; the SIGTRAP face), but the original Gap 3 itself
+(the arg-stamp prelude/user grounding asymmetry, §2) has no current caller since the
+shipped per-impl specialization dodges it — kept as an accurate backlog item, not
+scheduled. See `TRAVERSABLE-DEFAULT-METHOD-DESIGN.md`'s own "Gap 3 confirmed
+DODGED (stays open)" note, which is consistent with this doc's disposition.
+
 > **RE-DIAGNOSIS UPDATE (2026-06-28, current main).** This design (below) was
 > written on stale commit `197e550` against the `debug (sequence …)` repro. On
 > current main the manifestation has SHIFTED (post-#21/#22, which closed the

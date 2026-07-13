@@ -1,6 +1,10 @@
 # Declaration-Shadowing Semantics (standalone fn ⇄ interface method)
 
-**Status:** conformance specification + empirical audit (2026-07-09, binary at
+**Status:** PARTIAL — 4 historical bugs fixed (P0-18 arc, see below); 2 residual
+bugs remain explicitly open (a definer-shadow dict-passing seam bug; multi-typaram
+interfaces bypassing the shadow machinery). `test/shadow_fixtures/` exists but is
+NOT yet wired into any gate. Conformance specification + empirical audit
+(2026-07-09, binary at
 `cfc4fa5a`, all cells re-observed in the Docker Linux container on `run`,
 `build`→execute, AND `check` — no cell's status is taken from a design doc).
 **Scope:** a bare name `N` that is BOTH a top-level standalone function AND an

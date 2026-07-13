@@ -1,5 +1,9 @@
 # SQLite Mutation (UPDATE / DELETE) — Design & Feasibility
 
+**Status:** IMPLEMENTED — `a0fb00d`, 2026-06-30. See the AS-BUILT section at the
+end of this file; `sqlite/lib/mutate.mdk` implements INSERT/UPDATE/DELETE via
+read-transform-rewrite exactly as designed.
+
 Status: **DESIGN / SCOPING** (2026-06-30). No library code written. This doc
 records an empirical feasibility study of adding row mutation (UPDATE / DELETE)
 to the pure-Medaka SQLite library under `sqlite/`, and proposes a v1.

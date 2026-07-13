@@ -1,10 +1,13 @@
 # ASYNC-DESIGN.md
 
+**Status:** IMPLEMENTED — `26784fb` (driver dispatch), 2026-06-16. `stdlib/async.mdk`
+shipped; every §6/§7 item below is marked `[DONE]`.
+
 Design for Medaka's `Async` monad — a basic, **swappable** cooperative-concurrency
-layer. Design-only: NO implementation until a stage is green-lit. Companion to
+layer. Companion to
 `CAPABILITY-EFFECTS-V2-DESIGN.md` (the effect-row work this deliberately stays *out* of).
 
-Status: **DESIGN LOCKED** (2026-06-16, collaborative). Decisions in §0 are authoritative.
+Status (at design time): **DESIGN LOCKED** (2026-06-16, collaborative). Decisions in §0 are authoritative.
 
 ---
 
