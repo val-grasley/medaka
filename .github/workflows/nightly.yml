@@ -1,0 +1,221 @@
+name: Nightly
+
+# Scheduled home for gates that are deliberately NOT on the PR path (see
+# test/CI-COVERAGE-EXCEPTIONS.txt for the retired ledger entries this workflow
+# replaces — workstream item T-4, .claude/workstreams/TESTING.md).
+#
+#   check_removed_constructs  ~2-3 min tree-wide scan. Correct and cheap, just too
+#                              slow for every push. Here it is a NORMAL pass/fail
+#                              job — a red run is a genuine regression.
+#
+#   fuzz_diff                 a FUZZER. It must NOT be a pass/fail PR gate: a green
+#                              run proves nothing (it only means these particular
+#                              random seeds didn't find anything) and a red run may
+#                              not even reproduce (a generator-side gap, not
+#                              necessarily a compiler bug). So this job never fails
+#                              the workflow on a fuzz FINDING — it FILES one
+#                              (uploads the reproducer as a build artifact and
+#                              opens/updates a tracking issue) and reports how many
+#                              cases it actually ran. It DOES fail loudly if it ran
+#                              ZERO cases (a missing oracle / toolchain problem is
+#                              infra rot, not a fuzz finding — "didn't run" must
+#                              never look like "passed").
+#
+# Mirrors ci.yml's bootstrap (checkout -> install clang/libgc -> cache/cold-build
+# `make medaka` -> build only the oracles the gate needs) — see that file for the
+# full rationale on caching and the oracle `--for` derivation. This workflow is
+# NOT path-filtered (there's no PR diff to filter on a schedule) and is NOT part
+# of branch protection's required-checks list, so it is free to skip entirely,
+# fail, or take longer without blocking any PR.
+on:
+  schedule:
+    # 07:17 UTC daily — an arbitrary off-the-hour time, not midnight/top-of-hour,
+    # to avoid GitHub Actions' scheduling congestion at round times.
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  check-removed-constructs:
+    name: check_removed_constructs (tree-wide scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      # Same cache as ci.yml's `gates`/`inlang` jobs — see that file's top-of-file
+      # "Caching" note for the completeness argument on the key.
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+
+      - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      # check_removed_constructs.sh invokes ./medaka directly (no test/bin oracle
+      # needed) and derives its own root via `dirname "$0"`, but MEDAKA_ROOT is
+      # exported anyway per the documented footgun: some scripts in this suite
+      # silently misresolve stdlib without it when the binary isn't run from the
+      # exact directory it expects.
+      - name: Tree-wide scan for stale removed-construct usage
+        env:
+          MEDAKA_ROOT: ${{ github.workspace }}
+        run: bash test/check_removed_constructs.sh
+
+  fuzz-diff:
+    name: fuzz_diff (bounded nightly sweep; findings are FILED, not failed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+
+      - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      # fuzz_diff.sh reads test/bin/fuzz_gen_main (the native program generator)
+      # and test/bin/eval_dict_main (the native-interp oracle). `--for 'fuzz_diff'`
+      # derives exactly those two from the gate script itself — see ci.yml's
+      # "Why NO GATE NEEDS ALL 54" note for the general mechanism.
+      - name: Build the oracles fuzz_diff needs
+        run: FORCE=1 sh test/build_oracles.sh --for 'fuzz_diff'
+
+      # BOUNDED on two axes so this can never run forever: a fixed seed/iteration
+      # count passed to the script, AND a `timeout` wrapper as a hard backstop in
+      # case the per-case cost estimate this count was chosen from drifts high.
+      #
+      #   Tier-A (oracle + invariants): 1000 seeds, the cheap tier (~500ms/batch
+      #     of 12, amortized) — a large sweep for not much wall-clock.
+      #   Tier-C (oracle vs `medaka build`): opt-in, 150 programs. This tier is
+      #     ~2.8s/program (native build + clang), the highest-leverage tier per
+      #     the script's own header (it exercises the artifact users actually
+      #     ship, and was previously UNFUZZED), so it's worth the nightly budget.
+      #
+      # fuzz_diff.sh is `#!/usr/bin/env bash` and uses `local` inside a function —
+      # it is NOT POSIX sh; the documented footgun is that dash-as-/bin/sh can
+      # silently mis-handle a bash-only script, so it is invoked with `bash`
+      # explicitly here, never `sh`.
+      - name: Run the fuzzer (bounded — 1000 Tier-A + 150 Tier-C native)
+        id: fuzz
+        run: |
+          set +e
+          timeout 45m bash test/fuzz_diff.sh 1 1000 2 12 1 150 > /tmp/fuzz.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/fuzz.log
+
+          tierA_ran=$(sed -n 's/^ran=\([0-9]*\).*/\1/p' /tmp/fuzz.log | head -1)
+          tierC_ran=$(sed -n 's/^native: ran=\([0-9]*\).*/\1/p' /tmp/fuzz.log | head -1)
+          result_line=$(grep -m1 '^RESULT:' /tmp/fuzz.log || true)
+          findings=0
+          if printf '%s' "$result_line" | grep -q 'NEW finding'; then
+            findings=$(printf '%s' "$result_line" | sed -n 's/^RESULT: \([0-9]*\) NEW.*/\1/p')
+          fi
+
+          {
+            echo "## fuzz_diff nightly sweep"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tier-A cases run | ${tierA_ran:-0} |"
+            echo "| Tier-C (native) cases run | ${tierC_ran:-0} |"
+            echo "| New findings | ${findings:-0} |"
+            echo "| fuzz_diff.sh exit code | $rc |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "ran=${tierA_ran:-0}" >> "$GITHUB_OUTPUT"
+          echo "native_ran=${tierC_ran:-0}" >> "$GITHUB_OUTPUT"
+          echo "findings=${findings:-0}" >> "$GITHUB_OUTPUT"
+
+          # "This didn't run" must never look like "this passed" (AGENTS.md — the
+          # theme this whole test suite is hardened against). Zero Tier-A cases run
+          # means an infra problem (missing oracle, toolchain, or the `timeout`
+          # backstop firing before even one case completed) — that is a genuine
+          # job failure, distinct from a fuzz FINDING, which never fails the job.
+          if [ -z "$tierA_ran" ] || [ "$tierA_ran" = "0" ]; then
+            echo "::error::fuzz_diff.sh ran ZERO Tier-A cases (rc=$rc). This is an infra failure (missing oracle/toolchain, or a timeout before the first case completed) — NOT a clean fuzz pass. See the log above."
+            echo "STATUS: DID NOT RUN — see log" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          exit 0
+
+      - name: Upload failing reproducers (if any)
+        if: steps.fuzz.outputs.findings != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failures-${{ github.run_id }}
+          path: test/fuzz_failures/*.mdk
+          if-no-files-found: warn
+          retention-days: 30
+
+      # File (or update) ONE tracking issue rather than one-per-night — dedup by
+      # exact title match against open issues. A green PR-path fuzzer would prove
+      # nothing (see the file header), so findings are surfaced here instead:
+      # durably (the issue persists across nights), not spammily (one issue, not
+      # N), and with a self-contained reproducer (the seed + reproduce command,
+      # already written into test/fuzz_failures/*.mdk by fuzz_diff.sh itself).
+      - name: File or update the fuzz-failure tracking issue
+        if: steps.fuzz.outputs.findings != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          TITLE="nightly fuzz_diff: open findings"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "fuzz_diff nightly sweep on $(date -u +%Y-%m-%dT%H:%MZ) found ${{ steps.fuzz.outputs.findings }} new finding(s) out of ${{ steps.fuzz.outputs.ran }} Tier-A + ${{ steps.fuzz.outputs.native_ran }} Tier-C cases run."
+            echo ""
+            echo "Run: $RUN_URL"
+            echo ""
+            echo "Failing reproducers are attached to that run as a build artifact"
+            echo "(\`fuzz-failures-${{ github.run_id }}\`, from \`test/fuzz_failures/*.mdk\` —"
+            echo "each file's header names the exact seed + a \`--seed N\` reproduce command)."
+            echo ""
+            echo "--- fuzz_diff summary tail ---"
+            echo '```'
+            tail -n 40 /tmp/fuzz.log
+            echo '```'
+          } > "$BODY_FILE"
+
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$BODY_FILE"
+            echo "updated existing tracking issue #$existing"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+            echo "opened a new tracking issue"
+          fi
