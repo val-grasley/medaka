@@ -1,0 +1,156 @@
+-- | GROUP BY / aggregates on the UNIFIED query engine — the capability demo.
+--
+-- Every query here was IMPOSSIBLE before `lib.select` and `lib.aggregate` were
+-- unified: the old `AggQuery` could aggregate but had no joins, no ORDER BY and
+-- no LIMIT, while the old `Select` had all three but could not aggregate.  So an
+-- aggregate over a JOIN, `ORDER BY count(*) DESC LIMIT n`, ORDER BY on a computed
+-- column, and HAVING + ORDER BY + LIMIT were simply not representable.
+--
+-- Reads a real sqlite3-created DB and prints one line per row, prefixed by a
+-- per-query label, for diffing against `sqlite3` in test/groupby_oracle.sh.
+--
+-- Usage: medaka build sqlite/groupby_demo.mdk -o /tmp/gdem && /tmp/gdem <db>
+
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.sqlite.{Db, openDb}
+import lib.select.{
+  Select,
+  selectFrom,
+  innerJoin,
+  withColumns,
+  withGroupCols,
+  withHavingPred,
+  withOrderBy,
+  withOrderByExpr,
+  withLimit,
+  eEq,
+  eGt,
+  eMul,
+  eColInt,
+  eColText,
+  eLitI,
+  aCountStar,
+  aSum,
+  aAvg,
+  aMin,
+  aMax,
+  unExpr,
+  query,
+}
+import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3, t4}
+import demo_support.{printRows}
+
+-- Render helpers (NULL → empty, matching sqlite3's default -list output).
+showOptI : Option Int -> String
+showOptI None = ""
+showOptI (Some n) = intToString n
+
+showOptF : Option Float -> String
+showOptF None = ""
+showOptF (Some f) = floatToString f
+
+-- ── generic per-query runner ────────────────────────────────────────────────
+runQ : Db -> String -> Select -> RowType a -> (a -> String) -> <IO> Unit
+runQ db label sel rt shw =
+  let _ = println label
+  match query db sel rt
+    Err e => println "query error: \{e}"
+    Ok rows => printRows shw rows
+
+-- `users JOIN orders ON users.id = orders.uid` — the base of every joined query.
+joined : Select
+joined =
+  innerJoin
+    "orders"
+    (eEq (eColInt "users.id") (eColInt "orders.uid"))
+    (selectFrom "users")
+
+main : <IO> Unit
+main = match args ()
+  [] => println "usage: gdem <db-path>"
+  path :: _ => match openDb path
+    Err e => println "open error: \{e}"
+    Ok db =>
+      -- A. AGGREGATE OVER A JOIN — count(*) and sum() grouped by a joined
+      --    table's column.  The old AggQuery had no joins at all.
+      let _ = runQ db "-- join+group name: count* sum(amount) --"
+                (withOrderBy "users.name" True
+                  (withColumns
+                    [ unExpr (eColText "users.name")
+                    , unExpr aCountStar
+                    , unExpr (aSum (eColInt "orders.amount"))
+                    ]
+                    (withGroupCols ["users.name"] joined)))
+                (t3 tText tInt (tOption tInt))
+                ((n, c, s) => "\{n}|\{c}|\{showOptI s}")
+      -- B. ORDER BY count(*) DESC LIMIT 2 — the classic "top N by frequency".
+      --    ORDER BY on an AGGREGATE, over a JOIN, with a LIMIT.  `users.name`
+      --    ASC is the tiebreak (two users have the same count).
+      let _ = runQ db "-- join+group name: order by count* desc, name asc limit 2 --"
+                (withLimit
+                  2
+                  (withOrderBy "users.name" True
+                    (withOrderByExpr (unExpr aCountStar) False
+                      (withColumns [unExpr (eColText "users.name"), unExpr aCountStar]
+                        (withGroupCols ["users.name"] joined)))))
+                (t2 tText tInt)
+                ((n, c) => "\{n}|\{c}")
+      -- C. ORDER BY A COMPUTED COLUMN — no grouping, no aggregate.  The old
+      --    engine documented this as a v1 limitation ("ORDER BY cannot reference
+      --    a computed column"); ORDER BY keys are expressions now, so it works.
+      --    The NULL-amount row sorts last under DESC (SQLite: NULL is smallest).
+      let _ = runQ db "-- orders: amount, qty, amount*qty order by amount*qty desc --"
+                (withOrderByExpr
+                  (unExpr (eMul (eColInt "amount") (eColInt "qty")))
+                  False
+                  (withColumns
+                    [ unExpr (eColInt "amount")
+                    , unExpr (eColInt "qty")
+                    , unExpr (eMul (eColInt "amount") (eColInt "qty"))
+                    ]
+                    (selectFrom "orders")))
+                (t3 (tOption tInt) tInt (tOption tInt))
+                ((a, q, p) => "\{showOptI a}|\{q}|\{showOptI p}")
+      -- D. HAVING + ORDER BY + LIMIT together — HAVING filters on one aggregate
+      --    (count) while ORDER BY sorts on a DIFFERENT one (sum), then LIMIT 1.
+      let _ = runQ db "-- join+group name: having count*>1 order by sum(amount) asc limit 1 --"
+                (withLimit
+                  1
+                  (withOrderByExpr (unExpr (aSum (eColInt "orders.amount"))) True
+                    (withHavingPred (eGt aCountStar (eLitI 1))
+                      (withColumns
+                        [ unExpr (eColText "users.name")
+                        , unExpr aCountStar
+                        , unExpr (aSum (eColInt "orders.amount"))
+                        ]
+                        (withGroupCols ["users.name"] joined)))))
+                (t3 tText tInt (tOption tInt))
+                ((n, c, s) => "\{n}|\{c}|\{showOptI s}")
+      -- E. A grouped MIN / MAX / AVG / SUM in one row (NULL amounts skipped by
+      --    all four, per SQL).
+      let _ = runQ db "-- group uid: min max avg sum(amount) --"
+                (withOrderBy "uid" True
+                  (withColumns
+                    [ unExpr (eColInt "uid")
+                    , unExpr (aMin (eColInt "amount"))
+                    , unExpr (aMax (eColInt "amount"))
+                    , unExpr (aAvg (eColInt "amount"))
+                    , unExpr (aSum (eColInt "amount"))
+                    ]
+                    (withGroupCols ["uid"] (selectFrom "orders"))))
+                (t2 tInt (t4 (tOption tInt) (tOption tInt) (tOption tFloat) (tOption tInt)))
+                ((u, (mn, mx, av, sm)) =>
+                  "\{u}|\{showOptI mn}|\{showOptI mx}|\{showOptF av}|\{showOptI sm}")
+      -- F. THE GROUP BY RULE — `orders.amount` is neither a group key nor inside
+      --    an aggregate, so the query is REJECTED.  sqlite silently picks an
+      --    arbitrary row from the group here; returning garbage is worse than an
+      --    error, so we refuse.  (Checked by the oracle as an error string, not
+      --    by diffing against sqlite3 — the two engines disagree BY DESIGN.)
+      runQ db "-- reject: non-aggregate column not in GROUP BY --"
+        (withColumns
+          [unExpr (eColText "users.name"), unExpr (eColInt "orders.amount"), unExpr aCountStar]
+          (withGroupCols ["users.name"] joined))
+        (t3 tText tInt tInt)
+        ((n, a, c) => "\{n}|\{a}|\{c}")

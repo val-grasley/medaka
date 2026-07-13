@@ -1,0 +1,135 @@
+-- | In-memory GROUP BY probe — the stage-C WasmGC tandem oracle for the UNIFIED
+-- query engine's aggregate path.
+--
+-- Builds TWO tables (`users`, `orders`) entirely in memory (`buildDatabaseMulti`
+-- → `fromBytes`, no file I/O) and runs the queries that were IMPOSSIBLE before
+-- `lib.select` and `lib.aggregate` were unified into one `Select` + one executor:
+-- an aggregate + GROUP BY over a JOIN, `ORDER BY count(*) DESC LIMIT n`, ORDER BY
+-- on a computed (non-aggregate) column, HAVING + ORDER BY + LIMIT, and a grouped
+-- MIN/MAX/AVG/SUM.  It also checks the GROUP BY rule is enforced (a non-aggregate
+-- projection that is not a group key is rejected, not silently guessed).
+--
+-- Because it is bytes-first (buildDatabaseMulti → fromBytes → query) it emits +
+-- runs IDENTICALLY under the native LLVM backend and the WasmGC backend;
+-- `test/wasm/diff_sqlite.sh` builds it for both targets and diffs stdout.
+--
+-- Same schema + data as test/groupby_oracle.sh, so the two agree row-for-row:
+-- user `dee` has no orders (the INNER JOIN drops her) and order 7 has a NULL
+-- amount (COUNT(*) still counts the row; SUM/AVG/MIN/MAX skip it).
+
+-- Demos are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+import lib.select.{
+  Select,
+  selectFrom,
+  innerJoin,
+  withColumns,
+  withGroupCols,
+  withHavingPred,
+  withOrderBy,
+  withOrderByExpr,
+  withLimit,
+  eEq,
+  eGt,
+  eMul,
+  eColInt,
+  eColText,
+  eLitI,
+  aCountStar,
+  aSum,
+  aAvg,
+  aMin,
+  aMax,
+  unExpr,
+  query,
+}
+import lib.rowtype.{RowType, tInt, tText, tFloat, tOption, t2, t3, t4}
+import demo_support.{printRows}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)"
+
+ordersSql : String
+ordersSql = "CREATE TABLE orders(id INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER, qty INTEGER)"
+
+usersRows : List (List Cell)
+usersRows = [
+  [CInt 1, CText "ada"],
+  [CInt 2, CText "bob"],
+  [CInt 3, CText "cyd"],
+  [CInt 4, CText "dee"],
+]
+
+ordersRows : List (List Cell)
+ordersRows = [
+  [CInt 1, CInt 1, CInt 100, CInt 2],
+  [CInt 2, CInt 1, CInt 200, CInt 3],
+  [CInt 3, CInt 1, CInt 300, CInt 4],
+  [CInt 4, CInt 2, CInt 150, CInt 1],
+  [CInt 5, CInt 2, CInt 250, CInt 3],
+  [CInt 6, CInt 3, CInt 75, CInt 5],
+  [CInt 7, CInt 3, CNull, CInt 2],
+]
+
+showOptI : Option Int -> String
+showOptI None = ""
+showOptI (Some n) = intToString n
+
+showOptF : Option Float -> String
+showOptF None = ""
+showOptF (Some f) = floatToString f
+
+runQ : Db -> String -> Select -> RowType a -> (a -> String) -> <IO> Unit
+runQ db label sel rt shw =
+  let _ = println label
+  match query db sel rt
+    Err e => println "query error: \{e}"
+    Ok rows => printRows shw rows
+
+joined : Select
+joined =
+  innerJoin
+    "orders"
+    (eEq (eColInt "users.id") (eColInt "orders.uid"))
+    (selectFrom "users")
+
+runAll : Db -> <IO> Unit
+runAll db =
+  -- A. aggregate + GROUP BY over a JOIN
+  let _ = runQ db "-- join+group name: count* sum(amount) --" (withOrderBy "users.name" True (withColumns [unExpr (eColText "users.name"), unExpr aCountStar, unExpr (aSum (eColInt "orders.amount"))] (withGroupCols ["users.name"] joined))) (t3 tText tInt (tOption tInt)) ((n, c, s) => "\{n}|\{c}|\{showOptI s}")
+  -- B. ORDER BY count(*) DESC LIMIT 2 (name ASC tiebreak)
+  let _ = runQ db "-- join+group name: order by count* desc, name asc limit 2 --" (withLimit 2 (withOrderBy "users.name" True (withOrderByExpr (unExpr aCountStar) False (withColumns [unExpr (eColText "users.name"), unExpr aCountStar] (withGroupCols ["users.name"] joined))))) (t2 tText tInt) ((n, c) => "\{n}|\{c}")
+  -- C. ORDER BY a COMPUTED column (the retired v1 limitation)
+  let _ = runQ db "-- orders: amount, qty, amount*qty order by amount*qty desc --" (withOrderByExpr (unExpr (eMul (eColInt "amount") (eColInt "qty"))) False (withColumns [unExpr (eColInt "amount"), unExpr (eColInt "qty"), unExpr (eMul (eColInt "amount") (eColInt "qty"))] (selectFrom "orders"))) (t3 (tOption tInt) tInt (tOption tInt)) ((a, q, p) => "\{showOptI a}|\{q}|\{showOptI p}")
+  -- D. HAVING (on count) + ORDER BY (on sum) + LIMIT
+  let _ = runQ db "-- join+group name: having count*>1 order by sum(amount) asc limit 1 --" (withLimit 1 (withOrderByExpr (unExpr (aSum (eColInt "orders.amount"))) True (withHavingPred (eGt aCountStar (eLitI 1)) (withColumns [unExpr (eColText "users.name"), unExpr aCountStar, unExpr (aSum (eColInt "orders.amount"))] (withGroupCols ["users.name"] joined))))) (t3 tText tInt (tOption tInt)) ((n, c, s) => "\{n}|\{c}|\{showOptI s}")
+  -- E. grouped MIN / MAX / AVG / SUM
+  let _ = runQ db "-- group uid: min max avg sum(amount) --" (withOrderBy "uid" True (withColumns [unExpr (eColInt "uid"), unExpr (aMin (eColInt "amount")), unExpr (aMax (eColInt "amount")), unExpr (aAvg (eColInt "amount")), unExpr (aSum (eColInt "amount"))] (withGroupCols ["uid"] (selectFrom "orders")))) (t2 tInt (t4 (tOption tInt) (tOption tInt) (tOption tFloat) (tOption tInt))) ((u, (mn, mx, av, sm)) => "\{u}|\{showOptI mn}|\{showOptI mx}|\{showOptF av}|\{showOptI sm}")
+  -- F. the GROUP BY rule is enforced (rejected, not silently guessed)
+  runQ
+    db
+    "-- reject: non-aggregate column not in GROUP BY --"
+    (withColumns
+      [unExpr (eColText "users.name"), unExpr (eColInt "orders.amount"), unExpr aCountStar]
+      (withGroupCols ["users.name"] joined))
+    (t3 tText tInt tInt)
+    ((n, a, c) => "\{n}|\{a}|\{c}")
+
+specs : List (String, String, Option Int, List (List Cell))
+specs = [
+  ("users", usersSql, Some 0, usersRows),
+  ("orders", ordersSql, Some 0, ordersRows),
+]
+
+main : <IO, Mut> Unit
+main =
+  let _ = println "-- CREATE users + orders (in-memory) --"
+  match buildDatabaseMulti specs
+    Err e => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db => runAll db

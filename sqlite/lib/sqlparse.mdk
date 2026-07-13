@@ -86,6 +86,9 @@ import lib.select.{
   ENot,
   EIsNull,
   ENotNull,
+  EAgg,
+  AggFn,
+  aggFnSql,
   Literal,
   LInt,
   LText,
@@ -651,6 +654,8 @@ renderSqlExpr (EOr l r) = "(\{renderSqlExpr l} OR \{renderSqlExpr r})"
 renderSqlExpr (ENot e) = "(NOT \{renderSqlExpr e})"
 renderSqlExpr (EIsNull e) = "(\{renderSqlExpr e} IS NULL)"
 renderSqlExpr (ENotNull e) = "(\{renderSqlExpr e} IS NOT NULL)"
+renderSqlExpr (EAgg fn None) = "\{aggFnSql fn}(*)"
+renderSqlExpr (EAgg fn (Some e)) = "\{aggFnSql fn}(\{renderSqlExpr e})"
 
 -- | Render a single literal, inlined (NOT as a `?` placeholder).
 --
@@ -708,6 +713,8 @@ dumpExpr (EOr l r) = "EOr (\{dumpExpr l}) (\{dumpExpr r})"
 dumpExpr (ENot e) = "ENot (\{dumpExpr e})"
 dumpExpr (EIsNull e) = "EIsNull (\{dumpExpr e})"
 dumpExpr (ENotNull e) = "ENotNull (\{dumpExpr e})"
+dumpExpr (EAgg fn None) = "EAgg \{debug fn} None"
+dumpExpr (EAgg fn (Some e)) = "EAgg \{debug fn} (Some (\{dumpExpr e}))"
 
 -- | An unambiguous constructor dump of a `Literal`.
 --

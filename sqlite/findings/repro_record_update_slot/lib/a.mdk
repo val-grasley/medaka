@@ -1,0 +1,5 @@
+-- `groupBy` is the SECOND field here (slot 1)
+public export data Sel = Sel { tag : String, groupBy : List Int }
+
+export mkSel : Sel
+mkSel = Sel { tag = "sel", groupBy = [7] }
