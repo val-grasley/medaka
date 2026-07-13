@@ -1,6 +1,8 @@
 # PLAYGROUND-DESIGN.md — in-browser Medaka playground
 
-> **Status: Stages 0–4 DONE (2026-06-22).** The playground is server-free: the
+**Status:** IMPLEMENTED — Stages 0-4 DONE, 2026-06-22.
+
+> The playground is server-free: the
 > Medaka compiler runs fully client-side as a WasmGC module; `playground/server.js`
 > is a static file server only. See `playground/README.md` for build + run
 > instructions. The original server-side compile plan (§6.1 below) is marked
@@ -43,7 +45,9 @@ lag the finalized encoding) — a feature-detect + "needs a current browser" ban
 (Stage 4). This is a live instance of the project's "gap docs lie — reproduce on the binary"
 rule: trust the empirical W1–W9b result, not §8.
 
-**VERIFIED facts the plan rests on (checked directly):**
+**VERIFIED facts the plan rests on (checked directly at design time, 2026-06;
+`lib/*.ml`/`bin/main.ml` citations below are historical grounding — `lib/` was
+removed 2026-06-26, only the native paths still resolve):**
 - `stdlib/runtime.mdk` has `runCommand` (`<Exec>`), `readFile`/`writeFile`
   (`<FileRead>`/`<FileWrite>`), `readLine`/`readAll`/`readExactly` (`<Stdin>`),
   `args`/`getEnv` (`<Env>`), `wallTimeSec` (`<Clock>`), etc. — and **ZERO socket /
@@ -139,8 +143,9 @@ The **`--target wasm`** path, structurally identical (already sketched in
    wasm-tools validate out.wasm                                      # GC validation on by default
 ```
 
-Concrete wiring, both drivers (mirror every LLVM change across the OCaml `lib/build_cmd.ml`
-and the native `compiler/driver/build_cmd.mdk` — they are duals):
+Concrete wiring (historical — at design time this meant mirroring every LLVM
+change across the OCaml `lib/build_cmd.ml` and the native `compiler/driver/build_cmd.mdk`;
+`lib/` was removed 2026-06-26, so only the native driver exists today):
 - **Arg parse.** Extend `parseBuildArgs` (`medaka_cli.mdk` ~line 445) to accept
   `--target <name>` (default `native`), carry a target tag into `runBuildCmd`.
 - **Backend dispatch.** `runBuild` takes the target; on `wasm` it swaps the emitter
@@ -223,8 +228,10 @@ driver itself uses. **The only genuinely new native surface is the socket layer.
 Per `RUNTIME-DESIGN.md` §6a (capability-interface model: same effect-labeled extern, C
 function on native / host import on WASM) and the decided **runtime-is-C-not-Rust**
 stance (`feedback_runtime_language_c_not_rust`: C = thin syscall shims, protocol logic in
-Medaka), the sockets are **`LEAF`-disposition thin C shims** in `runtime/medaka_rt.c` +
-OCaml impls in `lib/eval.ml`. **No bound C HTTP library** — HTTP is parsed in Medaka.
+Medaka), the sockets are **`LEAF`-disposition thin C shims** in `runtime/medaka_rt.c`
+(historical: at design time also required an OCaml `lib/eval.ml` mirror; shipped
+native-only, `stdlib/net.mdk`, since `lib/` no longer exists — see `NET-DESIGN.md`).
+**No bound C HTTP library** — HTTP is parsed in Medaka.
 
 Proposed **BSD-socket-shaped** surface (recommended shape — see fork §9c), all under the
 existing **`<Net>`** label, two-site add (`runtime.mdk` signature + `eval.ml`/`medaka_rt.c`
@@ -518,11 +525,11 @@ platform doc already *names* the playground (§388) — that's the anchor for th
 | Need | Source (verified) |
 |---|---|
 | WasmGC backend status, host-import ABI, engine caveats, `--target wasm` sketch | `compiler/WASMGC-DESIGN.md` §6/§7/§8/§9/§11 |
-| LLVM build-driver shape to parallel | `lib/build_cmd.ml` + `compiler/driver/build_cmd.mdk`; dispatch in `compiler/driver/medaka_cli.mdk` |
+| LLVM build-driver shape (historical: at design time paralleled `lib/build_cmd.ml`, removed 2026-06-26) | `compiler/driver/build_cmd.mdk`; dispatch in `compiler/driver/medaka_cli.mdk` |
 | Browser runtime glue | `test/wasm/run.js` |
 | Locked async contract (the swap) | `ASYNC-DESIGN.md` §0/§4/§5 |
 | Existing IO externs + the no-socket gap | `stdlib/runtime.mdk` |
-| `<Net>` Prefix label (both backends) | `lib/typecheck.ml`, `compiler/types/typecheck.mdk` |
+| `<Net>` Prefix label | `compiler/types/typecheck.mdk` |
 | Extern disposition (C-shim/LEAF) + capability-interface model | `compiler/RUNTIME-DESIGN.md` §6a + §5 |
 | Product vision + the wedge demo this instantiates | `CAPABILITY-PLATFORM.md` §7c/§8/§388 |
-| Two-site extern add convention | `stdlib/runtime.mdk` + `lib/eval.ml` (+ `runtime/medaka_rt.c` native) |
+| Extern add convention | `stdlib/runtime.mdk` + `compiler/eval/eval.mdk` (+ `runtime/medaka_rt.c` native) |

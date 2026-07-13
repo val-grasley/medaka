@@ -1,6 +1,22 @@
 # Medaka Language Design Document
 *A pragmatic, modern functional programming language*
 
+**Status:** PARTIAL — design rationale/philosophy (mostly current), plus an
+"Implementation Roadmap" section that fully completed 2026-06-26 (OCaml
+retired, native canonical — see `LIB-REMOVAL-DESIGN.md`) but is written entirely
+in forward tense with no completion marker.
+
+> ⚠️ **NON-NORMATIVE — `SYNTAX.md` is the ground-truth ledger of what the
+> current binary actually accepts, and wins whenever the two disagree.** This
+> document is intent and rationale, and deliberately includes aspirational
+> features never built. In particular: the "Product Types (`record`)" section
+> below teaches a standalone `record` keyword that **does not exist** — write
+> `data X = { … }` (SYNTAX.md: "There is no separate `record` keyword"). The
+> "Mutability and Passing Values" section teaches `let mut` extensively as
+> current syntax; `let mut` **has been removed** (SYNTAX.md: "a parse error
+> pointing at `Ref`"). If you're about to write code from what you read here,
+> check it against SYNTAX.md first.
+
 ---
 
 ## Vision & Philosophy
@@ -658,6 +674,12 @@ Derived instances survive abstract export: `deriving (Debug, Eq)` on an abstract
 
 ## Implementation Plan
 
+> **HISTORICAL — this roadmap completed in full 2026-06-26.** It reads as a
+> live forward plan below, but every phase (through "Phase 4: retire OCaml
+> implementation") executed; Medaka now self-hosts on a native LLVM backend
+> with OCaml fully removed. See `compiler/BOOTSTRAP.md` for the real
+> completion log and `LIB-REMOVAL-DESIGN.md` for the removal record.
+
 ### Phase 1: OCaml-hosted compiler + Tree-sitter grammar
 - Write the compiler in OCaml (fitting given the influence, and Rust did the same initially)
 - Transpile to OCaml or interpret directly
@@ -1188,7 +1210,7 @@ This design enables a clean bootstrap sequence:
 
 ## Open Questions
 
-1. **GC design** — what kind of garbage collector? Depends partly on backend choice. Modern incremental/concurrent GC (OCaml 5, Go) is the reference point.
+1. ~~**GC design**~~ — **SETTLED: Boehm GC** (`runtime/medaka_rt.c`), per AGENTS.md.
 
 2. **Algebraic effects** — kept as a future possibility. The current effect system reserves space in the type system, making a future upgrade to full algebraic effects less painful than bolting it on from scratch.
 

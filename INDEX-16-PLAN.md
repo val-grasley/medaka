@@ -1,5 +1,13 @@
 # INDEX-16-PLAN.md — concrete staged implementation plan for the Index arc, Phase #16
 
+**Status:** IMPLEMENTED — `c9478073`, 2026-07-12. Shipped exactly as staged below:
+`stdlib/core.mdk:894` (`export interface Index c k v where`) and `:901`
+(`IndexMut`), `TLBracketTight` in `compiler/frontend/lexer.mdk`, and
+`bracketIndexTail`/`postfixTail` in `compiler/frontend/parser.mdk` all match this
+plan verbatim. See PLAN.md's Open Issues Index. Residual value: the R0
+post-order-desugar trap and two-pass fix (§ below) are a reusable technique for the
+still-open #17 bare-slice `a[i..j]` follow-on.
+
 **Companion to `INDEX-DESIGN.md`** (the decision-ready design + LOCKED forks). This doc is the
 *implementation* plan: seam resolved, stages, exact touchpoints. Produced by a read-only Plan pass
 on base `07bf5371` (all claims probe-verified on the built binary). Forks F0–F9 are LOCKED in

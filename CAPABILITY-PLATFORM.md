@@ -1,7 +1,10 @@
 # The capability platform — runtime/product architecture
 
-Status: **direction / architecture sketch** (no code; long-horizon, post-native —
-sits downstream of Phase 146 and the WasmGC backend). This is the *product* built
+**Status:** OPEN — direction / architecture sketch, no code written. What remains:
+the whole thing; this doc is the target architecture, not started. Both stated
+prerequisites are now met (Phase 146 capability-effects: IMPLEMENTED; WasmGC
+backend: shipped, gap census 1428→0) — the platform itself is blocked on product
+scoping only, not on either prerequisite. This is the *product* built
 on top of the language feature in [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md):
 the runtime/platform that turns Medaka's effect-as-capability-manifest into
 automated trust for untrusted edge/plugin code. Read CAPABILITY-EFFECTS.md first —
@@ -437,8 +440,9 @@ provably can't send cookies to the network."
 ## 10. Sequencing
 
 Strictly downstream: **Phase 146 (capability-safe effects)** → **WasmGC backend**
-(Stage 2, sibling to LLVM via the Core IR seam) → **this platform**. The language
-feature and the backend are prerequisites; this doc is the target they aim at, not
-work to start now. The cheap early validation is the *design* (worked plugin
-interfaces like §6–§7), pressure-tested on paper against real plugin categories
+(Stage 2, sibling to LLVM via the Core IR seam) → **this platform**. Both
+prerequisites are now DONE (capability-effects IMPLEMENTED; WasmGC backend shipped)
+— this doc is the target they aimed at, and is now blocked only on product scoping,
+not on either prerequisite. The cheap early validation is still the *design* (worked
+plugin interfaces like §6–§7), pressure-tested on paper against real plugin categories
 before any runtime exists.

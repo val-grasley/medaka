@@ -5,7 +5,10 @@
 > path of the 0.1.0 funnel ([`RELEASE-0.1.0-PLAN.md`](./RELEASE-0.1.0-PLAN.md) §W1).
 > Windows is explicitly out of scope.
 
-Status: **design + dependency audit done; not yet started.** The audit below was
+**Status:** PARTIAL — D0-D2 DONE (Linux build spike, exe-relative stdlib
+discovery, big-stack pthread + native TMC parity — see §5 below for commit SHAs);
+D3 (install layout / package manager) and D4 (release CI matrix) remain open; D5 is
+optional post-0.1.0 polish. The audit below was
 taken directly against the tree — file:line evidence is load-bearing, re-verify
 if the code has moved.
 

@@ -1,5 +1,10 @@
 # LANGUAGE-SURFACE-AUDIT.md
 
+**Status:** OPEN — recommends; nothing here has been executed. The one "clean
+cut" identified (`function` keyword → RESERVE-WITH-HINT) has not been actioned
+(AGENTS.md's Dogfooding section still lists `function` as a normal current
+construct with no reservation/hint language).
+
 **Read-only language-surface audit for the 0.1.0 public-preview trim.** Goal: find
 optional/sugar/rare constructs that don't pull their weight, so a newcomer learns a small,
 coherent language. This doc **recommends**; a later batch does any cutting. Nothing here was

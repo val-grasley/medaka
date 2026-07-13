@@ -1,6 +1,6 @@
 # TESTING-DESIGN.md — a coherent testing architecture for Medaka
 
-Status: **partially built**, 2026-07-13. §§1–3 are the diagnosis + research (unchanged).
+**Status:** PARTIAL — built 2026-07-13. §§1–3 are the diagnosis + research (unchanged).
 §4.4 (the differential tier) and the capability gate ARE BUILT and merged on
 `testing-arc`. §4.3/§4.6/§4.7 (the snapshot migration) are **not started** — the 79
 bash gates are all still there.

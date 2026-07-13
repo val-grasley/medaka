@@ -1,7 +1,12 @@
 # INDEX-DESIGN.md — Indexing (`a[i]` / `a[i] := v`) design pass
 
-**Status:** decision-ready design. Read-only pass — no compiler/stdlib source changed.
-**Verified on the built binary** (`make medaka`, base `fdd388cd` ✓). Probes cited inline.
+**Status:** IMPLEMENTED — `c9478073`, 2026-07-12. Shipped as Index arc #16 (see
+PLAN.md's Open Issues Index); paired with `INDEX-16-PLAN.md`. `Index`/`IndexMut`
+interfaces landed in `stdlib/core.mdk`; the bare postfix `a[i]` grammar (point 3
+below, which said it "does NOT parse today") now parses via `bracketIndexTail`
+(`compiler/frontend/parser.mdk:627`). This doc's TL;DR/analysis below predates the
+implementation and is the design record of how it was built.
+**Verified on the built binary** (`make medaka`, base `fdd388cd` ✓) at design time. Probes cited inline.
 
 ---
 

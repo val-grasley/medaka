@@ -1,7 +1,16 @@
 # `@Impl` Named-Instance-Selection Hint — Native Port Design
 
-Status: DESIGN ONLY (read-only task; this doc is the only write).
-Date: 2026-06-23. Oracle = frozen `lib/` (complete). Native = `compiler/` (gap).
+**Status:** OPEN — genuinely not implemented. `currentImplHintRef` (the
+module-level ref this design proposes) does not exist anywhere in
+`compiler/types/typecheck.mdk`; the native `@Impl` typecheck arm has not been
+built. What remains: the two-stage gap in the TL;DR below (typecheck `EApp(f,
+EVar "@hint")` arm + route-key threading; eval needs no change). ⚠️ **The `lib/`
+oracle this design mirrors line-for-line was removed 2026-06-26** (`06356a80`) —
+every `lib/*.ml:NNN` citation below is now a dead path and cannot be re-checked;
+treat them as a historical behavior-spec (what the removed OCaml implementation
+did) to match, not as live pointers.
+
+Date: 2026-06-23. Oracle = frozen `lib/` (complete at the time). Native = `compiler/` (gap).
 
 ## TL;DR
 
@@ -206,7 +215,10 @@ tag. If it keys off the bare head only, two named same-head impls collide at emi
   graph/typecheck change; rebuild `./medaka` fresh before trusting `diff_native_cli`
   (stale-binary footgun).
 
-### Fixtures (mirror `test/test_eval.ml:1106` Phase-30 spec)
+### Fixtures (historical: at design time, mirrored `test/test_eval.ml:1106`
+Phase-30 spec — `test/test_eval.ml` no longer exists, removed with `lib/`
+2026-06-26; use it only as a behavior-spec reference for what to test, add
+fixtures directly to the native `test/*_fixtures/` corpora instead)
 - `combine @Additive 3 4` → 7; `combine @Multiplicative 3 4` → 12 (the
   `named_impl_src` cases + `@First` three-impl case).
 - The typed-path regression (`t_named_additive_typed`) — ensures the `run`
@@ -214,7 +226,8 @@ tag. If it keys off the bare head only, two named same-head impls collide at emi
   fallback. This is the case that catches a stamp-vs-eval mismatch.
 - An `UnknownImplName` fixture (`combine @Nonexistent 3 4`) → error.
 - An unhinted-ambiguous fixture (S4) → `AmbiguousImpl` ("use @ImplName…").
-- Add to native gate corpora, not (only) `test_eval.ml` (that drives the oracle).
+- Add to native gate corpora (`test_eval.ml`, which drove the now-removed OCaml
+  oracle, is gone — native `test/*_fixtures/` is the only place fixtures live now).
   Note the `diff_fixtures` golden-add footgun (whole-corpus recapture) — prefer the
   smallest fixture set that exercises stamp + narrow + error.
 

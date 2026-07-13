@@ -1,8 +1,10 @@
 # NET-DESIGN.md — Medaka networking (decision-ready)
 
-**Status:** DESIGN (not implemented). Supersedes/deepens `P1-STDLIB-DESIGN.md` §5
-(the first-cut networking section). Read that §5 for the P1 context; this doc is
-the implementation-ready spec.
+**Status:** IMPLEMENTED — `9100df2e`, 2026-07-01. Shipped as `stdlib/net.mdk` (native,
+build-path only); see STDLIB.md Module 19 for the current capability summary and
+`test/diff_net.sh` for the gate. This doc's design (extern set, effect wiring,
+staging plan below) is the historical record of how it was built — Supersedes/deepens
+`P1-STDLIB-DESIGN.md` §5 (the first-cut networking section, also landed).
 
 **Scope of this doc:** the extern set, effect wiring, resource-lifetime story,
 C-runtime sketch, interpreter/wasm posture, `stdlib/net.mdk` API, a staging plan,

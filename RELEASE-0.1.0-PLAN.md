@@ -1,5 +1,9 @@
 # RELEASE-0.1.0-PLAN.md — the road to a public 0.1.0 preview
 
+**Status:** OPEN — live roadmap hub for the 0.1.0 public preview push. What
+remains: see the W1-W9 workstream table below; W6 (License) is now DONE, W7
+(`KNOWN-GAPS.md`) is still genuinely not started.
+
 > **North star for the current phase.** Everything internal is mature — Medaka
 > self-hosts, has two backends, a real type system, a stdlib, LSP, formatter,
 > linter, doctests. The distance to a public release is almost entirely
@@ -172,14 +176,11 @@ two active repos.
 - **Public does NOT get:** PLAN.md / PLAN-ARCHIVE.md / the design-doc thicket /
   AGENTS.md-style agent routing. Decide the sync tooling (a scripted export/mirror).
 
-### W6 — License — 🔴 FLOOR, **decision pending Val's final pick**
+### W6 — License — ✅ DONE — `LICENSE` (Apache-2.0) exists at repo root (`d94bae5f`)
 
-Val wants "MIT space" — maximal freedom to use/tinker, no copyleft. Recommended:
-**dual-license MIT OR Apache-2.0** (the modern default for a language you want
-widely adopted — MIT's simplicity + Apache's explicit patent grant; the user
-picks whichever). **Minimum acceptable:** plain **MIT** (add Apache later). A
-five-minute drop-in that unblocks the public repo. *Action: Val confirms
-dual-vs-plain; then add LICENSE file(s).*
+Val wanted "MIT space" — maximal freedom to use/tinker, no copyleft. Shipped as
+plain **Apache-2.0** (not the originally-recommended MIT-or-dual — Val's final
+pick landed on Apache-2.0 alone, still permissive with an explicit patent grant).
 
 ### W7 — `KNOWN-GAPS.md` (public, human-facing) — 🔴 FLOOR
 

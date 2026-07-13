@@ -1,5 +1,8 @@
 # F1b Loader Module-Identity — Decision-Ready Design
 
+**Status:** IMPLEMENTED — `ac4b04a`, 2026-06-25 (+ extern `33972aa`, seed re-minted
+`6a1a67e`).
+
 Status: ✅ **LANDED 2026-06-25** (`ac4b04a` + extern `33972aa`, seed re-minted `6a1a67e`). Built per the
 HYBRID (Option A+) below. AS-BUILT: the deterministic-derivation form (no threaded memo) was used —
 both spellings already share the same `owningRoot`, so they collapse without a memo; the
