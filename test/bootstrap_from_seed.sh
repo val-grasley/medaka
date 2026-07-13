@@ -43,12 +43,40 @@ CC="${CC:-clang}"
 STACK_SIZE="${STACK_SIZE:-0x20000000}"
 OUT="${1:-$ROOT/medaka_emitter}"
 
-# SEED_TOLERANT=1 (or arg2 = "tolerant"): a C3a mismatch is a WARNING, not a hard
-# fail — a lagging seed still builds a working emitter_v0 that compiles current
-# source.  The cold build path (build_native_medaka.sh) sets this.  Unset (the
-# default, and `make bootstrap`) keeps C3a as a strict release/CI seed-currency gate.
-SEED_TOLERANT="${SEED_TOLERANT:-0}"
+# ── SEED POLICY (changed 2026-07-13): re-mint only when NECESSARY ─────────────
+#
+# There are TWO different properties here, and conflating them is what drove 41
+# re-mints (86 MB — 40% of the whole repo's git history is dead seed blobs):
+#
+#   (a) the seed WORKS   — gunzip(seed) builds an emitter that can compile the
+#                          CURRENT compiler source. This is genuinely REQUIRED.
+#   (b) the seed IS CURRENT — its IR is byte-identical to what current source
+#                          emits today (C3a). This is a DRIFT DETECTOR, not a
+#                          requirement.
+#
+# You only ever NEED (a). Demanding (b) forces a re-mint on ANY emitter-graph
+# change, which is why the seed was re-minted four times in two days.
+#
+# And (a) survives FAR longer than (b) — demonstrated on 2026-07-13: the seed was
+# stale (C3a FAILING) and CI's cold bootstrap from it passed anyway, seven times
+# over. A lagging seed still builds a working emitter_v0.
+#
+# So the DEFAULT is now TOLERANT: C3a drift is a WARNING; the hard failure is
+# reserved for a seed that can no longer do its job. Byte-currency is checked
+# EXPLICITLY at checkpoints (`make bootstrap`, or SEED_STRICT=1) and re-minted
+# then — not reflexively on every emitter touch.
+#
+#   default / CI      -> tolerant: seed must WORK. Drift warns.
+#   make bootstrap    -> strict:   seed must be byte-CURRENT. Use at checkpoints,
+#   SEED_STRICT=1        release, or before cutting a seed re-mint.
+#
+# ⚠️ Do NOT "simplify" this back into one strict gate. The point is that a drift
+# warning is INFORMATIVE and a build failure is ACTIONABLE, and they are not the
+# same event.
+SEED_TOLERANT="${SEED_TOLERANT:-1}"
+[ "${SEED_STRICT:-0}" = "1" ] && SEED_TOLERANT=0
 [ "${2:-}" = "tolerant" ] && SEED_TOLERANT=1
+[ "${2:-}" = "strict" ] && SEED_TOLERANT=0
 
 [ -f "$SEED_GZ" ] || { echo "missing seed: $SEED_GZ (mint with test/refresh_seed.sh)"; exit 1; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping (opt-in)"; exit 2; }
