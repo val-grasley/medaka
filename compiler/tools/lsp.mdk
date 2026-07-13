@@ -513,7 +513,7 @@ docSchemes runtimeSrc coreSrc src = match parseResult src
     let runtimeDecls = desugar (unwrapDecls (parseResult runtimeSrc))
     let coreDecls = desugar (unwrapDecls (parseResult coreSrc))
     let userDecls = desugar userRaw
-    Some (checkProgramSchemesWithRuntime runtimeDecls (coreDecls ++ userDecls))
+    Some (checkProgramSchemesWithRuntime runtimeDecls coreDecls userDecls)
 
 -- core.mdk always parses; unwrap its parseResult (defensive None → []).
 unwrapDecls : Result ParseError (List Decl) -> List Decl

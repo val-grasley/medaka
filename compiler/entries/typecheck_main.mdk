@@ -36,5 +36,5 @@ withRuntimeTarget rsrc targetPath = match readFile targetPath
   Ok src =>
     let desugared = desugar (parse src)
     let _ = setCoherenceUserDecls desugared
-    putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
+    putStr (checkToLinesWithRuntime (desugar (parse rsrc)) [] desugared)
   Err msg => ePutStrLn msg

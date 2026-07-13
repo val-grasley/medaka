@@ -25,6 +25,7 @@ aliasTableRef : Ref (List (String, (List String, Ty)))
 alignedMethodConstraintIds : String -> List (Int, Mono) -> <Mut> Option (List Int)
 allCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 allConcreteHeads : List Mono -> Bool
+allCoreFns : List String -> <Mut> Bool
 allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 allEVars : Expr -> List String
 allHeadArgsMatch : List (Ty, Mono) -> <Mut> Bool
@@ -132,7 +133,7 @@ checkEffectParams : List Decl -> <Mut> Unit
 checkEffectParamsDecl : Decl -> <Mut> Unit
 checkEffectParamsTy : Ty -> <Mut> Unit
 checkEffectParamsTys : List Ty -> <Mut> Unit
-checkErrorsWithRuntime : List Decl -> List Decl -> <Mut> Bool
+checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> Bool
 checkImplCompleteness : List Decl -> List Decl -> <Mut> Unit
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
@@ -166,10 +167,11 @@ checkOneImplObligation : List (String, List Ty, List Require) -> List (String, L
 checkPhantomMethods : List Decl -> <Mut> Unit
 checkProductAxes : String -> Param -> <Mut> Unit
 checkProductAxesGo : String -> List (String, Param) -> <Mut> Unit
-checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, String, Option Loc), List (String, Option Loc))
-checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
-checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramDiags : List Decl -> List Decl -> List Decl -> <Mut> (List (String, String, Option Loc), List (String, Option Loc))
+checkProgramSchemes : List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemesWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> <Mut> Unit
 checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> <Mut> Unit
 checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
@@ -179,7 +181,7 @@ checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
 checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> <Mut> Unit
 checkSuperImpls : List Decl -> List Decl -> <Mut> Unit
 checkToLines : List Decl -> <Mut> String
-checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
+checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> String
 checkUndeterminedObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
 clauseImplDictUser : Int -> ImplMethod -> List String
 clauseIsNonFunction : FunClause -> Bool
@@ -282,6 +284,7 @@ declTopFnNames : List Decl -> List String
 declaredEffects : Ty -> List Atom
 declaredPairOne : (String, Mono) -> <Mut> List (String, Int)
 declaredPairsFor : String -> List (String, List (String, Mono)) -> <Mut> List (String, Int)
+declsNonEmpty : List Decl -> Bool
 decodeAxis : String -> (String, Param)
 decodeAxisVal : String -> Param
 decodeProductParam : String -> Param
@@ -429,6 +432,10 @@ firstImplMethodLoc : List ImplMethod -> Option Loc
 firstOrZero : List Int -> Int
 firstTupleCallHint : List Mono -> <Mut> Option (String, Option (Loc, String))
 firstTvar : Mono -> Mono -> Int -> Option Mono
+flatCoreFnNamesRef : Ref (Map String Unit)
+flatGroupIsCore : List String -> <Mut> Bool
+flatShadowScopingRef : Ref Bool
+flatUserShadowNamesRef : Ref (List String)
 foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> <Mut> Mono
 foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> <Mut> Mono
 foldrFun : List Mono -> Mono -> Mono
@@ -575,7 +582,7 @@ inferFieldOfRecord : Mono -> String -> RecordInfo -> String -> <Mut> Mono
 inferHeadAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
 inferIf : TcEnv -> Expr -> Expr -> Expr -> <Mut> Mono
 inferImplBodies : TcEnv -> List Decl -> List String -> List Decl -> <Mut> Unit
-inferImplBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
+inferImplBodiesIfEnabledIn : TcEnv -> List Decl -> List Decl -> <Mut> Unit
 inferImplMethod : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> ImplMethod -> <Mut> Unit
 inferImplMethods : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> List ImplMethod -> <Mut> Unit
 inferInfix : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
@@ -1079,6 +1086,9 @@ schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Lo
 schemeObligationsRef : Ref (List (String, List (String, Int)))
 scopeArities : List ((String, String), List Int) -> Map String Unit -> List Decl -> List (String, List Int)
 scopeMethodArities : List ((String, String), List Int) -> Map String Unit -> List (String, List Int)
+scopeShadowsCore : Unit -> <Mut> Unit
+scopeShadowsForGroup : List String -> <Mut> Unit
+scopeShadowsUser : Unit -> <Mut> Unit
 seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> <Mut> Unit
 seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
 seedEffectDomains : Unit -> <Mut> Unit

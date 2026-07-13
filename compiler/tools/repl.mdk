@@ -63,7 +63,7 @@ export initSession : List Decl -> List Decl -> <Mut> Unit
 initSession runtimeDecls preludeDecls =
   let _ = setRef runtimeDeclsRef runtimeDecls
   let _ = setRef preludeDeclsRef preludeDecls
-  let prelSchemes = checkProgramSchemes preludeDecls
+  let prelSchemes = checkProgramSchemes [] preludeDecls
   let prelNames = map fst prelSchemes
   let _ = setRef preludeNamesRef prelNames
   let _ = setRef knownNamesRef prelNames
@@ -207,11 +207,11 @@ runPipeline combined =
   match resErrs
     e::_ => (map ppResError resErrs, [], [])
     [] =>
-      let (tcErrs, _) = checkProgramDiags runtimeDecls (preludeDecls ++ combined)
+      let (tcErrs, _) = checkProgramDiags runtimeDecls preludeDecls combined
       match tcErrs
         e::_ => (map ((_, m, _) => m) tcErrs, [], [])
         [] =>
-          let allSchemes = checkProgramSchemes (preludeDecls ++ combined)
+          let allSchemes = checkProgramSchemes preludeDecls combined
           let bindings = evalOneRootEnv preludeDecls ("__repl__", combined)
           ([], allSchemes, bindings)
 -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv

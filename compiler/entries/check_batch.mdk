@@ -48,7 +48,7 @@ cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 cleanReport runtimeP coreP raw desugared =
   let exWarns = exhaustToLinesWith (raw ++ runtimeP ++ coreP) raw
   let _ = setCoherenceUserDecls desugared
-  let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+  let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP) desugared
   joinNonEmpty exWarns schemes
 
 joinNonEmpty : String -> String -> String

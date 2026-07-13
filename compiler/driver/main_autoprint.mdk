@@ -122,6 +122,6 @@ wrapPrintln body = EApp (EVar "println") body
 export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, String, Option Loc)
 underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
   let _ = setCoherenceUserDecls entryDecls
-  let (tcErrs, _) = checkProgramDiags runtimeDecls (coreDecls ++ entryDecls)
+  let (tcErrs, _) = checkProgramDiags runtimeDecls coreDecls entryDecls
   tcErrs
 underivedMainDiags _ _ _ = []
