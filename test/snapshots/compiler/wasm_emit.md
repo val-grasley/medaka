@@ -1,5 +1,5 @@
 # META
-source_lines=7733
+source_lines=7685
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -216,6 +216,8 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodArityOf,
   methodIfaceOf,
+  ftPrefix,
+  labelFallthrough,
 }
 import backend.wasm_preamble.{
   preambleHeadLines,
@@ -2761,60 +2763,10 @@ emitClauseChainGo prog baseEnv name params arity ((CClause pats body)::rest) i =
     ++ ["end"]
     ++ emitClauseChainGo prog baseEnv name params arity rest (i + 1)
 
--- the prefix marking a fall-through sentinel CVar that carries its target block label:
--- `__ft__$cl_foo_0` → `br $cl_foo_0`.  Produced by labelFallthrough, consumed by
--- emitVarRef / emitAppRef / emitAppTail / emitRefTail.
-ftPrefix : String
-ftPrefix = "__ft__"
-
--- rewrite every `__fallthrough__` occurrence in a clause body to the label-carrying
--- sentinel `__ft__<label>`, so it lowers to `br <label>`.  Descends only the
--- constructs a guard chain produces (CIf / CLet / CBlock / CApp / CDecision arms);
--- does NOT enter a CLam (a closure owns its own clause scope and never contains a bare
--- fall-through for THIS clause).
-labelFallthrough : CExpr -> String -> CExpr
-labelFallthrough (e@(CVar x r)) label =
-  if x == "__fallthrough__" then
-    CVar (ftPrefix ++ label) r
-  else
-    e
-labelFallthrough (CApp f a) label =
-  CApp (labelFallthrough f label) (labelFallthrough a label)
-labelFallthrough (CIf c t f) label =
-  CIf
-    (labelFallthrough c label)
-    (labelFallthrough t label)
-    (labelFallthrough f label)
-labelFallthrough (CLet rf p e1 e2) label =
-  CLet rf p (labelFallthrough e1 label) (labelFallthrough e2 label)
-labelFallthrough (CLetGroup binds b) label =
-  CLetGroup binds (labelFallthrough b label)
-labelFallthrough (CBlock stmts) label =
-  CBlock (map (s => labelFallthroughStmt s label) stmts)
-labelFallthrough (CDecision scrut arms tree) label = CDecision
-  (labelFallthrough scrut label)
-  (map (a => labelFallthroughArm a label) arms)
-  tree
-labelFallthrough e label = e
-
-labelFallthroughStmt : CStmt -> String -> CStmt
-labelFallthroughStmt (CSExpr e) label = CSExpr (labelFallthrough e label)
-labelFallthroughStmt (CSLet rf p e) label =
-  CSLet rf p (labelFallthrough e label)
--- CSAssign (`:=`/setRef in a do-block, the Ref-mutability model): the assigned
--- expression is in tail-fallthrough position exactly like CSLet's RHS.
-labelFallthroughStmt (CSAssign x e) label =
-  CSAssign x (labelFallthrough e label)
-
-labelFallthroughArm : CArm -> String -> CArm
-labelFallthroughArm (CArm p gs b) label = CArm
-  p
-  (map (g => labelFallthroughGuard g label) gs)
-  (labelFallthrough b label)
-
-labelFallthroughGuard : CGuard -> String -> CGuard
-labelFallthroughGuard (CGBool e) label = CGBool (labelFallthrough e label)
-labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
+-- `ftPrefix` / `labelFallthrough` are the BACKEND-NEUTRAL sentinel-labelling pass —
+-- they now live in `backend/emit_support.mdk` and are shared with the LLVM emitter,
+-- which had reimplemented the same idea as a mutable "current label" Ref and
+-- MISCOMPILED a refutable pattern-guard clause because of it (see the comment there).
 
 -- generate (tests, binds, env) for a clause's parameter patterns against the
 -- synthetic positional params.  A `br clLabel` on a failed test falls to the next
@@ -7742,7 +7694,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "joinWith" false) (mem "reverseL" false) (mem "contains" false) (mem "filterList" false) (mem "lookupAssoc" false) (mem "listLen" false) (mem "maxI" false))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "SelfRef" true) (mem "trmcEligible" false) (mem "isCtorTail" false) (mem "isSelfSatApp" false) (mem "consTailArgs" false) (mem "ctorTailName" false) (mem "ctorTailLeadFields" false) (mem "ctorTailSelfIdx" false) (mem "DispGroup" true) (mem "dispRootOf" false) (mem "dispMembersOf" false) (mem "dispGroupOf" false) (mem "detectDispatchGroups" false) (mem "dispSpineParts" false) (mem "dispIsSatRootCall" false) (mem "dispNonDict" false) (mem "clauseArityOf" false) (mem "clauseBodyOf" false) (mem "armBody" false) (mem "allBoolGuards" false) (mem "lastStmtExpr" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "hashName" false))))
-(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodArityOf" false) (mem "methodIfaceOf" false))))
+(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodArityOf" false) (mem "methodIfaceOf" false) (mem "ftPrefix" false) (mem "labelFallthrough" false))))
 (DUse false (UseGroup ("backend" "wasm_preamble") ((mem "preambleHeadLines" false) (mem "closTypeLines" false) (mem "closApplyLines" false) (mem "ioByteImportLines" false) (mem "strTypeLines" false) (mem "ioRuntimeLines" false) (mem "ioStrRuntimeLines" false) (mem "stderrByteImportLines" false) (mem "stderrRuntimeLines" false) (mem "strLeafRuntimeLines" false) (mem "strConcatRuntimeLines" false) (mem "appendRuntimeLines" false) (mem "valueEqRuntimeLines" false) (mem "valueArithRuntimeLines" false) (mem "rngStateGlobalLines" false) (mem "rngRuntimeLines" false) (mem "hashRuntimeLines" false) (mem "hashStringRuntimeLines" false) (mem "floatFmtImportLines" false) (mem "floatRuntimeLines" false) (mem "hashFloatRuntimeLines" false) (mem "randomFloatRuntimeLines" false) (mem "floatStrImportLines" false) (mem "floatStrRuntimeLines" false) (mem "strSearchRuntimeLines" false) (mem "strCodecRuntimeLines" false) (mem "charFromCodeRuntimeLines" false) (mem "charClassRuntimeLines" false) (mem "ioHostImportLines" false) (mem "ioHostRuntimeLines" false) (mem "ioArgsRuntimeLines" false) (mem "fileBytesHostImportLines" false) (mem "fileBytesRuntimeLines" false))))
 (DData Private "WTy" () ((variant "WInt" (ConPos)) (variant "WBool" (ConPos)) (variant "WUnit" (ConPos)) (variant "WStr" (ConPos)) (variant "WRef" (ConPos)) (variant "WChar" (ConPos)) (variant "WFloat" (ConPos))) ())
 (DData Private "Prog" () ((variant "Prog" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyCon "Bool") (TyApp (TyCon "List") (TyCon "CImplEntry"))))) ())
@@ -8447,26 +8399,6 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitClauseChainGo" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))))
 (DFunDef false "emitClauseChainGo" (PWild PWild PWild PWild PWild (PList) PWild) (EApp (EApp (EVar "wasmTrap") (ELit (LString "E-NONEXHAUSTIVE-MATCH"))) (ELit (LString "non-exhaustive match"))))
 (DFunDef false "emitClauseChainGo" ((PVar "prog") (PVar "baseEnv") (PVar "name") (PVar "params") (PVar "arity") (PCons (PCon "CClause" (PVar "pats") (PVar "body")) (PVar "rest")) (PVar "i")) (EBlock (DoLet false false (PVar "clLabel") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$cl_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString "")))) (DoLet false false (PTuple (PVar "tests") (PVar "binds") (PVar "env")) (EApp (EApp (EApp (EApp (EApp (EVar "clausePatCodeEnv") (EVar "prog")) (EVar "baseEnv")) (EVar "pats")) (EVar "params")) (EVar "clLabel"))) (DoLet false false (PVar "body2") (EApp (EApp (EVar "labelFallthrough") (EVar "body")) (EVar "clLabel"))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (ELit (LString "block ")) (EVar "clLabel"))) (EApp (EVar "indent") (EBinOp "++" (EBinOp "++" (EVar "tests") (EVar "binds")) (EApp (EApp (EApp (EApp (EVar "emitRefTail") (EVar "prog")) (EVar "env")) (EVar "arity")) (EVar "body2"))))) (EListLit (ELit (LString "end")))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitClauseChainGo") (EVar "prog")) (EVar "baseEnv")) (EVar "name")) (EVar "params")) (EVar "arity")) (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))))
-(DTypeSig false "ftPrefix" (TyCon "String"))
-(DFunDef false "ftPrefix" () (ELit (LString "__ft__")))
-(DTypeSig false "labelFallthrough" (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyCon "CExpr"))))
-(DFunDef false "labelFallthrough" ((PAs "e" (PCon "CVar" (PVar "x") (PVar "r"))) (PVar "label")) (EIf (EBinOp "==" (EVar "x") (ELit (LString "__fallthrough__"))) (EApp (EApp (EVar "CVar") (EBinOp "++" (EVar "ftPrefix") (EVar "label"))) (EVar "r")) (EVar "e")))
-(DFunDef false "labelFallthrough" ((PCon "CApp" (PVar "f") (PVar "a")) (PVar "label")) (EApp (EApp (EVar "CApp") (EApp (EApp (EVar "labelFallthrough") (EVar "f")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "a")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CIf" (PVar "c") (PVar "t") (PVar "f")) (PVar "label")) (EApp (EApp (EApp (EVar "CIf") (EApp (EApp (EVar "labelFallthrough") (EVar "c")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "t")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "f")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CLet" (PVar "rf") (PVar "p") (PVar "e1") (PVar "e2")) (PVar "label")) (EApp (EApp (EApp (EApp (EVar "CLet") (EVar "rf")) (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e1")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "e2")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CLetGroup" (PVar "binds") (PVar "b")) (PVar "label")) (EApp (EApp (EVar "CLetGroup") (EVar "binds")) (EApp (EApp (EVar "labelFallthrough") (EVar "b")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CBlock" (PVar "stmts")) (PVar "label")) (EApp (EVar "CBlock") (EApp (EApp (EVar "map") (ELam ((PVar "s")) (EApp (EApp (EVar "labelFallthroughStmt") (EVar "s")) (EVar "label")))) (EVar "stmts"))))
-(DFunDef false "labelFallthrough" ((PCon "CDecision" (PVar "scrut") (PVar "arms") (PVar "tree")) (PVar "label")) (EApp (EApp (EApp (EVar "CDecision") (EApp (EApp (EVar "labelFallthrough") (EVar "scrut")) (EVar "label"))) (EApp (EApp (EVar "map") (ELam ((PVar "a")) (EApp (EApp (EVar "labelFallthroughArm") (EVar "a")) (EVar "label")))) (EVar "arms"))) (EVar "tree")))
-(DFunDef false "labelFallthrough" ((PVar "e") (PVar "label")) (EVar "e"))
-(DTypeSig false "labelFallthroughStmt" (TyFun (TyCon "CStmt") (TyFun (TyCon "String") (TyCon "CStmt"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSExpr" (PVar "e")) (PVar "label")) (EApp (EVar "CSExpr") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSLet" (PVar "rf") (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EApp (EVar "CSLet") (EVar "rf")) (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSAssign" (PVar "x") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CSAssign") (EVar "x")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DTypeSig false "labelFallthroughArm" (TyFun (TyCon "CArm") (TyFun (TyCon "String") (TyCon "CArm"))))
-(DFunDef false "labelFallthroughArm" ((PCon "CArm" (PVar "p") (PVar "gs") (PVar "b")) (PVar "label")) (EApp (EApp (EApp (EVar "CArm") (EVar "p")) (EApp (EApp (EVar "map") (ELam ((PVar "g")) (EApp (EApp (EVar "labelFallthroughGuard") (EVar "g")) (EVar "label")))) (EVar "gs"))) (EApp (EApp (EVar "labelFallthrough") (EVar "b")) (EVar "label"))))
-(DTypeSig false "labelFallthroughGuard" (TyFun (TyCon "CGuard") (TyFun (TyCon "String") (TyCon "CGuard"))))
-(DFunDef false "labelFallthroughGuard" ((PCon "CGBool" (PVar "e")) (PVar "label")) (EApp (EVar "CGBool") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughGuard" ((PCon "CGBind" (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CGBind") (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
 (DTypeSig false "clausePatCodeEnv" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "clausePatCodeEnv" ((PVar "prog") (PVar "baseEnv") (PVar "pats") (PVar "params") (PVar "clLabel")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "clausePatGo") (EVar "prog")) (EApp (EApp (EVar "zipPats") (EVar "pats")) (EVar "params"))) (EVar "clLabel")) (EListLit)) (EListLit)) (EVar "baseEnv")))
 (DTypeSig false "clausePatGo" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "Pat") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))))))))
@@ -9749,7 +9681,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "joinWith" false) (mem "reverseL" false) (mem "contains" false) (mem "filterList" false) (mem "lookupAssoc" false) (mem "listLen" false) (mem "maxI" false))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "SelfRef" true) (mem "trmcEligible" false) (mem "isCtorTail" false) (mem "isSelfSatApp" false) (mem "consTailArgs" false) (mem "ctorTailName" false) (mem "ctorTailLeadFields" false) (mem "ctorTailSelfIdx" false) (mem "DispGroup" true) (mem "dispRootOf" false) (mem "dispMembersOf" false) (mem "dispGroupOf" false) (mem "detectDispatchGroups" false) (mem "dispSpineParts" false) (mem "dispIsSatRootCall" false) (mem "dispNonDict" false) (mem "clauseArityOf" false) (mem "clauseBodyOf" false) (mem "armBody" false) (mem "allBoolGuards" false) (mem "lastStmtExpr" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "hashName" false))))
-(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodArityOf" false) (mem "methodIfaceOf" false))))
+(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodArityOf" false) (mem "methodIfaceOf" false) (mem "ftPrefix" false) (mem "labelFallthrough" false))))
 (DUse false (UseGroup ("backend" "wasm_preamble") ((mem "preambleHeadLines" false) (mem "closTypeLines" false) (mem "closApplyLines" false) (mem "ioByteImportLines" false) (mem "strTypeLines" false) (mem "ioRuntimeLines" false) (mem "ioStrRuntimeLines" false) (mem "stderrByteImportLines" false) (mem "stderrRuntimeLines" false) (mem "strLeafRuntimeLines" false) (mem "strConcatRuntimeLines" false) (mem "appendRuntimeLines" false) (mem "valueEqRuntimeLines" false) (mem "valueArithRuntimeLines" false) (mem "rngStateGlobalLines" false) (mem "rngRuntimeLines" false) (mem "hashRuntimeLines" false) (mem "hashStringRuntimeLines" false) (mem "floatFmtImportLines" false) (mem "floatRuntimeLines" false) (mem "hashFloatRuntimeLines" false) (mem "randomFloatRuntimeLines" false) (mem "floatStrImportLines" false) (mem "floatStrRuntimeLines" false) (mem "strSearchRuntimeLines" false) (mem "strCodecRuntimeLines" false) (mem "charFromCodeRuntimeLines" false) (mem "charClassRuntimeLines" false) (mem "ioHostImportLines" false) (mem "ioHostRuntimeLines" false) (mem "ioArgsRuntimeLines" false) (mem "fileBytesHostImportLines" false) (mem "fileBytesRuntimeLines" false))))
 (DData Private "WTy" () ((variant "WInt" (ConPos)) (variant "WBool" (ConPos)) (variant "WUnit" (ConPos)) (variant "WStr" (ConPos)) (variant "WRef" (ConPos)) (variant "WChar" (ConPos)) (variant "WFloat" (ConPos))) ())
 (DData Private "Prog" () ((variant "Prog" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyCon "Bool") (TyApp (TyCon "List") (TyCon "CImplEntry"))))) ())
@@ -10454,26 +10386,6 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitClauseChainGo" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))))))))
 (DFunDef false "emitClauseChainGo" (PWild PWild PWild PWild PWild (PList) PWild) (EApp (EApp (EVar "wasmTrap") (ELit (LString "E-NONEXHAUSTIVE-MATCH"))) (ELit (LString "non-exhaustive match"))))
 (DFunDef false "emitClauseChainGo" ((PVar "prog") (PVar "baseEnv") (PVar "name") (PVar "params") (PVar "arity") (PCons (PCon "CClause" (PVar "pats") (PVar "body")) (PVar "rest")) (PVar "i")) (EBlock (DoLet false false (PVar "clLabel") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "$cl_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString "")))) (DoLet false false (PTuple (PVar "tests") (PVar "binds") (PVar "env")) (EApp (EApp (EApp (EApp (EApp (EVar "clausePatCodeEnv") (EVar "prog")) (EVar "baseEnv")) (EVar "pats")) (EVar "params")) (EVar "clLabel"))) (DoLet false false (PVar "body2") (EApp (EApp (EVar "labelFallthrough") (EVar "body")) (EVar "clLabel"))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (ELit (LString "block ")) (EVar "clLabel"))) (EApp (EVar "indent") (EBinOp "++" (EBinOp "++" (EVar "tests") (EVar "binds")) (EApp (EApp (EApp (EApp (EVar "emitRefTail") (EVar "prog")) (EVar "env")) (EVar "arity")) (EVar "body2"))))) (EListLit (ELit (LString "end")))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitClauseChainGo") (EVar "prog")) (EVar "baseEnv")) (EVar "name")) (EVar "params")) (EVar "arity")) (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))))
-(DTypeSig false "ftPrefix" (TyCon "String"))
-(DFunDef false "ftPrefix" () (ELit (LString "__ft__")))
-(DTypeSig false "labelFallthrough" (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyCon "CExpr"))))
-(DFunDef false "labelFallthrough" ((PAs "e" (PCon "CVar" (PVar "x") (PVar "r"))) (PVar "label")) (EIf (EBinOp "==" (EVar "x") (ELit (LString "__fallthrough__"))) (EApp (EApp (EVar "CVar") (EBinOp "++" (EVar "ftPrefix") (EVar "label"))) (EVar "r")) (EVar "e")))
-(DFunDef false "labelFallthrough" ((PCon "CApp" (PVar "f") (PVar "a")) (PVar "label")) (EApp (EApp (EVar "CApp") (EApp (EApp (EVar "labelFallthrough") (EVar "f")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "a")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CIf" (PVar "c") (PVar "t") (PVar "f")) (PVar "label")) (EApp (EApp (EApp (EVar "CIf") (EApp (EApp (EVar "labelFallthrough") (EVar "c")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "t")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "f")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CLet" (PVar "rf") (PVar "p") (PVar "e1") (PVar "e2")) (PVar "label")) (EApp (EApp (EApp (EApp (EVar "CLet") (EVar "rf")) (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e1")) (EVar "label"))) (EApp (EApp (EVar "labelFallthrough") (EVar "e2")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CLetGroup" (PVar "binds") (PVar "b")) (PVar "label")) (EApp (EApp (EVar "CLetGroup") (EVar "binds")) (EApp (EApp (EVar "labelFallthrough") (EVar "b")) (EVar "label"))))
-(DFunDef false "labelFallthrough" ((PCon "CBlock" (PVar "stmts")) (PVar "label")) (EApp (EVar "CBlock") (EApp (EApp (EMethodRef "map") (ELam ((PVar "s")) (EApp (EApp (EVar "labelFallthroughStmt") (EVar "s")) (EVar "label")))) (EVar "stmts"))))
-(DFunDef false "labelFallthrough" ((PCon "CDecision" (PVar "scrut") (PVar "arms") (PVar "tree")) (PVar "label")) (EApp (EApp (EApp (EVar "CDecision") (EApp (EApp (EVar "labelFallthrough") (EVar "scrut")) (EVar "label"))) (EApp (EApp (EMethodRef "map") (ELam ((PVar "a")) (EApp (EApp (EVar "labelFallthroughArm") (EVar "a")) (EVar "label")))) (EVar "arms"))) (EVar "tree")))
-(DFunDef false "labelFallthrough" ((PVar "e") (PVar "label")) (EVar "e"))
-(DTypeSig false "labelFallthroughStmt" (TyFun (TyCon "CStmt") (TyFun (TyCon "String") (TyCon "CStmt"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSExpr" (PVar "e")) (PVar "label")) (EApp (EVar "CSExpr") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSLet" (PVar "rf") (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EApp (EVar "CSLet") (EVar "rf")) (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughStmt" ((PCon "CSAssign" (PVar "x") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CSAssign") (EVar "x")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DTypeSig false "labelFallthroughArm" (TyFun (TyCon "CArm") (TyFun (TyCon "String") (TyCon "CArm"))))
-(DFunDef false "labelFallthroughArm" ((PCon "CArm" (PVar "p") (PVar "gs") (PVar "b")) (PVar "label")) (EApp (EApp (EApp (EVar "CArm") (EVar "p")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "g")) (EApp (EApp (EVar "labelFallthroughGuard") (EVar "g")) (EVar "label")))) (EVar "gs"))) (EApp (EApp (EVar "labelFallthrough") (EVar "b")) (EVar "label"))))
-(DTypeSig false "labelFallthroughGuard" (TyFun (TyCon "CGuard") (TyFun (TyCon "String") (TyCon "CGuard"))))
-(DFunDef false "labelFallthroughGuard" ((PCon "CGBool" (PVar "e")) (PVar "label")) (EApp (EVar "CGBool") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
-(DFunDef false "labelFallthroughGuard" ((PCon "CGBind" (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CGBind") (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
 (DTypeSig false "clausePatCodeEnv" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "clausePatCodeEnv" ((PVar "prog") (PVar "baseEnv") (PVar "pats") (PVar "params") (PVar "clLabel")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "clausePatGo") (EVar "prog")) (EApp (EApp (EVar "zipPats") (EVar "pats")) (EVar "params"))) (EVar "clLabel")) (EListLit)) (EListLit)) (EVar "baseEnv")))
 (DTypeSig false "clausePatGo" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "Pat") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))))))))

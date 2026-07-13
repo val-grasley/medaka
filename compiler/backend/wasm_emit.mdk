@@ -212,6 +212,8 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodArityOf,
   methodIfaceOf,
+  ftPrefix,
+  labelFallthrough,
 }
 import backend.wasm_preamble.{
   preambleHeadLines,
@@ -2757,60 +2759,10 @@ emitClauseChainGo prog baseEnv name params arity ((CClause pats body)::rest) i =
     ++ ["end"]
     ++ emitClauseChainGo prog baseEnv name params arity rest (i + 1)
 
--- the prefix marking a fall-through sentinel CVar that carries its target block label:
--- `__ft__$cl_foo_0` → `br $cl_foo_0`.  Produced by labelFallthrough, consumed by
--- emitVarRef / emitAppRef / emitAppTail / emitRefTail.
-ftPrefix : String
-ftPrefix = "__ft__"
-
--- rewrite every `__fallthrough__` occurrence in a clause body to the label-carrying
--- sentinel `__ft__<label>`, so it lowers to `br <label>`.  Descends only the
--- constructs a guard chain produces (CIf / CLet / CBlock / CApp / CDecision arms);
--- does NOT enter a CLam (a closure owns its own clause scope and never contains a bare
--- fall-through for THIS clause).
-labelFallthrough : CExpr -> String -> CExpr
-labelFallthrough (e@(CVar x r)) label =
-  if x == "__fallthrough__" then
-    CVar (ftPrefix ++ label) r
-  else
-    e
-labelFallthrough (CApp f a) label =
-  CApp (labelFallthrough f label) (labelFallthrough a label)
-labelFallthrough (CIf c t f) label =
-  CIf
-    (labelFallthrough c label)
-    (labelFallthrough t label)
-    (labelFallthrough f label)
-labelFallthrough (CLet rf p e1 e2) label =
-  CLet rf p (labelFallthrough e1 label) (labelFallthrough e2 label)
-labelFallthrough (CLetGroup binds b) label =
-  CLetGroup binds (labelFallthrough b label)
-labelFallthrough (CBlock stmts) label =
-  CBlock (map (s => labelFallthroughStmt s label) stmts)
-labelFallthrough (CDecision scrut arms tree) label = CDecision
-  (labelFallthrough scrut label)
-  (map (a => labelFallthroughArm a label) arms)
-  tree
-labelFallthrough e label = e
-
-labelFallthroughStmt : CStmt -> String -> CStmt
-labelFallthroughStmt (CSExpr e) label = CSExpr (labelFallthrough e label)
-labelFallthroughStmt (CSLet rf p e) label =
-  CSLet rf p (labelFallthrough e label)
--- CSAssign (`:=`/setRef in a do-block, the Ref-mutability model): the assigned
--- expression is in tail-fallthrough position exactly like CSLet's RHS.
-labelFallthroughStmt (CSAssign x e) label =
-  CSAssign x (labelFallthrough e label)
-
-labelFallthroughArm : CArm -> String -> CArm
-labelFallthroughArm (CArm p gs b) label = CArm
-  p
-  (map (g => labelFallthroughGuard g label) gs)
-  (labelFallthrough b label)
-
-labelFallthroughGuard : CGuard -> String -> CGuard
-labelFallthroughGuard (CGBool e) label = CGBool (labelFallthrough e label)
-labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
+-- `ftPrefix` / `labelFallthrough` are the BACKEND-NEUTRAL sentinel-labelling pass —
+-- they now live in `backend/emit_support.mdk` and are shared with the LLVM emitter,
+-- which had reimplemented the same idea as a mutable "current label" Ref and
+-- MISCOMPILED a refutable pattern-guard clause because of it (see the comment there).
 
 -- generate (tests, binds, env) for a clause's parameter patterns against the
 -- synthetic positional params.  A `br clLabel` on a failed test falls to the next
