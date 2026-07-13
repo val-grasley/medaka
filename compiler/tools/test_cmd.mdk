@@ -377,7 +377,7 @@ lookupRawLine name ((n, l, _)::rest)
 -- prop phase, each result is printed AS its body is evaluated (not batched), so a
 -- body that aborts the run still leaves the tests that already passed on screen.
 -- Returns True iff every test passed.
-reportTests : String -> List (String, Value) -> List (String, Int, Expr) -> <IO, Mut> Bool
+reportTests : String -> List (String, Value e) -> List (String, Int, Expr) -> <IO, Mut> Bool
 reportTests target env tests =
   let _ = putStrLn ("running tests in " ++ target)
   let (passed, failed, errors) = runTestLoop target env tests 0 0 0
@@ -387,7 +387,7 @@ reportTests target env tests =
   let _ = putStr "\n"
   failed == 0 && errors == 0
 
-runTestLoop : String -> List (String, Value) -> List (String, Int, Expr) -> Int -> Int -> Int -> <IO, Mut> (Int, Int, Int)
+runTestLoop : String -> List (String, Value e) -> List (String, Int, Expr) -> Int -> Int -> Int -> <IO, Mut> (Int, Int, Int)
 runTestLoop _ _ [] passed failed errors = (passed, failed, errors)
 runTestLoop target env ((name, line, body)::rest) passed failed errors =
   let loc = "\{target}:\{intToString line}"
