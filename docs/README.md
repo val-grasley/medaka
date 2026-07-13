@@ -26,11 +26,11 @@ What parses, what it means, formal semantics. Read here first for "does X exist 
 |-----|------------|--------|
 | [`DICT-SEMANTICS.md`](spec/DICT-SEMANTICS.md) | Dictionary-Passing Semantics for Medaka Interfaces | specification |
 | [`EFFECTS-SEMANTICS.md`](spec/EFFECTS-SEMANTICS.md) | Effect-and-Capability Semantics for Medaka | specification |
-| [`language-design.md`](spec/language-design.md) | Medaka Language Design Document | PARTIAL |
 | [`LAYOUT-SEMANTICS.md`](spec/LAYOUT-SEMANTICS.md) | LAYOUT-SEMANTICS.md — Medaka's layout rule, formalized | OPEN |
 | [`SHADOW-SEMANTICS.md`](spec/SHADOW-SEMANTICS.md) | Declaration-Shadowing Semantics (standalone fn ⇄ interface method) | PARTIAL |
 | [`STYLE.md`](spec/STYLE.md) | Medaka style guide | — |
 | [`SYNTAX.md`](spec/SYNTAX.md) | SYNTAX.md — Medaka construct cheat-sheet | — |
+| [`language-design.md`](spec/language-design.md) | Medaka Language Design Document | PARTIAL |
 
 ### guide — learning path
 
@@ -119,17 +119,17 @@ What's in the standard library, what's planned, module-by-module status.
 | [`TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`](../compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md) | Tuple as a real type constructor — design doc | IMPLEMENTED |
 | [`TYPE-ALIAS-EXPANSION-DESIGN.md`](../compiler/TYPE-ALIAS-EXPANSION-DESIGN.md) | Type-Alias Expansion — Design | IMPLEMENTED |
 | [`TYPE-AWARE-LINT-DESIGN.md`](../compiler/TYPE-AWARE-LINT-DESIGN.md) | Type-Aware Lint Tier — Design | OPEN |
+| [`TYPE-ERROR-SPAN-DESIGN.md`](../compiler/TYPE-ERROR-SPAN-DESIGN.md) | Type-error span precision — design | IMPLEMENTED |
 | [`TYPECHECK-AUDIT.md`](../compiler/TYPECHECK-AUDIT.md) | Selfhost Typechecker Audit — 2026-06-09 | IMPLEMENTED |
 | [`TYPECHECK-ERROR-FRAMING-DESIGN.md`](../compiler/TYPECHECK-ERROR-FRAMING-DESIGN.md) | TYPECHECK ERROR FRAMING — Design (Tier-3 "typecheck mis-framing" reservoir) | IMPLEMENTED |
 | [`TYPECHECK-SIGNATURE-CONSTRAINT-DESIGN.md`](../compiler/TYPECHECK-SIGNATURE-CONSTRAINT-DESIGN.md) | Signature Constraint Soundness — Design + Blast-Radius Census | IMPLEMENTED |
-| [`TYPE-ERROR-SPAN-DESIGN.md`](../compiler/TYPE-ERROR-SPAN-DESIGN.md) | Type-error span precision — design | IMPLEMENTED |
 | [`VALUE-RESTRICTION-DESIGN.md`](../compiler/VALUE-RESTRICTION-DESIGN.md) | Generalizing constructor / record applications of values (value-restriction relaxation) | IMPLEMENTED |
 | [`WASM-FLOAT-TYPING-DESIGN.md`](../compiler/WASM-FLOAT-TYPING-DESIGN.md) | WASM-FLOAT-TYPING-DESIGN — the principled fix for W-SQLITE-4 | IMPLEMENTED |
-| [`WASMGC-DESIGN.md`](../compiler/WASMGC-DESIGN.md) | WASMGC-DESIGN.md — WasmGC backend implementation plan | IMPLEMENTED |
-| [`WASMGC-TRMC-DESIGN.md`](../compiler/WASMGC-TRMC-DESIGN.md) | WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5) | IMPLEMENTED |
 | [`WASM-POLY-NUM-DESIGN.md`](../compiler/WASM-POLY-NUM-DESIGN.md) | WASM-POLY-NUM-DESIGN — closing the wasm polymorphic-`Num` arithmetic gap | IMPLEMENTED |
 | [`WASM-SELFHOST-GAPS.md`](../compiler/WASM-SELFHOST-GAPS.md) | WasmGC self-host gap census | IMPLEMENTED |
 | [`WASM-SELFHOST-ROADMAP.md`](../compiler/WASM-SELFHOST-ROADMAP.md) | WASM-SELFHOST-ROADMAP.md — driving the WasmGC backend to compile the compiler | IMPLEMENTED |
+| [`WASMGC-DESIGN.md`](../compiler/WASMGC-DESIGN.md) | WASMGC-DESIGN.md — WasmGC backend implementation plan | IMPLEMENTED |
+| [`WASMGC-TRMC-DESIGN.md`](../compiler/WASMGC-TRMC-DESIGN.md) | WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5) | IMPLEMENTED |
 | [`WS2-REKEY-DIAGNOSIS.md`](../compiler/WS2-REKEY-DIAGNOSIS.md) | WS-2 full re-key — diagnosis & deferral (module-qualified dict-arity identity) | PARTIAL |
 
 ### archive — closed / historical

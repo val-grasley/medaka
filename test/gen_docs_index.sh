@@ -1,4 +1,12 @@
 #!/bin/sh
+
+# Byte-determinism: `sort` is LOCALE-DEPENDENT. Under en_US.UTF-8 collation ignores
+# hyphens, so TYPE-ERROR-SPAN sorts AFTER TYPECHECK-AUDIT; under C it sorts before.
+# The dev box and the CI runner disagreed, so `make docs-index` produced a DIFFERENT
+# file on each — and the CI drift check (which regenerates and diffs) caught it.
+# Pin the collation or the index is not reproducible, and "generated" means nothing.
+LC_ALL=C
+export LC_ALL
 # test/gen_docs_index.sh — generate docs/README.md from every doc's H1 + Status
 # banner. Run via `make docs-index`.
 #
