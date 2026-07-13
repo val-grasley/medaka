@@ -73,6 +73,10 @@ fi
 #   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs golden)
 #   llvm_emit_typed_main  — diff_compiler_llvm_typed.sh
 #   llvm_emit_modules_main — diff_compiler_llvm_modules.sh
+#   eval_autoprint_main   — diff_compiler_engines.sh    (the INTERPRETER arm of the
+#                           3-engine differential: `medaka run`'s exact eval path plus
+#                           driver/main_autoprint's value-main wrap, so eval honours the
+#                           same auto-print contract `medaka build` and wasm_emit do)
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
 #   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
 #   parse_main            — diff_compiler_parse.sh
@@ -110,7 +114,7 @@ fi
 ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
-eval_typed_modules_main eval_modules_main \
+eval_typed_modules_main eval_modules_main eval_autoprint_main \
 core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core_ir_modules_main \
 llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \

@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# diff_compiler_engines.sh — the THREE-ENGINE differential gate (TESTING-DESIGN.md §4.4).
+#
+# Medaka owns three independent implementations of its own semantics:
+#
+#   eval    the tree-walking interpreter   compiler/eval/eval.mdk         (`medaka run`)
+#   native  the LLVM backend               compiler/backend/llvm_emit.mdk (`medaka build`)
+#   wasm    the WasmGC backend             compiler/backend/wasm_emit.mdk
+#
+# …and, before this gate, no program in the tree was ever compared across all three.
+# The one two-way check that existed (diff_compiler_llvm.sh) diffs the native
+# binary's stdout against a `<fixture>.eval.golden` FILE — a frozen capture of the
+# interpreter, taken from the OCaml interpreter that was deleted 2026-06-26.  So a
+# bug that got captured became the *expected* answer for the backend too.  This gate
+# removes that circularity: it runs all three engines LIVE on the same source and
+# diffs them against EACH OTHER.  No golden file mediates anything.
+#
+#   for each fixture f:   eval(f) == native(f) == wasm(f)
+#
+# Corpus: the UNION of test/llvm_fixtures/ (195) + test/wasm/fixtures/ (151) = 346.
+# Before this gate the two backends were validated on essentially disjoint corpora
+# (5 basenames in common) — which is exactly why 7 of the 22 known divergences are
+# wasm bugs on fixtures only the LLVM corpus ever had.
+#
+# ── Three tiers ───────────────────────────────────────────────────────────────
+#   T1  eval == native   over every fixture both engines can run   (no golden)
+#   T2  native == wasm   over every fixture both engines can run
+#   T3  all three agree                                            (headline)
+#
+# ── The known-failure ledger (test/engine_divergence.txt) ─────────────────────
+# The 22 real divergences and the engine-unavailability cases are NOT skipped.  Each
+# is an EXPLICIT ledger entry asserting the CURRENT (wrong) behaviour — rustc's
+# `tests/crashes` model.  The gate fails BOTH ways:
+#
+#   * an un-ledgered disagreement            → FAIL (regression)
+#   * a ledgered entry that starts PASSING   → FAIL ("promote it: delete the line")
+#
+# That second property is the whole point, and a plain skip-list cannot do it.  A
+# silent skip is how this suite already lies to itself (TESTING-DESIGN.md §2.3).
+# The per-entry diagnosis lives in test/ENGINE-DIVERGENCE.md.
+#
+# ── The auto-print contract (why there is an `eval_autoprint_main` probe) ──────
+# Nearly every fixture in both corpora is a bare VALUE main (`main = 1 + 2`).
+# `medaka build` rewrites that to `main = println <e>` (driver/main_autoprint.mdk)
+# and the WasmGC emitter mirrors the same auto-print — but `medaka run` REFUSES a
+# value main by design ("'main' must be a value of type Unit").  That is a CLI/UX
+# decision, not a semantic difference, so using `medaka run` verbatim would report
+# every fixture as a spurious three-way disagreement.  The interpreter arm is
+# therefore compiler/entries/eval_autoprint_main.mdk = `medaka run`'s exact
+# load→elaborate→evalModules path PLUS the same auto-print wrap.  Nothing else about
+# the eval path differs from `medaka run`'s.
+#
+# ── Arms ──────────────────────────────────────────────────────────────────────
+#   eval    test/bin/eval_autoprint_main <runtime> <core> <f> <dir(f)> <stdlib>
+#   native  medaka build --allow-internal <f> -o <UNIQUE>.bin && <UNIQUE>.bin
+#   wasm    test/bin/wasm_emit_main <f> | wasm-tools parse+validate | node run.js
+#
+# The wasm arm uses the PRELUDE-FREE annotate entry (wasm_emit_main), the same one
+# test/wasm/diff_wasm.sh uses.  The real-prelude WasmGC path (wasm_emit_modules_main)
+# still has the point-free-impl eta-expansion gap documented in diff_wasm_modules.sh,
+# so it cannot run this corpus.
+#
+# ⚠️ The native arm's `-o` basename MUST be unique per fixture.  build_cmd.mdk derives
+# its scratch IR path from the output BASENAME, not the full path
+# (`/tmp/medaka_build_<baseOf outPath>.ll`), so N concurrent builds that all write
+# `-o <somedir>/bin` fight over `/tmp/medaka_build_bin.ll` and silently produce each
+# other's programs.  This gate hit exactly that: a stable-looking 20-vs-8 "backend
+# disagreement" that was really one worker's IR linked into another's binary.  The
+# unique-basename workaround below stays correct even once build_cmd is fixed.
+#
+# ── Exit ──────────────────────────────────────────────────────────────────────
+#   0  every fixture matches its expected signature (clean, or ledgered-as-known)
+#   1  a regression, or a ledgered known-failure that now passes (promote it)
+#   2  ONLY for a genuine toolchain absence, worded to match run_gates.sh's
+#      LEGIT_SKIP_RE.  A missing test/bin/* oracle exits 2 with a deliberately
+#      NON-matching message, so run_gates reclassifies it as FAIL* (phantom skip) —
+#      an unbuilt oracle means zero comparisons ran: infra rot, not a skip.
+#   The gate never exits 0 having compared nothing (see the ZERO-COMPARISON checks).
+#
+# Usage:  bash test/diff_compiler_engines.sh
+#         JOBS=8 bash test/diff_compiler_engines.sh
+#         VERBOSE=1 bash test/diff_compiler_engines.sh    # every fixture's signature
+#         CAPTURE=1 bash test/diff_compiler_engines.sh    # rewrite the ledger (review the diff!)
+#
+# run_gates.sh invokes every gate as `sh <gate>`, and /bin/sh is dash on Debian.  This
+# gate needs bash (`${key//\//__}` substitution, `IFS=$'\t' read`), so re-exec under
+# bash when we were not started by it.  Without this the gate dies with "Bad
+# substitution" and exit 2 — which run_gates would (correctly) call a phantom skip.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MEDAKA="$ROOT/medaka"
+EMITTER="$ROOT/medaka_emitter"
+EVALBIN="$ROOT/test/bin/eval_autoprint_main"
+WASMBIN="$ROOT/test/bin/wasm_emit_main"
+RUNTIME="$ROOT/stdlib/runtime.mdk"
+CORE="$ROOT/stdlib/core.mdk"
+STDLIB="$ROOT/stdlib"
+RUNJS="$ROOT/test/wasm/run.js"
+LEDGER="$ROOT/test/engine_divergence.txt"
+TIMEOUT="${TIMEOUT:-60}"
+
+run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no coreutils on mac)
+
+# ── Per-fixture worker ────────────────────────────────────────────────────────
+# Writes $RESULTDIR/<slug>.sig :  <key> \t <signature> \t <t1> \t <t2> \t <t3>
+# signature = "<en>:<nw>:<ew>:<eval>:<native>:<wasm>" — the three PAIRWISE verdicts
+# (eq | ne | na) followed by the three arm availabilities (ran | na).  Clean =
+# "eq:eq:eq:ran:ran:ran".  Plus <slug>.detail (the three outputs + why an arm is n/a).
+if [ "${1:-}" = "--one" ]; then
+  f="$2"
+  # Key by CORPUS + basename: 5 basenames (adt_option, fn_factorial, fn_gcd,
+  # fn_tailsum, global_chain) exist in BOTH corpora as different files.
+  case "$f" in
+    */llvm_fixtures/*) key="llvm/$(basename "$f" .mdk)" ;;
+    */wasm/fixtures/*) key="wasm/$(basename "$f" .mdk)" ;;
+    *)                 key="other/$(basename "$f" .mdk)" ;;
+  esac
+  slug="${key//\//__}"
+  W="$WORKDIR/$slug"; mkdir -p "$W"
+  : >"$W/eval.out"; : >"$W/native.out"; : >"$W/wasm.out"
+  : >"$W/eval.err"; : >"$W/native.err"; : >"$W/wasm.err"
+
+  # -- eval -------------------------------------------------------------------
+  # `ran` unless the interpreter raised its own runtime error.  Today ANY internal
+  # E-* (E-PANIC / E-STACK-OVERFLOW / E-INDEX-OOB) means the interpreter could not
+  # carry the program to completion — it has no `exit` primitive, so a nonzero exit
+  # is never a program-level exit.  Each such fixture is ledgered with its reason.
+  eva=ran
+  run_t "$TIMEOUT" "$EVALBIN" "$RUNTIME" "$CORE" "$f" "$(dirname "$f")" "$STDLIB" \
+    >"$W/eval.out" 2>"$W/eval.err" || true
+  grep -q 'runtime error \[E-' "$W/eval.err" && eva=na
+
+  # -- native -----------------------------------------------------------------
+  # `ran` = a program was produced and executed, whatever its exit code (the abort_*
+  # fixtures legitimately exit nonzero with their stdout already flushed).
+  nat=ran
+  if ! run_t "$TIMEOUT" "$MEDAKA" build --allow-internal "$f" -o "$W/$slug.bin" \
+        >"$W/native.err" 2>&1; then
+    nat=na
+  else
+    run_t "$TIMEOUT" "$W/$slug.bin" >"$W/native.out" 2>>"$W/native.err" || true
+  fi
+
+  # -- wasm -------------------------------------------------------------------
+  # `na` = the emitter could not produce a module that assembles and validates.  A
+  # module that validates but TRAPS at run counts as `ran` (empty stdout): a trap is
+  # a real disagreement with the other engines, not an unavailability.
+  wsm=ran
+  if [ "$WASM_OK" != 1 ]; then
+    wsm=off
+  elif ! run_t "$TIMEOUT" "$WASMBIN" "$f" >"$W/w.wat" 2>>"$W/wasm.err"; then
+    wsm=na; echo "the wasm emitter failed on this fixture" >>"$W/wasm.err"
+  elif ! wasm-tools parse "$W/w.wat" -o "$W/w.wasm" 2>>"$W/wasm.err"; then
+    wsm=na; echo "wasm-tools parse rejected the emitted WAT" >>"$W/wasm.err"
+  elif ! wasm-tools validate --features=all "$W/w.wasm" 2>>"$W/wasm.err"; then
+    wsm=na; echo "wasm-tools validate rejected the emitted module" >>"$W/wasm.err"
+  else
+    run_t "$TIMEOUT" "$NODE" "$RUNJS" "$W/w.wasm" >"$W/wasm.out" 2>>"$W/wasm.err" || true
+  fi
+
+  # -- compare ----------------------------------------------------------------
+  # The signature carries all THREE pairwise verdicts, not one collapsed "agree"
+  # flag.  That matters: a collapsed flag cannot distinguish "eval disagrees with
+  # native" from "only wasm disagrees", so when the wasm arm is unavailable the gate
+  # could not soundly decide what to still enforce — and would either drop T1
+  # silently or fire spurious regressions.  Six independently-maskable fields fix it.
+  #
+  #   <en>:<nw>:<ew>:<e>:<n>:<w>     pair ∈ eq | ne | na     arm ∈ ran | na
+  #
+  # A clean fixture is  eq:eq:eq:ran:ran:ran  (the default for anything un-ledgered).
+  pair() {  # pair <armA> <armB> <fileA> <fileB>
+    if [ "$1" != ran ] || [ "$2" != ran ]; then echo na
+    elif cmp -s "$3" "$4"; then echo eq
+    else echo ne; fi
+  }
+  en=$(pair "$eva" "$nat" "$W/eval.out"   "$W/native.out")
+  nw=$(pair "$nat" "$wsm" "$W/native.out" "$W/wasm.out")
+  ew=$(pair "$eva" "$wsm" "$W/eval.out"   "$W/wasm.out")
+
+  # tier verdicts (pass/fail/na) for the tallies
+  case "$en" in eq) t1=pass ;; ne) t1=fail ;; *) t1=na ;; esac
+  case "$nw" in eq) t2=pass ;; ne) t2=fail ;; *) t2=na ;; esac
+  t3=na
+  if [ "$en" != na ] && [ "$nw" != na ] && [ "$ew" != na ]; then
+    t3=pass
+    [ "$en" = eq ] && [ "$nw" = eq ] && [ "$ew" = eq ] || t3=fail
+  fi
+
+  printf '%s\t%s:%s:%s:%s:%s:%s\t%s\t%s\t%s\n' \
+    "$key" "$en" "$nw" "$ew" "$eva" "$nat" "$wsm" "$t1" "$t2" "$t3" > "$RESULTDIR/$slug.sig"
+
+  {
+    printf '  eval   [%-3s] %s\n' "$eva" "$(head -c 200 "$W/eval.out"   | tr '\n' '|')"
+    printf '  native [%-3s] %s\n' "$nat" "$(head -c 200 "$W/native.out" | tr '\n' '|')"
+    printf '  wasm   [%-3s] %s\n' "$wsm" "$(head -c 200 "$W/wasm.out"   | tr '\n' '|')"
+    [ "$eva" = na ] && printf '  eval-why:   %s\n' "$(grep -m1 'runtime error' "$W/eval.err")"
+    [ "$nat" = na ] && printf '  native-why: %s\n' "$(head -1 "$W/native.err")"
+    [ "$wsm" = na ] && printf '  wasm-why:   %s\n' "$(tail -1 "$W/wasm.err")"
+  } > "$RESULTDIR/$slug.detail"
+
+  [ -n "${VERBOSE:-}" ] && printf '%-34s %s\n' "$key" "$agree:$eva:$nat:$wsm"
+  rm -rf "$W"
+  exit 0
+fi
+
+# ── Preflight ─────────────────────────────────────────────────────────────────
+# Genuine toolchain absence → exit 2, worded to MATCH run_gates.sh's LEGIT_SKIP_RE.
+command -v clang >/dev/null 2>&1 || { echo "no C compiler (clang) on PATH — skipping the engine gate"; exit 2; }
+
+# A missing oracle is NOT a legitimate skip: the gate would compare nothing.  Exit 2
+# with a message that deliberately does NOT match LEGIT_SKIP_RE, so run_gates.sh
+# reclassifies it as FAIL* (phantom skip: oracle/binary not built).
+[ -x "$MEDAKA" ]  || { echo "the native compiler was never built (missing $MEDAKA) — run: make medaka"; exit 2; }
+[ -x "$EVALBIN" ] || { echo "the eval oracle was never built (missing $EVALBIN) — run: sh test/build_oracles.sh"; exit 2; }
+
+# The wasm arm DEGRADES rather than skipping: with no wasm-tools / Node 24 we still
+# run T1 (eval == native), the tier that removes the golden circularity.  Skipping
+# the whole gate over an optional third arm would silently drop 300+ live two-engine
+# comparisons — the exact failure mode TESTING-DESIGN.md §2.3 indicts.
+WASM_OK=1; WASM_OFF_WHY=""
+NODE="${NODE:-node}"
+if ! [ -x "$WASMBIN" ]; then
+  WASM_OK=0; WASM_OFF_WHY="test/bin/wasm_emit_main not built (sh test/wasm/build_wasm_oracle.sh)"
+elif ! command -v wasm-tools >/dev/null 2>&1; then
+  WASM_OK=0; WASM_OFF_WHY="wasm-tools not on PATH"
+else
+  major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+  if [ "$major" -lt 24 ]; then
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck disable=SC1091
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" >/dev/null 2>&1 && nvm use 24 >/dev/null 2>&1 || true
+    major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+  fi
+  if [ "$major" -lt 24 ]; then
+    WASM_OK=0; WASM_OFF_WHY="Node >= 24 required for finalized WasmGC (have $($NODE --version 2>/dev/null))"
+  else
+    NODE="$(command -v "$NODE")"
+  fi
+fi
+
+[ -x "$EMITTER" ] && export MEDAKA_EMITTER="$EMITTER"
+
+WORK="$(mktemp -d)"; RESULTS="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$RESULTS"' EXIT
+
+CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk "$ROOT"/test/wasm/fixtures/*.mdk 2>/dev/null)"
+[ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
+
+JOBS="${JOBS:-4}"
+printf '%s\n' "$CORPUS" \
+  | MEDAKA="$MEDAKA" EVALBIN="$EVALBIN" WASMBIN="$WASMBIN" RUNTIME="$RUNTIME" CORE="$CORE" \
+    STDLIB="$STDLIB" RUNJS="$RUNJS" NODE="$NODE" TIMEOUT="$TIMEOUT" VERBOSE="${VERBOSE:-}" \
+    WASM_OK="$WASM_OK" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
+    WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+    xargs -P "$JOBS" -n 1 -I{} bash "$0" --one {}
+
+cat "$RESULTS"/*.sig 2>/dev/null | sort > "$WORK/all.tsv"
+compared=$(wc -l < "$WORK/all.tsv" | tr -d ' ')
+[ "$compared" -gt 0 ] || { echo "ZERO-COMPARISON: not one fixture produced a result — the gate did not run"; exit 2; }
+
+# ── CAPTURE: rewrite the ledger from the observed signatures ──────────────────
+# Emits a line only for a fixture that is NOT clean.  The category+reason text is
+# carried over from the existing ledger where the key survives; a NEW divergence gets
+# a literal TODO a human must fill in, so a fresh bug can never slip in wearing a
+# plausible-looking excuse it inherited from its neighbours.
+if [ -n "${CAPTURE:-}" ]; then
+  {
+    sed -n '1,/^# Regenerate with CAPTURE=1/p' "$LEDGER" 2>/dev/null
+    echo
+    while IFS=$'\t' read -r key sig _t1 _t2 _t3; do
+      [ "$sig" = "eq:eq:eq:ran:ran:ran" ] && continue
+      old="$(awk -v k="$key" '$1==k { for (i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"") }' "$LEDGER" 2>/dev/null | head -1)"
+      [ -n "$old" ] || old="TODO TODO-diagnose-this-new-divergence"
+      printf '%-34s %-26s %s\n' "$key" "$sig" "$old"
+    done < "$WORK/all.tsv"
+  } > "$LEDGER.new"
+  mv "$LEDGER.new" "$LEDGER"
+  echo "captured $LEDGER — REVIEW THE DIFF, and replace any TODO with a real diagnosis"
+fi
+
+# ── Compare each fixture's signature against the ledger ───────────────────────
+# expected(key) = the ledger's signature, else "agree:ran:ran:ran" (i.e. clean).
+regress=0; promote=0; clean=0; known=0; unverified=0
+CLEAN="eq:eq:eq:ran:ran:ran"
+[ "$WASM_OK" = 1 ] || CLEAN="eq:-:-:ran:ran:-"
+: >"$WORK/regress.txt"; : >"$WORK/promote.txt"
+
+while IFS=$'\t' read -r key sig t1 t2 t3; do
+  exp="$(awk -v k="$key" '$1==k {print $2}' "$LEDGER" 2>/dev/null | head -1)"
+  led=1; [ -n "$exp" ] || { exp="eq:eq:eq:ran:ran:ran"; led=0; }
+
+  # wasm arm off → blank the three wasm-dependent fields (nw, ew, w) on BOTH sides.
+  # The eval-vs-native verdict (en) and both arms survive, so T1 still gates FULLY
+  # and soundly — no silent drop, no spurious regression.
+  if [ "$WASM_OK" != 1 ]; then
+    sig="$(echo "$sig" | awk -F: '{print $1":-:-:"$4":"$5":-"}')"
+    exp="$(echo "$exp" | awk -F: '{print $1":-:-:"$4":"$5":-"}')"
+    unverified=$((unverified+1))
+  fi
+
+  if [ "$sig" = "$exp" ]; then
+    if [ "$led" = 1 ]; then known=$((known+1)); else clean=$((clean+1)); fi
+  elif [ "$led" = 1 ] && [ "$sig" = "$CLEAN" ]; then
+    promote=$((promote+1))
+    printf 'PROMOTE  %s\n  ledger asserts: %s\n  actual now:     %s   ← it PASSES\n  → delete its line from test/engine_divergence.txt (and note the fix in test/ENGINE-DIVERGENCE.md)\n\n' \
+      "$key" "$exp" "$sig" >> "$WORK/promote.txt"
+  else
+    regress=$((regress+1))
+    { printf 'REGRESS  %s\n  expected: %s\n  actual:   %s\n' "$key" "$exp" "$sig"
+      cat "$RESULTS/${key//\//__}.detail" 2>/dev/null
+      echo; } >> "$WORK/regress.txt"
+  fi
+done < "$WORK/all.tsv"
+
+tier() { awk -F'\t' -v c="$1" -v v="$2" '$c==v' "$WORK/all.tsv" | wc -l | tr -d ' '; }
+t1p=$(tier 3 pass); t1f=$(tier 3 fail); t1n=$(tier 3 na)
+t2p=$(tier 4 pass); t2f=$(tier 4 fail); t2n=$(tier 4 na)
+t3p=$(tier 5 pass); t3f=$(tier 5 fail); t3n=$(tier 5 na)
+
+echo
+echo "══════════════════════════════════════════════════════════════════════"
+echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm_fixtures ∪ wasm/fixtures)"
+echo "══════════════════════════════════════════════════════════════════════"
+printf ' T1  eval   == native   %4d agree  %3d differ  %3d n/a\n' "$t1p" "$t1f" "$t1n"
+if [ "$WASM_OK" = 1 ]; then
+  printf ' T2  native == wasm     %4d agree  %3d differ  %3d n/a\n' "$t2p" "$t2f" "$t2n"
+  printf ' T3  all three agree    %4d agree  %3d differ  %3d n/a\n' "$t3p" "$t3f" "$t3n"
+else
+  printf ' T2  native == wasm     NOT RUN — %s\n' "$WASM_OFF_WHY"
+  printf ' T3  all three agree    NOT RUN — wasm arm unavailable (T1 still gates)\n'
+fi
+echo "──────────────────────────────────────────────────────────────────────"
+printf ' clean                  %4d\n' "$clean"
+printf ' known (ledgered)       %4d   test/engine_divergence.txt\n' "$known"
+printf ' REGRESSIONS            %4d\n' "$regress"
+printf ' PROMOTIONS (now pass)  %4d\n' "$promote"
+echo "══════════════════════════════════════════════════════════════════════"
+
+[ "$regress" -gt 0 ] && { echo; cat "$WORK/regress.txt"; }
+if [ "$promote" -gt 0 ]; then
+  echo
+  cat "$WORK/promote.txt"
+  echo "A known-failure entry started PASSING.  That is good news and a HARD FAIL:"
+  echo "the ledger must be promoted, or the fix will silently rot back later."
+fi
+
+# Never report success having compared nothing.
+if [ "$t1p" -eq 0 ] && [ "$t2p" -eq 0 ]; then
+  echo "ZERO-COMPARISON: no tier made a single passing comparison — the gate did not run"
+  exit 1
+fi
+
+[ "$regress" -eq 0 ] && [ "$promote" -eq 0 ]
