@@ -6,7 +6,7 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help
+.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -86,6 +86,15 @@ ci: medaka
 	FORCE=1 sh test/build_oracles.sh
 	sh test/run_gates.sh
 	$(MAKE) test
+
+## docs-links — doc-link rot gate. Pure text analysis (no build, no toolchain,
+##           safe to run anywhere): checks every relative markdown link and
+##           every bare `compiler/`/`stdlib/`/`test/`/`runtime/`/`playground/`
+##           source citation across the repo's markdown against the CURRENT
+##           tree. Ratcheted by test/DOC-LINK-EXCEPTIONS.txt — see that file
+##           and test/check_doc_links.sh's header for the FILE/REF format.
+docs-links:
+	sh test/check_doc_links.sh
 
 ## clean   — remove native build artifacts (keeps the checked-in seed)
 clean:
