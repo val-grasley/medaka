@@ -1,13 +1,19 @@
 # Type-Aware Lint Tier — Design
 
+**Status:** OPEN — verified live: `grep -n "type oracle\|typeOracle\|TypeOracle"
+compiler/tools/lint.mdk` returns zero hits; no type-aware oracle machinery exists in the
+current linter, matching AGENTS.md's description of ~20 purely-syntactic rules. Genuinely
+still-open, unclaimed forward work with a fully worked-out design (oracle interface,
+registry shape, ≥4 candidate rules, effort estimate).
+
 Status: **DESIGN ONLY (read-only pass, 2026-06-29).** Nothing built. This doc
 scopes a *type-aware* rule tier for `medaka lint` (`compiler/tools/lint.mdk`),
 analogous to `typescript-eslint`'s type-checked rules: rules keep matching the
 **raw (pre-desugar) surface AST** for shape, but may **query a side-table of
 resolve/type facts** (a "type oracle") harvested by running the pipeline once.
 
-All file:line citations are against this worktree
-(`/Users/val/medaka/.claude/worktrees/compressed-bouncing-quilt/`).
+All file:line citations were against a since-discarded agent worktree (path removed,
+2026-07-13 doc pass — never a valid path for anyone else).
 
 ---
 
