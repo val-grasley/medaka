@@ -256,7 +256,7 @@ collectVars (ELetGroup bs e2) = flatMap letBindVars bs ++ collectVars e2
 collectVars (EMatch e0 arms) = collectVars e0 ++ flatMap armVars arms
 collectVars (EIf c t el) = collectVars c ++ collectVars t ++ collectVars el
 collectVars (EBinOp _ a b _) = collectVars a ++ collectVars b
-collectVars (EUnOp _ a) = collectVars a
+collectVars (EUnOp _ a _) = collectVars a
 -- The operator name IS a reference: a backtick infix `a `divide` b` names the
 -- plain top-level function `divide` (marker leaves it EInfix when `divide` is
 -- neither a method nor a constrained fn), so DCE must see `divide` as reachable
@@ -386,7 +386,7 @@ localBoundExpr (EIf c t el) = localBoundExpr c
   ++ localBoundExpr t
   ++ localBoundExpr el
 localBoundExpr (EBinOp _ a b _) = localBoundExpr a ++ localBoundExpr b
-localBoundExpr (EUnOp _ a) = localBoundExpr a
+localBoundExpr (EUnOp _ a _) = localBoundExpr a
 localBoundExpr (EInfix _ a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EFieldAccess e0 _ _) = localBoundExpr e0
 localBoundExpr (ERecordCreate _ fs) = flatMap fieldAssignBound fs

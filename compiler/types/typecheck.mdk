@@ -1148,6 +1148,12 @@ pendingSites = Ref []
 pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
 pendingBinopSites = Ref []
 
+-- Roadmap #18c: the EUnOp analogue of pendingBinopSites — `-` (Num's `negate`)
+-- sites discovered during inference.  Same tuple shape/fields, same resolve/
+-- rewrite seam (resolveUnopSites / rewriteUnopExpr), one operand instead of two.
+pendingUnopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+pendingUnopSites = Ref []
+
 -- SHARED-FLOAT-RESIDUAL §3(C): arithmetic EBinOp sites whose operand type may
 -- ground to a concrete primitive.  Recorded during inference (operand Mono + the
 -- node's route ref); resolveArithSites zonks each Mono after the whole module is
@@ -2074,6 +2080,7 @@ resetState _ =
   let _ = setRef shadowHeadCtxRef False
   let _ = setRef shadowKeyTableRef []
   let _ = setRef pendingBinopSites []
+  let _ = setRef pendingUnopSites []
   let _ = setRef pendingArithSites []
   let _ = setRef methodIfaceParamsRef []
   let _ = setRef pendingImplObligations []
@@ -3095,7 +3102,7 @@ infer env (ETuple es) = tupleMono (inferEach env es)
 infer env (EListLit es) = inferListLit env es
 infer env (EAnnot e ty) = inferAnnot env e ty
 infer env (EBinOp op l r dref) = inferBinopE env op l r dref
-infer env (EUnOp op e) = inferUnop op (infer env e)
+infer env (EUnOp op e dref) = inferUnopE env op e dref
 infer env (EInfix op l r) = inferInfix env op l r
 infer env (ERecordCreate name fields) = inferRecordCreate env name fields
 infer env (EFieldAccess e fname r) = inferFieldAccess env e fname r
@@ -4057,6 +4064,29 @@ binopMethod ">=" = Some "gte"
 binopMethod "++" = Some "append"
 binopMethod _ = None
 
+-- Roadmap #18c: `-` (unary minus) is the surface operator for `Num`'s `negate`,
+-- joining `++`/comparisons on the record*Site/resolve*Sites/rewrite*Expr seam.
+-- `!` never routes — Bool negation is not a typeclass method.
+unopMethod : String -> Option String
+unopMethod "-" = Some "negate"
+unopMethod _ = None
+
+-- The EUnOp analogue of recordBinopSite: stash a pending unop site for `-`
+-- (nothing for `!`).  Same currentImplBody/currentFn snapshot, same reason.
+recordUnopSite : String -> Ref Route -> Mono -> <Mut> Unit
+recordUnopSite op dref m = match unopMethod op
+  Some method => setRef pendingUnopSites ((method, dref, m, currentImplBody.value, currentFn.value)::pendingUnopSites.value)
+  None => ()
+
+-- The EUnOp analogue of inferBinopE: infer the single operand, record its
+-- pending unop site (for `-`), then dispatch to inferUnop for the actual
+-- obligation/unification work (negateOp for `-`, Bool-unify for `!`).
+inferUnopE : TcEnv -> String -> Expr -> Ref Route -> <Mut> Mono
+inferUnopE env op e dref =
+  let t = infer env e
+  let _ = recordUnopSite op dref t
+  inferUnop op t
+
 inferBinop : String -> Mono -> Mono -> <Mut> Mono
 inferBinop "+" lt rt = numArithOp lt rt
 inferBinop "-" lt rt = numArithOp lt rt
@@ -4362,11 +4392,24 @@ composeOp gt ht True =
   TFun c (openRow ()) b
 
 inferUnop : String -> Mono -> <Mut> Mono
-inferUnop "-" t = t
+inferUnop "-" t = negateOp t
 inferUnop "!" t =
   let _ = unify t (TCon "Bool")
   TCon "Bool"
 inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
+
+-- Roadmap #18c: unary minus `-x` carries a `Num` obligation on its operand type —
+-- a verbatim mirror of `numArithOp`/`recordNumObligation` for binary `+`/`-`/…,
+-- and the reason `-"x"` is now a located `No impl of Num for String` reject at
+-- CHECK time rather than an eval-time `panic "unary minus on non-number"`.
+-- markNumlitOpTaint keeps the same Chunk-D literal-provenance error framing as
+-- the binary arithmetic operators (`-"x"` blames the operator, not a bare
+-- literal-vs-String mismatch).
+negateOp : Mono -> <Mut> Mono
+negateOp t =
+  let _ = markNumlitOpTaint t
+  let _ = recordNumObligation t
+  t
 
 -- backtick infix `x `f` y` is just f applied to x then y
 inferInfix : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
@@ -5168,7 +5211,7 @@ renderCallArg (ELit (LBool False)) = Some "False"
 renderCallArg (ELit (LString s)) = Some ("\"" ++ s ++ "\"")
 renderCallArg (ELit (LChar c)) = Some ("'" ++ c ++ "'")
 renderCallArg (EVar n) = Some n
-renderCallArg (EUnOp "-" e) = map ("-" ++ _) (renderCallArg e)
+renderCallArg (EUnOp "-" e _) = map ("-" ++ _) (renderCallArg e)
 renderCallArg _ = None
 
 -- all-or-nothing render of every tuple element.
@@ -6173,6 +6216,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let keyTable = buildKeyTable prog2
   let _ = resolveSites implTable keyTable (returnPosMethodNames prog2) pendingSites.value
   let _ = resolveBinopSites implTable keyTable pendingBinopSites.value
+  let _ = resolveUnopSites implTable keyTable pendingUnopSites.value
   let _ = resolveArithSites pendingArithSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps prog2 implTable pendingDictApps.value
@@ -6598,7 +6642,8 @@ rewriteArgScoped rw bound (EIf c t e) =
     (rewriteArgScoped rw bound e)
 rewriteArgScoped rw bound (EBinOp op l r dr) =
   EBinOp op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r) dr
-rewriteArgScoped rw bound (EUnOp op x) = EUnOp op (rewriteArgScoped rw bound x)
+rewriteArgScoped rw bound (EUnOp op x dr) =
+  EUnOp op (rewriteArgScoped rw bound x) dr
 rewriteArgScoped rw bound (EInfix op l r) =
   EInfix op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r)
 rewriteArgScoped rw bound (EFieldAccess e0 n r) =
@@ -7109,6 +7154,52 @@ stampBinopRoute implTable keyTable method tagRef operandMono tag
 -- emit paths.  The impl method `eq`/`compare` carries leading `$dict_*` params
 -- (resolveArgStamps runs on both paths); emitter applies them; eval's methodAtNarrow
 -- forwards dict reqs (like RDictFwd) truncated to the matched impl's reqCount.
+
+-- Roadmap #18c: the EUnOp analogue of resolveBinopSites/resolveBinopSite/
+-- stampBinopRoute for `-` → `negate`.  Only ONE method ever reaches here
+-- (unopMethod only routes `-`), so there is no per-method dispatch table like
+-- binopDictVarOf's `"append"` case, and no Ord-style innerDefaultMethod
+-- reduction — every `impl Num` (including Int/Float's own, `negate a = 0 - a`)
+-- defines `negate` directly, no interface-level default body to reduce through.
+resolveUnopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> <Mut> Unit
+resolveUnopSites _ _ [] = ()
+resolveUnopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
+  let _ = resolveUnopSite implTable keyTable method tagRef operandMono inImpl encl
+  resolveUnopSites implTable keyTable rest
+
+-- Roadmap #18a/#45 landmine (see binopDictVarOf above): routing THROUGH an
+-- impl's own `requires` element dict (activeDictVarOf) can make usesImplDict
+-- true for a method for the FIRST time, prepending a dict param that shifts
+-- the impl's arg-dispatch index without re-offsetting the VTypedImpl's
+-- discriminating indices — dispatch then tag-checks the dict instead of the
+-- receiver.  Rather than wait to hit that wall, `unopDictVarOf` takes the same
+-- narrow escape #18a landed on for `append`: ALWAYS route via enclDictVarOf
+-- (a top-level fn's own declared constraint slot — a different, already-sound
+-- dict source), never activeDictVarOf, regardless of `inImpl`.  So `-x` on an
+-- impl's own abstract `requires`-bound tyvar stays on the structural builtin
+-- (RNone) instead of routing the impl's threaded element dict — a residual,
+-- not a regression (mirrors the pre-existing `++` residual exactly).
+unopDictVarOf : String -> Mono -> Bool -> String -> <Mut> Option String
+unopDictVarOf _ m _ encl = enclDictVarOf m encl
+
+resolveUnopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> <Mut> Unit
+resolveUnopSite implTable keyTable method tagRef operandMono inImpl encl = match unopDictVarOf method operandMono inImpl encl
+  Some dname => setRef tagRef (RDict dname)
+  None => match headTyconMono operandMono
+    Some tag => stampUnopRoute implTable keyTable method tagRef operandMono tag
+    None => ()
+
+-- A ground Int/Float operand stays on the structural builtin (evalUnop's
+-- VInt/VFloat fast paths, unchanged) — mirrors stampBinopRoute's
+-- binopPrimitiveHead guard for the comparison operators.  Any OTHER concrete
+-- head (a user `impl Num MyVector`) routes RKey to the user's `negate`.
+stampUnopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+stampUnopRoute implTable keyTable method tagRef operandMono tag
+  | binopPrimitiveHead tag = ()
+  | otherwise =
+    let key = fromOption tag (keyForSite keyTable method operandMono)
+    let reqs = argImplDictRoutesFor implTable method tag operandMono
+    setRef tagRef (RKey key reqs)
 
 -- The inner same-interface method an interface DEFAULT reduces to, supplying the
 -- element `requires` dicts.  Ord's `lt`/`gt`/`lte`/`gte`/`min`/`max` defaults all
@@ -8400,6 +8491,15 @@ rewriteBinopExpr (ENumLit n fref dref) = match fref.value
     RNone => ELit (LInt n)
     route =>
       EApp (EMethodAt "fromInt" (Ref route) (Ref []) (Ref [])) (ELit (LInt n))
+-- Roadmap #18c: rewrite each *stamped* EUnOp (`-` → `negate`) into its Num
+-- method application via EMethodAt, exactly like the EBinOp arm above.  Only
+-- nodes resolveUnopSites stamped (ground non-primitive operand) carry a
+-- non-RNone route; Int/Float stay the literal EUnOp the eval builtin handles
+-- structurally (no recursion — Int/Float's own `negate` bodies use the BINOP
+-- `0 - a`, never unary minus).  `!` never routes (stays RNone unconditionally).
+rewriteBinopExpr (EUnOp op e routeRef) = match routeRef.value
+  RNone => EUnOp op e routeRef
+  _ => unopMethodApp op e routeRef
 rewriteBinopExpr e = e
 
 -- split the stamped RKey route into a bare-tag route (reqs dropped) + the element
@@ -8416,6 +8516,15 @@ binopMethodApp op l r routeRef =
   let split = binopRouteSplit routeRef.value
   let call = EApp (EApp (EMethodAt method (Ref (fst split)) (Ref (snd split)) (Ref [])) l) r
   if op == "!=" then EApp (EVar "not") call else call
+
+-- The EUnOp analogue of binopMethodApp: one operand, no `!=`-style postfix
+-- (unopMethod only ever routes `-`).  Reuses binopRouteSplit (a generic
+-- Route-ripping helper — nothing about it is binop-specific).
+unopMethodApp : String -> Expr -> Ref Route -> Expr
+unopMethodApp op e routeRef =
+  let method = fromOption "negate" (unopMethod op)
+  let split = binopRouteSplit routeRef.value
+  EApp (EMethodAt method (Ref (fst split)) (Ref (snd split)) (Ref [])) e
 
 dictPassDecl : List String -> List String -> Decl -> Decl
 dictPassDecl names _ (DFunDef pub n pats body)
@@ -8585,7 +8694,7 @@ collectMethodSites (EIf c t e) = collectMethodSites c
   ++ collectMethodSites e
 collectMethodSites (EBinOp _ l r _) = collectMethodSites l
   ++ collectMethodSites r
-collectMethodSites (EUnOp _ e) = collectMethodSites e
+collectMethodSites (EUnOp _ e _) = collectMethodSites e
 collectMethodSites (EInfix _ l r) = collectMethodSites l ++ collectMethodSites r
 collectMethodSites (EFieldAccess e _ _) = collectMethodSites e
 collectMethodSites (ETuple es) = flatMap collectMethodSites es
@@ -8655,7 +8764,7 @@ collectDictSites (EIf c t e) = collectDictSites c
   ++ collectDictSites t
   ++ collectDictSites e
 collectDictSites (EBinOp _ l r _) = collectDictSites l ++ collectDictSites r
-collectDictSites (EUnOp _ e) = collectDictSites e
+collectDictSites (EUnOp _ e _) = collectDictSites e
 collectDictSites (EInfix _ l r) = collectDictSites l ++ collectDictSites r
 collectDictSites (EFieldAccess e _ _) = collectDictSites e
 collectDictSites (ETuple es) = flatMap collectDictSites es
@@ -8936,9 +9045,11 @@ checkProgramSeeded seed prog =
 inferPropBodies : TcEnv -> List Decl -> <Mut> Unit
 inferPropBodies env prog =
   let savedBinop = pendingBinopSites.value
+  let savedUnop = pendingUnopSites.value
   let savedArith = pendingArithSites.value
   let _ = inferPropBodiesGo env prog
   let _ = setRef pendingArithSites savedArith
+  let _ = setRef pendingUnopSites savedUnop
   setRef pendingBinopSites savedBinop
 
 inferPropBodiesGo : TcEnv -> List Decl -> <Mut> Unit
@@ -10039,7 +10150,7 @@ allEVars (ELetGroup binds body) = flatMap letBindEVars binds ++ allEVars body
 allEVars (EMatch e arms) = allEVars e ++ flatMap armEVars arms
 allEVars (EIf c t e) = allEVars c ++ allEVars t ++ allEVars e
 allEVars (EBinOp _ l r _) = allEVars l ++ allEVars r
-allEVars (EUnOp _ e) = allEVars e
+allEVars (EUnOp _ e _) = allEVars e
 allEVars (EInfix op l r) = op :: allEVars l ++ allEVars r
 allEVars (EFieldAccess e _ _) = allEVars e
 allEVars (ETuple es) = flatMap allEVars es
@@ -12278,6 +12389,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
+  let _ = resolveUnopSites stampImplTable (buildKeyTable implDecls) pendingUnopSites.value
   let _ = resolveArithSites pendingArithSites.value
   let _ = resolveArgStamps stampImplTable (buildKeyTable implDecls) pendingArgStamps.value
   let _ = resolveRLocalSites (buildKeyTable implDecls) pendingRLocalSites.value

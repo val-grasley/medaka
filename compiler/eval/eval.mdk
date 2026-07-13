@@ -1014,7 +1014,7 @@ eval env (EIf c t e) = evalIf env (eval env c) t e
 eval env (EBinOp op l r _) = evalBinop env op l r
 eval env (EInfix op l r) =
   apply (apply (lookupEnv env op) (eval env l)) (eval env r)
-eval env (EUnOp op e) = evalUnop op (eval env e)
+eval env (EUnOp op e _) = evalUnop op (eval env e)
 eval env (ETuple es) = VTuple (map (eval env) es)
 eval env (EListLit es) = VList (map (eval env) es)
 eval env (EArrayLit es) = VArray (arrayFromList (map (eval env) es))

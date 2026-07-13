@@ -547,7 +547,7 @@ exprPrec (ERangeArray _ _ _) = precAtom
 exprPrec (ESlice _ _ _ _ _) = precAtom
 exprPrec (EFieldAccess _ _ _) = precPostfix
 exprPrec (EIndex _ _ _) = precPostfix
-exprPrec (EUnOp _ _) = precUnary
+exprPrec (EUnOp _ _ _) = precUnary
 exprPrec (EApp _ _) = precApp
 exprPrec (EInfix _ _ _) = precInfix
 exprPrec (EBinOp op _ _ _) = binopPrec op
@@ -635,7 +635,7 @@ printExprRaw (EBinOp op l r _) =
     (Cat
       sp
       (Cat (text op) (Cat sp (printExpr (if ra then prec else prec + 1) r))))
-printExprRaw (EUnOp op e) = Cat (text op) (printExpr precUnary e)
+printExprRaw (EUnOp op e _) = Cat (text op) (printExpr precUnary e)
 printExprRaw (EFieldAccess e f _) =
   Cat (printExpr precPostfix e) (Cat (text ".") (text f))
 printExprRaw (ERecordCreate n fs) =

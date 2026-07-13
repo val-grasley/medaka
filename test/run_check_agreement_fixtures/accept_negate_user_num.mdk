@@ -1,0 +1,20 @@
+-- Roadmap #18c: unary minus `-x` on a type WITH a `Num` impl must be ACCEPTED
+-- by check and must actually run/build (the operator was previously hardwired
+-- to VInt/VFloat, so a user `impl Num` type's `negate` was unreachable from
+-- `-x`).
+data Vec2 = Vec2 Int Int deriving (Eq)
+
+impl Num Vec2 where
+  add (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 + x2) (y1 + y2)
+  sub (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 - x2) (y1 - y2)
+  mul (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 * x2) (y1 * y2)
+  div (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 / x2) (y1 / y2)
+  negate (Vec2 x y) = Vec2 (0 - x) (0 - y)
+  abs (Vec2 x y) = Vec2 x y
+  signum (Vec2 x y) = Vec2 1 1
+  fromInt n = Vec2 n n
+
+unVec : Vec2 -> Int
+unVec (Vec2 x _) = x
+
+main = println (unVec (-(Vec2 3 4)))

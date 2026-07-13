@@ -1,0 +1,8 @@
+-- Roadmap #18c: unary minus `-x` on a type with no `Num` impl must be
+-- REJECTED by check.  Before #18c, `inferUnop "-" t = t` recorded NO
+-- obligation at all, so check wrongly ACCEPTED this and `run`/`build` would
+-- reach evalUnop's/CUnOp's structural Int/Float-only path on a non-number.
+s : String
+s = "hi"
+
+main = println (-s)

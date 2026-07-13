@@ -404,7 +404,7 @@ checkExpr cur env scope (EIf c t el) = checkExpr cur env scope c
   ++ checkExpr cur env scope el
 checkExpr cur env scope (EBinOp _ a b _) = checkExpr cur env scope a
   ++ checkExpr cur env scope b
-checkExpr cur env scope (EUnOp _ a) = checkExpr cur env scope a
+checkExpr cur env scope (EUnOp _ a _) = checkExpr cur env scope a
 checkExpr cur env scope (EInfix op a b) = checkVar cur env scope op
   ++ checkExpr cur env scope a
   ++ checkExpr cur env scope b
@@ -1220,7 +1220,7 @@ firstExprLoc (EMatch e0 _) = firstExprLoc e0
 firstExprLoc (EIf c t el) =
   orElseLocL (firstExprLoc c) (orElseLocL (firstExprLoc t) (firstExprLoc el))
 firstExprLoc (EBinOp _ a b _) = orElseLocL (firstExprLoc a) (firstExprLoc b)
-firstExprLoc (EUnOp _ a) = firstExprLoc a
+firstExprLoc (EUnOp _ a _) = firstExprLoc a
 firstExprLoc (EInfix _ a b) = orElseLocL (firstExprLoc a) (firstExprLoc b)
 firstExprLoc (EFieldAccess e0 _ _) = firstExprLoc e0
 firstExprLoc (ETuple es) = firstLocList es

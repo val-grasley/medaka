@@ -1,0 +1,1 @@
+TYPE ERROR: No impl of Num for Box; write an 'impl Num Box'.

@@ -1,0 +1,8 @@
+-- Roadmap #18c: unary minus `-x` carries a Num obligation, so an operand with
+-- no impl is a located type error rather than an eval-time panic.
+-- Prelude-dependent (the obligation is gated on the `Num` interface being
+-- registered), so this fixture is listed in PRELUDE_DEP and runs Driver B only.
+data Box = Box Int
+
+bad : Box -> Box
+bad x = -x

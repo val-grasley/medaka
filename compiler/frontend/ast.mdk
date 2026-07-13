@@ -154,7 +154,14 @@ public export data Expr =
   -- operators → the structural-builtin EBinOp eval path (unchanged, no recursion).
   -- The parser always builds a fresh `Ref RNone`; sexp/astdump ignore the ref.
   | EBinOp String Expr Expr (Ref Route)
-  | EUnOp String Expr
+  -- Roadmap #18c: the trailing route ref mirrors EBinOp's — filled by
+  -- resolveUnopSites for `-` (Num's `negate`) when the operand grounds to a
+  -- NON-primitive Num type; dictPass then rewrites such a stamped node into
+  -- `EMethodAt "negate"` so eval dispatches to the user impl.  RNone for
+  -- Int/Float → the structural-builtin EUnOp eval path (unchanged). `!` never
+  -- routes (unopMethod "!" = None). The parser always builds a fresh
+  -- `Ref RNone`; sexp/astdump ignore the ref.
+  | EUnOp String Expr (Ref Route)
   | EInfix String Expr Expr
   -- field access `r.f`.  The trailing `Ref String` is the resolved record name
   -- (stamped by typecheck's inferFieldAccess; "" = unknown).  The emitter reads
