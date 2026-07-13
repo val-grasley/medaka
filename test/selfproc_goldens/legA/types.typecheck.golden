@@ -1050,6 +1050,7 @@ semigroupEntry : (String, (String, List String, Ty)) -> Bool
 semigroupIfaceRegistered : Unit -> <Mut> Bool
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> <Mut> Unit
+setEmitArgStampPasses : Bool -> <Mut> Unit
 setLocIfSome : Option Loc -> <Mut> Unit
 setNumlitFloats : Unit -> <Mut> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Unit

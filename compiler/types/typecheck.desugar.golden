@@ -505,6 +505,8 @@
 (DFunDef false "emitArgStampPasses" () (EApp (EVar "Ref") (EVar "False")))
 (DTypeSig true "enableEmitArgStampPasses" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Unit"))))
 (DFunDef false "enableEmitArgStampPasses" (PWild) (EApp (EApp (EVar "setRef") (EVar "emitArgStampPasses")) (EVar "True")))
+(DTypeSig true "setEmitArgStampPasses" (TyFun (TyCon "Bool") (TyEffect ("Mut") None (TyCon "Unit"))))
+(DFunDef false "setEmitArgStampPasses" ((PVar "b")) (EApp (EApp (EVar "setRef") (EVar "emitArgStampPasses")) (EVar "b")))
 (DTypeSig false "pendingArgStamps" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyCon "Route")) (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyCon "Mono") (TyCon "String")))))
 (DFunDef false "pendingArgStamps" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig true "argDispatchIndices" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
