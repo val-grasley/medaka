@@ -121,8 +121,8 @@ lower (ESlice a lo hi incl r) =
     CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f r) = CFieldAccess (lower e) f r.value
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
-lower (ERecordUpdate base fields) =
-  CRecordUpdate (lower base) (map lowerField fields)
+lower (ERecordUpdate base fields r) =
+  CRecordUpdate r.value (lower base) (map lowerField fields)
 lower (EVariantUpdate con base fields) =
   CVariantUpdate con (lower base) (map lowerField fields)
 lower (EBlock stmts) = CBlock (map lowerStmt stmts)
@@ -608,8 +608,8 @@ rewriteExprRP fo (CList es) = CList (map (rewriteExprRP fo) es)
 rewriteExprRP fo (CRecord name fields) =
   CRecord name (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CFieldAccess ex f n) = CFieldAccess (rewriteExprRP fo ex) f n
-rewriteExprRP fo (CRecordUpdate base fields) =
-  CRecordUpdate (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CRecordUpdate name base fields) =
+  CRecordUpdate name (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CVariantUpdate con base fields) =
   CVariantUpdate con (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CArray es) = CArray (map (rewriteExprRP fo) es)
@@ -1129,7 +1129,7 @@ nodeTag _ = "?"
 (DFunDef false "lower" ((PCon "ESlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl") (PVar "r"))) (EIf (EBinOp "==" (EFieldAccess (EVar "r") "value") (ELit (LString "String"))) (EApp (EApp (EApp (EApp (EVar "CStringSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")) (EIf (EBinOp "==" (EFieldAccess (EVar "r") "value") (ELit (LString "List"))) (EApp (EApp (EApp (EApp (EVar "CListSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")) (EApp (EApp (EApp (EApp (EVar "CSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")))))
 (DFunDef false "lower" ((PCon "EFieldAccess" (PVar "e") (PVar "f") (PVar "r"))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EVar "lower") (EVar "e"))) (EVar "f")) (EFieldAccess (EVar "r") "value")))
 (DFunDef false "lower" ((PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "CRecord") (EVar "name")) (EApp (EApp (EVar "map") (EVar "lowerField")) (EVar "fields"))))
-(DFunDef false "lower" ((PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "lowerField")) (EVar "fields"))))
+(DFunDef false "lower" ((PCon "ERecordUpdate" (PVar "base") (PVar "fields") (PVar "r"))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EFieldAccess (EVar "r") "value")) (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "lowerField")) (EVar "fields"))))
 (DFunDef false "lower" ((PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EVar "con")) (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "lowerField")) (EVar "fields"))))
 (DFunDef false "lower" ((PCon "EBlock" (PVar "stmts"))) (EApp (EVar "CBlock") (EApp (EApp (EVar "map") (EVar "lowerStmt")) (EVar "stmts"))))
 (DFunDef false "lower" ((PCon "EAnnot" (PCon "EBinOp" (PVar "op") (PVar "l") (PVar "r") PWild) (PCon "TyCon" (PVar "tag") PWild))) (EApp (EApp (EApp (EApp (EVar "lowerBinop") (EVar "op")) (EVar "l")) (EVar "r")) (EVar "tag")))
@@ -1355,7 +1355,7 @@ nodeTag _ = "?"
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CList" (PVar "es"))) (EApp (EVar "CList") (EApp (EApp (EVar "map") (EApp (EVar "rewriteExprRP") (EVar "fo"))) (EVar "es"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "CRecord") (EVar "name")) (EApp (EApp (EVar "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CFieldAccess" (PVar "ex") (PVar "f") (PVar "n"))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "ex"))) (EVar "f")) (EVar "n")))
-(DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
+(DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecordUpdate" (PVar "name") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EVar "name")) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EVar "con")) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CArray" (PVar "es"))) (EApp (EVar "CArray") (EApp (EApp (EVar "map") (EApp (EVar "rewriteExprRP") (EVar "fo"))) (EVar "es"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRangeList" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "CRangeList") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "lo"))) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "hi"))) (EVar "incl")))
@@ -1602,7 +1602,7 @@ nodeTag _ = "?"
 (DFunDef false "lower" ((PCon "ESlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl") (PVar "r"))) (EIf (EBinOp "==" (EFieldAccess (EVar "r") "value") (ELit (LString "String"))) (EApp (EApp (EApp (EApp (EVar "CStringSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")) (EIf (EBinOp "==" (EFieldAccess (EVar "r") "value") (ELit (LString "List"))) (EApp (EApp (EApp (EApp (EVar "CListSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")) (EApp (EApp (EApp (EApp (EVar "CSlice") (EApp (EVar "lower") (EVar "a"))) (EApp (EVar "lower") (EVar "lo"))) (EApp (EVar "lower") (EVar "hi"))) (EVar "incl")))))
 (DFunDef false "lower" ((PCon "EFieldAccess" (PVar "e") (PVar "f") (PVar "r"))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EVar "lower") (EVar "e"))) (EVar "f")) (EFieldAccess (EVar "r") "value")))
 (DFunDef false "lower" ((PCon "ERecordCreate" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "CRecord") (EVar "name")) (EApp (EApp (EMethodRef "map") (EVar "lowerField")) (EVar "fields"))))
-(DFunDef false "lower" ((PCon "ERecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "lowerField")) (EVar "fields"))))
+(DFunDef false "lower" ((PCon "ERecordUpdate" (PVar "base") (PVar "fields") (PVar "r"))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EFieldAccess (EVar "r") "value")) (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "lowerField")) (EVar "fields"))))
 (DFunDef false "lower" ((PCon "EVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EVar "con")) (EApp (EVar "lower") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "lowerField")) (EVar "fields"))))
 (DFunDef false "lower" ((PCon "EBlock" (PVar "stmts"))) (EApp (EVar "CBlock") (EApp (EApp (EMethodRef "map") (EVar "lowerStmt")) (EVar "stmts"))))
 (DFunDef false "lower" ((PCon "EAnnot" (PCon "EBinOp" (PVar "op") (PVar "l") (PVar "r") PWild) (PCon "TyCon" (PVar "tag") PWild))) (EApp (EApp (EApp (EApp (EVar "lowerBinop") (EVar "op")) (EVar "l")) (EVar "r")) (EVar "tag")))
@@ -1828,7 +1828,7 @@ nodeTag _ = "?"
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CList" (PVar "es"))) (EApp (EVar "CList") (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteExprRP") (EVar "fo"))) (EVar "es"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "CRecord") (EVar "name")) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CFieldAccess" (PVar "ex") (PVar "f") (PVar "n"))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "ex"))) (EVar "f")) (EVar "n")))
-(DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
+(DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRecordUpdate" (PVar "name") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EVar "name")) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EVar "con")) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteFieldRP") (EVar "fo"))) (EVar "fields"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CArray" (PVar "es"))) (EApp (EVar "CArray") (EApp (EApp (EMethodRef "map") (EApp (EVar "rewriteExprRP") (EVar "fo"))) (EVar "es"))))
 (DFunDef false "rewriteExprRP" ((PVar "fo") (PCon "CRangeList" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "CRangeList") (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "lo"))) (EApp (EApp (EVar "rewriteExprRP") (EVar "fo")) (EVar "hi"))) (EVar "incl")))

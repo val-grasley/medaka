@@ -265,7 +265,8 @@ collectVars (EUnOp _ a _) = collectVars a
 collectVars (EInfix op a b) = op :: collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _ _) = collectVars e0
 collectVars (ERecordCreate _ fs) = flatMap fieldAssignVars fs
-collectVars (ERecordUpdate e0 fs) = collectVars e0 ++ flatMap fieldAssignVars fs
+collectVars (ERecordUpdate e0 fs _) = collectVars e0
+  ++ flatMap fieldAssignVars fs
 collectVars (EVariantUpdate _ e0 fs) = collectVars e0
   ++ flatMap fieldAssignVars fs
 collectVars (EArrayLit es) = flatMap collectVars es
@@ -390,7 +391,7 @@ localBoundExpr (EUnOp _ a _) = localBoundExpr a
 localBoundExpr (EInfix _ a b) = localBoundExpr a ++ localBoundExpr b
 localBoundExpr (EFieldAccess e0 _ _) = localBoundExpr e0
 localBoundExpr (ERecordCreate _ fs) = flatMap fieldAssignBound fs
-localBoundExpr (ERecordUpdate e0 fs) = localBoundExpr e0
+localBoundExpr (ERecordUpdate e0 fs _) = localBoundExpr e0
   ++ flatMap fieldAssignBound fs
 localBoundExpr (EVariantUpdate _ e0 fs) = localBoundExpr e0
   ++ flatMap fieldAssignBound fs

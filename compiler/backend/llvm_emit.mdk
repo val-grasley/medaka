@@ -1235,8 +1235,8 @@ emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label recName) =
   emitFieldAccess e env ex label recName
-emitExpr e env (CRecordUpdate base updates) =
-  emitRecordUpdate e env base updates
+emitExpr e env (CRecordUpdate name base updates) =
+  emitRecordUpdate e env name base updates
 emitExpr e env (CVariantUpdate con base updates) =
   emitVariantUpdate e env con base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) =
@@ -8554,16 +8554,32 @@ fieldIdxByName table recName label =
       None => findFieldIdx table label
     None => findFieldIdx table label
 
-emitRecordUpdate : Emit -> List (String, (String, LTy)) -> CExpr -> List CField -> <Mut> (String, LTy)
-emitRecordUpdate e env base updates =
+emitRecordUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
+emitRecordUpdate e env recName base updates =
   let (bw, _) = emitExpr e env base
   let firstLabel = cFieldFirstLabel updates
-  match findRecordByLabel (recFieldTable e) firstLabel
+  match recordByName (recFieldTable e) recName firstLabel
     None => gapE ("CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
     Some (name, labels) =>
       let updatePairs = emitUpdatePairs e env updates
       let words = buildUpdateWords e bw labels updatePairs 0
       emitCtorAlloc e name words
+
+-- Resolve the RECEIVER record of an update by the typecheck-stamped record name
+-- (CRecordUpdate's 1st field) when it is usable — non-empty, present in the
+-- field-order table, and actually owning the update label — else fall back to
+-- today's label-only search (unstamped / synthesized updates).  The by-name path
+-- is what makes two records that share a field name at DIFFERENT slot indices
+-- update the correct slot; the label-only guess silently wrote the other
+-- record's slot (bug #38).  Peer of fieldIdxByName on the access path.
+recordByName : List (String, List String) -> String -> String -> Option (String, List String)
+recordByName table recName label =
+  if recName == "" then findRecordByLabel table label
+  else match lookupAssoc recName table
+    Some labels => match indexOfStr label labels
+      Some _ => Some (recName, labels)
+      None => findRecordByLabel table label
+    None => findRecordByLabel table label
 
 emitVariantUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
 emitVariantUpdate e env con base updates =
@@ -8662,7 +8678,7 @@ scanExprRecords : CExpr -> List (String, List String)
 scanExprRecords (CRecord name fields) =
   (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
 scanExprRecords (CFieldAccess ex _ _) = scanExprRecords ex
-scanExprRecords (CRecordUpdate base updates) = scanExprRecords base
+scanExprRecords (CRecordUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
 scanExprRecords (CVariantUpdate _ base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)
@@ -9389,7 +9405,7 @@ ctag (CList _) = "CList"
 ctag (CArray _) = "CArray"
 ctag (CRecord _ _) = "CRecord"
 ctag (CFieldAccess _ _ _) = "CFieldAccess"
-ctag (CRecordUpdate _ _) = "CRecordUpdate"
+ctag (CRecordUpdate _ _ _) = "CRecordUpdate"
 ctag (CRangeList _ _ _) = "CRangeList"
 ctag (CRangeArray _ _ _) = "CRangeArray"
 ctag (CIndex _ _) = "CIndex"

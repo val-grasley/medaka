@@ -124,7 +124,7 @@ ceval env (CBlock stmts) = cevalBlock env stmts
 -- reached through `CApp`/`CVar`; `.value` deref is `CFieldAccess _ "value"`.
 ceval env (CArray es) = VArray (arrayFromList (map (ceval env) es))
 ceval env (CRecord name fields) = VRecord name (map (cevalField env) fields)
-ceval env (CRecordUpdate base fields) =
+ceval env (CRecordUpdate _ base fields) =
   evalRecordUpdate (ceval env base) (map (cevalField env) fields)
 ceval env (CVariantUpdate con base fields) =
   evalVariantUpdate con (ceval env base) (map (cevalField env) fields)
@@ -593,7 +593,7 @@ cevalModulesOutput preludeDecls modules =
 (DFunDef false "ceval" ((PVar "env") (PCon "CBlock" (PVar "stmts"))) (EApp (EApp (EVar "cevalBlock") (EVar "env")) (EVar "stmts")))
 (DFunDef false "ceval" ((PVar "env") (PCon "CArray" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EVar "map") (EApp (EVar "ceval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "VRecord") (EVar "name")) (EApp (EApp (EVar "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
-(DFunDef false "ceval" ((PVar "env") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "ceval" ((PVar "env") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EVar "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "e"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "e"))) (EVar "field")))
@@ -775,7 +775,7 @@ cevalModulesOutput preludeDecls modules =
 (DFunDef false "ceval" ((PVar "env") (PCon "CBlock" (PVar "stmts"))) (EApp (EApp (EVar "cevalBlock") (EVar "env")) (EVar "stmts")))
 (DFunDef false "ceval" ((PVar "env") (PCon "CArray" (PVar "es"))) (EApp (EVar "VArray") (EApp (EVar "arrayFromList") (EApp (EApp (EMethodRef "map") (EApp (EVar "ceval") (EVar "env"))) (EVar "es")))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CRecord" (PVar "name") (PVar "fields"))) (EApp (EApp (EVar "VRecord") (EVar "name")) (EApp (EApp (EMethodRef "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
-(DFunDef false "ceval" ((PVar "env") (PCon "CRecordUpdate" (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
+(DFunDef false "ceval" ((PVar "env") (PCon "CRecordUpdate" PWild (PVar "base") (PVar "fields"))) (EApp (EApp (EVar "evalRecordUpdate") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CVariantUpdate" (PVar "con") (PVar "base") (PVar "fields"))) (EApp (EApp (EApp (EVar "evalVariantUpdate") (EVar "con")) (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "base"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "cevalField") (EVar "env"))) (EVar "fields"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CFieldAccess" (PVar "e") (PLit (LString "value")) PWild)) (EApp (EVar "evalValueField") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "e"))))
 (DFunDef false "ceval" ((PVar "env") (PCon "CFieldAccess" (PVar "e") (PVar "field") PWild)) (EApp (EApp (EVar "evalField") (EApp (EApp (EVar "ceval") (EVar "env")) (EVar "e"))) (EVar "field")))

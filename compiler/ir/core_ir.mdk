@@ -91,7 +91,13 @@ public export data CExpr =
   -- field access `r.f`; 3rd = resolved record name ("" = unknown) so emit can
   -- resolve the field index by (recName, label) instead of label alone.
   | CFieldAccess CExpr String String
-  | CRecordUpdate CExpr (List CField)
+  -- functional record update `{ base | f = v … }`.  1st = the receiver's record
+  -- name, stamped by typecheck onto ERecordUpdate and carried through lowering —
+  -- WITHOUT it an emitter has to guess the record from the first update label,
+  -- which silently writes the wrong slot when two records share a field name at
+  -- different indices (bug #38).  Same discipline as CVariantUpdate's ctor name.
+  -- ("" = unstamped/synthesized → emitters fall back to the label search.)
+  | CRecordUpdate String CExpr (List CField)
   -- named-field variant (constructor) update: `Con { base | f = v … }` (§2.3)
   | CVariantUpdate String CExpr (List CField)
   -- array / range / index / slice (slice 3)

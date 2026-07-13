@@ -313,8 +313,8 @@ toCExpr (SList ((SAtom "CRecord")::name::fields)) =
   CRecord (toStr name) (map toCField fields)
 toCExpr (SList ((SAtom "CFieldAccess")::[e, f, n])) =
   CFieldAccess (toCExpr e) (toStr f) (toStr n)
-toCExpr (SList ((SAtom "CRecordUpdate")::base::fields)) =
-  CRecordUpdate (toCExpr base) (map toCField fields)
+toCExpr (SList ((SAtom "CRecordUpdate")::name::base::fields)) =
+  CRecordUpdate (toStr name) (toCExpr base) (map toCField fields)
 toCExpr (SList ((SAtom "CVariantUpdate")::con::base::fields)) =
   CVariantUpdate (toStr con) (toCExpr base) (map toCField fields)
 toCExpr (SList ((SAtom "CArray")::es)) = CArray (map toCExpr es)
@@ -541,7 +541,7 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CList"))) (PVar "es")))) (EApp (EVar "CList") (EApp (EApp (EVar "map") (EVar "toCExpr")) (EVar "es"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecord"))) (PCons (PVar "name") (PVar "fields"))))) (EApp (EApp (EVar "CRecord") (EApp (EVar "toStr") (EVar "name"))) (EApp (EApp (EVar "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CFieldAccess"))) (PList (PVar "e") (PVar "f") (PVar "n"))))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EVar "toCExpr") (EVar "e"))) (EApp (EVar "toStr") (EVar "f"))) (EApp (EVar "toStr") (EVar "n"))))
-(DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecordUpdate"))) (PCons (PVar "base") (PVar "fields"))))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "toCField")) (EVar "fields"))))
+(DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecordUpdate"))) (PCons (PVar "name") (PCons (PVar "base") (PVar "fields")))))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "toStr") (EVar "name"))) (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CVariantUpdate"))) (PCons (PVar "con") (PCons (PVar "base") (PVar "fields")))))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EApp (EVar "toStr") (EVar "con"))) (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EVar "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CArray"))) (PVar "es")))) (EApp (EVar "CArray") (EApp (EApp (EVar "map") (EVar "toCExpr")) (EVar "es"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRangeList"))) (PList (PVar "lo") (PVar "hi") (PVar "incl"))))) (EApp (EApp (EApp (EVar "CRangeList") (EApp (EVar "toCExpr") (EVar "lo"))) (EApp (EVar "toCExpr") (EVar "hi"))) (EApp (EVar "toBool") (EVar "incl"))))
@@ -737,7 +737,7 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CList"))) (PVar "es")))) (EApp (EVar "CList") (EApp (EApp (EMethodRef "map") (EVar "toCExpr")) (EVar "es"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecord"))) (PCons (PVar "name") (PVar "fields"))))) (EApp (EApp (EVar "CRecord") (EApp (EVar "toStr") (EVar "name"))) (EApp (EApp (EMethodRef "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CFieldAccess"))) (PList (PVar "e") (PVar "f") (PVar "n"))))) (EApp (EApp (EApp (EVar "CFieldAccess") (EApp (EVar "toCExpr") (EVar "e"))) (EApp (EVar "toStr") (EVar "f"))) (EApp (EVar "toStr") (EVar "n"))))
-(DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecordUpdate"))) (PCons (PVar "base") (PVar "fields"))))) (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "toCField")) (EVar "fields"))))
+(DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRecordUpdate"))) (PCons (PVar "name") (PCons (PVar "base") (PVar "fields")))))) (EApp (EApp (EApp (EVar "CRecordUpdate") (EApp (EVar "toStr") (EVar "name"))) (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CVariantUpdate"))) (PCons (PVar "con") (PCons (PVar "base") (PVar "fields")))))) (EApp (EApp (EApp (EVar "CVariantUpdate") (EApp (EVar "toStr") (EVar "con"))) (EApp (EVar "toCExpr") (EVar "base"))) (EApp (EApp (EMethodRef "map") (EVar "toCField")) (EVar "fields"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CArray"))) (PVar "es")))) (EApp (EVar "CArray") (EApp (EApp (EMethodRef "map") (EVar "toCExpr")) (EVar "es"))))
 (DFunDef false "toCExpr" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "CRangeList"))) (PList (PVar "lo") (PVar "hi") (PVar "incl"))))) (EApp (EApp (EApp (EVar "CRangeList") (EApp (EVar "toCExpr") (EVar "lo"))) (EApp (EVar "toCExpr") (EVar "hi"))) (EApp (EVar "toBool") (EVar "incl"))))
