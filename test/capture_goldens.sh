@@ -18,13 +18,18 @@
 # DRIVER TABLE.  Each row: <fixture-glob> | <oracle-command-template> | <suffix>.
 # %f in the template is the fixture path.  Add rows here as later phases capture
 # more surfaces (front-end dumps via gen_golden, construct binary output, …).
-# Phase 1 captures the eval_probe VALUE goldens — the largest A cluster (217
-# fixtures across 13 gates), here the two no-golden dirs that block them:
+# Phase 1 captured the eval_probe VALUE goldens — the largest A cluster:
 #   test/eval_fixtures/*.mdk  (20)   eval engine value oracle
-#   test/llvm_fixtures/*.mdk  (180)  the emitted program's runtime stdout, which
-#                                    the LLVM gate diffs against eval_probe (the
-#                                    value is position-free; the IR is not — see
-#                                    MEMORY "Diff gates compare OUTPUT not IR").
+#
+# ⚠️ test/llvm_fixtures/*.mdk is NOT a driver-table row and never runs under a bare
+# `capture_goldens.sh` — its `.eval.golden`s are the emitted program's RUNTIME
+# STDOUT, so regenerating one means emit -> clang -> link -> RUN, not a stage dump.
+# (A `test/llvm_fixtures/*.mdk (180)` row was advertised here for months after it was
+# deleted in 6869cc8d, so the documented "capture a golden" recipe silently did
+# NOTHING for the one corpus you add an emitter fixture to.)  It now has a real,
+# supported regenerator — an opt-in FROZEN family:
+#
+#   sh test/capture_goldens.sh --frozen llvm_eval
 #
 # Usage:
 #   sh test/capture_goldens.sh            capture all rows
@@ -49,7 +54,7 @@ case "${1:-}" in
   --frozen)
     FROZEN_TAG="${2:-}"
     [ -n "$FROZEN_TAG" ] || {
-      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA>"
+      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA|llvm_eval>"
       exit 2
     }
     ;;
@@ -125,8 +130,64 @@ if [ -n "$FROZEN_TAG" ]; then
       ;;
     boot_typecheck)
       regen_frozen typecheck_main boot_typecheck.golden "" "$ROOT/test/typecheck_fixtures/*.mdk" ;;
+    llvm_eval)
+      # test/llvm_fixtures/*.eval.golden — the emitted program's RUNTIME STDOUT.
+      #
+      # Unlike every other frozen family this is not a stage dump, so regen_frozen
+      # cannot express it: the golden only exists after emit -> clang -> link -> RUN.
+      # This block mirrors test/diff_compiler_llvm.sh's `--one` worker EXACTLY (same
+      # emit binary, same trailing-`()` strip, same GC detection, same link line), so
+      # a regenerated golden is BY CONSTRUCTION the "actual" side that gate compares
+      # against — there is no second implementation to drift.
+      #
+      # CONTRACT (why this renders Bools as True/False).  The probe is PRELUDE-FREE,
+      # so a bare value main (`main = 3 >= 4`) has no `println` in scope and the
+      # composite-main auto-print wrap (compiler/driver/main_autoprint.mdk) cannot
+      # fire; the emitter's own scalar auto-print (emitPrint) calls the C runtime's
+      # mdk_print_bool instead.  That function now renders the CONSTRUCTOR names
+      # `True`/`False` — Medaka's `impl Display Bool` — so the probe's stdout equals
+      # what a real `medaka build` of the same fixture prints (which goes through
+      # `println`/`display`).  It used to print OCaml's lowercase `string_of_bool`,
+      # which pinned this corpus to a rendering NO shipping binary could produce.
+      LEMIT="$BIN/llvm_emit_main"
+      [ -x "$LEMIT" ] || { echo "missing $LEMIT — run: sh test/build_oracles.sh --build-one llvm_emit_main"; exit 2; }
+      LCC="${CC:-clang}"
+      command -v "$LCC" >/dev/null 2>&1 || { echo "no C compiler ($LCC) on PATH"; exit 2; }
+      if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
+        LGC_CFLAGS="$(pkg-config --cflags bdw-gc)"; LGC_LIBS="$(pkg-config --libs bdw-gc)"
+      elif LGC_PREFIX="$(brew --prefix bdw-gc 2>/dev/null)" && [ -n "$LGC_PREFIX" ] && [ -f "$LGC_PREFIX/include/gc.h" ]; then
+        LGC_CFLAGS="-I$LGC_PREFIX/include"; LGC_LIBS="-L$LGC_PREFIX/lib -lgc"
+      elif printf '#include <gc.h>\nint main(void){return 0;}\n' | "$LCC" -x c - -lgc -o /dev/null 2>/dev/null; then
+        LGC_CFLAGS=""; LGC_LIBS="-lgc"
+      else
+        echo "libgc (bdw-gc) not found — cannot regenerate llvm_eval goldens"; exit 2
+      fi
+      LW="$(mktemp -d)"
+      trap 'rm -rf "$LW"' EXIT
+      LRT="$LW/medaka_rt.o"
+      "$LCC" $LGC_CFLAGS -c "$ROOT/runtime/medaka_rt.c" -o "$LRT" 2>/dev/null || LRT="$ROOT/runtime/medaka_rt.c"
+      lfail=0
+      for f in "$ROOT"/test/llvm_fixtures/*.mdk; do
+        [ -f "$f" ] || continue
+        n="$(basename "$f" .mdk)"
+        if ! "$LEMIT" "$f" 2>/dev/null | perl -0pe 's/\(\)\s*\z//' > "$LW/$n.ll"; then
+          echo "  FAIL $n (emit)"; lfail=$((lfail+1)); continue
+        fi
+        if ! "$LCC" $LGC_CFLAGS "$LW/$n.ll" "$LRT" $LGC_LIBS -lm -o "$LW/$n.bin" 2>/dev/null; then
+          echo "  FAIL $n (clang)"; lfail=$((lfail+1)); continue
+        fi
+        # The fixture's own exit status is part of its behaviour (abort_*/panic
+        # fixtures exit non-zero AFTER printing); capture stdout regardless.
+        "$LW/$n.bin" > "${f%.mdk}.eval.golden" 2>/dev/null
+        fwrote=$((fwrote+1))
+      done
+      rm -rf "$LW"; trap - EXIT
+      # A regenerator that silently writes 0 goldens is how a stale golden ships.
+      [ "$fwrote" -gt 0 ] || { echo "wrote 0 goldens — no fixtures found under test/llvm_fixtures/"; exit 2; }
+      [ "$lfail" -eq 0 ] || { echo "$lfail fixture(s) failed to emit/compile — goldens NOT written for those"; exit 1; }
+      ;;
     *)
-      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA)"
+      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA|llvm_eval)"
       exit 2 ;;
   esac
   status=$?

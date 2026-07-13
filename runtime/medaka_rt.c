@@ -204,8 +204,25 @@ noreturn void mdk_oob(void) {
  * string_of_int n, then eval_probe adds a trailing newline. */
 void mdk_print_int(long long v) { printf("%lld\n", v); }
 
-/* Print a Bool.  Matches Eval.pp_value (VBool b) = string_of_bool b. */
-void mdk_print_bool(long long v) { printf(v ? "true\n" : "false\n"); }
+/* Print a Bool for the VALUE-MAIN auto-print (emitPrint LTBool -> the sole caller;
+ * llvm_emit.mdk's `if mainIsUnit e mty then () else emitPrint e mv mty`).
+ *
+ * Renders the CONSTRUCTOR names `True`/`False` — Medaka's own `impl Display Bool`
+ * (stdlib/core.mdk: `display True = "True"`).  That is the contract a SHIPPING
+ * binary produces: `medaka build` runs the composite-main auto-print wrap
+ * (compiler/driver/main_autoprint.mdk), which rewrites `main = <e>` into
+ * `main = println <e>`, so a Bool value-main renders through `display`.  The WasmGC
+ * backend's peer ($mdk_print_bool in compiler/backend/wasm_preamble.mdk) already
+ * writes "True"/"False", with a comment saying it MUST agree with native's
+ * println/display — this function was the last holdout.
+ *
+ * It previously printed OCaml's `string_of_bool` ("true"/"false") to match the
+ * OCaml oracle's Eval.pp_value.  That oracle was REMOVED 2026-06-26, so the
+ * lowercase rendering survived only in the PRELUDE-FREE emit probes
+ * (test/bin/llvm_emit_main), where no `println` is in scope and the wrap cannot
+ * fire.  That is why test/diff_compiler_llvm.sh was grading a rendering no
+ * `medaka build` binary can ever emit. */
+void mdk_print_bool(long long v) { printf(v ? "True\n" : "False\n"); }
 
 /* Print a Float.  Renders the canonical Medaka float lexeme (DECIDED 2026-06-15,
  * a deliberate divergence from OCaml string_of_float — the same rule is mirrored
