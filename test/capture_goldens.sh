@@ -46,6 +46,7 @@ CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdli
 DICT_BIN="$ROOT/test/bin/eval_dict_main"
 TYPED_BIN="$ROOT/test/bin/eval_typed_main"
 EVAL_MODULES_BIN="$ROOT/test/bin/eval_modules_main"
+REPL_BIN="$ROOT/test/bin/repl_main"
 
 # capture_build_golden <fixture.mdk> <golden path> — mirrors
 # test/build_construct_coverage.sh's check() EXACTLY: `medaka build
@@ -302,6 +303,79 @@ $ROOT/test/eval_dict_fixtures/*.mdk::eval_dict::eval.golden
 $ROOT/test/eval_typed_fixtures/*.mdk::eval_typed::eval.golden
 "
 
+want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
+  [ -z "$FILTER" ] && return 0
+  case "eval" in "$FILTER"*) return 0 ;; esac
+  case "$1" in "$FILTER"*) return 0 ;; esac
+  return 1
+}
+
+# ── PREFLIGHT: a missing test/bin/* probe must NEVER look like a golden drift ──
+#
+# This mirrors test/run_gates.sh's stale-oracle refusal (same principle, same
+# reason it exists): "I could not run this" and "the answer was wrong" are
+# different failures and this tool must never conflate them. Before this
+# preflight existed, a missing probe made `oracle_eval_dict`/`oracle_eval_typed`
+# print "missing <bin> — run: ..." to STDERR, which `emit_golden` immediately
+# discards (`"$@" 2>/dev/null`) — so the warning vanished, the probe's empty
+# stdout got compared (or, in capture mode, WRITTEN) as if it were real output,
+# and `--check` reported a wall of "DRIFT" for every fixture in that row. Worse:
+# a plain (non-`--check`) capture run with the probe missing SILENTLY OVERWROTE
+# every golden in that row with empty content and printed "0 oracle failures" —
+# a real golden-corruption bug, not just a misleading message.
+#
+# So: determine which test/bin/* binaries THIS invocation actually needs
+# (honoring $FILTER with the exact same row/tag selection the loops below use),
+# check them ALL before touching a single golden, and if any are missing or
+# non-executable, name them, print the exact fix, and exit — zero comparisons
+# happened, so this is not a mismatch and must not be counted as one.
+missing_bins=""
+add_missing() {  # add_missing <binary-basename> (deduped)
+  case " $missing_bins " in
+    *" $1 "*) ;;
+    *) missing_bins="$missing_bins $1" ;;
+  esac
+}
+for row in $ROWS; do
+  [ -n "$row" ] || continue
+  glob="${row%%::*}"; rest="${row#*::}"
+  tag="${rest%%::*}"; suffix="${rest#*::}"
+  if [ -n "$FILTER" ]; then
+    case "$suffix" in "$FILTER"*) ;; *) case "$tag" in "$FILTER"*) ;; *) continue ;; esac ;; esac
+  fi
+  case "$tag" in
+    eval_dict)  [ -x "$DICT_BIN" ]  || add_missing eval_dict_main ;;
+    eval_typed) [ -x "$TYPED_BIN" ] || add_missing eval_typed_main ;;
+  esac
+done
+if want eval_modules; then
+  [ -x "$EVAL_MODULES_BIN" ] || add_missing eval_modules_main
+fi
+if want repl; then
+  [ -x "$REPL_BIN" ] || add_missing repl_main
+fi
+
+if [ -n "$missing_bins" ]; then
+  echo "════════════════════════════════════════════════════════════════════"
+  echo "MISSING ORACLE BINARIES — REFUSING TO RUN."
+  echo
+  echo "  Required by this invocation but not built (or not executable):"
+  for b in $missing_bins; do echo "    test/bin/$b"; done
+  echo
+  echo "A missing probe is NOT a golden drift and this run made ZERO"
+  echo "comparisons — do not read anything below this line as one."
+  echo "(Comparing — or worse, in capture mode, WRITING — a missing binary's"
+  echo "empty output against a committed golden looks exactly like a real"
+  echo "regression, or silently corrupts the golden.)"
+  echo
+  echo "  Build them:"
+  for b in $missing_bins; do
+    echo "    FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $b"
+  done
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 2
+fi
+
 total=0 wrote=0 mism=0 fixtures=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
@@ -370,13 +444,9 @@ done
 # These goldens are captured from the EXACT OCaml oracle each gate used (a compiler
 # entry run via main.exe, or `main.exe run <entry>` per fixture dir), so the
 # re-rooted gate diffs its native host's stdout against this committed reference.
-
-want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
-  [ -z "$FILTER" ] && return 0
-  case "eval" in "$FILTER"*) return 0 ;; esac
-  case "$1" in "$FILTER"*) return 0 ;; esac
-  return 1
-}
+# (`want()` used to be defined here; moved up next to the PREFLIGHT block above —
+# that block needs it too, and `want()` doesn't depend on anything defined between
+# the two locations.)
 
 # eval_modules : golden = the SAME native loader-driven probe
 # diff_compiler_eval_modules.sh diffs against (test/bin/eval_modules_main),
