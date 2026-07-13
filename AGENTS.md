@@ -525,11 +525,23 @@ add a pass, profile it.
     collapse into one cell, so a module constructs via the *other* module's arity, saturates
     early, and applies the surplus arg (`E-NOT-A-FUNCTION`). The fix shape is a per-module
     **local** ctor frame that shadows the global (the global stays, for `Type(..)` imports).
-- ⚠️ **`test/eval_modules_fixtures/*/` is globbed by TWO gates** — `diff_compiler_eval_modules.sh`
-  *and* `diff_compiler_core_ir_modules.sh`. Adding a regression fixture there silently enrolls it
-  in the Core-IR gate too. P0-9 shipped "green" on `eval_modules 5/0` while leaving
-  `core_ir_modules` red, because only the first gate was run. **When adding a fixture to a shared
-  corpus, run every gate that globs it.**
+- ⚠️ **A FIXTURE DIRECTORY IS A SHARED CORPUS. Adding, moving, or deleting a fixture silently
+  enrolls (or de-enrolls) you in gates you never named.** This is general, not a quirk of one
+  directory. Before touching a fixture dir, find every consumer:
+  `grep -rl '<fixture_dir>' test/`. Then run **all** of them.
+  - `test/eval_modules_fixtures/*/` → `diff_compiler_eval_modules.sh` **and**
+    `diff_compiler_core_ir_modules.sh`. P0-9 shipped "green" on `eval_modules 5/0` while leaving
+    `core_ir_modules` red, because only the first gate was run.
+  - `test/wasm/fixtures/` → **FOUR** consumers: `diff_wasm.sh`, `diff_compiler_engines.sh` (its
+    corpus is `llvm_fixtures ∪ wasm/fixtures`), `tmc_census.sh`, and the keys of
+    `test/engine_divergence.txt`. `test/wasm/fixtures_modules/` → `diff_wasm_modules.sh`,
+    `build_wasm_cmd.sh`, `selfcompile_emit.sh`.
+- ⚠️ **The compiler's own sources are IN the snapshot corpus, so a source change MOVES ITS OWN
+  GOLDEN. Bless it in the SAME commit.** Push the source without the golden and `main` goes red,
+  and the pre-commit hook then forces the *next* agent to bless a file it never touched — which is
+  exactly the "rubber-stamp someone else's regression" hazard blessing is supposed to prevent. (Done
+  wrong 2026-07-13: `main` was red for two commits for this reason.) Bless by NAMING the path —
+  `--bless` refuses to rubber-stamp a whole corpus.
 - Development is organized by numbered **Phases**. Open/forward work is in
   `PLAN.md`; the completed Phases 1–97 (with implementation notes) are in
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
