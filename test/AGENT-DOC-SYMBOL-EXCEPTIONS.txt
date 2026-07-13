@@ -63,17 +63,25 @@
 #    1 FILE exception (STDLIB.md, covers 5 dead tokens): a workstream backlog
 #       whose own header states its content is MISSING functions.
 #
-#   Both REAL violations found while deriving this ledger — `checkGuardExhaust`
-#   and `checkMatch` in AGENTS.md (stale: the real names are
-#   `checkGuardExhaustiveness` and `checkMatchToLines`/`checkMatchExhaustive`),
-#   plus `EFunction` (AGENTS.md x2, debug-pipeline/SKILL.md x1 — no such AST
-#   node; likely a stale reference to the REMOVED `function` keyword) and
-#   `argStampEnabled` (AGENTS.md — renamed to `emitArgStampPasses` by commit
-#   121b9dc0, 2026-06-21; the doc still describes the rename as "is being
-#   retired", present tense, when it has already completed) — are NOT excused
-#   here. They are real doc rot on `main`, reported to the docs-cleanup
-#   workstream, not fixed by this gate (out of scope: this PR builds the
-#   checker, not the fix).
+#   The REAL violations found while deriving this ledger were deliberately NOT
+#   excused here — a fabrication belongs in the source of the claim, not in a
+#   skip-list. All four were FIXED in the same PR that turned this gate on:
+#     - `checkGuardExhaust` (AGENTS.md)   -> `checkGuardExhaustiveness`
+#                                            (compiler/frontend/exhaust.mdk:835)
+#     - `checkMatch`        (AGENTS.md)   -> `checkMatchExhaustive`
+#                                            (compiler/types/typecheck.mdk:5847 — the
+#                                            per-EMatch call typecheck.mdk:5829 makes)
+#     - `EFunction`  (AGENTS.md x2, debug-pipeline/SKILL.md x1) -> no such AST
+#                                            constructor; a ghost of the REMOVED
+#                                            `function` keyword. The real surface-sugar
+#                                            nodes are EGuards/ESection/EStringInterp/EDo.
+#     - `argStampEnabled`   (AGENTS.md)   -> `emitArgStampPasses`
+#                                            (compiler/types/typecheck.mdk:1809), and the
+#                                            fork is RETIRED (ARGSTAMP-UNIFY-PLAN.md:
+#                                            COMPLETE d01a411a, 2026-06-14), not
+#                                            "being retired" as the doc claimed.
+#   If any of those four names reappears in a doc, this gate fails again — which
+#   is the point.
 
 # ── SYM: agent-harness / Claude Code concepts, not Medaka source ───────────
 SYM	Monitor	.claude/ORCHESTRATING.md describes the Claude Code Monitor TOOL (streams background-process events) — an agent-harness concept, not a Medaka compiler symbol

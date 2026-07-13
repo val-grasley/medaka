@@ -48,12 +48,12 @@ lexer.mdk → parser.mdk → ast.mdk → desugar.mdk → resolve.mdk → marker.
 
 Two non-obvious facts that bite when deciding *where* a check belongs:
 - **`desugar.mdk` runs first**, before resolve/typecheck. So surface-sugar nodes
-  (`EGuards`, `EFunction`, `ESection`, string interp) are
+  (`EGuards`, `ESection`, `EStringInterp`, `EDo`) are
   **already lowered to core** by the time typecheck/exhaust/eval see the tree. A
   check that needs the sugar shape (e.g. guard *coverage* on `EGuards`) cannot
-  live in typecheck/exhaust — it must run pre-desugar (see `checkGuardExhaust`
+  live in typecheck/exhaust — it must run pre-desugar (see `checkGuardExhaustiveness`
   in `compiler/frontend/exhaust.mdk`, a standalone pass on the raw AST).
-- **`exhaust.mdk` is not a standalone later stage** — `checkMatch` is
+- **`exhaust.mdk` is not a standalone later stage** — `checkMatchExhaustive` is
   *called from inside* `compiler/types/typecheck.mdk` (once per `EMatch`, with
   the scrutinee type known). It only ever sees core patterns.
 
@@ -62,7 +62,7 @@ Two non-obvious facts that bite when deciding *where* a check belongs:
 | Lex | `compiler/frontend/lexer.mdk` | Indentation-sensitive; emits INDENT/DEDENT/NEWLINE |
 | Parse | `compiler/frontend/parser.mdk` | Recursive-descent grammar |
 | AST | `compiler/frontend/ast.mdk` | Node types + source locations |
-| Desugar | `compiler/frontend/desugar.mdk` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, `EGuards`/`EFunction`/`ESection`/string-interp, `EDo` (do-blocks → nested `andThen`/`pure`), default-method specialization |
+| Desugar | `compiler/frontend/desugar.mdk` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, `EGuards`/`ESection`/`EStringInterp`, `EDo` (do-blocks → nested `andThen`/`pure`), default-method specialization |
 | Resolve | `compiler/frontend/resolve.mdk` | Name binding, single- and multi-module |
 | Mark | `compiler/frontend/marker.mdk` | Runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
 | Typecheck | `compiler/types/typecheck.mdk` | Hindley-Milner + interfaces + effects; invokes Exhaust per `EMatch` |
@@ -755,11 +755,11 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `compiler/DIAGNOSTIC-CODES-DESIGN.md` | Stable diagnostic error-code taxonomy (per-stage `T-*`/`R-*`/`P-*`/`L-*`/`W-*`) + the `Diag` `code`/`kind`/`help`/`fix` JSON contract. Add new codes here |
 | `compiler/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
 | `compiler/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series). ⚠️ This row used to claim refutable `CGBind` (`Just x <- e`) was "a contained `gapU`, not produced by current source" — **BOTH halves were false** and it cost a reviewer a wrong turn; refutable `CGBind` has lowered since 2026-06-08, current source *does* produce it, and the shape that was actually broken (a refutable guard on a clause of a **multi-clause** fn) was a run≠build MISCOMPILE, not a gap — **FIXED 2026-07-13** (task T28; see the guard note above and the doc's own entry). The mixed-nullary/payload-ADT fuzzer crash was CLOSED 2026-06-13 — root cause was a cross-module **constructor-name collision** in the emitter's bare-name ctor tables (fixed by universal ctor mangling in `backend/private_mangle.mdk`), NOT match field mis-extraction as first filed. |
-| `compiler/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `compiler/ARGSTAMP-UNIFY-PLAN.md`. |
+| `compiler/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `emitArgStampPasses`, removed the `suppressBinopStamp` workaround). The deeper root — the `emitArgStampPasses` eval-vs-emit fork these shared — **was retired** (COMPLETE 2026-06-14, `d01a411a`); see `compiler/ARGSTAMP-UNIFY-PLAN.md`. |
 | `compiler/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
 | `compiler/PERF-RESULTS.md` | Measured perf log. **⚠️ the 1.72s self-compile below is STALE — see the 2026-07-02 warning at the top of that file: emit is now ~3.7s (compiler grew), and that session parallelized the build/test harness (oracle build 327→34s, gate suite 125→32s) + built the emitter at -O2 + added env knobs (EMITTER_OPT/ORACLE_OPT/CLI_OPT/GC_INITIAL_HEAP_SIZE).** Historical: **Bar-4 EXECUTED (2026-06-11), extended session 2 (2026-06-14):** self-compile **12.04 s → ~1.72 s (~7×); ~73× vs the OCaml interpreter**. Session 1 (18 wins): `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Session 2 (3 wins, 2.57→1.72 s): two MISATTRIBUTED-symbol O(N²) sites session 1 missed — `scopeArities` (~23%) + `maybeInferConstraint` (~7.5%) membership→SMap — plus `GC_malloc_atomic` for pointer-free string cells (~3%). Reusable patterns (map the lam-id to source before trusting a filed hotspot; verify by wall-clock not sample count), every dead-end, and the supervised-only remaining levers (threaded float-augmented sig tree, GC allocation density). Harness: `test/bench.sh` |
 | `compiler/STAGE2-DESIGN.md` / `compiler/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
 | `compiler/README.md` | Self-host port slice log + roadmap |
 | `compiler/REROOT-PLAN.md` | The plan that took every differential gate OCaml-free (DONE 2026-06-13): gate categories (HOST/eval-probe-oracle/front-end/build), golden-capture infra, native-interp oracle, phasing. |
 | `compiler/DRIVER-COLLAPSE-PLAN.md` | The plan that folded single-file typecheck+eval into the 1-module case of the multi-module path (DONE 2026-06-13, closes audit §6): 5 phases (scaffold→test→dict→eval→check→delete), `check`-option-A (resolves imports), risk register. |
-| `compiler/ARGSTAMP-UNIFY-PLAN.md` | **COMPLETE (all phases 0–5 done 2026-06-14).** The plan that retired the `argStampEnabled` eval-vs-emit dispatch fork (the finer split the driver collapse left; shared root of #55/#21): eval and emit now run ONE elaboration mode (full static dict-threading); arg-tag survives only for the irreducible primitive `Eq Int`/`Ord Int` residual. Kept for the fork inventory + arg-tag dependency map. |
+| `compiler/ARGSTAMP-UNIFY-PLAN.md` | **COMPLETE (all phases 0–5 done 2026-06-14).** The plan that retired the `emitArgStampPasses` eval-vs-emit dispatch fork (the finer split the driver collapse left; shared root of #55/#21): eval and emit now run ONE elaboration mode (full static dict-threading); arg-tag survives only for the irreducible primitive `Eq Int`/`Ord Int` residual. Kept for the fork inventory + arg-tag dependency map. |

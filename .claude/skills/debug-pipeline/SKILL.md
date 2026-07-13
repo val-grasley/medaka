@@ -20,7 +20,7 @@ Two facts that decide *where a bug can possibly live* — get these wrong and yo
 will bisect in the wrong half of the compiler:
 
 - **`desugar` runs FIRST**, before resolve/typecheck — not last. So the surface
-  sugar nodes (`EGuards`, `EFunction`, `ESection`, string interpolation, `EDo`)
+  sugar nodes (`EGuards`, `ESection`, `EStringInterp`, `EDo`)
   are **already lowered to core** by the time resolve/typecheck/eval see the tree.
   A misbehaviour that needs the *sugar shape* to explain it is a `desugar.mdk` bug,
   and it cannot be downstream of typecheck.
