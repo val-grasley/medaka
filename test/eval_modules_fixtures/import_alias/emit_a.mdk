@@ -1,0 +1,9 @@
+-- Two provider modules deliberately export the SAME names (`emit`, `describe`).
+-- Before import aliasing they could not both be imported by one module at all.
+export emit : Int -> String
+emit n = "A:\{n}"
+
+-- constrained (dict-passed) — an alias must carry the dict arity across, or the call
+-- silently under-applies
+export describe : Debug a => a -> String
+describe x = "A<\{debug x}>"

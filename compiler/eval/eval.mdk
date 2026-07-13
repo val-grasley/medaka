@@ -34,6 +34,9 @@ import frontend.ast.{
   ImplMethod(..),
   UsePath(..),
   UseMember(..),
+  useMemberOrigin,
+  useMemberLocal,
+  qualifiedLocal,
   Decl(..),
 }
 import support.util.{
@@ -2454,8 +2457,45 @@ buildModInfos globalCells exportsMap ((mid, decls)::rest) =
   let localCells = map (n => (n, Ref VUnit)) (map fst grps ++ map fst modCtors)
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
-  let exports = localCells ++ pubReexports exportsMap decls
+  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports exportsMap decls
   ModInfo mid decls grps localCells menv :: buildModInfos globalCells ((mid, exports)::exportsMap) rest
+
+-- IMPORT ALIASING: a module must ALSO export the interface/impl METHODS it declares.
+--
+-- Methods are not in `localCells`: they are coalesced into ONE GLOBAL cell per bare name
+-- (evalModules' `globalNames`/`coalesceImpls`), because impl dispatch is global-by-name.
+-- So they were absent from every module's `exports` — the very list resolveMembers /
+-- importFrameOf consult to bind an import.  That gap was INVISIBLE while every import
+-- kept its origin name: the reference simply fell through to the global frame unchanged.
+-- The moment a local name diverges from the origin — either alias form — nothing bound
+-- it anywhere, and `import shapes.{area as computeArea}` died with "unbound identifier".
+--
+-- The exported entry is the SAME global cell, never a copy: that cell holds the
+-- coalesced dispatcher, so an alias is a second name for one dispatcher and impl
+-- coalescing is untouched.
+export methodCellsOf : List (String, Ref (Value e)) -> List Decl -> List (String, Ref (Value e))
+methodCellsOf globalCells decls =
+  flatMap (methodCell globalCells) (moduleMethodNames decls)
+
+methodCell : List (String, Ref (Value e)) -> String -> List (String, Ref (Value e))
+methodCell globalCells n = match lookupAssoc n globalCells
+  Some cell => [(n, cell)]
+  None => []
+
+-- every interface/impl method name THIS module declares (unlike implMethodNames, an
+-- interface method with NO default counts — it still has a global dispatch cell, put
+-- there by whichever module impls it).
+moduleMethodNames : List Decl -> List String
+moduleMethodNames decls = dedup (flatMap moduleMethodNamesOf decls)
+
+moduleMethodNamesOf : Decl -> List String
+moduleMethodNamesOf (DImpl { methods, ... }) = map implMethodName methods
+moduleMethodNamesOf (DInterface { methods, ... }) = map ifaceMethodNmE methods
+moduleMethodNamesOf (DAttrib _ d) = moduleMethodNamesOf d
+moduleMethodNamesOf _ = []
+
+ifaceMethodNmE : IfaceMethod -> String
+ifaceMethodNmE (IfaceMethod n _ _) = n
 
 -- pass 2: install each module's funDef groups into its own cells (its env)
 installModGroups : List (ModInfo (Value e)) -> <Mut | e> Unit
@@ -2549,24 +2589,37 @@ reexport exportsMap (DUse True path _) = match lookupAssoc (useModuleId path) ex
   Some exports => resolveMembers path exports
 reexport _ _ = []
 
+-- The cells an import binds into the importing module's frame, keyed by the LOCAL name.
+-- The origin module's cell is shared by REFERENCE, so an alias is a second name for the
+-- very same cell — never a copy.
 resolveMembers : UsePath -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 resolveMembers (UseName ns) exports =
   if listLen ns > 1 then
-    bindNames [lastOfList ns] exports
+    bindNames [selfBind (lastOfList ns)] exports
   else
     []
-resolveMembers (UseGroup _ ms) exports = bindNames (map memberNm ms) exports
+resolveMembers (UseGroup _ ms) exports = bindNames (map memberBind ms) exports
 resolveMembers (UseWild _) exports = exports
-resolveMembers (UseAlias _ _) _ = []
+-- `import m as A` → every export of m, under `A.name`.  This is what makes two modules
+-- exporting the SAME name importable at once: their cells land under distinct keys, so
+-- the importing frame's first-match lookup can no longer collapse them.
+resolveMembers (UseAlias _ a) exports = map (qualifyCell a) exports
 
-bindNames : List String -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
+qualifyCell : String -> (String, Ref (Value e)) -> (String, Ref (Value e))
+qualifyCell a (n, cell) = (qualifiedLocal a n, cell)
+
+-- bind (origin, local) pairs: look the cell up by ORIGIN, enter it under LOCAL.
+bindNames : List (String, String) -> List (String, Ref (Value e)) -> List (String, Ref (Value e))
 bindNames [] _ = []
-bindNames (n::rest) exports = match lookupAssoc n exports
-  Some cell => (n, cell) :: bindNames rest exports
+bindNames ((origin, local)::rest) exports = match lookupAssoc origin exports
+  Some cell => (local, cell) :: bindNames rest exports
   None => bindNames rest exports
 
-memberNm : UseMember -> String
-memberNm (UseMember n _ _) = n
+memberBind : UseMember -> (String, String)
+memberBind m = (useMemberOrigin m, useMemberLocal m)
+
+selfBind : String -> (String, String)
+selfBind n = (n, n)
 
 useModuleId : UsePath -> String
 useModuleId (UseName ns) =

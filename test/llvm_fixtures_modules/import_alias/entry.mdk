@@ -1,0 +1,9 @@
+-- BOTH alias forms reaching the same interface method, which must still DISPATCH
+-- (Circle vs Square pick different impls), not merely resolve.
+import shapes as S
+import shapes.{area as areaOf, Circle(..), Square(..)}
+
+total : Int
+total = areaOf (Circle 2) + S.area (Square 3) + areaOf (Square 4)
+
+main = putStrLn (intToString total)

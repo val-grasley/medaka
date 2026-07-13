@@ -387,30 +387,43 @@ public export data Color = Red | Green | Blue   -- export type + constructors
 export data Color = Red | Green | Blue           -- abstract export (type only)
 ```
 
-### ⚠️ There is NO import aliasing. `as` does not work.
+### Import aliasing (`as`)
 
-This file used to list `import collections.HashMap as HM  -- alias`. **That was wrong**,
-and since this file is supposed to be the ground truth for what the current binary
-accepts, it was actively misleading. Verified 2026-07-13:
+Two forms, both of which make a name collision between modules resolvable. Landed
+2026-07-13 (before that, `as` parsed and was silently ignored).
 
-| form | actual behavior |
+```
+import backend.wasm_emit as W                  -- module alias: refer to W.emitProgram
+import backend.wasm_emit.{emitProgram as wasmText}   -- member alias: rename one value
+```
+
+| form | meaning |
 |---|---|
-| `import list as L` | **parses, then SILENTLY NO-OPS.** `L` is unbound; bare `length` works as if the `as` clause were absent. No error, no warning. |
-| `import list.map as L` | parses, but misresolves `list.map` as a *module path* → "unknown module" |
-| `import list.{map} as L` | **parse error:** ``unexpected `as` `` |
-| `import list.* as L` | **parse error** |
+| `import m as A` | binds every VALUE `m` exports as `A.name`. Does **not** bind bare `name`. |
+| `import m.sub as A` | same, for a nested module path |
+| `import m.{a as b, c}` | binds `m`'s `a` as `b`, plus `c`. Does **not** bind bare `a`. |
 
-`as` IS a lexer keyword (`TAs`, `lexer.mdk:429`), so the token exists — but nothing
-downstream binds an alias.
+**An alias REPLACES the unqualified import** (like Python's `import x as y`, or
+Haskell's `qualified`). That is what makes a collision resolvable: `import emit_a as A`
+and `import emit_b as B` puts both modules' `emit` in scope, as `A.emit` and `B.emit`.
 
-**Consequence:** two modules exporting the same name cannot both be imported. There is
-no way to disambiguate. This is not hypothetical — `backend.llvm_emit` and
-`backend.wasm_emit` both export `emitProgram`, and the only way to use both in one
-module is a hand-written re-export shim (`compiler/tools/snap_wasm.mdk` exists solely
-for this).
+Rules, each a real error rather than a silent no-op:
 
-**A silently-ignored `as` is worse than a parse error** — it looks like it worked.
-Either implement aliasing or reject `as` outright.
+| rejected form | why |
+|---|---|
+| `import m.{a} as A` | group + alias is contradictory (the group already binds names unqualified) |
+| `import m.* as A` | wildcard + alias, same reason |
+| `import m as l` | a module alias must be **Uppercase** — it is used as a qualifier (`A.name`), and a lowercase one would be ambiguous with `record.field` |
+| `import m.{Foo as Bar}` | only a **value** member can be renamed. Impl coherence and constructor identity resolve on the REAL name globally, so aliasing a type/ctor/interface would be a soundness hole, not a rename |
+| `export import m as A` | an alias is FILE-LOCAL. Re-exporting `A.name` would export a name no importer could write |
+
+A qualified reference `A.name` is lowered by `frontend/desugar.mdk` to the flat name
+`A.name` (a dot cannot occur in an identifier, so it cannot collide), and
+`backend/private_mangle.mdk` maps it back to the origin module's real symbol — no dotted
+name reaches the emitted code.
+
+Only values can be qualified: `A.SomeType` does not parse (a field name is lowercase).
+Import a type with `import m.{T(..)}`.
 
 ## Externs (primitive declarations — see stdlib/runtime.mdk)
 

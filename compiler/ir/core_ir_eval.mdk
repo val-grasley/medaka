@@ -84,6 +84,7 @@ import eval.eval.{
   collectCtors,
   buildIfaceDispatch,
   implMethodNames,
+  methodCellsOf,
   importFrameOf,
   pubReexports,
   evalVariantUpdate,
@@ -524,7 +525,13 @@ cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
   let localCells = map (n => (n, Ref VUnit)) (map cBindName cbinds ++ map fst modCtors)
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
-  let exports = localCells ++ pubReexports exportsMap decls
+  -- IMPORT ALIASING (Core-IR port of the eval.mdk fix — these two module drivers are
+  -- parallel and their frame semantics MUST move in lockstep): a module also exports the
+  -- interface/impl METHODS it declares, bound to the SAME global (coalesced-dispatcher)
+  -- cell.  Methods are global-by-name and so appear in no module's localCells; without
+  -- this, an ALIASED method import binds to nothing, while an un-aliased one silently
+  -- works by falling through to the global frame under its unchanged name.
+  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports exportsMap decls
   CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
 
 -- a module's impl methods / interface defaults close over ITS env but coalesce

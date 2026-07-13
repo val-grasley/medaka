@@ -1,0 +1,26 @@
+-- interface lives HERE; one impl lives here, another lives in shapes_extra.mdk, so an
+-- aliased method must dispatch across a module boundary too.
+export interface Shape a where
+  area : a -> Int
+  name : a -> String
+
+public export data Circle = Circle Int
+public export data Square = Square Int
+
+export impl Shape Circle where
+  area (Circle r) = 3 * r * r
+  name _ = "circle"
+
+export impl Shape Square where
+  area (Square s) = s * s
+  name _ = "square"
+
+-- a method carrying its OWN `=>` constraint — this is what reaches the METHOD-side
+-- dict-arity tables (methodConstraintsRef / crossModuleMethodConstraintsQualRef).
+-- Those need no alias re-keying precisely because renameAliasedMethods has already
+-- resolved every aliased method back to its origin name before they are built.
+export interface Tagger a where
+  tagged : Debug b => a -> b -> String
+
+export impl Tagger Circle where
+  tagged _ x = "tag:\{debug x}"

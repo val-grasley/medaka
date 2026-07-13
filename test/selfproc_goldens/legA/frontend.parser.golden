@@ -123,6 +123,7 @@ exprToPat : Expr -> Pat
 externName : Parser String
 externNameFor : Token -> Parser String
 extractConstraints : Ty -> List Constraint
+failIfAliasedMember : List UseMember -> Parser Unit
 failP : String -> Parser a
 fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
 firstBacktickIdx : Array Token -> Int -> Int
@@ -263,6 +264,10 @@ many : Parser a -> Parser (List a)
 manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
 mapPR : (a -> b) -> PR a -> PR b
+memberAliasFor : Int -> String -> Bool -> Token -> Parser UseMember
+memberAliasName : Parser String
+memberAliasNameFor : Token -> Parser String
+memberAliasOrNot : Int -> String -> Bool -> Parser UseMember
 mkAttr : String -> Option String -> Attr
 mkEffect : (List (String, Option String), Option String) -> Ty -> Ty
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
@@ -273,6 +278,11 @@ negIntRng : Lit -> Parser Pat
 negLitArg : Bool -> Parser Expr
 negLitArgFor : Token -> Token -> Parser Expr
 nextSigIsPipe : Array Token -> Int -> Int -> Bool
+noExportedAlias : Bool -> UsePath -> Parser Unit
+noMemberAlias : String -> Parser Unit
+noMemberAliasFor : String -> Token -> Parser Unit
+noTrailingAlias : String -> Parser Unit
+noTrailingAliasFor : String -> Token -> Parser Unit
 offsetAt : Array Int -> Int -> Int -> Int
 optPipe : Parser Unit
 optPipeFor : Token -> Parser Unit

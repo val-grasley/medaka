@@ -1,5 +1,5 @@
 # META
-source_lines=1157
+source_lines=1162
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/snapshot.mdk — `medaka snapshot`, the in-process snapshot runner
@@ -196,14 +196,18 @@ import backend.llvm_emit.{
   resetGaps,
   gapEvents,
 }
+-- `backend.wasm_emit` also exports `emitProgram`, colliding with the LLVM one above.
+-- A member alias renames it on import, so BOTH backends are driven from ONE process
+-- over ONE lowered CProgram.  (This is what retired `tools/snap_wasm.mdk`, a re-export
+-- shim that existed solely because Medaka had no import aliasing.)
 import backend.wasm_emit.{
+  emitProgram as wasmText,
   installDeclRetTypes,
   installCtorFloatFields,
   enableGapRecordW,
   resetGapsW,
   gapEventsW,
 }
-import tools.snap_wasm.{wasmText}
 import support.util.{
   joinNl,
   joinWith,
@@ -479,8 +483,9 @@ evalOf runtimeDecls coreDecls d =
 
 -- ── the emit path (BOTH backends, ONE lowered CProgram) ──────────────────────
 --
--- This is the payoff of the snap_wasm shim: `elaborateDict` -> `lowerProgramEmit` runs
--- ONCE and the resulting CProgram feeds llvm_emit AND wasm_emit.
+-- `elaborateDict` -> `lowerProgramEmit` runs ONCE and the resulting CProgram feeds
+-- llvm_emit AND wasm_emit (whose colliding `emitProgram` is import-aliased to
+-- `wasmText` above).
 --
 -- PRELUDE-FREE (runtime.mdk only, no core.mdk) — the exact shape of
 -- entries/llvm_emit_typed_main.mdk and wasm_emit_typed_main.mdk, which are what the
@@ -1173,8 +1178,7 @@ mapUnit f (x::rest) =
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkToLinesWithRuntime" false) (mem "setCoherenceUserDecls" false) (mem "elaborateOne" false) (mem "elaborateDict" false) (mem "constrainedSigNames" false) (mem "setEmitArgStampPasses" false) (mem "mainTypeIsUnit" false) (mem "mainTypeIsFloat" false) (mem "hadTypeErrors" false) (mem "hadMatchWarnings" false) (mem "resetTypeErrorsSticky" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "evalOneOutput" false) (mem "funNamesOf" false) (mem "dropShadowedExp" false))))
 (DUse false (UseGroup ("backend" "llvm_emit") ((mem "emitProgram" false) (mem "installReturnsSelf" false) (mem "installSelfFnParams" false) (mem "installMethodIface" false) (mem "installMethodConstraintIfaces" false) (mem "installCtorFieldTypes" false) (mem "installDeclSigTypes" false) (mem "installMainIsUnitHint" false) (mem "installMainIsFloatHint" false) (mem "enableGapRecord" false) (mem "resetGaps" false) (mem "gapEvents" false))))
-(DUse false (UseGroup ("backend" "wasm_emit") ((mem "installDeclRetTypes" false) (mem "installCtorFloatFields" false) (mem "enableGapRecordW" false) (mem "resetGapsW" false) (mem "gapEventsW" false))))
-(DUse false (UseGroup ("tools" "snap_wasm") ((mem "wasmText" false))))
+(DUse false (UseGroup ("backend" "wasm_emit") ((mem "emitProgram" false "wasmText") (mem "installDeclRetTypes" false) (mem "installCtorFloatFields" false) (mem "enableGapRecordW" false) (mem "resetGapsW" false) (mem "gapEventsW" false))))
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "joinWith" false) (mem "splitNl" false) (mem "startsWith" false) (mem "anyList" false) (mem "reverseL" false) (mem "filterList" false))))
 (DUse false (UseGroup ("support" "path") ((mem "chopExt" false) (mem "baseOf" false))))
 (DUse false (UseGroup ("string") ((mem "split" false) (mem "replaceAll" false) (mem "trim" false) (mem "trimRight" false) (mem "take" false) (mem "drop" false) (mem "toInt" false) (mem "toFloat" false) (mem "toUpper" false))))
@@ -1456,8 +1460,7 @@ mapUnit f (x::rest) =
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkToLinesWithRuntime" false) (mem "setCoherenceUserDecls" false) (mem "elaborateOne" false) (mem "elaborateDict" false) (mem "constrainedSigNames" false) (mem "setEmitArgStampPasses" false) (mem "mainTypeIsUnit" false) (mem "mainTypeIsFloat" false) (mem "hadTypeErrors" false) (mem "hadMatchWarnings" false) (mem "resetTypeErrorsSticky" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "evalOneOutput" false) (mem "funNamesOf" false) (mem "dropShadowedExp" false))))
 (DUse false (UseGroup ("backend" "llvm_emit") ((mem "emitProgram" false) (mem "installReturnsSelf" false) (mem "installSelfFnParams" false) (mem "installMethodIface" false) (mem "installMethodConstraintIfaces" false) (mem "installCtorFieldTypes" false) (mem "installDeclSigTypes" false) (mem "installMainIsUnitHint" false) (mem "installMainIsFloatHint" false) (mem "enableGapRecord" false) (mem "resetGaps" false) (mem "gapEvents" false))))
-(DUse false (UseGroup ("backend" "wasm_emit") ((mem "installDeclRetTypes" false) (mem "installCtorFloatFields" false) (mem "enableGapRecordW" false) (mem "resetGapsW" false) (mem "gapEventsW" false))))
-(DUse false (UseGroup ("tools" "snap_wasm") ((mem "wasmText" false))))
+(DUse false (UseGroup ("backend" "wasm_emit") ((mem "emitProgram" false "wasmText") (mem "installDeclRetTypes" false) (mem "installCtorFloatFields" false) (mem "enableGapRecordW" false) (mem "resetGapsW" false) (mem "gapEventsW" false))))
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "joinWith" false) (mem "splitNl" false) (mem "startsWith" false) (mem "anyList" false) (mem "reverseL" false) (mem "filterList" false))))
 (DUse false (UseGroup ("support" "path") ((mem "chopExt" false) (mem "baseOf" false))))
 (DUse false (UseGroup ("string") ((mem "split" false) (mem "replaceAll" false) (mem "trim" false) (mem "trimRight" false) (mem "take" false) (mem "drop" false) (mem "toInt" false) (mem "toFloat" false) (mem "toUpper" false))))

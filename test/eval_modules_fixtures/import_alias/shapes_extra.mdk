@@ -1,0 +1,13 @@
+-- an impl whose INTERFACE lives in another module, and a CONSTRAINED (requires) impl.
+import shapes.{Shape, area, name, Circle(..)}
+
+public export data Tri = Tri Int
+public export data Boxed a = Boxed a
+
+export impl Shape Tri where
+  area (Tri b) = b * b / 2
+  name _ = "tri"
+
+export impl Shape (Boxed a) requires Shape a where
+  area (Boxed x) = area x
+  name (Boxed x) = "boxed-\{name x}"

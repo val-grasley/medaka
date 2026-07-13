@@ -1,0 +1,5 @@
+-- A qualified name the aliased module does not export must be REJECTED by all three
+-- engines — never silently accepted, and never accepted by check but fatal at run.
+import list as L
+
+main = println (L.noSuchFunction [1, 2, 3])

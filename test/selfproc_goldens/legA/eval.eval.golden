@@ -17,7 +17,7 @@ argsOfTy : Ty -> List Ty
 arrayToListG : Array a -> List a
 arrayToListGo : Array a -> Int -> Int -> List a
 awaitsArgs : Value a -> Bool
-bindNames : List String -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
+bindNames : List (String, String) -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
 blackholeCell : String -> Unit -> <Mut> Value a
 blitGo : Array (Value a) -> Int -> Array (Value a) -> Int -> Int -> <Mut> Unit
 blockLet : EvalEnv (Value <Mut | a>) -> Pat -> Expr -> List DoStmt -> <Mut> Value <Mut | a>
@@ -142,6 +142,7 @@ headTyconHead : List Ty -> Option String
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
 ifaceMethodArity : IfaceMethod -> (String, Int)
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
+ifaceMethodNmE : IfaceMethod -> String
 implDeclNames : Decl -> List String
 implKeyOf : String -> List Ty -> Option String -> String
 implMethodEntry : EvalEnv (Value <Mut | a>) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value <Mut | a>))
@@ -195,16 +196,20 @@ matchPats : List Pat -> List (Value a) -> Option (List (String, Value a))
 matchRecField : String -> Option Pat -> Value a -> List RecPatField -> List (String, Value a) -> Option (List (String, Value a))
 matchRecFields : List RecPatField -> List (String, Value a) -> Option (List (String, Value a))
 matchesTag : String -> Value a -> Bool
-memberNm : UseMember -> String
+memberBind : UseMember -> (String, String)
 memoThunk : EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
 memoThunkOf : Ref (Option (Value <Mut | a>)) -> EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
 mergeField : List (String, Value a) -> (String, Value a) -> (String, Value a)
 methodAtNarrow : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Route -> <Mut> (Value <Mut | a>, List (Value <Mut | a>))
+methodCell : List (String, Ref (Value a)) -> String -> List (String, Ref (Value a))
+methodCellsOf : List (String, Ref (Value a)) -> List Decl -> List (String, Ref (Value a))
 methodDeclArities : Decl -> List (String, Int)
 methodReqCountRef : Ref (List ((String, String), Int))
 mixInt30 : Int -> Int
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 modImplEntries : List ((String, String), List Int) -> ModInfo (Value <Mut | a>) -> List (String, (Int, Value <Mut | a>))
+moduleMethodNames : List Decl -> List String
+moduleMethodNamesOf : Decl -> List String
 narrowMethod : Value a -> String -> <Mut> Value a
 noMainMsg : String
 oneOrMulti : List (Value a) -> Value a
@@ -342,6 +347,7 @@ prim5M : (Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a) 
 progArgsRef : Ref (List String)
 pubReexports : List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
 pushFrame : EvalEnv (Value a) -> List (String, Ref (Value a)) -> EvalEnv (Value a)
+qualifyCell : String -> (String, Ref (Value a)) -> (String, Ref (Value a))
 rangeArrayMk : List Int -> Value a
 rangeListMk : List Int -> Value a
 reTag : String -> String -> List Int -> Int -> Value a -> Value a
@@ -361,6 +367,7 @@ runMainForEffect : List (String, Value a) -> <Mut> Value a
 runtimePanic : String -> String -> a
 runtimeTypeTag : Value a -> Option String
 selectByName : String -> List (String, (Int, Value a)) -> List (Int, Value a)
+selfBind : String -> (String, String)
 seqV : Unit -> Value a -> Value a
 shadowedFun : List String -> Decl -> Bool
 sliceArray : Array (Value a) -> Int -> Int -> Value a

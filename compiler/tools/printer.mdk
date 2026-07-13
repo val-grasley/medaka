@@ -1422,11 +1422,11 @@ printUsePath (UseAlias names alias) =
   Cat (text (joinWith "." names)) (Cat (text " as ") (text alias))
 
 useMemberDoc : UseMember -> Doc
-useMemberDoc (UseMember n allCtors _) =
-  if allCtors then
-    Cat (text n) (text "(..)")
-  else
-    text n
+useMemberDoc (UseMember n allCtors _ alias) =
+  let base = if allCtors then Cat (text n) (text "(..)") else text n
+  match alias
+    Some a => Cat base (text " as \{a}")
+    None => base
 
 -- A single `data` variant (without the leading `| `).
 printVariant : Variant -> Doc

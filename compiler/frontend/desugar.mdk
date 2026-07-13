@@ -28,6 +28,7 @@ import frontend.ast.{
   Expr(..),
   UseMember(..),
   UsePath(..),
+  qualifiedLocal,
   PropParam(..),
   MethodDefault(..),
   IfaceMethod(..),
@@ -824,12 +825,46 @@ pinTypeGo : Ty -> List Ty -> Ty
 pinTypeGo acc [] = acc
 pinTypeGo acc (t::ts) = pinTypeGo (TyApp acc t) ts
 
+-- ── Import aliasing: a qualified reference `A.name` → the flat name `A.name` ──
+-- `import m as A` makes every value m exports available as `A.name`.  The grammar has
+-- no notion of a qualified name — `A.name` parses as an ordinary FIELD ACCESS on a
+-- variable `A` — so lower it here, before resolve, to a plain `EVar "A.name"`.
+-- Resolve/typecheck/eval then bind it exactly like any other imported name (the import
+-- machinery enters m's exports under precisely these dotted local names), and
+-- `backend/private_mangle.mdk` maps it back to m's real symbol.  A dot cannot occur in
+-- a surface identifier, so the flat name is collision-free by construction.
+--
+-- The rewrite is scoped to the aliases THIS file declares, and the parser forces a
+-- module alias to be Uppercase — so an ordinary `rec.field` access on a lowercase
+-- local can never be captured here.
+moduleAliases : List Decl -> List String
+moduleAliases [] = []
+moduleAliases ((DUse _ (UseAlias _ a) _)::rest) = a :: moduleAliases rest
+moduleAliases ((DAttrib _ d)::rest) = moduleAliases [d] ++ moduleAliases rest
+moduleAliases (_::rest) = moduleAliases rest
+
+-- No alias in this file ⇒ the identity, so an alias-free program is untouched.
+qualifyAliasRefs : List Decl -> List Decl
+qualifyAliasRefs prog = match moduleAliases prog
+  [] => prog
+  aliases => mapProg (rewriteAliasQual aliases) prog
+
+-- The head must be matched THROUGH `ELoc` — the parser wraps every atom in the
+-- transparent location wrapper, so the alias reference is `EFieldAccess (ELoc _ (EVar
+-- "A")) "f"`, never a bare `EVar`.
+rewriteAliasQual : List String -> Expr -> Expr
+rewriteAliasQual aliases (e@(EFieldAccess head f _)) = match stripLocE head
+  EVar a => if contains a aliases then EVar (qualifiedLocal a f) else e
+  _ => e
+rewriteAliasQual _ e = e
+
 -- ── The pass pipeline ─────────────────────────────────────────────────────
 -- Ported in the reference order (later passes run last): merge_iface_defaults →
 -- expand_decl → desugar_record_puns → lower_container_literals →
 -- desugar_list_comps → desugar_questions → lower_do_blocks → desugar_sugar.
 export desugar : List Decl -> List Decl
-desugar prog = mergeIfaceDefaults prog
+desugar prog = qualifyAliasRefs prog
+  |> mergeIfaceDefaults
   |> fillImplDefaults
   |> concatMapDecl expandDecl
   |> desugarRecordPuns

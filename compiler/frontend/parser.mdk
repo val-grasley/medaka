@@ -34,6 +34,8 @@ import frontend.ast.{
   Loc(..),
   UseMember(..),
   UsePath(..),
+  useMemberOrigin,
+  useMemberAlias,
   PropParam(..),
   MethodDefault(..),
   IfaceMethod(..),
@@ -2064,8 +2066,35 @@ parseImport pub = do
   quals <- importQuals
   path <- importPathFor quals
   e <- getPos
+  noExportedAlias pub path
   skipNewlines
   pure (DUse pub path (locOfSpan s e))
+
+-- An `export import` may NOT be aliased, in either form.  Both would re-export a name
+-- that does not exist in the module that actually defines it:
+--
+--   `export import m as A`        binds `A.name` — names meaningful only against OUR
+--                                 private alias, which an importer could not write.
+--   `export import m.{a as b}`    would re-export `b`, but a module's export table maps
+--                                 (name → defining module) and the real symbol is
+--                                 rebuilt from that pair — so `b` would rebuild as
+--                                 `m__b`, while the symbol is `m__a`.
+--
+-- Rejecting is the honest option: an alias is FILE-LOCAL.  Re-export the module
+-- (`export import m`) or the member under its own name (`export import m.{a}`), and let
+-- the importer alias it.
+noExportedAlias : Bool -> UsePath -> Parser Unit
+noExportedAlias True (UseAlias _ a) =
+  failP
+    "`export import … as \{a}` is not allowed — a module alias is file-local (it binds `\{a}.name`, which an importer could not write). Re-export the module itself (`export import m`) and let the importer choose its own alias."
+noExportedAlias True (UseGroup _ members) = failIfAliasedMember members
+noExportedAlias _ _ = pure ()
+
+failIfAliasedMember : List UseMember -> Parser Unit
+failIfAliasedMember [] = pure ()
+failIfAliasedMember (m::rest) = match useMemberAlias m
+  Some a => failP "`export import` cannot rename a member — re-exporting `\{useMemberOrigin m}` as `\{a}` would export a name its defining module does not have. Re-export it under its own name (`export import m.{\{useMemberOrigin m}}`) and let the importer alias it."
+  None => failIfAliasedMember rest
 
 importQuals : Parser (List String)
 importQuals = do
@@ -2114,15 +2143,33 @@ importPathForT quals TDotLBrace = do
   ms <- sepBy1 importMember (expectTok TComma)
   optTrailingComma
   expectTok TRBrace
+  noTrailingAlias "a selective import"
   pure (UseGroup quals ms)
 importPathForT quals TDotStar = do
   advance
+  noTrailingAlias "a wildcard import"
   pure (UseWild quals)
 importPathForT quals TAs = do
   advance
   a <- aliasName
   pure (UseAlias quals a)
 importPathForT quals _ = pure (UseName quals)
+
+-- `import m.{a, b} as A` / `import m.* as A` are REJECTED, not silently ignored.
+-- Both forms are self-contradictory: the group/wildcard says "bind these names
+-- unqualified HERE", the alias says "bind them only under `A.`".  A module alias
+-- (`import m as A`) already covers everything the module exports, and a member alias
+-- (`import m.{a as b}`) covers renaming a single name — so neither form loses power.
+noTrailingAlias : String -> Parser Unit
+noTrailingAlias what = do
+  t <- peekP
+  noTrailingAliasFor what t
+
+noTrailingAliasFor : String -> Token -> Parser Unit
+noTrailingAliasFor what TAs =
+  failP
+    "`as` cannot alias \{what} — write `import m as A` to alias the whole module (then use `A.name`), or `import m.{name as alias}` to rename one member"
+noTrailingAliasFor _ _ = pure ()
 
 importMember : Parser UseMember
 importMember = do
@@ -2133,8 +2180,7 @@ importMember = do
 importMemberFor : Int -> Token -> Parser UseMember
 importMemberFor s (TIdent x) = do
   advance
-  q <- getPos
-  pure (UseMember x False (locOfSpan s q))
+  memberAliasOrNot s x False
 importMemberFor s (TUpper x) = do
   advance
   withAllOrNot s x
@@ -2145,17 +2191,66 @@ withAllOrNot s x = do
   t <- peekP
   withAllFor s x t
 
+-- An Uppercase member is a TYPE, CONSTRUCTOR or INTERFACE, and none of those may be
+-- aliased.  Impl coherence and constructor identity are resolved on the REAL name
+-- globally, so binding one under a local alias would be a silent soundness hole, not a
+-- rename.  Reject it here rather than accept-and-ignore.
 withAllFor : Int -> String -> Token -> Parser UseMember
 withAllFor s x TLParen = do
   advance
   expectTok TDotDot
   expectTok TRParen
   q <- getPos
-  pure (UseMember x True (locOfSpan s q))
+  noMemberAlias x
+  pure (UseMember x True (locOfSpan s q) None)
 withAllFor s x _ = do
   q <- getPos
-  pure (UseMember x False (locOfSpan s q))
+  noMemberAlias x
+  pure (UseMember x False (locOfSpan s q) None)
 
+noMemberAlias : String -> Parser Unit
+noMemberAlias x = do
+  t <- peekP
+  noMemberAliasFor x t
+
+noMemberAliasFor : String -> Token -> Parser Unit
+noMemberAliasFor x TAs =
+  failP
+    "`\{x}` is a type or constructor and cannot be aliased — only a value member can be renamed (`import m.{name as alias}`). Import it under its own name."
+noMemberAliasFor _ _ = pure ()
+
+-- a value member's optional `as <alias>`: `import m.{a as b}` binds m's `a` under `b`.
+memberAliasOrNot : Int -> String -> Bool -> Parser UseMember
+memberAliasOrNot s x allCtors = do
+  t <- peekP
+  memberAliasFor s x allCtors t
+
+memberAliasFor : Int -> String -> Bool -> Token -> Parser UseMember
+memberAliasFor s x allCtors TAs = do
+  advance
+  a <- memberAliasName
+  q <- getPos
+  pure (UseMember x allCtors (locOfSpan s q) (Some a))
+memberAliasFor s x allCtors _ = do
+  q <- getPos
+  pure (UseMember x allCtors (locOfSpan s q) None)
+
+-- A value member's alias is itself a value name ⇒ lowercase.
+memberAliasName : Parser String
+memberAliasName = do
+  t <- peekP
+  memberAliasNameFor t
+
+memberAliasNameFor : Token -> Parser String
+memberAliasNameFor (TIdent x) = emit x
+memberAliasNameFor (TUpper x) =
+  failP
+    "a value member's alias must be lowercase — `as \{x}` names a type or constructor"
+memberAliasNameFor _ = failP "expected alias name after `as`"
+
+-- A MODULE alias must be Uppercase.  It is referenced as `A.name`, which parses as a
+-- field access on `A`; requiring uppercase keeps it unambiguous against `rec.field` on
+-- a lowercase local (record fields are accessed with the same `.`).
 aliasName : Parser String
 aliasName = do
   t <- peekP
@@ -2163,8 +2258,10 @@ aliasName = do
 
 aliasNameFor : Token -> Parser String
 aliasNameFor (TUpper x) = emit x
-aliasNameFor (TIdent x) = emit x
-aliasNameFor _ = failP "expected alias name"
+aliasNameFor (TIdent x) =
+  failP
+    "a module alias must be capitalized — `as \{x}` should be an Uppercase name (it is used as a qualifier, `Alias.name`)"
+aliasNameFor _ = failP "expected alias name after `as`"
 
 -- ── prop / test / bench declarations ─────────────────────────────────────
 stringLitP : Parser String

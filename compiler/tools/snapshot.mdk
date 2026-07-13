@@ -192,14 +192,18 @@ import backend.llvm_emit.{
   resetGaps,
   gapEvents,
 }
+-- `backend.wasm_emit` also exports `emitProgram`, colliding with the LLVM one above.
+-- A member alias renames it on import, so BOTH backends are driven from ONE process
+-- over ONE lowered CProgram.  (This is what retired `tools/snap_wasm.mdk`, a re-export
+-- shim that existed solely because Medaka had no import aliasing.)
 import backend.wasm_emit.{
+  emitProgram as wasmText,
   installDeclRetTypes,
   installCtorFloatFields,
   enableGapRecordW,
   resetGapsW,
   gapEventsW,
 }
-import tools.snap_wasm.{wasmText}
 import support.util.{
   joinNl,
   joinWith,
@@ -475,8 +479,9 @@ evalOf runtimeDecls coreDecls d =
 
 -- ── the emit path (BOTH backends, ONE lowered CProgram) ──────────────────────
 --
--- This is the payoff of the snap_wasm shim: `elaborateDict` -> `lowerProgramEmit` runs
--- ONCE and the resulting CProgram feeds llvm_emit AND wasm_emit.
+-- `elaborateDict` -> `lowerProgramEmit` runs ONCE and the resulting CProgram feeds
+-- llvm_emit AND wasm_emit (whose colliding `emitProgram` is import-aliased to
+-- `wasmText` above).
 --
 -- PRELUDE-FREE (runtime.mdk only, no core.mdk) — the exact shape of
 -- entries/llvm_emit_typed_main.mdk and wasm_emit_typed_main.mdk, which are what the

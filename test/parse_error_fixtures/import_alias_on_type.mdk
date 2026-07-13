@@ -1,0 +1,3 @@
+import list.{Foo as Bar}
+
+main = println 1

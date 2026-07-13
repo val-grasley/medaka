@@ -85,6 +85,7 @@ mergeTwo : IfaceMethod -> IfaceMethod -> IfaceMethod
 mergedDefault : Option MethodDefault -> Option MethodDefault -> Option MethodDefault
 mergedType : Ty -> Ty -> Ty
 methodName : IfaceMethod -> String
+moduleAliases : List Decl -> List String
 ordArms : List Variant -> List Arm
 ordBody : Int -> Int -> List String -> List String -> Expr
 ordCell : Int -> Variant -> (Int, Variant) -> Arm
@@ -94,7 +95,9 @@ paramRequires : String -> List String -> List Require
 pinType : String -> List Ty -> Ty
 pinTypeGo : Ty -> List Ty -> Ty
 punField : Expr -> FieldAssign
+qualifyAliasRefs : List Decl -> List Decl
 recPatFields : List Field -> List String -> List RecPatField
+rewriteAliasQual : List String -> Expr -> Expr
 rewriteAssignIndex : Expr -> Expr
 rewriteContainerLit : Expr -> Expr
 rewriteDo : Expr -> Expr
