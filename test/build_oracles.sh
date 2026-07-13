@@ -145,9 +145,13 @@ if [ ! -x "$MEDAKA" ] || [ ! -x "$EMITTER" ]; then
 fi
 [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "FAIL: ./medaka or ./medaka_emitter still missing"; exit 1; }
 
-# ── newest compiler/*.mdk mtime — any source newer than a binary => rebuild it ─
+# ── newest source mtime across everything an oracle links — any source newer
+# than a binary => rebuild it. This MUST cover stdlib/*.mdk and runtime/*.c(.h)
+# too: every test/bin/* oracle links stdlib/*.mdk and runtime/medaka_rt.c, so
+# scanning only compiler/**.mdk left all 53 oracles silently stale whenever the
+# stdlib or C runtime changed (a one-line bug — see AGENTS.md staleness gotcha).
 newest_src=0
-for f in $(find "$ROOT/compiler" -name '*.mdk'); do
+for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; find "$ROOT/runtime" -name '*.c' -o -name '*.h'); do
   m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
   [ "$m" -gt "$newest_src" ] && newest_src=$m
 done

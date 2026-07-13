@@ -11,8 +11,14 @@
 #   sh test/run_gates.sh 'pattern*'      # only gates whose basename matches the glob
 #   JOBS=4 sh test/run_gates.sh          # cap concurrency
 #
-# Exit: 0 if every selected gate passes, else 1. Per-gate exit 2 (skipped: oracle
-#       missing / opt-in) is reported as SKIP, not FAIL.
+# Exit: 0 if every selected gate passes, else 1. Per-gate exit 2 is reported as
+#       SKIP only when the skip is a GENUINE opt-in toolchain-absence (no C
+#       compiler / no libgc / no wasm-tools on PATH — see LEGIT_SKIP_RE below).
+#       An exit-2 whose message says an oracle/binary was never built
+#       (test/bin/* or ./medaka missing) means the gate executed ZERO tests —
+#       that is infra rot, not an opt-in skip, and is reclassified as FAIL (see
+#       the --run-one worker). Invariant: this script must never exit 0 having
+#       executed no tests (either every gate skipped, or none ran at all).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,6 +36,12 @@ INNER_JOBS="${INNER_JOBS:-3}"
 RESULTDIR="$(mktemp -d)"
 trap 'rm -rf "$RESULTDIR"' EXIT
 
+# A gate's exit-2 skip message is only a LEGITIMATE opt-in skip when it names a
+# genuinely-absent piece of the platform toolchain. Every other exit-2 (a
+# missing test/bin/* oracle, a missing ./medaka, a missing golden/fixture) means
+# the gate never actually compared anything — reclassified as FAIL below.
+LEGIT_SKIP_RE='no C compiler|libgc \(bdw-gc\)|not on PATH'
+
 # ── Worker mode: run one gate, record its status ──────────────────────────────
 if [ "${1:-}" = "--run-one" ]; then
   g="$2"
@@ -40,10 +52,14 @@ if [ "${1:-}" = "--run-one" ]; then
   else
     st=$?
   fi
+  if [ "$st" = 2 ] && ! grep -qE "$LEGIT_SKIP_RE" "$rd/$name.log"; then
+    st=9   # phantom skip: oracle/binary never built — a bug, not an opt-in skip
+  fi
   echo "$st" >"$rd/$name.status"
   case "$st" in
     0) printf 'PASS  %s\n' "$name" ;;
     2) printf 'SKIP  %s\n' "$name" ;;
+    9) printf 'FAIL* %s  (phantom skip: oracle/binary not built — see log)\n' "$name" ;;
     *) printf 'FAIL  %s\n' "$name" ;;
   esac
   exit 0
@@ -78,6 +94,13 @@ printf '\n=== gates: %d passed, %d failed, %d skipped (JOBS=%s) ===\n' "$pass" "
 if [ "$fail" -gt 0 ]; then
   echo "FAILED:$failed"
   echo "(logs in the run's temp dir; re-run a single gate with: sh test/<name>.sh)"
+  exit 1
+fi
+# Invariant: never report success having executed zero tests — a run where
+# every gate skipped (even for a "legitimate" toolchain-absent reason) ran no
+# comparisons and must not exit 0.
+if [ "$pass" -eq 0 ]; then
+  echo "FAIL: 0 gates passed ($skip skipped, $fail failed) — no tests were actually executed"
   exit 1
 fi
 exit 0
