@@ -463,6 +463,7 @@ globalCoherenceConflict : List (String, List Decl) -> <Mut> Option String
 groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 groundNumVars : List (String, List String, Ty, Mono, Option Loc) -> List Int -> <Mut> Unit
 groundOneObligation : List Decl -> String -> List String -> Ty -> Mono -> <Mut> Unit
+groundShadowReceiver : String -> Mono -> Bool -> Option Loc -> <Mut> Unit
 groupClauses : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr))
 groupClausesGo : List (String, (List Pat, Expr)) -> Map String (List (List Pat, Expr)) -> Map String (List (List Pat, Expr))
 groupConstraintMonosRef : Ref (List (String, Mono))
