@@ -85,14 +85,14 @@ test "adt match red" = expectEqual "red" (colorName Red)
 test "adt match green" = expectEqual "green" (colorName Green)
 test "adt match blue" = expectEqual "blue" (colorName Blue)
 
--- ── let mut + reassignment ──────────────────────────────────────────────────
+-- ── Ref + reassignment (was `let mut`, removed by the P0-5 mutability→Ref pivot) ──
 -- Ported from: t_let_mut
 
 letMutResult =
-  let mut x = 0
-  x = x + 1
-  x = x + 1
-  x
+  let x = Ref 0
+  x := x.value + 1
+  x := x.value + 1
+  x.value
 
 test "let mut" = expectEqual 2 letMutResult
 
@@ -379,7 +379,7 @@ impl BaseF BoxS where
 impl SubF BoxS where
   same x = x
 
-mkS : SubF m => a -> m a
+mkS : (BaseF m, SubF m) => a -> m a
 mkS x = same (base x)
 
 test "super dict dispatch Box" = expectEqual "BoxS 5" (display (mkS 5 : BoxS Int))
