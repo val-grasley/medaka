@@ -107,7 +107,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`PERF-RUNTIME.md`](../compiler/PERF-RUNTIME.md) | PERF-RUNTIME.md — general compiled-program performance | IMPLEMENTED |
 | [`PERF-SCOPE.md`](../compiler/PERF-SCOPE.md) | PERF-SCOPE.md — Stage-3 bar-item-4 performance scoping | IMPLEMENTED |
 | [`PRE-FLIP-GAPS.md`](../compiler/PRE-FLIP-GAPS.md) | PRE-FLIP-GAPS.md — outstanding native-compiler items to close before the canonicalization milestone flip | IMPLEMENTED |
-| [`PRELUDE-OBJ-DESIGN.md`](../compiler/PRELUDE-OBJ-DESIGN.md) | PRELUDE-OBJ-DESIGN.md — precompiling the prelude to a shared object | DESIGN + MEASUREMENTS, NO CODE |
+| [`PRELUDE-OBJ-DESIGN.md`](../compiler/PRELUDE-OBJ-DESIGN.md) | PRELUDE-OBJ-DESIGN.md — precompiling the prelude to a shared object | SHIPPED |
 | [`README.md`](../compiler/README.md) | compiler — the Medaka-in-Medaka compiler | IMPLEMENTED / SUPERSEDED-FRAMING |
 | [`REROOT-PLAN.md`](../compiler/REROOT-PLAN.md) | REROOT-PLAN — taking the gate suite OFF the OCaml oracle | IMPLEMENTED |
 | [`RESOLVER-DIAG-LOCATION-DESIGN.md`](../compiler/RESOLVER-DIAG-LOCATION-DESIGN.md) | Real source locations for the 3 `{0,0}`-range resolver diagnostics (F3) | IMPLEMENTED |

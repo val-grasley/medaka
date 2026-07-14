@@ -327,6 +327,29 @@ if MEDAKA_ROOT="$ROOT" "$MEDAKA" build --emit-rt-obj "$RTOBJ" >/dev/null 2>&1 &&
   export MEDAKA_RT_OBJ="$RTOBJ"
 fi
 
+# CI FAST PATH #2 (issue #118): the same trick one level up, and a much bigger win.
+# The PRELUDE is 88% of a small program's emitted IR (270 of 281 defines on a
+# nine-line fixture), and clang -O2 re-optimises all of it on every one of these
+# ~346 builds. Precompile it ONCE and point every build at it via
+# MEDAKA_PRELUDE_OBJ; each build then only compiles its own code plus its
+# per-program `@mdk_disp_*` dispatchers. Same discipline as the runtime object
+# above: the COMPILER emits it (`--emit-prelude-obj`) with exactly the flags its own
+# link uses, so they cannot drift; stdlib/core.mdk can't change mid-run, so a single
+# object built at startup has no staleness surface; and it is best-effort — if the
+# precompile fails we don't export it and every build falls back to the (unchanged)
+# inline path. The two link paths are proven to produce identically-behaving programs
+# by test/diff_compiler_prelude_obj.sh.
+#
+# This gate running ON the fast path is deliberate, and is the strongest validation
+# it gets: 346 fixtures × 3 engines, every native arm built against the shared
+# prelude.o, differentially compared against eval and wasm. A prelude.o that baked in
+# anything program-specific cannot survive that.
+PRELUDEOBJ="$WORK/prelude.o"
+if MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
+     "$MEDAKA" build --emit-prelude-obj "$PRELUDEOBJ" >/dev/null 2>&1 && [ -f "$PRELUDEOBJ" ]; then
+  export MEDAKA_PRELUDE_OBJ="$PRELUDEOBJ"
+fi
+
 # All FOUR emitter corpora — the two untyped (prelude-free) and, since the wasm arm
 # moved onto the shipping CLI, the two TYPED ones as well.  See the header.
 CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
@@ -353,6 +376,7 @@ printf '%s\n' "$CORPUS" \
     WASM_OK="$WASM_OK" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
     MEDAKA_WASM_EMITTER="${MEDAKA_WASM_EMITTER:-}" \
     MEDAKA_RT_OBJ="${MEDAKA_RT_OBJ:-}" \
+    MEDAKA_PRELUDE_OBJ="${MEDAKA_PRELUDE_OBJ:-}" \
     WORKDIR="$WORK" RESULTDIR="$RESULTS" \
     xargs -P "$JOBS" -n 1 -I{} bash "$0" --one {}
 

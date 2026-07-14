@@ -525,7 +525,15 @@ jobs:
             # header). It is ~3s (two `medaka build --keep-ir` of tiny probes), and the
             # backend shard is already the 2nd-heaviest at 5.3min, close to the
             # gates(engines) 5.8min critical path. This shard has room; backend does not.
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
+            #
+            # 'diff_compiler_prelude_obj' (39s) is the soundness gate for the
+            # MEDAKA_PRELUDE_OBJ fast path — it proves the inline and prebuilt link paths
+            # produce IDENTICAL program output across 24 fixtures at both opt levels. It is
+            # the exact analogue of diff_compiler_rt_obj (which lives in `backend`), but
+            # backend is the 2nd-heaviest shard at 5.3min against gates(engines)' 5.8min
+            # critical path, so it goes where there is ROOM. Same reasoning as
+            # dispatch_shape below and build_construct_coverage in `frontend`.
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'diff_compiler_prelude_obj' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
             # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
             # 14 real programs built through the actual CLI, each binary's stdout diffed
