@@ -1,0 +1,39 @@
+-- TYPED + DICT-PASSED Core IR S-expression dump, on the SHIPPING modules path —
+-- the observability probe core_ir_dump_main.mdk cannot be (it is prelude-free and
+-- typecheck-free, so it never shows a `$dict` param or a `CDict`/`CMethod` route).
+-- This driver mirrors llvm_emit_modules_main.mdk exactly (driveModules →
+-- runEmitWith → mangle → elaborateModules → dceFilter → lowerProgramEmit) but
+-- prints `cprogramToSexp` of the lowered program instead of emitting LLVM — i.e.
+-- the PRECISE Core IR both shipping emitters consume, dicts and routes included.
+--
+--   medaka build --allow-internal compiler/entries/core_ir_typed_modules_dump_main.mdk -o <bin>
+--   <bin> <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- (Build it native: `medaka run` on any compiler-graph entry overflows the
+-- tree-walking interpreter's 25000-frame budget.)
+--
+-- Reach for this when a backend decision depends on the LOWERED shape of a bind
+-- and reasoning from emitted IR would be a guess.  Existence proof: the TMC
+-- dict-veto fix (compiler/WASM-TMC-GAP-DESIGN.md) shipped against a design doc
+-- that read the EMITTED LLVM and concluded the self-call was a `CVar`-headed
+-- spine `isSelfSatApp` already matched; one dump from this path showed the truth
+-- (`CDict self ((RDict "$dict_…")) …`, arity 3 for a 2-arg source fn) and
+-- redirected the whole fix into the shared analysis.
+
+import frontend.ast.{Decl}
+import ir.core_ir_lower.{lowerProgramEmit}
+import ir.core_ir_sexp.{cprogramToSexp}
+import ir.dce.{dceFilter}
+import entries.entry_support.{driveModules, runEmitWith}
+
+main : <IO, Mut> Unit
+main = driveModules (runEmitWith emitTail)
+
+-- The llvm_emit_modules_main emitTail with `putStr (emitProgram …)` swapped for
+-- the S-expression serializer; no side-table installs (they feed the emitter,
+-- not the lowering).
+emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitTail _ coreD modules2 =
+  let allDecls0 = coreD ++ flatMap snd modules2
+  let allDecls = dceFilter allDecls0
+  putStr (cprogramToSexp (lowerProgramEmit allDecls))

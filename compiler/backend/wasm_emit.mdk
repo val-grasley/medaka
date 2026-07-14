@@ -199,7 +199,8 @@ import backend.trmc_analysis.{
   detectDispatchGroups,
   dispSpineParts,
   dispIsSatRootCall,
-  dispNonDict,
+  dictUniformClauses,
+  dropFirstN,
   clauseArityOf,
   clauseBodyOf,
   armBody,
@@ -2629,7 +2630,8 @@ emitRefFnBind prog (CBind name clauses0) =
         else emitWDispMemberFn prog grp name name arity clauses
       gd ++ (if needsClosWrapper prog name then emitFnClosWrapper prog name arity else [])
     None =>
-      -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level NON-DICT self-recursive define whose
+      -- Stage 1 (WASMGC-TRMC-DESIGN §7): a top-level self-recursive define (uniform
+      -- leading-dict count; dicts ride along as loop slots) whose
       -- clauses are `trmcEligible` for the self-only cons/ctor-tail shape (a) is emitted as
       -- a destination-passing LOOP (emitWasmTrmcBind) instead of the stack-growing recursive
       -- call (emitRefTail's generic ctor arm evaluates the self-call as a struct.new ARG, so
@@ -5422,8 +5424,11 @@ emitWasmTrmcCtor prog env self arity pslots ctorSet ctorName selfIdx loopLbl lea
     ++ wTrmcRecordDctor ctorSet ctorName
   -- recompute the self-call args into temps (an arg may read an old param), then store
   -- into the param slots, then loop.  Args occupy temps 1..arity (temp 0 = the cell).
+  -- A dict-carrying (CDict-headed) self-call's args cover only the VALUE params; its
+  -- leading dict slots are loop-invariant (identity-forwarded routes, trmc_analysis
+  -- dictRoutesForwarded) — store into the LAST |args| slots only (non-dict drops 0).
   let argTemps = wTrmcEmitArgsToTemps prog env args 1
-  let storeSlots = wTrmcStoreSlots pslots args 1
+  let storeSlots = wTrmcStoreSlots (dropFirstN (listLen pslots - listLen args) pslots) args 1
   stashNew ++ linkInstrs ++ advance ++ argTemps ++ storeSlots ++ ["br " ++ loopLbl]
 
 -- store `valInstrs` into the CURRENT dest cell's recursive slot.  Singleton
@@ -5474,8 +5479,10 @@ wTrmcCtorIndex ((n, _)::rest) ctorName k =
 emitWasmTrmcTailCall : Prog -> List String -> List String -> String -> CExpr -> <Mut> List String
 emitWasmTrmcTailCall prog env pslots loopLbl e =
   let (_, args) = flattenApp e []
+  -- dict-carrying self-call: skip the loop-invariant leading dict slots (see
+  -- emitWasmTrmcCtor); non-dict is |args| == |pslots| ⇒ drop 0.
   let argTemps = wTrmcEmitArgsToTemps prog env args 0
-  let storeSlots = wTrmcStoreSlots pslots args 0
+  let storeSlots = wTrmcStoreSlots (dropFirstN (listLen pslots - listLen args) pslots) args 0
   argTemps ++ storeSlots ++ ["br " ++ loopLbl]
 
 -- base/other leaf: a value with NO self-call.  Store it into the current destination's
@@ -5520,8 +5527,12 @@ wTrmcStoreGo (p::ps) (_::as_) base k = [
   ++ wTrmcStoreGo ps as_ base (k + 1)
 
 -- ── the Stage-1 driver: decide eligibility + emit the destination-passing loop ──
--- Returns `Some fnDef` when `name`/`clauses` is a top-level non-dict self-recursive
--- define that is `trmcEligible` for the self-only cons/ctor-tail shape (a).
+-- Returns `Some fnDef` when `name`/`clauses` is a top-level self-recursive define
+-- that is `trmcEligible` for the self-only cons/ctor-tail shape (a).  Dict-carrying
+-- defines (every unannotated polymorphic builder — F2(b) shape (a)) are admitted
+-- when the leading-dict count is uniform across clauses (`dictUniformClauses`); the
+-- emit is arity-keyed and types every param `(ref eq)`, so the dict is just another
+-- loop slot.
 -- Otherwise `None` → the caller falls back to the ordinary (stack-growing)
 -- codegen (no regression).  MIXED leaf ctors are supported (P3, TMC-parity arc):
 -- the emit dispatches link sites on the parent cell's ctor; the old uniform-ctor
@@ -5539,7 +5550,7 @@ wasmTrmcTry prog name arity clauses =
   -- direct-body path.  (Mirrors llvm_emit's trmcTryFn forceSingle=False / emitClauseTree
   -- reuse.)
   if arity > 0
-     && dispNonDict clauses
+     && dictUniformClauses clauses
      && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
     Some (emitWasmTrmcFn prog name arity clauses (wTrmcCtorSet prog self arity pairs))
   else None
@@ -5561,14 +5572,15 @@ clauseToPair (CClause pats body) = (pats, body)
 -- self-recurses via `CMethod` in a NON-tail position is rejected (stays ordinary) rather
 -- than wrongly transformed (dropped recursion → silent miscompile).
 --
--- Scope = F2(a): NON-dict, NON-eta impls.  Returns Some def when eligible (the whole
+-- Scope = F2(a) + F2(b) shape (a): NON-eta impls, dicts admitted when the leading-dict
+-- count is uniform across clauses.  Returns Some def when eligible (the whole
 -- `(func …)` define via emitWasmTrmcCore with the impl symbol + SelfByMethod), else None
 -- so emitImplGroup falls back to the ordinary emitClausesImpl body.
 wTrmcImplTry : Prog -> String -> String -> Int -> List CClause -> <Mut> Option (List String)
 wTrmcImplTry prog method tag arity clauses =
   let self = SelfByMethod method tag
   let pairs = map clauseToPair clauses
-  if arity > 0 && dispNonDict clauses && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
+  if arity > 0 && dictUniformClauses clauses && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
     Some (emitWasmTrmcCore prog (implFnSym tag method) self (implFnSym tag method) arity clauses (wTrmcCtorSet prog self arity pairs))
   else
     None
@@ -5778,7 +5790,7 @@ wDispStage1Claims prog name arity clauses =
   let self = SelfByVar name
   let pairs = map clauseToPair clauses
   arity > 0
-    && dispNonDict clauses
+    && dictUniformClauses clauses
     && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs
 
 -- shared spine classifier, closed over `prog` (detection, validation, and the

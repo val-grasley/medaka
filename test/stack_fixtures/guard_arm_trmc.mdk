@@ -1,3 +1,4 @@
+-- EXPECT-TMC: build keepBig
 -- Guarded arm inside a TRMC tail-position match (regression, fixed 2026-07-13):
 -- emitGuardedArm must descend the arm body as a TAIL leaf under an active TRMC
 -- loop (cons-into-dest+loop for the kept arm, plain-tail F3 loop for the drop

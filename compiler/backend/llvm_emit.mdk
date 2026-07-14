@@ -229,6 +229,8 @@ import backend.trmc_analysis.{
   dispFindBind,
   detectDispatchGroups,
   dispSpineParts,
+  dictUniformPairs,
+  dropFirstN,
   clauseArityOf,
 }
 import backend.private_mangle.{hashName, safeChar}
@@ -4514,13 +4516,14 @@ emitGroup e (ImplGroup method tag symTag positions arity clauses) =
 -- Phase 2 B-dispatch (TRMC-DESIGN.md): a DISPATCHED self-recursive cons/ctor-tail
 -- impl method (`map`/`filterMap`/`ap` over List, recursing via a `CMethod method
 -- (RKey tag)` node) is emitted as an O(1)-stack destination-passing loop, just like
--- a top-level builder.  F2(a) scope: NON-dict impls only (`trmcNonDict`); a
+-- a top-level builder.  Scope: uniform-leading-dict impls (`dictUniformPairs`); a
 -- point-free eta-reshaped impl (`filter p = filterMap …`) is a single dispatched
 -- call, NOT cons-tail-recursive, so `trmcEligible` rejects it (stays ordinary).
 
 -- Phase 2 B-dispatch: try to emit an impl group as a TRMC destination-passing loop.
--- Returns True (and emits the whole define) when the impl is F2(a)-eligible: NON-dict
--- (`trmcNonDict`) and cons/ctor-tail self-recursive via its own `CMethod method
+-- Returns True (and emits the whole define) when the impl is F2(a)/F2(b)-shape-(a)
+-- eligible: uniform leading-dict count (`dictUniformPairs` — dicts are admitted as
+-- ordinary loop slots) and cons/ctor-tail self-recursive via its own `CMethod method
 -- (RKey tag)` dispatch (`trmcEligible (SelfByMethod …)`).  Otherwise returns False so
 -- emitGroup falls back to the ordinary `emitGroupBody`.  The loop body reuses
 -- emitTrmcLoopBody verbatim (the shared Axis-A machinery); the impl path supplies the
@@ -4530,7 +4533,7 @@ emitGroup e (ImplGroup method tag symTag positions arity clauses) =
 trmcImplTry : Emit -> String -> String -> String -> List Int -> Int -> List (List Pat, CExpr) -> <Mut> Bool
 trmcImplTry e fname method tag positions arity clauses =
   let self = SelfByMethod method tag
-  if arity > 0 && trmcNonDict clauses && trmcEligible (isCtor e) (ctorArity e) self arity clauses then
+  if arity > 0 && dictUniformPairs clauses && trmcEligible (isCtor e) (ctorArity e) self arity clauses then
     let slotTys = patPosTys tag positions arity 0
     let (spats, sbody) = match clauses
       (ps, b)::_ => (ps, b)
@@ -6614,9 +6617,11 @@ emitFn e (CBind name (c::rest)) = match dispGroupOf gDispGroupsRef.value name
 emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
 
 -- TRMC branch point (TRMC-DESIGN.md §"Emitter touchpoints" #2): if `name`'s
--- clauses are TRMC-eligible AND the function is a top-level NON-DICT define (no
--- leading `$dict` params — stdlib `map`/`filterMap` and lifted lambdas are Phase
--- 2, out of scope), emit it as a destination-passing loop and return True; else
+-- clauses are TRMC-eligible AND its leading-dict count is uniform across clauses
+-- (`dictUniformPairs` — a dict-carrying define, i.e. every unannotated
+-- polymorphic builder, is admitted; the dict is just another loop slot, and
+-- `inferSigs` runs over the LOWERED clauses so `ptys` is already dict-inclusive),
+-- emit it as a destination-passing loop and return True; else
 -- return False so the caller falls back to the current (stack-growing) codegen.
 -- `forceSingle` marks the all-PVar single-clause path so emitTrmcFn descends the
 -- CIf-guarded body directly instead of the decision-tree chain.
@@ -6624,7 +6629,7 @@ trmcTryFn : Emit -> String -> List (List Pat, CExpr) -> Bool -> <Mut> Bool
 trmcTryFn e name clauses forceSingle =
   let arity = clauseArity clauses
   let single = forceSingle && allClausesPVar clauses
-  if arity > 0 && trmcNonDict clauses && trmcEligible (isCtor e) (ctorArity e) (SelfByVar name) arity clauses then
+  if arity > 0 && dictUniformPairs clauses && trmcEligible (isCtor e) (ctorArity e) (SelfByVar name) arity clauses then
     let ptys = match sigLookup e name
       Some (FnSig ts _) => ts
       None => []
@@ -6639,12 +6644,6 @@ trmcTryFn e name clauses forceSingle =
 allClausesPVar : List (List Pat, CExpr) -> Bool
 allClausesPVar [] = True
 allClausesPVar ((pats, _)::rest) = allPVar pats && allClausesPVar rest
-
--- a NON-DICT define: no clause has a leading `$dict_…` param (dict-passed methods
--- / lifted lambdas are Phase 2).  leadingDictPats counts them; 0 ⇒ non-dict.
-trmcNonDict : List (List Pat, CExpr) -> Bool
-trmcNonDict [] = True
-trmcNonDict ((pats, _)::rest) = leadingDictPats pats == 0 && trmcNonDict rest
 
 -- Gap #50 — eta-SATURATE a point-free constrained binding whose body is an
 -- UNDER-APPLIED interface-method (CMethod) or constrained-fn (CDict) occurrence.
@@ -7074,7 +7073,10 @@ emitTrmcTailCall e env ex loopL pslots =
   let args = match flattenApp ex []
     (_, as_) => as_
   let argOps = emitArgs e env args
-  let _ = trmcStoreParamSlots e pslots argOps
+  -- a dict-carrying (CDict-headed) self-call's args cover only the VALUE params;
+  -- its leading dict slots are loop-invariant (identity-forwarded routes,
+  -- trmc_analysis dictRoutesForwarded) — store into the LAST |args| slots only.
+  let _ = trmcStoreParamSlots e (dropFirstN (lengthS pslots - lengthS argOps) pslots) argOps
   emit e ("  br label %" ++ loopL)
 
 -- ctor leaf (Phase 2 Axis A): alloc a single-constructor cell (header + the
@@ -7106,7 +7108,9 @@ emitTrmcCtor e env ctor leadFields args selfIdx destSlot loopL pslots =
   let _ = emit e "  \{newdest} = getelementptr i8, ptr \{cell}, i64 \{intToString (8 * (selfIdx + 1))}"
   let _ = emit e "  store ptr \{newdest}, ptr \{destSlot}"
   let argOps = emitArgs e env args
-  let _ = trmcStoreParamSlots e pslots argOps
+  -- dict-carrying self-call: skip the loop-invariant leading dict slots (see
+  -- emitTrmcTailCall); non-dict is |argOps| == |pslots| ⇒ drop 0.
+  let _ = trmcStoreParamSlots e (dropFirstN (lengthS pslots - lengthS argOps) pslots) argOps
   emit e ("  br label %" ++ loopL)
 -- emit the leading (non-last) field values FIRST (left-to-right), then alloc.
 
@@ -7419,7 +7423,7 @@ gDispStage1Claims : Emit -> String -> Int -> List CClause -> <Mut> Bool
 gDispStage1Claims e name arity clauses =
   let pairs = clausePairs clauses
   arity > 0
-    && trmcNonDict pairs
+    && dictUniformPairs pairs
     && trmcEligible (isCtor e) (ctorArity e) (SelfByVar name) arity pairs
 
 -- keep only groups whose every SINGLE-CLAUSE member has eta deficit 0 (the

@@ -1,3 +1,4 @@
+-- EXPECT-TMC: mk
 -- TRMC Phase 2 Axis A — MULTI-FIELD non-`::` ctor.  `T3 = Node Int Int T3 | Leaf`
 -- has a 2-LEADING-field ctor (two self-free Ints) whose LAST field is the
 -- self-call.  Verifies the leading fields are stored at their positional offsets

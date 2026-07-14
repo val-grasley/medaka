@@ -100,6 +100,10 @@ if [ "${1:-}" = "--bless" ]; then
   fi
   rc=0
   for p in "$@"; do
+    # Tolerate repeated flags: `--bless A --bless B` is a natural spelling, and
+    # without this the second literal `--bless` is resolved as a PATH (cwd-relative)
+    # and reported "not part of the snapshot corpus" — a confusing half-success.
+    [ "$p" = "--bless" ] && continue
     case "$p" in /*) ;; *) p="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" ;; esac
     [ -e "$p" ] || { echo "no such path: $p" >&2; rc=1; continue; }
     # Which family owns it?  Same table as the run_family calls at the bottom.
