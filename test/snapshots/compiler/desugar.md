@@ -1,5 +1,5 @@
 # META
-source_lines=874
+source_lines=884
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted desugar stage — Stage 1 port of `lib/desugar.ml`.  Lowers surface
@@ -480,9 +480,19 @@ showFieldParts _ _ [] = []
 showFieldParts callName i (v::vs) = showFieldPart callName i v
   ++ showFieldParts callName (i + 1) vs
 
+-- Nested field args are wrapped through the prelude's `derivedShowWrap`
+-- (`core.mdk`) so a nested constructor application stays parenthesized —
+-- `Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)`, not
+-- `Branch Branch Leaf 1 Leaf 2 Leaf 3`. See `core.mdk` for the full rationale
+-- (shared unchanged by both `Debug` and `Display`, since they run through
+-- this exact same generator and neither documents a different contract here).
 showFieldPart : String -> Int -> String -> List Expr
-showFieldPart callName 0 v = [EApp (EVar callName) (EVar v)]
-showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
+showFieldPart callName 0 v = [wrappedFieldCall callName v]
+showFieldPart callName _ v = [ELit (LString " "), wrappedFieldCall callName v]
+
+wrappedFieldCall : String -> String -> Expr
+wrappedFieldCall callName v =
+  EApp (EVar "derivedShowWrap") (EApp (EVar callName) (EVar v))
 
 -- ` f0 = <call> a0, f1 = <call> a1, …` inside the record braces.
 showNamedParts : String -> Int -> List Field -> List String -> List Expr
@@ -1104,8 +1114,10 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "showFieldParts" (PWild PWild (PList)) (EListLit))
 (DFunDef false "showFieldParts" ((PVar "callName") (PVar "i") (PCons (PVar "v") (PVar "vs"))) (EBinOp "++" (EApp (EApp (EApp (EVar "showFieldPart") (EVar "callName")) (EVar "i")) (EVar "v")) (EApp (EApp (EApp (EVar "showFieldParts") (EVar "callName")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "vs"))))
 (DTypeSig false "showFieldPart" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Expr"))))))
-(DFunDef false "showFieldPart" ((PVar "callName") (PLit (LInt 0)) (PVar "v")) (EListLit (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
-(DFunDef false "showFieldPart" ((PVar "callName") PWild (PVar "v")) (EListLit (EApp (EVar "ELit") (EApp (EVar "LString") (ELit (LString " ")))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
+(DFunDef false "showFieldPart" ((PVar "callName") (PLit (LInt 0)) (PVar "v")) (EListLit (EApp (EApp (EVar "wrappedFieldCall") (EVar "callName")) (EVar "v"))))
+(DFunDef false "showFieldPart" ((PVar "callName") PWild (PVar "v")) (EListLit (EApp (EVar "ELit") (EApp (EVar "LString") (ELit (LString " ")))) (EApp (EApp (EVar "wrappedFieldCall") (EVar "callName")) (EVar "v"))))
+(DTypeSig false "wrappedFieldCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Expr"))))
+(DFunDef false "wrappedFieldCall" ((PVar "callName") (PVar "v")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "derivedShowWrap")))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
 (DTypeSig false "showNamedParts" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Expr")))))))
 (DFunDef false "showNamedParts" (PWild PWild (PList) PWild) (EListLit))
 (DFunDef false "showNamedParts" (PWild PWild PWild (PList)) (EListLit))
@@ -1499,8 +1511,10 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "showFieldParts" (PWild PWild (PList)) (EListLit))
 (DFunDef false "showFieldParts" ((PVar "callName") (PVar "i") (PCons (PVar "v") (PVar "vs"))) (EBinOp "++" (EApp (EApp (EApp (EVar "showFieldPart") (EVar "callName")) (EVar "i")) (EVar "v")) (EApp (EApp (EApp (EVar "showFieldParts") (EVar "callName")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "vs"))))
 (DTypeSig false "showFieldPart" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Expr"))))))
-(DFunDef false "showFieldPart" ((PVar "callName") (PLit (LInt 0)) (PVar "v")) (EListLit (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
-(DFunDef false "showFieldPart" ((PVar "callName") PWild (PVar "v")) (EListLit (EApp (EVar "ELit") (EApp (EVar "LString") (ELit (LString " ")))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
+(DFunDef false "showFieldPart" ((PVar "callName") (PLit (LInt 0)) (PVar "v")) (EListLit (EApp (EApp (EVar "wrappedFieldCall") (EVar "callName")) (EVar "v"))))
+(DFunDef false "showFieldPart" ((PVar "callName") PWild (PVar "v")) (EListLit (EApp (EVar "ELit") (EApp (EVar "LString") (ELit (LString " ")))) (EApp (EApp (EVar "wrappedFieldCall") (EVar "callName")) (EVar "v"))))
+(DTypeSig false "wrappedFieldCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Expr"))))
+(DFunDef false "wrappedFieldCall" ((PVar "callName") (PVar "v")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "derivedShowWrap")))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "callName"))) (EApp (EVar "EVar") (EVar "v")))))
 (DTypeSig false "showNamedParts" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Expr")))))))
 (DFunDef false "showNamedParts" (PWild PWild (PList) PWild) (EListLit))
 (DFunDef false "showNamedParts" (PWild PWild PWild (PList)) (EListLit))

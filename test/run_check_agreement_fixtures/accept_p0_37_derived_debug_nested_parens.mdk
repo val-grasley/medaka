@@ -1,0 +1,26 @@
+-- Bug #37: derived Debug/Display did not parenthesize a nested constructor
+-- application field, so structure was unrecoverable (`Branch Branch Leaf 1
+-- Leaf 2 Leaf 3`). Covers: 3+-level nesting, a nullary ctor nested as an arg
+-- (no parens), a constructor-with-args nested as an arg (parens), a
+-- top-level constructor (no outer parens), a literal/atom arg (no parens),
+-- a negative-number arg (parens — unambiguous on sight even though Medaka's
+-- tight-minus grammar rule happens to also parse the unparenthesized form),
+-- and a record-syntax constructor nested as an arg (parens; the record's own
+-- `{ }` fields stay untouched — no double-wrap).
+data Tree = Leaf Int | Branch Tree Tree deriving (Debug, Display)
+data Opt2 = None2 | Some2 Opt2 deriving (Debug)
+data Shape = Circle { radius : Float } | Square Float deriving (Debug)
+data Wrap = Wrap Shape deriving (Debug)
+data NWrap = NWrap Int deriving (Debug)
+
+main : <IO> Unit
+main =
+  let a = println (debug (Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)))
+  let b = println (debug (Some2 None2))
+  let c = println (debug (Some2 (Some2 None2)))
+  let d = println (debug (Wrap Circle { radius = 1.0 }))
+  let e = println (debug (Wrap (Square 2.0)))
+  let f = println (debug (NWrap (0 - 1)))
+  let g = println (debug (Leaf 5))
+  let h = println (display (Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)))
+  println (debug Circle { radius = 1.0 })
