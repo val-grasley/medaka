@@ -6,9 +6,9 @@
    `List (k, v)`) in an `Array` held by a `Ref` so it can be swapped on resize,
    plus a `Ref Int` count. This is the *performance* counterpart to the
    persistent ordered `Map` (map.mdk): O(1) average lookup/insert, but updates
-   mutate in place (`<Mut>` in the signature) rather than returning a fresh map.
-   Reach for `Map` when you want persistence/ordering; reach for `HashMap` when
-   you want raw speed and a single owner.
+   mutate in place (untracked — no effect in the signature) rather than
+   returning a fresh map. Reach for `Map` when you want persistence/ordering;
+   reach for `HashMap` when you want raw speed and a single owner.
 
    Keys hash via the `Hashable` typeclass method `hash` (structural by default via
    `deriving (Hashable)`). It must agree with the key's `Eq`, which holds for every
@@ -16,8 +16,8 @@
    would break it, so don't key a HashMap on such a type. Iteration order is
    unspecified (hash order).
 
-   The mutating ops sequence `<Mut>` statements in block bodies. A conditional
-   effect whose body is a multi-statement block (`deleteAt`) uses an **else-less
+   The mutating ops sequence mutation statements in block bodies. A conditional
+   mutation whose body is a multi-statement block (`deleteAt`) uses an **else-less
    `if`** (Phases 118 & 122 — both the block branch and the missing `else`
    survive `medaka fmt`), dropping the noisy `| otherwise = ()`. The rest stay as
    **guards**: `maybeResize` (the fmt'd else-less form would be one over-long

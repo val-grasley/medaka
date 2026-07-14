@@ -9,7 +9,7 @@ and the resulting row a trustworthy **capability manifest**.
 ## 0. Purpose and the non-derivation principle
 
 Medaka annotates function types with **effect rows** (`<IO>`, `<Net "a.com/*">`,
-`<Mut, Rand>`, `<IO | e>`). The intent is bigger than "track side effects": a
+`<Rand, Clock>`, `<IO | e>`). The intent is bigger than "track side effects": a
 sound, fine-grained row is a **compiler-verified capability manifest** — the type
 tells you (and the platform that runs the module) exactly what authority the code
 exercises. The hard part is **parameterized effects**: a label like `Net` carries
@@ -56,11 +56,10 @@ Terminology bridge (Medaka surface → this document; no implementation terms):
 | Medaka surface | This document |
 |---|---|
 | effect row `<IO>` / `<Net "h/*"> ` / `<IO ∣ e>` | effect row `φ` |
-| effect label `Net`, `IO`, `Mut` | effect/operation label `L` |
+| effect label `Net`, `IO`, `Rand` | effect/operation label `L` |
 | parameter `"a.com/*"`, `_` | refinement-domain element `p ∈ 𝔻_L` |
 | row tail `… ∣ e` | effect-row variable `μ` |
 | `effect Net Prefix` | label declaration binding `L` to domain `𝔻_L` |
-| `internal effect Mut` | internal label (purity tracking; no capability) |
 | pure (no annotation) | the empty closed row `⟨ ⟩` |
 | the known-prefix analysis (`α`) | the abstraction function `α : Expr → 𝔻` |
 | `check-policy` / capability manifest | manifest extraction `M(·)` (§7) |
@@ -102,7 +101,7 @@ a   ::= L · p                                    -- atom: label L refined by pa
   - `μ = ·` (absent) ⇒ **closed** row: exactly `ā`.
   - `μ = ρ` (present) ⇒ **open** row `⟨ ā ∣ ρ ⟩`: `ρ` can absorb further atoms.
 - A **label environment** `LE` records, for each declared label `L`, its
-  **domain** `𝔻_L` (§2) and its **class** ∈ {security, internal} (§7). Built-in
+  **domain** `𝔻_L` (§2). Every label is a host capability (§7). Built-in
   labels and `effect`-declarations populate `LE`.
 
 Closed rows are what a *user annotation* denotes; **inference synthesizes open
@@ -438,34 +437,32 @@ behavior of their own** — they are erased before evaluation (§8). What they
 produce is a **capability manifest**, and the *meaning* of an effect is fixed by
 who reads that manifest.
 
-**Label classes.** Every label is **security** or **internal** (declared at the
-label's declaration, stored in `LE`):
-
-- **security** — a host-granted authority; the platform supplies the primitive
-  that performs it; **parameterizable** (carries a domain); **emitted to the
-  manifest**. Examples: `Net, FileRead, FileWrite, Env, Exec, Stdout, Stderr,
-  Stdin, Clock, Rand`, and every user `effect Foo` (security by default).
-- **internal** — purity/discipline tracking only; **never granted, never in the
-  manifest, never parameterized** (domain fixed to `Unit`). Examples: `Mut`
-  (mutable state), `Panic` (divergence). They have no host/WASI counterpart.
+**Every label is a host capability.** There is no internal/purity-tracking label
+class — a label is a host-granted authority; the platform supplies the primitive
+that performs it; **parameterizable** (carries a domain); **emitted to the
+manifest**. Examples: `Net, FileRead, FileWrite, Env, Exec, Stdout, Stderr,
+Stdin, Clock, Rand`, and every user `effect Foo`. (An earlier design carved out
+an "internal" class — `Mut` for mutable state, `Panic` for divergence — with no
+host meaning and no manifest entry. That class was removed 2026-07-14: mutation
+is now untracked and `panic` is an ordinary control-flow primitive, not an
+effect label. See [`MUT-SCOPING-DESIGN.md`](../design/MUT-SCOPING-DESIGN.md) for
+the history.)
 
 **`IO` as a widening alias.** `IO` is not a primitive label but the **join of the
 security labels at `⊤`** (`Stdout ⊔ Stderr ⊔ … ⊔ Net⊤`). An inferred narrow row is
 `≤ <IO>`, so any `<IO>` annotation still typechecks (it widens), while inference
-yields tight narrow rows for the manifest. `IO` **excludes** the internal labels —
-`<Mut>` is *not* `≤ <IO>` (an `<IO>` bound rejects a mutating body), because `Mut`
-is not a host capability.
+yields tight narrow rows for the manifest.
 
 **Manifest extraction.** The capability manifest of a module is
 
 ```
-M(module) = filter_security( verified-row of the module's entry point(s) )
+M(module) = verified-row of the module's entry point(s)
 ```
 
-— the inferred, escape-checked row of `main` (or each exported entry), restricted
-to security labels, with each label's verified parameter rendered (`drender`). For
+— the inferred, escape-checked row of `main` (or each exported entry), unfiltered,
+with each label's verified parameter rendered (`drender`). For
 `Net "idp.example.com/*"` the manifest records `idp.example.com/*` as the sole
-permitted outbound authority. Internal labels are dropped (no host meaning).
+permitted outbound authority.
 
 **The host is the handler.** Medaka has no in-language effect handler. Instead the
 **runtime platform** is the handler: it reads `M(module)` *before loading* the
@@ -479,7 +476,7 @@ within an allowed capability set?) is *manifest verification*, performed by the
 toolchain/host against `M`, not a typing rule.
 
 **Capability soundness (no-exfiltration).** Combining §4 and §5: if a module
-type-checks with manifest `M`, then for every security label `L`, every authority
+type-checks with manifest `M`, then for every label `L`, every authority
 it can exercise at `L` is `⊑ M(L)`. In particular a parameterized bound confines
 *which* hosts/paths/resources, not merely *whether* the label is used — and the
 α ⊤-fallback guarantees runtime-chosen targets cannot escape the bound. This is the
@@ -508,7 +505,7 @@ code. Therefore:
 A corollary worth stating because it is easy to violate: a primitive's effect must
 be a faithful upper bound of what it *actually does* at runtime. Erasure means the
 type system is the *only* place the authority is checked — so the externs' declared
-rows (and label classes) are part of the trusted base. A mis-annotated extern
+rows are part of the trusted base. A mis-annotated extern
 (claiming a narrower row than it performs) is a soundness bug the spec cannot catch;
 the extern catalog is trusted, like any FFI boundary.
 
@@ -526,7 +523,7 @@ the extern catalog is trusted, like any FFI boundary.
   authority of the determining argument is admitted by the recorded parameter:
   `⟦e_k⟧ ∈ γ(α(e_k))`. (Over-approximation; §4.)
 - **Capability confinement.** If a module type-checks with manifest `M`, every
-  authority it exercises at a security label `L` is `⊑ M(L)` (§7). With a host that
+  authority it exercises at a label `L` is `⊑ M(L)` (§7). With a host that
   honors `M`, the module cannot act outside its declared capabilities.
 - **Principality.** Inference computes the `≤`-least row for every term (§3); the
   manifest is therefore the *tightest* sound description, not a conservative blanket.
@@ -554,8 +551,6 @@ a clause:
   capability feature is unreachable even though the *typing* is sound. Suspect a
   policy/manifest command stranded on a non-canonical tool, or one checking labels
   but not parameters.
-- **Label-class fidelity** → §7: `IO` must exclude internal labels and the manifest
-  must drop them. Suspect any path treating `Mut`/`Panic` as host capabilities.
 - **Effect-poly / data-effect threading** → §6: the `<e>` on combinators and the
   row-kinded data parameter must generalize and instantiate as HM-for-effects.
   Suspect a combinator that fixes a concrete label where the spec demands a variable.

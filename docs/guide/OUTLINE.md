@@ -26,7 +26,7 @@ Working program running in the playground in five minutes.
 - Introduce: literals; `let ... in`; immutability by default; **`let mut`
   (mutation is opt-in and visible)**; annotations/signatures; **inference means
   you rarely write types, but signatures document**; everything-is-an-expression.
-- Defer: `Ref`, `<Mut>` mechanics, constrained signatures.
+- Defer: `Ref`, mutation mechanics (untracked — no effect), constrained signatures.
 
 ## 3. Functions — "Defining and composing behavior"
 - Introduce: definitions; **multiple clauses with pattern-matching heads**;
@@ -56,9 +56,10 @@ Working program running in the playground in five minutes.
 ## 7. Effects & IO — "Doing things in the world" *(the signature chapter)*
 Lead with the surprise.
 - Introduce: **imperative IO is a bare indented block, not `do`** (IO is not a
-  monad here); `let mut`, reassignment, `<Mut>`; **effect rows `<IO>`,
-  `<Clock, IO>`** as the "what can this touch" contract; capabilities at a high
-  level. Contrast with Haskell `IO a` and with unrestricted side effects.
+  monad here); `let mut`, reassignment, `Ref`/`:=` (mutation is untracked — no
+  effect label); **effect rows `<IO>`, `<Clock, IO>`** as the "what can this
+  touch" contract — every effect label is a host capability; capabilities at a
+  high level. Contrast with Haskell `IO a` and with unrestricted side effects.
 - Defer: custom `effect` labels, capability platform, effect variables/open rows.
 
 ## 8. `do` and Monads — "Chaining computations that might fail or accumulate"

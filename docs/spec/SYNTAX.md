@@ -99,7 +99,7 @@ run g = g ()
 ```
 
 Effect-label declarations (Phase 146 gap 2 — builtins are
-`IO, Mut, Panic, Rand, Stdout, Stderr, Stdin, Clock, Env, Exec, Net,
+`IO, Rand, Stdout, Stderr, Stdin, Clock, Env, Exec, Net,
 FileRead, FileWrite`; declare more):
 
 ```medaka
@@ -315,7 +315,7 @@ p1 = if 1 > 0 then 1 else 0
 p2 = if let Some v = opt then v else 0        -- if-let (single-ctor bind)
 p3 x = if x > 0 then println "pos"            -- else-less: else defaults to (); then must be Unit
 main =
-  if 1 > 0 then                               -- else-less with an indented <Mut> block
+  if 1 > 0 then                               -- else-less with an indented side-effecting block
     doThing
     doOther
 ```
@@ -632,9 +632,9 @@ baz x = x
 
 ## Refs
 
-Mutable state lives in a `Ref` cell (carrying the `<Mut>` effect), not in the
-binding. Construct with `Ref v`, write with the `:=` operator, read the `.value`
-field:
+Mutable state lives in a `Ref` cell, not in the binding. Mutation is untracked
+(no effect label). Construct with `Ref v`, write with the `:=` operator, read
+the `.value` field:
 
 ```medaka
 main =
@@ -645,7 +645,7 @@ main =
 ```
 
 `x := e` is surface sugar that desugars to `setRef x e` (type
-`Ref a -> a -> <Mut> Unit`), so `x` must be a `Ref`; a non-`Ref` left side is a
+`Ref a -> a -> Unit`), so `x` must be a `Ref`; a non-`Ref` left side is a
 type error. `setRef` may still be called directly.
 
 ## Map / Set literals

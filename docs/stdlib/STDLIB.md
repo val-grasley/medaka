@@ -86,7 +86,7 @@ the **current** labels (fine-grained after the `<IO>` split — verified 2026-06
 - (`print`/`println : Display a => a -> <IO> Unit` are Medaka prelude functions
   over `putStr`/`putStrLn`, not externs — they render via `Display`, Phase 111)
 - `Ref : a -> Ref a` — wrap a value in a mutable cell (read it back via `r.value`)
-- `set_ref : Ref a -> a -> <Mut> Unit` — overwrite the contents of a `Ref`
+- `set_ref : Ref a -> a -> Unit` — overwrite the contents of a `Ref` (mutation is untracked, no effect row)
 - `hashInt`, `hashFloat`, `hashString`, `hashChar`, `hashBool : _ -> Int` — type-specific
   hash externs; the `Hashable` interface in `core.mdk` calls these (replaced the old
   generic `hash : a -> Int` extern)
@@ -95,7 +95,7 @@ the **current** labels (fine-grained after the `<IO>` split — verified 2026-06
 - `readLine : Unit -> <Stdin> String` — read one line from stdin
 - `readFile : String -> <FileRead> (Result String String)` — read file, `Ok contents` or `Err message`
 - `writeFile : String -> String -> <FileWrite> (Result String Unit)` — write file, `Ok ()` or `Err message`
-- `exit : Int -> <Panic> Unit` — terminate the process with the given exit code
+- `exit : Int -> Unit` — terminate the process with the given exit code
 - `panic : String -> a` — abort with a runtime panic carrying the message
 
 io Module 7 host primitives (see Module 7 for the ergonomic layer):
@@ -579,7 +579,7 @@ literals (`[|lo..hi|]`/`[|lo..=hi|]`), and panicking bracket indexing
    `arrayMakeWith` extern — see PLAN.md "Native backend" for the remaining cutover.
 2. **Pure stdlib** (Medaka) built on the kernel via `arrayMakeWith`
    and tail-recursive helpers.
-3. **Effectful stdlib** (Medaka) with explicit `<Mut>` in signatures.
+3. **Effectful stdlib** (Medaka) that mutates in place (untracked — no effect row).
 4. **Typeclass impls**: `Mappable`, `Foldable`, `Filterable`, `Semigroup`,
    `Monoid`, `Eq`.  Deliberately *not* `Applicative` / `Thenable` — the natural
    definitions encode cartesian-style allocation that's a performance
@@ -644,13 +644,13 @@ typechecked as if it had no declared effect, then errored on the
 - ✅ `zipWith : (a -> b -> c) -> Array a -> Array b -> Array c` — generalised `zip`
 - ✅ `unzip : Array (a, b) -> (Array a, Array b)` — split into two parallel arrays
 
-### Mutation (effectful — modify in place)
+### Mutation (untracked — modifies in place, no effect row)
 
-- ✅ `set : Int -> a -> Array a -> <Mut> Unit` — bounds-checked write (panics on OOB)
-- ✅ `swap : Int -> Int -> Array a -> <Mut> Unit`
-- ✅ `fill : a -> Array a -> <Mut> Unit`
-- ✅ `sortInPlace : Ord a => Array a -> <Mut> Unit`
-- ✅ `sortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit`
+- ✅ `set : Int -> a -> Array a -> Unit` — bounds-checked write (panics on OOB)
+- ✅ `swap : Int -> Int -> Array a -> Unit`
+- ✅ `fill : a -> Array a -> Unit`
+- ✅ `sortInPlace : Ord a => Array a -> Unit`
+- ✅ `sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <e> Unit`
 
 ### Folds and search
 
@@ -766,7 +766,7 @@ ascending inserts).
 ## Module 6 — `hash_map` / `hash_set` (mutable, performance)
 
 The performance counterpart to the persistent ordered Module 5: O(1)-average
-**mutable** hash containers. Updates mutate in place (`<Mut>` in the signature)
+**mutable** hash containers. Updates mutate in place (untracked — no effect row)
 rather than returning a fresh structure. Reach for `Map`/`Set` when you want
 persistence/ordering; reach for these for raw speed with a single owner.
 
@@ -780,9 +780,9 @@ would break it. Iteration order is unspecified.
 ### `hash_map` ✅ implemented (`stdlib/hash_map.mdk`)
 
 - **Construction:** `new : Unit -> HashMap k v` (a *function*, so each call
-  allocates its own table), `fromList : Eq k => List (k, v) -> <Mut> HashMap k v`.
+  allocates its own table), `fromList : Eq k => List (k, v) -> HashMap k v`.
 - **Query (pure):** `size` (O(1)), `isEmpty`, `get`, `member`, `findWithDefault`.
-- **Mutation (`<Mut>`):** `insert` (overwrites), `delete`.
+- **Mutation (untracked, no effect row):** `insert` (overwrites), `delete`.
 - **Iteration (pure, unspecified order):** `entries` (the pairs), `toList`
   (alias of `entries`), `keys`, `values`.
 - **Instances:** `Eq` (order-independent — same entries), `Debug` (`fromList […]`
@@ -799,7 +799,7 @@ over `HashMap a Unit`, same reasoning as `set` over `Map a Unit`).
 - **Query (pure):** `size`, `member`; `toList`/`length`/`elem`/`any`/`sum`/… via
   `Foldable HashSet` (a set's elements *are* its `toList`, so no clash — unlike
   `hash_map`).
-- **Mutation (`<Mut>`):** `insert`, `delete`.
+- **Mutation (untracked, no effect row):** `insert`, `delete`.
 - **Instances:** `Foldable`, `Eq` (order-independent), `Debug`.
 - 7 doctests.
 
@@ -876,7 +876,7 @@ empty vector needs no default value of `a`.
 - ✅ Observation (pure): `capacity`, `get` (bounds-checked `Option`), `first`,
   `last`; `length`/`isEmpty`/`toList` via `Foldable`
 - ✅ Conversion: `toArray` (snapshot of the live range into a fresh `Array`)
-- ✅ Mutation (`<Mut>`): `push` (amortized O(1), doubling), `pop` (returns
+- ✅ Mutation (untracked, no effect row): `push` (amortized O(1), doubling), `pop` (returns
   `Option`), `set` (panics OOB), `swap`, `clear` (keeps capacity), `mapInPlace`
 - ✅ Instances: `Foldable MutArray` (index-based folds, never allocates a list),
   `Eq` (element-wise over the live range), `Debug` (`fromList [..]`)
@@ -925,7 +925,7 @@ parser) is local.
 - ✅ `parse : String -> Result String Json` — recursive descent over an
   `Array Char` with an explicit position, threaded through a `bindP` combinator.
   Builds each level transiently into a `List` then `arrayFromList`s it, so `parse`
-  stays **pure** (no `<Mut>`) while the stored value is contiguous. Handles
+  stays **pure** while the stored value is contiguous. Handles
   strings + escapes (`\" \\ \/ \n \t \r \b \f \uXXXX`), int/float numbers with
   exponents, nested arrays/objects, and reports a message on malformed input.
 - ✅ `stringify : Json -> String` — compact serialization. Escapes control chars,
@@ -1219,19 +1219,31 @@ This determines which functions are available on a capability-gated target
 (edge Wasm, pure sandbox, plugin module) and what the capability manifest
 must list.
 
+> **Update, 2026-07-14:** at the time of this audit (Phase 146) tier M was
+> distinguished from tier P by an internal `<Mut>` effect label — never granted,
+> never in the manifest, purity-tracking only. That label (and the whole
+> internal/security label-class split) was **removed from the language**
+> outright: mutation is now untracked and carries no effect row at all, so tier
+> M is no longer visible to the type system — a tier-M function's signature is
+> indistinguishable from a tier-P one. The P/M split below is kept as a
+> **documentation convention** (does this function allocate fresh data or
+> mutate in place?), not something the compiler enforces or the manifest can
+> see.
+
 ### Tiers
 
 | Tier | Effect label | What it means | Available on |
 |------|-------------|---------------|-------------|
 | **P — Pure** | (none) | Referentially transparent; no host interaction; byte-identical on every target | Every target |
-| **M — Local mutation** | `<Mut>` | Heap-local in-place mutation; no host interaction, no observable side effect outside the process | Every target (Wasm supports local heap mutation) |
-| **H — Host capability** | `<IO>`, `<Rand>`, `<Exit>`, `<Time>`, user-defined | Requires the host to provide and grant the capability; gated by the capability manifest | Only where the manifest grants it |
+| **M — Local mutation** | (none — untracked) | Heap-local in-place mutation; no host interaction, no observable side effect outside the process | Every target (Wasm supports local heap mutation) |
+| **H — Host capability** | `<IO>`, `<Rand>`, `<Time>`, user-defined | Requires the host to provide and grant the capability; gated by the capability manifest | Only where the manifest grants it |
 
 Tiers P and M together are the **capability-free core**: a module that stays
 within P+M can be loaded on any target without any manifest grant.  The
 distinction between P and M is an *observability* property (is mutation
-visible to a caller?), not a *security* property — `<Mut>` is not a host
-capability and cannot be withheld.
+visible to a caller?), not a *security* property — mutation is not a host
+capability and cannot be withheld (and, since 2026-07-14, does not even carry
+an effect label).
 
 ### Module stratification
 
@@ -1241,14 +1253,14 @@ capability and cannot be withheld.
 | 1 core | `core.mdk` | P + H carve-outs | Mostly P; `print`/`println` → `<IO>`; `Arbitrary`/`arbitraryString`/`arbitraryList` → `<Rand>` |
 | 2 list | `list.mdk` | P | Fully pure |
 | 3 string | `string.mdk` | P | Fully pure (Unicode DB is bundled, not a syscall) |
-| 4 array | `array.mdk` | P + M | In-place ops (`sort!`, `fill`, `blit`) are `<Mut>`; allocation and reads are P |
+| 4 array | `array.mdk` | P + M | In-place ops (`sort!`, `fill`, `blit`) mutate in place, untracked; allocation and reads are P |
 | 5 map | `map.mdk` | P | Persistent weight-balanced tree; no mutation |
 | 5 set | `set.mdk` | P | Persistent weight-balanced tree; no mutation |
-| 6 hash_map | `hash_map.mdk` | M | `insert`/`delete`/`fromList` are `<Mut>`; all queries pure |
+| 6 hash_map | `hash_map.mdk` | M | `insert`/`delete`/`fromList` mutate in place, untracked; all queries pure |
 | 6 hash_set | `hash_set.mdk` | M | Same as hash_map |
 | 7 io | `io.mdk` | H (`<IO>`) | Entirely host-capability; not available without the `<IO>` grant |
-| 8 mut_array | `mut_array.mdk` | M | `push`/`pop`/`set`/`swap`/`clear`/`mapInPlace` are `<Mut>`; capacity/length queries pure |
-| 9 json | `json.mdk` | P | `parse`/`stringify` are fully pure; transiently allocates arrays but `<Mut>` does not escape |
+| 8 mut_array | `mut_array.mdk` | M | `push`/`pop`/`set`/`swap`/`clear`/`mapInPlace` mutate in place, untracked; capacity/length queries pure |
+| 9 json | `json.mdk` | P | `parse`/`stringify` are fully pure; transiently allocates arrays but the mutation never escapes |
 | 10 test | `test.mdk` | P + H | `Expectation` ADT + assertion helpers are P; `runTests` → `<IO>` (prints results to stdout) |
 
 **P+M kernel:** modules 1–9 (excluding io) cover the full capability-free
@@ -1264,7 +1276,7 @@ structures needs no manifest entries at all.
 | Constants | `pi`, `e`, `intMinBound`, `intMaxBound`, `charMinBound`, `charMaxBound` |
 | Allocation (pure) | `Ref` (wraps a value; mutation is `set_ref`), `arrayMake`, `arrayMakeWith`, `arrayCopy`, `arrayFromList` |
 | Array read | `arrayLength`, `arrayGetUnsafe` |
-| Array pure wrappers | `arraySortBy` — allocates + locally mutates + returns a fresh array; `<Mut>` does not escape |
+| Array pure wrappers | `arraySortBy` — allocates + locally mutates + returns a fresh array; the mutation never escapes |
 | Numeric / char conversions | `charToStr`, `intToFloat`, `floatToInt`, `intToString`, `floatToString`, `charCode`, `charFromCode` |
 | Debug rendering | `debugStringLit`, `debugCharLit` |
 | String kernel | `stringToChars`, `stringFromChars`, `stringLength`, `stringSlice`, `stringConcat`, `stringIndexOf`, `stringCompare`, `stringToFloat` |
@@ -1273,7 +1285,7 @@ structures needs no manifest entries at all.
 | Hash | `hash` — structural, deterministic; must agree with the type's `Eq` |
 | Internal | `__fallthrough__` — signals pattern fall-through; not a user capability |
 
-#### Tier M — local mutation (`<Mut>`)
+#### Tier M — local mutation (untracked, no effect label)
 
 | Extern | Notes |
 |--------|-------|
@@ -1293,7 +1305,7 @@ structures needs no manifest entries at all.
 | `readFile`, `fileExists`, `listDir` | `<FileRead>` ✅ | `<FileRead>` | Filesystem read (split done) |
 | `writeFile`, `appendFile` | `<FileWrite>` ✅ | `<FileWrite>` | Filesystem write (split done) |
 | `args`, `getEnv` | `<Env>` ✅ | `<Env>` | Process args + env vars (split done) |
-| `exit` | `<Panic>` | **`<Exit>`** | Process termination — a genuine withholdable capability; distinct from `panic` (see Design resolution below) |
+| `exit` | (none) | **`<Exit>`** (still proposed, not implemented) | Process termination — a genuine withholdable capability; distinct from `panic` (see Design resolution below). Was `<Panic>` until 2026-07-14; when the internal-label class was deleted outright, `exit` lost its label entirely rather than gaining the proposed gated `<Exit>` — the split below never landed |
 | `randomInt`, `randomBool`, `randomFloat`, `randomChar`, `setSeed` | `<Rand>` | `<Rand>` | (already fine-grained) |
 | `wallTimeSec` | `<Clock>` ✅ (was `<IO>`) | `<Clock>` | Wall-clock read; builtin label is `Clock` (not `Time` as originally planned) |
 | `allocBytes` | `<IO>` | `<Perf>` or keep `<IO>` | GC profiling escape hatch; very low priority |
@@ -1305,6 +1317,17 @@ structures needs no manifest entries at all.
 | `assert_snapshot` | `<IO>` | Used only by the snapshot test harness |
 
 ### Design resolution — `panic` vs `exit` (2026-06-06)
+
+> **Status update, 2026-07-14:** `panic` and `exit` were both labelled
+> `<Panic>` at the time this section was written — an internal label (purity
+> tracking, never in the manifest). That whole internal-label class was
+> removed from the language, and with it `<Panic>` — `exit` simply lost its
+> label (it is now `Int -> Unit`, no row), rather than gaining the gated
+> `<Exit>` label recommendation below. The distinction argued for here (`exit`
+> *should* be a withholdable host capability; `panic` should not) is still a
+> live, unimplemented design point — it just needs a **new** label declaration
+> (`exit`'s current lack of any row is a regression relative to this section's
+> goal, not a fix for it).
 
 `panic` and `exit` were both labelled `<Panic>`, but they are different kinds
 of thing, and conflating them is the source of the confusion:
@@ -1366,8 +1389,12 @@ before codegen).  The remaining steps, in priority order:
    io.mdk wrappers and `appendFile` may still use `<IO>`; do a final audit before
    manifest emission.
 3. **`panic`/`exit` split** — `panic` stays untagged (excluded from gating);
-   `exit` relabelled `<Panic>` → `<Exit>` as a real gated capability. See
-   "Design resolution" above. Apply before manifest emission.
+   `exit` should get a real gated `<Exit>` capability label. See "Design
+   resolution" above. **Still open** as of 2026-07-14: `exit` currently carries
+   *no* label at all (its old `<Panic>` label was deleted along with the whole
+   internal-label class, rather than replaced by `<Exit>`), so this item is not
+   done — it needs a genuinely new label declaration, not a rename. Apply
+   before manifest emission.
 4. **Cross-module effect label export** — ✅ DONE (Phase 146 gap 3, 2026-06-07): `export effect Fetch` declared in a
    platform SDK module is now visible across the loader boundary via `exp_effects` in `module_exports`.
 5. **Manifest emission** — the final Phase 146 remaining item (CAPABILITY-EFFECTS.md

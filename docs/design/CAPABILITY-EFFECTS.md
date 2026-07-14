@@ -43,8 +43,10 @@ things Medaka either already has or is already building:
 
 - **Strong, predictable, approachable static checking** (Medaka's identity:
   Haskell-grade abstraction without the ivory tower).
-- **An effect system in the types** (already present: `<IO>`, `<Mut>`, `<Rand>`,
-  `<Panic>`, row-tail forms `<IO | e> a`).
+- **An effect system in the types** (already present: `<IO>`, `<Rand>`,
+  `<Async>`, row-tail forms `<IO | e> a`). Every effect label is a host
+  capability — there is no internal/purity-tracking label class (`Mut`/`Panic`
+  were removed 2026-07-14).
 - **A native/Wasm backend** (Stage 2; the Core IR is a swappable seam, so a
   WasmGC backend can be a sibling consumer of the LLVM one).
 - **The AI-guardrail reality**: in an AI-coding world the bottleneck shifts from
@@ -143,7 +145,7 @@ class as type/constructor names, since labels appear in type position). It is a
 top-level `decl` (`DEffect of bool * ident`, the bool mirroring every other decl's
 `export` prefix) — so it admits `export effect Foo` for free and slots into the
 `inner_non_data_decl` rule with **zero new parser conflicts**. The declared label
-joins the built-in vocabulary (`IO, Mut, Async, Panic, Rand, Time`); using an
+joins the built-in vocabulary (`IO, Async, Rand, Time`); using an
 *undeclared* label in a row stays a resolve-time `UnknownEffect`. A row mentioning
 the label (`<KV>`, `<KV, Log>`, `<KV | e>`) needs no new syntax — it is the existing
 row grammar over a now-larger label set.
@@ -190,7 +192,7 @@ Medaka's current effects are further along than this section originally claimed
    the point is fine-grained, **user/platform-definable** labels (`<KV>`,
    `<Fetch>`, `<Log>`, `<Clock>`). **Shipped (Phase 146 gap 2, 2026-06-06).** The
    `effect Foo` declaration form registers labels into the resolver vocabulary
-   (builtins `IO, Mut, Async, Panic, Rand, Time` ∪ user-declared); an undeclared
+   (builtins `IO, Async, Rand, Time` ∪ user-declared); an undeclared
    label in a row is still an `UnknownEffect`. `DExtern` is already a top-level
    decl, so a platform declares `<KV>` host imports as ordinary externs. Syntax +
    rationale in §3a; done/remaining in §5a. (Cross-module label export and the
@@ -224,10 +226,10 @@ safe pure→effectful subsumption from unsafe effectful→pure escape. Fix:
 `instantiate_raw` re-opens a closed-with-labels row to `<labels | ρ>` **only at
 covariant (positive) positions** (the value's own arrows), so the existing
 open/closed subset check fires. Contravariant rows (a ctor field / parameter the
-scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)`) stay closed, preserving
-safe subsumption (a pure argument into a `<Mut>`-allowing slot is fine).
+scheme *accepts*, e.g. `VPrim (Value -> <IO> Value)`) stay closed, preserving
+safe subsumption (a pure argument into an effectful-allowing slot is fine).
 Measurement surfaced exactly **one** genuine latent unsoundness in the compiler
-source — `concatMapList`'s pure callback signature hid a `<Mut>` effect — fixed
+source — `concatMapList`'s pure callback signature hid an effect — fixed
 by making it effect-polymorphic (`(a -> <e> List b) -> List a -> <e> List b`).
 Zero spurious regressions across all unit suites, `@thorough`, and the compiler
 harnesses (typecheck/check/check_modules/golden/selfproc/eval_run/eval_modules/

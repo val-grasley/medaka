@@ -205,12 +205,17 @@ exit-2 is now a FAILURE, and the runner hard-fails if 0 gates passed.
 - **B2 does NOT force a seed re-mint.** Predicted it would; it doesn't. The seed is
   minted from the *emitter's* graph (`llvm_emit_modules_main`), and the emitter does not
   import `eval`. `bootstrap_from_seed` stayed green byte-for-byte.
-- **The `<Mut>`-only interpreter was NOT a playground constraint.** The playground
-  compiles to wasm and never executes the interpreter. It was oracle inertia (§0.1).
+- **The `<Mut>`-only interpreter was NOT a playground constraint.** (Historical,
+  written when `Mut` still existed as an effect label — removed 2026-07-14.) The
+  playground compiles to wasm and never executes the interpreter. It was oracle
+  inertia (§0.1).
 - **Effect-polymorphic `Value` did NOT cascade.** The feared "Scheme vs Unit"
   generalization sharp edge never fired: `typecheck_compiler_source` reports 0 errors,
-  fixpoint C3a/C3b byte-identical, 15/15 eval oracle gates green. The oracle now
-  instantiates `e := <Mut>` and its purity is a **type-level guarantee**.
+  fixpoint C3a/C3b byte-identical, 15/15 eval oracle gates green. At the time this
+  was written the oracle instantiated `e := <Mut>` to exercise this; that specific
+  label is gone (removed 2026-07-14) but the underlying effect-polymorphism
+  guarantee this describes is unaffected — any concrete label instantiates the
+  same way.
 
 ---
 

@@ -12,8 +12,8 @@ stages=DESUGAR,MARK
 
      1. Performance vs. functional feel.  The public API is a pure facade
         where it can be (`map`, `filter`, `sort`, etc. return fresh arrays)
-        and explicitly effectful where mutation is the whole point
-        (`set`, `swap`, `sortInPlace`, `<Mut>` in the signature).
+        and explicitly mutates in place where that's the whole point
+        (`set`, `swap`, `sortInPlace`) — untracked, no effect in the signature.
 
      2. Opaque builtin vs. typeclass member.  `Array a` cannot be pattern-
         matched like `List a`, so the impls below dispatch through the
@@ -141,7 +141,7 @@ toListGo arr i acc =
   else
     toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
 
--- ── Pure transformation (return fresh arrays, no <Mut>) ─────────────────
+-- ── Pure transformation (return fresh arrays, no mutation) ──────────────
 
 {- `map` is provided by `impl Mappable Array` below; not re-exported as a
    standalone name to avoid colliding with `Mappable.map`. -}
@@ -263,7 +263,7 @@ revList : List a -> List a -> List a
 revList [] acc = acc
 revList (x::xs) acc = revList xs (x::acc)
 
--- ── Effectful mutation (explicit <Mut>) ─────────────────────────────────
+-- ── In-place mutation (untracked — no effect) ───────────────────────────
 
 -- | Bounds-checked write.  Panics on OOB.
 export set : Int -> a -> Array a -> Unit

@@ -1,9 +1,18 @@
 # `<Mut>` scoping — effect masking for allocate→fill→freeze
 
-**Status:** OPEN — decision-ready design input, not implemented. What remains: the
-whole `mut` block construct (see Recommendation below). Raised by the SQLite dogfood
-workstream (2026-07-13); lands in `compiler/`, which a different orchestrator owns — this doc
-exists to hand them a decided question, not a debate.
+**Status:** CLOSED — superseded 2026-07-14. The `mut` masking-block proposal below
+was **rejected**; the language instead removed `Mut` (and `Panic`, and the whole
+internal-label class) from the effect system outright — mutation via `Ref`/`:=` is
+now untracked, so the masking problem this document diagnoses no longer exists
+because there is nothing to mask. Every remaining effect label is a host
+capability. Landed across three PRs: #134 (codemod tooling), #137 (strip all
+`<Mut>`/`<Panic>` annotations from source), and the label-removal PR (delete the
+`internal effect` syntax, `TInternal`, `DEffect`'s `isInternal` flag, and
+`check_policy`'s security-class filtering — plus this docs sweep). The rest of
+this document is kept as the historical record of why the `mut`-block design was
+considered and rejected — it is **not** current behavior.
+
+---
 
 **Recommendation:** add a **`mut` block** that subtracts `Mut` from its body's inferred effect
 row, as an explicitly **trusted** construct with a checked perimeter — and **reclassify `<Mut>`

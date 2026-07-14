@@ -292,7 +292,8 @@ Medaka has two orthogonal sequencing mechanisms; **the form should match the
 intent**, and there is exactly one spelling for each:
 
 - **Effect sequencing** → a **bare indented block**. Statements in a plain block
-  run in order, sequenced by their `<E>` effects (IO/Mut/…). No keyword.
+  run in order, sequenced by evaluation (host effects like `IO`, plus untracked
+  mutation). No keyword.
 - **Monadic sequencing** → a **`do` block**, where `x <- e` binds a value out of a
   `Thenable` monad (`Result`/`Option`/`Parser`/…). `<-` lives *only* in a `do`
   block — the `do` keyword is the deliberate delimiter that tells the reader (and
@@ -316,8 +317,8 @@ you actually *use* the failure:
 
 An effect statement inside a `do` block is written **`let _ = effectfulCall`**,
 never bare — a bare statement is a monadic `>>` and must be in the block's monad,
-so an `<IO>`/`<Mut>` call is rejected; `let _ =` stays a plain let and the block
-types as `<e> Result _`.
+so an `<IO>` call (or an untracked mutation) is rejected; `let _ =` stays a plain
+let and the block types as `<e> Result _`.
 
 ```
 -- BAD: pass-through match repackages the error; comprehension/`?` removed
@@ -330,7 +331,7 @@ findTable db name = flatMap (findTableGo name) (readSchema db)
 
 scanRows db name = do
   entry <- findTable db name
-  let _ = writeHeader entry        -- <Mut>; bare would fail in a do block
+  let _ = writeHeader entry        -- mutation; bare would fail in a do block
   decode entry
 
 -- GOOD: a collection transform is a pipeline, not a do block

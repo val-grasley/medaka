@@ -1,5 +1,5 @@
 # META
-source_lines=249
+source_lines=251
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -208,8 +208,10 @@ extern arraySetUnsafe : Int -> a -> Array a -> Unit
 extern arrayCopy : Array a -> Array a
 extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> Unit
 extern arrayFill : a -> Array a -> Unit
--- Pure wrapper.  Encapsulates "alloc + locally mutate + return fresh" so the
--- <Mut> doesn't leak into pure callers (Medaka has no effect masking).
+-- Pure wrapper.  Encapsulates "alloc + locally mutate + return fresh" as a
+-- plain pure function (historical note: this used to matter because mutation
+-- carried a `<Mut>` effect and Medaka has no effect masking; since mutation is
+-- untracked, that concession is now moot — the function is just pure).
 extern arrayFromList : List a -> Array a
 
 -- String/Char kernel (Phase 75).  String is a sequence of Unicode codepoints,

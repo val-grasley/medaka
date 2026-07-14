@@ -532,8 +532,8 @@ sequences *effects*, not a monad). An effect statement inside a `do` block is wr
 effectfulCall` (a bare statement would be a monadic `>>` and is required to be in the block's monad).
 There is no postfix `?` operator — it was removed as a redundant spelling of `<-`.
 
-### Unrecoverable Errors → `Panic`
-For genuine invariant violations, index out of bounds, stack overflow — situations where the program cannot reasonably continue. Tracked as an effect in the type system (see Effects).
+### Unrecoverable Errors → `panic`
+For genuine invariant violations, index out of bounds, stack overflow — situations where the program cannot reasonably continue. `panic` is an ordinary primitive (`String -> a`), not an effect label — it carries no row annotation (see Effects).
 
 ---
 
@@ -547,19 +547,20 @@ A small, fixed set of built-in effects tracked by the compiler. Not a full algeb
 ### Built-in Effects
 ```
 IO      -- file system, network, console
-Mut     -- mutable state
 Async   -- asynchronous computation
-Panic   -- unrecoverable errors
 Rand    -- randomness / nondeterminism
 Time    -- current time / clock access
 ```
+
+Every effect label is a host capability — there is no internal/purity-tracking
+label class. Mutation (via `Ref`/`:=`) and `panic` are untracked: they carry no
+effect row (see "Mutability" and "Unrecoverable Errors" above).
 
 ### How It Works
 Effects appear in type signatures:
 ```
 readFile  : String -> <IO> String
 divide    : Int -> Int -> Result Int String   -- pure, uses Result not Exn
-counter   : <Mut> Int
 fetchUser : String -> <Async, IO> User
 roll      : <Rand> Int
 now       : <Time> Timestamp
@@ -572,13 +573,13 @@ add : Int -> Int -> Int
 - **Pure by default** — no annotation means guaranteed pure, compiler enforced
 - **Effects compose automatically** via inference — call an `<IO>` and `<Rand>` function, your function is inferred as `<IO, Rand>`
 - **No manual annotation needed in most cases** — inference propagates effects up the call stack
-- **Purity is a guarantee** — a function with no effect annotation genuinely cannot do IO, mutate state, etc.
+- **Purity is a guarantee about host capabilities** — a function with no effect annotation genuinely cannot do IO, access the clock, etc. It says nothing about mutation: mutating a `Ref` is untracked, so a "pure" function may still mutate one.
 
 ### What This Gives You
 - Know what any function can do just from its signature
 - Pure functions are trivially testable
 - Nondeterminism (`Rand`, `Time`) is visible and can be controlled in tests
-- No exceptions — `Exn` replaced entirely by `Result` and `Panic`
+- No exceptions — `Exn` replaced entirely by `Result` and `panic`
 
 ---
 
@@ -761,17 +762,17 @@ map (x => x + 1) arr         -- [|2, 3, 4|], same interface as List
 ```
 
 #### MutArray — mutable array
-Opt-in mutability for performance. The cell is mutable; the binding is immutable. Mutating operations carry the `<Mut>` effect.
+Opt-in mutability for performance. The cell is mutable; the binding is immutable. Mutation is untracked — it carries no effect row.
 
 ```
 let arr = MutArray [|1, 2, 3|]
-arr[0] = 5                    -- index assignment, Mut effect tracked
+arr[0] = 5                    -- index assignment, mutates in place
 ```
 
 Conversion between Array and MutArray:
 ```
-freeze : MutArray a -> Array a         -- zero cost, type change only
-thaw   : Array a -> <Mut> MutArray a   -- copies
+freeze : MutArray a -> Array a   -- zero cost, type change only
+thaw   : Array a -> MutArray a   -- copies
 ```
 
 #### Map — immutable tree map
@@ -785,24 +786,25 @@ m `insert` ("charlie", 35)        -- returns new Map, cheap via structural shari
 ```
 
 #### HashMap — mutable hash map
-Hash-based, mutable. Its mutating operations carry the `<Mut>` effect. Faster for update-heavy code.
+Hash-based, mutable. Its mutating operations are untracked — no effect row. Faster for update-heavy code.
 
 ```
 let m = HashMap { "alice" => 30 }
-m `insert` ("charlie", 35)        -- mutates in place (<Mut>)
+m `insert` ("charlie", 35)        -- mutates in place
 ```
 
 #### Set and HashSet
 Same immutable/mutable distinction as Map/HashMap:
 - `Set` — immutable tree set
-- `HashSet` — mutable hash set (mutating ops carry `<Mut>`)
+- `HashSet` — mutable hash set (mutating ops are untracked, no effect row)
 
 ### Mutability Rules
 Universal and consistent across all collection types and bindings:
 
-**Bindings are immutable. Mutation lives in a `Ref` cell, surfaced by the
-`<Mut>` effect.** There is no mutable binding form — `let mut` has been removed,
-and a bare reassignment `x = e` of an already-bound name is an error. `=` (with
+**Bindings are immutable. Mutation lives in a `Ref` cell.** Mutation is
+untracked by the effect system — writing a `Ref` carries no effect row. There
+is no mutable binding form — `let mut` has been removed, and a bare
+reassignment `x = e` of an already-bound name is an error. `=` (with
 `let`, or at the top level) is *declaration only*.
 
 ```
@@ -820,11 +822,12 @@ p.age = 31                             -- field assignment (in-place record muta
 
 `Ref` is the single mutation primitive:
 - construct — `Ref v` (type `a -> Ref a`)
-- write — `x := e` (surface sugar for `setRef x e`, type `Ref a -> a -> <Mut> Unit`)
+- write — `x := e` (surface sugar for `setRef x e`, type `Ref a -> a -> Unit`)
 - read — `x.value`
 
-Any function that writes a `Ref` carries `<Mut>` in its inferred type signature.
-The `Ref` type and the `<Mut>` effect are two faces of the same concept.
+Mutation is untracked: a function that writes a `Ref` carries no additional
+effect in its inferred type signature — the effect system tracks host
+capabilities only.
 
 Practical benefit: grep a codebase for `Ref` / `:=` and find every place mutation
 is introduced.
@@ -991,12 +994,12 @@ let x : Ref Int = Ref 5       -- binding stable, contents mutable
 let mut x : Int = 5           -- binding can be repointed, no shared mutation
 ```
 
-The `<Mut>` effect is still tracked — functions that mutate a `Ref` carry `<Mut>` in their signature:
+Mutation via `Ref` is untracked by the effect system — a function that mutates a `Ref` carries no extra effect in its signature:
 ```
-increment : Ref Int -> <Mut> Unit
+increment : Ref Int -> Unit
 ```
 
-So even though `Ref` doesn't require `let mut` on the binding, mutation is never invisible — it always shows up in the effect system. `Ref` makes shared mutable state explicit in the type, so it's never hidden or surprising.
+`Ref` makes shared mutable state explicit in the *type* (a `Ref a` argument or field), even though it's no longer surfaced in the effect row.
 
 This is a fundamental design decision worth stating explicitly, as it resolves a tension that plagues Haskell.
 
@@ -1182,7 +1185,7 @@ extern println  : String -> <IO> Unit
 extern readLine : Unit -> <IO> String
 extern readFile : String -> <IO> Result String IoError
 extern writeFile : String -> String -> <IO> Result Unit IoError
-extern exit     : Int -> <Panic> Unit
+extern exit     : Int -> Unit
 ```
 
 During the OCaml phase, these are backed by OCaml implementations. During the LLVM phase, they're backed by C or LLVM IR implementations. The Medaka code above this layer never changes.
@@ -1222,7 +1225,7 @@ This design enables a clean bootstrap sequence:
 |---|---|---|---|---|
 | Evaluation | Strict | Lazy | Strict | Strict |
 | Polymorphism | Interfaces (HKT) | Typeclasses (HKT) | Objects + Modules | Traits |
-| Error handling | Result + Panic | Either + exceptions | exceptions | Result + panic |
+| Error handling | Result + panic | Either + exceptions | exceptions | Result + panic |
 | Effects | Built-in tracked set | IO Monad | Unrestricted | Unrestricted |
 | Memory | GC | GC | GC | Ownership |
 | Syntax style | Haskell/Idris | Haskell | ML | C-like |

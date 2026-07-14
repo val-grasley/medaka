@@ -151,7 +151,7 @@ skipped, and each carries its specific reason.
 > (`args`/`getEnv`/`executablePath`), Stdin (4), Clock (`wallTimeSec`/
 > `monotonicSec`/`sleepMs`), `allocBytes`, and `ePutStr`/`ePutStrLn` (which
 > previously **silently discarded all stderr**). `arrayFill`/`arraySortInPlaceBy`/
-> `arraySortBy` — pure/`<Mut>`, no I/O at all — went into the shared pure table.
+> `arraySortBy` — pure/untracked-mutation, no I/O at all — went into the shared pure table.
 > Interpreter extern coverage: **98/134 → 120/134**. The differential oracle still
 > installs ONLY the pure `externBindings`, so every eval golden is byte-identical.
 >

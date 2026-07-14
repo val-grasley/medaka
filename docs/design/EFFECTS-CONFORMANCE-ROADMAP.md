@@ -17,10 +17,13 @@ discipline" and Phase 146b remain open. **Target spec:**
 >   via the domain `dsub` (`inferred ⊑ policy`); effect read widened `String → Atom`
 >   to carry the param. **Native-only** (the frozen oracle stays bare-label, so the
 >   diff gate's bare cases stay byte-identical); 3 native param fixtures.
-> - **WS-1c** (`41509f6`) — `medaka manifest <file>` emits the security half of the
->   verified entry row as TOML `[package.capabilities]` (internal `Mut`/`Panic`
->   dropped per §7), round-trips through `check-policy`. Gate `test/manifest_emit.sh`
->   (6/0). **Deferred seam:** the Wasm custom-section half (touches `wasm_emit.mdk`).
+> - **WS-1c** (`41509f6`) — `medaka manifest <file>` emits the verified entry row as
+>   TOML `[package.capabilities]` (at the time, filtered to drop the internal
+>   `Mut`/`Panic` labels per §7 — moot since 2026-07-14: those labels and the
+>   internal/security label-class split no longer exist, so the manifest is now the
+>   *whole* verified row, unfiltered), round-trips through `check-policy`. Gate
+>   `test/manifest_emit.sh` (6/0). **Deferred seam:** the Wasm custom-section half
+>   (touches `wasm_emit.mdk`).
 >
 > **Remaining:** WS-2 (α scope-seeding, cheap/independent), WS-3 (`Set` domain) →
 > WS-3b (param Env/Exec) → WS-4 (`Product`/structured Net), WS-5 (standing).
@@ -236,12 +239,14 @@ decision. *Gate:* a plugin inferring `<Net "evil.com/*">` is **rejected** under
 `--allow 'Net=idp.example.com/*'`; one inferring `<Net "idp.example.com/api/*">` is
 **accepted**. (Builds directly on probes A2/A3.)
 
-**1c — Manifest emission.** Add a path that *emits* `M(module)` as an artifact: the
-research doc's dual layer — TOML `[package.capabilities]` (human/tooling) +
-optional Wasm custom section (host). Filter to **security** labels (drop
-`Mut`/`Panic`, §7), render each parameter via `drender`. *Gate:* `medaka build`/a
-new `medaka manifest` produces a manifest whose entries equal the inferred security
-row; round-trips through `check-policy`.
+**1c — Manifest emission. DONE — see WS-1c above.** Added a path that *emits*
+`M(module)` as an artifact: the research doc's dual layer — TOML
+`[package.capabilities]` (human/tooling) + optional Wasm custom section (host).
+Since 2026-07-14 every label is a host capability (no internal/security split),
+so nothing is filtered — the manifest is the entire verified row, each
+parameter rendered via `drender`. *Gate:* `medaka build`/`medaka manifest`
+produces a manifest whose entries equal the inferred row; round-trips through
+`check-policy`.
 
 **Why first:** every other clause is conformant; this is the unshipped half of v2
 Stage 3 (fork (i)) and the spec's entire reason to exist. It needs **no** new

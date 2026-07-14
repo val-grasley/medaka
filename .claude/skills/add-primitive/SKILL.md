@@ -34,8 +34,10 @@ When you write **Medaka** code (e.g. wrappers in `core.mdk`/`list.mdk`), use
    - IO → `<IO>`, or a finer-grained tag if one fits: `<Stdout>`, `<Stdin>`,
      `<FileRead "_">`, `<Net "_">` (see existing entries in `runtime.mdk` for
      examples of each)
-   - mutation via refs → `<Mut>`
-   - unrecoverable exit → `<Panic>`
+   - every effect label is a host capability — there is no internal/purity
+     label class. Mutation via refs and `panic`/unrecoverable exit carry no
+     effect row at all (untracked); don't reach for `<Mut>`/`<Panic>` — those
+     labels were removed from the language 2026-07-14.
    Type variables are implicitly universally quantified.
 
 2. **Implement it in the interpreter** — add a matching `("name", primN ...)`

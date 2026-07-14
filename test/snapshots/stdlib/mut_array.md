@@ -12,8 +12,8 @@ stages=DESUGAR,MARK
 
    Representation: `MutArray backing len` where `backing.value` is the backing
    array (its `arrayLength` is the *capacity*) and `len.value` is the number of
-   live elements (`0 <= len <= capacity`).  Both are `Ref`s, mutated in place
-   (`<Mut>`).  Slots `[len, capacity)` are scratch — never read; they hold
+   live elements (`0 <= len <= capacity`).  Both are `Ref`s, mutated in place.
+   Slots `[len, capacity)` are scratch — never read; they hold
    whatever value last filled them (the most recent `push`'s element on a grow).
 
    Iteration / instances only ever touch the live range `[0, len)`, so the

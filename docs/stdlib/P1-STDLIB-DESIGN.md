@@ -293,7 +293,7 @@ compiler never imports `net`).
 2. **Blocking-only v1** interacts awkwardly with the cooperative `async` monad —
    real servers want non-blocking. Scope v1 as blocking; treat async I/O as a
    follow-on that needs `select`/epoll externs.
-3. **Opaque-handle lifetime** — sockets are `<Mut>`-like resources with no
+3. **Opaque-handle lifetime** — sockets are mutable-handle resources with no
    `finally`/RAII and no catchable panics (by design). Need a clear close
    discipline; leaked fds are the failure mode. Consider a `withSocket` bracket
    helper (pure-Medaka) as the blessed pattern.

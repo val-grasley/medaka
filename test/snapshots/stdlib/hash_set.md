@@ -9,7 +9,7 @@ stages=DESUGAR,MARK
    `HashSet a` is a **mutable** hash set — separate chaining (each bucket a
    `List a`) in a `Ref`-held array plus a `Ref Int` count, mirroring
    `hash_map.mdk`. The *performance* counterpart to the persistent ordered `Set`
-   (set.mdk): O(1) average membership/insert, updates mutate in place (`<Mut>`).
+   (set.mdk): O(1) average membership/insert, updates mutate in place.
 
    Standalone rather than a wrapper over `HashMap a Unit` — same reasoning as
    set.mdk over `Map a Unit` (self-contained, no qualified-import gymnastics, no
