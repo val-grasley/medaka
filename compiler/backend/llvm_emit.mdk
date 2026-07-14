@@ -285,8 +285,14 @@ fallthroughLabelRef : Ref String
 fallthroughLabelRef = Ref ""
 
 -- compile-time closure-arity table, keyed by the closure cell's SSA register
--- (`%tN`, globally unique via the shared freshId counter — no cross-function
--- collision).  Recorded when a user lambda's closure cell is allocated
+-- (`%tN`).  ⚠️ `%tN` is only unique WITHIN a define (issue #118 restarts the
+-- register counter at each one), so this table is PER-DEFINE: `beginDefine`
+-- clears it and `endDefine` restores the enclosing define's — otherwise `%t5` in
+-- one function would answer a lookup for `%t5` in another and the indirect call
+-- would saturate with the WRONG arity.  Sound because an entry can only be read
+-- in the define that wrote it (the key is used verbatim as an SSA operand of the
+-- emitted `call`, which LLVM requires to be defined in the same function).
+--   Recorded when a user lambda's closure cell is allocated
 -- (emitClosureAllocA); read at an INDIRECT call site (emitIndirect) so a let-bound
 -- closure applied to MORE args than its arity (`(g 7) 9` where `g = (x => (y => …))`)
 -- saturates with the first `arity` args then applies the surplus to the returned
@@ -300,6 +306,7 @@ closureArityRef : Ref (List (String, Int))
 closureArityRef = Ref []
 
 -- compile-time closure RETURN-TYPE table, keyed by the closure cell's SSA register.
+-- ⚠️ Same `%tN` scoping hazard as closureArityRef above — also PER-DEFINE.
 -- Records LTFloat for a user lambda whose body EVIDENTLY returns a Float (a float
 -- literal or known-float capture flows to the result through arith/if/block — see
 -- bodyFloatRet, conservative).  Read at an indirect call site (indirectRetTy) so a
@@ -778,6 +785,22 @@ data FnSig = FnSig (List LTy) LTy
 -- tagged-int constant (constants are used inline, emitting no instruction).
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
+-- TWO gensym namespaces (issue #118, "per-define deterministic numbering"):
+--
+--   * `freshId` — the MODULE-GLOBAL counter (`e.counter`).  Feeds every name that
+--     must be unique across the whole LLVM module: `@.strc.N` string constants,
+--     `@mdk_dc_N` constant dict cells, and every lifted-define name
+--     (`@mdk_lamN`, `@mdk_eta_*`, `@mdk_pap_*`, `@mdk_methval_*`, …).  NEVER reset.
+--
+--   * `freshLocal` — the PER-DEFINE counter (`defineCounterRef`).  Feeds `%tN` SSA
+--     registers (`freshReg`) and block labels (`then{N}`, `divok{N}`, `clause{N}`,
+--     …).  Both are FUNCTION-scoped in LLVM, so restarting them at 0 in each
+--     `define` is legal — and it is what makes a define's text depend only on that
+--     define, not on how much code was emitted before it.
+--
+-- Reset by `beginDefine` at the top of every `define`; saved+restored by
+-- `endDefine` around the side-buffer swap that emits a lifted define INSIDE
+-- another define's emission (see `defineScope` below).
 freshId : Emit -> <Mut> Int
 freshId e =
   let c = e.counter
@@ -785,8 +808,48 @@ freshId e =
   let _ = setRef c (n + 1)
   n
 
+defineCounterRef : Ref Int
+defineCounterRef = Ref 0
+
+freshLocal : Emit -> <Mut> Int
+freshLocal _ =
+  let n = defineCounterRef.value
+  let _ = setRef defineCounterRef (n + 1)
+  n
+
 freshReg : Emit -> <Mut> String
-freshReg e = "%t" ++ intToString (freshId e)
+freshReg e = "%t" ++ intToString (freshLocal e)
+
+-- ── the per-define gensym scope (issue #118) ────────────────────────────────
+-- Everything keyed on, or counting, a FUNCTION-SCOPED name: the `%tN`/label
+-- counter plus the two tables keyed BY a `%tN` register — `closureArityRef` and
+-- `closureRetTyRef`.  Once `%tN` restarts per define, a register name is only
+-- unique WITHIN a define, so those tables must be scoped the same way or `%t5` in
+-- one function would answer a lookup for `%t5` in another (a wrong closure arity
+-- at an indirect call = silent miscompile).  Scoping them per define is sound
+-- because a table entry can only ever be READ inside the define that WROTE it:
+-- the key is used verbatim as an SSA operand of the emitted `call`, and LLVM
+-- requires an operand to be defined in the same function.
+--
+-- It also fixes a latent leak — both tables previously grew for the whole program.
+data DefScope = DefScope Int (List (String, Int)) (List (String, LTy))
+
+-- start a fresh `define` scope, returning the enclosing one (for `endDefine`).
+beginDefine : Emit -> <Mut> DefScope
+beginDefine _ =
+  let saved = DefScope defineCounterRef.value closureArityRef.value closureRetTyRef.value
+  let _ = setRef defineCounterRef 0
+  let _ = setRef closureArityRef []
+  let _ = setRef closureRetTyRef []
+  saved
+
+-- restore the enclosing `define` scope (only needed where a define NESTS inside
+-- another's emission, i.e. at each bufRef save/restore swap).
+endDefine : Emit -> DefScope -> <Mut> Unit
+endDefine _ (DefScope n ar rt) =
+  let _ = setRef defineCounterRef n
+  let _ = setRef closureArityRef ar
+  setRef closureRetTyRef rt
 
 emit : Emit -> String -> <Mut> Unit
 emit e line = let buf = e.buf in setRef buf (line::buf.value)
@@ -2737,7 +2800,7 @@ emitIntDivZeroChecked : Emit -> String -> String -> String -> <Mut> (String, LTy
 emitIntDivZeroChecked e op li ri =
   let z = freshReg e
   let _ = emit e "  \{z} = icmp eq i64 \{ri}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let zeroL = "divzero" ++ n
   let okL = "divok" ++ n
   let _ = emit e "  br i1 \{z}, label %\{zeroL}, label %\{okL}"
@@ -2927,7 +2990,7 @@ emitIf e env c t f =
   let ci = untagInt e cv
   let cb = freshReg e
   let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
   let endL = "end" ++ n
@@ -3100,6 +3163,7 @@ emitGroupBindDefine : Emit -> List (String, (String, LTy)) -> String -> String -
 emitGroupBindDefine e env lamName name arity clauses captured =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
   let _ = emit e "define i64 @\{lamName}(i64 %clos, \{implParamDecls arity 0}) {"
@@ -3111,6 +3175,7 @@ emitGroupBindDefine e env lamName name arity clauses captured =
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = setRef fallthroughLabelRef savedFt
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 -- A lifted define is a FRESH function: its clause chain's last-clause
 -- fallthrough must be @mdk_oob (non-exhaustive abort), NOT the enclosing
@@ -3323,7 +3388,7 @@ emitRefutableCsLet e env pat sv = match letElseHead pat
     let tag = loadDiscriminant e sv
     let cmp = freshReg e
     let _ = emit e "  \{cmp} = icmp eq i64 \{tag}, \{intToString (cellTag e c)}"
-    let n = intToString (freshId e)
+    let n = intToString (freshLocal e)
     let ok = "letrefok" ++ n
     let no = "letrefno" ++ n
     let _ = emit e "  br i1 \{cmp}, label %\{ok}, label %\{no}"
@@ -3645,6 +3710,7 @@ emitMethodValDefine : Emit -> List (String, (String, LTy)) -> String -> String -
 emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env capNames 0
@@ -3655,6 +3721,7 @@ emitMethodValDefine e env lamName name route implRoutes methRoutes arity capName
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- CDict in VALUE position (EMITTER-GAPS #18, value facet): a `=>`-constrained
@@ -3692,6 +3759,7 @@ emitDictValDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
 emitDictValDefine e lamName name nDicts valArity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls valArity}) {"
   let _ = emit e "entry:"
   let dictOps = loadPapCaptures e nDicts 0
@@ -3703,6 +3771,7 @@ emitDictValDefine e lamName name nDicts valArity =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- E22: a runtime-dict-routed (RDict/RDictFwd) method occurrence is UNDER-APPLIED —
@@ -3742,6 +3811,7 @@ emitMethodPapDefine : Emit -> List (String, (String, LTy)) -> String -> String -
 emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capNames supplied =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let remaining = arity - supplied
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
@@ -3755,6 +3825,7 @@ emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capName
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- E19: an RKey route into a method with NO tagged impl for `tag` — the type's
@@ -3863,7 +3934,7 @@ emitApplyAny e cw argOps =
   let hdr = loadHeader e cw
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{hdr}, \{intToString n}"
-  let m = intToString (freshId e)
+  let m = intToString (freshLocal e)
   let fastL = "apfast" ++ m
   let slowL = "apslow" ++ m
   let endL = "apend" ++ m
@@ -3935,6 +4006,7 @@ emitPapDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
 emitPapDefine e papName fname supplied remaining =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{papName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
   let capOps = loadPapCaptures e supplied 0
@@ -3946,6 +4018,7 @@ emitPapDefine e papName fname supplied remaining =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- load the `k` captured argument words from %clos fields 1..k (code_ptr is 0).
@@ -3977,6 +4050,7 @@ emitPapDefineIndirect : Emit -> String -> Int -> Int -> <Mut> Unit
 emitPapDefineIndirect e papName supplied remaining =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{papName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
   let innerCw = loadField e "%clos" 1
@@ -3992,6 +4066,7 @@ emitPapDefineIndirect e papName supplied remaining =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- the interface name a resolved impl entry belongs to (for the returns-self
@@ -4049,7 +4124,7 @@ emitMethodDispatchChain e env name d methRoutes argOps =
   let methWords = dictWordsOf e env methRoutes
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "dispend" ++ intToString (freshId e)
+  let endL = "dispend" ++ intToString (freshLocal e)
   let _ = match impls
     [] => match defaultFor e name
       Some entry => emitDefaultDispatchChain e dictPtr headTag (ifaceTags e (methodIfaceOf name)) name entry argOps slot endL
@@ -4102,7 +4177,7 @@ emitDefaultDispatchChain e _ _ [] _ _ _ _ _ = emit e "  unreachable"
 emitDefaultDispatchChain e dictPtr headTag (tag::rest) name entry argOps slot endL =
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{headTag}, \{intToString (hashName tag)}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "ddispyes" ++ n
   let next = "ddispnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -4157,7 +4232,7 @@ emitDispatchArm e dictPtr headTag ent name methWords argOps slot endL =
   let symTag = implFnSymOf (implEntriesOf e) name ent
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{headTag}, \{intToString (hashName routeKey)}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "dispyes" ++ n
   let next = "dispnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -4271,7 +4346,7 @@ emitArgTagDispatchGo e method groups argOps discrimPos =
   let tagReg = loadDiscriminant e discrimWord
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "argdispend" ++ intToString (freshId e)
+  let endL = "argdispend" ++ intToString (freshLocal e)
   let _ = emitArgDispatchChain e method tagReg groups argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
@@ -4283,7 +4358,7 @@ emitArgDispatchChain e _ _ [] _ _ _ = emit e "  unreachable"
 emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
   let tag = groupTag g
   let cond = emitTagMatch e tagReg (ctorsOfType e tag)
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "argyes" ++ n
   let next = "argnext" ++ n
   let _ = emit e "  br i1 \{cond}, label %\{yes}, label %\{next}"
@@ -4525,6 +4600,7 @@ emitGroup e (ImplGroup method tag symTag positions arity clauses) =
     let _ = clearCurImplSelfFns ()
     ()
   else
+    let _ = beginDefine e
     let _ = emit e "define i64 @\{fname}(\{implParamDecls arity 0}) {"
     let _ = emit e "entry:"
     let _ = emitGroupBody e fname tag positions arity clauses
@@ -4614,6 +4690,7 @@ emitDefaultDefine e fname tag method entry =
   let body = restampCrossIface methodIfaceTableRef.value method dictIfaces bodyS
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
   let _ = emit e "define i64 @\{fname}(\{implParamDecls arity 0}) {"
@@ -4624,6 +4701,7 @@ emitDefaultDefine e fname tag method entry =
   let defLines = (bufRef e).value
   let _ = setRef (lamsRef e) (defLines ++ (lamsRef e).value)
   let _ = setRef fallthroughLabelRef savedFt
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 -- G7: the dict-passing pass already PREPENDED one `$dict_<method>_<slot>` param per
 -- method-level constraint (foldMap's `Monoid m`) to this default's pats, so the full
@@ -5060,7 +5138,7 @@ emitClauseTree e env arity clauses =
   let roots = emitArgs e env (implScrutVars arity 0)
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "decend" ++ intToString (freshId e)
+  let endL = "decend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
   let saved = fallthroughLabelRef.value
   let _ = emitClauseChain e env arity clauses roots slot endL rty saved
@@ -5114,7 +5192,7 @@ ftClause lbl (pats, body) = (pats, labelFallthrough body lbl)
 -- clause, else a fresh `clauseN` block label.
 chainNextLabel : Emit -> List (List Pat, CExpr) -> String -> <Mut> String
 chainNextLabel _ [] outer = outer
-chainNextLabel e _ _ = "clause" ++ intToString (freshId e)
+chainNextLabel e _ _ = "clause" ++ intToString (freshLocal e)
 
 isEmptyL : List a -> Bool
 isEmptyL [] = True
@@ -5391,6 +5469,7 @@ emitRecLamDefine : Emit -> List (String, (String, LTy)) -> String -> String -> L
 emitRecLamDefine e env lamName f pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
@@ -5400,6 +5479,7 @@ emitRecLamDefine e env lamName f pats captured body =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- E2b — emit a lifted lambda whose params are NON-variable patterns, into the side
@@ -5416,6 +5496,7 @@ emitPatLamDefine : Emit -> List (String, (String, LTy)) -> String -> List (Strin
 emitPatLamDefine e env lamName extra pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let savedFt = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
   let arity = listLen pats
@@ -5428,6 +5509,7 @@ emitPatLamDefine e env lamName extra pats captured body =
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = setRef fallthroughLabelRef savedFt
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- drop every occurrence of a name from a list (the recursive-closure self name is
@@ -5512,6 +5594,7 @@ emitCtorPapDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
 emitCtorPapDefine e lamName name arity supplied =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let remaining = arity - supplied
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls remaining}) {"
   let _ = emit e "entry:"
@@ -5522,6 +5605,7 @@ emitCtorPapDefine e lamName name arity supplied =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- a CONSTRUCTOR with arity>0 referenced as a FIRST-CLASS value (`map PVar vars`):
@@ -5546,6 +5630,7 @@ emitCtorEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitCtorEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let (w, _) = emitCtorAlloc e name (argNames arity 0)
@@ -5554,6 +5639,7 @@ emitCtorEtaDefine e lamName name arity =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- emit a lifted lambda's top-level `define` into the SIDE buffer (LLVM forbids a
@@ -5567,6 +5653,7 @@ emitLamDefine : Emit -> List (String, (String, LTy)) -> String -> List Pat -> Li
 emitLamDefine e env lamName pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
@@ -5576,6 +5663,7 @@ emitLamDefine e env lamName pats captured body =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- emit the captureless eta-forwarder `@mdk_etaN(i64 %clos, %arg…) { ret = call
@@ -5584,6 +5672,7 @@ emitEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitEtaDefine e lamName fname arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let r = freshReg e
@@ -5593,6 +5682,7 @@ emitEtaDefine e lamName fname arity =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- gap-2 (GENERAL): a known extern of ANY family (str/num/io/char/file/hash/…)
@@ -5633,6 +5723,7 @@ emitMethodEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitMethodEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let synArgs = etaArgOps arity 0
@@ -5642,6 +5733,7 @@ emitMethodEtaDefine e lamName name arity =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- the declared arity of extern `name` = the arrow count of its runtime signature
@@ -5663,6 +5755,7 @@ emitExternEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
 emitExternEtaDefine e lamName name arity =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
+  let scope = beginDefine e
   let _ = emit e "define i64 @\{lamName}(\{etaParamDecls arity}) {"
   let _ = emit e "entry:"
   let argEnv = etaArgEnv arity 0
@@ -5673,6 +5766,7 @@ emitExternEtaDefine e lamName name arity =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
   setRef (bufRef e) saved
 
 -- env binding `__eta_argK__ -> (%argK, LTInt)` for K in [i, arity) — so the
@@ -5988,7 +6082,7 @@ loadTag e ptrWord =
 -- directly only where the value is known boxed (array length header).
 loadDiscriminant : Emit -> String -> <Mut> String
 loadDiscriminant e word =
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let imm = "discimm" ++ n
   let box = "discbox" ++ n
   let cont = "disccont" ++ n
@@ -6040,7 +6134,7 @@ emitDecision e env scrut arms tree =
   let (sv, _) = emitExpr e env scrut
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "decend" ++ intToString (freshId e)
+  let endL = "decend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
   let saved = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
@@ -6147,7 +6241,7 @@ emitLeaf e env roots arms i slot endL rty = match nthArm arms i
 -- subtree (resumes the match at the same column context `occs`).
 emitGuardedArm : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> Pat -> List CGuard -> CExpr -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitGuardedArm e env roots arms occs pat guards body fail slot endL rty =
-  let failL = "guardfail" ++ intToString (freshId e)
+  let failL = "guardfail" ++ intToString (freshLocal e)
   let env2 = emitRefutArm e env pat roots body failL
   let env3 = emitGuardChain e env2 guards body failL
   -- Under an ACTIVE TRMC loop the guarded arm's body is a TAIL leaf: descend it
@@ -6182,7 +6276,7 @@ emitGuardChain e env ((CGBool g)::rest) body failL =
   let (bw, _) = emitExpr e env g
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{bw}, 3"
-  let pass = "guardok" ++ intToString (freshId e)
+  let pass = "guardok" ++ intToString (freshLocal e)
   let _ = emit e "  br i1 \{cmp}, label %\{pass}, label %\{failL}"
   let _ = emit e (pass ++ ":")
   emitGuardChain e env rest body failL
@@ -6407,7 +6501,7 @@ emitWordEqTest : Emit -> String -> String -> String -> <Mut> Unit
 emitWordEqTest e word k failL =
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{word}, \{k}"
-  let ok = "refok" ++ intToString (freshId e)
+  let ok = "refok" ++ intToString (freshLocal e)
   let _ = emit e "  br i1 \{cmp}, label %\{ok}, label %\{failL}"
   emit e (ok ++ ":")
 
@@ -6417,7 +6511,7 @@ emitRangeTest : Emit -> String -> Int -> Int -> Bool -> String -> <Mut> Unit
 emitRangeTest e v lo hi incl failL =
   let loW = intToString (lo * 2 + 1)
   let hiW = intToString (hi * 2 + 1)
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let cLo = freshReg e
   let _ = emit e "  \{cLo} = icmp sge i64 \{v}, \{loW}"
   let mid = "rngmid" ++ n
@@ -6507,7 +6601,7 @@ emitConChain e env roots arms foc rest tagReg ((CTBranch h sub)::more) dft slot 
   Some (c, a) =>
     let cmp = freshReg e
     let _ = emit e "  \{cmp} = icmp eq i64 \{tagReg}, \{intToString (cellTag e c)}"
-    let n = intToString (freshId e)
+    let n = intToString (freshLocal e)
     let yes = "conyes" ++ n
     let next = "connext" ++ n
     let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -6530,7 +6624,7 @@ emitLitChain e env roots arms _ rest [] dft slot endL rty =
 emitLitChain e env roots arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL rty =
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (k * 2 + 1)}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -6543,7 +6637,7 @@ emitLitChain e env roots arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) d
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (cp * 2 + 1)}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -6560,7 +6654,7 @@ emitLitChain e env roots arms foc rest ((CTBranch (HLit (LString s)) sub)::more)
   let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{foc}, i64 \{lit})"
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{r}, 3"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
@@ -6845,6 +6939,7 @@ emitMultiClauseFn e name clauses =
     Some (FnSig ts _) => ts
     None => []
   let env = implParamEnvTyped arity ptys 0
+  let _ = beginDefine e
   let _ = emit e "define i64 @mdk_\{name}(\{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let _ = emitClauseTree e env arity clauses
@@ -6905,6 +7000,7 @@ emitTrmcFn e name arity ptys clauses single singlePats singleBody =
 -- emitGroup already brackets the define).
 emitTrmcHeader : Emit -> String -> Int -> <Mut> Unit
 emitTrmcHeader e defineName arity =
+  let _ = beginDefine e
   let _ = emit e "define i64 @\{defineName}(\{implParamDecls arity 0}) {"
   emit e "entry:"
 
@@ -6926,8 +7022,8 @@ emitTrmcLoopBody e self arity slotTys clauses single singlePats singleBody =
   let _ = emit e ("  " ++ destSlot ++ " = alloca ptr")
   let _ = emit e "  store ptr \{hole}, ptr \{destSlot}"
   let pslots = trmcEmitParamSlots e arity 0
-  let loopL = "trmcloop" ++ intToString (freshId e)
-  let exitL = "trmcexit" ++ intToString (freshId e)
+  let loopL = "trmcloop" ++ intToString (freshLocal e)
+  let exitL = "trmcexit" ++ intToString (freshLocal e)
   let _ = emit e ("  br label %" ++ loopL)
   let _ = emit e (loopL ++ ":")
   let reloaded = trmcReloadParams e pslots slotTys 0
@@ -7002,7 +7098,7 @@ emitTrmcBody e env (CIf c t f) =
   let ci = untagInt e cv
   let cb = freshReg e
   let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let thenL = "trmcthen" ++ n
   let elseL = "trmcelse" ++ n
   let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
@@ -7034,7 +7130,7 @@ emitTrmcBody e env (CDecision scrut arms tree) =
   let (sv, _) = emitExpr e env scrut
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "trmcdecend" ++ intToString (freshId e)
+  let endL = "trmcdecend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
   let savedFT = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
@@ -7217,7 +7313,7 @@ emitGDispGroup e grp =
   let destSlot = freshReg e
   let _ = emit e ("  " ++ destSlot ++ " = alloca ptr")
   let _ = emit e "  store ptr \{hole}, ptr \{destSlot}"
-  let exitL = "gdispexit" ++ intToString (freshId e)
+  let exitL = "gdispexit" ++ intToString (freshLocal e)
   let _ = emit e ("  br label %" ++ gDispLabel root)
   let saved = gDispCtxRef.value
   let _ = setRef gDispCtxRef (GDispOn root members uslots destSlot exitL)
@@ -7302,7 +7398,7 @@ emitGDispBody e env (CIf c t f) =
   let ci = untagInt e cv
   let cb = freshReg e
   let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let thenL = "gdispthen" ++ n
   let elseL = "gdispelse" ++ n
   let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
@@ -7326,7 +7422,7 @@ emitGDispBody e env (CDecision scrut arms tree) =
   let (sv, _) = emitExpr e env scrut
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
-  let endL = "gdispdecend" ++ intToString (freshId e)
+  let endL = "gdispdecend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
   let savedFT = fallthroughLabelRef.value
   let _ = setRef fallthroughLabelRef ""
@@ -7695,7 +7791,7 @@ emitFnBodyD e env self worker fp arity (CIf c t f) =
   let ci = untagInt e cv
   let cb = freshReg e
   let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
   let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
@@ -7762,6 +7858,7 @@ emitFloatFwOnly e name pats ptys body =
   let arity = lengthS pats
   let worker = name ++ "__fw"
   let wenv = paramEnvD pats ptys fp 0
+  let _ = beginDefine e
   let _ = emit e "define double @mdk_\{worker}(\{paramDeclsD pats fp 0}) {"
   let _ = emit e "entry:"
   let _ = emitFnBodyD e wenv name worker fp arity body
@@ -7775,6 +7872,7 @@ emitFloatWorkerFn e name pats ptys body =
   -- worker ($fw): float params as doubles, body emitted double-returning
   let _ = emitFloatFwOnly e name pats ptys body
   -- wrapper: original i64 ABI; unbox float params, call worker, box the result
+  let _ = beginDefine e
   let _ = emit e "define i64 @mdk_\{name}(\{paramDecls pats 0}) {"
   let _ = emit e "entry:"
   let callArgs = wrapperCallArgs e fp 0 pats
@@ -7809,6 +7907,7 @@ emitFnClauseStd e name pats ptys body =
 emitFnClauseW : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
 emitFnClauseW e name pats ptys body =
   let env = paramEnv pats ptys 0
+  let _ = beginDefine e
   let _ = emit e "define i64 @mdk_\{name}(\{paramDecls pats 0}) {"
   let _ = emit e "entry:"
   let _ = emitFnBody e env name body
@@ -7858,7 +7957,7 @@ emitFnBody e env self (CIf c t f) =
   let ci = untagInt e cv
   let cb = freshReg e
   let _ = emit e "  \{cb} = icmp ne i64 \{ci}, 0"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let thenL = "then" ++ n
   let elseL = "else" ++ n
   let _ = emit e "  br i1 \{cb}, label %\{thenL}, label %\{elseL}"
@@ -8886,7 +8985,7 @@ emitArrayIndex e env a i =
   let _ = emit e "  \{c2} = icmp sge i64 \{idx_raw}, \{arr_len}"
   let oob = freshReg e
   let _ = emit e "  \{oob} = or i1 \{c1}, \{c2}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let oobL = "oob" ++ n
   let okL = "idx_ok" ++ n
   let _ = emit e "  br i1 \{oob}, label %\{oobL}, label %\{okL}"
@@ -8912,7 +9011,7 @@ emitRangeArray e env lo hi incl =
   let count = freshReg e
   let _ = emit e "  \{count} = sub i64 \{hi_adj}, \{lo_raw}"
   let p = emitArrayDynAlloc e count
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let condL = "rng_cond" ++ n
   let bodyL = "rng_body" ++ n
   let doneL = "rng_done" ++ n
@@ -8962,7 +9061,7 @@ emitArraySlice e env a lo hi incl =
   let new_len = freshReg e
   let _ = emit e "  \{new_len} = sub i64 \{end_raw}, \{lo_raw}"
   let p = emitArrayDynAlloc e new_len
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let condL = "sl_cond" ++ n
   let bodyL = "sl_body" ++ n
   let doneL = "sl_done" ++ n
@@ -9016,7 +9115,7 @@ emitStringIndex e env a i =
   let _ = emit e "  \{c2} = icmp sge i64 \{idx_raw}, \{arr_len}"
   let oob = freshReg e
   let _ = emit e "  \{oob} = or i1 \{c1}, \{c2}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let oobL = "soob" ++ n
   let okL = "sidx_ok" ++ n
   let _ = emit e "  br i1 \{oob}, label %\{oobL}, label %\{okL}"
@@ -9090,7 +9189,7 @@ emitArrayMakeWith e env [nExpr, fExpr] =
   let (fw, _) = emitExpr e env fExpr
   let count = untagInt e n_w
   let p = emitArrayDynAlloc e count
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let condL = "mw_cond" ++ n
   let bodyL = "mw_body" ++ n
   let doneL = "mw_done" ++ n
@@ -9221,7 +9320,7 @@ emitRangeList e env lo hi incl =
   let im1 = freshReg e
   let _ = emit e "  \{im1} = sub i64 \{count}, 1"
   let _ = emit e "  store i64 \{im1}, ptr \{ic}"
-  let n = intToString (freshId e)
+  let n = intToString (freshLocal e)
   let condL = "rl_cond" ++ n
   let bodyL = "rl_body" ++ n
   let doneL = "rl_done" ++ n
@@ -9306,6 +9405,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   let _ = emitGlobalDecls e (valBinds groups)
+  let _ = beginDefine e
   let _ = emit e "define i32 @mdk_program_main(i32 %argc, ptr %argv) {"
   let _ = emit e "entry:"
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
