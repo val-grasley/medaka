@@ -54,18 +54,59 @@ This works — the emitted LLVM carries CFI, so DWARF unwinding produces clean s
 (An earlier doc claimed call graphs were "unusable". That was WRONG — it referred to
 frame-pointer unwinding — and it cost an agent a wrong turn.)
 
-**Why flat counts mislead here, specifically:** they profile **TIME**, but the perf
-gate grades **ALLOCATION** — and on this workload those point at *different
-functions*. Flat counts named `rootIdOf` at 28%, which is pure CPU and allocates
-nothing, so it was invisible to the gate.
+**Time and allocation point at DIFFERENT functions, and you must hunt BOTH.** The two
+are independent axes, not two views of one thing:
 
-The move that actually works is **allocation attribution**: pipe `perf script` through
-a filter that attributes each `GC_malloc_kind` sample to its nearest `mdk_` frame.
-That is what the gate measures, and it named the two guilty functions in one shot.
+- **Allocation attribution** — pipe `perf script` through a filter that attributes each
+  `GC_malloc_kind` sample to its nearest `mdk_` frame. Good for the allocating quadratics
+  (the "List rebuilt once per element" family — most of the eleven found so far).
+- **Flat TIME counts** — good for the *non-allocating* ones. **These are real bugs, not
+  noise.**
 
-Corollary: if the profile looks flat and allocation-dominated (`GC_malloc_kind` ~11%,
-everything else <2%), **you are looking at the wrong axis.** Get allocation
-attribution, or fall back to a stage-timing probe.
+### 🔴 THIS SECTION USED TO SAY THE OPPOSITE, AND IT COST US A BUG (corrected 2026-07-14)
+
+It read: *"Flat counts named `rootIdOf` at 28%, which is pure CPU and allocates nothing,
+**so it was invisible to the gate**… if the profile looks flat and allocation-dominated
+you are looking at the **wrong axis**."*
+
+**`rootIdOf` was the answer.** It is the root cause of **#115** — a union-find `find` with
+no path compression, which made `typecheck` **superquadratic** (a 4000-arm `match` took
+**6 seconds**; fixing it was **58×**). This skill *named the guilty function* and then
+told the reader to disregard it.
+
+The reasoning error is worth internalising, because it is subtle and it will recur:
+**"the gate cannot see it" was treated as evidence that it did not matter.** The correct
+inference was the opposite one — **the GATE was blind** (a `List` `contains`, a pointer
+chase, a comparison loop all cost TIME while allocating NOTHING). The gate has since been
+taught to grade time per-stage (#110), which found #115 within minutes.
+
+> **A hot symbol that allocates nothing is not a false positive. It is the bug class
+> allocation profiling cannot see.**
+
+### ⚠️ When a symbol dominates, check its stack DEPTH, not just its count
+
+`rootIdOf` was not hot because it was *called* a lot — **each call recursed hundreds of
+frames deep.** A flat profile alone sends you hunting a hot loop that does not exist.
+Histogram the hot symbol's frames-per-sample:
+
+```sh
+perf script | awk '/rootIdOf/{n++} /^$/{if(n)print n; n=0}' | sort -n | uniq -c
+```
+```
+   2 120
+   4 125
+2315 127     <- perf's max-stack limit: the chains are DEEPER than perf can dump
+```
+That histogram *is* the diagnosis: a long chain being walked, not a hot loop. Suspect a
+union-find without path compression, a linked structure walked per element, or an
+accidentally-deep recursion.
+
+### ⚠️ Pin the GC heap for EVERY timing measurement
+
+`GC_INITIAL_HEAP_SIZE=2147483648`. A Boehm heap resize inside the measured range produces
+a **~3.4× ratio on a perfectly CORRECT compiler** — it collapses one doubling later (a
+step, not a curve). Unpinned timing is a **false-red generator**. The knob cannot change
+emitted IR, so it is always safe. Allocation is immune to this; wall-clock is not.
 
 ### 3. Read the source to find *why* it is O(N), then stub-and-measure to confirm
 
