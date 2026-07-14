@@ -1,4 +1,73 @@
-# Next-orchestrator handoff — Medaka (2026-07-13)
+# Next-orchestrator handoff — Medaka (2026-07-14)
+
+## ⏱️ PERF NIGHT — 2026-07-14. The compiler is now **GC-bound, not algorithm-bound.**
+
+**Six PRs merged. The headline: a 4000-arm `match` went from 6.0 s to 0.10 s to typecheck (58×).**
+
+| PR | Win |
+|---|---|
+| **#117** | **`typecheck` union-find path compression — 58× (match), 74× (listlit).** Root cause: a union-find FIND with **no path compression**; one big declaration built an N-long `Link` chain that every later `normalize` walked. |
+| **#112** | `resolve`'s O(refs × decls) killed — front end **~2×** on real compiler sources (`parser.mdk` 4.16 s → 2.02 s) |
+| **#123** | `--gc-sections` — binaries **77% smaller** (`./medaka` itself −15.8%) |
+| **#116** | The perf gate can now see **TIME**, per stage — not just allocation |
+| **#119** | `compiler/PRELUDE-OBJ-DESIGN.md` — precompiling the prelude is **11.4× on the clang step**, plus the counterexample that blocks the naive version |
+| **#122** | The perf lessons, and a **skill correction** (below) |
+
+### ⭐ THE LESSON, AND IT COST US A REAL BUG
+**Our only perf gate graded ALLOCATION. A `List` `contains` allocates NOTHING.** So a pure-scan
+O(n²) was **invisible by construction** — the gate printed `4 ok, 0 regressed` next to a live quadratic.
+
+Worse: **`perf-hunt/SKILL.md` had already NAMED the guilty function** (`rootIdOf`, 28%) — and told every
+future agent to **disregard it**, because *"it allocates nothing, so it was invisible to the gate."*
+**The gate being blind was treated as evidence the bug did not matter.** `rootIdOf` was #115. Corrected in #122.
+
+> **A hot symbol that allocates nothing is not a false positive. It is the bug class allocation profiling
+> cannot see.**
+
+And #115's ledger row **already said FIXED** — because the *allocation* half had been. Read
+[`.claude/workstreams/PERF.md`](workstreams/PERF.md) **before any perf work**; the three measurement traps
+are there (incl. **the GC heap-resize step that fakes a 3.4× quadratic on a CORRECT compiler** — pin
+`GC_INITIAL_HEAP_SIZE` on every timing run, or you will ship a false-red gate).
+
+### 🎯 WHERE THE TIME ACTUALLY GOES NOW — two DIFFERENT bottlenecks, do not confuse them
+
+**`medaka check` (the LSP / edit loop) is GC-BOUND** → **#124**
+`perf` on a real `check` of `eval.mdk` (**5.1 s**): **`libgc` 62%**, our own code 27%. No `mdk_` symbol
+exceeds 0.8% — the profile is *flat*, which is what "no algorithmic hot spot left" looks like.
+⛔ **The GC knobs are a DEAD END and I measured them:** `GC_INITIAL_HEAP_SIZE=1G` cuts collections
+**124 → 5** and buys **1.02×**. So **collection is not the cost — ALLOCATION is** (113 MB per check, in
+small objects). Two leads in #124: the system libgc appears to have **no thread-local allocation** (so every
+`GC_malloc` takes a lock — `pthread_mutex_trylock` is 2% of the profile), and then the known structural
+allocation-density wall.
+
+**CI is CLANG-BOUND** → **#118**
+Critical path is `diff_compiler_engines` = **346 × (`medaka build` + clang)**. A **9-line** program emits
+**32,896 lines of IR — 272 `define`s, exactly ONE of which is its own.** The other **271 are prelude**,
+re-optimized identically every build. `clang -O2` is **77%** of a build; the front end is **12%**.
+⛔ **`MEDAKA_CLANG_OPT=-O0` is UNSOUND** (40% faster, but regresses `wasm/clos_reftco_indirect` — clang's
+tail-call elimination for **indirect** calls only runs at `-O1`+). `-O1` saves 10%. Both dead.
+
+**⚠️ So: making the front end faster barely moves CI, and making clang faster does nothing for the LSP.**
+
+### Also filed
+**#110** (perf gate blind spots — fixed) · **#111** (CI's `medaka-bin` cache **can never hit** — keyed on
+exactly the files every non-docs PR changes; but do NOT "fix" it by hoisting the build into one job, the 9
+bootstraps are *parallel*, so it is neutral-to-worse on wall-clock) · **#113** (**`make preflight` is BROKEN in
+a fresh worktree** — it diffs against *local* `main`, decides everything changed, and tries to rebuild the
+whole tree. **It bit two agents tonight.** Highest-value small fix on the board) · **#121** (`dce.mdk`'s header
+rationale is stale and would talk an agent out of #118) · **#114** ⚠️ **I CORRECTED THIS AGAINST MYSELF** —
+its "resolve is 83% of the front end" came from `profile_main`, which is **not what `medaka check` does**
+(`eval.mdk`: profile_main 0.30 s vs real check 5.13 s). Retarget or close it.
+
+### Seed: re-mint tested and DECLINED (measured, not skipped)
+Cold `make medaka`: **93.3 s (old seed) → 94.7 s (new seed) — no improvement.** Cold bootstrap is
+clang-dominated. The old seed already passed C3a + `bootstrap_from_seed` + the fixpoint on the new source,
+so it was never functionally stale. **A seed is a starting point, not a golden — it does not need to be
+byte-current.** Declined a 2 MB churn commit for zero benefit.
+
+---
+
+# ── previous handoff (2026-07-13) ──
 
 ## 🚦 READ THIS FIRST: how work lands now
 
