@@ -1,6 +1,14 @@
 # `@Impl` Named-Instance-Selection Hint — Native Port Design
 
-**Status:** OPEN — genuinely not implemented. `currentImplHintRef` (the
+**Status:** SUPERSEDED — **MOOT, do not implement (2026-07-14).** This design selects between
+**named impls**, and named impls were **REMOVED from the language**:
+`compiler/frontend/parser.mdk:2454` rejects them outright via `namedImplRemovedMsg`. There is no
+`@Impl` hint to port because there is no named instance to hint *at*. The doc is kept for provenance
+only. (`PLAN.md` separately claimed this shipped — that claim was false and has been corrected; the
+`currentImplHintRef` it said it added has zero hits in the tree. Three artifacts, three stories, none
+of them right — see issue #71's lesson about categories asserted rather than observed.)
+
+*(historical status, retained:)* OPEN — genuinely not implemented. `currentImplHintRef` (the
 module-level ref this design proposes) does not exist anywhere in
 `compiler/types/typecheck.mdk`; the native `@Impl` typecheck arm has not been
 built. What remains: the two-stage gap in the TL;DR below (typecheck `EApp(f,

@@ -272,9 +272,13 @@ a newly-parallelized gate several times — a temp-collision flake shows ~1 in N
 they violate style on purpose). Re-install after a fresh clone:
 `cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"`.
 
-- **Format** — `medaka fmt --check` rejects any staged unformatted `.mdk`. The whole tree is
-  clean. **Run `medaka fmt --write <changed.mdk>` and re-`git add` before committing any
-  `.mdk` edit.** `fmt` is idempotent and safe, so `--write` on a clean file is a no-op.
+- **Format** — `medaka fmt --check` rejects any staged unformatted `.mdk`. **Run `medaka fmt --write
+  <changed.mdk>` and re-`git add` before committing any `.mdk` edit.**
+  ⚠️ **The tree is NOT fmt-clean** (verified 2026-07-14): `sqlite/lib/varint.mdk` and
+  `stdlib/byteparser.mdk` both fail `fmt --check`, so touching either drags an unrelated
+  `.[`→`[` normalization into your diff. (This file claimed "the whole tree is clean". It isn't.)
+  ⚠️ **`fmt --write` is NOT safe on a file holding a float literal ≥ 1e15** — it writes `9e+15`,
+  which the lexer cannot read back. **It destroys the file.** See issue **#51**.
 - **Lint** — the tree is at **0 findings and the hook is a MAX RATCHET: all ~20 rules gated**,
   so any NEW finding of any rule fails the commit. The cross-file `rule-duplicate-body` can't
   be checked per-staged-file, so the hook also runs one whole-project scan (`medaka lint

@@ -100,7 +100,7 @@ Mapping of the rows that were here, **re-verified on `e34e2b46`**:
 | **T33(b)** multi-typaram interface bypasses the definer-shadow machinery | **#54** |
 | **T21** 11th quadratic (`resolve`'s scopes) · **T19** `check` runs the front end 2–3× | **#78** |
 | **T27** missing `<Mut>` traversal family | **#79** |
-| **T20** fabricated `1:0` location | ✅ **CLOSED** — would not reproduce on any error shape |
+| **T20** fabricated `1:0` location | ⚠️ **HALF closed.** No **error** shape reproduces it (type mismatch, missing impl, signature-vs-body all report a correct `file:L:C`). But the **guard-exhaustiveness WARNING** still prints `<unknown location>` and **fabricates a `0:0` range in `--json`** → **#99**. *I first recorded this as fully closed by checking errors and generalizing to warnings. Don't.* |
 | **T20** leading-`->` in a multi-line signature | **#66** |
 | **T-12** a user fn shadowing a prelude method is silently ignored | **#50** ⟵ *the S0* |
 | **T-11** removal diagnostics fire on the bare token regardless of position | **#62** |
