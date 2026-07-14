@@ -42,37 +42,52 @@
 # — every body referenced only its own local `x`, so `lookupValue`'s short-circuit
 # `||` chain never fell through to scan `env.values`. See the `xref` shape below.
 #
-# So TIME is now ALSO graded — as a self-normalizing RATIO, never an absolute
-# wall-clock ceiling (a hosted runner is too noisy for that). Two things make a
-# ratio-based time gate non-flaky:
+# So TIME is now ALSO graded — PER STAGE, as a self-normalizing RATIO, never an
+# absolute wall-clock ceiling (a hosted runner is too noisy for that). Four rules
+# make a ratio-based time gate trustworthy; all four are load-bearing:
 #
-#   * MIN-OF-K (K>=5) per measurement. Runner noise is ONE-SIDED — a scheduling
-#     stall can only make a run SLOWER, never spuriously faster — so the minimum
-#     over K samples converges on the true cost FROM ABOVE (same principle as
-#     PERF-RESULTS.md's "min-of-10, quiet machine").
-#   * A floor: at N too small, absolute time is noise, and a ratio computed on
-#     noise is meaningless. Below the floor the timing verdict SKIPS (loudly —
-#     it is printed, and a skip can never be read as a pass); it does not affect
-#     pass/fail.
+#   1. PER-STAGE, NEVER A SUM. An earlier draft of this gate summed several
+#      stages' times and graded the sum. That is strictly worse than useless: a
+#      sum can only BLUR signals together. It read 2.7-2.9x on a CORRECT
+#      compiler purely because it was adding a small stage's artifact (below)
+#      into resolve's clean signal. Grading each stage separately gives each a
+#      clean ratio AND names which stage regressed.
+#
+#   2. PIN THE HEAP: GC_INITIAL_HEAP_SIZE=2147483648 on every timing run.
+#      Wall-clock carries a GC HEAP-RESIZE STEP that allocation does not. Left
+#      unpinned, `exhaust-guards` reads 3.25x and `desugar` 2.72x ON A CORRECT
+#      COMPILER at the sizes we sample — and then COLLAPSES back to ~2.07x /
+#      ~2.16x one doubling later. A real quadratic HOLDS near 4.0x; a step does
+#      not. Pinning the heap removes it (exhaust-guards 3.25 -> 2.17). An
+#      unpinned time gate is a FALSE-RED GENERATOR. (Per AGENTS.md this knob
+#      cannot change emitted IR, so it is safe. It is applied to the TIMING runs
+#      ONLY — the allocation runs stay unpinned and their numbers are unmoved,
+#      because allocation is the primary verdict and must not shift.)
+#
+#   3. MIN-OF-K (K>=5) per measurement. Runner noise is ONE-SIDED — a scheduling
+#      stall can only make a run SLOWER, never spuriously faster — so the minimum
+#      over K samples converges on the true cost FROM ABOVE (same principle as
+#      PERF-RESULTS.md's "min-of-10, quiet machine").
+#
+#   4. A PER-STAGE FLOOR (TIME_FLOOR, 200ms). A stage whose absolute time at the
+#      LARGEST N is under the floor is too small to time reliably; its ratio is
+#      computed out of noise and MUST NOT gate. Such a stage is SKIPPED — and the
+#      skip is PRINTED, with the measured time, so it can never be read as a
+#      pass. This is what disqualifies desugar/exhaust-guards/mark (10-70ms):
+#      they are exactly where the borderline readings came from.
+#
+# Fail only on a SUSTAINED signal: BOTH doublings (r1 AND r2) over threshold.
 #
 # The timing verdict can ONLY make a shape FAIL that allocation called "ok" — it
-# is an added detector, not a replacement, and it never overrides an allocation
-# failure or downgrades one.
+# is an added detector, not a replacement. It never overrides or downgrades an
+# allocation failure.
 #
-# ⚠️ TIME-GATING IS SCOPED TO `xref` ONLY (TIME_GATED below), not all five
-# shapes. Measured trying it on `match` at N=250: the SUM-of-stages metric came
-# in at r1≈2.9/r2≈3.1-3.2 across repeated min-of-5 samples — dangerously close
-# to the 3.0 threshold, on a shape whose allocation ratio is a clean 2.02/2.03
-# (genuinely linear). That is not runner noise (min-of-K already suppresses
-# that) — it is CONSTANT-FACTOR DILUTION at small N in `parse`/`typecheck`
-# (the same trap the allocation baseline-subtraction above exists to avoid),
-# and unlike `xref` nobody has done the work to isolate a clean per-shape focus
-# stage set and larger N for it. Gating on an under-conditioned metric is worse
-# than not gating — it is exactly the flakiness this whole redesign exists to
-# avoid. `xref`'s focus set + N=2000 base WAS validated this way (fixed-resolve
-# max observed r2 ≈2.78; broken-resolve min observed r1 ≈3.13 — a real margin
-# on both sides); the other four shapes are not, so their TIME line stays
-# informational-only (min-of-K computed and printed, but never fails).
+# MEASURED MARGIN (this box, 3 independent batches, pinned, min-of-5), the
+# `xref` shape's gated stages on a CORRECT compiler:
+#     parse      r <= 2.01      resolve  r <= 2.34      typecheck  r <= 2.14
+# and on a compiler with the pre-#78 (quadratic) resolve restored:
+#     resolve    r1=3.56 r2=3.89
+# Against the 3.0 threshold that is ~22% headroom below and ~19% above.
 #
 # Usage:  sh test/diff_compiler_perf_scaling.sh
 #         PERF_N=250 sh test/diff_compiler_perf_scaling.sh   # base size
@@ -97,19 +112,26 @@ CORE="$ROOT/stdlib/core.mdk"
 THRESH="${PERF_THRESH:-3.0}"
 N="${PERF_N:-250}"
 
-# `xref` needs a bigger base N than the other four shapes to clear the timing
-# floor (see TIME_FLOOR below) — it is timed on a narrow per-stage sum, not the
-# padded `total`, and that sum is genuinely small at N=250. Kept as its own knob
-# so the other shapes' (cheap, N=250) fixtures are untouched.
-XREF_N="${PERF_XREF_N:-2000}"
+# `xref` samples at a LARGER N than the other four shapes. This is FORCED, not a
+# preference: the stage we must be able to see (`resolve`) only reaches 0.29s at
+# N=16000. At a 2000/4000/8000 range its largest-N time is 0.137s — UNDER the
+# 200ms floor — so the floor would (correctly) refuse to grade it and the gate
+# could not see the very bug it exists to catch. The alternative, lowering the
+# floor to 100ms, weakens the one guard that keeps a ratio from being computed
+# out of noise. So: raise N, keep the floor honest.
+XREF_N="${PERF_XREF_N:-4000}"
 
 # min-of-K sample count for the TIME signal. K>=5 required (see file header);
 # allocation needs no such thing — it is deterministic, one run suffices.
 PERF_K="${PERF_K:-5}"
 
-# Below this absolute time (seconds) at the largest N, a time ratio is noise,
-# not signal — SKIP rather than gate on it. ~200ms per the task brief.
+# A stage whose absolute time at the LARGEST N is below this is too small to
+# time-gate — its ratio would be noise. It is SKIPPED, loudly. See rule 4.
 TIME_FLOOR="${PERF_TIME_FLOOR:-0.2}"
+
+# Pin the GC heap for TIMING runs only — see rule 2. Without this the gate emits
+# false reds from a heap-resize step on a perfectly correct compiler.
+TIME_HEAP="${PERF_TIME_HEAP:-2147483648}"
 
 # ── KNOWN SUPERLINEAR (a ledger, NOT a skip-list) ────────────────────────────
 #
@@ -260,70 +282,76 @@ BASE_ALLOC="$(alloc_of "$BASE_FIX")"
 case "$BASE_ALLOC" in
   ''|*[!0-9.]*) echo "FAIL: could not measure the baseline allocation (harness bug)"; exit 1 ;;
 esac
-time_of() {
-  MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
-    | awk '/^\[perf\] total/ { gsub(/s$/,"",$3); print $3; exit }'
-}
-
-# ── TIME grading (issue #110) ────────────────────────────────────────────────
+# ── TIME grading, PER STAGE (issue #110) ─────────────────────────────────────
 #
-# `total` (used above by time_of, informationally) is the WRONG metric to gate
-# on: it is dominated by `parse` and `typecheck`, which scale roughly linearly
-# and DILUTE a quadratic living in a smaller stage. Measured on #78's resolve
-# bug, `total`'s ratio at N=2000/4000/8000 (xref shape) was only 2.34x/2.48x —
-# UNDER threshold, i.e. STILL BLIND — while the `resolve` stage alone (or the
-# name-binding stages summed below) was unmistakably quadratic, 3.13x/3.48x.
+# One profile_main run emits a `[perf] <stage> <time>s <alloc>MB` line per stage,
+# so ONE run yields every stage's time. stage_times_min runs the profiler K times
+# with the heap PINNED and keeps, per stage, the MINIMUM observed time.
 #
-# So the TIME signal sums a per-shape FOCUS set of profile_main's per-stage
-# lines, not `total`. Default focus is every N-scaling stage (i.e. total minus
-# the fixed one-time `parse-prelude` cost) — a reasonable default for a shape
-# with no narrower hypothesis. `xref` overrides it to the four name-binding
-# stages (exhaust-guards, desugar, resolve, mark) — deliberately EXCLUDING
-# `parse` and `typecheck`, the two stages large enough to swamp the signal.
-time_stages_for() {
-  case "$1" in
-    xref) printf 'exhaust-guards desugar resolve mark' ;;
-    *)    printf 'parse exhaust-guards desugar resolve mark typecheck' ;;
-  esac
-}
-
-# Shapes whose TIME ratio can actually FAIL the gate. See the file-header
-# warning above for why this is not all five shapes yet.
-TIME_GATED="xref"
-is_time_gated() {
-  for s in $TIME_GATED; do [ "$s" = "$1" ] && return 0; done
-  return 1
-}
-
-# Sum the wall-clock time (seconds) of the given PERF stage names, for ONE
-# profile_main run. $2 is a space-separated stage-name list (matched literally
-# against profile_main's `[perf] <stage> ...` lines).
-stagesum_of() {
-  fixture="$1"; stages="$2"
-  MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1 \
-    | awk -v want="$stages" '
-        BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) keep[w[i]] = 1; sum = 0 }
-        /^\[perf\] / { if ($2 in keep) { t = $3; gsub(/s$/, "", t); sum += t } }
-        END { printf "%.6f", sum }
-      '
-}
-
-# min-of-K stagesum (K = PERF_K, >=5). Runner noise is ONE-SIDED — see the file
-# header — so the minimum over K runs converges on the true cost from above.
-min_stagesum_of() {
-  fixture="$1"; stages="$2"; k="$3"
-  best=""
+# Output: one "<stage> <min-seconds>" line per stage, on stdout.
+stage_times_min() {
+  fixture="$1"; k="$2"
   i=0
   while [ "$i" -lt "$k" ]; do
-    v="$(stagesum_of "$fixture" "$stages")"
-    if [ -z "$best" ]; then
-      best="$v"
-    else
-      best="$(awk -v a="$best" -v b="$v" 'BEGIN { print (b + 0 < a + 0) ? b : a }')"
-    fi
+    GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 \
+      "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1 \
+      | awk '/^\[perf\] / { t = $3; gsub(/s$/, "", t); printf "%s %s\n", $2, t }'
     i=$((i+1))
-  done
-  printf '%s' "$best"
+  done | awk '
+      { if (!($1 in m) || $2 + 0 < m[$1] + 0) m[$1] = $2 }
+      END { for (st in m) printf "%s %s\n", st, m[st] }
+    '
+}
+
+# Stages to grade. `parse-prelude` is the FIXED one-time cost of runtime+core and
+# does not scale with N, so grading it is meaningless; `total` is a sum and rule 1
+# says never grade a sum.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck"
+
+# ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
+#
+# Same contract as KNOWN_SUPERLINEAR above, for the TIME signal: each entry
+# records a REAL, CURRENTLY-UNFIXED superlinearity, so that it cannot get worse
+# silently AND an accidental fix is detected and must be promoted out.
+#
+#   match:typecheck / listlit:typecheck — FOUND BY THIS GATE, the moment it could
+#     see time at all (2026-07-14). Typecheck is superquadratic in the size of a
+#     SINGLE declaration, and ALLOCATION IS BLIND TO IT — which is the entire
+#     thesis of issue #110, demonstrated on a live bug:
+#
+#         match, typecheck stage      TIME              ALLOC
+#           N=250                     0.024s            7.2 MB
+#           N=500                     0.072s  (3.05x)   9.6 MB  (1.33x)
+#           N=1000                    0.234s  (3.28x)  14.6 MB  (1.52x)
+#           N=2000                    1.059s  (4.52x)  25.0 MB  (1.72x)
+#           N=4000                    6.950s  (6.56x)  46.8 MB  (1.87x)
+#
+#     The ratio CLIMBS past 4.0 — it is worse than quadratic at these sizes — so
+#     it is not a heap-resize step (a step collapses one doubling later; this does
+#     not). A 4000-arm match spends SEVEN SECONDS in typecheck.
+#
+#     It is NOT about the number of declarations: `xref` has 16000 of them and
+#     typechecks linearly (2.03x / 2.10x). It is about the size of ONE decl —
+#     `listlit` is a single wide list literal containing NO `match` at all, and
+#     blows up identically (2.75 -> 3.55 -> 3.93 -> 5.86). So the two entries are
+#     very likely ONE root cause in HM inference / constraint solving over a large
+#     expression, not two.
+#
+#     NOTE the T17 entry in KNOWN_SUPERLINEAR's history above says the `match`
+#     quadratic was "FIXED 2026-07-13 ... 3.10x -> 2.18x". That was the ALLOCATION
+#     ratio. The time-side blowup survived it untouched, and nothing in CI could
+#     see it. That is exactly the blind spot this change closes.
+#
+# Ceilings gate r2. They are set with real headroom over the observed spread
+# (match r2 3.23-3.36, listlit r2 3.39-3.55 across 3 batches) because a ratio at
+# these small absolute times is the least stable number this gate computes.
+KNOWN_SLOW_TIME="match:typecheck listlit:typecheck"
+KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
+KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
+
+is_known_time() {
+  for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
+  return 1
 }
 
 fail=0
@@ -363,7 +391,6 @@ for shape in bindings match listlit nesting xref; do
   "gen_$shape" "$n3" "$f3"
 
   a1="$(alloc_of "$f1")"; a2="$(alloc_of "$f2")"; a3="$(alloc_of "$f3")"
-  t1="$(time_of  "$f1")"; t2="$(time_of  "$f3")"
 
   # A shape that produces no measurement is a HARNESS failure, not a pass. Never
   # let "I could not measure it" read as "it is fine" — that is the silent-green
@@ -372,38 +399,75 @@ for shape in bindings match listlit nesting xref; do
     *[!0-9.]*|"") echo "FAIL $shape: profiler produced no allocation figure (harness bug)"; fail=$((fail+1)); continue ;;
   esac
 
-  # ── TIME verdict (min-of-K, see helpers above) ──────────────────────────────
-  # Computed unconditionally BEFORE the allocation branch below — so it can
-  # promote an allocation "ok" to a failure, but never the reverse (an
-  # allocation failure/TOOSMALL/known-superlinear verdict is untouched) — but
-  # ONLY for a TIME_GATED shape. For everything else, min-of-K x 3 sizes is a
-  # real cost (15 extra profiler invocations) for a number that — see the
-  # header warning — is not well-conditioned enough to act on, so skip the
-  # work entirely rather than spend time computing a figure nobody should
-  # trust and this gate does not need.
+  # ── TIME verdict: PER STAGE, heap-pinned, min-of-K, floor-guarded ──────────
+  # Computed BEFORE the allocation branch below so it can promote an allocation
+  # "ok" to a failure — never the reverse.
+  #
+  # These are written to files rather than shell vars because there is one line
+  # per stage per size and sh has no arrays.
+  TF1="$WORK/${shape}_t1"; TF2="$WORK/${shape}_t2"; TF3="$WORK/${shape}_t3"
+  stage_times_min "$f1" "$PERF_K" | sort > "$TF1"
+  stage_times_min "$f2" "$PERF_K" | sort > "$TF2"
+  stage_times_min "$f3" "$PERF_K" | sort > "$TF3"
+
   time_bad=0
-  if is_time_gated "$shape"; then
-    focus="$(time_stages_for "$shape")"
-    mt1="$(min_stagesum_of "$f1" "$focus" "$PERF_K")"
-    mt2="$(min_stagesum_of "$f2" "$focus" "$PERF_K")"
-    mt3="$(min_stagesum_of "$f3" "$focus" "$PERF_K")"
-    tverdict="$(awk -v t1="$mt1" -v t2="$mt2" -v t3="$mt3" -v floor="$TIME_FLOOR" -v th="$THRESH" 'BEGIN {
-      if (t3 + 0 < floor + 0) { printf "SKIP 0 0"; exit }
-      r1 = t2 / t1; r2 = t3 / t2
-      # Fail only on a SUSTAINED signal — both doublings over threshold — never
-      # one bad sample. No "climbing" heuristic here (unlike allocation): the
-      # min-of-K already suppresses one-sided noise, so a plain double-threshold
-      # is enough and keeps the rule easy to reason about.
-      bad = (r1 > th && r2 > th) ? 1 : 0
-      printf "%s %.2f %.2f", (bad ? "QUADRATIC" : "ok"), r1, r2
-    }')"
-    tword="$(echo "$tverdict" | cut -d' ' -f1)"
-    trr1="$(echo "$tverdict" | cut -d' ' -f2)"
-    trr2="$(echo "$tverdict" | cut -d' ' -f3)"
-    [ "$tword" = "QUADRATIC" ] && time_bad=1
-  else
-    tword="NOTGATED"
-  fi
+  time_lines=""
+  for st in $TIME_STAGES; do
+    s1="$(awk -v s="$st" '$1==s{print $2}' "$TF1")"
+    s2="$(awk -v s="$st" '$1==s{print $2}' "$TF2")"
+    s3="$(awk -v s="$st" '$1==s{print $2}' "$TF3")"
+    # A stage the profiler never emitted is a HARNESS bug, not a pass.
+    if [ -z "$s1" ] || [ -z "$s2" ] || [ -z "$s3" ]; then
+      time_lines="${time_lines}           time ${st}: NO MEASUREMENT from the profiler (harness bug)
+"
+      fail=$((fail+1))
+      continue
+    fi
+
+    # RULE 4 — the per-stage floor. Under it, the ratio is noise: SKIP, loudly.
+    below="$(awk -v v="$s3" -v f="$TIME_FLOOR" 'BEGIN{print (v + 0 < f + 0) ? 1 : 0}')"
+    if [ "$below" = "1" ]; then
+      ms3="$(awk -v v="$s3" 'BEGIN{printf "%.0f", v*1000}')"
+      msf="$(awk -v f="$TIME_FLOOR" 'BEGIN{printf "%.0f", f*1000}')"
+      time_lines="${time_lines}           time ${st}: SKIP — too small to time-gate: ${ms3} ms at N=${n3} < ${msf} ms floor
+"
+      continue
+    fi
+
+    tr1="$(awk -v a="$s1" -v b="$s2" 'BEGIN{printf "%.2f", b/a}')"
+    tr2="$(awk -v a="$s2" -v b="$s3" 'BEGIN{printf "%.2f", b/a}')"
+    # SUSTAINED signal only: both doublings over threshold.
+    bad="$(awk -v r1="$tr1" -v r2="$tr2" -v th="$THRESH" 'BEGIN{print (r1 > th && r2 > th) ? 1 : 0}')"
+
+    if is_known_time "${shape}:${st}"; then
+      lk="$(printf '%s_%s' "$shape" "$st" | tr -c 'a-zA-Z0-9_' '_')"
+      eval "tceil=\${KNOWN_TCEIL_$lk}"
+      eval "tfixed=\${KNOWN_TFIXED_$lk}"
+      tworse="$(awk -v r="$tr2" -v c="$tceil" 'BEGIN{print (r > c) ? 1 : 0}')"
+      tbetter="$(awk -v r="$tr2" -v f="$tfixed" 'BEGIN{print (r < f) ? 1 : 0}')"
+      if [ "$tworse" = "1" ]; then
+        fail=$((fail+1))
+        time_lines="${time_lines}           time ${st}: ** KNOWN-SLOW, AND GOT WORSE ** r1=${tr1} r2=${tr2} (ceiling ${tceil})
+"
+      elif [ "$tbetter" = "1" ]; then
+        fail=$((fail+1))
+        time_lines="${time_lines}           time ${st}: ** PROMOTE: now scales LINEARLY ** r2=${tr2} (< ${tfixed})
+           Remove \"${shape}:${st}\" from KNOWN_SLOW_TIME — the bug is FIXED.
+"
+      else
+        known=$((known+1))
+        time_lines="${time_lines}           time ${st}: known-slow (TIME) r1=${tr1} r2=${tr2} — ledgered, alloc is blind to it
+"
+      fi
+    elif [ "$bad" = "1" ]; then
+      time_bad=1
+      time_lines="${time_lines}           time ${st}: ** SUPERLINEAR (TIME) ** ${s1}s -> ${s2}s -> ${s3}s  r1=${tr1} r2=${tr2} (> ${THRESH}x)
+"
+    else
+      time_lines="${time_lines}           time ${st}: ok  r1=${tr1} r2=${tr2}  (min-of-${PERF_K}, heap pinned)
+"
+    fi
+  done
 
   # Subtract the fixed prelude cost — see the BASELINE note above. Without this the
   # gate is blind.
@@ -460,42 +524,30 @@ for shape in bindings match listlit nesting xref; do
 
   elif [ "$word" = "QUADRATIC" ]; then
     fail=$((fail+1))
-    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** SUPERLINEAR (ALLOC) **
-' \
+    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** SUPERLINEAR (ALLOC) **\n' \
       "$shape" "$n1" "$d1" "$d2" "$d3" "$r1" "$ratio"
-    printf '           time: %ss -> %ss\n' "$t1" "$t2"
-    if [ "$tword" = "QUADRATIC" ]; then
-      printf '           TIME is ALSO quadratic: stages [%s] min-of-%s r1=%s r2=%s (> %sx)\n' \
-        "$focus" "$PERF_K" "$trr1" "$trr2" "$THRESH"
-    fi
+    printf '%s' "$time_lines"
 
   elif [ "$time_bad" = "1" ]; then
-    # Allocation alone said "ok" — this is the blind spot #110 exists to close.
-    # A pure O(n^2) scan (the resolve bug in #78) allocates almost nothing extra
-    # per element, so allocation cannot see it; TIME can, and just did.
+    # Allocation alone said "ok" — this is the blind spot #110 exists to close. A
+    # pure O(n^2) scan (the resolve bug in #78) allocates almost nothing extra per
+    # element, so allocation cannot see it; TIME can, and just did.
     fail=$((fail+1))
-    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** SUPERLINEAR (TIME) **
-' \
+    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** SUPERLINEAR (TIME) **\n' \
       "$shape" "$n1" "$d1" "$d2" "$d3" "$r1" "$ratio"
-    printf '           alloc looked fine (r1=%s r2=%s) but min-of-%s TIME on stages [%s]\n' \
-      "$r1" "$ratio" "$PERF_K" "$focus"
-    printf '           is quadratic: N=%s %ss -> N=%s %ss -> N=%s %ss  (r1=%s r2=%s, > %sx)\n' \
-      "$n1" "$mt1" "$n2" "$mt2" "$n3" "$mt3" "$trr1" "$trr2" "$THRESH"
+    printf '           alloc looked fine (r1=%s r2=%s) — the regression is in TIME:\n' "$r1" "$ratio"
+    printf '%s' "$time_lines"
 
   else
     pass=$((pass+1))
-    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ok
-' "$shape" "$n1" "$d1" "$d2" "$d3" "$r1" "$ratio"
-    if [ "$tword" = "SKIP" ]; then
-      printf '           time: skip (largest-N %ss < %ss floor, no signal)\n' "$mt3" "$TIME_FLOOR"
-    elif [ "$tword" != "NOTGATED" ]; then
-      printf '           time: min-of-%s r1=%s r2=%s ok (stages: %s)\n' "$PERF_K" "$trr1" "$trr2" "$focus"
-    fi
+    printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ok\n' \
+      "$shape" "$n1" "$d1" "$d2" "$d3" "$r1" "$ratio"
+    printf '%s' "$time_lines"
   fi
 done
 
 printf -- '---------------------------------------------------------------------\n'
-printf '%d ok, %d known-superlinear, %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
+printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
 
 # Never exit 0 having measured nothing.
 [ $((pass + known + fail)) -gt 0 ] || { echo "FAIL: the gate measured no shapes at all"; exit 1; }
@@ -503,8 +555,14 @@ printf '%d ok, %d known-superlinear, %d regressed (threshold %sx per doubling)\n
 if [ "$fail" -gt 0 ]; then
   cat <<EOF
 
-A shape grew faster than ${THRESH}x per doubling of input size. That is the
-signature of a SUPERLINEAR (probably QUADRATIC) algorithm.
+A shape grew faster than ${THRESH}x per doubling of input size, in ALLOCATION or
+in per-stage TIME. That is the signature of a SUPERLINEAR (probably QUADRATIC)
+algorithm.
+
+If the failure says SUPERLINEAR (TIME) while allocation reads "ok", that is not a
+contradiction — it is the point. A pure O(n^2) TRAVERSAL (scan a list / linear-search
+a scope once per lookup) costs time quadratically while allocating nothing extra, so
+allocation cannot see it. Both signals are real; neither subsumes the other.
 
   linear      ~2.0x      n log n  ~2.1x      QUADRATIC  ~4.0x
 
