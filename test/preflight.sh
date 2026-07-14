@@ -36,12 +36,33 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="${1:-main}"
 cd "$ROOT" || exit 1
 
-# committed-vs-base, working tree, INDEX, and untracked. `--cached` is not optional:
-# without it a fully-`git add`ed change is invisible here (working-tree diff is empty and
-# nothing is committed yet), so `preflight` printed "no changes vs main — nothing to do"
-# and exited 0 over a staged rewrite of the compiler. That is the same silent-green
-# failure as the gate-existence check below, one step earlier in the pipe.
-changed="$(git diff --name-only "$BASE"...HEAD 2>/dev/null; git diff --name-only 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files -o --exclude-standard 2>/dev/null)"
+# ── Where the changed-file list comes from ───────────────────────────────────
+#
+# Normally: git, relative to $BASE. But CI cannot use that. On a `pull_request`
+# event `actions/checkout` gives a SHALLOW checkout of the PR's MERGE ref, so
+# there is no `main` branch locally and no merge-base to three-dot against; the
+# `detect` job already resolves base/head SHAs (fetching them explicitly) and
+# diffs them itself. PREFLIGHT_CHANGED_FILE lets it hand that list straight in.
+#
+# This parameterizes only the INPUT ("what changed"), never the DERIVATION
+# ("which gates does that touch"). The derivation below stays the single
+# implementation — CI narrowing its PR run must not become a second, drifting
+# copy of this file's change→gate map. See .github/workflows/ci.yml.
+if [ -n "${PREFLIGHT_CHANGED_FILE:-}" ]; then
+  [ -f "$PREFLIGHT_CHANGED_FILE" ] || {
+    echo "preflight: PREFLIGHT_CHANGED_FILE='$PREFLIGHT_CHANGED_FILE' does not exist."
+    exit 1
+  }
+  changed="$(cat "$PREFLIGHT_CHANGED_FILE")"
+  BASE="(PREFLIGHT_CHANGED_FILE)"
+else
+  # committed-vs-base, working tree, INDEX, and untracked. `--cached` is not optional:
+  # without it a fully-`git add`ed change is invisible here (working-tree diff is empty and
+  # nothing is committed yet), so `preflight` printed "no changes vs main — nothing to do"
+  # and exited 0 over a staged rewrite of the compiler. That is the same silent-green
+  # failure as the gate-existence check below, one step earlier in the pipe.
+  changed="$(git diff --name-only "$BASE"...HEAD 2>/dev/null; git diff --name-only 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files -o --exclude-standard 2>/dev/null)"
+fi
 changed="$(printf '%s\n' "$changed" | sort -u | grep -v '^$')"
 
 if [ -z "$changed" ]; then
@@ -208,6 +229,49 @@ $_g"
   done
 }
 
+# ── UNMAPPED: a changed path that hits NO arm of the table below ─────────────
+#
+# The table is a semantic map (path → the gates that could plausibly notice a change
+# there). Plenty of real paths are outside it: Makefile, .github/**, test/run_gates.sh,
+# test/CI-COVERAGE-*.txt, compiler/entries/**, .claude/**, playground/**, and every
+# prose .md. Locally that is harmless — preflight is a filter, and an unmapped file
+# just contributes no gates.
+#
+# But the moment a CONSUMER uses this derivation to decide what to SKIP, "contributes
+# no gates" and "I have no opinion about this file" become dangerously different
+# answers, and this script was returning the first for both. So it now says which
+# files it had no opinion about. .github/workflows/ci.yml reads this list and refuses
+# to narrow a PR run when anything on it is not provably prose — i.e. an unmapped file
+# widens CI back to the full suite rather than silently shrinking it.
+#
+# It is also a genuine local finding: `compiler/entries/*.mdk` (the oracle probe
+# sources) hits no arm, so a change there derives only the snapshot gates today —
+# under-running the gates that read the oracle it builds. Being loud about it is how
+# that gets fixed rather than forgotten.
+unmapped=""
+note_unmapped() { case " $unmapped " in *" $1 "*) ;; *) unmapped="$unmapped $1" ;; esac; }
+
+# ── BLAST RADIUS: the changed path is used EVERYWHERE. Run the whole suite. ───
+#
+# `add 'diff_compiler_*'` was doing double duty here and it is NOT the same thing as
+# "the whole suite". That glob selects the 85 test/diff_compiler_*.sh gates and MISSES
+# every gate outside the family — build_cmd, the 4 bootstrap_*, the 3 selfcompile_*,
+# check_syntax_examples, cross_project_*, manifest_emit, lsp_harness, diff_net,
+# diff_native_*, the 4 effect_*_domain, native_fixtures/run, and all 22
+# sqlite/test/*oracle. For a prelude change, every one of those is in the blast radius.
+#
+# So a blast-radius path now raises a distinct FLAG rather than widening a glob. Locally
+# it still adds 'diff_compiler_*' (unchanged behaviour — preflight is a fast filter and
+# is explicit that it under-runs). But it SAYS SO, and CI reads the flag and refuses to
+# narrow the PR run at all.
+full_suite=0
+full_reasons=""
+mark_full() {
+  full_suite=1
+  case " $full_reasons " in *" $1 "*) ;; *) full_reasons="$full_reasons $1" ;; esac
+  add 'diff_compiler_*'
+}
+
 need_fixpoint=0
 for f in $changed; do
   case "$f" in
@@ -255,14 +319,31 @@ for f in $changed; do
     compiler/tools/*test*|compiler/tools/doctest.mdk|compiler/tools/prop_runner.mdk)
       add 'diff_compiler_test'; add 'diff_compiler_ported' ;;
     compiler/tools/*)              add 'diff_compiler_check*' ;;
-    compiler/support/*)            add 'diff_compiler_*' ;;   # used everywhere — run all
 
-    # ── stdlib / runtime: the extern catalog and every engine's view of it ──
-    stdlib/runtime.mdk|runtime/*)
-      add 'diff_compiler_capability_matrix'; add 'diff_compiler_eval*'; add 'diff_compiler_test' ;;
-    stdlib/*)
-      add 'diff_compiler_test'; add 'diff_compiler_snapshot*'
-      add 'diff_compiler_lex*' ;;                              # stdlib is IN the snapshot corpus
+    # ── the compiler's private mini-stdlib: used by every stage. ──
+    compiler/support/*)            mark_full 'compiler/support' ;;
+
+    # ── the oracle probe SOURCES. Changing one changes the BINARY the gates read. ──
+    # There was no arm for these at all, so `compiler/entries/eval_main.mdk` derived
+    # only the snapshot gates — i.e. preflight would rebuild the very probe that
+    # diff_compiler_eval reads and then not run diff_compiler_eval.
+    compiler/entries/*)            mark_full 'compiler/entries' ;;
+
+    # ── stdlib / runtime: BLAST RADIUS. This arm used to be the narrowest in the file. ──
+    #
+    # It derived FIVE gates for `stdlib/core.mdk` — the IMPLICIT PRELUDE, prepended to
+    # every program the compiler ever sees. A change there moves essentially every
+    # golden in the tree (eval, core_ir, llvm, engines, typecheck, check, build, …), and
+    # preflight would have reported green having run lexer + snapshot + doctests.
+    # AGENTS.md already says this in prose — "stdlib/core.mdk → it is used *everywhere*;
+    # the blast radius genuinely is the whole suite" — the map just never agreed with it.
+    #
+    # The whole of stdlib/, not just core: `medaka build` links the entire stdlib root
+    # into every binary, `runtime.mdk` is the extern catalog every engine reads, and
+    # since 2026-06-29 the COMPILER ITSELF imports stdlib (support/ordmap.mdk wraps
+    # stdlib `Map`), so `stdlib/map.mdk` is transitively compiler source. runtime/ is the
+    # C runtime linked into every binary. There is no narrow answer here that is true.
+    stdlib/*|runtime/*)            mark_full 'stdlib-or-runtime' ;;
 
     # ── a changed GATE SCRIPT runs itself ─────────────────────────────────────
     #
@@ -283,6 +364,19 @@ for f in $changed; do
     # from the repo ROOT, so these are exactly the names CI's shards use.
     test/diff_compiler_*.sh|test/build_cmd.sh|test/native_fixtures/run.sh)
       _p="${f#test/}"; add "${_p%.sh}" ;;
+
+    # ── the snapshot corpus: goldens, but NOT in a *fixtures*/*goldens* directory ──
+    #
+    # `_fixture_dir_for` only fires for a path with a `*fixtures*`/`*goldens*` ancestor,
+    # and `test/snapshots/{compiler,stdlib,...}` has neither — so these 167 golden .md
+    # files hit NO arm at all. That is not a corner case: AGENTS.md REQUIRES the moved
+    # snapshot be blessed in the SAME COMMIT as the source change that moved it, so the
+    # single most common compiler PR in this repo carries one. Leaving them unmapped
+    # makes every such PR look like "I have no opinion about this file".
+    #
+    # Only the snapshot gates read them, and they read the tree as a whole (SNAPDIR),
+    # never a per-file path — so the answer is the same for every file under it.
+    test/snapshots/*)              add 'diff_compiler_snapshot*' ;;
 
     # ── sqlite: the derivation structurally CANNOT reach it ───────────────────
     # `_fixture_dir_for` only fires for a path with a `*fixtures*`/`*goldens*` ancestor
@@ -308,13 +402,13 @@ for f in $changed; do
     test/*fixtures*/*|test/*goldens*/*)
       _fdir="$(_fixture_dir_for "$f")" || _fdir=""
       if [ -z "$_fdir" ]; then
-        echo "preflight: WARNING — could not identify a fixture directory for '$f'; falling back to the full diff_compiler_* suite."
-        add 'diff_compiler_*'
+        echo "preflight: WARNING — could not identify a fixture directory for '$f'; falling back to the FULL suite."
+        mark_full "unidentifiable-fixture-dir:$f"
       else
         _gset="$(_gates_for_fixture_dir "$_fdir")"
         if [ -z "$_gset" ]; then
-          echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every tracked gate script in the repo — every .sh not listed in test/CI-COVERAGE-TOOLS.txt, which now includes sqlite/test/, test/native_fixtures/ and playground/e2e/ — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the full diff_compiler_* suite for safety."
-          add 'diff_compiler_*'
+          echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every tracked gate script in the repo — every .sh not listed in test/CI-COVERAGE-TOOLS.txt, which now includes sqlite/test/, test/native_fixtures/ and playground/e2e/ — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the FULL suite for safety."
+          mark_full "no-consumer:$_fdir"
         else
           # Report each fixture dir ONCE, however many of its files changed. Adding a
           # .mdk plus its .expected golden is the normal case and printed the same
@@ -331,6 +425,9 @@ for f in $changed; do
           done
         fi
       fi ;;
+
+    # ── no arm matched: record it, do not silently ignore it. See `unmapped` above.
+    *) note_unmapped "$f" ;;
   esac
 done
 
@@ -349,18 +446,6 @@ for f in $changed; do
     compiler/*.mdk|compiler/*/*.mdk|stdlib/*.mdk) add 'diff_compiler_snapshot*' ;;
   esac
 done
-
-[ -n "$pats" ] || { echo "preflight: no gates map to these changes (docs/config only?) — nothing to run."; exit 0; }
-
-# ── build the compiler ───────────────────────────────────────────────────────
-if [ ! -x "$ROOT/medaka_emitter" ]; then
-  echo "preflight: no ./medaka_emitter — borrowing one (a fresh worktree cannot cold-bootstrap)"
-  for src in /root/medaka/medaka_emitter "$ROOT"/../*/medaka_emitter; do
-    [ -x "$src" ] && { cp "$src" "$ROOT/medaka_emitter"; break; }
-  done
-fi
-echo "── building ./medaka ─────────────────────────────────────────"
-make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"; exit 1; }
 
 # ── resolve gates → the ORACLES they actually need ───────────────────────────
 #
@@ -406,11 +491,46 @@ done
 # the only part with no way to inspect it short of a full 5-minute build+run. Now you
 # can ask it what it WOULD run, which is also how the T8/T15 integration cases are
 # verified.
+#
+# It is ALSO what .github/workflows/ci.yml's `detect` job runs to narrow the
+# `pull_request` gate run (the `merge_group` run stays FULL). So it must be free —
+# no `make medaka`, no oracle build, nothing but the derivation. It runs BEFORE the
+# build for exactly that reason; do not move the build back above it.
+#
+# Three machine-readable prefixes, deliberately stable — CI parses them:
+#   GATE      <repo-relative path of a gate this diff selects>
+#   UNMAPPED  <changed path the map has NO OPINION about>
+#   FULL      <reason this diff has whole-suite blast radius>
+# CI narrows a `pull_request` run ONLY when there is no FULL line and every UNMAPPED
+# path is provably prose (its own docs allowlist decides that). Anything else widens
+# it back to the full suite. `merge_group` is never narrowed, whatever this prints.
 if [ -n "${PREFLIGHT_DRY:-}" ]; then
   printf '── would run %s gate(s) ─────\n' "$(printf '%s\n' $gates | grep -c .)"
-  for g in $gates; do printf '  %s\n' "${g#"$ROOT"/}"; done
+  for g in $gates; do printf '  GATE      %s\n' "${g#"$ROOT"/}"; done
+  if [ "$full_suite" -eq 1 ]; then
+    printf '── BLAST RADIUS: this diff touches something used everywhere ─────\n'
+    for r in $full_reasons; do printf '  FULL      %s\n' "$r"; done
+    printf '  (locally that means the 85 diff_compiler_* gates; in CI it means the whole suite.)\n'
+  fi
+  if [ -n "$unmapped" ]; then
+    printf '── %s path(s) the change→gate map has NO OPINION about ─────\n' \
+      "$(printf '%s\n' $unmapped | grep -c .)"
+    for u in $unmapped; do printf '  UNMAPPED  %s\n' "$u"; done
+  fi
   exit 0
 fi
+
+[ -n "$pats" ] || { echo "preflight: no gates map to these changes (docs/config only?) — nothing to run."; exit 0; }
+
+# ── build the compiler ───────────────────────────────────────────────────────
+if [ ! -x "$ROOT/medaka_emitter" ]; then
+  echo "preflight: no ./medaka_emitter — borrowing one (a fresh worktree cannot cold-bootstrap)"
+  for src in /root/medaka/medaka_emitter "$ROOT"/../*/medaka_emitter; do
+    [ -x "$src" ] && { cp "$src" "$ROOT/medaka_emitter"; break; }
+  done
+fi
+echo "── building ./medaka ─────────────────────────────────────────"
+make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"; exit 1; }
 
 # Build this diff's oracles by DELEGATING to build_oracles.sh --for. Do not re-derive
 # the set here.
