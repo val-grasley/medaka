@@ -59,6 +59,28 @@ emitting nothing while looking alive.
 OBSERVED, not what it CONCLUDED.** That is why every issue is labelled `verified` or `needs-repro`,
 and why the distinction is not decoration.
 
+**4b. ⭐⭐ AND THE DEBUNKING NEEDS THE SAME PROOF AS THE FILING.** This is the trap on the *other*
+side of #4, and we walked into it within a day of writing #4 down.
+
+Having learned that 17 ledgered "wasm bugs" were never bugs, someone corrected the ledger — and
+`engine_divergence.txt`'s header came to assert, of three rows:
+
+> *"NONE of them were wasm bugs. They were artifacts of the gate's own wasm arm."*
+
+**All three were real wasm bugs**, fixed 2026-07-14 (`num_int_max`, `num_int_min`,
+`where_sibling_ref`). The *denial* was every bit as unfounded as the original filing — same
+confident tone, same absent evidence, and now with the borrowed authority of a correction, so it
+reads as the *result* of the audit rather than another unevidenced claim inside it.
+
+A correction feels like the safe direction. It is not, and the reason is structural, not a matter
+of care:
+
+> **"This is not a bug" quantifies over all inputs. "Here is one input where it breaks" needs a
+> single witness.** Un-filing a row therefore costs strictly MORE evidence than filing it.
+
+**To close a row, produce the passing run. To keep it, produce the failing one. Never resolve one
+on prose.**
+
 **5. ⭐ A PARITY GATE CANNOT DETECT A BUG WHERE BOTH BACKENDS ARE EQUALLY WRONG.** The TMC dict-veto
 lived in a **shared** predicate, so both backends declined **identically** and the census was a green,
 honest `12/12 same`. **Parity was gated; COVERAGE never was.** If two things are checked only against
