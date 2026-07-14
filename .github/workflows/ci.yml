@@ -69,6 +69,43 @@ name: CI
 # the trust anchor, and this caching must never be the only thing proving the seed
 # still works. The `gates`/`inlang` jobs may skip their OWN cold bootstrap on a
 # cache hit, but the anchor job always re-proves it independently.
+#
+# ── The PR run is NARROWED. The merge_group run is NOT. (T-15, 2026-07-14) ─────
+#
+# Every PR used to pay for the whole suite TWICE — once on `pull_request`, once on the
+# `merge_group` branch when the queue tests it merged onto main. GitHub's queue creates
+# one temp branch per entry and cannot combine builds, so the merge_group run is a FIXED
+# cost. We are runner-bound (jobs wait 40-105s for a runner; 20 concurrent, ~11 per run),
+# so the duplicate is what saturates us. The PR half is the half we can shrink.
+#
+#   pull_request  -> each `gates (…)` shard runs only the intersection of ITS pattern
+#                    with the gate set `detect` derives from the diff (via
+#                    `PREFLIGHT_DRY=1 test/preflight.sh` — the SAME derivation agents run
+#                    locally, not a second copy of it).
+#   merge_group   -> every shard runs its FULL pattern. UNCHANGED. Always.
+#   push to main  -> ditto.
+#
+# ⚠️ NEVER NARROW `merge_group`, AND NEVER NARROW `soundness`.
+#
+# The queue's whole value is that it tests the MERGED RESULT. Three times in one day, two
+# independently-green branches auto-merged with ZERO git conflicts into a broken tree (a
+# derivation scanning a universe the other branch had widened; a gate comparing basenames
+# against files the other had re-keyed to paths; a classifier skipping the suite on a file
+# the other had moved). NO per-PR check can see any of those — only the full suite on the
+# merged tree can. And `soundness` is the backstop for a different hole entirely: ALL the
+# gate shards pass on an ill-typed compiler (`make medaka` does not gate on type errors),
+# which is exactly how a compiler with unbound constructors once shipped to main with every
+# gate green. It is 171s. It stays full, on every event, forever.
+#
+# A PR that passes its narrowed subset and then fails in the queue is simply bounced from
+# the queue. That is correct and expected — it is how bors always worked. Preflight is a
+# FILTER, not an AUTHORITY; CI on the MERGED tree is the authority.
+#
+# The narrowing FAILS SAFE in every direction: preflight erroring, preflight reporting
+# whole-suite blast radius (stdlib/, runtime/, compiler/support/, compiler/entries/, a
+# fixture dir with no discoverable consumer), or preflight having no opinion about a
+# changed non-prose path — each one widens the run back to everything. See the `gateset`
+# step for the three checks and why each exists.
 
 on:
   push:
@@ -107,8 +144,9 @@ jobs:
   # to skip their EXPENSIVE STEPS, not to skip THEMSELVES.
   #
   # ⚠️ Do NOT convert this into `if:` at the JOB level on gates/soundness/etc, and
-  # do NOT path-filter the `on:` trigger above. Branch protection requires 9 named
-  # status checks (the 6 `gates (…)` shards, `soundness`, `seed-health`, `inlang`)
+  # do NOT path-filter the `on:` trigger above. Branch protection requires TEN named
+  # status checks (the 7 `gates (…)` shards — engines, sqlite, frontend, types, eval,
+  # backend, tools — plus `soundness`, `seed-health`, `inlang`)
   # with ZERO approvals — the checks ARE the merge gate. A job skipped by a
   # job-level `if:`, or a workflow that never runs because of a `paths-ignore:`
   # trigger filter, means GitHub never receives a status for that context. It sits
@@ -150,6 +188,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
+      narrow: ${{ steps.gateset.outputs.narrow }}
+      gates: ${{ steps.gateset.outputs.gates }}
+      oracle_key: ${{ steps.gateset.outputs.oracle_key }}
     steps:
       - uses: actions/checkout@v4
 
@@ -158,6 +199,11 @@ jobs:
         run: |
           set -u
           event="${{ github.event_name }}"
+          # These two files are consumed by the `gateset` step below. Create them
+          # unconditionally, so that step never has to distinguish "no non-docs files"
+          # from "the classifier bailed early".
+          : > "$RUNNER_TEMP/changed.txt"
+          : > "$RUNNER_TEMP/nondocs.txt"
           if [ "$event" != "pull_request" ]; then
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "not a pull_request event ($event) — running the full suite."
@@ -187,9 +233,18 @@ jobs:
           printf '%s\n' "$changed"
 
           # See the job header for why this is an ALLOWLIST, not a **.md denylist.
-          changed_file="$(mktemp)"
-          printf '%s\n' "$changed" > "$changed_file"
+          printf '%s\n' "$changed" > "$RUNNER_TEMP/changed.txt"
           docs_only=true
+
+          # ── ONE classifier, TWO consumers. ─────────────────────────────────────
+          # `docs_only` is the old question ("is EVERY changed file prose?"). The
+          # `gateset` step below asks a second question of the SAME allowlist ("is THIS
+          # particular file prose?"), so every arm that means "not prose" now also names
+          # the file. A separate list of what-counts-as-prose would be a second copy of
+          # this allowlist, free to drift from it — and this file's own header is a
+          # monument to what that costs.
+          nondoc() { docs_only=false; printf '%s\n' "$1" >> "$RUNNER_TEMP/nondocs.txt"; }
+
           while IFS= read -r f; do
             if [ -z "$f" ]; then
               continue
@@ -202,7 +257,7 @@ jobs:
               # Classifying a blessed golden re-cut as "docs-only" would SKIP THE ENTIRE
               # SUITE on the exact change most likely to need it — manufacturing the
               # silent-green failure this suite exists to prevent. Never relax this.
-              test/*) docs_only=false ;;
+              test/*) nondoc "$f" ;;
 
               # ── SYNTAX.md IS NOT PROSE — IT IS AN EXECUTABLE SPEC. ────────────────
               # AGENTS.md designates SYNTAX.md the ground truth for what the binary
@@ -216,7 +271,7 @@ jobs:
               # REMOVED CONSTRUCTS as live syntax (backtick infix, let-else, named
               # impls, default impl, @Name) because nothing ever executed it. Same
               # silent-green shape as the test/ arm above; same answer.
-              docs/spec/SYNTAX.md) docs_only=false ;;
+              docs/spec/SYNTAX.md) nondoc "$f" ;;
 
               docs/*) : ;;
               LICENSE|LICENSE.*) : ;;
@@ -231,13 +286,116 @@ jobs:
               # directory glob.
               *.md) : ;;
 
-              *) docs_only=false ;;
+              *) nondoc "$f" ;;
             esac
-          done < "$changed_file"
-          rm -f "$changed_file"
+          done < "$RUNNER_TEMP/changed.txt"
 
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
           echo "classified: docs_only=$docs_only"
+
+      # ── T-15: narrow the `pull_request` run. NEVER the `merge_group` run. ────────
+      #
+      # Each PR used to pay for the whole suite TWICE: once on `pull_request`, and again
+      # on the `merge_group` branch when the queue tests it merged onto main. We are
+      # runner-bound (jobs wait 40-105s for a runner; 20 concurrent, ~11 per run), so the
+      # duplicate is not free.
+      #
+      # ⚠️ ONLY the `pull_request` half shrinks, and the direction is NOT negotiable.
+      # The merge_group run's entire value is that it tests the MERGED RESULT: three
+      # separate times in one day, two independently-green branches auto-merged with ZERO
+      # git conflicts into a broken tree (a derivation scanning a universe the other
+      # branch had widened; a gate comparing basenames against files the other had
+      # re-keyed to paths; a classifier skipping the suite on a file the other had moved).
+      # NO per-PR check can see any of those. Narrowing merge_group would trade away the
+      # one property that justifies the queue. `soundness` and `seed-health` likewise stay
+      # FULL on every event — every gate shard passes on an ill-typed compiler, so
+      # soundness is the backstop, and it is only 171s.
+      #
+      # A PR that passes its narrowed subset and then fails in the queue just gets bounced
+      # from the queue. That is correct and expected; it is how bors always worked.
+      # Preflight is a FILTER, not an AUTHORITY — CI on the merged tree is the authority.
+      #
+      # ── The derivation is test/preflight.sh. It is not reimplemented here. ──────
+      #
+      # preflight already maps a diff to a gate set (source file -> gates; fixture corpus
+      # -> the gates that actually READ it, derived by scanning every tracked .sh). A
+      # second, subtly-different copy of "which gates does this diff touch" is exactly the
+      # drift-prone duplication this repo keeps finding and killing. So CI runs preflight
+      # in PREFLIGHT_DRY=1 mode, which prints the derivation and builds nothing, and feeds
+      # it the changed-file list the classify step already resolved (a shallow checkout of
+      # the PR's merge ref has no `main` to diff against, so preflight's own git derivation
+      # cannot run here — PREFLIGHT_CHANGED_FILE parameterizes the INPUT only, never the
+      # derivation).
+      #
+      # ── THREE ways this refuses to narrow. All of them fail SAFE (= run everything). ──
+      #
+      #   1. preflight exits nonzero          -> a stale glob in its map, or a bug. FULL.
+      #   2. preflight prints `FULL <reason>` -> the diff has whole-suite blast radius
+      #                                          (stdlib/, runtime/, compiler/support/,
+      #                                          compiler/entries/, or a fixture dir with
+      #                                          no discoverable consumer). FULL.
+      #   3. preflight prints `UNMAPPED <p>`  -> its map has NO OPINION about path <p>.
+      #      An unmapped path is only tolerable if it is PROSE — and the docs allowlist
+      #      above already decides that, so we ask it (nondocs.txt) rather than writing a
+      #      second list. Unmapped + not prose (Makefile, .github/**, test/run_gates.sh,
+      #      a ledger .txt) -> FULL.
+      #
+      # A gate wrongly INCLUDED costs CI minutes, which are free on a public repo. A gate
+      # wrongly EXCLUDED is a bug that reaches the queue. Bias accordingly, always.
+      - name: Derive the gate set for this PR
+        id: gateset
+        run: |
+          set -u
+          full() {
+            echo "narrow=false" >> "$GITHUB_OUTPUT"
+            echo "gates=" >> "$GITHUB_OUTPUT"
+            echo "oracle_key=full" >> "$GITHUB_OUTPUT"
+            echo "▶ FULL SUITE: $1"
+            exit 0
+          }
+
+          event="${{ github.event_name }}"
+          [ "$event" = "pull_request" ] || full "event is '$event', not pull_request — the merge_group/push run is ALWAYS the full suite."
+          [ "${{ steps.classify.outputs.docs_only }}" != "true" ] || full "docs-only change — every heavy step is skipped anyway."
+          [ -s "$RUNNER_TEMP/changed.txt" ] || full "no changed files resolved (conservative default)."
+
+          if ! PREFLIGHT_DRY=1 PREFLIGHT_CHANGED_FILE="$RUNNER_TEMP/changed.txt" \
+                 sh test/preflight.sh > "$RUNNER_TEMP/pf.txt" 2>&1; then
+            cat "$RUNNER_TEMP/pf.txt"
+            full "test/preflight.sh FAILED to derive a gate set (see above) — refusing to narrow on a broken derivation."
+          fi
+          cat "$RUNNER_TEMP/pf.txt"
+          echo
+
+          if grep -q '^  FULL ' "$RUNNER_TEMP/pf.txt"; then
+            full "preflight reports whole-suite blast radius:$(awk '$1=="FULL"{printf " %s", $2}' "$RUNNER_TEMP/pf.txt")"
+          fi
+
+          # Every UNMAPPED path must be prose, per the SAME allowlist the docs-only
+          # classifier uses. nondocs.txt is that allowlist's verdict, file by file.
+          leftover=""
+          for u in $(awk '$1=="UNMAPPED"{print $2}' "$RUNNER_TEMP/pf.txt"); do
+            if grep -qxF "$u" "$RUNNER_TEMP/nondocs.txt"; then
+              leftover="$leftover $u"
+            fi
+          done
+          [ -z "$leftover" ] || full "preflight has no opinion about these NON-PROSE paths:$leftover"
+
+          gates="$(awk '$1=="GATE"{printf "%s ", $2}' "$RUNNER_TEMP/pf.txt")"
+          gates="${gates% }"
+          [ -n "$gates" ] || full "preflight derived ZERO gates from a non-docs diff — that must never be read as 'nothing to test'."
+
+          # Keys the per-shard oracle cache (see the `gates` job). A narrowed run builds a
+          # SUBSET of a shard's oracles, so its test/bin must never be restored by a full
+          # run under the same key — that would skip the build step and leave the missing
+          # oracles simply ABSENT. Different content, different key.
+          key="$(printf '%s' "$gates" | sha1sum | cut -c1-12)"
+
+          echo "narrow=true" >> "$GITHUB_OUTPUT"
+          echo "gates=$gates" >> "$GITHUB_OUTPUT"
+          echo "oracle_key=pr-$key" >> "$GITHUB_OUTPUT"
+          echo "▶ NARROWED pull_request run: $(printf '%s\n' $gates | grep -c .) gate(s)."
+          echo "  The merge_group run of this same PR still executes the FULL suite on the MERGED tree."
 
   gates:
     needs: detect
@@ -380,6 +538,100 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── WHAT DOES *THIS* SHARD ACTUALLY HAVE TO DO? ───────────────────────────────
+      #
+      # ⚠️ THIS STEP IS NEVER GUARDED, AND NEITHER IS THE JOB. That is the entire design
+      # constraint, and getting it wrong bricks the repo:
+      #
+      #   * a job skipped by a job-level `if:` reports as SKIPPED;
+      #   * a workflow skipped by a `paths-ignore:` trigger filter never reports at all.
+      #
+      # There are TEN required checks and ZERO required approvals — the checks ARE the
+      # merge gate — so either way GitHub leaves that context at "Expected — waiting for
+      # status" FOREVER and the PR becomes permanently UNMERGEABLE. Not fast: blocked.
+      # So every required job always RUNS and always REPORTS; only its STEPS are
+      # conditional. A shard with nothing to do exits 0 in seconds, having said so out
+      # loud. (This is the same shape the docs-only fast path already uses.)
+      #
+      # It computes ONE output, `has_work`, which every expensive step below hangs off,
+      # and `pats`, the concrete gate list to run.
+      #
+      # ── AND IT IS LOUD ABOUT WHAT IT SKIPPED. ─────────────────────────────────────
+      # ORCHESTRATING.md is explicit that a preflight which quietly under-reports its own
+      # coverage is the exact failure this suite exists to prevent. So this prints BOTH
+      # halves: the gates it will run, and every gate in the shard it will NOT — by name,
+      # in the CI log, on every run.
+      - name: Plan this shard
+        id: plan
+        env:
+          DOCS_ONLY: ${{ needs.detect.outputs.docs_only }}
+          NARROW: ${{ needs.detect.outputs.narrow }}
+          DERIVED: ${{ needs.detect.outputs.gates }}
+        run: |
+          set -u
+
+          # Expand THIS shard's patterns into repo-relative gate paths, resolving against
+          # BOTH `test/` and the repo root — the SAME rule run_gates.sh, build_oracles.sh
+          # --for and diff_compiler_ci_shard_coverage.sh use. All four must agree, or CI
+          # would certify coverage of a gate that silently never ran.
+          #
+          # (UNQUOTED substitution of matrix.pattern is deliberate, exactly as in the run
+          # step below: quoting it collapses the pattern list into ONE argument and
+          # silently degrades the shard to a single bad glob.)
+          shard=""
+          for pat in ${{ matrix.pattern }}; do
+            for g in test/$pat.sh $pat.sh; do
+              [ -f "$g" ] || continue
+              case " $shard " in *" $g "*) ;; *) shard="$shard $g" ;; esac
+            done
+          done
+          if [ -z "$shard" ]; then
+            echo "::error::shard '${{ matrix.name }}' pattern matched NO gates at all. A gate was renamed or deleted; this shard would have reported green having run nothing."
+            exit 1
+          fi
+
+          if [ "$DOCS_ONLY" = "true" ]; then
+            run=""
+            why="docs-only change — nothing in this shard applies"
+          elif [ "$NARROW" = "true" ]; then
+            # Intersect this shard's gates with the set `detect` derived from the diff.
+            run=""
+            for g in $shard; do
+              case " $DERIVED " in *" $g "*) run="$run $g" ;; esac
+            done
+            why="pull_request — narrowed to the gates this diff touches (merge_group runs ALL of them)"
+          else
+            run="$shard"
+            why="FULL suite (event: ${{ github.event_name }})"
+          fi
+
+          skipped=""
+          for g in $shard; do
+            case " $run " in *" $g "*) ;; *) skipped="$skipped $g" ;; esac
+          done
+
+          echo "── shard '${{ matrix.name }}': $why"
+          echo "── WILL RUN ($(printf '%s\n' $run | grep -c .) of $(printf '%s\n' $shard | grep -c .) gates in this shard):"
+          for g in $run; do echo "     $g"; done
+          echo "── WILL NOT RUN ($(printf '%s\n' $skipped | grep -c .) gates):"
+          for g in $skipped; do echo "     $g"; done
+
+          # run_gates.sh / build_oracles.sh --for take PATTERNS; a concrete gate path minus
+          # its `.sh`, minus a leading `test/`, IS one ('diff_compiler_fmt',
+          # 'native_fixtures/run', 'sqlite/test/select_oracle'). Same names the shards use.
+          pats=""
+          for g in $run; do p="${g%.sh}"; pats="$pats ${p#test/}"; done
+          pats="${pats# }"
+
+          if [ -z "$pats" ]; then
+            echo "has_work=false" >> "$GITHUB_OUTPUT"
+            echo
+            echo "▶ Nothing for this shard to do. Reporting SUCCESS — the check still reports, which is what keeps the PR mergeable."
+          else
+            echo "has_work=true" >> "$GITHUB_OUTPUT"
+            echo "pats=$pats" >> "$GITHUB_OUTPUT"
+          fi
+
       # sqlite3 is the ORACLE for the 22 sqlite/test/*oracle.sh gates in the `sqlite`
       # shard — they generate a .db with the real sqlite3 CLI, read it back with both
       # sqlite3 and the Medaka library, and diff. It ships on ubuntu-latest, but it is
@@ -391,7 +643,7 @@ jobs:
       # (which is now a routine act — see the shard-scheduling note above) could silently
       # lose its oracle and start "passing".
       - name: Install toolchain
-        if: needs.detect.outputs.docs_only != 'true'
+        if: steps.plan.outputs.has_work == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev sqlite3
@@ -400,7 +652,7 @@ jobs:
       # argument. Exact-match key only — no restore-keys.
       - name: Restore cached medaka binary
         id: medaka-cache
-        if: needs.detect.outputs.docs_only != 'true'
+        if: steps.plan.outputs.has_work == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -418,7 +670,7 @@ jobs:
       # every push regardless, so the trust anchor is proven at least once per
       # run even when every gates/inlang job skips it here.
       - name: Build medaka (cold bootstrap from seed)
-        if: needs.detect.outputs.docs_only != 'true' && steps.medaka-cache.outputs.cache-hit != 'true'
+        if: steps.plan.outputs.has_work == 'true' && steps.medaka-cache.outputs.cache-hit != 'true'
         run: make medaka
 
       # Per-shard: this shard's oracle set, keyed the same way as the binary
@@ -442,13 +694,23 @@ jobs:
       # hash-a-string function. So a comment-only edit to this file also busts the oracle
       # cache. That over-invalidates, and it is deliberately the safe direction to be wrong
       # in — the same trade the `compiler/**` glob above makes, for the same reason.
+      #
+      # ── AND the DERIVED GATE SET, via detect's `oracle_key` (T-15). ──────────────
+      # A narrowed `pull_request` run builds only the oracles its SUBSET of this shard's
+      # gates reads. That is a different test/bin than the full run's, under a key that
+      # was otherwise IDENTICAL — so a full run could have restored a narrow cache, SKIPPED
+      # the build step, and found the missing oracles simply ABSENT. `oracle_key` is
+      # 'full' on merge_group/push and a hash of the derived gate set on a narrowed PR, so
+      # the two can never collide. (Loud, not silent, if it ever did: run_gates.sh counts a
+      # missing oracle as FAIL*, phantom skip. But a loud failure on an unrelated commit is
+      # still a bug — key it correctly instead.)
       - name: Restore cached oracles for this shard
         id: oracle-cache
-        if: needs.detect.outputs.docs_only != 'true'
+        if: steps.plan.outputs.has_work == 'true'
         uses: actions/cache@v4
         with:
           path: test/bin
-          key: oracles-${{ matrix.name }}-v2-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: oracles-${{ matrix.name }}-v3-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ needs.detect.outputs.oracle_key }}
 
       # Only the oracles THIS shard's gates actually read. See the header.
       # Skipped only on an exact cache hit above — a miss always rebuilds with
@@ -456,15 +718,19 @@ jobs:
       # restore sets mtimes to extraction time, not original-build time, which
       # would otherwise defeat build_oracles.sh's own staleness check).
       - name: Build the oracles this shard needs
-        if: needs.detect.outputs.docs_only != 'true' && steps.oracle-cache.outputs.cache-hit != 'true'
-        run: FORCE=1 sh test/build_oracles.sh --for ${{ matrix.pattern }}
+        if: steps.plan.outputs.has_work == 'true' && steps.oracle-cache.outputs.cache-hit != 'true'
+        run: FORCE=1 sh test/build_oracles.sh --for ${{ steps.plan.outputs.pats }}
 
-      # run_gates.sh hard-fails when zero gates matched, and reclassifies a
-      # missing-oracle exit-2 as a FAILURE rather than a SKIP — so a shard whose
-      # patterns match nothing fails LOUDLY instead of reporting a green no-op.
+      # Runs the CONCRETE gate list the `plan` step resolved (never a glob) — on a
+      # merge_group/push that is the shard's whole pattern, on a narrowed pull_request
+      # it is the intersection with the diff. This step is reached only when that list
+      # is non-empty (`has_work`), so run_gates.sh's own "no gates match -> exit 1"
+      # guard still means what it says: a genuine resolution failure, never a no-op.
+      # It also reclassifies a missing-oracle exit-2 as a FAILURE rather than a SKIP, so
+      # a shard that ran nothing can never report green.
       #
-      # (UNQUOTED substitution is deliberate; quoting it would collapse the pattern
-      # list into ONE argument and silently degrade the shard to a single bad glob.)
+      # (UNQUOTED substitution is deliberate; quoting it would collapse the gate list
+      # into ONE argument and silently degrade the shard to a single bad glob.)
       #
       # ── `full_cores` — set ONLY on the `engines` shard ────────────────────────────
       # diff_compiler_engines picks its own fan-out: ENGINE_JOBS, defaulting to NCPU/2.
@@ -479,13 +745,13 @@ jobs:
       # Every other shard leaves it empty and the gate's own default applies (and no
       # other shard contains that gate — the coverage gate enforces exactly-one).
       - name: Gate shard — ${{ matrix.name }}
-        if: needs.detect.outputs.docs_only != 'true'
+        if: steps.plan.outputs.has_work == 'true'
         run: |
           if [ -n "${{ matrix.full_cores }}" ]; then
             export ENGINE_JOBS="$(nproc)"
             echo "engines shard owns this runner: ENGINE_JOBS=$ENGINE_JOBS"
           fi
-          sh test/run_gates.sh ${{ matrix.pattern }}
+          sh test/run_gates.sh ${{ steps.plan.outputs.pats }}
 
       # THE REVIEW GATE — must be in THIS job, on the tree the gates just ran over.
       #
@@ -501,7 +767,7 @@ jobs:
       # Skipped on a docs-only run: nothing above ran, so there is nothing to have
       # drifted — running it anyway would just diff an unmodified checkout.
       - name: The tree must not have drifted
-        if: needs.detect.outputs.docs_only != 'true'
+        if: steps.plan.outputs.has_work == 'true'
         run: |
           if ! git diff --exit-code; then
             echo "::error::A gate in the '${{ matrix.name }}' shard modified tracked files."
