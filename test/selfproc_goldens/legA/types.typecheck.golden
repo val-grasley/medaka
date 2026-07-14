@@ -549,6 +549,7 @@ importDefinersOf : List Decl -> List (String, String)
 importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
 importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
 importedBindings : UsePath -> Option (List (String, String))
+importerShadowDomain : String -> <Mut> Option Mono
 indexKind : Mono -> String
 indexOfId : Int -> List Int -> Option Int
 indexOfIdGo : Int -> Int -> List Int -> Option Int
@@ -659,6 +660,7 @@ isArithBinop : String -> Bool
 isConPat : Pat -> Bool
 isConstrainedTy : Ty -> Bool
 isCtorAppHead : Expr -> Bool
+isDefinerShadow : String -> <Mut> Bool
 isHoleParam : Param -> Bool
 isHoleStr : String -> Bool
 isLetrecGroup : List String -> Bool

@@ -1,0 +1,20 @@
+-- S2 INVERSION (2026-07-14) — the headline bug, pinned in a BUILT BINARY.
+--
+-- Was `definer_shadow_dispatch.mdk`, which pinned the OLD rule: a definer shadow applied
+-- to a receiver whose head had a live impl DISPATCHED to that impl (`size (Box 3)` -> 3).
+-- That rule silently ERASED the user's function whenever the prelude happened to have an
+-- impl for the argument's type -- and the prelude has one for almost everything.  That
+-- cell is now a located REJECT (see d2 in test/diff_compiler_shadow_semantics.sh), which
+-- a build-and-diff-stdout gate cannot express, so this fixture now pins the INVERSION
+-- itself: the standalone wins, and the escape hatch still works.
+--
+-- Line 1: the user's `eq` beats the PRELUDE's `impl Eq List`.  Printed False before.
+-- Line 2: `==` still reaches `Eq.eq` -- operators desugar through the method-call path
+--         and never touch the bare-name funDef intersection, so they are the one escape
+--         hatch that survives inside a shadowing module (SHADOW-SEMANTICS.md 5.3).
+eq : List Int -> List Int -> Bool
+eq a b = True
+
+main =
+  println (debug (eq [1] [2]))
+  println (debug ([1] == [2]))

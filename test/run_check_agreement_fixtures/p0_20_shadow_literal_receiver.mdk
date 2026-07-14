@@ -1,3 +1,13 @@
+-- ⚠️ RE-PINNED 2026-07-14 — THE S2 INVERSION.  `eq 1 2` now prints 3, was False.
+-- THIS FIXTURE IS THE HEADLINE BUG IN MINIATURE.  P0-20 (below) made check/run/build
+-- AGREE — but it made them agree on DISPATCHING to `impl Eq Int`, which silently
+-- ERASED the user`s `eq : Int -> Int -> Int`.  Agreement was never the whole story:
+-- by S7 all three paths agree on every shadow cell, which is exactly why no
+-- differential gate could ever see this bug.  A top-level name is now the module`s
+-- own name: `eq 1 2` calls the user`s `eq` and prints 3.
+-- The P0-20 history below is still accurate about the bug it fixed; only the
+-- tie-break it restored (dispatch) has been inverted.
+--
 -- P0-20 (SILENT WRONG ANSWER — the worst cell yet found in the shadow arc).
 --
 -- A top-level `eq` shadowing the PRELUDE's `Eq` method `eq`, applied to LITERAL

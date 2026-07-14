@@ -1,3 +1,10 @@
+-- ⚠️ RE-PINNED 2026-07-14 — THE S2 INVERSION (ACCEPT/3 -> located REJECT).
+-- A DEFINER shadow now WINS over the same-named interface method, unconditionally: the
+-- impl universe is no longer consulted (docs/spec/SHADOW-SEMANTICS.md S2).  So
+-- `size (Box 3)` no longer dispatches to `impl Sizeable Box` — it types against this
+-- module`s own `size : Int -> Int` and REJECTS `Type mismatch: Int vs Box` at the call.
+-- Everything below describes the OLD rule and is kept for the history only.
+--
 -- P0-18 (FINDINGS.md): a standalone function with the same name as an
 -- interface method (documented-supported shape). check exits 0 (silent,
 -- ACCEPT). `run` errors: "type error in <file>. Run `medaka check` for

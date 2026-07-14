@@ -1,13 +1,21 @@
--- P0-18 (Part B): N-way multi-impl selection for a definer shadow.  `size` is a
--- standalone AND an interface method with TWO live impls (Box, Bar).  On the build
--- path each `size <receiver>` must select per-receiver: `Box` → its impl (3), `Bar`
--- → its impl (30), `Int` (no impl) → the standalone fallback (4).  Exercises the
--- multi-impl arg-position RKey selection alongside the RLocal standalone route.
+-- S2 INVERSION (2026-07-14) — S3 (N-way) is now VACUOUS for a definer shadow, and the
+-- `=>` dict is the only N-way dispatch left.  Pinned in a BUILT BINARY.
+--
+-- Two live impls exist and NEITHER is selected by a bare `size` inside this module: the
+-- module's own `size : Int -> Int` takes every such call.  (`size (Box 3)` is now a
+-- located REJECT -- the shadow gate's d3 cell pins that; a stdout gate cannot.)
+--
+-- But the impls are still installed and still dispatch N-way -- through `sizeOf`'s
+-- written `Sizeable a =>` constraint.  That is the Fork-2 carve-out: a dict-bound
+-- receiver DISPATCHES, because writing the constraint is an explicit request to resolve
+-- through the interface.  For a non-operator interface it is the ONLY way to reach the
+-- method from inside a shadowing module, so it is exactly the thing that must not
+-- silently break.  This fixture exercises BOTH emitter arms in one program: RLocal (the
+-- standalone, line 1) and RKey (the dict dispatch, lines 2-3).
 interface Sizeable a where
   size : a -> Int
 
 data Box = Box Int
-
 data Bar = Bar Int Int
 
 impl Sizeable Box where
@@ -19,7 +27,10 @@ impl Sizeable Bar where
 size : Int -> Int
 size n = n + 1
 
+sizeOf : Sizeable a => a -> Int
+sizeOf x = size x
+
 main =
-  println (size (Box 3))
-  println (size (Bar 10 20))
   println (size 3)
+  println (sizeOf (Box 3))
+  println (sizeOf (Bar 10 20))

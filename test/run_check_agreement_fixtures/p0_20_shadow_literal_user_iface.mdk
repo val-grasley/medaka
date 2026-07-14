@@ -1,3 +1,7 @@
+-- ⚠️ RE-PINNED 2026-07-14 — THE S2 INVERSION.  `size 3` now prints 4, was "IMPL".
+-- The definer shadow `size : Int -> Int` wins over `impl Sz Int`; the impl universe is
+-- not consulted.  Everything below describes the OLD rule (kept for the history).
+--
 -- P0-20 (peer of p0_20_shadow_literal_receiver, with a USER interface so the cell is
 -- readable without prelude knowledge, and with a method whose RESULT TYPE DIFFERS from
 -- the standalone's — which is what makes the disagreement observable rather than merely

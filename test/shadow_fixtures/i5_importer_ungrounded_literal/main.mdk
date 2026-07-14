@@ -1,0 +1,30 @@
+-- CELL: IMPORTER shadow · UNGROUNDED (numeric-literal) receiver.  Clauses S2 + S5, Fork 1.
+--
+-- ✅ REGRESSION FIXTURE for S1-RESIDUAL-B (closed 2026-07-14).  Every other importer fixture
+-- (i1/i3/i4) uses a GROUNDED receiver -- a `Box`, a `Tok`, a `List` -- so the corpus was
+-- structurally blind to this cell and graded 18/0 while it was broken:
+--
+--     import prov.{isEmpty}
+--     main = println (isEmpty 0)     -- Type mismatch: Int literal vs Int Int
+--
+-- A numeric literal is `Num a => a`, so `inferShadowApp`'s `headTyconMono` said None, it
+-- never reached its standalone arm, and it fell to the ordinary-app arm -- which types
+-- against the METHOD scheme the env rebound the name to.  The prelude's
+-- `Foldable.isEmpty : t a -> Bool` is HIGHER-KINDED, so unifying `t a` with the literal's
+-- tyvar solved `t := Int, a := Int` -- hence the tell-tale `Int Int`.  The user's imported
+-- `isEmpty : Int -> Bool` was never consulted.  PRE-EXISTING; not caused by the inversion.
+--
+-- Fix: give inferShadowApp the P0-20 groundShadowReceiver call its definer peer already had.
+import prov.{isEmpty}
+
+main =
+  -- the IMPORTED standalone, on an UNGROUNDED literal receiver.  This is the regression.
+  println (isEmpty 0)
+  println (isEmpty 5)
+  -- ⚠️ FORK-1 CONTROL, in the SAME fixture on purpose: an `import` is a SIBLING scope, not
+  -- an inner one, so it does NOT shadow.  A receiver whose head HAS a live impl of the
+  -- shadowed interface must still DISPATCH to the method.  If the inversion ever leaks onto
+  -- importer shadows, these two lines reject or flip -- and the fix above cannot mask it,
+  -- because grounding only chooses WHICH head the per-receiver rule is applied to.
+  println (isEmpty [1, 2])
+  println (isEmpty [])

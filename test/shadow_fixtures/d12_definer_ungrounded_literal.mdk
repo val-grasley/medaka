@@ -1,0 +1,23 @@
+-- CELL: DEFINER shadow · UNGROUNDED (numeric-literal) receiver · the grounded head HAS a
+-- live impl of the shadowed interface.  Clauses S2 + S5.
+--
+-- This is the cell the corpus was missing, and it is the sharpest one: a numeric literal is
+-- `Num a => a`, i.e. UNGROUNDED at inference time, so the routing decision is taken BEFORE
+-- the receiver has a head tycon -- and the type is then resolved against a receiver that has
+-- SINCE CHANGED.  That "one decision, derived twice, at two different times, over a value
+-- that changed in between" is the recurring P0-20 root cause.
+--
+-- The prelude has `impl Eq Int`, so under the OLD S2 this DISPATCHED: `eq 1 2` was a Bool,
+-- `println` rendered it with `Display Int`, `run` E-PANICked and `build` SILENTLY PRINTED 0.
+-- P0-20 made the three paths AGREE -- on the dispatch, i.e. on discarding the user's `eq`.
+--
+-- Under the INVERSION the standalone wins: `eq 1 2` is the user's own function, = 3.
+-- groundShadowReceiver is what keeps check/run/build honest here -- it grounds the literal
+-- to the standalone's declared domain BEFORE the S2 question is asked, so typecheck and the
+-- post-inference route resolver ask it about the SAME head.
+eq : Int -> Int -> Int
+eq a b = a + b
+
+main =
+  println (eq 1 2)
+  println (eq 10 20)

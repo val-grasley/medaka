@@ -1,12 +1,31 @@
 # SHADOW-INVERSION-DESIGN — invert S2: a top-level standalone WINS over a same-named interface method
 
-**Status:** OPEN — design, decision-ready; not implemented. Forks A (make it work, new
-clause S9) and D (importers in scope) are DECIDED by the language owner. Its two
-prerequisites are now met: S-1 (`RLocal` carries a dict channel) is MERGED, and P0-21
-(per-module shadow-hood on the flat path, so a user shadow cannot leak into the prelude)
-ships with this PR. **Do not implement the inversion before P0-21 lands** — under
-"standalone wins" a leaked prelude occurrence stops mistyping and starts ROUTING, which
-would silently miscompile the prelude itself.
+**Status:** SHIPPED 2026-07-14 — the inversion is IMPLEMENTED and GATED. The normative
+spec is now `docs/spec/SHADOW-SEMANTICS.md` (clauses S1–S9 + the decision matrix); **read
+that first** — this document is the design record and its "expected outcomes" columns are
+predictions, not the enforced truth. Both prerequisites landed first, as required: S-1
+(`RLocal` carries a dict channel) and P0-21 (per-module shadow-hood on the flat path, so a
+user shadow cannot leak into the prelude).
+
+**Landed as designed, with two corrections found in implementation** (both were leaks that
+`test/diff_compiler_shadow_semantics.sh` caught, and both are worth knowing before you
+touch this code again):
+
+1. **`inferDefinerShadowApp` also serves IMPORTER shadows** on the mangled emit path —
+   `definerShadowArgHead` fires on `routeLocalSym != ""` as well as on
+   `definerShadowNamesRef`. So "we reached the definer-shadow app path" is **not** the same
+   question as "this is a definer shadow". Inverting on the former broke `i1`/`i3`/`i4`
+   (Fork 1). The decision points re-ask via `isDefinerShadow`.
+2. **The route stamp must respect `singleParamIfaceMethod`, exactly as every typing entry
+   point does.** `definerShadowNamesRef` is populated for a multi-TYPARAM interface's method
+   too, but the typing paths skip it (open bug S-3 / row 26). Forcing `RLocal` there routed a
+   site whose *type* came from the dispatch path — route and type disagreeing is the P0-20
+   bug class — and moved `d11`.
+
+**Sections 6 (design forks) and 8 (staged plan) are HISTORICAL.** Forks 1 and 2 were both
+resolved as recommended (definer-only; keep the `=>` carve-out). Stage 4 (`import
+core.{eq as eqM}`) and the Stage-2 `W-SHADOWS-METHOD` warning are **NOT done** — see
+`docs/spec/SHADOW-SEMANTICS.md` §1.1 and §7 below.
 
 Peer of `docs/spec/SHADOW-SEMANTICS.md`. Peer of `SHADOW-SEMANTICS.md`
 (which this doc proposes to replace clause-for-clause). All cells below were

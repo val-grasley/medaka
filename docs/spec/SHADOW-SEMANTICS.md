@@ -1,18 +1,71 @@
 # Declaration-Shadowing Semantics (standalone fn ⇄ interface method)
 
-**Status:** ENFORCED — the decision matrix is now a GATE
-(`test/diff_compiler_shadow_semantics.sh`, added 2026-07-14): it runs every
-fixture in `test/shadow_fixtures/` through `check` + `run` + `build`, asserting
-each cell's verdict AND (per **S7**) that `run` and the built binary print the
-same pinned value. Every cell is conformant except **S-3** (row 26, multi-typaram
-interface), which is pinned as a KNOWN-BAD ledger row so it fails the day it is
-fixed. Until this gate existed the corpus below **ran nowhere**, and the matrix's
-own Status column had silently gone stale in the OK direction (see the note under
-§2). **Scope:** a bare name `N` that is BOTH a top-level standalone function AND
-an interface-method name (a "shadow"). Peer of `DICT-SEMANTICS.md` /
+**Status:** ENFORCED — the decision matrix is a GATE
+(`test/diff_compiler_shadow_semantics.sh`): it runs every fixture in
+`test/shadow_fixtures/` through `check` + `run` + `build`, asserting each cell's
+verdict AND (per **S7**) that `run` and the built binary print the same pinned
+value. Every cell is conformant except **S-3** (row 26, multi-typaram interface),
+which is pinned as a KNOWN-BAD ledger row so it fails the day it is fixed. Until
+this gate existed the corpus below **ran nowhere**, and the matrix's own Status
+column had silently gone stale in the OK direction (see the note under §2).
+**Scope:** a bare name `N` that is BOTH a top-level standalone function AND an
+interface-method name (a "shadow"). Peer of `DICT-SEMANTICS.md` /
 `LAYOUT-SEMANTICS.md`: clauses S1–S9, a gated decision matrix, and a per-stage
 enforcement table. Where the binary disagrees with a clause, the matrix row says
 **BUG** — the spec is the target, not a description of present behavior.
+
+> ## ⚡ 2026-07-14 — **S2 IS INVERTED: A TOP-LEVEL STANDALONE WINS.**
+>
+> A standalone function defined in a module now **beats** a same-named interface
+> method **inside that module**, unconditionally. **The impl universe is no longer
+> consulted for a definer shadow.** This replaces the old S2 ("a live impl at the
+> receiver's head dispatches; the standalone is only a no-impl fallback").
+>
+> **The bug that forced it** — and it is not a corner case:
+>
+> ```medaka
+> eq : List Int -> List Int -> Bool
+> eq a b = True
+> main = println (debug (eq [1] [2]))    -- printed False. THE USER'S FUNCTION WAS IGNORED.
+> ```
+>
+> `check` passed. `run` and `build` **agreed** — both wrong the same way — and
+> `check --types` did not even report the user's signature. The function was not
+> shadowed, it was **erased**, because `List` has a prelude `impl Eq List`. By **S1**
+> shadow-hood is `standalones ∩ iface-method-names` *and the interface may be the
+> prelude*, so **~45 of the most natural names in the language were landmines**:
+> `map`, `filter`, `length`, `compare`, `eq`, `min`, `max`, `abs`, `empty`, `index`,
+> `append`, `fold`, `toList`, `display`, `debug`, `pure`, `traverse`, …
+>
+> ⚠️ **And the compiler was obeying this spec.** The old S2 said dispatch; the
+> compiler dispatched. **The SPEC was the bug** — which is why the fix is a spec
+> change, and why **no differential gate could ever have caught it**: by **S7** the
+> three engines agree on every shadow cell *by construction*, and they did.
+>
+> **The new tie-break.** *A name written at top level in a module is that module's
+> name.* The prelude declares 49 method names over every common type; a user cannot
+> be expected to know them and `check` could not tell them. Silently discarding a
+> declared, signatured top-level function because a **prelude** impl exists for the
+> argument's type is not a tie-break — it is erasure. The stdlib's own fallback
+> pattern (`map.mdk`'s `toList` beating `Foldable.toList`) is not a special case of
+> the old rule; it is the **general case** of the new one.
+>
+> **Two deliberate limits** (both decided by the language owner, both load-bearing):
+> - **Definer-only.** An **imported** standalone does **not** shadow — an `import` is
+>   a *sibling* scope, not an *inner* one. Total inversion would break the everyday
+>   `import map` pattern (row 20: `isEmpty [1,2]` must still reach `Foldable.isEmpty`).
+> - **The `=>` carve-out stays.** A call on a **dict-bound** (`Sz a =>`) receiver still
+>   **dispatches**: writing the constraint is an explicit request for dispatch, and it
+>   is the only way to reach the method by name inside a shadowing module (§1.1).
+>
+> **What moved:** five cells went ACCEPT → **located REJECT** (rows 5, 6, 7, 8, 14 —
+> `d2`, `d3`, `d6`, `d7`, `d8`), each now `Type mismatch: Int vs <receiver>` at the
+> call site on all three paths. **Nothing that rejected became an accept**, except
+> `p0_20_shadow_literal_result_pinned`, whose reject existed *only* as a side effect
+> of the method stealing the call. Row 14 (`d8`) **deliberately reverts** `ebb8ee90`
+> (P0-19 batch 2), which had made a definer shadow dispatch cross-module — that fix
+> faithfully implemented the OLD S2, and the inversion abolishes the rule it
+> implemented. Design: `compiler/SHADOW-INVERSION-DESIGN.md`.
 
 **Why this exists.** This one rule produced four bugs in four different stages
 (P0-18 arc: typecheck routing `953d9ea1`, mangle/mark ordering `0b4a7882`,
@@ -48,47 +101,96 @@ explicit). Fixtures: `test/shadow_fixtures/` (one per matrix cell), run by
 Given an occurrence of bare name `N`:
 
 - **S1 (shadow-hood).** `N` is a shadow iff `N` ∈ funDef-names(visible
-  standalones) ∩ iface-method-names(visible interfaces). Definer vs importer is
-  classified by where the standalone is defined; the *interface* may live
-  anywhere (local, imported, prelude). Shadow-hood is per-module, per-name — not
-  per-occurrence.
-- **S2 (applied, grounded receiver — the core rule).** A shadow `N` applied to
-  an argument whose type grounds to head tycon `T`:
-  - if any impl of the shadowed interface for `T` is visible (the impl universe
-    is GLOBAL — local ∪ imported ∪ prelude; instances are coherent across
-    modules, cf. `DICT-SEMANTICS.md`) → **method dispatch** (`RKey T`);
-  - else → **the standalone** (`RLocal`), and the argument must then type
-    against the standalone's declared domain — a mismatch is a **located
-    reject** at `check` (and at `run`/`build`, which typecheck first).
-- **S3 (N-way).** With multiple impls, each occurrence selects the impl whose
-  head matches ITS receiver — per-receiver, per-occurrence; the no-impl receiver
-  still falls to the standalone. (Gated: `definer_shadow_nway`.)
+  standalones) ∩ iface-method-names(visible interfaces). `N` is a **definer
+  shadow** in module `M` iff the standalone is defined **in `M`**; an **importer
+  shadow** iff it is *imported* into `M`. The *interface* may live anywhere
+  (local, imported, prelude). Shadow-hood is per-module, per-name — not
+  per-occurrence — and **the PRELUDE IS A MODULE**: a `core.mdk` occurrence of `N`
+  is never a shadow of a user standalone, on *any* path, flat or multi-module
+  (P0-21; before it, a user's `map` leaked into the prelude's own bodies). A name
+  bound by a **local pattern** at the occurrence is not a shadow there — lexical
+  scope resolves it to the binder.
+
+- **S2 (applied — THE INVERSION).** **[CHANGED 2026-07-14]**
+
+  - A **definer** shadow `N` applied to any receiver denotes **the standalone,
+    unconditionally** (`RLocal`). **The impl universe is NOT consulted.** The
+    argument must type against the standalone's declared domain; a mismatch is a
+    **located reject** at `check` (and at `run`/`build`, which typecheck first).
+    *A visible impl of the shadowed interface at the receiver's head no longer
+    overrides the standalone — **this is the inversion.*** (Carve-out: S5's
+    dict-bound receiver.)
+
+  - An **importer** shadow keeps the **old per-receiver rule**: if any impl of the
+    shadowed interface for the receiver's head tycon `T` is visible (the impl
+    universe is GLOBAL — local ∪ imported ∪ prelude; instances are coherent across
+    modules, cf. `DICT-SEMANTICS.md`) → **method dispatch** (`RKey T`); else → the
+    standalone (`RLocal`), with the same domain obligation. An `import` is a
+    *sibling* scope, not an *inner* one, so it does not shadow.
+
+- **S3 (N-way).** **[CHANGED]** **Vacuous for a definer shadow:** every occurrence
+  is the standalone regardless of receiver, so no receiver selects an impl; a
+  receiver at a live-impl head is a **located reject**, not a dispatch. The impls
+  remain installed and still dispatch N-way — from any module that does not shadow
+  the name, and, inside the shadowing module, through a written `=>` constraint
+  (S5's carve-out). Unchanged for importer shadows. (Gated: `d3_definer_nway`,
+  `definer_shadow_nway`.)
+
 - **S4 (value position).** A shadow name NOT syntactically applied to its
   receiver (passed to a HOF, bound with `let`, sectioned) denotes the
   **standalone, always** (Phase 112: a method value has no receiver to dispatch
   on). Consequently value-position use over live-impl elements whose type
   mismatches the standalone's domain is a **located reject** — never a silent
-  dispatch, never a runtime panic.
-- **S5 (ungrounded receiver).** A shadow applied to a receiver that never
-  grounds (a polymorphic parameter) routes to the **standalone**, and the
-  enclosing function must **monomorphise to the standalone's domain** — it must
-  NOT generalize over the shadow's receiver (a generalized wrapper later called
-  at a live-impl type would run the standalone on a foreign value). Calling such
-  a wrapper outside the standalone's domain is a located reject.
-- **S6 (module-independence).** S2's impl query is location-independent: a
-  definer shadow whose shadowed interface and receiver impl are *imported*
-  behaves exactly like the all-local case (dispatch on live impl, standalone on
-  none). Where the standalone/interface/impl each live changes *detection
-  bookkeeping*, never the outcome.
+  dispatch, never a runtime panic. *Unchanged, and now **consistent with** S2
+  rather than an exception to it: under the old S2 this was the one place lexical
+  shadowing already won; under the new S2 it is simply the general rule.*
+
+- **S5 (ungrounded receiver).** **[CHANGED — narrowed]** A definer shadow applied
+  to a receiver that never grounds (a polymorphic parameter) routes to the
+  **standalone**, and the enclosing function **monomorphises to the standalone's
+  declared domain** — it must NOT generalize over the shadow's receiver (a
+  generalized wrapper later called at a live-impl type would run the standalone on
+  a foreign value). Calling such a wrapper outside the standalone's domain is a
+  located reject.
+
+  **⭐ CARVE-OUT (the one dispatch a definer shadow still permits):** a receiver
+  that is a **dict-bound `=>` constraint variable of the enclosing function**
+  **DISPATCHES**. Writing `Sz a =>` is an explicit, written-down request to resolve
+  through the interface, and — for a non-operator interface — it is the **only** way
+  to name the method inside a shadowing module (§1.1). Removing it would make
+  generic code unwritable in any module that shadows a method name.
+  (`definerReceiverIsDictVar`; gated: `accept_constrained_receiver_shadow` → `14`,
+  and `definer_shadow_nway`, which dispatches N-way through exactly this channel.)
+
+- **S6 (module-independence).** **[CHANGED]** For a **definer** shadow the impl
+  query is *deleted*, so S6 is **trivially satisfied**: where the interface and impl
+  live cannot change the outcome, because the outcome no longer depends on them. An
+  all-local live impl (`d2`) and an imported one (`d8`) now reject identically. For
+  an **importer** shadow S6 stands as written: the impl query is
+  location-independent, and where the standalone/interface/impl each live changes
+  *detection bookkeeping*, never the outcome.
+
 - **S7 (path agreement).** `run`, `check`, and `build` agree on every cell:
   `check` accepts iff `run` and the built binary produce the (identical)
   defined value. A shadow cell where they disagree is a conformance bug even if
   each path is individually defensible.
+
+  > ⚠️ **Note what S7 COSTS you.** Because it *guarantees* the three engines agree,
+  > **no differential gate can ever see a shadow bug** — the `eq [1] [2]` erasure was
+  > invisible to every gate the project owns, **by construction**, and P0-20 even
+  > "fixed" that cell by making all three paths agree on the *wrong* answer. Tests for
+  > this rule must assert on **printed values against a pinned expectation**
+  > (`run_check_agreement`'s `.out` pin; the shadow gate's `value` column), **never**
+  > on cross-path agreement alone.
+
 - **S8 (arity).** The per-receiver machinery in typecheck is gated to
-  single-parameter interface methods (`singleParamIfaceMethod`), but the
-  *specified* outcome for a multi-param method shadow is the same S2 rule keyed
-  on the first parameter. (Observed: the ordinary arg-position dispatch path
-  covers this today — matrix row 8.)
+  single-**typaram** interfaces (`singleParamIfaceMethod`), but the *specified*
+  outcome for a multi-**param** *method* shadow is the same S2 rule keyed on the
+  first parameter — and under the inversion that means the standalone wins there too
+  (row 8 / `d7` now rejects its live-impl receiver). ⚠️ A multi-**TYPARAM**
+  *interface* (`interface Ix a i`) still bypasses the machinery entirely and keeps
+  the OLD semantics — that is the open **S-3** bug (row 26), and under the inversion
+  it is now an **inconsistency**, not merely a gap.
 
 ### S9 — a CONSTRAINED standalone (added 2026-07-13; closes S-1)
 
@@ -120,16 +222,57 @@ silently **under-applied**, the first real argument landed in the dict slot, and
 *undecided* at mark time; `EMethodAt` is the node that can be either. The fix is
 to give its `RLocal` arm a dict channel.
 
-**Tie-break rationale.** *Per-receiver* (not lexical shadowing) because a live
-impl is the ground truth of intent — the user wrote a method for that exact
-type; unconditional lexical shadowing was the pre-`953d9ea1` behavior and
-mis-ran `size (Box 3)` on the standalone. *Standalone-fallback on no-impl*
-because the stdlib pattern requires it: `map.mdk`'s `toList : Map k v -> List
-(k, v)` must win over Foldable's `toList` for a `Map` (there is deliberately no
-`impl Foldable Map`), and rejecting would break every `import map` consumer.
-*Bare-name-in-value-position = standalone* because dispatch needs a receiver at
-the call and a method value carries no evidence (no dict is threaded at value
-position on the arg-tag path) — the standalone is the only coherent denotation.
+**Tie-break rationale.** **[REPLACED 2026-07-14 — the old rationale is the premise
+the inversion rejects; kept below, struck, because it is the argument you will
+re-derive if you don't see why it fails.]**
+
+> ~~*Per-receiver* (not lexical shadowing) because **a live impl is the ground truth
+> of intent** — the user wrote a method for that exact type; unconditional lexical
+> shadowing was the pre-`953d9ea1` behavior and mis-ran `size (Box 3)` on the
+> standalone.~~
+
+**Why that fails.** It silently assumes the impl is *the user's*. Almost always it
+is the **PRELUDE's** — `impl Eq List`, `impl Mappable List`, `impl Foldable Option`
+— and a user who writes `eq`, `map`, or `length` has expressed no intent about it
+whatsoever. "The ground truth of intent" turned into "the prelude outranks you, and
+we will not tell you." The `size (Box 3)` case that motivated the old rule is real
+but is the *rare* one; it is now a **located reject**, which is the honest answer:
+the module said `size` means `Int -> Int`, so a `Box` does not fit.
+
+**The rule now.** *A name written at top level in a module is that module's name.*
+A module's own top-level binding is an **inner** scope relative to the implicit
+prelude and therefore **shadows** it; an `import` is a **sibling** scope and does
+not. The stdlib's `map.mdk`-`toList`-beats-`Foldable.toList` pattern is not a
+special case of the old rule — it is the **general case** of the new one.
+
+*Standalone-in-value-position = standalone* (S4) still holds for the original
+reason: dispatch needs a receiver at the call and a method value carries no
+evidence (no dict is threaded at value position on the arg-tag path) — the
+standalone is the only coherent denotation. Under the new S2 it is no longer an
+exception; it is just the rule.
+
+### 1.1 Reaching the interface method from INSIDE a shadowing module
+
+Under the inversion, a module that defines `toList` / `map` / `eq` / `display` / …
+**cannot call that method by its bare name, for any type, anywhere in that module.**
+That is the deliberate cost of true lexical shadowing, and it is the one thing the
+new rule takes away that the old one gave. What still works:
+
+| Route | Works? | Notes |
+|---|---|---|
+| **Operators** (`==`, `!=`, `<`, `+`, `++`, …) | **YES** | They desugar through the method-call path and never touch the bare-name funDef intersection (row 24, UNREACHABLE). A module with `impl Eq Foo` *and* a standalone `eq` still evaluates `Foo 1 == Foo 2` correctly. Covers `Eq`/`Ord`/`Num`/`Semigroup`. |
+| **A written `=>` constraint** (S5 carve-out) | **YES** | `sizeOf : Sizeable a => a -> Int ; sizeOf x = size x` dispatches — including N-way. For a non-operator interface this is the **only** in-module route. Gated by `definer_shadow_nway`. |
+| **Any other module** | **YES** | Shadow-hood is per-module (S1). A module that does not define a colliding standalone is completely unaffected — including the prelude's own bodies (P0-21). |
+| **Module alias** — `import core as C` → `C.eq` | **NO** | `Unbound variable: C.eq` |
+| **Member alias** — `import core.{eq as eqM}` → `eqM` | **NO** | `Unbound variable: eqM. Did you mean 'eq'` |
+| **Interface-qualified** — `Eq.eq x y` | **NO** | No such syntax. |
+
+**Recommended follow-up (not a blocker):** make `import core.{eq as eqM}` resolve.
+The member-alias machinery already exists and is gated
+(`test/eval_modules_fixtures/import_alias/` aliases a *user* interface's method);
+the prelude is simply not reachable as an importable module for aliasing. It is a
+contained change to `resolve.mdk`'s import handling and needs **no new syntax**.
+Until then the answer for a user is: **rename your function.**
 
 ## 2. Decision matrix (re-observed 2026-07-14, post-`eb92cdff`; now GATED)
 
@@ -154,16 +297,16 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 2 | not a shadow — method only | S1 | ordinary dispatch | — (construct-coverage gates) | — | — | — | BASELINE |
 | 3 | definer · no-impl recv (impl exists for another type) · 1-file · applied | S2 | RLocal → 4 | `d1_definer_noimpl.mdk` | 4 | 4 | accept | **OK** |
 | 4 | definer · no-impl recv (interface has ZERO impls) · 1-file · applied | S2 | RLocal → 4 | `d1b_definer_noimpl_zeroimpls.mdk` | 4 | 4 | accept | **OK** |
-| 5 | definer · live-impl recv · 1-file · applied | S2 | RKey → 3; RLocal → 4 | `d2_definer_liveimpl.mdk` | 3,4 | 3,4 | accept | **OK** |
-| 6 | definer · N-way (2 impls + no-impl) · 1-file · applied | S3 | 3, 30, 4 | `d3_definer_nway.mdk` | 3,30,4 | 3,30,4 | accept | **OK** |
-| 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | RKey → 9; RLocal → 4 | `d6_definer_parametric_receiver.mdk` | 9,4 | 9,4 | accept | **OK** |
-| 8 | definer · TWO-param method shadow · applied | S8 | dispatch 3; standalone 6 | `d7_definer_multiparam_method.mdk` | 3,6 | 3,6 | accept | **OK** (via ordinary arg-dispatch, outside the S2 machinery) |
+| 5 | definer · live-impl recv · 1-file · applied | S2 | **REJECT** `Int vs Box` @ `size (Box 3)`; `size 3` → 4 | `d2_definer_liveimpl.mdk` | reject | reject | reject | **OK** (**FLIPPED 2026-07-14** — was `3,4` (dispatch). The inversion: the module's own `size : Int -> Int` takes the call, so `Box` mistypes) |
+| 6 | definer · N-way (2 impls + no-impl) · 1-file · applied | S3 | **REJECT** ×2 (`Box`, `Bar`); `size 3` → 4 | `d3_definer_nway.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,30,4`. S3 is now VACUOUS for a definer shadow: no receiver selects an impl. The impls still dispatch N-way through a `=>` dict — see `definer_shadow_nway`) |
+| 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | **REJECT** `Int vs P Bool` @ the `P a` receiver; 4 | `d6_definer_parametric_receiver.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `9,4`. A parametric impl head is no more privileged than a concrete one) |
+| 8 | definer · TWO-param method shadow · applied | S8 | **REJECT** `Int vs Box` @ `comb (Box 1) (Box 2)`; `comb 2 3` → 6 | `d7_definer_multiparam_method.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,6` via ordinary arg-dispatch. Multi-*param methods* now follow S2 like everything else; multi-*TYPARAM interfaces* still do NOT — row 26 / S-3) |
 | 9 | definer · value position · no-impl elements | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** |
 | 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 2 `ebb8ee90`; was a 3-way split) |
 | 11 | definer · ungrounded recv · wrapper used at standalone domain | S5 | 4; wrapper : Int -> Int | `d5_definer_poly_receiver.mdk` | 4 | 4 | accept (but `useIt : a -> Int` — over-general, the row-12 hole) | **OK** (value), caveat on scheme |
 | 12 | definer · ungrounded recv · wrapper CALLED at live-impl type | S5 | located REJECT | `d5b_definer_poly_liveimpl_call.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was a silent miscompile) |
 | 13 | definer · no-impl recv · domain mismatch (`size "hi"`) | S2 | located REJECT | `d9_definer_reject.mdk` | reject `Int vs String` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was check-over-accept → build garbage) |
-| 14 | definer · live impl, interface+impl IMPORTED · applied | S6 | RKey → 3; RLocal → 4 | `d8_definer_imported_impl/` | 3,4 | 3,4 | accept | **OK** (fixed P0-19 batch 2 `ebb8ee90`; now dispatches cross-module) |
+| 14 | definer · live impl, interface+impl IMPORTED · applied | S6 | **REJECT** `Int vs Box` @ `size (Box 3)`; 4 | `d8_definer_imported_impl/` | reject | reject | reject | **OK** (**FLIPPED 2026-07-14 — DELIBERATELY REVERTS `ebb8ee90`** (P0-19 batch 2), which made this dispatch cross-module. That fix faithfully implemented the OLD S2; the inversion abolishes the rule it implemented. S6 now holds VACUOUSLY — the impl universe is never queried, so *where* the impl lives cannot matter. Rejects identically to the all-local `d2`, which is the point. Also re-pinned in `diff_compiler_check_cli_modules`'s `definer-shadow-xmod` leg) |
 | 15 | importer · live impl · interface LOCAL to consumer | S2/S6 | RKey → 3 | `i1_importer_local_iface/` | 3 | 3 | accept | **OK** |
 | 16 | importer · no-impl recv · interface LOCAL | S2/S6 | RLocal → 4 | `i1_importer_local_iface/` | 4 | 4 | accept | **OK** |
 | 17 | importer · live impl · interface+impl in a THIRD module | S6 | RKey → 3 | `i3_importer_imported_iface/` | 3 | 3 | accept | **OK** |
@@ -176,11 +319,52 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 24 | operator-named shadow (`==` etc.) | — | n/a — operator occurrences resolve through the desugared method-call path, not bare-`EVar` funDef intersection | — | — | — | — | UNREACHABLE |
 | 25 | definer · **CONSTRAINED** standalone (`size : Num a => a -> a`) · no-impl recv | S9 | RLocal **carrying the standalone's dicts** → 4 | `d10_definer_constrained.mdk` | 4 | 4 | accept | **OK** (fixed 2026-07-13, S-1 / clause S9; was `check` green + `run` E-PANIC + `build` printing a raw heap pointer) |
 | 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S8 (does not cover it) | dispatch 4; standalone 3 | `d11_definer_multityparam_iface.mdk` | **E-PANIC `unknown op '*'`** | 4,3 | accepts | **BUG** (**S-3**; `run` diverges from check+build — an S7 violation. Every entry point gates on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so this shadow bypasses the machinery entirely. `check`/`build` happen to be per-receiver CORRECT. Pinned KNOWN-BAD by the gate.) |
+| 27 | definer · **UNGROUNDED (numeric-literal) receiver** whose grounded head HAS a live prelude impl | S2+S5 | standalone → 3, 30 | `d12_definer_ungrounded_literal.mdk` | 3,30 | 3,30 | accept | **OK** (the P0-20 cell, now INVERTED: `eq 1 2` = 3, was `False`. `groundShadowReceiver` grounds the literal to the standalone's domain BEFORE the S2 question, so check/run/build ask it about the same head) |
+| 28 | **importer** · **UNGROUNDED (numeric-literal) receiver** · prelude iface + the Fork-1 control | S2+S5 | standalone → True, False; **method** → False, True | `i5_importer_ungrounded_literal/` | T,F,F,T | T,F,F,T | accept | **OK** (fixed 2026-07-14, **S1-RESIDUAL-B** — was `Type mismatch: Int literal vs Int Int` on ALL THREE paths, PRE-EXISTING, and invisible to the corpus because i1/i3/i4 all use GROUNDED receivers. The last two lines are the Fork-1 control: an importer shadow still dispatches on a live-impl head) |
 
-**Tally: 19 OK · 1 BUG (row 26 / S-3) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE ·
-2 baselines.** Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1.
-Row 26 is the only open cell, and it is a **loud** divergence (`run` panics),
-not a silent wrong answer.
+**Tally: 21 OK · 1 BUG (row 26 / S-3) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE ·
+2 baselines.** Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1;
+**row 28 was BUG until 2026-07-14 (S1-RESIDUAL-B) — and it was PRE-EXISTING, not
+introduced by the inversion.** Row 26 is the only open cell, and it is a **loud**
+divergence (`run` panics), not a silent wrong answer.
+
+> ⭐ **Rows 27–28 exist because the corpus was blind to an entire AXIS.** Every
+> importer fixture used a **grounded** receiver, so the gate graded **18/0 while
+> row 28 was broken**. A numeric literal is `Num a => a` — **ungrounded** at
+> inference time — so the routing decision is taken before the receiver has a head
+> tycon, and the type is then resolved against a receiver that has *since changed*.
+> **That is the P0-20 root cause, and it is the root cause of this entire arc.**
+> When adding a shadow fixture, vary the receiver's **PROVENANCE** — literal /
+> grounded / dict-bound — not just its type. **A gate that cannot express a cell
+> cannot defend it.**
+
+> **The 2026-07-14 inversion moved exactly five rows — 5, 6, 7, 8, 14 — all
+> ACCEPT → located REJECT.** The change is **monotonically more rejecting** for
+> definer shadows, which is what made it safe to land: it cannot turn a rejected
+> program into a silently-miscompiled one. (One cell went the other way, outside
+> this matrix: `run_check_agreement`'s `p0_20_shadow_literal_result_pinned` REJECT →
+> ACCEPT — its reject existed *only* because the method was stealing the call and
+> returning a `String` where the annotation said `Int`.)
+>
+> **Rows 15–20 (importer shadows) and row 26 did NOT move, and must not.** They are
+> the Fork-1 boundary and the S-3 ledger row respectively. If either moves, the
+> inversion has leaked out of definer scope — `test/diff_compiler_shadow_semantics.sh`
+> is the tripwire, and during development it caught exactly that, twice.
+
+**In-tree census (re-verified 2026-07-14, two independent methods).** The whole
+tree contains **exactly five** definer shadows, and the inversion is a **semantic
+no-op for all five** — none is ever applied to a receiver whose head has an impl of
+the shadowed interface, so all five routed `RLocal` before and route `RLocal` now:
+`compiler/frontend/parser.mdk:221` `orElse` (46 uses, all on `Parser`; there is no
+`impl Alternative Parser`) · `stdlib/map.mdk:158` `isEmpty` + `:347` `toList` (all
+on `Map`; there is deliberately no `impl Foldable Map`) · `stdlib/hash_map.mdk:63`
+`isEmpty` + `:220` `toList` (all on `HashMap`; same). Every interface in production
+source lives in `stdlib/core.mdk` (49 method names), so shadow-hood reduces to
+`standalone-names ∩ those 49`. This is why `selfcompile_fixpoint` (C3a/C3b) and
+`typecheck_compiler_source` stayed green through the inversion — the compiler does
+not depend on the rule that changed. `hash_map.mdk:210`'s comment is a **workaround
+for the old rule** ("an internal use of `toList` would be shadowed by the method and
+mistyped") — the inversion retires the need for it.
 
 ## 3. Per-stage enforcement table (clause → site → keying assumption)
 
@@ -194,10 +378,10 @@ Line numbers at `cfc4fa5a`.
 | S1 detect (build path) | `typecheck.mdk:11475` `computeMangledShadowMap` + `unitMangledShadows:11480`, set once at `elaborateModules:11932` (`mangledShadowMapRef`); consumed by `buildDefinerShadows:11460` and `buildStandaloneShadowsGraph:11487-11497` | recover shadows AFTER mangling renamed the standalone | **forward-constructs `mangledName mid m`** per (module, method) and checks it against actual funDefs — exact, not prefix-stripping; empty map on the un-mangled path (inert) |
 | S1 mark | `typecheck.mdk:11942` `markRpNames` (∪ `buildStandaloneShadowsGraph`) → `prePassDictArg`/`prePassModulePairArg:11943-11944` rewrite occurrences to `EMethodAt` | occurrences get a route ref | graph-wide name set over USER modules (core excluded) |
 | (enabler of the S1 build split) | `compiler/backend/private_mangle.mdk`: `mangleUnits:117`, `buildUnitRenameMap:372`, `renameDecl` DFunDef `~578` + `renameScoped` EVar `~651` rename the standalone def + refs to `<mid>__N`; `renameIfaceMethod:626`/`renameImplMethod:636` leave the method **NAME bare** (header `:34-46`: dispatch is by bare name cross-module) | collision-free private symbols | **the asymmetry**: standalone side mangled, method side bare — which is exactly what defeated name-intersection detection (bug `0b4a7882`); driver order `compiler/entries/entry_support.mdk:133-134` (`runEmitWith`) and `:145-146` (`emitModulesWith`): mangle STRICTLY before mark |
-| S2 type + record (definer) | `typecheck.mdk:4909-4912` app-head peel → `definerShadowArgHead:5015` (gated `singleParamIfaceMethod:4969`; fires on `definerShadowNamesRef` OR a mark-seeded `RLocal sym` — the cross-module emit signal) → `inferDefinerShadowApp:5029` + `definerShadowHeadType:5062` | type against the STANDALONE scheme (via the mangled sym on build — the scheme-selection SIGSEGV fix), record the ACTUAL argument mono | route symbol non-empty ⇒ shadow (works cross-module on build); `definerShadowNamesRef` ⇒ shadow (run/check, module-local only) |
+| S2 type + record (definer) | app-head peel → `definerShadowArgHead` (gated `singleParamIfaceMethod`; fires on `definerShadowNamesRef` OR a mark-seeded `RLocal sym` — the cross-module emit signal) → `inferDefinerShadowApp` + `definerShadowHeadType`. The un-marked `check` path peels via `definerShadowVarHead` → `inferDefinerShadowVarApp`. **`definerReceiverDispatches` is the single decision point** | **[CHANGED — THE INVERSION]** a definer shadow types against the STANDALONE scheme, **always** (via the mangled sym on build — the scheme-selection SIGSEGV fix); `enforceStandaloneDomain` then imposes its declared domain, so a live-impl receiver is a located reject. The only dispatch arm left is S5's dict-bound receiver | ⚠️ **`definerShadowArgHead` fires for IMPORTER shadows too** — its `routeLocalSym != ""` arm is the cross-module emit signal, so `inferDefinerShadowApp` serves BOTH kinds on the mangled path. "Did we reach this function" is therefore **NOT** the same question as "is this a definer shadow": `definerReceiverDispatches` must re-ask it via `isDefinerShadow` (`definerShadowNamesRef` never holds an imported standalone) or the inversion leaks onto importers and breaks `import map` |
 | S2 type + record (importer) | `typecheck.mdk:4950` `shadowStandaloneHead` → `inferShadowApp:4979`; standalone schemes stashed in `shadowStandaloneSchemesRef` (`checkModuleFullImpl:11210`, concrete-head pick); impl query table `shadowKeyTableRef` (`:11217`, includes LOCAL impls per `cfc4fa5a`) | live-impl head ⇒ ordinary app (dispatch); else instantiate the IMPORTED standalone scheme + stamp `RLocal` | standalone scheme = the seedVars entry whose first arrow domain has a **concrete head tycon** (never the poly method scheme) |
 | S2 no-impl obligation skip | `typecheck.mdk:4670` `recordImplObligation`, skip arm `:4688` | a no-impl shadow receiver is a legitimate standalone fallback, not `No impl of …` | bare name ∈ `definerShadowNamesRef` ∪ `standaloneValuesRef` — skips the obligation for EVERY occurrence of the name, impl-having or not (this un-checks row 13: the domain mismatch is never re-imposed) |
-| S2/S3/S5 route stamping | `recordRLocalSite:3456` (gated on `standaloneValuesRef`, suppressed inside `inferDefinerShadowApp`); `resolveRLocalSites:6978` / `resolveRLocalSite:6991`: grounded head + `implExistsForHead` → leave route (dispatch) else `RLocal sym` (`stampRLocalOrFallback:7011`); ungrounded → `RLocal` for definer shadows (`:7006`); build-path RKey via `pendingArgStamps` push (`:5054`) → `resolveArgStamps` | per-receiver decision, deferred to post-inference grounding | receiver mono = the ACTUAL argument mono recorded by `inferDefinerShadowApp` (NOT the standalone's declared domain — the `953d9ea1` fix); impl existence per **head tycon only** |
+| S2/S3/S5 route stamping | `recordRLocalSite` (gated on `standaloneValuesRef`, suppressed inside `inferDefinerShadowApp`); `resolveRLocalSites` / `resolveRLocalSite`: **`isDefinerShadow` ⇒ `RLocal sym` unconditionally**, else (importer) grounded head + `implExistsForHead` → leave route (dispatch) else `RLocal sym` (`stampRLocalOrFallback`); ungrounded → `RLocal` for definer shadows; build-path RKey via `pendingArgStamps` push → `resolveArgStamps` | **[CHANGED — THE INVERSION]** route by SHADOW KIND first, receiver second. `resolveArgStamps` runs BEFORE `resolveRLocalSites`, so the `RLocal` stamp wins | ⚠️ **`isDefinerShadow`, not a bare `definerShadowNamesRef` membership test.** That ref is populated for a multi-TYPARAM interface's method too, but every *typing* entry point is gated on `singleParamIfaceMethod` and leaves such an occurrence to ordinary dispatch (open bug S-3 / row 26). Forcing `RLocal` here without the same gate routes a site whose TYPE came from the dispatch path — **route and type disagreeing is precisely the P0-20 bug class.** The two gates must stay identical |
 | route representation | `compiler/frontend/ast.mdk:69-72` (`RKey`/`RLocal String`); sexp `compiler/ir/core_ir_sexp.mdk:43-44` (`RLocal ""` serializes to the old nullary form) | ONE occurrence needs TWO names: bare `N` for dispatch, `<mid>__N` for the standalone | the mangled standalone symbol is **carried in the route**, stamped at resolve time (Fork-2 carry-in-route) |
 | lowering | `compiler/ir/core_ir_lower.mdk:144` `EMethodAt name … → CMethod name …` | route + both names survive to the backends | `name` is the single bare field; the RLocal symbol rides the route |
 | emit (LLVM) | `compiler/backend/llvm_emit.mdk:3413` `emitMethod … (RKey tag)` → `implFor e name tag`; `:3435` `… (RLocal sym)` → `emitKnownFnSat e ("mdk_" ++ sym)` | S2's two arms at codegen | RKey needs the **bare** method name; RLocal needs the **mangled** symbol |
@@ -464,18 +648,52 @@ this row's `build` failure (it saw a GC OOM) to the missing dict.
 > working behavior, so if it is a live latent bug the gate will catch it the
 > moment it bites.
 
-### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver under-applies on `run`
+### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver — ✅ **CLOSED 2026-07-14**
 
-`import prov.{size}` where `prov.size : Num a => a -> a` shadows a local interface method,
-called as `size 3`: **`build` and `wasm` are correct (4); `run` still under-applies.**
+**The filed diagnosis was right, and its own suggested fix was the fix.** But the residual
+**understated the blast radius**, and that is the part worth remembering.
 
-Cause: a `Num` literal receiver is not grounded when `inferShadowApp` asks
-`headTyconMono tx`, so it never reaches that function's *standalone* arm (which does compute
-the dicts) and falls to its ordinary-app arm. The occurrence is then recorded by the generic
-`recordRLocalSite`, whose dict slots come back empty for this cross-module case. `build` is
-unaffected because an importer shadow reaches the standalone through the **mangled symbol**
-via `inferDefinerShadowApp`, which does compute them. `inferShadowApp` lacks the
-`groundShadowReceiver` call that P0-20 added to `inferDefinerShadowApp` — that asymmetry is
-the likely root.
-*Fix location:* `compiler/types/typecheck.mdk` `inferShadowApp` (add the P0-20 grounding) or
-`recordRLocalSite`'s cross-module slot resolution.
+*As filed:* `import prov.{size}` where `prov.size : Num a => a -> a` shadows a local
+interface method, called as `size 3` — "`build` and `wasm` are correct (4); `run` still
+under-applies." Read that way it sounds like a **constrained**-standalone dict-threading
+nit on one engine.
+
+*What it actually was:* the root breaks an **unconstrained** standalone at **`check`**, on
+**all three paths**, whenever the shadowed method is **higher-kinded** — which every
+`Foldable`/`Mappable`/`Traversable` method is:
+
+```medaka
+-- prov.mdk:  export isEmpty : Int -> Bool   (isEmpty n = n == 0)
+import prov.{isEmpty}
+main = println (debug (isEmpty 0))    -- Type mismatch: Int literal vs Int Int
+```
+
+The **`Int Int`** is the tell. A numeric literal is `Num a => a`, i.e. **ungrounded** at
+inference time, so `inferShadowApp`'s `headTyconMono tx` said `None`, it never reached its
+*standalone* arm, and it fell to the ordinary-app arm — which types against the **method**
+scheme the env rebound the name to. The prelude's `Foldable.isEmpty : t a -> Bool` is
+higher-kinded, so unifying `t a` against the literal's tyvar solved `t := Int, a := Int`.
+The user's imported `isEmpty : Int -> Bool` was **never consulted**.
+
+**Cause (as filed):** `inferShadowApp` lacked the `groundShadowReceiver` call that P0-20 gave
+its definer peer `inferDefinerShadowApp`. **Fix (as filed):** add it — ground the ungrounded
+receiver to the *imported* standalone's declared domain (`importerShadowDomain`) **before**
+asking the S2 impl question, so typecheck and the post-inference route resolver ask it about
+the **same head**.
+
+> ⚠️ **This is the P0-20 shape again, one arm over: ONE DECISION, DERIVED TWICE, AT TWO
+> DIFFERENT TIMES, OVER A RECEIVER THAT CHANGED IN BETWEEN.** It is the recurring root cause
+> of this entire arc. When you touch shadow routing, the question to ask is never "is the
+> receiver the right *type*" but "**is the receiver GROUNDED YET, and will it still be the
+> same thing when the route is stamped?**"
+
+**Why no gate caught it, and the lesson.** Every importer fixture — `i1`, `i3`, `i4` — used a
+**grounded** receiver (a `Box`, a `Tok`, a `List`). **Not one used a bare numeric literal**,
+so the corpus was *structurally blind* to the cell and the gate graded **18/0 over a real
+break**. Rows 27–28 (`d12`, `i5`) close it, and `i5` carries the Fork-1 control in the same
+fixture. **A gate that cannot express a cell cannot defend it: vary the receiver's
+PROVENANCE — literal / grounded / dict-bound — not just its type.**
+
+*Fixed in:* `compiler/types/typecheck.mdk` `inferShadowApp` + `importerShadowDomain`.
+Fork 1 is untouched: grounding only decides **which head** the per-receiver rule is applied
+to; a grounded head with a live impl still dispatches (`isEmpty [1, 2]` → `Foldable.isEmpty`).

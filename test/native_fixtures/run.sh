@@ -33,19 +33,8 @@
 # The first direction is the one a skip-list structurally cannot see, and it is why
 # this is a ledger. Every entry needs a reason and an owning task.
 #
-#   method_shadow_run  T-12  A user top-level fn that SHADOWS a prelude interface
-#       method is silently ignored at the call site; the interface impl wins.
-#       Minimal repro (both `medaka run` AND `medaka build` print False; True is correct):
-#           eq : List Int -> List Int -> Bool
-#           eq a b = True
-#           main = println (debug (eq [1] [2]))
-#       Dispatch arg-stamps `eq [1] [2]` to the `Eq (List a)` impl (structural -> False)
-#       instead of resolving to the user's `eq`. run == build, so it is not a run/build
-#       divergence — both are wrong the same way. The user's definition is DEAD CODE with
-#       no diagnostic. `method_shadow_check` (the `check` half) still passes, so only the
-#       value is wrong, not the types. Fixing it means touching compiler/ dispatch, which
-#       is out of scope for T8. Delete this entry when T-12 lands.
-XFAIL='method_shadow_run'
+# (empty — method_shadow_run's T-12 entry was deleted when the S2 inversion landed.)
+XFAIL=''
 
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

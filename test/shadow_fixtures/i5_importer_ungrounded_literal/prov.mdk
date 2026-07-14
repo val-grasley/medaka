@@ -1,0 +1,4 @@
+-- The provider: an ordinary standalone whose name collides with the PRELUDE's
+-- `Foldable.isEmpty`.  Nothing here is unusual -- which is the point.
+export isEmpty : Int -> Bool
+isEmpty n = n == 0

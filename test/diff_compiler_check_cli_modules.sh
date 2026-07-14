@@ -309,15 +309,27 @@ if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/impmain.mdk"
   else fail=$((fail+1)); printf 'FAIL importer-shadow/build (got [%s], want [3,4,])\n' "$imp_bld"; fi
 else fail=$((fail+1)); printf 'FAIL importer-shadow/build (native build failed)\n'; fi
 
-# 10. P0-19 (SHADOW-SEMANTICS row 14 / cell d8) DEFINER shadow with IMPORTED
-#     interface+impl.  The CONSUMER defines the standalone `size : Int -> Int` and
-#     IMPORTS the interface `Sizeable` + type `Box(..)` + its impl from `dprov`.
-#     S6: the impl universe is GLOBAL, so `size (Box 3)` must DISPATCH to the imported
-#     `impl Sizeable Box` (3) and `size 3` (Int, no impl) fall back to the standalone
-#     (4) — exactly like the all-local cell d2.  Before the fix all three paths
-#     REJECTED `Int vs Box` (the definer-shadow app typed against the local standalone
-#     before the per-receiver machinery saw the imported impl).  check must ACCEPT and
-#     build must AGREE (3 then 4).
+# 10. THE S2 INVERSION (SHADOW-SEMANTICS row 14 / cell d8) — DEFINER shadow with an
+#     IMPORTED interface+impl.  The CONSUMER defines the standalone `size : Int -> Int`
+#     and IMPORTS the interface `Sizeable` + type `Box(..)` + its impl from `dprov`.
+#
+#     ⚠️ RE-PINNED 2026-07-14, ACCEPT(3,4) -> located REJECT.  This leg was added by
+#     ebb8ee90 (P0-19 batch 2) to assert the OLD S2: "the impl universe is GLOBAL, so
+#     `size (Box 3)` must DISPATCH to the imported `impl Sizeable Box`".  The inversion
+#     abolishes the rule that leg encoded — a DEFINER shadow is now the standalone,
+#     unconditionally, and the impl universe is never queried.  So `size (Box 3)` types
+#     against the consumer's own `size : Int -> Int` and REJECTS `Type mismatch: Int vs
+#     Box` at the call site, on check AND run AND build.  This is a DELIBERATE revert of
+#     a two-day-old intentional fix, not a regression — see the d8 row in
+#     test/diff_compiler_shadow_semantics.sh.
+#
+#     S6 still holds, but VACUOUSLY: where the interface and impl live cannot change the
+#     outcome, because the outcome no longer depends on them.  The all-local cell d2
+#     rejects identically, which is the point.
+#
+#     ⚠️ The IMPORTER-shadow leg immediately above (#9) is the Fork-1 control and MUST
+#     still ACCEPT + dispatch (3,4): an `import` is a SIBLING scope, not an inner one,
+#     so it does NOT shadow.  If #9 and #10 ever agree, the inversion has leaked.
 cat > "$TMP/dprov.mdk" <<'EOF'
 export interface Sizeable a where
   size : a -> Int
@@ -337,19 +349,21 @@ main =
   println (size (Box 3))
   println (size 3)
 EOF
-dfn_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/dmain.mdk" 2>/dev/null)"
+dfn_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/dmain.mdk" 2>&1)"
 dfn_code=$?
+# The standalone WINS: `size (Box 3)` must be a LOCATED reject against `size : Int -> Int`.
 case "$dfn_out" in
-  *"Type mismatch"*|*"No impl"*) fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (spurious reject: [%s])\n' "$dfn_out" ;;
-  *) if [ "$dfn_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/check (imported iface+impl dispatch accepted)\n'
-     else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (exit %d: [%s])\n' "$dfn_code" "$dfn_out"; fi ;;
+  *"dmain.mdk:7:10: Type mismatch: Int vs Box"*)
+    if [ "$dfn_code" -ne 0 ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/check (S2 inversion: standalone wins, located reject at the call)\n'
+    else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (diagnosed but exit 0)\n'; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/check (want located "Int vs Box" at 7:10, got exit %d: [%s])\n' "$dfn_code" "$dfn_out" ;;
 esac
-# build AGREEMENT: the same project must build AND run to `3` then `4`.
+# build AGREEMENT (S7): the same project must FAIL to build, and emit no binary.
 if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/dmain.mdk" -o "$TMP/dfn.bin" >/dev/null 2>&1 && [ -x "$TMP/dfn.bin" ]; then
-  dfn_bld="$("$TMP/dfn.bin" 2>/dev/null | tr '\n' ',')"
-  if [ "$dfn_bld" = "3,4," ]; then pass=$((pass+1)); printf 'ok   definer-shadow-xmod/build (dispatch 3 + standalone 4)\n'
-  else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (got [%s], want [3,4,])\n' "$dfn_bld"; fi
-else fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (native build failed)\n'; fi
+  fail=$((fail+1)); printf 'FAIL definer-shadow-xmod/build (built a binary; the standalone-domain reject must stop it)\n'
+else
+  pass=$((pass+1)); printf 'ok   definer-shadow-xmod/build (S2 inversion: rejected, no binary — agrees with check)\n'
+fi
 
 # 11. IMPORTED-MODULE diagnostics (the regression this gate's fix targets).  A type
 #     error in an IMPORTED module (badhelper.mdk) used to be invisible on the very

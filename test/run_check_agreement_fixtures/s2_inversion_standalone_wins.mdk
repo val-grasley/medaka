@@ -1,0 +1,28 @@
+-- S2 INVERSION (2026-07-14) — THE BUG THIS CHANGE EXISTS TO FIX.
+--
+-- A top-level standalone must WIN over a same-named interface method inside the module
+-- that DEFINES it.  Before the inversion this program printed `False`: `List` has a
+-- prelude `impl Eq List`, so the OLD S2 ("a live impl at the receiver head dispatches")
+-- routed `eq [1] [2]` to `Eq.eq` and the user's function was SILENTLY DISCARDED.
+-- `check --types` did not even report the user's signature — it reported the prelude's
+-- `eq : a -> a -> Bool`.  The function wasn't shadowed, it was ERASED.
+--
+-- ⚠️ WHY NO GATE COULD SEE IT: by clause S7, check/run/build agree on every shadow cell
+-- BY CONSTRUCTION, and they did — all three were wrong the same way.  A differential
+-- gate compares the engines against each other, so it was blind to this by design.  That
+-- is why this fixture pins a VALUE (`.out`), not an agreement.
+--
+-- ~45 of the most natural names in the language sat on this landmine: the prelude
+-- declares 49 method names (`map`, `filter`, `length`, `compare`, `eq`, `min`, `max`,
+-- `abs`, `empty`, `index`, `append`, `fold`, `toList`, `display`, `debug`, `pure`, …).
+eq : List Int -> List Int -> Bool
+eq a b = True
+
+-- ...and the prelude's own `Eq` still works for everything that does NOT shadow it:
+-- `==` desugars through the method-call path, never the bare-name funDef intersection.
+data Color = Red | Blue deriving (Eq, Debug)
+
+main =
+  println (debug (eq [1] [2]))
+  println (debug (Red == Red))
+  println (debug (Red == Blue))

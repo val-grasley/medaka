@@ -1,3 +1,11 @@
+-- ⚠️ RE-PINNED 2026-07-14 — THE S2 INVERSION (REJECT -> ACCEPT, prints 4).
+-- NOTE the direction: this is the one cell in the arc that went from REJECT to ACCEPT.
+-- It is not a weakening.  The old REJECT existed ONLY as a side effect of the method
+-- stealing the call: `size 3` dispatched to `Sz.size : Int -> String`, which then
+-- clashed with the `: Int` annotation.  Under standalone-wins `size 3` is the user`s
+-- own `size : Int -> Int`, so `let s = size 3 : Int` is simply COHERENT and accepts.
+-- Everything below describes the OLD rule and is kept for the history only.
+--
 -- P0-20, the REJECT direction.  Same shadow as p0_20_shadow_literal_user_iface, but the
 -- result is pinned to the STANDALONE's return type (`Int`).  Since a literal receiver
 -- grounds to `Int` and `impl Sz Int` exists, the occurrence DISPATCHES and yields
