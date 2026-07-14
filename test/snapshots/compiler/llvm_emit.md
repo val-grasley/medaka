@@ -1,5 +1,5 @@
 # META
-source_lines=9728
+source_lines=9744
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -94,9 +94,12 @@ stages=DESUGAR,MARK
 --     each carrying the typechecker's resolved `Route`s.  An `RKey` route is
 --     STATICALLY resolved (the concrete impl is known at compile time) → a DIRECT
 --     call to that impl's lifted `@mdk_impl_<tag>_<method>`; `RDict`/`RDictFwd` read
---     a runtime dict-parameter witness word → an inline if-chain over the method's
---     impls.  Mirrors core_ir_eval's methodAtNarrow/applyDicts/narrowMethod.  See the
---     "typeclass dispatch (slice 6)" section below for the (j)/(k)/(l) rep notes.
+--     a runtime dict-parameter witness word → a CALL to the method's SHARED
+--     dispatcher `@mdk_disp_<method>_<nMeth>_<nArgs>`, which holds the impl if-chain
+--     (issue #118 — the chain is OUTLINED, not inlined at the site; look for it
+--     there, not here).  Mirrors core_ir_eval's methodAtNarrow/applyDicts/
+--     narrowMethod.  See the "typeclass dispatch (slice 6)" section below for the
+--     (j)/(k)/(l) rep notes.
 --   • slice 8 — ARRAYS + RANGES.  CArray allocates a length-prefixed boxed cell
 --     (layout: [ i64 raw_len | elem0 | elem1 … ], reusing the slice-3 cell shape
 --     but with the header word = raw element count rather than a constructor hash).
@@ -3577,9 +3580,22 @@ argDecls (x::rest) = "i64 \{x}, \{argDecls rest}"
 --       nullary return-position impl (`def`/`zero`/`empty`) is a zero-arg function
 --       the use site CALLs for its value; a parameterized impl takes its params.
 --   (l) DISPATCH — RKey ⇒ a direct call (impl chosen at compile time).  RDict/
---       RDictFwd ⇒ an inline if-chain over the method's impls comparing the dict
---       witness word to each impl's hashName tag; an exhausted chain is
+--       RDictFwd ⇒ a CALL to the method's SHARED dispatcher
+--       `@mdk_disp_<method>_<nMeth>_<nArgs>(%dict, %mw…, %arg…)`.  ⚠️ THE IF-CHAIN IS
+--       NOT AT THE SITE — it lives in that dispatcher (issue #118: it used to be
+--       inlined at every site, which made emitted IR grow as `Σ over sites of
+--       (#impls of that site's method)`; 107 sites shared just 9 distinct chains on a
+--       9-line fixture).  INSIDE the dispatcher the chain is unchanged: compare the
+--       dict witness word to each impl's hashName tag; an exhausted chain is
 --       `unreachable` (the typechecker proves the dict names a real impl).
+--       Debugging a dispatch miscompile? The arm you want is in `@mdk_disp_*`.
+--
+--       Why one dispatcher can serve every site of a method: the chain body is a pure
+--       function of the method NAME, the method-level dict count, and the arg count —
+--       all three are baked into the symbol — plus program-global tables
+--       (`implsOf`/`defaultFor`/`ifaceTags`, all reading `e.implEntries`, which is
+--       written ONCE at Emit construction and never mutated).  So the impl set cannot
+--       grow between the site that mints a dispatcher and any later site.
 
 -- a method occurrence.  `argOps` are the already-emitted real-argument words (empty
 -- for a bare nullary method like `def`).  methRoutes/implRoutes apply method-/
