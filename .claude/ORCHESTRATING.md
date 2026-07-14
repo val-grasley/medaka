@@ -22,7 +22,7 @@ gh pr create --fill
 gh pr merge --auto --merge       # enqueues; the merge queue does the rest
 ```
 
-**Nine required checks:** the six `gates (…)` shards, **`soundness`**, `seed-health`, `inlang`. Zero
+**Ten required checks:** the **seven** `gates (…)` shards, **`soundness`**, `seed-health`, `inlang`. Zero
 approvals — the *checks* are the gate, not a human, so an agent can self-merge on green.
 
 **`soundness` is required ON PURPOSE and must never be dropped.** It runs the compiler-source

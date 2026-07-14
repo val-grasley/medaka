@@ -11,6 +11,14 @@ reference compiler was removed 2026-06-26 (tag `oracle-frozen` preserves the las
 **This file is a *router*: maps, traps, and links.** It does not teach. For prose,
 rationale, and post-mortems, follow the links — and don't assume detail that isn't here.
 
+> ### ⚡ Editing `compiler/`? Read [`compiler/AGENTS.md`](compiler/AGENTS.md) first.
+> **How not to make the compiler slow.** It exists because *the agents who introduce
+> performance bugs here are not the ones hunting them* — every quadratic in this tree was
+> added by someone doing reasonable feature work who never thought about perf at all.
+> **Thirteen quadratics, all the same shape: a `List` used as a set or a map.** It also
+> records the two bottlenecks (`check` is **GC-bound**; `build`/CI is **clang-bound** — do not
+> conflate them) and the measurement traps that produce confidently wrong answers.
+
 `compiler/` is ONE Medaka project (`compiler/medaka.toml`); each stage is one `.mdk` file
 under a subfolder: `frontend/` (lex/parse/AST/desugar/resolve/marker/exhaust), `types/`
 (typecheck + annotate), `ir/` (Core IR, DCE, S-expr), `backend/` (LLVM + WasmGC emit, TRMC,
@@ -100,7 +108,12 @@ gh pr create --fill
 gh pr merge --auto --merge           # merges itself the moment all 9 checks go green
 ```
 
-**Nine required checks:** the six `gates (…)` shards, `soundness`, `seed-health`, `inlang`.
+**Ten required checks:** the **seven** `gates (…)` shards (engines · backend · tools · sqlite ·
+eval · frontend · types), `soundness`, `seed-health`, `inlang`. ⚠️ **A gate matching
+`test/diff_compiler_*.sh` but no shard pattern in `ci.yml` SILENTLY NEVER RUNS** —
+`diff_compiler_ci_shard_coverage.sh` catches it, and the merge queue will bounce you for it.
+Shards are scheduled by **cost, not theme**: put a new gate where there is ROOM, never on
+`gates (engines)` (~5.8 min — the critical path).
 **Zero approvals required** — the *checks* are the gate, not a human, so an agent can
 self-merge on green. The repo is org-owned (MedakaLang), so a **merge queue is live** — see above; `--auto` enqueues.
 
