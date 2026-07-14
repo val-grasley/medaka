@@ -354,25 +354,19 @@ cause was wrong ~every time.
 >   the lexer has no exponent form, so it cannot read the float the printer writes. No single doc owned
 >   enough of it to see the shape. **One tracker, one item, one root cause.**
 
-### ⚠️ VERIFYING ONE MEMBER OF A FAMILY AND GENERALIZING IS HOW A FALSE CLAIM GETS *STRONGER*
+### ⚠️ Check the SET, not one member — a plural noun in a backlog item is a claim about a set
 
-I did this **while writing the fix for exactly this problem**, so it is worth its own heading.
+An item that says *"the four X's"*, *"the warnings"*, *"both backends"*, *"the whole tree"* is a claim
+about a **set**. **Enumerate it and check every member, or narrow the claim to what you actually ran.**
+Reporting N after verifying 1 is worse than not verifying: it *retires the question*.
 
-The backlog said *"the non-exhaustive-match **warnings** print with no `file:L:C`."* I checked the
-**match** warning, found it fixed, and wrote into `RELEASE-0.1.0-PLAN.md`: *"W-errors has no remaining
-exception — **it is fully frozen**."* The **guard**-exhaustiveness warning still prints
-`<unknown location>` — and **fabricates a `0:0` range in `--json`**, so an editor squiggles line 1.
-My edit did not just miss it; it **upgraded a partly-true doc into a confidently false one**, over the
-signature of a "verified" pass. A review agent caught it (#99).
+It happened here, to this very doc set: *"W-errors has no remaining exception — **it is fully
+frozen**"* was written after checking the non-exhaustive-**match** warning and generalizing. The
+**guard** warning still fabricates a `0:0` location (#99). The edit turned a hedged doc into a
+confidently false one, stamped `verified`.
 
-**The rule: an item that says "the four X's" or "the warnings" or "both backends" is a CLAIM ABOUT A
-SET. Enumerate the set and check every member, or narrow the claim to what you actually ran.** A
-verification that covers 1 of N and reports N is worse than no verification, because it retires the
-question.
-
-This is the same disease as *"a one-backend fix is a half fix"* (#59) and *"a parity gate cannot see a
-bug where both backends are equally wrong"* — **the unit of verification must be the unit of the
-claim.**
+Same disease as *"a one-backend fix is a half fix"* (#59) and *"a parity gate cannot see a bug where
+both backends are equally wrong"*. **The unit of verification must be the unit of the claim.**
 
 - **Reproduce a "known gap" on current main before you scope or spawn a fix.** A throwaway repro
   (`run` = oracle, `build` + run = native, compare) takes a minute and repeatedly saved an Opus agent
