@@ -6319,6 +6319,8 @@ registerData env (DData _ name params variants _) =
 registerData env (DTypeAlias _ name params rhs) =
   let _ = setRef aliasTableRef ((name, (params, rhs))::aliasTableRef.value)
   env
+registerData env (DNewtype _ name params con fty _) =
+  registerVariants env name params [Variant con (ConPos [fty])]
 registerData env _ = env
 
 -- ── record metadata registration & instantiation ──────────────────────────

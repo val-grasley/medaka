@@ -35,6 +35,52 @@ EMITTER="${MEDAKA_EMITTER:-$ROOT/medaka_emitter}"
 FIXTURES="$ROOT/test/construct_fixtures"
 CC="${CC:-clang}"
 
+# ── Worker: one fixture. Writes <label>.out (the lines to print) + <label>.st ──
+#
+# Dispatched BEFORE the toolchain probe below on purpose: the parent has already
+# proven clang + libgc are present, and the libgc probe's fallback arm compiles a C
+# file. Re-running it in each of 144 workers would spawn 144 pointless clangs.
+#
+# The old serial `check()` wrote its diff through two FIXED scratch paths
+# ($WORK/exp.txt, $WORK/got.txt) shared by every fixture — already a latent footgun,
+# and a real race here. The worker keys them on the label instead.
+if [ "${1:-}" = "--one" ]; then
+  src="$2"
+  RD="$3"
+  label="$(basename "$src" .mdk)"
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "$WORK"' EXIT
+  bin="$WORK/$label.bin"
+  golden="${src%.mdk}.build.golden"
+  out="$RD/$label.out"
+
+  if [ ! -f "$golden" ]; then
+    printf 'FAIL %s (no .build.golden — run sh test/capture_goldens.sh build_construct)\n' "$label" > "$out"
+    echo fail > "$RD/$label.st"; exit 0
+  fi
+  if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" \
+       "$MEDAKA" build --allow-internal "$src" -o "$bin" >"$WORK/build.out" 2>"$WORK/build.err"; then
+    { printf 'FAIL %s (native build)\n' "$label"
+      sed 's/^/    /' "$WORK/build.err" | head -5
+    } > "$out"
+    echo fail > "$RD/$label.st"; exit 0
+  fi
+  native="$("$bin" 2>/dev/null)"
+  expected="$(cat "$golden")"
+  if [ "$native" = "$expected" ]; then
+    printf 'ok   %s\n' "$label" > "$out"
+    echo pass > "$RD/$label.st"
+  else
+    printf '%s' "$expected" > "$WORK/exp.txt"
+    printf '%s' "$native"   > "$WORK/got.txt"
+    { printf 'FAIL %s (diff)\n' "$label"
+      diff "$WORK/exp.txt" "$WORK/got.txt" | head -8 | sed 's/^/    /'
+    } > "$out"
+    echo fail > "$RD/$label.st"
+  fi
+  exit 0
+fi
+
 [ -x "$MEDAKA" ]  || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
 [ -x "$EMITTER" ] || { echo "build native first: make medaka (missing $EMITTER)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping"; exit 2; }
@@ -44,9 +90,6 @@ elif GC_PREFIX="$(brew --prefix bdw-gc 2>/dev/null)" && [ -n "$GC_PREFIX" ] && [
 elif printf '#include <gc.h>\nint main(void){return 0;}\n' | "$CC" -x c - -lgc -o /dev/null 2>/dev/null; then :
 else echo "libgc (bdw-gc) not found — skipping (install bdw-gc)"; exit 2; fi
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
 # Known native-CLI gap DEFERRED (no .build.golden captured; gate skips it):
 #   newtype_ctor_fn — a `newtype`'s implicit constructor used as a callable
 #     (arity-1 function) or in a match pattern is not recognised by native
@@ -55,42 +98,76 @@ trap 'rm -rf "$WORK"' EXIT
 #     (verified 2026-07-13; the fixture itself is annotated "Gap D2"). This is
 #     a real, narrow compiler gap — not a stale fixture — left for a
 #     dedicated newtype-constructor task; do not resurrect it here.
-SKIP="newtype_ctor_fn"
-skipped=0
+# SKIP is EMPTY — every previously-deferred construct now builds.
+#
+# Two independent efforts emptied this list from opposite ends:
+#   * main (T-3) closed four: tuple_neq, json_parse, mod_reverse_string, type_alias
+#   * this branch closed the fifth, newtype_ctor_fn (bug #31) — the "dedicated
+#     newtype-constructor task" main's own comment was waiting for. `newtype` ctors
+#     were unbound at typecheck (registerData dropped DNewtype) AND at eval
+#     (ctorsOfDecl/ctorTypeEntries dropped it too). Both fixed; golden captured.
+#
+# Keep it empty. A construct that stops building should FAIL here, not be re-added to
+# a skip-list — a skip-list cannot notice an accidental fix, so it rots.
+SKIP=""
 
-pass=0; fail=0
+# ── Fan-out (2026-07-14) ──────────────────────────────────────────────────────
+# 144 × (`medaka build` + clang), and it used to run them ONE AT A TIME: 282s of
+# CPU and 282s of wall, on any machine, forever. It was the second-heaviest gate
+# in the suite and the only heavy one that had no fan-out at all, which made
+# whichever CI shard hosted it a 282s floor no amount of resharding could lower.
+#
+# Each fixture is independent: its own source, its own golden, its own output
+# binary. `medaka build` stages its scratch IR in a per-PROCESS mktemp dir (fixed
+# 2026-07-13 — it used to key on the output BASENAME in global /tmp, which is why
+# concurrent builds silently produced each other's binaries), so N of them in
+# flight is safe. diff_compiler_engines already runs 346 concurrent `medaka build`s
+# over the same emitter and has for weeks.
+#
+# The verdict and the printed output are UNCHANGED: each worker writes its lines to
+# a file and the parent replays them in fixture order, so a parallel run is
+# byte-identical to a serial one (verified serial-vs-JOBS=6, 3 runs). JOBS=1
+# restores the strictly-serial behaviour.
+NCPU="$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+JOBS="${JOBS:-$NCPU}"
 
-check() {
-  src="$1"
-  label="$(basename "$src" .mdk)"
-  bin="$WORK/$label.bin"
-  golden="${src%.mdk}.build.golden"
+RD="$(mktemp -d)"
+trap 'rm -rf "$RD"' EXIT
 
-  if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .build.golden — run sh test/capture_goldens.sh build_construct)\n' "$label"; return
-  fi
-  if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" \
-       "$MEDAKA" build --allow-internal "$src" -o "$bin" >"$WORK/$label.out" 2>"$WORK/$label.err"; then
-    fail=$((fail+1)); printf 'FAIL %s (native build)\n' "$label"
-    sed 's/^/    /' "$WORK/$label.err" | head -5
-    return
-  fi
-  native="$("$bin" 2>/dev/null)"
-  expected="$(cat "$golden")"
-  if [ "$native" = "$expected" ]; then
-    pass=$((pass+1)); printf 'ok   %s\n' "$label"
-  else
-    fail=$((fail+1)); printf 'FAIL %s (diff)\n' "$label"
-    printf '%s' "$expected" > "$WORK/exp.txt"
-    printf '%s' "$native"   > "$WORK/got.txt"
-    diff "$WORK/exp.txt" "$WORK/got.txt" | head -8 | sed 's/^/    /'
-  fi
-}
-
+todo=""
 for src in "$FIXTURES"/*.mdk; do
   label="$(basename "$src" .mdk)"
-  case " $SKIP " in *" $label "*) skipped=$((skipped+1)); printf 'skip %s (known native-CLI gap — see header)\n' "$label"; continue ;; esac
-  check "$src"
+  case " $SKIP " in
+    *" $label "*)
+      printf 'skip %s (known native-CLI gap — see header)\n' "$label" > "$RD/$label.out"
+      echo skip > "$RD/$label.st"
+      continue ;;
+  esac
+  todo="$todo $src"
+done
+
+# ZERO-COMPARISON guard: an empty fixture dir must not report "0 ok, 0 failing" and
+# exit 0 — a gate that compared nothing has proven nothing (docs/ops/TESTING-DESIGN.md §2.3).
+[ -n "$todo" ] || { echo "no construct fixtures in $FIXTURES — the gate compared nothing"; exit 2; }
+
+# The worker re-derives ROOT/MEDAKA/EMITTER from $0 and the environment exactly as the
+# parent did, so nothing needs passing down: MEDAKA_EMITTER (the only env input) is
+# already inherited.
+printf '%s\n' $todo | xargs -P "$JOBS" -I{} sh "$0" --one {} "$RD"
+
+# Replay in fixture order, so the output is identical to the serial run's.
+pass=0; fail=0; skipped=0
+for src in "$FIXTURES"/*.mdk; do
+  label="$(basename "$src" .mdk)"
+  [ -f "$RD/$label.st" ] || {
+    printf 'FAIL %s (worker produced no result)\n' "$label"; fail=$((fail+1)); continue
+  }
+  cat "$RD/$label.out"
+  case "$(cat "$RD/$label.st")" in
+    pass) pass=$((pass+1)) ;;
+    skip) skipped=$((skipped+1)) ;;
+    *)    fail=$((fail+1)) ;;
+  esac
 done
 
 printf '\n%d ok, %d failing, %d skipped (of %d)\n' "$pass" "$fail" "$skipped" "$((pass+fail+skipped))"

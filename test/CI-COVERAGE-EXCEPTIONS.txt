@@ -92,7 +92,14 @@ playground/e2e/run  needs system Chrome + an un-committed 2.6MB playground/dist 
 # of 144). Triaged: the failure was a stale `let_else` fixture for a REMOVED construct, and
 # FOUR of the five "skips" were stale too — their documented gaps had been fixed elsewhere
 # and nobody had re-checked the skip list against a current binary. Now 142 ok / 0 failing /
-# 1 skipped, and enrolled in the `engines` shard (see ci.yml).
+# 1 skipped, and enrolled in a shard (see ci.yml).
+#
+# It went into `engines` — the shard that ALREADY held the suite's single most expensive gate —
+# on the reasoning that it was "the smallest shard". That was measured wrong: `engines` was the
+# smallest by GATE COUNT and by far the largest by COST, and stacking a 282s serial gate onto it
+# put both on the critical path. Moved to `frontend` (the genuinely cheapest shard) and given a
+# fan-out (298s -> 111s) on 2026-07-14. See the shard-scheduling note in ci.yml: shards are
+# scheduled by measured cost, not by name.
 #
 # `check_removed_constructs` and `fuzz_diff` (T-4) — COVERED by .github/workflows/nightly.yml,
 # on a schedule (+ workflow_dispatch). Neither belongs on the PR path: check_removed_constructs
@@ -109,7 +116,11 @@ playground/e2e/run  needs system Chrome + an un-committed 2.6MB playground/dist 
 #
 #   sqlite/test/*_oracle.sh (22)  Differential gates diffing the pure-Medaka SQLite library
 #                                 against the REAL sqlite3 CLI. All 22 verified green
-#                                 (2026-07-13, ~5 min serial). Now in the `sqlite` shard.
+#                                 (2026-07-13, ~5 min serial; 188 CPU-s). Now in the `sqlite`
+#                                 shard — WHICH THIS LINE CLAIMED FOR A DAY BEFORE IT EXISTED.
+#                                 They were actually dumped into `engines`, the longest shard,
+#                                 and this ledger said otherwise. The shard is real as of
+#                                 2026-07-14; the doc is now true.
 #   test/native_fixtures/run.sh   11 native-only regression assertions. Lives one directory
 #                                 DOWN from test/, so even `test/*.sh` missed it. It was RED
 #                                 — and had been for an unknown length of time. Triaged: one
