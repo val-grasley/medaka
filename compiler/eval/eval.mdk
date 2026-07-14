@@ -2499,7 +2499,7 @@ buildModInfos globalCells exportsMap ((mid, decls)::rest) =
   let localCells = map (n => (n, Ref VUnit)) (map fst grps ++ map fst modCtors)
   let imports = importFrameOf exportsMap decls
   let menv = EvalEnv [localCells, imports, globalCells]
-  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports exportsMap decls
+  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports globalCells exportsMap decls
   ModInfo mid decls grps localCells menv :: buildModInfos globalCells ((mid, exports)::exportsMap) rest
 
 -- IMPORT ALIASING: a module must ALSO export the interface/impl METHODS it declares.
@@ -2621,15 +2621,33 @@ useImports exportsMap (DUse _ path _) = match lookupAssoc (useModuleId path) exp
   Some exports => resolveMembers path exports
 useImports _ _ = []
 
--- cells re-exported by a `pub import`
-export pubReexports : List (String, List (String, Ref (Value e))) -> List Decl -> List (String, Ref (Value e))
-pubReexports exportsMap decls = flatMap (reexport exportsMap) decls
+-- cells re-exported by a `pub import`.
+--
+-- `core` re-exports resolve against `globalCells`, not `exportsMap`: core is the
+-- implicit prelude, so it is installed straight into the GLOBAL frame and never
+-- appears in exportsMap as a module.  Matches resolve's `coreExports` — the two must
+-- agree on core's surface or a name resolve accepts would be unbound at eval.
+--
+-- The re-exporter's export list must really CONTAIN the cell, not merely tolerate the
+-- name: an importer that ALIASES it (`import list.{filter as keep}` — legal; it is the
+-- `export import` side that may not alias) is bound by `resolveMembers`, which looks the
+-- ORIGIN up in this list and enters it under the LOCAL name.  With core absent from
+-- exportsMap that lookup missed, `keep` bound nothing, and only an unaliased reference
+-- survived — by falling through to the global frame, which is not binding, just luck.
+export pubReexports : List (String, Ref (Value e)) -> List (String, List (String, Ref (Value e))) -> List Decl -> List (String, Ref (Value e))
+pubReexports globalCells exportsMap decls =
+  flatMap (reexport globalCells exportsMap) decls
 
-reexport : List (String, List (String, Ref (Value e))) -> Decl -> List (String, Ref (Value e))
-reexport exportsMap (DUse True path _) = match lookupAssoc (useModuleId path) exportsMap
-  None => []
-  Some exports => resolveMembers path exports
-reexport _ _ = []
+reexport : List (String, Ref (Value e)) -> List (String, List (String, Ref (Value e))) -> Decl -> List (String, Ref (Value e))
+reexport globalCells exportsMap (DUse True path _) =
+  let src = if useModuleId path == "core" then
+    Some globalCells
+  else
+    lookupAssoc (useModuleId path) exportsMap
+  match src
+    None => []
+    Some exports => resolveMembers path exports
+reexport _ _ _ = []
 
 -- The cells an import binds into the importing module's frame, keyed by the LOCAL name.
 -- The origin module's cell is shared by REFERENCE, so an alias is a second name for the

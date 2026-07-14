@@ -1,0 +1,8 @@
+-- resolves against prov's RE-EXPORTS of core names — clean.
+import prov.{filter, filterMap, twice}
+
+evens : List Int -> List Int
+evens xs = filter (x => x % 2 == 0) xs
+
+doubled : List Int -> List Int
+doubled xs = filterMap (x => Some (twice x)) xs

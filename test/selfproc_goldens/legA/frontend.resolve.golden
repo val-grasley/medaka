@@ -8,7 +8,7 @@ bestOf : String -> Int -> List String -> Option String
 buildEnv : List Decl -> List Decl -> List Decl -> List String -> Env
 buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> List String -> (Env, List ResError)
 buildErrors : List Decl -> List Decl -> List ResError
-buildExports : List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+buildExports : ModuleExports -> List ModuleExports -> String -> List Decl -> Env -> ModuleExports
 builtInEffects : List String
 checkArm : Option Loc -> Env -> List String -> Arm -> List ResError
 checkArmGuards : Option Loc -> Env -> List String -> List Guard -> (List ResError, List String)
@@ -50,6 +50,9 @@ closeMissing : List String -> List String -> Map String Unit -> Map String Unit
 collectImports : List ModuleExports -> List Decl -> ImportAdds
 contigGo : Map String Unit -> List String -> List Decl -> List ResError
 contiguityErrors : List Decl -> List ResError
+coreExports : List Decl -> ModuleExports
+coreUseErrors : List Decl -> List Decl -> List ResError
+coreUseErrorsOf : ModuleExports -> Decl -> List ResError
 ctorNames : List Decl -> List String
 dataRecordNames : List Decl -> List String
 dbName : ResError -> String
@@ -150,7 +153,7 @@ oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (St
 oneImportedModuleValues : List ModuleExports -> UsePath -> List (String, List String)
 optStrEq : Option String -> String -> Bool
 orElseLocL : Option Loc -> Option Loc -> Option Loc
-overPubUse : List ModuleExports -> (UsePath -> ModuleExports -> List a) -> UsePath -> List a
+overPubUse : ModuleExports -> List ModuleExports -> (UsePath -> ModuleExports -> List a) -> UsePath -> List a
 ownedFieldOwners : ModuleExports -> List (String, String) -> List (String, String)
 ownersForTypes : List String -> List (String, String) -> List (String, String)
 ownersOf : String -> List (String, String) -> List String
@@ -172,19 +175,19 @@ pubErrLoc : ModuleExports -> (String, Loc) -> List ResError
 pubIfaceMethodSets : List Decl -> List (List String)
 pubUsePaths : List Decl -> List UsePath
 publicIfaceMethodVals : List Decl -> Env -> List String
-reExpCtors : List ModuleExports -> List Decl -> List String
+reExpCtors : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpCtorsFrom : UsePath -> ModuleExports -> List String
-reExpEffects : List ModuleExports -> List Decl -> List String
+reExpEffects : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpEffectsFrom : UsePath -> ModuleExports -> List String
-reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwners : ModuleExports -> List ModuleExports -> List Decl -> List (String, String)
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
-reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethods : ModuleExports -> List ModuleExports -> List Decl -> List (String, List String)
 reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
-reExpInterfaces : List ModuleExports -> List Decl -> List String
+reExpInterfaces : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpInterfacesFrom : UsePath -> ModuleExports -> List String
-reExpTypes : List ModuleExports -> List Decl -> List String
+reExpTypes : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpTypesFrom : UsePath -> ModuleExports -> List String
-reExpValues : List ModuleExports -> List Decl -> List String
+reExpValues : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpValuesFrom : UsePath -> ModuleExports -> List String
 realImport : ModuleExports -> UsePath -> Loc -> ImportAdds
 recCreateField : Option Loc -> Env -> String -> FieldAssign -> List ResError
@@ -223,6 +226,7 @@ suggestName : Env -> List String -> String -> Option String
 suggestNameFuzzy : Env -> List String -> String -> Option String
 suggestType : Env -> String -> Option String
 suggestTypeFuzzy : Env -> String -> Option String
+typeCtorsAllOf : List Decl -> List (String, List String)
 typeCtorsOf : String -> ModuleExports -> Option (List String)
 unboundVarErrors : Option Loc -> Env -> List String -> String -> List ResError
 unionStr : List String -> List String -> List String

@@ -1,0 +1,8 @@
+-- `core` is the IMPLICIT prelude: it is prepended, not imported, so it is absent
+-- from the loader's `known` exports.  A re-export of a core name therefore used to
+-- resolve to NOTHING — silently: this module checked clean while exporting none of
+-- the three names below (the shape of stdlib/list.mdk's `export import core.{...}`).
+export import core.{Filterable, filter, filterMap}
+
+export twice : Int -> Int
+twice x = x * 2

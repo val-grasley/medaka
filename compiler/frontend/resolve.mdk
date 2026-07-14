@@ -1123,9 +1123,37 @@ buildErrors preludeDecls prog =
   let contigErrs = filterOutNamesIn sigDupNames dbName (contiguityErrors prog)
   externWithBodyErrors (externNames prog) prog
     ++ duplicateErrors preludeDecls prog
+    ++ coreUseErrors preludeDecls prog
     ++ sigDups
     ++ contigErrs
     ++ dupValErrs
+
+-- Validate every `core` use-path's members against the prelude's real surface.
+--
+-- Lives in buildErrors because buildErrors is the ONE import-independent error pass
+-- both resolve paths run — `resolveProgram` (single-file: `medaka check one.mdk`, which
+-- the CLI routes to whenever the graph is ONE module) and `resolveModuleG` (multi-module).
+-- The multi-module path's `oneImport` cannot host this: the single-file path never
+-- consults an import table at all, and a module whose only imports are `core` IS a
+-- one-module graph — precisely the shape of `stdlib/list.mdk`.  Validating in the import
+-- table alone would leave the EXPORT SITE, checked on its own, silent: the exact hole that
+-- let `export import core.{filter}` re-export nothing while `medaka check stdlib/list.mdk`
+-- reported no problem at all.
+--
+-- Non-core paths are NOT validated here — they need the loader's `known` exports, which
+-- buildErrors does not have; the multi-module path validates them in `oneImport`.
+coreUseErrors : List Decl -> List Decl -> List ResError
+coreUseErrors preludeDecls prog =
+  flatMap (coreUseErrorsOf (coreExports preludeDecls)) prog
+
+coreUseErrorsOf : ModuleExports -> Decl -> List ResError
+coreUseErrorsOf coreExp (DAttrib _ d) = coreUseErrorsOf coreExp d
+coreUseErrorsOf coreExp (DUse _ path loc)
+  | useModId path == "core" =
+    let (_, errs) = importedNamesMM path coreExp
+    map (withResErrorLoc loc) errs
+  | otherwise = []
+coreUseErrorsOf _ _ = []
 
 -- name extractors for the three ResError kinds combined in buildErrors — each
 -- is only ever applied to a list its OWN producer built, so the wildcard arm
@@ -1852,6 +1880,13 @@ foldImports known ((p, loc)::rest) =
 oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
 oneImport known path loc =
   let mid = useModId path
+  -- `core` binds NOTHING here: it is the implicit prelude, so every one of its names
+  -- is already in scope in every module (buildEnvMM seeds them from preludeDecls).  A
+  -- core use-path is a no-op for SCOPE — it documents intent, and (with `export`) widens
+  -- this module's export surface.  Its members are still VALIDATED, but in `buildErrors`
+  -- (see coreUseErrors), which is the one pass BOTH resolve paths run — validating here
+  -- would leave the single-file path, and therefore a lone `medaka check <exporter>.mdk`,
+  -- silent.
   if mid == "core" then emptyAdds
   else match findExports mid known
     None => stubOrUnknown known path mid loc
@@ -2003,18 +2038,57 @@ oneImportedModuleValues known path =
     None => []
     Some exp => [(mid, exp.expValues)]
 
+-- ── core's export surface ──────────────────────────────────────────────────
+-- The prelude, viewed as a ModuleExports, so a `core` use-path can be resolved
+-- and VALIDATED exactly like any other module's (see overPubUse / coreUseErrors).
+--
+-- core is never in the driver's `known` list — it is prepended to every module,
+-- not imported — so every `mid == "core"` site had to answer "what does core
+-- export?" and none could.  They all answered "nothing", which is why an
+-- `export import core.{…}` exported nothing AND said nothing.
+--
+-- Built from the SAME extractors `buildEnvMM` uses to seed prelude names into
+-- scope (preludeValueNames / dataRecordNames / ctorNames / interfaceList / …), so
+-- "what core exports" is by construction "what core puts in scope".  The prelude
+-- ignores visibility markers — every core name is in scope in every module — so
+-- its export surface is all of it.
+coreExports : List Decl -> ModuleExports
+coreExports preludeDecls = ModuleExports {
+  modId = "core",
+  expValues = preludeValueNames preludeDecls,
+  expTypes = dataRecordNames preludeDecls,
+  expCtors = ctorNames preludeDecls,
+  expTypeCtors = typeCtorsAllOf preludeDecls,
+  expFieldOwners = fieldOwnersOf preludeDecls,
+  expInterfaces = map fst (interfaceList preludeDecls),
+  expIfaceMethods = interfaceList preludeDecls,
+  expEffects = effectNames preludeDecls,
+}
+
+-- type → its ctors, ignoring visibility (the vis-filtered `expTypeCtorsDirect` is
+-- for a real module's public surface; the prelude has no private names).  Feeds
+-- `T(..)` expansion for `import core.{Option(..)}`.
+typeCtorsAllOf : List Decl -> List (String, List String)
+typeCtorsAllOf [] = []
+typeCtorsAllOf ((DNewtype _ n _ con _ _)::rest) =
+  (n, [con]) :: typeCtorsAllOf rest
+typeCtorsAllOf ((DData _ n _ vs _)::rest) =
+  (n, map variantName vs) :: typeCtorsAllOf rest
+typeCtorsAllOf ((DAttrib _ d)::rest) = typeCtorsAllOf (d::rest)
+typeCtorsAllOf (_::rest) = typeCtorsAllOf rest
+
 -- ── build_exports ──────────────────────────────────────────────────────────
-buildExports : List ModuleExports -> String -> List Decl -> Env -> ModuleExports
-buildExports known modId prog env = ModuleExports {
+buildExports : ModuleExports -> List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+buildExports coreExp known modId prog env = ModuleExports {
   modId = modId,
-  expValues = expValuesDirect prog ++ publicIfaceMethodVals prog env ++ reExpValues known prog,
-  expTypes = expTypesDirect prog ++ reExpTypes known prog,
-  expCtors = expCtorsDirect prog ++ reExpCtors known prog,
+  expValues = expValuesDirect prog ++ publicIfaceMethodVals prog env ++ reExpValues coreExp known prog,
+  expTypes = expTypesDirect prog ++ reExpTypes coreExp known prog,
+  expCtors = expCtorsDirect prog ++ reExpCtors coreExp known prog,
   expTypeCtors = expTypeCtorsDirect prog,
-  expFieldOwners = expFieldOwnersDirect prog ++ reExpFieldOwners known prog,
-  expInterfaces = expInterfacesDirect prog ++ reExpInterfaces known prog,
-  expIfaceMethods = expIfaceMethodsDirect prog ++ reExpIfaceMethods known prog,
-  expEffects = expEffectsDirect prog ++ reExpEffects known prog,
+  expFieldOwners = expFieldOwnersDirect prog ++ reExpFieldOwners coreExp known prog,
+  expInterfaces = expInterfacesDirect prog ++ reExpInterfaces coreExp known prog,
+  expIfaceMethods = expIfaceMethodsDirect prog ++ reExpIfaceMethods coreExp known prog,
+  expEffects = expEffectsDirect prog ++ reExpEffects coreExp known prog,
 }
 
 -- pub DTypeSig/DExtern/DFunDef
@@ -2087,9 +2161,9 @@ expEffectsDirect [] = []
 expEffectsDirect ((DEffect True n _ _)::rest) = n :: expEffectsDirect rest
 expEffectsDirect (_::rest) = expEffectsDirect rest
 
-reExpEffects : List ModuleExports -> List Decl -> List String
-reExpEffects known prog =
-  flatMap (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
+reExpEffects : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpEffects coreExp known prog =
+  flatMap (overPubUse coreExp known reExpEffectsFrom) (pubUsePaths prog)
 
 reExpEffectsFrom : UsePath -> ModuleExports -> List String
 reExpEffectsFrom (UseWild _) src = src.expEffects
@@ -2132,9 +2206,9 @@ localsExportedFrom : List String -> List (String, String) -> List String
 localsExportedFrom origins bindings =
   map snd (filterList (b => contains (fst b) origins) bindings)
 
-reExpValues : List ModuleExports -> List Decl -> List String
-reExpValues known prog =
-  flatMap (overPubUse known reExpValuesFrom) (pubUsePaths prog)
+reExpValues : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpValues coreExp known prog =
+  flatMap (overPubUse coreExp known reExpValuesFrom) (pubUsePaths prog)
 
 reExpValuesFrom : UsePath -> ModuleExports -> List String
 reExpValuesFrom path src =
@@ -2149,25 +2223,25 @@ ifaceValsOf src n =
   else
     []
 
-reExpTypes : List ModuleExports -> List Decl -> List String
-reExpTypes known prog =
-  flatMap (overPubUse known reExpTypesFrom) (pubUsePaths prog)
+reExpTypes : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpTypes coreExp known prog =
+  flatMap (overPubUse coreExp known reExpTypesFrom) (pubUsePaths prog)
 
 reExpTypesFrom : UsePath -> ModuleExports -> List String
 reExpTypesFrom path src =
   localsExportedFrom src.expTypes (reexportBindings path src)
 
-reExpCtors : List ModuleExports -> List Decl -> List String
-reExpCtors known prog =
-  flatMap (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
+reExpCtors : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpCtors coreExp known prog =
+  flatMap (overPubUse coreExp known reExpCtorsFrom) (pubUsePaths prog)
 
 reExpCtorsFrom : UsePath -> ModuleExports -> List String
 reExpCtorsFrom path src =
   localsExportedFrom src.expCtors (reexportBindings path src)
 
-reExpInterfaces : List ModuleExports -> List Decl -> List String
-reExpInterfaces known prog =
-  flatMap (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
+reExpInterfaces : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpInterfaces coreExp known prog =
+  flatMap (overPubUse coreExp known reExpInterfacesFrom) (pubUsePaths prog)
 
 -- Interfaces / types / ctors / field owners key off the ORIGIN name: only a VALUE
 -- member can carry an alias (parser-enforced), so for these kinds origin == local and
@@ -2180,9 +2254,9 @@ reExpInterfacesFrom : UsePath -> ModuleExports -> List String
 reExpInterfacesFrom path src =
   filterContains src.expInterfaces (reexportOrigins path src)
 
-reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
-reExpIfaceMethods known prog =
-  flatMap (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
+reExpIfaceMethods : ModuleExports -> List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethods coreExp known prog =
+  flatMap (overPubUse coreExp known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
 reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
 reExpIfaceMethodsFrom path src =
@@ -2195,9 +2269,9 @@ ifaceMethodPairs _ [] = []
 ifaceMethodPairs src (i::rest) =
   (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
 
-reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
-reExpFieldOwners known prog =
-  flatMap (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
+reExpFieldOwners : ModuleExports -> List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwners coreExp known prog =
+  flatMap (overPubUse coreExp known reExpFieldOwnersFrom) (pubUsePaths prog)
 
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
 reExpFieldOwnersFrom path src =
@@ -2211,11 +2285,19 @@ ownersForTypes types ((f, o)::rest)
   | contains o types = (f, o) :: ownersForTypes types rest
   | otherwise = ownersForTypes types rest
 
--- run `f` against a pub use-path's resolved source exports (skip core/unknown)
-overPubUse : List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
-overPubUse known f path =
+-- run `f` against a pub use-path's resolved source exports (skip unknown).
+--
+-- `core` resolves against `coreExp`, NOT against `known`: core is the IMPLICIT
+-- prelude, so it is prepended to every module rather than imported, and it never
+-- appears in the driver's `known` list.  This arm used to be `if mid == "core"
+-- then []`, which silently dropped every name an `export import core.{…}` named —
+-- so `stdlib/list.mdk`'s `export import core.{Filterable, filter, filterMap}`
+-- re-exported NOTHING and `import list.{filter}` failed with "Module 'list' has no
+-- exported name 'filter'", while `medaka check stdlib/list.mdk` stayed clean.
+overPubUse : ModuleExports -> List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
+overPubUse coreExp known f path =
   let mid = useModId path
-  if mid == "core" then []
+  if mid == "core" then f path coreExp
   else match findExports mid known
     None => []
     Some src => f path src
@@ -2231,7 +2313,7 @@ export resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExpo
 resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
   let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog internalGuard
   let errs = dedupResErrors (buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog)
-  let exp = buildExports known modId prog env
+  let exp = buildExports (coreExports preludeDecls) known modId prog env
   (exp, errs)
 
 -- thread resolveModule over modules in dependency-first order, accumulating

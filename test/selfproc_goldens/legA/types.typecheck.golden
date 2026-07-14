@@ -151,13 +151,13 @@ checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl 
 checkModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
 checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
 checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
-checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+checkModulesDiagsGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
-checkModulesEntryFullGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModulesEntryFullGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
 checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
 checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
-checkModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
+checkModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
 checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> <Mut> Unit
 checkOneAxis : String -> String -> Param -> <Mut> Unit
 checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
@@ -367,7 +367,7 @@ effvarId : Ref Effvar -> Int
 effvarIdOf : (String, Ref Effvar) -> Int
 effvarLevel : Ref Effvar -> Int
 elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
-elabModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
+elabModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
 elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
 elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> <Mut> List Decl
@@ -767,7 +767,7 @@ methodSchemesPure : List IfaceMethod -> <Mut> List (String, Scheme)
 methodShadowNamesRef : Ref (List String)
 methodSiteFns : Ref (Map String (List Mono))
 methodTyOf : String -> List IfaceMethod -> Option Ty
-midMethodNames : (String, List Decl) -> (String, List String)
+methodsPerMidGo : List (String, List String) -> List (String, List Decl) -> List (String, List String)
 mintParamReprs : List Kind -> <Mut> List Mono
 missingConstraintMsg : String -> String -> String -> String
 missingFieldMsg : String -> String -> String
@@ -973,7 +973,9 @@ recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
 recordStandaloneSigObligations : String -> String -> Mono -> <Mut> Unit
 recordUnopSite : String -> Ref Route -> Mono -> <Mut> Unit
 recordsRef : Ref (List (String, RecordInfo))
-reexportSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+reexportSeed : List (String, Scheme) -> List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+reexportedMethodNames : List (String, List String) -> List Decl -> List String
+reexportedMethodsOf : List (String, List String) -> Decl -> List String
 registerActiveDictVars : String -> Int -> List Int -> <Mut> Unit
 registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
 registerAmbiguousConstraints : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit

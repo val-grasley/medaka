@@ -1,0 +1,7 @@
+-- `filter` reaches main only through prov's re-export of a CORE name.
+import prov.{filter, filterMap}
+
+main =
+  let evens = filter (x => x % 2 == 0) [1, 2, 3, 4, 5, 6]
+  let big = filterMap (x => if x > 2 then Some (x * 10) else None) [1, 2, 3, 4]
+  putStrLn "\{evens} \{big}"

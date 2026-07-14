@@ -1,0 +1,8 @@
+-- `filtrMap` is not a name core defines.  This must be REJECTED at the export site.
+-- It used to be accepted in silence — core use-paths were skipped wholesale, so a
+-- module could re-export (or plain-import) a core name that does not exist and still
+-- check clean, exporting nothing.
+export import core.{Filterable, filter, filtrMap}
+
+export twice : Int -> Int
+twice x = x * 2

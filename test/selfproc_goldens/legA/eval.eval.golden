@@ -348,7 +348,7 @@ prim3 : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
 prim3M : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
 prim5M : (Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
 progArgsRef : Ref (List String)
-pubReexports : List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
+pubReexports : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
 pushFrame : EvalEnv (Value a) -> List (String, Ref (Value a)) -> EvalEnv (Value a)
 qualifyCell : String -> (String, Ref (Value a)) -> (String, Ref (Value a))
 rangeArrayMk : List Int -> Value a
@@ -356,7 +356,7 @@ rangeListMk : List Int -> Value a
 reTag : String -> String -> List Int -> Int -> Value a -> Value a
 receiverParam : List String -> List String
 recordCreateVals : String -> List String -> List (String, Value a) -> List (Value a)
-reexport : List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
+reexport : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 resolveMembers : UsePath -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
 resultToValue : Result String (Value a) -> Value a
 rngNext : Unit -> <Mut> Int

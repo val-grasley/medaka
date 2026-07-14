@@ -531,7 +531,7 @@ cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
   -- cell.  Methods are global-by-name and so appear in no module's localCells; without
   -- this, an ALIASED method import binds to nothing, while an un-aliased one silently
   -- works by falling through to the global frame under its unchanged name.
-  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports exportsMap decls
+  let exports = localCells ++ methodCellsOf globalCells decls ++ pubReexports globalCells exportsMap decls
   CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
 
 -- a module's impl methods / interface defaults close over ITS env but coalesce
