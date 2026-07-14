@@ -3,6 +3,9 @@
 -- a TAIL-recursive `lenAcc` (constant-stack `return_call`).  WITHOUT destination-passing
 -- TMC the builder recurses 2,000,000 frames deep → Node throws `RangeError: Maximum call
 -- stack size exceeded`; WITH it the builder loops in constant stack and prints 2000000.
+-- `upto` is deliberately UNANNOTATED: on the shipping path it carries a `$dict` param
+-- (Ord/Num constraints), the F2(b) shape (a) population — the pin holds TMC to it.
+-- EXPECT-TMC: upto
 upto lo hi = if lo > hi then [] else lo :: upto (lo + 1) hi
 
 lenAcc acc xs = match xs

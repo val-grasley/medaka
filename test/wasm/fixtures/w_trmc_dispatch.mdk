@@ -1,3 +1,4 @@
+-- EXPECT-TMC: scan
 -- WASMGC-TRMC Stage 2 (§7 Stage 2, shape (b′)): a DISPATCH-into-single-target cons
 -- builder that mirrors the lexer's `scan`/`scanAt`/leaf shape.  `scan` is a cons-free
 -- dispatcher that fans out (by a cycling tag `k`) to one of three LEAF builders; each

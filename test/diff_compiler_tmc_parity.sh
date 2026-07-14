@@ -3,12 +3,16 @@
 #
 # Wraps test/tmc_census.sh: emits the pinned corpus (stack fixtures + wasm TMC
 # fixtures + the compiler front-end module graph) through the LLVM and WasmGC
-# emitters, extracts each backend's per-function TMC decisions (the `; tmc:` /
-# `;; tmc:` census markers both emitters write — fn name + mode: `trmc`,
-# `group-root`, `group:<root>`), and FAILS on any set difference.  This is the
-# TMC-parity arc's acceptance gate: the shared detection/eligibility analysis
-# (backend/trmc_analysis.mdk) guarantees parity by construction; this gate keeps
-# any future backend-local gate from silently re-splitting the sets.
+# emitters — on BOTH the prelude-free probe arm and the SHIPPING arm (the real
+# `medaka build` pair, with typecheck + dictPass) — extracts each backend's
+# per-function TMC decisions (the `; tmc:` / `;; tmc:` census markers both
+# emitters write — fn name + mode: `trmc`, `group-root`, `group:<root>`), and
+# FAILS on any set difference OR any missed `-- EXPECT-TMC:` coverage pin.
+# This is the TMC-parity arc's acceptance gate: the shared detection/eligibility
+# analysis (backend/trmc_analysis.mdk) guarantees parity by construction; this
+# gate keeps any future backend-local gate from silently re-splitting the sets.
+# The pins guard what parity cannot: both backends dropping the SAME function
+# (the dict-param veto shipped exactly that way — WASM-TMC-GAP-DESIGN.md §3).
 #
 # Exit: 0 all corpus items match; 1 any DIFF/emit failure; 2 toolchain missing
 # (wasm probe binaries not built — sh test/wasm/build_wasm_oracle.sh).
@@ -29,8 +33,17 @@ for _p in llvm_emit_main wasm_emit_main wasm_emit_modules_main; do
   [ -x "$ROOT/test/bin/$_p" ] || _need="$_need $_p"
 done
 [ -z "$_need" ] || {
-  echo "emit probes missing:$_need — building (sh test/wasm/build_wasm_oracle.sh) ..."
-  sh "$ROOT/test/wasm/build_wasm_oracle.sh" > /dev/null 2>&1
+  echo "emit probes missing:$_need — building ..."
+  # build_wasm_oracle.sh provides ONLY the wasm probes; llvm_emit_main is a
+  # build_oracles.sh oracle.  Provision each from its actual producer — a
+  # provision step that runs the wrong builder "succeeds" and then skips, which
+  # reads like a toolchain problem and is not one (this gate did exactly that).
+  case "$_need" in *llvm_emit_main*)
+    FORCE=1 JOBS=1 sh "$ROOT/test/build_oracles.sh" --build-one llvm_emit_main > /dev/null 2>&1 ;;
+  esac
+  case "$_need" in *wasm_emit*)
+    sh "$ROOT/test/wasm/build_wasm_oracle.sh" > /dev/null 2>&1 ;;
+  esac
   for _p in llvm_emit_main wasm_emit_main wasm_emit_modules_main; do
     [ -x "$ROOT/test/bin/$_p" ] || {
       echo "skipping (could not build emit probe: $_p)"
@@ -43,6 +56,15 @@ OUT="$(mktemp -d /tmp/tmc_parity.XXXXXX)"
 trap 'rm -rf "$OUT"' EXIT
 
 if ! sh "$ROOT/test/tmc_census.sh" "$OUT" > "$OUT/census.log" 2>&1; then
+  # Coverage pins (-- EXPECT-TMC) are checked against the SHIPPING sets: parity
+  # between two sets that BOTH dropped a function is vacuous, so a pinned fn
+  # missing from EITHER backend's shipping TMC set fails the census — report it
+  # as the coverage failure it is, not as an emit error.
+  if grep -q '^PINFAIL ' "$OUT/SUMMARY" 2>/dev/null; then
+    echo "FAIL — TMC coverage pins missing from a backend's SHIPPING set:"
+    grep '^PINFAIL ' "$OUT/SUMMARY"
+    exit 1
+  fi
   echo "FAIL (census emit error)"
   tail -20 "$OUT/census.log"
   exit 1

@@ -1,3 +1,4 @@
+-- EXPECT-TMC: build
 -- TRMC Phase 2 Axis A — general single-constructor LAST-field TMC over a NON-`::`
 -- user ADT.  `build N` builds a 2,000,000-deep `Chain` via `Link n (build (n-1))`
 -- — a saturated `Link` ctor whose LAST field is the self-call, field 0 (`n`)

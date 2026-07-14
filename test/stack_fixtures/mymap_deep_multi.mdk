@@ -1,6 +1,8 @@
 -- TRMC stack-safety: a MULTI-CLAUSE cons-tail builder (`myMap`, head = f x)
 -- builds a deep list in O(1) stack via the decision-tree TRMC path, then a
--- musttail length consumes it.
+-- musttail length consumes it.  `myMap` is unconstrained (no dict even on the
+-- shipping path); `upto` is unannotated ⇒ dict-carrying there — both pinned.
+-- EXPECT-TMC: myMap upto
 myMap f [] = []
 myMap f (x::xs) = f x :: myMap f xs
 

@@ -17,12 +17,29 @@
 # Corpus (must stay emit-able by BOTH backends):
 #   • test/stack_fixtures/*.mdk          (prelude-free deep builders)
 #   • test/wasm/fixtures/w_trmc_*.mdk    (wasm TMC fixtures, incl. dispatch shape)
+#   • test/wasm/fixtures/w_deep_append.mdk (dict-carrying builder + `++`)
 #   • compiler/entries/check_main.mdk    (the compiler front-end module graph —
 #     the real-world corpus: lexer/layout/parser/typecheck families + prelude impls)
 #
+# Each fixture is emitted through TWO arms:
+#   • the PROBE arm (llvm_emit_main / wasm_emit_main): parse→desugar→lower→emit,
+#     NO typecheck, NO prelude — a cheap detection-drift signal, but blind to the
+#     dict-param population (no typecheck ⇒ no dictPass ⇒ no `$dict` params);
+#   • the SHIPPING arm (medaka_emitter / wasm_emit_modules_main with
+#     stdlib/runtime.mdk + stdlib/core.mdk — the exact pair `medaka build` shells
+#     out to): the path users take.  Written as <name>.ship.{llvm,wasm}.tmc.
+#     An unannotated polymorphic builder carries a `$dict` param ONLY here, which
+#     is how TMC once silently declined on every such builder while this census
+#     stayed green (compiler/WASM-TMC-GAP-DESIGN.md).
+#
+# COVERAGE PINS: a fixture may declare `-- EXPECT-TMC: fn1 fn2 …` in its header.
+# Every pinned fn must appear (any mode) in BOTH backends' SHIPPING sets, else
+# the census fails with a PINFAIL row.  Parity between two sets that both
+# dropped a function is vacuous; the pins are the coverage claim.
+#
 # Usage: sh test/tmc_census.sh [outdir]
 #   Writes <item>.{llvm,wasm}.tmc sorted set files + SUMMARY into outdir
-#   (default: a mktemp dir, path printed).  Exit 0 unless an EMIT fails.
+#   (default: a mktemp dir, path printed).  Exit 0 unless an EMIT or PIN fails.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -78,13 +95,37 @@ emit_or_fail() { # backend name cmd...
   fi
 }
 
-# ── prelude-free single-file corpus ──────────────────────────────────────────
-for f in "$ROOT"/test/stack_fixtures/*.mdk "$ROOT"/test/wasm/fixtures/w_trmc_*.mdk; do
+# check_pins FIXTURE NAME — enforce the fixture's `-- EXPECT-TMC:` pins against
+# the SHIPPING sets.  A pinned fn must appear (any mode; module-prefixed names
+# match on the `__<fn>` suffix) in BOTH backends' NAME.ship.*.tmc.
+check_pins() {
+  fx="$1"; nm="$2"
+  pins="$(sed -n 's/^-- EXPECT-TMC: *//p' "$fx")"
+  [ -n "$pins" ] || return 0
+  for fn in $pins; do
+    for be in llvm wasm; do
+      if ! grep -Eq "(^|__)$fn " "$OUT/$nm.ship.$be.tmc" 2>/dev/null; then
+        echo "PINFAIL $nm: '$fn' missing from the $be SHIPPING TMC set" >> "$OUT/PINFAILS"
+        fail=1
+      fi
+    done
+  done
+}
+
+# ── single-file corpus (probe arm + shipping arm) ─────────────────────────────
+for f in "$ROOT"/test/stack_fixtures/*.mdk "$ROOT"/test/wasm/fixtures/w_trmc_*.mdk \
+         "$ROOT"/test/wasm/fixtures/w_deep_append.mdk; do
   [ -f "$f" ] || continue
   name="$(basename "$f" .mdk)"
-  emit_or_fail llvm "$name" "$LLVM_ONE" "$f" || continue
-  emit_or_fail wasm "$name" "$WASM_ONE" "$f" || continue
-  extract_pair "$name"
+  if emit_or_fail llvm "$name" "$LLVM_ONE" "$f" \
+     && emit_or_fail wasm "$name" "$WASM_ONE" "$f"; then
+    extract_pair "$name"
+  fi
+  if emit_or_fail llvm "$name.ship" "$EMITTER" "$RUNTIME" "$CORE" "$f" \
+     && emit_or_fail wasm "$name.ship" "$WASM_MODS" "$RUNTIME" "$CORE" "$f"; then
+    extract_pair "$name.ship"
+    check_pins "$f" "$name"
+  fi
 done
 
 # ── the compiler front-end module graph (the real-world corpus) ──────────────
@@ -106,6 +147,7 @@ fi
       diff "$l" "$w" | sed 's/^/    /'
     fi
   done
+  [ -f "$OUT/PINFAILS" ] && cat "$OUT/PINFAILS"
 } | tee "$OUT/SUMMARY"
 
 exit $fail

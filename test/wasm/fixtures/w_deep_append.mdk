@@ -1,9 +1,14 @@
--- WASMGC layer-16 step 1 (§): a DEEP list `++`.  The runtime list-append helper
--- `$mdk_append` is invoked over a left operand of length 50000.  The OLD recursive
--- `$mdk_append` (self-call under `struct.new $C_Cons`) grew the wasm stack to depth
--- = length(left) and Node threw `RangeError: Maximum call stack size exceeded`.  The
--- ITERATIVE destination-passing rewrite loops in constant stack → prints 100000.
--- (`++` must stay VALUE-IDENTICAL: same elements, same order.)
+-- A deep list built by an UNANNOTATED (dict-carrying) builder, then `++`-appended.
+-- What this actually exercises, verified in the emitted IR (WASM-TMC-GAP-DESIGN.md §1):
+--   1. `upto` has NO signature ⇒ it generalizes to a constrained scheme (`>` ⇒ Ord,
+--      `+` ⇒ Num) ⇒ dictPass prepends a `$dict` param on the shipping path.  TMC must
+--      fire on it anyway (F2(b) shape (a)) or the build recurses one frame per cell.
+--   2. `++` reaches the ITERATIVE `$mdk_append` intrinsic directly (`binopBuiltinHead`
+--      excludes List from the Semigroup dispatch seam) — `$mdk_append` was never the
+--      recursive culprit here; a previous header claimed it was, and that false
+--      diagnosis propagated into test/engine_divergence.txt and TRMC-DESIGN.md §F2(b).
+-- Prints 100000 in O(1) stack.  (`++` must stay VALUE-IDENTICAL: same elements, order.)
+-- EXPECT-TMC: upto
 upto lo hi = if lo > hi then [] else lo :: upto (lo + 1) hi
 
 lenAcc acc xs = match xs

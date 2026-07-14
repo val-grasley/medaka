@@ -366,7 +366,12 @@ runBuildWasmIn root medaka inputAbs outPath tmpDir keepIrCli =
     emitArgsBase
   else
     "run" :: emitter::emitArgsBase
-  match probeWasmTools ()
+  -- Surface a missing/mistyped MEDAKA_WASM_EMITTER as an actionable error here;
+  -- without this, runCommand fails with a bare "No such file or directory" that
+  -- names neither the variable nor the fix.
+  if useNativeBin && !fileExists wasmEmitter then
+    BuildErr "error: MEDAKA_WASM_EMITTER points to a missing binary: \{wasmEmitter}\n  build it with: sh test/wasm/build_wasm_oracle.sh (produces test/bin/wasm_emit_modules_main)"
+  else match probeWasmTools ()
     None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm"
     Some _ => match runCommand emitProg emitArgs
       Err e => BuildErr "error: could not run wasm emitter (\{emitProg}): \{e}"

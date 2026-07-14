@@ -391,12 +391,15 @@ chain (`emitClauseTree`, TRMC-aware leaf via `trmcCtxRef`); the Cons leaf does t
 advances `%dest` to +16, recomputes `f`/`xs` into the slots, `br %trmcloop` — **NO `call
 @mdk_impl_List_map`**; the Nil leaf stores the nil immediate into `*dest`, `br %trmcexit`.
 
-**F2(b) param-threading seam (confirmed GENERIC).** The loop param-threading
-(`trmcEmitParamSlots`/`trmcReloadParams`/`trmcStoreParamSlots`) is keyed purely on `arity`
-and a positional `slotTys` list — it makes NO assumption of zero leading params. F2(b)
-(dict/eta-carrying constrained impls) is therefore a DETECTION-ONLY relax: broaden the F2(a)
-`trmcNonDict` gate to admit leading dict/eta params and thread them as loop-invariants by
-identity; the loop machinery is unchanged. No real constrained cons-tail impl exists today.
+**F2(b) param-threading seam (confirmed GENERIC — and BUILT 2026-07-14 for shape (a)).**
+The loop param-threading (`trmcEmitParamSlots`/`trmcReloadParams`/`trmcStoreParamSlots`)
+is keyed purely on `arity` and a positional `slotTys` list — it makes NO assumption of
+zero leading params.  The relax was NOT detection-only as this seam note once claimed:
+a constrained self-call is a `CDict self routes` spine (not `CVar self`), so
+`isSelfHead`/`isSelfSatApp`/`selfFree` had to learn the CDict shape, and the leaf
+stores skip the loop-invariant leading dict slots (`dropFirstN`) because the self-call
+arg list covers only the value params.  See §"F2(b)" below and
+compiler/WASM-TMC-GAP-DESIGN.md.
 
 **`filterMap` awaits B-match.** `filterMap`'s cons lives inside a `match` arm (`CDecision`),
 which `trmcBodyOk` does NOT descend (a tail cons in a match arm is the B-match-descent stage).
@@ -524,18 +527,36 @@ SMALL–MEDIUM, risk LOW.
   one tail position exists, so it is NOT TMC-able. Detection must require EXACTLY ONE
   self-field and disqualify ≥2 (the second self-call is caught by the `selfFree` net).
 
-**F2(b) — dict-carrying / eta-reshaped constrained cons-tail impls.** No real target —
-exhaustively verified ABSENT: only `Eq`/`Ord`/`Debug`/`Display`/`Hashable` instances
-carry `requires`, and none BUILDS a list (their `::` is pattern-deconstruction; their
-recursion is direct-tail Bool/Ordering). The headline builders (`map`/`ap`/`filterMap`/
-`Applicative List`) carry no `requires` on the IMPL (it sits on the interface) → no dict
-params → already covered by F2(a)/B-dispatch. `ap` recurses under `++` (C extern), not
-cons-tail. Constrained list-builder typeclasses don't exist in this stdlib design.
-Effort MEDIUM–LARGE, risk MEDIUM (speculative, no oracle target).
-- *Detection:* relax `trmcNonDict` (rejects `leadingDictPats > 0`) to admit leading
-  dict/eta params + thread them as loop-invariants (`trmcEmitParamSlots`/`trmcReloadParams`
-  are already arity/slotTys-generic). The `SelfByMethod` + `mentionsSelfMethod` safety net
-  is dict-agnostic → carries over.
+**F2(b) — dict-carrying / eta-reshaped constrained cons-tail impls.**
+⚠️ **CORRECTED 2026-07-14 — the "no real target" audit was IMPL-SCOPED and its
+conclusion did NOT generalize** (compiler/WASM-TMC-GAP-DESIGN.md is the full
+post-mortem).  The audit below is accurate *about stdlib impls*: only
+`Eq`/`Ord`/`Debug`/`Display`/`Hashable` instances carry `requires`, and none BUILDS a
+list (their `::` is pattern-deconstruction; their recursion is direct-tail
+Bool/Ordering).  But the dict veto (`dispNonDict` — and its since-deleted per-backend
+copy `trmcNonDict`) also gated the **TOP-LEVEL** path (`trmcTryFn`/`wasmTrmcTry`),
+whose dict-carrying population is not stdlib impls — it is **every unannotated
+polymorphic user builder** (`upto lo hi = … lo :: upto (lo+1) hi` generalizes to a
+constrained scheme ⇒ dictPass prepends a `$dict` param).  Every such builder silently
+lost TMC on BOTH backends; wasm overflowed at ~10⁴ cells, native at ~5×10⁶ (the 256 MB
+worker stack hid it).  **Shape (a) is now BUILT** (self-recursive dict-carrying
+defines, top-level AND impl): `dictUniformClauses`/`dictUniformPairs` admit a uniform
+leading-dict count, `isSelfSatApp`/`isSelfHead` recognize the `CDict self routes`
+spine (saturation = |args| + |routes| == lowered arity; routes must be
+identity-forwarded `RDict`/`RDictFwd` — no polymorphic recursion), `mentionsSelfDict`
+closes the freeVars blindness to the CDict head (the same hazard as CMethod), and
+both leaf emitters skip the loop-invariant leading dict slots when storing recomputed
+args (`dropFirstN`).  Coverage is pinned by `-- EXPECT-TMC:` in test/tmc_census.sh's
+SHIPPING arm — parity alone could never see this class (both backends declined
+identically).  The (b′) dispatch-graph path deliberately KEEPS the dict veto
+(`dispNonDict`) — see WASM-TMC-GAP-DESIGN.md §5 Stage 3.
+- *Detection (as built):* the F2(a) gate swap described above; the `SelfByMethod` +
+  `mentionsSelfMethod` safety net is dict-agnostic → carried over, and the CDict
+  analog (`mentionsSelfDict`) now guards SelfByVar the same way.
+- *Impl-path note:* a dict-carrying IMPL self-call recurses via `CMethod`, whose
+  saturation math is still value-arity-only — so dict-carrying impls keep declining
+  (safe; the audited population is empty).  The gate relax there is inert until the
+  CMethod arm learns the dict-word accounting.
 - *NOT a pure "relax" (the seam note understates this):* `etaSaturateMethodBody` runs only
   on the `emitFn` top-level path, NOT the impl path. To TRMC an eta-reshaped constrained
   impl you'd first route eta-saturation into the impl path THEN thread the synthesized
