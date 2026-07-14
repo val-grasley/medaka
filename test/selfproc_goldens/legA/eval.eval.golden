@@ -256,6 +256,7 @@ pDebugStringLit : Value a -> <Mut> Value a
 pDiscard : Value a -> <Mut> Value a
 pEPutStr : Value a -> <Mut, Stderr> Value a
 pEPutStrLn : Value a -> <Mut, Stderr> Value a
+pEnableRunStdoutFlush : Value a -> <Mut> Value a
 pExecutablePath : Value a -> <Env, Mut> Value a
 pExp : Value a -> <Mut> Value a
 pFileExists : Value a -> <FileRead, Mut> Value a
@@ -309,6 +310,7 @@ pSinh : Value a -> <Mut> Value a
 pSleepMs : Value a -> <Mut> Value a
 pSleepMsIO : Value a -> <Clock, Mut> Value a
 pSqrt : Value a -> <Mut> Value a
+pStashRunStdout : Value a -> <Mut> Value a
 pStatFile : Value a -> <FileRead, Mut> Value a
 pStringCompare : Value a -> Value a -> <Mut> Value a
 pStringConcat : Value a -> <Mut> Value a

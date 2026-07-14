@@ -90,6 +90,12 @@
 #     upper, abort_exit*, where_local_rec, where_sibling_ref, char_unicode) fell the same
 #     way when the arm moved.  A gate that tests a configuration users never run will
 #     keep filing its own artifacts as compiler bugs.
+#     ⚠️ T-22 (2026-07-14, later the same day): the "wasm_emit gap — " prefix quoted above
+#     is now GONE from wasm_emit.mdk's unbound-name panic — it asserted a category (backend
+#     coverage gap) the emitter cannot verify, which is exactly what laundered these 16
+#     fixtures into the ledger in the first place.  The panic now reads e.g. `unbound
+#     variable 'index' (not a local, global value, constructor, or known function) [in
+#     ...]` — an observation, not a conclusion.  See compiler/ERROR-QUALITY.md.
 #
 #   * and, per the corpus note above, it capped the corpus at the prelude-free fixtures.
 #

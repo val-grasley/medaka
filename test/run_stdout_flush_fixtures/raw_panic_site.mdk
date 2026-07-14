@@ -1,0 +1,13 @@
+-- "run drops stdout on panic" regression — a RAW `panic "…"` call site in
+-- eval.mdk that does NOT go through runtimePanic (here: `lookupFrames [] name
+-- = panic (...)`, hit because the interpreter has no dispatch-table entry for
+-- `exit`).  Representative of the ~20 similar internal-invariant call sites
+-- (evalIndex/evalSlice/evalRange/applyClosure/collectPartials/pPutStr/…) that
+-- fire when the interpreter meets a value shape it doesn't expect ("type
+-- confusion" class) -- they all compile to the SAME native `panic` extern
+-- call our fix covers, so this one call site stands in for the whole class.
+-- See index_oob.mdk for the full writeup.
+main : <IO, Panic> Unit
+main =
+  println "SENTINEL"
+  exit 3

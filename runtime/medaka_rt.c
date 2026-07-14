@@ -195,7 +195,13 @@ mdk_i64 __mdk_apply(mdk_i64 cw, mdk_i64 argc, const mdk_i64 *argv) {
   }
 }
 
+/* Forward-declared: defined below (near mdk_putstr) alongside the rest of the
+   "run drops stdout on panic" stash/flush machinery; mdk_oob is an abort path
+   that needs it but is emitted earlier in this file. */
+static void mdk_flush_run_stdout_on_abort(void);
+
 noreturn void mdk_oob(void) {
+  mdk_flush_run_stdout_on_abort();
   fprintf(stderr, "runtime error [E-INDEX-OOB]: index out of bounds\n");
   exit(1);
 }
@@ -359,6 +365,75 @@ void mdk_eputstrln(long long w) { mdk_fwrite_str(w, stderr, 1); }
 void mdk_flushstdout(long long w) { (void)w; fflush(stdout); }
 void mdk_print_unit(void)       { printf("()\n"); }
 
+/* ---------------------------------------------------------------------------
+ * "run drops stdout on panic" fix.  `medaka run`'s tree-walking interpreter
+ * buffers a program's stdout in an in-language Ref<String> (eval.mdk's
+ * outputRef) and only writes it to real stdout via ONE final `putStr` call
+ * after `main` returns NORMALLY (medaka_cli.mdk's `runProgramOutput`).
+ * Medaka panics are NOT catchable (no exception handling, no unwind), so a
+ * panicking program's buffered stdout used to be silently discarded — the
+ * printed trace before the crash never reached the terminal, which made the
+ * standard "does this ill-typed program actually EXECUTE" probe (`println`
+ * a sentinel, then check whether it appears) blind: both `run`'s stdout AND
+ * its exit code look identical whether the program ran or not.
+ *
+ * mdk_stash_run_stdout lets eval.mdk register the buffer's raw bytes (a
+ * pointer + length into an already-allocated, GC-owned, IMMUTABLE string
+ * cell -- storing the pointer performs no allocation and no observable
+ * effect) after every print.  mdk_enable_run_stdout_flush is called exactly
+ * once, only by the real `medaka run` CLI driver (evalModulesOutputRun /
+ * evalModulesOutputAsync) -- never by the pure differential-oracle eval
+ * probes, which share this exact source but never call it, so their
+ * captured output (many goldens pin an EMPTY capture for a deliberately
+ * panicking fixture) is unaffected.  Every abort path below -- mdk_panic,
+ * mdk_div_zero, mdk_mod_zero, mdk_nonexhaustive_match, mdk_let_refute,
+ * mdk_oob, and the SIGSEGV/SIGBUS fault handler for a genuine stack overflow
+ * or fatal signal -- flushes the stash via write(2) before printing its own
+ * diagnostic and exiting.  write(2) is async-signal-safe (unlike fflush/
+ * fwrite), so the SAME flush function is safe to call from the fault
+ * handler too, matching its existing "no allocation, no stdio" discipline.
+ *
+ * A compiled (non-interpreter) `medaka build` binary never calls
+ * mdk_stash_run_stdout or mdk_enable_run_stdout_flush at all (its own
+ * mdk_putstr/mdk_putstrln write straight to the real stdio `stdout` stream,
+ * which `exit()` -- used by every abort path except the signal handler --
+ * already flushes automatically), so the flag stays 0 and every check below
+ * is a no-op for it.
+ */
+static volatile int mdk_run_stdout_flush_enabled = 0;
+static const char *volatile mdk_run_stdout_bytes = NULL;
+static volatile long long mdk_run_stdout_len = 0;
+
+void mdk_enable_run_stdout_flush(long long w) {
+  (void)w;
+  mdk_run_stdout_flush_enabled = 1;
+}
+
+void mdk_stash_run_stdout(long long w) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  mdk_run_stdout_bytes = cell + 24;
+  mdk_run_stdout_len = byte_len;
+}
+
+/* Async-signal-safe: only word-sized reads and write(2), no allocation, no
+   stdio.  Clears the stash first so a re-entrant abort during the flush
+   itself (or a later abort path, e.g. mdk_exit after this already ran)
+   can't double-print. */
+static void mdk_flush_run_stdout_on_abort(void) {
+  if (!mdk_run_stdout_flush_enabled) return;
+  const char *bytes = mdk_run_stdout_bytes;
+  long long len = mdk_run_stdout_len;
+  mdk_run_stdout_bytes = NULL;
+  mdk_run_stdout_len = 0;
+  while (len > 0) {
+    ssize_t n = write(1, bytes, (size_t)len);
+    if (n <= 0) break;
+    bytes += n;
+    len -= n;
+  }
+}
+
 /* `panic` is BOTH the abort primitive the interpreter's `runtimePanic` uses to
    print an already-formatted, coded+located runtime diagnostic AND the lowering
    of a user's `panic "msg"` in a natively-compiled program.  The two want
@@ -370,6 +445,7 @@ void mdk_print_unit(void)       { printf("()\n"); }
    runtimePanic); mdk_panic strips that and prints verbatim, else it adds the
    E-PANIC banner.  A user panic message never begins with 0x01. */
 noreturn void mdk_panic(long long w) {
+  mdk_flush_run_stdout_on_abort();
   const char *cell = (const char *)w;
   long long byte_len = ((const long long *)cell)[1];
   const char *bytes = cell + 24;
@@ -388,10 +464,12 @@ noreturn void mdk_panic(long long w) {
    exit 0).  Message matches the interpreter's runtimePanic MINUS the source
    location (Core IR carries no loc); nonzero exit. */
 noreturn void mdk_div_zero(void) {
+  mdk_flush_run_stdout_on_abort();
   fputs("runtime error [E-DIV-ZERO]: division by zero\n", stderr);
   exit(1);
 }
 noreturn void mdk_mod_zero(void) {
+  mdk_flush_run_stdout_on_abort();
   fputs("runtime error [E-MOD-ZERO]: modulo by zero\n", stderr);
   exit(1);
 }
@@ -403,6 +481,7 @@ noreturn void mdk_mod_zero(void) {
    source location (Core IR carries no loc — a located native trap is a
    follow-on); nonzero exit. */
 noreturn void mdk_nonexhaustive_match(void) {
+  mdk_flush_run_stdout_on_abort();
   fputs("runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match\n", stderr);
   exit(1);
 }
@@ -413,6 +492,7 @@ noreturn void mdk_nonexhaustive_match(void) {
    head ctor and calls this noreturn trap on a miss, matching run's message MINUS
    the source location (Core IR carries no loc); nonzero exit. */
 noreturn void mdk_let_refute(void) {
+  mdk_flush_run_stdout_on_abort();
   fputs("runtime error [E-LET-REFUTE]: let pattern match failed\n", stderr);
   exit(1);
 }
@@ -1739,7 +1819,10 @@ static void mdk_chain_previous(int sig, siginfo_t *info, void *uctx) {
     old->sa_handler(sig);
     return;
   }
-  /* No previous handler: no silent death — print generic and exit nonzero. */
+  /* No previous handler: no silent death — print generic and exit nonzero.
+     mdk_flush_run_stdout_on_abort is async-signal-safe (word reads + write(2)
+     only, no allocation, no stdio) — see its definition near mdk_putstr. */
+  mdk_flush_run_stdout_on_abort();
   static const char m[] =
     "runtime error [E-FATAL-SIGNAL]: fatal memory fault (segmentation fault)\n";
   write(2, m, sizeof(m) - 1);
@@ -1748,6 +1831,7 @@ static void mdk_chain_previous(int sig, siginfo_t *info, void *uctx) {
 
 static void mdk_fault_handler(int sig, siginfo_t *info, void *uctx) {
   if (mdk_addr_near_stack(info ? info->si_addr : NULL)) {
+    mdk_flush_run_stdout_on_abort();
     static const char m[] =
       "runtime error [E-STACK-OVERFLOW]: stack overflow (recursion too deep)\n";
     write(2, m, sizeof(m) - 1);

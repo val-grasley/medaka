@@ -1742,6 +1742,15 @@ fmtSentinel = "\u{01}"
 appendOutput : String -> <Mut | e> Value e
 appendOutput s =
   let _ = setRef outputRef (outputRef.value ++ s)
+  -- Snapshot the buffer's raw bytes into the native runtime (O(1)
+  -- pointer+length store; no allocation, no observable effect on its own —
+  -- see stdlib/runtime.mdk's stashRunStdout doc comment) so a subsequent
+  -- abort can flush it.  Called from BOTH the real `medaka run` path and the
+  -- pure differential-oracle path (this function is shared), which is fine:
+  -- the stash is inert unless `enableRunStdoutFlush` was also called, and
+  -- only `evalModulesOutputRun`/`evalModulesOutputAsync` (never the oracle
+  -- probes) call that.
+  let _ = stashRunStdout outputRef.value
   VUnit
 
 pPutStr : Value e -> <Mut | e> Value e
@@ -1751,6 +1760,13 @@ pPutStr _ = panic "putStr: not a String"
 pPutStrLn : Value e -> <Mut | e> Value e
 pPutStrLn (VString s) = appendOutput (s ++ "\n")
 pPutStrLn _ = panic "putStrLn: not a String"
+
+pStashRunStdout : Value e -> <Mut | e> Value e
+pStashRunStdout (VString s) = let _ = stashRunStdout s in VUnit
+pStashRunStdout _ = panic "stashRunStdout: not a String"
+
+pEnableRunStdoutFlush : Value e -> <Mut | e> Value e
+pEnableRunStdoutFlush _ = let _ = enableRunStdoutFlush () in VUnit
 
 pDiscard : Value e -> <Mut | e> Value e
 pDiscard _ = VUnit
@@ -1949,6 +1965,8 @@ externBindings _ = [
   ("putStrLn", prim1M pPutStrLn),
   ("ePutStr", prim1M pDiscard),
   ("ePutStrLn", prim1M pDiscard),
+  ("stashRunStdout", prim1M pStashRunStdout),
+  ("enableRunStdoutFlush", prim1M pEnableRunStdoutFlush),
   ("panic", prim1 pPanic),
   ("indexError", prim1 (s => runtimePanic "E-INDEX-OOB" (unString s))),
   ("debugStringLit", prim1 pDebugStringLit),
@@ -2891,6 +2909,10 @@ ioExternBindings _ = [
 export evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO, Mut> String
 evalModulesOutputRun preludeDecls modules =
   let _ = setRef outputRef ""
+  -- Only the real `medaka run` CLI driver reaches this function (never the
+  -- pure differential-oracle probes — see appendOutput/stashRunStdout above),
+  -- so this is the one place it is safe to arm the abort-time flush.
+  let _ = enableRunStdoutFlush ()
   let binds = evalModulesWith (ioExternBindings ()) preludeDecls modules
   let _ = runMainForEffect binds
   outputRef.value
@@ -2905,6 +2927,9 @@ evalModulesOutputRun preludeDecls modules =
 export evalModulesOutputAsync : List Decl -> List (String, List Decl) -> <Mut | e> String
 evalModulesOutputAsync preludeDecls modules =
   let _ = setRef outputRef ""
+  -- Same reasoning as evalModulesOutputRun above: only the real `medaka run`
+  -- CLI driver (an Async main) reaches this function.
+  let _ = enableRunStdoutFlush ()
   let binds = evalModulesRootEnv preludeDecls modules
   let _ = driveAsyncMain binds
   outputRef.value

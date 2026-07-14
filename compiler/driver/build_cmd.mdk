@@ -329,10 +329,24 @@ runBuildNativeIn root medaka cc inputAbs outPath tmpDir keepIrCli =
 -- extern, which exists in the native runtime but NOT in the native interpreter's
 -- run mode — so `medaka run <emitter>` fails at resolve (`unbound identifier:
 -- args`) for the LLVM entry too.  The LLVM path sidesteps this via the compiled
--- MEDAKA_EMITTER binary.  The wasm peer uses MEDAKA_WASM_EMITTER (built by
--- test/wasm/build_wasm_oracle.sh as test/bin/wasm_emit_modules_main).  If unset we
--- fall back to `medaka run` (which mirrors the LLVM fallback — also non-functional
--- without the binary, but the failure is surfaced clearly).
+-- MEDAKA_EMITTER binary, which defaults to `<exeDir>/medaka_emitter` (a self-
+-- locating default — `make medaka` always builds it alongside `medaka`, so the
+-- LLVM path needs no env var in the common case).  The wasm peer has NO such
+-- self-locating default (there is no fixed post-build location for the wasm
+-- emitter binary), so MEDAKA_WASM_EMITTER MUST be set — build one with
+-- `test/wasm/build_wasm_oracle.sh` (produces test/bin/wasm_emit_modules_main).
+--
+-- ⚠️ T-22 (2026-07-14): this used to fall back to `medaka run <entry>` when unset,
+-- on the theory that the failure would be "surfaced clearly" — it was not. `medaka`
+-- here is whatever `envOr "MEDAKA" "medaka"` resolves to (a bare PATH-relative name
+-- by default, NOT this process's own exeDir), so the fallback typically shells a
+-- `medaka` that plain isn't found on PATH — `runCommand` reports that as a bare
+-- "No such file or directory", which names neither the missing env var nor the
+-- fix. Three separate agents lost time to this. No in-repo caller ever relied on
+-- the fallback actually working (every gate that drives --target wasm sets
+-- MEDAKA_WASM_EMITTER itself), so it is now an explicit, actionable error instead
+-- of a silent, broken code path — the same treatment probeWasmTools already gets
+-- below for missing wasm-tools.
 -- Args mirror the LLVM root set: the COMPILED binary takes positional
 -- <runtime> <core> <entry> <inputDir> <compiler> <stdlib> (the wasm entry takes
 -- any number of roots after the entry).
@@ -347,7 +361,6 @@ runBuildWasm root medaka inputAbs outPath keepIrCli = match makeTempDir ()
 
 runBuildWasmIn : String -> String -> String -> String -> String -> Bool -> <IO> BuildResult
 runBuildWasmIn root medaka inputAbs outPath tmpDir keepIrCli =
-  let emitter = joinPath root "compiler/entries/wasm_emit_modules_main.mdk"
   let runtimeP = joinPath root "stdlib/runtime.mdk"
   let preludeP = joinPath root "stdlib/core.mdk"
   let compilerDir = joinPath root "compiler"
@@ -360,21 +373,17 @@ runBuildWasmIn root medaka inputAbs outPath tmpDir keepIrCli =
   let watPath = joinPath tmpDir "program.wat"
   let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let wasmEmitter = envOr "MEDAKA_WASM_EMITTER" ""
-  let useNativeBin = wasmEmitter != ""
-  let emitProg = if useNativeBin then wasmEmitter else medaka
-  let emitArgs = if useNativeBin then
-    emitArgsBase
-  else
-    "run" :: emitter::emitArgsBase
-  -- Surface a missing/mistyped MEDAKA_WASM_EMITTER as an actionable error here;
-  -- without this, runCommand fails with a bare "No such file or directory" that
-  -- names neither the variable nor the fix.
-  if useNativeBin && !fileExists wasmEmitter then
+  -- Surface a missing/unset/mistyped MEDAKA_WASM_EMITTER as an actionable error
+  -- here; without this, runCommand fails with a bare "No such file or directory"
+  -- that names neither the variable nor the fix.
+  if wasmEmitter == "" then
+    BuildErr "error: --target wasm needs a compiled wasm emitter — set MEDAKA_WASM_EMITTER to its path\n  build one with: sh test/wasm/build_wasm_oracle.sh (produces test/bin/wasm_emit_modules_main)"
+  else if !fileExists wasmEmitter then
     BuildErr "error: MEDAKA_WASM_EMITTER points to a missing binary: \{wasmEmitter}\n  build it with: sh test/wasm/build_wasm_oracle.sh (produces test/bin/wasm_emit_modules_main)"
   else match probeWasmTools ()
     None => BuildErr "error: wasm-tools not found on PATH — install wasm-tools (cargo install wasm-tools or brew install wasm-tools) for --target wasm"
-    Some _ => match runCommand emitProg emitArgs
-      Err e => BuildErr "error: could not run wasm emitter (\{emitProg}): \{e}"
+    Some _ => match runCommand wasmEmitter emitArgsBase
+      Err e => BuildErr "error: could not run wasm emitter (\{wasmEmitter}): \{e}"
       Ok (code, watRaw, emitErr) => if code != 0 then BuildErr "error: wasm emitter failed compiling \{inputAbs}\n\{emitErr}"
       else
         let wat = stripTrailingUnit watRaw
