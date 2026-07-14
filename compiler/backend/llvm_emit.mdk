@@ -4109,19 +4109,108 @@ soleImplDirect e name = match implsOf e name
   [ent] => if implReqCount e name ent <= 0 then Some ent else None
   _ => None
 
+-- ── issue #118: the dispatch chain is OUTLINED, one per method ──────────────
+-- A runtime-dict dispatch site used to INLINE the whole impl chain — one `icmp` +
+-- branch + call arm per impl of the method, at EVERY site.  That made the emitted IR
+-- grow as `Σ over sites of (#impls of that site's method)`, and it is the dominant
+-- term in a small program's IR: on `test/wasm/fixtures/adt_enum_nullary.mdk` (9 lines
+-- of source) there were 107 dispatch sites but only NINE distinct chains between
+-- them — 2,123 emitted arms, ~80% of the module's 32,895 lines, to express 9 chains.
+--
+-- So the chain now lives ONCE, in a shared `@mdk_disp_<method>_<nMeth>_<nArgs>`
+-- define, and the site is a single `call`.  The chain BODY is unchanged — the same
+-- head-tag `icmp` arms in the same order, the same default-synthesis arms, the same
+-- `unreachable` tail — so every dispatch decision is byte-for-byte the one the inline
+-- chain made; only its PLACEMENT moved.
+--
+-- The dispatcher's parameters are exactly what the inline chain read out of the
+-- enclosing define, in that order:
+--   %dict   — the dict-witness word (the enclosing fn's dict PARAM; `loadTag`/
+--             `loadField` read the cell's head tag and per-instance `requires`).
+--   %mwK    — the METHOD-LEVEL constraint dicts.  These are AMBIENT at the CALL site
+--             (a `traverse : Thenable m =>` whose `m` is not the dispatch receiver),
+--             so they are still resolved from `env` HERE and passed IN — they are not,
+--             and never were, in the dict cell.
+--   %argK   — the value args.  Always exactly `methodArityOf name`: under-application
+--             is diverted to a PAP by `dictRoutedUnderApplied` before we get here, and
+--             over-application cannot arise at an impl head (see emitImplCallSat).
+--
+-- Both counts are baked into the dispatcher's NAME, so a site that somehow disagreed
+-- on either would get its own dispatcher rather than a silently mis-arity'd call.
 emitMethodDispatchChain : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List String -> <Mut> (String, LTy)
 emitMethodDispatchChain e env name d methRoutes argOps =
   let dictPtr = dictOperand env d
+  let methWords = dictWordsOf e env methRoutes
+  let nmw = lengthS methWords
+  let nargs = lengthS argOps
+  let fname = dispFnName name nmw nargs
+  let _ = ensureDispatcherEmitted e fname name nmw nargs
+  emitImplCall e fname (dictPtr :: methWords ++ argOps) LTInt
+
+-- the shared dispatcher's symbol.  Method names are plain identifiers here (an
+-- operator is a `CBinPrim`, never a method name — same assumption `implFnName`
+-- already makes), so the concatenation is a legal LLVM symbol.
+dispFnName : String -> Int -> Int -> String
+dispFnName name nmw nargs =
+  "mdk_disp_\{name}_\{intToString nmw}_\{intToString nargs}"
+
+-- the dispatchers emitted so far, by symbol.  Module-level Ref (mirroring
+-- `dictConstCacheRef`), reset per program by emitProgram/emitProgramGaps.
+dispCacheRef : Ref (List String)
+dispCacheRef = Ref []
+
+ensureDispatcherEmitted : Emit -> String -> String -> Int -> Int -> <Mut> Unit
+ensureDispatcherEmitted e fname name nmw nargs =
+  if contains fname dispCacheRef.value then
+    ()
+  else
+    -- REGISTER BEFORE EMITTING.  A default-synthesis arm lifts `@mdk_default_<m>_<tag>`
+    -- on demand (ensureDefaultEmitted), and that body can itself reach a dict-routed
+    -- site for the SAME method — which would re-enter here and recurse forever if the
+    -- symbol were only recorded after the body was emitted.
+    let _ = setRef dispCacheRef (fname :: dispCacheRef.value)
+    emitDispatcherDefine e fname name nmw nargs
+
+-- emit the shared dispatcher define.  Same side-buffer swap every other lifted define
+-- uses (emitMethodValDefine/emitDictValDefine): redirect `buf`, emit, splice into
+-- `lams`, restore.  `beginDefine` resets the per-define `%tN`/label counter, so the
+-- dispatcher's text depends only on the method — not on where the first site of it
+-- happened to appear (issue #118 step 1).
+emitDispatcherDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
+emitDispatcherDefine e fname name nmw nargs =
+  let saved = (bufRef e).value
+  let _ = setRef (bufRef e) []
+  let scope = beginDefine e
+  let _ = emit e "define i64 @\{fname}(\{dispParamDecls nmw nargs}) {"
+  let _ = emit e "entry:"
+  let (r, _) = emitDispatchBody e name "%dict" (dispWordNames "%mw" nmw 0) (dispWordNames "%arg" nargs 0)
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
+  let _ = endDefine e scope
+  setRef (bufRef e) saved
+
+dispParamDecls : Int -> Int -> String
+dispParamDecls nmw nargs =
+  argDecls
+    ("%dict" :: dispWordNames "%mw" nmw 0 ++ dispWordNames "%arg" nargs 0)
+
+dispWordNames : String -> Int -> Int -> List String
+dispWordNames pre n i
+  | i >= n = []
+  | otherwise = pre ++ intToString i :: dispWordNames pre n (i + 1)
+
+-- the dispatch chain itself, verbatim from the old inline site — now the BODY of the
+-- shared dispatcher.  [dictPtr] is the dict-witness word, [methWords] the ambient
+-- method-level constraint dicts (`emitDispatchChain` prepends them ahead of the
+-- cell-sourced per-instance `requires`, matching the lifted fn's leading dict-param
+-- order: dict_pass binds methRoutes ++ implRoutes), [argOps] the saturated value args.
+emitDispatchBody : Emit -> String -> String -> List String -> List String -> <Mut> (String, LTy)
+emitDispatchBody e name dictPtr methWords argOps =
   let headTag = loadTag e dictPtr
   let impls = implsOf e name
-  -- METHOD-LEVEL constraint dicts (`traverse : Thenable m => …`, over a tyvar that
-  -- is NOT the dispatch receiver) are passed as AMBIENT dict args at the call site,
-  -- resolved from `env` here — NOT from the runtime dispatch-dict cell (which only
-  -- holds the impl's per-instance `requires` dicts).  Materialize them ONCE in this
-  -- block (dominates every dispatch arm); emitDispatchChain prepends them ahead of
-  -- the cell-sourced per-instance requires, matching the lifted fn's leading
-  -- dict-param order (dict_pass binds methRoutes ++ implRoutes).
-  let methWords = dictWordsOf e env methRoutes
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "dispend" ++ intToString (freshLocal e)
@@ -9372,6 +9461,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   }
   let _ = resetDistinctTypeNames ()
   let _ = setRef dictConstCacheRef []
+  let _ = setRef dispCacheRef []
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
@@ -9591,6 +9681,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   }
   let _ = resetDistinctTypeNames ()
   let _ = setRef dictConstCacheRef []
+  let _ = setRef dispCacheRef []
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
