@@ -1,0 +1,3 @@
+-- codemod fixture: an expression-level type annotation (EAnnot) carries a row.
+identity : Int -> Int
+identity x = (x : <Mut> Int)

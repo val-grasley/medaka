@@ -1,0 +1,3 @@
+-- codemod fixture: a domain-carrying atom's string is preserved across a strip.
+save : Int -> <FileWrite "_" | e> Int
+save x = x

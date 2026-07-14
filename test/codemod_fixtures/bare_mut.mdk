@@ -1,0 +1,3 @@
+-- codemod fixture: a bare <Mut> row collapses to an unannotated (pure) arrow.
+writeCell : Ref Int -> Int -> <Mut> Unit
+writeCell r v = setRef r v

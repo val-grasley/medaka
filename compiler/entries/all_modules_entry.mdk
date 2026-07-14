@@ -22,6 +22,7 @@ import driver.loader.{loadProgram}
 import types.typecheck.{ppScheme}
 import eval.eval.{ppValue}
 import tools.check.{runCheck}
+import tools.codemod.{codemodSource}
 
 batchEntryDummy : Int
 batchEntryDummy = 0

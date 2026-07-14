@@ -1,0 +1,3 @@
+-- codemod fixture: <IO, Mut, Panic> loses the two stripped labels, keeps IO.
+step : Int -> <IO, Mut, Panic> Int
+step x = x

@@ -133,6 +133,13 @@ import tools.lint.{
   applyFixes,
   runCrossFileRules,
 }
+import tools.codemod.{
+  findCodemod,
+  codemodMk,
+  codemodWarnDecls,
+  codemodListing,
+  codemodSource,
+}
 import tools.check_policy.{
   runCheckPolicy,
   runAcceptedPlugin,
@@ -174,6 +181,7 @@ main = match args ()
   "snapshot"::rest => runSnapshotCmd rest
   "doc"::rest => runDocCmd rest
   "lint"::rest => runLintCmd rest
+  "codemod"::rest => runCodemodCmd rest
   "check-policy"::rest => runCheckPolicyCmd rest
   "manifest"::rest => runManifestCmd rest
   "repl"::rest => runReplCmd rest
@@ -197,6 +205,7 @@ usage _ = putStrLn (stringConcat
     "  medaka bench [file.mdk]   Run bench declarations\n",
     "  medaka doc [file.mdk]     Generate Markdown documentation\n",
     "  medaka lint [paths...]    Lint files/dirs (style rules; --fix, --disable/--only/--deny=<rules,...>)\n",
+    "  medaka codemod <name> [flags] [paths...]  Apply a named source-preserving AST transform (--write/--stdout)\n",
     "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n",
     "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
     "  medaka new <name>         Scaffold a new project directory\n",
@@ -800,6 +809,139 @@ fmtOne mode file = match readFile file
             let _ = ePutStrLn "\{file}: \{msg}"
             exit 2
           Ok _ => ()
+
+-- ── codemod ────────────────────────────────────────────────────────────────
+-- `medaka codemod <name> [codemod-flags] [--write|--stdout] <paths...>`.
+--
+-- Registry-driven (tools/codemod.mdk): the first arg names a codemod; the rest
+-- splits into mode flags (--write/--stdout), the codemod's OWN value-taking flags
+-- (any other `--flag value`, handed to the codemod's `mk`), and file/dir targets
+-- (expanded by the SAME `expandLintTarget`/`collectMdkFiles` walk fmt/lint use).
+--
+-- Modes mirror `fmt`: default is a DRY-RUN that prints `would rewrite: <file>`
+-- per changed file and exits 1 if any would change (0 otherwise), so idempotence
+-- is a plain exit-code check; `--write` rewrites only files that actually change;
+-- `--stdout` prints one file's result (original text if unchanged).  A bare
+-- `medaka codemod` lists the registry and exits 2.
+data CodeMode = CmDry | CmWrite | CmStdout
+
+runCodemodCmd : List String -> <IO, Mut, Panic> Unit
+runCodemodCmd [] = listCodemodsAndExit ()
+runCodemodCmd (name::rest) = match findCodemod name
+  None =>
+    let _ = ePutStrLn "medaka codemod: unknown codemod '\{name}'"
+    listCodemodsAndExit ()
+  Some cm => match splitCodemodArgv rest CmDry [] []
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 2
+    Ok (mode, cargs, targets) => match codemodMk cm cargs
+      Err msg =>
+        let _ = ePutStrLn "medaka codemod \{name}: \{msg}"
+        exit 2
+      Ok xf =>
+        let files = flatMap expandLintTarget targets
+        match files
+          [] =>
+            let _ = ePutStrLn "medaka codemod: no .mdk files found"
+            exit 2
+          _ => match mode
+            CmStdout => match files
+              [one] => codemodStdout xf (codemodWarnDecls cm cargs) one
+              _ =>
+                let _ = ePutStrLn "medaka codemod: --stdout requires exactly one file"
+                exit 2
+            _ =>
+              if codemodFilesGo mode xf (codemodWarnDecls cm cargs) files False then
+                exit 1
+              else
+                ()
+
+listCodemodsAndExit : Unit -> <IO, Mut, Panic> Unit
+listCodemodsAndExit _ =
+  let _ = putStrLn "Usage: medaka codemod <name> [flags] [--write|--stdout] <paths...>"
+  let _ = putStrLn ""
+  let _ = putStrLn "Available codemods:"
+  let _ = putStrLn codemodListing
+  exit 2
+
+-- Split the post-name argv into (mode, codemod-flags, paths).  --write/--stdout
+-- are consumed as modes; any other `--flag` is a codemod flag that consumes the
+-- NEXT token as its value (the effect-labels convention: --strip <v>, --rename
+-- <v>); everything else is a target path.
+splitCodemodArgv : List String -> CodeMode -> List String -> List String -> Result String (CodeMode, List String, List String)
+splitCodemodArgv [] mode cargs paths = Ok (mode, reverseL cargs, reverseL paths)
+splitCodemodArgv ("--write"::rest) _ cargs paths =
+  splitCodemodArgv rest CmWrite cargs paths
+splitCodemodArgv ("--stdout"::rest) _ cargs paths =
+  splitCodemodArgv rest CmStdout cargs paths
+splitCodemodArgv (tok::rest) mode cargs paths =
+  if startsWith "--" tok then match rest
+    v::rest2 => splitCodemodArgv rest2 mode (v :: tok::cargs) paths
+    [] => Err "medaka codemod: flag '\{tok}' requires a value"
+  else splitCodemodArgv rest mode cargs (tok::paths)
+
+-- --stdout for a single file: parse errors exit 1, otherwise print the rewritten
+-- (or, if unchanged, the original) source.  Advisory warnings go to stderr.
+codemodStdout : (Decl -> (Decl, Bool)) -> (List Decl -> List String) -> String -> <IO, Mut, Panic> Unit
+codemodStdout xf warnFn file = match readFile file
+  Err msg =>
+    let _ = ePutStrLn "\{file}: \{msg}"
+    exit 2
+  Ok src => match codemodSource xf src
+    Err e =>
+      let _ = ePutStrLn (ppParseError src file e)
+      exit 1
+    Ok result =>
+      let _ = emitCodemodWarns warnFn file src
+      match result
+        None => putStr src
+        Some out => putStr out
+
+-- Dry-run / --write fold over an expanded file list.  Returns whether the
+-- process should exit 1: for dry-run that is "any file would change"; for
+-- --write it is "any read/parse/write error" (a successful rewrite is exit 0).
+codemodFilesGo : CodeMode -> (Decl -> (Decl, Bool)) -> (List Decl -> List String) -> List String -> Bool -> <IO, Mut, Panic> Bool
+codemodFilesGo _ _ _ [] acc = acc
+codemodFilesGo mode xf warnFn (f::rest) acc =
+  let signal = codemodOneReport mode xf warnFn f
+  codemodFilesGo mode xf warnFn rest (acc || signal)
+
+codemodOneReport : CodeMode -> (Decl -> (Decl, Bool)) -> (List Decl -> List String) -> String -> <IO, Mut, Panic> Bool
+codemodOneReport mode xf warnFn file = match readFile file
+  Err msg =>
+    let _ = ePutStrLn "\{file}: \{msg}"
+    True
+  Ok src => match codemodSource xf src
+    Err e =>
+      let _ = ePutStrLn (ppParseError src file e)
+      True
+    Ok result =>
+      let _ = emitCodemodWarns warnFn file src
+      match result
+        None => False
+        Some out => match mode
+          CmWrite => match writeFile file out
+            Err msg =>
+              let _ = ePutStrLn "\{file}: \{msg}"
+              True
+            Ok _ => False
+          _ =>
+            let _ = putStrLn "would rewrite: \{file}"
+            True
+
+-- Emit a codemod's advisory warnings for one file to stderr.  Safe to reparse:
+-- the caller only reaches here after `codemodSource` proved the source parses.
+emitCodemodWarns : (List Decl -> List String) -> String -> String -> <IO, Mut, Panic> Unit
+emitCodemodWarns warnFn file src =
+  let (decls, _) = parseWithPositions src
+  emitWarnLines file (warnFn decls)
+
+emitWarnLines : String -> List String -> <IO, Mut, Panic> Unit
+emitWarnLines _ [] = ()
+emitWarnLines file (w::ws) =
+  let _ = ePutStrLn "\{file}: warning: \{w}"
+  emitWarnLines file ws
 
 -- ── new ───────────────────────────────────────────────────────────────────
 runNewCmd : List String -> <IO, Panic> Unit
