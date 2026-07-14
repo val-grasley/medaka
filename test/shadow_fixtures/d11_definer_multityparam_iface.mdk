@@ -1,0 +1,27 @@
+-- SHADOW-SEMANTICS cell D11: definer shadow of a method on a MULTI-TYPARAM
+-- interface (`interface Ix a i`, two type params) -- SHADOW-SEMANTICS.md
+-- section 5, residual #2 (2026-07-13): "every entry point is gated on
+-- singleParamIfaceMethod, which counts interface TYPE PARAMS, not method
+-- params" -- so this shadow bypasses the whole definer-shadow machinery.  S8
+-- only speaks to multi-PARAM methods, not multi-typaram INTERFACES; this is a
+-- distinct, still-open gap (no PR in flight for this one, unlike D10/S-1).
+-- KNOWN-BAD on current main: check ACCEPTS and build ACCEPTS printing the
+-- (per-receiver-CORRECT!) values 4 then 3 -- but run E-PANICs (`unknown op
+-- '*'`), so check/build agree with each other while run disagrees with both,
+-- violating S7 path agreement.  Pinning the CURRENT split (not fixing it) so
+-- test/diff_compiler_shadow_semantics.sh goes red -- and must be updated --
+-- the day `run` is taught to route this shape too.
+interface Ix a i where
+  get : a -> i -> Int
+
+data Box = Box Int
+
+impl Ix Box Int where
+  get (Box n) i = n + i
+
+get : Int -> Int -> Int
+get n i = n * i
+
+main =
+  println (get (Box 3) 1)
+  println (get 3 1)

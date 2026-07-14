@@ -247,10 +247,10 @@ jobs:
       fail-fast: false          # one shard failing must not hide the others
       matrix:
         include:
-          # Every one of the 82 diff_compiler_* gates lands in exactly ONE shard —
-          # verified: 0 missing, 0 duplicated. A gate falling between shards would
-          # silently never run, which is the exact class of rot this suite is being
-          # hardened against.
+          # Every gate in the repo lands in exactly ONE shard — verified by
+          # test/diff_compiler_ci_shard_coverage.sh (0 missing, 0 duplicated). A gate
+          # falling between shards would silently never run, which is the exact class
+          # of rot this suite is being hardened against.
           #
           # Quoting is load-bearing on BOTH layers:
           #   * outer DOUBLE quotes -> one YAML scalar (a bare `'a' 'b'` is invalid
@@ -259,26 +259,78 @@ jobs:
           #     the globs before run_gates.sh sees them.
           # And do NOT use brace expansion: run_gates.sh runs under POSIX sh (dash),
           # which does not expand braces, so it would glob to nothing.
+          #
+          # ── SHARDS ARE SCHEDULED BY COST, NOT BY THEME (2026-07-14) ──────────────
+          #
+          # The shard NAMES are thematic and that is fine — they make a failure legible.
+          # The SCHEDULE is not: jobs run in parallel, so total CI wall-clock is the
+          # SLOWEST shard, and grouping by subsystem stacked the three most expensive
+          # gates in the repo onto one runner while five others idled for four minutes.
+          #
+          # Measured per-gate CPU seconds (2026-07-14, wasm-tools absent = what a hosted
+          # runner sees; a shard's wall ≈ setup + Σcpu / 2, since run_gates' outer pool is
+          # JOBS=2 on a 4-core hosted runner):
+          #
+          #   diff_compiler_engines  ..  834   <- 346 fixtures x (medaka build + clang)
+          #   build_construct_coverage   282   <- 144 fixtures x (medaka build + clang)
+          #   sqlite/test/*oracle (22)   188   <- 22 gates, 3-15s each
+          #   backend (12 gates)         298
+          #   tools  (27 gates)          114
+          #   types  (20 gates)           36
+          #   eval   (27 gates)           27
+          #   frontend (15 gates)         12
+          #
+          # The old `engines` shard held 834+282+188 = 1304 of the suite's ~1790 CPU-s.
+          # It measured 517s wall while `frontend` measured 138s — i.e. ONE shard WAS the
+          # critical path and the other five were noise. So:
+          #
+          #   * diff_compiler_engines now OWNS a runner (it cannot go below Σcpu/ncores).
+          #   * the 22 sqlite oracles get their own shard — they are 22 INDEPENDENT gates,
+          #     embarrassingly parallel, and they are what CI-COVERAGE-EXCEPTIONS.txt has
+          #     been claiming all along ("Now in the `sqlite` shard" — there wasn't one).
+          #   * build_construct_coverage moves to `frontend`, the CHEAPEST shard (12 CPU-s
+          #     of gates behind a 14-oracle build). It is a backend gate sitting in a shard
+          #     named frontend, and that is deliberate: it is placed where there is idle
+          #     runner, not where its name says. It was also SERIAL — 282s of wall on any
+          #     machine — and is now fanned out (298s -> 111s at run_gates' JOBS=3), which
+          #     is what makes it fit anywhere at all.
+          #
+          # GitHub gives this repo 20 concurrent jobs and we use ~11. More, smaller shards
+          # are nearly free; a long pole is not. When you add a heavy gate, put it where
+          # there is ROOM, and update the table above.
           - name: engines
-            # build_construct_coverage (T-3, ~300s, no extra oracle needed) added here —
-            # smallest shard, so it runs concurrently with diff_compiler_engines instead
-            # of queueing behind a bigger shard.
+            # ALONE ON ITS RUNNER, on purpose. 834 CPU-s — the single most expensive thing
+            # in the suite by 3x, and irreducible: 346 fixtures each paying a full `medaka
+            # build` + clang. On a 4-core runner that is a ~210s floor no matter what else
+            # we do, so anything sharing this shard is added directly to the critical path.
             #
-            # 'sqlite/test/*_oracle' (T8): the 22 differential gates that diff the
-            # pure-Medaka SQLite library against the REAL sqlite3 CLI. They had never run
-            # in CI — not because anyone excluded them, but because NO PATTERN COULD REACH
-            # THEM: run_gates.sh globbed `$ROOT/test/<pat>.sh` and these live in
-            # sqlite/test/. run_gates.sh, build_oracles.sh --for, and the coverage gate now
-            # all resolve a pattern against BOTH `$ROOT/test/` and `$ROOT/`, so a shard can
-            # name a gate anywhere in the tree. All 22 are green (~5 min serial, ~2 min
-            # across run_gates' pool). They read no test/bin oracle; they need `sqlite3`,
-            # installed in the toolchain step below.
+            # `full_cores` (below) matters as much as the pattern: the gate's own default is
+            # ENGINE_JOBS=NCPU/2, which is the right hedge when it shares a runner with other
+            # gates and leaves HALF THE BOX IDLE when it doesn't. It doesn't, now.
+            pattern: "'diff_compiler_engines'"
+            full_cores: "1"
+          - name: sqlite
+            # THE 22 differential gates that diff the pure-Medaka SQLite library against the
+            # REAL sqlite3 CLI (T8). They had never run in CI — not because anyone excluded
+            # them, but because NO PATTERN COULD REACH THEM: run_gates.sh globbed
+            # `$ROOT/test/<pat>.sh` and these live in sqlite/test/. run_gates.sh,
+            # build_oracles.sh --for, and the coverage gate now all resolve a pattern against
+            # BOTH `$ROOT/test/` and `$ROOT/`, so a shard can name a gate anywhere in the tree.
+            #
+            # 22 independent gates, 188 CPU-s total, longest single gate 15s — the most
+            # shardable work in the repo, and it landed in the ALREADY-longest shard. Its own
+            # runner costs nothing (we use 11 of 20 concurrent jobs) and takes ~95s off the
+            # critical path. CI-COVERAGE-EXCEPTIONS.txt already described this shard as
+            # existing; now it does.
+            #
+            # They read NO test/bin oracle (they drive ./medaka directly), so this shard's
+            # oracle step correctly builds nothing. They need `sqlite3`, installed below.
             #
             # NOTE the glob is '*oracle', not '*_oracle': 21 of them are <name>_oracle.sh but
             # the 22nd is plain `oracle.sh`. '*_oracle' silently left it out — and the coverage
             # gate caught that immediately, on its first run after being widened. Which is the
             # whole argument for the widened gate in one line.
-            pattern: "'diff_compiler_engines' 'build_construct_coverage' 'sqlite/test/*oracle'"
+            pattern: "'sqlite/test/*oracle'"
           - name: frontend
             # 'native_fixtures/run' (T8): 11 native-only regression assertions (parse-error
             # location + foreign-syntax hints + one eval dispatch check). A real gate that
@@ -286,9 +338,22 @@ jobs:
             # `test/*.sh` glob could not see it. It was RED. Its one real failure (compiler
             # bug T-12) is now an XFAIL in the gate's own expected-failure ledger, so it runs
             # here green and still fails loudly if the bug regresses OR gets fixed.
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'native_fixtures/run'"
+            #
+            # 'build_construct_coverage' (T-3): a BACKEND gate (144 construct fixtures through
+            # the native `medaka build`, stdout diffed against committed goldens), parked here
+            # for COST, not theme — see the shard-scheduling note above. frontend's own 15
+            # gates are 12 CPU-s combined, i.e. this shard was ~130s of oracle build and then
+            # nothing. It has the room; `engines` and `backend` do not.
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'native_fixtures/run' 'build_construct_coverage'"
           - name: types
-            pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project' 'effect_param_domain' 'effect_builtin_param_domain' 'effect_product_domain' 'effect_set_domain'"
+            # 'diff_compiler_shadow_semantics': the SHADOW-SEMANTICS.md decision matrix
+            # (standalone fn ⇄ interface-method shadowing). It lives here rather than in
+            # `tools` (with its closest sibling, diff_compiler_run_check_agreement) because
+            # every stage it exercises — definer/importer shadow detection, per-receiver
+            # route stamping, standalone-domain enforcement — is in compiler/types/
+            # typecheck.mdk. It drives check+run+build per fixture but reads NO test/bin
+            # oracle, so it adds no oracle-build cost to this shard.
+            pattern: "'diff_compiler_typecheck*' 'diff_compiler_check*' 'diff_compiler_exhaust' 'diff_compiler_diagnostics' 'diff_compiler_analyze_project' 'diff_compiler_shadow_semantics' 'effect_param_domain' 'effect_builtin_param_domain' 'effect_product_domain' 'effect_set_domain'"
           - name: eval
             # The 4 bootstrap_* stage gates (each native pipeline stage == the interpreter's
             # output) also ran in NO CI job until 2026-07-13 — found by the coverage gate
@@ -315,11 +380,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # sqlite3 is the ORACLE for the 22 sqlite/test/*_oracle.sh gates in the `engines`
+      # sqlite3 is the ORACLE for the 22 sqlite/test/*oracle.sh gates in the `sqlite`
       # shard — they generate a .db with the real sqlite3 CLI, read it back with both
       # sqlite3 and the Medaka library, and diff. It ships on ubuntu-latest, but it is
       # named EXPLICITLY here: an oracle that a gate silently depends on and the workflow
       # never mentions is exactly how "this didn't run" starts looking like "this passed".
+      #
+      # Installed on EVERY shard rather than only `sqlite`. It is ~1s from the apt cache,
+      # and a per-shard toolchain would mean a gate moved between shards for cost reasons
+      # (which is now a routine act — see the shard-scheduling note above) could silently
+      # lose its oracle and start "passing".
       - name: Install toolchain
         if: needs.detect.outputs.docs_only != 'true'
         run: |
@@ -395,9 +465,27 @@ jobs:
       #
       # (UNQUOTED substitution is deliberate; quoting it would collapse the pattern
       # list into ONE argument and silently degrade the shard to a single bad glob.)
+      #
+      # ── `full_cores` — set ONLY on the `engines` shard ────────────────────────────
+      # diff_compiler_engines picks its own fan-out: ENGINE_JOBS, defaulting to NCPU/2.
+      # That default is a HEDGE against sharing a runner with other gates (run_gates'
+      # outer pool would otherwise oversubscribe it) — and on a 4-core hosted runner it
+      # means the suite's single most expensive gate uses TWO CORES and idles the other
+      # two. `engines` is now the only gate in its shard, so give it the whole box: 834
+      # CPU-s at 2 workers is ~420s; at 4 it is ~210s. Purely an env knob the gate
+      # already exposes — no gate change.
+      #
+      # Derived from `nproc` rather than hardcoded, so it tracks GitHub's runner size.
+      # Every other shard leaves it empty and the gate's own default applies (and no
+      # other shard contains that gate — the coverage gate enforces exactly-one).
       - name: Gate shard — ${{ matrix.name }}
         if: needs.detect.outputs.docs_only != 'true'
-        run: sh test/run_gates.sh ${{ matrix.pattern }}
+        run: |
+          if [ -n "${{ matrix.full_cores }}" ]; then
+            export ENGINE_JOBS="$(nproc)"
+            echo "engines shard owns this runner: ENGINE_JOBS=$ENGINE_JOBS"
+          fi
+          sh test/run_gates.sh ${{ matrix.pattern }}
 
       # THE REVIEW GATE — must be in THIS job, on the tree the gates just ran over.
       #

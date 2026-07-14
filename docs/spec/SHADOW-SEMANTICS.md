@@ -1,15 +1,16 @@
 # Declaration-Shadowing Semantics (standalone fn ⇄ interface method)
 
-**Status:** PARTIAL — 4 historical bugs fixed (P0-18 arc, see below); 2 residual
-bugs remain explicitly open (a definer-shadow dict-passing seam bug; multi-typaram
-interfaces bypassing the shadow machinery). `test/shadow_fixtures/` exists but is
-NOT yet wired into any gate. Conformance specification + empirical audit
-(2026-07-09, binary at
-`cfc4fa5a`, all cells re-observed in the Docker Linux container on `run`,
-`build`→execute, AND `check` — no cell's status is taken from a design doc).
-**Scope:** a bare name `N` that is BOTH a top-level standalone function AND an
-interface-method name (a "shadow"). Peer of `DICT-SEMANTICS.md` /
-`LAYOUT-SEMANTICS.md`: clauses S1–S8, a gated decision matrix, and a per-stage
+**Status:** ENFORCED — the decision matrix is now a GATE
+(`test/diff_compiler_shadow_semantics.sh`, added 2026-07-14): it runs every
+fixture in `test/shadow_fixtures/` through `check` + `run` + `build`, asserting
+each cell's verdict AND (per **S7**) that `run` and the built binary print the
+same pinned value. Every cell is conformant except **S-3** (row 26, multi-typaram
+interface), which is pinned as a KNOWN-BAD ledger row so it fails the day it is
+fixed. Until this gate existed the corpus below **ran nowhere**, and the matrix's
+own Status column had silently gone stale in the OK direction (see the note under
+§2). **Scope:** a bare name `N` that is BOTH a top-level standalone function AND
+an interface-method name (a "shadow"). Peer of `DICT-SEMANTICS.md` /
+`LAYOUT-SEMANTICS.md`: clauses S1–S9, a gated decision matrix, and a per-stage
 enforcement table. Where the binary disagrees with a clause, the matrix row says
 **BUG** — the spec is the target, not a description of present behavior.
 
@@ -17,9 +18,9 @@ enforcement table. Where the binary disagrees with a clause, the matrix row says
 (P0-18 arc: typecheck routing `953d9ea1`, mangle/mark ordering `0b4a7882`,
 scheme selection → SIGSEGV, cross-module registration `cfc4fa5a`) because each
 stage made its own keying assumption about the same rule (§3 makes those keys
-explicit). Fixtures: `test/shadow_fixtures/` (one per matrix cell; NOT yet wired
-into any gate — see §4). History/context: memory `project_phase112_standalone_vs_method`,
-`qa-beta-2026-07-07/P0-18-*.md`.
+explicit). Fixtures: `test/shadow_fixtures/` (one per matrix cell), run by
+`test/diff_compiler_shadow_semantics.sh` — see §4. History/context: memory
+`project_phase112_standalone_vs_method`, `qa-beta-2026-07-07/P0-18-*.md`.
 
 ## 0. Terminology
 
@@ -130,11 +131,22 @@ because the stdlib pattern requires it: `map.mdk`'s `toList : Map k v -> List
 the call and a method value carries no evidence (no dict is threaded at value
 position on the arg-tag path) — the standalone is the only coherent denotation.
 
-## 2. Decision matrix (observed 2026-07-09, `cfc4fa5a`, Linux container)
+## 2. Decision matrix (re-observed 2026-07-14, post-`eb92cdff`; now GATED)
 
 Axes: shadow kind × receiver impl-status × topology × use form. "Outcome" is
-the S1–S8-specified result; **Status** is what the binary actually does on all
+the S1–S9-specified result; **Status** is what the binary actually does on all
 three of run / build / check. Fixtures in `test/shadow_fixtures/`.
+
+> ⚠️ **This column used to be STALE, and that is the reason the gate exists.**
+> From 2026-07-10 to 2026-07-14 rows 10 / 12 / 13 / 14 read **BUG** while the
+> binary was in fact conformant on all four — P0-19 and P0-20 had fixed them,
+> and this table was never updated even though the §5 change-log a few
+> paragraphs below *said so*. A spec that says BUG where the binary says OK
+> sends the next agent down a wrong hypothesis; that is exactly what it did.
+> Every Status below is now re-observed empirically **and enforced by
+> `test/diff_compiler_shadow_semantics.sh`**, which drives every fixture
+> through `check` + `run` + `build` and pins the value. This column can no
+> longer drift without a gate going red.
 
 | # | Cell (kind · receiver · topology · use) | Clause | Specified outcome | Fixture | run | build | check | Status |
 |---|---|---|---|---|---|---|---|---|
@@ -147,11 +159,11 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | RKey → 9; RLocal → 4 | `d6_definer_parametric_receiver.mdk` | 9,4 | 9,4 | accept | **OK** |
 | 8 | definer · TWO-param method shadow · applied | S8 | dispatch 3; standalone 6 | `d7_definer_multiparam_method.mdk` | 3,6 | 3,6 | accept | **OK** (via ordinary arg-dispatch, outside the S2 machinery) |
 | 9 | definer · value position · no-impl elements | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** |
-| 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | E-PANIC `unknown op '+'` | **[1, 2]** (dispatches!) | **accepts** | **BUG** (three-way split) |
+| 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 2 `ebb8ee90`; was a 3-way split) |
 | 11 | definer · ungrounded recv · wrapper used at standalone domain | S5 | 4; wrapper : Int -> Int | `d5_definer_poly_receiver.mdk` | 4 | 4 | accept (but `useIt : a -> Int` — over-general, the row-12 hole) | **OK** (value), caveat on scheme |
-| 12 | definer · ungrounded recv · wrapper CALLED at live-impl type | S5 | located REJECT | `d5b_definer_poly_liveimpl_call.mdk` | E-PANIC | **garbage int** | **accepts** | **BUG** (silent miscompile) |
-| 13 | definer · no-impl recv · domain mismatch (`size "hi"`) | S2 | located REJECT | `d9_definer_reject.mdk` | E-PANIC | **garbage int** | **accepts** | **BUG** (check over-accept → build garbage) |
-| 14 | definer · live impl, interface+impl IMPORTED · applied | S6 | RKey → 3; RLocal → 4 | `d8_definer_imported_impl/` | reject `Int vs Box` | reject | reject | **BUG** (consistent but wrong outcome — no dispatch cross-module) |
+| 12 | definer · ungrounded recv · wrapper CALLED at live-impl type | S5 | located REJECT | `d5b_definer_poly_liveimpl_call.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was a silent miscompile) |
+| 13 | definer · no-impl recv · domain mismatch (`size "hi"`) | S2 | located REJECT | `d9_definer_reject.mdk` | reject `Int vs String` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was check-over-accept → build garbage) |
+| 14 | definer · live impl, interface+impl IMPORTED · applied | S6 | RKey → 3; RLocal → 4 | `d8_definer_imported_impl/` | 3,4 | 3,4 | accept | **OK** (fixed P0-19 batch 2 `ebb8ee90`; now dispatches cross-module) |
 | 15 | importer · live impl · interface LOCAL to consumer | S2/S6 | RKey → 3 | `i1_importer_local_iface/` | 3 | 3 | accept | **OK** |
 | 16 | importer · no-impl recv · interface LOCAL | S2/S6 | RLocal → 4 | `i1_importer_local_iface/` | 4 | 4 | accept | **OK** |
 | 17 | importer · live impl · interface+impl in a THIRD module | S6 | RKey → 3 | `i3_importer_imported_iface/` | 3 | 3 | accept | **OK** |
@@ -162,9 +174,13 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 22 | importer · N-way | S3 | per-receiver | — | — | — | — | UNTESTED-NO-FIXTURE (expected ≡ row 6) |
 | 23 | return-position method shadow (no receiver param, e.g. `pure`-like) | S4 | value-position rule → standalone | — | — | — | — | UNTESTED-NO-FIXTURE |
 | 24 | operator-named shadow (`==` etc.) | — | n/a — operator occurrences resolve through the desugared method-call path, not bare-`EVar` funDef intersection | — | — | — | — | UNREACHABLE |
+| 25 | definer · **CONSTRAINED** standalone (`size : Num a => a -> a`) · no-impl recv | S9 | RLocal **carrying the standalone's dicts** → 4 | `d10_definer_constrained.mdk` | 4 | 4 | accept | **OK** (fixed 2026-07-13, S-1 / clause S9; was `check` green + `run` E-PANIC + `build` printing a raw heap pointer) |
+| 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S8 (does not cover it) | dispatch 4; standalone 3 | `d11_definer_multityparam_iface.mdk` | **E-PANIC `unknown op '*'`** | 4,3 | accepts | **BUG** (**S-3**; `run` diverges from check+build — an S7 violation. Every entry point gates on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so this shadow bypasses the machinery entirely. `check`/`build` happen to be per-receiver CORRECT. Pinned KNOWN-BAD by the gate.) |
 
-**Tally: 14 OK · 4 BUG (rows 10, 12, 13, 14) · 3 UNTESTED-NO-FIXTURE · 1
-UNREACHABLE · 2 baselines.**
+**Tally: 19 OK · 1 BUG (row 26 / S-3) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE ·
+2 baselines.** Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1.
+Row 26 is the only open cell, and it is a **loud** divergence (`run` panics),
+not a silent wrong answer.
 
 ## 3. Per-stage enforcement table (clause → site → keying assumption)
 
@@ -190,20 +206,49 @@ Line numbers at `cfc4fa5a`.
 | S9 dicts (typecheck) | `shadowStandaloneDicts` / `shadowStandaloneDictSlotsAt` (slot monos, expanded-supers, from the SIGNATURE's id space) → carried on `pendingRLocalSites` (an `RLocalSite` record) → resolved **inside** `resolveRLocalSites` via `routesOfMonosTop` | the standalone's own `=>` dicts, stamped by the SAME single writer as the route | ⚠️ resolve them **inside the stamp** — `resolveRLocalSites` runs BEFORE `resolveDictApps` in `elabModuleStamp`, so routing them through `pendingDictApps` reads `[]` and reproduces the bug with more code |
 | S9 reject direction | `recordStandaloneSigObligations` → `pushCallObl` → `checkCallObligations` | `size "hi"` ⇒ located `No impl of Num for String` | ⚠️ obligations must come from the **signature**, not `schemeObligationsRef`: for a signatured binding those are **different id spaces** (generalization vs `sigToSchemeTvs`), so the id lookup silently finds nothing |
 
-## 4. Fixture-per-cell plan (all created; adoption is a mechanical follow-up)
+## 4. The gate (`test/diff_compiler_shadow_semantics.sh`)
 
-`test/shadow_fixtures/` — NOT wired into any gate and no goldens captured (this
-spec is read-only). Suggested adoption:
+**The matrix in §2 is enforced.** One gate owns the whole corpus
+(`test/shadow_fixtures/`, 17 fixture units — 13 single-file `.mdk` plus the
+`d8`/`i1`/`i3`/`i4` multi-module directories), and for each it drives all three
+paths and asserts:
 
-| Fixture(s) | Adopting gate |
-|---|---|
-| `d1`, `d1b`, `d2`, `d3`, `d4`, `d6`, `d7` (accept cells, scalar/list build values) | `test/diff_compiler_build.sh` (build differential) + `test/diff_compiler_run_check_agreement.sh` |
-| `d4b`, `d5b`, `d9` (REJECT-expected cells, currently BUG) | `test/diff_compiler_run_check_agreement.sh` with `.expected = REJECT` — these become the regression tests for the row-10/12/13 fixes |
-| `d5` | agreement gate (accept) — and, once row 12 is fixed, assert the wrapper's scheme is `Int -> Int`, not `a -> Int` |
-| `d8_definer_imported_impl/`, `i1_importer_local_iface/`, `i3_importer_imported_iface/`, `i4_importer_prelude_iface/` | `test/diff_compiler_check_cli_modules.sh` (the modules-flavored CLI gate that already hosts the inline importer-shadow case #9) — check accept + build agreement (`d8` as expected-3,4 once row 14 is fixed) |
-| rows 21–23 | write alongside the row-10/12/13 fixes (importer value-position / importer N-way / return-position shadow) |
+- the **verdict** — `check`, `run`, and `build` each ACCEPT or REJECT exactly as
+  the cell specifies; and
+- the **value** — for a cell all three accept, `run`'s stdout and the **built
+  binary's** stdout must be byte-identical to each other *and* to a pinned
+  expectation. This half is not optional: **S7** is a claim about values, and an
+  exit-code-only gate cannot see the bug class this arc keeps producing (P0-20:
+  `build` exits 0 while printing a wrong number; S-1: `build` exits 0 while
+  printing a raw heap pointer). Both would have graded PASS.
 
-## 5. Residuals — the 4 BUG cells (repro + one-line hypothesis; NOT fixed here)
+Two properties that keep it from rotting:
+
+- **A coverage self-audit.** The gate diffs the fixture directory's actual
+  contents against its own table and FAILS if a fixture is ever added without
+  being wired in — the orphan-corpus failure this gate was written to end.
+- **KNOWN-BAD rows are a ledger, never a skip-list.** An open bug (today: row 26
+  / **S-3**) is pinned to its *current, wrong* behavior, so it is asserted on
+  every run and goes **red the day it is fixed** — which is the signal to correct
+  the row. This is not theoretical: `d10` (row 25) was added as a KNOWN-BAD row
+  pinning the S-1 miscompile, S-1 landed, and the gate went red on the next run.
+
+CI: the `types` shard (`.github/workflows/ci.yml`); `diff_compiler_ci_shard_coverage`
+enforces that it is in exactly one shard.
+
+Still **UNTESTED-NO-FIXTURE** (rows 21–23): importer value-position, importer
+N-way, and a return-position method shadow. Adding those three fixtures is the
+next mechanical step — the gate picks them up automatically once a row is added
+to its table (and its coverage audit will fail until one is).
+
+## 5. Residuals — HISTORICAL (all four now CLOSED; kept for the repro + root cause)
+
+> **All four cells in this section are FIXED** (P0-19 batches 1–2, 2026-07-10;
+> see the update notes at the end of the section). They are kept because the
+> repro and the root cause are the useful part — and because *this section
+> saying "fixed" while §2's table still said BUG for the same four rows* is
+> precisely the drift the §2 gate now prevents. Read §2's table for current
+> status; it is the one that is enforced.
 
 1. **Row 10 — value-position shadow over live-impl elements: three-way split.**
    `d4b`: `map size [Box 1, Box 2]` → check ACCEPTS, run E-PANICs (`unknown op
@@ -403,6 +448,21 @@ lift itself (`llvm_emit.mdk` `emitMethodValue` / `emitMethodValDefine`, wasm's
 method's** arity — for a body that calls the **standalone**. S-1's design doc mis-attributed
 this row's `build` failure (it saw a GC OOM) to the missing dict.
 *Fix location:* `compiler/backend/llvm_emit.mdk` `emitMethodValue`; wasm peer.
+
+> ⚠️ **DOES NOT REPRODUCE as written (2026-07-14, first run of the new gate, on
+> `main` post-`eb92cdff`).** Both shapes this entry names build and run
+> **correctly**: the unconstrained `size : Int -> Int` + `map size [1,2,3]` is
+> fixture `d10`'s neighbour `d4_definer_value_pos.mdk`, which the gate grades
+> ACCEPT/ACCEPT/ACCEPT with `build` printing `[2, 3, 4]` (30/30 runs, exit 0, no
+> SIGSEGV); the constrained `size : Num a => a -> a` in the same position also
+> prints `[2, 3, 4]` on check/run/build. So either the repro needs a shape not
+> named here (the stated mechanism — a closure built at `methodArityOf name` for
+> a body calling the standalone — requires the method and standalone arities to
+> **differ**, and in both shapes above they are both 1), or the S9 landing closed
+> it as a side effect. **Needs re-confirmation from the filer with an exact
+> repro.** Do not spend time chasing it from this text alone; `d4` now pins the
+> working behavior, so if it is a live latent bug the gate will catch it the
+> moment it bites.
 
 ### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver under-applies on `run`
 
