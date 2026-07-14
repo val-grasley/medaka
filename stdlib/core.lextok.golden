@@ -2610,6 +2610,221 @@ INTERP_END ")"
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "derivedShowWrap"
+COLON
+UPPER "String"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "derivedShowWrap"
+IDENT "s"
+INDENT
+PIPE
+IDENT "derivedArgNeedsParens"
+IDENT "s"
+EQUAL
+INTERP_OPEN "("
+IDENT "s"
+INTERP_END ")"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "s"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "derivedArgNeedsParens"
+COLON
+UPPER "String"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "derivedArgNeedsParens"
+IDENT "s"
+INDENT
+PIPE
+IDENT "stringLength"
+IDENT "s"
+EQ_EQ
+INT 0
+EQUAL
+UPPER "False"
+NEWLINE
+PIPE
+IDENT "derivedIsQuoteChar"
+LPAREN
+IDENT "arrayGetUnsafe"
+INT 0
+LPAREN
+IDENT "stringToChars"
+IDENT "s"
+RPAREN
+RPAREN
+EQUAL
+UPPER "False"
+NEWLINE
+PIPE
+IDENT "arrayGetUnsafe"
+INT 0
+LPAREN
+IDENT "stringToChars"
+IDENT "s"
+RPAREN
+EQ_EQ
+CHAR "-"
+EQUAL
+UPPER "True"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "derivedHasTopLevelSpace"
+LPAREN
+IDENT "stringToChars"
+IDENT "s"
+RPAREN
+INT 0
+LPAREN
+IDENT "stringLength"
+IDENT "s"
+RPAREN
+INT 0
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "derivedIsQuoteChar"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "derivedIsQuoteChar"
+IDENT "c"
+EQUAL
+IDENT "c"
+EQ_EQ
+CHAR "\""
+OR
+IDENT "c"
+EQ_EQ
+CHAR "'"
+NEWLINE
+IDENT "derivedHasTopLevelSpace"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "derivedHasTopLevelSpace"
+IDENT "chars"
+IDENT "i"
+IDENT "n"
+IDENT "depth"
+INDENT
+PIPE
+IDENT "i"
+GEQ
+IDENT "n"
+EQUAL
+UPPER "False"
+NEWLINE
+PIPE
+IDENT "arrayGetUnsafe"
+IDENT "i"
+IDENT "chars"
+EQ_EQ
+CHAR " "
+AND
+IDENT "depth"
+EQ_EQ
+INT 0
+EQUAL
+UPPER "True"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "derivedHasTopLevelSpace"
+IDENT "chars"
+LPAREN
+IDENT "i"
+PLUS
+INT 1
+RPAREN
+IDENT "n"
+LPAREN
+IDENT "derivedNextDepth"
+LPAREN
+IDENT "arrayGetUnsafe"
+IDENT "i"
+IDENT "chars"
+RPAREN
+IDENT "depth"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "derivedNextDepth"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "derivedNextDepth"
+IDENT "c"
+IDENT "depth"
+INDENT
+PIPE
+IDENT "c"
+EQ_EQ
+CHAR "("
+OR
+IDENT "c"
+EQ_EQ
+CHAR "["
+OR
+IDENT "c"
+EQ_EQ
+CHAR "{"
+EQUAL
+IDENT "depth"
+PLUS
+INT 1
+NEWLINE
+PIPE
+IDENT "c"
+EQ_EQ
+CHAR ")"
+OR
+IDENT "c"
+EQ_EQ
+CHAR "]"
+OR
+IDENT "c"
+EQ_EQ
+CHAR "}"
+EQUAL
+IDENT "depth"
+MINUS
+INT 1
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "depth"
+NEWLINE
+DEDENT
+NEWLINE
 EXPORT
 INTERFACE
 UPPER "Hashable"

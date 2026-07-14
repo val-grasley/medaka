@@ -476,9 +476,19 @@ showFieldParts _ _ [] = []
 showFieldParts callName i (v::vs) = showFieldPart callName i v
   ++ showFieldParts callName (i + 1) vs
 
+-- Nested field args are wrapped through the prelude's `derivedShowWrap`
+-- (`core.mdk`) so a nested constructor application stays parenthesized —
+-- `Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)`, not
+-- `Branch Branch Leaf 1 Leaf 2 Leaf 3`. See `core.mdk` for the full rationale
+-- (shared unchanged by both `Debug` and `Display`, since they run through
+-- this exact same generator and neither documents a different contract here).
 showFieldPart : String -> Int -> String -> List Expr
-showFieldPart callName 0 v = [EApp (EVar callName) (EVar v)]
-showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
+showFieldPart callName 0 v = [wrappedFieldCall callName v]
+showFieldPart callName _ v = [ELit (LString " "), wrappedFieldCall callName v]
+
+wrappedFieldCall : String -> String -> Expr
+wrappedFieldCall callName v =
+  EApp (EVar "derivedShowWrap") (EApp (EVar callName) (EVar v))
 
 -- ` f0 = <call> a0, f1 = <call> a1, …` inside the record braces.
 showNamedParts : String -> Int -> List Field -> List String -> List Expr

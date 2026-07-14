@@ -1,0 +1,9 @@
+Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)
+Some2 None2
+Some2 (Some2 None2)
+Wrap (Circle { radius = 1.0 })
+Wrap (Square 2.0)
+NWrap (-1)
+Leaf 5
+Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)
+Circle { radius = 1.0 }
