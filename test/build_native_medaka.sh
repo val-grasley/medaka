@@ -78,6 +78,21 @@ else
   echo "libgc (bdw-gc) not found — skipping (opt-in; install bdw-gc or set GC_PREFIX)"; exit 2
 fi
 
+# ---- Resolve section-level dead-code-elim flags (issue #120) --------------------
+# -ffunction-sections/-fdata-sections put each fn/global in its own section so the
+# LINKER's real relocation graph (not source-level analysis) decides what's
+# reachable: source DCE (compiler/ir/dce.mdk) cannot prune an impl (dict-passing
+# means pruning one could be a silent miscompile), but the linker sees the actual
+# call/dict relocations and recovers exactly what source DCE is obliged to leave
+# behind (measured 77% smaller binary on a sample fixture). The matching LINKER
+# flag differs: GNU ld/gold/lld (Linux) take --gc-sections; macOS's ld64 has no
+# such flag and uses -dead_strip instead — dual-platform per AGENTS.md.
+GC_SECTION_CFLAGS="-ffunction-sections -fdata-sections"
+case "$(uname -s)" in
+  Darwin) GC_SECTION_LDFLAGS="-Wl,-dead_strip" ;;
+  *) GC_SECTION_LDFLAGS="-Wl,--gc-sections" ;;
+esac
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -186,7 +201,7 @@ else
   # every emit downstream (oracle build's 53 entries, every `medaka build`, make
   # medaka's own stage B), so clang -O2 (~+3s once vs -O0) buys ~30% faster emit
   # each time (self-compile 5.4s→3.7s; oracle build 55s→48s). EMITTER_OPT overrides.
-  if ! "$CC" -pthread "${EMITTER_OPT:--O2}" $GC_CFLAGS "$EMIT_LL" "$RT" $GC_LIBS -lm -o "$EMIT_NEW" 2>"$WORK/emitA-cc.err"; then
+  if ! "$CC" -pthread "${EMITTER_OPT:--O2}" $GC_SECTION_CFLAGS $GC_CFLAGS "$EMIT_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$EMIT_NEW" 2>"$WORK/emitA-cc.err"; then
     echo "FAIL (clang fresh emitter): $(cat "$WORK/emitA-cc.err")"; exit 1
   fi
   mv "$EMIT_NEW" "$EMITTER"
@@ -212,7 +227,7 @@ trim_unit "$CLI_LL"
 # (The EMITTER, by contrast, is always -O2 — it's the reused workhorse; see stage A.)
 CLI_OPT="${CLI_OPT:--O2}"
 echo "stage B: clang(medaka_cli.ll, $CLI_OPT) -> $OUT ..."
-if ! "$CC" -pthread "$CLI_OPT" $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS -lm -o "$OUT" 2>"$WORK/cc.err"; then
+if ! "$CC" -pthread "$CLI_OPT" $GC_SECTION_CFLAGS $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$OUT" 2>"$WORK/cc.err"; then
   echo "FAIL (clang medaka): $(cat "$WORK/cc.err")"; exit 1
 fi
 
