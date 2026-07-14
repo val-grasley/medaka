@@ -1,0 +1,8 @@
+-- "run drops stdout on panic" regression — E-PANIC path (a user `panic "…"`
+-- call, routed through eval.mdk's pPanic -> runtimePanic, not through a
+-- coded abort helper).  See index_oob.mdk for the full writeup.
+main : <IO> Unit
+main =
+  println "SENTINEL"
+  let x = panic "boom" : Int
+  println "\{x}"

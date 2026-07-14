@@ -1601,8 +1601,17 @@ emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 isIoExtern : String -> Bool
 -- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-isIoExtern name =
-  contains name ["putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
+isIoExtern name = contains
+  name
+  [
+    "putStr",
+    "putStrLn",
+    "ePutStr",
+    "ePutStrLn",
+    "flushStdout",
+    "stashRunStdout",
+    "enableRunStdoutFlush",
+  ]
 
 emitIoExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitIoExtern e env "putStr" args = match emitArgs e env args
@@ -1630,6 +1639,21 @@ emitIoExtern e env "flushStdout" args = match emitArgs e env args
     let _ = emit e ("  call void @mdk_flushstdout(i64 " ++ u ++ ")")
     ("1", LTUnit)
   _ => panic "llvm spike: flushStdout takes exactly one argument (slice 3)"
+-- "run drops stdout on panic" fix: stashRunStdout snapshots the interpreter's
+-- currently-buffered stdout (a pointer+length store; no allocation) so an
+-- abort can flush it; enableRunStdoutFlush arms that flush.  See
+-- runtime/medaka_rt.c's mdk_flush_run_stdout_on_abort and eval.mdk's
+-- appendOutput/evalModulesOutputRun.
+emitIoExtern e env "stashRunStdout" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_stash_run_stdout(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: stashRunStdout takes exactly one argument (slice 3)"
+emitIoExtern e env "enableRunStdoutFlush" args = match emitArgs e env args
+  [u] =>
+    let _ = emit e ("  call void @mdk_enable_run_stdout_flush(i64 " ++ u ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: enableRunStdoutFlush takes exactly one argument (slice 3)"
 emitIoExtern _ _ name _ = gapE ("unsupported IO extern " ++ name)
 
 -- abort externs (native extern catalog slice 4).

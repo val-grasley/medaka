@@ -1,5 +1,5 @@
 # META
-source_lines=9513
+source_lines=9537
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -1605,8 +1605,17 @@ emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 isIoExtern : String -> Bool
 -- Intentional cross-file duplicate of the same helper in wasm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-isIoExtern name =
-  contains name ["putStr", "putStrLn", "ePutStr", "ePutStrLn", "flushStdout"]
+isIoExtern name = contains
+  name
+  [
+    "putStr",
+    "putStrLn",
+    "ePutStr",
+    "ePutStrLn",
+    "flushStdout",
+    "stashRunStdout",
+    "enableRunStdoutFlush",
+  ]
 
 emitIoExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitIoExtern e env "putStr" args = match emitArgs e env args
@@ -1634,6 +1643,21 @@ emitIoExtern e env "flushStdout" args = match emitArgs e env args
     let _ = emit e ("  call void @mdk_flushstdout(i64 " ++ u ++ ")")
     ("1", LTUnit)
   _ => panic "llvm spike: flushStdout takes exactly one argument (slice 3)"
+-- "run drops stdout on panic" fix: stashRunStdout snapshots the interpreter's
+-- currently-buffered stdout (a pointer+length store; no allocation) so an
+-- abort can flush it; enableRunStdoutFlush arms that flush.  See
+-- runtime/medaka_rt.c's mdk_flush_run_stdout_on_abort and eval.mdk's
+-- appendOutput/evalModulesOutputRun.
+emitIoExtern e env "stashRunStdout" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_stash_run_stdout(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: stashRunStdout takes exactly one argument (slice 3)"
+emitIoExtern e env "enableRunStdoutFlush" args = match emitArgs e env args
+  [u] =>
+    let _ = emit e ("  call void @mdk_enable_run_stdout_flush(i64 " ++ u ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: enableRunStdoutFlush takes exactly one argument (slice 3)"
 emitIoExtern _ _ name _ = gapE ("unsupported IO extern " ++ name)
 
 -- abort externs (native extern catalog slice 4).
@@ -9871,13 +9895,15 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitNumExtern" ((PVar "e") (PVar "env") (PVar "name") (PVar "args")) (EIf (EApp (EVar "isMathBinary") (EVar "name")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "a") (PVar "b")) () (EBlock (DoLet false false (PVar "da") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "a"))) (DoLet false false (PVar "db") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "b"))) (DoLet false false (PVar "r") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "r"))) (ELit (LString " = call double @mdk_"))) (EApp (EVar "display") (EVar "name"))) (ELit (LString "(double "))) (EApp (EVar "display") (EVar "da"))) (ELit (LString ", double "))) (EApp (EVar "display") (EVar "db"))) (ELit (LString ")"))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "r")) (EVar "LTFloat"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: binary math extern takes two arguments"))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))
 (DFunDef false "emitNumExtern" (PWild PWild (PVar "name") PWild) (EApp (EVar "gapE") (EBinOp "++" (ELit (LString "unsupported numeric extern ")) (EVar "name"))))
 (DTypeSig false "isIoExtern" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isIoExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "putStr")) (ELit (LString "putStrLn")) (ELit (LString "ePutStr")) (ELit (LString "ePutStrLn")) (ELit (LString "flushStdout")))))
+(DFunDef false "isIoExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "putStr")) (ELit (LString "putStrLn")) (ELit (LString "ePutStr")) (ELit (LString "ePutStrLn")) (ELit (LString "flushStdout")) (ELit (LString "stashRunStdout")) (ELit (LString "enableRunStdoutFlush")))))
 (DTypeSig false "emitIoExtern" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "putStr")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_putstr(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: putStr takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "putStrLn")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_putstrln(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: putStrLn takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "ePutStr")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_eputstr(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: ePutStr takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "ePutStrLn")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_eputstrln(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: ePutStrLn takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "flushStdout")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "u")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_flushstdout(i64 ")) (EVar "u")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: flushStdout takes exactly one argument (slice 3)"))))))
+(DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "stashRunStdout")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_stash_run_stdout(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: stashRunStdout takes exactly one argument (slice 3)"))))))
+(DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "enableRunStdoutFlush")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "u")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_enable_run_stdout_flush(i64 ")) (EVar "u")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: enableRunStdoutFlush takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" (PWild PWild (PVar "name") PWild) (EApp (EVar "gapE") (EBinOp "++" (ELit (LString "unsupported IO extern ")) (EVar "name"))))
 (DTypeSig false "isAbortExtern" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isAbortExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "panic")) (ELit (LString "exit")) (ELit (LString "indexError")))))
@@ -11922,13 +11948,15 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitNumExtern" ((PVar "e") (PVar "env") (PVar "name") (PVar "args")) (EIf (EApp (EVar "isMathBinary") (EVar "name")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "a") (PVar "b")) () (EBlock (DoLet false false (PVar "da") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "a"))) (DoLet false false (PVar "db") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "b"))) (DoLet false false (PVar "r") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "r"))) (ELit (LString " = call double @mdk_"))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "(double "))) (EApp (EMethodRef "display") (EVar "da"))) (ELit (LString ", double "))) (EApp (EMethodRef "display") (EVar "db"))) (ELit (LString ")"))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "r")) (EVar "LTFloat"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: binary math extern takes two arguments"))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))
 (DFunDef false "emitNumExtern" (PWild PWild (PVar "name") PWild) (EApp (EVar "gapE") (EBinOp "++" (ELit (LString "unsupported numeric extern ")) (EVar "name"))))
 (DTypeSig false "isIoExtern" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isIoExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "putStr")) (ELit (LString "putStrLn")) (ELit (LString "ePutStr")) (ELit (LString "ePutStrLn")) (ELit (LString "flushStdout")))))
+(DFunDef false "isIoExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "putStr")) (ELit (LString "putStrLn")) (ELit (LString "ePutStr")) (ELit (LString "ePutStrLn")) (ELit (LString "flushStdout")) (ELit (LString "stashRunStdout")) (ELit (LString "enableRunStdoutFlush")))))
 (DTypeSig false "emitIoExtern" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "putStr")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_putstr(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: putStr takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "putStrLn")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_putstrln(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: putStrLn takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "ePutStr")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_eputstr(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: ePutStr takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "ePutStrLn")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_eputstrln(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: ePutStrLn takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "flushStdout")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "u")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_flushstdout(i64 ")) (EVar "u")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: flushStdout takes exactly one argument (slice 3)"))))))
+(DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "stashRunStdout")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "s")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_stash_run_stdout(i64 ")) (EVar "s")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: stashRunStdout takes exactly one argument (slice 3)"))))))
+(DFunDef false "emitIoExtern" ((PVar "e") (PVar "env") (PLit (LString "enableRunStdoutFlush")) (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "emitArgs") (EVar "e")) (EVar "env")) (EVar "args")) (arm (PList (PVar "u")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (ELit (LString "  call void @mdk_enable_run_stdout_flush(i64 ")) (EVar "u")) (ELit (LString ")"))))) (DoExpr (ETuple (ELit (LString "1")) (EVar "LTUnit"))))) (arm PWild () (EApp (EVar "panic") (ELit (LString "llvm spike: enableRunStdoutFlush takes exactly one argument (slice 3)"))))))
 (DFunDef false "emitIoExtern" (PWild PWild (PVar "name") PWild) (EApp (EVar "gapE") (EBinOp "++" (ELit (LString "unsupported IO extern ")) (EVar "name"))))
 (DTypeSig false "isAbortExtern" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isAbortExtern" ((PVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EListLit (ELit (LString "panic")) (ELit (LString "exit")) (ELit (LString "indexError")))))

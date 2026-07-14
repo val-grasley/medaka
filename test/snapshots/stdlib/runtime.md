@@ -1,5 +1,5 @@
 # META
-source_lines=231
+source_lines=249
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -64,6 +64,24 @@ extern panic : String -> a
 -- backend already has for the built-in index paths (native @mdk_oob, wasm's
 -- E-INDEX-OOB trap) -- unlike `panic`, which is always coded E-PANIC.
 extern indexError : String -> a
+
+-- Internal `medaka run` plumbing ("run drops stdout on panic" fix). `run`'s
+-- tree-walking interpreter buffers a program's stdout in an in-language
+-- Ref<String> (eval.mdk's outputRef) and writes it out only after `main`
+-- returns NORMALLY -- so a panicking program's buffered stdout used to be
+-- silently discarded (Medaka panics are NOT catchable; there is no unwind
+-- path back to that final write). These two internal-only externs let
+-- eval.mdk register the buffer with the native runtime so every abort path
+-- (panic / index-OOB / non-exhaustive-match / stack-overflow / a fatal
+-- signal) can flush it before dying -- see runtime/medaka_rt.c's
+-- mdk_flush_run_stdout_on_abort. Not for general use: `stashRunStdout` takes
+-- an O(1) pointer+length snapshot (no allocation, no observable effect by
+-- itself) and `enableRunStdoutFlush` is called exactly once, only by the
+-- real `medaka run` CLI driver -- never by the pure differential-oracle eval
+-- probes, which share this same source but never call it, so their captured
+-- output is unaffected.
+extern stashRunStdout : String -> <Mut> Unit
+extern enableRunStdoutFlush : Unit -> <Mut> Unit
 
 -- io Module 7.  Higher-level ergonomics (eprint/eprintln/readLines) live in
 -- stdlib/io.mdk; these are the irreducible host primitives.
@@ -260,6 +278,8 @@ extern stringToLower : String -> String
 (DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
+(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Unit"))))
+(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Unit"))))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
@@ -393,6 +413,8 @@ extern stringToLower : String -> String
 (DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
+(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Unit"))))
+(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Unit"))))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
