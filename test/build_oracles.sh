@@ -277,6 +277,26 @@ for e in $ENTRIES; do
   worklist="$worklist $e"
 done
 
+# ── CI FAST PATH: precompile the C runtime object ONCE ─────────────────────────
+# Every --build-one worker otherwise recompiles the byte-identical
+# runtime/medaka_rt.c from scratch (~0.6s of clang each). Precompile it ONCE at the
+# SAME opt level the workers link at (ORACLE_OPT, default -O0 — CRITICAL: a mismatch
+# would make the object incompatible), then export MEDAKA_RT_OBJ; each worker
+# inherits it (env passes through `sh "$0" --build-one`) and LINKS the object rather
+# than recompiling. The compiler emits the object (`--emit-rt-obj`) with exactly the
+# flags its own link uses, so it can't drift; inline-vs-prebuilt is proven
+# byte-identical by test/diff_compiler_rt_obj.sh. Best-effort: on failure we don't
+# export it and every build falls back to the (unchanged) inline compile.
+if [ -n "$worklist" ]; then
+  _rtobjdir="$(mktemp -d)"
+  trap 'rm -rf "$_rtobjdir"' EXIT
+  _rtobj="$_rtobjdir/medaka_rt.o"
+  if ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O0}" \
+         "$MEDAKA" build --emit-rt-obj "$_rtobj" ) >/dev/null 2>&1 && [ -f "$_rtobj" ]; then
+    export MEDAKA_RT_OBJ="$_rtobj"
+  fi
+fi
+
 # ── Parallel build via an xargs -P job pool ────────────────────────────────────
 # Default concurrency = logical CPU count (override with JOBS=n). Each build is a
 # self-reinvocation (`sh "$0" --build-one <e>`); xargs exits non-zero if any fails.

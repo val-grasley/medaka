@@ -125,9 +125,27 @@ Two things that are easy to get wrong:
 **Where the backlog and the orchestration rules live** — none of this is reachable from
 anywhere else, so it is listed here:
 
+### 🎯 "What should I work on?" → **GitHub Issues.** Not a doc.
+
+```sh
+gh issue list --label "S0: silent wrongness"      # always start here — silent wrongness beats everything
+gh issue list --label "ws:soundness" --state open # one workstream (ws:soundness|language|tooling|wasm|
+                                                  #   diagnostics|testing|release|perf|stdlib)
+gh issue list --label "needs-repro"               # inherited claims NOBODY has reproduced
+gh issue list --milestone "0.1.0 public preview"  # the release floor
+```
+
+**Severity:** `S0: silent wrongness` (a wrong answer or destroyed source, **with no error**) →
+`S1: loud breakage` → `S2: misleading` → `S3: friction & debt`. **Soundness outranks release.**
+
+⚠️ **`verified` vs `needs-repro` is load-bearing. REPRODUCE BEFORE YOU FIX.** When the backlog was
+re-derived against the binary on 2026-07-14, **six entries were already fixed** — including two
+"silent build miscompiles", a duplicate-definition segfault, and a `newtype` bug billed as "the best
+value-to-risk item on the board". **Closing an issue as already-fixed is a good outcome; say so.**
+
 | Path | What it is |
 |------|-----------|
-| `.claude/workstreams/` | The per-orchestrator **backlogs** + a collision map. Start here for "what should I work on". |
+| `.claude/workstreams/` | Per-workstream **domain knowledge**: the traps, the collision map, and *why each bug class recurs*. **Not the backlog** (that is the issue tracker) — read the one matching your labels **before** you start. |
 | `.claude/ORCHESTRATING.md` | Orchestration playbook. Its #1 lesson: *the gap docs lie — reproduce before you trust them.* |
 | `.claude/HANDOFF.md` | **Known-red gates.** Read BEFORE diagnosing a failing gate — it is usually not your break. |
 | `.claude/skills/` | Task playbooks (table at the bottom of this file). |

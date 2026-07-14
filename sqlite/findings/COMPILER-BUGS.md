@@ -15,7 +15,14 @@
 > **When something reports FIXED: mark it closed here, and move its repro into a real regression
 > fixture so it stays closed.**
 >
-> Snapshot: **10 open, 1 fixed (B1 on LLVM only).**
+> Snapshot **re-derived 2026-07-14 on `e34e2b46` by running the script: 7 open, 4 fixed.**
+> (Was "10 open, 1 fixed". **B2, B3 and B4 had all been fixed and nobody had noticed** — including
+> BOTH of the "silent build miscompile" P0s that `PLAN.md` was still advertising as open. This is the
+> reason the header above exists. The still-open rows are **B1w, B5, B6, B7, B8, B10, MUT**.)
+>
+> **The backlog now lives in GitHub Issues** (`gh issue list --label "S0: silent wrongness"`), because
+> an issue self-drains and a markdown row does not. This file stays as the *repro corpus* and the
+> workaround map — but the open/closed truth is the script, and the tracking is the tracker.
 >
 > ⚠️ **B1 is a cautionary tale about "fixed".** `main`'s `ced6342d` fixed the partially-applied-
 > constructor miscompile **in the LLVM emitter and NOT in the WasmGC one.** The script said FIXED, I
@@ -48,7 +55,7 @@ no longer exists, which is how workarounds quietly become permanent architecture
 | bug | site | what to do when it closes |
 |-----|------|---------------------------|
 | **B1w** | `sqlite/lib/sqlparse.mdk` (×2) | ⚠️ **STILL NEEDED — for WasmGC only.** `main`'s `ced6342d` fixed this in the LLVM emitter; the **WasmGC emitter still fails to emit** a partially-applied constructor. Revert the eta-expansions only when B1 is fixed in **both** backends. |
-| **B2** | `sqlite/lib/aggregate.mdk` | `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
+| **B2** | `sqlite/lib/aggregate.mdk` | ⭐ **B2 IS NOW CLOSED — this revert is OWED.** `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
 | **B5** | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | `Eq` is hand-written for `Literal` and `Cell` because `deriving (Eq)` over their `Array` field can't be built. Replace with `deriving (Eq)` — and drop the `-- lint-disable-next-line rule-hand-rolled-derivable` that silences the linter's (currently wrong) advice. |
 | **MUT** | `sqlite/lib/btree.mdk` | The overflow gather uses pure `slice`+`concat` instead of `arrayMake`+`blit`, costing **O(chunks × bytes)** instead of O(bytes). Restore the mutable gather inside a `mut` block. |
 | **MUT** | `sqlite/lib/recordenc.mdk` | `beSintBytes` duplicates stdlib `bytebuilder.emitBeSint` purely to keep `<Mut>` out of `encodeRecord`'s signature. Delete it and call `bytebuilder`. |
@@ -121,7 +128,18 @@ So it is constructors specifically; eta-expanding is a sound workaround (`sqlpar
 for `EArith`). Probably a residual of the 2026-07-02 PAP arc (`mdk_apply` / wrapped-PAP). Deserves
 an `llvm_fixtures` regression.
 
-### B2 ✅ VERIFIED — cross-module record **update** writes the wrong slot
+### B2 — ✅✅ **CLOSED** (verified FIXED by the script on `e34e2b46`, 2026-07-14)
+
+**Root cause, for the record:** `CRecordUpdate` carried **no receiver type name** (its sibling
+`CVariantUpdate` does), so both emitters guessed from the bare field label, **first-match-wins**.
+Silent on LLVM, `illegal cast` on wasm.
+
+⚠️ **The workaround is still in the tree.** `sqlite/lib/aggregate.mdk:140` still prefixes `AggQuery`'s
+fields with `aq` (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to dodge this bug.
+**Rename them back to the natural names** — otherwise the library keeps paying for a bug that no
+longer exists, which is how workarounds quietly become permanent architecture.
+
+#### (historical) cross-module record **update** writes the wrong slot
 `check` ✓ · `run` ✓ correct · **native binary silently returns the wrong value.**
 
 Repro: `repro_record_update_slot/`. Two record types in **different modules** sharing a field name
@@ -167,7 +185,17 @@ than no linter for that rule.
 
 ## P1 — `run` diverges from `build` / from `check`
 
-### B3 ✅ VERIFIED — multi-module `run` does not gate on TYPE errors
+### B3 — ✅✅ **CLOSED** (verified FIXED by the script on `e34e2b46`, 2026-07-14)
+
+**Root cause, for the record:** `checkImplObligations` runs only when `implInferEnabled` is OFF;
+`elaborateModules` set it ON **unconditionally**. A plain type mismatch DID gate — *which is why
+probing with one showed correct behaviour, and is why this was once declared not-reproducible.*
+
+**The lesson outlived the bug:** both obvious observables were blind at once — the **exit code is 1
+either way**, *and* `run` discarded stdout on panic (B4), so a `println` probe returned nothing whether
+the program executed or not. **Assert on the DIAGNOSTIC.**
+
+#### (historical) multi-module `run` does not gate on TYPE errors
 Repro + full write-up: `repro_multimodule_run_typecheck_gap/`. `run` **executes the ill-typed
 program** and dies on an unrelated panic.
 
@@ -183,10 +211,20 @@ Int` (unlocated, unrelated); `build` → a third message leaking an internal sli
 Suspected: the loader's `run` path never consults `hadTypeErrors()` — the same hole AGENTS.md
 already documents on the bootstrap emit path, and possibly a case P0-1 (`96894932`) missed.
 
-### B4 ✅ VERIFIED — `medaka run` discards buffered stdout on panic; the built binary does not
+### B4 — ✅✅ **CLOSED** (fixed on `main`, `41a5986b` / PR #48; verified by the script on `e34e2b46`)
+
+`run` now flushes buffered stdout before **every** abort path, not just a clean exit. Gated by
+`test/diff_compiler_run_stdout_flush.sh` (enrolled in the tools shard, `47e041df`).
+
+⚠️ **One ledger row still cites this bug as its blocker:** `test/CAPABILITY-EXCEPTIONS.txt:119`
+(`flushStdout`, interpreter) says *"fix with the 'run drops stdout on panic' bug"* — that precondition
+is now satisfied. Re-verify or promote the row.
+
+#### (historical) `medaka run` discards buffered stdout on panic; the built binary does not
 In a **well-typed** program, a `println` before a panic prints under `build` and vanishes under
 `run`. Repro in `repro_multimodule_run_typecheck_gap/f3/flush.mdk`. A vicious debugging footgun:
-your trace output disappears exactly when the program crashes.
+your trace output disappears exactly when the program crashes — **it is what made B3 look
+unreproducible.**
 
 ### B6 ✅ VERIFIED — `exit` works in `build`, is unbound under `run`
     main : <IO, Panic> Unit

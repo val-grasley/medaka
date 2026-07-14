@@ -1,13 +1,22 @@
 -- "run drops stdout on panic" regression — a RAW `panic "…"` call site in
 -- eval.mdk that does NOT go through runtimePanic (here: `lookupFrames [] name
 -- = panic (...)`, hit because the interpreter has no dispatch-table entry for
--- `exit`).  Representative of the ~20 similar internal-invariant call sites
--- (evalIndex/evalSlice/evalRange/applyClosure/collectPartials/pPutStr/…) that
--- fire when the interpreter meets a value shape it doesn't expect ("type
+-- `flushStdout`).  Representative of the ~20 similar internal-invariant call
+-- sites (evalIndex/evalSlice/evalRange/applyClosure/collectPartials/pPutStr/…)
+-- that fire when the interpreter meets a value shape it doesn't expect ("type
 -- confusion" class) -- they all compile to the SAME native `panic` extern
 -- call our fix covers, so this one call site stands in for the whole class.
 -- See index_oob.mdk for the full writeup.
-main : <IO, Panic> Unit
+--
+-- Was `exit 3` until eval.mdk grew a real `exit` binding (2026-07-14,
+-- ioExternBindings) — `exit` no longer reaches this raw-panic path under
+-- `run` (it now cleanly exits 3, see test/CAPABILITY-EXCEPTIONS.txt's
+-- promoted `exit` row), so this fixture switched to `flushStdout`, one of
+-- the remaining interp-BUG externs (unbound under `run`, bound under
+-- `build`) that still exercises the same "unbound identifier" raw-panic
+-- call site. run-only for the same reason `exit` was: `medaka build`
+-- implements `flushStdout` (isIoExtern) so it does not panic there.
+main : <IO, Stdout> Unit
 main =
   println "SENTINEL"
-  exit 3
+  flushStdout ()

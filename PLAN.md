@@ -1215,13 +1215,32 @@ strict priority.
 
 ### Open issues index
 
-**Single locator for every open item.** If work is open, it is in this table — either
-defined below in this file or with a pointer to its owning doc. Statuses stay terse here;
-the linked location holds live detail. (Keep this table in sync when an item opens/closes.)
+> # ⛔ THIS TABLE IS NO LONGER THE BACKLOG — GitHub Issues is (2026-07-14)
+>
+> ```sh
+> gh issue list --label "S0: silent wrongness"     # always start here
+> gh issue list --label "ws:soundness"             # one workstream
+> gh issue list --milestone "0.1.0 public preview" # the release floor
+> ```
+>
+> **Why it moved.** This table asked you to *"keep it in sync when an item opens/closes"*, and it was
+> not kept. When the backlog was re-derived against the binary on 2026-07-14, **six entries across
+> these docs were already fixed** — including *both* "silent build miscompile" P0s that the row below
+> advertised, a duplicate-definition SEGFAULT, a fabricated `1:0` source location, and `newtype`
+> ("entirely unusable — best value-to-risk item on the board"; it works). Meanwhile the **worst bug in
+> the tree** — `fmt --write` destroying source — was filed in **three docs as three unrelated items**,
+> none naming the shared root cause: a lexer with no exponent form.
+>
+> **An issue self-drains. A markdown row has to be remembered.** Severity (`S0`–`S3`), workstream
+> (`ws:*`), and evidence (`verified` / `needs-repro`) are now labels. Rubric + collision map:
+> [`.claude/workstreams/README.md`](./.claude/workstreams/README.md).
+>
+> The rows below are **kept for provenance and for the design detail they link to** — treat any
+> "open" status here as `needs-repro` until the binary says otherwise.
 
 | Open item | Area | Tracked in |
 |-----------|------|-----------|
-| **⚠️ SQLite-dogfood compiler bugs (10 open) — incl. `fmt` CORRUPTING SOURCE + 2 silent build miscompiles** | Compiler / language | [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md). **Self-checking:** `MEDAKA_ROOT=$PWD bash sqlite/findings/verify_compiler_bugs.sh` re-runs every repro and prints OPEN/FIXED — **run it before believing the list.** **P0: `medaka fmt --write` DESTROYS SOURCE** — it rewrites a float literal ≥1e15 into scientific notation that the lexer cannot read back, and `fmt` runs in the **pre-commit hook** (latent: the tree holds no such literal today). P0: partially-applied **constructor** miscompiles (`build` returns a wrong answer, exit 0); cross-module record **update** writes the wrong slot (ditto). P1: multi-module `run` doesn't gate type errors (executes ill-typed code; *exit code is 1 either way*, so exit-code tests miss it); `run` drops buffered stdout on panic; `deriving (Eq)` over an `Array` field can't be built (and `lint` recommends it); `exit` unbound under `run`; `Float` can't round-trip through display (`0.1 + 0.2` prints `0.3`). P2: a Markdown blockquote in a doc comment is run as a doctest → unlocated panic that **silently disabled a whole file's doctests for months**. |
+| **⚠️ SQLite-dogfood compiler bugs — re-derived 2026-07-14: `7 open, 4 fixed`** | Compiler / language | [`sqlite/findings/COMPILER-BUGS.md`](./sqlite/findings/COMPILER-BUGS.md). **Self-checking:** `MEDAKA_ROOT=$PWD bash sqlite/findings/verify_compiler_bugs.sh` re-runs every repro and prints OPEN/FIXED — **run it before believing any list, including this one.** **Still open:** `medaka fmt --write` **DESTROYS SOURCE** (rewrites a float ≥1e15 into scientific notation the lexer cannot read back — and `fmt` runs in the **pre-commit hook**; latent, the tree holds no such literal today) → **#51**; partially-applied constructor still fails on **WasmGC** (the LLVM fix never reached it) → **#59**; `deriving (Eq)` over an `Array` field can't be built, and `lint` recommends it → **#56**; `exit` unbound under `run` → **#58**; `Float` can't round-trip through display → **#57**; a Markdown blockquote in a doc comment silently disables a whole file's doctests → **#55**; a pure-typed fn returns two answers across a mutation → **#61**. **NOW CLOSED (do not re-file):** B1 partially-applied ctor on LLVM · B2 cross-module record update wrote the wrong slot · B3 multi-module `run` didn't gate type errors · B4 `run` dropped buffered stdout on panic. |
 | **`<Mut>` effect masking (`mut` block) — pure fns can't use a local mutable buffer** | Language capability | [`MUT-SCOPING-DESIGN.md`](docs/design/MUT-SCOPING-DESIGN.md) — decision-ready; recommendation + rejected alternative + 3 counterexamples |
 | **`EFFECTS-SEMANTICS.md` §7 mis-classifies `Mut` as "purity tracking"** — falsified on the binary (pure-typed fn returns two answers across a mutation); amend to "writer discipline" | Language / spec | [`MUT-SCOPING-DESIGN.md`](docs/design/MUT-SCOPING-DESIGN.md) §2 |
 | **0.1.0 — native binary distribution (mac/linux `medaka build`)** | 0.1.0 release | [`DISTRIBUTION-DESIGN.md`](docs/ops/DISTRIBUTION-DESIGN.md) (D0 Linux spike first) |
@@ -1478,9 +1497,9 @@ cover the corpus; these are known holes outside it.
      **FIXED (2026-06-24, `ff658b2`, native).** `parser.mdk`'s `importIdentFor` now accepts `TRecord`
      (and the obviously-safe `TData`/`TType`) as module-path segments. `import record.*` resolves
      (`test/native_fixtures/keyword_import_record/`); fixpoint C3a/C3b YES.
-  2. **`/=` mis-lexes** as `/` then `=` (not-equal is `!=`), producing a *misleading,
-     locationless* "Parse error". Diagnostic-quality bug — the lexer should accept `/=` or
-     emit a located "did you mean `!=`?" hint.
+  2. ~~**`/=` mis-lexes** as `/` then `=`, producing a *misleading, locationless* "Parse error".~~
+     ✅ **FIXED** (re-verified on `e34e2b46`, 2026-07-14). It now emits exactly the located hint this
+     item asked for: ``ne.mdk:1:25: unexpected `/=`. (Did you mean `!=`?)``
   3. **Layout parse error**: a leading `let x = e` followed by a multi-line `if/then/else`
      whose `else` branch has further `let`s. Workaround: inline the leading `let`. Worth a
      focused layout repro.
