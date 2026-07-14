@@ -481,6 +481,34 @@ gapLTy reason =
   else
     gap reason
 
+-- an unresolved name is an OBSERVATION ("this lookup found nothing"), not a
+-- claim that wasm codegen lacks coverage for it — `gap`'s "wasm_emit gap — "
+-- prefix asserts the latter, and asserting a category the emitter cannot
+-- verify is exactly what T-22 (AGENTS.md) is about: on the untypechecked,
+-- prelude-free probe path an interface method occurrence (e.g. `.[i]`'s
+-- `index`) NEVER resolves to anything but a bare unbound name — not because
+-- wasm codegen is missing it, but because the probe skipped typecheck/marker,
+-- the pass that would have turned it into a dispatchable `CMethod`.  Twelve+
+-- fixtures sat ledgered as "wasm gaps" for weeks on exactly this laundered
+-- claim (test/engine_divergence.txt).  So an unbound-name lookup miss is
+-- reported plainly — no "gap" wording, let the reader diagnose the cause —
+-- while every OTHER gap call site here is a genuine, verified codegen-coverage
+-- gap (an exhaustive match with no arm for the node/op/extern shape) and keeps
+-- the `gap` wording, which is accurate for that case.
+gapUnboundL : String -> <Mut> List String
+gapUnboundL reason =
+  if gapRecordEnabledW.value then
+    let _ = noteGapW reason in []
+  else
+    panic reason
+
+gapUnboundLTy : String -> <Mut> (List String, WTy)
+gapUnboundLTy reason =
+  if gapRecordEnabledW.value then
+    let _ = noteGapW reason in ([], WInt)
+  else
+    panic reason
+
 gapS : String -> <Mut> String
 gapS reason =
   if gapRecordEnabledW.value then
@@ -1881,7 +1909,7 @@ emitVarI32 fnNames valNames env x =
   else if contains x fnNames then
     (["call $" ++ gname x], WInt)
   else
-    gapLTy ("scalar-mode: unbound variable '" ++ x ++ "'")
+    gapUnboundLTy ("unbound variable '" ++ x ++ "' (scalar mode: not a local, global value, or known function)")
 
 emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CExpr -> <Mut> (List String, WTy)
 emitBinI32 fnNames valNames env op l r =
@@ -4100,7 +4128,7 @@ emitVarRefPlain prog env d x =
   -- build an eta closure wrapping a lifted `$mdk_ext_<name>` that calls the extern
   -- (peer of the LLVM emitExternEtaClosure).  env = [] (externs capture nothing).
   else if isWasmEtaExtern x then emitExternEtaClosure prog x
-  else gapL "ref-mode: unbound variable '\{x}' [in \{curBindRef.value}]"
+  else gapUnboundL "unbound variable '\{x}' (not a local, global value, constructor, or known function) [in \{curBindRef.value}]"
 
 -- W9: lift `$mdk_ext_<name>` (a $codety) that unpacks its $args into synthetic CVar
 -- locals and emits the extern call, then build the closure struct at the use site.

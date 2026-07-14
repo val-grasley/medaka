@@ -29,12 +29,27 @@
 # 4 real codegen failures sat unnoticed in it:
 #
 #     w7_array_index / w7_array_slice / w7_array_oob / w7_range_array
-#         E-PANIC: wasm_emit gap — ref-mode: unbound variable 'index'
+#         E-PANIC: unbound variable 'index' (not a local, global value, constructor, or
+#         known function) [in ...]
 #     disp_hof_shadows_method  (typed gate)
 #
 # `.[i]` sugar desugars to the Index interface's `index` method, and wasm_emit's
 # ref-mode path cannot resolve interface methods. The LLVM backend compiles the
 # same fixtures correctly, so this is wasm-only.
+#
+# ⚠️ T-22 (2026-07-14): the quoted panic text above is UPDATED wording, not the original
+# capture — `wasm_emit.mdk` used to prefix this "wasm_emit gap — ", asserting a category
+# (backend coverage gap) the emitter cannot actually verify; that word is gone now (see
+# compiler/ERROR-QUALITY.md's "report what you observed" principle). Separately, and NOT
+# resolved by T-22: `test/engine_divergence.txt`'s history note records that FOUR OTHER
+# rows quoting this exact same wording (also w7_array_*, coincidentally) turned out to be
+# a probe artifact, not a real backend gap — `diff_compiler_engines.sh` was shelling the
+# prelude-free `wasm_emit_main` probe (no typecheck, no prelude) instead of the shipping
+# `medaka build --target wasm` CLI. `test/wasm/diff_wasm.sh` (THIS gate) still shells that
+# same prelude-free probe today and has NOT been moved onto the shipping CLI the way
+# `diff_compiler_engines.sh` was on 2026-07-14 — so whether these four are genuine T25
+# codegen gaps or the identical probe artifact is still open. Do not take "4 real codegen
+# failures" above as re-verified until T25 checks it against the shipping CLI.
 #
 # These are EXCLUDED ONLY UNTIL THAT FIX LANDS (task T25). They are excluded
 # because they are RED, and a red gate wired into CI would just get ignored — the
