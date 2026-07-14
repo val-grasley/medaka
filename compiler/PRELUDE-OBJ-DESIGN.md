@@ -1,14 +1,35 @@
 # PRELUDE-OBJ-DESIGN.md — precompiling the prelude to a shared object
 
-**Status:** DESIGN + MEASUREMENTS, NO CODE. Issue #118. The win is real and large
-(measured 11.4× on the clang step, and the binary gets 51% *smaller*), but a measured
-counterexample kills the naive "one shared prelude object" design: **a program's own
-`impl` decls structurally rewrite core prelude function bodies**, because the emitter
-inlines an exhaustive arg-tag dispatch chain over *every impl in the whole program*
-into prelude code. §6 is the decision that has to be made before any code lands.
+**Status:** SHIPPED. Issue #118. `medaka build --emit-prelude-obj <path>` +
+`MEDAKA_PRELUDE_OBJ`, opt-in exactly like `MEDAKA_RT_OBJ`; soundness gate
+`test/diff_compiler_prelude_obj.sh`; wired into `diff_compiler_engines.sh` and
+`build_oracles.sh`.
 
-Every number below was measured on this box (x86_64 Debian 13, 12 cores) with the
-binary built from `19011a98`, min-of-5, and is reproducible from §8.
+**The blocker in §5(e) is GONE, and §6's decision was overtaken by events.** That
+section is right that a program's own `impl` decls used to structurally rewrite core
+prelude bodies — but the fix was neither Option D (partition) nor Option E (rewrite the
+dict representation). **Outlining the dispatch chain** (issue #118 step 2, PR #129 —
+Option C, which §6 called "cleaner, riskier") moved every chain into a shared
+`@mdk_disp_<method>_<nMeth>_<nArgs>` define, and prelude bodies became program-independent
+outright. Verified against two programs differing only by an `impl Eq Color`: of the 249
+shared prelude defines, **zero differ structurally** — only the module-global gensym
+counter shifts the `@mdk_lamN`/`@mdk_etac_*_N` names.
+
+**Read §1–§5 for the mechanism and the measurements. Do NOT act on §6 — the decision it
+poses was answered by outlining, and Prereq A (renumber the prelude gensyms) turned out
+to be UNNECESSARY: the two halves are emitted by independent emitter runs, so they simply
+take disjoint gensym ranges (`programHalfIdBase`, `compiler/backend/llvm_emit.mdk`).**
+
+⚠️ **§4's binary-size table is STALE and its −51% is not reproducible today.** It was
+measured before `--gc-sections` landed in the default link line (issue #120), so its
+"Today" baseline is an un-GC'd binary. Measured on the shipped implementation, with
+`--gc-sections` on BOTH arms, the split build is **+20% larger** (23,328 → 28,064 B on
+`adt_enum_nullary`) — cross-module inlining is lost, so more prelude sections stay
+referenced. The size is a real, modest COST, not a win.
+
+Every number in §1–§5 was measured on this box (x86_64 Debian 13, 12 cores) with the
+binary built from `19011a98`, min-of-5, and is reproducible from §8. The shipped
+implementation's numbers are in the PR.
 
 ---
 
