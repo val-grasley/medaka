@@ -789,9 +789,16 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   already pinned the concrete type head, so the impl is known at COMPILE time and the
   site lowers to a DIRECT call to that impl's lifted `@mdk_impl_<tag>_<method>`, with
   NO runtime tag inspection. `RKey` alone covers the bootstrap. `RDict`/`RDictFwd`
-  read a named dict PARAMETER at run time, so they lower to an inline if-chain
+  read a named dict PARAMETER at run time, so they lower to a CALL to the method's
+  SHARED dispatcher `@mdk_disp_<method>_<nMeth>_<nArgs>`, which holds the if-chain
   switching on the dict witness word over the method's impls (corpus completeness —
-  the dict-passing fixtures). This mirrors `core_ir_eval`'s
+  the dict-passing fixtures). ⚠️ **The chain is OUTLINED, not inlined at the site**
+  (issue #118, 2026-07-14): inlining it at every site made emitted IR grow as `Σ over
+  sites of (#impls of that site's method)` — on a 9-line fixture, 107 dispatch sites
+  shared only 9 distinct chains, and the duplicated arms were ~80% of the module.
+  Outlining also made every prelude define PROGRAM-INDEPENDENT (the impl set no longer
+  leaks into `mdk_impl_List_eq`'s body), which is the precondition for a reusable
+  `prelude.o`. This mirrors `core_ir_eval`'s
   `methodAtNarrow`/`applyDicts`/`narrowMethod` one-to-one, resolving the same routes
   in emitted control flow instead of walking `VMulti` values; `bytecode.mdk`'s
   `IMethod`/`IDict` lower the identical routes. **Spike-rep notes (extending the
@@ -806,8 +813,13 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   (`def`/`zero`) is a zero-arg fn the use site CALLs for its value, a parameterized
   impl takes its params; untagged interface defaults (`CImplDefault`, the arg-tag
   fallback) are skipped. **(l) dispatch** — `RKey ⇒` a direct call; `RDict`/`RDictFwd
-  ⇒` an inline if-chain comparing the dict witness to each impl's `hashName` tag, with
-  an `unreachable` default (the typechecker proves the dict names a real impl). **(m)
+  ⇒` a call to the method's shared `@mdk_disp_<method>_<nMeth>_<nArgs>`, INSIDE which
+  an if-chain compares the dict witness to each impl's `hashName` tag, with an
+  `unreachable` default (the typechecker proves the dict names a real impl). One
+  dispatcher serves every site of a method because the chain body is a pure function
+  of the method name + the two arities (all three in the symbol) and of
+  `e.implEntries`, which is written once at `Emit` construction and never mutated.
+  **(m)
   constrained fns** — a `CDict name routes` at a call lowers to a direct
   `@mdk_<name>(dictWords ++ argWords)`; `dict_pass` already gave `name` the matching
   leading dict params, so the constrained fn is an ORDINARY `emitFn` define and only

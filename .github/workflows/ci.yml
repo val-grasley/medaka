@@ -519,7 +519,13 @@ jobs:
             #
             # Named individually, NOT globbed as 'bootstrap_*': that glob also catches
             # bootstrap_from_seed.sh, the 80s cold bootstrap that seed-health already owns.
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
+            #
+            # 'diff_compiler_dispatch_shape' is a BACKEND gate living in a shard named
+            # eval, deliberately — shards are scheduled by COST, not by theme (see the
+            # header). It is ~3s (two `medaka build --keep-ir` of tiny probes), and the
+            # backend shard is already the 2nd-heaviest at 5.3min, close to the
+            # gates(engines) 5.8min critical path. This shard has room; backend does not.
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
             # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
             # 14 real programs built through the actual CLI, each binary's stdout diffed
