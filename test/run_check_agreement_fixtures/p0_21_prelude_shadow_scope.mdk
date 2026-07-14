@@ -1,0 +1,28 @@
+-- P0-21 (SHADOW-SEMANTICS S1: shadow-hood is PER-MODULE, per-name).  A user standalone
+-- that shadows an interface-method name is a shadow inside the USER's module ONLY — it
+-- must never be treated as one inside the PRELUDE's own bodies.
+--
+-- The single-file/flat typecheck path flattened `core ++ user` into one program and then
+-- applied the definer-shadow name set to every occurrence in it, core's included.  So a
+-- top-level `map : Int -> Int` — even one that is NEVER USED — made the PRELUDE's own
+-- `map2`/`map3`/`replaceWith`/`discard` type their internal `map` calls against the
+-- USER's `map`, and `map n = n + 1` / `main = println "hello"` came back with FOURTEEN
+-- errors, every one of them raised inside stdlib/core.mdk and reported at a fabricated
+-- `1:0` on the user's signature (including the memorable `'map' takes 1 argument(s) but
+-- is applied to 2` for a call the user never wrote).  The multi-module path was always
+-- correct here: checkModuleFullImpl seeds the shadow set per module and checks core in
+-- isolation.
+--
+-- This fixture pins BOTH halves of the rule at once:
+--   * the user's `map` really is the user's inside the user's module (`map 3` → 4), and
+--   * the prelude's `map` is still the METHOD everywhere inside the prelude —
+--     `map2`/`discard`/`elem`/`length` are core fns whose bodies call it.
+map : Int -> Int
+map n = n + 1
+
+main =
+  println (map 3)
+  println (map2 (a b => a + b) (Some 1) (Some 2))
+  println (discard (Some 5))
+  println (elem 9 [1, 2, 3])
+  println (length [1, 2, 3])

@@ -78,7 +78,7 @@ cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 cleanReport runtimeP coreP raw desugared =
   let exWarns = exhaustToLinesWith (raw ++ runtimeP ++ coreP) raw
   let _ = setCoherenceUserDecls desugared
-  let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+  let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP) desugared
   joinNonEmpty exWarns schemes
 -- TYPECHECK-AUDIT S3: stage the USER decls (NO prelude) for the coherence check
 -- so a user impl overriding a prelude impl is not flagged as overlapping.
@@ -111,7 +111,7 @@ checkHasErrors rsrc csrc tsrc =
       match resDiags
         "" =>
           let _ = setCoherenceUserDecls desugared
-          checkErrorsWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+          checkErrorsWithRuntime (desugar runtimeP) (desugar coreP) desugared
         _ => True
 
 -- ── multi-module `check` (DRIVER-COLLAPSE Phase 4, OPTION A) ───────────────

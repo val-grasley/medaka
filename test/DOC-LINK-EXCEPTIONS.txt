@@ -124,7 +124,10 @@ REF	compiler/core_ir_sexp.mdk	TODO(docs-cleanup): stale path from the compiler s
 REF	compiler/desugar.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/desugar.mdk
 REF	compiler/eval.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/eval/eval.mdk
 REF	compiler/exhaust.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/exhaust.mdk
-REF	compiler/llvm_emit.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/backend/llvm_emit.mdk
+# (compiler/llvm_emit.mdk's REF exception lived here. The ORCHESTRATING.md terseness
+#  pass fixed that doc's stale path to compiler/backend/llvm_emit.mdk — the last LIVING
+#  citation — so the ORPHAN REF half of the ratchet correctly demanded this line's
+#  deletion. The TODO(docs-cleanup) it named is DONE.)
 REF	compiler/loader.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/driver/loader.mdk
 REF	compiler/marker.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/marker.mdk
 REF	compiler/parser.mdk	TODO(docs-cleanup): stale path from the compiler subfolder restructure; now compiler/frontend/parser.mdk

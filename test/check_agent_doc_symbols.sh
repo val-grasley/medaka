@@ -139,6 +139,12 @@ function isSymbolShaped(tok,    i, c, hasLower, hasUpper) {
   return (hasLower && hasUpper)
 }
 
+function countTicks(s,    n, i) {
+  n = 0
+  for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == "`") n++
+  return n
+}
+
 function processLine(fname, lineno, line,    work, mstart, mlen, tok) {
   work = line
   while (match(work, /`[^`]+`/)) {
@@ -157,14 +163,37 @@ BEGIN {
   while ((getline fname < LISTFILE) > 0) {
     lineno = 0
     infence = 0
+    pending = ""; pendlno = 0
     while ((getline line < fname) > 0) {
       lineno++
       trimmed = line
       gsub(/^[ \t]+/, "", trimmed)
       if (trimmed ~ /^```/) { infence = !infence; continue }
       if (infence) continue
-      processLine(fname, lineno, line)
+
+      # ── A CODE SPAN CAN WRAP ACROSS A LINE BREAK. Join before extracting. ──
+      # Markdown reflow happily splits `sh test/build_oracles.sh --build-one
+      # <name>` over two lines. Matching /`[^`]+`/ per-line then pairs the OPENING
+      # backtick with the next UNRELATED closing one, extracting garbage — and,
+      # far worse, making a genuinely-cited symbol later on the line invisible.
+      #
+      # That is not hypothetical: it made the gate report
+      #   "ORPHAN SYM EXCEPTION — 'TaskStop' is no longer cited by ANY document"
+      # while TaskStop WAS cited, two lines up. The message points at the LEDGER,
+      # not at the real cause, and the fix it invites is to delete a ledger line
+      # that is still earning its place. A gate that lies about WHY it failed is
+      # worse than one that stays quiet — it launders a wrong action as a fix.
+      #
+      # An ODD backtick count means a span is still open: hold the line and
+      # append the next. Report at the line the span STARTED on.
+      if (pending != "") { line = pending " " line; lineno_use = pendlno }
+      else               { lineno_use = lineno }
+      if (countTicks(line) % 2 == 1) { pending = line; pendlno = lineno_use; continue }
+      pending = ""; pendlno = 0
+      processLine(fname, lineno_use, line)
     }
+    # An unterminated span at EOF: process what we have rather than dropping it.
+    if (pending != "") processLine(fname, pendlno, pending)
     close(fname)
   }
 }

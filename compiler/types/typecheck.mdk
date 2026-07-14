@@ -1321,6 +1321,38 @@ methodDispatchIdxRef = Ref []
 methodShadowNamesRef : Ref (List String)
 methodShadowNamesRef = Ref []
 
+-- FLAT-PATH SHADOW SCOPING (SHADOW-SEMANTICS S1: shadow-hood is per-module, per-name).
+-- The flat path hands checkProgramSeededSplit ONE program, `core ++ user`, and then
+-- applied the definer-shadow name set to EVERY occurrence in it — INCLUDING the
+-- prelude's own bodies.  So a user file that merely DEFINES (and never uses)
+-- `map : Int -> Int` made core's `map2`/`map3`/`replaceWith`/`discard` type their own
+-- `map` calls against the USER's `map`, yielding 14 errors — all inside core, all
+-- reported at a fabricated `1:0` on the user's signature.  (Once SHADOW-SEMANTICS S2 is
+-- inverted so a standalone WINS over a same-named method, the same leak stops merely
+-- mistyping and starts ROUTING the prelude's calls into user code — a silent miscompile
+-- of the prelude.)  The multi-module path never had this: checkModuleFullImpl seeds the
+-- shadow set PER MODULE and checks core in ISOLATION.
+--
+-- These three refs reproduce that isolation on the flat path WITHOUT splitting the
+-- inference: definerShadowNamesRef is toggled OFF while a CORE-owned letrec group (and
+-- core's impl/default/prop/test bodies) is inferred and back ON for the user's, so every
+-- consumer of that ref (definerShadowVarHead / definerShadowArgHead /
+-- maybeStandaloneValueMono / recordImplObligation / resolveRLocalSite) becomes
+-- per-module for free.  Empty/False on every other path — resetState clears them and
+-- ONLY a checkProgramSeededSplit with a NON-EMPTY prelude sets them — so the
+-- multi-module path and the prelude-free probe paths are byte-identical.
+flatShadowScopingRef : Ref Bool
+flatShadowScopingRef = Ref False
+
+-- the prelude's own top-level fn names (a set: this is consulted once per letrec group).
+flatCoreFnNamesRef : Ref (OrdMap Unit)
+flatCoreFnNamesRef = Ref omEmpty
+
+-- the definer-shadow names of the USER module only — what definerShadowNamesRef holds
+-- whenever a user-owned group/body is being inferred.
+flatUserShadowNamesRef : Ref (List String)
+flatUserShadowNamesRef = Ref []
+
 -- C5: arg-position method occurrences whose name is a standalone-shadow, recorded
 -- UNGATED (the ordinary arg-stamp machinery is emit-path-only, but eval also
 -- arg-tag-dispatches and panics on a receiver with no impl — box's `toList b`).
@@ -2250,6 +2282,9 @@ resetState _ =
   let _ = setRef dictAppFns omEmpty
   let _ = setRef promotedRef []
   let _ = setRef methodShadowNamesRef []
+  let _ = setRef flatShadowScopingRef False
+  let _ = setRef flatCoreFnNamesRef omEmpty
+  let _ = setRef flatUserShadowNamesRef []
   let _ = setRef groupConstraintMonosRef []
   let _ = setRef typeErrors []
   let _ = setRef typeErrorHelpFix []
@@ -9547,10 +9582,10 @@ tupleUnifyClash a b = match (tupleSpine a, tupleSpine b)
 -- Callers pass the 1-module decl list (preludeDecls ++ user buffer) and read
 -- schemes by name; no eval, so this is the typecheck-only sibling of the
 -- 1-module path.
-export checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
-checkProgramSchemes prog =
+export checkProgramSchemes : List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemes coreProg userProg =
   let _ = setRef implInferEnabled False
-  checkProgramSeeded [] prog
+  checkProgramSeededSplit [] coreProg userProg
 
 -- Like checkProgramSchemes but ALSO seeds runtime.mdk's externs (putStrLn,
 -- readLine, …) into scope, so a buffer using them type-checks instead of leaving
@@ -9558,16 +9593,29 @@ checkProgramSchemes prog =
 -- `check_program`, which seeds `Runtime.entries` into the initial env — the LSP
 -- hover/completion/inlay handlers run this so externs resolve and a `let input =
 -- readLine ()` hovers as `String`, not a free `a`.
-export checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
-checkProgramSchemesWithRuntime runtimeDecls prog =
+export checkProgramSchemesWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemesWithRuntime runtimeDecls coreProg userProg =
   let _ = setRef implInferEnabled False
-  checkProgramSeeded (externSchemes runtimeDecls) prog
+  checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
 
 -- [seed] are extern schemes from runtime.mdk: in scope for lookup (so core.mdk's
 -- use of putStrLn/etc. resolves) but NOT part of the output (mirrors the
 -- reference seeding Runtime.entries into initial_env, which aren't returned).
 checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
-checkProgramSeeded seed prog =
+checkProgramSeeded seed prog = checkProgramSeededSplit seed [] prog
+
+-- Same pass, but told WHERE THE PRELUDE ENDS.  Every driver that flattens the prelude
+-- into the program it checks (`desugar coreP ++ desugared`) hands the two halves in
+-- separately instead of pre-concatenating them, which is the only thing the flat path
+-- was missing to make SHADOW-SEMANTICS S1 (shadow-hood is PER-MODULE, per-name) hold:
+-- with the boundary known, a user standalone that shadows an interface-method name is a
+-- shadow inside the USER's decls and NOT inside the prelude's.  See flatShadowScopingRef
+-- for the bug this closes.  [coreProg] = [] ⇒ prelude-free program ⇒ scoping is inert and
+-- this is byte-for-byte the old checkProgramSeeded (that is the multi-module discovery,
+-- elaborateDict, and probe-entry path).
+checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSeededSplit seed coreProg userProg =
+  let prog = coreProg ++ userProg
   let _ = resetState ()
   -- seed the interface decls for super-closure (the flat path skips elaborateDict/
   -- elabModuleStamp which set this elsewhere); read-only during inference, so the
@@ -9589,13 +9637,21 @@ checkProgramSeeded seed prog =
   -- the user's `eq`).  See methodShadowNamesRef.  Empty on the multi-module path.
   let methodNames = map fst (ifaceMethodSchemes prog)
   let _ = setRef methodShadowNamesRef methodNames
-  -- DEFINER-shadow set (facet 2), flat path: a USER top-level funDef reusing an
-  -- interface-method name (a single-file program with its own `orElse`) resolves
-  -- in-scope to the user's def, so recordImplObligation must NOT raise a spurious
-  -- `No impl of <Iface> for <T>` at its occurrences.  The flat [prog] is core ++
-  -- user, and core's method impls live in DImpl blocks (not funDefs), so this picks
-  -- up only genuine user shadows.  Mirrors the multi-module checkModuleFullImpl path.
-  let _ = setRef definerShadowNamesRef (buildDefinerShadows prog prog)
+  -- DEFINER-shadow set (facet 2): a USER top-level funDef reusing an interface-method
+  -- name (a single-file program with its own `orElse`) resolves in-scope to the user's
+  -- def, so recordImplObligation must NOT raise a spurious `No impl of <Iface> for <T>`
+  -- at its occurrences.  Mirrors checkModuleFullImpl exactly: the METHOD universe is the
+  -- whole flattened [prog] (core's interfaces are visible everywhere), but the STANDALONE
+  -- side — and the local-binder exclusion — is scoped to the module that defines it
+  -- ([userProg]), so this is the USER module's shadow set and nobody else's.
+  let userShadows = buildDefinerShadows prog userProg
+  let _ = setRef definerShadowNamesRef userShadows
+  -- FLAT-PATH SHADOW SCOPING (S1): arm the per-group/per-body toggle, but ONLY when a
+  -- prelude was actually prepended.  A prelude-free program has no other module to leak
+  -- into, so the refs stay at their resetState values and every consumer behaves as before.
+  let _ = setRef flatShadowScopingRef (declsNonEmpty coreProg)
+  let _ = setRef flatUserShadowNamesRef userShadows
+  let _ = setRef flatCoreFnNamesRef (namesToSet (map fst (funDefs coreProg)) omEmpty)
   -- P0-19: stash the standalone signatures + the impl key table so
   -- inferDefinerShadowApp can enforce a definer-shadow standalone's declared domain on
   -- a no-impl / ungrounded receiver (single-file check AND single-file run/build, which
@@ -9616,10 +9672,21 @@ checkProgramSeeded seed prog =
   -- passes we drop any user scheme whose name is an interface method, leaving the
   -- method scheme (in env1/globalS) visible — the isolation the multi-module path gives.
   let preludeBodyEnv = extendVars env1 (dropSchemesNamed methodNames topSchemes)
-  let _ = inferImplBodiesIfEnabled preludeBodyEnv prog
-  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog
-  let _ = inferPropBodies preludeBodyEnv prog
-  let _ = inferTestBodies preludeBodyEnv prog
+  -- FLAT-PATH SHADOW SCOPING (S1): the prelude's OWN impl/default/prop/test bodies are
+  -- inferred with the user's shadow set OFF — the isolation checkModuleFullImpl gets for
+  -- free by checking core as its own module.  [coreProg] is [] on every prelude-free path,
+  -- so these four calls are no-ops there and the user pair walks the whole program, exactly
+  -- as the single pre-split call did (prog = coreProg ++ userProg preserves decl order too).
+  let _ = scopeShadowsCore ()
+  let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog coreProg
+  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv coreProg
+  let _ = inferPropBodies preludeBodyEnv coreProg
+  let _ = inferTestBodies preludeBodyEnv coreProg
+  let _ = scopeShadowsUser ()
+  let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog userProg
+  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv userProg
+  let _ = inferPropBodies preludeBodyEnv userProg
+  let _ = inferTestBodies preludeBodyEnv userProg
   let _ = groundMultiParamObligations prog pendingImplObligations.value
   let _ = checkImplCompleteness prog prog   -- P0-17: impl missing a required method
   let _ = checkImplObligations prog pendingImplObligations.value
@@ -9711,11 +9778,15 @@ extendPropParams env ((PropParam x ty)::rest) =
   let scheme = monoScheme (fromAstType (freshTvMap (dedup (tyVarNames ty))) ty)
   extendPropParams (extendVar env x scheme) rest
 
--- gate: impl-body inference runs only when the elaborate/dict path turned it on
-inferImplBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
-inferImplBodiesIfEnabled env prog
+-- gate: impl-body inference runs only when the elaborate/dict path turned it on.
+-- FLAT-PATH SHADOW SCOPING: the impl decls to WALK [decls] are given separately from the
+-- [allProg] universe the return-position/method tables are built from — so the flat path
+-- can walk core's impls (shadows off) and the user's impls (shadows on) in two bracketed
+-- calls without perturbing either table.
+inferImplBodiesIfEnabledIn : TcEnv -> List Decl -> List Decl -> <Mut> Unit
+inferImplBodiesIfEnabledIn env allProg decls
   | implInferEnabled.value =
-    inferImplBodies env prog (returnPosMethodNames prog) prog
+    inferImplBodies env allProg (returnPosMethodNames allProg) decls
   | otherwise = ()
 
 -- C8b: default-body type-checking runs UNCONDITIONALLY (mirrors the oracle's
@@ -11087,8 +11158,51 @@ allDictObls [] = []
 allDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "" then [] else [(fst p, ["a"], TyVar "a", snd p, currentLoc.value)]) (zipL ifaces monos)
   ++ allDictObls rest
 
+-- FLAT-PATH SHADOW SCOPING (S1): a letrec group whose members are ALL prelude fns is a
+-- CORE group — no user standalone is a shadow inside it.  Empty group ⇒ not core (it
+-- cannot occur, and "user" is the conservative arm: it preserves the pre-fix behavior).
+flatGroupIsCore : List String -> <Mut> Bool
+flatGroupIsCore [] = False
+flatGroupIsCore members = allCoreFns members
+
+allCoreFns : List String -> <Mut> Bool
+allCoreFns [] = True
+allCoreFns (m::rest)
+  | omHasKey m flatCoreFnNamesRef.value = allCoreFns rest
+  | otherwise = False
+
+-- FLAT-PATH SHADOW SCOPING (S1): point definerShadowNamesRef at the shadow set that is
+-- actually IN SCOPE for the decls about to be inferred — [] inside the prelude, the
+-- user's shadows inside the user's module.  Inert (and byte-identical) unless the flat
+-- path prepended a prelude; see flatShadowScopingRef.
+scopeShadowsForGroup : List String -> <Mut> Unit
+scopeShadowsForGroup members
+  | not flatShadowScopingRef.value = ()
+  | flatGroupIsCore members = setRef definerShadowNamesRef []
+  | otherwise = setRef definerShadowNamesRef flatUserShadowNamesRef.value
+
+scopeShadowsCore : Unit -> <Mut> Unit
+scopeShadowsCore _ =
+  if flatShadowScopingRef.value then
+    setRef definerShadowNamesRef []
+  else
+    ()
+
+scopeShadowsUser : Unit -> <Mut> Unit
+scopeShadowsUser _ =
+  if flatShadowScopingRef.value then
+    setRef definerShadowNamesRef flatUserShadowNamesRef.value
+  else
+    ()
+
+-- did the caller prepend a prelude?  (`listLen ds > 0` without walking the list.)
+declsNonEmpty : List Decl -> Bool
+declsNonEmpty [] = False
+declsNonEmpty _ = True
+
 processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
+  let _ = scopeShadowsForGroup members
   let _ = enterLevel ()
   let oblN0 = pendingImplObligationsN.value
   let callN0 = pendingCallObligationsN.value
@@ -11778,7 +11892,7 @@ typeErrorLines (e::rest) = "TYPE ERROR: " ++ e :: typeErrorLines rest
 
 export checkToLines : List Decl -> <Mut> String
 checkToLines prog =
-  let schemes = checkProgramSchemes prog
+  let schemes = checkProgramSchemes [] prog
   let _ = checkCoherence prog
   let _ = checkInterfaceCycles prog
   let _ = checkPhantomMethods prog
@@ -11791,13 +11905,17 @@ checkToLines prog =
 -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
 
 -- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
--- which references putStrLn / etc. declared in runtime.mdk)
-export checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
-checkToLinesWithRuntime runtimeDecls prog =
+-- which references putStrLn / etc. declared in runtime.mdk).  [coreProg] is the PRELUDE
+-- the caller would otherwise have pre-concatenated onto [userProg]; keeping the two
+-- apart is what lets the flat path scope shadow-hood per module (SHADOW-SEMANTICS S1 —
+-- see flatShadowScopingRef).  Prelude-free callers pass [].
+export checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> String
+checkToLinesWithRuntime runtimeDecls coreProg userProg =
+  let prog = coreProg ++ userProg
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
-  let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
   let _ = checkPhantomMethods coherenceUserDecls.value
@@ -11820,12 +11938,13 @@ checkToLinesWithRuntime runtimeDecls prog =
 -- accumulator, ignoring the success-path scheme dump and the match WARNINGS (which
 -- are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
 -- WITHOUT altering runCheck's reported stdout.
-export checkErrorsWithRuntime : List Decl -> List Decl -> <Mut> Bool
-checkErrorsWithRuntime runtimeDecls prog =
+export checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> <Mut> Bool
+checkErrorsWithRuntime runtimeDecls coreProg userProg =
+  let prog = coreProg ++ userProg
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
-  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
   let _ = checkPhantomMethods coherenceUserDecls.value
@@ -11853,13 +11972,14 @@ checkMatchToLines runtimeDecls prog =
 -- error strings — each paired with its captured `Option Loc` (B.10.2b) — plus
 -- the warning strings (each paired with its captured `Option Loc`, S4), so
 -- diagnostics.mdk can wrap them in structured Diag values carrying the span.
-export checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, String, Option Loc), List (String, Option Loc))
-checkProgramDiags runtimeDecls prog =
+export checkProgramDiags : List Decl -> List Decl -> List Decl -> <Mut> (List (String, String, Option Loc), List (String, Option Loc))
+checkProgramDiags runtimeDecls coreProg userProg =
+  let prog = coreProg ++ userProg
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
   let _ = setRef matchWarningLocs []
   let _ = setRef matchOracle (buildOracle prog)
-  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
   let _ = checkCoherence coherenceUserDecls.value
   let _ = checkInterfaceCycles prog
   let _ = checkPhantomMethods coherenceUserDecls.value

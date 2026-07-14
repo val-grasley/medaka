@@ -916,14 +916,36 @@ typecheckGate allowInternal root input =
 -- that catches `"x" + 1`'s `No impl of Num for String`) — and renders BYTE-IDENTICAL
 -- carat diagnostics via ppDiagCliSrc.  This is the case the G1 bug fixture exercises.
 --
--- The MULTI-MODULE case keeps the emit-path predicate (resolve diagnostics +
--- elaborate + hadTypeErrors) it always used.  We deliberately do NOT gate a
--- multi-module build on the multi-module obligation check (checkModulesHasErrors):
--- it OVER-REJECTS valid code — e.g. it flags the compiler's own source with a
--- spurious `No impl of Alternative for Parser`, which would break every oracle
--- build of a compiler entry even though those programs typecheck-for-emit, build,
--- and self-host cleanly.  So multi-module keeps its prior (looser but sound)
--- behaviour; the located single-file path is what this fix tightens.
+-- The MULTI-MODULE case gates on `locatedProjectErrors` — LITERALLY the predicate
+-- `checkRoute`'s multi-module arm uses (analyzeProject), so `build`/`run` reject
+-- exactly the graphs `check` rejects, by construction (bug #40).
+--
+-- WHY THE OLD PREDICATE WAS UNSOUND (and could not be patched in place).  It was
+-- `resolve diagnostics + elaborateModules + hadTypeErrors`.  But `elaborateModules`
+-- sets `implInferEnabled := True`, and typecheck.mdk gates `checkImplObligations`
+-- (the pass that raises `No impl of Display for Foo`) behind `if not
+-- implInferEnabled.value`.  So the emit/eval elaboration STRUCTURALLY CANNOT record
+-- a constraint / missing-impl error: `hadTypeErrors` stayed False and multi-module
+-- `run` EXECUTED the ill-typed program, dying later on an unrelated runtime panic
+-- (`intToString: not an Int`).  A plain unification `Type mismatch` DID set the
+-- sticky flag, which is exactly why the hole hid for so long — probing with a type
+-- mismatch shows correct behaviour.  Single-file `run`/`build` were never affected:
+-- their arm already gates on `analyzeLocatedG`, which runs with implInferEnabled OFF.
+--
+-- WHY THIS DOES NOT OVER-REJECT.  The historical fear (recorded here as "the
+-- multi-module obligation check flags the compiler's own source with a spurious
+-- `No impl of Alternative for Parser`") named a predicate that no longer exists, and
+-- the false positive it described was fixed by checkModuleFullDiags's `accAll` seed
+-- (typecheck.mdk "Bug C": without the imported-standalone-shadow universe, `toList m`
+-- routed to method dispatch → spurious `No impl of Foldable for Map`).  The proof that
+-- analyzeProject is clean on compiler source is a REQUIRED CI check:
+-- test/typecheck_compiler_source.sh runs exactly this driver over
+-- compiler/driver/medaka_cli.mdk's whole import closure and fails on ANY
+-- error-severity diagnostic.  So gating the oracle builds on it is safe.
+--
+-- The elaborate + hadTypeErrors gate is KEPT behind it as belt-and-braces (it is the
+-- emit path's own view, and it is not a superset of nothing — a diagnostic only the
+-- emit elaboration can see still aborts before the emitter).
 typecheckGateRoute : Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> TypecheckGate
 typecheckGateRoute allowInternal trusted _ rsrc csrc tsrc target [(mid, _)] =
   -- Same fix as checkRoute's single-module arm: honour the caller-computed
@@ -939,16 +961,16 @@ typecheckGateRoute allowInternal trusted roots rsrc csrc tsrc target mods =
   let modsD = map desugarPair mods
   let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
   match resDiags
-    "" =>
-      let _ = resetTypeErrorsSticky ()
-      let _ = elaborateModules rtD coreD modsD
-      match hadTypeErrors ()
-        -- Gate stays the looser (sound, non-over-rejecting) hadTypeErrors, but the
-        -- MESSAGE is now the located per-module diagnostics (matching `--json`/
-        -- `check`), so a build failure points at the offending file:L:C — including
-        -- an IMPORTED module — instead of the opaque entry-only deflection.
-        True => TGErr (locatedOrGeneric target roots rsrc csrc)
-        False => TGOk
+    "" => match locatedProjectErrors target roots rsrc csrc
+      -- CHECK-STRENGTH gate: the located per-module diagnostics, identical to what
+      -- `medaka check` prints and to what `--json` reports.
+      Some errText => TGErr errText
+      None =>
+        let _ = resetTypeErrorsSticky ()
+        let _ = elaborateModules rtD coreD modsD
+        match hadTypeErrors ()
+          True => TGErr (locatedOrGeneric target roots rsrc csrc)
+          False => TGOk
     _ => TGErr resDiags
 
 -- Parse `[-o <out>] [--target <native|wasm>]`; first remaining positional is the
@@ -1099,28 +1121,35 @@ runRunCmd argv =
                         let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
                         exit 1
                   _ =>
-                    -- Multi-module: keep the resolve + elaborate + hadTypeErrors
-                    -- predicate (matches `build`'s multi-module gate).  This is
-                    -- looser than check's checkModulesHasErrors but SOUND, and
-                    -- deliberately so: checkModulesHasErrors OVER-REJECTS valid
-                    -- multi-module code (e.g. the compiler's own source with a
-                    -- spurious `No impl of Alternative for Parser`), which run is
-                    -- routinely used on.  See typecheckGateRoute's note.
+                    -- Multi-module: gate on `locatedProjectErrors` — the SAME
+                    -- analyzeProject predicate `checkRoute`'s multi-module arm uses —
+                    -- so `run` rejects exactly the graphs `check` rejects (bug #40).
+                    --
+                    -- The old gate here was resolve + elaborateModules +
+                    -- hadTypeErrors, which is BLIND to constraint / missing-impl
+                    -- errors: elaborateModules sets implInferEnabled, and typecheck
+                    -- skips checkImplObligations under it.  So multi-module `run`
+                    -- EXECUTED an ill-typed program (`println "\{Foo 1}"` with no
+                    -- Display impl) and died on an unrelated `intToString: not an Int`
+                    -- panic, while `check` on the same program printed the real
+                    -- located `No impl of Display for Foo`.  See typecheckGateRoute
+                    -- for why this is not an over-rejection.
                     let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
                     match resDiags
-                      "" =>
-                        let _ = resetTypeErrorsSticky ()
-                        let elaborated = elaborateModules rtD coreD modsD
-                        match hadTypeErrors ()
-                          True =>
-                            -- Located per-module diagnostics (matching `--json`/
-                            -- `check`/`build`) so `run`'s rejection points at the
-                            -- offending file:L:C, imported modules included, rather
-                            -- than the opaque entry-only deflection.  Gate stays the
-                            -- sound hadTypeErrors (see the note above).
-                            let _ = ePutStrLn (locatedOrGeneric target roots rsrc csrc)
-                            exit 1
-                          False => finishRunEval target jsonMode elaborated mods
+                      "" => match locatedProjectErrors target roots rsrc csrc
+                        Some errText =>
+                          let _ = ePutStrLn errText
+                          exit 1
+                        None =>
+                          let _ = resetTypeErrorsSticky ()
+                          let elaborated = elaborateModules rtD coreD modsD
+                          match hadTypeErrors ()
+                            True =>
+                              -- Belt-and-braces: anything only the emit/eval
+                              -- elaboration can see still aborts before eval.
+                              let _ = ePutStrLn (locatedOrGeneric target roots rsrc csrc)
+                              exit 1
+                            False => finishRunEval target jsonMode elaborated mods
                       _ =>
                         let _ = ePutStrLn resDiags
                         exit 1

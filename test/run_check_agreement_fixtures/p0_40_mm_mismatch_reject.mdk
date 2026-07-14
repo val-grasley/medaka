@@ -1,0 +1,12 @@
+-- Bug #40, ERROR-CLASS CONTROL: the same multi-module shape, but a plain
+-- unification `Type mismatch` instead of a missing impl.  This class was
+-- ALREADY gated before the fix (it sets typeErrorsSticky).  It is pinned here
+-- so a future change that reworks the multi-module gate cannot regress the
+-- easy class while fixing the hard one — and so the corpus documents that
+-- probing this bug with a type mismatch shows correct behaviour.
+import lib.p0_40_t.{bump}
+
+main : <IO> Unit
+main =
+  println "MUST-NOT-EXECUTE"
+  println "\{bump "not an Int"}"

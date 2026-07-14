@@ -126,7 +126,7 @@ wrapPrintln body = EApp (EVar "println") body
 export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, String, Option Loc)
 underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
   let _ = setCoherenceUserDecls entryDecls
-  let (tcErrs, _) = checkProgramDiags runtimeDecls (coreDecls ++ entryDecls)
+  let (tcErrs, _) = checkProgramDiags runtimeDecls coreDecls entryDecls
   tcErrs
 underivedMainDiags _ _ _ = []
 # DESUGAR
@@ -164,7 +164,7 @@ underivedMainDiags _ _ _ = []
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
 (DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))
-(DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EBinOp "++" (EVar "coreDecls") (EVar "entryDecls")))) (DoExpr (EVar "tcErrs"))))
+(DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Expr" true) (mem "Pat" false) (mem "Loc" false))))
@@ -201,5 +201,5 @@ underivedMainDiags _ _ _ = []
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
 (DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))
-(DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EBinOp "++" (EVar "coreDecls") (EVar "entryDecls")))) (DoExpr (EVar "tcErrs"))))
+(DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))
