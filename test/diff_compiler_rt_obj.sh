@@ -96,4 +96,19 @@ done
 
 printf '\n%d/%d fixture-builds byte-identical inline-vs-prebuilt (%d checked)\n' \
   "$identical" "$checked" "$checked"
-[ "$fail" -eq 0 ]
+
+# EXIT STATUS — gated EXPLICITLY on $fail. Every failure path above (a failed
+# --emit-rt-obj, a missing fixture, a failed inline/prebuilt build, and a byte
+# MISMATCH) increments $fail, and a byte-identity proof gate that observed a
+# mismatch MUST exit nonzero — otherwise it is exactly the "detected a divergence
+# and reported success" bug this whole optimization is guarding against. An
+# explicit `exit` (not a trailing `[ "$fail" -eq 0 ]`) is deliberate: the trailing-
+# test idiom leaves the final status to the shell's fall-off-the-end behavior,
+# which an EXIT trap (`rm -rf "$W"` above) can override to 0 on some shells
+# (notably macOS's bash-3.2 /bin/sh) — a silent green over a real mismatch. An
+# explicit `exit N` is preserved through the trap on every shell.
+if [ "$fail" -ne 0 ]; then
+  printf 'FAILED: %d fixture-build(s) diverged inline-vs-prebuilt (or failed to build)\n' "$fail" >&2
+  exit 1
+fi
+exit 0
