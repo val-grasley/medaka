@@ -213,6 +213,7 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodArityOf,
   methodIfaceOf,
+  isDictParamName,
   ftPrefix,
   labelFallthrough,
 }
@@ -1540,6 +1541,20 @@ scanExprValueUses fnNames fnArs ctorArs (CApp f a) =
         fn0
       if contains fn fnNames then
         if arityOf fnArs fn == listLen args then [] else [fn]
+      else
+        []
+    -- P1: an RLocal method-ref head is a DIRECT call to a shadowing standalone top-level
+    -- fn — the same direct call the CVar arm above describes, reached by a different
+    -- route.  So it needs the SAME rule: when the call is UNDER-applied, emitMethodRef
+    -- falls back to the closure/$__mdk_apply path, which references `$mdk_w_<fn>` — and
+    -- that wrapper is only DEFINED for a fn this scan reports.  Missing it emitted the
+    -- ref.func and never the func: "unknown func $mdk_w_…" at assemble (exactly the
+    -- failure the composite-arm comment below records).  Kept in lockstep with
+    -- emitMethodRef's RLocal arm, including the `sym == ""` bare-name fallback.
+    CMethod mname (RLocal sym dicts) _ _ =>
+      let target = if sym == "" then mname else sym
+      if isEmpty dicts && contains target fnNames && arityOf fnArs target != listLen args then
+        [target]
       else
         []
     _ => scanExprValueUses fnNames fnArs ctorArs hd
@@ -3072,11 +3087,28 @@ emitMethodRef prog env d name RNone implRoutes methRoutes args =
 -- few and wasm-tools rejects the module outright ("type mismatch: expected (ref eq) but
 -- nothing on stack" — that "nothing" IS the missing dict word).  `dicts == []` keeps the
 -- byte-identical pre-S1 direct call.
+-- P1 (under-application): the direct `call` below is only legal when the call is
+-- SATURATED.  emitAppRef's CVar arm has always guarded that (`listLen args ==
+-- progFnArity`), falling back to the closure/`$__mdk_apply` path otherwise — but this
+-- arm, which is the SAME direct call reached by a different route, never did.  So an
+-- under-applied shadowing standalone emitted `call $fn` with too few operands and
+-- wasm-tools rejected the whole module ("expected (ref eq) but nothing on stack").
+--
+-- `inc = add 1` is exactly that: `add` shadows the prelude `Num.add` method name, so
+-- the marker rewrites it to `CMethod "add" (RLocal "<mid>__add")` and it arrives HERE
+-- rather than at the guarded CVar arm — which is why the prelude-free probe (no marker,
+-- so a plain CVar head) never saw this and the shipping path does.  Route an
+-- unsaturated call through emitIndirectApp: it builds the fn's closure and applies via
+-- $__mdk_apply, whose under-app arm makes the residual PAP.  Peer of llvm_emit's
+-- emitKnownFnSat ("builds a residual PAP when genuinely under-applied").  A saturated
+-- call is byte-identical to before, so no emitted IR moves.
 emitMethodRef prog env d name (RLocal sym dicts) implRoutes methRoutes args =
   let target = if sym == "" then name else sym
   if isEmpty dicts then
-    let argInstrs = flatMap (a => emitRefExpr prog env d a) args
-    argInstrs ++ ["call $" ++ gname target]
+    if contains target (progFnNames prog) && listLen args != progFnArity prog target then emitIndirectApp prog env d (CVar target AGlobal) args
+    else
+      let argInstrs = flatMap (a => emitRefExpr prog env d a) args
+      argInstrs ++ ["call $" ++ gname target]
   else emitDictRef prog env d target dicts args
 emitMethodRef prog env d name (RScalar _) implRoutes methRoutes args =
   gapL ("wasm W5: RScalar route for method '" ++ name ++ "' is out of slice")
@@ -3531,7 +3563,15 @@ floatParamNames name clauses = match declParamTypesOf name
 floatClausePatVars : List String -> CClause -> List String
 floatClausePatVars ptys (CClause pats _) = floatPatsAt ptys pats
 
+-- P1: a `$dict_*` param (prepended to a `=>`-constrained fn by elaborateModules) is
+-- NOT a source param, so it must advance the PATTERN cursor without consuming a
+-- DECLARED type head — otherwise every declared type lines up one slot left of the
+-- param it describes.  Peer of llvm_emit's inferParamTysSeedD, whose own comment
+-- names this as the G3 root cause ("x's LTNum seed was read at the dict's index →
+-- missed").  wasm never got the same guard; see numPolyPatsAt for what it cost.
 floatPatsAt : List String -> List Pat -> List String
+floatPatsAt tys ((PVar x)::ps)
+  | isDictParamName x = floatPatsAt tys ps
 floatPatsAt (ty::tys) ((PVar x)::ps) = (if ty == "Float" then [x] else [])
   ++ floatPatsAt tys ps
 floatPatsAt (_::tys) (_::ps) = floatPatsAt tys ps
@@ -3556,7 +3596,16 @@ numPolyParamNames name clauses = match declParamTypesOf name
 numPolyClausePatVars : List String -> CClause -> List String
 numPolyClausePatVars ptys (CClause pats body) = numPolyPatsAt ptys pats body
 
+-- P1: skip a `$dict_*` param WITHOUT consuming a declared type head (see floatPatsAt).
+-- This was the whole bug behind wasm/polynum_sq_sig_float: `sq : Num a => a -> a`
+-- lowers to params [$dict_…__sq_0, x], so the declared head `a` lined up with the DICT
+-- slot; `x` fell off the end of `ptys` and was never seeded into numPolyLocalsRef.  Its
+-- `x * x` then took the inline i31 int path and trapped `illegal cast` on the boxed
+-- $float at runtime — i.e. the explicit `Num a =>` signature, the one thing that should
+-- have GUARANTEED runtime dispatch, was precisely what disabled it.
 numPolyPatsAt : List String -> List Pat -> CExpr -> List String
+numPolyPatsAt tys ((PVar x)::ps) body
+  | isDictParamName x = numPolyPatsAt tys ps body
 numPolyPatsAt (ty::tys) ((PVar x)::ps) body = (if isTypeVarName ty && paramUsedInNumBinop x body then [x] else [])
   ++ numPolyPatsAt tys ps body
 numPolyPatsAt (_::tys) (_::ps) body = numPolyPatsAt tys ps body
@@ -4102,16 +4151,27 @@ emitVarRefPlain prog env d x =
   -- W9: builtin Char bounds fit in an i31 → emit directly (codepoints 1 / 0x21FFFF).
   else if x == "charMinBound" then ["i32.const 1", "ref.i31"]
   else if x == "charMaxBound" then ["i32.const 2228223", "ref.i31"]
-  -- W9: builtin Int/Float bounds (intMinBound/intMaxBound = 64-bit, overflow i31; pi/e
-  -- = Float) are W8b-shaped — they appear only in always-retained Bounded/Num impl
-  -- bodies (DCE can't prune them), executed only by a program that actually uses them,
-  -- which W9 fixtures avoid.  Trap-stub so the program emits.
   -- W8b: the Float math constants pi/e are boxed (struct $float) — the SAME decimal
-  -- text the LLVM oracle boxes (3.141592653589793 / 2.718281828459045).  intMin/MaxBound
-  -- are 64-bit Ints that overflow i31 and are W8b-shaped; they trap-stub still.
+  -- text the LLVM oracle boxes (3.141592653589793 / 2.718281828459045).
   else if x == "pi" then ["f64.const 3.141592653589793", "struct.new $float"]
   else if x == "e" then ["f64.const 2.718281828459045", "struct.new $float"]
-  else if contains x ["intMinBound", "intMaxBound"] then ["unreachable"]
+  -- P1: builtin Int bounds.  These used to be a bare `unreachable` trap-stub, on the
+  -- (then-true, now STALE) grounds that a 64-bit bound "overflows i31" and so had no
+  -- wasm rep — but layer-17 §2.1 gave ref-mode the `$boxint` i64 box, and every int
+  -- binop already round-trips through `$mdk_box_int`/`$mdk_unbox_int` (both always in
+  -- scope via ioRuntimeLines).  So the bound is representable and the stub was simply
+  -- never revisited: `main = intMaxBound` ASSEMBLED and VALIDATED, then trapped
+  -- `unreachable` at instantiate.
+  --
+  -- The VALUES are the language's, not the machine's.  Medaka's Int is the NATIVE
+  -- rep's 63-bit tagged word, so `intMaxBound` = 2^62-1 and `intMinBound` = -2^62 —
+  -- llvm_emit emits the TAGGED words (9223372036854775807 / -9223372036854775807,
+  -- as literal strings: `n*2+1` would overflow the self-host's own 63-bit Int), whose
+  -- untagged values are these.  Ref-mode is untagged, so it emits the values directly
+  -- — again as literal STRINGS, for exactly the same self-host-overflow reason (they
+  -- are 2^62-1 / -2^62, at the boundary of the Int the compiler itself computes in).
+  else if x == "intMaxBound" then ["i64.const 4611686018427387903", "call $mdk_box_int"]
+  else if x == "intMinBound" then ["i64.const -4611686018427387904", "call $mdk_box_int"]
   else if isCtor prog x then
     if ctorArity prog x == 0 then emitCtorConstruct prog env d x []
     else emitCtorEtaClosure prog x
@@ -4471,6 +4531,32 @@ ctorPatFloatBindersGo c floatIdxs ((PVar x)::rest) i = (if containsInt i floatId
   ++ ctorPatFloatBindersGo c floatIdxs rest (i + 1)
 ctorPatFloatBindersGo c floatIdxs (_::rest) i =
   ctorPatFloatBindersGo c floatIdxs rest (i + 1)
+
+-- P1: the match-arm pattern binders whose numeric type is only known at RUNTIME — every
+-- PVar the arm binds that is used as a direct operand of an arith/compare binop and is
+-- NOT one of the declared-Float ctor fields (those already take the static Float fast
+-- path via floatLocalsRef, which emitBinRef consults first).
+--
+-- A match binder carries NO static type: a tuple field has no declared type at all, and
+-- a ctor field is only known when it is declared Float.  Ref-mode's fallback for an
+-- unknown operand is the inline i31 int primitive — which is not merely a wrong guess but
+-- a TRAP: $mdk_unbox_int ref.casts a boxed $float and the module dies `illegal cast` at
+-- instantiate (test/llvm_fixtures_typed/float_typelost_tuple: `addPair p = match p (a,b)
+-- => a + b` at Float).  So an unknown operand must DISPATCH, never guess.
+--
+-- This is exactly what the native backend already does — llvm_emit's binOperandTy falls
+-- back to LTNum (the runtime tag-dispatched @mdk_num_* helpers) for any arith operand
+-- whose type it cannot pin concretely, and a match binder is never in its LTy env, so it
+-- is always LTNum there.  Seeding these into numPolyLocalsRef routes them to $mdk_value_*
+-- — the WasmGC peers of those very helpers — so BOTH backends now runtime-dispatch the
+-- SAME nodes.  On an Int instantiation $mdk_value_* is byte-identical to the inline int
+-- path, so only correctness changes, never a value.
+armNumPolyBinders : Pat -> CExpr -> List String
+armNumPolyBinders pat body =
+  let floatBinders = ctorPatFloatBinders pat
+  filterList
+    (x => notIn floatBinders x && paramUsedInNumBinop x body)
+    (patVars pat)
 
 cexprIsFloatBlock : Prog -> List String -> List CStmt -> Bool
 cexprIsFloatBlock _ _ [] = False
@@ -6116,11 +6202,9 @@ emitLeafTail : Prog -> List String -> Int -> List String -> List CArm -> Int -> 
 emitLeafTail prog env arity root arms i = match nthArm arms i
   Some (CArm pat _ body) =>
     let (binds, env2) = bindPatRef prog env pat root
-    let floatBinders = ctorPatFloatBinders pat
-    let savedFloat = floatLocalsRef.value
-    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let savedNum = seedArmNumEnv pat body
     let bodyCode = emitRefTail prog env2 arity body
-    let _ = setRef floatLocalsRef savedFloat
+    let _ = restoreArmNumEnv savedNum
     binds ++ bodyCode
   None => gapL "ref-mode: tail decision arm index out of range"
 
@@ -6130,12 +6214,10 @@ emitGuardArmTail : Prog -> List String -> Int -> Int -> List String -> List (Lis
 emitGuardArmTail prog env arity d root occs arms i fail = match nthArm arms i
   Some (CArm pat guards body) => if allBoolGuards guards then
     let (binds, env2) = bindPatRef prog env pat root
-    let floatBinders = ctorPatFloatBinders pat
-    let savedFloat = floatLocalsRef.value
-    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let savedNum = seedArmNumEnv pat body
     let gLabel = "$gt" ++ intToString d
     let armCode = ["block " ++ gLabel] ++ indent (binds ++ flatMap (emitGuardTest prog env2 0 gLabel) guards ++ emitRefTail prog env2 arity body) ++ ["end"]
-    let _ = setRef floatLocalsRef savedFloat
+    let _ = restoreArmNumEnv savedNum
     armCode ++ emitTreeTail prog env arity d root occs arms fail
   else gapL "ref-mode: refutable pattern guard (`p <- e`) in a tail match arm — not yet lowered"
   None => gapL "ref-mode: tail guarded arm index out of range"
@@ -6352,19 +6434,60 @@ argLoadAt (p, i) = [
 --   * the USE site (the group body) rebuilds the same closures into locals from the
 --     enclosing env, then emits the body — so the body sees each group name bound.
 -- A zero-binding group is just its body.
+--
+-- P1 — a NULLARY VALUE binding (`base = 10`, i.e. `CBind n [CClause [] rhs]`) is NOT a
+-- local function and must NOT be lifted.  It used to be: every member was lambda-lifted
+-- uniformly, so `where base = 10 …` bound `base` to an arity-0 CLOSURE that was never
+-- forced, and a sibling's `x + base` then ran $mdk_unbox_int over a `$clos` → the module
+-- validated and trapped `illegal cast` at instantiate (test/llvm_fixtures/where_sibling_ref).
+-- llvm_emit's emitLetGroup has always had the dedicated nullary-value arm; ref-mode
+-- didn't.  Fix: evaluate a value binding's rhs at the use site into its local, and hand
+-- the value to the lifted members as an ordinary CAPTURE (it joins groupCaps, so each
+-- member loads it from $env exactly like any enclosing free var).  Values are computed
+-- before the closures because the closures capture them — so a value binding whose rhs
+-- calls a sibling FUNCTION is the one shape this cannot tie, and it is rejected
+-- precisely rather than miscompiled (llvm_emit rejects the mirror case in emitKnotRun).
 emitLetGroupRef : Prog -> List String -> Int -> List CBind -> CExpr -> <Mut> List String
 emitLetGroupRef prog env d binds body =
   let gid = freshLamId ()
-  let names = map lgBindName binds
-  let allParams = flatMap lgBindParams binds
-  let groupCaps = filterList (c => contains c env)
-        (dedupKeep (filterList (notIn (names ++ allParams)) (flatMap (freeVarsClauses []) binds)))
-  -- emit each lifted top-level fn (drained into the module like other lifted lams).
-  let _ = forEachU (b => emitLgLifted prog gid names groupCaps binds b) binds
-  -- at the use site: rebuild every member closure from the enclosing env, bind to a
-  -- local, then emit the body with those names in scope.
-  let rebuilds = flatMap (b => rebuildLgClosure prog gid groupCaps b) binds
-  rebuilds ++ emitRefTail2 prog (names ++ env) d body
+  let valBinds = filterList isLgValBind binds
+  let fnBinds = filterList (b => not (isLgValBind b)) binds
+  let valNames = map lgBindName valBinds
+  let names = map lgBindName fnBinds
+  let allParams = flatMap lgBindParams fnBinds
+  let valFree = dedupKeep (flatMap (freeVarsClauses []) valBinds)
+  if anyOfList names valFree then
+    gapL "wasm W9: unsupported let-group — a VALUE binding's right-hand side calls a sibling FUNCTION of the same group; the value must be computed before the group's closures are built (peer of the native emitter's knot-tying restriction)"
+  else
+    let freeCaps = filterList (c => contains c env)
+          (dedupKeep (filterList (notIn (names ++ valNames ++ allParams)) (flatMap (freeVarsClauses []) binds)))
+    -- the group's value bindings are shared by every member, so they ride along as caps.
+    let groupCaps = freeCaps ++ valNames
+    -- emit each lifted top-level fn (drained into the module like other lifted lams).
+    let _ = forEachU (b => emitLgLifted prog gid names groupCaps fnBinds b) fnBinds
+    -- at the use site: compute the value bindings into their locals (each visible to the
+    -- next), rebuild every FUNCTION member's closure, then emit the body with all bound.
+    let valInit = emitLgValBinds prog env d valBinds
+    let rebuilds = flatMap (b => rebuildLgClosure prog gid groupCaps b) fnBinds
+    valInit ++ rebuilds ++ emitRefTail2 prog (names ++ valNames ++ env) d body
+
+-- P1: a CLetGroup member that is a nullary VALUE binding, not a local function.
+isLgValBind : CBind -> Bool
+isLgValBind (CBind _ [CClause [] _]) = True
+isLgValBind _ = False
+
+-- P1: evaluate each value binding's rhs into its local, threading the bound names
+-- through the env so a later value binding can reference an earlier one.
+emitLgValBinds : Prog -> List String -> Int -> List CBind -> <Mut> List String
+emitLgValBinds _ _ _ [] = []
+emitLgValBinds prog env d ((CBind name [CClause [] rhs])::rest) = emitRefExpr prog env d rhs
+  ++ ["local.set $" ++ gname name]
+  ++ emitLgValBinds prog (name::env) d rest
+emitLgValBinds prog env d (_::rest) = emitLgValBinds prog env d rest
+
+-- P1: does any name in `xs` occur in `ys`?
+anyOfList : List String -> List String -> Bool
+anyOfList xs ys = anyList (x => contains x ys) xs
 
 -- when a group body is in NON-tail position we still want to evaluate it leaving a
 -- value on the stack; emitRefExpr handles every node, so use it directly (the body
@@ -6848,19 +6971,39 @@ emitTreeRef prog env d decLabel root occs arms (CTDrop sub) =
 emitTreeRef prog env d decLabel root occs arms (CTSwitch branches dft) =
   emitSwitchRef prog env d decLabel root occs arms branches dft
 
+-- The numeric typing environment an arm's PATTERN BINDERS contribute to its body, saved
+-- so it can be restored after (arms nest).  Two disjoint seeds, both scoped to the body:
+--   * floatLocalsRef  — binders at declared-Float ctor fields (W-SQLITE-4 stage 2): a
+--     STATIC Float, so cexprIsFloat sees them and emitBinRef takes the f64 fast path.
+--   * numPolyLocalsRef — P1: every OTHER binder used in a num binop, whose type is known
+--     only at runtime → routed to the shape-dispatching $mdk_value_* helpers.  Without
+--     this the unknown operand fell to the inline i31 int path and TRAPPED `illegal cast`
+--     on a boxed $float (see armNumPolyBinders).
+-- emitBinRef consults floatLocalsRef first, so a declared-Float binder keeps its static
+-- path and only genuinely type-lost operands pay for dispatch.
+seedArmNumEnv : Pat -> CExpr -> <Mut> (List String, List String)
+seedArmNumEnv pat body =
+  let savedFloat = floatLocalsRef.value
+  let savedNumPoly = numPolyLocalsRef.value
+  let _ = setRef floatLocalsRef (ctorPatFloatBinders pat ++ savedFloat)
+  let _ = setRef numPolyLocalsRef (armNumPolyBinders pat body ++ savedNumPoly)
+  (savedFloat, savedNumPoly)
+
+restoreArmNumEnv : (List String, List String) -> <Mut> Unit
+restoreArmNumEnv (savedFloat, savedNumPoly) =
+  let _ = setRef floatLocalsRef savedFloat
+  setRef numPolyLocalsRef savedNumPoly
+
 -- a leaf: re-match arm i's pattern against `root` to bind its PVars (loading struct
 -- fields), then emit the body, then `br decLabel` with the value.
--- W-SQLITE-4 stage 2: if the arm's pattern is a PCon with Float fields, temporarily
--- add those binder names to floatLocalsRef so cexprIsFloat sees them in the body.
+-- Pattern binders seed the arm body's numeric typing env — see seedArmNumEnv.
 emitLeafRef : Prog -> List String -> Int -> String -> List String -> List CArm -> Int -> <Mut> List String
 emitLeafRef prog env d decLabel root arms i = match nthArm arms i
   Some (CArm pat _ body) =>
     let (binds, env2) = bindPatRef prog env pat root
-    let floatBinders = ctorPatFloatBinders pat
-    let savedFloat = floatLocalsRef.value
-    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let savedNum = seedArmNumEnv pat body
     let bodyCode = emitRefExpr prog env2 d body
-    let _ = setRef floatLocalsRef savedFloat
+    let _ = restoreArmNumEnv savedNum
     binds ++ bodyCode ++ ["br " ++ decLabel]
   None => gapL "ref-mode: decision arm index out of range"
 
@@ -6873,12 +7016,10 @@ emitGuardArmRef : Prog -> List String -> Int -> String -> List String -> List (L
 emitGuardArmRef prog env d decLabel root occs arms i fail = match nthArm arms i
   Some (CArm pat guards body) => if allBoolGuards guards then
     let (binds, env2) = bindPatRef prog env pat root
-    let floatBinders = ctorPatFloatBinders pat
-    let savedFloat = floatLocalsRef.value
-    let _ = setRef floatLocalsRef (floatBinders ++ savedFloat)
+    let savedNum = seedArmNumEnv pat body
     let gLabel = "$g" ++ intToString d
     let armCode = ["block " ++ gLabel] ++ indent (binds ++ flatMap (emitGuardTest prog env2 d gLabel) guards ++ emitRefExpr prog env2 d body ++ ["br " ++ decLabel]) ++ ["end"]
-    let _ = setRef floatLocalsRef savedFloat
+    let _ = restoreArmNumEnv savedNum
     armCode ++ emitTreeRef prog env d decLabel root occs arms fail
   else gapL "ref-mode: refutable pattern guard (`p <- e`) in a match arm — not yet lowered"
   None => gapL "ref-mode: guarded arm index out of range"
@@ -7160,9 +7301,19 @@ collectExprLocals (CMatch scrut arms) = collectExprLocals scrut
 -- W9: a CLetGroup's member NAMES are bound as closure locals at the use site (the
 -- enclosing fn must declare them); the bindings' own clause locals belong to the
 -- LIFTED fns, not here, so only the group body's locals are collected here.
+-- P1: a group's FUNCTION members are lambda-lifted (their bodies declare their own
+-- locals in their own lifted fn), but a nullary VALUE member's rhs is emitted INLINE at
+-- the use site — so its locals must be declared HERE, in the enclosing function.
 collectExprLocals (CLetGroup binds body) = map lgBindName binds
+  ++ flatMap collectLgValLocals binds
   ++ collectExprLocals body
 collectExprLocals _ = []
+
+-- P1: the inline-emitted locals of a group's nullary VALUE member (none for a function
+-- member — that one is lifted).
+collectLgValLocals : CBind -> List String
+collectLgValLocals (CBind _ [CClause [] rhs]) = collectExprLocals rhs
+collectLgValLocals _ = []
 
 collectStmtLocals : CStmt -> List String
 collectStmtLocals (CSExpr ex) = collectExprLocals ex
@@ -7510,7 +7661,11 @@ maxIndexAt (CBlock stmts) d = foldMaxI (map (s => maxIndexAtStmt s d) stmts)
 -- a let-group's BODY is emitted at this same depth `d` at the use site (its lifted
 -- members carry their own scratch in their own functions); descend into the body so
 -- the enclosing function declares enough `$__rf` slots (a match in the body uses them).
-maxIndexAt (CLetGroup _ body) d = maxIndexAt body d
+-- P1: a nullary VALUE member's rhs is emitted INLINE at the use site (function members
+-- are lifted and size their own scratch), so its depth must be folded in here — else the
+-- enclosing fn under-declares scratch locals for it.
+maxIndexAt (CLetGroup binds body) d =
+  foldMaxI (maxIndexAt body d :: map (b => maxIndexAtLgVal b d) binds)
 -- compound value nodes emit their sub-expressions at depth `d` (no own stash slot);
 -- descend so a scratch-using element (e.g. CIndex/CSlice/a nested match) is counted.
 maxIndexAt (CTuple es) d = foldMaxI (map (x => maxIndexAt x d) es)
@@ -7555,6 +7710,12 @@ treeSwitchNesting (CTDrop sub) = treeSwitchNesting sub
 treeSwitchNesting (CTSwitch branches dft) =
   let bd = foldMaxI (map (b => treeSwitchNesting (branchSub b)) branches)
   maxI (1 + bd) (treeSwitchNesting dft)
+
+-- P1: scratch depth of a group's nullary VALUE member's inline-emitted rhs (a function
+-- member contributes nothing here — it is lifted).
+maxIndexAtLgVal : CBind -> Int -> Int
+maxIndexAtLgVal (CBind _ [CClause [] rhs]) d = maxIndexAt rhs d
+maxIndexAtLgVal _ d = d - 1
 
 maxIndexAtStmt : CStmt -> Int -> Int
 maxIndexAtStmt (CSExpr e) d = maxIndexAt e d

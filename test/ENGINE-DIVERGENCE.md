@@ -295,6 +295,37 @@ its own gaps, which is to its credit. Distinct causes, by frequency:
 > JS-stack overflow), and one (`clos_partial_app`) that fails GC validation outright.
 > Several of these were *clean under the probe*: the shipping wasm path is genuinely
 > worse than the spike path, and nothing was measuring it.
+>
+> **All 8 are now FIXED** (2026-07-14): the two TMC ones by the dict-veto fix, and the
+> other six in `compiler/backend/wasm_emit.mdk` — see §3.3.
+
+### 3.3 The 6 shipping-path wasm bugs — FIXED 2026-07-14
+
+`llvm/{num_int_max, num_int_min, where_sibling_ref}`, `llvmT/float_typelost_tuple`,
+`wasm/{polynum_sq_sig_float, clos_partial_app}`. All promoted out of the ledger.
+
+**The three `illegal cast` fixtures did NOT share one root — they had two.** (Worth
+saying, because "one symptom ⇒ one cause" was the natural guess and it was wrong.)
+
+| fixture | root cause | native peer that already existed |
+|---|---|---|
+| `num_int_max` / `num_int_min` | `emitVarRef` emitted a literal `unreachable` **trap-stub** for the Int bounds, on the *stale* grounds that a 64-bit bound "overflows i31". Layer-17 gave ref-mode the `$boxint` i64 box; the stub was never revisited. Now `i64.const <value>` + `$mdk_box_int`. | `llvm_emit` emits the tagged word. |
+| `where_sibling_ref` | **`illegal cast` root #1.** `emitLetGroupRef` lambda-lifted *every* let-group member uniformly — including a nullary **VALUE** binding (`base = 10`), which became an arity-0 closure that was never forced. A sibling's `x + base` then ran `$mdk_unbox_int` over a `$clos`. Values are now evaluated at the use site and passed to the lifted members as ordinary captures. | `llvm_emit.emitLetGroup` has always had a dedicated `CBind n [CClause [] rhs]` arm. |
+| `polynum_sq_sig_float` + `float_typelost_tuple` | **`illegal cast` root #2, shared by both.** An arithmetic operand whose type is known only at RUNTIME fell through to the inline i31 int primitive, which `ref.cast`s a boxed `$float`. Two independent under-seedings of `numPolyLocalsRef`: (a) `numPolyPatsAt` lined declared param types up against lowered params **without skipping the prepended `$dict_*` params**, so `sq : Num a => a -> a`'s type-var head `a` matched the *dict* slot — i.e. the explicit `Num a =>` signature was precisely what *disabled* dispatch; (b) **match-arm pattern binders** (tuple/ctor payload) were never seeded at all. | `llvm_emit` routes both to the runtime tag-dispatched `@mdk_num_*` helpers — via `inferParamTysSeedD` (whose comment names the dict misalignment as "the G3 root cause") and `binOperandTy`→`LTNum`. |
+| `clos_partial_app` | `emitMethodRef`'s **`RLocal`** arm emitted a raw direct `call` with **no arity guard**, so an under-application pushed too few operands and the module failed GC validation. `inc = add 1` reaches that arm — not the (correctly guarded) `CVar` arm — because `add` shadows the prelude `Num.add` method name, so the marker rewrites it to `CMethod "add" (RLocal …)`. **That is exactly why the prelude-free probe never saw it** (no marker ⇒ a plain `CVar` head). Under-applied calls now route to `$__mdk_apply`, whose under-app arm builds the PAP. | `llvm_emit`'s RLocal arm delegates to `emitKnownFnSat`, which "builds a residual PAP when genuinely under-applied". |
+
+**The pattern across all six: the native backend already had the guard and wasm lacked
+it.** Core IR is deliberately type-erased, and each backend re-derives numeric type and
+saturation facts in its own value representation (native: low-bit-tagged i64 + the `LTy`
+lattice; wasm: `(ref eq)` with `i31`/`$float`/`$boxint` + boolean predicate refs). There
+is no shared place to put these fixes short of a *typed* Core IR — so they are correctly
+per-backend. What IS shared is now shared: `isDictParamName` moved to
+`backend/emit_support.mdk`, since both backends need it for the same reason.
+
+Note the wasm runtime helpers these route to (`$mdk_value_add/sub/mul/div/mod`, the peers
+of native's `@mdk_num_*`) **already existed** — the bug was never a missing helper, only a
+predicate that failed to reach them. On an `Int` instantiation they are byte-identical to
+the inline int path, so only correctness moved, never a value.
 
 ---
 

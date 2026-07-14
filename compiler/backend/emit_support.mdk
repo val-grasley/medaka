@@ -114,6 +114,19 @@ methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0
 
+-- ── dict-witness parameter names (shared by BOTH backends) ───────────────────
+-- `$dict_<fn>_<slot>` — a dict witness param that dict_pass/elaborateModules PREPENDS
+-- to a `=>`-constrained fn's source params.  Both backends must recognize one, for the
+-- same reason: a synthesized dict param occupies an IR param slot but has NO entry in
+-- the DECLARED signature, so any walk that lines declared types up against lowered
+-- params must skip it WITHOUT consuming a declared type — otherwise every declared type
+-- describes the param one slot to its LEFT.  llvm_emit's inferParamTysSeedD does this;
+-- wasm_emit's numPolyPatsAt/floatPatsAt did NOT, which is what made an explicit
+-- `Num a =>` signature *disable* the very runtime dispatch it should have guaranteed
+-- (2026-07-14; fixture `test/wasm/fixtures/polynum_sq_sig_float.mdk`).
+export isDictParamName : String -> Bool
+isDictParamName x = stringLength x >= 5 && stringSlice 0 5 x == "$dict"
+
 -- ── clause fall-through labelling (shared by BOTH backends) ──────────────────
 -- `desugar.mdk` lowers a clause's guard chain to a nested `CIf`/`CDecision`
 -- terminated by the sentinel call `__fallthrough__ ()` — "no guard arm matched,
