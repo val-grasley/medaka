@@ -215,6 +215,7 @@ buildCtorToType prog = flatMap ctorTypeEntries prog
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
   map (v => (variantName v, tyname)) variants
+ctorTypeEntries (DNewtype _ tyname _ con _ _) = [(con, tyname)]
 ctorTypeEntries _ = []
 
 variantName : Variant -> String
@@ -1044,6 +1045,8 @@ eval env (ERecordCreate name fields) =
     None => VRecord name assigns
 eval env (ERecordUpdate base fields _) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
+eval env (EVariantUpdate con base fields) =
+  evalVariantUpdate con (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value" _) = evalValueField (eval env e)
 eval env (EFieldAccess e field _) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
@@ -1193,8 +1196,15 @@ evalVariantUpdate con (VCon con' vals) updates
   | con == con' =
     VCon con (applyVariantUpdates updates (ctorFieldOrderFor con) vals)
   | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
-evalVariantUpdate con _ _ =
-  panic ("evalVariantUpdate: not a constructor: " ++ con)
+-- The tree-walking `run` path (compiler/eval/eval.mdk's own `ERecordCreate` arm)
+-- never populates `ctorFieldOrdersRef` (only the Core-IR lowering/eval drivers
+-- do), so a named-field constructor value on this path is a `VRecord`, never a
+-- `VCon`. Mirror `evalRecordUpdate`'s merge, keeping the constructor tag.
+evalVariantUpdate con (VRecord con' fields) updates
+  | con == con' = VRecord con' (map (mergeField updates) fields)
+  | otherwise = panic "evalVariantUpdate: expected \{con} got \{con'}"
+evalVariantUpdate con v _ =
+  panic "evalVariantUpdate: not a constructor: \{con} got \{ppValue v}"
 
 ctorFieldOrderFor : String -> List String
 ctorFieldOrderFor con = match lookupAssoc con ctorFieldOrdersRef.value
@@ -1420,6 +1430,8 @@ collectCtors prog = flatMap ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value e)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
+ctorsOfDecl (DNewtype _ _ _ con fty _) =
+  [ctorEntry (Variant con (ConPos [fty]))]
 ctorsOfDecl _ = []
 
 ctorEntry : Variant -> (String, Value e)

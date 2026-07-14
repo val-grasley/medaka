@@ -1,5 +1,5 @@
 # META
-source_lines=13528
+source_lines=13530
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -6323,6 +6323,8 @@ registerData env (DData _ name params variants _) =
 registerData env (DTypeAlias _ name params rhs) =
   let _ = setRef aliasTableRef ((name, (params, rhs))::aliasTableRef.value)
   env
+registerData env (DNewtype _ name params con fty _) =
+  registerVariants env name params [Variant con (ConPos [fty])]
 registerData env _ = env
 
 -- ── record metadata registration & instantiation ──────────────────────────
@@ -15185,6 +15187,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "registerData" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Decl") (TyEffect ("Mut") None (TyCon "TcEnv")))))
 (DFunDef false "registerData" ((PVar "env") (PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EVar "variants")))
 (DFunDef false "registerData" ((PVar "env") (PCon "DTypeAlias" PWild (PVar "name") (PVar "params") (PVar "rhs"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "aliasTableRef")) (EBinOp "::" (ETuple (EVar "name") (ETuple (EVar "params") (EVar "rhs"))) (EFieldAccess (EVar "aliasTableRef") "value")))) (DoExpr (EVar "env"))))
+(DFunDef false "registerData" ((PVar "env") (PCon "DNewtype" PWild (PVar "name") (PVar "params") (PVar "con") (PVar "fty") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "registerData" ((PVar "env") PWild) (EVar "env"))
 (DTypeSig false "registerRecordInfoKeyed" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "registerRecordInfoKeyed" ((PVar "key") (PVar "typeName") (PVar "params") (PVar "fields")) (EBlock (DoLet false false (PVar "paramVars") (EApp (EVar "freshVars") (EApp (EVar "listLen") (EVar "params")))) (DoLet false false (PVar "tvs") (EApp (EApp (EVar "zipL") (EVar "params")) (EVar "paramVars"))) (DoLet false false (PVar "result") (EApp (EApp (EVar "applyParams") (EApp (EVar "TCon") (EVar "typeName"))) (EVar "paramVars"))) (DoLet false false (PVar "fieldMonos") (EApp (EApp (EVar "map") (EApp (EVar "recFieldMono") (EVar "tvs"))) (EVar "fields"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "recordsRef")) (EBinOp "::" (ETuple (EVar "key") (EApp (EApp (EApp (EVar "RecordInfo") (EApp (EApp (EVar "map") (EVar "monoTyvarId")) (EVar "paramVars"))) (EVar "result")) (EVar "fieldMonos"))) (EFieldAccess (EVar "recordsRef") "value"))))))
@@ -18780,6 +18783,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "registerData" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Decl") (TyEffect ("Mut") None (TyCon "TcEnv")))))
 (DFunDef false "registerData" ((PVar "env") (PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EVar "variants")))
 (DFunDef false "registerData" ((PVar "env") (PCon "DTypeAlias" PWild (PVar "name") (PVar "params") (PVar "rhs"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "aliasTableRef")) (EBinOp "::" (ETuple (EVar "name") (ETuple (EVar "params") (EVar "rhs"))) (EFieldAccess (EVar "aliasTableRef") "value")))) (DoExpr (EVar "env"))))
+(DFunDef false "registerData" ((PVar "env") (PCon "DNewtype" PWild (PVar "name") (PVar "params") (PVar "con") (PVar "fty") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))))
 (DFunDef false "registerData" ((PVar "env") PWild) (EVar "env"))
 (DTypeSig false "registerRecordInfoKeyed" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "registerRecordInfoKeyed" ((PVar "key") (PVar "typeName") (PVar "params") (PVar "fields")) (EBlock (DoLet false false (PVar "paramVars") (EApp (EVar "freshVars") (EApp (EVar "listLen") (EVar "params")))) (DoLet false false (PVar "tvs") (EApp (EApp (EVar "zipL") (EVar "params")) (EVar "paramVars"))) (DoLet false false (PVar "result") (EApp (EApp (EVar "applyParams") (EApp (EVar "TCon") (EVar "typeName"))) (EVar "paramVars"))) (DoLet false false (PVar "fieldMonos") (EApp (EApp (EMethodRef "map") (EApp (EVar "recFieldMono") (EVar "tvs"))) (EVar "fields"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "recordsRef")) (EBinOp "::" (ETuple (EVar "key") (EApp (EApp (EApp (EVar "RecordInfo") (EApp (EApp (EMethodRef "map") (EVar "monoTyvarId")) (EVar "paramVars"))) (EVar "result")) (EVar "fieldMonos"))) (EFieldAccess (EVar "recordsRef") "value"))))))

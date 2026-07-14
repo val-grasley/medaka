@@ -98,7 +98,18 @@ else echo "libgc (bdw-gc) not found — skipping (install bdw-gc)"; exit 2; fi
 #     (verified 2026-07-13; the fixture itself is annotated "Gap D2"). This is
 #     a real, narrow compiler gap — not a stale fixture — left for a
 #     dedicated newtype-constructor task; do not resurrect it here.
-SKIP="newtype_ctor_fn"
+# SKIP is EMPTY — every previously-deferred construct now builds.
+#
+# Two independent efforts emptied this list from opposite ends:
+#   * main (T-3) closed four: tuple_neq, json_parse, mod_reverse_string, type_alias
+#   * this branch closed the fifth, newtype_ctor_fn (bug #31) — the "dedicated
+#     newtype-constructor task" main's own comment was waiting for. `newtype` ctors
+#     were unbound at typecheck (registerData dropped DNewtype) AND at eval
+#     (ctorsOfDecl/ctorTypeEntries dropped it too). Both fixed; golden captured.
+#
+# Keep it empty. A construct that stops building should FAIL here, not be re-added to
+# a skip-list — a skip-list cannot notice an accidental fix, so it rots.
+SKIP=""
 
 # ── Fan-out (2026-07-14) ──────────────────────────────────────────────────────
 # 144 × (`medaka build` + clang), and it used to run them ONE AT A TIME: 282s of

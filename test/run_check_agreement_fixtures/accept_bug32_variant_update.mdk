@@ -1,0 +1,21 @@
+-- Bug #32 regression: `EVariantUpdate` (a named-field variant "tagged" update,
+-- `Con { base | f = v }`) had no arm in compiler/eval/eval.mdk's `eval`, so
+-- `run` panicked with "E-PANIC: eval: unsupported node (slice 2)" on this
+-- program while `check` was green and `build` printed the correct value.
+-- A second gap surfaced only once the missing arm was added and wired to the
+-- pre-existing `evalVariantUpdate` helper (already used by the Core-IR
+-- interpreter, core_ir_eval.mdk): that helper only matched a `VCon` base, but
+-- the `run` path's own `ERecordCreate` arm never populates
+-- `ctorFieldOrdersRef` (only the Core-IR lowering/eval drivers do), so a
+-- named-field constructor value under `run` is always a `VRecord`, never a
+-- `VCon` — `evalVariantUpdate` needed a matching `VRecord` arm too.
+data Shape
+  = Circle { radius : Float }
+  | Square { side : Float }
+  deriving (Debug)
+
+grow : Shape -> Shape
+grow s = Circle { s | radius = 99.0 }
+
+main : <IO> Unit
+main = println (debug (grow (Circle { radius = 1.0 })))
