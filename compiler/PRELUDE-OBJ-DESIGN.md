@@ -182,16 +182,95 @@ dispyes155:
   %t156 = call i64 @mdk_impl_Color_eq(i64 %arg1, i64 %arg2)
 ```
 
-The emitter **inlines an exhaustive arg-tag dispatch chain over every impl of the
-interface in the whole program** into the prelude's own bodies (built by
-`detectDispatchGroups` / `gDispStage1Claims`, `llvm_emit.mdk:9290-9298`). The chain has
-**no dict fallback** — the final `dispnext` branches straight to the join block — so it
-is the dispatch mechanism, not a fast path that could simply be dropped.
+The emitter **inlines an exhaustive tag-dispatch chain over every impl of the interface in
+the whole program** into the prelude's own bodies. It is the dispatch mechanism, not a fast
+path that could simply be dropped.
 
-**Therefore the prelude's *code*, not merely its numbering, is a function of the
-program's impl set. One prelude object cannot serve all programs as things stand.**
+> ### ⚠️ CORRECTED 2026-07-14 — this section originally blamed the wrong function, twice
+>
+> 1. **It is NOT `detectDispatchGroups` / `gDispStage1Claims` (`llvm_emit.mdk:9290-9298`).**
+>    That is **TRMC dispatch-graph grouping** — *tail-recursion-modulo-cons*
+>    (`compiler/backend/trmc_analysis.mdk:3`) — and has **nothing to do with impl dispatch.**
+>    The real builder is `emitMethodDispatchChain` → `emitDispatchChain` → `emitDispatchArm`
+>    (`llvm_emit.mdk:4037` / `:4172` / `:4155`), fed by **`implsOf`** (`:956`), the
+>    whole-program impl table.
+> 2. **The chain's terminal is `unreachable`** (`llvm_emit.mdk:4173`), not *"the final
+>    `dispnext` branches straight to the join block"*. The conclusion was right; the evidence
+>    was not.
+>
+> Both errors propagated into a downstream agent prompt before being caught. Recorded rather
+> than silently corrected, because *a wrong root cause launders itself into every artifact
+> that cites it.*
+
+### 🔑 And the root cause is one level DOWN — in the dict REPRESENTATION
+
+The chain is not an *alternative* to dict-passing. **It is HOW you consume this dict.**
+**A Medaka dict carries no code pointers — it is a type TAG:**
+
+```
+llvm_emit.mdk:4421   -- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … ]`
+eval.mdk:114         | VDict String (List (Value e))
+```
+
+Field 0 is `hashName(impl-head-tag)`; fields 1..n are nested witness cells. There is nowhere
+to put a function. So *projecting a method out of a dict* necessarily means **comparing that
+tag against every impl of the method** (`loadTag`, `:4040`; `icmp eq`, `:4159`).
+
+**The route choice (`RDict`) is deliberate and correct. The program-dependence is incidental.**
+
+**And both of our own specs already say this representation is a placeholder:**
+
+- `compiler/STAGE2-DESIGN.md:117` — *"Runtime dict representation (flat `VDict String` tag) …
+  **LLVM wants a real dict struct / vtable pointer**. Routing reused, representation
+  rewritten."* — **It was never rewritten.**
+- `docs/spec/DICT-SEMANTICS.md:128` — *"A flat, impl-key representation is **unsound for the
+  general case** and admissible only as a representation **optimization**."* And `:134` —
+  *"Method values are **closed over their needed evidence** … so projecting `methods.m_i`
+  yields a **directly-applicable**"* function.
+
+**Therefore the prelude's *code*, not merely its numbering, is a function of the program's
+impl set. One prelude object cannot serve all programs as things stand** — but see Option E.
 
 ## 6. The design — and the decision that must be made first
+
+> ## ⭐ OPTION E (added 2026-07-14) — the spec already prescribes it, and it DOMINATES C and D
+>
+> §5 establishes the real root cause: **the dict carries no code pointer.** So fix *that*, and
+> the whole problem evaporates.
+>
+> **Give the LLVM dict cell closure words per interface method** (code_ptr + captured
+> `requires` dicts), and lower `RDict` to **load slot i; call** — i.e. exactly what
+> `DICT-SEMANTICS.md:134` already specifies (*"method values closed over their needed
+> evidence … projecting `methods.m_i` yields a directly-applicable"* function) and what
+> `STAGE2-DESIGN.md:117` already promised (*"LLVM wants a real dict struct / vtable pointer …
+> representation rewritten"*) **and never delivered.**
+>
+> | | |
+> |---|---|
+> | **Prelude bodies** | become **fully program-independent** ⇒ the **whole prelude** ships in `prelude.o`. #118 closes outright. |
+> | **The O(#impls) linear `icmp` scan** | **dies** — replaced by an O(1) indirect call. On a self-compiled compiler full of `deriving (Eq)` types that chain is dozens of arms **and it runs once per element** in container equality. **This may be a perf WIN, not a cost — MEASURE IT.** |
+> | **Blast radius** | **Backend-local.** Dicts are opaque and never observable, so `eval` / `core_ir_eval` / `wasm_emit` keep their `VDict`/i31 tags untouched under the single-evaluator law. |
+> | **Allocation** | **None new.** Most dicts are already const-hoisted to `internal constant` globals (`emitConstDictCell`, `llvm_emit.mdk:4437`), so the closure words are static. |
+>
+> ⚠️ **Must preserve `soleImplDirect` / WS-1b** (`llvm_emit.mdk:4012-4035`): a single-impl method
+> emits a **direct call and never loads the dict**, because an ambiguous return-position
+> superclass constraint can pass a **NULL dict** — and a vtable would deref the same null. It is
+> per-method, so it moves into the new representation cleanly.
+>
+> **Option C (trampoline) is DOMINATED**: it pays an extra call *and keeps the chain*.
+>
+> **Confidence:** high on the mechanism (every line grep-proved); **medium-low on the perf
+> ordering — nothing here is measured.** That measurement is the next step.
+
+> ### ⚠️ AND OPTION D (partition) IS WORTH LESS THAN §6 SAYS. "8 of 349" IS A FLOOR, NOT THE NUMBER.
+>
+> `prelude.o` is built **once for all programs**, so VOLATILE is not "the defines that moved in
+> my one A/B" — it is the **conservative union of every define that contains a dispatch chain**:
+> **all 37 `requires`-bearing impls in `stdlib/core.mdk`** (Eq×7, Ord×7, Debug×8, Display×8,
+> Hashable×7) **plus ~26 `=>`-constrained standalone exports** (`neq`, `elem`, `maximum`, …).
+>
+> **≈60–90 of ~351, not 8.** The win survives (~75–80% still shared) but it is **not**
+> "essentially preserved". **Measure the real VOLATILE set before committing to D.**
 
 Two mechanical prerequisites, then the open choice.
 
@@ -271,8 +350,11 @@ the original reason for prelude DCE no longer applies.
   an implementation must not regress this.
 - A duplicated-arm oddity was noticed while reading the dispatch chain in
   `mdk_impl_List_eq`: **three identical consecutive arms** all testing tag
-  `7571402896630687` and all calling `mdk_impl_Ordering_eq`. Harmless, but it looks like
-  a missed dedup in `detectDispatchGroups` and is worth its own look.
+  `7571402896630687` and all calling `mdk_impl_Ordering_eq`. **Root-caused 2026-07-14 and
+  filed as #126:** `implsOf` (`llvm_emit.mdk:956`) is `filterTagged` with **no dedup**, while
+  its sibling `ifaceTags` (`:4086`) *does* `dedupS`. **Not harmless** — a dict has no code
+  pointer, so a dispatch *is* a linear scan of that list, and it runs **once per element** in
+  container equality. (Not `detectDispatchGroups`, which is TRMC — see §5(e).)
 
 ## 8. Reproducing the measurements
 
