@@ -1612,7 +1612,15 @@ routes land. Detail lives in the owning doc cited. **(D7/D8/foldMap reproduce-ve
   lexical-addressing pass — NO driver runs it (eval.mdk:966-974), so this is dead code; a
   recursive do-let works on native run/build/oracle. Fix only if `annotate` is ever
   reactivated. Owner: [`compiler/TYPECHECK-AUDIT.md`](./compiler/TYPECHECK-AUDIT.md) §D8.
-- **D9 — `@Impl` named-instance-selection hint — ✅ DONE (2026-06-23, `45d52f7`, native).**
+- **D9 — `@Impl` named-instance-selection hint — ⚠️ MOOT. This "✅ DONE" claim is FALSE; the feature
+  is also unreachable.** (Corrected 2026-07-14.) Three artifacts told three different stories, all
+  wrong: this row claims DONE *"added … `currentImplHintRef`"* — that symbol has **zero hits** in
+  `compiler/**/*.mdk`; `docs/design/AT-IMPL-PORT-DESIGN.md` says **"OPEN — genuinely not
+  implemented"**; and the whole feature selects between **named impls**, which are **REMOVED from the
+  language** — `compiler/frontend/parser.mdk:2454` rejects them via `namedImplRemovedMsg`. So there is
+  nothing to finish and nothing to un-finish. **Do not schedule it.** The historical note below is
+  kept only for provenance.
+- *(historical, and not to be trusted)* ~~D9 — ✅ DONE (2026-06-23, `45d52f7`, native).~~
   Was a REAL observable divergence (the audit's "→VUnit" symptom had shifted to native
   `check` rejecting `combine @Additive` as `Unbound variable: @Additive`; oracle returned
   `7`/`12`). Ported to native per [`AT-IMPL-PORT-DESIGN.md`](docs/design/AT-IMPL-PORT-DESIGN.md): the

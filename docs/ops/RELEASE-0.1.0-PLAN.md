@@ -219,10 +219,15 @@ presets (§W2), regression fixtures.
 Already at a defensible bar (corpus ~11.9/14; see `project_error_quality_workstream`).
 **Freeze as "good enough for preview"** — further work is ongoing-not-blocking.
 
-~~One cheap exception worth landing…: the four non-exhaustive-match *warnings* still print with no
-`file:L:C:` prefix in the human CLI text.~~ ✅ **DONE — re-verified on `e34e2b46` (2026-07-14):**
-`wex.mdk:2:9: non-exhaustive clauses of 'f'. Missing case: 'False'; add a 'False' clause, or a '_'
-catch-all clause.` The prefix is there. **W-errors has no remaining exception — it is fully frozen.**
+The exception here is **half closed, and I originally recorded it as fully closed. That was wrong** —
+a lesson worth leaving in place, since it is the exact failure this doc set keeps making: I verified
+*one* warning, found it fixed, and generalized to *all* warnings.
+
+- ✅ The non-exhaustive-**match** warning now carries its location (verified 2026-07-14):
+  `wex.mdk:2:9: non-exhaustive clauses of 'f'. Missing case: 'False'…`
+- ❌ The **guard**-exhaustiveness warning does **not**. It prints `<unknown location>:` in the human
+  text, and in `--json` it **fabricates a `0:0` range** — pointing at line 1 of the file regardless of
+  where the guard is. A confidently wrong location is worse than none. → issue **#99**.
 
 Remaining error-quality work is tracked as issues, not here:
 `gh issue list --label "ws:diagnostics"`.

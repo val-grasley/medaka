@@ -49,7 +49,7 @@ Live design docs: **OPEN** = not started, **PARTIAL** = in progress. Read before
 
 | Doc | What it is | Status |
 |-----|------------|--------|
-| [`AT-IMPL-PORT-DESIGN.md`](design/AT-IMPL-PORT-DESIGN.md) | `@Impl` Named-Instance-Selection Hint — Native Port Design | OPEN |
+| [`AT-IMPL-PORT-DESIGN.md`](design/AT-IMPL-PORT-DESIGN.md) | `@Impl` Named-Instance-Selection Hint — Native Port Design | SUPERSEDED |
 | [`CAPABILITY-EFFECTS.md`](design/CAPABILITY-EFFECTS.md) | Capability-safe effects — Medaka's headline direction | PARTIAL |
 | [`CAPABILITY-PLATFORM.md`](design/CAPABILITY-PLATFORM.md) | The capability platform — runtime/product architecture | OPEN |
 | [`EFFECTS-CONFORMANCE-ROADMAP.md`](design/EFFECTS-CONFORMANCE-ROADMAP.md) | Effect-and-Capability Conformance Roadmap | PARTIAL |
