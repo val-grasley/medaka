@@ -1,8 +1,94 @@
 # Next-orchestrator handoff — Medaka (2026-07-14)
 
-## ⏱️ PERF NIGHT — 2026-07-14. The compiler is now **GC-bound, not algorithm-bound.**
+## ⏱️ PERF SESSION — 2026-07-14. **`medaka build` is 3.1× faster. CI's critical-path gate: 367 s → 107 s.**
 
-**Six PRs merged. The headline: a 4000-arm `match` went from 6.0 s to 0.10 s to typecheck (58×).**
+**Eleven PRs merged.** Two headlines: a 4000-arm `match` went **6.0 s → 0.10 s** to typecheck (**58×**), and
+**80% of a small program's emitted IR turned out to be typeclass dispatch chains** — now outlined and cached.
+
+| PR | Win |
+|---|---|
+| **#117** | `typecheck` union-find **path compression — 58× / 74×**. A FIND with no path compression: one big decl built an N-long `Link` chain every later `normalize` walked. |
+| **#129** | **Dispatch chains OUTLINED — IR −64%, binaries −47%.** 107 dispatch sites shared only **9 distinct chains**; the waste was *duplication across sites*. |
+| **#131** | **`prelude.o` — `medaka build` 2×, engines gate 67 s → 43 s. CLOSES #118.** |
+| **#112** | `resolve`'s O(refs × decls) → OrdMap sets — front end **~2×** |
+| **#123** | `--gc-sections` — binaries **77% smaller** |
+| **#116/#128** | The perf gate can see **TIME**; emitter gensym is **per-define deterministic** |
+
+### 🔑 THE ARC — read this before touching #124/#133, it is the whole map
+The thread started as *"cache the prelude"*. **Four theories died, each to a measurement:**
+1. *"The prelude is re-parsed every compile"* → true, but the front end is only **18%** of a build.
+2. *"So cache the prelude object"* → **BLOCKED**: a program's own `impl` decls **mutated prelude bodies**.
+3. *"So fix the dict representation"* → **the switch IS the dict.** A Medaka dict carries **no code pointers** —
+   it is a type TAG (`emitDictCell`: `[ i64 headTag | i64 req_0 | … ]`). Consuming it *means* an `icmp` scan over
+   every impl. **Both our specs already said this rep was a placeholder** (`STAGE2-DESIGN.md:117`,
+   `DICT-SEMANTICS.md:128`) and it was never rewritten.
+4. *"So give dicts method slots (Option E)"* → **wrong twice.** The culprit was the **INLINING**, not the
+   representation. Outlining fixed it without touching the dict — and Option E would have needed trampolines
+   anyway (`requires` arity varies per impl), converging on the same IR for **~3%**, while an AST change to
+   `Route` would have **escaped the backend blast radius**.
+
+**The blocker was worth more than the cache.** Compound on a `medaka build`: **1.06 s → 0.343 s (3.1×)**.
+
+---
+
+## ⭐ THE LESSON, AND IT COST US A 58× FIX FOR MONTHS
+
+**Our only perf gate graded ALLOCATION. A `List` `contains` allocates NOTHING.** So a pure-scan O(n²) was
+invisible *by construction* — the gate printed `4 ok, 0 regressed` beside a live quadratic.
+
+Worse: **`perf-hunt/SKILL.md` had already NAMED the guilty function** (`rootIdOf`, 28%) — and told every future
+agent to **disregard it**, because *"it allocates nothing, so it was invisible to the gate."* **The gate's
+blindness was treated as evidence the bug did not matter.** `rootIdOf` was #115. Corrected in #122.
+
+> **A hot symbol that allocates nothing is not a false positive. It is the bug class allocation profiling cannot see.**
+
+And #115's ledger row **already said FIXED** — because the *allocation* half had been.
+
+**⇒ New: [`compiler/AGENTS.md`](../compiler/AGENTS.md) — "how not to make the compiler slow."** It exists because
+*the agents who introduce perf bugs are not the ones hunting them.* Read it before editing `compiler/`.
+Deep-dive for hunting: [`workstreams/PERF.md`](workstreams/PERF.md) (the three measurement traps — incl. **the GC
+heap-resize step that fakes a 3.4× quadratic on a CORRECT compiler**; pin `GC_INITIAL_HEAP_SIZE` on every timing run).
+
+---
+
+## 🎯 WHERE THE TIME GOES NOW — two DIFFERENT bottlenecks. Conflating them wastes a session.
+
+**`medaka check` (LSP / edit loop) is GC-BOUND** → **#124**. `libgc` is **62%** of a real check; our code 27%; no
+`mdk_` symbol above 0.8% (a *flat* profile = no algorithmic hot spot left). ⛔ **GC knobs are a MEASURED dead
+end**: `GC_INITIAL_HEAP_SIZE=1G` cuts collections **124 → 5** and buys **1.02×** ⇒ **collection is not the cost,
+ALLOCATION is.** Leads: the system libgc appears to have **no thread-local allocation** (every `GC_malloc` takes a
+lock), then the structural allocation-density wall.
+
+**`medaka build` / CI is CLANG-BOUND** → **#133**. Still ~65% clang after all of the above.
+
+⚠️ **`MEDAKA_CLANG_OPT=-O0` is UNSOUND** — 40% faster, and it **regresses `wasm/clos_reftco_indirect`** (clang's
+tail-call elimination for **indirect** calls only runs at `-O1`+). `-O1` saves 10%. Both dead, both verified.
+
+---
+
+## Also filed / still open
+**#113** — **`make preflight` is BROKEN in a fresh worktree**: it diffs against *local* `main` (ancient), decides
+everything changed, and tries to rebuild the whole tree. **It bit three agents.** Highest-value small fix on the board.
+**#130** (S1) — **`fmt --write` silently DELETES parens**, making code depend on precedence — and the pre-commit hook
+forces it on the compiler's own source, with nothing checking AST-neutrality. Silent sibling of #51.
+**#126** `implsOf` has no dedup (its sibling `ifaceTags` does) · **#111** CI's `medaka-bin` cache can never hit ·
+**#121** `dce.mdk`'s rationale is stale · **#132** relocated-binary diagnostic · **#135** `deriving` layout ·
+**#78 P-2** `check` runs the front end 2–3×.
+**Closed as NOT-A-BUG: #114** — I filed it, then disproved it. `profile_main` is **single-file and prelude-stubbed**;
+it is the **wrong instrument** for `medaka check` (`eval.mdk`: profile_main 0.30 s vs real check 5.13 s).
+
+## Seed: re-mint TESTED and DECLINED (measured, not skipped)
+Cold `make medaka`: **93.3 s (old seed) → 94.7 s (new) — no improvement.** Cold bootstrap is clang-dominated, and
+the old seed already passed C3a + `bootstrap_from_seed` + the fixpoint. **A seed is a starting point, not a golden.**
+
+## Process, learned the hard way
+- **A gate matching `diff_compiler_*` but NO SHARD PATTERN silently never runs.** The merge queue bounced #129 for
+  exactly this. `diff_compiler_ci_shard_coverage.sh` catches it. **Enrol new gates; put them where there is ROOM.**
+- **A merge-queue failure needs its tested SHA checked before you believe it.** The queue raced a push and failed on
+  a bug I had already fixed. `gh run view <id> --json headSha`, then confirm your commit is in that tree.
+- **"Have you seen it fail?" is not ceremony.** A new gate reported **24 real failures as "not run"** (every build
+  failed ⇒ nothing reached the comparison ⇒ a zero-comparison guard fired first ⇒ exit 2 = SKIP). Found **only**
+  because the red run was mandatory.
 
 | PR | Win |
 |---|---|

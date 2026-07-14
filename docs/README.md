@@ -84,6 +84,7 @@ What's in the standard library, what's planned, module-by-module status.
 
 | Doc | What it is | Status |
 |-----|------------|--------|
+| [`AGENTS.md`](../compiler/AGENTS.md) | compiler/AGENTS.md — how not to make the compiler slow | — |
 | [`ARCH-REVIEW.md`](../compiler/ARCH-REVIEW.md) | Medaka Architecture Review | PARTIAL |
 | [`ARGSTAMP-UNIFY-PLAN.md`](../compiler/ARGSTAMP-UNIFY-PLAN.md) | ARGSTAMP-UNIFY-PLAN.md — retire the `emitArgStampPasses` eval-vs-emit dispatch fork | IMPLEMENTED |
 | [`BOOTSTRAP.md`](../compiler/BOOTSTRAP.md) | BOOTSTRAP.md — Native self-compile slices | IMPLEMENTED |
