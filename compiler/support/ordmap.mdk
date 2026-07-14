@@ -5,7 +5,7 @@
 -- The `om*` helpers below are thin String-keyed wrappers kept for the existing
 -- call sites in types/typecheck.mdk, backend/llvm_emit.mdk, and support/util.mdk.
 
-import map.{Map(..), set, get, has, size, delete}
+import map.{Map(..), set, get, has, size, delete, keys}
 
 export type OrdMap a = Map String a
 
@@ -26,6 +26,13 @@ omHasKey k m = has k m
 
 export omDelete : String -> OrdMap a -> OrdMap a
 omDelete k m = delete k m
+
+-- Materialize the key set, sorted ascending. Only for the (rare) sites that
+-- need to iterate a whole OrdMap-backed set rather than test membership
+-- (e.g. an error-path "did you mean" candidate list) — the O(n) cost is fine
+-- there precisely because it is off the hot membership-testing path.
+export omKeys : OrdMap a -> List String
+omKeys m = keys m
 
 -- Build a membership set from a name list.
 export omFromNames : List String -> OrdMap Unit -> OrdMap Unit

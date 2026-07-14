@@ -93,6 +93,7 @@ fieldOwnersOf : List Decl -> List (String, String)
 fieldVerdict : Option Loc -> Env -> String -> String -> List String -> List ResError
 filterContains : List String -> List String -> List String
 filterIfaceMethods : List String -> List (String, List String) -> List (String, List String)
+filterInSet : Map String Unit -> List String -> List String
 filterKeepOpen : List String -> List String -> List String
 filterOutNamesIn : List String -> (ResError -> String) -> List ResError -> List ResError
 findDups : List String -> List String -> List String

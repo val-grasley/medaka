@@ -1,5 +1,5 @@
 # META
-source_lines=41
+source_lines=48
 stages=DESUGAR,MARK
 # SOURCE
 -- `OrdMap a` is a transparent alias for `Map String a` (stdlib/map.mdk).
@@ -9,7 +9,7 @@ stages=DESUGAR,MARK
 -- The `om*` helpers below are thin String-keyed wrappers kept for the existing
 -- call sites in types/typecheck.mdk, backend/llvm_emit.mdk, and support/util.mdk.
 
-import map.{Map(..), set, get, has, size, delete}
+import map.{Map(..), set, get, has, size, delete, keys}
 
 export type OrdMap a = Map String a
 
@@ -31,6 +31,13 @@ omHasKey k m = has k m
 export omDelete : String -> OrdMap a -> OrdMap a
 omDelete k m = delete k m
 
+-- Materialize the key set, sorted ascending. Only for the (rare) sites that
+-- need to iterate a whole OrdMap-backed set rather than test membership
+-- (e.g. an error-path "did you mean" candidate list) — the O(n) cost is fine
+-- there precisely because it is off the hot membership-testing path.
+export omKeys : OrdMap a -> List String
+omKeys m = keys m
+
 -- Build a membership set from a name list.
 export omFromNames : List String -> OrdMap Unit -> OrdMap Unit
 omFromNames [] m = m
@@ -44,7 +51,7 @@ export omFromPairs : List (String, a) -> OrdMap a -> OrdMap a
 omFromPairs [] m = m
 omFromPairs ((k, v)::rest) m = omFromPairs rest (omInsert k v m)
 # DESUGAR
-(DUse false (UseGroup ("map") ((mem "Map" true) (mem "set" false) (mem "get" false) (mem "has" false) (mem "size" false) (mem "delete" false))))
+(DUse false (UseGroup ("map") ((mem "Map" true) (mem "set" false) (mem "get" false) (mem "has" false) (mem "size" false) (mem "delete" false) (mem "keys" false))))
 (DTypeAlias true "OrdMap" ("a") (TyApp (TyApp (TyCon "Map") (TyCon "String")) (TyVar "a")))
 (DTypeSig true "omEmpty" (TyApp (TyCon "OrdMap") (TyVar "a")))
 (DFunDef false "omEmpty" () (EVar "Tip"))
@@ -58,6 +65,8 @@ omFromPairs ((k, v)::rest) m = omFromPairs rest (omInsert k v m)
 (DFunDef false "omHasKey" ((PVar "k") (PVar "m")) (EApp (EApp (EVar "has") (EVar "k")) (EVar "m")))
 (DTypeSig true "omDelete" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyVar "a")) (TyApp (TyCon "OrdMap") (TyVar "a")))))
 (DFunDef false "omDelete" ((PVar "k") (PVar "m")) (EApp (EApp (EVar "delete") (EVar "k")) (EVar "m")))
+(DTypeSig true "omKeys" (TyFun (TyApp (TyCon "OrdMap") (TyVar "a")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "omKeys" ((PVar "m")) (EApp (EVar "keys") (EVar "m")))
 (DTypeSig true "omFromNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))
 (DFunDef false "omFromNames" ((PList) (PVar "m")) (EVar "m"))
 (DFunDef false "omFromNames" ((PCons (PVar "x") (PVar "rest")) (PVar "m")) (EApp (EApp (EVar "omFromNames") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "x")) (ELit LUnit)) (EVar "m"))))
@@ -65,7 +74,7 @@ omFromPairs ((k, v)::rest) m = omFromPairs rest (omInsert k v m)
 (DFunDef false "omFromPairs" ((PList) (PVar "m")) (EVar "m"))
 (DFunDef false "omFromPairs" ((PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest")) (PVar "m")) (EApp (EApp (EVar "omFromPairs") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "k")) (EVar "v")) (EVar "m"))))
 # MARK
-(DUse false (UseGroup ("map") ((mem "Map" true) (mem "set" false) (mem "get" false) (mem "has" false) (mem "size" false) (mem "delete" false))))
+(DUse false (UseGroup ("map") ((mem "Map" true) (mem "set" false) (mem "get" false) (mem "has" false) (mem "size" false) (mem "delete" false) (mem "keys" false))))
 (DTypeAlias true "OrdMap" ("a") (TyApp (TyApp (TyCon "Map") (TyCon "String")) (TyVar "a")))
 (DTypeSig true "omEmpty" (TyApp (TyCon "OrdMap") (TyVar "a")))
 (DFunDef false "omEmpty" () (EVar "Tip"))
@@ -79,6 +88,8 @@ omFromPairs ((k, v)::rest) m = omFromPairs rest (omInsert k v m)
 (DFunDef false "omHasKey" ((PVar "k") (PVar "m")) (EApp (EApp (EVar "has") (EVar "k")) (EVar "m")))
 (DTypeSig true "omDelete" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyVar "a")) (TyApp (TyCon "OrdMap") (TyVar "a")))))
 (DFunDef false "omDelete" ((PVar "k") (PVar "m")) (EApp (EApp (EVar "delete") (EVar "k")) (EVar "m")))
+(DTypeSig true "omKeys" (TyFun (TyApp (TyCon "OrdMap") (TyVar "a")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "omKeys" ((PVar "m")) (EApp (EVar "keys") (EVar "m")))
 (DTypeSig true "omFromNames" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))
 (DFunDef false "omFromNames" ((PList) (PVar "m")) (EVar "m"))
 (DFunDef false "omFromNames" ((PCons (PVar "x") (PVar "rest")) (PVar "m")) (EApp (EApp (EVar "omFromNames") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "x")) (ELit LUnit)) (EVar "m"))))
