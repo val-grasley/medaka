@@ -313,6 +313,20 @@ fi
 WORK="$(mktemp -d)"; RESULTS="$(mktemp -d)"
 trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
+# CI FAST PATH: precompile runtime/medaka_rt.c ONCE for the whole gate run, then
+# point every per-fixture `medaka build` at it via MEDAKA_RT_OBJ. Otherwise each
+# of the ~300 native builds recompiles the byte-identical runtime from scratch
+# (~0.6s of clang each). The COMPILER produces the object (`--emit-rt-obj`) with
+# exactly the flags its own link uses, so it can't drift; the inline-vs-prebuilt
+# binary is proven byte-identical by test/diff_compiler_rt_obj.sh. Best-effort:
+# if the precompile fails we simply don't export it and every build falls back to
+# the (unchanged) inline compile. medaka_rt.c can't change mid-run, so a single
+# object built at startup has no staleness surface.
+RTOBJ="$WORK/medaka_rt.o"
+if MEDAKA_ROOT="$ROOT" "$MEDAKA" build --emit-rt-obj "$RTOBJ" >/dev/null 2>&1 && [ -f "$RTOBJ" ]; then
+  export MEDAKA_RT_OBJ="$RTOBJ"
+fi
+
 # All FOUR emitter corpora — the two untyped (prelude-free) and, since the wasm arm
 # moved onto the shipping CLI, the two TYPED ones as well.  See the header.
 CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
@@ -338,6 +352,7 @@ printf '%s\n' "$CORPUS" \
     STDLIB="$STDLIB" RUNJS="$RUNJS" NODE="$NODE" TIMEOUT="$TIMEOUT" VERBOSE="${VERBOSE:-}" \
     WASM_OK="$WASM_OK" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
     MEDAKA_WASM_EMITTER="${MEDAKA_WASM_EMITTER:-}" \
+    MEDAKA_RT_OBJ="${MEDAKA_RT_OBJ:-}" \
     WORKDIR="$WORK" RESULTDIR="$RESULTS" \
     xargs -P "$JOBS" -n 1 -I{} bash "$0" --one {}
 
