@@ -8,7 +8,13 @@
 #
 # Format:   <key>  <signature>  <category>  <reason>
 #
-#   key        llvm/<name> or wasm/<name>  (corpus + fixture basename)
+#   key        <corpus>/<fixture basename>, over the four emitter corpora:
+#                llvm/   test/llvm_fixtures/        untyped, prelude-free
+#                llvmT/  test/llvm_fixtures_typed/  its typed sibling
+#                wasm/   test/wasm/fixtures/        untyped, prelude-free
+#                wasmT/  test/wasm/fixtures_typed/  its typed sibling
+#              The corpus prefix is load-bearing: 18 basenames exist in more than one
+#              corpus as DIFFERENT files (arr_get, str_lit, fn_gcd, adt_option, …).
 #
 #   signature  <en>:<nw>:<ew>:<eval>:<native>:<wasm>
 #                en / nw / ew  the three PAIRWISE verdicts — eval-vs-native,
@@ -29,71 +35,77 @@
 #   reason     the specific bug, one line.  NEVER leave it as TODO.
 #
 # ⚠️ THE CATEGORY IS A CLAIM. VERIFY IT — a wrong one launders a bug behind a plausible
-# label, and it will be repeated as fact by everyone who reads this file (it was: four
-# `wasm:emitter-gap` rows for the w7_array_* fixtures asserted a wasm ref-mode gap that
-# DID NOT EXIST, and an orchestrator briefed an agent on that wrong story as if it were
-# established. The rows are deleted; see the 2026-07-13 commit).
+# label, and it will be repeated as fact by everyone who reads this file. It HAS been:
+# four `wasm:emitter-gap` rows for the w7_array_* fixtures asserted a wasm ref-mode gap
+# that DID NOT EXIST, and an orchestrator briefed an agent on that wrong story as if it
+# were established (rows deleted 2026-07-13). On 2026-07-14 TWELVE MORE `wasm:emitter-gap`
+# / `wasm:codegen-bug` rows dissolved the same way — char_lit, char_unicode, uni_to_lower,
+# uni_to_upper, num_pi, num_e, num_int_min, num_int_max, abort_exit, abort_exit_nonzero,
+# where_local_rec, where_sibling_ref, arr_set_unit, debug_charlit, debug_strlit,
+# fn_bool_return, fn_float_chain. NONE of them were wasm bugs. They were artifacts of the
+# gate's own wasm arm, and they sat here for weeks wearing a backend's name.
 #
-# For `wasm:emitter-gap` specifically, there is a ONE-LINE discriminating test. Run the
-# fixture through BOTH prelude-free probe entries:
+# ── THE DISCRIMINATING TEST (rewritten 2026-07-14) ────────────────────────────────────
+# It used to say: run the fixture through the two prelude-free probe entries
+# (test/bin/{llvm,wasm}_emit_main) and see whether ONLY wasm fails. THAT ADVICE IS NOW
+# OBSOLETE, AND IT IS WHAT PRODUCED THE 12 BAD ROWS ABOVE. Both probes run a compiler
+# NOBODY SHIPS: parse → desugar → annotate → lower → emit, with NO TYPECHECK and NO
+# PRELUDE. On that path `println` is unbound, `pi` is unbound, and `.[i]` (the `Index`
+# interface method) cannot resolve — so the probe rejects correct programs, and it says so
+# in words that read like a backend defect:
 #
-#     ./test/bin/llvm_emit_main <fixture>      # does the OTHER backend manage it?
-#     ./test/bin/wasm_emit_main <fixture>
+#     "wasm_emit gap — ref-mode: unbound variable 'index'"
 #
-#   * BOTH fail the same way  -> it is NOT a backend gap. It is a front-end/prelude fact
-#     about the prelude-free corpus (e.g. `.[i]` desugars to the Index INTERFACE METHOD,
-#     which has no binding in a prelude-free entry — both backends are CORRECT to reject
-#     it). Do not write `wasm:emitter-gap`. Move the fixture to the real-prelude corpus.
-#   * ONLY wasm fails -> a genuine wasm gap. (Audited 2026-07-13: all 44 remaining rows
-#     pass this test. `writeFile`/`statFile`/`listDir` are externs LLVM binds and wasm's
-#     ref-mode does not; `CRecord`/`CLetGroup` are Core IR nodes wasm cannot lower.)
+# There is no gap in that sentence. There is a missing prelude. Do not take the emitter's
+# own wording as the category.
 #
-# Note wasm_emit's own message is what created the confusion: it labels a GENERIC unbound
-# name as "wasm_emit gap — ref-mode: unbound variable 'x'", which reads as a backend
-# defect even when the name is simply not in scope. Do not take that wording as the
-# category.
+# Since 2026-07-14 all three arms of the gate ARE the shipping CLI, so the discriminating
+# test is simply to run the two shipping backends and compare:
+#
+#     ./medaka build              --allow-internal <fixture> -o /tmp/n && /tmp/n
+#     ./medaka build --target wasm --allow-internal <fixture> -o /tmp/w.wasm \
+#         && node test/wasm/run.js /tmp/w.wasm
+#
+#   * BOTH fail the same way  -> NOT a backend gap. It is a front-end fact about the
+#     fixture (e.g. it redefines a prelude interface, so the real prelude collides with
+#     it). Use `native:prelude-collision`, not `wasm:*`.
+#   * ONLY wasm fails         -> a genuine wasm gap, on the path users actually run.
+#     (Audited 2026-07-14: every remaining `wasm:*` row passes this test.)
 #
 # A fixture ABSENT from this file is expected to be CLEAN: eq:eq:eq:ran:ran:ran.
-# Regenerate with CAPTURE=1 (then review the diff and write the reasons).
+# Regenerate with CAPTURE=1 — but CAPTURE COPIES THE OLD REASON TEXT FORWARD whenever the
+# key survives, even if the SIGNATURE changed underneath it. So a captured row can carry a
+# reason that is no longer true. Read the diff line by line; do not trust the carried text.
 
 llvm/abort_exit_after_output       na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
-llvm/abort_exit                    na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: wasm-tools parse rejected the WAT: error: unknown type: failed to find name `$str`
-llvm/abort_exit_nonzero            na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: wasm-tools parse rejected the WAT: error: unknown type: failed to find name `$str`
-llvm/abort_panic                   na:na:na:na:na:ran         eval:intended-abort native:autoprint-ambiguous the program's OWN intended panic; the na classifier is conservative (any interpreter E-* counts as na) | native: main = panic .. is polymorphic, so the auto-print wrap cannot resolve Display
-llvm/adt_list_fold                 na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
-llvm/adt_option                    na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build ('orElse' expects a container (like List or Array) here, but got Maybe. Pass a List or Array, or convert the Maybe to one first.)
-llvm/arr_set_unit                  eq:ne:ne:ran:ran:ran       wasm:codegen-bug the wasm scalar auto-print renders a Unit main as 0; eval+native correctly print nothing
+llvm/abort_exit                    na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter. (2026-07-14: the `wasm:emitter-gap` half of this row is GONE — under `medaka build --target wasm` the module assembles and native==wasm. The old `unknown type: failed to find name $str` was the prelude-free probe, not the backend.)
+llvm/abort_exit_nonzero            na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no exit — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter. (2026-07-14: the `wasm:emitter-gap` half is GONE — see llvm/abort_exit.)
+llvm/abort_panic                   na:na:na:na:na:na          eval:intended-abort native:autoprint-ambiguous the program's OWN intended panic; the na classifier is conservative (any interpreter E-* counts as na) | native AND wasm: `main = panic ..` is polymorphic, so the auto-print wrap cannot resolve Display — BOTH shipping backends reject it identically, which is the correct and consistent answer
+llvm/adt_list_fold                 na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` (Type mismatch: IntList vs a b). Both shipping backends reject it identically. (The old `ew=eq` was an artifact: eval was being compared against a prelude-free PROBE, not the shipping wasm compiler.)
+llvm/adt_option                    na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` ('orElse' expects a container (like List or Array) here, but got Maybe). Both shipping backends reject it identically.
 llvm/bitwise_ops                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'bitOr' [in showI]
-llvm/char_lit                      eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
 llvm/char_max                      eq:ne:ne:ran:ran:ran       wasm:codegen-bug charCode leaks the i31 tag: wasm prints 2n+1 (2228223 for 1114111); eval+native agree
 llvm/char_min                      eq:ne:ne:ran:ran:ran       wasm:codegen-bug charCode leaks the i31 tag: wasm prints 2n+1 (1 for 0); eval+native agree
-llvm/char_unicode                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
-llvm/clo_adt                       na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/clo_adt                       na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` (Type mismatch: IntList vs a b). Both shipping backends reject it identically.
 llvm/clock_monotonic_sleep         eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'monotonicSec' [in ?]
-llvm/debug_charlit                 eq:ne:ne:ran:ran:ran       wasm:codegen-bug debugCharLit traps at run with 'illegal cast'; eval+native print '\n'
-llvm/debug_strlit                  eq:ne:ne:ran:ran:ran       wasm:codegen-bug debugStringLit traps at run with 'illegal cast'; eval+native print the escaped string
 llvm/env_args_empty                na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no args — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 llvm/env_getenv_none               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 llvm/env_getenv_some               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
-llvm/fn_bool_return                eq:ne:ne:ran:ran:ran       wasm:codegen-bug the wasm scalar auto-print renders a Bool main as 1, not True (formatting, not a value bug)
-llvm/fn_float_chain                eq:ne:ne:ran:ran:ran       wasm:codegen-bug wasm float detection is signature-driven (declSigTypeNames); an UNSIGNATURED float fn traps with 'illegal cast' — adding f : Float -> Float fixes it
 llvm/guard_refut_ctor              eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: refutable pattern guard (`p <- e`) in a tail match arm — not yet lowered
 llvm/hash_int                      ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
 llvm/hash_string                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
 llvm/lam_rec_tuple                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
 llvm/let_local_fn                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
 llvm/let_local_rec                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
-llvm/list_filter                   na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
-llvm/list_sum                      na:na:eq:ran:na:ran        native:prelude-collision native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Type mismatch: IntList vs a b)
+llvm/list_filter                   na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` (Type mismatch: IntList vs a b). Both shipping backends reject it identically.
+llvm/list_sum                      na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` (Type mismatch: IntList vs a b). Both shipping backends reject it identically.
 llvm/lit_int_large_tag             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'intBitsToFloat' [in ?]
-llvm/match_char_lit                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 9 failed to validate
-llvm/match_str_default             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 22 failed to validate
-llvm/match_str_lit                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools validate rejected: error: func 22 failed to validate
+llvm/match_char_lit                eq:na:na:ran:ran:na        wasm:emitter-gap wasm: the module fails GC validation — `func 324 failed to validate`. Confirmed 2026-07-14 on the SHIPPING `medaka build --target wasm` (not just the probe); native runs fine, so this is a genuine wasm gap.
+llvm/match_str_default             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: the module fails GC validation — `func 324 failed to validate`. Confirmed 2026-07-14 on the SHIPPING CLI; native runs fine.
+llvm/match_str_lit                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: the module fails GC validation — `func 324 failed to validate`. Confirmed 2026-07-14 on the SHIPPING CLI; native runs fine.
 llvm/math_externs                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'sqrt' [in ?]
-llvm/num_e                         eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'e'
-llvm/num_int_max                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'intMaxBound'
-llvm/num_int_min                   eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'intMinBound'
-llvm/num_pi                        eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unbound variable 'pi'
+llvm/num_int_max                   eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (the old row claimed `scalar-mode: unbound variable 'intMaxBound'` — that was the prelude-free probe). Under `medaka build --target wasm` the module ASSEMBLES AND VALIDATES, then TRAPS at instantiate with `unreachable`. native prints 4611686018427387903. A real bug on the wasm path users run.
+llvm/num_int_min                   eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (see llvm/num_int_max — same trap). wasm traps at instantiate with `unreachable`; native prints -4611686018427387904.
 llvm/rec_build                     na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
 llvm/rec_local                     eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
 llvm/rec_update                    na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
@@ -120,12 +132,33 @@ llvm/s13_run_command               na:na:na:na:ran:na         eval:extern-not-im
 llvm/s13_stat_err                  na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no statFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'statFile' [in ?]
 llvm/s13_stat_file                 na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFileBytes — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'statFile' [in ?]
 llvm/s13_write_read                na:na:na:na:ran:na         eval:extern-not-implemented wasm:emitter-gap eval.mdk's primitive table has no writeFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: unbound variable 'writeFile' [in ?]
-llvm/uni_to_lower                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
-llvm/uni_to_upper                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: wasm-tools parse rejected the WAT: error: unknown func: failed to find name `$mdk_char_to_str`
-llvm/where_local_rec               eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CLetGroup (where/let-group — W4)
-llvm/where_sibling_ref             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CLetGroup (where/let-group — W4)
+llvmT/dict_clamp                   na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/dict_debug_list              na:na:na:na:na:na          native:prelude-collision native+wasm: the fixture declares its OWN `interface Debug`, which COLLIDES with the real prelude's (Debug) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing. | eval: also E-PANIC unknown op '+' (the interpreter's own gap on this fixture).
+llvmT/dict_hash_list               na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Hashable`, which COLLIDES with the real prelude's (Hashable) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/dict_when                    na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `Option` type, which COLLIDES with the real prelude's (Duplicate type: Option). Both shipping backends reject it identically. Written for the prelude-free typed PROBE.
+llvmT/disp_arg_clauses             na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Eq`, which COLLIDES with the real prelude's (Eq) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_arg_prim_compare        na:na:na:na:na:na          native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing. | eval: also E-NONEXHAUSTIVE-MATCH.
+llvmT/disp_arg_prim_display        na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Display`, which COLLIDES with the real prelude's (Display) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_constr_elem_int         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Eq`, which COLLIDES with the real prelude's (Eq) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_constr_fold_int         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Foldable`, which COLLIDES with the real prelude's (Foldable) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_constr_forward_int      na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Eq`, which COLLIDES with the real prelude's (Eq) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_constr_pick_int         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_ord_default_gte         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_ord_default_gt          na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_ord_default_lte         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_ord_default_lt          na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/disp_req_compare_list_int    na:na:na:na:na:na          native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing. | eval: also E-NONEXHAUSTIVE-MATCH.
+llvmT/disp_req_eq_list_int         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Eq`, which COLLIDES with the real prelude's (Eq) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/float_typelost_tuple         eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEW 2026-07-14 (this fixture could not be in the corpus before — it needs the prelude). The module validates, then TRAPS at instantiate with `illegal cast`; native prints 4.0. Same family as wasm/polynum_sq_sig_float: wasm's Float typing is signature-driven and loses the type here.
+llvmT/impl_andthen_list            na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture redefines `flatMap` point-free against its own interface; against the REAL prelude the shipping compiler cannot deduce the constraint (Could not deduce 'Bind m' from the signature of 'flatMap'). Both backends reject it identically. Written for the prelude-free typed PROBE.
+llvmT/impl_ap_list                 na:na:na:ran:na:na         native:prelude-collision native+wasm: as llvmT/impl_andthen_list, for `map2` (Could not deduce 'Mapp f' from the signature of 'map2'). Both shipping backends reject it identically.
+llvmT/impl_append_list             na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Semigroup`, which COLLIDES with the real prelude's (Semigroup) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvmT/impl_append_str              na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Semigroup`, which COLLIDES with the real prelude's (Semigroup) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
+llvm/where_sibling_ref             eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (the old row claimed `unsupported Core IR node CLetGroup` — that was the prelude-free probe; the shipping path lowers CLetGroup fine). The module now validates, then TRAPS at instantiate with `illegal cast`. native prints 35.
 wasm/clos_deep_tco                 na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/clos_partial_app              eq:na:na:ran:ran:na        wasm:emitter-gap ⭐NEWLY EXPOSED 2026-07-14. Was CLEAN under the prelude-free probe; under `medaka build --target wasm` the emitted module FAILS GC VALIDATION — `func 325 failed to validate: type mismatch: expected (ref eq) but nothing on stack`. A PAP (`inc = add 1`, saturated later) is mis-emitted on the real-prelude path. native prints 22.
 wasm/clos_reftco_indirect          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/polynum_sq_sig_float          eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14. This fixture was CLEAN under the prelude-free probe and TRAPS under the shipping CLI (`illegal cast` at instantiate); native prints 6.25. An explicit `Num a =>` signature at Float does NOT rescue the shipping wasm path. Note both entries install the same float hooks (installDeclRetTypes / installCtorFloatFields), so this is NOT a missing install — it is deeper in wasm_emit.
 wasm/w7_variant_update             na:eq:na:na:ran:ran        eval:unsupported-node eval: unsupported node (slice 2) — an AST node the interpreter never learned to evaluate
 wasm/w8b_hash_float                ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
 wasm/w8b_rng_float_determinism     ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; the seeded-determinism contract is violated under run
@@ -135,11 +168,11 @@ wasm/w8_hash_string                ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg 
 wasm/w8_rng_bool                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
 wasm/w8_rng_char                   ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; native+wasm agree on the spec value
 wasm/w8_rng_int_determinism        ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; the seeded-determinism contract is violated under run
-wasm/w_deep_append                 na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_deep_append                 na:ne:na:na:ran:ran        eval:no-tco wasm:codegen-bug eval: the tree-walking interpreter has no TCO (depth > 25000); it says so cleanly | wasm ⭐NEWLY EXPOSED 2026-07-14: on the SHIPPING wasm path the iterative destination-passing `$mdk_append` does NOT take effect — the module overflows the JS stack at instantiate (`Maximum call stack size exceeded`) where native prints 100000. The prelude-free probe got this RIGHT, so the shipping modules path is losing the rewrite this very fixture exists to assert.
 wasm/w_file_exists_false           na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no fileExists — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 wasm/w_file_exists_true            na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no fileExists — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 wasm/w_readfile_ok                 na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no readFile — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
-wasm/w_trmc_deep_cons              na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
+wasm/w_trmc_deep_cons              na:ne:na:na:ran:ran        eval:no-tco wasm:codegen-bug eval: the tree-walking interpreter has no TCO (depth > 25000); it says so cleanly | wasm ⭐NEWLY EXPOSED 2026-07-14: TRMC does not take effect on the SHIPPING wasm path — instantiate overflows the JS stack where native prints 2000000. Same shape as wasm/w_deep_append; the probe path got it right.
 wasm/w_trmc_dispatch               na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
 wasm/w_trmc_mixed_ctor             na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
 wasm/w_trmc_strip_clauses          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly

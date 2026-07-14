@@ -1,0 +1,15 @@
+-- Bug #40, THE OTHER DIRECTION — the regression that actually matters.
+-- Tightening the multi-module run/build gate to check-strength must NOT
+-- over-reject: a VALID multi-module program has to keep running (and building,
+-- and producing the same value).  Rejecting a valid program is worse than the
+-- bug.  Same import graph as the two REJECT fixtures, but the Display impl the
+-- REJECT fixture is missing is supplied here — so the ONLY difference between
+-- accept and reject is the very obligation the old gate could not see.
+import lib.p0_40_t.{Foo, bump}
+
+impl Display Foo where
+  display f = match f
+    Foo n => "Foo(\{n})"
+
+main : <IO> Unit
+main = println "\{Foo (bump 41)}"

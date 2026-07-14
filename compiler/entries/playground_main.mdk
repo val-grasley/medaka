@@ -394,7 +394,7 @@ queryResult isHover rsrc csrc tsrc line col = match parseResult tsrc
   Ok userRaw =>
     let runtimeDecls = desugar (unwrapDecls (parseResult rsrc))
     let coreDecls = desugar (unwrapDecls (parseResult csrc))
-    let env = checkProgramSchemesWithRuntime runtimeDecls (coreDecls ++ desugar userRaw)
+    let env = checkProgramSchemesWithRuntime runtimeDecls coreDecls (desugar userRaw)
     if isHover then
       hoverResult tsrc line col env
     else

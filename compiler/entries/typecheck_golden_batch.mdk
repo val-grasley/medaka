@@ -12,4 +12,4 @@ main = driveRuntimeBatch "===SELFHOST-FIX=== " render
 
 render : List Decl -> List Decl -> List Decl -> <Mut> String
 render runtimeDecls coreDecls targetDecls =
-  checkToLinesWithRuntime runtimeDecls (coreDecls ++ targetDecls)
+  checkToLinesWithRuntime runtimeDecls coreDecls targetDecls

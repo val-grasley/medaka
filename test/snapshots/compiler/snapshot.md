@@ -463,7 +463,7 @@ typesOf : List Decl -> List Decl -> <Mut> (String, Bool)
 typesOf runtimeDecls d =
   let _ = setCoherenceUserDecls d
   let _ = resetTypeErrorsSticky ()
-  let text = checkToLinesWithRuntime runtimeDecls d
+  let text = checkToLinesWithRuntime runtimeDecls [] d
   (text, hadTypeErrors () || hadMatchWarnings ())
 
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing
@@ -1246,7 +1246,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "markOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String"))))
 (DFunDef false "markOf" ((PVar "coreDecls") (PVar "d")) (EApp (EVar "programToSexp") (EApp (EApp (EVar "markWithPrelude") (EVar "coreDecls")) (EVar "d"))))
 (DTypeSig false "typesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "Bool"))))))
-(DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
+(DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EListLit)) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
 (DTypeSig false "coreIrOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "String"))))
 (DFunDef false "coreIrOf" ((PVar "d")) (EApp (EVar "cprogramToSexp") (EApp (EVar "lowerProgram") (EApp (EVar "annotateProgram") (EVar "d")))))
 (DTypeSig false "evalOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "String"))))))
@@ -1528,7 +1528,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "markOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String"))))
 (DFunDef false "markOf" ((PVar "coreDecls") (PVar "d")) (EApp (EVar "programToSexp") (EApp (EApp (EVar "markWithPrelude") (EVar "coreDecls")) (EVar "d"))))
 (DTypeSig false "typesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "Bool"))))))
-(DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
+(DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EListLit)) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
 (DTypeSig false "coreIrOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "String"))))
 (DFunDef false "coreIrOf" ((PVar "d")) (EApp (EVar "cprogramToSexp") (EApp (EVar "lowerProgram") (EApp (EVar "annotateProgram") (EVar "d")))))
 (DTypeSig false "evalOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "String"))))))

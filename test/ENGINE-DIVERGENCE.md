@@ -18,7 +18,7 @@ Medaka has **three independent implementations of its own semantics**:
 |---|---|---|
 | **eval** | `compiler/eval/eval.mdk` (tree-walking interpreter) | `medaka run` |
 | **native** | `compiler/backend/llvm_emit.mdk` → clang | `medaka build` |
-| **wasm** | `compiler/backend/wasm_emit.mdk` → WasmGC | `test/bin/wasm_emit_main` |
+| **wasm** | `compiler/backend/wasm_emit.mdk` → WasmGC | `medaka build --target wasm` |
 
 Before this gate, **no program in the tree was ever compared across all three**, and
 the two backends were validated on essentially disjoint corpora:
@@ -49,18 +49,36 @@ a codegen bug now has to corrupt all three engines *identically* to hide.
 
 ## 2. The census
 
-346 fixtures = `test/llvm_fixtures/` (195) ∪ `test/wasm/fixtures/` (151).
+**404 fixtures** = the union of ALL FOUR emitter corpora:
+
+| corpus | n | |
+|---|---|---|
+| `test/llvm_fixtures/` | 201 | untyped, prelude-free |
+| `test/llvm_fixtures_typed/` | 45 | its typed sibling |
+| `test/wasm/fixtures/` | 149 | untyped, prelude-free |
+| `test/wasm/fixtures_typed/` | 9 | its typed sibling |
+
 Deterministic across repeated runs.
 
+> **The two TYPED corpora joined on 2026-07-14, and could not have before.** This gate is
+> a THREE-WAY differential, so a fixture must run on all three arms to be in the corpus at
+> all — **the corpus is capped by the weakest arm.** Until then the wasm arm was the
+> prelude-free probe `test/bin/wasm_emit_main` (no typecheck, no prelude), so no fixture
+> that needed the prelude could join, and **the gate structurally could not express a
+> type-directed bug** — it could not have caught the record-update miscompile (#38).
+> Moving the wasm arm onto `medaka build --target wasm` raised the ceiling and the typed
+> corpora walked in. T3 (all three agree) went 263 → 305.
+
 ```
- T1  eval   == native    290 agree   15 differ   41 n/a
- T2  native == wasm      286 agree    7 differ   53 n/a
- T3  all three agree     254 agree   22 differ   70 n/a
+ T1  eval   == native    329 agree   15 differ   60 n/a
+ T2  native == wasm      336 agree    9 differ   59 n/a
+ T3  all three agree     305 agree   22 differ   77 n/a
 ```
 
-The tiers separate the two bug classes cleanly: **T1's 15 are all one interpreter
-bug** (§3.1); **T2's 7 are all wasm codegen bugs** (§3.2), every one of them on a
-fixture from the *LLVM* corpus that the wasm backend had never been run on.
+The tiers separate the bug classes cleanly: **T1's 15 are all one interpreter bug**
+(§3.1); **T2's 9 are all wasm codegen bugs** (§3.2) — 7 of them on fixtures from the
+*LLVM* corpus that the wasm backend had never been run on, plus 2 more that only became
+visible once the wasm arm became the shipping compiler.
 
 ---
 
@@ -257,9 +275,19 @@ its own gaps, which is to its credit. Distinct causes, by frequency:
 | 2 | `scalar-mode: unsupported Core IR node CLetGroup` |
 | … | (see `test/engine_divergence.txt` for the per-fixture reason) |
 
-The real-prelude wasm path (`wasm_emit_modules_main`) has a further known gap —
-point-free-impl eta-expansion — documented in `test/wasm/diff_wasm_modules.sh`, which
-is why this gate drives the prelude-free `wasm_emit_main` entry.
+> ⚠️ **The paragraph that used to sit here was stale, and it was load-bearing.** It said
+> the real-prelude wasm path had a point-free-impl eta-expansion gap "which is why this
+> gate drives the prelude-free `wasm_emit_main` entry". That gap is closed
+> (`installMethodIface`, W9b), and driving the probe was costing far more than it saved:
+> **17 ledger rows blamed on the wasm backend were artifacts of the probe**, and they
+> dissolved the moment the arm moved to the shipping CLI (2026-07-14). See
+> `test/engine_divergence.txt`'s header for the list and the discriminating test.
+>
+> The flip also **newly exposed 8 real wasm bugs on the path users actually run** — six
+> modules that validate and then trap at instantiate (`unreachable` / `illegal cast` /
+> JS-stack overflow), and one (`clos_partial_app`) that fails GC validation outright.
+> Several of these were *clean under the probe*: the shipping wasm path is genuinely
+> worse than the spike path, and nothing was measuring it.
 
 ---
 

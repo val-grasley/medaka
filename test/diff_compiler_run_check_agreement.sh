@@ -43,6 +43,13 @@
 # blindly capture whatever the binary currently prints as truth — read the
 # fixture source and confirm the value is actually correct before pinning it.
 #
+# BUG #40: REJECT fixtures are NOT exempt from a value-style assertion either.
+# They get their own: a rejected program must be rejected by a DIAGNOSTIC, never
+# by a runtime panic (value column RANPANIC / EMITPANIC). Exit codes alone cannot
+# tell those apart — both are 1 — which is precisely how multi-module `run` shipped
+# EXECUTING ill-typed programs while this gate stayed green. See the comment at the
+# check itself.
+#
 # Usage:  sh test/diff_compiler_run_check_agreement.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -72,9 +79,9 @@ for f in "$FIXDIR"/*.mdk; do
 
   bound "$MEDAKA" check "$f" >/dev/null 2>&1
   check_code=$?
-  bound "$MEDAKA" run "$f" >"$TMP/run_$base.out" 2>/dev/null
+  bound "$MEDAKA" run "$f" >"$TMP/run_$base.out" 2>"$TMP/run_$base.err"
   run_code=$?
-  bound "$MEDAKA" build "$f" -o "$TMP/out_$base" >/dev/null 2>&1
+  bound "$MEDAKA" build "$f" -o "$TMP/out_$base" >"$TMP/build_$base.log" 2>&1
   build_code=$?
 
   if [ "$check_code" -ne 0 ]; then check_v='REJECT'; else check_v='ACCEPT'; fi
@@ -89,6 +96,32 @@ for f in "$FIXDIR"/*.mdk; do
   # present and correct — a missing `.out` is its own FAIL category (NOPIN), not a skip,
   # because two engines agreeing with each other proves nothing if they agree on garbage.
   value_v='-'
+  # Bug #40: for a REJECT fixture, the EXIT CODE IS 1 EITHER WAY — so an
+  # accept-vs-reject gate is BLIND to the difference between "rejected by a
+  # diagnostic" and "EXECUTED the ill-typed program and died on a runtime panic".
+  # That is exactly how multi-module `run` shipped executing ill-typed programs:
+  # `check` printed `No impl of Display for Foo`, `run` printed
+  # `E-PANIC: intToString: not an Int` (having already evaluated main), `build`
+  # printed a THIRD message (`E-PANIC: no impl of method 'display' … (slice 6)`),
+  # and all three exited 1, so this gate graded them PASS.
+  #
+  # A stdout-based "did it execute?" probe cannot see it either: `medaka run`
+  # DISCARDS buffered stdout when the program panics (a separate, still-open bug),
+  # so even a `println` placed before the ill-typed expression vanishes.
+  #
+  # The only observable that actually differs is the DIAGNOSTIC. So assert the
+  # invariant directly: a program the compiler rejects must be rejected by a
+  # DIAGNOSTIC, never by a runtime panic. `E-PANIC` on run's stderr means eval
+  # ran the program; `E-PANIC` in build's output means the emitter was handed a
+  # program the front end should have refused. Verified corpus-wide: every REJECT
+  # fixture rejects cleanly via a diagnostic, so this needs no exception list.
+  if [ "$expected" = 'REJECT' ]; then
+    if grep -q 'E-PANIC' "$TMP/run_$base.err" 2>/dev/null; then
+      value_v='RANPANIC'
+    elif grep -q 'E-PANIC' "$TMP/build_$base.log" 2>/dev/null; then
+      value_v='EMITPANIC'
+    fi
+  fi
   if [ "$expected" = 'ACCEPT' ]; then
     if [ ! -f "$FIXDIR/$base.out" ]; then
       value_v='NOPIN'
@@ -105,7 +138,8 @@ for f in "$FIXDIR"/*.mdk; do
   fi
 
   if [ "$check_v" = "$expected" ] && [ "$run_v" = "$expected" ] && [ "$build_v" = "$expected" ] \
-     && [ "$value_v" != 'DIFF' ] && [ "$value_v" != 'WRONG' ] && [ "$value_v" != 'NOPIN' ]; then
+     && [ "$value_v" != 'DIFF' ] && [ "$value_v" != 'WRONG' ] && [ "$value_v" != 'NOPIN' ] \
+     && [ "$value_v" != 'RANPANIC' ] && [ "$value_v" != 'EMITPANIC' ]; then
     pass=$((pass+1))
     result='PASS'
   else

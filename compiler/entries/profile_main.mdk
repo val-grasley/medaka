@@ -104,7 +104,7 @@ runStaged on rsrc csrc tsrc =
   let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
   let tT0 = now ()
   let aT0 = allocSnap ()
-  let _ = checkToLinesWithRuntime rDecls (cDecls ++ desugared)
+  let _ = checkToLinesWithRuntime rDecls cDecls desugared
   let tT1 = now ()
   let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
   emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)

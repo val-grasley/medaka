@@ -111,3 +111,16 @@ SYM	singleTyparamIfaceMethod	COMPILER-SOUNDNESS.md workstream: "**Rename it `sin
 
 # ── FILE: backlog doc whose STATED PURPOSE is to name missing functions ────
 FILE	.claude/workstreams/STDLIB.md	header states "Owns: missing stdlib/support functions" — the file's L-1..L-5 items propose functions that do not exist yet by design (currently dead: foldlMut, zipWithMut, boolToString, strLen, dropSuffix); that is the doc's entire point, not fabrication. (Siblings it mentions in passing — mapMut, dropPrefix, stripPrefix, startsWith, endsWith — already exist and resolve fine on their own, no exception needed for those.)
+
+# ── Names QUOTED AS KNOWN FABRICATIONS (2026-07-14) ──────────────────────────────
+# ORCHESTRATING.md's "an AUDIT is not evidence" lesson names the exact symbols an Opus
+# auditor INVENTED and swore existed, and the exact fabrication a skill taught. They MUST
+# NOT resolve — that is the entire point of the anecdote. The gate flagged them, correctly:
+# it cannot tell "grep for this" from "this was fiction". Excused, not un-backticked, so the
+# ratchet stays useful: if any of these ever becomes a REAL symbol, the STALE check fires and
+# tells us the anecdote has gone wrong. That is the ledger earning its keep.
+SYM	checkGuardExhaust	quoted as a KNOWN FABRICATION (real: checkGuardExhaustiveness) in ORCHESTRATING.md's "the gap docs lie" lesson — must NOT resolve
+SYM	registerImpl	quoted as a symbol the Opus auditor INVENTED (0 hits) in ORCHESTRATING.md's "an audit is not evidence" lesson — must NOT resolve
+SYM	ppMonos	quoted as a symbol the Opus auditor INVENTED (0 hits; real: ppMonosShared) — must NOT resolve
+SYM	implEntry	quoted as a symbol the Opus auditor INVENTED (0 hits; real: the ImplEntry type / findImplEntry) — must NOT resolve
+SYM	registerRecord	quoted as a symbol the Opus auditor INVENTED (0 hits; real: registerRecordInfoKeyed) — must NOT resolve
