@@ -193,6 +193,34 @@ detectGCBare cc tmpDir =
     Ok (0, _, _) => Some ([], ["-lgc"])
     _ => None
 
+-- ---- section-level dead-code-elim flags (issue #120) ----
+-- -ffunction-sections/-fdata-sections put each fn/global in its own section so
+-- the LINKER's real relocation graph (not source-level analysis) decides what
+-- survives: source DCE (compiler/ir/dce.mdk) cannot prune an impl — dict-
+-- passing means pruning one could be a silent miscompile, so it keeps every
+-- DImpl/DInterface WHOLE — but the linker sees the actual call/dict
+-- relocations and recovers exactly what source DCE is obliged to leave
+-- behind (measured 77% smaller on a sample fixture: 192,336 -> 44,088 bytes,
+-- byte-identical program output). Compile flags are identical on both
+-- toolchains (GNU as and Apple clang both accept them).
+gcSectionsCflags : List String
+gcSectionsCflags = ["-ffunction-sections", "-fdata-sections"]
+
+-- The matching LINKER flag differs by platform: GNU ld/gold/lld (Linux) take
+-- `--gc-sections`; macOS's ld64 has no such flag and uses `-dead_strip`
+-- instead. Detected via `uname -s` (rather than hardcoded) so this stays
+-- correct on the Mac smoke-test machine — the AGENTS.md dual-platform
+-- invariant. Falls back to the GNU flag if `uname` itself is unavailable
+-- (matches every other best-effort probe in this file).
+gcSectionsLinkFlag : Unit -> <IO> String
+gcSectionsLinkFlag _ = match runCommand "uname" ["-s"]
+  Ok (0, out, _) =>
+    if stringTrim out == "Darwin" then
+      "-Wl,-dead_strip"
+    else
+      "-Wl,--gc-sections"
+  _ => "-Wl,--gc-sections"
+
 -- ---- keep-IR (--keep-ir / MEDAKA_KEEP_IR) ----
 -- Normally the emitted IR lives ONLY inside the per-process scratch dir
 -- (makeTempDir) and is gone the instant the build returns — which is exactly
@@ -465,7 +493,8 @@ clangLink cc rtC llPath outPath inputAbs tmpDir = match detectGC cc tmpDir
     -- worker thread via GC_pthread_create, so it self-provisions its stack: no
     -- Mach-O-only `-Wl,-stack_size` link flag is needed on either platform.
     -- `-pthread` (thread runtime) and `-lm` (math externs) go on every link.
-    let clangArgs = [optFlag, "-pthread"] ++ gcCflags ++ [llPath, rtInput] ++ gcLibs ++ ["-lm", "-o", outPath]
+    let sectionsLink = gcSectionsLinkFlag ()
+    let clangArgs = [optFlag, "-pthread"] ++ gcSectionsCflags ++ gcCflags ++ [llPath, rtInput] ++ gcLibs ++ [sectionsLink, "-lm", "-o", outPath]
     match runCommand cc clangArgs
       Err e => BuildErr "error: could not run clang (\{cc}): \{e}"
       Ok (0, _, _) => BuildOk "built \{inputAbs} -> \{outPath}"
@@ -490,7 +519,11 @@ emitRtObj cc root outObjPath = match makeTempDir ()
       Some (gcCflags, _gcLibs) =>
         let optFlag = clangOptFlag
         let rtC = joinPath root "runtime/medaka_rt.c"
-        let ccArgs = [optFlag, "-pthread"] ++ gcCflags ++ ["-c", rtC, "-o", outObjPath]
+        -- -c (compile-only): the section-GC LINK flag has no meaning here — only
+        -- the compile flags (gcSectionsCflags) apply, and they must match
+        -- clangLink's exactly so the prebuilt object is indistinguishable from
+        -- an inline compile (test/diff_compiler_rt_obj.sh).
+        let ccArgs = [optFlag, "-pthread"] ++ gcSectionsCflags ++ gcCflags ++ ["-c", rtC, "-o", outObjPath]
         match runCommand cc ccArgs
           Err e => BuildErr "error: could not run clang (\{cc}): \{e}"
           Ok (0, _, _) => BuildOk "compiled runtime object -> \{outObjPath}"
