@@ -41,6 +41,28 @@ log() { printf '\n== %s ==\n' "$*"; }
 #    built that way watched precisely nothing, all night, and looked healthy doing it.
 #    (`gh` has a built-in `--jq`, which is why the same expression works by hand and
 #    dies inside a script — an especially nasty way to be wrong.)
+# 0. Scratch: keep the build/test write-storm OUT OF RAM.
+#
+#    ⚠️ /tmp is a RAM-BACKED tmpfs, sized by the kernel at 50% of RAM by default —
+#    16 GB on a 32 GB box. Nobody chose that for this workload; it is systemd's stock
+#    tmp.mount. Every byte of build scratch there competes with the compiler for MEMORY,
+#    and the failure mode is not "disk full", it is "the box is mysteriously slow".
+#
+#    Measured 2026-07-14: two orphaned scratch dirs from a doc-link scan that had finished
+#    SIX HOURS EARLIER held 11 GB — a THIRD of the machine's RAM — while several agents
+#    fought a box whose load sat above 10 with no obviously-guilty process. Because the
+#    memory was not held by a process at all.
+#
+#    `medaka build` and all 42 gate scripts allocate scratch with `mktemp -d`, which honours
+#    TMPDIR. One variable moves the lot onto disk (957 GB, vs 16 GB of RAM) at essentially
+#    zero cost — the bottleneck here is clang CPU, not scratch I/O.
+log "provisioning disk-backed scratch (/var/tmp/medaka-scratch) — /tmp is RAM"
+$SUDO mkdir -p /var/tmp/medaka-scratch
+$SUDO chmod 1777 /var/tmp/medaka-scratch
+if ! grep -q 'medaka-scratch' /etc/environment 2>/dev/null; then
+  printf 'TMPDIR=/var/tmp/medaka-scratch\n' | $SUDO tee -a /etc/environment >/dev/null
+fi
+
 log "installing toolchain (clang, libgc, node 24, sqlite3, jq, ...)"
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \

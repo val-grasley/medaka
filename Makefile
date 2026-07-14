@@ -6,6 +6,13 @@
 #
 # Quick start:   make medaka && ./medaka run yourfile.mdk
 
+# ⚠️ /tmp is a RAM-BACKED tmpfs (50% of RAM by default = 16 GB on this box).
+# Build scratch there competes with the compiler for MEMORY, and a leak shows up as
+# "the box is mysteriously slow", not "disk full". mktemp -d honours TMPDIR, so one
+# variable moves the whole write-storm onto disk. Override with MEDAKA_SCRATCH.
+MEDAKA_SCRATCH ?= /var/tmp/medaka-scratch
+export TMPDIR := $(shell mkdir -p $(MEDAKA_SCRATCH) 2>/dev/null && echo $(MEDAKA_SCRATCH) || echo /tmp)
+
 .PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index agent-doc-symbols
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).

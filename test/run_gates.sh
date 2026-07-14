@@ -22,6 +22,10 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Keep the build/test write-storm OUT OF RAM (/tmp is a RAM-backed tmpfs).
+. "$ROOT/test/lib_scratch.sh"
+mdk_warn_if_tmp_full
 NCPU="$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 # Outer pool: how many gates run at once. Inner pool (INNER_JOBS, exported as JOBS
 # to each gate): a heavy gate's own fixture fan-out. Nesting the two naively gives

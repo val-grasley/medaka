@@ -82,3 +82,9 @@ dist/linux-spike/run           driver for the three spike scripts above.
 editors/install-vscode         installs the VS Code extension. A dev-setup action.
 ops/provision                  provisions a build box. A dev-setup action.
 scripts/docker-dev             runs the build inside a Linux container. A dev wrapper.
+
+# ── sourced libraries (never executed; `sh <file>` is a no-op) ──
+test/lib_scratch               shell library, not a script: sourced by run_gates / build_oracles /
+                               preflight to point TMPDIR off the RAM-backed /tmp tmpfs (and to warn
+                               when /tmp fills). Defines functions + sets a var; running it does
+                               nothing observable, so there is nothing for a CI shard to assert.
