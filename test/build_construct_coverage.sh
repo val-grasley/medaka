@@ -150,6 +150,19 @@ done
 # exit 0 — a gate that compared nothing has proven nothing (docs/ops/TESTING-DESIGN.md §2.3).
 [ -n "$todo" ] || { echo "no construct fixtures in $FIXTURES — the gate compared nothing"; exit 2; }
 
+# CI FAST PATH: precompile runtime/medaka_rt.c ONCE, then have every one of the 144
+# per-fixture `medaka build`s LINK that object (via MEDAKA_RT_OBJ) instead of
+# recompiling the byte-identical runtime each time (~0.6s of clang saved per build).
+# The compiler emits the object (`--emit-rt-obj`) with exactly the flags its own link
+# uses, so it can't drift; inline-vs-prebuilt is proven byte-identical by
+# test/diff_compiler_rt_obj.sh. Best-effort: on failure we don't export it and every
+# build falls back to the (unchanged) inline compile. Workers inherit MEDAKA_RT_OBJ
+# through the environment (xargs passes it down).
+RTOBJ="$RD/medaka_rt.o"
+if MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" "$MEDAKA" build --emit-rt-obj "$RTOBJ" >/dev/null 2>&1 && [ -f "$RTOBJ" ]; then
+  export MEDAKA_RT_OBJ="$RTOBJ"
+fi
+
 # The worker re-derives ROOT/MEDAKA/EMITTER from $0 and the environment exactly as the
 # parent did, so nothing needs passing down: MEDAKA_EMITTER (the only env input) is
 # already inherited.

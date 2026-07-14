@@ -218,10 +218,14 @@ presets (§W2), regression fixtures.
 
 Already at a defensible bar (corpus ~11.9/14; see `project_error_quality_workstream`).
 **Freeze as "good enough for preview"** — further work is ongoing-not-blocking.
-One cheap exception worth landing because a first-hour user notices it: the four
-non-exhaustive-match *warnings* still print with no `file:L:C:` prefix in the
-human CLI text (the JSON range is already real) — add the prefix in the warning
-renderer. Tracked in PLAN.md's error-quality status.
+
+~~One cheap exception worth landing…: the four non-exhaustive-match *warnings* still print with no
+`file:L:C:` prefix in the human CLI text.~~ ✅ **DONE — re-verified on `e34e2b46` (2026-07-14):**
+`wex.mdk:2:9: non-exhaustive clauses of 'f'. Missing case: 'False'; add a 'False' clause, or a '_'
+catch-all clause.` The prefix is there. **W-errors has no remaining exception — it is fully frozen.**
+
+Remaining error-quality work is tracked as issues, not here:
+`gh issue list --label "ws:diagnostics"`.
 
 ---
 

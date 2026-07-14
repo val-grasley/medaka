@@ -348,14 +348,84 @@ long long mdk_float_to_string(double d) {
   return mdk_str_lit(buf, (long long)strlen(buf));
 }
 
+/* ---------------------------------------------------------------------------
+ * BUILD-BINARY STDOUT-LOSS FIX (companion to the `medaka run` "drops stdout on
+ * panic" fix below, but for a COMPILED, non-interpreter `medaka build` binary).
+ *
+ * A compiled binary's println/print write straight through LIBC's BUFFERED
+ * stdout (mdk_fwrite_str -> fwrite(..., stdout)). Every EXIT()-based abort path
+ * (mdk_panic, mdk_div_zero, mdk_oob, ...) already gets that buffer out for free,
+ * since libc's exit() runs stdio's atexit flush. But the SIGSEGV/SIGBUS fault
+ * handler below must call _exit(), never exit() (async-signal-safety: fflush/
+ * fwrite are not on the POSIX async-signal-safe list, and calling them from a
+ * signal handler risks deadlocking on stdio's lock if the crashing thread
+ * already held it mid-fwrite) — and _exit() skips that flush entirely. So a
+ * compiled binary that prints, then recurses into a genuine stack overflow,
+ * lost every byte still sitting in libc's stdout buffer (confirmed empirically:
+ * exit 134, empty stdout).
+ *
+ * Fix mirrors mdk_flush_run_stdout_on_abort's approach (below) exactly, adapted
+ * for a native buffer instead of a GC-owned Medaka string cell: every stdout
+ * write ALSO copies its bytes into a plain malloc'd, doubling-growth C buffer
+ * (mdk_build_stdout_track — allocation/copy happens only in NORMAL execution,
+ * NEVER inside the signal handler) and updates a pointer+length pair with plain
+ * word stores. At abort time mdk_flush_build_stdout_on_fatal_signal reads that
+ * pointer+length and write(2)s it — no allocation, no stdio, no locks, the same
+ * discipline as mdk_flush_run_stdout_on_abort. It is called ONLY from the two
+ * _exit() paths below (mdk_fault_handler's stack-overflow branch and
+ * mdk_chain_previous's no-previous-handler branch) — NEVER from the exit()-based
+ * abort paths, which already work correctly for a compiled binary via libc's own
+ * flush; calling it there too would DOUBLE-print (once via libc's real flush,
+ * once via this raw write(2)). The buffer is plain malloc/realloc, NOT
+ * GC_malloc/mdk_alloc — it holds no pointers, needs no scanning, and must
+ * survive independent of the GC heap.
+ * ------------------------------------------------------------------------- */
+static char *mdk_build_stdout_buf = NULL;
+static long long mdk_build_stdout_len = 0;
+static long long mdk_build_stdout_cap = 0;
+
+static void mdk_build_stdout_track(const char *bytes, long long n) {
+  if (n <= 0) return;
+  if (mdk_build_stdout_len + n > mdk_build_stdout_cap) {
+    long long newcap = mdk_build_stdout_cap == 0 ? 4096 : mdk_build_stdout_cap;
+    while (newcap < mdk_build_stdout_len + n) newcap *= 2;
+    char *nb = (char *)realloc(mdk_build_stdout_buf, (size_t)newcap);
+    if (!nb) return; /* best-effort safety net: never sacrifice the real print for it */
+    mdk_build_stdout_buf = nb;
+    mdk_build_stdout_cap = newcap;
+  }
+  memcpy(mdk_build_stdout_buf + mdk_build_stdout_len, bytes, (size_t)n);
+  mdk_build_stdout_len += n;
+}
+
+/* Async-signal-safe: word reads + write(2) only, no allocation, no stdio, no
+   locks. Mirrors mdk_flush_run_stdout_on_abort but for the native build-stdout
+   buffer above; see the block comment there for why the two must stay separate
+   flush entry points despite doing the same thing. */
+static void mdk_flush_build_stdout_on_fatal_signal(void) {
+  const char *bytes = mdk_build_stdout_buf;
+  long long len = mdk_build_stdout_len;
+  while (len > 0) {
+    ssize_t n = write(1, bytes, (size_t)len);
+    if (n <= 0) break;
+    bytes += n;
+    len -= n;
+  }
+}
+
 /* IO-output externs (native extern catalog slice 3).
    mdk_fwrite_str reads the string cell (bytes at offset 24, byte_len at offset 8)
-   and writes to the given FILE; appends '\n' iff nl != 0. */
+   and writes to the given FILE; appends '\n' iff nl != 0. Tracks stdout writes
+   (not stderr) into the fatal-signal safety-net buffer above. */
 static void mdk_fwrite_str(long long w, FILE *out, int nl) {
   const char *cell = (const char *)w;
   long long byte_len = ((const long long *)cell)[1];
+  if (out == stdout) mdk_build_stdout_track(cell + 24, byte_len);
   fwrite(cell + 24, 1, (size_t)byte_len, out);
-  if (nl) fputc('\n', out);
+  if (nl) {
+    if (out == stdout) mdk_build_stdout_track("\n", 1);
+    fputc('\n', out);
+  }
 }
 
 void mdk_putstr(long long w)    { mdk_fwrite_str(w, stdout, 0); }
@@ -496,7 +566,21 @@ noreturn void mdk_let_refute(void) {
   fputs("runtime error [E-LET-REFUTE]: let pattern match failed\n", stderr);
   exit(1);
 }
-noreturn void mdk_exit(long long tagged) { exit((int)(tagged >> 1)); }
+/* User `exit n`. Unlike the other abort paths above this carries no diagnostic
+   -- it is a silent, coded-free process termination -- but it still needs the
+   SAME mdk_flush_run_stdout_on_abort() call they all make: under `medaka run`
+   stdout is buffered in the interpreter's outputRef and normally only printed
+   by the CLI driver AFTER `main` returns, so a mid-`main` `exit` call would
+   otherwise silently drop everything printed before it (the same class of bug
+   as "run drops stdout on panic", just for a clean exit instead of a crash).
+   For a compiled `medaka build` binary the call is a no-op (mdk_run_stdout_
+   flush_enabled stays 0 there — see the block comment above), and libc's own
+   exit() already flushes its real buffered stdout normally, so this is safe on
+   both engines without double-printing. */
+noreturn void mdk_exit(long long tagged) {
+  mdk_flush_run_stdout_on_abort();
+  exit((int)(tagged >> 1));
+}
 
 /* Concatenate a built-in List String (native extern catalog slice 5).
    Nil = odd immediate (low bit 1, stop); Cons = even pointer to [tag | head@8 | tail@16].
@@ -1821,8 +1905,13 @@ static void mdk_chain_previous(int sig, siginfo_t *info, void *uctx) {
   }
   /* No previous handler: no silent death — print generic and exit nonzero.
      mdk_flush_run_stdout_on_abort is async-signal-safe (word reads + write(2)
-     only, no allocation, no stdio) — see its definition near mdk_putstr. */
+     only, no allocation, no stdio) — see its definition near mdk_putstr.
+     mdk_flush_build_stdout_on_fatal_signal is its build-binary counterpart
+     (same discipline; see its definition near mdk_fwrite_str) — both are
+     no-ops unless the corresponding engine actually populated their buffer, so
+     calling both here is safe regardless of which engine is running. */
   mdk_flush_run_stdout_on_abort();
+  mdk_flush_build_stdout_on_fatal_signal();
   static const char m[] =
     "runtime error [E-FATAL-SIGNAL]: fatal memory fault (segmentation fault)\n";
   write(2, m, sizeof(m) - 1);
@@ -1832,6 +1921,7 @@ static void mdk_chain_previous(int sig, siginfo_t *info, void *uctx) {
 static void mdk_fault_handler(int sig, siginfo_t *info, void *uctx) {
   if (mdk_addr_near_stack(info ? info->si_addr : NULL)) {
     mdk_flush_run_stdout_on_abort();
+    mdk_flush_build_stdout_on_fatal_signal();
     static const char m[] =
       "runtime error [E-STACK-OVERFLOW]: stack overflow (recursion too deep)\n";
     write(2, m, sizeof(m) - 1);

@@ -32,6 +32,7 @@ import driver.build_cmd.{
   TNative,
   TWasm,
   runBuild,
+  emitRtObj,
   envOr,
   defaultMedakaRoot,
 }
@@ -818,32 +819,46 @@ runNewCmd _ =
 runBuildCmd : List String -> <IO, Mut, Panic> Unit
 runBuildCmd argv =
   if hasFlag "--help" argv || hasFlag "-h" argv then buildUsage ()
-  else match parseBuildArgs argv
-    Err msg =>
-      let _ = ePutStrLn msg
-      exit 1
-    Ok (input, outOpt, target) => if not (fileExists input) then
-      let _ = ePutStrLn ("error: no such file: " ++ input)
-      exit 1
-    else
+  else match snapFlagValue "--emit-rt-obj" argv
+    -- `medaka build --emit-rt-obj <path>`: precompile runtime/medaka_rt.c to a
+    -- reusable object with EXACTLY the flags a normal link would apply, then exit.
+    -- No input .mdk is required (or read) in this mode — it compiles only the C
+    -- runtime.  A CI gate points MEDAKA_RT_OBJ at the result to skip the redundant
+    -- per-build recompile of the identical runtime.
+    Some objPath =>
       let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
-      let medaka = envOr "MEDAKA" "medaka"
       let cc = envOr "CC" "clang"
-      let inputAbs = input
-      let allowInternal = hasFlag "--allow-internal" argv
-      let keepIrCli = hasFlag "--keep-ir" argv
-      let outPath = match outOpt
-        Some o => o
-        None => defaultOutPath target input
-      match typecheckGate allowInternal root inputAbs
-        TGErr msg =>
+      match emitRtObj cc root objPath
+        BuildOk msg => println msg
+        BuildErr msg =>
           let _ = ePutStrLn msg
           exit 1
-        TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
-          BuildOk msg => println msg
-          BuildErr msg =>
+    None => match parseBuildArgs argv
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok (input, outOpt, target) => if not (fileExists input) then
+        let _ = ePutStrLn ("error: no such file: " ++ input)
+        exit 1
+      else
+        let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+        let medaka = envOr "MEDAKA" "medaka"
+        let cc = envOr "CC" "clang"
+        let inputAbs = input
+        let allowInternal = hasFlag "--allow-internal" argv
+        let keepIrCli = hasFlag "--keep-ir" argv
+        let outPath = match outOpt
+          Some o => o
+          None => defaultOutPath target input
+        match typecheckGate allowInternal root inputAbs
+          TGErr msg =>
             let _ = ePutStrLn msg
             exit 1
+          TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
+            BuildOk msg => println msg
+            BuildErr msg =>
+              let _ = ePutStrLn msg
+              exit 1
 
 -- `medaka build --help` / `-h`: a subcommand-local usage, since the global
 -- `usage()` (only matched when --help/-h is argv[0]) never sees this — dispatch
@@ -862,6 +877,9 @@ buildUsage _ = putStrLn (stringConcat
     "                    kept path is printed. Env var MEDAKA_KEEP_IR=1 does the same for a\n",
     "                    build invoked by something else (e.g. a test harness)\n",
     "  --allow-internal  permit internal-only externs outside stdlib/\n",
+    "  --emit-rt-obj <p> compile only runtime/medaka_rt.c to a reusable object at <p> (with\n",
+    "                    the same flags a normal link uses) and exit; point MEDAKA_RT_OBJ at\n",
+    "                    it to skip recompiling the runtime on every subsequent build\n",
   ])
 
 -- Default output path per target: native drops the extension (a bare exe name);

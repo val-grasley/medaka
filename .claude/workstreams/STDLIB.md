@@ -3,56 +3,93 @@
 **Owns:** missing stdlib/support functions.
 **Touches:** `stdlib/`, `compiler/support/util.mdk`.
 
-⚠️ **`stdlib/core.mdk` is the PRELUDE.** Touching it moves **every** snapshot golden and
-perturbs the fixpoint. Land core changes at a checkpoint, alone, and re-cut goldens in the same
-PR.
+```sh
+gh issue list --label "ws:stdlib" --state open
+```
 
-These are not wishlist items. Each one is **currently causing duplication or a bug** in the
+The items here are **not a wishlist.** Each one is *currently* causing duplication or a bug in the
 compiler, and each was surfaced by an agent that had to hand-roll it.
 
 ---
 
-## L-1 · An effectful traversal family — `mapMut` / `foldlMut` / `zipWithMut`
+## ⚠️ `stdlib/core.mdk` is THE PRELUDE. Land core changes at a checkpoint, ALONE.
 
-`map` / `zip` / `foldl` are **pure**, so **every `<Mut>` traversal in the compiler gets
-hand-rolled.** `llvm_emit.mdk` now carries **four near-clones** (`bindFields` / `bindEach` /
-`emitRefutFields` / `emitRefutEach`) plus a one-off `mapMut : (a -> <Mut> b) -> List a -> <Mut> List b`
-written for exactly this reason.
+Its blast radius is **5 golden families, ~120 files, 7 gates — and none of it is greppable**:
 
-Wanted, at minimum in `support/util.mdk`:
-```medaka
-foldlMut  : (acc -> a -> b -> <Mut> acc) -> acc -> List a -> List b -> <Mut> acc
-zipWithMut : (a -> b -> <Mut> c) -> List a -> List b -> <Mut> List c
-```
+- snapshot goldens
+- **every `check` golden is a full prelude SCHEME DUMP** — so adding one helper moves all of them
+- `selfproc` + the LSP completion list
+- `eval_prelude` / `core_ir_prelude` / `core.test.golden` — **doctests keyed on `core.mdk:NNN` line
+  numbers**, so inserting a line moves them
+- `stdlib/core.lextok.golden` — **token dumps**
 
-## L-2 · `boolToString : Bool -> String`
+Five helpers added to `core.mdk` once turned **5 of 6 CI shards red**. And in one session **three
+agents claimed "no goldens moved". All three were wrong.**
 
-`intToString` and `floatToString` are both externs (`stdlib/runtime.mdk:171-172`). **`Bool` has
-no sibling.** `display` on `Bool` works but drags in dict dispatch, which is unusable for
-compiler-internal instrumentation.
+**Re-cut the goldens in the SAME PR** — the compiler's own sources are in the snapshot corpus, so a
+source change moves its own golden. Push the source without the golden and `main` goes red, and the
+hook then forces the *next* agent to bless a file they never touched.
 
-Not merely cosmetic: a shadow bug surfaced as the panic `intToString: not an Int`. **A
-`boolToString` would have made that bug LOUDER, not silent.**
+---
 
-## L-3 · String length has no ergonomic name
+## The compiler MAY import `stdlib/` — but WEIGH IT PER MODULE
 
-It is the raw extern `stringLength` (`runtime.mdk:210`). `stdlib/string.mdk` does not re-export
-it, and the `Foldable` `length` does not apply to `String`. An agent guessed `strLen` and got
-"unbound variable".
+Policy changed 2026-06-29; the old blanket ban is retired. Measured:
 
-## L-4 · `dropPrefix` / `stripPrefix` / `dropSuffix`
+- **Importing a module whose types' instances live in `core`** (the always-present prelude) is
+  **near-free** — `import list`/`import string` drag no new instance surface, so DCE trims to the
+  referenced standalone fns (**−256 B, +2% ≈ noise**).
+- **Importing a module that defines a NEW type is not.** DCE keeps every `DImpl`/`DInterface` **whole**
+  (runtime dict-passing → pruning an impl would be a silent miscompile), so `import map` drags `Map`'s
+  entire Eq/Ord/Debug/Display/Mappable/Monoid surface in — **+34 KB binary, +4.8% self-compile.**
+- The imported module is **re-typechecked on every compile** *and* every fixpoint iteration.
+- Once the compiler imports a stdlib module, any change there that perturbs emitted IR **forces a seed
+  re-mint + fixpoint re-validation.** (A feature — it converts silent `support/`-vs-`stdlib/`
+  divergence into a build-time gate — but it is churn.)
 
-`util` already has `startsWith` / `endsWith`. The obvious siblings are missing, so `wasm_emit.mdk`
-hand-rolls `dropPrefix` as `stringSlice (stringLength p) (stringLength s) s`.
+### ⚠️ Anti-pattern (measured): do NOT delegate hot monomorphic helpers to prelude Foldable methods
+`elem` / `any` / `all` / `length` lose `||`/`&&` **short-circuiting** and become dict-passed
+fold+closure. Doing this to `util.mdk`'s hottest helpers cost **+56% self-compile.**
 
-Haskell's shape is the one actually wanted: `stripPrefix : String -> String -> Option String`.
+### Migrating a `support/` structure to stdlib
+A **polymorphic empty must be a nullary constructor.** A constructor *application* like `OMap Tip` is
+NOT generalized → it monomorphises → "Scheme vs Unit" cascades. And any harness running the
+emitter/probes over compiler source must pass `$STDLIB` as well as the compiler root.
 
-## L-5 · Two `startsWith`s with OPPOSITE argument orders
+---
 
-`support/util.startsWith pre s` (prefix first) vs `wasm_emit.startsWithStr s p` (string first).
-**Both are `String -> String -> Bool`, so the typechecker cannot help you.** An agent wrote the
-arguments in the wrong order, got a silent `False`, and only found out via an `unbound variable
-'__ft__clause23113'` **four minutes into a full rebuild**.
+## The layout
 
-Unify `wasm_emit`'s private `startsWithStr` / `dropPrefix` onto util's order and delete the
-duplicates.
+`stdlib/runtime.mdk` (extern primitive catalog, read from disk at runtime) · `core.mdk` (**the implicit
+prelude** — `Eq`/`Ord`/`Debug`/`Num`/…) · plus `list`/`string`/`array`/`map`/`set`/`io`/`hash_map`/
+`hash_set`/`mut_array`/`json`/`byteparser`/`bytebuilder`.
+
+**Only `core.mdk` is auto-prelude** — import the rest by bare name (`import map`). `io.mdk` is the
+ergonomic layer over the `runtime.mdk` IO externs.
+
+⚠️ A non-prelude `impl` is **out of scope until you `import` its module** — so "No impl / Ambiguous" is
+*not* necessarily a dispatch bug.
+
+---
+
+## Two traps that make silent bugs
+
+- **`boolToString` does not exist** (#79). `intToString`/`floatToString` are both externs; `Bool` has no
+  sibling. This is not cosmetic: a shadow bug surfaced as the panic `intToString: not an Int`. **A
+  `boolToString` would have made that bug LOUDER, not silent.**
+- **Two `startsWith`s with OPPOSITE argument orders** (#79) — `util.startsWith pre s` vs
+  `wasm_emit.startsWithStr s p`. **Both are `String -> String -> Bool`, so the typechecker cannot help
+  you.** An agent wrote them in the wrong order, got a silent `False`, and found out four minutes into
+  a full rebuild.
+
+**When two functions have the same type and opposite meanings, the type system is not a safety net —
+it is camouflage.**
+
+---
+
+## Doctest gotchas
+
+Stdlib doctests are **single-file, all-or-nothing** — one malformed example aborts the file (#55). And
+**every doctest runs under the interpreter**, so a compiled-only bug is invisible to them; wrap `Array`
+in `toList` for stable output.
+</content>

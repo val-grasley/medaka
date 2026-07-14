@@ -63,7 +63,7 @@
 # in the reason text and in diff_compiler_capability_matrix.sh's header).
 
 # ============================================================================
-# INTERPRETER — 14 rows, ALL category BUG (was 37 + 6 FROZEN-CONSTANT).
+# INTERPRETER — 13 rows, ALL category BUG (was 37 + 6 FROZEN-CONSTANT, then 14).
 # eval.mdk was written as a value-oracle for differential testing against the
 # (now-deleted) OCaml reference compiler, so effectful/IO externs were "out of
 # scope" by construction. When OCaml was removed (2026-06-26) eval.mdk was
@@ -78,12 +78,15 @@
 # in the shared pure table. (arraySortInPlaceBy/arraySortBy were REMOVED
 # entirely, catalog and all — see the deletion note below.)
 #
-# STILL OPEN, deliberately (the 14 below):
-#   exit           — needs a POLICY decision, not an implementation: a doctest
-#                    calling `exit 0` would kill `medaka test` with a SUCCESS
-#                    status, silently skipping every remaining test. It must be
-#                    host-installed PER DRIVER (`run` gets the real one;
-#                    `test`/`repl` get a located E-EXIT panic).
+# CLOSED 2026-07-14 (1 more row promoted): `exit` now has the same per-driver
+# host-installation the header below asks for — bound in `ioExternBindings`
+# (medaka run` only), NOT the shared `externBindings` table, so `medaka test`/
+# `repl`/`check-policy`'s evalModules still see "unbound identifier: exit"
+# (unchanged) and can't be silently killed by a doctest's `exit 0`. `mdk_exit`
+# (runtime/medaka_rt.c) now also flushes the run-stdout stash first, so a
+# mid-`main` exit doesn't drop output printed before it — see eval.mdk's pExit.
+#
+# STILL OPEN, deliberately (the 13 below):
 #   runCommand +   — a security-posture call: these are to be gated behind
 #   the 10 net       `--allow-exec` / `--allow-net` before the interpreter binds
 #   externs          them.
@@ -93,12 +96,12 @@
 #   assertSnapshot — unimplemented in ALL THREE engines (see the llvm/wasm TODO
 #                    rows); not an interpreter-specific gap at all.
 #
-# ALSO NOT FIXED BY THE 2026-07-13 pass: only `medaka run` installs
+# ALSO NOT FIXED BY THE 2026-07-13/14 passes: only `medaka run` installs
 # ioExternBindings. `medaka test` / `medaka repl` / `medaka check-policy` drive
 # evalModules/evalModulesRootEnv, which install the PURE table alone — so a
 # DOCTEST still sees the frozen clock, still has its stderr discarded, and still
-# gets "unbound identifier" for `args`/`readFile`/… That is the same per-driver
-# host-installation decision `exit` is blocked on; do them together.
+# gets "unbound identifier" for `args`/`readFile`/`exit`/… That is the same
+# per-driver host-installation decision; do the rest together.
 # ============================================================================
 
 # --- net (10): LLVM implements the whole isNetExtern family; interpreter none.
@@ -115,7 +118,6 @@ netTcpConnect	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netTcpListen	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 
 # --- singles ---
-exit	interp	BUG	implemented by llvm (isAbortExtern) and wasm, missing from interp — BUG(T7). DEFERRED ON PURPOSE (2026-07-13): binding it needs a per-driver policy (see the header) — a doctest calling `exit 0` would kill `medaka test` with a SUCCESS status
 flushStdout	interp	BUG	implemented by llvm (isIoExtern), missing from interp — BUG(T7). No-op-by-construction while `run` buffers stdout into outputRef and prints it after main returns; fix with the "run drops stdout on panic" bug
 runCommand	interp	BUG	implemented by llvm (isFileExtern family), missing from interp — BUG(T7). DEFERRED ON PURPOSE (2026-07-13): --allow-exec security posture first
 
