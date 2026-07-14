@@ -33,6 +33,10 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Keep the build/test write-storm OUT OF RAM (/tmp is a RAM-backed tmpfs).
+. "$ROOT/test/lib_scratch.sh"
+mdk_warn_if_tmp_full
 BASE="${1:-main}"
 cd "$ROOT" || exit 1
 
