@@ -1,0 +1,2 @@
+-- codemod fixture: a <Mut> row nested inside a data-constructor payload type.
+data Thunk a = Thunk (Int -> <Mut> a)

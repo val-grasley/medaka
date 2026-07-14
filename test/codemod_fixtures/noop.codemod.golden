@@ -1,0 +1,4 @@
+-- codemod fixture: no Mut/Panic anywhere, so the transform reports no change
+-- and --stdout echoes the source unchanged (the dry-run exits 0).
+plus : Int -> Int -> <IO> Int
+plus a b = a + b

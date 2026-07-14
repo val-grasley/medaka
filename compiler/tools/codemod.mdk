@@ -1,0 +1,684 @@
+-- compiler/tools/codemod.mdk — the `medaka codemod` framework + registry.
+--
+-- A codemod is a NAMED, source-preserving AST transform: parse a `.mdk` file
+-- (WITH positions + comments), rewrite its declarations, and re-render through
+-- the comment-preserving formatter (`tools.fmt.formatProgram`).  The registry
+-- mirrors `tools.lint`'s `Rule` pattern — adding a codemod is ONE constructor
+-- function + ONE entry in `allCodemods`.  The CLI layer (medaka_cli.mdk) never
+-- touches the record fields directly; it goes through the exported accessors
+-- (`codemodName`/`codemodMk`/`codemodWarnDecls`/…) exactly as it does for lint.
+--
+-- ── Position/comment invariant (why re-render is safe) ──────────────────────
+-- `codemodSource` threads the parser's position side-channels
+-- (`positionsDecls`/`positionsVariantLines`/`positionsChainLines`/
+-- `positionsLastContentLine`) BACK INTO `formatProgram` UNCHANGED.  That is only
+-- sound because a codemod transform NEVER adds, removes, or reorders a decl, a
+-- `data` variant, or a continuation-chain operand — it only rewrites TYPES in
+-- place.  A transform that violates that (e.g. one that splices a new decl) would
+-- desynchronise the side-channels and MUST NOT reuse this core.
+--
+-- ⚠️ VERBATIM SAFETY-NET CAVEAT.  `formatProgram`'s Option-C net (fmt.mdk:336-417)
+-- re-emits a NON-data decl's ORIGINAL source lines verbatim whenever that decl
+-- carries an INTERIOR single-line comment the chain/block paths can't anchor.
+-- For such a decl the type rewrite is present in the AST but SILENTLY DISCARDED
+-- from the rendered output (the original text wins).  Callers doing a bulk strip
+-- MUST grep for residue afterwards (the PR-1 harness does exactly this).  Data
+-- decls are exempt (their comments are placed per-variant, a reflow-safe path).
+--
+-- No stdlib imports (compiler isolation): generic helpers come from
+-- support.util; the total Expr traversal is hand-rolled here (rather than reusing
+-- desugar's `Expr -> Expr` engine) precisely so the CHANGED flag threads purely —
+-- `setRef` carries `<Mut>`, which would leak into the transform's pure type.
+
+import frontend.ast.{
+  Ty(..),
+  Constraint(..),
+  Expr(..),
+  Section(..),
+  Arm(..),
+  Guard(..),
+  DoStmt(..),
+  InterpPart(..),
+  GuardArm(..),
+  FieldAssign(..),
+  LetBind(..),
+  FunClause(..),
+  PropParam(..),
+  IfaceMethod(..),
+  MethodDefault(..),
+  Require(..),
+  ImplMethod(..),
+  Variant(..),
+  ConPayload(..),
+  Field(..),
+  Decl(..),
+}
+import frontend.parser.{
+  parseResult,
+  ParseError,
+  parseWithPositions,
+  positionsDecls,
+  positionsVariantLines,
+  positionsChainLines,
+  positionsLastContentLine,
+}
+import frontend.lexer.{collectComments}
+import tools.fmt.{formatProgram}
+import support.util.{
+  reverseL,
+  listLen,
+  lookupAssoc,
+  splitOnChar,
+  joinNl,
+  anyList,
+}
+
+-- ── public types ───────────────────────────────────────────────────────────
+
+-- A registered codemod.  `mk` parses the codemod-specific CLI arguments and
+-- returns EITHER an error message OR the per-decl transform `Decl -> (Decl,
+-- Bool)` (the Bool = "this decl changed").  `warn`, given the same args plus a
+-- file's decls, returns advisory stderr lines the transform can't express (the
+-- pure transform can't do IO) — e.g. "you asked to strip a label a `DEffect`
+-- here declares".  Most codemods leave `warn` returning `[]`.
+public export data Codemod =
+  | Codemod {
+      name : String,
+      descr : String,
+      argHelp : String,
+      mk : List String -> Result String (Decl -> (Decl, Bool)),
+      warn : List String -> List Decl -> List String,
+    }
+
+-- ── registry ────────────────────────────────────────────────────────────────
+-- Adding a codemod = one `mkX`/`warnX` pair + one entry here.
+export allCodemods : List Codemod
+allCodemods = [effectLabelsCodemod]
+
+effectLabelsCodemod : Codemod
+effectLabelsCodemod = Codemod {
+  name = "effect-labels",
+  descr = "strip and/or rename effect-row labels (<Mut>, <Panic>, …)",
+  argHelp = "--strip L1,L2   --rename Old=New   (repeatable)",
+  mk = mkEffectLabels,
+  warn = warnEffectLabels,
+}
+
+-- ── accessors (the CLI uses these; never the record fields) ──────────────────
+export codemodName : Codemod -> String
+codemodName (Codemod { name, ... }) = name
+
+export codemodDescr : Codemod -> String
+codemodDescr (Codemod { descr, ... }) = descr
+
+export codemodArgHelp : Codemod -> String
+codemodArgHelp (Codemod { argHelp, ... }) = argHelp
+
+export codemodMk : Codemod -> List String -> Result String (Decl -> (Decl, Bool))
+codemodMk (Codemod { mk, ... }) args = mk args
+
+export codemodWarnDecls : Codemod -> List String -> List Decl -> List String
+codemodWarnDecls (Codemod { warn, ... }) args decls = warn args decls
+
+export findCodemod : String -> Option Codemod
+findCodemod name = findCodemodGo name allCodemods
+
+findCodemodGo : String -> List Codemod -> Option Codemod
+findCodemodGo _ [] = None
+findCodemodGo name (c::rest) =
+  if codemodName c == name then
+    Some c
+  else
+    findCodemodGo name rest
+
+-- Registry listing for the bare `medaka codemod` invocation.
+export codemodListing : String
+codemodListing = joinNl (map codemodListingLine allCodemods)
+
+codemodListingLine : Codemod -> String
+codemodListingLine c =
+  "  \{codemodName c} — \{codemodDescr c}\n    \{codemodArgHelp c}"
+
+-- ── pure core ────────────────────────────────────────────────────────────────
+-- Parse `src`, run the transform over every decl (OR-folding the change flags),
+-- and — ONLY when something changed — re-render through the comment-preserving
+-- formatter.  `None` = nothing changed (the caller MUST NOT write: this keeps a
+-- codemod from doubling as `fmt` and keeps it off non-fmt-clean or #51 float
+-- files that carry no target label).  Parse errors surface as `Err ParseError`
+-- so the CLI reports them through the shared `ppParseError` path.
+export codemodSource : (Decl -> (Decl, Bool)) -> String -> Result ParseError (Option String)
+codemodSource xf src = match parseResult src
+  Err e => Err e
+  Ok _ =>
+    -- parseResult already proved the source parses, so parseWithPositions
+    -- (which panics on failure) is safe here.
+    let (decls, pos) = parseWithPositions src
+    let (decls2, changed) = mapDeclsChanged xf decls
+    if not changed then Ok None
+    else
+      let comments = collectComments src
+      Ok (Some (formatProgram
+        decls2
+        (positionsDecls pos)
+        (positionsVariantLines pos)
+        (positionsChainLines pos)
+        comments
+        (positionsLastContentLine pos)
+        src))
+
+mapDeclsChanged : (Decl -> (Decl, Bool)) -> List Decl -> (List Decl, Bool)
+mapDeclsChanged _ [] = ([], False)
+mapDeclsChanged xf (d::ds) =
+  let (d2, c1) = xf d
+  let (ds2, c2) = mapDeclsChanged xf ds
+  (d2::ds2, c1 || c2)
+
+-- ── generic Ty traversal ─────────────────────────────────────────────────────
+-- `mapTyFull f t` applies `f` to EVERY Ty node in `t`, post-order (children
+-- first, then the rebuilt node), OR-folding the change flags.  Effect rows nest,
+-- so recursing the carried type of a `TyEffect` BEFORE applying `f` at that node
+-- is what lets a transform see an already-rewritten inner row.
+mapTyFull : (Ty -> (Ty, Bool)) -> Ty -> (Ty, Bool)
+mapTyFull f ty =
+  let (ty1, c1) = mapTyKids f ty
+  let (ty2, c2) = f ty1
+  (ty2, c1 || c2)
+
+mapTyKids : (Ty -> (Ty, Bool)) -> Ty -> (Ty, Bool)
+mapTyKids _ (TyCon n l) = (TyCon n l, False)
+mapTyKids _ (TyVar n) = (TyVar n, False)
+mapTyKids f (TyApp a b) =
+  let (a2, ca) = mapTyFull f a
+  let (b2, cb) = mapTyFull f b
+  (TyApp a2 b2, ca || cb)
+mapTyKids f (TyFun a b) =
+  let (a2, ca) = mapTyFull f a
+  let (b2, cb) = mapTyFull f b
+  (TyFun a2 b2, ca || cb)
+mapTyKids f (TyTuple ts) =
+  let (ts2, c) = mapTyListB f ts
+  (TyTuple ts2, c)
+mapTyKids f (TyEffect es tail t) =
+  let (t2, c) = mapTyFull f t
+  (TyEffect es tail t2, c)
+mapTyKids f (TyConstrained cs t) =
+  let (cs2, cc) = mapConstraintsB f cs
+  let (t2, ct) = mapTyFull f t
+  (TyConstrained cs2 t2, cc || ct)
+
+mapTyListB : (Ty -> (Ty, Bool)) -> List Ty -> (List Ty, Bool)
+mapTyListB _ [] = ([], False)
+mapTyListB f (t::ts) =
+  let (t2, c1) = mapTyFull f t
+  let (ts2, c2) = mapTyListB f ts
+  (t2::ts2, c1 || c2)
+
+mapConstraintsB : (Ty -> (Ty, Bool)) -> List Constraint -> (List Constraint, Bool)
+mapConstraintsB _ [] = ([], False)
+mapConstraintsB f ((Constraint iface tys)::rest) =
+  let (tys2, c1) = mapTyListB f tys
+  let (rest2, c2) = mapConstraintsB f rest
+  (Constraint iface tys2 :: rest2, c1 || c2)
+
+-- ── generic Decl traversal ───────────────────────────────────────────────────
+-- Threads `f` through EVERY Ty position of a decl (verified against ast.mdk):
+-- signatures, externs, `data` variant payloads, prop params, interface method
+-- sigs (+ their default bodies' Exprs), impl heads + requires (+ method Exprs),
+-- type aliases, newtypes, let-groups, and `@attr`-wrapped decls.  `DEffect`
+-- decls carry no Ty and are left untouched (the effect-labels codemod warns
+-- about them separately).
+export mapTyInDecl : (Ty -> (Ty, Bool)) -> Decl -> (Decl, Bool)
+mapTyInDecl f (DTypeSig pub n t) =
+  let (t2, c) = mapTyFull f t
+  (DTypeSig pub n t2, c)
+mapTyInDecl f (DExtern pub n t) =
+  let (t2, c) = mapTyFull f t
+  (DExtern pub n t2, c)
+mapTyInDecl f (DFunDef pub n ps e) =
+  let (e2, c) = mapTyInExpr f e
+  (DFunDef pub n ps e2, c)
+mapTyInDecl f (DData vis n tps variants ders) =
+  let (vs2, c) = mapVariantsB f variants
+  (DData vis n tps vs2 ders, c)
+mapTyInDecl _ (DUse pub path loc) = (DUse pub path loc, False)
+mapTyInDecl _ (DEffect pub n dom isIntern) = (DEffect pub n dom isIntern, False)
+mapTyInDecl f (DProp pub n params body) =
+  let (params2, c1) = mapPropParamsB f params
+  let (body2, c2) = mapTyInExpr f body
+  (DProp pub n params2 body2, c1 || c2)
+mapTyInDecl f (DTest pub n body) =
+  let (b2, c) = mapTyInExpr f body
+  (DTest pub n b2, c)
+mapTyInDecl f (DBench pub n body) =
+  let (b2, c) = mapTyInExpr f body
+  (DBench pub n b2, c)
+mapTyInDecl f (d@(DInterface { methods, ... })) =
+  let (ms2, c) = mapIfaceMethodsB f methods
+  (DInterface { d | methods = ms2 }, c)
+mapTyInDecl f (d@(DImpl { tys, reqs, methods, ... })) =
+  let (tys2, c1) = mapTyListB f tys
+  let (reqs2, c2) = mapRequiresB f reqs
+  let (ms2, c3) = mapImplMethodsB f methods
+  (DImpl { d | tys = tys2, reqs = reqs2, methods = ms2 }, c1 || c2 || c3)
+mapTyInDecl f (DTypeAlias pub n tps t) =
+  let (t2, c) = mapTyFull f t
+  (DTypeAlias pub n tps t2, c)
+mapTyInDecl f (DNewtype pub n tps cn t ders) =
+  let (t2, c) = mapTyFull f t
+  (DNewtype pub n tps cn t2 ders, c)
+mapTyInDecl f (DLetGroup pub binds) =
+  let (bs2, c) = mapLetBindsB f binds
+  (DLetGroup pub bs2, c)
+mapTyInDecl f (DAttrib attrs d) =
+  let (d2, c) = mapTyInDecl f d
+  (DAttrib attrs d2, c)
+
+mapVariantsB : (Ty -> (Ty, Bool)) -> List Variant -> (List Variant, Bool)
+mapVariantsB _ [] = ([], False)
+mapVariantsB f (v::vs) =
+  let (v2, c1) = mapVariantB f v
+  let (vs2, c2) = mapVariantsB f vs
+  (v2::vs2, c1 || c2)
+
+mapVariantB : (Ty -> (Ty, Bool)) -> Variant -> (Variant, Bool)
+mapVariantB f (Variant n (ConPos tys)) =
+  let (tys2, c) = mapTyListB f tys
+  (Variant n (ConPos tys2), c)
+mapVariantB f (Variant n (ConNamed fields omitted)) =
+  let (fs2, c) = mapFieldsB f fields
+  (Variant n (ConNamed fs2 omitted), c)
+
+mapFieldsB : (Ty -> (Ty, Bool)) -> List Field -> (List Field, Bool)
+mapFieldsB _ [] = ([], False)
+mapFieldsB f ((Field n t)::rest) =
+  let (t2, c1) = mapTyFull f t
+  let (rest2, c2) = mapFieldsB f rest
+  (Field n t2 :: rest2, c1 || c2)
+
+mapPropParamsB : (Ty -> (Ty, Bool)) -> List PropParam -> (List PropParam, Bool)
+mapPropParamsB _ [] = ([], False)
+mapPropParamsB f ((PropParam n t)::rest) =
+  let (t2, c1) = mapTyFull f t
+  let (rest2, c2) = mapPropParamsB f rest
+  (PropParam n t2 :: rest2, c1 || c2)
+
+mapIfaceMethodsB : (Ty -> (Ty, Bool)) -> List IfaceMethod -> (List IfaceMethod, Bool)
+mapIfaceMethodsB _ [] = ([], False)
+mapIfaceMethodsB f (m::ms) =
+  let (m2, c1) = mapIfaceMethodB f m
+  let (ms2, c2) = mapIfaceMethodsB f ms
+  (m2::ms2, c1 || c2)
+
+mapIfaceMethodB : (Ty -> (Ty, Bool)) -> IfaceMethod -> (IfaceMethod, Bool)
+mapIfaceMethodB f (IfaceMethod n ty None) =
+  let (ty2, c) = mapTyFull f ty
+  (IfaceMethod n ty2 None, c)
+mapIfaceMethodB f (IfaceMethod n ty (Some (MethodDefault ps e))) =
+  let (ty2, c1) = mapTyFull f ty
+  let (e2, c2) = mapTyInExpr f e
+  (IfaceMethod n ty2 (Some (MethodDefault ps e2)), c1 || c2)
+
+mapRequiresB : (Ty -> (Ty, Bool)) -> List Require -> (List Require, Bool)
+mapRequiresB _ [] = ([], False)
+mapRequiresB f ((Require iface tys)::rest) =
+  let (tys2, c1) = mapTyListB f tys
+  let (rest2, c2) = mapRequiresB f rest
+  (Require iface tys2 :: rest2, c1 || c2)
+
+mapImplMethodsB : (Ty -> (Ty, Bool)) -> List ImplMethod -> (List ImplMethod, Bool)
+mapImplMethodsB _ [] = ([], False)
+mapImplMethodsB f ((ImplMethod n ps e)::rest) =
+  let (e2, c1) = mapTyInExpr f e
+  let (rest2, c2) = mapImplMethodsB f rest
+  (ImplMethod n ps e2 :: rest2, c1 || c2)
+
+mapLetBindsB : (Ty -> (Ty, Bool)) -> List LetBind -> (List LetBind, Bool)
+mapLetBindsB _ [] = ([], False)
+mapLetBindsB f ((LetBind n clauses)::rest) =
+  let (cs2, c1) = mapFunClausesB f clauses
+  let (rest2, c2) = mapLetBindsB f rest
+  (LetBind n cs2 :: rest2, c1 || c2)
+
+mapFunClausesB : (Ty -> (Ty, Bool)) -> List FunClause -> (List FunClause, Bool)
+mapFunClausesB _ [] = ([], False)
+mapFunClausesB f ((FunClause ps e)::rest) =
+  let (e2, c1) = mapTyInExpr f e
+  let (rest2, c2) = mapFunClausesB f rest
+  (FunClause ps e2 :: rest2, c1 || c2)
+
+-- ── generic Expr traversal (TOTAL over ast.mdk's Expr) ───────────────────────
+-- Ty appears in an Expr ONLY at `EAnnot`/`EHeadAnnot`, but every Expr-carrying
+-- constructor must be walked to REACH them.  This mirrors desugar.mdk's `mapKids`
+-- constructor-for-constructor (kept in lockstep with the AST — a new Expr node
+-- there makes THIS match non-exhaustive, a loud build error), but threads the
+-- change flag purely.  Ref-typed fields (EBinOp/EUnOp/EFieldAccess/ESlice/EIndex
+-- /ERecordUpdate/EMethodAt/EDictAt/ENumLit) are carried through unchanged.
+export mapTyInExpr : (Ty -> (Ty, Bool)) -> Expr -> (Expr, Bool)
+mapTyInExpr _ (ELit l) = (ELit l, False)
+mapTyInExpr _ (EVar n) = (EVar n, False)
+mapTyInExpr f (EApp a b) =
+  let (a2, ca) = mapTyInExpr f a
+  let (b2, cb) = mapTyInExpr f b
+  (EApp a2 b2, ca || cb)
+mapTyInExpr f (ELam ps b) =
+  let (b2, c) = mapTyInExpr f b
+  (ELam ps b2, c)
+mapTyInExpr f (ELet m r p e1 e2) =
+  let (e1b, c1) = mapTyInExpr f e1
+  let (e2b, c2) = mapTyInExpr f e2
+  (ELet m r p e1b e2b, c1 || c2)
+mapTyInExpr f (EMatch e0 arms) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (arms2, c2) = mapArmsB f arms
+  (EMatch e0b arms2, c1 || c2)
+mapTyInExpr f (EIf c t el) =
+  let (cb, c1) = mapTyInExpr f c
+  let (tb, c2) = mapTyInExpr f t
+  let (elb, c3) = mapTyInExpr f el
+  (EIf cb tb elb, c1 || c2 || c3)
+mapTyInExpr f (EBinOp op a b r) =
+  let (a2, ca) = mapTyInExpr f a
+  let (b2, cb) = mapTyInExpr f b
+  (EBinOp op a2 b2 r, ca || cb)
+mapTyInExpr f (EUnOp op a r) =
+  let (a2, c) = mapTyInExpr f a
+  (EUnOp op a2 r, c)
+mapTyInExpr f (EInfix op a b) =
+  let (a2, ca) = mapTyInExpr f a
+  let (b2, cb) = mapTyInExpr f b
+  (EInfix op a2 b2, ca || cb)
+mapTyInExpr f (EFieldAccess e0 n r) =
+  let (e0b, c) = mapTyInExpr f e0
+  (EFieldAccess e0b n r, c)
+mapTyInExpr f (ETuple es) =
+  let (es2, c) = mapExprsB f es
+  (ETuple es2, c)
+mapTyInExpr f (EListLit es) =
+  let (es2, c) = mapExprsB f es
+  (EListLit es2, c)
+mapTyInExpr f (EArrayLit es) =
+  let (es2, c) = mapExprsB f es
+  (EArrayLit es2, c)
+mapTyInExpr f (ERangeList lo hi incl) =
+  let (lo2, c1) = mapTyInExpr f lo
+  let (hi2, c2) = mapTyInExpr f hi
+  (ERangeList lo2 hi2 incl, c1 || c2)
+mapTyInExpr f (ERangeArray lo hi incl) =
+  let (lo2, c1) = mapTyInExpr f lo
+  let (hi2, c2) = mapTyInExpr f hi
+  (ERangeArray lo2 hi2 incl, c1 || c2)
+mapTyInExpr f (ESlice e0 lo hi incl r) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (lo2, c2) = mapTyInExpr f lo
+  let (hi2, c3) = mapTyInExpr f hi
+  (ESlice e0b lo2 hi2 incl r, c1 || c2 || c3)
+mapTyInExpr f (ELetGroup binds e2) =
+  let (bs2, c1) = mapLetBindsB f binds
+  let (e2b, c2) = mapTyInExpr f e2
+  (ELetGroup bs2 e2b, c1 || c2)
+mapTyInExpr _ (ESection (SecBare op)) = (ESection (SecBare op), False)
+mapTyInExpr f (ESection (SecRight op e0)) =
+  let (e0b, c) = mapTyInExpr f e0
+  (ESection (SecRight op e0b), c)
+mapTyInExpr f (ESection (SecLeft e0 op)) =
+  let (e0b, c) = mapTyInExpr f e0
+  (ESection (SecLeft e0b op), c)
+mapTyInExpr f (EIndex e0 i r) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (i2, c2) = mapTyInExpr f i
+  (EIndex e0b i2 r, c1 || c2)
+mapTyInExpr f (EAnnot e0 t) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (t2, c2) = mapTyFull f t
+  (EAnnot e0b t2, c1 || c2)
+mapTyInExpr f (EHeadAnnot e0 t) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (t2, c2) = mapTyFull f t
+  (EHeadAnnot e0b t2, c1 || c2)
+mapTyInExpr f (EBlock stmts) =
+  let (ss2, c) = mapDoStmtsB f stmts
+  (EBlock ss2, c)
+mapTyInExpr f (EDo stmts) =
+  let (ss2, c) = mapDoStmtsB f stmts
+  (EDo ss2, c)
+mapTyInExpr f (EStringInterp parts) =
+  let (ps2, c) = mapInterpsB f parts
+  (EStringInterp ps2, c)
+mapTyInExpr f (EGuards arms) =
+  let (as2, c) = mapGuardArmsB f arms
+  (EGuards as2, c)
+mapTyInExpr f (ERecordCreate n fs) =
+  let (fs2, c) = mapFieldAssignsB f fs
+  (ERecordCreate n fs2, c)
+mapTyInExpr f (ERecordUpdate e0 fs r) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (fs2, c2) = mapFieldAssignsB f fs
+  (ERecordUpdate e0b fs2 r, c1 || c2)
+mapTyInExpr f (EVariantUpdate cn e0 fs) =
+  let (e0b, c1) = mapTyInExpr f e0
+  let (fs2, c2) = mapFieldAssignsB f fs
+  (EVariantUpdate cn e0b fs2, c1 || c2)
+mapTyInExpr f (EMapLit n kvs) =
+  let (kvs2, c) = mapKvsB f kvs
+  (EMapLit n kvs2, c)
+mapTyInExpr f (ESetLit n es) =
+  let (es2, c) = mapExprsB f es
+  (ESetLit n es2, c)
+mapTyInExpr f (EAsPat n e0) =
+  let (e0b, c) = mapTyInExpr f e0
+  (EAsPat n e0b, c)
+mapTyInExpr _ (EMethodRef n) = (EMethodRef n, False)
+mapTyInExpr _ (EDictApp n) = (EDictApp n, False)
+mapTyInExpr _ (EVarAt n a) = (EVarAt n a, False)
+mapTyInExpr _ (EMethodAt n r1 r2 r3) = (EMethodAt n r1 r2 r3, False)
+mapTyInExpr _ (EDictAt n r) = (EDictAt n r, False)
+mapTyInExpr f (ELoc l e) =
+  let (e2, c) = mapTyInExpr f e
+  (ELoc l e2, c)
+mapTyInExpr f (EDoOrigin l e) =
+  let (e2, c) = mapTyInExpr f e
+  (EDoOrigin l e2, c)
+mapTyInExpr _ (ENumLit n rf rr) = (ENumLit n rf rr, False)
+
+mapExprsB : (Ty -> (Ty, Bool)) -> List Expr -> (List Expr, Bool)
+mapExprsB _ [] = ([], False)
+mapExprsB f (e::es) =
+  let (e2, c1) = mapTyInExpr f e
+  let (es2, c2) = mapExprsB f es
+  (e2::es2, c1 || c2)
+
+mapArmsB : (Ty -> (Ty, Bool)) -> List Arm -> (List Arm, Bool)
+mapArmsB _ [] = ([], False)
+mapArmsB f ((Arm p gs b)::rest) =
+  let (gs2, c1) = mapGuardsB f gs
+  let (b2, c2) = mapTyInExpr f b
+  let (rest2, c3) = mapArmsB f rest
+  (Arm p gs2 b2 :: rest2, c1 || c2 || c3)
+
+mapGuardsB : (Ty -> (Ty, Bool)) -> List Guard -> (List Guard, Bool)
+mapGuardsB _ [] = ([], False)
+mapGuardsB f ((GBool g)::rest) =
+  let (g2, c1) = mapTyInExpr f g
+  let (rest2, c2) = mapGuardsB f rest
+  (GBool g2 :: rest2, c1 || c2)
+mapGuardsB f ((GBind p g)::rest) =
+  let (g2, c1) = mapTyInExpr f g
+  let (rest2, c2) = mapGuardsB f rest
+  (GBind p g2 :: rest2, c1 || c2)
+
+mapGuardArmsB : (Ty -> (Ty, Bool)) -> List GuardArm -> (List GuardArm, Bool)
+mapGuardArmsB _ [] = ([], False)
+mapGuardArmsB f ((GuardArm gs b)::rest) =
+  let (gs2, c1) = mapGuardsB f gs
+  let (b2, c2) = mapTyInExpr f b
+  let (rest2, c3) = mapGuardArmsB f rest
+  (GuardArm gs2 b2 :: rest2, c1 || c2 || c3)
+
+mapDoStmtsB : (Ty -> (Ty, Bool)) -> List DoStmt -> (List DoStmt, Bool)
+mapDoStmtsB _ [] = ([], False)
+mapDoStmtsB f (s::ss) =
+  let (s2, c1) = mapDoStmtB f s
+  let (ss2, c2) = mapDoStmtsB f ss
+  (s2::ss2, c1 || c2)
+
+mapDoStmtB : (Ty -> (Ty, Bool)) -> DoStmt -> (DoStmt, Bool)
+mapDoStmtB f (DoExpr e) =
+  let (e2, c) = mapTyInExpr f e
+  (DoExpr e2, c)
+mapDoStmtB f (DoBind p e) =
+  let (e2, c) = mapTyInExpr f e
+  (DoBind p e2, c)
+mapDoStmtB f (DoLet m r p e) =
+  let (e2, c) = mapTyInExpr f e
+  (DoLet m r p e2, c)
+mapDoStmtB f (DoAssign x e) =
+  let (e2, c) = mapTyInExpr f e
+  (DoAssign x e2, c)
+mapDoStmtB f (DoFieldAssign x fs e) =
+  let (e2, c) = mapTyInExpr f e
+  (DoFieldAssign x fs e2, c)
+
+mapInterpsB : (Ty -> (Ty, Bool)) -> List InterpPart -> (List InterpPart, Bool)
+mapInterpsB _ [] = ([], False)
+mapInterpsB f (InterpStr s :: rest0) =
+  -- InterpStr carries no Expr; recurse the rest with the real transform.
+  let (rest2, c) = mapInterpsB f rest0
+  (InterpStr s :: rest2, c)
+mapInterpsB f ((InterpExpr e)::rest) =
+  let (e2, c1) = mapTyInExpr f e
+  let (rest2, c2) = mapInterpsB f rest
+  (InterpExpr e2 :: rest2, c1 || c2)
+
+mapFieldAssignsB : (Ty -> (Ty, Bool)) -> List FieldAssign -> (List FieldAssign, Bool)
+mapFieldAssignsB _ [] = ([], False)
+mapFieldAssignsB f ((FieldAssign n v)::rest) =
+  let (v2, c1) = mapTyInExpr f v
+  let (rest2, c2) = mapFieldAssignsB f rest
+  (FieldAssign n v2 :: rest2, c1 || c2)
+
+mapKvsB : (Ty -> (Ty, Bool)) -> List (Expr, Expr) -> (List (Expr, Expr), Bool)
+mapKvsB _ [] = ([], False)
+mapKvsB f ((k, v)::rest) =
+  let (k2, c1) = mapTyInExpr f k
+  let (v2, c2) = mapTyInExpr f v
+  let (rest2, c3) = mapKvsB f rest
+  ((k2, v2)::rest2, c1 || c2 || c3)
+
+-- ── the `effect-labels` transform ────────────────────────────────────────────
+-- Per-label action, parsed from `--strip`/`--rename`.
+data EffAction = ADrop | ARename String
+
+mkEffectLabels : List String -> Result String (Decl -> (Decl, Bool))
+mkEffectLabels args = match parseEffectArgs args []
+  Err msg => Err msg
+  Ok [] => Err "need at least one --strip <labels> or --rename Old=New"
+  Ok acts => Ok (mapTyInDecl (effTyNode acts))
+
+-- Parse the codemod-specific args into a (label -> action) table.  `--strip`
+-- and `--rename` each consume a following value (the CLI's generic flag/value
+-- splitter has already paired them).
+parseEffectArgs : List String -> List (String, EffAction) -> Result String (List (String, EffAction))
+parseEffectArgs [] acc = Ok (reverseL acc)
+parseEffectArgs ("--strip"::v::rest) acc =
+  parseEffectArgs rest (prependDrops (splitOnChar ',' v) acc)
+parseEffectArgs ("--rename"::v::rest) acc = match splitOnChar '=' v
+  [old, nw] =>
+    if old == "" || nw == "" then
+      Err "--rename expects Old=New, got '\{v}'"
+    else
+      parseEffectArgs rest ((old, ARename nw)::acc)
+  _ => Err "--rename expects Old=New, got '\{v}'"
+parseEffectArgs ["--strip"] _ =
+  Err "--strip requires a value (e.g. --strip Mut,Panic)"
+parseEffectArgs ["--rename"] _ =
+  Err "--rename requires a value (e.g. --rename Panic=Exit)"
+parseEffectArgs (x::_) _ = Err "unknown argument '\{x}'"
+
+prependDrops : List String -> List (String, EffAction) -> List (String, EffAction)
+prependDrops [] acc = acc
+prependDrops (n::ns) acc =
+  if n == "" then
+    prependDrops ns acc
+  else
+    prependDrops ns ((n, ADrop)::acc)
+
+-- Apply the action table at one Ty node.  Only `TyEffect` nodes are affected;
+-- everything else passes through unchanged.  (The child type was already
+-- rewritten by mapTyFull's post-order recursion.)
+effTyNode : List (String, EffAction) -> Ty -> (Ty, Bool)
+effTyNode acts (TyEffect es tail t) = rewriteRow acts es tail t
+effTyNode _ ty = (ty, False)
+
+rewriteRow : List (String, EffAction) -> List (String, Option String) -> Option String -> Ty -> (Ty, Bool)
+rewriteRow acts es tail t =
+  let stepped = map (applyAtom acts) es
+  let anyChanged = anyList sndB stepped
+  let kept = collectKept stepped
+  let deduped = dedupeAtoms kept
+  let dedupChanged = listLen deduped != listLen kept
+  let changed = anyChanged || dedupChanged
+  match deduped
+    [] => match tail
+      -- fully-stripped, no tail → an unannotated (pure) arrow: drop the node.
+      None => if changed then (t, True) else (TyEffect [] None t, False)
+      -- an open row with no atoms still prints (`<v>`) and round-trips.
+      Some v => (TyEffect [] (Some v) t, changed)
+    _ => (TyEffect deduped tail t, changed)
+
+applyAtom : List (String, EffAction) -> (String, Option String) -> (Option (String, Option String), Bool)
+applyAtom acts (label, dom) = match lookupAssoc label acts
+  None => (Some (label, dom), False)
+  Some ADrop => (None, True)
+  Some (ARename nw) => (Some (nw, dom), True)
+
+sndB : (a, Bool) -> Bool
+sndB (_, b) = b
+
+collectKept : List (Option (String, Option String), Bool) -> List (String, Option String)
+collectKept [] = []
+collectKept ((None, _)::rest) = collectKept rest
+collectKept ((Some a, _)::rest) = a :: collectKept rest
+
+-- Order-preserving dedupe (keep first) — a rename can make two atoms identical.
+dedupeAtoms : List (String, Option String) -> List (String, Option String)
+dedupeAtoms xs = dedupeGo xs []
+
+dedupeGo : List (String, Option String) -> List (String, Option String) -> List (String, Option String)
+dedupeGo [] _ = []
+dedupeGo (a::rest) seen =
+  if atomElem a seen then
+    dedupeGo rest seen
+  else
+    a :: dedupeGo rest (a::seen)
+
+atomElem : (String, Option String) -> List (String, Option String) -> Bool
+atomElem _ [] = False
+atomElem a (b::bs) = atomEq a b || atomElem a bs
+
+atomEq : (String, Option String) -> (String, Option String) -> Bool
+atomEq (l1, d1) (l2, d2) = l1 == l2 && domEq d1 d2
+
+domEq : Option String -> Option String -> Bool
+domEq None None = True
+domEq (Some x) (Some y) = x == y
+domEq _ _ = False
+
+-- Advisory warnings: a `DEffect` that DECLARES a targeted label is left
+-- untouched (the codemod only rewrites row USES), so flag it for the operator.
+warnEffectLabels : List String -> List Decl -> List String
+warnEffectLabels args decls = match parseEffectArgs args []
+  Err _ => []
+  Ok acts => declEffectWarns acts decls
+
+declEffectWarns : List (String, EffAction) -> List Decl -> List String
+declEffectWarns _ [] = []
+declEffectWarns acts (d::ds) = declEffectWarn acts d ++ declEffectWarns acts ds
+
+declEffectWarn : List (String, EffAction) -> Decl -> List String
+declEffectWarn acts (DEffect _ name _ _) = match lookupAssoc name acts
+  None => []
+  Some _ => [
+    "'effect \{name}' is declared here but effect-labels targets \{name}; the declaration is left untouched"
+  ]
+declEffectWarn acts (DAttrib _ d) = declEffectWarn acts d
+declEffectWarn _ _ = []

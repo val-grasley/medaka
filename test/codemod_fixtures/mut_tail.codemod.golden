@@ -1,0 +1,3 @@
+-- codemod fixture: stripping Mut from <Mut | e> keeps the open-row tail <e>.
+touch : Int -> <e> Int
+touch x = x

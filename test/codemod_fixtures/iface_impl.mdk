@@ -1,0 +1,7 @@
+-- codemod fixture: <Mut> in an interface method signature AND in an impl's
+-- `requires` type argument are both rewritten.
+interface Encode a where
+  encode : a -> <Mut> Unit
+
+impl Encode (List a) requires Encode (Int -> <Mut> a) where
+  encode xs = ()

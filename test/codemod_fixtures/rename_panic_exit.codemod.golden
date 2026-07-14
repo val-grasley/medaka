@@ -1,0 +1,6 @@
+-- codemod fixture (rename): Panic -> Exit, and <Panic, Exit> dedupes to <Exit>.
+bail : Int -> <Exit> Int
+bail x = x
+
+both : Int -> <Exit> Int
+both x = x

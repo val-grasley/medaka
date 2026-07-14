@@ -1,0 +1,8 @@
+-- leading comment: this must survive the rewrite verbatim.
+-- second leading comment line.
+persist : Ref Int -> Int -> <Mut> Unit  -- trailing comment stays put
+persist r v = setRef r v
+
+-- a standalone comment between decls is preserved too.
+noop : Int -> Int
+noop x = x
