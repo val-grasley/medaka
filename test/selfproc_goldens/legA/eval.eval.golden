@@ -258,6 +258,7 @@ pEPutStr : Value a -> <Mut, Stderr> Value a
 pEPutStrLn : Value a -> <Mut, Stderr> Value a
 pEnableRunStdoutFlush : Value a -> <Mut> Value a
 pExecutablePath : Value a -> <Env, Mut> Value a
+pExit : Value a -> <Mut, Panic> Value a
 pExp : Value a -> <Mut> Value a
 pFileExists : Value a -> <FileRead, Mut> Value a
 pFloatRem : Value a -> Value a -> <Mut> Value a

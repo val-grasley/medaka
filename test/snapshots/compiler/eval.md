@@ -1,5 +1,5 @@
 # META
-source_lines=2968
+source_lines=3005
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -2766,6 +2766,41 @@ pSleepMsIO (VInt n) =
   VUnit
 pSleepMsIO _ = panic "sleepMs: expected Int"
 
+-- The `exit` extern (stdlib/runtime.mdk: `exit : Int -> <Panic> Unit`) is
+-- declared in the catalog but had NO binding anywhere in eval.mdk, so a user
+-- program's `exit 0`/`exit 1` hit "unbound identifier: exit" under `medaka
+-- run` while the native `medaka build` binary already handled it correctly
+-- (llvm_emit.mdk's isAbortExtern groups "exit" with "panic"/"indexError" and
+-- lowers it straight to @mdk_exit).
+--
+-- Deliberately bound HERE (ioExternBindings, `medaka run`-only), NOT in the
+-- shared `externBindings` table pPanic/indexError live in: `externBindings` is
+-- also installed by `medaka test`/`medaka repl`/`medaka check-policy`'s
+-- evalModules, which batches MANY programs (doctests) through one long-lived
+-- process. A real process-terminating `exit` bound there would let a single
+-- `exit 0` inside one doctest silently kill the entire `medaka test` run with
+-- a SUCCESS status, abandoning every doctest after it — exactly the
+-- per-driver hazard test/CAPABILITY-EXCEPTIONS.txt flagged this extern as
+-- "DEFERRED ON PURPOSE" for. Scoping it to ioExternBindings (installed only by
+-- evalModulesOutputRun, `medaka run`'s own driver) avoids that: the pure
+-- oracle and the batch test/repl drivers still see "unbound identifier: exit"
+-- (unchanged, pre-existing behavior), while `medaka run` — the one driver that
+-- ever runs exactly ONE program per process — gets the real thing.
+--
+-- Unlike `pPanic`, this must NOT route through `runtimePanic` — exit is a
+-- silent, coded-free process termination (matching native `mdk_exit`'s bare
+-- `exit((int)(tagged >> 1))`), not a diagnostic. So it calls the real `exit`
+-- extern directly, same shape as `pSleepMsIO` calling the real `sleepMs`:
+-- eval.mdk is itself compiled natively, so this call lowers to a genuine
+-- @mdk_exit — a real process exit with the given code. (mdk_exit itself now
+-- also flushes the run-stdout stash first — see its comment in
+-- runtime/medaka_rt.c — so output printed before the exit call is not lost.)
+pExit : Value e -> <Panic, Mut | e> Value e
+pExit (VInt n) =
+  let _ = exit n
+  VUnit
+pExit _ = panic "exit: not an Int"
+
 pAllocBytesIO : Value e -> <IO, Mut | e> Value e
 pAllocBytesIO _ = VFloat (allocBytes ())
 
@@ -2904,6 +2939,8 @@ ioExternBindings _ = [
   ("readLineOpt", prim1M pReadLineOpt),
   ("readAll", prim1M pReadAll),
   ("readExactly", prim1 pReadExactly),
+  -- Process
+  ("exit", prim1 pExit),
 ]
 
 -- `medaka run`'s output driver: evalModulesOutput plus the real-I/O externs.
@@ -4208,6 +4245,9 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DTypeSig false "pSleepMsIO" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Clock" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pSleepMsIO" ((PCon "VInt" (PVar "n"))) (EBlock (DoLet false false PWild (EApp (EVar "sleepMs") (EVar "n"))) (DoExpr (EVar "VUnit"))))
 (DFunDef false "pSleepMsIO" (PWild) (EApp (EVar "panic") (ELit (LString "sleepMs: expected Int"))))
+(DTypeSig false "pExit" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Panic" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
+(DFunDef false "pExit" ((PCon "VInt" (PVar "n"))) (EBlock (DoLet false false PWild (EApp (EVar "exit") (EVar "n"))) (DoExpr (EVar "VUnit"))))
+(DFunDef false "pExit" (PWild) (EApp (EVar "panic") (ELit (LString "exit: not an Int"))))
 (DTypeSig false "pAllocBytesIO" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("IO" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pAllocBytesIO" (PWild) (EApp (EVar "VFloat") (EApp (EVar "allocBytes") (ELit LUnit))))
 (DTypeSig false "pEPutStr" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Stderr" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
@@ -4273,7 +4313,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "pReadExactly" ((PCon "VInt" (PVar "n"))) (EApp (EVar "vOptionString") (EApp (EVar "readExactly") (EVar "n"))))
 (DFunDef false "pReadExactly" (PWild) (EApp (EVar "panic") (ELit (LString "readExactly: expected Int"))))
 (DTypeSig true "ioExternBindings" (TyFun (TyCon "Unit") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
-(DFunDef false "ioExternBindings" (PWild) (EListLit (ETuple (ELit (LString "wallTimeSec")) (EApp (EVar "prim1M") (EVar "pWallTimeSecIO"))) (ETuple (ELit (LString "monotonicSec")) (EApp (EVar "prim1M") (EVar "pMonotonicSecIO"))) (ETuple (ELit (LString "sleepMs")) (EApp (EVar "prim1M") (EVar "pSleepMsIO"))) (ETuple (ELit (LString "allocBytes")) (EApp (EVar "prim1M") (EVar "pAllocBytesIO"))) (ETuple (ELit (LString "ePutStr")) (EApp (EVar "prim1M") (EVar "pEPutStr"))) (ETuple (ELit (LString "ePutStrLn")) (EApp (EVar "prim1M") (EVar "pEPutStrLn"))) (ETuple (ELit (LString "readFile")) (EApp (EVar "prim1") (EVar "pReadFile"))) (ETuple (ELit (LString "readFileBytes")) (EApp (EVar "prim1") (EVar "pReadFileBytes"))) (ETuple (ELit (LString "fileExists")) (EApp (EVar "prim1") (EVar "pFileExists"))) (ETuple (ELit (LString "canonicalizePath")) (EApp (EVar "prim1") (EVar "pCanonicalizePath"))) (ETuple (ELit (LString "listDir")) (EApp (EVar "prim1") (EVar "pListDir"))) (ETuple (ELit (LString "statFile")) (EApp (EVar "prim1") (EVar "pStatFile"))) (ETuple (ELit (LString "writeFile")) (EApp (EVar "prim2M") (EVar "pWriteFile"))) (ETuple (ELit (LString "writeFileBytes")) (EApp (EVar "prim2M") (EVar "pWriteFileBytes"))) (ETuple (ELit (LString "appendFile")) (EApp (EVar "prim2M") (EVar "pAppendFile"))) (ETuple (ELit (LString "makeDir")) (EApp (EVar "prim1") (EVar "pMakeDir"))) (ETuple (ELit (LString "removeFile")) (EApp (EVar "prim1") (EVar "pRemoveFile"))) (ETuple (ELit (LString "removeDir")) (EApp (EVar "prim1") (EVar "pRemoveDir"))) (ETuple (ELit (LString "rename")) (EApp (EVar "prim2M") (EVar "pRename"))) (ETuple (ELit (LString "args")) (EApp (EVar "prim1M") (EVar "pArgs"))) (ETuple (ELit (LString "getEnv")) (EApp (EVar "prim1") (EVar "pGetEnv"))) (ETuple (ELit (LString "executablePath")) (EApp (EVar "prim1M") (EVar "pExecutablePath"))) (ETuple (ELit (LString "readLine")) (EApp (EVar "prim1M") (EVar "pReadLine"))) (ETuple (ELit (LString "readLineOpt")) (EApp (EVar "prim1M") (EVar "pReadLineOpt"))) (ETuple (ELit (LString "readAll")) (EApp (EVar "prim1M") (EVar "pReadAll"))) (ETuple (ELit (LString "readExactly")) (EApp (EVar "prim1") (EVar "pReadExactly")))))
+(DFunDef false "ioExternBindings" (PWild) (EListLit (ETuple (ELit (LString "wallTimeSec")) (EApp (EVar "prim1M") (EVar "pWallTimeSecIO"))) (ETuple (ELit (LString "monotonicSec")) (EApp (EVar "prim1M") (EVar "pMonotonicSecIO"))) (ETuple (ELit (LString "sleepMs")) (EApp (EVar "prim1M") (EVar "pSleepMsIO"))) (ETuple (ELit (LString "allocBytes")) (EApp (EVar "prim1M") (EVar "pAllocBytesIO"))) (ETuple (ELit (LString "ePutStr")) (EApp (EVar "prim1M") (EVar "pEPutStr"))) (ETuple (ELit (LString "ePutStrLn")) (EApp (EVar "prim1M") (EVar "pEPutStrLn"))) (ETuple (ELit (LString "readFile")) (EApp (EVar "prim1") (EVar "pReadFile"))) (ETuple (ELit (LString "readFileBytes")) (EApp (EVar "prim1") (EVar "pReadFileBytes"))) (ETuple (ELit (LString "fileExists")) (EApp (EVar "prim1") (EVar "pFileExists"))) (ETuple (ELit (LString "canonicalizePath")) (EApp (EVar "prim1") (EVar "pCanonicalizePath"))) (ETuple (ELit (LString "listDir")) (EApp (EVar "prim1") (EVar "pListDir"))) (ETuple (ELit (LString "statFile")) (EApp (EVar "prim1") (EVar "pStatFile"))) (ETuple (ELit (LString "writeFile")) (EApp (EVar "prim2M") (EVar "pWriteFile"))) (ETuple (ELit (LString "writeFileBytes")) (EApp (EVar "prim2M") (EVar "pWriteFileBytes"))) (ETuple (ELit (LString "appendFile")) (EApp (EVar "prim2M") (EVar "pAppendFile"))) (ETuple (ELit (LString "makeDir")) (EApp (EVar "prim1") (EVar "pMakeDir"))) (ETuple (ELit (LString "removeFile")) (EApp (EVar "prim1") (EVar "pRemoveFile"))) (ETuple (ELit (LString "removeDir")) (EApp (EVar "prim1") (EVar "pRemoveDir"))) (ETuple (ELit (LString "rename")) (EApp (EVar "prim2M") (EVar "pRename"))) (ETuple (ELit (LString "args")) (EApp (EVar "prim1M") (EVar "pArgs"))) (ETuple (ELit (LString "getEnv")) (EApp (EVar "prim1") (EVar "pGetEnv"))) (ETuple (ELit (LString "executablePath")) (EApp (EVar "prim1M") (EVar "pExecutablePath"))) (ETuple (ELit (LString "readLine")) (EApp (EVar "prim1M") (EVar "pReadLine"))) (ETuple (ELit (LString "readLineOpt")) (EApp (EVar "prim1M") (EVar "pReadLineOpt"))) (ETuple (ELit (LString "readAll")) (EApp (EVar "prim1M") (EVar "pReadAll"))) (ETuple (ELit (LString "readExactly")) (EApp (EVar "prim1") (EVar "pReadExactly"))) (ETuple (ELit (LString "exit")) (EApp (EVar "prim1") (EVar "pExit")))))
 (DTypeSig true "evalModulesOutputRun" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("IO" "Mut") None (TyCon "String")))))
 (DFunDef false "evalModulesOutputRun" ((PVar "preludeDecls") (PVar "modules")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "outputRef")) (ELit (LString "")))) (DoLet false false PWild (EApp (EVar "enableRunStdoutFlush") (ELit LUnit))) (DoLet false false (PVar "binds") (EApp (EApp (EApp (EVar "evalModulesWith") (EApp (EVar "ioExternBindings") (ELit LUnit))) (EVar "preludeDecls")) (EVar "modules"))) (DoLet false false PWild (EApp (EVar "runMainForEffect") (EVar "binds"))) (DoExpr (EFieldAccess (EVar "outputRef") "value"))))
 (DTypeSig true "evalModulesOutputAsync" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") (Some "e") (TyCon "String")))))
@@ -5524,6 +5564,9 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DTypeSig false "pSleepMsIO" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Clock" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pSleepMsIO" ((PCon "VInt" (PVar "n"))) (EBlock (DoLet false false PWild (EApp (EVar "sleepMs") (EVar "n"))) (DoExpr (EVar "VUnit"))))
 (DFunDef false "pSleepMsIO" (PWild) (EApp (EVar "panic") (ELit (LString "sleepMs: expected Int"))))
+(DTypeSig false "pExit" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Panic" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
+(DFunDef false "pExit" ((PCon "VInt" (PVar "n"))) (EBlock (DoLet false false PWild (EApp (EVar "exit") (EVar "n"))) (DoExpr (EVar "VUnit"))))
+(DFunDef false "pExit" (PWild) (EApp (EVar "panic") (ELit (LString "exit: not an Int"))))
 (DTypeSig false "pAllocBytesIO" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("IO" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pAllocBytesIO" (PWild) (EApp (EVar "VFloat") (EApp (EVar "allocBytes") (ELit LUnit))))
 (DTypeSig false "pEPutStr" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect ("Stderr" "Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
@@ -5589,7 +5632,7 @@ evalOneRootEnv preludeDecls (rootId, prog) =
 (DFunDef false "pReadExactly" ((PCon "VInt" (PVar "n"))) (EApp (EVar "vOptionString") (EApp (EVar "readExactly") (EVar "n"))))
 (DFunDef false "pReadExactly" (PWild) (EApp (EVar "panic") (ELit (LString "readExactly: expected Int"))))
 (DTypeSig true "ioExternBindings" (TyFun (TyCon "Unit") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))
-(DFunDef false "ioExternBindings" (PWild) (EListLit (ETuple (ELit (LString "wallTimeSec")) (EApp (EVar "prim1M") (EVar "pWallTimeSecIO"))) (ETuple (ELit (LString "monotonicSec")) (EApp (EVar "prim1M") (EVar "pMonotonicSecIO"))) (ETuple (ELit (LString "sleepMs")) (EApp (EVar "prim1M") (EVar "pSleepMsIO"))) (ETuple (ELit (LString "allocBytes")) (EApp (EVar "prim1M") (EVar "pAllocBytesIO"))) (ETuple (ELit (LString "ePutStr")) (EApp (EVar "prim1M") (EVar "pEPutStr"))) (ETuple (ELit (LString "ePutStrLn")) (EApp (EVar "prim1M") (EVar "pEPutStrLn"))) (ETuple (ELit (LString "readFile")) (EApp (EVar "prim1") (EVar "pReadFile"))) (ETuple (ELit (LString "readFileBytes")) (EApp (EVar "prim1") (EVar "pReadFileBytes"))) (ETuple (ELit (LString "fileExists")) (EApp (EVar "prim1") (EVar "pFileExists"))) (ETuple (ELit (LString "canonicalizePath")) (EApp (EVar "prim1") (EVar "pCanonicalizePath"))) (ETuple (ELit (LString "listDir")) (EApp (EVar "prim1") (EVar "pListDir"))) (ETuple (ELit (LString "statFile")) (EApp (EVar "prim1") (EVar "pStatFile"))) (ETuple (ELit (LString "writeFile")) (EApp (EVar "prim2M") (EVar "pWriteFile"))) (ETuple (ELit (LString "writeFileBytes")) (EApp (EVar "prim2M") (EVar "pWriteFileBytes"))) (ETuple (ELit (LString "appendFile")) (EApp (EVar "prim2M") (EVar "pAppendFile"))) (ETuple (ELit (LString "makeDir")) (EApp (EVar "prim1") (EVar "pMakeDir"))) (ETuple (ELit (LString "removeFile")) (EApp (EVar "prim1") (EVar "pRemoveFile"))) (ETuple (ELit (LString "removeDir")) (EApp (EVar "prim1") (EVar "pRemoveDir"))) (ETuple (ELit (LString "rename")) (EApp (EVar "prim2M") (EVar "pRename"))) (ETuple (ELit (LString "args")) (EApp (EVar "prim1M") (EVar "pArgs"))) (ETuple (ELit (LString "getEnv")) (EApp (EVar "prim1") (EVar "pGetEnv"))) (ETuple (ELit (LString "executablePath")) (EApp (EVar "prim1M") (EVar "pExecutablePath"))) (ETuple (ELit (LString "readLine")) (EApp (EVar "prim1M") (EVar "pReadLine"))) (ETuple (ELit (LString "readLineOpt")) (EApp (EVar "prim1M") (EVar "pReadLineOpt"))) (ETuple (ELit (LString "readAll")) (EApp (EVar "prim1M") (EVar "pReadAll"))) (ETuple (ELit (LString "readExactly")) (EApp (EVar "prim1") (EVar "pReadExactly")))))
+(DFunDef false "ioExternBindings" (PWild) (EListLit (ETuple (ELit (LString "wallTimeSec")) (EApp (EVar "prim1M") (EVar "pWallTimeSecIO"))) (ETuple (ELit (LString "monotonicSec")) (EApp (EVar "prim1M") (EVar "pMonotonicSecIO"))) (ETuple (ELit (LString "sleepMs")) (EApp (EVar "prim1M") (EVar "pSleepMsIO"))) (ETuple (ELit (LString "allocBytes")) (EApp (EVar "prim1M") (EVar "pAllocBytesIO"))) (ETuple (ELit (LString "ePutStr")) (EApp (EVar "prim1M") (EVar "pEPutStr"))) (ETuple (ELit (LString "ePutStrLn")) (EApp (EVar "prim1M") (EVar "pEPutStrLn"))) (ETuple (ELit (LString "readFile")) (EApp (EVar "prim1") (EVar "pReadFile"))) (ETuple (ELit (LString "readFileBytes")) (EApp (EVar "prim1") (EVar "pReadFileBytes"))) (ETuple (ELit (LString "fileExists")) (EApp (EVar "prim1") (EVar "pFileExists"))) (ETuple (ELit (LString "canonicalizePath")) (EApp (EVar "prim1") (EVar "pCanonicalizePath"))) (ETuple (ELit (LString "listDir")) (EApp (EVar "prim1") (EVar "pListDir"))) (ETuple (ELit (LString "statFile")) (EApp (EVar "prim1") (EVar "pStatFile"))) (ETuple (ELit (LString "writeFile")) (EApp (EVar "prim2M") (EVar "pWriteFile"))) (ETuple (ELit (LString "writeFileBytes")) (EApp (EVar "prim2M") (EVar "pWriteFileBytes"))) (ETuple (ELit (LString "appendFile")) (EApp (EVar "prim2M") (EVar "pAppendFile"))) (ETuple (ELit (LString "makeDir")) (EApp (EVar "prim1") (EVar "pMakeDir"))) (ETuple (ELit (LString "removeFile")) (EApp (EVar "prim1") (EVar "pRemoveFile"))) (ETuple (ELit (LString "removeDir")) (EApp (EVar "prim1") (EVar "pRemoveDir"))) (ETuple (ELit (LString "rename")) (EApp (EVar "prim2M") (EVar "pRename"))) (ETuple (ELit (LString "args")) (EApp (EVar "prim1M") (EVar "pArgs"))) (ETuple (ELit (LString "getEnv")) (EApp (EVar "prim1") (EVar "pGetEnv"))) (ETuple (ELit (LString "executablePath")) (EApp (EVar "prim1M") (EVar "pExecutablePath"))) (ETuple (ELit (LString "readLine")) (EApp (EVar "prim1M") (EVar "pReadLine"))) (ETuple (ELit (LString "readLineOpt")) (EApp (EVar "prim1M") (EVar "pReadLineOpt"))) (ETuple (ELit (LString "readAll")) (EApp (EVar "prim1M") (EVar "pReadAll"))) (ETuple (ELit (LString "readExactly")) (EApp (EVar "prim1") (EVar "pReadExactly"))) (ETuple (ELit (LString "exit")) (EApp (EVar "prim1") (EVar "pExit")))))
 (DTypeSig true "evalModulesOutputRun" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("IO" "Mut") None (TyCon "String")))))
 (DFunDef false "evalModulesOutputRun" ((PVar "preludeDecls") (PVar "modules")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "outputRef")) (ELit (LString "")))) (DoLet false false PWild (EApp (EVar "enableRunStdoutFlush") (ELit LUnit))) (DoLet false false (PVar "binds") (EApp (EApp (EApp (EVar "evalModulesWith") (EApp (EVar "ioExternBindings") (ELit LUnit))) (EVar "preludeDecls")) (EVar "modules"))) (DoLet false false PWild (EApp (EVar "runMainForEffect") (EVar "binds"))) (DoExpr (EFieldAccess (EVar "outputRef") "value"))))
 (DTypeSig true "evalModulesOutputAsync" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") (Some "e") (TyCon "String")))))
