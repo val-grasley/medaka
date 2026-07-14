@@ -659,6 +659,7 @@ isArithBinop : String -> Bool
 isConPat : Pat -> Bool
 isConstrainedTy : Ty -> Bool
 isCtorAppHead : Expr -> Bool
+isDefinerShadow : String -> <Mut> Bool
 isHoleParam : Param -> Bool
 isHoleStr : String -> Bool
 isLetrecGroup : List String -> Bool

@@ -1,5 +1,5 @@
 # META
-source_lines=13530
+source_lines=13580
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -5188,14 +5188,61 @@ inferDefinerShadowApp env name tagRef implRef f x =
   let _ = if sym == "" then enforceStandaloneDomain env name xt dloc else ()
   inferApp (envAlphaLets env) (EApp f x) ft xt
 
--- P0-19 (d8): True iff the definer-shadow [name] applied to a receiver of type [xt]
--- should DISPATCH — its grounded head tycon has a visible impl of the shadowed
--- interface in the GLOBAL impl universe (shadowKeyTableRef, seeded local ∪ imported ∪
--- prelude).  An ungrounded receiver is NOT a dispatch (it is the standalone, S5).
+-- S1/S2 (THE INVERSION, 2026-07-14): is [name] a DEFINER shadow — a top-level fn defined in
+-- THIS module that reuses a single-param interface method's name?  This is the exact
+-- predicate that decides whether the inversion applies (Fork 1: definer-only).
+--
+-- ⚠️ It is NOT the same question as "did we reach inferDefinerShadowApp".  That entry point
+-- (definerShadowArgHead) ALSO fires for an IMPORTER shadow on the mangled emit path, where
+-- the mark pass seeded the route with the provider's mangled symbol (`routeLocalSym != ""`)
+-- — see its header.  Inverting on that signal would invert importer shadows too, which
+-- Fork 1 forbids: it breaks the everyday `import map` pattern (`isEmpty [1,2]` must still
+-- reach `Foldable.isEmpty`).  definerShadowNamesRef holds bare names on EVERY path — the
+-- emit path recovers a mangled local funDef through the mangle map (buildDefinerShadows) —
+-- and never holds an imported standalone, so it is the reliable definer/importer test.
+--
+-- The singleParamIfaceMethod conjunct mirrors definerShadowVarHead / definerShadowArgHead
+-- verbatim, so every entry point agrees on which occurrences the machinery owns.  A
+-- multi-TYPARAM interface (`interface Ix a i`) is deliberately still OUT of scope — that is
+-- the pre-existing S-3 / row-26 bug (SHADOW-SEMANTICS.md §2), untouched by this change.
+isDefinerShadow : String -> <Mut> Bool
+isDefinerShadow name = singleParamIfaceMethod name
+  && contains name definerShadowNamesRef.value
+
+-- S2 (THE INVERSION, 2026-07-14; SHADOW-INVERSION-DESIGN.md): True iff the shadow [name]
+-- applied to a receiver of type [xt] should DISPATCH to the interface method rather than
+-- call the standalone.
+--
+-- ⚠️ FOR A DEFINER SHADOW THE IMPL UNIVERSE IS NO LONGER CONSULTED.  It used to be: a
+-- receiver whose head tycon had a visible impl of the shadowed interface dispatched, and the
+-- standalone was only a FALLBACK for a no-impl head.  That rule silently ERASED the user's
+-- function —
+--
+--   eq : List Int -> List Int -> Bool
+--   eq a b = True
+--   main = println (debug (eq [1] [2]))   -- printed False: `impl Eq List` won
+--
+-- — and `check --types` did not even report the user's signature.  Since the prelude declares
+-- ~49 method names over every common type (`map`, `filter`, `length`, `compare`, `eq`, `min`,
+-- `empty`, `toList`, `display`, …), that made the most natural names in the language into
+-- landmines.  A top-level name written in a module is now THAT MODULE'S NAME: a definer
+-- shadow is the standalone, unconditionally, and the argument must type against the
+-- standalone's declared domain (a mismatch is a located reject — S2/S3/S6).
+--
+-- The ONE carve-out (S5, Fork 2): a receiver that is a dict-bound `=>` constraint var of the
+-- enclosing function still DISPATCHES.  Writing `Sz a => …` is an explicit, written-down
+-- request to resolve through the interface, and there is currently no other way to name the
+-- method inside a shadowing module (SHADOW-SEMANTICS.md §1.1).  A grounded head never
+-- normalizes to a TVar, so it correctly answers False for every concrete receiver.
+--
+-- An IMPORTER shadow reaching here (via definerShadowArgHead's mangled-sym arm) keeps the
+-- OLD per-receiver rule — Fork 1.
 definerReceiverDispatches : String -> Mono -> <Mut> Bool
-definerReceiverDispatches name xt = match headTyconMono xt
-  Some head => implExistsForHead shadowKeyTableRef.value name head
-  None => definerReceiverIsDictVar name xt
+definerReceiverDispatches name xt
+  | isDefinerShadow name = definerReceiverIsDictVar name xt
+  | otherwise = match headTyconMono xt
+    Some head => implExistsForHead shadowKeyTableRef.value name head
+    None => definerReceiverIsDictVar name xt
 
 -- P0-19 (constrained-receiver arm): True iff an UNGROUNDED definer-shadow receiver is
 -- one of the ENCLOSING group's `=>`-constraint variables for the SHADOWED interface (or
@@ -5252,26 +5299,25 @@ superIfaceName : Super -> String
 superIfaceName (Super n _) = n
 
 -- P0-19: impose a definer-shadow standalone's declared domain on the actual argument
--- [xt] WHEN the occurrence resolves to the standalone (RLocal): a grounded receiver
--- head with no impl of the shadowed interface, or an ungrounded receiver (S5 —
--- monomorphise the enclosing wrapper to the standalone's domain).  A grounded head
--- that DOES have an impl dispatches → leave it (no domain constraint).  No declared
--- signature ⇒ nothing to enforce (permissive fallback, unchanged).  [dloc] re-points
--- currentLoc at the application so a mismatch localizes to the call, not the argument.
+-- [xt] WHEN the occurrence resolves to the standalone (RLocal).  No declared signature ⇒
+-- nothing to enforce (permissive fallback, unchanged).  [dloc] re-points currentLoc at the
+-- application so a mismatch localizes to the call, not the argument.
+--
+-- S2 (THE INVERSION): a definer shadow now ALWAYS resolves to the standalone, so its domain
+-- is ALWAYS enforced.  This used to skip enforcement whenever the receiver's grounded head
+-- had a visible impl of the shadowed interface — that head dispatched, so no domain applied.
+-- That skip is precisely what let `eq [1] [2]` sail through `check` against the PRELUDE's
+-- `Eq.eq` while the user's `eq : List Int -> List Int -> Bool` was discarded.  The only
+-- surviving exemption is the Fork-2 dict-var carve-out: imposing a concrete domain on the
+-- enclosing group's `=>`-constraint var would monomorphise its written signature.
 enforceStandaloneDomain : TcEnv -> String -> Mono -> Option Loc -> <Mut> Unit
 enforceStandaloneDomain _ name xt dloc = match standaloneShadowDomain name
   None => ()
-  Some dom => match headTyconMono xt
-    Some head =>
-      if implExistsForHead shadowKeyTableRef.value name head then
-        ()
-      else
-        unifyStandaloneDomain dom xt dloc
-    -- P0-19 (constrained-receiver arm): an ungrounded receiver that is one of the
-    -- enclosing group's dict-bound constraint vars DISPATCHES — imposing the
-    -- standalone's domain on it would monomorphise the constrained signature.
-    None =>
-      if definerReceiverIsDictVar name xt then () else unifyStandaloneDomain dom xt dloc
+  Some dom =>
+    if definerReceiverIsDictVar name xt then
+      ()
+    else
+      unifyStandaloneDomain dom xt dloc
 
 -- P0-20 (SILENT WRONG ANSWER, `eq 1 2` → the binary printed 0): typecheck's
 -- dispatch-vs-standalone decision and the POST-inference route resolver
@@ -5375,39 +5421,31 @@ definerShadowVarHead (EVar name)
   | otherwise = None
 definerShadowVarHead _ = None
 
--- P0-19: type an un-marked (check-path) definer-shadow application PER RECEIVER,
--- mirroring the importer path (inferShadowApp).  A receiver head with a VISIBLE impl
--- of the shadowed interface DISPATCHES (impl universe is GLOBAL — shadowKeyTableRef
--- spans local ∪ imported ∪ prelude) → type against the METHOD scheme so the result
--- comes from the method; a grounded no-impl head, or an ungrounded receiver (S5), is
--- the STANDALONE → type against the LOCAL standalone scheme (its result type) and
--- localize a domain mismatch to the call.  Using the method scheme EXPLICITLY (not
--- `infer env f`) is what makes d8 (S6) dispatch: on the multi-module path the env
--- rebinds the bare name to the LOCAL standalone (`Int -> Int`), so `infer env f` there
--- would reject a live-impl receiver (`Box`) — the row-14 `Int vs Box` bug — instead of
--- dispatching to the imported impl.  On the single-file path the standalone/method
--- split is unchanged (d1/d2/d9 stay green).
+-- S2 (THE INVERSION): type an un-marked (check-path) definer-shadow application against
+-- the module's OWN standalone, unconditionally.  Peer of inferDefinerShadowApp (the marked
+-- run/build path); the two must agree cell-for-cell or `check` and the binary diverge (S7),
+-- which is the bug class this whole arc keeps producing.
+--
+-- The receiver's impl universe is no longer consulted (see definerReceiverDispatches).  The
+-- sole dispatch arm left is the Fork-2 carve-out: a dict-bound `=>` constraint var, which is
+-- an explicit written request to resolve through the interface.  Everything else — grounded
+-- live-impl head included — types against the LOCAL standalone scheme, so a domain mismatch
+-- (`size (Box 3)` against `size : Int -> Int`) is a located reject at the call, not a silent
+-- dispatch that erases the user's function.
 inferDefinerShadowVarApp : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferDefinerShadowVarApp env name f x =
   let dloc = currentLoc.value
   let xt = infer env x
+  let isDictVar = definerReceiverIsDictVar name xt
   -- P0-20: ground an ungrounded receiver to the standalone's declared domain BEFORE the
-  -- dispatch decision (see groundShadowReceiver) — otherwise `check` types `eq 1 2`
-  -- against the standalone while run/build dispatch to `impl Eq Int`.
-  let _ = groundShadowReceiver (standaloneShadowDomain name) xt (definerReceiverIsDictVar name xt) dloc
-  match headTyconMono xt
-    Some head =>
-      if implExistsForHead shadowKeyTableRef.value name head then
-        inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
-      else
-        inferDefinerStandaloneVarApp env name f x xt dloc
-    -- P0-19 (constrained-receiver arm): an ungrounded receiver that is one of the
-    -- enclosing group's dict-bound constraint vars is a DISPATCH, not the standalone.
-    None =>
-      if definerReceiverIsDictVar name xt then
-        inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
-      else
-        inferDefinerStandaloneVarApp env name f x xt dloc
+  -- dispatch decision (see groundShadowReceiver).  Still load-bearing under the inversion:
+  -- it is what gives a bare `Num` literal receiver (`eq 1 2`) the standalone's domain
+  -- rather than leaving it open for Num-defaulting to ground LATER, behind typecheck's back.
+  let _ = groundShadowReceiver (standaloneShadowDomain name) xt isDictVar dloc
+  if isDictVar then
+    inferApp (envAlphaLets env) (EApp f x) (shadowVarHeadMethodScheme env name f) xt
+  else
+    inferDefinerStandaloneVarApp env name f x xt dloc
 
 -- P0-19 (d8 dispatch arm): the interface METHOD scheme for [name], from
 -- methodIfaceParamsRef (which spans imported interfaces) so per-receiver dispatch works
@@ -7583,17 +7621,29 @@ resolveRLocalSites prog implTable keyTable ((RLocalSite name tagRef am sym force
 -- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
 resolveRLocalSite : List Decl -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> <Mut> Unit
 resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces = match headTyconMono am
-  -- P0-18: route per-receiver for BOTH importer and definer shadows.  A GROUNDED
-  -- receiver whose head has an impl of the shadowed interface dispatches to the
-  -- method (leave the route → eval arg-tag / emit RKey); one with NO impl is the
-  -- standalone (RLocal).  Previously a DEFINER shadow was UNCONDITIONALLY RLocal
-  -- (Facet 2), which mis-routed `size (Box 3)` — `Box` HAS a `Sizeable` impl — to
-  -- the standalone `size n = n + 1` (run → `unknown op '+'`, build → garbage).  The
-  -- existing definer shadows (map/hash_map `toList`/`isEmpty`, parser `orElse`) are
-  -- each applied only to their own type, which has NO impl of the shadowed interface,
-  -- so they still resolve RLocal.  am is the ACTUAL argument type (inferDefinerShadowApp
-  -- records it), not the standalone's declared domain, so the impl query is meaningful.
-  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef sym
+  -- S2 (THE INVERSION): route by SHADOW KIND first, receiver second.
+  --   * DEFINER shadow (the name is this module's own top-level fn) → the standalone,
+  --     UNCONDITIONALLY.  The impl universe is not consulted; a grounded head with a live
+  --     impl no longer steals the call.  (The APP path already forces this via the
+  --     RLocalSite `forceLocal` flag; this arm is what carries the other recorders —
+  --     notably the VALUE-position sites pushed by the generic recordRLocalSite, which is
+  --     gated on standaloneValuesRef and that set holds definer AND importer shadows.)
+  --   * IMPORTER shadow (Fork 1) → the OLD per-receiver rule, unchanged: a live impl at the
+  --     receiver head dispatches, else the standalone.  An `import` is a SIBLING scope, not
+  --     an inner one, so it does not shadow; inverting it too would break the everyday
+  --     `import map` pattern (`isEmpty [1,2]` must still reach `Foldable.isEmpty`).
+  -- am is the ACTUAL argument type (inferDefinerShadowApp records it), not the standalone's
+  -- declared domain, so the importer arm's impl query is still meaningful.
+  --
+  -- ⚠️ isDefinerShadow — NOT a bare definerShadowNamesRef membership test.  That ref is
+  -- populated for a multi-TYPARAM interface's method too, but EVERY typing entry point is
+  -- gated on singleParamIfaceMethod and so leaves such an occurrence to ordinary dispatch
+  -- (the open S-3 / row-26 bug).  Forcing RLocal here without the same gate would route a
+  -- site whose TYPE came from the dispatch path — route and type disagreeing is exactly the
+  -- P0-20 bug class.  Keep the two gates identical.
+  Some tag => stampRLocalOrFallback
+    (not (isDefinerShadow name) && implExistsForHead keyTable name tag)
+    tagRef sym
     (routesOfMonosTop prog implTable monos ifaces)
   -- An UNGROUNDED definer-shadow receiver keeps the old default (RLocal → standalone);
   -- other (importer) ungrounded sites stay untouched (deferred/polymorphic).
@@ -14942,8 +14992,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "definerShadowArgHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono")))))))))
 (DFunDef false "inferDefinerShadowApp" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "sym") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EApp (EApp (EVar "shadowDomainFor") (EVar "env")) (EVar "name")) (EVar "sym"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoLet false false (PVar "dispatches") (EApp (EApp (EVar "definerReceiverDispatches") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressRLocalRecord")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressArgStamp")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EIf (EVar "dispatches") (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f")) (EApp (EApp (EApp (EVar "definerShadowHeadType") (EVar "env")) (EVar "sym")) (EVar "f")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "False"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressRLocalRecord")) (EVar "False"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressArgStamp")) (EVar "False"))) (DoLet false false (PVar "dicts") (EIf (EBinOp "||" (EVar "dispatches") (EVar "isDictVar")) (ETuple (EListLit) (EListLit)) (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDicts") (EVar "env")) (EVar "name")) (EVar "sym")) (EVar "xt")))) (DoLet false false PWild (EIf (EVar "isDictVar") (ELit LUnit) (EApp (EApp (EVar "setRef") (EVar "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "RLocalSite") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (EApp (EVar "not") (EVar "dispatches"))) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts"))) (EFieldAccess (EVar "pendingRLocalSites") "value"))))) (DoLet false false PWild (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "setRef") (EVar "pendingArgStamps")) (EBinOp "::" (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef") (EVar "xt") (EFieldAccess (EVar "currentFn") "value")) (EFieldAccess (EVar "pendingArgStamps") "value")))) (arm (PCon "None") () (ELit LUnit)))) (DoLet false false PWild (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "enforceStandaloneDomain") (EVar "env")) (EVar "name")) (EVar "xt")) (EVar "dloc")) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EVar "ft")) (EVar "xt")))))
+(DTypeSig false "isDefinerShadow" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value"))))
 (DTypeSig false "definerReceiverDispatches" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyEffect ("Mut") None (TyCon "Bool")))))
-(DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))))
+(DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EIf (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EIf (EVar "otherwise") (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "definerReceiverIsDictVar" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyEffect ("Mut") None (TyCon "Bool")))))
 (DFunDef false "definerReceiverIsDictVar" ((PVar "name") (PVar "xt")) (EMatch (EApp (EVar "normalize") (EVar "xt")) (arm (PCon "TVar" (PVar "cell")) () (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple (PVar "mIface") PWild PWild)) () (EApp (EApp (EApp (EVar "dictVarSatisfiesIface") (EVar "mIface")) (EApp (EVar "tyvarId") (EVar "cell"))) (EFieldAccess (EVar "groupConstraintMonosRef") "value"))) (arm (PCon "None") () (EVar "False")))) (arm PWild () (EVar "False"))))
 (DTypeSig false "dictVarSatisfiesIface" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyEffect ("Mut") None (TyCon "Bool"))))))
@@ -14961,7 +15013,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "superIfaceName" (TyFun (TyCon "Super") (TyCon "String")))
 (DFunDef false "superIfaceName" ((PCon "Super" (PVar "n") PWild)) (EVar "n"))
 (DTypeSig false "enforceStandaloneDomain" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Unit")))))))
-(DFunDef false "enforceStandaloneDomain" (PWild (PVar "name") (PVar "xt") (PVar "dloc")) (EMatch (EApp (EVar "standaloneShadowDomain") (EVar "name")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "dom")) () (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc"))))))))
+(DFunDef false "enforceStandaloneDomain" (PWild (PVar "name") (PVar "xt") (PVar "dloc")) (EMatch (EApp (EVar "standaloneShadowDomain") (EVar "name")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "dom")) () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc"))))))
 (DTypeSig false "groundShadowReceiver" (TyFun (TyApp (TyCon "Option") (TyCon "Mono")) (TyFun (TyCon "Mono") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "groundShadowReceiver" ((PVar "dom") (PVar "xt") (PVar "isDictVar") (PVar "dloc")) (EIf (EVar "isDictVar") (ELit LUnit) (EIf (EApp (EVar "isSome") (EApp (EVar "headTyconMono") (EVar "xt"))) (ELit LUnit) (EIf (EVar "otherwise") (EMatch (EVar "dom") (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "d")) () (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "d")) (EVar "xt")) (EVar "dloc")))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "shadowDomainFor" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "Option") (TyCon "Mono")))))))
@@ -14980,7 +15032,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowVarHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono")))))))
-(DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (EVar "dloc"))) (DoExpr (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))))
+(DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoExpr (EIf (EVar "isDictVar") (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))
 (DTypeSig false "shadowVarHeadMethodScheme" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono"))))))
 (DFunDef false "shadowVarHeadMethodScheme" ((PVar "env") (PVar "name") (PVar "f")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild PWild (PVar "ty"))) () (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty")))) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "f"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "False"))) (DoExpr (EVar "ft"))))))
 (DTypeSig false "inferDefinerStandaloneVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Mono")))))))))
@@ -15569,7 +15621,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "resolveRLocalSites" (PWild PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "resolveRLocalSites" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PCons (PCon "RLocalSite" (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "forceLocal") (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBlock (DoLet false false PWild (EIf (EVar "forceLocal") (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveRLocalSite") (EVar "prog")) (EVar "implTable")) (EVar "keyTable")) (EVar "name")) (EVar "tagRef")) (EVar "am")) (EVar "sym")) (EVar "monos")) (EVar "ifaces")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "resolveRLocalSites") (EVar "prog")) (EVar "implTable")) (EVar "keyTable")) (EVar "rest")))))
 (DTypeSig false "resolveRLocalSite" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyApp (TyCon "List") (TyCon "KeyEntry")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "Mono") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyCon "Unit"))))))))))))
-(DFunDef false "resolveRLocalSite" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "monos") (PVar "ifaces")) (EMatch (EApp (EVar "headTyconMono") (EVar "am")) (arm (PCon "Some" (PVar "tag")) () (EApp (EApp (EApp (EApp (EVar "stampRLocalOrFallback") (EApp (EApp (EApp (EVar "implExistsForHead") (EVar "keyTable")) (EVar "name")) (EVar "tag"))) (EVar "tagRef")) (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (ELit LUnit)))))
+(DFunDef false "resolveRLocalSite" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "monos") (PVar "ifaces")) (EMatch (EApp (EVar "headTyconMono") (EVar "am")) (arm (PCon "Some" (PVar "tag")) () (EApp (EApp (EApp (EApp (EVar "stampRLocalOrFallback") (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isDefinerShadow") (EVar "name"))) (EApp (EApp (EApp (EVar "implExistsForHead") (EVar "keyTable")) (EVar "name")) (EVar "tag")))) (EVar "tagRef")) (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (ELit LUnit)))))
 (DTypeSig false "stampRLocalOrFallback" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "stampRLocalOrFallback" ((PCon "True") PWild PWild PWild) (ELit LUnit))
 (DFunDef false "stampRLocalOrFallback" ((PCon "False") (PVar "tagRef") (PVar "sym") (PVar "dicts")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EVar "dicts"))))
@@ -18538,8 +18590,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "definerShadowArgHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono")))))))))
 (DFunDef false "inferDefinerShadowApp" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "sym") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EApp (EApp (EVar "shadowDomainFor") (EVar "env")) (EVar "name")) (EVar "sym"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoLet false false (PVar "dispatches") (EApp (EApp (EVar "definerReceiverDispatches") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressRLocalRecord")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressArgStamp")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EIf (EVar "dispatches") (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f")) (EApp (EApp (EApp (EVar "definerShadowHeadType") (EVar "env")) (EVar "sym")) (EVar "f")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "False"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressRLocalRecord")) (EVar "False"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "suppressArgStamp")) (EVar "False"))) (DoLet false false (PVar "dicts") (EIf (EBinOp "||" (EVar "dispatches") (EVar "isDictVar")) (ETuple (EListLit) (EListLit)) (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDicts") (EVar "env")) (EVar "name")) (EVar "sym")) (EVar "xt")))) (DoLet false false PWild (EIf (EVar "isDictVar") (ELit LUnit) (EApp (EApp (EVar "setRef") (EVar "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "RLocalSite") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (EApp (EVar "not") (EVar "dispatches"))) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts"))) (EFieldAccess (EVar "pendingRLocalSites") "value"))))) (DoLet false false PWild (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "setRef") (EVar "pendingArgStamps")) (EBinOp "::" (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef") (EVar "xt") (EFieldAccess (EVar "currentFn") "value")) (EFieldAccess (EVar "pendingArgStamps") "value")))) (arm (PCon "None") () (ELit LUnit)))) (DoLet false false PWild (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "enforceStandaloneDomain") (EVar "env")) (EVar "name")) (EVar "xt")) (EVar "dloc")) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EVar "ft")) (EVar "xt")))))
+(DTypeSig false "isDefinerShadow" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value"))))
 (DTypeSig false "definerReceiverDispatches" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyEffect ("Mut") None (TyCon "Bool")))))
-(DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))))
+(DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EIf (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EIf (EVar "otherwise") (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "definerReceiverIsDictVar" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyEffect ("Mut") None (TyCon "Bool")))))
 (DFunDef false "definerReceiverIsDictVar" ((PVar "name") (PVar "xt")) (EMatch (EApp (EVar "normalize") (EVar "xt")) (arm (PCon "TVar" (PVar "cell")) () (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple (PVar "mIface") PWild PWild)) () (EApp (EApp (EApp (EVar "dictVarSatisfiesIface") (EVar "mIface")) (EApp (EVar "tyvarId") (EVar "cell"))) (EFieldAccess (EVar "groupConstraintMonosRef") "value"))) (arm (PCon "None") () (EVar "False")))) (arm PWild () (EVar "False"))))
 (DTypeSig false "dictVarSatisfiesIface" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyEffect ("Mut") None (TyCon "Bool"))))))
@@ -18557,7 +18611,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "superIfaceName" (TyFun (TyCon "Super") (TyCon "String")))
 (DFunDef false "superIfaceName" ((PCon "Super" (PVar "n") PWild)) (EVar "n"))
 (DTypeSig false "enforceStandaloneDomain" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Unit")))))))
-(DFunDef false "enforceStandaloneDomain" (PWild (PVar "name") (PVar "xt") (PVar "dloc")) (EMatch (EApp (EVar "standaloneShadowDomain") (EVar "name")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "dom")) () (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc"))))))))
+(DFunDef false "enforceStandaloneDomain" (PWild (PVar "name") (PVar "xt") (PVar "dloc")) (EMatch (EApp (EVar "standaloneShadowDomain") (EVar "name")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "dom")) () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (ELit LUnit) (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "dom")) (EVar "xt")) (EVar "dloc"))))))
 (DTypeSig false "groundShadowReceiver" (TyFun (TyApp (TyCon "Option") (TyCon "Mono")) (TyFun (TyCon "Mono") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "groundShadowReceiver" ((PVar "dom") (PVar "xt") (PVar "isDictVar") (PVar "dloc")) (EIf (EVar "isDictVar") (ELit LUnit) (EIf (EApp (EVar "isSome") (EApp (EVar "headTyconMono") (EVar "xt"))) (ELit LUnit) (EIf (EVar "otherwise") (EMatch (EVar "dom") (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "d")) () (EApp (EApp (EApp (EVar "unifyStandaloneDomain") (EVar "d")) (EVar "xt")) (EVar "dloc")))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "shadowDomainFor" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("Mut") None (TyApp (TyCon "Option") (TyCon "Mono")))))))
@@ -18576,7 +18630,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowVarHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono")))))))
-(DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (EVar "dloc"))) (DoExpr (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))))
+(DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoExpr (EIf (EVar "isDictVar") (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))
 (DTypeSig false "shadowVarHeadMethodScheme" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyEffect ("Mut") None (TyCon "Mono"))))))
 (DFunDef false "shadowVarHeadMethodScheme" ((PVar "env") (PVar "name") (PVar "f")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild PWild (PVar "ty"))) () (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty")))) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "f"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "shadowHeadCtxRef")) (EVar "False"))) (DoExpr (EVar "ft"))))))
 (DTypeSig false "inferDefinerStandaloneVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyEffect ("Mut") None (TyCon "Mono")))))))))
@@ -19165,7 +19219,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "resolveRLocalSites" (PWild PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "resolveRLocalSites" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PCons (PCon "RLocalSite" (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "forceLocal") (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBlock (DoLet false false PWild (EIf (EVar "forceLocal") (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveRLocalSite") (EVar "prog")) (EVar "implTable")) (EVar "keyTable")) (EVar "name")) (EVar "tagRef")) (EVar "am")) (EVar "sym")) (EVar "monos")) (EVar "ifaces")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "resolveRLocalSites") (EVar "prog")) (EVar "implTable")) (EVar "keyTable")) (EVar "rest")))))
 (DTypeSig false "resolveRLocalSite" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyApp (TyCon "List") (TyCon "KeyEntry")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "Mono") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("Mut") None (TyCon "Unit"))))))))))))
-(DFunDef false "resolveRLocalSite" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "monos") (PVar "ifaces")) (EMatch (EApp (EVar "headTyconMono") (EVar "am")) (arm (PCon "Some" (PVar "tag")) () (EApp (EApp (EApp (EApp (EVar "stampRLocalOrFallback") (EApp (EApp (EApp (EVar "implExistsForHead") (EVar "keyTable")) (EVar "name")) (EVar "tag"))) (EVar "tagRef")) (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (ELit LUnit)))))
+(DFunDef false "resolveRLocalSite" ((PVar "prog") (PVar "implTable") (PVar "keyTable") (PVar "name") (PVar "tagRef") (PVar "am") (PVar "sym") (PVar "monos") (PVar "ifaces")) (EMatch (EApp (EVar "headTyconMono") (EVar "am")) (arm (PCon "Some" (PVar "tag")) () (EApp (EApp (EApp (EApp (EVar "stampRLocalOrFallback") (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isDefinerShadow") (EVar "name"))) (EApp (EApp (EApp (EVar "implExistsForHead") (EVar "keyTable")) (EVar "name")) (EVar "tag")))) (EVar "tagRef")) (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (arm (PCon "None") () (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EVar "definerShadowNamesRef") "value")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EApp (EApp (EApp (EApp (EVar "routesOfMonosTop") (EVar "prog")) (EVar "implTable")) (EVar "monos")) (EVar "ifaces")))) (ELit LUnit)))))
 (DTypeSig false "stampRLocalOrFallback" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect ("Mut") None (TyCon "Unit")))))))
 (DFunDef false "stampRLocalOrFallback" ((PCon "True") PWild PWild PWild) (ELit LUnit))
 (DFunDef false "stampRLocalOrFallback" ((PCon "False") (PVar "tagRef") (PVar "sym") (PVar "dicts")) (EApp (EApp (EVar "setRef") (EVar "tagRef")) (EApp (EApp (EVar "RLocal") (EVar "sym")) (EVar "dicts"))))

@@ -26,6 +26,48 @@
 # gate's empirical run is what proved it, and the table has now been corrected
 # to match -- with this gate cited as the enforcement.
 #
+# ###################################################################
+# # 2026-07-14 -- THE S2 INVERSION. FIVE ROWS FLIPPED ACCEPT->REJECT #
+# ###################################################################
+# A top-level standalone now WINS over a same-named interface method inside the
+# module that DEFINES it (compiler/SHADOW-INVERSION-DESIGN.md; docs/spec/
+# SHADOW-SEMANTICS.md S2). The impl universe is no longer consulted for a
+# DEFINER shadow. The bug it fixes: a user`s
+#
+#     eq : List Int -> List Int -> Bool
+#     eq a b = True
+#     main = println (debug (eq [1] [2]))      -- printed False. SILENTLY.
+#
+# was ERASED by the prelude`s `impl Eq List` -- on check AND run AND build, so
+# by S7 (they all agree) NO differential gate could see it, BY CONSTRUCTION.
+# That is exactly why this gate pins VALUES, and it is the only gate that could
+# have caught the fix landing wrong.
+#
+# The five rows re-pinned, each ACCEPT -> located REJECT (`Type mismatch: Int
+# vs <receiver>` at the call site, on all three paths):
+#   d2 -- live-impl receiver                    (S2)
+#   d3 -- N-way: S3 is now VACUOUS for a definer shadow
+#   d6 -- live impl at a PARAMETRIC head        (S2)
+#   d7 -- two-param method                      (S8)
+#   d8 -- iface+impl IMPORTED                   (S6)
+# Nothing that REJECTed became an ACCEPT: the change is monotonically MORE
+# rejecting for definer shadows, which is what makes it safe to land.
+#
+# ⚠️ d8 DELIBERATELY REVERTS ebb8ee90 (P0-19 batch 2, row 14), which was two
+# days old and made a definer shadow dispatch to a cross-module impl. That fix
+# faithfully implemented the OLD S2; the inversion abolishes the rule it
+# implemented. This is NOT a regression -- see the row`s label.
+#
+# ⚠️ i1/i3/i4 (IMPORTER shadows) and d11 MUST NOT MOVE. Fork 1 confines the
+# inversion to DEFINER shadows: an `import` is a SIBLING scope, not an inner
+# one. Inverting importers would break the everyday `import map` pattern
+# (i4: `isEmpty [1,2]` must still reach `Foldable.isEmpty`). During
+# development this gate caught exactly that -- inferDefinerShadowApp also
+# serves importer shadows on the mangled emit path, via definerShadowArgHead`s
+# `routeLocalSym != ""` arm -- and it caught d11 moving when the route stamp
+# skipped the singleParamIfaceMethod gate that every typing entry point
+# applies. If either moves again, the inversion has leaked. STOP.
+#
 # d10 is the ledger working as designed. It was added by THIS gate as a
 # KNOWN-BAD row pinning the S-1 bug (a CONSTRAINED standalone `Num a =>` shadow
 # whose RLocal route carried no dictionary -- check green, run E-PANIC, build
@@ -87,16 +129,16 @@ pass=0; fail=0; asserts=0
 #   `printf '%b'`); empty for mode NONE.
 TABLE='d1b_definer_noimpl_zeroimpls.mdk|D1b definer, iface has ZERO impls (S2)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
 d1_definer_noimpl.mdk|D1 definer, no-impl receiver, impl exists elsewhere (S2)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
-d2_definer_liveimpl.mdk|D2 definer, live-impl receiver + no-impl fallback (S2)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
-d3_definer_nway.mdk|D3 definer, N-way multi-impl selection (S3)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n30\n4
+d2_definer_liveimpl.mdk|D2 definer, live-impl receiver is now a located REJECT (S2 INVERSION: `size (Box 3)` no longer dispatches -- the module`s own `size : Int -> Int` wins, so Box mistypes)|REJECT|REJECT|REJECT|NONE|
+d3_definer_nway.mdk|D3 definer, N-way: every live-impl receiver REJECTs (S3 INVERSION: S3 is vacuous for a definer shadow -- no receiver selects an impl; only `size 3` survives)|REJECT|REJECT|REJECT|NONE|
 d4_definer_value_pos.mdk|D4 definer, value position over no-impl elements (S4)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
 d4b_definer_value_pos_liveimpl.mdk|D4b definer, value position over LIVE-impl elements (S4)|REJECT|REJECT|REJECT|NONE|
 d5_definer_poly_receiver.mdk|D5 definer, ungrounded receiver monomorphises to standalone (S5)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
 d5b_definer_poly_liveimpl_call.mdk|D5b definer, poly wrapper CALLED at live-impl type (S5)|REJECT|REJECT|REJECT|NONE|
-d6_definer_parametric_receiver.mdk|D6 definer, live impl at parametric receiver head (S2)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|9\n4
-d7_definer_multiparam_method.mdk|D7 definer, two-param interface method shadow (S8)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n6
+d6_definer_parametric_receiver.mdk|D6 definer, live impl at a PARAMETRIC head is now a located REJECT (S2 INVERSION: `impl Sizeable (P a)` no longer steals `size (P True)`)|REJECT|REJECT|REJECT|NONE|
+d7_definer_multiparam_method.mdk|D7 definer, two-param method shadow now REJECTs its live-impl receiver (S8 INVERSION: `comb (Box 1) (Box 2)` types against the standalone `comb : Int -> Int -> Int`)|REJECT|REJECT|REJECT|NONE|
 d9_definer_reject.mdk|D9 definer, no-impl receiver + standalone domain mismatch (S2)|REJECT|REJECT|REJECT|NONE|
-d8_definer_imported_impl/main.mdk|D8 definer, shadowed iface + impl IMPORTED (S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
+d8_definer_imported_impl/main.mdk|D8 definer, IMPORTED iface+impl now REJECTs too (S6 INVERSION -- deliberately REVERTS the P0-19-batch-2 row-14 fix ebb8ee90, which made this dispatch cross-module: S6 is now trivial because the impl universe is never queried for a definer shadow, so WHERE the impl lives cannot change the outcome)|REJECT|REJECT|REJECT|NONE|
 i1_importer_local_iface/main.mdk|I1/I2 importer shadow, LOCAL interface (S2/S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i3_importer_imported_iface/main.mdk|I3 importer shadow, iface+impl in a THIRD module (S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i4_importer_prelude_iface/main.mdk|I4 importer shadow of a PRELUDE method (S2, stdlib shape)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue

@@ -1,3 +1,13 @@
+-- ⚠️ RE-PINNED 2026-07-14 — THE S2 INVERSION (ACCEPT/"IMPL" -> located REJECT).
+-- This is NOT the Fork-2 carve-out.  Fork 2 keeps dispatch when the RECEIVER is the
+-- ENCLOSING function`s dict-bound `=>` constraint var (see
+-- accept_constrained_receiver_shadow, which still prints 14).  Here the receiver is a
+-- concrete `Box 3` and the `Num a =>` sits on the SHADOW`s own signature — so this is
+-- just the d2 cell (definer shadow, live-impl receiver) with a constrained standalone.
+-- Under standalone-wins the standalone takes the call, and `Box` has no `Num` impl:
+-- a located `No impl of Num for Box` — clause S9`s specified reject direction.
+-- Everything below describes the OLD rule and is kept for the history only.
+--
 -- S-1 CONTROL (must never regress): the same constrained shadow, but the receiver's
 -- head HAS an impl of the shadowed interface, so the occurrence must DISPATCH to the
 -- impl, not fall back to the standalone.  This arm worked before the S-1 fix and is
