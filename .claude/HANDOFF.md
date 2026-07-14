@@ -71,23 +71,41 @@ seed's fat pre-optimization codegen, blew the stack. **Re-mint before you go bug
 
 - `run_gates.sh` baseline: **83 passed / 0 failed / 0 skipped**
 - Coverage: **103 of 110** gates in CI; the rest ledgered in `test/CI-COVERAGE-EXCEPTIONS.txt`
-  (one, `build_construct_coverage`, is **RED and unexamined** — 138 ok / 1 failing)
+  (~~one, `build_construct_coverage`, is **RED and unexamined** — 138 ok / 1 failing~~ ✅ **STALE —
+  triaged**: now **142 ok / 0 failing / 1 skipped** and enrolled in a shard;
+  `test/CI-COVERAGE-EXCEPTIONS.txt:106`)
 - Fixpoint: C3a YES + C3b YES byte-for-byte · compiler source type-clean
 - `run_gates` now **REFUSES** to run against stale oracles (they don't fail, they *lie* — three
   agents were burned, one nearly re-diagnosed its own already-fixed bug from a stale binary)
 
-## Open bugs, worst first
+## Open bugs, worst first → ⛔ MOVED TO GITHUB ISSUES (2026-07-14)
 
-| | |
+```sh
+gh issue list --label "S0: silent wrongness"     # always start here
+gh issue list --milestone "0.1.0 public preview"
+```
+
+**This table's internal `T`/`#` numbering collided with real GitHub issue numbers** — its "#41" was a
+stdout bug while GitHub's #41 is a diagnostics-path bug, and its "#42" was the Float arc while
+GitHub's #42 is the internal-extern guard. **Use GitHub numbers only.** Rubric, labels, and the
+collision map: [`.claude/workstreams/README.md`](workstreams/README.md).
+
+Mapping of the rows that were here, **re-verified on `e34e2b46`**:
+
+| was | now |
 |---|---|
-| **T33(a)** | **SILENT.** A definer shadow whose standalone is *constrained* miscompiles — build prints **garbage**, even with no impl at the receiver head. The `RLocal`-vs-dict-passing seam. Fix = thread a dict through ast + route + eval + LLVM + wasm. Real work, not a patch. |
-| **T30** | A duplicate top-level function name **SEGFAULTS the emitter** instead of erroring; the diagnostic ("clauses must be contiguous") gives *actively wrong* advice. |
-| **T34** | **TWO auto-print contracts.** The llvm gate's probe prints `false`; `medaka build` prints `False`. The gate validates a path users never take. Also: there is **no supported way** to regenerate a `test/llvm_fixtures` golden — AGENTS.md's recipe is wrong for that corpus. |
-| **T33(b)** | A multi-typaram interface bypasses the definer-shadow machinery entirely (loud, not silent). |
-| **T21** | 11th quadratic: `resolve`'s scopes are `List String` with linear `contains`. Top allocator, 3.82x per doubling. |
-| **T19** | `medaka check` runs the front end 2–3x per invocation (~3x constant factor). |
-| **T27** | Missing stdlib: an effectful traversal family (`mapMut`/`foldlMut`/`zipWithMut`). Because `map`/`zip`/`foldl` are pure, **every** `<Mut>` traversal in the compiler gets hand-rolled — the emitter carries four near-clones. |
-| **T20** | Diagnostic quality: a **fabricated `1:0` source location**; leading-`->` in a multi-line signature rejected with a misleading "indentation" error. |
+| **T33(a)** constrained definer-shadow prints garbage | ✅ **CLOSED** — the dict-marking prePass was a first-match guard chain with the shadow arm ahead of the dict arm |
+| **T30** duplicate top-level fn **SEGFAULTS the emitter**; "clauses must be contiguous" gives *actively wrong* advice | ✅ **CLOSED** — now: *"'foo' is already defined at line 1…"* |
+| **T34** two auto-print contracts; no way to re-cut a `llvm_fixtures` golden | **#70** |
+| **T33(b)** multi-typaram interface bypasses the definer-shadow machinery | **#54** |
+| **T21** 11th quadratic (`resolve`'s scopes) · **T19** `check` runs the front end 2–3× | **#78** |
+| **T27** missing `<Mut>` traversal family | **#79** |
+| **T20** fabricated `1:0` location | ✅ **CLOSED** — would not reproduce on any error shape |
+| **T20** leading-`->` in a multi-line signature | **#66** |
+| **T-12** a user fn shadowing a prelude method is silently ignored | **#50** ⟵ *the S0* |
+| **T-11** removal diagnostics fire on the bare token regardless of position | **#62** |
+| **#31** `newtype` "entirely unusable — best value-to-risk item on the board" | ✅ **CLOSED** — it works |
+| **P1-1** Int silently wraps at 63 bits | **#53** ⟵ *an S0 that was sitting in a housekeeping list* |
 
 ## What the friction rule is worth
 

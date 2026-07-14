@@ -1,48 +1,75 @@
 # Workstream: DIAGNOSTICS
 
-**Owns:** error-message quality, and wrong/fabricated source locations.
+**Owns:** error-message quality, and wrong source locations.
 **Touches:** `compiler/driver/diagnostics.mdk`, `compiler/frontend/`.
 
-Read `compiler/ERROR-QUALITY.md` (the rubric) and `compiler/DIAGNOSTIC-CODES-DESIGN.md` (the
+```sh
+gh issue list --label "ws:diagnostics" --state open
+```
+
+Read **`compiler/ERROR-QUALITY.md`** (the rubric) and **`compiler/DIAGNOSTIC-CODES-DESIGN.md`** (the
 taxonomy) first. A new diagnostic needs a **stable code**.
 
 ---
 
-## D-1 · A FABRICATED source location: `1:0`
+## ⚠️ This workstream's own backlog was 2/3 stale. Reproduce first.
 
-Type-mismatch diagnostics can be reported at `1:0` — a **default** location, not the real one.
-So the caret points at whatever is on line 1, which in one agent's case was a comment.
+When the backlog was rebuilt on 2026-07-14 against `e34e2b46`, the top **two** DIAGNOSTICS items were
+already fixed:
 
-**A diagnostic with no location must SAY it has no location, not invent one.** A confidently
-wrong location is worse than none: it sends the reader to the wrong place and they trust it.
+- **"A fabricated `1:0` source location"** — *did not reproduce on any error shape.* Type mismatch,
+  missing impl, signature-vs-body: all three report a correct `file:L:C`.
+- **"'Clauses must be contiguous' for a duplicate definition"** — the message that *"advises you to
+  merge two different functions"* is gone. It now says: *"'foo' is already defined at line 1. A name
+  may have only one type signature — rename or remove this duplicate definition, or merge the clauses
+  into a single multi-clause function if that was the intent."* That is the fix the item asked for.
+- So is the release plan's one listed error-quality exception: non-exhaustive-match **warnings** now
+  carry `file:L:C`.
 
-## D-2 · "Clauses of 'X' must be contiguous" for a DUPLICATE DEFINITION
+Three items, three fixes, zero updates to the doc that tracked them. **That is the whole argument for
+moving the backlog into the issue tracker** — an issue closes; a bullet does not.
 
-The real problem is **two unrelated functions sharing a name**. The message advises you to
-"group all clauses together" — which would **merge two different functions**. Actively harmful
-advice.
+---
 
-Should be: *"'X' is already defined at line NNN."* (Paired with COMPILER-SOUNDNESS S-2, where
-the same duplicate **segfaults the emitter** before you ever see this message.)
+## The rule this workstream exists to defend
 
-## D-3 · Leading-`->` continuation in a multi-line type signature is rejected
+**A diagnostic reports what it OBSERVED, not what it CONCLUDED.**
 
-Rejected with an **indentation** error, which is not what is wrong. AGENTS.md advertises
-leading-operator continuation as supported. Either support it or say the true reason.
+- **A diagnostic with no location must SAY it has no location, not invent one.** A confidently wrong
+  location is worse than none: it sends the reader to the wrong place *and they trust it*.
+- **A diagnostic must not assert a category it cannot know.** `wasm_emit` prefixed every unbound name
+  with `"gap —"`, asserting a *backend coverage gap* — but an unbound name can just mean the program
+  never typechecked. **17 ledgered "wasm bugs" were never bugs**, and the false category propagated
+  into ledgers, docs, and agent prompts, each copy reading like corroboration.
+- **A diagnostic must not give advice that is wrong for the situation it is in.** The removal
+  diagnostics for `record`/`mut`/`function` fire on the **bare token regardless of syntactic
+  position** (#62), so a user naming a variable `record` is told how to declare a record type.
 
-## D-4 · `public export` on a function is a parse error with an unhelpful message
+---
 
-`public export f : ...` yields *"expected data after public export"*. `public` applies **only to
-`data`**; a function is just `export`. The message names the token it wanted but never says the
-actual fix. (This exact confusion — `export data` exporting a type *abstractly* — is what put
-unbound constructors on `main`.)
+## Structure
 
-## D-5 · `medaka check` prints its scheme dump with no trailing newline
+**Errors accumulate.** Phases push into `compiler/driver/diagnostics.mdk` rather than raising on the
+first error. **Do not add early-exit/raise paths.**
 
-`main : Unitexit=0` in a harness. Cosmetic, but it mangles any shell pipeline that appends.
+**Two typecheck entry points** (`checkProgramSeeded` single-file ∥ `checkModuleFullImpl` per-module)
+are textually duplicated and kept in **manual** lockstep — so a diagnostic added to one is **silently
+absent from the other**. That is exactly how the 2026-06-14 imported-module bug happened. Mirror both,
+or fix the root (#80).
 
-## D-6 · No way to ask which pass raised a diagnostic
+**`medaka check --json`** is the machine-readable surface — a stable `code`, a real `range`, a
+`severity`, and for suggestion-bearing errors a `help` string plus a machine-applicable
+`fix { range, replacement }`. **Key off `code`**; it does not move when wording changes.
 
-Diagnosing a typechecker bug required **rebuilding the compiler three times (~5 min each)** just
-to append `currentFn` to a type-mismatch message. A `MEDAKA_TC_TRACE=1` that tags each
-diagnostic with the pass + `currentFn` that raised it would have halved that task.
+---
+
+## The parked idea worth knowing about
+
+A **structured type-error ADT** — one variant per error kind, plus a single pretty-printer, replacing
+today's string messages — would enable LSP error codes and quickfixes properly. It is parked because it
+churns the hottest in-graph file (`compiler/types/typecheck.mdk`, ~34 raise sites) and needs a
+`selfcompile_fixpoint` + seed re-mint. `PLAN.md:1303`.
+
+**`MEDAKA_TC_TRACE=1` (#69) is the cheap thing that pays now, and does not depend on it.** Do the cheap
+thing first.
+</content>

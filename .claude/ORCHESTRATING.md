@@ -74,13 +74,58 @@ scope-read (bounded) → frame a precise prompt → get approval → spawn (bg, 
 
 ---
 
-## Workstreams — the backlog, split so orchestrators don't collide
+## 🎯 The backlog is GITHUB ISSUES. The workstream docs are the domain knowledge. (2026-07-14)
 
-`.claude/workstreams/` holds one self-contained backlog per orchestrator: **TESTING** ·
-**COMPILER-SOUNDNESS** · **PERF** · **STDLIB** · **DIAGNOSTICS** · **HARNESS**. Each names the files it
-touches; `workstreams/README.md` carries the **collision map** — read it before running two in
-parallel. TESTING is safe alongside anything (only `test/`); `stdlib/core.mdk` is the **prelude**, so
-it moves every golden and must land alone at a checkpoint.
+```sh
+gh issue list --label "S0: silent wrongness"      # always start here
+gh issue list --label "ws:soundness" --state open # one workstream
+gh issue list --label "needs-repro"               # claims NOBODY has reproduced
+gh issue list --milestone "0.1.0 public preview"  # the release floor
+```
+
+**Severity:** `S0: silent wrongness` (a wrong answer, or destroyed source, **with no error**) →
+`S1: loud breakage` → `S2: misleading` → `S3: friction & debt`.
+**Workstream:** `ws:soundness|language|tooling|wasm|diagnostics|testing|release|perf|stdlib`.
+**Evidence:** `verified` (repro run at a stated SHA) vs **`needs-repro`** (nobody has reproduced it).
+**S0 beats everything, and soundness beats release.**
+
+### Why it moved — this is the #1 lesson, applied to itself
+
+The backlog used to be markdown lists across `PLAN.md`, `HANDOFF.md`, `workstreams/*.md`, and the
+gap docs, each carrying an instruction to *"keep this in sync when an item opens/closes."* **It was
+not kept in sync — and it could not have been, because nothing forced it.**
+
+Re-deriving every claim against the binary (2026-07-14, `e34e2b46`) found **six entries already
+fixed**, including *both* "silent build miscompile" P0s the roadmap was advertising, a
+duplicate-definition **segfault**, a "fabricated `1:0` source location" that would not reproduce, and
+a `newtype` bug billed as *"the best value-to-risk item on the board"* — which works.
+
+**An issue self-drains: closing it removes it from the backlog. A markdown row has to be
+remembered.** That is the entire argument, and it is the same one as *DERIVE, don't encode* below.
+
+Two failure modes worth naming, because both were invisible while the backlog was scattered:
+
+- **The worst bug in the tree hid by being filed three times.** `fmt --write` destroying source, a
+  "scientific-notation float literal" *parser gap*, and a `1e12` must-fail row were **one defect** —
+  the lexer has no exponent form, so it cannot read the float the printer writes. Three docs, three
+  owners, nobody holding the whole shape.
+- **An S0 sat unranked in a housekeeping list.** `Int` silently wraps at 63 bits, filed as "P1-1"
+  among *remaining TODOs*. **Severity has to be a label you can sort by, not an adjective in prose.**
+
+### The workstream docs (`.claude/workstreams/`) are NOT the backlog
+
+They hold what does **not** belong in an issue and would rot if scattered across 34 of them: the
+**traps**, the **collision map**, and **why each bug class recurs**. Read the one matching your labels
+*before* you spawn anything.
+
+**COMPILER-SOUNDNESS** · **LANGUAGE** · **TOOLING** · **WASM** · **DIAGNOSTICS** · **TESTING** ·
+**RELEASE** · **PERF** · **STDLIB** · **HARNESS**.
+
+`workstreams/README.md` carries the **collision map** — read it before running two orchestrators in
+parallel. The unit of collision is a **file**, not a topic: TESTING (`test/`) and RELEASE (`docs/`) are
+safe alongside anything; SOUNDNESS/LANGUAGE/DIAGNOSTICS all live in `compiler/frontend/` + `types/` and
+should be run **one at a time**; `stdlib/core.mdk` is the **prelude**, so it moves every golden and must
+land **alone, at a checkpoint**.
 
 ---
 
@@ -198,6 +243,22 @@ the disease, and *tidying does not treat it.* In priority order:
    fixed, so it rots** (this is how `test/ported/` died). The doc-link gate shipped with only the
    first half and had **3 orphaned entries within one merge.**
 
+> **⭐ The BACKLOG was the biggest un-drained ledger of all (fixed 2026-07-14).** A markdown bug list
+> is *exactly* the disease this section describes: a statement encoding a fact about the code
+> (*"this is broken"*), with **no derivation and no expiry**, and a footnote politely asking humans to
+> keep it in sync. They didn't — **six entries were dead**, two of them labelled *silent build
+> miscompile*.
+>
+> **A GitHub issue is the self-draining form of a bug report: closing it removes it from the
+> backlog.** There is no separate act of remembering, so there is nothing to forget. Severity, owner,
+> and evidence are **labels you can sort by** — not adjectives buried in prose, which is how an S0
+> (`Int` silently wraps at 63 bits) spent weeks in a list called *"remaining TODOs"*.
+>
+> Same shape, one level up: **`sqlite/findings/verify_compiler_bugs.sh` is the model.** The bug list
+> ships with a script that **re-runs every repro and prints OPEN/FIXED** — the list cannot lie for
+> longer than it takes to run it. That script is the only reason we *know* four of those bugs were
+> fixed. **Every bug corpus should ship its own verifier.**
+
 ### 🔴 The lazy fix hides the real bug
 
 Three times in one session, **refusing to "just add an exception" exposed a genuine defect**:
@@ -269,6 +330,30 @@ One gap doc mispredicted on **every** contact: items marked OPEN were already cl
 incidentally, by an unrelated fix), items marked CLOSED were still broken, and the documented root
 cause was wrong ~every time.
 
+> #### 📊 Re-measured 2026-07-14 — the drift rate is roughly **1 in 5, and it favours "already fixed"**
+>
+> Rebuilding the whole backlog by executing every claim against `e34e2b46` found **six dead entries**:
+> `B2` and `B3` (**both billed as *silent build miscompile* P0s** — the scariest label we have), `B4`,
+> `T30` (a **segfault**, per the doc), `T20`'s "fabricated `1:0` location" (**would not reproduce on any
+> error shape**), and `#31` — `newtype` "entirely unusable", advertised as *"the best value-to-risk item
+> on the board"*. It works. An orchestrator who trusted that ranking would have spent a session
+> re-fixing a working feature.
+>
+> **The bias is important: stale entries skew toward *already fixed*, not *still broken*.** Bugs get
+> fixed incidentally by adjacent work far more often than docs get updated. So the default failure mode
+> is **aiming a good agent at a dead bug** — which costs a session and produces a confused PR.
+>
+> Two structural lessons, both now enforced by labels:
+>
+> - **A claim nobody has reproduced must not look like a known bug.** Every issue is stamped `verified`
+>   (repro run at a stated SHA) or **`needs-repro`**. `needs-repro` is a *lead*, not a fact. **Closing
+>   an issue as already-fixed is a GOOD outcome** — say so in the PR and delete the ledger rows citing
+>   it.
+> - **A bug filed in three places is invisible in all three.** `fmt --write` destroying source, a
+>   "scientific-notation float literal" *parser gap*, and a `1e12` must-fail row were **one defect** —
+>   the lexer has no exponent form, so it cannot read the float the printer writes. No single doc owned
+>   enough of it to see the shape. **One tracker, one item, one root cause.**
+
 - **Reproduce a "known gap" on current main before you scope or spawn a fix.** A throwaway repro
   (`run` = oracle, `build` + run = native, compare) takes a minute and repeatedly saved an Opus agent
   from being aimed at an already-closed gap.
@@ -319,6 +404,20 @@ Each is a failure actually watched happen this session:
    in any prompt** — it is what caught the Opus auditor fabricating symbols.
 5. **"Disproving me is a SUCCESS."** Say it explicitly. It fired **three times in one session**, every
    time against the orchestrator. An honest `UNVERIFIED` beats a confident wrong answer.
+
+### 🎯 A sixth, now that the backlog is issues: **"REPRODUCE THE ISSUE BEFORE YOU FIX IT."**
+
+Hand the agent an **issue number**, not a paraphrase — the issue carries the repro, the evidence
+stamp, and the source citations, so there is no game of telephone. Then put this in the prompt:
+
+> *"Start by running the repro in issue #N against the current binary. If it does NOT reproduce, STOP
+> and report that — closing an issue as already-fixed is a **success**, not a failed task. Six items on
+> this backlog turned out to be already fixed."*
+
+Without that line an agent will *implement a fix for a bug that no longer exists*, and — because it
+cannot see the bug — will "fix" something else to make its change look justified. **The
+`needs-repro` label exists precisely so you can tell an agent which issues are leads rather than
+facts.** When it lands, have the agent flip the label to `verified` (with the SHA) or close it.
 
 ⚠️ Also: **`git merge main` SILENTLY NO-OPS** when another worktree has `main` checked out (very
 likely with several agents live). Tell agents **`git merge origin/main`**.

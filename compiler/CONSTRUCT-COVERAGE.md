@@ -433,7 +433,7 @@ not produced by current `compiler/` source.
 
 **Genuine emitter dispatch residuals (2026-06-18 audit, both reproduced as open):**
 - **C7-native same-head dispatch** — `medaka build` fails on two `impl`s of one interface sharing a head tycon with different type args (e.g. `impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) is correct. Emitter dispatch is head-tag-keyed; can't disambiguate type args.
-- **Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.
+- ~~**Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.~~ ❌ **DISPROVEN — does not reproduce** (re-checked on `e34e2b46`, 2026-07-14). Both impls declared, `foo ((1,2),(3,4))` correctly selects the pair-of-pairs impl under `run`. **Do not re-file this without a fresh repro.**
 
 Historical table (as of 2026-06-10; statuses updated below):
 
