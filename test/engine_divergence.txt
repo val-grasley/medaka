@@ -40,10 +40,22 @@
 # that DID NOT EXIST, and an orchestrator briefed an agent on that wrong story as if it
 # were established (rows deleted 2026-07-13). On 2026-07-14 TWELVE MORE `wasm:emitter-gap`
 # / `wasm:codegen-bug` rows dissolved the same way — char_lit, char_unicode, uni_to_lower,
-# uni_to_upper, num_pi, num_e, num_int_min, num_int_max, abort_exit, abort_exit_nonzero,
-# where_local_rec, where_sibling_ref, arr_set_unit, debug_charlit, debug_strlit,
-# fn_bool_return, fn_float_chain. NONE of them were wasm bugs. They were artifacts of the
-# gate's own wasm arm, and they sat here for weeks wearing a backend's name.
+# uni_to_upper, num_pi, num_e, abort_exit, abort_exit_nonzero, where_local_rec,
+# arr_set_unit, debug_charlit, debug_strlit, fn_bool_return, fn_float_chain. Those were
+# artifacts of the gate's own wasm arm, and they sat here for weeks wearing a backend's
+# name.
+#
+# ⚠️ BUT THE INVERSE IS ALSO A CLAIM, AND IT WAS ALSO WRONG. An earlier revision of this
+# paragraph listed num_int_min, num_int_max and where_sibling_ref among the dissolved rows
+# and asserted "NONE of them were wasm bugs". That was FALSE. Their OLD row text was
+# wrong (it described a prelude-free-probe artifact), but once the gate's wasm arm moved
+# onto the shipping `medaka build --target wasm` all three failed for REAL, were re-filed
+# as genuine `wasm:codegen-bug`s, and were then genuinely FIXED in wasm_emit.mdk
+# (2026-07-14: intMin/MaxBound was a live `unreachable` trap-stub; where_sibling_ref was a
+# let-group nullary VALUE binding lifted to an unforced arity-0 closure). So: "it was a
+# gate artifact" is exactly as much of a claim as "it is a backend bug" — DEBUNKING a row
+# needs the same proof as filing one. Read the emitted `.wat` (`medaka build --target wasm
+# --keep-ir`) before you write either sentence.
 #
 # ── THE DISCRIMINATING TEST (rewritten 2026-07-14) ────────────────────────────────────
 # It used to say: run the fixture through the two prelude-free probe entries
@@ -115,8 +127,6 @@ llvm/match_char_lit                eq:na:na:ran:ran:na        wasm:emitter-gap w
 llvm/match_str_default             eq:na:na:ran:ran:na        wasm:emitter-gap wasm: the module fails GC validation — `func 324 failed to validate`. Confirmed 2026-07-14 on the SHIPPING CLI; native runs fine.
 llvm/match_str_lit                 eq:na:na:ran:ran:na        wasm:emitter-gap wasm: the module fails GC validation — `func 324 failed to validate`. Confirmed 2026-07-14 on the SHIPPING CLI; native runs fine.
 llvm/math_externs                  eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: unbound variable 'sqrt' (not a local, global value, constructor, or known function) [in ?]
-llvm/num_int_max                   eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (the old row claimed `scalar-mode: unbound variable 'intMaxBound'` — that was the prelude-free probe). Under `medaka build --target wasm` the module ASSEMBLES AND VALIDATES, then TRAPS at instantiate with `unreachable`. native prints 4611686018427387903. A real bug on the wasm path users run.
-llvm/num_int_min                   eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (see llvm/num_int_max — same trap). wasm traps at instantiate with `unreachable`; native prints -4611686018427387904.
 llvm/rec_build                     na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
 llvm/rec_local                     eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: wasm_emit gap — ref-mode: recursive `let` binding
 llvm/rec_update                    na:na:na:ran:na:na         native:prelude-collision wasm:emitter-gap native: the prelude-free fixture redefines a core type, which collides under a real medaka build (Unknown type: Point) | wasm: emit: runtime error [E-PANIC]: wasm_emit gap — scalar-mode: unsupported Core IR node CRecord (W7)
@@ -160,16 +170,12 @@ llvmT/disp_ord_default_lte         na:na:na:ran:na:na         native:prelude-col
 llvmT/disp_ord_default_lt          na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
 llvmT/disp_req_compare_list_int    na:na:na:na:na:na          native:prelude-collision native+wasm: the fixture declares its OWN `interface Ord`, which COLLIDES with the real prelude's (Ord) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing. | eval: also E-NONEXHAUSTIVE-MATCH.
 llvmT/disp_req_eq_list_int         na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Eq`, which COLLIDES with the real prelude's (Eq) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
-llvmT/float_typelost_tuple         eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEW 2026-07-14 (this fixture could not be in the corpus before — it needs the prelude). The module validates, then TRAPS at instantiate with `illegal cast`; native prints 4.0. Same family as wasm/polynum_sq_sig_float: wasm's Float typing is signature-driven and loses the type here.
 llvmT/impl_andthen_list            na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture redefines `flatMap` point-free against its own interface; against the REAL prelude the shipping compiler cannot deduce the constraint (Could not deduce 'Bind m' from the signature of 'flatMap'). Both backends reject it identically. Written for the prelude-free typed PROBE.
 llvmT/impl_ap_list                 na:na:na:ran:na:na         native:prelude-collision native+wasm: as llvmT/impl_andthen_list, for `map2` (Could not deduce 'Mapp f' from the signature of 'map2'). Both shipping backends reject it identically.
 llvmT/impl_append_list             na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Semigroup`, which COLLIDES with the real prelude's (Semigroup) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
 llvmT/impl_append_str              na:na:na:ran:na:na         native:prelude-collision native+wasm: the fixture declares its OWN `interface Semigroup`, which COLLIDES with the real prelude's (Semigroup) — the shipping compiler prepends core.mdk, both backends reject it identically. Written for the prelude-free typed PROBE (llvm_emit_typed_main), which prepends nothing.
-llvm/where_sibling_ref             eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14 (the old row claimed `unsupported Core IR node CLetGroup` — that was the prelude-free probe; the shipping path lowers CLetGroup fine). The module now validates, then TRAPS at instantiate with `illegal cast`. native prints 35.
 wasm/clos_deep_tco                 na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
-wasm/clos_partial_app              eq:na:na:ran:ran:na        wasm:emitter-gap ⭐NEWLY EXPOSED 2026-07-14. Was CLEAN under the prelude-free probe; under `medaka build --target wasm` the emitted module FAILS GC VALIDATION — `func 325 failed to validate: type mismatch: expected (ref eq) but nothing on stack`. A PAP (`inc = add 1`, saturated later) is mis-emitted on the real-prelude path. native prints 22.
 wasm/clos_reftco_indirect          na:eq:na:na:ran:ran        eval:no-tco the tree-walking interpreter has no tail-call optimisation (depth > 25000); it says so cleanly
-wasm/polynum_sq_sig_float          eq:ne:ne:ran:ran:ran       wasm:codegen-bug ⭐NEWLY EXPOSED 2026-07-14. This fixture was CLEAN under the prelude-free probe and TRAPS under the shipping CLI (`illegal cast` at instantiate); native prints 6.25. An explicit `Num a =>` signature at Float does NOT rescue the shipping wasm path. Note both entries install the same float hooks (installDeclRetTypes / installCtorFloatFields), so this is NOT a missing install — it is deeper in wasm_emit.
 wasm/w8b_hash_float                ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value
 wasm/w8b_rng_float_determinism     ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64; the seeded-determinism contract is violated under run
 wasm/w8_hash_char                  ne:eq:ne:ran:ran:ran       eval:rng-hash-lcg eval installs an LCG, not the specified SplitMix64/FNV-1a; native+wasm agree on the spec value

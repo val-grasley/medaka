@@ -1,5 +1,5 @@
 # META
-source_lines=200
+source_lines=213
 stages=DESUGAR,MARK
 # SOURCE
 -- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
@@ -117,6 +117,19 @@ export methodArityOf : String -> <Mut> Int
 methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0
+
+-- ── dict-witness parameter names (shared by BOTH backends) ───────────────────
+-- `$dict_<fn>_<slot>` — a dict witness param that dict_pass/elaborateModules PREPENDS
+-- to a `=>`-constrained fn's source params.  Both backends must recognize one, for the
+-- same reason: a synthesized dict param occupies an IR param slot but has NO entry in
+-- the DECLARED signature, so any walk that lines declared types up against lowered
+-- params must skip it WITHOUT consuming a declared type — otherwise every declared type
+-- describes the param one slot to its LEFT.  llvm_emit's inferParamTysSeedD does this;
+-- wasm_emit's numPolyPatsAt/floatPatsAt did NOT, which is what made an explicit
+-- `Num a =>` signature *disable* the very runtime dispatch it should have guaranteed
+-- (2026-07-14; fixture `test/wasm/fixtures/polynum_sq_sig_float.mdk`).
+export isDictParamName : String -> Bool
+isDictParamName x = stringLength x >= 5 && stringSlice 0 5 x == "$dict"
 
 -- ── clause fall-through labelling (shared by BOTH backends) ──────────────────
 -- `desugar.mdk` lowers a clause's guard chain to a nested `CIf`/`CDecision`
@@ -260,6 +273,8 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DFunDef false "methodIfaceOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple (PVar "iface") PWild)) () (EVar "iface")) (arm (PCon "None") () (ELit (LString "")))))
 (DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Int"))))
 (DFunDef false "methodArityOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "arity"))) () (EVar "arity")) (arm (PCon "None") () (ELit (LInt 0)))))
+(DTypeSig true "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))
 (DTypeSig true "ftPrefix" (TyCon "String"))
 (DFunDef false "ftPrefix" () (ELit (LString "__ft__")))
 (DTypeSig true "ftLabelOf" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))
@@ -340,6 +355,8 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DFunDef false "methodIfaceOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple (PVar "iface") PWild)) () (EVar "iface")) (arm (PCon "None") () (ELit (LString "")))))
 (DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Int"))))
 (DFunDef false "methodArityOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "arity"))) () (EVar "arity")) (arm (PCon "None") () (ELit (LInt 0)))))
+(DTypeSig true "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))
 (DTypeSig true "ftPrefix" (TyCon "String"))
 (DFunDef false "ftPrefix" () (ELit (LString "__ft__")))
 (DTypeSig true "ftLabelOf" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))

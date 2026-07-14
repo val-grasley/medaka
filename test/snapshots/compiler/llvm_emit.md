@@ -243,6 +243,7 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodIfaceOf,
   methodArityOf,
+  isDictParamName,
   ftPrefix,
   ftLabelOf,
   labelFallthrough,
@@ -6763,9 +6764,8 @@ leadingDictPats ((PVar x)::rest) =
     0
 leadingDictPats _ = 0
 
--- a dict-witness parameter name (dict_pass emits `$dict_<method>_<slot>`).
-isDictParamName : String -> Bool
-isDictParamName x = stringLength x >= 5 && stringSlice 0 5 x == "$dict"
+-- (`isDictParamName` — a dict-witness parameter name, `$dict_<method>_<slot>` — now
+-- lives in backend/emit_support.mdk: BOTH backends need it, for the same reason.)
 
 -- the count of still-unapplied VALUE params of an under-applied method/dict body
 -- (0 = saturated / not a method-or-dict head ⇒ no eta-expansion).  A bare CMethod
@@ -9548,7 +9548,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omEmpty" false))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "SelfRef" true) (mem "flattenApp" false) (mem "lengthS" false) (mem "freeVars" false) (mem "routeDictNames" false) (mem "bindName" false) (mem "bindNames" false) (mem "patVars" false) (mem "patVarsList" false) (mem "patVarNames" false) (mem "trmcEligible" false) (mem "isCtorTail" false) (mem "isSelfSatApp" false) (mem "consTailArgs" false) (mem "ctorTailName" false) (mem "ctorTailLeadFields" false) (mem "ctorTailSelfIdx" false) (mem "splitLastF" false) (mem "selfFree" false) (mem "mentionsSelfMethod" false) (mem "DispGroup" true) (mem "dispRootOf" false) (mem "dispMembersOf" false) (mem "dispGroupOf" false) (mem "dispFindBind" false) (mem "detectDispatchGroups" false) (mem "dispSpineParts" false) (mem "dictUniformPairs" false) (mem "dropFirstN" false) (mem "clauseArityOf" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "hashName" false) (mem "safeChar" false))))
-(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodIfaceOf" false) (mem "methodArityOf" false) (mem "ftPrefix" false) (mem "ftLabelOf" false) (mem "labelFallthrough" false))))
+(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodIfaceOf" false) (mem "methodArityOf" false) (mem "isDictParamName" false) (mem "ftPrefix" false) (mem "ftLabelOf" false) (mem "labelFallthrough" false))))
 (DTypeSig false "gapRecordEnabled" (TyApp (TyCon "Ref") (TyCon "Bool")))
 (DFunDef false "gapRecordEnabled" () (EApp (EVar "Ref") (EVar "False")))
 (DTypeSig false "gapLog" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
@@ -10892,8 +10892,6 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "leadingDictPats" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))
 (DFunDef false "leadingDictPats" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest"))) (EIf (EApp (EVar "isDictParamName") (EVar "x")) (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "leadingDictPats") (EVar "rest"))) (ELit (LInt 0))))
 (DFunDef false "leadingDictPats" (PWild) (ELit (LInt 0)))
-(DTypeSig false "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))
 (DTypeSig false "methodBodyDeficit" (TyFun (TyCon "Emit") (TyFun (TyCon "CExpr") (TyEffect ("Mut") None (TyCon "Int")))))
 (DFunDef false "methodBodyDeficit" ((PVar "e") (PCon "CLet" PWild PWild PWild (PVar "b"))) (EApp (EApp (EVar "methodBodyDeficit") (EVar "e")) (EVar "b")))
 (DFunDef false "methodBodyDeficit" ((PVar "e") (PCon "CLetGroup" PWild (PVar "b"))) (EApp (EApp (EVar "methodBodyDeficit") (EVar "e")) (EVar "b")))
@@ -11601,7 +11599,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omEmpty" false))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "SelfRef" true) (mem "flattenApp" false) (mem "lengthS" false) (mem "freeVars" false) (mem "routeDictNames" false) (mem "bindName" false) (mem "bindNames" false) (mem "patVars" false) (mem "patVarsList" false) (mem "patVarNames" false) (mem "trmcEligible" false) (mem "isCtorTail" false) (mem "isSelfSatApp" false) (mem "consTailArgs" false) (mem "ctorTailName" false) (mem "ctorTailLeadFields" false) (mem "ctorTailSelfIdx" false) (mem "splitLastF" false) (mem "selfFree" false) (mem "mentionsSelfMethod" false) (mem "DispGroup" true) (mem "dispRootOf" false) (mem "dispMembersOf" false) (mem "dispGroupOf" false) (mem "dispFindBind" false) (mem "detectDispatchGroups" false) (mem "dispSpineParts" false) (mem "dictUniformPairs" false) (mem "dropFirstN" false) (mem "clauseArityOf" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "hashName" false) (mem "safeChar" false))))
-(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodIfaceOf" false) (mem "methodArityOf" false) (mem "ftPrefix" false) (mem "ftLabelOf" false) (mem "labelFallthrough" false))))
+(DUse false (UseGroup ("backend" "emit_support") ((mem "eagerVars" false) (mem "methodIfaceTableRef" false) (mem "methodIfaceOf" false) (mem "methodArityOf" false) (mem "isDictParamName" false) (mem "ftPrefix" false) (mem "ftLabelOf" false) (mem "labelFallthrough" false))))
 (DTypeSig false "gapRecordEnabled" (TyApp (TyCon "Ref") (TyCon "Bool")))
 (DFunDef false "gapRecordEnabled" () (EApp (EVar "Ref") (EVar "False")))
 (DTypeSig false "gapLog" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
@@ -12945,8 +12943,6 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "leadingDictPats" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))
 (DFunDef false "leadingDictPats" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest"))) (EIf (EApp (EVar "isDictParamName") (EVar "x")) (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "leadingDictPats") (EVar "rest"))) (ELit (LInt 0))))
 (DFunDef false "leadingDictPats" (PWild) (ELit (LInt 0)))
-(DTypeSig false "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))
 (DTypeSig false "methodBodyDeficit" (TyFun (TyCon "Emit") (TyFun (TyCon "CExpr") (TyEffect ("Mut") None (TyCon "Int")))))
 (DFunDef false "methodBodyDeficit" ((PVar "e") (PCon "CLet" PWild PWild PWild (PVar "b"))) (EApp (EApp (EVar "methodBodyDeficit") (EVar "e")) (EVar "b")))
 (DFunDef false "methodBodyDeficit" ((PVar "e") (PCon "CLetGroup" PWild (PVar "b"))) (EApp (EApp (EVar "methodBodyDeficit") (EVar "e")) (EVar "b")))

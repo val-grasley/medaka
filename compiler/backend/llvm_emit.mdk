@@ -239,6 +239,7 @@ import backend.emit_support.{
   methodIfaceTableRef,
   methodIfaceOf,
   methodArityOf,
+  isDictParamName,
   ftPrefix,
   ftLabelOf,
   labelFallthrough,
@@ -6759,9 +6760,8 @@ leadingDictPats ((PVar x)::rest) =
     0
 leadingDictPats _ = 0
 
--- a dict-witness parameter name (dict_pass emits `$dict_<method>_<slot>`).
-isDictParamName : String -> Bool
-isDictParamName x = stringLength x >= 5 && stringSlice 0 5 x == "$dict"
+-- (`isDictParamName` — a dict-witness parameter name, `$dict_<method>_<slot>` — now
+-- lives in backend/emit_support.mdk: BOTH backends need it, for the same reason.)
 
 -- the count of still-unapplied VALUE params of an under-applied method/dict body
 -- (0 = saturated / not a method-or-dict head ⇒ no eta-expansion).  A bare CMethod
