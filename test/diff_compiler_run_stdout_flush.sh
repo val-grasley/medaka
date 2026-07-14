@@ -48,6 +48,23 @@
 # and a `run`-only missing-extern gap, respectively, both pre-existing and out
 # of this bug's scope).
 #
+# stack_overflow_build.mdk is the companion `build`-ONLY check for the
+# "build drops stdout on a real SIGSEGV" bug (2026-07-14): a compiled binary's
+# println writes through libc's BUFFERED stdout, which every coded abort path
+# (mdk_panic et al) gets flushed for free via `exit()`, but the SIGSEGV/SIGBUS
+# fault handler must call `_exit()` (fflush/fwrite are not async-signal-safe),
+# which skips that flush -- so a compiled binary that prints then genuinely
+# overflows its 256 MB worker stack used to lose everything already printed
+# (confirmed empirically: exit 134, empty stdout). Fixed by
+# runtime/medaka_rt.c's mdk_flush_build_stdout_on_fatal_signal (mirrors
+# mdk_flush_run_stdout_on_abort's pointer+length-snapshot-then-write(2)
+# approach, but tracks the NATIVE stdout stream mdk_fwrite_str writes through,
+# not the interpreter's outputRef). It turned out entirely practical to
+# exercise from a fast, portable fixture (contrary to an earlier note here
+# calling this "impractical") — the same non-tail `loop` shape as
+# stack_overflow_depth_guard.mdk, built and run as a real binary, reliably
+# overflows in well under a second on both Linux and macOS.
+#
 # Usage:  sh test/diff_compiler_run_stdout_flush.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,6 +80,32 @@ pass=0; fail=0
 check_one() {
   name="$1"; mode="$2"
   f="$FIXDIR/$name.mdk"
+
+  if [ "$mode" = 'build-only' ]; then
+    # `medaka run` is not exercised at all here: this fixture is about a real
+    # SIGSEGV in a COMPILED binary (mdk_flush_build_stdout_on_fatal_signal),
+    # not the interpreter's own (unrelated) synthetic depth guard, which would
+    # catch the same source first via a completely different, already-covered
+    # code path (see stack_overflow_depth_guard.mdk).
+    if ! "$MEDAKA" build "$f" -o "$TMP/$name.bin" >"$TMP/$name.build.log" 2>&1; then
+      echo "FAIL $name: \`medaka build\` failed to compile — cannot test"
+      cat "$TMP/$name.build.log"
+      fail=$((fail+1)); return
+    fi
+    "$TMP/$name.bin" >"$TMP/$name.bin.out" 2>"$TMP/$name.bin.err"
+    bin_code=$?
+    if [ "$bin_code" -eq 0 ]; then
+      echo "FAIL $name: the built binary exited 0 (expected a nonzero abort)"
+      fail=$((fail+1)); return
+    fi
+    if ! grep -q '^SENTINEL$' "$TMP/$name.bin.out"; then
+      echo "FAIL $name: SENTINEL missing from the built binary's stdout — the fix regressed"
+      echo "  bin stdout: $(cat "$TMP/$name.bin.out")"
+      fail=$((fail+1)); return
+    fi
+    echo "ok   $name (build-only: SENTINEL present, exit $bin_code)"
+    pass=$((pass+1)); return
+  fi
 
   "$MEDAKA" run "$f" >"$TMP/$name.run.out" 2>"$TMP/$name.run.err"
   run_code=$?
@@ -111,6 +154,7 @@ check_one panic run-vs-build
 check_one nonexhaustive_match run-vs-build
 check_one stack_overflow_depth_guard run-only
 check_one raw_panic_site run-only
+check_one stack_overflow_build build-only
 
 echo
 echo "diff_compiler_run_stdout_flush.sh: $pass passed, $fail failed"

@@ -1,0 +1,28 @@
+-- "build drops stdout on a real SIGSEGV" regression (companion to the
+-- "run drops stdout on panic" fix this whole directory is named after, but
+-- for a COMPILED `medaka build` binary instead of the interpreter).
+--
+-- A compiled binary's println/print write straight through LIBC'S BUFFERED
+-- stdout (runtime/medaka_rt.c's mdk_fwrite_str -> fwrite(..., stdout)). Every
+-- coded abort path (mdk_panic, mdk_div_zero, mdk_oob, ...) already gets that
+-- buffer out for free, since libc's `exit()` flushes stdio automatically. But
+-- a REAL stack overflow is caught by the SIGSEGV/SIGBUS fault handler, which
+-- must call `_exit()` (never `exit()` -- `fflush`/`fwrite` are not
+-- async-signal-safe and risk deadlocking on a lock the crashing thread may
+-- already hold), and `_exit()` skips that flush entirely -- so before the
+-- fix, this fixture's SENTINEL was silently lost (confirmed empirically:
+-- exit 134, empty stdout).
+--
+-- Unlike stack_overflow_depth_guard.mdk (the interpreter's own synthetic
+-- depth counter, which is `run`-only and never reaches a real SIGSEGV at
+-- all), this fixture is BUILD-only: it deliberately does non-tail recursion
+-- deep enough to exhaust the compiled binary's real 256 MB worker stack, so
+-- it hits runtime/medaka_rt.c's mdk_fault_handler / mdk_chain_previous ->
+-- mdk_flush_build_stdout_on_fatal_signal path, not a coded abort.
+main : <IO> Unit
+main =
+  println "SENTINEL"
+  println "\{loop 0}"
+
+loop : Int -> Int
+loop n = 1 + loop (n + 1)
