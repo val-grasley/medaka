@@ -33,6 +33,7 @@ import driver.build_cmd.{
   TWasm,
   runBuild,
   emitRtObj,
+  emitPreludeObj,
   envOr,
   defaultMedakaRoot,
 }
@@ -975,32 +976,48 @@ runBuildCmd argv =
         BuildErr msg =>
           let _ = ePutStrLn msg
           exit 1
-    None => match parseBuildArgs argv
-      Err msg =>
-        let _ = ePutStrLn msg
-        exit 1
-      Ok (input, outOpt, target) => if not (fileExists input) then
-        let _ = ePutStrLn ("error: no such file: " ++ input)
-        exit 1
-      else
+    None => match snapFlagValue "--emit-prelude-obj" argv
+      -- `medaka build --emit-prelude-obj <path>`: precompile stdlib/core.mdk to a
+      -- reusable object with EXACTLY the flags a normal link would apply, then exit
+      -- (issue #118 — the same trick as --emit-rt-obj, one level up: the prelude is
+      -- 88% of a small program's IR).  No input .mdk is required (or read) in this
+      -- mode.  A CI gate points MEDAKA_PRELUDE_OBJ at the result to skip
+      -- re-optimising the identical prelude on every subsequent build.
+      Some objPath =>
         let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
-        let medaka = envOr "MEDAKA" "medaka"
         let cc = envOr "CC" "clang"
-        let inputAbs = input
-        let allowInternal = hasFlag "--allow-internal" argv
-        let keepIrCli = hasFlag "--keep-ir" argv
-        let outPath = match outOpt
-          Some o => o
-          None => defaultOutPath target input
-        match typecheckGate allowInternal root inputAbs
-          TGErr msg =>
+        let medaka = envOr "MEDAKA" "./medaka"
+        match emitPreludeObj cc root medaka objPath
+          BuildOk msg => println msg
+          BuildErr msg =>
             let _ = ePutStrLn msg
             exit 1
-          TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
-            BuildOk msg => println msg
-            BuildErr msg =>
+      None => match parseBuildArgs argv
+        Err msg =>
+          let _ = ePutStrLn msg
+          exit 1
+        Ok (input, outOpt, target) => if not (fileExists input) then
+          let _ = ePutStrLn ("error: no such file: " ++ input)
+          exit 1
+        else
+          let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+          let medaka = envOr "MEDAKA" "medaka"
+          let cc = envOr "CC" "clang"
+          let inputAbs = input
+          let allowInternal = hasFlag "--allow-internal" argv
+          let keepIrCli = hasFlag "--keep-ir" argv
+          let outPath = match outOpt
+            Some o => o
+            None => defaultOutPath target input
+          match typecheckGate allowInternal root inputAbs
+            TGErr msg =>
               let _ = ePutStrLn msg
               exit 1
+            TGOk => match runBuild root medaka cc target inputAbs outPath keepIrCli
+              BuildOk msg => println msg
+              BuildErr msg =>
+                let _ = ePutStrLn msg
+                exit 1
 
 -- `medaka build --help` / `-h`: a subcommand-local usage, since the global
 -- `usage()` (only matched when --help/-h is argv[0]) never sees this — dispatch
@@ -1022,6 +1039,11 @@ buildUsage _ = putStrLn (stringConcat
     "  --emit-rt-obj <p> compile only runtime/medaka_rt.c to a reusable object at <p> (with\n",
     "                    the same flags a normal link uses) and exit; point MEDAKA_RT_OBJ at\n",
     "                    it to skip recompiling the runtime on every subsequent build\n",
+    "  --emit-prelude-obj <p>\n",
+    "                    compile only stdlib/core.mdk to a reusable object at <p> (with the\n",
+    "                    same flags a normal link uses) and exit; point MEDAKA_PRELUDE_OBJ at\n",
+    "                    it to skip re-optimising the prelude on every subsequent build.\n",
+    "                    Opt-in: separate objects cannot inline the prelude into user code\n",
   ])
 
 -- Default output path per target: native drops the extension (a bare exe name);

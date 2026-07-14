@@ -113,26 +113,44 @@ a constraint set — not a per-decl scan.
 
 ## Where `medaka build` time ACTUALLY goes (measured 2026-07-14) — it is NOT the front end
 
-For a **9-line** program, with the `MEDAKA_RT_OBJ` fast path already on:
+**`medaka build` / CI is CLANG-BOUND. `medaka check` (LSP) is GC-BOUND. These are DIFFERENT problems and
+conflating them wastes a session.**
 
-| | time | share |
-|---|---|---|
-| front end (`medaka check`) | 0.126 s | **12%** |
-| **`clang -O2` on the emitted IR** | **0.814 s** | **77%** |
-| emit + link | ~0.12 s | 11% |
+Originally, for a **9-line** program (with `MEDAKA_RT_OBJ` on): front end **12%**, **`clang -O2` 77%**, emit+link
+11%. It emitted **32,896 lines of IR — 272 `define`s, exactly ONE of which was its own.**
 
-**A 9-line program emits 32,896 lines of IR — 272 `define`s, exactly ONE of which is its own.** The other
-**271 (99.6%) are prelude**, re-optimized by clang identically on every build.
+### ⭐ And ~80% of that IR was TYPECLASS DISPATCH CHAINS
+Not prelude *logic* — dispatch. **2,123 `icmp` arm-pairs** to express **9 distinct chains**, because the chain was
+**inlined at every one of 107 dispatch sites.** A Medaka dict carries **no code pointer** (it is a type TAG), so
+"project a method from a dict" *means* a linear scan over every impl of that method — and that scan was copied
+into every caller.
 
-This reframes CI: the critical-path gate is `diff_compiler_engines` = **346 × (`medaka build` + clang)**, so
-**CI wall-clock is clang-bound, not compiler-bound.** Making the front end faster barely moves it. See #118
-(precompile the prelude → 11.4× on the clang step) and #120 (`--gc-sections` → 77% smaller binaries).
+**Fixed by OUTLINING** (#129): one shared `@mdk_disp_<method>_<nMeth>_<nArgs>` per method. **IR −64%, binaries
+−47%.** Then **`prelude.o`** (#131) cached the now-program-independent prelude: **build 2×**, engines gate
+**67 s → 43 s**. Compound: **`medaka build` 1.06 s → 0.343 s (3.1×).**
 
-⚠️ **Two shortcuts that are DEAD — do not re-try them:**
-- **`MEDAKA_CLANG_OPT=-O0`** (the knob exists, `build_cmd.mdk:442`). Cuts the engines gate 127 s → 76 s and is
-  **UNSOUND**: it **regresses `wasm/clos_reftco_indirect`** — clang's tail-call elimination for **indirect**
-  calls only runs at `-O1`+. The deep-TCO trap bites LLVM, not just wasm.
-- **`-O1`** — saves ~10% (0.740 s vs 0.821 s). Not worth a semantics risk.
+- ⚠️ **Dispatch is OUTLINED, not inlined at the site.** Debugging a dispatch miscompile? **The arm you want is in
+  `@mdk_disp_*`, not at the call site.** `test/diff_compiler_dispatch_shape.sh` pins this — and pins that prelude
+  bodies stay **program-independent**, the precondition for `prelude.o`.
+- ⚠️ **`soleImplDirect` is a live silent-miscompile hazard for anything CACHED.** A site may shortcut to a direct
+  call when a method has exactly **one** impl — true of the prelude alone, **FALSE the moment a user program adds
+  one.** Baking that into a cached `prelude.o` would direct-call the wrong impl in every program that links it,
+  and **no fixture would catch it.** Under `MEDAKA_PRELUDE_OBJ` the shortcut lives **inside the dispatcher**
+  (per-program, recomputed from the whole-program impl table).
+
+### ⚠️ Shortcuts that are DEAD — measured, do not re-try
+- **`MEDAKA_CLANG_OPT=-O0`** (the knob exists; its own comment says `-O2` "buys little"). Cuts the engines gate
+  40% and is **UNSOUND**: it **regresses `wasm/clos_reftco_indirect`** — clang's tail-call elimination for
+  **indirect** calls only runs at `-O1`+. **The deep-TCO trap bites LLVM, not just wasm.**
+- **`-O1`** — saves ~10%. Not worth a semantics risk.
+- **Option E (give dicts method slots / a vtable)** — the "obvious" fix, and **dominated**. `requires` arity varies
+  per impl, so a uniform indirect call needs a trampoline anyway ⇒ it converges on outlining's IR for **~3%** more,
+  and it needs the interface at dict-construction (`RKey` carries none — `Eq Int` and `Ord Int` build **identical
+  cells**), which means an AST change to `Route` that `eval`/`wasm` pattern-match ⇒ **escapes the backend blast
+  radius.** Full analysis: `compiler/PRELUDE-OBJ-DESIGN.md`.
+- **Chain DEPTH is not a runtime cost.** 31 vs 159 arms = **1.05×** (non-monotonic ⇒ noise): the branch predictor
+  nails the always-taken path. But IR grows **linearly** in arms (2.00× IR, 1.72× build). **The chain costs COMPILE
+  time, not RUN time** — which is why outlining wins and a vtable does not.
 
 ---
 

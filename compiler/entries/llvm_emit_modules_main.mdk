@@ -32,6 +32,7 @@ import types.typecheck.{
   mainTypeIsUnit,
   mainTypeIsFloat,
 }
+import ir.core_ir.{CProgram(..), CBind(..), CImplEntry(..), CImplBody(..)}
 import ir.core_ir_lower.{
   lowerProgramEmit,
   returnsSelfTable,
@@ -51,6 +52,8 @@ import backend.llvm_emit.{
   installDeclSigTypes,
   installMainIsUnitHint,
   installMainIsFloatHint,
+  installEmitHalf,
+  installPreludeSyms,
 }
 import ir.dce.{dceFilter}
 import entries.entry_support.{driveModules, runEmitWith}
@@ -66,11 +69,55 @@ main = driveModules (runEmitWith emitTail)
 -- main (incl. every compiler-graph main) takes the unchanged path, so emitter
 -- output on the compiler graph is byte-identical (fixpoint stable).
 
+-- ---- issue #118: which HALF of the module are we emitting? ------------------
+-- MEDAKA_EMIT_HALF is set by `medaka build` (compiler/driver/build_cmd.mdk), never
+-- by a user:
+--   unset      → 0, the whole module.  Every ordinary build.  Unchanged.
+--   "prelude"  → 1, core.mdk alone, as the shared `prelude.o` (--emit-prelude-obj).
+--   "program"  → 2, this program only, `declare`ing what prelude.o defines.
+-- See the big section comment on emitHalfRef in compiler/backend/llvm_emit.mdk.
+emitHalfOfEnv : <IO> Int
+emitHalfOfEnv = match getEnv "MEDAKA_EMIT_HALF"
+  Some "prelude" => 1
+  Some "program" => 2
+  _ => 0
+
+-- The prelude-owned symbols the PROGRAM half must `declare` rather than define.
+-- Lowering core.mdk's decls ON THEIR OWN is what makes this a question of where a
+-- decl was DEFINED rather than a guess at its emitted name.  Only ever run in mode
+-- 2, so the default emit path is untouched (and pays nothing for it).
+installPreludeSymsOf : List Decl -> <IO, Mut> Unit
+installPreludeSymsOf coreD = match lowerProgramEmit coreD
+  CProgram groups _ _ impls =>
+    installPreludeSyms (map cbindNameOf groups) (implKeysOf impls)
+
+cbindNameOf : CBind -> String
+cbindNameOf (CBind n _) = n
+
+-- (method, type-head tag) per TAGGED impl entry — the key emitGroups classifies a
+-- group by.  An untagged interface DEFAULT has no head, and its
+-- `@mdk_default_<m>_<tag>` define lives in the program half regardless.
+implKeysOf : List CImplEntry -> List (String, String)
+implKeysOf [] = []
+implKeysOf ((CImplEntry m _ (CImplTagged tag _ _ _ _ _))::rest) =
+  (m, tag) :: implKeysOf rest
+implKeysOf (_::rest) = implKeysOf rest
+
 -- Install the emitter side-tables + emit, from an already-elaborated program.
 emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 emitTail runtimeDecls coreD modules2 =
+  let half = emitHalfOfEnv
+  let _ = installEmitHalf half
   let allDecls0 = coreD ++ flatMap snd modules2
-  let allDecls = dceFilter allDecls0
+  -- SOURCE DCE IS OFF in the prelude-object modes.  It is per-program by
+  -- construction, so it would (1) shrink prelude.o to whatever the stub entry
+  -- reached — nothing — and (2) make the program half walk FEWER prelude bodies
+  -- than prelude.o was built from, so it would fail to define a dispatcher
+  -- prelude.o declares.  The linker's `--gc-sections` recovers the size from the
+  -- real relocation graph instead (issue #120), which is strictly more precise
+  -- than source reachability anyway.
+  let allDecls = if half == 0 then dceFilter allDecls0 else allDecls0
+  let _ = if half == 2 then installPreludeSymsOf coreD else ()
   let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)

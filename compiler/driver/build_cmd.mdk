@@ -308,11 +308,19 @@ runBuildNativeIn root medaka cc inputAbs outPath tmpDir keepIrCli =
   let emitArgsBase = [runtimeP, preludeP, inputAbs] ++ inputRoots ++ [compilerDir, stdlibDir]
   let emitter2 = envOr "MEDAKA_EMITTER" defaultMedakaEmitter
   let useNative = emitter2 != ""
-  let emitProg = if useNative then emitter2 else medaka
-  let emitArgs = if useNative then
+  let emitProg0 = if useNative then emitter2 else medaka
+  let emitArgs0 = if useNative then
     emitArgsBase
   else
     "run" :: emitter::emitArgsBase
+  -- CI FAST PATH (MEDAKA_PRELUDE_OBJ, issue #118) — the prelude half.  When a
+  -- prebuilt prelude.o is on offer, tell the emitter to emit THIS PROGRAM ONLY
+  -- (declaring what prelude.o defines): 88% of a small program's IR is prelude, and
+  -- clang -O2 re-optimises all of it on every build.  See preludeObjOf below.
+  let (emitProg, emitArgs) = if preludeObjOf () == "" then
+    (emitProg0, emitArgs0)
+  else
+    withEmitHalf "program" emitProg0 emitArgs0
   match runCommand emitProg emitArgs
     Err e =>
       BuildErr "error: could not run emitter (\{emitProg}): \{e}"
@@ -489,17 +497,119 @@ clangLink cc rtC llPath outPath inputAbs tmpDir = match detectGC cc tmpDir
     -- test/diff_compiler_rt_obj.sh.
     let rtObjEnv = envOr "MEDAKA_RT_OBJ" ""
     let rtInput = if rtObjEnv != "" && fileExists rtObjEnv then rtObjEnv else rtC
+    -- CI FAST PATH (MEDAKA_PRELUDE_OBJ, issue #118) — the LINK half.  Exactly the
+    -- MEDAKA_RT_OBJ trick one level up: the prelude is 88% of a small program's IR,
+    -- and clang -O2 re-optimises all of it on every build.  Precompile it ONCE
+    -- (`medaka build --emit-prelude-obj <path>`, emitPreludeObj — same clangOptFlag,
+    -- same detectGC cflags, so the object's flags cannot drift from the link's) and
+    -- link the object instead.  The emitter was told to emit the PROGRAM half above,
+    -- so the two are complementary halves of one module: prelude.o defines
+    -- `@mdk_core__*`/`@mdk_impl_*`, the program half defines its own code, the
+    -- per-program `@mdk_disp_*` dispatchers, and `@mdk_program_main`.
+    --
+    -- Purely additive: unset (or a missing file) → the exact original behavior,
+    -- byte-for-byte, so an ordinary user build is unaffected.  It is opt-in on
+    -- purpose and NOT the default for `--release`: separate objects cannot inline
+    -- prelude functions into user code without LTO.  Proven output-identical
+    -- inline-vs-prebuilt by test/diff_compiler_prelude_obj.sh.
+    let preludeObj = preludeObjOf ()
+    let objInputs = if preludeObj == "" then [llPath, rtInput] else [llPath, preludeObj, rtInput]
     -- The runtime (runtime/medaka_rt.c) runs the compiled program on a 256 MB
     -- worker thread via GC_pthread_create, so it self-provisions its stack: no
     -- Mach-O-only `-Wl,-stack_size` link flag is needed on either platform.
     -- `-pthread` (thread runtime) and `-lm` (math externs) go on every link.
     let sectionsLink = gcSectionsLinkFlag ()
-    let clangArgs = [optFlag, "-pthread"] ++ gcSectionsCflags ++ gcCflags ++ [llPath, rtInput] ++ gcLibs ++ [sectionsLink, "-lm", "-o", outPath]
+    let clangArgs = [optFlag, "-pthread"] ++ gcSectionsCflags ++ gcCflags ++ objInputs ++ gcLibs ++ [sectionsLink, "-lm", "-o", outPath]
     match runCommand cc clangArgs
       Err e => BuildErr "error: could not run clang (\{cc}): \{e}"
       Ok (0, _, _) => BuildOk "built \{inputAbs} -> \{outPath}"
       Ok (_, _, ccErr) =>
         BuildErr "error: clang failed linking \{inputAbs}\n\{ccErr}"
+
+-- ---- the prelude object (issue #118) ---------------------------------------
+-- MEDAKA_PRELUDE_OBJ, honoured only when it names a file that exists (same
+-- discipline as MEDAKA_RT_OBJ: a stale/deleted path degrades to the ordinary
+-- build, it does not fail it).  ONE reader, consulted by both the emit step (which
+-- must then emit the program half) and the link step (which must then link the
+-- object) — so the two can never disagree about whether the fast path is on, which
+-- would be a half-linked binary.
+preludeObjOf : Unit -> <IO> String
+preludeObjOf _ =
+  let p = envOr "MEDAKA_PRELUDE_OBJ" ""
+  if p != "" && fileExists p then p else ""
+
+-- Run a command with MEDAKA_EMIT_HALF set, via `env` — Medaka has no setEnv extern
+-- and runCommand takes no environment, and `env` is POSIX on both platforms.  argv[0]
+-- stays the emitter's own absolute path, so its argv[0]-relative asset lookup is
+-- unaffected.
+withEmitHalf : String -> String -> List String -> (String, List String)
+withEmitHalf half prog args =
+  ("env", ["MEDAKA_EMIT_HALF=\{half}", prog] ++ args)
+
+-- `medaka build --emit-prelude-obj <path>`: emit stdlib/core.mdk ALONE as a
+-- library (MEDAKA_EMIT_HALF=prelude) and compile it to a reusable object with
+-- EXACTLY the flags clangLink would apply to the program half — the same
+-- clangOptFlag opt level, the same `-pthread`, the same gcSectionsCflags, the same
+-- detectGC cflags.  Having the COMPILER decide those (rather than a gate
+-- hand-rolling a clang line with guessed flags) is the whole point: it removes the
+-- drift surface, exactly as emitRtObj does for the C runtime.
+--
+-- The emitter needs an ENTRY, so we hand it a `main = ()` stub in the scratch dir.
+-- The stub contributes nothing (mode 1 emits no `@mdk_program_main`, and a nullary
+-- `main` is neither a fn bind nor a value bind) — it exists only to give the loader
+-- a graph to walk.  DCE is off in this mode, so what lands in the object is the
+-- WHOLE prelude, not what the stub happened to reach.
+export emitPreludeObj : String -> String -> String -> String -> <IO> BuildResult
+emitPreludeObj cc root medaka outObjPath = match makeTempDir ()
+  Err e => BuildErr "error: could not create a scratch directory for the prelude compile: \{e}"
+  Ok tmpDir =>
+    let res = emitPreludeObjIn cc root medaka outObjPath tmpDir
+    let _ = cleanupTempDir tmpDir
+    res
+
+emitPreludeObjIn : String -> String -> String -> String -> String -> <IO> BuildResult
+emitPreludeObjIn cc root medaka outObjPath tmpDir = match detectGC cc tmpDir
+  None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config"
+  Some (gcCflags, _gcLibs) =>
+    let stubPath = joinPath tmpDir "prelude_entry.mdk"
+    let llPath = joinPath tmpDir "prelude.ll"
+    match writeFile stubPath "main = ()\n"
+      Err e =>
+        BuildErr "error: could not write the prelude-object entry stub: \{e}"
+      Ok _ =>
+        let emitter = joinPath root "compiler/entries/llvm_emit_modules_main.mdk"
+        let emitArgsBase = [
+          joinPath root "stdlib/runtime.mdk",
+          joinPath root "stdlib/core.mdk",
+          stubPath,
+          tmpDir,
+          joinPath root "compiler",
+          joinPath root "stdlib",
+        ]
+        let emitter2 = envOr "MEDAKA_EMITTER" defaultMedakaEmitter
+        let useNative = emitter2 != ""
+        let emitProg0 = if useNative then emitter2 else medaka
+        let emitArgs0 = if useNative then
+          emitArgsBase
+        else
+          "run" :: emitter::emitArgsBase
+        let (emitProg, emitArgs) = withEmitHalf "prelude" emitProg0 emitArgs0
+        match runCommand emitProg emitArgs
+          Err e => BuildErr "error: could not run emitter (\{emitProg}): \{e}"
+          Ok (code, irRaw, emitErr) => if code != 0 then BuildErr "error: emitter failed emitting the prelude object\n\{emitErr}"
+          else
+            let ir = stripTrailingUnit irRaw
+            if stringLength ir == 0 then BuildErr "error: emitter produced empty IR for the prelude object\n\{emitErr}"
+            else match writeFile llPath ir
+              Err e => BuildErr ("error: could not write prelude IR: " ++ e)
+              Ok _ =>
+                let optFlag = clangOptFlag
+                let ccArgs = [optFlag, "-pthread"] ++ gcSectionsCflags ++ gcCflags ++ ["-c", llPath, "-o", outObjPath]
+                match runCommand cc ccArgs
+                  Err e => BuildErr "error: could not run clang (\{cc}): \{e}"
+                  Ok (0, _, _) =>
+                    BuildOk "compiled prelude object -> \{outObjPath}"
+                  Ok (_, _, ccErr) => BuildErr "error: clang failed compiling the prelude object\n\{ccErr}"
 
 -- ---- precompile the C runtime object (`medaka build --emit-rt-obj <path>`) ----
 -- Compile runtime/medaka_rt.c to a standalone object with EXACTLY the flags

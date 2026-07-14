@@ -291,6 +291,15 @@ done
 # flags its own link uses, so it can't drift; inline-vs-prebuilt is proven
 # byte-identical by test/diff_compiler_rt_obj.sh. Best-effort: on failure we don't
 # export it and every build falls back to the (unchanged) inline compile.
+#
+# ── CI FAST PATH #2: precompile the PRELUDE object ONCE (issue #118) ───────────
+# Same trick, one level up, and a bigger win: the prelude is 88% of a small
+# program's emitted IR, so without this every worker hands clang ~10k lines of
+# identical prelude to re-optimise. Precompiled at the SAME ORACLE_OPT the workers
+# link at (the same CRITICAL constraint as the runtime object: the compiler reads
+# MEDAKA_CLANG_OPT for both, so a mismatch cannot arise as long as both are built
+# with the same value here). Two link paths, identically-behaving programs — proven
+# by test/diff_compiler_prelude_obj.sh. Best-effort, exactly as above.
 if [ -n "$worklist" ]; then
   _rtobjdir="$(mktemp -d)"
   trap 'rm -rf "$_rtobjdir"' EXIT
@@ -298,6 +307,11 @@ if [ -n "$worklist" ]; then
   if ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O0}" \
          "$MEDAKA" build --emit-rt-obj "$_rtobj" ) >/dev/null 2>&1 && [ -f "$_rtobj" ]; then
     export MEDAKA_RT_OBJ="$_rtobj"
+  fi
+  _preludeobj="$_rtobjdir/prelude.o"
+  if ( cd "$ROOT" && MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" MEDAKA_CLANG_OPT="${ORACLE_OPT:--O0}" \
+         "$MEDAKA" build --emit-prelude-obj "$_preludeobj" ) >/dev/null 2>&1 && [ -f "$_preludeobj" ]; then
+    export MEDAKA_PRELUDE_OBJ="$_preludeobj"
   fi
 fi
 
