@@ -1,0 +1,11 @@
+-- "run drops stdout on panic" regression — E-NONEXHAUSTIVE-MATCH path.  See
+-- index_oob.mdk for the full writeup.
+data Foo = A | B
+
+f : Foo -> Int
+f A = 1
+
+main : <IO> Unit
+main =
+  println "SENTINEL"
+  println "\{f B}"

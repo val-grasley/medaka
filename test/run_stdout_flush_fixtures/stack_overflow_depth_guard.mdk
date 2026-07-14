@@ -1,0 +1,22 @@
+-- "run drops stdout on panic" regression — E-STACK-OVERFLOW path, the CLEAN
+-- interpreter-only guard (eval.mdk's `apply` increments a depth counter and
+-- runtimePanics past evalDepthLimit, well before the real C stack would
+-- exhaust).  See index_oob.mdk for the full writeup.
+--
+-- NOT compared against `medaka build`'s binary in the gate: the compiled
+-- binary has no analogous synthetic depth counter (that is an interpreter-
+-- only safety net — RUNTIME-DESIGN.md), so the SAME source instead runs
+-- until the real 256 MB worker stack is exhausted and dies via the raw
+-- SIGSEGV/SIGBUS fault handler.  That handler path is covered by this fix
+-- too (see runtime/medaka_rt.c's mdk_flush_run_stdout_on_abort, called from
+-- mdk_fault_handler / mdk_chain_previous) but is impractical to exercise
+-- from a fast, portable fixture -- verified instead by a standalone C-level
+-- harness against runtime/medaka_rt.c directly (see the "run drops stdout
+-- on panic" fix's commit message / friction notes).
+main : <IO> Unit
+main =
+  println "SENTINEL"
+  println "\{loop 0}"
+
+loop : Int -> Int
+loop n = 1 + loop (n + 1)

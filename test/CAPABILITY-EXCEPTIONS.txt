@@ -148,11 +148,24 @@ assertSnapshot	interp	BUG	unimplemented in all 3 engines (see llvm/wasm TODO row
 assertSnapshot	llvm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression
 
 # ============================================================================
-# WASM — 58 rows: 10 PERMANENT (net), 2 TRAP-STUB (int bounds), 1 TODO
-# (assertSnapshot), 45 WASM-GAP (unported, no structural blocker).
+# WASM — 60 rows: 12 PERMANENT (net, run-stdout-flush plumbing), 2 TRAP-STUB
+# (int bounds), 1 TODO (assertSnapshot), 45 WASM-GAP (unported, no structural
+# blocker).
 # (arraySortBy/arraySortInPlaceBy formerly filed DEAD here — REMOVED 2026-07-13,
 # same history as the LLVM rows above.)
 # ============================================================================
+
+# --- run-stdout-flush plumbing (2) — PERMANENT. stashRunStdout /
+#     enableRunStdoutFlush are internal `medaka run` CLI plumbing ("run drops
+#     stdout on panic" fix, eval.mdk's appendOutput/evalModulesOutputRun):
+#     they let the NATIVE interpreter binary register its outputRef buffer
+#     with runtime/medaka_rt.c so an abort can flush it before dying. The
+#     compiler itself is only ever built via the LLVM backend (never
+#     compiled to wasm), and no WasmGC-target program runs `medaka run`'s
+#     buffered-then-panicking interpreter loop this exists for, so there is
+#     no structural reason to ever port it. ---
+stashRunStdout	wasm	PERMANENT	internal `medaka run` CLI plumbing (interpreter-only outputRef stash for the "run drops stdout on panic" fix) — the compiler is only ever built via the LLVM backend, never wasm, so no WasmGC program ever exercises this
+enableRunStdoutFlush	wasm	PERMANENT	internal `medaka run` CLI plumbing (arms the abort-time flush for the "run drops stdout on panic" fix) — the compiler is only ever built via the LLVM backend, never wasm, so no WasmGC program ever exercises this
 
 # --- net (10) — PERMANENT. wasm_emit.mdk's own gapL message says so
 #     (~line 4590/6311): "raw BSD sockets have no WasmGC equivalent. Build

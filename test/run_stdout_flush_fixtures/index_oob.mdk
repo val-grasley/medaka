@@ -1,0 +1,12 @@
+-- "run drops stdout on panic" regression (test/diff_compiler_run_stdout_flush.sh).
+-- Before the fix, `medaka run` buffered a program's stdout in an in-language
+-- Ref<String> and only wrote it out after `main` returned NORMALLY -- so a
+-- panicking program's already-printed output was silently discarded (Medaka
+-- panics are not catchable; there is no unwind path back to that final write).
+-- This fixture's SENTINEL line must appear on `run`'s stdout, in the same
+-- place `build`'s binary already put it, before the E-INDEX-OOB diagnostic.
+main : <IO> Unit
+main =
+  println "SENTINEL"
+  let arr = [1, 2, 3]
+  println "\{arr[10]}"
